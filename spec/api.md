@@ -1495,7 +1495,11 @@ published to the connections' queues. A hub's **stream rows** are the
 topic bindings to it, each with its topic, payload, direction (`out`: a
 stream carries what the program publishes, and a row for a topic nothing
 publishes is refused), codec, `bound`, `on_full`, whether it replays, and
-`requires`. A row states `bound:` and `on_full:`; `refuse` is not a
+`requires`. A row may bind a topic another seed declares and require a
+role another seed declares, both through the import alias
+(`lib::Ticks: self.hub requires: [lib::reader], …`): the topic is the
+library's topic and the role the library's role (`spec/types.md` §
+Roles). A row states `bound:` and `on_full:`; `refuse` is not a
 policy of a stream, since a subscriber that cannot keep up loses events,
 never the subscription. A hub has at most sixteen stream rows.
 

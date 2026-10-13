@@ -116,6 +116,16 @@ pub fn build_seed_renames(
                     continue;
                 }
             }
+            // T1: a role is bundle-global vocabulary and keeps its
+            // name (see `top_decl_name`), so it maps to itself — the
+            // row is what lets an importer name it `alias::role`
+            // (`requires: [lib::reader]`) and reach this seed's role.
+            // A declaration of the same name that is renamed keeps its
+            // row: the role's never displaces it.
+            if let TopDecl::Role(r) = item {
+                out.entry(r.name.name.clone()).or_insert_with(|| r.name.name.clone());
+                continue;
+            }
             if let Some(n) = top_decl_name(item) {
                 out.insert(n.to_string(), mangled(lib_id, stem, n));
             }
@@ -921,9 +931,14 @@ impl<'a> QualifiedRenameApplier<'a> {
                 // no TypeExprs the import-rename pass needs
                 // to rewrite.
             }
-            TopDecl::Role(_) => {
-                // GH #1109: a role's name and its `includes` are bare
-                // vocabulary, never qualified paths.
+            TopDecl::Role(r) => {
+                // GH #1109: a role's name is bare vocabulary. T1: an
+                // `includes` may name an imported seed's role through
+                // its alias (`includes lib::reader`); it collapses to
+                // the role's own name.
+                for inc in &mut r.includes {
+                    self.rewrite_joined_ident(inc);
+                }
             }
             TopDecl::Unit(_) => {
                 // GH #1076: a unit and its target are bare vocabulary.
@@ -936,6 +951,10 @@ impl<'a> QualifiedRenameApplier<'a> {
                 // row's `written` spelling stay as the author wrote them.
                 for r in &mut a.rows {
                     self.rewrite_joined_ident(&mut r.locus);
+                    // T1: a role another seed declares, `lib::reader`
+                    for role in &mut r.requires {
+                        self.rewrite_joined_ident(role);
+                    }
                 }
             }
             TopDecl::Group(g) => {
@@ -1049,6 +1068,12 @@ impl<'a> QualifiedRenameApplier<'a> {
                 if let Some(fal) = &mut fd.fallible {
                     self.rewrite_type_expr(fal);
                 }
+                // T1: `@rpc(requires: [lib::reader])`
+                if let Some(rpc) = &mut fd.rpc {
+                    for role in &mut rpc.requires {
+                        self.rewrite_joined_ident(role);
+                    }
+                }
             }
             LocusMember::Const(c) => self.rewrite_type_expr(&mut c.ty),
             LocusMember::Type(t) => match &mut t.body {
@@ -1089,6 +1114,14 @@ impl<'a> QualifiedRenameApplier<'a> {
                     }
                     if let Some(codec) = &mut entry.codec {
                         self.rewrite_joined_ident(&mut codec.locus);
+                    }
+                }
+                // T1: a hub's stream may carry an imported topic and
+                // require an imported role, both through the alias
+                for hub in &mut bb.hubs {
+                    self.rewrite_joined_ident(&mut hub.topic);
+                    for role in &mut hub.requires {
+                        self.rewrite_joined_ident(role);
                     }
                 }
             }

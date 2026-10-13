@@ -95,9 +95,12 @@ group_member      = IDENTIFIER , { "::" , IDENTIFIER } , [ "::" , "*" ]
    `includes` are contextual: at top level `role` followed by a name
    is the declaration (it is also the `unix(..., role: listen)`
    kwarg). `includes` is grant-only and union-only; `owner` needs no
-   declaration. Role names are never mangled. *)
+   declaration. Role names are never mangled; an included role (and a
+   `requires_clause` role) may be qualified by an import alias,
+   `lib::reader`, naming the role that seed declares. *)
 role_decl         = "role" , IDENTIFIER ,
-                    [ "includes" , IDENTIFIER , { "," , IDENTIFIER } ] , ";" ;
+                    [ "includes" , role_ref , { "," , role_ref } ] , ";" ;
+role_ref          = IDENTIFIER , [ "::" , IDENTIFIER ] ;
 
 (* GH #1076 — `unit NAME;` declares a node of the unit graph;
    `unit NAME = FACTOR [TARGET];` also states that one NAME is FACTOR
@@ -124,7 +127,7 @@ unit_decl         = "unit" , IDENTIFIER , [ "=" , unit_factor ] , ";" ;
 api_decl          = "api" , IDENTIFIER , "{" , { rpc_row } , "}" ;
 rpc_row           = "rpc" , IDENTIFIER , "::" , IDENTIFIER , { "::" , IDENTIFIER } ,
                     [ requires_clause ] , ";" ;
-requires_clause   = "requires" , ":" , "[" , [ identifier_list , [ "," ] ] , "]" ;
+requires_clause   = "requires" , ":" , "[" , [ role_ref , { "," , role_ref } , [ "," ] ] , "]" ;
 unit_factor       = INT_LIT , [ "/" , INT_LIT ] , [ IDENTIFIER ]
                   | [ INT_LIT , "/" ] , QUANTITY_LIT ;
 

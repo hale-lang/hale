@@ -1651,6 +1651,16 @@ Role names are deployment vocabulary (the keys of
 mangled: an imported seed's `role x;` and the entrypoint's are one
 `x`, and declaring it in both is the duplicate error.
 
+A role another seed declares may be named through the import alias,
+`lib::reader`, wherever a role is named: a `requires: [...]` list (a
+surface row's, an `@rpc` attribute's, a hub binding's) and an
+`includes`. The path collapses to the role's own name when the seed the
+alias imports declares that role, so `lib::reader` and the bare `reader`
+are one role and a description, a refusal and the environment's role
+table all say `reader`. A path whose alias the seed does not import, or
+whose seed declares no such role, is left as written and refused as an
+undeclared role in the author's spelling.
+
 A role is named by a requirement: a surface row's `requires: [R, …]`
 (`rpc Orders::cancel requires: [operator];`, or `@rpc(requires: [R])` on
 the handler) or a hub binding's `requires:` (`spec/api.md` § Surfaces

@@ -173,3 +173,107 @@ fn the_fixture_program_is_admitted() {
     let errors: Vec<&str> = checked.diags.iter().filter(|d| d.is_error()).map(|d| d.message.as_str()).collect();
     assert!(errors.is_empty(), "{errors:#?}");
 }
+
+/// T1 (friction sweep 2026-10-12): a role a library seed declares is named
+/// through its import alias. `requires: [lib::reader]` on a surface row,
+/// an `@rpc` attribute and a hub's stream, and `includes lib::reader` on a
+/// role, all reach the library's role (roles are bundle-global vocabulary,
+/// so the alias collapses to the role's own name); the hub's stream may
+/// carry the library's topic as well. An alias the seed does not import,
+/// or a role the library does not declare, is left as written and refused
+/// by law 4 in the author's spelling.
+fn seed_with_role_library(tag: &str, entry: &str) -> std::path::PathBuf {
+    let d = std::env::temp_dir().join(format!("hale_roles_imported_{tag}_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&d);
+    std::fs::create_dir_all(d.join("lib")).unwrap();
+    std::fs::write(d.join("hale.toml"), "[deps]\n").unwrap();
+    std::fs::write(d.join("lib/hale.toml"), "[deps]\n").unwrap();
+    std::fs::write(
+        d.join("lib/main.hl"),
+        "role reader;
+role writer includes reader;
+type Tick { n: Int; }
+topic Ticks { payload: Tick; subject: \"ticks\"; }
+locus Store {
+    bus { publish Ticks; }
+    fn tick() { Ticks <- Tick { n: 1 }; }
+}
+locus Toks {
+    fn principal(token: String) -> std::api::Principal { return std::api::Principal { mode: \"bearer\", name: token }; }
+    fn refused() -> String { return \"no\"; }
+}
+locus Grants {
+    fn holds(p: std::api::Principal, r: String) -> Bool { return true; }
+}
+",
+    )
+    .unwrap();
+    std::fs::write(d.join("main.hl"), entry).unwrap();
+    d
+}
+
+fn role_errors_of_seed(dir: &std::path::Path) -> Vec<String> {
+    let snap = Snapshot::load(dir, LoadMode::WholeSeed, &Disk, Config::check(false, false)).ok().expect("it loads");
+    let diags = match snap.demand_check() {
+        Ok(c) => c.diags.clone(),
+        Err(b) => b.because.clone(),
+    };
+    let out = diags.iter().filter(|d| d.is_error()).map(|d| d.message.clone()).collect();
+    let _ = std::fs::remove_dir_all(dir);
+    out
+}
+
+const ROLE_APP: &str = "import \"lib\" as lib;
+role boss includes lib::writer;
+type Q { n: Int; }
+type A { n: Int; }
+locus Desk {
+    fn look(q: Q) -> A { return A { n: q.n }; }
+    @rpc(requires: [lib::writer])
+    fn write(q: Q) -> A { return A { n: q.n }; }
+}
+api Public { rpc Desk::look requires: [lib::reader, boss]; }
+main locus App {
+    params {
+        toks: lib::Toks = lib::Toks { };
+        grants: lib::Grants = lib::Grants { };
+        store: lib::Store = lib::Store { };
+        desk: Desk = Desk { };
+        hub: ws::Hub = ws::Hub { bind: \"127.0.0.1:0\", principals: self.toks, roles: self.grants, as: \"stream\" };
+    }
+    bindings {
+        lib::Ticks: self.hub requires: [lib::reader], bound: 8, on_full: drop_old;
+    }
+    run() { self.hub.stop(); }
+}
+fn main() { App { }; }
+";
+
+#[test]
+fn a_role_another_seed_declares_is_named_through_its_alias() {
+    let ok = seed_with_role_library("ok", ROLE_APP);
+    assert_eq!(role_errors_of_seed(&ok), Vec::<String>::new());
+}
+
+#[test]
+fn a_qualified_role_nothing_declares_is_refused_as_written() {
+    let missing = seed_with_role_library(
+        "missing",
+        &ROLE_APP.replace("requires: [lib::reader, boss]", "requires: [lib::auditor, boss]"),
+    );
+    let errors = role_errors_of_seed(&missing);
+    assert_eq!(
+        errors,
+        vec!["rpc `Desk::look` requires `lib::auditor`, which no `role` declares".to_string()],
+        "{errors:#?}"
+    );
+    let unknown_alias = seed_with_role_library(
+        "alias",
+        &ROLE_APP.replace("requires: [lib::reader, boss]", "requires: [other::reader, boss]"),
+    );
+    let errors = role_errors_of_seed(&unknown_alias);
+    assert!(
+        errors.iter().any(|e| e.contains("requires `other::reader`, which no `role` declares")),
+        "{errors:#?}"
+    );
+}

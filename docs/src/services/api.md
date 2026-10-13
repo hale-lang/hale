@@ -94,6 +94,12 @@ subscribes a topic or returns a value. A handler can sit in several
 surfaces, each with its own `requires`, and two versions of one API
 over one set of handlers are two surfaces.
 
+Roles are one vocabulary for the whole program, whichever seed declares
+them. A role a library declares is named through its import alias —
+`requires: [lib::reader]`, `@rpc(requires: [lib::writer])`, a hub
+stream's `requires:`, or `role boss includes lib::writer;` — and is the
+library's `reader`: the description and the refusals say `reader`.
+
 ### What the check refuses
 
 The rows are checked before anything is served. A row that names no
