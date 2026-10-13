@@ -288,7 +288,8 @@ the binding and a use of it (or is the call it is passed to; an
 argument is passed by reference, so only a `String` or `Bytes` argument
 is copied — a record, tuple or array handed to a callee stays the
 caller's, and what the callee writes through its parameter the caller
-sees). An
+sees — unless a later argument's evaluation replaces its place, when it
+is copied whole: nothing is left to write through). An
 operand held while a later one is evaluated — an earlier argument of a
 call, a method's receiver, a binary operator's left side, an earlier
 field of a literal — is copied where it is evaluated when the later

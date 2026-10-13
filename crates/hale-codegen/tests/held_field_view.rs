@@ -565,3 +565,89 @@ fn a_record_argument_the_callee_fills_stays_the_callers() {
     assert!(out.status.success(), "non-zero {:?}; stdout: {stdout}; stderr: {stderr}", out.status);
     assert!(stdout.contains("count=1\n"), "stdout: {stdout}; stderr: {stderr}");
 }
+
+/// Two shapes the analysis credited with too little:
+///
+/// - a record's fn-valued member named like a form's method (`pop`,
+///   `set`, `get`): `self.hooks.pop(r)` was taken for a form's `pop`
+///   by its name alone, credited with the receiver's write only, so a
+///   payload held across it stayed a view while the member's `reset`
+///   cleared it. A form's synthesized method now needs a receiver known
+///   to hold a form, and a record's fn-typed member is a value call,
+///   which writes anything;
+/// - a compound argument (a record, a tuple, an array) whose place a
+///   LATER argument's evaluation replaces: the argument is passed by
+///   reference, so it was passed as the place's pointer, which the later
+///   argument retired before the callee ran. With the place gone there is
+///   nothing to write through, so it is copied whole where it is
+///   evaluated (a callee writing through its own parameter still gets the
+///   caller's record, `a_record_argument_the_callee_fills_stays_the_callers`).
+#[test]
+fn a_member_call_and_a_later_argument_keep_what_they_were_given() {
+    let src = r#"
+type E = enum { A(String), B };
+type Cell { s: String = ""; }
+type F { cells: [Cell; 2] = [Cell { }, Cell { }]; pair: (String, Int) = ("", 0); }
+interface Resetter { fn clear(); fn put(t: String); }
+type Hooks { pop: fn(Resetter) -> Int; set: fn(Resetter) -> Int; get: fn(Resetter) -> Int; }
+fn reset(h: Resetter) -> Int {
+    h.clear();
+    let mut i = 0;
+    while i < 50 { h.put(std::str::upper("pad-" + to_string(i))); i = i + 1; }
+    return 0;
+}
+fn take(c: Cell, n: Int) -> String { return c.s; }
+fn take_t(t: (String, Int), n: Int) -> String { return t.0; }
+fn take_a(a: [Cell; 2], n: Int) -> String { return a[0].s; }
+locus H {
+    params {
+        e: E = E::A(std::str::upper("old-member-payload"));
+        f: F = F { };
+        hooks: Hooks = Hooks { pop: reset, set: reset, get: reset };
+    }
+    fn clear() { self.e = E::B; self.f = F { }; }
+    fn put(t: String) {
+        self.e = E::A(t);
+        self.f = F { cells: [Cell { s: t }, Cell { s: t }], pair: (t, 1) };
+    }
+    fn fill(t: String) { self.put(t); }
+    fn by_pop() -> String { let held = match self.e { E::A(s) -> s, E::B -> "", }; let r: Resetter = self; let n = self.hooks.pop(r); return held; }
+    fn by_set() -> String { let held = match self.e { E::A(s) -> s, E::B -> "", }; let r: Resetter = self; let n = self.hooks.set(r); return held; }
+    fn by_get() -> String { let held = match self.e { E::A(s) -> s, E::B -> "", }; let r: Resetter = self; let n = self.hooks.get(r); return held; }
+    fn later_cell() -> String { return take(self.f.cells[0], reset(self)); }
+    fn later_tuple() -> String { return take_t(self.f.pair, reset(self)); }
+    fn later_array() -> String { return take_a(self.f.cells, reset(self)); }
+}
+fn main() {
+    let h = H { };
+    println("pop=" + h.by_pop());
+    h.fill(std::str::upper("old-member-payload"));
+    println("set=" + h.by_set());
+    h.fill(std::str::upper("old-member-payload"));
+    println("get=" + h.by_get());
+    h.fill(std::str::upper("old-later-argument"));
+    println("cell=" + h.later_cell());
+    h.fill(std::str::upper("old-later-argument"));
+    println("tuple=" + h.later_tuple());
+    h.fill(std::str::upper("old-later-argument"));
+    println("array=" + h.later_array());
+}
+    "#;
+    let bin = harness::unique_bin("hale_held_field_view_member_later");
+    harness::build_source_asan(src, &bin);
+    let out = Command::new(&bin).env("LOTUS_NO_CHUNK_POOL", "1").output().expect("run");
+    let _ = std::fs::remove_file(&bin);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "non-zero {:?}; stdout: {stdout}; stderr: {stderr}", out.status);
+    for want in [
+        "pop=OLD-MEMBER-PAYLOAD\n",
+        "set=OLD-MEMBER-PAYLOAD\n",
+        "get=OLD-MEMBER-PAYLOAD\n",
+        "cell=OLD-LATER-ARGUMENT\n",
+        "tuple=OLD-LATER-ARGUMENT\n",
+        "array=OLD-LATER-ARGUMENT\n",
+    ] {
+        assert!(stdout.contains(want), "missing {want:?}; stdout: {stdout}; stderr: {stderr}");
+    }
+}

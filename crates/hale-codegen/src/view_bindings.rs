@@ -444,9 +444,10 @@ impl Bodies<'_> {
                     Target::Unknown
                 } else if self.methods.contains_key(&name.name) {
                     Target::Method(name.name.clone())
-                } else if FORM_OPS.contains(&name.name.as_str()) {
-                    Target::FormOp
                 } else {
+                    // A form's synthesized method only on a receiver known
+                    // to hold a form: by its name alone it may be a record's
+                    // fn-valued member, or anything else.
                     Target::Unknown
                 }
             }
@@ -554,7 +555,15 @@ fn collect<'a>(items: &'a [TopDecl], p: &mut Bodies<'a>) {
                         p.variants.extend(vs.iter().map(|v| v.name.name.clone()));
                         p.enums.extend(decl_names(&td.name.name));
                     }
-                    TypeDeclBody::Struct(_) | TypeDeclBody::Scalar(_) => p.records.extend(decl_names(&td.name.name)),
+                    TypeDeclBody::Struct(fields) => {
+                        p.records.extend(decl_names(&td.name.name));
+                        // A record's members are fields a call
+                        // `x.name(..)` may run as a value, like a locus's.
+                        for f in fields {
+                            p.field_types.push((f.name.name.clone(), Some(&f.ty)));
+                        }
+                    }
+                    TypeDeclBody::Scalar(_) => p.records.extend(decl_names(&td.name.name)),
                     TypeDeclBody::Alias(_) => {}
                 }
                 if let TypeDeclBody::Alias(t) = &td.body {
@@ -1181,7 +1190,7 @@ impl<'p, 'a> Walk<'p, 'a> {
             }
             Expr::Literal(..) | Expr::Path(_) | Expr::KwSelf(_) => None,
             Expr::Binary { left, right, .. } => {
-                self.operands(&[left, right], false);
+                self.operands(&[left, right]);
                 None
             }
             Expr::Unary { operand, .. } => {
@@ -1198,16 +1207,16 @@ impl<'p, 'a> Walk<'p, 'a> {
                 None
             }
             Expr::Index { receiver, index, .. } => {
-                let mut keys = self.operands(&[receiver, index], false);
+                let mut keys = self.operands(&[receiver, index]);
                 keys.swap_remove(0)
             }
             Expr::Tuple(es, _) | Expr::Array(es, _) => {
                 let ops: Vec<&Expr> = es.iter().collect();
-                self.operands(&ops, false).into_iter().fold(None, union)
+                self.operands(&ops).into_iter().fold(None, union)
             }
             Expr::Struct { inits, .. } => {
                 let ops: Vec<&Expr> = inits.iter().map(|i| &i.value).collect();
-                self.operands(&ops, false).into_iter().fold(None, union)
+                self.operands(&ops).into_iter().fold(None, union)
             }
             Expr::Block(b) => self.block(b),
             Expr::If(i) => self.if_stmt(i),
@@ -1294,7 +1303,7 @@ impl<'p, 'a> Walk<'p, 'a> {
         let mut ops: Vec<&Expr> = Vec::with_capacity(args.len() + 1);
         ops.extend(receiver);
         ops.extend(args.iter());
-        let mut keys = self.operands(&ops, true);
+        let mut keys = self.operands(&ops);
         let recv_keys = if receiver.is_some() { keys.remove(0) } else { None };
         let mut result: Keys = None;
         // A form's read may hand back its cell; any other method's
@@ -1346,8 +1355,11 @@ impl<'p, 'a> Walk<'p, 'a> {
     /// later operand's evaluation may replace that place (`take(match
     /// self.e { .. }, self.reset())`, `self.f.s + self.renamed()`, a
     /// record literal's fields). The keys of each.
-    /// `by_ref`: the operands are a call's receiver and arguments.
-    fn operands(&mut self, ops: &[&Expr], by_ref: bool) -> Vec<Keys> {
+    /// A call's receiver and arguments are operands too: one a later
+    /// sibling's evaluation replaces is copied whole, a compound
+    /// included — the place it referenced is gone before the callee
+    /// starts, so there is nothing for the callee to write through.
+    fn operands(&mut self, ops: &[&Expr]) -> Vec<Keys> {
         let first_write = self.writes.len();
         let mut keys = Vec::with_capacity(ops.len());
         let mut ends = Vec::with_capacity(ops.len());
@@ -1363,7 +1375,10 @@ impl<'p, 'a> Walk<'p, 'a> {
                     .any(|w| w.at > ends[i] && w.writes.touches(k, self.p));
                 if hit {
                     let k = k.clone();
-                    self.flag_operand(ops[i], &k, by_ref);
+                    // A later sibling replaced the place before the call
+                    // begins: there is no live place for a callee to write
+                    // through, so even a compound argument is copied whole.
+                    self.flag_operand(ops[i], &k, false);
                 }
             }
         }
@@ -1761,6 +1776,22 @@ mod tests {
             }
         "#;
         assert_eq!(flagged(src), ["e"]);
+    }
+
+    #[test]
+    fn a_member_named_like_a_form_op_is_a_value_call() {
+        // `pop` on a record member is no form's `pop`: only a receiver
+        // known to hold a form takes a form's synthesized method.
+        let src = r#"
+            type F { s: String = ""; }
+            type Hooks { pop: fn(Int) -> Int; }
+            locus H {
+                params { f: F = F { }; hooks: Hooks = Hooks { pop: one }; }
+                fn hold() -> String { let s = self.f.s; self.hooks.pop(1); return s; }
+            }
+            fn one(x: Int) -> Int { return x; }
+        "#;
+        assert_eq!(flagged(src), ["s"]);
     }
 
     #[test]

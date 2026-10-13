@@ -1885,7 +1885,8 @@ pub const FAMILIES: &[Family] = &[
         invariants: &[
             "a binding is an owned copy only where a write that may replace what it views comes before a use of it (or is the call it is passed to); every other binding stays the field's own pointer, which costs nothing",
             "a type or a callee the pass cannot positively identify costs a copy, never a use after a retire: an unclassified type may be a handle and a fn value, an unidentified callee writes anything",
-            "an argument is passed by reference: only a String or Bytes argument is copied, so a record a callee writes through its parameter stays the caller's",
+            "an argument is passed by reference: against its callee's writes only a String or Bytes argument is copied, so a record a callee writes through its parameter stays the caller's; an argument whose place a later argument's evaluation replaces is copied whole, a compound included",
+            "a form's synthesized method is a target only on a receiver known to hold a form; a name alone (a record's fn-valued member called `pop`) is an unidentified callee",
             "every question about a type goes through `classify`; no `TypeExpr` variant is matched elsewhere in the pass (`types_are_classified_in_one_place`)",
         ],
         missing: Missing::NotApplicable,

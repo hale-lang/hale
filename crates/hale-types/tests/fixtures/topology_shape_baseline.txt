@@ -867,6 +867,7 @@ crates/hale-codegen/tests/held_field_view.rs#1 f4982980eba60043
 crates/hale-codegen/tests/held_field_view.rs#2 e47f1818b4ddda48
 crates/hale-codegen/tests/held_field_view.rs#3 51ace5f4180a49e1
 crates/hale-codegen/tests/held_field_view.rs#4 834b637e73b40daf
+crates/hale-codegen/tests/held_field_view.rs#5 de1a7b5c9d1f7bd4
 crates/hale-codegen/tests/http_request_headers.rs#0 865d341109268295
 crates/hale-codegen/tests/http_request_headers.rs#1 865d341109268295
 crates/hale-codegen/tests/http_request_headers.rs#2 865d341109268295
