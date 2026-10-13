@@ -197,6 +197,31 @@ is not judged here (§ "Expressions — `if` and block tails"). Before
 this rule the checker accepted `a + 2;` and the backend refused it
 with no file or line.
 
+## Expressions with no value
+
+A call to a fn that returns nothing, an `or` on a `() fallible(E)`
+call (`push(self.marks, t) or { }`, `write_file(p, s) or discard`),
+and an `if` / `match` / block with no tail value produce no value:
+their type is `()`, and there is no `()` value to bind, store or
+compute with. Such an expression is a statement or nothing. Where a
+place takes the type of what it is given rather than checking it
+against a declared one — a `let` (with or without an annotation),
+a tuple or array element, an operand, a generic fn's argument — the
+check refuses it at the expression:
+
+```text
+main.hl:7:20: type error: let `full` needs a value, and this
+expression produces none (its type is `()`): a call to a fn that
+returns nothing, an `or` on a `() fallible(E)` call, or an `if` /
+`match` / block with no tail value. Write it as a statement of its
+own (`call() or { ... };`), or give it a value to produce.
+```
+
+A place with a declared type (a parameter, a field, a condition, a
+return) already refused `()` as a type mismatch. Until 2026-10-13
+the others checked clean and the build refused them with no file or
+line.
+
 ## Binary data — Bytes and conversion
 
 `Bytes` is the binary-safe sibling of `String`. Same

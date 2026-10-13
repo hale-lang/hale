@@ -11246,10 +11246,37 @@ impl<'a> Checker<'a> {
         ));
     }
 
+    /// A value position (a `let`, an element, an operand, a generic
+    /// argument: the places that take the type of what they are given
+    /// rather than checking it against a declared one) given an
+    /// expression that produces no value: a call to a fn that returns
+    /// nothing, an `or` on a `() fallible(E)` call, or an `if` / `match`
+    /// / block with no tail value. There is nothing to bind or compute
+    /// with, and lowering has no value to give; the check refuses it so
+    /// `hale check` and `hale build` give one answer. Returns whether it
+    /// refused.
+    fn refuse_unit_value(&mut self, ty: &Ty, value: &Expr, place: &str) -> bool {
+        if !matches!(ty, Ty::Unit) {
+            return false;
+        }
+        self.diags.push(Diag::ty(
+            value.span(),
+            format!(
+                "{place} needs a value, and this expression produces none \
+                 (its type is `()`): a call to a fn that returns nothing, an \
+                 `or` on a `() fallible(E)` call, or an `if` / `match` / \
+                 block with no tail value. Write it as a statement of its \
+                 own (`call() or {{ ... }};`), or give it a value to produce."
+            ),
+        ));
+        true
+    }
+
     fn check_stmt(&mut self, stmt: &Stmt) {
         match stmt {
             Stmt::Let { is_mut, name, ty, value, .. } => {
                 let got = self.check_expr(value);
+                self.refuse_unit_value(&got, value, &format!("let `{}`", name.name));
                 let bound = match ty {
                     Some(te) => {
                         // GH #877: the one annotation that lives in a
@@ -11319,6 +11346,7 @@ impl<'a> Checker<'a> {
             }
             Stmt::LetTuple { is_mut, names, ty, value, .. } => {
                 let got = self.check_expr(value);
+                self.refuse_unit_value(&got, value, "a tuple binding");
                 // GH #877: `let (a, b): (Int, Strng) = ...` — the
                 // annotation is a tuple type expression, walked the
                 // same way.
@@ -15739,10 +15767,19 @@ impl<'a> Checker<'a> {
             Expr::Binary { op, left, right, span } => {
                 let lt = self.check_expr(left);
                 let rt = self.check_expr(right);
+                let place = format!("an operand of `{}`", crate::unit_quantities::op_symbol(*op));
+                let unit_l = self.refuse_unit_value(&lt, left, &place);
+                let unit_r = self.refuse_unit_value(&rt, right, &place);
+                if unit_l || unit_r {
+                    return Ty::Unknown;
+                }
                 self.binop_ty(*op, &lt, &rt, *span, (left.as_ref(), right.as_ref()))
             }
             Expr::Unary { op, operand, span } => {
                 let t = self.check_expr(operand);
+                if self.refuse_unit_value(&t, operand, "the operand of a unary operator") {
+                    return Ty::Unknown;
+                }
                 // GH #1076 (U3): a quantity negates; a point does not.
                 match self.scalars.quantity_unary(*op, &t) {
                     Some(Ok(t)) => return t,
@@ -16288,6 +16325,13 @@ impl<'a> Checker<'a> {
                             .iter()
                             .map(|a| self.check_expr(a))
                             .collect();
+                        for (a, at) in args.iter().zip(&arg_tys) {
+                            self.refuse_unit_value(
+                                at,
+                                a,
+                                &format!("an argument to generic fn `{}`", id.name),
+                            );
+                        }
                         let generic_names: std::collections::BTreeSet<
                             String,
                         > = template
@@ -17211,10 +17255,17 @@ impl<'a> Checker<'a> {
                 }
             }
             Expr::Tuple(parts, _) => {
-                Ty::Tuple(parts.iter().map(|e| self.check_expr_local(e)).collect())
+                let tys: Vec<Ty> = parts.iter().map(|e| self.check_expr_local(e)).collect();
+                for (e, t) in parts.iter().zip(&tys) {
+                    self.refuse_unit_value(t, e, "a tuple element");
+                }
+                Ty::Tuple(tys)
             }
             Expr::Array(parts, _) => {
                 let tys: Vec<Ty> = parts.iter().map(|e| self.check_expr_local(e)).collect();
+                for (e, t) in parts.iter().zip(&tys) {
+                    self.refuse_unit_value(t, e, "an array element");
+                }
                 let elem = self.array_element(expr, parts, tys);
                 Ty::Array(Box::new(elem), Some(parts.len() as u64))
             }
@@ -17223,6 +17274,7 @@ impl<'a> Checker<'a> {
                 // type repeated N times. Count is parser-validated
                 // as a non-negative Int literal.
                 let elem = self.check_expr_local(val);
+                self.refuse_unit_value(&elem, val, "an array element");
                 Ty::Array(Box::new(elem), Some(*count))
             }
             Expr::Struct { path, inits, span, id } => self.check_struct_literal(*id, path, inits, *span),

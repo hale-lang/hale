@@ -24958,12 +24958,16 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                             e.span(),
                         ))
                     }
-                    _ => Err(CodegenError::Unsupported(
-                        "`or` expression in value position has Unit \
-                         success type — bare-statement use is fine, but \
-                         can't bind to `let` without a value (use \
-                         `let _: () = expr or ...;` if you want to ignore)"
+                    // The check refuses a `()` value where a value is
+                    // taken (`refuse_unit_value`); a harness build that
+                    // skips the check meets the same rule here.
+                    _ => Err(CodegenError::UnsupportedAt(
+                        "this `or` produces no value (the call succeeds \
+                         with `()`), so there is nothing to bind or \
+                         compute with; write it as a statement of its own \
+                         (`call() or { ... };`)"
                             .into(),
+                        e.span(),
                     )),
                 }
             }

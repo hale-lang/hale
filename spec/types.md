@@ -1719,6 +1719,12 @@ so the position reports no type mismatch beside the law's error.
   `write_file(p, s) or { println("failed"); };` — the same as
   `or raise` / `or discard` there.
 
+  The value of an `or` whose call succeeds with `()` is no value:
+  `let full = push(self.marks, t) or { };` is refused at the
+  expression, as every `()`-typed expression in a value position is
+  (spec/semantics.md § "Expressions with no value"). Write the call
+  as a statement.
+
 The `or` operator is right-associative: `a() or b() or raise`
 parses as `a() or (b() or raise)`, so each level disposes one
 fallible in turn until a non-fallible value remains.

@@ -2242,3 +2242,51 @@ fn a_bounded_of_time_checks_and_builds() {
         assert_eq!(sweep_verdict(src, tag), Verdict::Built, "{}", src);
     }
 }
+
+/// An expression that produces no value, put where a value is taken by
+/// its type rather than checked against a declared one: a `let`, a
+/// tuple or array element, an operand, a generic fn's argument. `let
+/// full = push(self.marks, t) or { };` checked clean and the build
+/// refused it ("`or` expression in value position has Unit success
+/// type"), as did `let u = g();` for a fn returning nothing ("fn `g`
+/// returns no value but is used in expression position"). There is no
+/// `()` value to bind or compute with, so the check refuses each at the
+/// expression; the same call written as a statement builds.
+///
+/// Plain string literals, for the reason given above.
+#[test]
+fn a_unit_value_in_a_value_position_is_refused_by_the_check_not_the_build() {
+    let marks = |stmt: &str| {
+        format!(
+            "locus L {{\n\
+             params {{ marks: bounded[Time; 2]; }}\n\
+             run() {{ let t = `2026-05-08T12:00:00Z`; {stmt} println(count(self.marks)); }}\n\
+             }}\n\
+             fn main() {{ L {{ }}; }}\n"
+        )
+    };
+    let or_block = marks("let full = push(self.marks, t) or { };");
+    let or_discard = marks("let full = push(self.marks, t) or discard;");
+    assert_refused_by_the_check(
+        &[
+            (&or_block, "push(self.marks, t) or { }", "let `full` needs a value, and this expression produces none"),
+            (&or_discard, "push(self.marks, t) or discard", "let `full` needs a value, and this expression produces none"),
+            ("fn g() { println(\"g\"); }\nfn main() { let u = g(); }\n", "g()", "let `u` needs a value, and this expression produces none"),
+            (
+                "fn main() { let c = true; let x = if c { println(\"a\"); } else { println(\"b\"); }; }\n",
+                "if c { println(\"a\"); } else { println(\"b\"); }",
+                "let `x` needs a value, and this expression produces none",
+            ),
+            ("fn g() { println(\"g\"); }\nfn main() { let (a, b) = (g(), 1); println(b); }\n", "g()", "a tuple element needs a value, and this expression produces none"),
+            ("fn g() { println(\"g\"); }\nfn main() { let a = [g()]; }\n", "g()", "an array element needs a value, and this expression produces none"),
+            ("fn g() { println(\"g\"); }\nfn main() { let n = -g(); }\n", "g()", "the operand of a unary operator needs a value, and this expression produces none"),
+            (
+                "fn g() { println(\"g\"); }\nfn id<T>(x: T) -> T { return x; }\nfn main() { id(g()); }\n",
+                "g()",
+                "an argument to generic fn `id` needs a value, and this expression produces none",
+            ),
+        ],
+        "unit_value",
+    );
+    assert_built(&marks("push(self.marks, t) or { };"), "hale_cb_unit_or_block_statement");
+}
