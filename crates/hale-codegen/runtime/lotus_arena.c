@@ -6677,29 +6677,41 @@ static void *lotus_retire_free_pop(lotus_arena_t *a, size_t size,
     return best;
 }
 
-/* Bounded first-fit pop for the OUT-OF-BAND small-block freelist
+/* Bounded best-fit pop for the OUT-OF-BAND small-block freelist
  * (blocks < 16 bytes, tracked by their shells so nothing is written
  * into the block). Unlinks the matched shell, recycles it to the
- * shell pool, and returns its blob. Returns NULL on miss. */
+ * shell pool, and returns its blob. Returns NULL on miss.
+ *
+ * Best fit within the probe window, as lotus_retire_free_pop (GH
+ * #1037): a replace that frees a 12-byte payload-enum block and an
+ * 8-byte String and then allocates the String first let first fit
+ * hand the String the enum's block, leaving the enum's request only
+ * the String's, too small — a block and a shell stranded per replace
+ * (~48 B), so `self.e = E::A(s)` grew without bound. */
 static void *lotus_retire_free_small_pop(lotus_arena_t *a, size_t size,
                                          size_t align) {
     lotus_retire_shell_t **pp =
         (lotus_retire_shell_t **)&a->retire_free_small;
+    lotus_retire_shell_t **best = NULL;
     int probes = 0;
     while (*pp && probes < 8) {
         lotus_retire_shell_t *sh = *pp;
         if (sh->size >= size && sh->size <= size + (size >> 2) + 16 &&
-            ((uintptr_t)sh->blob & (align - 1)) == 0) {
-            *pp = sh->next;
-            void *blob = sh->blob;
-            sh->next = (lotus_retire_shell_t *)a->retire_shells;
-            a->retire_shells = sh;
-            return blob;
+            ((uintptr_t)sh->blob & (align - 1)) == 0 &&
+            (!best || sh->size < (*best)->size)) {
+            best = pp;
+            if (sh->size == size) break;
         }
         pp = &sh->next;
         probes++;
     }
-    return NULL;
+    if (!best) return NULL;
+    lotus_retire_shell_t *sh = *best;
+    *best = sh->next;
+    void *blob = sh->blob;
+    sh->next = (lotus_retire_shell_t *)a->retire_shells;
+    a->retire_shells = sh;
+    return blob;
 }
 
 /* Anchor-site allocator: reuse a flushed retired block when one
@@ -17541,20 +17553,22 @@ void lotus_str_field_replace_fixup(void *arena_ptr, char **slot,
  * knows (a field block, lotus_slot_alloc — a nested String assigned
  * in place) retires at its class; everything else at its walked
  * size. */
-void lotus_self_field_retire_replaced(void *arena_ptr, const void *old_snap,
-                                      const void *new_block, void *scrap,
-                                      int64_t scrap_size, const int32_t *desc,
-                                      int64_t n) {
-    lotus_arena_t *a = (lotus_arena_t *)arena_ptr;
-    if (!a) return;
-    if (scrap && scrap != new_block && scrap_size > 0)
-        lotus_arena_retire_sized_cls(a, scrap, (size_t)scrap_size, -1);
-    if (!old_snap || !new_block || !desc || n <= 0) return;
+/* The walk both entries below share: `old_desc` over the old
+ * snapshot, `new_desc` over the field's block (the same descriptor for
+ * a record, tuple or array; for a payload enum, each value's own
+ * variant's). */
+static void lotus_self_field_retire_walk(lotus_arena_t *a, const void *old_snap,
+                                         const int32_t *old_desc, int64_t old_n,
+                                         const void *new_block,
+                                         const int32_t *new_desc, int64_t new_n,
+                                         void *scrap) {
+    if (!old_snap || !new_block || !old_desc || old_n <= 0) return;
     lotus_retire_blocks_t olds, news;
     lotus_retire_blocks_init(&olds);
     lotus_retire_blocks_init(&news);
-    int ok = lotus_retire_collect(&olds, (const char *)old_snap, desc, n, 1);
-    if (ok) ok = lotus_retire_collect(&news, (const char *)new_block, desc, n, 0);
+    int ok = lotus_retire_collect(&olds, (const char *)old_snap, old_desc, old_n, 1);
+    if (ok && new_desc && new_n > 0)
+        ok = lotus_retire_collect(&news, (const char *)new_block, new_desc, new_n, 0);
     if (ok) {
         for (size_t i = 0; i < olds.n; i++) {
             void *p = olds.p[i];
@@ -17579,6 +17593,42 @@ void lotus_self_field_retire_replaced(void *arena_ptr, const void *old_snap,
     }
     lotus_retire_blocks_free(&olds);
     lotus_retire_blocks_free(&news);
+}
+
+void lotus_self_field_retire_replaced(void *arena_ptr, const void *old_snap,
+                                      const void *new_block, void *scrap,
+                                      int64_t scrap_size, const int32_t *desc,
+                                      int64_t n) {
+    lotus_arena_t *a = (lotus_arena_t *)arena_ptr;
+    if (!a) return;
+    if (scrap && scrap != new_block && scrap_size > 0)
+        lotus_arena_retire_sized_cls(a, scrap, (size_t)scrap_size, -1);
+    lotus_self_field_retire_walk(a, old_snap, desc, n, new_block, desc, n, scrap);
+}
+
+/* The payload-enum field's replace: `self.e = E::A(s)`. The field
+ * points at the enum's storage block, `{ int32 tag, body }`, and the
+ * store copies the new value's block over it, so the old value's
+ * payload — a String, a Bytes, a nested block and everything under it
+ * — lives on only in `old_snap`. What it owns depends on the variant
+ * it held: `table` is the variant table (`lotus_retire_variant`), the
+ * old snapshot walked with its own variant's descriptor and the new
+ * block with the new one's. `scrap` is the fresh copy the value was
+ * built in before its bytes were copied over the block. Each replace
+ * used to leave both in the locus's arena for its lifetime. */
+void lotus_self_field_retire_replaced_enum(void *arena_ptr, const void *old_snap,
+                                           const void *new_block, void *scrap,
+                                           int64_t scrap_size,
+                                           const int32_t *table, int64_t table_n) {
+    lotus_arena_t *a = (lotus_arena_t *)arena_ptr;
+    if (!a) return;
+    if (scrap && scrap != new_block && scrap_size > 0)
+        lotus_arena_retire_sized_cls(a, scrap, (size_t)scrap_size, -1);
+    if (!old_snap || !new_block || !table) return;
+    int64_t old_n = 0, new_n = 0;
+    const int32_t *old_desc = lotus_retire_variant((const char *)old_snap, table, table_n, &old_n);
+    const int32_t *new_desc = lotus_retire_variant((const char *)new_block, table, table_n, &new_n);
+    lotus_self_field_retire_walk(a, old_snap, old_desc, old_n, new_block, new_desc, new_n, scrap);
 }
 
 /* GH #1033: the Bytes companion. A compound `self.f = Struct { ... }`

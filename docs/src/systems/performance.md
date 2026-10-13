@@ -170,7 +170,8 @@ These are advisory warnings, not build failures:
   and arrays, with everything in them — retire at the activation
   boundary and recycle on the next store (the struct's own bytes were
   already overwritten in place), so a steady-state replace holds the
-  arena flat. A tuple or array field replaced whole does too. The same holds for a single `String` or `Bytes` field whose
+  arena flat. A tuple, array or payload-enum field replaced whole
+  (`self.state = State::Ready(name)`) does too. The same holds for a single `String` or `Bytes` field whose
   length changes from write to write — a message's payload one time,
   the empty value a control frame leaves the next: the old value is
   retired whatever the new one is. A `String` field's next values

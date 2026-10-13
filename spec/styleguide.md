@@ -103,9 +103,9 @@ the order you should reach for them:
    *retires* what only the replaced value reached at the method's
    activation boundary, recycling it on the next store: its String
    clones (since v0.11.3), its `Bytes`, and its nested records,
-   tuples and arrays with everything under them. Steady-state
-   replace of any struct holds the arena flat, and so does a tuple
-   or array field replaced whole. A nested block the new value
+   tuples, arrays and payload enums with everything under them.
+   Steady-state replace of any struct holds the arena flat, and so
+   does a tuple, array or payload-enum field replaced whole. A nested block the new value
    carries over from the field itself (`self.f = F { n: i, inner:
    self.f.inner }`) is kept, not copied; one it takes from anywhere
    else is copied, so a field never shares a block it will retire.

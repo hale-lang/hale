@@ -133,5 +133,8 @@ fn the_exempt_families_are_the_known_ones() {
         .filter_map(|f| exempt(f).map(|why| (f.name, why)))
         .collect();
     let names: Vec<&str> = exempt.iter().map(|(n, _)| *n).collect();
-    assert_eq!(names, ["desugar_sequence"], "{exempt:?}");
+    // `owned_views`: lowering still derives which bindings take an owned
+    // copy (its legacy producer in `view_bindings.rs`), until the owner
+    // table carries the column.
+    assert_eq!(names, ["desugar_sequence", "owned_views"], "{exempt:?}");
 }

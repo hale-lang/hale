@@ -300,8 +300,8 @@ fn param_str_types(params: &[Param]) -> Vec<(String, StrTy)> {
 /// Does a struct field of type `ty` retire with its struct when a
 /// whole-field replace overwrites it (Gap D)? A scalar, a String or
 /// Bytes, a struct already found retirable, or a tuple or array of
-/// such. A view, an enum, an interface, a locus, a bounded field or
-/// anything unrecognized does not.
+/// such, or an enum whose payloads are. A view, an interface, a locus, a
+/// bounded field or anything unrecognized does not.
 fn retirable_field_ty(ty: &TypeExpr, retirable: &BTreeSet<String>) -> bool {
     match ty {
         TypeExpr::Primitive(
@@ -582,8 +582,8 @@ pub struct AllocSite {
     /// still grows and stays flagged. Since 2026-10-12 a struct with
     /// Bytes fields and nested records, tuples and arrays of such
     /// qualifies too (`lotus_self_field_retire_replaced` retires the
-    /// nested blocks); a view, enum or interface field keeps the
-    /// conservative verdict.
+    /// nested blocks), and an enum field whose payloads do; a view or
+    /// interface field keeps the conservative verdict.
     pub retired_store: bool,
     /// The site is written inside a loop body. `loop_depth` is how
     /// deep the allocation repeats, which a `return` / `fail` payload
@@ -2477,8 +2477,8 @@ pub fn summarize_identified(
     let walked_stores = std::cell::RefCell::new(SlotStores::default());
     // Gap D — struct types a whole-field replace fully reclaims via
     // anchor retirement (Gap A): fields of scalars, Strings, Bytes and
-    // records, tuples and arrays of such (`retirable_field_ty`).
-    // Conservative: a view, enum or interface field disqualifies.
+    // records, tuples, arrays and enums of such (`retirable_field_ty`).
+    // Conservative: a view or interface field disqualifies.
     let mut retirable_structs: BTreeSet<String> = BTreeSet::new();
     // Each struct declaration's field types, read into
     // `retirable_structs` once every declaration is in.
@@ -2724,6 +2724,18 @@ pub fn summarize_identified(
                         }
                         struct_decl_tys
                             .insert(td.name.name.clone(), fields.iter().map(|f| f.ty.clone()).collect());
+                    }
+                    // An enum retires like a record of its payloads: a
+                    // unit-only one is an inline tag, and a payload
+                    // enum's block, with what its variant holds, retires
+                    // when the field or the record holding it is
+                    // replaced (`lotus_self_field_retire_replaced_enum`,
+                    // and the nested walk's enum entry).
+                    if let TypeDeclBody::Enum(variants) = &td.body {
+                        struct_decl_tys.insert(
+                            td.name.name.clone(),
+                            variants.iter().flat_map(|v| v.fields.iter().cloned()).collect(),
+                        );
                     }
                 }
                 TopDecl::Locus(l) => {
@@ -9242,6 +9254,56 @@ mod tests {
         assert!(
             msgs.iter().any(|m| m.contains("struct Cell")),
             "a view-field struct replace must stay flagged, got: {:?}",
+            msgs
+        );
+    }
+
+    #[test]
+    fn enum_field_struct_replace_retires() {
+        // A struct with an enum field — a unit-only enum (an inline tag)
+        // or a payload enum of retirable payloads, whose block retires
+        // with the record — retires whole on a replace in a method...
+        let src = r#"
+            type Inner { s: String = ""; }
+            type Mode = enum { On, Off };
+            type Tag = enum { Named(String), Rec(Inner, Bytes), Empty };
+            type Cell { s: String = ""; n: Int = 0; mode: Mode = Mode::Off; tag: Tag = Tag::Empty; }
+            locus Rec {
+                params { st: Cell; }
+                fn record(i: Int) {
+                    self.st = Cell { s: "v" + i, n: i, mode: Mode::On, tag: Tag::Named("w" + i) };
+                }
+                run() {
+                    while true { self.record(1); }
+                }
+            }
+            fn main() { }
+        "#;
+        let msgs = leak_msgs(src);
+        assert!(
+            !msgs.iter().any(|m| m.contains("struct Cell")),
+            "an enum-field struct replace retires, got: {:?}",
+            msgs
+        );
+        // ...while an enum carrying a view keeps the conservative verdict.
+        let view = r#"
+            type Tag = enum { Seen(StringView), Empty };
+            type Cell { s: String = ""; tag: Tag = Tag::Empty; }
+            locus Rec {
+                params { st: Cell; }
+                fn record(i: Int) {
+                    self.st = Cell { s: "v" + i, tag: Tag::Empty };
+                }
+                run() {
+                    while true { self.record(1); }
+                }
+            }
+            fn main() { }
+        "#;
+        let msgs = leak_msgs(view);
+        assert!(
+            msgs.iter().any(|m| m.contains("struct Cell")),
+            "a view-payload enum field must stay flagged, got: {:?}",
             msgs
         );
     }

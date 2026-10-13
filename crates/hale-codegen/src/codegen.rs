@@ -1657,6 +1657,10 @@ pub fn build_resolved(
         replica_index_for_next_locus_instantiation: None,
         current_instantiation_replica_index: 0,
         owner_table,
+        owned_views: crate::view_bindings::OwnedViews::of(
+            merged,
+            &import_renames.iter().map(|(segs, m)| (segs.clone(), m.clone())).collect(),
+        ),
         placement: &resolved.placement,
         owner_site: None,
         in_fresh_temp_hook: false,
@@ -4395,6 +4399,11 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// — a locus instantiation with no row in it is a
     /// `CodegenError`, which is F.39's rule.
     pub(crate) owner_table: &'p crate::ownership::OwnerTable,
+    /// The bindings of a field's String, Bytes or compound value that a
+    /// later write may replace while they are live
+    /// (`crate::view_bindings`): those bind an owned copy, every other
+    /// one the field's own pointer.
+    pub(crate) owned_views: crate::view_bindings::OwnedViews,
     /// The snapshot's placement table (`LoweringView::placement`): the
     /// deployment plan is read from its root rows, domains and adapters
     /// (`collect_main_placement`).
@@ -17668,6 +17677,16 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 {
                     let dest = self.current_arena_ptr()?;
                     val = self.emit_return_value_deep_copy(val, &ty, dest)?;
+                } else if self.owned_views.node(*id) {
+                    // A String, Bytes, tuple, array or payload enum that
+                    // views a place — read from it, or carried out of
+                    // one by a `match` arm, an `if`, a block, a literal
+                    // holding it — is the place's own pointer, unless a
+                    // write that may replace the place comes before a
+                    // use (`crate::view_bindings`): `let s = self.f.s;
+                    // self.put(..); s` read the block `put`'s retire
+                    // recycled. Those bind an owned copy.
+                    val = self.own_viewed_value(val, &ty)?;
                 }
                 // GH #383: a let-bound call to a proven-fresh locus
                 // factory is owned by THIS binding, so it dissolves
@@ -17814,8 +17833,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 scope.locals.insert(name.name.clone(), (alloca, ty));
                 Ok(BlockEnd::Open)
             }
-            Stmt::LetTuple { names, value, .. } => {
+            Stmt::LetTuple { names, value, id, .. } => {
                 let (tup_val, tup_ty) = self.lower_expr(value, scope)?;
+                // The elements of a tuple read from a place view it, as a
+                // `let` of the place would (`crate::view_bindings`).
+                let owned = self.owned_views.node(*id);
                 let elem_tys = match &tup_ty {
                     CodegenTy::Tuple(ts) => ts.clone(),
                     other => {
@@ -17854,10 +17876,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
                     };
                     let elem_llvm = self.llvm_basic_type(et);
-                    let loaded = self
+                    let mut loaded = self
                         .builder
                         .build_load(elem_llvm, slot, &format!("tup.{}", i))
                         .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    if owned {
+                        loaded = self.own_viewed_value(loaded, et)?;
+                    }
                     let alloca = self.alloca_for(et, &n.name)?;
                     self.builder
                         .build_store(alloca, loaded)
@@ -17873,7 +17898,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 }
                 Ok(BlockEnd::Open)
             }
-            Stmt::Assign { target, op, value, .. } => {
+            Stmt::Assign { target, op, value, id: assign_id, .. } => {
                 // WS1#4: `self.<locusfield> = <LocusLiteral>` is a
                 // lifecycle transition (dissolve the old instance,
                 // construct a new one owned by the field), NOT a
@@ -18374,6 +18399,15 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 {
                     let dest = self.current_arena_ptr()?;
                     self.emit_return_value_deep_copy(new_val, &slot_ty, dest)?
+                } else if target.tail.is_empty()
+                    && target.head.name != "self"
+                    && matches!(op, AssignOp::Eq)
+                    && self.owned_views.node(*assign_id)
+                {
+                    // A local rebound to a place's String, Bytes or
+                    // compound that a later write may replace while the
+                    // local is live, as `let` (`crate::view_bindings`).
+                    self.own_viewed_value(new_val, &slot_ty)?
                 } else {
                     new_val
                 };
@@ -18426,8 +18460,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             Stmt::While { cond, body, .. } => {
                 self.lower_while(cond, body, scope)
             }
-            Stmt::For { name, iter, body, .. } => {
-                self.lower_for(name, iter, body, scope)
+            Stmt::For { name, iter, body, id, .. } => {
+                // An element of an array read from a place views it, as
+                // a `let` of the place would (`crate::view_bindings`).
+                let owned = self.owned_views.node(*id);
+                self.lower_for(name, iter, body, owned, scope)
             }
             Stmt::Break(_) => self.lower_break(),
             Stmt::Continue(_) => self.lower_continue(),
@@ -20702,6 +20739,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let (scrutinee_val, scrutinee_ty) = self.lower_expr(&m.scrutinee, scope)?;
         let func = self.current_fn.expect("match outside function");
         let after_bb = self.context.append_basic_block(func, "match.after");
+        // A payload binding of a place's value views the place: owned
+        // when a later write may replace it while the arm still reads
+        // it (`crate::view_bindings`).
+        let owned_bindings =
+            self.owned_views.match_arms(m);
 
         let mut all_terminated = true;
 
@@ -21082,9 +21124,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             > {
                 let mut out = Vec::with_capacity(bindings.len());
                 for (bname, bval, bty) in bindings {
+                    let bval = if owned_bindings {
+                        this.own_viewed_value(*bval, bty)?
+                    } else {
+                        *bval
+                    };
                     let alloca = this.alloca_for(bty, bname)?;
                     this.builder
-                        .build_store(alloca, *bval)
+                        .build_store(alloca, bval)
                         .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
                     let prior = scope.locals.insert(
                         bname.clone(),
@@ -21345,6 +21392,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         var_name: &Ident,
         iter: &Expr,
         body: &Block,
+        owned: bool,
         scope: &mut Scope<'ctx>,
     ) -> Result<BlockEnd, CodegenError> {
         // Three iterator shapes today: `self.children` (built-in
@@ -21429,7 +21477,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             }
         }
         if !is_self_children {
-            return self.lower_for_array(var_name, iter, body, scope);
+            return self.lower_for_array(var_name, iter, body, owned, scope);
         }
         let cs = self.current_self.as_ref().cloned().ok_or_else(|| {
             CodegenError::Unsupported(
@@ -22363,9 +22411,17 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         var_name: &Ident,
         iter: &Expr,
         body: &Block,
+        owned: bool,
         scope: &mut Scope<'ctx>,
     ) -> Result<BlockEnd, CodegenError> {
-        let (arr_val, arr_ty) = self.lower_expr(iter, scope)?;
+        let (mut arr_val, arr_ty) = self.lower_expr(iter, scope)?;
+        if owned {
+            // The loop walks the array it started with: a write in the
+            // body may replace the field's array, and retire the block
+            // the loop is reading and every element in it
+            // (`crate::view_bindings`).
+            arr_val = self.own_viewed_value(arr_val, &arr_ty)?;
+        }
         let (elem_ty, n) = match arr_ty {
             CodegenTy::Array(elem, n) => (*elem, n),
             other => {
@@ -23532,7 +23588,22 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let result = self.lower_expr_at(e, scope);
         self.current_call = previous;
         // GH #1076 (U3): a value the checker converted where it stands.
-        self.convert_value(e, result?)
+        let (v, ty) = self.convert_value(e, result?)?;
+        // An argument read from a place its callee may replace before
+        // it reads the parameter (`crate::view_bindings`): passed as an
+        // owned copy.
+        match self.owned_views.operand(e) {
+            // A value position: copied whole.
+            Some(false) => return Ok((self.own_viewed_value(v, &ty)?, ty)),
+            // A call's argument is passed by reference: a callee may
+            // write a record through its parameter, and the caller sees
+            // it, so only an immutable leaf goes as a copy.
+            Some(true) if matches!(ty, CodegenTy::String | CodegenTy::Bytes) => {
+                return Ok((self.own_viewed_value(v, &ty)?, ty));
+            }
+            _ => {}
+        }
+        Ok((v, ty))
     }
 
     fn lower_expr_at(

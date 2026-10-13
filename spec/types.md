@@ -268,6 +268,56 @@ view of the storage, and an acknowledgement body read after the
 proposal field was cleared came back empty). A deliberate view has no
 spelling yet; read the field again when the current value is wanted.
 
+### Any binding of a place keeps its value
+
+A `String`, `Bytes`, tuple, array or payload-enum value bound from a
+place — `let s = self.f.s;`, `let (a, n) = self.pair;`, a bare `x =
+self.f.s`, a `match self.e { E::A(s) -> .. }` payload, the array a `for
+x in self.f.names` walks — and a place passed straight to a call
+(`self.take(self.f.s)`) keep the value they were given, whatever
+replaces the place while they are live. So does a value carried out of
+a place by another expression: a `match` arm's payload (`let held =
+match self.e { E::A(s) -> s, E::B -> "", };`), an `if` or block
+result, a tuple, array or record literal holding it, an `or`
+substitute, an enum constructor holding it. (A fn's, a method's or a
+stdlib call's result is copied out of its frame and is the caller's
+own.) The compiler keeps these the
+place's own pointer where it can, which costs nothing: it binds an
+owned copy only when a write that may replace the place comes between
+the binding and a use of it (or is the call it is passed to; an
+argument is passed by reference, so only a `String` or `Bytes` argument
+is copied — a record, tuple or array handed to a callee stays the
+caller's, and what the callee writes through its parameter the caller
+sees — unless a later argument's evaluation replaces its place, when it
+is copied whole: nothing is left to write through). An
+operand held while a later one is evaluated — an earlier argument of a
+call, a method's receiver, a binary operator's left side, an earlier
+field of a literal — is copied where it is evaluated when the later
+one may replace its place (`take(match self.e { E::A(s) -> s, E::B ->
+"", }, self.reset())`). Such a
+write is a store into the place's field (`self.f.s = ..`, `self.f =
+..`, through any root), a call whose callee writes it, transitively (a
+method by its name, on any locus declaring one; a method called on the
+field itself, as a form's `set`), and anything that may run other code
+of the locus: a publish, `yield` and a stdlib call that parks on an
+`async_io` pool write what the program's bus handlers write, and a call
+the compiler cannot positively identify — through a fn value or a field
+whose type is a fn (however spelled) or cannot be classified, of a name
+no declaration answers to — and a recovery statement may write
+anything. A field
+of a record the frame holds itself is never replaced under a binding of
+it (a write through a local root replaces the field's pointer); a field
+read through a handle is — a value whose type is a locus, an interface
+or a perspective, however it is spelled (an alias, an imported seed's
+`lib::Kid`, a binding's declared type). A write
+inside a loop reaches a use anywhere in the loop when the variable was
+declared before the loop — a local declared outside and rebound inside
+(`held = self.f.s;` then a replacing call, read on the next iteration)
+included. Before this a String local held across a method that
+replaced its field read the block the replace retired, reused by the
+next allocation (`spec/memory.md` rules 6 and 7), and a same-length
+store into the field changed the local in place.
+
 ## Type aliases
 
 `type Name = Type;` declares an **alias**: a second spelling of an

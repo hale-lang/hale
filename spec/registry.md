@@ -49,6 +49,7 @@ The families, their legacy producers, the spec rules and the frozen Debug-string
 | `deployment` | Layer 5 | Reserved | derivation | — | 0 | A deployment as typed rows: root and horizon, component identities, instances and incarnations, resources and allocations, endpoints and routes, hosting and authority, persistence obligations (the habitat, after phase 2). |
 | `lifecycle_order` | Layer 6 | Canonical | derivation | `derive_lifecycle` | 0 | The happens-before order per instance: birth sequence, params open and settle, failure delivery and its execution domain, reclaim prerequisites, drain, restart, teardown. |
 | `bus_inert` | Layer 6 | Canonical | derivation | `bus_inert` | 0 | Whether the program can ever have a bus cell in flight, so drains can be elided. |
+| `owned_views` | Layer 8 | Migrating | derivation | — | 1 | Which bindings, operands and arguments of a field's String, Bytes or compound value a later write may replace while they are live, so lowering binds or passes an owned copy of exactly those and leaves every other one the field's own pointer. |
 | `law_backstops` | Layer 8 | Canonical | law | `lowering_laws` | 0 | The laws that replaced lowering's own refusals of rules the spec states. |
 | `model` | The law engine | Canonical | derivation | `derive_application_model_over` | 0 | The canonical semantic model of a checked bundle: fifteen entity tables, seventeen relation tables, holes, capabilities, provenance (GH #476). |
 | `claims` | The law engine | Canonical | law | `claim_law_diags_over` | 0 | Every user law: lowered claim rows, the judged verdicts over the model and evidence, constitution identities, and the artifact's law account. |
@@ -1403,6 +1404,40 @@ The families, their legacy producers, the spec rules and the frozen Debug-string
 - `bus_inert(` may be referenced from: `crates/hale-types/src/bus_inert.rs` ×2, `crates/hale-types/src/resolved.rs` ×1
 
 ## Layer 8 — lowering
+
+### `owned_views` — Migrating · derivation
+
+**Answers.** Which bindings, operands and arguments of a field's String, Bytes or compound value a later write may replace while they are live, so lowering binds or passes an owned copy of exactly those and leaves every other one the field's own pointer.
+
+**Inputs.** the merged program's bodies (place chains, calls, stores, loops, bus sends); the build's import table; the declarations' types (loci, interfaces, perspectives, forms, records, enums, aliases), classified in lowering
+
+**Producer.** none yet: the family has no authoritative producer today; the legacy list is the whole inventory.
+
+**Legacy producers (permitted until removal).**
+
+- `crates/hale-codegen/src/view_bindings.rs` · `fn owned_view_sites_with` — a pass over every body in lowering (`OwnedViews::of`): per binding, the field names of the places its value views and the writes after it (a store's field, a callee's transitive write summary by name, a fn value, a publish's handlers), keyed by the `let`/assign/`for` node id, the `match`'s span and an operand's span. It classifies types itself (`classify`, `classify_name`, `classify_path`), resolving each spelling through the aliases, the import table and the minted names: a re-derivation of the types the checker resolves, which is why it errs toward a copy wherever a type or a callee is unknown. *Removed when:* when the owner table carries a binding's owned-view column (and an operand's), computed in hale-types over the checker's resolved types and the effect rows' per-callee field writes, and lowering reads that column instead of running this pass.
+
+**Also owned.** `crates/hale-codegen/src/view_bindings.rs` · `classify_name`; `crates/hale-codegen/src/view_bindings.rs` · `classify_path`
+
+**Consumers.** codegen (a `let`, a tuple `let`, a bare-local `=`, a `for`'s array, a `match`'s payloads, an operand: an owned copy at the flagged site) (`crates/hale-codegen/src/codegen.rs` · `owned_views`)
+
+**Invariants.**
+
+- a binding is an owned copy only where a write that may replace what it views comes before a use of it (or is the call it is passed to); every other binding stays the field's own pointer, which costs nothing
+- a type or a callee the pass cannot positively identify costs a copy, never a use after a retire: an unclassified type may be a handle and a fn value, an unidentified callee writes anything
+- an argument is passed by reference: against its callee's writes only a String or Bytes argument is copied, so a record a callee writes through its parameter stays the caller's; an argument whose place a later argument's evaluation replaces is copied whole, a compound included
+- a form's synthesized method is a target only on a receiver known to hold a form; a name alone (a record's fn-valued member called `pop`) is an unidentified callee
+- every question about a type goes through `classify`; no `TypeExpr` variant is matched elsewhere in the pass (`types_are_classified_in_one_place`)
+
+**Missing data.** n/a
+
+**Focused tests.** crates/hale-codegen/src/view_bindings.rs (unit tests); crates/hale-codegen/tests/held_field_view.rs; crates/hale-codegen/tests/self_field_enum_retire.rs
+
+**Spec.** spec/types.md § Any binding of a place keeps its value; spec/memory.md rule 6
+
+**Guarded seams.**
+
+- `OwnedViews::of(` may be referenced from: `crates/hale-codegen/src/codegen.rs` ×1
 
 ### `law_backstops` — Canonical · law
 
