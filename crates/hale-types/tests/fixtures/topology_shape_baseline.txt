@@ -372,6 +372,15 @@ crates/hale-codegen/tests/bus_routing_keys.rs#9 65e63d144fb21a26
 crates/hale-codegen/tests/bus_scope_local_subscriber.rs#1 e277e169916ed40d
 crates/hale-codegen/tests/bus_scope_local_subscriber.rs#2 2dc6c7b1cab6e556
 crates/hale-codegen/tests/bus_scope_local_subscriber.rs#5 6c9de33d63047673
+crates/hale-codegen/tests/bus_static_reservation.rs#0 6e0ac9820e11691b
+crates/hale-codegen/tests/bus_static_reservation.rs#1 27c8f7ed63b08eb4
+crates/hale-codegen/tests/bus_static_reservation.rs#10 7bd8342ea191b87d
+crates/hale-codegen/tests/bus_static_reservation.rs#2 fccf97dc1520f456
+crates/hale-codegen/tests/bus_static_reservation.rs#3 110976e0ba76afa6
+crates/hale-codegen/tests/bus_static_reservation.rs#4 d04fe83f1a1bd363
+crates/hale-codegen/tests/bus_static_reservation.rs#5 a3d1a95ba648ccd1
+crates/hale-codegen/tests/bus_static_reservation.rs#6 325e61f1d7686eaf
+crates/hale-codegen/tests/bus_static_reservation.rs#7 2d03110929aec484
 crates/hale-codegen/tests/bus_subscriber.rs#0 0e25bf94e70f3125
 crates/hale-codegen/tests/bus_subscriber.rs#2 0e25bf94e70f3125
 crates/hale-codegen/tests/bus_subscriber.rs#4 0e25bf94e70f3125
