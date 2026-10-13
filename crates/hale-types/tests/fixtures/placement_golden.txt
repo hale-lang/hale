@@ -1969,6 +1969,11 @@ row	Root@literal1	Root	main	default
 row	Root@literal1.b	Burst	main	default
 row	Root@literal1.g	Gauge	main	default
 
+== crates/hale-codegen/tests/bus_static_reservation.rs#736585eb
+row	Ear@main1	Ear	main	default
+row	Teller@main2	Teller	main	default
+dynamic	Tree	on main	in the seed
+
 == crates/hale-codegen/tests/bus_static_reservation.rs#53160c4e
 root	Root	the entry
 row	Root@literal1	Root	main	default
