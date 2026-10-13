@@ -664,7 +664,7 @@ row	~.acc	Acc	main	inherited
 
 == crates/hale-stdlib/hl/metrics.hl#19f66cf4
 
-== crates/hale-stdlib/hl/process.hl#ea613e30
+== crates/hale-stdlib/hl/process.hl#229cd237
 
 == crates/hale-stdlib/hl/source.hl#fac6c107
 
@@ -7116,6 +7116,11 @@ row	__StdProcessChild@main1	__StdProcessChild	main	default
 == tests/hale/process_spawn_in_birth_test.hl
 row	Spawner@main1	Spawner	main	default
 dynamic	__StdProcessChild	on main|unknown (no caller)	in the seed
+
+== tests/hale/process_spawn_options_test.hl
+row	__StdProcessChild@main1	__StdProcessChild	main	default
+row	__StdProcessChild@main2	__StdProcessChild	main	default
+row	__StdProcessChild@main3	__StdProcessChild	main	default
 
 == tests/hale/release_generic_owner_test.hl
 row	Manager_Job@main1	Manager_Job	main	default

@@ -282,11 +282,12 @@ fn own_scope_let_block_scope_test() {
             // `__json_plain_byte` came); one fewer invoked unboundedly since
             // the HTTP client's `__http_retry_sentinel`, called in its retry
             // loop, went (`__http_retries_exhausted` came); 430 since
-            // `std::process::close_stdin` came
+            // `std::process::close_stdin` came; 433 since `run_with`,
+            // `spawn_with` and the deadline helper behind `wait` came
             changed_lines(&old.render(), &now.render()),
             [
-                "- # 430 fns, 27 entry points, 113 invoked-unboundedly",
-                "+ # 430 fns, 27 entry points, 112 invoked-unboundedly",
+                "- # 433 fns, 27 entry points, 113 invoked-unboundedly",
+                "+ # 433 fns, 27 entry points, 112 invoked-unboundedly",
                 "- call  count loop_depth=0 result=local",
                 "+ call  <unresolved: count> loop_depth=0 result=local",
                 "- call  count loop_depth=0 result=local",

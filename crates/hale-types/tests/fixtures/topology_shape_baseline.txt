@@ -1512,7 +1512,7 @@ crates/hale-stdlib/hl/log.hl 8f96d39abe5b312b
 crates/hale-stdlib/hl/metrics.hl f89fe6d80b752d5d
 crates/hale-stdlib/hl/mirror_ring.hl 67d1b5dd2519f196
 crates/hale-stdlib/hl/name.hl a0cb9c4bfee2b3ec
-crates/hale-stdlib/hl/process.hl c83127d5dee8b757
+crates/hale-stdlib/hl/process.hl 66db96d9c723469a
 crates/hale-stdlib/hl/secret.hl 643027905780f0d6
 crates/hale-stdlib/hl/source.hl 5dee20cb0f0c4164
 crates/hale-stdlib/hl/str_view.hl b618b984ded1ff8b

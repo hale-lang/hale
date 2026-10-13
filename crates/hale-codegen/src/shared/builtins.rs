@@ -1095,6 +1095,43 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         );
         self.module
             .add_function("lotus_process_spawn", process_spawn_ty, None);
+        // `run_with` / `spawn_with` (2026-10-12): argv, then the
+        // SpawnOptions as ptr cwd, ptr env, ptr unset_env, i64
+        // clear_env, i64 timeout_ns, i64 ×4 rlimits; then the out-params
+        // of `run` / `spawn` and one more — run's i32 timed_out,
+        // spawn's i64 deadline_ns.
+        // declare i32 @lotus_process_run_with(ptr, ptr, ptr, ptr, i64 ×6,
+        //                                     ptr ×5)
+        // declare i32 @lotus_process_spawn_with(ptr, ptr, ptr, ptr, i64 ×6,
+        //                                       ptr ×5)
+        let i64_opt = self.context.i64_type();
+        let mut with_params: Vec<inkwell::types::BasicMetadataTypeEnum> =
+            vec![ptr_t.into(), ptr_t.into(), ptr_t.into(), ptr_t.into()];
+        let i64_meta: inkwell::types::BasicMetadataTypeEnum = i64_opt.into();
+        let ptr_meta: inkwell::types::BasicMetadataTypeEnum = ptr_t.into();
+        with_params.extend(std::iter::repeat(i64_meta).take(6));
+        with_params.extend(std::iter::repeat(ptr_meta).take(5));
+        let process_with_ty = i32_t.fn_type(&with_params, false);
+        self.module
+            .add_function("lotus_process_run_with", process_with_ty, None);
+        self.module
+            .add_function("lotus_process_spawn_with", process_with_ty, None);
+        // declare i32 @lotus_process_wait_deadline(i32 pid, i64 deadline_ns,
+        //     i64 nonblocking, ptr out_code, ptr out_signal)
+        self.module.add_function(
+            "lotus_process_wait_deadline",
+            i32_t.fn_type(
+                &[
+                    i32_t.into(),
+                    i64_opt.into(),
+                    i64_opt.into(),
+                    ptr_t.into(),
+                    ptr_t.into(),
+                ],
+                false,
+            ),
+            None,
+        );
         // declare ptr @lotus_process_enoent_hint_label(
         //     ptr argv_blob, ptr plain_label, ptr hint_label)
         // — picks the IoError surface label on run/spawn failure:

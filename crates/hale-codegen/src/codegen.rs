@@ -27573,6 +27573,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             | Id::ProcessPipeWriteRaw
             | Id::ProcessSignalPidRaw
             | Id::ProcessSpawnRaw
+            | Id::ProcessSpawnWithRaw
+            | Id::ProcessRunWithRaw
+            | Id::ProcessWaitDeadlineRaw
             | Id::ProcessTryWaitPidRaw
             | Id::ProcessWaitPidRaw
             | Id::ProcessRun
@@ -27895,6 +27898,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // process.hl's spawn/wait/kill wrappers.
             Id::ProcessRun => self.lower_std_process_run_fallible(args, scope),
             Id::ProcessSpawnRaw => self.lower_std_process_spawn_fallible(args, scope),
+            Id::ProcessSpawnWithRaw => self.lower_std_process_spawn_with_fallible(args, scope),
+            Id::ProcessRunWithRaw => self.lower_std_process_run_with_fallible(args, scope),
+            Id::ProcessWaitDeadlineRaw => self.lower_std_process_wait_deadline_fallible(args, scope),
             Id::ProcessWaitPidRaw => self.lower_std_process_wait_pid_fallible(args, scope),
             Id::ProcessKillEscalateRaw => {
                 self.lower_std_process_kill_escalate_fallible(args, scope)

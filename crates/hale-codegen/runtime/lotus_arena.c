@@ -24734,16 +24734,262 @@ static pid_t lotus_process_fork(void) {
 #endif
 }
 
-int lotus_process_run(
+/* Spawn options (2026-10-12, downstream handoff): `run_with` /
+ * `spawn_with` take a `SpawnOptions` record — a working directory, the
+ * environment (additions, removals, or a cleared one), resource limits
+ * and, for `run_with` here and `wait` / `try_wait` through
+ * `lotus_process_wait_deadline`, a wall-clock deadline.
+ *
+ * Everything that changes the CHILD is applied in the forked child,
+ * after its pipes are in place and before its exec, so the parent's
+ * own cwd, environment and limits are never touched. The child may run
+ * only async-signal-safe calls there (another thread can hold the
+ * malloc lock at fork), so the environment is built in the PARENT —
+ * a NULL-terminated `envp` whose entries point into the parent's
+ * `environ` (a copy the child inherits) and into one malloc'd copy of
+ * the additions — and the child only stores it into `environ` before
+ * `execvp`, which reads PATH from it and hands it to the program.
+ * `chdir` and `setrlimit` are plain system calls.
+ *
+ * A setup step that fails (a missing cwd, a limit above the hard one)
+ * fails the CALL, not the child: the child writes its errno down a
+ * close-on-exec pipe and `_exit`s, and the parent, which reads that
+ * pipe until the exec closes it, reaps the child and returns the
+ * errno — so `spawn_with` with a cwd that does not exist is an
+ * IoError of kind `not_found`. A missing PROGRAM is still exit code
+ * 127 from a later wait (GH #794): the exec's own failure is not
+ * written down the pipe. */
+typedef struct {
+    const char *cwd;   /* NULL or "" = inherit */
+    char **envp;       /* NULL = inherit */
+    int64_t rl_cpu;    /* RLIMIT_CPU seconds; <= 0 = unchanged */
+    int64_t rl_as;     /* RLIMIT_AS bytes */
+    int64_t rl_nofile; /* RLIMIT_NOFILE descriptors */
+    int64_t rl_fsize;  /* RLIMIT_FSIZE bytes */
+} lotus_spawn_opts;
+
+#ifndef __wasm__
+extern char **environ;
+
+/* Monotonic nanoseconds for a deadline. Not `lotus_time_monotonic_ns`:
+ * a replay serves that one from a journal, and a child's deadline is
+ * the kernel's wall clock, not a recorded value. */
+static int64_t lotus_process_mono_ns(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (int64_t)ts.tv_sec * 1000000000LL + (int64_t)ts.tv_nsec;
+}
+
+/* Length of an environment entry's name: the bytes before its `=`. */
+static size_t lotus_process_env_key_len(const char *e) {
+    const char *eq = strchr(e, '=');
+    return eq ? (size_t)(eq - e) : strlen(e);
+}
+
+/* Whether `list[0..n)` names `key` (`klen` bytes) — a list of names
+ * (`unset_env`) or of `NAME=value` entries (`env`). */
+static int lotus_process_env_names(char **list, int n, const char *key,
+                                   size_t klen) {
+    for (int i = 0; i < n; i++) {
+        if (lotus_process_env_key_len(list[i]) == klen
+            && memcmp(list[i], key, klen) == 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/* Build the child's environment in the parent. `add` is newline-
+ * separated `NAME=value` lines, `unset` newline-separated names;
+ * `clear` starts from nothing instead of this process's environment.
+ * A name `add` sets replaces the inherited one (the last line wins
+ * when `add` names it twice); `unset` removes inherited names only, so
+ * `add` always wins. On success *out_envp is NULL when nothing changes
+ * (the child inherits as before), else a malloc'd array the caller
+ * frees together with *out_buf (the additions' storage). Returns 0, or
+ * -1 with errno: EINVAL for an addition with no `=` or an empty name,
+ * ENOMEM. */
+static int lotus_process_build_envp(const char *add, const char *unset,
+                                    int64_t clear, char ***out_envp,
+                                    char **out_buf) {
+    *out_envp = NULL;
+    *out_buf = NULL;
+    int has_add = add && add[0];
+    int has_unset = unset && unset[0];
+    if (!clear && !has_add && !has_unset) {
+        return 0;
+    }
+    char **adds = NULL, *add_buf = NULL;
+    int nadd = 0;
+    char **unsets = NULL, *unset_buf = NULL;
+    int nunset = 0;
+    if (has_add
+        && lotus_process_split_argv(add, &adds, &add_buf, &nadd) < 0) {
+        return -1;
+    }
+    for (int i = 0; i < nadd; i++) {
+        const char *eq = strchr(adds[i], '=');
+        if (!eq || eq == adds[i]) {
+            free(adds); free(add_buf);
+            errno = EINVAL;
+            return -1;
+        }
+    }
+    if (has_unset
+        && lotus_process_split_argv(unset, &unsets, &unset_buf, &nunset)
+               < 0) {
+        int saved = errno;
+        free(adds); free(add_buf);
+        errno = saved;
+        return -1;
+    }
+    size_t nbase = 0;
+    if (!clear && environ) {
+        while (environ[nbase]) nbase++;
+    }
+    char **envp = (char **)malloc(sizeof(char *) * (nbase + (size_t)nadd + 1));
+    if (!envp) {
+        free(adds); free(add_buf); free(unsets); free(unset_buf);
+        errno = ENOMEM;
+        return -1;
+    }
+    size_t k = 0;
+    for (size_t i = 0; i < nbase; i++) {
+        char *e = environ[i];
+        size_t kl = lotus_process_env_key_len(e);
+        if (lotus_process_env_names(unsets, nunset, e, kl)) continue;
+        if (lotus_process_env_names(adds, nadd, e, kl)) continue;
+        envp[k++] = e;
+    }
+    for (int i = 0; i < nadd; i++) {
+        size_t kl = lotus_process_env_key_len(adds[i]);
+        /* A later line names it again: that one wins. */
+        if (lotus_process_env_names(adds + i + 1, nadd - i - 1, adds[i], kl)) {
+            continue;
+        }
+        envp[k++] = adds[i];
+    }
+    envp[k] = NULL;
+    free(adds);
+    free(unsets); free(unset_buf);
+    *out_envp = envp;
+    *out_buf = add_buf;
+    return 0;
+}
+
+/* In the forked child, before exec: apply `o`. Async-signal-safe calls
+ * only. Returns 0, or the errno of the step that failed. */
+static int lotus_process_child_setup(const lotus_spawn_opts *o) {
+    if (!o) return 0;
+    if (o->cwd && o->cwd[0] && chdir(o->cwd) != 0) {
+        return errno;
+    }
+    const int res[4] = { RLIMIT_CPU, RLIMIT_AS, RLIMIT_NOFILE, RLIMIT_FSIZE };
+    const int64_t val[4] = { o->rl_cpu, o->rl_as, o->rl_nofile, o->rl_fsize };
+    for (int i = 0; i < 4; i++) {
+        if (val[i] <= 0) continue;
+        struct rlimit r;
+        r.rlim_cur = (rlim_t)val[i];
+        r.rlim_max = (rlim_t)val[i];
+        if (setrlimit(res[i], &r) != 0) {
+            return errno;
+        }
+    }
+    if (o->envp) {
+        environ = o->envp;
+    }
+    return 0;
+}
+
+/* The setup-failure channel: a pipe whose ends close on exec, so the
+ * parent's read sees EOF the moment the exec succeeds (or the child
+ * exits). Returns 0 or -1 with errno. */
+static int lotus_process_errpipe(int fds[2]) {
+    if (pipe(fds) < 0) return -1;
+    fcntl(fds[0], F_SETFD, FD_CLOEXEC);
+    fcntl(fds[1], F_SETFD, FD_CLOEXEC);
+    return 0;
+}
+
+/* Child side: report `err` down the setup pipe and end. */
+static void lotus_process_child_fail(int errfd, int err) {
+    int e = err;
+    ssize_t w;
+    do {
+        w = write(errfd, &e, sizeof e);
+    } while (w < 0 && errno == EINTR);
+    _exit(127);
+}
+
+/* Parent side: the child's setup errno, or 0 once its exec closed the
+ * pipe. Closes the read end. */
+static int lotus_process_errpipe_read(int fd) {
+    int e = 0;
+    ssize_t n;
+    do {
+        n = read(fd, &e, sizeof e);
+    } while (n < 0 && errno == EINTR);
+    close(fd);
+    return n == (ssize_t)sizeof e ? e : 0;
+}
+
+/* Reap `pid` after a failed setup (it `_exit`ed, or is about to). */
+static void lotus_process_reap(pid_t pid) {
+    int status = 0;
+    while (waitpid(pid, &status, 0) < 0 && errno == EINTR) {
+    }
+}
+
+/* The deadline's stop: TERM to the child's process group (it called
+ * `setpgid(0, 0)`, so a shell's own children go with it), 100 ms of
+ * grace polled at 5 ms, then KILL to the group, then reap. A group
+ * that is already gone falls back to the pid. *status is the reaped
+ * status (0 if something else reaped it). */
+static void lotus_process_stop_group(pid_t pid, int *status) {
+    *status = 0;
+    if (kill(-pid, SIGTERM) < 0) kill(pid, SIGTERM);
+    for (int waited = 0; waited < 100000; waited += 5000) {
+        pid_t w = waitpid(pid, status, WNOHANG);
+        if (w == pid) return;
+        if (w < 0 && errno != EINTR) return;
+        struct timespec ts = { 0, 5000L * 1000L };
+        nanosleep(&ts, NULL);
+    }
+    if (kill(-pid, SIGKILL) < 0) kill(pid, SIGKILL);
+    for (;;) {
+        pid_t w = waitpid(pid, status, 0);
+        if (w == pid) return;
+        if (w < 0 && errno == EINTR) continue;
+        return;
+    }
+}
+#endif /* !__wasm__ */
+
+/* The body of `run` and `run_with`: `o` NULL for `run`, `timeout_ns`
+ * <= 0 for no deadline. At the deadline the child's group is stopped
+ * (`lotus_process_stop_group`) and reaped, what it wrote so far is the
+ * output, and *out_timed_out is 1 — a result, not an error. */
+static int lotus_process_run_opts(
     const char *argv_blob,
+    const lotus_spawn_opts *o,
+    int64_t timeout_ns,
     int32_t *out_code,
     int32_t *out_signal,
     const char **out_stdout_str,
-    const char **out_stderr_str
+    const char **out_stderr_str,
+    int32_t *out_timed_out
 ) {
     if (!out_code || !out_signal || !out_stdout_str || !out_stderr_str) {
         return EINVAL;
     }
+    if (out_timed_out) *out_timed_out = 0;
+#ifdef __wasm__
+    (void)o;
+    (void)timeout_ns;
+#else
+    int64_t deadline = timeout_ns > 0 ? lotus_process_mono_ns() + timeout_ns : 0;
+    int timed_out = 0;
+#endif
     *out_code = -1;
     *out_signal = 0;
     *out_stdout_str = "";
@@ -24769,12 +25015,24 @@ int lotus_process_run(
         free(argv); free(argv_buf);
         return saved;
     }
+    /* The setup-failure channel, only when there is setup to fail. */
+    int setup_pipe[2] = { -1, -1 };
+#ifndef __wasm__
+    if (o && lotus_process_errpipe(setup_pipe) < 0) {
+        int saved = errno;
+        close(out_pipe[0]); close(out_pipe[1]);
+        close(err_pipe[0]); close(err_pipe[1]);
+        free(argv); free(argv_buf);
+        return saved;
+    }
+#endif
 
     pid_t pid = lotus_process_fork();
     if (pid < 0) {
         int saved = errno;
         close(out_pipe[0]); close(out_pipe[1]);
         close(err_pipe[0]); close(err_pipe[1]);
+        if (setup_pipe[0] >= 0) { close(setup_pipe[0]); close(setup_pipe[1]); }
         free(argv); free(argv_buf);
         return saved;
     }
@@ -24797,6 +25055,13 @@ int lotus_process_run(
             dup2(devnull, STDIN_FILENO);
             close(devnull);
         }
+#ifndef __wasm__
+        if (o) {
+            close(setup_pipe[0]);
+            int se = lotus_process_child_setup(o);
+            if (se) lotus_process_child_fail(setup_pipe[1], se);
+        }
+#endif
         execvp(argv[0], argv);
         _exit(127);
     }
@@ -24804,6 +25069,19 @@ int lotus_process_run(
     /* PARENT. Close the write ends; we only read. */
     close(out_pipe[1]); out_pipe[1] = -1;
     close(err_pipe[1]); err_pipe[1] = -1;
+#ifndef __wasm__
+    if (o) {
+        close(setup_pipe[1]);
+        int se = lotus_process_errpipe_read(setup_pipe[0]);
+        if (se) {
+            close(out_pipe[0]); close(err_pipe[0]);
+            lotus_process_reap(pid);
+            free(argv); free(argv_buf);
+            errno = se;
+            return se;
+        }
+    }
+#endif
 
     /* Drain both pipes via poll() so the child can write to
      * stdout and stderr in any order without filling either pipe
@@ -24827,7 +25105,20 @@ int lotus_process_run(
     while (!drain_err && (out_open || err_open)) {
         pfds[0].events = out_open ? POLLIN : 0;
         pfds[1].events = err_open ? POLLIN : 0;
-        int pn = poll(pfds, 2, -1);
+        int wait_ms = -1;
+#ifndef __wasm__
+        if (deadline > 0) {
+            int64_t left = deadline - lotus_process_mono_ns();
+            if (left <= 0) {
+                timed_out = 1;
+                break;
+            }
+            int64_t ms = (left + 999999) / 1000000;
+            wait_ms = ms > INT_MAX ? INT_MAX : (int)ms;
+        }
+#endif
+        int pn = poll(pfds, 2, wait_ms);
+        if (pn == 0) continue;
         if (pn < 0) {
             if (errno == EINTR) continue;
             drain_err = errno;
@@ -24877,8 +25168,38 @@ int lotus_process_run(
     close(out_pipe[0]); out_pipe[0] = -1;
     close(err_pipe[0]); err_pipe[0] = -1;
 
-    /* Reap. waitpid retries on EINTR. */
+    /* Reap. waitpid retries on EINTR. A child that reached its
+     * deadline is stopped first, its group with it. Pipes that stay
+     * open past the child's exit (a grandchild holding them) wait for
+     * the deadline too. */
     int status = 0;
+#ifndef __wasm__
+    if (!timed_out && deadline > 0) {
+        /* Both streams ended; the child may still be running (it
+         * closed them) — its exit still has to come by the deadline. */
+        for (;;) {
+            pid_t w = waitpid(pid, &status, WNOHANG);
+            if (w == pid) goto reaped;
+            if (w < 0) {
+                if (errno == EINTR) continue;
+                if (!drain_err) drain_err = errno;
+                goto reaped;
+            }
+            int64_t left = deadline - lotus_process_mono_ns();
+            if (left <= 0) {
+                timed_out = 1;
+                break;
+            }
+            struct timespec ts = { 0, left < 5000000 ? (long)left : 5000000L };
+            nanosleep(&ts, NULL);
+        }
+    }
+    if (timed_out) {
+        lotus_process_stop_group(pid, &status);
+        if (out_timed_out) *out_timed_out = 1;
+        goto reaped;
+    }
+#endif
     for (;;) {
         pid_t w = waitpid(pid, &status, 0);
         if (w == pid) break;
@@ -24886,6 +25207,9 @@ int lotus_process_run(
         if (!drain_err) drain_err = errno;
         break;
     }
+#ifndef __wasm__
+reaped:
+#endif
 
     if (drain_err) {
         free(out_buf); free(err_buf);
@@ -24939,6 +25263,69 @@ int lotus_process_run(
     return 0;
 }
 
+int lotus_process_run(
+    const char *argv_blob,
+    int32_t *out_code,
+    int32_t *out_signal,
+    const char **out_stdout_str,
+    const char **out_stderr_str
+) {
+    return lotus_process_run_opts(argv_blob, NULL, 0, out_code, out_signal,
+                                  out_stdout_str, out_stderr_str, NULL);
+}
+
+/* `std::process::run_with(argv, opts)`: `run` under a `SpawnOptions`
+ * (see "Spawn options" above). `clear_env` is 0/1; a limit <= 0 and a
+ * `timeout_ns` <= 0 are unset. *out_timed_out is 1 when the deadline
+ * stopped the child. */
+int lotus_process_run_with(
+    const char *argv_blob,
+    const char *cwd,
+    const char *env_add,
+    const char *env_unset,
+    int64_t clear_env,
+    int64_t timeout_ns,
+    int64_t rl_cpu,
+    int64_t rl_as,
+    int64_t rl_nofile,
+    int64_t rl_fsize,
+    int32_t *out_code,
+    int32_t *out_signal,
+    const char **out_stdout_str,
+    const char **out_stderr_str,
+    int32_t *out_timed_out
+) {
+#ifdef __wasm__
+    (void)argv_blob; (void)cwd; (void)env_add; (void)env_unset;
+    (void)clear_env; (void)timeout_ns; (void)rl_cpu; (void)rl_as;
+    (void)rl_nofile; (void)rl_fsize; (void)out_code; (void)out_signal;
+    (void)out_stdout_str; (void)out_stderr_str; (void)out_timed_out;
+    errno = EINVAL;
+    return EINVAL;
+#else
+    lotus_spawn_opts o;
+    char *env_buf = NULL;
+    o.cwd = cwd;
+    o.envp = NULL;
+    o.rl_cpu = rl_cpu;
+    o.rl_as = rl_as;
+    o.rl_nofile = rl_nofile;
+    o.rl_fsize = rl_fsize;
+    if (lotus_process_build_envp(env_add, env_unset, clear_env, &o.envp,
+                                 &env_buf) < 0) {
+        return errno ? errno : EINVAL;
+    }
+    int rc = lotus_process_run_opts(argv_blob, &o, timeout_ns, out_code,
+                                    out_signal, out_stdout_str,
+                                    out_stderr_str, out_timed_out);
+    int saved = errno;
+    free(o.envp);
+    free(env_buf);
+    errno = saved;
+    return rc;
+#endif
+}
+
 /* C2 surface 2a: async spawn. fork → setpgid → exec in the child;
  * parent gets back the pid + three pipe fds (stdin write, stdout
  * read, stderr read).
@@ -24946,13 +25333,17 @@ int lotus_process_run(
  * Returns 0 on success, errno on failure. All out-params are
  * populated only on success.
  */
-int lotus_process_spawn(
+static int lotus_process_spawn_opts(
     const char *argv_blob,
+    const lotus_spawn_opts *o,
     int32_t *out_pid,
     int32_t *out_stdin_fd,
     int32_t *out_stdout_fd,
     int32_t *out_stderr_fd
 ) {
+#ifdef __wasm__
+    (void)o;
+#endif
     if (!out_pid || !out_stdin_fd || !out_stdout_fd || !out_stderr_fd) {
         return EINVAL;
     }
@@ -24984,6 +25375,18 @@ int lotus_process_spawn(
         free(argv); free(argv_buf);
         return saved;
     }
+    /* The setup-failure channel, only when there is setup to fail. */
+    int setup_pipe[2] = { -1, -1 };
+#ifndef __wasm__
+    if (o && lotus_process_errpipe(setup_pipe) < 0) {
+        int saved = errno;
+        close(in_pipe[0]); close(in_pipe[1]);
+        close(out_pipe[0]); close(out_pipe[1]);
+        close(err_pipe[0]); close(err_pipe[1]);
+        free(argv); free(argv_buf);
+        return saved;
+    }
+#endif
 
     pid_t pid = lotus_process_fork();
     if (pid < 0) {
@@ -24991,6 +25394,7 @@ int lotus_process_spawn(
         close(in_pipe[0]); close(in_pipe[1]);
         close(out_pipe[0]); close(out_pipe[1]);
         close(err_pipe[0]); close(err_pipe[1]);
+        if (setup_pipe[0] >= 0) { close(setup_pipe[0]); close(setup_pipe[1]); }
         free(argv); free(argv_buf);
         return saved;
     }
@@ -25002,6 +25406,13 @@ int lotus_process_spawn(
         close(in_pipe[0]);  close(in_pipe[1]);
         close(out_pipe[0]); close(out_pipe[1]);
         close(err_pipe[0]); close(err_pipe[1]);
+#ifndef __wasm__
+        if (o) {
+            close(setup_pipe[0]);
+            int se = lotus_process_child_setup(o);
+            if (se) lotus_process_child_fail(setup_pipe[1], se);
+        }
+#endif
         execvp(argv[0], argv);
         _exit(127);
     }
@@ -25010,6 +25421,19 @@ int lotus_process_spawn(
     close(in_pipe[0]);  in_pipe[0] = -1;
     close(out_pipe[1]); out_pipe[1] = -1;
     close(err_pipe[1]); err_pipe[1] = -1;
+#ifndef __wasm__
+    if (o) {
+        close(setup_pipe[1]);
+        int se = lotus_process_errpipe_read(setup_pipe[0]);
+        if (se) {
+            close(in_pipe[1]); close(out_pipe[0]); close(err_pipe[0]);
+            lotus_process_reap(pid);
+            free(argv); free(argv_buf);
+            errno = se;
+            return se;
+        }
+    }
+#endif
 
     /* Mark the parent-side pipe fds non-blocking so reads return
      * EAGAIN promptly instead of blocking. stdin write stays
@@ -25030,6 +25454,134 @@ int lotus_process_spawn(
     *out_stdout_fd = (int32_t)out_pipe[0];
     *out_stderr_fd = (int32_t)err_pipe[0];
     return 0;
+}
+
+int lotus_process_spawn(
+    const char *argv_blob,
+    int32_t *out_pid,
+    int32_t *out_stdin_fd,
+    int32_t *out_stdout_fd,
+    int32_t *out_stderr_fd
+) {
+    return lotus_process_spawn_opts(argv_blob, NULL, out_pid, out_stdin_fd,
+                                    out_stdout_fd, out_stderr_fd);
+}
+
+/* `std::process::spawn_with(argv, opts)`: `spawn` under a
+ * `SpawnOptions` (see "Spawn options" above). The child's deadline is
+ * not enforced here — `spawn` returns at once — but handed back as
+ * *out_deadline_ns (CLOCK_MONOTONIC nanoseconds; 0 when `timeout_ns`
+ * <= 0) for the handle to carry: `wait` and `try_wait` stop the child
+ * there (`lotus_process_wait_deadline`). */
+int lotus_process_spawn_with(
+    const char *argv_blob,
+    const char *cwd,
+    const char *env_add,
+    const char *env_unset,
+    int64_t clear_env,
+    int64_t timeout_ns,
+    int64_t rl_cpu,
+    int64_t rl_as,
+    int64_t rl_nofile,
+    int64_t rl_fsize,
+    int32_t *out_pid,
+    int32_t *out_stdin_fd,
+    int32_t *out_stdout_fd,
+    int32_t *out_stderr_fd,
+    int64_t *out_deadline_ns
+) {
+#ifdef __wasm__
+    (void)argv_blob; (void)cwd; (void)env_add; (void)env_unset;
+    (void)clear_env; (void)timeout_ns; (void)rl_cpu; (void)rl_as;
+    (void)rl_nofile; (void)rl_fsize; (void)out_pid; (void)out_stdin_fd;
+    (void)out_stdout_fd; (void)out_stderr_fd; (void)out_deadline_ns;
+    errno = EINVAL;
+    return EINVAL;
+#else
+    if (!out_deadline_ns) return EINVAL;
+    *out_deadline_ns = 0;
+    lotus_spawn_opts o;
+    char *env_buf = NULL;
+    o.cwd = cwd;
+    o.envp = NULL;
+    o.rl_cpu = rl_cpu;
+    o.rl_as = rl_as;
+    o.rl_nofile = rl_nofile;
+    o.rl_fsize = rl_fsize;
+    if (lotus_process_build_envp(env_add, env_unset, clear_env, &o.envp,
+                                 &env_buf) < 0) {
+        return errno ? errno : EINVAL;
+    }
+    int64_t start = lotus_process_mono_ns();
+    int rc = lotus_process_spawn_opts(argv_blob, &o, out_pid, out_stdin_fd,
+                                      out_stdout_fd, out_stderr_fd);
+    int saved = errno;
+    free(o.envp);
+    free(env_buf);
+    if (rc == 0 && timeout_ns > 0) {
+        *out_deadline_ns = start + timeout_ns;
+    }
+    errno = saved;
+    return rc;
+#endif
+}
+
+/* `wait` / `try_wait` on a handle that carries a deadline
+ * (`spawn_with`'s timeout). `nonblocking` 0 waits for the exit or the
+ * deadline, whichever is first; 1 looks once, like `try_wait`. A child
+ * that exited decodes as `lotus_process_wait` does; one still running
+ * before the deadline is *out_code = -2 (nonblocking only); one still
+ * running AT the deadline is stopped with its group
+ * (`lotus_process_stop_group`), reaped, and reported *out_code = -3,
+ * *out_signal = the signal that ended it — the stdlib's "timed out".
+ * The blocking wait polls `waitpid(WNOHANG)` with a sleep that grows
+ * from 1 ms to 10 ms, never past the deadline. Returns errno on
+ * failure (ECHILD when already reaped). */
+int lotus_process_wait_deadline(
+    int32_t pid,
+    int64_t deadline_ns,
+    int64_t nonblocking,
+    int32_t *out_code,
+    int32_t *out_signal
+) {
+    if (!out_code || !out_signal) return EINVAL;
+    *out_code = -2;
+    *out_signal = 0;
+#ifdef __wasm__
+    (void)pid; (void)deadline_ns; (void)nonblocking;
+    return EINVAL;
+#else
+    long step_ns = 1000000L;
+    int status = 0;
+    for (;;) {
+        pid_t w = waitpid((pid_t)pid, &status, WNOHANG);
+        if (w == (pid_t)pid) break;
+        if (w < 0) {
+            if (errno == EINTR) continue;
+            return errno ? errno : ECHILD;
+        }
+        int64_t left = deadline_ns - lotus_process_mono_ns();
+        if (left <= 0) {
+            lotus_process_stop_group((pid_t)pid, &status);
+            *out_code = -3;
+            *out_signal = WIFSIGNALED(status) ? WTERMSIG(status) : 0;
+            return 0;
+        }
+        if (nonblocking) return 0;
+        struct timespec ts = { 0, left < step_ns ? (long)left : step_ns };
+        nanosleep(&ts, NULL);
+        if (step_ns < 10000000L) step_ns *= 2;
+        if (step_ns > 10000000L) step_ns = 10000000L;
+    }
+    if (WIFEXITED(status)) {
+        *out_code = WEXITSTATUS(status);
+        *out_signal = 0;
+    } else if (WIFSIGNALED(status)) {
+        *out_code = -1;
+        *out_signal = WTERMSIG(status);
+    }
+    return 0;
+#endif
 }
 
 /* C2 surface 2b: blocking wait. Reaps the child, decodes the exit
