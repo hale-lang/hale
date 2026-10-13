@@ -294,15 +294,12 @@ pub(crate) struct BceLoop {
 
 /// Does this form slot retire its cells onto its locus's arena pending
 /// list, for the activation boundary to flush (anchor retirement)? A
-/// `sync = none` / `serialized` `@form(hashmap)` of record cells, and a
+/// `@form(hashmap)` of record cells (any discipline), and a
 /// `@form(lru_cache)` (whose put, eviction and remove retire the same
 /// way).
 pub(crate) fn slot_retires_cells_deferred(sl: &CapacitySlotLayout) -> bool {
     match sl.form {
-        Some(SlotForm::Hashmap) => {
-            matches!(sl.sync_mode, SyncMode::None | SyncMode::Serialized)
-                && matches!(sl.elem_ty, CodegenTy::TypeRef(_))
-        }
+        Some(SlotForm::Hashmap) => matches!(sl.elem_ty, CodegenTy::TypeRef(_)),
         Some(SlotForm::LruCache) => matches!(sl.elem_ty, CodegenTy::TypeRef(_)),
         _ => false,
     }
@@ -21667,7 +21664,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // Without it, enabling the writer's retirement would turn
         // the old leak into a use-after-free the moment an
         // iteration overlapped a concurrent set.
-        let synced_clone_reads = slot.sync_mode == SyncMode::Serialized
+        let synced_clone_reads = slot.sync_mode != SyncMode::None
             && self.hashmap_cell_owns_blocks(&cell_info.fields);
         let count = if synced_clone_reads {
             let dest = self.current_arena_ptr()?;

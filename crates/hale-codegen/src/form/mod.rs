@@ -282,18 +282,15 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// Does the locus `name` hold form cells whose nested blocks are
     /// retired from its own arena — a `@form(vec)` (`set` and `pop`
     /// free a replaced or removed element), or a `@form(hashmap)` that
-    /// installs a retire descriptor (`sync = none` / `serialized`, a
-    /// record cell)? Such a locus's own field stores must not share a
+    /// installs a retire descriptor (a record cell, under any
+    /// discipline)? Such a locus's own field stores must not share a
     /// block with a cell (`emit_self_field_inplace_assign`).
     pub(crate) fn locus_retires_cell_blocks(&self, name: &str) -> bool {
         self.user_loci.get(name).is_some_and(|info| {
             info.capacity_slots.iter().any(|sl| match sl.form {
                 Some(SlotForm::Vec) => true,
                 Some(SlotForm::LruCache) => matches!(sl.elem_ty, CodegenTy::TypeRef(_)),
-                Some(SlotForm::Hashmap) => {
-                    matches!(sl.sync_mode, SyncMode::None | SyncMode::Serialized)
-                        && matches!(sl.elem_ty, CodegenTy::TypeRef(_))
-                }
+                Some(SlotForm::Hashmap) => matches!(sl.elem_ty, CodegenTy::TypeRef(_)),
                 _ => false,
             })
         })
@@ -1648,13 +1645,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 .map(Some);
         }
 
-        // Downstream handoff P1 (2026-08-03): a `sync = serialized`
-        // map's cell is copied out into the reader's arena at every
-        // read (its String and Bytes fields and nested blocks), which
-        // is what lets the writer retire the blocks it replaces. Only
+        // Downstream handoff P1 (2026-08-03): a synced map's cell
+        // (`serialized`, and `striped` / `lockfree` under the cell's
+        // claim) is copied out into the reader's arena at every read
+        // (its String and Bytes fields and nested blocks), which is
+        // what lets the writer retire the blocks it replaces. Only
         // cells that own any pay for it; everything else keeps the
         // plain read.
-        let synced_clone_reads = slot.sync_mode == SyncMode::Serialized
+        let synced_clone_reads = slot.sync_mode != SyncMode::None
             && self.hashmap_cell_owns_blocks(&cell_info.fields);
 
         let payload_ty = CodegenTy::TypeRef("KeyError".to_string());
@@ -1914,17 +1912,29 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // synced map whose cell owns blocks takes the cloning variant, for
         // the same reason `get` does — a raw cell pointer handed
         // off-thread would be freed under the reader once the
-        // writer's retirement is enabled. `key_at` copies a key,
-        // not a cell, so it is unaffected.
+        // writer's retirement is enabled.
         let synced_clone_reads = c_fn_name == "lotus_hashmap_value_at"
-            && slot_decl.sync_mode == SyncMode::Serialized
+            && slot_decl.sync_mode != SyncMode::None
             && self.hashmap_cell_owns_blocks(&cell_info.fields);
-        let c_ret = if synced_clone_reads {
+        // A String key of such a map is retired when its cell is
+        // removed, so `key_at` copies it out under the same lock
+        // (lotus_hashmap_key_at_cloned) rather than hand out the
+        // map's pointer to another pool.
+        let synced_key_clone = c_fn_name == "lotus_hashmap_key_at"
+            && slot_decl.sync_mode != SyncMode::None
+            && key_codegen_ty == CodegenTy::String
+            && self.hashmap_cell_owns_blocks(&cell_info.fields);
+        let c_ret = if synced_clone_reads || synced_key_clone {
             let dest = self.current_arena_ptr()?;
+            let cloned_name = if synced_key_clone {
+                "lotus_hashmap_key_at_cloned"
+            } else {
+                "lotus_hashmap_value_at_cloned"
+            };
             let c_fn = self
                 .module
-                .get_function("lotus_hashmap_value_at_cloned")
-                .expect("lotus_hashmap_value_at_cloned declared");
+                .get_function(cloned_name)
+                .expect("hashmap cloned index primitive declared");
             self.builder
                 .build_call(
                     c_fn,
@@ -2831,12 +2841,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     // first, so a nested block carried over from it
                     // is kept rather than copied.
                     // Only a cell with such a field pays for the peek.
-                    let retiring =
-                        matches!(slot.sync_mode, SyncMode::None | SyncMode::Serialized)
-                            && cell_info
-                                .fields
-                                .values()
-                                .any(|(_, t)| self.record_field_owns_block(t));
+                    let retiring = cell_info
+                        .fields
+                        .values()
+                        .any(|(_, t)| self.record_field_owns_block(t));
                     let owner = if !retiring {
                         None
                     } else if slot.sync_mode == SyncMode::None {

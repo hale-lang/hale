@@ -481,9 +481,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // the cell owns (String and Bytes fields, nested blocks)
         // into the CALLER's arena, inside the critical section that
         // read the cell, so the map's writer is free to retire its
-        // own blocks. Emitted only for a `sync = serialized` slot
-        // whose cell owns any — the plain entry points are
-        // unchanged.
+        // own blocks. Emitted only for a synced slot (`serialized`,
+        // `striped`, `lockfree`) whose cell owns any — the plain
+        // entry points are unchanged.
         let hashmap_get_cloned_ty = i32_t.fn_type(
             &[ptr_t.into(), ptr_t.into(), ptr_t.into(), ptr_t.into()],
             false,
@@ -499,6 +499,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         );
         self.module.add_function(
             "lotus_hashmap_value_at_cloned",
+            hashmap_value_at_cloned_ty,
+            None,
+        );
+        // key_at of such a slot with a String key: the key is copied
+        // into the caller's arena under the read's lock.
+        self.module.add_function(
+            "lotus_hashmap_key_at_cloned",
             hashmap_value_at_cloned_ty,
             None,
         );

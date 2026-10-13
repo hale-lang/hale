@@ -3826,6 +3826,18 @@ void lotus_vec_destroy(void *vec_ptr) {
  * gracefully. */
 #define LOTUS_CELL_TOMBSTONE 3
 
+/* A thread waiting out another's CLAIMED cell. The claim is short (a
+ * writer's memcpy, or a retiring map's reader copying the cell out —
+ * lotus_hashmap_cell_read), but its holder can be descheduled, so
+ * after a burst of spins the waiter yields its core instead of
+ * burning the holder's time slice. wasm32 has no other thread. */
+#ifdef __wasm__
+#define LOTUS_CELL_RELAX(spins) ((void)(spins))
+#else
+#define LOTUS_CELL_RELAX(spins) \
+    do { if (++(spins) >= 64) { (spins) = 0; sched_yield(); } } while (0)
+#endif
+
 /* Cache line for the striped cell-stride padding (matches the
  * value used in experiments/f32-false-sharing/bench.c). The
  * C twin's measurement shows ~5x speedup ceiling from padding
@@ -4284,6 +4296,8 @@ static void lotus_hashmap_grow(lotus_hashmap_t *m) {
 static void lotus_hashmap_retire_cell(lotus_hashmap_t *m, char *slot,
                                       const char *new_key,
                                       const char *new_v);
+/* Retire a lockfree tombstone's String key (lotus_hashmap_lf_migrate). */
+static void lotus_hashmap_retire_key(lotus_hashmap_t *m, char *k);
 
 static void lotus_hashmap_set_unlocked(lotus_hashmap_t *m,
                                         const void *key,
@@ -4397,6 +4411,7 @@ probe_restart:;
     size_t mask = m->cap - 1;
     size_t i = lotus_hashmap_hash(m, key) & mask;
     size_t probes = 0;
+    unsigned spins = 0;
 
     for (;;) {
         if (probes >= m->cap) {
@@ -4445,7 +4460,9 @@ probe_restart:;
         }
 
         if (state == LOTUS_CELL_CLAIMED) {
-            /* Writer mid-publish on this slot. Spin briefly. */
+            /* Writer mid-publish on this slot (or a retiring map's
+             * reader copying it out). Spin briefly. */
+            LOTUS_CELL_RELAX(spins);
             continue;
         }
 
@@ -4461,6 +4478,16 @@ probe_restart:;
                     __ATOMIC_ACQUIRE,
                     __ATOMIC_RELAXED))
             {
+                /* The claim excludes every reader of this cell (a
+                 * retiring map's reads copy the cell out under the
+                 * same claim, lotus_hashmap_cell_read), so no thread
+                 * holds the old value's blocks: retire what the new
+                 * value no longer reaches. The slot keeps its key,
+                 * which concurrent probes compare. */
+                if (__builtin_expect(m->retire_n != 0, 0)) {
+                    lotus_hashmap_retire_cell(m, slot, slot + 1,
+                                              (const char *)value);
+                }
                 memcpy(slot + 1 + m->key_size, value, m->value_size);
                 __atomic_store_n((uint8_t *)&slot[0],
                                  LOTUS_CELL_COMMITTED,
@@ -4543,6 +4570,16 @@ static void lotus_hashmap_lf_migrate(lotus_hashmap_t *m,
          * steady state; CLAIMED is transient (writer
          * mid-publish) and our drain-wait guaranteed no
          * writers are in flight. */
+        if (slot[0] == LOTUS_CELL_TOMBSTONE && m->retire_n != 0 &&
+            m->key_type_tag == LOTUS_HASHMAP_KEY_STRING) {
+            /* A removed cell's String key outlived its value for the
+             * probes that might still compare it (remove's retire
+             * keeps it). The drain-wait leaves none in flight, and
+             * the new table drops the tombstone: retire it now. */
+            char *k;
+            memcpy(&k, slot + 1, sizeof k);
+            if (k) lotus_hashmap_retire_key(m, k);
+        }
         if (slot[0] != LOTUS_CELL_COMMITTED) continue;
         const char *key = slot + 1;
         const char *value = slot + 1 + m->key_size;
@@ -4596,6 +4633,19 @@ static void lotus_hashmap_grow_lockfree(lotus_hashmap_t *m) {
     size_t old_cap = m->cap;
     char *old_slots = m->slots;
     size_t new_cap = old_cap * 2;
+    /* A table that crossed the load factor on its tombstones, not its
+     * live entries (a set/remove churn: a lockfree insert never
+     * reuses a tombstone), is rebuilt at its own size — the
+     * migration drops the tombstones, which is all it needed. Doubling
+     * it grew the slots without bound under churn, and held every
+     * tombstone's key until the next, ever rarer, grow. Live entries
+     * at most half the threshold leave the rebuilt table at most that
+     * full, so the next rebuild is as many removes away. */
+    size_t live_now = __atomic_load_n(&m->len, __ATOMIC_RELAXED);
+    if (live_now * LOTUS_HASHMAP_LOAD_DEN * 2
+        <= old_cap * LOTUS_HASHMAP_LF_LOAD_NUM) {
+        new_cap = old_cap;
+    }
     if (new_cap < LOTUS_HASHMAP_INITIAL_CAP) {
         new_cap = LOTUS_HASHMAP_INITIAL_CAP;
     }
@@ -4676,6 +4726,7 @@ set_retry:
     size_t mask = m->cap - 1;
     size_t i = lotus_hashmap_hash(m, key) & mask;
     size_t probes = 0;
+    unsigned spins = 0;
     for (;;) {
         if (probes >= m->cap) {
             /* Probe exhausted under the current cap. Exit the
@@ -4707,7 +4758,10 @@ set_retry:
             }
             continue;  /* CAS lost; re-read */
         }
-        if (state == LOTUS_CELL_CLAIMED) continue;  /* spin */
+        if (state == LOTUS_CELL_CLAIMED) {  /* spin */
+            LOTUS_CELL_RELAX(spins);
+            continue;
+        }
         /* F.32-1γ-v2 (session 1): TOMBSTONE — slot's previous
          * key was removed. Advance probe; the residual key
          * bytes are NOT valid for comparison (they may match
@@ -4729,6 +4783,15 @@ set_retry:
                     &expected, LOTUS_CELL_CLAIMED,
                     0, __ATOMIC_ACQUIRE, __ATOMIC_RELAXED))
             {
+                /* As the striped update: the claim excludes every
+                 * reader of the cell, so the old value's blocks
+                 * are unreachable once the new value is in;
+                 * retire what it no longer reaches. The slot keeps
+                 * its key, which concurrent probes compare. */
+                if (__builtin_expect(m->retire_n != 0, 0)) {
+                    lotus_hashmap_retire_cell(m, slot, slot + 1,
+                                              (const char *)value);
+                }
                 memcpy(slot + 1 + m->key_size, value, m->value_size);
                 __atomic_store_n((uint8_t *)&slot[0],
                                  LOTUS_CELL_COMMITTED,
@@ -4811,11 +4874,13 @@ static size_t lotus_hashmap_find_slot_striped(lotus_hashmap_t *m,
         if (probes >= m->cap) return m->cap;  /* not present */
         char *slot = m->slots + i * es;
         uint8_t state;
+        unsigned spins = 0;
         for (;;) {
             state =
                 __atomic_load_n((uint8_t *)&slot[0], __ATOMIC_ACQUIRE);
             if (state != LOTUS_CELL_CLAIMED) break;
             /* Spin: writer mid-publish. */
+            LOTUS_CELL_RELAX(spins);
         }
         if (state == LOTUS_CELL_EMPTY) {
             return m->cap;  /* probe boundary: not found */
@@ -4871,6 +4936,56 @@ static void lotus_hashmap_clone_out_owned(const lotus_hashmap_t *m,
                                             void *out_value,
                                             void *dest_arena);
 
+/* Read one COMMITTED cell of a striped or lockfree map into
+ * `out_value` (and copy what it owns into `dest_arena`). The caller
+ * holds the map's rdlock or lf_enter, and found `slot` COMMITTED.
+ *
+ * A map whose cells own blocks (a retire descriptor is installed)
+ * retires a replaced cell's blocks, so its reads may not touch the
+ * cell while a writer swaps it: the reader takes the cell's claim —
+ * the same COMMITTED -> CLAIMED CAS a writer's update takes — copies
+ * the value and everything it owns out, and releases it. A writer's
+ * update and a lockfree remove are CASes from COMMITTED, so neither
+ * starts while the copy runs; once one has replaced or tombstoned the
+ * cell no reader can reach the old blocks, and the writer retires
+ * them inside its own claim (deferred to its activation boundary, as
+ * on a serialized map). The claim also makes the read whole: without
+ * it, a read racing an update could copy half of each value. Readers
+ * of one key serialize on it; readers of distinct keys never meet.
+ *
+ * Returns 1 when the value was read, 0 when the cell stopped being
+ * COMMITTED before the claim (a lockfree remove tombstoned it; the
+ * caller probes again). A map with no descriptor keeps the plain
+ * memcpy: its cells own nothing a writer frees. */
+static int lotus_hashmap_cell_read(lotus_hashmap_t *m, char *slot,
+                                   void *out_value, void *dest_arena) {
+    if (m->retire_n == 0) {
+        memcpy(out_value, slot + 1 + m->key_size, m->value_size);
+        return 1;
+    }
+    unsigned spins = 0;
+    for (;;) {
+        uint8_t state =
+            __atomic_load_n((uint8_t *)&slot[0], __ATOMIC_ACQUIRE);
+        if (state == LOTUS_CELL_CLAIMED) {
+            LOTUS_CELL_RELAX(spins);
+            continue;
+        }
+        if (state != LOTUS_CELL_COMMITTED) return 0;
+        uint8_t expected = LOTUS_CELL_COMMITTED;
+        if (__atomic_compare_exchange_n((uint8_t *)&slot[0], &expected,
+                                        LOTUS_CELL_CLAIMED, 0,
+                                        __ATOMIC_ACQUIRE,
+                                        __ATOMIC_RELAXED))
+            break;
+    }
+    memcpy(out_value, slot + 1 + m->key_size, m->value_size);
+    lotus_hashmap_clone_out_owned(m, out_value, dest_arena);
+    __atomic_store_n((uint8_t *)&slot[0], LOTUS_CELL_COMMITTED,
+                     __ATOMIC_RELEASE);
+    return 1;
+}
+
 static int lotus_hashmap_get_into(void *map_ptr, const void *key,
                                   void *out_value, void *dest_arena) {
     if (!map_ptr || !key || !out_value) return 0;
@@ -4881,12 +4996,16 @@ static int lotus_hashmap_get_into(void *map_ptr, const void *key,
         lotus_hashmap_lf_enter(m);
         int r = 0;
         if (__atomic_load_n(&m->len, __ATOMIC_RELAXED) > 0) {
-            size_t i = lotus_hashmap_find_slot_striped(m, key);
-            if (i < m->cap) {
+            for (;;) {
+                size_t i = lotus_hashmap_find_slot_striped(m, key);
+                if (i >= m->cap) break;
                 char *slot = m->slots + i * lotus_hashmap_entry_size(m);
-                memcpy(out_value, slot + 1 + m->key_size, m->value_size);
-                lotus_hashmap_clone_out_owned(m, out_value, dest_arena);
-                r = 1;
+                /* 0: removed before the claim — probe again (a later
+                 * insert of the key lands past the tombstone). */
+                if (lotus_hashmap_cell_read(m, slot, out_value, dest_arena)) {
+                    r = 1;
+                    break;
+                }
             }
         }
         lotus_hashmap_lf_exit(m);
@@ -4899,9 +5018,9 @@ static int lotus_hashmap_get_into(void *map_ptr, const void *key,
             size_t i = lotus_hashmap_find_slot_striped(m, key);
             if (i < m->cap) {
                 char *slot = m->slots + i * lotus_hashmap_entry_size(m);
-                memcpy(out_value, slot + 1 + m->key_size, m->value_size);
-                lotus_hashmap_clone_out_owned(m, out_value, dest_arena);
-                r = 1;
+                /* A striped cell leaves COMMITTED only under the
+                 * wrlock (remove), which the rdlock excludes. */
+                r = lotus_hashmap_cell_read(m, slot, out_value, dest_arena);
             }
         }
         pthread_rwlock_unlock(m->mu_grow);
@@ -5045,6 +5164,16 @@ static int lotus_hashmap_remove_lockfree(lotus_hashmap_t *m,
                     __ATOMIC_ACQ_REL,
                     __ATOMIC_RELAXED))
             {
+                /* The CAS succeeded from COMMITTED, so no reader held
+                 * the cell's claim (lotus_hashmap_cell_read), and none
+                 * reads a TOMBSTONE's value: retire what it owned.
+                 * Not its key — a probe that loaded COMMITTED before
+                 * the CAS may still be comparing it; the grow's
+                 * migration retires a tombstone's key, when no op is
+                 * in flight (lotus_hashmap_lf_migrate). */
+                if (__builtin_expect(m->retire_n != 0, 0)) {
+                    lotus_hashmap_retire_cell(m, slot, slot + 1, NULL);
+                }
                 __atomic_fetch_add(&m->tombstone_count, 1, __ATOMIC_RELAXED);
                 __atomic_fetch_sub(&m->len, 1, __ATOMIC_RELAXED);
                 r = 1;
@@ -5682,11 +5811,13 @@ static size_t lotus_hashmap_resolve_index_slot_striped(lotus_hashmap_t *m,
     for (size_t s = start_slot; s < m->cap; s++) {
         char *slot = m->slots + s * es;
         uint8_t state;
+        unsigned spins = 0;
         for (;;) {
             state =
                 __atomic_load_n((uint8_t *)&slot[0], __ATOMIC_ACQUIRE);
             if (state != LOTUS_CELL_CLAIMED) break;
             /* Spin: writer mid-publish on this slot. */
+            LOTUS_CELL_RELAX(spins);
         }
         if (state == LOTUS_CELL_EMPTY) continue;
         /* F.32-1γ-v2 (session 1): tombstones don't count toward
@@ -5733,8 +5864,12 @@ int64_t lotus_hashmap_iter_next(void *map_ptr, int64_t start_slot,
             char *slot = m->slots + s * es;
             unsigned char occ =
                 __atomic_load_n((unsigned char *)slot, __ATOMIC_ACQUIRE);
-            if (occ == LOTUS_CELL_COMMITTED) {
-                memcpy(out_entry, slot + 1 + m->key_size, m->value_size);
+            /* A retiring map's CLAIMED cell may be another
+             * reader's copy, not a writer's: wait it out (the read
+             * spins) rather than skip a live entry. */
+            if ((occ == LOTUS_CELL_COMMITTED ||
+                 (occ == LOTUS_CELL_CLAIMED && m->retire_n != 0)) &&
+                lotus_hashmap_cell_read(m, slot, out_entry, NULL)) {
                 found = (int64_t)s;
                 break;
             }
@@ -5748,8 +5883,12 @@ int64_t lotus_hashmap_iter_next(void *map_ptr, int64_t start_slot,
             char *slot = m->slots + s * es;
             unsigned char occ =
                 __atomic_load_n((unsigned char *)slot, __ATOMIC_ACQUIRE);
-            if (occ == LOTUS_CELL_COMMITTED) {
-                memcpy(out_entry, slot + 1 + m->key_size, m->value_size);
+            /* A retiring map's CLAIMED cell may be another
+             * reader's copy, not a writer's: wait it out (the read
+             * spins) rather than skip a live entry. */
+            if ((occ == LOTUS_CELL_COMMITTED ||
+                 (occ == LOTUS_CELL_CLAIMED && m->retire_n != 0)) &&
+                lotus_hashmap_cell_read(m, slot, out_entry, NULL)) {
                 found = (int64_t)s;
                 break;
             }
@@ -5802,9 +5941,12 @@ static int64_t lotus_hashmap_iter_batch_into(void *map_ptr,
             char *slot = m->slots + s * es;
             unsigned char occ =
                 __atomic_load_n((unsigned char *)slot, __ATOMIC_ACQUIRE);
-            if (occ == LOTUS_CELL_COMMITTED) {
-                memcpy(dst, slot + 1 + m->key_size, m->value_size);
-                lotus_hashmap_clone_out_owned(m, dst, dest_arena);
+            /* A retiring map's CLAIMED cell may be another
+             * reader's copy, not a writer's: wait it out (the read
+             * spins) rather than skip a live entry. */
+            if ((occ == LOTUS_CELL_COMMITTED ||
+                 (occ == LOTUS_CELL_CLAIMED && m->retire_n != 0)) &&
+                lotus_hashmap_cell_read(m, slot, dst, dest_arena)) {
                 dst += m->value_size;
                 n++;
             }
@@ -6292,13 +6434,15 @@ static void lotus_hashmap_retire_cell(lotus_hashmap_t *m, char *slot,
     if (ok)
         ok = lotus_retire_collect(&olds, old_v, m->retire_offsets,
                                   m->retire_n, 1);
-    if (ok && new_v) {
+    /* `new_key` alone (no `new_v`): the cell goes, its key stays —
+     * a lockfree remove, whose tombstone keeps the key for probes. */
+    if (ok && (new_v || new_key)) {
         if (string_key && new_key) {
             char *k;
             memcpy(&k, new_key, sizeof k);
             if (k) ok = lotus_retire_blocks_push(&news, k, 0);
         }
-        if (ok)
+        if (ok && new_v)
             ok = lotus_retire_collect(&news, new_v, m->retire_offsets,
                                       m->retire_n, 0);
     }
@@ -6317,6 +6461,11 @@ static void lotus_hashmap_retire_cell(lotus_hashmap_t *m, char *slot,
     }
     lotus_retire_blocks_free(&olds);
     lotus_retire_blocks_free(&news);
+}
+
+static void lotus_hashmap_retire_key(lotus_hashmap_t *m, char *k) {
+    lotus_arena_t *a = (lotus_arena_t *)m->retire_arena;
+    if (a && k) lotus_arena_retire_sized_cls(a, k, strlen(k) + 1, -1);
 }
 
 /* Clone-on-read for SYNCED maps (2026-08-03, downstream handoff P1).
@@ -6560,7 +6709,29 @@ void *lotus_arena_alloc_reusable(void *arena_ptr, uint64_t size,
     return lotus_arena_alloc(a, size, align);
 }
 
-int lotus_hashmap_key_at(void *map_ptr, int64_t i, void *out_key) {
+/* key_at's copy of a cell's key. A String key of a synced map that
+ * retires its cells is copied into `dest_arena`, under the same lock
+ * or lf_enter as the read: the map retires a removed cell's key (a
+ * lockfree map at its next grow), so the pointer itself would dangle
+ * once the remover's activation flushed it, on whichever thread held
+ * it. A probe never sees a striped key change under its rdlock (only
+ * remove and grow, under the wrlock, move one), nor a lockfree one
+ * retired while it is in flight (lotus_hashmap_lf_migrate). */
+static void lotus_hashmap_key_out(lotus_hashmap_t *m, char *slot,
+                                  void *out_key, void *dest_arena) {
+    memcpy(out_key, slot + 1, m->key_size);
+    if (dest_arena && m->key_type_tag == LOTUS_HASHMAP_KEY_STRING) {
+        char *k;
+        memcpy(&k, out_key, sizeof k);
+        if (k) {
+            char *c = lotus_str_clone((lotus_arena_t *)dest_arena, k);
+            if (c) memcpy(out_key, &c, sizeof c);
+        }
+    }
+}
+
+static int lotus_hashmap_key_at_into(void *map_ptr, int64_t i,
+                                     void *out_key, void *dest_arena) {
     if (!map_ptr || !out_key || i < 0) return 0;
     lotus_hashmap_t *m = (lotus_hashmap_t *)map_ptr;
     if (m->sync_mode == LOTUS_HASHMAP_SYNC_LOCKFREE) {
@@ -6572,7 +6743,7 @@ int lotus_hashmap_key_at(void *map_ptr, int64_t i, void *out_key) {
             if (s < m->cap) {
                 size_t es = lotus_hashmap_entry_size(m);
                 char *slot = m->slots + s * es;
-                memcpy(out_key, slot + 1, m->key_size);
+                lotus_hashmap_key_out(m, slot, out_key, dest_arena);
                 r = 1;
             }
         }
@@ -6588,7 +6759,7 @@ int lotus_hashmap_key_at(void *map_ptr, int64_t i, void *out_key) {
             if (s < m->cap) {
                 size_t es = lotus_hashmap_entry_size(m);
                 char *slot = m->slots + s * es;
-                memcpy(out_key, slot + 1, m->key_size);
+                lotus_hashmap_key_out(m, slot, out_key, dest_arena);
                 r = 1;
             }
         }
@@ -6602,12 +6773,23 @@ int lotus_hashmap_key_at(void *map_ptr, int64_t i, void *out_key) {
         if (s < m->cap) {
             size_t es = lotus_hashmap_entry_size(m);
             char *slot = m->slots + s * es;
-            memcpy(out_key, slot + 1, m->key_size);
+            lotus_hashmap_key_out(m, slot, out_key, dest_arena);
             r = 1;
         }
     }
     lotus_hashmap_unlock(m);
     return r;
+}
+
+int lotus_hashmap_key_at(void *map_ptr, int64_t i, void *out_key) {
+    return lotus_hashmap_key_at_into(map_ptr, i, out_key, NULL);
+}
+
+/* Codegen emits this instead of `lotus_hashmap_key_at` for a synced,
+ * String-keyed map that retires its cells (lotus_hashmap_key_out). */
+int lotus_hashmap_key_at_cloned(void *map_ptr, int64_t i, void *out_key,
+                                void *dest_arena) {
+    return lotus_hashmap_key_at_into(map_ptr, i, out_key, dest_arena);
 }
 
 static int lotus_hashmap_value_at_into(void *map_ptr, int64_t i,
@@ -6620,13 +6802,17 @@ static int lotus_hashmap_value_at_into(void *map_ptr, int64_t i,
         int r = 0;
         size_t cur_len = __atomic_load_n(&m->len, __ATOMIC_RELAXED);
         if ((size_t)i < cur_len) {
-            size_t s = lotus_hashmap_resolve_index_slot_striped(m, i);
-            if (s < m->cap) {
+            for (;;) {
+                size_t s = lotus_hashmap_resolve_index_slot_striped(m, i);
+                if (s >= m->cap) break;
                 size_t es = lotus_hashmap_entry_size(m);
                 char *slot = m->slots + s * es;
-                memcpy(out_value, slot + 1 + m->key_size, m->value_size);
-                lotus_hashmap_clone_out_owned(m, out_value, dest_arena);
-                r = 1;
+                if (lotus_hashmap_cell_read(m, slot, out_value, dest_arena)) {
+                    r = 1;
+                    break;
+                }
+                /* Tombstoned before the claim: resolve again, past it. */
+                m->cursor_i = -1;
             }
         }
         lotus_hashmap_lf_exit(m);
@@ -6641,9 +6827,7 @@ static int lotus_hashmap_value_at_into(void *map_ptr, int64_t i,
             if (s < m->cap) {
                 size_t es = lotus_hashmap_entry_size(m);
                 char *slot = m->slots + s * es;
-                memcpy(out_value, slot + 1 + m->key_size, m->value_size);
-                lotus_hashmap_clone_out_owned(m, out_value, dest_arena);
-                r = 1;
+                r = lotus_hashmap_cell_read(m, slot, out_value, dest_arena);
             }
         }
         pthread_rwlock_unlock(m->mu_grow);
