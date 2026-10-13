@@ -130,9 +130,15 @@
 //!   path, nothing that may read the field comes between, no other
 //!   binding views it and the local is not used after. The store keeps
 //!   the block the field already holds, so the idiom copies nothing;
-//! - a local handed to a call that may write through its parameter is
+//! - a local handed to a call that may write through that parameter is
 //!   bound as an owned copy (a parameter is a reference by design, GH
-//!   #1550: a callee writing through its own parameter is seen);
+//!   #1550: a callee writing through its own parameter is seen). Which
+//!   parameter a body writes through is summarized by position
+//!   (`Summaries::param_masks`): an assignment rooted at it, or handing
+//!   it on to a callee's written one — never a local bound from it,
+//!   which this rule copies at its write; a primitive or handle
+//!   parameter is never written into. The cell-read rule keeps its
+//!   broader per-body flag (`writes_params`) as a second net;
 //! - the other direction: a binding of a local's or a parameter's value
 //!   that is live across a write into that value in place (a slot of
 //!   the block it holds, or anything under it written by a call) is
@@ -445,8 +451,13 @@ struct Bodies<'a> {
     /// one bound by `let` (or a bare `=`) from a place is a copy
     /// already (spec/types.md § A struct binding is a copy).
     structs: BTreeSet<String>,
-    /// Field names every declaration of which holds a struct.
+    /// Field names every declaration of which holds a struct; a
+    /// primitive (a number, a `Bool`, a `String`, `Bytes`).
     record_fields: BTreeSet<String>,
+    scalar_fields: BTreeSet<String>,
+    /// Field names every declaration of which holds an array, a tuple
+    /// or an enum: a block that is neither a struct nor a primitive.
+    compound_fields: BTreeSet<String>,
     /// Field names every declaration of which holds a handle (a locus,
     /// an interface, a perspective, a form): a binding of one is the
     /// handle, which a write through it means to reach.
@@ -569,7 +580,7 @@ impl<'a> Bodies<'a> {
                     }
                     return self.classify_name(&name);
                 }
-                TypeExpr::Primitive(..) => return Class::Value,
+                TypeExpr::Primitive(..) => return Class::Scalar,
                 // A fixed array of scalars and a bounded list are laid
                 // out inline in the record that holds them: no block of
                 // their own. The element is read as lowering lays it out
@@ -742,6 +753,9 @@ enum Class {
     Value,
     /// A struct: a value, which a `let` from a place binds as a copy.
     Record,
+    /// A primitive (a number, a `Bool`, a `String`, `Bytes`): a value
+    /// nothing writes into, only replaces.
+    Scalar,
     /// A value laid out inline in the record holding it (a fixed array
     /// of scalars, a bounded list): a write into it writes the record's
     /// own bytes.
@@ -908,6 +922,13 @@ struct Summaries {
     writes: Vec<Writes>,
     reads: Vec<bool>,
     writes_params: Vec<bool>,
+    /// Per body, which of its parameters (a bit by position; the last
+    /// bit stands for every one past it) it may write through by an
+    /// assignment rooted at the parameter itself, or by handing it to a
+    /// callee that may write through that one, transitively. A local
+    /// bound from a parameter is not the parameter (it is copied at its
+    /// first write, the local-place rule), so it writes none.
+    param_masks: Vec<u64>,
 }
 
 fn analyze(programs: &[&Program], renames: &BTreeMap<Vec<String>, String>) -> Found {
@@ -923,6 +944,8 @@ fn analyze(programs: &[&Program], renames: &BTreeMap<Vec<String>, String>) -> Fo
         enums: BTreeSet::new(),
         structs: BTreeSet::new(),
         record_fields: BTreeSet::new(),
+        scalar_fields: BTreeSet::new(),
+        compound_fields: BTreeSet::new(),
         handle_fields: BTreeSet::new(),
         field_types: Vec::new(),
         aliases: BTreeMap::new(),
@@ -972,6 +995,12 @@ fn analyze(programs: &[&Program], renames: &BTreeMap<Vec<String>, String>) -> Fo
     let not_record: BTreeSet<&String> = classes.iter().filter(|(_, c)| *c != Class::Record).map(|(f, _)| f).collect();
     p.record_fields =
         classes.iter().filter(|(f, c)| *c == Class::Record && !not_record.contains(f)).map(|(f, _)| f.clone()).collect();
+    let not_scalar: BTreeSet<&String> = classes.iter().filter(|(_, c)| *c != Class::Scalar).map(|(f, _)| f).collect();
+    p.scalar_fields =
+        classes.iter().filter(|(f, c)| *c == Class::Scalar && !not_scalar.contains(f)).map(|(f, _)| f.clone()).collect();
+    let not_compound: BTreeSet<&String> = classes.iter().filter(|(_, c)| *c != Class::Value).map(|(f, _)| f).collect();
+    p.compound_fields =
+        classes.iter().filter(|(f, c)| *c == Class::Value && !not_compound.contains(f)).map(|(f, _)| f.clone()).collect();
     let not_handle: BTreeSet<&String> =
         classes.iter().filter(|(_, c)| !matches!(c, Class::Handle | Class::Form(_))).map(|(f, _)| f).collect();
     p.handle_fields = classes
@@ -990,6 +1019,8 @@ fn analyze(programs: &[&Program], renames: &BTreeMap<Vec<String>, String>) -> Fo
         reads: bool,
         writes_params: bool,
         param_callees: BTreeSet<Callee>,
+        param_mask: u64,
+        param_passes: Vec<(Callee, usize, usize)>,
     }
     let mut direct: Vec<Direct> = Vec::with_capacity(p.bodies.len());
     for (params, body) in &p.bodies {
@@ -1001,6 +1032,8 @@ fn analyze(programs: &[&Program], renames: &BTreeMap<Vec<String>, String>) -> Fo
             reads: w.reads,
             writes_params: w.writes_params,
             param_callees: w.param_callees,
+            param_mask: w.param_mask,
+            param_passes: w.param_passes,
         });
     }
     // Each body's callees, resolved once (a method name to every body
@@ -1015,6 +1048,11 @@ fn analyze(programs: &[&Program], renames: &BTreeMap<Vec<String>, String>) -> Fo
     let param_edges: Vec<Vec<usize>> = direct.iter().map(|d| resolve_all(&d.param_callees)).collect();
     let mut reads: Vec<bool> = direct.iter().map(|d| d.reads).collect();
     let mut writes_params: Vec<bool> = direct.iter().map(|d| d.writes_params).collect();
+    let mut param_masks: Vec<u64> = direct.iter().map(|d| d.param_mask).collect();
+    let param_passes: Vec<Vec<(Vec<usize>, usize, usize)>> = direct
+        .iter()
+        .map(|d| d.param_passes.iter().map(|(c, k, m)| (p.resolve(c), *k, *m)).collect())
+        .collect();
     let mut summary: Vec<Writes> = direct.into_iter().map(|d| d.writes).collect();
     loop {
         let mut changed = false;
@@ -1026,6 +1064,13 @@ fn analyze(programs: &[&Program], renames: &BTreeMap<Vec<String>, String>) -> Fo
             if !writes_params[i] && param_edges[i].iter().any(|&j| writes_params[j]) {
                 writes_params[i] = true;
                 changed = true;
+            }
+            for (bodies, k, m) in &param_passes[i] {
+                let bit = param_bit(*m);
+                if param_masks[i] & bit == 0 && bodies.iter().any(|&j| param_masks[j] & param_bit(*k) != 0) {
+                    param_masks[i] |= bit;
+                    changed = true;
+                }
             }
             if summary[i].top {
                 continue;
@@ -1048,7 +1093,7 @@ fn analyze(programs: &[&Program], renames: &BTreeMap<Vec<String>, String>) -> Fo
             break;
         }
     }
-    let summaries = Summaries { writes: summary, reads, writes_params };
+    let summaries = Summaries { writes: summary, reads, writes_params, param_masks };
 
     let mut out = Found::default();
     for (b, (params, body)) in p.bodies.iter().enumerate() {
@@ -1061,6 +1106,12 @@ fn analyze(programs: &[&Program], renames: &BTreeMap<Vec<String>, String>) -> Fo
         }
     }
     out
+}
+
+/// A parameter's bit in a body's parameter mask: one per position, the
+/// last standing for every parameter past it.
+fn param_bit(i: usize) -> u64 {
+    1u64 << i.min(63)
 }
 
 impl Bodies<'_> {
@@ -1342,6 +1393,14 @@ struct Walk<'p, 'a> {
     names: Vec<String>,
     record_hint: Vec<bool>,
     handle_only: Vec<bool>,
+    /// Per variable, whether it surely holds a primitive (nothing writes
+    /// into one); and such parameters.
+    scalar_hint: Vec<bool>,
+    scalar_params: BTreeSet<String>,
+    /// Per variable, whether it is known to hold an array, a tuple or an
+    /// enum read from a place (a field every declaration of which holds
+    /// one, or a local that does).
+    compound_hint: Vec<bool>,
     handle_only_params: BTreeSet<String>,
     record_params: BTreeSet<String>,
     /// Locals handed to a call that may write through its parameter,
@@ -1358,6 +1417,13 @@ struct Walk<'p, 'a> {
     /// anything below it may be written too (a call that may write
     /// through it) or only a slot of the block itself (an assignment).
     root_writes: Vec<(String, u32, bool)>,
+    /// On the summary pass: the parameters the body writes through
+    /// itself (`Summaries::param_masks`), and each parameter it hands to
+    /// a callee (the callee, the argument's position, the parameter's).
+    param_mask: u64,
+    param_passes: Vec<(Callee, usize, usize)>,
+    /// Each parameter's position.
+    param_index: BTreeMap<String, usize>,
 }
 
 fn pattern_names<'e>(p: &'e Pattern, out: &mut Vec<&'e Ident>) {
@@ -1377,6 +1443,7 @@ impl<'p, 'a> Walk<'p, 'a> {
         let mut view_form_params = BTreeSet::new();
         let mut handle_only_params = BTreeSet::new();
         let mut record_params = BTreeSet::new();
+        let mut scalar_params = BTreeSet::new();
         for prm in params {
             top.insert(prm.name.name.clone(), None);
             let class = p.classify(&prm.ty);
@@ -1385,6 +1452,9 @@ impl<'p, 'a> Walk<'p, 'a> {
             }
             if class == Class::Record {
                 record_params.insert(prm.name.name.clone());
+            }
+            if class == Class::Scalar {
+                scalar_params.insert(prm.name.name.clone());
             }
             if class.may_be_handle() {
                 handle_params.insert(prm.name.name.clone());
@@ -1436,6 +1506,9 @@ impl<'p, 'a> Walk<'p, 'a> {
             names: Vec::new(),
             record_hint: Vec::new(),
             handle_only: Vec::new(),
+            scalar_hint: Vec::new(),
+            scalar_params,
+            compound_hint: Vec::new(),
             handle_only_params,
             record_params,
             place_passed: Vec::new(),
@@ -1443,6 +1516,9 @@ impl<'p, 'a> Walk<'p, 'a> {
             opaque_calls: Vec::new(),
             self_stores: Vec::new(),
             root_writes: Vec::new(),
+            param_mask: 0,
+            param_passes: Vec::new(),
+            param_index: params.iter().enumerate().map(|(i, prm)| (prm.name.name.clone(), i)).collect(),
         }
     }
 
@@ -1470,6 +1546,8 @@ impl<'p, 'a> Walk<'p, 'a> {
         self.names.push(name.to_string());
         self.record_hint.push(false);
         self.handle_only.push(false);
+        self.scalar_hint.push(false);
+        self.compound_hint.push(false);
         self.scopes.last_mut().expect("a scope").insert(name.to_string(), Some(v));
         v
     }
@@ -1529,7 +1607,7 @@ impl<'p, 'a> Walk<'p, 'a> {
     /// be shared is shared as that value is; a field every declaration
     /// of which holds a handle is the handle, and carries none.
     fn field_keys(&self, receiver: &Expr, keys: Keys, name: &Ident) -> Keys {
-        let marker = if self.p.handle_fields.contains(&name.name) {
+        let marker = if self.p.handle_fields.contains(&name.name) || self.p.scalar_fields.contains(&name.name) {
             None
         } else if let Some(rp) = self.place_of(receiver) {
             at(Some(format!("{rp}.{}", name.name)))
@@ -1584,8 +1662,12 @@ impl<'p, 'a> Walk<'p, 'a> {
     /// (`None`: one that surely holds a handle, or no local at all).
     fn ident_at(&self, name: &str) -> Keys {
         match self.lookup(name) {
-            Some(Some(v)) if !self.handle_only[v] => at(Some(format!("@{v}"))),
-            Some(None) if self.params.contains(name) && !self.handle_only_params.contains(name) => {
+            Some(Some(v)) if !self.handle_only[v] && !self.scalar_hint[v] => at(Some(format!("@{v}"))),
+            Some(None)
+                if self.params.contains(name)
+                    && !self.handle_only_params.contains(name)
+                    && !self.scalar_params.contains(name) =>
+            {
                 at(Some(format!("${name}")))
             }
             _ => None,
@@ -1608,6 +1690,25 @@ impl<'p, 'a> Walk<'p, 'a> {
             },
             Expr::Struct { path, .. } => matches!(self.p.classify_path(path), Class::Handle | Class::Form(_)),
             Expr::KwSelf(_) => true,
+            _ => false,
+        }
+    }
+
+    /// Is `value`, bound to a fresh local, surely a primitive (its
+    /// declared type, a literal, an operator's result, a field every
+    /// declaration of which holds one, a local or a parameter that is)?
+    fn known_scalar(&self, ty: Option<&TypeExpr>, value: &Expr) -> bool {
+        if let Some(t) = ty {
+            return self.p.classify(t) == Class::Scalar;
+        }
+        match value {
+            Expr::Literal(..) | Expr::Binary { .. } | Expr::Unary { .. } => true,
+            Expr::Field { name, .. } => self.p.scalar_fields.contains(&name.name),
+            Expr::Ident(id) => match self.lookup(&id.name) {
+                Some(Some(v)) => self.scalar_hint[v],
+                Some(None) => self.scalar_params.contains(&id.name),
+                None => false,
+            },
             _ => false,
         }
     }
@@ -1706,6 +1807,20 @@ impl<'p, 'a> Walk<'p, 'a> {
             Expr::Field { receiver, .. } | Expr::Index { receiver, .. } => {
                 self.root_local(receiver).map(|(v, d)| (v, d + 1))
             }
+            _ => None,
+        }
+    }
+
+    /// The parameter `e` is, or is read from (`p`, `p.f`, `p[i]`), by
+    /// position — not through a local, which the local-place rule copies
+    /// at its first write.
+    fn direct_param(&self, e: &Expr) -> Option<usize> {
+        match e {
+            Expr::Ident(id) => match self.lookup(&id.name) {
+                Some(None) => self.param_index.get(&id.name).copied(),
+                _ => None,
+            },
+            Expr::Field { receiver, .. } | Expr::Index { receiver, .. } => self.direct_param(receiver),
             _ => None,
         }
     }
@@ -1906,6 +2021,7 @@ impl<'p, 'a> Walk<'p, 'a> {
                 };
                 let surely_handle = self.surely_handle(ty.as_ref(), value);
                 let record = self.known_record(ty.as_ref(), value);
+                let scalar = self.known_scalar(ty.as_ref(), value);
                 let place_rhs = matches!(value, Expr::Ident(_) | Expr::Field { .. } | Expr::Index { .. });
                 let from_param = self.rooted_at_param(value);
                 let v = self.declare(&name.name);
@@ -1915,6 +2031,12 @@ impl<'p, 'a> Walk<'p, 'a> {
                 self.view_forms[v] = view_form;
                 self.handle_only[v] = surely_handle;
                 self.record_hint[v] = record;
+                self.scalar_hint[v] = scalar;
+                self.compound_hint[v] = match value {
+                    Expr::Field { name, .. } => self.p.compound_fields.contains(&name.name),
+                    Expr::Ident(id) => matches!(self.lookup(&id.name), Some(Some(u)) if self.compound_hint[u]),
+                    _ => false,
+                };
                 self.bind_parts(v, Site::Node(id.0), &name.name, keys, parts, *span, true, place_rhs);
             }
             Stmt::LetTuple { names, value, id, span, .. } => {
@@ -2015,7 +2137,12 @@ impl<'p, 'a> Walk<'p, 'a> {
                         }
                         // A write under a parameter reaches the caller's
                         // value (an argument is passed by reference).
-                        Some(None) if self.params.contains(&target.head.name) => self.writes_params = true,
+                        Some(None) if self.params.contains(&target.head.name) => {
+                            self.writes_params = true;
+                            if let Some(&i) = self.param_index.get(&target.head.name) {
+                                self.param_mask |= param_bit(i);
+                            }
+                        }
                         _ => {}
                     }
                     // `self.f.. = v`, a local stored whole into a self
@@ -2454,7 +2581,22 @@ impl<'p, 'a> Walk<'p, 'a> {
                 || (bounded && i == 0)
                 || summarized.as_ref().is_some_and(|c| self.summarized(c, |s, j| s.writes_params[j]));
             if self.summary.is_none() {
-                // The summary pass: a parameter handed on.
+                // The summary pass: a parameter handed on, by position
+                // (a bounded intrinsic or a callee the pass cannot
+                // identify writes it).
+                if let Some(m) = self.direct_param(a) {
+                    if unknown || (bounded && i == 0) {
+                        self.param_mask |= param_bit(m);
+                    } else if let Some(c) = &summarized {
+                        self.param_passes.push((c.clone(), i, m));
+                    }
+                }
+                // A bounded intrinsic on a local bound from a parameter
+                // writes the caller's list: no first-class value, it is
+                // never copied.
+                if bounded && i == 0 && self.direct_param(a).is_none() && self.rooted_at_param(a) {
+                    self.param_mask = u64::MAX;
+                }
                 if self.rooted_at_param(a) {
                     if unknown || (bounded && i == 0) {
                         self.writes_params = true;
@@ -2470,17 +2612,33 @@ impl<'p, 'a> Walk<'p, 'a> {
             // The local-place rule: a local handed to a call that may
             // write through it (a bounded intrinsic's list is no
             // first-class value, and is not copied).
-            if let (Some((v, _)), false) = (self.root_local(a), bounded && i == 0) {
-                let record_param = summarized.as_ref().is_some_and(|c| {
-                    let bodies = self.p.resolve(c);
-                    !bodies.is_empty()
-                        && bodies.iter().all(|&j| {
-                            self.p.bodies[j].0.get(i).is_some_and(|prm| self.p.classify(&prm.ty) == Class::Record)
-                        })
-                });
+            // The parameter's declared class in every body the call may
+            // reach that writes through a parameter (a method name names
+            // every locus's method of it): a primitive one (a String, a
+            // number) is never written into, the callee can only rebind
+            // it, and a handle is a reference by design; a struct one
+            // says the local passed whole is a struct.
+            // Only the bodies that write through this very parameter count
+            // (`Summaries::param_masks`); a callee the pass cannot identify
+            // may write through any.
+            let classes: Vec<Class> = summarized.as_ref().map_or(Vec::new(), |c| {
+                let s = self.summary.expect("the second pass");
+                self.p
+                    .resolve(c)
+                    .into_iter()
+                    .filter(|&j| s.param_masks[j] & param_bit(i) != 0)
+                    .map(|j| self.p.bodies[j].0.get(i).map_or(Class::Unknown, |prm| self.p.classify(&prm.ty)))
+                    .collect()
+            });
+            let only = |ok: &dyn Fn(Class) -> bool| !classes.is_empty() && classes.iter().all(|&c| ok(c));
+            let into = !(bounded && i == 0)
+                && (unknown || !classes.is_empty())
+                && !only(&|c| matches!(c, Class::Scalar | Class::Handle | Class::Form(_)));
+            if let (Some((v, _)), true) = (self.root_local(a), into) {
+                let record_param = only(&|c| matches!(c, Class::Scalar | Class::Record));
                 self.place_passed.push((v, record_param && matches!(a, Expr::Ident(_))));
             }
-            if let Some(place) = self.arg_place(a).filter(|_| !(bounded && i == 0)) {
+            if let Some(place) = self.arg_place(a).filter(|_| into) {
                 let at = self.tick();
                 self.root_writes.push((place, at, true));
             }
@@ -2934,7 +3092,7 @@ impl<'p, 'a> Walk<'p, 'a> {
                 .copied()
                 .filter(|&i| {
                     let inst = &self.insts[i];
-                    has_at(&inst.keys) && !marked(i) && !owned[i] && !(record[v] && inst.place_rhs)
+                    has_at(&inst.keys) && !marked(i) && !owned[i] && !(record[v] && inst.place_rhs) && !self.scalar_hint[v]
                 })
                 .collect()
         };
@@ -2963,7 +3121,10 @@ impl<'p, 'a> Walk<'p, 'a> {
                     continue;
                 }
                 let v = inst.var;
-                if marked(i) || o.owned[i] || (record[v] && inst.place_rhs) {
+                // A call writing anything under the place: only a binding
+                // known to hold a block that is neither a struct (copied at
+                // its `let`) nor a primitive is owned for it.
+                if marked(i) || o.owned[i] || (record[v] && inst.place_rhs) || self.scalar_hint[v] || (deep && !self.compound_hint[v]) {
                     continue;
                 }
                 let live = self.uses[v].iter().any(|&u| {
@@ -3568,10 +3729,11 @@ mod tests {
         let src = PLACES.replace("BODY", body);
         let program = hale_syntax::parse_source(&src).expect("parses");
         let found = analyze(&[&program], &BTreeMap::new());
+        let start = src.find("fn body(").expect("the body") as u32;
         found
             .cell_copies
             .iter()
-            .filter(|c| reasons::is_place(c.reason))
+            .filter(|c| reasons::is_place(c.reason) && c.span.start.0 >= start)
             .map(|c| (src[c.span.start.0 as usize..c.span.end.0 as usize].to_string(), c.reason))
             .collect()
     }
@@ -3584,6 +3746,9 @@ mod tests {
         locus V { capacity { heap cells of In; } }
         fn poke(a: [In; 2]) { a[0].k = 1; }
         fn look(a: [In; 2]) -> Int { return a[0].k; }
+        fn poke_second(a: [In; 2], b: [In; 2]) { b[0].k = 1; }
+        fn poke_via(a: [In; 2]) { poke(a); }
+        fn poke_copy(a: [In; 2]) { let mut c = a; c[0].k = 1; }
         locus H {
             params { r: R = R { }; arr: [In; 2] = [In { }, In { }]; v: V = V { }; }
             fn other() -> Int { return 1; }
@@ -3661,6 +3826,14 @@ mod tests {
             place_copies("let a = self.r.arr; poke(a);"),
             [("let a = self.r.arr;".to_string(), PLACE_CALL_WRITES)]
         );
+        // Only the parameter a callee writes through, transitively, and
+        // not through a local bound from it (which copies on its write).
+        assert!(place_copies("let a = self.r.arr; poke_second(a, [In { }, In { }]);").is_empty());
+        assert_eq!(
+            place_copies("let a = self.r.arr; poke_via(a);"),
+            [("let a = self.r.arr;".to_string(), PLACE_CALL_WRITES)]
+        );
+        assert!(place_copies("let a = self.r.arr; poke_copy(a);").is_empty());
         assert_eq!(
             place_copies("let a = p.arr; p.arr[0].k = 4; println(a[0].k);"),
             [("let a = p.arr;".to_string(), PLACE_SOURCE_WRITTEN)]
