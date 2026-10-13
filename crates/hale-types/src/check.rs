@@ -2138,6 +2138,19 @@ fn hot_snapshot_message(method: &str) -> String {
     )
 }
 
+/// A copy of a value read from a form's cell, on the hot path
+/// (spec/forms.md § Reading a cell).
+fn hot_cell_copy_message(reason: &str, in_loop: bool) -> String {
+    format!(
+        "hot-path copy: a value read from a form's cell is copied here{} \
+         ({reason}). A write into a value read from a map stays in the \
+         cell without a copy only when the value is set back into the \
+         same map, on every path after the write, before anything reads \
+         the map, and is not used after the set.",
+        if in_loop { " in a loop" } else { "" }
+    )
+}
+
 const HOT_SELF_REPLACE: &str = "hot-path store: whole-struct replace of a \
      self-field — every store re-anchors the struct's \
      heap fields (clone + retire per String field). \
@@ -2333,6 +2346,15 @@ fn hot_path_findings<'s>(
         let handler = f.entry == Some(EntryKind::BusHandler);
         let mut found: Vec<(Span, String)> = Vec::new();
         for s in f.sites.iter().chain(&f.in_place_sites) {
+            // A copy the cell-read rule adds: an allocation on the hot
+            // path like any other, and anywhere in a `@hot` fn, as a
+            // whole-struct replace is.
+            if let AllocKind::CellCopy(reason) = &s.kind {
+                if s.in_loop || handler || f.hot {
+                    found.push((s.span, hot_cell_copy_message(reason, s.in_loop)));
+                }
+                continue;
+            }
             let AllocKind::StructLit(lit) = &s.kind else { continue };
             if !(s.in_loop || handler) {
                 continue;

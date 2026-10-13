@@ -943,3 +943,66 @@ fn main() {{ pump(); }}
     assert_eq!(hot_errors(&program("xs[Child { n: 0 }.get()]")), expected, "inside the index");
     assert_eq!(hot_errors(&program("Child { n: 0 }.get()")), expected, "the control");
 }
+
+// ---- the cell-read rule's copies (spec/forms.md § Reading a cell) ----
+
+/// A map that reads in place, and fns that write into what they read
+/// from it: `NOSET` writes and never sets the value back (a copy on
+/// write), `RMW` sets it straight back (no copy).
+fn cells(decorator: &str, body: &str) -> String {
+    format!(
+        r#"
+type Level {{ p: Int = 0; q: Int = 0; }}
+type Big {{ id: Int = 0; inner: Level = Level {{ }}; }}
+@form(hashmap)
+locus M {{ capacity {{ pool cells of Big indexed_by id; }} }}
+{decorator}
+fn walk(m: M, n: Int) -> Int {{
+    let mut t = 0;
+    let mut i = 0;
+    while i < n {{
+        let mut e = m.get(i) or Big {{ id: i }};
+        e.inner.p = e.inner.p + 1;
+        {body}
+        i = i + 1;
+    }}
+    return t;
+}}
+fn main() {{ let m = M {{ }}; println(walk(m, 3)); }}
+"#
+    )
+}
+const NOSET: &str = "t = t + e.inner.p;";
+const RMW: &str = "m.set(e);";
+
+#[test]
+fn a_cell_copy_in_a_loop_warns_and_names_its_reason() {
+    let ds = all_diags(&cells("", NOSET));
+    let found: Vec<&(bool, String)> = ds.iter().filter(|(_, m)| m.contains("hot-path copy")).collect();
+    assert_eq!(found.len(), 1, "{ds:?}");
+    assert!(!found[0].0, "a warning outside @hot: {ds:?}");
+    assert!(found[0].1.contains("copy: the value is not set back into its map"), "{ds:?}");
+}
+
+#[test]
+fn a_cell_copy_in_a_hot_fn_is_an_error() {
+    let ds = all_diags(&cells("@hot", NOSET));
+    assert!(ds.iter().any(|(is_err, m)| *is_err && m.contains("@hot") && m.contains("hot-path copy")), "{ds:?}");
+}
+
+#[test]
+fn a_get_modify_set_in_a_hot_loop_is_silent() {
+    let ds = all_diags(&cells("@hot", RMW));
+    assert!(!ds.iter().any(|(_, m)| m.contains("hot-path copy")), "{ds:?}");
+}
+
+#[test]
+fn a_cell_copy_counts_against_a_zero_allocation_budget() {
+    let ds = all_diags(&cells("@budget(alloc_per_call = 0)", NOSET));
+    assert!(
+        ds.iter().any(|(is_err, m)| *is_err && m.contains("a copy of a value read from a form's cell")),
+        "{ds:?}"
+    );
+    let ds = all_diags(&cells("@budget(alloc_per_call = 0)", RMW));
+    assert!(!ds.iter().any(|(_, m)| m.contains("a copy of a value read from a form's cell")), "{ds:?}");
+}
