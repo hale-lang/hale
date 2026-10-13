@@ -6663,6 +6663,7 @@ impl<'a> Walker<'a> {
             _ => None,
         };
         let spelling = CallSpelling::of(callee);
+        let allocating_recv = spelling.allocating_recv();
         if let Some(hook) = evict_hook {
             self.calls.push(CallEdge {
                 recv_ty: recv_ty.clone(),
@@ -6681,7 +6682,7 @@ impl<'a> Walker<'a> {
                 dispatch_group: None,
                 via_value: None,
                 arity: 2,
-                allocating_recv: spelling.allocating_recv(),
+                allocating_recv: allocating_recv.clone(),
                 spelling: spelling.clone(),
                 in_loop: self.loops_as_written > 0,
                 let_span: None,
@@ -6708,7 +6709,7 @@ impl<'a> Walker<'a> {
             dispatch_group: None,
             via_value: None,
             arity,
-            allocating_recv: spelling.allocating_recv(),
+            allocating_recv,
             spelling,
             in_loop: self.loops_as_written > 0,
             let_span: self.let_call.take().filter(|(c, _)| *c == span).map(|(_, s)| s),
