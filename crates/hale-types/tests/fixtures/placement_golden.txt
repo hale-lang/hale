@@ -515,6 +515,16 @@ row	Shop@literal1.staff	__StdApiStaticRoles	main	default
 shared	Shop@literal1.__rpc_u_1	__StdApiUnixListener #e8cfe0e1
 shared	dynamic	sites in the seed #38292389
 
+== crates/hale-cli/tests/fixtures/api_shapes/main.hl#4b27813e
+root	Desk	the entry
+domain	pool:__api_http	async_io
+row	Desk@literal1	Desk	main	default
+row	Desk@literal1.bearer	Tokens	main	default
+row	Desk@literal1.library	Library	main	default
+row	Desk@literal1.roles	Nobody	main	default
+shared	Desk@literal1.__rpc_h_1	__StdApiHttpListener #6e12d80d
+shared	dynamic	sites in the seed #7c55c618
+
 == crates/hale-cli/tests/fixtures/bounded-annotation/app.hl#588a6cd6
 row	Acc@main1	Acc	main	default
 row	Src@main2	Src	main	default
@@ -652,11 +662,11 @@ row	App@literal1	App	main	default
 row	~	Grow	main	default
 row	~.acc	Acc	main	inherited
 
-== crates/hale-stdlib/hl/api_rpc.hl#4fa1f91b
+== crates/hale-stdlib/hl/api_rpc.hl#c4bdd5f6
 
 == crates/hale-stdlib/hl/file.hl#f57ba351
 
-== crates/hale-stdlib/hl/http_client.hl#299b071b
+== crates/hale-stdlib/hl/http_client.hl#ef024722
 
 == crates/hale-stdlib/hl/json.hl#8645f085
 
@@ -664,7 +674,7 @@ row	~.acc	Acc	main	inherited
 
 == crates/hale-stdlib/hl/metrics.hl#19f66cf4
 
-== crates/hale-stdlib/hl/process.hl#ea613e30
+== crates/hale-stdlib/hl/process.hl#e44be954
 
 == crates/hale-stdlib/hl/source.hl#fac6c107
 
@@ -1324,14 +1334,7 @@ row	Desk@literal1.bearer	Tokens	main	default
 row	Desk@literal1.echoer	Echoer	main	default
 row	Desk@literal1.roles	Nobody	main	default
 shared	Desk@literal1.__rpc_h_1	__StdApiHttpListener #6e12d80d
--- dynamic	sites in the seed
-dynamic	<hole>	on main|unresolved declaration `__api_serve`|unresolved declaration `http::Rpc`
-dynamic	__StdApiHttpConns	on pool:__api_http
-dynamic	__StdApiHttpPeer	on pool:__api_http
-dynamic	__StdIoTcpConnFlow	on pool:__api_http
-dynamic	__StdIoTcpConnInline	on pool:__api_http
-dynamic	__StdIoTcpConnections	on pool:__api_http|unknown (no instance)
-dynamic	__StdIoTcpStream	on pool:__api_http|unknown (no instance)
+shared	dynamic	sites in the seed #7c55c618
 
 == crates/hale-codegen/tests/api_hub.rs#067b6ae6
 root	Desk	the entry
@@ -1386,7 +1389,7 @@ dynamic	__StdIoTcpConnInline	on pool:__api_http
 dynamic	__StdIoTcpConnections	on pool:__api_http|unknown (no instance)
 dynamic	__StdIoTcpStream	on pool:__api_http|unknown (no instance)
 
-== crates/hale-codegen/tests/api_runtime.rs#9876407f
+== crates/hale-codegen/tests/api_runtime.rs#c9cabfaf
 root	App	the entry
 domain	pool:work	async_io
 row	App@literal1	App	main	default
@@ -1754,6 +1757,12 @@ row	App@literal1	App	main	default
 row	Adapter@binding1	Adapter	pinned:Adapter@binding1	binding
 dynamic	Sink	on main	in the seed
 
+== crates/hale-codegen/tests/bus_early_registration.rs#f8586544
+root	App	the entry
+row	App@literal1	App	main	default
+row	App@literal1.b	Born	main	default
+row	App@literal1.r	Ran	main	default
+
 == crates/hale-codegen/tests/bus_handler_freefn.rs#c3019ba5
 row	Src@main2	Src	main	default
 row	Worker@main1	Worker	main	default
@@ -1783,6 +1792,20 @@ row	Pub@main2	Pub	main	default
 == crates/hale-codegen/tests/bus_publish_stack_alloca.rs#2d27a62d
 row	Counter@main1	Counter	main	default
 row	Pub@main2	Pub	main	default
+
+== crates/hale-codegen/tests/bus_publisher_order.rs#11124b22
+root	App	the entry
+row	App@literal1	App	main	default
+row	App@literal1.a1	SubA	main	default
+row	App@literal1.a2	SubA	main	default
+row	App@literal1.a3	SubA	main	default
+row	App@literal1.c	Coord	main	default
+
+== crates/hale-codegen/tests/bus_publisher_order.rs#c326e5a0
+root	App	the entry
+row	App@literal1	App	main	default
+row	App@literal1.t1	Tally	main	default
+row	App@literal1.t2	Tally	main	default
 
 == crates/hale-codegen/tests/bus_routing_keys.rs#3d1a84d5
 root	App	the entry
@@ -2421,6 +2444,23 @@ row	L@main1	L	main	default
 == crates/hale-codegen/tests/form_enum_cells.rs#8ffb188f
 row	Book@main1	Book	main	default
 
+== crates/hale-codegen/tests/form_hashmap_cas_retire.rs#e5222255
+-- H@main1	H
+row	~	H	main	default
+row	~.lm	LM	main	inherited
+row	~.ls	LS	main	inherited
+row	~.sm	SM	main	inherited
+row	~.ss	SS	main	inherited
+
+== crates/hale-codegen/tests/form_hashmap_cas_retire.rs#aebbcdec
+root	App	the entry
+domain	pool:io
+row	App@literal1	App	main	default
+-- App@literal1.w	Writer
+row	~	Writer	pool:io	entry	off owner
+row	~.lf	LF	pool:io	inherited
+row	~.st	ST	pool:io	inherited
+
 == crates/hale-codegen/tests/form_hashmap_codegen.rs#e9ab2b42
 row	RegistryL@main1	RegistryL	main	default
 
@@ -2545,9 +2585,7 @@ row	App@literal1	App	main	default
 shared	App@literal1.host	PoolHost #63b77edf
 
 == crates/hale-codegen/tests/form_hashmap_nested_retire.rs#aa60fd1f
--- H@main1	H
-row	~	H	main	default
-row	~.m	M	main	inherited
+shared	H@main1	H #95920e24
 
 == crates/hale-codegen/tests/form_hashmap_nested_retire.rs#e868199e
 -- H@main1	H
@@ -2602,6 +2640,14 @@ domain	pool:io
 row	App@literal1	App	main	default
 shared	App@literal1.w	Writer #1774d7f8
 
+== crates/hale-codegen/tests/form_heap.rs#b8f01559
+row	Evs@main2	Evs	main	default
+row	Jobs@main1	Jobs	main	default
+row	Words@main3	Words	main	default
+
+== crates/hale-codegen/tests/form_heap.rs#f0c8e194
+shared	H@main1	H #540d0d6c
+
 == crates/hale-codegen/tests/form_iteration.rs#5981160b
 row	Reg@main1	Reg	main	default
 
@@ -2628,6 +2674,23 @@ row	C@main1	C	main	default
 
 == crates/hale-codegen/tests/form_lru_cache_codegen.rs#df6debfc
 row	C@main1	C	main	default
+
+== crates/hale-codegen/tests/form_lru_cache_reclaim.rs#5e1a0a14
+row	Pool@main1	Pool	main	default
+
+== crates/hale-codegen/tests/form_lru_cache_reclaim.rs#2caf9c7d
+row	C@main1	C	main	default
+
+== crates/hale-codegen/tests/form_lru_cache_reclaim.rs#2c79ba82
+shared	H@main1	H #95920e24
+
+== crates/hale-codegen/tests/form_lru_cache_reclaim.rs#4be08740
+root	App	the entry
+row	App@literal1	App	main	default
+row	App@literal1.q	Pool	main	default
+-- dynamic	sites in the seed
+dynamic	Holder	on main
+dynamic	Pool	on main
 
 == crates/hale-codegen/tests/form_ring_buffer_codegen.rs#6e1a7340
 row	RB@main1	RB	main	default
@@ -2675,6 +2738,17 @@ row	IntVec@main1	IntVec	main	default
 
 == crates/hale-codegen/tests/form_vec_bce.rs#b8a669c5
 row	IntVec@main1	IntVec	main	default
+
+== crates/hale-codegen/tests/form_vec_clear.rs#b94557f1
+row	I@main2	I	main	default
+row	S@main3	S	main	default
+row	V@main1	V	main	default
+
+== crates/hale-codegen/tests/form_vec_clear.rs#98f16b70
+-- H@main1	H
+row	~	H	main	default
+row	~.q	Q	main	inherited
+row	~.qs	QS	main	inherited
 
 == crates/hale-codegen/tests/form_vec_codegen.rs#5c89ab56
 row	IntListL@main1	IntListL	main	default
@@ -2784,9 +2858,7 @@ row	~.qb	QB	main	inherited
 row	~.qs	QS	main	inherited
 
 == crates/hale-codegen/tests/form_vec_pop_retire.rs#f5a683be
--- H@main1	H
-row	~	H	main	default
-row	~.q	Q	main	inherited
+shared	H@main1	H #540d0d6c
 
 == crates/hale-codegen/tests/form_vec_pop_retire.rs#a81d4f8d
 -- H@main1	H
@@ -4124,6 +4196,20 @@ row	App@literal1.burst	Burst	pinned:App@literal1.burst	entry	off owner
 row	App@literal1.sink	Sink	main	default
 row	App@literal1.slow	Slow	main	default
 
+== crates/hale-codegen/tests/shm_ring_teardown_wait.rs#8b8864b8
+root	App	the entry
+domain	pinned:App@literal1.burst
+row	App@literal1	App	main	default
+row	App@literal1.burst	Burst	pinned:App@literal1.burst	entry	off owner
+row	App@literal1.sink	Sink	main	default
+
+== crates/hale-codegen/tests/shm_ring_teardown_wait.rs#55f2f164
+root	App	the entry
+domain	pinned:App@literal1.burst
+row	App@literal1	App	main	default
+row	App@literal1.born	Born	main	default
+row	App@literal1.burst	Burst	pinned:App@literal1.burst	entry	off owner
+
 == crates/hale-codegen/tests/sibling_field_forward_ref.rs#2c26373a
 root	Workbench	the entry
 hole	Workbench@literal1.dispatcher.gate	reuse `self.gate`
@@ -4153,6 +4239,15 @@ domain	pinned:App@literal1.pub_
 row	App@literal1	App	main	default
 row	App@literal1.pub_	Pub	pinned:App@literal1.pub_	entry	off owner
 row	App@literal1.sub	Sub	main	default
+
+== crates/hale-codegen/tests/sleep_drains_bus.rs#35248313
+root	App	the entry
+domain	pinned:App@literal1.pub_
+domain	pool:a
+row	App@literal1	App	main	default
+row	App@literal1.other	Other	pool:a	entry	off owner
+row	App@literal1.pub_	Pub	pinned:App@literal1.pub_	entry	off owner
+row	App@literal1.sub	Sub	pool:a	entry	off owner
 
 == crates/hale-codegen/tests/stdlib_cli.rs#d87e629e
 row	__StdCliResolver@main1	__StdCliResolver	main	default
@@ -4424,6 +4519,20 @@ row	__StdApiHubStream@binding1	__StdApiHubStream	pinned:__StdApiHubStream@bindin
 shared	Desk@literal1.__rpc_w_1	__StdApiWsListener #61e09f7c
 shared	dynamic	sites in the seed #648c1683
 
+== crates/hale-codegen/tests/tcp_connect_deadline.rs#5c595966
+row	__StdHttpClient@main1	__StdHttpClient	main	default
+row	__StdHttpClient@main2	__StdHttpClient	main	default
+-- dynamic	sites in the stdlib
+dynamic	__StdBytesBytesBuilder	on main
+dynamic	__StdHttpConn	on main
+
+== crates/hale-codegen/tests/tcp_connect_deadline.rs#d6647451
+root	App	the entry
+domain	pool:io	async_io
+row	App@literal1	App	main	default
+row	App@literal1.host	Host	pool:io	entry	off owner
+dynamic	Job	on pool:io	in the seed
+
 == crates/hale-codegen/tests/tcp_listener.rs#9d4fc3db
 shared	__StdIoTcpListener@main1	__StdIoTcpListener #0b638db1
 shared	dynamic	sites in the seed #a76c74f1
@@ -4528,6 +4637,13 @@ shared	dynamic	sites in the seed #6247a882
 
 == crates/hale-codegen/tests/term_primitives.rs#3ddf52f2
 row	__StdTermRawMode@main1	__StdTermRawMode	main	default
+
+== crates/hale-codegen/tests/tls_async_io_park.rs#76b5de49
+root	App	the entry
+domain	pool:io	async_io
+row	App@literal1	App	main	default
+row	App@literal1.host	Host	pool:io	entry	off owner
+dynamic	Job	on pool:io	in the seed
 
 == crates/hale-codegen/tests/tls_fast_io.rs#24eccffd
 row	__StdBytesBytesBuilder@main1	__StdBytesBytesBuilder	main	default
@@ -4676,6 +4792,13 @@ row	Holder@main1	Holder	main	default
 row	Provider@main1	Provider	main	default
 row	Provider@main2	Provider	main	default
 
+== crates/hale-codegen/tests/unwind_registry_threads.rs#7c3188a5
+root	App	the entry
+domain	pinned:App@literal1.w
+row	App@literal1	App	main	default
+row	App@literal1.w	Worker	pinned:App@literal1.w	entry	off owner
+dynamic	Child	on main|pinned:App@literal1.w	in the seed
+
 == crates/hale-codegen/tests/view_coerce_e1.rs#b21794f6
 row	__StdBytesBytesBuilder@main1	__StdBytesBytesBuilder	main	default
 
@@ -4742,6 +4865,10 @@ root	App	the entry
 row	App@literal1	App	main	default
 shared	App@literal1.gw	Gateway #7eef2531
 
+== crates/hale-codegen/tests/violate_build.rs#df440a92
+row	Feed@main2	Feed	main	default
+row	Guard@main1	Guard	main	default
+
 == crates/hale-codegen/tests/violate_child_state_read.rs#ee9ca4a3
 row	Parent@main1	Parent	main	default
 dynamic	Child	on main	in the seed
@@ -4761,6 +4888,15 @@ row	__StdBytesBytesBuilder@main3	__StdBytesBytesBuilder	main	default
 row	Left@main1	Left	main	default
 row	Right@main2	Right	main	default
 dynamic	Small	on main	in the seed
+
+== crates/hale-codegen/tests/wasm_target.rs#9f9ee9e7
+row	V@main1	V	main	default
+
+== crates/hale-codegen/tests/wasm_target.rs#0e7a1b36
+root	App	the entry
+row	App@literal1	App	main	default
+row	App@literal1.h	Holder	main	default
+row	App@literal1.r	Plus	main	default
 
 == crates/hale-codegen/tests/ws1_ffi_handle_reassign.rs#60aaaf4b
 dynamic	Conn	on main	in the seed
@@ -5365,6 +5501,22 @@ root	App	the entry
 domain	pool:web	async_io
 row	App@literal1	App	main	default
 row	App@literal1.w	Worker	pool:web	entry	off owner
+
+== crates/hale-types/tests/effect_assertions.rs#b73151e8
+root	App	the entry
+domain	pool:web	async_io
+row	App@literal1	App	main	default
+row	App@literal1.w	Worker	pool:web	entry	off owner
+
+== crates/hale-types/tests/effect_assertions.rs#a11c8117
+root	App	the entry
+domain	pool:web	async_io
+row	App@literal1	App	main	default
+row	App@literal1.w	Worker	pool:web	entry	off owner
+dynamic	__StdHttpClient	on pool:web	in the seed
+-- dynamic	sites in the stdlib
+dynamic	__StdBytesBytesBuilder	on pool:web
+dynamic	__StdHttpConn	on pool:web
 
 == crates/hale-types/tests/effect_assertions.rs#7fea7b1b
 root	App	the entry
@@ -6670,18 +6822,19 @@ row	App@literal1.svc	Svc	pool:work	entry	off owner
 row	App@literal1.tight	Svc	pool:work2	entry	off owner
 dynamic	<hole>	on main|unresolved declaration `__api_receivers`|unresolved declaration `__api_serve`	in the seed
 
+== tests/hale/api/lists_test.hl
+root	Desk	the entry
+row	Desk@literal1	Desk	main	default
+row	Desk@literal1.probe	Probe	main	default
+dynamic	<hole>	on main|unresolved declaration `__api_receivers`|unresolved declaration `__api_serve`	in the seed
+
 == tests/hale/api/pb_codec_test.hl
 root	Desk	the entry
 domain	pool:__api_grpc	async_io
 row	Desk@literal1	Desk	main	default
 row	Desk@literal1.bearer	Tokens	main	default
 row	Desk@literal1.probe	Probe	main	default
--- Desk@literal1.__rpc_g_1	__StdIoH2Listener
-row	~	__StdIoH2Listener	pool:__api_grpc	entry	off owner
-row	~.conns	__StdIoTcpConnections	pool:__api_grpc	inherited
-row	~.conns.flows	__StdIoTcpFlows	pool:__api_grpc	inherited
-row	~.conns.handler	__StdIoH2Conns	pool:__api_grpc	inherited
-row	~.relay	__StdIoTcpRelay	pool:__api_grpc	inherited
+shared	Desk@literal1.__rpc_g_1	__StdIoH2Listener #b0c4764c
 -- dynamic	sites in the seed
 dynamic	<hole>	on main|unresolved declaration `IndexError`|unresolved declaration `__api_receivers`|unresolved declaration `__api_serve`|unresolved declaration `grpc::Rpc`
 dynamic	__StdIoH2Conn	on pool:__api_grpc
@@ -6690,6 +6843,15 @@ dynamic	__StdIoTcpConnFlow	on pool:__api_grpc
 dynamic	__StdIoTcpConnInline	on pool:__api_grpc
 dynamic	__StdIoTcpConnections	on pool:__api_grpc|unknown (no instance)
 dynamic	__StdIoTcpStream	on pool:__api_grpc|unknown (no instance)
+
+== tests/hale/api/pb_lists_test.hl
+root	Desk	the entry
+domain	pool:__api_grpc	async_io
+row	Desk@literal1	Desk	main	default
+row	Desk@literal1.bearer	Tokens	main	default
+row	Desk@literal1.probe	Probe	main	default
+shared	Desk@literal1.__rpc_g_1	__StdIoH2Listener #b0c4764c
+shared	dynamic	sites in the seed #ce231561
 
 == tests/hale/api/pending_test.hl
 root	Desk	the entry
@@ -6776,6 +6938,15 @@ row	~.svc	Svc	main	inherited
 -- dynamic	sites in the seed
 dynamic	<hole>	on main|unresolved declaration `__api_receivers`|unresolved declaration `__api_serve`
 dynamic	Server	on main
+
+== tests/hale/api/time_test.hl
+root	Desk	the entry
+domain	pool:__api_grpc	async_io
+row	Desk@literal1	Desk	main	default
+row	Desk@literal1.bearer	Tokens	main	default
+row	Desk@literal1.clock	Clock	main	default
+shared	Desk@literal1.__rpc_g_1	__StdIoH2Listener #b0c4764c
+shared	dynamic	sites in the seed #ce231561
 
 == tests/hale/api/unix_wire_test.hl
 root	Desk	the entry
@@ -6895,6 +7066,10 @@ row	Box@main2	Box	main	default
 row	Counter@main1	Counter	main	default
 dynamic	Mx	on main	in the seed
 
+== tests/hale/bounded_time_test.hl
+root	Clock	the entry
+row	Clock@literal1	Clock	main	default
+
 == tests/hale/bus_static_wide_payload_test.hl
 row	Printer@main1	Printer	main	default
 row	Producer@main2	Producer	main	default
@@ -6928,6 +7103,10 @@ row	App@literal1	App	main	default
 -- App@literal1.b	Board
 row	~	Board	main	default
 row	~.w	Worker	main	inherited
+
+== tests/hale/decimal_scale_wire_test.hl
+row	Sink@main1	Sink	main	default
+row	Source@main2	Source	main	default
 
 == tests/hale/decorator_stack_test.hl
 root	App	the entry
@@ -6991,6 +7170,11 @@ row	App@literal1	App	main	default
 -- App@literal1.pub	Pub
 row	~	Pub	main	default
 row	~.sub	Sub	main	inherited
+
+== tests/hale/ipv6_test.hl
+-- __StdIoTcpAcceptor@main1	__StdIoTcpAcceptor
+row	~	__StdIoTcpAcceptor	main	default
+row	~.relay	__StdIoTcpRelay	main	inherited
 
 == tests/hale/is_route_test.hl
 row	Api@main1	Api	main	default
@@ -7087,6 +7271,17 @@ root	App	the entry
 row	App@literal1	App	main	default
 shared	App@literal1.gw	Gateway #85305e8b
 
+== tests/hale/perspective_hold_test.hl
+root	App	the entry
+row	App@literal1	App	main	default
+row	App@literal1.performer	Tripler	main	default
+row	App@literal1.s	Steps	main	default
+row	App@literal1.scaling	__lib_tests__hale__perspective_hold_lib___lib__Thrice	main	default
+row	App@literal1.w	Work	main	default
+-- dynamic	sites in the seed
+dynamic	Attempt	on main
+dynamic	__lib_tests__hale__perspective_hold_lib___lib__Step	on main
+
 == tests/hale/pinned_birth_restart_test.hl
 root	App	the entry
 domain	pinned:App@literal1.held
@@ -7127,12 +7322,20 @@ shared	Job@main1	Job #01dd0b0d
 dynamic	Job	on main
 dynamic	__StdProcessChild	on main
 
+== tests/hale/process_child_sigpipe_test.hl
+row	__StdProcessChild@main1	__StdProcessChild	main	default
+
 == tests/hale/process_close_stdin_test.hl
 row	__StdProcessChild@main1	__StdProcessChild	main	default
 
 == tests/hale/process_spawn_in_birth_test.hl
 row	Spawner@main1	Spawner	main	default
 dynamic	__StdProcessChild	on main|unknown (no caller)	in the seed
+
+== tests/hale/process_spawn_options_test.hl
+row	__StdProcessChild@main1	__StdProcessChild	main	default
+row	__StdProcessChild@main2	__StdProcessChild	main	default
+row	__StdProcessChild@main3	__StdProcessChild	main	default
 
 == tests/hale/release_generic_owner_test.hl
 row	Manager_Job@main1	Manager_Job	main	default
@@ -7265,6 +7468,10 @@ dynamic	<hole>	on main|unresolved declaration `Pair_Int`	in the seed
 == tests/hale/unit_return_annotation_test.hl
 row	Counter@main1	Counter	main	default
 
+== tests/hale/units_loop_test.hl
+root	Till	the entry
+row	Till@literal1	Till	main	default
+
 == tests/hale/violate_in_value_method_test.hl
 root	App	the entry
 row	App@literal1	App	main	default
@@ -7341,6 +7548,11 @@ dynamic	__lib_dna__operations___governance_command__GovernanceCommandCodec	on ma
 dynamic	__lib_dna__operations___governance_policy__AuthorityPolicyCodec	on main|unknown (no instance)
 dynamic	__lib_dna__operations___organization_json__OrganizationJson	on main|unknown (no instance)
 shared	dynamic	sites in the stdlib #c3a51769
+
+== dna/api/project_service/tests/head_assets_test.hl
+shared	__lib_dna__api__project_service__tests__fixture___main__HeadFixture@main1	__lib_dna__api__project_service__tests__fixture___main__HeadFixture #23f55ba1
+shared	dynamic	sites in api/project_service/tests/fixture #c6dc7898
+shared	dynamic	sites in core #b2c4d9f5
 
 == dna/api/project_service/tests/head_push_test.hl
 row	EventStream@main2	EventStream	main	default
@@ -10189,10 +10401,7 @@ shared	dynamic	sites in the stdlib #c3a51769
 == dna/tests/heart_reading_test.hl
 root	App	the entry
 row	App@literal1	App	main	default
--- dynamic	sites in core
-dynamic	__StdBytesBytesBuilder	on unknown (`concerns` passed as a value)|unknown (no caller)|unknown (no instance)
-dynamic	__lib_dna__core___native_json__NativeJson	on unknown (`concerns` passed as a value)
-dynamic	__lib_dna__core___record__RowBatch	on unknown (`concerns` passed as a value)|unknown (no instance)
+shared	dynamic	sites in core #ec318237
 shared	dynamic	sites in core/pond/realtime/nats #164fddea
 -- dynamic	sites in tests
 dynamic	__StdSecretCredential	on main
@@ -11550,6 +11759,16 @@ dynamic	__lib_dna__core___record__GitJournal	on main|unknown (`answers` passed a
 dynamic	__lib_dna__core__pond__realtime__nats___client__NatsClient	on main
 shared	dynamic	sites in the stdlib #c3a51769
 
+== dna/tests/repository_sense_test.hl
+root	App	the entry
+row	App@literal1	App	main	default
+dynamic	__StdIoTcpStream	on main	in tests/onboarding/todo/api
+shared	dynamic	sites in core #ec318237
+-- dynamic	sites in tests
+dynamic	__StdSecretCredential	on main
+dynamic	__lib_dna__core___record__GitJournal	on main|unknown (`concerns` passed as a value)
+dynamic	__lib_dna__tests__onboarding__todo__api__nerves__nerves__Nerves	on main
+
 == dna/tests/retired_admission_test.hl
 root	App	the entry
 row	App@literal1	App	main	default
@@ -11827,6 +12046,10 @@ dynamic	__lib_dna__core___memory_spine__MemoryLedger	on main
 dynamic	__lib_dna__core___record__GitJournal	on main
 dynamic	__lib_dna__core__pond__realtime__nats___client__NatsClient	on main
 shared	dynamic	sites in the stdlib #c3a51769
+
+== dna/tests/ui_assets_test.hl
+root	App	the entry
+row	App@literal1	App	main	default
 
 == dna/tests/usage_test.hl
 root	App	the entry
@@ -13655,6 +13878,13 @@ row	App@literal1.m	Manager	main	default
 dynamic	Part	on main
 dynamic	Run	on main
 
+== dna/friction/f4-perspective-must-designate
+root	App	the entry
+row	App@literal1	App	main	default
+row	App@literal1.performer	Tripler	main	default
+row	App@literal1.w	Work	main	default
+dynamic	Attempt	on main	in the seed
+
 == dna/friction/f5-bus-reply-at-drain
 root	App	the entry
 row	App@literal1	App	main	default
@@ -14928,6 +15158,14 @@ row	~.router	RouterV1	main	inherited
 row	~	Gateway	main	default
 row	~.router	RouterV2	main	inherited
 
+== shared H #540d0d6c
+row	~	H	main	default
+row	~.q	Q	main	inherited
+
+== shared H #95920e24
+row	~	H	main	default
+row	~.m	M	main	inherited
+
 == shared Holder #532e241f
 row	~	Holder	pool:side	entry	off owner
 row	~.i	Inner	pool:side	inherited
@@ -15198,6 +15436,13 @@ row	~.conns.handler.handler	<hole>	pool:io	inherited
 row	~.handler	__lib_dna__oidc___stub__StubIssuer	pool:io	inherited
 row	~.handler.codes	__lib_dna__oidc___stub__IssuedCodes	pool:io	inherited
 row	~.relay	__StdIoTcpRelay	pool:io	inherited
+
+== shared __StdIoH2Listener #b0c4764c
+row	~	__StdIoH2Listener	pool:__api_grpc	entry	off owner
+row	~.conns	__StdIoTcpConnections	pool:__api_grpc	inherited
+row	~.conns.flows	__StdIoTcpFlows	pool:__api_grpc	inherited
+row	~.conns.handler	__StdIoH2Conns	pool:__api_grpc	inherited
+row	~.relay	__StdIoTcpRelay	pool:__api_grpc	inherited
 
 == shared __StdIoTcpAcceptor #1ef3cccf
 row	~	__StdIoTcpAcceptor	pinned:~	entry	off owner
@@ -16390,6 +16635,11 @@ dynamic	__lib_dna__core___workflow_runtime__WorkflowRun	on main
 dynamic	__lib_dna__core___workflow_runtime__WorkflowRuntime	on main
 dynamic	__lib_dna__core__pond__db___args__Args	on main|unknown (no caller)
 
+== shared sites in core #ec318237
+dynamic	__StdBytesBytesBuilder	on unknown (`concerns` passed as a value)|unknown (no caller)|unknown (no instance)
+dynamic	__lib_dna__core___native_json__NativeJson	on unknown (`concerns` passed as a value)
+dynamic	__lib_dna__core___record__RowBatch	on unknown (`concerns` passed as a value)|unknown (no instance)
+
 == shared sites in core #fd739ca5
 dynamic	__StdBytesBytesBuilder	on main|unknown (no instance)
 dynamic	__StdJsonBuilder	on main|unknown (no caller)|unknown (no instance)
@@ -16991,6 +17241,15 @@ dynamic	__StdIoTcpConnInline	on pool:__api_ws
 dynamic	__StdIoTcpConnections	on pool:__api_ws|unknown (no instance)
 dynamic	__StdIoTcpStream	on pool:__api_ws|unknown (no instance)
 
+== shared sites in the seed #7c55c618
+dynamic	<hole>	on main|unresolved declaration `__api_serve`|unresolved declaration `http::Rpc`
+dynamic	__StdApiHttpConns	on pool:__api_http
+dynamic	__StdApiHttpPeer	on pool:__api_http
+dynamic	__StdIoTcpConnFlow	on pool:__api_http
+dynamic	__StdIoTcpConnInline	on pool:__api_http
+dynamic	__StdIoTcpConnections	on pool:__api_http|unknown (no instance)
+dynamic	__StdIoTcpStream	on pool:__api_http|unknown (no instance)
+
 == shared sites in the seed #8900d651
 dynamic	Child	on pinned:App@literal1.w
 dynamic	Grand	on main|pinned:App@literal1.s
@@ -17032,6 +17291,15 @@ dynamic	__StdIoTcpConnFlow	on pool:io
 dynamic	__StdIoTcpConnInline	on pool:io
 dynamic	__StdIoTcpConnections	on pool:io
 dynamic	__StdIoTcpStream	on pool:io
+
+== shared sites in the seed #ce231561
+dynamic	<hole>	on main|unresolved declaration `__api_receivers`|unresolved declaration `__api_serve`|unresolved declaration `grpc::Rpc`
+dynamic	__StdIoH2Conn	on pool:__api_grpc
+dynamic	__StdIoH2Conns	on pool:__api_grpc
+dynamic	__StdIoTcpConnFlow	on pool:__api_grpc
+dynamic	__StdIoTcpConnInline	on pool:__api_grpc
+dynamic	__StdIoTcpConnections	on pool:__api_grpc|unknown (no instance)
+dynamic	__StdIoTcpStream	on pool:__api_grpc|unknown (no instance)
 
 == shared sites in the stdlib #017b2abb
 dynamic	__StdBytesBytesBuilder	on unknown (`event` passed as a value)

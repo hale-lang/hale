@@ -43,7 +43,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             CodegenTy::Int
             | CodegenTy::Float
             | CodegenTy::Bool
-            | CodegenTy::Decimal
+            | CodegenTy::Decimal(_)
             | CodegenTy::Time
             | CodegenTy::Duration
             | CodegenTy::FnPtr { .. }
@@ -285,7 +285,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             CodegenTy::Int
             | CodegenTy::Float
             | CodegenTy::Bool
-            | CodegenTy::Decimal
+            | CodegenTy::Decimal(_)
             | CodegenTy::Time
             | CodegenTy::Duration
             | CodegenTy::BytesMut
@@ -823,8 +823,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .expect("builder positioned");
         let cont_bb = self.context.append_basic_block(func, "enum.dc.cont");
         let default_bb = self.context.append_basic_block(func, "enum.dc.default");
+        // Each variant: its tag, the block the switch enters, the block its
+        // copy ends in (a payload whose copy loops, a `bounded[T; N]` of
+        // records, ends in another block than it began), and the new value.
         let mut variant_blocks: Vec<(
             inkwell::values::IntValue<'ctx>,
+            inkwell::basic_block::BasicBlock<'ctx>,
             inkwell::basic_block::BasicBlock<'ctx>,
             BasicValueEnum<'ctx>,
         )> = Vec::new();
@@ -863,12 +867,21 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 Some(dest_arena),
             )?;
             self.current_arena_override = prev_override;
+            // The payload's own deep copy (a nested enum's switch, a
+            // record's) adds blocks: the PHI's edge comes from the one
+            // the builder now stands in, not from `bb`, which only the
+            // switch targets.
+            let end_bb = self
+                .builder
+                .get_insert_block()
+                .expect("builder positioned in enum.dc variant");
             self.builder
                 .build_unconditional_branch(cont_bb)
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
             variant_blocks.push((
                 i32_t.const_int(i as u64, false),
                 bb,
+                end_bb,
                 new_ptr.into(),
             ));
         }
@@ -886,7 +899,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             inkwell::basic_block::BasicBlock<'ctx>,
         )> = variant_blocks
             .iter()
-            .map(|(c, bb, _)| (*c, *bb))
+            .map(|(c, bb, _, _)| (*c, *bb))
             .collect();
         self.builder
             .build_switch(tag, default_bb, &cases)
@@ -901,8 +914,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             &dyn inkwell::values::BasicValue<'ctx>,
             inkwell::basic_block::BasicBlock<'ctx>,
         )> = Vec::new();
-        for (_, bb, val) in &variant_blocks {
-            incoming.push((val, *bb));
+        for (_, _, end_bb, val) in &variant_blocks {
+            incoming.push((val, *end_bb));
         }
         let null = ptr_t.const_null();
         incoming.push((&null, default_bb));
@@ -981,7 +994,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             CodegenTy::Int
             | CodegenTy::Float
             | CodegenTy::Bool
-            | CodegenTy::Decimal
+            | CodegenTy::Decimal(_)
             | CodegenTy::Time
             | CodegenTy::Duration
             | CodegenTy::FnPtr { .. }

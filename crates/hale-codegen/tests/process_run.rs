@@ -179,3 +179,41 @@ fn run_passes_multi_arg_argv() {
         stdout
     );
 }
+
+#[test]
+fn run_argv_cap_is_64_kib() {
+    // The argv blob is capped at 65536 bytes, newlines included
+    // (`LOTUS_PROCESS_ARGV_MAX`, spec/stdlib.md § std::process): a
+    // blob of exactly the cap runs, one byte past it fails before
+    // any fork with IoError { kind: "invalid", errno: 7 } (E2BIG).
+    let src = r#"
+        fn report(e: IoError) -> std::process::ProcessOutput {
+            println("kind=", e.kind);
+            println("errno=", e.errno);
+            println("path=", e.path);
+            return std::process::ProcessOutput { code: -99, signal: 0, stdout: "", stderr: "" };
+        }
+        fn main() {
+            let mut s = "true";
+            while len(s) < 65536 - 10 { s = s + "\nxxxxxxxxx"; }
+            while len(s) < 65536 { s = s + "x"; }
+            println("len=", len(s));
+            let at = std::process::run(s) or report(err);
+            println("at_cap=", at.code);
+            let over = std::process::run(s + "y") or report(err);
+            println("over_cap=", over.code);
+        }
+    "#;
+    let (stdout, _stderr, status) = build_and_run("argv_cap", src);
+    assert!(status.success(), "non-zero exit: {:?}", status);
+    for want in [
+        "len=65536\n",
+        "at_cap=0\n",
+        "kind=invalid\n",
+        "errno=7\n",
+        "path=std::process::run\n",
+        "over_cap=-99\n",
+    ] {
+        assert!(stdout.contains(want), "expected {want:?}; got: {stdout:?}");
+    }
+}

@@ -179,7 +179,10 @@ fn a_pool_placed_owner_is_initialized_before_its_params() {
 /// locus's init on its thread, and the held failure is delivered to the
 /// pinned owner's `on_failure` when its params settle — still inside
 /// the init. The handler reads its own header (`draining`), which must
-/// be the zero the literal stored.
+/// be the zero the literal stored. `App`'s run() outlasts `Post`'s, which
+/// reads it at once: once App's run() returns, its teardown drains the
+/// tree (spec/runtime.md § "Lifecycle obligations", line 15), and
+/// `draining` reads true for that reason.
 #[test]
 fn a_pinned_owner_is_initialized_before_its_params() {
     let src = r#"
@@ -199,6 +202,7 @@ locus Post {
 main locus App {
     params { p: Post = Post { }; }
     placement { p: pinned; }
+    run() { std::time::sleep(500ms); }
 }
 fn main() { App { }; println("end"); }
 "#;

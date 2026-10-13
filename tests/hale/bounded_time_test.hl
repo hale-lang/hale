@@ -1,0 +1,41 @@
+// `bounded[Time; N]`: a `Time` is an i64 count of nanoseconds, a scalar
+// like `Duration`, so a bounded buffer of instants lowers as one of
+// durations does, in a type's field and in a locus's params. `hale
+// check` admitted it and the build refused the element type; the
+// agreement test in crates/hale-codegen/tests/corpus_check_build_agreement.rs
+// holds the two to one answer.
+
+type Window { seen: bounded[Time; 3]; }
+
+main locus Clock {
+    params {
+        marks: bounded[Time; 2];
+    }
+    run() {
+        let t = `2026-05-08T12:00:00Z`;
+        push(self.marks, t) or { };
+        push(self.marks, t + 90s) or { };
+        push(self.marks, t + 1h) or { };
+        std::test::assert_eq_int(count(self.marks), 2, "two instants, the capacity");
+        let second = at(self.marks, 1) or t;
+        std::test::assert(second - t == 90s, "an instant read back is the one pushed");
+        std::test::assert_eq_str(to_string(second), "2026-05-08T12:01:30Z", "and formats as one");
+        set(self.marks, 0, t - 1h) or { };
+        std::test::assert((at(self.marks, 0) or t) == t - 1h, "set overwrites a live slot");
+        let mut n = 0;
+        for x in self.marks {
+            n = n + 1;
+        }
+        std::test::assert_eq_int(n, 2, "iteration walks the live slots");
+
+        let mut w = Window { };
+        push(w.seen, t) or { };
+        let copy = w;
+        std::test::assert_eq_int(count(copy.seen), 1, "a whole-struct copy carries the instants");
+        std::test::assert((at(copy.seen, 0) or `1970-01-01T00:00:00Z`) == t, "by value");
+        clear(w.seen);
+        std::test::assert_eq_int(count(w.seen), 0, "clear empties it");
+    }
+}
+
+fn main() { Clock { }; }

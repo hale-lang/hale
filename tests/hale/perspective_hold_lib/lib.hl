@@ -1,0 +1,21 @@
+// The library half of perspective_hold_test: a perspective, two impls
+// and a holder that holds the slot without designating it (GH #731).
+
+perspective Scaling {
+    fn scale(x: Int) -> Int;
+}
+
+locus Twice : serves Scaling {
+    fn scale(x: Int) -> Int { return x * 2; }
+}
+
+locus Thrice : serves Scaling {
+    fn scale(x: Int) -> Int { return x * 3; }
+}
+
+// Holds `Scaling` as whoever designated it; its birth designates nothing.
+locus Step {
+    params { scaling: perspective(Scaling); out: Int = 0; }
+    contract { expose out: Int; }
+    run() { self.out = self.scaling.scale(7); }
+}

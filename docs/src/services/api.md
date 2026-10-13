@@ -94,6 +94,12 @@ subscribes a topic or returns a value. A handler can sit in several
 surfaces, each with its own `requires`, and two versions of one API
 over one set of handlers are two surfaces.
 
+Roles are one vocabulary for the whole program, whichever seed declares
+them. A role a library declares is named through its import alias —
+`requires: [lib::reader]`, `@rpc(requires: [lib::writer])`, a hub
+stream's `requires:`, or `role boss includes lib::writer;` — and is the
+library's `reader`: the description and the refusals say `reader`.
+
 ### What the check refuses
 
 The rows are checked before anything is served. A row that names no
@@ -108,6 +114,53 @@ rpc `Orders::cancel` requires `tradr`, which no `role` declares; did you mean `t
 rpc `Ledger::dump`: its response `Export` has a field `raw: Bytes`, which the JSON codec does not carry
 rpc `Orders::flush` may violate (`violate stale`) and returns nothing: an rpc handler that may violate is `fallible(ClosureViolation)`, so its caller receives the server error instead of a result
 ```
+
+### Lists and pages
+
+A list crosses as a field of a record, and its type says how long it
+may be: a `bounded[T; N]` field is a JSON array of up to `N` elements,
+a `[T; N]` field one of exactly `N`. "List my items" returns a page,
+which is a record:
+
+```hale,fragment
+type Item { id: Int; title: String; }
+type Page { items: bounded[Item; 50]; more: Bool; }
+
+locus Shelf {
+    params { items: bounded[Item; 500]; }
+    fn list(q: ListQuery) -> Page {
+        let mut page = Page { more: false };
+        for item in self.items {
+            push(page.items, item) or { page.more = true; break; };
+        }
+        return page;
+    }
+}
+```
+
+A `bounded` field may be left out of a request, and is then empty; a
+fixed array is always sent whole. The description states the bound
+(`"maxItems": 50`, and `"minItems"` for a fixed array), the `.proto`
+makes the field `repeated`, and the generated clients type it
+(`bounded[Item; 50]` in Hale, `Array<Item>` in TypeScript). A request
+whose list is longer than the field holds is refused `malformed` with
+`too_long` (a fixed array sent short, `too_short`): the handler never
+sees a list cut to fit. An unbounded `[T]` is not carried, since an
+unbounded collection belongs to a locus (`@form(vec)`), not to a value
+that crosses a boundary; neither is a list of lists, nor a request or
+response that is a bare list.
+
+### Instants and durations
+
+A `Time` crosses as its RFC 3339 text in UTC, to the nanosecond:
+`"2026-10-12T03:04:05.123456789Z"` (trailing zeros of the fraction
+dropped, `"2026-10-12T03:04:05Z"` when there is none). A request must
+say `Z`: a time with no zone or with an offset is refused `malformed`
+rather than guessed at, and so is one past `Time`'s range (it ends in
+2262). A `Duration` crosses as its count of nanoseconds, as every
+quantity crosses as its count: `1500000000` is `1.5s`. The description
+marks a `Time` `"format": "date-time"` and a `Duration` with its unit,
+`q(ns)`; the `.proto` carries both as `int64` nanoseconds.
 
 ### The digest
 
@@ -174,6 +227,12 @@ answer it:
 ```hale,fragment
 let public = api::serve(Public, self.fixture, as: "public", receivers: { Orders: self.orders }, bound: 64, on_full: refuse);
 ```
+
+A library can ship a surface for an application to serve: the library
+declares `api Svc { … }` and the loci its rows name, and the application
+holds the receivers and names the surface by its path under the import
+alias, `api::serve(lib::Svc, …)`. The exposure describes it as `Svc`,
+its declared name.
 
 The transport is a locus that implements `std::api::Rpc`: it listens,
 frames a request, and writes each outcome in its protocol's terms. The
@@ -356,6 +415,28 @@ connection alone, and the listener and the other connections go on.
 `public.stop()` refuses what is queued, answers what is executing and
 closes the listener after the replies.
 
+#### Calls from a web page: `cors`
+
+A page served from another origin can call the exposure only if the
+exposure answers CORS for that origin. `cors:` lists the origins,
+comma-separated (`"*"` for any); without it nothing changes:
+
+```hale,fragment
+let public = api::serve(Public, http::Rpc { bind: "127.0.0.1:8080", codec: json, principals: self.bearer, roles: self.public_roles, cors: "https://app.example.com, http://localhost:5173" }, as: "public", receivers: { Orders: self.orders }, bound: 64, on_full: refuse);
+```
+
+The browser's preflight (`OPTIONS /call/<member>` or `OPTIONS
+/.description`, sent with no credential) from a listed origin is answered
+`204` with that origin in `Access-Control-Allow-Origin`, the methods
+(`POST, GET, OPTIONS`), the headers a call sends (`Authorization,
+Content-Type, Hale-Surface-Digest`) and a ten-minute `Max-Age`; it never
+reaches a receiver. Every response to a listed origin, refusals included,
+carries `Access-Control-Allow-Origin`, so the page can read why a call was
+refused. Any other origin's preflight is `403` with no CORS header, and its
+calls carry none, so the browser stops the page. CORS is the browser's
+guard and not authentication: a call is still admitted by its bearer and
+its roles, whatever origin it came from.
+
 ### Serving to an MCP host
 
 `mcp::Rpc` takes a `bind:`, a `principals:` and a `roles:`, and serves the
@@ -471,8 +552,8 @@ Todo`) is the message `TodoMessage`: proto3 gives a service and a message one
 scope, and the service keeps the surface's name because it is the gRPC path.
 
 A client is whatever generates stubs from a `.proto`; `hale api client`
-makes Hale and TypeScript clients and neither speaks gRPC (a browser's
-`fetch` cannot, and neither client carries an HTTP/2 stack). The server also
+makes Hale, TypeScript and JavaScript clients and none speaks gRPC (a
+browser's `fetch` cannot, and no client carries an HTTP/2 stack). The server also
 answers gRPC server reflection (`grpc.reflection.v1`), so a tool that does not
 have the file finds the surface through the server: it lists three services
 (the surface, `hale.api.Description` and the reflection service itself) and
@@ -679,6 +760,7 @@ hale api export --surface Public --out api/public desk.hl
 hale api client --surface Public --lang hale --out client/desk.hl desk.hl
 hale api client --surface Public --lang ts   --out client/desk.ts desk.hl
 hale api client --surface Public --lang ts   --check client/desk.ts desk.hl   # exit 1 on drift
+hale api client --surface Public --lang js   --out web/desk.js desk.hl
 ```
 
 `export` writes a bundle: `Public.description.json` (every member with its
@@ -703,9 +785,13 @@ single file that needs only `fetch` and `WebSocket`: an async function per
 member answering a tagged union (`result`, `handler_error`, `refusal`,
 `server_error`; a connection that never answered is thrown as a
 `TransportError`, because that request may have run) and an async iterable
-per stream. Both send the surface's digest on every call, so a program that
-changed under a client refuses it `digest_mismatch`; both name the digest in
-a constant, and `--check` refuses a committed copy made against another one.
+per stream. The JavaScript one is that same client as an ES module a page
+loads as it is, with no compile step: the same functions by the same names,
+typed in JSDoc, so an editor (or `tsc --checkJs`) still checks a caller
+against the rows. Every client sends the surface's digest on every call, so a
+program that changed under it refuses it `digest_mismatch`; each names the
+digest in a constant, and `--check` refuses a committed copy made against
+another one.
 A client speaks `unix:PATH` and `http://` (the Hale client) and `http://` and
 `ws://` (both); TLS is not spoken, and neither is gRPC: a gRPC caller takes the
 `.proto` to its own language's stub generator, or finds the surface through

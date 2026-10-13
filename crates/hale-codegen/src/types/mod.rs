@@ -36,8 +36,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     CodegenTy::Int
                         | CodegenTy::Float
                         | CodegenTy::Bool
-                        | CodegenTy::Decimal
+                        | CodegenTy::Decimal(_)
                         | CodegenTy::Duration
+                        | CodegenTy::Time
                         | CodegenTy::String
                         | CodegenTy::Bytes
                         | CodegenTy::TypeRef(_)
@@ -45,8 +46,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     return Err(CodegenError::Unsupported(format!(
                         "bounded[T; N]: element type {:?} not supported \
                          — scalars (Int / Float / Bool / Decimal / \
-                         Duration), String, Bytes, and user structs \
-                         are covered",
+                         Duration / Time), String, Bytes, and user \
+                         structs are covered",
                         e
                     )));
                 }
@@ -58,7 +59,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 PrimType::Bool => Ok(CodegenTy::Bool),
                 PrimType::String => Ok(CodegenTy::String),
                 PrimType::Duration => Ok(CodegenTy::Duration),
-                PrimType::Decimal => Ok(CodegenTy::Decimal),
+                PrimType::Decimal(s) => Ok(CodegenTy::Decimal(*s)),
                 PrimType::Time => Ok(CodegenTy::Time),
                 PrimType::Bytes => Ok(CodegenTy::Bytes),
                 PrimType::BytesView => Ok(CodegenTy::BytesView),
@@ -685,7 +686,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 self.context.ptr_type(AddressSpace::default()).into()
             }
             CodegenTy::Float => self.context.f64_type().into(),
-            CodegenTy::Decimal => {
+            CodegenTy::Decimal(_) => {
                 // m48: Decimal is an i128 mantissa with implicit
                 // scale 9 (mantissa × 10^-9). Distinct from Float
                 // at the type level so type-checking stays strict
@@ -761,7 +762,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 CodegenTy::Int
                 | CodegenTy::Float
                 | CodegenTy::Bool
-                | CodegenTy::Decimal
+                | CodegenTy::Decimal(_)
                 | CodegenTy::Duration => Some((elem.as_ref(), *n)),
                 _ => None,
             },
@@ -1281,7 +1282,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             CodegenTy::Int
             | CodegenTy::Float
             | CodegenTy::Bool
-            | CodegenTy::Decimal
+            | CodegenTy::Decimal(_)
             | CodegenTy::Time
             | CodegenTy::Duration
             | CodegenTy::FnPtr { .. }

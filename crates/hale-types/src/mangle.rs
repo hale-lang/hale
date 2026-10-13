@@ -87,6 +87,27 @@ pub fn mangle_program(prog: &mut Program, alias: &str, file_stem: &str) {
 /// different `lib_id`s). The importer's alias is still used at
 /// the path-rename table level so call-site references
 /// `alias::Name` resolve correctly.
+/// The key prefix of a role's row in a seed's rename table: roles are
+/// named in their own namespace (T1), apart from the seed's fns, types
+/// and loci, which an ordinary `alias::Name` path reaches.
+pub const ROLE_KEY: &str = "role:";
+
+/// The key prefix of a surface's row in a seed's rename table: an `api`
+/// block keeps its name (it is the description's), and its row lives in
+/// a namespace of its own, apart from a same-named fn, type or locus. The
+/// row maps to the block's identity, [`api_origin`], which the loader
+/// stamps on the block (`ApiDecl::origin`), so an importer's `alias::Name`
+/// serve site names that seed's surface and no other (`rpc_expand`).
+pub const API_KEY: &str = "api:";
+
+/// The identity of surface `name` declared in source file `file_stem` of
+/// library `lib_id`: the seed's mangling of the key `api:<name>`. No
+/// identifier holds a `:`, so it is never a declaration's mangled name,
+/// a same-named locus or type of the same file included.
+pub fn api_origin(lib_id: &str, file_stem: &str, name: &str) -> String {
+    mangled(lib_id, file_stem, &format!("{API_KEY}{name}"))
+}
+
 pub fn build_seed_renames(
     programs: &[(String, &Program)],
     lib_id: &str,
@@ -115,6 +136,20 @@ pub fn build_seed_renames(
                     out.insert(f.name.name.clone(), f.name.name.clone());
                     continue;
                 }
+            }
+            // T1: a role is bundle-global vocabulary and keeps its
+            // name (see `top_decl_name`). Its row lives in a namespace of
+            // its own, keyed `role:<name>` (no identifier is spelled with
+            // a `:`), so a fn, type or locus of the same name keeps its
+            // own row and an importer's `lib::reader` in a role position
+            // still reaches the role (`ROLE_KEY`, `rewrite_role_ident`).
+            if let TopDecl::Role(r) = item {
+                out.insert(format!("{ROLE_KEY}{}", r.name.name), r.name.name.clone());
+                continue;
+            }
+            if let TopDecl::Api(a) = item {
+                out.insert(format!("{API_KEY}{}", a.name.name), api_origin(lib_id, stem, &a.name.name));
+                continue;
             }
             if let Some(n) = top_decl_name(item) {
                 out.insert(n.to_string(), mangled(lib_id, stem, n));
@@ -634,6 +669,25 @@ impl<'a> QualifiedRenameApplier<'a> {
     /// so the checker's `serves unknown perspective` / `unknown
     /// perspective` diagnostic still cites the path the author typed
     /// (a nested alias, a typo).
+    /// T1: a role named through an import alias (`lib::reader`) in a
+    /// role position — a `requires` list, an `includes` — collapses to
+    /// the role that seed declares, looked up in the roles' namespace
+    /// (`ROLE_KEY`), never through an ordinary declaration of the same
+    /// name. A path that names no such role is left as written.
+    fn rewrite_role_ident(&self, id: &mut Ident) {
+        let Some((alias, name)) = id.name.split_once("::") else { return };
+        if name.contains("::") {
+            return;
+        }
+        let key = format!("{ROLE_KEY}{name}");
+        for (k, role) in self.renames {
+            if k.len() == 2 && k[0] == alias && k[1] == key {
+                id.name = role.clone();
+                return;
+            }
+        }
+    }
+
     fn rewrite_joined_ident(&self, id: &mut Ident) {
         if !id.name.contains("::") {
             return;
@@ -921,9 +975,14 @@ impl<'a> QualifiedRenameApplier<'a> {
                 // no TypeExprs the import-rename pass needs
                 // to rewrite.
             }
-            TopDecl::Role(_) => {
-                // GH #1109: a role's name and its `includes` are bare
-                // vocabulary, never qualified paths.
+            TopDecl::Role(r) => {
+                // GH #1109: a role's name is bare vocabulary. T1: an
+                // `includes` may name an imported seed's role through
+                // its alias (`includes lib::reader`); it collapses to
+                // the role's own name.
+                for inc in &mut r.includes {
+                    self.rewrite_role_ident(inc);
+                }
             }
             TopDecl::Unit(_) => {
                 // GH #1076: a unit and its target are bare vocabulary.
@@ -936,6 +995,10 @@ impl<'a> QualifiedRenameApplier<'a> {
                 // row's `written` spelling stay as the author wrote them.
                 for r in &mut a.rows {
                     self.rewrite_joined_ident(&mut r.locus);
+                    // T1: a role another seed declares, `lib::reader`
+                    for role in &mut r.requires {
+                        self.rewrite_role_ident(role);
+                    }
                 }
             }
             TopDecl::Group(g) => {
@@ -1049,6 +1112,12 @@ impl<'a> QualifiedRenameApplier<'a> {
                 if let Some(fal) = &mut fd.fallible {
                     self.rewrite_type_expr(fal);
                 }
+                // T1: `@rpc(requires: [lib::reader])`
+                if let Some(rpc) = &mut fd.rpc {
+                    for role in &mut rpc.requires {
+                        self.rewrite_role_ident(role);
+                    }
+                }
             }
             LocusMember::Const(c) => self.rewrite_type_expr(&mut c.ty),
             LocusMember::Type(t) => match &mut t.body {
@@ -1089,6 +1158,14 @@ impl<'a> QualifiedRenameApplier<'a> {
                     }
                     if let Some(codec) = &mut entry.codec {
                         self.rewrite_joined_ident(&mut codec.locus);
+                    }
+                }
+                // T1: a hub's stream may carry an imported topic and
+                // require an imported role, both through the alias
+                for hub in &mut bb.hubs {
+                    self.rewrite_joined_ident(&mut hub.topic);
+                    for role in &mut hub.requires {
+                        self.rewrite_role_ident(role);
                     }
                 }
             }

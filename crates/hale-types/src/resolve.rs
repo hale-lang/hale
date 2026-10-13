@@ -512,7 +512,6 @@ pub fn build_top_scope(bundle: &Bundle<'_>) -> (TopScope, Vec<Diag>) {
         &mut scope,
         bundle_uses_fail_topics(bundle),
         bundle_declares_a_range(bundle),
-        bundle_declares_a_quantity(bundle),
     );
     // FUv0.8.2 #1 (2026-05-25): if the user has declared a
     // type whose name shadows a stdlib error type but with
@@ -1139,7 +1138,11 @@ fn register_locus(
                             ParamInit::Inferred => Ty::Unknown,
                         },
                     };
-                    let has_default = matches!(p.init, ParamInit::Value(_));
+                    // GH #731: a `perspective(P)` param with no
+                    // initializer holds the program's slot without
+                    // designating it — a construction may omit it
+                    let has_default = matches!(p.init, ParamInit::Value(_))
+                        || matches!(p.ty, Some(TypeExpr::Perspective { .. }));
                     params.push(ParamInfo {
                         name: p.name.name.clone(),
                         ty,
@@ -1355,6 +1358,11 @@ fn register_locus(
             "ring_buffer" => {
                 let cell_ty = form_ring_buffer_cell_ty(decl, known);
                 synthesize_form_ring_buffer_methods(&mut methods, &cell_ty);
+            }
+            "heap" => {
+                // The single heap slot's cell type, as for vec.
+                let cell_ty = form_vec_cell_ty(decl, known);
+                synthesize_form_heap_methods(&mut methods, &cell_ty);
             }
             "lru_cache" => {
                 // Same keyed shape as @form(hashmap): value struct S +
@@ -1657,7 +1665,7 @@ fn type_expr_mangle_token(
             PrimType::Bool => Some("Bool".into()),
             PrimType::String => Some("String".into()),
             PrimType::Duration => Some("Duration".into()),
-            PrimType::Decimal => Some("Decimal".into()),
+            PrimType::Decimal(s) => Some(crate::ty::decimal_mangle_token(*s).into()),
             PrimType::Time => Some("Time".into()),
             _ => None,
         },
@@ -2022,6 +2030,23 @@ fn synthesize_form_vec_methods(methods: &mut Vec<MethodInfo>, cell_ty: &Ty) {
         ret: Ty::Unit,
         fallible: None,
     });
+    // Friction sweep 2026-10-12: a per-message scratch vec is hoisted
+    // and reused. Both drop elements the way `pop` does (each retired
+    // with what it owns) and keep the buffer's capacity.
+    methods.push(MethodInfo {
+        name: "clear".to_string(),
+        params: Vec::new(),
+        min_params: None,
+        ret: Ty::Unit,
+        fallible: None,
+    });
+    methods.push(MethodInfo {
+        name: "truncate".to_string(),
+        params: vec![Ty::Prim(PrimType::Int)],
+        min_params: None,
+        ret: Ty::Unit,
+        fallible: None,
+    });
 }
 
 /// v1.x-FORM-4 PR3: synthesize the standard `@form(hashmap)`
@@ -2175,6 +2200,29 @@ fn synthesize_form_hashmap_methods(
     });
 }
 
+/// `@form(heap)`: a priority queue over cell type T, ordered by the
+/// slot's `ordered_by` field (`spec/forms.md` § `@form(heap)`):
+///   `push(x: T) -> ()`                  (infallible)
+///   `pop() -> T fallible(EmptyError)`   (the root: smallest or largest key)
+///   `peek() -> T fallible(EmptyError)`  (the root, left in place)
+///   `len() -> Int`, `is_empty() -> Bool`, `clear() -> ()`
+fn synthesize_form_heap_methods(methods: &mut Vec<MethodInfo>, cell_ty: &Ty) {
+    let empty_err = Ty::Named("EmptyError".to_string());
+    let m = |name: &str, params: Vec<Ty>, ret: Ty, fallible: Option<Ty>| MethodInfo {
+        name: name.to_string(),
+        params,
+        min_params: None,
+        ret,
+        fallible,
+    };
+    methods.push(m("push", vec![cell_ty.clone()], Ty::Unit, None));
+    methods.push(m("pop", Vec::new(), cell_ty.clone(), Some(empty_err.clone())));
+    methods.push(m("peek", Vec::new(), cell_ty.clone(), Some(empty_err)));
+    methods.push(m("len", Vec::new(), Ty::Prim(PrimType::Int), None));
+    methods.push(m("is_empty", Vec::new(), Ty::Prim(PrimType::Bool), None));
+    methods.push(m("clear", Vec::new(), Ty::Unit, None));
+}
+
 /// v1.x-FORM-5: extract cell type T from a `@form(ring_buffer)`
 /// locus. Same shape as `form_vec_cell_ty` — the cell type is
 /// the (single) pool slot's `elem_ty`. Returns `Ty::Unknown` if
@@ -2290,6 +2338,15 @@ fn synthesize_form_lru_cache_methods(
         ret: Ty::Prim(PrimType::Int),
         fallible: None,
     });
+    // Take-semantics (friction sweep 2026-10-12): the entry comes out
+    // as the caller's own value; a miss is a KeyError.
+    methods.push(MethodInfo {
+        name: "remove".to_string(),
+        params: vec![key_ty.clone()],
+        min_params: None,
+        ret: value_ty.clone(),
+        fallible: Some(Ty::Named("KeyError".to_string())),
+    });
 }
 
 /// Put the builtin types ([`crate::builtin_types::BUILTIN_TYPES`])
@@ -2298,16 +2355,16 @@ fn synthesize_form_lru_cache_methods(
 /// `BusUnmatchedKey` publish payload. A synthesized `@form` method's,
 /// a `bounded` push's and a fallible stdlib call's error type then
 /// resolves with its fields. With `ranges` (a type declares a `range:`
-/// clause, GH #1076), the `RangeError` a narrowing carries; with
-/// `quantities` (a type is a quantity or a point, U3), the `InexactError`
-/// a conversion that divides carries.
+/// clause, GH #1076), the `RangeError` a narrowing carries. The
+/// `InexactError` a conversion that divides carries (a quantity's, U3,
+/// or a Decimal's `.rescale(S)`) is in every program.
 ///
 /// Idempotent per name: a name the scope already holds (declared by
 /// user code or a stdlib `.hl` file) wins, so a project that shipped
 /// its own error shapes keeps them (and `check_stdlib_error_shadowing`
 /// says when one cannot stand in for the stdlib's). The injected
 /// entries carry a zero span.
-pub(crate) fn inject_builtin_types(scope: &mut TopScope, fail_topics: bool, ranges: bool, quantities: bool) {
+pub(crate) fn inject_builtin_types(scope: &mut TopScope, fail_topics: bool, ranges: bool) {
     use crate::builtin_types::{Injected, BUILTIN_TYPES};
     let zero = Span::new(0, 0);
     for t in BUILTIN_TYPES {
@@ -2315,7 +2372,6 @@ pub(crate) fn inject_builtin_types(scope: &mut TopScope, fail_topics: bool, rang
             Injected::Always => true,
             Injected::WhenAFailTopic => fail_topics,
             Injected::WhenARange => ranges,
-            Injected::WhenAQuantity => quantities,
         };
         if !injected || scope.symbols.contains_key(t.name) {
             continue;
@@ -2415,8 +2471,8 @@ fn scan_items_for_stdlib_usage(items: &[TopDecl], out: &mut StdlibErrorUsage) {
                 if let Some(form) = &l.form {
                     let error = match form.name.name.as_str() {
                         "vec" => Some("IndexError"),
-                        "hashmap" => Some("KeyError"),
-                        "ring_buffer" => Some("EmptyError"),
+                        "hashmap" | "lru_cache" => Some("KeyError"),
+                        "ring_buffer" | "heap" => Some("EmptyError"),
                         _ => None,
                     };
                     if let Some(error) = error {
@@ -2740,7 +2796,7 @@ fn prim_display(p: PrimType) -> &'static str {
         PrimType::Int => "Int",
         PrimType::Uint => "Uint",
         PrimType::Float => "Float",
-        PrimType::Decimal => "Decimal",
+        PrimType::Decimal(s) => crate::ty::decimal_name(s),
         PrimType::Bool => "Bool",
         PrimType::String => "String",
         PrimType::Time => "Time",
@@ -2760,7 +2816,7 @@ fn infer_literal_ty(e: &Expr) -> Ty {
     match e {
         Expr::Literal(Literal::Int(_), _) => Ty::Prim(PrimType::Int),
         Expr::Literal(Literal::Float(_), _) => Ty::Prim(PrimType::Float),
-        Expr::Literal(Literal::Decimal(_), _) => Ty::Prim(PrimType::Decimal),
+        Expr::Literal(Literal::Decimal(_), _) => Ty::Prim(PrimType::DECIMAL),
         Expr::Literal(Literal::String(_), _) => Ty::Prim(PrimType::String),
         Expr::Literal(Literal::Bool(_), _) => Ty::Prim(PrimType::Bool),
         // A literal of the stdlib's time catalogue is a `Duration` (U4).

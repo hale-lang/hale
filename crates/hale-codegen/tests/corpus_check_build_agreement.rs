@@ -1005,6 +1005,54 @@ fn an_array_literals_elements_each_convert_from_their_own_type() {
     assert_eq!(build_and_run_probe(meet, "unit_mixed_array_meet"), Ok("1000msec\n1500msec\n".to_string()), "{}", meet);
 }
 
+/// `Decimal<S>` (review of #1532): a composite literal holding a Decimal
+/// flows element by element into its place. Two divergences: the check
+/// accepted `[1.0d]` where `[Decimal; 2]` is expected (adopting the
+/// elements' scale skipped the length, and the build read past a
+/// one-element allocation), and refused nothing but built nothing for
+/// `[a, 2.34d]` into `[Decimal<2>; 2]` (the literal kept scale 9 because
+/// its neighbour was typed, and the build refused the element type).
+/// The first is now the check's refusal; the second, and the nested,
+/// tuple, repeated, bounded, generic-field, `if` and `match` shapes,
+/// check, build and print.
+///
+/// Plain string literals, for the reason given above.
+#[test]
+fn a_decimal_composite_literal_flows_element_by_element() {
+    let short = "fn main() { let values: [Decimal; 2] = [1.0d]; println(values[1]); }\n";
+    let program = hale_syntax::parse_source(short).expect("parses");
+    let errors: Vec<hale_syntax::Diag> =
+        entries::check_program(&program).into_iter().filter(|d| d.is_error()).collect();
+    assert_eq!(errors.len(), 1, "one error from the check: {:?}", errors);
+    assert_eq!(errors[0].span.slice(short), "[1.0d]");
+    assert_eq!(sweep_verdict(short, "hale_cb_decimal_short_array"), Verdict::Skipped("the checker rejects it"));
+    let mixed = "type Box<T> { value: T; }\n\
+                 type W { s: bounded[Decimal<2>; 4]; }\n\
+                 fn main() {\n\
+                     let a: Decimal<2> = 1.23d;\n\
+                     let xs: [Decimal<2>; 2] = [a, 2.34d];\n\
+                     let ys: [Decimal<2>; 2] = [2.35d, a];\n\
+                     let n: [[Decimal<2>; 2]; 2] = [[a, 0.01d], [0.02d, 0.03d]];\n\
+                     let t: (Decimal<18>, Int, Decimal<2>) = (0.000000000000000001d, 3, a);\n\
+                     let w = W { };\n\
+                     push(w.s, 0.04d) or raise;\n\
+                     let b: Box<Decimal<18>> = Box { value: 0.000000000000000005d };\n\
+                     let r: [Decimal<2>; 3] = [0.07d; 3];\n\
+                     let k = 1;\n\
+                     let y = if k > 0 { 0.06d } else { a };\n\
+                     let m = match k { 0 -> a, _ -> 0.08d, };\n\
+                     println(xs[1]); println(ys[0]); println(n[0][1]); println(n[1][0]);\n\
+                     println(t.0); println(t.2); println(f\"{w.s}\"); println(b.value);\n\
+                     println(r[2]); println(y); println(m);\n\
+                 }\n";
+    assert_eq!(
+        build_and_run_probe(mixed, "decimal_mixed_composites"),
+        Ok("2.34\n2.35\n0.01\n0.02\n0.000000000000000001\n1.23\n[0.04]\n0.000000000000000005\n0.07\n0.06\n0.08\n".to_string()),
+        "{}",
+        mixed
+    );
+}
+
 /// GH #1076 (U4, review 1): a literal is its quantity at the quantity's
 /// denomination when its count there is whole, whatever its unit's factor
 /// alone is. The rule tested the factor, so `1000mg` of a `Mass` counted
@@ -2168,5 +2216,29 @@ fn the_friction_sweep_shapes_agree() {
             "the check refuses it, so the build is never reached:\n{}",
             src
         );
+    }
+}
+
+/// `bounded[Time; N]` checked clean and the build refused its element
+/// type ("element type Time not supported"): a `Time` is the i64 a
+/// `Duration` is, so it lowers as a scalar element, in a type's field and
+/// in a locus's params. Behaviour: tests/hale/bounded_time_test.hl.
+///
+/// Plain string literals, for the reason given above.
+#[test]
+fn a_bounded_of_time_checks_and_builds() {
+    let builds = [
+        ("type W { seen: bounded[Time; 3]; }\n\
+          fn main() { let mut w = W { }; push(w.seen, `2026-05-08T12:00:00Z`) or { }; println(count(w.seen)); }\n",
+         "hale_cb_bounded_time_field"),
+        ("locus L {\n\
+          params { marks: bounded[Time; 2]; }\n\
+          run() { push(self.marks, `2026-05-08T12:00:00Z`) or { }; for x in self.marks { println(x); } }\n\
+          }\n\
+          fn main() { L { }; }\n",
+         "hale_cb_bounded_time_param"),
+    ];
+    for (src, tag) in builds {
+        assert_eq!(sweep_verdict(src, tag), Verdict::Built, "{}", src);
     }
 }

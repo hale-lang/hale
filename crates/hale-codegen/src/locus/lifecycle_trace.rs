@@ -129,7 +129,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .build_call(dissolve_fn, &[self_ptr.into()], &format!("{}.dissolve.call", locus_name))
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
             }
-            Ok(())
+            cx.emit_lru_evict_remaining(info, self_ptr, locus_name)
         })
     }
 

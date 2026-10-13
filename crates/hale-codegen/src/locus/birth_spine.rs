@@ -72,11 +72,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     }
 
     /// Line 6 at a baked direct publish: while any subscriber's readiness
-    /// window is open, the publish goes through
-    /// `lotus_bus_dispatch_static_direct`, whose gate parks a cell for a
-    /// subscriber not yet born; otherwise the baked call runs. Leaves the
-    /// builder at the baked path's start and returns the block both
-    /// paths join at.
+    /// window is open (`readiness`: some subscriber owes one), the publish
+    /// goes through `lotus_bus_dispatch_static_direct`, whose gate parks a
+    /// cell for a subscriber not yet born; so it does, where a subscriber
+    /// may have another cell queued (`order`), while a cell this thread
+    /// sent earlier still waits on its own queue (one publisher's order,
+    /// `lotus_local_queued`), where the helper queues it behind that cell.
+    /// Otherwise the baked call runs. Leaves the builder at the
+    /// baked path's start and returns the block both paths join at.
     pub(crate) fn emit_direct_publish_readiness_guard(
         &mut self,
         func: FunctionValue<'ctx>,
@@ -84,9 +87,19 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         subject: inkwell::values::BasicValueEnum<'ctx>,
         payload: inkwell::values::BasicValueEnum<'ctx>,
         size: inkwell::values::IntValue<'ctx>,
+        readiness: bool,
+        order: bool,
     ) -> Result<inkwell::basic_block::BasicBlock<'ctx>, CodegenError> {
         let e = |e: inkwell::builder::BuilderError| CodegenError::LlvmEmit(e.to_string());
-        let held = self.emit_any_subscriber_unready()?;
+        let held = match (readiness, order) {
+            (true, true) => {
+                let unready = self.emit_any_subscriber_unready()?;
+                let queued = self.emit_local_queued()?;
+                self.builder.build_or(unready, queued, "bus.direct.held.or_queued").map_err(e)?
+            }
+            (true, false) => self.emit_any_subscriber_unready()?,
+            (false, _) => self.emit_local_queued()?,
+        };
         let held_bb = self.context.append_basic_block(func, "bus.direct.unready.helper");
         let baked_bb = self.context.append_basic_block(func, "bus.direct.ready");
         let join_bb = self.context.append_basic_block(func, "bus.direct.join");
@@ -102,6 +115,36 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         self.builder.build_unconditional_branch(join_bb).map_err(e)?;
         self.builder.position_at_end(baked_bb);
         Ok(join_bb)
+    }
+
+    /// i1: a cell this thread sent earlier may still wait on its own
+    /// delivery queue (`lotus_local_queued`, one load of a thread-local
+    /// word). Every
+    /// devirtualized publish consults it: a direct call while it is up
+    /// would overtake that cell, so the publish queues instead (one
+    /// publisher's order, spec/runtime.md § "Bus message router").
+    pub(crate) fn emit_local_queued(&mut self) -> Result<inkwell::values::IntValue<'ctx>, CodegenError> {
+        let e = |e: inkwell::builder::BuilderError| CodegenError::LlvmEmit(e.to_string());
+        let i64_t = self.context.i64_type();
+        let g = match self.module.get_global("lotus_local_queued") {
+            Some(g) => g,
+            None => {
+                // Thread-local on every target: wasm32's backend lowers a
+                // thread-local to a plain global, as it does the runtime's
+                // `__thread` words, without threads.
+                let g = self.module.add_global(i64_t, None, "lotus_local_queued");
+                g.set_thread_local(true);
+                g.set_thread_local_mode(Some(inkwell::ThreadLocalMode::InitialExecTLSModel));
+                g
+            }
+        };
+        let n = self.builder.build_load(i64_t, g.as_pointer_value(), "bus.local.queued").map_err(e)?.into_int_value();
+        if let Some(inst) = n.as_instruction() {
+            inst.set_alignment(8).map_err(|m| CodegenError::LlvmEmit(m.to_string()))?;
+        }
+        self.builder
+            .build_int_compare(inkwell::IntPredicate::NE, n, i64_t.const_zero(), "bus.local.queued.up")
+            .map_err(e)
     }
 
     /// All optimized publish paths consult the same readiness windows.

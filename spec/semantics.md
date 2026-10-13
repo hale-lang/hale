@@ -361,7 +361,16 @@ an `Int`) are reported by the typechecker. Neither reaches codegen.
    `birth()` may publish to its own subscriptions; delivery to the
    locus becomes eligible once `birth()` (and its `birth_check`)
    has completed, and what was published to it before waits, in
-   order (`runtime.md` § "Lifecycle obligations", line 6).
+   order (`runtime.md` § "Lifecycle obligations", line 6). A
+   cooperative locus's subscriptions that take no key wire up as
+   soon as its region exists, before its params are built, so what
+   its params' children publish to it while they are born or run
+   waits for it too (2026-10-12); a keyed one waits for the params
+   its key reads, a pinned locus's and an accepted child's for
+   step 2's `accept`, and one bound to an `shm_ring` (its reader
+   calls the handler outside the window) for the params too. A publish made before its subscriber is built
+   at all reaches no subscription of it; `hale check` warns where it
+   can see one in a body.
 5. `birth(args)` runs synchronously.
 6. Modes are reachable for invocation.
 7. If `run` declared, scheduled to run on the locus's
@@ -2526,13 +2535,18 @@ payload picks the consumer mode:
   fallible(JsonError)` that parses the object in a single pass (driving
   the `std::json` object cursor), dispatching each key to the matching
   field and reading the value by the field's declared scalar type
-  (`Int` / `Float` / `Bool` / `String`). The key is the tag value, else
+  (`Int` / `Float` / `Bool` / `String` / `Decimal<S>`). A `Decimal<S>`
+  field is a JSON number read at the field's scale, every digit kept; a
+  number with a nonzero digit past the scale (or not a number) is
+  `JsonError { kind: "wrong_type", field }`, never truncated or read as
+  zero (spec/types.md § Decimal<S>). The key is the tag value, else
   the field name; unmatched keys (and nested objects/arrays under them)
   are skipped. A missing field raises `JsonError { kind, field }` unless
   the field declares a literal default (`= "USD"`), which fills it.
   `from_json` is `fallible`, so callers must address it. The same tags
   drive emit: `Type::to_json(v) -> String` serializes a value back (bare
-  numbers/bools, escaped strings, nested structs recursed), round-tripping
+  numbers/bools, a Decimal's exact digits at its scale, escaped strings,
+  nested structs recursed), round-tripping
   with `from_json`; it is not fallible. A field whose
   type is another generated JSON struct is parsed recursively (the nested
   object's raw text is handed to that type's parser; a nested failure
@@ -2813,7 +2827,13 @@ rewrite — observable behavior is identical modulo timing
 (synchronous instead of cooperative-deferred) — *provided
 publisher and subscriber share an execution context* (see the
 placement carve-out below; that condition is what keeps the
-rewrite observably transparent).
+rewrite observably transparent), and provided nothing the
+publishing thread sent earlier still waits on its own queue:
+one publisher's order holds across topics (`runtime.md` § "Bus
+message router", "One publisher's order"), so while such a cell
+waits the send is queued to its subscriber behind it, and only
+otherwise is it the direct call (2026-10-12: before, `TA <- a;
+TB <- b;` ran TB's rewritten handler ahead of TA's queued ones).
 
 Out of scope for v1 (fall through to bus dispatch unchanged):
 
@@ -4531,6 +4551,40 @@ per-instance one — two holders constructed with different impls
 race on one slot, last designation wins, the same as two holders
 with different defaults.
 
+**Holding without designating (GH #731).** A `perspective(P)`
+param with **no initializer** holds the slot: a construction may
+omit it (it is not a required param, unlike any other field with no
+initializer), and omitted it builds no impl, owns nothing, stores no
+impl pointer in the field and leaves `__persp.<P>` as it is — calls
+through the field dispatch to whatever the program designated, and a
+later `reperspective` by any holder reaches it through the same slot.
+A construction that does name an impl
+(`Attempt { performer: Impl { } }`) designates, exactly as the
+override above. Two rules keep the
+slot from being read empty:
+
+- **The build** refuses a program in which an instantiation it lowers
+  holds `P` this way and no instantiation it lowers designates `P`
+  — the error names `P` and the holding field `L.f`: "holds its slot
+  without designating it, and nothing in the program designates it".
+  A designation in a locus nothing builds does not count.
+- **At run time**, a call through a perspective that some declared
+  holder may hold without designating first checks the slot; a call
+  that runs before any designation — a field constructed ahead of the
+  designating one, whose birth calls through it — stops the program
+  with "runtime error: perspective `P`: `m` was called before
+  anything designated the perspective" on stderr and exit status 1.
+  Designation is ordered as construction is: a holder's fields in declaration
+  order, each child's birth before its next sibling's construction.
+  A perspective every holder designates is not checked: its slot is
+  written before any holder can call.
+
+What a call through a held slot reaches is, to every analysis that reads
+the call graph (effects, the portable capability check, the allocation
+summary), each locus that `serves P` — the only loci a designation may
+name — so a held slot is judged as the impls it can hold, never as an
+unknown receiver.
+
 **Cost.** Steady state is one load + one predicted indirect call
 per call into a perspective — near-direct. The mechanism is
 Linux/native-agnostic (no new runtime dependency); a program that
@@ -4790,18 +4844,26 @@ disposition. (GH #1039: before 2026-09-24 the runtime caught
 neither signal, so every program ended at the signal and a
 `while !self.draining` loop never saw a drain.)
 
-**When `main`'s `run()` ends first.** A `main` locus whose `run()`
-returns while a child's `run()` still loops keeps the process alive
-until that `run()` returns — when the child is pinned or on a
-classic cooperative pool (`main`'s own included): a pinned receive
-loop, a server whose `main` has no `run()` at all. Ending such a
-program is what SIGINT / SIGTERM are for; the drain reaches the
-child the same way whether `main`'s `run()` is still running or has
-returned. An **`async_io`** child is the exception: its `run()`
-parked on a timer or an fd when `main`'s `run()` ends does not keep
-the process alive — the pool shuts down, the parked coroutine is
-abandoned (`runtime.md` § the wakeable park) without seeing a drain,
-and the child dissolves with the rest of the tree.
+**When `main`'s `run()` ends first.** Teardown follows the
+ownership tree: when a `main` locus's `run()` returns, the first step
+of its teardown raises the drain for its tree, steps 1–3 above
+without a signal (`runtime.md` § "Lifecycle obligations", line 15).
+A child whose `run()` still loops on `while !self.draining` — pinned,
+on a classic cooperative pool or on an `async_io` one — sees it, a
+timed wait it is in returns early, its `run()` returns and it is
+joined; the tree then dissolves, leaves first. So a `main` whose
+`run()` returns at once — or that declares none — ends its program
+once its children's loops see the drain: a server stays up because
+`main`'s `run()` waits (`while !self.draining { std::time::sleep(…); }`,
+or `std::api::run_until_stopped`), and SIGINT / SIGTERM end that wait.
+A child's `run()` that never reads `self.draining` keeps the process
+alive until it returns, as under a signal; an `async_io` child parked
+on an untimed wait (a plain `accept`) is abandoned at its pool's
+shutdown (`runtime.md` § the wakeable park). The tree's drain ends
+with its teardown: a `main` locus built afterwards starts undrained,
+and a signal's drain is neither masked nor ended by it. (Before
+2026-10-12 a pinned or classic child's loop kept the process alive
+after `main`'s `run()` returned, until a signal ended it.)
 
 **Under `hale run`.** `hale run` stands aside for the program's
 drain: it ignores SIGINT (a terminal's Ctrl-C reaches the program

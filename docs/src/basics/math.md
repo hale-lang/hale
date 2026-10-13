@@ -144,15 +144,55 @@ value is the same number); when a display needs fixed places,
 `std::decimal::format(price, 2)` renders exactly two fraction
 digits with half-up rounding.
 
-A `Decimal` has exactly nine digits after the point. A literal with
+A plain `Decimal` has exactly nine digits after the point. A literal with
 a nonzero digit past the ninth, like `0.1234567891d`, is a compile
 error at the literal, and `std::str::parse_decimal` of such text
 takes its `or` branch: neither drops the digit in silence. Arithmetic
 stays at nine places and truncates toward zero past them, so
 `1.0d / 3.0d` is `0.333333333` and a product smaller than
-`0.000000001d` is `0`. Where the tenth digit matters, scale the
-quantity (count in micro-units) or round explicitly with
-`std::decimal::format`.
+`0.000000001d` is `0`.
+
+### The scale is part of the type
+
+Nine places is a default, not a limit. `Decimal<S>` holds `S` digits
+after the point, `S` from 0 to 18, and plain `Decimal` is
+`Decimal<9>`. Cents are `Decimal<2>`; a token counted in 10⁻¹⁸ units
+is `Decimal<18>`:
+
+```hale,fragment
+let price: Decimal<2>  = 19.99d;
+let wei:   Decimal<18> = 0.000000000000000001d;
+let total = price * 3d;         // 59.97, a Decimal<2>
+```
+
+A literal takes the scale of wherever it goes — the annotation, the
+parameter, the field, the other side of an operator — and has to fit
+it: `let p: Decimal<2> = 1.505d;` is a compile error at `1.505d`, not
+a quiet `1.50`. `std::str::parse_decimal` reads at the scale its
+result is stored at, and refuses text with more places.
+
+Two scales are two types. Adding a `Decimal<18>` to a `Decimal` is a
+compile error, naming both; say which scale you mean with
+`.rescale(T)`. Widening is exact. Narrowing drops digits, so it asks
+what to do with them, the same `or` a unit conversion asks:
+
+```hale,fragment
+let precise: Decimal<18> = 1d / 3d;          // 0.333333333333333333
+let cents = precise.rescale(2) or half_even; // 0.33, rounded
+let exact = precise.rescale(2) or raise;     // fails: a digit would be lost
+let wide  = cents.rescale(18);               // exact
+```
+
+`or trunc`, `or floor`, `or ceil`, `or half_up` and `or half_even`
+round; `or <value>`, `or raise` and `or handler(err)` keep the value
+only when nothing nonzero is dropped. A bare narrowing `rescale` is a
+compile error. Arithmetic at every scale truncates toward zero past
+its last place, as plain `Decimal` does; where a digit matters, widen
+first, or round explicitly with `rescale` or `std::decimal::format`.
+
+A `Decimal<S>` prints at its scale (trailing zeros trimmed), crosses
+the bus as the same 16 bytes at every scale, and a JSON field of one
+writes and reads its exact digits.
 
 Use `Decimal` for prices, balances, quantities, anything where a
 penny of rounding error is a bug. Use `Float` for measurements,

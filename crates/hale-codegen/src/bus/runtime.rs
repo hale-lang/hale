@@ -520,10 +520,11 @@ impl<'ctx, 'p> BusRuntime<'ctx> for Cx<'ctx, 'p> {
             // it is dropped at materialization (GH #703), and it waits
             // for a handler of it that has started (R52). On an
             // `async_io` pool its handlers run while the constructing
-            // body parks; on a classic pool, whose cells are
-            // handler-atomic, a delivery waits for the worker, which the
-            // constructing body holds for the subscriber's whole life,
-            // and is dropped with it.
+            // body parks; on a classic pool, at the body's park points
+            // inside a run() (`lotus_pool_run_park_drain`); elsewhere a
+            // delivery waits for the worker, which the constructing body
+            // holds for the subscriber's whole life, and is dropped with
+            // it.
             let current_fn = self
                 .module
                 .get_function("lotus_coop_pool_current")

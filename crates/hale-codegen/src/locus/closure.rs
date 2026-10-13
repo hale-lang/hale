@@ -62,6 +62,20 @@ impl<'ctx, 'p> LocusClosure<'ctx> for Cx<'ctx, 'p> {
             .get(closure_name)
             .cloned()
             .unwrap_or_default();
+        // A closure body has no method scratch, so what its operands
+        // allocate lands in `self.__arena` for the locus's life. On a
+        // form locus that is the cell arena, and a cell read there
+        // (`self.get(k)` in the assertion) is a copy — every synced
+        // map's read copies the cell out — so each check grew the
+        // arena by the cells it read (31 MB over 20 000 ticks reading
+        // a 400-byte String and Bytes). The operands are scalars, so
+        // a scratch of their own, destroyed once they are computed,
+        // holds everything the evaluation allocates.
+        let closure_scratch =
+            self.current_method_scratch.is_none() && info.capacity_slots.iter().any(|sl| sl.form.is_some());
+        if closure_scratch {
+            self.open_method_scratch()?;
+        }
         if !slots.is_empty() {
             for (i, slot) in slots.iter().enumerate() {
                 self.update_accumulator_slot(
@@ -103,6 +117,9 @@ impl<'ctx, 'p> LocusClosure<'ctx> for Cx<'ctx, 'p> {
         // Substitution complete; clear ctx so any later expression
         // lowering on this thread doesn't accidentally hit it.
         self.accumulator_ctx = None;
+        if closure_scratch {
+            self.close_method_scratch()?;
+        }
 
         // Track the signed-i64 diff for Int/Duration closures so
         // we can populate ClosureViolation.diff at routing time.
@@ -113,7 +130,7 @@ impl<'ctx, 'p> LocusClosure<'ctx> for Cx<'ctx, 'p> {
         let mut int_diff: Option<inkwell::values::IntValue<'ctx>> = None;
 
         let pass = match &lt {
-            CodegenTy::Int | CodegenTy::Duration | CodegenTy::Decimal => {
+            CodegenTy::Int | CodegenTy::Duration | CodegenTy::Decimal(_) => {
                 let l = lv.into_int_value();
                 let r = rv.into_int_value();
                 let t = tv.into_int_value();
@@ -123,7 +140,7 @@ impl<'ctx, 'p> LocusClosure<'ctx> for Cx<'ctx, 'p> {
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
                 int_diff = Some(diff);
                 let zero: inkwell::values::IntValue<'ctx> =
-                    if matches!(lt, CodegenTy::Decimal) {
+                    if matches!(lt, CodegenTy::Decimal(_)) {
                         i128_const(self.context, 0)
                     } else {
                         self.context.i64_type().const_int(0, false)
@@ -548,11 +565,16 @@ impl<'ctx, 'p> LocusClosure<'ctx> for Cx<'ctx, 'p> {
         }
 
         // bare_bb: no handler — emit the v0 fallback report and
-        // exit(1).
+        // exit(1). The report names the epoch the check ran at: a
+        // tick closure failing mid-`main` is not a dissolve-time
+        // failure, and saying so sent a downstream handoff looking
+        // for lost output at teardown.
         self.builder.position_at_end(bare_bb);
         let msg = format!(
-            "ClosureViolation: locus `{}` closure `{}` failed at dissolve\n",
-            locus_name, closure_name
+            "ClosureViolation: locus `{}` closure `{}` failed {}\n",
+            locus_name,
+            closure_name,
+            epoch_moment(&epoch)
         );
         let msg_ptr = self.global_string(&msg);
         let dprintf_fn = self
@@ -594,4 +616,17 @@ impl<'ctx, 'p> LocusClosure<'ctx> for Cx<'ctx, 'p> {
         Ok(())
     }
 
+}
+
+/// Where a closure's check ran, worded for the no-handler report
+/// ("closure `c` failed at tick").
+fn epoch_moment(epoch: &EpochSpec) -> &'static str {
+    match epoch {
+        EpochSpec::Tick => "at tick (after a delivered cell)",
+        EpochSpec::Duration(_) => "at its duration epoch",
+        EpochSpec::Birth => "at birth",
+        EpochSpec::Dissolve => "at dissolve",
+        EpochSpec::Explicit => "at an explicit check",
+        EpochSpec::Inline => "at `violate`",
+    }
 }

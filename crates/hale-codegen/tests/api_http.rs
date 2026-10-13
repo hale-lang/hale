@@ -369,3 +369,287 @@ fn a_receiver_built_where_the_serving_locus_is_constructed_serves_and_the_addres
     assert_eq!((got.status, got.body.as_str()), (200, "{\"n\":105}"), "the instance the literal at the construction site builds answers");
     assert!(server.finish().status.success());
 }
+
+/// `CONSTRUCTED` with CORS answered for two origins.
+fn cors_program() -> PathBuf {
+    static BUILT: OnceLock<PathBuf> = OnceLock::new();
+    BUILT
+        .get_or_init(|| {
+            let bin = harness::unique_bin("api_http_cors");
+            let src = CONSTRUCTED.replace(
+                "principals: self.bearer, roles: self.roles }",
+                "principals: self.bearer, roles: self.roles, cors: \"https://app.example, http://localhost:5173\" }",
+            );
+            assert_ne!(src, CONSTRUCTED, "the serve site took the cors field");
+            build_opts::build_source(&src, &bin, &build_opts::options()).expect("build the CORS program");
+            bin
+        })
+        .clone()
+}
+
+fn preflight(port: u16, path: &str, origin: &str) -> Response {
+    request(
+        port,
+        "OPTIONS",
+        path,
+        &[h("Origin", origin), h("Access-Control-Request-Method", "POST"), h("Access-Control-Request-Headers", "authorization, content-type")],
+        None,
+    )
+}
+
+#[test]
+fn a_cors_preflight_from_an_allowed_origin_is_answered_and_others_get_no_cors_headers() {
+    let server = Server::start(&cors_program(), &[]);
+    server.ready();
+    // an allowed origin's preflight, of a call and of the description: 204,
+    // the origin echoed, what the routes take, and no credential needed
+    for (path, origin) in [("/call/Echoer::echo", "https://app.example"), ("/.description", "http://localhost:5173")] {
+        let got = preflight(server.port, path, origin);
+        assert_eq!(got.status, 204, "{path} from {origin}: {}", got.body);
+        assert_eq!(got.body, "", "a 204 has no body");
+        assert_eq!(got.header("Access-Control-Allow-Origin"), Some(origin), "{path}");
+        assert_eq!(got.header("Access-Control-Allow-Methods"), Some("POST, GET, OPTIONS"));
+        assert_eq!(got.header("Access-Control-Allow-Headers"), Some("Authorization, Content-Type, Hale-Surface-Digest"));
+        assert_eq!(got.header("Access-Control-Max-Age"), Some("600"));
+        assert_eq!(got.header("Vary"), Some("Origin"));
+    }
+    // an origin the list does not name: refused, and nothing the browser
+    // would take as leave to send the call
+    let other = preflight(server.port, "/call/Echoer::echo", "https://evil.example");
+    assert_eq!(other.status, 403, "{}", other.body);
+    assert_eq!(other.header("Access-Control-Allow-Origin"), None);
+    assert_eq!(other.header("Access-Control-Allow-Methods"), None);
+    // an OPTIONS of a path the transport does not serve is still malformed
+    let elsewhere = preflight(server.port, "/elsewhere", "https://app.example");
+    assert_eq!(elsewhere.status, 400, "{}", elsewhere.body);
+
+    // the call itself: an allowed origin can read the answer
+    let auth = [bearer("t-alice"), h("Origin", "https://app.example")];
+    let got = request(server.port, "POST", "/call/Echoer::echo", &auth, Some("{\"n\":5}"));
+    assert_eq!((got.status, got.body.as_str()), (200, "{\"n\":105}"));
+    assert_eq!(got.header("Access-Control-Allow-Origin"), Some("https://app.example"));
+    assert_eq!(got.header("Vary"), Some("Origin"));
+    assert_eq!(got.header("Access-Control-Allow-Methods"), None, "only a preflight states the methods");
+    // and its refusals too, so a page can tell why
+    let nobody = request(server.port, "POST", "/call/Echoer::echo", &[h("Origin", "https://app.example")], Some("{\"n\":5}"));
+    assert_eq!(nobody.status, 401, "{}", nobody.body);
+    assert_eq!(nobody.header("Access-Control-Allow-Origin"), Some("https://app.example"));
+    // a disallowed origin's call is served (CORS is the browser's guard, not
+    // authentication) but carries no CORS header, so a page cannot read it
+    let other = request(server.port, "POST", "/call/Echoer::echo", &[bearer("t-alice"), h("Origin", "https://evil.example")], Some("{\"n\":5}"));
+    assert_eq!(other.status, 200, "{}", other.body);
+    assert_eq!(other.header("Access-Control-Allow-Origin"), None);
+    assert!(server.finish().status.success());
+}
+
+#[test]
+fn without_cors_a_preflight_is_malformed_and_no_response_carries_cors_headers() {
+    let bin = harness::unique_bin("api_http_no_cors");
+    build_opts::build_source(CONSTRUCTED, &bin, &build_opts::options()).expect("build the program");
+    let server = Server::start(&bin, &[]);
+    server.ready();
+    let pre = preflight(server.port, "/call/Echoer::echo", "https://app.example");
+    assert_eq!(pre.status, 400, "{}", pre.body);
+    assert!(pre.body.contains("\"kind\":\"malformed\""), "{}", pre.body);
+    assert_eq!(pre.header("Access-Control-Allow-Origin"), None);
+    assert_eq!(pre.header("Vary"), None);
+    let got = request(server.port, "POST", "/call/Echoer::echo", &[bearer("t-alice"), h("Origin", "https://app.example")], Some("{\"n\":5}"));
+    assert_eq!(got.status, 200, "{}", got.body);
+    assert_eq!(got.header("Access-Control-Allow-Origin"), None);
+    assert_eq!(got.header("Vary"), None);
+    assert!(server.finish().status.success());
+}
+
+/// A library seed that declares a surface and the receivers its rows name,
+/// for an application to serve (spec/api.md § Surfaces and their rows: "how
+/// a library ships one"), and a second surface whose rows are all qualified:
+/// they name a locus of the seed the library imports, so no row tells the
+/// block's seed, only where it was declared does.
+const LIBRARY: &str = r#"
+import "../base" as base;
+
+type Ping { n: Int; }
+type Pong { n: Int; }
+
+api Svc { rpc Echoer::echo; }
+api Relay { rpc base::Doubler::double; }
+
+locus Echoer {
+    params { base: Int = 0; }
+    fn echo(p: Ping) -> Pong { return Pong { n: self.base + p.n }; }
+}
+"#;
+
+/// The seed the library imports.
+const BASE: &str = r#"
+type N { n: Int; }
+
+locus Doubler {
+    fn double(x: N) -> N { return N { n: x.n * 2 }; }
+}
+"#;
+
+/// The application: it imports the library as `lib` and serves `@SURFACE@`
+/// over `http::Rpc`, its receivers a `lib::Echoer` and a `base::Doubler` it
+/// holds. Its own surface `Own` names the library's locus, as the
+/// library's `Relay` names the base's.
+const SERVES_LIBRARY: &str = r#"
+import "../lib" as lib;
+import "../base" as base;
+
+api Own { rpc lib::Echoer::echo; }
+
+locus Tokens {
+    fn principal(token: String) -> std::api::Principal {
+        if token == "t-alice" { return std::api::Principal { mode: "bearer", name: "alice" }; }
+        return std::api::Principal { mode: "bearer", name: "" };
+    }
+    fn refused() -> String { return "no such token"; }
+}
+
+locus Nobody {
+    fn holds(p: std::api::Principal, r: String) -> Bool { return false; }
+}
+
+main locus Desk {
+    params {
+        bearer: Tokens = Tokens { };
+        roles: Nobody = Nobody { };
+        echoer: lib::Echoer = lib::Echoer { base: 100 };
+        doubler: base::Doubler = base::Doubler { };
+    }
+    run() {
+        let h = api::serve(@SURFACE@, http::Rpc { bind: std::env::var("BIND"), codec: json, principals: self.bearer, roles: self.roles }, as: "svc", bound: 4, on_full: refuse);
+        let trigger = std::env::var("TRIGGER");
+        while !self.draining && (std::io::fs::read_file(trigger) or "") == "" {
+            std::time::sleep(10ms);
+        }
+        h.stop();
+    }
+}
+
+fn main() { Desk { }; }
+"#;
+
+/// The application and the library laid out as `import "../lib"` reads
+/// them; the entry.
+fn library_seed(name: &str, surface: &str) -> PathBuf {
+    library_seed_shadowed(name, surface, None)
+}
+
+/// [`library_seed`], the library also declaring a locus named `Svc`, as
+/// the surface is, in `file` (`svc.hl`, the surface's own, or another),
+/// and the application holding one (`lib::Svc { tag: 7 }`).
+fn library_seed_shadowed(name: &str, surface: &str, file: Option<&str>) -> PathBuf {
+    let dir = harness::unique_dir(name);
+    std::fs::create_dir_all(dir.join("app")).expect("the app dir");
+    std::fs::create_dir_all(dir.join("lib")).expect("the lib dir");
+    std::fs::create_dir_all(dir.join("base")).expect("the base dir");
+    std::fs::write(dir.join("base/n.hl"), BASE).expect("write the base");
+    std::fs::write(dir.join("lib/svc.hl"), LIBRARY).expect("write the library");
+    let mut app = SERVES_LIBRARY.replace("@SURFACE@", surface);
+    if let Some(file) = file {
+        let shadow = "\nlocus Svc { params { tag: Int = 0; } }\n";
+        let path = dir.join("lib").join(file);
+        let before = std::fs::read_to_string(&path).unwrap_or_default();
+        std::fs::write(&path, before + shadow).expect("write the shadowing locus");
+        let held = "doubler: base::Doubler = base::Doubler { };";
+        assert!(app.contains(held));
+        app = app.replace(held, &format!("{held}\n        shadow: lib::Svc = lib::Svc {{ tag: 7 }};"));
+    }
+    let entry = dir.join("app/main.hl");
+    std::fs::write(&entry, app).expect("write the app");
+    entry
+}
+
+#[test]
+fn a_surface_an_imported_seed_declares_is_served_by_its_qualified_name() {
+    let entry = library_seed("api_http_lib_surface", "lib::Svc");
+    let bin = harness::unique_bin("api_http_lib_surface");
+    build_opts::build_seed_dir(&entry, &bin, &build_opts::options()).expect("serve `lib::Svc`");
+    let server = Server::start(&bin, &[]);
+    server.ready();
+    let got = request(server.port, "POST", "/call/Echoer::echo", &[bearer("t-alice")], Some("{\"n\":5}"));
+    assert_eq!((got.status, got.body.as_str()), (200, "{\"n\":105}"), "the library's row answers through the app's receiver");
+    let described = request(server.port, "GET", "/.description", &[bearer("t-alice")], None);
+    assert!(described.body.contains("\"Svc\""), "the exposure describes the surface by its declared name: {}", described.body);
+    assert!(server.finish().status.success());
+
+    // A surface whose rows all name another seed's locus is the library's
+    // all the same: it was declared there.
+    let entry = library_seed("api_http_lib_surface_relay", "lib::Relay");
+    let bin = harness::unique_bin("api_http_lib_surface_relay");
+    build_opts::build_seed_dir(&entry, &bin, &build_opts::options()).expect("serve `lib::Relay`");
+    let server = Server::start(&bin, &[]);
+    server.ready();
+    let got = request(server.port, "POST", "/call/base::Doubler::double", &[bearer("t-alice")], Some("{\"n\":21}"));
+    assert_eq!((got.status, got.body.as_str()), (200, "{\"n\":42}"), "the all-qualified row answers");
+    assert!(server.finish().status.success());
+}
+
+#[test]
+fn a_qualified_surface_the_imported_seed_does_not_declare_is_refused_as_written() {
+    // `Own` is the application's surface, not the library's, though its
+    // one row names the library's locus: `lib::Own` names nothing, and the
+    // check refuses it in the author's spelling, where `lib::Svc` and
+    // `lib::Relay` (declared in the library, its rows all qualified) and
+    // the application's own `Own` are admitted.
+    let check = |surface: &str| -> Vec<String> {
+        let entry = library_seed("api_http_lib_surface_check", surface);
+        let snap = hale_frontend::snapshot::Snapshot::load(
+            &entry,
+            hale_frontend::frontend::LoadMode::WholeSeed,
+            &hale_frontend::source::Disk,
+            hale_frontend::snapshot::Config::check(false, false),
+        )
+        .ok()
+        .expect("a snapshot");
+        let diags = match snap.demand_check() {
+            Ok(c) => c.diags.clone(),
+            Err(b) => b.because.clone(),
+        };
+        diags.iter().filter(|d| d.is_error()).map(|d| d.message.clone()).collect()
+    };
+    for admitted in ["lib::Svc", "lib::Relay", "Own"] {
+        assert_eq!(check(admitted), Vec::<String>::new(), "{admitted}");
+    }
+    let own = check("lib::Own");
+    assert!(own.iter().any(|m| m.starts_with("serve of `lib::Own`: no surface `lib::Own` is declared")), "{own:?}");
+}
+
+/// A surface lives in a namespace of its own in the import table
+/// (`mangle::API_KEY`): a locus the library names like it, in another of
+/// its files or in the surface's own, keeps `lib::Svc` as a type (the
+/// application builds one) and `lib::Svc` in a serve site is still the
+/// surface. Before, the locus's row took the name and the surface was
+/// refused as undeclared when the two sat in different files.
+#[test]
+fn a_surface_and_a_same_named_locus_of_the_library_are_both_reached() {
+    for (file, tag) in [("shadow.hl", "other_file"), ("svc.hl", "same_file")] {
+        let entry = library_seed_shadowed(&format!("api_http_lib_surface_{tag}"), "lib::Svc", Some(file));
+        let bin = harness::unique_bin(&format!("api_http_lib_surface_{tag}"));
+        build_opts::build_seed_dir(&entry, &bin, &build_opts::options()).unwrap_or_else(|e| panic!("{file}: {e}"));
+        let snap = hale_frontend::snapshot::Snapshot::load(
+            &entry,
+            hale_frontend::frontend::LoadMode::WholeSeed,
+            &hale_frontend::source::Disk,
+            hale_frontend::snapshot::Config::check(false, false),
+        )
+        .ok()
+        .expect("a snapshot");
+        let errors: Vec<String> = match snap.demand_check() {
+            Ok(c) => c.diags.clone(),
+            Err(b) => b.because.clone(),
+        }
+        .iter()
+        .filter(|d| d.is_error())
+        .map(|d| d.message.clone())
+        .collect();
+        assert_eq!(errors, Vec::<String>::new(), "{file}");
+        let server = Server::start(&bin, &[]);
+        server.ready();
+        let got = request(server.port, "POST", "/call/Echoer::echo", &[bearer("t-alice")], Some("{\"n\":5}"));
+        assert_eq!((got.status, got.body.as_str()), (200, "{\"n\":105}"), "{file}");
+        assert!(server.finish().status.success());
+    }
+}

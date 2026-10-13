@@ -1149,10 +1149,10 @@ fn main() { App { }; }
 // ---------------------------------------------------------------
 
 /// The 11 paths the hand list named, kept as a pin: every one must
-/// still be a blocking leaf under the derived set. Seven of them
+/// still be a blocking leaf under the derived set. Eight of them
 /// (`tcp::{recv_into, recv_stamped_into, __recv, __recv_bytes,
-/// __accept_one}`, `tls::{recv_into, recv_stamped_into}`) are also
-/// in `ASYNC_IO_PARKING` — which is exactly why this lint does NOT
+/// __accept_one}`, `tls::{recv_into, recv_stamped_into, recv_bytes}`)
+/// are also in `ASYNC_IO_PARKING` — which is exactly why this lint does NOT
 /// subtract the park list: it never looks at an async_io placement
 /// (the walk `continue`s on the `where async_io` constraint), and on
 /// a classic pool those leaves take their blocking path.

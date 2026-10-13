@@ -32,6 +32,12 @@ use std::path::{Path, PathBuf};
 /// `(crate-relative path, enclosing fn, why)`.
 const ALIGNED: &[(&str, &str, &str)] = &[
     (
+        "crates/hale-cli/src/dna.rs",
+        "push_graph_lines",
+        "`hale dna init` prints its report as label-aligned lines (`graph   …`, \
+         `note    …`), the same column as the init report's other lines",
+    ),
+    (
         "crates/hale-types/src/rpc_expand.rs",
         "surface_src",
         "generated Hale source keeps its indentation so the expanded \
@@ -54,6 +60,24 @@ const ALIGNED: &[(&str, &str, &str)] = &[
         "stream_decl",
         "generated Hale source keeps its indentation so the generated \
          client is readable",
+    ),
+    (
+        "crates/hale-cli/src/api_gen/js_client.rs",
+        "struct_decl",
+        "a generated JSDoc `@typedef` aligns its ` *   name: type` \
+         field lines under the tag, as JSDoc reads them",
+    ),
+    (
+        "crates/hale-syntax/src/json_gen.rs",
+        "json_list_read",
+        "generated Hale source keeps its indentation so the expanded \
+         codec is readable in a dump",
+    ),
+    (
+        "crates/hale-syntax/src/json_gen.rs",
+        "pb_list_read",
+        "generated Hale source keeps its indentation so the expanded \
+         codec is readable in a dump",
     ),
     (
         "crates/hale-cli/src/verbs/api.rs",

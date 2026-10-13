@@ -172,8 +172,12 @@ let o2   = Order::from_json(body) or raise;
 The tag is general `key:"value"` metadata — `json:` is one consumer;
 other keys are free for future tools.
 
-Fields must be scalars — `Int` / `Float` / `Bool` / `String` — or nested
-`json:`-tagged structs. **Array fields are not supported**, by design:
+Fields must be scalars — `Int` / `Float` / `Bool` / `String` /
+`Decimal<S>` — or nested `json:`-tagged structs. A `Decimal<S>` field
+crosses as a JSON number with its exact digits (`to_json` writes
+`19.99`, not a float's approximation) and is read back at the field's
+scale: a number with more places than the scale holds is refused as the
+field's `wrong_type` rather than truncated. **Array fields are not supported**, by design:
 Hale sequences are locus-owned (there is no heap-owning value list to put
 in a struct). To read a JSON array, walk it with the [array
 cursor](#arrays) and `push` each element into a `@form(vec)` cell on a

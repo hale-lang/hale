@@ -27,15 +27,16 @@ buffer and the methods over it — `push`, `get`, `set`, `pop`,
 (here: a `{cap, len, buf}` struct with doubling realloc) and the
 method surface.
 
-The five forms and what they require:
+The six forms and what they require:
 
 | Form | Backing slot | Lowers to | Synthesized surface |
 |---|---|---|---|
-| `@form(vec)` | one `heap` | doubling contiguous buffer | `push`, `get`, `set`, `pop`, `len`, `is_empty`, `sort*` |
+| `@form(vec)` | one `heap` | doubling contiguous buffer | `push`, `get`, `set`, `pop`, `len`, `is_empty`, `sort*`, `clear`, `truncate` |
 | `@form(hashmap)` | one `pool` + `indexed_by` | intrusive open-addressing table | `set`, `get`, `has`, `remove`, `len`, `is_empty`, `key_at`, `entry_at`, `bump` |
 | `@form(set)` | one `pool` + `indexed_by` | the hashmap table, value never surfaced | `insert`, `contains -> Bool`, `remove`, `len`, `is_empty` |
 | `@form(ring_buffer, cap=N)` | one `pool` | fixed circular buffer | `push -> Bool`, `pop`, `len`, `is_full` |
-| `@form(lru_cache, cap=N)` | one `pool` + `indexed_by` | fixed keyed table, LRU eviction | `put`, `get`, `contains`, `len` |
+| `@form(lru_cache, cap=N)` | one `pool` + `indexed_by` | fixed keyed table, LRU eviction | `put`, `get`, `contains`, `len`, `remove` |
+| `@form(heap)` | one `heap` + `ordered_by min\|max <field>` | binary heap over a doubling buffer | `push`, `pop`, `peek`, `len`, `is_empty`, `clear` |
 
 `get` / `pop` / `remove` (and a vec's `set`) are `fallible`
 (bounds / missing-key / empty); `push` on `vec` is infallible, on `ring_buffer` returns
@@ -43,7 +44,15 @@ The five forms and what they require:
 the cap-bounded keyed form: `put` is infallible and silently
 evicts the least-recently-**used** entry over `cap` (a `get`
 counts as a use and saves an entry from eviction; `contains` does
-not). Its `get` is `fallible(KeyError)` on a miss.
+not). Its `get` is `fallible(KeyError)` on a miss, and so is
+`remove(k)`, which takes the entry out and hands you the value. A
+cache whose cells own something outside memory — a socket, a file —
+declares `fn on_evict(k: K, v: S)` on the locus: the cache calls it with
+each entry it evicts, before reclaiming the cell, so the cell can be
+closed, and when the cache dissolves it calls it once more for each
+entry still held, least recently used first. The hook may not `put` into
+its own cache, directly or through a method it calls; the check refuses
+that `put`.
 
 Both a `vec` and a `hashmap` also expose **batched iteration** —
 `for x in v.items { … }` walks the vec, and
@@ -52,15 +61,17 @@ buffer/slot walk, not per-element method calls. (Don't mutate the
 form inside the body — a grow would rehash under the cursor.)
 
 A form owns what it holds. A `vec`'s `push` / `set` and a
-`hashmap`'s `set` store the form's own copy of the value —
+`hashmap`'s `set` (and an `lru_cache`'s `put`) store the form's own copy of the value —
 its Strings and Bytes, and any nested record, tuple, array or
 payload-carrying enum with what that owns — and when a `set` replaces an element or cell, or a
-`pop` / `remove` drops one, all of it is reclaimed and reused, at
-any depth, so a map or vec churned for hours keeps a flat arena (a
-`striped` or `lockfree` map does not reclaim yet). A
-value you read out stays whole: a vec's `get` hands you a copy, and
-a single-pool map's reclamation waits for the end of the current
-activation. Reading a nested record out of a map cell and setting it
+`pop` / `remove` (or a vec's `clear` / `truncate`, or a cache's
+eviction) drops one, all of it is reclaimed and reused, at
+any depth, so a map or vec churned for hours keeps a flat arena,
+under every sync discipline. A
+value you read out stays whole: a vec's `get` hands you a copy, a
+synced map's read (`serialized`, `striped` or `lockfree`) copies the
+cell out for the reader, and a single-pool map's reclamation waits
+for the end of the current activation. Reading a nested record out of a map cell and setting it
 back under the same key costs nothing; storing it under another key
 copies it.
 
@@ -122,6 +133,9 @@ declare an `interface`.
   `@form(ring_buffer, cap = N)`.
 - **Bounded keyed cache, evict least-recently-used on full** →
   `@form(lru_cache, cap = N)` (`indexed_by` names the key field).
+- **Always take the smallest (or largest) next** — a priority
+  queue, a timer list, a search frontier → `@form(heap)`
+  (`ordered_by min <field>` or `ordered_by max <field>`).
 
 One form per locus — a locus is one container. Need two? That's
 two loci, which is usually the cleaner decomposition anyway.

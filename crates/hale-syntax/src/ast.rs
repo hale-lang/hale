@@ -278,6 +278,12 @@ pub struct ApiDecl {
     pub name: Ident,
     pub rows: Vec<RpcRow>,
     pub span: Span,
+    /// The surface's identity in the import table when an imported seed
+    /// declares it (`mangle::api_origin`): the loader registers it under
+    /// the importer's alias in the surfaces' own namespace (`api:<name>`),
+    /// so `alias::Name` names this block and no other seed's.
+    /// `None` for a block of the entry seed, which no alias reaches.
+    pub origin: Option<String>,
 }
 
 /// One `rpc` line of an `api` block.
@@ -1857,7 +1863,30 @@ pub struct CapacitySlot {
     /// `@form(hashmap)` loci; typecheck flags misuse on other
     /// shapes. `None` for ordinary slots.
     pub indexed_by: Option<Ident>,
+    /// `@form(heap)` slot order: `ordered_by min <field>` /
+    /// `ordered_by max <field>` names the cell record's field the heap
+    /// orders by and which end is its root. Only meaningful on a
+    /// `@form(heap)` locus; typecheck flags it anywhere else. `None` for
+    /// ordinary slots.
+    pub ordered_by: Option<SlotOrder>,
     pub span: Span,
+}
+
+/// `ordered_by min <field>` / `ordered_by max <field>` on a capacity
+/// slot (`@form(heap)`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct SlotOrder {
+    pub dir: OrderDir,
+    pub field: Ident,
+    pub span: Span,
+}
+
+/// Which end of a `@form(heap)` is its root: the smallest key (`min`)
+/// or the largest (`max`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OrderDir {
+    Min,
+    Max,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2874,7 +2903,11 @@ pub enum PrimType {
     Int,
     Uint,
     Float,
-    Decimal,
+    /// `Decimal<S>`: an i128 mantissa at the scale `S` (`mantissa ×
+    /// 10⁻ˢ`), `S` from 0 to `decimal_literal::MAX_SCALE`. The scale is
+    /// part of the type: two scales never unify. Plain `Decimal` is
+    /// `Decimal<9>` (`decimal_literal::DEFAULT_SCALE`), the same type.
+    Decimal(u8),
     String,
     Bool,
     Time,
@@ -2905,6 +2938,19 @@ pub enum PrimType {
     /// directly via their `_raw` siblings. Length is carried in the
     /// struct, not a prefix.
     BytesMut,
+}
+
+impl PrimType {
+    /// Plain `Decimal`: `Decimal<9>`.
+    pub const DECIMAL: PrimType = PrimType::Decimal(crate::decimal_literal::DEFAULT_SCALE);
+
+    /// The scale of a `Decimal<S>`, `None` for every other primitive.
+    pub fn decimal_scale(self) -> Option<u8> {
+        match self {
+            PrimType::Decimal(s) => Some(s),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]

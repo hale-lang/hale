@@ -85,7 +85,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             | CodegenTy::Bool
             | CodegenTy::String
             | CodegenTy::Duration
-            | CodegenTy::Decimal
+            | CodegenTy::Decimal(_)
             | CodegenTy::Time
             | CodegenTy::Bytes
             | CodegenTy::BytesView
@@ -1406,6 +1406,48 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // default action at once, with no word said).
         self.emit_drain_observer_count(locus_name, 1)?;
 
+        // Line 6, a subscriber of a statically built tree (2026-10-12): a
+        // cooperative instance whose subscriptions take no key registers
+        // them here, its window open, before its params are built — so a
+        // cell its params' children publish while they are born or run
+        // (to it, or to a sibling it builds later) parks for it and is
+        // delivered once its own birth() completes, instead of reaching
+        // no subscription of it. A keyed subscription reads its key from
+        // the params, and a pinned one registers with the mailbox its
+        // thread start creates: both stay at the Subscribe step below, as
+        // does one the plan owes no readiness (a locus only stdlib or
+        // imported code builds), whose cells no window would hold back
+        // from its half-built params, and an accepted child, whose
+        // owner's `accept` precedes its subscriptions (line 5). Nor does a
+        // subscription bound to an `shm_ring`: registering it starts the
+        // ring's reader thread, which calls the handler itself, outside
+        // the window, so a record already in the ring would reach the
+        // instance before its params are stored (and be written over by
+        // them: #1533's merge run, "got 8" of ten).
+        //
+        // Per subscription: the eligible ones register here, the others at
+        // the Subscribe step, after the params, on the same instance and
+        // behind the same window (codex review of #1533: a locus with one
+        // ring subscription kept its ordinary topics late too).
+        let early_subscribe = !matches!(info.schedule_class, ScheduleClass::Pinned(_))
+            && info.subscriptions.iter().any(|(subject, _, _, key)| {
+                key.is_none() && !self.shm_ring_subjects.contains_key(subject)
+            })
+            && self.owes_readiness(locus_name)
+            && owner_self_ptr.is_none()
+            && !parent_accepts_us
+            && !bubbled;
+        if early_subscribe {
+            self.emit_hold_delivery(self_ptr, true)?;
+            self.lc_in_spine("Instantiation", |cx| {
+                cx.lc_event("Subscribe", "Entered", Some(self_ptr), Some(locus_name))
+            })?;
+            self.emit_cooperative_subscriptions(&info, self_ptr, locus_name, Some(true))?;
+            self.lc_in_spine("Instantiation", |cx| {
+                cx.lc_event("Subscribe", "Completed", Some(self_ptr), Some(locus_name))
+            })?;
+        }
+
         // Interest-based ownership #2: if THIS locus is a bubble owner —
         // a SingletonConst `A` that some deeper site resolves to — stash
         // its self-pointer into `@__owner_singleton_<A>` now, right after
@@ -1972,23 +2014,20 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         // reader, so the ordinary flush is sound
                         // and no epoch scheme is needed.
                         //
-                        // `striped` and `lockfree` stay excluded:
-                        // their read paths are bracketed by
-                        // lf_enter/rwlock rather than the map
-                        // mutex, and their grow path rebuilds
-                        // slots concurrently — a separate audit.
-                        let cell_name = if matches!(
-                            slot.sync_mode,
-                            SyncMode::None | SyncMode::Serialized
-                        ) {
-                            cell_name
-                        } else {
-                            None
-                        };
-                        // A serialized map's arena is written from
-                        // more than one pool: serialize its bump
-                        // allocator and retire lists.
-                        if slot.sync_mode == SyncMode::Serialized {
+                        // `striped` and `lockfree` maps retire too:
+                        // their reads copy a cell out under the
+                        // cell's own claim (lotus_hashmap_cell_read),
+                        // the CAS a writer's update or a lockfree
+                        // remove takes, so no reader is inside a
+                        // block when its cell is replaced. Their
+                        // grows move cells under the wrlock or the
+                        // drain and retire nothing.
+                        //
+                        // A synced map's arena is written from more
+                        // than one pool (each writer's set copies its
+                        // value in): serialize its bump allocator and
+                        // retire lists.
+                        if slot.sync_mode != SyncMode::None {
                             let arena_field = self
                                 .builder
                                 .build_struct_gep(
@@ -2935,6 +2974,27 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                                 locus_name, fname, locus_name, fname
                             )));
                         }
+                        DefaultInit::HoldsSlot => {
+                            // GH #731: the field holds the program's
+                            // slot as the designating holder set it —
+                            // no impl is built, none is owned, the slot
+                            // is not written. The field stores null.
+                            let declared = info
+                                .fields
+                                .get(fname)
+                                .map(|(_, t)| t.clone())
+                                .expect("field declared by declare_locus_struct");
+                            if let CodegenTy::Perspective(persp) = &declared {
+                                self.perspectives_held
+                                    .entry(persp.clone())
+                                    .or_insert_with(|| format!("{}.{}", locus_name, fname));
+                            }
+                            let null = self
+                                .context
+                                .ptr_type(AddressSpace::default())
+                                .const_null();
+                            (null.into(), declared, false, false)
+                        }
                     }
                 };
             // 2026-05-24: ensure the payload-arena routing flag
@@ -3033,6 +3093,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 // it. The field itself stores the impl self_ptr for
                 // ownership / teardown (the impl is an owned child).
                 owned_child_impl = Some(impl_locus.clone());
+                self.perspectives_designated.insert(persp.clone());
                 let impl_self = val.into_pointer_value();
                 let vtable =
                     self.ensure_perspective_vtable(impl_locus, persp)?;
@@ -3332,6 +3393,35 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let is_long_lived = !info.subscriptions.is_empty();
         let is_pinned = matches!(info.schedule_class, ScheduleClass::Pinned(_));
         let pinned_subscriptions = is_pinned && !info.subscriptions.is_empty();
+        // The instance is built: if this frame tears it down (eagerly,
+        // or at its exit) a failed assertion outside main's frame owes
+        // its teardown from here — its birth and run included — until
+        // that teardown begins (`locus/unwind.rs`). A pinned one is
+        // registered where its frame entry is pushed, with its thread.
+        // One slot serves the registry and the frame entry.
+        let unwind_slot = if !is_pinned
+            && !program_lifetime
+            && !self.instantiating_persistent_singleton
+            && !returns_this_locus
+            && !parent_accepts_us
+            && !parent_owns_via_field
+            && !bubbled
+            && !self.deferred_dissolves.is_empty()
+        {
+            let slot = match reused_deferred_slot {
+                Some(slot) => {
+                    self.builder
+                        .build_store(slot, self_ptr)
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    slot
+                }
+                None => self.defer_dissolve_slot(self_ptr, locus_name)?,
+            };
+            self.emit_unwind_push(slot, locus_name, None)?;
+            Some(slot)
+        } else {
+            None
+        };
         let accepted_by_owner = match (owner_self_ptr, owner_locus_name.as_ref()) {
             (Some(_), Some(owner_name)) => self
                 .user_loci
@@ -3534,6 +3624,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             }
         }
         }
+        ObligationKind::Subscribe if early_subscribe => {
+        // The eligible ones were registered before the params, the window
+        // open (above); the keyed and ring-bound ones register here.
+        self.emit_cooperative_subscriptions(&info, self_ptr, locus_name, Some(false))?;
+        }
         ObligationKind::Subscribe => {
         // Bus subscription registration runs BEFORE birth so a
         // locus's own birth() can publish on subjects it
@@ -3556,89 +3651,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             cx.lc_event("Subscribe", "Entered", Some(self_ptr), Some(locus_name))
         })?;
         if !pinned_subscriptions {
-            // Phase 3 (2026-05-25): `where key == self.X` in any
-            // subscribe clause needs `current_self` set to this
-            // new locus so the key-filter EXPR's `self.X` reads
-            // resolve correctly. Save / restore around the loop
-            // (same pattern birth_check_decls uses below).
-            // Finding 4: the where-clause is member text of THIS
-            // locus, not params-default text of the outer one —
-            // clear in_params_default so current_self wins even
-            // when this instantiation sits inside an outer default.
-            let prev_self = self.current_self.clone();
-            let prev_ipd_sub = std::mem::replace(&mut self.in_params_default, false);
-            self.current_self = Some(SelfCx {
-                locus_name: locus_name.to_string(),
-                struct_ty: info.struct_ty,
-                self_ptr,
-                fields: info.fields.clone(),
-            });
-            for (subject, handler_name, payload_type, key_filter) in &info.subscriptions {
-                let handler_fn = info
-                    .user_methods
-                    .get(handler_name)
-                    .copied()
-                    .ok_or_else(|| {
-                        CodegenError::Unsupported(format!(
-                            "locus `{}` subscribes to `{}` with handler `{}` \
-                             but no such method declared",
-                            locus_name, subject, handler_name
-                        ))
-                    })?;
-                // NOTE (2026-07-03): do NOT shim view-param
-                // handlers here. The shm_ring C reader passes the
-                // view BY VALUE via a cast call (lotus_shm_ring.c
-                // "shm_lotus_view_t" invoke), so the raw method ABI
-                // is already correct on that path — shimming it
-                // segfaulted the bytesview ring suites. The arena-
-                // queue path adapts inside __hwrap_ instead (the
-                // slot-ptr load in synthesize_reclaim_fns).
-                // Form K6b (2026-05-20): subscriber-side branch.
-                // If the subject is shm_ring-bound, emit
-                // lotus_bus_register_subscriber_shm_ring instead
-                // of the normal lotus_bus_register. The reader
-                // thread spawned by the C runtime invokes the
-                // handler with the slot pointer.
-                if self.shm_ring_subjects.contains_key(subject) {
-                    // Drain<T> batch consumer (2026-06-26): if this
-                    // handler's param is `Drain<T>`, register the batch
-                    // reader (one handler call per batch) rather than
-                    // the per-record reader.
-                    let is_batch = info.batch_handlers.contains(handler_name);
-                    self.emit_bus_register_shm_ring(
-                        subject,
-                        self_ptr,
-                        handler_fn,
-                        is_batch,
-                    )?;
-                } else {
-                    // 2026-06-01: register the handler-reclaim wrapper
-                    // (handler + post-dispatch `terminate;` check) in
-                    // place of the raw handler, so a cooperative
-                    // subscriber can end its own life from a bus
-                    // handler. Falls back to the raw handler if no
-                    // wrapper was synthesized.
-                    let reg_handler = self
-                        .handler_reclaim_wrappers
-                        .get(&(locus_name.to_string(), handler_name.clone()))
-                        .copied()
-                        .unwrap_or(handler_fn);
-                    self.emit_bus_register(
-                        subject,
-                        self_ptr,
-                        reg_handler,
-                        None,
-                        payload_type,
-                        key_filter.as_ref(),
-                    )?;
-                    // GH #255 phase 2: attach declared capacity.
-                    self.emit_sub_bound_if_any(
-                        locus_name, subject, self_ptr,
-                    )?;
-                }
-            }
-            self.in_params_default = prev_ipd_sub;
-            self.current_self = prev_self;
+            self.emit_cooperative_subscriptions(&info, self_ptr, locus_name, None)?;
         } else {
             // m28b: a pinned locus registers every subscription with
             // the mailbox already in its __mailbox slot, so dispatch routes
@@ -4150,6 +4163,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // mailbox loop and proceeds to drain/dissolve.
             if !self.deferred_dissolves.is_empty() {
                 let slot = self.defer_dissolve_slot(self_ptr, locus_name)?;
+                // A failed assertion outside main's frame joins it
+                // (`locus/unwind.rs`).
+                self.emit_unwind_push(slot, locus_name, Some(tid_alloca))?;
                 self.deferred_dissolves
                     .last_mut()
                     .expect("checked non-empty")
@@ -4665,6 +4681,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // dissolve here (see the matching no-op teardown branch).
             || bubbled;
         if !defer {
+            // Its own teardown begins: a failed assertion no longer owes
+            // it (`locus/unwind.rs`).
+            if let Some(slot) = unwind_slot {
+                self.emit_unwind_pop(slot)?;
+            }
             // The lifecycle trace names this spine for its steps.
             let lc_outer = std::mem::replace(&mut self.lc_spine, "EagerTeardown");
             // 2026-06-01: the MAIN locus dissolves eagerly here, right
@@ -4779,6 +4800,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 .build_unconditional_branch(eager_skip_bb)
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
             self.builder.position_at_end(eager_skip_bb);
+            // The main locus's tree is gone: the drain its head raised
+            // ends (lifecycle line 15).
+            if is_main_locus {
+                self.emit_tree_drain_end()?;
+            }
             self.lc_spine = lc_outer;
         } else if returns_this_locus {
             // Intentionally no-op: see m90 note above. The locus
@@ -4808,14 +4834,15 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // could be reclaimed against it. Store into that same
             // slot — a second one would leave the per-iteration
             // teardown reading a slot nothing ever writes.
-            let slot = match reused_deferred_slot {
-                Some(slot) => {
+            let slot = match (unwind_slot, reused_deferred_slot) {
+                (Some(slot), _) => slot,
+                (None, Some(slot)) => {
                     self.builder
                         .build_store(slot, self_ptr)
                         .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
                     slot
                 }
-                None => self.defer_dissolve_slot(self_ptr, locus_name)?,
+                (None, None) => self.defer_dissolve_slot(self_ptr, locus_name)?,
             };
             // GH #253 completion (Crumb batch-4 item 1): a DEFERRED
             // parent's own pinned children (pushed during its param
@@ -5412,6 +5439,113 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         Ok(())
     }
 
+    /// A cooperative (not pinned) instance's subscriptions, registered
+    /// against `self_ptr`: each handler's reclaim wrapper (or the raw
+    /// handler), its shm ring reader where the subject is ring-bound, and
+    /// its declared capacity. The Subscribe step's registrations; its
+    /// window is opened by the caller. `early`: `None` registers every
+    /// subscription; `Some(true)` only those that may register before the
+    /// params (no key, not bound to an `shm_ring`); `Some(false)` only the
+    /// others.
+    pub(crate) fn emit_cooperative_subscriptions(
+        &mut self,
+        info: &LocusInfo<'ctx>,
+        self_ptr: PointerValue<'ctx>,
+        locus_name: &str,
+        early: Option<bool>,
+    ) -> Result<(), CodegenError> {
+        // Phase 3 (2026-05-25): `where key == self.X` in any
+        // subscribe clause needs `current_self` set to this
+        // new locus so the key-filter EXPR's `self.X` reads
+        // resolve correctly. Save / restore around the loop
+        // (same pattern birth_check_decls uses below).
+        // Finding 4: the where-clause is member text of THIS
+        // locus, not params-default text of the outer one —
+        // clear in_params_default so current_self wins even
+        // when this instantiation sits inside an outer default.
+        let prev_self = self.current_self.clone();
+        let prev_ipd_sub = std::mem::replace(&mut self.in_params_default, false);
+        self.current_self = Some(SelfCx {
+            locus_name: locus_name.to_string(),
+            struct_ty: info.struct_ty,
+            self_ptr,
+            fields: info.fields.clone(),
+        });
+        for (subject, handler_name, payload_type, key_filter) in &info.subscriptions {
+            if let Some(early) = early {
+                let eligible = key_filter.is_none() && !self.shm_ring_subjects.contains_key(subject);
+                if eligible != early {
+                    continue;
+                }
+            }
+            let handler_fn = info
+                .user_methods
+                .get(handler_name)
+                .copied()
+                .ok_or_else(|| {
+                    CodegenError::Unsupported(format!(
+                        "locus `{}` subscribes to `{}` with handler `{}` \
+                         but no such method declared",
+                        locus_name, subject, handler_name
+                    ))
+                })?;
+            // NOTE (2026-07-03): do NOT shim view-param
+            // handlers here. The shm_ring C reader passes the
+            // view BY VALUE via a cast call (lotus_shm_ring.c
+            // "shm_lotus_view_t" invoke), so the raw method ABI
+            // is already correct on that path — shimming it
+            // segfaulted the bytesview ring suites. The arena-
+            // queue path adapts inside __hwrap_ instead (the
+            // slot-ptr load in synthesize_reclaim_fns).
+            // Form K6b (2026-05-20): subscriber-side branch.
+            // If the subject is shm_ring-bound, emit
+            // lotus_bus_register_subscriber_shm_ring instead
+            // of the normal lotus_bus_register. The reader
+            // thread spawned by the C runtime invokes the
+            // handler with the slot pointer.
+            if self.shm_ring_subjects.contains_key(subject) {
+                // Drain<T> batch consumer (2026-06-26): if this
+                // handler's param is `Drain<T>`, register the batch
+                // reader (one handler call per batch) rather than
+                // the per-record reader.
+                let is_batch = info.batch_handlers.contains(handler_name);
+                self.emit_bus_register_shm_ring(
+                    subject,
+                    self_ptr,
+                    handler_fn,
+                    is_batch,
+                )?;
+            } else {
+                // 2026-06-01: register the handler-reclaim wrapper
+                // (handler + post-dispatch `terminate;` check) in
+                // place of the raw handler, so a cooperative
+                // subscriber can end its own life from a bus
+                // handler. Falls back to the raw handler if no
+                // wrapper was synthesized.
+                let reg_handler = self
+                    .handler_reclaim_wrappers
+                    .get(&(locus_name.to_string(), handler_name.clone()))
+                    .copied()
+                    .unwrap_or(handler_fn);
+                self.emit_bus_register(
+                    subject,
+                    self_ptr,
+                    reg_handler,
+                    None,
+                    payload_type,
+                    key_filter.as_ref(),
+                )?;
+                // GH #255 phase 2: attach declared capacity.
+                self.emit_sub_bound_if_any(
+                    locus_name, subject, self_ptr,
+                )?;
+            }
+        }
+        self.in_params_default = prev_ipd_sub;
+        self.current_self = prev_self;
+        Ok(())
+    }
+
     /// An instance's header: every synthetic field the literal sets
     /// rather than its params, stored right after the instance is
     /// allocated and its `__arena` set, before anything can reach it
@@ -5638,7 +5772,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 | CodegenTy::Bool
                 | CodegenTy::String
                 | CodegenTy::Duration
-                | CodegenTy::Decimal
+                | CodegenTy::Decimal(_)
                 | CodegenTy::Time
                 | CodegenTy::Bytes
                 | CodegenTy::TypeRef(_) => true,
@@ -5775,7 +5909,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 {
                     DefaultInit::Const(pv) => self.const_param(pv),
                     DefaultInit::Expr(e) => self.in_body(info.decl, |cx| cx.lower_expr(e, scope))?,
-                    DefaultInit::Required => {
+                    DefaultInit::Required | DefaultInit::HoldsSlot => {
                         return Err(CodegenError::Unsupported(format!(
                             "cross-pool spawn `{}`: param `{}` is required — \
                              supply it as `{} {{ {}: ... }};`",

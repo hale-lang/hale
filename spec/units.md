@@ -387,6 +387,11 @@ are refused: "\`OrderId\` and \`SeqNo\` are distinct identities; convert
 one explicitly". A compound assignment (`x += 1`) is the operator and
 the store.
 
+**A loop variable.** The variable of `for x in xs`, where `xs` is a
+`bounded[T; N]` or an array of `T`, is a `T`, and the algebra reads it
+as one: over a `bounded[Money; N]`, `x / 1cent` is the `Int` count and
+`x` prints with its unit; over instants, `x - t` is a `Duration`.
+
 ## Literals
 
 A **quantity literal** names its unit in the units' namespace, which is
@@ -492,8 +497,9 @@ range's policy, and this conversion divides: …").
 
 A division that leaves a remainder fails with an `InexactError { kind:
 String; value: Int; divisor: Int }` (the target's name, the count
-divided, the divisor), injected where the program declares a quantity
-or a point; a value outside a range with a `RangeError { kind: String;
+divided, the divisor), in every program (a Decimal's narrowing
+`.rescale(T)` fails with it too, spec/types.md § Decimal<S>); a value
+outside a range with a `RangeError { kind: String;
 value: Int; low: Int; high: Int }`, injected where a type declares a
 range.
 

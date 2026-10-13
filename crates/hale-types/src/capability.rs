@@ -321,7 +321,7 @@ impl FfiTypeClass {
                 PrimType::BytesMut => FfiTypeClass::BytesMut,
                 PrimType::Time => FfiTypeClass::Time,
                 PrimType::Duration => FfiTypeClass::Duration,
-                PrimType::Decimal => FfiTypeClass::Decimal,
+                PrimType::Decimal(_) => FfiTypeClass::Decimal,
                 PrimType::Uint => FfiTypeClass::Uint,
             },
             Ty::Unit => FfiTypeClass::Unit,
@@ -445,10 +445,14 @@ pub enum Obligation {
     /// `lotus_shm_readers_stop` in a teardown spine: this process's shm
     /// ring readers stop, after the pool join and before the loci die.
     ReaderStop,
+    /// `lotus_tree_drain_raise` at the head of a main locus's teardown and
+    /// `lotus_tree_drain_end` once it is gone: the drain reaches the
+    /// tree's runs on other threads.
+    TreeDrain,
 }
 
 impl Obligation {
-    pub const ALL: [Obligation; 10] = [
+    pub const ALL: [Obligation; 11] = [
         Obligation::ReplayIngress,
         Obligation::ObservationIdentity,
         Obligation::SignalInstall,
@@ -459,6 +463,7 @@ impl Obligation {
         Obligation::WaitAbort,
         Obligation::IngressQuiesce,
         Obligation::ReaderStop,
+        Obligation::TreeDrain,
     ];
 
     pub fn name(self) -> &'static str {
@@ -473,6 +478,7 @@ impl Obligation {
             Obligation::WaitAbort => "WaitAbort",
             Obligation::IngressQuiesce => "IngressQuiesce",
             Obligation::ReaderStop => "ReaderStop",
+            Obligation::TreeDrain => "TreeDrain",
         }
     }
 }
@@ -1731,6 +1737,12 @@ const READER_STOP: ObligationCell = emit(
     SPEC_OBLIGATIONS,
 );
 
+const TREE_DRAIN: ObligationCell = emit(
+    "crates/hale-codegen/src/codegen.rs::emit_tree_drain_raise",
+    "a main locus's teardown raises the drain for its tree's runs on other threads before it joins them",
+    SPEC_OBLIGATIONS,
+);
+
 const SIGNALS: Premise = Premise::Rejects(Capability::ProcessSignals);
 const LISTEN_TRANSPORTS: &[Premise] = &[
     Premise::Rejects(Capability::RemoteTransport(Transport::Unix)),
@@ -1834,6 +1846,21 @@ pub const OBLIGATIONS: &[ObligationRow] = &[
             Premise::Rejects(Capability::RemoteTransport(Transport::ShmRing)),
             "crates/hale-codegen/src/codegen.rs::emit_shm_readers_stop",
             "no shm ring binding exists to read",
+            SPEC_OBLIGATIONS,
+        ),
+    ),
+    ob_row(
+        Obligation::TreeDrain,
+        TREE_DRAIN,
+        TREE_DRAIN,
+        omit(
+            Premise::All(&[
+                Premise::Rejects(Capability::PinnedThreads),
+                Premise::Rejects(Capability::PoolThreads),
+                Premise::Rejects(Capability::AsyncIoPool),
+            ]),
+            "crates/hale-codegen/src/codegen.rs::emit_tree_drain_raise",
+            "no run of the tree runs off the main thread",
             SPEC_OBLIGATIONS,
         ),
     ),

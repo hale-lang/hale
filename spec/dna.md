@@ -1287,7 +1287,8 @@ repository:
   `dna/nats.conf`'s `$NATS_APP_<NAME>_PASSWORD`, and it may publish on
   `<org>.app.<name>.>` and nowhere else; no other application's
   subjects, nor the reflexes'. It is provisioned when
-  `application.attached` lands (`hale dna init` lands it, then
+  `application.attached` lands (`hale dna init` lands it, for an
+  application and for a repository alike, then
   provisions the organism's secrets) and on every `upgrade` that finds
   it missing. `hale dna application remove [project] [--as <who>]`
   writes `application.detached {name, by}` to the record, the
@@ -4495,7 +4496,8 @@ The live half is memory's, projected from the record by the spine
   as it would for an application — `vendor/dna`, `dna/org`, the manifest
   with `[claims] no_base` and `[environments.org]` alone (there is no
   application entrypoint) — cuts no topology artifact, and seeds the
-  record with what the repository holds, as the graph, through the host
+  record with the repository's application attached, then what the
+  repository holds, as the graph, through the host
   verb `graph-ingest`, then proposes the declared purpose (GH #995)
   (`dna/operations/graph_ingest.hl`). It never derives one perspective
   from the other. A directory holding `.hl` files is a seed: with a main
@@ -4511,7 +4513,17 @@ The live half is memory's, projected from the record by the spine
   each directory holding `hale.toml`, `package.json`, `Cargo.toml`,
   `go.mod` or `pyproject.toml`, the outermost only (a workspace's
   members are its own), never the root; a process unfolds into the seed
-  of its name; **contracts** — `spec/*.yaml`, `spec/*.yml`, `spec/*.md`
+  of its name. A `ui/` at the root holding no manifest is **no seed**
+  (ruling 11b, 2026-10-12): when the repository references it — a link
+  in a tracked markdown document outside it resolves into it, or the
+  compose file names `./ui` (a volume or a build) — the head serves it as
+  the application's static assets under `/app/` (`/app/` its
+  `index.html`, `/app/<path>` the file `ui/<path>`, nothing outside it,
+  for the attached project: `ops::application_asset`; a file's bytes are
+  written as they are, with their length and the extension's content
+  type, so an image or a font arrives whole), and `init` says so
+  on a `note` line; when nothing references it `init` says once that it
+  is ignored. Neither writes a row. **contracts** — `spec/*.yaml`, `spec/*.yml`, `spec/*.md`
   and each directory under `spec/vendor/`; **nouns** — a YAML contract's
   `components.schemas` and a markdown contract's `CREATE TABLE`s, named
   by the contract; a noun is its name, so two contracts that name one
@@ -4917,8 +4929,8 @@ The live half is memory's, projected from the record by the spine
   organization and never grants authority.** The `reviews` edge over the
   surface's contract is what it was; no position exists because a role
   does. The seeded practice `design/standard-equipment` states the list:
-  API roles now; the broker account and the vault names when an
-  application attaches in repository mode.
+  API roles now; the broker account and the vault names of the
+  application a repository attaches are not proposed as equipment yet.
   **`hale dna fill <position>|organization:<name>
   <holder>|organization:<name> [project] [--as <who>]`**, once it has
   proposed the hold, prints `equipment: <roles>` when the position's node
@@ -4968,6 +4980,25 @@ The live half is memory's, projected from the record by the spine
   record's seed holds no Hale source of its own, `hale dna dev` and
   `hale dna run` check and build the organization only; there is no application
   to cut, build, express or restart, and `dev` says so.
+- **A repository's application is its compose services (ruling 11,
+  2026-10-12).** The compose file is a repository's expression, and the
+  record attaches its application all the same: `init` lands
+  `application.attached` (entity `.`) with the project's name as `name`,
+  `repository: true` and no `main`, `artifact` or shape (nothing was
+  cut), before the purpose and the graph. Its broker account is drawn as
+  any attached application's (**The application's account**): `app-<name>`
+  in the vault and `dna/nats.conf`, and `hale dna nerves migrate` prints
+  `HALE_DNA_NATS_URL_APP`, `HALE_DNA_NATS_USER_APP` and
+  `HALE_DNA_NATS_VAULT_APP` for it, so what the repository's processes
+  publish under `<org>.app.<name>.` reaches the heart. `hale dna status`
+  says `expression: the repository's compose services, attached as
+  <name>`. Such a row is not an application's artifact: a repository is
+  re-ingested (`hale dna ingest`) with it. **Not yet built:** the host
+  does not run the repository's compose services — `docker compose up`
+  is the operator's, and the `*_APP` variables reach a service only when
+  the compose file passes them (a service in a container also needs the
+  broker's address as the container sees it, and the vault entry's
+  password, which the host does not hand to compose yet).
 - **Review routing (GH #1087).** A change set goes to the positions that
   must sign it, read from the graph, never guessed:
   `hale dna route [--json] (<path>… | --diff <range>)` (the host verb

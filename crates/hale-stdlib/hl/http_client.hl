@@ -4,7 +4,8 @@
 // Outbound HTTP/1.1 for both schemes:
 //   - `std::http::get(url)` / `post(url, body, content_type)` /
 //     `request(req)` — one-shot free fns, `Connection: close`,
-//     read-to-close. `fallible(std::http::HttpError)`.
+//     read-to-close, the dial bounded at 30 s (the `Client`'s
+//     default `timeout_ms`). `fallible(std::http::HttpError)`.
 //   - `std::http::Client` — pooled locus: per-host keep-alive
 //     (opt-in), retry-with-backoff, configurable user-agent /
 //     body cap.
@@ -17,11 +18,10 @@
 // survive), where the server's `Response` body is String. One
 // name-space, two honest shapes.
 //
-// PLACEMENT CAVEAT (https): TLS I/O has no async_io integration
-// yet — an https call on a `where async_io` pool blocks the
-// worker thread, starving sibling coroutines. Keep loci that
-// make https calls on `pinned` or a classic cooperative pool
-// (styleguide C3 / §7). Plain-http calls park fine on async_io.
+// Placement: on a `where async_io` pool every wait of a call —
+// the dial, the TLS handshake, each write and read — parks the
+// coroutine, http and https alike; a non-numeric host's name
+// lookup still runs on the worker (spec/stdlib.md § std::io::tcp).
 //
 // `Transfer-Encoding: chunked` bodies are de-chunked on every
 // path (one-shot and keep-alive) — `body` is always the payload,
@@ -111,7 +111,11 @@ fn __http_default_port(scheme: String) -> Int {
 // `std::http::parse_url(s)` — scheme + host + optional :port +
 // optional path (query string rides in `path`; that's all a
 // request line needs). `//host/path` is tolerated as http.
-// Rejects bare paths, missing host, malformed port.
+// Rejects bare paths, missing host, malformed port. An IPv6
+// literal host is bracketed (`http://[::1]:9107/x`); `host` is
+// the address without its brackets (`::1`), which is what
+// `std::io::tcp::connect` takes, and the request's `Host` header
+// brackets it again.
 /// Decompose a URL string; fails with HttpError{bad_url} on
 /// malformed input.
 fn __http_parse_url(s: String) -> std::http::Url fallible(std::http::HttpError) {
@@ -151,14 +155,36 @@ fn __http_parse_url(s: String) -> std::http::Url fallible(std::http::HttpError) 
         fail std::http::HttpError { kind: "bad_url", status: 0, detail: "empty authority" };
     }
     let auth_len = len(authority);
-    let port_sep = std::str::index_of(authority, ":");
     let mut host = authority;
     let mut port = __http_default_port(scheme);
-    if port_sep >= 0 {
-        host = authority[0..port_sep];
-        let port_str = authority[(port_sep + 1)..auth_len];
+    // the port's text after the host: "" for none, else ":<port>"
+    let mut rest = "";
+    if authority[0..1] == "[" {
+        // an IPv6 literal is bracketed (`[::1]`, `[fe80::1%eth0]`); the
+        // host is what the brackets hold, and only a port may follow them
+        let close = std::str::index_of(authority, "]");
+        if close < 0 {
+            fail std::http::HttpError { kind: "bad_url", status: 0, detail: "an IPv6 host's [ is never closed" };
+        }
+        host = authority[1..close];
+        rest = authority[(close + 1)..auth_len];
+        if len(rest) > 0 && rest[0..1] != ":" {
+            fail std::http::HttpError { kind: "bad_url", status: 0, detail: "only a :port may follow an IPv6 host's ]" };
+        }
+        if std::str::index_of(host, ":") < 0 {
+            fail std::http::HttpError { kind: "bad_url", status: 0, detail: "brackets hold an IPv6 address" };
+        }
+    } else {
+        let port_sep = std::str::index_of(authority, ":");
+        if port_sep >= 0 {
+            host = authority[0..port_sep];
+            rest = authority[port_sep..auth_len];
+        }
+    }
+    if len(rest) > 0 {
+        let port_str = rest[1..len(rest)];
         port = std::str::parse_int(port_str) or 0;
-        if port <= 0 {
+        if port <= 0 || port > 65535 {
             fail std::http::HttpError { kind: "bad_url", status: 0, detail: "bad port" };
         }
     }
@@ -190,18 +216,26 @@ fn __http_close_handle(handle: Int, is_tls: Bool) {
 }
 
 // Connect + TCP_NODELAY (Nagle costs up to ~40ms on small
-// writes). -1 on failure (the pooled path retries).
-fn __http_dial_nd(host: String, port: Int, is_tls: Bool) -> Int {
+// writes). `timeout_ms` bounds the dial — the TCP connect and, for
+// https, the TLS handshake — and `0` leaves it unbounded.
+fn __http_dial_nd(host: String, port: Int, is_tls: Bool, timeout_ms: Int) -> Int fallible(IoError) {
     if is_tls {
-        let h = std::io::tls::connect(host, port) or - 1;
-        if h < 0 { return -1; }
+        let h = std::io::tls::connect_within(host, port, timeout_ms * 1ms) or raise;
         std::io::tls::set_nodelay(h, true) or discard;
         return h;
     }
-    let fd = std::io::tcp::connect(host, port) or - 1;
-    if fd < 0 { return -1; }
+    let fd = std::io::tcp::connect_within(host, port, timeout_ms * 1ms) or raise;
     std::io::tcp::set_nodelay(fd, true) or discard;
     return fd;
+}
+
+// What a failed dial says: the IoError's kind, and for a dial the
+// deadline ended, the deadline.
+fn __http_connect_detail(e: IoError, timeout_ms: Int) -> String {
+    if e.kind == "timeout" {
+        return "timeout: no connection within " + to_string(timeout_ms) + " ms";
+    }
+    return e.kind;
 }
 
 // Auto-closing one-shot wrapper: dissolve closes the handle at
@@ -225,10 +259,19 @@ locus __StdHttpConn {
 
 // ---- wire format -----------------------------------------------------
 
+// A host as an authority writes it: an IPv6 address (it holds a `:`)
+// bracketed, anything else as it is.
+fn __http_host_text(host: String) -> String {
+    if std::str::index_of(host, ":") >= 0 && !std::str::starts_with(host, "[") {
+        return "[" + host + "]";
+    }
+    return host;
+}
+
 // Assemble the request header block. Body ships as a separate
 // trailing send. ASCII throughout, so String concat is safe.
 fn __http_build_request_headers(req: std::http::ClientRequest, user_agent: String, keep_alive: Bool) -> String {
-    let host_header = "Host: " + req.url.host + ":" + to_string(req.url.port) + "\r\n";
+    let host_header = "Host: " + __http_host_text(req.url.host) + ":" + to_string(req.url.port) + "\r\n";
     let ua_header = "User-Agent: " + user_agent + "\r\n";
     let cl_header = "Content-Length: " + to_string(len(req.body)) + "\r\n";
     let conn_header = if keep_alive { "Connection: keep-alive\r\n" } else { "Connection: close\r\n" };
@@ -529,11 +572,11 @@ fn __http_exchange_on_handle(handle: Int, is_tls: Bool, req: std::http::ClientRe
 
 // ---- dial + one-shot round trip -------------------------------------
 
-fn __http_raise_connect(e: IoError, host: String, port: Int) -> Int fallible(std::http::HttpError) {
+fn __http_raise_connect(e: IoError, host: String, port: Int, timeout_ms: Int) -> Int fallible(std::http::HttpError) {
     fail std::http::HttpError {
         kind: "connect_failed",
         status: 0,
-        detail: host + ":" + to_string(port) + " " + e.kind
+        detail: host + ":" + to_string(port) + " " + __http_connect_detail(e, timeout_ms)
     };
 }
 
@@ -548,23 +591,18 @@ fn __http_check_scheme(scheme: String) -> Int fallible(std::http::HttpError) {
 }
 
 // One-shot exchange: connect, send, recv-to-close, parse. The
-// __StdHttpConn's fn-exit dissolve closes the handle.
+// __StdHttpConn's fn-exit dissolve closes the handle. `timeout_ms`
+// bounds the dial (0: unbounded).
 fn __http_round_trip_oneshot(
     req: std::http::ClientRequest,
     user_agent: String,
-    max_body: Int
+    max_body: Int,
+    timeout_ms: Int
 ) -> std::http::ClientResponse fallible(std::http::HttpError) {
     let host = req.url.host;
     let port = req.url.port;
     let is_tls = req.url.scheme == "https";
-    let mut handle = -1;
-    if is_tls {
-        handle = std::io::tls::connect(host, port) or __http_raise_connect(err, host, port);
-        std::io::tls::set_nodelay(handle, true) or discard;
-    } else {
-        handle = std::io::tcp::connect(host, port) or __http_raise_connect(err, host, port);
-        std::io::tcp::set_nodelay(handle, true) or discard;
-    }
+    let handle = __http_dial_nd(host, port, is_tls, timeout_ms) or __http_raise_connect(err, host, port, timeout_ms);
     let s = __StdHttpConn { handle: handle, is_tls: is_tls };
     let resp = __http_exchange_oneshot(s, req, user_agent, max_body);
     if resp.status <= 0 {
@@ -581,7 +619,8 @@ fn __http_round_trip_with_retry(
     req: std::http::ClientRequest,
     user_agent: String,
     max_body: Int,
-    max_retries: Int
+    max_retries: Int,
+    timeout_ms: Int
 ) -> std::http::ClientResponse fallible(std::http::HttpError) {
     let mut attempt = 0;
     let mut last_5xx = __http_empty_client_response();
@@ -589,7 +628,7 @@ fn __http_round_trip_with_retry(
     let max_attempts = max_retries + 1;
     while attempt < max_attempts {
         let mut failure = "";
-        let resp = __http_round_trip_oneshot(req, user_agent, max_body) or {
+        let resp = __http_round_trip_oneshot(req, user_agent, max_body, timeout_ms) or {
             failure = err.kind + " " + err.detail;
             __http_empty_client_response()
         };
@@ -612,15 +651,25 @@ fn __http_round_trip_with_retry(
 
 // ---- free-fn surface (one-shot) -------------------------------------
 
+// The one-shot fns' dial deadline, 30000 ms: the TCP connect and, for
+// https, the TLS handshake. 30 s, the pooled Client's default
+// `timeout_ms` (and Go's default dialer's), so a host that never
+// answers fails `connect_failed` with "timeout: no connection within
+// 30000 ms" instead of holding the caller for the kernel's ~2 min of
+// SYN retransmits. A different deadline is `std::http::Client {
+// timeout_ms: …, max_retries: 0 }`, whose default (keep_alive false)
+// is the same one-shot exchange. The three fns below pass it as the
+// literal 30000.
+
 // `std::http::get(url)`.
 /// One-shot GET: connect, send, read to close. `Connection:
-/// close`; https rides std::io::tls (placement caveat: TLS recv
-/// blocks the worker — pinned or classic pools).
+/// close`; the dial is bounded at 30 s; https rides std::io::tls,
+/// which parks on an async_io pool like plain tcp.
 fn __http_client_get(url_str: String) -> std::http::ClientResponse fallible(std::http::HttpError) {
     let u = __http_parse_url(url_str) or raise;
     let _ = __http_check_scheme(u.scheme) or raise;
     let req = std::http::ClientRequest { method: "GET", url: u, headers: "", body: b"" };
-    return __http_round_trip_oneshot(req, "hale-std-http/0.11", 16777216) or raise;
+    return __http_round_trip_oneshot(req, "hale-std-http/0.11", 16777216, 30000) or raise;
 }
 
 // `std::http::post(url, body, content_type)`.
@@ -632,7 +681,7 @@ fn __http_client_post(url_str: String, body: Bytes, content_type: String) -> std
     let req = std::http::ClientRequest {
         method: "POST", url: u, headers: "Content-Type: " + content_type, body: body
     };
-    return __http_round_trip_oneshot(req, "hale-std-http/0.11", 16777216) or raise;
+    return __http_round_trip_oneshot(req, "hale-std-http/0.11", 16777216, 30000) or raise;
 }
 
 // `std::http::request(req)` — full control over method / headers
@@ -640,7 +689,7 @@ fn __http_client_post(url_str: String, body: Bytes, content_type: String) -> std
 /// One-shot arbitrary request (build a ClientRequest yourself).
 fn __http_client_request(req: std::http::ClientRequest) -> std::http::ClientResponse fallible(std::http::HttpError) {
     let _ = __http_check_scheme(req.url.scheme) or raise;
-    return __http_round_trip_oneshot(req, "hale-std-http/0.11", 16777216) or raise;
+    return __http_round_trip_oneshot(req, "hale-std-http/0.11", 16777216, 30000) or raise;
 }
 
 // ---- the pooled Client ----------------------------------------------
@@ -658,8 +707,10 @@ fn __http_client_request(req: std::http::ClientRequest) -> std::http::ClientResp
 /// The pooled client: `user_agent`/`timeout_ms`/`max_retries`/
 /// `max_body` params; `keep_alive: true` switches to framed
 /// reads (Content-Length or chunked) over a 4-slot per-host:port
-/// connection pool with retry-and-backoff. Same fallible
-/// get/post/request surface as the free fns.
+/// connection pool with retry-and-backoff. `timeout_ms` bounds each
+/// attempt's dial (the TCP connect and, for https, the handshake);
+/// `0` leaves it unbounded. Same fallible get/post/request surface
+/// as the free fns.
 locus __StdHttpClient {
     params {
         user_agent: String = "hale-std-http/0.11";
@@ -697,7 +748,7 @@ locus __StdHttpClient {
         let _ = __http_check_scheme(req.url.scheme) or raise;
         if self.keep_alive { return self.__pooled(req) or raise; }
         return __http_round_trip_with_retry(
-            req, self.user_agent, self.max_body, self.max_retries
+            req, self.user_agent, self.max_body, self.max_retries, self.timeout_ms
         ) or raise;
     }
 
@@ -726,10 +777,11 @@ locus __StdHttpClient {
         let mut last_5xx = __http_empty_client_response();
         let mut detail = "";
         while attempt < max_attempts {
-            let fd = __http_dial_nd(host, port, is_tls);
-            if fd < 0 {
-                detail = "connect_failed";
-            } else {
+            let fd = __http_dial_nd(host, port, is_tls, self.timeout_ms) or {
+                detail = "connect_failed " + __http_connect_detail(err, self.timeout_ms);
+                    -1
+            };
+            if fd >= 0 {
                 let ex = __http_exchange_on_handle(fd, is_tls, req, self.user_agent, self.max_body);
                 if ex.ok && ex.resp.status < 500 {
                     if ex.reusable { self.__pool_put(host, port, fd, is_tls); }

@@ -140,10 +140,11 @@ impl AllocKind {
 }
 
 /// Phase D / D2: the `@form(...)` names whose inserts grow without bound
-/// (backing buffer grows with population, frees only at dissolve). A
+/// (backing buffer grows with population, frees only at dissolve; a
+/// `heap` is a vec underneath). A
 /// `ring_buffer` / `lru_cache` is cap-bounded and excluded.
 fn form_grows(form_name: &str) -> bool {
-    matches!(form_name, "vec" | "hashmap")
+    matches!(form_name, "vec" | "hashmap" | "heap")
 }
 
 /// Phase D / D2: the method names that *insert* into a collection (vs read
@@ -307,7 +308,7 @@ fn retirable_field_ty(ty: &TypeExpr, retirable: &BTreeSet<String>) -> bool {
             PrimType::Int
             | PrimType::Uint
             | PrimType::Float
-            | PrimType::Decimal
+            | PrimType::Decimal(_)
             | PrimType::String
             | PrimType::Bytes
             | PrimType::Bool
@@ -3326,6 +3327,10 @@ pub fn summarize_identified(
         BTreeMap::new();
     let mut locus_methods: BTreeMap<String, BTreeMap<String, usize>> =
         BTreeMap::new();
+    // GH #731: a perspective a held slot dispatches through, with the
+    // loci that `serves` it: the same fan-out, its conformers the
+    // declared servers (a designation may name no other).
+    let mut perspective_servers: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for (program, ids) in identified {
         for item in flat_decls(&program.items).filter(|item| !shadowed(ids, item)) {
             match item {
@@ -3344,7 +3349,23 @@ pub fn summarize_identified(
                             .collect(),
                     );
                 }
+                TopDecl::Perspective(p) => {
+                    ifaces.insert(
+                        p.name.name.clone(),
+                        p.members
+                            .iter()
+                            .filter_map(|m| match m {
+                                PerspectiveMember::Fn(f) => Some((f.name.name.clone(), f.params.len())),
+                                _ => None,
+                            })
+                            .collect(),
+                    );
+                    perspective_servers.entry(p.name.name.clone()).or_default();
+                }
                 TopDecl::Locus(l) => {
+                    for s in &l.serves {
+                        perspective_servers.entry(s.name.clone()).or_default().push(l.name.name.clone());
+                    }
                     let e = locus_methods
                         .entry(l.name.name.clone())
                         .or_default();
@@ -3364,7 +3385,11 @@ pub fn summarize_identified(
     let mut conformers: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
     for (iname, methods) in &ifaces {
         let mut who: Vec<&str> = Vec::new();
+        let servers = perspective_servers.get(iname);
         for (lname, lmethods) in &locus_methods {
+            if servers.is_some_and(|s| !s.iter().any(|x| x == lname)) {
+                continue;
+            }
             if methods.iter().all(|(m, arity)| {
                 lmethods.get(m).is_some_and(|a| a == arity)
             }) {
@@ -4327,7 +4352,18 @@ fn locus_param_field_types(
                     }
                     (Some(d), _) => Some(d.clone()),
                     (None, Some(c)) => Some(c.clone()),
-                    (None, None) => None,
+                    // GH #731: a `perspective(P)` field with no
+                    // initializer holds the program's slot, which the
+                    // designating holder fills: the receiver is the
+                    // perspective itself, and the dispatch pass fans a
+                    // call through it to every locus that `serves P`
+                    // (the only loci a designation may name).
+                    (None, None) => match (&pd.ty, &pd.init) {
+                        (Some(TypeExpr::Perspective { name, .. }), ParamInit::Inferred) => {
+                            Some(renames.get(&name.name).cloned().unwrap_or_else(|| name.name.clone()))
+                        }
+                        _ => None,
+                    },
                 };
                 if let Some(tn) = resolved {
                     m.insert(pd.name.name.clone(), tn);
@@ -4357,7 +4393,7 @@ fn locus_inline_array_fields(l: &LocusDecl) -> BTreeSet<String> {
                             PrimType::Int
                                 | PrimType::Float
                                 | PrimType::Bool
-                                | PrimType::Decimal
+                                | PrimType::Decimal(_)
                                 | PrimType::Duration,
                             _,
                         )
@@ -6726,6 +6762,16 @@ impl<'a> Walker<'a> {
                 receiver_present =
                     !matches!(receiver.as_ref(), Expr::KwSelf(_))
                         && !is_alias;
+                // `Decimal<S>`'s `d.rescale(T)` (an integer literal scale)
+                // is a conversion lowering emits inline, no call: when no
+                // locus declares a `rescale` the call can be nothing else
+                // (the checker types it), so its receiver is no unknown.
+                if name.name == "rescale"
+                    && matches!(args, [Expr::Literal(Literal::Int(_), _)])
+                    && !self.known.keys().any(|(_, m)| m == "rescale")
+                {
+                    receiver_present = false;
+                }
                 // `self.m()` — the enclosing locus is the receiver type.
                 let owner = if matches!(receiver.as_ref(), Expr::KwSelf(_)) {
                     self.enclosing_locus.clone()
@@ -6780,7 +6826,45 @@ impl<'a> Walker<'a> {
                 }
             }
         }
+        // A `@form(lru_cache)` `put` runs the locus's `on_evict(k, v)`
+        // hook on the entry it evicts over `cap`: the synthesized method
+        // has no body to walk, so the hook is an edge of the call.
+        let evict_hook = match (&resolved, recv_ty.as_ref()) {
+            (Callee::Unresolved(m), Some(t)) if m == "put" => {
+                self.known.get(&(Some(t.clone()), "on_evict".to_string())).cloned()
+            }
+            _ => None,
+        };
         let spelling = CallSpelling::of(callee);
+        let allocating_recv = spelling.allocating_recv();
+        if let Some(hook) = evict_hook {
+            self.calls.push(CallEdge {
+                recv_ty: recv_ty.clone(),
+                receiver_present,
+                callee: Callee::Resolved(hook),
+                indirect: false,
+                through_param: false,
+                via_local: None,
+                unresolved_local: false,
+                bound_field: None,
+                loop_depth: depth,
+                in_unbounded_loop: self.loop_stack.iter().any(|bounded| !bounded),
+                escape,
+                receiver_slot: self_slot_receiver(callee),
+                via_interface: None,
+                dispatch_group: None,
+                via_value: None,
+                arity: 2,
+                allocating_recv: allocating_recv.clone(),
+                spelling: spelling.clone(),
+                in_loop: self.loops_as_written > 0,
+                let_span: None,
+                span,
+                callee_span: callee.span(),
+                arg_taints: vec![Taint::none(), Taint::none()],
+                self_call,
+            });
+        }
         self.calls.push(CallEdge {
             recv_ty,
             receiver_present,
@@ -6798,7 +6882,7 @@ impl<'a> Walker<'a> {
             dispatch_group: None,
             via_value: None,
             arity,
-            allocating_recv: spelling.allocating_recv(),
+            allocating_recv,
             spelling,
             in_loop: self.loops_as_written > 0,
             let_span: self.let_call.take().filter(|(c, _)| *c == span).map(|(_, s)| s),

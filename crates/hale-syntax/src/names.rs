@@ -189,7 +189,7 @@ fn top_decl<'a>(d: &'a TopDecl, f: &mut Visit<'_, 'a>) {
             }
         }
         TopDecl::Api(a) => {
-            let ApiDecl { name: n, rows, span: _ } = a;
+            let ApiDecl { name: n, rows, span: _, origin: _ } = a;
             name(n, f);
             for r in rows {
                 let RpcRow { locus, written: _, method, requires, span: _ } = r;
@@ -393,11 +393,14 @@ fn locus_member<'a>(m: &'a LocusMember, f: &mut Visit<'_, 'a>) {
         LocusMember::Capacity(cb) => {
             let CapacityBlock { slots, span: _ } = cb;
             for s in slots {
-                let CapacitySlot { name: n, kind: _, elem_ty, as_parent_for, indexed_by, span: _ } = s;
+                let CapacitySlot { name: n, kind: _, elem_ty, as_parent_for, indexed_by, ordered_by, span: _ } = s;
                 name(n, f);
                 ty(elem_ty, f);
                 opt_name(as_parent_for, f);
                 opt_name(indexed_by, f);
+                if let Some(o) = ordered_by {
+                    name(&o.field, f);
+                }
             }
         }
         LocusMember::Bindings(bb) => {

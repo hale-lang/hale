@@ -102,6 +102,16 @@ synthetic diffs. A PR's checks are that scoped suite; the merge queue
 runs the full suite on the merge group before anything reaches `main`,
 and `main`'s own push run is the full suite as well.
 
+**CI tests from archives, built once.** `quick-build`, `build-cli` and
+`build-codegen` each compile a family's test binaries and hand them on
+as a `cargo nextest archive`; the `quick`, `cli`, `dna` and `codegen`
+jobs extract it in place and run a partition of it without compiling.
+A test that reads something under `target/` by path at run time (not a
+binary a test runs through `CARGO_BIN_EXE_*`, which the archive
+carries) needs it named in the `archive` profile of
+`.config/nextest.toml`, or it is missing on CI only. The DNA suite's
+job count and `HEAVY` in `dna_native_suite.rs` move together.
+
 The `parity` job in `.github/workflows/tests.yml` gates both:
 the workspace doctests, plus the test binaries that share
 process-wide state, run under libtest's threads.

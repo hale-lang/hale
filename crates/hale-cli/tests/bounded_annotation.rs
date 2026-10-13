@@ -127,7 +127,7 @@ fn report_names_what_each_decorator_silences() {
     assert_eq!(code, Some(0), "the report changes no exit code");
     assert_eq!(
         stdout,
-        "unbounded-use\tunbounded-use.hl:17\tAcc::on_sample\t2\t0\tunbounded\n\
+        "unbounded-use\tunbounded-use.hl:17\tAcc::on_sample\t1\t0\tunbounded\n\
          unbounded-use\tunbounded-use.hl:22\tAcc::on_quiet\t0\t0\tunbounded\n\
          unbounded-use\tunbounded-use.hl:29\tspawn_many\t1\t1\tunbounded\n\
          unbounded-use\tunbounded-use.hl:41\tFan::run\t0\t1\tunbounded\n",
@@ -157,7 +157,7 @@ fn report_changes_nothing_the_check_prints() {
 #[test]
 fn report_counts_what_removal_would_warn() {
     // The fixture with every `@unbounded` removed warns exactly what the
-    // report says the decorators silence: 3 survey sites, 2 hot-path
+    // report says the decorators silence: 2 survey sites, 2 hot-path
     // warnings.
     let src = std::fs::read_to_string(fixture("unbounded-use.hl")).unwrap();
     let bare: String = src
@@ -173,7 +173,7 @@ fn report_counts_what_removal_would_warn() {
     let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
     let _ = std::fs::remove_dir_all(&dir);
     let count = |needle: &str| stderr.lines().filter(|l| l.contains(needle)).count();
-    assert_eq!(count("warning: unbounded allocation"), 3, "{stderr}");
+    assert_eq!(count("warning: unbounded allocation"), 2, "{stderr}");
     assert_eq!(count("warning: hot-path allocation"), 2, "{stderr}");
 }
 
@@ -190,7 +190,7 @@ fn bounded_by_is_reported_with_its_bound() {
     assert_eq!(code, Some(0));
     assert_eq!(
         stdout,
-        "unbounded-use\tbounded-by.hl:18\tAcc::on_sample\t2\t0\tbounded_by(record)\n\
+        "unbounded-use\tbounded-by.hl:18\tAcc::on_sample\t1\t0\tbounded_by(record)\n\
          unbounded-use\tbounded-by.hl:23\tAcc::on_quiet\t0\t0\tbounded_by(quiet.rate)\n\
          unbounded-use\tbounded-by.hl:30\tspawn_many\t1\t1\tbounded_by(n)\n\
          unbounded-use\tbounded-by.hl:42\tFan::run\t0\t1\tbounded_by(self.fan)\n",

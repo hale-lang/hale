@@ -79,13 +79,11 @@ pub(crate) enum CodegenTy {
     Bool,
     String,
     Duration,
-    /// 64-bit decimal value. v0 codegen stores this as `f64` (same
-    /// hack the interpreter uses — `parse_decimal` calls
-    /// `s.parse::<f64>()`). Distinct from `Float` at the type level
-    /// so type-checking stays strict; same LLVM lowering. A real
-    /// fixed-point or arbitrary-precision representation lands
-    /// later when Decimal precision actually matters.
-    Decimal,
+    /// `Decimal<S>`: an i128 mantissa at the scale `S` (`mantissa ×
+    /// 10⁻ˢ`). Every scale has the one layout (16 bytes, align 16); the
+    /// scale decides what `*`, `/`, printing, parsing and a literal
+    /// mean. Plain `Decimal` is `Decimal(9)`.
+    Decimal(u8),
     /// Wall-clock instant. v0 codegen stores this as a pointer to
     /// the literal's source-spelling string (same hack the
     /// interpreter uses). Real `time_t` / `i64`-since-epoch
@@ -292,6 +290,19 @@ impl BceVecKey {
 pub(crate) struct BceLoop {
     pub(crate) vec_key: BceVecKey,
     pub(crate) index_var: String,
+}
+
+/// Does this form slot retire its cells onto its locus's arena pending
+/// list, for the activation boundary to flush (anchor retirement)? A
+/// `@form(hashmap)` of record cells (any discipline), and a
+/// `@form(lru_cache)` (whose put, eviction and remove retire the same
+/// way).
+pub(crate) fn slot_retires_cells_deferred(sl: &CapacitySlotLayout) -> bool {
+    match sl.form {
+        Some(SlotForm::Hashmap) => matches!(sl.elem_ty, CodegenTy::TypeRef(_)),
+        Some(SlotForm::LruCache) => matches!(sl.elem_ty, CodegenTy::TypeRef(_)),
+        _ => false,
+    }
 }
 
 /// Read-only `@form(vec)` methods — calling one of these on the
@@ -1369,6 +1380,24 @@ pub fn build_resolved(
             bus_devirt_direct_subs.insert(s.subject.clone(), s.subscribers.clone());
         }
     }
+    // One publisher's order at a direct publish: a direct subject's
+    // handlers are quiet (they change their own locus and nothing else),
+    // so calling one ahead of a cell still queued is observable only when
+    // that cell is for the same subscriber. A locus that subscribes to a
+    // subject the plan does not lower direct can have such a cell; a
+    // direct subject with one among its subscribers checks this thread's
+    // queue first (`lotus_local_queued`), the rest bake the call alone.
+    let queued_subscribers: std::collections::BTreeSet<&str> = plan
+        .subjects
+        .iter()
+        .filter(|s| s.flavor != hale_model::dispatch_plan::DispatchFlavor::StaticDirect)
+        .flat_map(|s| s.subscribers.iter().map(|(locus, _)| locus.as_str()))
+        .collect();
+    let bus_devirt_direct_ordered: std::collections::BTreeSet<String> = bus_devirt_direct_subs
+        .iter()
+        .filter(|(_, subs)| subs.iter().any(|(locus, _)| queued_subscribers.contains(locus.as_str())))
+        .map(|(subject, _)| subject.clone())
+        .collect();
 
     // Interest-based ownership, artifacts #2 / #2b / #3: the bubble
     // plans (`hale_types::ownership_graph::BubblePlans`), projected in
@@ -1545,6 +1574,7 @@ pub fn build_resolved(
         bus_devirt_ids,
         bus_devirt_direct,
         bus_devirt_direct_subs,
+        bus_devirt_direct_ordered,
         ownership_bubble_plan: bubble.singleton,
         ownership_bubble_nonsingleton_plan: bubble.nonsingleton,
         ownership_forwarding_sets: bubble.forwarding,
@@ -1567,6 +1597,8 @@ pub fn build_resolved(
         main_frame_depth: usize::MAX,
         main_dissolve_frame: None,
         main_test_fail_bb: None,
+        test_unwind_used: false,
+        unwind_fns: BTreeMap::new(),
         current_arena_override: None,
         current_user_fn_caller_arena: None,
         current_user_fn_arena: None,
@@ -1586,6 +1618,9 @@ pub fn build_resolved(
         locus_cascade_path: Vec::new(),
         instantiating_into_payload_arena: false,
         anchor_record_slot: None,
+        perspectives_holdable: BTreeSet::new(),
+        perspectives_held: BTreeMap::new(),
+        perspectives_designated: BTreeSet::new(),
         placement_for_field: None,
         numa_node_for_next_locus_instantiation: None,
         params_init_self: None,
@@ -3400,7 +3435,7 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// rows of the generic calls its body makes.
     pub(crate) current_specialization: Option<(hale_syntax::ast::NodeId, Vec<hale_types::ty::Ty>)>,
     /// Source invocation whose omitted defaults are being lowered.
-    current_call: Option<NodeId>,
+    pub(crate) current_call: Option<NodeId>,
     default_invocations: Vec<u32>,
     /// While a default is lowered where it is evaluated: the evaluation
     /// path, outermost first, each a struct literal that leaves a field
@@ -3689,6 +3724,11 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// constant). Empty under `LOTUS_NO_BUS_DEVIRT=1`.
     pub(crate) bus_devirt_direct_subs:
         std::collections::BTreeMap<String, Vec<(String, String)>>,
+    /// The `bus_devirt_direct` subjects with a subscriber locus that also
+    /// subscribes to a subject the plan does not lower direct: a cell for
+    /// it may wait on the publishing thread's queue, so their baked call
+    /// first checks `lotus_local_queued` (one publisher's order).
+    pub(crate) bus_devirt_direct_ordered: std::collections::BTreeSet<String>,
     /// Interest-based ownership, artifact #2: singleton-owner,
     /// same-tower bubbling. Keyed by `(enclosing_locus, child_ty)` —
     /// the only key the `OwnershipGraph` resolution depends on — the
@@ -3861,6 +3901,17 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// `main`, filled with main's teardown + `ret i32 1` once the
     /// body has been lowered.
     main_test_fail_bb: Option<BasicBlock<'ctx>>,
+    /// A `std::test` assertion outside `fn main`'s own frame was lowered:
+    /// its failure tears the tree down through the main thread's unwind
+    /// registry (`locus/unwind.rs`), whose upkeep is emitted behind the
+    /// private `lotus.test_unwind` flag this decides at the end of
+    /// lowering.
+    pub(crate) test_unwind_used: bool,
+    /// The teardown each registered instance's record names, by its
+    /// declaration and whether it is pinned: a private function-pointer
+    /// global (`lotus.unwind_fn.<L>`) the end of lowering fills with a
+    /// synthesized `__unwind_<L>` when the registry is in use.
+    pub(crate) unwind_fns: BTreeMap<(String, bool), inkwell::values::GlobalValue<'ctx>>,
     /// When set, `arena_alloc` routes through this arena pointer
     /// instead of `current_self`'s arena field or the program
     /// global. Used during locus-instantiation field init so
@@ -4039,6 +4090,17 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// no entry on the building frame, which does not own the root at its
     /// exit.
     pub(crate) anchor_record_slot: Option<PointerValue<'ctx>>,
+    /// GH #731: the perspectives some declared holder may hold WITHOUT
+    /// designating (`p: perspective(P);`). Filled as the loci are
+    /// declared, so every call through one of them — lowered later —
+    /// checks the slot before it dispatches.
+    pub(crate) perspectives_holdable: BTreeSet<String>,
+    /// GH #731: the perspectives a lowered instantiation holds without
+    /// designating, each with its first such field as `Locus.field`.
+    pub(crate) perspectives_held: BTreeMap<String, String>,
+    /// GH #731: the perspectives a lowered instantiation designates
+    /// (a `= Impl { }` default or a constructor override).
+    pub(crate) perspectives_designated: BTreeSet<String>,
     /// F.31 (2026-05-23): the placement a `placement { }` entry
     /// gives one field, as `(entry, class)`.
     ///
@@ -5568,6 +5630,11 @@ pub(crate) struct CapacitySlotLayout {
     /// future F.32-1 ships; today the typechecker rejects
     /// those values.
     pub(crate) sync_mode: SyncMode,
+    /// `@form(heap)`: the `ordered_by` field of the cell record and
+    /// whether the largest key is the root (`max`). The slot is a
+    /// `SlotForm::Vec` (the same storage); this turns its method set
+    /// into the heap's. `None` for every other slot.
+    pub(crate) heap_order: Option<(String, bool)>,
 }
 
 /// F.32-1α (2026-05-24): which cross-pool sync discipline a
@@ -5649,6 +5716,12 @@ pub(crate) enum DefaultInit {
     /// `lower_locus_instantiation` errors with a clear message
     /// otherwise.
     Required,
+    /// GH #731 (dna/FRICTION.md F.4): a `perspective(P)` param with no
+    /// initializer HOLDS the program's slot without designating it.
+    /// Omitted at the instantiation, the field stores no impl (null),
+    /// owns nothing and leaves `__persp.<P>` as the designating holder
+    /// set it; calls through the field dispatch through that slot.
+    HoldsSlot,
 }
 
 /// Compiled user `type` (a plain data record). No methods, no
@@ -5903,13 +5976,17 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     ///   teardown (pools joined, loci dissolved — so a child the
     ///   fixture spawned is reaped and scratch the fixture owns is
     ///   removed by its owner's `dissolve()`) and returns exit code 1.
-    /// - anywhere else — a helper fn, a locus method, a nested
-    ///   `on_failure` frame — `exit(1)` on the spot, exactly the
-    ///   pre-#717 behaviour. Those contexts have no main-teardown
-    ///   spine to branch to, and this is not general unwinding.
+    /// - anywhere else — a helper fn, a locus method, a `run()`, a
+    ///   handler, a nested `on_failure` frame — `lotus_test_fail_unwind`:
+    ///   on the main thread it tears down everything main's teardown
+    ///   would reach, from the main thread's unwind registry
+    ///   (`locus/unwind.rs`), and exits 1 without returning; on another
+    ///   thread it raises the drain and asks main to do the same at its
+    ///   next drain point, and returns (the body goes on, its later
+    ///   assertions no-ops), as it does while that teardown runs.
     ///
     /// Either way the first failure stops the run: nothing after it
-    /// executes, and the failure's first line is unchanged.
+    /// executes on main, and the failure's first line is unchanged.
     fn emit_test_assert_failure_check(
         &mut self,
     ) -> Result<(), CodegenError> {
@@ -5952,28 +6029,29 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 }
             }
         } else {
-            let bb =
-                self.context.append_basic_block(func, "test.fail.exit");
+            self.test_unwind_used = true;
+            self.context.append_basic_block(func, "test.fail.unwind")
+        };
+        let unwinds = !(self.in_main && self.deferred_dissolves.len() == self.main_frame_depth);
+        let ok_bb =
+            self.context.append_basic_block(func, "test.assert.ok");
+        if unwinds {
             let resume = self.builder.get_insert_block();
-            self.builder.position_at_end(bb);
-            let exit_fn = self
+            self.builder.position_at_end(bail_bb);
+            let unwind = self
                 .module
-                .get_function("exit")
-                .expect("exit declared in declare_builtins");
-            let one = self.context.i32_type().const_int(1, false);
+                .get_function("lotus_test_fail_unwind")
+                .expect("lotus_test_fail_unwind declared");
             self.builder
-                .build_call(exit_fn, &[one.into()], "test.fail.exit.call")
+                .build_call(unwind, &[], "test.fail.unwind.call")
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
             self.builder
-                .build_unreachable()
+                .build_unconditional_branch(ok_bb)
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
             if let Some(r) = resume {
                 self.builder.position_at_end(r);
             }
-            bb
-        };
-        let ok_bb =
-            self.context.append_basic_block(func, "test.assert.ok");
+        }
         self.builder
             .build_conditional_branch(is_fail, bail_bb, ok_bb)
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
@@ -6174,6 +6252,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         self.lc_spine = lc_outer;
         self.emit_arena_destroy()?;
         self.emit_bus_queue_destroy()?;
+        // An assertion that failed on another thread, whose teardown
+        // main reached an exit before running: the run still fails.
+        let code = self.emit_unwind_exit_code(code)?;
         self.builder.build_return(Some(&code)).map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         Ok(())
     }
@@ -6216,11 +6297,39 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 }
                 ObligationKind::WaitAbort if self.cells.emits(Obligation::WaitAbort)? => self.emit_bus_wait_abort_all()?,
                 ObligationKind::ReaderStop if self.cells.emits(Obligation::ReaderStop)? => self.emit_shm_readers_stop()?,
+                ObligationKind::TreeDrain if self.cells.emits(Obligation::TreeDrain)? => self.emit_tree_drain_raise()?,
                 // Omitted by the target's cells, elided, or no runtime
                 // call (the join's progress).
                 _ => {}
             }
         }
+        Ok(())
+    }
+
+    /// A main locus's tree drain (lifecycle line 15), the first step of its
+    /// teardown's head: once its `run()` has returned, every locus of its
+    /// tree reads `self.draining` as true, so a child's `run()` on a pinned
+    /// thread or a pool that watches it returns and the joins after it
+    /// complete (`lotus_tree_drain_raise`).
+    pub(crate) fn emit_tree_drain_raise(&mut self) -> Result<(), CodegenError> {
+        let f = self.module.get_function("lotus_tree_drain_raise").expect("lotus_tree_drain_raise declared");
+        self.builder
+            .build_call(f, &[], "tree.drain.raise")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        Ok(())
+    }
+
+    /// The tree drain's end, once the main locus that raised it is torn
+    /// down: a main locus built after it starts undrained
+    /// (`lotus_tree_drain_end`; a signal's drain stays up).
+    pub(crate) fn emit_tree_drain_end(&mut self) -> Result<(), CodegenError> {
+        if !self.cells.emits(Obligation::TreeDrain)? {
+            return Ok(());
+        }
+        let f = self.module.get_function("lotus_tree_drain_end").expect("lotus_tree_drain_end declared");
+        self.builder
+            .build_call(f, &[], "tree.drain.end")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         Ok(())
     }
 
@@ -6763,6 +6872,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 .build_unconditional_branch(after_bb)
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
             self.builder.position_at_end(process_bb);
+            // Its own teardown begins: a failed assertion no longer owes
+            // it (`locus/unwind.rs`).
+            self.emit_unwind_pop(self_slot)?;
             // GH #1148: the MAIN locus's deferred teardown joins the
             // cooperative pools first, as its eager dissolve does
             // (`lower_locus_instantiation`, 2026-06-01) and as fn main's
@@ -6829,6 +6941,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // — the single teardown chokepoint — so every dissolve
             // path picks it up, not just this one.)
             self.emit_locus_arena_destroy(&info, self_ptr, &locus_name)?;
+            // The main locus's tree is gone: its drain ends (line 15).
+            if is_main_entry {
+                self.emit_tree_drain_end()?;
+            }
             // m52: drain again after each dissolve. The dissolve
             // method may publish — those cells enqueue for
             // still-alive subscribers later in the reverse-iter
@@ -7317,7 +7433,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         .build_call(dissolve_fn, &[self_arg.into()], &format!("{}.reclaim.dissolve", locus_name))
                         .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
                 }
-                Ok(())
+                cx.emit_lru_evict_remaining(&info, self_arg, locus_name)
             })?;
             // Reclaim accept'd children BEFORE this locus's own fields
             // go: a child may borrow a parent's capacity slot
@@ -8577,7 +8693,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     Some((lo, i64_t.const_zero()))
                 }
             }
-            CodegenTy::Decimal => {
+            CodegenTy::Decimal(_) => {
                 // i128: split into low + high i64 halves.
                 let iv = val.into_int_value();
                 let i128_t = self.context.i128_type();
@@ -9241,7 +9357,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // Scalar-literal fast path: same shape as locus-param
             // `params { ... }` defaults — value lowers to a
             // constant via `const_param` at every use site.
-            match param_value(&c.value) {
+            match param_value(&c.value, Some(&c.ty)) {
                 Ok(pv) => {
                     self.user_consts.insert(c.name.name.clone(), pv);
                 }
@@ -9321,6 +9437,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         self.main_frame_depth = self.deferred_dissolves.len();
         self.main_dissolve_frame = None;
         self.main_test_fail_bb = None;
+        // A failed assertion outside this frame tears down from the
+        // unwind registry: name its head and main's thread (behind the
+        // registry's flag, `locus/unwind.rs`).
+        self.emit_unwind_set_head()?;
 
         // m77: pull argc/argv off main's params and hand them to
         // the C-runtime stash so std::env::args_count / arg /
@@ -9911,6 +10031,28 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let _ = ptr_t;
         self.in_main = false;
         self.current_fn = None;
+        // GH #731: a perspective held without a designation needs one
+        // somewhere in the program; with none, every call through it
+        // would reach the empty slot.
+        for (persp, holder) in &self.perspectives_held {
+            if !self.perspectives_designated.contains(persp) {
+                return Err(CodegenError::Unsupported(format!(
+                    "perspective `{}`: `{}` holds its slot without designating it, \
+                     and nothing in the program designates it — give one holder \
+                     an impl (`{}: perspective({}) = Impl {{ }}` or a constructor \
+                     override)",
+                    persp,
+                    holder,
+                    holder.rsplit('.').next().unwrap_or(holder),
+                    persp
+                )));
+            }
+        }
+        // The unwind registry's teardowns, once every body has lowered
+        // and whether an assertion outside main's frame was lowered is
+        // known (`locus/unwind.rs`); before the contract teardowns, whose
+        // table they may add to.
+        self.finish_unwind_registry()?;
         // C32: the contract teardowns the bodies recorded, before the
         // drain observers are counted (their drains are some).
         self.synthesize_contract_teardowns()?;
@@ -10641,6 +10783,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // prelude transport, so the post-destroy struct recycling
         // in `emit_locus_arena_destroy` is a no-op for it.
         let slot = self.defer_dissolve_slot(self_ptr, locus_name)?;
+        self.emit_unwind_push(slot, locus_name, None)?;
         match self.deferred_dissolves.last_mut() {
             Some(frame) => {
                 frame.push((slot, locus_name.to_string(), None))
@@ -11149,6 +11292,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let codec_self_ptr = self_val.into_pointer_value();
         let codec_slot =
             self.defer_dissolve_slot(codec_self_ptr, &locus.name)?;
+        self.emit_unwind_push(codec_slot, &locus.name, None)?;
         match self.deferred_dissolves.last_mut() {
             Some(frame) => {
                 frame.push((codec_slot, locus.name.clone(), None))
@@ -12034,7 +12178,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         TypeExpr::Primitive(
                             PrimType::Int
                                 | PrimType::Float
-                                | PrimType::Decimal
+                                | PrimType::Decimal(_)
                                 | PrimType::Duration,
                             _,
                         )
@@ -12452,7 +12596,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 | PrimType::Bool
                 | PrimType::String
                 | PrimType::Duration
-                | PrimType::Decimal
+                | PrimType::Decimal(_)
                 | PrimType::Time),
             ) => Ok(TypeExpr::Primitive(*p, span)),
             Ty::Named(n) if self.user_types.contains_key(n) || self.user_enums.contains_key(n) => {
@@ -13305,7 +13449,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 Some(CodegenTy::Float) => {
                     self.context.f64_type().fn_type(&llvm_param_tys, false)
                 }
-                Some(CodegenTy::Decimal) => {
+                Some(CodegenTy::Decimal(_)) => {
                     self.context.i128_type().fn_type(&llvm_param_tys, false)
                 }
                 Some(CodegenTy::Bool) => {
@@ -13999,7 +14143,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             | CodegenTy::Cell(_, _)
             | CodegenTy::FnPtr { .. }
             | CodegenTy::Drain(_)
-            | CodegenTy::Decimal => Err(CodegenError::Unsupported(format!(
+            | CodegenTy::Decimal(_) => Err(CodegenError::Unsupported(format!(
                 "@ffi fn `{}` parameter `{}`: type {:?} is not yet wired \
                  for FFI codegen at Stage 1. See spec/ffi.md.",
                 fn_name, param_name, ty
@@ -14654,7 +14798,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             CodegenTy::Int
             | CodegenTy::Float
             | CodegenTy::Bool
-            | CodegenTy::Decimal
+            | CodegenTy::Decimal(_)
             | CodegenTy::Time
             | CodegenTy::Duration
             | CodegenTy::FnPtr { .. }
@@ -14881,7 +15025,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             CodegenTy::Int
                 | CodegenTy::Float
                 | CodegenTy::Bool
-                | CodegenTy::Decimal
+                | CodegenTy::Decimal(_)
                 | CodegenTy::Time
                 | CodegenTy::Duration
                 | CodegenTy::FnPtr { .. }
@@ -16066,7 +16210,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             CodegenTy::Bool => "Bool".to_string(),
             CodegenTy::String => "String".to_string(),
             CodegenTy::Bytes => "Bytes".to_string(),
-            CodegenTy::Decimal => "Decimal".to_string(),
+            CodegenTy::Decimal(s) => hale_types::ty::decimal_name(*s).to_string(),
             CodegenTy::Time => "Time".to_string(),
             CodegenTy::Duration => "Duration".to_string(),
             other => format!("{:?}", other),
@@ -16112,7 +16256,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
 
     /// A rewritten send can run in a helper reached during birth. Preserve
     /// its exact receiver while that receiver's readiness window is open,
-    /// including payloads held in variables; otherwise keep the direct call.
+    /// including payloads held in variables, or while a cell this thread
+    /// sent earlier still waits on its own queue (one publisher's order);
+    /// otherwise keep the direct call.
     fn lower_ready_publish_call(
         &mut self,
         id: NodeId,
@@ -16128,7 +16274,15 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let value = args.first().expect("a rewritten send has its payload argument");
         let func = self.builder.get_insert_block().and_then(|b| b.get_parent())
             .expect("a publish is inside a function");
-        let held = self.emit_any_subscriber_unready()?;
+        // One publisher's order: while a cell this thread sent earlier
+        // waits on its own queue, the direct call would overtake it, so
+        // the send is queued to its receiver behind it.
+        let unready_any = self.emit_any_subscriber_unready()?;
+        let queued = self.emit_local_queued()?;
+        let held = self
+            .builder
+            .build_or(unready_any, queued, "publish.held.or_queued")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         let parked = self.context.append_basic_block(func, "publish.unready");
         let direct = self.context.append_basic_block(func, "publish.ready");
         let join = self.context.append_basic_block(func, "publish.ready.join");
@@ -16148,6 +16302,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .map_err(e)?.try_as_basic_value().left().expect("is_unready returns i32").into_int_value();
         let unready = self.builder.build_int_compare(inkwell::IntPredicate::NE, unready,
             self.context.i32_type().const_zero(), "publish.receiver.held").map_err(e)?;
+        let unready = self.builder.build_or(unready, queued, "publish.receiver.held.or_queued").map_err(e)?;
         self.builder.build_conditional_branch(unready, parked, direct).map_err(e)?;
         self.builder.position_at_end(parked);
         self.lower_send(&subject, value, None, scope, Some(receiver))?;
@@ -16574,7 +16729,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 CodegenTy::Int
                     | CodegenTy::Float
                     | CodegenTy::Bool
-                    | CodegenTy::Decimal
+                    | CodegenTy::Decimal(_)
                     | CodegenTy::Time
                     | CodegenTy::Duration
                     | CodegenTy::String
@@ -16732,7 +16887,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             CodegenTy::Int => ("Int", 64, SIGNED, false),
             CodegenTy::Float => ("Float", 64, FLOAT, false),
             CodegenTy::Bool => ("Bool", 32, BOOLEAN, false),
-            CodegenTy::Decimal => ("Decimal", 128, SIGNED, false),
+            CodegenTy::Decimal(_) => ("Decimal", 128, SIGNED, false),
             CodegenTy::Time => ("Time", 64, SIGNED, false),
             CodegenTy::Duration => ("Duration", 64, SIGNED, false),
             CodegenTy::String => ("String", 0, 0, true),
@@ -17603,6 +17758,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         // dissolved the loop bindings' uninitialized
                         // allocas.
                         self.null_init_entry_ptr_slot(alloca)?;
+                        self.emit_unwind_push(alloca, &lname, None)?;
                         self.deferred_dissolves
                             .last_mut()
                             .expect("checked non-empty")
@@ -18264,6 +18420,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 // publishers mid-program. No-op on cooperative
                 // threads (TLS is null).
                 self.emit_pinned_mailbox_drain_pending()?;
+                // A failed assertion another thread raised: main tears
+                // down here (`locus/unwind.rs`).
+                self.emit_unwind_poll()?;
                 Ok(BlockEnd::Open)
             }
             Stmt::Terminate(_) => {
@@ -19231,7 +19390,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             )));
         }
         match at {
-            CodegenTy::Int | CodegenTy::Duration | CodegenTy::Decimal => {
+            CodegenTy::Int | CodegenTy::Duration | CodegenTy::Decimal(_) => {
                 let pred = match name {
                     "min" => inkwell::IntPredicate::SLT,
                     "max" => inkwell::IntPredicate::SGT,
@@ -19285,13 +19444,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         ty: &CodegenTy,
     ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
         match ty {
-            CodegenTy::Int | CodegenTy::Duration | CodegenTy::Decimal => {
+            CodegenTy::Int | CodegenTy::Duration | CodegenTy::Decimal(_) => {
                 // m48: Decimal lives in i128 so the int-abs path
                 // works for it directly — same neg + select shape
                 // as Int / Duration, just with the i128 zero
                 // constant instead of i64.
                 let zero: inkwell::values::IntValue<'ctx> =
-                    if matches!(ty, CodegenTy::Decimal) {
+                    if matches!(ty, CodegenTy::Decimal(_)) {
                         i128_const(self.context, 0)
                     } else {
                         self.context.i64_type().const_int(0, true)
@@ -19412,7 +19571,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             CodegenTy::Int => PrintShape::Prim(PrimType::Int),
             CodegenTy::Bool => PrintShape::Prim(PrimType::Bool),
             CodegenTy::Float => PrintShape::Prim(PrimType::Float),
-            CodegenTy::Decimal => PrintShape::Prim(PrimType::Decimal),
+            CodegenTy::Decimal(s) => PrintShape::Prim(PrimType::Decimal(*s)),
             CodegenTy::Duration => PrintShape::Prim(PrimType::Duration),
             CodegenTy::Time => PrintShape::Prim(PrimType::Time),
             CodegenTy::Bytes => PrintShape::Prim(PrimType::Bytes),
@@ -19576,7 +19735,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .expect("lotus_str_from_float returns ptr");
                 Ok(res)
             }
-            CodegenTy::Decimal => {
+            CodegenTy::Decimal(dec_scale) => {
                 let arena_ptr = self.current_arena_ptr()?;
                 let i128_v = v.into_int_value();
                 let i64_t = self.context.i64_type();
@@ -19601,7 +19760,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .builder
                     .build_call(
                         f,
-                        &[arena_ptr.into(), hi.into(), lo.into()],
+                        &[
+                            arena_ptr.into(),
+                            hi.into(),
+                            lo.into(),
+                            i64_t.const_int(u64::from(dec_scale), false).into(),
+                        ],
                         "to_string.decimal",
                     )
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
@@ -19739,6 +19903,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let mut variant_blocks: Vec<(
             inkwell::values::IntValue<'ctx>,
             inkwell::basic_block::BasicBlock<'ctx>,
+            inkwell::basic_block::BasicBlock<'ctx>,
             BasicValueEnum<'ctx>,
         )> = Vec::new();
         for (idx, vinfo) in info.variants.iter().enumerate() {
@@ -19771,12 +19936,16 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .str_concat(acc.into(), close.into())?
                     .into_pointer_value();
             }
+            // A nested payload's rendering (an enum's own switch) adds
+            // blocks: the switch targets `case_bb`, the PHI's edge comes
+            // from the block the case ends in.
+            let final_bb = self.builder.get_insert_block().unwrap();
             self.builder
                 .build_unconditional_branch(cont_bb)
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-            let final_bb = self.builder.get_insert_block().unwrap();
             variant_blocks.push((
                 i32_t.const_int(idx as u64, false),
+                case_bb,
                 final_bb,
                 acc.into(),
             ));
@@ -19797,7 +19966,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             inkwell::basic_block::BasicBlock<'ctx>,
         )> = variant_blocks
             .iter()
-            .map(|(c, bb, _)| (*c, *bb))
+            .map(|(c, bb, _, _)| (*c, *bb))
             .collect();
         self.builder
             .build_switch(tag, default_bb, &cases)
@@ -19813,8 +19982,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             &dyn inkwell::values::BasicValue<'ctx>,
             inkwell::basic_block::BasicBlock<'ctx>,
         )> = Vec::new();
-        for (_, bb, acc) in &variant_blocks {
-            incoming.push((acc, *bb));
+        for (_, _, end_bb, acc) in &variant_blocks {
+            incoming.push((acc, *end_bb));
         }
         incoming.push((&default_acc, default_bb));
         phi.add_incoming(&incoming);
@@ -19904,14 +20073,15 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         .left()
                         .expect("lotus_fmt_float_prec returns ptr")
                 }
-                // Decimal is an i128 mantissa at fixed scale 9, NOT
+                // Decimal is an i128 mantissa at its scale S, NOT
                 // an f64 — so it goes through the exact fixed-point
                 // formatter `std::decimal::format` already uses.
                 // Routing it via a double would reintroduce, in the
                 // rendering of a money value, precisely the rounding
                 // the Decimal type exists to avoid. (Places clamp at
-                // 9: there is no tenth digit to print.)
-                Some(p) if ty == CodegenTy::Decimal => {
+                // S: there is no digit past the scale to print.)
+                Some(p) if matches!(ty, CodegenTy::Decimal(_)) => {
+                    let CodegenTy::Decimal(dec_scale) = ty else { unreachable!("guard checked") };
                     let i128_v = v.into_int_value();
                     let lo = self
                         .builder
@@ -19939,6 +20109,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                             &[
                                 hi.into(),
                                 lo.into(),
+                                i64_t.const_int(u64::from(dec_scale), false).into(),
                                 i64_t.const_int(p as u64, false).into(),
                             ],
                             "fmt.dec.prec",
@@ -19963,7 +20134,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 ty,
                 CodegenTy::Int
                     | CodegenTy::Float
-                    | CodegenTy::Decimal
+                    | CodegenTy::Decimal(_)
                     | CodegenTy::Duration
             ) || spec.kind != SpecKind::Display;
             let align = spec.align.unwrap_or(if numeric {
@@ -20397,7 +20568,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         name: &str,
     ) -> Result<inkwell::values::IntValue<'ctx>, CodegenError> {
         match ty {
-            CodegenTy::Int | CodegenTy::Duration | CodegenTy::Time | CodegenTy::Bool | CodegenTy::Decimal => self
+            CodegenTy::Int | CodegenTy::Duration | CodegenTy::Time | CodegenTy::Bool | CodegenTy::Decimal(_) => self
                 .builder
                 .build_int_compare(
                     inkwell::IntPredicate::EQ,
@@ -20563,8 +20734,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
                 }
                 Pattern::Literal(lit, span) => {
-                    let (lit_val, lit_ty) =
-                        self.lower_expr(&Expr::Literal(lit.clone(), *span), scope)?;
+                    let (lit_val, lit_ty) = self.lower_pattern_literal(lit, *span, &scrutinee_ty, scope)?;
                     if lit_ty != scrutinee_ty {
                         return Err(CodegenError::Unsupported(format!(
                             "match arm pattern type {:?} doesn't match \
@@ -20647,10 +20817,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                                 ));
                             }
                             Pattern::Literal(lit, span) => {
-                                let (lit_val, lit_ty) = self.lower_expr(
-                                    &Expr::Literal(lit.clone(), *span),
-                                    scope,
-                                )?;
+                                let (lit_val, lit_ty) =
+                                    self.lower_pattern_literal(lit, *span, &elem_tys[j], scope)?;
                                 if lit_ty != elem_tys[j] {
                                     return Err(CodegenError::Unsupported(
                                         format!(
@@ -20823,10 +20991,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                                     bindings.push((ident.name.clone(), val, ty));
                                 }
                                 Pattern::Literal(lit, span) => {
-                                    let (lit_val, lit_ty) = self.lower_expr(
-                                        &Expr::Literal(lit.clone(), *span),
-                                        scope,
-                                    )?;
+                                    let (lit_val, lit_ty) =
+                                        self.lower_pattern_literal(lit, *span, &fields[j].1, scope)?;
                                     let (field_val, field_ty) = fields[j].clone();
                                     if lit_ty != field_ty {
                                         return Err(CodegenError::Unsupported(
@@ -21693,7 +21859,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // Without it, enabling the writer's retirement would turn
         // the old leak into a use-after-free the moment an
         // iteration overlapped a concurrent set.
-        let synced_clone_reads = slot.sync_mode == SyncMode::Serialized
+        let synced_clone_reads = slot.sync_mode != SyncMode::None
             && self.hashmap_cell_owns_blocks(&cell_info.fields);
         let count = if synced_clone_reads {
             let dest = self.current_arena_ptr()?;
@@ -22921,7 +23087,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 self.context.ptr_type(AddressSpace::default()).into()
             }
             CodegenTy::Float => self.context.f64_type().into(),
-            CodegenTy::Decimal => self.context.i128_type().into(),
+            CodegenTy::Decimal(_) => self.context.i128_type().into(),
             CodegenTy::Bool => self.context.bool_type().into(),
             CodegenTy::Enum(en) => {
                 let payload = self
@@ -23021,7 +23187,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 | CodegenTy::Float
                 | CodegenTy::Bool
                 | CodegenTy::Duration
-                | CodegenTy::Decimal
+                | CodegenTy::Decimal(_)
                 | CodegenTy::Enum(_)
         )
     }
@@ -23325,6 +23491,27 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         result
     }
 
+    /// A match pattern's literal, compared against a value of `want`: a
+    /// Decimal literal is a mantissa at `want`'s scale (`Decimal<S>`).
+    fn lower_pattern_literal(
+        &mut self,
+        lit: &Literal,
+        span: hale_syntax::Span,
+        want: &CodegenTy,
+        scope: &Scope<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
+        if let (Literal::Decimal(text), CodegenTy::Decimal(scale)) = (lit, want) {
+            let m = hale_syntax::decimal_literal::parse_at_scale(text, *scale).map_err(|_| {
+                CodegenError::UnsupportedAt(
+                    format!("Decimal pattern `{text}` does not fit `{}`", hale_types::ty::decimal_name(*scale)),
+                    span,
+                )
+            })?;
+            return Ok((i128_const(self.context, m).into(), want.clone()));
+        }
+        self.lower_expr(&Expr::Literal(lit.clone(), span), scope)
+    }
+
     pub(crate) fn lower_expr(
         &mut self,
         e: &Expr,
@@ -23488,6 +23675,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                             .map_err(|e| {
                                 CodegenError::LlvmEmit(e.to_string())
                             })?;
+                        self.emit_unwind_push(slot, &lname, None)?;
                         self.deferred_dissolves
                             .last_mut()
                             .expect("checked non-empty")
@@ -23557,23 +23745,25 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .expect("lotus_bytes_from_buf returns ptr");
                 Ok((blob, CodegenTy::Bytes))
             }
-            Expr::Literal(Literal::Decimal(s), _) => {
-                // m48: lower Decimal literals to i128 mantissa
-                // with fixed scale 9 (mantissa × 10^-9). Per-value
-                // scale lives only in the interpreter; codegen
-                // picks one fixed scale so add/sub stay i128 ops
-                // without mantissa alignment, and mul/div compose
-                // via single division by 10^9. Source spelling
-                // round-trips through the runtime print helper
-                // because trailing zeros are trimmed at display.
-                let mantissa = parse_decimal_to_i128_scale9(s).ok_or_else(|| {
-                    CodegenError::Unsupported(format!(
-                        "Decimal literal `{}` failed to parse",
-                        s
-                    ))
+            Expr::Literal(Literal::Decimal(s), span) => {
+                // m48 / `Decimal<S>`: an i128 mantissa at the scale of
+                // the place the literal flows into, which the checker
+                // recorded at the literal (`Decimal`'s 9 when it
+                // recorded none). Add/sub stay i128 ops; mul/div
+                // divide by 10^S once.
+                let scale = self.decimal_scale_at_value(*span);
+                let mantissa = hale_syntax::decimal_literal::parse_at_scale(s, scale).map_err(|_| {
+                    CodegenError::UnsupportedAt(
+                        format!(
+                            "Decimal literal `{}` does not fit `{}` (the checker refuses it)",
+                            s,
+                            hale_types::ty::decimal_name(scale)
+                        ),
+                        *span,
+                    )
                 })?;
                 let v = i128_const(self.context, mantissa);
-                Ok((v.into(), CodegenTy::Decimal))
+                Ok((v.into(), CodegenTy::Decimal(scale)))
             }
             Expr::Literal(Literal::Time(s), _) => {
                 // GH #607: an instant, i64 nanoseconds since the
@@ -24126,6 +24316,23 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 // the result's.
                 if let Some(result) = self.operator_result(*span) {
                     return self.lower_binop(*op, lv, rv, &result);
+                }
+                // A stdlib body has no operator rows (the checker records
+                // none for it: `conversion::row`), so its `n * 1ms` — the
+                // one spelling by which a count becomes a `Duration` —
+                // found no row and was refused here. The algebra's answer
+                // for that product is fixed whatever the site (spec/units.md:
+                // a quantity times an `Int` is the quantity, and a
+                // `Duration` counts nanoseconds, the `i64` both operands
+                // are), so it is the same multiply a row would emit.
+                if *op == BinOp::Mul
+                    && matches!(
+                        (&lt, &rt),
+                        (CodegenTy::Int, CodegenTy::Duration)
+                            | (CodegenTy::Duration, CodegenTy::Int)
+                    )
+                {
+                    return self.lower_binop(*op, lv, rv, &CodegenTy::Duration);
                 }
                 if lt != rt {
                     return Err(CodegenError::Unsupported(format!(
@@ -25172,9 +25379,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 self.context.i64_type().const_int(*ns as u64, true).into(),
                 CodegenTy::Duration,
             ),
-            ParamValue::Decimal(m) => (
+            ParamValue::Decimal(m, scale) => (
                 i128_const(self.context, *m).into(),
-                CodegenTy::Decimal,
+                CodegenTy::Decimal(*scale),
             ),
             ParamValue::Time(s) => {
                 let ns = hale_syntax::time_literal::parse_iso8601_utc_ns(s).unwrap_or(0);
@@ -25332,22 +25539,28 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 let v = v.map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
                 Ok((v.into(), CodegenTy::Float))
             }
-            (BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod, CodegenTy::Decimal) => {
-                // m48: Decimal arithmetic on i128 mantissa with
-                // implicit scale 9. Add/Sub/Mod: direct i128 ops
-                // (the mantissas already share the implicit
-                // scale, so a%b at scale 9 is just `a_m %
-                // b_m` reinterpreted at scale 9). Mul: (a × b)
-                // is mantissa scale 18; divide by 10^9 to bring
-                // back to scale 9. Div: scale a's mantissa up by
-                // 10^9 first so (a × 10^9) / b lands at scale 9.
-                // Mul and div risk i128 overflow on the
-                // intermediate product when operands exceed
-                // ~10^19; v0.1 accepts the same wrap-around
-                // policy as Int multiplication.
+            (BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod, CodegenTy::Decimal(scale)) => {
+                // m48 / `Decimal<S>`: arithmetic on the i128 mantissa
+                // at the scale S both operands share (the checker
+                // refuses two scales). Add/Sub/Mod: direct i128 ops (a
+                // % b at scale S is `a_m % b_m` read at scale S). Mul:
+                // (a × b) is a mantissa at scale 2S; divide by 10^S to
+                // bring it back to S. Div: scale a's mantissa up by
+                // 10^S first so (a × 10^S) / b lands at S. Each
+                // division truncates toward zero.
+                //
+                // The intermediate: up to scale 9 it is the i128 itself
+                // (as `Decimal` always was), and wraps like `Int`
+                // arithmetic past it. Above 9 an i128 product would
+                // overflow for operands as small as 14 at scale 18, so
+                // the product and the scaled dividend are i256, and only
+                // a result no i128 holds wraps.
                 let l = lv.into_int_value();
                 let r = rv.into_int_value();
-                let pow9 = i128_const(self.context, 1_000_000_000i128);
+                if matches!(op, BinOp::Mul | BinOp::Div) && scale > hale_syntax::decimal_literal::DEFAULT_SCALE {
+                    return self.lower_wide_decimal_mul_div(op, l, r, scale);
+                }
+                let pow = i128_const(self.context, hale_syntax::decimal_literal::pow10(u32::from(scale)));
                 let v = match op {
                     BinOp::Add => self.builder.build_int_add(l, r, "decadd"),
                     BinOp::Sub => self.builder.build_int_sub(l, r, "decsub"),
@@ -25357,19 +25570,19 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                             .builder
                             .build_int_mul(l, r, "decmul_raw")
                             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                        self.builder.build_int_signed_div(prod, pow9, "decmul")
+                        self.builder.build_int_signed_div(prod, pow, "decmul")
                     }
                     BinOp::Div => {
                         let scaled = self
                             .builder
-                            .build_int_mul(l, pow9, "decdiv_scale")
+                            .build_int_mul(l, pow, "decdiv_scale")
                             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
                         self.builder.build_int_signed_div(scaled, r, "decdiv")
                     }
                     _ => unreachable!(),
                 };
                 let v = v.map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                Ok((v.into(), CodegenTy::Decimal))
+                Ok((v.into(), CodegenTy::Decimal(scale)))
             }
             (BinOp::Eq | BinOp::NotEq | BinOp::Lt | BinOp::Gt | BinOp::LtEq | BinOp::GtEq,
                 CodegenTy::Int) =>
@@ -25392,7 +25605,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 Ok((v.into(), CodegenTy::Bool))
             }
             (BinOp::Eq | BinOp::NotEq | BinOp::Lt | BinOp::Gt | BinOp::LtEq | BinOp::GtEq,
-                CodegenTy::Decimal) =>
+                CodegenTy::Decimal(_)) =>
             {
                 let l = lv.into_int_value();
                 let r = rv.into_int_value();
@@ -25651,7 +25864,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
                 Ok((r.into(), CodegenTy::Float))
             }
-            (UnaryOp::Neg, CodegenTy::Decimal) => {
+            (UnaryOp::Neg, t @ CodegenTy::Decimal(_)) => {
                 // m48: Decimal lives in i128; negate via subtract
                 // from i128 zero, mirroring Int's neg lowering.
                 let zero = i128_const(self.context, 0);
@@ -25659,7 +25872,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .builder
                     .build_int_sub(zero, v.into_int_value(), "decneg")
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                Ok((r.into(), CodegenTy::Decimal))
+                Ok((r.into(), t.clone()))
             }
             (UnaryOp::Not, CodegenTy::Bool) => {
                 let r = self
@@ -25764,7 +25977,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     printf_args
                         .push(BasicMetadataValueEnum::FloatValue(val.into_float_value()));
                 }
-                CodegenTy::Decimal => {
+                CodegenTy::Decimal(_) => {
                     // m48: render the i128 mantissa via the
                     // C runtime helper into a stack buffer, then
                     // splice the buffer in as %s. Splitting i128
@@ -25801,10 +26014,16 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                                 "lotus_decimal_to_string undeclared".into(),
                             )
                         })?;
+                    let CodegenTy::Decimal(dec_scale) = ty else { unreachable!("a Decimal arm") };
                     self.builder
                         .build_call(
                             dec_to_str,
-                            &[hi.into(), lo.into(), buf.into()],
+                            &[
+                                hi.into(),
+                                lo.into(),
+                                i64_t.const_int(u64::from(dec_scale), false).into(),
+                                buf.into(),
+                            ],
                             "dec_render",
                         )
                         .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
@@ -27611,12 +27830,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             | Id::IoTcpAcceptOne
             | Id::IoTcpConnect
             | Id::IoTcpConnectWait
+            | Id::IoTcpConnectWithin
             | Id::IoTcpListenSocket
             | Id::IoTcpSetNodelay
             | Id::IoTcpSetRecvTimeout
             | Id::IoTcpSetRxTimestamps
             | Id::IoTcpSetSendTimeout
             | Id::IoTlsConnect
+            | Id::IoTlsConnectWithin
             | Id::IoTlsSetNodelay
             | Id::IoTlsSetRecvTimeout
             | Id::IoTlsSetRxTimestamps
@@ -27645,6 +27866,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             | Id::ProcessPipeWriteRaw
             | Id::ProcessSignalPidRaw
             | Id::ProcessSpawnRaw
+            | Id::ProcessSpawnWithRaw
+            | Id::ProcessRunWithRaw
+            | Id::ProcessWaitDeadlineRaw
             | Id::ProcessTryWaitPidRaw
             | Id::ProcessWaitPidRaw
             | Id::ProcessRun
@@ -27856,6 +28080,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             Id::IoTcpListenSocket => self.lower_std_io_tcp_listen_socket_fallible(args, scope),
             Id::IoTcpConnect => self.lower_std_io_tcp_connect_fallible(args, scope),
             Id::IoTcpConnectWait => self.lower_std_io_tcp_connect_wait_fallible(args, scope),
+            Id::IoTcpConnectWithin => self.lower_std_io_tcp_connect_within_fallible(args, scope),
             Id::IoTcpAcceptOne => self.lower_std_io_tcp_accept_one_fallible(args, scope),
             // GH #1106: AF_UNIX stream sockets, the fd-level shape tcp has.
             Id::IoUnixListenSocket => self.lower_std_io_unix_listen_socket_fallible(args, scope),
@@ -27867,6 +28092,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // stay non-fallible (Int 0/-1 returns) to mirror the
             // tcp shape.
             Id::IoTlsConnect => self.lower_std_io_tls_connect_fallible(args, scope),
+            Id::IoTlsConnectWithin => self.lower_std_io_tls_connect_within_fallible(args, scope),
             // upgrade wraps an already-connected fd in a TLS session
             // (STARTTLS-style); same fallible(IoError) surface as
             // connect since it handshakes + optionally verifies.
@@ -27967,6 +28193,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // process.hl's spawn/wait/kill wrappers.
             Id::ProcessRun => self.lower_std_process_run_fallible(args, scope),
             Id::ProcessSpawnRaw => self.lower_std_process_spawn_fallible(args, scope),
+            Id::ProcessSpawnWithRaw => self.lower_std_process_spawn_with_fallible(args, scope),
+            Id::ProcessRunWithRaw => self.lower_std_process_run_with_fallible(args, scope),
+            Id::ProcessWaitDeadlineRaw => self.lower_std_process_wait_deadline_fallible(args, scope),
             Id::ProcessWaitPidRaw => self.lower_std_process_wait_pid_fallible(args, scope),
             Id::ProcessKillEscalateRaw => {
                 self.lower_std_process_kill_escalate_fallible(args, scope)
@@ -30085,7 +30314,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             CodegenTy::Bool => "Bool".to_string(),
             CodegenTy::String => "String".to_string(),
             CodegenTy::Bytes => "Bytes".to_string(),
-            CodegenTy::Decimal => "Decimal".to_string(),
+            CodegenTy::Decimal(s) => hale_types::ty::decimal_mangle_token(*s).to_string(),
             CodegenTy::Duration => "Duration".to_string(),
             CodegenTy::Time => "Time".to_string(),
             CodegenTy::TypeRef(name) => format!("type_{}", name),
@@ -30708,6 +30937,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .build_load(ptr_t, vtable_slot_ptr, "persp.vtable")
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
             .into_pointer_value();
+        // GH #731: a perspective some holder holds without designating
+        // can be called before anything designated it. The call stops
+        // the program with the perspective named instead of jumping
+        // through an empty slot. A perspective every holder designates
+        // pays nothing: its slot is set before any holder can call.
+        if self.perspectives_holdable.contains(persp_name) {
+            self.emit_perspective_slot_check(persp_name, vtable_ptr, method_name)?;
+        }
         let vtable_ty = ptr_t.array_type(contract_fns.len() as u32);
         let i32_t = self.context.i32_type();
         let zero = i32_t.const_zero();
@@ -30938,7 +31175,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     ///   pass = diff <= tolerance
     ///   if pass: continue
     ///   else:
-    ///     dprintf(2, "ClosureViolation: locus `L` closure `C` failed at dissolve\n")
+    ///     dprintf(2, "ClosureViolation: locus `L` closure `C` failed at <epoch>\n")
     ///     exit(1)
     /// ```
     ///
@@ -31063,7 +31300,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .build_store(slot_ptr, z)
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
             }
-            CodegenTy::Decimal => {
+            CodegenTy::Decimal(_) => {
                 let z = i128_const(self.context, 0);
                 self.builder
                     .build_store(slot_ptr, z)
@@ -31218,7 +31455,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .build_store(slot_ptr, next)
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
             }
-            CodegenTy::Decimal => {
+            CodegenTy::Decimal(_) => {
                 let i128_t = self.context.i128_type();
                 let prev = self
                     .builder
@@ -31341,9 +31578,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                             CodegenError::LlvmEmit(e.to_string())
                         })?,
                     CodegenTy::Float => sum_v.into_float_value(),
-                    CodegenTy::Decimal => {
-                        // Decimal sum is i128 with implicit scale 9.
-                        // Cast to f64 then divide by 10^9 so the
+                    CodegenTy::Decimal(dec_scale) => {
+                        // Decimal sum is i128 at its scale S.
+                        // Cast to f64 then divide by 10^S so the
                         // result is in real units before the
                         // count division. Loses some precision but
                         // mean is inherently real-valued so f64
@@ -31358,7 +31595,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                             .map_err(|e| {
                                 CodegenError::LlvmEmit(e.to_string())
                             })?;
-                        let scale = f64_t.const_float(1_000_000_000.0);
+                        let scale = f64_t.const_float(10f64.powi(i32::from(dec_scale)));
                         self.builder
                             .build_float_div(raw, scale, "mean.sum.dec.f")
                             .map_err(|e| {
@@ -31415,7 +31652,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 .builder
                 .build_load(self.context.f64_type(), slot_ptr, name)
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?,
-            CodegenTy::Decimal => self
+            CodegenTy::Decimal(_) => self
                 .builder
                 .build_load(self.context.i128_type(), slot_ptr, name)
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?,
@@ -31967,7 +32204,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             )
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         let fmt = self.global_string(
-            "runtime error: ClosureViolation: locus `%s` closure `%s` failed at dissolve\n",
+            "runtime error: ClosureViolation: locus `%s` closure `%s` failed; bubbled past every on_failure handler\n",
         );
         let dprintf_fn = self
             .module
@@ -32316,6 +32553,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let mut variant_blocks: Vec<(
             inkwell::values::IntValue<'ctx>,
             inkwell::basic_block::BasicBlock<'ctx>,
+            inkwell::basic_block::BasicBlock<'ctx>,
             inkwell::values::IntValue<'ctx>,
         )> = Vec::new();
         let default_bb =
@@ -32349,12 +32587,20 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
                 }
             }
+            // A nested payload's comparison (an enum's own switch) adds
+            // blocks: the switch targets `case_bb`, the PHI's edge comes
+            // from the block the case ends in.
+            let end_bb = self
+                .builder
+                .get_insert_block()
+                .expect("builder positioned in enum.eq variant");
             self.builder
                 .build_unconditional_branch(cont_bb)
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
             variant_blocks.push((
                 i32_t.const_int(idx as u64, false),
                 case_bb,
+                end_bb,
                 acc,
             ));
         }
@@ -32380,7 +32626,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             inkwell::basic_block::BasicBlock<'ctx>,
         )> = variant_blocks
             .iter()
-            .map(|(c, b, _)| (*c, *b))
+            .map(|(c, b, _, _)| (*c, *b))
             .collect();
         self.builder
             .build_switch(lt, default_bb, &cases)
@@ -32399,8 +32645,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // SAFETY: each `acc` has bool_t type; PHI accepts any
         // BasicValue, so we coerce via &inkwell::values::IntValue
         // which implements BasicValue.
-        for (_, bb, acc) in &variant_blocks {
-            incoming.push((acc, *bb));
+        for (_, _, end_bb, acc) in &variant_blocks {
+            incoming.push((acc, *end_bb));
         }
         incoming.push((&default_acc, default_bb));
         incoming.push((&mismatch_acc, mismatch_bb));
@@ -32783,6 +33029,58 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// (`perspective(P) = Impl { }`) stores `{impl_self, vtable}`
     /// into it, and Phase 2b `reperspective` re-points it with one
     /// atomic store. Idempotent (get-or-create by name).
+    /// GH #731: stop the program, naming the perspective, when its
+    /// slot holds no impl at a call through it.
+    fn emit_perspective_slot_check(
+        &mut self,
+        persp_name: &str,
+        vtable_ptr: PointerValue<'ctx>,
+        method_name: &str,
+    ) -> Result<(), CodegenError> {
+        let func = self
+            .builder
+            .get_insert_block()
+            .and_then(|b| b.get_parent())
+            .ok_or_else(|| CodegenError::LlvmEmit("perspective call outside a function".into()))?;
+        let empty = self
+            .builder
+            .build_is_null(vtable_ptr, "persp.empty")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let empty_bb = self.context.append_basic_block(func, "persp.empty");
+        let ok_bb = self.context.append_basic_block(func, "persp.designated");
+        self.builder
+            .build_conditional_branch(empty, empty_bb, ok_bb)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder.position_at_end(empty_bb);
+        let i32_t = self.context.i32_type();
+        let ptr_t = self.context.ptr_type(AddressSpace::default());
+        let fflush_fn = self.module.get_function("fflush").expect("fflush declared");
+        self.builder
+            .build_call(fflush_fn, &[ptr_t.const_null().into()], "persp.empty.fflush")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let msg = self.global_string(&format!(
+            "runtime error: perspective `{}`: `{}` was called before anything designated the perspective\n",
+            persp_name, method_name
+        ));
+        let dprintf_fn = self.module.get_function("dprintf").expect("dprintf declared");
+        self.builder
+            .build_call(
+                dprintf_fn,
+                &[i32_t.const_int(2, false).into(), msg.into()],
+                "persp.empty.dprintf",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let exit_fn = self.module.get_function("exit").expect("exit declared");
+        self.builder
+            .build_call(exit_fn, &[i32_t.const_int(1, false).into()], "persp.empty.exit")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder
+            .build_unreachable()
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder.position_at_end(ok_bb);
+        Ok(())
+    }
+
     pub(crate) fn ensure_perspective_slot(
         &mut self,
         persp_name: &str,
@@ -34045,19 +34343,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         self.user_loci
                             .get(child_name)
                             .map(|child| {
-                                child.capacity_slots.iter().any(|sl| {
-                                    matches!(
-                                        sl.form,
-                                        Some(SlotForm::Hashmap)
-                                    ) && matches!(
-                                        sl.sync_mode,
-                                        SyncMode::None
-                                            | SyncMode::Serialized
-                                    ) && matches!(
-                                        sl.elem_ty,
-                                        CodegenTy::TypeRef(_)
-                                    )
-                                })
+                                child.capacity_slots.iter().any(slot_retires_cells_deferred)
                             })
                             .unwrap_or(false)
                     } else {
@@ -34119,20 +34405,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 if let CodegenTy::LocusRef(child_name) = fty {
                     if let Some(child) = self.user_loci.get(child_name)
                     {
-                        let retires = child.capacity_slots.iter().any(
-                            |sl| {
-                                matches!(
-                                    sl.form,
-                                    Some(SlotForm::Hashmap)
-                                ) && matches!(
-                                    sl.sync_mode,
-                                    SyncMode::None | SyncMode::Serialized
-                                ) && matches!(
-                                    sl.elem_ty,
-                                    CodegenTy::TypeRef(_)
-                                )
-                            },
-                        );
+                        let retires = child
+                            .capacity_slots
+                            .iter()
+                            .any(slot_retires_cells_deferred);
                         if retires {
                             child_flushes
                                 .push((fname.clone(), *fidx));
@@ -34407,12 +34683,19 @@ pub(crate) enum ParamValue {
     Float(f64),
     Bool(bool),
     Duration(i64),
-    Decimal(i128),
+    /// The mantissa and its scale (`Decimal<S>`).
+    Decimal(i128, u8),
     /// Time literal stored as its source spelling.
     Time(String),
 }
 
-pub(crate) fn param_value(e: &Expr) -> Result<ParamValue, CodegenError> {
+/// The constant a `params` initializer or a `const`'s literal is;
+/// `ascribed`, the declared type, gives a Decimal literal its scale.
+pub(crate) fn param_value(e: &Expr, ascribed: Option<&TypeExpr>) -> Result<ParamValue, CodegenError> {
+    let decimal_scale = match ascribed {
+        Some(TypeExpr::Primitive(PrimType::Decimal(s), _)) => *s,
+        _ => hale_syntax::decimal_literal::DEFAULT_SCALE,
+    };
     match e {
         Expr::Literal(Literal::String(s), _) => Ok(ParamValue::String(s.clone())),
         Expr::Literal(Literal::Int(n), _) => Ok(ParamValue::Int(*n)),
@@ -34431,13 +34714,14 @@ pub(crate) fn param_value(e: &Expr) -> Result<ParamValue, CodegenError> {
             Ok(ParamValue::Duration(ns))
         }
         Expr::Literal(Literal::Decimal(s), _) => {
-            let m = parse_decimal_to_i128_scale9(s).ok_or_else(|| {
+            let m = hale_syntax::decimal_literal::parse_at_scale(s, decimal_scale).map_err(|_| {
                 CodegenError::Unsupported(format!(
-                    "Decimal literal `{}` failed to parse",
-                    s
+                    "Decimal literal `{}` does not fit `{}`",
+                    s,
+                    hale_types::ty::decimal_name(decimal_scale)
                 ))
             })?;
-            Ok(ParamValue::Decimal(m))
+            Ok(ParamValue::Decimal(m, decimal_scale))
         }
         Expr::Literal(Literal::Time(s), _) => Ok(ParamValue::Time(s.clone())),
         // GH #1076 (U3): a quantity literal's count is its row's, which a
@@ -34457,16 +34741,6 @@ pub(crate) fn param_value(e: &Expr) -> Result<ParamValue, CodegenError> {
 
 fn escape_format(s: &str) -> String {
     s.replace('%', "%%")
-}
-
-/// m48: parse a Decimal literal source spelling (e.g. `"100.40d"`,
-/// `"0.001"`) into the i128 mantissa with implicit scale 9.
-/// Strips an optional trailing `d`, an optional leading sign,
-/// underscores. Returns None on malformed input.
-fn parse_decimal_to_i128_scale9(s: &str) -> Option<i128> {
-    // The checker has refused a literal this cannot represent (past
-    // scale 9, or past i128), with its span; this is the same parse.
-    hale_syntax::decimal_literal::parse_scale9(s).ok()
 }
 
 /// Cheap edit-distance close-match for a "did you mean" hint on
@@ -34600,7 +34874,7 @@ pub(crate) fn codegen_ty_size_bytes<'ctx>(
     t: &CodegenTy,
 ) -> u64 {
     match t {
-        CodegenTy::Decimal => 16,
+        CodegenTy::Decimal(_) => 16,
         _ => 8,
     }
 }
@@ -34664,7 +34938,7 @@ pub(crate) fn accumulator_element_type(
     match elem {
         hale_types::ty::Ty::Prim(PrimType::Int) => Ok(CodegenTy::Int),
         hale_types::ty::Ty::Prim(PrimType::Float) => Ok(CodegenTy::Float),
-        hale_types::ty::Ty::Prim(PrimType::Decimal) => Ok(CodegenTy::Decimal),
+        hale_types::ty::Ty::Prim(PrimType::Decimal(s)) => Ok(CodegenTy::Decimal(*s)),
         hale_types::ty::Ty::Prim(PrimType::Duration) => Ok(CodegenTy::Duration),
         other => Err(CodegenError::Unsupported(format!(
             "closure `{}` on locus `{}`: accumulator `sum(self.{})` \

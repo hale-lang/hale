@@ -28,7 +28,7 @@ Three things are happening:
 
 - **`@form(vec)`** tells the compiler "this locus is a growable
   list." It synthesizes the methods for you: `push`, `get`,
-  `set`, `pop`, `len`, `is_empty`, and sorting.
+  `set`, `pop`, `len`, `is_empty`, `clear`, `truncate`, and sorting.
 - **`capacity { heap items of String; }`** is where the list's
   storage lives. Read it as "this list holds `String`s." The
   element type comes from here.
@@ -43,6 +43,11 @@ Three things are happening:
   `set` free the element the vec held. A vec used as a queue — push,
   then pop once handled — stays the same size for as long as the
   locus lives.
+- **Reuse a list with `clear()`.** `clear()` empties the vec and
+  `truncate(n)` keeps its first `n` elements; what they drop is freed
+  the way `pop` frees it, and the buffer keeps its room. A scratch
+  list you fill per message can live on the locus and be cleared
+  each time instead of rebuilt.
 
 Iterate with `for` over the items:
 
@@ -126,6 +131,39 @@ locus Recent {
 new entry is not stored — so you decide whether to drop it, apply
 backpressure, or `pop` the oldest and push again. `pop` takes the
 oldest entry and is fallible on empty.
+
+## A priority queue — `@form(heap)`
+
+When you always want the most urgent item next — a job queue, a
+timer list, the frontier of a search — declare a heap and say which
+field orders it, and which end comes out first:
+
+```hale
+type Job { name: String; priority: Int; }
+
+@form(heap)
+locus Jobs {
+    capacity { heap jobs of Job ordered_by min priority; }
+}
+
+fn main() {
+    let q = Jobs { };
+    q.push(Job { name: "deploy", priority: 2 });
+    q.push(Job { name: "page", priority: 0 });
+    q.push(Job { name: "report", priority: 5 });
+    while !q.is_empty() {
+        let j = q.pop() or raise;
+        println(j.name);            // page, deploy, report
+    }
+}
+```
+
+`ordered_by min priority` pops the smallest `priority` first;
+`ordered_by max at` would pop the largest `at`. The field can be an
+`Int`, `Float`, `String`, `Time` or `Duration`. `pop` and `peek`
+(the next item, left in place) are fallible on an empty heap; there
+is no `get(i)` and no `for` over a heap — drain it with `pop` to see
+the items in order.
 
 ## A list inside a type — `bounded[T; N]`
 
