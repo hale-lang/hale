@@ -515,6 +515,16 @@ row	Shop@literal1.staff	__StdApiStaticRoles	main	default
 shared	Shop@literal1.__rpc_u_1	__StdApiUnixListener #e8cfe0e1
 shared	dynamic	sites in the seed #38292389
 
+== crates/hale-cli/tests/fixtures/api_shapes/main.hl#4b27813e
+root	Desk	the entry
+domain	pool:__api_http	async_io
+row	Desk@literal1	Desk	main	default
+row	Desk@literal1.bearer	Tokens	main	default
+row	Desk@literal1.library	Library	main	default
+row	Desk@literal1.roles	Nobody	main	default
+shared	Desk@literal1.__rpc_h_1	__StdApiHttpListener #6e12d80d
+shared	dynamic	sites in the seed #7c55c618
+
 == crates/hale-cli/tests/fixtures/bounded-annotation/app.hl#588a6cd6
 row	Acc@main1	Acc	main	default
 row	Src@main2	Src	main	default
@@ -1324,14 +1334,7 @@ row	Desk@literal1.bearer	Tokens	main	default
 row	Desk@literal1.echoer	Echoer	main	default
 row	Desk@literal1.roles	Nobody	main	default
 shared	Desk@literal1.__rpc_h_1	__StdApiHttpListener #6e12d80d
--- dynamic	sites in the seed
-dynamic	<hole>	on main|unresolved declaration `__api_serve`|unresolved declaration `http::Rpc`
-dynamic	__StdApiHttpConns	on pool:__api_http
-dynamic	__StdApiHttpPeer	on pool:__api_http
-dynamic	__StdIoTcpConnFlow	on pool:__api_http
-dynamic	__StdIoTcpConnInline	on pool:__api_http
-dynamic	__StdIoTcpConnections	on pool:__api_http|unknown (no instance)
-dynamic	__StdIoTcpStream	on pool:__api_http|unknown (no instance)
+shared	dynamic	sites in the seed #7c55c618
 
 == crates/hale-codegen/tests/api_hub.rs#067b6ae6
 root	Desk	the entry
@@ -6731,18 +6734,19 @@ row	App@literal1.svc	Svc	pool:work	entry	off owner
 row	App@literal1.tight	Svc	pool:work2	entry	off owner
 dynamic	<hole>	on main|unresolved declaration `__api_receivers`|unresolved declaration `__api_serve`	in the seed
 
+== tests/hale/api/lists_test.hl
+root	Desk	the entry
+row	Desk@literal1	Desk	main	default
+row	Desk@literal1.probe	Probe	main	default
+dynamic	<hole>	on main|unresolved declaration `__api_receivers`|unresolved declaration `__api_serve`	in the seed
+
 == tests/hale/api/pb_codec_test.hl
 root	Desk	the entry
 domain	pool:__api_grpc	async_io
 row	Desk@literal1	Desk	main	default
 row	Desk@literal1.bearer	Tokens	main	default
 row	Desk@literal1.probe	Probe	main	default
--- Desk@literal1.__rpc_g_1	__StdIoH2Listener
-row	~	__StdIoH2Listener	pool:__api_grpc	entry	off owner
-row	~.conns	__StdIoTcpConnections	pool:__api_grpc	inherited
-row	~.conns.flows	__StdIoTcpFlows	pool:__api_grpc	inherited
-row	~.conns.handler	__StdIoH2Conns	pool:__api_grpc	inherited
-row	~.relay	__StdIoTcpRelay	pool:__api_grpc	inherited
+shared	Desk@literal1.__rpc_g_1	__StdIoH2Listener #b0c4764c
 -- dynamic	sites in the seed
 dynamic	<hole>	on main|unresolved declaration `IndexError`|unresolved declaration `__api_receivers`|unresolved declaration `__api_serve`|unresolved declaration `grpc::Rpc`
 dynamic	__StdIoH2Conn	on pool:__api_grpc
@@ -6751,6 +6755,15 @@ dynamic	__StdIoTcpConnFlow	on pool:__api_grpc
 dynamic	__StdIoTcpConnInline	on pool:__api_grpc
 dynamic	__StdIoTcpConnections	on pool:__api_grpc|unknown (no instance)
 dynamic	__StdIoTcpStream	on pool:__api_grpc|unknown (no instance)
+
+== tests/hale/api/pb_lists_test.hl
+root	Desk	the entry
+domain	pool:__api_grpc	async_io
+row	Desk@literal1	Desk	main	default
+row	Desk@literal1.bearer	Tokens	main	default
+row	Desk@literal1.probe	Probe	main	default
+shared	Desk@literal1.__rpc_g_1	__StdIoH2Listener #b0c4764c
+shared	dynamic	sites in the seed #ce231561
 
 == tests/hale/api/pending_test.hl
 root	Desk	the entry
@@ -6837,6 +6850,15 @@ row	~.svc	Svc	main	inherited
 -- dynamic	sites in the seed
 dynamic	<hole>	on main|unresolved declaration `__api_receivers`|unresolved declaration `__api_serve`
 dynamic	Server	on main
+
+== tests/hale/api/time_test.hl
+root	Desk	the entry
+domain	pool:__api_grpc	async_io
+row	Desk@literal1	Desk	main	default
+row	Desk@literal1.bearer	Tokens	main	default
+row	Desk@literal1.clock	Clock	main	default
+shared	Desk@literal1.__rpc_g_1	__StdIoH2Listener #b0c4764c
+shared	dynamic	sites in the seed #ce231561
 
 == tests/hale/api/unix_wire_test.hl
 root	Desk	the entry
@@ -15315,6 +15337,13 @@ row	~.handler	__lib_dna__oidc___stub__StubIssuer	pool:io	inherited
 row	~.handler.codes	__lib_dna__oidc___stub__IssuedCodes	pool:io	inherited
 row	~.relay	__StdIoTcpRelay	pool:io	inherited
 
+== shared __StdIoH2Listener #b0c4764c
+row	~	__StdIoH2Listener	pool:__api_grpc	entry	off owner
+row	~.conns	__StdIoTcpConnections	pool:__api_grpc	inherited
+row	~.conns.flows	__StdIoTcpFlows	pool:__api_grpc	inherited
+row	~.conns.handler	__StdIoH2Conns	pool:__api_grpc	inherited
+row	~.relay	__StdIoTcpRelay	pool:__api_grpc	inherited
+
 == shared __StdIoTcpAcceptor #1ef3cccf
 row	~	__StdIoTcpAcceptor	pinned:~	entry	off owner
 row	~.relay	__StdIoTcpRelay	pinned:~	inherited
@@ -17112,6 +17141,15 @@ dynamic	__StdIoTcpConnInline	on pool:__api_ws
 dynamic	__StdIoTcpConnections	on pool:__api_ws|unknown (no instance)
 dynamic	__StdIoTcpStream	on pool:__api_ws|unknown (no instance)
 
+== shared sites in the seed #7c55c618
+dynamic	<hole>	on main|unresolved declaration `__api_serve`|unresolved declaration `http::Rpc`
+dynamic	__StdApiHttpConns	on pool:__api_http
+dynamic	__StdApiHttpPeer	on pool:__api_http
+dynamic	__StdIoTcpConnFlow	on pool:__api_http
+dynamic	__StdIoTcpConnInline	on pool:__api_http
+dynamic	__StdIoTcpConnections	on pool:__api_http|unknown (no instance)
+dynamic	__StdIoTcpStream	on pool:__api_http|unknown (no instance)
+
 == shared sites in the seed #8900d651
 dynamic	Child	on pinned:App@literal1.w
 dynamic	Grand	on main|pinned:App@literal1.s
@@ -17153,6 +17191,15 @@ dynamic	__StdIoTcpConnFlow	on pool:io
 dynamic	__StdIoTcpConnInline	on pool:io
 dynamic	__StdIoTcpConnections	on pool:io
 dynamic	__StdIoTcpStream	on pool:io
+
+== shared sites in the seed #ce231561
+dynamic	<hole>	on main|unresolved declaration `__api_receivers`|unresolved declaration `__api_serve`|unresolved declaration `grpc::Rpc`
+dynamic	__StdIoH2Conn	on pool:__api_grpc
+dynamic	__StdIoH2Conns	on pool:__api_grpc
+dynamic	__StdIoTcpConnFlow	on pool:__api_grpc
+dynamic	__StdIoTcpConnInline	on pool:__api_grpc
+dynamic	__StdIoTcpConnections	on pool:__api_grpc|unknown (no instance)
+dynamic	__StdIoTcpStream	on pool:__api_grpc|unknown (no instance)
 
 == shared sites in the stdlib #017b2abb
 dynamic	__StdBytesBytesBuilder	on unknown (`event` passed as a value)

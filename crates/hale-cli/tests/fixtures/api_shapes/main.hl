@@ -1,0 +1,62 @@
+// The shapes a payload carries beyond scalars and records, served over HTTP
+// (`crates/hale-cli/tests/api_shapes.rs`): a list (`bounded[T; N]`, `[T; N]`),
+// an instant (`Time`) and a `Duration`.
+// The listener binds port 0; the test reads back the port it was given.
+
+type Book { id: Int; title: String; }
+type Shelf { books: bounded[Book; 3]; label: String; }
+type Find { ids: bounded[Int; 4]; }
+type Corner { at: [Int; 2]; }
+type Stamp { at: Time; every: Duration; }
+
+api Shelves {
+    rpc Library::put;
+    rpc Library::find;
+    rpc Library::corner;
+    rpc Library::stamp;
+}
+
+locus Tokens {
+    fn principal(token: String) -> std::api::Principal {
+        if token == "t-reader" { return std::api::Principal { mode: "bearer", name: "reader" }; }
+        return std::api::Principal { mode: "bearer", name: "" };
+    }
+    fn refused() -> String { return "no such token"; }
+}
+
+locus Nobody {
+    fn holds(p: std::api::Principal, r: String) -> Bool { return false; }
+}
+
+locus Library {
+    params { shelf: Shelf = Shelf { label: "empty" }; }
+    fn put(s: Shelf) -> Shelf {
+        self.shelf = s;
+        return s;
+    }
+    fn find(f: Find) -> Shelf {
+        let mut out = Shelf { label: "found" };
+        for b in self.shelf.books {
+            for id in f.ids {
+                if b.id == id { push(out.books, b) or discard; }
+            }
+        }
+        return out;
+    }
+    fn corner(c: Corner) -> Corner { return c; }
+    fn stamp(s: Stamp) -> Stamp { return Stamp { at: s.at + s.every, every: s.every * 2 }; }
+}
+
+main locus Desk {
+    params {
+        bearer: Tokens = Tokens { };
+        roles: Nobody = Nobody { };
+        library: Library = Library { };
+    }
+    run() {
+        let h = api::serve(Shelves, http::Rpc { bind: "127.0.0.1:0", codec: json, principals: self.bearer, roles: self.roles }, as: "shelves", bound: 8, on_full: refuse);
+        std::api::run_until_stopped(h);
+    }
+}
+
+fn main() { Desk { }; }

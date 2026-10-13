@@ -1,6 +1,8 @@
 //! GH #1417, R8a: the generated TypeScript client compiles under
 //! `tsc --strict` and speaks the contract's wire on node's `fetch` and
-//! `WebSocket` (`tests/fixtures/ts-client/run.mjs`).
+//! `WebSocket` (`tests/fixtures/ts-client/run.mjs`); the JavaScript client
+//! (`--lang js`) checks under `tsc --checkJs --strict` and runs the same
+//! scenarios to the same outcomes.
 //!
 //! It needs `node` (22 or later) and a TypeScript compiler (`TSC`, or `tsc`
 //! on the PATH). Where either is missing the test says so and passes, unless
@@ -42,7 +44,8 @@ fn the_generated_typescript_client_speaks_the_contract() {
 
 /// A surface type named like a global the wire uses (`Response`, `Record`,
 /// `Promise`) does not shadow it: the generated client still compiles under
-/// `tsc --strict`, and the type keeps the name the row gives it.
+/// `tsc --strict` (the JavaScript one under `--checkJs`), and the type keeps
+/// the name the row gives it.
 #[test]
 fn a_surface_type_named_like_a_global_does_not_shadow_it() {
     let tsc = std::env::var("TSC").unwrap_or_else(|_| "tsc".to_string());
@@ -82,6 +85,27 @@ fn a_surface_type_named_like_a_global_does_not_shadow_it() {
         assert!(
             checked.status.success(),
             "{name}: tsc refused the client:\n{}{}",
+            String::from_utf8_lossy(&checked.stdout),
+            String::from_utf8_lossy(&checked.stderr)
+        );
+        let js = dir.join("client.js");
+        let made = Command::new(env!("CARGO_BIN_EXE_hale"))
+            .args(["api", "client", "--surface", "Public", "--lang", "js", "--out"])
+            .arg(&js)
+            .arg(&program)
+            .env("HALE_SKIP_STALE_CHECK", "1")
+            .output()
+            .expect("run hale");
+        assert!(made.status.success(), "{name}: {}", String::from_utf8_lossy(&made.stderr));
+        assert!(std::fs::read_to_string(&js).unwrap().contains(&format!(" * }}}} {name}\n")), "{name}: the JavaScript type keeps its name");
+        let checked = Command::new(&tsc)
+            .args(["--allowJs", "--checkJs", "--strict", "--target", "es2022", "--lib", "es2022,dom", "--module", "es2022", "--moduleResolution", "bundler", "--noEmit"])
+            .arg(&js)
+            .output()
+            .expect("run tsc");
+        assert!(
+            checked.status.success(),
+            "{name}: tsc --checkJs refused the JavaScript client:\n{}{}",
             String::from_utf8_lossy(&checked.stdout),
             String::from_utf8_lossy(&checked.stderr)
         );
