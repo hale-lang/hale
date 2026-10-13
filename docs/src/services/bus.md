@@ -174,7 +174,9 @@ them.
 A subscriber must be *born before* a publisher sends, or the
 message has nowhere to land. In practice: instantiate your
 subscribers first in `main`. (This is the same rule you saw with
-the log sink.)
+the log sink.) Where `hale check` can see it — a publish written
+before the literal that builds a locus subscribing to it, in the same
+body — it warns at the publish ("publish before its subscriber").
 
 The mirror-image rule at the *end* of a program is handled for
 you: at teardown, the runtime joins pinned workers (and drains

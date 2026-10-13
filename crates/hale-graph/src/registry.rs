@@ -2655,6 +2655,16 @@ pub const RULES: &[Rule] = &[
         state: State::Canonical,
     },
     Rule {
+        id: "verification/structural/publish-before-subscriber",
+        title: "Publish before its subscriber",
+        // The bundle's bodies (their sends and locus literals, in the order written), the scope (which name is a locus, the loci its params build) and the bus graph (each declaration's subscribed wires, the topic rows a send resolves through).
+        reads: Reads::Rows(&["bus_graph", "top_scope"]),
+        gist: "a send written, in one body, before a literal building a locus that subscribes to its subject (itself or a locus its params build), which never receives that cell (warning, at the send)",
+        family: "bus_graph",
+        evaluator: Some(site(CHECK, "check_publish_before_subscriber")),
+        state: State::Canonical,
+    },
+    Rule {
         id: "verification/structural/hot-path-allocation",
         title: "Hot-path allocation",
         // The allocation summary's rows (each own fn's sites and calls, where they are written, `@hot`, `@unbounded`), and the scope, for which literal names a locus and which call a factory.

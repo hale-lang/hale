@@ -340,6 +340,7 @@ crates/hale-codegen/tests/bus_devirt_direct.rs#3 be1c5579570bf80c
 crates/hale-codegen/tests/bus_devirt_direct.rs#4 5b9bb6bf129e2a3b
 crates/hale-codegen/tests/bus_devirt_no_pinned.rs#0 bb4c8f6d7778a320
 crates/hale-codegen/tests/bus_devirt_no_pinned.rs#1 10ddd98ba0a9b8a5
+crates/hale-codegen/tests/bus_early_registration.rs#0 1fe98bca183a737e
 crates/hale-codegen/tests/bus_handler_freefn.rs#0 5b49f77969b94d28
 crates/hale-codegen/tests/bus_handler_freefn.rs#2 f9444860206a1a7e
 crates/hale-codegen/tests/bus_idle_wait.rs#0 03ba56fa908d3cb9

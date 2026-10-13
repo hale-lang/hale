@@ -2250,7 +2250,17 @@ its `KNOWN_OPEN` table, which is empty today.
   runs its `birth()`.
 - **Line 6, registration before birth, and readiness.** A new
   instance's subscriptions are registered before its `birth()`, so
-  `birth()` may publish to them. Shipped. Delivery to the instance
+  `birth()` may publish to them. Shipped. A cooperative instance the
+  plan owes readiness registers the subscriptions that take no key
+  as soon as its region exists, its window open, before its params
+  are built: a cell its params' children publish to it while they
+  are born or run inline parks for it and is delivered after its own
+  `birth()` (2026-10-12, `bus_early_registration.rs`; before, it
+  registered after its params and the cell reached no subscription
+  of it). A keyed subscription, which reads its key from the params,
+  a pinned instance's, which registers with the mailbox its thread
+  start creates, and an accepted child's, which follows its owner's
+  `accept` (line 5), still register after the params. Delivery to the instance
   becomes eligible once its `birth()` (and its `birth_check`) has
   completed: what is published to it before then, its own
   `birth()`'s sends included, waits in the order it was published,
@@ -2282,7 +2292,20 @@ its `KNOWN_OPEN` table, which is empty today.
   Baked broadcast publishes use runtime dispatch while any window
   is open. A helper cannot bypass readiness or broaden a local send
   into a broadcast.
-  Not yet true in two cases (inventory rows C51
+  A publish written before the literal that builds its subscriber, in
+  one body, never reaches that subscriber, and `hale check` warns at it
+  (spec/verification.md, "Publish before its subscriber"). **Pending,
+  adopted 2026-10-12:** a subscriber of a statically built tree that
+  is built after its publisher — a later params sibling, one a pinned
+  or pool-placed field's subtree builds on its own thread, a keyed or
+  pinned subscriber — registers once it is built, so what an earlier
+  sibling's `birth()` or `run()` publishes before then reaches no
+  subscription of it, and is lost. The adopted rule reserves the static
+  tree's subscriptions before its first birth, so those cells park
+  until the subscriber's birth completes, bounded by the topic's
+  capacity and its `on_full`; not yet emitted (the parent's own
+  subscriptions are, above). Not yet true
+  in two further cases (inventory rows C51
   and R51). A subscribing locus that only stdlib or imported code
   builds, so that the lifecycle plan holds no template of it, opens
   no window, and what is published to it during its `birth()` is

@@ -354,7 +354,15 @@ an `Int`) are reported by the typechecker. Neither reaches codegen.
    `birth()` may publish to its own subscriptions; delivery to the
    locus becomes eligible once `birth()` (and its `birth_check`)
    has completed, and what was published to it before waits, in
-   order (`runtime.md` § "Lifecycle obligations", line 6).
+   order (`runtime.md` § "Lifecycle obligations", line 6). A
+   cooperative locus's subscriptions that take no key wire up as
+   soon as its region exists, before its params are built, so what
+   its params' children publish to it while they are born or run
+   waits for it too (2026-10-12); a keyed one waits for the params
+   its key reads, and a pinned locus's and an accepted child's for
+   step 2's `accept`. A publish made before its subscriber is built
+   at all reaches no subscription of it; `hale check` warns where it
+   can see one in a body.
 5. `birth(args)` runs synchronously.
 6. Modes are reachable for invocation.
 7. If `run` declared, scheduled to run on the locus's

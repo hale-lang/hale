@@ -514,7 +514,13 @@ so nothing tears it down twice. The rules that order gives you:
   own sends included, waits and is delivered afterwards, in order.
   Once a queue's worth is waiting, a publisher elsewhere waits for
   the birth to finish; a handler on the new locus's own pool, or on
-  its pinned thread, never does.
+  its pinned thread, never does. A parent's own subscriptions are
+  in place before its params are built, so what a child publishes
+  to its parent from its `birth()` or `run()` waits for the parent's
+  `birth()` too. A subscriber built *after* the publish — a later
+  sibling, a locus a body builds after sending — does not hear it:
+  build subscribers first (`hale check` warns where it sees the
+  order in one body).
 - **A pinned locus checks its birth on its own thread.** Its
   `birth_check` runs there, after `birth()` and before `run()`.
 - **A field inherits its owner's pool.** A locus field inside a

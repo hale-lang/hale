@@ -1740,6 +1740,12 @@ row	App@literal1	App	main	default
 row	Adapter@binding1	Adapter	pinned:Adapter@binding1	binding
 dynamic	Sink	on main	in the seed
 
+== crates/hale-codegen/tests/bus_early_registration.rs#f8586544
+root	App	the entry
+row	App@literal1	App	main	default
+row	App@literal1.b	Born	main	default
+row	App@literal1.r	Ran	main	default
+
 == crates/hale-codegen/tests/bus_handler_freefn.rs#c3019ba5
 row	Src@main2	Src	main	default
 row	Worker@main1	Worker	main	default

@@ -1406,6 +1406,37 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // default action at once, with no word said).
         self.emit_drain_observer_count(locus_name, 1)?;
 
+        // Line 6, a subscriber of a statically built tree (2026-10-12): a
+        // cooperative instance whose subscriptions take no key registers
+        // them here, its window open, before its params are built — so a
+        // cell its params' children publish while they are born or run
+        // (to it, or to a sibling it builds later) parks for it and is
+        // delivered once its own birth() completes, instead of reaching
+        // no subscription of it. A keyed subscription reads its key from
+        // the params, and a pinned one registers with the mailbox its
+        // thread start creates: both stay at the Subscribe step below, as
+        // does one the plan owes no readiness (a locus only stdlib or
+        // imported code builds), whose cells no window would hold back
+        // from its half-built params, and an accepted child, whose
+        // owner's `accept` precedes its subscriptions (line 5).
+        let early_subscribe = !matches!(info.schedule_class, ScheduleClass::Pinned(_))
+            && !info.subscriptions.is_empty()
+            && info.subscriptions.iter().all(|(_, _, _, key)| key.is_none())
+            && self.owes_readiness(locus_name)
+            && owner_self_ptr.is_none()
+            && !parent_accepts_us
+            && !bubbled;
+        if early_subscribe {
+            self.emit_hold_delivery(self_ptr, true)?;
+            self.lc_in_spine("Instantiation", |cx| {
+                cx.lc_event("Subscribe", "Entered", Some(self_ptr), Some(locus_name))
+            })?;
+            self.emit_cooperative_subscriptions(&info, self_ptr, locus_name)?;
+            self.lc_in_spine("Instantiation", |cx| {
+                cx.lc_event("Subscribe", "Completed", Some(self_ptr), Some(locus_name))
+            })?;
+        }
+
         // Interest-based ownership #2: if THIS locus is a bubble owner —
         // a SingletonConst `A` that some deeper site resolves to — stash
         // its self-pointer into `@__owner_singleton_<A>` now, right after
@@ -3571,6 +3602,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             }
         }
         }
+        ObligationKind::Subscribe if early_subscribe => {
+        // Registered before the params (above).
+        }
         ObligationKind::Subscribe => {
         // Bus subscription registration runs BEFORE birth so a
         // locus's own birth() can publish on subjects it
@@ -3593,89 +3627,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             cx.lc_event("Subscribe", "Entered", Some(self_ptr), Some(locus_name))
         })?;
         if !pinned_subscriptions {
-            // Phase 3 (2026-05-25): `where key == self.X` in any
-            // subscribe clause needs `current_self` set to this
-            // new locus so the key-filter EXPR's `self.X` reads
-            // resolve correctly. Save / restore around the loop
-            // (same pattern birth_check_decls uses below).
-            // Finding 4: the where-clause is member text of THIS
-            // locus, not params-default text of the outer one —
-            // clear in_params_default so current_self wins even
-            // when this instantiation sits inside an outer default.
-            let prev_self = self.current_self.clone();
-            let prev_ipd_sub = std::mem::replace(&mut self.in_params_default, false);
-            self.current_self = Some(SelfCx {
-                locus_name: locus_name.to_string(),
-                struct_ty: info.struct_ty,
-                self_ptr,
-                fields: info.fields.clone(),
-            });
-            for (subject, handler_name, payload_type, key_filter) in &info.subscriptions {
-                let handler_fn = info
-                    .user_methods
-                    .get(handler_name)
-                    .copied()
-                    .ok_or_else(|| {
-                        CodegenError::Unsupported(format!(
-                            "locus `{}` subscribes to `{}` with handler `{}` \
-                             but no such method declared",
-                            locus_name, subject, handler_name
-                        ))
-                    })?;
-                // NOTE (2026-07-03): do NOT shim view-param
-                // handlers here. The shm_ring C reader passes the
-                // view BY VALUE via a cast call (lotus_shm_ring.c
-                // "shm_lotus_view_t" invoke), so the raw method ABI
-                // is already correct on that path — shimming it
-                // segfaulted the bytesview ring suites. The arena-
-                // queue path adapts inside __hwrap_ instead (the
-                // slot-ptr load in synthesize_reclaim_fns).
-                // Form K6b (2026-05-20): subscriber-side branch.
-                // If the subject is shm_ring-bound, emit
-                // lotus_bus_register_subscriber_shm_ring instead
-                // of the normal lotus_bus_register. The reader
-                // thread spawned by the C runtime invokes the
-                // handler with the slot pointer.
-                if self.shm_ring_subjects.contains_key(subject) {
-                    // Drain<T> batch consumer (2026-06-26): if this
-                    // handler's param is `Drain<T>`, register the batch
-                    // reader (one handler call per batch) rather than
-                    // the per-record reader.
-                    let is_batch = info.batch_handlers.contains(handler_name);
-                    self.emit_bus_register_shm_ring(
-                        subject,
-                        self_ptr,
-                        handler_fn,
-                        is_batch,
-                    )?;
-                } else {
-                    // 2026-06-01: register the handler-reclaim wrapper
-                    // (handler + post-dispatch `terminate;` check) in
-                    // place of the raw handler, so a cooperative
-                    // subscriber can end its own life from a bus
-                    // handler. Falls back to the raw handler if no
-                    // wrapper was synthesized.
-                    let reg_handler = self
-                        .handler_reclaim_wrappers
-                        .get(&(locus_name.to_string(), handler_name.clone()))
-                        .copied()
-                        .unwrap_or(handler_fn);
-                    self.emit_bus_register(
-                        subject,
-                        self_ptr,
-                        reg_handler,
-                        None,
-                        payload_type,
-                        key_filter.as_ref(),
-                    )?;
-                    // GH #255 phase 2: attach declared capacity.
-                    self.emit_sub_bound_if_any(
-                        locus_name, subject, self_ptr,
-                    )?;
-                }
-            }
-            self.in_params_default = prev_ipd_sub;
-            self.current_self = prev_self;
+            self.emit_cooperative_subscriptions(&info, self_ptr, locus_name)?;
         } else {
             // m28b: a pinned locus registers every subscription with
             // the mailbox already in its __mailbox slot, so dispatch routes
@@ -5460,6 +5412,103 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
             }
         }
+        Ok(())
+    }
+
+    /// A cooperative (not pinned) instance's subscriptions, registered
+    /// against `self_ptr`: each handler's reclaim wrapper (or the raw
+    /// handler), its shm ring reader where the subject is ring-bound, and
+    /// its declared capacity. The Subscribe step's registrations; its
+    /// window is opened by the caller.
+    pub(crate) fn emit_cooperative_subscriptions(
+        &mut self,
+        info: &LocusInfo<'ctx>,
+        self_ptr: PointerValue<'ctx>,
+        locus_name: &str,
+    ) -> Result<(), CodegenError> {
+        // Phase 3 (2026-05-25): `where key == self.X` in any
+        // subscribe clause needs `current_self` set to this
+        // new locus so the key-filter EXPR's `self.X` reads
+        // resolve correctly. Save / restore around the loop
+        // (same pattern birth_check_decls uses below).
+        // Finding 4: the where-clause is member text of THIS
+        // locus, not params-default text of the outer one —
+        // clear in_params_default so current_self wins even
+        // when this instantiation sits inside an outer default.
+        let prev_self = self.current_self.clone();
+        let prev_ipd_sub = std::mem::replace(&mut self.in_params_default, false);
+        self.current_self = Some(SelfCx {
+            locus_name: locus_name.to_string(),
+            struct_ty: info.struct_ty,
+            self_ptr,
+            fields: info.fields.clone(),
+        });
+        for (subject, handler_name, payload_type, key_filter) in &info.subscriptions {
+            let handler_fn = info
+                .user_methods
+                .get(handler_name)
+                .copied()
+                .ok_or_else(|| {
+                    CodegenError::Unsupported(format!(
+                        "locus `{}` subscribes to `{}` with handler `{}` \
+                         but no such method declared",
+                        locus_name, subject, handler_name
+                    ))
+                })?;
+            // NOTE (2026-07-03): do NOT shim view-param
+            // handlers here. The shm_ring C reader passes the
+            // view BY VALUE via a cast call (lotus_shm_ring.c
+            // "shm_lotus_view_t" invoke), so the raw method ABI
+            // is already correct on that path — shimming it
+            // segfaulted the bytesview ring suites. The arena-
+            // queue path adapts inside __hwrap_ instead (the
+            // slot-ptr load in synthesize_reclaim_fns).
+            // Form K6b (2026-05-20): subscriber-side branch.
+            // If the subject is shm_ring-bound, emit
+            // lotus_bus_register_subscriber_shm_ring instead
+            // of the normal lotus_bus_register. The reader
+            // thread spawned by the C runtime invokes the
+            // handler with the slot pointer.
+            if self.shm_ring_subjects.contains_key(subject) {
+                // Drain<T> batch consumer (2026-06-26): if this
+                // handler's param is `Drain<T>`, register the batch
+                // reader (one handler call per batch) rather than
+                // the per-record reader.
+                let is_batch = info.batch_handlers.contains(handler_name);
+                self.emit_bus_register_shm_ring(
+                    subject,
+                    self_ptr,
+                    handler_fn,
+                    is_batch,
+                )?;
+            } else {
+                // 2026-06-01: register the handler-reclaim wrapper
+                // (handler + post-dispatch `terminate;` check) in
+                // place of the raw handler, so a cooperative
+                // subscriber can end its own life from a bus
+                // handler. Falls back to the raw handler if no
+                // wrapper was synthesized.
+                let reg_handler = self
+                    .handler_reclaim_wrappers
+                    .get(&(locus_name.to_string(), handler_name.clone()))
+                    .copied()
+                    .unwrap_or(handler_fn);
+                self.emit_bus_register(
+                    subject,
+                    self_ptr,
+                    reg_handler,
+                    None,
+                    payload_type,
+                    key_filter.as_ref(),
+                )?;
+                // GH #255 phase 2: attach declared capacity.
+                self.emit_sub_bound_if_any(
+                    locus_name, subject, self_ptr,
+                )?;
+            }
+        }
+        self.in_params_default = prev_ipd_sub;
+        self.current_self = prev_self;
         Ok(())
     }
 

@@ -1,4 +1,4 @@
-//! The `bus_core` integration-test binary: 24 test files of this area, kept
+//! The `bus_core` integration-test binary: 25 test files of this area, kept
 //! where they are (their paths, names and history unchanged) and built as
 //! modules of one binary, so the crate links once for the area instead of
 //! once per file. Each file is a module; a test's name is `<file>::<fn>`.
@@ -29,6 +29,8 @@ mod bus_devirt_differential;
 mod bus_devirt_direct;
 #[path = "bus_devirt_no_pinned.rs"]
 mod bus_devirt_no_pinned;
+#[path = "bus_early_registration.rs"]
+mod bus_early_registration;
 #[path = "bus_handler_freefn.rs"]
 mod bus_handler_freefn;
 #[path = "bus_large_payload.rs"]
