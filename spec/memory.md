@@ -1484,7 +1484,14 @@ reclaim on a real-world long-running workload:
      = F { n: i, inner: self.f.inner }` keeps `inner`, copies
      nothing, and retires nothing. A `let` of a compound read
      from a field is already a deep copy in the method's scratch,
-     so it never points into a block the store retires. A locus
+     so it never points into a block the store retires. A String,
+     Bytes, tuple, array or payload-enum binding of a field (a
+     `let`, a `match` payload, a `for`'s array, an argument) is the
+     field's own pointer unless a write that may replace the field
+     comes before a use of it — a callee's store retires the block
+     and flushes at the callee's return, which the caller's frame
+     outlives — and then it is an owned copy (`spec/types.md` §
+     "Any binding of a place keeps its value"). A locus
      with such a field flushes its arena at each method's
      activation boundary, as one with a String field does.
 

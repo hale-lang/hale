@@ -143,6 +143,29 @@ view of the storage, and an acknowledgement body read after the
 proposal field was cleared came back empty). A deliberate view has no
 spelling yet; read the field again when the current value is wanted.
 
+### Any binding of a place keeps its value
+
+A `String`, `Bytes`, tuple, array or payload-enum value bound from a
+place — `let s = self.f.s;`, `let (a, n) = self.pair;`, a bare `x =
+self.f.s`, a `match self.e { E::A(s) -> .. }` payload, the array a `for
+x in self.f.names` walks — and a place passed straight to a call
+(`self.take(self.f.s)`) keep the value they were given, whatever
+replaces the place while they are live. The compiler keeps these the
+place's own pointer where it can, which costs nothing: it binds an
+owned copy only when a write that may replace the place comes between
+the binding and a use of it (or is the call it is passed to). Such a
+write is a store into the place's field (`self.f.s = ..`, `self.f =
+..`, through any root), a call whose callee writes it, transitively (a
+method by its name, on any locus declaring one; a method called on the
+field itself, as a form's `set`), and anything that may run other code
+of the locus: a call through a fn value, a publish, `yield`, a recovery
+statement, a stdlib call that parks on an `async_io` pool. A write
+inside a loop reaches a binding made before the loop wherever in the
+body it is read. Before this a String local held across a method that
+replaced its field read the block the replace retired, reused by the
+next allocation (`spec/memory.md` rules 6 and 7), and a same-length
+store into the field changed the local in place.
+
 ## Type aliases
 
 `type Name = Type;` declares an **alias**: a second spelling of an

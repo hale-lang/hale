@@ -49,6 +49,13 @@ untouched. A literal or a call result is bound as it is, since it was
 already yours. Assignment is the same: `copy = saved` copies too, and
 a write through one local never shows up in another.
 
+The same holds for a `String`, `Bytes`, tuple or array you read out of
+a field — `let name = self.row.name;`, a `match` payload of a field, the
+array a `for` walks: it keeps what it read, even across a method that
+replaces the field. The compiler only pays for a copy where such a
+write can come before a use; anywhere else the binding reads the
+field's own bytes.
+
 ```hale,fragment
 let saved = self.row;
 self.row = Row { };           // saved is unchanged

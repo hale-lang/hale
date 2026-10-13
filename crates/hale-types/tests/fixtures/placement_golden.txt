@@ -2921,6 +2921,9 @@ root	App	the entry
 row	App@literal1	App	main	default
 row	App@literal1.b	Boom	main	default
 
+== crates/hale-codegen/tests/held_field_view.rs#ba5d4814
+row	H@main1	H	main	default
+
 == crates/hale-codegen/tests/http_response_headers.rs#b03484a8
 shared	__StdIoTcpListener@main1	__StdIoTcpListener #0b638db1
 shared	dynamic	sites in the seed #a76c74f1
