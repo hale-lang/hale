@@ -413,8 +413,10 @@ pub(crate) fn check_usage(verify: bool) {
     println!("hale {} [flags] <file | dir>    {}", cmd, what);
     println!();
     println!("A directory is ONE seed: the `.hl` files directly inside");
-    println!("it are checked together, without recursing. Flags may");
-    println!("appear before or after the target.");
+    println!("it are checked together, without recursing. A `*_test.hl`");
+    println!("file is not one of them: it is a program of its own, as");
+    println!("`hale test` builds it. Flags may appear before or after the");
+    println!("target.");
     println!();
     println!("  --workspace                    check EVERY seed under the");
     println!("                                 target, each independently.");
@@ -422,6 +424,8 @@ pub(crate) fn check_usage(verify: bool) {
     println!("                                 dot-dirs. Every seed runs even");
     println!("                                 if an earlier one fails. It does");
     println!("                                 NOT connect seeds to each other.");
+    println!("                                 Each `*_test.hl` file is then");
+    println!("                                 checked as its own program.");
     println!("  --env <name>                   also adopt the constitution that");
     println!("                                 `[environments.<name>]` in hale.toml");
     println!("                                 requires. One entrypoint deployed to");

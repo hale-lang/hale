@@ -174,7 +174,11 @@ project/
 
 Or, alternatively, Go-style: `*_test.hl` lives next to the
 source it tests. Both layouts are supported; the runner finds
-tests by suffix (`_test.hl`) regardless of location.
+tests by suffix (`_test.hl`) regardless of location. Each test file is
+a program of its own (the file and what its imports reach), never a
+member of the seed of the directory it sits in (`spec/projects.md` §
+Seeds): a test beside its program reaches that program by an import,
+like a test in `tests/` does.
 
 ## Toolchain commands
 
