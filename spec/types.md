@@ -1756,7 +1756,7 @@ type with the same name wins.
 |---|---|---|
 | `@form(vec)` | `IndexError` | `kind: String`, `index: Int`, `len: Int` |
 | `@form(hashmap)` | `KeyError` | `kind: String` (also surfaces `IndexError` on `key_at` / `entry_at` — those are index-based, added 2026-05-16) |
-| `@form(ring_buffer)` | `EmptyError` | `kind: String` |
+| `@form(ring_buffer)`, `@form(heap)` | `EmptyError` | `kind: String` |
 | `std::io::fs::*` / `std::io::tcp::*` | `IoError` | `kind: String`, `errno: Int`, `path: String` |
 
 The `IoError` payload is the unified shape for the
