@@ -299,6 +299,8 @@ impl<'a> Codec<'a> {
         let te = &self.shapes.dealias(te);
         match self.shapes.classify(te) {
             TypeClass::Prim(PrimType::String) => format!("\"\\\"\" + std::json::escape_string({v}) + \"\\\"\""),
+            TypeClass::Prim(PrimType::Time) => format!("\"\\\"\" + std::time::iso8601({v}) + \"\\\"\""),
+            TypeClass::Prim(PrimType::Duration) => format!("to_string({v} / 1ns)"),
             TypeClass::Prim(_) => format!("to_string({v})"),
             TypeClass::Struct { name, .. } | TypeClass::Builtin(name) => format!("__api_encode_{name}({v})"),
             TypeClass::Named { name, base, .. } => match self.convs.get(name) {
@@ -333,6 +335,14 @@ impl<'a> Codec<'a> {
             ),
             TypeClass::Prim(PrimType::String) => format!(
                 "let __t_{var} = std::str::trim({body});\nif !__api_json_is_string(__t_{var}) {{ {bail} }}\nlet {var} = std::json::unescape_string(__t_{var}[1..(len(__t_{var}) - 1)]);\n"
+            ),
+            // an instant is one string, RFC 3339 in UTC: the `Z` required, an
+            // instant outside `Time`'s range refused by `parse_time`
+            TypeClass::Prim(PrimType::Time) => format!(
+                "let __t_{var} = std::str::trim({body});\nif !__api_json_is_string(__t_{var}) {{ {bail} }}\nlet __u_{var} = std::json::unescape_string(__t_{var}[1..(len(__t_{var}) - 1)]);\nif !std::str::ends_with(__u_{var}, \"Z\") {{ {bail} }}\nlet {var} = std::time::parse_time(__u_{var}) or {{ {bail} }};\n"
+            ),
+            TypeClass::Prim(PrimType::Duration) => format!(
+                "if !__api_json_is_int(std::str::trim({body})) {{ {bail} }}\nlet __n_{var} = std::str::parse_int(std::str::trim({body})) or {{ {bail} }};\nlet {var} = __n_{var} * 1ns;\n"
             ),
             TypeClass::Named { name, .. } if self.convs.contains_key(name) => {
                 let c = &self.convs[name];
@@ -377,6 +387,9 @@ impl PbCodec<'_> {
         };
         match self.shapes.classify(te) {
             TypeClass::Struct { name, .. } | TypeClass::Builtin(name) => format!("__api_pb_encode_{name}({v})"),
+            // an instant is its nanoseconds since the epoch, a `Duration` its count of them
+            TypeClass::Prim(PrimType::Time) => format!("__api_pb_put_int(1, std::time::nanos({v}))"),
+            TypeClass::Prim(PrimType::Duration) => format!("__api_pb_put_int(1, {v} / 1ns)"),
             TypeClass::Prim(p) => put(p, v),
             TypeClass::Named { name, base, .. } => match self.convs.get(name) {
                 Some(c) => format!("__api_pb_put_int(1, {})", c.to_int(v)),
@@ -400,6 +413,12 @@ impl PbCodec<'_> {
         match self.shapes.classify(te) {
             TypeClass::Struct { name, .. } | TypeClass::Builtin(name) => {
                 format!("let {var} = __api_pb_decode_{name}({bytes}) or {{ {bail} }};\n")
+            }
+            TypeClass::Prim(PrimType::Time) => {
+                format!("let __n_{var} = __api_pb_box_int({bytes}) or {{ {bail} }};\nlet {var} = std::time::from_nanos(__n_{var});\n")
+            }
+            TypeClass::Prim(PrimType::Duration) => {
+                format!("let __n_{var} = __api_pb_box_int({bytes}) or {{ {bail} }};\nlet {var} = __n_{var} * 1ns;\n")
             }
             TypeClass::Prim(p) => format!("let {var} = {}({bytes}) or {{ {bail} }};\n", boxed(p)),
             TypeClass::Named { name, .. } if self.convs.contains_key(name) => {
@@ -1794,6 +1813,7 @@ fn field_json(f: &crate::surfaces::FieldSchema) -> String {
             o
         }
         FieldSchema::Ref(name) => format!("{{\"$ref\":{}}}", jstr(&format!("#/schemas/{name}"))),
+        FieldSchema::Time => "{\"type\":\"string\",\"format\":\"date-time\",\"x-hale-type\":\"Time\"}".to_string(),
         FieldSchema::List { items, max, exact } => {
             let min = if *exact { format!(",\"minItems\":{max}") } else { String::new() };
             format!("{{\"type\":\"array\",\"items\":{}{min},\"maxItems\":{max}}}", field_json(items))

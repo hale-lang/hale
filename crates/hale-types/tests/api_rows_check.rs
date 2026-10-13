@@ -163,6 +163,21 @@ locus Shelf {
     );
 }
 
+/// A `Time` and a `Duration` are carried, as a field, as a list's element
+/// and as a whole request or response (spec/api.md § Codecs).
+#[test]
+fn law_5_an_instant_and_a_duration_are_carried() {
+    let times = "
+type Due = Time;
+type Stamp { at: Time; every: Duration; due: Due; seen: [Time; 2]; }
+locus Clock {
+    fn stamp(s: Stamp) -> Stamp { return s; }
+    fn now(d: Duration) -> Time { return std::time::current() + d; }
+}
+";
+    assert!(row_errors(&format!("{BASE}\n{times}\napi Clocks {{ rpc Clock::stamp; rpc Clock::now; }}")).is_empty());
+}
+
 /// Law 6 is a statement, not a refusal: the note `hale check --api`
 /// prints beside a member whose error type is `ClosureViolation`.
 #[test]

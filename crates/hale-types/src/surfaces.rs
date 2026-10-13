@@ -1067,7 +1067,9 @@ fn did_you_mean<'a>(name: &str, candidates: impl IntoIterator<Item = &'a str>) -
 
 /// Why a type a row names has no JSON form (spec/api.md § Codecs: `Int`,
 /// `Float`, `Bool`, `String` and nested structs of the same; an
-/// identity, a range, a quantity and a point as their integer): the
+/// identity, a range and a quantity as their integer, a `Duration` as its
+/// nanoseconds, a `Time` as its RFC 3339 text; a list as a record's
+/// field, `bounded[T; N]` or `[T; N]` of any of those): the
 /// field path from the row's type to what the codec does not carry,
 /// and that type as written. `None` when every field has a form.
 fn json_refusal(
@@ -1093,6 +1095,11 @@ fn json_refusal(
             Some((p, _)) if p == *path => Some((p, type_text(te))),
             r => r,
         };
+    }
+    // a `Time` is its RFC 3339 text and a `Duration` its count of
+    // nanoseconds, an alias of either what it stands for
+    if matches!(shapes.dealias(te), TypeExpr::Primitive(PrimType::Time | PrimType::Duration, _)) {
+        return None;
     }
     match shapes.classify(te) {
         TypeClass::Prim(p) if carried(p) => None,
@@ -1817,6 +1824,9 @@ pub enum FieldSchema {
     /// `{"$ref": "#/schemas/<name>"}`: a struct, its schema in the
     /// document's `schemas`.
     Ref(String),
+    /// `{"type": "string", "format": "date-time", "x-hale-type": "Time"}`:
+    /// an instant, its RFC 3339 text in UTC (spec/api.md § Codecs).
+    Time,
     /// `{"type": "array", "items": …, "maxItems": N}`, and `"minItems": N`
     /// for a fixed array (`exact`): a `bounded[T; N]` or a `[T; N]`.
     List { items: Box<FieldSchema>, max: u64, exact: bool },
@@ -1863,6 +1873,19 @@ impl<'a> Schemas<'a> {
             PrimType::String => Some("string"),
             _ => None,
         };
+        // an instant is its text; a `Duration` the quantity it is, its count
+        // of nanoseconds
+        match self.shapes.dealias(te) {
+            TypeExpr::Primitive(PrimType::Time, _) => return FieldSchema::Time,
+            TypeExpr::Primitive(PrimType::Duration, _) => {
+                return FieldSchema::Scalar {
+                    json: "integer",
+                    hale_type: Some("Duration".to_string()),
+                    unit: Some("q(ns)".to_string()),
+                }
+            }
+            _ => {}
+        }
         // a list: its elements as a field of their type, never a list
         if let Some((elem, max, exact)) = hale_syntax::json_gen::wire_list(&self.shapes.dealias(te)) {
             if hale_syntax::json_gen::wire_list(&self.shapes.dealias(elem)).is_some() {

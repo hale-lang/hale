@@ -390,6 +390,7 @@ fn field_schema(f: &FieldSchema, base: &str) -> J {
             J::Obj(pairs)
         }
         FieldSchema::Ref(name) => o(vec![("$ref", s(&format!("{base}{name}")))]),
+        FieldSchema::Time => o(vec![("type", s("string")), ("format", s("date-time")), ("x-hale-type", s("Time"))]),
         FieldSchema::List { items, max, exact } => {
             let mut pairs = vec![("type".to_string(), s("array")), ("items".to_string(), field_schema(items, base))];
             if *exact {

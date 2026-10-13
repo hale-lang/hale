@@ -3,7 +3,8 @@
 //! generated clients.
 //!
 //! The fixture under `fixtures/api_shapes/` serves `Shelves`, whose records
-//! hold lists (`bounded[Book; 3]`, `bounded[Int; 4]`, `[Int; 2]`). It is built
+//! hold lists (`bounded[Book; 3]`, `bounded[Int; 4]`, `[Int; 2]`), an instant
+//! and a `Duration`. It is built
 //! once per process and run by each test that drives it; its listener binds
 //! port 0 and the test reads back the port it was given.
 
@@ -112,6 +113,22 @@ fn a_list_is_described_as_an_array_with_its_bound() {
     assert_eq!(r.code, 0, "{}", r.stderr);
     assert!(r.stdout.contains("Library::put(label: String, books?: [Book; at most 3]) -> Shelf"), "{}", r.stdout);
     assert!(r.stdout.contains("Library::corner(at: [Int; 2]) -> Corner"), "{}", r.stdout);
+    assert!(r.stdout.contains("Library::stamp(at: String (Time), every: Int (Duration, q(ns))) -> Stamp"), "{}", r.stdout);
+    assert_eq!(doc["schemas"]["Stamp"]["properties"]["at"], json!({"type": "string", "format": "date-time", "x-hale-type": "Time"}));
+    assert_eq!(doc["schemas"]["Stamp"]["properties"]["every"], json!({"type": "integer", "x-hale-type": "Duration", "x-hale-unit": "q(ns)"}));
+}
+
+#[test]
+fn an_instant_crosses_http_as_its_rfc_3339_text_and_a_duration_as_its_nanoseconds() {
+    let s = Served::start();
+    let o = run(&["api", "call", &s.endpoint, "Library::stamp", "--at", "2026-10-12T03:04:05.123456789Z", "--every", "1000000001"]);
+    assert_eq!(o.code, 0, "{}", o.stderr);
+    assert_eq!(json_of(&o.stdout), json!({"at": "2026-10-12T03:04:06.12345679Z", "every": 2000000002}));
+    for (at, what) in [("2026-10-12T03:04:05", "no zone"), ("2026-10-12T03:04:05+01:00", "an offset"), ("2999-01-01T00:00:00Z", "past Time's range")] {
+        let o = run(&["api", "call", &s.endpoint, "Library::stamp", "--at", at, "--every", "1"]);
+        assert_eq!(o.code, 2, "{what}: {}", o.stderr);
+        assert_eq!(json_of(&o.stderr)["refusal"], json!({"kind": "malformed", "reason": "wrong_type: at"}), "{what}");
+    }
 }
 
 #[test]
@@ -165,15 +182,19 @@ fn main() {
         LibraryCornerOutcome::Result(v) -> { println(api_enc_Corner(v)); },
         _ -> { println("corner: another outcome"); },
     }
+    match library_stamp(ep, "t-reader", Stamp { at: `2026-10-12T03:04:05.5Z`, every: 250 }) {
+        LibraryStampOutcome::Result(v) -> { println(std::time::iso8601(v.at) + " " + to_string(v.every)); },
+        _ -> { println("stamp: another outcome"); },
+    }
 }
 "#;
 
-/// The generated clients type a list: the Hale client checks (`hale api
-/// client` refuses one that does not) and carries a list both ways against
-/// the served fixture, and the TypeScript one compiles under `tsc --strict`
-/// where a compiler is installed.
+/// The generated clients type a list and an instant: the Hale client checks
+/// (`hale api client` refuses one that does not) and carries both, both ways,
+/// against the served fixture, and the TypeScript one compiles under `tsc
+/// --strict` where a compiler is installed.
 #[test]
-fn the_generated_clients_carry_a_list() {
+fn the_generated_clients_carry_a_list_and_an_instant() {
     let dir = unique_dir("clients");
     let hl = dir.join("client.hl");
     let o = hale().args(["api", "client", "--surface", "Shelves", "--lang", "hale", "--out"]).arg(&hl).arg(fixture()).output().expect("hale client");
@@ -191,7 +212,8 @@ fn the_generated_clients_carry_a_list() {
         String::from_utf8_lossy(&r.stdout),
         "{\"books\":[{\"id\":7,\"title\":\"Kim\"},{\"id\":8,\"title\":\"Emma\"}],\"label\":\"back\"}\n\
          1 {\"books\":[{\"id\":8,\"title\":\"Emma\"}],\"label\":\"found\"}\n\
-         {\"at\":[5,-6]}\n",
+         {\"at\":[5,-6]}\n\
+         2026-10-12T03:04:05.50000025Z 500\n",
         "{}",
         String::from_utf8_lossy(&r.stderr)
     );
@@ -200,6 +222,7 @@ fn the_generated_clients_carry_a_list() {
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
     let text = std::fs::read_to_string(&ts).unwrap();
     assert!(text.contains("books: __Array<Book>;") && text.contains("at: __Array<number>;"), "{text}");
+    assert!(text.contains("export interface Stamp {\n  at: string;\n  every: number;\n}"), "an instant is its text: {text}");
     let tsc = std::env::var("TSC").unwrap_or_else(|_| "tsc".to_string());
     if Command::new(&tsc).arg("--version").output().is_ok_and(|o| o.status.success()) {
         let c = Command::new(&tsc).args(["--strict", "--target", "es2022", "--lib", "es2022,dom", "--noEmit"]).arg(&ts).output().expect("tsc");

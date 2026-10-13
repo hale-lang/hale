@@ -1753,6 +1753,26 @@ and the description names the unit a quantity counts. A point is not
 carried (its origin is not a count): a row whose shape holds one is
 refused by law 5.
 
+**An instant and a duration.** The stdlib's `Time` (a point over
+`Duration` with no origin, `spec/types.md`) is the one point the codec
+carries, as its RFC 3339 text in UTC: what `std::time::iso8601` writes,
+the fraction to the nanosecond with its trailing zeros dropped and none
+when it is zero (`"2026-10-12T03:04:05.123456789Z"`,
+`"2026-10-12T03:04:05Z"`). It is read back by `std::time::parse_time`,
+the `Z` required: a text with no zone, one with an offset (`+01:00`,
+which `parse_time` refuses rather than read as UTC), an instant outside
+`Time`'s range (`1677-09-21T00:12:43.145224192Z` through
+`2262-04-11T23:47:16.854775807Z`) and a number are `wrong_type`. Its
+schema is `{"type": "string", "format": "date-time", "x-hale-type":
+"Time"}`. A `Duration` is the quantity it is (`quantity Int in ns`):
+its count of nanoseconds, as any quantity is its count in its
+denomination (`spec/units.md` § Layout and the wire), `{"type":
+"integer", "x-hale-type": "Duration", "x-hale-unit": "q(ns)"}`, never
+a text such as `"1.5s"`. A plain alias of either is what it stands
+for. A literal default of either (`` = `2026-01-01T00:00:00Z` ``, `= 5s`)
+is kept when the field is left out, as a scalar's is, and so is a
+literal default of a unit scalar.
+
 **A list** is a field's: `bounded[T; N]` or `[T; N]` (a literal `N` of
 at least one), its elements what a field of their type is (a record, a
 scalar, a string, an identity, a range or a quantity by its count). It
@@ -1792,7 +1812,11 @@ field, its bound in the field's comment (`// Hale: at most 50`); the
 encoder writes each element as an occurrence of its own, and the decoder
 reads that and the packed form proto3 writes by default for a numeric
 element, in any mix, holding the bound as the JSON codec does
-(`too_long`, `too_short`). The set of shapes is the JSON codec's, so
+(`too_long`, `too_short`). A `Time` is an `int64`, its nanoseconds since
+the epoch (which is all of `Time`; the field's comment says so), not
+`google.protobuf.Timestamp`, which would make the well-known type a
+dependency of every file and of the descriptor reflection serves; a
+`Duration` is an `int64`, its nanoseconds. The set of shapes is the JSON codec's, so
 there is no shape without a proto3 encoding: a map, an `optional` and an
 enum are shapes the codec does not carry, and law 5 refuses the row
 before a `.proto` could be asked of it. The `.proto`
@@ -1833,7 +1857,8 @@ caller's `Context` under that exposure's role source:
 - the transport's **outcome encoding** (§ Outcomes);
 - the JSON Schema of every type the listed members and streams name,
   and nothing else, a quantity's field carrying `x-hale-unit` (its
-  `q(…)` tag);
+  `q(…)` tag), a `Time`'s `"format": "date-time"`, a list's `maxItems`
+  (§ Codecs);
 - the notes, in the document's own text: authorization is a boundary
   check at the serve site, never a proof over the program's internal
   call paths; a request accepted runs to completion whatever becomes of
@@ -2023,7 +2048,9 @@ by name).
 client:
 
 - is typed by the rows: a type for every struct a member or a stream names (a
-  quantity, an identity or a range crosses as the integer it counts; a list is
+  quantity, an identity or a range crosses as the integer it counts, a
+  `Duration` among them; a `Time` is a `Time` in Hale and its RFC 3339 text,
+  a `string`, in TypeScript, since a `Date` holds milliseconds; a list is
   the client language's: `bounded[T; N]` or `[T; N]` in Hale, an array in
   TypeScript, whose bound the server holds; an enum or any shape the JSON codec
   does not carry is refused, never approximated), and

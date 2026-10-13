@@ -196,6 +196,12 @@ fn scalar_of(json: &str) -> Option<Scalar> {
     }
 }
 
+/// A `Time` field's comment: the protobuf codec carries an instant as its
+/// nanoseconds since the epoch (an `int64`, which is all of `Time`), not
+/// as `google.protobuf.Timestamp`, which would be a dependency of every
+/// file and of the descriptor reflection serves.
+const TIME: &str = "Hale: Time, nanoseconds since the Unix epoch, UTC";
+
 /// A scalar field's comment: the Hale type it stands for.
 fn hale_comment(hale_type: &Option<String>, unit: &Option<String>) -> Option<String> {
     match (hale_type, unit) {
@@ -224,6 +230,15 @@ fn carried(
             let name = wrapper_name(member, what);
             let mut v = field("value", 1, Ty::Scalar(s), Label::Optional);
             v.comment = hale_comment(hale_type, unit);
+            let mut m = message(&name, vec![v]);
+            m.comment = vec![format!("The {} of `{member}`, a scalar.", what.to_lowercase())];
+            wrappers.push(m);
+            Ok(name)
+        }
+        FieldSchema::Time => {
+            let name = wrapper_name(member, what);
+            let mut v = field("value", 1, Ty::Scalar(Scalar::Int64), Label::Optional);
+            v.comment = Some(TIME.to_string());
             let mut m = message(&name, vec![v]);
             m.comment = vec![format!("The {} of `{member}`, a scalar.", what.to_lowercase())];
             wrappers.push(m);
@@ -410,6 +425,11 @@ fn record(display: &str, schema: &TypeSchema, surface: &str) -> Result<PMessage,
                 p
             }
             FieldSchema::Ref(n) => field(key, number, Ty::Message(message_name(n, surface)), Label::Plain),
+            FieldSchema::Time => {
+                let mut p = field(key, number, Ty::Scalar(Scalar::Int64), Label::Optional);
+                p.comment = Some(TIME.to_string());
+                p
+            }
             // a list is `repeated`, its elements written one occurrence each
             // (a parser reads that as it reads the packed form); its bound is
             // the codec's to hold, so the comment states it
@@ -425,6 +445,11 @@ fn record(display: &str, schema: &TypeSchema, surface: &str) -> Result<PMessage,
                         p
                     }
                     FieldSchema::Ref(n) => field(key, number, Ty::Message(message_name(n, surface)), Label::Repeated),
+                    FieldSchema::Time => {
+                        let mut p = field(key, number, Ty::Scalar(Scalar::Int64), Label::Repeated);
+                        p.comment = Some(TIME.to_string());
+                        p
+                    }
                     _ => {
                         return Err(format!(
                             "{display}.{key}: a list of a shape the codec does not carry has no proto3 encoding; no \

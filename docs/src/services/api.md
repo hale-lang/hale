@@ -144,6 +144,18 @@ unbounded collection belongs to a locus (`@form(vec)`), not to a value
 that crosses a boundary; neither is a list of lists, nor a request or
 response that is a bare list.
 
+### Instants and durations
+
+A `Time` crosses as its RFC 3339 text in UTC, to the nanosecond:
+`"2026-10-12T03:04:05.123456789Z"` (trailing zeros of the fraction
+dropped, `"2026-10-12T03:04:05Z"` when there is none). A request must
+say `Z`: a time with no zone or with an offset is refused `malformed`
+rather than guessed at, and so is one past `Time`'s range (it ends in
+2262). A `Duration` crosses as its count of nanoseconds, as every
+quantity crosses as its count: `1500000000` is `1.5s`. The description
+marks a `Time` `"format": "date-time"` and a `Duration` with its unit,
+`q(ns)`; the `.proto` carries both as `int64` nanoseconds.
+
 ### The digest
 
 Each surface folds into a **contract digest**: its rows in member

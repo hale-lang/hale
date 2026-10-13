@@ -61,6 +61,13 @@ enum FieldKind {
     /// A field whose type is another generated JSON struct — parsed by
     /// recursing into the nested object's raw text.
     Nested(String),
+    /// A `Time` (the api codecs only): on the JSON wire its RFC 3339 text in
+    /// UTC (`std::time::iso8601`: the fraction to the nanosecond, its
+    /// trailing zeros dropped, none when it is zero), read back by
+    /// `std::time::parse_time` with the `Z` required, an instant outside
+    /// `Time`'s range `wrong_type`; as protobuf its nanoseconds since the
+    /// epoch, an `int64`.
+    Time,
     /// A list (the api codecs only): `bounded[T; N]` (`exact` false: up to
     /// `cap` elements, absent is empty) or `[T; N]` (`exact`: all `cap`
     /// of them). A JSON array, a protobuf `repeated` field; more elements
@@ -71,10 +78,14 @@ enum FieldKind {
     List { elem: Elem, elem_ty: String, cap: u64, exact: bool },
 }
 
+/// A `Time` no payload has set yet: the epoch.
+const EPOCH: &str = "`1970-01-01T00:00:00Z`";
+
 /// An element of a list field: what a field of the same type would be.
 #[derive(Clone)]
 enum Elem {
     Scalar(ScalarTy, Option<Conv>),
+    Time,
     Nested(String),
 }
 
@@ -227,6 +238,8 @@ fn literal_src(e: &Expr) -> Option<String> {
         Expr::Literal(Literal::String(s), _) => {
             Some(format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\"")))
         }
+        Expr::Literal(Literal::Time(s), _) => Some(format!("`{s}`")),
+        Expr::Literal(Literal::Quantity { value, unit }, _) => Some(format!("{value}{unit}")),
         _ => None,
     }
 }
@@ -294,7 +307,7 @@ fn collect_json_types(items: &[TopDecl], names: &HashSet<String>, out: &mut Vec<
                         };
                         let default_src = match kind {
                             FieldKind::Scalar(_) => f.default.as_ref().and_then(literal_src),
-                            FieldKind::Nested(_) | FieldKind::List { .. } => None,
+                            FieldKind::Nested(_) | FieldKind::Time | FieldKind::List { .. } => None,
                         };
                         jfields.push(JsonField {
                             name: f.name.name.clone(),
@@ -378,6 +391,10 @@ fn generate_parser_src_mode(t: &JsonType, prefix: &str, strict: bool) -> String 
             }
             FieldKind::Nested(_) => {
                 b.push_str(&format!("    let mut __raw_{}: String = \"\";\n", f.name));
+            }
+            FieldKind::Time => {
+                let init = f.default_src.as_deref().unwrap_or(EPOCH);
+                b.push_str(&format!("    let mut __f_{}: Time = {};\n", f.name, init));
             }
             FieldKind::List { .. } => {
                 b.push_str(&format!("    let mut __h_{} = {} {{ }};\n", f.name, holder_name(&t.name, &f.name)));
@@ -464,6 +481,7 @@ fn generate_parser_src_mode(t: &JsonType, prefix: &str, strict: bool) -> String 
                 }
                 FieldKind::Scalar(ScalarTy::Bool) => "__c0 == 116 || __c0 == 102",
                 FieldKind::Nested(_) => "__c0 == 123",
+                FieldKind::Time => "__c0 == 34",
                 FieldKind::List { .. } => "__c0 == 91",
             };
             b.push_str(&format!(
@@ -502,6 +520,13 @@ fn generate_parser_src_mode(t: &JsonType, prefix: &str, strict: bool) -> String 
                 "                    __raw_{} = __s[__vs..__ve];\n",
                 f.name
             )),
+            FieldKind::Time => {
+                let wrong = format!("fail JsonError {{ kind: \"wrong_type\", field: \"{}\" }}", f.key);
+                b.push_str("                    let mut __tt = __s[(__vs + 1)..(__ve - 1)];\n");
+                b.push_str("                    if __esc { __tt = std::json::unescape_string(__tt); }\n");
+                b.push_str(&format!("                    if !std::str::ends_with(__tt, \"Z\") {{ {wrong}; }}\n"));
+                b.push_str(&format!("                    __f_{} = std::time::parse_time(__tt) or {wrong};\n", f.name));
+            }
             FieldKind::List { elem, .. } => b.push_str(&json_list_read(f, elem, prefix)),
         }
         if f.needs_seen() {
@@ -549,11 +574,30 @@ fn holder_name(record: &str, field: &str) -> String {
 fn holder_src(t: &JsonType, field: &str) -> String {
     let mut out = String::new();
     for f in t.fields.iter().filter(|f| f.name == field) {
-        if let FieldKind::List { elem_ty, cap, .. } = &f.kind {
-            out.push_str(&format!("type {} {{ b: bounded[{elem_ty}; {cap}]; }}\n", holder_name(&t.name, &f.name)));
+        if let FieldKind::List { elem, elem_ty, cap, .. } = &f.kind {
+            let held = if matches!(elem, Elem::Time) { "Int" } else { elem_ty.as_str() };
+            out.push_str(&format!("type {} {{ b: bounded[{held}; {cap}]; }}\n", holder_name(&t.name, &f.name)));
         }
     }
     out
+}
+
+/// What the holder keeps of an element `v`: the element itself, but an
+/// instant as its nanoseconds (a `bounded` holds no `Time`; a `[Time; N]`
+/// is a record's field all the same).
+fn held(elem: &Elem, v: &str) -> String {
+    match elem {
+        Elem::Time => format!("std::time::nanos({v})"),
+        _ => v.to_string(),
+    }
+}
+
+/// The element the holder's `v` is.
+fn unheld(elem: &Elem, v: &str) -> String {
+    match elem {
+        Elem::Time => format!("std::time::from_nanos({v})"),
+        _ => v.to_string(),
+    }
 }
 
 /// The end of a decoder: a fixed array built from its holder (refused
@@ -564,15 +608,15 @@ fn holder_src(t: &JsonType, field: &str) -> String {
 fn construct_src(t: &JsonType) -> String {
     let mut b = String::new();
     for f in &t.fields {
-        if let FieldKind::List { cap, exact: true, .. } = &f.kind {
+        if let FieldKind::List { elem, cap, exact: true, .. } = &f.kind {
             let short = format!("fail JsonError {{ kind: \"too_short\", field: \"{}\" }}", f.key);
             b.push_str(&format!("    if count(__h_{n}.b) != {cap} {{ {short}; }}\n", n = f.name));
             b.push_str(&format!("    let __a0_{n} = at(__h_{n}.b, 0) or {short};\n", n = f.name));
-            b.push_str(&format!("    let mut __a_{n} = [__a0_{n}; {cap}];\n", n = f.name));
+            b.push_str(&format!("    let mut __a_{n} = [{}; {cap}];\n", unheld(elem, &format!("__a0_{}", f.name)), n = f.name));
             b.push_str(&format!("    let mut __ai_{n} = 1;\n", n = f.name));
             b.push_str(&format!("    while __ai_{n} < {cap} {{\n", n = f.name));
             b.push_str(&format!("        let __av_{n} = at(__h_{n}.b, __ai_{n}) or {short};\n", n = f.name));
-            b.push_str(&format!("        __a_{n}[__ai_{n}] = __av_{n};\n", n = f.name));
+            b.push_str(&format!("        __a_{n}[__ai_{n}] = {};\n", unheld(elem, &format!("__av_{}", f.name)), n = f.name));
             b.push_str(&format!("        __ai_{n} = __ai_{n} + 1;\n    }}\n", n = f.name));
         }
     }
@@ -583,6 +627,7 @@ fn construct_src(t: &JsonType) -> String {
             (FieldKind::Scalar(_), Some(c)) => Some(format!("{}: {}", f.name, c.from_int(&format!("__f_{}", f.name), &f.key))),
             (FieldKind::Scalar(_), None) => Some(format!("{}: __f_{}", f.name, f.name)),
             (FieldKind::Nested(_), _) => Some(format!("{}: __p_{}", f.name, f.name)),
+            (FieldKind::Time, _) => Some(format!("{}: __f_{}", f.name, f.name)),
             (FieldKind::List { exact: true, .. }, _) => Some(format!("{}: __a_{}", f.name, f.name)),
             (FieldKind::List { exact: false, .. }, _) => None,
         })
@@ -595,7 +640,8 @@ fn construct_src(t: &JsonType) -> String {
     }
     b.push_str(&format!("    let mut __r = {} {{ {} }};\n", t.name, inits.join(", ")));
     for f in bounded {
-        b.push_str(&format!("    for __x in __h_{n}.b {{ push(__r.{n}, __x) or discard; }}\n", n = f.name));
+        let FieldKind::List { elem, .. } = &f.kind else { continue };
+        b.push_str(&format!("    for __x in __h_{n}.b {{ push(__r.{n}, {}) or discard; }}\n", unheld(elem, "__x"), n = f.name));
     }
     b.push_str("    return __r;\n");
     b
@@ -611,6 +657,7 @@ fn json_elem_read(elem: &Elem, src: &str, key: &str, prefix: &str, ind: &str) ->
         Elem::Scalar(ScalarTy::Str, _) => "__e0 == 34",
         Elem::Scalar(ScalarTy::Int, _) | Elem::Scalar(ScalarTy::Float, _) => "__e0 == 45 || (__e0 >= 48 && __e0 <= 57)",
         Elem::Scalar(ScalarTy::Bool, _) => "__e0 == 116 || __e0 == 102",
+        Elem::Time => "__e0 == 34",
         Elem::Nested(_) => "__e0 == 123",
     };
     b.push_str(&format!("{ind}if !({want}) {{ {wrong}; }}\n"));
@@ -633,6 +680,11 @@ fn json_elem_read(elem: &Elem, src: &str, key: &str, prefix: &str, ind: &str) ->
             b.push_str(&format!(
                 "{ind}if !__ev && !std::str::range_eq({src}, __es, __ee, \"false\") {{ {wrong}; }}\n"
             ));
+        }
+        Elem::Time => {
+            b.push_str(&format!("{ind}let __et = std::json::unescape_string({src}[(__es + 1)..(__ee - 1)]);\n"));
+            b.push_str(&format!("{ind}if !std::str::ends_with(__et, \"Z\") {{ {wrong}; }}\n"));
+            b.push_str(&format!("{ind}let __ev = std::time::parse_time(__et) or {wrong};\n"));
         }
         Elem::Nested(tn) => {
             b.push_str(&format!("{ind}let __ev = {prefix}{tn}({src}[__es..__ee]) or raise;\n"));
@@ -664,8 +716,10 @@ fn json_list_read(f: &JsonField, elem: &Elem, prefix: &str) -> String {
     b.push_str(&format!("{ind}    }}\n"));
     b.push_str(&json_elem_read(elem, "__la", &f.key, prefix, &format!("{ind}    ")));
     b.push_str(&format!(
-        "{ind}    push(__h_{}.b, __ev) or fail JsonError {{ kind: \"too_long\", field: \"{}\" }};\n",
-        f.name, f.key
+        "{ind}    push(__h_{}.b, {}) or fail JsonError {{ kind: \"too_long\", field: \"{}\" }};\n",
+        f.name,
+        held(elem, "__ev"),
+        f.key
     ));
     b.push_str(&format!("{ind}    __li = std::json::array_next_span(__li, __la);\n"));
     b.push_str(&format!("{ind}}}\n"));
@@ -706,6 +760,7 @@ fn generate_emit_src_mode(t: &JsonType, fn_prefix: &str) -> String {
                 None => format!("to_string(__v.{})", f.name),
             },
             FieldKind::Nested(tn) => format!("{}{}(__v.{})", fn_prefix, tn, f.name),
+            FieldKind::Time => format!("\"\\\"\" + std::time::iso8601(__v.{}) + \"\\\"\"", f.name),
             FieldKind::List { elem, elem_ty, .. } => {
                 b.push_str(&format!("    __b = __b + {} + \"[\";\n", prefix));
                 b.push_str(&format!("    let mut __n_{} = 0;\n", f.name));
@@ -731,7 +786,7 @@ fn generate_emit_src_mode(t: &JsonType, fn_prefix: &str) -> String {
 /// annotated binding does.
 fn elem_bind(elem: &Elem, elem_ty: &str, ind: &str) -> String {
     match elem {
-        Elem::Scalar(_, Some(_)) => format!("{ind}let __xe: {elem_ty} = __x;\n"),
+        Elem::Scalar(_, Some(_)) | Elem::Time => format!("{ind}let __xe: {elem_ty} = __x;\n"),
         _ => format!("{ind}let __xe = __x;\n"),
     }
 }
@@ -742,6 +797,7 @@ fn json_elem_write(elem: &Elem, v: &str, fn_prefix: &str) -> String {
         Elem::Scalar(ScalarTy::Str, _) => format!("\"\\\"\" + std::json::escape_string({v}) + \"\\\"\""),
         Elem::Scalar(_, Some(c)) => format!("to_string({})", c.to_int(v)),
         Elem::Scalar(_, None) => format!("to_string({v})"),
+        Elem::Time => format!("\"\\\"\" + std::time::iso8601({v}) + \"\\\"\""),
         Elem::Nested(tn) => format!("{fn_prefix}{tn}({v})"),
     }
 }
@@ -770,6 +826,10 @@ fn generate_pb_parser_src(t: &JsonType) -> String {
             }
             FieldKind::Nested(_) => {
                 b.push_str(&format!("    let mut __raw_{}: Bytes = std::bytes::from_string(\"\");\n", f.name));
+            }
+            FieldKind::Time => {
+                let init = f.default_src.as_deref().unwrap_or(EPOCH);
+                b.push_str(&format!("    let mut __f_{}: Time = {};\n", f.name, init));
             }
             FieldKind::List { .. } => {
                 b.push_str(&format!("    let mut __h_{} = {} {{ }};\n", f.name, holder_name(&t.name, &f.name)));
@@ -800,7 +860,7 @@ fn generate_pb_parser_src(t: &JsonType) -> String {
         let (want, what) = match &f.kind {
             FieldKind::Scalar(ScalarTy::Float) => (1, "f64"),
             FieldKind::Scalar(ScalarTy::Str) | FieldKind::Nested(_) => (2, "len"),
-            FieldKind::Scalar(_) => (0, "varint"),
+            FieldKind::Scalar(_) | FieldKind::Time => (0, "varint"),
             FieldKind::List { .. } => unreachable!("read above"),
         };
         b.push_str(&format!(
@@ -839,6 +899,8 @@ fn generate_pb_parser_src(t: &JsonType) -> String {
                 let value = "__api_pb_vval(__b, __p, __e)";
                 if matches!(f.kind, FieldKind::Scalar(ScalarTy::Bool)) {
                     b.push_str(&format!("            __f_{} = {value} != 0;\n", f.name));
+                } else if matches!(f.kind, FieldKind::Time) {
+                    b.push_str(&format!("            __f_{} = std::time::from_nanos({value});\n", f.name));
                 } else {
                     b.push_str(&format!("            __f_{} = {value};\n", f.name));
                 }
@@ -880,7 +942,7 @@ fn pb_elem_wire(elem: &Elem) -> u32 {
     match elem {
         Elem::Scalar(ScalarTy::Float, _) => 1,
         Elem::Scalar(ScalarTy::Str, _) | Elem::Nested(_) => 2,
-        Elem::Scalar(_, _) => 0,
+        Elem::Scalar(_, _) | Elem::Time => 0,
     }
 }
 
@@ -915,6 +977,12 @@ fn pb_elem_read(elem: &Elem, key: &str, end: &str, bad: &str, ind: &str) -> Stri
             }
             b.push_str(&format!("{ind}__p = __ee + __el;\n"));
         }
+        Elem::Time => {
+            b.push_str(&format!("{ind}let __ee = __api_pb_vend(__b, __p);\n"));
+            b.push_str(&format!("{ind}if __ee < 0 || __ee > {end} {{ {bad} }}\n"));
+            b.push_str(&format!("{ind}let __ev = std::time::from_nanos(__api_pb_vval(__b, __p, __ee));\n"));
+            b.push_str(&format!("{ind}__p = __ee;\n"));
+        }
         Elem::Scalar(s, conv) => {
             b.push_str(&format!("{ind}let __ee = __api_pb_vend(__b, __p);\n"));
             b.push_str(&format!("{ind}if __ee < 0 || __ee > {end} {{ {bad} }}\n"));
@@ -939,8 +1007,10 @@ fn pb_list_read(f: &JsonField, elem: &Elem, bad: &str) -> String {
     let ind = "            ";
     let wire = pb_elem_wire(elem);
     let push = format!(
-        "push(__h_{}.b, __ev) or fail JsonError {{ kind: \"too_long\", field: \"{}\" }};",
-        f.name, f.key
+        "push(__h_{}.b, {}) or fail JsonError {{ kind: \"too_long\", field: \"{}\" }};",
+        f.name,
+        held(elem, "__ev"),
+        f.key
     );
     let mut b = format!("{ind}if __wire == {wire} {{\n");
     b.push_str(&pb_elem_read(elem, &f.key, "__n", bad, &format!("{ind}    ")));
@@ -983,6 +1053,7 @@ fn generate_pb_emit_src(t: &JsonType) -> String {
                 None => format!("__api_pb_put_int({}, {v})", f.pb_no),
             },
             FieldKind::Nested(tn) => format!("__api_pb_put_msg({}, __api_pb_encode_{tn}({v}))", f.pb_no),
+            FieldKind::Time => format!("__api_pb_put_int({}, std::time::nanos({v}))", f.pb_no),
             FieldKind::List { elem, elem_ty, .. } => {
                 // each element its own field occurrence, which a proto3
                 // parser reads as it reads the packed form
@@ -1007,6 +1078,7 @@ fn pb_elem_put(elem: &Elem, no: u32, v: &str) -> String {
         Elem::Scalar(ScalarTy::Bool, _) => format!("__api_pb_put_bool({no}, {v})"),
         Elem::Scalar(ScalarTy::Int, Some(c)) => format!("__api_pb_put_int({no}, {})", c.to_int(v)),
         Elem::Scalar(ScalarTy::Int, None) => format!("__api_pb_put_int({no}, {v})"),
+        Elem::Time => format!("__api_pb_put_int({no}, std::time::nanos({v}))"),
         Elem::Nested(tn) => format!("__api_pb_put_msg({no}, __api_pb_encode_{tn}({v}))"),
     }
 }
@@ -1453,7 +1525,12 @@ fn elem_of(
     aliases: &std::collections::BTreeMap<String, TypeExpr>,
 ) -> Option<(Elem, String)> {
     let ty = through_aliases(ty, aliases);
-    if let Some(s) = scalar_of(&ty) {
+    if let TypeExpr::Primitive(PrimType::Time, _) = ty {
+        Some((Elem::Time, "Time".to_string()))
+    } else if let TypeExpr::Primitive(PrimType::Duration, _) = ty {
+        // the stdlib's `quantity Int in ns`: its count of nanoseconds
+        Some((Elem::Scalar(ScalarTy::Int, Some(Conv::Quantity(1, "ns".to_string()))), "Duration".to_string()))
+    } else if let Some(s) = scalar_of(&ty) {
         Some((Elem::Scalar(s, None), s.type_name().to_string()))
     } else if let Some((tn, c)) = named_single(&ty).and_then(|tn| scalars.get(tn).map(|c| (tn, c))) {
         // a scalar of the unit dialect: its `Int` on the wire
@@ -1497,12 +1574,15 @@ fn collect_api_types(
                                 conv = c;
                                 FieldKind::Scalar(s)
                             }
+                            Some((Elem::Time, _)) => FieldKind::Time,
                             Some((Elem::Nested(tn), _)) => FieldKind::Nested(tn),
                             None => continue,
                         }
                     };
-                    let default_src = match kind {
-                        FieldKind::Scalar(_) if conv.is_none() => f.default.as_ref().and_then(literal_src),
+                    // a literal default; a unit scalar's is held as its wire `Int`
+                    let default_src = match (&kind, &conv) {
+                        (FieldKind::Scalar(_), None) | (FieldKind::Time, _) => f.default.as_ref().and_then(literal_src),
+                        (FieldKind::Scalar(_), Some(c)) => f.default.as_ref().and_then(literal_src).map(|d| c.to_int(&d)),
                         _ => None,
                     };
                     jfields.push(JsonField {

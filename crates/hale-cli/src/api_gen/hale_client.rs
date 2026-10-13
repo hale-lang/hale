@@ -15,6 +15,9 @@ use super::{camel, field_ident, hale_lit, json_quote, snake, type_ident, unforme
 
 const PREAMBLE: &str = include_str!("hale_preamble.hl");
 
+/// The instant a client reads where a reply holds none it can parse.
+const EPOCH: &str = "`1970-01-01T00:00:00Z`";
+
 /// A Hale type as the client declares it.
 fn hale_type(f: &FieldSchema, what: &str) -> Result<String, String> {
     match f {
@@ -26,6 +29,7 @@ fn hale_type(f: &FieldSchema, what: &str) -> Result<String, String> {
         }
         .to_string()),
         FieldSchema::Ref(name) => Ok(type_ident(name)),
+        FieldSchema::Time => Ok("Time".to_string()),
         FieldSchema::List { items, max, exact: false } => Ok(format!("bounded[{}; {max}]", hale_type(items, what)?)),
         FieldSchema::List { items, max, exact: true } => Ok(format!("[{}; {max}]", hale_type(items, what)?)),
         FieldSchema::Unformed => Err(unformed(what)),
@@ -44,6 +48,7 @@ fn zero(f: &FieldSchema, what: &str) -> Result<String, String> {
         }
         .to_string()),
         FieldSchema::Ref(name) => Ok(format!("api_dec_{}(\"{{}}\")", type_ident(name))),
+        FieldSchema::Time => Ok(EPOCH.to_string()),
         _ => Err(unformed(what)),
     }
 }
@@ -57,6 +62,7 @@ fn encode(f: &FieldSchema, value: &str, what: &str) -> Result<String, String> {
             _ => format!("api_str({value})"),
         }),
         FieldSchema::Ref(name) => Ok(format!("api_enc_{}({value})", type_ident(name))),
+        FieldSchema::Time => Ok(format!("api_str(std::time::iso8601({value}))")),
         // a list is written by its record's helper (`list_enc`), never inline
         FieldSchema::List { .. } | FieldSchema::Unformed => Err(unformed(what)),
     }
@@ -72,6 +78,7 @@ fn decode_whole(f: &FieldSchema, json: &str, what: &str) -> Result<String, Strin
             _ => format!("api_scalar_str({json})"),
         }),
         FieldSchema::Ref(name) => Ok(format!("api_dec_{}({json})", type_ident(name))),
+        FieldSchema::Time => Ok(format!("(std::time::parse_time(api_scalar_str({json})) or {EPOCH})")),
         // a list is read by its record's decoder (`list_dec`), never whole
         FieldSchema::List { .. } | FieldSchema::Unformed => Err(unformed(what)),
     }
@@ -88,6 +95,7 @@ fn decode_field(f: &FieldSchema, json: &str, key: &str, what: &str) -> Result<St
             _ => format!("std::json::find_string_field({json}, {q})"),
         }),
         FieldSchema::Ref(name) => Ok(format!("api_dec_{}(std::json::find_field_raw({json}, {q}))", type_ident(name))),
+        FieldSchema::Time => Ok(format!("(std::time::parse_time(std::json::find_string_field({json}, {q})) or {EPOCH})")),
         FieldSchema::List { .. } | FieldSchema::Unformed => Err(unformed(what)),
     }
 }
