@@ -1585,7 +1585,7 @@ tuple_expr        = "(" , expression , "," , expression ,
    N is a non-negative integer literal at v0 (const-eval is a
    future addition). *)
 array_expr        = "[" , [ expression , { "," , expression } ] , "]"
-                  | "[" , expression , ";" , INTEGER_LIT , "]"
+                  | "[" , expression , ";" , INT_LIT , "]"
                   ;
 
 struct_expr       = qualified_name , "{" ,
@@ -1627,9 +1627,14 @@ identifier_list   = IDENTIFIER , { "," , IDENTIFIER } ;
 
 (* IDENTIFIER     = ?[a-zA-Z_][a-zA-Z0-9_]*?  excluding keywords *)
 (* INT_LIT        = ?decimal | 0x... | 0o... | 0b...?            *)
-(* FLOAT_LIT      = ?...with exponent and optional suffix?       *)
+(* FLOAT_LIT      = ?<digits>.<digits>, optional exponent, no    *)
+(*                   suffix?                                     *)
 (* DECIMAL_LIT    = ?... 'd' suffix?                             *)
-(* STRING_LIT     = ?"..." with escapes; r"..." raw; """..."""?  *)
+(* STRING_LIT     = ?"..." with escapes?                         *)
+(*                   no raw r"..." and no """...""" form: the    *)
+(*                   lexer has neither (tokens.md § String       *)
+(*                   literals)                                   *)
+(* FSTRING_LIT    = ?f"... {expr} ..."?                          *)
 (* BYTES_LIT      = ?b"..."?                                     *)
 (* QUANTITY_LIT   = ?<decimal int><identifier>, no space: the    *)
 (*                   unit is the catalogue's (`500ms` the        *)

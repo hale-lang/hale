@@ -230,10 +230,10 @@ fn __std_process_release(c: std::process::Child) {
 //      free when `src` spawned. So a re-spawn into the same field
 //      never closes the new child's pipes.
 //   2. `src`'s pid + fds move into `dest`.
-//   3. `src` is DISARMED: whenever its teardown runs — its owner's
-//      dissolve, or never at all if it is a factory result (see "fd
-//      cleanup and who runs it" above) — it sees the not-spawned
-//      sentinels and releases nothing. This is the step the
+//   3. `src` is DISARMED: when its teardown runs — the dissolve of
+//      the binding or owner that holds it (see "fd cleanup and who
+//      runs it" above) — it sees the not-spawned sentinels and
+//      releases nothing. This is the step the
 //      hand-rolled workaround had to get right by hand, and the one
 //      whose absence double-closes: without it, handing a handle
 //      from one owner to another kills the process the second owner

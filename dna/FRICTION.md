@@ -20,7 +20,9 @@ Compiler BUGS found on the way are fixed upstream and noted here.
 
 **Tag:** `import-enum-match`
 **Severity:** blocking for any library that matches its own enum.
-**Status:** open (compiler bug); workaround in `dna/core/types.hl`.
+**Status:** FIXED (GH #534, hale PR #538, 2026-09-08); see the
+resolution line. Re-run on main 2026-10-12: `app` and `app2` both
+build and run.
 
 `dna/core/types.hl` declared `type Disposition = enum { Release,
 Stage, Review, Escalate, Deny }` and a `match` over it. `hale check
@@ -177,7 +179,8 @@ settles with whatever came back.
 **Tag:** `release-dispatch-keyed-by-child-only`
 **Severity:** memory corruption (SIGSEGV in the DNA core: `Work`'s
 release body ran over `WorkSystem`'s layout).
-**Status:** compiler bug; see resolution line.
+**Status:** FIXED (hale PR #536, 2026-09-05); see the resolution
+line. Re-run on main 2026-10-12: each parent's own `release` runs.
 
 `Attempt` was accepted by `Work` (in-tower attempts) AND by
 `WorkSystem` (routed attempts). The routed program segfaulted inside
@@ -216,7 +219,9 @@ core keeps one `Attempt` concept accepted by both `Work` and
 
 **Tag:** `interface-method-fallible`
 **Severity:** shapes every storage contract.
-**Status:** open — second candidate language REQUEST.
+**Status:** FIXED (GH #732, hale PR #1021, 2026-09-23): an interface
+method declares `fallible(E)` and dynamic dispatch carries the
+channel. Re-run on main 2026-10-12: the reproducer prints `1`.
 
 `interface Journal { fn append(expected: Int, ...) -> Int fallible(JournalError); }`
 is a parse error (`expected ;, got Ident("fallible")`): the interface
@@ -242,8 +247,10 @@ reverse). Call sites through the interface address the error with
 
 **Tag:** `or-on-infallible-stdlib-path`
 **Severity:** minor; check/build disagreement.
-**Status:** open (compiler bug; known class — multi-segment stdlib
-paths type as `Unknown`, so fallibility is invisible to the checker).
+**Status:** FIXED (GH #535, hale PR #538, 2026-09-05): `hale check`
+refuses the `or` — `` `std::json::find_int_field` is not fallible (it
+returns `Int`); drop the `or` clause `` — where the build did.
+Re-run on main 2026-10-12.
 
 `std::json::find_int_field(line, "seq") or 0` — the reader is
 infallible (returns 0 on a missing field), so the `or` is meaningless;
@@ -259,7 +266,11 @@ where the build does, with the fn named.
 **Tag:** `write-file-append-unit-vs-int`
 **Severity:** blocked the file-backed journal for an hour; misleading
 diagnostics.
-**Status:** open (compiler bug, three faces).
+**Status:** FIXED. GH #535 (hale PR #538, 2026-09-05) made the spec
+and the checker agree with codegen — the `or` form's success type is
+`()` — so the first two faces are the checker's honest type errors;
+GH #738 (hale PR #1265, 2026-09-29) made the third, a bare fallible
+call, an error. Re-run on main 2026-10-12.
 
 `spec/stdlib.md` and `stdlib_surface.rs` declare
 `write_file_append(path, s) -> Int fallible(IoError)`. Codegen lowers
@@ -284,8 +295,8 @@ the call as Unit, so:
 **Tag:** `perspective-across-seeds`
 **Severity:** blocks the routing-policy-as-perspective design in a
 library.
-**Status:** open (compiler bug: the import path-rename pass misses
-`serves` lists and `perspective(P)` field types).
+**Status:** FIXED (GH #534, hale PR #538, 2026-09-08); see the
+resolution line. Re-run on main 2026-10-12: the app builds and runs.
 
 `perspective WorkRouting`, two `: serves WorkRouting` impls and a
 `selection: perspective(WorkRouting) = CapabilityFirstSelection { }`
@@ -320,7 +331,10 @@ reads across both policies through the contract.
 **Tag:** `reaches-through-interface-field-default`
 **Severity:** SOUNDNESS — fail-open on the exact shape #521's assembly
 is built from.
-**Status:** open; filed upstream from this track.
+**Status:** FIXED (GH #533, hale PR #538, 2026-09-08), and the
+follow-up narrowed (GH #540, hale PR #1467); see the resolution line.
+Re-run on main 2026-10-12: `fail_open.hl` is refused, and
+`false_positive.hl` checks clean.
 
 `Dna { deployment: LocalApplyDeployment { } }` overrides the
 `deployment: Deployment = NoDeployment { }` default. `Dna.stage`
@@ -358,7 +372,10 @@ every conformer; a CONCRETE slot admits one; confinement by wiring
 therefore needs the concrete type at the boundary, which is what
 `PrivateModelRouter` now declares. Per-field narrowing (only the
 impls the program actually stores into that field) would give the
-precise answer without the concrete type; filed as a follow-up.
+precise answer without the concrete type; filed as a follow-up, and
+landed as GH #540 (hale PR #1467): an interface-typed slot's callee
+set is what the program stores into it, which is why
+`false_positive.hl` now checks clean.
 
 ---
 
@@ -520,7 +537,9 @@ stands, for now, as a design that pushed the domain toward a better
 shape than the one the issue drew.
 
 **Candidate language requests** (each with a reproducer; none filed
-yet — the fixtures should sit for a while first):
+yet — the fixtures should sit for a while first). *Update 2026-10-12:*
+all three were filed; F.7 (GH #732) and F.3 (GH #730) are FIXED, and
+F.4 (GH #731) is open.
 
 1. F.4 — `p: perspective(P);` with no initializer means *hold, do not
    designate*. Without it, a dynamic child cannot dispatch through the
@@ -709,13 +728,14 @@ their defining seed's groups — GH #733, PR #769; the same fix stopped
 an importer's same-named group from being substituted for one an
 imported claim was written against).
 
-**Compiler bugs open, reproducers under `dna/friction/`:** F.1 (enum match across
-seeds: checker and codegen), F.10 (perspectives do not cross seeds),
-F.8 (`or` on an infallible stdlib path accepted by check), F.9
-(`write_file_append` Int vs Unit, misleading diagnostics). F.1 and
-F.10 share a cause — name families the import mangler does not
-rewrite: a library cannot use its own enums or perspectives until they
-are.
+**Compiler bugs that were open here, all FIXED since (reproducers
+under `dna/friction/`, re-run on main 2026-10-12):** F.1 (enum match
+across seeds) and F.10 (perspectives across seeds), which shared a
+cause — name families the import mangler did not rewrite (GH #534,
+PR #538); F.8 (`or` on an infallible stdlib path, refused by check
+now) and F.9 (`write_file_append` is `()` in the `or` form, GH #535,
+PR #538; a bare fallible call is an error, GH #738, PR #1265). F.11's
+per-field narrowing follow-up landed as GH #540 (PR #1467).
 
 **Recorded, by design:** F.5 (a bus reply reaches a flow child at
 drain; the engine's residents are not flow children, so nothing of a
@@ -830,6 +850,10 @@ stated with each entry.
 ## F.22 — Unicode escape decoding differs from the expected string
 
 **Original context:** the DNA api contract (retired in GH #1417); preserved port observations.
+**Status:** FIXED (GH #709, hale PR #745, 2026-09-19): `unescape_string`
+decodes a `\uHHHH` escape to the scalar it names, and a surrogate pair
+to the astral scalar. Re-run on main 2026-10-12: `"\\u0031"` decodes
+to `1` and `"hale.v\\u0031"` to `hale.v1`.
 
 During this port, a program built with this worktree's `target/release/hale`
 printed `?` for `std::json::unescape_string("\\u0031")`; the expected string
@@ -864,6 +888,10 @@ The port was checked and built with this worktree's `target/release/hale`.
 ## F.24 — Native child handles need explicit ownership transfer
 
 **Original context:** `dna/api/tests`; preserved port observations.
+**Status:** FIXED (GH #716, hale PR #792, 2026-09-20):
+`std::process::adopt(self.child, spawned)` moves a spawned handle into
+the field and disarms the source, so the hand-built transfer below is
+no longer needed.
 
 - A returned `std::process::Child` cannot be assigned directly into a locus field.
   The fixture constructs the field with the returned OS handles, then disarms the
@@ -889,6 +917,9 @@ The port was checked and built with this worktree's `target/release/hale`.
 ## F.27 — The local compiler does not recognize eprint
 
 **Original context:** `dna/api/tests`; preserved port observations.
+**Status:** FIXED (GH #779, hale PR #799, 2026-09-20): every builtin
+codegen answers, `eprint` among them, is a known bare callee to
+`hale check` on a whole seed.
 
 - Direct `hale check dna/api/tests` with the September 18 local compiler rejects
   `eprint` as an unknown free function. The cleanup re-exec prints nonempty child
@@ -897,6 +928,11 @@ The port was checked and built with this worktree's `target/release/hale`.
 ## F.28 — Temporary query literal followed by a method call
 
 **Original context:** `dna/operations`; preserved port observations.
+**Status:** not reproduced on main 2026-10-12: a minimal program of the
+same shape (an outer literal holding a String-carrying child, a method
+called on the temporary, 1,000 times) runs clean under
+`LOTUS_ASAN=1`. The original Git fixture was not re-run, so the cause
+is still undiagnosed.
 
 While extending the native Git fixture, this expression typechecked and built but
 the test process terminated by signal:
@@ -945,6 +981,10 @@ following a deep chain does not perform another linear identity search per edge.
 ## F.31 — Native JSON string encoding can exhaust the host before a timeout
 
 **Original context:** `dna/operations`; preserved port observations.
+**Status:** FIXED (GH #708, hale PR #745, 2026-09-19): escaping,
+unescaping and the Builder emitters accumulate into one `BytesBuilder`
+and are linear; hale PR #1524 (2026-10-12) appends runs rather than
+bytes.
 
 The Definitions 600,000-byte shared-leaf regression exposed quadratic allocation
 in the toolchain's JSON escape helper: immutable per-byte concatenation retains
@@ -993,6 +1033,11 @@ not a compiler root-cause diagnosis or compiler repair. No core or compiler
 source changed.
 
 ## F.33 — Native HTTP Client discards 5xx response bodies
+
+**Status:** FIXED (hale PR #1526, 2026-10-12): a `retries_exhausted`
+`HttpError` carries the last 5xx response's `status`, `headers` and
+`body`, on the pooled path too. The private RPC's status-200 transport
+below predates it.
 
 The Knowledge command integration returned a typed `commands_unsupported`
 refusal when policy required an unavailable Review path. Sending that private
