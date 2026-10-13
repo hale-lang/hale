@@ -99,6 +99,10 @@ attached, the host hands it the nerves (`HALE_DNA_NATS_URL_APP`,
 `nerves.hl` says each one as `<org>.app.<name>.concern.raised` (`<name>` is the
 project's, read from the account `app-<name>`: `todo`), with the item as the
 payload: the heart reads it as a concern. Without them it says nothing.
+`hale dna init` on this repository attaches its application as `todo` (the
+compose services are its expression), so the account exists; the host does
+not run the compose services, so the variables reach the api only when
+whoever runs it passes them.
 The client is the smallest piece of core NATS that says one message and waits
 for the server to have it; the application's password is revealed on the
 CONNECT line and nowhere else.

@@ -122,8 +122,11 @@ Assembly-time substitution reaches only statically-owned params.
 
 **Tag:** `perspective-hold-without-designation`
 **Severity:** closes the other route to F.3's problem.
-**Status:** open — the first candidate language REQUEST from this
-track (see "Requests" below).
+**Status:** FIXED (GH #731, 2026-10-12): `p: perspective(P);` with no
+initializer holds the slot (`spec/semantics.md` "Holding without
+designating"); the reproducer prints `total=126`. The build refuses a
+held perspective nothing built designates, and a call through an empty
+held slot stops the program naming it. `tests/hale/perspective_hold_test.hl`.
 
 The obvious answer to F.3 is the program-global slot: the assembly
 designates `perspective(Performing)` once (`#525` item 2 made that
@@ -885,6 +888,10 @@ The port was checked and built with this worktree's `target/release/hale`.
 
 - Immediately after the first native journal append, cached journal genesis was
   empty. Fixtures read authoritative identity through `GitRecord.identity()`.
+
+**Status:** FIXED (2026-10-12): `GitJournal.landed` records the root commit
+when it appends the chain's first row, so `genesis()` answers the identity at
+once; `dna/tests/journal_incremental_test.hl` pins it before any refresh.
 
 ## F.27 — The local compiler does not recognize eprint
 

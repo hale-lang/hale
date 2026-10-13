@@ -84,7 +84,12 @@ with a default.
 
 The application's account is provisioned when the record attaches the
 application and revoked by `hale dna application remove`
-([The heart and the body](./heart.md)). An application named
+([The heart and the body](./heart.md)). A repository's record attaches
+one too: `hale dna init` on a repository root names its application by
+the project (its compose services are what express it), so a service the
+repository runs can publish its events as `app-<project>` once it is
+handed the variables `nerves migrate` prints; the host does not run the
+compose services itself. An application named
 `reflexes` holds no account: those subjects are the reflexes' alone.
 [The skin](./skin.md) has every secret the organism holds.
 
