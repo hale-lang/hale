@@ -2160,7 +2160,11 @@ main locus Host {
         }
         // the fence must be able to bring them down if this host dies:
         // who owns them is written, and every service labelled, first
-        let owned = self.compose.own(self.dna_dir, std::process::pid(), dna::body_mark(self.holder, self.lease.token, std::process::pid()));
+        let mark = dna::body_mark(self.holder, self.lease.token, std::process::pid());
+        // what bodies before this one left with no fence to settle it
+        let swept = compose_sweep(self.dna_dir, mark);
+        if len(swept) > 0 { self.say("compose: removed the containers of earlier bodies whose host is gone (" + std::str::replace(swept, "\n", ", ") + ")"); }
+        let owned = self.compose.own(self.dna_dir, std::process::pid(), mark);
         if len(owned) > 0 { self.say("the repository's compose services are not brought up: their ownership could not be recorded for the body fence (" + owned + ")"); return; }
         self.say("expression: the repository's compose services, compose project " + self.compose.project + " (" + std::str::replace(self.compose.services(), "\n", ", ") + "), coming up; " + handed);
         let why = self.compose.up(dna::wait_secs(COMPOSE_WAIT));

@@ -28,9 +28,11 @@
 // here (CI pulls nats:2 from its mirror), a repository whose one service is
 // a broker is run, its host killed outright, and the fence removes the
 // body's containers, while a replacement body's container in the same
-// project (another mark, started before the kill) survives on the
-// project's network; run again with its ownership record naming another
-// body (a replacement host's), the fence leaves the services alone.
+// project (another mark, its own record and override written before the
+// kill, as a replacement host on this clone would) survives on the
+// project's network with its files; the next body's start sweeps that
+// replacement once its host is gone; run again with its ownership record
+// naming another body, the fence leaves the services alone.
 
 import "../core" as dna;
 import "./onboarding/todo/api/nerves" as todo;
@@ -263,16 +265,24 @@ fn fenced(repo: String) {
     let committed = dna::run_tool("sh\n-c\ncd \"$1\" && git add -A && git commit -qm organism\nsh\n" + repo);
     std::test::assert_eq_int(committed.code, 0, "the organism committed: " + committed.stderr);
 
-    // ---- the host killed outright: the fence takes the project down
+    // ---- the host killed outright: the fence removes this body's
+    // containers, and nothing of a replacement's
     let project = compose_body(repo);
     let reaper = dna::run_tool("sh\n-c\n(while kill -0 \"$1\" 2>/dev/null; do sleep 1; done; docker compose -p \"$2\" down --remove-orphans --timeout 5) </dev/null >/dev/null 2>&1 &\nsh\n" + to_string(std::process::pid()) + "\n" + project);
-    let owner = std::io::fs::read_file(repo + "/.hale/dna/compose.owner") or "";
-    std::test::assert(std::str::starts_with(owner, host_pid_of(repo) + "\n"), "who owns the services is recorded before they come up: " + owner);
+    let record = own_record(repo);
+    let owner = std::io::fs::read_file(record) or "";
+    std::test::assert(std::str::starts_with(owner, host_pid_of(repo) + "\n"), "who owns the services is recorded, in the body's own file, before they come up: " + record + ": " + owner);
     let labelled = dna::run_tool("docker\nps\n-aq\n--filter\nlabel=com.docker.compose.project=" + project + "\n--filter\nlabel=hale.dna.body");
     std::test::assert(len(dna::trim_nl(labelled.stdout)) > 0, "the services carry the body's mark");
-    // a replacement body's service in the same project, on its network,
-    // under a mark of its own: whatever the fence does, it is not this body's
-    let replacement = dna::trim_nl(dna::run_tool("docker\nrun\n-d\n--name\n" + project + "-replacement\n--network\n" + project + "_default\n--label\ncom.docker.compose.project=" + project + "\n--label\nhale.dna.body=another-body#9#1#\nnats:2").stdout);
+    // a replacement body on this clone, as if it took over before the fence
+    // ran: its own record and override, and its service in the same
+    // project, on its network, under its own mark (its host is gone too,
+    // a pid no process has, so the next body's start sweeps it)
+    let theirs = repo + "/.hale/dna/compose.owner." + REPLACEMENT_KEY;
+    let their_override = repo + "/.hale/dna/compose.body." + REPLACEMENT_KEY + ".yaml";
+    std::io::fs::write_file(their_override, "services: {}\n") or discard;
+    std::io::fs::write_file(theirs, "4194999\n" + REPLACEMENT_MARK + "\n" + project + "\ncompose.yaml\n.\n" + their_override + "\n") or discard;
+    let replacement = dna::trim_nl(dna::run_tool("docker\nrun\n-d\n--name\n" + project + "-replacement\n--network\n" + project + "_default\n--label\ncom.docker.compose.project=" + project + "\n--label\nhale.dna.body=" + REPLACEMENT_MARK + "\nnats:2").stdout);
     std::test::assert(len(replacement) > 0, "a replacement's container in " + project);
     let killed = dna::run_tool("kill\n-9\n" + host_pid_of(repo));
     std::test::assert_eq_int(killed.code, 0, "the host killed");
@@ -280,24 +290,37 @@ fn fenced(repo: String) {
     std::test::assert_eq_str(containers_of(project), dna::trim_nl(dna::run_tool("docker\nps\n-aq\n--filter\nid=" + replacement).stdout), "only the replacement's container is left in " + project);
     std::test::assert(std::str::contains(dna::run_tool("docker\ninspect\n-f\n{{.State.Running}}\n" + replacement).stdout, "true"), "and it still runs");
     std::test::assert(dna::run_tool("docker\nnetwork\ninspect\n" + project + "_default").code == 0, "on the project's network, which the fence left since it is in use");
-    std::test::assert(!std::io::fs::file_exists(repo + "/.hale/dna/compose.owner"), "the record goes with this body's containers");
-    let gone = dna::run_tool("sh\n-c\ndocker rm -f \"$1\" >/dev/null && docker network rm \"$2_default\" >/dev/null\nsh\n" + replacement + "\n" + project);
-    std::test::assert_eq_int(gone.code, 0, "the replacement and the network taken down by hand: " + gone.stderr);
+    std::test::assert(!std::io::fs::file_exists(record), "the lost body's record goes with its containers");
+    std::test::assert(std::io::fs::file_exists(theirs) && std::io::fs::file_exists(their_override), "and the replacement's own files stay");
 
-    // ---- the record names another body (a replacement host's): left alone
+    // ---- the next body sweeps what a body with no host left; then its
+    // own record, made to name another body, is left by its fence
     let again = compose_body(repo);
     std::test::assert_eq_str(again, project, "the organism's one project");
-    let record = std::io::fs::read_file(repo + "/.hale/dna/compose.owner") or "";
-    let nl = std::str::index_of(record, "\n");
-    let rest = record[(nl + 1)..len(record)];
-    let other = record[0..(nl + 1)] + "another-body#9#1#" + rest[std::str::index_of(rest, "\n")..len(rest)];
-    std::io::fs::write_file(repo + "/.hale/dna/compose.owner", other) or discard;
+    std::test::assert(std::str::contains(host_log(repo), "compose: removed the containers of earlier bodies whose host is gone (" + REPLACEMENT_MARK + ")"), "the start sweeps the body whose host is gone: " + host_log(repo));
+    std::test::assert(!std::io::fs::file_exists(theirs) && !std::io::fs::file_exists(their_override), "its files swept");
+    std::test::assert_eq_str(dna::trim_nl(dna::run_tool("docker\nps\n-aq\n--filter\nid=" + replacement).stdout), "", "and its container");
+    let mine = own_record(repo);
+    let text = std::io::fs::read_file(mine) or "";
+    let nl = std::str::index_of(text, "\n");
+    let rest = text[(nl + 1)..len(text)];
+    let other = text[0..(nl + 1)] + "another-body#8#1#" + rest[std::str::index_of(rest, "\n")..len(rest)];
+    std::io::fs::write_file(mine, other) or discard;
     let killed2 = dna::run_tool("kill\n-9\n" + host_pid_of(repo));
     std::test::assert_eq_int(killed2.code, 0, "the host killed again");
     std::test::assert(fence_says(repo, "compose not this body's: " + project, 60), "the fence leaves another body's services: " + fence_said(repo));
     std::test::assert(len(containers_of(project)) > 0, "the replacement's services are still there");
     let down = dna::run_tool("docker\ncompose\n-p\n" + project + "\ndown\n--remove-orphans\n--timeout\n5");
     std::test::assert_eq_str(containers_of(project), "", "taken down by hand: " + down.stderr);
+}
+
+// A replacement body's mark: its host's pid is one no process has.
+const REPLACEMENT_MARK: String = "another-body#9#4194999#";
+const REPLACEMENT_KEY: String = "9_4194999";
+
+// This body's ownership record (a replacement's has REPLACEMENT_KEY).
+fn own_record(repo: String) -> String {
+    return dna::trim_nl(dna::run_tool("sh\n-c\nls \"$1\"/.hale/dna/compose.owner.* 2>/dev/null | grep -v \"$2\" | head -1\nsh\n" + repo + "\n" + REPLACEMENT_KEY).stdout);
 }
 
 fn main() { App { }; }

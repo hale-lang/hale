@@ -202,13 +202,13 @@ fn host_verb() {
     pinned("host/verb", 1, 1, "main  does={unclassified}");
 }
 
-/// host: 104 of 511 rows.
+/// host: 106 of 515 rows.
 #[test]
 fn host() {
     pinned(
         "host",
-        505,
-        511,
+        508,
+        515,
         "
         GovernanceCli::review_profile  does={syscall,block,time,entropy,env,alloc,secret_use}
         Host::ack_reading  does={publish,alloc}
@@ -261,6 +261,8 @@ fn host() {
         build_fingerprint  does={syscall,block,env,alloc}
         build_seed_at  does={syscall,block,env,alloc}
         checkpoint_here  does={syscall,block,time,entropy,env,alloc,secret_use}
+        compose_key  does={alloc}
+        compose_sweep  does={syscall,block,alloc}
         definitions_verb  does={syscall,block,alloc}
         descendants  does={syscall,block,alloc}
         draw_secret  does={syscall,block,alloc}

@@ -281,9 +281,27 @@ const NATS_APP_SECRET_ENV: String = "HALE_DNA_NATS_SECRET_APP";
 // app.pid under .hale/dna, written before `up`: the host's pid, the body's
 // mark, the project, the compose file, the project directory and the
 // override that labels every service with the mark (COMPOSE_LABEL), a line
-// each. The body fence reads it when the host is gone (`fence_compose_down`).
-const COMPOSE_OWNER: String = "compose.owner";
-const COMPOSE_OVERRIDE: String = "compose.body.yaml";
+// each. Both files are the body's own — `compose.owner.<key>` and
+// `compose.body.<key>.yaml`, keyed by its lease token and host pid
+// (`compose_key`) — so a body creates, reads and removes only its own, and
+// a replacement host on the same clone never loses its files to the
+// cleanup of the body before it. The body fence reads the lost body's when
+// its host is gone (`fence_compose_down`); a host starting sweeps those of
+// bodies whose host is gone (`compose_sweep`).
+const COMPOSE_OWNER: String = "compose.owner.";
+const COMPOSE_OVERRIDE: String = "compose.body.";
+
+// The key of a body's compose files: its mark's lease token and host pid
+// (`<holder>#<token>#<pid>#`), a file name's characters only.
+fn compose_key(mark: String) -> String {
+    let m = if std::str::ends_with(mark, "#") { mark[0..(len(mark) - 1)] } else { mark };
+    let p = last_index_of(m, "#");
+    if p <= 0 { return dna::nerves_token(m); }
+    let q = last_index_of(m[0..p], "#");
+    return dna::nerves_token(m[(q + 1)..len(m)]);
+}
+fn compose_owner_path(dir: String, mark: String) -> String { return dir + "/" + COMPOSE_OWNER + compose_key(mark); }
+fn compose_override_path(dir: String, mark: String) -> String { return dir + "/" + COMPOSE_OVERRIDE + compose_key(mark) + ".yaml"; }
 const COMPOSE_LABEL: String = "hale.dna.body";
 // How a body's compose services go, by the host and by the fence alike:
 // the containers of the project that carry the body's mark — the daemon's
@@ -339,8 +357,8 @@ locus RepositoryCompose {
     // body brought up when the host is gone, and only that. "" when both
     // are written, else why not.
     fn own(dir: String, host_pid: Int, mark: String) -> String {
-        let record = dir + "/" + COMPOSE_OWNER;
-        let labels = dir + "/" + COMPOSE_OVERRIDE;
+        let record = compose_owner_path(dir, mark);
+        let labels = compose_override_path(dir, mark);
         let script = "ovr=$1 rec=$2 pid=$3 mark=$4 proj=$5 file=$6 pdir=$7; shift 7; svcs=$(\"$@\" config --services) || exit 1; umask 077; { echo services:; for s in $svcs; do printf '  %s:\\n    labels:\\n      " + COMPOSE_LABEL + ": \"%s\"\\n' \"$s\" \"$mark\"; done; } > \"$ovr\" && printf '%s\\n' \"$pid\" \"$mark\" \"$proj\" \"$file\" \"$pdir\" \"$ovr\" > \"$rec\"";
         let r = dna::run_tool("sh\n-c\n" + script + "\nsh\n" + labels + "\n" + record + "\n" + to_string(host_pid) + "\n" + mark + "\n" + self.project + "\n" + self.file + "\n" + self.root + "\n" + self.base());
         if r.code != 0 { return dna::last_line(dna::trim_nl(r.stderr)); }
@@ -406,10 +424,21 @@ locus RepositoryCompose {
 // COMPOSE_REMOVE_MARKED, at once: only containers carrying `mark` go, so a
 // replacement body's services in the same project stay whenever they
 // start. A record another body wrote (a replacement host on this clone) is
-// left, with its services. The record and its override go once this
-// body's containers are gone.
+// left, with its services. The record and its override — the lost body's
+// own files, never another body's — go once its containers are gone.
 fn fence_compose_down(dir: String, host_pid: Int, mark: String) -> String {
     let script = "f=$1 pid=$2 mark=$3; [ -f \"$f\" ] || exit 0; { read -r p; read -r m; read -r proj; read -r file; read -r pdir; read -r ovr; } < \"$f\"; [ \"$p\" = \"$pid\" ] && [ \"$m\" = \"$mark\" ] || { echo \"not this body's: $proj\"; exit 0; }; sh -c \"$4\" sh \"$proj\" \"$mark\" 0 || { echo \"this body's containers of $proj not removed\"; exit 0; }; rm -f \"$f\" \"$ovr\"; echo \"removed this body's containers of $proj\"";
-    let r = dna::run_tool("sh\n-c\n" + script + "\nsh\n" + dir + "/" + COMPOSE_OWNER + "\n" + to_string(host_pid) + "\n" + mark + "\n" + COMPOSE_REMOVE_MARKED);
+    let r = dna::run_tool("sh\n-c\n" + script + "\nsh\n" + compose_owner_path(dir, mark) + "\n" + to_string(host_pid) + "\n" + mark + "\n" + COMPOSE_REMOVE_MARKED);
     return dna::trim_nl(r.stdout + r.stderr);
+}
+
+// When a host starts its compose services: the records of other bodies of
+// this clone whose host is gone (a fence that died with it, or never ran)
+// have their containers removed by their mark, as the fence would, and
+// then their files. A record whose host still runs is that body's, and its
+// fence's, to settle. The marks swept, one a line.
+fn compose_sweep(dir: String, own_mark: String) -> String {
+    let script = "dir=$1 own=$2 rm=$3; for f in \"$dir\"/" + COMPOSE_OWNER + "*; do [ -f \"$f\" ] || continue; [ \"$f\" = \"$own\" ] && continue; { read -r p; read -r m; read -r proj; read -r file; read -r pdir; read -r ovr; } < \"$f\"; [ -n \"$p\" ] && ps -p \"$p\" >/dev/null 2>&1 && continue; sh -c \"$rm\" sh \"$proj\" \"$m\" 0 || continue; rm -f \"$f\" \"$ovr\"; echo \"$m\"; done";
+    let r = dna::run_tool("sh\n-c\n" + script + "\nsh\n" + dir + "\n" + compose_owner_path(dir, own_mark) + "\n" + COMPOSE_REMOVE_MARKED);
+    return dna::trim_nl(r.stdout);
 }

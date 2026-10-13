@@ -5019,10 +5019,13 @@ The live half is memory's, projected from the record by the spine
   held takes them down (`the repository's compose services are down`).
   Before `up` the body labels every service with its mark
   (`hale.dna.body=<holder>#<token>#<host pid>#`, an override
-  `.hale/dna/compose.body.yaml` beside the compose file) and records who
-  owns them in `.hale/dna/compose.owner` (the host's pid, the mark, the
-  project, the compose file, the project directory and the override, a line
-  each); without the record nothing is brought up. Nothing ever takes the
+  `.hale/dna/compose.body.<token>_<host pid>.yaml` beside the compose file)
+  and records who owns them in `.hale/dna/compose.owner.<token>_<host pid>`
+  (the host's pid, the mark, the project, the compose file, the project
+  directory and the override, a line each); without the record nothing is
+  brought up. Both files are the body's own: a body creates, reads and
+  removes only its own, so a replacement host on the same clone never loses
+  its files to the cleanup of the body before it. Nothing ever takes the
   project down whole: `docker compose down` acts on whatever the project
   holds when it runs, and the project is the organism's, so another clone of
   the record on the same docker daemon — a replacement body, once this one's
@@ -5041,8 +5044,13 @@ The live half is memory's, projected from the record by the spine
   removed at once, the same way; a record another body wrote (a replacement
   host on this clone) is left, with its services. The fence's status line
   says `compose removed this body's containers of <project>` or `compose not
-  this body's: <project>`, and the record and the override go once this
-  body's containers are gone, by the host or by the fence. Compose runs without the organism's credentials in its
+  this body's: <project>`, and the body's own record and override go once
+  its containers are gone, by the host or by the fence. A host starting its
+  services first sweeps the records of other bodies of its clone whose host
+  is gone (a fence that died with it): their containers go by their mark,
+  then their files (`compose: removed the containers of earlier bodies whose
+  host is gone (<marks>)`); a record whose host still runs is left to that
+  body and its fence. Compose runs without the organism's credentials in its
   environment (the ones an application's start removes: the spine's, owner's,
   head's and reflexes' URLs and DSNs), so a compose file cannot interpolate
   them, and with nerves here it is handed the attached application's:
