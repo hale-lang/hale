@@ -651,6 +651,10 @@ the description gave: an integer or a quantity's count (`--qty 3`), a number,
 field and a flag that names no field are refused before anything is sent, with
 the field's schema in the message. `--json '{…}'` (or `--json -` for stdin)
 sends a payload as given, unchecked: the server's answer is then the check.
+The verb keeps five flags for itself, `--json`, `--bearer`, `--digest`, `--raw`
+and `--request-id` (the call's id, `hale-<pid>` by default); a payload field
+with one of those names goes in `--json`. A field named `id` is an ordinary
+flag: `--id 5`.
 
 A result prints its value on stdout and exits 0. Everything else prints what the
 wire said on stderr: a handler error exits 1, a refusal 2 (`unauthorized`,
