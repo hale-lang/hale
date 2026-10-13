@@ -7070,6 +7070,17 @@ root	App	the entry
 row	App@literal1	App	main	default
 shared	App@literal1.gw	Gateway #85305e8b
 
+== tests/hale/perspective_hold_test.hl
+root	App	the entry
+row	App@literal1	App	main	default
+row	App@literal1.performer	Tripler	main	default
+row	App@literal1.s	Steps	main	default
+row	App@literal1.scaling	__lib_tests__hale__perspective_hold_lib___lib__Thrice	main	default
+row	App@literal1.w	Work	main	default
+-- dynamic	sites in the seed
+dynamic	Attempt	on main
+dynamic	__lib_tests__hale__perspective_hold_lib___lib__Step	on main
+
 == tests/hale/pinned_birth_restart_test.hl
 root	App	the entry
 domain	pinned:App@literal1.held
@@ -13637,6 +13648,13 @@ row	App@literal1.m	Manager	main	default
 -- dynamic	sites in the seed
 dynamic	Part	on main
 dynamic	Run	on main
+
+== dna/friction/f4-perspective-must-designate
+root	App	the entry
+row	App@literal1	App	main	default
+row	App@literal1.performer	Tripler	main	default
+row	App@literal1.w	Work	main	default
+dynamic	Attempt	on main	in the seed
 
 == dna/friction/f5-bus-reply-at-drain
 root	App	the entry

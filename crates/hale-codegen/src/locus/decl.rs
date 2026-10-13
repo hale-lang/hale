@@ -253,7 +253,16 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
                             let ascribed = p.ty.as_ref().expect("required param has ty");
                             let ty = self.type_expr_to_codegen_ty(ascribed)?;
                             fields.insert(p.name.name.clone(), (idx, ty.clone()));
-                            defaults.push((p.name.name.clone(), DefaultInit::Required));
+                            // GH #731: a perspective handle with no
+                            // initializer holds the slot rather than
+                            // demanding an impl at every birth
+                            let init = if let CodegenTy::Perspective(persp) = &ty {
+                                self.perspectives_holdable.insert(persp.clone());
+                                DefaultInit::HoldsSlot
+                            } else {
+                                DefaultInit::Required
+                            };
+                            defaults.push((p.name.name.clone(), init));
                             // Inline fixed arrays (array_inline_spec).
                             llvm_field_tys.push(self.llvm_field_storage_type(&ty));
                             idx += 1;

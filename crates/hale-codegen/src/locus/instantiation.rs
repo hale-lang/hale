@@ -2935,6 +2935,27 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                                 locus_name, fname, locus_name, fname
                             )));
                         }
+                        DefaultInit::HoldsSlot => {
+                            // GH #731: the field holds the program's
+                            // slot as the designating holder set it —
+                            // no impl is built, none is owned, the slot
+                            // is not written. The field stores null.
+                            let declared = info
+                                .fields
+                                .get(fname)
+                                .map(|(_, t)| t.clone())
+                                .expect("field declared by declare_locus_struct");
+                            if let CodegenTy::Perspective(persp) = &declared {
+                                self.perspectives_held
+                                    .entry(persp.clone())
+                                    .or_insert_with(|| format!("{}.{}", locus_name, fname));
+                            }
+                            let null = self
+                                .context
+                                .ptr_type(AddressSpace::default())
+                                .const_null();
+                            (null.into(), declared, false, false)
+                        }
                     }
                 };
             // 2026-05-24: ensure the payload-arena routing flag
@@ -3033,6 +3054,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 // it. The field itself stores the impl self_ptr for
                 // ownership / teardown (the impl is an owned child).
                 owned_child_impl = Some(impl_locus.clone());
+                self.perspectives_designated.insert(persp.clone());
                 let impl_self = val.into_pointer_value();
                 let vtable =
                     self.ensure_perspective_vtable(impl_locus, persp)?;
@@ -5768,7 +5790,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 {
                     DefaultInit::Const(pv) => self.const_param(pv),
                     DefaultInit::Expr(e) => self.in_body(info.decl, |cx| cx.lower_expr(e, scope))?,
-                    DefaultInit::Required => {
+                    DefaultInit::Required | DefaultInit::HoldsSlot => {
                         return Err(CodegenError::Unsupported(format!(
                             "cross-pool spawn `{}`: param `{}` is required — \
                              supply it as `{} {{ {}: ... }};`",
