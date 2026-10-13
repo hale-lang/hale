@@ -380,8 +380,13 @@ impl Writes {
     fn has(&self, id: usize) -> bool {
         self.bits.get(id / 64).is_some_and(|w| w & (1 << (id % 64)) != 0)
     }
+    /// May these writes replace what `keys` views? A place marker names
+    /// no place a write replaces (the local-place rule reads it): a value
+    /// carrying nothing else is touched by nothing, an unknown write
+    /// included.
     fn touches(&self, keys: &BTreeSet<String>, p: &Bodies<'_>) -> bool {
-        self.top || keys.iter().any(|k| p.known_field(k).is_some_and(|id| self.has(id)))
+        (self.top && keys.iter().any(|k| !is_place_marker(k)))
+            || keys.iter().any(|k| p.known_field(k).is_some_and(|id| self.has(id)))
     }
 }
 
@@ -3493,6 +3498,12 @@ mod tests {
         assert!(place_copies("let a = self.r.arr; let n = look(a); println(a[0].k + n);").is_empty());
         assert!(place_copies("let mut c = self.r; c.inner.k = 1; c.arr[0].k = 2;").is_empty());
         assert!(place_copies("for x in self.v.items { x.k = 1; }").is_empty());
+        // A place marker is no key a write replaces: an operand that
+        // carries only one is not copied for a later operand's unknown
+        // call (which may write anything).
+        let src = PLACES.replace("BODY", "let n = look(p.arr, mystery(1)); println(n);");
+        let program = hale_syntax::parse_source(&src).expect("parses");
+        assert!(analyze(&[&program], &BTreeMap::new()).sites.is_empty());
     }
 
     #[test]
