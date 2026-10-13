@@ -176,12 +176,12 @@ fn run_fields(name: &str, src: &str) -> impl Fn(&str) -> String + use<> {
     }
 }
 
-/// Main's queue is bounded for a producer on another thread too: the
-/// pool's worker waits at the cap for main's next drain, as a producer to
-/// a full ring waits for its consumer. Before, the cross-thread post grew
-/// main's queue without bound (the locked path skipped the cap): the 2M
-/// ticks were all sent while main spun, and held 1.1 GB. Now the source
-/// stops at the cap while main spins, and every tick is still delivered
+/// Main's queue is bounded for a producer on another thread too. Before,
+/// the cross-thread post grew main's queue without bound (the locked path
+/// skipped the cap): the 2M ticks were all sent while main spun, and held
+/// 1.1 GB. A spinning main drains nothing, so the source takes it for
+/// blocked and goes on a queue's worth (8192) per 20 ms stall window:
+/// about 115k ticks in the 300 ms spin, ~75 MB. Every tick is delivered
 /// once main drains.
 #[test]
 fn cross_thread_flood_to_main_queue_is_bounded() {
@@ -189,8 +189,103 @@ fn cross_thread_flood_to_main_queue_is_bounded() {
     let rss = harness::statm_resident_bytes(&field("rss_statm")) / 1048576;
     let sent: i64 = field("sent_while_spinning").parse().expect("a count");
     assert_eq!(field("delivered"), "2000000", "every tick is delivered");
-    assert!(sent < 2 * 8192, "the source ran on past main's full queue: {sent} sent while main spun");
+    assert!(sent < 500_000, "the source ran on past main's bound: {sent} sent while main spun");
     assert!(rss < 200, "pool->main flood RSS {rss} MB with {sent} sent while main spun (expected < 200)");
+}
+
+/// A producer never waits on an owner that is not draining (PR #1552's
+/// review). Main sends `go` over a socket and blocks reading the reply; the
+/// pool's worker reads `go`, publishes 100000 ticks to a main subscriber
+/// (more than main's queue holds), and only then replies `done`. Main's
+/// read is no runtime wait, so a bound that held the worker until main's
+/// next drain closed the cycle: neither side went on. Main's heartbeat
+/// stands still, so the worker goes on and replies.
+const OWNER_BLOCKED_IN_READ: &str = r#"
+    type Tick { n: Int; }
+    locus Counter {
+        params { count: Int = 0; }
+        bus { subscribe "bk" as on_tick of type Tick; }
+        fn on_tick(t: Tick) { self.count = self.count + 1; }
+    }
+    locus Worker {
+        params { port: Int = 0; }
+        bus { publish "bk" of type Tick; }
+        run() {
+            let fd = std::io::tcp::connect("127.0.0.1", self.port) or raise;
+            let s = std::io::tcp::Stream { conn_fd: fd };
+            let go = s.recv(16) or raise;
+            let mut i = 0;
+            while i < 100000 { "bk" <- Tick { n: i }; i = i + 1; }
+            s.send("done") or raise;
+        }
+    }
+    main locus App {
+        params { lfd: Int = 0; sub: Counter = Counter { }; w: Worker = Worker { }; }
+        placement { w: cooperative(pool = side); }
+        run() {
+            let cfd = std::io::tcp::accept_one(self.lfd) or raise;
+            let s = std::io::tcp::Stream { conn_fd: cfd };
+            s.send("go") or raise;
+            let reply = s.recv(16) or raise;
+            println("reply=" + reply);
+            let deadline = std::time::monotonic_ns() + 30000000000;
+            while (self.sub.count < 100000 && std::time::monotonic_ns() < deadline) { std::time::sleep(1ms); }
+            println("delivered=" + to_string(self.sub.count));
+        }
+    }
+    fn main() {
+        let lfd = std::io::tcp::listen_socket("127.0.0.1", 0) or raise;
+        let port = std::io::tcp::__local_port(lfd);
+        App { lfd: lfd, w: Worker { port: port } };
+    }
+"#;
+
+#[test]
+fn a_producer_never_waits_on_an_owner_blocked_in_a_read() {
+    let field = run_fields("owner_in_read", OWNER_BLOCKED_IN_READ);
+    assert_eq!(field("reply"), "done");
+    assert_eq!(field("delivered"), "100000", "every tick is delivered");
+}
+
+/// The same for an owner blocked in an `@ffi` call, which the runtime
+/// cannot see: main sleeps a second in `usleep` while the source publishes
+/// 100000 ticks to its subscriber, and the source finishes inside that
+/// second (a cap per 20 ms stall window), not at main's return.
+const OWNER_BLOCKED_IN_FFI: &str = r#"
+    @ffi("c") fn usleep(us: Int) -> Int;
+
+    type Tick { n: Int; }
+    locus Counter {
+        params { count: Int = 0; }
+        bus { subscribe "fb" as on_tick of type Tick; }
+        fn on_tick(t: Tick) { self.count = self.count + 1; }
+    }
+    locus Source {
+        params { sent: Int = 0; }
+        bus { publish "fb" of type Tick; }
+        run() { while self.sent < 100000 { "fb" <- Tick { n: self.sent }; self.sent = self.sent + 1; } }
+    }
+    main locus App {
+        params { sub: Counter = Counter { }; src: Source = Source { }; }
+        placement { src: cooperative(pool = side); }
+        run() {
+            let started = std::time::monotonic_ns() + 10000000000;
+            while (self.src.sent == 0 && std::time::monotonic_ns() < started) { }
+            usleep(1000000);
+            println("sent_while_blocked=" + to_string(self.src.sent));
+            let deadline = std::time::monotonic_ns() + 30000000000;
+            while (self.sub.count < 100000 && std::time::monotonic_ns() < deadline) { std::time::sleep(1ms); }
+            println("delivered=" + to_string(self.sub.count));
+        }
+    }
+    fn main() { App { }; }
+"#;
+
+#[test]
+fn a_producer_never_waits_on_an_owner_blocked_in_ffi() {
+    let field = run_fields("owner_in_ffi", OWNER_BLOCKED_IN_FFI);
+    assert_eq!(field("sent_while_blocked"), "100000", "the source waited on main's foreign call");
+    assert_eq!(field("delivered"), "100000", "every tick is delivered");
 }
 
 /// A subscriber born on main while a pool floods its topic: its birth

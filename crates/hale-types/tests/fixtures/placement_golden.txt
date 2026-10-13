@@ -1633,6 +1633,21 @@ row	App@literal1	App	main	default
 row	App@literal1.src	Source	pool:side	entry	off owner
 row	App@literal1.sub	Counter	main	default
 
+== crates/hale-codegen/tests/bus_backpressure.rs#a860228d
+root	App	the entry
+domain	pool:side
+row	App@literal1	App	main	default
+row	App@literal1.sub	Counter	main	default
+row	App@literal1.w	Worker	pool:side	entry	off owner
+dynamic	__StdIoTcpStream	on main|pool:side	in the seed
+
+== crates/hale-codegen/tests/bus_backpressure.rs#c03aec32
+root	App	the entry
+domain	pool:side
+row	App@literal1	App	main	default
+row	App@literal1.src	Source	pool:side	entry	off owner
+row	App@literal1.sub	Counter	main	default
+
 == crates/hale-codegen/tests/bus_backpressure.rs#18fba47e
 root	App	the entry
 domain	pool:side
