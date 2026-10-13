@@ -166,10 +166,11 @@ These are advisory warnings, not build failures:
   The classic instance — a whole-value replace `self.latest =
   Thing{…}` allocating a fresh value each message — is largely
   closed since v0.11.3: inside a method or handler, the replaced
-  value's String and Bytes clones retire at the activation boundary
-  and recycle on the next store (the struct's own bytes were already
-  overwritten in place), so a steady-state replace holds the arena
-  flat. The same holds for a single `String` or `Bytes` field whose
+  value's String and Bytes clones — and its nested records, tuples
+  and arrays, with everything in them — retire at the activation
+  boundary and recycle on the next store (the struct's own bytes were
+  already overwritten in place), so a steady-state replace holds the
+  arena flat. A tuple or array field replaced whole does too. The same holds for a single `String` or `Bytes` field whose
   length changes from write to write — a message's payload one time,
   the empty value a control frame leaves the next: the old value is
   retired whatever the new one is. A `String` field's next values
@@ -178,9 +179,9 @@ These are advisory warnings, not build failures:
   largest value, and the survey does not report such a replace. **In-place mutation**
   (`self.latest.field = v`, `self.arr[i] = v`) is still the faster
   idiom — a same-length write skips the clone-and-retire cycle
-  entirely — and remains the fix for what retirement doesn't yet
-  cover: nested compound fields, and stores looping inside `run()`
-  itself (no activation boundary). For genuinely unbounded growth, reach for the moves
+  entirely — and remains the fix for what retirement doesn't
+  cover: stores looping inside `run()` itself (no activation
+  boundary). For genuinely unbounded growth, reach for the moves
   from this chapter — a capacity-bounded `@form`, route it over
   the bus, or a per-iteration child. A `while i < N { … }` counter with a constant
   bound is *proven* bounded and left alone. Run-to-exit programs (a

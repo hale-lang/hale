@@ -355,6 +355,172 @@ fn send_subject(e: &Expr, topics: &TopicRows) -> Option<String> {
     }
 }
 
+/// A send that precedes, in one body, a literal building a locus that
+/// subscribes to its subject: the subscriber registers once the literal
+/// runs, so the cell, which reaches the subscribers registered when it
+/// is published, never reaches it (the publish-before-subscriber
+/// warning, spec/verification.md).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EarlyPublish {
+    /// The send.
+    pub send: Span,
+    /// The wire subject it publishes on.
+    pub wire: String,
+    /// The literal built after it.
+    pub literal: Span,
+    /// The locus the literal builds.
+    pub locus: String,
+    /// The locus of its tree that subscribes: the literal's own, or one
+    /// its params build.
+    pub subscriber: String,
+}
+
+/// The sends and the locus literals of a body, in the order written:
+/// a send at any depth, and a literal written as a statement, a `let`'s
+/// value or an assignment's.
+enum BodyEvent<'a> {
+    Send(&'a Expr, Span),
+    Literal(String, Span),
+}
+
+fn literal_of(e: &Expr) -> Option<(String, Span)> {
+    match e {
+        Expr::Struct { path, span, .. } if path.segments.len() == 1 => Some((path.segments[0].name.clone(), *span)),
+        _ => None,
+    }
+}
+
+fn body_events<'a>(b: &'a Block, out: &mut Vec<BodyEvent<'a>>) {
+    for s in &b.stmts {
+        match s {
+            Stmt::Send { subject, span, .. } => out.push(BodyEvent::Send(subject, *span)),
+            Stmt::Let { value, .. } | Stmt::Assign { value, .. } | Stmt::Expr(value) => {
+                if let Some((name, span)) = literal_of(value) {
+                    out.push(BodyEvent::Literal(name, span));
+                }
+            }
+            Stmt::If(i) => if_events(i, out),
+            Stmt::Match(m) => {
+                for arm in &m.arms {
+                    if let MatchArmBody::Block(b) = &arm.body {
+                        body_events(b, out);
+                    }
+                }
+            }
+            Stmt::For { body, .. } | Stmt::While { body, .. } | Stmt::Block(body) => body_events(body, out),
+            _ => {}
+        }
+    }
+}
+
+fn if_events<'a>(i: &'a IfStmt, out: &mut Vec<BodyEvent<'a>>) {
+    body_events(&i.then_block, out);
+    match i.else_block.as_deref() {
+        Some(ElseBranch::Else(b)) => body_events(b, out),
+        Some(ElseBranch::ElseIf(n)) => if_events(n, out),
+        None => {}
+    }
+}
+
+/// Every send of a user body that is written before a literal whose
+/// locus — or a locus its params build, by their declared types — 
+/// subscribes to the send's subject (a `**` subscription covering it
+/// included). Program order is the order written: a send after the
+/// literal inside one loop is the next iteration's, which the literal's
+/// instance, built by then, receives. Unkeyed and keyed subscriptions
+/// alike: a keyed subscriber built later misses a cell for its key.
+pub(crate) fn publishes_before_their_subscriber(bundle: &Bundle<'_>, top: &TopScope, graph: &BusGraph) -> Vec<EarlyPublish> {
+    // The wires each locus subscribes to, by name, over its declarations.
+    let mut subscribes: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+    for d in &graph.decls {
+        for (subject, _) in &d.subscribes {
+            if let Some(w) = subject.wire() {
+                subscribes.entry(d.name.as_str()).or_default().push(w);
+            }
+        }
+    }
+    let covers = |pattern: &str, wire: &str| pattern == wire || hale_model::wildcard_match(pattern, wire);
+    // The locus of `name`'s tree (itself, then its params' loci) that
+    // subscribes to `wire`.
+    fn tree_subscriber(
+        name: &str,
+        wire: &str,
+        top: &TopScope,
+        subscribes: &BTreeMap<&str, Vec<&str>>,
+        covers: &dyn Fn(&str, &str) -> bool,
+        seen: &mut BTreeSet<String>,
+    ) -> Option<String> {
+        if !seen.insert(name.to_string()) {
+            return None;
+        }
+        if subscribes.get(name).is_some_and(|ws| ws.iter().any(|p| covers(p, wire))) {
+            return Some(name.to_string());
+        }
+        let Some(TopSymbol::Locus(li)) = top.lookup(name) else { return None };
+        li.params.iter().find_map(|p| match &p.ty {
+            crate::ty::Ty::Named(child) => tree_subscriber(child, wire, top, subscribes, covers, seen),
+            _ => None,
+        })
+    }
+    let mut bodies: Vec<&Block> = Vec::new();
+    for program in bundle.programs.values() {
+        for item in hale_syntax::ast::flat_decls(&program.items) {
+            match item {
+                TopDecl::Fn(f) => bodies.push(&f.body),
+                TopDecl::Locus(l) if !l.imported => {
+                    for m in &l.members {
+                        match m {
+                            LocusMember::Lifecycle(lc) => bodies.push(&lc.body),
+                            LocusMember::Fn(f) => bodies.push(&f.body),
+                            LocusMember::Mode(md) => bodies.push(&md.body),
+                            LocusMember::Failure(fd) => bodies.push(&fd.body),
+                            _ => {}
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    let mut out = Vec::new();
+    for body in bodies {
+        let mut events = Vec::new();
+        body_events(body, &mut events);
+        let mut sent: Vec<(String, Span)> = Vec::new();
+        for ev in events {
+            match ev {
+                BodyEvent::Send(subject, span) => {
+                    if let Some(w) = send_subject(subject, &top.topics) {
+                        sent.push((w, span));
+                    }
+                }
+                BodyEvent::Literal(name, span) => {
+                    if !matches!(top.lookup(&name), Some(TopSymbol::Locus(_))) {
+                        continue;
+                    }
+                    let mut reported: BTreeSet<&str> = BTreeSet::new();
+                    for (w, send) in &sent {
+                        if send.start >= span.start || !reported.insert(w.as_str()) {
+                            continue;
+                        }
+                        let mut seen = BTreeSet::new();
+                        if let Some(subscriber) = tree_subscriber(&name, w, top, &subscribes, &covers, &mut seen) {
+                            out.push(EarlyPublish {
+                                send: *send,
+                                wire: w.clone(),
+                                literal: span,
+                                locus: name.clone(),
+                                subscriber,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
 /// A send: its subject, span and identity, and whether it is guarded.
 type SendSite<'a> = (&'a Expr, Span, NodeId, bool);
 

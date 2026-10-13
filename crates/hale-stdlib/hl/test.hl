@@ -5,9 +5,9 @@
 // stdlib files, so order in the concat is flexible.
 //
 // User code reaches these via `std::test::assert(...)`,
-// `std::test::assert_eq_int(...)`, `std::test::assert_eq_str(...)`
-// — path-call dispatch in codegen routes to the bare-name
-// fns below.
+// `std::test::assert_eq_int(...)`, `std::test::assert_eq_str(...)`,
+// `std::test::assert_near(...)` — path-call dispatch in codegen
+// routes to the bare-name fns below.
 
 // m87 — std::test assertion primitives (Phase 2 v0.1).
 //
@@ -89,6 +89,34 @@ fn __test_assert_eq_str(actual: String, expected: String, msg: String) {
         println("ASSERTION FAILED: ", msg);
         println("  expected: \"", expected, "\"");
         println("  actual:   \"", actual, "\"");
+        __test_fail_trailer();
+        std::test::__note_fail();
+        return;
+    }
+    std::test::__note_pass();
+}
+
+// `assert_near(actual, expected, tolerance, msg)`: a Float compare
+// that allows for rounding (downstream handoff: every numeric test
+// hand-rolled `assert(abs(a - b) < eps, ...)` and lost the values on
+// failure). Passes when the two are equal (two equal infinities
+// included) or `|actual - expected| <= tolerance`. A NaN on either
+// side never passes: the difference is NaN and no comparison with it
+// holds. The failure prints both values, the difference and the
+// tolerance, so a failing run says how far off it was.
+fn __test_assert_near(actual: Float, expected: Float, tolerance: Float, msg: String) {
+    if std::test::__failed() != 0 {
+        return;
+    }
+    let diff = if actual >= expected { actual - expected } else { expected - actual };
+    // `==` and `<=`, each negated, not `!=`: Float `!=` is the ordered
+    // compare, false when a side is NaN, which would pass a NaN here.
+    let equal = actual == expected;
+    if !equal && !(diff <= tolerance) {
+        println("ASSERTION FAILED: ", msg);
+        println("  expected:   ", expected);
+        println("  actual:     ", actual);
+        println("  difference: ", diff, " (tolerance ", tolerance, ")");
         __test_fail_trailer();
         std::test::__note_fail();
         return;

@@ -227,6 +227,21 @@ pub const AP_SOURCE: &str = concat!(
     // declarations. Last, so no other file's spans or sites move; the
     // checker reads them from the analysis copy (`units::derive_unit_rows`).
     include_str!("../hl/time.hl"),
+    "\n",
+    // std::hex: base16 encode / decode / digit. Free fns only, so its
+    // place is free; after time.hl so no other file's spans move.
+    include_str!("../hl/hex.hl"),
+    "\n",
+    // std::url: percent-encoding. Free fns over hex.hl's digit; http.hl's
+    // path_param / query_param call it, which order does not constrain.
+    include_str!("../hl/url.hl"),
+    "\n",
+    // std::rand::Rng: a seeded generator, a locus over Int arithmetic
+    // and `std::math::int_to_float`; nothing in the bundle precedes it.
+    include_str!("../hl/rand.hl"),
+    "\n",
+    // std::crypto::ed25519_keypair: one fn over a native primitive.
+    include_str!("../hl/crypto.hl"),
 );
 
 /// The same sources as `AP_SOURCE`, per file. `AP_SOURCE` is the
@@ -267,6 +282,10 @@ pub const AP_FILES: &[(&str, &str)] = &[
     ("mirror_ring.hl", include_str!("../hl/mirror_ring.hl")),
     ("term.hl", include_str!("../hl/term.hl")),
     ("time.hl", include_str!("../hl/time.hl")),
+    ("hex.hl", include_str!("../hl/hex.hl")),
+    ("url.hl", include_str!("../hl/url.hl")),
+    ("rand.hl", include_str!("../hl/rand.hl")),
+    ("crypto.hl", include_str!("../hl/crypto.hl")),
 ];
 
 /// Map an `AP_SOURCE` byte offset to `(file_name, file_content,
@@ -381,7 +400,19 @@ pub const PATH_RENAMES: &[(&[&str], &str)] = &[
     (&["std", "io", "tcp", "Connections"], "__StdIoTcpConnections"),
     (&["std", "http", "Responder"], "__StdHttpResponder"),
     (&["std", "io", "udp", "Reader"], "__StdIoUdpReader"),
+    // std::crypto (crypto.hl): the Ed25519 key pair.
+    (&["std", "crypto", "ed25519_keypair"], "__std_crypto_ed25519_keypair"),
+    // std::hex (hex.hl): base16 text of bytes.
+    (&["std", "hex", "decode"], "__std_hex_decode"),
+    (&["std", "hex", "digit"], "__std_hex_digit"),
+    (&["std", "hex", "encode"], "__std_hex_encode"),
     (&["std", "iter", "Lines"], "__StdIterLines"),
+    // std::rand::Rng (rand.hl): the seeded generator.
+    (&["std", "rand", "Rng"], "__StdRandRng"),
+    // std::url (url.hl): percent-encoding.
+    (&["std", "url", "decode"], "__std_url_decode"),
+    (&["std", "url", "decode_query"], "__std_url_decode_query"),
+    (&["std", "url", "encode"], "__std_url_encode"),
     (&["std", "json", "ArrayIter"], "__JsonArrayIter"),
     (&["std", "json", "ArrayIterSpan"], "__JsonArrayIterSpan"),
     (&["std", "json", "ObjectIterSpan"], "__JsonObjectIterSpan"),

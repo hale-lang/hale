@@ -1,0 +1,35 @@
+// tests/hale/url_test.hl — `std::url` percent-encoding, and the
+// decoding `std::http::path_param` / `query_param` now do (they handed
+// back `hello%20world`: downstream handoff).
+
+fn main() {
+    // decode: %XX in either case; malformed escapes and %00 stay.
+    std::test::assert_eq_str(std::url::decode("hello%20world"), "hello world", "a space");
+    std::test::assert_eq_str(std::url::decode("a%2fb%2Fc"), "a/b/c", "either case");
+    std::test::assert_eq_str(std::url::decode("caf%C3%A9"), "café", "UTF-8 bytes");
+    std::test::assert_eq_str(std::url::decode("a+b"), "a+b", "+ is a plus outside a query");
+    std::test::assert_eq_str(std::url::decode("100%"), "100%", "a trailing % stays");
+    std::test::assert_eq_str(std::url::decode("%zz%4"), "%zz%4", "malformed escapes stay");
+    std::test::assert_eq_str(std::url::decode("a%00b"), "a%00b", "%00 stays rather than cutting the String");
+    std::test::assert_eq_str(std::url::decode("plain"), "plain", "nothing to decode");
+
+    // decode_query: + is a space too.
+    std::test::assert_eq_str(std::url::decode_query("a+b%2Bc"), "a b+c", "+ is a space, %2B a plus");
+
+    // encode: everything but the unreserved set, uppercase.
+    std::test::assert_eq_str(std::url::encode("AZaz09-._~"), "AZaz09-._~", "the unreserved set");
+    std::test::assert_eq_str(std::url::encode("tea & cake/?"), "tea%20%26%20cake%2F%3F", "reserved bytes");
+    std::test::assert_eq_str(std::url::encode("café"), "caf%C3%A9", "UTF-8 bytes");
+    std::test::assert_eq_str(std::url::decode(std::url::encode("a b+c/d%e")), "a b+c/d%e", "the round trip");
+
+    // query_param decodes the key and the value, + as a space.
+    let p = std::http::RouteParams { qs: "first%20name=Ada+L&x=1%262&flag&empty=&q=a=b" };
+    std::test::assert_eq_str(std::http::query_param(p, "first name"), "Ada L", "decoded key and value");
+    std::test::assert_eq_str(std::http::query_param(p, "x"), "1&2", "an escaped & is data");
+    std::test::assert_eq_str(std::http::query_param(p, "flag"), "", "a key with no =");
+    std::test::assert_eq_str(std::http::query_param(p, "empty"), "", "an empty value");
+    std::test::assert_eq_str(std::http::query_param(p, "q"), "a=b", "the first = splits");
+    std::test::assert_eq_str(std::http::query_param(p, "missing"), "", "absent");
+    let first = std::http::RouteParams { qs: "k=1&k=2" };
+    std::test::assert_eq_str(std::http::query_param(first, "k"), "1", "the first pair wins");
+}

@@ -258,7 +258,9 @@ type error: `Int` is not `Duration`: a count becomes a quantity by a unit (`n * 
 ```
 
 Write `d > 0ns` and `n * 1ms`; the other way, a quantity's count is a
-quotient, `d / 1ms`.
+quotient, `d / 1ms`. The same holds for a loop's variable: in `for x in
+prices`, over a `bounded[Money; N]` or a `[Money; N]`, `x` is a `Money`
+and `x / 1cent` its count.
 
 ## The report
 

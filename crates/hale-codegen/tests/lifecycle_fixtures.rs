@@ -305,7 +305,6 @@ const FIXTURES: &[Fixture] = &[
 const KNOWN_OPEN: &[(&str, &str, &str)] = &[
     ("l04_dissolve_route_reclaim.hl", "C25", "structural-exit"),
     ("l04_dissolve_route_cascade.hl", "C31", "structural-exit"),
-    ("rd_restart_during_teardown.hl", "C42", "restarted-during-teardown"),
     // A yield inside a handler on a pinned thread runs the owner's
     // handler that reclaims the suspended one's subscriber, which no hold
     // keeps. Deferred: a pinned handler holds its subscriber (or the
@@ -651,21 +650,6 @@ const TRACE_KNOWN_OPEN: &[(&str, &str, &[&str])] = &[
         &[
             "missing: -.PreDrain@EagerTeardown",
             "edge: Sub.Drain.Entered (inst _ inc 0) with -.PreDrain@EagerTeardown.Completed not reached",
-        ],
-    ),
-    // The restart performed during teardown begins a second
-    // incarnation, born and run. The reclaim-wins rule does not reach
-    // it: App's eager teardown joins the pool first, the delivery runs
-    // on main inside that join (join progress), and only after the join
-    // does the cascade enter Kid's drain and reclaim, so when Kid reads
-    // the decision its reclaim is neither owed nor claimed.
-    (
-        "rd_restart_during_teardown.hl",
-        "C42",
-        &[
-            "count: Kid.Restart has 1 subjects, owes 0",
-            "count: Kid.Birth has 2 subjects, owes 1",
-            "count: Kid.Run has 2 subjects, owes 1",
         ],
     ),
     // Join progress (C36) left with L5's fourth part: the late failure
@@ -1961,10 +1945,6 @@ const SPINE_KNOWN_OPEN: &[(&str, &str, &str)] = &[
         "C42: the producer holds a held failure's restart on PoolRun, the resume performs it at settle"),
     ("l01_neg_same_pool_held.hl", "Late@Settle recovery: emitted [Resume Restart], the plan owes []",
         "C42: the producer holds a held failure's restart on PoolRun, the resume performs it at settle"),
-    // Restart during drain (RD): refused under an owner's teardown is
-    // known open.
-    ("rd_restart_during_teardown.hl", "Kid@PoolRun recovery: emitted [Restart], the plan owes []",
-        "C42: a restart asked for under the owner's teardown is performed"),
 ];
 
 /// The emitted step sequence of every instance a run of `file` built, per

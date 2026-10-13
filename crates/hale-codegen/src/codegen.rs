@@ -294,15 +294,12 @@ pub(crate) struct BceLoop {
 
 /// Does this form slot retire its cells onto its locus's arena pending
 /// list, for the activation boundary to flush (anchor retirement)? A
-/// `sync = none` / `serialized` `@form(hashmap)` of record cells, and a
+/// `@form(hashmap)` of record cells (any discipline), and a
 /// `@form(lru_cache)` (whose put, eviction and remove retire the same
 /// way).
 pub(crate) fn slot_retires_cells_deferred(sl: &CapacitySlotLayout) -> bool {
     match sl.form {
-        Some(SlotForm::Hashmap) => {
-            matches!(sl.sync_mode, SyncMode::None | SyncMode::Serialized)
-                && matches!(sl.elem_ty, CodegenTy::TypeRef(_))
-        }
+        Some(SlotForm::Hashmap) => matches!(sl.elem_ty, CodegenTy::TypeRef(_)),
         Some(SlotForm::LruCache) => matches!(sl.elem_ty, CodegenTy::TypeRef(_)),
         _ => false,
     }
@@ -1383,6 +1380,24 @@ pub fn build_resolved(
             bus_devirt_direct_subs.insert(s.subject.clone(), s.subscribers.clone());
         }
     }
+    // One publisher's order at a direct publish: a direct subject's
+    // handlers are quiet (they change their own locus and nothing else),
+    // so calling one ahead of a cell still queued is observable only when
+    // that cell is for the same subscriber. A locus that subscribes to a
+    // subject the plan does not lower direct can have such a cell; a
+    // direct subject with one among its subscribers checks this thread's
+    // queue first (`lotus_local_queued`), the rest bake the call alone.
+    let queued_subscribers: std::collections::BTreeSet<&str> = plan
+        .subjects
+        .iter()
+        .filter(|s| s.flavor != hale_model::dispatch_plan::DispatchFlavor::StaticDirect)
+        .flat_map(|s| s.subscribers.iter().map(|(locus, _)| locus.as_str()))
+        .collect();
+    let bus_devirt_direct_ordered: std::collections::BTreeSet<String> = bus_devirt_direct_subs
+        .iter()
+        .filter(|(_, subs)| subs.iter().any(|(locus, _)| queued_subscribers.contains(locus.as_str())))
+        .map(|(subject, _)| subject.clone())
+        .collect();
 
     // Interest-based ownership, artifacts #2 / #2b / #3: the bubble
     // plans (`hale_types::ownership_graph::BubblePlans`), projected in
@@ -1559,6 +1574,7 @@ pub fn build_resolved(
         bus_devirt_ids,
         bus_devirt_direct,
         bus_devirt_direct_subs,
+        bus_devirt_direct_ordered,
         ownership_bubble_plan: bubble.singleton,
         ownership_bubble_nonsingleton_plan: bubble.nonsingleton,
         ownership_forwarding_sets: bubble.forwarding,
@@ -1581,6 +1597,8 @@ pub fn build_resolved(
         main_frame_depth: usize::MAX,
         main_dissolve_frame: None,
         main_test_fail_bb: None,
+        test_unwind_used: false,
+        unwind_fns: BTreeMap::new(),
         current_arena_override: None,
         current_user_fn_caller_arena: None,
         current_user_fn_arena: None,
@@ -2122,6 +2140,7 @@ pub fn build_resolved(
             &cx.wasm_exports,
             &options.csrc_files,
             &options.link_libs,
+            module_references_ed25519(&cx.module),
         )?;
         let _ = std::fs::remove_file(&obj_path);
         return Ok(());
@@ -2337,6 +2356,13 @@ pub fn build_resolved(
     } else {
         Vec::new()
     };
+    // Monocypher's Ed25519 and its glue: likewise, only into a program
+    // that reaches `lotus_ed25519_*` (`std::crypto::ed25519_*`).
+    let ed25519_objs = if module_references_ed25519(&cx.module) {
+        crate::ed25519_runtime::ed25519_objects(options, &["clang".to_string()], "", &rt_cflags)?
+    } else {
+        Vec::new()
+    };
     let mut clang = Command::new("clang");
     clang
         .arg(&main_input)
@@ -2345,7 +2371,8 @@ pub fn build_resolved(
         .arg(&shm_ring_o)
         .arg(&compress_o)
         .arg(&obs_o)
-        .args(&h2_objs);
+        .args(&h2_objs)
+        .args(&ed25519_objs);
     if lto_active {
         // Full-LTO link: -flto pulls the Hale bitcode + the runtime
         // bitcode TUs through the LTO backend at -O3, inlining the arena
@@ -2838,6 +2865,9 @@ fn link_cross(
     if module_references_h2(module) {
         rt_objs.extend(crate::h2_runtime::h2_objects(options, &cc, &cc_version, &rt_cflags)?);
     }
+    if module_references_ed25519(module) {
+        rt_objs.extend(crate::ed25519_runtime::ed25519_objects(options, &cc, &cc_version, &rt_cflags)?);
+    }
 
     let ts_shim = locate_cross_ts_shim(target, &sysroot, options);
     if ts_shim.is_none() && module_references_ts_shim(module) {
@@ -2929,6 +2959,9 @@ fn link_wasm(
     // `[ffi] link` names system dynamic libraries. There is no such
     // thing on wasm, so this is rejected rather than ignored.
     link_libs: &[String],
+    // The program reaches `lotus_ed25519_*`: Monocypher's units and their
+    // glue are compiled for wasm32 and linked (they call no libc).
+    ed25519: bool,
 ) -> Result<(), CodegenError> {
     let mkerr = |m: String| CodegenError::Link(m);
     // Unique temp dir for the staged runtime sources.
@@ -3026,6 +3059,16 @@ fn link_wasm(
             ))
         })?;
         csrc_objs.push(o);
+    }
+    if ed25519 {
+        for (stem, source) in crate::ed25519_runtime::units() {
+            let src = dir.join(format!("{stem}.c"));
+            let o = dir.join(format!("{stem}.o"));
+            std::fs::write(&src, source)
+                .map_err(|e| mkerr(format!("stage {stem} for wasm32: {e}")))?;
+            cc(&src, &o, &[])?;
+            csrc_objs.push(o);
+        }
     }
 
     let mut cmd = Command::new(&wasm_ld);
@@ -3198,6 +3241,26 @@ if (typeof process !== "undefined" && process.versions && process.versions.node)
 /// unoptimized build (`LOTUS_ASAN=1` skips the pipeline) keeps the
 /// dead bodies and therefore answers yes; that is also correct,
 /// since its object really does carry the undefined symbols.
+/// Whether anything still calls a `lotus_ed25519_*` symbol: the link then
+/// needs Monocypher's objects (`ed25519_runtime`). Asked like
+/// `module_references_h2`.
+fn module_references_ed25519(module: &inkwell::module::Module<'_>) -> bool {
+    use inkwell::values::BasicValue;
+    let mut f = module.get_first_function();
+    while let Some(func) = f {
+        let is_ed_symbol = func
+            .get_name()
+            .to_str()
+            .map(crate::ed25519_runtime::is_ed25519_symbol)
+            .unwrap_or(false);
+        if is_ed_symbol && func.as_global_value().get_first_use().is_some() {
+            return true;
+        }
+        f = func.get_next_function();
+    }
+    false
+}
+
 fn module_references_h2(module: &inkwell::module::Module<'_>) -> bool {
     use inkwell::values::BasicValue;
     let mut f = module.get_first_function();
@@ -3705,6 +3768,11 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// constant). Empty under `LOTUS_NO_BUS_DEVIRT=1`.
     pub(crate) bus_devirt_direct_subs:
         std::collections::BTreeMap<String, Vec<(String, String)>>,
+    /// The `bus_devirt_direct` subjects with a subscriber locus that also
+    /// subscribes to a subject the plan does not lower direct: a cell for
+    /// it may wait on the publishing thread's queue, so their baked call
+    /// first checks `lotus_local_queued` (one publisher's order).
+    pub(crate) bus_devirt_direct_ordered: std::collections::BTreeSet<String>,
     /// Interest-based ownership, artifact #2: singleton-owner,
     /// same-tower bubbling. Keyed by `(enclosing_locus, child_ty)` —
     /// the only key the `OwnershipGraph` resolution depends on — the
@@ -3877,6 +3945,17 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// `main`, filled with main's teardown + `ret i32 1` once the
     /// body has been lowered.
     main_test_fail_bb: Option<BasicBlock<'ctx>>,
+    /// A `std::test` assertion outside `fn main`'s own frame was lowered:
+    /// its failure tears the tree down through the main thread's unwind
+    /// registry (`locus/unwind.rs`), whose upkeep is emitted behind the
+    /// private `lotus.test_unwind` flag this decides at the end of
+    /// lowering.
+    pub(crate) test_unwind_used: bool,
+    /// The teardown each registered instance's record names, by its
+    /// declaration and whether it is pinned: a private function-pointer
+    /// global (`lotus.unwind_fn.<L>`) the end of lowering fills with a
+    /// synthesized `__unwind_<L>` when the registry is in use.
+    pub(crate) unwind_fns: BTreeMap<(String, bool), inkwell::values::GlobalValue<'ctx>>,
     /// When set, `arena_alloc` routes through this arena pointer
     /// instead of `current_self`'s arena field or the program
     /// global. Used during locus-instantiation field init so
@@ -5936,13 +6015,17 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     ///   teardown (pools joined, loci dissolved — so a child the
     ///   fixture spawned is reaped and scratch the fixture owns is
     ///   removed by its owner's `dissolve()`) and returns exit code 1.
-    /// - anywhere else — a helper fn, a locus method, a nested
-    ///   `on_failure` frame — `exit(1)` on the spot, exactly the
-    ///   pre-#717 behaviour. Those contexts have no main-teardown
-    ///   spine to branch to, and this is not general unwinding.
+    /// - anywhere else — a helper fn, a locus method, a `run()`, a
+    ///   handler, a nested `on_failure` frame — `lotus_test_fail_unwind`:
+    ///   on the main thread it tears down everything main's teardown
+    ///   would reach, from the main thread's unwind registry
+    ///   (`locus/unwind.rs`), and exits 1 without returning; on another
+    ///   thread it raises the drain and asks main to do the same at its
+    ///   next drain point, and returns (the body goes on, its later
+    ///   assertions no-ops), as it does while that teardown runs.
     ///
     /// Either way the first failure stops the run: nothing after it
-    /// executes, and the failure's first line is unchanged.
+    /// executes on main, and the failure's first line is unchanged.
     fn emit_test_assert_failure_check(
         &mut self,
     ) -> Result<(), CodegenError> {
@@ -5985,28 +6068,29 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 }
             }
         } else {
-            let bb =
-                self.context.append_basic_block(func, "test.fail.exit");
+            self.test_unwind_used = true;
+            self.context.append_basic_block(func, "test.fail.unwind")
+        };
+        let unwinds = !(self.in_main && self.deferred_dissolves.len() == self.main_frame_depth);
+        let ok_bb =
+            self.context.append_basic_block(func, "test.assert.ok");
+        if unwinds {
             let resume = self.builder.get_insert_block();
-            self.builder.position_at_end(bb);
-            let exit_fn = self
+            self.builder.position_at_end(bail_bb);
+            let unwind = self
                 .module
-                .get_function("exit")
-                .expect("exit declared in declare_builtins");
-            let one = self.context.i32_type().const_int(1, false);
+                .get_function("lotus_test_fail_unwind")
+                .expect("lotus_test_fail_unwind declared");
             self.builder
-                .build_call(exit_fn, &[one.into()], "test.fail.exit.call")
+                .build_call(unwind, &[], "test.fail.unwind.call")
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
             self.builder
-                .build_unreachable()
+                .build_unconditional_branch(ok_bb)
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
             if let Some(r) = resume {
                 self.builder.position_at_end(r);
             }
-            bb
-        };
-        let ok_bb =
-            self.context.append_basic_block(func, "test.assert.ok");
+        }
         self.builder
             .build_conditional_branch(is_fail, bail_bb, ok_bb)
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
@@ -6207,6 +6291,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         self.lc_spine = lc_outer;
         self.emit_arena_destroy()?;
         self.emit_bus_queue_destroy()?;
+        // An assertion that failed on another thread, whose teardown
+        // main reached an exit before running: the run still fails.
+        let code = self.emit_unwind_exit_code(code)?;
         self.builder.build_return(Some(&code)).map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         Ok(())
     }
@@ -6249,11 +6336,39 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 }
                 ObligationKind::WaitAbort if self.cells.emits(Obligation::WaitAbort)? => self.emit_bus_wait_abort_all()?,
                 ObligationKind::ReaderStop if self.cells.emits(Obligation::ReaderStop)? => self.emit_shm_readers_stop()?,
+                ObligationKind::TreeDrain if self.cells.emits(Obligation::TreeDrain)? => self.emit_tree_drain_raise()?,
                 // Omitted by the target's cells, elided, or no runtime
                 // call (the join's progress).
                 _ => {}
             }
         }
+        Ok(())
+    }
+
+    /// A main locus's tree drain (lifecycle line 15), the first step of its
+    /// teardown's head: once its `run()` has returned, every locus of its
+    /// tree reads `self.draining` as true, so a child's `run()` on a pinned
+    /// thread or a pool that watches it returns and the joins after it
+    /// complete (`lotus_tree_drain_raise`).
+    pub(crate) fn emit_tree_drain_raise(&mut self) -> Result<(), CodegenError> {
+        let f = self.module.get_function("lotus_tree_drain_raise").expect("lotus_tree_drain_raise declared");
+        self.builder
+            .build_call(f, &[], "tree.drain.raise")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        Ok(())
+    }
+
+    /// The tree drain's end, once the main locus that raised it is torn
+    /// down: a main locus built after it starts undrained
+    /// (`lotus_tree_drain_end`; a signal's drain stays up).
+    pub(crate) fn emit_tree_drain_end(&mut self) -> Result<(), CodegenError> {
+        if !self.cells.emits(Obligation::TreeDrain)? {
+            return Ok(());
+        }
+        let f = self.module.get_function("lotus_tree_drain_end").expect("lotus_tree_drain_end declared");
+        self.builder
+            .build_call(f, &[], "tree.drain.end")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         Ok(())
     }
 
@@ -6796,6 +6911,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 .build_unconditional_branch(after_bb)
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
             self.builder.position_at_end(process_bb);
+            // Its own teardown begins: a failed assertion no longer owes
+            // it (`locus/unwind.rs`).
+            self.emit_unwind_pop(self_slot)?;
             // GH #1148: the MAIN locus's deferred teardown joins the
             // cooperative pools first, as its eager dissolve does
             // (`lower_locus_instantiation`, 2026-06-01) and as fn main's
@@ -6862,6 +6980,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // — the single teardown chokepoint — so every dissolve
             // path picks it up, not just this one.)
             self.emit_locus_arena_destroy(&info, self_ptr, &locus_name)?;
+            // The main locus's tree is gone: its drain ends (line 15).
+            if is_main_entry {
+                self.emit_tree_drain_end()?;
+            }
             // m52: drain again after each dissolve. The dissolve
             // method may publish — those cells enqueue for
             // still-alive subscribers later in the reverse-iter
@@ -7350,7 +7472,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         .build_call(dissolve_fn, &[self_arg.into()], &format!("{}.reclaim.dissolve", locus_name))
                         .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
                 }
-                Ok(())
+                cx.emit_lru_evict_remaining(&info, self_arg, locus_name)
             })?;
             // Reclaim accept'd children BEFORE this locus's own fields
             // go: a child may borrow a parent's capacity slot
@@ -9354,6 +9476,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         self.main_frame_depth = self.deferred_dissolves.len();
         self.main_dissolve_frame = None;
         self.main_test_fail_bb = None;
+        // A failed assertion outside this frame tears down from the
+        // unwind registry: name its head and main's thread (behind the
+        // registry's flag, `locus/unwind.rs`).
+        self.emit_unwind_set_head()?;
 
         // m77: pull argc/argv off main's params and hand them to
         // the C-runtime stash so std::env::args_count / arg /
@@ -9961,6 +10087,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 )));
             }
         }
+        // The unwind registry's teardowns, once every body has lowered
+        // and whether an assertion outside main's frame was lowered is
+        // known (`locus/unwind.rs`); before the contract teardowns, whose
+        // table they may add to.
+        self.finish_unwind_registry()?;
         // C32: the contract teardowns the bodies recorded, before the
         // drain observers are counted (their drains are some).
         self.synthesize_contract_teardowns()?;
@@ -10691,6 +10822,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // prelude transport, so the post-destroy struct recycling
         // in `emit_locus_arena_destroy` is a no-op for it.
         let slot = self.defer_dissolve_slot(self_ptr, locus_name)?;
+        self.emit_unwind_push(slot, locus_name, None)?;
         match self.deferred_dissolves.last_mut() {
             Some(frame) => {
                 frame.push((slot, locus_name.to_string(), None))
@@ -11199,6 +11331,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let codec_self_ptr = self_val.into_pointer_value();
         let codec_slot =
             self.defer_dissolve_slot(codec_self_ptr, &locus.name)?;
+        self.emit_unwind_push(codec_slot, &locus.name, None)?;
         match self.deferred_dissolves.last_mut() {
             Some(frame) => {
                 frame.push((codec_slot, locus.name.clone(), None))
@@ -16162,7 +16295,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
 
     /// A rewritten send can run in a helper reached during birth. Preserve
     /// its exact receiver while that receiver's readiness window is open,
-    /// including payloads held in variables; otherwise keep the direct call.
+    /// including payloads held in variables, or while a cell this thread
+    /// sent earlier still waits on its own queue (one publisher's order);
+    /// otherwise keep the direct call.
     fn lower_ready_publish_call(
         &mut self,
         id: NodeId,
@@ -16178,7 +16313,15 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let value = args.first().expect("a rewritten send has its payload argument");
         let func = self.builder.get_insert_block().and_then(|b| b.get_parent())
             .expect("a publish is inside a function");
-        let held = self.emit_any_subscriber_unready()?;
+        // One publisher's order: while a cell this thread sent earlier
+        // waits on its own queue, the direct call would overtake it, so
+        // the send is queued to its receiver behind it.
+        let unready_any = self.emit_any_subscriber_unready()?;
+        let queued = self.emit_local_queued()?;
+        let held = self
+            .builder
+            .build_or(unready_any, queued, "publish.held.or_queued")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         let parked = self.context.append_basic_block(func, "publish.unready");
         let direct = self.context.append_basic_block(func, "publish.ready");
         let join = self.context.append_basic_block(func, "publish.ready.join");
@@ -16198,6 +16341,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .map_err(e)?.try_as_basic_value().left().expect("is_unready returns i32").into_int_value();
         let unready = self.builder.build_int_compare(inkwell::IntPredicate::NE, unready,
             self.context.i32_type().const_zero(), "publish.receiver.held").map_err(e)?;
+        let unready = self.builder.build_or(unready, queued, "publish.receiver.held.or_queued").map_err(e)?;
         self.builder.build_conditional_branch(unready, parked, direct).map_err(e)?;
         self.builder.position_at_end(parked);
         self.lower_send(&subject, value, None, scope, Some(receiver))?;
@@ -17645,6 +17789,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         // dissolved the loop bindings' uninitialized
                         // allocas.
                         self.null_init_entry_ptr_slot(alloca)?;
+                        self.emit_unwind_push(alloca, &lname, None)?;
                         self.deferred_dissolves
                             .last_mut()
                             .expect("checked non-empty")
@@ -18287,6 +18432,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 // publishers mid-program. No-op on cooperative
                 // threads (TLS is null).
                 self.emit_pinned_mailbox_drain_pending()?;
+                // A failed assertion another thread raised: main tears
+                // down here (`locus/unwind.rs`).
+                self.emit_unwind_poll()?;
                 Ok(BlockEnd::Open)
             }
             Stmt::Terminate(_) => {
@@ -19198,6 +19346,30 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         }
     }
 
+    /// Call the `f64` overload of an LLVM float intrinsic
+    /// (`llvm.minimum`, `llvm.maximum`, `llvm.fabs`) on `args`.
+    fn call_f64_intrinsic(
+        &mut self,
+        intrinsic: &str,
+        args: &[inkwell::values::FloatValue<'ctx>],
+        label: &str,
+    ) -> Result<inkwell::values::FloatValue<'ctx>, CodegenError> {
+        let f64_t = self.context.f64_type();
+        let decl = inkwell::intrinsics::Intrinsic::find(intrinsic)
+            .and_then(|i| i.get_declaration(&self.module, &[f64_t.into()]))
+            .ok_or_else(|| CodegenError::LlvmEmit(format!("no `{}` intrinsic", intrinsic)))?;
+        let call_args: Vec<inkwell::values::BasicMetadataValueEnum<'ctx>> =
+            args.iter().map(|a| (*a).into()).collect();
+        let call = self
+            .builder
+            .build_call(decl, &call_args, label)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        call.try_as_basic_value()
+            .left()
+            .map(|v| v.into_float_value())
+            .ok_or_else(|| CodegenError::LlvmEmit(format!("`{}` returned no value", intrinsic)))
+    }
+
     /// m38: lower min(a, b) / max(a, b) / abs(x). All work
     /// across the four numeric types (Int / Duration via
     /// signed integer ops, Float / Decimal via float ops).
@@ -19252,25 +19424,24 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 Ok((v, Self::builtin_result(sig, &at)))
             }
             CodegenTy::Float => {
-                let pred = match name {
-                    "min" => inkwell::FloatPredicate::OLT,
-                    "max" => inkwell::FloatPredicate::OGT,
+                // IEEE 754-2019 `minimum` / `maximum`: a NaN operand
+                // makes the result NaN whichever side it is on, and
+                // -0.0 orders below 0.0. A compare + select (the old
+                // lowering) answered `min(nan, 1.0)` with 1.0 and
+                // `min(1.0, nan)` with NaN. The intrinsics lower
+                // inline — `f64.min` / `f64.max` on wasm32, a
+                // compare sequence on x86-64 — with no libm symbol.
+                let intrinsic = match name {
+                    "min" => "llvm.minimum",
+                    "max" => "llvm.maximum",
                     _ => unreachable!(),
                 };
-                let cmp = self
-                    .builder
-                    .build_float_compare(
-                        pred,
-                        av.into_float_value(),
-                        bv.into_float_value(),
-                        &format!("{}.fcmp", name),
-                    )
-                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                let v = self
-                    .builder
-                    .build_select(cmp, av, bv, &format!("{}.sel", name))
-                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                Ok((v, Self::builtin_result(sig, &at)))
+                let v = self.call_f64_intrinsic(
+                    intrinsic,
+                    &[av.into_float_value(), bv.into_float_value()],
+                    name,
+                )?;
+                Ok((v.into(), Self::builtin_result(sig, &at)))
             }
             other => Err(CodegenError::Unsupported(format!(
                 "`{}` not supported for type {:?}",
@@ -19317,26 +19488,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 Ok((chosen, Self::builtin_result(Self::builtin_sig("abs"), ty)))
             }
             CodegenTy::Float => {
-                let fv = v.into_float_value();
-                let neg = self
-                    .builder
-                    .build_float_neg(fv, "abs.fneg")
-                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                let zero = self.context.f64_type().const_float(0.0);
-                let is_neg = self
-                    .builder
-                    .build_float_compare(
-                        inkwell::FloatPredicate::OLT,
-                        fv,
-                        zero,
-                        "abs.is_neg",
-                    )
-                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                let chosen = self
-                    .builder
-                    .build_select(is_neg, neg.into(), v, "abs.sel")
-                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                Ok((chosen, Self::builtin_result(Self::builtin_sig("abs"), ty)))
+                // `llvm.fabs` clears the sign bit, so `abs(-0.0)` is
+                // 0.0 (a `< 0.0` compare + select kept -0.0) and a NaN
+                // stays NaN. Inline everywhere: `f64.abs` on wasm32.
+                let r = self.call_f64_intrinsic("llvm.fabs", &[v.into_float_value()], "abs")?;
+                Ok((r.into(), Self::builtin_result(Self::builtin_sig("abs"), ty)))
             }
             other => Err(CodegenError::Unsupported(format!(
                 "`abs` not supported for type {:?}",
@@ -21704,7 +21860,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // Without it, enabling the writer's retirement would turn
         // the old leak into a use-after-free the moment an
         // iteration overlapped a concurrent set.
-        let synced_clone_reads = slot.sync_mode == SyncMode::Serialized
+        let synced_clone_reads = slot.sync_mode != SyncMode::None
             && self.hashmap_cell_owns_blocks(&cell_info.fields);
         let count = if synced_clone_reads {
             let dest = self.current_arena_ptr()?;
@@ -23505,6 +23661,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                             .map_err(|e| {
                                 CodegenError::LlvmEmit(e.to_string())
                             })?;
+                        self.emit_unwind_push(slot, &lname, None)?;
                         self.deferred_dissolves
                             .last_mut()
                             .expect("checked non-empty")
@@ -25459,8 +25616,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 let l = lv.into_float_value();
                 let r = rv.into_float_value();
                 let pred = match op {
+                    // IEEE 754: `==` and the orderings are false when
+                    // either side is NaN (ordered predicates); `!=` is
+                    // their negation, so it is TRUE then — the
+                    // unordered `une`. `one` (ordered not-equal)
+                    // answered `nan != 1.0` with false.
                     BinOp::Eq => FP::OEQ,
-                    BinOp::NotEq => FP::ONE,
+                    BinOp::NotEq => FP::UNE,
                     BinOp::Lt => FP::OLT,
                     BinOp::Gt => FP::OGT,
                     BinOp::LtEq => FP::OLE,
@@ -26516,6 +26678,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             "__test_assert",
             "__test_assert_eq_int",
             "__test_assert_eq_str",
+            "__test_assert_near",
         ];
         // The bodies that return no value (m85's response writer, m87's
         // assertions): a value position has no arm for them.
@@ -26524,6 +26687,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             "__test_assert",
             "__test_assert_eq_int",
             "__test_assert_eq_str",
+            "__test_assert_near",
         ];
         // m87: each `std::test` assertion prints a diagnostic and records
         // the failure (GH #717 — it used to exit(1) from inside), no-op
@@ -26531,8 +26695,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // exit 0 on pass; the `emit_test_assert_failure_check` call
         // after each one is what turns a recorded failure into a
         // non-zero exit, through main's teardown where there is one.
-        const ASSERTION_BODIES: &[&str] =
-            &["__test_assert", "__test_assert_eq_int", "__test_assert_eq_str"];
+        const ASSERTION_BODIES: &[&str] = &[
+            "__test_assert",
+            "__test_assert_eq_int",
+            "__test_assert_eq_str",
+            "__test_assert_near",
+        ];
         match pos {
             StdCallPos::Statement if STATEMENT_BODIES.contains(&body) => {
                 let _ = self.lower_user_fn_call(body, args, scope)?;
@@ -26799,6 +26967,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             },
             Id::DecimalToFloat => self.lower_std_decimal_to_float(args, scope),
             Id::DecimalFormat => self.lower_std_decimal_format(args, scope),
+            Id::DecimalFromInt => self.lower_std_decimal_from_int(args, scope),
             // 2026-06-13 — test-time gate counters (#7): read-only
             // views over the runtime's heap-alloc / I/O-syscall
             // counts for steady-state "did N allocs / syscalls"
@@ -26915,6 +27084,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             }
             Id::StrIndexOf => {
                 self.lower_std_str_index_of(args, scope)
+            }
+            Id::StrIndexOfFrom => {
+                self.lower_std_str_index_of_from(args, scope)
             }
             Id::StrJoin => self.lower_std_str_join(args, scope),
             // #353: UTF-8 code-point decoding. Byte-oriented String
@@ -27231,6 +27403,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             Id::IoTcpIoErrorKindRaw => {
                 self.lower_std_io_tcp_io_error_kind(args, scope)
             }
+            Id::IoTcpIoErrorDetailRaw => {
+                self.lower_std_io_tcp_io_error_detail(args, scope)
+            }
             // 2026-05-26 — named socket-option constants. Each
             // resolves to a zero-arg call into the matching C
             // getter, which returns the platform's numeric
@@ -27334,6 +27509,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             }
             Id::CryptoEcdsaP256Verify => {
                 self.lower_std_crypto_ecdsa_p256_verify(args, scope)
+            }
+            Id::CryptoEd25519PublicKeyRaw => {
+                self.lower_std_crypto_ed25519_public_key(args, scope)
+            }
+            Id::CryptoEd25519Verify => {
+                self.lower_std_crypto_ed25519_verify(args, scope)
             }
             // m96: std::ts::* tree-sitter substrate. A statement
             // reaches these too, its value dropped, for
@@ -27632,6 +27813,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             | Id::CompressUnzstd
             | Id::CompressZstd
             | Id::CryptoEcdsaP256Sign
+            | Id::CryptoEd25519Sign
+            | Id::DecimalFromFloat
             | Id::IoFileOpenRaw
             | Id::IoFileSeekRaw
             | Id::IoFileWriteBytesRaw
@@ -27874,6 +28057,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             Id::CryptoEcdsaP256Sign => {
                 self.lower_std_crypto_ecdsa_p256_sign_fallible(args, scope)
             }
+            // Ed25519 (RFC 8032) → fallible(CryptoError) on a malformed
+            // secret key.
+            Id::CryptoEd25519Sign => self.lower_std_crypto_ed25519_sign_fallible(args, scope),
+            // A Float as the nearest Decimal; NaN, an infinity or a
+            // magnitude past the i128 is its ParseError.
+            Id::DecimalFromFloat => self.lower_std_decimal_from_float_fallible(args, scope),
             // Per-path wrappers for the fs/tcp surfaces flipped to
             // `fallible(IoError)`. Each helper evaluates args, calls
             // the underlying C primitive, and feeds the sentinel
@@ -28063,12 +28252,15 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             | Id::BytesSlice
             | Id::CryptoCrc32
             | Id::CryptoEcdsaP256Verify
+            | Id::CryptoEd25519PublicKeyRaw
+            | Id::CryptoEd25519Verify
             | Id::CryptoHmacSha256
             | Id::CryptoHmacSha512
             | Id::CryptoSha1
             | Id::CryptoSha256
             | Id::CryptoSha512
             | Id::DecimalFormat
+            | Id::DecimalFromInt
             | Id::DecimalToFloat
             | Id::DiagHeapAllocCount
             | Id::DiagSyscallCount
@@ -28142,6 +28334,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             | Id::IoTcpCloseFdRaw
             | Id::IoTcpConnectRaw
             | Id::IoTcpIoErrorKindRaw
+            | Id::IoTcpIoErrorDetailRaw
             | Id::IoTcpLastIoStatusRaw
             | Id::IoTcpLastRecvKernelNs
             | Id::IoTcpLastRecvUserNs
@@ -28237,6 +28430,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             | Id::StrEndsWith
             | Id::StrFromBytes
             | Id::StrIndexOf
+            | Id::StrIndexOfFrom
             | Id::StrJoin
             | Id::StrLower
             | Id::StrPadLeft
@@ -34185,20 +34379,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // (lotus_bytes_assign_in_place), and a locus whose only
             // retiring field was Bytes never flushed — its retired
             // blocks were never reusable.
-            let has_retiring_self_fields =
-                info.fields.values().any(|(_, fty)| match fty {
-                    CodegenTy::String | CodegenTy::Bytes => true,
-                    CodegenTy::TypeRef(tn) => self
-                        .user_types
-                        .get(tn)
-                        .map(|t| {
-                            t.fields.values().any(|(_, f)| {
-                                matches!(f, CodegenTy::String | CodegenTy::Bytes)
-                            })
-                        })
-                        .unwrap_or(false),
-                    _ => false,
-                });
+            // A record's nested blocks, a tuple's and an out-of-line
+            // array's retire too (lotus_self_field_retire_replaced),
+            // and so does a String a nested field-of-field store
+            // replaces (`self.outer.inner.s = v`).
+            let has_retiring_self_fields = info
+                .fields
+                .values()
+                .any(|(_, fty)| self.self_field_type_retires(fty));
             if !has_retiring_child && !has_retiring_self_fields {
                 return Ok(());
             }

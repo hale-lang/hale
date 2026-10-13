@@ -58,11 +58,14 @@ All of these live under `std::io::fs` and all are
 ## The error tells you what happened
 
 When a call fails, the `IoError` payload carries a `kind`
-(`String`), the raw `errno` (`Int`), and the `path` (`String`).
+(`String`), the raw `errno` (`Int`), the `path` (`String`), and a
+`detail` (`String`) — the platform's own message for the error,
+`"No such file or directory"`, for a log line or a person.
 `kind` is a stable tag derived from the OS error —
 `"not_found"`, `"permission_denied"`, `"already_exists"`,
 `"is_dir"`, and so on. So you can branch on the *kind* of
-failure without parsing error strings:
+failure without parsing error strings (the `detail` is for reading,
+not matching: its wording is the platform's):
 
 ```hale
 fn handle_io(e: IoError) -> String {

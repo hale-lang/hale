@@ -307,10 +307,6 @@ fn __api_json_digit(c: Int) -> Bool {
     return c >= 48 && c <= 57;
 }
 
-fn __api_json_hex(c: Int) -> Bool {
-    return (c >= 48 && c <= 57) || (c >= 65 && c <= 70) || (c >= 97 && c <= 102);
-}
-
 /// The index past the run of one or more digits at `i`, or -1.
 fn __api_json_run(t: String, i: Int) -> Int {
     let n = len(t);
@@ -381,7 +377,7 @@ fn __api_json_is_string(t: String) -> Bool {
                 if i + 5 >= last { return false; }
                 let mut k = 2;
                 while k <= 5 {
-                    if !__api_json_hex(std::str::byte_at_unchecked(t, i + k)) { return false; }
+                    if __std_hex_digit(std::str::byte_at_unchecked(t, i + k)) < 0 { return false; }
                     k = k + 1;
                 }
                 i = i + 6;
@@ -814,9 +810,11 @@ locus __StdApiExposure {
         self.settle_slot(slot, 1);
     }
     // Hand the oldest queued call of `slot` to its receiver, if the
-    // receiver is free and known.
+    // receiver is free and known, and the exposure is not draining: once
+    // the drain reaches it (a signal, or its tree's teardown), nothing new
+    // is handed over, and its shutdown refuses what is still queued.
     fn pump(slot: Int) {
-        if self.slot_busy[slot] != 0 { return; }
+        if self.slot_busy[slot] != 0 || self.draining { return; }
         let n = self.entries.len();
         let mut best = -1;
         let mut best_rid = 0;
@@ -1671,21 +1669,6 @@ type __StdApiHttpOut {
     headers: String = "";
 }
 
-fn __api_http_phrase(status: Int) -> String {
-    if status == 200 { return "OK"; }
-    if status == 202 { return "Accepted"; }
-    if status == 204 { return "No Content"; }
-    if status == 400 { return "Bad Request"; }
-    if status == 401 { return "Unauthorized"; }
-    if status == 403 { return "Forbidden"; }
-    if status == 405 { return "Method Not Allowed"; }
-    if status == 409 { return "Conflict"; }
-    if status == 422 { return "Unprocessable Entity"; }
-    if status == 429 { return "Too Many Requests"; }
-    if status == 503 { return "Service Unavailable"; }
-    return "Internal Server Error";
-}
-
 /// The status a refusal kind has (spec/api.md § Outcomes).
 fn __api_http_refusal_status(kind: String) -> Int {
     if kind == "malformed" { return 400; }
@@ -1796,7 +1779,7 @@ locus __StdApiHttpPeer {
     fn respond(status: Int, body: String, extra: String) {
         if self.fd < 0 { return; }
         // a write that fails closes this connection, and only this one
-        self.stream.send("HTTP/1.1 " + to_string(status) + " " + __api_http_phrase(status) + "\r\nContent-Type: application/json\r\nCache-Control: no-store\r\n" + extra + "Content-Length: " + to_string(len(body)) + "\r\nConnection: close\r\n\r\n" + body) or { self.open = false; };
+        self.stream.send("HTTP/1.1 " + to_string(status) + " " + __status_phrase(status) + "\r\nContent-Type: application/json\r\nCache-Control: no-store\r\n" + extra + "Content-Length: " + to_string(len(body)) + "\r\nConnection: close\r\n\r\n" + body) or { self.open = false; };
     }
     // Stop reading: the shutdown wakes the reader, which ends the connection.
     fn hangup() {

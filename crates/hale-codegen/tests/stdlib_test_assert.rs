@@ -166,6 +166,38 @@ fn assert_eq_str_diagnostic_includes_both_values() {
     );
 }
 
+/// `assert_near` out of tolerance: the message carries both values, the
+/// difference and the tolerance, and a NaN never passes.
+#[test]
+fn assert_near_diagnostic_includes_values_and_difference() {
+    let src = r#"
+        fn main() {
+            std::test::assert_near(1.5, 1.25, 0.125, "near mismatch");
+        }
+    "#;
+    let out = build_and_run("assert_near_fail", src);
+    assert!(!out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    for want in [
+        "ASSERTION FAILED: near mismatch",
+        "expected:   1.25",
+        "actual:     1.5",
+        "difference: 0.25 (tolerance 0.125)",
+    ] {
+        assert!(stdout.contains(want), "want {want:?}; got: {stdout:?}");
+    }
+
+    let src = r#"
+        fn main() {
+            std::test::assert_near(std::math::nan(), 1.0, 1000.0, "nan is never near");
+        }
+    "#;
+    let out = build_and_run("assert_near_nan", src);
+    assert!(!out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("ASSERTION FAILED: nan is never near"), "got: {stdout:?}");
+}
+
 #[test]
 fn first_failing_assertion_short_circuits() {
     // Multi-assertion test: only the first failure runs. The

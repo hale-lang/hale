@@ -179,8 +179,8 @@ fn the_replay_gate_refuses_what_it_refused() {
 fn api() {
     pinned(
         "api",
-        308,
-        310,
+        309,
+        311,
         "
         Api::definition_draft_handle  does={syscall,block,env,alloc}
         Api::definitions_read  does={syscall,block,env,alloc}

@@ -550,21 +550,45 @@ assertion. What happens next is fixed:
 3. **The process then exits non-zero** (code 1), so the exit-code
    contract above is unchanged.
 
-That is the whole mechanism. It is **not** exception unwinding: a
-failed assertion is not a value, not catchable, and does not
-propagate through arbitrary frames. Two consequences follow, and
-they are the contract, not accidents:
+**Outside `main`'s own frame** (2026-10-12) — inside a free `fn`, a
+locus method, a `run()`, a bus handler, an `on_failure` body — a
+failed assertion tears the tree down the same way, from where it
+failed:
 
-- A test that must release something — a subprocess it spawned,
-  scratch state it created, a socket, a lock file — releases it in
-  the `dissolve()` of a locus the test `let`-binds in `main`. That
-  is the supported cleanup route, and it cleans only what the test
-  owns. There is no runner-owned cleanup hook, and none is needed.
-- An assertion that fails *outside* `main`'s own frame — inside a
-  free `fn`, a locus method, an `on_failure` body — has no main
-  teardown to return through and still terminates the process
-  immediately with code 1. Put the assertions that guard owned
-  resources in `main`.
+1. **Nothing after it runs** on the main thread: the frames under it
+   are never resumed.
+2. **What `main`'s teardown would reach is torn down**: the drain is
+   raised (every `run()` that watches `self.draining` ends, a wait in
+   progress returns early); the head of `main`'s test-failure exit
+   runs (the ingress quiesce, the wait-abort, the pool join, the
+   reader stop); the pinned threads a frame holds are joined; then
+   every locus a body on the main thread holds — its `let`-bound and
+   frame-kept loci, the main locus and its fields' cascade, a
+   statement literal whose `run()` was under way — is drained and
+   dissolved, innermost first, `dissolve()` bodies and all.
+3. **The process exits 1.**
+
+The main thread keeps a registry of those instances for this: each is
+registered once it is built and removed where its own teardown
+begins, with its declaration's teardown, the deferred entry's spine.
+The compiler emits the registry's upkeep only in a program that has an
+assertion outside `main`'s frame. An assertion that fails on another
+thread — a pinned locus's, a pool's worker — raises the drain and asks
+`main` to tear down at its next park point (a sleep slice, a `yield`,
+a drain): the body that failed runs on to its end (its later
+assertions are no-ops), so the joins complete; and if `main` reaches
+an exit first, the exit code is still 1. Teardown of what another
+thread's own frames hold is that thread's lifecycle's, which the
+drain ends.
+
+It is still **not** exception unwinding: a failed assertion is not a
+value, not catchable, and runs no code of the frames it leaves but
+their loci's teardown. A test that must release something — a
+subprocess it spawned, scratch state it created, a socket, a lock
+file — releases it in the `dissolve()` of a locus the test owns, in
+`main` or below it. That is the supported cleanup route, and it
+cleans only what the test owns. There is no runner-owned cleanup
+hook, and none is needed.
 
 **Process kill is a separate case.** `SIGKILL` (and a hard crash)
 cannot be intercepted by anything: no `dissolve()` runs, no atexit
@@ -610,6 +634,7 @@ observation records.
 | `std::test::assert(cond, msg)` | sealed m87 |
 | `std::test::assert_eq_int(actual, expected, msg)` | sealed m87 |
 | `std::test::assert_eq_str(actual, expected, msg)` | sealed m87 |
+| `std::test::assert_near(actual, expected, tolerance, msg)` | shipped 2026-10-12 (Float within a tolerance) |
 | `assert_neq` / `assert_neq_int` / `assert_neq_str` | not shipped |
 | `assert_rejects(...)` (compile-time errors) | not shipped — needs compiler-level surface |
 | `assert_closure(name, tolerance)` | not shipped — needs closure-test introspection |

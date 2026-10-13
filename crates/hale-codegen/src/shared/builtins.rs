@@ -481,9 +481,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // the cell owns (String and Bytes fields, nested blocks)
         // into the CALLER's arena, inside the critical section that
         // read the cell, so the map's writer is free to retire its
-        // own blocks. Emitted only for a `sync = serialized` slot
-        // whose cell owns any — the plain entry points are
-        // unchanged.
+        // own blocks. Emitted only for a synced slot (`serialized`,
+        // `striped`, `lockfree`) whose cell owns any — the plain
+        // entry points are unchanged.
         let hashmap_get_cloned_ty = i32_t.fn_type(
             &[ptr_t.into(), ptr_t.into(), ptr_t.into(), ptr_t.into()],
             false,
@@ -499,6 +499,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         );
         self.module.add_function(
             "lotus_hashmap_value_at_cloned",
+            hashmap_value_at_cloned_ty,
+            None,
+        );
+        // key_at of such a slot with a String key: the key is copied
+        // into the caller's arena under the read's lock.
+        self.module.add_function(
+            "lotus_hashmap_key_at_cloned",
             hashmap_value_at_cloned_ty,
             None,
         );
@@ -660,6 +667,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             None,
         );
         self.module.add_function("lotus_lru_remove", lru_get_ty, None);
+        // declare i32 @lotus_lru_pop_lru(ptr c, ptr out_value): take the
+        // least-recently-used entry out, for the hook at dissolve.
+        self.module.add_function(
+            "lotus_lru_pop_lru",
+            i32_t.fn_type(&[ptr_t.into(), ptr_t.into()], false),
+            None,
+        );
         self.module.add_function(
             "lotus_lru_retire_value",
             void_t.fn_type(
@@ -741,6 +755,28 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         self.module.add_function(
             "lotus_str_field_replace_fixup",
             str_field_fixup_ty,
+            None,
+        );
+        // ... and its nested half: retire every block the replaced
+        // value reached that the new one does not (see lotus_arena.c).
+        // declare void @lotus_self_field_retire_replaced(ptr arena,
+        //     ptr old_snap, ptr new_block, ptr scrap, i64 scrap_size,
+        //     ptr desc, i64 n)
+        let retire_i64 = self.context.i64_type();
+        self.module.add_function(
+            "lotus_self_field_retire_replaced",
+            void_t.fn_type(
+                &[
+                    ptr_t.into(),
+                    ptr_t.into(),
+                    ptr_t.into(),
+                    ptr_t.into(),
+                    retire_i64.into(),
+                    ptr_t.into(),
+                    retire_i64.into(),
+                ],
+                false,
+            ),
             None,
         );
         // An on_failure handler never runs before its locus's params
@@ -1028,6 +1064,15 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .module
             .add_function("lotus_str_index_of", str_index_of_ty, None);
         self.mark_pure_read(str_index_of_fn);
+        // declare i64 @lotus_str_index_of_from(ptr s, ptr sub, i64 start)
+        let str_index_of_from_ty =
+            i64_t.fn_type(&[ptr_t.into(), ptr_t.into(), i64_t.into()], false);
+        let str_index_of_from_fn = self.module.add_function(
+            "lotus_str_index_of_from",
+            str_index_of_from_ty,
+            None,
+        );
+        self.mark_pure_read(str_index_of_from_fn);
 
         // m89: Bytes value primitives.
         // declare ptr @lotus_bytes_create(ptr arena, i64 len)
@@ -1248,6 +1293,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             self.context.void_type().fn_type(&[], false),
             None,
         );
+        // declare void @lotus_tree_drain_raise() / @lotus_tree_drain_end()
+        // — a main locus's tree drain (lifecycle line 15)
+        for name in ["lotus_tree_drain_raise", "lotus_tree_drain_end"] {
+            self.module.add_function(name, self.context.void_type().fn_type(&[], false), None);
+        }
         // Crumb batch-5 item 1 — async_io sleep park:
         // declare i64 @lotus_time_sleep_park_try(i64 ns)
         // 1 = slept via a timer-only coro park (async_io context);
@@ -1642,6 +1692,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             f64_t.fn_type(&[i64_t.into(), i64_t.into(), i64_t.into()], false);
         self.module
             .add_function("lotus_decimal_to_float", dec_to_float_ty, None);
+        // declare i64 @lotus_decimal_from_float(double x, ptr hi, ptr lo)
+        let dec_from_float_ty = i64_t.fn_type(
+            &[f64_t.into(), ptr_t.into(), ptr_t.into()],
+            false,
+        );
+        self.module
+            .add_function("lotus_decimal_from_float", dec_from_float_ty, None);
 
         // GH #230 item 2: fixed-places decimal formatting.
         // declare ptr @lotus_decimal_format(i64 hi, i64 lo, i64 scale, i64 places)
@@ -2445,6 +2502,20 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             i64_t.fn_type(&[], false),
             None,
         );
+        // A failed assertion outside main's frame tears the tree down
+        // through the main thread's unwind registry (`locus/unwind.rs`).
+        {
+            let ptr_t = self.context.ptr_type(AddressSpace::default());
+            self.module.add_function("lotus_test_fail_unwind", void_t.fn_type(&[], false), None);
+            self.module.add_function("lotus_unwind_set_head", void_t.fn_type(&[ptr_t.into()], false), None);
+            self.module.add_function(
+                "lotus_unwind_push",
+                void_t.fn_type(&[ptr_t.into(), ptr_t.into(), ptr_t.into()], false),
+                None,
+            );
+            self.module.add_function("lotus_unwind_pop_slot", void_t.fn_type(&[ptr_t.into()], false), None);
+            self.module.add_function("lotus_unwind_poll", void_t.fn_type(&[], false), None);
+        }
 
         // Wave B (bus-transport redesign): adapter-binding
         // registration. The runtime stores the (self, send_fn)
@@ -3486,6 +3557,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             ptr_t.fn_type(&[i64_t.into()], false),
             None,
         );
+        // declare ptr @lotus_io_error_detail(ptr arena, i64 errno)
+        self.module.add_function(
+            "lotus_io_error_detail",
+            ptr_t.fn_type(&[ptr_t.into(), i64_t.into()], false),
+            None,
+        );
         // declare i64 @lotus_tls_recv_into(i32 handle, ptr builder, i64 max_bytes)
         let tls_recv_into_ty = i64_t.fn_type(
             &[i32_t.into(), ptr_t.into(), i64_t.into()],
@@ -3750,6 +3827,26 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         self.module.add_function(
             "lotus_crypto_ecdsa_p256_verify",
             ecdsa_verify_ty,
+            None,
+        );
+        // Ed25519 (RFC 8032, Monocypher; `ed25519_runtime`): linked only
+        // into a program that still calls one of these after the pipeline.
+        // declare ptr @lotus_ed25519_public_key(ptr seed)
+        self.module.add_function(
+            "lotus_ed25519_public_key",
+            ptr_t.fn_type(&[ptr_t.into()], false),
+            None,
+        );
+        // declare ptr @lotus_ed25519_sign_or_null(ptr secret, ptr msg)
+        self.module.add_function(
+            "lotus_ed25519_sign_or_null",
+            ptr_t.fn_type(&[ptr_t.into(), ptr_t.into()], false),
+            None,
+        );
+        // declare i64 @lotus_ed25519_verify(ptr pub, ptr msg, ptr sig)
+        self.module.add_function(
+            "lotus_ed25519_verify",
+            i64_t.fn_type(&[ptr_t.into(), ptr_t.into(), ptr_t.into()], false),
             None,
         );
         // declare ptr @lotus_text_base64_encode(ptr bytes)

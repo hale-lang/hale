@@ -117,6 +117,67 @@ fn law_5_every_shape_has_a_codec_form() {
     );
 }
 
+/// A list crosses as a field of a record: `bounded[T; N]` and `[T; N]` of
+/// what a field carries are admitted; an unbounded `[T]`, a list of lists, a
+/// list of what the codec does not carry, and a request or response that is
+/// itself a list are refused, each named (spec/api.md § Codecs).
+#[test]
+fn law_5_a_list_is_carried_as_a_field_of_a_record() {
+    let lists = "
+type Item { id: Int; name: String; }
+type Page { items: bounded[Item; 8]; ids: [Int; 3]; }
+type Loose { items: [Item]; }
+type Nested { grid: bounded[[Int; 2]; 4]; }
+type Blobs { raws: bounded[Bytes; 2]; }
+locus Shelf {
+    fn page(p: Page) -> Page { return p; }
+    fn loose(p: Page) -> Loose { return Loose { items: [] }; }
+    fn nested(p: Page) -> Nested { return Nested { }; }
+    fn blobs(p: Page) -> Blobs { return Blobs { }; }
+    fn bare(p: Page) -> [Int; 3] { return p.ids; }
+}
+";
+    let rows = |api: &str| row_errors(&format!("{BASE}\n{lists}\n{api}"));
+    assert!(rows("api Shelves { rpc Shelf::page; }").is_empty(), "a bounded list and a fixed array are carried");
+    assert_eq!(
+        rows("api Shelves { rpc Shelf::loose; }"),
+        vec!["rpc `Shelf::loose`: its response `Loose` has a field `items: [Item]`, which the JSON codec does not carry"]
+    );
+    assert_eq!(
+        rows("api Shelves { rpc Shelf::nested; }"),
+        vec![
+            "rpc `Shelf::nested`: its response `Nested` has a field `grid: bounded[[Int; 2]; 4]`, which the JSON codec \
+             does not carry"
+        ]
+    );
+    assert_eq!(
+        rows("api Shelves { rpc Shelf::blobs; }"),
+        vec!["rpc `Shelf::blobs`: its response `Blobs` has a field `raws: bounded[Bytes; 2]`, which the JSON codec does not carry"]
+    );
+    assert_eq!(
+        rows("api Shelves { rpc Shelf::bare; }"),
+        vec![
+            "rpc `Shelf::bare`: its response is `[Int; 3]`, a list, which crosses as a field of a record: declare one \
+             (`type Page { items: [Int; 3]; }`)"
+        ]
+    );
+}
+
+/// A `Time` and a `Duration` are carried, as a field, as a list's element
+/// and as a whole request or response (spec/api.md § Codecs).
+#[test]
+fn law_5_an_instant_and_a_duration_are_carried() {
+    let times = "
+type Due = Time;
+type Stamp { at: Time; every: Duration; due: Due; seen: [Time; 2]; }
+locus Clock {
+    fn stamp(s: Stamp) -> Stamp { return s; }
+    fn now(d: Duration) -> Time { return std::time::current() + d; }
+}
+";
+    assert!(row_errors(&format!("{BASE}\n{times}\napi Clocks {{ rpc Clock::stamp; rpc Clock::now; }}")).is_empty());
+}
+
 /// Law 6 is a statement, not a refusal: the note `hale check --api`
 /// prints beside a member whose error type is `ClosureViolation`.
 #[test]

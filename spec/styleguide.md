@@ -99,12 +99,16 @@ the order you should reach for them:
    String/Bytes reassign that fits the existing buffer — all
    reuse existing storage, zero new bytes.
 3. **Replace and let it retire.** `self.f = Struct { ... }`
-   whole-value replace memcpys the struct bytes in place, and —
-   since v0.11.3 — *retires* the replaced String clones at the
-   method's activation boundary, recycling them on the next
-   store. Steady-state replace of a scalar/String struct holds
-   the arena flat, and so does a struct carrying `Bytes`. (Nested
-   compound fields aren't retired yet — see §7.)
+   whole-value replace memcpys the struct bytes in place, and
+   *retires* what only the replaced value reached at the method's
+   activation boundary, recycling it on the next store: its String
+   clones (since v0.11.3), its `Bytes`, and its nested records,
+   tuples and arrays with everything under them. Steady-state
+   replace of any struct holds the arena flat, and so does a tuple
+   or array field replaced whole. A nested block the new value
+   carries over from the field itself (`self.f = F { n: i, inner:
+   self.f.inner }`) is kept, not copied; one it takes from anywhere
+   else is copied, so a field never shares a block it will retire.
 4. **Bound the container.** `capacity` slots, `bounded[T; N]`,
    `@form(ring_buffer)` / `@form(lru_cache)` are cap-bounded by
    type.
@@ -858,9 +862,11 @@ C1's deferred-clear discipline makes them safe across frames.
 
 In-place scalar mutation (`self.state.px = v`) is
 allocation-free. Whole-struct replace (`self.state = State{...}`)
-is *correct* — the struct bytes memcpy in place and replaced
-String clones retire (v0.11.3) — but each store still pays an
-anchor-clone + retire per String field. On a certified-hot path
+is *correct* — the struct bytes memcpy in place and the replaced
+value's String clones, Bytes and nested blocks retire — but each
+store still pays an anchor-clone + retire per String field and per
+nested block, and a walk of the old and new values when the struct
+nests one. On a certified-hot path
 prefer in-place writes for the fields that changed; keep the
 replace when most fields genuinely change (construction-position
 init is legitimate now that retirement reclaims it).
@@ -875,10 +881,12 @@ per-frame path entirely — the `pond` client does this.
 
 `self.f = <String/Bytes>` reuses the existing buffer when the new
 value fits. Bounded-variance fields (timestamps, fixed headers,
-checksums) hit the memcpy path forever. Grow-paths clone (the
-abandoned String buffer retires; Bytes doesn't yet — §7), and
-oscillating lengths degrade capacity — genuinely variable-length
-hot fields belong in a reused `BytesBuilder` + view instead.
+checksums) hit the memcpy path forever. Any other length clones
+and retires the abandoned buffer, String or Bytes, for the next
+store to reuse (a String field's blocks come in size classes, so
+its memory stays bounded by its largest value) — but each such
+store still pays the clone, so genuinely variable-length hot
+fields belong in a reused `BytesBuilder` + view instead.
 **[convention]**
 
 ### S6. Pre-render once, fan out many
@@ -1150,7 +1158,8 @@ workaround knowing it's temporary), and sharp edges you step
 around (current limitations, no promise either way). Current as
 of v0.22.0 (2026-10-07); shipped-and-gone entries are removed on
 shipping — keyed String routing, match-as-expression, whole-struct
-replace reclamation, `err` in an `or fail` payload, `Duration`
+replace reclamation and its nested-compound fields, `err` in an `or
+fail` payload, `Duration`
 arithmetic, `return` in a lifecycle body, inline fixed-array
 payload fields, qualified `@form` cell types, an `Int` returned
 from a `-> Float` fn and an `Int` into a `Float` let or field all
@@ -1201,25 +1210,6 @@ absent thing means fighting the design, not waiting on it.
 
 Write the workaround knowing it's a placeholder.
 
-- **Nested-compound fields of a replaced struct don't retire**:
-  each replace leaves the old one in the arena (measured on v0.22.0,
-  ~6 MiB of resident growth over 200 000 replaces, where a
-  String-only struct holds flat). String leaves retire since
-  v0.11.3; Bytes fields of a self-field struct store and of a vec
-  element since GH #1033 / #1037; a replaced `@form(vec)` or
-  `@form(hashmap)` cell retires its whole value, nested records,
-  tuples, arrays and Bytes included (spec/forms.md, "Cell
-  reclamation"). Until then: nested compound fields of a self-field
-  struct in their own locus or flattened.
-- **`striped` / `lockfree` `@form` maps don't retire** replaced
-  cells — a churned String-bearing cell on those modes still
-  accumulates (~2.3 MiB over 200 000 replaces of 16 keys, on
-  each). (`sync = serialized` retires since 2026-08-03:
-  reads are owned snapshots cloned into the caller's arena, so
-  churned shared maps no longer need to stay single-pool. The
-  clone is per String field per read — a read-heavy hot path on
-  a String-bearing cell now pays it, so weigh serialized against
-  single-pool on read-dominated shapes.)
 - **Dynamic per-instance bus subjects** (the conversation-per-
   topic shape). Keyed routing covers the *bounded/known* key-set
   case — including String keys — but an unbounded,

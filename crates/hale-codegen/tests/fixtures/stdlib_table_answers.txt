@@ -96,6 +96,10 @@ ns std::crypto open_prefixes=[]
   crc32 pure
   ecdsa_p256_sign pure
   ecdsa_p256_verify pure
+  __ed25519_public_key pure
+  ed25519_keypair pure
+  ed25519_sign pure
+  ed25519_verify pure
   hmac_sha256 pure
   hmac_sha512 pure
   sha1 pure
@@ -109,6 +113,8 @@ ns std::ring open_prefixes=[]
   __spsc_set_tag_b syscall
 ns std::decimal open_prefixes=[]
   format pure
+  from_float pure
+  from_int pure
   to_float pure
 ns std::diag open_prefixes=[]
   heap_alloc_count syscall
@@ -131,6 +137,10 @@ ns std::http open_prefixes=[]
   query_param pure
   request syscall|block
   write_response syscall|block
+ns std::hex open_prefixes=[]
+  decode pure
+  digit pure
+  encode pure
 ns std::io::file open_prefixes=[]
   __at_eof syscall
   __close syscall
@@ -186,6 +196,7 @@ ns std::io::tcp open_prefixes=[]
   __close_fd syscall
   __connect syscall|block
   __io_error_kind pure
+  __io_error_detail pure
   __last_io_status pure
   __listen_socket syscall
   __parks pure
@@ -435,6 +446,7 @@ ns std::str open_prefixes=[]
   range_copy pure
   slice pure
   index_of pure
+  index_of_from pure
   contains pure
   split_into pure
   join pure
@@ -467,6 +479,7 @@ ns std::test open_prefixes=[]
   assert pure
   assert_eq_int pure
   assert_eq_str pure
+  assert_near pure
 ns std::text open_prefixes=[]
   is_alnum pure
   is_alpha pure
@@ -479,6 +492,10 @@ ns std::text::base64 open_prefixes=[]
   decode pure
   encode pure
   url_encode pure
+ns std::url open_prefixes=[]
+  decode pure
+  decode_query pure
+  encode pure
 ns std::time open_prefixes=[]
   parse_iso8601 pure
   can_parse_iso8601 pure
@@ -619,15 +636,21 @@ std::compress::gunzip | lookup=compress@2 | locus=false | effects=pure | sig=(By
 std::compress::gzip | lookup=compress@2 | locus=false | effects=pure | sig=(Bytes) -> Bytes ! IoError | ret_ty=? | or=(Bytes, IoError) | parks=false | holds=false | unknown=- | suggest=gzip
 std::compress::unzstd | lookup=compress@2 | locus=false | effects=pure | sig=(Bytes) -> Bytes ! IoError | ret_ty=? | or=(Bytes, IoError) | parks=false | holds=false | unknown=- | suggest=unzstd
 std::compress::zstd | lookup=compress@2 | locus=false | effects=pure | sig=(Bytes) -> Bytes ! IoError | ret_ty=? | or=(Bytes, IoError) | parks=false | holds=false | unknown=- | suggest=zstd
+std::crypto::__ed25519_public_key | lookup=crypto@2 | locus=false | effects=pure | sig=(Bytes) -> Bytes | ret_ty=Bytes | or=- | parks=false | holds=false | unknown=- | suggest=__ed25519_public_key
 std::crypto::crc32 | lookup=crypto@2 | locus=false | effects=pure | sig=(Bytes) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=crc32
 std::crypto::ecdsa_p256_sign | lookup=crypto@2 | locus=false | effects=pure | sig=(Bytes, Bytes) -> Bytes ! CryptoError | ret_ty=? | or=(Bytes, CryptoError) | parks=false | holds=false | unknown=- | suggest=ecdsa_p256_sign
 std::crypto::ecdsa_p256_verify | lookup=crypto@2 | locus=false | effects=pure | sig=(Bytes, Bytes, Bytes) -> Bool | ret_ty=Bool | or=- | parks=false | holds=false | unknown=- | suggest=ecdsa_p256_verify
+std::crypto::ed25519_keypair | lookup=crypto@2 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=ed25519_keypair
+std::crypto::ed25519_sign | lookup=crypto@2 | locus=false | effects=pure | sig=(Bytes, Bytes) -> Bytes ! CryptoError | ret_ty=? | or=(Bytes, CryptoError) | parks=false | holds=false | unknown=- | suggest=ed25519_sign
+std::crypto::ed25519_verify | lookup=crypto@2 | locus=false | effects=pure | sig=(Bytes, Bytes, Bytes) -> Bool | ret_ty=Bool | or=- | parks=false | holds=false | unknown=- | suggest=ed25519_verify
 std::crypto::hmac_sha256 | lookup=crypto@2 | locus=false | effects=pure | sig=(Bytes, Bytes) -> Bytes | ret_ty=Bytes | or=- | parks=false | holds=false | unknown=- | suggest=hmac_sha256
 std::crypto::hmac_sha512 | lookup=crypto@2 | locus=false | effects=pure | sig=(Bytes, Bytes) -> Bytes | ret_ty=Bytes | or=- | parks=false | holds=false | unknown=- | suggest=hmac_sha512
 std::crypto::sha1 | lookup=crypto@2 | locus=false | effects=pure | sig=(Bytes) -> Bytes | ret_ty=Bytes | or=- | parks=false | holds=false | unknown=- | suggest=sha1
 std::crypto::sha256 | lookup=crypto@2 | locus=false | effects=pure | sig=(Bytes) -> Bytes | ret_ty=Bytes | or=- | parks=false | holds=false | unknown=- | suggest=sha256
 std::crypto::sha512 | lookup=crypto@2 | locus=false | effects=pure | sig=(Bytes) -> Bytes | ret_ty=Bytes | or=- | parks=false | holds=false | unknown=- | suggest=sha512
 std::decimal::format | lookup=decimal@2 | locus=false | effects=pure | sig=(Decimal, Int) -> Str | ret_ty=String | or=- | parks=false | holds=false | unknown=- | suggest=format
+std::decimal::from_float | lookup=decimal@2 | locus=false | effects=pure | sig=(Float) -> Decimal ! ParseError | ret_ty=? | or=(Decimal, ParseError) | parks=false | holds=false | unknown=- | suggest=from_float
+std::decimal::from_int | lookup=decimal@2 | locus=false | effects=pure | sig=(Int) -> Decimal | ret_ty=Decimal | or=- | parks=false | holds=false | unknown=- | suggest=from_int
 std::decimal::to_float | lookup=decimal@2 | locus=false | effects=pure | sig=(Decimal) -> Float | ret_ty=Float | or=- | parks=false | holds=false | unknown=- | suggest=to_float
 std::diag::heap_alloc_count | lookup=diag@2 | locus=false | effects=syscall | sig=() -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=heap_alloc_count
 std::diag::syscall_count | lookup=diag@2 | locus=false | effects=syscall | sig=(Str) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=syscall_count
@@ -638,6 +661,9 @@ std::env::var | lookup=env@2 | locus=false | effects=env | sig=(Str) -> Str | re
 std::env::var_exists | lookup=env@2 | locus=false | effects=env | sig=(Str) -> Bool | ret_ty=Bool | or=- | parks=false | holds=false | unknown=- | suggest=var_exists
 std::fmt::print | lookup=- | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=`std::fmt::print` is not a stdlib function; writing to stdout is the builtin `print(x)`
 std::fmt::println | lookup=- | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=`std::fmt::println` is not a stdlib function; writing a line to stdout is the builtin `println(x)`
+std::hex::decode | lookup=hex@2 | locus=false | effects=pure | sig=(Str) -> Bytes ! ParseError | ret_ty=? | or=(Bytes, ParseError) | parks=false | holds=false | unknown=- | suggest=decode
+std::hex::digit | lookup=hex@2 | locus=false | effects=pure | sig=(Int) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=digit
+std::hex::encode | lookup=hex@2 | locus=false | effects=pure | sig=(Bytes) -> Str | ret_ty=String | or=- | parks=false | holds=false | unknown=- | suggest=encode
 std::http::Client | lookup=http@2 | locus=true | effects=- | sig=- | parks=false | holds=false | unknown=- | suggest=-
 std::http::ClientRequest | lookup=http@2 | locus=true | effects=- | sig=- | parks=false | holds=false | unknown=- | suggest=-
 std::http::ClientResponse | lookup=http@2 | locus=true | effects=- | sig=- | parks=false | holds=false | unknown=- | suggest=-
@@ -774,6 +800,7 @@ std::io::tcp::Stream | lookup=io::tcp@3 | locus=true | effects=- | sig=- | parks
 std::io::tcp::__accept_one | lookup=io::tcp@3 | locus=false | effects=syscall|block | sig=(Int) -> Int | ret_ty=Int | or=- | parks=true | holds=true | unknown=- | suggest=__accept_one
 std::io::tcp::__close_fd | lookup=io::tcp@3 | locus=false | effects=syscall | sig=(Int) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=__close_fd
 std::io::tcp::__connect | lookup=io::tcp@3 | locus=false | effects=syscall|block | sig=(Str, Int) -> Int | ret_ty=Int | or=- | parks=true | holds=true | unknown=- | suggest=__connect
+std::io::tcp::__io_error_detail | lookup=io::tcp@3 | locus=false | effects=pure | sig=(Int) -> Str | ret_ty=String | or=- | parks=false | holds=false | unknown=- | suggest=__io_error_detail
 std::io::tcp::__io_error_kind | lookup=io::tcp@3 | locus=false | effects=pure | sig=(Int) -> Str | ret_ty=String | or=- | parks=false | holds=false | unknown=- | suggest=__io_error_kind
 std::io::tcp::__last_io_status | lookup=io::tcp@3 | locus=false | effects=pure | sig=() -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=__last_io_status
 std::io::tcp::__listen_socket | lookup=io::tcp@3 | locus=false | effects=syscall | sig=(Str, Int) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=__listen_socket
@@ -981,6 +1008,7 @@ std::process::try_wait | lookup=process@2 | locus=false | effects=syscall | sig=
 std::process::uid | lookup=process@2 | locus=false | effects=syscall | sig=() -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=-
 std::process::wait | lookup=process@2 | locus=false | effects=syscall|block | sig=(Int) -> Any ! IoError | ret_ty=? | or=(?, IoError) | parks=false | holds=true | unknown=- | suggest=wait
 std::process::write_stdin | lookup=process@2 | locus=false | effects=syscall | sig=- | parks=false | holds=false | unknown=- | suggest=write_stdin
+std::rand::Rng | lookup=rand@2 | locus=true | effects=- | sig=- | parks=false | holds=false | unknown=- | suggest=-
 std::rand::next_int | lookup=rand@2 | locus=false | effects=entropy | sig=(Int) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=next_int
 std::rand::seed_from_time | lookup=rand@2 | locus=false | effects=time|entropy | sig=() -> Unit | ret_ty=() | or=- | parks=false | holds=false | unknown=- | suggest=seed_from_time
 std::regex::find | lookup=regex@2 | locus=false | effects=pure | sig=(Str, Str) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=find
@@ -1019,6 +1047,7 @@ std::str::ends_with | lookup=str@2 | locus=false | effects=pure | sig=(Str, Str)
 std::str::from_bytes | lookup=str@2 | locus=false | effects=pure | sig=(Bytes) -> Str | ret_ty=String | or=- | parks=false | holds=false | unknown=- | suggest=from_bytes
 std::str::from_int | lookup=str@2 | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=`std::str::from_int` is not a stdlib function; rendering a value as a String is the builtin `to_string(x)` | suggest=-
 std::str::index_of | lookup=str@2 | locus=false | effects=pure | sig=(Str, Str) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=index_of
+std::str::index_of_from | lookup=str@2 | locus=false | effects=pure | sig=(Str, Str, Int) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=index_of_from
 std::str::join | lookup=str@2 | locus=false | effects=pure | sig=(Any, Str) -> Str | ret_ty=String | or=- | parks=false | holds=false | unknown=- | suggest=join
 std::str::len | lookup=str@2 | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=`std::str::len` is not a stdlib function; the length of a String is the builtin `len(s)` | suggest=-
 std::str::lenght | lookup=str@2 | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib function `std::str::lenght` | suggest=-
@@ -1069,6 +1098,7 @@ std::test::__passes | lookup=test@2 | locus=false | effects=- | sig=- | parks=fa
 std::test::assert | lookup=test@2 | locus=false | effects=pure | sig=(Bool, Str) -> Unit | ret_ty=() | or=- | parks=false | holds=false | unknown=- | suggest=assert
 std::test::assert_eq_int | lookup=test@2 | locus=false | effects=pure | sig=(Int, Int, Str) -> Unit | ret_ty=() | or=- | parks=false | holds=false | unknown=- | suggest=assert_eq_int
 std::test::assert_eq_str | lookup=test@2 | locus=false | effects=pure | sig=(Str, Str, Str) -> Unit | ret_ty=() | or=- | parks=false | holds=false | unknown=- | suggest=assert_eq_str
+std::test::assert_near | lookup=test@2 | locus=false | effects=pure | sig=(Float, Float, Float, Str) -> Unit | ret_ty=() | or=- | parks=false | holds=false | unknown=- | suggest=assert_near
 std::text::FileSink | lookup=text@2 | locus=true | effects=- | sig=- | parks=false | holds=false | unknown=- | suggest=-
 std::text::Sink | lookup=text@2 | locus=true | effects=- | sig=- | parks=false | holds=false | unknown=- | suggest=-
 std::text::StdoutSink | lookup=text@2 | locus=true | effects=- | sig=- | parks=false | holds=false | unknown=- | suggest=-
@@ -1110,6 +1140,9 @@ std::ts::node_start_byte | lookup=ts@2 | locus=false | effects=pure | sig=(Int) 
 std::ts::node_text | lookup=ts@2 | locus=false | effects=pure | sig=(Int) -> Str | ret_ty=String | or=- | parks=false | holds=false | unknown=- | suggest=node_text
 std::ts::parse_go | lookup=ts@2 | locus=false | effects=alloc | sig=(Str) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=parse_go
 std::ts::root_node | lookup=ts@2 | locus=false | effects=pure | sig=(Int) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=root_node
+std::url::decode | lookup=url@2 | locus=false | effects=pure | sig=(Str) -> Str | ret_ty=String | or=- | parks=false | holds=false | unknown=- | suggest=decode
+std::url::decode_query | lookup=url@2 | locus=false | effects=pure | sig=(Str) -> Str | ret_ty=String | or=- | parks=false | holds=false | unknown=- | suggest=decode_query
+std::url::encode | lookup=url@2 | locus=false | effects=pure | sig=(Str) -> Str | ret_ty=String | or=- | parks=false | holds=false | unknown=- | suggest=encode
 std::vec::len | lookup=- | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=`std::vec::len` is not a stdlib function; the length of an array is the builtin `len(a)`
 std::x | lookup=- | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib namespace `std`
 std::yaml::Builder | lookup=- | locus=true | effects=- | sig=- | parks=false | holds=false | unknown=-

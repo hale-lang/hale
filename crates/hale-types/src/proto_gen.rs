@@ -196,6 +196,12 @@ fn scalar_of(json: &str) -> Option<Scalar> {
     }
 }
 
+/// A `Time` field's comment: the protobuf codec carries an instant as its
+/// nanoseconds since the epoch (an `int64`, which is all of `Time`), not
+/// as `google.protobuf.Timestamp`, which would be a dependency of every
+/// file and of the descriptor reflection serves.
+const TIME: &str = "Hale: Time, nanoseconds since the Unix epoch, UTC";
+
 /// A scalar field's comment: the Hale type it stands for.
 fn hale_comment(hale_type: &Option<String>, unit: &Option<String>) -> Option<String> {
     match (hale_type, unit) {
@@ -229,6 +235,18 @@ fn carried(
             wrappers.push(m);
             Ok(name)
         }
+        FieldSchema::Time => {
+            let name = wrapper_name(member, what);
+            let mut v = field("value", 1, Ty::Scalar(Scalar::Int64), Label::Optional);
+            v.comment = Some(TIME.to_string());
+            let mut m = message(&name, vec![v]);
+            m.comment = vec![format!("The {} of `{member}`, a scalar.", what.to_lowercase())];
+            wrappers.push(m);
+            Ok(name)
+        }
+        FieldSchema::List { .. } => Err(format!(
+            "{member}: the {what} is a list, which crosses as a field of a record (law 5 refuses the row)"
+        )),
         FieldSchema::Unformed => Err(format!(
             "{member}: the {what} is a shape the codec does not carry (an enum, an array or a name the program does not declare), \
              so it has no proto3 encoding; no approximation is made"
@@ -265,8 +283,14 @@ pub fn from_model(model: &ClientModel) -> Result<ProtoFile, String> {
             reached.push(n);
             if let Some(t) = model.types.get(n) {
                 for (_, f) in &t.properties {
-                    if let FieldSchema::Ref(r) = f {
-                        work.push(r);
+                    match f {
+                        FieldSchema::Ref(r) => work.push(r),
+                        FieldSchema::List { items, .. } => {
+                            if let FieldSchema::Ref(r) = items.as_ref() {
+                                work.push(r);
+                            }
+                        }
+                        _ => {}
                     }
                 }
             }
@@ -401,6 +425,44 @@ fn record(display: &str, schema: &TypeSchema, surface: &str) -> Result<PMessage,
                 p
             }
             FieldSchema::Ref(n) => field(key, number, Ty::Message(message_name(n, surface)), Label::Plain),
+            FieldSchema::Time => {
+                let mut p = field(key, number, Ty::Scalar(Scalar::Int64), Label::Optional);
+                p.comment = Some(TIME.to_string());
+                p
+            }
+            // a list is `repeated`, its elements written one occurrence each
+            // (a parser reads that as it reads the packed form); its bound is
+            // the codec's to hold, so the comment states it
+            FieldSchema::List { items, max, exact } => {
+                let bound = if *exact { format!("exactly {max}") } else { format!("at most {max}") };
+                let mut p = match items.as_ref() {
+                    FieldSchema::Scalar { json, hale_type, unit } => {
+                        let Some(s) = scalar_of(json) else {
+                            return Err(format!("{display}.{key}: `{json}` has no proto3 scalar"));
+                        };
+                        let mut p = field(key, number, Ty::Scalar(s), Label::Repeated);
+                        p.comment = hale_comment(hale_type, unit);
+                        p
+                    }
+                    FieldSchema::Ref(n) => field(key, number, Ty::Message(message_name(n, surface)), Label::Repeated),
+                    FieldSchema::Time => {
+                        let mut p = field(key, number, Ty::Scalar(Scalar::Int64), Label::Repeated);
+                        p.comment = Some(TIME.to_string());
+                        p
+                    }
+                    _ => {
+                        return Err(format!(
+                            "{display}.{key}: a list of a shape the codec does not carry has no proto3 encoding; no \
+                             approximation is made"
+                        ))
+                    }
+                };
+                p.comment = Some(match p.comment.take() {
+                    Some(c) => format!("{c}; {bound}"),
+                    None => format!("Hale: {bound}"),
+                });
+                p
+            }
             FieldSchema::Unformed => {
                 return Err(format!(
                     "{display}.{key}: a shape the codec does not carry (an enum, an array or a name the program does not declare) \

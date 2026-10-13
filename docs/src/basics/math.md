@@ -108,6 +108,20 @@ let d = std::math::trunc(3.7);          // 3   — toward zero, like float_to_in
 Both return an `Int` directly. (`floor` / `ceil` below return a
 `Float`; wrap them in `float_to_int` if you need an `Int`.)
 
+Float comparisons are IEEE 754's. A NaN (what `0.0 / 0.0` or
+`std::math::sqrt(-1.0)` produces) is unequal to everything,
+itself included: `==`, `<`, `<=`, `>` and `>=` are `false` when
+either side is NaN, and `!=` is `true`. `-0.0 == 0.0` holds.
+`min` and `max` return NaN when either argument is one, whichever
+side it is on, so a NaN can't hide inside a running minimum:
+
+```hale,fragment
+let nan = std::math::nan();
+let a = nan != nan;          // true — the NaN test, like std::math::is_nan
+let b = nan == nan;          // false
+let c = min(1.0, nan);       // NaN, and so is min(nan, 1.0)
+```
+
 The standard library covers the rest: `std::math::sqrt`,
 `exp`, `log`, `pow`, `floor`, `ceil`, the trig functions, and
 so on.
@@ -186,6 +200,23 @@ ratios, and math where approximation is fine. The two never mix
 implicitly — there is no silent `Decimal`/`Float` conversion, and
 not even `Decimal * Int` (the quantity above is `3.0d`, not `3`), so
 you can't accidentally launder exactness away.
+
+Converting is explicit. An `Int` becomes a `Decimal` exactly; a
+`Float` becomes the `Decimal` nearest its exact binary value, rounded
+half away from zero at the ninth place, and can fail (NaN, an
+infinity, or a magnitude past about `1.7e29`), so it takes an `or`.
+The way back is `to_float`:
+
+```hale,fragment
+let n    = std::decimal::from_int(3);                    // 3.0d
+let p    = std::decimal::from_float(19.99) or 0.0d;      // 19.99d
+let back = std::decimal::to_float(p);                    // 19.99
+```
+
+`0.1` as a `Float` is `0.1000000000000000055…`, so `from_float(0.1)`
+is `0.1d`: the binary tail is past the ninth place. Both answer a plain
+`Decimal` (`Decimal<9>`); for another scale, `rescale` the result
+(`std::decimal::from_int(3).rescale(2)`).
 
 ## Duration — time spans with units
 

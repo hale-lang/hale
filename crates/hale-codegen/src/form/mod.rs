@@ -223,6 +223,102 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         Some((size, self.retire_slots_desc(slots, depth)))
     }
 
+    /// The retire descriptor a compound `self.<field> = value` store of
+    /// type `ty` walks after the replace (`lotus_self_field_retire_replaced`),
+    /// over the field's block: for a record, its fields that point at a
+    /// block of their own (a nested record, a tuple, an out-of-line
+    /// array, a payload enum — with everything under them), leaving out
+    /// its top-level String and Bytes fields, which the per-field
+    /// fixups retire; for a tuple or an out-of-line array, every slot.
+    /// `None` when the store retires nothing beyond those fixups: a
+    /// record of scalars, Strings and Bytes, or a type that is not such
+    /// a block. A tuple or array of scalars answers `Some(vec![])`: it
+    /// owns nothing nested, but its store still builds a fresh copy to
+    /// retire.
+    pub(crate) fn self_field_retire_desc(&self, ty: &CodegenTy) -> Option<Vec<u32>> {
+        match ty {
+            CodegenTy::TypeRef(tn) => {
+                let ti = self.user_types.get(tn)?;
+                let mut slots = Vec::new();
+                for fname in &ti.field_order {
+                    let Some((idx, fty)) = ti.fields.get(fname) else { continue };
+                    if !self.record_field_owns_block(fty) {
+                        continue;
+                    }
+                    if let Some(o) = self.target_data.offset_of_element(&ti.struct_ty, *idx) {
+                        slots.push((o, fty.clone(), false));
+                    }
+                }
+                let desc = self.retire_slots_desc(slots, 0);
+                (!desc.is_empty()).then_some(desc)
+            }
+            CodegenTy::Tuple(_) => self.retire_desc_for(ty, 0).map(|(_, d)| d),
+            CodegenTy::Array(_, _) if Self::array_inline_spec(ty).is_none() => {
+                self.retire_desc_for(ty, 0).map(|(_, d)| d)
+            }
+            _ => None,
+        }
+    }
+
+    /// The LLVM type of the block a compound locus field of type `ty`
+    /// points at (a record's struct, a tuple's storage, an array's
+    /// `[N x T]`): what `emit_self_field_inplace_assign` snapshots the
+    /// replaced value into.
+    pub(crate) fn self_field_block_type(
+        &self,
+        ty: &CodegenTy,
+    ) -> Result<inkwell::types::BasicTypeEnum<'ctx>, CodegenError> {
+        match ty {
+            CodegenTy::TypeRef(tn) => self
+                .user_types
+                .get(tn)
+                .map(|t| t.struct_ty.into())
+                .ok_or_else(|| CodegenError::Unsupported(format!("unknown type `{}`", tn))),
+            CodegenTy::Tuple(elems) => Ok(self.llvm_tuple_storage_type(elems).into()),
+            CodegenTy::Array(elem, n) => Ok(self.llvm_array_storage_type(elem, *n).into()),
+            other => Err(CodegenError::Unsupported(format!("no field block for {:?}", other))),
+        }
+    }
+
+    /// The constant global holding `desc` (`self_field_retire_desc`),
+    /// one per distinct descriptor: named by its words, so two field
+    /// types with the same layout share it.
+    pub(crate) fn self_field_retire_desc_global(
+        &mut self,
+        desc: &[u32],
+    ) -> inkwell::values::GlobalValue<'ctx> {
+        let words: Vec<String> = desc.iter().map(|w| format!("{:x}", w)).collect();
+        let gname = format!("__self_field_retire_desc.{}", words.join("_"));
+        if let Some(g) = self.module.get_global(&gname) {
+            return g;
+        }
+        let i32_t = self.context.i32_type();
+        let vals: Vec<_> = desc.iter().map(|o| i32_t.const_int(*o as u64, false)).collect();
+        let arr = i32_t.const_array(&vals);
+        let g = self.module.add_global(arr.get_type(), None, &gname);
+        g.set_initializer(&arr);
+        g.set_constant(true);
+        g.set_linkage(inkwell::module::Linkage::Internal);
+        g
+    }
+
+    /// Can a store into a locus field of type `ty` retire a block into
+    /// the locus's arena — a String or Bytes field, a record carrying
+    /// one or a nested block, a tuple or an out-of-line array? Such a
+    /// locus flushes its arena's pending retires at each method's
+    /// activation boundary.
+    pub(crate) fn self_field_type_retires(&self, ty: &CodegenTy) -> bool {
+        match ty {
+            CodegenTy::String | CodegenTy::Bytes => true,
+            CodegenTy::TypeRef(tn) => {
+                self.user_types.get(tn).is_some_and(|t| {
+                    t.fields.values().any(|(_, f)| matches!(f, CodegenTy::String | CodegenTy::Bytes))
+                }) || self.self_field_retire_desc(ty).is_some()
+            }
+            _ => self.self_field_retire_desc(ty).is_some(),
+        }
+    }
+
     /// The descriptor words over a block's `(offset, type, inline)`
     /// slots (`retire_desc_for`).
     fn retire_slots_desc(&self, slots: Vec<(u64, CodegenTy, bool)>, depth: u32) -> Vec<u32> {
@@ -282,18 +378,15 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// Does the locus `name` hold form cells whose nested blocks are
     /// retired from its own arena — a `@form(vec)` (`set` and `pop`
     /// free a replaced or removed element), or a `@form(hashmap)` that
-    /// installs a retire descriptor (`sync = none` / `serialized`, a
-    /// record cell)? Such a locus's own field stores must not share a
+    /// installs a retire descriptor (a record cell, under any
+    /// discipline)? Such a locus's own field stores must not share a
     /// block with a cell (`emit_self_field_inplace_assign`).
     pub(crate) fn locus_retires_cell_blocks(&self, name: &str) -> bool {
         self.user_loci.get(name).is_some_and(|info| {
             info.capacity_slots.iter().any(|sl| match sl.form {
                 Some(SlotForm::Vec) => true,
                 Some(SlotForm::LruCache) => matches!(sl.elem_ty, CodegenTy::TypeRef(_)),
-                Some(SlotForm::Hashmap) => {
-                    matches!(sl.sync_mode, SyncMode::None | SyncMode::Serialized)
-                        && matches!(sl.elem_ty, CodegenTy::TypeRef(_))
-                }
+                Some(SlotForm::Hashmap) => matches!(sl.elem_ty, CodegenTy::TypeRef(_)),
                 _ => false,
             })
         })
@@ -1648,13 +1741,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 .map(Some);
         }
 
-        // Downstream handoff P1 (2026-08-03): a `sync = serialized`
-        // map's cell is copied out into the reader's arena at every
-        // read (its String and Bytes fields and nested blocks), which
-        // is what lets the writer retire the blocks it replaces. Only
+        // Downstream handoff P1 (2026-08-03): a synced map's cell
+        // (`serialized`, and `striped` / `lockfree` under the cell's
+        // claim) is copied out into the reader's arena at every read
+        // (its String and Bytes fields and nested blocks), which is
+        // what lets the writer retire the blocks it replaces. Only
         // cells that own any pay for it; everything else keeps the
         // plain read.
-        let synced_clone_reads = slot.sync_mode == SyncMode::Serialized
+        let synced_clone_reads = slot.sync_mode != SyncMode::None
             && self.hashmap_cell_owns_blocks(&cell_info.fields);
 
         let payload_ty = CodegenTy::TypeRef("KeyError".to_string());
@@ -1914,17 +2008,29 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // synced map whose cell owns blocks takes the cloning variant, for
         // the same reason `get` does — a raw cell pointer handed
         // off-thread would be freed under the reader once the
-        // writer's retirement is enabled. `key_at` copies a key,
-        // not a cell, so it is unaffected.
+        // writer's retirement is enabled.
         let synced_clone_reads = c_fn_name == "lotus_hashmap_value_at"
-            && slot_decl.sync_mode == SyncMode::Serialized
+            && slot_decl.sync_mode != SyncMode::None
             && self.hashmap_cell_owns_blocks(&cell_info.fields);
-        let c_ret = if synced_clone_reads {
+        // A String key of such a map is retired when its cell is
+        // removed, so `key_at` copies it out under the same lock
+        // (lotus_hashmap_key_at_cloned) rather than hand out the
+        // map's pointer to another pool.
+        let synced_key_clone = c_fn_name == "lotus_hashmap_key_at"
+            && slot_decl.sync_mode != SyncMode::None
+            && key_codegen_ty == CodegenTy::String
+            && self.hashmap_cell_owns_blocks(&cell_info.fields);
+        let c_ret = if synced_clone_reads || synced_key_clone {
             let dest = self.current_arena_ptr()?;
+            let cloned_name = if synced_key_clone {
+                "lotus_hashmap_key_at_cloned"
+            } else {
+                "lotus_hashmap_value_at_cloned"
+            };
             let c_fn = self
                 .module
-                .get_function("lotus_hashmap_value_at_cloned")
-                .expect("lotus_hashmap_value_at_cloned declared");
+                .get_function(cloned_name)
+                .expect("hashmap cloned index primitive declared");
             self.builder
                 .build_call(
                     c_fn,
@@ -2831,12 +2937,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     // first, so a nested block carried over from it
                     // is kept rather than copied.
                     // Only a cell with such a field pays for the peek.
-                    let retiring =
-                        matches!(slot.sync_mode, SyncMode::None | SyncMode::Serialized)
-                            && cell_info
-                                .fields
-                                .values()
-                                .any(|(_, t)| self.record_field_owns_block(t));
+                    let retiring = cell_info
+                        .fields
+                        .values()
+                        .any(|(_, t)| self.record_field_owns_block(t));
                     let owner = if !retiring {
                         None
                     } else if slot.sync_mode == SyncMode::None {
@@ -4287,5 +4391,110 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             success_ty: Some(value_ty),
             payload_ty,
         })
+    }
+
+    /// A `@form(lru_cache)` locus that declares `on_evict(k, v)` hands
+    /// every entry it still holds to the hook when it dissolves, after its
+    /// `dissolve()` body, least recently used first (spec/forms.md § The
+    /// eviction hook): a cell owning a resource outside the arena (an fd)
+    /// releases it, as an entry evicted over `cap` does. Each entry is
+    /// taken out of the table before the hook sees it, so the table is
+    /// empty when the slot is freed. Nothing retires: the cells' blocks
+    /// are the locus arena's, freed with it. Emitted at every teardown
+    /// spine's Dissolve step; a no-op for any other locus.
+    pub(crate) fn emit_lru_evict_remaining(
+        &mut self,
+        info: &LocusInfo<'ctx>,
+        self_ptr: PointerValue<'ctx>,
+        locus_name: &str,
+    ) -> Result<(), CodegenError> {
+        let Some(hook) = info.user_methods.get("on_evict").copied() else {
+            return Ok(());
+        };
+        let err = |e: inkwell::builder::BuilderError| CodegenError::LlvmEmit(e.to_string());
+        let ptr_t = self.context.ptr_type(AddressSpace::default());
+        for slot in &info.capacity_slots {
+            if slot.form != Some(SlotForm::LruCache) {
+                continue;
+            }
+            let CodegenTy::TypeRef(cell_name) = &slot.elem_ty else { continue };
+            let Some(cell_info) = self.user_types.get(cell_name).cloned() else { continue };
+            let Some((key_idx, key_ty)) =
+                slot.indexed_by.as_ref().and_then(|f| cell_info.fields.get(f)).cloned()
+            else {
+                continue;
+            };
+            let func = self.current_fn.expect("a teardown spine is emitted inside a fn");
+            let lru_ptr = self
+                .builder
+                .build_struct_gep(
+                    info.struct_ty,
+                    self_ptr,
+                    slot.struct_field_idx,
+                    &format!("{}.__lru_{}.dissolve.ptr", locus_name, slot.name),
+                )
+                .map_err(err)?;
+            let held = self.alloca_in_entry(
+                cell_info.struct_ty.into(),
+                &format!("{}.__lru_{}.dissolve.held", locus_name, slot.name),
+            )?;
+            let cond_bb = self.context.append_basic_block(func, "lru.dissolve.next");
+            let hook_bb = self.context.append_basic_block(func, "lru.dissolve.evict_hook");
+            let done_bb = self.context.append_basic_block(func, "lru.dissolve.done");
+            self.builder.build_unconditional_branch(cond_bb).map_err(err)?;
+            self.builder.position_at_end(cond_bb);
+            let pop = self.module.get_function("lotus_lru_pop_lru").expect("lotus_lru_pop_lru declared");
+            let took = self
+                .builder
+                .build_call(pop, &[lru_ptr.into(), held.into()], &format!("{}.lru.dissolve.pop", locus_name))
+                .map_err(err)?
+                .try_as_basic_value()
+                .left()
+                .expect("lotus_lru_pop_lru returns i32")
+                .into_int_value();
+            let any = self
+                .builder
+                .build_int_compare(
+                    inkwell::IntPredicate::NE,
+                    took,
+                    self.context.i32_type().const_zero(),
+                    &format!("{}.lru.dissolve.any", locus_name),
+                )
+                .map_err(err)?;
+            self.builder.build_conditional_branch(any, hook_bb, done_bb).map_err(err)?;
+            self.builder.position_at_end(hook_bb);
+            let key_ptr = self
+                .builder
+                .build_struct_gep(cell_info.struct_ty, held, key_idx, &format!("{}.lru.dissolve.key.ptr", locus_name))
+                .map_err(err)?;
+            let key = self
+                .builder
+                .build_load(self.llvm_basic_type(&key_ty), key_ptr, &format!("{}.lru.dissolve.key", locus_name))
+                .map_err(err)?;
+            // The hook runs as a method of the dissolving locus: its
+            // caller arena is the locus's own, alive until the spine
+            // releases it.
+            if !info.arena_elidable {
+                let arena_slot = self
+                    .builder
+                    .build_struct_gep(
+                        info.struct_ty,
+                        self_ptr,
+                        info.arena_field_idx,
+                        &format!("{}.lru.dissolve.arena.ptr", locus_name),
+                    )
+                    .map_err(err)?;
+                let arena =
+                    self.builder.build_load(ptr_t, arena_slot, &format!("{}.lru.dissolve.arena", locus_name)).map_err(err)?;
+                let set = self.module.get_function("lotus_set_caller_arena").expect("lotus_set_caller_arena declared");
+                self.builder.build_call(set, &[arena.into()], "set_caller_arena").map_err(err)?;
+            }
+            self.builder
+                .build_call(hook, &[self_ptr.into(), key.into(), held.into()], &format!("{}.on_evict.dissolve", locus_name))
+                .map_err(err)?;
+            self.builder.build_unconditional_branch(cond_bb).map_err(err)?;
+            self.builder.position_at_end(done_bb);
+        }
+        Ok(())
     }
 }

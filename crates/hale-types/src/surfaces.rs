@@ -273,6 +273,9 @@ pub fn type_text(te: &TypeExpr) -> String {
             }
         }
         TypeExpr::Array { elem, size: None, .. } => format!("[{}]", type_text(elem)),
+        TypeExpr::Array { elem, size: Some(hale_syntax::ast::Expr::Literal(hale_syntax::ast::Literal::Int(n), _)), .. } => {
+            format!("[{}; {n}]", type_text(elem))
+        }
         TypeExpr::Array { elem, size: Some(_), .. } => format!("[{}; …]", type_text(elem)),
         TypeExpr::Bounded { elem, cap, .. } => format!("bounded[{}; {cap}]", type_text(elem)),
         TypeExpr::Tuple(parts, _) => format!("({})", parts.iter().map(type_text).collect::<Vec<_>>().join(", ")),
@@ -446,6 +449,50 @@ fn if_sites<'a>(i: &'a hale_syntax::ast::IfStmt, out: &mut Vec<ServeSite<'a>>) {
         Some(ElseBranch::Else(b)) => serve_sites_in(b, out),
         Some(ElseBranch::ElseIf(e)) => if_sites(e, out),
         None => {}
+    }
+}
+
+/// The surface argument of every serve site in a block, mutably: the
+/// statement shapes [`serve_sites_in`] reads, in its order.
+pub(crate) fn serve_surfaces_in_mut(b: &mut Block, f: &mut dyn FnMut(&mut Expr)) {
+    fn expr(e: &mut Expr, f: &mut dyn FnMut(&mut Expr)) {
+        if ServeSite::of(e).is_none() {
+            return;
+        }
+        if let Expr::Call { args, .. } = e {
+            if let Some(first) = args.first_mut() {
+                f(first);
+            }
+        }
+    }
+    fn if_stmt(i: &mut hale_syntax::ast::IfStmt, f: &mut dyn FnMut(&mut Expr)) {
+        serve_surfaces_in_mut(&mut i.then_block, f);
+        match i.else_block.as_deref_mut() {
+            Some(ElseBranch::Else(b)) => serve_surfaces_in_mut(b, f),
+            Some(ElseBranch::ElseIf(e)) => if_stmt(e, f),
+            None => {}
+        }
+    }
+    for s in &mut b.stmts {
+        match s {
+            Stmt::Let { value, .. } | Stmt::LetTuple { value, .. } | Stmt::Assign { value, .. } => expr(value, f),
+            Stmt::Expr(e) => expr(e, f),
+            Stmt::If(i) => if_stmt(i, f),
+            Stmt::Match(m) => {
+                for arm in &mut m.arms {
+                    match &mut arm.body {
+                        MatchArmBody::Expr(e) => expr(e, f),
+                        MatchArmBody::Block(b) => serve_surfaces_in_mut(b, f),
+                    }
+                }
+            }
+            Stmt::For { body, .. } | Stmt::While { body, .. } => serve_surfaces_in_mut(body, f),
+            Stmt::Block(b) => serve_surfaces_in_mut(b, f),
+            _ => {}
+        }
+    }
+    if let Some(t) = &mut b.tail {
+        expr(t, f);
     }
 }
 
@@ -1064,7 +1111,9 @@ fn did_you_mean<'a>(name: &str, candidates: impl IntoIterator<Item = &'a str>) -
 
 /// Why a type a row names has no JSON form (spec/api.md § Codecs: `Int`,
 /// `Float`, `Bool`, `String` and nested structs of the same; an
-/// identity, a range, a quantity and a point as their integer): the
+/// identity, a range and a quantity as their integer, a `Duration` as its
+/// nanoseconds, a `Time` as its RFC 3339 text; a list as a record's
+/// field, `bounded[T; N]` or `[T; N]` of any of those): the
 /// field path from the row's type to what the codec does not carry,
 /// and that type as written. `None` when every field has a form.
 fn json_refusal(
@@ -1076,6 +1125,26 @@ fn json_refusal(
     use crate::topic_identity::TypeClass;
     use hale_syntax::ast::PrimType;
     let carried = |p: PrimType| matches!(p, PrimType::Int | PrimType::Float | PrimType::Bool | PrimType::String);
+    // A list is a field's: `bounded[T; N]` or `[T; N]` (spec/api.md § Codecs),
+    // its element carried as a field of its type would be, and never itself a
+    // list. A row's whole request or response is never a list (law 5 names it).
+    if let Some((elem, _, _)) = hale_syntax::json_gen::wire_list(&shapes.dealias(te)) {
+        let elem = shapes.dealias(elem);
+        if path.is_empty() || hale_syntax::json_gen::wire_list(&elem).is_some() {
+            return Some((path.clone(), type_text(te)));
+        }
+        // an element refused is named as the list's field, by the list's type
+        // when the element is no record (a record's own field names itself)
+        return match json_refusal(shapes, &elem, path, seen) {
+            Some((p, _)) if p == *path => Some((p, type_text(te))),
+            r => r,
+        };
+    }
+    // a `Time` is its RFC 3339 text and a `Duration` its count of
+    // nanoseconds, an alias of either what it stands for
+    if matches!(shapes.dealias(te), TypeExpr::Primitive(PrimType::Time | PrimType::Duration, _)) {
+        return None;
+    }
     match shapes.classify(te) {
         TypeClass::Prim(p) if carried(p) => None,
         // An identity, a range and a quantity are their `Int`; a point is
@@ -1261,7 +1330,12 @@ pub fn surface_laws(
         for (slot, ty) in slots {
             let Some(ty) = ty else { continue };
             if let Some((path, at)) = json_refusal(&shapes, &ty.te, &mut Vec::new(), &mut BTreeSet::new()) {
-                let message = if path.is_empty() {
+                let message = if path.is_empty() && hale_syntax::json_gen::wire_list(&shapes.dealias(&ty.te)).is_some() {
+                    format!(
+                        "rpc `{m}`: its {slot} is `{at}`, a list, which crosses as a field of a record: declare one \
+                         (`type Page {{ items: {at}; }}`)"
+                    )
+                } else if path.is_empty() {
                     format!("rpc `{m}`: its {slot} is `{at}`, which the JSON codec does not carry")
                 } else {
                     format!(
@@ -1794,6 +1868,12 @@ pub enum FieldSchema {
     /// `{"$ref": "#/schemas/<name>"}`: a struct, its schema in the
     /// document's `schemas`.
     Ref(String),
+    /// `{"type": "string", "format": "date-time", "x-hale-type": "Time"}`:
+    /// an instant, its RFC 3339 text in UTC (spec/api.md § Codecs).
+    Time,
+    /// `{"type": "array", "items": …, "maxItems": N}`, and `"minItems": N`
+    /// for a fixed array (`exact`): a `bounded[T; N]` or a `[T; N]`.
+    List { items: Box<FieldSchema>, max: u64, exact: bool },
     /// A type the codec does not carry (law 5 refuses its row).
     Unformed,
 }
@@ -1837,6 +1917,29 @@ impl<'a> Schemas<'a> {
             PrimType::String => Some("string"),
             _ => None,
         };
+        // an instant is its text; a `Duration` the quantity it is, its count
+        // of nanoseconds
+        match self.shapes.dealias(te) {
+            TypeExpr::Primitive(PrimType::Time, _) => return FieldSchema::Time,
+            TypeExpr::Primitive(PrimType::Duration, _) => {
+                return FieldSchema::Scalar {
+                    json: "integer",
+                    hale_type: Some("Duration".to_string()),
+                    unit: Some("q(ns)".to_string()),
+                }
+            }
+            _ => {}
+        }
+        // a list: its elements as a field of their type, never a list
+        if let Some((elem, max, exact)) = hale_syntax::json_gen::wire_list(&self.shapes.dealias(te)) {
+            if hale_syntax::json_gen::wire_list(&self.shapes.dealias(elem)).is_some() {
+                return FieldSchema::Unformed;
+            }
+            return match self.type_ref(elem, out) {
+                FieldSchema::Unformed => FieldSchema::Unformed,
+                items => FieldSchema::List { items: Box::new(items), max, exact },
+            };
+        }
         match self.shapes.classify(te) {
             TypeClass::Prim(p) => {
                 json(p).map_or(FieldSchema::Unformed, |j| FieldSchema::Scalar { json: j, hale_type: None, unit: None })
@@ -1862,7 +1965,7 @@ impl<'a> Schemas<'a> {
                             .and_then(|t| hale_syntax::desugar::tag_value(t, "json"))
                             .unwrap_or_else(|| f.name.name.clone());
                         properties.push((key.clone(), self.type_ref(&f.ty, out)));
-                        if f.default.is_none() {
+                        if hale_syntax::json_gen::wire_required(&self.shapes.dealias(&f.ty), f.default.is_some()) {
                             required.push(key);
                         }
                     }

@@ -1352,9 +1352,9 @@ const INTERNAL: &[(&str, Position, &[&str])] = &[
     ("std::bus::__transport_realize", Position::Expression, &["__StdBusUnixConnectTransport", "__StdBusUnixListenTransport"]),
     ("std::bus::__transport_reclaim", Position::Statement, &["__StdBusUnixConnectTransport", "__StdBusUnixListenTransport"]),
     ("std::bus::__transport_spawn_server", Position::Expression, &["__StdBusUnixListenTransport"]),
-    ("std::test::__failed", Position::Expression, &["__test_assert", "__test_assert_eq_int", "__test_assert_eq_str"]),
-    ("std::test::__note_fail", Position::Statement, &["__test_assert", "__test_assert_eq_int", "__test_assert_eq_str"]),
-    ("std::test::__note_pass", Position::Statement, &["__test_assert", "__test_assert_eq_int", "__test_assert_eq_str"]),
+    ("std::test::__failed", Position::Expression, &["__test_assert", "__test_assert_eq_int", "__test_assert_eq_str", "__test_assert_near"]),
+    ("std::test::__note_fail", Position::Statement, &["__test_assert", "__test_assert_eq_int", "__test_assert_eq_str", "__test_assert_near"]),
+    ("std::test::__note_pass", Position::Statement, &["__test_assert", "__test_assert_eq_int", "__test_assert_eq_str", "__test_assert_near"]),
     ("std::test::__passes", Position::Expression, &["__test_fail_trailer"]),
 ];
 

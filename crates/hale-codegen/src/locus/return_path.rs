@@ -245,6 +245,31 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         Ok(phi.as_basic_value())
     }
 
+    /// A deep copy of `value` into `dest_arena` that OWNS every leaf:
+    /// a String or Bytes already in `dest_arena` is copied too
+    /// (`cell_owned_clone`), where the plain copy passes it through.
+    /// For a value stored into a locus's own fields outside a compound
+    /// self-field store — a param's value at construction, the built
+    /// params a restart-in-place snapshots and restores. Those values
+    /// are evaluated in the locus's arena, so a plain copy kept a
+    /// String one field or param shared with another (`o: Outer = Outer
+    /// { s: self.text, inner: Inner { s: self.text } }`), and the
+    /// retire of a replaced value — its String fixups, its nested-block
+    /// walk (`lotus_self_field_retire_replaced`) — then freed it under
+    /// the others. Records, tuples, arrays and payload-enum blocks are
+    /// always fresh in this copy.
+    pub(crate) fn emit_owned_deep_copy(
+        &mut self,
+        value: BasicValueEnum<'ctx>,
+        ty: &CodegenTy,
+        dest_arena: PointerValue<'ctx>,
+    ) -> Result<BasicValueEnum<'ctx>, CodegenError> {
+        let prev = std::mem::replace(&mut self.cell_owned_clone, true);
+        let out = self.emit_return_value_deep_copy(value, ty, dest_arena);
+        self.cell_owned_clone = prev;
+        out
+    }
+
     pub(crate) fn emit_return_value_deep_copy(
         &mut self,
         value: BasicValueEnum<'ctx>,
@@ -798,6 +823,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .expect("builder positioned");
         let cont_bb = self.context.append_basic_block(func, "enum.dc.cont");
         let default_bb = self.context.append_basic_block(func, "enum.dc.default");
+        // Each variant: its tag, the block the switch enters, the block its
+        // copy ends in (a payload whose copy loops, a `bounded[T; N]` of
+        // records, ends in another block than it began), and the new value.
         let mut variant_blocks: Vec<(
             inkwell::values::IntValue<'ctx>,
             inkwell::basic_block::BasicBlock<'ctx>,
@@ -1246,11 +1274,30 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // self.saved = x; }` visits the vec's elements in place), and
         // rewriting it would hand the element and the field one fresh
         // block, which the element's retire then frees under the field.
+        //
+        // The same rule holds wherever the store itself retires nested
+        // blocks: a value that owns a block of its own — a record with
+        // a nested record, tuple, out-of-line array or payload enum, or
+        // a tuple or out-of-line array itself — has the blocks the
+        // replaced value alone reached retired after the memcpy
+        // (`lotus_self_field_retire_replaced`, below). A block shared
+        // with any other owner (another field, a cell, a child's
+        // param) would be freed under it, so the field owns every
+        // nested block it stores: a copy, unless it is the very block
+        // the field already holds at that place (`cell_compound_owner`
+        // with the existing value — `self.f = F { n: i, inner:
+        // self.f.inner }` keeps `inner` and copies nothing).
         let owns_retiring_cells = self.locus_retires_cell_blocks(&cs.locus_name);
+        let nested_desc = self.self_field_retire_desc(slot_ty);
         let prev_owned = self.cell_owned_clone;
         let mut rhs = rhs;
-        if owns_retiring_cells {
-            self.cell_compound_owner = Some(None);
+        if owns_retiring_cells || nested_desc.is_some() {
+            // The walk's outermost record takes it (a tuple or array is
+            // deep-copied whole, every block of it fresh).
+            if matches!(slot_ty, CodegenTy::TypeRef(_)) {
+                self.cell_compound_owner =
+                    if owns_retiring_cells { Some(None) } else { Some(Some(existing_ptr)) };
+            }
             self.cell_owned_clone = true;
             if let CodegenTy::TypeRef(tn) = slot_ty {
                 if let Some(tinfo) = self.user_types.get(tn).cloned() {
@@ -1276,12 +1323,69 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
 
         let size = self.compound_storage_size(slot_ty)?;
 
+        // What the replaced value reached, read before the memcpy
+        // overwrites it: a stack copy of the block's bytes, walked by
+        // the retire below.
+        let old_snap = match &nested_desc {
+            Some(desc) if !desc.is_empty() => {
+                let storage = self.self_field_block_type(slot_ty)?;
+                let snap = self.alloca_in_entry(storage, "self_field.old_snap")?;
+                self.emit_memcpy_call(snap, existing_ptr, size, "self_field.old_snap.memcpy")?;
+                Some(snap)
+            }
+            _ => None,
+        };
+
         self.emit_memcpy_call(
             existing_ptr,
             anchored.into_pointer_value(),
             size,
             "self_field_inplace.memcpy",
         )?;
+
+        if let Some(desc) = nested_desc {
+            // A tuple or array value was deep-copied whole into a fresh
+            // block of this arena, and its bytes now live in the
+            // field's block: the fresh block is scrap.
+            let scrap = if matches!(slot_ty, CodegenTy::TypeRef(_)) {
+                ptr_t.const_null()
+            } else {
+                anchored.into_pointer_value()
+            };
+            let i64_t = self.context.i64_type();
+            let scrap_size = if matches!(slot_ty, CodegenTy::TypeRef(_)) {
+                i64_t.const_zero()
+            } else {
+                self.builder
+                    .build_int_z_extend_or_bit_cast(size, i64_t, "self_field.scrap_size")
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            };
+            let desc_ptr = if desc.is_empty() {
+                ptr_t.const_null()
+            } else {
+                self.self_field_retire_desc_global(&desc).as_pointer_value()
+            };
+            let old_ptr = old_snap.unwrap_or_else(|| ptr_t.const_null());
+            let retire_fn = self
+                .module
+                .get_function("lotus_self_field_retire_replaced")
+                .expect("lotus_self_field_retire_replaced declared");
+            self.builder
+                .build_call(
+                    retire_fn,
+                    &[
+                        dest_arena.into(),
+                        old_ptr.into(),
+                        existing_ptr.into(),
+                        scrap.into(),
+                        scrap_size.into(),
+                        desc_ptr.into(),
+                        i64_t.const_int(desc.len() as u64, false).into(),
+                    ],
+                    "self_field_inplace.retire_nested",
+                )
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        }
 
         if !retire_fields.is_empty() {
             for (dest_slot, oldp, rawp, fixup_name) in retire_fields {

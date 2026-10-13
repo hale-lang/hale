@@ -75,7 +75,8 @@ pub const BUILTIN_TYPES: &[BuiltinType] = &[
     },
     // The fallible `std::io::*` calls: `kind` is the errno-derived tag
     // (`not_found`, `permission_denied`, `timeout`, ...), `errno` the raw
-    // platform errno, `path` the file or connection target.
+    // platform errno, `path` the file or connection target, `detail` the
+    // human text (the platform's message for the errno).
     // GH #1076 (U3): a conversion between two denominations that divides
     // (`d.in(s)`, `Bucket(d)`, `spread / 2`) and leaves a remainder, and
     // (`Decimal<S>`) a Decimal's narrowing `d.rescale(T)` that drops a
@@ -90,7 +91,7 @@ pub const BUILTIN_TYPES: &[BuiltinType] = &[
     },
     BuiltinType {
         name: "IoError",
-        fields: &[("kind", Str), ("errno", Int), ("path", Str)],
+        fields: &[("kind", Str), ("errno", Int), ("path", Str), ("detail", Str)],
         injected: Injected::Always,
     },
     // `@form(hashmap)`'s `get` / `remove`. The key is not carried: its

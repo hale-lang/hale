@@ -174,3 +174,48 @@ fn ordered_by_names_min_or_max() {
         err.iter().map(|d| &d.message).collect::<Vec<_>>()
     );
 }
+
+/// The hook must not `put` into its own cache: it runs inside the `put`
+/// that evicts and while the cache dissolves. The check refuses a `put`
+/// on the cache the hook reaches, directly or through the fns it calls,
+/// at that `put`, with the chain; a `put` into another cache is the
+/// hook's to make.
+#[test]
+fn an_eviction_hook_that_puts_into_its_own_cache_is_refused_at_the_put() {
+    let via_helper = format!(
+        "{LRU}@form(lru_cache, cap = 2) locus P {{\n\
+             capacity {{ pool cs of Conn indexed_by host; }}\n\
+             fn on_evict(k: String, v: Conn) {{ self.keep(v); }}\n\
+             fn keep(v: Conn) {{ self.put(Conn {{ host: v.host + \"'\", fd: v.fd }}); }}\n\
+         }}\n\
+         fn main() {{ let p = P {{ }}; p.put(Conn {{ host: \"a\" }}); }}\n"
+    );
+    let prog = parse_source(&via_helper).expect("parse");
+    let errors: Vec<_> = check_program(&prog).into_iter().filter(|d| d.is_error()).collect();
+    assert_eq!(errors.len(), 1, "{errors:?}");
+    assert_eq!(errors[0].span.slice(&via_helper), "self.put(Conn { host: v.host + \"'\", fd: v.fd })", "at the put");
+    assert!(
+        errors[0].message.starts_with("`P.on_evict` puts into its own cache (P::on_evict -> P::keep [P::put])"),
+        "{}",
+        errors[0].message
+    );
+    assert_error(
+        &format!(
+            "{LRU}@form(lru_cache, cap = 2) locus P {{\n\
+                 capacity {{ pool cs of Conn indexed_by host; }}\n\
+                 fn on_evict(k: String, v: Conn) {{ self.put(v); }}\n\
+             }}\n\
+             fn main() {{ let p = P {{ }}; p.put(Conn {{ host: \"a\" }}); }}\n"
+        ),
+        "`P.on_evict` puts into its own cache (P::on_evict [P::put])",
+    );
+    assert_clean(&format!(
+        "{LRU}@form(lru_cache, cap = 2) locus Q {{ capacity {{ pool cs of Conn indexed_by host; }} }}\n\
+         @form(lru_cache, cap = 2) locus P {{\n\
+             capacity {{ pool cs of Conn indexed_by host; }}\n\
+             params {{ spill: Q = Q {{ }}; }}\n\
+             fn on_evict(k: String, v: Conn) {{ self.spill.put(v); }}\n\
+         }}\n\
+         fn main() {{ let p = P {{ }}; p.put(Conn {{ host: \"a\" }}); }}\n"
+    ));
+}

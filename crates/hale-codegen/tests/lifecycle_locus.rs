@@ -1,4 +1,4 @@
-//! The `lifecycle_locus` integration-test binary: 21 test files of this area, kept
+//! The `lifecycle_locus` integration-test binary: 22 test files of this area, kept
 //! where they are (their paths, names and history unchanged) and built as
 //! modules of one binary, so the crate links once for the area instead of
 //! once per file. Each file is a module; a test's name is `<file>::<fn>`.
@@ -43,6 +43,8 @@ mod self_containing_locus;
 mod self_field_alias;
 #[path = "self_field_index_assign.rs"]
 mod self_field_index_assign;
+#[path = "self_field_nested_retire.rs"]
+mod self_field_nested_retire;
 #[path = "self_field_retire_alternation.rs"]
 mod self_field_retire_alternation;
 #[path = "sibling_field_forward_ref.rs"]

@@ -17,13 +17,14 @@ fn main() {
 }
 ```
 
-`std::test` ships three primitives, all written in Hale itself:
+`std::test` ships four primitives, all written in Hale itself:
 
 | Assertion | Passes when… |
 |---|---|
 | `assert(cond, msg)` | `cond` is `true` |
 | `assert_eq_int(actual, expected, msg)` | `actual == expected` (with an `expected / actual` diff on failure) |
 | `assert_eq_str(actual, expected, msg)` | `actual == expected` (the same diff, quoted) |
+| `assert_near(actual, expected, tolerance, msg)` | the two `Float`s are equal or `\|actual - expected\| <= tolerance` (the failure shows both values, the difference and the tolerance; a NaN never passes) |
 
 The contract is exit-code based, and it's the whole model:
 
@@ -101,11 +102,14 @@ Three edges are worth knowing:
 - **Only what you own.** `dissolve()` is your code; it cleans your
   child, your directory, your lock file. Nothing cleans up on your
   behalf.
-- **Assertions belong in `main`.** An assertion that fails inside a
-  helper `fn` or a locus method has no `main` frame to return
-  through, and ends the process on the spot without the dissolve
-  cascade. Keep the assertions that guard owned resources at the top
-  level.
+- **Anywhere is fine.** An assertion that fails inside a helper
+  `fn`, a locus method or a `run()` tears the program down the same
+  way: nothing after it runs, and every locus `main`'s teardown would
+  reach — what `main` and the bodies under it `let`-bound, the main
+  locus and its fields, the pinned children — dissolves before the
+  process returns `1`. One that fails on a pinned thread or a pool
+  stops the test at `main`'s next `sleep` or `yield`; the body that
+  failed runs on to its end, with its later assertions doing nothing.
 - **`kill -9` is different.** If something SIGKILLs the test process,
   nothing runs — not `dissolve()`, not an atexit hook. That's the
   platform, not Hale; an external reaper is the only answer.

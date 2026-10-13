@@ -1,0 +1,58 @@
+// std::hex: base16 text of bytes.
+//
+// `encode` writes two lowercase digits per byte; `decode` reads them
+// back, either case, and refuses anything that is not an even run of
+// hex digits; `digit` is the value of one digit byte. Before these the
+// stdlib carried three private copies of the digit table (a key
+// fingerprint, the JSON `\uHHHH` reader and the api payload checker)
+// and every program that printed a digest wrote a fourth.
+
+/// The base16 text of `b`: two lowercase digits per byte, nothing
+/// between them (`b"\x01\xab"` is `"01ab"`). An empty `b` is `""`.
+fn __std_hex_encode(b: Bytes) -> String {
+    let n = len(b);
+    if n == 0 {
+        return "";
+    }
+    let digits = "0123456789abcdef";
+    let out = std::bytes::BytesBuilder { initial_cap: n * 2 + 1 };
+    let mut i = 0;
+    while i < n {
+        let v = std::bytes::read_u8(b, i) or 0;
+        out.append_u8(std::str::byte_at_unchecked(digits, v / 16));
+        out.append_u8(std::str::byte_at_unchecked(digits, v % 16));
+        i = i + 1;
+    }
+    return std::str::clone(out.text_view());
+}
+
+/// The bytes base16 text `s` spells, two digits a byte, either case.
+/// An odd length or a byte that is not a hex digit is a
+/// `ParseError { kind: "hex", input: s }`; `""` is the empty `Bytes`.
+fn __std_hex_decode(s: String) -> Bytes fallible(ParseError) {
+    let n = len(s);
+    if n % 2 != 0 {
+        fail ParseError { kind: "hex", input: s };
+    }
+    let out = std::bytes::BytesBuilder { initial_cap: n / 2 + 1 };
+    let mut i = 0;
+    while i < n {
+        let hi = __std_hex_digit(std::str::byte_at_unchecked(s, i));
+        let lo = __std_hex_digit(std::str::byte_at_unchecked(s, i + 1));
+        if hi < 0 || lo < 0 {
+            fail ParseError { kind: "hex", input: s };
+        }
+        out.append_u8(hi * 16 + lo);
+        i = i + 2;
+    }
+    return std::bytes::clone(out.view());
+}
+
+/// The value of one hex digit byte (`'0'`-`'9'`, `'a'`-`'f'`,
+/// `'A'`-`'F'`), or -1 when `c` is not one.
+fn __std_hex_digit(c: Int) -> Int {
+    if c >= 48 && c <= 57 { return c - 48; }
+    if c >= 97 && c <= 102 { return c - 87; }
+    if c >= 65 && c <= 70 { return c - 55; }
+    return -1;
+}

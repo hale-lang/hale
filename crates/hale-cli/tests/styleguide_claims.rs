@@ -365,14 +365,15 @@ fn claim_qualified_std_time_duration_alone_fails_build() {
 
 // ---- retirement gaps: a running program's resident set ------------
 
-/// §7 open gaps: "Nested-compound fields of a replaced struct don't
-/// retire", beside a String-only struct, which does, and a Bytes field
-/// of a replaced `@form(hashmap)` cell, which retires since the map
-/// reclaims a replaced cell's whole value. Measured on v0.22.0 over
-/// 200 000 replaces: the control +4 KiB, nested +6.0 MiB, map Bytes
-/// +4.6 MiB; the map's phase holds flat now.
+/// §1 "Replace and let it retire": a replaced self-field struct retires
+/// its whole old value — a String-only struct, one with a nested record
+/// (a §7 open gap until the self-field store walked the replaced value
+/// with the form retire descriptor: +6.0 MiB over 200 000 replaces on
+/// v0.22.0) — and so does a replaced `@form(hashmap)` cell's Bytes field
+/// (+4.6 MiB on v0.22.0, before the map reclaimed a replaced cell's
+/// whole value). Every phase holds flat now.
 #[test]
-fn claim_replaced_nested_fields_do_not_retire_but_map_cells_do() {
+fn claim_replaced_nested_fields_and_map_cells_retire() {
     if asan_build() {
         eprintln!("skipped under LOTUS_ASAN: a resident-set budget says nothing past ASan's quarantine");
         return;
@@ -433,11 +434,10 @@ fn main() { App { }; }
         out
     );
     assert!(
-        g["nested"] > MIB,
-        "spec/styleguide.md §7 says nested-compound fields of a replaced \
-         struct don't retire (+6.0 MiB over 200 000 replaces on v0.22.0). \
-         This run grew {} bytes — they retire now: update that open gap, \
-         §1's \"Replace and let it retire\" and S4:\n{}",
+        g["nested"] < MIB / 2,
+        "spec/styleguide.md §1 says a replaced struct's nested-compound \
+         fields retire with the rest of it (\"Replace and let it retire\"); \
+         200 000 replaces grew {} bytes:\n{}",
         g["nested"],
         out
     );
@@ -451,12 +451,14 @@ fn main() { App { }; }
     );
 }
 
-/// §7 open gaps: "`striped` / `lockfree` `@form` maps don't retire
-/// replaced cells", beside a plain map and a `serialized` one, which
-/// do. Measured on v0.22.0 over 200 000 replaces of 16 keys: plain
-/// and serialized +4 KiB each, striped +2.3 MiB, lockfree +2.4 MiB.
+/// §7 says a replaced `@form(hashmap)` cell retires under every `sync =`
+/// discipline. That was an open gap for `striped` and `lockfree` ("maps
+/// don't retire replaced cells"): measured on v0.22.0 over 200 000
+/// replaces of 16 keys, plain and serialized +4 KiB each, striped
+/// +2.3 MiB, lockfree +2.4 MiB. Their reads now copy the cell out under
+/// its claim and their writers retire, so all four hold flat.
 #[test]
-fn claim_striped_and_lockfree_maps_do_not_retire() {
+fn claim_maps_of_every_discipline_retire() {
     if asan_build() {
         eprintln!("skipped under LOTUS_ASAN: a resident-set budget says nothing past ASan's quarantine");
         return;
@@ -509,25 +511,12 @@ fn main() { App { }; }
     );
     let g = phase_growth(&out);
     eprintln!("resident growth per phase (bytes): {:?}", g);
-    for control in ["plain", "serialized"] {
+    for mode in ["plain", "serialized", "striped", "lockfree"] {
         assert!(
-            g[control] < MIB / 2,
-            "the control — a `{}` map whose cell is replaced 200 000 \
-             times — must hold flat (§7 says `sync = serialized` retires \
-             since 2026-08-03); it grew {} bytes:\n{}",
-            control,
-            g[control],
-            out
-        );
-    }
-    for mode in ["striped", "lockfree"] {
-        assert!(
-            g[mode] > MIB,
-            "spec/styleguide.md §7 says a `sync = {}` map doesn't retire \
-             replaced cells (~2.3 MiB over 200 000 replaces on v0.22.0). \
-             This run grew {} bytes — it retires now: update the \
-             \"`striped` / `lockfree` `@form` maps don't retire\" open \
-             gap:\n{}",
+            g[mode] < MIB / 2,
+            "spec/styleguide.md §7 says a replaced `@form(hashmap)` cell \
+             retires under every `sync =` discipline; a `{}` map whose cell \
+             was replaced 200 000 times grew {} bytes:\n{}",
             mode,
             g[mode],
             out

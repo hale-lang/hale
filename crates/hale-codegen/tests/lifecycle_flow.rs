@@ -1,4 +1,4 @@
-//! The `lifecycle_flow` integration-test binary: 29 test files of this area, kept
+//! The `lifecycle_flow` integration-test binary: 31 test files of this area, kept
 //! where they are (their paths, names and history unchanged) and built as
 //! modules of one binary, so the crate links once for the area instead of
 //! once per file. Each file is a module; a test's name is `<file>::<fn>`.
@@ -53,8 +53,12 @@ mod placement_factory_default;
 mod placement_where_async_io;
 #[path = "pool_affinity.rs"]
 mod pool_affinity;
+#[path = "tree_drain.rs"]
+mod tree_drain;
 #[path = "typed_body_rows.rs"]
 mod typed_body_rows;
+#[path = "unwind_registry_threads.rs"]
+mod unwind_registry_threads;
 #[path = "reclaim_cancel_ir.rs"]
 mod reclaim_cancel_ir;
 #[path = "reclaim_idle_calls.rs"]

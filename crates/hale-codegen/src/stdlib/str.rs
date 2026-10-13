@@ -71,6 +71,11 @@ pub(crate) trait StrStdlib<'ctx> {
         args: &[Expr],
         scope: &Scope<'ctx>,
     ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError>;
+    fn lower_std_str_index_of_from(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError>;
     fn lower_std_str_can_parse_int(
         &mut self,
         args: &[Expr],
@@ -1016,6 +1021,57 @@ impl<'ctx, 'p> StrStdlib<'ctx> for Cx<'ctx, 'p> {
             )
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         let v = call
+            .try_as_basic_value()
+            .left()
+            .expect("returns i64");
+        Ok((v, CodegenTy::Int))
+    }
+
+    /// Lower `std::str::index_of_from(s: String, sub: String, start: Int)
+    /// -> Int`: `index_of` from byte `start` on, the index still into
+    /// `s` (a scanner passes it back as the next start, where slicing the
+    /// tail and adding the offset back was the workaround — a copy per
+    /// step). A negative start is 0, a start past the end finds nothing;
+    /// `lotus_str_index_of_from` states the empty-needle rule.
+    fn lower_std_str_index_of_from(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
+        if args.len() != 3 {
+            return Err(CodegenError::Unsupported(format!(
+                "std::str::index_of_from takes 3 args (s, sub, start), got {}",
+                args.len()
+            )));
+        }
+        let mut strs = Vec::with_capacity(2);
+        for (i, what) in ["s", "sub"].iter().enumerate() {
+            let (v, ty) = self.lower_expr(&args[i], scope)?;
+            if !matches!(ty, CodegenTy::String | CodegenTy::StringView) {
+                return Err(CodegenError::Unsupported(format!(
+                    "std::str::index_of_from: {what} must be String, got {ty:?}"
+                )));
+            }
+            strs.push(self.unpack_view_if_needed(v, &ty)?);
+        }
+        let (start, start_ty) = self.lower_expr(&args[2], scope)?;
+        if !matches!(start_ty, CodegenTy::Int) {
+            return Err(CodegenError::Unsupported(format!(
+                "std::str::index_of_from: start must be Int, got {start_ty:?}"
+            )));
+        }
+        let f = self
+            .module
+            .get_function("lotus_str_index_of_from")
+            .expect("lotus_str_index_of_from declared");
+        let v = self
+            .builder
+            .build_call(
+                f,
+                &[strs[0].into(), strs[1].into(), start.into()],
+                "str.index_of_from.ret",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
             .try_as_basic_value()
             .left()
             .expect("returns i64");

@@ -237,7 +237,7 @@ fn no_other_target_changes() {
 
 /// The targets whose dump only names more of what it calls: no verdict,
 /// no fn's tag and no advisory site moves.
-const CALL_LINES_ONLY: [(&str, usize); 22] = [
+const CALL_LINES_ONLY: [(&str, usize); 24] = [
     // The two programs that start `std::io::tcp::Listener`: since it is
     // the TCP connection substrate's, appended to the program that names
     // it, the program alone holds its connection loop too, and its call
@@ -265,6 +265,7 @@ const CALL_LINES_ONLY: [(&str, usize); 22] = [
     // more: E5 resolves the calls through a function value to the
     // program's function values, one of them an imported seed's, which
     // only the renames name.
+    ("tests/hale/http_status_phrase_test.hl", 1),
     ("tests/hale/imported_fn_value_test.hl", 5),
     // the property test of the run-appending escaper (its Rng and
     // generators are the program's own; the escapers' stdlib bodies
@@ -273,6 +274,7 @@ const CALL_LINES_ONLY: [(&str, usize); 22] = [
     ("tests/hale/json_unicode_escapes_test.hl", 16),
     ("tests/hale/json_valid_test.hl", 27),
     ("tests/hale/log_fields_test.hl", 6),
+    ("tests/hale/rand_rng_test.hl", 12),
     ("tests/hale/secret_write_private_test.hl", 10),
     ("tests/hale/std_secret_test.hl", 8),
 ];
@@ -437,6 +439,7 @@ fn verdict_changes() {
             "GraphHttp::text",
             "GraphHttp::unhex",
             "GraphItems::result",
+            "Http::checked",
             "Http::error",
             "Http::page",
             "Http::query",
@@ -574,12 +577,12 @@ fn verdict_changes() {
         ],
         &[
             ("once-per-invocation -> ACCUMULATES-UNBOUNDED", 6),
-            ("once-per-invocation -> per-iteration-reclaim", 187),
+            ("once-per-invocation -> per-iteration-reclaim", 189),
             ("per-iteration-reclaim -> ACCUMULATES-UNBOUNDED", 2),
         ],
         &[
-            "__lib_dna__core___workspace__run_failed StructLit(\"std::process::ProcessOutput\") @1908581..1908660 InvokedUnboundedly",
-            "__lib_dna__core___workspace__run_tool StructLit(\"__lib_dna__core___workspace__RunResult\") @1909293..1909361 InvokedUnboundedly",
+            "__lib_dna__core___workspace__run_failed StructLit(\"std::process::ProcessOutput\") @1909084..1909163 InvokedUnboundedly",
+            "__lib_dna__core___workspace__run_tool StructLit(\"__lib_dna__core___workspace__RunResult\") @1909796..1909864 InvokedUnboundedly",
         ],
     );
     pinned(

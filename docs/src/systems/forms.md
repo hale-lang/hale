@@ -49,7 +49,10 @@ not). Its `get` is `fallible(KeyError)` on a miss, and so is
 cache whose cells own something outside memory — a socket, a file —
 declares `fn on_evict(k: K, v: S)` on the locus: the cache calls it with
 each entry it evicts, before reclaiming the cell, so the cell can be
-closed.
+closed, and when the cache dissolves it calls it once more for each
+entry still held, least recently used first. The hook may not `put` into
+its own cache, directly or through a method it calls; the check refuses
+that `put`.
 
 Both a `vec` and a `hashmap` also expose **batched iteration** —
 `for x in v.items { … }` walks the vec, and
@@ -63,11 +66,12 @@ its Strings and Bytes, and any nested record, tuple, array or
 payload-carrying enum with what that owns — and when a `set` replaces an element or cell, or a
 `pop` / `remove` (or a vec's `clear` / `truncate`, or a cache's
 eviction) drops one, all of it is reclaimed and reused, at
-any depth, so a map or vec churned for hours keeps a flat arena (a
-`striped` or `lockfree` map does not reclaim yet). A
-value you read out stays whole: a vec's `get` hands you a copy, and
-a single-pool map's reclamation waits for the end of the current
-activation. Reading a nested record out of a map cell and setting it
+any depth, so a map or vec churned for hours keeps a flat arena,
+under every sync discipline. A
+value you read out stays whole: a vec's `get` hands you a copy, a
+synced map's read (`serialized`, `striped` or `lockfree`) copies the
+cell out for the reader, and a single-pool map's reclamation waits
+for the end of the current activation. Reading a nested record out of a map cell and setting it
 back under the same key costs nothing; storing it under another key
 copies it.
 

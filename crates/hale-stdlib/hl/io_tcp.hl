@@ -20,10 +20,15 @@
 //           "would_block", ... ("io" is the catch-all).
 //   errno — raw platform errno for callers that want it.
 //   path  — file path / connection target / "" (diagnostic).
+//   detail — the human text: the platform's message for the errno
+//           ("Connection reset by peer"), or what failed when there is
+//           no errno. Defaulted, so a program's own `fail IoError {
+//           kind, errno, path }` still builds.
 type IoError {
     kind: String;
     errno: Int;
     path: String;
+    detail: String = "";
 }
 
 // m81: Stream locus — owns one connected TCP fd, exposes
@@ -71,6 +76,7 @@ locus __StdIoTcpStream {
             let e = std::io::tcp::__last_io_status();
             fail IoError {
                 kind: std::io::tcp::__io_error_kind(e), errno: e, path: "",
+                detail: std::io::tcp::__io_error_detail(e),
             };
         }
     }
@@ -83,6 +89,7 @@ locus __StdIoTcpStream {
             let e = std::io::tcp::__last_io_status();
             fail IoError {
                 kind: std::io::tcp::__io_error_kind(e), errno: e, path: "",
+                detail: std::io::tcp::__io_error_detail(e),
             };
         }
     }
@@ -92,6 +99,7 @@ locus __StdIoTcpStream {
         if e != 0 {
             fail IoError {
                 kind: std::io::tcp::__io_error_kind(e), errno: e, path: "",
+                detail: std::io::tcp::__io_error_detail(e),
             };
         }
         return s;
@@ -108,6 +116,7 @@ locus __StdIoTcpStream {
         if e != 0 {
             fail IoError {
                 kind: std::io::tcp::__io_error_kind(e), errno: e, path: "",
+                detail: std::io::tcp::__io_error_detail(e),
             };
         }
         return b;
@@ -148,6 +157,7 @@ fn __std_io_tcp_send_fd(fd: Int, b: Bytes) -> () fallible(IoError) {
         let e = std::io::tcp::__last_io_status();
         fail IoError {
             kind: std::io::tcp::__io_error_kind(e), errno: e, path: "",
+            detail: std::io::tcp::__io_error_detail(e),
         };
     }
 }

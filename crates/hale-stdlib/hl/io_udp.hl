@@ -98,8 +98,12 @@ locus __StdIoUdpReader {
             // other negative = fatal. Both surface as IoError; the
             // kind distinguishes them.
             let k = "io";
-            if n == 0 - 2 { k = "timeout"; }
-            fail IoError { kind: k, errno: 0, path: "" };
+            let d = "recvfrom failed";
+            if n == 0 - 2 {
+                k = "timeout";
+                d = "the receive timed out (the fd's recv timeout)";
+            }
+            fail IoError { kind: k, errno: 0, path: "", detail: d };
         }
         return self.buf.view();
     }

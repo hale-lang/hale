@@ -56,6 +56,56 @@ pub(crate) trait CryptoStdlib<'ctx> {
         args: &[Expr],
         scope: &Scope<'ctx>,
     ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError>;
+
+    fn lower_std_crypto_ed25519_public_key(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError>;
+
+    fn lower_std_crypto_ed25519_sign_fallible(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<FallibleCallResult<'ctx>, CodegenError>;
+
+    fn lower_std_crypto_ed25519_verify(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError>;
+}
+
+impl<'ctx, 'p> Cx<'ctx, 'p> {
+    /// Lower `args` (each Bytes, a view unpacked) for `std::crypto::<surface>`,
+    /// whose parameters `names` are.
+    fn lower_crypto_bytes_args(
+        &mut self,
+        surface: &str,
+        names: &[&str],
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<Vec<BasicValueEnum<'ctx>>, CodegenError> {
+        if args.len() != names.len() {
+            return Err(CodegenError::Unsupported(format!(
+                "std::crypto::{surface} takes {} args ({}), got {}",
+                names.len(),
+                names.join(", "),
+                args.len()
+            )));
+        }
+        let mut vals = Vec::with_capacity(names.len());
+        for (arg, name) in args.iter().zip(names) {
+            let (v, ty) = self.lower_expr(arg, scope)?;
+            if !matches!(ty, CodegenTy::Bytes | CodegenTy::BytesView) {
+                return Err(CodegenError::Unsupported(format!(
+                    "std::crypto::{surface}: {name} must be Bytes, got {ty:?}"
+                )));
+            }
+            vals.push(self.unpack_view_if_needed(v, &ty)?);
+        }
+        Ok(vals)
+    }
 }
 
 impl<'ctx, 'p> CryptoStdlib<'ctx> for Cx<'ctx, 'p> {
@@ -438,6 +488,103 @@ impl<'ctx, 'p> CryptoStdlib<'ctx> for Cx<'ctx, 'p> {
                 iv,
                 self.context.i64_type().const_zero(),
                 "ecdsa.verify.bool",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        Ok((b.into(), CodegenTy::Bool))
+    }
+
+    /// `std::crypto::__ed25519_public_key(seed: Bytes) -> Bytes`: the
+    /// 32-byte Ed25519 public key of a 32-byte seed, or an empty Bytes
+    /// for any other length — `ed25519_keypair`'s body (`crypto.hl`)
+    /// refuses that with its CryptoError.
+    fn lower_std_crypto_ed25519_public_key(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
+        let vals = self.lower_crypto_bytes_args("__ed25519_public_key", &["seed"], args, scope)?;
+        let f = self
+            .module
+            .get_function("lotus_ed25519_public_key")
+            .expect("lotus_ed25519_public_key declared");
+        let v = self
+            .builder
+            .build_call(f, &[vals[0].into()], "ed25519.public_key")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .try_as_basic_value()
+            .left()
+            .expect("returns ptr");
+        Ok((v, CodegenTy::Bytes))
+    }
+
+    /// `std::crypto::ed25519_sign(secret: Bytes, message: Bytes) -> Bytes
+    /// fallible(CryptoError)`: the 64-byte RFC 8032 signature. `secret` is
+    /// the 32-byte seed or the 64-byte seed + public key; a NULL from the
+    /// runtime (any other length, or a public half that is not the
+    /// seed's) is `CryptoError { kind: "ed25519_sign", detail }`.
+    fn lower_std_crypto_ed25519_sign_fallible(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<FallibleCallResult<'ctx>, CodegenError> {
+        let vals = self.lower_crypto_bytes_args("ed25519_sign", &["secret", "message"], args, scope)?;
+        let f = self
+            .module
+            .get_function("lotus_ed25519_sign_or_null")
+            .expect("lotus_ed25519_sign_or_null declared");
+        let sig_ptr = self
+            .builder
+            .build_call(f, &[vals[0].into(), vals[1].into()], "ed25519.sign.or_null")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .try_as_basic_value()
+            .left()
+            .expect("returns ptr");
+        let is_err = self
+            .builder
+            .build_is_null(sig_ptr.into_pointer_value(), "ed25519.sign.is_err")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let detail_ptr = self.global_string(
+            "the secret key is neither a 32-byte seed nor a 64-byte seed and its public key",
+        );
+        self.complete_crypto_fallible_call(
+            is_err,
+            detail_ptr.into(),
+            "ed25519_sign",
+            Some((sig_ptr, CodegenTy::Bytes)),
+            "crypto.ed25519_sign",
+        )
+    }
+
+    /// `std::crypto::ed25519_verify(public: Bytes, message: Bytes,
+    /// signature: Bytes) -> Bool`: RFC 8032 verification (S < L enforced);
+    /// a public key that is not 32 bytes or a signature that is not 64 is
+    /// `false`. The C fn returns i64 1/0; narrowed to i1.
+    fn lower_std_crypto_ed25519_verify(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
+        let vals =
+            self.lower_crypto_bytes_args("ed25519_verify", &["public", "message", "signature"], args, scope)?;
+        let f = self
+            .module
+            .get_function("lotus_ed25519_verify")
+            .expect("lotus_ed25519_verify declared");
+        let iv = self
+            .builder
+            .build_call(f, &[vals[0].into(), vals[1].into(), vals[2].into()], "ed25519.verify.ret")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .try_as_basic_value()
+            .left()
+            .expect("returns i64")
+            .into_int_value();
+        let b = self
+            .builder
+            .build_int_compare(
+                inkwell::IntPredicate::NE,
+                iv,
+                self.context.i64_type().const_zero(),
+                "ed25519.verify.bool",
             )
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         Ok((b.into(), CodegenTy::Bool))

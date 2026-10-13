@@ -844,6 +844,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 self.builder
                     .build_store(slot, ptr)
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                self.emit_unwind_push(slot, &lname, None)?;
                 self.deferred_dissolves
                     .last_mut()
                     .expect("checked non-empty")
@@ -1512,6 +1513,27 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         success_value: Option<(BasicValueEnum<'ctx>, CodegenTy)>,
         label: &str,
     ) -> Result<FallibleCallResult<'ctx>, CodegenError> {
+        self.complete_parse_fallible_call_with(
+            is_err,
+            |_| Ok(input_str_ptr),
+            kind_tag,
+            success_value,
+            label,
+        )
+    }
+
+    /// `complete_parse_fallible_call` whose `input` text is built on the
+    /// error path only, by `input`: a caller whose refused value is not
+    /// already a String (`std::decimal::from_float`'s Float) formats it
+    /// there, so the success path pays nothing for it.
+    pub(crate) fn complete_parse_fallible_call_with(
+        &mut self,
+        is_err: IntValue<'ctx>,
+        input: impl FnOnce(&mut Self) -> Result<BasicValueEnum<'ctx>, CodegenError>,
+        kind_tag: &str,
+        success_value: Option<(BasicValueEnum<'ctx>, CodegenTy)>,
+        label: &str,
+    ) -> Result<FallibleCallResult<'ctx>, CodegenError> {
         let payload_ty = CodegenTy::TypeRef("ParseError".to_string());
         let out_err_slot = self.alloca_for(
             &payload_ty,
@@ -1550,6 +1572,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
 
         // err path: build ParseError, store in out_err_slot.
         self.builder.position_at_end(lazy_err_bb);
+        let input_str_ptr = input(self)?;
         let pe_ptr = self.emit_parse_error_alloc(input_str_ptr, kind_tag)?;
         self.builder
             .build_store(out_err_slot, pe_ptr)
@@ -2223,7 +2246,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .expect("lotus_io_error_kind returns ptr");
 
         // Store fields. Order matches the `IoError` row of `hale_types::builtin_types`:
-        // kind (0), errno (1), path (2).
+        // kind (0), errno (1), path (2), detail (3).
         let (kind_idx, _) = info
             .fields
             .get("kind")
@@ -2277,6 +2300,31 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         self.builder
             .build_store(path_field_ptr, path_str_ptr)
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+        // detail: the platform's message for the errno, copied into the
+        // arena. A user's own `type IoError` (the shadow rule holds it to
+        // the row's fields) has the field too.
+        if let Some((detail_idx, _)) = info.fields.get("detail").cloned() {
+            let arena_ptr = self.current_arena_ptr()?;
+            let detail_fn = self
+                .module
+                .get_function("lotus_io_error_detail")
+                .expect("lotus_io_error_detail declared");
+            let detail_ptr = self
+                .builder
+                .build_call(detail_fn, &[arena_ptr.into(), errno_i64.into()], "ioerr.detail.ptr")
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                .try_as_basic_value()
+                .left()
+                .expect("lotus_io_error_detail returns ptr");
+            let detail_field_ptr = self
+                .builder
+                .build_struct_gep(info.struct_ty, alloc_ptr, detail_idx, "IoError.detail.ptr")
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            self.builder
+                .build_store(detail_field_ptr, detail_ptr)
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        }
 
         Ok(alloc_ptr)
     }

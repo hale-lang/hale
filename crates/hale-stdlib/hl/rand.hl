@@ -1,0 +1,77 @@
+// std::rand::Rng: a seeded, deterministic pseudo-random generator.
+//
+// `std::rand::next_int` draws from one process-global generator, seeded
+// at start and re-seedable only from the clock, so a simulation or a
+// test that wants the same sequence twice had nothing to hold
+// (downstream handoff). An `Rng` is its own generator: the same `seed`
+// gives the same sequence, on every run and every target, and two
+// `Rng`s never share state.
+//
+// The generator is SplitMix64 (Steele, Lea & Flood, "Fast splittable
+// pseudorandom number generators", OOPSLA 2014; the seeding generator of
+// xoshiro256**): a 64-bit state advanced by the golden-ratio constant
+// and mixed by two multiply-xorshift rounds. It passes BigCrush and has
+// period 2^64. It is NOT cryptographic: its output reveals its state.
+// For keys, tokens and nonces use `std::os::getrandom`.
+//
+// `Int` arithmetic wraps and `>>` is the logical shift, which is the
+// 64-bit unsigned arithmetic the algorithm is written in; the three
+// constants are 0x9E3779B97F4A7C15, 0xBF58476D1CE4E5B9 and
+// 0x94D049BB133111EB as `Int`s.
+
+/// A seeded pseudo-random generator (SplitMix64): the same `seed` gives
+/// the same sequence everywhere. Not cryptographic — use
+/// `std::os::getrandom` for anything secret.
+locus __StdRandRng {
+    params {
+        // The seed. Any `Int`, 0 included.
+        seed: Int = 0;
+        // The generator's state: `seed` at birth, advanced by each draw.
+        state: Int = 0;
+    }
+
+    birth() {
+        self.state = self.seed;
+    }
+
+    /// The next 64 bits of the sequence, as an `Int` (any value, negative
+    /// included). The other draws are built on it.
+    fn next() -> Int {
+        self.state = self.state + -7046029254386353131;
+        let mut z = self.state;
+        z = (z ^ (z >> 30)) * -4658895280553007687;
+        z = (z ^ (z >> 27)) * -7723592293110705685;
+        return z ^ (z >> 31);
+    }
+
+    /// A uniform `Int` in `[0, max)`, without modulo bias (a draw past the
+    /// largest multiple of `max` is drawn again). `max <= 0` answers 0, as
+    /// `std::rand::next_int` does, and draws nothing.
+    fn next_int(max: Int) -> Int {
+        if max <= 0 {
+            return 0;
+        }
+        let limit = (9223372036854775807 / max) * max;
+        let mut r = self.next() >> 1;
+        while r >= limit {
+            r = self.next() >> 1;
+        }
+        return r % max;
+    }
+
+    /// A uniform `Float` in `[0, 1)`: the top 53 bits of a draw, so every
+    /// value is a multiple of 2^-53.
+    fn next_float() -> Float {
+        return std::math::int_to_float(self.next() >> 11) / 9007199254740992.0;
+    }
+
+    /// A uniform `Int` in `[lo, hi)`. `hi <= lo` answers `lo` and draws
+    /// nothing; so does a span `hi - lo` too wide for an `Int`.
+    fn range(lo: Int, hi: Int) -> Int {
+        let span = hi - lo;
+        if hi <= lo || span <= 0 {
+            return lo;
+        }
+        return lo + self.next_int(span);
+    }
+}

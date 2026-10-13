@@ -166,7 +166,9 @@ the model: runtime is automatic; stdlib is explicit.
   the process's draining flag and call no `drain()`: the `run()`s
   that read `self.draining` return, and the ordinary teardown
   follows (§ "Process control", § "Lifecycle obligations",
-  line 15). No separate cascade syntax — `drain()` is always
+  line 15). A main locus's teardown raises the same drain for its
+  tree once its `run()` has returned, before it joins anything
+  (line 15). No separate cascade syntax — `drain()` is always
   cascading. For locus-typed param fields specifically
   (F.29), the codegen walks `LocusRef` fields in declaration
   order at the cascade-teardown sites (ephemeral scope-exit
@@ -641,23 +643,52 @@ threads, pinned publishers via `lotus_bus_local_dispatch`, etc.
 The drain is idempotent, so existing code with `sleep; yield;`
 stays correct.
 
-**Which path delivers to whom.** The queue drained *here* is the
-program-wide *in-process cooperative* queue, drained on the `main`
-thread — so this sleep-loop drain delivers in-process cells to a
-cooperative subscriber on the `main` pool. It is **not** the only
-delivery path: cross-process topics (`udp://` / `unix://` bound via
-`LOTUS_BUS_CONFIG`) are delivered by the transport reader thread,
-which dispatches directly into the subscribed handler set and
-reaches a cooperative locus on *any* pool — **provided that pool's
-thread is free to run the dispatch.** So a non-`main` cooperative
-subscriber receives reliably as long as it doesn't monopolize its
-pool thread with a blocking call. (Pinned loci are a third path: a
-per-locus mailbox drained at each `sleep`/`yield`.) The failure mode
-is a cooperative subscriber whose `run()` *blocks* — the dispatch
-can't run and its handlers never fire; that blocking-and-subscribing
-combination is what the dead-bus-receiver rule rejects (see
-"Type-check rules" in `spec/semantics.md`), **not** non-`main`
-placement on its own.
+**Every park point delivers, on every pool.** A sleep slice and an
+explicit `yield;` are park points, and a park point inside a
+cooperative locus's `run()` delivers the cells already queued for
+the thread it runs on, whatever pool that is:
+
+- on `main`, the program-wide *in-process cooperative* queue
+  (`lotus_bus_queue_drain`);
+- on a classic pool's worker, that pool's own queue
+  (`lotus_pool_run_park_drain`, 2026-10-12): the bus cells queued
+  for the pool's subscribers, the sleeping locus's own included,
+  are delivered on the worker in the order they were posted, before
+  the sleep returns. The pool's other work is not started there: a
+  run start, a resume or a pool-placed root's init that the drain
+  dequeues is set aside in order and runs after the current `run()`
+  returns, ahead of everything still queued, so a park point moves
+  deliveries earlier and reorders nothing else, and one `run()` never
+  starts inside another. A failure posted and not yet delivered stops
+  the drain before the cells behind it (the worker delivers it
+  between cells, as before, and a delivery does not overtake it);
+- on a pinned thread, its mailbox (below);
+- on a `where async_io` pool, a sleep parks the coroutine and the
+  worker delivers meanwhile, so it needs no drain.
+
+A handler a park point runs is not itself a `run()`: a park point
+inside it delivers nothing, as a handler run by main's drain does not
+re-enter it. A `run()` that never reaches a park point delivers
+nothing while it runs — the blocking advisories below are about that
+shape.
+
+**Which path delivers to whom.** The queue drained on `main` is the
+program-wide *in-process cooperative* queue, so the sleep-loop drain
+there delivers in-process cells to a cooperative subscriber on the
+`main` pool; the one a pool's worker drains delivers to that pool's.
+Neither is the only delivery path: cross-process topics (`udp://` /
+`unix://` bound via `LOTUS_BUS_CONFIG`) are delivered by the
+transport reader thread, which dispatches directly into the
+subscribed handler set and reaches a cooperative locus on *any* pool
+— **provided that pool's thread is free to run the dispatch.** So a
+non-`main` cooperative subscriber receives reliably as long as it
+doesn't monopolize its pool thread with a blocking call. (Pinned
+loci are a third path: a per-locus mailbox drained at each
+`sleep`/`yield`.) The failure mode is a cooperative subscriber whose
+`run()` *blocks* — the dispatch can't run and its handlers never
+fire; that blocking-and-subscribing combination is what the
+dead-bus-receiver rule rejects (see "Type-check rules" in
+`spec/semantics.md`), **not** non-`main` placement on its own.
 
 **Long sleeps no longer starve main-pool handlers.**
 Before the slicing, the drain happened only *after the whole sleep
@@ -1241,11 +1272,16 @@ subscriber's handlers run where that thread runs cells while the
 scope is open: on an `async_io` pool, while the constructing body
 parks; on a pinned thread, at the body's sleeps and yields, which
 drain its mailbox; on main, at the drains of its statement
-boundaries and its scope exit. A classic pool's cells are
-handler-atomic, and the constructing body holds the worker for the
-subscriber's whole life, so a delivery to a scope-local subscriber
-there waits and is dropped with it; `hale check` warns at such a
-literal (spec/verification.md, "Dropped scope-local delivery"). Its dissolve is a reclaim like
+boundaries and its scope exit; on a classic pool, at the body's
+sleeps and yields while it runs inside a `run()`, which deliver the
+pool's queued cells (§ "`time::sleep` drain semantics"). Anywhere
+else on a classic pool — in a handler, whose park points deliver
+nothing, or past the body's last park point — the constructing body
+holds the worker for the subscriber's whole life, so a delivery to a
+scope-local subscriber there waits and is dropped with it; `hale
+check` warns at every such literal on a classic pool, whether or not
+the body parks after its publishes (spec/verification.md, "Dropped
+scope-local delivery"). Its dissolve is a reclaim like
 any other: the subscriber is quarantined before its storage goes, so
 a cell still queued for it on the pool or the mailbox is dropped at
 materialization (GH #703), and the release waits for a handler of it
@@ -1394,6 +1430,47 @@ and modes; specific transports come from stdlib (`std::bus::*`).
   transport is in the runtime itself (substrate-guaranteed
   atomic delivery via SOCK_SEQPACKET) and doesn't go through
   the Adapter interface.
+
+**One publisher's order (2026-10-12).** Each thread delivers in-process
+cells through one queue of its own: `main` through the program-wide
+cooperative queue, a pool's worker through its pool's queue, a pinned
+thread through its mailbox. That queue is the destination domain of
+every subscriber the thread hosts. The guarantee: for one publishing
+thread and one destination domain, the cells it sends are delivered in
+the order it sent them, **across topics** — `TA <- a; TB <- b;` delivers
+`a` to each of TA's subscribers in that domain before `b` reaches any of
+TB's there, whichever topic it was. Delivered means the handler is
+started in that order; on an `async_io` pool a handler that parks lets
+the next one start, so completion may interleave. A cell a thread
+posts to its own queue while an overflow of its own waits there joins
+that overflow, so the drain's ring-before-overflow order cannot let it
+overtake one. Nothing is promised between
+two publishing threads, nor between two destination domains (a cell to
+a pool's subscriber and one to `main`'s run on different threads, and
+either may run first). A subscriber whose `birth()` has not completed
+is the one exception the readiness contract makes: its cells wait for
+its readiness (§ "Lifecycle obligations", line 6) and are delivered
+then, in the order they were sent.
+
+The compiler's devirtualizations keep it, which is what makes them
+invisible (`spec/semantics.md` § "Closed-world topology
+optimization"): a publish lowered to a direct handler call — the
+closed-world rewrite of a send to its one subscriber, or a direct
+dispatch flavor's baked call — runs at once only while nothing the
+publishing thread sent earlier still waits on its own queue. While
+something does, the publish is queued to the same subscribers instead,
+behind it, as the bus would have queued it. The runtime keeps one word
+per thread, `lotus_local_queued`: raised where the thread posts a cell
+to its own queue, lowered where its drain finds that queue empty; a
+devirtualized publish reads it with one load. It is conservative (a
+cell another publisher on the thread queued raises it too, and costs
+that publish an enqueue, never an order). A direct dispatch flavor
+reads it only where a subscriber of its subject also subscribes to a
+subject the plan does not lower direct: its handlers are quiet (they
+change their own locus and nothing else), so overtaking a queued cell
+is observable only through that subscriber. The common case — nothing
+queued — stays the direct call (a baked direct publish measured the
+same, 2.8 ns for two handlers, before and after).
 
 **v1.x source surface.** Subjects are now declared as typed
 top-level `topic Foo { payload: T; subject: "..."; }` decls
@@ -1826,9 +1903,12 @@ zero_copy binding produces.
     while `lotus_process_draining_flag` is up). For an owner's
     teardown it is shipped where the owner's reclaim reaches the
     child while the failure is outstanding (the reclaim wins, below),
-    and not yet where the teardown joins the child's pool first and
-    reaches its reclaim only after the delivery (inventory row C42,
-    `rd_restart_during_teardown.hl`).
+    and where the teardown joins the child's pool first and reaches
+    its reclaim only after the delivery: a main locus's teardown
+    raises its tree's drain before it joins (§ "Lifecycle
+    obligations", line 15), so the restart gate reads the drain up
+    (inventory row C42, `rd_restart_during_teardown.hl`, shipped
+    2026-10-12).
   - A failure held while the owner's params are open is still
     delivered when they settle (`spec/semantics.md` §
     "on_failure(c, err)"). One subcase was open: an owner placed
@@ -2181,7 +2261,21 @@ its `KNOWN_OPEN` table, which is empty today.
   runs its `birth()`.
 - **Line 6, registration before birth, and readiness.** A new
   instance's subscriptions are registered before its `birth()`, so
-  `birth()` may publish to them. Shipped. Delivery to the instance
+  `birth()` may publish to them. Shipped. A cooperative instance the
+  plan owes readiness registers the subscriptions that take no key
+  as soon as its region exists, its window open, before its params
+  are built: a cell its params' children publish to it while they
+  are born or run inline parks for it and is delivered after its own
+  `birth()` (2026-10-12, `bus_early_registration.rs`; before, it
+  registered after its params and the cell reached no subscription
+  of it). A keyed subscription, which reads its key from the params,
+  a pinned instance's, which registers with the mailbox its thread
+  start creates, an accepted child's, which follows its owner's
+  `accept` (line 5), and one bound to an `shm_ring`, whose reader
+  thread starts at the registration and calls the handler itself,
+  outside the window, still register after the params — each on its
+  own: the same instance's eligible subscriptions register early
+  behind the one window. Delivery to the instance
   becomes eligible once its `birth()` (and its `birth_check`) has
   completed: what is published to it before then, its own
   `birth()`'s sends included, waits in the order it was published,
@@ -2213,7 +2307,20 @@ its `KNOWN_OPEN` table, which is empty today.
   Baked broadcast publishes use runtime dispatch while any window
   is open. A helper cannot bypass readiness or broaden a local send
   into a broadcast.
-  Not yet true in two cases (inventory rows C51
+  A publish written before the literal that builds its subscriber, in
+  one body, never reaches that subscriber, and `hale check` warns at it
+  (spec/verification.md, "Publish before its subscriber"). **Pending,
+  adopted 2026-10-12:** a subscriber of a statically built tree that
+  is built after its publisher — a later params sibling, one a pinned
+  or pool-placed field's subtree builds on its own thread, a keyed or
+  pinned subscriber — registers once it is built, so what an earlier
+  sibling's `birth()` or `run()` publishes before then reaches no
+  subscription of it, and is lost. The adopted rule reserves the static
+  tree's subscriptions before its first birth, so those cells park
+  until the subscriber's birth completes, bounded by the topic's
+  capacity and its `on_full`; not yet emitted (the parent's own
+  subscriptions are, above). Not yet true
+  in two further cases (inventory rows C51
   and R51). A subscribing locus that only stdlib or imported code
   builds, so that the lifecycle plan holds no template of it, opens
   no window, and what is published to it during its `birth()` is
@@ -2227,7 +2334,9 @@ its `KNOWN_OPEN` table, which is empty today.
   it raises `BusWaitAborted`. Shipped in all five spines: each runs
   the ingress quiesce, then the wait-abort, then the pool join, then
   the reader stop (the edges between the process rows the lifecycle
-  plan states for every teardown spine, which emission reads). The
+  plan states for every teardown spine, which emission reads); a main
+  locus's own spine, eager or deferred, raises its tree's drain before
+  all four (line 15). The
   reader stop ends this process's shm ring readers
   (`lotus_shm_readers_stop`): after the join, since a reader lives
   as long as anything it serves can still produce (a pool's job
@@ -2412,10 +2521,11 @@ its `KNOWN_OPEN` table, which is empty today.
   birth-closure check, decides a restart only while the child's
   reclaim claim is clear (the reclaim wins). The trace build holds
   the resume and the restart to the plan over every fixture, with
-  three departures named: a held `run()` failure's resume, which the
-  plan does not yet state (C43); a held failure's restart performed
-  by the resume at settle where the plan places it on the posted run
-  (C42); and the restart under an owner's teardown (below).
+  two departures named: a held `run()` failure's resume, which the
+  plan does not yet state (C43); and a held failure's restart
+  performed by the resume at settle where the plan places it on the
+  posted run (C42). A restart under an owner's teardown is refused,
+  as the plan states (below).
 - **Line 14, order.** Order follows the steps the compiler emits;
   latches and pending-release records keep teardown from running
   twice (§ "Lifecycle", "Order by construction"). Shipped
@@ -2425,11 +2535,33 @@ its `KNOWN_OPEN` table, which is empty today.
   instance is reclaimed once, and only after it was born; no step is
   taken on an instance nothing built; every step entered ends), and
   each adopted line's fixture against its plan.
-- **Line 15, signals.** SIGINT and SIGTERM raise the process's
-  draining flag, from a watcher thread; nothing on the signal path
-  calls a lifecycle method. The `run()`s that read `self.draining`
-  return, and the ordinary teardown follows, `drain()` and
-  `dissolve()` once each. Shipped (`l15_sigint_flag.hl`).
+- **Line 15, signals, and the tree drain.** SIGINT and SIGTERM raise
+  the process's draining flag, from a watcher thread; nothing on the
+  signal path calls a lifecycle method. The `run()`s that read
+  `self.draining` return, and the ordinary teardown follows, `drain()`
+  and `dissolve()` once each. Shipped (`l15_sigint_flag.hl`).
+  Teardown follows the ownership tree: once a main locus's `run()`
+  has returned, the first step of its teardown, eager or deferred,
+  raises the same drain for its tree (`TreeDrain`, the capability
+  matrix's obligation of that name, before the ingress quiesce, the
+  wait-abort, the pool join, the reader stop and its pinned fields'
+  joins; `lotus_tree_drain_raise`). Every locus then reads
+  `self.draining` as true, a timed wait in progress returns early (an
+  `async_io` pool's worker is woken to expire its timed parks), and a
+  child's `run()` that watches the drain returns, so the joins after it
+  complete: a pinned or pool-placed child's `while !self.draining`
+  loop no longer holds the process once `main`'s `run()` has returned.
+  A `run()` that does not watch it keeps running, as under a signal.
+  The tree drain is the flag's second bit, so a signal's drain is
+  neither masked nor ended by it; it ends with the main locus's
+  teardown (`lotus_tree_drain_end`), so a main locus built afterwards
+  starts undrained. A `std::test` assertion that fails outside `fn
+  main`'s frame raises a third, never lowered, before it tears the
+  tree down (`spec/testing.md` § "What runs after a failed
+  assertion"). The runs of the tree are the only ones off main
+  while it is torn down: main loci are built one after another.
+  Shipped 2026-10-12 (`crates/hale-codegen/tests/tree_drain.rs`, plain
+  and under AddressSanitizer; the lifecycle plan's `TreeDrain` row).
 - **Line 16, a target without threads.** The capability matrix
   selects which of the three process-wide obligations a target owes
   (its `PoolJoin`, `WaitAbort` and `IngressQuiesce` cells), and the
@@ -2684,12 +2816,13 @@ its `KNOWN_OPEN` table, which is empty today.
   is owed or claimed when it reads the decision: its handler replaced
   it, or its owner's reclaim reached it while the failure was
   outstanding (the reclaim wins, § "Failure handling", decision
-  L0-1). Not yet shipped for an owner's teardown that reaches the
-  child through a pool join (inventory row C42): a pool-placed child
-  that fails while `fn main`'s exit joins the pools is restarted,
-  because the join runs the delivery before the cascade reaches the
-  child's reclaim, so nothing is owed or claimed when the child reads
-  the decision (`rd_restart_during_teardown.hl`).
+  L0-1). Shipped too for an owner's teardown that reaches the child
+  through a pool join (inventory row C42, 2026-10-12): the join runs
+  the delivery before the cascade reaches the child's reclaim, so
+  nothing is owed or claimed when the child reads the decision, but
+  the main locus's teardown raised its tree's drain before the join
+  (line 15), and the restart gate refuses a restart while it is up
+  (`rd_restart_during_teardown.hl`; before, the child was restarted).
 - **Join progress.** An owner keeps completing the outstanding
   failure decisions of its children until the children it waits
   for have quiesced, and a pool worker that supervises children
@@ -3511,8 +3644,15 @@ for replay-under-a-different-plan) is the next milestone.
   `time::monotonic` stays the basis for scheduling. Richer
   `Time`-typed wall-clock (with calendar arithmetic) is
   deferred until a consumer surfaces a concrete date-shape
-  need. Mocking is available for tests via
-  `time::mock_clock(...)` (stdlib).
+  need. There is no mock clock: a test controls time by passing
+  it — `Time` and `Duration` are values, so logic that depends on
+  the clock takes `now: Time` (or an elapsed `Duration`) as an
+  argument and a test hands it a literal — and a recorded run's
+  `now` / `current` / `monotonic` reads are served back by
+  `hale replay` (§ Input journal). A process-global clock a
+  program could set would be a second time source the journal,
+  `sleep` and the scheduler's deadline queue would each have to
+  consult.
 - **Monotonic-only scheduling.** Every scheduling primitive in
   Hale — `time::sleep`, `time::tick`, the cooperative
   scheduler's deadline queue — is grounded on the monotonic
@@ -3767,7 +3907,14 @@ for replay-under-a-different-plan) is the next milestone.
   `lotus_io_init` so writes to a closed pipe (subprocess stdin,
   closed TCP socket, etc.) surface as `EPIPE` through the
   IoError channel instead of synchronously killing the parent.
-  Applies process-wide — no opt-out.
+  Applies process-wide — no opt-out. It is the program's own
+  disposition, not its children's: an ignored signal stays ignored
+  across exec, so `lotus_process_fork` resets SIGPIPE to the default
+  in a `run`/`spawn` child before its exec, beside SIGINT and SIGTERM.
+  A spawned filter whose reader has gone (`yes` into `head -1`) dies
+  of SIGPIPE, as under a shell — `run` reports `signal: 13` — instead
+  of meeting `EPIPE` on every write and never ending. (Before
+  2026-10-12 the child inherited SIG_IGN.)
 - **Subprocess lifecycle** (added 2026-05-17, C2 — see
   [`spec/stdlib.md` § std::process](stdlib.md) for the API
   surface). Every spawned child gets its own process group via

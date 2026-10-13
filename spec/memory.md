@@ -1159,6 +1159,16 @@ minutes. Post-fix the scratch resets each method call so
 transient allocations have a bounded lifetime matching the
 call's frame.
 
+A closure check on a `@form` locus gets a scratch of its own the
+same way: its operands are scalars, so what computing them
+allocates — chiefly a cell read in the assertion
+(`len((self.get(k) or Cell { }).s) ~~ …`), which every synced
+map copies out — is freed once they are computed. Before, a
+closure body had no scratch, and those copies landed in the
+cell arena itself: 20 000 tick checks reading a 400-byte String
+and Bytes grew a striped map's arena 64 KiB → 31 MiB. (Closures
+on other loci still evaluate in `self.__arena`.)
+
 Two correctness invariants make this safe:
 
   1. Heap-typed `self.X = expr` stores deep-copy `expr` into
@@ -1379,14 +1389,14 @@ reclaim on a real-world long-running workload:
      always exclusively owned.
 
      Nested-block single-owner (2026-10-12): a retiring map
-     (`sync = none` / `serialized`) retires a replaced cell's
+     (any `sync =` discipline) retires a replaced cell's
      nested records, tuples and out-of-line arrays too
      (forms.md § Cell reclamation), so those fields can no
      longer identity-skip on arena membership — a block another
      cell held would be freed under it. On such a map the walk
      copies a nested-block field unless it is the very block the
      same key's current cell holds at that field
-     (`lotus_hashmap_peek`, `sync = none` only; a serialized map
+     (`lotus_hashmap_peek`, `sync = none` only; a synced map
      always copies): the get-modify-set of a cell with a large
      nested field still allocates nothing, and the retire sees
      the block survive. Interface and payload-enum fields keep
@@ -1453,11 +1463,57 @@ reclaim on a real-world long-running workload:
      old clones for the locus lifetime. String and Bytes fields
      (Bytes since GH #1033, `lotus_bytes_field_replace_fixup`:
      before it, a replaced Bytes blob — 8 bytes even for an
-     empty payload — was orphaned on every whole-struct write);
-     pointer-shaped compound fields of the replaced struct keep
-     the pre-fix behavior, and fields of @form vec / bounded
-     cells and stores from boundary-less contexts (a `run()`
-     loop) do not retire.
+     empty payload — was orphaned on every whole-struct write).
+     Fields of @form vec / bounded cells and stores from
+     boundary-less contexts (a `run()` loop) do not retire.
+
+     Nested blocks (2026-10-12): a field pointing at a block of
+     its own — a nested record, a tuple, an out-of-line array, a
+     payload enum — retires too, with everything under it. The
+     store snapshots the field's block before the memcpy, and
+     after it `lotus_self_field_retire_replaced` walks the old
+     snapshot and the new block with the form retire descriptor
+     (forms.md § Cell reclamation; for a record, its nested-block
+     fields only, the fixups above owning its top-level String /
+     Bytes) and retires, pending until the same flush, every block
+     the old value reached that the new one does not. A tuple or
+     array field is replaced the same way, every slot walked, and
+     the fresh copy its value was built in — garbage once its
+     bytes are copied over the field's block — retires as well.
+     Before, each replace left the old nested blocks (and, for a
+     tuple or array field, that copy) in `self.__arena` for the
+     locus's lifetime: ~6 MiB over 200 000 replaces of a record
+     holding a record of one String.
+
+     Retiring a nested block is sound only if nothing else holds
+     it, so such a store follows the retiring form's rule below
+     for its own fields: the walk runs over a stack snapshot of
+     the rhs, every nested block is copied in (its Strings and
+     Bytes owned clones), and the only block passed through is
+     the one the field already holds at that same place — `self.f
+     = F { n: i, inner: self.f.inner }` keeps `inner`, copies
+     nothing, and retires nothing. A `let` of a compound read
+     from a field is already a deep copy in the method's scratch,
+     so it never points into a block the store retires. A locus
+     with such a field flushes its arena at each method's
+     activation boundary, as one with a String field does.
+
+     The fields a store replaces must have owned their leaves from
+     the start, so the same rule holds where a locus's fields are
+     first written: a param's value at construction (default or
+     literal override) and the params a restart in place
+     snapshots and restores are stored by a deep copy that owns
+     every String and Bytes in it (`emit_owned_deep_copy`), its
+     records, tuples and arrays fresh. Those values are evaluated
+     in the locus's own arena, and the plain copy passed a
+     same-arena String through: `o: Outer = Outer { s: self.text,
+     inner: Inner { s: self.text } }` made `text`, `o.s` and
+     `o.inner.s` one blob, which replacing `o.inner` retired under
+     the other two (and the restart snapshot shared every restored
+     field's). The cost is one copy of each String / Bytes leaf a
+     construction builds in the locus's arena, freshly built or
+     not (~20 ns per construction for three such leaves, measured
+     on a 1M-construction loop).
 
   7. **In-place String / Bytes reassignment at `self.X =
      heap_value`.** `lotus_str_assign_in_place(arena, old, new)`
