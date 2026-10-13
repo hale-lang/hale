@@ -77,3 +77,17 @@ inherits = "default"
 [[profile.small.overrides]]
 filter = 'binary(dna_native_suite)'
 test-group = 'dna-fixtures-small'
+
+# What `cargo nextest archive` carries beside the test binaries (tests.yml's
+# `build` job archives once; every test job runs from that archive). The
+# archive holds the test binaries, the binaries they run through
+# CARGO_BIN_EXE_*, and the build scripts' OUT_DIRs; these are what is
+# read from `target/` at run time by path instead: the shim staticlib
+# codegen path-probes beside the compiler (`locate_ts_shim_staticlib`),
+# and the compiler's dep-info, which the jobs' `Compiler identity` step
+# hashes into the toolchain cache's key.
+[profile.default.archive]
+include = [
+    { path = "release/libhale_ts_shim.a", relative-to = "target", on-missing = "error" },
+    { path = "release/hale.d", relative-to = "target", on-missing = "error" },
+]

@@ -21,27 +21,16 @@ name: tests
 # `harness::unique_bin` (pid + counter), enforced by
 # `harness_paths_are_unique.rs`.
 #
-# Build-and-run-per-partition shape: N parallel `test` jobs each
-# build the workspace from the shared cargo cache and run a
-# hash-partitioned subset (`cargo nextest run --partition`). There
-# is deliberately NO separate compile-once `build` job + archive
-# handoff: that serialized the run behind a full compile *and* an
-# archive upload/download round-trip (~1.7min upload alone), and
-# each partition still paid its own ~2min setup afterward. Folding
-# the build into each partition overlaps the compile with the
-# (already parallel) partitions and drops the round-trip — ~3-4min
-# of wall-clock — at the cost of compiling ~Nx instead of once (the
-# cargo cache keeps each warm build to ~3min). Wall-clock over CI
-# minutes, for branch-iteration velocity.
-#
-# Revisited 2026-09-20 with libLLVM linked dynamically: a warm
-# partition now spends ~4min building (workspace + its 560 test
-# binaries) and the nextest archive of the suite is 1.1GB. A build
-# job on a standard 4-core runner would take about as long as each
-# partition's own build, so the split still buys nothing unless
-# that one job moves to a larger (paid) runner. Six partitions
-# instead of four: CI minutes are free on a public repository, and
-# each partition's test phase is what shrinks.
+# Build-once shape (2026-10-12): one `build` job compiles the
+# workspace and every test binary the cli, codegen and dna families run,
+# and hands them over as a nextest archive (`cargo nextest archive`,
+# carrying `hale`, the build scripts' OUT_DIRs and the extra paths
+# `[profile.default.archive]` names); each test job downloads it,
+# extracts it in place and runs its slice without compiling anything.
+# Until then every partition built the workspace and its family's test
+# binaries for itself (2-7 min a job; the history of that choice is in
+# git: 2026-09-20 measured an archive at 1.1GB and judged the hand-off
+# not worth it while partitions were few).
 
 # One run per commit. A push to a PR branch used to trigger this
 # twice — once as `push` (every branch) and once as `pull_request`
@@ -89,6 +78,13 @@ env:
   # errors after it is up; a server that cannot START on the backend is
   # the `sccache health` step's, after each install below.
   SCCACHE_IGNORE_SERVER_IO_ERROR: "1"
+  # How a test job runs the `build` job's nextest archive once it is
+  # extracted in place (`Extract the test archive in place`): from the
+  # archive's own metadata, so nextest neither builds nor extracts again.
+  NEXTEST_ARCHIVE: >-
+    --binaries-metadata target/nextest/binaries-metadata.json
+    --cargo-metadata target/nextest/cargo-metadata.json
+    --workspace-remap . --target-dir-remap target
 
 jobs:
   # Which jobs this diff can possibly affect.
@@ -271,9 +267,85 @@ jobs:
   # FILE so each half compiles 167), and `dna` (the fixture suite on
   # its own, so its slices can run four-wide). The LLVM-free crates
   # are `quick`'s.
+  #
+  # Built once (2026-10-12): the `build` job compiles the workspace and
+  # every test binary those three families run, and hands them over as a
+  # nextest archive; each test job extracts it in place and runs its
+  # slice with no compiler at all.
+  build:
+    name: build (workspace + test archive)
+    needs: scope
+    if: needs.scope.outputs.code == 'true' || github.event_name != 'pull_request' || needs.scope.outputs.dna == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install sccache
+        uses: mozilla-actions/sccache-action@v0.0.9
+
+      - *sccache-health
+
+      # rust-cache keeps only the dependency artifacts (the workspace
+      # crates and their test binaries change on every commit), so it
+      # restores in seconds. Saved from main only, so a PR's cache writes
+      # cannot evict the one every other branch restores.
+      - name: Cache cargo registry + dependency artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: tests-x86_64-linux-llvm18
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Install LLVM 18 + clang
+        run: |
+          set -eux
+          sudo apt-get update
+          sudo apt-get install -y \
+            llvm-18-dev libpolly-18-dev libzstd-dev \
+            clang-18 libclang-18-dev zlib1g-dev
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@nextest
+
+      - name: cargo build --release --workspace
+        # Every workspace member, so `libhale_ts_shim.a` is built: codegen
+        # finds it by path-probe beside the compiler (no Cargo dependency
+        # can name a staticlib), and the archive carries it from there
+        # (`[profile.default.archive]` in .config/nextest.toml).
+        # `--features hale-codegen/dynamic-llvm` links the shared libLLVM,
+        # so the archive is a few hundred MB, not ~100MB per test binary.
+        run: cargo build --release --workspace --features hale-codegen/dynamic-llvm
+
+      - name: cargo nextest archive
+        # The LLVM-free crates are `quick`'s and not archived. The archive
+        # holds the test binaries, `hale` (CARGO_BIN_EXE_hale), the build
+        # scripts' OUT_DIRs, and the two extra paths nextest.toml names.
+        run: |
+          cargo nextest archive --release --workspace \
+            --exclude hale-syntax --exclude hale-types --exclude hale-model \
+            --exclude hale-graph --exclude hale-stdlib --exclude hale-corpus \
+            --features hale-codegen/dynamic-llvm \
+            --archive-file "$RUNNER_TEMP/nextest.tar.zst"
+          ls -l "$RUNNER_TEMP/nextest.tar.zst"
+
+      - name: Upload the archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: nextest-archive
+          path: ${{ runner.temp }}/nextest.tar.zst
+          # already zstd
+          compression-level: 0
+          retention-days: 1
+
+      - name: sccache stats
+        if: always()
+        run: sccache --show-stats
+
   cli:
     name: cli ${{ matrix.part }}/3
-    needs: scope
+    needs: [scope, build]
     if: needs.scope.outputs.code == 'true'
     # Free runners only: a paid 8-core runner was tried on 2026-09-26 and
     # cost about $200 a day; test time is cut at the cause instead.
@@ -340,40 +412,21 @@ jobs:
       - name: Start NATS (JetStream)
         run: docker run -d --name nerves -p 127.0.0.1:4222:4222 nats:2 -js
 
-      # Fixtures resolve via CARGO_MANIFEST_DIR against this checkout,
-      # so build + run happen in-place with no path remap.
-      #
-      # No "Free disk space" step here any more: the test binaries
-      # link libLLVM dynamically (`hale-codegen/dynamic-llvm`, below),
-      # so the target dir is a few GB rather than tens, and the
-      # 1.5-3min of deleting preinstalled toolchains bought nothing.
+      # The test binaries bake absolute paths in at compile time
+      # (CARGO_MANIFEST_DIR, CARGO_TARGET_TMPDIR, CARGO_BIN_EXE_hale, and
+      # hale-codegen's probe for the shim staticlib), and every hosted
+      # runner checks out to the same path, so the archive is extracted
+      # in place: `target/` lands where the build job's was, and those
+      # paths hold here as they held there.
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Install sccache
-        uses: mozilla-actions/sccache-action@v0.0.9
-
-      - *sccache-health
-
-      # Shared cache across the partitions (and reused run-to-run).
-      # rust-cache keeps only the dependency artifacts — the workspace
-      # crates and their test binaries change on every commit and
-      # are rebuilt anyway — so the cache is a fraction of the size
-      # the raw `target` dir was (6.4GB, 2-3min to restore) and
-      # restores in seconds. Saved from main only, so a PR's cache
-      # writes cannot evict the one every other branch restores.
-      - name: Cache cargo registry + dependency artifacts
-        uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: tests-x86_64-linux-llvm18
-          save-if: ${{ github.ref == 'refs/heads/main' }}
-
-      - name: Install LLVM 18 + clang + wasm-ld
-        # llvm-18-dev provides both the static archives and
-        # libLLVM-18.so; the builds below link the shared one
-        # (`hale-codegen/dynamic-llvm`). clang-18 is also invoked at
-        # test time to link compiled `.hl` fixtures, and lld-18's
-        # wasm-ld to link the wasm32 ones (`hale build --target wasm32`).
+      - &install-llvm-runtime
+        name: Install LLVM 18 + clang + wasm-ld
+        # libLLVM-18.so: the test binaries and `hale` link it dynamically
+        # (`hale-codegen/dynamic-llvm`). clang-18 links compiled `.hl`
+        # fixtures at test time, and lld-18's wasm-ld the wasm32 ones
+        # (`hale build --target wasm32`).
         run: |
           set -eux
           sudo apt-get update
@@ -381,24 +434,31 @@ jobs:
             llvm-18-dev libpolly-18-dev libzstd-dev \
             clang-18 libclang-18-dev lld-18 zlib1g-dev
 
-      - name: Install cargo-nextest
-        # Prebuilt binary — installs in seconds.
+      - &install-nextest
+        name: Install cargo-nextest
         uses: taiki-e/install-action@nextest
 
-      - name: cargo build --release --workspace
-        # Build ALL workspace members first so `libhale_ts_shim.a`
-        # lands at `target/release/` before any test links against
-        # it. `hale-cli` / `hale-codegen` tests invoke clang to link
-        # compiled .hl fixtures — codegen appends the staticlib by
-        # path-probe (no cargo dep edge forces it), so going straight
-        # to `cargo test` misses it (`undefined reference to
-        # lotus_ts_*`).
-        #
-        # `--features hale-codegen/dynamic-llvm`: link the shared
-        # libLLVM rather than a static copy into every binary. The
-        # same flag on the nextest run below, or cargo would build
-        # the workspace twice under two feature sets.
-        run: cargo build --release --workspace --features hale-codegen/dynamic-llvm
+      - &archive-download
+        name: Download the test archive
+        uses: actions/download-artifact@v4
+        with:
+          name: nextest-archive
+          path: ${{ runner.temp }}
+
+      - &archive-extract
+        name: Extract the test archive in place
+        # Into the checkout itself, then run with the archive's metadata
+        # (`--binaries-metadata`/`--cargo-metadata` below) rather than
+        # `--archive-file`, which would extract it a second time. The
+        # archive file stays outside the checkout (the clean-tree step).
+        # `target/tmp` is CARGO_TARGET_TMPDIR, which cargo creates at
+        # build time and the archive does not carry.
+        run: |
+          set -eux
+          tar --zstd -xf "$RUNNER_TEMP/nextest.tar.zst"
+          rm "$RUNNER_TEMP/nextest.tar.zst"
+          mkdir -p target/tmp
+          ls -l target/release/hale target/release/libhale_ts_shim.a
 
       - name: hale fmt --check (canonical-form gate)
         # The styleguide's §5 fmt tier: the repo's own .hl surface
@@ -551,25 +611,16 @@ jobs:
         # binaries less the DNA fixture suite, plus hale-lsp,
         # hale-iris and hale-dna. `hash:I/N` partitions by test name
         # within that set — a test always lands on the same part, so
-        # a flake is reproducible to its part. `hale-cli/dynamic-llvm`
-        # is a passthrough to hale-codegen's feature: cargo only
-        # accepts `pkg/feature` for a selected package, and the same
-        # feature set as the build above keeps it from rebuilding.
+        # a flake is reproducible to its part. The archive holds every
+        # family's binaries but `quick`'s; the filter takes this one's.
         run: |
-          cargo nextest run --release --workspace \
-            --exclude hale-codegen --exclude hale-syntax --exclude hale-types \
-            --exclude hale-model --exclude hale-graph --exclude hale-stdlib --exclude hale-corpus \
-            --features hale-cli/dynamic-llvm \
-            -E 'not binary(dna_native_suite)' \
+          cargo nextest run $NEXTEST_ARCHIVE \
+            -E 'not package(hale-codegen) and not binary(dna_native_suite)' \
             --partition hash:${{ matrix.part }}/3
-
-      - name: sccache stats
-        if: always()
-        run: sccache --show-stats
 
   codegen:
     name: codegen ${{ matrix.half }}/2
-    needs: scope
+    needs: [scope, build]
     if: needs.scope.outputs.code == 'true'
     runs-on: ubuntu-latest
     strategy:
@@ -582,27 +633,10 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Install sccache
-        uses: mozilla-actions/sccache-action@v0.0.9
-
-      - *sccache-health
-
-      - name: Cache cargo registry + dependency artifacts
-        uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: tests-x86_64-linux-llvm18
-          save-if: ${{ github.ref == 'refs/heads/main' }}
-
-      - name: Install LLVM 18 + clang + wasm-ld
-        # lld-18 for wasm-ld: the wasm32 builds (the lowering shadow, the
-        # teardown spines per target, the portable subset) link with it,
-        # and skip, naming it, when it is missing.
-        run: |
-          set -eux
-          sudo apt-get update
-          sudo apt-get install -y \
-            llvm-18-dev libpolly-18-dev libzstd-dev \
-            clang-18 libclang-18-dev lld-18 zlib1g-dev
+      # lld-18 for wasm-ld: the wasm32 builds (the lowering shadow, the
+      # teardown spines per target, the portable subset) link with it,
+      # and skip, naming it, when it is missing.
+      - *install-llvm-runtime
 
       # node runs the wasm32 modules (the portable subset compares their
       # stdout with the native binaries'); stated, not assumed of the
@@ -612,31 +646,24 @@ jobs:
         with:
           node-version: '22'
 
-      - name: Install cargo-nextest
-        uses: taiki-e/install-action@nextest
-
-      - name: cargo build --release --workspace
-        # For `libhale_ts_shim.a` (see the cli job).
-        run: cargo build --release --workspace --features hale-codegen/dynamic-llvm
+      - *install-nextest
+      - *archive-download
+      - *archive-extract
 
       - name: cargo nextest run (hale-codegen tests, half ${{ matrix.half }}/2)
         # The crate's test files are built as ~40 area binaries (each
         # `tests/<area>.rs` names its files with `#[path]`; see
         # `every_test_file_is_built`), where they were 352 binaries and
-        # this step named half of them with `--test`. One link per area
-        # is cheap, so both halves build every binary and nextest deals
-        # the TESTS between them by hash, the lib's unit tests included.
+        # this step named half of them with `--test`. nextest deals the
+        # TESTS between the halves by hash, the lib's unit tests included.
         run: |
-          cargo nextest run --release -p hale-codegen --features dynamic-llvm \
+          cargo nextest run $NEXTEST_ARCHIVE \
+            -E 'package(hale-codegen)' \
             --partition hash:${{ matrix.half }}/2
-
-      - name: sccache stats
-        if: always()
-        run: sccache --show-stats
 
   dna:
     name: dna ${{ matrix.part }}/4
-    needs: scope
+    needs: [scope, build]
     if: github.event_name != 'pull_request' || needs.scope.outputs.dna == 'true'
     # Free runners only: a paid 8-core runner was tried on 2026-09-26 and
     # cost about $200 a day; test time is cut at the cause instead.
@@ -696,31 +723,11 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Install sccache
-        uses: mozilla-actions/sccache-action@v0.0.9
-
-      - *sccache-health
-
-      - name: Cache cargo registry + dependency artifacts
-        uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: tests-x86_64-linux-llvm18
-          save-if: ${{ github.ref == 'refs/heads/main' }}
-
-      - name: Install LLVM 18 + clang
-        run: |
-          set -eux
-          sudo apt-get update
-          sudo apt-get install -y \
-            llvm-18-dev libpolly-18-dev libzstd-dev \
-            clang-18 libclang-18-dev zlib1g-dev
-
-      - name: Install cargo-nextest
-        uses: taiki-e/install-action@nextest
-
-      - name: cargo build --release --workspace
-        # The fixtures run through the `hale` binary this builds.
-        run: cargo build --release --workspace --features hale-codegen/dynamic-llvm
+      # The fixtures run through the archive's `hale`.
+      - *install-llvm-runtime
+      - *install-nextest
+      - *archive-download
+      - *archive-extract
 
       # The compiler id and the toolchain cache, as in the cli job.
       - *compiler-identity
@@ -764,8 +771,8 @@ jobs:
           # macOS already runs at 3.
           HALE_DNA_WAIT_SCALE: "3"
         run: |
-          cargo nextest run --release -p hale-cli --features dynamic-llvm \
-            --test dna_native_suite \
+          cargo nextest run $NEXTEST_ARCHIVE \
+            -E 'binary_id(hale-cli::dna_native_suite)' \
             --profile small \
             --partition count:${{ matrix.part }}/4
 
@@ -784,10 +791,6 @@ jobs:
             echo "$status"
             exit 1
           fi
-
-      - name: sccache stats
-        if: always()
-        run: sccache --show-stats
 
   # The face and the DNA service API (GH #690, #998), as two jobs with
   # no edge between them, so they run concurrently (GH #1009): the API
@@ -1731,7 +1734,7 @@ jobs:
   required:
     name: required
     runs-on: ubuntu-latest
-    needs: [scope, quick, docs, cli, codegen, dna, face-api, face-browser, cross, parity, tsan, asan, genmc]
+    needs: [scope, quick, docs, build, cli, codegen, dna, face-api, face-browser, cross, parity, tsan, asan, genmc]
     if: always()
     steps:
       - name: every job green or scoped out
