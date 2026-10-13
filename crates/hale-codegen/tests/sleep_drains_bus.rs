@@ -168,3 +168,108 @@ fn sleep_drains_bus_queue_mid_loop() {
         );
     }
 }
+
+/// The same loop on a cooperative pool other than `main` (friction
+/// sweep 2026-10-12, a cooperative child's handlers ran only once its
+/// `run()` returned): a park point inside a `run()` on a pool's worker
+/// delivers the pool's queued cells, as one on `main` delivers main's
+/// queue. `Sub` sleeps and yields in its loop; every tick is handled
+/// before its sentinel. `Other`, placed on the same pool, has its own
+/// `run()` queued behind `Sub`'s: a park point delivers cells, it does
+/// not start another `run()` inside this one, so `Other` runs after
+/// `Sub`'s run returns, as before.
+#[test]
+fn park_points_deliver_on_a_pool_worker_run() {
+    let src = r#"
+        type Tick { n: Int; }
+
+        locus Pub {
+            bus { publish "tick" of type Tick; }
+            run() {
+                std::time::sleep(20ms);
+                let mut i = 1;
+                while i <= 4 {
+                    "tick" <- Tick { n: i };
+                    std::time::sleep(5ms);
+                    i = i + 1;
+                }
+                std::time::sleep(300ms);
+            }
+        }
+
+        locus Sub {
+            bus { subscribe "tick" as on_tick of type Tick; }
+            fn on_tick(t: Tick) {
+                println("got tick ", t.n);
+            }
+            run() {
+                let mut i = 0;
+                while i < 30 {
+                    if i % 2 == 0 {
+                        std::time::sleep(5ms);
+                    } else {
+                        let t0 = std::time::monotonic_ns();
+                        while std::time::monotonic_ns() - t0 < 5000000 { }
+                        yield;
+                    }
+                    i = i + 1;
+                }
+                println("subscriber.run done");
+            }
+        }
+
+        locus Other {
+            run() { println("other.run"); }
+        }
+
+        main locus App {
+            params {
+                pub_: Pub = Pub { };
+                sub: Sub = Sub { };
+                other: Other = Other { };
+            }
+            placement {
+                pub_: pinned;
+                sub: cooperative(pool = a);
+                other: cooperative(pool = a);
+            }
+        }
+
+        fn main() {
+            App { };
+        }
+    "#;
+
+    let bin = unique_path("pool");
+    build_opts::build_source(src, &bin, &build_opts::options()).expect("build");
+    let out = Command::new(&bin).output().expect("run binary");
+    let _ = std::fs::remove_file(&bin);
+    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+    assert!(
+        out.status.success(),
+        "binary exited non-zero: {:?}\nstdout: {}\nstderr: {}",
+        out.status,
+        stdout,
+        String::from_utf8_lossy(&out.stderr),
+    );
+    let lines: Vec<&str> = stdout.lines().collect();
+    let pos = |l: &str| {
+        lines
+            .iter()
+            .position(|x| *x == l)
+            .unwrap_or_else(|| panic!("no `{l}` in stdout:\n{stdout}"))
+    };
+    let sentinel = pos("subscriber.run done");
+    for n in 1..=4 {
+        let at = pos(&format!("got tick {n}"));
+        assert!(
+            at < sentinel,
+            "tick {n} was handled after the pool-placed run() returned: \
+             its park points delivered nothing. stdout:\n{stdout}"
+        );
+    }
+    assert!(
+        pos("other.run") > sentinel,
+        "another run() started inside a park point. stdout:\n{stdout}"
+    );
+}

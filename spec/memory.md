@@ -1159,6 +1159,16 @@ minutes. Post-fix the scratch resets each method call so
 transient allocations have a bounded lifetime matching the
 call's frame.
 
+A closure check on a `@form` locus gets a scratch of its own the
+same way: its operands are scalars, so what computing them
+allocates — chiefly a cell read in the assertion
+(`len((self.get(k) or Cell { }).s) ~~ …`), which every synced
+map copies out — is freed once they are computed. Before, a
+closure body had no scratch, and those copies landed in the
+cell arena itself: 20 000 tick checks reading a 400-byte String
+and Bytes grew a striped map's arena 64 KiB → 31 MiB. (Closures
+on other loci still evaluate in `self.__arena`.)
+
 Two correctness invariants make this safe:
 
   1. Heap-typed `self.X = expr` stores deep-copy `expr` into
@@ -1379,14 +1389,14 @@ reclaim on a real-world long-running workload:
      always exclusively owned.
 
      Nested-block single-owner (2026-10-12): a retiring map
-     (`sync = none` / `serialized`) retires a replaced cell's
+     (any `sync =` discipline) retires a replaced cell's
      nested records, tuples and out-of-line arrays too
      (forms.md § Cell reclamation), so those fields can no
      longer identity-skip on arena membership — a block another
      cell held would be freed under it. On such a map the walk
      copies a nested-block field unless it is the very block the
      same key's current cell holds at that field
-     (`lotus_hashmap_peek`, `sync = none` only; a serialized map
+     (`lotus_hashmap_peek`, `sync = none` only; a synced map
      always copies): the get-modify-set of a cell with a large
      nested field still allocates nothing, and the retire sees
      the block survive. Interface and payload-enum fields keep

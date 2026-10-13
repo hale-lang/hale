@@ -1241,10 +1241,11 @@ jobs:
       # GH #1417 (R8a): the TypeScript client `hale api client --lang ts`
       # generates compiles under `tsc --strict` and speaks the contract's wire
       # on node's fetch and WebSocket against a server that replays
-      # tests/api-contract/wire. Node is set up above; TypeScript is installed
+      # tests/api-contract/wire; the JavaScript client (`--lang js`) checks
+      # under `tsc --checkJs --strict` and runs the same scenarios. Node is set up above; TypeScript is installed
       # beside it, not into the face's package.json. It runs in the same
       # `scope`-classified job as the browser tests, and only when code changed.
-      - name: Generated TypeScript client
+      - name: Generated TypeScript and JavaScript clients
         if: matrix.shard == '1'
         env:
           HALE_BIN: ${{ github.workspace }}/target/release/hale

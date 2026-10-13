@@ -9,14 +9,15 @@
 // loop never saw a drain, its post-loop line and `dissolve` never
 // ran, and the process died with 143.
 //
-// The child program is the issue's shape, with main's `run()`
-// ending first — the state a pinned receive loop (a broker
-// connection) is in for most of its life, and the one the program
-// otherwise stays in until it is stopped. The fixture builds it with
-// the toolchain running the test (`HALE_BIN`, which `hale test`
-// exports), waits for main's `run()` to end, sends SIGTERM, and
-// waits — bounded — for the exit. Then the same through `hale run`,
-// signalling `hale` rather than the program.
+// The child program is the issue's shape: a pinned receive loop (a
+// broker connection) beside a main whose `run()` waits for the drain,
+// the state a served program is in for most of its life. (A main whose
+// `run()` ends first now drains its tree itself, spec/runtime.md §
+// "Lifecycle obligations", line 15, so the signal is what ends this
+// one.) The fixture builds it with the toolchain running the test
+// (`HALE_BIN`, which `hale test` exports), waits for main's `run()` to
+// be up, sends SIGTERM, and waits — bounded — for the exit. Then the
+// same through `hale run`, signalling `hale` rather than the program.
 
 fn child_source() -> String {
     return "locus Loop {\n"
@@ -34,7 +35,12 @@ fn child_source() -> String {
         + "main locus App {\n"
         + "    params { l: Loop = Loop { }; }\n"
         + "    placement { l: pinned; }\n"
-        + "    run() { std::time::sleep(200ms); println(\"app run ends\"); }\n"
+        + "    run() {\n"
+        + "        std::time::sleep(200ms);\n"
+        + "        println(\"app run up\");\n"
+        + "        while !self.draining { std::time::sleep(100ms); }\n"
+        + "        println(\"app run ends\");\n"
+        + "    }\n"
         + "}\n"
         + "fn main() { App { }; }\n";
 }
@@ -100,8 +106,8 @@ fn main() {
 
     let p = Proc { };
     std::test::assert(p.start(bin), "the child started");
-    std::test::assert(p.wait_for("app run ends"),
-        "main's run() ended while the pinned loop runs: " + p.out);
+    std::test::assert(p.wait_for("app run up"),
+        "main's run() waits while the pinned loop runs: " + p.out);
 
     p.term();
     let code = p.exit_code();
@@ -116,8 +122,8 @@ fn main() {
     // program's clean exit rather than dying first.
     let r = Proc { };
     std::test::assert(r.start(hale + "\nrun\n" + src), "hale run started");
-    std::test::assert(r.wait_for("app run ends"),
-        "under hale run, main's run() ended while the pinned loop runs: " + r.out);
+    std::test::assert(r.wait_for("app run up"),
+        "under hale run, main's run() waits while the pinned loop runs: " + r.out);
     r.term();
     let run_code = r.exit_code();
     std::test::assert_eq_int(run_code, 0, "hale run forwards SIGTERM and reports the drain: " + r.out);

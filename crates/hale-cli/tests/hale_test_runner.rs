@@ -724,3 +724,154 @@ fn parallel_output_stays_with_its_own_file() {
         );
     }
 }
+
+// ---------------------------------------------------------------
+// A failed assertion outside `fn main`'s frame tears the tree down
+// too (friction sweep 2026-10-12, downstream handoff): it used to
+// exit(1) on the spot, so a fixture asserting in a helper or in its
+// main locus's `run()` left its child and its scratch behind.
+// ---------------------------------------------------------------
+
+/// Where the fixture's failing assertion sits.
+#[derive(Clone, Copy)]
+enum FailSite {
+    /// A free fn `fn main` calls, with the fixture `let`-bound in main.
+    Helper,
+    /// A method the main locus's `run()` calls, with the fixture one of
+    /// the main locus's fields and a pinned child looping on the drain.
+    Run,
+    /// A pinned child's `run()`, while main's `run()` sleeps: another
+    /// thread, which asks main to tear down at its next park point.
+    Pinned,
+}
+
+/// The GH #717 fixture's owned resources (a `sleep 30` child and a
+/// scratch dir, released by `Fixture.dissolve()`) with its failing
+/// assertion at `site`. Braces doubled: a `format!` template, which
+/// `hale-corpus` does not harvest.
+fn nested_failure_fixture(scratch: &Path, pidfile: &Path, site: FailSite) -> String {
+    let fixture = r#"locus Fixture {
+    params { pid: Int = -1; dir: String = ""; }
+    dissolve() {
+        let _stop = std::process::run(
+            f"sh\n-c\nkill -9 {self.pid} 2>/dev/null; rm -rf {self.dir}"
+        ) or std::process::ProcessOutput { code: -1, signal: 0, stdout: "", stderr: "" };
+    }
+}
+
+fn check(n: Int) {
+    std::test::assert(n == 1, "deliberate failure outside main's frame");
+    println("UNREACHABLE: the helper continued past a failed assertion");
+}
+"#;
+    // fn main's start: the child and the scratch dir the fixture owns.
+    let prelude = format!(
+        r#"    let dir = "{scratch}";
+    std::io::fs::mkdir(dir) or discard;
+    std::io::fs::write_file(dir + "/owned.txt", "scratch\n") or discard;
+    let c = std::process::spawn("sleep\n30") or raise;
+    std::io::fs::write_file("{pidfile}", f"{{c.pid}}") or discard;
+"#,
+        scratch = scratch.display(),
+        pidfile = pidfile.display(),
+    );
+    let rest = match site {
+        FailSite::Helper => format!(
+            r#"fn main() {{
+{prelude}    let f = Fixture {{ pid: c.pid, dir: dir }};
+    check(2);
+    println("UNREACHABLE: main continued past a failed assertion");
+}}
+"#
+        ),
+        FailSite::Run => format!(
+            r#"locus Spinner {{
+    run() {{ while !self.draining {{ std::time::sleep(1s); }} }}
+}}
+main locus App {{
+    params {{ f: Fixture = Fixture {{ }}; spin: Spinner = Spinner {{ }}; }}
+    placement {{ spin: pinned; }}
+    fn verify() {{ check(2); println("UNREACHABLE: the method continued"); }}
+    run() {{
+        self.verify();
+        println("UNREACHABLE: run() continued past a failed assertion");
+    }}
+}}
+fn main() {{
+{prelude}    App {{ f: Fixture {{ pid: c.pid, dir: dir }} }};
+    println("UNREACHABLE: main continued");
+}}
+"#
+        ),
+        FailSite::Pinned => format!(
+            r#"locus Checker {{
+    run() {{
+        std::time::sleep(20ms);
+        // off main the failing body runs on to its end; nothing marks it
+        std::test::assert(false, "deliberate failure outside main's frame");
+    }}
+}}
+main locus App {{
+    params {{ c: Checker = Checker {{ }}; }}
+    placement {{ c: pinned; }}
+    run() {{
+        let mut i = 0;
+        while i < 3000 {{ std::time::sleep(10ms); i = i + 1; }}
+        println("UNREACHABLE: main's run() outlived the failure");
+    }}
+}}
+fn main() {{
+{prelude}    let f = Fixture {{ pid: c.pid, dir: dir }};
+    App {{ }};
+    println("UNREACHABLE: main continued");
+}}
+"#
+        ),
+    };
+    format!("{fixture}{rest}")
+}
+
+fn assert_nested_failure_tears_down(tag: &str, site: FailSite) {
+    let root = gh717_root(tag);
+    let scratch = root.join("scratch");
+    let pidfile = root.join("child.pid");
+    std::fs::write(root.join("nested_test.hl"), nested_failure_fixture(&scratch, &pidfile, site))
+        .expect("write the fixture");
+    let out = Command::new(hale_bin()).arg("test").arg(&root).output().expect("invoke hale test");
+    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+    let pid: Option<u32> = std::fs::read_to_string(&pidfile).ok().and_then(|s| s.trim().parse().ok());
+    let child_gone = pid.map(gh717_wait_for_exit);
+    let scratch_gone = !scratch.exists();
+    if let Some(p) = pid {
+        if gh717_child_alive(p) {
+            let _ = Command::new("kill").arg("-9").arg(p.to_string()).status();
+        }
+    }
+    let _ = std::fs::remove_dir_all(&root);
+    assert_eq!(out.status.code(), Some(1), "{tag}: the run fails; stdout={stdout:?} stderr={stderr:?}");
+    assert!(stdout.contains("0 passed, 1 failed"), "{tag}: stdout={stdout:?}");
+    assert_eq!(
+        stdout.matches("ASSERTION FAILED: deliberate failure outside main's frame").count(),
+        1,
+        "{tag}: one failure line; stdout={stdout:?}"
+    );
+    assert!(!stdout.contains("UNREACHABLE"), "{tag}: the run continued past the failure; stdout={stdout:?}");
+    assert_eq!(child_gone, Some(true), "{tag}: the fixture's child survived (pid={pid:?}); stdout={stdout:?}");
+    assert!(scratch_gone, "{tag}: the scratch dir survived; stdout={stdout:?}");
+}
+
+#[test]
+fn a_failed_assertion_in_a_helper_dissolves_mains_loci() {
+    assert_nested_failure_tears_down("nested_helper", FailSite::Helper);
+}
+
+#[test]
+fn a_failed_assertion_in_a_main_locus_method_tears_its_tree_down() {
+    assert_nested_failure_tears_down("nested_run", FailSite::Run);
+}
+
+#[test]
+fn a_failed_assertion_on_a_pinned_thread_tears_the_tree_down_at_mains_next_park_point() {
+    assert_nested_failure_tears_down("nested_pinned", FailSite::Pinned);
+}

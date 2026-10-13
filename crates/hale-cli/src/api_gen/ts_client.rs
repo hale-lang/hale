@@ -16,7 +16,7 @@ use super::{camel, json_quote, type_ident, unformed};
 
 const PREAMBLE: &str = include_str!("ts_preamble.ts");
 
-fn lower_camel(name: &str) -> String {
+pub(super) fn lower_camel(name: &str) -> String {
     let c = camel(name);
     let mut cs = c.chars();
     match cs.next() {
@@ -32,7 +32,7 @@ fn is_ts_ident(key: &str) -> bool {
 }
 
 /// A property key as TypeScript writes it.
-fn prop(key: &str) -> String {
+pub(super) fn prop(key: &str) -> String {
     if is_ts_ident(key) {
         key.to_string()
     } else {
@@ -41,7 +41,7 @@ fn prop(key: &str) -> String {
 }
 
 /// A property read: `v.key` or `v["key"]`.
-fn access(value: &str, key: &str) -> String {
+pub(super) fn access(value: &str, key: &str) -> String {
     if is_ts_ident(key) {
         format!("{value}.{key}")
     } else {
@@ -50,6 +50,12 @@ fn access(value: &str, key: &str) -> String {
 }
 
 fn ts_type(f: &FieldSchema, what: &str) -> Result<String, String> {
+    type_in(f, what, false)
+}
+
+/// A schema's type as TypeScript writes it, or (`jsdoc`) as a JSDoc type of
+/// the JavaScript client, which has no `__Array` alias to name.
+pub(super) fn type_in(f: &FieldSchema, what: &str, jsdoc: bool) -> Result<String, String> {
     match f {
         FieldSchema::Scalar { json, .. } => Ok(match *json {
             "integer" | "number" => "number",
@@ -58,21 +64,36 @@ fn ts_type(f: &FieldSchema, what: &str) -> Result<String, String> {
         }
         .to_string()),
         FieldSchema::Ref(name) => Ok(type_ident(name)),
+        // an instant stays its RFC 3339 text: a `Date` holds milliseconds,
+        // and the wire's nanoseconds would not survive it
+        FieldSchema::Time => Ok("string".to_string()),
+        FieldSchema::List { items, .. } if jsdoc => Ok(format!("globalThis.Array<{}>", type_in(items, what, true)?)),
+        FieldSchema::List { items, .. } => Ok(format!("__Array<{}>", ts_type(items, what)?)),
         FieldSchema::Unformed => Err(unformed(what)),
     }
 }
 
-/// The wire form of `value`, a TypeScript expression of the schema's type.
-fn encode(f: &FieldSchema, value: &str, what: &str) -> Result<String, String> {
+/// The wire form of `value`, a TypeScript (and JavaScript) expression of the schema's type.
+pub(super) fn encode(f: &FieldSchema, value: &str, what: &str) -> Result<String, String> {
     match f {
-        FieldSchema::Scalar { .. } => Ok(value.to_string()),
+        FieldSchema::Scalar { .. } | FieldSchema::Time => Ok(value.to_string()),
         FieldSchema::Ref(name) => Ok(format!("encode_{}({value})", type_ident(name))),
+        // a list of scalars is itself; a list of records each record's form
+        FieldSchema::List { items, .. } => match items.as_ref() {
+            FieldSchema::Scalar { .. } | FieldSchema::Time => Ok(value.to_string()),
+            i => Ok(format!("({value}).map((e) => {})", encode(i, "e", what)?)),
+        },
         FieldSchema::Unformed => Err(unformed(what)),
     }
 }
 
 /// The typed value of `json`, an `unknown` expression.
 fn decode(f: &FieldSchema, json: &str, what: &str) -> Result<String, String> {
+    decode_in(f, json, what, false)
+}
+
+/// [`decode`] in TypeScript, or (`js`) in JavaScript, whose cast is a JSDoc one.
+pub(super) fn decode_in(f: &FieldSchema, json: &str, what: &str, js: bool) -> Result<String, String> {
     match f {
         FieldSchema::Scalar { json: kind, .. } => Ok(match *kind {
             "integer" | "number" => format!("Number({json} ?? 0)"),
@@ -80,6 +101,15 @@ fn decode(f: &FieldSchema, json: &str, what: &str) -> Result<String, String> {
             _ => format!("String({json} ?? \"\")"),
         }),
         FieldSchema::Ref(name) => Ok(format!("decode_{}({json})", type_ident(name))),
+        FieldSchema::Time => Ok(format!("String({json} ?? \"\")")),
+        FieldSchema::List { items, .. } if js => Ok(format!(
+            "(globalThis.Array.isArray({json}) ? /** @type {{unknown[]}} */ ({json}).map((e) => {}) : [])",
+            decode_in(items, "e", what, true)?
+        )),
+        FieldSchema::List { items, .. } => Ok(format!(
+            "(globalThis.Array.isArray({json}) ? ({json} as unknown[]).map((e) => {}) : [])",
+            decode(items, "e", what)?
+        )),
         FieldSchema::Unformed => Err(unformed(what)),
     }
 }

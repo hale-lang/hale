@@ -774,11 +774,15 @@ impl<'ctx, 'p> TimeStdlib<'ctx> for Cx<'ctx, 'p> {
         // g_bus_queue until the body's next natural drain point (the
         // old workaround was `sleep; yield;`). 2026-05-23 mirror: if
         // this is a pinned locus's own thread, drain its mailbox too;
-        // on a cooperative thread get_current is NULL → no-op. Then
+        // on a classic pool's worker inside a run() the same call
+        // delivers the pool's queued bus cells (2026-10-12,
+        // `lotus_pool_run_park_drain`); elsewhere it is a no-op. Then
         // subtract the slice from `remaining` and loop or finish.
         self.builder.position_at_end(drain_bb);
         self.emit_bus_drain()?;
         self.emit_pinned_mailbox_drain_pending()?;
+        // A failed assertion another thread raised: main tears down here.
+        self.emit_unwind_poll()?;
         let chunk_done = self
             .builder
             .build_load(i64_t, chunk_slot, "sleep.chunk.done")

@@ -294,15 +294,12 @@ pub(crate) struct BceLoop {
 
 /// Does this form slot retire its cells onto its locus's arena pending
 /// list, for the activation boundary to flush (anchor retirement)? A
-/// `sync = none` / `serialized` `@form(hashmap)` of record cells, and a
+/// `@form(hashmap)` of record cells (any discipline), and a
 /// `@form(lru_cache)` (whose put, eviction and remove retire the same
 /// way).
 pub(crate) fn slot_retires_cells_deferred(sl: &CapacitySlotLayout) -> bool {
     match sl.form {
-        Some(SlotForm::Hashmap) => {
-            matches!(sl.sync_mode, SyncMode::None | SyncMode::Serialized)
-                && matches!(sl.elem_ty, CodegenTy::TypeRef(_))
-        }
+        Some(SlotForm::Hashmap) => matches!(sl.elem_ty, CodegenTy::TypeRef(_)),
         Some(SlotForm::LruCache) => matches!(sl.elem_ty, CodegenTy::TypeRef(_)),
         _ => false,
     }
@@ -1383,6 +1380,24 @@ pub fn build_resolved(
             bus_devirt_direct_subs.insert(s.subject.clone(), s.subscribers.clone());
         }
     }
+    // One publisher's order at a direct publish: a direct subject's
+    // handlers are quiet (they change their own locus and nothing else),
+    // so calling one ahead of a cell still queued is observable only when
+    // that cell is for the same subscriber. A locus that subscribes to a
+    // subject the plan does not lower direct can have such a cell; a
+    // direct subject with one among its subscribers checks this thread's
+    // queue first (`lotus_local_queued`), the rest bake the call alone.
+    let queued_subscribers: std::collections::BTreeSet<&str> = plan
+        .subjects
+        .iter()
+        .filter(|s| s.flavor != hale_model::dispatch_plan::DispatchFlavor::StaticDirect)
+        .flat_map(|s| s.subscribers.iter().map(|(locus, _)| locus.as_str()))
+        .collect();
+    let bus_devirt_direct_ordered: std::collections::BTreeSet<String> = bus_devirt_direct_subs
+        .iter()
+        .filter(|(_, subs)| subs.iter().any(|(locus, _)| queued_subscribers.contains(locus.as_str())))
+        .map(|(subject, _)| subject.clone())
+        .collect();
 
     // Interest-based ownership, artifacts #2 / #2b / #3: the bubble
     // plans (`hale_types::ownership_graph::BubblePlans`), projected in
@@ -1559,6 +1574,7 @@ pub fn build_resolved(
         bus_devirt_ids,
         bus_devirt_direct,
         bus_devirt_direct_subs,
+        bus_devirt_direct_ordered,
         ownership_bubble_plan: bubble.singleton,
         ownership_bubble_nonsingleton_plan: bubble.nonsingleton,
         ownership_forwarding_sets: bubble.forwarding,
@@ -1581,6 +1597,8 @@ pub fn build_resolved(
         main_frame_depth: usize::MAX,
         main_dissolve_frame: None,
         main_test_fail_bb: None,
+        test_unwind_used: false,
+        unwind_fns: BTreeMap::new(),
         current_arena_override: None,
         current_user_fn_caller_arena: None,
         current_user_fn_arena: None,
@@ -3750,6 +3768,11 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// constant). Empty under `LOTUS_NO_BUS_DEVIRT=1`.
     pub(crate) bus_devirt_direct_subs:
         std::collections::BTreeMap<String, Vec<(String, String)>>,
+    /// The `bus_devirt_direct` subjects with a subscriber locus that also
+    /// subscribes to a subject the plan does not lower direct: a cell for
+    /// it may wait on the publishing thread's queue, so their baked call
+    /// first checks `lotus_local_queued` (one publisher's order).
+    pub(crate) bus_devirt_direct_ordered: std::collections::BTreeSet<String>,
     /// Interest-based ownership, artifact #2: singleton-owner,
     /// same-tower bubbling. Keyed by `(enclosing_locus, child_ty)` —
     /// the only key the `OwnershipGraph` resolution depends on — the
@@ -3922,6 +3945,17 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// `main`, filled with main's teardown + `ret i32 1` once the
     /// body has been lowered.
     main_test_fail_bb: Option<BasicBlock<'ctx>>,
+    /// A `std::test` assertion outside `fn main`'s own frame was lowered:
+    /// its failure tears the tree down through the main thread's unwind
+    /// registry (`locus/unwind.rs`), whose upkeep is emitted behind the
+    /// private `lotus.test_unwind` flag this decides at the end of
+    /// lowering.
+    pub(crate) test_unwind_used: bool,
+    /// The teardown each registered instance's record names, by its
+    /// declaration and whether it is pinned: a private function-pointer
+    /// global (`lotus.unwind_fn.<L>`) the end of lowering fills with a
+    /// synthesized `__unwind_<L>` when the registry is in use.
+    pub(crate) unwind_fns: BTreeMap<(String, bool), inkwell::values::GlobalValue<'ctx>>,
     /// When set, `arena_alloc` routes through this arena pointer
     /// instead of `current_self`'s arena field or the program
     /// global. Used during locus-instantiation field init so
@@ -5981,13 +6015,17 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     ///   teardown (pools joined, loci dissolved — so a child the
     ///   fixture spawned is reaped and scratch the fixture owns is
     ///   removed by its owner's `dissolve()`) and returns exit code 1.
-    /// - anywhere else — a helper fn, a locus method, a nested
-    ///   `on_failure` frame — `exit(1)` on the spot, exactly the
-    ///   pre-#717 behaviour. Those contexts have no main-teardown
-    ///   spine to branch to, and this is not general unwinding.
+    /// - anywhere else — a helper fn, a locus method, a `run()`, a
+    ///   handler, a nested `on_failure` frame — `lotus_test_fail_unwind`:
+    ///   on the main thread it tears down everything main's teardown
+    ///   would reach, from the main thread's unwind registry
+    ///   (`locus/unwind.rs`), and exits 1 without returning; on another
+    ///   thread it raises the drain and asks main to do the same at its
+    ///   next drain point, and returns (the body goes on, its later
+    ///   assertions no-ops), as it does while that teardown runs.
     ///
     /// Either way the first failure stops the run: nothing after it
-    /// executes, and the failure's first line is unchanged.
+    /// executes on main, and the failure's first line is unchanged.
     fn emit_test_assert_failure_check(
         &mut self,
     ) -> Result<(), CodegenError> {
@@ -6030,28 +6068,29 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 }
             }
         } else {
-            let bb =
-                self.context.append_basic_block(func, "test.fail.exit");
+            self.test_unwind_used = true;
+            self.context.append_basic_block(func, "test.fail.unwind")
+        };
+        let unwinds = !(self.in_main && self.deferred_dissolves.len() == self.main_frame_depth);
+        let ok_bb =
+            self.context.append_basic_block(func, "test.assert.ok");
+        if unwinds {
             let resume = self.builder.get_insert_block();
-            self.builder.position_at_end(bb);
-            let exit_fn = self
+            self.builder.position_at_end(bail_bb);
+            let unwind = self
                 .module
-                .get_function("exit")
-                .expect("exit declared in declare_builtins");
-            let one = self.context.i32_type().const_int(1, false);
+                .get_function("lotus_test_fail_unwind")
+                .expect("lotus_test_fail_unwind declared");
             self.builder
-                .build_call(exit_fn, &[one.into()], "test.fail.exit.call")
+                .build_call(unwind, &[], "test.fail.unwind.call")
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
             self.builder
-                .build_unreachable()
+                .build_unconditional_branch(ok_bb)
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
             if let Some(r) = resume {
                 self.builder.position_at_end(r);
             }
-            bb
-        };
-        let ok_bb =
-            self.context.append_basic_block(func, "test.assert.ok");
+        }
         self.builder
             .build_conditional_branch(is_fail, bail_bb, ok_bb)
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
@@ -6252,6 +6291,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         self.lc_spine = lc_outer;
         self.emit_arena_destroy()?;
         self.emit_bus_queue_destroy()?;
+        // An assertion that failed on another thread, whose teardown
+        // main reached an exit before running: the run still fails.
+        let code = self.emit_unwind_exit_code(code)?;
         self.builder.build_return(Some(&code)).map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         Ok(())
     }
@@ -6294,11 +6336,39 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 }
                 ObligationKind::WaitAbort if self.cells.emits(Obligation::WaitAbort)? => self.emit_bus_wait_abort_all()?,
                 ObligationKind::ReaderStop if self.cells.emits(Obligation::ReaderStop)? => self.emit_shm_readers_stop()?,
+                ObligationKind::TreeDrain if self.cells.emits(Obligation::TreeDrain)? => self.emit_tree_drain_raise()?,
                 // Omitted by the target's cells, elided, or no runtime
                 // call (the join's progress).
                 _ => {}
             }
         }
+        Ok(())
+    }
+
+    /// A main locus's tree drain (lifecycle line 15), the first step of its
+    /// teardown's head: once its `run()` has returned, every locus of its
+    /// tree reads `self.draining` as true, so a child's `run()` on a pinned
+    /// thread or a pool that watches it returns and the joins after it
+    /// complete (`lotus_tree_drain_raise`).
+    pub(crate) fn emit_tree_drain_raise(&mut self) -> Result<(), CodegenError> {
+        let f = self.module.get_function("lotus_tree_drain_raise").expect("lotus_tree_drain_raise declared");
+        self.builder
+            .build_call(f, &[], "tree.drain.raise")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        Ok(())
+    }
+
+    /// The tree drain's end, once the main locus that raised it is torn
+    /// down: a main locus built after it starts undrained
+    /// (`lotus_tree_drain_end`; a signal's drain stays up).
+    pub(crate) fn emit_tree_drain_end(&mut self) -> Result<(), CodegenError> {
+        if !self.cells.emits(Obligation::TreeDrain)? {
+            return Ok(());
+        }
+        let f = self.module.get_function("lotus_tree_drain_end").expect("lotus_tree_drain_end declared");
+        self.builder
+            .build_call(f, &[], "tree.drain.end")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         Ok(())
     }
 
@@ -6841,6 +6911,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 .build_unconditional_branch(after_bb)
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
             self.builder.position_at_end(process_bb);
+            // Its own teardown begins: a failed assertion no longer owes
+            // it (`locus/unwind.rs`).
+            self.emit_unwind_pop(self_slot)?;
             // GH #1148: the MAIN locus's deferred teardown joins the
             // cooperative pools first, as its eager dissolve does
             // (`lower_locus_instantiation`, 2026-06-01) and as fn main's
@@ -6907,6 +6980,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // — the single teardown chokepoint — so every dissolve
             // path picks it up, not just this one.)
             self.emit_locus_arena_destroy(&info, self_ptr, &locus_name)?;
+            // The main locus's tree is gone: its drain ends (line 15).
+            if is_main_entry {
+                self.emit_tree_drain_end()?;
+            }
             // m52: drain again after each dissolve. The dissolve
             // method may publish — those cells enqueue for
             // still-alive subscribers later in the reverse-iter
@@ -9399,6 +9476,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         self.main_frame_depth = self.deferred_dissolves.len();
         self.main_dissolve_frame = None;
         self.main_test_fail_bb = None;
+        // A failed assertion outside this frame tears down from the
+        // unwind registry: name its head and main's thread (behind the
+        // registry's flag, `locus/unwind.rs`).
+        self.emit_unwind_set_head()?;
 
         // m77: pull argc/argv off main's params and hand them to
         // the C-runtime stash so std::env::args_count / arg /
@@ -10006,6 +10087,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 )));
             }
         }
+        // The unwind registry's teardowns, once every body has lowered
+        // and whether an assertion outside main's frame was lowered is
+        // known (`locus/unwind.rs`); before the contract teardowns, whose
+        // table they may add to.
+        self.finish_unwind_registry()?;
         // C32: the contract teardowns the bodies recorded, before the
         // drain observers are counted (their drains are some).
         self.synthesize_contract_teardowns()?;
@@ -10736,6 +10822,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // prelude transport, so the post-destroy struct recycling
         // in `emit_locus_arena_destroy` is a no-op for it.
         let slot = self.defer_dissolve_slot(self_ptr, locus_name)?;
+        self.emit_unwind_push(slot, locus_name, None)?;
         match self.deferred_dissolves.last_mut() {
             Some(frame) => {
                 frame.push((slot, locus_name.to_string(), None))
@@ -11244,6 +11331,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let codec_self_ptr = self_val.into_pointer_value();
         let codec_slot =
             self.defer_dissolve_slot(codec_self_ptr, &locus.name)?;
+        self.emit_unwind_push(codec_slot, &locus.name, None)?;
         match self.deferred_dissolves.last_mut() {
             Some(frame) => {
                 frame.push((codec_slot, locus.name.clone(), None))
@@ -16207,7 +16295,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
 
     /// A rewritten send can run in a helper reached during birth. Preserve
     /// its exact receiver while that receiver's readiness window is open,
-    /// including payloads held in variables; otherwise keep the direct call.
+    /// including payloads held in variables, or while a cell this thread
+    /// sent earlier still waits on its own queue (one publisher's order);
+    /// otherwise keep the direct call.
     fn lower_ready_publish_call(
         &mut self,
         id: NodeId,
@@ -16223,7 +16313,15 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let value = args.first().expect("a rewritten send has its payload argument");
         let func = self.builder.get_insert_block().and_then(|b| b.get_parent())
             .expect("a publish is inside a function");
-        let held = self.emit_any_subscriber_unready()?;
+        // One publisher's order: while a cell this thread sent earlier
+        // waits on its own queue, the direct call would overtake it, so
+        // the send is queued to its receiver behind it.
+        let unready_any = self.emit_any_subscriber_unready()?;
+        let queued = self.emit_local_queued()?;
+        let held = self
+            .builder
+            .build_or(unready_any, queued, "publish.held.or_queued")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         let parked = self.context.append_basic_block(func, "publish.unready");
         let direct = self.context.append_basic_block(func, "publish.ready");
         let join = self.context.append_basic_block(func, "publish.ready.join");
@@ -16243,6 +16341,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .map_err(e)?.try_as_basic_value().left().expect("is_unready returns i32").into_int_value();
         let unready = self.builder.build_int_compare(inkwell::IntPredicate::NE, unready,
             self.context.i32_type().const_zero(), "publish.receiver.held").map_err(e)?;
+        let unready = self.builder.build_or(unready, queued, "publish.receiver.held.or_queued").map_err(e)?;
         self.builder.build_conditional_branch(unready, parked, direct).map_err(e)?;
         self.builder.position_at_end(parked);
         self.lower_send(&subject, value, None, scope, Some(receiver))?;
@@ -17690,6 +17789,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         // dissolved the loop bindings' uninitialized
                         // allocas.
                         self.null_init_entry_ptr_slot(alloca)?;
+                        self.emit_unwind_push(alloca, &lname, None)?;
                         self.deferred_dissolves
                             .last_mut()
                             .expect("checked non-empty")
@@ -18332,6 +18432,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 // publishers mid-program. No-op on cooperative
                 // threads (TLS is null).
                 self.emit_pinned_mailbox_drain_pending()?;
+                // A failed assertion another thread raised: main tears
+                // down here (`locus/unwind.rs`).
+                self.emit_unwind_poll()?;
                 Ok(BlockEnd::Open)
             }
             Stmt::Terminate(_) => {
@@ -21749,7 +21852,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // Without it, enabling the writer's retirement would turn
         // the old leak into a use-after-free the moment an
         // iteration overlapped a concurrent set.
-        let synced_clone_reads = slot.sync_mode == SyncMode::Serialized
+        let synced_clone_reads = slot.sync_mode != SyncMode::None
             && self.hashmap_cell_owns_blocks(&cell_info.fields);
         let count = if synced_clone_reads {
             let dest = self.current_arena_ptr()?;
@@ -23550,6 +23653,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                             .map_err(|e| {
                                 CodegenError::LlvmEmit(e.to_string())
                             })?;
+                        self.emit_unwind_push(slot, &lname, None)?;
                         self.deferred_dissolves
                             .last_mut()
                             .expect("checked non-empty")

@@ -25,6 +25,8 @@ mod check_flows;
 mod check_friction_sweep;
 #[path = "check_lowering_laws.rs"]
 mod check_lowering_laws;
+#[path = "check_publish_before_subscriber.rs"]
+mod check_publish_before_subscriber;
 #[path = "check_scope_local_subscriber.rs"]
 mod check_scope_local_subscriber;
 #[path = "check_secret_reveal.rs"]

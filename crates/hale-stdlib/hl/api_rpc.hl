@@ -810,9 +810,11 @@ locus __StdApiExposure {
         self.settle_slot(slot, 1);
     }
     // Hand the oldest queued call of `slot` to its receiver, if the
-    // receiver is free and known.
+    // receiver is free and known, and the exposure is not draining: once
+    // the drain reaches it (a signal, or its tree's teardown), nothing new
+    // is handed over, and its shutdown refuses what is still queued.
     fn pump(slot: Int) {
-        if self.slot_busy[slot] != 0 { return; }
+        if self.slot_busy[slot] != 0 || self.draining { return; }
         let n = self.entries.len();
         let mut best = -1;
         let mut best_rid = 0;
