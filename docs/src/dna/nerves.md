@@ -121,7 +121,11 @@ application's password: compose mounts that file read-only, so the password
 is never copied, never in an environment and never in the repository. The
 broker's address is the one the body uses; on Linux a container on a bridge
 network cannot reach a broker on the host's loopback, which is why the
-service runs on the host's network. `HALE_DNA_COMPOSE=off` leaves the
+service runs on the host's network. A body whose host dies does not leave
+them behind: every service carries the body's mark as a label, and the
+body fence, which already stops what a lost body started, brings down the
+services its ownership record (`.hale/dna/compose.owner`) says are this
+body's, and never another body's. `HALE_DNA_COMPOSE=off` leaves the
 services to you. The todo repository (`dna/tests/onboarding/todo`) is the
 worked example.
 [The skin](./skin.md) has every secret the organism holds.

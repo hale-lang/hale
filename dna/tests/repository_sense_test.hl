@@ -23,6 +23,12 @@
 // stopping the body takes every container down. Elsewhere (CI pulls only
 // its mirror's images) the body is told to leave compose alone
 // (HALE_DNA_COMPOSE=off) and the test process speaks as the api would.
+//
+// The body fence covers compose too: where docker compose and nats:2 are
+// here (CI pulls nats:2 from its mirror), a repository whose one service is
+// a broker is run, its host killed outright, and the fence brings the
+// project down; run again with its ownership record naming another body (a
+// replacement host's), the fence leaves the services alone.
 
 import "../core" as dna;
 import "./onboarding/todo/api/nerves" as todo;
@@ -109,6 +115,9 @@ main locus App {
         std::test::assert_eq_int(committed.code, 0, "the organism committed: " + committed.stderr);
         let ingested = in_dir(repo, toolchain() + "\ndna\ningest");
         std::test::assert(ingested.code == 0 && std::str::contains(ingested.stdout, "ingested "), "a repository is still re-ingested: " + ingested.stdout + ingested.stderr);
+
+        if dna::run_tool("sh\n-c\ndocker compose version >/dev/null 2>&1 && docker image inspect nats:2 >/dev/null 2>&1").code == 0 { fenced(scratch + "/fenced"); }
+        else { eprintln("repository_sense_test: the fence half not exercised (docker compose, or the image nats:2, is not on this machine)"); }
 
         let nats_owner = if std::env::var_exists("HALE_DNA_NATS_URL_OWNER") { std::env::var("HALE_DNA_NATS_URL_OWNER") } else { "" };
         if len(nats_owner) == 0 {
@@ -207,6 +216,78 @@ fn in_containers(repo: String, spine: String, org: String) {
     std::test::assert(logged(repo, "the repository's compose services are down (compose project " + project + ")", 120), "stopping the body brings compose down: " + host_log(repo));
     std::test::assert_eq_str(containers_of(project), "", "no container of " + project + " is left");
     let rest = dna::run_tool("sh\n-c\ncd \"$1\" && for f in org app; do [ -f .hale/dna/$f.pid ] && kill -9 $(cat .hale/dna/$f.pid) 2>/dev/null; done; true\nsh\n" + repo);
+}
+
+// The host's pid, from the fence's mandate (`body.fence`), once written.
+fn host_pid_of(repo: String) -> String {
+    let m = std::io::fs::read_file(repo + "/.hale/dna/body.fence") or "";
+    let nl = std::str::index_of(m, "\n");
+    return if nl < 0 { "" } else { m[0..nl] };
+}
+
+// What the fence last said.
+fn fence_said(repo: String) -> String { return std::io::fs::read_file(repo + "/.hale/dna/body.fence.status") or ""; }
+
+// Whether the fence comes to say `text` within `secs`.
+fn fence_says(repo: String, text: String, secs: Int) -> Bool {
+    let deadline = std::time::now() + dna::wait_secs(secs);
+    while std::time::now() <= deadline {
+        if std::str::contains(fence_said(repo), text) { return true; }
+        std::time::sleep(250ms);
+    }
+    return false;
+}
+
+// Start `dna run` on `repo` with compose on (no nerves, no memory: the
+// organization runs alone, and the compose services are handed none), and
+// wait for its services; the project it named.
+fn compose_body(repo: String) -> String {
+    std::io::fs::unlink(repo + "/host.log") or discard;
+    let started = in_dir(repo, "sh\n-c\nHALE_DNA_COMPOSE=on nohup timeout --foreground 600 \"$1\" dna run . --no-iris >host.log 2>&1 </dev/null & echo $!\nsh\n" + toolchain());
+    std::test::assert(logged(repo, "the repository's compose services are up (compose project ", 300), "the body brought the broker up: " + host_log(repo));
+    let project = compose_project_logged(repo);
+    std::test::assert(len(project) > 0 && len(containers_of(project)) > 0, "a container of " + project);
+    std::test::assert(len(host_pid_of(repo)) > 0, "the fence's mandate names the host");
+    return project;
+}
+
+// The fence, when the host dies under it: it brings down what this body's
+// compose brought up, and leaves what another body's record names.
+fn fenced(repo: String) {
+    let made = dna::run_tool("sh\n-c\nmkdir -p \"$1\" && cd \"$1\" && printf '# fenced\\n\\nA repository whose one service is a broker.\\n' > README.md && printf 'services:\\n  broker:\\n    image: nats:2\\n' > compose.yaml && git init -q -b main && git config user.name t && git config user.email t@dna && git add -A && git commit -q -m fenced\nsh\n" + repo);
+    std::test::assert_eq_int(made.code, 0, "the fenced repository: " + made.stderr);
+    let init = in_dir(repo, toolchain() + "\ndna\ninit\n.\n--no-library");
+    std::test::assert_eq_int(init.code, 0, "hale dna init on it: " + init.stdout + init.stderr);
+    let committed = dna::run_tool("sh\n-c\ncd \"$1\" && git add -A && git commit -qm organism\nsh\n" + repo);
+    std::test::assert_eq_int(committed.code, 0, "the organism committed: " + committed.stderr);
+
+    // ---- the host killed outright: the fence takes the project down
+    let project = compose_body(repo);
+    let reaper = dna::run_tool("sh\n-c\n(while kill -0 \"$1\" 2>/dev/null; do sleep 1; done; docker compose -p \"$2\" down --remove-orphans --timeout 5) </dev/null >/dev/null 2>&1 &\nsh\n" + to_string(std::process::pid()) + "\n" + project);
+    let owner = std::io::fs::read_file(repo + "/.hale/dna/compose.owner") or "";
+    std::test::assert(std::str::starts_with(owner, host_pid_of(repo) + "\n"), "who owns the services is recorded before they come up: " + owner);
+    let labelled = dna::run_tool("docker\nps\n-aq\n--filter\nlabel=com.docker.compose.project=" + project + "\n--filter\nlabel=hale.dna.body");
+    std::test::assert(len(dna::trim_nl(labelled.stdout)) > 0, "the services carry the body's mark");
+    let killed = dna::run_tool("kill\n-9\n" + host_pid_of(repo));
+    std::test::assert_eq_int(killed.code, 0, "the host killed");
+    std::test::assert(fence_says(repo, "compose down: " + project, 60), "the fence brings the project down: " + fence_said(repo));
+    std::test::assert_eq_str(containers_of(project), "", "no container of " + project + " is left");
+    std::test::assert(!std::io::fs::file_exists(repo + "/.hale/dna/compose.owner"), "the record goes with the project");
+
+    // ---- the record names another body (a replacement host's): left alone
+    let again = compose_body(repo);
+    std::test::assert_eq_str(again, project, "the organism's one project");
+    let record = std::io::fs::read_file(repo + "/.hale/dna/compose.owner") or "";
+    let nl = std::str::index_of(record, "\n");
+    let rest = record[(nl + 1)..len(record)];
+    let other = record[0..(nl + 1)] + "another-body#9#1#" + rest[std::str::index_of(rest, "\n")..len(rest)];
+    std::io::fs::write_file(repo + "/.hale/dna/compose.owner", other) or discard;
+    let killed2 = dna::run_tool("kill\n-9\n" + host_pid_of(repo));
+    std::test::assert_eq_int(killed2.code, 0, "the host killed again");
+    std::test::assert(fence_says(repo, "compose not this body's: " + project, 60), "the fence leaves another body's services: " + fence_said(repo));
+    std::test::assert(len(containers_of(project)) > 0, "the replacement's services are still there");
+    let down = dna::run_tool("docker\ncompose\n-p\n" + project + "\ndown\n--remove-orphans\n--timeout\n5");
+    std::test::assert_eq_str(containers_of(project), "", "taken down by hand: " + down.stderr);
 }
 
 fn main() { App { }; }

@@ -277,6 +277,14 @@ const COMPOSE_WAIT: Int = 300;
 // the password is never copied, never in an environment and never in the
 // repository (GH #989: the vault is its one ingress).
 const NATS_APP_SECRET_ENV: String = "HALE_DNA_NATS_SECRET_APP";
+// Which body owns the services compose brought up, beside org.pid and
+// app.pid under .hale/dna, written before `up`: the host's pid, the body's
+// mark, the project, the compose file, the project directory and the
+// override that labels every service with the mark (COMPOSE_LABEL), a line
+// each. The body fence reads it when the host is gone (`fence_compose_down`).
+const COMPOSE_OWNER: String = "compose.owner";
+const COMPOSE_OVERRIDE: String = "compose.body.yaml";
+const COMPOSE_LABEL: String = "hale.dna.body";
 
 // The repository's compose file, where compose itself looks for one; ""
 // when there is none.
@@ -304,11 +312,28 @@ locus RepositoryCompose {
         active: Bool = false;
         checked: Int = 0; // when the services were last looked at
         last: String = "";
+        // the ownership record and the labelling override (own)
+        owner: String = "";
+        override: String = "";
     }
     // `docker compose` on this project and file, newline-separated, run
     // under `env` without the organism's credentials and with `self.env`
     fn base() -> String {
-        return "env\n-u\n" + std::str::replace(APPLICATION_UNSET, " ", "\n-u\n") + "\n" + self.env + "docker\ncompose\n-p\n" + self.project + "\n-f\n" + self.file + "\n--project-directory\n" + self.root;
+        return "env\n-u\n" + std::str::replace(APPLICATION_UNSET, " ", "\n-u\n") + "\n" + self.env + "docker\ncompose\n-p\n" + self.project + "\n-f\n" + self.file + (if len(self.override) > 0 { "\n-f\n" + self.override } else { "" }) + "\n--project-directory\n" + self.root;
+    }
+    // Before `up`: every service labelled with the body's mark, and the
+    // record of who owns them, so the body fence can bring down what this
+    // body brought up when the host is gone, and only that. "" when both
+    // are written, else why not.
+    fn own(dir: String, host_pid: Int, mark: String) -> String {
+        let record = dir + "/" + COMPOSE_OWNER;
+        let labels = dir + "/" + COMPOSE_OVERRIDE;
+        let script = "ovr=$1 rec=$2 pid=$3 mark=$4 proj=$5 file=$6 pdir=$7; shift 7; svcs=$(\"$@\" config --services) || exit 1; umask 077; { echo services:; for s in $svcs; do printf '  %s:\\n    labels:\\n      " + COMPOSE_LABEL + ": \"%s\"\\n' \"$s\" \"$mark\"; done; } > \"$ovr\" && printf '%s\\n' \"$pid\" \"$mark\" \"$proj\" \"$file\" \"$pdir\" \"$ovr\" > \"$rec\"";
+        let r = dna::run_tool("sh\n-c\n" + script + "\nsh\n" + labels + "\n" + record + "\n" + to_string(host_pid) + "\n" + mark + "\n" + self.project + "\n" + self.file + "\n" + self.root + "\n" + self.base());
+        if r.code != 0 { return dna::last_line(dna::trim_nl(r.stderr)); }
+        self.owner = record;
+        self.override = labels;
+        return "";
     }
     fn argv(args: String) -> String { return self.base() + "\n" + args; }
     // Hand compose a variable (no newline in it: none of these carries one).
@@ -350,6 +375,22 @@ locus RepositoryCompose {
         if !self.active { return ""; }
         self.active = false;
         let r = dna::run_tool(self.argv("down\n--remove-orphans\n--timeout\n10"));
-        return if r.code == 0 { "" } else { dna::last_line(dna::trim_nl(r.stderr)) };
+        if r.code != 0 { return dna::last_line(dna::trim_nl(r.stderr)); }
+        if len(self.owner) > 0 { std::io::fs::unlink(self.owner) or discard; }
+        if len(self.override) > 0 { std::io::fs::unlink(self.override) or discard; }
+        return "";
     }
+}
+
+// The body fence's share of a lost body (`fence_stop`): the compose
+// services the host at `host_pid` brought up, down — when the ownership
+// record under `dir` is that host's and names `mark`. A record another body
+// wrote (a replacement host on this clone) is left with its services. Only
+// the containers labelled with `mark` are this body's: when the project
+// holds no other, it goes down whole (its network too); otherwise only
+// those containers go. The record and its override go once it is down.
+fn fence_compose_down(dir: String, host_pid: Int, mark: String) -> String {
+    let script = "f=$1 pid=$2 mark=$3; shift 3; [ -f \"$f\" ] || exit 0; { read -r p; read -r m; read -r proj; read -r file; read -r pdir; read -r ovr; } < \"$f\"; [ \"$p\" = \"$pid\" ] && [ \"$m\" = \"$mark\" ] || { echo \"not this body's: $proj\"; exit 0; }; ours=$(docker ps -aq --filter \"label=com.docker.compose.project=$proj\" --filter \"label=" + COMPOSE_LABEL + "=$mark\" | sort); all=$(docker ps -aq --filter \"label=com.docker.compose.project=$proj\" | sort); if [ \"$ours\" = \"$all\" ]; then \"$@\" docker compose -p \"$proj\" -f \"$file\" -f \"$ovr\" --project-directory \"$pdir\" down --remove-orphans --timeout 10 >/dev/null 2>&1 || { [ -z \"$ours\" ] || docker rm -f $ours >/dev/null; }; else [ -z \"$ours\" ] || docker rm -f $ours >/dev/null; fi; rm -f \"$f\" \"$ovr\"; echo \"down: $proj\"";
+    let r = dna::run_tool("sh\n-c\n" + script + "\nsh\n" + dir + "/" + COMPOSE_OWNER + "\n" + to_string(host_pid) + "\n" + mark + "\nenv\n-u\n" + std::str::replace(APPLICATION_UNSET, " ", "\n-u\n"));
+    return dna::trim_nl(r.stdout + r.stderr);
 }

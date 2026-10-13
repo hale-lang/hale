@@ -3404,7 +3404,10 @@ organization's (`[claims] no_base = true`; each adopts its own law).
   (`HALE_DNA_BODY=<holder>#<token>#<host pid>#`, set in the environment of
   everything the host starts and inherited by every tool they start) —
   the second net, for that `setsid` tool, where the machine discloses
-  environments — and says why (the
+  environments — then a repository's compose services this body brought
+  up (**The body runs a repository's compose services**: they live in
+  docker, outside every tree and mark above, so the fence takes them down
+  by the body's ownership record) — and says why (the
   host does the same, before it stops the fence, on every exit it takes
   once it holds the lease: a failed build, a refused start, its
   organization's exit), and the host
@@ -5014,7 +5017,20 @@ The live half is memory's, projected from the record by the spine
   <code>; brought up again`); one compose is restarting under its own
   `restart:` policy is left to it. Every exit of the body once its lease is
   held brings them down (`down --remove-orphans`; `the repository's compose
-  services are down`). Compose runs without the organism's credentials in its
+  services are down`). A host that dies cannot, so before `up` the body
+  labels every service with its mark (`hale.dna.body=<holder>#<token>#<host
+  pid>#`, an override `.hale/dna/compose.body.yaml` beside the compose file)
+  and records who owns them in `.hale/dna/compose.owner` (the host's pid,
+  the mark, the project, the compose file, the project directory and the
+  override, a line each); without the record nothing is brought up. When
+  the body fence stops a lost body (its host gone, its lease lost or
+  expired) it reads the record: one that names its host and its mark has
+  the project brought down whole when every container in it carries that
+  mark, and only the marked containers otherwise; a record another body
+  wrote (a replacement host on this clone) is left, with its services. The
+  fence's status line says `compose down: <project>` or `compose not this
+  body's: <project>`, and the record and the override go once the
+  services are down, by the host or by the fence. Compose runs without the organism's credentials in its
   environment (the ones an application's start removes: the spine's, owner's,
   head's and reflexes' URLs and DSNs), so a compose file cannot interpolate
   them, and with nerves here it is handed the attached application's:

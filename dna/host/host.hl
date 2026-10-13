@@ -2158,6 +2158,10 @@ main locus Host {
             self.stop_org();
             self.quit(3);
         }
+        // the fence must be able to bring them down if this host dies:
+        // who owns them is written, and every service labelled, first
+        let owned = self.compose.own(self.dna_dir, std::process::pid(), dna::body_mark(self.holder, self.lease.token, std::process::pid()));
+        if len(owned) > 0 { self.say("the repository's compose services are not brought up: their ownership could not be recorded for the body fence (" + owned + ")"); return; }
         self.say("expression: the repository's compose services, compose project " + self.compose.project + " (" + std::str::replace(self.compose.services(), "\n", ", ") + "), coming up; " + handed);
         let why = self.compose.up(dna::wait_secs(COMPOSE_WAIT));
         if len(why) > 0 { self.say("the repository's compose services did not all come up (" + why + "); the organization is up, and the body looks at them again every " + to_string(COMPOSE_CHECK) + "s"); }
@@ -2315,6 +2319,10 @@ fn fence_stop(dir: String, host_pid: Int, mark: String, why: String) {
     kill_tree(dna::trim_nl(std::io::fs::read_file(dir + "/org.pid") or ""));
     kill_tree(dna::trim_nl(std::io::fs::read_file(dir + "/app.pid") or ""));
     dna::kill_marked(mark);
+    // the repository's compose services this body brought up (ruling 11):
+    // they live in docker, outside every tree and mark above
+    let composed = fence_compose_down(dir, host_pid, mark);
+    if len(composed) > 0 { let c = write_text(dir + "/body.fence.status", to_string(host_pid) + " " + why + "; compose " + composed) or false; }
 }
 
 fn host_main(verb: String, root: String, seed: String, fleet: String, plan: String, toolchain: String, a: Args) {
