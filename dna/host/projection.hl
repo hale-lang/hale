@@ -600,7 +600,12 @@ locus Projection {
         let current = std::io::fs::read_file(self.root + "/.hale/dna/current.topology") or "";
         let cur_shape = std::json::find_string_field(current, "shape_hash");
         let bd = self.build_digest();
-        out = out + "expression: attached " + std::json::find_string_field(attached.body, "main") + " (shape " + std::json::find_string_field(attached.body, "shape_hash") + ") · current shape " + (if len(cur_shape) > 0 { cur_shape } else { "not cut" }) + " · build " + (if len(bd) > 0 { short(bd) } else { "not built" }) + "\n";
+        if attached.seq >= 0 && len(std::json::find_string_field(attached.body, "main")) == 0 {
+            // ruling 11: a repository's application is its compose services
+            out = out + "expression: the repository's compose services, attached as " + std::json::find_string_field(attached.body, "name") + "\n";
+        } else {
+            out = out + "expression: attached " + std::json::find_string_field(attached.body, "main") + " (shape " + std::json::find_string_field(attached.body, "shape_hash") + ") · current shape " + (if len(cur_shape) > 0 { cur_shape } else { "not cut" }) + " · build " + (if len(bd) > 0 { short(bd) } else { "not built" }) + "\n";
+        }
         out = out + "intents:    " + to_string(self.count("intent.offered")) + " offered, " + to_string(self.count("intent.refused")) + " refused\n";
         // GH #664: over a shared record, an intent for a position no
         // controller here owns waits in the record, visibly

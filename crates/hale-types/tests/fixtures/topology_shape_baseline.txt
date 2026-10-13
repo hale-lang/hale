@@ -1499,6 +1499,7 @@ crates/hale-codegen/tests/wasm_target.rs#2 3218fa9dbdc01510
 crates/hale-codegen/tests/wasm_target.rs#20 cee899a36c15eda8
 crates/hale-codegen/tests/wasm_target.rs#21 7409ee5e1bea5782
 crates/hale-codegen/tests/wasm_target.rs#22 9e7240d456a5a42c
+crates/hale-codegen/tests/wasm_target.rs#23 59ad3cb1fefefc89
 crates/hale-codegen/tests/wasm_target.rs#5 3218fa9dbdc01510
 crates/hale-codegen/tests/ws1_ffi_handle_reassign.rs#1 ec84d76cf468d9b4
 crates/hale-codegen/tests/ws3_int_float_conversion.rs#0 865d341109268295

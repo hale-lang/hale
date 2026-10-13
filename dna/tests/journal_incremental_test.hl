@@ -50,8 +50,12 @@ main locus App {
         while k < 3 {
             let r = self.kept.append(self.kept.revision(), "kept.row", "k" + to_string(k), "{\"n\": " + to_string(k) + ", \"text\": \"tab\\there é\"}");
             std::test::assert(r.ok, "kept row " + to_string(k) + " landed: " + r.error);
+            // the journal that appended the chain's first row knows the
+            // record's identity at once, before any refresh (F.26)
+            std::test::assert_eq_str(self.kept.genesis(), self.kept.read(0).digest, "the identity after row " + to_string(k));
             k = k + 1;
         }
+        self.same_as_fresh(repo, "its own rows on an empty chain");
         let base = self.kept.read(1).digest;
 
         // another writer grows the chain: the kept journal reads its rows alone
