@@ -527,3 +527,41 @@ fn a_binding_held_across_a_callback_reads_the_old_value() {
         assert!(stdout.contains(want), "missing {want:?}; stdout: {stdout}; stderr: {stderr}");
     }
 }
+
+/// A record handed to a callee that writes it through its parameter
+/// stays the caller's. An argument is passed by reference, so the
+/// owned-view copy of an argument the callee may replace is taken only
+/// for an immutable leaf (a String, a Bytes): copying the record handed
+/// the callee a private copy to fill, and the caller read its own still
+/// empty — a Router's captures, filled by the matcher into
+/// `cur.params`, came back empty (`hi ` for `hi wire`), once a fn-value
+/// call in the matcher's chain made it a callee that may write anything.
+#[test]
+fn a_record_argument_the_callee_fills_stays_the_callers() {
+    let src = r#"
+        type P { vals: bounded[String; 4]; }
+        type C { p: P = P { }; }
+        fn one(x: Int) -> Int { return x; }
+        fn make() -> C { return C { }; }
+        fn fill(p: P, cb: fn(Int) -> Int) -> Bool {
+            let n = cb(1);
+            clear(p.vals);
+            push(p.vals, std::str::upper("filled")) or raise;
+            return true;
+        }
+        fn hold(mk: fn() -> C) -> Int {
+            let cur = mk();
+            let ok = fill(cur.p, one);
+            return count(cur.p.vals);
+        }
+        fn main() { println("count=" + to_string(hold(make))); }
+    "#;
+    let bin = harness::unique_bin("hale_held_field_view_byref");
+    harness::build_source_asan(src, &bin);
+    let out = Command::new(&bin).env("LOTUS_NO_CHUNK_POOL", "1").output().expect("run");
+    let _ = std::fs::remove_file(&bin);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "non-zero {:?}; stdout: {stdout}; stderr: {stderr}", out.status);
+    assert!(stdout.contains("count=1\n"), "stdout: {stdout}; stderr: {stderr}");
+}

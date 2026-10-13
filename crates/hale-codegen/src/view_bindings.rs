@@ -84,9 +84,16 @@ enum Site {
     Node(u32),
     /// A `match`'s payload bindings, by the match's span.
     Match(u32, u32),
-    /// A call's argument read from a place the callee may replace (the
-    /// callee reads its parameter after), by the argument's span.
+    /// A call's argument or receiver read from a place the callee may
+    /// replace (the callee reads its parameter after), by its span. An
+    /// argument is passed by reference — a callee may write a record
+    /// through its parameter, and the caller sees it — so only an
+    /// immutable leaf (a String, a Bytes) is passed as a copy.
     Arg(u32, u32),
+    /// A value position — a literal's part, a binary operator's or an
+    /// index's operand — read from a place a later operand may replace:
+    /// copied whole where it is evaluated.
+    Part(u32, u32),
 }
 
 impl OwnedViews {
@@ -112,14 +119,24 @@ impl OwnedViews {
         self.sites.contains(&Site::Match(m.span.start.0, m.span.end.0))
     }
 
-    /// Is `e` a call's argument read from a place the callee may
-    /// replace, passed as an owned copy?
-    pub(crate) fn arg(&self, e: &Expr) -> bool {
+    /// Is `e` an operand read from a place a later write may replace,
+    /// copied where it is evaluated? `Some(true)`: a call's argument or
+    /// receiver, copied only when it is an immutable leaf (String,
+    /// Bytes) — a record passed by reference stays the caller's, which
+    /// the callee may write through; `Some(false)`: a value position,
+    /// copied whole.
+    pub(crate) fn operand(&self, e: &Expr) -> Option<bool> {
         if self.sites.is_empty() {
-            return false;
+            return None;
         }
         let span = e.span();
-        self.sites.contains(&Site::Arg(span.start.0, span.end.0))
+        if self.sites.contains(&Site::Part(span.start.0, span.end.0)) {
+            Some(false)
+        } else if self.sites.contains(&Site::Arg(span.start.0, span.end.0)) {
+            Some(true)
+        } else {
+            None
+        }
     }
 }
 
@@ -350,6 +367,10 @@ impl<'a> Bodies<'a> {
 
 /// The method names of the `@form` loci, synthesized by lowering (no
 /// body): what they write is the field they are called on.
+/// The bare `bounded[T; N]` intrinsics, whose first argument is the
+/// bounded field they write (`push(p.path_vals, v)`).
+const BOUNDED_OPS: &[&str] = &["count", "clear", "truncate", "push", "at", "pop"];
+
 const FORM_OPS: &[&str] = &[
     "get", "set", "pop", "push", "remove", "insert", "contains", "has", "len", "is_empty", "is_full", "key_at",
     "entry_at", "sort", "bump", "put", "clear",
@@ -368,6 +389,8 @@ enum Target {
     Ctor,
     /// A form's synthesized method.
     FormOp,
+    /// A bare `bounded[T; N]` intrinsic: writes its first argument.
+    Bounded,
     /// Nothing the pass knows: may write anything, may return a handle.
     Unknown,
 }
@@ -385,6 +408,8 @@ impl Bodies<'_> {
                 let n = id.name.as_str();
                 if self.fns.contains_key(n) {
                     Target::Fn(n.to_string())
+                } else if BOUNDED_OPS.contains(&n) {
+                    Target::Bounded
                 } else if self.variants.contains(n) {
                     Target::Ctor
                 } else if bare_builtin_sig(n).is_some() || builtin_effects(n).is_some() || row(&[n]).is_some() {
@@ -433,7 +458,7 @@ impl Bodies<'_> {
     fn returns_handle(&self, t: &Target) -> bool {
         match t {
             Target::Fn(n) | Target::Method(n) => self.handle_fns.contains(n),
-            Target::Std | Target::Ctor | Target::FormOp => false,
+            Target::Std | Target::Ctor | Target::FormOp | Target::Bounded => false,
             Target::Unknown => true,
         }
     }
@@ -883,12 +908,12 @@ impl<'p, 'a> Walk<'p, 'a> {
                 // part is copied whole.
                 Expr::Match(_) | Expr::If(_) | Expr::Block(_) | Expr::Or { .. } => {
                     let span = e.span();
-                    out.push(Site::Arg(span.start.0, span.end.0));
+                    out.push(Site::Part(span.start.0, span.end.0));
                 }
                 _ => {
                     if w.part_keys(e).is_some() {
                         let span = e.span();
-                        out.push(Site::Arg(span.start.0, span.end.0));
+                        out.push(Site::Part(span.start.0, span.end.0));
                     }
                 }
             }
@@ -1156,7 +1181,7 @@ impl<'p, 'a> Walk<'p, 'a> {
             }
             Expr::Literal(..) | Expr::Path(_) | Expr::KwSelf(_) => None,
             Expr::Binary { left, right, .. } => {
-                self.operands(&[left, right]);
+                self.operands(&[left, right], false);
                 None
             }
             Expr::Unary { operand, .. } => {
@@ -1173,16 +1198,16 @@ impl<'p, 'a> Walk<'p, 'a> {
                 None
             }
             Expr::Index { receiver, index, .. } => {
-                let mut keys = self.operands(&[receiver, index]);
+                let mut keys = self.operands(&[receiver, index], false);
                 keys.swap_remove(0)
             }
             Expr::Tuple(es, _) | Expr::Array(es, _) => {
                 let ops: Vec<&Expr> = es.iter().collect();
-                self.operands(&ops).into_iter().fold(None, union)
+                self.operands(&ops, false).into_iter().fold(None, union)
             }
             Expr::Struct { inits, .. } => {
                 let ops: Vec<&Expr> = inits.iter().map(|i| &i.value).collect();
-                self.operands(&ops).into_iter().fold(None, union)
+                self.operands(&ops, false).into_iter().fold(None, union)
             }
             Expr::Block(b) => self.block(b),
             Expr::If(i) => self.if_stmt(i),
@@ -1250,6 +1275,12 @@ impl<'p, 'a> Walk<'p, 'a> {
                     // stdlib leaf's result is copied out of its frame.
                     Target::Ctor => ctor = true,
                     Target::FormOp => form_op = true,
+                    Target::Bounded => {
+                        // The bounded field it is handed.
+                        if let Some(Expr::Field { name: f, .. }) = args.first() {
+                            writes.add(&Writes::field(self.p.field_id(&f.name)));
+                        }
+                    }
                     Target::Unknown => writes = Writes::top(),
                 }
             }
@@ -1263,7 +1294,7 @@ impl<'p, 'a> Walk<'p, 'a> {
         let mut ops: Vec<&Expr> = Vec::with_capacity(args.len() + 1);
         ops.extend(receiver);
         ops.extend(args.iter());
-        let mut keys = self.operands(&ops);
+        let mut keys = self.operands(&ops, true);
         let recv_keys = if receiver.is_some() { keys.remove(0) } else { None };
         let mut result: Keys = None;
         // A form's read may hand back its cell; any other method's
@@ -1297,7 +1328,7 @@ impl<'p, 'a> Walk<'p, 'a> {
             }
             if let (Some(k), true, false) = (&keys, self.summary.is_some(), matches!(a, Expr::Ident(_))) {
                 if writes.touches(k, self.p) {
-                    self.flag_operand(a, k);
+                    self.flag_operand(a, k, true);
                 }
             }
             if ctor {
@@ -1315,7 +1346,8 @@ impl<'p, 'a> Walk<'p, 'a> {
     /// later operand's evaluation may replace that place (`take(match
     /// self.e { .. }, self.reset())`, `self.f.s + self.renamed()`, a
     /// record literal's fields). The keys of each.
-    fn operands(&mut self, ops: &[&Expr]) -> Vec<Keys> {
+    /// `by_ref`: the operands are a call's receiver and arguments.
+    fn operands(&mut self, ops: &[&Expr], by_ref: bool) -> Vec<Keys> {
         let first_write = self.writes.len();
         let mut keys = Vec::with_capacity(ops.len());
         let mut ends = Vec::with_capacity(ops.len());
@@ -1331,7 +1363,7 @@ impl<'p, 'a> Walk<'p, 'a> {
                     .any(|w| w.at > ends[i] && w.writes.touches(k, self.p));
                 if hit {
                     let k = k.clone();
-                    self.flag_operand(ops[i], &k);
+                    self.flag_operand(ops[i], &k, by_ref);
                 }
             }
         }
@@ -1340,13 +1372,14 @@ impl<'p, 'a> Walk<'p, 'a> {
 
     /// Copy `a`, an operand that views `keys`, where it is evaluated: a
     /// literal by its parts that view a place, anything else whole.
-    fn flag_operand(&mut self, a: &Expr, keys: &BTreeSet<String>) {
+    fn flag_operand(&mut self, a: &Expr, keys: &BTreeSet<String>, by_ref: bool) {
         let name = keys.iter().next().cloned().unwrap_or_default();
         match self.literal_parts(a) {
             Some(parts) => self.args.extend(parts.into_iter().map(|s| (s, name.clone()))),
             None => {
                 let span = a.span();
-                self.args.push((Site::Arg(span.start.0, span.end.0), name));
+                let site = if by_ref { Site::Arg(span.start.0, span.end.0) } else { Site::Part(span.start.0, span.end.0) };
+                self.args.push((site, name));
             }
         }
     }

@@ -23532,8 +23532,16 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // An argument read from a place its callee may replace before
         // it reads the parameter (`crate::view_bindings`): passed as an
         // owned copy.
-        if self.owned_views.arg(e) {
-            return Ok((self.own_viewed_value(v, &ty)?, ty));
+        match self.owned_views.operand(e) {
+            // A value position: copied whole.
+            Some(false) => return Ok((self.own_viewed_value(v, &ty)?, ty)),
+            // A call's argument is passed by reference: a callee may
+            // write a record through its parameter, and the caller sees
+            // it, so only an immutable leaf goes as a copy.
+            Some(true) if matches!(ty, CodegenTy::String | CodegenTy::Bytes) => {
+                return Ok((self.own_viewed_value(v, &ty)?, ty));
+            }
+            _ => {}
         }
         Ok((v, ty))
     }
