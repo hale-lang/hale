@@ -83,10 +83,12 @@ enum Site {
 }
 
 impl OwnedViews {
-    /// Run the pass over every body of `program`.
-    pub(crate) fn of(program: &Program) -> Self {
+    /// Run the pass over every body of `program`; `renames` is the
+    /// build's import table (a qualified path to the declaration it
+    /// names).
+    pub(crate) fn of(program: &Program, renames: &BTreeMap<Vec<String>, String>) -> Self {
         let mut out = OwnedViews::default();
-        for (site, _) in owned_view_sites(program) {
+        for (site, _) in owned_view_sites_with(program, renames) {
             out.sites.insert(site);
         }
         out
@@ -199,7 +201,16 @@ struct Bodies<'a> {
     /// last segment): a form's read (`self.v.get(i)`) may hand back a
     /// view of its cell, which the form's own writes retire.
     form_loci: BTreeSet<String>,
-    field_types: Vec<(String, String)>,
+    field_types: Vec<(String, &'a TypeExpr)>,
+    /// Type aliases, by their normalized names: classified by what they
+    /// name, never by their spelling.
+    aliases: BTreeMap<String, &'a TypeExpr>,
+    /// The build's import table: `lib::Kid` names the declaration minted
+    /// for the library's `Kid`.
+    renames: BTreeMap<Vec<String>, String>,
+    /// Every enum variant's name: a call of one constructs a value that
+    /// holds its arguments.
+    variants: BTreeSet<String>,
     form_fields: BTreeSet<String>,
     /// Loci, interfaces and perspectives: a value of one of these is a
     /// handle, whose field reads view the locus's storage.
@@ -223,13 +234,91 @@ impl Bodies<'_> {
     }
 }
 
-/// Does a value of type `ty` hold a handle (a locus, an interface, a
-/// perspective)?
-fn handle_ty(ty: &TypeExpr, loci: &BTreeSet<String>) -> bool {
-    match ty {
-        TypeExpr::Named { path, .. } => path.segments.last().is_some_and(|s| loci.contains(&s.name)),
-        TypeExpr::Perspective { .. } => true,
-        _ => false,
+/// The names a declaration answers to. An imported seed's declaration
+/// is minted `__lib_<alias>_<stem>_<Name>`, and a use spells it either
+/// that way (inside the seed, after the mangle), through the import
+/// table (`lib::Name`, `Bodies::path_name`), or — in a body the mangle
+/// did not reach — as `Name`: the minted name answers to every suffix
+/// after an underscore too. A suffix shared with an unrelated
+/// declaration only makes the answer err toward a copy.
+fn decl_names(name: &str) -> Vec<String> {
+    let mut out = vec![name.to_string()];
+    if name.starts_with("__lib_") {
+        for (i, _) in name.match_indices('_') {
+            if i + 1 < name.len() && !name[i + 1..].starts_with('_') {
+                out.push(name[i + 1..].to_string());
+            }
+        }
+    }
+    out
+}
+
+impl<'a> Bodies<'a> {
+    /// The declaration a path names, by its normalized name: a qualified
+    /// path through the import table (or the stdlib's), a bare name as
+    /// written.
+    fn path_name(&self, segs: &[Ident]) -> Option<String> {
+        let last = segs.last()?;
+        if segs.len() > 1 {
+            let key: Vec<String> = segs.iter().map(|s| s.name.clone()).collect();
+            let refs: Vec<&str> = key.iter().map(|s| s.as_str()).collect();
+            if let Some(m) = self.renames.get(&key) {
+                return Some(m.clone());
+            }
+            if let Some(m) = crate::ownership::stdlib_mangled_for_path(&refs) {
+                return Some(m.to_string());
+            }
+        }
+        Some(last.name.clone())
+    }
+
+    /// Does the call path name an enum variant (`E::A`, `lib::E::A`)?
+    fn is_ctor(&self, q: &QualifiedName) -> bool {
+        q.segments.len() > 1 && q.segments.last().is_some_and(|s| self.variants.contains(&s.name))
+    }
+
+    /// `ty` with its aliases followed (`type Child = Kid;`) and a mode
+    /// projection taken off: what it is, never how it is spelled.
+    fn resolved<'t>(&'t self, ty: &'t TypeExpr) -> &'t TypeExpr {
+        let mut cur = ty;
+        for _ in 0..16 {
+            match cur {
+                TypeExpr::Named { path, .. } => {
+                    match self.path_name(&path.segments).and_then(|n| self.aliases.get(&n)) {
+                        Some(next) => cur = next,
+                        None => return cur,
+                    }
+                }
+                TypeExpr::Projection { inner, .. } => cur = inner,
+                _ => return cur,
+            }
+        }
+        cur
+    }
+
+    /// The declared type `ty` names, aliases followed, by its normalized
+    /// name; `None` for one that names no declaration.
+    fn type_name(&self, ty: &TypeExpr) -> Option<String> {
+        match self.resolved(ty) {
+            TypeExpr::Named { path, .. } => self.path_name(&path.segments),
+            _ => None,
+        }
+    }
+
+    /// Does a value of type `ty` hold a handle (a locus, an interface, a
+    /// perspective), its aliases followed?
+    fn handle_ty(&self, ty: &TypeExpr) -> bool {
+        matches!(self.resolved(ty), TypeExpr::Perspective { .. })
+            || self.type_name(ty).is_some_and(|n| self.loci.contains(&n))
+    }
+
+    /// Does a literal or constructor path name a locus (through an alias)?
+    fn handle_path(&self, path: &QualifiedName) -> bool {
+        let Some(name) = self.path_name(&path.segments) else { return false };
+        if self.loci.contains(&name) {
+            return true;
+        }
+        self.aliases.get(&name).is_some_and(|t| self.handle_ty(t))
     }
 }
 
@@ -237,19 +326,23 @@ fn collect<'a>(items: &'a [TopDecl], p: &mut Bodies<'a>) {
     for item in items {
         match item {
             TopDecl::Fn(f) => {
-                p.fns.entry(f.name.name.clone()).or_default().push(p.bodies.len());
-                p.bodies.push((&f.params, &f.body));
-                if let Some(r) = &f.ret {
-                    p.returns.push((f.name.name.clone(), r));
+                // An imported seed's fn is minted under a mangled name and
+                // called by its own (`lib::name`, `name`).
+                for n in decl_names(&f.name.name) {
+                    p.fns.entry(n.clone()).or_default().push(p.bodies.len());
+                    if let Some(r) = &f.ret {
+                        p.returns.push((n, r));
+                    }
                 }
+                p.bodies.push((&f.params, &f.body));
             }
             TopDecl::Interface(i) => {
-                p.loci.insert(i.name.name.clone());
+                p.loci.extend(decl_names(&i.name.name));
             }
             TopDecl::Locus(l) => {
-                p.loci.insert(l.name.name.clone());
+                p.loci.extend(decl_names(&l.name.name));
                 if l.form.is_some() {
-                    p.form_loci.insert(l.name.name.clone());
+                    p.form_loci.extend(decl_names(&l.name.name));
                 }
                 for m in &l.members {
                     match m {
@@ -269,10 +362,8 @@ fn collect<'a>(items: &'a [TopDecl], p: &mut Bodies<'a>) {
                                     Some(TypeExpr::Function { .. }) => {
                                         p.fn_fields.insert(d.name.name.clone());
                                     }
-                                    Some(TypeExpr::Named { path, .. }) => {
-                                        if let Some(last) = path.segments.last() {
-                                            p.field_types.push((d.name.name.clone(), last.name.clone()));
-                                        }
+                                    Some(t @ (TypeExpr::Named { .. } | TypeExpr::Projection { .. })) => {
+                                        p.field_types.push((d.name.name.clone(), t));
                                     }
                                     _ => {}
                                 }
@@ -290,7 +381,7 @@ fn collect<'a>(items: &'a [TopDecl], p: &mut Bodies<'a>) {
                 }
             }
             TopDecl::Perspective(d) => {
-                p.loci.insert(d.name.name.clone());
+                p.loci.extend(decl_names(&d.name.name));
                 for m in &d.members {
                     if let PerspectiveMember::Fn(f) = m {
                         p.methods.entry(f.name.name.clone()).or_default().push(p.bodies.len());
@@ -299,6 +390,16 @@ fn collect<'a>(items: &'a [TopDecl], p: &mut Bodies<'a>) {
                 }
             }
             TopDecl::Module(m) => collect(&m.items, p),
+            TopDecl::Type(td) => {
+                if let TypeDeclBody::Enum(vs) = &td.body {
+                    p.variants.extend(vs.iter().map(|v| v.name.name.clone()));
+                }
+                if let TypeDeclBody::Alias(t) = &td.body {
+                    for n in decl_names(&td.name.name) {
+                        p.aliases.insert(n, t);
+                    }
+                }
+            }
             _ => {}
         }
     }
@@ -306,7 +407,12 @@ fn collect<'a>(items: &'a [TopDecl], p: &mut Bodies<'a>) {
 
 /// The flagged sites, each with the name it binds (the first name of a
 /// tuple `let`, a match's first payload binding): for the tests.
+#[cfg(test)]
 fn owned_view_sites(program: &Program) -> Vec<(Site, String)> {
+    owned_view_sites_with(program, &BTreeMap::new())
+}
+
+fn owned_view_sites_with(program: &Program, renames: &BTreeMap<Vec<String>, String>) -> Vec<(Site, String)> {
     let mut p = Bodies {
         bodies: Vec::new(),
         methods: BTreeMap::new(),
@@ -315,6 +421,9 @@ fn owned_view_sites(program: &Program) -> Vec<(Site, String)> {
         handlers: BTreeSet::new(),
         form_loci: BTreeSet::new(),
         field_types: Vec::new(),
+        aliases: BTreeMap::new(),
+        renames: renames.clone(),
+        variants: BTreeSet::new(),
         form_fields: BTreeSet::new(),
         loci: BTreeSet::new(),
         returns: Vec::new(),
@@ -323,12 +432,12 @@ fn owned_view_sites(program: &Program) -> Vec<(Site, String)> {
     };
     collect(&program.items, &mut p);
     let handle_fns: BTreeSet<String> =
-        p.returns.iter().filter(|(_, r)| handle_ty(r, &p.loci)).map(|(n, _)| n.clone()).collect();
+        p.returns.iter().filter(|(_, r)| p.handle_ty(r)).map(|(n, _)| n.clone()).collect();
     p.handle_fns = handle_fns;
     let forms: BTreeSet<String> = p
         .field_types
         .iter()
-        .filter(|(_, ty)| p.form_loci.contains(ty))
+        .filter(|(_, ty)| p.type_name(ty).is_some_and(|n| p.form_loci.contains(&n)))
         .map(|(f, _)| f.clone())
         .collect();
     p.form_fields = forms;
@@ -467,7 +576,7 @@ impl<'p, 'a> Walk<'p, 'a> {
         let mut handle_params = BTreeSet::new();
         for prm in params {
             top.insert(prm.name.name.clone(), None);
-            if handle_ty(&prm.ty, &p.loci) {
+            if p.handle_ty(&prm.ty) {
                 handle_params.insert(prm.name.name.clone());
             }
         }
@@ -567,11 +676,11 @@ impl<'p, 'a> Walk<'p, 'a> {
                 Some(None) => self.handle_params.contains(&id.name),
                 None => false,
             },
-            Expr::Struct { path, .. } => path.segments.last().is_some_and(|s| self.p.loci.contains(&s.name)),
+            Expr::Struct { path, .. } => self.p.handle_path(path),
             Expr::Field { .. } | Expr::Index { .. } => true,
             Expr::Call { callee, .. } => match callee.as_ref() {
                 Expr::Ident(id) => self.p.handle_fns.contains(&id.name),
-                Expr::Path(q) => q.segments.last().is_some_and(|s| self.p.handle_fns.contains(&s.name)),
+                Expr::Path(q) => self.p.path_name(&q.segments).is_some_and(|n| self.p.handle_fns.contains(&n)),
                 Expr::Field { name, .. } | Expr::Path2 { name, .. } => self.p.handle_fns.contains(&name.name),
                 _ => true,
             },
@@ -624,10 +733,7 @@ impl<'p, 'a> Walk<'p, 'a> {
                 _ => None,
             },
             Expr::Call { callee, args, .. } => match callee.as_ref() {
-                Expr::Path(q)
-                    if q.segments.len() > 1
-                        && q.segments[0].name != "std"
-                        && !self.p.fns.contains_key(&q.segments.last().expect("segments").name) =>
+                Expr::Path(q) if self.p.is_ctor(q) =>
                 {
                     args.iter().fold(None, |acc, a| union(acc, self.part_keys(a)))
                 }
@@ -667,10 +773,12 @@ impl<'p, 'a> Walk<'p, 'a> {
     /// expression, `if`, `match` or block statement.
     fn stmt(&mut self, s: &Stmt) -> Keys {
         match s {
-            Stmt::Let { name, value, id, .. } => {
+            Stmt::Let { name, ty, value, id, .. } => {
                 let keys = self.expr(value);
                 let parts = self.literal_parts(value);
-                let handle = self.is_handle(value);
+                // A binding declared as a handle is one, whatever the
+                // value's own spelling says.
+                let handle = self.is_handle(value) || ty.as_ref().is_some_and(|t| self.p.handle_ty(t));
                 let v = self.declare(&name.name);
                 self.handles[v] = handle;
                 self.bind_parts(v, Site::Node(id.0), &name.name, keys, parts);
@@ -930,16 +1038,15 @@ impl<'p, 'a> Walk<'p, 'a> {
                     self.use_name(&id.name);
                     writes = Writes::top();
                 }
-                None => writes.add(&self.named_fn(&[id.name.as_str()])),
+                None => writes.add(&self.named_fn(&[id.name.as_str()], &id.name)),
             },
             Expr::Path(q) => {
                 let segs: Vec<&str> = q.segments.iter().map(|s| s.name.as_str()).collect();
-                writes.add(&self.named_fn(&segs));
+                let name = self.p.path_name(&q.segments).unwrap_or_default();
+                writes.add(&self.named_fn(&segs, &name));
                 // An enum constructor holds its arguments; a fn's or a
                 // stdlib leaf's result is copied out of its frame.
-                ctor = segs.len() > 1
-                    && segs[0] != "std"
-                    && !self.p.fns.contains_key(*segs.last().expect("a path has segments"));
+                ctor = self.p.is_ctor(q);
             }
             Expr::Field { receiver: r, name, .. } | Expr::Path2 { receiver: r, name, .. } => {
                 receiver = Some(r);
@@ -1046,18 +1153,18 @@ impl<'p, 'a> Walk<'p, 'a> {
     }
 
     /// A call of a free fn or a stdlib leaf by its path.
-    fn named_fn(&mut self, segs: &[&str]) -> Writes {
+    /// `name`: the fn the path names (`Bodies::path_name`).
+    fn named_fn(&mut self, segs: &[&str], name: &str) -> Writes {
         use hale_types::stdlib_surface::{effects_for, parks_on_async_io, EffectSet};
         if parks_on_async_io(segs)
             || effects_for(segs).is_some_and(|e| !e.is_unclassified() && e.contains(EffectSet::PUBLISH))
         {
             return self.deliveries();
         }
-        let last = segs.last().copied().unwrap_or_default();
         if segs.first() == Some(&"std") {
             return Writes::default();
         }
-        self.callee(Callee::Fn(last.to_string()))
+        self.callee(Callee::Fn(name.to_string()))
     }
 
     fn callee(&mut self, c: Callee) -> Writes {
@@ -1318,6 +1425,32 @@ mod tests {
         "#;
         let got = owned_view_sites(&hale_syntax::parse_source(src).expect("parses"));
         assert_eq!(got.len(), 3, "{got:?}");
+    }
+
+    #[test]
+    fn a_handle_is_known_by_its_resolved_type() {
+        // Through an alias, through a binding's declared type, and by an
+        // imported seed's minted name.
+        let src = r#"
+            type E = enum { A(String), B };
+            locus Kid { params { e: E = E::B; } fn clear() { self.e = E::B; } }
+            locus __lib_x_f_Ward { params { e: E = E::B; } fn clear() { self.e = E::B; } }
+            type Child = Kid;
+            fn child(k: Kid) -> Child { return k; }
+            fn ward(w: x::Ward) -> x::Ward { return w; }
+            fn opaque(k: Kid) -> Kid { return k; }
+            locus H {
+                params { k: Kid = Kid { }; w: x::Ward = x::Ward { }; }
+                fn aliased() -> String { let c = child(self.k); let held = match c.e { E::A(s) -> s, E::B -> "", }; c.clear(); return held; }
+                fn declared() -> String { let c: Kid = opaque(self.k); let held = match c.e { E::A(s) -> s, E::B -> "", }; c.clear(); return held; }
+                fn imported() -> String { let c = ward(self.w); let held = match c.e { E::A(s) -> s, E::B -> "", }; c.clear(); return held; }
+            }
+        "#;
+        let renames: BTreeMap<Vec<String>, String> =
+            [(vec!["x".to_string(), "Ward".to_string()], "__lib_x_f_Ward".to_string())].into_iter().collect();
+        let got = owned_view_sites_with(&hale_syntax::parse_source(src).expect("parses"), &renames);
+        let lets = got.iter().filter(|(site, _)| matches!(site, Site::Node(_))).count();
+        assert_eq!(lets, 3, "{got:?}");
     }
 
     #[test]

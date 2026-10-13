@@ -1655,7 +1655,10 @@ pub fn build_resolved(
         replica_index_for_next_locus_instantiation: None,
         current_instantiation_replica_index: 0,
         owner_table,
-        owned_views: crate::view_bindings::OwnedViews::of(merged),
+        owned_views: crate::view_bindings::OwnedViews::of(
+            merged,
+            &import_renames.iter().map(|(segs, m)| (segs.clone(), m.clone())).collect(),
+        ),
         placement: &resolved.placement,
         owner_site: None,
         in_fresh_temp_hook: false,

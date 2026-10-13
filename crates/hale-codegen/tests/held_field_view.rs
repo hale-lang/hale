@@ -34,7 +34,21 @@ const PROGRAM: &str = r##"
     }
     fn take(s: String, n: Int) -> String { return s + "!" + to_string(n); }
     locus Kid {
-        params { name: String = ""; }
+        params { name: String = ""; tag: Tag = Tag::Empty; }
+        fn rename(t: String) { self.name = t; }
+        fn clear() { self.tag = Tag::Empty; }
+        fn tag_it(t: String) { self.tag = Tag::Named(t); }
+    }
+    // A handle spelled through an alias, returned by a fn.
+    type Child = Kid;
+    fn child(k: Kid) -> Child { return k; }
+    perspective Named {
+        fn label() -> String;
+        fn rename(t: String);
+    }
+    locus Badge : serves Named {
+        params { name: String = std::str::upper("old-perspective-label"); }
+        fn label() -> String { return self.name; }
         fn rename(t: String) { self.name = t; }
     }
     locus H {
@@ -42,6 +56,7 @@ const PROGRAM: &str = r##"
             f: F = F { };
             pair: (String, Int) = ("", 0);
             k: Kid = Kid { };
+            badge: perspective(Named) = Badge { };
         }
         fn put(text: String) {
             self.f = F {
@@ -181,6 +196,20 @@ const PROGRAM: &str = r##"
             let t = (self.f.inner.s, self.reset());
             return r.s + "/" + t.0;
         }
+        fn aliased_handle() -> String {
+            let c = child(self.k);
+            let held = match c.tag { Tag::Named(s) -> s, Tag::Empty -> "", };
+            c.clear();
+            let mut i = 0;
+            while i < 50 { c.rename(std::str::upper("pad-" + to_string(i))); i = i + 1; }
+            return held;
+        }
+        fn through_perspective() -> String {
+            let held = self.badge.label();
+            let mut i = 0;
+            while i < 50 { self.badge.rename(std::str::upper("new-label-" + to_string(i))); i = i + 1; }
+            return held;
+        }
         fn in_place() -> String {
             let x = self.f.s;
             self.f.s = std::str::upper("abc");
@@ -209,6 +238,9 @@ const PROGRAM: &str = r##"
         println("kid=" + h.kid());
         h.put(std::str::upper("old"));
         println("in_place=" + h.in_place());
+        h.k.tag_it(std::str::upper("old-aliased-payload"));
+        println("aliased_handle=" + h.aliased_handle());
+        println("through_perspective=" + h.through_perspective());
         h.put(std::str::upper("old-argument-payload"));
         println("operand_arg=" + h.operand_arg());
         h.put(std::str::upper("old-argument-payload"));
@@ -264,6 +296,8 @@ fn a_binding_held_across_a_replace_reads_the_old_value() {
         "rebound=OLD",
         "kid=OLD",
         "in_place=OLD",
+        "aliased_handle=OLD-ALIASED-PAYLOAD\n",
+        "through_perspective=OLD-PERSPECTIVE-LABEL\n",
         "operand_arg=OLD-ARGUMENT-PAYLOAD!0\n",
         "operand_binary=OLD-ARGUMENT-PAYLOAD0\n",
         "operand_literal=OLD-ARGUMENT-PAYLOAD0/NEW-VALUE-49\n",
@@ -274,7 +308,7 @@ fn a_binding_held_across_a_replace_reads_the_old_value() {
         "loop_rebound=,OLD-LOOP-BINDING-TEXT,\n",
         "for_rebound=,OLD-LOOP-BINDING-TEXT,\n",
         "nested_rebound=,OLD-LOOP-BINDING-TEXT,\n",
-        "now=NEW-VALUE-49/KID-49",
+        "now=NEW-VALUE-49/PAD-49",
     ] {
         assert!(stdout.contains(want), "missing {want:?}; stdout: {stdout}; stderr: {stderr}");
     }
@@ -341,4 +375,76 @@ fn a_binding_no_write_reaches_stays_a_view() {
         across.contains("call ptr @lotus_str_clone_cell_owned"),
         "H.across holds `s` across the replace without a copy:\n{across}"
     );
+}
+
+/// A handle an imported seed hands back, spelled through the seed's
+/// alias of its locus (`type Child = Kid;`) — by the seed's own fn and
+/// by the consumer's, declared `-> lib::Child`: its payload, matched out
+/// and held across the locus's own replace, keeps its value. The
+/// analysis classified handles by spelling, so `lib::Child` read as a
+/// record value and the payload stayed a view of the retired String.
+#[test]
+fn an_imported_aliased_handle_keeps_its_value() {
+    let lib_src = r#"
+        type E = enum { A(String), B };
+        locus Kid {
+            params { e: E = E::B; }
+            fn put(t: String) { self.e = E::A(t); }
+            fn clear() { self.e = E::B; }
+            fn pad(i: Int) { self.e = E::A(std::str::upper("pad-" + to_string(i))); }
+        }
+        type Child = Kid;
+        fn child(k: Kid) -> Child { return k; }
+    "#;
+    let consumer_src = r#"
+        import "../lib" as lib;
+        fn mine(k: lib::Kid) -> lib::Child { return k; }
+        locus H {
+            params { k: lib::Kid = lib::Kid { }; }
+            fn hold() -> String {
+                let c = lib::child(self.k);
+                let held = match c.e { lib::E::A(s) -> s, lib::E::B -> "", };
+                c.clear();
+                let mut i = 0;
+                while i < 50 { c.pad(i); i = i + 1; }
+                return held;
+            }
+            fn hold_mine() -> String {
+                let c = mine(self.k);
+                let held = match c.e { lib::E::A(s) -> s, lib::E::B -> "", };
+                c.clear();
+                let mut i = 0;
+                while i < 50 { c.pad(i); i = i + 1; }
+                return held;
+            }
+        }
+        fn main() {
+            let h = H { };
+            h.k.put(std::str::upper("old-imported-payload"));
+            println("imported=" + h.hold());
+            h.k.put(std::str::upper("old-qualified-alias-payload"));
+            println("qualified=" + h.hold_mine());
+        }
+    "#;
+    let dir = harness::unique_dir("hale_held_field_view_import");
+    let consumer = dir.join("consumer");
+    let lib = dir.join("lib");
+    std::fs::create_dir_all(&consumer).expect("create consumer dir");
+    std::fs::create_dir_all(&lib).expect("create lib dir");
+    std::fs::write(lib.join("thing.hl"), lib_src).expect("write lib");
+    let entry = consumer.join("main.hl");
+    std::fs::write(&entry, consumer_src).expect("write consumer");
+    let bin = harness::unique_bin("hale_held_field_view_import");
+    let options = hale_codegen::BuildOptions { asan: true, ..build_opts::options() };
+    let built = build_opts::build_seed_dir(&entry, &bin, &options);
+    let _ = std::fs::remove_dir_all(&dir);
+    built.expect("build consumer + lib");
+    let out = Command::new(&bin).env("LOTUS_NO_CHUNK_POOL", "1").output().expect("run");
+    let _ = std::fs::remove_file(&bin);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "non-zero {:?}; stdout: {stdout}; stderr: {stderr}", out.status);
+    for want in ["imported=OLD-IMPORTED-PAYLOAD\n", "qualified=OLD-QUALIFIED-ALIAS-PAYLOAD\n"] {
+        assert!(stdout.contains(want), "missing {want:?}; stdout: {stdout}; stderr: {stderr}");
+    }
 }

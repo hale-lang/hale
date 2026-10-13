@@ -298,7 +298,10 @@ of the locus: a publish, `yield` and a stdlib call that parks on an
 `async_io` pool write what the program's bus handlers write, and a call
 through a fn value or a recovery statement may write anything. A field
 of a record the frame holds itself is never replaced under a binding of
-it (a write through a local root replaces the field's pointer). A write
+it (a write through a local root replaces the field's pointer); a field
+read through a handle is — a value whose type is a locus, an interface
+or a perspective, however it is spelled (an alias, an imported seed's
+`lib::Kid`, a binding's declared type). A write
 inside a loop reaches a use anywhere in the loop when the variable was
 declared before the loop — a local declared outside and rebound inside
 (`held = self.f.s;` then a replacing call, read on the next iteration)
