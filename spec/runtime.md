@@ -2267,7 +2267,9 @@ its `KNOWN_OPEN` table, which is empty today.
   start creates, an accepted child's, which follows its owner's
   `accept` (line 5), and one bound to an `shm_ring`, whose reader
   thread starts at the registration and calls the handler itself,
-  outside the window, still register after the params. Delivery to the instance
+  outside the window, still register after the params — each on its
+  own: the same instance's eligible subscriptions register early
+  behind the one window. Delivery to the instance
   becomes eligible once its `birth()` (and its `birth_check`) has
   completed: what is published to it before then, its own
   `birth()`'s sends included, waits in the order it was published,

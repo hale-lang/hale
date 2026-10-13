@@ -1424,9 +1424,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // the window, so a record already in the ring would reach the
         // instance before its params are stored (and be written over by
         // them: #1533's merge run, "got 8" of ten).
+        //
+        // Per subscription: the eligible ones register here, the others at
+        // the Subscribe step, after the params, on the same instance and
+        // behind the same window (codex review of #1533: a locus with one
+        // ring subscription kept its ordinary topics late too).
         let early_subscribe = !matches!(info.schedule_class, ScheduleClass::Pinned(_))
-            && !info.subscriptions.is_empty()
-            && info.subscriptions.iter().all(|(subject, _, _, key)| {
+            && info.subscriptions.iter().any(|(subject, _, _, key)| {
                 key.is_none() && !self.shm_ring_subjects.contains_key(subject)
             })
             && self.owes_readiness(locus_name)
@@ -1438,7 +1442,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             self.lc_in_spine("Instantiation", |cx| {
                 cx.lc_event("Subscribe", "Entered", Some(self_ptr), Some(locus_name))
             })?;
-            self.emit_cooperative_subscriptions(&info, self_ptr, locus_name)?;
+            self.emit_cooperative_subscriptions(&info, self_ptr, locus_name, Some(true))?;
             self.lc_in_spine("Instantiation", |cx| {
                 cx.lc_event("Subscribe", "Completed", Some(self_ptr), Some(locus_name))
             })?;
@@ -3595,7 +3599,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         }
         }
         ObligationKind::Subscribe if early_subscribe => {
-        // Registered before the params (above).
+        // The eligible ones were registered before the params, the window
+        // open (above); the keyed and ring-bound ones register here.
+        self.emit_cooperative_subscriptions(&info, self_ptr, locus_name, Some(false))?;
         }
         ObligationKind::Subscribe => {
         // Bus subscription registration runs BEFORE birth so a
@@ -3619,7 +3625,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             cx.lc_event("Subscribe", "Entered", Some(self_ptr), Some(locus_name))
         })?;
         if !pinned_subscriptions {
-            self.emit_cooperative_subscriptions(&info, self_ptr, locus_name)?;
+            self.emit_cooperative_subscriptions(&info, self_ptr, locus_name, None)?;
         } else {
             // m28b: a pinned locus registers every subscription with
             // the mailbox already in its __mailbox slot, so dispatch routes
@@ -5411,12 +5417,16 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// against `self_ptr`: each handler's reclaim wrapper (or the raw
     /// handler), its shm ring reader where the subject is ring-bound, and
     /// its declared capacity. The Subscribe step's registrations; its
-    /// window is opened by the caller.
+    /// window is opened by the caller. `early`: `None` registers every
+    /// subscription; `Some(true)` only those that may register before the
+    /// params (no key, not bound to an `shm_ring`); `Some(false)` only the
+    /// others.
     pub(crate) fn emit_cooperative_subscriptions(
         &mut self,
         info: &LocusInfo<'ctx>,
         self_ptr: PointerValue<'ctx>,
         locus_name: &str,
+        early: Option<bool>,
     ) -> Result<(), CodegenError> {
         // Phase 3 (2026-05-25): `where key == self.X` in any
         // subscribe clause needs `current_self` set to this
@@ -5436,6 +5446,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             fields: info.fields.clone(),
         });
         for (subject, handler_name, payload_type, key_filter) in &info.subscriptions {
+            if let Some(early) = early {
+                let eligible = key_filter.is_none() && !self.shm_ring_subjects.contains_key(subject);
+                if eligible != early {
+                    continue;
+                }
+            }
             let handler_fn = info
                 .user_methods
                 .get(handler_name)
