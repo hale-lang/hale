@@ -254,3 +254,102 @@ locus ReferenceInfrastructure {
         return "";
     }
 }
+
+// ---- a repository's compose services (ruling 11, 2026-10-12) ----------------
+//
+// In repository mode the compose file at the repository's root is the
+// expression. The body brings its services up (`up -d --wait`: running,
+// and healthy where a service declares a healthcheck), looks at them every
+// COMPOSE_CHECK seconds and brings up again one that is gone, and brings
+// them down when it stops. The project is the organism's own
+// (`<record schema>-<application>`), so two organisms on one machine, or a
+// person's own `docker compose up` of the same file, never share
+// containers. Compose runs without the organism's credentials in its
+// environment (the ones an application's start removes, procs.hl), so a
+// compose file cannot interpolate them; what it is handed of the nerves is
+// the application's, the variables `env` names.
+const COMPOSE_CHECK: Int = 10;
+// How long `up` waits for the services to be running and healthy (scaled
+// by HALE_DNA_WAIT_SCALE): a first start pulls images.
+const COMPOSE_WAIT: Int = 300;
+// The vault entry holding the application's broker password, as a path:
+// compose mounts that file read-only as a secret (`secrets: file:`), so
+// the password is never copied, never in an environment and never in the
+// repository (GH #989: the vault is its one ingress).
+const NATS_APP_SECRET_ENV: String = "HALE_DNA_NATS_SECRET_APP";
+
+// The repository's compose file, where compose itself looks for one; ""
+// when there is none.
+fn compose_file_at(root: String) -> String {
+    if std::io::fs::file_exists(root + "/compose.yaml") { return root + "/compose.yaml"; }
+    if std::io::fs::file_exists(root + "/compose.yml") { return root + "/compose.yml"; }
+    if std::io::fs::file_exists(root + "/docker-compose.yaml") { return root + "/docker-compose.yaml"; }
+    if std::io::fs::file_exists(root + "/docker-compose.yml") { return root + "/docker-compose.yml"; }
+    return "";
+}
+
+// The organism's compose project for its repository's services.
+fn compose_project(record_id: String, app: String) -> String {
+    return dna::schema_for(record_id) + "-" + (if len(app) > 0 { dna::nerves_app_name(app) } else { "app" });
+}
+
+locus RepositoryCompose {
+    params {
+        root: String = ".";
+        file: String = ""; // the compose file ("" none)
+        project: String = "";
+        // `NAME=value` lines compose is handed, beside what it inherits
+        env: String = "";
+        // brought up by this body, and brought down when it stops
+        active: Bool = false;
+        checked: Int = 0; // when the services were last looked at
+        last: String = "";
+    }
+    // `docker compose` on this project and file, newline-separated, run
+    // under `env` without the organism's credentials and with `self.env`
+    fn base() -> String {
+        return "env\n-u\n" + std::str::replace(APPLICATION_UNSET, " ", "\n-u\n") + "\n" + self.env + "docker\ncompose\n-p\n" + self.project + "\n-f\n" + self.file + "\n--project-directory\n" + self.root;
+    }
+    fn argv(args: String) -> String { return self.base() + "\n" + args; }
+    // Hand compose a variable (no newline in it: none of these carries one).
+    fn hand(name: String, value: String) { self.env = self.env + name + "=" + value + "\n"; }
+    // Up, waited for: "" when every service is running (and healthy where it
+    // declares a healthcheck), else why not.
+    fn up(wait: Int) -> String {
+        // from here on something may be up: it goes down with the body
+        self.active = true;
+        let r = dna::run_tool(self.argv("up\n-d\n--wait\n--wait-timeout\n" + to_string(wait) + "\n--remove-orphans"));
+        self.checked = std::time::now();
+        if r.code != 0 { return dna::last_line(dna::trim_nl(r.stderr + "\n" + r.stdout)); }
+        return "";
+    }
+    // The services, one a line.
+    fn services() -> String {
+        let r = dna::run_tool(self.argv("config\n--services"));
+        return if r.code == 0 { dna::trim_nl(r.stdout) } else { "" };
+    }
+    // Every COMPOSE_CHECK seconds: a service with no container, or whose
+    // container stopped other than by finishing (exit 0), is brought up
+    // again. One compose itself is restarting (its `restart:` policy) is
+    // left to it. What it did, "" when nothing.
+    fn check(now: Int) -> String {
+        if !self.active || now - self.checked < COMPOSE_CHECK { return ""; }
+        self.checked = now;
+        let script = "all=$(\"$@\" config --services) || exit 1; st=$(\"$@\" ps -a --format '{{.Service}} {{.State}} {{.ExitCode}}') || exit 1; printf '%s\\n' \"$st\" | awk -v all=\"$all\" 'BEGIN { n = split(all, a, \"\\n\"); for (i = 1; i <= n; i++) if (a[i] != \"\") want[a[i]] = 1 } { seen[$1] = 1; if ($2 != \"running\" && $2 != \"restarting\" && !($2 == \"exited\" && $3 == \"0\")) print $1 \" \" $2 \" \" $3 } END { for (s in want) if (!(s in seen)) print s \" gone\" }'";
+        let r = dna::run_tool("sh\n-c\n" + script + "\nsh\n" + self.base());
+        if r.code != 0 { return ""; }
+        let down = dna::trim_nl(r.stdout);
+        if len(down) == 0 { return ""; }
+        let again = dna::run_tool(self.argv("up\n-d\n--remove-orphans"));
+        let said = std::str::replace(down, "\n", ", ");
+        if again.code != 0 { return "compose: " + said + "; bringing it up again failed: " + dna::last_line(dna::trim_nl(again.stderr)); }
+        return "compose: " + said + "; brought up again";
+    }
+    // Down with the body: "" when it went, else why not.
+    fn down() -> String {
+        if !self.active { return ""; }
+        self.active = false;
+        let r = dna::run_tool(self.argv("down\n--remove-orphans\n--timeout\n10"));
+        return if r.code == 0 { "" } else { dna::last_line(dna::trim_nl(r.stderr)) };
+    }
+}

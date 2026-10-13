@@ -910,9 +910,12 @@ main locus Host {
         org_ready: String = ""; // the organization's binary, built for `genome_sha`
         app_ready: String = ""; // the application's, under `dev`
         // GH #1091: a repository record (init on a directory with no Hale
-        // source of its own) has no application: the organization runs
-        // alone and oversees the repository's seeds
+        // source of its own) has no application to cut or build: the
+        // organization oversees the repository's seeds, and (ruling 11)
+        // the repository's compose services are its expression, which the
+        // body brings up, keeps up and brings down (infra.hl)
         repository: Bool = false;
+        compose: RepositoryCompose = RepositoryCompose { };
         handled: String = "\n";
         app_gone_reported: Bool = false;
         exit_code: Int = 0;
@@ -1184,6 +1187,10 @@ main locus Host {
     fn stop_started() {
         if self.org.pid > 0 { kill_tree(to_string(self.org.pid)); }
         if self.app.pid > 0 { kill_tree(to_string(self.app.pid)); }
+        if self.compose.active {
+            let gone = self.compose.down();
+            self.say(if len(gone) == 0 { "the repository's compose services are down (compose project " + self.compose.project + ")" } else { "compose down (project " + self.compose.project + ") failed: " + gone });
+        }
         dna::kill_marked(dna::body_mark(self.holder, self.lease.token, std::process::pid()));
     }
     fn quit(code: Int) {
@@ -1945,6 +1952,10 @@ main locus Host {
     fn tick() {
         if !self.body_alive() { self.stop_body(3); }
         self.org_log = drain_log(self.org, self.org_log);
+        if self.compose.active {
+            let looked = self.compose.check(std::time::now());
+            if len(looked) > 0 { self.say(looked); }
+        }
         if self.app.pid > 0 {
             self.app_log = drain_log(self.app, self.app_log);
             let ac = exit_code(self.app);
@@ -2103,9 +2114,9 @@ main locus Host {
         let bound = self.wait_nerves(window);
         if bound && self.nerves_on { self.say_nerves_read(); }
         else if exit_code(self.org) == -2 && self.nerves_on { self.say("the organization did not come to read the nerves within " + to_string(window) + "s; the facts wait in the stream, and the host says when it reads them"); }
-        // 4. dev: the application too, under this host — a repository has
-        // none, and its organization runs alone
-        if self.verb == "dev" && self.repository { self.say("a repository: no application runs under this host; the organization oversees its seeds"); }
+        // 4. dev: the application too, under this host — a repository's
+        // is its compose services, under `dev` and `run` alike (ruling 11)
+        if self.repository && (self.verb == "dev" || self.verb == "run") { self.start_compose(); }
         if self.verb == "dev" && !self.repository {
             let bin = self.app_ready;
             if len(bin) == 0 { self.stop_org(); self.quit(1); }
@@ -2129,6 +2140,51 @@ main locus Host {
             let baseline = self.dna_dir + "/baseline.topology";
             self.launch_iris(if std::io::fs::file_exists(baseline) { baseline } else { "" });
         }
+    }
+    // Ruling 11 (2026-10-12): a repository's application is its compose
+    // services. The body brings them up as the organism's own compose
+    // project, handed the application's nerves, and waits for them to be
+    // running and healthy; the tick looks at them again, and they go down
+    // with the body (`stop_started`). HALE_DNA_COMPOSE=off leaves them to
+    // the operator, as before.
+    fn start_compose() {
+        let file = compose_file_at(self.root);
+        if len(file) == 0 { self.say("a repository with no compose file: no application runs under this host; the organization oversees its seeds"); return; }
+        if std::env::var("HALE_DNA_COMPOSE") == "off" { self.say("the repository's compose services are the operator's (HALE_DNA_COMPOSE=off): this body does not bring them up"); return; }
+        let app = attached_application(self.root);
+        self.compose = RepositoryCompose { root: self.root, file: file, project: compose_project(record_identity(self.root), if len(app) > 0 { app } else { project_dir_name(self.root) }) };
+        let handed = self.hand_compose_nerves(app);
+        if !self.body_assert("the repository's compose services") {
+            self.stop_org();
+            self.quit(3);
+        }
+        self.say("expression: the repository's compose services, compose project " + self.compose.project + " (" + std::str::replace(self.compose.services(), "\n", ", ") + "), coming up; " + handed);
+        let why = self.compose.up(dna::wait_secs(COMPOSE_WAIT));
+        if len(why) > 0 { self.say("the repository's compose services did not all come up (" + why + "); the organization is up, and the body looks at them again every " + to_string(COMPOSE_CHECK) + "s"); }
+        else { self.say("the repository's compose services are up (compose project " + self.compose.project + ")"); }
+    }
+    // What compose is handed of the nerves: the attached application's
+    // broker as this body reaches it (a service on the host's network,
+    // `network_mode: host`, reaches it at the same address), its user, the
+    // organization's token, and the path of its password's vault entry,
+    // which compose mounts as a secret. What it said of them.
+    fn hand_compose_nerves(app: String) -> String {
+        if len(app) == 0 { return "no application is attached, so they are handed no nerves"; }
+        if !self.nerves_on { return "no nerves here, so " + app + "'s sense says nothing"; }
+        let given = std::env::var(dna::NATS_APP_URL_ENV);
+        let url = dna::nerves_server_url(if len(given) > 0 { given } else { dna::nerves_spine_url() });
+        let org = dna::nerves_org();
+        let vault = dna::nerves_app_vault(org, app);
+        self.compose.hand(dna::NATS_APP_URL_ENV, url);
+        self.compose.hand(dna::NATS_APP_USER_ENV, dna::nerves_app_user(app));
+        self.compose.hand(dna::NATS_APP_VAULT_ENV, vault);
+        self.compose.hand(dna::NATS_ORG_ENV, org);
+        // a local vault's entry is a file compose can mount; a vault
+        // served over HTTP (HALE_VAULT_ADDR) has none to hand
+        let entry = std::secret::vault_local_dir() + "/" + vault;
+        if std::env::var_exists("HALE_VAULT_ADDR") || !std::io::fs::file_exists(entry) { return "the nerves handed to them as " + dna::nerves_app_user(app) + " at " + url + ", with no credential file (" + (if std::env::var_exists("HALE_VAULT_ADDR") { "the vault is served over HTTP" } else { "the vault holds no " + vault }) + ")"; }
+        self.compose.hand(NATS_APP_SECRET_ENV, entry);
+        return "the nerves handed to them as " + dna::nerves_app_user(app) + " at " + url + ", its password the vault's entry, mounted";
     }
     // The supervision over: the organization's exit code, `exited`, is
     // this node's, once what the body started is gone and its lease given up.

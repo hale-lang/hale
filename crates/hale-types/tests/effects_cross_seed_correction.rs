@@ -202,13 +202,13 @@ fn host_verb() {
     pinned("host/verb", 1, 1, "main  does={unclassified}");
 }
 
-/// host: 98 of 498 rows.
+/// host: 102 of 509 rows.
 #[test]
 fn host() {
     pinned(
         "host",
-        492,
-        498,
+        503,
+        509,
         "
         GovernanceCli::review_profile  does={syscall,block,time,entropy,env,alloc,secret_use}
         Host::ack_reading  does={publish,alloc}
@@ -243,6 +243,10 @@ fn host() {
         ReferenceInfrastructure::start  does={syscall,block,env,alloc}
         ReferenceInfrastructure::status  does={syscall,block,env,alloc}
         ReferenceInfrastructure::stop  does={syscall,block,env,alloc}
+        RepositoryCompose::check  does={syscall,block,alloc}
+        RepositoryCompose::down  does={syscall,block,alloc}
+        RepositoryCompose::services  does={syscall,block,alloc}
+        RepositoryCompose::up  does={syscall,block,time,alloc}
         SshTransport::execute  does={syscall,block,alloc}
         SshTransport::probe  does={syscall,block,alloc}
         admits_here  does={syscall,block,time,env,alloc}
