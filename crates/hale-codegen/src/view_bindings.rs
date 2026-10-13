@@ -1,7 +1,7 @@
 //! Lowering's half of the owned-view analysis
 //! (`hale_types::view_bindings`): the owned copy a flagged binding takes,
-//! and the copy on write a write into a value read from a form's cell
-//! takes first.
+//! and the copy on write a write takes first — into a nested part of a
+//! value read from a form's cell, or into a local bound from a place.
 
 use inkwell::values::{BasicValueEnum, PointerValue};
 use inkwell::AddressSpace;
@@ -51,17 +51,66 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// (`OwnedViews::cow_bind`): set each part's flag, `true` when the
     /// value bound is the frame's own (a fresh value or a copy), `false`
     /// when it is a read of a form's cell, whose nested blocks are the
-    /// cell's.
+    /// cell's, or a place's value another name reaches. `copied`: this
+    /// binding bound a deep copy (a struct `let` of a place, GH #713, or
+    /// an owned view), which owns every part whatever the analysis saw.
     pub(crate) fn set_cell_part_flags(
         &mut self,
         slot: PointerValue<'ctx>,
         fields: &[(String, bool)],
+        copied: bool,
     ) -> Result<(), CodegenError> {
         for (field, owned) in fields {
             let flag = self.cell_part_flag(slot, field)?;
-            let v = self.context.bool_type().const_int(u64::from(*owned), false);
+            let v = self.context.bool_type().const_int(u64::from(*owned || copied), false);
             self.builder.build_store(flag, v).map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         }
+        Ok(())
+    }
+
+    /// Before a write into the local `name`, bound from a place
+    /// (`OwnedViews::cow_write`'s whole-value part, `""`): unless its flag
+    /// says the frame owns the value already, deep-copy it into the
+    /// frame's arena and point the local at the copy, so the write never
+    /// reaches the place it was read from (spec/types.md § A local bound
+    /// from a place is yours). A loop variable of a walk that visits in
+    /// place by design is left as it is.
+    pub(crate) fn emit_local_cow(&mut self, name: &str, scope: &Scope<'ctx>) -> Result<(), CodegenError> {
+        let Some((slot, ty)) = scope.locals.get(name).cloned() else { return Ok(()) };
+        if self.cow_exempt_slots.contains(&slot)
+            || !matches!(ty, CodegenTy::TypeRef(_) | CodegenTy::Tuple(_) | CodegenTy::Array(_, _) | CodegenTy::Enum(_))
+        {
+            return Ok(());
+        }
+        let func = self.current_fn.ok_or_else(|| CodegenError::Unsupported("a write outside a fn body".into()))?;
+        let flag = self.cell_part_flags.get(&(slot, String::new())).copied();
+        let copy_bb = self.context.append_basic_block(func, &format!("{name}.cow"));
+        let join_bb = self.context.append_basic_block(func, &format!("{name}.cow.done"));
+        let err = |e: inkwell::builder::BuilderError| CodegenError::LlvmEmit(e.to_string());
+        match flag {
+            Some(flag) => {
+                let owned = self
+                    .builder
+                    .build_load(self.context.bool_type(), flag, &format!("{name}.owned"))
+                    .map_err(err)?
+                    .into_int_value();
+                self.builder.build_conditional_branch(owned, join_bb, copy_bb).map_err(err)?;
+            }
+            // No binding set a flag: copy at every write, which is never
+            // wrong.
+            None => {
+                self.builder.build_unconditional_branch(copy_bb).map_err(err)?;
+            }
+        }
+        self.builder.position_at_end(copy_bb);
+        let old = self.builder.build_load(self.llvm_basic_type(&ty), slot, name).map_err(err)?;
+        let copy = self.own_viewed_value(old, &ty)?;
+        self.builder.build_store(slot, copy).map_err(err)?;
+        if let Some(flag) = flag {
+            self.builder.build_store(flag, self.context.bool_type().const_int(1, false)).map_err(err)?;
+        }
+        self.builder.build_unconditional_branch(join_bb).map_err(err)?;
+        self.builder.position_at_end(join_bb);
         Ok(())
     }
 

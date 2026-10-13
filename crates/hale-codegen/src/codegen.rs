@@ -1,7 +1,7 @@
 //! AST → LLVM IR → object file → executable, for the
 //! milestone-0 subset.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -1662,6 +1662,7 @@ pub fn build_resolved(
             &import_renames.iter().map(|(segs, m)| (segs.clone(), m.clone())).collect(),
         ),
         cell_part_flags: HashMap::new(),
+        cow_exempt_slots: HashSet::new(),
         placement: &resolved.placement,
         owner_site: None,
         in_fresh_temp_hook: false,
@@ -4409,6 +4410,11 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// does the frame own the part yet, or does the form's cell it was
     /// read from (`hale_types::view_bindings`, the cell-read rule)?
     pub(crate) cell_part_flags: HashMap<(PointerValue<'ctx>, String), PointerValue<'ctx>>,
+    /// The loop variables of a walk that visits its elements in place by
+    /// design (a `@form(vec)`'s `.items`, a map's `.entries`, a bounded
+    /// list, a drain): a write through one is never copied on write by
+    /// the local-place rule (`crate::view_bindings`).
+    pub(crate) cow_exempt_slots: HashSet<PointerValue<'ctx>>,
     /// The snapshot's placement table (`LoweringView::placement`): the
     /// deployment plan is read from its root rows, domains and adapters
     /// (`collect_main_placement`).
@@ -17677,12 +17683,15 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 // inside cloned, nested structs copied, locus handles
                 // left as handles. A literal or a call result is fresh
                 // already and is bound as it is.
+                let mut bound_copy = false;
                 if matches!(ty, CodegenTy::TypeRef(_))
                     && Self::expr_is_place(value_to_lower)
                 {
                     let dest = self.current_arena_ptr()?;
                     val = self.emit_return_value_deep_copy(val, &ty, dest)?;
+                    bound_copy = true;
                 } else if self.owned_views.node(*id) {
+                    bound_copy = true;
                     // A String, Bytes, tuple, array or payload enum that
                     // views a place — read from it, or carried out of
                     // one by a `match` arm, an `if`, a block, a literal
@@ -17838,9 +17847,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 // A local a later write copies on write: whether the value
                 // bound is a form cell's read (its nested blocks the
                 // cell's) or the frame's own (`crate::view_bindings`).
-                if let Some(fields) = self.owned_views.cow_bind(*id) {
+                if let Some(fields) = self.owned_views.cow_bind(*id, &name.name) {
                     let fields = fields.to_vec();
-                    self.set_cell_part_flags(alloca, &fields)?;
+                    self.set_cell_part_flags(alloca, &fields, bound_copy)?;
                 }
                 scope.locals.insert(name.name.clone(), (alloca, ty));
                 Ok(BlockEnd::Open)
@@ -17906,11 +17915,30 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                             alloca, &n.name, et, None, fi, ln, loc,
                         );
                     }
+                    if let Some(fields) = self.owned_views.cow_bind(*id, &n.name) {
+                        let fields = fields.to_vec();
+                        self.set_cell_part_flags(alloca, &fields, owned)?;
+                    }
                     scope.locals.insert(n.name.clone(), (alloca, et.clone()));
                 }
                 Ok(BlockEnd::Open)
             }
             Stmt::Assign { target, op, value, id: assign_id, .. } => {
+                // A write into a local whose part another name may still
+                // reach — a nested part of a form cell's read, or the
+                // whole of a local bound from a place — copies that part
+                // first, unless the frame owns it already
+                // (`crate::view_bindings`).
+                if target.head.name != "self" && !target.tail.is_empty() {
+                    if let Some(field) = self.owned_views.cow_write(*assign_id) {
+                        let field = field.to_string();
+                        if field.is_empty() {
+                            self.emit_local_cow(&target.head.name, scope)?;
+                        } else {
+                            self.emit_cell_part_cow(&target.head.name, &field, scope)?;
+                        }
+                    }
+                }
                 // WS1#4: `self.<locusfield> = <LocusLiteral>` is a
                 // lifecycle transition (dissolve the old instance,
                 // construct a new one owned by the field), NOT a
@@ -18341,14 +18369,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     // (`local.field = X`, `local.f1.f2 = X`,
                     // `local.f1[i].f2 = X`, etc.). Route through
                     // the general walker; emits a plain store.
-                    //
-                    // A write into a nested part of a value read from a
-                    // form's cell copies the part first, unless the frame
-                    // owns it already (`crate::view_bindings`).
-                    if let Some(field) = self.owned_views.cow_write(*assign_id) {
-                        let field = field.to_string();
-                        self.emit_cell_part_cow(&target.head.name, &field, scope)?;
-                    }
                     let (slot_ptr, slot_ty, slot_name) =
                         self.resolve_lvalue_chain(target, scope)?;
                     return self.finish_lvalue_assign(
@@ -18412,18 +18432,21 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     && (target.tail.is_empty()
                         || (target.tail.len() == 1
                             && matches!(target.tail[0], LValueSeg::Index(_))));
+                let mut bound_copy = false;
                 let new_val = if local_value_slot
                     && matches!(op, AssignOp::Eq)
                     && matches!(slot_ty, CodegenTy::TypeRef(_))
                     && Self::expr_is_place(value)
                 {
                     let dest = self.current_arena_ptr()?;
+                    bound_copy = true;
                     self.emit_return_value_deep_copy(new_val, &slot_ty, dest)?
                 } else if target.tail.is_empty()
                     && target.head.name != "self"
                     && matches!(op, AssignOp::Eq)
                     && self.owned_views.node(*assign_id)
                 {
+                    bound_copy = true;
                     // A local rebound to a place's String, Bytes or
                     // compound that a later write may replace while the
                     // local is live, as `let` (`crate::view_bindings`).
@@ -18476,9 +18499,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     // A local rebound: its copy-on-write flags follow the
                     // value now bound (`crate::view_bindings`).
                     if target.tail.is_empty() {
-                        if let Some(fields) = self.owned_views.cow_bind(*assign_id) {
+                        if let Some(fields) = self.owned_views.cow_bind(*assign_id, &target.head.name) {
                             let fields = fields.to_vec();
-                            self.set_cell_part_flags(slot_ptr, &fields)?;
+                            self.set_cell_part_flags(slot_ptr, &fields, bound_copy)?;
                         }
                     }
                 }
@@ -18493,7 +18516,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 // a `let` of the place would (`crate::view_bindings`).
                 let owned = self.owned_views.node(*id);
                 let cell_owned = self.owned_views.cell_owned(*id);
-                self.lower_for(name, iter, body, owned, cell_owned, scope)
+                let cow = self.owned_views.cow_bind(*id, &name.name).map(|f| f.to_vec());
+                self.lower_for(name, iter, body, owned, cell_owned, cow, scope)
             }
             Stmt::Break(_) => self.lower_break(),
             Stmt::Continue(_) => self.lower_continue(),
@@ -21162,6 +21186,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     this.builder
                         .build_store(alloca, bval)
                         .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    // A payload written in the arm is copied at its first
+                    // write (`crate::view_bindings`, the local-place rule).
+                    if let Some(fields) = this.owned_views.cow_match_bind(m, bname) {
+                        let fields = fields.to_vec();
+                        this.set_cell_part_flags(alloca, &fields, owned_bindings)?;
+                    }
                     let prior = scope.locals.insert(
                         bname.clone(),
                         (alloca, bty.clone()),
@@ -21423,6 +21453,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         body: &Block,
         owned: bool,
         cell_owned: bool,
+        cow: Option<Vec<(String, bool)>>,
         scope: &mut Scope<'ctx>,
     ) -> Result<BlockEnd, CodegenError> {
         // Three iterator shapes today: `self.children` (built-in
@@ -21507,7 +21538,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             }
         }
         if !is_self_children {
-            return self.lower_for_array(var_name, iter, body, owned, scope);
+            return self.lower_for_array(var_name, iter, body, owned, cow, scope);
         }
         let cs = self.current_self.as_ref().cloned().ok_or_else(|| {
             CodegenError::Unsupported(
@@ -21780,6 +21811,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let prev = scope
             .locals
             .insert(var_name.name.clone(), (var_slot, elem.clone()));
+        self.cow_exempt_slots.insert(var_slot);
         self.loops.push(LoopFrame {
             continue_bb: inc_bb,
             break_bb: exit_bb,
@@ -22079,6 +22111,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         self.builder
             .build_store(var_slot, entry_ptr)
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.cow_exempt_slots.insert(var_slot);
         let prev = scope.locals.insert(
             var_name.name.clone(),
             (var_slot, CodegenTy::TypeRef(cell_name)),
@@ -22244,6 +22277,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let prev = scope
             .locals
             .insert(var_name.name.clone(), (var_slot, elem_ty.clone()));
+        self.cow_exempt_slots.insert(var_slot);
         self.loops.push(LoopFrame {
             continue_bb: inc_bb,
             break_bb: exit_bb,
@@ -22450,6 +22484,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         iter: &Expr,
         body: &Block,
         owned: bool,
+        cow: Option<Vec<(String, bool)>>,
         scope: &mut Scope<'ctx>,
     ) -> Result<BlockEnd, CodegenError> {
         let (mut arr_val, arr_ty) = self.lower_expr(iter, scope)?;
@@ -22533,6 +22568,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         self.builder
             .build_store(local_slot, elem_val)
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        // An element written in the body is copied at its first write
+        // in each iteration (`crate::view_bindings`, the local-place
+        // rule): the flag is cleared at every binding.
+        if let Some(fields) = &cow {
+            self.set_cell_part_flags(local_slot, fields, owned)?;
+        }
         let prev = scope.locals.insert(
             var_name.name.clone(),
             (local_slot, elem_ty.clone()),
@@ -22721,6 +22762,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let prev = scope
             .locals
             .insert(var_name.name.clone(), (local_slot, elem_ty.clone()));
+        self.cow_exempt_slots.insert(local_slot);
         self.loops.push(LoopFrame {
             continue_bb: inc_bb,
             break_bb: exit_bb,

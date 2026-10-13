@@ -2141,6 +2141,19 @@ fn hot_snapshot_message(method: &str) -> String {
 /// A copy of a value read from a form's cell, on the hot path
 /// (spec/forms.md § Reading a cell).
 fn hot_cell_copy_message(reason: &str, in_loop: bool) -> String {
+    if crate::view_bindings::reasons::is_place(reason) {
+        return format!(
+            "hot-path copy: a local bound from a place is copied here{} \
+             ({reason}). A write into a local read from a field, an \
+             element, a parameter, a `match` payload or a `for` element \
+             never reaches what it was read from; it stays in the place \
+             without a copy only as a get-modify-store \
+             (`let mut v = self.f; v.x[i] = y; self.f = v;`) with nothing \
+             reading the field between, or read the place again and \
+             write through it (`self.f.x[i] = y`).",
+            if in_loop { " in a loop" } else { "" }
+        );
+    }
     format!(
         "hot-path copy: a value read from a form's cell is copied here{} \
          ({reason}). A write into a value read from a map stays in the \

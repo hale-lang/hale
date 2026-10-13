@@ -128,7 +128,11 @@ pub enum AllocKind {
     /// rule adds where a write into the value could otherwise show in
     /// the cell (`crate::view_bindings`): a copy on write at the write, an
     /// owned binding, a copied argument. The reason says why the write
-    /// could not stay in the cell (spec/forms.md § Reading a cell).
+    /// could not stay in the cell (spec/forms.md § Reading a cell). The
+    /// local-place rule's copies are this kind too, with a `PLACE_*`
+    /// reason (labelled `place-copy`): a write into a local bound from a
+    /// place, copied at its first write (spec/types.md § A local bound
+    /// from a place is yours).
     CellCopy(&'static str),
 }
 
@@ -141,6 +145,9 @@ impl AllocKind {
             AllocKind::BytesLit => "bytes-literal".to_string(),
             AllocKind::CollectionInsert(form) => format!("{}-insert", form),
             AllocKind::StringConcat => "string-concat".to_string(),
+            AllocKind::CellCopy(reason) if crate::view_bindings::reasons::is_place(reason) => {
+                format!("place-copy ({reason})")
+            }
             AllocKind::CellCopy(reason) => format!("cell-copy ({reason})"),
         }
     }

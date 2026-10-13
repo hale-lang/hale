@@ -471,6 +471,9 @@ fn describe_alloc(kind: &alloc_summary::AllocKind) -> String {
         alloc_summary::AllocKind::StringConcat => {
             "a string concatenation".to_string()
         }
+        alloc_summary::AllocKind::CellCopy(reason) if crate::view_bindings::reasons::is_place(reason) => {
+            "a copy of a local bound from a place".to_string()
+        }
         alloc_summary::AllocKind::CellCopy(_) => {
             "a copy of a value read from a form's cell".to_string()
         }
