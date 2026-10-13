@@ -2883,7 +2883,10 @@ A **lifecycle hook** is the exception: `@unbounded run { … }` or
 `@bounded_by(<name>) run { … }`, once, and nothing else (a repeat or
 the pair is a parse error there, since a hook keeps no decorator list). A hook is one-shot, so a per-call ceiling has no calls to
 divide by, and it is not a fn a caller asserts over. Put the other
-contracts on a `fn` the hook calls.
+contracts on a `fn` the hook calls. A **mode** takes the same one
+decorator, `@unbounded mode bulk() { … }` or `@bounded_by(<name>)
+mode bulk() { … }` (friction sweep 2026-10-12): the
+unbounded-allocation warning in a mode body asks for it.
 
 What a stack cannot do is contradict itself. These shapes are **errors at
 check time, reported at the decorator** (not parse errors — the

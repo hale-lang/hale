@@ -325,6 +325,36 @@ impl Parser {
         }
     }
 
+    /// Is the next token the contextual keyword `w`? Contextual
+    /// keywords lex as `Ident`, so they are matched on spelling (see
+    /// the caveat on [`Parser::at`]).
+    fn at_word(&self, w: &str) -> bool {
+        matches!(self.peek(), TokenKind::Ident(s) if s == w)
+    }
+
+    /// Consume the contextual keyword `w` if it is next.
+    fn eat_word(&mut self, w: &str) -> bool {
+        if self.at_word(w) {
+            self.bump();
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Expect the contextual keyword `w`.
+    fn expect_word(&mut self, w: &str) -> Result<Token, Diag> {
+        if self.at_word(w) {
+            Ok(self.bump())
+        } else {
+            let span = self.peek_token().span;
+            Err(Diag::parse(
+                span,
+                format!("expected `{}`, got {:?}", w, self.peek()),
+            ))
+        }
+    }
+
     /// m66: close a generic-args list. Accepts `>` directly, OR
     /// splits a `>>` token in-place (consumes one `>`, rewrites
     /// the current token to a single `>` so the enclosing parser
@@ -441,6 +471,66 @@ impl Parser {
         ));
     }
 
+    /// A locus METHOD named like a lifecycle hook, the failure handler
+    /// or a mode: that name IS the hook (`run() { … }` declares `run`,
+    /// `self.bulk()` calls `mode bulk`), so a `fn` of the name would
+    /// collide with it. The words are contextual keywords — a field,
+    /// parameter, local or free fn may take them — and this is the one
+    /// declaration position that stays refused.
+    fn reject_hook_name_as_method(&mut self, name: &Ident) {
+        let word = name.name.as_str();
+        let what = if is_lifecycle_word(word) {
+            format!(
+                "the `{word}` lifecycle hook — declare the hook as \
+                 `{word}() {{ … }}` (no `fn`)"
+            )
+        } else if word == "on_failure" {
+            "the failure handler — declare it as `on_failure(c: Child) \
+             { … }` (no `fn`)"
+                .to_string()
+        } else if matches!(word, "bulk" | "harmonic" | "resolution") {
+            format!(
+                "the `mode {word}` member's call name (`self.{word}()` \
+                 runs the mode) — declare it as `mode {word}() {{ … }}`"
+            )
+        } else {
+            return;
+        };
+        self.diags.push(Diag::parse(
+            name.span,
+            format!(
+                "a locus method cannot be named `{word}`: that name is \
+                 {what}, or rename the method. (`{word}` is a contextual \
+                 keyword, so a field, parameter, local or free fn may use \
+                 it — spec/tokens.md § Reserved words.)"
+            ),
+        ));
+    }
+
+    /// GH friction sweep 2026-10-12: a free `fn` may not take a
+    /// recovery word (`restart`, `bubble`, ...). The words are
+    /// contextual, but `restart(x);` at statement head IS the recovery
+    /// statement, so a call to such a fn could not be written as a
+    /// statement — the declaration would be half-reachable. A locus
+    /// method of the name is reached through a receiver
+    /// (`self.restart()`), which no statement claims, and stays legal.
+    fn reject_recovery_word_as_free_fn(&mut self, name: &Ident) {
+        if RecoveryOp::from_word(&name.name).is_none() {
+            return;
+        }
+        self.diags.push(Diag::parse(
+            name.span,
+            format!(
+                "`{w}` cannot name a free fn: `{w}(…);` at statement head \
+                 is the `{w}` recovery statement, so a call to the fn could \
+                 not be written as a statement; rename it. A field, \
+                 parameter, local or locus method may still be named \
+                 `{w}` (spec/tokens.md § Recovery primitives).",
+                w = name.name
+            ),
+        ));
+    }
+
     /// Reserved-word recovery for a DECLARATION name (GH #725):
     /// record the one located diagnostic, then carry on with the
     /// keyword's own spelling as the name so the rest of the
@@ -496,7 +586,7 @@ impl Parser {
     /// `what` names the position for the diagnostic — a struct-decl
     /// body declares "a field", a post-`.` access reads "a field or
     /// method". A reserved word that `try_member_keyword_as_name`
-    /// does NOT admit (e.g. `rich`, `restart`) gets the GH #725
+    /// does NOT admit (e.g. `match`, `return`) gets the GH #725
     /// reserved-word sentence and recovers with the keyword's own
     /// spelling, so the surrounding `type` body or expression keeps
     /// parsing and the author sees one error at the word they wrote.
@@ -525,19 +615,6 @@ impl Parser {
                 ))
             }
         }
-    }
-
-    /// Accept either a regular Ident or a keyword that is permitted
-    /// as an identifier in expression / path position (primitive
-    /// type names — `time`, `int`, etc. — and mode names —
-    /// `bulk` / `harmonic` / `resolution`).
-    fn expect_ident_or_kw_name(&mut self, what: &str) -> Result<Ident, Diag> {
-        if let Some(name) = try_keyword_as_name(self.peek()) {
-            let span = self.peek_token().span;
-            self.bump();
-            return Ok(Ident::new(name, span));
-        }
-        self.expect_ident(what)
     }
 
     /// GH #724: a perspective-contract reference that may be
@@ -1847,10 +1924,7 @@ impl Parser {
                     while !matches!(self.peek(), TokenKind::RBrace) {
                         let tok = self.peek_token().clone();
                         match &tok.kind {
-                            // `bus` is a hard keyword (the bus
-                            // block), so it arrives as its own
-                            // token here.
-                            TokenKind::Bus => {
+                            TokenKind::Ident(s) if s == "bus" => {
                                 self.bump();
                                 via_bus = true;
                             }
@@ -1885,17 +1959,11 @@ impl Parser {
                 }
                 TokenKind::Ident(s) if s == "during" => {
                     self.bump();
-                    // Lifecycle names are hard keywords; accept
-                    // them alongside plain idents.
+                    // Lifecycle names are contextual keywords, so
+                    // they arrive as plain idents.
                     let t = self.peek_token().clone();
                     let name = match &t.kind {
                         TokenKind::Ident(s) => s.clone(),
-                        TokenKind::Birth => "birth".to_string(),
-                        TokenKind::Accept => "accept".to_string(),
-                        TokenKind::Release => "release".to_string(),
-                        TokenKind::Run => "run".to_string(),
-                        TokenKind::Drain => "drain".to_string(),
-                        TokenKind::Dissolve => "dissolve".to_string(),
                         other => {
                             return Err(Diag::parse(
                                 t.span,
@@ -1951,9 +2019,8 @@ impl Parser {
         while !matches!(self.peek(), TokenKind::RBrace) {
             let t = self.peek_token().clone();
             let publish = match &t.kind {
-                // `publish` / `subscribe` are hard bus keywords.
-                TokenKind::Publish => true,
-                TokenKind::Subscribe => false,
+                TokenKind::Ident(s) if s == "publish" => true,
+                TokenKind::Ident(s) if s == "subscribe" => false,
                 other => {
                     return Err(Diag::parse(
                         t.span,
@@ -2020,7 +2087,7 @@ impl Parser {
                 "a bound must be non-negative",
             ));
         }
-        self.expect(TokenKind::On, "on")?;
+        self.expect_word("on")?;
         let p_tok = self.peek_token().clone();
         match &p_tok.kind {
             TokenKind::Ident(s) if s == "paths" => {
@@ -2112,18 +2179,7 @@ impl Parser {
                     ));
                 }
             }
-            // `publish` is a built-in effect class AND a reserved
-            // keyword, so `expect_ident` rejected the one class most
-            // worth attributing. Same shape as the `@budget`
-            // dimension parser, which hit this first.
-            let tok = self.peek_token().clone();
-            let class_name = match &tok.kind {
-                TokenKind::Publish => {
-                    self.bump();
-                    Ident::new("publish", tok.span)
-                }
-                _ => self.expect_ident("effect class name")?,
-            };
+            let class_name = self.expect_ident("effect class name")?;
             self.expect(TokenKind::RParen, ")")?;
             return Ok(ClaimForm::RequireAttributed { class_name });
         }
@@ -2927,9 +2983,6 @@ impl Parser {
             let key_tok = self.peek_token().clone();
             let key = match &key_tok.kind {
                 TokenKind::Ident(s) => s.clone(),
-                // `publish` is a bus keyword elsewhere in the grammar;
-                // inside `@effects(...)` it is the key name.
-                TokenKind::Publish => "publish".to_string(),
                 _ => {
                     return Err(Diag::parse(
                         key_tok.span,
@@ -2987,12 +3040,6 @@ impl Parser {
                     }
                     TokenKind::StringLit(s) => {
                         items.push(s.clone());
-                        self.bump();
-                    }
-                    // `publish` is a bus keyword elsewhere; inside an
-                    // `@effects` set it is the effect-class name.
-                    TokenKind::Publish => {
-                        items.push("publish".to_string());
                         self.bump();
                     }
                     _ => {
@@ -3307,13 +3354,6 @@ impl Parser {
             let key_tok = self.peek_token().clone();
             let phase = match &key_tok.kind {
                 TokenKind::Ident(s) => s.clone(),
-                // Lifecycle phase names are keywords elsewhere in
-                // the grammar; inside `@phase_effects(...)` they are
-                // the phase labels.
-                TokenKind::Birth => "birth".to_string(),
-                TokenKind::Run => "run".to_string(),
-                TokenKind::Drain => "drain".to_string(),
-                TokenKind::Dissolve => "dissolve".to_string(),
                 _ => {
                     return Err(Diag::parse(
                         key_tok.span,
@@ -3330,7 +3370,6 @@ impl Parser {
                 let t = self.peek_token().clone();
                 let name = match &t.kind {
                     TokenKind::Ident(s) => s.clone(),
-                    TokenKind::Publish => "publish".to_string(),
                     _ => {
                         return Err(Diag::parse(
                             t.span,
@@ -3382,7 +3421,6 @@ impl Parser {
             let key_tok = self.peek_token().clone();
             let key = match &key_tok.kind {
                 TokenKind::Ident(s) => s.clone(),
-                TokenKind::Publish => "publish".to_string(),
                 _ => {
                     return Err(Diag::parse(
                         key_tok.span,
@@ -3717,7 +3755,7 @@ impl Parser {
 
     fn parse_locus_annotation(&mut self) -> Result<LocusAnnotation, Diag> {
         match self.peek() {
-            TokenKind::Tier => {
+            TokenKind::Ident(kw) if kw == "tier" => {
                 self.bump();
                 match self.peek().clone() {
                     TokenKind::IntLit(n) => {
@@ -3734,18 +3772,18 @@ impl Parser {
                     )),
                 }
             }
-            TokenKind::Projection => {
+            TokenKind::Ident(kw) if kw == "projection" => {
                 self.bump();
                 let class = match self.peek() {
-                    TokenKind::Rich => {
+                    TokenKind::Ident(kw) if kw == "rich" => {
                         self.bump();
                         ProjectionClass::Rich
                     }
-                    TokenKind::Chunked => {
+                    TokenKind::Ident(kw) if kw == "chunked" => {
                         self.bump();
                         ProjectionClass::Chunked
                     }
-                    TokenKind::Recognition => {
+                    TokenKind::Ident(kw) if kw == "recognition" => {
                         let kw_span = self.bump().span;
                         // v1.x-3: recognition REQUIRES
                         // `(cap=N, <sub_mode>)`. No default sub-mode;
@@ -3909,16 +3947,16 @@ impl Parser {
 
     fn parse_locus_member(&mut self) -> Result<LocusMember, Diag> {
         match self.peek() {
-            TokenKind::Params => self.parse_params_block().map(LocusMember::Params),
-            TokenKind::Contract => self.parse_contract_block().map(LocusMember::Contract),
-            TokenKind::Bus => self.parse_bus_block().map(LocusMember::Bus),
-            TokenKind::Capacity => self.parse_capacity_block().map(LocusMember::Capacity),
-            TokenKind::Birth
-            | TokenKind::Accept
-            | TokenKind::Release
-            | TokenKind::Run
-            | TokenKind::Drain
-            | TokenKind::Dissolve => {
+            TokenKind::Ident(kw) if kw == "params" => self.parse_params_block().map(LocusMember::Params),
+            TokenKind::Ident(kw) if kw == "contract" => self.parse_contract_block().map(LocusMember::Contract),
+            TokenKind::Ident(kw) if kw == "bus" => self.parse_bus_block().map(LocusMember::Bus),
+            TokenKind::Ident(kw) if kw == "capacity" => self.parse_capacity_block().map(LocusMember::Capacity),
+            // A lifecycle word at member position is the hook when its
+            // declaration follows (`run() { … }`, `run { … }`,
+            // `accept(c: Child) { … }`); the words are contextual, so
+            // the same spelling names a field, local or free fn
+            // elsewhere.
+            TokenKind::Ident(kw) if is_lifecycle_word(kw) => {
                 self.parse_lifecycle_decl().map(LocusMember::Lifecycle)
             }
             // `mode` is contextual; recognized as a member-
@@ -3927,9 +3965,13 @@ impl Parser {
             TokenKind::Ident(s) if s == "mode" => {
                 self.parse_mode_decl().map(LocusMember::Mode)
             }
-            TokenKind::OnFailure => self.parse_failure_decl().map(LocusMember::Failure),
-            TokenKind::Closure => self.parse_closure_decl().map(LocusMember::Closure),
-            TokenKind::Fn => self.parse_fn_decl(false).map(LocusMember::Fn),
+            TokenKind::Ident(kw) if kw == "on_failure" => self.parse_failure_decl().map(LocusMember::Failure),
+            TokenKind::Ident(kw) if kw == "closure" => self.parse_closure_decl().map(LocusMember::Closure),
+            TokenKind::Fn => {
+                let fn_decl = self.parse_fn_decl(false)?;
+                self.reject_hook_name_as_method(&fn_decl.name);
+                Ok(LocusMember::Fn(fn_decl))
+            }
             // The fn-level contract decorators on a locus member:
             // `@unbounded` (GH #18 item 1 — on a method or on a
             // lifecycle hook, `@unbounded run { … }`), `@budget(...)`,
@@ -3974,16 +4016,15 @@ impl Parser {
                 match self.peek() {
                     TokenKind::Fn => {
                         let mut fn_decl = self.parse_fn_decl(false)?;
+                        self.reject_hook_name_as_method(&fn_decl.name);
                         decos.apply_to_fn(&mut fn_decl);
                         Ok(LocusMember::Fn(fn_decl))
                     }
-                    TokenKind::Birth
-                    | TokenKind::Accept
-                    | TokenKind::Release
-                    | TokenKind::Run
-                    | TokenKind::Drain
-                    | TokenKind::Dissolve => {
-                        // A lifecycle hook takes `@unbounded` or
+                    TokenKind::Ident(kw) if is_lifecycle_word(kw) || kw == "mode" => {
+                        let is_mode = kw == "mode";
+                        // A lifecycle hook — and a `mode`, whose body is
+                        // one the unbounded-allocation warning asks to
+                        // annotate (friction sweep 2026-10-12) — takes `@unbounded` or
                         // `@bounded_by(<name>)` (GH #1490) and nothing
                         // else: a hook is one-shot (so a per-call ceiling
                         // has no calls to divide by) and it is not a fn a
@@ -3992,16 +4033,18 @@ impl Parser {
                         // than a decorator list, which is also why a
                         // repeat or the pair is caught here instead of at
                         // check time.
+                        let what = if is_mode { "a mode" } else { "a lifecycle hook" };
+                        let (who, it) = if is_mode { ("a mode", "the mode") } else { ("a hook", "the hook") };
                         let silencer = |n: &str| n == "unbounded" || n == "bounded_by";
                         if let Some(d) = decos.written.iter().find(|d| !silencer(&d.name)) {
                             return Err(Diag::parse(
                                 d.span,
                                 format!(
-                                    "`@{}` can't precede a lifecycle hook \
-                                     — a hook takes `@unbounded` or \
+                                    "`@{}` can't precede {what} \
+                                     — {who} takes `@unbounded` or \
                                      `@bounded_by(<name>)` and nothing \
                                      else. Put the other contracts on a \
-                                     `fn` the hook calls.",
+                                     `fn` {it} calls.",
                                     d.name
                                 ),
                             ));
@@ -4012,14 +4055,23 @@ impl Parser {
                                 d.span,
                                 if &d.name == first {
                                     format!(
-                                        "duplicate `@{}` on a lifecycle \
-                                         hook — state it once",
+                                        "duplicate `@{}` on {what} \
+                                         — state it once",
                                         d.name
                                     )
                                 } else {
-                                    bounded_by_with_unbounded("this hook")
+                                    bounded_by_with_unbounded(if is_mode { "this mode" } else { "this hook" })
                                 },
                             ));
+                        }
+                        if is_mode {
+                            let mut md = self.parse_mode_decl()?;
+                            md.unbounded = decos.unbounded;
+                            md.bounded_by = decos.bounded_by;
+                            if let Some(s) = decos.span {
+                                md.span = s.merge(md.span);
+                            }
+                            return Ok(LocusMember::Mode(md));
                         }
                         let mut lc = self.parse_lifecycle_decl()?;
                         lc.unbounded = decos.unbounded;
@@ -4033,8 +4085,8 @@ impl Parser {
                         self.peek_token().span,
                         format!(
                             "expected `fn` after {} (or a lifecycle hook \
-                             — `run`, `birth`, … — after `@unbounded` or \
-                             `@bounded_by(<name>)`)",
+                             — `run`, `birth`, … — or a `mode` after \
+                             `@unbounded` or `@bounded_by(<name>)`)",
                             decos.written_list()
                         ),
                     )),
@@ -4511,7 +4563,7 @@ impl Parser {
     fn parse_placement_constraints_opt(
         &mut self,
     ) -> Result<Vec<SpannedPlacementConstraint>, Diag> {
-        if !self.eat(&TokenKind::Where) {
+        if !self.eat_word("where") {
             return Ok(Vec::new());
         }
         let mut out = Vec::new();
@@ -4883,15 +4935,15 @@ impl Parser {
     }
 
     /// Form K (2026-05-20): the optional `where <c>, <c>, ...`
-    /// suffix on a binding entry. `where` is a reserved keyword
-    /// (`TokenKind::Where`). Each constraint is a bare
+    /// suffix on a binding entry. `where` is a contextual keyword,
+    /// recognized here after the entry. Each constraint is a bare
     /// identifier matched against
     /// `BindingConstraint::from_ident`. Unknown idents produce
     /// a diagnostic citing the constraint span.
     fn parse_binding_constraints_opt(
         &mut self,
     ) -> Result<Vec<SpannedBindingConstraint>, Diag> {
-        if !self.eat(&TokenKind::Where) {
+        if !self.eat_word("where") {
             return Ok(Vec::new());
         }
         let mut out = Vec::new();
@@ -5230,7 +5282,7 @@ impl Parser {
     /// parser recognizes them contextually so the surrounding
     /// identifier pool stays unreserved.
     fn parse_capacity_block(&mut self) -> Result<CapacityBlock, Diag> {
-        let kw = self.expect(TokenKind::Capacity, "capacity")?;
+        let kw = self.expect_word("capacity")?;
         self.expect(TokenKind::LBrace, "{")?;
         let mut slots = Vec::new();
         while !self.at(&TokenKind::RBrace)
@@ -5262,21 +5314,21 @@ impl Parser {
             }
         };
         let name = self.expect_ident("slot name")?;
-        self.expect(TokenKind::Of, "of")?;
+        self.expect_word("of")?;
         let elem_ty = self.parse_type_expr()?;
         // v1.x-FORM-4 optional trailing clause:
         //   `indexed_by <fieldname>`
         // Names a field of the cell type as the hashmap key.
         // Only meaningful on `@form(hashmap)` loci; ignored
         // elsewhere (typecheck flags misuse).
-        let indexed_by = if self.eat(&TokenKind::IndexedBy) {
+        let indexed_by = if self.eat_word("indexed_by") {
             Some(self.expect_ident("field name after `indexed_by`")?)
         } else {
             None
         };
         // F.22 v1.x-4 optional trailing clause:
         //   `as_parent_for <ChildLocus>`
-        let as_parent_for = if self.eat(&TokenKind::AsParentFor) {
+        let as_parent_for = if self.eat_word("as_parent_for") {
             Some(self.expect_ident("child locus name after `as_parent_for`")?)
         } else {
             None
@@ -5293,7 +5345,7 @@ impl Parser {
     }
 
     fn parse_params_block(&mut self) -> Result<ParamsBlock, Diag> {
-        let kw = self.expect(TokenKind::Params, "params")?;
+        let kw = self.expect_word("params")?;
         self.expect(TokenKind::LBrace, "{")?;
         let mut params = Vec::new();
         while !self.at(&TokenKind::RBrace) && !matches!(self.peek(), TokenKind::Eof) {
@@ -5310,7 +5362,7 @@ impl Parser {
         let name = self.expect_decl_name("params field name")?;
         let ty = if self.eat(&TokenKind::Colon) {
             // Could be inferred or a type expression. Check next.
-            if self.at(&TokenKind::Inferred) {
+            if self.at_word("inferred") {
                 // Form: name : inferred ;
                 self.bump();
                 let semi = self.expect(TokenKind::Semi, ";")?;
@@ -5333,7 +5385,7 @@ impl Parser {
             ParamInit::Value(self.parse_expr()?)
         } else if self.eat(&TokenKind::Colon) {
             // `name: T : inferred ;` form
-            self.expect(TokenKind::Inferred, "inferred")?;
+            self.expect_word("inferred")?;
             ParamInit::Inferred
         } else if self.at(&TokenKind::Semi) {
             // No default; the value must be supplied at instantiation.
@@ -5359,9 +5411,9 @@ impl Parser {
     }
 
     fn parse_contract_block(&mut self) -> Result<ContractBlock, Diag> {
-        let kw = self.expect(TokenKind::Contract, "contract")?;
+        let kw = self.expect_word("contract")?;
         if self.eat(&TokenKind::Colon) {
-            self.expect(TokenKind::Inferred, "inferred")?;
+            self.expect_word("inferred")?;
             let semi = self.expect(TokenKind::Semi, ";")?;
             return Ok(ContractBlock {
                 kind: ContractKind::Inferred,
@@ -5387,8 +5439,8 @@ impl Parser {
     fn parse_contract_member(&mut self) -> Result<ContractMember, Diag> {
         let direction_tok = self.bump();
         let direction = match direction_tok.kind {
-            TokenKind::Expose => ContractDirection::Expose,
-            TokenKind::Consume => ContractDirection::Consume,
+            TokenKind::Ident(kw) if kw == "expose" => ContractDirection::Expose,
+            TokenKind::Ident(kw) if kw == "consume" => ContractDirection::Consume,
             other => {
                 return Err(Diag::parse(
                     direction_tok.span,
@@ -5397,7 +5449,7 @@ impl Parser {
             }
         };
         // Either: NAME : TYPE ;  or  inferred ;
-        if self.eat(&TokenKind::Inferred) {
+        if self.eat_word("inferred") {
             let semi = self.expect(TokenKind::Semi, ";")?;
             return Ok(ContractMember {
                 direction,
@@ -5411,7 +5463,7 @@ impl Parser {
         // may call the child's mode iff it's contract-exposed).
         // Same F.10 keyword-as-name fallback as `self.bulk()`.
         let name =
-            self.expect_ident_or_kw_name("contract field name")?;
+            self.expect_ident("contract field name")?;
         self.expect(TokenKind::Colon, ":")?;
         let ty = self.parse_type_expr()?;
         let semi = self.expect(TokenKind::Semi, ";")?;
@@ -5424,7 +5476,7 @@ impl Parser {
     }
 
     fn parse_bus_block(&mut self) -> Result<BusBlock, Diag> {
-        let kw = self.expect(TokenKind::Bus, "bus")?;
+        let kw = self.expect_word("bus")?;
         self.expect(TokenKind::LBrace, "{")?;
         let mut members = Vec::new();
         while !self.at(&TokenKind::RBrace) && !matches!(self.peek(), TokenKind::Eof) {
@@ -5443,13 +5495,13 @@ impl Parser {
 
     fn parse_bus_member(&mut self) -> Result<BusMember, Diag> {
         match self.peek() {
-            TokenKind::Subscribe => {
+            TokenKind::Ident(kw) if kw == "subscribe" => {
                 let kw = self.bump();
                 let subject = self.parse_bus_subject("subscribe")?;
                 // `as IDENT`
                 self.expect_kw_as()?;
                 let handler = self.expect_ident("handler name")?;
-                let ty = if self.eat(&TokenKind::Of) {
+                let ty = if self.eat_word("of") {
                     self.expect(TokenKind::Type, "type")?;
                     Some(self.parse_type_expr()?)
                 } else {
@@ -5507,7 +5559,7 @@ impl Parser {
                 // Optional `where key == EXPR` (Phase 3).
                 // `where` is already a reserved keyword (used in
                 // form annotations); reuse the same TokenKind.
-                let key_filter = if matches!(self.peek(), TokenKind::Where) {
+                let key_filter = if self.at_word("where") {
                     let where_tok = self.bump();
                     let key_kw = self.expect_ident("`key`")?;
                     if key_kw.name != "key" {
@@ -5571,10 +5623,10 @@ impl Parser {
                     id: NodeId::NONE,
                 })
             }
-            TokenKind::Publish => {
+            TokenKind::Ident(kw) if kw == "publish" => {
                 let kw = self.bump();
                 let subject = self.parse_bus_subject("publish")?;
-                let ty = if self.eat(&TokenKind::Of) {
+                let ty = if self.eat_word("of") {
                     self.expect(TokenKind::Type, "type")?;
                     Some(self.parse_type_expr()?)
                 } else {
@@ -5669,12 +5721,12 @@ impl Parser {
     fn parse_lifecycle_decl(&mut self) -> Result<LifecycleDecl, Diag> {
         let kw_tok = self.bump();
         let kind = match kw_tok.kind {
-            TokenKind::Birth => LifecycleKind::Birth,
-            TokenKind::Accept => LifecycleKind::Accept,
-            TokenKind::Release => LifecycleKind::Release,
-            TokenKind::Run => LifecycleKind::Run,
-            TokenKind::Drain => LifecycleKind::Drain,
-            TokenKind::Dissolve => LifecycleKind::Dissolve,
+            TokenKind::Ident(kw) if kw == "birth" => LifecycleKind::Birth,
+            TokenKind::Ident(kw) if kw == "accept" => LifecycleKind::Accept,
+            TokenKind::Ident(kw) if kw == "release" => LifecycleKind::Release,
+            TokenKind::Ident(kw) if kw == "run" => LifecycleKind::Run,
+            TokenKind::Ident(kw) if kw == "drain" => LifecycleKind::Drain,
+            TokenKind::Ident(kw) if kw == "dissolve" => LifecycleKind::Dissolve,
             _ => unreachable!(),
         };
         let params = self.parse_paren_params()?;
@@ -5746,9 +5798,9 @@ impl Parser {
         self.bump();
         let kind_tok = self.bump();
         let kind = match kind_tok.kind {
-            TokenKind::Bulk => ModeKind::Bulk,
-            TokenKind::Harmonic => ModeKind::Harmonic,
-            TokenKind::Resolution => ModeKind::Resolution,
+            TokenKind::Ident(kw) if kw == "bulk" => ModeKind::Bulk,
+            TokenKind::Ident(kw) if kw == "harmonic" => ModeKind::Harmonic,
+            TokenKind::Ident(kw) if kw == "resolution" => ModeKind::Resolution,
             other => {
                 return Err(Diag::parse(
                     kind_tok.span,
@@ -5767,6 +5819,8 @@ impl Parser {
             kind,
             params,
             ret,
+            unbounded: false,
+            bounded_by: None,
             span: kw.span.merge(body.span),
             body,
             id: NodeId::NONE,
@@ -5774,7 +5828,7 @@ impl Parser {
     }
 
     fn parse_failure_decl(&mut self) -> Result<FailureDecl, Diag> {
-        let kw = self.expect(TokenKind::OnFailure, "on_failure")?;
+        let kw = self.expect_word("on_failure")?;
         let params = self.parse_paren_params()?;
         let body = self.parse_block()?;
         Ok(FailureDecl {
@@ -5786,7 +5840,7 @@ impl Parser {
     }
 
     fn parse_closure_decl(&mut self) -> Result<ClosureDecl, Diag> {
-        let kw = self.expect(TokenKind::Closure, "closure")?;
+        let kw = self.expect_word("closure")?;
         let name = self.expect_ident("closure name")?;
         self.expect(TokenKind::LBrace, "{")?;
         // v1.x-VIOLATE (F.27): the assertion is optional. If the
@@ -5840,12 +5894,21 @@ impl Parser {
     /// not. Typecheck (not parse) enforces "assertion required
     /// unless epoch inline".
     fn at_closure_clause_leader(&self) -> bool {
+        // The clause words are contextual: `epoch` leads a clause when
+        // an epoch spec (a name) follows it, the three event / field
+        // lists when their `(` does.
         match self.peek() {
-            TokenKind::Epoch
-            | TokenKind::PersistsThrough
-            | TokenKind::ResetsOn
-            | TokenKind::ResetsPerEpoch
-            | TokenKind::RBrace => true,
+            TokenKind::RBrace => true,
+            TokenKind::Ident(s) if s == "epoch" => {
+                matches!(self.peek_at(1), TokenKind::Ident(_))
+            }
+            TokenKind::Ident(s)
+                if s == "persists_through"
+                    || s == "resets_on"
+                    || s == "resets_per_epoch" =>
+            {
+                matches!(self.peek_at(1), TokenKind::LParen)
+            }
             TokenKind::Ident(s) if s == "captures" => true,
             _ => false,
         }
@@ -5895,19 +5958,19 @@ impl Parser {
 
     fn parse_closure_clause(&mut self) -> Result<ClosureClause, Diag> {
         match self.peek().clone() {
-            TokenKind::Epoch => {
+            TokenKind::Ident(kw) if kw == "epoch" => {
                 self.bump();
                 let spec = self.parse_epoch_spec()?;
                 self.expect(TokenKind::Semi, ";")?;
                 Ok(ClosureClause::Epoch(spec))
             }
-            TokenKind::PersistsThrough => {
+            TokenKind::Ident(kw) if kw == "persists_through" => {
                 let kw = self.bump();
                 let names = self.parse_paren_recovery_event_list()?;
                 let semi = self.expect(TokenKind::Semi, ";")?;
                 Ok(ClosureClause::PersistsThrough(RecoveryEvents { names, span: kw.span.merge(semi.span) }))
             }
-            TokenKind::ResetsOn => {
+            TokenKind::Ident(kw) if kw == "resets_on" => {
                 let kw = self.bump();
                 let names = self.parse_paren_recovery_event_list()?;
                 let semi = self.expect(TokenKind::Semi, ";")?;
@@ -5918,7 +5981,7 @@ impl Parser {
             // `duration(N)` boundary. Typecheck verifies the
             // closure has `epoch duration(...)` and each field is
             // a numeric field on the enclosing locus.
-            TokenKind::ResetsPerEpoch => {
+            TokenKind::Ident(kw) if kw == "resets_per_epoch" => {
                 self.bump();
                 self.expect(TokenKind::LParen, "(")?;
                 let mut names = Vec::new();
@@ -5969,11 +6032,11 @@ impl Parser {
                 self.bump();
                 Ok(EpochSpec::Inline)
             }
-            TokenKind::Birth => {
+            TokenKind::Ident(kw) if kw == "birth" => {
                 self.bump();
                 Ok(EpochSpec::Birth)
             }
-            TokenKind::Dissolve => {
+            TokenKind::Ident(kw) if kw == "dissolve" => {
                 self.bump();
                 Ok(EpochSpec::Dissolve)
             }
@@ -5995,8 +6058,8 @@ impl Parser {
     /// names. The closure clauses `persists_through(...)` and
     /// `resets_on(...)` take these names as bare keywords per
     /// the spec example `persists_through(restart_in_place,
-    /// quarantine);` — each event spelling is a reserved
-    /// keyword token, not a plain identifier. Each name is
+    /// quarantine);` — each event spelling is a contextual
+    /// keyword, so it arrives as a plain identifier. Each name is
     /// typed here, once: the event it is when it is in the
     /// alphabet ([`RecoveryEvent`]), and the name as written
     /// either way, which the check refuses at its span when it
@@ -6015,19 +6078,8 @@ impl Parser {
     }
 
     fn parse_recovery_event_name(&mut self) -> Result<RecoveryEventName, Diag> {
-        let tok = self.peek_token().clone();
-        let name: &'static str = match tok.kind {
-            TokenKind::Restart => "restart",
-            TokenKind::RestartInPlace => "restart_in_place",
-            TokenKind::Quarantine => "quarantine",
-            TokenKind::Dissolve => "dissolve",
-            _ => {
-                let name = self.expect_ident("recovery event name")?;
-                return Ok(RecoveryEventName { event: RecoveryEvent::named(&name.name), name });
-            }
-        };
-        self.bump();
-        Ok(RecoveryEventName { name: Ident::new(name, tok.span), event: RecoveryEvent::named(name) })
+        let name = self.expect_ident("recovery event name")?;
+        Ok(RecoveryEventName { event: RecoveryEvent::named(&name.name), name })
     }
 
     fn parse_perspective_decl(&mut self) -> Result<PerspectiveDecl, Diag> {
@@ -6051,13 +6103,13 @@ impl Parser {
 
     fn parse_perspective_member(&mut self) -> Result<PerspectiveMember, Diag> {
         match self.peek() {
-            TokenKind::Params => self.parse_params_block().map(PerspectiveMember::Params),
-            TokenKind::StableWhen => {
+            TokenKind::Ident(kw) if kw == "params" => self.parse_params_block().map(PerspectiveMember::Params),
+            TokenKind::Ident(kw) if kw == "stable_when" => {
                 self.bump();
                 let block = self.parse_block()?;
                 Ok(PerspectiveMember::StableWhen(block))
             }
-            TokenKind::SerializeAs => {
+            TokenKind::Ident(kw) if kw == "serialize_as" => {
                 self.bump();
                 let ty = self.parse_type_expr()?;
                 self.expect(TokenKind::Semi, ";")?;
@@ -6066,7 +6118,7 @@ impl Parser {
             TokenKind::Fn => self.parse_contract_fn().map(PerspectiveMember::Fn),
             TokenKind::At if self.at_gated() => Err(self.gated_refusal()),
             // Phase 2c: the perspective contract's bus surface.
-            TokenKind::Bus => self.parse_bus_block().map(PerspectiveMember::Bus),
+            TokenKind::Ident(kw) if kw == "bus" => self.parse_bus_block().map(PerspectiveMember::Bus),
             other => Err(Diag::parse(
                 self.peek_token().span,
                 format!("expected perspective member, got {:?}", other),
@@ -6421,10 +6473,35 @@ impl Parser {
     fn parse_const_decl(&mut self) -> Result<ConstDecl, Diag> {
         let kw = self.expect(TokenKind::Const, "const")?;
         let name = self.expect_decl_name("const name")?;
-        self.expect(TokenKind::Colon, ":")?;
-        let ty = self.parse_type_expr()?;
+        // Friction sweep 2026-10-12: `const X = 1;` — a literal's type
+        // is the const's type, so the annotation may be left out there;
+        // any other initializer still states it, and the error says so
+        // (it used to read "expected :, got Eq").
+        let annotated = if self.at(&TokenKind::Eq) {
+            None
+        } else {
+            self.expect(TokenKind::Colon, ":")?;
+            Some(self.parse_type_expr()?)
+        };
         self.expect(TokenKind::Eq, "=")?;
         let value = self.parse_expr()?;
+        let ty = match annotated {
+            Some(ty) => ty,
+            None => match literal_prim(&value) {
+                Some(prim) => TypeExpr::Primitive(prim, value.span()),
+                None => {
+                    return Err(Diag::parse(
+                        value.span(),
+                        format!(
+                            "`const {n}` needs its type written: only a \
+                             literal's type is inferred (`const {n} = 3;`, \
+                             `const {n} = \"x\";`); write `const {n}: T = …;`",
+                            n = name.name
+                        ),
+                    ));
+                }
+            },
+        };
         let semi = self.expect(TokenKind::Semi, ";")?;
         Ok(ConstDecl {
             span: kw.span.merge(semi.span),
@@ -6475,6 +6552,7 @@ impl Parser {
         // instead of being claimed by the builtin a second time.
         if free {
             self.reject_builtin_call_form_as_fn(&name);
+            self.reject_recovery_word_as_free_fn(&name);
         }
         let generics = self.parse_generic_params_opt()?;
         self.expect(TokenKind::LParen, "(")?;
@@ -6726,17 +6804,22 @@ impl Parser {
                     span: kw.span.merge(close.span),
                 })
             }
-            TokenKind::Rich | TokenKind::Chunked | TokenKind::Recognition => {
+            // The projection-class words are contextual: in type
+            // position they are the projection type when a `<` follows.
+            TokenKind::Ident(kw)
+                if matches!(kw.as_str(), "rich" | "chunked" | "recognition")
+                    && matches!(self.peek_at(1), TokenKind::Lt) =>
+            {
                 let class_tok = self.bump();
                 let class = match class_tok.kind {
-                    TokenKind::Rich => ProjectionClass::Rich,
-                    TokenKind::Chunked => ProjectionClass::Chunked,
+                    TokenKind::Ident(kw) if kw == "rich" => ProjectionClass::Rich,
+                    TokenKind::Ident(kw) if kw == "chunked" => ProjectionClass::Chunked,
                     // v1.x-3: `Recognition<T>` as a *type expression*
                     // (in a signature, not a locus annotation) carries
                     // no sub-mode commitment — the allocator choice
                     // lives at the locus declaration site, not the
                     // type use site. Use None here.
-                    TokenKind::Recognition => ProjectionClass::Recognition(None),
+                    TokenKind::Ident(kw) if kw == "recognition" => ProjectionClass::Recognition(None),
                     _ => unreachable!(),
                 };
                 self.expect(TokenKind::Lt, "<")?;
@@ -6866,7 +6949,7 @@ impl Parser {
     }
 
     fn parse_qualified_name(&mut self) -> Result<QualifiedName, Diag> {
-        let first = self.expect_ident_or_kw_name("name")?;
+        let first = self.expect_ident("name")?;
         let mut span = first.span;
         let mut segments = vec![first];
         while self.eat(&TokenKind::ColonColon) {
@@ -6977,18 +7060,32 @@ impl Parser {
             | TokenKind::Return
             | TokenKind::Break
             | TokenKind::Continue
-            | TokenKind::Yield
-            | TokenKind::Terminate
-            | TokenKind::LBrace
-            | TokenKind::Restart
-            | TokenKind::RestartInPlace
-            | TokenKind::Quarantine
-            | TokenKind::Reorganize
-            | TokenKind::Bubble => {
+            | TokenKind::LBrace => {
+                stmts.push(self.parse_stmt()?);
+                Ok(None)
+            }
+            _ if self.at_contextual_stmt() => {
                 stmts.push(self.parse_stmt()?);
                 Ok(None)
             }
             _ => self.parse_expr_or_tail(stmts),
+        }
+    }
+
+    /// True when peek is a statement led by a contextual keyword:
+    /// `yield;` / `terminate;` (the word, then `;`) or a recovery
+    /// statement (`restart(c);`, `bubble(err);` — the word, then
+    /// `(`). Anywhere else the words are names: `let yield_count`,
+    /// `self.restart`, a local `epoch`, a free fn `run()`.
+    fn at_contextual_stmt(&self) -> bool {
+        match self.peek() {
+            TokenKind::Ident(s) if s == "yield" || s == "terminate" => {
+                matches!(self.peek_at(1), TokenKind::Semi)
+            }
+            TokenKind::Ident(s) if RecoveryOp::from_word(s).is_some() => {
+                matches!(self.peek_at(1), TokenKind::LParen)
+            }
+            _ => false,
         }
     }
 
@@ -7126,12 +7223,12 @@ impl Parser {
                 let semi = self.expect(TokenKind::Semi, ";")?;
                 Ok(Stmt::Continue(kw.span.merge(semi.span)))
             }
-            TokenKind::Yield => {
+            TokenKind::Ident(kw) if kw == "yield" && self.at_contextual_stmt() => {
                 let kw = self.bump();
                 let semi = self.expect(TokenKind::Semi, ";")?;
                 Ok(Stmt::Yield(kw.span.merge(semi.span)))
             }
-            TokenKind::Terminate => {
+            TokenKind::Ident(kw) if kw == "terminate" && self.at_contextual_stmt() => {
                 let kw = self.bump();
                 let semi = self.expect(TokenKind::Semi, ";")?;
                 Ok(Stmt::Terminate(kw.span.merge(semi.span)))
@@ -7142,11 +7239,9 @@ impl Parser {
             // quarantine / bubble + reorganize. drain and
             // dissolve are lifecycle methods only — using them
             // here would overlap with bubble(err).
-            TokenKind::Restart
-            | TokenKind::RestartInPlace
-            | TokenKind::Quarantine
-            | TokenKind::Reorganize
-            | TokenKind::Bubble => self.parse_recovery_stmt(),
+            TokenKind::Ident(_) if self.at_contextual_stmt() => {
+                self.parse_recovery_stmt()
+            }
             // Expression-led items go through parse_block_item /
             // parse_expr_or_tail at the call site so they can become
             // a trailing-tail expression instead of a stmt. Reaching
@@ -7466,19 +7561,19 @@ impl Parser {
 
     fn parse_recovery_stmt(&mut self) -> Result<Stmt, Diag> {
         let kw_tok = self.bump();
-        let op = match kw_tok.kind {
-            TokenKind::Restart => RecoveryOp::Restart,
-            TokenKind::RestartInPlace => RecoveryOp::RestartInPlace,
-            TokenKind::Quarantine => RecoveryOp::Quarantine,
-            TokenKind::Reorganize => RecoveryOp::Reorganize,
-            TokenKind::Bubble => RecoveryOp::Bubble,
-            _ => unreachable!(),
-        };
+        let op = match &kw_tok.kind {
+            TokenKind::Ident(kw) => RecoveryOp::from_word(kw),
+            _ => None,
+        }
+        .expect("caller checked at_contextual_stmt");
         self.expect(TokenKind::LParen, "(")?;
         let mut args = Vec::new();
         if !self.at(&TokenKind::RParen) {
             args.push(self.parse_expr()?);
             while self.eat(&TokenKind::Comma) {
+                if self.at(&TokenKind::RParen) {
+                    break;
+                }
                 args.push(self.parse_expr()?);
             }
         }
@@ -7970,7 +8065,13 @@ impl Parser {
                         args = self.parse_serve_args()?;
                     } else if !self.at(&TokenKind::RParen) {
                         args.push(self.parse_expr()?);
+                        // A trailing comma before `)` is accepted, as
+                        // in a struct literal (friction sweep
+                        // 2026-10-12): `f(a, b,)`.
                         while self.eat(&TokenKind::Comma) {
+                            if self.at(&TokenKind::RParen) {
+                                break;
+                            }
                             args.push(self.parse_expr()?);
                         }
                     }
@@ -8605,9 +8706,7 @@ fn bin_op_bp(op: BinOp) -> (u8, u8) {
 /// belongs. `what` is the declaration context the parser was in
 /// ("params field name", "variable name", ...), so the message says
 /// both which word is reserved and what the author was declaring.
-/// The lifecycle words get a parenthetical because a `let run = ...`
-/// is usually a collision with the lifecycle vocabulary rather than
-/// with syntax. `spec/tokens.md` § Reserved words is the canonical
+/// `spec/tokens.md` § Reserved words is the canonical
 /// list; Hale has no escaped-identifier form, so renaming is the
 /// only fix and the message says so instead of leaving the author
 /// hunting for an escape.
@@ -8620,25 +8719,11 @@ fn reserved_name_message(kw: &str, what: &str) -> String {
         Some(b'a') | Some(b'e') | Some(b'i') | Some(b'o') | Some(b'u') => "an",
         _ => "a",
     };
-    let kind = if matches!(
-        kw,
-        "birth"
-            | "accept"
-            | "release"
-            | "run"
-            | "drain"
-            | "dissolve"
-            | "on_failure"
-    ) {
-        "a reserved word (a lifecycle keyword)"
-    } else {
-        "a reserved word"
-    };
     format!(
-        "`{}` is {} and cannot name {} {}; rename it (Hale has no \
-         escaped-identifier form — spec/tokens.md lists every \
+        "`{}` is a reserved word and cannot name {} {}; rename it (Hale \
+         has no escaped-identifier form — spec/tokens.md lists every \
          reserved word)",
-        kw, kind, article, thing
+        kw, article, thing
     )
 }
 
@@ -8700,7 +8785,8 @@ const PRINTER_CLAIM: &str =
 /// - `B`, `c`, `sigma`, `phi`, `k_max`, `span_max`, `length` and
 ///   `empty` are in spec/tokens.md's built-in identifier table but
 ///   no call site claims them; each builds and runs its own body.
-/// - `bubble` is a keyword, so GH #725 already refuses it.
+/// - `bubble` and the other recovery words are refused as free fn
+///   names by `reject_recovery_word_as_free_fn`.
 const BUILTIN_CALL_FORMS: &[(&str, Option<&str>)] = &[
     // Claimed by THIS parser at expression head: `sum(` / `prod(`
     // produce `Expr::Sum` / `Expr::Prod`, never a call.
@@ -8766,56 +8852,51 @@ fn builtin_call_form(
     BUILTIN_CALL_FORMS.iter().copied().find(|(w, _)| *w == name)
 }
 
-/// If the given keyword token is one we permit as an identifier
-/// in expression / path / member position, return its textual
-/// name. Otherwise None.
-///
-/// As of v0.2 (capitalize-types + bus-send-operator refactor), the
-/// only keywords still in this fallback are mode names — they need
-/// to be available as member names per F.10 (e.g., `self.bulk()`).
-/// Primitive types are no longer keywords (PascalCase predefined
-/// identifiers); `publish`/`subscribe` are no longer overloaded
-/// (the runtime publish action is the `<-` operator, not a builtin).
-fn try_keyword_as_name(k: &TokenKind) -> Option<&'static str> {
-    Some(match k {
-        TokenKind::Bulk => "bulk",
-        TokenKind::Harmonic => "harmonic",
-        TokenKind::Resolution => "resolution",
-        _ => return None,
-    })
+/// The primitive type of a literal const initializer (`3`, `-1.5`,
+/// `2.50d`, `"x"`, `true`, `b"x"`): the type `const X = …;` takes when
+/// it states none.
+fn literal_prim(e: &Expr) -> Option<PrimType> {
+    match e {
+        Expr::Literal(lit, _) => match lit {
+            Literal::Int(_) => Some(PrimType::Int),
+            Literal::Float(_) => Some(PrimType::Float),
+            Literal::Decimal(_) => Some(PrimType::Decimal),
+            Literal::String(_) => Some(PrimType::String),
+            Literal::Bool(_) => Some(PrimType::Bool),
+            Literal::Bytes(_) => Some(PrimType::Bytes),
+            _ => None,
+        },
+        Expr::Unary { op: UnaryOp::Neg, operand, .. } => match literal_prim(operand)? {
+            p @ (PrimType::Int | PrimType::Float | PrimType::Decimal) => Some(p),
+            _ => None,
+        },
+        _ => None,
+    }
 }
 
-/// Broader keyword-as-name set permitted in member-name
-/// position (post-`.`). The post-dot position is
-/// unambiguous, so it's safe to admit framework-vocabulary
-/// keywords here as field names. This unlocks fields like
-/// `err.closure`, `err.locus`, `err.params` on built-in
-/// struct values without renaming.
+/// The lifecycle hook words: a locus member led by one of them is the
+/// hook (`run() { … }`), and a locus METHOD may not take one of them as
+/// its name — that name IS the hook. Contextual keywords (they lex as
+/// `Ident`), so a field, parameter, local or free fn may be named by any.
+const LIFECYCLE_WORDS: &[&str] =
+    &["birth", "accept", "release", "run", "drain", "dissolve"];
+
+fn is_lifecycle_word(s: &str) -> bool {
+    LIFECYCLE_WORDS.contains(&s)
+}
+
+/// Hard keywords permitted in member-name position (post-`.`, a
+/// `type` body's field, a struct literal's field). The post-dot
+/// position is unambiguous, so it is safe to admit these declaration
+/// words as field names: `err.closure` and `err.locus` on built-in
+/// struct values, `x.type`, `d.in(s)`. Every lifecycle, mode, closure,
+/// recovery and locus-member word is a contextual keyword now and
+/// arrives as an `Ident` anyway.
 fn try_member_keyword_as_name(k: &TokenKind) -> Option<&'static str> {
-    if let Some(name) = try_keyword_as_name(k) {
-        return Some(name);
-    }
     Some(match k {
-        TokenKind::Closure => "closure",
         TokenKind::Locus => "locus",
-        TokenKind::Params => "params",
-        TokenKind::Contract => "contract",
-        TokenKind::Bus => "bus",
-        TokenKind::Capacity => "capacity",
-        TokenKind::Tier => "tier",
-        TokenKind::Projection => "projection",
         TokenKind::Perspective => "perspective",
         TokenKind::Type => "type",
-        // v1.x-8: lifecycle keywords admissible as field names
-        // inside type decls + struct literals. Friction:
-        // `type Cmd { run: fn(CliCtxL); }` couldn't parse
-        // because `run` lexed as TokenKind::Run.
-        TokenKind::Birth => "birth",
-        TokenKind::Accept => "accept",
-        TokenKind::Release => "release",
-        TokenKind::Run => "run",
-        TokenKind::Drain => "drain",
-        TokenKind::Dissolve => "dissolve",
         // GH #1076: `d.in(s)`, the conversion the unit dialect gives
         // meaning to, is an ordinary method call.
         TokenKind::In => "in",
@@ -8831,9 +8912,6 @@ fn starts_type_expr(k: &TokenKind) -> bool {
         k,
         TokenKind::Ident(_)
             | TokenKind::Perspective
-            | TokenKind::Rich
-            | TokenKind::Chunked
-            | TokenKind::Recognition
             | TokenKind::LBracket
             | TokenKind::LParen
             | TokenKind::Fn
@@ -8939,14 +9017,86 @@ fn main() {
         }
     }
 
+    /// Friction sweep 2026-10-12: every contextual keyword (the
+    /// lifecycle, mode, closure, recovery, locus-member, contract, bus,
+    /// perspective and statement words) is a name wherever a name is
+    /// written: a type field, a params field, a parameter, a local, an
+    /// enum variant, a struct-literal field, a member read and — but for
+    /// the recovery words — a free fn.
     #[test]
-    fn let_with_lifecycle_keyword_names_the_keyword() {
-        let errs = parse_str("fn main() { let accept = 1; }").unwrap_err();
+    fn contextual_keywords_are_names_in_every_name_position() {
+        const WORDS: &[&str] = &[
+            "params", "contract", "bus", "capacity", "as_parent_for",
+            "indexed_by", "birth", "accept", "release", "run", "drain",
+            "dissolve", "on_failure", "bulk", "harmonic", "resolution",
+            "projection", "rich", "chunked", "recognition", "tier",
+            "closure", "epoch", "persists_through", "resets_on",
+            "resets_per_epoch", "restart", "restart_in_place", "quarantine",
+            "reorganize", "bubble", "expose", "consume", "inferred",
+            "subscribe", "publish", "on", "of", "stable_when",
+            "serialize_as", "yield", "terminate", "where",
+        ];
+        for w in WORDS {
+            assert!(
+                crate::keywords::CONTEXTUAL_KEYWORDS.contains(w),
+                "`{w}` is listed as contextual"
+            );
+            let free_fn = if crate::ast::RecoveryOp::from_word(w).is_some() {
+                String::new()
+            } else {
+                format!("fn {w}(x: Int) -> Int {{ return x; }}\n")
+            };
+            let src = format!(
+                "type R {{ {w}: Int; }}\n\
+                 type E = enum {{ {w}, other }};\n\
+                 locus L {{ params {{ {w}: Int = 0; }} \
+                 fn get({w}: Int) -> Int {{ let {w} = {w} + self.{w}; return {w}; }} }}\n\
+                 {free_fn}\
+                 fn main() {{ let r = R {{ {w}: 1 }}; let {w} = r.{w}; println({w}); }}\n"
+            );
+            if let Err(errs) = parse_str(&src) {
+                panic!("`{w}` as a name failed to parse: {errs:?}\n{src}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_hook_word_still_introduces_its_hook() {
+        let prog = parse_str(
+            "locus L { run() { } on_failure(c: L) { restart(c) for 3; bubble(c); } \
+             closure k { epoch tick; persists_through(restart); } }",
+        )
+        .expect("hooks parse");
+        let TopDecl::Locus(l) = &prog.items[0] else { panic!("locus") };
+        assert!(l.members.iter().any(|m| matches!(m, LocusMember::Lifecycle(_))));
+        assert!(l.members.iter().any(|m| matches!(m, LocusMember::Failure(_))));
+        assert!(l.members.iter().any(|m| matches!(m, LocusMember::Closure(_))));
+    }
+
+    #[test]
+    fn a_locus_method_named_like_a_hook_is_refused() {
+        for (w, says) in [
+            ("run", "lifecycle hook"),
+            ("accept", "lifecycle hook"),
+            ("on_failure", "failure handler"),
+            ("bulk", "mode bulk"),
+        ] {
+            let errs = parse_str(&format!("locus L {{ fn {w}() {{ }} }}"))
+                .unwrap_err();
+            assert_eq!(errs.len(), 1, "one diagnostic; got: {errs:?}");
+            let msg = &errs[0].message;
+            assert!(msg.contains(&format!("cannot be named `{w}`")), "got: {msg}");
+            assert!(msg.contains(says), "got: {msg}");
+        }
+    }
+
+    #[test]
+    fn a_free_fn_named_like_a_recovery_statement_is_refused() {
+        let errs = parse_str("fn restart(x: Int) { }").unwrap_err();
         assert_eq!(errs.len(), 1, "one diagnostic; got: {errs:?}");
-        let msg = &errs[0].message;
-        assert!(msg.contains("`accept`"), "got: {msg}");
-        assert!(msg.contains("a lifecycle keyword"), "got: {msg}");
-        assert!(msg.contains("cannot name a variable"), "got: {msg}");
+        assert!(errs[0].message.contains("recovery statement"), "{errs:?}");
+        // A locus method of the name is reached through a receiver.
+        parse_str("locus L { fn restart() { } }").expect("method parses");
     }
 
     #[test]

@@ -54,7 +54,7 @@ main locus App {
             println("ev replaced sibling");
         }
         if c.tag == 1 {
-            restart (c);
+            restart(c);
         }
         self.heard = self.heard + 1;
     }

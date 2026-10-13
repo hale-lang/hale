@@ -45,7 +45,7 @@ let a = parse_count(s) or raise;              // propagate upward
 let b = parse_count(s) or 0;                  // substitute a value
 let c = parse_count(s) or handle(err);        // hand off to a helper
 let d = parse_count(s) or fail OtherErr { };  // translate the error
-some_unit_call()       or discard;            // ignore (unit result only)
+parse_count(s)         or discard;            // ignore (as a statement)
 ```
 
 - **`or raise`** — pass the error up to *your* caller. For that
@@ -70,10 +70,14 @@ some_unit_call()       or discard;            // ignore (unit result only)
   ```hale,fragment
   let n = std::str::parse_int(s) or fail AppErr { msg: err.kind };
   ```
-- **`or discard`** — throw the error away. Only allowed when the
-  successful result is `()` (nothing to substitute). The compiler
-  rejects `or discard` on a value-bearing call and suggests
-  `or <fallback>` instead.
+- **`or discard`** — throw the error away. On a call that
+  returns `()` it goes anywhere. On a call that returns a value it
+  goes where the value is thrown away too — the call is the whole
+  statement, `cache.put(k, v) or discard;` — and both are dropped.
+  Where the value is used, `let n = parse_count(s) or discard;`,
+  there is nothing to give `n` when the call fails, so the
+  compiler refuses it and suggests `or <fallback>`, `or raise` or
+  the statement form.
 
 ## A real example
 

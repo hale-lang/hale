@@ -457,6 +457,159 @@ pub struct WireRow {
     pub published_by_pattern: bool,
     /// A `**` subscription covers the subject.
     pub subscribed_by_pattern: bool,
+    /// An external ingress may deliver on the subject: a
+    /// `std::bus::__local_dispatch` call, the inbound side of an
+    /// adapter, names it as a literal or computes its subject (and so
+    /// may name any). It is a publisher the program's `bus { }` blocks
+    /// do not show ([`Ingress`]).
+    pub ingress: bool,
+}
+
+/// An external ingress (friction sweep 2026-10-12): a call to
+/// `std::bus::__local_dispatch(subject, bytes)`, through which an
+/// adapter hands wire bytes it received to the local subscribers of
+/// `subject` — the inbound side of a binding. A program that receives a
+/// topic only that way publishes it nowhere in its `bus { }` blocks, so
+/// the graph records the call as a publisher of the subject it names:
+/// the literal's, or — a computed subject, as a NATS connection's is —
+/// any subject.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Ingress {
+    /// The subject, when the call writes it as a string literal.
+    pub subject: Option<String>,
+    /// The call.
+    pub span: Span,
+}
+
+/// Every `std::bus::__local_dispatch` call in `items`' bodies, in walk
+/// order.
+fn ingress_sites(items: &[TopDecl], out: &mut Vec<Ingress>) {
+    fn expr(e: &Expr, out: &mut Vec<Ingress>) {
+        match e {
+            Expr::Call { callee, args, span, .. } => {
+                if let Expr::Path(qn) = callee.as_ref() {
+                    let segs: Vec<&str> = qn.segments.iter().map(|s| s.name.as_str()).collect();
+                    if segs.ends_with(&["bus", "__local_dispatch"]) {
+                        let subject = match args.first() {
+                            Some(Expr::Literal(Literal::String(s), _)) => Some(s.clone()),
+                            _ => None,
+                        };
+                        out.push(Ingress { subject, span: *span });
+                    }
+                }
+                expr(callee, out);
+                args.iter().for_each(|a| expr(a, out));
+            }
+            Expr::Binary { left, right, .. } => {
+                expr(left, out);
+                expr(right, out);
+            }
+            Expr::Unary { operand, .. } => expr(operand, out),
+            Expr::Field { receiver, .. } | Expr::Path2 { receiver, .. } => expr(receiver, out),
+            Expr::Index { receiver, index, .. } => {
+                expr(receiver, out);
+                expr(index, out);
+            }
+            Expr::Tuple(es, _) | Expr::Array(es, _) => es.iter().for_each(|a| expr(a, out)),
+            Expr::Struct { inits, .. } => inits.iter().for_each(|i| expr(&i.value, out)),
+            Expr::Block(b) => block(b, out),
+            Expr::If(i) => if_stmt(i, out),
+            Expr::Match(m) => match_stmt(m, out),
+            Expr::Sum(a, _) | Expr::Prod(a, _) => expr(a, out),
+            Expr::Approx { left, right, tolerance, .. } => {
+                expr(left, out);
+                expr(right, out);
+                expr(tolerance, out);
+            }
+            Expr::Range { lo, hi, .. } => {
+                expr(lo, out);
+                expr(hi, out);
+            }
+            Expr::ArrayRepeat { val, .. } => expr(val, out),
+            Expr::Or { inner, disposition, .. } => {
+                expr(inner, out);
+                match disposition {
+                    OrDisposition::Substitute(x) | OrDisposition::Fail(x, _) => expr(x, out),
+                    _ => {}
+                }
+            }
+            Expr::Literal(..) | Expr::Ident(_) | Expr::Path(_) | Expr::KwSelf(_) => {}
+        }
+    }
+    fn if_stmt(i: &IfStmt, out: &mut Vec<Ingress>) {
+        expr(&i.cond, out);
+        block(&i.then_block, out);
+        match i.else_block.as_deref() {
+            Some(ElseBranch::Else(b)) => block(b, out),
+            Some(ElseBranch::ElseIf(e)) => if_stmt(e, out),
+            None => {}
+        }
+    }
+    fn match_stmt(m: &MatchStmt, out: &mut Vec<Ingress>) {
+        expr(&m.scrutinee, out);
+        for arm in &m.arms {
+            if let Some(g) = &arm.guard {
+                expr(g, out);
+            }
+            match &arm.body {
+                MatchArmBody::Expr(e) => expr(e, out),
+                MatchArmBody::Block(b) => block(b, out),
+            }
+        }
+    }
+    fn block(b: &Block, out: &mut Vec<Ingress>) {
+        for st in &b.stmts {
+            match st {
+                Stmt::Let { value, .. } | Stmt::LetTuple { value, .. } | Stmt::Assign { value, .. } => expr(value, out),
+                Stmt::If(i) => if_stmt(i, out),
+                Stmt::Match(m) => match_stmt(m, out),
+                Stmt::For { iter, body, .. } => {
+                    expr(iter, out);
+                    block(body, out);
+                }
+                Stmt::While { cond, body, .. } => {
+                    expr(cond, out);
+                    block(body, out);
+                }
+                Stmt::Return(Some(e), _) => expr(e, out),
+                Stmt::Fail { value, .. } => expr(value, out),
+                Stmt::Block(b) => block(b, out),
+                Stmt::Recovery { args, .. } => args.iter().for_each(|a| expr(a, out)),
+                Stmt::Violate { payload: Some(p), .. } => expr(p, out),
+                Stmt::Send { subject, value, .. } => {
+                    expr(subject, out);
+                    expr(value, out);
+                }
+                Stmt::ShmWrite { max, body, .. } => {
+                    expr(max, out);
+                    block(body, out);
+                }
+                Stmt::Expr(e) => expr(e, out),
+                _ => {}
+            }
+        }
+        if let Some(t) = &b.tail {
+            expr(t, out);
+        }
+    }
+    for d in items {
+        match d {
+            TopDecl::Fn(f) => block(&f.body, out),
+            TopDecl::Module(m) => ingress_sites(&m.items, out),
+            TopDecl::Locus(l) => {
+                for m in &l.members {
+                    match m {
+                        LocusMember::Lifecycle(lc) => block(&lc.body, out),
+                        LocusMember::Failure(fd) => block(&fd.body, out),
+                        LocusMember::Mode(md) => block(&md.body, out),
+                        LocusMember::Fn(f) => block(&f.body, out),
+                        _ => {}
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
 }
 
 /// A site whose subject the graph cannot resolve: recorded, and judged
@@ -472,8 +625,9 @@ pub struct Hole {
     pub span: Span,
 }
 
-/// The graph's canonical subjects and its holes, from the walk's sites.
-fn wire_rows(walk: &BusWalk, topics: &TopicRows) -> (BTreeMap<String, WireRow>, Vec<Hole>) {
+/// The graph's canonical subjects and its holes, from the walk's sites
+/// and the program's external ingresses.
+fn wire_rows(walk: &BusWalk, topics: &TopicRows, ingress: &[Ingress]) -> (BTreeMap<String, WireRow>, Vec<Hole>) {
     let mut rows: BTreeMap<String, WireRow> = BTreeMap::new();
     let mut holes = Vec::new();
     for t in topics.iter().filter(|t| !t.broken) {
@@ -517,6 +671,17 @@ fn wire_rows(walk: &BusWalk, topics: &TopicRows) -> (BTreeMap<String, WireRow>, 
             if let Some(row) = rows.get_mut(wire) {
                 row.cross_seed = true;
             }
+        }
+    }
+    // An ingress publishes the subject it names, or, computing it, any.
+    for site in ingress {
+        match &site.subject {
+            Some(wire) => {
+                if let Some(row) = rows.get_mut(wire) {
+                    row.ingress = true;
+                }
+            }
+            None => rows.values_mut().for_each(|row| row.ingress = true),
         }
     }
     for (wire, row) in rows.iter_mut() {
@@ -802,6 +967,9 @@ pub struct BusGraph {
     pub decls: Vec<LocusDeclRow>,
     /// Every handler edge, in walk order (rule 10's graph).
     pub edges: Vec<BusEdge>,
+    /// Every external ingress, in walk order ([`Ingress`]): the
+    /// publishers no `bus { }` block declares.
+    pub ingress: Vec<Ingress>,
 }
 
 impl BusGraph {
@@ -922,7 +1090,11 @@ pub fn build_bus_graph(
 ) -> BusGraph {
     let programs = bundle.programs.iter().map(|(name, p)| (name.as_str(), p.items.as_slice()));
     let walk = collect_bus_walk(programs, &top.topics, bindings);
-    let (wires, holes) = wire_rows(&walk, &top.topics);
+    let mut ingress = Vec::new();
+    for p in bundle.programs.values() {
+        ingress_sites(&p.items, &mut ingress);
+    }
+    let (wires, holes) = wire_rows(&walk, &top.topics, &ingress);
     // Closed-world gate input (DEVIRT-ONLY notion): a complete,
     // closed-world program is one with an ENTRY POINT — a bare
     // top-level `fn main` free function OR an entry (the entry row's:
@@ -945,7 +1117,7 @@ pub fn build_bus_graph(
             .any(|p| p.items.iter().any(|i| matches!(i, TopDecl::Fn(f) if f.name.name == "main")));
     let rows = bus_rows(bundle, top, &walk, has_entry_point);
     let subjects = rows.subjects(placement);
-    BusGraph { subjects, rows, wires, holes, decls: walk.decls, edges: walk.edges }
+    BusGraph { subjects, rows, wires, holes, decls: walk.decls, edges: walk.edges, ingress }
 }
 
 /// The rows of a walk: each site with its payload, its flatness and

@@ -291,7 +291,7 @@ fn reserved_word_in_a_sibling_file_is_located_at_the_word() {
          \n\
          locus Worker {\n\
          \x20   params {\n\
-         \x20       epoch: Int = 0;\n\
+         \x20       await: Int = 0;\n\
          \x20   }\n\
          \n\
          \x20   fn produce() -> WorkResult {\n\
@@ -314,7 +314,7 @@ fn reserved_word_in_a_sibling_file_is_located_at_the_word() {
     assert!(
         errs[0].contains("work.hl:8:9:")
             && errs[0].contains(
-                "`epoch` is a reserved word and cannot name a params field"
+                "`await` is a reserved word and cannot name a params field"
             ),
         "the error is at the reserved word in work.hl; got: {}",
         errs[0]
@@ -323,7 +323,7 @@ fn reserved_word_in_a_sibling_file_is_located_at_the_word() {
     // the file — the double-shifted span pointed past EOF and lost
     // them silently.
     assert!(
-        stderr.contains("epoch: Int = 0;") && stderr.contains("^^^^^"),
+        stderr.contains("await: Int = 0;") && stderr.contains("^^^^^"),
         "the caret underlines the word: {}",
         stderr
     );
@@ -349,10 +349,10 @@ fn reserved_word_in_a_sibling_file_is_located_at_the_word() {
 // findings do.
 // ---------------------------------------------------------------
 
-/// A seed whose only fault is syntactic: `where` is a reserved word
+/// A seed whose only fault is syntactic: `macro` is a reserved word
 /// (`spec/tokens.md`), so this does not parse. Line 2, column 9.
 const RESERVED_WORD_SEED: &str =
-    "fn main() {\n    let where = 1;\n    println(\"x\");\n}\n";
+    "fn main() {\n    let macro = 1;\n    println(\"x\");\n}\n";
 
 #[test]
 fn parse_error_is_an_ndjson_record() {
@@ -412,7 +412,7 @@ fn parse_error_in_a_sibling_file_carries_its_own_position() {
         .unwrap();
     std::fs::write(
         d.join("b.hl"),
-        "main locus App {\n    run {\n        let tier = 1;\n        \
+        "main locus App {\n    run {\n        let impl = 1;\n        \
          println(\"t\");\n    }\n}\n",
     )
     .unwrap();
@@ -427,7 +427,7 @@ fn parse_error_in_a_sibling_file_carries_its_own_position() {
         "the file holding the mistake, not the first of the seed: {}",
         line
     );
-    assert_eq!(v["line"], 3, "`tier` is on line 3 of b.hl: {}", line);
+    assert_eq!(v["line"], 3, "`impl` is on line 3 of b.hl: {}", line);
     assert_eq!(v["col"], 13, "and at column 13: {}", line);
     let _ = std::fs::remove_dir_all(&d);
 }
@@ -481,12 +481,12 @@ fn every_parse_error_gets_its_own_record() {
     let d = seed_dir("parsemany");
     std::fs::write(
         d.join("a.hl"),
-        "fn a() -> Int {\n    let where = 1;\n    return 2;\n}\n",
+        "fn a() -> Int {\n    let macro = 1;\n    return 2;\n}\n",
     )
     .unwrap();
     std::fs::write(
         d.join("b.hl"),
-        "main locus App {\n    run {\n        let tier = 2;\n    }\n}\n",
+        "main locus App {\n    run {\n        let impl = 2;\n    }\n}\n",
     )
     .unwrap();
 
@@ -531,7 +531,7 @@ fn parse_error_text_rendering_is_unchanged() {
         stderr
     );
     assert!(
-        stderr.contains("let where = 1;") && stderr.contains("^^^^^"),
+        stderr.contains("let macro = 1;") && stderr.contains("^^^^^"),
         "with its snippet and caret: {}",
         stderr
     );

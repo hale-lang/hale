@@ -55,7 +55,7 @@ locus Tracker {
     closure within_band {
         sum(self.delta) ~~ 0 within 100;
         epoch tick;
-        persists_through (quarantine);
+        persists_through(quarantine);
     }
 
     bus {
@@ -72,7 +72,7 @@ locus Coordinator {
     on_failure(t: Tracker, err: ClosureViolation) {
         println("Coordinator: drift detected (diff=", err.diff,
             ") — quarantining Tracker");
-        quarantine (t);
+        quarantine(t);
     }
 
     bus {

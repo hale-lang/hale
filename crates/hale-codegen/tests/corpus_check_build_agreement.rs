@@ -410,11 +410,23 @@ fn every_check_clean_corpus_program_also_builds() {
 
 /// GH #829 — the coverage the sweep gained, pinned cheaply.
 ///
-/// Two locus-only programs, neither with an entry point, both
-/// check-clean. One lowers; the other is refused by codegen. Before
-/// #829 the sweep skipped BOTH on "no entry point", so the refused
-/// one — a check-accepts/build-refuses divergence, the exact thing
-/// this file is the gate for — was invisible to it.
+/// Locus-only programs, none with an entry point, all check-clean.
+/// Before #829 the sweep skipped them on "no entry point", so a
+/// check-accepts/build-refuses divergence in one — the exact thing
+/// this file is the gate for — was invisible to it. Each must now be
+/// BUILT by the sweep.
+///
+/// This test also pinned the refused half with a program the check
+/// accepted and codegen refused (`std::process::run(…) or discard;`,
+/// then `accept(c: Interface)`). Each such program is a divergence the
+/// work is closing — the first builds since a statement `or discard`
+/// drops a value (friction sweep 2026-10-12), the second is being moved
+/// to the check — so a pinned example only lives until its fix lands.
+/// The sweep's own ratchet (`check_build_divergences.txt`) holds the
+/// divergences that remain; this test holds that an entry-point-less
+/// program reaches the build at all. The second program is the
+/// divergence the friction sweep closed in codegen: a method whose
+/// `match` returns in every arm was refused as falling through.
 ///
 /// The verdicts come from [`sweep_verdict`], which is the sweep's
 /// own decision procedure, so restoring the skip fails here in
@@ -432,14 +444,16 @@ fn an_entry_point_less_program_is_built() {
                   params { n: Int = 0; }\n\
                   fn bump() { self.n = self.n + 1; }\n\
                   }\n";
-    // `or discard` needs a Unit success type; `std::process::run`
-    // yields a value. The checker does not say so (that is GH #791's
-    // territory) and codegen does, with no span — a divergence.
-    let refused = "locus Runner {\n\
-                   fn go() { std::process::run(\"true\") or discard; }\n\
-                   }\n";
+    let match_returns = "locus Namer {\n\
+                         fn name(n: Int) -> String {\n\
+                         match n {\n\
+                         0 -> { return \"zero\"; },\n\
+                         _ -> { return \"many\"; },\n\
+                         }\n\
+                         }\n\
+                         }\n";
 
-    for src in [lowers, refused] {
+    for (src, tag) in [(lowers, "hale_cb_ep_lowers"), (match_returns, "hale_cb_ep_match")] {
         let program = hale_syntax::parse_source(src).expect("parses");
         assert!(
             !has_entry_point(&program),
@@ -460,27 +474,13 @@ fn an_entry_point_less_program_is_built() {
             errors,
             src
         );
-    }
-
-    assert_eq!(
-        sweep_verdict(lowers, "hale_cb_ep_lowers"),
-        Verdict::Built,
-        "an entry-point-less program that lowers must be BUILT by the \
-         sweep, not skipped"
-    );
-
-    match sweep_verdict(refused, "hale_cb_ep_refused") {
-        Verdict::Refused(e) => assert!(
-            e.contains("or discard"),
-            "expected the `or discard` refusal, got: {}",
-            e
-        ),
-        other => panic!(
-            "an entry-point-less program the checker accepts and codegen \
-             refuses is a check/build DIVERGENCE the sweep must see; got \
-             {:?}",
-            other
-        ),
+        assert_eq!(
+            sweep_verdict(src, tag),
+            Verdict::Built,
+            "an entry-point-less program that lowers must be BUILT by the \
+             sweep, not skipped:\n{}",
+            src
+        );
     }
 }
 
@@ -2149,4 +2149,72 @@ fn a_raw_frame_topic_off_a_layout_ring_is_refused_by_the_check_not_the_build() {
         &program("bindings { Recs: shm_ring(\"/hale.cb.recs.layout\", on_overflow: drop, layout: ForeignRing); }"),
         "hale_cb_raw_frame_layout_ring",
     );
+}
+
+/// The 2026-10-12 friction sweep's shapes, each held to the sweep's own
+/// verdict: what the check now accepts builds, and what it refuses is
+/// refused by the check, never first by the build. In particular an
+/// interface-typed parameter's field read passed the check (the local
+/// typed `Unknown`) and was refused by codegen ("field access `.v` on
+/// non-record type Interface"), the divergence this file exists for.
+///
+/// Plain string literals, for the reason given above.
+#[test]
+fn the_friction_sweep_shapes_agree() {
+    let builds = [
+        // F.43: the framework vocabulary names fields, params, locals, fns.
+        ("type Job { run: Int; epoch: Int; restart: Bool = false; }\n\
+          fn run(capacity: Int) -> Int { let where = capacity + 1; return where; }\n\
+          locus W { params { tier: Int = 1; } fn restart() -> Int { return self.tier; } }\n\
+          fn main() { let j = Job { run: 1, epoch: 2 }; let w = W { }; println(run(j.run + j.epoch) + w.restart()); }\n",
+         "hale_cb_fs_words"),
+        // `or discard` drops a value-bearing fallible as a statement.
+        ("type Oops { why: String = \"\"; }\n\
+          fn parse(s: String) -> Int fallible(Oops) { if s == \"bad\" { fail Oops { why: s }; } return 7; }\n\
+          fn main() { parse(\"bad\") or discard; parse(\"ok\") or discard; }\n",
+         "hale_cb_fs_discard"),
+        // A literal const takes the literal's type; a trailing comma.
+        ("const LIMIT = 100;\nfn add(a: Int, b: Int) -> Int { return a + b; }\n\
+          fn main() { println(add(LIMIT, 2,)); }\n",
+         "hale_cb_fs_const"),
+        // `@unbounded` before a mode.
+        ("@form(vec)\nlocus V { capacity { heap items of String; } }\n\
+          locus L { params { v: V = V { }; n: Int = 3; }\n\
+          @unbounded\n mode bulk() { let mut i = 0; while i < self.n { self.v.push(\"x\"); i = i + 1; } }\n\
+          run() { self.bulk(); } }\n\
+          fn main() { let l = L { }; }\n",
+         "hale_cb_fs_mode"),
+        // An interface parameter's methods are callable.
+        ("interface T { fn x() -> Int; }\n\
+          locus A { params { v: Int = 1; } fn x() -> Int { return self.v; } }\n\
+          fn f(c: T) -> Int { let d = c; return d.x() + c.x(); }\n\
+          fn main() { let a = A { }; println(f(a)); }\n",
+         "hale_cb_fs_iface_ok"),
+    ];
+    for (src, tag) in builds {
+        assert_eq!(sweep_verdict(src, tag), Verdict::Built, "{}", src);
+    }
+    let refused_by_check = [
+        "type Oops { why: String = \"\"; }\n\
+         fn parse(s: String) -> Int fallible(Oops) { return 7; }\n\
+         fn main() { let x = parse(\"1\") or discard; println(x); }\n",
+        "interface T { fn x() -> Int; }\n\
+         locus A { params { v: Int = 1; } fn x() -> Int { return self.v; } }\n\
+         fn f(c: T) -> Int { return c.v; }\n\
+         fn main() { let a = A { }; println(f(a)); }\n",
+        "interface T { fn x() -> Int; }\n\
+         locus A { params { v: Int = 1; } fn x() -> Int { return self.v; } }\n\
+         locus H { fn m(c: T) -> Int { return c.y(); } }\n\
+         fn main() { let a = A { }; let h = H { }; println(h.m(a)); }\n",
+        "locus F { params { ps: [Decimal; 2] = [1.5d, 2.0d]; } run { println(self.ps.sum(0.0d)); } }\n\
+         fn main() { let f = F { }; }\n",
+    ];
+    for src in refused_by_check {
+        assert_eq!(
+            sweep_verdict(src, "hale_cb_fs_refused"),
+            Verdict::Skipped("the checker rejects it"),
+            "the check refuses it, so the build is never reached:\n{}",
+            src
+        );
+    }
 }

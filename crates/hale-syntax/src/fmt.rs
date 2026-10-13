@@ -474,28 +474,15 @@ impl<'a> SpaceCx<'a> {
         }
 
         // `(` / `[` openers: tight after a callee/indexee (ident,
-        // closer, self) and after the keyword-named declarations
-        // that take parameter lists (`run()`, `birth()`, mode
-        // methods); spaced after other keywords and operators
-        // (`if (`, `return (`).
+        // closer, self) — the contextual keywords among them, so the
+        // hooks (`run()`, `release(c: T)`, `on_failure(c: C)`) and the
+        // recovery statements (`restart(c) for 3;`) read like calls —
+        // and after `perspective(P)`; spaced after the hard keywords
+        // and operators (`if (`, `return (`).
         if matches!(n, LParen | LBracket) {
             if matches!(
                 p,
-                Ident(_)
-                    | KwSelf
-                    | RParen
-                    | RBracket
-                    | Gt
-                    | Run
-                    | Birth
-                    | Accept
-                    | Drain
-                    | Dissolve
-                    | OnFailure
-                    | Bulk
-                    | Harmonic
-                    | Resolution
-                    | Perspective
+                Ident(_) | KwSelf | RParen | RBracket | Gt | Perspective
             ) {
                 return false;
             }

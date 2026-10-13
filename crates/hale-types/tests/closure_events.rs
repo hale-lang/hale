@@ -424,7 +424,7 @@ fn example_41s_quarantine_is_reached() {
     // the event is reached.
     let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../hale-codegen/tests/fixtures/examples/41-closure-accumulator/main.hl");
     let src = std::fs::read_to_string(path).expect("example 41");
-    assert!(src.contains("persists_through (quarantine);"));
+    assert!(src.contains("persists_through(quarantine);"));
     for src in [src.clone(), src.replace("locus Coordinator", "main locus Coordinator")] {
         let all = diags(&src);
         assert!(of(&all, "within_band").is_empty(), "{all:?}");

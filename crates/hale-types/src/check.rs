@@ -5262,9 +5262,11 @@ fn check_bus_graph(rows: &BusLawRows<'_, '_>, out: &mut Vec<Violation>) {
         })
         .flatten()
         .collect();
+    // An external ingress (`std::bus::__local_dispatch`, an adapter's
+    // inbound side) is a publisher too: the cells arrive from outside.
     let has_pub = |row: Option<&crate::bus_graph::WireRow>| {
         row.is_some_and(|r| {
-            r.published.is_some() || r.published_by_pattern || r.bound || r.cross_seed
+            r.published.is_some() || r.published_by_pattern || r.bound || r.cross_seed || r.ingress
         })
     };
     let has_sub = |row: Option<&crate::bus_graph::WireRow>| {
@@ -10705,7 +10707,7 @@ impl<'a> Checker<'a> {
         }
         self.locals.push();
         for p in &decl.params {
-            let ty = self.resolve_te(&p.ty);
+            let ty = self.resolve_param_te(&p.ty);
             self.locals.insert(&p.name.name, LocalSym { ty, is_mut: false });
         }
         self.check_fn_body(&decl.body);
@@ -12430,6 +12432,35 @@ impl<'a> Checker<'a> {
         iface_name: &str,
     ) -> Result<(), String> {
         conformance(self.top, locus_name, iface_name)
+    }
+
+    /// A fn or method PARAMETER's type, as the body's local sees it: as
+    /// [`Self::resolve_te`], except that a parameter typed by an
+    /// interface is that interface (`Ty::Named`), not `Unknown`. The
+    /// scope's name table leaves interfaces out so an interface-typed
+    /// SLOT accepts any satisfying locus (`Ty::assignable_from`), which
+    /// also left the parameter's own uses unchecked: `fn f(c: T) {
+    /// c.v }` passed the check and the build refused the field read
+    /// (friction sweep 2026-10-12). Typed as the interface, the local
+    /// offers exactly the interface's methods (`field_ty`'s interface
+    /// arm), and a field read or an undeclared method is refused here.
+    fn resolve_param_te(&self, te: &TypeExpr) -> Ty {
+        let ty = self.resolve_te(te);
+        if !matches!(ty, Ty::Unknown) {
+            return ty;
+        }
+        if let TypeExpr::Named { path, generic_args, .. } = te {
+            if path.segments.len() == 1 && generic_args.is_empty() {
+                let n = &path.segments[0].name;
+                if !self.generic_params.contains(n)
+                    && !self.generic_bindings.contains_key(n)
+                    && matches!(self.top.lookup(n), Some(TopSymbol::Interface(_)))
+                {
+                    return Ty::Named(n.clone());
+                }
+            }
+        }
+        ty
     }
 
     /// A type expression the walk resolves: through the scope's names,
@@ -16656,6 +16687,11 @@ impl<'a> Checker<'a> {
                                             pi.methods.iter().map(|m| m.name.clone()),
                                         );
                                     }
+                                    Some(TopSymbol::Interface(ii)) => {
+                                        candidates.extend(
+                                            ii.methods.iter().map(|m| m.name.clone()),
+                                        );
+                                    }
                                     Some(TopSymbol::Type(ti)) => {
                                         if let TypeKind::Struct(fields) = &ti.kind {
                                             candidates.extend(
@@ -16690,6 +16726,67 @@ impl<'a> Checker<'a> {
                                 {
                                     hint = format!(" — {}", advice);
                                 }
+                            }
+                            // Friction sweep 2026-10-12: a value of an
+                            // interface offers its methods and nothing
+                            // else — no fields, whatever the locus
+                            // behind it holds.
+                            if let Ty::Named(tn) = &rt {
+                                if let Some(TopSymbol::Interface(ii)) = self.top.symbols.get(tn) {
+                                    let methods: Vec<String> =
+                                        ii.methods.iter().map(|m| format!("`{}`", m.name)).collect();
+                                    // The method list replaces the
+                                    // nearest-name guess: it is the
+                                    // whole of what may be written.
+                                    hint = format!(
+                                        " — `{tn}` is an interface: a value of it \
+                                         offers only its methods ({}), never the \
+                                         fields of the locus behind it",
+                                        if methods.is_empty() { "none".to_string() } else { methods.join(", ") }
+                                    );
+                                }
+                            }
+                            // Friction sweep 2026-10-12: a `@form`
+                            // locus's capacity slot read from outside
+                            // (`for c in v.cells`, the slot declared
+                            // `heap cells of Int`). The iteration
+                            // surface is the form's fixed pseudo-field,
+                            // whatever the slot is called (spec/forms.md
+                            // § Iteration surface).
+                            if hint.is_empty() {
+                                if let Ty::Named(tn) = &rt {
+                                    if let Some(TopSymbol::Locus(li)) = self.top.symbols.get(tn) {
+                                        if li.capacity_slot_names.iter().any(|n| n == &name.name) {
+                                            hint = format!(
+                                                " — `{f}` is `{tn}`'s capacity slot, and \
+                                                 a slot is not a field: a `@form(vec)` \
+                                                 is iterated as `.items` (`for x in \
+                                                 ….items {{ … }}`, `….items.filter(…)`), \
+                                                 a `@form(hashmap)` as `.entries`, \
+                                                 whatever the slot is named",
+                                                f = name.name
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+                            // Friction sweep 2026-10-12: a chain
+                            // terminal with no stage before it
+                            // (`xs.sum(0.0d)`) is not a chain — chains
+                            // desugar before typecheck, and a bare
+                            // `.sum(…)` may be a locus's own method — so
+                            // it reads as a member of the collection.
+                            // Say what to write.
+                            if hint.is_empty()
+                                && hale_syntax::chains::is_terminal(&name.name)
+                                && matches!(rt, Ty::Array(..) | Ty::Bounded(..))
+                            {
+                                hint = format!(
+                                    " — an element chain needs a stage before \
+                                     its terminal: write `….map(it).{}(…)` \
+                                     (`map(it)` passes each element through)",
+                                    name.name
+                                );
                             }
                             self.diags.push(Diag::ty(
                                 *span,
@@ -16948,19 +17045,27 @@ impl<'a> Checker<'a> {
                         success
                     }
                     OrDisposition::Discard(span) => {
-                        // `or discard` — swallow error, produce
-                        // Unit. Requires the underlying call's
-                        // success type to be Unit (since discard
-                        // doesn't carry a value).
-                        if !matches!(success, Ty::Unit | Ty::Unknown) {
+                        // `or discard` — swallow the error, produce
+                        // Unit. A value-bearing fallible may be
+                        // discarded where its value is thrown away
+                        // anyway: a statement (`cache.put(k, v) or
+                        // discard;`), the friction sweep's ruling
+                        // (2026-10-12: no `or ignore` keyword). Where
+                        // the value is USED the discard branch has
+                        // none to give, so the expression needs a
+                        // default instead.
+                        if !value_discarded && !matches!(success, Ty::Unit | Ty::Unknown) {
                             self.diags.push(Diag::ty(
                                 *span,
                                 format!(
-                                    "`or discard` requires the underlying \
-                                     call's success type to be Unit (so the \
-                                     discard branch produces no value to \
-                                     bind); got `{}`. Use `or <default>` or \
-                                     `or raise` for value-bearing fallibles.",
+                                    "`or discard` has no value to give where \
+                                     the result is used: the call succeeds \
+                                     with a `{}`, and the discard branch \
+                                     produces none. Substitute a default \
+                                     (`or <default>`), propagate with `or \
+                                     raise`, or write the call as a statement \
+                                     (`call() or discard;`) to throw the \
+                                     value away.",
                                     success.display()
                                 ),
                             ));
