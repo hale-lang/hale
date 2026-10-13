@@ -296,7 +296,10 @@ method by its name, on any locus declaring one; a method called on the
 field itself, as a form's `set`), and anything that may run other code
 of the locus: a publish, `yield` and a stdlib call that parks on an
 `async_io` pool write what the program's bus handlers write, and a call
-through a fn value or a recovery statement may write anything. A field
+the compiler cannot positively identify — through a fn value or a field
+whose type is a fn (however spelled) or cannot be classified, of a name
+no declaration answers to — and a recovery statement may write
+anything. A field
 of a record the frame holds itself is never replaced under a binding of
 it (a write through a local root replaces the field's pointer); a field
 read through a handle is — a value whose type is a locus, an interface

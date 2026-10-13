@@ -51,8 +51,15 @@
 //! - a publish, an explicit `yield` and a stdlib leaf that publishes
 //!   or parks on an `async_io` pool (where another delivery to the same
 //!   locus runs meanwhile) write what any bus handler writes;
-//! - a call through a fn value (a local, a parameter, a fn-typed
-//!   field) and a recovery statement may write anything.
+//! - a call the pass cannot positively identify — through a fn value
+//!   (a local, a parameter, a field whose type is a fn or cannot be
+//!   classified), of a name no body declares, a recovery statement —
+//!   may write anything. Unknown never means "writes nothing".
+//!
+//! Every question about a type (a handle? a fn value? a form?) is
+//! answered by `Bodies::classify` over the resolved type — aliases
+//! followed through imports and minted names — and a type it cannot
+//! place answers the way that costs a copy.
 //!
 //! In a loop, a write anywhere in the body reaches a use anywhere in it
 //! when the variable was declared before the loop, wherever in the
@@ -192,7 +199,11 @@ struct Bodies<'a> {
     /// Method name → the summaries' index of each body declaring it.
     methods: BTreeMap<String, Vec<usize>>,
     fns: BTreeMap<String, Vec<usize>>,
-    /// Field names declared with a fn type: `x.cb(..)` calls a value.
+    /// Params fields by name, each declared type (`None`: inferred from
+    /// its default), classified once the declarations are in.
+    field_types: Vec<(String, Option<&'a TypeExpr>)>,
+    /// Field names a call `x.name(..)` may call as a value: a fn type, or
+    /// a type this pass cannot classify.
     fn_fields: BTreeSet<String>,
     /// Bus handler names: a publish, a `yield` or a park may run any
     /// of them before it returns.
@@ -201,7 +212,10 @@ struct Bodies<'a> {
     /// last segment): a form's read (`self.v.get(i)`) may hand back a
     /// view of its cell, which the form's own writes retire.
     form_loci: BTreeSet<String>,
-    field_types: Vec<(String, &'a TypeExpr)>,
+    /// Records and enums, by every name they answer to: values the frame
+    /// holds, not handles.
+    records: BTreeSet<String>,
+    enums: BTreeSet<String>,
     /// Type aliases, by their normalized names: classified by what they
     /// name, never by their spelling.
     aliases: BTreeMap<String, &'a TypeExpr>,
@@ -212,12 +226,16 @@ struct Bodies<'a> {
     /// holds its arguments.
     variants: BTreeSet<String>,
     form_fields: BTreeSet<String>,
+    /// Field names every declaration of which holds an `@form` locus.
+    form_only_fields: BTreeSet<String>,
     /// Loci, interfaces and perspectives: a value of one of these is a
     /// handle, whose field reads view the locus's storage.
     loci: BTreeSet<String>,
-    /// Fns and methods whose declared return type is a handle, with
-    /// their declared return types until `loci` is complete.
-    returns: Vec<(String, &'a TypeExpr)>,
+    /// Every fn and method name with each body's declared return type
+    /// (`None`: returns nothing), classified once the declarations are
+    /// in.
+    returns: Vec<(String, Option<&'a TypeExpr>)>,
+    /// Fn and method names some body of which may return a handle.
     handle_fns: BTreeSet<String>,
     /// Every field name a write names, numbered for `Writes`' bits.
     field_ids: std::cell::RefCell<BTreeMap<String, usize>>,
@@ -277,48 +295,174 @@ impl<'a> Bodies<'a> {
         q.segments.len() > 1 && q.segments.last().is_some_and(|s| self.variants.contains(&s.name))
     }
 
-    /// `ty` with its aliases followed (`type Child = Kid;`) and a mode
-    /// projection taken off: what it is, never how it is spelled.
-    fn resolved<'t>(&'t self, ty: &'t TypeExpr) -> &'t TypeExpr {
+    /// The one place a type is classified: `ty` with its aliases
+    /// followed (`type Child = Kid;`, through any import or minted
+    /// name), a mode projection taken off. Every question the pass asks
+    /// of a type — a handle? a fn value? a form? — reads this.
+    /// A type it cannot place (a generic parameter, a name it does not
+    /// know) is `Unknown`, which every question answers the way that
+    /// costs a copy rather than a use after a retire.
+    fn classify(&self, ty: &TypeExpr) -> Class {
         let mut cur = ty;
         for _ in 0..16 {
             match cur {
-                TypeExpr::Named { path, .. } => {
-                    match self.path_name(&path.segments).and_then(|n| self.aliases.get(&n)) {
-                        Some(next) => cur = next,
-                        None => return cur,
-                    }
-                }
                 TypeExpr::Projection { inner, .. } => cur = inner,
-                _ => return cur,
+                TypeExpr::Named { path, .. } => {
+                    let Some(name) = self.path_name(&path.segments) else { return Class::Unknown };
+                    if let Some(next) = self.aliases.get(&name) {
+                        cur = next;
+                        continue;
+                    }
+                    return self.classify_name(&name);
+                }
+                TypeExpr::Primitive(..) => return Class::Value,
+                TypeExpr::Tuple(..) | TypeExpr::Array { .. } | TypeExpr::Bounded { .. } => return Class::Value,
+                TypeExpr::Function { .. } => return Class::FnValue,
+                TypeExpr::Perspective { .. } => return Class::Handle,
             }
         }
-        cur
+        Class::Unknown
     }
 
-    /// The declared type `ty` names, aliases followed, by its normalized
-    /// name; `None` for one that names no declaration.
-    fn type_name(&self, ty: &TypeExpr) -> Option<String> {
-        match self.resolved(ty) {
-            TypeExpr::Named { path, .. } => self.path_name(&path.segments),
-            _ => None,
+    /// A declared name's class (aliases already followed).
+    fn classify_name(&self, name: &str) -> Class {
+        if self.form_loci.contains(name) {
+            Class::Form
+        } else if self.loci.contains(name) {
+            Class::Handle
+        } else if self.records.contains(name) || self.enums.contains(name) {
+            Class::Value
+        } else {
+            Class::Unknown
         }
     }
 
-    /// Does a value of type `ty` hold a handle (a locus, an interface, a
-    /// perspective), its aliases followed?
-    fn handle_ty(&self, ty: &TypeExpr) -> bool {
-        matches!(self.resolved(ty), TypeExpr::Perspective { .. })
-            || self.type_name(ty).is_some_and(|n| self.loci.contains(&n))
+    /// The class a literal or constructor path names, its aliases
+    /// followed.
+    fn classify_path(&self, path: &QualifiedName) -> Class {
+        let Some(name) = self.path_name(&path.segments) else { return Class::Unknown };
+        match self.aliases.get(&name) {
+            Some(t) => self.classify(t),
+            None => self.classify_name(&name),
+        }
+    }
+}
+
+/// The method names of the `@form` loci, synthesized by lowering (no
+/// body): what they write is the field they are called on.
+const FORM_OPS: &[&str] = &[
+    "get", "set", "pop", "push", "remove", "insert", "contains", "has", "len", "is_empty", "is_full", "key_at",
+    "entry_at", "sort", "bump", "put", "clear",
+];
+
+/// What a call's target is, as far as the pass can tell.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Target {
+    /// A fn or method of the program, with a body and so a summary.
+    Fn(String),
+    Method(String),
+    /// A builtin or stdlib leaf: writes nothing of the program's (or
+    /// what the bus handlers write, when it publishes or parks).
+    Std,
+    /// An enum variant: builds a value holding its arguments.
+    Ctor,
+    /// A form's synthesized method.
+    FormOp,
+    /// Nothing the pass knows: may write anything, may return a handle.
+    Unknown,
+}
+
+impl Bodies<'_> {
+    /// The target of a call through `callee` (not a local fn value);
+    /// `on_form`: its receiver is known to be an `@form` locus, whose
+    /// synthesized methods take a name before any method of another
+    /// locus that shares it.
+    fn target(&self, callee: &Expr, on_form: bool) -> Target {
+        use hale_types::builtin_sigs::bare_builtin_sig;
+        use hale_types::stdlib_surface::{builtin_effects, row};
+        match callee {
+            Expr::Ident(id) => {
+                let n = id.name.as_str();
+                if self.fns.contains_key(n) {
+                    Target::Fn(n.to_string())
+                } else if self.variants.contains(n) {
+                    Target::Ctor
+                } else if bare_builtin_sig(n).is_some() || builtin_effects(n).is_some() || row(&[n]).is_some() {
+                    Target::Std
+                } else {
+                    Target::Unknown
+                }
+            }
+            Expr::Path(q) => {
+                let segs: Vec<&str> = q.segments.iter().map(|s| s.name.as_str()).collect();
+                if self.is_ctor(q) {
+                    return Target::Ctor;
+                }
+                if segs.first() == Some(&"std") || row(&segs).is_some() {
+                    return Target::Std;
+                }
+                match self.path_name(&q.segments) {
+                    Some(n) if self.fns.contains_key(&n) => Target::Fn(n),
+                    // `Type::method(..)`
+                    _ if self.methods.contains_key(*segs.last().unwrap_or(&"")) => {
+                        Target::Method(segs.last().unwrap_or(&"").to_string())
+                    }
+                    _ => Target::Unknown,
+                }
+            }
+            Expr::Field { name, .. } | Expr::Path2 { name, .. } => {
+                if on_form && FORM_OPS.contains(&name.name.as_str()) {
+                    Target::FormOp
+                } else if self.fn_fields.contains(&name.name) {
+                    // A fn-valued (or unclassified) field of that name: a
+                    // value call, whatever methods share the name.
+                    Target::Unknown
+                } else if self.methods.contains_key(&name.name) {
+                    Target::Method(name.name.clone())
+                } else if FORM_OPS.contains(&name.name.as_str()) {
+                    Target::FormOp
+                } else {
+                    Target::Unknown
+                }
+            }
+            _ => Target::Unknown,
+        }
     }
 
-    /// Does a literal or constructor path name a locus (through an alias)?
-    fn handle_path(&self, path: &QualifiedName) -> bool {
-        let Some(name) = self.path_name(&path.segments) else { return false };
-        if self.loci.contains(&name) {
-            return true;
+    /// May a call of `t` return a handle?
+    fn returns_handle(&self, t: &Target) -> bool {
+        match t {
+            Target::Fn(n) | Target::Method(n) => self.handle_fns.contains(n),
+            Target::Std | Target::Ctor | Target::FormOp => false,
+            Target::Unknown => true,
         }
-        self.aliases.get(&name).is_some_and(|t| self.handle_ty(t))
+    }
+}
+
+/// What a type is, as the pass needs to know it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Class {
+    /// A scalar, String or Bytes, record, enum, tuple or array: a value
+    /// the frame holds (its fields view nothing another write replaces).
+    Value,
+    /// A locus, an interface, a perspective: its field reads view the
+    /// locus's storage.
+    Handle,
+    /// An `@form` locus: a handle whose reads may hand back a cell.
+    Form,
+    /// A fn type: calling one may run anything.
+    FnValue,
+    /// A type the pass cannot place: treated as a handle, and called as
+    /// a value it may run anything.
+    Unknown,
+}
+
+impl Class {
+    fn may_be_handle(self) -> bool {
+        matches!(self, Class::Handle | Class::Form | Class::Unknown)
+    }
+    fn may_be_fn(self) -> bool {
+        matches!(self, Class::FnValue | Class::Unknown)
     }
 }
 
@@ -330,9 +474,7 @@ fn collect<'a>(items: &'a [TopDecl], p: &mut Bodies<'a>) {
                 // called by its own (`lib::name`, `name`).
                 for n in decl_names(&f.name.name) {
                     p.fns.entry(n.clone()).or_default().push(p.bodies.len());
-                    if let Some(r) = &f.ret {
-                        p.returns.push((n, r));
-                    }
+                    p.returns.push((n, f.ret.as_ref()));
                 }
                 p.bodies.push((&f.params, &f.body));
             }
@@ -349,24 +491,14 @@ fn collect<'a>(items: &'a [TopDecl], p: &mut Bodies<'a>) {
                         LocusMember::Fn(f) => {
                             p.methods.entry(f.name.name.clone()).or_default().push(p.bodies.len());
                             p.bodies.push((&f.params, &f.body));
-                            if let Some(r) = &f.ret {
-                                p.returns.push((f.name.name.clone(), r));
-                            }
+                            p.returns.push((f.name.name.clone(), f.ret.as_ref()));
                         }
                         LocusMember::Lifecycle(d) => p.bodies.push((&d.params, &d.body)),
                         LocusMember::Mode(d) => p.bodies.push((&d.params, &d.body)),
                         LocusMember::Failure(d) => p.bodies.push((&d.params, &d.body)),
                         LocusMember::Params(pb) => {
                             for d in &pb.params {
-                                match &d.ty {
-                                    Some(TypeExpr::Function { .. }) => {
-                                        p.fn_fields.insert(d.name.name.clone());
-                                    }
-                                    Some(t @ (TypeExpr::Named { .. } | TypeExpr::Projection { .. })) => {
-                                        p.field_types.push((d.name.name.clone(), t));
-                                    }
-                                    _ => {}
-                                }
+                                p.field_types.push((d.name.name.clone(), d.ty.as_ref()));
                             }
                         }
                         LocusMember::Bus(b) => {
@@ -386,13 +518,19 @@ fn collect<'a>(items: &'a [TopDecl], p: &mut Bodies<'a>) {
                     if let PerspectiveMember::Fn(f) = m {
                         p.methods.entry(f.name.name.clone()).or_default().push(p.bodies.len());
                         p.bodies.push((&f.params, &f.body));
+                        p.returns.push((f.name.name.clone(), f.ret.as_ref()));
                     }
                 }
             }
             TopDecl::Module(m) => collect(&m.items, p),
             TopDecl::Type(td) => {
-                if let TypeDeclBody::Enum(vs) = &td.body {
-                    p.variants.extend(vs.iter().map(|v| v.name.name.clone()));
+                match &td.body {
+                    TypeDeclBody::Enum(vs) => {
+                        p.variants.extend(vs.iter().map(|v| v.name.name.clone()));
+                        p.enums.extend(decl_names(&td.name.name));
+                    }
+                    TypeDeclBody::Struct(_) | TypeDeclBody::Scalar(_) => p.records.extend(decl_names(&td.name.name)),
+                    TypeDeclBody::Alias(_) => {}
                 }
                 if let TypeDeclBody::Alias(t) = &td.body {
                     for n in decl_names(&td.name.name) {
@@ -420,27 +558,41 @@ fn owned_view_sites_with(program: &Program, renames: &BTreeMap<Vec<String>, Stri
         fn_fields: BTreeSet::new(),
         handlers: BTreeSet::new(),
         form_loci: BTreeSet::new(),
+        records: BTreeSet::new(),
+        enums: BTreeSet::new(),
         field_types: Vec::new(),
         aliases: BTreeMap::new(),
         renames: renames.clone(),
         variants: BTreeSet::new(),
         form_fields: BTreeSet::new(),
+        form_only_fields: BTreeSet::new(),
         loci: BTreeSet::new(),
         returns: Vec::new(),
         handle_fns: BTreeSet::new(),
         field_ids: std::cell::RefCell::new(BTreeMap::new()),
     };
     collect(&program.items, &mut p);
-    let handle_fns: BTreeSet<String> =
-        p.returns.iter().filter(|(_, r)| p.handle_ty(r)).map(|(n, _)| n.clone()).collect();
-    p.handle_fns = handle_fns;
-    let forms: BTreeSet<String> = p
+    // Every classification below reads `classify`: a fn or method name
+    // some body of which may return a handle; a field a call may run as
+    // a value; a field holding a form. A field with no declared type
+    // (inferred from its default) is unclassified.
+    let handle_fns: BTreeSet<String> = p
+        .returns
+        .iter()
+        .filter(|(_, r)| r.is_some_and(|t| p.classify(t).may_be_handle()))
+        .map(|(n, _)| n.clone())
+        .collect();
+    let classes: Vec<(String, Class)> = p
         .field_types
         .iter()
-        .filter(|(_, ty)| p.type_name(ty).is_some_and(|n| p.form_loci.contains(&n)))
-        .map(|(f, _)| f.clone())
+        .map(|(f, t)| (f.clone(), t.map_or(Class::Unknown, |t| p.classify(t))))
         .collect();
-    p.form_fields = forms;
+    p.handle_fns = handle_fns;
+    p.fn_fields = classes.iter().filter(|(_, c)| c.may_be_fn()).map(|(f, _)| f.clone()).collect();
+    p.form_fields = classes.iter().filter(|(_, c)| matches!(c, Class::Form | Class::Unknown)).map(|(f, _)| f.clone()).collect();
+    let not_form: BTreeSet<&String> = classes.iter().filter(|(_, c)| *c != Class::Form).map(|(f, _)| f).collect();
+    p.form_only_fields =
+        classes.iter().filter(|(f, c)| *c == Class::Form && !not_form.contains(f)).map(|(f, _)| f.clone()).collect();
 
     // Each body's own writes and the calls it makes, then the fixpoint.
     let mut direct: Vec<(Writes, BTreeSet<Callee>)> = Vec::with_capacity(p.bodies.len());
@@ -546,6 +698,10 @@ struct Walk<'p, 'a> {
     handles: Vec<bool>,
     /// The parameters that are handles.
     handle_params: BTreeSet<String>,
+    /// Per variable, whether it holds an `@form` locus (bound from a
+    /// form's literal or declared as one); and the form parameters.
+    forms: Vec<bool>,
+    form_params: BTreeSet<String>,
     /// Per variable, where it was declared: a loop that starts after
     /// it carries its value round the back edge, whichever instance of
     /// it holds the value.
@@ -574,10 +730,15 @@ impl<'p, 'a> Walk<'p, 'a> {
     fn new(p: &'p Bodies<'a>, summary: Option<&'p [Writes]>, params: &[Param]) -> Self {
         let mut top = BTreeMap::new();
         let mut handle_params = BTreeSet::new();
+        let mut form_params = BTreeSet::new();
         for prm in params {
             top.insert(prm.name.name.clone(), None);
-            if p.handle_ty(&prm.ty) {
+            let class = p.classify(&prm.ty);
+            if class.may_be_handle() {
                 handle_params.insert(prm.name.name.clone());
+            }
+            if class == Class::Form {
+                form_params.insert(prm.name.name.clone());
             }
         }
         Walk {
@@ -590,6 +751,8 @@ impl<'p, 'a> Walk<'p, 'a> {
             vars: Vec::new(),
             handles: Vec::new(),
             handle_params,
+            forms: Vec::new(),
+            form_params,
             declared: Vec::new(),
             insts: Vec::new(),
             uses: Vec::new(),
@@ -615,6 +778,7 @@ impl<'p, 'a> Walk<'p, 'a> {
         let v = self.vars.len();
         self.vars.push(Vec::new());
         self.handles.push(false);
+        self.forms.push(false);
         self.declared.push(self.pos);
         self.uses.push(Vec::new());
         self.scopes.last_mut().expect("a scope").insert(name.to_string(), Some(v));
@@ -665,6 +829,22 @@ impl<'p, 'a> Walk<'p, 'a> {
         Some(keys)
     }
 
+    /// Is the receiver of the method call `callee` known to be an
+    /// `@form` locus: a form-typed field, a form parameter, a local bound
+    /// from a form's literal or declared as one?
+    fn on_form(&self, callee: &Expr) -> bool {
+        let (Expr::Field { receiver, .. } | Expr::Path2 { receiver, .. }) = callee else { return false };
+        match receiver.as_ref() {
+            Expr::Field { name, .. } => self.p.form_only_fields.contains(&name.name),
+            Expr::Ident(id) => match self.lookup(&id.name) {
+                Some(Some(v)) => self.forms[v],
+                Some(None) => self.form_params.contains(&id.name),
+                None => false,
+            },
+            _ => false,
+        }
+    }
+
     /// May `e` be a handle? `self`, a handle parameter, a local that
     /// may hold one, a locus literal, a call of a fn or method declared
     /// to return one, and any field read (a field may hold a child).
@@ -676,13 +856,12 @@ impl<'p, 'a> Walk<'p, 'a> {
                 Some(None) => self.handle_params.contains(&id.name),
                 None => false,
             },
-            Expr::Struct { path, .. } => self.p.handle_path(path),
+            Expr::Struct { path, .. } => self.p.classify_path(path).may_be_handle(),
             Expr::Field { .. } | Expr::Index { .. } => true,
             Expr::Call { callee, .. } => match callee.as_ref() {
-                Expr::Ident(id) => self.p.handle_fns.contains(&id.name),
-                Expr::Path(q) => self.p.path_name(&q.segments).is_some_and(|n| self.p.handle_fns.contains(&n)),
-                Expr::Field { name, .. } | Expr::Path2 { name, .. } => self.p.handle_fns.contains(&name.name),
-                _ => true,
+                // A fn value held in a local or a parameter.
+                Expr::Ident(id) if self.lookup(&id.name).is_some() => true,
+                c => self.p.returns_handle(&self.p.target(c, self.on_form(c))),
             },
             Expr::If(_) | Expr::Match(_) | Expr::Block(_) | Expr::Or { .. } => true,
             _ => false,
@@ -778,9 +957,15 @@ impl<'p, 'a> Walk<'p, 'a> {
                 let parts = self.literal_parts(value);
                 // A binding declared as a handle is one, whatever the
                 // value's own spelling says.
-                let handle = self.is_handle(value) || ty.as_ref().is_some_and(|t| self.p.handle_ty(t));
+                let handle = self.is_handle(value) || ty.as_ref().is_some_and(|t| self.p.classify(t).may_be_handle());
+                let form = match (ty, value) {
+                    (Some(t), _) => self.p.classify(t) == Class::Form,
+                    (None, Expr::Struct { path, .. }) => self.p.classify_path(path) == Class::Form,
+                    _ => false,
+                };
                 let v = self.declare(&name.name);
                 self.handles[v] = handle;
+                self.forms[v] = form;
                 self.bind_parts(v, Site::Node(id.0), &name.name, keys, parts);
             }
             Stmt::LetTuple { names, value, id, .. } => {
@@ -1030,35 +1215,42 @@ impl<'p, 'a> Walk<'p, 'a> {
         let start = self.tick();
         let mut writes = Writes::default();
         let mut ctor = false;
+        let mut form_op = false;
         let mut receiver: Option<&Expr> = None;
+        // A target the pass cannot positively identify may write
+        // anything: missed precision costs a copy, never a use after a
+        // retire.
         match callee {
-            Expr::Ident(id) => match self.lookup(&id.name) {
+            Expr::Ident(id) if self.lookup(&id.name).is_some() => {
                 // A fn value held in a local or a parameter.
-                Some(_) => {
-                    self.use_name(&id.name);
-                    writes = Writes::top();
-                }
-                None => writes.add(&self.named_fn(&[id.name.as_str()], &id.name)),
-            },
-            Expr::Path(q) => {
-                let segs: Vec<&str> = q.segments.iter().map(|s| s.name.as_str()).collect();
-                let name = self.p.path_name(&q.segments).unwrap_or_default();
-                writes.add(&self.named_fn(&segs, &name));
-                // An enum constructor holds its arguments; a fn's or a
-                // stdlib leaf's result is copied out of its frame.
-                ctor = self.p.is_ctor(q);
+                self.use_name(&id.name);
+                writes = Writes::top();
             }
-            Expr::Field { receiver: r, name, .. } | Expr::Path2 { receiver: r, name, .. } => {
-                receiver = Some(r);
-                if self.p.fn_fields.contains(&name.name) {
-                    writes = Writes::top();
-                } else {
-                    writes.add(&self.callee(Callee::Method(name.name.clone())));
+            Expr::Ident(_) | Expr::Path(_) | Expr::Field { .. } | Expr::Path2 { .. } => {
+                if let Expr::Field { receiver: r, .. } | Expr::Path2 { receiver: r, .. } = callee {
+                    receiver = Some(r);
+                    // A method of a field's value (a form's `set`, a
+                    // child's) may change what the field holds.
+                    if let Expr::Field { name: f, .. } = r.as_ref() {
+                        writes.add(&Writes::field(self.p.field_id(&f.name)));
+                    }
                 }
-                // A method of a field's value (a form's `set`, a
-                // child's) may change what the field holds.
-                if let Expr::Field { name: f, .. } = r.as_ref() {
-                    writes.add(&Writes::field(self.p.field_id(&f.name)));
+                match self.p.target(callee, self.on_form(callee)) {
+                    Target::Fn(n) => writes.add(&self.callee(Callee::Fn(n))),
+                    Target::Method(n) => writes.add(&self.callee(Callee::Method(n))),
+                    Target::Std => {
+                        let segs: Vec<&str> = match callee {
+                            Expr::Ident(id) => vec![id.name.as_str()],
+                            Expr::Path(q) => q.segments.iter().map(|s| s.name.as_str()).collect(),
+                            _ => Vec::new(),
+                        };
+                        writes.add(&self.std_leaf(&segs));
+                    }
+                    // An enum constructor holds its arguments; a fn's or a
+                    // stdlib leaf's result is copied out of its frame.
+                    Target::Ctor => ctor = true,
+                    Target::FormOp => form_op = true,
+                    Target::Unknown => writes = Writes::top(),
                 }
             }
             other => {
@@ -1078,13 +1270,31 @@ impl<'p, 'a> Walk<'p, 'a> {
         // result is copied into the caller's arena.
         if let Some(Expr::Field { name: f, .. }) = receiver {
             if self.p.form_fields.contains(&f.name) {
-                result = recv_keys;
+                result = recv_keys.clone();
             }
+        }
+        if form_op {
+            // A form held in a local or a parameter: its cells are a place
+            // of their own, named after it, which its writes (`set`,
+            // `remove`, `pop`) retire and its reads may view.
+            if let Some(Expr::Ident(id)) = receiver {
+                let key = format!("@{}", id.name);
+                writes.add(&Writes::field(self.p.field_id(&key)));
+                let mut k = BTreeSet::new();
+                k.insert(key);
+                result = union(result, Some(k));
+            }
+            result = union(result, recv_keys);
         }
         for (a, keys) in args.iter().zip(keys) {
             // An argument the callee may replace before it reads its
             // parameter. A local passed on is its own binding's use,
-            // inside the call: that binding answers for it.
+            // inside the call: that binding answers for it. A form's
+            // synthesized method copies its arguments in before it
+            // replaces a cell.
+            if form_op {
+                continue;
+            }
             if let (Some(k), true, false) = (&keys, self.summary.is_some(), matches!(a, Expr::Ident(_))) {
                 if writes.touches(k, self.p) {
                     self.flag_operand(a, k);
@@ -1094,7 +1304,9 @@ impl<'p, 'a> Walk<'p, 'a> {
                 result = union(result, keys);
             }
         }
-        self.write(writes, Some(start));
+        // A form's synthesized method has consumed its arguments by the
+        // time it writes: the write spans no argument.
+        self.write(writes, if form_op { None } else { Some(start) });
         result
     }
 
@@ -1152,19 +1364,17 @@ impl<'p, 'a> Walk<'p, 'a> {
         w
     }
 
-    /// A call of a free fn or a stdlib leaf by its path.
-    /// `name`: the fn the path names (`Bodies::path_name`).
-    fn named_fn(&mut self, segs: &[&str], name: &str) -> Writes {
+    /// What a builtin or stdlib leaf writes: what the bus handlers
+    /// write when it publishes or parks on an `async_io` pool, else
+    /// nothing of the program's.
+    fn std_leaf(&mut self, segs: &[&str]) -> Writes {
         use hale_types::stdlib_surface::{effects_for, parks_on_async_io, EffectSet};
         if parks_on_async_io(segs)
             || effects_for(segs).is_some_and(|e| !e.is_unclassified() && e.contains(EffectSet::PUBLISH))
         {
             return self.deliveries();
         }
-        if segs.first() == Some(&"std") {
-            return Writes::default();
-        }
-        self.callee(Callee::Fn(name.to_string()))
+        Writes::default()
     }
 
     fn callee(&mut self, c: Callee) -> Writes {
@@ -1451,6 +1661,73 @@ mod tests {
         let got = owned_view_sites_with(&hale_syntax::parse_source(src).expect("parses"), &renames);
         let lets = got.iter().filter(|(site, _)| matches!(site, Site::Node(_))).count();
         assert_eq!(lets, 3, "{got:?}");
+    }
+
+    #[test]
+    fn a_callee_it_cannot_identify_writes_anything() {
+        // An unknown free fn, an unknown method, a fn-valued field through
+        // an alias and a field of a generic parameter's type: each may
+        // write the field the binding views.
+        let src = r#"
+            type F { s: String = ""; }
+            type Callback = fn(Int) -> Int;
+            locus Hook<T> { params { cb: T; } }
+            locus H {
+                params { f: F = F { }; cb: Callback = nothing; k: Hook<Int> = Hook { cb: 0 }; }
+                fn unknown_fn() -> String { let s = self.f.s; mystery(1); return s; }
+                fn unknown_method() -> String { let s = self.f.s; self.k.vanish(); return s; }
+                fn aliased_field() -> String { let s = self.f.s; self.cb(1); return s; }
+                fn generic_field() -> String { let s = self.f.s; self.k.cb(1); return s; }
+                fn known() -> String { let s = self.f.s; println("x"); return s; }
+            }
+        "#;
+        let got = owned_view_sites(&hale_syntax::parse_source(src).expect("parses"));
+        let lets = got.iter().filter(|(site, _)| matches!(site, Site::Node(_))).count();
+        assert_eq!(lets, 4, "{got:?}");
+    }
+
+    /// Every question the pass asks of a type goes through `classify`:
+    /// no `TypeExpr` variant is matched anywhere else, so a new spelling
+    /// (an alias, an import, a minted name) cannot be classified one way
+    /// in one place and another way in the next.
+    #[test]
+    fn types_are_classified_in_one_place() {
+        let src = include_str!("view_bindings.rs");
+        let body_start = src.find("    fn classify(&self, ty: &TypeExpr) -> Class {").expect("classify");
+        let body_end = src.find("    /// A declared name's class").expect("classify_name");
+        let needle = ["Type", "Expr::"].concat();
+        for (i, _) in src.match_indices(&needle) {
+            assert!(
+                (body_start..body_end).contains(&i),
+                "a type is matched outside `classify`, at byte {i}: {}",
+                &src[i..src.len().min(i + 60)]
+            );
+        }
+    }
+
+    #[test]
+    fn a_forms_read_is_a_view_of_its_cell() {
+        // A form's synthesized `set` is the form's, not some other
+        // locus's method named `set`; its read views the cell its later
+        // write retires, and its arguments are copied in before it writes.
+        let src = r#"
+            type C { id: Int = 0; s: String = ""; }
+            @form(hashmap)
+            locus M { capacity { pool cells of C indexed_by id; } }
+            locus Other { params { n: Int = 0; } fn set(c: C) { mystery(); } }
+            fn rmw() {
+                let m = M { };
+                let e = m.get(1) or C { };
+                m.set(C { id: 1, s: e.s });
+            }
+            fn held() {
+                let m = M { };
+                let e = m.get(1) or C { };
+                m.set(C { id: 1, s: "x" });
+                println(e.s);
+            }
+        "#;
+        assert_eq!(flagged(src), ["e"]);
     }
 
     #[test]

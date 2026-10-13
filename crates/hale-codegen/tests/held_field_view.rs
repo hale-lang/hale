@@ -448,3 +448,82 @@ fn an_imported_aliased_handle_keeps_its_value() {
         assert!(stdout.contains(want), "missing {want:?}; stdout: {stdout}; stderr: {stderr}");
     }
 }
+
+/// A payload held across a call through a callback field: a fn-typed
+/// field spelled through an alias (`type Callback = fn(H) -> Int;`), an
+/// interface-typed field, and a generic locus's `T`-typed field, each
+/// running code that replaces the payload's field. The analysis took a
+/// callee it could not classify for one that writes nothing — the
+/// aliased fn field read as a method named `cb` with an empty summary —
+/// so the payload stayed a view of the retired String. A callee it cannot
+/// positively identify now writes anything.
+#[test]
+fn a_binding_held_across_a_callback_reads_the_old_value() {
+    let src = r#"
+        type E = enum { A(String), B };
+        type Callback = fn(H) -> Int;
+        interface Resetter { fn fire(h: H) -> Int; }
+        locus Hard {
+            fn fire(h: H) -> Int {
+                h.clear();
+                let mut i = 0;
+                while i < 50 { h.put(std::str::upper("pad-" + to_string(i))); i = i + 1; }
+                return 0;
+            }
+        }
+        locus Hook<T> { params { cb: T; } fn fire(h: H) -> Int { return self.cb(h); } }
+        fn reset(h: H) -> Int {
+            h.clear();
+            let mut i = 0;
+            while i < 50 { h.put(std::str::upper("pad-" + to_string(i))); i = i + 1; }
+            return 0;
+        }
+        locus H {
+            params {
+                e: E = E::A(std::str::upper("old-callback-payload"));
+                cb: Callback = reset;
+                r: Resetter = Hard { };
+            }
+            fn clear() { self.e = E::B; }
+            fn put(t: String) { self.e = E::A(t); }
+            fn aliased() -> String {
+                let held = match self.e { E::A(s) -> s, E::B -> "", };
+                let n = self.cb(self);
+                return held;
+            }
+            fn through_interface() -> String {
+                let held = match self.e { E::A(s) -> s, E::B -> "", };
+                let n = self.r.fire(self);
+                return held;
+            }
+            fn generic() -> String {
+                let hk: Hook<Callback> = Hook { cb: reset };
+                let held = match self.e { E::A(s) -> s, E::B -> "", };
+                let n = hk.fire(self);
+                return held;
+            }
+        }
+        fn main() {
+            let h = H { };
+            println("aliased=" + h.aliased());
+            h.put(std::str::upper("old-interface-payload"));
+            println("interface=" + h.through_interface());
+            h.put(std::str::upper("old-generic-payload"));
+            println("generic=" + h.generic());
+        }
+    "#;
+    let bin = harness::unique_bin("hale_held_field_view_callback");
+    harness::build_source_asan(src, &bin);
+    let out = Command::new(&bin).env("LOTUS_NO_CHUNK_POOL", "1").output().expect("run");
+    let _ = std::fs::remove_file(&bin);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "non-zero {:?}; stdout: {stdout}; stderr: {stderr}", out.status);
+    for want in [
+        "aliased=OLD-CALLBACK-PAYLOAD\n",
+        "interface=OLD-INTERFACE-PAYLOAD\n",
+        "generic=OLD-GENERIC-PAYLOAD\n",
+    ] {
+        assert!(stdout.contains(want), "missing {want:?}; stdout: {stdout}; stderr: {stderr}");
+    }
+}
