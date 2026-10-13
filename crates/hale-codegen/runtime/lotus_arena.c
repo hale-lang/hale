@@ -14919,6 +14919,10 @@ typedef struct {
 } lotus_bus_pubctx_t;
 #define LOTUS_BUS_SEEN_TABLE(n)  ((uint64_t)(n) << 1)
 #define LOTUS_BUS_SEEN_BUCKET(n) (((uint64_t)(n) << 1) | 1u)
+/* A keyed publish's routing key, as the posts pass it (NULL: unkeyed). */
+typedef struct {
+    uint64_t lo, hi;
+} lotus_bus_pubkey_t;
 
 typedef struct lotus_bus_parked {
     struct lotus_bus_parked *next;
@@ -15064,23 +15068,44 @@ static void lotus_bus_resv_stub(void *self, void *payload) {
 }
 static int lotus_bus_resv_park(void *token, lotus_bus_queue_t *queue,
                                const void *payload, size_t size,
-                               uint64_t rec_pub,
-                               const lotus_bus_pubctx_t *pc);
+                               uint64_t rec_pub, uint64_t seen,
+                               const lotus_bus_pubkey_t *key);
+static int lotus_bus_park_held(void *handler, void *self,
+                               lotus_mailbox_t *mailbox,
+                               lotus_coop_pool_t *coop_pool,
+                               lotus_bus_queue_t *queue,
+                               const void *payload, size_t size,
+                               uint64_t rec_pub);
 
-/* 1 = parked: `self` is held, and the cell waits for its readiness. */
-static int lotus_bus_park_if_unready(void *handler, void *self,
-                                     lotus_mailbox_t *mailbox,
-                                     lotus_coop_pool_t *coop_pool,
-                                     lotus_bus_queue_t *queue,
-                                     const void *payload, size_t size,
-                                     uint64_t rec_pub,
-                                     const lotus_bus_pubctx_t *pc) {
-    /* A reservation's placeholder (#1534): the cell is the
-     * reservation's, whether or not any window is open. */
+/* 1 = parked: `self` is held, and the cell waits for its readiness. The
+ * test every post makes is inlined into it: a reservation's placeholder
+ * (#1534) — the cell is the reservation's, whether or not any window is
+ * open — then the one load that says no window is. `seen` and `key` are
+ * what the publish walked and its routing key (a reservation reads
+ * them). */
+static inline __attribute__((always_inline)) int
+lotus_bus_park_if_unready(void *handler, void *self,
+                          lotus_mailbox_t *mailbox,
+                          lotus_coop_pool_t *coop_pool,
+                          lotus_bus_queue_t *queue,
+                          const void *payload, size_t size,
+                          uint64_t rec_pub, uint64_t seen,
+                          const lotus_bus_pubkey_t *key) {
     if (__builtin_expect(handler == (void *)lotus_bus_resv_stub, 0))
-        return lotus_bus_resv_park(self, queue, payload, size, rec_pub, pc);
+        return lotus_bus_resv_park(self, queue, payload, size, rec_pub, seen, key);
     if (__atomic_load_n(&lotus_bus_unready_count, __ATOMIC_ACQUIRE) == 0)
         return 0;
+    return lotus_bus_park_held(handler, self, mailbox, coop_pool, queue,
+                               payload, size, rec_pub);
+}
+
+/* Some window is open: is `self`'s? */
+static int lotus_bus_park_held(void *handler, void *self,
+                               lotus_mailbox_t *mailbox,
+                               lotus_coop_pool_t *coop_pool,
+                               lotus_bus_queue_t *queue,
+                               const void *payload, size_t size,
+                               uint64_t rec_pub) {
     if (!mailbox && !coop_pool && !queue) return 0;
     pthread_mutex_lock(&g_bus_ready_lock);
     lotus_bus_unready_t *u = lotus_bus_unready_find(self);
@@ -15469,16 +15494,17 @@ static long lotus_bus_test_reserve_stall_us(void) {
 
 static int lotus_bus_resv_park(void *token, lotus_bus_queue_t *queue,
                                const void *payload, size_t size,
-                               uint64_t rec_pub,
-                               const lotus_bus_pubctx_t *pc) {
+                               uint64_t rec_pub, uint64_t seen,
+                               const lotus_bus_pubkey_t *key) {
     lotus_bus_resv_t *r = (lotus_bus_resv_t *)token;
+    const lotus_bus_pubctx_t pcv = { seen, key != NULL,
+                                     key ? key->lo : 0, key ? key->hi : 0 };
+    const lotus_bus_pubctx_t *pc = &pcv;
     long stall = lotus_bus_test_reserve_stall_us();
     if (stall > 0 && !pthread_equal(r->ctor, pthread_self())) {
         struct timespec ts = { stall / 1000000L, (stall % 1000000L) * 1000L };
         nanosleep(&ts, NULL);
     }
-    static const lotus_bus_pubctx_t none = { 0, 0, 0, 0 };
-    if (!pc) pc = &none;
     void *wire_deser = g_bus_pending_wire_deser;
     const char *pkey = (r->key_is_str && pc->keyed)
         ? (const char *)(uintptr_t)pc->key_hi : NULL;
@@ -15792,12 +15818,12 @@ static inline int lotus_bus_post_entry_gen(lotus_bus_entry_t *e,
                                            lotus_bus_queue_t *queue,
                                            const void *payload,
                                            size_t size,
-                                           uint64_t rec_pub,
-                                           const lotus_bus_pubctx_t *pc) {
+                                           uint64_t rec_pub, uint64_t seen,
+                                           const lotus_bus_pubkey_t *key) {
     /* Decision line 6: a subscriber whose birth has not completed (or
      * a reservation's placeholder, #1534). */
     if (lotus_bus_park_if_unready(e->handler, e->self_ptr, e->mailbox, e->coop_pool,
-                                  queue, payload, size, rec_pub, pc))
+                                  queue, payload, size, rec_pub, seen, key))
         return 1;
     /* GH #296: the TLS is scoped to exactly this post (the wire-deser
      * pattern) so a structural cell posted outside any fanout can
@@ -15833,11 +15859,11 @@ static inline int lotus_bus_post_entry(lotus_bus_entry_t *e,
                                        lotus_bus_queue_t *queue,
                                        const void *payload,
                                        size_t size,
-                                       uint64_t rec_pub,
-                                       const lotus_bus_pubctx_t *pc) {
+                                       uint64_t rec_pub, uint64_t seen,
+                                       const lotus_bus_pubkey_t *key) {
     uint64_t prev_gen = g_bus_pending_gen;
     g_bus_pending_gen = e->gen;
-    int posted = lotus_bus_post_entry_gen(e, queue, payload, size, rec_pub, pc);
+    int posted = lotus_bus_post_entry_gen(e, queue, payload, size, rec_pub, seen, key);
     g_bus_pending_gen = prev_gen;
     return posted;
 }
@@ -15864,7 +15890,7 @@ void lotus_bus_local_dispatch(lotus_bus_queue_t *queue,
     }
     size_t delivered = 0;
     lotus_bus_view_t bv = lotus_bus_view();
-    const lotus_bus_pubctx_t pc = { LOTUS_BUS_SEEN_TABLE(bv.n), 0, 0, 0 };
+    const uint64_t seen = LOTUS_BUS_SEEN_TABLE(bv.n);
     for (size_t i = 0; i < bv.n; i++) {
         lotus_bus_entry_t *e = bv.at[i];
         if (!e->subject) continue;          /* deregistered */
@@ -15880,7 +15906,7 @@ void lotus_bus_local_dispatch(lotus_bus_queue_t *queue,
          * filter — bypassing the routing-key contract. */
         if (e->key_filter_kind != 0) continue;
         delivered += (size_t)lotus_bus_post_entry(
-            e, queue, payload, payload_size, rec_pub, &pc);
+            e, queue, payload, payload_size, rec_pub, seen, NULL);
         if (lotus_obs_bus_deliver && lotus_obs_live && e->handler != (void *)lotus_bus_resv_stub) {
             lotus_obs_bus_deliver(subject, e->self_ptr,
                                   (uint64_t)payload_size, obs_tok);
@@ -15993,7 +16019,8 @@ void lotus_bus_local_dispatch_keyed(lotus_bus_queue_t *queue,
     size_t specific_subs_on_subject = 0;
     size_t unkeyed_subs_on_subject = 0;
     lotus_bus_view_t bv = lotus_bus_view();
-    const lotus_bus_pubctx_t pc = { LOTUS_BUS_SEEN_TABLE(bv.n), 1, key_lo, key_hi };
+    const uint64_t seen = LOTUS_BUS_SEEN_TABLE(bv.n);
+    const lotus_bus_pubkey_t pkey = { key_lo, key_hi };
     for (size_t i = 0; i < bv.n; i++) {
         lotus_bus_entry_t *e = bv.at[i];
         if (!e->subject) continue;
@@ -16013,7 +16040,7 @@ void lotus_bus_local_dispatch_keyed(lotus_bus_queue_t *queue,
             continue;
         }
         (void)lotus_bus_post_entry(e, queue,
-            payload, payload_size, rec_pub, &pc);
+            payload, payload_size, rec_pub, seen, &pkey);
         /* iris handoff-4 P15: BUS_DELIVER per matched keyed target
          * (sibling of the non-keyed local_dispatch probe — the keyed
          * flavor had none, so keyed deliveries never counted). */
@@ -16034,7 +16061,7 @@ void lotus_bus_local_dispatch_keyed(lotus_bus_queue_t *queue,
             if (!lotus_subject_match(e->subject, subject)) continue;
             if (e->key_filter_kind != 2) continue;
             (void)lotus_bus_post_entry(e, queue, payload, payload_size,
-                                       rec_pub, &pc);
+                                       rec_pub, seen, &pkey);
             if (lotus_obs_bus_deliver && lotus_obs_live && e->handler != (void *)lotus_bus_resv_stub) {
                 lotus_obs_bus_deliver(subject, e->self_ptr,
                                       (uint64_t)payload_size, obs_tok);
@@ -16380,10 +16407,10 @@ static int lotus_bus_cell_materialize(lotus_bus_cell_t *c) {
 static inline int lotus_bus_post_wire(lotus_bus_entry_t *e,
                                       lotus_bus_queue_t *q,
                                       const void *wire, size_t wire_size,
-                                      uint64_t rec_pub,
-                                      const lotus_bus_pubctx_t *pc) {
+                                      uint64_t rec_pub, uint64_t seen,
+                                      const lotus_bus_pubkey_t *key) {
     g_bus_pending_wire_deser = (void *)e->deserialize;
-    int posted = lotus_bus_post_entry(e, q, wire, wire_size, rec_pub, pc);
+    int posted = lotus_bus_post_entry(e, q, wire, wire_size, rec_pub, seen, key);
     g_bus_pending_wire_deser = NULL;
     return posted;
 }
@@ -16762,14 +16789,14 @@ void lotus_bus_dispatch_fused(lotus_bus_queue_t *queue,
     if (lotus_obs_bus_publish && lotus_obs_live)
         obs_tok = lotus_obs_bus_publish(subject, NULL, size);
     lotus_bus_view_t bv = lotus_bus_view();
-    const lotus_bus_pubctx_t pc = { LOTUS_BUS_SEEN_TABLE(bv.n), 0, 0, 0 };
+    const uint64_t seen = LOTUS_BUS_SEEN_TABLE(bv.n);
     for (size_t i = 0; i < bv.n; i++) {
         lotus_bus_entry_t *e = bv.at[i];
         if (e->self_ptr != receiver || !e->subject || e->key_filter_kind != 0
             || !lotus_subject_match(e->subject, subject)) continue;
         if (!flat && !e->deserialize) continue;
         g_bus_pending_wire_deser = flat ? NULL : (void *)e->deserialize;
-        int posted = lotus_bus_post_entry(e, queue, payload, (size_t)size, rec_pub, &pc);
+        int posted = lotus_bus_post_entry(e, queue, payload, (size_t)size, rec_pub, seen, NULL);
         g_bus_pending_wire_deser = NULL;
         if (posted && lotus_obs_bus_deliver && lotus_obs_live)
             lotus_obs_bus_deliver(subject, e->self_ptr, size, obs_tok);
@@ -25111,7 +25138,8 @@ void lotus_bus_dispatch_wire_keyed(const char *subject,
     size_t specific_subs_on_subject = 0;
     size_t unkeyed_subs_on_subject = 0;
     lotus_bus_view_t bv = lotus_bus_view();
-    const lotus_bus_pubctx_t pc = { LOTUS_BUS_SEEN_TABLE(bv.n), 1, key_lo, key_hi };
+    const uint64_t seen = LOTUS_BUS_SEEN_TABLE(bv.n);
+    const lotus_bus_pubkey_t pkey = { key_lo, key_hi };
     for (size_t i = 0; i < bv.n; i++) {
         lotus_bus_entry_t *e = bv.at[i];
         if (!e->subject) continue;
@@ -25132,7 +25160,7 @@ void lotus_bus_dispatch_wire_keyed(const char *subject,
          * (F.31 Phase 4), and readiness's gate (decision line 6) —
          * the wire bytes, materialized by the owner at drain. */
         (void)lotus_bus_post_wire(e, g_bus_queue_for_remote,
-                                  wire_bytes, wire_size, rec_pub, &pc);
+                                  wire_bytes, wire_size, rec_pub, seen, &pkey);
         /* iris handoff-4 P15: BUS_DELIVER per matched keyed target. */
         if (lotus_obs_bus_deliver && lotus_obs_live && e->handler != (void *)lotus_bus_resv_stub) {
             lotus_obs_bus_deliver(subject, e->self_ptr,
@@ -25147,7 +25175,7 @@ void lotus_bus_dispatch_wire_keyed(const char *subject,
             if (!e->deserialize) continue;
             if (e->key_filter_kind != 2) continue;
             (void)lotus_bus_post_wire(e, g_bus_queue_for_remote,
-                                      wire_bytes, wire_size, rec_pub, &pc);
+                                      wire_bytes, wire_size, rec_pub, seen, &pkey);
             if (lotus_obs_bus_deliver && lotus_obs_live && e->handler != (void *)lotus_bus_resv_stub) {
                 lotus_obs_bus_deliver(subject, e->self_ptr,
                                       (uint64_t)wire_size, obs_tok);
@@ -25196,7 +25224,7 @@ void lotus_bus_dispatch_wire(const char *subject,
     size_t matched = 0;
     size_t delivered = 0;
     lotus_bus_view_t bv = lotus_bus_view();
-    const lotus_bus_pubctx_t pc = { LOTUS_BUS_SEEN_TABLE(bv.n), 0, 0, 0 };
+    const uint64_t seen = LOTUS_BUS_SEEN_TABLE(bv.n);
     for (size_t i = 0; i < bv.n; i++) {
         lotus_bus_entry_t *e = bv.at[i];
         if (!e->subject) continue;
@@ -25222,7 +25250,7 @@ void lotus_bus_dispatch_wire(const char *subject,
         /* The wire bytes + deserialize fn; the owner materializes at
          * drain (lotus_bus_post_wire). */
         if (lotus_bus_post_wire(e, g_bus_queue_for_remote,
-                                wire_bytes, wire_size, rec_pub, &pc)) {
+                                wire_bytes, wire_size, rec_pub, seen, NULL)) {
             /* handoff-8 P21: BUS_DELIVER per matched target — the
              * plain wire flavor was the one fanout without it (its
              * keyed sibling gained the probe in handoff-4). */
@@ -25306,7 +25334,7 @@ void lotus_bus_dispatch_static(lotus_bus_queue_t *queue,
         if (b) {
             lotus_bus_entry_t *const *at;
             size_t bn = lotus_bus_bucket_view(b, &at);
-            const lotus_bus_pubctx_t pc = { LOTUS_BUS_SEEN_BUCKET(bn), 0, 0, 0 };
+            const uint64_t seen = LOTUS_BUS_SEEN_BUCKET(bn);
             for (size_t k = 0; k < bn; k++) {
                 lotus_bus_entry_t *e = at[k];
                 if (!e->subject) continue;           /* quarantined */
@@ -25324,7 +25352,7 @@ void lotus_bus_dispatch_static(lotus_bus_queue_t *queue,
                 g_bus_pending_gen = e->gen;
                 if (no_pinned && !e->mailbox && !e->coop_pool && queue
                     && lotus_bus_park_if_unready(e->handler, e->self_ptr, NULL, NULL, queue,
-                                                 struct_payload, (size_t)struct_size, rec_pub, &pc)) {
+                                                 struct_payload, (size_t)struct_size, rec_pub, seen, NULL)) {
                     delivered++; /* decision line 6: parked until ready */
                 } else if (no_pinned && !e->mailbox && !e->coop_pool && queue) {
                     g_bus_pending_rec_pub = rec_pub;
@@ -25340,7 +25368,7 @@ void lotus_bus_dispatch_static(lotus_bus_queue_t *queue,
                 } else {
                     delivered += (size_t)lotus_bus_post_entry(
                         e, queue, struct_payload, (size_t)struct_size,
-                        rec_pub, &pc);
+                        rec_pub, seen, NULL);
                 }
                 g_bus_pending_gen = prev_gen;
             }
@@ -25407,7 +25435,7 @@ void lotus_bus_dispatch_static(lotus_bus_queue_t *queue,
         if (b) {
             lotus_bus_entry_t *const *at;
             size_t bn = lotus_bus_bucket_view(b, &at);
-            const lotus_bus_pubctx_t pc = { LOTUS_BUS_SEEN_BUCKET(bn), 0, 0, 0 };
+            const uint64_t seen = LOTUS_BUS_SEEN_BUCKET(bn);
             for (size_t k = 0; k < bn; k++) {
                 lotus_bus_entry_t *e = at[k];
                 if (!e->subject) continue;
@@ -25421,7 +25449,7 @@ void lotus_bus_dispatch_static(lotus_bus_queue_t *queue,
                 g_bus_pending_gen = e->gen;
                 if (no_pinned && !e->mailbox && !e->coop_pool && queue
                     && lotus_bus_park_if_unready(e->handler, e->self_ptr, NULL, NULL, queue,
-                                                 struct_payload, (size_t)struct_size, rec_pub, &pc)) {
+                                                 struct_payload, (size_t)struct_size, rec_pub, seen, NULL)) {
                     delivered++; /* decision line 6: parked until ready */
                 } else if (no_pinned && !e->mailbox && !e->coop_pool && queue) {
                     g_bus_pending_rec_pub = rec_pub;
@@ -25437,7 +25465,7 @@ void lotus_bus_dispatch_static(lotus_bus_queue_t *queue,
                 } else {
                     delivered += (size_t)lotus_bus_post_entry(
                         e, queue, struct_payload, (size_t)struct_size,
-                        rec_pub, &pc);
+                        rec_pub, seen, NULL);
                 }
                 g_bus_pending_gen = prev_gen;
             }
@@ -25471,7 +25499,7 @@ void lotus_bus_dispatch_static(lotus_bus_queue_t *queue,
     if (b) {
         lotus_bus_entry_t *const *at;
         size_t bn = lotus_bus_bucket_view(b, &at);
-        const lotus_bus_pubctx_t pc = { LOTUS_BUS_SEEN_BUCKET(bn), 0, 0, 0 };
+        const uint64_t seen = LOTUS_BUS_SEEN_BUCKET(bn);
         for (size_t k = 0; k < bn; k++) {
             lotus_bus_entry_t *e = at[k];
             if (!e->subject) continue;             /* quarantined */
@@ -25498,7 +25526,7 @@ void lotus_bus_dispatch_static(lotus_bus_queue_t *queue,
                 g_bus_pending_wire_deser = (void *)e->deserialize;
                 if (lotus_bus_park_if_unready(e->handler, e->self_ptr, NULL, NULL,
                                               g_bus_queue_for_remote, wire_buf,
-                                              (size_t)wire_size, rec_pub, &pc)) {
+                                              (size_t)wire_size, rec_pub, seen, NULL)) {
                     delivered++; /* decision line 6: parked until ready */
                 } else {
                     g_bus_pending_rec_pub = rec_pub;
@@ -25516,7 +25544,7 @@ void lotus_bus_dispatch_static(lotus_bus_queue_t *queue,
             } else {
                 delivered += (size_t)lotus_bus_post_wire(
                     e, g_bus_queue_for_remote, wire_buf, (size_t)wire_size,
-                    rec_pub, &pc);
+                    rec_pub, seen, NULL);
             }
             g_bus_pending_gen = prev_gen;
         }
@@ -25598,7 +25626,7 @@ void lotus_bus_dispatch_static_direct(uint32_t id,
     if (b) {
         lotus_bus_entry_t *const *at;
         size_t bn = lotus_bus_bucket_view(b, &at);
-        const lotus_bus_pubctx_t pc = { LOTUS_BUS_SEEN_BUCKET(bn), 0, 0, 0 };
+        const uint64_t seen = LOTUS_BUS_SEEN_BUCKET(bn);
         for (size_t k = 0; k < bn; k++) {
             lotus_bus_entry_t *e = at[k];
             if (!e->subject) continue;           /* quarantined */
@@ -25612,7 +25640,7 @@ void lotus_bus_dispatch_static_direct(uint32_t id,
             uint64_t prev_gen = g_bus_pending_gen;
             g_bus_pending_gen = e->gen;
             if (lotus_bus_park_if_unready(e->handler, e->self_ptr, e->mailbox, e->coop_pool,
-                                          g_bus_queue_for_remote, payload, (size_t)size, 0, &pc)) {
+                                          g_bus_queue_for_remote, payload, (size_t)size, 0, seen, NULL)) {
                 /* Decision line 6: its birth has not completed; the
                  * cell waits on the cooperative queue's side. */
             } else if (e->mailbox) {
