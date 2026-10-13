@@ -1657,7 +1657,9 @@ surface row's, an `@rpc` attribute's, a hub binding's) and an
 `includes`. The path collapses to the role's own name when the seed the
 alias imports declares that role, so `lib::reader` and the bare `reader`
 are one role and a description, a refusal and the environment's role
-table all say `reader`. A path whose alias the seed does not import, or
+table all say `reader`. Roles are their own namespace: a library that
+declares `role reader;` and `fn reader()` keeps both, `lib::reader` in a
+role position is the role and `lib::reader()` the fn. A path whose alias the seed does not import, or
 whose seed declares no such role, is left as written and refused as an
 undeclared role in the author's spelling.
 
