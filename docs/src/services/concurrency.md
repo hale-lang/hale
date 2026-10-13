@@ -160,8 +160,8 @@ The block is **declare-only** and checked at compile time: node
 ids must be unique, L3 names must be unique (so `pinned(l3 =
 name)` is unambiguous), a core belongs to at most one domain,
 and every `pinned(node/l3)` must name a domain you declared.
-L3-domain names are ordinary identifiers, so a reserved word
-(like `bulk`) can't be a domain name — pick a plain name.
+L3-domain names are ordinary identifiers, so a hard keyword
+(like `match`) can't be a domain name — pick a plain name.
 
 **Thread *and* memory co-location.** `pinned(node = N)` binds
 more than the thread: the locus's arena — and its per-call

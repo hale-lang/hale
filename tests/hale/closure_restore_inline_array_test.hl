@@ -48,7 +48,7 @@ locus Sup {
     params { fired: Int = 0; b: Born = Born { ring: [2.5; 4] }; }
     on_failure(c: Born, err: ClosureViolation) {
         self.fired = self.fired + 1;
-        restart_in_place (c) for 3;
+        restart_in_place(c) for 3;
     }
 }
 
@@ -65,7 +65,7 @@ main locus App {
         self.fired = self.fired + 1;
         self.seen0 = c.ring[0];
         self.seen3 = c.ring[3];
-        restart_in_place (c) for 3;
+        restart_in_place(c) for 3;
     }
     run() {
         std::test::assert_eq_int(self.bars.lag, 1, "the reported locus builds and runs");

@@ -27,6 +27,12 @@ referenced by name — never a magic string — so the payload type
 is checked at every publish and every handler, and renaming the
 topic moves every use with it.
 
+Because it is a top-level declaration, a topic shares one namespace
+with types and loci: `type Tick { … }` and `topic Tick { payload:
+Tick; }` are the same name declared twice, and the compiler says so
+with the fix — name the channel for what happens (`TickArrived`,
+`OrderPlaced`) or suffix it (`TickTopic`).
+
 ### The payload is a record, not a value
 
 Notice that `Order` is a `type`, not a `Decimal`. That's the rule,

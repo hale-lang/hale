@@ -77,7 +77,7 @@ main locus App {
     on_failure(c: Svc, err: ClosureViolation) {
         self.failures = self.failures + 1;
         self.answered_when_failed = self.fixture.outcomes_of(2);
-        restart (c) for 3;
+        restart(c) for 3;
     }
 
     run() {

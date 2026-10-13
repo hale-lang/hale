@@ -226,7 +226,7 @@ locus __StdIoH2Conns {
         __StdIoH2Conn { conn: n, tid: self.tid, route: self.tid * 4294967296 + n, fd: c.fd };
     }
     accept(p: __StdIoH2Conn) { }
-    release (p: __StdIoH2Conn) { }
+    release(p: __StdIoH2Conn) { }
 }
 
 /// The listening socket, on its own pool (the compiler adds one to the main

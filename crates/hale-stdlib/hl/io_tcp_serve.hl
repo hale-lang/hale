@@ -287,7 +287,7 @@ locus __StdIoTcpFlows {
     accept(f: __StdIoTcpConnFlow) {
         self.active = self.active + 1;
     }
-    release (f: __StdIoTcpConnFlow) {
+    release(f: __StdIoTcpConnFlow) {
         self.active = self.active - 1;
     }
 }

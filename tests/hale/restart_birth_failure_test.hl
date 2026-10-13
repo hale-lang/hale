@@ -58,15 +58,15 @@ main locus App {
     }
     on_failure(c: Kid, err: ClosureViolation) {
         self.kid_failures = self.kid_failures + 1;
-        restart (c) for 3;
+        restart(c) for 3;
     }
     on_failure(c: Checked, err: ClosureViolation) {
         self.checked_failures = self.checked_failures + 1;
-        restart (c) for 1;
+        restart(c) for 1;
     }
     on_failure(c: Fresh, err: ClosureViolation) {
         self.fresh_failures = self.fresh_failures + 1;
-        restart_in_place (c);
+        restart_in_place(c);
     }
     run() {
         std::test::assert_eq_int(self.held.births, 2, "a held birth failure re-ran birth()");

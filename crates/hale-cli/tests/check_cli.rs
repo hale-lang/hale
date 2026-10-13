@@ -21,6 +21,8 @@ mod check_entry_consumers;
 mod check_tcp_substrate;
 #[path = "check_flows.rs"]
 mod check_flows;
+#[path = "check_friction_sweep.rs"]
+mod check_friction_sweep;
 #[path = "check_lowering_laws.rs"]
 mod check_lowering_laws;
 #[path = "check_publish_before_subscriber.rs"]
