@@ -7330,7 +7330,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         .build_call(dissolve_fn, &[self_arg.into()], &format!("{}.reclaim.dissolve", locus_name))
                         .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
                 }
-                Ok(())
+                cx.emit_lru_evict_remaining(&info, self_arg, locus_name)
             })?;
             // Reclaim accept'd children BEFORE this locus's own fields
             // go: a child may borrow a parent's capacity slot

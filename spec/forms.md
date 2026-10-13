@@ -1734,12 +1734,27 @@ the arena (a socket, a file) can release it. Only capacity eviction
 calls it: a `put` over a present key replaces the value without the
 hook (the caller replacing a value owns what the old one held — `remove`
 it first to release it), and `remove` hands the entry to the caller.
-Dissolving the locus does not call it for the entries still held.
+
+**At dissolve.** When the locus dissolves, after its `dissolve()` body
+(which still sees every entry), the cache calls `on_evict` once for each
+entry it still holds, in LRU order: the least recently used first, the
+order capacity eviction would have taken them. Each entry is taken out
+of the table before the hook sees it, so `len()` in the hook counts the
+entries still to come. This holds on every teardown path: a cache that
+goes out of scope, one a locus holds as a param (dissolved with its
+holder), and the main locus's own. A cell that owns a resource outside
+the arena is therefore released whether it leaves by eviction or with
+the cache; the cell's blocks go with the locus's arena.
 
 The hook runs inside the `put` that evicted, so the call graph has an
 edge from every `put` on the locus to `on_evict`: an effect the hook
 performs (`syscall` for a `close_fd`) is one the `put`'s caller reaches.
-The hook must not `put` into its own cache.
+The hook must not `put` into its own cache: it runs inside a `put` and
+while the cache dissolves, and a `put` there would evict again under it.
+The check refuses a `put` on the cache's own type that `on_evict`
+reaches, directly or through the fns it calls, at that `put`, with the
+chain: "\`P.on_evict\` puts into its own cache (P::on_evict -> P::keep
+[P::put]): …". A `put` into another cache is the hook's to make.
 
 ### Cell reclamation
 

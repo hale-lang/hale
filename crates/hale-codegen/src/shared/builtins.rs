@@ -660,6 +660,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             None,
         );
         self.module.add_function("lotus_lru_remove", lru_get_ty, None);
+        // declare i32 @lotus_lru_pop_lru(ptr c, ptr out_value): take the
+        // least-recently-used entry out, for the hook at dissolve.
+        self.module.add_function(
+            "lotus_lru_pop_lru",
+            i32_t.fn_type(&[ptr_t.into(), ptr_t.into()], false),
+            None,
+        );
         self.module.add_function(
             "lotus_lru_retire_value",
             void_t.fn_type(

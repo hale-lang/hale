@@ -1055,6 +1055,8 @@ pub fn check_bundle_by_declaration(
     // Gap D (2026-07-17): accept-without-release on a daemon-shaped
     // locus — resident children accumulate until OOM.
     check_accept_release(bundle, flows, &mut diags);
+    // A `@form(lru_cache)` eviction hook that puts into its own cache.
+    check_lru_hook_puts(bundle, inputs.alloc_summary, &mut diags);
     // Lever 2 (2026-07-16): `@budget(alloc_per_call = N)` — an opt-in
     // hot-path allocation contract. A hard error when an annotated fn
     // allocates more than its declared per-call ceiling (0 = zero-alloc
@@ -2534,6 +2536,61 @@ fn check_decorator_stacks(bundle: &Bundle<'_>, diags: &mut Vec<Diag>) {
             }
             _ => {}
         });
+    }
+}
+
+/// `@form(lru_cache)`'s eviction hook must not `put` into its own cache
+/// (spec/forms.md § The eviction hook): the hook runs inside the `put`
+/// that evicted, or while the locus dissolves, and a `put` there evicts
+/// again under the hook, into a table mid-update. The call graph has the
+/// edge (a `put` on the cache reaches `on_evict`), so the law asks it: a
+/// `put` on the cache's own type that `on_evict` reaches, directly or
+/// through the fns it calls, is refused at that `put`, with the chain.
+fn check_lru_hook_puts(bundle: &Bundle<'_>, summary: &crate::alloc_summary::AllocSummary, diags: &mut Vec<Diag>) {
+    for p in bundle.programs.values() {
+        for d in flat_decls(&p.items) {
+            let TopDecl::Locus(l) = d else { continue };
+            if !l.form.as_ref().is_some_and(|f| f.name.name == "lru_cache") {
+                continue;
+            }
+            let Some(hook) = l.members.iter().find_map(|m| match m {
+                LocusMember::Fn(f) if f.name.name == "on_evict" => Some(f),
+                _ => None,
+            }) else {
+                continue;
+            };
+            let locus = l.name.name.as_str();
+            let Some(root) = summary
+                .fns
+                .keys()
+                .find(|k| k.locus.as_deref() == Some(locus) && k.fn_name == "on_evict")
+                .cloned()
+            else {
+                continue;
+            };
+            let mut pred = |probe: &crate::callgraph::Probe<'_>| match probe {
+                crate::callgraph::Probe::Unresolved(name, edge)
+                    if *name == "put" && edge.recv_ty.as_deref() == Some(locus) =>
+                {
+                    Some(format!("{locus}::put"))
+                }
+                _ => None,
+            };
+            let Some(path) = crate::callgraph::witness_path(summary, &root, &mut pred) else { continue };
+            let at = path.last().map(|s| s.span).unwrap_or(hook.name.span);
+            diags.push(
+                Diag::ty(
+                    at,
+                    format!(
+                        "`{locus}.on_evict` puts into its own cache ({}): the hook runs inside the `put` that \
+                         evicts and while the cache dissolves, so a `put` there evicts again under the hook; \
+                         keep what the hook would add in a field and `put` it after the call",
+                        crate::callgraph::render_witness(&root, &path)
+                    ),
+                )
+                .with_related(hook.name.span, "the eviction hook"),
+            );
+        }
     }
 }
 

@@ -4288,4 +4288,109 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             payload_ty,
         })
     }
+
+    /// A `@form(lru_cache)` locus that declares `on_evict(k, v)` hands
+    /// every entry it still holds to the hook when it dissolves, after its
+    /// `dissolve()` body, least recently used first (spec/forms.md § The
+    /// eviction hook): a cell owning a resource outside the arena (an fd)
+    /// releases it, as an entry evicted over `cap` does. Each entry is
+    /// taken out of the table before the hook sees it, so the table is
+    /// empty when the slot is freed. Nothing retires: the cells' blocks
+    /// are the locus arena's, freed with it. Emitted at every teardown
+    /// spine's Dissolve step; a no-op for any other locus.
+    pub(crate) fn emit_lru_evict_remaining(
+        &mut self,
+        info: &LocusInfo<'ctx>,
+        self_ptr: PointerValue<'ctx>,
+        locus_name: &str,
+    ) -> Result<(), CodegenError> {
+        let Some(hook) = info.user_methods.get("on_evict").copied() else {
+            return Ok(());
+        };
+        let err = |e: inkwell::builder::BuilderError| CodegenError::LlvmEmit(e.to_string());
+        let ptr_t = self.context.ptr_type(AddressSpace::default());
+        for slot in &info.capacity_slots {
+            if slot.form != Some(SlotForm::LruCache) {
+                continue;
+            }
+            let CodegenTy::TypeRef(cell_name) = &slot.elem_ty else { continue };
+            let Some(cell_info) = self.user_types.get(cell_name).cloned() else { continue };
+            let Some((key_idx, key_ty)) =
+                slot.indexed_by.as_ref().and_then(|f| cell_info.fields.get(f)).cloned()
+            else {
+                continue;
+            };
+            let func = self.current_fn.expect("a teardown spine is emitted inside a fn");
+            let lru_ptr = self
+                .builder
+                .build_struct_gep(
+                    info.struct_ty,
+                    self_ptr,
+                    slot.struct_field_idx,
+                    &format!("{}.__lru_{}.dissolve.ptr", locus_name, slot.name),
+                )
+                .map_err(err)?;
+            let held = self.alloca_in_entry(
+                cell_info.struct_ty.into(),
+                &format!("{}.__lru_{}.dissolve.held", locus_name, slot.name),
+            )?;
+            let cond_bb = self.context.append_basic_block(func, "lru.dissolve.next");
+            let hook_bb = self.context.append_basic_block(func, "lru.dissolve.evict_hook");
+            let done_bb = self.context.append_basic_block(func, "lru.dissolve.done");
+            self.builder.build_unconditional_branch(cond_bb).map_err(err)?;
+            self.builder.position_at_end(cond_bb);
+            let pop = self.module.get_function("lotus_lru_pop_lru").expect("lotus_lru_pop_lru declared");
+            let took = self
+                .builder
+                .build_call(pop, &[lru_ptr.into(), held.into()], &format!("{}.lru.dissolve.pop", locus_name))
+                .map_err(err)?
+                .try_as_basic_value()
+                .left()
+                .expect("lotus_lru_pop_lru returns i32")
+                .into_int_value();
+            let any = self
+                .builder
+                .build_int_compare(
+                    inkwell::IntPredicate::NE,
+                    took,
+                    self.context.i32_type().const_zero(),
+                    &format!("{}.lru.dissolve.any", locus_name),
+                )
+                .map_err(err)?;
+            self.builder.build_conditional_branch(any, hook_bb, done_bb).map_err(err)?;
+            self.builder.position_at_end(hook_bb);
+            let key_ptr = self
+                .builder
+                .build_struct_gep(cell_info.struct_ty, held, key_idx, &format!("{}.lru.dissolve.key.ptr", locus_name))
+                .map_err(err)?;
+            let key = self
+                .builder
+                .build_load(self.llvm_basic_type(&key_ty), key_ptr, &format!("{}.lru.dissolve.key", locus_name))
+                .map_err(err)?;
+            // The hook runs as a method of the dissolving locus: its
+            // caller arena is the locus's own, alive until the spine
+            // releases it.
+            if !info.arena_elidable {
+                let arena_slot = self
+                    .builder
+                    .build_struct_gep(
+                        info.struct_ty,
+                        self_ptr,
+                        info.arena_field_idx,
+                        &format!("{}.lru.dissolve.arena.ptr", locus_name),
+                    )
+                    .map_err(err)?;
+                let arena =
+                    self.builder.build_load(ptr_t, arena_slot, &format!("{}.lru.dissolve.arena", locus_name)).map_err(err)?;
+                let set = self.module.get_function("lotus_set_caller_arena").expect("lotus_set_caller_arena declared");
+                self.builder.build_call(set, &[arena.into()], "set_caller_arena").map_err(err)?;
+            }
+            self.builder
+                .build_call(hook, &[self_ptr.into(), key.into(), held.into()], &format!("{}.on_evict.dissolve", locus_name))
+                .map_err(err)?;
+            self.builder.build_unconditional_branch(cond_bb).map_err(err)?;
+            self.builder.position_at_end(done_bb);
+        }
+        Ok(())
+    }
 }
