@@ -95,9 +95,12 @@ group_member      = IDENTIFIER , { "::" , IDENTIFIER } , [ "::" , "*" ]
    `includes` are contextual: at top level `role` followed by a name
    is the declaration (it is also the `unix(..., role: listen)`
    kwarg). `includes` is grant-only and union-only; `owner` needs no
-   declaration. Role names are never mangled. *)
+   declaration. Role names are never mangled; an included role (and a
+   `requires_clause` role) may be qualified by an import alias,
+   `lib::reader`, naming the role that seed declares. *)
 role_decl         = "role" , IDENTIFIER ,
-                    [ "includes" , IDENTIFIER , { "," , IDENTIFIER } ] , ";" ;
+                    [ "includes" , role_ref , { "," , role_ref } ] , ";" ;
+role_ref          = IDENTIFIER , [ "::" , IDENTIFIER ] ;
 
 (* GH #1076 — `unit NAME;` declares a node of the unit graph;
    `unit NAME = FACTOR [TARGET];` also states that one NAME is FACTOR
@@ -124,7 +127,7 @@ unit_decl         = "unit" , IDENTIFIER , [ "=" , unit_factor ] , ";" ;
 api_decl          = "api" , IDENTIFIER , "{" , { rpc_row } , "}" ;
 rpc_row           = "rpc" , IDENTIFIER , "::" , IDENTIFIER , { "::" , IDENTIFIER } ,
                     [ requires_clause ] , ";" ;
-requires_clause   = "requires" , ":" , "[" , [ identifier_list , [ "," ] ] , "]" ;
+requires_clause   = "requires" , ":" , "[" , [ role_ref , { "," , role_ref } , [ "," ] ] , "]" ;
 unit_factor       = INT_LIT , [ "/" , INT_LIT ] , [ IDENTIFIER ]
                   | [ INT_LIT , "/" ] , QUANTITY_LIT ;
 
@@ -1585,7 +1588,7 @@ tuple_expr        = "(" , expression , "," , expression ,
    N is a non-negative integer literal at v0 (const-eval is a
    future addition). *)
 array_expr        = "[" , [ expression , { "," , expression } ] , "]"
-                  | "[" , expression , ";" , INTEGER_LIT , "]"
+                  | "[" , expression , ";" , INT_LIT , "]"
                   ;
 
 struct_expr       = qualified_name , "{" ,
@@ -1627,9 +1630,14 @@ identifier_list   = IDENTIFIER , { "," , IDENTIFIER } ;
 
 (* IDENTIFIER     = ?[a-zA-Z_][a-zA-Z0-9_]*?  excluding keywords *)
 (* INT_LIT        = ?decimal | 0x... | 0o... | 0b...?            *)
-(* FLOAT_LIT      = ?...with exponent and optional suffix?       *)
+(* FLOAT_LIT      = ?<digits>.<digits>, optional exponent, no    *)
+(*                   suffix?                                     *)
 (* DECIMAL_LIT    = ?... 'd' suffix?                             *)
-(* STRING_LIT     = ?"..." with escapes; r"..." raw; """..."""?  *)
+(* STRING_LIT     = ?"..." with escapes?                         *)
+(*                   no raw r"..." and no """...""" form: the    *)
+(*                   lexer has neither (tokens.md § String       *)
+(*                   literals)                                   *)
+(* FSTRING_LIT    = ?f"... {expr} ..."?                          *)
 (* BYTES_LIT      = ?b"..."?                                     *)
 (* QUANTITY_LIT   = ?<decimal int><identifier>, no space: the    *)
 (*                   unit is the catalogue's (`500ms` the        *)

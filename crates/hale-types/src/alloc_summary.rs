@@ -3281,6 +3281,10 @@ pub fn summarize_identified(
         BTreeMap::new();
     let mut locus_methods: BTreeMap<String, BTreeMap<String, usize>> =
         BTreeMap::new();
+    // GH #731: a perspective a held slot dispatches through, with the
+    // loci that `serves` it: the same fan-out, its conformers the
+    // declared servers (a designation may name no other).
+    let mut perspective_servers: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for (program, ids) in identified {
         for item in flat_decls(&program.items).filter(|item| !shadowed(ids, item)) {
             match item {
@@ -3299,7 +3303,23 @@ pub fn summarize_identified(
                             .collect(),
                     );
                 }
+                TopDecl::Perspective(p) => {
+                    ifaces.insert(
+                        p.name.name.clone(),
+                        p.members
+                            .iter()
+                            .filter_map(|m| match m {
+                                PerspectiveMember::Fn(f) => Some((f.name.name.clone(), f.params.len())),
+                                _ => None,
+                            })
+                            .collect(),
+                    );
+                    perspective_servers.entry(p.name.name.clone()).or_default();
+                }
                 TopDecl::Locus(l) => {
+                    for s in &l.serves {
+                        perspective_servers.entry(s.name.clone()).or_default().push(l.name.name.clone());
+                    }
                     let e = locus_methods
                         .entry(l.name.name.clone())
                         .or_default();
@@ -3319,7 +3339,11 @@ pub fn summarize_identified(
     let mut conformers: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
     for (iname, methods) in &ifaces {
         let mut who: Vec<&str> = Vec::new();
+        let servers = perspective_servers.get(iname);
         for (lname, lmethods) in &locus_methods {
+            if servers.is_some_and(|s| !s.iter().any(|x| x == lname)) {
+                continue;
+            }
             if methods.iter().all(|(m, arity)| {
                 lmethods.get(m).is_some_and(|a| a == arity)
             }) {
@@ -4282,7 +4306,18 @@ fn locus_param_field_types(
                     }
                     (Some(d), _) => Some(d.clone()),
                     (None, Some(c)) => Some(c.clone()),
-                    (None, None) => None,
+                    // GH #731: a `perspective(P)` field with no
+                    // initializer holds the program's slot, which the
+                    // designating holder fills: the receiver is the
+                    // perspective itself, and the dispatch pass fans a
+                    // call through it to every locus that `serves P`
+                    // (the only loci a designation may name).
+                    (None, None) => match (&pd.ty, &pd.init) {
+                        (Some(TypeExpr::Perspective { name, .. }), ParamInit::Inferred) => {
+                            Some(renames.get(&name.name).cloned().unwrap_or_else(|| name.name.clone()))
+                        }
+                        _ => None,
+                    },
                 };
                 if let Some(tn) = resolved {
                     m.insert(pd.name.name.clone(), tn);
