@@ -118,6 +118,10 @@ const TYPES: &str = r#"
     type In { s: String = ""; b: Bytes = b""; }
     type Tag = enum { Empty, Named(String), Pair(String, Bytes), Num(Int), Rec(In) };
     type Order { id: Int = 0; side: Side = Side::Bid; tag: Tag = Tag::Empty; }
+    type Inner = enum { A(String), B };
+    type Outer = enum { X(Inner), Y };
+    type Deep = enum { D(Outer), E(String, Outer), F };
+    type Nest { id: Int = 0; o: Outer = Outer::Y; d: Deep = Deep::F; }
 "#;
 
 /// `decl` declares the form locus `M`; `body` is one cycle of
@@ -338,4 +342,149 @@ fn enum_values_outlive_their_cells() {
         ),
         "stdout: {stdout}; stderr: {stderr}"
     );
+}
+
+/// An enum nested in another enum's payload, in a form cell (a codex
+/// review note on #1527): the deep copy's variant switch joined its
+/// result with a PHI naming each variant's FIRST block, but the nested
+/// enum's own copy adds blocks, so the build failed LLVM verification
+/// ("PHI node entries do not match predecessors") — and `hale run`
+/// crashed on it. Two levels deep, in a hashmap and a vec, set, read,
+/// replaced and rendered.
+#[test]
+fn enum_nested_in_an_enum_payload_sets_reads_and_replaces() {
+    let out = run(
+        "nested",
+        r##"
+        type Inner = enum { A(String), B };
+        type Outer = enum { X(Inner), Y };
+        type Deep = enum { D(Outer), E(String, Outer), F };
+        type Cell { k: Int = 0; o: Outer = Outer::Y; d: Deep = Deep::F; }
+        @form(hashmap) locus M { capacity { pool cells of Cell indexed_by k; } }
+        @form(vec) locus V { capacity { heap xs of Cell; } }
+        fn show(o: Outer) -> String {
+            return match o {
+                Outer::X(i) -> match i { Inner::A(s) -> "A" + s, Inner::B -> "B" },
+                Outer::Y -> "Y",
+            };
+        }
+        fn showd(d: Deep) -> String {
+            return match d { Deep::D(o) -> "D" + show(o), Deep::E(s, o) -> "E" + s + show(o), Deep::F -> "F" };
+        }
+        fn main() {
+            let m = M { };
+            let v = V { };
+            m.set(Cell { k: 1, o: Outer::X(Inner::A("hello")), d: Deep::E("e", Outer::X(Inner::A("deep"))) });
+            v.push(Cell { k: 1, o: Outer::X(Inner::A("vh")), d: Deep::D(Outer::X(Inner::A("vd"))) });
+            let c0 = m.get(1) or Cell { };
+            let v0 = v.get(0) or Cell { };
+            m.set(Cell { k: 1, o: Outer::Y });
+            v.set(0, Cell { k: 2, o: Outer::X(Inner::B), d: Deep::D(Outer::Y) }) or discard;
+            m.set(Cell { k: 1, o: Outer::X(Inner::B), d: Deep::D(Outer::X(Inner::A("x"))) });
+            let c = m.get(1) or Cell { };
+            let v1 = v.get(0) or Cell { };
+            println(show(c0.o), " ", showd(c0.d), " ", show(c.o), " ", showd(c.d), " ", showd(v0.d), " ", showd(v1.d));
+            println(to_string(c0.d));
+        }
+        "##,
+    );
+    assert_eq!(
+        out.trim(),
+        "Ahello EeAdeep B DAx DAvd DY\nDeep::E(\"e\", Outer::X(Inner::A(\"deep\")))"
+    );
+}
+
+const NEST_MAP: &str = "@form(hashmap) locus M { capacity { pool entries of Nest indexed_by id; } }";
+
+#[test]
+fn hashmap_replace_of_a_nested_enum_stays_flat() {
+    assert_form_flat(
+        "nested_map",
+        NEST_MAP,
+        "if self.n % 2 == 0 { self.m.set(Nest { id: self.n % 4, o: Outer::X(Inner::A(x)), d: Deep::E(x, Outer::X(Inner::A(x))) }); } \
+         else { self.m.set(Nest { id: self.n % 4, o: Outer::X(Inner::B), d: Deep::D(Outer::Y) }); }",
+    );
+}
+
+#[test]
+fn hashmap_get_modify_set_of_a_nested_enum_stays_flat() {
+    assert_form_flat(
+        "nested_rmw",
+        NEST_MAP,
+        "let o = self.m.get(self.n % 4) or Nest { id: self.n % 4, d: Deep::D(Outer::X(Inner::A(x))) }; \
+         self.m.set(Nest { id: o.id, o: Outer::X(Inner::A(x)), d: o.d });",
+    );
+}
+
+#[test]
+fn vec_set_and_pop_of_a_nested_enum_stays_flat() {
+    assert_form_flat(
+        "nested_vec",
+        "@form(vec) locus M { capacity { heap xs of Nest; } }",
+        "if self.m.len() < 4 { self.m.push(Nest { id: self.n, d: Deep::E(x, Outer::X(Inner::A(x))) }); } \
+         else { self.m.set(self.n % 4, Nest { id: self.n, o: Outer::X(Inner::A(x)), d: Deep::D(Outer::X(Inner::B)) }) or discard; \
+         let p = self.m.pop() or Nest { }; }",
+    );
+}
+
+/// Nested enum values read out of cells outlive the replace of their
+/// cell, under ASan.
+#[test]
+fn nested_enum_values_outlive_their_cells() {
+    let src = r##"
+        type Inner = enum { A(String), B };
+        type Outer = enum { X(Inner), Y };
+        type Deep = enum { D(Outer), E(String, Outer), F };
+        type Cell { k: Int = 0; d: Deep = Deep::F; }
+        @form(hashmap) locus M { capacity { pool cells of Cell indexed_by k; } }
+        @form(vec) locus V { capacity { heap xs of Cell; } }
+        fn show(o: Outer) -> String {
+            return match o {
+                Outer::X(i) -> match i { Inner::A(s) -> s, Inner::B -> "B" },
+                Outer::Y -> "Y",
+            };
+        }
+        fn showd(d: Deep) -> String {
+            return match d { Deep::D(o) -> show(o), Deep::E(s, o) -> s + show(o), Deep::F -> "F" };
+        }
+        locus H {
+            params { m: M = M { }; v: V = V { }; kept: Deep = Deep::F; seen: Int = 0; }
+            fn make(i: Int) -> Cell {
+                let s = "s" + to_string(i);
+                let mut d = Deep::F;
+                if i % 3 == 0 { d = Deep::D(Outer::X(Inner::A(s))); }
+                if i % 3 == 1 { d = Deep::E(s, Outer::X(Inner::A(s + "!"))); }
+                return Cell { k: i % 4, d: d };
+            }
+            fn churn(i: Int) {
+                let g = self.m.get(i % 4) or Cell { };
+                self.m.set(self.make(i));
+                self.seen = self.seen + len(showd(g.d));
+                self.kept = g.d;
+                if self.v.len() < 4 { self.v.push(self.make(i)); }
+                else {
+                    let vg = self.v.get(i % 4) or Cell { };
+                    self.v.set(i % 4, self.make(i + 1)) or discard;
+                    self.seen = self.seen + len(showd(vg.d));
+                }
+            }
+        }
+        fn main() {
+            let h = H { };
+            let mut i = 0;
+            while i < 3000 { h.churn(i); i = i + 1; }
+            println("kept=", showd(h.kept), " seen=", h.seen);
+        }
+    "##;
+    let bin = harness::unique_bin("hale_form_enum_cells_nested_outlive");
+    harness::build_source_asan(src, &bin);
+    let out = Command::new(&bin)
+        .env("LOTUS_NO_CHUNK_POOL", "1")
+        .output()
+        .expect("run");
+    let _ = std::fs::remove_file(&bin);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "non-zero {:?}; stdout: {stdout}; stderr: {stderr}", out.status);
+    assert!(stdout.contains("kept=s2995s2995! seen=31744"), "stdout: {stdout}; stderr: {stderr}");
 }

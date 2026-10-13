@@ -124,6 +124,7 @@ unsigned short ntohs(unsigned short);
 #define SO_SNDBUF 7
 #define SO_RCVTIMEO 20
 #define SO_SNDTIMEO 21
+#define SO_ERROR 4
 #define IPPROTO_IP 0
 #define IPPROTO_TCP 6
 #define IPPROTO_UDP 17

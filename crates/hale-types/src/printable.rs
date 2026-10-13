@@ -28,7 +28,7 @@ pub const PRINTABLE_PRIMS: &[PrimType] = &[
     PrimType::Int,
     PrimType::Bool,
     PrimType::Float,
-    PrimType::Decimal,
+    PrimType::DECIMAL,
     PrimType::Duration,
     PrimType::Time,
     PrimType::StringView,
@@ -37,7 +37,16 @@ pub const PRINTABLE_PRIMS: &[PrimType] = &[
 /// The element types a fixed array or a `bounded` renders with: the
 /// scalars, whose storage is inline where the renderer walks it.
 pub const SEQUENCE_ELEMENT_PRIMS: &[PrimType] =
-    &[PrimType::Int, PrimType::Float, PrimType::Bool, PrimType::Decimal, PrimType::Duration];
+    &[PrimType::Int, PrimType::Float, PrimType::Bool, PrimType::DECIMAL, PrimType::Duration];
+
+/// `p`, with a `Decimal` of any scale as plain `Decimal`: every scale
+/// prints (its digits at its scale).
+fn any_scale(p: PrimType) -> PrimType {
+    match p {
+        PrimType::Decimal(_) => PrimType::DECIMAL,
+        other => other,
+    }
+}
 
 /// A type as the printable rule sees it, one level deep; `T` is the
 /// reader's own type, for the children the rule may look at.
@@ -81,13 +90,13 @@ pub fn prints_at<T>(t: &T, depth: u32, shape_of: &impl Fn(&T) -> PrintShape<T>) 
         return false;
     }
     match shape_of(t) {
-        PrintShape::Prim(p) => PRINTABLE_PRIMS.contains(&p),
+        PrintShape::Prim(p) => PRINTABLE_PRIMS.contains(&any_scale(p)),
         PrintShape::Enum | PrintShape::Unseen => true,
         PrintShape::Record(fields) => fields.iter().all(|f| prints_at(f, depth + 1, shape_of)),
         PrintShape::Alias(inner) => prints_at(&inner, depth + 1, shape_of),
         PrintShape::Tuple(parts) => parts.iter().all(|p| prints_at(p, depth + 1, shape_of)),
         PrintShape::Sequence(elem) => {
-            matches!(shape_of(&elem), PrintShape::Prim(p) if SEQUENCE_ELEMENT_PRIMS.contains(&p))
+            matches!(shape_of(&elem), PrintShape::Prim(p) if SEQUENCE_ELEMENT_PRIMS.contains(&any_scale(p)))
         }
         PrintShape::NoTextForm => false,
     }

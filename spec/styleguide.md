@@ -634,12 +634,14 @@ websocket's client is the reference). **[convention]**
 - A single-writer state locus read from other pools: pin it, and
   poll scalar fields across pools rather than sharing heap
   values. **[convention]**
-- TLS on an async_io pool reads with `recv_into` /
-  `recv_stamped_into`, which park the coroutine. The handshake
-  (`connect`, `upgrade`) and `recv_bytes` still block the worker
-  (§7), and the compiler warns where a handler on such a pool
-  reaches them — so does `std::http`'s https client, which uses
-  both. **[warn]**
+- TLS on an async_io pool parks like plain TCP: the handshake
+  (`connect`, `connect_within`, `upgrade`), `send_bytes` and every
+  read (`recv_bytes`, `recv_into`, `recv_stamped_into`) swap the
+  coroutine out while the socket is not ready, so the `std::http`
+  https client belongs there as much as the plain-http one. What
+  still runs on the worker is the name lookup of a non-numeric
+  host (`getaddrinfo`): a client of a host whose resolver is slow
+  dials an address, or lives on its own pool. **[convention]**
 
 ### C4. accept / release — flows, not residents
 
@@ -1221,13 +1223,12 @@ Write the workaround knowing it's a placeholder.
   topic shape). Keyed routing covers the *bounded/known* key-set
   case — including String keys — but an unbounded,
   runtime-created subject set still has no shape.
-- **TLS parks only its reads into a builder.** On a `where
-  async_io` pool `recv_into` / `recv_stamped_into` park the
-  coroutine; the handshake (`connect`, `upgrade`) and `recv_bytes`
-  block the thread, and `send_bytes` is a plain `SSL_write` on it.
-  Read with `recv_into`, and keep the handshake — and the
-  `std::http` https client, which uses `connect` and `recv_bytes` —
-  off async_io pools (C3).
+- **A dial resolves its host name on the thread.** On a `where
+  async_io` pool a connect (tcp or tls) and every TLS wait park
+  the coroutine, but a non-numeric host is resolved with
+  `getaddrinfo(3)` first, on the worker, and a connect deadline
+  does not cover it. A slow resolver stalls the pool for as long
+  as it takes: dial an address, or resolve once and keep it (C3).
 
 ### Sharp edges — current limitations, step around them
 

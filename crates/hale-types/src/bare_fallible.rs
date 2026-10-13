@@ -51,6 +51,21 @@ fn judge_narrowing((site, row): (ConversionSite, &ConversionRow)) -> Option<Diag
     }
     if let Some(scale) = &row.scale {
         let divisor = crate::unit_quantities::grouped(scale.factor.denominator());
+        // `Decimal<S>`: a narrowing `.rescale(T)` drops the digits past
+        // `T`'s last place; the program says what becomes of them.
+        if let crate::ty::Ty::Prim(hale_syntax::ast::PrimType::Decimal(to)) = row.to {
+            return Some(Diag::ty(
+                row.span,
+                format!(
+                    "`.rescale({to})` narrows `{}` to `{}`, dividing its mantissa by {divisor}, and says nothing \
+                     of the digits it drops: round them (`or trunc`, `or floor`, `or ceil`, `or half_up`, \
+                     `or half_even`), or refuse a nonzero one (`or <value>`, `or raise`, `or handler(err)` \
+                     with the `InexactError`)",
+                    row.from.display(),
+                    row.to.display(),
+                ),
+            ));
+        }
         // A type the program declared can take a policy; one no
         // declaration names cannot, and neither can the stdlib's
         // `Duration` and `Time`, which are the primitives (U4).

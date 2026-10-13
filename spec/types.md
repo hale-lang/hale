@@ -12,7 +12,7 @@ document tells you what's *meaningfully* valid.
 | `Int` | i64 | Signed; default for integer literals |
 | `Uint` | i64 | Unsigned at the type level; codegen lowers as i64. Parser-recognized; full lowering pending a workload that exercises the unsigned-arithmetic distinction. |
 | `Float` | f64 | IEEE 754 double; default for float literals |
-| `Decimal` | i128 | Mantissa with implicit scale 9 (`mantissa × 10^-9`). Distinct from `Float` at the type level; same-shape arithmetic with scale-adjusted mul/div. Suffix `d` on literals (`1.50d`). **Nine fractional digits, exactly** (2026-10-12, downstream handoff): a literal with a nonzero digit past the ninth place (`0.1234567891d`), or whose mantissa no i128 holds, is a check error at the literal ("Decimal literal \`0.1234567891d\` cannot be represented…"), and `std::str::parse_decimal` of such text is its `ParseError` — never a silent truncation; zeros past the ninth place are the same value and are accepted. **Arithmetic truncates toward zero at scale 9**: `+`, `-`, `%` are exact; `*` is `(a × b) / 10⁹` and `/` is `(a × 10⁹) / b`, each an integer division that drops the digits past the ninth place toward zero (`1.0d / 3.0d` is `0.333333333`, `-1.0d / 3.0d` is `-0.333333333`, `0.00000001d * 0.123456789d` is `0.000000001`, `0.000000001d * 0.5d` is `0`), with no rounding and no diagnostic; the i128 intermediate wraps like `Int` arithmetic past ~10^19 in magnitude. `std::decimal::format(d, places)` is the rounding surface (half-up). Real arbitrary-precision deferred. |
+| `Decimal<S>`, `Decimal` | i128 | Fixed point: an i128 mantissa at the scale `S` (`mantissa × 10^-S`), `S` an integer literal from 0 to 18 that is **part of the type**; plain `Decimal` is `Decimal<9>`, the same type (2026-10-12, [§ Decimal<S>](#decimals--the-scale-is-part-of-the-type)). Every scale is the one 16-byte, 16-aligned layout. Distinct from `Float` at the type level; suffix `d` on literals (`1.50d`). A literal holds no more places than the scale of the place it flows into (a check error at the literal otherwise, never a truncation); `+ - %` are exact, `*` and `/` truncate toward zero at the scale; two scales never mix, and `d.rescale(T)` converts. Real arbitrary-precision deferred. |
 | `String` | ptr (NUL-terminated) | UTF-8 bytes, C-style NUL-terminated. Single-pointer ABI to fit return-by-value through the m49 calling convention. Embedded NUL truncates — use `Bytes` for binary content. Allocated in the caller's arena (or the lazy global payload arena for stdlib returns whose lifetime needs to outlive the call). |
 | `Bool` | i1 | `true` / `false` |
 | `Time` | i64 | Nanoseconds since the Unix epoch, UTC (GH #607, 2026-09-14). A literal is ISO-8601 between backticks — `` `2026-05-08T12:00:00Z` ``, an optional fraction of one to nine digits, an optional `Z`; an offset such as `+01:00` is a compile error, never read as UTC — and is parsed at check time. Declared by the stdlib (`type Time = point Duration;`, GH #1076 U4, spec/units.md § The stdlib's time catalogue): a point over `Duration` with no `origin:`, so the unit dialect's algebra of points is its arithmetic: `Time ± Duration → Time`, `Duration + Time → Time`, `Time − Time → Duration`; anything else with a `Time` operand is refused, naming both. Orders and compares as an instant. `to_string` / `println` render ISO-8601, the fraction only when it is not zero. Before the epoch is negative, not an error. It holds `1677-09-21T00:12:43.145224192Z` through `2262-04-11T23:47:16.854775807Z`: a literal past either end is a check error at the literal, `parse_time` of one is its `ParseError`, and `time_from_unix` or `Time ± Duration` past either end is a runtime violation (spec/stdlib.md `std::time`), never a wrapped instant. On the wire and in a struct it is the same 8 bytes as `Int`; over FFI it is `i64`. `std::time::current()` reads the wall clock as one; `iso8601`, `parse_time`, `unix`, `nanos`, `from_nanos`, `time_from_unix` convert. Was a string-shaped placeholder until v0.20.0. |
@@ -38,7 +38,7 @@ type set above carries an additional axis of distinction at the
 `@ffi("c")` boundary: which types have a stable C-ABI mapping.
 `Int` / `Float` / `Bool` / `Duration` / `Time` / `String` /
 `Bytes` / `BytesView` / `StringView` may appear in `@ffi`
-parameter and return positions; `Decimal` / `Uint` are
+parameter and return positions; `Decimal` (any scale) / `Uint` are
 typecheck-rejected (platform-variable ABI or Hale-internal).
 See [`spec/ffi.md`](./ffi.md) for the full marshalling table and
 the lifetime contract.
@@ -64,6 +64,131 @@ result NaN, and `-0.0` orders below `0.0` (`min(0.0, -0.0)` is
 `abs(nan)` is NaN). They lower to `llvm.minimum` / `llvm.maximum` /
 `llvm.fabs`, inline on every target (`f64.min` / `f64.max` /
 `f64.abs` on `wasm32`), so none needs a libm symbol or host import.
+
+## Decimal<S> — the scale is part of the type
+
+A `Decimal<S>` is a fixed-point number: an i128 mantissa `m` read as
+`m × 10^-S`. `S`, the scale, is an integer literal from 0 to 18
+written in the type (`Decimal<18>`, `Decimal<2>`, `Decimal<0>`), and
+two scales are two types: they never unify, and nothing converts
+between them implicitly. Plain `Decimal` is `Decimal<9>`, the same
+type under either spelling, with the behaviour and the layout
+`Decimal` always had. `Decimal<19>` (or a scale that is not an
+integer literal) is a parse error at the scale: an i128 mantissa at
+scale 18 still holds twenty integer digits (about ±1.7 × 10²⁰), and
+`10^S` is an `Int`, which the conversions multiply and divide by.
+
+**Layout.** Every scale is the one i128 (16 bytes, align 16) in a
+struct field, a locus param, a bus payload and a return; the scale
+lives only in the type, so changing a field's scale changes no
+offset. `Decimal` is not FFI-portable at any scale.
+
+**Literals.** A Decimal literal (`1.5d`) has no scale of its own: it
+takes the scale of the place it flows into — a `let` ascription, a
+parameter, a struct field, a locus param or `const` ascription, a
+`return` or a fn body's tail, the other operand of an arithmetic or
+comparison operator, the other argument of `min` / `max`, an array
+literal's element type, a match's scrutinee — and is `Decimal<9>`
+where nothing gives it one (`let a = 1.5d;`). So does an expression
+built only of such values: a negated literal, an arithmetic operator
+over two of them, a block or an `if` whose every value is one, an
+`or` over a `std::str::parse_decimal` / `range_parse_decimal` call
+whose fallback is one. An array, a tuple or a `[v; N]` literal holding
+a Decimal flows into its place element by element, its shape (length,
+arity) held first: a scale-less element takes the element's scale
+whatever its neighbours are, and any other element is held to the
+element type (`[a, 2.34d]` into `[Decimal<2>; 2]`, `a` a `Decimal<2>`,
+is two `Decimal<2>`s; `[1.0d]` is not a `[Decimal; 2]`). So does a
+`bounded` push, and a generic struct literal's field of a parameter
+bound to a Decimal. An `if` or a `match` in expression position joins
+its arms as an operator joins its operands: a scale-less arm takes the
+scale the other arms have, and arms of two scales are mismatched.
+The literal must fit that scale: a nonzero
+digit past the scale's last place, or a mantissa no i128 holds at
+it, is a check error at the literal ("Decimal literal `1.505d`
+cannot be represented: a `Decimal<2>` has 2 fractional digits, and
+this one has a nonzero digit past them (it would be truncated);
+round it to 2 places, or give the place it flows into a wider
+scale"). Zeros past the last place are the same value and are
+accepted (`1.500d` is a `Decimal<2>`).
+
+**Arithmetic** is within one scale. `+`, `-` and `%` are exact
+mantissa operations; `*` is `(a × b) / 10^S` and `/` is
+`(a × 10^S) / b`, each an integer division that drops the digits past
+the `S`th place toward zero (`1.0d / 3.0d` is `0.333333333` at scale 9
+and `0.333333333333333333` at 18; `-1.0d / 3.0d` is the negation; a
+product below one unit of the scale is `0`), with no rounding and no
+diagnostic. The intermediate is the i128 itself up to scale 9, as
+`Decimal` always was, and wraps like `Int` arithmetic past it; above
+scale 9 the product and the scaled dividend are i256, so any two
+operands whose result an i128 holds compute exactly (an i128
+intermediate at scale 18 overflows for operands as small as 14), and
+only a result past i128 wraps. Comparison orders the mantissas.
+Unary `-`, `abs`, `min` and `max` keep the scale. An operator, a
+binding, an argument or a return whose two Decimals have different
+scales is refused, naming both: "binary op: `Decimal<18>` and
+`Decimal` are different scales: a Decimal's scale is part of its
+type, and two scales never mix; convert one explicitly
+(`.rescale(18)`)", "`Decimal<18>` is not `Decimal`: …".
+
+**`d.rescale(T)`** is the one conversion between scales, `T` an
+integer literal from 0 to 18, typed `Decimal<T>`:
+
+- widening (`T >= S`) multiplies the mantissa by `10^(T-S)` and is
+  exact (a mantissa past i128 wraps, as `*` does);
+- narrowing (`T < S`) divides by `10^(S-T)`, and a nonzero dropped
+  digit is a remainder, so the call is fallible exactly as the unit
+  dialect's change of denomination is (spec/units.md § Conversions):
+  its `or` says what becomes of the digits — `or trunc` (toward
+  zero), `or floor`, `or ceil`, `or half_up`, `or half_even` round;
+  `or <value>`, `or raise`, `or handler(err)` and `or fail <payload>`
+  keep the exact quotient and take their path only when a dropped
+  digit is nonzero, with an `InexactError { kind, value, divisor }`
+  (`kind` is the target type, `value` the mantissa — the nearest
+  `Int` — and `divisor` the power of ten). A bare narrowing `rescale`
+  is refused: "`.rescale(2)` narrows `Decimal<18>` to `Decimal<2>`,
+  dividing its mantissa by 10,000,000,000,000,000, and says nothing
+  of the digits it drops: …". `or clamp` / `or wrap` are a range's
+  policies and are refused here.
+
+**Printing.** `to_string`, `println` and `+` with a `String` render
+the value at its scale with trailing zeros trimmed (`12.50d` prints
+`12.5` at every scale; `0.000000000000000001` at 18). The
+fixed-places surface is `std::decimal::format(d, places)` and an
+f-string precision (`{d:.2}`): exactly `places` fraction digits,
+rounded half-up away from zero, `places` clamped to `0..=S` (there is
+no digit past the scale to print).
+
+**Parsing.** `std::str::parse_decimal(s)` and
+`range_parse_decimal(s, start, end)` read at the scale of the place
+their result flows into (scale 9 where nothing gives one): `let p:
+Decimal<18> = std::str::parse_decimal(s) or raise;`. Text with a
+nonzero digit past that scale is the call's `ParseError`, never a
+truncation; zeros past it are accepted.
+
+**On the wire.** A bus payload carries the mantissa (16 bytes) and
+the scale is the topic's type, so a field round-trips every digit its
+scale holds; a payload's contract shape tags a `Decimal<S>` field
+`d<S>` for `S` other than 9 (`d18`; plain `Decimal` keeps `d`,
+spec/model.md § The shape of a type), so a publisher and a subscriber
+that disagree on a scale disagree on the contract. The JSON codec
+(`T::to_json` / `T::from_json`, the `json:` tag in spec/semantics.md) writes a
+`Decimal<S>` field as a JSON number with its exact digits and reads it
+back at the field's scale; a number with a nonzero digit past the
+scale is the field's `wrong_type`. An api surface's codecs (JSON,
+protobuf) do not carry a Decimal at any scale (spec/api.md § Codecs):
+a row that names one is refused.
+
+**Units.** A quantity, an identity and a range count an `Int`
+(spec/units.md), so `quantity Decimal<18> in wei` is refused as
+`quantity Decimal in wei` is ("a quantity counts an `Int`, and
+`Decimal<18>` is not one").
+
+**Generics.** `Decimal<S>` is a generic argument like any primitive:
+`Box<Decimal<18>>` is the monomorph `Box_Decimal18` (plain `Decimal`
+keeps the token `Decimal`), and a literal in a field of a type
+parameter bound to `Decimal<S>` (`let b: Box<Decimal<18>> = Box {
+value: 0.5d };`) takes `S`.
 
 ## Scalar types (GH #1076)
 
@@ -673,7 +798,8 @@ for the narrowing direction (LLVM `fptosi` / `sitofp`):
   `Float(i)` widens an `Int` to a `Float` (`sitofp`). Each is the
   identity on its own type, and rejects any other argument type.
   They are the only two numeric casts: there is no `String(x)`,
-  `Bool(x)`, `Bytes(x)` or `Decimal(x)` — those names are types.
+  `Bool(x)`, `Bytes(x)` or `Decimal(x)` — those names are types; a
+  Decimal changes scale by `d.rescale(T)` (§ Decimal<S>).
   `Duration(x)` and `Time(x)` are the unit dialect's conversions of a
   value of the time component (spec/units.md § Conversions), never of
   an `Int` (`n * 1ns` makes a count a `Duration`).
@@ -942,6 +1068,10 @@ to that name. The primitive vocabulary is:
 Int  Float  Bool  String  Duration  Decimal  Time
 Bytes  BytesView  BytesMut  StringView
 ```
+
+`Decimal` stands for every scale: `Decimal<S>`'s token is
+`Decimal<S>` without the brackets (`Box<Decimal<18>>` is
+`Box_Decimal18`), and plain `Decimal`'s (`Decimal<9>`) is `Decimal`.
 
 `Uint` is the one primitive that may NOT be a generic argument: it
 is parser-recognized with no codegen representation in any storage
@@ -1648,7 +1778,7 @@ type with the same name wins.
 |---|---|---|
 | `@form(vec)` | `IndexError` | `kind: String`, `index: Int`, `len: Int` |
 | `@form(hashmap)` | `KeyError` | `kind: String` (also surfaces `IndexError` on `key_at` / `entry_at` — those are index-based, added 2026-05-16) |
-| `@form(ring_buffer)` | `EmptyError` | `kind: String` |
+| `@form(ring_buffer)`, `@form(heap)` | `EmptyError` | `kind: String` |
 | `std::io::fs::*` / `std::io::tcp::*` | `IoError` | `kind: String`, `errno: Int`, `path: String` |
 
 The `IoError` payload is the unified shape for the
