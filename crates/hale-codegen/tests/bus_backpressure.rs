@@ -193,6 +193,62 @@ fn cross_thread_flood_to_main_queue_is_bounded() {
     assert!(rss < 200, "pool->main flood RSS {rss} MB with {sent} sent while main spun (expected < 200)");
 }
 
+/// A subscriber born on main while a pool floods its topic: its birth
+/// spins 50 ms, so the flood parks a full queue's worth for it and waits
+/// at the readiness cap. Main's post to its own queue never waits, so
+/// readying it in rounds never ended while the source ran: each round
+/// posted the list the source had parked during the last, and main's queue
+/// took the whole flood (2M sent before `Counter { }` returned, 1.1 GB;
+/// under a loaded box the same loop reached 16 GB in a failure-delivery
+/// fixture). Readying it now posts the list and closes the window in one
+/// hold, and the source then waits at main's full queue.
+const READY_ON_MAIN_MID_FLOOD: &str = r#"
+    type Tick { n: Int; }
+    locus Counter {
+        params { count: Int = 0; }
+        bus { subscribe "rw" as on_tick of type Tick; }
+        birth() {
+            let until = std::time::monotonic_ns() + 50000000;
+            while (std::time::monotonic_ns() < until) { }
+        }
+        fn on_tick(t: Tick) { self.count = self.count + 1; }
+    }
+    locus Source {
+        params { sent: Int = 0; }
+        bus { publish "rw" of type Tick; }
+        run() { while self.sent < 2000000 { "rw" <- Tick { n: self.sent }; self.sent = self.sent + 1; } }
+    }
+    main locus App {
+        params { src: Source = Source { }; }
+        placement { src: cooperative(pool = side); }
+        run() {
+            let started = std::time::monotonic_ns() + 10000000000;
+            while (self.src.sent == 0 && std::time::monotonic_ns() < started) { }
+            let c = Counter { };
+            let statm = std::io::fs::read_file("/proc/self/statm") or "";
+            let after = self.src.sent;
+            println("sent_after_birth=" + to_string(after));
+            print("rss_statm=");
+            println(statm);
+            let deadline = std::time::monotonic_ns() + 60000000000;
+            while (c.count < 2000000 - after && std::time::monotonic_ns() < deadline) { std::time::sleep(1ms); }
+            println("missing=" + to_string(2000000 - after - c.count));
+        }
+    }
+    fn main() { App { }; }
+"#;
+
+#[test]
+fn a_subscriber_readied_on_main_mid_flood_closes_its_window() {
+    let field = run_fields("ready_on_main", READY_ON_MAIN_MID_FLOOD);
+    let rss = harness::statm_resident_bytes(&field("rss_statm")) / 1048576;
+    let sent: i64 = field("sent_after_birth").parse().expect("a count");
+    assert!(sent < 4 * 8192, "readying the subscriber went on with the flood: {sent} sent before it returned");
+    assert!(rss < 200, "ready-on-main RSS {rss} MB with {sent} sent before readiness returned (expected < 200)");
+    let missing: i64 = field("missing").parse().expect("a count");
+    assert!(missing <= 0, "{missing} ticks sent after the subscriber's birth never reached it");
+}
+
 /// A flood whose handler publishes: the at-cap inline drain runs `Sink`'s
 /// handler inside the `Source`'s post, and that handler publishes a
 /// `Reply`. The nested publish used to clear the wire deserializer the

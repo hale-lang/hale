@@ -2297,7 +2297,14 @@ its `KNOWN_OPEN` table, which is empty today.
   waits). Nor does a consumer that a producer is blocked on,
   since that producer may be a readiness step posting parked
   cells, or wait on one. Either still parks behind every earlier
-  cell, so order holds. A pinned subscriber transfers that
+  cell, so order holds. A subscriber on main's own queue, readied
+  on main while other threads run, has its parked cells posted and
+  its window closed in one step: main's post to its own queue never
+  waits, so posting them in rounds, each taking what a producer
+  parked during the last, never ended while the producer kept
+  publishing, and main's queue took the whole flood. A publisher
+  that arrives during that step posts behind the parked cells,
+  under main's queue bound (`bus_backpressure.rs`). A pinned subscriber transfers that
   exemption to its thread before birth; its mailbox stays current
   so already-born nested subscribers can continue receiving. The closed-world optimization that turns a send
   into a direct call (`spec/semantics.md` § "Topic declarations →

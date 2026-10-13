@@ -1633,6 +1633,13 @@ row	App@literal1	App	main	default
 row	App@literal1.src	Source	pool:side	entry	off owner
 row	App@literal1.sub	Counter	main	default
 
+== crates/hale-codegen/tests/bus_backpressure.rs#18fba47e
+root	App	the entry
+domain	pool:side
+row	App@literal1	App	main	default
+row	App@literal1.src	Source	pool:side	entry	off owner
+dynamic	Counter	on main	in the seed
+
 == crates/hale-codegen/tests/bus_bounded_topics.rs#32b214f8
 root	App	the entry
 domain	pinned:App@literal1.p	cpus 0

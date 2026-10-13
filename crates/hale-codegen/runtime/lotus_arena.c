@@ -15231,11 +15231,62 @@ static int lotus_bus_park_if_unready(void *handler, void *self,
     return 1;
 }
 
+/* Post one parked cell to where it was routed, with the post TLS it was
+ * parked with. */
+static void lotus_bus_parked_post(lotus_bus_parked_t *c) {
+    g_bus_pending_wire_deser = c->wire_deser;
+    if (c->rec_pub) g_bus_pending_rec_pub = c->rec_pub;
+    uint64_t prev_gen = g_bus_pending_gen;
+    g_bus_pending_gen = c->gen;
+    if (c->mailbox) {
+        lotus_mailbox_post(c->mailbox, c->handler, c->self_ptr, c->payload, c->size);
+    } else if (c->coop_pool) {
+        lotus_coop_pool_post_bus(c->coop_pool, c->handler, c->self_ptr, c->payload, c->size);
+    } else {
+        lotus_bus_queue_enqueue(c->queue, c->handler, c->self_ptr, c->payload, c->size);
+    }
+    g_bus_pending_gen = prev_gen;
+    g_bus_pending_wire_deser = NULL;
+    g_bus_pending_rec_pub = 0;
+    if (c->rec_pub && lotus_obs_record_enqueue && lotus_obs_live) {
+        lotus_obs_record_enqueue(c->rec_pub, c->self_ptr);
+    }
+}
+
+/* `u`'s window closes, the lock held: delivery to it is no longer parked. */
+static void lotus_bus_ready_close_locked(lotus_bus_unready_t *u) {
+    *u = g_bus_unready[--g_bus_unready_len];
+    __atomic_sub_fetch(&lotus_bus_unready_count, 1, __ATOMIC_SEQ_CST);
+    /* No wake on wasm32: its only waiter, the cap wait in
+     * `lotus_bus_park_if_unready`, is compiled out there
+     * (PinnedThreads × wasm32 = Reject, so the module's one
+     * thread holds every window), and no other thread exists
+     * to wake. Compiled out so the module does not import
+     * pthread_cond_broadcast (P3 T7). */
+#ifndef __wasm__
+    pthread_cond_broadcast(&g_bus_ready_cond);
+#endif
+}
+
 /* Delivery to `self` is eligible from here: post what it parked, in
  * order. The list is taken out under the lock and posted outside it
  * (a post can drain inline, and a handler then publish); what is
  * parked meanwhile is posted in the next round, behind it, so order
- * holds, and the window closes once a round finds nothing. */
+ * holds, and the window closes once a round finds nothing.
+ *
+ * A subscriber on main's own queue, readied on main while other threads
+ * run, is the exception: its rounds could never end. Main's post to its
+ * own queue never waits (nothing else drains it), so a producer on
+ * another thread parks a new list as fast as main posts the last, every
+ * round finds one, and main's queue grew by a list a round without a
+ * bound (16 GB in seconds under a loaded box, a pool flooding a
+ * subscriber main had just replaced). There the list is posted under the
+ * lock and the window closes in the same hold: a producer that arrives
+ * meanwhile waits on the lock, finds the window closed, and posts to the
+ * queue behind the list, where the queue's bound holds it. Such a post
+ * runs no handler (main's post at the cap grows the queue, never drains
+ * it inline, and multithreaded the queue is never drained inline), so
+ * nothing re-enters the lock. */
 void lotus_bus_ready(void *self) {
     if (__atomic_load_n(&lotus_bus_unready_count, __ATOMIC_ACQUIRE) == 0)
         return;
@@ -15248,20 +15299,23 @@ void lotus_bus_ready(void *self) {
         }
         lotus_bus_parked_t *p = u->head;
         if (!p) {
-            *u = g_bus_unready[--g_bus_unready_len];
-            __atomic_sub_fetch(&lotus_bus_unready_count, 1, __ATOMIC_SEQ_CST);
-            /* No wake on wasm32: its only waiter, the cap wait in
-             * `lotus_bus_park_if_unready`, is compiled out there
-             * (PinnedThreads × wasm32 = Reject, so the module's one
-             * thread holds every window), and no other thread exists
-             * to wake. Compiled out so the module does not import
-             * pthread_cond_broadcast (P3 T7). */
-#ifndef __wasm__
-            pthread_cond_broadcast(&g_bus_ready_cond);
-#endif
+            lotus_bus_ready_close_locked(u);
             pthread_mutex_unlock(&g_bus_ready_lock);
             return;
         }
+#ifndef __wasm__
+        if (!p->mailbox && !p->coop_pool && p->queue
+            && __atomic_load_n(&g_bus_has_pinned, __ATOMIC_ACQUIRE)
+            && pthread_equal(pthread_self(), p->queue->owner)) {
+            u->head = u->tail = NULL;
+            u->parked = 0;
+            for (lotus_bus_parked_t *c = p; c; c = c->next) lotus_bus_parked_post(c);
+            lotus_bus_ready_close_locked(u);
+            pthread_mutex_unlock(&g_bus_ready_lock);
+            lotus_bus_parked_free(p);
+            return;
+        }
+#endif
         u->head = u->tail = NULL;
         u->parked = 0;
         /* No wake on wasm32: as above, no thread waits at the cap. */
@@ -15271,23 +15325,7 @@ void lotus_bus_ready(void *self) {
         pthread_mutex_unlock(&g_bus_ready_lock);
         size_t posted_to_own_mailbox = 0;
         for (lotus_bus_parked_t *c = p; c; c = c->next) {
-            g_bus_pending_wire_deser = c->wire_deser;
-            if (c->rec_pub) g_bus_pending_rec_pub = c->rec_pub;
-            uint64_t prev_gen = g_bus_pending_gen;
-            g_bus_pending_gen = c->gen;
-            if (c->mailbox) {
-                lotus_mailbox_post(c->mailbox, c->handler, c->self_ptr, c->payload, c->size);
-            } else if (c->coop_pool) {
-                lotus_coop_pool_post_bus(c->coop_pool, c->handler, c->self_ptr, c->payload, c->size);
-            } else {
-                lotus_bus_queue_enqueue(c->queue, c->handler, c->self_ptr, c->payload, c->size);
-            }
-            g_bus_pending_gen = prev_gen;
-            g_bus_pending_wire_deser = NULL;
-            g_bus_pending_rec_pub = 0;
-            if (c->rec_pub && lotus_obs_record_enqueue && lotus_obs_live) {
-                lotus_obs_record_enqueue(c->rec_pub, c->self_ptr);
-            }
+            lotus_bus_parked_post(c);
             if (c->mailbox && c->mailbox == lotus_mailbox_get_current()) {
                 if (++posted_to_own_mailbox >= bus_queue_max_cap()) {
                     lotus_mailbox_drain_pending(c->mailbox);
