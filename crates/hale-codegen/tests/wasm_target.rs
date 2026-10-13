@@ -139,6 +139,62 @@ fn wasm_string_int_concat_formats() {
     }
 }
 
+/// `Decimal<S>` above scale 9 on wasm32: the i128 mantissa at scale 18,
+/// its `*` and `/` through the i256 intermediate (which LLVM expands
+/// inline on wasm32), `.rescale(T)` and the scale-aware renderer
+/// (`lotus_decimal_to_string`'s zero-padded fraction is written by hand:
+/// the wasm libc shim's snprintf has no `*` width) must all agree with
+/// native.
+#[test]
+fn wasm_decimal_scale_18_matches_native() {
+    let (Some(_clang), Some(_wasm_ld), Some(node)) =
+        (tool("clang"), tool("wasm-ld"), tool("node"))
+    else {
+        eprintln!("SKIP wasm_decimal_scale_18_matches_native: toolchain missing");
+        return;
+    };
+    let src = r#"
+        target wasm { }
+        @ffi("js") fn console_log(msg: String);
+        fn main() {
+            let a: Decimal<18> = 1.5d;
+            let wei: Decimal<18> = 0.000000000000000003d;
+            let big: Decimal<18> = 100d;
+            console_log("sum=" + (a * a + wei));
+            console_log("wide=" + (big * big));
+            console_log("third=" + (1d / 3d * a));
+            console_log("narrow=" + ((a / 3d).rescale(4) or half_even));
+            console_log("fmt=" + std::decimal::format(a / 7d, 6));
+            let p: Decimal<18> = std::str::parse_decimal("0.123456789012345678") or 0d;
+            console_log("parsed=" + p);
+        }
+    "#;
+    let wasm = tmp("decimal18.wasm");
+    build_wasm(src, &wasm);
+    let loader = wasm.with_extension("mjs");
+    let run = Command::new(&node).arg(&loader).output().expect("run node loader");
+    let stdout = String::from_utf8_lossy(&run.stdout);
+    let _ = std::fs::remove_file(&wasm);
+    let _ = std::fs::remove_file(&loader);
+    for expect in [
+        "sum=2.250000000000000003",
+        "wide=10000",
+        "third=0.499999999999999999",
+        "narrow=0.5",
+        "fmt=0.214286",
+        "parsed=0.123456789012345678",
+    ] {
+        assert!(
+            stdout.contains(expect),
+            "wasm Decimal<18> disagrees with native (expected line {:?}):\n\
+             stdout: {}\nstderr: {}",
+            expect,
+            stdout,
+            String::from_utf8_lossy(&run.stderr)
+        );
+    }
+}
+
 /// `@ffi("js")` marshals Hale `Int` as a JS `number` (f64), not a
 /// `BigInt` (i64). Before, a host handler `(n) => ...` received a
 /// BigInt and had to `Number(n)` everywhere — a recurring sharp edge.
@@ -939,4 +995,93 @@ fn wasm_a_flow_two_owner_types_track_leaves_its_owners_tracker() {
     assert!(run.status.success(), "stdout: {stdout}\nstderr: {}", String::from_utf8_lossy(&run.stderr));
     assert!(stdout.contains("once left=0 right=0"), "stdout: {stdout}\nstderr: {}", String::from_utf8_lossy(&run.stderr));
     assert!(stdout.contains("churn left=0 right=0/2001"), "stdout: {stdout}\nstderr: {}", String::from_utf8_lossy(&run.stderr));
+}
+
+/// `truncate(n)` with `n` at or past the length changes nothing, on
+/// wasm32 too, where `size_t` is 32 bits: an `n` past `UINT32_MAX` used
+/// to be narrowed before the comparison and wrap to a small length,
+/// emptying the vec and reclaiming its elements.
+#[test]
+fn wasm_vec_truncate_past_u32_keeps_the_vec() {
+    let (Some(_clang), Some(_wasm_ld), Some(node)) =
+        (tool("clang"), tool("wasm-ld"), tool("node"))
+    else {
+        eprintln!("SKIP wasm_vec_truncate_past_u32_keeps_the_vec: toolchain missing");
+        return;
+    };
+    let src = r#"
+        target wasm { }
+        @ffi("js") fn console_log(msg: String);
+        type Msg { s: String = ""; }
+        @form(vec) locus V { capacity { heap xs of Msg; } }
+        fn main() {
+            let v = V { };
+            v.push(Msg { s: "a" });
+            v.push(Msg { s: "b" });
+            v.push(Msg { s: "c" });
+            v.truncate(4294967296);
+            let last = v.get(2) or Msg { s: "gone" };
+            console_log("len=" + v.len() + " last=" + last.s);
+            v.truncate(1);
+            console_log("len=" + v.len());
+        }
+    "#;
+    let wasm = tmp("vec_truncate_u32.wasm");
+    build_wasm(src, &wasm);
+    let loader = wasm.with_extension("mjs");
+    let run = Command::new(&node).arg(&loader).output().expect("run node loader");
+    let stdout = String::from_utf8_lossy(&run.stdout);
+    let _ = std::fs::remove_file(&wasm);
+    let _ = std::fs::remove_file(&loader);
+    assert!(
+        stdout.contains("len=3 last=c") && stdout.contains("len=1"),
+        "truncate past u32 on wasm32:\nstdout: {}\nstderr: {}",
+        stdout,
+        String::from_utf8_lossy(&run.stderr)
+    );
+}
+
+/// GH #731 (review of #1543): a `perspective(P)` field with no initializer
+/// holds the slot the program designates. The portable capability check
+/// used to see no receiver type behind it ("cannot establish what `route`
+/// requires on wasm32: its receiver's type is not known here") although
+/// `App` designates a pure impl; the call now fans to the loci that serve
+/// the perspective, and the program builds for wasm32 and routes to the
+/// designated impl in node.
+#[test]
+fn wasm_held_perspective_slot_routes_to_the_designated_impl() {
+    let (Some(_clang), Some(_wasm_ld), Some(node)) =
+        (tool("clang"), tool("wasm-ld"), tool("node"))
+    else {
+        eprintln!("SKIP wasm_held_perspective_slot_routes_to_the_designated_impl: toolchain missing");
+        return;
+    };
+    let src = r#"
+        target wasm { }
+        @ffi("js") fn console_log(msg: String);
+        perspective Router { fn route(x: Int) -> Int; }
+        locus Plus : serves Router { fn route(x: Int) -> Int { return x + 100; } }
+        locus Holder {
+            params { p: perspective(Router); }
+            fn go(x: Int) -> Int { return self.p.route(x); }
+        }
+        main locus App {
+            params { r: perspective(Router) = Plus { }; h: Holder = Holder { }; }
+            run() { console_log("routed=" + self.h.go(1)); }
+        }
+        fn main() { App { }; }
+    "#;
+    let wasm = tmp("held_perspective.wasm");
+    build_wasm(src, &wasm);
+    let loader = wasm.with_extension("mjs");
+    let run = Command::new(&node).arg(&loader).output().expect("run node loader");
+    let stdout = String::from_utf8_lossy(&run.stdout);
+    let _ = std::fs::remove_file(&wasm);
+    let _ = std::fs::remove_file(&loader);
+    assert!(
+        stdout.contains("routed=101"),
+        "the held slot routes to the designated impl:\nstdout: {}\nstderr: {}",
+        stdout,
+        String::from_utf8_lossy(&run.stderr)
+    );
 }

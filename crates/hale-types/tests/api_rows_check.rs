@@ -179,7 +179,9 @@ fn the_fixture_program_is_admitted() {
 /// an `@rpc` attribute and a hub's stream, and `includes lib::reader` on a
 /// role, all reach the library's role (roles are bundle-global vocabulary,
 /// so the alias collapses to the role's own name); the hub's stream may
-/// carry the library's topic as well. An alias the seed does not import,
+/// carry the library's topic as well. The library also declares a fn named
+/// `reader`: the role is looked up in the roles' own namespace, so the fn
+/// keeps its rename and `lib::reader()` still calls it. An alias the seed does not import,
 /// or a role the library does not declare, is left as written and refused
 /// by law 4 in the author's spelling.
 fn seed_with_role_library(tag: &str, entry: &str) -> std::path::PathBuf {
@@ -192,6 +194,8 @@ fn seed_with_role_library(tag: &str, entry: &str) -> std::path::PathBuf {
         d.join("lib/main.hl"),
         "role reader;
 role writer includes reader;
+// a fn of a role's name: the role is named in a namespace of its own
+fn reader() -> Int { return 7; }
 type Tick { n: Int; }
 topic Ticks { payload: Tick; subject: \"ticks\"; }
 locus Store {
@@ -244,7 +248,11 @@ main locus App {
     bindings {
         lib::Ticks: self.hub requires: [lib::reader], bound: 8, on_full: drop_old;
     }
-    run() { self.hub.stop(); }
+    run() {
+        let seven = lib::reader();
+        println(seven);
+        self.hub.stop();
+    }
 }
 fn main() { App { }; }
 ";

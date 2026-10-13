@@ -1757,7 +1757,13 @@ zero_copy binding produces.
   picks one of `restart` / `restart_in_place` / `quarantine` /
   `reorganize` / `bubble`, or absorbs (returns without calling
   any). A violation that bubbles past the root exits the
-  process non-zero with the violation report on stderr.
+  process non-zero with the violation report on stderr, at
+  the moment the check failed: nothing after it in `main`
+  runs. The report names the epoch the check ran at —
+  `failed at tick (after a delivered cell)`,
+  `at birth`, `at dissolve`, `at its duration epoch`, `at an
+  explicit check` — and a violation re-raised by `bubble(err)`
+  past the root says `bubbled past every on_failure handler`.
 - **No source-level panic / exceptions.** Hale has no
   `panic(msg)`, `assert(cond)`, `throw` / `catch`, or
   implicitly-propagating exception machinery. Failure is

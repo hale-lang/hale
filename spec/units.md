@@ -492,8 +492,9 @@ range's policy, and this conversion divides: …").
 
 A division that leaves a remainder fails with an `InexactError { kind:
 String; value: Int; divisor: Int }` (the target's name, the count
-divided, the divisor), injected where the program declares a quantity
-or a point; a value outside a range with a `RangeError { kind: String;
+divided, the divisor), in every program (a Decimal's narrowing
+`.rescale(T)` fails with it too, spec/types.md § Decimal<S>); a value
+outside a range with a `RangeError { kind: String;
 value: Int; low: Int; high: Int }`, injected where a type declares a
 range.
 

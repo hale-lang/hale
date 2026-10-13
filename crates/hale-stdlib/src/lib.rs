@@ -490,6 +490,7 @@ pub const PATH_RENAMES: &[(&[&str], &str)] = &[
     // its bare `__std_process_*` implementation in process.hl.
     (&["std", "process", "Child"], "__StdProcessChild"),
     (&["std", "process", "ProcessOutput"], "__StdProcessOutput"),
+    (&["std", "process", "SpawnOptions"], "__StdProcessSpawnOptions"),
     // GH #716: the one-owner handle handoff. `__std_process_release`
     // is deliberately absent — it is the shared teardown spine of
     // dissolve and adopt, called bare inside process.hl only.
@@ -499,8 +500,11 @@ pub const PATH_RENAMES: &[(&[&str], &str)] = &[
     (&["std", "process", "kill"], "__std_process_kill"),
     (&["std", "process", "read_stderr"], "__std_process_read_stderr"),
     (&["std", "process", "read_stdout"], "__std_process_read_stdout"),
+    // `run` / `spawn` under a SpawnOptions (cwd, env, timeout, rlimits).
+    (&["std", "process", "run_with"], "__std_process_run_with"),
     (&["std", "process", "signal"], "__std_process_signal"),
     (&["std", "process", "spawn"], "__std_process_spawn"),
+    (&["std", "process", "spawn_with"], "__std_process_spawn_with"),
     (&["std", "process", "try_wait"], "__std_process_try_wait"),
     (&["std", "process", "wait"], "__std_process_wait"),
     (&["std", "process", "write_stdin"], "__std_process_write_stdin"),

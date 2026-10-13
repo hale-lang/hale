@@ -52,6 +52,24 @@ pub(crate) trait ProcessStdlib<'ctx> {
         scope: &Scope<'ctx>,
     ) -> Result<FallibleCallResult<'ctx>, CodegenError>;
 
+    fn lower_std_process_run_with_fallible(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<FallibleCallResult<'ctx>, CodegenError>;
+
+    fn lower_std_process_spawn_with_fallible(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<FallibleCallResult<'ctx>, CodegenError>;
+
+    fn lower_std_process_wait_deadline_fallible(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<FallibleCallResult<'ctx>, CodegenError>;
+
     fn lower_std_process_wait_pid_fallible(
         &mut self,
         args: &[Expr],
@@ -350,143 +368,130 @@ impl<'ctx, 'p> ProcessStdlib<'ctx> for Cx<'ctx, 'p> {
         args: &[Expr],
         scope: &Scope<'ctx>,
     ) -> Result<FallibleCallResult<'ctx>, CodegenError> {
-        if args.len() != 1 {
+        self.lower_process_run(args, scope, false)
+    }
+
+    /// `std::process::__run_with(argv, cwd, env, unset_env, clear_env,
+    /// timeout_ns, cpu_seconds, address_space, open_files, file_size)
+    /// -> __StdProcessOutput fallible(IoError)` — `run` under a
+    /// `SpawnOptions`, the primitive `process.hl`'s `run_with` unpacks
+    /// the record into. The result's `timed_out` says the deadline
+    /// stopped the child.
+    fn lower_std_process_run_with_fallible(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<FallibleCallResult<'ctx>, CodegenError> {
+        self.lower_process_run(args, scope, true)
+    }
+
+    /// `std::process::__spawn_with(argv, cwd, env, unset_env,
+    /// clear_env, timeout_ns, cpu_seconds, address_space, open_files,
+    /// file_size) -> __StdProcessSpawnHandle fallible(IoError)` — the
+    /// handle carries the deadline `wait` / `try_wait` enforce.
+    fn lower_std_process_spawn_with_fallible(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<FallibleCallResult<'ctx>, CodegenError> {
+        self.lower_process_spawn(args, scope, true)
+    }
+
+    /// `std::process::__wait_deadline(pid, deadline_ns, nonblocking)
+    /// -> __StdProcessWaitOutcome fallible(IoError)` — `wait` /
+    /// `try_wait` on a handle with a deadline: code -2 = still running
+    /// (nonblocking), -3 = stopped at the deadline.
+    fn lower_std_process_wait_deadline_fallible(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<FallibleCallResult<'ctx>, CodegenError> {
+        if args.len() != 3 {
             return Err(CodegenError::Unsupported(format!(
-                "std::process::run takes 1 arg (argv: String), got {}",
+                "std::process::__wait_deadline takes 3 args (pid, deadline_ns, \
+                 nonblocking: Int), got {}",
                 args.len()
             )));
         }
-        let (argv_val, argv_ty) = self.lower_expr(&args[0], scope)?;
-        if !matches!(argv_ty, CodegenTy::String | CodegenTy::StringView) {
-            return Err(CodegenError::Unsupported(format!(
-                "std::process::run: argv must be String (newline-\
-                 separated), got {:?}",
-                argv_ty
-            )));
+        let mut ints = Vec::with_capacity(3);
+        for a in args {
+            let (v, ty) = self.lower_expr(a, scope)?;
+            if ty != CodegenTy::Int {
+                return Err(CodegenError::Unsupported(format!(
+                    "std::process::__wait_deadline: arguments are Int, got {:?}",
+                    ty
+                )));
+            }
+            ints.push(v.into_int_value());
         }
-        let argv_val = self.unpack_view_if_needed(argv_val, &argv_ty)?;
         let i32_t = self.context.i32_type();
-        let ptr_t = self.context.ptr_type(AddressSpace::default());
-
-        // Allocate stack slots for the four out-params. Hoisted
-        // to the entry block so a `run()` inside a loop doesn't
-        // grow the stack per iteration.
-        let code_slot = self.alloca_in_entry(i32_t.into(), "proc.run.code.slot")?;
-        let sig_slot = self.alloca_in_entry(i32_t.into(), "proc.run.sig.slot")?;
-        let out_slot = self.alloca_in_entry(ptr_t.into(), "proc.run.out.slot")?;
-        let err_slot = self.alloca_in_entry(ptr_t.into(), "proc.run.err.slot")?;
-
-        let run_fn = self
+        let pid_i32 = self
+            .builder
+            .build_int_truncate(ints[0], i32_t, "proc.waitdl.pid.i32")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let code_slot = self.alloca_in_entry(i32_t.into(), "proc.waitdl.code.slot")?;
+        let sig_slot = self.alloca_in_entry(i32_t.into(), "proc.waitdl.sig.slot")?;
+        let f = self
             .module
-            .get_function("lotus_process_run")
-            .expect("lotus_process_run declared");
+            .get_function("lotus_process_wait_deadline")
+            .expect("lotus_process_wait_deadline declared");
         let ret_i32 = self
             .builder
             .build_call(
-                run_fn,
+                f,
                 &[
-                    argv_val.into(),
+                    pid_i32.into(),
+                    ints[1].into(),
+                    ints[2].into(),
                     code_slot.into(),
                     sig_slot.into(),
-                    out_slot.into(),
-                    err_slot.into(),
                 ],
-                "proc.run.ret",
+                "proc.waitdl.ret",
             )
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
             .try_as_basic_value()
             .left()
             .expect("returns i32")
             .into_int_value();
-        // Non-zero return → fork/exec failure. The C primitive
-        // already set errno before returning so the IoError kind
-        // tag flows naturally through complete_io_fallible_call.
         let is_err = self
             .builder
             .build_int_compare(
                 inkwell::IntPredicate::NE,
                 ret_i32,
                 i32_t.const_zero(),
-                "proc.run.is_err",
+                "proc.waitdl.is_err",
             )
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-
-        // On the success arm, build the ProcessOutput struct in
-        // the locus arena from the four out-params.
         let info = self
             .user_types
-            .get("__StdProcessOutput")
+            .get("__StdProcessWaitOutcome")
             .cloned()
-            .expect("__StdProcessOutput declared in process.hl");
+            .expect("__StdProcessWaitOutcome declared in process.hl");
         let size = info
             .struct_ty
             .size_of()
-            .expect("__StdProcessOutput has known size");
-        let struct_ptr = self.arena_alloc(size, "ProcessOutput.alloc")?;
-
-        // Load each out-param + store into the struct field.
-        let i64_t = self.context.i64_type();
-        let code_i32_v = self
+            .expect("__StdProcessWaitOutcome has known size");
+        let struct_ptr = self.arena_alloc(size, "WaitDeadlineOutcome.alloc")?;
+        let code_i64 = self.load_i32_to_i64(code_slot, "proc.waitdl.code.val")?;
+        let sig_i64 = self.load_i32_to_i64(sig_slot, "proc.waitdl.sig.val")?;
+        self.store_struct_field(
+            &info, struct_ptr, "code", code_i64.into(), "WaitOutcome",
+        )?;
+        self.store_struct_field(
+            &info, struct_ptr, "signal", sig_i64.into(), "WaitOutcome",
+        )?;
+        let path_label = self
             .builder
-            .build_load(i32_t, code_slot, "proc.run.code.val")
+            .build_global_string_ptr("std::process::wait", "proc.waitdl.label")
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
-            .into_int_value();
-        let code_i64 = self
-            .builder
-            .build_int_s_extend(code_i32_v, i64_t, "proc.run.code.i64")
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-        let sig_i32_v = self
-            .builder
-            .build_load(i32_t, sig_slot, "proc.run.sig.val")
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
-            .into_int_value();
-        let sig_i64 = self
-            .builder
-            .build_int_s_extend(sig_i32_v, i64_t, "proc.run.sig.i64")
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-        let stdout_ptr_v = self
-            .builder
-            .build_load(ptr_t, out_slot, "proc.run.stdout.val")
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-        let stderr_ptr_v = self
-            .builder
-            .build_load(ptr_t, err_slot, "proc.run.stderr.val")
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-
-        self.store_struct_field(
-            &info, struct_ptr, "code", code_i64.into(), "ProcessOutput",
-        )?;
-        self.store_struct_field(
-            &info, struct_ptr, "signal", sig_i64.into(), "ProcessOutput",
-        )?;
-        self.store_struct_field(
-            &info, struct_ptr, "stdout", stdout_ptr_v, "ProcessOutput",
-        )?;
-        self.store_struct_field(
-            &info, struct_ptr, "stderr", stderr_ptr_v, "ProcessOutput",
-        )?;
-
-        // Diagnostic-path on IoError = surface label. hale-bun
-        // upstream item 4: routed through the C hint helper so an
-        // ENOENT with a space in argv[0] (shell-split argv passed
-        // to the newline-separated surface) names the real
-        // mistake instead of reading as "binary not on PATH".
-        // errno is still live from the failed primitive here; on
-        // the success arm the label goes unused.
-        let path_label = self.process_surface_label_with_enoent_hint(
-            argv_val,
-            "std::process::run",
-            "std::process::run — argv[0] contains a space; argv is \
-             newline-separated (\"echo\\nhello\"), not shell-split",
-            "proc.run",
-        )?;
+            .as_pointer_value();
         self.complete_io_fallible_call(
             is_err,
             path_label.into(),
             Some((struct_ptr.into(), CodegenTy::TypeRef(
-                "__StdProcessOutput".to_string()
+                "__StdProcessWaitOutcome".to_string()
             ))),
-            "proc.run",
+            "proc.waitdl",
         )
     }
 
@@ -498,106 +503,7 @@ impl<'ctx, 'p> ProcessStdlib<'ctx> for Cx<'ctx, 'p> {
         args: &[Expr],
         scope: &Scope<'ctx>,
     ) -> Result<FallibleCallResult<'ctx>, CodegenError> {
-        if args.len() != 1 {
-            return Err(CodegenError::Unsupported(format!(
-                "std::process::__spawn takes 1 arg (argv: String), got {}",
-                args.len()
-            )));
-        }
-        let (argv_val, argv_ty) = self.lower_expr(&args[0], scope)?;
-        if !matches!(argv_ty, CodegenTy::String | CodegenTy::StringView) {
-            return Err(CodegenError::Unsupported(format!(
-                "std::process::__spawn: argv must be String, got {:?}",
-                argv_ty
-            )));
-        }
-        let argv_val = self.unpack_view_if_needed(argv_val, &argv_ty)?;
-        let i32_t = self.context.i32_type();
-        let i64_t = self.context.i64_type();
-
-        let pid_slot = self.alloca_in_entry(i32_t.into(), "proc.spawn.pid.slot")?;
-        let in_slot = self.alloca_in_entry(i32_t.into(), "proc.spawn.in.slot")?;
-        let out_slot = self.alloca_in_entry(i32_t.into(), "proc.spawn.out.slot")?;
-        let err_slot = self.alloca_in_entry(i32_t.into(), "proc.spawn.err.slot")?;
-
-        let f = self
-            .module
-            .get_function("lotus_process_spawn")
-            .expect("lotus_process_spawn declared");
-        let ret_i32 = self
-            .builder
-            .build_call(
-                f,
-                &[
-                    argv_val.into(),
-                    pid_slot.into(),
-                    in_slot.into(),
-                    out_slot.into(),
-                    err_slot.into(),
-                ],
-                "proc.spawn.ret",
-            )
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
-            .try_as_basic_value()
-            .left()
-            .expect("returns i32")
-            .into_int_value();
-        let is_err = self
-            .builder
-            .build_int_compare(
-                inkwell::IntPredicate::NE,
-                ret_i32,
-                i32_t.const_zero(),
-                "proc.spawn.is_err",
-            )
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-
-        let info = self
-            .user_types
-            .get("__StdProcessSpawnHandle")
-            .cloned()
-            .expect("__StdProcessSpawnHandle declared in process.hl");
-        let size = info
-            .struct_ty
-            .size_of()
-            .expect("__StdProcessSpawnHandle has known size");
-        let struct_ptr = self.arena_alloc(size, "SpawnHandle.alloc")?;
-
-        let pid_i64 = self.load_i32_to_i64(pid_slot, "proc.spawn.pid.val")?;
-        let in_i64 = self.load_i32_to_i64(in_slot, "proc.spawn.in.val")?;
-        let out_i64 = self.load_i32_to_i64(out_slot, "proc.spawn.out.val")?;
-        let err_i64 = self.load_i32_to_i64(err_slot, "proc.spawn.err.val")?;
-        let _ = i64_t;
-
-        self.store_struct_field(
-            &info, struct_ptr, "pid", pid_i64.into(), "SpawnHandle",
-        )?;
-        self.store_struct_field(
-            &info, struct_ptr, "stdin_fd", in_i64.into(), "SpawnHandle",
-        )?;
-        self.store_struct_field(
-            &info, struct_ptr, "stdout_fd", out_i64.into(), "SpawnHandle",
-        )?;
-        self.store_struct_field(
-            &info, struct_ptr, "stderr_fd", err_i64.into(), "SpawnHandle",
-        )?;
-
-        // Same ENOENT space-in-argv[0] hint as run above.
-        let path_label = self.process_surface_label_with_enoent_hint(
-            argv_val,
-            "std::process::spawn",
-            "std::process::spawn — argv[0] contains a space; argv is \
-             newline-separated (\"echo\\nhello\"), not shell-split",
-            "proc.spawn",
-        )?;
-        self.complete_io_fallible_call(
-            is_err,
-            path_label.into(),
-            Some((struct_ptr.into(), CodegenTy::TypeRef(
-                "__StdProcessSpawnHandle".to_string()
-            ))),
-            "proc.spawn",
-        )
+        self.lower_process_spawn(args, scope, false)
     }
 
     /// C2 — `std::process::__wait_pid(pid: Int) ->
@@ -1155,5 +1061,419 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .left()
             .expect("returns ptr")
             .into_pointer_value())
+    }
+
+    /// `run` (`with_opts` false: one arg) and `__run_with` (ten: argv
+    /// and the `SpawnOptions` fields, see `lower_process_option_args`).
+    fn lower_process_run(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+        with_opts: bool,
+    ) -> Result<FallibleCallResult<'ctx>, CodegenError> {
+        let (surface, want) = if with_opts {
+            ("std::process::run_with", 10)
+        } else {
+            ("std::process::run", 1)
+        };
+        if args.len() != want {
+            return Err(CodegenError::Unsupported(format!(
+                "{} takes {} arg(s), got {}",
+                surface,
+                want,
+                args.len()
+            )));
+        }
+        let (argv_val, argv_ty) = self.lower_expr(&args[0], scope)?;
+        if !matches!(argv_ty, CodegenTy::String | CodegenTy::StringView) {
+            return Err(CodegenError::Unsupported(format!(
+                "{}: argv must be String (newline-\
+                 separated), got {:?}",
+                surface, argv_ty
+            )));
+        }
+        let argv_val = self.unpack_view_if_needed(argv_val, &argv_ty)?;
+        let opt_vals = if with_opts {
+            self.lower_process_option_args(&args[1..], scope, surface)?
+        } else {
+            Vec::new()
+        };
+        let i32_t = self.context.i32_type();
+        let ptr_t = self.context.ptr_type(AddressSpace::default());
+
+        // Allocate stack slots for the four out-params. Hoisted
+        // to the entry block so a `run()` inside a loop doesn't
+        // grow the stack per iteration.
+        let code_slot = self.alloca_in_entry(i32_t.into(), "proc.run.code.slot")?;
+        let sig_slot = self.alloca_in_entry(i32_t.into(), "proc.run.sig.slot")?;
+        let out_slot = self.alloca_in_entry(ptr_t.into(), "proc.run.out.slot")?;
+        let err_slot = self.alloca_in_entry(ptr_t.into(), "proc.run.err.slot")?;
+        let timed_slot = self.alloca_in_entry(i32_t.into(), "proc.run.timed.slot")?;
+        self.builder
+            .build_store(timed_slot, i32_t.const_zero())
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+        let mut call_args: Vec<inkwell::values::BasicMetadataValueEnum<'ctx>> =
+            vec![argv_val.into()];
+        call_args.extend(opt_vals);
+        for slot in [code_slot, sig_slot, out_slot, err_slot] {
+            call_args.push(slot.into());
+        }
+        if with_opts {
+            call_args.push(timed_slot.into());
+        }
+        let run_fn = self
+            .module
+            .get_function(if with_opts {
+                "lotus_process_run_with"
+            } else {
+                "lotus_process_run"
+            })
+            .expect("lotus_process_run[_with] declared");
+        let ret_i32 = self
+            .builder
+            .build_call(
+                run_fn,
+                &call_args,
+                "proc.run.ret",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .try_as_basic_value()
+            .left()
+            .expect("returns i32")
+            .into_int_value();
+        // Non-zero return → fork/exec failure. The C primitive
+        // already set errno before returning so the IoError kind
+        // tag flows naturally through complete_io_fallible_call.
+        let is_err = self
+            .builder
+            .build_int_compare(
+                inkwell::IntPredicate::NE,
+                ret_i32,
+                i32_t.const_zero(),
+                "proc.run.is_err",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+        // On the success arm, build the ProcessOutput struct in
+        // the locus arena from the four out-params.
+        let info = self
+            .user_types
+            .get("__StdProcessOutput")
+            .cloned()
+            .expect("__StdProcessOutput declared in process.hl");
+        let size = info
+            .struct_ty
+            .size_of()
+            .expect("__StdProcessOutput has known size");
+        let struct_ptr = self.arena_alloc(size, "ProcessOutput.alloc")?;
+
+        // Load each out-param + store into the struct field.
+        let i64_t = self.context.i64_type();
+        let code_i32_v = self
+            .builder
+            .build_load(i32_t, code_slot, "proc.run.code.val")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .into_int_value();
+        let code_i64 = self
+            .builder
+            .build_int_s_extend(code_i32_v, i64_t, "proc.run.code.i64")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let sig_i32_v = self
+            .builder
+            .build_load(i32_t, sig_slot, "proc.run.sig.val")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .into_int_value();
+        let sig_i64 = self
+            .builder
+            .build_int_s_extend(sig_i32_v, i64_t, "proc.run.sig.i64")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let stdout_ptr_v = self
+            .builder
+            .build_load(ptr_t, out_slot, "proc.run.stdout.val")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let stderr_ptr_v = self
+            .builder
+            .build_load(ptr_t, err_slot, "proc.run.stderr.val")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+        self.store_struct_field(
+            &info, struct_ptr, "code", code_i64.into(), "ProcessOutput",
+        )?;
+        self.store_struct_field(
+            &info, struct_ptr, "signal", sig_i64.into(), "ProcessOutput",
+        )?;
+        self.store_struct_field(
+            &info, struct_ptr, "stdout", stdout_ptr_v, "ProcessOutput",
+        )?;
+        self.store_struct_field(
+            &info, struct_ptr, "stderr", stderr_ptr_v, "ProcessOutput",
+        )?;
+        let timed_i32 = self
+            .builder
+            .build_load(i32_t, timed_slot, "proc.run.timed.val")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .into_int_value();
+        let timed = self
+            .builder
+            .build_int_compare(
+                inkwell::IntPredicate::NE,
+                timed_i32,
+                i32_t.const_zero(),
+                "proc.run.timed",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.store_bool_field(&info, struct_ptr, "timed_out", timed, "ProcessOutput")?;
+
+        // Diagnostic-path on IoError = surface label. hale-bun
+        // upstream item 4: routed through the C hint helper so an
+        // ENOENT with a space in argv[0] (shell-split argv passed
+        // to the newline-separated surface) names the real
+        // mistake instead of reading as "binary not on PATH".
+        // errno is still live from the failed primitive here; on
+        // the success arm the label goes unused.
+        let path_label = self.process_surface_label_with_enoent_hint(
+            argv_val,
+            surface,
+            &format!(
+                "{} — argv[0] contains a space; argv is \
+                 newline-separated (\"echo\\nhello\"), not shell-split",
+                surface
+            ),
+            "proc.run",
+        )?;
+        self.complete_io_fallible_call(
+            is_err,
+            path_label.into(),
+            Some((struct_ptr.into(), CodegenTy::TypeRef(
+                "__StdProcessOutput".to_string()
+            ))),
+            "proc.run",
+        )
+    }
+
+    /// `__spawn` (`with_opts` false: one arg) and `__spawn_with` (ten:
+    /// argv and the `SpawnOptions` fields). The handle's `deadline_ns`
+    /// is 0 for `__spawn`, the C side's monotonic deadline for
+    /// `__spawn_with` with a timeout.
+    fn lower_process_spawn(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+        with_opts: bool,
+    ) -> Result<FallibleCallResult<'ctx>, CodegenError> {
+        let (surface, want) = if with_opts {
+            ("std::process::spawn_with", 10)
+        } else {
+            ("std::process::spawn", 1)
+        };
+        if args.len() != want {
+            return Err(CodegenError::Unsupported(format!(
+                "{} takes {} arg(s), got {}",
+                surface,
+                want,
+                args.len()
+            )));
+        }
+        let (argv_val, argv_ty) = self.lower_expr(&args[0], scope)?;
+        if !matches!(argv_ty, CodegenTy::String | CodegenTy::StringView) {
+            return Err(CodegenError::Unsupported(format!(
+                "{}: argv must be String, got {:?}",
+                surface, argv_ty
+            )));
+        }
+        let argv_val = self.unpack_view_if_needed(argv_val, &argv_ty)?;
+        let opt_vals = if with_opts {
+            self.lower_process_option_args(&args[1..], scope, surface)?
+        } else {
+            Vec::new()
+        };
+        let i32_t = self.context.i32_type();
+        let i64_t = self.context.i64_type();
+
+        let pid_slot = self.alloca_in_entry(i32_t.into(), "proc.spawn.pid.slot")?;
+        let in_slot = self.alloca_in_entry(i32_t.into(), "proc.spawn.in.slot")?;
+        let out_slot = self.alloca_in_entry(i32_t.into(), "proc.spawn.out.slot")?;
+        let err_slot = self.alloca_in_entry(i32_t.into(), "proc.spawn.err.slot")?;
+        let deadline_slot =
+            self.alloca_in_entry(i64_t.into(), "proc.spawn.deadline.slot")?;
+        self.builder
+            .build_store(deadline_slot, i64_t.const_zero())
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+        let mut call_args: Vec<inkwell::values::BasicMetadataValueEnum<'ctx>> =
+            vec![argv_val.into()];
+        call_args.extend(opt_vals);
+        for slot in [pid_slot, in_slot, out_slot, err_slot] {
+            call_args.push(slot.into());
+        }
+        if with_opts {
+            call_args.push(deadline_slot.into());
+        }
+        let f = self
+            .module
+            .get_function(if with_opts {
+                "lotus_process_spawn_with"
+            } else {
+                "lotus_process_spawn"
+            })
+            .expect("lotus_process_spawn[_with] declared");
+        let ret_i32 = self
+            .builder
+            .build_call(
+                f,
+                &call_args,
+                "proc.spawn.ret",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .try_as_basic_value()
+            .left()
+            .expect("returns i32")
+            .into_int_value();
+        let is_err = self
+            .builder
+            .build_int_compare(
+                inkwell::IntPredicate::NE,
+                ret_i32,
+                i32_t.const_zero(),
+                "proc.spawn.is_err",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+        let info = self
+            .user_types
+            .get("__StdProcessSpawnHandle")
+            .cloned()
+            .expect("__StdProcessSpawnHandle declared in process.hl");
+        let size = info
+            .struct_ty
+            .size_of()
+            .expect("__StdProcessSpawnHandle has known size");
+        let struct_ptr = self.arena_alloc(size, "SpawnHandle.alloc")?;
+
+        let pid_i64 = self.load_i32_to_i64(pid_slot, "proc.spawn.pid.val")?;
+        let in_i64 = self.load_i32_to_i64(in_slot, "proc.spawn.in.val")?;
+        let out_i64 = self.load_i32_to_i64(out_slot, "proc.spawn.out.val")?;
+        let err_i64 = self.load_i32_to_i64(err_slot, "proc.spawn.err.val")?;
+        let deadline_i64 = self
+            .builder
+            .build_load(i64_t, deadline_slot, "proc.spawn.deadline.val")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+        self.store_struct_field(
+            &info, struct_ptr, "pid", pid_i64.into(), "SpawnHandle",
+        )?;
+        self.store_struct_field(
+            &info, struct_ptr, "stdin_fd", in_i64.into(), "SpawnHandle",
+        )?;
+        self.store_struct_field(
+            &info, struct_ptr, "stdout_fd", out_i64.into(), "SpawnHandle",
+        )?;
+        self.store_struct_field(
+            &info, struct_ptr, "stderr_fd", err_i64.into(), "SpawnHandle",
+        )?;
+        self.store_struct_field(
+            &info, struct_ptr, "deadline_ns", deadline_i64, "SpawnHandle",
+        )?;
+
+        // Same ENOENT space-in-argv[0] hint as run above.
+        let path_label = self.process_surface_label_with_enoent_hint(
+            argv_val,
+            surface,
+            &format!(
+                "{} — argv[0] contains a space; argv is \
+                 newline-separated (\"echo\\nhello\"), not shell-split",
+                surface
+            ),
+            "proc.spawn",
+        )?;
+        self.complete_io_fallible_call(
+            is_err,
+            path_label.into(),
+            Some((struct_ptr.into(), CodegenTy::TypeRef(
+                "__StdProcessSpawnHandle".to_string()
+            ))),
+            "proc.spawn",
+        )
+    }
+
+    /// The nine `SpawnOptions` arguments of `__run_with` /
+    /// `__spawn_with`, in order: `cwd`, `env`, `unset_env` (String),
+    /// `clear_env` (Bool), `timeout_ns`, `cpu_seconds`, `address_space`,
+    /// `open_files`, `file_size` (Int) — lowered to the C side's
+    /// `const char *` ×3 and `int64_t` ×6.
+    fn lower_process_option_args(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+        surface: &str,
+    ) -> Result<Vec<inkwell::values::BasicMetadataValueEnum<'ctx>>, CodegenError> {
+        let i64_t = self.context.i64_type();
+        let mut out = Vec::with_capacity(args.len());
+        for (i, a) in args.iter().enumerate() {
+            let (v, ty) = self.lower_expr(a, scope)?;
+            match i {
+                0..=2 => {
+                    if !matches!(ty, CodegenTy::String | CodegenTy::StringView) {
+                        return Err(CodegenError::Unsupported(format!(
+                            "{}: option {} must be String, got {:?}",
+                            surface, i, ty
+                        )));
+                    }
+                    let v = self.unpack_view_if_needed(v, &ty)?;
+                    out.push(v.into());
+                }
+                3 => {
+                    if ty != CodegenTy::Bool {
+                        return Err(CodegenError::Unsupported(format!(
+                            "{}: clear_env must be Bool, got {:?}",
+                            surface, ty
+                        )));
+                    }
+                    let w = self
+                        .builder
+                        .build_int_cast_sign_flag(v.into_int_value(), i64_t, false, "proc.opt.clear")
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    out.push(w.into());
+                }
+                _ => {
+                    if !matches!(ty, CodegenTy::Int | CodegenTy::Duration) {
+                        return Err(CodegenError::Unsupported(format!(
+                            "{}: option {} must be Int, got {:?}",
+                            surface, i, ty
+                        )));
+                    }
+                    out.push(v.into_int_value().into());
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    /// Store an `i1` into a `Bool` field of a result struct, cast to
+    /// the field's own width.
+    fn store_bool_field(
+        &self,
+        info: &TypeInfo<'ctx>,
+        struct_ptr: PointerValue<'ctx>,
+        field: &str,
+        val: inkwell::values::IntValue<'ctx>,
+        struct_label: &str,
+    ) -> Result<(), CodegenError> {
+        let (idx, _) = info
+            .fields
+            .get(field)
+            .cloned()
+            .unwrap_or_else(|| panic!("{}.{} field", struct_label, field));
+        let field_ty = info
+            .struct_ty
+            .get_field_type_at_index(idx)
+            .expect("field index in range")
+            .into_int_type();
+        let v = self
+            .builder
+            .build_int_cast_sign_flag(val, field_ty, false, &format!("{}.{}.cast", struct_label, field))
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.store_struct_field(info, struct_ptr, field, v.into(), struct_label)
     }
 }

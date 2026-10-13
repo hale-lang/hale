@@ -369,3 +369,93 @@ fn a_receiver_built_where_the_serving_locus_is_constructed_serves_and_the_addres
     assert_eq!((got.status, got.body.as_str()), (200, "{\"n\":105}"), "the instance the literal at the construction site builds answers");
     assert!(server.finish().status.success());
 }
+
+/// `CONSTRUCTED` with CORS answered for two origins.
+fn cors_program() -> PathBuf {
+    static BUILT: OnceLock<PathBuf> = OnceLock::new();
+    BUILT
+        .get_or_init(|| {
+            let bin = harness::unique_bin("api_http_cors");
+            let src = CONSTRUCTED.replace(
+                "principals: self.bearer, roles: self.roles }",
+                "principals: self.bearer, roles: self.roles, cors: \"https://app.example, http://localhost:5173\" }",
+            );
+            assert_ne!(src, CONSTRUCTED, "the serve site took the cors field");
+            build_opts::build_source(&src, &bin, &build_opts::options()).expect("build the CORS program");
+            bin
+        })
+        .clone()
+}
+
+fn preflight(port: u16, path: &str, origin: &str) -> Response {
+    request(
+        port,
+        "OPTIONS",
+        path,
+        &[h("Origin", origin), h("Access-Control-Request-Method", "POST"), h("Access-Control-Request-Headers", "authorization, content-type")],
+        None,
+    )
+}
+
+#[test]
+fn a_cors_preflight_from_an_allowed_origin_is_answered_and_others_get_no_cors_headers() {
+    let server = Server::start(&cors_program(), &[]);
+    server.ready();
+    // an allowed origin's preflight, of a call and of the description: 204,
+    // the origin echoed, what the routes take, and no credential needed
+    for (path, origin) in [("/call/Echoer::echo", "https://app.example"), ("/.description", "http://localhost:5173")] {
+        let got = preflight(server.port, path, origin);
+        assert_eq!(got.status, 204, "{path} from {origin}: {}", got.body);
+        assert_eq!(got.body, "", "a 204 has no body");
+        assert_eq!(got.header("Access-Control-Allow-Origin"), Some(origin), "{path}");
+        assert_eq!(got.header("Access-Control-Allow-Methods"), Some("POST, GET, OPTIONS"));
+        assert_eq!(got.header("Access-Control-Allow-Headers"), Some("Authorization, Content-Type, Hale-Surface-Digest"));
+        assert_eq!(got.header("Access-Control-Max-Age"), Some("600"));
+        assert_eq!(got.header("Vary"), Some("Origin"));
+    }
+    // an origin the list does not name: refused, and nothing the browser
+    // would take as leave to send the call
+    let other = preflight(server.port, "/call/Echoer::echo", "https://evil.example");
+    assert_eq!(other.status, 403, "{}", other.body);
+    assert_eq!(other.header("Access-Control-Allow-Origin"), None);
+    assert_eq!(other.header("Access-Control-Allow-Methods"), None);
+    // an OPTIONS of a path the transport does not serve is still malformed
+    let elsewhere = preflight(server.port, "/elsewhere", "https://app.example");
+    assert_eq!(elsewhere.status, 400, "{}", elsewhere.body);
+
+    // the call itself: an allowed origin can read the answer
+    let auth = [bearer("t-alice"), h("Origin", "https://app.example")];
+    let got = request(server.port, "POST", "/call/Echoer::echo", &auth, Some("{\"n\":5}"));
+    assert_eq!((got.status, got.body.as_str()), (200, "{\"n\":105}"));
+    assert_eq!(got.header("Access-Control-Allow-Origin"), Some("https://app.example"));
+    assert_eq!(got.header("Vary"), Some("Origin"));
+    assert_eq!(got.header("Access-Control-Allow-Methods"), None, "only a preflight states the methods");
+    // and its refusals too, so a page can tell why
+    let nobody = request(server.port, "POST", "/call/Echoer::echo", &[h("Origin", "https://app.example")], Some("{\"n\":5}"));
+    assert_eq!(nobody.status, 401, "{}", nobody.body);
+    assert_eq!(nobody.header("Access-Control-Allow-Origin"), Some("https://app.example"));
+    // a disallowed origin's call is served (CORS is the browser's guard, not
+    // authentication) but carries no CORS header, so a page cannot read it
+    let other = request(server.port, "POST", "/call/Echoer::echo", &[bearer("t-alice"), h("Origin", "https://evil.example")], Some("{\"n\":5}"));
+    assert_eq!(other.status, 200, "{}", other.body);
+    assert_eq!(other.header("Access-Control-Allow-Origin"), None);
+    assert!(server.finish().status.success());
+}
+
+#[test]
+fn without_cors_a_preflight_is_malformed_and_no_response_carries_cors_headers() {
+    let bin = harness::unique_bin("api_http_no_cors");
+    build_opts::build_source(CONSTRUCTED, &bin, &build_opts::options()).expect("build the program");
+    let server = Server::start(&bin, &[]);
+    server.ready();
+    let pre = preflight(server.port, "/call/Echoer::echo", "https://app.example");
+    assert_eq!(pre.status, 400, "{}", pre.body);
+    assert!(pre.body.contains("\"kind\":\"malformed\""), "{}", pre.body);
+    assert_eq!(pre.header("Access-Control-Allow-Origin"), None);
+    assert_eq!(pre.header("Vary"), None);
+    let got = request(server.port, "POST", "/call/Echoer::echo", &[bearer("t-alice"), h("Origin", "https://app.example")], Some("{\"n\":5}"));
+    assert_eq!(got.status, 200, "{}", got.body);
+    assert_eq!(got.header("Access-Control-Allow-Origin"), None);
+    assert_eq!(got.header("Vary"), None);
+    assert!(server.finish().status.success());
+}

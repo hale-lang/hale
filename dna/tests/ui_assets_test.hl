@@ -72,11 +72,11 @@ main locus App {
         std::test::assert(!std::str::contains(journal(todo), "seed:ui"), "ui is no seed");
         std::test::assert_eq_str(ops::application_assets(todo), "ui", "the head's assets are ui/");
         let index = ops::application_asset(todo, "/app/");
-        std::test::assert(index.status == 200 && index.content_type == "text/html; charset=utf-8" && std::str::starts_with(index.body, "<!doctype html>"), "/app/ is its index.html: " + index.why);
+        std::test::assert(index.status == 200 && index.content_type == "text/html; charset=utf-8" && len(index.bytes) == len(std::io::fs::read_bytes(todo + "/ui/index.html") or b""), "/app/ is its index.html: " + index.why);
         let page = ops::application_asset(todo, "/app");
         std::test::assert_eq_int(page.status, 200, "and so is /app");
         let js = ops::application_asset(todo, "/app/seq.js");
-        std::test::assert(js.status == 200 && js.content_type == "text/javascript; charset=utf-8" && js.body == (std::io::fs::read_file(todo + "/ui/seq.js") or ""), "/app/seq.js is ui/seq.js, as JavaScript: " + js.why);
+        std::test::assert(js.status == 200 && js.content_type == "text/javascript; charset=utf-8" && len(js.bytes) == len(std::io::fs::read_bytes(todo + "/ui/seq.js") or b""), "/app/seq.js is ui/seq.js, as JavaScript: " + js.why);
         let ts = ops::application_asset(todo, "/app/client/todo.ts");
         std::test::assert_eq_int(ts.status, 200, "a file in a subdirectory");
         std::test::assert_eq_int(ops::application_asset(todo, "/app/../README.md").status, 404, "nothing above ui/");

@@ -87,6 +87,11 @@ pub fn mangle_program(prog: &mut Program, alias: &str, file_stem: &str) {
 /// different `lib_id`s). The importer's alias is still used at
 /// the path-rename table level so call-site references
 /// `alias::Name` resolve correctly.
+/// The key prefix of a role's row in a seed's rename table: roles are
+/// named in their own namespace (T1), apart from the seed's fns, types
+/// and loci, which an ordinary `alias::Name` path reaches.
+pub const ROLE_KEY: &str = "role:";
+
 pub fn build_seed_renames(
     programs: &[(String, &Program)],
     lib_id: &str,
@@ -117,13 +122,13 @@ pub fn build_seed_renames(
                 }
             }
             // T1: a role is bundle-global vocabulary and keeps its
-            // name (see `top_decl_name`), so it maps to itself — the
-            // row is what lets an importer name it `alias::role`
-            // (`requires: [lib::reader]`) and reach this seed's role.
-            // A declaration of the same name that is renamed keeps its
-            // row: the role's never displaces it.
+            // name (see `top_decl_name`). Its row lives in a namespace of
+            // its own, keyed `role:<name>` (no identifier is spelled with
+            // a `:`), so a fn, type or locus of the same name keeps its
+            // own row and an importer's `lib::reader` in a role position
+            // still reaches the role (`ROLE_KEY`, `rewrite_role_ident`).
             if let TopDecl::Role(r) = item {
-                out.entry(r.name.name.clone()).or_insert_with(|| r.name.name.clone());
+                out.insert(format!("{ROLE_KEY}{}", r.name.name), r.name.name.clone());
                 continue;
             }
             if let Some(n) = top_decl_name(item) {
@@ -644,6 +649,25 @@ impl<'a> QualifiedRenameApplier<'a> {
     /// so the checker's `serves unknown perspective` / `unknown
     /// perspective` diagnostic still cites the path the author typed
     /// (a nested alias, a typo).
+    /// T1: a role named through an import alias (`lib::reader`) in a
+    /// role position — a `requires` list, an `includes` — collapses to
+    /// the role that seed declares, looked up in the roles' namespace
+    /// (`ROLE_KEY`), never through an ordinary declaration of the same
+    /// name. A path that names no such role is left as written.
+    fn rewrite_role_ident(&self, id: &mut Ident) {
+        let Some((alias, name)) = id.name.split_once("::") else { return };
+        if name.contains("::") {
+            return;
+        }
+        let key = format!("{ROLE_KEY}{name}");
+        for (k, role) in self.renames {
+            if k.len() == 2 && k[0] == alias && k[1] == key {
+                id.name = role.clone();
+                return;
+            }
+        }
+    }
+
     fn rewrite_joined_ident(&self, id: &mut Ident) {
         if !id.name.contains("::") {
             return;
@@ -937,7 +961,7 @@ impl<'a> QualifiedRenameApplier<'a> {
                 // its alias (`includes lib::reader`); it collapses to
                 // the role's own name.
                 for inc in &mut r.includes {
-                    self.rewrite_joined_ident(inc);
+                    self.rewrite_role_ident(inc);
                 }
             }
             TopDecl::Unit(_) => {
@@ -953,7 +977,7 @@ impl<'a> QualifiedRenameApplier<'a> {
                     self.rewrite_joined_ident(&mut r.locus);
                     // T1: a role another seed declares, `lib::reader`
                     for role in &mut r.requires {
-                        self.rewrite_joined_ident(role);
+                        self.rewrite_role_ident(role);
                     }
                 }
             }
@@ -1071,7 +1095,7 @@ impl<'a> QualifiedRenameApplier<'a> {
                 // T1: `@rpc(requires: [lib::reader])`
                 if let Some(rpc) = &mut fd.rpc {
                     for role in &mut rpc.requires {
-                        self.rewrite_joined_ident(role);
+                        self.rewrite_role_ident(role);
                     }
                 }
             }
@@ -1121,7 +1145,7 @@ impl<'a> QualifiedRenameApplier<'a> {
                 for hub in &mut bb.hubs {
                     self.rewrite_joined_ident(&mut hub.topic);
                     for role in &mut hub.requires {
-                        self.rewrite_joined_ident(role);
+                        self.rewrite_role_ident(role);
                     }
                 }
             }

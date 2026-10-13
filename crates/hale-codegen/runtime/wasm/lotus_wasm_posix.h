@@ -71,6 +71,10 @@ struct in_addr { unsigned int s_addr; };
 struct sockaddr { unsigned short sa_family; char sa_data[14]; };
 struct sockaddr_in { unsigned short sin_family; unsigned short sin_port; struct in_addr sin_addr; char sin_zero[8]; };
 struct sockaddr_un { unsigned short sun_family; char sun_path[108]; };
+/* IPv6 (std::io::tcp / udp resolve either family): names only. */
+struct in6_addr { unsigned char s6_addr[16]; };
+struct sockaddr_in6 { unsigned short sin6_family; unsigned short sin6_port; unsigned int sin6_flowinfo; struct in6_addr sin6_addr; unsigned int sin6_scope_id; };
+struct sockaddr_storage { unsigned short ss_family; char __ss_pad[126]; };
 struct addrinfo {
     int ai_flags, ai_family, ai_socktype, ai_protocol;
     socklen_t ai_addrlen; struct sockaddr *ai_addr;
@@ -110,6 +114,10 @@ unsigned int   ntohl(unsigned int);
 unsigned short ntohs(unsigned short);
 #define AF_UNIX  1
 #define AF_INET  2
+#define AF_INET6 10
+#define AF_UNSPEC 0
+#define AI_PASSIVE 0x0001
+#define AI_NUMERICHOST 0x0004
 #define SOCK_STREAM 1
 #define SOCK_DGRAM  2
 #define SOCK_SEQPACKET 5
@@ -124,6 +132,7 @@ unsigned short ntohs(unsigned short);
 #define SO_SNDBUF 7
 #define SO_RCVTIMEO 20
 #define SO_SNDTIMEO 21
+#define SO_ERROR 4
 #define IPPROTO_IP 0
 #define IPPROTO_TCP 6
 #define IPPROTO_UDP 17
