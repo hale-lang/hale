@@ -1618,6 +1618,7 @@ pub fn build_resolved(
         locus_cascade_path: Vec::new(),
         instantiating_into_payload_arena: false,
         anchor_record_slot: None,
+        reserve_child_next: None,
         perspectives_holdable: BTreeSet::new(),
         perspectives_held: BTreeMap::new(),
         perspectives_designated: BTreeSet::new(),
@@ -4089,6 +4090,10 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// no entry on the building frame, which does not own the root at its
     /// exit.
     pub(crate) anchor_record_slot: Option<PointerValue<'ctx>>,
+    /// #1534: the static tree a param's literal is a node of — the locus
+    /// it is expected to build and the root's reservations — set by the
+    /// params loop for the literal it lowers next, taken by that literal.
+    pub(crate) reserve_child_next: Option<(String, crate::locus::reservation::ReserveCtx<'ctx>)>,
     /// GH #731: the perspectives some declared holder may hold WITHOUT
     /// designating (`p: perspective(P);`). Filled as the loci are
     /// declared, so every call through one of them — lowered later —

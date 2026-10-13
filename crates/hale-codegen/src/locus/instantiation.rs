@@ -113,6 +113,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // which has no source expression for a table row to key on
         // and so states its owner at the site instead.
         let owner_site = std::mem::take(&mut self.owner_site);
+        // #1534: whether the params loop around this literal made it a
+        // node of a static tree (the locus it expected, and the root's
+        // reservations), taken before any literal nested in it can.
+        let reserve_node = match self.reserve_child_next.take() {
+            Some((expected, ctx)) if expected == locus_name => Some(ctx),
+            _ => None,
+        };
         let own_site_id = match owner_site {
             Some(crate::ownership::Site::Expr(id)) => Some(id),
             _ => None,
@@ -1429,6 +1436,18 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // the Subscribe step, after the params, on the same instance and
         // behind the same window (codex review of #1533: a locus with one
         // ring subscription kept its ordinary topics late too).
+        // #1534: a literal no static tree around it holds is the root of
+        // its own: what its tree's nodes publish to one another before the
+        // subscriber is built is reserved here, before any of them is
+        // (`locus/reservation.rs`). A pinned literal builds its params on
+        // its own thread, so its tree is the init's to reserve.
+        let reserve_root = reserve_node.is_none() && !matches!(info.schedule_class, ScheduleClass::Pinned(_));
+        let reserve_ctx = match reserve_node {
+            Some(ctx) => Some(ctx),
+            None if reserve_root => self.emit_reservations(locus_name, inits)?,
+            None => None,
+        };
+        let reserve_root = reserve_root && reserve_ctx.is_some();
         let early_subscribe = !matches!(info.schedule_class, ScheduleClass::Pinned(_))
             && info.subscriptions.iter().any(|(subject, _, _, key)| {
                 key.is_none() && !self.shm_ring_subjects.contains_key(subject)
@@ -1442,7 +1461,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             self.lc_in_spine("Instantiation", |cx| {
                 cx.lc_event("Subscribe", "Entered", Some(self_ptr), Some(locus_name))
             })?;
-            self.emit_cooperative_subscriptions(&info, self_ptr, locus_name, Some(true))?;
+            self.emit_cooperative_subscriptions(&info, self_ptr, locus_name, Some(true), reserve_ctx.as_ref())?;
             self.lc_in_spine("Instantiation", |cx| {
                 cx.lc_event("Subscribe", "Completed", Some(self_ptr), Some(locus_name))
             })?;
@@ -2788,6 +2807,22 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             if hands_back_replicas {
                 self.anchor_record_slot = self.anchor_record_at(&info, self_ptr, fname, 0)?;
             }
+            // #1534: a literal this field builds on the constructing thread
+            // is a node of this instance's static tree. Not under a pinned
+            // instance, whose params its own thread builds.
+            if let (Some(ctx), None) = (&reserve_ctx, &pinned_init) {
+                let value = match (overrides.get(fname.as_str()), default) {
+                    (Some(e), _) => Some(*e),
+                    (None, DefaultInit::Expr(e)) => Some(e),
+                    _ => None,
+                };
+                let field_ty = info.fields.get(fname).map(|(_, t)| t.clone());
+                if let Some((child, how)) = value.and_then(|v| self.static_tree_child(is_main_locus, fname, v, field_ty.as_ref())) {
+                    if how != crate::locus::reservation::TreeChild::OffThread {
+                        self.reserve_child_next = Some((child, ctx.clone()));
+                    }
+                }
+            }
             let (val, val_ty, owned_via_literal, came_from_literal) =
                 if let Some(expr) = overrides.get(fname.as_str()) {
                     // The review of PR #1319: under a pinned locus whose
@@ -2997,6 +3032,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         }
                     }
                 };
+            // #1534: nor the tree flag, where the value built no literal.
+            self.reserve_child_next = None;
             // 2026-05-24: ensure the payload-arena routing flag
             // doesn't leak past this field. A field whose value
             // is a locus literal already consumed the flag via
@@ -3620,7 +3657,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         ObligationKind::Subscribe if early_subscribe => {
         // The eligible ones were registered before the params, the window
         // open (above); the keyed and ring-bound ones register here.
-        self.emit_cooperative_subscriptions(&info, self_ptr, locus_name, Some(false))?;
+        self.emit_cooperative_subscriptions(&info, self_ptr, locus_name, Some(false), reserve_ctx.as_ref())?;
         }
         ObligationKind::Subscribe => {
         // Bus subscription registration runs BEFORE birth so a
@@ -3644,7 +3681,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             cx.lc_event("Subscribe", "Entered", Some(self_ptr), Some(locus_name))
         })?;
         if !pinned_subscriptions {
-            self.emit_cooperative_subscriptions(&info, self_ptr, locus_name, None)?;
+            self.emit_cooperative_subscriptions(&info, self_ptr, locus_name, None, reserve_ctx.as_ref())?;
         } else {
             // m28b: a pinned locus registers every subscription with
             // the mailbox already in its __mailbox slot, so dispatch routes
@@ -3653,6 +3690,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 &info,
                 self_ptr,
                 locus_name,
+                reserve_ctx.as_ref(),
             )?;
         }
         self.lc_in_spine("Instantiation", |cx| {
@@ -4182,6 +4220,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         for step in birth_spine.iter().copied() {
         match step {
         ObligationKind::Birth => {
+        // #1534: the root's tree is built and every node of it registered;
+        // its reservations close before its own birth.
+        if reserve_root {
+            if let Some(ctx) = &reserve_ctx {
+                self.emit_reserve_end(ctx)?;
+            }
+        }
         // A failure raised by the birth — a `violate` in `birth()`, a
         // `birth_check` — whose handler runs before the gate (delivered
         // in place, or posted and run meanwhile) bumps the count before
@@ -5446,7 +5491,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         self_ptr: PointerValue<'ctx>,
         locus_name: &str,
         early: Option<bool>,
+        reserve: Option<&crate::locus::reservation::ReserveCtx<'ctx>>,
     ) -> Result<(), CodegenError> {
+        // #1534: a node of a static tree claims what the root reserved for
+        // its registrations; the plan counts only those of a locus it owes
+        // readiness.
+        let reserve = reserve.filter(|_| self.owes_readiness(locus_name));
         // Phase 3 (2026-05-25): `where key == self.X` in any
         // subscribe clause needs `current_self` set to this
         // new locus so the key-filter EXPR's `self.X` reads
@@ -5532,6 +5582,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 self.emit_sub_bound_if_any(
                     locus_name, subject, self_ptr,
                 )?;
+                if let Some(ctx) = reserve {
+                    self.emit_reserve_claim(ctx, subject, self_ptr)?;
+                }
             }
         }
         self.in_params_default = prev_ipd_sub;

@@ -14512,6 +14512,12 @@ static void lotus_bus_early_flush_for_subject(const char *pattern);
  * is published (graceful degrade), and `key_str` is the caller's to
  * free. A failed bucket append keeps the table's entry: the dynamic
  * path still fires it. */
+static lotus_bus_entry_t *lotus_bus_register_entry_gen(
+    const char *subject, void *self_ptr, void *handler,
+    lotus_mailbox_t *mailbox, lotus_deserialize_fn deserialize,
+    lotus_coop_pool_t *coop_pool, uint8_t key_filter_kind, uint64_t key_lo,
+    uint64_t key_hi, const char *key_str, uint32_t static_id, uint64_t gen);
+
 static int lotus_bus_register_entry(const char *subject, void *self_ptr,
                                     void *handler, lotus_mailbox_t *mailbox,
                                     lotus_deserialize_fn deserialize,
@@ -14522,11 +14528,25 @@ static int lotus_bus_register_entry(const char *subject, void *self_ptr,
     /* GH #703: the incarnation this registration belongs to, new when
      * no live one is at the address (again). */
     uint64_t gen = bus_incarnation_register(self_ptr);
+    return lotus_bus_register_entry_gen(subject, self_ptr, handler, mailbox,
+                                        deserialize, coop_pool,
+                                        key_filter_kind, key_lo, key_hi,
+                                        key_str, static_id, gen) != NULL;
+}
+
+/* The registration proper, with its incarnation given: the entry it
+ * published, or NULL on OOM. A reservation's placeholder (#1534) is
+ * no subscriber's incarnation and passes 0. */
+static lotus_bus_entry_t *lotus_bus_register_entry_gen(
+    const char *subject, void *self_ptr, void *handler,
+    lotus_mailbox_t *mailbox, lotus_deserialize_fn deserialize,
+    lotus_coop_pool_t *coop_pool, uint8_t key_filter_kind, uint64_t key_lo,
+    uint64_t key_hi, const char *key_str, uint32_t static_id, uint64_t gen) {
     pthread_mutex_lock(&g_bus_reg_lock);
     lotus_bus_entry_t *e = lotus_bus_entry_new_locked();
     if (!e) {
         pthread_mutex_unlock(&g_bus_reg_lock);
-        return 0;
+        return NULL;
     }
     e->subject     = subject;
     e->self_ptr    = self_ptr;
@@ -14543,7 +14563,7 @@ static int lotus_bus_register_entry(const char *subject, void *self_ptr,
         /* The chunk slot stays unused; nothing points at it. */
         memset(e, 0, sizeof *e);
         pthread_mutex_unlock(&g_bus_reg_lock);
-        return 0;
+        return NULL;
     }
     if (static_id != UINT32_MAX) {
         /* The directory grows to `static_id` with empty buckets. */
@@ -14564,7 +14584,7 @@ static int lotus_bus_register_entry(const char *subject, void *self_ptr,
     /* GH #468: this registration may be the one the boot-window
      * buffer was waiting for. */
     lotus_bus_early_flush_for_subject(subject);
-    return 1;
+    return e;
 }
 
 void lotus_bus_register(const char *subject,
@@ -14872,6 +14892,20 @@ static int lotus_bus_log_drop_enabled(void);
  * their mailbox stays current so already-born nested subscribers can
  * make progress, and a birth that publishes beyond the mailbox cap
  * never waits on its own consumer. */
+/* What one publish knew when it posted a cell (#1534): the view of the
+ * registrations it walked, and its routing key. A reservation (below)
+ * reads it to tell whether the publish reached a subscriber that
+ * registered meanwhile on its own. `seen` is the walked array's count,
+ * shifted left once, with the low bit set when the array was a static
+ * subject's bucket rather than the table. */
+typedef struct {
+    uint64_t seen;
+    uint8_t  keyed;
+    uint64_t key_lo, key_hi;
+} lotus_bus_pubctx_t;
+#define LOTUS_BUS_SEEN_TABLE(n)  ((uint64_t)(n) << 1)
+#define LOTUS_BUS_SEEN_BUCKET(n) (((uint64_t)(n) << 1) | 1u)
+
 typedef struct lotus_bus_parked {
     struct lotus_bus_parked *next;
     void *handler;
@@ -14884,6 +14918,11 @@ typedef struct lotus_bus_parked {
     uint64_t rec_pub;
     void *wire_deser;
     uint64_t gen;      /* GH #703: the incarnation it was parked for */
+    /* #1534: a reservation's cell keeps its publish's context, and a
+     * String key's own copy (the publisher's payload is gone by the
+     * time a claim reads it). */
+    lotus_bus_pubctx_t pc;
+    char *key_str;
 } lotus_bus_parked_t;
 
 typedef struct {
@@ -14914,6 +14953,7 @@ static void lotus_bus_parked_free(lotus_bus_parked_t *p) {
     while (p) {
         lotus_bus_parked_t *next = p->next;
         free(p->payload);
+        free(p->key_str);
         free(p);
         p = next;
     }
@@ -15000,13 +15040,31 @@ static int lotus_bus_ready_may_wait(const lotus_bus_unready_t *u,
     return 1;
 }
 
+/* #1534: a reservation's placeholder registration names this handler;
+ * a cell posted to it goes to the reservation (`lotus_bus_resv_park`),
+ * never to a queue. Should one reach a queue anyway, running it does
+ * nothing. */
+static void lotus_bus_resv_stub(void *self, void *payload) {
+    (void)self;
+    (void)payload;
+}
+static int lotus_bus_resv_park(void *token, lotus_bus_queue_t *queue,
+                               const void *payload, size_t size,
+                               uint64_t rec_pub,
+                               const lotus_bus_pubctx_t *pc);
+
 /* 1 = parked: `self` is held, and the cell waits for its readiness. */
 static int lotus_bus_park_if_unready(void *handler, void *self,
                                      lotus_mailbox_t *mailbox,
                                      lotus_coop_pool_t *coop_pool,
                                      lotus_bus_queue_t *queue,
                                      const void *payload, size_t size,
-                                     uint64_t rec_pub) {
+                                     uint64_t rec_pub,
+                                     const lotus_bus_pubctx_t *pc) {
+    /* A reservation's placeholder (#1534): the cell is the
+     * reservation's, whether or not any window is open. */
+    if (__builtin_expect(handler == (void *)lotus_bus_resv_stub, 0))
+        return lotus_bus_resv_park(self, queue, payload, size, rec_pub, pc);
     if (__atomic_load_n(&lotus_bus_unready_count, __ATOMIC_ACQUIRE) == 0)
         return 0;
     if (!mailbox && !coop_pool && !queue) return 0;
@@ -15048,12 +15106,35 @@ static int lotus_bus_park_if_unready(void *handler, void *self,
     if (size > 0 && payload) memcpy(copy, payload, size);
     *p = (lotus_bus_parked_t){ NULL, handler, self, mailbox, coop_pool, queue,
                                copy, size, rec_pub, g_bus_pending_wire_deser,
-                               g_bus_pending_gen };
+                               g_bus_pending_gen, { 0, 0, 0, 0 }, NULL };
     if (u->tail) u->tail->next = p; else u->head = p;
     u->tail = p;
     u->parked++;
     pthread_mutex_unlock(&g_bus_ready_lock);
     return 1;
+}
+
+/* Post one parked cell to its target: the mailbox, the pool's worker, or
+ * the queue it was published to, carrying its codec, publish identity
+ * and incarnation as the post it stood in for would have. */
+static void lotus_bus_parked_post(const lotus_bus_parked_t *c) {
+    g_bus_pending_wire_deser = c->wire_deser;
+    if (c->rec_pub) g_bus_pending_rec_pub = c->rec_pub;
+    uint64_t prev_gen = g_bus_pending_gen;
+    g_bus_pending_gen = c->gen;
+    if (c->mailbox) {
+        lotus_mailbox_post(c->mailbox, c->handler, c->self_ptr, c->payload, c->size);
+    } else if (c->coop_pool) {
+        lotus_coop_pool_post_bus(c->coop_pool, c->handler, c->self_ptr, c->payload, c->size);
+    } else {
+        lotus_bus_queue_enqueue(c->queue, c->handler, c->self_ptr, c->payload, c->size);
+    }
+    g_bus_pending_gen = prev_gen;
+    g_bus_pending_wire_deser = NULL;
+    g_bus_pending_rec_pub = 0;
+    if (c->rec_pub && lotus_obs_record_enqueue && lotus_obs_live) {
+        lotus_obs_record_enqueue(c->rec_pub, c->self_ptr);
+    }
 }
 
 /* Delivery to `self` is eligible from here: post what it parked, in
@@ -15096,23 +15177,7 @@ void lotus_bus_ready(void *self) {
         pthread_mutex_unlock(&g_bus_ready_lock);
         size_t posted_to_own_mailbox = 0;
         for (lotus_bus_parked_t *c = p; c; c = c->next) {
-            g_bus_pending_wire_deser = c->wire_deser;
-            if (c->rec_pub) g_bus_pending_rec_pub = c->rec_pub;
-            uint64_t prev_gen = g_bus_pending_gen;
-            g_bus_pending_gen = c->gen;
-            if (c->mailbox) {
-                lotus_mailbox_post(c->mailbox, c->handler, c->self_ptr, c->payload, c->size);
-            } else if (c->coop_pool) {
-                lotus_coop_pool_post_bus(c->coop_pool, c->handler, c->self_ptr, c->payload, c->size);
-            } else {
-                lotus_bus_queue_enqueue(c->queue, c->handler, c->self_ptr, c->payload, c->size);
-            }
-            g_bus_pending_gen = prev_gen;
-            g_bus_pending_wire_deser = NULL;
-            g_bus_pending_rec_pub = 0;
-            if (c->rec_pub && lotus_obs_record_enqueue && lotus_obs_live) {
-                lotus_obs_record_enqueue(c->rec_pub, c->self_ptr);
-            }
+            lotus_bus_parked_post(c);
             if (c->mailbox && c->mailbox == lotus_mailbox_get_current()) {
                 if (++posted_to_own_mailbox >= bus_queue_max_cap()) {
                     lotus_mailbox_drain_pending(c->mailbox);
@@ -15154,6 +15219,531 @@ static void lotus_bus_ready_forget(void *self) {
     pthread_mutex_unlock(&g_bus_ready_lock);
 }
 
+/* ---- Reservations: a static tree's subscriptions before its first
+ * birth (#1534, decision line 6).
+ *
+ * A static tree — a root literal and the locus literals its params build,
+ * recursively — registers each node's subscriptions as the node is built,
+ * so what an earlier node's `birth()` or `run()` publishes to a later
+ * one reached no subscription of it. Codegen enumerates the tree at the
+ * root and, for each subject a node of it subscribes to and a node of it
+ * publishes before that subscriber is built, reserves the subject before
+ * the params are built (`lotus_bus_reserve`): a PLACEHOLDER registration
+ * whose self is the reservation itself (the token) and whose handler is
+ * `lotus_bus_resv_stub`. Every dispatch flavor posts to it as to any
+ * subscriber, and the post lands here (`lotus_bus_resv_park`), where the
+ * cell waits, in publish order. Each reserved subscriber, registering on
+ * the constructing thread, CLAIMS (`lotus_bus_reserve_claim`): it takes a
+ * copy of every cell waiting, ahead of anything already in its window,
+ * which its readiness then delivers like the rest. When the last
+ * expected subscriber has claimed, the placeholder is quarantined and the
+ * reservation closes; one still open at the root's birth is closed there
+ * (`lotus_bus_reserve_end`), and a cell it held for a subscriber that
+ * never came is reported on stderr, never dropped in silence.
+ *
+ * A publish on another thread races a claim two ways: it may walk a view
+ * holding both the placeholder and the claimant's own registration (and
+ * post to both), or one holding neither the claimant nor yet anything it
+ * parks until after the claim copied. So every publish says what it saw
+ * (`lotus_bus_pubctx_t`: the count of the array it walked), a claimant
+ * records where its registration sits in the table and in its subject's
+ * bucket, and a cell is copied or forwarded to a claimant only when its
+ * publish did not see that claimant. A claim and a park both run under
+ * `g_bus_ready_lock`: a cell parked before the claim is copied by it, one
+ * parked after is forwarded by the park, each only where the publish
+ * did not reach the claimant itself.
+ *
+ * The bound is the topic's: a reservation holds at most `cap` cells (the
+ * subject's declared bound, else the queue's cap). Past it, `drop_new`
+ * sheds the newcomer and `drop_old` the oldest, counted on every
+ * claimant's `ctr_dropped_full`; `fail` (`on_full: fail`) has no
+ * publisher left to raise into by the time the subscriber exists, so it
+ * sheds the newcomer, counted, and says so once on stderr; an unbounded
+ * subject's publisher on another thread waits, as at a window's cap, for
+ * the reservation to close. The constructing thread never waits on its
+ * own reservation.
+ *
+ * A reservation is never freed while the process runs: a walk that read
+ * the placeholder before its quarantine may still post to it, and the
+ * post then forwards to the claimants it did not see. */
+typedef struct {
+    lotus_bus_entry_t *e;
+    size_t ti;   /* the registration's index in the table */
+    size_t bi;   /* its index in the subject's bucket; SIZE_MAX when none */
+} lotus_bus_claimant_t;
+
+typedef struct lotus_bus_resv {
+    /* First, and NULL: a cell that ever reached a consumer with the token
+     * as its self would read this word as its arena. */
+    void *null_arena;
+    struct lotus_bus_resv *next_all;
+    struct lotus_bus_resv *next_scope;
+    const char *subject;
+    uint32_t static_id;
+    lotus_bus_entry_t *entry;     /* the placeholder */
+    int64_t remaining;            /* claims still expected */
+    size_t cap;
+    uint8_t policy;               /* 0 wait, 1 drop_new, 2 drop_old, 3 fail */
+    uint8_t key_is_str;
+    uint8_t fail_noted;
+    int open;
+    pthread_t ctor;
+    lotus_bus_parked_t *head, *tail;
+    size_t parked;
+    uint64_t ever_parked, dropped;
+    uint64_t copied, forwarded;   /* for LOTUS_BUS_LOG_RESERVE */
+    lotus_bus_claimant_t *claimants;
+    size_t nclaim, capclaim;
+} lotus_bus_resv_t;
+
+typedef struct {
+    lotus_bus_resv_t *head;
+} lotus_bus_resv_scope_t;
+
+/* Every reservation made, for teardown. Under g_bus_ready_lock. */
+static lotus_bus_resv_t *g_bus_resv_all = NULL;
+
+/* Did the publish that carried `pc` walk a view holding `c`? */
+static int lotus_bus_pub_saw(const lotus_bus_pubctx_t *pc,
+                             const lotus_bus_claimant_t *c) {
+    uint64_t n = pc->seen >> 1;
+    if (pc->seen & 1) return c->bi != SIZE_MAX && c->bi < n;
+    return c->ti < n;
+}
+
+/* Would the publish that carried `pc` (String key `key_str`) reach `e`
+ * by its key? An unkeyed subscription takes every publish, a keyed one
+ * only a keyed publish of its key, as the keyed dispatch walk decides. */
+static int lotus_bus_resv_key_ok(const lotus_bus_entry_t *e,
+                                 const lotus_bus_pubctx_t *pc,
+                                 const char *key_str) {
+    if (e->key_filter_kind == 0) return 1;
+    if (e->key_filter_kind != 1 || !pc->keyed) return 0;
+    if (e->key_str) {
+        return e->key_lo == pc->key_lo && key_str
+            && strcmp(e->key_str, key_str) == 0;
+    }
+    return e->key_lo == pc->key_lo && e->key_hi == pc->key_hi;
+}
+
+/* A copy of a cell for claimant `e`, routed as a post to it would be. */
+static lotus_bus_parked_t *lotus_bus_resv_cell_for(lotus_bus_entry_t *e,
+                                                  lotus_bus_queue_t *queue,
+                                                  const void *payload,
+                                                  size_t size,
+                                                  uint64_t rec_pub,
+                                                  void *wire_deser) {
+    lotus_bus_parked_t *p = calloc(1, sizeof *p);
+    void *copy = malloc(size > 0 ? size : 1);
+    if (!p || !copy) {
+        fprintf(stderr, "lotus: out of memory holding a reserved cell\n");
+        abort();
+    }
+    if (size > 0 && payload) memcpy(copy, payload, size);
+    p->handler = e->handler;
+    p->self_ptr = e->self_ptr;
+    p->mailbox = e->mailbox;
+    p->coop_pool = e->coop_pool;
+    p->queue = queue ? queue : g_bus_queue_for_remote;
+    p->payload = copy;
+    p->size = size;
+    p->rec_pub = rec_pub;
+    p->wire_deser = wire_deser ? (void *)e->deserialize : NULL;
+    p->gen = e->gen;
+    return p;
+}
+
+/* Under the lock: hand `p` to its subscriber's window when one is open,
+ * else onto `*later` (posted once the lock is let go). */
+static void lotus_bus_resv_hand(lotus_bus_parked_t *p,
+                                lotus_bus_parked_t **later,
+                                lotus_bus_parked_t **later_tail) {
+    p->next = NULL;
+    lotus_bus_unready_t *u = lotus_bus_unready_find(p->self_ptr);
+    if (u) {
+        if (u->tail) u->tail->next = p; else u->head = p;
+        u->tail = p;
+        u->parked++;
+        return;
+    }
+    if (*later_tail) (*later_tail)->next = p; else *later = p;
+    *later_tail = p;
+}
+
+/* Post a list taken out from under the lock, then free it. */
+static void lotus_bus_resv_post_list(lotus_bus_parked_t *p) {
+    for (lotus_bus_parked_t *c = p; c; c = c->next) lotus_bus_parked_post(c);
+    lotus_bus_parked_free(p);
+}
+
+/* Whether this thread may wait for `r` to close. Not the constructing
+ * thread (its own claims close it), and not a consumer a producer is
+ * blocked on (that producer may be the constructing thread). */
+static int lotus_bus_resv_may_wait(const lotus_bus_resv_t *r) {
+    if (pthread_equal(r->ctor, pthread_self())) return 0;
+    lotus_mailbox_t *own_mb = lotus_mailbox_get_current();
+    lotus_coop_pool_t *own_pool = lotus_coop_pool_current();
+    if (own_mb && atomic_load_explicit(&own_mb->producers_waiting, memory_order_seq_cst) > 0)
+        return 0;
+    if (own_pool && atomic_load_explicit(&own_pool->producers_waiting, memory_order_seq_cst) > 0)
+        return 0;
+    return 1;
+}
+
+/* LOTUS_BUS_LOG_RESERVE=1: one stderr line per reservation as it
+ * closes, its counts (a development aid, and the race tests' witness). */
+static int lotus_bus_log_reserve_enabled(void) {
+    static int cached = -1;
+    if (cached < 0) {
+        const char *s = getenv("LOTUS_BUS_LOG_RESERVE");
+        cached = (s && s[0] == '1') ? 1 : 0;
+    }
+    return cached;
+}
+
+/* Under the lock: close `r` — its placeholder quarantined, its window
+ * shut, its cells handed to `*freeme`. What it shed counts on every
+ * claimant. */
+static void lotus_bus_resv_close_locked(lotus_bus_resv_t *r,
+                                        lotus_bus_parked_t **freeme) {
+    if (!r->open) return;
+    r->open = 0;
+    if (lotus_bus_log_reserve_enabled()) {
+        fprintf(stderr,
+                "[bus] reservation `%s` closed: parked %llu copied %llu "
+                "forwarded %llu shed %llu claimants %zu missing %lld\n",
+                r->subject, (unsigned long long)r->ever_parked,
+                (unsigned long long)r->copied,
+                (unsigned long long)r->forwarded,
+                (unsigned long long)r->dropped, r->nclaim,
+                (long long)r->remaining);
+    }
+    if (r->entry) r->entry->subject = NULL;
+    *freeme = r->head;
+    r->head = r->tail = NULL;
+    r->parked = 0;
+    if (r->dropped) {
+        for (size_t i = 0; i < r->nclaim; i++)
+            __atomic_fetch_add(&r->claimants[i].e->ctr_dropped_full,
+                               r->dropped, __ATOMIC_RELAXED);
+    }
+    __atomic_sub_fetch(&lotus_bus_unready_count, 1, __ATOMIC_SEQ_CST);
+#ifndef __wasm__
+    pthread_cond_broadcast(&g_bus_ready_cond);
+#endif
+}
+
+/* Test hook: LOTUS_BUS_TEST_RESERVE_STALL_US=N holds a publish on a
+ * thread other than the constructing one N microseconds between the view
+ * it walked and its park, so a claim lands in between and the park has
+ * to forward (the race tests' lever; read once). */
+static long lotus_bus_test_reserve_stall_us(void) {
+    static long cached = -1;
+    if (cached < 0) {
+        const char *s = getenv("LOTUS_BUS_TEST_RESERVE_STALL_US");
+        long v = (s && *s) ? strtol(s, NULL, 10) : 0;
+        cached = v > 0 ? v : 0;
+    }
+    return cached;
+}
+
+static int lotus_bus_resv_park(void *token, lotus_bus_queue_t *queue,
+                               const void *payload, size_t size,
+                               uint64_t rec_pub,
+                               const lotus_bus_pubctx_t *pc) {
+    lotus_bus_resv_t *r = (lotus_bus_resv_t *)token;
+    long stall = lotus_bus_test_reserve_stall_us();
+    if (stall > 0 && !pthread_equal(r->ctor, pthread_self())) {
+        struct timespec ts = { stall / 1000000L, (stall % 1000000L) * 1000L };
+        nanosleep(&ts, NULL);
+    }
+    static const lotus_bus_pubctx_t none = { 0, 0, 0, 0 };
+    if (!pc) pc = &none;
+    void *wire_deser = g_bus_pending_wire_deser;
+    const char *pkey = (r->key_is_str && pc->keyed)
+        ? (const char *)(uintptr_t)pc->key_hi : NULL;
+    lotus_bus_parked_t *later = NULL, *later_tail = NULL, *shed = NULL;
+    int note_fail = 0;
+    pthread_mutex_lock(&g_bus_ready_lock);
+#ifndef __wasm__
+    if (r->open && r->policy == 0 && r->parked >= r->cap
+        && lotus_bus_resv_may_wait(r)) {
+        __atomic_add_fetch(&g_bus_ready_waiters, 1, __ATOMIC_SEQ_CST);
+        while (r->open && r->parked >= r->cap && lotus_bus_resv_may_wait(r))
+            pthread_cond_wait(&g_bus_ready_cond, &g_bus_ready_lock);
+        __atomic_sub_fetch(&g_bus_ready_waiters, 1, __ATOMIC_SEQ_CST);
+    }
+#endif
+    /* The claimants that registered already and that this publish did
+     * not reach on its own. */
+    for (size_t i = 0; i < r->nclaim; i++) {
+        lotus_bus_claimant_t *c = &r->claimants[i];
+        if (!c->e->subject || lotus_bus_pub_saw(pc, c)) continue;
+        if (!lotus_bus_resv_key_ok(c->e, pc, pkey)) continue;
+        r->forwarded++;
+        lotus_bus_resv_hand(lotus_bus_resv_cell_for(c->e, queue, payload, size,
+                                                    rec_pub, wire_deser),
+                            &later, &later_tail);
+    }
+    /* And the ones still to come. */
+    if (r->open) {
+        int keep = 1;
+        if (r->parked >= r->cap) {
+            switch (r->policy) {
+            case 0:
+                break;  /* a thread that may not wait parks past the cap */
+            case 2:
+                shed = r->head;
+                r->head = shed->next;
+                if (!r->head) r->tail = NULL;
+                shed->next = NULL;
+                r->parked--;
+                r->dropped++;
+                break;
+            default:
+                keep = 0;
+                r->dropped++;
+                if (r->policy == 3 && !r->fail_noted) {
+                    r->fail_noted = 1;
+                    note_fail = 1;
+                }
+                break;
+            }
+        }
+        if (keep) {
+            lotus_bus_parked_t *p = calloc(1, sizeof *p);
+            void *copy = malloc(size > 0 ? size : 1);
+            char *key_copy = pkey ? strdup(pkey) : NULL;
+            if (!p || !copy || (pkey && !key_copy)) {
+                pthread_mutex_unlock(&g_bus_ready_lock);
+                fprintf(stderr, "lotus: out of memory holding a reserved cell\n");
+                abort();
+            }
+            if (size > 0 && payload) memcpy(copy, payload, size);
+            p->handler = (void *)lotus_bus_resv_stub;
+            p->self_ptr = r;
+            p->queue = queue;
+            p->payload = copy;
+            p->size = size;
+            p->rec_pub = rec_pub;
+            p->wire_deser = wire_deser;
+            p->pc = *pc;
+            p->key_str = key_copy;
+            if (r->tail) r->tail->next = p; else r->head = p;
+            r->tail = p;
+            r->parked++;
+            r->ever_parked++;
+        }
+    }
+    pthread_mutex_unlock(&g_bus_ready_lock);
+    lotus_bus_parked_free(shed);
+    if (note_fail) {
+        fprintf(stderr,
+                "hale: bus: `%s` is bounded with `on_full: fail`, and a "
+                "publish made before its subscriber was built found the "
+                "subscriber's reservation full; with no publisher left to "
+                "raise into, it is shed and counted as a full drop\n",
+                r->subject);
+    }
+    lotus_bus_resv_post_list(later);
+    return 1;
+}
+
+/* A root literal with reservations to make opens a scope for them. */
+void *lotus_bus_reserve_begin(void) {
+    lotus_bus_resv_scope_t *s = calloc(1, sizeof *s);
+    if (!s) {
+        fprintf(stderr, "lotus: out of memory reserving subscriptions\n");
+        abort();
+    }
+    return s;
+}
+
+/* Reserve `subject` for the `count` registrations of it the tree will
+ * make. `deserialize` is its subscribers', `static_id` its bucket
+ * (UINT32_MAX when it has none), `cap`/`policy` the bound the topic
+ * declares (`cap` <= 0: none), and `key_is_str` whether its routing key
+ * is a String. */
+void lotus_bus_reserve(void *scope_v, const char *subject, int64_t count,
+                       lotus_deserialize_fn deserialize, uint32_t static_id,
+                       int64_t cap, int64_t policy, int32_t key_is_str) {
+    lotus_bus_resv_scope_t *scope = (lotus_bus_resv_scope_t *)scope_v;
+    if (!scope || !subject || count <= 0) return;
+    lotus_bus_resv_t *r = calloc(1, sizeof *r);
+    if (!r) {
+        fprintf(stderr, "lotus: out of memory reserving subscriptions\n");
+        abort();
+    }
+    r->subject = subject;
+    r->static_id = static_id;
+    r->remaining = count;
+    r->cap = cap > 0 ? (size_t)cap : bus_queue_max_cap();
+    r->policy = (uint8_t)policy;
+    r->key_is_str = key_is_str != 0;
+    r->open = 1;
+    r->ctor = pthread_self();
+    /* Open before the placeholder is visible: a baked direct publish
+     * that sees no window open walks no reservation. */
+    pthread_mutex_lock(&g_bus_ready_lock);
+    r->next_all = g_bus_resv_all;
+    g_bus_resv_all = r;
+    __atomic_add_fetch(&lotus_bus_unready_count, 1, __ATOMIC_SEQ_CST);
+    pthread_mutex_unlock(&g_bus_ready_lock);
+    lotus_bus_entry_t *e = lotus_bus_register_entry_gen(
+        subject, r, (void *)lotus_bus_resv_stub, NULL, deserialize, NULL,
+        0, 0, 0, NULL, static_id, 0);
+    lotus_bus_parked_t *freeme = NULL;
+    pthread_mutex_lock(&g_bus_ready_lock);
+    r->entry = e;
+    if (e) {
+        r->next_scope = scope->head;
+        scope->head = r;
+    } else {
+        /* Nothing reserved: the subscribers register as they would
+         * have. */
+        lotus_bus_resv_close_locked(r, &freeme);
+    }
+    pthread_mutex_unlock(&g_bus_ready_lock);
+    lotus_bus_resv_post_list(freeme);
+}
+
+/* `self_ptr` registered its subscription to `subject`: it takes what
+ * the reservation holds that its publish did not hand it already. */
+void lotus_bus_reserve_claim(void *scope_v, const char *subject,
+                             void *self_ptr) {
+    lotus_bus_resv_scope_t *scope = (lotus_bus_resv_scope_t *)scope_v;
+    if (!scope || !subject || !self_ptr) return;
+    lotus_bus_resv_t *r = NULL;
+    for (lotus_bus_resv_t *x = scope->head; x; x = x->next_scope) {
+        if (x->subject == subject || strcmp(x->subject, subject) == 0) {
+            r = x;
+            break;
+        }
+    }
+    if (!r) return;
+    lotus_bus_parked_t *later = NULL, *later_tail = NULL, *freeme = NULL;
+    pthread_mutex_lock(&g_bus_ready_lock);
+    if (!r->open) {
+        pthread_mutex_unlock(&g_bus_ready_lock);
+        return;
+    }
+    /* Its newest registration of the subject not claimed already (a
+     * locus may subscribe to one subject twice). */
+    lotus_bus_view_t bv = lotus_bus_view();
+    lotus_bus_entry_t *e = NULL;
+    size_t ti = 0;
+    for (size_t i = bv.n; i-- > 0;) {
+        lotus_bus_entry_t *x = bv.at[i];
+        if (x->self_ptr != self_ptr || !x->subject
+            || x->handler == (void *)lotus_bus_resv_stub) continue;
+        if (x->subject != subject && strcmp(x->subject, subject) != 0) continue;
+        int claimed = 0;
+        for (size_t k = 0; k < r->nclaim; k++)
+            if (r->claimants[k].e == x) { claimed = 1; break; }
+        if (claimed) continue;
+        e = x;
+        ti = i;
+        break;
+    }
+    if (e) {
+        size_t bi = SIZE_MAX;
+        lotus_bus_static_bucket_t *b = r->static_id != UINT32_MAX
+            ? lotus_bus_static_bucket(r->static_id) : NULL;
+        if (b) {
+            lotus_bus_entry_t *const *at;
+            size_t bn = lotus_bus_bucket_view(b, &at);
+            for (size_t k = bn; k-- > 0;)
+                if (at[k] == e) { bi = k; break; }
+        }
+        if (r->nclaim == r->capclaim) {
+            size_t nc = r->capclaim ? r->capclaim * 2 : 4;
+            lotus_bus_claimant_t *g = realloc(r->claimants, nc * sizeof *g);
+            if (!g) {
+                pthread_mutex_unlock(&g_bus_ready_lock);
+                fprintf(stderr, "lotus: out of memory claiming a reservation\n");
+                abort();
+            }
+            r->claimants = g;
+            r->capclaim = nc;
+        }
+        lotus_bus_claimant_t *c = &r->claimants[r->nclaim++];
+        *c = (lotus_bus_claimant_t){ e, ti, bi };
+        /* Its copies, in publish order, ahead of what its window holds:
+         * every cell there came from a publish that saw it, so after
+         * these in any one publisher's order. */
+        lotus_bus_parked_t *mine = NULL, *mine_tail = NULL;
+        size_t n = 0;
+        for (lotus_bus_parked_t *t = r->head; t; t = t->next) {
+            if (lotus_bus_pub_saw(&t->pc, c)) continue;
+            if (!lotus_bus_resv_key_ok(e, &t->pc, t->key_str)) continue;
+            lotus_bus_parked_t *p = lotus_bus_resv_cell_for(
+                e, t->queue, t->payload, t->size, t->rec_pub, t->wire_deser);
+            if (mine_tail) mine_tail->next = p; else mine = p;
+            mine_tail = p;
+            n++;
+            r->copied++;
+        }
+        lotus_bus_unready_t *u = lotus_bus_unready_find(self_ptr);
+        if (mine && u) {
+            mine_tail->next = u->head;
+            u->head = mine;
+            if (!u->tail) u->tail = mine_tail;
+            u->parked += n;
+        } else if (mine) {
+            later = mine;
+            later_tail = mine_tail;
+        }
+    }
+    (void)later_tail;
+    if (--r->remaining <= 0) lotus_bus_resv_close_locked(r, &freeme);
+    pthread_mutex_unlock(&g_bus_ready_lock);
+    lotus_bus_parked_free(freeme);
+    lotus_bus_resv_post_list(later);
+}
+
+/* The root's birth is next: every reservation of its scope closes. One
+ * whose subscriber never came, holding cells published to it, says so. */
+void lotus_bus_reserve_end(void *scope_v) {
+    lotus_bus_resv_scope_t *scope = (lotus_bus_resv_scope_t *)scope_v;
+    if (!scope) return;
+    for (lotus_bus_resv_t *r = scope->head; r; r = r->next_scope) {
+        lotus_bus_parked_t *freeme = NULL;
+        int64_t missing = 0;
+        uint64_t held = 0;
+        pthread_mutex_lock(&g_bus_ready_lock);
+        if (r->open) {
+            missing = r->remaining;
+            held = r->ever_parked;
+            lotus_bus_resv_close_locked(r, &freeme);
+        }
+        pthread_mutex_unlock(&g_bus_ready_lock);
+        lotus_bus_parked_free(freeme);
+        if (missing > 0 && held > 0) {
+            fprintf(stderr,
+                    "hale: bus: %lld subscription(s) of `%s` reserved for a "
+                    "statically built tree never registered; %llu cell(s) "
+                    "published before then reached none of them\n",
+                    (long long)missing, r->subject, (unsigned long long)held);
+        }
+    }
+    free(scope);
+}
+
+/* Teardown: the reservations' storage. */
+static void lotus_bus_resv_destroy_all(void) {
+    pthread_mutex_lock(&g_bus_ready_lock);
+    lotus_bus_resv_t *r = g_bus_resv_all;
+    g_bus_resv_all = NULL;
+    pthread_mutex_unlock(&g_bus_ready_lock);
+    while (r) {
+        lotus_bus_resv_t *next = r->next_all;
+        lotus_bus_parked_free(r->head);
+        free(r->claimants);
+        free(r);
+        r = next;
+    }
+}
+
 /* Dispatch a published message to every subscriber of `subject`.
  * `queue` is the program-wide cooperative queue (passed in by
  * codegen rather than C-runtime-owned because the queue's
@@ -15182,10 +15772,12 @@ static inline int lotus_bus_post_entry_gen(lotus_bus_entry_t *e,
                                            lotus_bus_queue_t *queue,
                                            const void *payload,
                                            size_t size,
-                                           uint64_t rec_pub) {
-    /* Decision line 6: a subscriber whose birth has not completed. */
+                                           uint64_t rec_pub,
+                                           const lotus_bus_pubctx_t *pc) {
+    /* Decision line 6: a subscriber whose birth has not completed (or
+     * a reservation's placeholder, #1534). */
     if (lotus_bus_park_if_unready(e->handler, e->self_ptr, e->mailbox, e->coop_pool,
-                                  queue, payload, size, rec_pub))
+                                  queue, payload, size, rec_pub, pc))
         return 1;
     /* GH #296: the TLS is scoped to exactly this post (the wire-deser
      * pattern) so a structural cell posted outside any fanout can
@@ -15221,10 +15813,11 @@ static inline int lotus_bus_post_entry(lotus_bus_entry_t *e,
                                        lotus_bus_queue_t *queue,
                                        const void *payload,
                                        size_t size,
-                                       uint64_t rec_pub) {
+                                       uint64_t rec_pub,
+                                       const lotus_bus_pubctx_t *pc) {
     uint64_t prev_gen = g_bus_pending_gen;
     g_bus_pending_gen = e->gen;
-    int posted = lotus_bus_post_entry_gen(e, queue, payload, size, rec_pub);
+    int posted = lotus_bus_post_entry_gen(e, queue, payload, size, rec_pub, pc);
     g_bus_pending_gen = prev_gen;
     return posted;
 }
@@ -15251,6 +15844,7 @@ void lotus_bus_local_dispatch(lotus_bus_queue_t *queue,
     }
     size_t delivered = 0;
     lotus_bus_view_t bv = lotus_bus_view();
+    const lotus_bus_pubctx_t pc = { LOTUS_BUS_SEEN_TABLE(bv.n), 0, 0, 0 };
     for (size_t i = 0; i < bv.n; i++) {
         lotus_bus_entry_t *e = bv.at[i];
         if (!e->subject) continue;          /* deregistered */
@@ -15266,7 +15860,7 @@ void lotus_bus_local_dispatch(lotus_bus_queue_t *queue,
          * filter — bypassing the routing-key contract. */
         if (e->key_filter_kind != 0) continue;
         delivered += (size_t)lotus_bus_post_entry(
-            e, queue, payload, payload_size, rec_pub);
+            e, queue, payload, payload_size, rec_pub, &pc);
         if (lotus_obs_bus_deliver && lotus_obs_live) {
             lotus_obs_bus_deliver(subject, e->self_ptr,
                                   (uint64_t)payload_size, obs_tok);
@@ -15379,6 +15973,7 @@ void lotus_bus_local_dispatch_keyed(lotus_bus_queue_t *queue,
     size_t specific_subs_on_subject = 0;
     size_t unkeyed_subs_on_subject = 0;
     lotus_bus_view_t bv = lotus_bus_view();
+    const lotus_bus_pubctx_t pc = { LOTUS_BUS_SEEN_TABLE(bv.n), 1, key_lo, key_hi };
     for (size_t i = 0; i < bv.n; i++) {
         lotus_bus_entry_t *e = bv.at[i];
         if (!e->subject) continue;
@@ -15398,7 +15993,7 @@ void lotus_bus_local_dispatch_keyed(lotus_bus_queue_t *queue,
             continue;
         }
         (void)lotus_bus_post_entry(e, queue,
-            payload, payload_size, rec_pub);
+            payload, payload_size, rec_pub, &pc);
         /* iris handoff-4 P15: BUS_DELIVER per matched keyed target
          * (sibling of the non-keyed local_dispatch probe — the keyed
          * flavor had none, so keyed deliveries never counted). */
@@ -15419,7 +16014,7 @@ void lotus_bus_local_dispatch_keyed(lotus_bus_queue_t *queue,
             if (!lotus_subject_match(e->subject, subject)) continue;
             if (e->key_filter_kind != 2) continue;
             (void)lotus_bus_post_entry(e, queue, payload, payload_size,
-                                       rec_pub);
+                                       rec_pub, &pc);
             if (lotus_obs_bus_deliver && lotus_obs_live) {
                 lotus_obs_bus_deliver(subject, e->self_ptr,
                                       (uint64_t)payload_size, obs_tok);
@@ -15765,9 +16360,10 @@ static int lotus_bus_cell_materialize(lotus_bus_cell_t *c) {
 static inline int lotus_bus_post_wire(lotus_bus_entry_t *e,
                                       lotus_bus_queue_t *q,
                                       const void *wire, size_t wire_size,
-                                      uint64_t rec_pub) {
+                                      uint64_t rec_pub,
+                                      const lotus_bus_pubctx_t *pc) {
     g_bus_pending_wire_deser = (void *)e->deserialize;
-    int posted = lotus_bus_post_entry(e, q, wire, wire_size, rec_pub);
+    int posted = lotus_bus_post_entry(e, q, wire, wire_size, rec_pub, pc);
     g_bus_pending_wire_deser = NULL;
     return posted;
 }
@@ -16146,13 +16742,14 @@ void lotus_bus_dispatch_fused(lotus_bus_queue_t *queue,
     if (lotus_obs_bus_publish && lotus_obs_live)
         obs_tok = lotus_obs_bus_publish(subject, NULL, size);
     lotus_bus_view_t bv = lotus_bus_view();
+    const lotus_bus_pubctx_t pc = { LOTUS_BUS_SEEN_TABLE(bv.n), 0, 0, 0 };
     for (size_t i = 0; i < bv.n; i++) {
         lotus_bus_entry_t *e = bv.at[i];
         if (e->self_ptr != receiver || !e->subject || e->key_filter_kind != 0
             || !lotus_subject_match(e->subject, subject)) continue;
         if (!flat && !e->deserialize) continue;
         g_bus_pending_wire_deser = flat ? NULL : (void *)e->deserialize;
-        int posted = lotus_bus_post_entry(e, queue, payload, (size_t)size, rec_pub);
+        int posted = lotus_bus_post_entry(e, queue, payload, (size_t)size, rec_pub, &pc);
         g_bus_pending_wire_deser = NULL;
         if (posted && lotus_obs_bus_deliver && lotus_obs_live)
             lotus_obs_bus_deliver(subject, e->self_ptr, size, obs_tok);
@@ -16359,6 +16956,8 @@ void lotus_bus_router_destroy(void) {
     g_bus_chunk = NULL;
     g_bus_chunk_used = LOTUS_BUS_ENTRY_CHUNK;
     pthread_mutex_unlock(&g_bus_reg_lock);
+    /* #1534: the reservations, whose placeholders went with the table. */
+    lotus_bus_resv_destroy_all();
     /* m58: also tear down any remote-bound transports the
      * deployment-config loader opened at boot. */
     lotus_bus_remote_destroy_all();
@@ -24492,6 +25091,7 @@ void lotus_bus_dispatch_wire_keyed(const char *subject,
     size_t specific_subs_on_subject = 0;
     size_t unkeyed_subs_on_subject = 0;
     lotus_bus_view_t bv = lotus_bus_view();
+    const lotus_bus_pubctx_t pc = { LOTUS_BUS_SEEN_TABLE(bv.n), 1, key_lo, key_hi };
     for (size_t i = 0; i < bv.n; i++) {
         lotus_bus_entry_t *e = bv.at[i];
         if (!e->subject) continue;
@@ -24512,7 +25112,7 @@ void lotus_bus_dispatch_wire_keyed(const char *subject,
          * (F.31 Phase 4), and readiness's gate (decision line 6) —
          * the wire bytes, materialized by the owner at drain. */
         (void)lotus_bus_post_wire(e, g_bus_queue_for_remote,
-                                  wire_bytes, wire_size, rec_pub);
+                                  wire_bytes, wire_size, rec_pub, &pc);
         /* iris handoff-4 P15: BUS_DELIVER per matched keyed target. */
         if (lotus_obs_bus_deliver && lotus_obs_live) {
             lotus_obs_bus_deliver(subject, e->self_ptr,
@@ -24527,7 +25127,7 @@ void lotus_bus_dispatch_wire_keyed(const char *subject,
             if (!e->deserialize) continue;
             if (e->key_filter_kind != 2) continue;
             (void)lotus_bus_post_wire(e, g_bus_queue_for_remote,
-                                      wire_bytes, wire_size, rec_pub);
+                                      wire_bytes, wire_size, rec_pub, &pc);
             if (lotus_obs_bus_deliver && lotus_obs_live) {
                 lotus_obs_bus_deliver(subject, e->self_ptr,
                                       (uint64_t)wire_size, obs_tok);
@@ -24576,6 +25176,7 @@ void lotus_bus_dispatch_wire(const char *subject,
     size_t matched = 0;
     size_t delivered = 0;
     lotus_bus_view_t bv = lotus_bus_view();
+    const lotus_bus_pubctx_t pc = { LOTUS_BUS_SEEN_TABLE(bv.n), 0, 0, 0 };
     for (size_t i = 0; i < bv.n; i++) {
         lotus_bus_entry_t *e = bv.at[i];
         if (!e->subject) continue;
@@ -24601,7 +25202,7 @@ void lotus_bus_dispatch_wire(const char *subject,
         /* The wire bytes + deserialize fn; the owner materializes at
          * drain (lotus_bus_post_wire). */
         if (lotus_bus_post_wire(e, g_bus_queue_for_remote,
-                                wire_bytes, wire_size, rec_pub)) {
+                                wire_bytes, wire_size, rec_pub, &pc)) {
             /* handoff-8 P21: BUS_DELIVER per matched target — the
              * plain wire flavor was the one fanout without it (its
              * keyed sibling gained the probe in handoff-4). */
@@ -24685,6 +25286,7 @@ void lotus_bus_dispatch_static(lotus_bus_queue_t *queue,
         if (b) {
             lotus_bus_entry_t *const *at;
             size_t bn = lotus_bus_bucket_view(b, &at);
+            const lotus_bus_pubctx_t pc = { LOTUS_BUS_SEEN_BUCKET(bn), 0, 0, 0 };
             for (size_t k = 0; k < bn; k++) {
                 lotus_bus_entry_t *e = at[k];
                 if (!e->subject) continue;           /* quarantined */
@@ -24702,7 +25304,7 @@ void lotus_bus_dispatch_static(lotus_bus_queue_t *queue,
                 g_bus_pending_gen = e->gen;
                 if (no_pinned && !e->mailbox && !e->coop_pool && queue
                     && lotus_bus_park_if_unready(e->handler, e->self_ptr, NULL, NULL, queue,
-                                                 struct_payload, (size_t)struct_size, rec_pub)) {
+                                                 struct_payload, (size_t)struct_size, rec_pub, &pc)) {
                     delivered++; /* decision line 6: parked until ready */
                 } else if (no_pinned && !e->mailbox && !e->coop_pool && queue) {
                     g_bus_pending_rec_pub = rec_pub;
@@ -24718,7 +25320,7 @@ void lotus_bus_dispatch_static(lotus_bus_queue_t *queue,
                 } else {
                     delivered += (size_t)lotus_bus_post_entry(
                         e, queue, struct_payload, (size_t)struct_size,
-                        rec_pub);
+                        rec_pub, &pc);
                 }
                 g_bus_pending_gen = prev_gen;
             }
@@ -24785,6 +25387,7 @@ void lotus_bus_dispatch_static(lotus_bus_queue_t *queue,
         if (b) {
             lotus_bus_entry_t *const *at;
             size_t bn = lotus_bus_bucket_view(b, &at);
+            const lotus_bus_pubctx_t pc = { LOTUS_BUS_SEEN_BUCKET(bn), 0, 0, 0 };
             for (size_t k = 0; k < bn; k++) {
                 lotus_bus_entry_t *e = at[k];
                 if (!e->subject) continue;
@@ -24798,7 +25401,7 @@ void lotus_bus_dispatch_static(lotus_bus_queue_t *queue,
                 g_bus_pending_gen = e->gen;
                 if (no_pinned && !e->mailbox && !e->coop_pool && queue
                     && lotus_bus_park_if_unready(e->handler, e->self_ptr, NULL, NULL, queue,
-                                                 struct_payload, (size_t)struct_size, rec_pub)) {
+                                                 struct_payload, (size_t)struct_size, rec_pub, &pc)) {
                     delivered++; /* decision line 6: parked until ready */
                 } else if (no_pinned && !e->mailbox && !e->coop_pool && queue) {
                     g_bus_pending_rec_pub = rec_pub;
@@ -24814,7 +25417,7 @@ void lotus_bus_dispatch_static(lotus_bus_queue_t *queue,
                 } else {
                     delivered += (size_t)lotus_bus_post_entry(
                         e, queue, struct_payload, (size_t)struct_size,
-                        rec_pub);
+                        rec_pub, &pc);
                 }
                 g_bus_pending_gen = prev_gen;
             }
@@ -24848,6 +25451,7 @@ void lotus_bus_dispatch_static(lotus_bus_queue_t *queue,
     if (b) {
         lotus_bus_entry_t *const *at;
         size_t bn = lotus_bus_bucket_view(b, &at);
+        const lotus_bus_pubctx_t pc = { LOTUS_BUS_SEEN_BUCKET(bn), 0, 0, 0 };
         for (size_t k = 0; k < bn; k++) {
             lotus_bus_entry_t *e = at[k];
             if (!e->subject) continue;             /* quarantined */
@@ -24874,7 +25478,7 @@ void lotus_bus_dispatch_static(lotus_bus_queue_t *queue,
                 g_bus_pending_wire_deser = (void *)e->deserialize;
                 if (lotus_bus_park_if_unready(e->handler, e->self_ptr, NULL, NULL,
                                               g_bus_queue_for_remote, wire_buf,
-                                              (size_t)wire_size, rec_pub)) {
+                                              (size_t)wire_size, rec_pub, &pc)) {
                     delivered++; /* decision line 6: parked until ready */
                 } else {
                     g_bus_pending_rec_pub = rec_pub;
@@ -24892,7 +25496,7 @@ void lotus_bus_dispatch_static(lotus_bus_queue_t *queue,
             } else {
                 delivered += (size_t)lotus_bus_post_wire(
                     e, g_bus_queue_for_remote, wire_buf, (size_t)wire_size,
-                    rec_pub);
+                    rec_pub, &pc);
             }
             g_bus_pending_gen = prev_gen;
         }
@@ -24974,6 +25578,7 @@ void lotus_bus_dispatch_static_direct(uint32_t id,
     if (b) {
         lotus_bus_entry_t *const *at;
         size_t bn = lotus_bus_bucket_view(b, &at);
+        const lotus_bus_pubctx_t pc = { LOTUS_BUS_SEEN_BUCKET(bn), 0, 0, 0 };
         for (size_t k = 0; k < bn; k++) {
             lotus_bus_entry_t *e = at[k];
             if (!e->subject) continue;           /* quarantined */
@@ -24987,7 +25592,7 @@ void lotus_bus_dispatch_static_direct(uint32_t id,
             uint64_t prev_gen = g_bus_pending_gen;
             g_bus_pending_gen = e->gen;
             if (lotus_bus_park_if_unready(e->handler, e->self_ptr, e->mailbox, e->coop_pool,
-                                          g_bus_queue_for_remote, payload, (size_t)size, 0)) {
+                                          g_bus_queue_for_remote, payload, (size_t)size, 0, &pc)) {
                 /* Decision line 6: its birth has not completed; the
                  * cell waits on the cooperative queue's side. */
             } else if (e->mailbox) {
@@ -25079,6 +25684,11 @@ void *lotus_bus_static_direct_selfptr(uint32_t id, size_t k) {
      * skips) degrades a hypothetical gate bug to a dropped delivery
      * rather than a cross-thread call. */
     if (e->mailbox || e->coop_pool) return NULL;
+    /* #1534: a reservation's placeholder is never a handler's self. The
+     * baked path runs only while no window is open, and a reservation
+     * holds one open while its placeholder is live, so this is the
+     * belt for a publish that read the count just before it opened. */
+    if (e->handler == (void *)lotus_bus_resv_stub) return NULL;
     return e->self_ptr;
 }
 
