@@ -102,13 +102,17 @@ fn an_async_io_pool_serves_its_scope_local_subscriber() {
 }
 
 #[test]
-fn a_classic_pool_never_hands_its_scope_local_subscriber_to_main() {
-    // a classic pool's cells are handler-atomic: the delivery waits for
-    // the worker, which the body holds for the subscriber's whole life,
-    // and is dropped with it at its dissolve. It is not run on main.
+fn a_classic_pool_serves_its_scope_local_subscriber() {
+    // the body's sleep is a park point inside the host's run() on the
+    // worker, and a park point there delivers the pool's queued cells
+    // (spec/runtime.md § "`time::sleep` drain semantics", 2026-10-12):
+    // the handler runs on the worker before the scope ends, never on
+    // main. Before, a classic pool's run() was atomic and the delivery
+    // was dropped with the subscriber at its dissolve.
     let out = run_scope_local("scope_local_sub_classic", "cooperative(pool = cls)");
-    assert!(!out.contains("handler"), "a handler ran on main:\n{out}");
-    assert!(out.contains("work on_pool=1 got=0"), "{out}");
+    assert!(out.contains("handler n=1 on_pool=1"), "the handler ran off the pool:\n{out}");
+    assert!(out.contains("work on_pool=1 got=1"), "{out}");
+    assert!(!out.contains("on_pool=0"), "a handler ran on main:\n{out}");
 }
 
 #[test]
@@ -297,10 +301,12 @@ fn scope_local_subscribers_churn_clean_under_asan() {
     assert!(out.status.success(), "{:?}\nstdout:\n{stdout}\nstderr:\n{stderr}", out.status);
     assert!(stdout.contains("all done"), "{stdout}");
     assert!(!stdout.contains("BAD"), "a handler ran off its pool:\n{stdout}");
-    // the async pools serve their subscribers while the bodies park; the
-    // classic pool's deliveries are dropped with each subscriber
+    // the async pools serve their subscribers while the bodies park, and
+    // the classic pool at the bodies' sleeps, which are park points inside
+    // the host's run() (before 2026-10-12 its deliveries were all dropped
+    // with each subscriber)
     assert!(got(&stdout, "async_a") > 0 && got(&stdout, "async_b") > 0, "{stdout}");
-    assert_eq!(got(&stdout, "classic"), 0, "{stdout}");
+    assert!(got(&stdout, "classic") > 0, "{stdout}");
 }
 
 // A queued cell belongs to the subscriber incarnation it was posted for,
@@ -372,8 +378,11 @@ fn a_reused_stack_slot_never_runs_its_predecessor_s_cells() {
         assert!(out.contains("peer key=2 saw n=2"), "{out}");
         assert!(out.contains("once 2 got=1"), "{out}");
     }
+    // a classic pool's park point delivers too, so the same holds there
     for out in run_placed("scope_local_sub_reused_classic", REUSED_SLOT, "cooperative(pool = cls)") {
-        assert!(!out.contains("saw"), "{out}");
+        assert!(!out.contains("peer key=2 saw n=1"), "the key-1 cell ran on the key-2 subscriber:\n{out}");
+        assert!(out.contains("peer key=2 saw n=2"), "{out}");
+        assert!(out.contains("once 2 got=1"), "{out}");
     }
 }
 

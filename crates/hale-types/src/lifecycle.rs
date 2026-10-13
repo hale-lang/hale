@@ -116,12 +116,12 @@
 //! 12    Drain                                    Shipped (C9, L4); Shipped (C32, L4)
 //! 13    Resume RunAdmission Run                  KnownOpen C43; Shipped (C48, L4)
 //! 14    Reclaim                                  Shipped; Shipped (L2 verifies)
-//! 15    ProcessDrain                             Shipped
+//! 15    ProcessDrain TreeDrain                   Shipped; Shipped
 //! 16    PoolJoin WaitAbort                       Shipped (the capability matrix selects)
 //! 17    PinnedJoin TeardownDelivery              Pending (teardown delivery contract)
 //! 18    PreDrain                                 KnownOpen C13
 //! 19    RunAdmission Run Cancellation Handler    Shipped (retention, L5); Shipped (refused or freed unrun, named, L5); Shipped (R20a, named by L2); Shipped (a handler's hold, R52)
-//! RD    RecoveryDecision Restart                 Shipped (process drain); KnownOpen C42 (owner teardown)
+//! RD    RecoveryDecision Restart                 Shipped (process drain); Shipped (owner teardown, C42)
 //! JP    JoinProgress FailureDelivery             Shipped (pinned join, L5); Shipped (pool joins, an ended domain, L5)
 //! ```
 //!
@@ -472,6 +472,12 @@ pub enum ObligationKind {
     Drain,
     /// The bus drain a teardown spine runs before its first entry.
     PreDrain,
+    /// The drain reaching a main locus's tree once its `run()` has
+    /// returned: the head of its teardown raises the drain every locus of
+    /// the tree reads as `self.draining`, so a child's `run()` that
+    /// watches it returns and is joined. Lowered again once the tree is
+    /// gone (line 15).
+    TreeDrain,
     /// The main-exit ingress quiesce: kernel-accepted listen ingress
     /// drained through the intact registry while the pools and the
     /// subscribers are alive (GH #468).
@@ -528,6 +534,7 @@ impl ObligationKind {
         ObligationKind::Resume,
         ObligationKind::Drain,
         ObligationKind::PreDrain,
+        ObligationKind::TreeDrain,
         ObligationKind::IngressQuiesce,
         ObligationKind::WaitAbort,
         ObligationKind::ReaderStop,
@@ -565,6 +572,7 @@ impl ObligationKind {
             ObligationKind::Resume => "Resume",
             ObligationKind::Drain => "Drain",
             ObligationKind::PreDrain => "PreDrain",
+            ObligationKind::TreeDrain => "TreeDrain",
             ObligationKind::IngressQuiesce => "IngressQuiesce",
             ObligationKind::WaitAbort => "WaitAbort",
             ObligationKind::ReaderStop => "ReaderStop",
@@ -599,6 +607,7 @@ impl ObligationKind {
             ObligationKind::Resume => &["C43", "C48"],
             ObligationKind::Drain => &["C9", "C14", "C30", "C32", "R44"],
             ObligationKind::PreDrain => &["C16", "R29"],
+            ObligationKind::TreeDrain => &["R43"],
             ObligationKind::IngressQuiesce => &["R35"],
             ObligationKind::WaitAbort => &["C17", "R34"],
             ObligationKind::ReaderStop => &["R34", "R20"],
@@ -622,6 +631,7 @@ impl ObligationKind {
             ObligationKind::WaitAbort => Some(crate::capability::Obligation::WaitAbort),
             ObligationKind::PoolJoin => Some(crate::capability::Obligation::PoolJoin),
             ObligationKind::ReaderStop => Some(crate::capability::Obligation::ReaderStop),
+            ObligationKind::TreeDrain => Some(crate::capability::Obligation::TreeDrain),
             _ => None,
         }
     }
@@ -1169,8 +1179,11 @@ pub const DECISION_LINES: &[DecisionLine] = &[
     DecisionLine {
         line: "15",
         title: "a signal raises a cooperative flag",
-        kinds: &[K::ProcessDrain],
-        statuses: &[(Status::Shipped, "no lifecycle call from the signal path")],
+        kinds: &[K::ProcessDrain, K::TreeDrain],
+        statuses: &[
+            (Status::Shipped, "no lifecycle call from the signal path"),
+            (Status::Shipped, "a main locus's teardown raises the drain for its tree first, so its children's runs end before they are joined"),
+        ],
     },
     DecisionLine {
         line: "16",
@@ -1178,7 +1191,7 @@ pub const DECISION_LINES: &[DecisionLine] = &[
         kinds: &[K::PoolJoin, K::WaitAbort],
         statuses: &[(
             Status::Shipped,
-            "every teardown spine emits the pool join, the wait-abort, the ingress quiesce and the reader stop its target's cells select",
+            "every teardown spine emits the pool join, the wait-abort, the ingress quiesce, the reader stop and, a main locus's, the tree drain its target's cells select",
         )],
     },
     DecisionLine {
@@ -1228,7 +1241,10 @@ pub const DECISION_LINES: &[DecisionLine] = &[
         kinds: &[K::RecoveryDecision, K::Restart],
         statuses: &[
             (Status::Shipped, "while the process drains"),
-            (Status::KnownOpen { inventory_row: "C42" }, "while the owner is in teardown"),
+            (
+                Status::Shipped,
+                "while the owner is in teardown: a main locus's teardown raises its tree's drain before it joins (line 15, C42), and the reclaim wins elsewhere",
+            ),
         ],
     },
     DecisionLine {
@@ -1289,12 +1305,12 @@ mod tests {
     }
 
     /// Every obligation a teardown spine's cells select is a kind of the
-    /// plan, and only those four are.
+    /// plan, and only those five are.
     #[test]
     fn the_spine_obligations_are_kinds_of_the_plan() {
         use crate::capability::Obligation as O;
         let selected: Vec<O> = ObligationKind::ALL.iter().filter_map(|k| k.capability()).collect();
-        assert_eq!(selected, vec![O::IngressQuiesce, O::WaitAbort, O::ReaderStop, O::PoolJoin]);
+        assert_eq!(selected, vec![O::TreeDrain, O::IngressQuiesce, O::WaitAbort, O::ReaderStop, O::PoolJoin]);
     }
 
     #[test]

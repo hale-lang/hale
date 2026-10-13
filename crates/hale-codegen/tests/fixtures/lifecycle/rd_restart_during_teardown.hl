@@ -1,6 +1,7 @@
-// Restart during drain (RecoveryDecision, Restart). Known open at
-// inventory row C42 for an owner's teardown; shipped for the process
-// drain.
+// Restart during drain (RecoveryDecision, Restart). Shipped for the
+// process drain, and for an owner's teardown (inventory row C42): App's
+// teardown raises its tree's drain before it joins the pool (lifecycle
+// line 15), so the restart gate reads the drain up.
 //
 // `kid` runs on pool `side` and fails 200ms into its run(), long after
 // App's run() has returned and fn main's exit has begun App's teardown
@@ -11,8 +12,8 @@
 // asking.
 //
 // Expected terminal outcome: one birth, the handler once, one
-// dissolve, judged by the harness: `restart-not-performed`. Today the
-// restart runs: `restarted-during-teardown`.
+// dissolve, judged by the harness: `restart-not-performed`. Before the
+// tree drain (2026-10-12) the restart ran: `restarted-during-teardown`.
 
 locus Kid {
     params { births: Int = 0; name: String = ""; }

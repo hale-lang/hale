@@ -1,8 +1,9 @@
 //! The dropped scope-local delivery advisory (spec/verification.md,
 //! "Dropped scope-local delivery"): a bus subscriber built and dissolved
 //! inside one call that runs on a classic cooperative pool registers with
-//! that pool (spec/runtime.md § "Subscriptions follow the tower"), whose
-//! cells are handler-atomic, so every delivery to it is dropped. `hale
+//! that pool (spec/runtime.md § "Subscriptions follow the tower"), so a
+//! delivery to it waits for a park point of a `run()` there and is
+//! dropped when none comes first (the publish here follows the sleep). `hale
 //! check` warns at the literal, naming the locus, the call and the pool;
 //! not on an `async_io` pool, not on main, and not when the subscriber
 //! outlives the call.
