@@ -404,11 +404,35 @@ fn typed_flags_and_json_write_the_same_wire_line() {
     assert_eq!(v["payload"]["rush"], true);
     assert!(v["payload"].get("note").is_none(), "an optional field not given is not sent");
 
-    // --id and --digest are the caller's
-    let own = run(&["api", "call", &fake.sock, "Shop::order", "--json", "{}", "--id", "c-9", "--digest", "fnv1a64:feed"]);
+    // --request-id and --digest are the caller's
+    let own = run(&["api", "call", &fake.sock, "Shop::order", "--json", "{}", "--request-id", "c-9", "--digest", "fnv1a64:feed"]);
     assert_eq!(own.code, 0, "{}", own.stderr);
     let v: Value = serde_json::from_str(fake.calls().last().unwrap()).unwrap();
     assert_eq!((v["id"].as_str(), v["digest"].as_str()), (Some("c-9"), Some("fnv1a64:feed")));
+}
+
+/// A payload field named `id` is set by `--id`: the verb's own request id is
+/// `--request-id`, so the commonest field name is not shadowed (downstream handoff).
+#[test]
+fn a_payload_field_named_id_is_a_typed_flag_and_the_request_id_is_its_own() {
+    let doc = serde_json::json!({
+        "description": 1, "exposure": "Items@fnv1a64:0000000000000002/items", "name": "items", "surface": "Items", "digest": "fnv1a64:0000000000000002",
+        "listener": {"transport": "unix", "address": "/x"}, "caller": {"principal": {"mode": "unix", "name": "uid:1"}, "roles": []},
+        "members": [{"name": "Items::get", "request": {"$ref": "#/schemas/Get"}, "response": {"$ref": "#/schemas/Get"}, "error": "ClosureViolation", "requires": []}],
+        "schemas": {"Get": {"type": "object", "properties": {"id": {"type": "integer"}}, "required": ["id"]}}
+    });
+    let fake = Fake::start(&doc, Answer::Result);
+    let o = run(&["api", "call", &fake.sock, "Items::get", "--id", "5", "--request-id", "r-1"]);
+    assert_eq!(o.code, 0, "{}", o.stderr);
+    let v: Value = serde_json::from_str(fake.calls().last().unwrap()).unwrap();
+    assert_eq!(v["payload"], serde_json::json!({"id": 5}), "--id sets the payload field");
+    assert_eq!(v["id"], "r-1", "--request-id names the request");
+    // the short form agrees
+    let o = run(&["call", &fake.sock, "Items::get", "--id", "6"]);
+    assert_eq!(o.code, 0, "{}", o.stderr);
+    let v: Value = serde_json::from_str(fake.calls().last().unwrap()).unwrap();
+    assert_eq!(v["payload"]["id"], 6);
+    assert!(v["id"].as_str().unwrap().starts_with("hale-"), "{v}");
 }
 
 #[test]
@@ -552,8 +576,8 @@ fn call_over_unix_prints_each_outcome_with_its_exit_code() {
     let line = json_of(&o.stdout);
     assert_eq!((line["ok"].as_bool(), line["value"]["moved"].as_i64()), (Some(true), Some(1500)));
     assert!(line["id"].as_str().unwrap().starts_with("hale-") && line["caller"]["mode"] == "unix");
-    // --id is echoed
-    let o = run(&["api", "call", &u, "Ledger::rebalance", "--book", "desk", "--raw", "--id", "c-7"]);
+    // --request-id is echoed
+    let o = run(&["api", "call", &u, "Ledger::rebalance", "--book", "desk", "--raw", "--request-id", "c-7"]);
     assert_eq!(json_of(&o.stdout)["id"], "c-7");
 
     // refusals: the kind and reason as the wire says them, exit 2
@@ -694,7 +718,7 @@ fn the_short_forms_are_the_api_verbs_with_two_conveniences() {
     let o = same(&["call", &bare, "Ledger::rebalance", book], &["api", "call", &u, "Ledger::rebalance", "--json", book]);
     assert_eq!((o.code, json_of(&o.stdout)), (0, serde_json::json!({"moved": 1500})), "{}", o.stderr);
     // (--raw carries the server's request counter, which differs per call: check its shape)
-    let o = run(&["call", &bare, "Ledger::rebalance", book, "--raw", "--id", "c-1"]);
+    let o = run(&["call", &bare, "Ledger::rebalance", book, "--raw", "--request-id", "c-1"]);
     assert_eq!((o.code, json_of(&o.stdout)["id"].clone()), (0, serde_json::json!("c-1")), "{}", o.stderr);
 
     // a refusal and a handler error

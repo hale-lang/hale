@@ -541,6 +541,12 @@ declares an interface-typed param: missing-method, arity-
 mismatch, param-type, or return-type mismatches all produce
 typed diagnostics at typecheck time.
 
+An interface may also be the type of a locus's `accept` and
+`release` param (`accept(c: I)`): the locus then accepts every locus
+satisfying `I`, by the same rule, resolved statically per concrete
+type, never through a vtable (`semantics.md` § Locus instantiation,
+"An interface `accept`").
+
 Inside the fn, the parameter's local IS the interface: it offers
 exactly the interface's methods, and nothing of the locus behind it.
 A field read (`sink.path`) or a method the interface does not declare

@@ -267,9 +267,9 @@ pub(crate) fn bundle_handler_rows(bundle: &Bundle<'_>) -> handler_routing::Handl
 /// The flow rows of a bundle no snapshot holds: what
 /// [`check::check_bundle`] reads.
 /// Every verb reads its snapshot's (`Snapshot::demand_flows`).
-pub(crate) fn bundle_flow_rows(bundle: &Bundle<'_>) -> flows::FlowRows {
+pub(crate) fn bundle_flow_rows(bundle: &Bundle<'_>, top: &resolve::TopScope) -> flows::FlowRows {
     let programs: Vec<&hale_syntax::ast::Program> = bundle.programs.values().copied().collect();
-    flows::survey(&programs, &bundle.import_renames)
+    flows::survey(&programs, &bundle.import_renames).admit_interfaces(top)
 }
 
 /// The intra-locus rewrite's relation for a bundle no snapshot holds

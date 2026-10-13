@@ -22,7 +22,7 @@ usage: hale api export --surface NAME [--out DIR | --check DIR] [file.hl | dir]
        hale api client --surface NAME --lang hale|ts [--out FILE | --check FILE] [file.hl | dir]
        hale api describe <endpoint> [--json] [--bearer T]
        hale api call <endpoint> <member> [--json '<payload>' | --json - | --<field> <value> ...]
-                     [--bearer T] [--id ID] [--digest D] [--raw]
+                     [--bearer T] [--request-id ID] [--digest D] [--raw]
 
 `describe` asks a running program for the description it serves the caller and
 prints it: the exposure's identity (surface, digest, name), the caller and its
@@ -40,7 +40,7 @@ String by their text (`--name alice`), a quantity by its count, a record or
 list as JSON (`--items '[...]'`); a missing required field, a flag naming no field or
 a value that does not parse is refused before anything is sent. The call names
 the description's digest (`--digest D` overrides) and a request id of its own
-(`--id`). A result prints its value on stdout (exit 0); any other outcome
+(`--request-id`; `--id` is a payload field like any other). A result prints its value on stdout (exit 0); any other outcome
 prints the wire outcome on stderr: handler error 1, refusal 2, server error 3;
 a transport failure (no reply, connection lost, the reply answering another id)
 is 4, usage 5. `--raw` prints the whole outcome on stdout whatever its kind.

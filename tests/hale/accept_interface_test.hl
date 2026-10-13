@@ -1,0 +1,140 @@
+// `accept(c: I)` naming an interface accepts every locus that satisfies
+// `I`, resolved statically: each locus is born from a literal of a
+// concrete type, so the clause is one accept per admitted type, its
+// body lowered with the child typed as that type (`c.m()` is a direct
+// call), and ownership bubbles exactly as for a concrete clause:
+// innermost-wins, whichever kind of clause the nearer ancestor declares
+// (spec/semantics.md § Locus instantiation, "An interface `accept`").
+
+interface T { fn x() -> Int; }
+
+locus A {
+    params { v: Int = 1; }
+    fn x() -> Int { return self.v; }
+}
+
+locus B {
+    params { v: Int = 2; }
+    fn x() -> Int { return self.v * 10; }
+}
+
+fn twice(t: T) -> Int { return t.x() * 2; }
+
+// Two concrete types, both accepted, each through its own monomorph.
+locus Sum {
+    params { n: Int = 0; }
+    accept(c: T) { self.n = self.n + c.x(); }
+    fn go() {
+        let a = A { v: 5 };
+        let b = B { v: 7 };
+    }
+    fn kids() -> Int { return self.children.count; }
+}
+
+// The child flows on as a `T` value: the monomorph coerces it.
+locus Passes {
+    params { n: Int = 0; }
+    accept(c: T) { self.n = self.n + twice(c); }
+    fn go() {
+        A { v: 5 };
+        B { v: 7 };
+    }
+}
+
+interface Shape { fn area() -> Int; }
+
+locus Sq {
+    params { s: Int = 1; }
+    fn area() -> Int { return self.s * self.s; }
+}
+
+locus Rect {
+    params { w: Int = 1; h: Int = 1; }
+    fn area() -> Int { return self.w * self.h; }
+}
+
+// Innermost-wins across the two kinds: the inner owner accepts `Sq`
+// concretely, the outer one any `Shape`. An `Sq` born in `Inner` is
+// Inner's; a `Rect` born there bubbles past it to `Outer`.
+locus Inner {
+    params { sq: Int = 0; }
+    accept(c: Sq) { self.sq = self.sq + c.area(); }
+    fn make() {
+        let a = Sq { s: 3 };
+        let b = Rect { w: 2, h: 5 };
+    }
+}
+
+locus Outer {
+    params { total: Int = 0; count: Int = 0; }
+    accept(c: Shape) {
+        self.total = self.total + c.area();
+        self.count = self.count + 1;
+    }
+    fn go() -> Int {
+        let i = Inner { };
+        i.make();
+        let s = Sq { s: 4 };
+        return i.sq;
+    }
+    fn kids() -> Int { return self.children.count; }
+}
+
+// A locus satisfying two interfaces, with an ancestor accepting each:
+// the nearer one that admits it owns it.
+interface Named { fn name() -> String; }
+interface Sized { fn size() -> Int; }
+
+locus Both {
+    params { n: String = "both"; z: Int = 7; }
+    fn name() -> String { return self.n; }
+    fn size() -> Int { return self.z; }
+}
+
+locus OnlySized {
+    params { z: Int = 2; }
+    fn size() -> Int { return self.z; }
+}
+
+locus NameOwner {
+    params { names: String = ""; }
+    accept(c: Named) { self.names = self.names + c.name() + ";"; }
+    fn make() {
+        let b = Both { n: "x" };
+        let o = OnlySized { z: 9 };
+    }
+}
+
+locus SizeOwner {
+    params { sum: Int = 0; }
+    accept(c: Sized) { self.sum = self.sum + c.size(); }
+    fn go() -> String {
+        let no = NameOwner { };
+        no.make();
+        let b = Both { z: 100 };
+        return no.names;
+    }
+}
+
+fn main() {
+    let s = Sum { };
+    s.go();
+    std::test::assert_eq_int(s.n, 75, "A (5) and B (7 x 10) accepted through T");
+    std::test::assert_eq_int(s.kids(), 2, "one child of each type tracked");
+
+    let p = Passes { };
+    p.go();
+    std::test::assert_eq_int(p.n, 150, "each monomorph hands its child on as a T value");
+
+    let o = Outer { };
+    let inner_sq = o.go();
+    std::test::assert_eq_int(inner_sq, 9, "the concrete inner owner keeps its Sq");
+    std::test::assert_eq_int(o.total, 26, "the Rect bubbled past Inner (10) and Outer's own Sq (16)");
+    std::test::assert_eq_int(o.count, 2, "Outer accepted two children");
+    std::test::assert_eq_int(o.kids(), 2, "Outer tracks both, one per type");
+
+    let so = SizeOwner { };
+    let names = so.go();
+    std::test::assert_eq_str(names, "x;", "NameOwner, the nearer acceptor of Both, owns it");
+    std::test::assert_eq_int(so.sum, 109, "OnlySized bubbles to SizeOwner (9), and its own Both (100)");
+}

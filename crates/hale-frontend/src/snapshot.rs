@@ -1362,12 +1362,13 @@ impl Snapshot {
     pub fn demand_flows(&self) -> Result<&FlowRows, &Blocked> {
         self.flows
             .get_or_init(|| {
-                self.scope().map_err(Clone::clone)?;
+                let scope = self.scope().map_err(Clone::clone)?;
                 self.count("flows");
-                // In the bundle's order, as the handler rows.
+                // In the bundle's order, as the handler rows. An interface
+                // clause's loci are the scope's conformance to answer.
                 let bundle = self.bundle();
                 let programs: Vec<&Program> = bundle.programs.values().copied().collect();
-                Ok(hale_types::flows::survey(&programs, &bundle.import_renames))
+                Ok(hale_types::flows::survey(&programs, &bundle.import_renames).admit_interfaces(&scope.top))
             })
             .as_ref()
     }
@@ -1657,6 +1658,7 @@ impl Snapshot {
                 let bus = self.demand_bus_graph().map_err(Clone::clone)?;
                 let entry = self.demand_entry().map_err(Clone::clone)?;
                 let flows = self.demand_flows().map_err(Clone::clone)?;
+                let ownership = self.demand_ownership_graph().map_err(Clone::clone)?;
                 self.count("lifecycle_order");
                 let bundle = self.bundle();
                 Ok(hale_types::lifecycle::derive::derive_lifecycle(&hale_types::lifecycle::derive::LifecycleInputs {
@@ -1666,6 +1668,7 @@ impl Snapshot {
                     flows,
                     bus,
                     entry,
+                    ownership,
                 }))
             })
             .as_ref()

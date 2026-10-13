@@ -18,7 +18,7 @@ use crate::shared::diag::render_codegen_error;
 use crate::shared::diag::render_located;
 use crate::replay;
 use hale_frontend::snapshot::{LoadError, Snapshot};
-/// `hale replay <recording> <program.hl> [--diff [--json]] [--at N]`
+/// `hale replay <recording> <program.hl | dir> [--diff [--json]] [--at N]`
 /// — GH #296. Re-runs a recorded execution: the same binary (model
 /// identity checked against the recording header), with the
 /// runtime serving journaled inputs (time/entropy/env) and
@@ -148,7 +148,7 @@ pub(crate) fn run_replay(args: &[String]) -> ExitCode {
         (Some(r), Some(p)) => (r, p),
         _ => {
             eprintln!(
-                "usage: hale replay <recording> <program.hl> \
+                "usage: hale replay <recording> <program.hl | dir> \
                  [--diff [--json]] \
                  [--at <n> | --at <consumer-id>:<ordinal>] \
                  [--allow-live-effects] [--allow-unverified-model] \
@@ -206,14 +206,6 @@ pub(crate) fn run_replay(args: &[String]) -> ExitCode {
         );
     }
 
-    if !prog.is_file() {
-        eprintln!(
-            "hale replay: `{}` is not a file (directory seeds are \
-             not replayable yet)",
-            prog.display()
-        );
-        return ExitCode::from(1);
-    }
     // `--env` as `hale run --env` resolves it (I2): its constitution is
     // adopted by the load (its role table is no longer part of the
     // binary or the identity). `replay` accepted the flag and bound nothing,

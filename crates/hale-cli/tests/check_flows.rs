@@ -92,3 +92,15 @@ fn without_a_release_every_child_is_a_resident_and_no_flag_no_report() {
     let (ok, out) = check(&[("main.hl", MAIN_IMPORTS), ("lib/waiter.hl", LIB)], &[], "quiet");
     assert!(ok && !out.contains("flows:") && !out.contains("warning"), "no blanket notice on a legitimate release: {out}");
 }
+
+// A release through an interface: each locus satisfying it is a flow.
+const MAIN_INTERFACE: &str = "interface Job {\n    fn w() -> Int;\n}\n\nlocus Small {\n    fn w() -> Int { return 1; }\n}\n\nlocus Big {\n    fn w() -> Int { return 2; }\n}\n\nlocus Idle {\n    run() { }\n}\n\nlocus Pool {\n    accept(j: Job) { }\n    release(j: Job) { }\n}\n\nfn main() { println(\"checked\"); }\n";
+
+#[test]
+fn an_interface_release_names_the_loci_it_makes_flows() {
+    let (ok, out) = check(&[("main.hl", MAIN_INTERFACE)], &["--flows"], "interface");
+    assert!(ok, "{out}");
+    assert!(out.contains("Job — an interface: Big, Small each a flow, by:"), "the admitted loci, by name: {out}");
+    assert!(out.contains("release(j: Job) in Pool") && out.contains("main.hl:19:"), "the clause and where it is: {out}");
+    assert!(!out.contains("Idle"), "a locus that is no Job is no flow: {out}");
+}

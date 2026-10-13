@@ -116,6 +116,18 @@ every other file in the same directory, in one shared scope.
 under them. `hale build <file.hl>` keeps working for
 single-file targets (scripts, one-off cases).
 
+**A `*_test.hl` file is no member of its directory's seed.** It is a
+program of its own, as `hale test` builds it: the file and what its
+imports reach. A directory's seed, whether it is a target of `build`,
+`run`, `check` or `verify`, an imported library or the seed the
+editor checks, is its `.hl` files but the `*_test.hl` ones, so two
+tests side by side (or a test beside the program it tests) are never
+one program with a `main` each. The editor checks a test file as a
+seed of one. `hale check <dir>` notes the tests it left out;
+`hale check --workspace` checks each test as its own program after the
+seeds; a directory holding only tests is no seed, and saying so names
+`hale test <dir>`.
+
 **File order in the merged bundle is alphabetical by filename**
 (deterministic). Resolution within the seed is **order-free** —
 the typechecker flattens all top-level decls into one bundle
