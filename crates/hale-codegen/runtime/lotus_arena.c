@@ -17673,6 +17673,23 @@ int64_t lotus_str_index_of(const char *s, const char *sub) {
     return (int64_t)(hit - s);
 }
 
+/* `std::str::index_of_from(s, sub, start)`: the byte index of the first
+ * occurrence of `sub` at or after byte `start`, or -1. A negative start
+ * is 0; a start past the end finds nothing. An empty needle is found at
+ * `start` itself (at 0..=len), as `index_of` finds it at 0. The index is
+ * into `s`, not into the tail, so a scanner passes it straight back as
+ * the next start. */
+int64_t lotus_str_index_of_from(const char *s, const char *sub, int64_t start) {
+    if (!s || !sub) return -1;
+    if (start < 0) start = 0;
+    size_t n = strlen(s);
+    if ((uint64_t)start > (uint64_t)n) return -1;
+    if (*sub == '\0') return start;
+    const char *hit = strstr(s + start, sub);
+    if (!hit) return -1;
+    return (int64_t)(hit - s);
+}
+
 /*
  * m48 / Decimal<S>: render a Decimal value (an i128 mantissa at the
  * scale `scale`, i.e. mantissa × 10^-scale, 0 <= scale <= 18) into a
@@ -17763,6 +17780,65 @@ char *lotus_str_from_decimal(lotus_arena_t *a, int64_t hi, uint64_t lo,
 double lotus_decimal_to_float(int64_t hi, uint64_t lo, int64_t scale) {
     __int128 m = ((__int128)hi << 64) | (__int128)lo;
     return (double)m / (double)lotus_dec_pow10_u64(lotus_dec_clamp_scale(scale));
+}
+
+/* `std::decimal::from_float(x)`: the Decimal nearest `x`'s exact
+ * binary value, rounded half away from zero at the ninth fractional
+ * digit (`0.1` is 0.1000000000000000055…, so `0.1d`; `1e29` is
+ * 99999999999999991433150857216, all of it). Computed exactly: the
+ * integer part converts exactly (split into two 64-bit halves — the
+ * wasm32 runtime has no `__fixdfti`, and a double of 2⁵³ or more is an
+ * integer, so the split is exact), and the fraction, `f × 2⁻ˢ` with
+ * `f < 2⁵³`, is scaled by 10⁹ as an integer (`f × 10⁹ < 2⁸³`) and
+ * shifted with the rounding; there is no Float multiplication to lose
+ * a digit. The mantissa goes out as hi:lo, the Decimal C ABI's split.
+ * Returns 0, or -1 when `x` is NaN, infinite, or its mantissa does not
+ * fit i128 (|x| past about 1.7e29), where nothing is written. */
+int64_t lotus_decimal_from_float(double x, int64_t *hi, uint64_t *lo) {
+    if (!(x == x)) return -1;                       /* NaN */
+    double a = x < 0 ? -x : x;
+    if (!(a < 1.8e29)) return -1;                   /* inf, or far past 2^127 / 10^9 */
+    /* the integer part, with no libm `trunc` (an -O0 build calls it, and
+     * the runtime links no libm): under 2^63 the conversion truncates and
+     * converts back exactly; from 2^53 on a double is an integer already */
+    double ip = a < 9223372036854775808.0 ? (double)(uint64_t)a : a;
+    double fp = a - ip;                             /* exact */
+    const double two64 = 18446744073709551616.0;
+    uint64_t ih = (uint64_t)(ip / two64);
+    uint64_t il = (uint64_t)(ip - (double)ih * two64);
+    unsigned __int128 m = (((unsigned __int128)ih << 64) | il) * 1000000000u;
+    if (fp > 0) {
+        uint64_t bits;
+        memcpy(&bits, &fp, sizeof bits);
+        int bexp = (int)((bits >> 52) & 0x7ff);
+        uint64_t f = bits & ((1ULL << 52) - 1);
+        int sh;                                     /* fp == f * 2^-sh, sh >= 53 */
+        if (bexp == 0) {
+            sh = 1074;
+        } else {
+            f |= 1ULL << 52;
+            sh = 1075 - bexp;
+        }
+        /* round(num / 2^sh), half up: t = num >> (sh - 1), then (t + 1) >> 1.
+         * num < 2^83 and sh - 1 >= 52, so t < 2^31. The variable shift is
+         * done on the two 64-bit halves: a 128-bit one is a compiler-rt
+         * libcall (`__lshrti3`) the wasm32 runtime does not provide. */
+        int s1 = sh - 1;
+        if (s1 < 128) {
+            unsigned __int128 num = (unsigned __int128)f * 1000000000u;
+            uint64_t nh = (uint64_t)(num >> 64), nl = (uint64_t)num;
+            uint64_t t = s1 >= 64 ? nh >> (s1 - 64)
+                                  : (nl >> s1) | (nh << (64 - s1));
+            m += (t + 1) >> 1;
+        }
+        /* s1 >= 128: fp × 10^9 < 2^83 / 2^127, far under half a unit */
+    }
+    unsigned __int128 limit = (unsigned __int128)1 << 127;
+    if (x < 0 ? m > limit : m >= limit) return -1;
+    unsigned __int128 u = x < 0 ? (~m + 1) : m;
+    *hi = (int64_t)(uint64_t)(u >> 64);
+    *lo = (uint64_t)u;
+    return 0;
 }
 
 void lotus_decimal_to_string(int64_t hi, uint64_t lo, int64_t scale, char *buf) {
@@ -20366,6 +20442,27 @@ int64_t lotus_tcp_last_io_status(void) {
 /* errno → stable IoError kind tag, surfaced to `.hl` bodies as
  * `std::io::tcp::__io_error_kind(e)`. Thin wrapper so the Hale
  * side never needs the raw table. */
+/* IoError.detail: the platform's message for an errno ("No such file or
+ * directory"), the human text HttpError / DbError carry beside their
+ * kind. Copied into the caller's arena: `strerror` may answer from a
+ * buffer of its own (an errno it does not know), so the text is copied
+ * under one lock before anything else asks it. 0 is ""; a message the
+ * platform does not have (the wasm32 shim's is empty) is "errno N". */
+static pthread_mutex_t g_io_error_detail_lock = PTHREAD_MUTEX_INITIALIZER;
+const char *lotus_io_error_detail(lotus_arena_t *a, int64_t errno_val) {
+    if (errno_val == 0) return "";
+    char buf[160];
+    pthread_mutex_lock(&g_io_error_detail_lock);
+    const char *m = strerror((int)errno_val);
+    if (m && m[0]) {
+        snprintf(buf, sizeof buf, "%s", m);
+    } else {
+        snprintf(buf, sizeof buf, "errno %lld", (long long)errno_val);
+    }
+    pthread_mutex_unlock(&g_io_error_detail_lock);
+    return lotus_str_clone(a, buf);
+}
+
 const char *lotus_tcp_io_status_kind(int64_t errno_val) {
     return lotus_io_error_kind((int32_t)errno_val);
 }

@@ -634,6 +634,7 @@ observation records.
 | `std::test::assert(cond, msg)` | sealed m87 |
 | `std::test::assert_eq_int(actual, expected, msg)` | sealed m87 |
 | `std::test::assert_eq_str(actual, expected, msg)` | sealed m87 |
+| `std::test::assert_near(actual, expected, tolerance, msg)` | shipped 2026-10-12 (Float within a tolerance) |
 | `assert_neq` / `assert_neq_int` / `assert_neq_str` | not shipped |
 | `assert_rejects(...)` (compile-time errors) | not shipped — needs compiler-level surface |
 | `assert_closure(name, tolerance)` | not shipped — needs closure-test introspection |

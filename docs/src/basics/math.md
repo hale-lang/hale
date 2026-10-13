@@ -201,6 +201,23 @@ implicitly — there is no silent `Decimal`/`Float` conversion, and
 not even `Decimal * Int` (the quantity above is `3.0d`, not `3`), so
 you can't accidentally launder exactness away.
 
+Converting is explicit. An `Int` becomes a `Decimal` exactly; a
+`Float` becomes the `Decimal` nearest its exact binary value, rounded
+half away from zero at the ninth place, and can fail (NaN, an
+infinity, or a magnitude past about `1.7e29`), so it takes an `or`.
+The way back is `to_float`:
+
+```hale,fragment
+let n    = std::decimal::from_int(3);                    // 3.0d
+let p    = std::decimal::from_float(19.99) or 0.0d;      // 19.99d
+let back = std::decimal::to_float(p);                    // 19.99
+```
+
+`0.1` as a `Float` is `0.1000000000000000055…`, so `from_float(0.1)`
+is `0.1d`: the binary tail is past the ninth place. Both answer a plain
+`Decimal` (`Decimal<9>`); for another scale, `rescale` the result
+(`std::decimal::from_int(3).rescale(2)`).
+
 ## Duration — time spans with units
 
 A duration is a length of time, written with a unit: `ns`, `us`,

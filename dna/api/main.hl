@@ -226,8 +226,8 @@ locus Api {
             if path == "/auth/login" { return self.auth.begin_sign_in(); }
             if path == "/auth/callback" {
                 let ctx = std::http::build_context(req);
-                let code = http.decode(std::http::query_param(ctx.params, "code"));
-                let state = http.decode(std::http::query_param(ctx.params, "state"));
+                let code = http.checked(std::http::query_param(ctx.params, "code"));
+                let state = http.checked(std::http::query_param(ctx.params, "state"));
                 if !code.ok || !state.ok { return http.error(400, "invalid_query", "invalid authentication query encoding", false); }
                 return self.auth.finish_sign_in(code.text, state.text, dna::cookie_value(std::http::header(req, "Cookie"), "dna_signin"));
             }

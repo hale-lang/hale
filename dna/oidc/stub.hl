@@ -44,9 +44,21 @@ fn hex_digit(c: Int) -> Int {
     return -1;
 }
 
-// Decode the fixture's URL/form values once. The native HTTP query helpers
-// return raw encoded values; importing the knowledge service only to decode
-// them would add unrelated database/FFI dependencies to this issuer.
+// A query value `std::http::query_param` already decoded, refused ("") when
+// it holds a control byte, as `decode` refuses one.
+fn printable(text: String) -> String {
+    let mut i = 0;
+    while i < len(text) {
+        let c = std::str::byte_at_unchecked(text, i);
+        if c < 32 || c == 127 { return ""; }
+        i = i + 1;
+    }
+    return text;
+}
+
+// Decode the fixture's form values once (a POST body; `query_param` decodes
+// a query's itself). Importing the knowledge service only to decode them
+// would add unrelated database/FFI dependencies to this issuer.
 fn decode(raw: String) -> String {
     let bytes = std::bytes::BytesBuilder { };
     let mut i = 0;
@@ -158,9 +170,9 @@ locus StubIssuer {
             return self.json(b);
         }
         if std::http::is_route(ctx, "GET", "/authorize") {
-            let redirect = decode(std::http::query_param(ctx.params, "redirect_uri"));
-            let nonce = decode(std::http::query_param(ctx.params, "nonce"));
-            let hint = decode(std::http::query_param(ctx.params, "login_hint"));
+            let redirect = printable(std::http::query_param(ctx.params, "redirect_uri"));
+            let nonce = printable(std::http::query_param(ctx.params, "nonce"));
+            let hint = printable(std::http::query_param(ctx.params, "login_hint"));
             let state = std::http::query_param(ctx.params, "state");
             if len(redirect) == 0 || len(nonce) == 0 || len(state) == 0 {
                 return std::http::Response { status: 400, body: "incomplete authorization request" };

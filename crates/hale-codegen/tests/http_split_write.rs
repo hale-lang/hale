@@ -150,7 +150,7 @@ fn oversized_declared_content_length_gets_413() {
         let _ = sock.write_all(b"tiny");
     });
     assert!(
-        resp.starts_with("HTTP/1.1 413 Payload Too Large\r\n"),
+        resp.starts_with("HTTP/1.1 413 Content Too Large\r\n"),
         "expected 413; got: {:?}",
         resp
     );

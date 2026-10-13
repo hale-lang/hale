@@ -287,11 +287,18 @@ fn own_scope_let_block_scope_test() {
             // more fn and one more invoked unboundedly since the connect
             // deadlines (#1538); 435, and one more invoked unboundedly,
             // since the HTTP client writes its `Host` header through
-            // `__http_host_text`
+            // `__http_host_text`; 436 since `std::hex` came (its three fns)
+            // and the secret and JSON digit helpers it replaced went; 437
+            // since `std::test::assert_near` came; 441 since `std::url`
+            // came (its four fns; three more invoked unboundedly:
+            // `query_param`'s pair loop decodes through them); 446 since
+            // `std::rand::Rng` came (its birth, an entry point, and four
+            // methods; `next` invoked unboundedly by `next_int`'s rejection
+            // loop); 447 since `std::crypto::ed25519_keypair`'s body came
             changed_lines(&old.render(), &now.render()),
             [
-                "- # 435 fns, 27 entry points, 115 invoked-unboundedly",
-                "+ # 435 fns, 27 entry points, 114 invoked-unboundedly",
+                "- # 447 fns, 28 entry points, 119 invoked-unboundedly",
+                "+ # 447 fns, 28 entry points, 118 invoked-unboundedly",
                 "- call  count loop_depth=0 result=local",
                 "+ call  <unresolved: count> loop_depth=0 result=local",
                 "- call  count loop_depth=0 result=local",
@@ -464,7 +471,7 @@ fn reached_perspective_examples() {
         "crates/hale-codegen/tests/fixtures/examples/65-perspective-ctor-override",
         "tests/hale/perspective_ctor_override_test.hl",
     ] {
-        pinned_unreached(t, (116, 0), &["Gateway::handle", "RouterV1::route"], &[], &lines);
+        pinned_unreached(t, (120, 0), &["Gateway::handle", "RouterV1::route"], &[], &lines);
     }
 }
 
@@ -474,7 +481,7 @@ fn reached_perspective_examples() {
 fn reached_unowned_literal_positions() {
     pinned_unreached(
         "crates/hale-codegen/tests/fixtures/examples/90-unowned-literal-positions",
-        (116, 0),
+        (120, 0),
         &["Provider::submit", "Server::handle"],
         &["Provider::submit CollectionInsert(\"vec\") @1292..1320 InvokedUnboundedly"],
         &[
@@ -494,11 +501,12 @@ fn reached_unowned_literal_positions() {
 fn reached_oidc() {
     pinned_unreached(
         "dna/oidc",
-        (138, 2),
+        (142, 2),
         &[
             "b64",
             "decode",
             "form_field",
+            "printable",
             "signed_id_token",
             "StubIssuer::handle",
             "StubIssuer::json",
@@ -513,40 +521,42 @@ fn reached_oidc() {
             "+ fn decode",
             "- fn form_field   [invoked-unboundedly]",
             "+ fn form_field",
+            "- fn printable   [invoked-unboundedly, scratch-local]",
+            "+ fn printable   [scratch-local]",
             "- fn signed_id_token   [invoked-unboundedly]",
             "+ fn signed_id_token",
-            "- alloc string-concat    escaping=return      per-iteration-reclaim  reclaim@locus-dissolve @5095..5144",
-            "+ alloc string-concat    escaping=return      once-per-invocation    reclaim@locus-dissolve @5095..5144",
+            "- alloc string-concat    escaping=return      per-iteration-reclaim  reclaim@locus-dissolve @5446..5495",
+            "+ alloc string-concat    escaping=return      once-per-invocation    reclaim@locus-dissolve @5446..5495",
             "- fn StubIssuer::handle   [invoked-unboundedly]",
             "+ fn StubIssuer::handle",
-            "- alloc struct std::http::Response escaping=return      per-iteration-reclaim  reclaim@locus-dissolve @7455..7694",
-            "+ alloc struct std::http::Response escaping=return      once-per-invocation    reclaim@locus-dissolve @7455..7694",
-            "- alloc string-concat    escaping=return      per-iteration-reclaim  reclaim@locus-dissolve @7530..7692",
-            "+ alloc string-concat    escaping=return      once-per-invocation    reclaim@locus-dissolve @7530..7692",
-            "- alloc struct std::http::Response escaping=return      per-iteration-reclaim  reclaim@locus-dissolve @8395..8472",
-            "+ alloc struct std::http::Response escaping=return      once-per-invocation    reclaim@locus-dissolve @8395..8472",
-            "- alloc struct std::http::Response escaping=return      per-iteration-reclaim  reclaim@locus-dissolve @8702..8788",
-            "+ alloc struct std::http::Response escaping=return      once-per-invocation    reclaim@locus-dissolve @8702..8788",
-            "- alloc struct std::http::Response escaping=return      per-iteration-reclaim  reclaim@locus-dissolve @9064..9209",
-            "+ alloc struct std::http::Response escaping=return      once-per-invocation    reclaim@locus-dissolve @9064..9209",
-            "- alloc string-concat    escaping=return      per-iteration-reclaim  reclaim@locus-dissolve @9136..9197",
-            "+ alloc string-concat    escaping=return      once-per-invocation    reclaim@locus-dissolve @9136..9197",
-            "- alloc struct std::http::Response escaping=return      per-iteration-reclaim  reclaim@locus-dissolve @9909..10018",
-            "+ alloc struct std::http::Response escaping=return      once-per-invocation    reclaim@locus-dissolve @9909..10018",
-            "- alloc struct std::http::Response escaping=return      per-iteration-reclaim  reclaim@locus-dissolve @10298..10408",
-            "+ alloc struct std::http::Response escaping=return      once-per-invocation    reclaim@locus-dissolve @10298..10408",
-            "- alloc struct std::http::Response escaping=return      per-iteration-reclaim  reclaim@locus-dissolve @11145..11253",
-            "+ alloc struct std::http::Response escaping=return      once-per-invocation    reclaim@locus-dissolve @11145..11253",
-            "- alloc struct std::http::Response escaping=return      per-iteration-reclaim  reclaim@locus-dissolve @11280..11334",
-            "+ alloc struct std::http::Response escaping=return      once-per-invocation    reclaim@locus-dissolve @11280..11334",
+            "- alloc struct std::http::Response escaping=return      per-iteration-reclaim  reclaim@locus-dissolve @7806..8045",
+            "+ alloc struct std::http::Response escaping=return      once-per-invocation    reclaim@locus-dissolve @7806..8045",
+            "- alloc string-concat    escaping=return      per-iteration-reclaim  reclaim@locus-dissolve @7881..8043",
+            "+ alloc string-concat    escaping=return      once-per-invocation    reclaim@locus-dissolve @7881..8043",
+            "- alloc struct std::http::Response escaping=return      per-iteration-reclaim  reclaim@locus-dissolve @8755..8832",
+            "+ alloc struct std::http::Response escaping=return      once-per-invocation    reclaim@locus-dissolve @8755..8832",
+            "- alloc struct std::http::Response escaping=return      per-iteration-reclaim  reclaim@locus-dissolve @9062..9148",
+            "+ alloc struct std::http::Response escaping=return      once-per-invocation    reclaim@locus-dissolve @9062..9148",
+            "- alloc struct std::http::Response escaping=return      per-iteration-reclaim  reclaim@locus-dissolve @9424..9569",
+            "+ alloc struct std::http::Response escaping=return      once-per-invocation    reclaim@locus-dissolve @9424..9569",
+            "- alloc string-concat    escaping=return      per-iteration-reclaim  reclaim@locus-dissolve @9496..9557",
+            "+ alloc string-concat    escaping=return      once-per-invocation    reclaim@locus-dissolve @9496..9557",
+            "- alloc struct std::http::Response escaping=return      per-iteration-reclaim  reclaim@locus-dissolve @10269..10378",
+            "+ alloc struct std::http::Response escaping=return      once-per-invocation    reclaim@locus-dissolve @10269..10378",
+            "- alloc struct std::http::Response escaping=return      per-iteration-reclaim  reclaim@locus-dissolve @10658..10768",
+            "+ alloc struct std::http::Response escaping=return      once-per-invocation    reclaim@locus-dissolve @10658..10768",
+            "- alloc struct std::http::Response escaping=return      per-iteration-reclaim  reclaim@locus-dissolve @11505..11613",
+            "+ alloc struct std::http::Response escaping=return      once-per-invocation    reclaim@locus-dissolve @11505..11613",
+            "- alloc struct std::http::Response escaping=return      per-iteration-reclaim  reclaim@locus-dissolve @11640..11694",
+            "+ alloc struct std::http::Response escaping=return      once-per-invocation    reclaim@locus-dissolve @11640..11694",
             "- fn StubIssuer::json   [invoked-unboundedly]",
             "+ fn StubIssuer::json",
-            "- alloc struct std::http::Response escaping=return      per-iteration-reclaim  reclaim@locus-dissolve @6376..6463",
-            "+ alloc struct std::http::Response escaping=return      once-per-invocation    reclaim@locus-dissolve @6376..6463",
+            "- alloc struct std::http::Response escaping=return      per-iteration-reclaim  reclaim@locus-dissolve @6727..6814",
+            "+ alloc struct std::http::Response escaping=return      once-per-invocation    reclaim@locus-dissolve @6727..6814",
             "- fn StubIssuer::service_token   [invoked-unboundedly]",
             "+ fn StubIssuer::service_token",
-            "- alloc struct std::http::Response escaping=return      per-iteration-reclaim  reclaim@locus-dissolve @12120..12229",
-            "+ alloc struct std::http::Response escaping=return      once-per-invocation    reclaim@locus-dissolve @12120..12229",
+            "- alloc struct std::http::Response escaping=return      per-iteration-reclaim  reclaim@locus-dissolve @12480..12589",
+            "+ alloc struct std::http::Response escaping=return      once-per-invocation    reclaim@locus-dissolve @12480..12589",
             "- fn StubIssuer::token_answer   [invoked-unboundedly]",
             "+ fn StubIssuer::token_answer",
         ],
@@ -558,7 +568,7 @@ fn reached_oidc() {
 fn reached_is_route_test() {
     pinned_unreached(
         "tests/hale/is_route_test.hl",
-        (118, 0),
+        (122, 0),
         &["Api::handle", "Api::list", "Api::rename", "Api::show"],
         &["Api::handle StructLit(\"std::http::Response\") @1449..1496 InvokedUnboundedly"],
         &[
@@ -595,7 +605,7 @@ fn reached_is_route_test() {
 fn reached_unit_quantities_test() {
     pinned_unreached(
         "tests/hale/unit_quantities_test.hl",
-        (115, 0),
+        (119, 0),
         &["later"],
         &[],
         &["- fn later   [invoked-unboundedly]", "+ fn later"],
@@ -767,7 +777,7 @@ fn program_declaration_only_stdlib_source_shares_a_name() {
             sharing += 1;
         }
     }
-    assert_eq!(sharing, 27, "the stdlib source files that share a name with the copy");
+    assert_eq!(sharing, 31, "the stdlib source files that share a name with the copy");
 }
 
 /// A stdlib file checked as itself keeps its own rows: every fn of the

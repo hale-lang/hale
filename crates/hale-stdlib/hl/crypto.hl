@@ -1,0 +1,22 @@
+// std::crypto's Hale half: the Ed25519 key pair (RFC 8032).
+//
+// The rest of std::crypto is native (rows of the stdlib table lowered
+// to C: the hashes, HMAC, CRC-32, ECDSA P-256, and Ed25519's signing and
+// verification over Monocypher). A key pair is two values, a tuple no
+// row's signature states, so it is this body over the native public-key
+// primitive.
+
+/// The Ed25519 key pair of a 32-byte seed (RFC 8032 § 5.1.5): `(public,
+/// secret)`, the 32-byte public key and the 64-byte secret key — the seed
+/// followed by the public key, the form NaCl, libsodium and Go call the
+/// private key. `ed25519_sign` takes it or the seed alone. A seed of any
+/// other length is `CryptoError { kind: "ed25519_keypair", detail }`.
+/// The seed is the key: draw it from `std::os::getrandom(32)` and keep
+/// it as you keep the secret.
+fn __std_crypto_ed25519_keypair(seed: Bytes) -> (Bytes, Bytes) fallible(CryptoError) {
+    let public = std::crypto::__ed25519_public_key(seed);
+    if len(public) != 32 {
+        fail CryptoError { kind: "ed25519_keypair", detail: "the seed is not 32 bytes" };
+    }
+    return (public, std::bytes::concat(seed, public));
+}

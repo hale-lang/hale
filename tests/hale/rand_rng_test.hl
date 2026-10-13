@@ -1,0 +1,50 @@
+// tests/hale/rand_rng_test.hl — `std::rand::Rng`, the seeded generator:
+// the same seed gives the same sequence, which the process-global
+// `std::rand::next_int` cannot (downstream handoff). The generator is
+// SplitMix64; its published outputs for seed 0 are pinned here.
+
+fn main() {
+    let a = std::rand::Rng { seed: 0 };
+    std::test::assert_eq_int(a.next(), -2152535657050944081, "seed 0, first output 0xe220a8397b1dcdaf");
+    std::test::assert_eq_int(a.next(), 7960286522194355700, "second 0x6e789e6aa1b965f4");
+    std::test::assert_eq_int(a.next(), 487617019471545679, "third 0x06c45d188009454f");
+
+    // the same seed, the same sequence; another seed, another one
+    let x = std::rand::Rng { seed: 42 };
+    let y = std::rand::Rng { seed: 42 };
+    let z = std::rand::Rng { seed: 43 };
+    let mut same = true;
+    let mut differs = false;
+    let mut i = 0;
+    while i < 100 {
+        let v = x.next_int(1000);
+        if v != y.next_int(1000) { same = false; }
+        if v != z.next_int(1000) { differs = true; }
+        i = i + 1;
+    }
+    std::test::assert(same, "two Rngs with one seed agree");
+    std::test::assert(differs, "another seed gives another sequence");
+
+    // next_int stays in [0, max); next_float in [0, 1); range in [lo, hi)
+    let r = std::rand::Rng { seed: 7 };
+    let mut ok = true;
+    let mut seen_low = false;
+    let mut seen_high = false;
+    i = 0;
+    while i < 2000 {
+        let n = r.next_int(10);
+        if n < 0 || n >= 10 { ok = false; }
+        if n == 0 { seen_low = true; }
+        if n == 9 { seen_high = true; }
+        let f = r.next_float();
+        if f < 0.0 || f >= 1.0 { ok = false; }
+        let g = r.range(-5, 5);
+        if g < -5 || g >= 5 { ok = false; }
+        i = i + 1;
+    }
+    std::test::assert(ok, "every draw in its interval");
+    std::test::assert(seen_low && seen_high, "both ends of [0, 10) drawn");
+    std::test::assert_eq_int(r.next_int(0), 0, "max <= 0 is 0");
+    std::test::assert_eq_int(r.range(3, 3), 3, "an empty range is lo");
+    std::test::assert_eq_int(r.range(-9223372036854775807 - 1, 9223372036854775807), -9223372036854775807 - 1, "a span past Int is lo");
+}

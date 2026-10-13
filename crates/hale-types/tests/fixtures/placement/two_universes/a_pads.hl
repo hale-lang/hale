@@ -1,7 +1,7 @@
 // Two universes, one numeric id (the placement correspondence, § 3
 // case 12). Each `PadN` is two sites (the declaration and the `run`
-// the omitted-run desugar adds) and `pad_odd` one, so the 87 pads and
-// it put `Collider` at seed 0, index 175: the id the stdlib analysis
+// the omitted-run desugar adds) and `pad_odd` one, so the 92 pads and
+// it put `Collider` at seed 0, index 185: the id the stdlib analysis
 // copy, minted alone from seed 0 and index 0, gives `__StdIoUdpReader`.
 // The test asserts the collision before anything else, so a stdlib
 // edit that moves the reader is a red test and a new padding count,
@@ -93,6 +93,11 @@ locus Pad83 { }
 locus Pad84 { }
 locus Pad85 { }
 locus Pad86 { }
+locus Pad87 { }
+locus Pad88 { }
+locus Pad89 { }
+locus Pad90 { }
+locus Pad91 { }
 fn pad_odd() { }
 
 locus Collider {

@@ -878,8 +878,8 @@ locus Head {
             if path == "/auth/callback" {
                 let http = api::Http { };
                 let q = std::http::build_context(req);
-                let code = http.decode(std::http::query_param(q.params, "code"));
-                let state = http.decode(std::http::query_param(q.params, "state"));
+                let code = http.checked(std::http::query_param(q.params, "code"));
+                let state = http.checked(std::http::query_param(q.params, "state"));
                 if !code.ok || !state.ok { return self.error(400, "invalid_query", "invalid authentication query encoding", false); }
                 return self.auth.finish_sign_in(code.text, state.text, dna::cookie_value(std::http::header(req, "Cookie"), "dna_signin"));
             }

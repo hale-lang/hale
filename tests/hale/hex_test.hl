@@ -1,0 +1,41 @@
+// tests/hale/hex_test.hl — `std::hex`: base16 text of bytes. The
+// stdlib carried three private copies of the digit table and had no
+// public encoder, so every program that printed a digest wrote its
+// own (downstream handoff).
+
+fn main() {
+    // encode: two lowercase digits per byte.
+    std::test::assert_eq_str(std::hex::encode(b""), "", "empty encodes to empty");
+    std::test::assert_eq_str(std::hex::encode(b"\x00\x01\x0f\x10\xab\xff"), "00010f10abff", "every nibble position");
+    std::test::assert_eq_str(
+        std::hex::encode(std::crypto::sha256(b"abc")),
+        "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+        "the SHA-256 of abc (FIPS 180-2)"
+    );
+
+    // decode: either case, and back to the same bytes.
+    let d = std::hex::decode("00010F10abFF") or b"x";
+    std::test::assert_eq_int(len(d), 6, "six bytes");
+    std::test::assert_eq_int(std::bytes::read_u8(d, 4) or - 1, 171, "ab is 171");
+    std::test::assert_eq_int(std::bytes::read_u8(d, 5) or - 1, 255, "FF is 255");
+    std::test::assert_eq_str(std::hex::encode(d), "00010f10abff", "the round trip");
+    let e = std::hex::decode("") or b"x";
+    std::test::assert_eq_int(len(e), 0, "empty decodes to empty");
+
+    // decode refuses an odd length and a non-digit, naming both.
+    let mut kind = "";
+    let mut input = "";
+    let odd = std::hex::decode("abc") or { kind = err.kind; b"" };
+    std::test::assert_eq_int(len(odd), 0, "an odd length decodes nothing");
+    std::test::assert_eq_str(kind, "hex", "an odd length is a ParseError");
+    let bad = std::hex::decode("zz") or { input = err.input; b"" };
+    std::test::assert_eq_int(len(bad), 0, "a non-digit decodes nothing");
+    std::test::assert_eq_str(input, "zz", "a non-digit is a ParseError carrying the input");
+
+    // digit: one byte's value, or -1.
+    std::test::assert_eq_int(std::hex::digit(48), 0, "'0'");
+    std::test::assert_eq_int(std::hex::digit(102), 15, "'f'");
+    std::test::assert_eq_int(std::hex::digit(65), 10, "'A'");
+    std::test::assert_eq_int(std::hex::digit(103), -1, "'g' is not a digit");
+    std::test::assert_eq_int(std::hex::digit(47), -1, "'/' is not a digit");
+}

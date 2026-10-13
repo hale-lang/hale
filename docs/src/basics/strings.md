@@ -115,6 +115,18 @@ let t   = std::str::trim("  spaced  ");                   // "spaced"
 let r   = std::str::replace("a-b-c", "-", "+");          // "a+b+c"
 ```
 
+To find every occurrence, search on from just past the last hit.
+`index_of_from` takes the byte offset to start at and still answers
+an index into the whole string (or `-1`):
+
+```hale,fragment
+let s = "a=1&b=2&c=3";
+let mut at = std::str::index_of_from(s, "&", 0);       // 3
+while at >= 0 {
+    at = std::str::index_of_from(s, "&", at + 1);      // 7, then -1
+}
+```
+
 Hale has no per-character method syntax (`s.charAt(i)`); you
 slice with a range or use the `std::str` helpers. Slicing a
 string by byte range:

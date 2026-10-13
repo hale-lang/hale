@@ -1,0 +1,83 @@
+// std::url: percent-encoding (RFC 3986 § 2.1).
+//
+// `decode` undoes `%XX` escapes; `decode_query` also reads `+` as a
+// space, the application/x-www-form-urlencoded rule, which holds in a
+// query string and nowhere else; `encode` escapes every byte but the
+// unreserved ones. `std::http`'s `path_param` and `query_param` decode
+// through these (they handed back `hello%20world` before: a downstream
+// handoff).
+//
+// Decoding is total, the WHATWG URL standard's percent-decode: a `%`
+// not followed by two hex digits is kept as it is, never an error, so
+// a value a client mangled still arrives. `%00` is kept as it is too:
+// a `String` ends at its first NUL, so decoding it would cut the value
+// short in silence.
+
+/// `s` with each `%XX` escape (two hex digits, either case) replaced by
+/// the byte it names. A `%` not followed by two hex digits, and `%00`,
+/// stay as they are; `+` stays a `+` (see `decode_query`).
+fn __std_url_decode(s: String) -> String {
+    return __std_url_decode_with(s, false);
+}
+
+/// `decode`, and `+` is a space: the form-encoding rule a query string
+/// (`?q=a+b`) follows. Use `decode` for a path segment, where `+` is a
+/// literal plus.
+fn __std_url_decode_query(s: String) -> String {
+    return __std_url_decode_with(s, true);
+}
+
+fn __std_url_decode_with(s: String, plus_is_space: Bool) -> String {
+    let n = len(s);
+    let pct = std::str::index_of(s, "%");
+    let plus = if plus_is_space { std::str::index_of(s, "+") } else { -1 };
+    if pct < 0 && plus < 0 {
+        return s;
+    }
+    let out = std::bytes::BytesBuilder { initial_cap: n + 1 };
+    let mut i = 0;
+    while i < n {
+        let c = std::str::byte_at_unchecked(s, i);
+        if c == 37 && i + 2 < n {
+            let hi = __std_hex_digit(std::str::byte_at_unchecked(s, i + 1));
+            let lo = __std_hex_digit(std::str::byte_at_unchecked(s, i + 2));
+            let b = hi * 16 + lo;
+            if hi >= 0 && lo >= 0 && b != 0 {
+                out.append_u8(b);
+                i = i + 3;
+                continue;
+            }
+        }
+        if c == 43 && plus_is_space {
+            out.append_u8(32);
+        } else {
+            out.append_u8(c);
+        }
+        i = i + 1;
+    }
+    return std::str::clone(out.text_view());
+}
+
+/// `s` with every byte but the unreserved ones (`A`-`Z`, `a`-`z`,
+/// `0`-`9`, `-`, `.`, `_`, `~`) written as `%XX`, uppercase: safe as a
+/// path segment, a query key or a query value. A space is `%20`.
+fn __std_url_encode(s: String) -> String {
+    let n = len(s);
+    let digits = "0123456789ABCDEF";
+    let out = std::bytes::BytesBuilder { initial_cap: n + 1 };
+    let mut i = 0;
+    while i < n {
+        let c = std::str::byte_at_unchecked(s, i);
+        let unreserved = (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || (c >= 48 && c <= 57)
+            || c == 45 || c == 46 || c == 95 || c == 126;
+        if unreserved {
+            out.append_u8(c);
+        } else {
+            out.append_u8(37);
+            out.append_u8(std::str::byte_at_unchecked(digits, c / 16));
+            out.append_u8(std::str::byte_at_unchecked(digits, c % 16));
+        }
+        i = i + 1;
+    }
+    return std::str::clone(out.text_view());
+}

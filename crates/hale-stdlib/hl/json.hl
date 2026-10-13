@@ -443,26 +443,17 @@ fn __json_unescape_u(
 
 // Read the four hex digits at `at`. Returns their value, or -1
 // when any of the four is not a hex digit. The caller has
-// already checked that `at + 3` is in range.
+// already checked that `at + 3` is in range. A digit's value is
+// `std::hex::digit`'s, -1 for a non-digit (GH #709: it used to be
+// 0, which silently read \uZZZZ as U+0000; malformed digits reach
+// the verbatim-passthrough rule instead of inventing a scalar).
 fn __json_hex4(s: String, at: Int) -> Int {
-    let h0 = __json_hex_nibble(std::str::byte_at_unchecked(s, at));
-    let h1 = __json_hex_nibble(std::str::byte_at_unchecked(s, at + 1));
-    let h2 = __json_hex_nibble(std::str::byte_at_unchecked(s, at + 2));
-    let h3 = __json_hex_nibble(std::str::byte_at_unchecked(s, at + 3));
+    let h0 = __std_hex_digit(std::str::byte_at_unchecked(s, at));
+    let h1 = __std_hex_digit(std::str::byte_at_unchecked(s, at + 1));
+    let h2 = __std_hex_digit(std::str::byte_at_unchecked(s, at + 2));
+    let h3 = __std_hex_digit(std::str::byte_at_unchecked(s, at + 3));
     if h0 < 0 || h1 < 0 || h2 < 0 || h3 < 0 { return -1; }
     return h0 * 4096 + h1 * 256 + h2 * 16 + h3;
-}
-
-// One hex digit's value, or -1 when `b` is not a hex digit.
-// 2026-09-19 (GH #709): the unrecognized answer used to be 0,
-// which silently read \uZZZZ as U+0000. Malformed digits now
-// reach the verbatim-passthrough rule instead of inventing a
-// scalar.
-fn __json_hex_nibble(b: Int) -> Int {
-    if b >= 48 && b <= 57 { return b - 48; }
-    if b >= 97 && b <= 102 { return b - 97 + 10; }
-    if b >= 65 && b <= 70 { return b - 65 + 10; }
-    return -1;
 }
 
 // Append one Unicode scalar's UTF-8 encoding to `out`. The full

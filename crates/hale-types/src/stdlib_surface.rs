@@ -362,6 +362,7 @@ pub const LOCUS_PATHS: &[&[&str]] = &[
     &["std", "secret", "Credential"],
     &["std", "secret", "Signer"],
     &["std", "process", "Child"],
+    &["std", "rand", "Rng"],
     &["std", "process", "ProcessOutput"],
     &["std", "process", "SpawnOptions"],
     &["std", "source", "Walk"],
@@ -675,6 +676,14 @@ pub const SURFACES: &[NsSurface] = &[
             // answered an empty Bytes on a bad key is gone.
             row!("ecdsa_p256_sign", PURE, [Bytes, Bytes] -> Bytes ! "CryptoError", Intrinsic(CryptoEcdsaP256Sign)),
             row!("ecdsa_p256_verify", PURE, [Bytes, Bytes, Bytes] -> Bool, Intrinsic(CryptoEcdsaP256Verify)),
+            // Ed25519, RFC 8032 (Monocypher, vendored; pure computation,
+            // sans-I/O). The key pair is a Hale body (`crypto.hl`) over the
+            // public-key primitive, since a pair is a tuple no row's
+            // signature states; signing refuses a malformed secret key.
+            row!("__ed25519_public_key", PURE, [Bytes] -> Bytes, Intrinsic(CryptoEd25519PublicKeyRaw)),
+            row!("ed25519_keypair", PURE, _, Renamed),
+            row!("ed25519_sign", PURE, [Bytes, Bytes] -> Bytes ! "CryptoError", Intrinsic(CryptoEd25519Sign)),
+            row!("ed25519_verify", PURE, [Bytes, Bytes, Bytes] -> Bool, Intrinsic(CryptoEd25519Verify)),
             row!("hmac_sha256", PURE, [Bytes, Bytes] -> Bytes, Intrinsic(CryptoHmacSha256)),
             row!("hmac_sha512", PURE, [Bytes, Bytes] -> Bytes, Intrinsic(CryptoHmacSha512)),
             row!("sha1", PURE, [Bytes] -> Bytes, Intrinsic(CryptoSha1)),
@@ -698,6 +707,12 @@ pub const SURFACES: &[NsSurface] = &[
         ns: &["decimal"],
         fns: &[
             row!("format", PURE, [Decimal, Int] -> Str, Intrinsic(DecimalFormat)),
+            // The two conversions into Decimal (downstream handoff: they
+            // went through `parse_decimal(to_string(x))`). An Int is
+            // exact; a Float rounds half away from zero at the ninth
+            // place and refuses NaN, an infinity and what no i128 holds.
+            row!("from_float", PURE, [Float] -> Decimal ! "ParseError", Intrinsic(DecimalFromFloat)),
+            row!("from_int", PURE, [Int] -> Decimal, Intrinsic(DecimalFromInt)),
             row!("to_float", PURE, [Decimal] -> Float, Intrinsic(DecimalToFloat)),
         ],
         open_prefixes: &[],
@@ -745,6 +760,16 @@ pub const SURFACES: &[NsSurface] = &[
             row!("query_param", PURE, _, Renamed),
             row!("request", SYSCALL | BLOCK, _, Renamed),
             row!("write_response", SYSCALL | BLOCK, [Named("__StdIoTcpStream"), Named("__StdHttpResponse")] -> Unit, HaleBody("__write_http_response")),
+        ],
+        open_prefixes: &[],
+    },
+    // std::hex: base16 text of bytes, Hale bodies in `hex.hl`.
+    NsSurface {
+        ns: &["hex"],
+        fns: &[
+            row!("decode", PURE, [Str] -> Bytes ! "ParseError", Renamed),
+            row!("digit", PURE, [Int] -> Int, Renamed),
+            row!("encode", PURE, [Bytes] -> Str, Renamed),
         ],
         open_prefixes: &[],
     },
@@ -865,6 +890,8 @@ pub const SURFACES: &[NsSurface] = &[
             row!("__close_fd", SYSCALL, [Int] -> Int, Intrinsic(IoTcpCloseFdRaw)),
             row!("__connect", SYSCALL | BLOCK, [Str, Int] -> Int, Intrinsic(IoTcpConnectRaw)),
             row!("__io_error_kind", PURE, [Int] -> Str, Intrinsic(IoTcpIoErrorKindRaw)),
+            // The platform's message for an errno: IoError.detail.
+            row!("__io_error_detail", PURE, [Int] -> Str, Intrinsic(IoTcpIoErrorDetailRaw)),
             row!("__last_io_status", PURE, [] -> Int, Intrinsic(IoTcpLastIoStatusRaw)),
             row!("__listen_socket", SYSCALL, [Str, Int] -> Int, Intrinsic(IoTcpListenSocketRaw)),
             // 1 when a blocking socket call here parks the coroutine (an
@@ -1295,6 +1322,10 @@ pub const SURFACES: &[NsSurface] = &[
             row!("range_copy", PURE, [Str, Int, Int, Int] -> Str, Intrinsic(StrRangeCopy)),
             row!("slice", PURE, [Named("__StrByteView"), Int, Int] -> Str, Renamed),
             row!("index_of", PURE, [Str, Str] -> Int, Intrinsic(StrIndexOf)),
+            // `index_of` from a byte offset on, the index into `s`: a
+            // scanner's next search without slicing the tail (downstream
+            // handoff).
+            row!("index_of_from", PURE, [Str, Str, Int] -> Int, Intrinsic(StrIndexOfFrom)),
             row!("contains", PURE, [Str, Str] -> Bool, Intrinsic(StrContains)),
             // #353: the everyday predicates. The runtime carried
             // `lotus_str_contains` / `_starts_with` all along; `ends_with` is
@@ -1340,6 +1371,9 @@ pub const SURFACES: &[NsSurface] = &[
             row!("assert", PURE, [Bool, Str] -> Unit, HaleBody("__test_assert")),
             row!("assert_eq_int", PURE, [Int, Int, Str] -> Unit, HaleBody("__test_assert_eq_int")),
             row!("assert_eq_str", PURE, [Str, Str, Str] -> Unit, HaleBody("__test_assert_eq_str")),
+            // A Float compare within a tolerance; its failure prints both
+            // values and the difference.
+            row!("assert_near", PURE, [Float, Float, Float, Str] -> Unit, HaleBody("__test_assert_near")),
             // GH #230 / #717: the pass counter and the recorded-failure
             // latch, called by the `__test_assert*` bodies and
             // `__test_fail_trailer`.
@@ -1371,6 +1405,16 @@ pub const SURFACES: &[NsSurface] = &[
             row!("decode", PURE, [Str] -> Bytes, Intrinsic(TextBase64Decode)),
             row!("encode", PURE, [Bytes] -> Str, Intrinsic(TextBase64Encode)),
             row!("url_encode", PURE, [Bytes] -> Str, Intrinsic(TextBase64UrlEncode)),
+        ],
+        open_prefixes: &[],
+    },
+    // std::url: percent-encoding, Hale bodies in `url.hl`.
+    NsSurface {
+        ns: &["url"],
+        fns: &[
+            row!("decode", PURE, [Str] -> Str, Renamed),
+            row!("decode_query", PURE, [Str] -> Str, Renamed),
+            row!("encode", PURE, [Str] -> Str, Renamed),
         ],
         open_prefixes: &[],
     },
@@ -1514,6 +1558,9 @@ pub enum IntrinsicId {
     CryptoCrc32,
     CryptoEcdsaP256Sign,
     CryptoEcdsaP256Verify,
+    CryptoEd25519PublicKeyRaw,
+    CryptoEd25519Sign,
+    CryptoEd25519Verify,
     CryptoHmacSha256,
     CryptoHmacSha512,
     CryptoSha1,
@@ -1525,6 +1572,8 @@ pub enum IntrinsicId {
     RingSpscReadRaw,
     RingSpscSetTagBRaw,
     DecimalFormat,
+    DecimalFromFloat,
+    DecimalFromInt,
     DecimalToFloat,
     DiagHeapAllocCount,
     DiagSyscallCount,
@@ -1585,6 +1634,7 @@ pub enum IntrinsicId {
     IoTcpCloseFdRaw,
     IoTcpConnectRaw,
     IoTcpIoErrorKindRaw,
+    IoTcpIoErrorDetailRaw,
     IoTcpLastIoStatusRaw,
     IoTcpListenSocketRaw,
     IoTcpParksRaw,
@@ -1747,6 +1797,7 @@ pub enum IntrinsicId {
     StrFromBytes,
     StrRangeCopy,
     StrIndexOf,
+    StrIndexOfFrom,
     StrContains,
     StrSplitInto,
     StrJoin,

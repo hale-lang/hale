@@ -2140,6 +2140,7 @@ pub fn build_resolved(
             &cx.wasm_exports,
             &options.csrc_files,
             &options.link_libs,
+            module_references_ed25519(&cx.module),
         )?;
         let _ = std::fs::remove_file(&obj_path);
         return Ok(());
@@ -2355,6 +2356,13 @@ pub fn build_resolved(
     } else {
         Vec::new()
     };
+    // Monocypher's Ed25519 and its glue: likewise, only into a program
+    // that reaches `lotus_ed25519_*` (`std::crypto::ed25519_*`).
+    let ed25519_objs = if module_references_ed25519(&cx.module) {
+        crate::ed25519_runtime::ed25519_objects(options, &["clang".to_string()], "", &rt_cflags)?
+    } else {
+        Vec::new()
+    };
     let mut clang = Command::new("clang");
     clang
         .arg(&main_input)
@@ -2363,7 +2371,8 @@ pub fn build_resolved(
         .arg(&shm_ring_o)
         .arg(&compress_o)
         .arg(&obs_o)
-        .args(&h2_objs);
+        .args(&h2_objs)
+        .args(&ed25519_objs);
     if lto_active {
         // Full-LTO link: -flto pulls the Hale bitcode + the runtime
         // bitcode TUs through the LTO backend at -O3, inlining the arena
@@ -2856,6 +2865,9 @@ fn link_cross(
     if module_references_h2(module) {
         rt_objs.extend(crate::h2_runtime::h2_objects(options, &cc, &cc_version, &rt_cflags)?);
     }
+    if module_references_ed25519(module) {
+        rt_objs.extend(crate::ed25519_runtime::ed25519_objects(options, &cc, &cc_version, &rt_cflags)?);
+    }
 
     let ts_shim = locate_cross_ts_shim(target, &sysroot, options);
     if ts_shim.is_none() && module_references_ts_shim(module) {
@@ -2947,6 +2959,9 @@ fn link_wasm(
     // `[ffi] link` names system dynamic libraries. There is no such
     // thing on wasm, so this is rejected rather than ignored.
     link_libs: &[String],
+    // The program reaches `lotus_ed25519_*`: Monocypher's units and their
+    // glue are compiled for wasm32 and linked (they call no libc).
+    ed25519: bool,
 ) -> Result<(), CodegenError> {
     let mkerr = |m: String| CodegenError::Link(m);
     // Unique temp dir for the staged runtime sources.
@@ -3044,6 +3059,16 @@ fn link_wasm(
             ))
         })?;
         csrc_objs.push(o);
+    }
+    if ed25519 {
+        for (stem, source) in crate::ed25519_runtime::units() {
+            let src = dir.join(format!("{stem}.c"));
+            let o = dir.join(format!("{stem}.o"));
+            std::fs::write(&src, source)
+                .map_err(|e| mkerr(format!("stage {stem} for wasm32: {e}")))?;
+            cc(&src, &o, &[])?;
+            csrc_objs.push(o);
+        }
     }
 
     let mut cmd = Command::new(&wasm_ld);
@@ -3216,6 +3241,26 @@ if (typeof process !== "undefined" && process.versions && process.versions.node)
 /// unoptimized build (`LOTUS_ASAN=1` skips the pipeline) keeps the
 /// dead bodies and therefore answers yes; that is also correct,
 /// since its object really does carry the undefined symbols.
+/// Whether anything still calls a `lotus_ed25519_*` symbol: the link then
+/// needs Monocypher's objects (`ed25519_runtime`). Asked like
+/// `module_references_h2`.
+fn module_references_ed25519(module: &inkwell::module::Module<'_>) -> bool {
+    use inkwell::values::BasicValue;
+    let mut f = module.get_first_function();
+    while let Some(func) = f {
+        let is_ed_symbol = func
+            .get_name()
+            .to_str()
+            .map(crate::ed25519_runtime::is_ed25519_symbol)
+            .unwrap_or(false);
+        if is_ed_symbol && func.as_global_value().get_first_use().is_some() {
+            return true;
+        }
+        f = func.get_next_function();
+    }
+    false
+}
+
 fn module_references_h2(module: &inkwell::module::Module<'_>) -> bool {
     use inkwell::values::BasicValue;
     let mut f = module.get_first_function();
@@ -26633,6 +26678,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             "__test_assert",
             "__test_assert_eq_int",
             "__test_assert_eq_str",
+            "__test_assert_near",
         ];
         // The bodies that return no value (m85's response writer, m87's
         // assertions): a value position has no arm for them.
@@ -26641,6 +26687,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             "__test_assert",
             "__test_assert_eq_int",
             "__test_assert_eq_str",
+            "__test_assert_near",
         ];
         // m87: each `std::test` assertion prints a diagnostic and records
         // the failure (GH #717 — it used to exit(1) from inside), no-op
@@ -26648,8 +26695,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // exit 0 on pass; the `emit_test_assert_failure_check` call
         // after each one is what turns a recorded failure into a
         // non-zero exit, through main's teardown where there is one.
-        const ASSERTION_BODIES: &[&str] =
-            &["__test_assert", "__test_assert_eq_int", "__test_assert_eq_str"];
+        const ASSERTION_BODIES: &[&str] = &[
+            "__test_assert",
+            "__test_assert_eq_int",
+            "__test_assert_eq_str",
+            "__test_assert_near",
+        ];
         match pos {
             StdCallPos::Statement if STATEMENT_BODIES.contains(&body) => {
                 let _ = self.lower_user_fn_call(body, args, scope)?;
@@ -26916,6 +26967,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             },
             Id::DecimalToFloat => self.lower_std_decimal_to_float(args, scope),
             Id::DecimalFormat => self.lower_std_decimal_format(args, scope),
+            Id::DecimalFromInt => self.lower_std_decimal_from_int(args, scope),
             // 2026-06-13 — test-time gate counters (#7): read-only
             // views over the runtime's heap-alloc / I/O-syscall
             // counts for steady-state "did N allocs / syscalls"
@@ -27032,6 +27084,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             }
             Id::StrIndexOf => {
                 self.lower_std_str_index_of(args, scope)
+            }
+            Id::StrIndexOfFrom => {
+                self.lower_std_str_index_of_from(args, scope)
             }
             Id::StrJoin => self.lower_std_str_join(args, scope),
             // #353: UTF-8 code-point decoding. Byte-oriented String
@@ -27348,6 +27403,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             Id::IoTcpIoErrorKindRaw => {
                 self.lower_std_io_tcp_io_error_kind(args, scope)
             }
+            Id::IoTcpIoErrorDetailRaw => {
+                self.lower_std_io_tcp_io_error_detail(args, scope)
+            }
             // 2026-05-26 — named socket-option constants. Each
             // resolves to a zero-arg call into the matching C
             // getter, which returns the platform's numeric
@@ -27451,6 +27509,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             }
             Id::CryptoEcdsaP256Verify => {
                 self.lower_std_crypto_ecdsa_p256_verify(args, scope)
+            }
+            Id::CryptoEd25519PublicKeyRaw => {
+                self.lower_std_crypto_ed25519_public_key(args, scope)
+            }
+            Id::CryptoEd25519Verify => {
+                self.lower_std_crypto_ed25519_verify(args, scope)
             }
             // m96: std::ts::* tree-sitter substrate. A statement
             // reaches these too, its value dropped, for
@@ -27749,6 +27813,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             | Id::CompressUnzstd
             | Id::CompressZstd
             | Id::CryptoEcdsaP256Sign
+            | Id::CryptoEd25519Sign
+            | Id::DecimalFromFloat
             | Id::IoFileOpenRaw
             | Id::IoFileSeekRaw
             | Id::IoFileWriteBytesRaw
@@ -27991,6 +28057,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             Id::CryptoEcdsaP256Sign => {
                 self.lower_std_crypto_ecdsa_p256_sign_fallible(args, scope)
             }
+            // Ed25519 (RFC 8032) → fallible(CryptoError) on a malformed
+            // secret key.
+            Id::CryptoEd25519Sign => self.lower_std_crypto_ed25519_sign_fallible(args, scope),
+            // A Float as the nearest Decimal; NaN, an infinity or a
+            // magnitude past the i128 is its ParseError.
+            Id::DecimalFromFloat => self.lower_std_decimal_from_float_fallible(args, scope),
             // Per-path wrappers for the fs/tcp surfaces flipped to
             // `fallible(IoError)`. Each helper evaluates args, calls
             // the underlying C primitive, and feeds the sentinel
@@ -28180,12 +28252,15 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             | Id::BytesSlice
             | Id::CryptoCrc32
             | Id::CryptoEcdsaP256Verify
+            | Id::CryptoEd25519PublicKeyRaw
+            | Id::CryptoEd25519Verify
             | Id::CryptoHmacSha256
             | Id::CryptoHmacSha512
             | Id::CryptoSha1
             | Id::CryptoSha256
             | Id::CryptoSha512
             | Id::DecimalFormat
+            | Id::DecimalFromInt
             | Id::DecimalToFloat
             | Id::DiagHeapAllocCount
             | Id::DiagSyscallCount
@@ -28259,6 +28334,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             | Id::IoTcpCloseFdRaw
             | Id::IoTcpConnectRaw
             | Id::IoTcpIoErrorKindRaw
+            | Id::IoTcpIoErrorDetailRaw
             | Id::IoTcpLastIoStatusRaw
             | Id::IoTcpLastRecvKernelNs
             | Id::IoTcpLastRecvUserNs
@@ -28354,6 +28430,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             | Id::StrEndsWith
             | Id::StrFromBytes
             | Id::StrIndexOf
+            | Id::StrIndexOfFrom
             | Id::StrJoin
             | Id::StrLower
             | Id::StrPadLeft

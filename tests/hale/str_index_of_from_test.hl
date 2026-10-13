@@ -1,0 +1,30 @@
+// tests/hale/str_index_of_from_test.hl — `std::str::index_of_from`:
+// `index_of` from a byte offset on, the index into the whole string.
+// A scanner used to slice the tail and add the offset back, a copy per
+// step (downstream handoff).
+
+fn count_of(s: String, needle: String) -> Int {
+    let mut n = 0;
+    let mut at = std::str::index_of_from(s, needle, 0);
+    while at >= 0 {
+        n = n + 1;
+        at = std::str::index_of_from(s, needle, at + len(needle));
+    }
+    return n;
+}
+
+fn main() {
+    let s = "a=1&b=2&c=3";
+    std::test::assert_eq_int(std::str::index_of_from(s, "&", 0), 3, "from 0 is index_of");
+    std::test::assert_eq_int(std::str::index_of_from(s, "&", 3), 3, "a hit at the start offset");
+    std::test::assert_eq_int(std::str::index_of_from(s, "&", 4), 7, "the next one, indexed into s");
+    std::test::assert_eq_int(std::str::index_of_from(s, "&", 8), -1, "none after the last");
+    std::test::assert_eq_int(std::str::index_of_from(s, "a=", 1), -1, "a needle before the start is not found");
+    std::test::assert_eq_int(std::str::index_of_from(s, "&", -5), 3, "a negative start is 0");
+    std::test::assert_eq_int(std::str::index_of_from(s, "&", 99), -1, "a start past the end finds nothing");
+    std::test::assert_eq_int(std::str::index_of_from(s, "", 4), 4, "an empty needle is found at the start");
+    std::test::assert_eq_int(std::str::index_of_from(s, "", 11), 11, "an empty needle at the end");
+    std::test::assert_eq_int(std::str::index_of_from(s, "", 12), -1, "and not past it");
+    std::test::assert_eq_int(count_of("abababa", "aba"), 2, "a scan steps past each hit");
+    std::test::assert_eq_int(count_of("", "x"), 0, "nothing in the empty string");
+}

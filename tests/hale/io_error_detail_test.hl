@@ -1,0 +1,31 @@
+// tests/hale/io_error_detail_test.hl — `IoError.detail`, the human text
+// beside the kind tag (the platform's message for the errno), as
+// `HttpError` and `DbError` carry it. IoError had only kind, errno and
+// path (downstream handoff).
+
+fn main() {
+    let mut kind = "";
+    let mut detail = "";
+    let missing = std::io::fs::read_file("/nonexistent-hale-dir/x") or {
+        kind = err.kind;
+        detail = err.detail;
+        ""
+    };
+    std::test::assert_eq_str(kind, "not_found", "the kind tag is unchanged");
+    std::test::assert_eq_str(detail, "No such file or directory", "ENOENT's message");
+
+    // a connect refused: the message is the platform's, never empty
+    let fd = std::io::tcp::connect("127.0.0.1", 1) or {
+        kind = err.kind;
+        detail = err.detail;
+            -1
+    };
+    std::test::assert_eq_int(fd, -1, "nothing listens on port 1");
+    std::test::assert_eq_str(kind, "connection_refused", "refused");
+    std::test::assert(len(detail) > 0, "a refused connect has a detail");
+
+    // a program's own IoError without a detail still builds: the field
+    // defaults to ""
+    let own = IoError { kind: "mine", errno: 0, path: "" };
+    std::test::assert_eq_str(own.detail, "", "detail defaults to empty");
+}

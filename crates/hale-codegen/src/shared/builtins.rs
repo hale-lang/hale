@@ -1064,6 +1064,15 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .module
             .add_function("lotus_str_index_of", str_index_of_ty, None);
         self.mark_pure_read(str_index_of_fn);
+        // declare i64 @lotus_str_index_of_from(ptr s, ptr sub, i64 start)
+        let str_index_of_from_ty =
+            i64_t.fn_type(&[ptr_t.into(), ptr_t.into(), i64_t.into()], false);
+        let str_index_of_from_fn = self.module.add_function(
+            "lotus_str_index_of_from",
+            str_index_of_from_ty,
+            None,
+        );
+        self.mark_pure_read(str_index_of_from_fn);
 
         // m89: Bytes value primitives.
         // declare ptr @lotus_bytes_create(ptr arena, i64 len)
@@ -1683,6 +1692,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             f64_t.fn_type(&[i64_t.into(), i64_t.into(), i64_t.into()], false);
         self.module
             .add_function("lotus_decimal_to_float", dec_to_float_ty, None);
+        // declare i64 @lotus_decimal_from_float(double x, ptr hi, ptr lo)
+        let dec_from_float_ty = i64_t.fn_type(
+            &[f64_t.into(), ptr_t.into(), ptr_t.into()],
+            false,
+        );
+        self.module
+            .add_function("lotus_decimal_from_float", dec_from_float_ty, None);
 
         // GH #230 item 2: fixed-places decimal formatting.
         // declare ptr @lotus_decimal_format(i64 hi, i64 lo, i64 scale, i64 places)
@@ -3541,6 +3557,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             ptr_t.fn_type(&[i64_t.into()], false),
             None,
         );
+        // declare ptr @lotus_io_error_detail(ptr arena, i64 errno)
+        self.module.add_function(
+            "lotus_io_error_detail",
+            ptr_t.fn_type(&[ptr_t.into(), i64_t.into()], false),
+            None,
+        );
         // declare i64 @lotus_tls_recv_into(i32 handle, ptr builder, i64 max_bytes)
         let tls_recv_into_ty = i64_t.fn_type(
             &[i32_t.into(), ptr_t.into(), i64_t.into()],
@@ -3805,6 +3827,26 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         self.module.add_function(
             "lotus_crypto_ecdsa_p256_verify",
             ecdsa_verify_ty,
+            None,
+        );
+        // Ed25519 (RFC 8032, Monocypher; `ed25519_runtime`): linked only
+        // into a program that still calls one of these after the pipeline.
+        // declare ptr @lotus_ed25519_public_key(ptr seed)
+        self.module.add_function(
+            "lotus_ed25519_public_key",
+            ptr_t.fn_type(&[ptr_t.into()], false),
+            None,
+        );
+        // declare ptr @lotus_ed25519_sign_or_null(ptr secret, ptr msg)
+        self.module.add_function(
+            "lotus_ed25519_sign_or_null",
+            ptr_t.fn_type(&[ptr_t.into(), ptr_t.into()], false),
+            None,
+        );
+        // declare i64 @lotus_ed25519_verify(ptr pub, ptr msg, ptr sig)
+        self.module.add_function(
+            "lotus_ed25519_verify",
+            i64_t.fn_type(&[ptr_t.into(), ptr_t.into(), ptr_t.into()], false),
             None,
         );
         // declare ptr @lotus_text_base64_encode(ptr bytes)

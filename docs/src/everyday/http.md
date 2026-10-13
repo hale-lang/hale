@@ -297,7 +297,9 @@ is reclaimed when the next iteration reuses its storage, so register
 handlers that are fields, or build each one outside the loop.
 
 `:name` segments capture (`path_param`), `?k=v` pairs are one
-`query_param(ctx.params, "k")` away, the first matching route
+`query_param(ctx.params, "k")` away (both hand the value back
+percent-decoded: `/hello%20world` captures `hello world`, and a
+query's `+` is a space too), the first matching route
 wins (register specific patterns before general ones), and
 anything unmatched hits an overridable 404. Middleware wraps the
 chain in onion order:
@@ -514,6 +516,17 @@ the response; the `Client`, once its retries are spent, fails with
 `503` with a `Retry-After` and a JSON reason still reaches you
 (`err.status` is `0` and the body empty when no attempt got an
 answer, and `err.detail` says what the last attempt hit).
+
+A value that goes into a URL is escaped with `std::url::encode`, and
+`std::url::decode` (or `decode_query`, where `+` is a space) reads one
+back:
+
+```hale,fragment
+let q = std::url::encode("tea & cake");          // "tea%20%26%20cake"
+let r = std::http::get("http://api.local/search?q=" + q) or raise;
+let back = std::url::decode_query("tea+%26+cake");  // "tea & cake"
+```
+
 
 On an `async_io` pool the client parks while it waits — on the
 connect, the TLS handshake, and every write and read — so http and
