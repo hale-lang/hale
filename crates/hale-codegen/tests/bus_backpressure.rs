@@ -163,9 +163,15 @@ const POOL_TO_MAIN_FLOOD: &str = r#"
 /// Build and run `src`, and read its `key=value` lines (the program prints
 /// them while the memory being measured is live, then runs to the end).
 fn run_fields(name: &str, src: &str) -> impl Fn(&str) -> String + use<> {
+    run_fields_env(name, src, &[])
+}
+
+/// [`run_fields`] with `env` set on the program.
+fn run_fields_env(name: &str, src: &str, env: &[(&str, &str)]) -> impl Fn(&str) -> String + use<> {
     let bin = harness::unique_bin(&format!("hale_bus_bp_{name}"));
     build_opts::build_source(src, &bin, &build_opts::options()).expect("build");
-    let output = Command::new("timeout").arg("120").arg(&bin).output().expect("run");
+    let output =
+        Command::new("timeout").arg("120").arg(&bin).envs(env.iter().copied()).output().expect("run");
     let _ = std::fs::remove_file(&bin);
     let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
     assert!(output.status.success(), "{name}: {:?}\n{stdout}", output.status);
@@ -286,6 +292,72 @@ fn a_producer_never_waits_on_an_owner_blocked_in_ffi() {
     let field = run_fields("owner_in_ffi", OWNER_BLOCKED_IN_FFI);
     assert_eq!(field("sent_while_blocked"), "100000", "the source waited on main's foreign call");
     assert_eq!(field("delivered"), "100000", "every tick is delivered");
+}
+
+/// The stall window is the queue's, not each producer's (PR #1552's
+/// review): four sources on four pools flood one main subscriber while
+/// main sleeps a second in `usleep`, with a 64-cell queue. A raise of the
+/// bound starts the window again for every producer waiting, so the queue
+/// grows a cap per 20 ms in all. With a window per producer, each one whose
+/// own clock had run out raised the bound again at once: about 11.5k sent
+/// in the second, where the bound allows about 3.3k.
+const FOUR_PRODUCERS_OWNER_IN_FFI: &str = r#"
+    @ffi("c") fn usleep(us: Int) -> Int;
+
+    type Tick { n: Int; }
+    locus Counter {
+        params { count: Int = 0; }
+        bus { subscribe "f4" as on_tick of type Tick; }
+        fn on_tick(t: Tick) { self.count = self.count + 1; }
+    }
+    locus Source {
+        params { sent: Int = 0; }
+        bus { publish "f4" of type Tick; }
+        run() { while self.sent < 20000 { "f4" <- Tick { n: self.sent }; self.sent = self.sent + 1; } }
+    }
+    main locus App {
+        params {
+            sub: Counter = Counter { };
+            a: Source = Source { };
+            b: Source = Source { };
+            c: Source = Source { };
+            d: Source = Source { };
+        }
+        placement {
+            a: cooperative(pool = pa);
+            b: cooperative(pool = pb);
+            c: cooperative(pool = pc);
+            d: cooperative(pool = pd);
+        }
+        run() {
+            let started = std::time::monotonic_ns() + 10000000000;
+            while ((self.a.sent == 0 || self.b.sent == 0 || self.c.sent == 0 || self.d.sent == 0) && std::time::monotonic_ns() < started) { }
+            let before = self.a.sent + self.b.sent + self.c.sent + self.d.sent;
+            let t0 = std::time::monotonic_ns();
+            usleep(1000000);
+            let blocked_ms = (std::time::monotonic_ns() - t0) / 1000000;
+            let after = self.a.sent + self.b.sent + self.c.sent + self.d.sent;
+            println("sent_while_blocked=" + to_string(after - before));
+            println("blocked_ms=" + to_string(blocked_ms));
+            let deadline = std::time::monotonic_ns() + 30000000000;
+            while (self.sub.count < 80000 && std::time::monotonic_ns() < deadline) { std::time::sleep(1ms); }
+            println("delivered=" + to_string(self.sub.count));
+        }
+    }
+    fn main() { App { }; }
+"#;
+
+#[test]
+fn the_stall_window_is_the_queues_not_each_producers() {
+    let field = run_fields_env("four_producers", FOUR_PRODUCERS_OWNER_IN_FFI, &[("LOTUS_BUS_QUEUE_CAP", "64")]);
+    let sent: i64 = field("sent_while_blocked").parse().expect("a count");
+    let blocked_ms: i64 = field("blocked_ms").parse().expect("a duration");
+    // A cap (64) per 20 ms window over the blocked time, one more for the
+    // window running when it began, and one for what was in flight.
+    let allowed = (blocked_ms / 20 + 2) * 64;
+    assert!(sent <= allowed, "{sent} sent in {blocked_ms} ms while main was blocked; the bound allows {allowed}");
+    assert!(sent >= 64, "the sources waited on main's foreign call: {sent} sent in {blocked_ms} ms");
+    assert_eq!(field("delivered"), "80000", "every tick is delivered");
 }
 
 /// A subscriber born on main while a pool floods its topic: its birth

@@ -1648,6 +1648,19 @@ row	App@literal1	App	main	default
 row	App@literal1.src	Source	pool:side	entry	off owner
 row	App@literal1.sub	Counter	main	default
 
+== crates/hale-codegen/tests/bus_backpressure.rs#915f9c92
+root	App	the entry
+domain	pool:pa
+domain	pool:pb
+domain	pool:pc
+domain	pool:pd
+row	App@literal1	App	main	default
+row	App@literal1.a	Source	pool:pa	entry	off owner
+row	App@literal1.b	Source	pool:pb	entry	off owner
+row	App@literal1.c	Source	pool:pc	entry	off owner
+row	App@literal1.d	Source	pool:pd	entry	off owner
+row	App@literal1.sub	Counter	main	default
+
 == crates/hale-codegen/tests/bus_backpressure.rs#18fba47e
 root	App	the entry
 domain	pool:side

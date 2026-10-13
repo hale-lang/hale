@@ -7660,13 +7660,16 @@ typedef struct lotus_bus_queue {
      * drain's signal; the teardown's word that ends every such wait
      * (`lotus_bus_queue_close`), after which the queue grows again; the
      * owner's drain heartbeat, bumped at every drain and every cell it
-     * pops; and the bound itself, under `lock` (0 = the cap), raised a
-     * queue's worth each time a producer finds the owner not draining. */
+     * pops; the bound itself, under `lock` (0 = the cap), raised a
+     * queue's worth each time a producer finds the owner not draining;
+     * and when it was last raised (monotonic ns, under `lock`), so every
+     * waiter's stall window starts again at a raise. */
     int               producers_waiting;
     pthread_cond_t    not_full;
     _Atomic int       closing;
     _Atomic uint64_t  drains;
     size_t            limit;
+    uint64_t          grant_at;
 #endif
 } lotus_bus_queue_t;
 
@@ -7789,6 +7792,7 @@ lotus_bus_queue_t *lotus_bus_queue_create(void) {
     atomic_init(&q->closing, 0);
     atomic_init(&q->drains, 0);
     q->limit = 0;
+    q->grant_at = 0;
 #endif
 #if defined(__linux__)
     q->wake_r = q->wake_w = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
@@ -8322,8 +8326,10 @@ static void lotus_bus_note_dispatched(void *handler, void *self_ptr);
  * — in a socket read, an `@ffi` call, a long handler, any wait that may be
  * for this very producer — and goes on: it raises the bound by one queue's
  * worth, so it and the producers beside it post a cap more before they
- * look again, and the queue grows by at most a cap per stall window while
- * the owner drains nothing. Once the owner drains back to half the cap the
+ * look again. A raise starts the window again for every producer waiting
+ * (`q->grant_at`), however long each has waited, so the queue grows by at
+ * most a cap per stall window while the owner drains nothing, not a cap
+ * per producer. Once the owner drains back to half the cap the
  * bound returns to the cap. Two cases go on at once: the owner blocked in
  * a runtime wait (`g_bus_owner_waiting`), and the queue closing (main's
  * teardown). The owner's own posts never wait here (nothing else drains
@@ -8364,9 +8370,11 @@ static void bus_queue_bound_wait(lotus_bus_queue_t *q) {
         if (drains != seen) {
             seen = drains;
             since = now;
-        } else if (now - since >= (uint64_t)LOTUS_BUS_OWNER_STALL_NS
+        } else if (now - (since > q->grant_at ? since : q->grant_at)
+                       >= (uint64_t)LOTUS_BUS_OWNER_STALL_NS
                    && q->tail - q->head >= limit) {
             q->limit = (q->tail - q->head) + max_cap;
+            q->grant_at = now;
             break;
         }
     }
