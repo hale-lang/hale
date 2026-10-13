@@ -911,7 +911,14 @@ unsynchronized whatever inference would pick; see `semantics.md`
   grow after its drain, so neither races a read. `key_at` of a
   String-keyed retiring map (any synced discipline) copies the
   key out under the read's lock as well, since a removed cell's
-  key is retired. A lockfree tombstone keeps its String key until
+  key is retired. Every such copy is a block of the reader's own
+  whatever arena it lands in: the walk uses the cell-owned clones,
+  which copy a pointer already in the destination rather than pass
+  it through. (The plain clones' same-arena fast path handed a
+  read with no method scratch — a closure assertion on the map
+  locus, reading into `self.__arena` — the cell's own String and
+  Bytes, which a same-key replace on another pool then retired
+  and its flush reused under the reader.) A lockfree tombstone keeps its String key until
   the next grow's migration — a probe that loaded the cell before
   the `remove` may still be comparing it — and the migration,
   with no op in flight, retires it. (Before, neither discipline

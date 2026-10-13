@@ -332,3 +332,117 @@ fn cross_pool_reads_of_cas_maps_are_whole_owned_copies() {
         assert!(stdout.contains(want), "missing {want}; stdout: {stdout}");
     }
 }
+
+/// The tick-closure program for `closure_reads_of_a_synced_map_*`: the
+/// map, on its own pool, checks on every tick that a cell read in its
+/// closure is whole (a 400-char String and 400-byte Bytes; the default
+/// for a missing key has the same lengths), while `main` replaces and
+/// removes that cell. Any other length is a read of a block the writer
+/// retired and its activation boundary put back on the freelist.
+fn closure_program(sync: &str) -> String {
+    let lit = "ab".repeat(200);
+    format!(
+        r#"
+type Cell {{ k: Int = 0; s: String = ""; b: Bytes = b""; }}
+type Poke {{ n: Int; }}
+
+@form(hashmap, sync = {sync})
+locus M {{
+    capacity {{ pool entries of Cell indexed_by k; }}
+    closure snapshot {{
+        len((self.get(0) or Cell {{ s: "{lit}", b: b"{lit}" }}).s)
+            + len((self.get(0) or Cell {{ s: "{lit}", b: b"{lit}" }}).b) ~~ 800 within 0;
+        epoch tick;
+    }}
+    bus {{ subscribe "poke" as on_poke of type Poke; }}
+    fn on_poke(p: Poke) {{ }}
+}}
+
+main locus App {{
+    params {{ m: M = M {{ }}; }}
+    placement {{ m: cooperative(pool = aux); }}
+    bus {{ publish "poke" of type Poke; }}
+    fn put(i: Int) {{
+        let s = std::str::repeat("v" + to_string(i % 10), 200);
+        self.m.set(Cell {{ k: 0, s: s, b: std::bytes::from_string(s) }});
+        if i % 5 == 0 {{ self.m.remove(0) or discard; }}
+    }}
+    run() {{
+        let mut i = 0;
+        while i < 20000 {{ self.put(i); "poke" <- Poke {{ n: i }}; i = i + 1; }}
+        std::time::sleep(300ms);
+        println("app done");
+        let _d = std::process::dump_arena_residency();
+    }}
+}}
+fn main() {{ App {{ }}; }}
+"#
+    )
+}
+
+/// A closure assertion has no method scratch. Its `self.get(...)` on a
+/// map locus used to copy the cell into the map's own arena, where the
+/// plain clones' same-arena fast path handed back the cell's own String
+/// and Bytes blocks: once the read released the cell's claim, a
+/// same-key replace on another pool retired them, its activation
+/// boundary put them on the freelist, and the closure read the reused
+/// bytes (2 of 8 runs violated on this program). A read now always
+/// copies into blocks of its own, and the closure's operands are
+/// computed in a scratch of their own. Under ASan with the chunk pool
+/// off, three runs per discipline, no check sees a torn cell.
+fn assert_closure_reads_whole(sync: &str) {
+    let src = closure_program(sync);
+    let bin = harness::unique_bin(&format!("hale_hashmap_cas_closure_{sync}"));
+    harness::build_source_asan(&src, &bin);
+    for run in 0..3 {
+        let out = Command::new(&bin)
+            .env("LOTUS_NO_CHUNK_POOL", "1")
+            .output()
+            .expect("run");
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            out.status.success() && stdout.contains("app done") && !stderr.contains("ClosureViolation"),
+            "{sync} run {run}: {:?}; stdout: {stdout}; stderr: {stderr}",
+            out.status
+        );
+    }
+    let _ = std::fs::remove_file(&bin);
+}
+
+#[test]
+fn closure_reads_of_a_striped_map_are_whole_under_a_concurrent_writer() {
+    assert_closure_reads_whole("striped");
+}
+
+#[test]
+fn closure_reads_of_a_lockfree_map_are_whole_under_a_concurrent_writer() {
+    assert_closure_reads_whole("lockfree");
+}
+
+/// What a closure check allocates stays out of the cell arena: 20 000
+/// ticks each reading the cell twice (a 400-char String and 400-byte
+/// Bytes) grew the map's arena 65 536 -> 31 260 672 bytes when the
+/// copies landed in `self.__arena`.
+#[test]
+fn closure_checks_on_a_synced_map_leave_its_arena_flat() {
+    for sync in ["striped", "lockfree"] {
+        let src = closure_program(sync);
+        let bin = harness::unique_bin(&format!("hale_hashmap_cas_closure_arena_{sync}"));
+        build_opts::build_source(&src, &bin, &build_opts::options()).expect("build");
+        let out = Command::new(&bin)
+            .env("LOTUS_ARENA_RESIDENCY", "1")
+            .output()
+            .expect("run");
+        let _ = std::fs::remove_file(&bin);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(out.status.success(), "{sync}: {:?}; stderr: {stderr}", out.status);
+        let dumps = arena_bytes(&stderr, "M");
+        assert!(!dumps.is_empty(), "{sync}: no residency dump; stderr: {stderr}");
+        assert!(
+            dumps[0] <= 131_072,
+            "{sync}: the map's arena holds {} bytes after 20 000 closure checks; stderr: {stderr}",
+            dumps[0]
+        );
+    }
+}

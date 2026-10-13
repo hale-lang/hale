@@ -62,6 +62,20 @@ impl<'ctx, 'p> LocusClosure<'ctx> for Cx<'ctx, 'p> {
             .get(closure_name)
             .cloned()
             .unwrap_or_default();
+        // A closure body has no method scratch, so what its operands
+        // allocate lands in `self.__arena` for the locus's life. On a
+        // form locus that is the cell arena, and a cell read there
+        // (`self.get(k)` in the assertion) is a copy — every synced
+        // map's read copies the cell out — so each check grew the
+        // arena by the cells it read (31 MB over 20 000 ticks reading
+        // a 400-byte String and Bytes). The operands are scalars, so
+        // a scratch of their own, destroyed once they are computed,
+        // holds everything the evaluation allocates.
+        let closure_scratch =
+            self.current_method_scratch.is_none() && info.capacity_slots.iter().any(|sl| sl.form.is_some());
+        if closure_scratch {
+            self.open_method_scratch()?;
+        }
         if !slots.is_empty() {
             for (i, slot) in slots.iter().enumerate() {
                 self.update_accumulator_slot(
@@ -103,6 +117,9 @@ impl<'ctx, 'p> LocusClosure<'ctx> for Cx<'ctx, 'p> {
         // Substitution complete; clear ctx so any later expression
         // lowering on this thread doesn't accidentally hit it.
         self.accumulator_ctx = None;
+        if closure_scratch {
+            self.close_method_scratch()?;
+        }
 
         // Track the signed-i64 diff for Int/Duration closures so
         // we can populate ClosureViolation.diff at routing time.

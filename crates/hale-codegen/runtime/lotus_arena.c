@@ -6496,6 +6496,8 @@ static void lotus_hashmap_retire_key(lotus_hashmap_t *m, char *k) {
  * rest was never retired, so a raw pointer to it could not dangle.) */
 char *lotus_str_clone(lotus_arena_t *a, const char *s);
 void *lotus_bytes_clone(lotus_arena_t *a, const void *src);
+char *lotus_str_clone_cell_owned(lotus_arena_t *a, const char *s);
+void *lotus_bytes_clone_cell_owned(lotus_arena_t *a, const void *b);
 
 static void lotus_clone_out_walk(lotus_arena_t *dest, char *v,
                                  const int32_t *desc, int64_t n) {
@@ -6523,12 +6525,19 @@ static void lotus_clone_out_walk(lotus_arena_t *dest, char *v,
             continue;
         }
         if (!p) continue;
-        /* Static literals and pointers already in `dest` pass through
-         * untouched (the clones' own fast paths). Two fields aliasing
-         * one blob become two blobs — the single-owner rule. */
+        /* Always a block of the reader's own: the cell-owned clones
+         * copy a pointer already in `dest` instead of passing it
+         * through. `dest` is the map's own arena when the read has no
+         * method scratch (a closure assertion on the map locus reads
+         * `self.get(...)` into `self.__arena`), and there the plain
+         * clone's same-arena fast path handed back the cell's block —
+         * which a writer's replace then retired and its flush reused
+         * under the reader. Static literals still pass through (never
+         * retired). Two fields aliasing one blob become two blobs —
+         * the single-owner rule. */
         void *c = (e & LOTUS_RETIRE_OFF_BYTES)
-            ? lotus_bytes_clone(dest, p)
-            : (void *)lotus_str_clone(dest, p);
+            ? lotus_bytes_clone_cell_owned(dest, p)
+            : (void *)lotus_str_clone_cell_owned(dest, p);
         if (!c) continue;
         memcpy(v + off, &c, sizeof c);
     }
@@ -6724,7 +6733,10 @@ static void lotus_hashmap_key_out(lotus_hashmap_t *m, char *slot,
         char *k;
         memcpy(&k, out_key, sizeof k);
         if (k) {
-            char *c = lotus_str_clone((lotus_arena_t *)dest_arena, k);
+            /* Cell-owned: `dest_arena` can be the map's own arena (a
+             * read without a method scratch), where the plain clone
+             * would hand back the cell's key itself. */
+            char *c = lotus_str_clone_cell_owned((lotus_arena_t *)dest_arena, k);
             if (c) memcpy(out_key, &c, sizeof c);
         }
     }
