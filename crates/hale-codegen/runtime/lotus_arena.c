@@ -9835,14 +9835,8 @@ static int lotus_pinned_start_no_drain(void) {
 /* The instantiating thread: wait for the params, draining its own
  * mailbox as a yield would. `queue` is the program-wide queue (NULL in
  * a bundle that can enqueue nothing). */
-/* Threads waiting in a start's await (#1534): the init they wait for
- * may publish into a reservation of the tree they are building, and must
- * not wait for it to close (`lotus_bus_resv_may_wait`). Seq_cst, a Dekker
- * pair with the reservation's waiter count, as `lotus_bus_ready_kick`. */
-static int g_lotus_start_awaiting = 0;
-
-static void lotus_pinned_start_await_ready_in(lotus_pinned_start_t *s,
-                                              lotus_bus_queue_t *queue) {
+void lotus_pinned_start_await_ready(lotus_pinned_start_t *s,
+                                    lotus_bus_queue_t *queue) {
     if (lotus_pinned_start_no_drain()) {
         lotus_pinned_start_wait(s, 1);
         return;
@@ -9858,14 +9852,6 @@ static void lotus_pinned_start_await_ready_in(lotus_pinned_start_t *s,
         pthread_mutex_lock(&s->lock);
     }
     pthread_mutex_unlock(&s->lock);
-}
-
-void lotus_pinned_start_await_ready(lotus_pinned_start_t *s,
-                                    lotus_bus_queue_t *queue) {
-    __atomic_add_fetch(&g_lotus_start_awaiting, 1, __ATOMIC_SEQ_CST);
-    lotus_bus_ready_kick();
-    lotus_pinned_start_await_ready_in(s, queue);
-    __atomic_sub_fetch(&g_lotus_start_awaiting, 1, __ATOMIC_SEQ_CST);
 }
 
 /* The instantiating thread: the instantiation is complete; its last
@@ -15297,10 +15283,11 @@ static void lotus_bus_ready_forget(void *self) {
  * sheds the newcomer and `drop_old` the oldest, counted on every
  * claimant's `ctr_dropped_full`; `fail` (`on_full: fail`) has no
  * publisher left to raise into by the time the subscriber exists, so it
- * sheds the newcomer, counted, and says so once on stderr; an unbounded
- * subject's publisher on another thread waits, as at a window's cap, for
- * the reservation to close. The constructing thread never waits on its
- * own reservation.
+ * sheds the newcomer, counted, and says so once on stderr; so does an
+ * unbounded subject past a queue's worth. No publisher ever waits on a
+ * reservation: one may stay open while what closes it waits on something
+ * else (an init, a birth that runs until the drain), and a publisher
+ * waiting there could not see the drain.
  *
  * A reservation is never freed while the process runs: a walk that read
  * the placeholder before its quarantine may still post to it, and the
@@ -15322,9 +15309,9 @@ typedef struct lotus_bus_resv {
     lotus_bus_entry_t *entry;     /* the placeholder */
     int64_t remaining;            /* claims still expected */
     size_t cap;
-    uint8_t policy;               /* 0 wait, 1 drop_new, 2 drop_old, 3 fail */
+    uint8_t policy;               /* 0 none (sheds new), 1 drop_new, 2 drop_old, 3 fail */
     uint8_t key_is_str;
-    uint8_t fail_noted;
+    uint8_t shed_noted;
     int open;
     pthread_t ctor;
     lotus_bus_parked_t *head, *tail;
@@ -15415,26 +15402,6 @@ static void lotus_bus_resv_post_list(lotus_bus_parked_t *p) {
     lotus_bus_parked_free(p);
 }
 
-/* Whether this thread may wait for `r` to close. Not the constructing
- * thread (its own claims close it), not while any thread waits for a
- * start's init (this one may be running the init the constructing thread
- * waits for), and not a consumer a producer is blocked on (that producer
- * may be the constructing thread). */
-static int lotus_bus_resv_may_wait(const lotus_bus_resv_t *r) {
-    if (pthread_equal(r->ctor, pthread_self())) return 0;
-#ifndef __wasm__
-    /* A thread waits for a start's init: this one may be running it. */
-    if (__atomic_load_n(&g_lotus_start_awaiting, __ATOMIC_SEQ_CST) > 0) return 0;
-#endif
-    lotus_mailbox_t *own_mb = lotus_mailbox_get_current();
-    lotus_coop_pool_t *own_pool = lotus_coop_pool_current();
-    if (own_mb && atomic_load_explicit(&own_mb->producers_waiting, memory_order_seq_cst) > 0)
-        return 0;
-    if (own_pool && atomic_load_explicit(&own_pool->producers_waiting, memory_order_seq_cst) > 0)
-        return 0;
-    return 1;
-}
-
 /* LOTUS_BUS_LOG_RESERVE=1: one stderr line per reservation as it
  * closes, its counts (a development aid, and the race tests' witness). */
 static int lotus_bus_log_reserve_enabled(void) {
@@ -15509,17 +15476,8 @@ static int lotus_bus_resv_park(void *token, lotus_bus_queue_t *queue,
     const char *pkey = (r->key_is_str && pc->keyed)
         ? (const char *)(uintptr_t)pc->key_hi : NULL;
     lotus_bus_parked_t *later = NULL, *later_tail = NULL, *shed = NULL;
-    int note_fail = 0;
+    int note_shed = 0;
     pthread_mutex_lock(&g_bus_ready_lock);
-#ifndef __wasm__
-    if (r->open && r->policy == 0 && r->parked >= r->cap
-        && lotus_bus_resv_may_wait(r)) {
-        __atomic_add_fetch(&g_bus_ready_waiters, 1, __ATOMIC_SEQ_CST);
-        while (r->open && r->parked >= r->cap && lotus_bus_resv_may_wait(r))
-            pthread_cond_wait(&g_bus_ready_cond, &g_bus_ready_lock);
-        __atomic_sub_fetch(&g_bus_ready_waiters, 1, __ATOMIC_SEQ_CST);
-    }
-#endif
     /* The claimants that registered already and that this publish did
      * not reach on its own. */
     for (size_t i = 0; i < r->nclaim; i++) {
@@ -15536,8 +15494,6 @@ static int lotus_bus_resv_park(void *token, lotus_bus_queue_t *queue,
         int keep = 1;
         if (r->parked >= r->cap) {
             switch (r->policy) {
-            case 0:
-                break;  /* a thread that may not wait parks past the cap */
             case 2:
                 shed = r->head;
                 r->head = shed->next;
@@ -15547,11 +15503,14 @@ static int lotus_bus_resv_park(void *token, lotus_bus_queue_t *queue,
                 r->dropped++;
                 break;
             default:
+                /* drop_new; `on_full: fail` and an unbounded subject say
+                 * so, once: no publisher is left to raise into, and none
+                 * ever waits on a reservation. */
                 keep = 0;
                 r->dropped++;
-                if (r->policy == 3 && !r->fail_noted) {
-                    r->fail_noted = 1;
-                    note_fail = 1;
+                if (r->policy != 1 && !r->shed_noted) {
+                    r->shed_noted = 1;
+                    note_shed = 1;
                 }
                 break;
             }
@@ -15583,13 +15542,20 @@ static int lotus_bus_resv_park(void *token, lotus_bus_queue_t *queue,
     }
     pthread_mutex_unlock(&g_bus_ready_lock);
     lotus_bus_parked_free(shed);
-    if (note_fail) {
+    if (note_shed && r->policy == 3) {
         fprintf(stderr,
                 "hale: bus: `%s` is bounded with `on_full: fail`, and a "
                 "publish made before its subscriber was built found the "
                 "subscriber's reservation full; with no publisher left to "
                 "raise into, it is shed and counted as a full drop\n",
                 r->subject);
+    } else if (note_shed) {
+        fprintf(stderr,
+                "hale: bus: `%s`: %zu cells published before their subscriber "
+                "was built are held for it, a queue's worth; further ones are "
+                "shed and counted as full drops until it registers (bound the "
+                "topic to choose which)\n",
+                r->subject, r->cap);
     }
     lotus_bus_resv_post_list(later);
     return 1;

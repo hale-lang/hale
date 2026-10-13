@@ -197,8 +197,9 @@ the messages wait, in order, and arrive once the subscriber's own
 topic's `bounded(N, drop_new | drop_old)` the reservation sheds and
 counts as the subscriber would; an `on_full: fail` topic sheds the
 newcomer and says so once on stderr, since by then there is no
-publisher to raise into; and with no bound, a publisher on another
-thread waits once a queue's worth is held. A field placed inside
+publisher to raise into; and with no bound, the reservation holds a
+queue's worth and sheds what comes after, counted, saying so once on
+stderr — no publisher ever waits for a subscriber to be built. A field placed inside
 another placed field's params, and a replicated field, are not part
 of the reservation — build such subscribers before their publishers.
 `LOTUS_BUS_LOG_RESERVE=1` prints each reservation's counts as it

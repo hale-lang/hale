@@ -2344,11 +2344,12 @@ its `KNOWN_OPEN` table, which is empty today.
   drop_old)` the reservation sheds and counts on each claimant
   (`ctr_dropped_full`); past `bounded(N); on_full: fail` it sheds the
   newcomer, counted, and says so once on stderr, since no publisher is
-  left to raise into once the subscriber exists; with no bound a
-  publisher on another thread waits at the queue's cap until the
-  reservation closes; the constructing thread never waits on its own,
-  nor does any thread while a thread waits for a start's init (it may
-  be that init, which the constructing thread waits for). A tree that needs no reservation emits none, and the publish
+  left to raise into once the subscriber exists; with no bound it holds a
+  queue's worth (`LOTUS_BUS_QUEUE_CAP`) and sheds the newcomer past it,
+  counted, saying so once. No publisher ever waits on a reservation: one
+  can stay open while what closes it waits on something else (an init,
+  a birth that runs until the drain), and a publisher waiting there could
+  not see the drain. A tree that needs no reservation emits none, and the publish
   site is unchanged: a reservation holds a window open, so a baked
   direct publish takes the helper through the window count it already
   reads. Not yet true: an anchor nested in another anchor's params
