@@ -251,6 +251,11 @@ pub(crate) fn struct_closure(
     builtins: &mut BTreeMap<String, Vec<(String, hale_syntax::ast::PrimType)>>,
 ) {
     let te = shapes.dealias(te);
+    // a list reaches what its elements reach
+    if let Some((elem, _, _)) = hale_syntax::json_gen::wire_list(&te) {
+        struct_closure(shapes, elem, out, builtins);
+        return;
+    }
     match shapes.classify(&te) {
         TypeClass::Struct { name, fields } => {
             if out.insert(name.to_string()) {
@@ -1789,6 +1794,10 @@ fn field_json(f: &crate::surfaces::FieldSchema) -> String {
             o
         }
         FieldSchema::Ref(name) => format!("{{\"$ref\":{}}}", jstr(&format!("#/schemas/{name}"))),
+        FieldSchema::List { items, max, exact } => {
+            let min = if *exact { format!(",\"minItems\":{max}") } else { String::new() };
+            format!("{{\"type\":\"array\",\"items\":{}{min},\"maxItems\":{max}}}", field_json(items))
+        }
         FieldSchema::Unformed => "{}".to_string(),
     }
 }

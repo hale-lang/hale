@@ -109,6 +109,41 @@ rpc `Ledger::dump`: its response `Export` has a field `raw: Bytes`, which the JS
 rpc `Orders::flush` may violate (`violate stale`) and returns nothing: an rpc handler that may violate is `fallible(ClosureViolation)`, so its caller receives the server error instead of a result
 ```
 
+### Lists and pages
+
+A list crosses as a field of a record, and its type says how long it
+may be: a `bounded[T; N]` field is a JSON array of up to `N` elements,
+a `[T; N]` field one of exactly `N`. "List my items" returns a page,
+which is a record:
+
+```hale,fragment
+type Item { id: Int; title: String; }
+type Page { items: bounded[Item; 50]; more: Bool; }
+
+locus Shelf {
+    params { items: bounded[Item; 500]; }
+    fn list(q: ListQuery) -> Page {
+        let mut page = Page { more: false };
+        for item in self.items {
+            push(page.items, item) or { page.more = true; break; };
+        }
+        return page;
+    }
+}
+```
+
+A `bounded` field may be left out of a request, and is then empty; a
+fixed array is always sent whole. The description states the bound
+(`"maxItems": 50`, and `"minItems"` for a fixed array), the `.proto`
+makes the field `repeated`, and the generated clients type it
+(`bounded[Item; 50]` in Hale, `Array<Item>` in TypeScript). A request
+whose list is longer than the field holds is refused `malformed` with
+`too_long` (a fixed array sent short, `too_short`): the handler never
+sees a list cut to fit. An unbounded `[T]` is not carried, since an
+unbounded collection belongs to a locus (`@form(vec)`), not to a value
+that crosses a boundary; neither is a list of lists, nor a request or
+response that is a bare list.
+
 ### The digest
 
 Each surface folds into a **contract digest**: its rows in member

@@ -61,6 +61,45 @@ enum FieldKind {
     /// A field whose type is another generated JSON struct — parsed by
     /// recursing into the nested object's raw text.
     Nested(String),
+    /// A list (the api codecs only): `bounded[T; N]` (`exact` false: up to
+    /// `cap` elements, absent is empty) or `[T; N]` (`exact`: all `cap`
+    /// of them). A JSON array, a protobuf `repeated` field; more elements
+    /// than `cap` is `too_long` and fewer than an exact list's `too_short`,
+    /// never a truncation. Decoded into the holder `__ApiList_<T>_<field>`
+    /// (`{ b: bounded[<elem_ty>; cap] }`) as it is read, then moved into
+    /// the record.
+    List { elem: Elem, elem_ty: String, cap: u64, exact: bool },
+}
+
+/// An element of a list field: what a field of the same type would be.
+#[derive(Clone)]
+enum Elem {
+    Scalar(ScalarTy, Option<Conv>),
+    Nested(String),
+}
+
+/// A list on the wire: `bounded[T; N]` (`N`, not exact) or `[T; N]` with a
+/// literal `N` of at least one (`N`, exact); `None` for any other type,
+/// `[T]` and `[T; 0]` among them (spec/api.md § Codecs).
+pub fn wire_list(te: &TypeExpr) -> Option<(&TypeExpr, u64, bool)> {
+    match te {
+        TypeExpr::Bounded { elem, cap, .. } => Some((elem, *cap, false)),
+        TypeExpr::Array { elem, size: Some(Expr::Literal(Literal::Int(n), _)), .. } if *n > 0 => {
+            Some((elem, *n as u64, true))
+        }
+        _ => None,
+    }
+}
+
+/// Whether a field of the (dealiased) type `ty` must be present in a
+/// payload: a `bounded[T; N]` never is (absent, it is empty, as its
+/// declaration leaves it), a fixed array always is (the codec does not read
+/// its default), and any other field unless it declares a default.
+pub fn wire_required(ty: &TypeExpr, has_default: bool) -> bool {
+    match wire_list(ty) {
+        Some((_, _, exact)) => exact,
+        None => !has_default,
+    }
 }
 
 struct JsonField {
@@ -77,6 +116,14 @@ struct JsonField {
     /// struct's declared fields counted from 1 (0 where no protobuf codec
     /// is made).
     pb_no: u32,
+}
+
+impl JsonField {
+    /// Whether the decoder tracks the field's presence: every field
+    /// without a default, but a `bounded[T; N]`, which is empty when absent.
+    fn needs_seen(&self) -> bool {
+        self.default_src.is_none() && !matches!(self.kind, FieldKind::List { exact: false, .. })
+    }
 }
 
 /// How a scalar of the unit dialect crosses the JSON wire as its `Int`.
@@ -247,7 +294,7 @@ fn collect_json_types(items: &[TopDecl], names: &HashSet<String>, out: &mut Vec<
                         };
                         let default_src = match kind {
                             FieldKind::Scalar(_) => f.default.as_ref().and_then(literal_src),
-                            FieldKind::Nested(_) => None,
+                            FieldKind::Nested(_) | FieldKind::List { .. } => None,
                         };
                         jfields.push(JsonField {
                             name: f.name.name.clone(),
@@ -332,8 +379,11 @@ fn generate_parser_src_mode(t: &JsonType, prefix: &str, strict: bool) -> String 
             FieldKind::Nested(_) => {
                 b.push_str(&format!("    let mut __raw_{}: String = \"\";\n", f.name));
             }
+            FieldKind::List { .. } => {
+                b.push_str(&format!("    let mut __h_{} = {} {{ }};\n", f.name, holder_name(&t.name, &f.name)));
+            }
         }
-        if f.default_src.is_none() {
+        if f.needs_seen() {
             b.push_str(&format!("    let mut __seen_{}: Bool = false;\n", f.name));
         }
     }
@@ -414,6 +464,7 @@ fn generate_parser_src_mode(t: &JsonType, prefix: &str, strict: bool) -> String 
                 }
                 FieldKind::Scalar(ScalarTy::Bool) => "__c0 == 116 || __c0 == 102",
                 FieldKind::Nested(_) => "__c0 == 123",
+                FieldKind::List { .. } => "__c0 == 91",
             };
             b.push_str(&format!(
                 "                    let __c0 = if __vs < __ve {{ std::str::byte_at_unchecked(__s, __vs) }} else {{ 0 }};\n                    if !({}) {{ fail JsonError {{ kind: \"wrong_type\", field: \"{}\" }}; }}\n",
@@ -451,8 +502,9 @@ fn generate_parser_src_mode(t: &JsonType, prefix: &str, strict: bool) -> String 
                 "                    __raw_{} = __s[__vs..__ve];\n",
                 f.name
             )),
+            FieldKind::List { elem, .. } => b.push_str(&json_list_read(f, elem, prefix)),
         }
-        if f.default_src.is_none() {
+        if f.needs_seen() {
             b.push_str(&format!("                    __seen_{} = true;\n", f.name));
         }
     }
@@ -465,7 +517,7 @@ fn generate_parser_src_mode(t: &JsonType, prefix: &str, strict: bool) -> String 
     b.push_str("    }\n"); // close while __more
     // Presence checks.
     for f in &t.fields {
-        if f.default_src.is_none() {
+        if f.needs_seen() {
             b.push_str(&format!(
                 "    if !__seen_{} {{ fail JsonError {{ kind: \"missing_field\", field: \"{}\" }}; }}\n",
                 f.name, f.key
@@ -481,16 +533,142 @@ fn generate_parser_src_mode(t: &JsonType, prefix: &str, strict: bool) -> String 
             ));
         }
     }
+    b.push_str(&construct_src(t));
+    b.push_str("}\n");
+    b
+}
+
+/// The name of the holder a list field is decoded into.
+fn holder_name(record: &str, field: &str) -> String {
+    format!("__ApiList_{record}_{field}")
+}
+
+/// The holder of the list field `field` of `t`: `type __ApiList_<T>_<f> { b:
+/// bounded[<elem>; <cap>]; }`, a local the decoders push each element into
+/// as it is read (a `bounded` field is a type's, never a local's).
+fn holder_src(t: &JsonType, field: &str) -> String {
+    let mut out = String::new();
+    for f in t.fields.iter().filter(|f| f.name == field) {
+        if let FieldKind::List { elem_ty, cap, .. } = &f.kind {
+            out.push_str(&format!("type {} {{ b: bounded[{elem_ty}; {cap}]; }}\n", holder_name(&t.name, &f.name)));
+        }
+    }
+    out
+}
+
+/// The end of a decoder: a fixed array built from its holder (refused
+/// `too_short` when the payload held fewer than its length), the record
+/// constructed from the fields read, and each `bounded` field filled from
+/// its holder (the record's own field starts empty, and the holder holds
+/// no more than it does).
+fn construct_src(t: &JsonType) -> String {
+    let mut b = String::new();
+    for f in &t.fields {
+        if let FieldKind::List { cap, exact: true, .. } = &f.kind {
+            let short = format!("fail JsonError {{ kind: \"too_short\", field: \"{}\" }}", f.key);
+            b.push_str(&format!("    if count(__h_{n}.b) != {cap} {{ {short}; }}\n", n = f.name));
+            b.push_str(&format!("    let __a0_{n} = at(__h_{n}.b, 0) or {short};\n", n = f.name));
+            b.push_str(&format!("    let mut __a_{n} = [__a0_{n}; {cap}];\n", n = f.name));
+            b.push_str(&format!("    let mut __ai_{n} = 1;\n", n = f.name));
+            b.push_str(&format!("    while __ai_{n} < {cap} {{\n", n = f.name));
+            b.push_str(&format!("        let __av_{n} = at(__h_{n}.b, __ai_{n}) or {short};\n", n = f.name));
+            b.push_str(&format!("        __a_{n}[__ai_{n}] = __av_{n};\n", n = f.name));
+            b.push_str(&format!("        __ai_{n} = __ai_{n} + 1;\n    }}\n", n = f.name));
+        }
+    }
     let inits: Vec<String> = t
         .fields
         .iter()
-        .map(|f| match (&f.kind, &f.conv) {
-            (FieldKind::Scalar(_), Some(c)) => format!("{}: {}", f.name, c.from_int(&format!("__f_{}", f.name), &f.key)),
-            (FieldKind::Scalar(_), None) => format!("{}: __f_{}", f.name, f.name),
-            (FieldKind::Nested(_), _) => format!("{}: __p_{}", f.name, f.name),
+        .filter_map(|f| match (&f.kind, &f.conv) {
+            (FieldKind::Scalar(_), Some(c)) => Some(format!("{}: {}", f.name, c.from_int(&format!("__f_{}", f.name), &f.key))),
+            (FieldKind::Scalar(_), None) => Some(format!("{}: __f_{}", f.name, f.name)),
+            (FieldKind::Nested(_), _) => Some(format!("{}: __p_{}", f.name, f.name)),
+            (FieldKind::List { exact: true, .. }, _) => Some(format!("{}: __a_{}", f.name, f.name)),
+            (FieldKind::List { exact: false, .. }, _) => None,
         })
         .collect();
-    b.push_str(&format!("    return {} {{ {} }};\n}}\n", t.name, inits.join(", ")));
+    let bounded: Vec<&JsonField> =
+        t.fields.iter().filter(|f| matches!(f.kind, FieldKind::List { exact: false, .. })).collect();
+    if bounded.is_empty() {
+        b.push_str(&format!("    return {} {{ {} }};\n", t.name, inits.join(", ")));
+        return b;
+    }
+    b.push_str(&format!("    let mut __r = {} {{ {} }};\n", t.name, inits.join(", ")));
+    for f in bounded {
+        b.push_str(&format!("    for __x in __h_{n}.b {{ push(__r.{n}, __x) or discard; }}\n", n = f.name));
+    }
+    b.push_str("    return __r;\n");
+    b
+}
+
+/// The statements that read one JSON element whose text is `[{src}[__es..__ee])`
+/// as `elem`, binding `__ev`; a value of the wrong kind is `wrong_type`
+/// for the list's `key`.
+fn json_elem_read(elem: &Elem, src: &str, key: &str, prefix: &str, ind: &str) -> String {
+    let wrong = format!("fail JsonError {{ kind: \"wrong_type\", field: \"{key}\" }}");
+    let mut b = format!("{ind}let __e0 = std::str::byte_at_unchecked({src}, __es);\n");
+    let want = match elem {
+        Elem::Scalar(ScalarTy::Str, _) => "__e0 == 34",
+        Elem::Scalar(ScalarTy::Int, _) | Elem::Scalar(ScalarTy::Float, _) => "__e0 == 45 || (__e0 >= 48 && __e0 <= 57)",
+        Elem::Scalar(ScalarTy::Bool, _) => "__e0 == 116 || __e0 == 102",
+        Elem::Nested(_) => "__e0 == 123",
+    };
+    b.push_str(&format!("{ind}if !({want}) {{ {wrong}; }}\n"));
+    match elem {
+        Elem::Scalar(ScalarTy::Str, _) => {
+            b.push_str(&format!("{ind}let __ev = std::json::unescape_string({src}[(__es + 1)..(__ee - 1)]);\n"));
+        }
+        Elem::Scalar(ScalarTy::Int, conv) => {
+            b.push_str(&format!("{ind}let __ei = std::str::range_parse_int({src}, __es, __ee) or {wrong};\n"));
+            match conv {
+                Some(c) => b.push_str(&format!("{ind}let __ev = {};\n", c.from_int("__ei", key))),
+                None => b.push_str(&format!("{ind}let __ev = __ei;\n")),
+            }
+        }
+        Elem::Scalar(ScalarTy::Float, _) => {
+            b.push_str(&format!("{ind}let __ev = std::str::parse_float({src}[__es..__ee]) or {wrong};\n"));
+        }
+        Elem::Scalar(ScalarTy::Bool, _) => {
+            b.push_str(&format!("{ind}let __ev = std::str::range_eq({src}, __es, __ee, \"true\");\n"));
+            b.push_str(&format!(
+                "{ind}if !__ev && !std::str::range_eq({src}, __es, __ee, \"false\") {{ {wrong}; }}\n"
+            ));
+        }
+        Elem::Nested(tn) => {
+            b.push_str(&format!("{ind}let __ev = {prefix}{tn}({src}[__es..__ee]) or raise;\n"));
+        }
+    }
+    b
+}
+
+/// The statements that read a list field's value span `[__vs, __ve)`: the
+/// array checked whole (a malformed one is `wrong_type`), the holder
+/// cleared (the last of a key sent twice wins, as for any field), and
+/// each element read and pushed; more than the holder holds is `too_long`.
+fn json_list_read(f: &JsonField, elem: &Elem, prefix: &str) -> String {
+    let ind = "                    ";
+    let wrong = format!("fail JsonError {{ kind: \"wrong_type\", field: \"{}\" }}", f.key);
+    let mut b = String::new();
+    b.push_str(&format!("{ind}let __la = __s[__vs..__ve];\n"));
+    b.push_str(&format!("{ind}if !std::json::valid(__la) {{ {wrong}; }}\n"));
+    b.push_str(&format!("{ind}clear(__h_{}.b);\n", f.name));
+    b.push_str(&format!("{ind}let mut __li = std::json::array_first_span(__la);\n"));
+    b.push_str(&format!("{ind}while !__li.done {{\n"));
+    b.push_str(&format!("{ind}    let __es = __li.cur_start;\n"));
+    b.push_str(&format!("{ind}    let mut __ee = __li.cur_end;\n"));
+    b.push_str(&format!("{ind}    while __ee > __es {{\n"));
+    b.push_str(&format!("{ind}        let __et = std::str::byte_at_unchecked(__la, __ee - 1);\n"));
+    b.push_str(&format!(
+        "{ind}        if __et == 32 || __et == 9 || __et == 10 || __et == 13 {{ __ee = __ee - 1; }} else {{ break; }}\n"
+    ));
+    b.push_str(&format!("{ind}    }}\n"));
+    b.push_str(&json_elem_read(elem, "__la", &f.key, prefix, &format!("{ind}    ")));
+    b.push_str(&format!(
+        "{ind}    push(__h_{}.b, __ev) or fail JsonError {{ kind: \"too_long\", field: \"{}\" }};\n",
+        f.name, f.key
+    ));
+    b.push_str(&format!("{ind}    __li = std::json::array_next_span(__li, __la);\n"));
+    b.push_str(&format!("{ind}}}\n"));
     b
 }
 
@@ -528,12 +706,44 @@ fn generate_emit_src_mode(t: &JsonType, fn_prefix: &str) -> String {
                 None => format!("to_string(__v.{})", f.name),
             },
             FieldKind::Nested(tn) => format!("{}{}(__v.{})", fn_prefix, tn, f.name),
+            FieldKind::List { elem, elem_ty, .. } => {
+                b.push_str(&format!("    __b = __b + {} + \"[\";\n", prefix));
+                b.push_str(&format!("    let mut __n_{} = 0;\n", f.name));
+                b.push_str(&format!("    for __x in __v.{} {{\n", f.name));
+                b.push_str(&elem_bind(elem, elem_ty, "        "));
+                b.push_str(&format!("        if __n_{} > 0 {{ __b = __b + \",\"; }}\n", f.name));
+                b.push_str(&format!("        __b = __b + {};\n", json_elem_write(elem, "__xe", fn_prefix)));
+                b.push_str(&format!("        __n_{n} = __n_{n} + 1;\n    }}\n", n = f.name));
+                b.push_str("    __b = __b + \"]\";\n");
+                continue;
+            }
         };
         b.push_str(&format!("    __b = __b + {} + {};\n", prefix, value));
     }
     b.push_str("    __b = __b + \"}\";\n");
     b.push_str("    return __b;\n}\n");
     b
+}
+
+/// The loop's element `__x` bound as `__xe` of its declared type: the
+/// iteration variable of a list of a unit-dialect scalar does not carry the
+/// scalar's type into its conversion (`__x / 1cent` stays a quantity), the
+/// annotated binding does.
+fn elem_bind(elem: &Elem, elem_ty: &str, ind: &str) -> String {
+    match elem {
+        Elem::Scalar(_, Some(_)) => format!("{ind}let __xe: {elem_ty} = __x;\n"),
+        _ => format!("{ind}let __xe = __x;\n"),
+    }
+}
+
+/// The JSON text of the list element `v`.
+fn json_elem_write(elem: &Elem, v: &str, fn_prefix: &str) -> String {
+    match elem {
+        Elem::Scalar(ScalarTy::Str, _) => format!("\"\\\"\" + std::json::escape_string({v}) + \"\\\"\""),
+        Elem::Scalar(_, Some(c)) => format!("to_string({})", c.to_int(v)),
+        Elem::Scalar(_, None) => format!("to_string({v})"),
+        Elem::Nested(tn) => format!("{fn_prefix}{tn}({v})"),
+    }
 }
 
 // ---- GH #1417 (R8b): the protobuf codec of a record ----------------------
@@ -561,8 +771,11 @@ fn generate_pb_parser_src(t: &JsonType) -> String {
             FieldKind::Nested(_) => {
                 b.push_str(&format!("    let mut __raw_{}: Bytes = std::bytes::from_string(\"\");\n", f.name));
             }
+            FieldKind::List { .. } => {
+                b.push_str(&format!("    let mut __h_{} = {} {{ }};\n", f.name, holder_name(&t.name, &f.name)));
+            }
         }
-        if f.default_src.is_none() {
+        if f.needs_seen() {
             b.push_str(&format!("    let mut __seen_{}: Bool = false;\n", f.name));
         }
     }
@@ -577,10 +790,18 @@ fn generate_pb_parser_src(t: &JsonType) -> String {
     for (i, f) in t.fields.iter().enumerate() {
         let kw = if i == 0 { "if" } else { "} else if" };
         b.push_str(&format!("        {kw} __no == {} {{\n", f.pb_no));
+        if let FieldKind::List { elem, .. } = &f.kind {
+            b.push_str(&pb_list_read(f, elem, bad));
+            if f.needs_seen() {
+                b.push_str(&format!("            __seen_{} = true;\n", f.name));
+            }
+            continue;
+        }
         let (want, what) = match &f.kind {
             FieldKind::Scalar(ScalarTy::Float) => (1, "f64"),
             FieldKind::Scalar(ScalarTy::Str) | FieldKind::Nested(_) => (2, "len"),
             FieldKind::Scalar(_) => (0, "varint"),
+            FieldKind::List { .. } => unreachable!("read above"),
         };
         b.push_str(&format!(
             "            if __wire != {want} {{ fail JsonError {{ kind: \"wrong_type\", field: \"{}\" }}; }}\n",
@@ -624,7 +845,7 @@ fn generate_pb_parser_src(t: &JsonType) -> String {
                 b.push_str("            __p = __e;\n");
             }
         }
-        if f.default_src.is_none() {
+        if f.needs_seen() {
             b.push_str(&format!("            __seen_{} = true;\n", f.name));
         }
     }
@@ -636,7 +857,7 @@ fn generate_pb_parser_src(t: &JsonType) -> String {
     b.push_str("        }\n");
     b.push_str("    }\n");
     for f in &t.fields {
-        if f.default_src.is_none() {
+        if f.needs_seen() {
             b.push_str(&format!(
                 "    if !__seen_{} {{ fail JsonError {{ kind: \"missing_field\", field: \"{}\" }}; }}\n",
                 f.name, f.key
@@ -648,16 +869,99 @@ fn generate_pb_parser_src(t: &JsonType) -> String {
             b.push_str(&format!("    let __p_{} = __api_pb_decode_{}(__raw_{}) or raise;\n", f.name, tn, f.name));
         }
     }
-    let inits: Vec<String> = t
-        .fields
-        .iter()
-        .map(|f| match (&f.kind, &f.conv) {
-            (FieldKind::Scalar(_), Some(c)) => format!("{}: {}", f.name, c.from_int(&format!("__f_{}", f.name), &f.key)),
-            (FieldKind::Scalar(_), None) => format!("{}: __f_{}", f.name, f.name),
-            (FieldKind::Nested(_), _) => format!("{}: __p_{}", f.name, f.name),
-        })
-        .collect();
-    b.push_str(&format!("    return {} {{ {} }};\n}}\n", t.name, inits.join(", ")));
+    b.push_str(&construct_src(t));
+    b.push_str("}\n");
+    b
+}
+
+/// The wire type of a list element as proto3 writes one: 0 a varint, 1 a
+/// `double`, 2 length-delimited.
+fn pb_elem_wire(elem: &Elem) -> u32 {
+    match elem {
+        Elem::Scalar(ScalarTy::Float, _) => 1,
+        Elem::Scalar(ScalarTy::Str, _) | Elem::Nested(_) => 2,
+        Elem::Scalar(_, _) => 0,
+    }
+}
+
+/// The statements that read one element of wire type `pb_elem_wire(elem)`
+/// at `__p` (no further than `end`), bind it as `__ev` and step `__p` past it.
+fn pb_elem_read(elem: &Elem, key: &str, end: &str, bad: &str, ind: &str) -> String {
+    let wrong = format!("fail JsonError {{ kind: \"wrong_type\", field: \"{key}\" }}");
+    let mut b = String::new();
+    match elem {
+        Elem::Scalar(ScalarTy::Float, _) => {
+            b.push_str(&format!("{ind}if __p + 8 > {end} {{ {bad} }}\n"));
+            b.push_str(&format!("{ind}let __ev = std::bytes::read_f64_le(__b, __p) or 0.0;\n"));
+            b.push_str(&format!("{ind}__p = __p + 8;\n"));
+        }
+        Elem::Scalar(ScalarTy::Str, _) | Elem::Nested(_) => {
+            b.push_str(&format!("{ind}let __ee = __api_pb_vend(__b, __p);\n"));
+            b.push_str(&format!("{ind}if __ee < 0 {{ {bad} }}\n"));
+            b.push_str(&format!("{ind}let __el = __api_pb_vval(__b, __p, __ee);\n"));
+            b.push_str(&format!("{ind}if __el < 0 || __ee + __el > {end} {{ {bad} }}\n"));
+            match elem {
+                Elem::Nested(tn) => {
+                    b.push_str(&format!(
+                        "{ind}let __ev = __api_pb_decode_{tn}(std::bytes::slice(__b, __ee, __ee + __el)) or raise;\n"
+                    ));
+                }
+                _ => {
+                    b.push_str(&format!(
+                        "{ind}let __ev = std::str::from_bytes(std::bytes::slice(__b, __ee, __ee + __el));\n"
+                    ));
+                    b.push_str(&format!("{ind}if len(__ev) != __el {{ {wrong}; }}\n"));
+                }
+            }
+            b.push_str(&format!("{ind}__p = __ee + __el;\n"));
+        }
+        Elem::Scalar(s, conv) => {
+            b.push_str(&format!("{ind}let __ee = __api_pb_vend(__b, __p);\n"));
+            b.push_str(&format!("{ind}if __ee < 0 || __ee > {end} {{ {bad} }}\n"));
+            b.push_str(&format!("{ind}let __ei = __api_pb_vval(__b, __p, __ee);\n"));
+            b.push_str(&format!("{ind}__p = __ee;\n"));
+            match (s, conv) {
+                (ScalarTy::Bool, _) => b.push_str(&format!("{ind}let __ev = __ei != 0;\n")),
+                (_, Some(c)) => b.push_str(&format!("{ind}let __ev = {};\n", c.from_int("__ei", key))),
+                (_, None) => b.push_str(&format!("{ind}let __ev = __ei;\n")),
+            }
+        }
+    }
+    b
+}
+
+/// The statements that read one occurrence of a `repeated` field: one
+/// element of its own wire type, or, for a numeric element, a packed run
+/// (a length-delimited field of elements, which proto3 writes by default and
+/// a parser must accept either way); each pushed into the holder, more than it
+/// holds `too_long`.
+fn pb_list_read(f: &JsonField, elem: &Elem, bad: &str) -> String {
+    let ind = "            ";
+    let wire = pb_elem_wire(elem);
+    let push = format!(
+        "push(__h_{}.b, __ev) or fail JsonError {{ kind: \"too_long\", field: \"{}\" }};",
+        f.name, f.key
+    );
+    let mut b = format!("{ind}if __wire == {wire} {{\n");
+    b.push_str(&pb_elem_read(elem, &f.key, "__n", bad, &format!("{ind}    ")));
+    b.push_str(&format!("{ind}    {push}\n"));
+    if wire != 2 {
+        b.push_str(&format!("{ind}}} else if __wire == 2 {{\n"));
+        b.push_str(&format!("{ind}    let __pe0 = __api_pb_vend(__b, __p);\n"));
+        b.push_str(&format!("{ind}    if __pe0 < 0 {{ {bad} }}\n"));
+        b.push_str(&format!("{ind}    let __pl = __api_pb_vval(__b, __p, __pe0);\n"));
+        b.push_str(&format!("{ind}    if __pl < 0 || __pe0 + __pl > __n {{ {bad} }}\n"));
+        b.push_str(&format!("{ind}    let __pe = __pe0 + __pl;\n"));
+        b.push_str(&format!("{ind}    __p = __pe0;\n"));
+        b.push_str(&format!("{ind}    while __p < __pe {{\n"));
+        b.push_str(&pb_elem_read(elem, &f.key, "__pe", bad, &format!("{ind}        ")));
+        b.push_str(&format!("{ind}        {push}\n"));
+        b.push_str(&format!("{ind}    }}\n"));
+    }
+    b.push_str(&format!(
+        "{ind}}} else {{ fail JsonError {{ kind: \"wrong_type\", field: \"{}\" }}; }}\n",
+        f.key
+    ));
     b
 }
 
@@ -679,11 +983,32 @@ fn generate_pb_emit_src(t: &JsonType) -> String {
                 None => format!("__api_pb_put_int({}, {v})", f.pb_no),
             },
             FieldKind::Nested(tn) => format!("__api_pb_put_msg({}, __api_pb_encode_{tn}({v}))", f.pb_no),
+            FieldKind::List { elem, elem_ty, .. } => {
+                // each element its own field occurrence, which a proto3
+                // parser reads as it reads the packed form
+                b.push_str(&format!("    for __x in {v} {{\n"));
+                b.push_str(&elem_bind(elem, elem_ty, "        "));
+                b.push_str(&format!("        __o = std::bytes::concat(__o, {});\n", pb_elem_put(elem, f.pb_no, "__xe")));
+                b.push_str("    }\n");
+                continue;
+            }
         };
         b.push_str(&format!("    __o = std::bytes::concat(__o, {put});\n"));
     }
     b.push_str("    return __o;\n}\n");
     b
+}
+
+/// The field occurrence `no` that writes the list element `v`.
+fn pb_elem_put(elem: &Elem, no: u32, v: &str) -> String {
+    match elem {
+        Elem::Scalar(ScalarTy::Str, _) => format!("__api_pb_put_str({no}, {v})"),
+        Elem::Scalar(ScalarTy::Float, _) => format!("__api_pb_put_f64({no}, {v})"),
+        Elem::Scalar(ScalarTy::Bool, _) => format!("__api_pb_put_bool({no}, {v})"),
+        Elem::Scalar(ScalarTy::Int, Some(c)) => format!("__api_pb_put_int({no}, {})", c.to_int(v)),
+        Elem::Scalar(ScalarTy::Int, None) => format!("__api_pb_put_int({no}, {v})"),
+        Elem::Nested(tn) => format!("__api_pb_put_msg({no}, __api_pb_encode_{tn}({v}))"),
+    }
 }
 
 /// Synthesize `__json_parse_<T>` / `__json_to_json_<T>` / `JsonError`,
@@ -1007,6 +1332,7 @@ fn generate_codecs(
     let mut types: Vec<JsonType> = Vec::new();
     let mut have_jsonerror = false;
     let mut existing_fns: HashSet<String> = HashSet::new();
+    let mut declared_types: HashSet<String> = HashSet::new();
     let scalars = if units {
         let ro: Vec<&Program> = programs.iter().map(|p| &**p).collect();
         scalar_convs(&ro)
@@ -1027,6 +1353,9 @@ fn generate_codecs(
         if items_declare_type(&p.items, "JsonError") {
             have_jsonerror = true;
         }
+        walk_types(&p.items, &mut |name| {
+            declared_types.insert(name.to_string());
+        });
     }
     for (name, fields) in builtins {
         let jfields: Option<Vec<JsonField>> = fields
@@ -1052,6 +1381,12 @@ fn generate_codecs(
         src.push_str("type JsonError { kind: String; field: String; }\n");
     }
     for t in &types {
+        // the holders of the record's lists, which both codecs decode into
+        for f in &t.fields {
+            if matches!(f.kind, FieldKind::List { .. }) && declared_types.insert(holder_name(&t.name, &f.name)) {
+                src.push_str(&holder_src(t, &f.name));
+            }
+        }
         if protobuf {
             if !existing_fns.contains(&format!("__api_pb_decode_{}", t.name)) {
                 src.push_str(&generate_pb_parser_src(t));
@@ -1088,6 +1423,16 @@ fn items_declare_type(items: &[TopDecl], name: &str) -> bool {
     })
 }
 
+fn walk_types(items: &[TopDecl], f: &mut dyn FnMut(&str)) {
+    for i in items {
+        match i {
+            TopDecl::Type(d) => f(&d.name.name),
+            TopDecl::Module(m) => walk_types(&m.items, f),
+            _ => {}
+        }
+    }
+}
+
 fn walk_fns(items: &[TopDecl], f: &mut dyn FnMut(&str)) {
     for i in items {
         match i {
@@ -1095,6 +1440,26 @@ fn walk_fns(items: &[TopDecl], f: &mut dyn FnMut(&str)) {
             TopDecl::Module(m) => walk_fns(&m.items, f),
             _ => {}
         }
+    }
+}
+
+/// What a value of `ty` is to the codec, and the type's spelling: a scalar
+/// (a unit-dialect scalar with its conversion to the wire's `Int`, a plain
+/// alias as what it stands for) or a record; `None` for anything else (a
+/// list among them: a list's element is never a list).
+fn elem_of(
+    ty: &TypeExpr,
+    scalars: &std::collections::BTreeMap<String, Conv>,
+    aliases: &std::collections::BTreeMap<String, TypeExpr>,
+) -> Option<(Elem, String)> {
+    let ty = through_aliases(ty, aliases);
+    if let Some(s) = scalar_of(&ty) {
+        Some((Elem::Scalar(s, None), s.type_name().to_string()))
+    } else if let Some((tn, c)) = named_single(&ty).and_then(|tn| scalars.get(tn).map(|c| (tn, c))) {
+        // a scalar of the unit dialect: its `Int` on the wire
+        Some((Elem::Scalar(ScalarTy::Int, Some(c.clone())), tn.to_string()))
+    } else {
+        named_single(&ty).map(|tn| (Elem::Nested(tn.to_string()), tn.to_string()))
     }
 }
 
@@ -1122,16 +1487,19 @@ fn collect_api_types(
                     let mut conv = None;
                     // a field typed by a plain alias is what the alias stands for
                     let ty = through_aliases(&f.ty, aliases);
-                    let kind = if let Some(s) = scalar_of(&ty) {
-                        FieldKind::Scalar(s)
-                    } else if let Some(c) = named_single(&ty).and_then(|tn| scalars.get(tn)) {
-                        // a scalar of the unit dialect: its `Int` on the wire
-                        conv = Some(c.clone());
-                        FieldKind::Scalar(ScalarTy::Int)
-                    } else if let Some(tn) = named_single(&ty) {
-                        FieldKind::Nested(tn.to_string())
+                    let kind = if let Some((elem, cap, exact)) = wire_list(&ty) {
+                        // a list: its elements are what a field of their type is
+                        let Some((elem, elem_ty)) = elem_of(elem, scalars, aliases) else { continue };
+                        FieldKind::List { elem, elem_ty, cap, exact }
                     } else {
-                        continue;
+                        match elem_of(&ty, scalars, aliases) {
+                            Some((Elem::Scalar(s, c), _)) => {
+                                conv = c;
+                                FieldKind::Scalar(s)
+                            }
+                            Some((Elem::Nested(tn), _)) => FieldKind::Nested(tn),
+                            None => continue,
+                        }
                     };
                     let default_src = match kind {
                         FieldKind::Scalar(_) if conv.is_none() => f.default.as_ref().and_then(literal_src),

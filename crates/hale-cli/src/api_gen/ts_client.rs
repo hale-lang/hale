@@ -58,6 +58,7 @@ fn ts_type(f: &FieldSchema, what: &str) -> Result<String, String> {
         }
         .to_string()),
         FieldSchema::Ref(name) => Ok(type_ident(name)),
+        FieldSchema::List { items, .. } => Ok(format!("__Array<{}>", ts_type(items, what)?)),
         FieldSchema::Unformed => Err(unformed(what)),
     }
 }
@@ -67,6 +68,11 @@ fn encode(f: &FieldSchema, value: &str, what: &str) -> Result<String, String> {
     match f {
         FieldSchema::Scalar { .. } => Ok(value.to_string()),
         FieldSchema::Ref(name) => Ok(format!("encode_{}({value})", type_ident(name))),
+        // a list of scalars is itself; a list of records each record's form
+        FieldSchema::List { items, .. } => match items.as_ref() {
+            FieldSchema::Scalar { .. } => Ok(value.to_string()),
+            i => Ok(format!("({value}).map((e) => {})", encode(i, "e", what)?)),
+        },
         FieldSchema::Unformed => Err(unformed(what)),
     }
 }
@@ -80,6 +86,10 @@ fn decode(f: &FieldSchema, json: &str, what: &str) -> Result<String, String> {
             _ => format!("String({json} ?? \"\")"),
         }),
         FieldSchema::Ref(name) => Ok(format!("decode_{}({json})", type_ident(name))),
+        FieldSchema::List { items, .. } => Ok(format!(
+            "(globalThis.Array.isArray({json}) ? ({json} as unknown[]).map((e) => {}) : [])",
+            decode(items, "e", what)?
+        )),
         FieldSchema::Unformed => Err(unformed(what)),
     }
 }

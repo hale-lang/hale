@@ -273,6 +273,9 @@ pub fn type_text(te: &TypeExpr) -> String {
             }
         }
         TypeExpr::Array { elem, size: None, .. } => format!("[{}]", type_text(elem)),
+        TypeExpr::Array { elem, size: Some(hale_syntax::ast::Expr::Literal(hale_syntax::ast::Literal::Int(n), _)), .. } => {
+            format!("[{}; {n}]", type_text(elem))
+        }
         TypeExpr::Array { elem, size: Some(_), .. } => format!("[{}; …]", type_text(elem)),
         TypeExpr::Bounded { elem, cap, .. } => format!("bounded[{}; {cap}]", type_text(elem)),
         TypeExpr::Tuple(parts, _) => format!("({})", parts.iter().map(type_text).collect::<Vec<_>>().join(", ")),
@@ -1076,6 +1079,21 @@ fn json_refusal(
     use crate::topic_identity::TypeClass;
     use hale_syntax::ast::PrimType;
     let carried = |p: PrimType| matches!(p, PrimType::Int | PrimType::Float | PrimType::Bool | PrimType::String);
+    // A list is a field's: `bounded[T; N]` or `[T; N]` (spec/api.md § Codecs),
+    // its element carried as a field of its type would be, and never itself a
+    // list. A row's whole request or response is never a list (law 5 names it).
+    if let Some((elem, _, _)) = hale_syntax::json_gen::wire_list(&shapes.dealias(te)) {
+        let elem = shapes.dealias(elem);
+        if path.is_empty() || hale_syntax::json_gen::wire_list(&elem).is_some() {
+            return Some((path.clone(), type_text(te)));
+        }
+        // an element refused is named as the list's field, by the list's type
+        // when the element is no record (a record's own field names itself)
+        return match json_refusal(shapes, &elem, path, seen) {
+            Some((p, _)) if p == *path => Some((p, type_text(te))),
+            r => r,
+        };
+    }
     match shapes.classify(te) {
         TypeClass::Prim(p) if carried(p) => None,
         // An identity, a range and a quantity are their `Int`; a point is
@@ -1261,7 +1279,12 @@ pub fn surface_laws(
         for (slot, ty) in slots {
             let Some(ty) = ty else { continue };
             if let Some((path, at)) = json_refusal(&shapes, &ty.te, &mut Vec::new(), &mut BTreeSet::new()) {
-                let message = if path.is_empty() {
+                let message = if path.is_empty() && hale_syntax::json_gen::wire_list(&shapes.dealias(&ty.te)).is_some() {
+                    format!(
+                        "rpc `{m}`: its {slot} is `{at}`, a list, which crosses as a field of a record: declare one \
+                         (`type Page {{ items: {at}; }}`)"
+                    )
+                } else if path.is_empty() {
                     format!("rpc `{m}`: its {slot} is `{at}`, which the JSON codec does not carry")
                 } else {
                     format!(
@@ -1794,6 +1817,9 @@ pub enum FieldSchema {
     /// `{"$ref": "#/schemas/<name>"}`: a struct, its schema in the
     /// document's `schemas`.
     Ref(String),
+    /// `{"type": "array", "items": …, "maxItems": N}`, and `"minItems": N`
+    /// for a fixed array (`exact`): a `bounded[T; N]` or a `[T; N]`.
+    List { items: Box<FieldSchema>, max: u64, exact: bool },
     /// A type the codec does not carry (law 5 refuses its row).
     Unformed,
 }
@@ -1837,6 +1863,16 @@ impl<'a> Schemas<'a> {
             PrimType::String => Some("string"),
             _ => None,
         };
+        // a list: its elements as a field of their type, never a list
+        if let Some((elem, max, exact)) = hale_syntax::json_gen::wire_list(&self.shapes.dealias(te)) {
+            if hale_syntax::json_gen::wire_list(&self.shapes.dealias(elem)).is_some() {
+                return FieldSchema::Unformed;
+            }
+            return match self.type_ref(elem, out) {
+                FieldSchema::Unformed => FieldSchema::Unformed,
+                items => FieldSchema::List { items: Box::new(items), max, exact },
+            };
+        }
         match self.shapes.classify(te) {
             TypeClass::Prim(p) => {
                 json(p).map_or(FieldSchema::Unformed, |j| FieldSchema::Scalar { json: j, hale_type: None, unit: None })
@@ -1862,7 +1898,7 @@ impl<'a> Schemas<'a> {
                             .and_then(|t| hale_syntax::desugar::tag_value(t, "json"))
                             .unwrap_or_else(|| f.name.name.clone());
                         properties.push((key.clone(), self.type_ref(&f.ty, out)));
-                        if f.default.is_none() {
+                        if hale_syntax::json_gen::wire_required(&self.shapes.dealias(&f.ty), f.default.is_some()) {
                             required.push(key);
                         }
                     }

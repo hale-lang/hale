@@ -166,7 +166,11 @@ before anything is served:
    Bytes\`, which the JSON codec does not carry" (a field of a nested
    struct by its path, `inner.raw`), and for a type that is no struct
    the codec carries, "rpc \`Ledger::dump\`: its request is
-   \`Bytes\`, which the JSON codec does not carry". A
+   \`Bytes\`, which the JSON codec does not carry". A list is a field's
+   (§ Codecs): a request or response that is itself one is refused with
+   the record to declare, "rpc \`Shelf::bare\`: its response is \`[Int;
+   3]\`, a list, which crosses as a field of a record: declare one
+   (\`type Page { items: [Int; 3]; }\`)". A
    `ClosureViolation` error carries no schema (law 6), so no form is
    asked of it. R1 holds every row to the JSON codec, the one codec a
    serve site has (R2a lowers the JSON codec and no other; a serve site's
@@ -1234,7 +1238,7 @@ The refusal kinds, each with its status:
 
 | kind | when (§ Serving, the checks) | HTTP | gRPC |
 |---|---|---|---|
-| `malformed` | not a request; no such member (`unknown_member`); a payload that does not decode (`missing_field`, `wrong_type`) | 400 | INVALID_ARGUMENT |
+| `malformed` | not a request; no such member (`unknown_member`); a payload that does not decode (`missing_field`, `wrong_type`, a list's `too_long` or `too_short`) | 400 | INVALID_ARGUMENT |
 | `digest_mismatch` | the request's digest is not the served one; the refusal carries `"served"` | 409 | FAILED_PRECONDITION |
 | `unauthenticated` | the sources name nobody | 401 | UNAUTHENTICATED |
 | `unauthorized` | the `Context` does not hold the row's `requires`; the refusal carries `"requires"` | 403 | PERMISSION_DENIED |
@@ -1747,8 +1751,28 @@ wire: read as an `Int` and converted, a quantity by its denomination,
 `n * 1cent`; a range narrows, and a value outside it is `wrong_type`),
 and the description names the unit a quantity counts. A point is not
 carried (its origin is not a count): a row whose shape holds one is
-refused by law 5. Decoding is strict: a value of the wrong JSON kind is
-`wrong_type`
+refused by law 5.
+
+**A list** is a field's: `bounded[T; N]` or `[T; N]` (a literal `N` of
+at least one), its elements what a field of their type is (a record, a
+scalar, a string, an identity, a range or a quantity by its count). It
+is a JSON array, and the description says its bound: `{"type": "array",
+"items": …, "maxItems": N}`, and `"minItems": N` for a fixed array. A
+`bounded` field may be left out of a payload, and is empty, as its
+declaration leaves it; a fixed array is always sent, all `N` of it (its
+default is not read). A payload never makes a list shorter than it says:
+more elements than the list holds is `too_long`, fewer than a fixed
+array's length `too_short`, both `malformed`, and the handler does not
+run. What is not carried, each refused by law 5 naming the field: an
+unbounded `[T]` (an unbounded collection is locus-owned, `@form(vec)`,
+and a type holds bounded data only, `spec/types.md` § bounded[T; N]), a
+list of lists, and a list of a shape the codec does not carry. A
+request or response is never itself a list: a page of records is a
+record, `type Page { items: bounded[Item; 50]; }`, which leaves room
+for what a page says beside its items.
+
+Decoding is strict: a value of the wrong JSON kind is `wrong_type`, an
+element of a list and an array that is not well-formed JSON included
 (a payload that is one scalar is that scalar's complete JSON token: `true`
 or `false` for a `Bool`, one quoted and correctly escaped string for a
 `String`, a number for a `Float`, a number with no fraction or exponent for
@@ -1763,10 +1787,15 @@ never left out.
 from the same declaration: the same set of shapes and the same strictness,
 carried as proto3 (§ gRPC, The protobuf codec). A field is numbered by its
 place among the struct's declared fields, from 1, and a `json:"key"` tag
-names the proto field as it names the JSON key. The set of shapes is the
-JSON codec's, so there is no shape without a proto3 encoding: a list, a map,
-an `optional` and an enum are shapes the codec does not carry, and law 5
-refuses the row before a `.proto` could be asked of it. The `.proto`
+names the proto field as it names the JSON key. A list is a `repeated`
+field, its bound in the field's comment (`// Hale: at most 50`); the
+encoder writes each element as an occurrence of its own, and the decoder
+reads that and the packed form proto3 writes by default for a numeric
+element, in any mix, holding the bound as the JSON codec does
+(`too_long`, `too_short`). The set of shapes is the JSON codec's, so
+there is no shape without a proto3 encoding: a map, an `optional` and an
+enum are shapes the codec does not carry, and law 5 refuses the row
+before a `.proto` could be asked of it. The `.proto`
 generator refuses all the same, by row, so that were the codec to carry one it
 would not be approximated.
 
@@ -1994,8 +2023,10 @@ by name).
 client:
 
 - is typed by the rows: a type for every struct a member or a stream names (a
-  quantity, an identity or a range crosses as the integer it counts; an enum or
-  any shape the JSON codec does not carry is refused, never approximated), and
+  quantity, an identity or a range crosses as the integer it counts; a list is
+  the client language's: `bounded[T; N]` or `[T; N]` in Hale, an array in
+  TypeScript, whose bound the server holds; an enum or any shape the JSON codec
+  does not carry is refused, never approximated), and
   one function per member taking the endpoint, the bearer and the request;
 - sends the surface's digest on every call (`digest` in the line over a socket,
   `Hale-Surface-Digest` over HTTP) and names it in a constant, so a program
@@ -2084,8 +2115,9 @@ caller: bearer alice; roles: trader
 
 A payload field is `name: Type`, with `?` after the name when the schema does
 not require it; a type is the language's word (`Int`, `Float`, `Bool`,
-`String`, `[T]`, a record by its name), and a field of a distinct or quantity
-type adds the type's name and a quantity's unit in parentheses.
+`String`, a record by its name, a list `[T; at most N]` or, fixed, `[T; N]`),
+and a field of a distinct or quantity type adds the type's name and a
+quantity's unit in parentheses.
 
 **`call`** sends one member. What it reads from the description, and when: the
 description is fetched once per call, before the payload is built, and it is
@@ -2110,7 +2142,7 @@ field's schema:
 | `number` (`Float`) | a number: `--price 2.5` |
 | `boolean` (`Bool`) | `true` or `false`; the bare flag `--rush` is `true` |
 | `string` | the text: `--name alice` |
-| a record, a list | JSON checked against the schema, nested records and lists included (a record: every required field, no unknown field, each field of its type; a list: every item of the item type; an optional field may be absent): `--items '[1,2]'`, `--ship '{"city": "Oslo"}'` |
+| a record, a list | JSON checked against the schema, nested records and lists included (a record: every required field, no unknown field, each field of its type; a list: every item of the item type, and no more items than its `maxItems` nor fewer than its `minItems`; an optional field may be absent): `--items '[1,2]'`, `--ship '{"city": "Oslo"}'` |
 
 `--field=value` is `--field value`; a field's `_` may be written `-`. A field
 not required and not given is not sent. The typed form is refused before

@@ -664,8 +664,10 @@ fn own_entries_run_to_exit_programs() {
     // listener of the TCP connection substrate whose `run` is the
     // program's, as `std::http::Server`'s is: neither is run-to-exit; 4:
     // `tests/hale/json_escape_runs_test.hl`, the property test of the
-    // run-appending JSON escaper.
-    assert_eq!(moved, 4, "the run-to-exit programs among the targets that lose a site");
+    // run-appending JSON escaper; 5:
+    // `tests/hale/enum_return_copy_loops_test.hl`, whose decoder builds a
+    // record per element of a JSON array.
+    assert_eq!(moved, 5, "the run-to-exit programs among the targets that lose a site");
     assert_eq!(more, [], "the copy's leak sites");
     assert_eq!(
         own,
@@ -681,6 +683,8 @@ fn own_entries_run_to_exit_programs() {
             "tests/hale/api_roles_test.hl: main StringConcat @10395..10449 InUnboundedLoop",
             "tests/hale/chains_tranche2_test.hl: main CollectionInsert(\"vec\") @1882..1910 InUnboundedLoop",
             "tests/hale/chains_tranche2_test.hl: main CollectionInsert(\"vec\") @2095..2120 InUnboundedLoop",
+            // a record per element of the array the shelf's decoder reads
+            "tests/hale/enum_return_copy_loops_test.hl: book StructLit(\"Book\") @972..1074 InvokedUnboundedly",
             // the property test's copy of the per-byte escaper as it was:
             // its `\u00XX` digits were a concatenation per control byte
             "tests/hale/json_escape_runs_test.hl: old_hex_byte StringConcat @7859..7894 InvokedUnboundedly",
