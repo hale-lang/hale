@@ -15,7 +15,11 @@ use crate::shared::diag::render_codegen_error;
 use hale_frontend::snapshot::{Config, LoadError, Snapshot, Target};
 /// `hale bench [file | dir] [-run <substr>] [--json]` — the Layer-3
 /// runner (spec/testing.md). Discovers `*_bench.hl` files; each
-/// zero-param free fn named `bench_*` is a benchmark. The runner
+/// free fn named `bench_<name>` with no parameter is a benchmark, and
+/// so is one with a single parameter, its fixture, which the free fn
+/// `setup_<name>() -> T` makes before each batch, outside the timing
+/// and the allocation count (a `setup_<name>()` returning nothing runs
+/// before each batch of a parameterless bench). The runner
 /// appends a synthesized driver `main` to the file, read in place of
 /// the file itself (an overlay on its path, so relative imports
 /// resolve identically), checks and compiles it at the release
@@ -146,6 +150,43 @@ pub(crate) fn collect_bench_files(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
+/// What runs before each batch of a bench, untimed.
+enum Setup {
+    None,
+    /// `setup_<name>()`, returning nothing: run for its effect.
+    Effect(String),
+    /// `setup_<name>() -> T`: the fixture each call of the batch is
+    /// handed, `bench_<name>(f: T)`.
+    Fixture(String),
+}
+
+/// The setup of `bench_<suffix>`, which takes `params` parameters: the
+/// free fn `setup_<suffix>` if the file declares one. A bench with a
+/// parameter needs a setup that returns its fixture; a setup that returns
+/// one needs a bench that takes it.
+fn setup_of(fns: &[&hale_syntax::ast::FnDecl], suffix: &str, params: usize) -> Result<Setup, String> {
+    let name = format!("setup_{suffix}");
+    let setup = fns.iter().find(|fd| fd.name.name == name);
+    match (setup, params) {
+        (None, 0) => Ok(Setup::None),
+        (None, _) => Err(format!(
+            "`bench_{suffix}` takes a parameter, its fixture: declare `fn {name}() -> T`, \
+             which the runner calls before each batch, untimed, and hands to every call of the batch"
+        )),
+        (Some(fd), _) if !fd.params.is_empty() => {
+            Err(format!("`{name}` is the setup of `bench_{suffix}` and must take no parameter"))
+        }
+        (Some(fd), 0) if fd.ret.is_some() => Err(format!(
+            "`{name}` returns a fixture, but `bench_{suffix}` takes none: declare `fn bench_{suffix}(f: T)` to use it"
+        )),
+        (Some(_), 0) => Ok(Setup::Effect(name)),
+        (Some(fd), _) if fd.ret.is_none() => Err(format!(
+            "`bench_{suffix}` takes a parameter, but `{name}` returns nothing: declare `fn {name}() -> T`"
+        )),
+        (Some(_), _) => Ok(Setup::Fixture(name)),
+    }
+}
+
 pub(crate) struct BenchResult {
     pub(crate) name: String,
     pub(crate) iters: i64,
@@ -162,31 +203,37 @@ pub(crate) fn run_bench_file(
     let program = hale_syntax::parse_source(&src)
         .map_err(|_| "does not parse".to_string())?;
 
-    // Contract: bench_* zero-param free fns; no main of its own
-    // (the driver synthesizes one).
-    let mut benches: Vec<String> = Vec::new();
-    let mut has_main = false;
-    for item in &program.items {
-        if let hale_syntax::ast::TopDecl::Fn(fd) = item {
-            if fd.name.name == "main" {
-                has_main = true;
-            }
-            if fd.name.name.starts_with("bench_") && fd.params.is_empty() {
-                if let Some(f) = filter {
-                    if !fd.name.name.contains(f) {
-                        continue;
-                    }
-                }
-                benches.push(fd.name.name.clone());
-            }
-        }
-    }
-    if has_main {
+    // Contract: bench_* free fns taking no parameter, or one parameter
+    // filled by its setup fn (below); no main of its own (the driver
+    // synthesizes one).
+    let fns: Vec<&hale_syntax::ast::FnDecl> = program
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            hale_syntax::ast::TopDecl::Fn(fd) => Some(fd),
+            _ => None,
+        })
+        .collect();
+    if fns.iter().any(|fd| fd.name.name == "main") {
         return Err(
             "a *_bench.hl must not define `main` — the runner \
              synthesizes the driver"
                 .into(),
         );
+    }
+    let mut benches: Vec<(String, Setup)> = Vec::new();
+    for fd in &fns {
+        let name = fd.name.name.as_str();
+        let Some(suffix) = name.strip_prefix("bench_") else { continue };
+        if fd.params.len() > 1 {
+            continue;
+        }
+        if let Some(f) = filter {
+            if !name.contains(f) {
+                continue;
+            }
+        }
+        benches.push((name.to_string(), setup_of(&fns, suffix, fd.params.len())?));
     }
     if benches.is_empty() {
         return Ok(Vec::new());
@@ -194,24 +241,39 @@ pub(crate) fn run_bench_file(
 
     // Synthesized driver: per bench fn, calibrate batch ×10 until a
     // batch takes >= 100ms, then report the final batch's numbers.
-    let mut driver = String::from("\n// --- hale bench driver (synthesized) ---\n");
-    for b in &benches {
+    // One batch is a fn of its own: its setup runs before the clock
+    // starts (and before the allocation count is read), and the
+    // fixture it made is reclaimed when the batch returns.
+    let mut driver = String::from(
+        "\n// --- hale bench driver (synthesized) ---\ntype __HaleBenchBatch { ns: Int; allocs: Int; }\n",
+    );
+    for (b, setup) in &benches {
+        let (setup_line, arg) = match setup {
+            Setup::None => (String::new(), ""),
+            Setup::Effect(f) => (format!("{f}();\n    "), ""),
+            Setup::Fixture(f) => (format!("let fixture = {f}();\n    "), "fixture"),
+        };
         driver.push_str(&format!(
-            r#"fn __bench_drive_{b}() {{
+            r#"fn __bench_batch_{b}(batch: Int) -> __HaleBenchBatch {{
+    {setup_line}let a0 = std::diag::heap_alloc_count();
+    let t0 = std::time::monotonic_ns();
+    let mut i = 0;
+    while i < batch {{ {b}({arg}); i = i + 1; }}
+    let t1 = std::time::monotonic_ns();
+    let a1 = std::diag::heap_alloc_count();
+    let mut allocs = a1 - a0;
+    if a0 < 0 {{ allocs = 0 - batch; }}
+    return __HaleBenchBatch {{ ns: t1 - t0, allocs: allocs }};
+}}
+fn __bench_drive_{b}() {{
     let mut batch = 1;
     let mut elapsed = 1;
     let mut allocs = 0;
     while true {{
-        let a0 = std::diag::heap_alloc_count();
-        let t0 = std::time::monotonic_ns();
-        let mut i = 0;
-        while i < batch {{ {b}(); i = i + 1; }}
-        let t1 = std::time::monotonic_ns();
-        let a1 = std::diag::heap_alloc_count();
-        elapsed = t1 - t0;
+        let r = __bench_batch_{b}(batch);
+        elapsed = r.ns;
         if elapsed < 1 {{ elapsed = 1; }}
-        allocs = a1 - a0;
-        if a0 < 0 {{ allocs = 0 - batch; }}
+        allocs = r.allocs;
         if elapsed >= 100000000 {{ break; }}
         if batch >= 100000000 {{ break; }}
         batch = batch * 10;
@@ -223,7 +285,7 @@ pub(crate) fn run_bench_file(
         ));
     }
     driver.push_str("fn main() {\n");
-    for b in &benches {
+    for (b, _) in &benches {
         driver.push_str(&format!("    __bench_drive_{}();\n", b));
     }
     driver.push_str("}\n");

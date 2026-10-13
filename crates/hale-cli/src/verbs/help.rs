@@ -313,8 +313,12 @@ own output stays with its own file.
         "bench" => "\
 hale bench [file | dir]       run every `*_bench.hl`'s bench_* fns (default: cwd)
 
-Self-calibrating: each parameterless `bench_*` fn is run until the
-harness has a stable measurement, and reports ns/op and allocs/op. A
+Self-calibrating: each `bench_<name>` fn is run in batches growing x10
+until one takes 100 ms, and reports ns/op and allocs/op. A bench takes
+no parameter, or one: its fixture, which `fn setup_<name>() -> T` makes
+before each batch, outside the timing and the allocation count, and
+every call of the batch is handed. A `setup_<name>()` returning nothing
+runs before each batch of a parameterless bench, untimed. A
 `*_bench.hl` file may not declare `fn main`.
 
   -run <substr>   only benches whose NAME contains <substr>

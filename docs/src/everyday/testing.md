@@ -179,8 +179,10 @@ the program runs. Closures are part of Hale's
 but they're how you assert the things a unit test can't reach.
 
 The rest of the toolchain rides alongside: `hale bench` runs
-`*_bench.hl` benchmarks (zero-param `bench_*` fns, self-calibrated
-ns/op + allocs/op), `hale verify` is the CI gate (identical
+`*_bench.hl` benchmarks (`bench_*` fns, self-calibrated ns/op +
+allocs/op; a `bench_<name>(f: T)` gets its fixture from
+`setup_<name>() -> T`, built before each batch and never timed),
+`hale verify` is the CI gate (identical
 analysis to `check`, but *any* finding fails), `hale fmt` keeps
 everything canonical (`--check` in CI), and `hale doc` renders API
 references from `///` comments. Everything ships in the one
