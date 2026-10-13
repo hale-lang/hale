@@ -4749,6 +4749,12 @@ row	Left@main1	Left	main	default
 row	Right@main2	Right	main	default
 dynamic	Small	on main	in the seed
 
+== crates/hale-codegen/tests/wasm_target.rs#0e7a1b36
+root	App	the entry
+row	App@literal1	App	main	default
+row	App@literal1.h	Holder	main	default
+row	App@literal1.r	Plus	main	default
+
 == crates/hale-codegen/tests/ws1_ffi_handle_reassign.rs#60aaaf4b
 dynamic	Conn	on main	in the seed
 -- Gw@main1	Gw

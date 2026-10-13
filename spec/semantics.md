@@ -4559,6 +4559,12 @@ slot from being read empty:
   A perspective every holder designates is not checked: its slot is
   written before any holder can call.
 
+What a call through a held slot reaches is, to every analysis that reads
+the call graph (effects, the portable capability check, the allocation
+summary), each locus that `serves P` — the only loci a designation may
+name — so a held slot is judged as the impls it can hold, never as an
+unknown receiver.
+
 **Cost.** Steady state is one load + one predicted indirect call
 per call into a perspective — near-direct. The mechanism is
 Linux/native-agnostic (no new runtime dependency); a program that
