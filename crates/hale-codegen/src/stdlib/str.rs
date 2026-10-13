@@ -288,6 +288,10 @@ impl<'ctx, 'p> StrStdlib<'ctx> for Cx<'ctx, 'p> {
                 args.len()
             )));
         }
+        // `Decimal<S>`: the scale of the place the result flows into,
+        // which the checker recorded at the call.
+        let scale = self.decimal_scale_at_call();
+        let scale_v = self.context.i64_type().const_int(u64::from(scale), false);
         let (s_val, s_ty) = self.lower_expr(&args[0], scope)?;
         if !matches!(s_ty, CodegenTy::String | CodegenTy::StringView) {
             return Err(CodegenError::Unsupported(format!(
@@ -304,7 +308,7 @@ impl<'ctx, 'p> StrStdlib<'ctx> for Cx<'ctx, 'p> {
             .expect("lotus_str_can_parse_decimal declared");
         let can_i32 = self
             .builder
-            .build_call(can_fn, &[s_val.into()], "parse_decimal.can")
+            .build_call(can_fn, &[s_val.into(), scale_v.into()], "parse_decimal.can")
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
             .try_as_basic_value()
             .left()
@@ -328,7 +332,7 @@ impl<'ctx, 'p> StrStdlib<'ctx> for Cx<'ctx, 'p> {
         self.builder
             .build_call(
                 parse_fn,
-                &[s_val.into(), hi_slot.into(), lo_slot.into()],
+                &[s_val.into(), scale_v.into(), hi_slot.into(), lo_slot.into()],
                 "parse_decimal.split",
             )
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
@@ -363,7 +367,7 @@ impl<'ctx, 'p> StrStdlib<'ctx> for Cx<'ctx, 'p> {
             is_err,
             s_val,
             "parse_decimal",
-            Some((value_i128.into(), CodegenTy::Decimal)),
+            Some((value_i128.into(), CodegenTy::Decimal(scale))),
             "str.parse_decimal",
         )
     }
@@ -639,6 +643,8 @@ impl<'ctx, 'p> StrStdlib<'ctx> for Cx<'ctx, 'p> {
                 args.len()
             )));
         }
+        let scale = self.decimal_scale_at_call();
+        let scale_v = self.context.i64_type().const_int(u64::from(scale), false);
         let (s_val, s_ty) = self.lower_expr(&args[0], scope)?;
         if !matches!(s_ty, CodegenTy::String | CodegenTy::StringView) {
             return Err(CodegenError::Unsupported(format!(
@@ -671,7 +677,7 @@ impl<'ctx, 'p> StrStdlib<'ctx> for Cx<'ctx, 'p> {
             .builder
             .build_call(
                 can_fn,
-                &[s_val.into(), start_val.into(), end_val.into()],
+                &[s_val.into(), start_val.into(), end_val.into(), scale_v.into()],
                 "range_parse_decimal.can",
             )
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
@@ -701,6 +707,7 @@ impl<'ctx, 'p> StrStdlib<'ctx> for Cx<'ctx, 'p> {
                     s_val.into(),
                     start_val.into(),
                     end_val.into(),
+                    scale_v.into(),
                     hi_slot.into(),
                     lo_slot.into(),
                 ],
@@ -738,7 +745,7 @@ impl<'ctx, 'p> StrStdlib<'ctx> for Cx<'ctx, 'p> {
             is_err,
             s_val,
             "range_parse_decimal",
-            Some((value_i128.into(), CodegenTy::Decimal)),
+            Some((value_i128.into(), CodegenTy::Decimal(scale))),
             "str.range_parse_decimal",
         )
     }

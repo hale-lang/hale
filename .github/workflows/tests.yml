@@ -21,27 +21,18 @@ name: tests
 # `harness::unique_bin` (pid + counter), enforced by
 # `harness_paths_are_unique.rs`.
 #
-# Build-and-run-per-partition shape: N parallel `test` jobs each
-# build the workspace from the shared cargo cache and run a
-# hash-partitioned subset (`cargo nextest run --partition`). There
-# is deliberately NO separate compile-once `build` job + archive
-# handoff: that serialized the run behind a full compile *and* an
-# archive upload/download round-trip (~1.7min upload alone), and
-# each partition still paid its own ~2min setup afterward. Folding
-# the build into each partition overlaps the compile with the
-# (already parallel) partitions and drops the round-trip — ~3-4min
-# of wall-clock — at the cost of compiling ~Nx instead of once (the
-# cargo cache keeps each warm build to ~3min). Wall-clock over CI
-# minutes, for branch-iteration velocity.
-#
-# Revisited 2026-09-20 with libLLVM linked dynamically: a warm
-# partition now spends ~4min building (workspace + its 560 test
-# binaries) and the nextest archive of the suite is 1.1GB. A build
-# job on a standard 4-core runner would take about as long as each
-# partition's own build, so the split still buys nothing unless
-# that one job moves to a larger (paid) runner. Six partitions
-# instead of four: CI minutes are free on a public repository, and
-# each partition's test phase is what shrinks.
+# Build-once shape (2026-10-12): three build jobs compile the test
+# binaries once each (`quick-build`, `build-cli`, `build-codegen`) and
+# hand them over as nextest archives (`cargo nextest archive`, carrying
+# `hale`, the build scripts' OUT_DIRs and the extra paths the `archive`
+# profile in .config/nextest.toml names); each test job downloads its
+# family's archive, extracts it in place and runs its slice without
+# compiling anything. Until then every partition built the workspace and
+# its family's test binaries for itself (2-7 min a job), so a family
+# could only be split further by paying its build again; 2026-09-20 had
+# measured a single archive at 1.1GB and judged the hand-off not worth
+# it. With libLLVM linked dynamically the cli+dna archive is ~360MB and
+# uploads in seconds, and a test job's setup is 30-90 s.
 
 # One run per commit. A push to a PR branch used to trigger this
 # twice — once as `push` (every branch) and once as `pull_request`
@@ -89,6 +80,13 @@ env:
   # errors after it is up; a server that cannot START on the backend is
   # the `sccache health` step's, after each install below.
   SCCACHE_IGNORE_SERVER_IO_ERROR: "1"
+  # How a test job runs the `build` job's nextest archive once it is
+  # extracted in place (`Extract the test archive in place`): from the
+  # archive's own metadata, so nextest neither builds nor extracts again.
+  NEXTEST_ARCHIVE: >-
+    --binaries-metadata target/nextest/binaries-metadata.json
+    --cargo-metadata target/nextest/cargo-metadata.json
+    --workspace-remap . --target-dir-remap target
 
 jobs:
   # Which jobs this diff can possibly affect.
@@ -168,16 +166,23 @@ jobs:
           fi
           printf '%s\n' "$verdict" | grep '^dna=' >> "$GITHUB_OUTPUT"
 
-  # The fast lane: everything that needs no LLVM, in about two
-  # minutes. hale-syntax, hale-types, hale-model, hale-stdlib and
-  # hale-corpus have no dependency on inkwell, so this job skips the
-  # LLVM install and the codegen build entirely and reports a parse,
-  # typecheck, model or corpus-baseline failure long before a
-  # partition has finished compiling. It runs on every diff; the
-  # partitions below run the same tests again as part of the whole.
-  quick:
-    name: quick (parse, typecheck, model)
+  # The fast lane: everything that needs no LLVM. hale-syntax,
+  # hale-types, hale-model, hale-graph, hale-stdlib and hale-corpus have
+  # no dependency on inkwell, so these jobs skip the LLVM install and the
+  # codegen build entirely. They run on every diff, prose included.
+  #
+  # `quick-build` compiles their ~180 test binaries (about six minutes:
+  # each is a bin crate, which sccache cannot cache) and archives them;
+  # the six `quick` jobs run a hash sixth each of their ~2,500 tests
+  # (about 2,150 test-seconds; the ten corpus sweeps of hale-types take
+  # 60-260 s each, and three of them on one four-core runner made a part
+  # of four run 5.5 minutes). One job building and running all of it was
+  # the workflow's longest, at 16 minutes (2026-10-12).
+  quick-build:
+    name: quick build (LLVM-free test archive)
     runs-on: ubuntu-latest
+    env:
+      ARCHIVE: nextest-quick
     steps:
       - uses: actions/checkout@v4
 
@@ -210,11 +215,75 @@ jobs:
       - name: Install cargo-nextest
         uses: taiki-e/install-action@nextest
 
-      - name: cargo nextest run (LLVM-free crates)
+      - name: cargo nextest archive (LLVM-free crates)
         run: |
-          cargo nextest run --release \
+          cargo nextest archive --release \
             -p hale-syntax -p hale-types -p hale-model -p hale-graph \
-            -p hale-stdlib -p hale-corpus
+            -p hale-stdlib -p hale-corpus \
+            --archive-file "$RUNNER_TEMP/nextest.tar.zst"
+          ls -l "$RUNNER_TEMP/nextest.tar.zst"
+
+      - &archive-upload
+        name: Upload the archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.ARCHIVE }}
+          path: ${{ runner.temp }}/nextest.tar.zst
+          # already zstd
+          compression-level: 0
+          retention-days: 1
+
+  quick:
+    name: quick ${{ matrix.part }}/6 (parse, typecheck, model)
+    needs: quick-build
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        part: [1, 2, 3, 4, 5, 6]
+    env:
+      ARCHIVE: nextest-quick
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - &install-nextest
+        name: Install cargo-nextest
+        uses: taiki-e/install-action@nextest
+
+      # A test job runs a build job's nextest archive (`env.ARCHIVE`
+      # names which). The test binaries bake absolute paths in at compile
+      # time (CARGO_MANIFEST_DIR, CARGO_TARGET_TMPDIR, CARGO_BIN_EXE_hale,
+      # and hale-codegen's probe for the shim staticlib), and every hosted
+      # runner checks out to the same path, so the archive is extracted
+      # in place: `target/` lands where the build job's was, and those
+      # paths hold here as they held there.
+      - &archive-download
+        name: Download the test archive
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.ARCHIVE }}
+          path: ${{ runner.temp }}
+
+      - &archive-extract
+        name: Extract the test archive in place
+        # Into the checkout itself, then run with the archive's metadata
+        # ($NEXTEST_ARCHIVE) rather than `--archive-file`, which would
+        # extract it a second time. The archive file stays outside the
+        # checkout (the clean-tree step). `target/tmp` is
+        # CARGO_TARGET_TMPDIR, which cargo creates at build time and the
+        # archive does not carry.
+        run: |
+          set -eux
+          tar --zstd -xf "$RUNNER_TEMP/nextest.tar.zst"
+          rm "$RUNNER_TEMP/nextest.tar.zst"
+          mkdir -p target/tmp
+          du -sh target
+
+      - name: cargo nextest run (LLVM-free crates, part ${{ matrix.part }}/6)
+        run: cargo nextest run $NEXTEST_ARCHIVE --partition hash:${{ matrix.part }}/6
 
   # A prose-only diff's only remaining exposure after `quick`: the
   # `hale mcp` docs-search serves spec/*.md embedded at build time
@@ -267,13 +336,125 @@ jobs:
   # sccache cannot help: it caches rlibs, never bin/test crate
   # types). Three job families instead, each building only what it
   # runs: `cli` (hale-cli and the crates beside it, minus the DNA
-  # fixture suite), `codegen` (hale-codegen's 334 binaries, split by
-  # FILE so each half compiles 167), and `dna` (the fixture suite on
-  # its own, so its slices can run four-wide). The LLVM-free crates
-  # are `quick`'s.
-  cli:
-    name: cli ${{ matrix.part }}/3
+  # fixture suite), `codegen` (hale-codegen's tests, now ~45 area
+  # binaries), and `dna` (the fixture suite on
+  # its own, so its slices can run two-wide on five runners). The
+  # LLVM-free crates are `quick`'s.
+  #
+  # Built once (2026-10-12): two build jobs compile the workspace and the
+  # test binaries of the families that wait on them, and hand those over
+  # as a nextest archive; each test job extracts it in place and runs its
+  # slice with no compiler at all, so a family splits into as many jobs
+  # as its test minutes want for the cost of a runner's setup, not of
+  # another build. Two build jobs rather than one so that neither family
+  # waits on the other's compile: `build-cli` (hale-cli, hale-lsp,
+  # hale-iris, hale-dna, hale-frontend, hale-ts-shim; ~1.5 min of test
+  # binaries) feeds `cli` and `dna`, `build-codegen` (hale-codegen's ~45
+  # area binaries, ~4.5 min) feeds `codegen`.
+  build-cli:
+    name: build (cli + dna test archive)
     needs: scope
+    if: needs.scope.outputs.code == 'true' || github.event_name != 'pull_request' || needs.scope.outputs.dna == 'true'
+    runs-on: ubuntu-latest
+    env:
+      ARCHIVE: nextest-cli
+      # What this job archives: the workspace less the LLVM-free crates
+      # (`quick-build`'s) and hale-codegen (`build-codegen`'s).
+      ARCHIVE_SCOPE: >-
+        --workspace
+        --exclude hale-syntax --exclude hale-types --exclude hale-model
+        --exclude hale-graph --exclude hale-stdlib --exclude hale-corpus
+        --exclude hale-codegen
+    steps:
+      - &build-checkout
+        uses: actions/checkout@v4
+
+      - &build-toolchain
+        name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - &build-sccache
+        name: Install sccache
+        uses: mozilla-actions/sccache-action@v0.0.9
+
+      - *sccache-health
+
+      # rust-cache keeps only the dependency artifacts (the workspace
+      # crates and their test binaries change on every commit), so it
+      # restores in seconds. Saved from main only, so a PR's cache writes
+      # cannot evict the one every other branch restores.
+      - &build-rust-cache
+        name: Cache cargo registry + dependency artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: tests-x86_64-linux-llvm18
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - &build-llvm
+        name: Install LLVM 18 + clang
+        run: |
+          set -eux
+          sudo apt-get update
+          sudo apt-get install -y \
+            llvm-18-dev libpolly-18-dev libzstd-dev \
+            clang-18 libclang-18-dev zlib1g-dev
+
+      - &build-nextest
+        name: Install cargo-nextest
+        uses: taiki-e/install-action@nextest
+
+      - &build-workspace
+        name: cargo build --release --workspace
+        # Every workspace member, so `libhale_ts_shim.a` is built: codegen
+        # finds it by path-probe beside the compiler (no Cargo dependency
+        # can name a staticlib), and the archive carries it from there
+        # (`--profile archive` in .config/nextest.toml).
+        # `--features hale-codegen/dynamic-llvm` links the shared libLLVM,
+        # so the archive is a few hundred MB, not ~100MB per test binary.
+        run: cargo build --release --workspace --features hale-codegen/dynamic-llvm
+
+      - &build-archive
+        name: cargo nextest archive
+        # The test binaries, the binaries they run (`hale`, through
+        # CARGO_BIN_EXE_hale), the build scripts' OUT_DIRs, and the two
+        # extra paths the `archive` profile names.
+        run: |
+          cargo nextest archive --release --profile archive $ARCHIVE_SCOPE \
+            --features hale-codegen/dynamic-llvm \
+            --archive-file "$RUNNER_TEMP/nextest.tar.zst"
+          ls -l "$RUNNER_TEMP/nextest.tar.zst"
+
+      - *archive-upload
+
+      - &build-sccache-stats
+        name: sccache stats
+        if: always()
+        run: sccache --show-stats
+
+  build-codegen:
+    name: build (codegen test archive)
+    needs: scope
+    if: needs.scope.outputs.code == 'true'
+    runs-on: ubuntu-latest
+    env:
+      ARCHIVE: nextest-codegen
+      ARCHIVE_SCOPE: -p hale-codegen
+    steps:
+      - *build-checkout
+      - *build-toolchain
+      - *build-sccache
+      - *sccache-health
+      - *build-rust-cache
+      - *build-llvm
+      - *build-nextest
+      - *build-workspace
+      - *build-archive
+      - *archive-upload
+      - *build-sccache-stats
+
+  cli:
+    name: cli ${{ matrix.part }}/5
+    needs: [scope, build-cli]
     if: needs.scope.outputs.code == 'true'
     # Free runners only: a paid 8-core runner was tried on 2026-09-26 and
     # cost about $200 a day; test time is cut at the cause instead.
@@ -283,7 +464,7 @@ jobs:
       # we want to see the full failure picture across the suite.
       fail-fast: false
       matrix:
-        part: [1, 2, 3]
+        part: [1, 2, 3, 4, 5]
     # GH #583 K1: the knowledge store's Postgres half runs against a
     # service container; `dna/tests/knowledge_store_test.hl` reads the
     # DSN and skips the half when it is unset (a laptop without one).
@@ -305,6 +486,7 @@ jobs:
           --health-timeout 5s
           --health-retries 10
     env:
+      ARCHIVE: nextest-cli
       HALE_DNA_MEMORY_DSN_OWNER: postgres://dna:dna@127.0.0.1:5480/dna?sslmode=disable
       HALE_DNA_NATS_URL_OWNER: nats://127.0.0.1:4222
       # The DNA tests push to bare remotes under /tmp and clone from them
@@ -340,40 +522,15 @@ jobs:
       - name: Start NATS (JetStream)
         run: docker run -d --name nerves -p 127.0.0.1:4222:4222 nats:2 -js
 
-      # Fixtures resolve via CARGO_MANIFEST_DIR against this checkout,
-      # so build + run happen in-place with no path remap.
-      #
-      # No "Free disk space" step here any more: the test binaries
-      # link libLLVM dynamically (`hale-codegen/dynamic-llvm`, below),
-      # so the target dir is a few GB rather than tens, and the
-      # 1.5-3min of deleting preinstalled toolchains bought nothing.
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Install sccache
-        uses: mozilla-actions/sccache-action@v0.0.9
-
-      - *sccache-health
-
-      # Shared cache across the partitions (and reused run-to-run).
-      # rust-cache keeps only the dependency artifacts — the workspace
-      # crates and their test binaries change on every commit and
-      # are rebuilt anyway — so the cache is a fraction of the size
-      # the raw `target` dir was (6.4GB, 2-3min to restore) and
-      # restores in seconds. Saved from main only, so a PR's cache
-      # writes cannot evict the one every other branch restores.
-      - name: Cache cargo registry + dependency artifacts
-        uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: tests-x86_64-linux-llvm18
-          save-if: ${{ github.ref == 'refs/heads/main' }}
-
-      - name: Install LLVM 18 + clang + wasm-ld
-        # llvm-18-dev provides both the static archives and
-        # libLLVM-18.so; the builds below link the shared one
-        # (`hale-codegen/dynamic-llvm`). clang-18 is also invoked at
-        # test time to link compiled `.hl` fixtures, and lld-18's
-        # wasm-ld to link the wasm32 ones (`hale build --target wasm32`).
+      - &install-llvm-runtime
+        name: Install LLVM 18 + clang + wasm-ld
+        # libLLVM-18.so: the test binaries and `hale` link it dynamically
+        # (`hale-codegen/dynamic-llvm`). clang-18 links compiled `.hl`
+        # fixtures at test time, and lld-18's wasm-ld the wasm32 ones
+        # (`hale build --target wasm32`).
         run: |
           set -eux
           sudo apt-get update
@@ -381,24 +538,9 @@ jobs:
             llvm-18-dev libpolly-18-dev libzstd-dev \
             clang-18 libclang-18-dev lld-18 zlib1g-dev
 
-      - name: Install cargo-nextest
-        # Prebuilt binary — installs in seconds.
-        uses: taiki-e/install-action@nextest
-
-      - name: cargo build --release --workspace
-        # Build ALL workspace members first so `libhale_ts_shim.a`
-        # lands at `target/release/` before any test links against
-        # it. `hale-cli` / `hale-codegen` tests invoke clang to link
-        # compiled .hl fixtures — codegen appends the staticlib by
-        # path-probe (no cargo dep edge forces it), so going straight
-        # to `cargo test` misses it (`undefined reference to
-        # lotus_ts_*`).
-        #
-        # `--features hale-codegen/dynamic-llvm`: link the shared
-        # libLLVM rather than a static copy into every binary. The
-        # same flag on the nextest run below, or cargo would build
-        # the workspace twice under two feature sets.
-        run: cargo build --release --workspace --features hale-codegen/dynamic-llvm
+      - *install-nextest
+      - *archive-download
+      - *archive-extract
 
       - name: hale fmt --check (canonical-form gate)
         # The styleguide's §5 fmt tier: the repo's own .hl surface
@@ -546,63 +688,42 @@ jobs:
           path: ~/.cache/hale
           key: ${{ steps.toolchain-cache.outputs.cache-primary-key }}
 
-      - name: cargo nextest run (cli part ${{ matrix.part }}/3)
-        # Everything the other families do not own: hale-cli's 111
-        # binaries less the DNA fixture suite, plus hale-lsp,
-        # hale-iris and hale-dna. `hash:I/N` partitions by test name
-        # within that set — a test always lands on the same part, so
-        # a flake is reproducible to its part. `hale-cli/dynamic-llvm`
-        # is a passthrough to hale-codegen's feature: cargo only
-        # accepts `pkg/feature` for a selected package, and the same
-        # feature set as the build above keeps it from rebuilding.
+      - name: cargo nextest run (cli part ${{ matrix.part }}/5)
+        # Everything the other families do not own: hale-cli's
+        # binaries less the DNA fixture suite (which the archive also
+        # holds, for the `dna` jobs), plus hale-lsp, hale-iris, hale-dna,
+        # hale-frontend and hale-ts-shim. `count:I/N` deals the sorted
+        # test list out round-robin, so one binary's tests spread over
+        # every part: `hash:` piled the heavy hale-cli DNA binaries onto
+        # one part of five (1,250 of 3,500 test-seconds, against 520-860
+        # for each part dealt by count; 2026-10-12). A test's part is
+        # fixed for a given test list.
         run: |
-          cargo nextest run --release --workspace \
-            --exclude hale-codegen --exclude hale-syntax --exclude hale-types \
-            --exclude hale-model --exclude hale-graph --exclude hale-stdlib --exclude hale-corpus \
-            --features hale-cli/dynamic-llvm \
+          cargo nextest run $NEXTEST_ARCHIVE \
             -E 'not binary(dna_native_suite)' \
-            --partition hash:${{ matrix.part }}/3
-
-      - name: sccache stats
-        if: always()
-        run: sccache --show-stats
+            --partition count:${{ matrix.part }}/5
 
   codegen:
-    name: codegen ${{ matrix.half }}/2
-    needs: scope
+    name: codegen ${{ matrix.part }}/5
+    needs: [scope, build-codegen]
     if: needs.scope.outputs.code == 'true'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        half: [1, 2]
+        part: [1, 2, 3, 4, 5]
+    env:
+      ARCHIVE: nextest-codegen
     steps:
       - uses: actions/checkout@v4
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Install sccache
-        uses: mozilla-actions/sccache-action@v0.0.9
-
-      - *sccache-health
-
-      - name: Cache cargo registry + dependency artifacts
-        uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: tests-x86_64-linux-llvm18
-          save-if: ${{ github.ref == 'refs/heads/main' }}
-
-      - name: Install LLVM 18 + clang + wasm-ld
-        # lld-18 for wasm-ld: the wasm32 builds (the lowering shadow, the
-        # teardown spines per target, the portable subset) link with it,
-        # and skip, naming it, when it is missing.
-        run: |
-          set -eux
-          sudo apt-get update
-          sudo apt-get install -y \
-            llvm-18-dev libpolly-18-dev libzstd-dev \
-            clang-18 libclang-18-dev lld-18 zlib1g-dev
+      # lld-18 for wasm-ld: the wasm32 builds (the lowering shadow, the
+      # teardown spines per target, the portable subset) link with it,
+      # and skip, naming it, when it is missing.
+      - *install-llvm-runtime
 
       # node runs the wasm32 modules (the portable subset compares their
       # stdout with the native binaries'); stated, not assumed of the
@@ -612,31 +733,22 @@ jobs:
         with:
           node-version: '22'
 
-      - name: Install cargo-nextest
-        uses: taiki-e/install-action@nextest
+      - *install-nextest
+      - *archive-download
+      - *archive-extract
 
-      - name: cargo build --release --workspace
-        # For `libhale_ts_shim.a` (see the cli job).
-        run: cargo build --release --workspace --features hale-codegen/dynamic-llvm
-
-      - name: cargo nextest run (hale-codegen tests, half ${{ matrix.half }}/2)
+      - name: cargo nextest run (hale-codegen tests, part ${{ matrix.part }}/5)
         # The crate's test files are built as ~40 area binaries (each
         # `tests/<area>.rs` names its files with `#[path]`; see
         # `every_test_file_is_built`), where they were 352 binaries and
-        # this step named half of them with `--test`. One link per area
-        # is cheap, so both halves build every binary and nextest deals
-        # the TESTS between them by hash, the lib's unit tests included.
-        run: |
-          cargo nextest run --release -p hale-codegen --features dynamic-llvm \
-            --partition hash:${{ matrix.half }}/2
-
-      - name: sccache stats
-        if: always()
-        run: sccache --show-stats
+        # this step named half of them with `--test`. nextest deals the
+        # TESTS between the parts by hash, the lib's unit tests included
+        # (about 3,450 test-seconds in all, none longer than ~85 s).
+        run: cargo nextest run $NEXTEST_ARCHIVE --partition hash:${{ matrix.part }}/5
 
   dna:
-    name: dna ${{ matrix.part }}/4
-    needs: scope
+    name: dna ${{ matrix.part }}/5
+    needs: [scope, build-cli]
     if: github.event_name != 'pull_request' || needs.scope.outputs.dna == 'true'
     # Free runners only: a paid 8-core runner was tried on 2026-09-26 and
     # cost about $200 a day; test time is cut at the cause instead.
@@ -644,7 +756,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        part: [1, 2, 3, 4]
+        part: [1, 2, 3, 4, 5]
     services:
       knowledge-db:
         image: ghcr.io/hale-lang/ci-pgvector:pg16
@@ -663,6 +775,7 @@ jobs:
           --health-timeout 5s
           --health-retries 10
     env:
+      ARCHIVE: nextest-cli
       HALE_DNA_MEMORY_DSN_OWNER: postgres://dna:dna@127.0.0.1:5480/dna?sslmode=disable
       HALE_DNA_NATS_URL_OWNER: nats://127.0.0.1:4222
       GIT_CONFIG_COUNT: "3"
@@ -696,31 +809,11 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Install sccache
-        uses: mozilla-actions/sccache-action@v0.0.9
-
-      - *sccache-health
-
-      - name: Cache cargo registry + dependency artifacts
-        uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: tests-x86_64-linux-llvm18
-          save-if: ${{ github.ref == 'refs/heads/main' }}
-
-      - name: Install LLVM 18 + clang
-        run: |
-          set -eux
-          sudo apt-get update
-          sudo apt-get install -y \
-            llvm-18-dev libpolly-18-dev libzstd-dev \
-            clang-18 libclang-18-dev zlib1g-dev
-
-      - name: Install cargo-nextest
-        uses: taiki-e/install-action@nextest
-
-      - name: cargo build --release --workspace
-        # The fixtures run through the `hale` binary this builds.
-        run: cargo build --release --workspace --features hale-codegen/dynamic-llvm
+      # The fixtures run through the archive's `hale`.
+      - *install-llvm-runtime
+      - *install-nextest
+      - *archive-download
+      - *archive-extract
 
       # The compiler id and the toolchain cache, as in the cli job.
       - *compiler-identity
@@ -748,26 +841,27 @@ jobs:
 
       - *toolchain-save
 
-      - name: cargo nextest run (DNA fixture suite, part ${{ matrix.part }}/4)
+      - name: cargo nextest run (DNA fixture suite, part ${{ matrix.part }}/5)
         # The suite alone on its runner: twenty slice tests split across
-        # four jobs, each running two slices at a time (`--profile
-        # small`, the `dna-fixtures-small` group in .config/nextest.toml).
+        # five jobs, four slices each, two at a time (`--profile small`,
+        # the `dna-fixtures-small` group in .config/nextest.toml).
         # `count:` deals the alphabetical test list out round-robin, so
         # the split is the same every run, and the slice tests are named
         # `dna_fixtures_slice_<ii>` (zero-padded) so that list is slice
         # order: `HEAVY` in dna_native_suite.rs places the heavy fixtures
-        # so the four parts' slice minutes come out level and each part
-        # starts its longest slice first.
+        # so the five parts' slice minutes come out level and each part
+        # starts its longest slices first. Change the job count only
+        # with HEAVY.
         env:
           # The free 4-core runner answers a proposal slower than the suite's
           # default wait (2) allows while four slices run beside each other;
           # macOS already runs at 3.
           HALE_DNA_WAIT_SCALE: "3"
         run: |
-          cargo nextest run --release -p hale-cli --features dynamic-llvm \
-            --test dna_native_suite \
+          cargo nextest run $NEXTEST_ARCHIVE \
+            -E 'binary_id(hale-cli::dna_native_suite)' \
             --profile small \
-            --partition count:${{ matrix.part }}/4
+            --partition count:${{ matrix.part }}/5
 
       - &tree-is-clean
         name: The run left the source tree as it found it
@@ -784,10 +878,6 @@ jobs:
             echo "$status"
             exit 1
           fi
-
-      - name: sccache stats
-        if: always()
-        run: sccache --show-stats
 
   # The face and the DNA service API (GH #690, #998), as two jobs with
   # no edge between them, so they run concurrently (GH #1009): the API
@@ -1722,16 +1812,16 @@ jobs:
 
   # The one check the merge rules require. A prose-only diff scopes the
   # partitions out at the job level, and a skipped matrix job reports
-  # under its template name ("cli ${{ matrix.part }}/3"), so the expanded
+  # under its template name ("cli ${{ matrix.part }}/5"), so the expanded
   # names cannot be required one by one: a docs-only pull request would
-  # wait forever for "cli 1/3". This job runs always, and is green when
-  # scope and quick succeeded and every other job succeeded or was
+  # wait forever for "cli 1/5". This job runs always, and is green when
+  # scope and the quick jobs succeeded and every other job succeeded or was
   # scoped out, red when any failed or was cancelled. The merge queue's
   # run, where every job runs, gates the merge through the same check.
   required:
     name: required
     runs-on: ubuntu-latest
-    needs: [scope, quick, docs, cli, codegen, dna, face-api, face-browser, cross, parity, tsan, asan, genmc]
+    needs: [scope, quick-build, quick, docs, build-cli, build-codegen, cli, codegen, dna, face-api, face-browser, cross, parity, tsan, asan, genmc]
     if: always()
     steps:
       - name: every job green or scoped out
@@ -1739,6 +1829,6 @@ jobs:
           RESULTS: ${{ toJSON(needs) }}
         run: |
           echo "$RESULTS" | jq -r 'to_entries[] | "\(.key)\t\(.value.result)"'
-          must=$(echo "$RESULTS" | jq -r '["scope","quick"][] as $k | select(.[$k].result != "success") | $k')
+          must=$(echo "$RESULTS" | jq -r '["scope","quick-build","quick"][] as $k | select(.[$k].result != "success") | $k')
           bad=$(echo "$RESULTS" | jq -r 'to_entries[] | select(.value.result != "success" and .value.result != "skipped") | .key')
           if [ -n "$must$bad" ]; then echo "::error::not green: $must $bad"; exit 1; fi

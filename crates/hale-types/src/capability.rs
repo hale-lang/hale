@@ -321,7 +321,7 @@ impl FfiTypeClass {
                 PrimType::BytesMut => FfiTypeClass::BytesMut,
                 PrimType::Time => FfiTypeClass::Time,
                 PrimType::Duration => FfiTypeClass::Duration,
-                PrimType::Decimal => FfiTypeClass::Decimal,
+                PrimType::Decimal(_) => FfiTypeClass::Decimal,
                 PrimType::Uint => FfiTypeClass::Uint,
             },
             Ty::Unit => FfiTypeClass::Unit,

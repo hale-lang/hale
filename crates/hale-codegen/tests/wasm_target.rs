@@ -139,6 +139,62 @@ fn wasm_string_int_concat_formats() {
     }
 }
 
+/// `Decimal<S>` above scale 9 on wasm32: the i128 mantissa at scale 18,
+/// its `*` and `/` through the i256 intermediate (which LLVM expands
+/// inline on wasm32), `.rescale(T)` and the scale-aware renderer
+/// (`lotus_decimal_to_string`'s zero-padded fraction is written by hand:
+/// the wasm libc shim's snprintf has no `*` width) must all agree with
+/// native.
+#[test]
+fn wasm_decimal_scale_18_matches_native() {
+    let (Some(_clang), Some(_wasm_ld), Some(node)) =
+        (tool("clang"), tool("wasm-ld"), tool("node"))
+    else {
+        eprintln!("SKIP wasm_decimal_scale_18_matches_native: toolchain missing");
+        return;
+    };
+    let src = r#"
+        target wasm { }
+        @ffi("js") fn console_log(msg: String);
+        fn main() {
+            let a: Decimal<18> = 1.5d;
+            let wei: Decimal<18> = 0.000000000000000003d;
+            let big: Decimal<18> = 100d;
+            console_log("sum=" + (a * a + wei));
+            console_log("wide=" + (big * big));
+            console_log("third=" + (1d / 3d * a));
+            console_log("narrow=" + ((a / 3d).rescale(4) or half_even));
+            console_log("fmt=" + std::decimal::format(a / 7d, 6));
+            let p: Decimal<18> = std::str::parse_decimal("0.123456789012345678") or 0d;
+            console_log("parsed=" + p);
+        }
+    "#;
+    let wasm = tmp("decimal18.wasm");
+    build_wasm(src, &wasm);
+    let loader = wasm.with_extension("mjs");
+    let run = Command::new(&node).arg(&loader).output().expect("run node loader");
+    let stdout = String::from_utf8_lossy(&run.stdout);
+    let _ = std::fs::remove_file(&wasm);
+    let _ = std::fs::remove_file(&loader);
+    for expect in [
+        "sum=2.250000000000000003",
+        "wide=10000",
+        "third=0.499999999999999999",
+        "narrow=0.5",
+        "fmt=0.214286",
+        "parsed=0.123456789012345678",
+    ] {
+        assert!(
+            stdout.contains(expect),
+            "wasm Decimal<18> disagrees with native (expected line {:?}):\n\
+             stdout: {}\nstderr: {}",
+            expect,
+            stdout,
+            String::from_utf8_lossy(&run.stderr)
+        );
+    }
+}
+
 /// `@ffi("js")` marshals Hale `Int` as a JS `number` (f64), not a
 /// `BigInt` (i64). Before, a host handler `(n) => ...` received a
 /// BigInt and had to `Number(n)` everywhere — a recurring sharp edge.

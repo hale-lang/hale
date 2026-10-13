@@ -290,11 +290,13 @@ fn own_scope_let_block_scope_test() {
             // 441 since `std::rand::Rng` came (its birth, an entry point,
             // and four methods; `next` invoked unboundedly by `next_int`'s
             // rejection loop); 442 since `std::crypto::ed25519_keypair`'s
-            // body came
+            // body came; 443 and one more invoked unboundedly since the
+            // HTTP client's `__http_connect_detail` came, called in its
+            // pooled retry loop
             changed_lines(&old.render(), &now.render()),
             [
-                "- # 442 fns, 28 entry points, 117 invoked-unboundedly",
-                "+ # 442 fns, 28 entry points, 116 invoked-unboundedly",
+                "- # 443 fns, 28 entry points, 118 invoked-unboundedly",
+                "+ # 443 fns, 28 entry points, 117 invoked-unboundedly",
                 "- call  count loop_depth=0 result=local",
                 "+ call  <unresolved: count> loop_depth=0 result=local",
                 "- call  count loop_depth=0 result=local",
@@ -465,7 +467,7 @@ fn reached_perspective_examples() {
         "crates/hale-codegen/tests/fixtures/examples/65-perspective-ctor-override",
         "tests/hale/perspective_ctor_override_test.hl",
     ] {
-        pinned_unreached(t, (118, 0), &["Gateway::handle", "RouterV1::route"], &[], &lines);
+        pinned_unreached(t, (119, 0), &["Gateway::handle", "RouterV1::route"], &[], &lines);
     }
 }
 
@@ -475,7 +477,7 @@ fn reached_perspective_examples() {
 fn reached_unowned_literal_positions() {
     pinned_unreached(
         "crates/hale-codegen/tests/fixtures/examples/90-unowned-literal-positions",
-        (118, 0),
+        (119, 0),
         &["Provider::submit", "Server::handle"],
         &["Provider::submit CollectionInsert(\"vec\") @1292..1320 InvokedUnboundedly"],
         &[
@@ -495,7 +497,7 @@ fn reached_unowned_literal_positions() {
 fn reached_oidc() {
     pinned_unreached(
         "dna/oidc",
-        (140, 2),
+        (141, 2),
         &[
             "b64",
             "decode",
@@ -562,7 +564,7 @@ fn reached_oidc() {
 fn reached_is_route_test() {
     pinned_unreached(
         "tests/hale/is_route_test.hl",
-        (120, 0),
+        (121, 0),
         &["Api::handle", "Api::list", "Api::rename", "Api::show"],
         &["Api::handle StructLit(\"std::http::Response\") @1449..1496 InvokedUnboundedly"],
         &[
@@ -599,7 +601,7 @@ fn reached_is_route_test() {
 fn reached_unit_quantities_test() {
     pinned_unreached(
         "tests/hale/unit_quantities_test.hl",
-        (117, 0),
+        (118, 0),
         &["later"],
         &[],
         &["- fn later   [invoked-unboundedly]", "+ fn later"],

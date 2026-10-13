@@ -10,6 +10,8 @@
  *
  * Client-only scope for v1:
  *   - lotus_tls_connect(host, port) -> int handle
+ *   - lotus_tls_connect_within(host, port, timeout_ns) -> int handle
+ *       (the dial and the handshake bounded by one deadline)
  *   - lotus_tls_upgrade(fd, host, verify) -> int handle  (wrap an
  *       already-connected fd; STARTTLS-style. Does NOT own/close the
  *       fd on failure — see the fn header for the ownership contract.)
@@ -51,6 +53,7 @@
 #include <sys/socket.h>   /* recvmsg, send, setsockopt, SO_TIMESTAMPNS, cmsg */
 #include <sys/uio.h>      /* struct iovec */
 #include <time.h>         /* clock_gettime, struct timespec */
+#include <fcntl.h>        /* fcntl: the handshake's non-blocking window */
 
 /* macOS portability (Phase 1): MSG_NOSIGNAL is a Linux extension. macOS
  * suppresses SIGPIPE on a socket via the SO_NOSIGPIPE setsockopt instead.
@@ -64,6 +67,8 @@
 
 /* Forward decls — bodies live in lotus_arena.c. */
 int   lotus_tcp_connect(const char *host, uint16_t port);
+int   lotus_tcp_connect_within(const char *host, uint16_t port,
+                               int64_t timeout_ns);
 int   lotus_tcp_set_nodelay(int fd, int on);
 int64_t lotus_bytes_len(const void *b);
 void *lotus_bytes_data(void *b);
@@ -90,8 +95,13 @@ void          *lotus_bytes_create(lotus_arena_t *a, int64_t len);
 int     lotus_io_on_async_io_pool(void);
 void    lotus_io_set_nonblock(int fd);
 int64_t lotus_sock_get_recv_timeout_ns(int fd);
-int     lotus_coop_park_on_fd_deadline(int fd, uint32_t events,
-                                       int64_t deadline_ns);
+int64_t lotus_sock_get_send_timeout_ns(int fd);
+/* Wait for readiness until an absolute CLOCK_MONOTONIC deadline (0 =
+ * none): a park on an async_io pool's coroutine, poll(2) elsewhere.
+ * 0 = ready, 1 = deadline passed, -1 = the wait failed. Every blocking
+ * point of this file waits through it, so the handshake, the reads and the
+ * writes park on an async_io pool the way the plain-tcp primitives do. */
+int     lotus_io_wait_fd(int fd, uint32_t events, int64_t deadline_ns);
 /* Level-triggered epoll event bits; values mirror sys/epoll.h
  * (fallbacks match lotus_arena.c's non-Linux inert defines). */
 #ifndef EPOLLIN
@@ -100,6 +110,12 @@ int     lotus_coop_park_on_fd_deadline(int fd, uint32_t events,
 #ifndef EPOLLOUT
 #define EPOLLOUT 0x004
 #endif
+
+static int64_t lotus_tls__now_ns(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (int64_t)ts.tv_sec * 1000000000LL + (int64_t)ts.tv_nsec;
+}
 
 /* Local equivalent of lotus_arena.c's static lotus_bytes_empty_global:
  * the canonical "empty Bytes" return for error / EOF paths. Inline
@@ -332,7 +348,84 @@ static const BIO_METHOD *lotus_tls__recvmsg_bio(void) {
  *                semantics: e.g. AWS RDS, whose CA is not in the system
  *                trust store). SNI is still sent.
  */
+/* The TLS client handshake on `ssl`, bounded by `deadline_ns` (absolute
+ * CLOCK_MONOTONIC; 0 = none). Off an async_io pool with no deadline it is
+ * the blocking SSL_connect it always was. Otherwise the socket goes
+ * non-blocking for the handshake and each SSL_ERROR_WANT_READ /
+ * WANT_WRITE waits for the socket (lotus_io_wait_fd): on an async_io pool
+ * the coroutine parks and the worker keeps serving the pool, elsewhere the
+ * thread polls. The socket's own mode is restored afterwards. 1 = done;
+ * 0 = the handshake failed (`*err_out` = the SSL error); -1 = a deadline
+ * passed first (errno ETIMEDOUT).
+ *
+ * The socket's own timeouts bound each wait as the kernel bounds each
+ * blocking recv / send: a WANT_READ waits at most SO_RCVTIMEO, a
+ * WANT_WRITE at most SO_SNDTIMEO (when set), whichever comes before the
+ * call's deadline — so an `upgrade` of a fd with `set_recv_timeout` armed
+ * ends on a silent peer on an async_io pool as it does on a blocking
+ * socket, where the kernel's expiry surfaces as a WANT_* and is the same
+ * timeout (PR #1538 review). */
+static int lotus_tls__handshake(SSL *ssl, int raw_fd, int64_t deadline_ns,
+                                int *err_out) {
+    *err_out = 0;
+    if (deadline_ns <= 0 && !lotus_io_on_async_io_pool()) {
+        int r = SSL_connect(ssl);
+        if (r == 1) return 1;
+        int err = SSL_get_error(ssl, r);
+        if (err == SSL_ERROR_WANT_READ || err == SSL_ERROR_WANT_WRITE) {
+            /* A blocking socket answers WANT_* only when its SO_RCVTIMEO
+             * / SO_SNDTIMEO expired under the handshake. */
+            errno = ETIMEDOUT;
+            return -1;
+        }
+        *err_out = err;
+        return 0;
+    }
+    int flags = fcntl(raw_fd, F_GETFL, 0);
+    int set_nb = flags >= 0 && !(flags & O_NONBLOCK);
+    if (set_nb) (void)fcntl(raw_fd, F_SETFL, flags | O_NONBLOCK);
+    int out;
+    for (;;) {
+        int r = SSL_connect(ssl);
+        if (r == 1) {
+            out = 1;
+            break;
+        }
+        int err = SSL_get_error(ssl, r);
+        if (err == SSL_ERROR_WANT_READ || err == SSL_ERROR_WANT_WRITE) {
+            uint32_t ev = (err == SSL_ERROR_WANT_WRITE) ? EPOLLOUT : EPOLLIN;
+            int64_t t = (ev == EPOLLOUT) ? lotus_sock_get_send_timeout_ns(raw_fd)
+                                         : lotus_sock_get_recv_timeout_ns(raw_fd);
+            int64_t d = deadline_ns;
+            if (t > 0) {
+                int64_t own = lotus_tls__now_ns() + t;
+                if (d <= 0 || own < d) d = own;
+            }
+            int w = lotus_io_wait_fd(raw_fd, ev, d);
+            if (w == 0) continue;
+            if (w == 1) {
+                out = -1;
+                break;
+            }
+        }
+        *err_out = err;
+        out = 0;
+        break;
+    }
+    if (set_nb) (void)fcntl(raw_fd, F_SETFL, flags);
+    if (out == -1) errno = ETIMEDOUT;
+    return out;
+}
+
+static int lotus_tls__upgrade_until(int raw_fd, const char *host, int verify,
+                                    int64_t deadline_ns);
+
 int lotus_tls_upgrade(int raw_fd, const char *host, int verify) {
+    return lotus_tls__upgrade_until(raw_fd, host, verify, 0);
+}
+
+static int lotus_tls__upgrade_until(int raw_fd, const char *host, int verify,
+                                    int64_t deadline_ns) {
     if (raw_fd < 0 || !host) {
         errno = EINVAL;
         return -1;
@@ -380,10 +473,22 @@ int lotus_tls_upgrade(int raw_fd, const char *host, int verify) {
     } else {
         SSL_set_fd(ssl, raw_fd);
     }
+    /* Partial writes: SSL_write returns once a record is out, so a send
+     * that has to wait sees its progress (lotus_tls_send_bytes resets its
+     * SO_SNDTIMEO window on it; its loop already takes a short write). */
+    SSL_set_mode(ssl, SSL_MODE_ENABLE_PARTIAL_WRITE);
 
-    int r = SSL_connect(ssl);
-    if (r != 1) {
-        int err = SSL_get_error(ssl, r);
+    int err = 0;
+    int hs = lotus_tls__handshake(ssl, raw_fd, deadline_ns, &err);
+    if (hs == -1) {
+        /* The deadline the caller asked for passed mid-handshake: the
+         * answer, not a fault — the IoError (kind `timeout`) says it. */
+        SSL_free(ssl);
+        /* Caller owns raw_fd — do NOT close it here. */
+        errno = ETIMEDOUT;
+        return -1;
+    }
+    if (hs != 1) {
         fprintf(stderr,
                 "lotus_tls_upgrade: handshake failed (host=%s verify=%d err=%d)\n",
                 host, verify, err);
@@ -421,12 +526,23 @@ int lotus_tls_upgrade(int raw_fd, const char *host, int verify) {
     return handle;
 }
 
+int lotus_tls_connect_within(const char *host, uint16_t port, int64_t timeout_ns);
+
 int lotus_tls_connect(const char *host, uint16_t port) {
+    return lotus_tls_connect_within(host, port, 0);
+}
+
+/* `std::io::tls::connect_within`: `connect` with one deadline over the
+ * TCP dial AND the handshake — `timeout_ns` from the call, after which
+ * either fails ETIMEDOUT (kind `timeout`). `timeout_ns <= 0` is `connect`
+ * (no deadline). */
+int lotus_tls_connect_within(const char *host, uint16_t port, int64_t timeout_ns) {
     if (!host) {
         errno = EINVAL;
         return -1;
     }
-    int raw_fd = lotus_tcp_connect(host, port);
+    int64_t deadline = timeout_ns > 0 ? lotus_tls__now_ns() + timeout_ns : 0;
+    int raw_fd = lotus_tcp_connect_within(host, port, timeout_ns);
     if (raw_fd < 0) {
         /* lotus_tcp_connect already set errno + logged. */
         return -1;
@@ -436,7 +552,7 @@ int lotus_tls_connect(const char *host, uint16_t port) {
      * verify=1 preserves connect's existing external contract (system
      * trust store + SNI hostname match), so the io_tls network tests
      * double as regression coverage for this dial+upgrade refactor. */
-    int handle = lotus_tls_upgrade(raw_fd, host, /*verify=*/1);
+    int handle = lotus_tls__upgrade_until(raw_fd, host, /*verify=*/1, deadline);
     if (handle < 0) {
         /* upgrade() already set errno (e.g. ECONNREFUSED/ENOMEM) so
          * the Hale layer can derive IoError.kind from it via
@@ -445,6 +561,13 @@ int lotus_tls_connect(const char *host, uint16_t port) {
          * otherwise the caller's error branch reads whatever close()
          * left behind instead of upgrade's real failure reason. */
         int saved_errno = errno;
+        if (saved_errno == ETIMEDOUT) {
+            /* The asked-for deadline: no stderr line (the IoError says
+             * it), only the socket to close. */
+            close(raw_fd);
+            errno = saved_errno;
+            return -1;
+        }
         /* Log connect-level context (host+port, which upgrade doesn't
          * have) but stay generic: upgrade fails for alloc reasons too
          * (ctx/SSL_new/realloc → ENOMEM), so don't claim "handshake
@@ -475,17 +598,54 @@ int lotus_tls_send_bytes(int handle, const void *bytes_ptr) {
         errno = EINVAL;
         return -1;
     }
+    /* On an async_io pool the socket is non-blocking and a full send
+     * buffer (SSL_ERROR_WANT_WRITE, or WANT_READ mid-renegotiation) parks
+     * the coroutine until the socket is ready — the plain-tcp
+     * send_bytes's EPOLLOUT park. The retry passes the same buffer and
+     * length, as OpenSSL requires of a retried SSL_write. Off-pool the fd
+     * is blocking and SSL_write blocks, as before.
+     *
+     * The park is bounded by the socket's SO_SNDTIMEO, counted from the
+     * write's last progress, as the kernel bounds a blocking send (which
+     * it no longer is): a peer that stops reading fails the send once the
+     * window passes with no record written, instead of parking forever
+     * (PR #1538 review). Partial writes are on for the connection
+     * (lotus_tls__upgrade_until), so each record written returns and
+     * counts as progress. */
+    int async = lotus_io_on_async_io_pool();
+    int raw_fd = async ? lotus_tls__handle_fd(handle) : -1;
+    if (raw_fd >= 0) lotus_io_set_nonblock(raw_fd);
     const char *p = (const char *)bytes_ptr + sizeof(int64_t);
     size_t left = (size_t)total;
+    int64_t stall = -1;   /* < 0: not read; 0: no SO_SNDTIMEO */
     while (left > 0) {
         int chunk = left > INT_MAX ? INT_MAX : (int)left;
         int n = SSL_write(ssl, p, chunk);
         if (n > 0) {
             p    += (size_t)n;
             left -= (size_t)n;
+            stall = -1;
             continue;
         }
         int err = SSL_get_error(ssl, n);
+        if (raw_fd >= 0
+            && (err == SSL_ERROR_WANT_WRITE || err == SSL_ERROR_WANT_READ)) {
+            uint32_t ev = (err == SSL_ERROR_WANT_READ) ? EPOLLIN : EPOLLOUT;
+            if (stall < 0) {
+                int64_t t = lotus_sock_get_send_timeout_ns(raw_fd);
+                stall = t > 0 ? lotus_tls__now_ns() + t : 0;
+            }
+            int w = lotus_io_wait_fd(raw_fd, ev, stall);
+            if (w == 0) continue;
+            if (w == 1) {
+                /* The send timeout: the blocking write's expiry, a status
+                 * like any failed write. */
+                fprintf(stderr,
+                        "lotus_tls_send_bytes: send timed out (SO_SNDTIMEO)\n");
+                errno = EAGAIN;
+                return -1;
+            }
+        }
         fprintf(stderr,
                 "lotus_tls_send_bytes: SSL_write failed (err=%d)\n",
                 err);
@@ -494,6 +654,52 @@ int lotus_tls_send_bytes(int handle, const void *bytes_ptr) {
         return -1;
     }
     return 0;
+}
+
+/* One SSL_read of up to `max` bytes into `buf`: n > 0 bytes read, 0 the
+ * peer closed, -2 "timed out, retryable", -1 fatal (printed under `who`).
+ *
+ * downstream handoff 2026-07-14 (finding 1), extended to every TLS read: on
+ * an async_io pool the socket is non-blocking and an SSL_ERROR_WANT_READ
+ * (or WANT_WRITE during a renegotiation read) parks the coroutine on the
+ * raw fd until it is ready or the deadline mirroring the socket's
+ * SO_RCVTIMEO passes — the plain-tcp recv family's contract, so -2 means
+ * the deadline expired, never an instant would-block. Off-pool the fd is
+ * blocking: a single SSL_read, and -2 when the kernel's SO_RCVTIMEO
+ * expired under it. The deadline is computed once, at entry, so a wake
+ * that finds no whole record re-parks with the remaining time. */
+static int lotus_tls__read(int handle, SSL *ssl, char *buf, int max,
+                           const char *who) {
+    int async = lotus_io_on_async_io_pool();
+    int raw_fd = lotus_tls__handle_fd(handle);
+    int64_t deadline = 0;
+    if (async && raw_fd >= 0) {
+        lotus_io_set_nonblock(raw_fd);
+        int64_t t = lotus_sock_get_recv_timeout_ns(raw_fd);
+        if (t > 0) deadline = lotus_tls__now_ns() + t;
+    }
+    for (;;) {
+        int n = SSL_read(ssl, buf, max);
+        if (n >= 0) return n;
+        int err = SSL_get_error(ssl, n);
+        /* A `SO_RCVTIMEO` timeout on the underlying blocking fd surfaces as
+         * SSL_ERROR_WANT_READ (or WANT_WRITE during a renegotiation read).
+         * That is *retryable*, not fatal — distinguish it so a caller that
+         * set a recv timeout (e.g. a WebSocket liveness loop) can run its
+         * ping/pong check instead of tearing the connection down. No error
+         * print on the timeout path (it's expected). */
+        if (err == SSL_ERROR_WANT_READ || err == SSL_ERROR_WANT_WRITE) {
+            if (async && raw_fd >= 0) {
+                uint32_t ev = (err == SSL_ERROR_WANT_WRITE) ? EPOLLOUT
+                                                            : EPOLLIN;
+                if (lotus_io_wait_fd(raw_fd, ev, deadline) == 0) continue;
+            }
+            return -2;
+        }
+        fprintf(stderr, "%s: SSL_read failed (err=%d)\n", who, err);
+        ERR_print_errors_fp(stderr);
+        return -1;
+    }
 }
 
 void *lotus_tls_recv_bytes(int handle, int max_bytes) {
@@ -509,19 +715,14 @@ void *lotus_tls_recv_bytes(int handle, int max_bytes) {
     if (!blob) return lotus_tls__bytes_empty();
 
     char *body = (char *)lotus_bytes_data(blob);
-    int n = SSL_read(ssl, body, max_bytes);
+    int n = lotus_tls__read(handle, ssl, body, max_bytes,
+                            "lotus_tls_recv_bytes");
     if (n <= 0) {
-        /* Peer closed (0) or read error (<0). Hand back an empty
-         * Bytes so the caller can detect "nothing read"; the
-         * reserved arena memory leaks until program exit
-         * (matches lotus_tcp_recv_bytes's convention). */
-        int err = SSL_get_error(ssl, n);
-        if (n < 0) {
-            fprintf(stderr,
-                    "lotus_tls_recv_bytes: SSL_read failed (err=%d)\n",
-                    err);
-            ERR_print_errors_fp(stderr);
-        }
+        /* Peer closed (0), the recv deadline expired (-2) or a read
+         * error (-1, printed). Hand back an empty Bytes so the caller
+         * can detect "nothing read" — the plain-tcp recv_bytes's
+         * convention; the reserved arena memory leaks until program
+         * exit (matches lotus_tcp_recv_bytes). */
         return lotus_tls__bytes_empty();
     }
     /* Patch the length prefix down to the actual bytes read. The
@@ -535,59 +736,15 @@ void *lotus_tls_recv_bytes(int handle, int max_bytes) {
  * lotus_tcp_recv_into / lotus_udp_recv_into in lotus_arena.c —
  * SSL_read into the builder's tail, bump len, no allocation in
  * g_bus_payload_arena. Return semantics: > 0 bytes read, 0 peer
- * closed cleanly, < 0 fatal error. */
+ * closed cleanly, -2 timed out (retryable), -1 fatal error. */
 int64_t lotus_tls_recv_into(int handle, void *builder, int64_t max_bytes) {
     if (max_bytes <= 0) return -1;
     SSL *ssl = lotus_tls__handle_ssl(handle);
     if (!ssl) return -1;
-    /* downstream handoff 2026-07-14 (finding 1): on an async_io pool, a
-     * WANT_READ/WANT_WRITE parks the coro on the raw fd with a
-     * deadline mirroring the socket's SO_RCVTIMEO — same contract
-     * as lotus_tcp_recv_into (-2 = genuine deadline expiry only).
-     * Off-pool: blocking fd, single SSL_read, -2 on the kernel
-     * timeout — unchanged. */
-    int async = lotus_io_on_async_io_pool();
-    int raw_fd = lotus_tls__handle_fd(handle);
-    int64_t deadline = 0;
-    if (async && raw_fd >= 0) {
-        lotus_io_set_nonblock(raw_fd);
-        int64_t t = lotus_sock_get_recv_timeout_ns(raw_fd);
-        if (t > 0) {
-            struct timespec ts;
-            clock_gettime(CLOCK_MONOTONIC, &ts);
-            deadline = (int64_t)ts.tv_sec * 1000000000LL
-                     + (int64_t)ts.tv_nsec + t;
-        }
-    }
     char *tail = (char *)lotus_bytes_builder_reserve(builder, max_bytes);
     if (!tail) return -1;
-    int n;
-    for (;;) {
-        n = SSL_read(ssl, tail, (int)max_bytes);
-        if (n >= 0) break;
-        int err = SSL_get_error(ssl, n);
-        /* A `SO_RCVTIMEO` timeout on the underlying blocking fd surfaces as
-         * SSL_ERROR_WANT_READ (or WANT_WRITE during a renegotiation read).
-         * That is *retryable*, not fatal — distinguish it so a caller that
-         * set a recv timeout (e.g. a WebSocket liveness loop) can run its
-         * ping/pong check instead of tearing the connection down. Return -2
-         * for "would-block / timed out"; -1 stays "fatal". No error print on
-         * the timeout path (it's expected). See std::io::tls::recv_into. */
-        if (err == SSL_ERROR_WANT_READ || err == SSL_ERROR_WANT_WRITE) {
-            if (async && raw_fd >= 0) {
-                uint32_t ev = (err == SSL_ERROR_WANT_WRITE) ? EPOLLOUT
-                                                            : EPOLLIN;
-                int r = lotus_coop_park_on_fd_deadline(raw_fd, ev, deadline);
-                if (r == 0) continue;   /* ready — retry SSL_read */
-            }
-            return -2;
-        }
-        fprintf(stderr,
-                "lotus_tls_recv_into: SSL_read failed (err=%d)\n",
-                err);
-        ERR_print_errors_fp(stderr);
-        return -1;
-    }
+    int n = lotus_tls__read(handle, ssl, tail, (int)max_bytes,
+                            "lotus_tls_recv_into");
     if (n > 0) {
         lotus_bytes_builder_advance(builder, (int64_t)n);
     }
@@ -679,41 +836,11 @@ int64_t lotus_tls_recv_stamped_into(int handle, void *builder, int64_t max_bytes
     if (max_bytes <= 0) return -1;
     SSL *ssl = lotus_tls__handle_ssl(handle);
     if (!ssl) return -1;
-    /* Same async_io timed park as lotus_tls_recv_into. */
-    int async = lotus_io_on_async_io_pool();
-    int raw_fd = lotus_tls__handle_fd(handle);
-    int64_t deadline = 0;
-    if (async && raw_fd >= 0) {
-        lotus_io_set_nonblock(raw_fd);
-        int64_t t = lotus_sock_get_recv_timeout_ns(raw_fd);
-        if (t > 0) {
-            struct timespec ts;
-            clock_gettime(CLOCK_MONOTONIC, &ts);
-            deadline = (int64_t)ts.tv_sec * 1000000000LL
-                     + (int64_t)ts.tv_nsec + t;
-        }
-    }
     char *tail = (char *)lotus_bytes_builder_reserve(builder, max_bytes);
     if (!tail) return -1;
-    int n;
-    for (;;) {
-        n = SSL_read(ssl, tail, (int)max_bytes);
-        if (n >= 0) break;
-        int err = SSL_get_error(ssl, n);
-        if (err == SSL_ERROR_WANT_READ || err == SSL_ERROR_WANT_WRITE) {
-            if (async && raw_fd >= 0) {
-                uint32_t ev = (err == SSL_ERROR_WANT_WRITE) ? EPOLLOUT
-                                                            : EPOLLIN;
-                int r = lotus_coop_park_on_fd_deadline(raw_fd, ev, deadline);
-                if (r == 0) continue;
-            }
-            return -2;
-        }
-        fprintf(stderr,
-                "lotus_tls_recv_stamped_into: SSL_read failed (err=%d)\n", err);
-        ERR_print_errors_fp(stderr);
-        return -1;
-    }
+    /* Same async_io timed park as lotus_tls_recv_into. */
+    int n = lotus_tls__read(handle, ssl, tail, (int)max_bytes,
+                            "lotus_tls_recv_stamped_into");
     if (n > 0) {
         lotus_bytes_builder_advance(builder, (int64_t)n);
         struct timespec tu;

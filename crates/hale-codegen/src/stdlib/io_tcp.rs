@@ -23,6 +23,11 @@ pub(crate) trait IoTcpStdlib<'ctx> {
         args: &[Expr],
         scope: &Scope<'ctx>,
     ) -> Result<FallibleCallResult<'ctx>, CodegenError>;
+    fn lower_std_io_tcp_connect_within_fallible(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<FallibleCallResult<'ctx>, CodegenError>;
     fn lower_std_io_tcp_accept_one_fallible(
         &mut self,
         args: &[Expr],
@@ -209,18 +214,31 @@ impl<'ctx, 'p> IoTcpStdlib<'ctx> for Cx<'ctx, 'p> {
         args: &[Expr],
         scope: &Scope<'ctx>,
     ) -> Result<FallibleCallResult<'ctx>, CodegenError> {
-        self.lower_tcp_connect_common(args, scope, false)
+        self.lower_tcp_connect_common(args, scope, TcpDial::Connect)
     }
 
     /// `std::io::tcp::connect_wait(host, port, wait) -> Int
     /// fallible(IoError)`: retry a refused connect for up to `wait`
-    /// (a Duration) — for a caller racing its peer's `listen()`.
+    /// (a Duration) — for a caller racing its peer's `listen()`. The
+    /// same `wait` bounds the whole dial.
     fn lower_std_io_tcp_connect_wait_fallible(
         &mut self,
         args: &[Expr],
         scope: &Scope<'ctx>,
     ) -> Result<FallibleCallResult<'ctx>, CodegenError> {
-        self.lower_tcp_connect_common(args, scope, true)
+        self.lower_tcp_connect_common(args, scope, TcpDial::Wait)
+    }
+
+    /// `std::io::tcp::connect_within(host, port, timeout) -> Int
+    /// fallible(IoError)`: one attempt, bounded by `timeout` (a
+    /// Duration); a connect neither accepted nor refused by then fails
+    /// with kind `timeout`.
+    fn lower_std_io_tcp_connect_within_fallible(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<FallibleCallResult<'ctx>, CodegenError> {
+        self.lower_tcp_connect_common(args, scope, TcpDial::Within)
     }
 
     /// `std::io::tcp::accept_one(listen_fd) -> Int fallible(IoError)`.
@@ -1074,22 +1092,38 @@ impl<'ctx, 'p> IoTcpStdlib<'ctx> for Cx<'ctx, 'p> {
 
 }
 
+/// Which of the three TCP dials a call lowers: each is the same
+/// `lotus_tcp_dial` underneath, with or without a Duration argument.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum TcpDial {
+    Connect,
+    Wait,
+    Within,
+}
+
 impl<'ctx, 'p> Cx<'ctx, 'p> {
-    /// `connect` / `connect_wait`: host, port, and — for the latter —
-    /// how long to keep retrying a refused connect.
+    /// `connect` / `connect_wait` / `connect_within`: host, port, and —
+    /// for the latter two — the Duration (`wait`: how long to keep
+    /// retrying a refused connect, which also bounds the dial; `timeout`:
+    /// the one attempt's deadline).
     fn lower_tcp_connect_common(
         &mut self,
         args: &[Expr],
         scope: &Scope<'ctx>,
-        with_wait: bool,
+        dial: TcpDial,
     ) -> Result<FallibleCallResult<'ctx>, CodegenError> {
-        let (name, want) = if with_wait { ("connect_wait", 3) } else { ("connect", 2) };
+        let (name, want, arg_names, c_fn) = match dial {
+            TcpDial::Connect => ("connect", 2, "host, port", "lotus_tcp_connect_wait"),
+            TcpDial::Wait => ("connect_wait", 3, "host, port, wait", "lotus_tcp_connect_wait"),
+            TcpDial::Within => ("connect_within", 3, "host, port, timeout", "lotus_tcp_connect_within"),
+        };
+        let with_wait = dial != TcpDial::Connect;
         if args.len() != want {
             return Err(CodegenError::Unsupported(format!(
                 "std::io::tcp::{} takes {} args ({}), got {}",
                 name,
                 want,
-                if with_wait { "host, port, wait" } else { "host, port" },
+                arg_names,
                 args.len()
             )));
         }
@@ -1112,7 +1146,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             let (w, wt) = self.lower_expr(&args[2], scope)?;
             if wt != CodegenTy::Duration {
                 return Err(CodegenError::Unsupported(format!(
-                    "std::io::tcp::connect_wait: wait must be a Duration, got {:?}",
+                    "std::io::tcp::{}: {} must be a Duration, got {:?}",
+                    name,
+                    if dial == TcpDial::Within { "timeout" } else { "wait" },
                     wt
                 )));
             }
@@ -1122,8 +1158,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         };
         let connect_fn = self
             .module
-            .get_function("lotus_tcp_connect_wait")
-            .expect("lotus_tcp_connect_wait declared");
+            .get_function(c_fn)
+            .expect("lotus_tcp_connect_wait / _within declared");
         // NOTE 2026-07-02: was truncated to i32, mismatching the
         // i16-port declaration (and the C uint16_t). Benign on
         // x86-64 SysV (both travel in the low register bits) but a

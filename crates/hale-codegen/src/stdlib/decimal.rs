@@ -1,9 +1,48 @@
 //! `std::decimal::*` path-call lowering.
 
-use hale_syntax::ast::Expr;
-use inkwell::values::BasicValueEnum;
+use hale_syntax::ast::{BinOp, Expr};
+use inkwell::values::{BasicValueEnum, IntValue};
 
 use crate::codegen::{CodegenError, CodegenTy, Cx, FallibleCallResult, Scope};
+
+fn emit<T>(r: Result<T, inkwell::builder::BuilderError>) -> Result<T, CodegenError> {
+    r.map_err(|e| CodegenError::LlvmEmit(e.to_string()))
+}
+
+impl<'ctx, 'p> Cx<'ctx, 'p> {
+    /// `Decimal<S>`'s `*` and `/` above scale 9: the product, or the
+    /// dividend scaled by `10^S`, is an i256, so two operands whose
+    /// result an i128 holds compute exactly (an i128 product at scale 18
+    /// overflows for operands as small as 14). The quotient truncates
+    /// toward zero and is the i128 it fits, wrapping like `Int`
+    /// arithmetic when it does not.
+    pub(crate) fn lower_wide_decimal_mul_div(
+        &mut self,
+        op: BinOp,
+        l: IntValue<'ctx>,
+        r: IntValue<'ctx>,
+        scale: u8,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
+        let wide = self.context.custom_width_int_type(256);
+        let pow = hale_syntax::decimal_literal::pow10(u32::from(scale));
+        let pow = wide.const_int_arbitrary_precision(&[pow as u64, (pow >> 64) as u64, 0, 0]);
+        let lw = emit(self.builder.build_int_s_extend(l, wide, "decw.l"))?;
+        let rw = emit(self.builder.build_int_s_extend(r, wide, "decw.r"))?;
+        let q = match op {
+            BinOp::Mul => {
+                let prod = emit(self.builder.build_int_mul(lw, rw, "decw.mul_raw"))?;
+                emit(self.builder.build_int_signed_div(prod, pow, "decw.mul"))?
+            }
+            BinOp::Div => {
+                let scaled = emit(self.builder.build_int_mul(lw, pow, "decw.div_scale"))?;
+                emit(self.builder.build_int_signed_div(scaled, rw, "decw.div"))?
+            }
+            _ => unreachable!("only * and / widen"),
+        };
+        let v = emit(self.builder.build_int_truncate(q, self.context.i128_type(), "decw.result"))?;
+        Ok((v.into(), CodegenTy::Decimal(scale)))
+    }
+}
 
 pub(crate) trait DecimalStdlib<'ctx> {
     fn lower_std_decimal_to_float(
@@ -29,8 +68,8 @@ pub(crate) trait DecimalStdlib<'ctx> {
 }
 
 impl<'ctx, 'p> DecimalStdlib<'ctx> for Cx<'ctx, 'p> {
-    /// `std::decimal::to_float(d: Decimal) -> Float` (2026-05-21).
-    /// Direct i128 → f64 conversion at scale 9 via the new
+    /// `std::decimal::to_float(d: Decimal<S>) -> Float` (2026-05-21).
+    /// Direct i128 → f64 conversion at the value's scale via the
     /// `lotus_decimal_to_float` C primitive. Replaces the
     /// `to_string(d)` → strip "ns"-like-suffix → `parse_float`
     /// ASCII round-trip downstream consumers were doing in
@@ -50,12 +89,12 @@ impl<'ctx, 'p> DecimalStdlib<'ctx> for Cx<'ctx, 'p> {
             )));
         }
         let (v, ty) = self.lower_expr(&args[0], scope)?;
-        if ty != CodegenTy::Decimal {
+        let CodegenTy::Decimal(scale) = ty else {
             return Err(CodegenError::Unsupported(format!(
                 "std::decimal::to_float: arg must be Decimal, got {:?}",
                 ty
             )));
-        }
+        };
         let i64_t = self.context.i64_type();
         let i128_v = v.into_int_value();
         let lo = self
@@ -77,7 +116,11 @@ impl<'ctx, 'p> DecimalStdlib<'ctx> for Cx<'ctx, 'p> {
             .expect("lotus_decimal_to_float declared");
         let res = self
             .builder
-            .build_call(f, &[hi.into(), lo.into()], "dec.to_float.call")
+            .build_call(
+                f,
+                &[hi.into(), lo.into(), i64_t.const_int(u64::from(scale), false).into()],
+                "dec.to_float.call",
+            )
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
             .try_as_basic_value()
             .left()
@@ -85,9 +128,9 @@ impl<'ctx, 'p> DecimalStdlib<'ctx> for Cx<'ctx, 'p> {
         Ok((res, CodegenTy::Float))
     }
 
-    /// GH #230 item 2: `std::decimal::format(d: Decimal,
+    /// GH #230 item 2: `std::decimal::format(d: Decimal<S>,
     /// places: Int) -> String` — exactly `places` fraction
-    /// digits (0..=9 clamped), round half-up. The explicit
+    /// digits (0..=S clamped), round half-up. The explicit
     /// surface for fixed-places display; default printing keeps
     /// trimming trailing zeros (declared precision is not
     /// stored in the scale-9 repr).
@@ -103,12 +146,12 @@ impl<'ctx, 'p> DecimalStdlib<'ctx> for Cx<'ctx, 'p> {
             )));
         }
         let (v, ty) = self.lower_expr(&args[0], scope)?;
-        if ty != CodegenTy::Decimal {
+        let CodegenTy::Decimal(scale) = ty else {
             return Err(CodegenError::Unsupported(format!(
                 "std::decimal::format: arg 1 must be Decimal, got {:?}",
                 ty
             )));
-        }
+        };
         let (places_v, places_ty) = self.lower_expr(&args[1], scope)?;
         if places_ty != CodegenTy::Int {
             return Err(CodegenError::Unsupported(format!(
@@ -139,7 +182,7 @@ impl<'ctx, 'p> DecimalStdlib<'ctx> for Cx<'ctx, 'p> {
             .builder
             .build_call(
                 f,
-                &[hi.into(), lo.into(), places_v.into()],
+                &[hi.into(), lo.into(), i64_t.const_int(u64::from(scale), false).into(), places_v.into()],
                 "dec.format.call",
             )
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
@@ -179,7 +222,7 @@ impl<'ctx, 'p> DecimalStdlib<'ctx> for Cx<'ctx, 'p> {
             .builder
             .build_int_mul(wide, i128_t.const_int(1_000_000_000, false), "dec.from_int")
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-        Ok((m.into(), CodegenTy::Decimal))
+        Ok((m.into(), CodegenTy::Decimal(hale_syntax::decimal_literal::DEFAULT_SCALE)))
     }
 
     /// `std::decimal::from_float(x: Float) -> Decimal fallible(ParseError)`:
@@ -282,7 +325,7 @@ impl<'ctx, 'p> DecimalStdlib<'ctx> for Cx<'ctx, 'p> {
                     .expect("lotus_str_from_float returns ptr"))
             },
             "from_float",
-            Some((m.into(), CodegenTy::Decimal)),
+            Some((m.into(), CodegenTy::Decimal(hale_syntax::decimal_literal::DEFAULT_SCALE))),
             "decimal.from_float",
         )
     }
