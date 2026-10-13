@@ -47,7 +47,10 @@
 //
 // **SIGPIPE.** Globally ignored at lotus_io_init startup. Writes
 // to a closed pipe surface EPIPE via the IoError channel instead
-// of killing the parent.
+// of killing the parent. A spawned child gets the default action
+// back before its exec (an ignored signal survives exec), so a
+// filter whose reader has gone dies of SIGPIPE as it would under a
+// shell instead of meeting EPIPE on every write.
 //
 // **fd cleanup and who runs it.** Child.dissolve() closes all three
 // pipe fds and reaps the process (TERM → wait 100ms → KILL →
