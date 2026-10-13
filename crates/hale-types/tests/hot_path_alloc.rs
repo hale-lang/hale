@@ -1006,3 +1006,30 @@ fn a_cell_copy_counts_against_a_zero_allocation_budget() {
     let ds = all_diags(&cells("@budget(alloc_per_call = 0)", RMW));
     assert!(!ds.iter().any(|(_, m)| m.contains("a copy of a value read from a form's cell")), "{ds:?}");
 }
+
+/// A primitive bound from a call's result and handed on to a fn value
+/// is no copy at all (review round 3 on #1558): lowering loads and
+/// stores an `i64`, and the local-place rule must not report a
+/// `place-copy` the `@hot` check would refuse. An array read from a
+/// field and handed to a writer is one, and `@hot` refuses it.
+#[test]
+fn a_primitive_bound_from_a_call_is_no_hot_path_copy() {
+    let src = r#"
+type In { k: Int = 0; }
+fn one() -> Int { return 1; }
+fn poke(xs: [In; 2]) { xs[0].k = 8; }
+@hot
+fn scalar(cb: fn(Int) -> Int) -> Int { let a = one(); let b = a; return cb(b); }
+locus H {
+    params { arr: [In; 2] = [In { }, In { }]; }
+    @hot
+    fn compound() { let a = self.arr; poke(a); }
+}
+fn twice(x: Int) -> Int { return x * 2; }
+fn main() { println(scalar(twice)); let h = H { }; }
+"#;
+    let ds = all_diags(src);
+    let copies: Vec<&(bool, String)> = ds.iter().filter(|(_, m)| m.contains("hot-path copy")).collect();
+    assert_eq!(copies.len(), 1, "{ds:?}");
+    assert!(copies[0].0 && copies[0].1.contains("passed to a call that may write"), "{ds:?}");
+}

@@ -377,3 +377,103 @@ fn a_vec_items_walk_still_writes_in_place() {
     let out = run("vec_items", src);
     assert!(out.contains("sum=30"), "{out}");
 }
+
+/// A struct literal holding a field's array (`R { arr: self.source }`)
+/// handed to a callee that writes through what it is handed — the
+/// literal's part, or the literal whole — leaves the field as it was:
+/// the part is copied where the literal is built (review round 3 on
+/// #1558).
+#[test]
+fn a_literal_holding_a_field_handed_to_a_writer_leaves_the_field() {
+    let src = r#"
+        type In { k: Int = 0; s: String = ""; }
+        type R { arr: [In; 2] = [In { }, In { }]; n: Int = 0; }
+        fn heap(s: String) -> String { return std::str::upper(s) + to_string(len(s)); }
+        fn poke_arr(xs: [In; 2]) { xs[0].k = 8; xs[0].s = heap("w"); }
+        fn poke_rec(r: R) { r.arr[0].k = 9; r.arr[0].s = heap("v"); }
+        locus H {
+            params { source: [In; 2] = [In { }, In { }]; }
+            fn part() -> Int { let lit = R { arr: self.source }; poke_arr(lit.arr); return lit.arr[0].k; }
+            fn whole() -> Int { let lit = R { arr: self.source }; poke_rec(lit); return lit.arr[0].k; }
+            run {
+                self.source = [In { k: 1, s: heap("a") }, In { k: 2 }];
+                let p = self.part();
+                println("part: local=", p, " field=", self.source[0].k, "/", self.source[0].s);
+                let w = self.whole();
+                println("whole: local=", w, " field=", self.source[0].k, "/", self.source[0].s);
+            }
+        }
+        fn main() { let h = H { }; }
+    "#;
+    let out = run("literal_writer", src);
+    assert!(out.contains("part: local=8 field=1/A1"), "{out}");
+    assert!(out.contains("whole: local=9 field=1/A1"), "{out}");
+}
+
+/// The survey and lowering agree, shape by shape: the pass reports a
+/// local-place copy in a fn exactly when lowering copies there (a
+/// copy-on-write block, or an owned deep copy), and a primitive —
+/// a call's `Int`, an alias of one, a distinct `Int`, a `Duration`, a
+/// `Decimal`, a `Time`, a `String` — is never one, whatever unknown
+/// callee it is handed to (review round 3 on #1558: `let a = one(); let
+/// b = a; cb(b);` was a reported copy lowering never made).
+#[test]
+fn the_survey_and_lowering_agree_on_place_copies() {
+    let src = r#"
+        type In { k: Int = 0; }
+        type R { arr: [In; 2] = [In { }, In { }]; }
+        type Count = Int;
+        type Hits = distinct Int;
+        fn one() -> Int { return 1; }
+        fn count() -> Count { return 2; }
+        fn hits() -> Hits { return Hits(3); }
+        fn dur() -> Duration { return 5ms; }
+        fn dec(d: Decimal<2>) -> Decimal<2> { return d; }
+        fn word() -> String { return std::str::upper("w"); }
+        fn poke_arr(xs: [In; 2]) { xs[0].k = 8; }
+        fn twice(x: Int) -> Int { return x * 2; }
+        locus H {
+            params { source: [In; 2] = [In { }, In { }]; }
+            fn s_int(cb: fn(Int) -> Int) -> Int { let a = one(); let b = a; return cb(b); }
+            fn s_alias(cb: fn(Count) -> Int) -> Int { let a = count(); let b = a; return cb(b); }
+            fn s_distinct(cb: fn(Hits) -> Int) -> Int { let a = hits(); let b = a; return cb(b); }
+            fn s_duration(cb: fn(Duration) -> Int) -> Int { let a = dur(); let b = a; return cb(b); }
+            fn s_decimal(d: Decimal<2>, cb: fn(Decimal<2>) -> Int) -> Int { let a = dec(d); let b = a; return cb(b); }
+            fn s_time(cb: fn(Time) -> Int) -> Int { let a = std::time::current(); let b = a; return cb(b); }
+            fn s_string(cb: fn(String) -> Int) -> Int { let a = word(); let b = a; return cb(b); }
+            fn c_write() -> Int { let mut a = self.source; a[0].k = 4; return a[0].k; }
+            fn c_passed() { let a = self.source; poke_arr(a); }
+            fn c_literal() { let lit = R { arr: self.source }; poke_arr(lit.arr); }
+            run { println(self.s_int(twice)); }
+        }
+        fn main() { let h = H { }; }
+    "#;
+    // The pass's report, per fn.
+    let program = hale_syntax::parse_source(src).expect("parses");
+    let views = hale_types::view_bindings::OwnedViews::of(&[&program], &Default::default());
+    let reported = |f: &str| -> usize {
+        let start = src.find(&format!("fn {f}(")).expect("the fn");
+        let end = src[start + 1..].find("\n            fn ").map_or(src.len(), |e| start + 1 + e);
+        views
+            .cell_copies()
+            .iter()
+            .filter(|c| hale_types::view_bindings::reasons::is_place(c.reason))
+            .filter(|c| (start..end).contains(&(c.span.start.0 as usize)))
+            .count()
+    };
+    let text = ir("agree", src);
+    // Lowering's copies, per fn: a copy-on-write block, or an owned deep
+    // copy (`emit_return_value_deep_copy`'s fresh blocks and clones).
+    let copies = |f: &str| -> usize {
+        let b = body(&text, &format!("@H.{f}("));
+        let deep = ["fn.ret.arr.alloc", "fn.ret.struct.alloc", "fn.ret.str.clone", "lotus_str_clone_cell_owned"];
+        cow_blocks(b).len() + usize::from(deep.iter().any(|d| b.contains(d)))
+    };
+    for f in ["s_int", "s_alias", "s_distinct", "s_duration", "s_decimal", "s_time", "s_string"] {
+        assert_eq!((reported(f), copies(f)), (0, 0), "{f}: a primitive copies nothing");
+    }
+    for f in ["c_write", "c_passed", "c_literal"] {
+        let (r, c) = (reported(f), copies(f));
+        assert!(r == 1 && c >= 1, "{f}: reported {r}, lowering copies {c}");
+    }
+}
