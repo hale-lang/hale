@@ -1948,6 +1948,134 @@ row	App@literal1.h	Host	pinned:App@literal1.h	entry	off owner
 row	App@literal1.p	Pub	pinned:App@literal1.p	entry	off owner
 dynamic	Peer	on pinned:App@literal1.h	in the seed
 
+== crates/hale-codegen/tests/bus_static_reservation.rs#4c3ac167
+root	Root	the entry
+row	Root@literal1	Root	main	default
+row	Root@literal1.first	Ear	main	default
+row	Root@literal1.later	Ear	main	default
+row	Root@literal1.r	Runner	main	default
+row	Root@literal1.t	Teller	main	default
+-- Root@literal1.s	Shell
+row	~	Shell	main	default
+row	~.inner	Ear	main	inherited
+
+== crates/hale-codegen/tests/bus_static_reservation.rs#bd23d98d
+root	Root	the entry
+row	Root@literal1	Root	main	default
+row	Root@literal1.t	Teller	main	default
+row	Root@literal1.y	Tally	main	default
+
+== crates/hale-codegen/tests/bus_static_reservation.rs#b1341a25
+root	Root	the entry
+row	Root@literal1	Root	main	default
+row	Root@literal1.d	Desk	main	default
+row	Root@literal1.e	Every	main	default
+row	Root@literal1.l1	Lane	main	default
+row	Root@literal1.l2	Lane	main	default
+row	Root@literal1.s	Source	main	default
+
+== crates/hale-codegen/tests/bus_static_reservation.rs#4b50f2e2
+root	Fixture	the entry
+row	Fixture@literal1	Fixture	main	default
+row	Fixture@literal1.left	Work	main	default
+row	Fixture@literal1.right	Work	main	default
+
+== crates/hale-codegen/tests/bus_static_reservation.rs#c8ce4dc9
+root	Root	the entry
+domain	pinned:Root@literal1.f	cpus 0
+row	Root@literal1	Root	main	default
+row	Root@literal1.f	Far	pinned:Root@literal1.f	entry	off owner
+row	Root@literal1.t	Teller	main	default
+
+== crates/hale-codegen/tests/bus_static_reservation.rs#c6e33cdb
+root	Root	the entry
+domain	pinned:Root@literal1.h	cpus 0
+domain	pool:io
+row	Root@literal1	Root	main	default
+row	Root@literal1.c	Count	main	default
+row	Root@literal1.t	Teller	main	default
+-- Root@literal1.h	Hold
+row	~	Hold	pinned:~	entry	off owner
+row	~.e	Ear	pinned:~	inherited
+row	~.f	Flood	pinned:~	inherited
+-- Root@literal1.p	PoolHold
+row	~	PoolHold	pool:io	entry	off owner
+row	~.e	Ear	pool:io	inherited
+
+== crates/hale-codegen/tests/bus_static_reservation.rs#895655fa
+root	Root	the entry
+row	Root@literal1	Root	main	default
+row	Root@literal1.h	Listener	main	default
+
+== crates/hale-codegen/tests/bus_static_reservation.rs#07688bb0
+root	Root	the entry
+row	Root@literal1	Root	main	default
+row	Root@literal1.b	Burst	main	default
+row	Root@literal1.g	Gauge	main	default
+
+== crates/hale-codegen/tests/bus_static_reservation.rs#736585eb
+row	Ear@main1	Ear	main	default
+row	Teller@main2	Teller	main	default
+dynamic	Tree	on main	in the seed
+
+== crates/hale-codegen/tests/bus_static_reservation.rs#aa6cf49d
+root	Root	the entry
+domain	pinned:Root@literal1.p
+row	Root@literal1	Root	main	default
+row	Root@literal1.p	Pump	pinned:Root@literal1.p	entry	off owner
+row	Root@literal1.s	Sink	main	default
+row	Root@literal1.w	Slow	main	default
+
+== crates/hale-codegen/tests/bus_static_reservation.rs#cb1cebcb
+root	Root	the entry
+row	Root@literal1	Root	main	default
+row	Root@literal1.b	Burst	main	default
+row	Root@literal1.f	First	main	default
+row	Root@literal1.l	Last	main	default
+
+== crates/hale-codegen/tests/bus_static_reservation.rs#071eab24
+root	Root	the entry
+row	Root@literal1	Root	main	default
+row	Root@literal1.b	Burst	main	default
+row	Root@literal1.e0	Ear	main	default
+row	Root@literal1.e1	Ear	main	default
+
+== crates/hale-codegen/tests/bus_static_reservation.rs#7e4f345a
+root	Root	the entry
+row	Root@literal1	Root	main	default
+row	Root@literal1.b	Burst	main	default
+row	Root@literal1.e	Ear	main	default
+
+== crates/hale-codegen/tests/bus_static_reservation.rs#be62125a
+root	Root	the entry
+row	Root@literal1	Root	main	default
+row	Root@literal1.b	Burst	main	default
+row	Root@literal1.e	Ear	main	default
+
+== crates/hale-codegen/tests/bus_static_reservation.rs#dab40b76
+root	Root	the entry
+domain	pinned:Root@literal1.h	cpus 0
+row	Root@literal1	Root	main	default
+row	Root@literal1.early	Sink	main	default
+row	Root@literal1.h	Hammer	pinned:Root@literal1.h	entry	off owner
+row	Root@literal1.late	Sink	main	default
+row	Root@literal1.s0	Slow	main	default
+row	Root@literal1.s1	Slow	main	default
+shared	Root@literal1.p1	Pair #78ca35e6
+shared	Root@literal1.p2	Pair #78ca35e6
+shared	Root@literal1.p3	Pair #78ca35e6
+
+== crates/hale-codegen/tests/bus_static_reservation.rs#a9a8c139
+root	Root	the entry
+row	Root@literal1	Root	main	default
+row	Root@literal1.t	Teller	main	default
+row	Root@literal1.y	Tally	main	default
+
+== crates/hale-codegen/tests/bus_static_reservation.rs#53160c4e
+root	Root	the entry
+row	Root@literal1	Root	main	default
+row	Root@literal1.t	Teller	main	default
+
 == crates/hale-codegen/tests/bus_subscriber.rs#13a2a6c3
 row	Sub@main1	Sub	main	default
 
@@ -15274,6 +15402,12 @@ row	~.cat.workflows	__lib_dna__core___workflow_definition__WorkflowDefRows	main	
 == shared Owner #fc7aa7f5
 row	~	Owner	pinned:~	entry	off owner
 row	~.k	Kid	pinned:~	inherited
+
+== shared Pair #78ca35e6
+row	~	Pair	main	default
+row	~.a	Sink	main	inherited
+row	~.b	Sink	main	inherited
+row	~.s	Slow	main	inherited
 
 == shared Parent #6fbf107e
 row	~	Parent	main	default

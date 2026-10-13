@@ -517,10 +517,15 @@ so nothing tears it down twice. The rules that order gives you:
   its pinned thread, never does. A parent's own subscriptions are
   in place before its params are built, so what a child publishes
   to its parent from its `birth()` or `run()` waits for the parent's
-  `birth()` too. A subscriber built *after* the publish — a later
-  sibling, a locus a body builds after sending — does not hear it:
-  build subscribers first (`hale check` warns where it sees the
-  order in one body).
+  `birth()` too. The same holds across a tree a literal builds: a
+  later params sibling, or a locus nested under one, hears what an
+  earlier sibling published from its `birth()` or `run()`, after its
+  own `birth()` — the literal reserves those subscriptions before it
+  builds any of its params — a pinned or pool-placed field's own
+  params included, which that field's thread builds. A subscriber
+  built *after* the publish anywhere else — a locus a body builds
+  after sending — does not hear it: build subscribers first (`hale
+  check` warns where it sees the order in one body).
 - **A pinned locus checks its birth on its own thread.** Its
   `birth_check` runs there, after `birth()` and before `run()`.
 - **A field inherits its owner's pool.** A locus field inside a
@@ -579,6 +584,10 @@ behaviour until it changes:
 - a dissolve-epoch violation of a flow child, or of a field torn
   down from `fn main`, ends the process instead of reaching the
   parent's handler;
+- a subscriber built by a pinned or pool-placed field nested in
+  another such field's params, or a replicated field's instance,
+  misses what an earlier part of the tree published before it was
+  built;
 - a subscribing locus that only stdlib or imported code builds hears
   what is published to it during its `birth()` at once, not after;
 - a `birth()` that publishes to its own topic without bound keeps

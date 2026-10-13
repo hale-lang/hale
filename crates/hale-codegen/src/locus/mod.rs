@@ -8,6 +8,7 @@ pub(crate) mod dissolve;
 pub(crate) mod instantiation;
 pub(crate) mod lifecycle_trace;
 pub(crate) mod method;
+pub(crate) mod reservation;
 pub(crate) mod restart;
 pub(crate) mod return_path;
 pub(crate) mod unwind;

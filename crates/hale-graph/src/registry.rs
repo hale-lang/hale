@@ -300,6 +300,7 @@ const CG_INST: &str = "crates/hale-codegen/src/locus/instantiation.rs";
 const CG_DECL: &str = "crates/hale-codegen/src/locus/decl.rs";
 const CG_METHOD: &str = "crates/hale-codegen/src/locus/method.rs";
 const CG_DISSOLVE: &str = "crates/hale-codegen/src/locus/dissolve.rs";
+const CG_RESERVATION: &str = "crates/hale-codegen/src/locus/reservation.rs";
 const CG_RESTART: &str = "crates/hale-codegen/src/locus/restart.rs";
 const CG_CHANNELS: &str = "crates/hale-codegen/src/channels/mod.rs";
 const CG_CONVERSION: &str = "crates/hale-codegen/src/conversion.rs";
@@ -823,7 +824,7 @@ pub const FAMILIES: &[Family] = &[
             consumer_at("bindings (codegen's binding term counts the entry's entries, by the declaring locus's site)", BINDING_ROWS, "binds_on_main"),
             consumer_at("the lifecycle plan (the deferred main entry's spine is the entry's, by identity)", LIFECYCLE_DERIVE, "is_entry"),
             consumer_at("the lowering view (the snapshot's row, carried to codegen)", SNAPSHOT, "view.entry = Some(entry)"),
-            consumer_at("codegen (every comparison against the main locus reads the row's entry, found in lowering's program by its site: instantiation's and the cascade's placement overrides, the deferred entry's pool join, the frame flush's main-locus head before its pinned joins, whether the root's literal hands it back so it keeps the join record of every replica of its pinned fields, and which struct carries those records (C52), the bindings prelude's loss handler, and `root_bindings`, which the shm-ring subjects and the binding codec thunks read)", CG, "is_entry_locus"),
+            consumer_at("codegen (every comparison against the main locus reads the row's entry, found in lowering's program by its site: instantiation's and the cascade's placement overrides, the deferred entry's pool join, the frame flush's main-locus head before its pinned joins, whether the root's literal hands it back so it keeps the join record of every replica of its pinned fields, and which struct carries those records (C52), the bindings prelude's loss handler, `root_bindings`, which the shm-ring subjects and the binding codec thunks read, and the static tree a root reserves its subscriptions over, whose main-locus params build on the entry's own thread (#1534))", CG, "is_entry_locus"),
             consumer_at("--env and --matrix (an environment's constitutions are adopted into the row's root, the seed's own `main locus` the build deploys: the entry, in every seed an environment may be bound to)", SNAPSHOT, "adopt_into_root"),
             consumer_at("model (the header's `entrypoint` names the root the arrangement is rooted at, the placement table's, so the row's root; `main` when there is none)", MODEL_BUILDER, "derive_application_model_over"),
             consumer_at("lsp (`hale/placement` shows the row's root's params and placement block, a refused module-nested root included, never an imported library's `main locus`)", LSP, "placement_of"),
@@ -854,7 +855,7 @@ pub const FAMILIES: &[Family] = &[
         owned: &[],
         seams: &[
             Seam { symbol: "entry_row(", allowed: &[(ENTRY, 2), (SNAPSHOT, 1), (CHECK, 1), (V_MATRIX, 1), (SYNC, 1), (PLACEMENT, 1), (OWNERSHIP_GRAPH, 1), (LIFECYCLE_DERIVE, 1)] },
-            Seam { symbol: "is_entry_locus(", allowed: &[(CG, 3), (CG_INST, 2), (CG_DISSOLVE, 2), (CG_DECL, 1)] },
+            Seam { symbol: "is_entry_locus(", allowed: &[(CG, 3), (CG_INST, 2), (CG_DISSOLVE, 2), (CG_DECL, 1), (CG_RESERVATION, 1)] },
             // The per-declaration readers of the `main` keyword (the
             // invariant above): each where it is, once.
             Seam { symbol: "world()", allowed: &[(CLAIMS, 1)] },
