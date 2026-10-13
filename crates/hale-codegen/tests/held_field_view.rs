@@ -112,6 +112,56 @@ const PROGRAM: &str = r##"
             while i < 50 { self.k.rename(std::str::upper("kid-" + to_string(i))); i = i + 1; }
             return s;
         }
+        // A value carried out of a match arm, an `if` and a block, held
+        // across the replace (the arm's own binding is used before it).
+        fn match_escape() -> String {
+            let held = match self.f.tag { Tag::Named(s) -> s, Tag::Empty -> "", };
+            self.churn();
+            return held;
+        }
+        fn if_escape() -> String {
+            let m = match self.f.tag { Tag::Named(s) -> s, Tag::Empty -> "", };
+            let held = if self.f.n > 0 { m } else { "" };
+            self.churn();
+            return held;
+        }
+        fn block_escape() -> String {
+            let held = { let t = self.f.s; t };
+            self.churn();
+            return held;
+        }
+        fn literal_escape() -> String {
+            let t = (self.f.s, 1);
+            let r = Inner { s: self.f.inner.s };
+            self.churn();
+            return t.0 + "/" + r.s;
+        }
+        // An outer local rebound in a loop and read on the next
+        // iteration, after the replace the previous one made.
+        fn loop_rebound() -> String {
+            let mut held = "";
+            let mut out = "";
+            let mut i = 0;
+            while i < 2 { out = out + held + ","; held = self.f.s; self.churn(); i = i + 1; }
+            return out;
+        }
+        fn for_rebound() -> String {
+            let mut held = "";
+            let mut out = "";
+            for k in [1, 2] { out = out + held + ","; held = self.f.s; self.churn(); }
+            return out;
+        }
+        fn nested_rebound() -> String {
+            let mut held = "";
+            let mut out = "";
+            let mut i = 0;
+            while i < 2 {
+                let mut j = 0;
+                while j < 1 { out = out + held + ","; held = self.f.s; self.churn(); j = j + 1; }
+                i = i + 1;
+            }
+            return out;
+        }
         fn in_place() -> String {
             let x = self.f.s;
             self.f.s = std::str::upper("abc");
@@ -140,6 +190,20 @@ const PROGRAM: &str = r##"
         println("kid=" + h.kid());
         h.put(std::str::upper("old"));
         println("in_place=" + h.in_place());
+        h.put(std::str::upper("old-matched-payload-text"));
+        println("match_escape=" + h.match_escape());
+        h.put(std::str::upper("old-matched-payload-text"));
+        println("if_escape=" + h.if_escape());
+        h.put(std::str::upper("old-block-result-text"));
+        println("block_escape=" + h.block_escape());
+        h.put(std::str::upper("old-literal-text"));
+        println("literal_escape=" + h.literal_escape());
+        h.put(std::str::upper("old-loop-binding-text"));
+        println("loop_rebound=" + h.loop_rebound());
+        h.put(std::str::upper("old-loop-binding-text"));
+        println("for_rebound=" + h.for_rebound());
+        h.put(std::str::upper("old-loop-binding-text"));
+        println("nested_rebound=" + h.nested_rebound());
         println("now=" + h.f.s + "/" + h.k.name);
     }
 "##;
@@ -175,7 +239,14 @@ fn a_binding_held_across_a_replace_reads_the_old_value() {
         "rebound=OLD",
         "kid=OLD",
         "in_place=OLD",
-        "now=ABC/KID-49",
+        "match_escape=OLD-MATCHED-PAYLOAD-TEXT\n",
+        "if_escape=OLD-MATCHED-PAYLOAD-TEXT\n",
+        "block_escape=OLD-BLOCK-RESULT-TEXT\n",
+        "literal_escape=OLD-LITERAL-TEXT/OLD-LITERAL-TEXT\n",
+        "loop_rebound=,OLD-LOOP-BINDING-TEXT,\n",
+        "for_rebound=,OLD-LOOP-BINDING-TEXT,\n",
+        "nested_rebound=,OLD-LOOP-BINDING-TEXT,\n",
+        "now=NEW-VALUE-49/KID-49",
     ] {
         assert!(stdout.contains(want), "missing {want:?}; stdout: {stdout}; stderr: {stderr}");
     }

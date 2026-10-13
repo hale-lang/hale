@@ -51,8 +51,9 @@ a write through one local never shows up in another.
 
 The same holds for a `String`, `Bytes`, tuple or array you read out of
 a field — `let name = self.row.name;`, a `match` payload of a field, the
-array a `for` walks: it keeps what it read, even across a method that
-replaces the field. The compiler only pays for a copy where such a
+array a `for` walks, a value a `match` or `if` carries out of one: it
+keeps what it read, even across a method that replaces the field, and
+a local rebound inside a loop keeps it into the next iteration. The compiler only pays for a copy where such a
 write can come before a use; anywhere else the binding reads the
 field's own bytes.
 

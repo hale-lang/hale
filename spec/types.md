@@ -275,7 +275,13 @@ place — `let s = self.f.s;`, `let (a, n) = self.pair;`, a bare `x =
 self.f.s`, a `match self.e { E::A(s) -> .. }` payload, the array a `for
 x in self.f.names` walks — and a place passed straight to a call
 (`self.take(self.f.s)`) keep the value they were given, whatever
-replaces the place while they are live. The compiler keeps these the
+replaces the place while they are live. So does a value carried out of
+a place by another expression: a `match` arm's payload (`let held =
+match self.e { E::A(s) -> s, E::B -> "", };`), an `if` or block
+result, a tuple, array or record literal holding it, an `or`
+substitute, the result of a call it was passed to (a stdlib call may
+return its argument, an enum constructor holds it). A method returning
+such a value hands back an owned copy. The compiler keeps these the
 place's own pointer where it can, which costs nothing: it binds an
 owned copy only when a write that may replace the place comes between
 the binding and a use of it (or is the call it is passed to). Such a
@@ -285,8 +291,10 @@ method by its name, on any locus declaring one; a method called on the
 field itself, as a form's `set`), and anything that may run other code
 of the locus: a call through a fn value, a publish, `yield`, a recovery
 statement, a stdlib call that parks on an `async_io` pool. A write
-inside a loop reaches a binding made before the loop wherever in the
-body it is read. Before this a String local held across a method that
+inside a loop reaches a use anywhere in the loop when the variable was
+declared before the loop — a local declared outside and rebound inside
+(`held = self.f.s;` then a replacing call, read on the next iteration)
+included. Before this a String local held across a method that
 replaced its field read the block the replace retired, reused by the
 next allocation (`spec/memory.md` rules 6 and 7), and a same-length
 store into the field changed the local in place.

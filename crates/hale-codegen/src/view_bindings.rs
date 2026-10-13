@@ -19,10 +19,14 @@
 //!
 //! This pass finds the bindings for which that can happen, so lowering
 //! binds an owned copy of exactly those and leaves every other one a
-//! view. A binding is a view of a place chain (`self.a.b`, `h.name`,
-//! `self.arr[i].s`); the chain's field names are its keys. A binding
-//! needs its own copy when some use of it comes after (or as an
-//! argument of) a write that may change one of its keys:
+//! view. A value views the places it may have been read from, named by
+//! their field names, its keys: a field read (`self.a.b`, `h.name`,
+//! `self.arr[i].s`) views its field and what it is read from, and a
+//! value that carries another out — a `match` arm's payload, an `if`
+//! or block result, a tuple, array or record literal holding it, a
+//! call that may hand its argument back — views what that one does. A
+//! binding needs its own copy when some use of it comes after (or as
+//! an argument of) a write that may change one of its keys:
 //!
 //! - an assignment `x.f... = v` (any root) writes key `f`;
 //! - a call writes what its callee writes, transitively: a locus
@@ -36,7 +40,8 @@
 //!   anything.
 //!
 //! In a loop, a write anywhere in the body reaches a use anywhere in it
-//! when the binding was made before the loop. Field names stand in for
+//! when the variable was declared before the loop, wherever in the
+//! loop the instance holding the value was assigned. Field names stand in for
 //! fields of any type, so the answer only errs toward a copy.
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
@@ -60,6 +65,11 @@ enum Site {
     /// A call's argument read from a place the callee may replace (the
     /// callee reads its parameter after), by the argument's span.
     Arg(u32, u32),
+    /// A method's returned value that views a place, by the returned
+    /// expression's span: handed back as an owned copy, where the
+    /// return's same-arena skip would pass the field's own pointer
+    /// through to a caller whose arena holds it.
+    Ret(u32, u32),
 }
 
 impl OwnedViews {
@@ -83,10 +93,17 @@ impl OwnedViews {
         self.sites.contains(&Site::Match(m.span.start.0, m.span.end.0))
     }
 
+    /// Does the returned expression `e` view a place, so the return
+    /// hands back an owned copy?
+    pub(crate) fn ret(&self, e: &Expr) -> bool {
+        let span = e.span();
+        !self.sites.is_empty() && self.sites.contains(&Site::Ret(span.start.0, span.end.0))
+    }
+
     /// Is `e` a call's argument read from a place the callee may
     /// replace, passed as an owned copy?
     pub(crate) fn arg(&self, e: &Expr) -> bool {
-        if self.sites.is_empty() || !matches!(e, Expr::Field { .. } | Expr::Index { .. }) {
+        if self.sites.is_empty() {
             return false;
         }
         let span = e.span();
@@ -121,6 +138,21 @@ impl Writes {
     }
     fn touches(&self, keys: &BTreeSet<String>) -> bool {
         self.top || keys.iter().any(|k| self.fields.contains(k))
+    }
+}
+
+/// The field names a value may view, or `None` for a value that
+/// views no place.
+type Keys = Option<BTreeSet<String>>;
+
+fn union(a: Keys, b: Keys) -> Keys {
+    match (a, b) {
+        (Some(mut a), Some(b)) => {
+            a.extend(b);
+            Some(a)
+        }
+        (a, None) => a,
+        (None, b) => b,
     }
 }
 
@@ -226,7 +258,11 @@ fn owned_view_sites(program: &Program) -> Vec<(Site, String)> {
     let mut out = Vec::new();
     for (params, body) in &p.bodies {
         let mut w = Walk::new(&p, Some(&summary), params);
-        w.block(body);
+        // A body's tail is its value when the fn returns one.
+        let keys = w.block(body);
+        if let Some(t) = &body.tail {
+            w.returned(t, keys);
+        }
         out.extend(w.flagged());
     }
     out
@@ -271,33 +307,18 @@ struct Walk<'p, 'a> {
     scopes: Vec<BTreeMap<String, Option<usize>>>,
     /// Per variable, its instances.
     vars: Vec<Vec<usize>>,
+    /// Per variable, where it was declared: a loop that starts after
+    /// it carries its value round the back edge, whichever instance of
+    /// it holds the value.
+    declared: Vec<u32>,
     insts: Vec<Inst>,
     /// Per variable, the positions it is read at.
     uses: Vec<Vec<u32>>,
     writes: Vec<WriteAt>,
     loops: Vec<(u32, u32)>,
-    /// Arguments passed to a call that may replace what they view.
+    /// Arguments passed to a call that may replace what they view, and
+    /// returned values that view a place.
     args: Vec<(Site, String)>,
-}
-
-/// The field names of a place chain rooted at `self` or an identifier,
-/// and the root identifier (`None` for `self`). Index expressions are
-/// not part of the chain's keys.
-fn place_chain(e: &Expr) -> Option<(Option<&str>, BTreeSet<String>)> {
-    let mut keys = BTreeSet::new();
-    let mut cur = e;
-    loop {
-        match cur {
-            Expr::Field { receiver, name, .. } => {
-                keys.insert(name.name.clone());
-                cur = receiver;
-            }
-            Expr::Index { receiver, .. } => cur = receiver,
-            Expr::KwSelf(_) => return Some((None, keys)),
-            Expr::Ident(id) => return Some((Some(id.name.as_str()), keys)),
-            _ => return None,
-        }
-    }
 }
 
 fn pattern_names<'e>(p: &'e Pattern, out: &mut Vec<&'e Ident>) {
@@ -323,6 +344,7 @@ impl<'p, 'a> Walk<'p, 'a> {
             pos: 0,
             scopes: vec![top],
             vars: Vec::new(),
+            declared: Vec::new(),
             insts: Vec::new(),
             uses: Vec::new(),
             writes: Vec::new(),
@@ -345,20 +367,14 @@ impl<'p, 'a> Walk<'p, 'a> {
     fn declare(&mut self, name: &str) -> usize {
         let v = self.vars.len();
         self.vars.push(Vec::new());
+        self.declared.push(self.pos);
         self.uses.push(Vec::new());
         self.scopes.last_mut().expect("a scope").insert(name.to_string(), Some(v));
         v
     }
 
-    /// The keys a value bound from `e` views, if it views a place: a
-    /// field chain's names, or, for another local, that local's keys.
-    fn view_keys(&self, e: &Expr) -> Option<BTreeSet<String>> {
-        let (root, keys) = place_chain(e)?;
-        if !keys.is_empty() {
-            return Some(keys);
-        }
-        // A bare local: the binding aliases what it holds.
-        let v = self.lookup(root?)??;
+    /// The keys every instance of the variable `v` views.
+    fn var_keys(&self, v: usize) -> Keys {
         let mut all = BTreeSet::new();
         for &i in &self.vars[v] {
             all.extend(self.insts[i].keys.iter().cloned());
@@ -382,15 +398,15 @@ impl<'p, 'a> Walk<'p, 'a> {
         }
     }
 
-    fn block(&mut self, b: &Block) {
+    /// Walk a block; the keys of its value (its tail's).
+    fn block(&mut self, b: &Block) -> Keys {
         self.scopes.push(BTreeMap::new());
         for s in &b.stmts {
             self.stmt(s);
         }
-        if let Some(t) = &b.tail {
-            self.expr(t);
-        }
+        let keys = b.tail.as_ref().and_then(|t| self.expr(t));
         self.scopes.pop();
+        keys
     }
 
     fn in_loop(&mut self, f: impl FnOnce(&mut Self)) {
@@ -400,17 +416,17 @@ impl<'p, 'a> Walk<'p, 'a> {
         self.loops.push((start, end));
     }
 
-    fn stmt(&mut self, s: &Stmt) {
+    /// Walk a statement; the keys of its value when it is an
+    /// expression, `if`, `match` or block statement.
+    fn stmt(&mut self, s: &Stmt) -> Keys {
         match s {
             Stmt::Let { name, value, id, .. } => {
-                self.expr(value);
-                let keys = self.view_keys(value);
+                let keys = self.expr(value);
                 let v = self.declare(&name.name);
                 self.bind(v, Site::Node(id.0), &name.name, keys);
             }
             Stmt::LetTuple { names, value, id, .. } => {
-                self.expr(value);
-                let keys = self.view_keys(value);
+                let keys = self.expr(value);
                 for n in names {
                     let v = self.declare(&n.name);
                     self.bind(v, Site::Node(id.0), &n.name, keys.clone());
@@ -422,7 +438,7 @@ impl<'p, 'a> Walk<'p, 'a> {
                         self.expr(e);
                     }
                 }
-                self.expr(value);
+                let keys = self.expr(value);
                 let first = target.tail.iter().find_map(|seg| match seg {
                     LValueSeg::Field(f) => Some(f.name.as_str()),
                     LValueSeg::Index(_) => None,
@@ -430,7 +446,6 @@ impl<'p, 'a> Walk<'p, 'a> {
                 if target.tail.is_empty() {
                     // A bare local rebound: a new instance of it.
                     if let Some(Some(v)) = self.lookup(&target.head.name) {
-                        let keys = self.view_keys(value);
                         self.bind(v, Site::Node(id.0), &target.head.name, keys);
                     }
                 } else if let Some(f) = first {
@@ -442,15 +457,14 @@ impl<'p, 'a> Walk<'p, 'a> {
                     self.write(Writes::field(&target.head.name), None);
                 }
             }
-            Stmt::If(i) => self.if_stmt(i),
-            Stmt::Match(m) => self.match_stmt(m),
+            Stmt::If(i) => return self.if_stmt(i),
+            Stmt::Match(m) => return self.match_stmt(m),
             Stmt::For { name, iter, body, id, .. } => {
                 // The loop holds the array it walks from before its
                 // first iteration to its last, reading the next element
                 // at the top of each: the binding is the array's, made
                 // before the loop, and the element is that binding.
-                self.expr(iter);
-                let keys = self.view_keys(iter);
+                let keys = self.expr(iter);
                 self.scopes.push(BTreeMap::new());
                 let v = self.declare(&name.name);
                 self.bind(v, Site::Node(id.0), &name.name, keys);
@@ -467,10 +481,13 @@ impl<'p, 'a> Walk<'p, 'a> {
             }),
             Stmt::Return(e, _) => {
                 if let Some(e) = e {
-                    self.expr(e);
+                    let keys = self.expr(e);
+                    self.returned(e, keys);
                 }
             }
-            Stmt::Fail { value, .. } => self.expr(value),
+            Stmt::Fail { value, .. } => {
+                self.expr(value);
+            }
             Stmt::Violate { payload, .. } => {
                 if let Some(e) = payload {
                     self.expr(e);
@@ -488,7 +505,9 @@ impl<'p, 'a> Walk<'p, 'a> {
             }
             Stmt::Yield(_) | Stmt::Reperspective { .. } => self.write(Writes::top(), None),
             Stmt::Recovery { args, .. } => {
-                args.iter().for_each(|a| self.expr(a));
+                args.iter().for_each(|a| {
+                    self.expr(a);
+                });
                 self.write(Writes::top(), None);
             }
             Stmt::ShmWrite { max, binding, body, .. } => {
@@ -498,25 +517,29 @@ impl<'p, 'a> Walk<'p, 'a> {
                 self.block(body);
                 self.scopes.pop();
             }
-            Stmt::Block(b) => self.block(b),
-            Stmt::Expr(e) => self.expr(e),
+            Stmt::Block(b) => return self.block(b),
+            Stmt::Expr(e) => return self.expr(e),
             Stmt::Break(_) | Stmt::Continue(_) | Stmt::Terminate(_) => {}
         }
+        None
     }
 
-    fn if_stmt(&mut self, i: &IfStmt) {
+    /// Walk an `if`; the keys of its value, either branch's.
+    fn if_stmt(&mut self, i: &IfStmt) -> Keys {
         self.expr(&i.cond);
-        self.block(&i.then_block);
-        match i.else_block.as_deref() {
+        let then = self.block(&i.then_block);
+        let other = match i.else_block.as_deref() {
             Some(ElseBranch::Else(b)) => self.block(b),
             Some(ElseBranch::ElseIf(e)) => self.if_stmt(e),
-            None => {}
-        }
+            None => None,
+        };
+        union(then, other)
     }
 
-    fn match_stmt(&mut self, m: &MatchStmt) {
-        self.expr(&m.scrutinee);
-        let keys = self.view_keys(&m.scrutinee);
+    /// Walk a `match`; the keys of its value, any arm's.
+    fn match_stmt(&mut self, m: &MatchStmt) -> Keys {
+        let keys = self.expr(&m.scrutinee);
+        let mut out = None;
         let site = Site::Match(m.span.start.0, m.span.end.0);
         for arm in &m.arms {
             self.scopes.push(BTreeMap::new());
@@ -529,23 +552,36 @@ impl<'p, 'a> Walk<'p, 'a> {
             if let Some(g) = &arm.guard {
                 self.expr(g);
             }
-            match &arm.body {
+            let arm_keys = match &arm.body {
                 MatchArmBody::Expr(e) => self.expr(e),
                 MatchArmBody::Block(b) => self.block(b),
-            }
+            };
+            out = union(out, arm_keys);
             self.scopes.pop();
         }
+        out
     }
 
-    fn disposition(&mut self, d: &OrDisposition) {
+    /// Walk an `or`'s disposition; the keys of a substitute value.
+    fn disposition(&mut self, d: &OrDisposition) -> Keys {
         match d {
             OrDisposition::Substitute(e) | OrDisposition::Fail(e, _) => {
                 self.scopes.push(BTreeMap::new());
                 self.scopes.last_mut().expect("a scope").insert("err".into(), None);
-                self.expr(e);
+                let keys = self.expr(e);
                 self.scopes.pop();
+                if matches!(d, OrDisposition::Substitute(_)) { keys } else { None }
             }
-            OrDisposition::Raise(_) | OrDisposition::Discard(_) | OrDisposition::Wait(_) => {}
+            OrDisposition::Raise(_) | OrDisposition::Discard(_) | OrDisposition::Wait(_) => None,
+        }
+    }
+
+    /// A returned value that views a place is handed back owned.
+    fn returned(&mut self, e: &Expr, keys: Keys) {
+        if let (Some(keys), true) = (keys, self.summary.is_some()) {
+            let span = e.span();
+            let name = keys.iter().next().cloned().unwrap_or_default();
+            self.args.push((Site::Ret(span.start.0, span.end.0), name));
         }
     }
 
@@ -556,47 +592,84 @@ impl<'p, 'a> Walk<'p, 'a> {
         }
     }
 
-    fn expr(&mut self, e: &Expr) {
+    /// Walk an expression; the keys of the places its value may view
+    /// (`None`: it views none). A field read views its field, and
+    /// whatever the value it is read from views; a local, what its
+    /// instances view; a tuple, array or record literal, what its
+    /// parts view; a block, `if`, `match` or `or`, what any value it
+    /// may produce views. A call's result may hand back what its
+    /// arguments and its receiver view (a stdlib leaf may return its
+    /// argument, an enum constructor holds it), so it views their
+    /// keys; arithmetic and concatenation produce fresh values.
+    fn expr(&mut self, e: &Expr) -> Keys {
         match e {
-            Expr::Ident(id) => self.use_name(&id.name),
-            Expr::Literal(..) | Expr::Path(_) | Expr::KwSelf(_) => {}
+            Expr::Ident(id) => {
+                self.use_name(&id.name);
+                match self.lookup(&id.name) {
+                    Some(Some(v)) => self.var_keys(v),
+                    _ => None,
+                }
+            }
+            Expr::Literal(..) | Expr::Path(_) | Expr::KwSelf(_) => None,
             Expr::Binary { left, right, .. } => {
                 self.expr(left);
                 self.expr(right);
+                None
             }
-            Expr::Unary { operand, .. } => self.expr(operand),
+            Expr::Unary { operand, .. } => {
+                self.expr(operand);
+                None
+            }
             Expr::Call { callee, args, .. } => self.call(callee, args),
-            Expr::Field { receiver, .. } | Expr::Path2 { receiver, .. } => self.expr(receiver),
-            Expr::Index { receiver, index, .. } => {
-                self.expr(receiver);
-                self.expr(index);
+            Expr::Field { receiver, name, .. } => {
+                let mut keys = self.expr(receiver).unwrap_or_default();
+                keys.insert(name.name.clone());
+                Some(keys)
             }
-            Expr::Tuple(es, _) | Expr::Array(es, _) => es.iter().for_each(|x| self.expr(x)),
-            Expr::Struct { inits, .. } => inits.iter().for_each(|i| self.expr(&i.value)),
+            Expr::Path2 { receiver, .. } => {
+                self.expr(receiver);
+                None
+            }
+            Expr::Index { receiver, index, .. } => {
+                let keys = self.expr(receiver);
+                self.expr(index);
+                keys
+            }
+            Expr::Tuple(es, _) | Expr::Array(es, _) => {
+                es.iter().fold(None, |acc, x| union(acc, self.expr(x)))
+            }
+            Expr::Struct { inits, .. } => inits.iter().fold(None, |acc, i| union(acc, self.expr(&i.value))),
             Expr::Block(b) => self.block(b),
             Expr::If(i) => self.if_stmt(i),
             Expr::Match(m) => self.match_stmt(m),
-            Expr::Sum(x, _) | Expr::Prod(x, _) => self.expr(x),
+            Expr::Sum(x, _) | Expr::Prod(x, _) => {
+                self.expr(x);
+                None
+            }
             Expr::Approx { left, right, tolerance, .. } => {
                 self.expr(left);
                 self.expr(right);
                 self.expr(tolerance);
+                None
             }
             Expr::Range { lo, hi, .. } => {
                 self.expr(lo);
                 self.expr(hi);
+                None
             }
             Expr::ArrayRepeat { val, .. } => self.expr(val),
             Expr::Or { inner, disposition, .. } => {
-                self.expr(inner);
-                self.disposition(disposition);
+                let keys = self.expr(inner);
+                let other = self.disposition(disposition);
+                union(keys, other)
             }
         }
     }
 
-    fn call(&mut self, callee: &Expr, args: &[Expr]) {
+    fn call(&mut self, callee: &Expr, args: &[Expr]) -> Keys {
         let start = self.tick();
         let mut writes = Writes::default();
+        let mut result: Keys = None;
         match callee {
             Expr::Ident(id) => match self.lookup(&id.name) {
                 // A fn value held in a local or a parameter.
@@ -611,7 +684,7 @@ impl<'p, 'a> Walk<'p, 'a> {
                 writes.add(&self.named_fn(&segs));
             }
             Expr::Field { receiver, name, .. } | Expr::Path2 { receiver, name, .. } => {
-                self.expr(receiver);
+                result = self.expr(receiver);
                 if self.p.fn_fields.contains(&name.name) {
                     writes = Writes::top();
                 } else {
@@ -628,19 +701,21 @@ impl<'p, 'a> Walk<'p, 'a> {
                 writes = Writes::top();
             }
         }
-        args.iter().for_each(|a| self.expr(a));
-        if self.summary.is_some() {
-            for a in args {
-                if let Some((_, keys)) = place_chain(a) {
-                    if !keys.is_empty() && writes.touches(&keys) {
-                        let span = a.span();
-                        let name = keys.iter().next().cloned().unwrap_or_default();
-                        self.args.push((Site::Arg(span.start.0, span.end.0), name));
-                    }
+        for a in args {
+            let keys = self.expr(a);
+            // A local passed on is its own binding's use, inside the
+            // call: that binding answers for it.
+            if let (Some(keys), true, false) = (&keys, self.summary.is_some(), matches!(a, Expr::Ident(_))) {
+                if writes.touches(keys) {
+                    let span = a.span();
+                    let name = keys.iter().next().cloned().unwrap_or_default();
+                    self.args.push((Site::Arg(span.start.0, span.end.0), name));
                 }
             }
+            result = union(result, keys);
         }
         self.write(writes, Some(start));
+        result
     }
 
     /// A call of a free fn or a stdlib leaf by its path.
@@ -680,7 +755,7 @@ impl<'p, 'a> Walk<'p, 'a> {
                     && self.uses[inst.var].iter().any(|&u| {
                         u >= w.start
                             || self.loops.iter().any(|&(ls, le)| {
-                                ls > inst.at && ls <= u.min(w.start) && u.max(w.at) <= le
+                                ls > self.declared[inst.var] && ls <= u.min(w.start) && u.max(w.at) <= le
                             })
                     })
             });
@@ -808,6 +883,80 @@ mod tests {
             }
         "#;
         assert_eq!(flagged(src), ["s"]);
+    }
+
+    #[test]
+    fn a_value_carried_out_of_a_match_if_or_block_is_owned() {
+        let src = r#"
+            type E = enum { A(String), B };
+            locus H {
+                params { e: E = E::B; flag: Bool = true; }
+                fn clear() { self.e = E::B; }
+                fn matched() -> String {
+                    let held = match self.e { E::A(s) -> s, E::B -> "", };
+                    self.clear();
+                    return held;
+                }
+                fn cond() -> String {
+                    let m = match self.e { E::A(s) -> s, E::B -> "", };
+                    let held = if self.flag { m } else { "" };
+                    self.clear();
+                    return held;
+                }
+                fn block() -> String {
+                    let held = { let t = match self.e { E::A(s) -> s, E::B -> "", }; t };
+                    self.clear();
+                    return held;
+                }
+                fn early() -> String {
+                    let held = match self.e { E::A(s) -> s, E::B -> "", };
+                    let out = held + "!";
+                    self.clear();
+                    return out;
+                }
+            }
+        "#;
+        let got = owned_view_sites(&hale_syntax::parse_source(src).expect("parses"));
+        let lets = got.iter().filter(|(site, _)| matches!(site, Site::Node(_))).count();
+        assert_eq!(lets, 3, "{got:?}");
+    }
+
+    #[test]
+    fn a_literal_or_a_call_holding_a_view_is_a_view() {
+        assert_eq!(with(r#"let t = (self.f.s, 1); self.put("n"); println(t.0);"#), ["t"]);
+        assert_eq!(with(r#"let r = F { s: self.f.s }; self.put("n"); println(r.s);"#), ["r"]);
+        assert_eq!(with(r#"let t = std::str::trim(self.f.s); self.put("n"); println(t);"#), ["t"]);
+        // Concatenation is a fresh value.
+        assert!(with(r#"let t = self.f.s + "!"; self.put("n"); println(t);"#).is_empty());
+    }
+
+    #[test]
+    fn an_outer_local_rebound_in_a_loop_carries_round_the_back_edge() {
+        assert_eq!(
+            with(r#"let mut held = ""; let mut i = 0; while i < 2 { println(held); held = self.f.s; self.put("n"); i = i + 1; }"#),
+            ["held"]
+        );
+        // Rebound after the write: the next iteration reads it before
+        // the next write.
+        assert!(with(r#"let mut held = ""; let mut i = 0; while i < 2 { println(held); self.put("n"); held = self.f.s; i = i + 1; }"#)
+            .is_empty());
+        // A for, and a loop nested in another.
+        assert_eq!(
+            with(r#"let mut held = ""; for k in [1, 2] { println(held); held = self.f.s; self.put("n"); }"#),
+            ["held"]
+        );
+        assert_eq!(
+            with(r#"let mut held = ""; let mut i = 0; while i < 2 { let mut j = 0; while j < 2 { println(held); held = self.f.s; self.put("n"); j = j + 1; } i = i + 1; }"#),
+            ["held"]
+        );
+    }
+
+    #[test]
+    fn a_returned_view_is_owned() {
+        // The tail and a `return` alike; a fresh value is not.
+        assert_eq!(flagged(&LOCUS.replace("fn body() { BODY }", "fn name() -> String { self.f.s }")), ["f"]);
+        assert_eq!(with(r#"let s = self.f.s; return s;"#), ["f"]);
+        assert!(with(r#"return self.f.s + "!";"#).is_empty());
     }
 
     #[test]

@@ -17614,11 +17614,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 {
                     let dest = self.current_arena_ptr()?;
                     val = self.emit_return_value_deep_copy(val, &ty, dest)?;
-                } else if self.owned_views.node(*id) && Self::expr_is_place(value_to_lower) {
-                    // A String, Bytes, tuple, array or payload enum read
-                    // from a place is the place's own pointer — unless a
-                    // write that may replace it comes before a use
-                    // (`crate::view_bindings`): `let s = self.f.s;
+                } else if self.owned_views.node(*id) {
+                    // A String, Bytes, tuple, array or payload enum that
+                    // views a place — read from it, or carried out of
+                    // one by a `match` arm, an `if`, a block, a literal
+                    // holding it — is the place's own pointer, unless a
+                    // write that may replace the place comes before a
+                    // use (`crate::view_bindings`): `let s = self.f.s;
                     // self.put(..); s` read the block `put`'s retire
                     // recycled. Those bind an owned copy.
                     val = self.own_viewed_value(val, &ty)?;
@@ -17772,7 +17774,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 let (tup_val, tup_ty) = self.lower_expr(value, scope)?;
                 // The elements of a tuple read from a place view it, as a
                 // `let` of the place would (`crate::view_bindings`).
-                let owned = self.owned_views.node(*id) && Self::expr_is_place(value);
+                let owned = self.owned_views.node(*id);
                 let elem_tys = match &tup_ty {
                     CodegenTy::Tuple(ts) => ts.clone(),
                     other => {
@@ -18338,7 +18340,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     && target.head.name != "self"
                     && matches!(op, AssignOp::Eq)
                     && self.owned_views.node(*assign_id)
-                    && Self::expr_is_place(value)
                 {
                     // A local rebound to a place's String, Bytes or
                     // compound that a later write may replace while the
@@ -18399,7 +18400,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             Stmt::For { name, iter, body, id, .. } => {
                 // An element of an array read from a place views it, as
                 // a `let` of the place would (`crate::view_bindings`).
-                let owned = self.owned_views.node(*id) && Self::expr_is_place(iter);
+                let owned = self.owned_views.node(*id);
                 self.lower_for(name, iter, body, owned, scope)
             }
             Stmt::Break(_) => self.lower_break(),
@@ -20679,7 +20680,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // when a later write may replace it while the arm still reads
         // it (`crate::view_bindings`).
         let owned_bindings =
-            self.owned_views.match_arms(m) && Self::expr_is_place(&m.scrutinee);
+            self.owned_views.match_arms(m);
 
         let mut all_terminated = true;
 
@@ -22998,6 +22999,16 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         declared_ty, got_ty
                     )));
                 }
+                // A method's returned value that views a place — `return
+                // self.f.s;`, a local read from a field, a match payload
+                // of one — goes back as an owned copy
+                // (`crate::view_bindings`). The return's copy into the
+                // caller's arena passes a pointer already there through,
+                // and only the owned copy promises the caller never holds
+                // the field's own block, whichever arena it calls from.
+                // It costs what the cross-arena copy did. (A free fn's
+                // return copies out of its own frame the same way.)
+                let owned_ret = self.owned_views.ret(e);
                 if in_free_fn {
                     let ret_alloca = self
                         .current_user_fn_ret_alloca
@@ -23010,7 +23021,20 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         .build_unconditional_branch(exit_bb)
                         .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
                 } else if in_method_with_scratch {
-                    let copied = self.emit_method_return_deep_copy(v, &declared_ty)?;
+                    let copied = if owned_ret && v.is_pointer_value() {
+                        let slot = self
+                            .current_method_caller_arena
+                            .expect("method scratch active implies caller-arena snapshot");
+                        let ptr_t = self.context.ptr_type(AddressSpace::default());
+                        let dest = self
+                            .builder
+                            .build_load(ptr_t, slot, "method.caller_arena.owned_ret")
+                            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                            .into_pointer_value();
+                        self.emit_owned_deep_copy(v, &declared_ty, dest)?
+                    } else {
+                        self.emit_method_return_deep_copy(v, &declared_ty)?
+                    };
                     // GH #383: flush before the scratch dies — see the
                     // void-return arm for the ordering argument. The
                     // deep-copy above already moved the return value
