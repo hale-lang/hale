@@ -286,6 +286,7 @@ set for the processes they start.
 | `HALE_DNA_API`, `HALE_DNA_ID_TOKEN` | the head a leg's `hale dna work` verbs talk to without `--api`, and the bearer token it presents |
 | `HALE_DNA_GENOME_POLL` | seconds between polls of the record's remote for a changed genome (300) |
 | `HALE_DNA_NO_BUILD_CACHE` | build every seed, instead of reusing a build of the same sources |
+| `HALE_DNA_COMPOSE=off` | a repository's body leaves its compose services to you instead of bringing them up and down |
 | `HALE_VAULT_DIR`, `HALE_VAULT_ADDR`, `HALE_VAULT_TOKEN` | where the vault is: a local directory, or a vault's HTTP API and its token |
 
 Every `HALE_DNA_*` variable, with its default and effect, is in the

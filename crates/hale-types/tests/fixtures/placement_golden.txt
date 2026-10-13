@@ -13948,7 +13948,9 @@ domain	pinned:__lib_dna__core__pond__realtime__nats___adapter__NatsAdapter@bindi
 domain	pinned:__lib_dna__core__pond__realtime__nats___adapter__NatsAdapter@binding16
 row	Host@literal1	Host	main	default
 row	Host@literal2	Host	main	default
+row	Host@literal1.compose	RepositoryCompose	main	default
 row	Host@literal1.relay	NodeRelay	main	default
+row	Host@literal2.compose	RepositoryCompose	main	default
 row	Host@literal2.relay	NodeRelay	main	default
 row	__lib_dna__core__pond__realtime__nats___adapter__NatsAdapter@binding1	__lib_dna__core__pond__realtime__nats___adapter__NatsAdapter	pinned:__lib_dna__core__pond__realtime__nats___adapter__NatsAdapter@binding1	binding
 row	__lib_dna__core__pond__realtime__nats___adapter__NatsAdapter@binding10	__lib_dna__core__pond__realtime__nats___adapter__NatsAdapter	pinned:__lib_dna__core__pond__realtime__nats___adapter__NatsAdapter@binding10	binding
@@ -14010,6 +14012,7 @@ dynamic	GitHubForge	on main
 dynamic	Node	on main
 dynamic	OrganizationRollbackCodec	on main
 dynamic	Projection	on main
+dynamic	RepositoryCompose	on main
 dynamic	__StdHttpResponder	on pool:senses
 dynamic	__StdIoTcpConnInline	on pool:senses
 dynamic	__StdIoTcpConnections	on pool:senses

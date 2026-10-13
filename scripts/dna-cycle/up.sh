@@ -39,7 +39,7 @@ note "init --with founder: $(grep -E '^planned on ' "$RUN/init.out" | head -1 | 
 
 systemd-run --user --quiet --collect --unit="dna-cycle-gateway-$N" "${units_env[@]}" python3 "$HERE/canned-gateway.py" 8796 "$RUN/gateway.jsonl"
 systemd-run --user --quiet --collect --unit="dna-cycle-dev-$N" --working-directory="$RUN/todo" "${units_env[@]}" \
-    --setenv=HALE_DNA_TAPE="$( [ "$MODELS" = replay ] && echo replay || echo record )" --setenv=HALE_DNA_TAPE_DIR="$TAPE_DIR" --setenv=HALE_DNA_FORGE=file \
+    --setenv=HALE_DNA_TAPE="$( [ "$MODELS" = replay ] && echo replay || echo record )" --setenv=HALE_DNA_TAPE_DIR="$TAPE_DIR" --setenv=HALE_DNA_FORGE=file --setenv=HALE_DNA_COMPOSE=off \
     bash -c "hale dna dev . --no-iris > '$RUN/dev.log' 2>&1"
 t0=$(date +%s); ready=0
 while [ $(( $(date +%s) - t0 )) -lt 300 ]; do

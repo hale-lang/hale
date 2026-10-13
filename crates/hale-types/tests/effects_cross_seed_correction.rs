@@ -202,13 +202,13 @@ fn host_verb() {
     pinned("host/verb", 1, 1, "main  does={unclassified}");
 }
 
-/// host: 98 of 498 rows.
+/// host: 106 of 515 rows.
 #[test]
 fn host() {
     pinned(
         "host",
-        492,
-        498,
+        508,
+        515,
         "
         GovernanceCli::review_profile  does={syscall,block,time,entropy,env,alloc,secret_use}
         Host::ack_reading  does={publish,alloc}
@@ -243,6 +243,11 @@ fn host() {
         ReferenceInfrastructure::start  does={syscall,block,env,alloc}
         ReferenceInfrastructure::status  does={syscall,block,env,alloc}
         ReferenceInfrastructure::stop  does={syscall,block,env,alloc}
+        RepositoryCompose::check  does={syscall,block,alloc}
+        RepositoryCompose::down  does={syscall,block,alloc}
+        RepositoryCompose::own  does={syscall,block,alloc}
+        RepositoryCompose::services  does={syscall,block,alloc}
+        RepositoryCompose::up  does={syscall,block,time,alloc}
         SshTransport::execute  does={syscall,block,alloc}
         SshTransport::probe  does={syscall,block,alloc}
         admits_here  does={syscall,block,time,env,alloc}
@@ -256,12 +261,15 @@ fn host() {
         build_fingerprint  does={syscall,block,env,alloc}
         build_seed_at  does={syscall,block,env,alloc}
         checkpoint_here  does={syscall,block,time,entropy,env,alloc,secret_use}
+        compose_key  does={alloc}
+        compose_sweep  does={syscall,block,alloc}
         definitions_verb  does={syscall,block,alloc}
         descendants  does={syscall,block,alloc}
         draw_secret  does={syscall,block,alloc}
         drop_include_line  does={syscall,block,alloc}
         edge_admits_here  does={syscall,block,time,env,alloc}
         exit_code  does={syscall,block,alloc}
+        fence_compose_down  does={syscall,block,alloc}
         fence_stop  does={syscall,block,alloc}
         fill_check  does={syscall,block,time,entropy,env,alloc,secret_use}
         fill_equipment  does={syscall,block,time,entropy,env,alloc,secret_use}

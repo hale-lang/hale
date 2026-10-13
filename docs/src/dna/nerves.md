@@ -86,11 +86,51 @@ The application's account is provisioned when the record attaches the
 application and revoked by `hale dna application remove`
 ([The heart and the body](./heart.md)). A repository's record attaches
 one too: `hale dna init` on a repository root names its application by
-the project (its compose services are what express it), so a service the
-repository runs can publish its events as `app-<project>` once it is
-handed the variables `nerves migrate` prints; the host does not run the
-compose services itself. An application named
+the project (its compose services are what express it), and its services
+publish their events as `app-<project>`. An application named
 `reflexes` holds no account: those subjects are the reflexes' alone.
+
+### A repository's compose services
+
+In a repository the body runs the compose file at its root: `hale dna dev`
+and `hale dna run` bring its services up once the organization reads its
+nerves, as a compose project of the organism's own (`dna_<id>-<project>`),
+wait for them to be running and healthy, bring up again any that stops
+other than by finishing, and take them down when the body stops. Compose
+never sees the organism's own credentials; it is handed the application's
+nerves, for the compose file to pass on:
+
+```yaml
+services:
+  api:
+    network_mode: host            # the broker where the host reaches it
+    environment:
+      HALE_DNA_NATS_URL_APP: ${HALE_DNA_NATS_URL_APP:-}
+      HALE_DNA_NATS_USER_APP: ${HALE_DNA_NATS_USER_APP:-}
+      HALE_DNA_NATS_ORG: ${HALE_DNA_NATS_ORG:-}
+      HALE_VAULT_DIR: /run/secrets  # the secret below, a vault of one entry
+      HALE_DNA_NATS_VAULT_APP: nats-app
+    secrets: [nats-app]
+secrets:
+  nats-app:
+    file: ${HALE_DNA_NATS_SECRET_APP:-/dev/null}
+```
+
+`HALE_DNA_NATS_SECRET_APP` is the path of the vault's entry for the
+application's password: compose mounts that file read-only, so the password
+is never copied, never in an environment and never in the repository. The
+broker's address is the one the body uses; on Linux a container on a bridge
+network cannot reach a broker on the host's loopback, which is why the
+service runs on the host's network. A body whose host dies does not leave
+them behind: every service carries the body's mark as a label, and the
+body fence, which already stops what a lost body started, removes the
+containers carrying that mark when its ownership record
+(`.hale/dna/compose.owner.<token>_<pid>`, one per body) says they are this
+body's. Nothing takes the
+project down whole, so a replacement body's services in the same project
+are never touched. `HALE_DNA_COMPOSE=off` leaves the
+services to you. The todo repository (`dna/tests/onboarding/todo`) is the
+worked example.
 [The skin](./skin.md) has every secret the organism holds.
 
 ## Migrate and drop

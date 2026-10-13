@@ -1419,8 +1419,10 @@ repository:
   and the organization's token (`HALE_DNA_NATS_URL_APP`,
   `HALE_DNA_NATS_USER_APP`, `HALE_DNA_NATS_VAULT_APP`,
   `HALE_DNA_NATS_ORG`; `dev` keeps them from `nerves migrate`, a node is
-  started with them), and none of the organism's other credentials: the
-  spine's, the owner's, the head's and the reflexes' NATS URLs and
+  started with them, and a repository's compose services are handed
+  them with the path of the password's vault entry: **The body runs a
+  repository's compose services**), and none of the organism's other
+  credentials: the spine's, the owner's, the head's and the reflexes' NATS URLs and
   memory DSNs are taken out of what it inherits. A node materializes
   `vendor/dna` in its clone for its toolchain, so an instance can import
   pond's NATS client from it. Local mode is the seed compose's nerves.
@@ -3402,7 +3404,10 @@ organization's (`[claims] no_base = true`; each adopts its own law).
   (`HALE_DNA_BODY=<holder>#<token>#<host pid>#`, set in the environment of
   everything the host starts and inherited by every tool they start) —
   the second net, for that `setsid` tool, where the machine discloses
-  environments — and says why (the
+  environments — then a repository's compose services this body brought
+  up (**The body runs a repository's compose services**: they live in
+  docker, outside every tree and mark above, so the fence takes them down
+  by the body's ownership record) — and says why (the
   host does the same, before it stops the fence, on every exit it takes
   once it holds the lease: a failed build, a refused start, its
   organization's exit), and the host
@@ -4976,10 +4981,11 @@ The live half is memory's, projected from the record by the spine
   membership back where the retirement is projected. `fill` and
   `practice propose` name a request by its digest at the record's head
   (`h…`, `p…`), so two requests in one millisecond never share an id.
-- **A repository record runs its organization alone (GH #1091).** When the
+- **A repository record builds its organization alone (GH #1091).** When the
   record's seed holds no Hale source of its own, `hale dna dev` and
-  `hale dna run` check and build the organization only; there is no application
-  to cut, build, express or restart, and `dev` says so.
+  `hale dna run` check and build the organization only: there is no
+  application to cut, build or restart on a Mutation's request (the body says
+  so). Its expression is the repository's compose services (below).
 - **A repository's application is its compose services (ruling 11,
   2026-10-12).** The compose file is a repository's expression, and the
   record attaches its application all the same: `init` lands
@@ -4993,12 +4999,85 @@ The live half is memory's, projected from the record by the spine
   publish under `<org>.app.<name>.` reaches the heart. `hale dna status`
   says `expression: the repository's compose services, attached as
   <name>`. Such a row is not an application's artifact: a repository is
-  re-ingested (`hale dna ingest`) with it. **Not yet built:** the host
-  does not run the repository's compose services — `docker compose up`
-  is the operator's, and the `*_APP` variables reach a service only when
-  the compose file passes them (a service in a container also needs the
-  broker's address as the container sees it, and the vault entry's
-  password, which the host does not hand to compose yet).
+  re-ingested (`hale dna ingest`) with it.
+- **The body runs a repository's compose services (ruling 11).** Under
+  `dev` and `run`, a repository body whose root holds a compose file
+  (`compose.yaml`, `compose.yml`, `docker-compose.yaml` or
+  `docker-compose.yml`, compose's own order) brings its services up once the
+  organization reads its nerves, as the organism's own compose project,
+  `<record schema>-<application>` (`dna_<id>-todo`): two organisms on one
+  machine, or a person's own `docker compose up` of the same file, never share
+  a container. `up -d --wait` (300 s, scaled by `HALE_DNA_WAIT_SCALE`) waits
+  for every service to be running, and healthy where it declares a
+  healthcheck; the body says `the repository's compose services are up
+  (compose project <p>)`, or that they did not all come up and why, and the
+  organization stays up either way. Every 10 s the body's tick looks at them
+  again: a service with no container, or whose container stopped other than
+  by finishing (exit 0), is brought up again (`compose: <service> <state>
+  <code>; brought up again`); one compose is restarting under its own
+  `restart:` policy is left to it. Every exit of the body once its lease is
+  held takes them down (`the repository's compose services are down`).
+  Before `up` the body labels every service with its mark
+  (`hale.dna.body=<holder>#<token>#<host pid>#`, an override
+  `.hale/dna/compose.body.<token>_<host pid>.yaml` beside the compose file)
+  and records who owns them in `.hale/dna/compose.owner.<token>_<host pid>`
+  (the host's pid, the mark, the project, the compose file, the project
+  directory and the override, a line each); without the record nothing is
+  brought up. Both files are the body's own: a body creates, reads and
+  removes only its own, so a replacement host on the same clone never loses
+  its files to the cleanup of the body before it. Nothing ever takes the
+  project down whole: `docker compose down` acts on whatever the project
+  holds when it runs, and the project is the organism's, so another clone of
+  the record on the same docker daemon — a replacement body, once this one's
+  lease is lost — brings its services up in it under a mark of its own. The
+  body's services go by the daemon's own label filter, evaluated container
+  by container: the project's containers that carry this body's mark are
+  stopped and removed (`docker rm -f`), then the project's networks are
+  removed, which the daemon refuses while any container is attached, so a
+  network a replacement uses stays; volumes are never removed. The host does
+  this on every exit, stopping them within 10s first — one of its exits
+  (`stop_body`) is taken after its lease is lost, when a replacement may
+  already be running, so its own exit is no safer for a project-wide down
+  than the fence's. A host that dies cannot: when the body fence stops a
+  lost body (its host gone, its lease lost or expired) it reads the record,
+  and one that names its host and its mark has that body's containers
+  removed at once, the same way; a record another body wrote (a replacement
+  host on this clone) is left, with its services. The fence's status line
+  says `compose removed this body's containers of <project>` or `compose not
+  this body's: <project>`, and the body's own record and override go once
+  its containers are gone, by the host or by the fence. A host starting its
+  services first sweeps the records of other bodies of its clone whose host
+  is gone (a fence that died with it): their containers go by their mark,
+  then their files (`compose: removed the containers of earlier bodies whose
+  host is gone (<marks>)`); a record whose host still runs is left to that
+  body and its fence. Compose runs without the organism's credentials in its
+  environment (the ones an application's start removes: the spine's, owner's,
+  head's and reflexes' URLs and DSNs), so a compose file cannot interpolate
+  them, and with nerves here it is handed the attached application's:
+  `HALE_DNA_NATS_URL_APP` (the broker as the body reaches it, its own
+  `HALE_DNA_NATS_URL_APP` if set, else the spine's server),
+  `HALE_DNA_NATS_USER_APP`, `HALE_DNA_NATS_VAULT_APP`, `HALE_DNA_NATS_ORG`,
+  and `HALE_DNA_NATS_SECRET_APP`, the path of the local vault's entry holding
+  the application's password. The compose file mounts that file read-only as
+  a secret (`secrets: <name>: file: ${HALE_DNA_NATS_SECRET_APP:-/dev/null}`)
+  and the service reads it as a vault of one entry (`HALE_VAULT_DIR:
+  /run/secrets`, `HALE_DNA_NATS_VAULT_APP: <name>`): the vault stays the one
+  ingress, and the password is never copied, never in an environment and
+  never in the repository. A vault served over HTTP (`HALE_VAULT_ADDR`) has no
+  file to hand; the body says so and hands none. The broker's address is
+  handed as the body sees it, and a service on the host's network
+  (`network_mode: host`) reaches it there; on Linux a broker on the host's
+  loopback is out of a bridge network's reach (`host.docker.internal`
+  through `host-gateway` reaches only what listens beyond the loopback), so
+  the address is not rewritten. A mounted entry is the file the vault held
+  when the container was created: a password drawn anew reaches the service
+  when the body next brings it up. `HALE_DNA_COMPOSE=off` leaves the
+  services to the operator, as before ruling 11, and the body says so; a
+  repository with no compose file runs no application under the body, which
+  says that too. Not yet: a Mutation's
+  restart request does not bring a changed compose file up (the body says
+  the repository has no application to restart), and the services' logs stay
+  compose's (`docker compose -p <project> logs`).
 - **Review routing (GH #1087).** A change set goes to the positions that
   must sign it, read from the graph, never guessed:
   `hale dna route [--json] (<path>… | --diff <range>)` (the host verb
@@ -5686,6 +5765,8 @@ otherwise.
 | `HALE_DNA_NATS_URL_REFLEXES=<url>` | unset | The reflexes' URL: publishes on `<org>.app.reflexes.>` alone. |
 | `HALE_DNA_NATS_USER_APP=<user>` | unset | The attached application's own nerves user, `app-<name>` (`hale dna nerves migrate` prints it; GH #989). |
 | `HALE_DNA_NATS_VAULT_APP=<name>` | unset | The vault entry holding the application user's nerves password (`hale dna nerves migrate` prints it): presented on CONNECT, never carried in a URL (GH #989). |
+| `HALE_DNA_NATS_SECRET_APP=<path>` | unset | Handed by a repository body to its compose services alone: the path of the local vault's entry holding the application's nerves password, for the compose file to mount as a secret (ruling 11). |
+| `HALE_DNA_COMPOSE=off` | on | A repository body leaves its compose services to the operator: it neither brings them up nor down, and says `a repository: its compose services are left to the operator (HALE_DNA_COMPOSE=off)` (ruling 11). The DNA suite sets it for every fixture; a fixture about compose opts in with `on`. |
 | `HALE_DNA_NATS_VAULT_REFLEXES=<name>` | unset | The same for the reflexes user; `dna/reflexes` refuses to start without it. |
 | `HALE_DNA_COMMANDS_PORT=<port>` | unset | The loopback port of the API child's HTTP commands transport, given by `dna/face/start.sh` to the head and by the head to its API child; without it the head answers `commands_unavailable` (503). |
 | `HALE_DNA_NATS_ORG=<token>` | unset | The organization's token, the prefix of its subjects; `dev` hands it to the host and the host to the parts. |

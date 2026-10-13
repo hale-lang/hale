@@ -100,9 +100,12 @@ attached, the host hands it the nerves (`HALE_DNA_NATS_URL_APP`,
 project's, read from the account `app-<name>`: `todo`), with the item as the
 payload: the heart reads it as a concern. Without them it says nothing.
 `hale dna init` on this repository attaches its application as `todo` (the
-compose services are its expression), so the account exists; the host does
-not run the compose services, so the variables reach the api only when
-whoever runs it passes them.
+compose services are its expression), so the account exists, and the
+organization's body (`hale dna dev` or `run`) brings the compose services up
+as a project of its own and hands them the nerves. In its container the api
+reads its password from the vault entry the body names
+(`HALE_DNA_NATS_SECRET_APP`), which compose mounts as a secret, and it runs
+on the host's network so that it reaches the broker where the host does.
 The client is the smallest piece of core NATS that says one message and waits
 for the server to have it; the application's password is revealed on the
 CONNECT line and nowhere else.
@@ -165,8 +168,10 @@ hale build api -o bin/todo-api
 docker compose up
 ```
 
-The organism's own services (the record, the nerves, the host) are not here;
-`hale dna dev` brings them up.
+`TODO_PORT`, `TODO_MCP_PORT`, `TODO_STREAM_PORT` and `TODO_UI_PORT` move the
+listeners. The organism's own services (the record, the nerves, the host) are
+not here; `hale dna dev` brings them up, and its body brings these up beside
+them, and down when it stops.
 
 ## What the organization is for
 
