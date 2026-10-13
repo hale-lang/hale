@@ -134,6 +134,36 @@ const PROGRAMS: &[(&str, Entry, &str)] = &[
         "#,
     ),
     (
+        "decimal_from",
+        Entry::Main,
+        r#"
+        fn main() {
+            println("i=" + std::decimal::from_int(-7));
+            println("f=" + (std::decimal::from_float(19.99) or 0.0d));
+            println("half=" + (std::decimal::from_float(0.0009765625) or 0.0d));
+            println("big=" + (std::decimal::from_float(1.0e29) or 0.0d));
+            println("nan=" + (std::decimal::from_float(std::math::nan()) or -1.0d));
+        }
+        "#,
+    ),
+    // Ed25519 (Monocypher, compiled for wasm32 by the link): RFC 8032's
+    // TEST 1 key pair and signature, and its verification.
+    (
+        "ed25519",
+        Entry::Main,
+        r#"
+        fn main() {
+            let seed = std::hex::decode("9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60") or b"";
+            let (pk, sk) = std::crypto::ed25519_keypair(seed) or (b"", b"");
+            println("pk=" + std::hex::encode(pk));
+            let sig = std::crypto::ed25519_sign(sk, b"") or b"";
+            println("sig=" + std::hex::encode(sig));
+            println(std::crypto::ed25519_verify(pk, b"", sig));
+            println(std::crypto::ed25519_verify(pk, b"x", sig));
+        }
+        "#,
+    ),
+    (
         "portable_stdlib",
         Entry::Main,
         r#"

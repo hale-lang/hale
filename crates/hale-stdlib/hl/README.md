@@ -16,7 +16,7 @@ Builtin-only namespaces (no `.hl` in this directory):
 
 | namespace | what | implementation |
 |---|---|---|
-| `std::crypto` | sha1/sha256/sha512, hmac_sha256/512, crc32, ecdsa_p256_sign/verify | C in `lotus_arena.c` (hashes, hand-rolled) + `lotus_tls.c` (ECDSA, OpenSSL); lowering in `src/stdlib/crypto.rs` |
+| `std::crypto` | sha1/sha256/sha512, hmac_sha256/512, crc32, ecdsa_p256_sign/verify, ed25519_sign/verify (and `ed25519_keypair`, the one fn in `crypto.hl`) | C in `lotus_arena.c` (hashes, hand-rolled) + `lotus_tls.c` (ECDSA, OpenSSL) + `lotus_ed25519.c` (Ed25519, over Monocypher in `third_party/monocypher`); lowering in `src/stdlib/crypto.rs` |
 | `std::str` | index_of, substring, byte_at_unchecked, range_* family, parse_int/float, from_bytes, … | C + codegen arms |
 | `std::math` | sqrt, pow, trig, floor/ceil/round, int↔float | libm + codegen arms |
 | `std::time` | sleep, monotonic, monotonic_ns, now, current, iso8601, parse_time, … (the types are `time.hl`'s) | C + codegen (`src/stdlib/time.rs`) |

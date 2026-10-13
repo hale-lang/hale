@@ -289,11 +289,12 @@ fn own_scope_let_block_scope_test() {
             // unboundedly: `query_param`'s pair loop decodes through them);
             // 441 since `std::rand::Rng` came (its birth, an entry point,
             // and four methods; `next` invoked unboundedly by `next_int`'s
-            // rejection loop)
+            // rejection loop); 442 since `std::crypto::ed25519_keypair`'s
+            // body came
             changed_lines(&old.render(), &now.render()),
             [
-                "- # 441 fns, 28 entry points, 117 invoked-unboundedly",
-                "+ # 441 fns, 28 entry points, 116 invoked-unboundedly",
+                "- # 442 fns, 28 entry points, 117 invoked-unboundedly",
+                "+ # 442 fns, 28 entry points, 116 invoked-unboundedly",
                 "- call  count loop_depth=0 result=local",
                 "+ call  <unresolved: count> loop_depth=0 result=local",
                 "- call  count loop_depth=0 result=local",
@@ -766,7 +767,7 @@ fn program_declaration_only_stdlib_source_shares_a_name() {
             sharing += 1;
         }
     }
-    assert_eq!(sharing, 30, "the stdlib source files that share a name with the copy");
+    assert_eq!(sharing, 31, "the stdlib source files that share a name with the copy");
 }
 
 /// A stdlib file checked as itself keeps its own rows: every fn of the

@@ -3664,6 +3664,26 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             ecdsa_verify_ty,
             None,
         );
+        // Ed25519 (RFC 8032, Monocypher; `ed25519_runtime`): linked only
+        // into a program that still calls one of these after the pipeline.
+        // declare ptr @lotus_ed25519_public_key(ptr seed)
+        self.module.add_function(
+            "lotus_ed25519_public_key",
+            ptr_t.fn_type(&[ptr_t.into()], false),
+            None,
+        );
+        // declare ptr @lotus_ed25519_sign_or_null(ptr secret, ptr msg)
+        self.module.add_function(
+            "lotus_ed25519_sign_or_null",
+            ptr_t.fn_type(&[ptr_t.into(), ptr_t.into()], false),
+            None,
+        );
+        // declare i64 @lotus_ed25519_verify(ptr pub, ptr msg, ptr sig)
+        self.module.add_function(
+            "lotus_ed25519_verify",
+            i64_t.fn_type(&[ptr_t.into(), ptr_t.into(), ptr_t.into()], false),
+            None,
+        );
         // declare ptr @lotus_text_base64_encode(ptr bytes)
         let b64_encode_ty = ptr_t.fn_type(&[ptr_t.into()], false);
         self.module

@@ -671,6 +671,14 @@ pub const SURFACES: &[NsSurface] = &[
             // answered an empty Bytes on a bad key is gone.
             row!("ecdsa_p256_sign", PURE, [Bytes, Bytes] -> Bytes ! "CryptoError", Intrinsic(CryptoEcdsaP256Sign)),
             row!("ecdsa_p256_verify", PURE, [Bytes, Bytes, Bytes] -> Bool, Intrinsic(CryptoEcdsaP256Verify)),
+            // Ed25519, RFC 8032 (Monocypher, vendored; pure computation,
+            // sans-I/O). The key pair is a Hale body (`crypto.hl`) over the
+            // public-key primitive, since a pair is a tuple no row's
+            // signature states; signing refuses a malformed secret key.
+            row!("__ed25519_public_key", PURE, [Bytes] -> Bytes, Intrinsic(CryptoEd25519PublicKeyRaw)),
+            row!("ed25519_keypair", PURE, _, Renamed),
+            row!("ed25519_sign", PURE, [Bytes, Bytes] -> Bytes ! "CryptoError", Intrinsic(CryptoEd25519Sign)),
+            row!("ed25519_verify", PURE, [Bytes, Bytes, Bytes] -> Bool, Intrinsic(CryptoEd25519Verify)),
             row!("hmac_sha256", PURE, [Bytes, Bytes] -> Bytes, Intrinsic(CryptoHmacSha256)),
             row!("hmac_sha512", PURE, [Bytes, Bytes] -> Bytes, Intrinsic(CryptoHmacSha512)),
             row!("sha1", PURE, [Bytes] -> Bytes, Intrinsic(CryptoSha1)),
@@ -1535,6 +1543,9 @@ pub enum IntrinsicId {
     CryptoCrc32,
     CryptoEcdsaP256Sign,
     CryptoEcdsaP256Verify,
+    CryptoEd25519PublicKeyRaw,
+    CryptoEd25519Sign,
+    CryptoEd25519Verify,
     CryptoHmacSha256,
     CryptoHmacSha512,
     CryptoSha1,

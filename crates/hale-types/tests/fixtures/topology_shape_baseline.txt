@@ -1135,6 +1135,8 @@ crates/hale-codegen/tests/portable_subset.rs#2 865d341109268295
 crates/hale-codegen/tests/portable_subset.rs#3 f2c1228edb650960
 crates/hale-codegen/tests/portable_subset.rs#4 f2c1228edb650960
 crates/hale-codegen/tests/portable_subset.rs#6 f2c1228edb650960
+crates/hale-codegen/tests/portable_subset.rs#7 f2c1228edb650960
+crates/hale-codegen/tests/portable_subset.rs#8 f2c1228edb650960
 crates/hale-codegen/tests/printable_rule.rs#0 f2c1228edb650960
 crates/hale-codegen/tests/process_child.rs#0 53cadec6decfbc54
 crates/hale-codegen/tests/process_child.rs#1 14adc3b285b22ece
@@ -1498,6 +1500,7 @@ crates/hale-stdlib/hl/api.hl e416474db56b5494
 crates/hale-stdlib/hl/api_rpc.hl 9aff6c7f572979e6
 crates/hale-stdlib/hl/cli.hl 7d556f7676875798
 crates/hale-stdlib/hl/core.hl 5bd71359097e00e6
+crates/hale-stdlib/hl/crypto.hl 21b957bbaa986ffd
 crates/hale-stdlib/hl/file.hl 59c75ee097af9bd8
 crates/hale-stdlib/hl/hex.hl eb377492db5d27b1
 crates/hale-stdlib/hl/http.hl f2afa33461f44cd6

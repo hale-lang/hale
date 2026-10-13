@@ -50,6 +50,7 @@ pub mod deployment;
 pub(crate) mod channels;
 pub mod codegen;
 pub(crate) mod h2_runtime;
+pub(crate) mod ed25519_runtime;
 pub(crate) mod conversion;
 pub(crate) mod form;
 pub(crate) mod locus;

@@ -82,6 +82,30 @@ it is `fallible(CryptoError)`, so `or raise` / `or fail err` /
 detail }` like any other error, and `or b""` takes an empty
 `Bytes` instead. A bare call is a compile error.
 
+## Signing — Ed25519
+
+Ed25519 (RFC 8032) is the signature NATS NKeys, SSH keys, and many
+JWT and webhook schemes use. A key pair comes from a 32-byte seed:
+
+```hale,fragment
+let seed = std::os::getrandom(32) or raise;              // the private key
+let (public, secret) = std::crypto::ed25519_keypair(seed) or raise;
+
+let sig = std::crypto::ed25519_sign(secret, message) or raise;   // 64 bytes
+let ok  = std::crypto::ed25519_verify(public, message, sig);     // Bool
+```
+
+`public` is 32 bytes; `secret` is 64, the seed followed by the public
+key — the form libsodium and Go use, so keys move between them as
+they are. `ed25519_sign` takes that or the 32-byte seed alone, and
+refuses anything else with a `CryptoError` (a 64-byte key whose
+second half is not its seed's public key included). Signing is
+deterministic: the same key and message give the same signature.
+`ed25519_verify` answers `false` for a wrong key, a changed message
+or signature, or inputs of the wrong length. The implementation is
+Monocypher's, built into the runtime — no system library, and it works
+under `--target wasm32` too.
+
 ## Random numbers — `std::rand` and `std::os`
 
 `std::rand` is a fast, **non-cryptographic** PRNG — fine for
