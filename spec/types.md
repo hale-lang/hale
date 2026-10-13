@@ -301,6 +301,13 @@ location — a program the gate accepted that could not be built.
 
 ### `const` is a top-level declaration
 
+A const states its type, `const LIMIT: Int = 100;`, except where the
+initializer is a literal: `const LIMIT = 100;` takes the literal's
+primitive type (`Int`, `Float`, `Decimal`, `String`, `Bool`, `Bytes`;
+a negated numeric literal too). Any other initializer without a type
+is a parse error at the initializer that says to write `const NAME: T
+= …;`.
+
 A locus body may not declare a `const`. `const NAME: T = value;`
 is a top-level declaration only (see `grammar.ebnf`:
 `const_decl` is a `top_decl`, not a `locus_member`), and a
@@ -414,6 +421,17 @@ An interface may also be the type of a locus's `accept` and
 satisfying `I`, by the same rule, resolved statically per concrete
 type, never through a vtable (`semantics.md` § Locus instantiation,
 "An interface `accept`").
+
+Inside the fn, the parameter's local IS the interface: it offers
+exactly the interface's methods, and nothing of the locus behind it.
+A field read (`sink.path`) or a method the interface does not declare
+(`sink.flush()`) is a check-time error naming the interface and its
+methods; a local bound from the parameter (`let s = sink;`) is the
+interface too (friction sweep 2026-10-12; until then the parameter
+typed as unknown, the check passed such a read and the build refused
+it). A fn or locus-method parameter has this typing; an interface-
+typed slot (a field, an array element, a `let` annotation) still
+accepts any satisfying locus.
 
 **Fallible methods (GH #732).** An interface method may declare
 `fallible(E)` after its return type, as a fn does:

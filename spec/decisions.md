@@ -215,7 +215,9 @@ position because post-`.` is unambiguous.
 
 ### F.10 Mode keywords as member names
 
-(Added in v0.1.5 from 04-modes.)
+(Added in v0.1.5 from 04-modes. Generalized by F.43: the mode words,
+like the rest of the framework vocabulary, are contextual keywords
+now and name anything but a locus method.)
 
 The keywords `bulk`, `harmonic`, `resolution` are reserved at
 the lexer level (per `tokens.md`). They appear at top-level in
@@ -3163,7 +3165,7 @@ failure handlers may run); the dispatcher is a codegen-emitted
 fn registered only when main declares
 `on_failure(t: std::bus::UnixTransport, err: ClosureViolation)`
 (the connect locus's public name via the rename tables), passes
-a synthetic `link_lost` ClosureViolation, detects `restart (t)`
+a synthetic `link_lost` ClosureViolation, detects `restart(t)`
 by the `__restart_count` bump, and reconnects via the stored
 path; no handler / no restart / failed reconnect all take the
 structural exit. Down-window sends are dropped (fanout skips
@@ -3179,7 +3181,7 @@ when fanout detects the loss; the observable semantics
 a transport-bound topic: instead of taking the counted
 `dropped_lost` drop during the loss window, the publisher
 *parks* until the window closes (the app's `on_failure` ran
-`restart (t)` and the reconnect succeeded) and then publishes
+`restart(t)` and the reconnect succeeded) and then publishes
 onto the re-armed binding. This is a **delivery-mode modifier,
 not error handling** — the send stays infallible; `wait` is
 its own disposition kind, rejected everywhere except a send to
@@ -3725,6 +3727,47 @@ means: `or (self.handle_io(err) or { return; })`.
 - *`self.draining` as the contract.* It is the violating locus's own
   flag; a caller in another locus cannot read it, and a caller in the
   same one forgets to.
+
+### F.43 — Framework vocabulary is contextual
+
+**Problem.** The lexer reserved forty-odd ordinary English words —
+`run`, `epoch`, `restart`, `capacity`, `bulk`, `tier`, `where`, `of`,
+`publish` — so a field, parameter, local or fn named after one was a
+parse error. Each word introduces syntax in one position only (a hook
+at locus-member position, a clause inside a closure body, a statement
+at statement head), and a downstream handoff renamed fields `run`,
+`epoch` and `restart` to work around the list. F.10 had already
+admitted the three mode words post-`.`; the rest stayed reserved.
+
+**Decision.** Every word whose one position is unambiguous lexes as
+an identifier and the parser recognizes it in that position
+(spec/tokens.md § Reserved words gives each word's position): the
+locus-member words (`params`, `contract`, `bus`, `capacity`,
+`as_parent_for`, `indexed_by`), the lifecycle hooks (`birth`,
+`accept`, `release`, `run`, `drain`, `dissolve`, `on_failure`), the
+mode words, the projection classes and `tier`, the closure clauses
+(`closure`, `epoch`, `persists_through`, `resets_on`,
+`resets_per_epoch`), the recovery statements (`restart`,
+`restart_in_place`, `quarantine`, `reorganize`, `bubble`), the
+contract words (`expose`, `consume`, `inferred`), the bus words
+(`subscribe`, `publish`, `on`, `of`), the perspective words
+(`stable_when`, `serialize_as`), `yield`, `terminate` and `where`.
+Two declarations stay refused, each because its name would collide
+with the syntax at the call: a locus METHOD named like a hook, the
+failure handler or a mode (`fn run()` in a locus — that name IS the
+hook), and a free fn named like a recovery statement (`restart(x);`
+at statement head is the recovery).
+
+The declaration and statement words (`locus`, `type`, `fn`, `let`,
+`if`, `match`, `return`, `self`, ...) stay hard: they begin items,
+statements or expressions anywhere, so no position frees them. `trait`,
+`impl`, `async`, `await` and `macro` stay reserved for the syntax they
+are held for.
+
+**Considered and rejected.** *An escaped-identifier form (`r#run`).*
+It makes the author spell around a restriction the parser does not
+need. *Admitting the words as names in declaration positions only.*
+A local named `epoch` that cannot be read back is not a name.
 
 ## Deferred & future work
 

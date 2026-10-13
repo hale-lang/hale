@@ -30,7 +30,7 @@ row	CheckerL@main1	CheckerL	main	default
 row	AuditL@main1	AuditL	main	default
 dynamic	CheckerL	on main	in the seed
 
-== crates/hale-codegen/tests/fixtures/examples/03c-closure-bubbled/main.hl#74bbc66e
+== crates/hale-codegen/tests/fixtures/examples/03c-closure-bubbled/main.hl#54e828c9
 row	AuditL@main1	AuditL	main	default
 dynamic	CheckerL	on main	in the seed
 
@@ -50,7 +50,7 @@ row	Accumulator@main1	Accumulator	main	default
 row	ParentL@main1	ParentL	main	default
 dynamic	ChildL	on main	in the seed
 
-== crates/hale-codegen/tests/fixtures/examples/14-projection-classes/main.hl#2f207700
+== crates/hale-codegen/tests/fixtures/examples/14-projection-classes/main.hl#92423885
 row	ChunkedCoord@main2	ChunkedCoord	main	default
 row	RecognitionCoord@main3	RecognitionCoord	main	default
 row	RichCoord@main1	RichCoord	main	default
@@ -132,21 +132,21 @@ row	Producer@main2	Producer	main	default
 row	AuditL@main1	AuditL	main	default
 dynamic	Configured	on main	in the seed
 
-== crates/hale-codegen/tests/fixtures/examples/32-restart/main.hl#18b63bbc
+== crates/hale-codegen/tests/fixtures/examples/32-restart/main.hl#6d57e0de
 row	Coordinator@main1	Coordinator	main	default
 dynamic	Worker	on main	in the seed
 
-== crates/hale-codegen/tests/fixtures/examples/33-quarantine/main.hl#ff81868a
+== crates/hale-codegen/tests/fixtures/examples/33-quarantine/main.hl#75e1e0f7
 row	Coordinator@main1	Coordinator	main	default
 dynamic	Worker	on main	in the seed
 
-== crates/hale-codegen/tests/fixtures/examples/34-quarantine-bus/main.hl#c5d445d6
+== crates/hale-codegen/tests/fixtures/examples/34-quarantine-bus/main.hl#b2a508a7
 row	Coordinator@main1	Coordinator	main	default
 -- dynamic	sites in the seed
 dynamic	FailingWatcher	on main
 dynamic	HealthyWatcher	on main
 
-== crates/hale-codegen/tests/fixtures/examples/35-tick-closures/main.hl#10a50960
+== crates/hale-codegen/tests/fixtures/examples/35-tick-closures/main.hl#60d993b8
 row	Auditor@main1	Auditor	main	default
 dynamic	Counter	on main	in the seed
 
@@ -158,7 +158,7 @@ dynamic	Watcher	on main	in the seed
 row	Auditor@main1	Auditor	main	default
 dynamic	Ledger	on main	in the seed
 
-== crates/hale-codegen/tests/fixtures/examples/38-restart-in-place/main.hl#8033af87
+== crates/hale-codegen/tests/fixtures/examples/38-restart-in-place/main.hl#f2c8322f
 row	Coordinator@main1	Coordinator	main	default
 dynamic	Worker	on main	in the seed
 
@@ -172,7 +172,7 @@ domain	pinned:Coordinator@literal1.heartbeat
 row	Coordinator@literal1	Coordinator	main	default
 row	Coordinator@literal1.heartbeat	Heartbeat	pinned:Coordinator@literal1.heartbeat	entry	off owner
 
-== crates/hale-codegen/tests/fixtures/examples/41-closure-accumulator/main.hl#1dbfc2db
+== crates/hale-codegen/tests/fixtures/examples/41-closure-accumulator/main.hl#77e04d78
 row	Coordinator@main1	Coordinator	main	default
 dynamic	Tracker	on main	in the seed
 
@@ -652,7 +652,7 @@ row	App@literal1	App	main	default
 row	~	Grow	main	default
 row	~.acc	Acc	main	inherited
 
-== crates/hale-stdlib/hl/api_rpc.hl#7c06c0fc
+== crates/hale-stdlib/hl/api_rpc.hl#4fa1f91b
 
 == crates/hale-stdlib/hl/file.hl#f57ba351
 
@@ -6909,6 +6909,13 @@ row	App@literal1.bars	Bars	main	default
 shared	App@literal1.r	Ring #711a93c5
 shared	App@literal1.s	Sup #20139bc1
 
+== tests/hale/contextual_keywords_test.hl
+root	App	the entry
+row	App@literal1	App	main	default
+-- App@literal1.b	Board
+row	~	Board	main	default
+row	~.w	Worker	main	inherited
+
 == tests/hale/decorator_stack_test.hl
 root	App	the entry
 row	App@literal1	App	main	default
@@ -6992,6 +6999,9 @@ row	App@literal1.counter	Counting	main	default
 row	App@literal1.log	__StdLogLogger	main	default
 dynamic	__StdLogLogger	on main	in the seed
 
+== tests/hale/match_returns_in_every_arm_test.hl
+row	Namer@main1	Namer	main	default
+
 == tests/hale/mode_factory_return_test.hl
 root	App	the entry
 row	App@literal1	App	main	default
@@ -7026,6 +7036,11 @@ root	App	the entry
 row	App@literal1	App	main	default
 row	App@literal1.w	Worker	main	default
 dynamic	Probe	on main	in the seed
+
+== tests/hale/or_discard_value_test.hl
+root	App	the entry
+row	App@literal1	App	main	default
+row	App@literal1.c	Counter	main	default
 
 == tests/hale/or_substitute_interface_test.hl
 row	NoopTool@main1	NoopTool	main	default

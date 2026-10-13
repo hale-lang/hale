@@ -1489,7 +1489,7 @@ straight to the structural exit
 (`lotus_bus_transport_lost_fallback`). The dispatcher invokes
 `main.on_failure(main_self, transport_self, link_lost_violation)`
 and, when the handler bumped `__restart_count` via
-`restart (t)`, calls `lotus_bus_transport_reconnect` (re-runs
+`restart(t)`, calls `lotus_bus_transport_reconnect` (re-runs
 connect-with-retry against the entry's stored path; success
 clears `lost`). Codegen support: `lotus.main.self` global
 (stored at main-locus instantiation),

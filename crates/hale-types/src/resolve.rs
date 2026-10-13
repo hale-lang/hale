@@ -350,8 +350,9 @@ pub fn build_top_scope(bundle: &Bundle<'_>) -> (TopScope, Vec<Diag>) {
     // signature, a struct field, a locus param, a capacity slot,
     // an alias target — resolves to the merged declaration.
     known_names.set_imports(&bundle.import_renames);
+    let mut kinds: BTreeMap<String, &'static str> = BTreeMap::new();
     for program in bundle.programs.values() {
-        collect_type_names(&program.items, &mut known_names, &mut diags);
+        collect_type_names(&program.items, &mut known_names, &mut kinds, &mut diags);
     }
 
     // v1.x-FORM-1 PR3b: pre-register form-specific stdlib type
@@ -657,24 +658,31 @@ fn bundle_declares_a_quantity(bundle: &Bundle<'_>) -> bool {
 fn collect_type_names(
     items: &[TopDecl],
     known: &mut KnownNames,
+    kinds: &mut BTreeMap<String, &'static str>,
     diags: &mut Vec<Diag>,
 ) {
     for item in items {
-        match item {
-            TopDecl::Locus(l) => insert_name(known, &l.name, diags),
-            TopDecl::Type(t) => insert_name(known, &t.name, diags),
-            TopDecl::Perspective(p) => insert_name(known, &p.name, diags),
-            TopDecl::Interface(i) => insert_name(known, &i.name, diags),
-            TopDecl::Topic(t) => insert_name(known, &t.name, diags),
-            TopDecl::RingLayout(r) => insert_name(known, &r.name, diags),
-            TopDecl::Module(m) => collect_type_names(&m.items, known, diags),
-            _ => {}
-        }
+        let (kind, name) = match item {
+            TopDecl::Locus(l) => ("locus", &l.name),
+            TopDecl::Type(t) => ("type", &t.name),
+            TopDecl::Perspective(p) => ("perspective", &p.name),
+            TopDecl::Interface(i) => ("interface", &i.name),
+            TopDecl::Topic(t) => ("topic", &t.name),
+            TopDecl::RingLayout(r) => ("ring layout", &r.name),
+            TopDecl::Module(m) => {
+                collect_type_names(&m.items, known, kinds, diags);
+                continue;
+            }
+            _ => continue,
+        };
+        insert_name(known, kinds, kind, name, diags);
     }
 }
 
 fn insert_name(
     known: &mut KnownNames,
+    kinds: &mut BTreeMap<String, &'static str>,
+    kind: &'static str,
     ident: &Ident,
     diags: &mut Vec<Diag>,
 ) {
@@ -683,19 +691,38 @@ fn insert_name(
         // rides as a RELATED span, not a `{:?}`-formatted Span in
         // the message — this fn has no source text, but the
         // renderers (and the LSP's relatedInformation) do.
+        //
+        // Friction sweep 2026-10-12: the message names the clash and
+        // its fix. A topic named after its payload type is the shape
+        // authors reach for (`type Tick { … }` / `topic Tick { payload:
+        // Tick; }`), and "duplicate top-level name" alone did not say
+        // that topics and types share one namespace.
+        let prev_kind = kinds.get(&ident.name).copied().unwrap_or("declaration");
+        let n = &ident.name;
+        let hint = match (prev_kind, kind) {
+            ("type", "topic") | ("topic", "type") => format!(
+                ": a topic and its payload type share one namespace, so \
+                 `{n}` cannot name both — rename one, e.g. `topic \
+                 {n}Topic {{ payload: {n}; … }}` or `type {n}Payload {{ … }}`"
+            ),
+            (a, b) if a == b => String::new(),
+            (a, b) => format!(
+                ": `{n}` is declared as a {a} and as a {b}, and every \
+                 top-level declaration (type, locus, perspective, \
+                 interface, topic) shares one namespace — rename one"
+            ),
+        };
         diags.push(
             Diag::ty(
                 ident.span,
-                format!(
-                    "duplicate top-level name `{}`",
-                    ident.name
-                ),
+                format!("duplicate top-level name `{}`{}", n, hint),
             )
             .with_related(*prev, "previous declaration"),
         );
         return;
     }
     known.insert(ident.name.clone(), ident.span);
+    kinds.insert(ident.name.clone(), kind);
 }
 
 /// Report every topic whose parent chain is broken — a cycle or an

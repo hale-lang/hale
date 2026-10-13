@@ -20,7 +20,7 @@ locus Flowing {
 main locus App {
     params { fired: Int = 0; }
     accept(c: Flowing) { }
-    release (c: Flowing) { }
+    release(c: Flowing) { }
     on_failure(c: Flowing, err: ClosureViolation) { self.fired = self.fired + 1; }
     run() {
         Flowing { };

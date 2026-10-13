@@ -577,7 +577,7 @@ fn own_members(c: Cell, twin: bool) -> (String, String) {
     match c.position {
         Position::AcceptedChild => {
             m.push("    accept(c: Subj) { }\n".into());
-            m.push("    release (c: Subj) { }\n".into());
+            m.push("    release(c: Subj) { }\n".into());
         }
         Position::HandlerBorn => {
             m.push("    on_failure(c: Trig, err: ClosureViolation) { Subj { }; }\n".into());

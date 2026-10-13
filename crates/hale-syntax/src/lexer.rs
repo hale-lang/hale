@@ -87,104 +87,17 @@ pub enum TokenKind {
     Export,
     Module,
 
-    // Keywords — locus members
-    Params,
-    Contract,
-    Bus,
-    /// F.22 `capacity { ... }` block introducer. Inside the
-    /// block, `pool` and `heap` (slot kinds) stay as plain
-    /// idents and are recognized contextually by the parser —
-    /// frees the math-shaped identifier pool outside this block
-    /// (matches the `approx`/`within` precedent from F.10).
-    Capacity,
-    /// F.22 v1.x-4: slot-decl trailing clause introducer.
-    /// `pool entries of T as_parent_for ChildL;` overrides
-    /// accepted ChildL's same-named slot to share this allocator.
-    AsParentFor,
-    /// v1.x-FORM-4: slot-decl trailing clause introducer for
-    /// `@form(hashmap)`. `pool entries of T indexed_by name;`
-    /// says the cell type T has a field `name` that serves as
-    /// the hashmap key. Only meaningful on a `@form(hashmap)`
-    /// locus; ignored elsewhere (typecheck flags misuse).
-    IndexedBy,
-
-    // Keywords — lifecycle
-    Birth,
-    Accept,
-    Run,
-    Drain,
-    Dissolve,
-    OnFailure,
-
-    // Keywords — mode. `mode` itself is contextual; see
-    // `parse_locus_member`.
-    Bulk,
-    Harmonic,
-    Resolution,
-
-    // Keywords — projection class
-    Projection,
-    Rich,
-    Chunked,
-    Recognition,
-
-    // Keywords — placement classes (F.31, 2026-05-23).
-    //
-    // Placement is bimodal: cooperative (shared pool thread) or
-    // pinned (own OS thread). The keywords appear inside the
-    // `placement { field: SPEC; }` block on `main locus`.
-    //
-    // `placement`, `cooperative`, `pinned`, `pool`, `core` are
-    // all contextual idents — they lex as Ident and the parser
-    // recognizes them positionally inside the placement block.
-    // This frees the identifiers for use as fn / var / field
-    // names outside placement contexts. Same F.10-style
-    // narrowing the closure / mode keyword families use.
-    //
-    // Pre-F.31 surface had a per-locus `: schedule X` annotation
-    // with TokenKind::Schedule + TokenKind::Cooperative +
-    // TokenKind::Pinned. F.31 removed that surface; the tokens
-    // are gone. Existing source using `: schedule ...` is now a
-    // parse error (intentional — schedule moved to main).
-
-    // Keywords — closure
-    //
-    // F.10-style contextual narrowing (2026-05-11): `approx` and
-    // `within` are NOT reserved at the lexer level — they lex as
-    // Ident. The parser recognizes them inside closure-block
-    // bodies only (see parse_closure_assertion). This frees the
-    // math-shaped identifier pool (`fn approx(...)`, `let within
-    // = ...`) outside that context. `closure`, `epoch`,
-    // `persists_through`, `resets_on`, and `resets_per_epoch`
-    // stay reserved because they are unambiguously block-
-    // introducers / clause-leaders.
-    Closure,
-    Epoch,
-    PersistsThrough,
-    ResetsOn,
-    ResetsPerEpoch,
-
-    // Keywords — recovery primitives
-    Restart,
-    RestartInPlace,
-    Quarantine,
-    Reorganize,
-    Bubble,
-
-    // Keywords — contract
-    Expose,
-    Consume,
-    Inferred,
-
-    // Keywords — bus
-    Subscribe,
-    Publish,
-    On,
-    Of,
-
-    // Keywords — perspective
-    StableWhen,
-    SerializeAs,
+    // GH friction sweep 2026-10-12 (Riley: "can't the compiler be smart
+    // about context?"): the locus-member, lifecycle, mode, projection,
+    // closure, recovery, contract, bus, perspective and placement-tier
+    // words are CONTEXTUAL. They lex as `Ident` and the parser recognizes
+    // each in the one position where it introduces syntax (`run() { }`
+    // at locus-member position, `restart(c);` at statement head,
+    // `capacity { }`, `epoch tick;` inside a closure body, ...), so a
+    // field, parameter, local, enum variant or fn may be named `run`,
+    // `epoch`, `restart` or `capacity`. `keywords::CONTEXTUAL_KEYWORDS`
+    // lists them; spec/tokens.md § Reserved words says where each one
+    // is a keyword.
 
     // Keywords — statement / expression
     Let,
@@ -201,7 +114,6 @@ pub enum TokenKind {
     True,
     False,
     Nil,
-    Tier,
     KwSelf,
     Interface,
 
@@ -217,11 +129,7 @@ pub enum TokenKind {
     Impl,
     Async,
     Await,
-    Yield,
-    Terminate,
-    Release,
     Macro,
-    Where,
     // v1.x-VIOLATE (F.27): `with` is no longer reserved at the
     // lexer level. The lexer emits it as an Ident; the parser
     // recognizes it contextually inside `violate_stmt`.
@@ -284,8 +192,8 @@ pub enum TokenKind {
 }
 
 impl TokenKind {
-    /// The source lexeme for a reserved-keyword token (`Some("accept")`
-    /// for [`TokenKind::Accept`]), or `None` for any token that isn't a
+    /// The source lexeme for a reserved-keyword token (`Some("locus")`
+    /// for [`TokenKind::Locus`]), or `None` for any token that isn't a
     /// keyword. The reverse of the keyword match in
     /// `lex_ident_or_keyword`; `tests/keyword_sync.rs` keeps the two in
     /// sync via `keywords::HARD_KEYWORDS`.
@@ -299,44 +207,6 @@ impl TokenKind {
             TokenKind::Import => "import",
             TokenKind::Export => "export",
             TokenKind::Module => "module",
-            TokenKind::Params => "params",
-            TokenKind::Contract => "contract",
-            TokenKind::Bus => "bus",
-            TokenKind::Capacity => "capacity",
-            TokenKind::AsParentFor => "as_parent_for",
-            TokenKind::IndexedBy => "indexed_by",
-            TokenKind::Birth => "birth",
-            TokenKind::Accept => "accept",
-            TokenKind::Run => "run",
-            TokenKind::Drain => "drain",
-            TokenKind::Dissolve => "dissolve",
-            TokenKind::OnFailure => "on_failure",
-            TokenKind::Bulk => "bulk",
-            TokenKind::Harmonic => "harmonic",
-            TokenKind::Resolution => "resolution",
-            TokenKind::Projection => "projection",
-            TokenKind::Rich => "rich",
-            TokenKind::Chunked => "chunked",
-            TokenKind::Recognition => "recognition",
-            TokenKind::Closure => "closure",
-            TokenKind::Epoch => "epoch",
-            TokenKind::PersistsThrough => "persists_through",
-            TokenKind::ResetsOn => "resets_on",
-            TokenKind::ResetsPerEpoch => "resets_per_epoch",
-            TokenKind::Restart => "restart",
-            TokenKind::RestartInPlace => "restart_in_place",
-            TokenKind::Quarantine => "quarantine",
-            TokenKind::Reorganize => "reorganize",
-            TokenKind::Bubble => "bubble",
-            TokenKind::Expose => "expose",
-            TokenKind::Consume => "consume",
-            TokenKind::Inferred => "inferred",
-            TokenKind::Subscribe => "subscribe",
-            TokenKind::Publish => "publish",
-            TokenKind::On => "on",
-            TokenKind::Of => "of",
-            TokenKind::StableWhen => "stable_when",
-            TokenKind::SerializeAs => "serialize_as",
             TokenKind::Let => "let",
             TokenKind::Mut => "mut",
             TokenKind::If => "if",
@@ -351,18 +221,13 @@ impl TokenKind {
             TokenKind::True => "true",
             TokenKind::False => "false",
             TokenKind::Nil => "nil",
-            TokenKind::Tier => "tier",
             TokenKind::KwSelf => "self",
             TokenKind::Interface => "interface",
             TokenKind::Trait => "trait",
             TokenKind::Impl => "impl",
             TokenKind::Async => "async",
             TokenKind::Await => "await",
-            TokenKind::Yield => "yield",
-            TokenKind::Terminate => "terminate",
-            TokenKind::Release => "release",
             TokenKind::Macro => "macro",
-            TokenKind::Where => "where",
             _ => return None,
         })
     }
@@ -568,74 +433,12 @@ impl<'a> Lexer<'a> {
             // the identifier for use as a struct-field name etc.
             // Same pattern as `approx`/`within`/`pool`/`heap`.
 
-            // Locus members
-            "params" => TokenKind::Params,
-            "contract" => TokenKind::Contract,
-            "bus" => TokenKind::Bus,
-            "capacity" => TokenKind::Capacity,
-            "as_parent_for" => TokenKind::AsParentFor,
-            "indexed_by" => TokenKind::IndexedBy,
-
-            // Lifecycle
-            "birth" => TokenKind::Birth,
-            "accept" => TokenKind::Accept,
-            "run" => TokenKind::Run,
-            "drain" => TokenKind::Drain,
-            "dissolve" => TokenKind::Dissolve,
-            "on_failure" => TokenKind::OnFailure,
-
-            // Mode. `mode` is contextually keyworded — recognized
-            // only at locus-member position (see
-            // `parse_locus_member`). Lexing it as Ident frees the
-            // name for use as a param/field on user types
-            // (raylib bindings: `cam.mode: Int`). Same pattern as
-            // `bindings`/`birth_check`/`pool`/`heap`.
-            "bulk" => TokenKind::Bulk,
-            "harmonic" => TokenKind::Harmonic,
-            "resolution" => TokenKind::Resolution,
-
-            // Projection class
-            "projection" => TokenKind::Projection,
-            "rich" => TokenKind::Rich,
-            "chunked" => TokenKind::Chunked,
-            "recognition" => TokenKind::Recognition,
-
-            // Placement keywords (F.31) are all contextual idents:
-            // `placement`, `cooperative`, `pinned`, `pool`, `core`
-            // lex as Ident and the parser recognizes them inside
-            // the placement block on `main locus`. Frees them for
-            // ordinary identifier use outside that context.
-
-            // Closure. `approx` and `within` deliberately
-            // omitted — they lex as Ident and are recognized
-            // contextually inside closure blocks (F.10-style).
-            "closure" => TokenKind::Closure,
-            "epoch" => TokenKind::Epoch,
-            "persists_through" => TokenKind::PersistsThrough,
-            "resets_on" => TokenKind::ResetsOn,
-            "resets_per_epoch" => TokenKind::ResetsPerEpoch,
-
-            // Recovery
-            "restart" => TokenKind::Restart,
-            "restart_in_place" => TokenKind::RestartInPlace,
-            "quarantine" => TokenKind::Quarantine,
-            "reorganize" => TokenKind::Reorganize,
-            "bubble" => TokenKind::Bubble,
-
-            // Contract
-            "expose" => TokenKind::Expose,
-            "consume" => TokenKind::Consume,
-            "inferred" => TokenKind::Inferred,
-
-            // Bus
-            "subscribe" => TokenKind::Subscribe,
-            "publish" => TokenKind::Publish,
-            "on" => TokenKind::On,
-            "of" => TokenKind::Of,
-
-            // Perspective
-            "stable_when" => TokenKind::StableWhen,
-            "serialize_as" => TokenKind::SerializeAs,
+            // Every other locus, lifecycle, mode, projection,
+            // placement, closure, recovery, contract, bus and
+            // perspective word (`run`, `epoch`, `restart`, `capacity`,
+            // `publish`, `of`, `tier`, `where`, `yield`, ...) is a
+            // contextual keyword: it lexes as Ident and the parser
+            // recognizes it in position. See the note on `TokenKind`.
 
             // Statement / expression
             "let" => TokenKind::Let,
@@ -652,7 +455,6 @@ impl<'a> Lexer<'a> {
             "true" => TokenKind::True,
             "false" => TokenKind::False,
             "nil" => TokenKind::Nil,
-            "tier" => TokenKind::Tier,
             "self" => TokenKind::KwSelf,
 
             // (Primitive type names are NOT keywords; they fall
@@ -665,11 +467,7 @@ impl<'a> Lexer<'a> {
             "interface" => TokenKind::Interface,
             "async" => TokenKind::Async,
             "await" => TokenKind::Await,
-            "yield" => TokenKind::Yield,
-            "terminate" => TokenKind::Terminate,
-            "release" => TokenKind::Release,
             "macro" => TokenKind::Macro,
-            "where" => TokenKind::Where,
             // `with` is NOT in this list — v1.x-VIOLATE (F.27)
             // makes it a contextual keyword inside the
             // `violate_stmt` production. It lexes as Ident so

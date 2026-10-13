@@ -37,7 +37,7 @@ main locus App {
     on_failure(c: Kid, err: ClosureViolation) {
         println("ev delivered " + c.name);
         self.b = Kid { tag: 2 };
-        restart (c);
+        restart(c);
         self.heard = self.heard + 1;
     }
     run() {

@@ -10,7 +10,10 @@
 //!   topic's name rather than its wire is another subject;
 //! - a subject the graph cannot resolve is a hole, never an orphan;
 //! - the walk's bound, cross-seed and wildcard facts are columns of the
-//!   graph's wire rows.
+//!   graph's wire rows;
+//! - an external ingress (`std::bus::__local_dispatch`, an adapter's
+//!   inbound side) is a publisher row: of its literal's subject, or of
+//!   any subject when it computes one (friction sweep 2026-10-12).
 
 #[path = "support/entries.rs"]
 mod entries;
@@ -578,4 +581,68 @@ fn an_unresolved_subject_forms_no_edge() {
     assert!(msgs.iter().any(|m| m.contains("unknown topic `Nowhere`")), "{msgs:?}");
     assert!(!msgs.iter().any(|m| m.contains("re-entrant") || m.contains("bus cycle")), "{msgs:?}");
     assert!(graph(UNRESOLVED_CYCLE).edges.is_empty());
+}
+
+// --- rule 9: an external ingress is a publisher ---------------------
+
+/// A topic that arrives only through an adapter's inbound side: the
+/// adapter hands received bytes to `std::bus::__local_dispatch`, and no
+/// `bus { }` block publishes the topic. `SUBJECT` is the call's first
+/// argument as written.
+fn ingress_program(subject: &str) -> String {
+    format!(
+        r#"
+type Note {{ n: Int = 0; }}
+topic In {{ payload: Note; subject: "in"; }}
+locus Conn {{
+    fn send(subject: String, bytes: Bytes) {{ }}
+    fn wire() -> String {{ return "i" + "n"; }}
+    fn pump() {{ std::bus::__local_dispatch({subject}, b"x"); }}
+}}
+locus Sink {{
+    params {{ got: Int = 0; }}
+    bus {{ subscribe In as on_in; }}
+    fn on_in(n: Note) {{ self.got = self.got + 1; }}
+}}
+main locus App {{
+    params {{ s: Sink = Sink {{ }}; c: Conn = Conn {{ }}; }}
+    run() {{ self.c.pump(); }}
+}}
+fn main() {{ App {{ }}; }}
+"#
+    )
+}
+
+#[test]
+fn a_topic_that_arrives_through_an_ingress_is_published() {
+    // The literal names the topic's wire: that row has a publisher.
+    let lit = ingress_program("\"in\"");
+    assert!(orphans(&check(&lit)).is_empty(), "{:?}", check(&lit));
+    let g = graph(&lit);
+    assert_eq!(g.ingress.len(), 1, "{:?}", g.ingress);
+    assert_eq!(g.ingress[0].subject.as_deref(), Some("in"));
+    assert!(g.wires["in"].ingress && g.wires["in"].published.is_none());
+
+    // A computed subject may be any: every row has a publisher.
+    let computed = ingress_program("self.wire()");
+    assert!(orphans(&check(&computed)).is_empty(), "{:?}", check(&computed));
+    let g = graph(&computed);
+    assert_eq!(g.ingress[0].subject, None);
+    assert!(g.wires["in"].ingress);
+}
+
+#[test]
+fn a_truly_unpublished_topic_is_still_reported() {
+    // An ingress of another subject publishes that subject only.
+    let other = ingress_program("\"elsewhere\"");
+    let msgs = check(&other);
+    assert_eq!(orphans(&msgs).len(), 1, "{msgs:?}");
+    assert!(orphans(&msgs)[0].contains("bus topic `In` is subscribed but never published"), "{msgs:?}");
+    assert!(!graph(&other).wires["in"].ingress);
+
+    // And with no ingress at all, nothing publishes it.
+    let none = ingress_program("\"in\"").replace("std::bus::__local_dispatch(\"in\", b\"x\");", "");
+    let msgs = check(&none);
+    assert_eq!(orphans(&msgs).len(), 1, "{msgs:?}");
+    assert!(graph(&none).ingress.is_empty());
 }

@@ -210,8 +210,11 @@ fn or_discard_rejects_value_bearing_call() {
     let err = build_opts::build_source(src, &bin, &build_opts::options()).expect_err("should reject");
     let _ = std::fs::remove_file(&bin);
     let msg = format!("{:?}", err);
-    assert!(msg.contains("discard"), "got: {}", msg);
-    assert!(msg.contains("Unit"), "got: {}", msg);
+    // A statement-position `or discard` drops a value-bearing call's
+    // value (friction sweep 2026-10-12); where the value is used there
+    // is none to give, and the build says to substitute a default.
+    assert!(msg.contains("`or discard` has no value to give where the result is used"), "got: {}", msg);
+    assert!(msg.contains("or <default>"), "got: {}", msg);
 }
 
 #[test]

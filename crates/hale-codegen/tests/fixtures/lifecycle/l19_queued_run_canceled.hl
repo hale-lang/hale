@@ -26,7 +26,7 @@ locus Own {
 
 locus Host {
     accept(c: Kid) { }
-    release (c: Kid) { }
+    release(c: Kid) { }
     run() { Kid { tag: 1 }; }
 }
 

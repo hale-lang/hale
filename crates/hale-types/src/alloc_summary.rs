@@ -2767,6 +2767,7 @@ pub fn summarize_identified(
                                     locus.clone(),
                                     name.to_string(),
                                 );
+                                silence(&key, md.unbounded, &md.bounded_by);
                                 known.insert((key.locus.clone(), key.fn_name.clone()), key.clone());
                                 bodies.push((
                                     key,
@@ -4520,6 +4521,15 @@ pub fn unbounded_uses(
                                 let key = FnKey::method(decl(lc.id), l.name.name.clone(), lifecycle_key(lc.kind).0);
                                 push(key, lc.span, &lc.bounded_by, copy);
                             }
+                            LocusMember::Mode(md) if md.unbounded || md.bounded_by.is_some() => {
+                                let name = match md.kind {
+                                    ModeKind::Bulk => "bulk",
+                                    ModeKind::Harmonic => "harmonic",
+                                    ModeKind::Resolution => "resolution",
+                                };
+                                let key = FnKey::method(decl(md.id), l.name.name.clone(), name.to_string());
+                                push(key, md.span, &md.bounded_by, copy);
+                            }
                             _ => {}
                         }
                     }
@@ -4589,7 +4599,7 @@ pub fn unbounded_alloc_diags(
                      until the locus dissolves — it is never reclaimed per iteration, \
                      so it grows without bound (or acknowledge an \
                      intentionally-/domain-bounded shape with `@unbounded` \
-                     on the enclosing fn or lifecycle hook). Bound the loop; \
+                     on the enclosing fn, lifecycle hook or mode). Bound the loop; \
                      store it in a \
                      capacity-bounded form (`@form(ring_buffer)` / `@form(lru_cache)` / \
                      a `capacity` slot) instead of a replaced field; mutate fixed state \

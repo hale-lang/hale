@@ -55,7 +55,7 @@ locus FlowWaiter {
 // Never instantiated. Its release still makes every FlowWaiter a flow.
 locus Elsewhere {
     accept(w: FlowWaiter) { }
-    release (w: FlowWaiter) { }
+    release(w: FlowWaiter) { }
 }
 
 // Each accepts one waiter type (one accept type per parent) and releases
