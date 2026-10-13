@@ -88,6 +88,7 @@ fn symbols(o: Obligation) -> &'static [&'static str] {
         Obligation::WaitAbort => &["lotus_bus_wait_abort_all"],
         Obligation::IngressQuiesce => &["lotus_bus_ingress_quiesce"],
         Obligation::ReaderStop => &["lotus_shm_readers_stop"],
+        Obligation::TreeDrain => &["lotus_tree_drain_raise", "lotus_tree_drain_end"],
     }
 }
 
@@ -649,6 +650,9 @@ const CELL_READS: &[(&str, &str, usize)] = &[
     // through the plan's steps in `emit_teardown_obligations`.
     (CG, "Obligation::IngressQuiesce", 1),
     (CG, "Obligation::ReaderStop", 1),
+    // A main locus's head raises it from the plan's steps; its eager and
+    // deferred teardowns end it (`emit_tree_drain_end`).
+    (CG, "Obligation::TreeDrain", 2),
     (CG, "Obligation::PoolJoin", 1),
     (CG, "Obligation::WaitAbort", 1),
     (INST, "Obligation::ReplayIngress", 1),

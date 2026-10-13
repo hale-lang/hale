@@ -1045,7 +1045,9 @@ fn a_restart_is_refused_under_teardown() {
     let p = plan(&s);
     let restarts = rows(p, "Kid", K::Restart);
     let refused = restarts.iter().find(|o| o.guard == PathGuard::DrainInFlight).expect("a refused restart");
-    assert_eq!(refused.status, Status::KnownOpen { inventory_row: "C42" });
+    // shipped for an owner's teardown too (C42): the main locus's teardown
+    // raises its tree's drain before it joins (line 15)
+    assert_eq!(refused.status, Status::Shipped);
     assert!(refused.terminals.iter().all(|t| matches!(t, hale_types::lifecycle::Terminal::NotStarted(_))));
     assert!(restarts.iter().any(|o| o.guard == PathGuard::Restart && o.status == Status::Shipped));
     // One decision per path its failure can take: in place, or held at
@@ -1116,10 +1118,11 @@ fn the_main_fall_through_spine_owes_the_wait_abort_before_the_join() {
     }
 }
 
-/// Lines 7 and 16, from one source: every teardown spine states its
-/// process rows and the plan's reader orders them. The quiesce, the
-/// wait-abort, the join on the main locus's own teardown, eager or
-/// deferred; `fn main`'s three exits likewise, then the frame's
+/// Lines 7, 15 and 16, from one source: every teardown spine states its
+/// process rows and the plan's reader orders them. The tree drain, the
+/// quiesce, the wait-abort, the join on the main locus's own teardown,
+/// eager or deferred; `fn main`'s three exits likewise, less the tree
+/// drain (a main locus's), then the frame's
 /// pre-drain, or, without pools, the pre-drain ahead of the wait-abort.
 /// The eager spine's pre-drain is the one it does not emit (C13).
 #[test]
@@ -1139,10 +1142,15 @@ fn every_teardown_spine_states_its_process_rows() {
     // the reader stop after the last of the wait-abort and the join
     // (line 7), on every spine
     let head = [K::IngressQuiesce, K::WaitAbort, K::PoolJoin, K::JoinProgress, K::ReaderStop];
-    assert_eq!(order(pool_app, eager, Spine::EagerTeardown), [&[K::PreDrain][..], &head].concat());
-    assert_eq!(order(bare_app, eager, Spine::EagerTeardown), vec![K::PreDrain, K::IngressQuiesce, K::WaitAbort, K::ReaderStop]);
-    assert_eq!(order(pool_app, deferred, Spine::DeferredMainEntry), head.to_vec());
-    assert_eq!(order(pool_app, let_bound, Spine::DeferredMainEntry), head.to_vec());
+    // a main locus's own teardown raises its tree's drain first (line 15)
+    let root_head = [&[K::TreeDrain][..], &head].concat();
+    assert_eq!(order(pool_app, eager, Spine::EagerTeardown), [&[K::PreDrain][..], &root_head].concat());
+    assert_eq!(
+        order(bare_app, eager, Spine::EagerTeardown),
+        vec![K::PreDrain, K::TreeDrain, K::IngressQuiesce, K::WaitAbort, K::ReaderStop]
+    );
+    assert_eq!(order(pool_app, deferred, Spine::DeferredMainEntry), root_head);
+    assert_eq!(order(pool_app, let_bound, Spine::DeferredMainEntry), root_head);
     for spine in [Spine::MainFallThrough, Spine::MainReturn, Spine::MainTestFailure] {
         assert_eq!(order(pool_app, let_bound, spine), [&head[..], &[K::PreDrain]].concat(), "{}", spine.name());
         assert_eq!(

@@ -481,9 +481,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // the cell owns (String and Bytes fields, nested blocks)
         // into the CALLER's arena, inside the critical section that
         // read the cell, so the map's writer is free to retire its
-        // own blocks. Emitted only for a `sync = serialized` slot
-        // whose cell owns any — the plain entry points are
-        // unchanged.
+        // own blocks. Emitted only for a synced slot (`serialized`,
+        // `striped`, `lockfree`) whose cell owns any — the plain
+        // entry points are unchanged.
         let hashmap_get_cloned_ty = i32_t.fn_type(
             &[ptr_t.into(), ptr_t.into(), ptr_t.into(), ptr_t.into()],
             false,
@@ -499,6 +499,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         );
         self.module.add_function(
             "lotus_hashmap_value_at_cloned",
+            hashmap_value_at_cloned_ty,
+            None,
+        );
+        // key_at of such a slot with a String key: the key is copied
+        // into the caller's arena under the read's lock.
+        self.module.add_function(
+            "lotus_hashmap_key_at_cloned",
             hashmap_value_at_cloned_ty,
             None,
         );
@@ -1255,6 +1262,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             self.context.void_type().fn_type(&[], false),
             None,
         );
+        // declare void @lotus_tree_drain_raise() / @lotus_tree_drain_end()
+        // — a main locus's tree drain (lifecycle line 15)
+        for name in ["lotus_tree_drain_raise", "lotus_tree_drain_end"] {
+            self.module.add_function(name, self.context.void_type().fn_type(&[], false), None);
+        }
         // Crumb batch-5 item 1 — async_io sleep park:
         // declare i64 @lotus_time_sleep_park_try(i64 ns)
         // 1 = slept via a timer-only coro park (async_io context);
@@ -2452,6 +2464,20 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             i64_t.fn_type(&[], false),
             None,
         );
+        // A failed assertion outside main's frame tears the tree down
+        // through the main thread's unwind registry (`locus/unwind.rs`).
+        {
+            let ptr_t = self.context.ptr_type(AddressSpace::default());
+            self.module.add_function("lotus_test_fail_unwind", void_t.fn_type(&[], false), None);
+            self.module.add_function("lotus_unwind_set_head", void_t.fn_type(&[ptr_t.into()], false), None);
+            self.module.add_function(
+                "lotus_unwind_push",
+                void_t.fn_type(&[ptr_t.into(), ptr_t.into(), ptr_t.into()], false),
+                None,
+            );
+            self.module.add_function("lotus_unwind_pop_slot", void_t.fn_type(&[ptr_t.into()], false), None);
+            self.module.add_function("lotus_unwind_poll", void_t.fn_type(&[], false), None);
+        }
 
         // Wave B (bus-transport redesign): adapter-binding
         // registration. The runtime stores the (self, send_fn)

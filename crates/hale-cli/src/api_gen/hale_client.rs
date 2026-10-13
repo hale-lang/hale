@@ -15,6 +15,9 @@ use super::{camel, field_ident, hale_lit, json_quote, snake, type_ident, unforme
 
 const PREAMBLE: &str = include_str!("hale_preamble.hl");
 
+/// The instant a client reads where a reply holds none it can parse.
+const EPOCH: &str = "`1970-01-01T00:00:00Z`";
+
 /// A Hale type as the client declares it.
 fn hale_type(f: &FieldSchema, what: &str) -> Result<String, String> {
     match f {
@@ -26,7 +29,27 @@ fn hale_type(f: &FieldSchema, what: &str) -> Result<String, String> {
         }
         .to_string()),
         FieldSchema::Ref(name) => Ok(type_ident(name)),
+        FieldSchema::Time => Ok("Time".to_string()),
+        FieldSchema::List { items, max, exact: false } => Ok(format!("bounded[{}; {max}]", hale_type(items, what)?)),
+        FieldSchema::List { items, max, exact: true } => Ok(format!("[{}; {max}]", hale_type(items, what)?)),
         FieldSchema::Unformed => Err(unformed(what)),
+    }
+}
+
+/// The value a fixed array's slots hold before the payload's elements are
+/// read into them: the zero of a scalar, a record read from `{}`.
+fn zero(f: &FieldSchema, what: &str) -> Result<String, String> {
+    match f {
+        FieldSchema::Scalar { json, .. } => Ok(match *json {
+            "integer" => "0",
+            "number" => "0.0",
+            "boolean" => "false",
+            _ => "\"\"",
+        }
+        .to_string()),
+        FieldSchema::Ref(name) => Ok(format!("api_dec_{}(\"{{}}\")", type_ident(name))),
+        FieldSchema::Time => Ok(EPOCH.to_string()),
+        _ => Err(unformed(what)),
     }
 }
 
@@ -39,7 +62,9 @@ fn encode(f: &FieldSchema, value: &str, what: &str) -> Result<String, String> {
             _ => format!("api_str({value})"),
         }),
         FieldSchema::Ref(name) => Ok(format!("api_enc_{}({value})", type_ident(name))),
-        FieldSchema::Unformed => Err(unformed(what)),
+        FieldSchema::Time => Ok(format!("api_str(std::time::iso8601({value}))")),
+        // a list is written by its record's helper (`list_enc`), never inline
+        FieldSchema::List { .. } | FieldSchema::Unformed => Err(unformed(what)),
     }
 }
 
@@ -53,7 +78,9 @@ fn decode_whole(f: &FieldSchema, json: &str, what: &str) -> Result<String, Strin
             _ => format!("api_scalar_str({json})"),
         }),
         FieldSchema::Ref(name) => Ok(format!("api_dec_{}({json})", type_ident(name))),
-        FieldSchema::Unformed => Err(unformed(what)),
+        FieldSchema::Time => Ok(format!("(std::time::parse_time(api_scalar_str({json})) or {EPOCH})")),
+        // a list is read by its record's decoder (`list_dec`), never whole
+        FieldSchema::List { .. } | FieldSchema::Unformed => Err(unformed(what)),
     }
 }
 
@@ -68,8 +95,47 @@ fn decode_field(f: &FieldSchema, json: &str, key: &str, what: &str) -> Result<St
             _ => format!("std::json::find_string_field({json}, {q})"),
         }),
         FieldSchema::Ref(name) => Ok(format!("api_dec_{}(std::json::find_field_raw({json}, {q}))", type_ident(name))),
-        FieldSchema::Unformed => Err(unformed(what)),
+        FieldSchema::Time => Ok(format!("(std::time::parse_time(std::json::find_string_field({json}, {q})) or {EPOCH})")),
+        FieldSchema::List { .. } | FieldSchema::Unformed => Err(unformed(what)),
     }
+}
+
+/// The helper that writes the list field `field` of a `record` as a JSON array.
+fn list_enc_name(record: &str, field: &str) -> String {
+    format!("api_enc_{record}__{field}")
+}
+
+/// `api_enc_<T>__<field>(v: T) -> String`: the list `v.<field>` as a JSON array.
+fn list_enc(record: &str, field: &str, items: &FieldSchema, what: &str) -> Result<String, String> {
+    Ok(format!(
+        "@bounded_by(v)\nfn {name}(v: {record}) -> String {{\n    let mut out = \"[\";\n    let mut n = 0;\n    for x in v.{field} {{\n        \
+         if n > 0 {{ out = out + \",\"; }}\n        out = out + {elem};\n        n = n + 1;\n    }}\n    return out + \"]\";\n}}\n\n",
+        name = list_enc_name(record, field),
+        elem = encode(items, "x", what)?,
+    ))
+}
+
+/// The statements of a record's decoder that read the list at the key `key` of
+/// `json` into `target`: a bounded field by `push` (`target` the record's field),
+/// a fixed array by its slots (`target` a local, `[zero; N]` until then), the
+/// elements past what it holds left unread.
+fn list_dec(target: &str, local: &str, key: &str, items: &FieldSchema, max: u64, exact: bool, what: &str) -> Result<String, String> {
+    let text = format!("{local}_text");
+    let it = format!("{local}_at");
+    let elem = decode_whole(items, &format!("{text}[{it}.cur_start..{it}.cur_end]"), what)?;
+    let mut out = format!("    let {text} = std::json::find_field_raw(json, {});\n", hale_lit(key));
+    out.push_str(&format!("    let mut {it} = std::json::array_first_span({text});\n"));
+    if exact {
+        out.push_str(&format!("    let mut {local}_n = 0;\n"));
+        out.push_str(&format!("    while !{it}.done && {local}_n < {max} {{\n"));
+        out.push_str(&format!("        {target}[{local}_n] = {elem};\n"));
+        out.push_str(&format!("        {local}_n = {local}_n + 1;\n"));
+    } else {
+        out.push_str(&format!("    while !{it}.done {{\n"));
+        out.push_str(&format!("        push({target}, {elem}) or discard;\n"));
+    }
+    out.push_str(&format!("        {it} = std::json::array_next_span({it}, {text});\n    }}\n"));
+    Ok(out)
 }
 
 /// The field identifier of each JSON key of a struct, in key order. `field_ident` alone is not
@@ -101,6 +167,9 @@ fn struct_decl(name: &str, t: &TypeSchema) -> Result<String, String> {
         out.push_str(&format!("    {field}: {};\n", hale_type(f, &format!("{name}.{key}"))?));
     }
     out.push_str("}\n\n");
+    if t.properties.iter().any(|(_, f)| matches!(f, FieldSchema::List { .. })) {
+        return list_struct_fns(name, t, &ident, &idents, out);
+    }
     // the encoder: one compact object, the fields in declaration order
     out.push_str(&format!("fn api_enc_{ident}(v: {ident}) -> String {{\n"));
     if t.properties.is_empty() {
@@ -122,6 +191,53 @@ fn struct_decl(name: &str, t: &TypeSchema) -> Result<String, String> {
         out.push_str(&format!("        {field}: {},\n", decode_field(f, "json", key, &format!("{name}.{key}"))?));
     }
     out.push_str("    };\n}\n\n");
+    Ok(out)
+}
+
+/// The encoder and decoder of a record with a list field: as
+/// `struct_decl`'s, with each list written by its helper and read by a loop.
+fn list_struct_fns(name: &str, t: &TypeSchema, ident: &str, idents: &[String], mut out: String) -> Result<String, String> {
+    let mut parts = Vec::new();
+    for (i, ((key, f), field)) in t.properties.iter().zip(idents).enumerate() {
+        let sep = if i == 0 { "{" } else { "," };
+        let what = format!("{name}.{key}");
+        let value = match f {
+            FieldSchema::List { items, .. } => {
+                out.push_str(&list_enc(ident, field, items, &what)?);
+                format!("{}(v)", list_enc_name(ident, field))
+            }
+            f => encode(f, &format!("v.{field}"), &what)?,
+        };
+        parts.push(format!("{} + {value}", hale_lit(&format!("{sep}{}:", json_quote(key)))));
+    }
+    out.push_str(&format!("fn api_enc_{ident}(v: {ident}) -> String {{\n"));
+    out.push_str(&format!("    return {} + \"}}\";\n}}\n\n", parts.join(" + ")));
+    // the decoder: the fixed arrays read first, the record made, the bounded lists pushed into it
+    out.push_str(&format!("@bounded_by(json)\nfn api_dec_{ident}(json: String) -> {ident} {{\n"));
+    for ((key, f), field) in t.properties.iter().zip(idents) {
+        if let FieldSchema::List { items, max, exact: true } = f {
+            let what = format!("{name}.{key}");
+            let local = format!("l_{field}");
+            out.push_str(&format!("    let mut {local} = [{}; {max}];\n", zero(items, &what)?));
+            out.push_str(&list_dec(&local, &local, key, items, *max, true, &what)?);
+        }
+    }
+    let bounded = t.properties.iter().any(|(_, f)| matches!(f, FieldSchema::List { exact: false, .. }));
+    out.push_str(&format!("    let {}r = {ident} {{\n", if bounded { "mut " } else { "" }));
+    for ((key, f), field) in t.properties.iter().zip(idents) {
+        match f {
+            FieldSchema::List { exact: true, .. } => out.push_str(&format!("        {field}: l_{field},\n")),
+            FieldSchema::List { exact: false, .. } => {}
+            f => out.push_str(&format!("        {field}: {},\n", decode_field(f, "json", key, &format!("{name}.{key}"))?)),
+        }
+    }
+    out.push_str("    };\n");
+    for ((key, f), field) in t.properties.iter().zip(idents) {
+        if let FieldSchema::List { items, max, exact: false } = f {
+            out.push_str(&list_dec(&format!("r.{field}"), &format!("l_{field}"), key, items, *max, false, &format!("{name}.{key}"))?);
+        }
+    }
+    out.push_str("    return r;\n}\n\n");
     Ok(out)
 }
 
@@ -307,6 +423,11 @@ pub fn generate(model: &ClientModel) -> Result<String, String> {
         claim(type_ident(name))?;
         claim(format!("api_enc_{}", type_ident(name)))?;
         claim(format!("api_dec_{}", type_ident(name)))?;
+        for ((_, f), field) in t.properties.iter().zip(field_idents(t)) {
+            if matches!(f, FieldSchema::List { .. }) {
+                claim(list_enc_name(&type_ident(name), &field))?;
+            }
+        }
         out.push_str(&struct_decl(name, t)?);
     }
     for m in &model.members {

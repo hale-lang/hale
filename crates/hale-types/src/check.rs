@@ -1061,6 +1061,11 @@ pub fn check_bundle_by_declaration(
         placement: inputs.placement,
     };
     diags.extend(Law { rule: DROPPED_DELIVERY, eval: check_scope_local_subscriber_on_classic_pool }.diags(&rows));
+    // A publish written before the literal that builds its subscriber:
+    // the cell reaches the subscribers registered when it is published
+    // (spec/runtime.md § "Lifecycle obligations", line 6), so not that one.
+    let rows = EarlyPublishRows { bundle, top, bus: inputs.bus };
+    diags.extend(Law { rule: EARLY_PUBLISH, eval: check_publish_before_subscriber }.diags(&rows));
     // GH #723: the fn-level contract decorators stack, so a stack can
     // be incoherent — the same decorator twice, or `@unbounded` against
     // a contract that forbids allocation.
@@ -3128,6 +3133,51 @@ fn check_birth_order(rows: &RootRunRows<'_, '_>, out: &mut Vec<Violation>) {
 const STARVATION: RuleId = RuleId::registered("verification/structural", "pool-starvation");
 /// A scope-local subscriber on a classic pool, whose deliveries are dropped.
 const DROPPED_DELIVERY: RuleId = RuleId::registered("verification/structural", "dropped-scope-local-delivery");
+/// A publish written before the literal that builds its subscriber.
+const EARLY_PUBLISH: RuleId = RuleId::registered("verification/structural", "publish-before-subscriber");
+
+/// What the publish-before-subscriber law reads: the bundle's bodies
+/// (their sends and locus literals, in the order written), the scope
+/// (which name is a locus, and the loci its params build) and the bus
+/// graph (the wire each declaration subscribes to, and the topic rows a
+/// send's subject resolves through).
+#[derive(Clone, Copy)]
+struct EarlyPublishRows<'r, 'b> {
+    bundle: &'r Bundle<'b>,
+    top: &'r TopScope,
+    bus: &'r crate::bus_graph::BusGraph,
+}
+
+/// A send written, in one body, before a literal building a locus that
+/// subscribes to its subject (the literal's own, or one its params build):
+/// the subscriber registers when the literal runs, and a cell reaches the
+/// subscribers registered when it is published, so this one never reaches
+/// it. A warning at the send, with the literal as its witness; what a
+/// statically built tree publishes to itself while it is built is the
+/// runtime's to deliver, not this law's.
+fn check_publish_before_subscriber(rows: &EarlyPublishRows<'_, '_>, out: &mut Vec<Violation>) {
+    for f in crate::bus_graph::publishes_before_their_subscriber(rows.bundle, rows.top, rows.bus) {
+        let whose = if f.subscriber == f.locus {
+            format!("`{}` subscribes to it", f.locus)
+        } else {
+            format!("the `{}` it builds subscribes to it", f.subscriber)
+        };
+        out.push(
+            Violation::warning(
+                EARLY_PUBLISH,
+                f.send,
+                format!(
+                    "this publish on `{wire}` comes before the `{locus}` built below exists, and {whose}: a cell \
+                     reaches the subscribers registered when it is published, so that one never receives it. \
+                     Build the subscriber first, or publish once it exists.",
+                    wire = f.wire,
+                    locus = f.locus,
+                ),
+            )
+            .step(f.literal, format!("`{}` is built here, after the publish", f.locus)),
+        );
+    }
+}
 
 /// What the dropped-delivery law reads: the program's own allocation
 /// rows (where a locus literal is written and whether its value leaves
@@ -3146,9 +3196,11 @@ struct ScopeLocalSubscriberRows<'r, 'b> {
 /// A subscriber built and dissolved inside one call that runs on a
 /// classic cooperative pool (not `where async_io`). Its subscription
 /// registers with that pool (spec/runtime.md § "Subscriptions follow the
-/// tower"), whose cells are handler-atomic: the call holds the pool's
-/// worker for the subscriber's whole life, so every delivery to it waits
-/// and is dropped when it dissolves. Scope-local is the allocation rows'
+/// tower"), and the call holds the pool's worker for the subscriber's
+/// whole life, so a delivery to it waits for a park point of a `run()`
+/// on that worker and is dropped when it dissolves before one comes.
+/// The rows do not say where the body parks, so the advisory fires at
+/// every such literal. Scope-local is the allocation rows'
 /// `Local` (a `let` or a bare statement, neither stored in a field nor
 /// returned) with no `accept` owning it; the pools are the placement
 /// table's domains for the literal (its enclosing locus's instances, or a

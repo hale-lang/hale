@@ -451,12 +451,14 @@ fn main() { App { }; }
     );
 }
 
-/// §7 open gaps: "`striped` / `lockfree` `@form` maps don't retire
-/// replaced cells", beside a plain map and a `serialized` one, which
-/// do. Measured on v0.22.0 over 200 000 replaces of 16 keys: plain
-/// and serialized +4 KiB each, striped +2.3 MiB, lockfree +2.4 MiB.
+/// §7 says a replaced `@form(hashmap)` cell retires under every `sync =`
+/// discipline. That was an open gap for `striped` and `lockfree` ("maps
+/// don't retire replaced cells"): measured on v0.22.0 over 200 000
+/// replaces of 16 keys, plain and serialized +4 KiB each, striped
+/// +2.3 MiB, lockfree +2.4 MiB. Their reads now copy the cell out under
+/// its claim and their writers retire, so all four hold flat.
 #[test]
-fn claim_striped_and_lockfree_maps_do_not_retire() {
+fn claim_maps_of_every_discipline_retire() {
     if asan_build() {
         eprintln!("skipped under LOTUS_ASAN: a resident-set budget says nothing past ASan's quarantine");
         return;
@@ -509,25 +511,12 @@ fn main() { App { }; }
     );
     let g = phase_growth(&out);
     eprintln!("resident growth per phase (bytes): {:?}", g);
-    for control in ["plain", "serialized"] {
+    for mode in ["plain", "serialized", "striped", "lockfree"] {
         assert!(
-            g[control] < MIB / 2,
-            "the control — a `{}` map whose cell is replaced 200 000 \
-             times — must hold flat (§7 says `sync = serialized` retires \
-             since 2026-08-03); it grew {} bytes:\n{}",
-            control,
-            g[control],
-            out
-        );
-    }
-    for mode in ["striped", "lockfree"] {
-        assert!(
-            g[mode] > MIB,
-            "spec/styleguide.md §7 says a `sync = {}` map doesn't retire \
-             replaced cells (~2.3 MiB over 200 000 replaces on v0.22.0). \
-             This run grew {} bytes — it retires now: update the \
-             \"`striped` / `lockfree` `@form` maps don't retire\" open \
-             gap:\n{}",
+            g[mode] < MIB / 2,
+            "spec/styleguide.md §7 says a replaced `@form(hashmap)` cell \
+             retires under every `sync =` discipline; a `{}` map whose cell \
+             was replaced 200 000 times grew {} bytes:\n{}",
             mode,
             g[mode],
             out

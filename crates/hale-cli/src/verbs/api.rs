@@ -19,7 +19,7 @@ use crate::verbs::check::run_impl::load_for_check;
 pub(crate) fn api_usage() -> &'static str {
     "\
 usage: hale api export --surface NAME [--out DIR | --check DIR] [file.hl | dir]
-       hale api client --surface NAME --lang hale|ts [--out FILE | --check FILE] [file.hl | dir]
+       hale api client --surface NAME --lang hale|ts|js [--out FILE | --check FILE] [file.hl | dir]
        hale api describe <endpoint> [--json] [--bearer T]
        hale api call <endpoint> <member> [--json '<payload>' | --json - | --<field> <value> ...]
                      [--bearer T] [--request-id ID] [--digest D] [--raw]
@@ -64,7 +64,8 @@ member, typed by the row's request and response, returning the five outcomes
 (result, handler error, refusal, server error, lost), the surface's digest sent
 on every call, and a subscription per stream row of the program's hubs. `--lang
 hale` is a Hale module, `--lang ts` one TypeScript module with no dependency
-beyond `fetch` and `WebSocket`. The module names the surface's digest in a
+beyond `fetch` and `WebSocket`, `--lang js` the same client as one JavaScript
+ES module typed in JSDoc, which needs no compile step. The module names the surface's digest in a
 constant; `--check FILE` writes nothing and exits 1 when the committed client
 is not what the surface now generates, naming the digest it was made against.
 The output is on stdout unless `--out FILE` names a file.
@@ -291,7 +292,7 @@ fn run_client(rest: &[String]) -> ExitCode {
         return ExitCode::from(2);
     };
     let Some(lang) = lang else {
-        eprintln!("hale api client needs --lang hale or --lang ts");
+        eprintln!("hale api client needs --lang hale, --lang ts or --lang js");
         return ExitCode::from(2);
     };
     if out.is_some() && check.is_some() {
@@ -309,8 +310,9 @@ fn run_client(rest: &[String]) -> ExitCode {
     let generate: fn(&surface_doc::ClientModel) -> Result<String, String> = match lang.as_str() {
         "hale" => crate::api_gen::hale_client::generate,
         "ts" => crate::api_gen::ts_client::generate,
+        "js" => crate::api_gen::js_client::generate,
         other => {
-            eprintln!("hale api client: no `{other}` client; the languages are `hale` and `ts`");
+            eprintln!("hale api client: no `{other}` client; the languages are `hale`, `ts` and `js`");
             return ExitCode::from(2);
         }
     };

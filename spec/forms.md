@@ -883,11 +883,48 @@ unsynchronized whatever inference would pick; see `semantics.md`
   by an off-pool reader could outlive the writer's activation —
   the leak was the safety mechanism. A continuously-churned
   serialized map now holds steady-state RSS instead of growing
-  per replace. `striped` and `lockfree` maps do **not** retire
-  yet (their read paths bracket on rwlock / lf_enter rather than
-  the map mutex, and their grow rebuilds slots concurrently — a
-  separate audit); a churned String-bearing cell on those modes
-  still accumulates.
+  per replace. `striped` and `lockfree` maps read the same way
+  and retire the same way; what stands in for the mutex is the
+  cell's own claim (below).
+
+  **`striped` / `lockfree`: the read copies under the cell's
+  claim.** These maps have no lock a reader and a writer of one
+  cell both take, so a read of a cell that owns anything takes
+  the cell's claim — the same `COMMITTED → CLAIMED` CAS a
+  writer's update takes — copies the value and everything it
+  owns into the reader's arena, and releases it
+  (`lotus_hashmap_cell_read`). An update, and a lockfree
+  `remove`'s `COMMITTED → TOMBSTONE`, are CASes from `COMMITTED`,
+  so neither starts while a copy runs, and once one succeeds no
+  reader can reach the old cell's blocks: the writer retires them
+  inside its claim, deferred to its activation boundary as on a
+  serialized map. The choice is deep reads, not an epoch: a reader
+  on another pool never holds a view into a cell another pool may
+  replace, so the runtime needs no quiescent-state tracking, at
+  the price of a copy per read (a cell holding a String, a nested
+  record and Bytes: ~13 → ~39 ns a `get`, serialized ~33 ns; a
+  cell of scalars keeps the plain read). The claim also makes such
+  a read whole — before, a read racing an update of the same key
+  could copy half of each value. Readers of one key serialize on
+  its claim; readers and writers of distinct keys never meet. A
+  striped `remove` and grow run under the write lock, a lockfree
+  grow after its drain, so neither races a read. `key_at` of a
+  String-keyed retiring map (any synced discipline) copies the
+  key out under the read's lock as well, since a removed cell's
+  key is retired. Every such copy is a block of the reader's own
+  whatever arena it lands in: the walk uses the cell-owned clones,
+  which copy a pointer already in the destination rather than pass
+  it through. (The plain clones' same-arena fast path handed a
+  read with no method scratch — a closure assertion on the map
+  locus, reading into `self.__arena` — the cell's own String and
+  Bytes, which a same-key replace on another pool then retired
+  and its flush reused under the reader.) A lockfree tombstone keeps its String key until
+  the next grow's migration — a probe that loaded the cell before
+  the `remove` may still be comparing it — and the migration,
+  with no op in flight, retires it. (Before, neither discipline
+  retired anything: between 1 000 and 100 000 overwriting sets of
+  4 keys a cell holding a String, a nested record and Bytes grew
+  the map's arena 196 608 → 16 056 320 bytes.)
 - **Cross-pool, read-heavy or per-op work is expensive**:
   `sync = striped`. Rwlock lets concurrent readers run in
   parallel; cache-padded cells avoid false-sharing between
@@ -946,8 +983,13 @@ the probe advances past them, but inserts always land in the
 next EMPTY slot rather than reusing a TOMBSTONE. Session 3's
 grow path is where tombstones get compacted out: when the
 load factor (`live + tombstones / cap`) crosses 0.6, the
-table is rebuilt at double size and the new table omits
-tombstones entirely. Consistency on remove follows the
+table is rebuilt and the new table omits tombstones entirely.
+It is rebuilt at double size when the live entries alone are
+more than half that threshold (`live / cap > 0.3`), and at its
+own size otherwise — a table filled by tombstones (a set/remove
+churn) needs only the compaction. (Before, every rebuild
+doubled, so a churn of `set` + `remove` grew the slots without
+bound.) Consistency on remove follows the
 lockfree model: a reader that observed COMMITTED before a
 concurrent CAS to TOMBSTONE returns the (now-stale) value —
 "the key was present at the moment we read."
@@ -1245,14 +1287,15 @@ lifetime per the standard F.22 contract.
 array with what that owns — a record's field of scalars is inline and
 part of the cell itself, while an array inside a tuple or another
 array is a block of its own, as for `@form(vec)`), in the map locus's
-arena. When a `sync = none` or `sync = serialized` map replaces a
-cell (`set` of a present key) or removes one, everything the old cell
+arena. When a map replaces a cell (`set` of a present key) or
+removes one, under any sync discipline, everything the old cell
 owned is retired, at any depth, through the retire descriptor
 `@form(vec)` uses; a block the new cell still reaches survives, and a
 block reached twice is retired once. Retirement is deferred to the
 owner's activation boundary (anchor retirement, `memory.md`), so a
 value a plain `get` handed out stays whole for the rest of the
-activation; a serialized map's reads are owned copies (above). A
+activation; a synced map's reads are owned copies (above — a
+`striped` or `lockfree` map's taken under the cell's claim). A
 churned map's arena therefore stays flat. Before, only top-level
 String fields retired: a replaced cell's Bytes and its nested records
 (their blocks and their own String and Bytes) stayed for good — a
@@ -1287,9 +1330,6 @@ was stored as-is whatever held it, so two cells could share one; and a
 cell whose only heap part was a nested record of scalars stored the
 pointer it was handed, into the setting method's scratch, which a
 later `get` read after the method had returned.)
-
-`striped` and `lockfree` maps retire nothing yet (see the discipline
-table above).
 
 ## Complexity
 

@@ -115,6 +115,53 @@ rpc `Ledger::dump`: its response `Export` has a field `raw: Bytes`, which the JS
 rpc `Orders::flush` may violate (`violate stale`) and returns nothing: an rpc handler that may violate is `fallible(ClosureViolation)`, so its caller receives the server error instead of a result
 ```
 
+### Lists and pages
+
+A list crosses as a field of a record, and its type says how long it
+may be: a `bounded[T; N]` field is a JSON array of up to `N` elements,
+a `[T; N]` field one of exactly `N`. "List my items" returns a page,
+which is a record:
+
+```hale,fragment
+type Item { id: Int; title: String; }
+type Page { items: bounded[Item; 50]; more: Bool; }
+
+locus Shelf {
+    params { items: bounded[Item; 500]; }
+    fn list(q: ListQuery) -> Page {
+        let mut page = Page { more: false };
+        for item in self.items {
+            push(page.items, item) or { page.more = true; break; };
+        }
+        return page;
+    }
+}
+```
+
+A `bounded` field may be left out of a request, and is then empty; a
+fixed array is always sent whole. The description states the bound
+(`"maxItems": 50`, and `"minItems"` for a fixed array), the `.proto`
+makes the field `repeated`, and the generated clients type it
+(`bounded[Item; 50]` in Hale, `Array<Item>` in TypeScript). A request
+whose list is longer than the field holds is refused `malformed` with
+`too_long` (a fixed array sent short, `too_short`): the handler never
+sees a list cut to fit. An unbounded `[T]` is not carried, since an
+unbounded collection belongs to a locus (`@form(vec)`), not to a value
+that crosses a boundary; neither is a list of lists, nor a request or
+response that is a bare list.
+
+### Instants and durations
+
+A `Time` crosses as its RFC 3339 text in UTC, to the nanosecond:
+`"2026-10-12T03:04:05.123456789Z"` (trailing zeros of the fraction
+dropped, `"2026-10-12T03:04:05Z"` when there is none). A request must
+say `Z`: a time with no zone or with an offset is refused `malformed`
+rather than guessed at, and so is one past `Time`'s range (it ends in
+2262). A `Duration` crosses as its count of nanoseconds, as every
+quantity crosses as its count: `1500000000` is `1.5s`. The description
+marks a `Time` `"format": "date-time"` and a `Duration` with its unit,
+`q(ns)`; the `.proto` carries both as `int64` nanoseconds.
+
 ### The digest
 
 Each surface folds into a **contract digest**: its rows in member
@@ -505,8 +552,8 @@ Todo`) is the message `TodoMessage`: proto3 gives a service and a message one
 scope, and the service keeps the surface's name because it is the gRPC path.
 
 A client is whatever generates stubs from a `.proto`; `hale api client`
-makes Hale and TypeScript clients and neither speaks gRPC (a browser's
-`fetch` cannot, and neither client carries an HTTP/2 stack). The server also
+makes Hale, TypeScript and JavaScript clients and none speaks gRPC (a
+browser's `fetch` cannot, and no client carries an HTTP/2 stack). The server also
 answers gRPC server reflection (`grpc.reflection.v1`), so a tool that does not
 have the file finds the surface through the server: it lists three services
 (the surface, `hale.api.Description` and the reflection service itself) and
@@ -713,6 +760,7 @@ hale api export --surface Public --out api/public desk.hl
 hale api client --surface Public --lang hale --out client/desk.hl desk.hl
 hale api client --surface Public --lang ts   --out client/desk.ts desk.hl
 hale api client --surface Public --lang ts   --check client/desk.ts desk.hl   # exit 1 on drift
+hale api client --surface Public --lang js   --out web/desk.js desk.hl
 ```
 
 `export` writes a bundle: `Public.description.json` (every member with its
@@ -737,9 +785,13 @@ single file that needs only `fetch` and `WebSocket`: an async function per
 member answering a tagged union (`result`, `handler_error`, `refusal`,
 `server_error`; a connection that never answered is thrown as a
 `TransportError`, because that request may have run) and an async iterable
-per stream. Both send the surface's digest on every call, so a program that
-changed under a client refuses it `digest_mismatch`; both name the digest in
-a constant, and `--check` refuses a committed copy made against another one.
+per stream. The JavaScript one is that same client as an ES module a page
+loads as it is, with no compile step: the same functions by the same names,
+typed in JSDoc, so an editor (or `tsc --checkJs`) still checks a caller
+against the rows. Every client sends the surface's digest on every call, so a
+program that changed under it refuses it `digest_mismatch`; each names the
+digest in a constant, and `--check` refuses a committed copy made against
+another one.
 A client speaks `unix:PATH` and `http://` (the Hale client) and `http://` and
 `ws://` (both); TLS is not spoken, and neither is gRPC: a gRPC caller takes the
 `.proto` to its own language's stub generator, or finds the surface through

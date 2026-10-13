@@ -166,7 +166,11 @@ before anything is served:
    Bytes\`, which the JSON codec does not carry" (a field of a nested
    struct by its path, `inner.raw`), and for a type that is no struct
    the codec carries, "rpc \`Ledger::dump\`: its request is
-   \`Bytes\`, which the JSON codec does not carry". A
+   \`Bytes\`, which the JSON codec does not carry". A list is a field's
+   (§ Codecs): a request or response that is itself one is refused with
+   the record to declare, "rpc \`Shelf::bare\`: its response is \`[Int;
+   3]\`, a list, which crosses as a field of a record: declare one
+   (\`type Page { items: [Int; 3]; }\`)". A
    `ClosureViolation` error carries no schema (law 6), so no form is
    asked of it. R1 holds every row to the JSON codec, the one codec a
    serve site has (R2a lowers the JSON codec and no other; a serve site's
@@ -608,6 +612,9 @@ let admin = api::serve(Admin, unix::Rpc { path: "/run/desk/admin.sock", roles: s
 - **`stop()`** closes the listener and every connection after the replies
   already sent: the queued requests are refused `shutting_down` and the
   executing ones are answered first, as § The request lifecycle states.
+  Once the exposure is draining (a signal, or its owner's teardown, which
+  drains the tree first: `runtime.md` § "Lifecycle obligations", line 15)
+  it hands no queued request to a receiver; its shutdown refuses them.
   A program that ends without `stop()` is torn down by its owner and
   releases its sockets, but the pools of the listener and its connections
   are stopped before the exposure's shutdown can write to them, so a
@@ -1266,7 +1273,7 @@ The refusal kinds, each with its status:
 
 | kind | when (§ Serving, the checks) | HTTP | gRPC |
 |---|---|---|---|
-| `malformed` | not a request; no such member (`unknown_member`); a payload that does not decode (`missing_field`, `wrong_type`) | 400 | INVALID_ARGUMENT |
+| `malformed` | not a request; no such member (`unknown_member`); a payload that does not decode (`missing_field`, `wrong_type`, a list's `too_long` or `too_short`) | 400 | INVALID_ARGUMENT |
 | `digest_mismatch` | the request's digest is not the served one; the refusal carries `"served"` | 409 | FAILED_PRECONDITION |
 | `unauthenticated` | the sources name nobody | 401 | UNAUTHENTICATED |
 | `unauthorized` | the `Context` does not hold the row's `requires`; the refusal carries `"requires"` | 403 | PERMISSION_DENIED |
@@ -1669,7 +1676,7 @@ form a hub exposure's description states:
 | refusal | hub | `{"type": "refusal", "topic": T, "refusal": {"kind": K, "reason": …}}`: the subscription is not admitted |
 | event | hub | `{"type": "event", "topic": T, "seq": N, "payload": P}` |
 | unauthorized | hub | `{"type": "unauthorized", "topic": T, "reason": R}`, `R` being `"expired"` or `"revoked"`, once; then the subscription is gone |
-| closed | hub | `{"type": "closed", "reason": "shutting_down"}`, at the hub's `stop()`; then the connection closes |
+| closed | hub | `{"type": "closed", "reason": "shutting_down"}`, at the hub's `stop()`, or when the drain reaches a connection still open (a signal, or its program's teardown, which drains the tree before the hub's own stop comes round: `runtime.md` § "Lifecycle obligations", line 15), after what is already queued for it; then the connection closes |
 
 A refusal's object is § Outcomes', its kind one of `unauthenticated`
 (the sources named nobody at connect: no credential was presented, or the
@@ -1783,8 +1790,51 @@ wire: read as an `Int` and converted, a quantity by its denomination,
 `n * 1cent`; a range narrows, and a value outside it is `wrong_type`),
 and the description names the unit a quantity counts. A point is not
 carried (its origin is not a count): a row whose shape holds one is
-refused by law 5. Decoding is strict: a value of the wrong JSON kind is
-`wrong_type`
+refused by law 5.
+
+**An instant and a duration.** The stdlib's `Time` (a point over
+`Duration` with no origin, `spec/types.md`) is the one point the codec
+carries, as its RFC 3339 text in UTC: what `std::time::iso8601` writes,
+the fraction to the nanosecond with its trailing zeros dropped and none
+when it is zero (`"2026-10-12T03:04:05.123456789Z"`,
+`"2026-10-12T03:04:05Z"`). It is read back by `std::time::parse_time`,
+the `Z` required: a text with no zone, one with an offset (`+01:00`,
+which `parse_time` refuses rather than read as UTC), an instant outside
+`Time`'s range (`1677-09-21T00:12:43.145224192Z` through
+`2262-04-11T23:47:16.854775807Z`) and a number are `wrong_type`. Its
+schema is `{"type": "string", "format": "date-time", "x-hale-type":
+"Time"}`. A `Duration` is the quantity it is (`quantity Int in ns`):
+its count of nanoseconds, as any quantity is its count in its
+denomination (`spec/units.md` § Layout and the wire), `{"type":
+"integer", "x-hale-type": "Duration", "x-hale-unit": "q(ns)"}`, never
+a text such as `"1.5s"`. A plain alias of either is what it stands
+for. A literal default of either (`` = `2026-01-01T00:00:00Z` ``, `= 5s`)
+is kept when the field is left out, as a scalar's is, and so is a
+literal default of a unit scalar.
+
+**A list** is a field's: `bounded[T; N]` or `[T; N]` (a literal `N` of
+at least one), its elements what a field of their type is (a record, a
+scalar, a string, an identity, a range or a quantity by its count). It
+is a JSON array, and the description says its bound: `{"type": "array",
+"items": …, "maxItems": N}`, and `"minItems": N` for a fixed array. A
+`bounded` field may be left out of a payload, and is empty, as its
+declaration leaves it; a fixed array is always sent, all `N` of it (its
+default is not read). A payload never makes a list shorter than it says:
+more elements than the list holds is `too_long`, fewer than a fixed
+array's length `too_short`, both `malformed`, and the handler does not
+run. What is not carried, each refused by law 5 naming the field: an
+unbounded `[T]` (an unbounded collection is locus-owned, `@form(vec)`,
+and a type holds bounded data only, `spec/types.md` § bounded[T; N]), a
+list of lists, and a list of a shape the codec does not carry (a
+`Decimal<S>` among them: an api surface has no schema for one yet, as a
+field or as an element, though the generated codecs read and write it as
+JSON's tier 2 does, a number at its scale, and protobuf as its digits). A
+request or response is never itself a list: a page of records is a
+record, `type Page { items: bounded[Item; 50]; }`, which leaves room
+for what a page says beside its items.
+
+Decoding is strict: a value of the wrong JSON kind is `wrong_type`, an
+element of a list and an array that is not well-formed JSON included
 (a payload that is one scalar is that scalar's complete JSON token: `true`
 or `false` for a `Bool`, one quoted and correctly escaped string for a
 `String`, a number for a `Float`, a number with no fraction or exponent for
@@ -1799,10 +1849,19 @@ never left out.
 from the same declaration: the same set of shapes and the same strictness,
 carried as proto3 (§ gRPC, The protobuf codec). A field is numbered by its
 place among the struct's declared fields, from 1, and a `json:"key"` tag
-names the proto field as it names the JSON key. The set of shapes is the
-JSON codec's, so there is no shape without a proto3 encoding: a list, a map,
-an `optional` and an enum are shapes the codec does not carry, and law 5
-refuses the row before a `.proto` could be asked of it. The `.proto`
+names the proto field as it names the JSON key. A list is a `repeated`
+field, its bound in the field's comment (`// Hale: at most 50`); the
+encoder writes each element as an occurrence of its own, and the decoder
+reads that and the packed form proto3 writes by default for a numeric
+element, in any mix, holding the bound as the JSON codec does
+(`too_long`, `too_short`). A `Time` is an `int64`, its nanoseconds since
+the epoch (which is all of `Time`; the field's comment says so), not
+`google.protobuf.Timestamp`, which would make the well-known type a
+dependency of every file and of the descriptor reflection serves; a
+`Duration` is an `int64`, its nanoseconds. The set of shapes is the JSON codec's, so
+there is no shape without a proto3 encoding: a map, an `optional` and an
+enum are shapes the codec does not carry, and law 5 refuses the row
+before a `.proto` could be asked of it. The `.proto`
 generator refuses all the same, by row, so that were the codec to carry one it
 would not be approximated.
 
@@ -1840,7 +1899,8 @@ caller's `Context` under that exposure's role source:
 - the transport's **outcome encoding** (§ Outcomes);
 - the JSON Schema of every type the listed members and streams name,
   and nothing else, a quantity's field carrying `x-hale-unit` (its
-  `q(…)` tag);
+  `q(…)` tag), a `Time`'s `"format": "date-time"`, a list's `maxItems`
+  (§ Codecs);
 - the notes, in the document's own text: authorization is a boundary
   check at the serve site, never a proof over the program's internal
   call paths; a request accepted runs to completion whatever becomes of
@@ -2025,13 +2085,17 @@ library's location. And a tool, a path or a schema is named by what the
 program declares, in an order the rows fix (members by name as bytes, schemas
 by name).
 
-**`hale api client --surface NAME --lang hale|ts [--out FILE | --check FILE]
+**`hale api client --surface NAME --lang hale|ts|js [--out FILE | --check FILE]
 [target]`** writes a client of the surface (to stdout without `--out`). A
 client:
 
 - is typed by the rows: a type for every struct a member or a stream names (a
-  quantity, an identity or a range crosses as the integer it counts; an enum or
-  any shape the JSON codec does not carry is refused, never approximated), and
+  quantity, an identity or a range crosses as the integer it counts, a
+  `Duration` among them; a `Time` is a `Time` in Hale and its RFC 3339 text,
+  a `string`, in TypeScript, since a `Date` holds milliseconds; a list is
+  the client language's: `bounded[T; N]` or `[T; N]` in Hale, an array in
+  TypeScript, whose bound the server holds; an enum or any shape the JSON codec
+  does not carry is refused, never approximated), and
   one function per member taking the endpoint, the bearer and the request;
 - sends the surface's digest on every call (`digest` in the line over a socket,
   `Hale-Surface-Digest` over HTTP) and names it in a constant, so a program
@@ -2056,8 +2120,13 @@ dependency beyond `fetch` and `WebSocket` (`http://` and `ws://`; a socket is no
 spoken, `fetch` has none): an async function per member answering
 `{kind: "result" | "handler_error" | "refusal" | "server_error"}` and throwing
 `TransportError` for the fifth, and `subscribe<Topic>(opts)`, an async iterable
-of events; the credential rides a hub upgrade as `?access_token=`. TLS is not
-spoken by either. **Neither speaks gRPC, and that is by decision**: a gRPC call
+of events; the credential rides a hub upgrade as `?access_token=`. The
+**JavaScript client** (`--lang js`) is the TypeScript client as one ES module a
+page or `node` loads with no compile step: the same exports by the same names,
+the same wire and outcomes, its types JSDoc (`@typedef` per record and outcome,
+`@param` and `@returns` per function, a `// @ts-check` header), so an editor or
+`tsc --checkJs` holds a caller to the rows as the `.ts` module's types do. TLS
+is not spoken by any of them. **None speaks gRPC, and that is by decision**: a gRPC call
 needs HTTP/2 with trailers, which `fetch` does not give a script and which a
 generated Hale client has no stack for (nghttp2 is linked into served programs,
 not into a program that calls), so a gRPC mode would need a library beyond the
@@ -2071,7 +2140,8 @@ digest in the `hale-surface-digest` metadata and the bearer in `authorization`.
 the surface now generates, naming the digest it was made against when that is
 not the surface's. A client never carries more than the contract: the recorded
 requests of `tests/api-contract/wire/` are what the generated clients write, and
-the recorded replies what they read
+the recorded replies what they read (the TypeScript and JavaScript clients run
+the same compiled scenarios to the same outcomes)
 (`tests/hale/api/client_test.hl`, `crates/hale-cli/tests/fixtures/ts-client/`).
 
 ## Driving a served program
@@ -2120,8 +2190,9 @@ caller: bearer alice; roles: trader
 
 A payload field is `name: Type`, with `?` after the name when the schema does
 not require it; a type is the language's word (`Int`, `Float`, `Bool`,
-`String`, `[T]`, a record by its name), and a field of a distinct or quantity
-type adds the type's name and a quantity's unit in parentheses.
+`String`, a record by its name, a list `[T; at most N]` or, fixed, `[T; N]`),
+and a field of a distinct or quantity type adds the type's name and a
+quantity's unit in parentheses.
 
 **`call`** sends one member. What it reads from the description, and when: the
 description is fetched once per call, before the payload is built, and it is
@@ -2146,7 +2217,7 @@ field's schema:
 | `number` (`Float`) | a number: `--price 2.5` |
 | `boolean` (`Bool`) | `true` or `false`; the bare flag `--rush` is `true` |
 | `string` | the text: `--name alice` |
-| a record, a list | JSON checked against the schema, nested records and lists included (a record: every required field, no unknown field, each field of its type; a list: every item of the item type; an optional field may be absent): `--items '[1,2]'`, `--ship '{"city": "Oslo"}'` |
+| a record, a list | JSON checked against the schema, nested records and lists included (a record: every required field, no unknown field, each field of its type; a list: every item of the item type, and no more items than its `maxItems` nor fewer than its `minItems`; an optional field may be absent): `--items '[1,2]'`, `--ship '{"city": "Oslo"}'` |
 
 `--field=value` is `--field value`; a field's `_` may be written `-`. A field
 not required and not given is not sent. The typed form is refused before

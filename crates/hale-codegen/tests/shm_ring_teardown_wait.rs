@@ -340,6 +340,101 @@ fn a_producer_that_fills_the_ring_before_its_first_reader_waits_for_it() {
     filled_first(&ends(&bin, &[]));
 }
 
+/// The same, with the subscriber's params slow to build: its ring's reader
+/// starts at its registration and runs the handler on its own thread,
+/// outside the readiness window, so the subscription registers once the
+/// params are stored. Registered before them (a regression of #1533's
+/// early registration), the two records already in the ring were counted
+/// and then written over by the params' `got: 0`: "got 8".
+const FILLED_FIRST_SLOW_PARAMS: &str = r#"
+type M { n: Int = 0; }
+topic Ms { payload: M; }
+fn slow_zero() -> Int { std::time::sleep(100ms); return 0; }
+locus Sink {
+    params { got: Int = slow_zero(); }
+    bus { subscribe Ms as on_m; }
+    fn on_m(m: M) { self.got = self.got + 1; }
+    dissolve() { println("got ", self.got); }
+}
+locus Burst {
+    params { _u: Int = 0; }
+    bus { publish Ms; }
+    run() {
+        let mut i = 0;
+        while i < 10 {
+            Ms <- M { n: i };
+            i = i + 1;
+        }
+        println("published");
+    }
+}
+main locus App {
+    params { burst: Burst = Burst { }; sink: Sink = Sink { }; }
+    placement { burst: pinned; }
+    bindings { Ms: shm_ring("__NAME__", slot_count: 2, on_overflow: block) where zero_copy; }
+    run() { std::time::sleep(300ms); }
+}
+fn main() { App { }; }
+"#;
+
+#[test]
+fn a_ring_subscriber_registers_once_its_params_are_stored() {
+    let bin = harness::unique_bin("shm_teardown_filled_slow_params");
+    build_opts::build_source(&FILLED_FIRST_SLOW_PARAMS.replace("__NAME__", &shm_name("filledslow")), &bin, &build_opts::options())
+        .expect("build");
+    filled_first(&ends(&bin, &[]));
+}
+
+/// One locus with both kinds (codex review of #1533): `App` subscribes to
+/// an in-process topic its child's `birth()` publishes to and to the
+/// ring. The ring subscription waits for the params; the in-process one
+/// still registers before them, so the child's cell reaches `App` after
+/// its birth — and the ring still delivers all ten.
+const MIXED_TRANSPORTS: &str = r#"
+type M { n: Int = 0; }
+type D { n: Int = 0; }
+topic Ms { payload: M; }
+topic Done { payload: D; }
+locus Born {
+    params { _u: Int = 0; }
+    bus { publish Done; }
+    birth() { Done <- D { n: 7 }; }
+}
+locus Burst {
+    params { _u: Int = 0; }
+    bus { publish Ms; }
+    run() {
+        let mut i = 0;
+        while i < 10 {
+            Ms <- M { n: i };
+            i = i + 1;
+        }
+        println("published");
+    }
+}
+main locus App {
+    params { burst: Burst = Burst { }; born: Born = Born { }; got: Int = 0; done: Int = 0; }
+    placement { burst: pinned; }
+    bindings { Ms: shm_ring("__NAME__", slot_count: 2, on_overflow: block) where zero_copy; }
+    bus { subscribe Ms as on_m; subscribe Done as on_done; }
+    fn on_m(m: M) { self.got = self.got + 1; }
+    fn on_done(d: D) { self.done = self.done + d.n; }
+    run() { std::time::sleep(300ms); println("done ", self.done); }
+    dissolve() { println("got ", self.got); }
+}
+fn main() { App { }; }
+"#;
+
+#[test]
+fn a_ring_subscription_waits_for_the_params_and_the_same_loci_topic_does_not() {
+    let bin = harness::unique_bin("shm_teardown_mixed_transports");
+    build_opts::build_source(&MIXED_TRANSPORTS.replace("__NAME__", &shm_name("mixed")), &bin, &build_opts::options())
+        .expect("build");
+    let e = ends(&bin, &[]);
+    filled_first(&e);
+    assert!(e.stdout.contains("done 7"), "the child's birth reached the parent's in-process topic:\n{}", e.stdout);
+}
+
 #[test]
 fn a_producer_that_fills_the_ring_before_its_first_reader_waits_for_it_under_asan() {
     let bin = harness::unique_bin("shm_teardown_filled_first_asan");
