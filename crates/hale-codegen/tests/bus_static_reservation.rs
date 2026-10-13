@@ -475,10 +475,10 @@ fn private_bounds(fields: &str) -> String {
         bus { subscribe Evs as on_ev bounded(2, drop_old); }
         fn on_ev(e: Ev) { println("last " + to_string(e.n)); }
     }
-    main locus Root { params { FIELDS } run() { yield; std::time::sleep(20ms); } }
+    main locus Root { params { b: Burst = Burst { }; f: First = First { }; l: Last = Last { }; } run() { yield; std::time::sleep(20ms); } }
     fn main() { Root { }; }
     "#
-    .replace("FIELDS", fields)
+    .replace("b: Burst = Burst { }; f: First = First { }; l: Last = Last { };", fields)
 }
 
 #[test]
@@ -501,7 +501,7 @@ fn hammer(count: u32) -> String {
     type Seq { n: Int; last: Bool; }
     topic Feed { payload: Seq; subject: "rsv.feed"; }
     locus Hammer {
-        params { count: Int = COUNT; }
+        params { count: Int = 3000; }
         bus { publish Feed; }
         run() {
             let mut i = 0;
@@ -539,7 +539,7 @@ fn hammer(count: u32) -> String {
     }
     fn main() { Root { }; }
     "#
-    .replace("COUNT", &count.to_string())
+    .replace("count: Int = 3000;", &format!("count: Int = {count};"))
 }
 
 fn hammer_heard(count: u32) -> Vec<String> {
@@ -637,10 +637,10 @@ fn direct_program(fields: &str) -> String {
         bus { subscribe Fact as on_fact; }
         fn on_fact(f: Note) { self.sum = self.sum + f.n; }
     }
-    main locus Root { params { FIELDS } run() { } }
+    main locus Root { params { t: Teller = Teller { }; y: Tally = Tally { }; } run() { } }
     fn main() { Root { }; }
     "#
-    .replace("FIELDS", fields)
+    .replace("t: Teller = Teller { }; y: Tally = Tally { };", fields)
 }
 
 #[test]
