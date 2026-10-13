@@ -823,6 +823,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .expect("builder positioned");
         let cont_bb = self.context.append_basic_block(func, "enum.dc.cont");
         let default_bb = self.context.append_basic_block(func, "enum.dc.default");
+        // Each variant: its tag, the block the switch enters, the block its
+        // copy ends in (a payload whose copy loops, a `bounded[T; N]` of
+        // records, ends in another block than it began), and the new value.
         let mut variant_blocks: Vec<(
             inkwell::values::IntValue<'ctx>,
             inkwell::basic_block::BasicBlock<'ctx>,

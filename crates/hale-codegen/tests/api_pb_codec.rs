@@ -362,3 +362,179 @@ fn the_reflected_descriptor_is_the_file_a_compiler_makes_of_the_text() {
         assert_eq!(reflected, compiled, "{fields:?}: the reflected descriptor is the compiled text");
     }
 }
+
+// ---- a list is a `repeated` field ----
+
+#[derive(Clone, PartialEq, prost::Message)]
+struct PShelf {
+    #[prost(int64, repeated, tag = "1")]
+    ids: Vec<i64>,
+    #[prost(string, repeated, tag = "2")]
+    tags: Vec<String>,
+    #[prost(message, repeated, tag = "3")]
+    parts: Vec<PPart>,
+    #[prost(bool, repeated, tag = "4")]
+    flags: Vec<bool>,
+    #[prost(double, repeated, tag = "5")]
+    ratios: Vec<f64>,
+}
+
+/// A list is a `repeated` field: what `prost` writes (a numeric list packed,
+/// as proto3 writes it by default) the generated decoder reads, and what the
+/// generated encoder writes (each element an occurrence of its own) `prost`
+/// reads back as the same value. The `.proto`'s descriptor for it is the
+/// one a compiler makes of the text.
+#[test]
+fn a_list_is_a_repeated_field_that_prost_reads_and_writes() {
+    use prost::Message;
+    let shelf = PShelf {
+        ids: vec![41, 0, -7],
+        tags: vec!["x".to_string(), "y z".to_string()],
+        parts: vec![PPart { a: 1, b: 2 }, PPart { a: 0, b: 9 }],
+        flags: vec![true, false],
+        ratios: vec![0.5, -2.25],
+    };
+    let bytes = shelf.encode_to_vec();
+    assert_eq!(&bytes[..2], &[0x0a, 0x0c], "prost packs the ids: one length-delimited field 1");
+    let program = format!(
+        r#"
+type Part {{ a: Int = 0; b: Int = 0; }}
+type Shelf {{ ids: bounded[Int; 4]; tags: bounded[String; 2]; parts: bounded[Part; 2]; flags: bounded[Bool; 2]; ratios: [Float; 2]; }}
+api Pb {{ rpc Probe::shelf; }}
+locus Probe {{
+    fn shelf(s: Shelf) -> Shelf {{ return s; }}
+}}
+locus Tokens {{
+    fn principal(token: String) -> std::api::Principal {{ return std::api::Principal {{ mode: "bearer", name: "" }}; }}
+    fn refused() -> String {{ return "no"; }}
+}}
+main locus Desk {{
+    params {{ probe: Probe = Probe {{ }}; bearer: Tokens = Tokens {{ }}; }}
+    fn serving() {{
+        let h = api::serve(Pb, grpc::Rpc {{ bind: "127.0.0.1:0", codec: json, principals: self.bearer }}, as: "pb", receivers: {{ Probe: self.probe }}, bound: 4, on_full: refuse);
+        h.stop();
+    }}
+    run() {{
+        let s = __api_pb_decode_Shelf({bytes}) or {{ println("refused " + err.kind + " " + err.field); return; }};
+        println(__api_encode_Shelf(s));
+        let out = __api_pb_encode_Shelf(s);
+        let mut text = "";
+        let mut i = 0;
+        while i < len(out) {{
+            if i > 0 {{ text = text + ","; }}
+            text = text + to_string(std::bytes::read_u8(out, i) or 0);
+            i = i + 1;
+        }}
+        println(text);
+    }}
+}}
+fn main() {{ Desk {{ }}; }}
+"#,
+        bytes = bytes_expr(&bytes),
+    );
+    let bin = harness::unique_bin("api_pb_codec_repeated");
+    build_opts::build_source(&program, &bin, &build_opts::options()).expect("build the probe");
+    let got = run(&bin);
+    let mut lines = got.lines();
+    assert_eq!(
+        lines.next(),
+        Some(r#"{"ids":[41,0,-7],"tags":["x","y z"],"parts":[{"a":1,"b":2},{"a":0,"b":9}],"flags":[true,false],"ratios":[0.5,-2.25]}"#),
+        "the generated decoder reads what prost wrote"
+    );
+    let written: Vec<u8> = lines.next().expect("the encoded bytes").split(',').map(|b| b.parse().expect("a byte")).collect();
+    assert_eq!(PShelf::decode(written.as_slice()).expect("prost reads it"), shelf, "prost reads what the generated encoder wrote");
+
+    // the descriptor of a repeated field is the compiled text's
+    use hale_types::surface_doc::{ClientError, ClientMember, ClientModel};
+    use hale_types::surfaces::{FieldSchema, TypeSchema};
+    let list = |items: FieldSchema| FieldSchema::List { items: Box::new(items), max: 4, exact: false };
+    let data = TypeSchema {
+        properties: vec![
+            ("ids".to_string(), list(FieldSchema::Scalar { json: "integer", hale_type: None, unit: None })),
+            ("parts".to_string(), list(FieldSchema::Ref("Part".to_string()))),
+        ],
+        required: Vec::new(),
+    };
+    let part = TypeSchema { properties: vec![("a".to_string(), FieldSchema::Scalar { json: "integer", hale_type: None, unit: None })], required: Vec::new() };
+    let file = hale_types::proto_gen::from_model(&ClientModel {
+        surface: "S".to_string(),
+        digest: "fnv1a64:0".to_string(),
+        members: vec![ClientMember { name: "R::f".to_string(), request: Some(FieldSchema::Ref("Data".to_string())), response: None, error: ClientError::None, requires: Vec::new() }],
+        types: [("Data".to_string(), data), ("Part".to_string(), part)].into_iter().collect(),
+        streams: Vec::new(),
+    })
+    .expect("a file");
+    let (compiled, reflected) = compiled_and_reflected(&file, "repeated");
+    assert_eq!(reflected, compiled, "the reflected descriptor of a repeated field is the compiled text");
+}
+
+/// A list of `Decimal<S>` is carried by both codecs as a `Decimal<S>` field
+/// is (#1532): in JSON each element a number at the element's scale, every
+/// digit kept (written as `to_string` writes it, trailing zeros dropped), a nonzero digit past the scale `wrong_type`; in protobuf each
+/// element its digits in a string occurrence (length-delimited, so there is
+/// no packed form). An api surface still refuses a Decimal row (its schema has
+/// none), so the codecs are reached here through the harness's build, which
+/// lowers what the check refuses, and called as the transport's thunks would.
+#[test]
+fn a_list_of_decimals_crosses_both_codecs_at_its_scale() {
+    let program = r#"
+type Prices { amounts: bounded[Decimal<2>; 3]; exact: [Decimal<2>; 2]; }
+api Pb { rpc Probe::prices; }
+locus Probe {
+    fn prices(p: Prices) -> Prices { return p; }
+}
+locus Tokens {
+    fn principal(token: String) -> std::api::Principal { return std::api::Principal { mode: "bearer", name: "" }; }
+    fn refused() -> String { return "no"; }
+}
+main locus Desk {
+    params { probe: Probe = Probe { }; bearer: Tokens = Tokens { }; }
+    fn serving() {
+        let h = api::serve(Pb, grpc::Rpc { bind: "127.0.0.1:0", codec: json, principals: self.bearer }, as: "pb", receivers: { Probe: self.probe }, bound: 4, on_full: refuse);
+        h.stop();
+    }
+    fn json(text: String) {
+        let p = __api_decode_Prices(text) or { println("json refused " + err.kind + " " + err.field); return; };
+        println("json " + __api_encode_Prices(p));
+        let back = __api_pb_decode_Prices(__api_pb_encode_Prices(p)) or { println("pb refused " + err.kind + " " + err.field); return; };
+        println("pb " + __api_encode_Prices(back));
+    }
+    fn pb(b: Bytes) {
+        let p = __api_pb_decode_Prices(b) or { println("pb refused " + err.kind + " " + err.field); return; };
+        println("pb " + __api_encode_Prices(p));
+    }
+    run() {
+        self.json("{\"amounts\":[19.99,0.5,-3],\"exact\":[0.01,100]}");
+        self.json("{\"exact\":[1,2]}");
+        self.json("{\"amounts\":[1.234],\"exact\":[1,2]}");
+        self.json("{\"amounts\":[1,2,3,4],\"exact\":[1,2]}");
+        self.json("{\"amounts\":[\"1.5\"],\"exact\":[1,2]}");
+        self.json("{\"exact\":[1]}");
+        let exact = std::bytes::concat(__api_pb_put_str(2, "1"), __api_pb_put_str(2, "2"));
+        self.pb(std::bytes::concat(std::bytes::concat(__api_pb_put_str(1, "7.25"), __api_pb_put_str(1, "-0.01")), exact));
+        self.pb(std::bytes::concat(__api_pb_put_str(1, "1.234"), exact));
+        self.pb(std::bytes::concat(__api_pb_put_int(1, 5), exact));
+    }
+}
+fn main() { Desk { }; }
+"#;
+    let bin = harness::unique_bin("api_pb_codec_decimal_list");
+    build_opts::build_source(program, &bin, &build_opts::options()).expect("build the probe");
+    let got = run(&bin);
+    assert_eq!(
+        got.lines().collect::<Vec<_>>(),
+        [
+            r#"json {"amounts":[19.99,0.5,-3],"exact":[0.01,100]}"#,
+            r#"pb {"amounts":[19.99,0.5,-3],"exact":[0.01,100]}"#,
+            r#"json {"amounts":[],"exact":[1,2]}"#,
+            r#"pb {"amounts":[],"exact":[1,2]}"#,
+            "json refused wrong_type amounts",
+            "json refused too_long amounts",
+            "json refused wrong_type amounts",
+            "json refused too_short exact",
+            r#"pb {"amounts":[7.25,-0.01],"exact":[1,2]}"#,
+            "pb refused wrong_type amounts",
+            "pb refused wrong_type amounts",
+        ]
+    );
+}

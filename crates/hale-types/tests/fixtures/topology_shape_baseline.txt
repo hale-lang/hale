@@ -36,6 +36,7 @@ crates/hale-cli/tests/env_matrix.rs#2 db15bd17f8200c1b
 crates/hale-cli/tests/ffi_export_reentry.rs#2 367067d4491c583a
 crates/hale-cli/tests/fixtures/api_clients/main.hl abb7c7a221044fc2
 crates/hale-cli/tests/fixtures/api_description/main.hl 3a43011fae16ffd1
+crates/hale-cli/tests/fixtures/api_shapes/main.hl a204bff818827e0d
 crates/hale-cli/tests/fixtures/bounded-annotation/app.hl c1c2e181fb34f20c
 crates/hale-cli/tests/fixtures/bounded-annotation/bounded-by.hl 8f5063eb4b200eb0
 crates/hale-cli/tests/fixtures/bounded-annotation/plain.hl c90bc96e9e961826
@@ -674,6 +675,8 @@ crates/hale-codegen/tests/fn_ptr.rs#2 069c3e38557b62ab
 crates/hale-codegen/tests/fn_ptr.rs#3 0c916a6f12500186
 crates/hale-codegen/tests/fn_ptr.rs#4 e995132598780f27
 crates/hale-codegen/tests/form_enum_cells.rs#0 67e1fcf10e1bf0b7
+crates/hale-codegen/tests/form_hashmap_cas_retire.rs#1 d0805d1c9279d4c4
+crates/hale-codegen/tests/form_hashmap_cas_retire.rs#2 f50cc4accea80724
 crates/hale-codegen/tests/form_hashmap_codegen.rs#0 520433ac25303232
 crates/hale-codegen/tests/form_hashmap_codegen.rs#1 c95eecab336a0816
 crates/hale-codegen/tests/form_hashmap_codegen.rs#10 c95eecab336a0816

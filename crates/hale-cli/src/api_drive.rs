@@ -163,7 +163,14 @@ fn type_label(doc: &Value, schema: &Value) -> String {
         Some("number") => "Float".to_string(),
         Some("boolean") => "Bool".to_string(),
         Some("string") => "String".to_string(),
-        Some("array") => format!("[{}]", schema.get("items").map_or("JSON".to_string(), |i| type_label(doc, i))),
+        Some("array") => {
+            let item = schema.get("items").map_or("JSON".to_string(), |i| type_label(doc, i));
+            match (schema.get("minItems").and_then(Value::as_u64), schema.get("maxItems").and_then(Value::as_u64)) {
+                (Some(lo), Some(hi)) if lo == hi => format!("[{item}; {hi}]"),
+                (_, Some(hi)) => format!("[{item}; at most {hi}]"),
+                _ => format!("[{item}]"),
+            }
+        }
         Some("object") => "{record}".to_string(),
         _ => "JSON".to_string(),
     };
@@ -410,6 +417,13 @@ fn check_value(doc: &Value, path: &str, schema: &Value, v: &Value) -> Result<(),
         Some("string") if !v.is_string() => Err(misfit("not a string")),
         Some("array") => {
             let Some(items) = v.as_array() else { return Err(misfit("not a list")) };
+            let n = items.len() as u64;
+            if let Some(hi) = resolved.get("maxItems").and_then(Value::as_u64).filter(|hi| n > *hi) {
+                return Err(misfit(&format!("{n} items, more than the {hi} the list holds")));
+            }
+            if let Some(lo) = resolved.get("minItems").and_then(Value::as_u64).filter(|lo| n < *lo) {
+                return Err(misfit(&format!("{n} items, fewer than the {lo} the list holds")));
+            }
             match resolved.get("items") {
                 Some(item) => items.iter().enumerate().try_for_each(|(i, x)| check_value(doc, &format!("{path}[{i}]"), item, x)),
                 None => Ok(()),

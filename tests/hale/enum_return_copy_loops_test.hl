@@ -1,0 +1,60 @@
+// A fn that returns an enum from several places copies the value it returns
+// into its caller's arena at its one exit, variant by variant. A variant
+// whose payload holds a `bounded[T; N]` of records copies it in a loop, so
+// its copy ends in another block than it began; the join takes each
+// variant's value from the block its copy ended in. It took it from the
+// block the copy began in, and the program did not build ("PHI node entries
+// do not match predecessors"): the shape of every generated client's member
+// fn whose response holds a list of records.
+
+type Raw { outcome: Int; body: String; why: String = ""; }
+type Refused { kind: String; }
+type Book { id: Int; title: String; }
+type Shelf { books: bounded[Book; 3]; label: String; }
+type Outcome = enum { Result(Shelf), Refusal(Refused), ServerError, Lost(String) };
+
+fn call(n: Int, payload: String) -> Raw {
+    return Raw { outcome: n, body: payload };
+}
+
+fn book(json: String) -> Book {
+    return Book { id: std::json::find_int_field(json, "id"), title: std::json::find_string_field(json, "title") };
+}
+
+@bounded_by(json)
+fn shelf(json: String) -> Shelf {
+    let mut r = Shelf { label: std::json::find_string_field(json, "label") };
+    let text = std::json::find_field_raw(json, "books");
+    let mut at = std::json::array_first_span(text);
+    while !at.done {
+        push(r.books, book(text[at.cur_start..at.cur_end])) or discard;
+        at = std::json::array_next_span(at, text);
+    }
+    return r;
+}
+
+fn member(n: Int, payload: String) -> Outcome {
+    let raw = call(n, payload);
+    if raw.outcome == 0 { return Outcome::Result(shelf(raw.body)); }
+    if raw.outcome == 2 { return Outcome::Refusal(Refused { kind: raw.body }); }
+    if raw.outcome == 3 { return Outcome::ServerError; }
+    if raw.outcome == 1 { return Outcome::Lost("one came: " + raw.body); }
+    return Outcome::Lost(raw.why);
+}
+
+fn main() {
+    let body = "{\"books\":[{\"id\":1,\"title\":\"Kim\"},{\"id\":2,\"title\":\"Emma\"}],\"label\":\"front\"}";
+    match member(0, body) {
+        Outcome::Result(s) -> {
+            std::test::assert_eq_int(count(s.books), 2, "both books came back");
+            let second = at(s.books, 1) or Book { id: 0, title: "" };
+            std::test::assert_eq_str(second.title, "Emma", "the second book's title");
+            std::test::assert_eq_str(s.label, "front", "the label");
+        },
+        _ -> { std::test::assert(false, "the result"); },
+    }
+    match member(2, "unauthorized") {
+        Outcome::Refusal(r) -> { std::test::assert_eq_str(r.kind, "unauthorized", "the refusal"); },
+        _ -> { std::test::assert(false, "the refusal"); },
+    }
+}
