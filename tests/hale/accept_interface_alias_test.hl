@@ -32,7 +32,7 @@ locus Pool {
 locus Flows {
     params { accepted: Int = 0; released: Int = 0; }
     accept(c: Work) { self.accepted = self.accepted + c.weight(); }
-    release (c: Work) { self.released = self.released + 1; }
+    release(c: Work) { self.released = self.released + 1; }
     fn go() {
         Small { w: 1 };
         Big { w: 1 };

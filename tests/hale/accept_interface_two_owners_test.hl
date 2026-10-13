@@ -24,7 +24,7 @@ locus Big {
 locus Inner {
     params { released: Int = 0; }
     accept(c: Small) { }
-    release (c: Small) { self.released = self.released + 1; }
+    release(c: Small) { self.released = self.released + 1; }
     fn churn(n: Int) {
         let mut i = 0;
         while i < n {
@@ -39,7 +39,7 @@ locus Inner {
 locus Side {
     params { released: Int = 0; }
     accept(c: Sized) { }
-    release (c: Sized) { self.released = self.released + c.weight(); }
+    release(c: Sized) { self.released = self.released + c.weight(); }
     fn churn(n: Int) {
         let mut i = 0;
         while i < n {
@@ -54,7 +54,7 @@ locus Side {
 locus Outer {
     params { inner: Inner = Inner { }; side: Side = Side { }; released: Int = 0; }
     accept(c: Job) { }
-    release (c: Job) { self.released = self.released + c.weight(); }
+    release(c: Job) { self.released = self.released + c.weight(); }
     run() {
         self.inner.churn(10000);
         self.side.churn(10000);

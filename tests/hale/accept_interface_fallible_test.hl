@@ -40,7 +40,7 @@ locus Owner {
         let ok = self.check_through(s) or false;
         if ok { self.checked = self.checked + 1; }
     }
-    release (s: Store) { self.released = self.released + (s.put("") or 1000); }
+    release(s: Store) { self.released = self.released + (s.put("") or 1000); }
     fn check_through(s: Store) -> Bool fallible(StoreError) {
         s.check("") or raise;
         return true;
