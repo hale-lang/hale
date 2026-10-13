@@ -65,6 +65,13 @@
  * moot for them. */
 __attribute__((weak)) void lotus_mark_multithreaded(void) {}
 
+/* The same arrangement for main's blocked-wait count (lotus_arena.c): a
+ * claim that waits for a reader counts itself while it sleeps, so a
+ * reader's handler publishing to main's full cooperative queue does not
+ * wait on the main thread that waits on it. A no-op for the standalone
+ * drivers. */
+__attribute__((weak)) void lotus_bus_owner_wait_mark(int delta) { (void)delta; }
+
 /* Magic bumped at K7 (2026-05-20) when the header layout grew
  * the consumer_seqno cache line. Attaches against a different
  * magic value are rejected by lotus_shm_ring_open's validation
@@ -685,7 +692,9 @@ void *lotus_shm_ring_claim(lotus_shm_ring_t *ring) {
                     return NULL;
                 }
                 struct timespec ts = {0, 100 * 1000};  /* 100us */
+                lotus_bus_owner_wait_mark(1);
                 nanosleep(&ts, NULL);
+                lotus_bus_owner_wait_mark(-1);
                 consumer = atomic_load_explicit(
                     &ring->header->consumer_seqno,
                     memory_order_acquire);

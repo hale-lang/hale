@@ -123,6 +123,76 @@ fn cross_thread_flood_to_pinned_mailbox_is_bounded() {
     );
 }
 
+/// A `pool -> main` flood: `Source`, on pool `side`, publishes 2M ticks to
+/// a subscriber on main while main's `run()` spins with no drain point, so
+/// main's cooperative queue is the only place the cells can wait. Main
+/// spins until the source has sent a full queue's worth, then 300 ms more,
+/// and prints its residency and the count sent so far while the backlog is
+/// live; then it sleeps (a drain point) until all 2M arrived.
+const POOL_TO_MAIN_FLOOD: &str = r#"
+    type Tick { n: Int; }
+    locus Counter {
+        params { count: Int = 0; }
+        bus { subscribe "pm" as on_tick of type Tick; }
+        fn on_tick(t: Tick) { self.count = self.count + 1; }
+    }
+    locus Source {
+        params { sent: Int = 0; }
+        bus { publish "pm" of type Tick; }
+        run() { while self.sent < 2000000 { "pm" <- Tick { n: self.sent }; self.sent = self.sent + 1; } }
+    }
+    main locus App {
+        params { sub: Counter = Counter { }; src: Source = Source { }; }
+        placement { src: cooperative(pool = side); }
+        run() {
+            let full = std::time::monotonic_ns() + 10000000000;
+            while (self.src.sent < 8192 && std::time::monotonic_ns() < full) { }
+            let more = std::time::monotonic_ns() + 300000000;
+            while (std::time::monotonic_ns() < more) { }
+            let statm = std::io::fs::read_file("/proc/self/statm") or "";
+            println("sent_while_spinning=" + to_string(self.src.sent));
+            print("rss_statm=");
+            println(statm);
+            while self.sub.count < 2000000 { std::time::sleep(1ms); }
+            println("delivered=" + to_string(self.sub.count));
+        }
+    }
+    fn main() { App { }; }
+"#;
+
+/// Build and run `src`, and read its `key=value` lines (the program prints
+/// them while the memory being measured is live, then runs to the end).
+fn run_fields(name: &str, src: &str) -> impl Fn(&str) -> String + use<> {
+    let bin = harness::unique_bin(&format!("hale_bus_bp_{name}"));
+    build_opts::build_source(src, &bin, &build_opts::options()).expect("build");
+    let output = Command::new("timeout").arg("120").arg(&bin).output().expect("run");
+    let _ = std::fs::remove_file(&bin);
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    assert!(output.status.success(), "{name}: {:?}\n{stdout}", output.status);
+    let name = name.to_string();
+    move |key: &str| {
+        let prefix = format!("{key}=");
+        stdout.lines().find_map(|l| l.strip_prefix(&prefix)).unwrap_or_else(|| panic!("{name}: no {key} in {stdout:?}")).to_string()
+    }
+}
+
+/// Main's queue is bounded for a producer on another thread too: the
+/// pool's worker waits at the cap for main's next drain, as a producer to
+/// a full ring waits for its consumer. Before, the cross-thread post grew
+/// main's queue without bound (the locked path skipped the cap): the 2M
+/// ticks were all sent while main spun, and held 1.1 GB. Now the source
+/// stops at the cap while main spins, and every tick is still delivered
+/// once main drains.
+#[test]
+fn cross_thread_flood_to_main_queue_is_bounded() {
+    let field = run_fields("pool_to_main", POOL_TO_MAIN_FLOOD);
+    let rss = harness::statm_resident_bytes(&field("rss_statm")) / 1048576;
+    let sent: i64 = field("sent_while_spinning").parse().expect("a count");
+    assert_eq!(field("delivered"), "2000000", "every tick is delivered");
+    assert!(sent < 2 * 8192, "the source ran on past main's full queue: {sent} sent while main spun");
+    assert!(rss < 200, "pool->main flood RSS {rss} MB with {sent} sent while main spun (expected < 200)");
+}
+
 /// A flood whose handler publishes: the at-cap inline drain runs `Sink`'s
 /// handler inside the `Source`'s post, and that handler publishes a
 /// `Reply`. The nested publish used to clear the wire deserializer the

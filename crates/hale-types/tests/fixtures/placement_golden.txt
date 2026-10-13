@@ -1626,6 +1626,13 @@ domain	pinned:App@literal1.sub
 row	App@literal1	App	main	default
 row	App@literal1.sub	Counter	pinned:App@literal1.sub	entry	off owner
 
+== crates/hale-codegen/tests/bus_backpressure.rs#9e5f5ba0
+root	App	the entry
+domain	pool:side
+row	App@literal1	App	main	default
+row	App@literal1.src	Source	pool:side	entry	off owner
+row	App@literal1.sub	Counter	main	default
+
 == crates/hale-codegen/tests/bus_bounded_topics.rs#32b214f8
 root	App	the entry
 domain	pinned:App@literal1.p	cpus 0

@@ -157,6 +157,52 @@
 #define EPOLLOUT 0x004
 #endif
 
+/* Main's queue is bounded for a foreign producer too (GH #125's
+ * follow-on): a pool worker, pinned thread or reader that posts to main's
+ * full cooperative queue waits for main to drain it (see
+ * `bus_queue_full_wait`), as a producer to a full ring waits for its
+ * consumer. Main can be what that producer waits for only while main is
+ * itself blocked in the runtime: a post to a full ring, a reclaim waiting
+ * for a run, a failure delivery, a join, a readiness cap. Each such wait
+ * on main counts itself here, through the wrappers below (every condvar
+ * wait in this file goes through them, but a consumer's park on its own
+ * ring, which is a worker's or a pinned thread's, never main's) or
+ * `lotus_bus_owner_wait_mark`
+ * (a sleep-sliced wait, and the shm ring's claim in its own TU); while
+ * the count is above zero a full queue grows instead of holding its
+ * producer, which is the queue's behaviour before the bound. A producer
+ * re-reads the count every millisecond, so a wait that begins after it
+ * looked costs a millisecond, never a deadlock. Only main owns the queue
+ * (`lotus_bus_queue_create`, from main's prelude). */
+static _Atomic int g_bus_owner_waiting = 0;
+static __thread int t_bus_queue_owner = 0;
+
+void lotus_bus_owner_wait_mark(int delta) {
+    if (t_bus_queue_owner)
+        atomic_fetch_add_explicit(&g_bus_owner_waiting, delta, memory_order_seq_cst);
+}
+
+/* wasm32 has one thread, and every call site of these is gated out
+ * there, so neither wrapper exists on it. */
+#ifndef __wasm__
+static inline int lotus_cond_wait(pthread_cond_t *c, pthread_mutex_t *m) {
+    if (!t_bus_queue_owner) return pthread_cond_wait(c, m);
+    atomic_fetch_add_explicit(&g_bus_owner_waiting, 1, memory_order_seq_cst);
+    int rc = pthread_cond_wait(c, m);
+    atomic_fetch_sub_explicit(&g_bus_owner_waiting, 1, memory_order_seq_cst);
+    return rc;
+}
+
+static inline int lotus_cond_timedwait(pthread_cond_t *c, pthread_mutex_t *m,
+                                       const struct timespec *until) {
+    if (!t_bus_queue_owner) return pthread_cond_timedwait(c, m, until);
+    atomic_fetch_add_explicit(&g_bus_owner_waiting, 1, memory_order_seq_cst);
+    int rc = pthread_cond_timedwait(c, m, until);
+    atomic_fetch_sub_explicit(&g_bus_owner_waiting, 1, memory_order_seq_cst);
+    return rc;
+}
+#endif
+
 /* F.32-1γ-v2 session 2 (2026-05-26): TSAN suppressions.
  *
  * When the binary is built with `-fsanitize=thread` (driven by
@@ -2196,7 +2242,7 @@ int64_t lotus_failure_await_on(void *child, void *resume, int64_t phase,
          * it, unlocked, and wait on; a post broadcasts. */
         lotus_failure_await_service_locked();
         if (node->state == LOTUS_DELIVERED) break;
-        pthread_cond_wait(&g_held_delivered, &g_params_open_lock);
+        lotus_cond_wait(&g_held_delivered, &g_params_open_lock);
     }
     if (--node->waiters == 0) free(node);
     pthread_mutex_unlock(&g_params_open_lock);
@@ -7605,6 +7651,13 @@ typedef struct lotus_bus_queue {
     _Atomic int       idle;
     int               wake_r;
     int               wake_w;
+    /* A foreign producer at the cap waits for the owner's drain
+     * (`bus_queue_full_wait`): how many wait, counted under `lock`; the
+     * drain's signal; and the teardown's word that ends every such wait
+     * (`lotus_bus_queue_close`), after which the queue grows again. */
+    int               producers_waiting;
+    pthread_cond_t    not_full;
+    _Atomic int       closing;
 #endif
 } lotus_bus_queue_t;
 
@@ -7718,9 +7771,13 @@ lotus_bus_queue_t *lotus_bus_queue_create(void) {
     pthread_mutex_init(&q->lock, NULL);
     q->owner = pthread_self();
     t_owned_queue = q;
+    t_bus_queue_owner = 1;
 #ifndef __wasm__
     atomic_init(&q->idle, 0);
     q->wake_r = q->wake_w = -1;
+    q->producers_waiting = 0;
+    pthread_cond_init(&q->not_full, NULL);
+    atomic_init(&q->closing, 0);
 #endif
 #if defined(__linux__)
     q->wake_r = q->wake_w = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
@@ -7748,10 +7805,14 @@ lotus_bus_queue_t *lotus_bus_queue_create(void) {
  * producer in a cooperative pool (no preemption): the producer is the
  * only thread that can drain, so it drains itself.
  *
- * Multithreaded (cross-pool) backpressure is a follow-on: there the
- * publisher would have to run a handler on a FOREIGN pool's thread,
- * which the single-threaded-method invariant forbids — so the locked
- * path keeps growing for now.
+ * Multithreaded, a FOREIGN publisher cannot drain (only the owner runs
+ * the queue's handlers, the single-threaded-method invariant), so it
+ * WAITS for the owner's drain instead (`bus_queue_full_wait`), as a
+ * producer to a full ring waits for its consumer. Before that wait the
+ * locked path grew without bound: a pool flooding a main subscriber
+ * while main ran without a drain point reached 16 GB in seconds. The
+ * owner's own post, and a post the owner may be blocked behind, still
+ * grow (see `g_bus_owner_waiting`).
  *
  * Cap: `LOTUS_BUS_QUEUE_CAP` env (in cells), default 8192 (~4.5 MB of
  * cells), read once. Floor 64. */
@@ -8236,6 +8297,68 @@ static int lotus_bus_shed_check(struct lotus_bus_entry *reg,
 static void lotus_bus_note_enqueued(struct lotus_bus_entry *reg);
 static void lotus_bus_note_dispatched(void *handler, void *self_ptr);
 
+/* A foreign producer at main's full queue, `q->lock` held: wait for the
+ * owner to drain it, in 1 ms slices that re-read whether waiting is still
+ * safe. 1 = it waited and the queue has room (or the caller should look
+ * again); 0 = it must not wait, and the caller grows the queue.
+ *
+ * It must not wait on the owner's own thread (a post to its own queue:
+ * nothing else drains it), once the queue is closing (main's teardown has
+ * stopped draining for good), or while the owner is blocked in the runtime
+ * (`g_bus_owner_waiting`): that wait can be for this very thread — a full
+ * ring this thread consumes, a run or handler it is in, its join — and
+ * holding the producer would close the cycle. A wait the owner enters
+ * after this producer looked is seen at the next slice. The owner running
+ * code that reaches no drain point (a spin) holds the producer until it
+ * does: that is the backpressure, the same a producer gets from a full
+ * ring whose consumer is busy. */
+static int bus_queue_full_wait(lotus_bus_queue_t *q) {
+#ifdef __wasm__
+    (void)q;
+    return 0;
+#else
+    if (pthread_equal(pthread_self(), q->owner)) return 0;
+    q->producers_waiting++;
+    while (q->tail - q->head >= q->cap) {
+        if (atomic_load_explicit(&q->closing, memory_order_seq_cst)
+            || atomic_load_explicit(&g_bus_owner_waiting, memory_order_seq_cst) > 0)
+            break;
+        /* The owner may be in its idle wait, which looked before the
+         * queue filled: end it. */
+        if (atomic_load_explicit(&q->idle, memory_order_seq_cst) && q->wake_w >= 0) {
+            uint64_t one = 1;
+            ssize_t w = write(q->wake_w, &one, sizeof one);
+            (void)w;
+        }
+        struct timespec until;
+        clock_gettime(CLOCK_REALTIME, &until);
+        until.tv_nsec += 1000000;
+        if (until.tv_nsec >= 1000000000L) {
+            until.tv_sec++;
+            until.tv_nsec -= 1000000000L;
+        }
+        pthread_cond_timedwait(&q->not_full, &q->lock, &until);
+    }
+    q->producers_waiting--;
+    return q->tail - q->head < q->cap;
+#endif
+}
+
+/* The teardown's end of the bound: main stops draining for good (its pools
+ * and pinned threads are joined next), so a producer waiting at the cap
+ * must not hold their join. Waiters go on, and the queue grows again. */
+void lotus_bus_queue_close(lotus_bus_queue_t *q) {
+#ifdef __wasm__
+    (void)q;
+#else
+    if (!q) return;
+    pthread_mutex_lock(&q->lock);
+    atomic_store_explicit(&q->closing, 1, memory_order_seq_cst);
+    pthread_cond_broadcast(&q->not_full);
+    pthread_mutex_unlock(&q->lock);
+#endif
+}
+
 static void bus_queue_enqueue_inner(lotus_bus_queue_t *q,
                                     void *handler,
                                     void *self_ptr,
@@ -8291,12 +8414,19 @@ static void bus_queue_enqueue_inner(lotus_bus_queue_t *q,
         }
         if (q->tail < q->cap) break;            /* compaction freed a slot */
         size_t max_cap = bus_queue_max_cap();
+        /* At the cap, multithreaded: a foreign producer waits for the
+         * owner's drain (backpressure, as on a full ring), and comes back
+         * round to compact; the owner itself, or a producer the owner may
+         * be waiting for, grows the queue as below. */
+        if (q->cap >= max_cap && locked && bus_queue_full_wait(q)) continue;
         if (q->cap < max_cap || locked ||
             g_bus_inline_drain_depth >= LOTUS_BUS_INLINE_DRAIN_MAX_DEPTH) {
             /* Grow: below the cap (clamp the double to the cap), or
-             * multithreaded (cross-pool backpressure is a follow-on), or
-             * inline-drain nested too deep (keep the cap a soft bound —
-             * never deadlock or lose a message). */
+             * multithreaded where waiting could close on itself (the
+             * owner's own post, or one the owner is blocked behind:
+             * `bus_queue_full_wait`), or inline-drain nested too deep
+             * (keep the cap a soft bound — never deadlock or lose a
+             * message). */
             size_t new_cap = q->cap * 2;
             if (q->cap < max_cap && new_cap > max_cap) new_cap = max_cap;
             lotus_bus_cell_t *new_cells = (lotus_bus_cell_t *)
@@ -8960,6 +9090,12 @@ void lotus_bus_queue_drain(lotus_bus_queue_t *q) {
                 continue;
             }
             lotus_bus_cell_t cell_copy = q->cells[q->head++];
+#ifndef __wasm__
+            /* A producer waiting at the cap goes on once half the queue
+             * is free (`bus_queue_full_wait`). */
+            if (q->producers_waiting && q->tail - q->head <= q->cap / 2)
+                pthread_cond_broadcast(&q->not_full);
+#endif
             pthread_mutex_unlock(&q->lock);
 
             /* Wire cell from a cross-thread publisher: deserialize
@@ -9093,6 +9229,7 @@ void lotus_bus_queue_destroy(lotus_bus_queue_t *q) {
 #ifndef __wasm__
     if (q->wake_r >= 0) close(q->wake_r);
     if (q->wake_w >= 0 && q->wake_w != q->wake_r) close(q->wake_w);
+    pthread_cond_destroy(&q->not_full);
 #endif
     pthread_mutex_destroy(&q->lock);
     if (q->cells) free(q->cells);
@@ -9476,7 +9613,7 @@ void lotus_mailbox_post(lotus_mailbox_t *mb,
             enq = lotus_mpsc_ring_try_enqueue(&mb->ring, &cell);
             if (!enq) {
                 lotus_bus_ready_kick();
-                pthread_cond_wait(&mb->not_full, &mb->lock);
+                lotus_cond_wait(&mb->not_full, &mb->lock);
                 atomic_fetch_sub_explicit(&mb->producers_waiting, 1,
                                           memory_order_seq_cst);
                 pthread_mutex_unlock(&mb->lock);
@@ -9806,7 +9943,9 @@ lotus_pinned_start_t *lotus_pinned_start_create(void) {
 static void lotus_pinned_start_wait_slice(lotus_pinned_start_t *s) {
 #if defined(__APPLE__)
     const struct timespec slice = { 0, 1000000 };           /* 1 ms */
+    lotus_bus_owner_wait_mark(1);
     int rc = pthread_cond_timedwait_relative_np(&s->cond, &s->lock, &slice);
+    lotus_bus_owner_wait_mark(-1);
 #else
     struct timespec slice;
     if (clock_gettime(CLOCK_MONOTONIC, &slice) != 0)
@@ -9816,7 +9955,7 @@ static void lotus_pinned_start_wait_slice(lotus_pinned_start_t *s) {
         slice.tv_sec += 1;
         slice.tv_nsec -= 1000000000L;
     }
-    int rc = pthread_cond_timedwait(&s->cond, &s->lock, &slice);
+    int rc = lotus_cond_timedwait(&s->cond, &s->lock, &slice);
 #endif
     if (rc != 0 && rc != ETIMEDOUT && rc != EINTR)
         lotus_pinned_start_fail("the timed readiness wait", rc);
@@ -9832,7 +9971,7 @@ static void lotus_pinned_start_set(lotus_pinned_start_t *s, int state) {
 static void lotus_pinned_start_wait(lotus_pinned_start_t *s, int state) {
     pthread_mutex_lock(&s->lock);
     while (s->state < state)
-        pthread_cond_wait(&s->cond, &s->lock);
+        lotus_cond_wait(&s->cond, &s->lock);
     pthread_mutex_unlock(&s->lock);
 }
 
@@ -11049,7 +11188,7 @@ static void lotus_coop_pool_post_cell(lotus_coop_pool_t *p,
             enq = lotus_mpsc_ring_try_enqueue(&p->ring, &cell);
             if (!enq) {
                 lotus_bus_ready_kick();
-                pthread_cond_wait(&p->not_full, &p->lock);
+                lotus_cond_wait(&p->not_full, &p->lock);
                 atomic_fetch_sub_explicit(&p->producers_waiting, 1,
                                           memory_order_seq_cst);
                 pthread_mutex_unlock(&p->lock);
@@ -11695,7 +11834,14 @@ static void lotus_run_hold_wait(void *child, lotus_run_ticket_t *own) {
             until.tv_nsec -= 1000000000L;
         }
         g_run_hold_waiters++;
-        pthread_cond_timedwait(&g_run_holds_cv, &g_run_tickets_lock, &until);
+        /* Main drains its queue after each slice (below), so a producer
+         * waiting at its cap is let go within a millisecond: this wait
+         * holds no producer, unless main is inside a handler, where that
+         * drain does nothing (`g_bus_owner_waiting`). */
+        if (g_bus_drain_active)
+            lotus_cond_timedwait(&g_run_holds_cv, &g_run_tickets_lock, &until);
+        else
+            pthread_cond_timedwait(&g_run_holds_cv, &g_run_tickets_lock, &until);
         g_run_hold_waiters--;
         pthread_mutex_unlock(&g_run_tickets_lock);
         /* A hold may be a posted failure's, whose cell waits for this
@@ -11931,7 +12077,7 @@ static void lotus_held_wait_slice_locked(void) {
         until.tv_sec++;
         until.tv_nsec -= 1000000000L;
     }
-    pthread_cond_timedwait(&g_held_delivered, &g_params_open_lock, &until);
+    lotus_cond_timedwait(&g_held_delivered, &g_params_open_lock, &until);
 }
 
 /* Claim a posted delivery for this thread, the lock held. */
@@ -13880,6 +14026,9 @@ void lotus_coop_pool_dump_parked_counts(int fd) {
 }
 
 void lotus_coop_pool_shutdown_all(void) {
+    /* A worker waiting at main's full queue must not hold its join:
+     * main drains no more from here. */
+    lotus_bus_queue_close(g_bus_queue_for_remote);
     /* Two-phase: signal all pools first so they can drain
      * pending cells in parallel, then join. */
     for (size_t i = 0; i < g_coop_pool_count; i++) {
@@ -15054,7 +15203,7 @@ static int lotus_bus_park_if_unready(void *handler, void *self,
         __atomic_add_fetch(&g_bus_ready_waiters, 1, __ATOMIC_SEQ_CST);
         while (u && u->parked >= bus_queue_max_cap()
                && lotus_bus_ready_may_wait(u, mailbox, coop_pool)) {
-            pthread_cond_wait(&g_bus_ready_cond, &g_bus_ready_lock);
+            lotus_cond_wait(&g_bus_ready_cond, &g_bus_ready_lock);
             u = lotus_bus_unready_find(self);
         }
         __atomic_sub_fetch(&g_bus_ready_waiters, 1, __ATOMIC_SEQ_CST);
@@ -24583,6 +24732,8 @@ static volatile int g_bus_wait_abort = 0;
  * teardown the wait is structurally unsatisfiable. */
 void lotus_bus_wait_abort_all(void) {
     __atomic_store_n(&g_bus_wait_abort, 1, __ATOMIC_RELEASE);
+    /* Nor may a producer waiting at main's full queue hold those joins. */
+    lotus_bus_queue_close(g_bus_queue_for_remote);
 }
 
 
@@ -24618,7 +24769,11 @@ int64_t lotus_bus_binding_wait_ready(lotus_bus_queue_t *queue,
          * no-ops elsewhere. */
         lotus_bus_queue_drain(queue);
         struct timespec ts = {0, 1000000}; /* 1ms slice */
+        /* Inside a handler the drain above does nothing: no producer
+         * waits on main's queue through this sleep. */
+        lotus_bus_owner_wait_mark(1);
         nanosleep(&ts, NULL);
+        lotus_bus_owner_wait_mark(-1);
     }
 }
 
@@ -24637,7 +24792,11 @@ int64_t lotus_bus_subject_wait_space(lotus_bus_queue_t *queue,
         }
         lotus_bus_queue_drain(queue);
         struct timespec ts = {0, 1000000}; /* 1ms slice */
+        /* Inside a handler the drain above does nothing: no producer
+         * waits on main's queue through this sleep. */
+        lotus_bus_owner_wait_mark(1);
         nanosleep(&ts, NULL);
+        lotus_bus_owner_wait_mark(-1);
     }
 }
 
@@ -28706,6 +28865,9 @@ void lotus_bus_ingress_quiesce(lotus_bus_queue_t *queue) {
     if (have_ingress) {
         struct timespec tick = { 0, 1000000L };  /* 1ms */
         long waited_ms = 0;
+        /* Main drains nothing while it waits for the readers: a reader
+         * dispatching into main's full queue must not wait on it. */
+        lotus_bus_owner_wait_mark(1);
         for (;;) {
             int all_done = 1;
             for (size_t i = 0; i < g_bus_remote_count; i++) {
@@ -28731,6 +28893,7 @@ void lotus_bus_ingress_quiesce(lotus_bus_queue_t *queue) {
             nanosleep(&tick, NULL);
             waited_ms++;
         }
+        lotus_bus_owner_wait_mark(-1);
     }
     for (size_t i = 0; i < g_bus_remote_count; i++) {
         lotus_bus_remote_entry_t *e = g_bus_remote_entries[i];

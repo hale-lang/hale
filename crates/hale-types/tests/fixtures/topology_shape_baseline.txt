@@ -318,6 +318,7 @@ crates/hale-codegen/tests/bus_array_payload.rs#1 805330998deab5b5
 crates/hale-codegen/tests/bus_array_payload.rs#2 7527b091ccf56c4d
 crates/hale-codegen/tests/bus_backpressure.rs#0 d6825c90deca0cc8
 crates/hale-codegen/tests/bus_backpressure.rs#1 464e64f717283480
+crates/hale-codegen/tests/bus_backpressure.rs#2 10a7dd7139fcc864
 crates/hale-codegen/tests/bus_bounded_topics.rs#0 5558d63d31367fce
 crates/hale-codegen/tests/bus_bounded_topics.rs#2 5558d63d31367fce
 crates/hale-codegen/tests/bus_bytes_payload.rs#0 063792712dac5cfd
