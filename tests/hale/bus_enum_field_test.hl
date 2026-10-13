@@ -1,0 +1,56 @@
+// A payload-free enum field crosses the bus as its tag.
+//
+// A topic payload holding an enum field checked clean, and keyed routing
+// by one is modelled (`keyed_by key` over an enum), but the build refused
+// the field ("bus payload field `key: Enum(..)` — m70 wire format
+// supports primitives, ..."). The serializer now writes the tag's four
+// bytes, nested and in a `bounded` buffer too. An enum WITH payloads is a
+// pointer to its cell, which the wire does not carry: the check refuses
+// it at the topic (crates/hale-codegen/tests/corpus_check_build_agreement.rs).
+type Status = enum { Up, Down, Gone };
+type Inner { s: Status = Status::Up; n: Int = 0; }
+type Msg {
+    key: Status = Status::Up;
+    label: String = "";
+    last: Status = Status::Up;
+    inner: Inner = Inner { };
+    tags: bounded[Status; 2];
+}
+topic Events { payload: Msg; subject: "t_enum_field.events"; keyed_by key; }
+
+type Seen { ok: Int = 0; }
+topic Seens { payload: Seen; subject: "t_enum_field.seen"; }
+
+locus Worker {
+    bus {
+        subscribe Events as on_event;
+        publish Seens;
+    }
+    fn on_event(m: Msg) {
+        let mut ok = 0;
+        if m.key == Status::Down { ok = ok + 1; }
+        if m.label == "x" { ok = ok + 2; }
+        if m.last == Status::Gone { ok = ok + 4; }
+        if m.inner.s == Status::Gone && m.inner.n == 5 { ok = ok + 8; }
+        if count(m.tags) == 1 && (at(m.tags, 0) or Status::Up) == Status::Gone { ok = ok + 16; }
+        Seens <- Seen { ok: ok };
+    }
+}
+
+main locus App {
+    params { w: Worker = Worker { }; seen: Int = -1; }
+    bus {
+        publish Events;
+        subscribe Seens as on_seen;
+    }
+    fn on_seen(s: Seen) { self.seen = s.ok; }
+    run() {
+        let mut m = Msg { key: Status::Down, label: "x", last: Status::Gone, inner: Inner { s: Status::Gone, n: 5 } };
+        push(m.tags, Status::Gone) or { };
+        Events <- m;
+        std::time::sleep(300ms);
+        std::test::assert_eq_int(self.seen, 31, "every enum field arrived as it was sent");
+    }
+}
+
+fn main() { App { }; }

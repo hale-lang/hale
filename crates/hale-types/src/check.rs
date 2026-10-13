@@ -319,6 +319,26 @@ fn collect_generic_loci<'a>(
 /// which is why the callers say whether a locus counts rather than
 /// the lookup deciding for them. The site-by-site table is in
 /// `crates/hale-codegen/tests/generic_monomorph_agreement.rs`.
+/// An operator, as the operand table judges it (`operator_refusal`).
+#[derive(Clone, Copy)]
+enum Operator {
+    Binary(BinOp),
+    Unary(UnaryOp),
+}
+
+/// What an operand is to the operators (`operand_class`).
+#[derive(Clone, Copy)]
+enum OperandClass {
+    Int,
+    Float,
+    Decimal,
+    Bool,
+    String,
+    Enum,
+    /// A value no operator applies to, and how to name it.
+    Opaque(&'static str),
+}
+
 #[derive(Clone, Copy)]
 enum GenericTemplate<'a> {
     Type(&'a TypeDecl),
@@ -6330,8 +6350,21 @@ fn topic_payload_not_carried(
              <ring_layout>);`, or give it a user `type` payload."
         ));
     }
-    let Carriage::NotCarried(repair) = payload_carriage(&row.payload, top, known) else {
-        return None;
+    let repair = match payload_carriage(&row.payload, top, known) {
+        Carriage::NotCarried(repair) => repair,
+        Carriage::Carried => {
+            let ty = resolve_type_expr(&row.payload, known);
+            let field = struct_field_not_carried(&ty, top, 0)?;
+            return Some(format!(
+                "topic `{topic}` declares `payload: {}`, {field}, which the wire format does not \
+                 carry: a delivery serializes each field, and carries scalars (`Int`, `Float`, \
+                 `Bool`, `Decimal`, `Duration`, `Time`, a unit type), payload-free enums, `String`, \
+                 `Bytes`, structs of those, `bounded` buffers of scalars, and arrays of scalars or structs. Carry it as \
+                 a value the wire takes (a payload-free enum's tag, a tuple as a struct).",
+                ty.display()
+            ));
+        }
+        Carriage::Unresolved => return None,
     };
     Some(format!(
         "topic `{}` declares `payload: {}`, which the bus cannot carry. A \
@@ -6343,6 +6376,66 @@ fn topic_payload_not_carried(
         resolve_type_expr(&row.payload, known).display(),
         repair,
     ))
+}
+
+/// A struct payload whose field the wire format has no encoding for
+/// (`bus/wire.rs`, `emit_per_field_serialize`): an enum with payloads,
+/// a tuple, a `bounded` buffer of pointers, an array of strings or
+/// arrays. A payload-free enum travels as its tag. The
+/// topic's declaration checked clean and lowering refused the field
+/// ("bus payload field `x: Enum(..)` — m70 wire format supports …").
+/// Names the first such field, through nested structs; `None` when
+/// every field is carried or not judged here.
+fn struct_field_not_carried(ty: &Ty, top: &TopScope, depth: u32) -> Option<String> {
+    if depth > 8 {
+        return None;
+    }
+    let Ty::Named(n) = ty else { return None };
+    let Some(TopSymbol::Type(TypeInfo { kind: TypeKind::Struct(fields), .. })) = top.symbols.get(n) else {
+        return None;
+    };
+    // A scalar, or a payload-free enum's tag: fixed bytes on the wire.
+    let scalar = |t: &Ty| match t {
+        Ty::Prim(
+            PrimType::Int | PrimType::Float | PrimType::Bool | PrimType::Decimal(_) | PrimType::Duration | PrimType::Time,
+        ) => true,
+        Ty::Named(m) => match top.symbols.get(m) {
+            Some(TopSymbol::Type(TypeInfo { kind: TypeKind::Scalar(_), .. })) => true,
+            Some(TopSymbol::Type(TypeInfo { kind: TypeKind::Enum(vs), .. })) => vs.iter().all(|v| v.fields.is_empty()),
+            _ => false,
+        },
+        _ => false,
+    };
+    let is_struct = |t: &Ty| match t {
+        Ty::Named(m) => matches!(top.symbols.get(m), Some(TopSymbol::Type(TypeInfo { kind: TypeKind::Struct(_), .. }))),
+        _ => false,
+    };
+    for f in fields {
+        let shown = f.ty.display();
+        let bad = match &f.ty {
+            t if scalar(t) => None,
+            Ty::Prim(PrimType::String | PrimType::Bytes) => None,
+            t if is_struct(t) => {
+                if let Some(inner) = struct_field_not_carried(t, top, depth + 1) {
+                    // `whose field `c` is …` of the nested struct, as a path
+                    return Some(inner.replacen("whose field `", &format!("whose field `{}.", f.name), 1));
+                }
+                None
+            }
+            Ty::Named(m) => match top.symbols.get(m) {
+                Some(TopSymbol::Type(TypeInfo { kind: TypeKind::Enum(_), .. })) => Some("an enum with payloads"),
+                _ => None,
+            },
+            Ty::Tuple(_) => Some("a tuple"),
+            Ty::Bounded(e, _) if !scalar(e) => Some("a `bounded` buffer of other than scalars"),
+            Ty::Array(e, Some(_)) if !scalar(e) && !is_struct(e) => Some("an array of other than scalars or structs"),
+            _ => None,
+        };
+        if let Some(what) = bad {
+            return Some(format!("whose field `{}` is {what} (`{shown}`)", f.name));
+        }
+    }
+    None
 }
 
 /// The topics a raw `BytesView` payload can travel on: a binding entry
@@ -9700,9 +9793,30 @@ impl<'a> Checker<'a> {
                     .to_string(),
             ));
         }
-        // PR3 reads the key type `field_ty` to synthesize methods;
-        // for now we just verified it resolves.
-        let _ = field_ty;
+        // The key is hashed as an `Int` or a `String` (an identity, a
+        // range or a quantity is its `Int`); any other field checked
+        // clean and the synthesized `get` / `set` were refused ("key type
+        // Bool unsupported; v1 supports Int and String keys only").
+        let key_ok = match &field_ty {
+            Ty::Prim(PrimType::Int | PrimType::String) | Ty::Unknown => true,
+            Ty::Named(n) => !matches!(
+                self.top.lookup(n),
+                Some(TopSymbol::Type(TypeInfo { kind: TypeKind::Struct(_) | TypeKind::Enum(_), .. }))
+            ),
+            _ => false,
+        };
+        if !key_ok {
+            self.diags.push(Diag::ty(
+                field_ident.span,
+                format!(
+                    "@form(hashmap) key `{}.{}` is a `{}`: a hashmap's key is an `Int` or a `String` \
+                     (an identity, a range or a quantity is its `Int`); key the cell by one of those",
+                    cell_name,
+                    field_ident.name,
+                    field_ty.display()
+                ),
+            ));
+        }
     }
 
     /// v1.x-FORM-1: `@form(vec)` requires exactly one capacity
@@ -11441,6 +11555,9 @@ impl<'a> Checker<'a> {
                             right: Box::new(value.clone()),
                             span: *span,
                         });
+                    } else if let Some(why) = self.operator_refusal(Operator::Binary(bin), &want) {
+                        // `x += v` is `x = x + v`: the operator table's.
+                        self.diags.push(Diag::ty(*span, why));
                     }
                 }
                 let stored = stored.as_ref().unwrap_or(value);
@@ -12034,6 +12151,7 @@ impl<'a> Checker<'a> {
             // moment that stopped being free.
             self.locals.push();
             self.bind_pattern(&arm.pattern);
+            self.check_pattern_literals(&arm.pattern, &scrut_ty);
             // `Decimal<S>`: a Decimal literal pattern is a value of the
             // scrutinee's scale, judged at it.
             if let (Pattern::Literal(Literal::Decimal(text), span), Ty::Prim(PrimType::Decimal(scale))) =
@@ -14593,6 +14711,7 @@ impl<'a> Checker<'a> {
         // decided by the declaration, which a single file of a
         // multi-file seed reads as well as the whole bundle does.
         self.check_generic_arity(te);
+        self.check_bounded_element(te);
         if !self.strict_idents {
             return;
         }
@@ -14658,6 +14777,70 @@ impl<'a> Checker<'a> {
             // names a contract, not a type expression's bare name —
             // its own resolution rules are #724's, unchanged.
             TypeExpr::Primitive(_, _) | TypeExpr::Perspective { .. } => {}
+        }
+    }
+
+    /// `bounded[T; N]` holds its elements inline, so `T` is one lowering
+    /// lays out in a slot: a scalar (`Int`, `Float`, `Bool`, `Decimal<S>`,
+    /// `Duration`, `Time`, an identity, a range or a quantity), a payload-
+    /// free enum (its tag), a `String`, `Bytes` or a struct. A tuple, an
+    /// array, another `bounded`, an enum with payloads or an interface
+    /// checked clean and the build refused the element type; refused here,
+    /// at the annotation. A type this bundle cannot name stays permissive.
+    fn check_bounded_element(&mut self, te: &TypeExpr) {
+        let TypeExpr::Bounded { elem, span, .. } = te else { return };
+        let ty = self.resolve_te(elem);
+        let mut why = self.bounded_element_refusal(&ty, 0);
+        // An interface's name types as no value here (`Unknown`): read
+        // the declaration it names.
+        if let TypeExpr::Named { path, .. } = elem.as_ref() {
+            if let [name] = path.segments.as_slice() {
+                if matches!(self.top.symbols.get(&name.name), Some(TopSymbol::Interface(_))) {
+                    why = Some(format!("`{}` is an interface", name.name));
+                }
+            }
+        }
+        let shown = match &ty {
+            Ty::Unknown => type_expr_text(elem),
+            t => t.display(),
+        };
+        if let Some(what) = why {
+            self.diags.push(Diag::ty(
+                *span,
+                format!(
+                    "`bounded[{shown}; N]`: {what}, which a bounded buffer cannot hold inline. Its elements \
+                     are scalars (`Int`, `Float`, `Bool`, `Decimal`, `Duration`, `Time`, a unit type), enums \
+                     without payloads, `String`, `Bytes` or structs; wrap the element in a struct"
+                ),
+            ));
+        }
+    }
+
+    /// Why `t` is no `bounded` element (`check_bounded_element`), or `None`.
+    fn bounded_element_refusal(&self, t: &Ty, depth: u32) -> Option<String> {
+        use PrimType as P;
+        if depth > 8 {
+            return None;
+        }
+        match t {
+            Ty::Prim(P::Int | P::Float | P::Bool | P::Decimal(_) | P::Duration | P::Time | P::String | P::Bytes) => None,
+            Ty::Prim(p) => Some(format!("`{}` is not an element type", crate::ty::prim_name(*p))),
+            Ty::Tuple(_) => Some("a tuple".into()),
+            Ty::Array(..) => Some("an array".into()),
+            Ty::Bounded(..) => Some("a `bounded` buffer".into()),
+            Ty::Function { .. } => Some("a fn value".into()),
+            Ty::Named(n) => match self.top.symbols.get(n) {
+                Some(TopSymbol::Type(ti)) => match &ti.kind {
+                    TypeKind::Struct(_) | TypeKind::Scalar(_) => None,
+                    TypeKind::Enum(vs) if vs.iter().all(|v| v.fields.is_empty()) => None,
+                    TypeKind::Enum(_) => Some(format!("`{n}` is an enum with payloads")),
+                    TypeKind::Alias(inner) => self.bounded_element_refusal(inner, depth + 1),
+                },
+                Some(TopSymbol::Interface(_)) => Some(format!("`{n}` is an interface")),
+                Some(TopSymbol::Perspective(_)) => Some(format!("`{n}` is a perspective")),
+                _ => None,
+            },
+            _ => None,
         }
     }
 
@@ -15799,6 +15982,10 @@ impl<'a> Checker<'a> {
                     }
                     None => {}
                 }
+                if let Some(why) = self.operator_refusal(Operator::Unary(*op), &t) {
+                    self.diags.push(Diag::ty(*span, why));
+                    return Ty::Unknown;
+                }
                 match op {
                     UnaryOp::Neg | UnaryOp::BitNot => t,
                     UnaryOp::Not => Ty::Prim(PrimType::Bool),
@@ -16368,6 +16555,32 @@ impl<'a> Checker<'a> {
                                 ));
                             }
                         }
+                        // A quantity or a point (GH #1076) is no type
+                        // argument: its unit lives in the checker's rows
+                        // for the places that name it, and a generic body
+                        // names `G`, so it would print and convert as the
+                        // bare count. An identity or a range is its `Int`
+                        // there, as everywhere, and binds.
+                        for (gname, bound) in &bindings {
+                            // (a synthesized denomination has its own
+                            // refusal below)
+                            if matches!(bound, Ty::Named(_))
+                                && self.scalars.quantity(bound).is_some_and(|q| !q.synthesized)
+                            {
+                                self.diags.push(Diag::ty(
+                                    callee.span(),
+                                    format!(
+                                        "generic fn `{}`: `{}` would be `{}`, a quantity, and a generic body \
+                                         has no unit to print or convert one by; write the fn over `{}`, \
+                                         or pass its count (`x / 1<unit>`)",
+                                        id.name,
+                                        gname,
+                                        bound.display(),
+                                        bound.display()
+                                    ),
+                                ));
+                            }
+                        }
                         // Every generic must be pinned — UNLESS an
                         // arg typed Unknown could have pinned it
                         // (stay permissive where inference was).
@@ -16545,11 +16758,8 @@ impl<'a> Checker<'a> {
                 }
                 // m47-payloads: enum-variant construction with
                 // args. `EnumName::Variant(..)` resolves to the
-                // enum's named type. We still walk the args to
-                // surface their own type errors, but don't unify
-                // them against declared field types yet — codegen
-                // performs that strict check, and the typechecker
-                // is permissive on Unknowns elsewhere.
+                // enum's named type; each arg is held to the
+                // variant's declared field type.
                 if let Expr::Path(qn) = callee.as_ref() {
                     if qn.segments.len() == 2 {
                         // GH #831: through an alias of the enum too,
@@ -16561,10 +16771,45 @@ impl<'a> Checker<'a> {
                             ..
                         })) = self.top.symbols.get(enum_name)
                         {
-                            if variants.iter().any(|v| v.name == *variant_name) {
+                            if let Some(variant) = variants.iter().find(|v| v.name == *variant_name) {
                                 let enum_name = enum_name.clone();
-                                for a in args {
-                                    let _ = self.check_expr(a);
+                                let variant_name = variant_name.clone();
+                                let fields = variant.fields.clone();
+                                // A variant carries its declared values:
+                                // the count, and each one's type (a
+                                // Decimal literal taking the field's
+                                // scale). Lowering refused a mismatch
+                                // ("`E::V` arg 0: expected type Int, got
+                                // String") with no file or line. A field
+                                // the checker cannot name (a generic
+                                // enum's parameter) stays permissive.
+                                if args.len() != fields.len() {
+                                    self.diags.push(Diag::ty(
+                                        *call_span,
+                                        format!(
+                                            "`{enum_name}::{variant_name}` carries {} value{}, and this passes {}",
+                                            fields.len(),
+                                            if fields.len() == 1 { "" } else { "s" },
+                                            args.len()
+                                        ),
+                                    ));
+                                }
+                                for (i, a) in args.iter().enumerate() {
+                                    let got = self.check_expr(a);
+                                    let Some(want) = fields.get(i) else { continue };
+                                    if !self.ty_is_nameable(want) {
+                                        continue;
+                                    }
+                                    if !self.flows_into(want, &got, a) {
+                                        self.diags.push(Diag::ty(
+                                            a.span(),
+                                            format!(
+                                                "`{enum_name}::{variant_name}` value {i}: expected `{}`, got `{}`",
+                                                want.display(),
+                                                got.display()
+                                            ),
+                                        ));
+                                    }
                                 }
                                 return Ty::Named(enum_name);
                             }
@@ -18230,6 +18475,9 @@ impl<'a> Checker<'a> {
         match op {
             Add | Sub | Mul | Div | Mod | BitAnd | BitOr | BitXor | Shl | Shr => {
                 if is_int_float_mix {
+                    if let Some(why) = self.operator_refusal(Operator::Binary(op), &Ty::Prim(PrimType::Float)) {
+                        self.diags.push(Diag::ty(span, why));
+                    }
                     return Ty::Prim(PrimType::Float);
                 }
                 if !lt.assignable_from(rt) && !rt.assignable_from(lt) {
@@ -18241,6 +18489,11 @@ impl<'a> Checker<'a> {
                             rt.display()
                         ),
                     ));
+                } else if let Some(why) = self
+                    .operator_refusal(Operator::Binary(op), if matches!(lt, Ty::Unknown) { rt } else { lt })
+                {
+                    self.diags.push(Diag::ty(span, why));
+                    return Ty::Unknown;
                 }
                 if matches!(lt, Ty::Unknown) {
                     rt.clone()
@@ -18261,11 +18514,214 @@ impl<'a> Checker<'a> {
                             rt.display()
                         ),
                     ));
+                } else if let Some(why) = self
+                    .operator_refusal(Operator::Binary(op), if matches!(lt, Ty::Unknown) { rt } else { lt })
+                {
+                    self.diags.push(Diag::ty(span, why));
                 }
                 Ty::Prim(PrimType::Bool)
             }
-            And | Or => Ty::Prim(PrimType::Bool),
+            And | Or => {
+                for t in [lt, rt] {
+                    if let Some(why) = self.operator_refusal(Operator::Binary(op), t) {
+                        self.diags.push(Diag::ty(span, why));
+                        break;
+                    }
+                }
+                Ty::Prim(PrimType::Bool)
+            }
         }
+    }
+
+    /// A literal in a pattern is a value of the type it is matched
+    /// against: `match n { "a" -> … }` over an `Int`, or `(1, 2)` against
+    /// an `(Int, String)`, checked clean and the build refused the arm
+    /// ("match arm pattern type String doesn't match scrutinee type
+    /// Int"). A quantity literal (`5s`, `3cent`) is typed here as it is
+    /// in an expression, so its count has its row. Compared by what each
+    /// side is laid out as, the way lowering compares them: an identity
+    /// or a range is its `Int`, a `Decimal` literal takes the scrutinee's
+    /// scale (judged with the arm), and a type the table does not name
+    /// stays permissive.
+    fn check_pattern_literals(&mut self, pat: &Pattern, scrut: &Ty) {
+        match pat {
+            Pattern::Literal(lit, span) => {
+                let got = match lit {
+                    Literal::Quantity { value, unit } => {
+                        let t = self.quantity_literal(*value, unit, *span);
+                        if !matches!(t, Ty::Unknown) && self.scalars.quantity(scrut).is_some() {
+                            let e = Expr::Literal(lit.clone(), *span);
+                            if !self.flows_into(scrut, &t, &e) {
+                                self.diags.push(Diag::ty(
+                                    *span,
+                                    format!(
+                                        "this pattern is of type `{}`, and the value matched is of type `{}`",
+                                        t.display(),
+                                        scrut.display()
+                                    ),
+                                ));
+                            }
+                            return;
+                        }
+                        t
+                    }
+                    other => lit_ty(other),
+                };
+                let (Some(want), Some(have)) = (self.pattern_repr(scrut), self.pattern_repr(&got)) else { return };
+                if want != have {
+                    self.diags.push(Diag::ty(
+                        *span,
+                        format!(
+                            "this pattern is of type `{}`, and the value matched is of type `{}`",
+                            got.display(),
+                            scrut.display()
+                        ),
+                    ));
+                }
+            }
+            Pattern::Tuple(subs, _) => {
+                if let Ty::Tuple(ts) = scrut {
+                    if ts.len() == subs.len() {
+                        for (p, t) in subs.iter().zip(ts.clone()) {
+                            self.check_pattern_literals(p, &t);
+                        }
+                    }
+                }
+            }
+            Pattern::Constructor { path, args, .. } => {
+                let [enum_seg, variant_seg] = path.segments.as_slice() else { return };
+                let Some(TopSymbol::Type(TypeInfo { kind: TypeKind::Enum(variants), .. })) =
+                    self.top.symbols.get(&enum_seg.name)
+                else {
+                    return;
+                };
+                let Some(v) = variants.iter().find(|v| v.name == variant_seg.name) else { return };
+                let fields = v.fields.clone();
+                for (p, t) in args.iter().zip(fields) {
+                    if self.ty_is_nameable(&t) {
+                        self.check_pattern_literals(p, &t);
+                    }
+                }
+            }
+            Pattern::Wildcard(_) | Pattern::Binding(_) => {}
+        }
+    }
+
+    /// What a pattern's side is laid out as (`check_pattern_literals`):
+    /// its primitive, any `Decimal` scale alike, an identity's, a range's
+    /// or a quantity's `Int`; `None` for what the comparison leaves alone.
+    fn pattern_repr(&self, t: &Ty) -> Option<String> {
+        match t {
+            Ty::Prim(PrimType::Decimal(_)) => Some("Decimal".into()),
+            Ty::Prim(p) => Some(crate::ty::prim_name(*p).into()),
+            Ty::Named(n) => match self.top.symbols.get(n) {
+                Some(TopSymbol::Type(ti)) => match &ti.kind {
+                    TypeKind::Scalar(_) => Some("Int".into()),
+                    TypeKind::Enum(_) | TypeKind::Struct(_) => Some(n.clone()),
+                    TypeKind::Alias(inner) => self.pattern_repr(inner),
+                },
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    /// Whether every name `t` mentions is one the checker resolves (a
+    /// generic parameter is not).
+    fn ty_is_nameable(&self, t: &Ty) -> bool {
+        match t {
+            Ty::Unknown => false,
+            Ty::Named(n) => self.top.symbols.contains_key(n),
+            Ty::Array(e, _) | Ty::Bounded(e, _) | Ty::Projection(_, e) => self.ty_is_nameable(e),
+            Ty::Tuple(ts) => ts.iter().all(|t| self.ty_is_nameable(t)),
+            Ty::Function { params, ret } => params.iter().all(|t| self.ty_is_nameable(t)) && self.ty_is_nameable(ret),
+            Ty::Fallible { success, payload } => self.ty_is_nameable(success) && self.ty_is_nameable(payload),
+            Ty::Prim(_) | Ty::Unit => true,
+        }
+    }
+
+    /// What an operand of `t` is to the operators: the classes the
+    /// operator table (spec/semantics.md § "Operators and their operand
+    /// types") is written over. `None` is a type the table does not judge
+    /// (an unresolved name, a view, a generic parameter): left to the
+    /// rules that know it.
+    fn operand_class(&self, t: &Ty, depth: u32) -> Option<OperandClass> {
+        if depth > 8 {
+            return None;
+        }
+        Some(match t {
+            Ty::Prim(PrimType::Int) => OperandClass::Int,
+            Ty::Prim(PrimType::Float) => OperandClass::Float,
+            Ty::Prim(PrimType::Decimal(_)) => OperandClass::Decimal,
+            Ty::Prim(PrimType::Bool) => OperandClass::Bool,
+            Ty::Prim(PrimType::String) => OperandClass::String,
+            Ty::Prim(PrimType::Bytes) => OperandClass::Opaque("a byte string"),
+            Ty::Tuple(_) => OperandClass::Opaque("a tuple"),
+            Ty::Array(..) => OperandClass::Opaque("an array"),
+            Ty::Bounded(..) => OperandClass::Opaque("a `bounded` buffer"),
+            Ty::Named(n) => match self.top.symbols.get(n) {
+                Some(TopSymbol::Type(ti)) => match &ti.kind {
+                    TypeKind::Enum(_) => OperandClass::Enum,
+                    TypeKind::Struct(_) => OperandClass::Opaque("a struct"),
+                    TypeKind::Alias(inner) => return self.operand_class(inner, depth + 1),
+                    // An identity's or a range's operators are the unit
+                    // dialect's (`unit_values`), answered before this.
+                    TypeKind::Scalar(_) => return None,
+                },
+                Some(TopSymbol::Locus(_)) => OperandClass::Opaque("a locus"),
+                Some(TopSymbol::Perspective(_)) => OperandClass::Opaque("a perspective"),
+                Some(TopSymbol::Interface(_)) => OperandClass::Opaque("an interface"),
+                _ => return None,
+            },
+            _ => return None,
+        })
+    }
+
+    /// Why `op` does not apply to an operand of `t`, or `None` when it
+    /// does (or the table does not judge `t`). The table is what lowering
+    /// implements: before it, `hale check` accepted `true < false`,
+    /// `p1 == p2` of two structs or `b"a" + b"b"`, and the build refused
+    /// each with no file or line.
+    fn operator_refusal(&self, op: Operator, t: &Ty) -> Option<String> {
+        use BinOp::*;
+        let class = self.operand_class(t, 0)?;
+        let applies = match (op, class) {
+            (_, OperandClass::Int) => !matches!(op, Operator::Binary(And | Or) | Operator::Unary(UnaryOp::Not)),
+            (Operator::Binary(b), OperandClass::Float | OperandClass::Decimal) => {
+                matches!(b, Add | Sub | Mul | Div | Eq | NotEq | Lt | Gt | LtEq | GtEq)
+                    || (matches!(b, Mod) && matches!(class, OperandClass::Decimal))
+            }
+            (Operator::Unary(u), OperandClass::Float | OperandClass::Decimal) => matches!(u, UnaryOp::Neg),
+            (Operator::Binary(b), OperandClass::Bool) => matches!(b, Eq | NotEq | And | Or),
+            (Operator::Unary(u), OperandClass::Bool) => matches!(u, UnaryOp::Not),
+            (Operator::Binary(b), OperandClass::String) => matches!(b, Add | Eq | NotEq | Lt | Gt | LtEq | GtEq),
+            (Operator::Binary(b), OperandClass::Enum) => matches!(b, Eq | NotEq),
+            (Operator::Unary(_), OperandClass::String | OperandClass::Enum) => false,
+            (_, OperandClass::Opaque(_)) => false,
+        };
+        if applies {
+            return None;
+        }
+        let sym = match op {
+            Operator::Binary(b) => crate::unit_quantities::op_symbol(b),
+            Operator::Unary(UnaryOp::Neg) => "-",
+            Operator::Unary(UnaryOp::Not) => "!",
+            Operator::Unary(UnaryOp::BitNot) => "~",
+        };
+        let what = match class {
+            OperandClass::Opaque(what) => format!("{what} (`{}`)", t.display()),
+            _ => format!("`{}`", t.display()),
+        };
+        let which = match class {
+            OperandClass::Int => "`&&`, `||` and `!` take `Bool`s",
+            OperandClass::Float => "a `Float` has `+ - * /`, unary `-`, and the comparisons",
+            OperandClass::Decimal => "a `Decimal` has `+ - * / %`, unary `-`, and the comparisons",
+            OperandClass::Bool => "a `Bool` has `==`, `!=`, `&&`, `||` and `!`",
+            OperandClass::String => "a `String` has `+` (concatenation) and the comparisons",
+            OperandClass::Enum => "an enum has `==` and `!=`",
+            OperandClass::Opaque(_) => "it has no operators; compare or combine its parts",
+        };
+        Some(format!("`{sym}` does not apply to {what}: {which} (spec/semantics.md § \"Operators and their operand types\")"))
     }
 
     /// GH #1076 (U3): what the algebra decided for a binary operator over

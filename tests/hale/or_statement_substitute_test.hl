@@ -1,0 +1,49 @@
+// A statement `or` on a value-bearing fallible runs its substitute for
+// its effect: the value is thrown away, so the substitute need not be
+// one (spec/types.md: "In statement position the substituted value is
+// discarded, so the handler's success type needn't match the call's").
+// `f() or { log(err); };` and `f() or note(err);` with a handler of
+// another type checked clean and the build refused them ("block used as
+// expression has no trailing expression", "`or` substitute type
+// mismatch"). The agreement test in
+// crates/hale-codegen/tests/corpus_check_build_agreement.rs holds the
+// two to one answer.
+type Oops { why: String = ""; }
+
+locus Tally {
+    params { failed: Int = 0; noted: String = ""; }
+    fn fail_once(why: String) { self.failed = self.failed + 1; self.noted = why; }
+}
+
+fn parse(s: String) -> Int fallible(Oops) {
+    if s == "bad" { fail Oops { why: "bad input" }; }
+    return 7;
+}
+
+fn note(t: Tally, e: Oops) -> Bool {
+    t.fail_once(e.why);
+    return true;
+}
+
+main locus App {
+    params { t: Tally = Tally { }; }
+    run() {
+        parse("ok") or { };
+        parse("bad") or { };
+        std::test::assert_eq_int(self.t.failed, 0, "an empty block substitute does nothing");
+        parse("bad") or { self.t.fail_once(err.why); };
+        std::test::assert_eq_int(self.t.failed, 1, "a block substitute runs on the failure");
+        std::test::assert_eq_str(self.t.noted, "bad input", "with `err` in scope");
+        parse("ok") or { self.t.fail_once("not run"); };
+        std::test::assert_eq_int(self.t.failed, 1, "and not on a success");
+        parse("bad") or note(self.t, err);
+        std::test::assert_eq_int(self.t.failed, 2, "a handler of another type runs for its effect");
+        parse("bad") or 0;
+        parse("bad") or if self.t.failed > 1 { self.t.fail_once("if"); } else { };
+        std::test::assert_eq_str(self.t.noted, "if", "an `if` substitute runs as a statement");
+        let kept = parse("bad") or 3;
+        std::test::assert_eq_int(kept, 3, "a used value still takes the substitute");
+    }
+}
+
+fn main() { App { }; }

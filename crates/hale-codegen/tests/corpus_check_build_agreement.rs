@@ -2290,3 +2290,153 @@ fn a_unit_value_in_a_value_position_is_refused_by_the_check_not_the_build() {
     );
     assert_built(&marks("push(self.marks, t) or { };"), "hale_cb_unit_or_block_statement");
 }
+
+/// An operator over operands it does not apply to: the check held the
+/// two sides to one type and asked nothing more, so `true < false`, two
+/// structs compared with `==`, `b"a" + b"b"`, an enum ordered or `!` of
+/// an `Int` checked clean and the build refused each ("binop Lt on
+/// Bool", "binop Eq on TypeRef(..)", "unop Not on Int"). The table the
+/// check now holds is the one lowering implements (spec/semantics.md §
+/// "Operators and their operand types").
+///
+/// Plain string literals, for the reason given above.
+#[test]
+fn an_operator_over_operands_it_does_not_apply_to_is_refused_by_the_check_not_the_build() {
+    let bin = |decl: &str, ty: &str, v: &str, op: &str| {
+        format!("{decl}fn main() {{ let x: {ty} = {v}; let y: {ty} = {v}; let e = x {op} y; println(\"ok\"); }}\n")
+    };
+    let p = "type P { a: Int; }\n";
+    let c = "type Color = enum { Red, Green };\n";
+    let cases = [
+        (bin("", "Bool", "true", "<"), "x < y", "`<` does not apply to `Bool`"),
+        (bin(p, "P", "P { a: 1 }", "=="), "x == y", "`==` does not apply to a struct (`P`)"),
+        (bin("", "(Int, Int)", "(1, 2)", "=="), "x == y", "`==` does not apply to a tuple"),
+        (bin("", "Bytes", "b\"a\"", "+"), "x + y", "`+` does not apply to a byte string"),
+        (bin(c, "Color", "Color::Red", "<"), "x < y", "`<` does not apply to `Color`"),
+        (bin("", "Float", "1.5", "%"), "x % y", "`%` does not apply to `Float`"),
+        (bin("", "String", "\"a\"", "-"), "x - y", "`-` does not apply to `String`"),
+        (bin("", "Int", "1", "&&"), "x && y", "`&&` does not apply to `Int`"),
+        ("fn main() { let x = 1; let e = !x; println(\"ok\"); }\n".to_string(), "!x", "`!` does not apply to `Int`"),
+        (
+            "fn main() { let mut x = true; x += false; println(\"ok\"); }\n".to_string(),
+            "x += false;",
+            "`+` does not apply to `Bool`",
+        ),
+    ];
+    let cases: Vec<(&str, &str, &str)> = cases.iter().map(|(s, a, h)| (s.as_str(), *a, *h)).collect();
+    assert_refused_by_the_check(&cases, "operator");
+    for (i, src) in [
+        bin(c, "Color", "Color::Red", "!="),
+        bin("", "String", "\"a\"", "<"),
+        bin("", "Decimal", "1.5d", "%"),
+        bin("", "Bool", "true", "&&"),
+    ]
+    .iter()
+    .enumerate()
+    {
+        assert_built(src, &format!("hale_cb_operator_ok_{i}"));
+    }
+}
+
+/// The places that took a value's type on trust: the values an enum
+/// variant carries, a literal in a pattern, a `bounded` buffer's element
+/// type, a generic fn's type argument, a hashmap's key field, a topic
+/// payload's fields. Each checked clean and the build refused the
+/// program ("`Wr::One` arg 0: expected type Int, got String", "match arm
+/// pattern type String doesn't match scrutinee type Int", "bounded[T;
+/// N]: element type Tuple(..) not supported", "generic type argument
+/// `Money` not supported", "key type Bool unsupported", "bus payload
+/// field `x: Tuple(..)`"). The neighbours that lower are built, a
+/// payload-free enum on the wire among them (its tag, since 2026-10-13).
+///
+/// Plain string literals, for the reason given above.
+#[test]
+fn a_value_where_its_place_cannot_hold_it_is_refused_by_the_check_not_the_build() {
+    assert_refused_by_the_check(
+        &[
+            (
+                "type Wr = enum { One(Int), No };\nfn main() { let w = Wr::One(\"s\"); println(\"ok\"); }\n",
+                "\"s\"",
+                "`Wr::One` value 0: expected `Int`, got `String`",
+            ),
+            (
+                "type Wr = enum { One(Int), No };\nfn main() { let w = Wr::One(1, 2); println(\"ok\"); }\n",
+                "Wr::One(1, 2)",
+                "`Wr::One` carries 1 value, and this passes 2",
+            ),
+            (
+                "fn main() { let x = 3; match x { \"a\" -> { println(\"a\"); }, _ -> { println(\"o\"); }, } }\n",
+                "\"a\"",
+                "this pattern is of type `String`, and the value matched is of type `Int`",
+            ),
+            (
+                "fn main() { let x = (1, \"s\"); match x { (1, 2) -> { println(\"a\"); }, _ -> { println(\"o\"); }, } }\n",
+                "2",
+                "this pattern is of type `Int`, and the value matched is of type `String`",
+            ),
+            (
+                "type W { xs: bounded[(Int, Int); 2]; }\nfn main() { let w = W { }; println(count(w.xs)); }\n",
+                "bounded[(Int, Int); 2]",
+                "`bounded[(Int, Int); N]`: a tuple",
+            ),
+            (
+                "type Shape = enum { Dot, Circle(Int) };\ntype W { xs: bounded[Shape; 2]; }\n\
+                 fn main() { let w = W { }; println(count(w.xs)); }\n",
+                "bounded[Shape; 2]",
+                "`bounded[Shape; N]`: `Shape` is an enum with payloads",
+            ),
+            (
+                "unit cent;\ntype Money = quantity Int in cent;\nfn id<G>(x: G) -> G { return x; }\n\
+                 fn main() { let m: Money = 3cent; let y = id(m); println(\"ok\"); }\n",
+                "id",
+                "generic fn `id`: `G` would be `Money`, a quantity",
+            ),
+            (
+                "type Row { k: Bool; n: Int = 0; }\n@form(hashmap)\nlocus M { capacity { pool rows of Row indexed_by k; } }\n\
+                 fn main() { let m = M { }; println(\"ok\"); }\n",
+                "k",
+                "@form(hashmap) key `Row.k` is a `Bool`",
+            ),
+            (
+                "type Shape = enum { Dot, Circle(Int) };\ntype Msg { x: Shape; n: Int = 0; }\n\
+                 topic Ev { payload: Msg; subject: \"ev.x\"; }\n\
+                 locus Sub { bus { subscribe Ev as on_ev; } fn on_ev(m: Msg) { println(m.n); } }\n\
+                 fn main() { let s = Sub { }; }\n",
+                "subscribe Ev as on_ev;",
+                "subscribe `Ev`: topic `Ev` declares `payload: Msg`, whose field `x` is an enum with payloads (`Shape`)",
+            ),
+            (
+                "type Msg { x: (Int, Int); n: Int = 0; }\n\
+                 topic Ev { payload: Msg; subject: \"ev.x\"; }\n\
+                 locus Sub { bus { subscribe Ev as on_ev; } fn on_ev(m: Msg) { println(m.n); } }\n\
+                 fn main() { let s = Sub { }; }\n",
+                "subscribe Ev as on_ev;",
+                "subscribe `Ev`: topic `Ev` declares `payload: Msg`, whose field `x` is a tuple",
+            ),
+        ],
+        "place",
+    );
+    for (i, src) in [
+        "type Fee = enum { Flat(Decimal<2>), Waived };\nfn main() { let f = Fee::Flat(1.25d); println(\"ok\"); }\n",
+        "fn main() { let d = 60s; match d { 1min -> { println(\"m\"); }, _ -> { println(\"o\"); }, } }\n",
+        "type Color = enum { Red, Green };\ntype W { xs: bounded[Color; 2]; }\n\
+         fn main() { let mut w = W { }; push(w.xs, Color::Green) or { }; println(count(w.xs)); }\n",
+        "type OrderId = distinct Int;\nfn id<G>(x: G) -> G { return x; }\nfn main() { let o = id(OrderId(7)); println(Int(o)); }\n",
+        "type Color = enum { Red, Green };\n\
+         locus Q { params { x: Color = Color::Red; } fn put(v: Color) { self.x = v; } }\n\
+         fn main() { let q = Q { }; q.put(Color::Green); println(\"ok\"); }\n",
+        "type Oops { why: String = \"\"; }\n\
+         fn parse(s: String) -> Int fallible(Oops) { if s == \"bad\" { fail Oops { why: s }; } return 7; }\n\
+         fn main() { parse(\"bad\") or { println(err.why); }; parse(\"bad\") or 0; }\n",
+        "type Status = enum { Up, Down };\ntype Msg { key: Status = Status::Up; n: Int = 0; }\n\
+         topic Ev { payload: Msg; subject: \"ev.x\"; keyed_by key; }\n\
+         locus Sub { bus { subscribe Ev as on_ev; } fn on_ev(m: Msg) { println(m.n); } }\n\
+         main locus App { params { s: Sub = Sub { }; } bus { publish Ev; } run() { Ev <- Msg { key: Status::Down }; } }\n\
+         fn main() { App { }; }\n",
+    ]
+    .iter()
+    .enumerate()
+    {
+        assert_built(src, &format!("hale_cb_place_ok_{i}"));
+    }
+}
