@@ -306,7 +306,7 @@ const CG_CHANNELS: &str = "crates/hale-codegen/src/channels/mod.rs";
 const CG_CONVERSION: &str = "crates/hale-codegen/src/conversion.rs";
 const CG_BUS_RT: &str = "crates/hale-codegen/src/bus/runtime.rs";
 const CG_TYPES: &str = "crates/hale-codegen/src/types/mod.rs";
-const CG_VIEW_BINDINGS: &str = "crates/hale-codegen/src/view_bindings.rs";
+const VIEW_BINDINGS: &str = "crates/hale-types/src/view_bindings.rs";
 const CAPABILITY: &str = "crates/hale-types/src/capability.rs";
 const CAPABILITY_TRANSPORT: &str = "crates/hale-types/src/capability/transport.rs";
 const CAPABILITY_USES: &str = "crates/hale-types/src/capability/uses.rs";
@@ -1878,8 +1878,8 @@ pub const FAMILIES: &[Family] = &[
         inputs: &["the merged program's bodies (place chains, calls, stores, loops, bus sends)", "the build's import table", "the declarations' types (loci, interfaces, perspectives, forms, records, enums, aliases), classified in lowering"],
         producer: None,
         legacy: &[Legacy {
-            site: site(CG_VIEW_BINDINGS, "fn owned_view_sites_with"),
-            note: "a pass over every body in lowering (`OwnedViews::of`): per binding, the field names of the places its value views and the writes after it (a store's field, a callee's transitive write summary by name, a fn value, a publish's handlers), keyed by the `let`/assign/`for` node id, the `match`'s span and an operand's span. It classifies types itself (`classify`, `classify_name`, `classify_path`), resolving each spelling through the aliases, the import table and the minted names: a re-derivation of the types the checker resolves, which is why it errs toward a copy wherever a type or a callee is unknown",
+            site: site(VIEW_BINDINGS, "fn owned_view_sites_in"),
+            note: "a pass over every body, run in lowering (`OwnedViews::of`): per binding, the field names of the places its value views and the writes after it (a store's field, a callee's transitive write summary by name, a fn value, a publish's handlers), keyed by the `let`/assign/`for` node id, the `match`'s span and an operand's span. It classifies types itself (`classify`, `classify_name`, `classify_path`), resolving each spelling through the aliases, the import table and the minted names: a re-derivation of the types the checker resolves, which is why it errs toward a copy wherever a type or a callee is unknown",
             removal: "when the owner table carries a binding's owned-view column (and an operand's), computed in hale-types over the checker's resolved types and the effect rows' per-callee field writes, and lowering reads that column instead of running this pass",
         }],
         consumers: &[consumer_at("codegen (a `let`, a tuple `let`, a bare-local `=`, a `for`'s array, a `match`'s payloads, an operand: an owned copy at the flagged site)", CG, "owned_views")],
@@ -1891,9 +1891,9 @@ pub const FAMILIES: &[Family] = &[
             "every question about a type goes through `classify`; no `TypeExpr` variant is matched elsewhere in the pass (`types_are_classified_in_one_place`)",
         ],
         missing: Missing::NotApplicable,
-        tests: &["crates/hale-codegen/src/view_bindings.rs (unit tests)", "crates/hale-codegen/tests/held_field_view.rs", "crates/hale-codegen/tests/self_field_enum_retire.rs"],
+        tests: &["crates/hale-types/src/view_bindings.rs (unit tests)", "crates/hale-codegen/tests/held_field_view.rs", "crates/hale-codegen/tests/self_field_enum_retire.rs"],
         spec: &["spec/types.md § Any binding of a place keeps its value", "spec/memory.md rule 6"],
-        owned: &[site(CG_VIEW_BINDINGS, "classify_name"), site(CG_VIEW_BINDINGS, "classify_path")],
+        owned: &[site(VIEW_BINDINGS, "classify_name"), site(VIEW_BINDINGS, "classify_path")],
         seams: &[Seam { symbol: "OwnedViews::of(", allowed: &[(CG, 1)] }],
     },
     Family {

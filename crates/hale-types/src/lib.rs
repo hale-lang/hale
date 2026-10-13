@@ -63,6 +63,7 @@ pub mod topology_diff;
 pub mod topology_projection;
 pub mod model_graph;
 pub mod verdict;
+pub mod view_bindings;
 pub mod secret_reveal;
 pub mod stdlib_names;
 pub mod stdlib_bodies;

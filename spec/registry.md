@@ -1415,9 +1415,9 @@ The families, their legacy producers, the spec rules and the frozen Debug-string
 
 **Legacy producers (permitted until removal).**
 
-- `crates/hale-codegen/src/view_bindings.rs` · `fn owned_view_sites_with` — a pass over every body in lowering (`OwnedViews::of`): per binding, the field names of the places its value views and the writes after it (a store's field, a callee's transitive write summary by name, a fn value, a publish's handlers), keyed by the `let`/assign/`for` node id, the `match`'s span and an operand's span. It classifies types itself (`classify`, `classify_name`, `classify_path`), resolving each spelling through the aliases, the import table and the minted names: a re-derivation of the types the checker resolves, which is why it errs toward a copy wherever a type or a callee is unknown. *Removed when:* when the owner table carries a binding's owned-view column (and an operand's), computed in hale-types over the checker's resolved types and the effect rows' per-callee field writes, and lowering reads that column instead of running this pass.
+- `crates/hale-types/src/view_bindings.rs` · `fn owned_view_sites_in` — a pass over every body, run in lowering (`OwnedViews::of`): per binding, the field names of the places its value views and the writes after it (a store's field, a callee's transitive write summary by name, a fn value, a publish's handlers), keyed by the `let`/assign/`for` node id, the `match`'s span and an operand's span. It classifies types itself (`classify`, `classify_name`, `classify_path`), resolving each spelling through the aliases, the import table and the minted names: a re-derivation of the types the checker resolves, which is why it errs toward a copy wherever a type or a callee is unknown. *Removed when:* when the owner table carries a binding's owned-view column (and an operand's), computed in hale-types over the checker's resolved types and the effect rows' per-callee field writes, and lowering reads that column instead of running this pass.
 
-**Also owned.** `crates/hale-codegen/src/view_bindings.rs` · `classify_name`; `crates/hale-codegen/src/view_bindings.rs` · `classify_path`
+**Also owned.** `crates/hale-types/src/view_bindings.rs` · `classify_name`; `crates/hale-types/src/view_bindings.rs` · `classify_path`
 
 **Consumers.** codegen (a `let`, a tuple `let`, a bare-local `=`, a `for`'s array, a `match`'s payloads, an operand: an owned copy at the flagged site) (`crates/hale-codegen/src/codegen.rs` · `owned_views`)
 
@@ -1431,7 +1431,7 @@ The families, their legacy producers, the spec rules and the frozen Debug-string
 
 **Missing data.** n/a
 
-**Focused tests.** crates/hale-codegen/src/view_bindings.rs (unit tests); crates/hale-codegen/tests/held_field_view.rs; crates/hale-codegen/tests/self_field_enum_retire.rs
+**Focused tests.** crates/hale-types/src/view_bindings.rs (unit tests); crates/hale-codegen/tests/held_field_view.rs; crates/hale-codegen/tests/self_field_enum_retire.rs
 
 **Spec.** spec/types.md § Any binding of a place keeps its value; spec/memory.md rule 6
 

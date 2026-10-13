@@ -1657,8 +1657,8 @@ pub fn build_resolved(
         replica_index_for_next_locus_instantiation: None,
         current_instantiation_replica_index: 0,
         owner_table,
-        owned_views: crate::view_bindings::OwnedViews::of(
-            merged,
+        owned_views: hale_types::view_bindings::OwnedViews::of(
+            &[merged],
             &import_renames.iter().map(|(segs, m)| (segs.clone(), m.clone())).collect(),
         ),
         placement: &resolved.placement,
@@ -4403,7 +4403,7 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// later write may replace while they are live
     /// (`crate::view_bindings`): those bind an owned copy, every other
     /// one the field's own pointer.
-    pub(crate) owned_views: crate::view_bindings::OwnedViews,
+    pub(crate) owned_views: hale_types::view_bindings::OwnedViews,
     /// The snapshot's placement table (`LoweringView::placement`): the
     /// deployment plan is read from its root rows, domains and adapters
     /// (`collect_main_placement`).
