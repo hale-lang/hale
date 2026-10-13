@@ -1618,6 +1618,8 @@ pub fn build_resolved(
         locus_cascade_path: Vec::new(),
         instantiating_into_payload_arena: false,
         anchor_record_slot: None,
+        reserve_child_next: None,
+        reserve_exit_slots: Vec::new(),
         perspectives_holdable: BTreeSet::new(),
         perspectives_held: BTreeMap::new(),
         perspectives_designated: BTreeSet::new(),
@@ -4134,6 +4136,16 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// no entry on the building frame, which does not own the root at its
     /// exit.
     pub(crate) anchor_record_slot: Option<PointerValue<'ctx>>,
+    /// #1534: the static tree a param's literal is a node of — the locus
+    /// it is expected to build and the root's reservations — set by the
+    /// params loop for the literal it lowers next, taken by that literal.
+    pub(crate) reserve_child_next: Option<(String, crate::locus::reservation::ReserveCtx<'ctx>)>,
+    /// #1534: each root site's reservation-scope slot (entry-block,
+    /// NULL-initialized), with its function: the scope from its open to
+    /// its close, NULL otherwise. Every exit of the function closes what
+    /// a slot still holds (`emit_frame_teardown`), which is a scope whose
+    /// construction an initializer's propagated failure left part-way.
+    pub(crate) reserve_exit_slots: Vec<(inkwell::values::FunctionValue<'ctx>, PointerValue<'ctx>)>,
     /// GH #731: the perspectives some declared holder may hold WITHOUT
     /// designating (`p: perspective(P);`). Filled as the loci are
     /// declared, so every call through one of them — lowered later —
@@ -6540,6 +6552,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         frame: Vec<(PointerValue<'ctx>, String, Option<PointerValue<'ctx>>)>,
         drain_queue: bool,
     ) -> Result<(), CodegenError> {
+        // #1534: an exit out of a root's construction, part-way, closes
+        // the reservations it opened.
+        self.emit_reserve_scopes_abandoned()?;
         // m26: drain the bus queue BEFORE dissolves fire, so
         // every cooperative subscriber gets to process pending
         // cells while it's still alive. Handlers may publish

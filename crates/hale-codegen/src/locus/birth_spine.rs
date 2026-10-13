@@ -195,8 +195,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         info: &LocusInfo<'ctx>,
         self_ptr: PointerValue<'ctx>,
         locus_name: &str,
+        reserve: Option<&crate::locus::reservation::ReserveCtx<'ctx>>,
     ) -> Result<Option<PointerValue<'ctx>>, CodegenError> {
         let Some(mb_idx) = info.mailbox_field_idx else { return Ok(None) };
+        // #1534: a pinned anchor of a static tree registers here, on the
+        // instantiating thread, and claims what the root reserved for it.
+        let reserve = reserve.filter(|_| self.owes_readiness(locus_name));
         let ptr_t = self.context.ptr_type(AddressSpace::default());
         let mb_slot = self.builder
             .build_struct_gep(info.struct_ty, self_ptr, mb_idx, "pinned.mailbox.ptr")
@@ -231,6 +235,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 payload_type,
                 key_filter.as_ref(),
             )?;
+            if let Some(ctx) = reserve {
+                if !self.shm_ring_subjects.contains_key(subject) {
+                    self.emit_reserve_claim(ctx, subject, self_ptr)?;
+                }
+            }
         }
         self.in_params_default = prev_ipd_pinned;
         self.current_self = prev_self_pinned;

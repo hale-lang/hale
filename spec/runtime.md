@@ -2309,17 +2309,60 @@ its `KNOWN_OPEN` table, which is empty today.
   into a broadcast.
   A publish written before the literal that builds its subscriber, in
   one body, never reaches that subscriber, and `hale check` warns at it
-  (spec/verification.md, "Publish before its subscriber"). **Pending,
-  adopted 2026-10-12:** a subscriber of a statically built tree that
-  is built after its publisher — a later params sibling, one a pinned
-  or pool-placed field's subtree builds on its own thread, a keyed or
-  pinned subscriber — registers once it is built, so what an earlier
-  sibling's `birth()` or `run()` publishes before then reaches no
-  subscription of it, and is lost. The adopted rule reserves the static
-  tree's subscriptions before its first birth, so those cells park
-  until the subscriber's birth completes, bounded by the topic's
-  capacity and its `on_full`; not yet emitted (the parent's own
-  subscriptions are, above). Not yet true
+  (spec/verification.md, "Publish before its subscriber"). A
+  statically built tree reserves its subscriptions before its first
+  birth (#1534, adopted 2026-10-12; shipped, `bus_static_reservation.rs`).
+  The tree is a root literal (one no tree around it holds) and the
+  locus literals its params build, recursively: a param whose override
+  or default is a locus literal. Before the root's params are built
+  (`lotus_bus_reserve_begin`, then `lotus_bus_reserve` per subject),
+  the root reserves each subject a node of its tree subscribes to and
+  another node may publish before that subscriber registers: a
+  cooperative node publishes from its `birth()`, after its own params;
+  an anchor (a pinned or pool-placed field) from its instantiation; a
+  subscriber registers before its params where it does so early
+  (above), else just before its `birth()`. The reservation is a placeholder registration
+  every dispatch flavor posts to as to any subscriber; the cell waits
+  there in publish order. Each of the tree's registrations of the
+  subject — the root's, a cooperative node's, an anchor's (it registers
+  on the instantiating thread), a node's an anchor's params build in
+  the init its own thread or its pool's worker runs while the
+  instantiating thread waits (the init reads the scope through its
+  argument block), a keyed subscription's, its key applied — then
+  claims its copy
+  (`lotus_bus_reserve_claim`), ahead of what its window holds, and its
+  readiness delivers it after its `birth()`. The last expected claim
+  closes the reservation, and the root's `birth()` closes what is left
+  (`lotus_bus_reserve_end`); so does any exit that leaves the
+  construction part-way (an initializer's propagated failure: the scope
+  sits in an entry-block slot every exit of the function closes). One
+  whose subscriber never registered, holding cells, says so on stderr. A publish on another thread racing
+  a claim carries the count of the registrations it walked, and a cell
+  is copied at the claim, or forwarded by a park after it, only to a
+  claimant that publish did not reach itself: no cell is delivered
+  twice or lost. The bound is each claimant's own: the reservation
+  retains, for each routing key (a keyed claimant's bound is over its
+  own key's cells), the first cells any `bounded(N, drop_new)` or
+  unbounded claimant keeps and the last any `bounded(N, drop_old)` one
+  keeps, never more than a queue's worth in all, and
+  each claim takes its own bound's share of what is retained (the
+  oldest N, or the newest N), counting what it lost on its own
+  `ctr_dropped_full`, whichever field is built first; past `bounded(N);
+  on_full: fail` (the topic's, every claimant's) it sheds the
+  newcomer, counted, and says so once on stderr, since no publisher is
+  left to raise into once the subscriber exists; with no bound it holds a
+  queue's worth (`LOTUS_BUS_QUEUE_CAP`) and sheds the newcomer past it,
+  counted, saying so once. No publisher ever waits on a reservation: one
+  can stay open while what closes it waits on something else (an init,
+  a birth that runs until the drain), and a publisher waiting there could
+  not see the drain. A tree that needs no reservation emits none, and the publish
+  site is unchanged: a reservation holds a window open, so a baked
+  direct publish takes the helper through the window count it already
+  reads. Not yet true: an anchor nested in another anchor's params
+  builds its own params in an init of that init, and a subscriber there
+  claims nothing, so what an earlier part of the tree published before
+  it registered reaches no subscription of it; nor does a replicated
+  field's (`replicas = K`) instance. Not yet true
   in two further cases (inventory rows C51
   and R51). A subscribing locus that only stdlib or imported code
   builds, so that the lifecycle plan holds no template of it, opens
@@ -4326,6 +4369,8 @@ its behavior as described in this document.
 | `LOTUS_BUS_UDP_RCVBUF=<N>` | the kernel's | `SO_RCVBUF`, in bytes, for the udp bus readers. Ignored unless a positive `int`. |
 | `LOTUS_BUS_TEST_BOOT_HOLD_MS=<ms>` | 0 | Test only: stretches the boot-registration window of a listening binding (see `LOTUS_BUS_QUIESCE_MS`). Never set in production. |
 | `LOTUS_BUS_TEST_READER_STALL_MS=<ms>` | 0 | Test only: stretches the window in which a binding's reader is descheduled. Never set in production. |
+| `LOTUS_BUS_LOG_RESERVE=1` | off | #1534: one stderr line per reservation of a static tree's subscriptions as it closes — `[bus] reservation \`<subject>\` closed: parked P copied C forwarded F shed S claimants N missing M keys K` (cells held, copies its claims took, cells a later park forwarded to a claimant its publish did not reach, cells its bound shed, claims made, claims expected and never made, routing-key records kept: one per key with a retained cell, never more than a queue's worth). A development aid; the race tests read it. |
+| `LOTUS_BUS_TEST_RESERVE_STALL_US=<us>` | 0 | Test only: holds every publish into a reservation, on a thread other than the one building the tree, that many microseconds between the registrations it walked and its park, so a claim lands in between and the park forwards (`bus_static_reservation.rs`). Never set in production. |
 | `LOTUS_TEST_PINNED_START_NO_DRAIN=1` | off | Test only: disables the instantiating thread's queue drain while it waits for pinned or pool initialization. The startup request/reply negative controls use it to expose the resulting deadlock. Any non-empty value not starting with `0` enables it. Never set in production. |
 | `LOTUS_LIFECYCLE_SKIP=<steps>` | unset | Test only, and read only by a lifecycle-trace build (`HALE_LIFECYCLE_TRACE=1`; a release runtime has no such code): a comma list of steps a negative control removes, a kind (`PoolJoin`) or one event line (`Reclaim.Completed`). See *The lifecycle trace*. |
 | `HALE_MATRIX=full` | the sample | Test only, read by the test suite (`ownership_matrix.rs`, `lifecycle_matrix.rs`), never by a program: `full` runs every cell of the generated ownership and lifecycle matrices instead of the default deterministic sample. |

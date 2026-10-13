@@ -574,10 +574,13 @@ main locus App {
         //      right scope, the right Work takes nothing from it; a stale
         //      copy of an answer, and an answer to no question, are strays
         let wl = "t1/wf1/s0/a";
-        // the Works asked at their birth, before this locus listened: the
-        // left question is put again under the Work's own identity. (The
-        // main record's answers for its own `t1/wf1/s0/a`, over every
-        // restart above, reached both Works too — strays, counted from here.)
+        // the Works asked at their birth, before this locus registered its
+        // keyed subscription: the root's reservation held the left question
+        // for it (#1534), so the left Work took the left record's answer
+        // then; put again under the Work's own identity, the question's
+        // answer is one the Work has taken. (The main record's answers for
+        // its own `t1/wf1/s0/a`, over every restart above, reached both
+        // Works too — strays, counted from here.)
         let ls0 = self.left.state_strays;
         let rs0 = self.right.state_strays;
         dna::WorkStateAsked <- dna::WorkStateAsk { scope: "left", ask_id: wl + "@state", work_id: wl };
@@ -589,7 +592,7 @@ main locus App {
         dna::WorkStateAnswered <- dna::WorkState { scope: "left", ask_id: wl + "@state", work_id: wl, attempted: true, attempt_id: wl + "/a0", attempt_no: 0, performer_kind: "service" };
         dna::WorkStateAnswered <- dna::WorkState { scope: "right", ask_id: "nobody@state", work_id: wl, attempted: true, attempt_id: wl + "/a0", attempt_no: 0, performer_kind: "service" };
         self.settle();
-        std::test::assert_eq_int(self.left.state_strays, ls0 + 2, "the left answer, delivered again after it was taken, is a stray to the left Work — as is the right-scoped one");
+        std::test::assert_eq_int(self.left.state_strays, ls0 + 3, "the left answer, delivered again after it was taken (to the question put again, and replayed), is a stray to the left Work — as is the right-scoped one");
         std::test::assert_eq_int(self.right.state_strays, rs0 + 3, "an answer in the right scope to no question of the right Work's is a stray — as is the replayed left one");
         std::test::assert_eq_int(self.right_admits + self.left_admits, 1, "and nothing more was proposed on either");
 

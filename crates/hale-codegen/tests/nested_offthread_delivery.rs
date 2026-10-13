@@ -812,7 +812,7 @@ locus Kid {
         while self.got < 1 && std::time::monotonic_ns() < deadline {
             std::time::sleep(1ms);
         }
-        if self.got != 1 {
+        if self.got < 1 {
             println("STARTUP_TIMEOUT");
             std::process::exit(3);
         }
@@ -839,8 +839,9 @@ fn main() { App { }; }
 /// Two pinned anchors of the same type: the second initializes its tree
 /// while the first already runs its consumer loop. Each `Kid` registers
 /// with its own anchor's route, so the second `Kid`'s publication reaches
-/// the first on the first anchor's thread (its count ends at 2) and the
-/// second on its own (1).
+/// the first on the first anchor's thread, and the first's, published
+/// before the second `Kid` existed, reaches the second on its own through
+/// the root's reservation (#1534): both counts end at 2.
 const STARTUP_TWO_ANCHORS: &str = r#"
 locus Owner { params { w: Int = 0; k: Kid = Kid { who: self.w }; } }
 
@@ -1016,7 +1017,7 @@ fn two_pinned_anchors_of_one_type_initialize_on_their_own_threads() {
         assert_eq!(order[..3], ["KID_READY", "KID_READY", "APP_READY"], "{arm:?}\n{stdout}");
         let anchors = assert_kids_on_their_anchor(&stdout, &format!("{arm:?}"));
         assert_ne!(anchors[0], anchors[1], "{arm:?}: the two anchors share a thread\n{stdout}");
-        for (who, got) in [(1, 2), (2, 1)] {
+        for (who, got) in [(1, 2), (2, 2)] {
             let gone = stdout
                 .lines()
                 .find(|l| l.starts_with(&format!("KID_GONE who={who} ")))
@@ -1294,7 +1295,8 @@ fn a_child_two_levels_below_a_pool_root_initializes_on_its_worker() {
 /// post order, each complete before the next root's is posted: `Kid` 1 is
 /// ready before `Kid` 2, both before the root's `run()`, both on the one
 /// worker. `Kid` 2's publication reaches `Kid` 1 there too, at a yield of
-/// the second init (its count ends at 2), and `Kid` 2 itself (1).
+/// the second init, and `Kid` 1's, published before `Kid` 2 existed,
+/// reaches `Kid` 2 through the root's reservation (#1534): both end at 2.
 #[test]
 fn two_pool_roots_on_one_pool_initialize_in_post_order() {
     let src = startup_app(
@@ -1315,7 +1317,7 @@ fn two_pool_roots_on_one_pool_initialize_in_post_order() {
         assert!(app > 1, "{arm:?}: the root's run() follows both inits\n{stdout}");
         let threads = assert_kids_on(&stdout, Anchor::Pool, &format!("{arm:?}"));
         assert_eq!(threads[0], threads[1], "{arm:?}: one pool, one worker\n{stdout}");
-        for (who, got) in [(1, 2), (2, 1)] {
+        for (who, got) in [(1, 2), (2, 2)] {
             let gone = stdout
                 .lines()
                 .find(|l| l.starts_with(&format!("KID_GONE who={who} ")))
