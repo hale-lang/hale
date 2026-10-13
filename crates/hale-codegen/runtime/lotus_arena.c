@@ -6977,6 +6977,109 @@ int lotus_lru_get(void *cache_ptr, const void *key, void *out_value) {
     return 1;
 }
 
+/* Retire what an lru cell's value `old_v` owns — everything the retire
+ * descriptor reaches from it (String and Bytes fields, nested records,
+ * tuples, out-of-line arrays and payload enums, at any depth) — onto
+ * `arena`'s pending list, deferred to the owner's activation boundary
+ * exactly as a @form(hashmap) cell retires (lotus_hashmap_retire_cell):
+ * a value a `get` handed out this activation stays whole until then.
+ * `new_v` non-NULL is the replace path: a block the new value still
+ * reaches survives. A block reached twice is retired once. The value
+ * bytes themselves are the slot's (inline), never a block. The key of
+ * an lru cell is the value's own `indexed_by` field (put copies the
+ * key out of the value it stores), so the descriptor covers it. */
+void lotus_lru_retire_value(void *arena_ptr, const void *old_v,
+                            const void *new_v, const int32_t *desc,
+                            int64_t n_desc) {
+    lotus_arena_t *a = (lotus_arena_t *)arena_ptr;
+    if (!a || !old_v || n_desc <= 0 || !desc) return;
+    lotus_retire_blocks_t olds, news;
+    lotus_retire_blocks_init(&olds);
+    lotus_retire_blocks_init(&news);
+    int ok = lotus_retire_collect(&olds, (const char *)old_v, desc, n_desc, 1);
+    if (ok && new_v)
+        ok = lotus_retire_collect(&news, (const char *)new_v, desc, n_desc, 0);
+    if (ok) {
+        for (size_t i = 0; i < olds.n; i++) {
+            void *p = olds.p[i];
+            if (lotus_retire_blocks_has(&news, p)) continue;
+            int dup = 0;
+            for (size_t j = 0; j < i; j++)
+                if (olds.p[j] == p) { dup = 1; break; }
+            if (dup) continue;
+            lotus_arena_retire_sized_cls(a, p, olds.size[i], -1);
+        }
+    }
+    lotus_retire_blocks_free(&olds);
+    lotus_retire_blocks_free(&news);
+}
+
+/* `put` with reclamation and the eviction hook's hand-off. A present
+ * key's old value is retired against the new one (`arena`/`desc`, a
+ * NULL arena or empty descriptor retires nothing) before it is
+ * overwritten. A new key over capacity evicts the least-recently-used
+ * entry: its value is copied to `evicted_out` and 1 is returned, so the
+ * caller can run the locus's `on_evict(k, v)` and then retire the
+ * evicted value (lotus_lru_retire_value). `evicted_out` NULL: the
+ * evicted value is retired here. 0 when nothing was evicted. */
+int lotus_lru_put_ev(void *cache_ptr, const void *key, const void *value,
+                     void *evicted_out, void *arena,
+                     const int32_t *desc, int64_t n_desc) {
+    if (!cache_ptr || !key || !value) return 0;
+    lotus_lru_t *c = (lotus_lru_t *)cache_ptr;
+    size_t i = lotus_lru_find(c, key);
+    if (*lotus_lru_occ(c, i)) {
+        lotus_lru_retire_value(arena, lotus_lru_valp(c, i), value, desc, n_desc);
+        memcpy(lotus_lru_valp(c, i), value, c->value_size);
+        lotus_lru_set_tick(c, i, ++c->tick);
+        return 0;
+    }
+    int evicted = 0;
+    if (c->len >= c->cap) {
+        size_t best = c->table_cap;
+        uint64_t best_tick = 0;
+        for (size_t j = 0; j < c->table_cap; ++j) {
+            if (!*lotus_lru_occ(c, j)) continue;
+            uint64_t t = lotus_lru_tick_at(c, j);
+            if (best == c->table_cap || t < best_tick) {
+                best = j;
+                best_tick = t;
+            }
+        }
+        if (best != c->table_cap) {
+            if (evicted_out) {
+                memcpy(evicted_out, lotus_lru_valp(c, best), c->value_size);
+                evicted = 1;
+            } else {
+                lotus_lru_retire_value(arena, lotus_lru_valp(c, best), NULL, desc, n_desc);
+            }
+            lotus_lru_delete_at(c, best);
+        }
+        i = lotus_lru_find(c, key);
+    }
+    *lotus_lru_occ(c, i) = 1;
+    memcpy(lotus_lru_keyp(c, i), key, c->key_size);
+    memcpy(lotus_lru_valp(c, i), value, c->value_size);
+    lotus_lru_set_tick(c, i, ++c->tick);
+    c->len++;
+    return evicted;
+}
+
+/* `remove(k)`: take the entry out. Returns 1 and writes its value to
+ * `out_value` (the caller then copies it out as its own and retires
+ * the cell's blocks); 0 when `key` is absent. Recency of the other
+ * entries is untouched. */
+int lotus_lru_remove(void *cache_ptr, const void *key, void *out_value) {
+    if (!cache_ptr || !key || !out_value) return 0;
+    lotus_lru_t *c = (lotus_lru_t *)cache_ptr;
+    if (c->len == 0) return 0;
+    size_t i = lotus_lru_find(c, key);
+    if (!*lotus_lru_occ(c, i)) return 0;
+    memcpy(out_value, lotus_lru_valp(c, i), c->value_size);
+    lotus_lru_delete_at(c, i);
+    return 1;
+}
+
 /* Membership WITHOUT touching recency (unlike get). */
 int lotus_lru_contains(void *cache_ptr, const void *key) {
     if (!cache_ptr || !key) return 0;

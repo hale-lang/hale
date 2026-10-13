@@ -636,6 +636,38 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             i32_t.fn_type(&[ptr_t.into(), ptr_t.into(), ptr_t.into()], false);
         self.module
             .add_function("lotus_lru_get", lru_get_ty, None);
+        // declare i32  @lotus_lru_put_ev(ptr c, ptr key, ptr value,
+        //     ptr evicted_out, ptr arena, ptr desc, i64 n_desc)
+        // declare i32  @lotus_lru_remove(ptr c, ptr key, ptr out_value)
+        // declare void @lotus_lru_retire_value(ptr arena, ptr old_v,
+        //     ptr new_v, ptr desc, i64 n_desc)
+        // put with replace/evict reclamation and the on_evict hand-off,
+        // remove(k), and the deferred retire of a cell value.
+        self.module.add_function(
+            "lotus_lru_put_ev",
+            i32_t.fn_type(
+                &[
+                    ptr_t.into(),
+                    ptr_t.into(),
+                    ptr_t.into(),
+                    ptr_t.into(),
+                    ptr_t.into(),
+                    ptr_t.into(),
+                    i64_t.into(),
+                ],
+                false,
+            ),
+            None,
+        );
+        self.module.add_function("lotus_lru_remove", lru_get_ty, None);
+        self.module.add_function(
+            "lotus_lru_retire_value",
+            void_t.fn_type(
+                &[ptr_t.into(), ptr_t.into(), ptr_t.into(), ptr_t.into(), i64_t.into()],
+                false,
+            ),
+            None,
+        );
         let lru_contains_ty =
             i32_t.fn_type(&[ptr_t.into(), ptr_t.into()], false);
         self.module

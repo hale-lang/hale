@@ -2227,6 +2227,15 @@ fn synthesize_form_lru_cache_methods(
         ret: Ty::Prim(PrimType::Int),
         fallible: None,
     });
+    // Take-semantics (friction sweep 2026-10-12): the entry comes out
+    // as the caller's own value; a miss is a KeyError.
+    methods.push(MethodInfo {
+        name: "remove".to_string(),
+        params: vec![key_ty.clone()],
+        min_params: None,
+        ret: value_ty.clone(),
+        fallible: Some(Ty::Named("KeyError".to_string())),
+    });
 }
 
 /// Put the builtin types ([`crate::builtin_types::BUILTIN_TYPES`])
@@ -2352,7 +2361,7 @@ fn scan_items_for_stdlib_usage(items: &[TopDecl], out: &mut StdlibErrorUsage) {
                 if let Some(form) = &l.form {
                     let error = match form.name.name.as_str() {
                         "vec" => Some("IndexError"),
-                        "hashmap" => Some("KeyError"),
+                        "hashmap" | "lru_cache" => Some("KeyError"),
                         "ring_buffer" => Some("EmptyError"),
                         _ => None,
                     };

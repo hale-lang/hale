@@ -1632,10 +1632,14 @@ fn put(x: S) -> ()                          # infallible; silent LRU evict
 fn get(k: K) -> S fallible(KeyError)        # lookup + recency touch
 fn contains(k: K) -> Bool                   # membership, NO recency touch
 fn len() -> Int                             # infallible; count <= cap
+fn remove(k: K) -> S fallible(KeyError)     # take the entry out
 ```
 
-`get`'s miss payload is the synthesized `KeyError` (shared with
-`@form(hashmap)`); no new payload type is introduced.
+`get`'s and `remove`'s miss payload is the synthesized `KeyError`
+(shared with `@form(hashmap)`); no new payload type is introduced.
+
+The locus may declare one more method the form calls itself, the
+eviction hook `fn on_evict(k: K, v: S)` (see below).
 
 ### `put`
 
@@ -1686,6 +1690,63 @@ fn len() -> Int
 ```
 
 Current live entry count, always `<= cap`. Infallible.
+
+### `remove`
+
+```
+fn remove(k: K) -> S fallible(KeyError)
+```
+
+Takes the entry keyed `k` out of the cache and returns its value —
+the CALLER's own copy, allocated in the caller's current arena, as a
+`@form(vec)` `pop` hands one back. On a miss it raises `KeyError`. The
+recency of the other entries is untouched, and `on_evict` is not
+called: the caller now holds the value and whatever it owns (an fd it
+carries, say), which is the take-semantics a pool of connections needs.
+
+### The eviction hook — `on_evict`
+
+```hale
+type Conn { host: String; fd: Int; }
+
+@form(lru_cache, cap = 4)
+locus Conns {
+    capacity { pool conns of Conn indexed_by host; }
+    fn on_evict(k: String, v: Conn) {
+        let _ = std::io::tcp::close_fd(v.fd);
+    }
+}
+```
+
+A `@form(lru_cache)` locus may declare `fn on_evict(k: K, v: S)` — no
+return value, not fallible; any other signature under that name is a
+type error. When a `put` of a new key evicts the least-recently-used
+entry, the cache calls `on_evict` with the evicted entry's key and
+value, then reclaims the cell — so a cell that owns a resource outside
+the arena (a socket, a file) can release it. Only capacity eviction
+calls it: a `put` over a present key replaces the value without the
+hook (the caller replacing a value owns what the old one held — `remove`
+it first to release it), and `remove` hands the entry to the caller.
+Dissolving the locus does not call it for the entries still held.
+
+The hook runs inside the `put` that evicted, so the call graph has an
+edge from every `put` on the locus to `on_evict`: an effect the hook
+performs (`syscall` for a `close_fd`) is one the `put`'s caller reaches.
+The hook must not `put` into its own cache.
+
+### Cell reclamation
+
+`put` stores the cell's own copy of everything the value points at,
+in the cache locus's arena, as `@form(hashmap)`'s `set` does (§ Cell
+reclamation there): a nested block read out of another cell is copied,
+never shared. A cell the cache drops — replaced by a `put` of its key,
+evicted over `cap` (after `on_evict`), or taken by `remove` — has
+everything it owned retired through the retire descriptor, deferred to
+the owner's activation boundary, so a value a `get` handed out stays
+whole for the rest of the activation; a block a replacing value still
+reaches survives. A churned cache's arena therefore stays flat. (Before,
+the cache reclaimed nothing: each put of a new value grew its arena for
+the locus's lifetime.)
 
 ## Lowering strategy
 

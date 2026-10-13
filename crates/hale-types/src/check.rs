@@ -9086,20 +9086,24 @@ impl<'a> Checker<'a> {
             }
         };
         let cell_name = self.through_type_alias(cell_name);
+        let key_ty: Ty;
         match self.top.lookup(&cell_name) {
             Some(TopSymbol::Type(info)) => match &info.kind {
                 TypeKind::Struct(fields) => {
-                    if !fields.iter().any(|f| f.name == field_ident.name) {
-                        self.diags.push(Diag::ty(
-                            field_ident.span,
-                            format!(
-                                "@form(lru_cache) cell type `{}` has no field \
-                                 `{}` — the `indexed_by` field must exist on \
-                                 the cell struct",
-                                cell_name, field_ident.name
-                            ),
-                        ));
-                        return;
+                    match fields.iter().find(|f| f.name == field_ident.name) {
+                        Some(f) => key_ty = f.ty.clone(),
+                        None => {
+                            self.diags.push(Diag::ty(
+                                field_ident.span,
+                                format!(
+                                    "@form(lru_cache) cell type `{}` has no field \
+                                     `{}` — the `indexed_by` field must exist on \
+                                     the cell struct",
+                                    cell_name, field_ident.name
+                                ),
+                            ));
+                            return;
+                        }
                     }
                 }
                 TypeKind::Enum(_) => {
@@ -9165,6 +9169,37 @@ impl<'a> Checker<'a> {
                  override; form-lowered slots own their own allocator"
                     .to_string(),
             ));
+        }
+        // The eviction hook (friction sweep 2026-10-12): a method
+        // `on_evict(k: K, v: S)` the cache calls with each entry it
+        // evicts over `cap`, before it reclaims the cell.
+        let hook = decl.members.iter().find_map(|m| match m {
+            LocusMember::Fn(f) if f.name.name == "on_evict" => Some(f),
+            _ => None,
+        });
+        if let Some(f) = hook {
+            let cell_ty = Ty::Named(cell_name.clone());
+            let ok = f.params.len() == 2
+                && f.ret.is_none()
+                && f.fallible.is_none()
+                && f.generics.is_empty()
+                && self.resolve_te(&f.params[0].ty) == key_ty
+                && self.resolve_te(&f.params[1].ty) == cell_ty;
+            if !ok {
+                self.diags.push(Diag::ty(
+                    f.name.span,
+                    format!(
+                        "`{locus}.on_evict` is the eviction hook of \
+                         `@form(lru_cache)` and must be `fn on_evict(k: {k}, v: \
+                         {cell})` — no return value, not fallible: the cache \
+                         calls it with each entry it evicts over `cap`, before \
+                         reclaiming the cell",
+                        locus = decl.name.name,
+                        k = key_ty.display(),
+                        cell = cell_name,
+                    ),
+                ));
+            }
         }
     }
 

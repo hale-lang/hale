@@ -289,6 +289,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         self.user_loci.get(name).is_some_and(|info| {
             info.capacity_slots.iter().any(|sl| match sl.form {
                 Some(SlotForm::Vec) => true,
+                Some(SlotForm::LruCache) => matches!(sl.elem_ty, CodegenTy::TypeRef(_)),
                 Some(SlotForm::Hashmap) => {
                     matches!(sl.sync_mode, SyncMode::None | SyncMode::Serialized)
                         && matches!(sl.elem_ty, CodegenTy::TypeRef(_))
@@ -3594,6 +3595,17 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     let arg_val: BasicValueEnum = snap.into();
                     let prev_owned = self.cell_owned_clone;
                     self.cell_owned_clone = true;
+                    // The cache retires a replaced, evicted or removed
+                    // cell's nested blocks, so the cell must own them
+                    // (`cell_compound_owner`): a nested block read out of
+                    // another cell is copied, never shared.
+                    let nested = cell_info
+                        .fields
+                        .values()
+                        .any(|(_, t)| self.record_field_owns_block(t));
+                    if nested {
+                        self.cell_compound_owner = Some(None);
+                    }
                     let walk_res = self.emit_cross_arena_store_deep_copy(
                         arg_val,
                         &expected_value_ty,
@@ -3601,6 +3613,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         &format!("{}.lru_put", locus_name),
                     );
                     self.cell_owned_clone = prev_owned;
+                    self.cell_compound_owner = None;
                     walk_res?
                 } else {
                     let _ = dest_arena; // unused on the scalar path
@@ -3617,21 +3630,118 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     )
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
 
+                // Reclamation (friction sweep 2026-10-12): a replaced
+                // cell's blocks retire against the new value, an evicted
+                // one's after the locus's `on_evict(k, v)` hook (when it
+                // declares one) has seen it — deferred to the activation
+                // boundary, as a `@form(hashmap)` cell retires.
+                let ptr_t = self.context.ptr_type(AddressSpace::default());
+                let i64_t = self.context.i64_type();
+                let (desc_ptr, n_desc) = match self.vec_retire_args(&expected_value_ty) {
+                    Some((_, d, n)) if n > 0 => (d, n),
+                    _ => (ptr_t.const_null(), 0),
+                };
+                let retire_arena = if n_desc > 0 { dest_arena } else { ptr_t.const_null() };
+                let hook = info.user_methods.get("on_evict").copied();
+                let evicted_out = match hook {
+                    Some(_) => self.alloca_in_entry(
+                        cell_info.struct_ty.into(),
+                        &format!("{}.put.evicted", locus_name),
+                    )?,
+                    None => ptr_t.const_null(),
+                };
                 let put_fn = self
                     .module
-                    .get_function("lotus_lru_put")
-                    .expect("lotus_lru_put extern declared");
-                self.builder
+                    .get_function("lotus_lru_put_ev")
+                    .expect("lotus_lru_put_ev extern declared");
+                let evicted = self
+                    .builder
                     .build_call(
                         put_fn,
                         &[
                             lru_field_ptr.into(),
                             key_field_ptr.into(),
                             value_ptr.into(),
+                            evicted_out.into(),
+                            retire_arena.into(),
+                            desc_ptr.into(),
+                            i64_t.const_int(n_desc as u64, false).into(),
                         ],
                         &format!("{}.put.call", locus_name),
                     )
-                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                    .try_as_basic_value()
+                    .left()
+                    .expect("lotus_lru_put_ev returns i32")
+                    .into_int_value();
+                if let Some(hook_fn) = hook {
+                    let func = self.current_fn.expect("lru.put inside fn body");
+                    let hook_bb = self.context.append_basic_block(func, "lru.put.evict_hook");
+                    let cont_bb = self.context.append_basic_block(func, "lru.put.cont");
+                    let did = self
+                        .builder
+                        .build_int_compare(
+                            inkwell::IntPredicate::NE,
+                            evicted,
+                            i32_t.const_int(0, false),
+                            &format!("{}.put.evicted.did", locus_name),
+                        )
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    self.builder
+                        .build_conditional_branch(did, hook_bb, cont_bb)
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    self.builder.position_at_end(hook_bb);
+                    let key_ty = cell_info
+                        .fields
+                        .get(&field_name)
+                        .map(|(_, t)| t.clone())
+                        .expect("indexed_by field on cell");
+                    let ev_key_ptr = self
+                        .builder
+                        .build_struct_gep(
+                            cell_info.struct_ty,
+                            evicted_out,
+                            key_field_idx,
+                            &format!("{}.put.evicted.key.ptr", locus_name),
+                        )
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    let llvm_key_ty = self.llvm_basic_type(&key_ty);
+                    let ev_key = self
+                        .builder
+                        .build_load(llvm_key_ty, ev_key_ptr, &format!("{}.put.evicted.key", locus_name))
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    self.emit_set_caller_arena()?;
+                    self.builder
+                        .build_call(
+                            hook_fn,
+                            &[locus_self_ptr.into(), ev_key.into(), evicted_out.into()],
+                            &format!("{}.on_evict.call", locus_name),
+                        )
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    if n_desc > 0 {
+                        let retire_fn = self
+                            .module
+                            .get_function("lotus_lru_retire_value")
+                            .expect("lotus_lru_retire_value declared");
+                        self.builder
+                            .build_call(
+                                retire_fn,
+                                &[
+                                    dest_arena.into(),
+                                    evicted_out.into(),
+                                    ptr_t.const_null().into(),
+                                    desc_ptr.into(),
+                                    i64_t.const_int(n_desc as u64, false).into(),
+                                ],
+                                &format!("{}.put.evicted.retire", locus_name),
+                            )
+                            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    }
+                    self.builder
+                        .build_unconditional_branch(cont_bb)
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    self.builder.position_at_end(cont_bb);
+                }
                 Ok(Some(None))
             }
             "contains" => {
@@ -3762,8 +3872,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         else {
             return Ok(None);
         };
-        if method_name != "get" {
+        if method_name != "get" && method_name != "remove" {
             return Ok(None);
+        }
+        if method_name == "remove" {
+            return self
+                .lower_form_lru_cache_remove(info, locus_self_ptr, locus_name, &slot, args, scope)
+                .map(Some);
         }
 
         let cell_name = match &slot.elem_ty {
@@ -3922,4 +4037,161 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         }))
     }
 
+
+    /// `@form(lru_cache).remove(k) -> S fallible(KeyError)` (friction
+    /// sweep 2026-10-12: the http Client's connection pool hand-rolled an
+    /// LRU because the form had no take-semantics). `lotus_lru_remove`
+    /// copies the entry's value into a stack buffer and deletes it; on a
+    /// hit the caller gets its OWN copy (in its current arena, as a vec
+    /// `pop` hands one back) and the cell's blocks retire, deferred to
+    /// the activation boundary as a `@form(hashmap)` remove retires them.
+    /// A miss is a `KeyError`.
+    fn lower_form_lru_cache_remove(
+        &mut self,
+        info: &LocusInfo<'ctx>,
+        locus_self_ptr: PointerValue<'ctx>,
+        locus_name: &str,
+        slot: &CapacitySlotLayout,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<FallibleCallResult<'ctx>, CodegenError> {
+        let err = |e: inkwell::builder::BuilderError| CodegenError::LlvmEmit(e.to_string());
+        let cell_name = match &slot.elem_ty {
+            CodegenTy::TypeRef(n) => n.clone(),
+            other => {
+                return Err(CodegenError::Unsupported(format!(
+                    "@form(lru_cache) `{}`.remove: slot cell type must be a \
+                     user-declared struct; got {:?}",
+                    locus_name, other
+                )));
+            }
+        };
+        let cell_info = self.user_types.get(&cell_name).cloned().ok_or_else(|| {
+            CodegenError::Unsupported(format!(
+                "@form(lru_cache) `{}`.remove: cell type `{}` not registered",
+                locus_name, cell_name
+            ))
+        })?;
+        let field_name = slot.indexed_by.clone().ok_or_else(|| {
+            CodegenError::Unsupported(format!("@form(lru_cache) `{}`.remove: slot missing indexed_by", locus_name))
+        })?;
+        let (_, key_codegen_ty) = cell_info.fields.get(&field_name).cloned().ok_or_else(|| {
+            CodegenError::Unsupported(format!(
+                "@form(lru_cache) `{}`.remove: indexed-by field `{}` not on cell `{}`",
+                locus_name, field_name, cell_name
+            ))
+        })?;
+        if args.len() != 1 {
+            return Err(CodegenError::Unsupported(format!(
+                "@form(lru_cache) `{}`.remove: expects 1 arg, got {}",
+                locus_name,
+                args.len()
+            )));
+        }
+        let (key_val, key_ty) = self.lower_expr(&args[0], scope)?;
+        if key_ty != key_codegen_ty {
+            return Err(CodegenError::Unsupported(format!(
+                "@form(lru_cache) `{}`.remove: key arg type mismatch: expected {:?}, got {:?}",
+                locus_name, key_codegen_ty, key_ty
+            )));
+        }
+        let value_ty = CodegenTy::TypeRef(cell_name.clone());
+        let payload_ty = CodegenTy::TypeRef("KeyError".to_string());
+        let ptr_t = self.context.ptr_type(AddressSpace::default());
+        let i32_t = self.context.i32_type();
+        let i64_t = self.context.i64_type();
+        let lru_field_ptr = self
+            .builder
+            .build_struct_gep(
+                info.struct_ty,
+                locus_self_ptr,
+                slot.struct_field_idx,
+                &format!("{}.__lru_{}.remove.ptr", locus_name, slot.name),
+            )
+            .map_err(err)?;
+        let key_alloca = self.alloca_for(&key_codegen_ty, "lru.remove.key.slot")?;
+        self.builder.build_store(key_alloca, key_val).map_err(err)?;
+        let out_err_slot = self.alloca_for(&payload_ty, "lru.remove.out_err.slot")?;
+        let out_val_slot = self.alloca_for(&value_ty, "lru.remove.out_val.slot")?;
+        let buf = self.alloca_in_entry(cell_info.struct_ty.into(), &format!("{}.remove.buf", locus_name))?;
+        let remove_fn = self.module.get_function("lotus_lru_remove").expect("lotus_lru_remove declared");
+        let c_ret = self
+            .builder
+            .build_call(
+                remove_fn,
+                &[lru_field_ptr.into(), key_alloca.into(), buf.into()],
+                &format!("{}.remove.call", locus_name),
+            )
+            .map_err(err)?
+            .try_as_basic_value()
+            .left()
+            .expect("lotus_lru_remove returns i32")
+            .into_int_value();
+        let is_err = self
+            .builder
+            .build_int_compare(
+                inkwell::IntPredicate::EQ,
+                c_ret,
+                i32_t.const_int(0, false),
+                &format!("{}.remove.is_err", locus_name),
+            )
+            .map_err(err)?;
+        let func = self.current_fn.expect("fallible-method call inside fn body");
+        let ok_bb = self.context.append_basic_block(func, "lru.remove.ok");
+        let lazy_err_bb = self.context.append_basic_block(func, "lru.remove.lazy_err");
+        let join_bb = self.context.append_basic_block(func, "lru.remove.join");
+        self.builder.build_conditional_branch(is_err, lazy_err_bb, ok_bb).map_err(err)?;
+
+        self.builder.position_at_end(ok_bb);
+        let dest = self.current_arena_ptr()?;
+        let owned = self.emit_owned_store_copy_ptr(buf.into(), &value_ty, dest)?;
+        if let Some((_, desc_ptr, n_desc)) = self.vec_retire_args(&value_ty) {
+            if n_desc > 0 {
+                let arena_field_ptr = self
+                    .builder
+                    .build_struct_gep(
+                        info.struct_ty,
+                        locus_self_ptr,
+                        info.arena_field_idx,
+                        &format!("{}.__arena.for_remove.ptr", locus_name),
+                    )
+                    .map_err(err)?;
+                let lru_arena = self
+                    .builder
+                    .build_load(ptr_t, arena_field_ptr, &format!("{}.__arena.for_remove", locus_name))
+                    .map_err(err)?;
+                let retire_fn =
+                    self.module.get_function("lotus_lru_retire_value").expect("lotus_lru_retire_value declared");
+                self.builder
+                    .build_call(
+                        retire_fn,
+                        &[
+                            lru_arena.into(),
+                            buf.into(),
+                            ptr_t.const_null().into(),
+                            desc_ptr.into(),
+                            i64_t.const_int(n_desc as u64, false).into(),
+                        ],
+                        &format!("{}.remove.retire", locus_name),
+                    )
+                    .map_err(err)?;
+            }
+        }
+        self.builder.build_store(out_val_slot, owned).map_err(err)?;
+        self.builder.build_unconditional_branch(join_bb).map_err(err)?;
+
+        self.builder.position_at_end(lazy_err_bb);
+        let ke_ptr = self.emit_key_error_alloc("missing_key")?;
+        self.builder.build_store(out_err_slot, ke_ptr).map_err(err)?;
+        self.builder.build_unconditional_branch(join_bb).map_err(err)?;
+
+        self.builder.position_at_end(join_bb);
+        Ok(FallibleCallResult {
+            i1_path: is_err,
+            out_val_slot: Some(out_val_slot),
+            out_err_slot,
+            success_ty: Some(value_ty),
+            payload_ty,
+        })
+    }
 }

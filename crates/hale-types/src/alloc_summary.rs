@@ -6652,7 +6652,44 @@ impl<'a> Walker<'a> {
                 }
             }
         }
+        // A `@form(lru_cache)` `put` runs the locus's `on_evict(k, v)`
+        // hook on the entry it evicts over `cap`: the synthesized method
+        // has no body to walk, so the hook is an edge of the call.
+        let evict_hook = match (&resolved, recv_ty.as_ref()) {
+            (Callee::Unresolved(m), Some(t)) if m == "put" => {
+                self.known.get(&(Some(t.clone()), "on_evict".to_string())).cloned()
+            }
+            _ => None,
+        };
         let spelling = CallSpelling::of(callee);
+        if let Some(hook) = evict_hook {
+            self.calls.push(CallEdge {
+                recv_ty: recv_ty.clone(),
+                receiver_present,
+                callee: Callee::Resolved(hook),
+                indirect: false,
+                through_param: false,
+                via_local: None,
+                unresolved_local: false,
+                bound_field: None,
+                loop_depth: depth,
+                in_unbounded_loop: self.loop_stack.iter().any(|bounded| !bounded),
+                escape,
+                receiver_slot: self_slot_receiver(callee),
+                via_interface: None,
+                dispatch_group: None,
+                via_value: None,
+                arity: 2,
+                allocating_recv: spelling.allocating_recv(),
+                spelling: spelling.clone(),
+                in_loop: self.loops_as_written > 0,
+                let_span: None,
+                span,
+                callee_span: callee.span(),
+                arg_taints: vec![Taint::none(), Taint::none()],
+                self_call,
+            });
+        }
         self.calls.push(CallEdge {
             recv_ty,
             receiver_present,

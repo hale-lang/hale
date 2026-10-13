@@ -294,6 +294,22 @@ pub(crate) struct BceLoop {
     pub(crate) index_var: String,
 }
 
+/// Does this form slot retire its cells onto its locus's arena pending
+/// list, for the activation boundary to flush (anchor retirement)? A
+/// `sync = none` / `serialized` `@form(hashmap)` of record cells, and a
+/// `@form(lru_cache)` (whose put, eviction and remove retire the same
+/// way).
+pub(crate) fn slot_retires_cells_deferred(sl: &CapacitySlotLayout) -> bool {
+    match sl.form {
+        Some(SlotForm::Hashmap) => {
+            matches!(sl.sync_mode, SyncMode::None | SyncMode::Serialized)
+                && matches!(sl.elem_ty, CodegenTy::TypeRef(_))
+        }
+        Some(SlotForm::LruCache) => matches!(sl.elem_ty, CodegenTy::TypeRef(_)),
+        _ => false,
+    }
+}
+
 /// Read-only `@form(vec)` methods — calling one of these on the
 /// loop's vec (or any vec) cannot change `len`, so it never
 /// invalidates the BCE invariant. ANY other method name is treated
@@ -33728,19 +33744,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         self.user_loci
                             .get(child_name)
                             .map(|child| {
-                                child.capacity_slots.iter().any(|sl| {
-                                    matches!(
-                                        sl.form,
-                                        Some(SlotForm::Hashmap)
-                                    ) && matches!(
-                                        sl.sync_mode,
-                                        SyncMode::None
-                                            | SyncMode::Serialized
-                                    ) && matches!(
-                                        sl.elem_ty,
-                                        CodegenTy::TypeRef(_)
-                                    )
-                                })
+                                child.capacity_slots.iter().any(slot_retires_cells_deferred)
                             })
                             .unwrap_or(false)
                     } else {
@@ -33808,20 +33812,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 if let CodegenTy::LocusRef(child_name) = fty {
                     if let Some(child) = self.user_loci.get(child_name)
                     {
-                        let retires = child.capacity_slots.iter().any(
-                            |sl| {
-                                matches!(
-                                    sl.form,
-                                    Some(SlotForm::Hashmap)
-                                ) && matches!(
-                                    sl.sync_mode,
-                                    SyncMode::None | SyncMode::Serialized
-                                ) && matches!(
-                                    sl.elem_ty,
-                                    CodegenTy::TypeRef(_)
-                                )
-                            },
-                        );
+                        let retires = child
+                            .capacity_slots
+                            .iter()
+                            .any(slot_retires_cells_deferred);
                         if retires {
                             child_flushes
                                 .push((fname.clone(), *fidx));
