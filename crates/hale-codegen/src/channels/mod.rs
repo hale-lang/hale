@@ -884,19 +884,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     None
                 }
                 OrDisposition::Discard(_) => {
-                    // `or discard`: success type must be Unit;
-                    // err branch is a no-op (no fallback expr
-                    // evaluated, err value swallowed).
-                    if call.success_ty.is_some() {
-                        return Err(CodegenError::Unsupported(format!(
-                            "`or discard` requires the underlying call's \
-                             success type to be Unit (since discard \
-                             produces no value to bind); got {:?}. Use \
-                             `or <default-value>` or `or raise` for \
-                             value-bearing fallible calls.",
-                            call.success_ty
-                        )));
-                    }
+                    // `or discard`: the err branch is a no-op (no
+                    // fallback expr evaluated, err value swallowed).
+                    // A value-bearing call is discarded only in
+                    // statement position — the checker refuses it
+                    // where the value is used — and the join below
+                    // hands back no value for it.
                     let sub_end_bb = self
                         .builder
                         .get_insert_block()
@@ -1071,6 +1064,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .build_unconditional_branch(join_bb)
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
                 self.builder.position_at_end(join_bb);
+                // `or discard` produces Unit whatever the call's
+                // success type: its value is thrown away.
+                if matches!(disposition, OrDisposition::Discard(_)) {
+                    return Ok((None, None));
+                }
                 match (ok_v_opt, sub_v, &call.success_ty) {
                     (Some(ok_v), Some(sv), Some(succ_ty)) => {
                         let llvm_succ_ty = self.llvm_basic_type(succ_ty);
@@ -2160,6 +2158,22 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         if let Some(result) = self.try_lower_user_locus_fallible_method(
             &info,
             self_ptr,
+            &locus_name,
+            method_name,
+            args,
+            scope,
+        )? {
+            return Ok(result);
+        }
+        // An interface `accept` / `release` monomorph: the checker typed
+        // the child as the interface, whose method is fallible, and the
+        // concrete method is infallible (conformance admits it). The call
+        // keeps the interface's contract: a direct call that always takes
+        // the success path, the adapter an interface's vtable slot holds
+        // in front of the same method.
+        if let Some(result) = self.try_lower_known_success_iface_call(
+            self_ptr,
+            &info,
             &locus_name,
             method_name,
             args,

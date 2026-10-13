@@ -11,13 +11,13 @@ locus Explicit { params { n: Int = 0; } run() { } }
 locus OwnerImplicit {
     params { released: Int = 0; seen_at_run: Int = -1; }
     accept(c: Implicit) { }
-    release (c: Implicit) { self.released = self.released + 1; }
+    release(c: Implicit) { self.released = self.released + 1; }
     run() { Implicit { }; self.seen_at_run = self.released; }
 }
 locus OwnerExplicit {
     params { released: Int = 0; seen_at_run: Int = -1; }
     accept(c: Explicit) { }
-    release (c: Explicit) { self.released = self.released + 1; }
+    release(c: Explicit) { self.released = self.released + 1; }
     run() { Explicit { }; self.seen_at_run = self.released; }
 }
 main locus App {

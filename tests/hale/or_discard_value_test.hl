@@ -1,0 +1,40 @@
+// Friction sweep 2026-10-12: `or discard` on a value-bearing fallible
+// is legal where the value is thrown away anyway — the call is the
+// whole statement. The error and the value both go; the call's own
+// effects still happen. (Where the value is used the check refuses it:
+// crates/hale-cli/tests/check_friction_sweep.rs.)
+type Oops { why: String = ""; }
+
+locus Counter {
+    params { calls: Int = 0; }
+    fn bump() { self.calls = self.calls + 1; }
+}
+
+fn parse(c: Counter, s: String) -> Int fallible(Oops) {
+    c.bump();
+    if s == "bad" { fail Oops { why: "bad" }; }
+    return 7;
+}
+
+fn label(c: Counter, n: Int) -> String fallible(Oops) {
+    c.bump();
+    if n < 0 { fail Oops { why: "negative" }; }
+    return f"n={n}";
+}
+
+main locus App {
+    params { c: Counter = Counter { }; }
+    run() {
+        parse(self.c, "bad") or discard;
+        parse(self.c, "ok") or discard;
+        label(self.c, -1) or discard;
+        label(self.c, 3) or discard;
+        std::bytes::read_i16_be(b"x", 5) or discard;
+        std::bytes::read_i16_be(b"xyz", 0) or discard;
+        std::test::assert_eq_int(self.c.calls, 4, "every discarded call ran, failing or not");
+        let kept = parse(self.c, "ok") or 0;
+        std::test::assert_eq_int(kept, 7, "a used value still takes a default");
+    }
+}
+
+fn main() { App { }; }

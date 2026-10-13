@@ -1,10 +1,12 @@
-//! The `ownership_reclaim` integration-test binary: 22 test files of this area, kept
+//! The `ownership_reclaim` integration-test binary: 26 test files of this area, kept
 //! where they are (their paths, names and history unchanged) and built as
 //! modules of one binary, so the crate links once for the area instead of
 //! once per file. Each file is a module; a test's name is `<file>::<fn>`.
 //! A new test file joins an area by a line here (and is refused by
 //! `every_test_file_is_built` until it does).
 
+#[path = "accept_interface.rs"]
+mod accept_interface;
 #[path = "arena_oom_is_loud.rs"]
 mod arena_oom_is_loud;
 #[path = "birth_order_trap.rs"]

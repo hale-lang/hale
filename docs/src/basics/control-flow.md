@@ -102,7 +102,8 @@ fn describe(n: Int) -> String {
 every possibility. For a `Bool` that means both `true` and
 `false`; for open-ended types it means a `_` arm. This is a
 safety feature — you can't forget a case and have it silently
-fall through.
+fall through. It is also why a function may end with a `match` whose
+every arm `return`s: no path reaches the end of the function.
 
 `match` shines on enums (a type that's one of several named
 shapes), which you'll meet in

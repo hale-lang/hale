@@ -125,7 +125,13 @@ Phase 2b entry in `spec/stdlib.md`.
 `match` is dual-position too (Gap C, 2026-07-17):
 
 - **As statement**: arm bodies are evaluated for side effects;
-  heterogeneous arm-body types are legal (values discarded).
+  heterogeneous arm-body types are legal (values discarded). A
+  statement match whose every arm diverges (`return`, `fail`,
+  `break`, …) ends its block, so a fn whose last statement is such a
+  match returns on every path (friction sweep 2026-10-12: the check
+  said so and the build refused it as falling through). The
+  no-arm-matched edge, unreachable under F.18 exhaustiveness, panics
+  (`MatchFellThrough`) rather than run on.
 - **As expression** (`let x = match n { 0 -> 10, _ -> 20, };`):
   every arm body's value is phi-merged at the join block, so
   all value-producing arms must agree on one type (checked at
@@ -340,9 +346,10 @@ an `Int`) are reported by the typechecker. Neither reaches codegen.
    of m27 + m28a); the field's own `birth()` still runs where
    the literal is.
 2. The nearest enclosing ancestor that declares `accept(c: I)`
-   for the child's interface is the **owner** (innermost-wins —
-   interest-based ownership / accept bubbling; see below and
-   `runtime.md`). Its `accept(c)` runs once the child's region
+   for the child's type — the type itself, or an interface the type
+   satisfies (see "An interface `accept`" below) — is the **owner**
+   (innermost-wins — interest-based ownership / accept bubbling; see
+   below and `runtime.md`). Its `accept(c)` runs once the child's region
    exists and its params are built, before the child's `birth()`,
    and it cannot reject (`runtime.md` § "Lifecycle obligations",
    line 5). With no accepting ancestor the child is a transient
@@ -408,6 +415,45 @@ not rejected. Chains of defaults of either kind are followed. A
 use, under whichever locus uses them, so one that builds an `I{}`
 some locus would post is rejected at the position. See `runtime.md`
 "Interest-based ownership (accept bubbling)."
+
+**An interface `accept`.** `accept(c: I)` may name an interface
+(`spec/types.md` § Interface types). It accepts every locus that
+satisfies `I` — conformance as a coercion into `I` judges it, error
+channels included — and nothing else. Resolution is static, like
+every owner edge: every locus is born from a literal of a concrete
+type, so the clause stands for one concrete `accept(c: L)` per locus
+`L` it admits, and the ownership relation holds those concrete edges.
+There is no runtime type test and no dispatch through a vtable:
+
+- **Precedence.** A locus declares one `accept` (§ `accept(c)`), so
+  the only choice between clauses is by depth, and innermost-wins
+  decides it whatever the clauses' kinds: the nearest ancestor whose
+  clause admits the child's type owns it, whether that clause names
+  the type or an interface it satisfies. A concrete owner below an
+  interface owner keeps its own type and lets every other type
+  bubble past it; an interface owner below a concrete one keeps every
+  type it admits. A type satisfying two interfaces is owned by the
+  nearer ancestor accepting either.
+- **Monomorphization.** The body is compiled once per admitted type,
+  the child typed as that type, so a call through it is a direct call
+  to that type's method. The checker types the child as the interface,
+  so the body may use only the interface's methods — the members every
+  admitted type has — and passing the child on as an `I` value
+  coerces it as any locus does. `release(c: I)` is compiled the same
+  way.
+- **Children.** The owner keeps its children one type at a time: each
+  child is tracked, removed when it completes (a flow) and reclaimed
+  in the owner's cascade by its own type's teardown; the cascade walks
+  one type's tracker after another, the types in name order.
+  `self.children.count` and `self.children.is_empty` read the sum.
+  `for c in self.children` is refused at the check, since the children
+  share no element type.
+- **Unchanged.** The child's region is a sub-region of the owner's
+  (step 3), its placement is its own type's, a cross-pool owner is
+  served by the handoff below, and the model's owner edges and call
+  edges name the concrete owner and the concrete callee. A generic
+  locus's specializations are no interface's: an interface `accept`
+  admits none of them.
 
 Whether the owner is on another pool is a fact of each *instance*
 of the enclosing locus, not of its type: a locus nested under a
@@ -829,12 +875,23 @@ parent has two effects:
    flow-typed locus is instantiated outside an accept context
    (no owner).
 
+`release(c: I)` naming an interface makes every locus that satisfies
+`I` a flow, as `accept(c: I)` accepts each, and is compiled once per
+such type (§ Locus instantiation, "An interface `accept`"). The clause
+must name the same type as the locus's `accept` (the validity rule
+below).
+
 Several parent types may accept the same child type; each child
 carries its accept'ing owner AND that owner type's `release` fn
 (stored at accept dispatch), so the body that fires is the actual
 owner's own, never another parent type's (2026-09-05, GH #526 F.6:
 the reclaim spine used to pick the first declared `release(c: T)`
-program-wide). Whether `T` is a flow remains a type-wide fact: if
+program-wide). Where more than one owner type tracks `T` (two
+concrete owners, or an interface owner beside another), the child also
+carries the accepting owner's children tracker, so a completed flow
+leaves the tracker of the owner that accepted it, never none (the
+removal used to be skipped there, and the tracker grew without bound
+under churn). Whether `T` is a flow remains a type-wide fact: if
 any parent declares `release(c: T)`, every `T` reclaims on
 run-completion, and an owner that declares no `release` simply has
 no bookend called.
@@ -846,7 +903,7 @@ reclaims its children as a user owner's does), and a clause on a locus
 that is never instantiated counts all the same. `hale check --flows` reports every flow type with
 each `release(c: T)` clause that makes it one, by its declaring locus,
 file and line, as the declaring seed spells it, never a mangled symbol
-(GH #736); a qualified type is the whole path, so a local `Stream` is
+(GH #736), and an interface's clause with the loci it admits; a qualified type is the whole path, so a local `Stream` is
 never mistaken for `std::io::tcp::Stream`. It is an
 opt-in report, never a diagnostic, since a release declaration is
 legitimate. It lists the program's own clauses: a stdlib child type is
@@ -1366,7 +1423,9 @@ After accept returns, the child registers in `self.children`
 A locus declares **at most one** `accept` (single-accept-type per
 parent, `types.md` F.11). A second `accept` clause is a typecheck
 error naming both clauses; the first clause remains the locus's
-accept type. A parent that must own two child types gives one of
+accept type. The one clause may name an interface, accepting every
+locus that satisfies it (§ Locus instantiation, "An interface
+`accept`"). A parent that must own two child types gives one of
 them a different owner. (2026-09-04, GH #525: a second clause used
 to overwrite the first silently.)
 
@@ -2049,7 +2108,7 @@ acted on. Consequences, all normative:
   main locus declares
   `on_failure(t: std::bus::UnixTransport, err: ClosureViolation)`
   — the handler receives a synthetic `link_lost` violation, and
-  `restart (t);` re-runs the connect-with-retry; on success the
+  `restart(t);` re-runs the connect-with-retry; on success the
   binding resumes, on failure (or a handler that declines) the
   structural exit fires. Reconnection is a supervision decision,
   not a transport feature. `LOTUS_BUS_CONFIG` connect routes sit
@@ -3285,8 +3344,13 @@ main locus App {
    plausibly external: a **transport binding** (`bindings { T: ... }`
    implies a cross-process peer), a **wildcard** subscriber/publisher
    covering the subject (`log.**` covers `log.app`), a **cross-seed**
-   reference (`alias::Foo` — the other seed owns the other half), or
-   the same locus being both publisher and subscriber. (A topic is
+   reference (`alias::Foo` — the other seed owns the other half), an
+   **external ingress** — a `std::bus::__local_dispatch(subject,
+   bytes)` call, the inbound side of an adapter, which publishes the
+   subject its literal names or, computing it (a NATS connection
+   dispatches whatever subject arrives), any subject (friction sweep
+   2026-10-12) — or the same locus being both publisher and
+   subscriber. (A topic is
    no longer reachable by a caller because a locus subscribes it: the
    retired api binding's lift of this rule went with it, and a served
    surface reaches handlers, not topics.) The closed-
@@ -3295,7 +3359,8 @@ main locus App {
    Rules 9 and 10 and the dead-receiver rule (7) are judged over
    the bus graph. The graph carries as columns what the walk
    computed: whether a topic is bound to a transport, whether a
-   subject crosses a seed, whether a subscription is a wildcard;
+   subject crosses a seed, whether a subscription is a wildcard,
+   whether an external ingress may deliver on it;
    rule 9's closed world is the entry row's. A subject is compared
    under the graph's canonical key, its wire subject (spec/model.md
    rule 8): a topic published by its declared name and subscribed
@@ -3880,7 +3945,11 @@ is unbound outside a chain, so no valid ordinary call can look like
 that — or when it is `each` with a block. Bare `xs.sum()` /
 `xs.first()` therefore stay ordinary method calls (stage-less first
 is just `xs.get(0) or …`; a stage-less sum can be written
-`xs.map(it).sum()`). The whole-set terminals (`sort_into` /
+`xs.map(it).sum()`). On a fixed array or a `bounded[T; N]`, which
+has no member of a terminal's name, the check's "no field `sum` on
+`[Decimal; 2]`" says so: an element chain needs a stage before its
+terminal, `….map(it).sum(…)` (friction sweep 2026-10-12). The
+whole-set terminals (`sort_into` /
 `reverse_into` / `group_count_into`) are recognized stage-less too:
 `xs.sort_into(sorted)` is their natural spelling, and the compound
 `*_into` names belong to this vocabulary — unlike bare `into`, no
@@ -5026,11 +5095,18 @@ non-error value, that value is the expression's value
   { break; }` is the shape a generic desugar needs, since it
   cannot invent a typed default for an arbitrary element type.
 - **`or discard`** (added 2026-05-16) — swallows the error
-  and produces Unit. The underlying call's success type MUST
-  be Unit; the typechecker rejects `or discard` on
-  value-bearing calls with a message pointing at
-  `or <default>` or `or raise`. Sugar for the previously-
-  idiomatic `or noop(err)` pattern with a no-op handler fn.
+  and produces Unit. Sugar for the previously-idiomatic
+  `or noop(err)` pattern with a no-op handler fn. On a call
+  whose success type is Unit it is legal anywhere. On a
+  value-bearing call it is legal where the value is thrown
+  away anyway — the call is the whole statement
+  (`cache.put(k, v) or discard;`, friction sweep 2026-10-12:
+  there is no `or ignore` word) — and the success value is
+  dropped with the error. Where the value is used (`let x =
+  f() or discard;`, an argument, an operand) the discard
+  branch has no value to give, and the typechecker refuses
+  it with a message pointing at `or <default>`, `or raise`
+  and the statement form.
 - **`or fail <payload>`** (added 2026-05-17, B3 / G6) —
   symmetric to `or raise`, but the caller picks a fresh
   payload of the enclosing fallible fn's declared error type

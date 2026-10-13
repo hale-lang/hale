@@ -121,7 +121,12 @@ the model: runtime is automatic; stdlib is explicit.
   nearest enclosing ancestor that does (innermost-wins).
   Resolution is entirely static — there is no polymorphic locus
   instantiation, so the closed-world instantiation graph fixes
-  every owner edge at compile time; no runtime ancestor walk.
+  every owner edge at compile time; no runtime ancestor walk. An
+  `accept(c: J)` naming an interface `J` is one concrete edge per
+  locus satisfying `J`, matched by the same innermost-wins climb,
+  its body compiled per admitted type and its children tracked per
+  type (`semantics.md` § Locus instantiation, "An interface
+  `accept`").
   Backward-compatible by construction: innermost-wins selects the
   direct parent whenever it accepts, so no existing parent↔child
   edge changes; bubbling only *adds* an owner where a child would
@@ -1484,7 +1489,7 @@ straight to the structural exit
 (`lotus_bus_transport_lost_fallback`). The dispatcher invokes
 `main.on_failure(main_self, transport_self, link_lost_violation)`
 and, when the handler bumped `__restart_count` via
-`restart (t)`, calls `lotus_bus_transport_reconnect` (re-runs
+`restart(t)`, calls `lotus_bus_transport_reconnect` (re-runs
 connect-with-retry against the entry's stored path; success
 clears `lost`). Codegen support: `lotus.main.self` global
 (stored at main-locus instantiation),

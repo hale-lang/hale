@@ -2204,6 +2204,64 @@ impl AllocSummary {
 /// taint all stopped dead at a seed boundary while still reporting
 /// success. Codegen has always had this table; the analysis phases
 /// did not.
+/// Each interface the programs declare, with every locus that declares
+/// a method of each name the interface declares: what an interface
+/// `accept` or `release` can admit, read without types (a superset of the
+/// loci `check::interface_admits` answers).
+fn interface_admits_by_name(programs: &[&Program]) -> BTreeMap<String, BTreeSet<String>> {
+    let mut ifaces: Vec<(&str, BTreeSet<&str>)> = Vec::new();
+    let mut loci: Vec<(&str, BTreeSet<&str>)> = Vec::new();
+    let mut aliases: BTreeMap<&str, &str> = BTreeMap::new();
+    for program in programs {
+        for item in flat_decls(&program.items) {
+            match item {
+                TopDecl::Interface(i) => {
+                    ifaces.push((&i.name.name, i.methods.iter().map(|m| m.name.name.as_str()).collect()))
+                }
+                TopDecl::Type(td) => {
+                    if let TypeDeclBody::Alias(TypeExpr::Named { path, generic_args, .. }) = &td.body {
+                        if path.segments.len() == 1 && generic_args.is_empty() {
+                            aliases.insert(&td.name.name, &path.segments[0].name);
+                        }
+                    }
+                }
+                TopDecl::Locus(l) if l.generics.is_empty() => loci.push((
+                    &l.name.name,
+                    l.members
+                        .iter()
+                        .filter_map(|m| match m {
+                            LocusMember::Fn(f) => Some(f.name.name.as_str()),
+                            _ => None,
+                        })
+                        .collect(),
+                )),
+                _ => {}
+            }
+        }
+    }
+    let mut out: BTreeMap<String, BTreeSet<String>> = ifaces
+        .into_iter()
+        .map(|(name, methods)| {
+            let admitted = loci.iter().filter(|(_, fns)| methods.is_subset(fns)).map(|(l, _)| l.to_string()).collect();
+            (name.to_string(), admitted)
+        })
+        .collect();
+    // An alias of an interface, through any chain, admits what the
+    // interface does.
+    for alias in aliases.keys() {
+        let mut at: &str = alias;
+        for _ in 0..=aliases.len() {
+            let Some(next) = aliases.get(at) else { break };
+            at = next;
+            if let Some(admitted) = out.get(at).cloned() {
+                out.insert(alias.to_string(), admitted);
+                break;
+            }
+        }
+    }
+    out
+}
+
 pub fn summarize_identified(
     identified: &[(&Program, &crate::snapshot::Snapshot)],
     import_renames: &[(Vec<String>, String)],
@@ -2420,6 +2478,20 @@ pub fn summarize_identified(
     // appearance as an accept() param type, or `main` status
     // disqualifies.
     let mut eager_only_loci: BTreeSet<String> = BTreeSet::new();
+    // An `accept(c: I)` / `release(c: I)` naming an interface stands for
+    // one clause per locus satisfying `I` (spec/semantics.md § Locus
+    // instantiation). This survey reads no types, so it takes every locus
+    // declaring a method of each name `I` declares: a superset of the
+    // loci conformance admits, the conservative side of both uses below
+    // (a retained child is never eager-only; a flow's run is an
+    // activation only when no loop in it is unbounded).
+    let interface_admits = interface_admits_by_name(programs);
+    let admitted = |n: String| -> Vec<String> {
+        match interface_admits.get(&n) {
+            Some(loci) => loci.iter().cloned().collect(),
+            None => vec![n],
+        }
+    };
     // The flow loci: every type a `release(c: T)` clause names.
     let mut flow_loci: BTreeSet<String> = BTreeSet::new();
     for program in programs {
@@ -2429,7 +2501,7 @@ pub fn summarize_identified(
                 if let LocusMember::Lifecycle(lc) = member {
                     if lc.kind == LifecycleKind::Release {
                         if let Some(n) = lc.params.first().and_then(|p| single_named_type_name(&p.ty)) {
-                            flow_loci.insert(n);
+                            flow_loci.extend(admitted(n));
                         }
                     }
                 }
@@ -2536,7 +2608,7 @@ pub fn summarize_identified(
                                 if let Some(n) =
                                     single_named_type_name(&p.ty)
                                 {
-                                    deferred.insert(n);
+                                    deferred.extend(admitted(n));
                                 }
                             }
                             scan_lets(&lc.body, &mut deferred);
@@ -2695,6 +2767,7 @@ pub fn summarize_identified(
                                     locus.clone(),
                                     name.to_string(),
                                 );
+                                silence(&key, md.unbounded, &md.bounded_by);
                                 known.insert((key.locus.clone(), key.fn_name.clone()), key.clone());
                                 bodies.push((
                                     key,
@@ -4448,6 +4521,15 @@ pub fn unbounded_uses(
                                 let key = FnKey::method(decl(lc.id), l.name.name.clone(), lifecycle_key(lc.kind).0);
                                 push(key, lc.span, &lc.bounded_by, copy);
                             }
+                            LocusMember::Mode(md) if md.unbounded || md.bounded_by.is_some() => {
+                                let name = match md.kind {
+                                    ModeKind::Bulk => "bulk",
+                                    ModeKind::Harmonic => "harmonic",
+                                    ModeKind::Resolution => "resolution",
+                                };
+                                let key = FnKey::method(decl(md.id), l.name.name.clone(), name.to_string());
+                                push(key, md.span, &md.bounded_by, copy);
+                            }
                             _ => {}
                         }
                     }
@@ -4517,7 +4599,7 @@ pub fn unbounded_alloc_diags(
                      until the locus dissolves — it is never reclaimed per iteration, \
                      so it grows without bound (or acknowledge an \
                      intentionally-/domain-bounded shape with `@unbounded` \
-                     on the enclosing fn or lifecycle hook). Bound the loop; \
+                     on the enclosing fn, lifecycle hook or mode). Bound the loop; \
                      store it in a \
                      capacity-bounded form (`@form(ring_buffer)` / `@form(lru_cache)` / \
                      a `capacity` slot) instead of a replaced field; mutate fixed state \

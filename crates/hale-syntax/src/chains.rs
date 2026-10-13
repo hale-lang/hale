@@ -213,6 +213,13 @@ struct Chain {
     accessor: &'static str,
 }
 
+/// The chain terminals, for the checker's advice on a stage-less one
+/// (`xs.sum(0.0d)` reads as a method call on the source; see
+/// [`TERMINALS`]).
+pub fn is_terminal(name: &str) -> bool {
+    TERMINALS.contains(&name)
+}
+
 const TERMINALS: &[&str] = &[
     "count", "into", "sum", "any", "all", "first", "find", "min", "max",
     "each", "sort_into", "reverse_into", "group_count_into",

@@ -28,7 +28,7 @@ locus Owner {
     }
     on_failure(c: Late, err: ClosureViolation) {
         self.fired = self.fired + 1;
-        restart (c) for 1;
+        restart(c) for 1;
     }
     run() {
         if self.fired == 1 && self.c.births == 2 {

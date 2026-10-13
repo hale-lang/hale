@@ -1264,7 +1264,7 @@ impl OwnershipRows {
     /// the accept relation from ([`crate::build_rule_diags`]'s caller);
     /// every verb reads its snapshot's graph's.
     pub fn of(bundle: &Bundle<'_>) -> OwnershipRows {
-        collect_ownership_walk(bundle, None, Some(&crate::entry::entry_row(bundle)))
+        collect_ownership_walk(bundle, None, Some(&crate::entry::entry_row(bundle)), None)
     }
 
     /// `accepts_ancestor`: whether the locus `ancestor` declares an
@@ -1340,6 +1340,7 @@ fn collect_ownership_walk(
     bundle: &Bundle<'_>,
     tail: Option<&[TopDecl]>,
     entry: Option<&crate::entry::EntryRow>,
+    top: Option<&TopScope>,
 ) -> OwnershipRows {
     // Closed-world gate, mirroring `build_bus_graph`'s
     // `has_entry_point`: a bare top-level `fn main` OR an entry (the
@@ -1372,6 +1373,9 @@ fn collect_ownership_walk(
         declared: &'a DeclaredNames,
         renames: &'a [(Vec<String>, String)],
         snapshot: &'a crate::snapshot::Snapshot,
+        /// `(owner, written type)` of each `accept` whose type names no
+        /// locus: an interface's, or a name that resolves to nothing.
+        interface_accepts: std::cell::RefCell<Vec<(String, String)>>,
     }
     #[allow(clippy::too_many_arguments)]
     fn walk(
@@ -1429,10 +1433,16 @@ fn collect_ownership_walk(
                                             ty: p.ty.clone(),
                                             span: ld.span,
                                         });
-                                        if let ChildRef::Locus(name) =
-                                            child_locus_name(&p.ty, declared, renames)
-                                        {
-                                            entry.accepts.insert(name);
+                                        match child_locus_name(&p.ty, declared, renames) {
+                                            ChildRef::Locus(name) => {
+                                                entry.accepts.insert(name);
+                                            }
+                                            // Perhaps an interface: what it
+                                            // admits is the scope's to say
+                                            // ([`admit_interface_accepts`]).
+                                            ChildRef::External(written) => {
+                                                cx.interface_accepts.borrow_mut().push((l.name.name.clone(), written));
+                                            }
                                         }
                                     }
                                 }
@@ -1550,7 +1560,7 @@ fn collect_ownership_walk(
             }
         }
     }
-    let cx = WalkCx { declared: &declared, renames, snapshot: &bundle.snapshot };
+    let cx = WalkCx { declared: &declared, renames, snapshot: &bundle.snapshot, interface_accepts: Default::default() };
     let walked: Vec<&[TopDecl]> = match tail {
         Some(items) => vec![items],
         None => programs.iter().map(|p| p.items.as_slice()).collect(),
@@ -1567,6 +1577,8 @@ fn collect_ownership_walk(
             &mut other,
         );
     }
+
+    admit_interface_accepts(&mut facts, &declarations, &cx.interface_accepts.into_inner(), top);
 
     // The calls leave the literal positions here: a locus's, with its
     // declaration, a free fn's argument defaults', and the other
@@ -1605,6 +1617,38 @@ fn collect_ownership_walk(
             declared,
             renames: renames.to_vec(),
         },
+    }
+}
+
+/// An `accept(c: I)` naming an interface admits every locus the walk
+/// declares (a generic template apart: its specializations are no
+/// interface's) that satisfies `I` (`check::interface_admits`): the
+/// owner's `accepts` gets each as if it had declared `accept(c: L)` for
+/// it, so bubbling, the bubble plans, the borrow law and lowering read
+/// concrete children only and need nothing of their own for the
+/// interface (spec/semantics.md § Locus instantiation). Innermost-wins is
+/// unchanged: an interface clause and a concrete one are the same kind of
+/// edge, and a locus declares one `accept`.
+///
+/// Without a scope (a bundle no snapshot holds, read where its graph is
+/// blocked, and the stdlib's rows, which name no user interface) an
+/// interface clause admits nothing.
+fn admit_interface_accepts(
+    facts: &mut BTreeMap<String, LocusFacts>,
+    declarations: &[LocusDeclRow],
+    interface_accepts: &[(String, String)],
+    top: Option<&TopScope>,
+) {
+    let Some(top) = top else { return };
+    for (owner, iface) in interface_accepts {
+        let admitted = crate::check::interface_admits(
+            top,
+            iface,
+            declarations.iter().filter(|d| !d.generic).map(|d| d.name.as_str()),
+        );
+        if let Some(f) = facts.get_mut(owner) {
+            f.accepts.extend(admitted);
+        }
     }
 }
 
@@ -1683,11 +1727,11 @@ fn identify_child(
 /// whatever thread delivers it (U-1).
 pub fn build_ownership_graph(
     bundle: &Bundle<'_>,
-    _top: &TopScope,
+    top: &TopScope,
     placement: &crate::placement::PlacementTable,
     entry: &crate::entry::EntryRow,
 ) -> OwnershipGraph {
-    assemble(collect_ownership_walk(bundle, None, Some(entry)), &bundle.snapshot, placement)
+    assemble(collect_ownership_walk(bundle, None, Some(entry), Some(top)), &bundle.snapshot, placement)
 }
 
 /// The rows of the stdlib's loci and free fns in a merged program:
@@ -1698,7 +1742,7 @@ pub fn build_ownership_graph(
 /// names resolve against the whole merged program, as they did when the
 /// graph was built over it.
 pub fn stdlib_ownership_rows(bundle: &Bundle<'_>, stdlib: &[TopDecl]) -> OwnershipRows {
-    collect_ownership_walk(bundle, Some(stdlib), None)
+    collect_ownership_walk(bundle, Some(stdlib), None, None)
 }
 
 /// Lowering's ownership graph (F.40 phase 3, C5): the snapshot's rows,

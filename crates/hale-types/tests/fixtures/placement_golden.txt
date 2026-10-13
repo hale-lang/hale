@@ -30,7 +30,7 @@ row	CheckerL@main1	CheckerL	main	default
 row	AuditL@main1	AuditL	main	default
 dynamic	CheckerL	on main	in the seed
 
-== crates/hale-codegen/tests/fixtures/examples/03c-closure-bubbled/main.hl#74bbc66e
+== crates/hale-codegen/tests/fixtures/examples/03c-closure-bubbled/main.hl#54e828c9
 row	AuditL@main1	AuditL	main	default
 dynamic	CheckerL	on main	in the seed
 
@@ -50,7 +50,7 @@ row	Accumulator@main1	Accumulator	main	default
 row	ParentL@main1	ParentL	main	default
 dynamic	ChildL	on main	in the seed
 
-== crates/hale-codegen/tests/fixtures/examples/14-projection-classes/main.hl#2f207700
+== crates/hale-codegen/tests/fixtures/examples/14-projection-classes/main.hl#92423885
 row	ChunkedCoord@main2	ChunkedCoord	main	default
 row	RecognitionCoord@main3	RecognitionCoord	main	default
 row	RichCoord@main1	RichCoord	main	default
@@ -132,21 +132,21 @@ row	Producer@main2	Producer	main	default
 row	AuditL@main1	AuditL	main	default
 dynamic	Configured	on main	in the seed
 
-== crates/hale-codegen/tests/fixtures/examples/32-restart/main.hl#18b63bbc
+== crates/hale-codegen/tests/fixtures/examples/32-restart/main.hl#6d57e0de
 row	Coordinator@main1	Coordinator	main	default
 dynamic	Worker	on main	in the seed
 
-== crates/hale-codegen/tests/fixtures/examples/33-quarantine/main.hl#ff81868a
+== crates/hale-codegen/tests/fixtures/examples/33-quarantine/main.hl#75e1e0f7
 row	Coordinator@main1	Coordinator	main	default
 dynamic	Worker	on main	in the seed
 
-== crates/hale-codegen/tests/fixtures/examples/34-quarantine-bus/main.hl#c5d445d6
+== crates/hale-codegen/tests/fixtures/examples/34-quarantine-bus/main.hl#b2a508a7
 row	Coordinator@main1	Coordinator	main	default
 -- dynamic	sites in the seed
 dynamic	FailingWatcher	on main
 dynamic	HealthyWatcher	on main
 
-== crates/hale-codegen/tests/fixtures/examples/35-tick-closures/main.hl#10a50960
+== crates/hale-codegen/tests/fixtures/examples/35-tick-closures/main.hl#60d993b8
 row	Auditor@main1	Auditor	main	default
 dynamic	Counter	on main	in the seed
 
@@ -158,7 +158,7 @@ dynamic	Watcher	on main	in the seed
 row	Auditor@main1	Auditor	main	default
 dynamic	Ledger	on main	in the seed
 
-== crates/hale-codegen/tests/fixtures/examples/38-restart-in-place/main.hl#8033af87
+== crates/hale-codegen/tests/fixtures/examples/38-restart-in-place/main.hl#f2c8322f
 row	Coordinator@main1	Coordinator	main	default
 dynamic	Worker	on main	in the seed
 
@@ -172,7 +172,7 @@ domain	pinned:Coordinator@literal1.heartbeat
 row	Coordinator@literal1	Coordinator	main	default
 row	Coordinator@literal1.heartbeat	Heartbeat	pinned:Coordinator@literal1.heartbeat	entry	off owner
 
-== crates/hale-codegen/tests/fixtures/examples/41-closure-accumulator/main.hl#1dbfc2db
+== crates/hale-codegen/tests/fixtures/examples/41-closure-accumulator/main.hl#77e04d78
 row	Coordinator@main1	Coordinator	main	default
 dynamic	Tracker	on main	in the seed
 
@@ -652,19 +652,13 @@ row	App@literal1	App	main	default
 row	~	Grow	main	default
 row	~.acc	Acc	main	inherited
 
-== crates/hale-stdlib/hl/api_rpc.hl#9ad62dc6
-
-== crates/hale-stdlib/hl/crypto.hl#79bd629e
-dynamic	<hole>	on unknown (no caller)|unresolved declaration `CryptoError`	in the seed
+== crates/hale-stdlib/hl/api_rpc.hl#4fa1f91b
 
 == crates/hale-stdlib/hl/file.hl#f57ba351
 
-== crates/hale-stdlib/hl/hex.hl#d83ba4a5
-dynamic	<hole>	on unknown (no caller)|unresolved declaration `ParseError`	in the seed
-
 == crates/hale-stdlib/hl/http_client.hl#299b071b
 
-== crates/hale-stdlib/hl/json.hl#c7b1b7ac
+== crates/hale-stdlib/hl/json.hl#8645f085
 
 == crates/hale-stdlib/hl/lang.hl#69f221b9
 
@@ -675,8 +669,6 @@ dynamic	<hole>	on unknown (no caller)|unresolved declaration `ParseError`	in the
 == crates/hale-stdlib/hl/source.hl#fac6c107
 
 == crates/hale-stdlib/hl/tagged.hl#b5e9dd95
-
-== crates/hale-stdlib/hl/url.hl#a4efffbc
 
 == crates/hale-cli/tests/check_arg_parsing.rs#a354ed05
 root	App	the entry
@@ -886,7 +878,6 @@ row	M@literal1.s	Send	main	default
 
 == crates/hale-cli/tests/harness_vault.rs#cffa0d8d
 row	__StdSecretCredential@main1	__StdSecretCredential	main	default
-dynamic	__StdBytesBytesBuilder	on main	in the stdlib
 
 == crates/hale-cli/tests/import_parse_error_gates.rs#628f4585
 root	App	the entry
@@ -1254,6 +1245,20 @@ row	__StdBytesBytesBuilder@main1	__StdBytesBytesBuilder	main	default
 root	App	the entry
 row	App@literal1	App	main	default
 row	App@literal1.q	Q	main	default
+
+== crates/hale-codegen/tests/accept_interface.rs#6ed0a850
+row	H@main1	H	main	default
+-- dynamic	sites in the seed
+dynamic	A	on main
+dynamic	B	on main
+
+== crates/hale-codegen/tests/accept_interface.rs#c93f5b79
+row	Pool@main1	Pool	main	default
+shared	dynamic	sites in the seed #0ae7b8f9
+
+== crates/hale-codegen/tests/accept_interface.rs#7808dcc7
+dynamic	Small	on main	in the seed
+shared	Outer@main1	Outer #1047d3f2
 
 == crates/hale-codegen/tests/adapter_fanout_own_bytes.rs#edd7d385
 root	App	the entry
@@ -3688,6 +3693,15 @@ row	World@literal1	World	main	default
 row	World@literal1.driver	Driver	pool:workers	entry	off owner
 dynamic	Ship	on pool:workers	in the seed
 
+== crates/hale-codegen/tests/ownership_bubble_crosspool.rs#cbe1b22a
+root	World	the entry
+domain	pool:workers
+row	World@literal1	World	main	default
+row	World@literal1.driver	Driver	pool:workers	entry	off owner
+-- dynamic	sites in the seed
+dynamic	Barge	on pool:workers
+dynamic	Ship	on pool:workers
+
 == crates/hale-codegen/tests/ownership_bubble_crosspool.rs#72c8e05d
 root	World	the entry
 domain	pinned:World@literal1.o
@@ -3741,9 +3755,7 @@ dynamic	Conn	on main	in the seed
 row	L@main1	L	main	default
 
 == crates/hale-codegen/tests/params_default_scalar_self_ref.rs#2ebd91ab
--- Outer@main1	Outer
-row	~	Outer	main	default
-row	~.inner	Inner	main	inherited
+shared	Outer@main1	Outer #1047d3f2
 
 == crates/hale-codegen/tests/phase_b_fixes.rs#5e42f66f
 dynamic	Counter	on main	in the seed
@@ -4732,6 +4744,11 @@ row	__StdBytesBytesBuilder@main3	__StdBytesBytesBuilder	main	default
 
 == crates/hale-codegen/tests/wasm_target.rs#62135960
 
+== crates/hale-codegen/tests/wasm_target.rs#d5a77d3b
+row	Left@main1	Left	main	default
+row	Right@main2	Right	main	default
+dynamic	Small	on main	in the seed
+
 == crates/hale-codegen/tests/ws1_ffi_handle_reassign.rs#60aaaf4b
 dynamic	Conn	on main	in the seed
 -- Gw@main1	Gw
@@ -4742,6 +4759,36 @@ row	~.conn	Conn	main	inherited
 root	App	the entry
 row	App@literal1	App	main	default
 row	App@literal1.w	Worker	main	default
+
+== crates/hale-types/tests/accept_interface.rs#328b10b9
+row	H@main1	H	main	default
+-- dynamic	sites in the seed
+dynamic	A	on main
+dynamic	B	on main
+dynamic	Near	on main
+dynamic	Other	on main
+
+== crates/hale-types/tests/accept_interface.rs#92d065b6
+row	Outer@main1	Outer	main	default
+row	Top@main2	Top	main	default
+-- dynamic	sites in the seed
+dynamic	Inner	on main
+dynamic	Mid	on main
+dynamic	Rect	on main
+dynamic	Sq	on main
+
+== crates/hale-types/tests/accept_interface.rs#0ebe5c29
+row	Pool@main1	Pool	main	default
+-- dynamic	sites in the seed
+dynamic	Big	on main
+dynamic	Idle	on main
+dynamic	Small	on main
+
+== crates/hale-types/tests/accept_interface.rs#fcc51924
+row	Pool@main1	Pool	main	default
+-- dynamic	sites in the seed
+dynamic	Plain	on main
+dynamic	Small	on main
 
 == crates/hale-types/tests/alloc_summary_construction_correction.rs#8735a49c
 root	App	the entry
@@ -6504,6 +6551,43 @@ dynamic	__StdBytesBytesBuilder	on main	in the seed
 == crates/hale-types/tests/wasm_target_gating.rs#d6c9c505
 row	__StdBytesBytesBuilder@main1	__StdBytesBytesBuilder	main	default
 
+== tests/hale/accept_interface_alias_test.hl
+row	Flows@main2	Flows	main	default
+row	Pool@main1	Pool	main	default
+shared	dynamic	sites in the seed #0ae7b8f9
+
+== tests/hale/accept_interface_fallible_test.hl
+row	Owner@main1	Owner	main	default
+-- dynamic	sites in the seed
+dynamic	Lenient	on main
+dynamic	Strict	on main
+
+== tests/hale/accept_interface_release_test.hl
+row	Pool@main1	Pool	main	default
+shared	dynamic	sites in the seed #0ae7b8f9
+
+== tests/hale/accept_interface_test.hl
+row	Outer@main3	Outer	main	default
+row	Passes@main2	Passes	main	default
+row	SizeOwner@main4	SizeOwner	main	default
+row	Sum@main1	Sum	main	default
+-- dynamic	sites in the seed
+dynamic	A	on main
+dynamic	B	on main
+dynamic	Both	on main
+dynamic	Inner	on main
+dynamic	NameOwner	on main
+dynamic	OnlySized	on main
+dynamic	Rect	on main
+dynamic	Sq	on main
+
+== tests/hale/accept_interface_two_owners_test.hl
+-- Outer@main1	Outer
+row	~	Outer	main	default
+row	~.inner	Inner	main	inherited
+row	~.side	Side	main	inherited
+shared	dynamic	sites in the seed #0ae7b8f9
+
 == tests/hale/accept_spelled_or_monomorphised_test.hl
 row	ByAlias@main1	ByAlias	main	default
 row	ByGenericChild@main2	ByGenericChild	main	default
@@ -6825,6 +6909,13 @@ row	App@literal1.bars	Bars	main	default
 shared	App@literal1.r	Ring #711a93c5
 shared	App@literal1.s	Sup #20139bc1
 
+== tests/hale/contextual_keywords_test.hl
+root	App	the entry
+row	App@literal1	App	main	default
+-- App@literal1.b	Board
+row	~	Board	main	default
+row	~.w	Worker	main	inherited
+
 == tests/hale/decorator_stack_test.hl
 root	App	the entry
 row	App@literal1	App	main	default
@@ -6867,9 +6958,6 @@ row	Cache_Int_String@main1	Cache_Int_String	main	default
 row	Holder_Int@main2	Holder_Int	main	default
 dynamic	Cache	on main|unresolved arguments	in the seed
 
-== tests/hale/http_status_phrase_test.hl
-dynamic	__StdIoTcpStream	on main	in the seed
-
 == tests/hale/identities_and_ranges_test.hl
 row	Book@main1	Book	main	default
 
@@ -6911,6 +6999,9 @@ row	App@literal1.counter	Counting	main	default
 row	App@literal1.log	__StdLogLogger	main	default
 dynamic	__StdLogLogger	on main	in the seed
 
+== tests/hale/match_returns_in_every_arm_test.hl
+row	Namer@main1	Namer	main	default
+
 == tests/hale/mode_factory_return_test.hl
 root	App	the entry
 row	App@literal1	App	main	default
@@ -6945,6 +7036,11 @@ root	App	the entry
 row	App@literal1	App	main	default
 row	App@literal1.w	Worker	main	default
 dynamic	Probe	on main	in the seed
+
+== tests/hale/or_discard_value_test.hl
+root	App	the entry
+row	App@literal1	App	main	default
+row	App@literal1.c	Counter	main	default
 
 == tests/hale/or_substitute_interface_test.hl
 row	NoopTool@main1	NoopTool	main	default
@@ -7017,13 +7113,6 @@ dynamic	__StdProcessChild	on main
 == tests/hale/process_close_stdin_test.hl
 row	__StdProcessChild@main1	__StdProcessChild	main	default
 
-== tests/hale/rand_rng_test.hl
-row	__StdRandRng@main1	__StdRandRng	main	default
-row	__StdRandRng@main2	__StdRandRng	main	default
-row	__StdRandRng@main3	__StdRandRng	main	default
-row	__StdRandRng@main4	__StdRandRng	main	default
-row	__StdRandRng@main5	__StdRandRng	main	default
-
 == tests/hale/release_generic_owner_test.hl
 row	Manager_Job@main1	Manager_Job	main	default
 dynamic	__lib_tests__hale__release_generic_owner_lib___main__Worker	on main	in the seed
@@ -7069,7 +7158,6 @@ shared	__StdHttpRouter@main1	__StdHttpRouter #a16e8e74
 == tests/hale/secret_write_private_test.hl
 row	__StdSecretCredential@main1	__StdSecretCredential	main	default
 row	__StdSecretCredential@main2	__StdSecretCredential	main	default
-dynamic	__StdBytesBytesBuilder	on main	in the stdlib
 
 == tests/hale/short_circuit_test.hl
 root	App	the entry
@@ -7088,7 +7176,6 @@ dynamic	__StdProcessChild	on main
 == tests/hale/std_secret_test.hl
 root	App	the entry
 row	App@literal1	App	main	default
-dynamic	__StdBytesBytesBuilder	on main	in the stdlib
 -- App@literal1.decode_unknown	DecodeUnknown
 row	~	DecodeUnknown	main	default
 row	~.s	__StdSecretSigner	main	inherited
@@ -7189,7 +7276,7 @@ dynamic	__lib_dna__operations___definitions__DefinitionCodec	on unknown (`reject
 dynamic	__lib_dna__operations___governance_command__GovernanceCommandCodec	on main|unknown (`rejected` passed as a value)|unknown (no caller)|unknown (no instance)
 dynamic	__lib_dna__operations___governance_policy__AuthorityPolicyCodec	on main|unknown (no instance)
 dynamic	__lib_dna__operations___organization_json__OrganizationJson	on unknown (`rejected` passed as a value)|unknown (no instance)
-shared	dynamic	sites in the stdlib #60cf2d1f
+shared	dynamic	sites in the stdlib #b6aed203
 
 == dna/api/project_service/tests/head_api_s3_test.hl
 dynamic	<hole>	on unknown (no instance)|unresolved declaration `__api_serve`|unresolved declaration `http::Rpc`|unresolved declaration `unix::Rpc`	in api
@@ -7232,7 +7319,7 @@ dynamic	__lib_dna__operations___definitions__DefinitionCodec	on main|unknown (no
 dynamic	__lib_dna__operations___governance_command__GovernanceCommandCodec	on main|unknown (no caller)|unknown (no instance)
 dynamic	__lib_dna__operations___governance_policy__AuthorityPolicyCodec	on main|unknown (no instance)
 dynamic	__lib_dna__operations___organization_json__OrganizationJson	on main|unknown (no instance)
-shared	dynamic	sites in the stdlib #919aadb4
+shared	dynamic	sites in the stdlib #c3a51769
 
 == dna/api/project_service/tests/head_push_test.hl
 row	EventStream@main2	EventStream	main	default
@@ -7286,7 +7373,7 @@ dynamic	__StdJsonBuilder	on unknown (`request` passed as a value)
 dynamic	__lib_dna__api__project_service___journal__HeadJournal	on main
 dynamic	__lib_dna__api__project_service___registry__Registry	on main
 shared	dynamic	sites in operations #547a6538
-shared	dynamic	sites in the stdlib #b156bdf1
+shared	dynamic	sites in the stdlib #3acbb365
 
 == dna/api/project_service/tests/operations_s3_test.hl
 row	S3Cases@main1	S3Cases	main	default
@@ -7299,7 +7386,7 @@ dynamic	__lib_dna__api__project_service___journal__HeadJournal	on main
 dynamic	__lib_dna__core___record__GitRecord	on main
 shared	dynamic	sites in core #0ca7b9c1
 shared	dynamic	sites in operations #547a6538
-shared	dynamic	sites in the stdlib #b156bdf1
+shared	dynamic	sites in the stdlib #3acbb365
 
 == dna/api/project_service/tests/operations_test.hl
 row	OperationCases@main2	OperationCases	main	default
@@ -7314,7 +7401,7 @@ dynamic	__lib_dna__core___record__GitJournal	on main
 dynamic	__lib_dna__core___record__GitRecord	on main
 shared	dynamic	sites in core #b2c4d9f5
 shared	dynamic	sites in operations #547a6538
-shared	dynamic	sites in the stdlib #919aadb4
+shared	dynamic	sites in the stdlib #c3a51769
 
 == dna/api/tests/attempt_recovery_api_test.hl
 hole	RecoveryCases@main2.f	reuse `f`
@@ -7467,7 +7554,7 @@ dynamic	__lib_dna__operations___structure_command__StructureCommandCodec	on main
 dynamic	__lib_dna__operations___task_command__TaskCommandCodec	on main
 dynamic	__lib_dna__operations___task_create_command__TaskCreateCommandCodec	on main
 dynamic	__lib_dna__operations___task_projection__TaskProjection	on main
-shared	dynamic	sites in the stdlib #919aadb4
+shared	dynamic	sites in the stdlib #c3a51769
 
 == dna/api/tests/binding_review_api_test.hl
 row	BindingReviewReadCases@main1	BindingReviewReadCases	main	default
@@ -7514,7 +7601,7 @@ dynamic	__lib_dna__core___workflow_runtime__WorkRun	on main
 dynamic	__lib_dna__core___workflow_runtime__WorkflowRun	on main
 dynamic	__lib_dna__core___workflow_runtime__WorkflowRuntime	on main
 shared	dynamic	sites in operations #4444350e
-shared	dynamic	sites in the stdlib #919aadb4
+shared	dynamic	sites in the stdlib #c3a51769
 
 == dna/api/tests/commands_api_test.hl
 hole	__lib_dna__api___commands__CommandAdmission@main3.provider	reuse `host`
@@ -7598,7 +7685,7 @@ dynamic	__StdJsonBuilder	on main
 shared	dynamic	sites in api/tests/fixture #56f971bf
 shared	dynamic	sites in core #c1bf73a0
 shared	dynamic	sites in operations #07070d4b
-shared	dynamic	sites in the stdlib #919aadb4
+shared	dynamic	sites in the stdlib #c3a51769
 
 == dna/api/tests/context_api_test.hl
 hole	HatCases@main2.f	reuse `f`
@@ -7622,7 +7709,7 @@ dynamic	__lib_dna__core___workflow_definition__WorkflowCatalog	on main
 shared	dynamic	sites in api/tests/fixture #56f971bf
 shared	dynamic	sites in core #b3c0821e
 shared	dynamic	sites in operations #4444350e
-shared	dynamic	sites in the stdlib #919aadb4
+shared	dynamic	sites in the stdlib #c3a51769
 
 == dna/api/tests/definition_drafts_api_test.hl
 hole	DraftCases@main3.f	reuse `f`
@@ -7663,7 +7750,7 @@ dynamic	__lib_dna__operations___definition_drafts__DefinitionDraftCodec	on main
 shared	dynamic	sites in api/tests/fixture #56f971bf
 shared	dynamic	sites in core #b3c0821e
 shared	dynamic	sites in operations #4444350e
-shared	dynamic	sites in the stdlib #919aadb4
+shared	dynamic	sites in the stdlib #c3a51769
 
 == dna/api/tests/definitions_api_test.hl
 hole	CatalogCases@main2.f	reuse `f`
@@ -7691,7 +7778,7 @@ shared	dynamic	sites in api #33b097d0
 shared	dynamic	sites in api/tests/fixture #56f971bf
 shared	dynamic	sites in core #b3c0821e
 shared	dynamic	sites in operations #4444350e
-shared	dynamic	sites in the stdlib #919aadb4
+shared	dynamic	sites in the stdlib #c3a51769
 
 == dna/api/tests/edge_review_api_test.hl
 row	EdgeReviewReadCases@main1	EdgeReviewReadCases	main	default
@@ -7741,7 +7828,7 @@ dynamic	__lib_dna__core___workflow_runtime__WorkRun	on main
 dynamic	__lib_dna__core___workflow_runtime__WorkflowRun	on main
 dynamic	__lib_dna__core___workflow_runtime__WorkflowRuntime	on main
 shared	dynamic	sites in operations #4444350e
-shared	dynamic	sites in the stdlib #919aadb4
+shared	dynamic	sites in the stdlib #c3a51769
 
 == dna/api/tests/knowledge_api_test.hl
 hole	KnowledgeCases@main2.f	reuse `f`
@@ -7905,7 +7992,7 @@ dynamic	__lib_dna__operations___structure_command__StructureCommandCodec	on main
 dynamic	__lib_dna__operations___task_command__TaskCommandCodec	on main
 dynamic	__lib_dna__operations___task_create_command__TaskCreateCommandCodec	on main
 dynamic	__lib_dna__operations___task_projection__TaskProjection	on main
-shared	dynamic	sites in the stdlib #919aadb4
+shared	dynamic	sites in the stdlib #c3a51769
 
 == dna/api/tests/knowledge_commands_api_test.hl
 hole	__lib_dna__api___knowledge_commands__KnowledgeAdmission@main3.provider	reuse `host`
@@ -8030,7 +8117,7 @@ dynamic	__lib_dna__operations___knowledge_node_command__KnowledgeNodeCommandCode
 shared	dynamic	sites in api/tests/fixture #56f971bf
 shared	dynamic	sites in core #c1bf73a0
 shared	dynamic	sites in operations #07070d4b
-shared	dynamic	sites in the stdlib #919aadb4
+shared	dynamic	sites in the stdlib #c3a51769
 
 == dna/api/tests/knowledge_local_test.hl
 row	LocalCommandCases@main1	LocalCommandCases	main	default
@@ -8056,7 +8143,7 @@ dynamic	__lib_dna__operations___knowledge_policy__FixedKnowledgeAuthority	on mai
 dynamic	__lib_dna__operations___knowledge_policy__KnowledgePolicyCodec	on main
 shared	dynamic	sites in core #c1bf73a0
 shared	dynamic	sites in operations #250079bd
-shared	dynamic	sites in the stdlib #919aadb4
+shared	dynamic	sites in the stdlib #c3a51769
 
 == dna/api/tests/knowledge_memory_refused_test.hl
 dynamic	__lib_dna__api___knowledge_memory__LocalKnowledge	on unknown (`child` passed as a value)	in api/tests
@@ -8080,7 +8167,7 @@ dynamic	__lib_dna__core___record__RowBatch	on unknown (`child` passed as a value
 dynamic	__StdBytesBytesBuilder	on unknown (`child` passed as a value)|unknown (no instance)
 dynamic	__lib_dna__core___native_json__NativeJson	on unknown (`child` passed as a value)
 -- dynamic	sites in the stdlib
-dynamic	__StdBytesBytesBuilder	on unknown (`child` passed as a value)|unknown (no caller)
+dynamic	__StdBytesBytesBuilder	on unknown (`child` passed as a value)
 dynamic	__StdIterLines	on unknown (`child` passed as a value)
 
 == dna/api/tests/organization_candidate_api_test.hl
@@ -8194,7 +8281,7 @@ dynamic	__lib_dna__operations___task_command__TaskCommandCodec	on main
 dynamic	__lib_dna__operations___task_create_command__TaskCreateCommandCodec	on main
 dynamic	__lib_dna__operations___task_projection__TaskProjection	on main
 shared	dynamic	sites in organization_source #5ef637a9
-shared	dynamic	sites in the stdlib #919aadb4
+shared	dynamic	sites in the stdlib #c3a51769
 
 == dna/api/tests/organization_command_wire_test.hl
 hole	__lib_dna__api___commands__CommandAdmission@main3.provider	reuse `probe`
@@ -8250,7 +8337,7 @@ dynamic	__lib_dna__operations___governance_command__GovernanceCommandCodec	on ma
 dynamic	__lib_dna__operations___organization_command__OrganizationCommandCodec	on main
 shared	dynamic	sites in core #c1bf73a0
 shared	dynamic	sites in operations #07070d4b
-shared	dynamic	sites in the stdlib #919aadb4
+shared	dynamic	sites in the stdlib #c3a51769
 
 == dna/api/tests/organization_impact_api_test.hl
 row	OrganizationImpactApiCases@main1	OrganizationImpactApiCases	main	default
@@ -8271,7 +8358,7 @@ dynamic	__lib_dna__operations___organization_policy__OrganizationAuthorityPolicy
 dynamic	__lib_dna__operations___organization_projection__OrganizationProjection	on main
 shared	dynamic	sites in core #47f5f26d
 shared	dynamic	sites in operations #4444350e
-shared	dynamic	sites in the stdlib #919aadb4
+shared	dynamic	sites in the stdlib #c3a51769
 
 == dna/api/tests/organization_receipt_api_test.hl
 row	SourceReceiptCases@main1	SourceReceiptCases	main	default
@@ -8313,7 +8400,7 @@ dynamic	__lib_dna__operations___organization_policy__OrganizationAuthorityPolicy
 dynamic	__lib_dna__operations___organization_projection__OrganizationProjection	on main
 shared	dynamic	sites in core #47f5f26d
 shared	dynamic	sites in operations #4444350e
-shared	dynamic	sites in the stdlib #919aadb4
+shared	dynamic	sites in the stdlib #c3a51769
 
 == dna/api/tests/read_api_test.hl
 root	App	the entry
@@ -8366,7 +8453,7 @@ dynamic	__lib_dna__core___record__GitJournal	on main|unknown (no caller)
 dynamic	__lib_dna__core___record__GitRecord	on main|unknown (no caller)|unknown (no instance)
 dynamic	__lib_dna__core___record__RowBatch	on main|unknown (no instance)
 shared	dynamic	sites in operations #547a6538
-shared	dynamic	sites in the stdlib #919aadb4
+shared	dynamic	sites in the stdlib #c3a51769
 
 == dna/api/tests/task_create_api_test.hl
 row	CreateApiCases@main1	CreateApiCases	main	default
@@ -8398,7 +8485,7 @@ dynamic	__lib_dna__core___record__GitJournal	on main|unknown (no caller)
 dynamic	__lib_dna__core___record__GitRecord	on main|unknown (no caller)|unknown (no instance)
 dynamic	__lib_dna__core___record__RowBatch	on main|unknown (no instance)
 shared	dynamic	sites in dna/operations #07070d4b
-shared	dynamic	sites in the stdlib #919aadb4
+shared	dynamic	sites in the stdlib #c3a51769
 
 == dna/api/tests/task_query_test.hl
 row	TaskQueryCases@main1	TaskQueryCases	main	default
@@ -8409,7 +8496,7 @@ dynamic	__StdJsonBuilder	on main|unknown (no caller)|unknown (no instance)
 -- dynamic	sites in api/tests
 dynamic	__StdBytesBytesBuilder	on main
 dynamic	__lib_dna__api___http__Http	on main
-shared	dynamic	sites in the stdlib #919aadb4
+shared	dynamic	sites in the stdlib #c3a51769
 
 == dna/api/tests/tasks_api_test.hl
 row	TaskApiCases@main1	TaskApiCases	main	default
@@ -8480,7 +8567,7 @@ dynamic	__lib_dna__operations___structure_command__StructureCommandCodec	on main
 dynamic	__lib_dna__operations___task_command__TaskCommandCodec	on main
 dynamic	__lib_dna__operations___task_create_command__TaskCreateCommandCodec	on main
 dynamic	__lib_dna__operations___task_projection__TaskProjection	on main
-shared	dynamic	sites in the stdlib #919aadb4
+shared	dynamic	sites in the stdlib #c3a51769
 
 == dna/api/tests/usage_api_test.hl
 hole	UsageCases@main2.f	reuse `f`
@@ -8505,7 +8592,7 @@ dynamic	__lib_dna__core___workflow_definition__WorkflowCatalog	on main
 shared	dynamic	sites in api/tests/fixture #56f971bf
 shared	dynamic	sites in core #b3c0821e
 shared	dynamic	sites in operations #4444350e
-shared	dynamic	sites in the stdlib #919aadb4
+shared	dynamic	sites in the stdlib #c3a51769
 
 == dna/face/examples/intake-control/tests/provider_test.hl
 row	Proof@main1	Proof	main	default
@@ -8534,7 +8621,7 @@ dynamic	__lib_dna__operations__organization_json__organization_json__Organizatio
 -- dynamic	sites in dna/operations
 dynamic	__StdBytesBytesBuilder	on main
 dynamic	__lib_dna__core___native_json__NativeJson	on main
-shared	dynamic	sites in the stdlib #919aadb4
+shared	dynamic	sites in the stdlib #c3a51769
 
 == dna/face/service/tests/boundary_test.hl
 dynamic	__StdBytesBytesBuilder	on main|unknown (no caller)|unknown (no instance)	in core
@@ -8553,7 +8640,7 @@ dynamic	__lib_dna__face__service___wire__ApplicationWire	on main
 -- dynamic	sites in operations
 dynamic	__StdBytesBytesBuilder	on main
 dynamic	__lib_dna__core___native_json__NativeJson	on main
-shared	dynamic	sites in the stdlib #919aadb4
+shared	dynamic	sites in the stdlib #c3a51769
 
 == dna/operations/tests/definition_drafts_test.hl
 row	DraftProof@main1	DraftProof	main	default
@@ -8580,7 +8667,7 @@ dynamic	__lib_dna__operations___definition_drafts__DefinitionDraftCapture	on mai
 dynamic	__lib_dna__operations___definition_drafts__DefinitionDraftCodec	on main
 dynamic	__lib_dna__operations___definition_drafts__DefinitionDrafts	on main
 dynamic	__lib_dna__operations___definitions__Definitions	on main
-shared	dynamic	sites in the stdlib #919aadb4
+shared	dynamic	sites in the stdlib #c3a51769
 
 == dna/operations/tests/definitions_test.hl
 -- dynamic	sites in core
@@ -8600,7 +8687,7 @@ dynamic	__lib_dna__core___workflow_definition__WorkflowCatalog	on main
 dynamic	__lib_dna__operations___definitions__DeclaredWorkflowCatalog	on main
 dynamic	__lib_dna__operations___definitions__Definitions	on main|unknown (`invalid` passed as a value)
 -- dynamic	sites in the stdlib
-dynamic	__StdBytesBytesBuilder	on unknown (`invalid` passed as a value)|unknown (no caller)
+dynamic	__StdBytesBytesBuilder	on unknown (`invalid` passed as a value)
 dynamic	__StdIterLines	on unknown (`invalid` passed as a value)
 
 == dna/operations/tests/governance_admission_test.hl
@@ -8624,7 +8711,7 @@ dynamic	__lib_dna__core___record__GitRecord	on main|unknown (`subject` passed as
 dynamic	__lib_dna__operations___governance_admission__GovernanceCommands	on main
 dynamic	__lib_dna__operations___governance_admission__GovernanceJournal	on main
 dynamic	__lib_dna__operations___governance_command__GovernanceCommandCodec	on main
-shared	dynamic	sites in the stdlib #919aadb4
+shared	dynamic	sites in the stdlib #c3a51769
 
 == dna/operations/tests/governance_command_codec_test.hl
 dynamic	__StdBytesBytesBuilder	on unknown (`rejected` passed as a value)|unknown (no caller)|unknown (no instance)	in core
@@ -8637,7 +8724,7 @@ dynamic	__lib_dna__operations___organization_json__OrganizationJson	on unknown (
 -- dynamic	sites in operations/tests
 dynamic	__StdBytesBytesBuilder	on main
 dynamic	__lib_dna__operations___governance_command__GovernanceCommandCodec	on main|unknown (`rejected` passed as a value)
-shared	dynamic	sites in the stdlib #60cf2d1f
+shared	dynamic	sites in the stdlib #b6aed203
 
 == dna/operations/tests/governance_knowledge_review_test.hl
 -- dynamic	sites in core
@@ -8659,7 +8746,7 @@ dynamic	__lib_dna__core___record__GitReceipts	on main|unknown (`candidate` passe
 dynamic	__lib_dna__core___record__GitRecord	on main|unknown (`candidate` passed as a value)
 dynamic	__lib_dna__operations___governance_admission__GovernanceCommands	on main
 dynamic	__lib_dna__operations___queries__Queries	on main
-shared	dynamic	sites in the stdlib #530e81ca
+shared	dynamic	sites in the stdlib #ba6ce489
 
 == dna/operations/tests/governance_projection_test.hl
 -- dynamic	sites in core
@@ -8717,7 +8804,7 @@ dynamic	__StdJsonBuilder	on main|unknown (`candidate` passed as a value)|unknown
 dynamic	__lib_dna__core___journal__MemJournal	on main
 dynamic	__lib_dna__operations___governance_admission__GovernanceCommands	on unknown (`admission` passed as a value)
 dynamic	__lib_dna__operations___governance_command__GovernanceCommandCodec	on unknown (`admission` passed as a value)
-shared	dynamic	sites in the stdlib #530e81ca
+shared	dynamic	sites in the stdlib #ba6ce489
 
 == dna/operations/tests/knowledge_admission_test.hl
 root	App	the entry
@@ -8819,7 +8906,7 @@ dynamic	__lib_dna__operations___knowledge_admission__KnowledgeCommands	on main
 dynamic	__lib_dna__operations___knowledge_command__KnowledgeCommandCodec	on main
 dynamic	__lib_dna__operations___knowledge_edge_command__KnowledgeEdgeCommandCodec	on main
 dynamic	__lib_dna__operations___knowledge_edge_command__StrictKnowledgeDirectEdgeFacts	on main
-shared	dynamic	sites in the stdlib #919aadb4
+shared	dynamic	sites in the stdlib #c3a51769
 
 == dna/operations/tests/knowledge_binding_admission_test.hl
 row	BindingAdmissionCases@main1	BindingAdmissionCases	main	default
@@ -8842,7 +8929,7 @@ dynamic	__lib_dna__operations___knowledge_binding_command__KnowledgeBindingComma
 dynamic	__lib_dna__operations___knowledge_command__KnowledgeCommandCodec	on main
 dynamic	__lib_dna__operations___knowledge_policy__FixedKnowledgeAuthority	on main
 dynamic	__lib_dna__operations___knowledge_policy__KnowledgePolicyCodec	on main
-shared	dynamic	sites in the stdlib #919aadb4
+shared	dynamic	sites in the stdlib #c3a51769
 
 == dna/operations/tests/knowledge_node_admission_test.hl
 row	NodeAdmissionCases@main1	NodeAdmissionCases	main	default
@@ -8865,7 +8952,7 @@ dynamic	__lib_dna__operations___knowledge_command__KnowledgeCommandCodec	on main
 dynamic	__lib_dna__operations___knowledge_node_command__KnowledgeNodeCommandCodec	on main
 dynamic	__lib_dna__operations___knowledge_policy__FixedKnowledgeAuthority	on main
 dynamic	__lib_dna__operations___knowledge_policy__KnowledgePolicyCodec	on main
-shared	dynamic	sites in the stdlib #919aadb4
+shared	dynamic	sites in the stdlib #c3a51769
 
 == dna/operations/tests/organization_admission_test.hl
 -- dynamic	sites in core
@@ -8894,7 +8981,7 @@ dynamic	__lib_dna__operations___governance_policy__FixedAuthority	on main
 dynamic	__lib_dna__operations___organization_command__OrganizationCommandCodec	on main
 dynamic	__lib_dna__operations___organization_policy__FixedOrganizationAuthority	on main
 dynamic	__lib_dna__operations___organization_policy__OrganizationAuthorityPolicyCodec	on main
-shared	dynamic	sites in the stdlib #919aadb4
+shared	dynamic	sites in the stdlib #c3a51769
 
 == dna/operations/tests/organization_impact_test.hl
 row	ImpactCases@main1	ImpactCases	main	default
@@ -8935,7 +9022,7 @@ dynamic	__lib_dna__core___journal__MemJournal	on main
 dynamic	__lib_dna__core___workflow_definition__WorkflowCatalog	on main
 dynamic	__lib_dna__operations___organization_impact__OrganizationImpact	on main
 dynamic	__lib_dna__operations___queries__Queries	on main
-shared	dynamic	sites in the stdlib #919aadb4
+shared	dynamic	sites in the stdlib #c3a51769
 
 == dna/operations/tests/organization_projection_test.hl
 -- dynamic	sites in core
@@ -8986,7 +9073,7 @@ dynamic	__lib_dna__operations___organization_review_command__OrganizationReviewC
 dynamic	__lib_dna__organization_source___organization_source__OrganizationSource	on main
 dynamic	__lib_dna__organization_source___publication_guard__OrganizationPublicationInputs	on main
 shared	dynamic	sites in organization_source #5ef637a9
-shared	dynamic	sites in the stdlib #919aadb4
+shared	dynamic	sites in the stdlib #c3a51769
 
 == dna/operations/tests/organization_test.hl
 row	OrganizationFixture@main1	OrganizationFixture	main	default
@@ -9001,7 +9088,7 @@ dynamic	__lib_dna__operations___organization_json__OrganizationJson	on main|unkn
 dynamic	__StdJsonBuilder	on main
 dynamic	__lib_dna__operations___organization__Organization	on main
 dynamic	__lib_dna__operations___organization_json__OrganizationJson	on main
-shared	dynamic	sites in the stdlib #919aadb4
+shared	dynamic	sites in the stdlib #c3a51769
 
 == dna/operations/tests/person_retirement_test.hl
 row	RetirementCases@main1	RetirementCases	main	default
@@ -9020,7 +9107,7 @@ dynamic	__lib_dna__operations___queries__Queries	on main
 dynamic	__lib_dna__operations___task_policy__FixedTaskAuthority	on main
 dynamic	__lib_dna__operations___task_policy__TaskAuthorityPolicyCodec	on main
 dynamic	__lib_dna__operations___task_projection__TaskProjection	on main
-shared	dynamic	sites in the stdlib #919aadb4
+shared	dynamic	sites in the stdlib #c3a51769
 
 == dna/operations/tests/practice_provenance_test.hl
 row	PracticeProvenanceCases@main1	PracticeProvenanceCases	main	default
@@ -9054,7 +9141,7 @@ dynamic	__lib_dna__core___verification__HaleVerification	on main
 dynamic	__lib_dna__operations___knowledge_command__KnowledgeCommandCodec	on main
 dynamic	__lib_dna__operations___knowledge_node_command__KnowledgeNodeCommandCodec	on main
 dynamic	__lib_dna__operations___queries__Queries	on main
-shared	dynamic	sites in the stdlib #919aadb4
+shared	dynamic	sites in the stdlib #c3a51769
 
 == dna/operations/tests/queries_test.hl
 -- dynamic	sites in core
@@ -9072,7 +9159,7 @@ dynamic	__lib_dna__core___record__GitJournal	on main
 dynamic	__lib_dna__core___record__GitReceipts	on main
 dynamic	__lib_dna__operations___queries__Queries	on main
 -- dynamic	sites in the stdlib
-dynamic	__StdBytesBytesBuilder	on unknown (`propose` passed as a value)|unknown (no caller)
+dynamic	__StdBytesBytesBuilder	on unknown (`propose` passed as a value)
 dynamic	__StdIterLines	on unknown (`propose` passed as a value)
 
 == dna/operations/tests/task_administration_test.hl
@@ -9091,7 +9178,7 @@ dynamic	__lib_dna__operations___task_command__TaskCommandCodec	on main
 dynamic	__lib_dna__operations___task_policy__FixedTaskAuthority	on main
 dynamic	__lib_dna__operations___task_policy__TaskAuthorityPolicyCodec	on main
 dynamic	__lib_dna__operations___task_projection__TaskProjection	on main
-shared	dynamic	sites in the stdlib #919aadb4
+shared	dynamic	sites in the stdlib #c3a51769
 
 == dna/operations/tests/task_create_test.hl
 row	CreateCases@main1	CreateCases	main	default
@@ -9110,7 +9197,7 @@ dynamic	__lib_dna__operations___governance_policy__AuthorityPolicyCodec	on main
 dynamic	__lib_dna__operations___governance_policy__FixedAuthority	on main
 dynamic	__lib_dna__operations___task_command__TaskCommandCodec	on main
 dynamic	__lib_dna__operations___task_create_command__TaskCreateCommandCodec	on main
-shared	dynamic	sites in the stdlib #919aadb4
+shared	dynamic	sites in the stdlib #c3a51769
 
 == dna/organization_source/tests/publication_guard_test.hl
 row	PublicationGuardCases@main1	PublicationGuardCases	main	default
@@ -9651,7 +9738,7 @@ dynamic	__StdJsonBuilder	on main|unknown (`check` passed as a value)
 dynamic	__lib_dna__core___memory_spine__Memory	on main|unknown (`check` passed as a value)
 dynamic	__lib_dna__core___record__GitJournal	on main|unknown (`check` passed as a value)
 dynamic	__lib_dna__host___host__NodeRelay	on unknown (`check` passed as a value)
-shared	dynamic	sites in the stdlib #f3f955da
+shared	dynamic	sites in the stdlib #5050d570
 
 == dna/tests/compose_projects_test.hl
 
@@ -9776,7 +9863,7 @@ dynamic	__lib_dna__core___journal__MemJournal	on main
 dynamic	__lib_dna__core___memory_store__Pq	on main
 dynamic	__lib_dna__core___record__GitJournal	on main
 dynamic	__lib_dna__operations___knowledge_command__KnowledgeCommandCodec	on main
-shared	dynamic	sites in the stdlib #919aadb4
+shared	dynamic	sites in the stdlib #c3a51769
 
 == dna/tests/edge_unlink_test.hl
 root	App	the entry
@@ -9793,7 +9880,7 @@ dynamic	__lib_dna__core___memory_store__Pq	on main
 dynamic	__lib_dna__core___record__GitJournal	on main
 dynamic	__lib_dna__operations___governance_command__GovernanceCommandCodec	on main
 dynamic	__lib_dna__operations___knowledge_command__KnowledgeCommandCodec	on main
-shared	dynamic	sites in the stdlib #919aadb4
+shared	dynamic	sites in the stdlib #c3a51769
 
 == dna/tests/editing_seed_test.hl
 root	App	the entry
@@ -9804,7 +9891,7 @@ shared	App@literal1.broken_editor	__lib_dna__core___editing__SourceEditor #e71a3
 shared	App@literal1.init_editor	__lib_dna__core___editing__SourceEditor #e71a3722
 shared	App@literal1.repo_editor	__lib_dna__core___editing__SourceEditor #e71a3722
 shared	dynamic	sites in tests #6429d5ee
-shared	dynamic	sites in the stdlib #919aadb4
+shared	dynamic	sites in the stdlib #c3a51769
 
 == dna/tests/editing_test.hl
 root	App	the entry
@@ -9816,7 +9903,7 @@ shared	App@literal1.editor	__lib_dna__core___editing__SourceEditor #e71a3722
 shared	App@literal1.multi	__lib_dna__core___editing__SourceEditor #e71a3722
 shared	App@literal1.retrier	__lib_dna__core___editing__SourceEditor #e71a3722
 shared	dynamic	sites in tests #6429d5ee
-shared	dynamic	sites in the stdlib #919aadb4
+shared	dynamic	sites in the stdlib #c3a51769
 
 == dna/tests/effect_outcomes_test.hl
 root	App	the entry
@@ -9923,7 +10010,7 @@ dynamic	__StdIterLines	on unknown (`graph` passed as a value)
 dynamic	__StdJsonBuilder	on unknown (`graph` passed as a value)|unknown (no caller)|unknown (no instance)
 dynamic	__lib_dna__operations___graph__GraphEdge	on unknown (`graph` passed as a value)|unknown (no caller)|unknown (no instance)
 -- dynamic	sites in the stdlib
-dynamic	__StdBytesBytesBuilder	on unknown (`graph` passed as a value)|unknown (no caller)
+dynamic	__StdBytesBytesBuilder	on unknown (`graph` passed as a value)
 dynamic	__StdIterLines	on unknown (`graph` passed as a value)
 
 == dna/tests/graph_holes_test.hl
@@ -9936,7 +10023,7 @@ dynamic	__lib_dna__core___record__GitJournal	on main
 dynamic	__lib_dna__core___record__GitRecord	on main
 dynamic	__lib_dna__core___routing__RoutedJournal	on main
 dynamic	__lib_dna__operations___graph_ingest__GraphIngest	on main
-shared	dynamic	sites in the stdlib #919aadb4
+shared	dynamic	sites in the stdlib #c3a51769
 
 == dna/tests/graph_ingest_refusals_test.hl
 row	App@main1	App	main	default
@@ -9958,7 +10045,7 @@ dynamic	KnownAuthors	on main
 dynamic	__StdJsonBuilder	on main
 dynamic	__lib_dna__core___memory_store__Pq	on main
 dynamic	__lib_dna__operations___graph__GraphEdge	on main
-shared	dynamic	sites in the stdlib #919aadb4
+shared	dynamic	sites in the stdlib #c3a51769
 
 == dna/tests/graph_route_test.hl
 row	App@main1	App	main	default
@@ -9971,7 +10058,7 @@ dynamic	__lib_dna__core___record__GitJournal	on main
 dynamic	__lib_dna__core___record__GitReceipts	on main
 dynamic	__lib_dna__core___record__GitRecord	on main
 dynamic	__lib_dna__operations___graph__GraphEdge	on main
-shared	dynamic	sites in the stdlib #919aadb4
+shared	dynamic	sites in the stdlib #c3a51769
 
 == dna/tests/graph_show_test.hl
 row	App@main1	App	main	default
@@ -9983,7 +10070,7 @@ dynamic	__lib_dna__core___record__GitJournal	on main
 dynamic	__lib_dna__core___record__GitReceipts	on main
 dynamic	__lib_dna__core___record__GitRecord	on main
 dynamic	__lib_dna__operations___graph__GraphEdge	on main
-shared	dynamic	sites in the stdlib #919aadb4
+shared	dynamic	sites in the stdlib #c3a51769
 
 == dna/tests/handed_task_test.hl
 root	App	the entry
@@ -10048,7 +10135,7 @@ dynamic	Proc	on main
 dynamic	__StdProcessChild	on main
 dynamic	__lib_dna__core___record__GitJournal	on main
 dynamic	__lib_dna__operations___graph__GraphEdge	on main
-shared	dynamic	sites in the stdlib #919aadb4
+shared	dynamic	sites in the stdlib #c3a51769
 
 == dna/tests/head_structure_test.hl
 row	App@main1	App	main	default
@@ -10062,7 +10149,7 @@ dynamic	__lib_dna__core___record__GitJournal	on main
 dynamic	__lib_dna__core___record__GitReceipts	on main
 dynamic	__lib_dna__core___record__GitRecord	on main
 dynamic	__lib_dna__operations___graph__GraphEdge	on main
-shared	dynamic	sites in the stdlib #919aadb4
+shared	dynamic	sites in the stdlib #c3a51769
 
 == dna/tests/head_surface_durable_test.hl
 row	App@main1	App	main	default
@@ -10076,7 +10163,7 @@ dynamic	__StdProcessChild	on main
 dynamic	__lib_dna__core___record__GitJournal	on main
 dynamic	__lib_dna__core___record__GitRecord	on main
 dynamic	__lib_dna__operations___graph__GraphEdge	on main
-shared	dynamic	sites in the stdlib #919aadb4
+shared	dynamic	sites in the stdlib #c3a51769
 
 == dna/tests/heart_reading_test.hl
 root	App	the entry
@@ -10154,7 +10241,7 @@ dynamic	__lib_dna__core___journal__MemJournal	on unknown (`check` passed as a va
 dynamic	__lib_dna__core___record__GitJournal	on unknown (`check` passed as a value)
 dynamic	__lib_dna__core___record__GitReceipts	on unknown (`check` passed as a value)
 dynamic	__lib_dna__operations___attempt_command__AttemptCommandCodec	on unknown (`check` passed as a value)
-shared	dynamic	sites in the stdlib #f3f955da
+shared	dynamic	sites in the stdlib #5050d570
 
 == dna/tests/init_with_test.hl
 row	App@main1	App	main	default
@@ -10241,7 +10328,7 @@ dynamic	__lib_dna__core___verification__HaleVerification	on main
 dynamic	__lib_dna__operations___knowledge_binding_command__KnowledgeBindingCommandCodec	on main
 dynamic	__lib_dna__operations___knowledge_command__KnowledgeCommandCodec	on main
 dynamic	__lib_dna__operations___organization_json__OrganizationJson	on main
-shared	dynamic	sites in the stdlib #8d361d8b
+shared	dynamic	sites in the stdlib #017b2abb
 
 == dna/tests/knowledge_context_test.hl
 root	App	the entry
@@ -10277,7 +10364,7 @@ row	App@literal1	App	main	default
 -- dynamic	sites in tests
 dynamic	__StdBytesBytesBuilder	on unknown (`check` passed as a value)
 dynamic	__StdJsonBuilder	on unknown (`check` passed as a value)
-shared	dynamic	sites in the stdlib #f3f955da
+shared	dynamic	sites in the stdlib #5050d570
 
 == dna/tests/knowledge_edge_review_test.hl
 root	App	the entry
@@ -10320,7 +10407,7 @@ dynamic	__lib_dna__core___verification__HaleVerification	on main
 dynamic	__lib_dna__operations___knowledge_command__KnowledgeCommandCodec	on main
 dynamic	__lib_dna__operations___knowledge_edge_command__KnowledgeEdgeCommandCodec	on main
 dynamic	__lib_dna__operations___knowledge_edge_command__StrictKnowledgeDirectEdgeFacts	on main
-shared	dynamic	sites in the stdlib #8d361d8b
+shared	dynamic	sites in the stdlib #017b2abb
 
 == dna/tests/knowledge_events_test.hl
 root	App	the entry
@@ -10364,7 +10451,7 @@ dynamic	__lib_dna__core___ownership__Ownership	on main
 dynamic	__lib_dna__core___record__GitJournal	on main
 dynamic	__lib_dna__core___record__GitReceipts	on main
 dynamic	__lib_dna__core___verification__HaleVerification	on main
-shared	dynamic	sites in the stdlib #919aadb4
+shared	dynamic	sites in the stdlib #c3a51769
 
 == dna/tests/knowledge_node_relay_test.hl
 -- App@main1	App
@@ -10406,13 +10493,12 @@ dynamic	__lib_dna__core___memory_spine__Memory	on unknown (`check` passed as a v
 dynamic	__lib_dna__core___record__GitJournal	on unknown (`check` passed as a value)|unknown (`maximum` passed as a value)
 dynamic	__lib_dna__host___host__NodeRelay	on unknown (`maximum` passed as a value)
 -- dynamic	sites in the stdlib
-dynamic	__StdBytesBytesBuilder	on unknown (`maximum` passed as a value)|unknown (no caller)
+dynamic	__StdBytesBytesBuilder	on unknown (`maximum` passed as a value)
 dynamic	__StdIterLines	on unknown (`maximum` passed as a value)
 
 == dna/tests/knowledge_store_test.hl
 dynamic	<hole>	on unknown (no instance)|unresolved declaration `__api_serve`|unresolved declaration `http::Rpc`|unresolved declaration `unix::Rpc`	in api
 dynamic	__lib_dna__core___memory_store__Pq	on main	in tests
-dynamic	__StdBytesBytesBuilder	on main|unknown (no instance)	in the stdlib
 -- App@main1	App
 row	~	App	main	default
 row	~.j	__lib_dna__core___journal__MemJournal	main	inherited
@@ -10452,7 +10538,6 @@ shared	dynamic	sites in the stdlib #c3a51769
 root	App	the entry
 row	App@literal1	App	main	default
 dynamic	__lib_dna__core__pond__db___args__Args	on main|unknown (no caller)|unknown (no instance)	in core
-dynamic	__StdBytesBytesBuilder	on main|unknown (no instance)	in the stdlib
 -- App@literal1.pg	__lib_dna__core___memory_ledger__PqLedger
 row	~	__lib_dna__core___memory_ledger__PqLedger	main	default
 row	~.authors	__lib_dna__core___journal__Authors	main	inherited
@@ -10682,7 +10767,7 @@ dynamic	CountingJournal	on main
 dynamic	__StdJsonBuilder	on main
 dynamic	__lib_dna__core___journal__FileReceipts	on main
 dynamic	__lib_dna__core___knowledge_record__KnowledgeRecord	on main
-shared	dynamic	sites in the stdlib #919aadb4
+shared	dynamic	sites in the stdlib #c3a51769
 
 == dna/tests/library_family_test.hl
 root	App	the entry
@@ -10693,7 +10778,7 @@ dynamic	__StdJsonBuilder	on main
 dynamic	__lib_dna__core___journal__FileReceipts	on main
 dynamic	__lib_dna__core___journal__MemJournal	on main
 dynamic	__lib_dna__core___knowledge_record__KnowledgeRecord	on main
-shared	dynamic	sites in the stdlib #919aadb4
+shared	dynamic	sites in the stdlib #c3a51769
 
 == dna/tests/model_map_cli_test.hl
 root	App	the entry
@@ -10713,7 +10798,7 @@ dynamic	__lib_dna__core___models__FakeModel	on unknown (`check` passed as a valu
 dynamic	__lib_dna__core___models__ModelRouter	on unknown (`check` passed as a value)
 dynamic	__lib_dna__core__legs___hands__Hands	on unknown (`check` passed as a value)
 dynamic	__lib_dna__core__legs___model__ModelPerformer	on unknown (`check` passed as a value)
-shared	dynamic	sites in the stdlib #f3f955da
+shared	dynamic	sites in the stdlib #5050d570
 
 == dna/tests/mutation_review_test.hl
 root	App	the entry
@@ -10732,7 +10817,7 @@ dynamic	__StdBytesBytesBuilder	on unknown (`check` passed as a value)|unknown (n
 dynamic	__StdBytesBytesBuilder	on unknown (`check` passed as a value)
 dynamic	__StdJsonBuilder	on unknown (`check` passed as a value)
 dynamic	__lib_dna__core___native_json__NativeJson	on unknown (`check` passed as a value)
-shared	dynamic	sites in the stdlib #f3f955da
+shared	dynamic	sites in the stdlib #5050d570
 
 == dna/tests/nats_connect_password_test.hl
 
@@ -10803,7 +10888,7 @@ dynamic	__lib_dna__core___memory_store__Pq	on main
 dynamic	__lib_dna__core___record__GitJournal	on main
 dynamic	__lib_dna__core___record__GitReceipts	on main
 dynamic	__lib_dna__core___verification__HaleVerification	on main
-shared	dynamic	sites in the stdlib #919aadb4
+shared	dynamic	sites in the stdlib #c3a51769
 
 == dna/tests/oidc_head_test.hl
 root	App	the entry
@@ -10853,7 +10938,6 @@ row	SenseDesk@literal1.mailbox	__lib_tests__fake___fake_nats__Mailbox	main	defau
 dynamic	__StdIoTcpStream	on pinned:SenseDesk@literal1.broker	in tests/fake
 dynamic	<hole>	on main|unresolved declaration `__api_serve`	in tests/sense
 dynamic	__StdIoTcpStream	on pinned:SenseDesk@literal1.sense	in the seed
-dynamic	__StdBytesBytesBuilder	on pinned:SenseDesk@literal1.sense	in the stdlib
 shared	SenseDesk@literal1.sense	__lib_tests__fake___fake_nats__Sense #206ba75b
 
 == dna/tests/onboarding/todo/api/tests/silent/silent_test.hl
@@ -10868,7 +10952,6 @@ row	SilentDesk@literal1.mailbox	__lib_tests__fake___fake_nats__Mailbox	main	defa
 dynamic	__StdIoTcpStream	on pinned:SilentDesk@literal1.broker	in tests/fake
 dynamic	<hole>	on main|unresolved declaration `__api_serve`	in tests/silent
 dynamic	__StdIoTcpStream	on pinned:SilentDesk@literal1.sense	in the seed
-dynamic	__StdBytesBytesBuilder	on pinned:SilentDesk@literal1.sense	in the stdlib
 shared	SilentDesk@literal1.sense	__lib_tests__fake___fake_nats__Sense #206ba75b
 
 == dna/tests/onboarding/voice/api/tests/endpoints_test.hl
@@ -10996,7 +11079,7 @@ dynamic	__lib_dna__operations___organization_command__OrganizationCommandCodec	o
 dynamic	__lib_dna__operations___organization_command__StrictOrganizationSourceFacts	on main
 dynamic	__lib_dna__organization_source___organization_source__OrganizationSource	on main
 dynamic	__lib_dna__organization_source___publication_guard__OrganizationPublicationInputs	on main
-shared	dynamic	sites in the stdlib #919aadb4
+shared	dynamic	sites in the stdlib #c3a51769
 
 == dna/tests/organization_source_review_test.hl
 root	App	the entry
@@ -11027,7 +11110,7 @@ dynamic	__lib_dna__operations___organization_command__StrictOrganizationSourceFa
 dynamic	__lib_dna__operations___organization_review_command__OrganizationReviewCommandCodec	on main
 dynamic	__lib_dna__organization_source___organization_source__OrganizationSource	on main
 dynamic	__lib_dna__organization_source___publication_guard__OrganizationPublicationInputs	on main
-shared	dynamic	sites in the stdlib #919aadb4
+shared	dynamic	sites in the stdlib #c3a51769
 
 == dna/tests/owners_test.hl
 root	App	the entry
@@ -11243,7 +11326,7 @@ dynamic	__lib_dna__core___assembly__Dna	on main
 dynamic	__lib_dna__core___record__GitJournal	on main
 dynamic	__lib_dna__core___record__GitReceipts	on main
 dynamic	__lib_dna__core___verification__HaleVerification	on main
-shared	dynamic	sites in the stdlib #b156bdf1
+shared	dynamic	sites in the stdlib #3acbb365
 
 == dna/tests/practice_lifecycle_test.hl
 root	App	the entry
@@ -11256,7 +11339,7 @@ dynamic	__lib_dna__core___knowledge_node_request__KnowledgeNodeRequestCodec	on m
 dynamic	__lib_dna__core___record__GitJournal	on main
 dynamic	__lib_dna__core___record__GitReceipts	on main
 dynamic	__lib_dna__core___verification__HaleVerification	on main
-shared	dynamic	sites in the stdlib #919aadb4
+shared	dynamic	sites in the stdlib #c3a51769
 
 == dna/tests/practice_test.hl
 root	App	the entry
@@ -11277,7 +11360,7 @@ row	App@literal1	App	main	default
 shared	dynamic	sites in core #9cea11a6
 shared	dynamic	sites in operations #cbf89ec1
 shared	dynamic	sites in tests #58257a56
-shared	dynamic	sites in the stdlib #919aadb4
+shared	dynamic	sites in the stdlib #c3a51769
 
 == dna/tests/projectors_test.hl
 root	App	the entry
@@ -11384,7 +11467,7 @@ dynamic	__lib_dna__core___native_json__NativeJson	on main
 dynamic	__lib_dna__core___record__GitJournal	on main|unknown (no caller)
 dynamic	__lib_dna__core___record__GitRecord	on main|unknown (no caller)|unknown (no instance)
 dynamic	__lib_dna__core___record__RowBatch	on main|unknown (no instance)
-shared	dynamic	sites in the stdlib #919aadb4
+shared	dynamic	sites in the stdlib #c3a51769
 
 == dna/tests/record_test.hl
 root	App	the entry
@@ -11470,7 +11553,7 @@ dynamic	__StdJsonBuilder	on main|unknown (no caller)|unknown (no instance)
 dynamic	__lib_dna__core___knowledge_node_request__KnowledgeNodeRequestCodec	on main|unknown (no instance)
 dynamic	__lib_dna__core___native_json__NativeJson	on main
 dynamic	__lib_dna__core___organization_source_request__OrganizationSourceRequestCodec	on main|unknown (no instance)
-shared	dynamic	sites in the stdlib #919aadb4
+shared	dynamic	sites in the stdlib #c3a51769
 
 == dna/tests/review_command_test.hl
 root	App	the entry
@@ -11487,7 +11570,7 @@ dynamic	__lib_dna__core___record__RowBatch	on main|unknown (no instance)
 dynamic	CommandFaultJournal	on main
 dynamic	__lib_dna__core___record__GitJournal	on main
 dynamic	__lib_dna__core___review__Review	on main
-shared	dynamic	sites in the stdlib #919aadb4
+shared	dynamic	sites in the stdlib #c3a51769
 
 == dna/tests/review_signers_test.hl
 root	App	the entry
@@ -11536,13 +11619,12 @@ dynamic	__lib_dna__core___record__GitJournal	on main
 dynamic	__lib_dna__core___review__Review	on main|unknown (`review` passed as a value)
 dynamic	__lib_dna__core___verification__HaleVerification	on main
 -- dynamic	sites in the stdlib
-dynamic	__StdBytesBytesBuilder	on main|unknown (`review` passed as a value)
+dynamic	__StdBytesBytesBuilder	on unknown (`review` passed as a value)
 dynamic	__StdIterLines	on unknown (`review` passed as a value)
 
 == dna/tests/routing_test.hl
 root	App	the entry
 row	App@literal1	App	main	default
-dynamic	__StdBytesBytesBuilder	on main|unknown (no instance)	in the stdlib
 shared	App@literal1.j	__lib_dna__core___routing__RoutedJournal #d907b0f2
 shared	App@literal1.ledger	__lib_dna__core___journal__MemJournal #63b83e2f
 shared	App@literal1.record	__lib_dna__core___journal__MemJournal #63b83e2f
@@ -11562,7 +11644,7 @@ row	App@literal1	App	main	default
 shared	dynamic	sites in core #9cea11a6
 shared	dynamic	sites in operations #cbf89ec1
 shared	dynamic	sites in tests #58257a56
-shared	dynamic	sites in the stdlib #919aadb4
+shared	dynamic	sites in the stdlib #c3a51769
 
 == dna/tests/scenario_test.hl
 root	App	the entry
@@ -11646,7 +11728,7 @@ dynamic	__lib_dna__core___record__GitReceipts	on main
 dynamic	__lib_dna__core___record__GitRecord	on main
 dynamic	__lib_dna__core___routing__RoutedJournal	on main
 dynamic	__lib_dna__operations___graph_ingest__GraphIngest	on main
-shared	dynamic	sites in the stdlib #919aadb4
+shared	dynamic	sites in the stdlib #c3a51769
 
 == dna/tests/supersession_test.hl
 root	App	the entry
@@ -11679,7 +11761,7 @@ shared	App@literal1.j	__lib_dna__core___record__GitJournal #bfd4b798
 shared	App@literal1.r	__lib_dna__core___record__GitReceipts #24e9c48b
 shared	dynamic	sites in core #b2c4d9f5
 shared	dynamic	sites in tests #1b7b00d4
-shared	dynamic	sites in the stdlib #919aadb4
+shared	dynamic	sites in the stdlib #c3a51769
 
 == dna/tests/task_evidence_test.hl
 root	App	the entry
@@ -11688,7 +11770,7 @@ shared	App@literal1.j	__lib_dna__core___record__GitJournal #bfd4b798
 shared	App@literal1.r	__lib_dna__core___record__GitReceipts #24e9c48b
 shared	dynamic	sites in core #b2c4d9f5
 shared	dynamic	sites in tests #1b7b00d4
-shared	dynamic	sites in the stdlib #919aadb4
+shared	dynamic	sites in the stdlib #c3a51769
 
 == dna/tests/tool_loop_test.hl
 root	App	the entry
@@ -11706,7 +11788,7 @@ dynamic	__lib_dna__core___tape__RecordedModel	on unknown (`check` passed as a va
 dynamic	__lib_dna__core__legs___hands__Hands	on unknown (`check` passed as a value)
 dynamic	__lib_dna__core__legs___model__ModelPerformer	on unknown (`check` passed as a value)|unknown (`performer` passed as a value)
 -- dynamic	sites in the stdlib
-dynamic	__StdBytesBytesBuilder	on unknown (`performer` passed as a value)|unknown (no caller)
+dynamic	__StdBytesBytesBuilder	on unknown (`performer` passed as a value)
 dynamic	__StdIterLines	on unknown (`performer` passed as a value)
 
 == dna/tests/two_owners_test.hl
@@ -11740,7 +11822,7 @@ dynamic	__StdJsonBuilder	on unknown (`seed` passed as a value)
 dynamic	__lib_dna__core___record__GitJournal	on main
 dynamic	__lib_dna__operations___usage__Usage	on main
 -- dynamic	sites in the stdlib
-dynamic	__StdBytesBytesBuilder	on unknown (`seed` passed as a value)|unknown (no caller)
+dynamic	__StdBytesBytesBuilder	on unknown (`seed` passed as a value)
 dynamic	__StdIterLines	on unknown (`seed` passed as a value)
 
 == dna/tests/verification_test.hl
@@ -11754,7 +11836,7 @@ row	~.receipts	__lib_dna__core___journal__FileReceipts	main	inherited
 -- dynamic	sites in tests
 dynamic	__lib_dna__core___journal__FileReceipts	on main
 dynamic	__lib_dna__core___verification__HaleVerification	on main
-shared	dynamic	sites in the stdlib #919aadb4
+shared	dynamic	sites in the stdlib #c3a51769
 
 == dna/tests/workflow_admission_contention_test.hl
 root	App	the entry
@@ -12073,7 +12155,7 @@ row	~.work.service	Counting	main	inherited
 row	~.work.service_reconciler	__lib_dna__core___performers__NoEvidence	main	inherited
 row	~.work.software	__lib_dna__core___performers__ScriptedPerformer	main	inherited
 row	~.work.software_reconciler	__lib_dna__core___performers__NoEvidence	main	inherited
-shared	dynamic	sites in the stdlib #919aadb4
+shared	dynamic	sites in the stdlib #c3a51769
 
 == dna/tests/workflow_case_completion_test.hl
 root	App	the entry
@@ -12120,7 +12202,7 @@ row	App@literal1.owner	__lib_dna__core___workflow_runtime__Executions	main	defau
 shared	App@literal1.cat	__lib_dna__core___workflow_definition__WorkflowCatalog #747084a5
 shared	App@literal1.rt	__lib_dna__core___workflow_runtime__WorkflowRuntime #95d53e99
 shared	dynamic	sites in core #046c3aec
-shared	dynamic	sites in the stdlib #919aadb4
+shared	dynamic	sites in the stdlib #c3a51769
 
 == dna/tests/workflow_conformance_test.hl
 root	App	the entry
@@ -12154,7 +12236,7 @@ dynamic	__lib_dna__core___routing__RoutedJournal	on main
 dynamic	__lib_dna__core___work_system__WorkSystem	on main
 dynamic	__lib_dna__core___workflow_runtime__Executions	on main
 dynamic	__lib_dna__core___workflow_runtime__WorkflowRuntime	on main
-shared	dynamic	sites in the stdlib #919aadb4
+shared	dynamic	sites in the stdlib #c3a51769
 
 == dna/tests/workflow_definition_test.hl
 root	App	the entry
@@ -12164,7 +12246,7 @@ shared	App@literal1.cat	__lib_dna__core___workflow_definition__WorkflowCatalog #
 shared	App@literal1.copy	__lib_dna__core___workflow_definition__WorkflowCatalog #747084a5
 shared	App@literal1.dup	__lib_dna__core___workflow_definition__WorkflowCatalog #747084a5
 shared	dynamic	sites in core #aca30528
-shared	dynamic	sites in the stdlib #919aadb4
+shared	dynamic	sites in the stdlib #c3a51769
 
 == dna/tests/workflow_edit_outcomes_test.hl
 root	App	the entry
@@ -12205,7 +12287,7 @@ row	App@literal1	App	main	default
 shared	App@literal1.back	__lib_dna__core___workflow_definition__WorkflowCatalog #747084a5
 shared	App@literal1.cat	__lib_dna__core___workflow_definition__WorkflowCatalog #747084a5
 shared	dynamic	sites in core #aca30528
-shared	dynamic	sites in the stdlib #919aadb4
+shared	dynamic	sites in the stdlib #c3a51769
 
 == dna/tests/workflow_human_cases_test.hl
 root	App	the entry
@@ -12262,7 +12344,7 @@ shared	App@literal1.p	__lib_dna__core___workflow_projection__WorkflowProjection 
 shared	App@literal1.q	__lib_dna__core___workflow_projection__WorkflowProjection #9a7eaf07
 shared	App@literal1.wider	__lib_dna__core___workflow_definition__WorkflowCatalog #747084a5
 shared	dynamic	sites in core #aca30528
-shared	dynamic	sites in the stdlib #919aadb4
+shared	dynamic	sites in the stdlib #c3a51769
 
 == dna/tests/workflow_public_admission_test.hl
 root	App	the entry
@@ -12331,7 +12413,7 @@ dynamic	__lib_dna__core___performers__IdempotentReplay	on main
 dynamic	__lib_dna__core___work_system__WorkSystem	on main
 dynamic	__lib_dna__core___workflow_runtime__Executions	on main
 dynamic	__lib_dna__core___workflow_runtime__WorkflowRuntime	on main
-shared	dynamic	sites in the stdlib #919aadb4
+shared	dynamic	sites in the stdlib #c3a51769
 
 == dna/tests/workflow_recovery_test.hl
 root	App	the entry
@@ -12374,7 +12456,7 @@ dynamic	__lib_dna__core___work_system__WorkSystem	on main
 dynamic	__lib_dna__core___workflow_runtime__Executions	on main
 dynamic	__lib_dna__core___workflow_runtime__WorkRun	on main
 dynamic	__lib_dna__core___workflow_runtime__WorkflowRuntime	on main
-shared	dynamic	sites in the stdlib #919aadb4
+shared	dynamic	sites in the stdlib #c3a51769
 
 == dna/tests/workflow_release_type_wide_test.hl
 root	App	the entry
@@ -12403,7 +12485,7 @@ dynamic	__lib_dna__core___performers__IdempotentReplay	on main
 dynamic	__lib_dna__core___work_system__WorkSystem	on main
 dynamic	__lib_dna__core___workflow_runtime__Executions	on main
 dynamic	__lib_dna__core___workflow_runtime__WorkflowRuntime	on main
-shared	dynamic	sites in the stdlib #919aadb4
+shared	dynamic	sites in the stdlib #c3a51769
 
 == dna/tests/workflow_retry_test.hl
 root	App	the entry
@@ -12424,7 +12506,7 @@ dynamic	__lib_dna__core___routing__RoutedJournal	on main
 dynamic	__lib_dna__core___work_system__WorkSystem	on main
 dynamic	__lib_dna__core___workflow_runtime__Executions	on main
 dynamic	__lib_dna__core___workflow_runtime__WorkflowRuntime	on main
-shared	dynamic	sites in the stdlib #919aadb4
+shared	dynamic	sites in the stdlib #c3a51769
 
 == dna/tests/workflow_run_test.hl
 root	App	the entry
@@ -12443,7 +12525,7 @@ dynamic	__lib_dna__core___workflow_runtime__WorkRun	on main
 -- dynamic	sites in tests
 dynamic	__lib_dna__core___workflow_runtime__LeafSpecRows	on main
 dynamic	__lib_dna__core___workflow_runtime__WorkflowRun	on main
-shared	dynamic	sites in the stdlib #919aadb4
+shared	dynamic	sites in the stdlib #c3a51769
 
 == dna/tests/workflow_step_test.hl
 root	App	the entry
@@ -12491,7 +12573,7 @@ dynamic	__lib_dna__core___workflow_runtime__WorkRun	on main
 -- dynamic	sites in tests
 dynamic	__lib_dna__core___workflow_runtime__LeafSpecRows	on main
 dynamic	__lib_dna__core___workflow_runtime__StepRun	on main
-shared	dynamic	sites in the stdlib #919aadb4
+shared	dynamic	sites in the stdlib #c3a51769
 
 == dna/tests/workspace_test.hl
 root	App	the entry
@@ -13394,7 +13476,7 @@ dynamic	__lib_dna__operations___governance_command__GovernanceCommandCodec	on po
 dynamic	__lib_dna__operations___governance_policy__AuthorityPolicyCodec	on pool:io|unknown (no instance)
 dynamic	__lib_dna__operations___organization_json__OrganizationJson	on pool:io|unknown (`body_alive` passed as a value)|unknown (no instance)
 -- dynamic	sites in the stdlib
-dynamic	__StdBytesBytesBuilder	on main|pinned:HeadMain@literal1.watch|pool:io|pool:senses|unknown (`body_alive` passed as a value)
+dynamic	__StdBytesBytesBuilder	on pool:senses|unknown (`body_alive` passed as a value)
 dynamic	__StdIterLines	on unknown (`body_alive` passed as a value)
 
 == dna/api/tests/catalog
@@ -13782,7 +13864,7 @@ shared	Reflexes@literal1.nerves	__lib_dna__core__pond__realtime__nats___adapter_
 dynamic	__StdBytesBytesBuilder	on pinned:Reflexes@literal1.nerves
 dynamic	__StdJsonBuilder	on pinned:Reflexes@literal1.nerves|unknown (no caller)
 -- dynamic	sites in the stdlib
-dynamic	__StdBytesBytesBuilder	on main|pinned:Reflexes@literal1.nerves
+dynamic	__StdBytesBytesBuilder	on pinned:Reflexes@literal1.nerves
 dynamic	__StdIterLines	on pinned:Reflexes@literal1.nerves
 
 == dna/tests/claims
@@ -14151,7 +14233,7 @@ root	App	the entry
 row	App@literal1	App	main	default
 dynamic	__StdJsonBuilder	on main|unknown (no caller)|unknown (no instance)	in core
 shared	App@literal1.editor	__lib_dna__core___editing__SourceEditor #e71a3722
-shared	dynamic	sites in the stdlib #919aadb4
+shared	dynamic	sites in the stdlib #c3a51769
 
 == dna/tests/law/money_gate_pass
 root	App	the entry
@@ -14180,7 +14262,6 @@ row	App@literal1.list	Todos	pool:work	entry	off owner
 row	App@literal1.roles	Grants	main	default
 row	App@literal1.tokens	Tokens	main	default
 row	__StdApiHubStream@binding1	__StdApiHubStream	pinned:__StdApiHubStream@binding1	binding
-dynamic	__StdBytesBytesBuilder	on pinned:App@literal1.sense	in the stdlib
 shared	App@literal1.__rpc_h_1	__StdApiHttpListener #6e12d80d
 shared	App@literal1.__rpc_h_2	__StdApiHttpListener #6e12d80d
 shared	App@literal1.__rpc_w_1	__StdApiWsListener #61e09f7c
@@ -14857,6 +14938,10 @@ row	~.seg	Segment	main	inherited
 == shared M #9add580c
 row	~	M	pinned:~	entry	off owner
 row	~.s	S	pinned:~	inherited
+
+== shared Outer #1047d3f2
+row	~	Outer	main	default
+row	~.inner	Inner	main	inherited
 
 == shared Owner #415028ff
 row	~	Owner	pinned:~	entry	off owner
@@ -16853,6 +16938,10 @@ dynamic	__StdIoTcpConnInline	on pool:io
 dynamic	__StdIoTcpConnections	on pool:io
 dynamic	__StdIoTcpStream	on pool:io
 
+== shared sites in the seed #0ae7b8f9
+dynamic	Big	on main
+dynamic	Small	on main
+
 == shared sites in the seed #38292389
 dynamic	<hole>	on main|unresolved declaration `__api_receivers`|unresolved declaration `__api_serve`|unresolved declaration `unix::Rpc`
 dynamic	__StdApiUnixConns	on pool:__api_unix
@@ -16923,29 +17012,29 @@ dynamic	__StdIoTcpConnInline	on pool:io
 dynamic	__StdIoTcpConnections	on pool:io
 dynamic	__StdIoTcpStream	on pool:io
 
-== shared sites in the stdlib #530e81ca
-dynamic	__StdBytesBytesBuilder	on unknown (`candidate` passed as a value)|unknown (no caller)
-dynamic	__StdIterLines	on unknown (`candidate` passed as a value)
-
-== shared sites in the stdlib #60cf2d1f
-dynamic	__StdBytesBytesBuilder	on unknown (`rejected` passed as a value)|unknown (no caller)
-dynamic	__StdIterLines	on unknown (`rejected` passed as a value)
-
-== shared sites in the stdlib #8d361d8b
-dynamic	__StdBytesBytesBuilder	on unknown (`event` passed as a value)|unknown (no caller)
+== shared sites in the stdlib #017b2abb
+dynamic	__StdBytesBytesBuilder	on unknown (`event` passed as a value)
 dynamic	__StdIterLines	on unknown (`event` passed as a value)
 
-== shared sites in the stdlib #919aadb4
-dynamic	__StdBytesBytesBuilder	on main|unknown (no caller)
-dynamic	__StdIterLines	on main
+== shared sites in the stdlib #3acbb365
+dynamic	__StdBytesBytesBuilder	on unknown (`request` passed as a value)
+dynamic	__StdIterLines	on unknown (`request` passed as a value)
+
+== shared sites in the stdlib #5050d570
+dynamic	__StdBytesBytesBuilder	on unknown (`check` passed as a value)
+dynamic	__StdIterLines	on unknown (`check` passed as a value)
 
 == shared sites in the stdlib #a037c975
 dynamic	__StdBytesBytesBuilder	on main|pool:io
 dynamic	__StdIterLines	on main|pool:io
 
-== shared sites in the stdlib #b156bdf1
-dynamic	__StdBytesBytesBuilder	on unknown (`request` passed as a value)|unknown (no caller)
-dynamic	__StdIterLines	on unknown (`request` passed as a value)
+== shared sites in the stdlib #b6aed203
+dynamic	__StdBytesBytesBuilder	on unknown (`rejected` passed as a value)
+dynamic	__StdIterLines	on unknown (`rejected` passed as a value)
+
+== shared sites in the stdlib #ba6ce489
+dynamic	__StdBytesBytesBuilder	on unknown (`candidate` passed as a value)
+dynamic	__StdIterLines	on unknown (`candidate` passed as a value)
 
 == shared sites in the stdlib #c3a51769
 dynamic	__StdBytesBytesBuilder	on main
@@ -16954,7 +17043,3 @@ dynamic	__StdIterLines	on main
 == shared sites in the stdlib #d1d49800
 dynamic	__StdBytesBytesBuilder	on main|pool:commands|pool:io
 dynamic	__StdIterLines	on main|pool:commands|pool:io
-
-== shared sites in the stdlib #f3f955da
-dynamic	__StdBytesBytesBuilder	on unknown (`check` passed as a value)|unknown (no caller)
-dynamic	__StdIterLines	on unknown (`check` passed as a value)

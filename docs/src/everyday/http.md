@@ -398,6 +398,12 @@ declared `Api` with the right method, so it's a `Handler`. (Go
 programmers will recognize this; it's interfaces without the
 `impl` ceremony.)
 
+The other side of the contract: a parameter typed by an interface
+offers only the interface's methods. In `fn serve_one(h: Handler)`,
+`h.handle(req)` is fine and `h.routes` is a compile error — `Handler`
+promises a `handle` method, not whatever fields the locus behind it
+happens to have.
+
 ## Taking over the connection
 
 Some protocols start as HTTP and then stop being HTTP — WebSocket

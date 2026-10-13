@@ -17,6 +17,20 @@
    Capitalized identifiers refer to lexical classes defined in
    tokens.md (e.g., IDENTIFIER, INT_LIT). Lowercase identifiers
    are non-terminals defined here.
+
+   Contextual keywords (decision F.43). A quoted word in a production
+   is a keyword only in that production's position. Every word other
+   than the hard keywords of tokens.md (the declaration, statement /
+   expression and future-use words) is CONTEXTUAL: it lexes as an
+   IDENTIFIER, so wherever this grammar writes IDENTIFIER the word is
+   admitted too — `run`, `epoch`, `restart`, `capacity`, `of` and
+   `where` name fields, params, locals, enum variants and fns. Where a
+   word could be read both ways the production says which wins: a
+   lifecycle_keyword at locus-member position is the hook, a
+   recovery_op at statement head before `(` is the recovery, `yield` /
+   `terminate` at statement head before `;` are the statements. A
+   locus method named like a hook or a mode, and a free fn named like
+   a recovery_op, are parse errors (tokens.md § Reserved words).
    =================================================================== *)
 
 
@@ -154,7 +168,10 @@ interface_method_sig
    and inherit the payload type. `topic` is a contextual keyword
    (lexed as IDENTIFIER) — only the top-level decl position
    recognizes it, so `topic` remains usable as a struct field or
-   local name.
+   local name. A topic's name shares the one top-level namespace with
+   types, loci, perspectives and interfaces: `topic Tick { payload:
+   Tick; }` beside `type Tick` is a duplicate top-level name, and the
+   diagnostic says so and names the rename.
 
    Phase 2:
      - Optional `: ParentTopic` declares a hierarchy. Wire subject
@@ -720,11 +737,10 @@ contract_member   = ( "expose" | "consume" ) ,
                     | "inferred" , ";"
                     ) ;
 
-(* Mode keywords are admitted as contract names (2026-07-02, the
-   F.10 keyword-as-name fallback) so the exposed-mode pull rule is
-   expressible: `expose bulk: Float;`. The exposed type is checked
-   against the mode's declared return. *)
-contract_name     = IDENTIFIER | "bulk" | "harmonic" | "resolution" ;
+(* Mode words are contextual (F.43), so they are IDENTIFIERs here and
+   the exposed-mode pull rule is expressible: `expose bulk: Float;`.
+   The exposed type is checked against the mode's declared return. *)
+contract_name     = IDENTIFIER ;
 
 
 (* === 5. Bus block ============================================== *)
@@ -803,8 +819,8 @@ slot_kind         = "pool" | "heap" ;
    the cell type (which must be a user-declared struct) to serve
    as the key for `@form(hashmap)` lowering. Only valid on a
    `pool` slot in a `@form(hashmap)` locus; rejected at typecheck
-   elsewhere. The `indexed_by` keyword is reserved at the lexer
-   level (TokenKind::IndexedBy). *)
+   elsewhere. `indexed_by` is a contextual keyword, recognized in
+   this clause position (F.43). *)
 
 
 (* === 6. Lifecycle blocks ======================================= *)
@@ -842,9 +858,13 @@ lifecycle_keyword = "birth"
 
 (* Three modes (bulk / harmonic / resolution) project the same
    underlying kernel three ways. A locus may declare any subset.
-   The compiler emits one implementation per declared mode. *)
+   The compiler emits one implementation per declared mode. A mode
+   takes what a lifecycle hook takes, `@unbounded` or
+   `@bounded_by(<name>)`, once (friction sweep 2026-10-12): the
+   unbounded-allocation warning in a mode body asks for one. *)
 
-mode_decl         = "mode" , mode_name , [ "(" , [ param_list ] , ")" ] ,
+mode_decl         = [ unbounded_annotation | bounded_by_annotation ] ,
+                    "mode" , mode_name , [ "(" , [ param_list ] , ")" ] ,
                     [ "->" , type_expr ] , block ;
 mode_name         = "bulk"
                   | "harmonic"
@@ -1087,7 +1107,11 @@ function_type     = "fn" , "(" , [ type_expr , { "," , type_expr } ] , ")" ,
 
 (* === 13. Const and function decls ============================= *)
 
-const_decl        = "const" , IDENTIFIER , ":" , type_expr , "=" ,
+(* The type may be left out when the initializer is a literal (`3`,
+   `-1.5`, `2.50d`, `"x"`, `true`, `b"x"`): the const takes the
+   literal's primitive type. Any other initializer states it, and the
+   parser says so at the initializer (friction sweep 2026-10-12). *)
+const_decl        = "const" , IDENTIFIER , [ ":" , type_expr ] , "=" ,
                     expression , ";" ;
 
 function_decl     = [ ffi_annotation | export_annotation
@@ -1337,13 +1361,16 @@ terminate_stmt    = "terminate" , ";" ;
    Outside that position it's an ordinary identifier. *)
 fail_stmt         = "fail" , expression , ";" ;
 
-(* Recovery primitives. Statement-level only. *)
+(* Recovery primitives. Statement-level only: a recovery_op at
+   statement head followed by `(` is the recovery statement; the words
+   are contextual (F.43) and names anywhere else. A free fn may not be
+   named by one, since a statement-position call to it would read as
+   the recovery. `drain` and `dissolve` are lifecycle hooks, not
+   recovery ops (m55). *)
 recovery_stmt     = recovery_op , "(" , [ argument_list ] , ")" ,
                     [ recovery_modifier ] , ";" ;
 recovery_op       = "restart"
                   | "restart_in_place"
-                  | "drain"
-                  | "dissolve"
                   | "quarantine"
                   | "reorganize"
                   | "bubble"
@@ -1481,24 +1508,14 @@ serve_option      = "as" , ":" , expression
                   | "bound" , ":" , expression
                   | "on_full" , ":" , expression ;
 
-(* member_name accepts identifiers AND framework-vocabulary
-   keywords as field / method names. Post-`.` is unambiguous
-   member-name position, so admitting reserved words here is
-   safe. The mode keywords (per F.10) and the locus-member
-   keywords are admitted so that e.g. `self.bulk()`,
-   `err.closure`, `err.locus` typecheck without renaming. *)
+(* member_name accepts identifiers AND the hard declaration keywords
+   that name fields of built-in struct values. Post-`.` is unambiguous
+   member-name position, so admitting them here is safe: `err.locus`,
+   `x.type`, `d.in(s)`. The framework vocabulary (`self.bulk()`,
+   `err.closure`, `self.epoch`, `self.tier`) is contextual (F.43) and
+   arrives as an IDENTIFIER. *)
 member_name       = IDENTIFIER
-                  | "bulk"
-                  | "harmonic"
-                  | "resolution"
-                  | "closure"
                   | "locus"
-                  | "params"
-                  | "contract"
-                  | "bus"
-                  | "capacity"
-                  | "tier"
-                  | "projection"
                   | "perspective"
                   | "type"
                   | "in"              (* #1076: `d.in(s)` *)
@@ -1595,7 +1612,7 @@ match_expr        = match_stmt ;
 sum_expr          = "sum" , "(" , expression , ")" ;
 prod_expr         = "prod" , "(" , expression , ")" ;
 
-argument_list     = expression , { "," , expression } ;
+argument_list     = expression , { "," , expression } , [ "," ] ;   (* a trailing comma is accepted *)
 
 identifier_list   = IDENTIFIER , { "," , IDENTIFIER } ;
 

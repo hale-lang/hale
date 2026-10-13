@@ -233,7 +233,20 @@ pub fn render_flows(
     let mut shown: Vec<&hale_types::flows::Flow> = flows.iter().collect();
     shown.sort_by_key(|f| spell(&f.child));
     for f in shown {
-        out.push_str(&format!("\n  {} — a flow, by:\n", spell(&f.child)));
+        // An interface's clauses make flows of the loci they admit.
+        let mut admitted: Vec<String> =
+            f.clauses.iter().flat_map(|c| c.admits.iter().map(|a| spell(a))).collect();
+        admitted.sort();
+        admitted.dedup();
+        if admitted.is_empty() {
+            out.push_str(&format!("\n  {} — a flow, by:\n", spell(&f.child)));
+        } else {
+            out.push_str(&format!(
+                "\n  {} — an interface: {} each a flow, by:\n",
+                spell(&f.child),
+                admitted.join(", ")
+            ));
+        }
         for c in &f.clauses {
             let at = locate_span(c.span, file_bases, sources)
                 .map(|(path, l, col)| format!("{path}:{l}:{col}"))

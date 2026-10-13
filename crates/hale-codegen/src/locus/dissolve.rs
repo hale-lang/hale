@@ -2179,7 +2179,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // accepted one pays nothing. Only present on loci that
         // iterate `self.children` (children_field_idx is None
         // otherwise, including on the accept'd children themselves).
-        if let Some(arr_idx) = info.children_field_idx {
+        for arr_idx in info.child_buffers.values().map(|b| b.arr) {
             let arr_field_ptr = self
                 .builder
                 .build_struct_gep(

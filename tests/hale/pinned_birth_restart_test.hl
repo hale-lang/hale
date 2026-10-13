@@ -76,11 +76,11 @@ main locus App {
     placement { held: pinned; twice: pinned; late: pinned; fresh: pinned; never: pinned; }
     on_failure(c: Kid, err: ClosureViolation) {
         self.kid_failures = self.kid_failures + 1;
-        restart (c) for 3;
+        restart(c) for 3;
     }
     on_failure(c: Fresh, err: ClosureViolation) {
         self.fresh_failures = self.fresh_failures + 1;
-        restart_in_place (c);
+        restart_in_place(c);
     }
     run() {
         let mut i = 0;

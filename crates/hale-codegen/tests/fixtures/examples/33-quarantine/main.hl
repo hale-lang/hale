@@ -38,7 +38,7 @@ locus Coordinator {
     on_failure(w: Worker, err: ClosureViolation) {
         println("Coordinator: ", err.locus, " failed ",
             err.closure, " — quarantining");
-        quarantine (w);
+        quarantine(w);
     }
 
     run() {

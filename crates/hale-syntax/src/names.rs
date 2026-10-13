@@ -349,7 +349,7 @@ fn locus_member<'a>(m: &'a LocusMember, f: &mut Visit<'_, 'a>) {
             block(body, f);
         }
         LocusMember::Mode(md) => {
-            let ModeDecl { kind: _, params: ps, ret, body, span: _, id: _ } = md;
+            let ModeDecl { kind: _, params: ps, ret, unbounded: _, bounded_by: _, body, span: _, id: _ } = md;
             params(ps, f);
             opt_ty(ret, f);
             block(body, f);

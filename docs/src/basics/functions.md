@@ -29,6 +29,9 @@ fn main() {
 }
 ```
 
+A trailing comma after the last argument is fine — `add(2, 3,)` —
+which keeps a call whose arguments sit one per line diff-friendly.
+
 ## Returning a value
 
 `return expr;` hands a value back. A function can also return its
