@@ -49,7 +49,10 @@ not). Its `get` is `fallible(KeyError)` on a miss, and so is
 cache whose cells own something outside memory — a socket, a file —
 declares `fn on_evict(k: K, v: S)` on the locus: the cache calls it with
 each entry it evicts, before reclaiming the cell, so the cell can be
-closed.
+closed, and when the cache dissolves it calls it once more for each
+entry still held, least recently used first. The hook may not `put` into
+its own cache, directly or through a method it calls; the check refuses
+that `put`.
 
 Both a `vec` and a `hashmap` also expose **batched iteration** —
 `for x in v.items { … }` walks the vec, and

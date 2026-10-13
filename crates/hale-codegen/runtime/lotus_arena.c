@@ -7363,6 +7363,32 @@ int lotus_lru_remove(void *cache_ptr, const void *key, void *out_value) {
     return 1;
 }
 
+/* Dissolve's hand-off to the eviction hook: take the least-recently-used
+ * entry out, its value to `out_value`, and return 1; 0 when the cache is
+ * empty. Codegen calls it in a loop when the cache locus dissolves, so
+ * the hook sees each entry still held, in LRU order (oldest first), and
+ * a cell owning a resource outside the arena (an fd) releases it. The
+ * cell's blocks are the locus arena's and go with it: nothing retires. */
+int lotus_lru_pop_lru(void *cache_ptr, void *out_value) {
+    if (!cache_ptr || !out_value) return 0;
+    lotus_lru_t *c = (lotus_lru_t *)cache_ptr;
+    if (c->len == 0 || !c->slots) return 0;
+    size_t best = c->table_cap;
+    uint64_t best_tick = 0;
+    for (size_t j = 0; j < c->table_cap; ++j) {
+        if (!*lotus_lru_occ(c, j)) continue;
+        uint64_t t = lotus_lru_tick_at(c, j);
+        if (best == c->table_cap || t < best_tick) {
+            best = j;
+            best_tick = t;
+        }
+    }
+    if (best == c->table_cap) return 0;
+    memcpy(out_value, lotus_lru_valp(c, best), c->value_size);
+    lotus_lru_delete_at(c, best);
+    return 1;
+}
+
 /* Membership WITHOUT touching recency (unlike get). */
 int lotus_lru_contains(void *cache_ptr, const void *key) {
     if (!cache_ptr || !key) return 0;

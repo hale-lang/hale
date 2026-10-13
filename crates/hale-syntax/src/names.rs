@@ -189,7 +189,7 @@ fn top_decl<'a>(d: &'a TopDecl, f: &mut Visit<'_, 'a>) {
             }
         }
         TopDecl::Api(a) => {
-            let ApiDecl { name: n, rows, span: _ } = a;
+            let ApiDecl { name: n, rows, span: _, origin: _ } = a;
             name(n, f);
             for r in rows {
                 let RpcRow { locus, written: _, method, requires, span: _ } = r;

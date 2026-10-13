@@ -2693,6 +2693,14 @@ row	C@main1	C	main	default
 == crates/hale-codegen/tests/form_lru_cache_reclaim.rs#2c79ba82
 shared	H@main1	H #95920e24
 
+== crates/hale-codegen/tests/form_lru_cache_reclaim.rs#4be08740
+root	App	the entry
+row	App@literal1	App	main	default
+row	App@literal1.q	Pool	main	default
+-- dynamic	sites in the seed
+dynamic	Holder	on main
+dynamic	Pool	on main
+
 == crates/hale-codegen/tests/form_ring_buffer_codegen.rs#6e1a7340
 row	RB@main1	RB	main	default
 
@@ -7054,6 +7062,10 @@ row	Box@main2	Box	main	default
 row	Counter@main1	Counter	main	default
 dynamic	Mx	on main	in the seed
 
+== tests/hale/bounded_time_test.hl
+root	Clock	the entry
+row	Clock@literal1	Clock	main	default
+
 == tests/hale/bus_static_wide_payload_test.hl
 row	Printer@main1	Printer	main	default
 row	Producer@main2	Producer	main	default
@@ -7459,6 +7471,10 @@ dynamic	<hole>	on main|unresolved declaration `Pair_Int`	in the seed
 
 == tests/hale/unit_return_annotation_test.hl
 row	Counter@main1	Counter	main	default
+
+== tests/hale/units_loop_test.hl
+root	Till	the entry
+row	Till@literal1	Till	main	default
 
 == tests/hale/violate_in_value_method_test.hl
 root	App	the entry

@@ -452,6 +452,50 @@ fn if_sites<'a>(i: &'a hale_syntax::ast::IfStmt, out: &mut Vec<ServeSite<'a>>) {
     }
 }
 
+/// The surface argument of every serve site in a block, mutably: the
+/// statement shapes [`serve_sites_in`] reads, in its order.
+pub(crate) fn serve_surfaces_in_mut(b: &mut Block, f: &mut dyn FnMut(&mut Expr)) {
+    fn expr(e: &mut Expr, f: &mut dyn FnMut(&mut Expr)) {
+        if ServeSite::of(e).is_none() {
+            return;
+        }
+        if let Expr::Call { args, .. } = e {
+            if let Some(first) = args.first_mut() {
+                f(first);
+            }
+        }
+    }
+    fn if_stmt(i: &mut hale_syntax::ast::IfStmt, f: &mut dyn FnMut(&mut Expr)) {
+        serve_surfaces_in_mut(&mut i.then_block, f);
+        match i.else_block.as_deref_mut() {
+            Some(ElseBranch::Else(b)) => serve_surfaces_in_mut(b, f),
+            Some(ElseBranch::ElseIf(e)) => if_stmt(e, f),
+            None => {}
+        }
+    }
+    for s in &mut b.stmts {
+        match s {
+            Stmt::Let { value, .. } | Stmt::LetTuple { value, .. } | Stmt::Assign { value, .. } => expr(value, f),
+            Stmt::Expr(e) => expr(e, f),
+            Stmt::If(i) => if_stmt(i, f),
+            Stmt::Match(m) => {
+                for arm in &mut m.arms {
+                    match &mut arm.body {
+                        MatchArmBody::Expr(e) => expr(e, f),
+                        MatchArmBody::Block(b) => serve_surfaces_in_mut(b, f),
+                    }
+                }
+            }
+            Stmt::For { body, .. } | Stmt::While { body, .. } => serve_surfaces_in_mut(body, f),
+            Stmt::Block(b) => serve_surfaces_in_mut(b, f),
+            _ => {}
+        }
+    }
+    if let Some(t) = &mut b.tail {
+        expr(t, f);
+    }
+}
+
 fn expr_sites<'a>(e: &'a Expr, out: &mut Vec<ServeSite<'a>>) {
     if let Some(s) = ServeSite::of(e) {
         out.push(s);

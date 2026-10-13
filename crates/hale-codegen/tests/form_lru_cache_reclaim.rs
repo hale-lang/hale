@@ -276,3 +276,91 @@ fn values_outlive_their_cells() {
     assert!(out.status.success(), "non-zero {:?}; stdout: {stdout}; stderr: {stderr}", out.status);
     assert!(stdout.contains("kept=s2998i2998 last=s2998 ev=66757 seen=80664"), "stdout: {stdout}; stderr: {stderr}");
 }
+
+/// Dissolving the cache hands every entry it still holds to the hook,
+/// after the locus's `dissolve()` body, least recently used first: three
+/// fd-owning cells are closed, so the descriptor the program opens after
+/// the cache is gone is the one it had before (the lowest free fd), on
+/// each teardown path: a scope-local cache, one a locus holds as a param
+/// (the cascade) and the main locus's own (its reclaim), under ASan.
+#[test]
+fn dissolving_the_cache_hands_each_held_entry_to_the_hook_in_lru_order() {
+    let src = r#"
+        type Conn { host: String = ""; fd: Int = -1; }
+        @form(lru_cache, cap = 4)
+        locus Pool {
+            capacity { pool conns of Conn indexed_by host; }
+            params { closed: Int = 0; }
+            fn on_evict(k: String, v: Conn) {
+                let r = std::io::tcp::close_fd(v.fd);
+                self.closed = self.closed + 1;
+                println("evict ", k, " ", v.host, " ", r);
+            }
+            dissolve() { println("dissolve ", self.len(), " ", self.closed); }
+        }
+        fn open() -> Int {
+            return std::io::tcp::listen_socket("127.0.0.1", 0) or -1;
+        }
+        fn fill() {
+            let p = Pool { };
+            p.put(Conn { host: std::str::upper("a"), fd: open() });
+            p.put(Conn { host: std::str::upper("b"), fd: open() });
+            p.put(Conn { host: std::str::upper("c"), fd: open() });
+            let touch = p.get("A") or Conn { };
+            println("held ", p.len(), " ", touch.host);
+        }
+        locus Holder {
+            params { p: Pool = Pool { }; }
+            fn fill() {
+                self.p.put(Conn { host: std::str::upper("x"), fd: open() });
+                self.p.put(Conn { host: std::str::upper("y"), fd: open() });
+            }
+        }
+        fn hold() {
+            let h = Holder { };
+            h.fill();
+        }
+        main locus App {
+            params { q: Pool = Pool { }; }
+            run() {
+                let base = open();
+                let _c = std::io::tcp::close_fd(base);
+                fill();
+                println("baseline ", open() == base);
+                let again = open();
+                let _d = std::io::tcp::close_fd(again);
+                hold();
+                println("baseline ", open() == again);
+                self.q.put(Conn { host: std::str::upper("m"), fd: open() });
+            }
+        }
+        fn main() { App { }; println("after"); }
+    "#;
+    let bin = harness::unique_bin("hale_lru_reclaim_dissolve");
+    harness::build_source_asan(src, &bin);
+    let out = Command::new(&bin).env("LOTUS_NO_CHUNK_POOL", "1").output().expect("run");
+    let _ = std::fs::remove_file(&bin);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "non-zero {:?}; stdout: {stdout}; stderr: {stderr}", out.status);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(
+        lines,
+        [
+            "held 3 A",
+            "dissolve 3 0",
+            "evict B B 0",
+            "evict C C 0",
+            "evict A A 0",
+            "baseline true",
+            "dissolve 2 0",
+            "evict X X 0",
+            "evict Y Y 0",
+            "baseline true",
+            "dissolve 1 0",
+            "evict M M 0",
+            "after",
+        ],
+        "stderr: {stderr}"
+    );
+}
