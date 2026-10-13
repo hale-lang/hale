@@ -652,7 +652,7 @@ row	App@literal1	App	main	default
 row	~	Grow	main	default
 row	~.acc	Acc	main	inherited
 
-== crates/hale-stdlib/hl/api_rpc.hl#a4932d72
+== crates/hale-stdlib/hl/api_rpc.hl#c4bdd5f6
 
 == crates/hale-stdlib/hl/file.hl#f57ba351
 
@@ -1386,7 +1386,7 @@ dynamic	__StdIoTcpConnInline	on pool:__api_http
 dynamic	__StdIoTcpConnections	on pool:__api_http|unknown (no instance)
 dynamic	__StdIoTcpStream	on pool:__api_http|unknown (no instance)
 
-== crates/hale-codegen/tests/api_runtime.rs#9876407f
+== crates/hale-codegen/tests/api_runtime.rs#c9cabfaf
 root	App	the entry
 domain	pool:work	async_io
 row	App@literal1	App	main	default
@@ -1754,6 +1754,12 @@ row	App@literal1	App	main	default
 row	Adapter@binding1	Adapter	pinned:Adapter@binding1	binding
 dynamic	Sink	on main	in the seed
 
+== crates/hale-codegen/tests/bus_early_registration.rs#f8586544
+root	App	the entry
+row	App@literal1	App	main	default
+row	App@literal1.b	Born	main	default
+row	App@literal1.r	Ran	main	default
+
 == crates/hale-codegen/tests/bus_handler_freefn.rs#c3019ba5
 row	Src@main2	Src	main	default
 row	Worker@main1	Worker	main	default
@@ -1783,6 +1789,20 @@ row	Pub@main2	Pub	main	default
 == crates/hale-codegen/tests/bus_publish_stack_alloca.rs#2d27a62d
 row	Counter@main1	Counter	main	default
 row	Pub@main2	Pub	main	default
+
+== crates/hale-codegen/tests/bus_publisher_order.rs#11124b22
+root	App	the entry
+row	App@literal1	App	main	default
+row	App@literal1.a1	SubA	main	default
+row	App@literal1.a2	SubA	main	default
+row	App@literal1.a3	SubA	main	default
+row	App@literal1.c	Coord	main	default
+
+== crates/hale-codegen/tests/bus_publisher_order.rs#c326e5a0
+root	App	the entry
+row	App@literal1	App	main	default
+row	App@literal1.t1	Tally	main	default
+row	App@literal1.t2	Tally	main	default
 
 == crates/hale-codegen/tests/bus_routing_keys.rs#3d1a84d5
 root	App	the entry
@@ -4135,6 +4155,20 @@ row	App@literal1.burst	Burst	pinned:App@literal1.burst	entry	off owner
 row	App@literal1.sink	Sink	main	default
 row	App@literal1.slow	Slow	main	default
 
+== crates/hale-codegen/tests/shm_ring_teardown_wait.rs#8b8864b8
+root	App	the entry
+domain	pinned:App@literal1.burst
+row	App@literal1	App	main	default
+row	App@literal1.burst	Burst	pinned:App@literal1.burst	entry	off owner
+row	App@literal1.sink	Sink	main	default
+
+== crates/hale-codegen/tests/shm_ring_teardown_wait.rs#55f2f164
+root	App	the entry
+domain	pinned:App@literal1.burst
+row	App@literal1	App	main	default
+row	App@literal1.born	Born	main	default
+row	App@literal1.burst	Burst	pinned:App@literal1.burst	entry	off owner
+
 == crates/hale-codegen/tests/sibling_field_forward_ref.rs#2c26373a
 root	Workbench	the entry
 hole	Workbench@literal1.dispatcher.gate	reuse `self.gate`
@@ -4164,6 +4198,15 @@ domain	pinned:App@literal1.pub_
 row	App@literal1	App	main	default
 row	App@literal1.pub_	Pub	pinned:App@literal1.pub_	entry	off owner
 row	App@literal1.sub	Sub	main	default
+
+== crates/hale-codegen/tests/sleep_drains_bus.rs#35248313
+root	App	the entry
+domain	pinned:App@literal1.pub_
+domain	pool:a
+row	App@literal1	App	main	default
+row	App@literal1.other	Other	pool:a	entry	off owner
+row	App@literal1.pub_	Pub	pinned:App@literal1.pub_	entry	off owner
+row	App@literal1.sub	Sub	pool:a	entry	off owner
 
 == crates/hale-codegen/tests/stdlib_cli.rs#d87e629e
 row	__StdCliResolver@main1	__StdCliResolver	main	default
@@ -4707,6 +4750,13 @@ row	Holder@main1	Holder	main	default
 == crates/hale-codegen/tests/unowned_literal_positions.rs#c5db677e
 row	Provider@main1	Provider	main	default
 row	Provider@main2	Provider	main	default
+
+== crates/hale-codegen/tests/unwind_registry_threads.rs#7c3188a5
+root	App	the entry
+domain	pinned:App@literal1.w
+row	App@literal1	App	main	default
+row	App@literal1.w	Worker	pinned:App@literal1.w	entry	off owner
+dynamic	Child	on main|pinned:App@literal1.w	in the seed
 
 == crates/hale-codegen/tests/view_coerce_e1.rs#b21794f6
 row	__StdBytesBytesBuilder@main1	__StdBytesBytesBuilder	main	default
