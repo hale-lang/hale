@@ -877,6 +877,8 @@ pub const SURFACES: &[NsSurface] = &[
             row!("__close_fd", SYSCALL, [Int] -> Int, Intrinsic(IoTcpCloseFdRaw)),
             row!("__connect", SYSCALL | BLOCK, [Str, Int] -> Int, Intrinsic(IoTcpConnectRaw)),
             row!("__io_error_kind", PURE, [Int] -> Str, Intrinsic(IoTcpIoErrorKindRaw)),
+            // The platform's message for an errno: IoError.detail.
+            row!("__io_error_detail", PURE, [Int] -> Str, Intrinsic(IoTcpIoErrorDetailRaw)),
             row!("__last_io_status", PURE, [] -> Int, Intrinsic(IoTcpLastIoStatusRaw)),
             row!("__listen_socket", SYSCALL, [Str, Int] -> Int, Intrinsic(IoTcpListenSocketRaw)),
             // 1 when a blocking socket call here parks the coroutine (an
@@ -1606,6 +1608,7 @@ pub enum IntrinsicId {
     IoTcpCloseFdRaw,
     IoTcpConnectRaw,
     IoTcpIoErrorKindRaw,
+    IoTcpIoErrorDetailRaw,
     IoTcpLastIoStatusRaw,
     IoTcpListenSocketRaw,
     IoTcpParksRaw,

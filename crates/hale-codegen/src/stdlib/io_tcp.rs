@@ -97,6 +97,11 @@ pub(crate) trait IoTcpStdlib<'ctx> {
         args: &[Expr],
         scope: &Scope<'ctx>,
     ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError>;
+    fn lower_std_io_tcp_io_error_detail(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError>;
     fn lower_std_io_tcp_close_fd(
         &mut self,
         args: &[Expr],
@@ -861,6 +866,43 @@ impl<'ctx, 'p> IoTcpStdlib<'ctx> for Cx<'ctx, 'p> {
         let v = self
             .builder
             .build_call(f, &[e_val.into_int_value().into()], "tcp.errkind.ret")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .try_as_basic_value()
+            .left()
+            .expect("returns ptr");
+        Ok((v, CodegenTy::String))
+    }
+
+    /// `std::io::tcp::__io_error_detail(errno: Int) -> String`: the
+    /// platform's message for the errno, copied into the arena
+    /// (`lotus_io_error_detail`), for the `detail` of the IoErrors the
+    /// `Stream` bodies in `io_tcp.hl` build. 0 is "".
+    fn lower_std_io_tcp_io_error_detail(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
+        if args.len() != 1 {
+            return Err(CodegenError::Unsupported(format!(
+                "std::io::tcp::__io_error_detail takes 1 arg (errno), got {}",
+                args.len()
+            )));
+        }
+        let (e_val, e_ty) = self.lower_expr(&args[0], scope)?;
+        if e_ty != CodegenTy::Int {
+            return Err(CodegenError::Unsupported(format!(
+                "std::io::tcp::__io_error_detail: errno must be Int, got {:?}",
+                e_ty
+            )));
+        }
+        let arena_ptr = self.current_arena_ptr()?;
+        let f = self
+            .module
+            .get_function("lotus_io_error_detail")
+            .expect("lotus_io_error_detail declared");
+        let v = self
+            .builder
+            .build_call(f, &[arena_ptr.into(), e_val.into_int_value().into()], "tcp.errdetail.ret")
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
             .try_as_basic_value()
             .left()

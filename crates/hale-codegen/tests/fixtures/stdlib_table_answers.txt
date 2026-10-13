@@ -192,6 +192,7 @@ ns std::io::tcp open_prefixes=[]
   __close_fd syscall
   __connect syscall|block
   __io_error_kind pure
+  __io_error_detail pure
   __last_io_status pure
   __listen_socket syscall
   __parks pure
@@ -784,6 +785,7 @@ std::io::tcp::Stream | lookup=io::tcp@3 | locus=true | effects=- | sig=- | parks
 std::io::tcp::__accept_one | lookup=io::tcp@3 | locus=false | effects=syscall|block | sig=(Int) -> Int | ret_ty=Int | or=- | parks=true | holds=true | unknown=- | suggest=__accept_one
 std::io::tcp::__close_fd | lookup=io::tcp@3 | locus=false | effects=syscall | sig=(Int) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=__close_fd
 std::io::tcp::__connect | lookup=io::tcp@3 | locus=false | effects=syscall|block | sig=(Str, Int) -> Int | ret_ty=Int | or=- | parks=false | holds=true | unknown=- | suggest=__connect
+std::io::tcp::__io_error_detail | lookup=io::tcp@3 | locus=false | effects=pure | sig=(Int) -> Str | ret_ty=String | or=- | parks=false | holds=false | unknown=- | suggest=__io_error_detail
 std::io::tcp::__io_error_kind | lookup=io::tcp@3 | locus=false | effects=pure | sig=(Int) -> Str | ret_ty=String | or=- | parks=false | holds=false | unknown=- | suggest=__io_error_kind
 std::io::tcp::__last_io_status | lookup=io::tcp@3 | locus=false | effects=pure | sig=() -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=__last_io_status
 std::io::tcp::__listen_socket | lookup=io::tcp@3 | locus=false | effects=syscall | sig=(Str, Int) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=__listen_socket

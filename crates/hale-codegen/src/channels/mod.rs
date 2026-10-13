@@ -2231,7 +2231,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .expect("lotus_io_error_kind returns ptr");
 
         // Store fields. Order matches the `IoError` row of `hale_types::builtin_types`:
-        // kind (0), errno (1), path (2).
+        // kind (0), errno (1), path (2), detail (3).
         let (kind_idx, _) = info
             .fields
             .get("kind")
@@ -2285,6 +2285,31 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         self.builder
             .build_store(path_field_ptr, path_str_ptr)
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+
+        // detail: the platform's message for the errno, copied into the
+        // arena. A user's own `type IoError` (the shadow rule holds it to
+        // the row's fields) has the field too.
+        if let Some((detail_idx, _)) = info.fields.get("detail").cloned() {
+            let arena_ptr = self.current_arena_ptr()?;
+            let detail_fn = self
+                .module
+                .get_function("lotus_io_error_detail")
+                .expect("lotus_io_error_detail declared");
+            let detail_ptr = self
+                .builder
+                .build_call(detail_fn, &[arena_ptr.into(), errno_i64.into()], "ioerr.detail.ptr")
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                .try_as_basic_value()
+                .left()
+                .expect("lotus_io_error_detail returns ptr");
+            let detail_field_ptr = self
+                .builder
+                .build_struct_gep(info.struct_ty, alloc_ptr, detail_idx, "IoError.detail.ptr")
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            self.builder
+                .build_store(detail_field_ptr, detail_ptr)
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        }
 
         Ok(alloc_ptr)
     }

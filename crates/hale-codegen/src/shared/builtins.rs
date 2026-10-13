@@ -3392,6 +3392,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             ptr_t.fn_type(&[i64_t.into()], false),
             None,
         );
+        // declare ptr @lotus_io_error_detail(ptr arena, i64 errno)
+        self.module.add_function(
+            "lotus_io_error_detail",
+            ptr_t.fn_type(&[ptr_t.into(), i64_t.into()], false),
+            None,
+        );
         // declare i64 @lotus_tls_recv_into(i32 handle, ptr builder, i64 max_bytes)
         let tls_recv_into_ty = i64_t.fn_type(
             &[i32_t.into(), ptr_t.into(), i64_t.into()],

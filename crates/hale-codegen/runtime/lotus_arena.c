@@ -19363,6 +19363,27 @@ int64_t lotus_tcp_last_io_status(void) {
 /* errno → stable IoError kind tag, surfaced to `.hl` bodies as
  * `std::io::tcp::__io_error_kind(e)`. Thin wrapper so the Hale
  * side never needs the raw table. */
+/* IoError.detail: the platform's message for an errno ("No such file or
+ * directory"), the human text HttpError / DbError carry beside their
+ * kind. Copied into the caller's arena: `strerror` may answer from a
+ * buffer of its own (an errno it does not know), so the text is copied
+ * under one lock before anything else asks it. 0 is ""; a message the
+ * platform does not have (the wasm32 shim's is empty) is "errno N". */
+static pthread_mutex_t g_io_error_detail_lock = PTHREAD_MUTEX_INITIALIZER;
+const char *lotus_io_error_detail(lotus_arena_t *a, int64_t errno_val) {
+    if (errno_val == 0) return "";
+    char buf[160];
+    pthread_mutex_lock(&g_io_error_detail_lock);
+    const char *m = strerror((int)errno_val);
+    if (m && m[0]) {
+        snprintf(buf, sizeof buf, "%s", m);
+    } else {
+        snprintf(buf, sizeof buf, "errno %lld", (long long)errno_val);
+    }
+    pthread_mutex_unlock(&g_io_error_detail_lock);
+    return lotus_str_clone(a, buf);
+}
+
 const char *lotus_tcp_io_status_kind(int64_t errno_val) {
     return lotus_io_error_kind((int32_t)errno_val);
 }

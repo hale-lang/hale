@@ -26967,6 +26967,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             Id::IoTcpIoErrorKindRaw => {
                 self.lower_std_io_tcp_io_error_kind(args, scope)
             }
+            Id::IoTcpIoErrorDetailRaw => {
+                self.lower_std_io_tcp_io_error_detail(args, scope)
+            }
             // 2026-05-26 — named socket-option constants. Each
             // resolves to a zero-arg call into the matching C
             // getter, which returns the platform's numeric
@@ -27873,6 +27876,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             | Id::IoTcpCloseFdRaw
             | Id::IoTcpConnectRaw
             | Id::IoTcpIoErrorKindRaw
+            | Id::IoTcpIoErrorDetailRaw
             | Id::IoTcpLastIoStatusRaw
             | Id::IoTcpLastRecvKernelNs
             | Id::IoTcpLastRecvUserNs
