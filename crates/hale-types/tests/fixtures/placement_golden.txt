@@ -2424,6 +2424,23 @@ row	L@main1	L	main	default
 == crates/hale-codegen/tests/form_enum_cells.rs#8ffb188f
 row	Book@main1	Book	main	default
 
+== crates/hale-codegen/tests/form_hashmap_cas_retire.rs#e5222255
+-- H@main1	H
+row	~	H	main	default
+row	~.lm	LM	main	inherited
+row	~.ls	LS	main	inherited
+row	~.sm	SM	main	inherited
+row	~.ss	SS	main	inherited
+
+== crates/hale-codegen/tests/form_hashmap_cas_retire.rs#aebbcdec
+root	App	the entry
+domain	pool:io
+row	App@literal1	App	main	default
+-- App@literal1.w	Writer
+row	~	Writer	pool:io	entry	off owner
+row	~.lf	LF	pool:io	inherited
+row	~.st	ST	pool:io	inherited
+
 == crates/hale-codegen/tests/form_hashmap_codegen.rs#e9ab2b42
 row	RegistryL@main1	RegistryL	main	default
 

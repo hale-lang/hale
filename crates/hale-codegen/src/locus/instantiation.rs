@@ -1972,23 +1972,20 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         // reader, so the ordinary flush is sound
                         // and no epoch scheme is needed.
                         //
-                        // `striped` and `lockfree` stay excluded:
-                        // their read paths are bracketed by
-                        // lf_enter/rwlock rather than the map
-                        // mutex, and their grow path rebuilds
-                        // slots concurrently — a separate audit.
-                        let cell_name = if matches!(
-                            slot.sync_mode,
-                            SyncMode::None | SyncMode::Serialized
-                        ) {
-                            cell_name
-                        } else {
-                            None
-                        };
-                        // A serialized map's arena is written from
-                        // more than one pool: serialize its bump
-                        // allocator and retire lists.
-                        if slot.sync_mode == SyncMode::Serialized {
+                        // `striped` and `lockfree` maps retire too:
+                        // their reads copy a cell out under the
+                        // cell's own claim (lotus_hashmap_cell_read),
+                        // the CAS a writer's update or a lockfree
+                        // remove takes, so no reader is inside a
+                        // block when its cell is replaced. Their
+                        // grows move cells under the wrlock or the
+                        // drain and retire nothing.
+                        //
+                        // A synced map's arena is written from more
+                        // than one pool (each writer's set copies its
+                        // value in): serialize its bump allocator and
+                        // retire lists.
+                        if slot.sync_mode != SyncMode::None {
                             let arena_field = self
                                 .builder
                                 .build_struct_gep(
