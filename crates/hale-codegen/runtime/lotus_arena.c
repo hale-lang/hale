@@ -25385,7 +25385,17 @@ reaped:
     *out_stdout_str = out_anchored;
     *out_stderr_str = err_anchored;
 
-    /* Decode exit status. */
+    /* Decode exit status. A child the deadline stopped reads -1 however
+     * it ended (one that catches TERM and exits 0 timed out all the
+     * same), with the signal that ended it when one did, and is never
+     * taken for an exec failure. */
+#ifndef __wasm__
+    if (timed_out) {
+        *out_code = -1;
+        *out_signal = WIFSIGNALED(status) ? WTERMSIG(status) : 0;
+        return 0;
+    }
+#endif
     if (WIFEXITED(status)) {
         *out_code = WEXITSTATUS(status);
         *out_signal = 0;

@@ -72,6 +72,10 @@ fn main() {
     std::test::assert(len(pgid) > 0, "the leader said its group");
     let left = sh("sleep 0.5; if kill -0 -" + pgid + " 2>/dev/null; then echo alive; else echo gone; fi", std::process::SpawnOptions { });
     std::test::assert_eq_str(left.stdout, "gone\n", "no process of the group is left");
+    // A child that catches TERM and exits 0 still timed out: -1, not its 0.
+    let caught = sh("trap 'exit 0' TERM; while :; do sleep 0.05; done", std::process::SpawnOptions { timeout: 300ms });
+    std::test::assert(caught.timed_out, "a TERM-catching child timed out");
+    std::test::assert_eq_int(caught.code, -1, "and reads -1, not the 0 it exited with");
 
     // close_stdin still works on a spawn_with handle.
     let cat = std::process::spawn_with("/bin/cat", std::process::SpawnOptions { cwd: "/", timeout: 10s }) or std::process::Child { };
