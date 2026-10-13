@@ -610,18 +610,25 @@ fn a_producer_never_waits_on_a_pinned_thread_blocked_in_a_read() {
 /// 100th handler blocks a second in `usleep`. While it does, the sources
 /// spill a ring's worth per 20 ms in all (about 3.1k; with a window per
 /// producer, 10.6k), and every tick arrives once it drains, each source's
-/// in the order sent.
+/// in the order sent. Each tick carries the time it was sent, and the
+/// subscriber counts the ticks sent inside its block as they arrive: main
+/// counted the sources' sends between seeing the block begin and seeing it
+/// end, so its lag after the block took in the ticks sent while the
+/// subscriber was draining again (5489 against a bound of 3328, under
+/// load).
 const RING_SPILL_SHARED_WINDOW: &str = r#"
     @ffi("c") fn usleep(us: Int) -> Int;
 
-    type Tick { src: Int; n: Int; }
+    type Tick { src: Int; n: Int; at: Int; }
     locus Counter {
         params {
-            count: Int = 0; bad: Int = 0; blocking: Int = 0; blocked_ms: Int = 0;
+            count: Int = 0; bad: Int = 0; blocked_ms: Int = 0;
+            from: Int = 0; until: Int = 0; during: Int = 0;
             a: Int = -1; b: Int = -1; c: Int = -1; d: Int = -1;
         }
         bus { subscribe "p4" as on_tick of type Tick; }
         fn on_tick(t: Tick) {
+            if t.at >= self.from && t.at < self.until { self.during = self.during + 1; }
             let mut last = self.d;
             if t.src == 0 { last = self.a; }
             if t.src == 1 { last = self.b; }
@@ -633,18 +640,22 @@ const RING_SPILL_SHARED_WINDOW: &str = r#"
             if t.src == 3 { self.d = t.n; }
             self.count = self.count + 1;
             if self.count == 100 {
-                self.blocking = 1;
-                let t0 = std::time::monotonic_ns();
+                self.from = std::time::monotonic_ns();
                 usleep(1000000);
-                self.blocked_ms = (std::time::monotonic_ns() - t0) / 1000000;
-                self.blocking = 2;
+                self.until = std::time::monotonic_ns();
+                self.blocked_ms = (self.until - self.from) / 1000000;
             }
         }
     }
     locus Source {
         params { id: Int = 0; sent: Int = 0; }
         bus { publish "p4" of type Tick; }
-        run() { while self.sent < 20000 { "p4" <- Tick { src: self.id, n: self.sent }; self.sent = self.sent + 1; } }
+        run() {
+            while self.sent < 20000 {
+                "p4" <- Tick { src: self.id, n: self.sent, at: std::time::monotonic_ns() };
+                self.sent = self.sent + 1;
+            }
+        }
     }
     main locus App {
         params {
@@ -663,12 +674,8 @@ const RING_SPILL_SHARED_WINDOW: &str = r#"
         }
         run() {
             let deadline = std::time::monotonic_ns() + 60000000000;
-            while (self.sub.blocking == 0 && std::time::monotonic_ns() < deadline) { }
-            let before = self.s0.sent + self.s1.sent + self.s2.sent + self.s3.sent;
-            while (self.sub.blocking == 1 && std::time::monotonic_ns() < deadline) { }
-            let after = self.s0.sent + self.s1.sent + self.s2.sent + self.s3.sent;
             while (self.sub.count < 80000 && std::time::monotonic_ns() < deadline) { std::time::sleep(1ms); }
-            println("sent_while_blocked=" + to_string(after - before));
+            println("sent_while_blocked=" + to_string(self.sub.during));
             println("blocked_ms=" + to_string(self.sub.blocked_ms));
             println("delivered=" + to_string(self.sub.count));
             println("out_of_order=" + to_string(self.sub.bad));
@@ -682,7 +689,10 @@ fn ring_spill_shared_window(name: &str, pinned: bool) {
     let field = run_fields_env(name, &src, &[("LOTUS_BUS_QUEUE_CAP", "64")]);
     let sent: i64 = field("sent_while_blocked").parse().expect("a count");
     let blocked_ms: i64 = field("blocked_ms").parse().expect("a duration");
-    let allowed = (blocked_ms / 20 + 2) * 64;
+    // A ring (64) per 20 ms window over the blocked time, one more for the
+    // window running when it began and one for the ring's free slots then,
+    // and a cell per source stamped inside the block but posted after it.
+    let allowed = (blocked_ms / 20 + 2) * 64 + 4;
     assert!(sent <= allowed, "{name}: {sent} sent in {blocked_ms} ms while the consumer was blocked; the bound allows {allowed}");
     assert!(sent >= 64, "{name}: the sources waited on the blocked consumer: {sent} sent in {blocked_ms} ms");
     assert_eq!(field("delivered"), "80000", "{name}: every tick is delivered");
