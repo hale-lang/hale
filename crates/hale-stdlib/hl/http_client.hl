@@ -17,11 +17,10 @@
 // survive), where the server's `Response` body is String. One
 // name-space, two honest shapes.
 //
-// PLACEMENT CAVEAT (https): TLS I/O has no async_io integration
-// yet — an https call on a `where async_io` pool blocks the
-// worker thread, starving sibling coroutines. Keep loci that
-// make https calls on `pinned` or a classic cooperative pool
-// (styleguide C3 / §7). Plain-http calls park fine on async_io.
+// Placement: on a `where async_io` pool every wait of a call —
+// the dial, the TLS handshake, each write and read — parks the
+// coroutine, http and https alike; a non-numeric host's name
+// lookup still runs on the worker (spec/stdlib.md § std::io::tcp).
 //
 // `Transfer-Encoding: chunked` bodies are de-chunked on every
 // path (one-shot and keep-alive) — `body` is always the payload,
@@ -618,8 +617,8 @@ fn __http_round_trip_with_retry(
 
 // `std::http::get(url)`.
 /// One-shot GET: connect, send, read to close. `Connection:
-/// close`; https rides std::io::tls (placement caveat: TLS recv
-/// blocks the worker — pinned or classic pools).
+/// close`; https rides std::io::tls, which parks on an async_io
+/// pool like plain tcp.
 fn __http_client_get(url_str: String) -> std::http::ClientResponse fallible(std::http::HttpError) {
     let u = __http_parse_url(url_str) or raise;
     let _ = __http_check_scheme(u.scheme) or raise;

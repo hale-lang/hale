@@ -2093,21 +2093,23 @@ pub fn effects_for(segs: &[&str]) -> Option<EffectSet> {
 /// | `std::io::tcp::recv_stamped_into` | `lotus_tcp_recv_stamped` |
 /// | `std::io::udp::recv`, `__recv`, `recv_with_source` | `lotus_udp_recvfrom_async` |
 /// | `std::io::udp::recv_into` | `lotus_udp_recv_into` |
-/// | `std::io::tls::recv_into` | `lotus_tls_recv_into` |
-/// | `std::io::tls::recv_stamped_into` | `lotus_tls_recv_stamped_into` |
+/// | `std::io::tls::recv_into`, `recv_stamped_into`, `recv_bytes` | `lotus_tls__read` (`SSL_read` on the non-blocking socket, each `WANT_READ` / `WANT_WRITE` a park) |
+/// | `std::io::tls::connect`, `connect_within`, `upgrade` | the tcp dial, then `lotus_tls__handshake` (`SSL_connect` on the non-blocking socket, each `WANT_*` a park) |
+/// | `std::http::get`, `post`, `request` | Hale bodies (`http_client.hl`) whose every wait is one of the rows above or `tcp::__send_bytes` / `tls::send_bytes` (each a park on EPOLLOUT) |
 ///
 /// The tcp dial resolves a non-numeric host with `getaddrinfo(3)` on the
 /// calling thread before it connects: the connect parks, the name lookup
-/// does not (spec/stdlib.md § std::io::tcp).
+/// does not (spec/stdlib.md § std::io::tcp). With every TLS wait parking,
+/// the `std::http` client (dial, `send_bytes`, `recv_bytes`, the 50 ms
+/// retry `sleep`) reaches no leaf that holds the worker; the one-shot fns
+/// are rows of their own (the advisory meets them by name, before their
+/// bodies), so they are listed, and the `Client` locus's methods are
+/// walked into.
 ///
 /// Deliberately ABSENT, and each for a reason read off the runtime:
-/// `tls::connect` / `upgrade` (blocking
-/// handshake), `tls::recv_bytes` (a plain `SSL_read`; only the
-/// `recv_into` family got the async_io park), `io::file` /
-/// `io::stdin` reads (regular files and the tty are not epoll-park
-/// targets here), `std::process::{run, wait, read_stdout,
-/// read_stderr}` and `std::http::*` (which reaches `tls::connect`).
-/// These still stall the worker, so they still warn.
+/// `io::file` / `io::stdin` reads (regular files and the tty are not
+/// epoll-park targets here) and `std::process::{run, wait, read_stdout,
+/// read_stderr}`. These still stall the worker, so they still warn.
 pub const ASYNC_IO_PARKING: &[&[&str]] = &[
     &["std", "io", "tcp", "__accept_one"],
     &["std", "io", "tcp", "__connect"],
@@ -2119,12 +2121,19 @@ pub const ASYNC_IO_PARKING: &[&[&str]] = &[
     &["std", "io", "tcp", "connect_within"],
     &["std", "io", "tcp", "recv_into"],
     &["std", "io", "tcp", "recv_stamped_into"],
+    &["std", "io", "tls", "connect"],
+    &["std", "io", "tls", "connect_within"],
+    &["std", "io", "tls", "recv_bytes"],
     &["std", "io", "tls", "recv_into"],
     &["std", "io", "tls", "recv_stamped_into"],
+    &["std", "io", "tls", "upgrade"],
     &["std", "io", "udp", "__recv"],
     &["std", "io", "udp", "recv"],
     &["std", "io", "udp", "recv_into"],
     &["std", "io", "udp", "recv_with_source"],
+    &["std", "http", "get"],
+    &["std", "http", "post"],
+    &["std", "http", "request"],
     &["std", "time", "sleep"],
     &["std", "time", "__idle_wait"],
     &["std", "api", "run_until_stopped"],

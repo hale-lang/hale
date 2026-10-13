@@ -562,6 +562,48 @@ fn async_io_placement_is_silent_about_a_parking_connect() {
     );
 }
 
+/// Every TLS wait parks too (2026-10-12): the handshake (`connect`,
+/// `connect_within`, `upgrade`) and `recv_bytes` joined the park list, so
+/// the `std::http` https client — dial, writes, reads, its retry sleep —
+/// reaches no leaf that holds the worker, and a handler that makes https
+/// calls on an async_io pool is not flagged. It used to be, through
+/// `tls::connect` and `tls::recv_bytes`.
+#[test]
+fn async_io_placement_is_silent_about_tls_and_the_https_client() {
+    let src = r#"
+        type Ev { n: Int; }
+        locus Worker {
+            bus { subscribe "e" as on_e of type Ev; }
+            fn on_e(e: Ev) {
+                let h = std::io::tls::connect("example.com", 443) or - 1;
+                let w = std::io::tls::connect_within("example.com", 443, 2s) or - 1;
+                let u = std::io::tls::upgrade(e.n, "example.com", true) or - 1;
+                let b = std::io::tls::recv_bytes(h, 64);
+                let r = std::http::get("https://example.com/") or {
+                    std::http::ClientResponse { status: 0, headers: "", body: b"" }
+                };
+                let c = std::http::Client { timeout_ms: 2000 };
+                let r2 = c.get("https://example.com/") or {
+                    std::http::ClientResponse { status: 0, headers: "", body: b"" }
+                };
+                println(h + w + u + len(b) + r.status + r2.status);
+            }
+        }
+        main locus App {
+            params { w: Worker = Worker { }; }
+            placement { w: cooperative(pool = web) where async_io; }
+            run() { std::time::sleep(10ms); }
+        }
+        fn main() { App { }; }
+    "#;
+    let ds = diags_for(src);
+    assert!(
+        !ds.iter().any(|m| m.contains("stalls every other locus")),
+        "a handler whose TLS and https calls park must not be flagged: {:?}",
+        ds
+    );
+}
+
 /// The park exemption is per-LEAF, not per-handler: a handler that
 /// sleeps *and* blocks is still reported, and the witness path names
 /// the leaf that actually holds the worker.

@@ -115,6 +115,11 @@ and `connect_wait`'s wait bounds its whole dial the same way. On a
 `where async_io` pool a dial that is waiting parks its coroutine, so
 the rest of the pool keeps running.
 
+On a `where async_io` pool a TLS connection waits the way a plain
+socket does: the handshake, `send_bytes` and every read park the
+coroutine until the socket is ready, so many connections share one
+pool's thread.
+
 This is **client-side only** — there is no TLS *server* in the
 stdlib. `set_recv_timeout(h, d)` bounds a read; with one set,
 `recv_into` returns the `-2` "timed out, retryable" sentinel so a

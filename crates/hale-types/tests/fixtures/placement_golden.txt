@@ -656,7 +656,7 @@ row	~.acc	Acc	main	inherited
 
 == crates/hale-stdlib/hl/file.hl#f57ba351
 
-== crates/hale-stdlib/hl/http_client.hl#4a681f29
+== crates/hale-stdlib/hl/http_client.hl#e6b631b2
 
 == crates/hale-stdlib/hl/json.hl#8645f085
 
@@ -5310,6 +5310,22 @@ root	App	the entry
 domain	pool:web	async_io
 row	App@literal1	App	main	default
 row	App@literal1.w	Worker	pool:web	entry	off owner
+
+== crates/hale-types/tests/effect_assertions.rs#b73151e8
+root	App	the entry
+domain	pool:web	async_io
+row	App@literal1	App	main	default
+row	App@literal1.w	Worker	pool:web	entry	off owner
+
+== crates/hale-types/tests/effect_assertions.rs#a11c8117
+root	App	the entry
+domain	pool:web	async_io
+row	App@literal1	App	main	default
+row	App@literal1.w	Worker	pool:web	entry	off owner
+dynamic	__StdHttpClient	on pool:web	in the seed
+-- dynamic	sites in the stdlib
+dynamic	__StdBytesBytesBuilder	on pool:web
+dynamic	__StdHttpConn	on pool:web
 
 == crates/hale-types/tests/effect_assertions.rs#7fea7b1b
 root	App	the entry
