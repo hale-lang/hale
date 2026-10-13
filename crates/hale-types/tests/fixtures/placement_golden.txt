@@ -2002,6 +2002,18 @@ row	Root@literal1.b	Burst	main	default
 row	Root@literal1.e0	Ear	main	default
 row	Root@literal1.e1	Ear	main	default
 
+== crates/hale-codegen/tests/bus_static_reservation.rs#7e4f345a
+root	Root	the entry
+row	Root@literal1	Root	main	default
+row	Root@literal1.b	Burst	main	default
+row	Root@literal1.e	Ear	main	default
+
+== crates/hale-codegen/tests/bus_static_reservation.rs#be62125a
+root	Root	the entry
+row	Root@literal1	Root	main	default
+row	Root@literal1.b	Burst	main	default
+row	Root@literal1.e	Ear	main	default
+
 == crates/hale-codegen/tests/bus_static_reservation.rs#dab40b76
 root	Root	the entry
 domain	pinned:Root@literal1.h	cpus 0
