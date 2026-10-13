@@ -1,0 +1,53 @@
+// An `accept` / `release` naming an alias of an interface, through any
+// chain of aliases, is the interface's clause: it admits each locus
+// satisfying the interface, its body held to the interface's methods,
+// and its `release` makes each a flow. The alias is a spelling.
+
+interface Job { fn weight() -> Int; }
+
+type Jobs = Job;
+type Work = Jobs;
+
+locus Small {
+    params { w: Int = 3; }
+    fn weight() -> Int { return self.w; }
+}
+
+locus Big {
+    params { w: Int = 5; }
+    fn weight() -> Int { return self.w * 2; }
+    run() { }
+}
+
+locus Pool {
+    params { sum: Int = 0; }
+    accept(c: Jobs) { self.sum = self.sum + c.weight(); }
+    fn go() {
+        Small { };
+        Big { };
+    }
+    fn kids() -> Int { return self.children.count; }
+}
+
+locus Flows {
+    params { accepted: Int = 0; released: Int = 0; }
+    accept(c: Work) { self.accepted = self.accepted + c.weight(); }
+    release(c: Work) { self.released = self.released + 1; }
+    fn go() {
+        Small { w: 1 };
+        Big { w: 1 };
+    }
+    fn kids() -> Int { return self.children.count; }
+}
+
+fn main() {
+    let p = Pool { };
+    p.go();
+    std::test::assert_eq_int(p.sum, 13, "an alias of an interface admits Small (3) and Big (10)");
+    std::test::assert_eq_int(p.kids(), 0, "Flows' release makes every Job a flow, type-wide: they leave at their run's end");
+    let f = Flows { };
+    f.go();
+    std::test::assert_eq_int(f.accepted, 3, "an alias of an alias admits both too");
+    std::test::assert_eq_int(f.released, 2, "and its release makes each a flow");
+    std::test::assert_eq_int(f.kids(), 0, "released, untracked");
+}

@@ -2143,6 +2143,22 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         )? {
             return Ok(result);
         }
+        // An interface `accept` / `release` monomorph: the checker typed
+        // the child as the interface, whose method is fallible, and the
+        // concrete method is infallible (conformance admits it). The call
+        // keeps the interface's contract: a direct call that always takes
+        // the success path, the adapter an interface's vtable slot holds
+        // in front of the same method.
+        if let Some(result) = self.try_lower_known_success_iface_call(
+            self_ptr,
+            &info,
+            &locus_name,
+            method_name,
+            args,
+            scope,
+        )? {
+            return Ok(result);
+        }
         Err(CodegenError::Unsupported(format!(
             "fallible method `{}.{}` — not a synthesized @form(vec) \
              get/pop, @form(hashmap) get/remove/key_at/entry_at, \

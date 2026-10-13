@@ -543,6 +543,7 @@ pub fn resolve_rewritten(
         &snapshot,
         &fresh_locus_factories,
         import_renames,
+        &ownership.accepts,
     )
     .map_err(|e| e.to_string())?;
     // F.40 phase 1.2b: and what each `let` needs to know about its

@@ -1246,6 +1246,20 @@ root	App	the entry
 row	App@literal1	App	main	default
 row	App@literal1.q	Q	main	default
 
+== crates/hale-codegen/tests/accept_interface.rs#6ed0a850
+row	H@main1	H	main	default
+-- dynamic	sites in the seed
+dynamic	A	on main
+dynamic	B	on main
+
+== crates/hale-codegen/tests/accept_interface.rs#c93f5b79
+row	Pool@main1	Pool	main	default
+shared	dynamic	sites in the seed #0ae7b8f9
+
+== crates/hale-codegen/tests/accept_interface.rs#7808dcc7
+dynamic	Small	on main	in the seed
+shared	Outer@main1	Outer #1047d3f2
+
 == crates/hale-codegen/tests/adapter_fanout_own_bytes.rs#edd7d385
 root	App	the entry
 domain	pinned:Drop@binding1
@@ -3679,6 +3693,15 @@ row	World@literal1	World	main	default
 row	World@literal1.driver	Driver	pool:workers	entry	off owner
 dynamic	Ship	on pool:workers	in the seed
 
+== crates/hale-codegen/tests/ownership_bubble_crosspool.rs#cbe1b22a
+root	World	the entry
+domain	pool:workers
+row	World@literal1	World	main	default
+row	World@literal1.driver	Driver	pool:workers	entry	off owner
+-- dynamic	sites in the seed
+dynamic	Barge	on pool:workers
+dynamic	Ship	on pool:workers
+
 == crates/hale-codegen/tests/ownership_bubble_crosspool.rs#72c8e05d
 root	World	the entry
 domain	pinned:World@literal1.o
@@ -3732,9 +3755,7 @@ dynamic	Conn	on main	in the seed
 row	L@main1	L	main	default
 
 == crates/hale-codegen/tests/params_default_scalar_self_ref.rs#2ebd91ab
--- Outer@main1	Outer
-row	~	Outer	main	default
-row	~.inner	Inner	main	inherited
+shared	Outer@main1	Outer #1047d3f2
 
 == crates/hale-codegen/tests/phase_b_fixes.rs#5e42f66f
 dynamic	Counter	on main	in the seed
@@ -4723,6 +4744,11 @@ row	__StdBytesBytesBuilder@main3	__StdBytesBytesBuilder	main	default
 
 == crates/hale-codegen/tests/wasm_target.rs#62135960
 
+== crates/hale-codegen/tests/wasm_target.rs#d5a77d3b
+row	Left@main1	Left	main	default
+row	Right@main2	Right	main	default
+dynamic	Small	on main	in the seed
+
 == crates/hale-codegen/tests/ws1_ffi_handle_reassign.rs#60aaaf4b
 dynamic	Conn	on main	in the seed
 -- Gw@main1	Gw
@@ -4733,6 +4759,36 @@ row	~.conn	Conn	main	inherited
 root	App	the entry
 row	App@literal1	App	main	default
 row	App@literal1.w	Worker	main	default
+
+== crates/hale-types/tests/accept_interface.rs#328b10b9
+row	H@main1	H	main	default
+-- dynamic	sites in the seed
+dynamic	A	on main
+dynamic	B	on main
+dynamic	Near	on main
+dynamic	Other	on main
+
+== crates/hale-types/tests/accept_interface.rs#92d065b6
+row	Outer@main1	Outer	main	default
+row	Top@main2	Top	main	default
+-- dynamic	sites in the seed
+dynamic	Inner	on main
+dynamic	Mid	on main
+dynamic	Rect	on main
+dynamic	Sq	on main
+
+== crates/hale-types/tests/accept_interface.rs#0ebe5c29
+row	Pool@main1	Pool	main	default
+-- dynamic	sites in the seed
+dynamic	Big	on main
+dynamic	Idle	on main
+dynamic	Small	on main
+
+== crates/hale-types/tests/accept_interface.rs#fcc51924
+row	Pool@main1	Pool	main	default
+-- dynamic	sites in the seed
+dynamic	Plain	on main
+dynamic	Small	on main
 
 == crates/hale-types/tests/alloc_summary_construction_correction.rs#8735a49c
 root	App	the entry
@@ -6494,6 +6550,43 @@ dynamic	__StdBytesBytesBuilder	on main	in the seed
 
 == crates/hale-types/tests/wasm_target_gating.rs#d6c9c505
 row	__StdBytesBytesBuilder@main1	__StdBytesBytesBuilder	main	default
+
+== tests/hale/accept_interface_alias_test.hl
+row	Flows@main2	Flows	main	default
+row	Pool@main1	Pool	main	default
+shared	dynamic	sites in the seed #0ae7b8f9
+
+== tests/hale/accept_interface_fallible_test.hl
+row	Owner@main1	Owner	main	default
+-- dynamic	sites in the seed
+dynamic	Lenient	on main
+dynamic	Strict	on main
+
+== tests/hale/accept_interface_release_test.hl
+row	Pool@main1	Pool	main	default
+shared	dynamic	sites in the seed #0ae7b8f9
+
+== tests/hale/accept_interface_test.hl
+row	Outer@main3	Outer	main	default
+row	Passes@main2	Passes	main	default
+row	SizeOwner@main4	SizeOwner	main	default
+row	Sum@main1	Sum	main	default
+-- dynamic	sites in the seed
+dynamic	A	on main
+dynamic	B	on main
+dynamic	Both	on main
+dynamic	Inner	on main
+dynamic	NameOwner	on main
+dynamic	OnlySized	on main
+dynamic	Rect	on main
+dynamic	Sq	on main
+
+== tests/hale/accept_interface_two_owners_test.hl
+-- Outer@main1	Outer
+row	~	Outer	main	default
+row	~.inner	Inner	main	inherited
+row	~.side	Side	main	inherited
+shared	dynamic	sites in the seed #0ae7b8f9
 
 == tests/hale/accept_spelled_or_monomorphised_test.hl
 row	ByAlias@main1	ByAlias	main	default
@@ -14846,6 +14939,10 @@ row	~.seg	Segment	main	inherited
 row	~	M	pinned:~	entry	off owner
 row	~.s	S	pinned:~	inherited
 
+== shared Outer #1047d3f2
+row	~	Outer	main	default
+row	~.inner	Inner	main	inherited
+
 == shared Owner #415028ff
 row	~	Owner	pinned:~	entry	off owner
 row	~.w	Worker	pinned:~	inherited
@@ -16840,6 +16937,10 @@ dynamic	__StdIoTcpConnFlow	on pool:io
 dynamic	__StdIoTcpConnInline	on pool:io
 dynamic	__StdIoTcpConnections	on pool:io
 dynamic	__StdIoTcpStream	on pool:io
+
+== shared sites in the seed #0ae7b8f9
+dynamic	Big	on main
+dynamic	Small	on main
 
 == shared sites in the seed #38292389
 dynamic	<hole>	on main|unresolved declaration `__api_receivers`|unresolved declaration `__api_serve`|unresolved declaration `unix::Rpc`

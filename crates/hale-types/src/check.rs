@@ -586,7 +586,7 @@ fn check_numbered_bundle(
     allow_unowned_subscriber: bool,
 ) -> Vec<Diag> {
     let handlers = crate::bundle_handler_rows(bundle);
-    let flows = crate::bundle_flow_rows(bundle);
+    let flows = crate::bundle_flow_rows(bundle, top);
     let alloc_summary =
         std::sync::Arc::new(crate::alloc_summary::derive_alloc_summary(bundle));
     let rows = std::cell::OnceCell::new();
@@ -1460,6 +1460,34 @@ pub(crate) fn conformance_witness(
         }
     }
     Ok(())
+}
+
+/// The loci among `candidates` that an `accept(c: I)` or `release(c: I)`
+/// naming `iface_name` admits: each one that satisfies the interface by
+/// [`conformance_witness`], error channels judged, as a coercion into
+/// `I` would require. Empty when `iface_name` names no interface.
+///
+/// An owner's interface clause is resolved statically, per concrete
+/// type (spec/semantics.md § Locus instantiation, "An interface
+/// `accept`"): every locus is born from a literal of a concrete type, so
+/// the clause stands for one concrete clause per admitted locus, and the
+/// ownership graph's `accepts` relation, the flow rows and lowering all
+/// read the concrete loci this answers.
+pub fn interface_admits<'a>(
+    top: &TopScope,
+    iface_name: &str,
+    candidates: impl IntoIterator<Item = &'a str>,
+) -> BTreeSet<String> {
+    // An alias of an interface admits what the interface does.
+    let Some(iface_name) = top.interface_named(iface_name) else {
+        return BTreeSet::new();
+    };
+    candidates
+        .into_iter()
+        .filter(|l| matches!(top.lookup(l), Some(TopSymbol::Locus(_))))
+        .filter(|l| conformance_witness(top, l, iface_name, true).is_ok())
+        .map(str::to_string)
+        .collect()
 }
 
 /// [`conformance_witness`] with the error channel judged, its witness
@@ -9986,10 +10014,21 @@ impl<'a> Checker<'a> {
                     // locus; an undeclared name is the same typo in
                     // the same position.
                     self.check_type_annotation(&p.ty);
-                    let ty = self.resolve_te(&p.ty);
-                    if matches!(lc.kind, LifecycleKind::Accept | LifecycleKind::Release) {
-                        self.refuse_non_locus_child(lc.kind, p, &ty);
-                    }
+                    let ty = match self.interface_named(&p.ty) {
+                        // An interface `accept` / `release` is lowered once
+                        // per admitted locus, the child typed as that
+                        // locus: the body may use what every admitted
+                        // locus has, the interface's methods, and nothing
+                        // else (spec/semantics.md § Locus instantiation).
+                        Some(iface) => Ty::Named(iface),
+                        None => {
+                            let ty = self.resolve_te(&p.ty);
+                            if matches!(lc.kind, LifecycleKind::Accept | LifecycleKind::Release) {
+                                self.refuse_non_locus_child(lc.kind, p, &ty);
+                            }
+                            ty
+                        }
+                    };
                     self.locals.insert(&p.name.name, LocalSym { ty, is_mut: false });
                 }
                 self.check_block(&lc.body);
@@ -12336,6 +12375,15 @@ impl<'a> Checker<'a> {
         conformance(self.top, locus_name, iface_name)
     }
 
+    /// The interface a one-segment type expression names, if it names one.
+    fn interface_named(&self, te: &TypeExpr) -> Option<String> {
+        let TypeExpr::Named { path, generic_args, .. } = te else { return None };
+        if path.segments.len() != 1 || !generic_args.is_empty() {
+            return None;
+        }
+        self.top.interface_named(&path.segments[0].name).map(str::to_string)
+    }
+
     /// A fn or method PARAMETER's type, as the body's local sees it: as
     /// [`Self::resolve_te`], except that a parameter typed by an
     /// interface is that interface (`Ty::Named`), not `Unknown`. The
@@ -12365,9 +12413,7 @@ impl<'a> Checker<'a> {
         ty
     }
 
-    /// A type expression the walk resolves: through the scope's names,
-    /// and, while a generic fn or locus is walked for one of its
-    /// monomorphs, with the template's parameters substituted.
+
     /// The locus a type expression holds, by its written name: the
     /// type itself, or the element of an array, `bounded[T; N]` or
     /// tuple it is built from. A `std::` path names the bundled
@@ -12500,6 +12546,9 @@ impl<'a> Checker<'a> {
         ));
     }
 
+    /// A type expression the walk resolves: through the scope's names,
+    /// and, while a generic fn or locus is walked for one of its
+    /// monomorphs, with the template's parameters substituted.
     fn resolve_te(&self, te: &TypeExpr) -> Ty {
         let mut bindings: BTreeMap<String, Ty> = self.generic_params.iter()
             .map(|name| (name.clone(), Ty::Unknown)).collect();
@@ -16007,6 +16056,25 @@ impl<'a> Checker<'a> {
                         } else {
                             Ty::Prim(PrimType::Bool)
                         };
+                    }
+                }
+                if matches!(receiver.as_ref(), Expr::KwSelf(_)) && name.name == "children" {
+                    if let Some(iface) = self
+                        .current_locus
+                        .and_then(|li| li.accept_written.as_deref())
+                        .and_then(|w| self.top.interface_named(w))
+                    {
+                        self.diags.push(Diag::ty(
+                            *span,
+                            format!(
+                                "`self.children` is one child type's collection, and `{}` accepts through the \
+                                 interface `{}`: its children are of every locus that satisfies it, each kept \
+                                 apart. Read `self.children.count` or `self.children.is_empty`, or keep what the \
+                                 children need in `accept(c)`.",
+                                self.current_locus.map(|l| l.name.as_str()).unwrap_or_default(),
+                                iface
+                            ),
+                        ));
                     }
                 }
                 let rt = self.check_expr(receiver);
