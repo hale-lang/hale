@@ -308,7 +308,7 @@ fn retirable_field_ty(ty: &TypeExpr, retirable: &BTreeSet<String>) -> bool {
             PrimType::Int
             | PrimType::Uint
             | PrimType::Float
-            | PrimType::Decimal
+            | PrimType::Decimal(_)
             | PrimType::String
             | PrimType::Bytes
             | PrimType::Bool
