@@ -26531,6 +26531,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             },
             Id::DecimalToFloat => self.lower_std_decimal_to_float(args, scope),
             Id::DecimalFormat => self.lower_std_decimal_format(args, scope),
+            Id::DecimalFromInt => self.lower_std_decimal_from_int(args, scope),
             // 2026-06-13 — test-time gate counters (#7): read-only
             // views over the runtime's heap-alloc / I/O-syscall
             // counts for steady-state "did N allocs / syscalls"
@@ -27367,6 +27368,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             | Id::CompressUnzstd
             | Id::CompressZstd
             | Id::CryptoEcdsaP256Sign
+            | Id::DecimalFromFloat
             | Id::IoFileOpenRaw
             | Id::IoFileSeekRaw
             | Id::IoFileWriteBytesRaw
@@ -27604,6 +27606,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             Id::CryptoEcdsaP256Sign => {
                 self.lower_std_crypto_ecdsa_p256_sign_fallible(args, scope)
             }
+            // A Float as the nearest Decimal; NaN, an infinity or a
+            // magnitude past the i128 is its ParseError.
+            Id::DecimalFromFloat => self.lower_std_decimal_from_float_fallible(args, scope),
             // Per-path wrappers for the fs/tcp surfaces flipped to
             // `fallible(IoError)`. Each helper evaluates args, calls
             // the underlying C primitive, and feeds the sentinel
@@ -27794,6 +27799,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             | Id::CryptoSha256
             | Id::CryptoSha512
             | Id::DecimalFormat
+            | Id::DecimalFromInt
             | Id::DecimalToFloat
             | Id::DiagHeapAllocCount
             | Id::DiagSyscallCount

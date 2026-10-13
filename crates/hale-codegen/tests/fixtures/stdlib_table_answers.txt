@@ -109,6 +109,8 @@ ns std::ring open_prefixes=[]
   __spsc_set_tag_b syscall
 ns std::decimal open_prefixes=[]
   format pure
+  from_float pure
+  from_int pure
   to_float pure
 ns std::diag open_prefixes=[]
   heap_alloc_count syscall
@@ -627,6 +629,8 @@ std::crypto::sha1 | lookup=crypto@2 | locus=false | effects=pure | sig=(Bytes) -
 std::crypto::sha256 | lookup=crypto@2 | locus=false | effects=pure | sig=(Bytes) -> Bytes | ret_ty=Bytes | or=- | parks=false | holds=false | unknown=- | suggest=sha256
 std::crypto::sha512 | lookup=crypto@2 | locus=false | effects=pure | sig=(Bytes) -> Bytes | ret_ty=Bytes | or=- | parks=false | holds=false | unknown=- | suggest=sha512
 std::decimal::format | lookup=decimal@2 | locus=false | effects=pure | sig=(Decimal, Int) -> Str | ret_ty=String | or=- | parks=false | holds=false | unknown=- | suggest=format
+std::decimal::from_float | lookup=decimal@2 | locus=false | effects=pure | sig=(Float) -> Decimal ! ParseError | ret_ty=? | or=(Decimal, ParseError) | parks=false | holds=false | unknown=- | suggest=from_float
+std::decimal::from_int | lookup=decimal@2 | locus=false | effects=pure | sig=(Int) -> Decimal | ret_ty=Decimal | or=- | parks=false | holds=false | unknown=- | suggest=from_int
 std::decimal::to_float | lookup=decimal@2 | locus=false | effects=pure | sig=(Decimal) -> Float | ret_ty=Float | or=- | parks=false | holds=false | unknown=- | suggest=to_float
 std::diag::heap_alloc_count | lookup=diag@2 | locus=false | effects=syscall | sig=() -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=heap_alloc_count
 std::diag::syscall_count | lookup=diag@2 | locus=false | effects=syscall | sig=(Str) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=syscall_count

@@ -693,6 +693,12 @@ pub const SURFACES: &[NsSurface] = &[
         ns: &["decimal"],
         fns: &[
             row!("format", PURE, [Decimal, Int] -> Str, Intrinsic(DecimalFormat)),
+            // The two conversions into Decimal (downstream handoff: they
+            // went through `parse_decimal(to_string(x))`). An Int is
+            // exact; a Float rounds half away from zero at the ninth
+            // place and refuses NaN, an infinity and what no i128 holds.
+            row!("from_float", PURE, [Float] -> Decimal ! "ParseError", Intrinsic(DecimalFromFloat)),
+            row!("from_int", PURE, [Int] -> Decimal, Intrinsic(DecimalFromInt)),
             row!("to_float", PURE, [Decimal] -> Float, Intrinsic(DecimalToFloat)),
         ],
         open_prefixes: &[],
@@ -1527,6 +1533,8 @@ pub enum IntrinsicId {
     RingSpscReadRaw,
     RingSpscSetTagBRaw,
     DecimalFormat,
+    DecimalFromFloat,
+    DecimalFromInt,
     DecimalToFloat,
     DiagHeapAllocCount,
     DiagSyscallCount,

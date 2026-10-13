@@ -1551,6 +1551,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             f64_t.fn_type(&[i64_t.into(), i64_t.into()], false);
         self.module
             .add_function("lotus_decimal_to_float", dec_to_float_ty, None);
+        // declare i64 @lotus_decimal_from_float(double x, ptr hi, ptr lo)
+        let dec_from_float_ty = i64_t.fn_type(
+            &[f64_t.into(), ptr_t.into(), ptr_t.into()],
+            false,
+        );
+        self.module
+            .add_function("lotus_decimal_from_float", dec_from_float_ty, None);
 
         // GH #230 item 2: fixed-places decimal formatting.
         // declare ptr @lotus_decimal_format(i64 hi, i64 lo, i64 places)

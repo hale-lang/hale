@@ -1514,6 +1514,27 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         success_value: Option<(BasicValueEnum<'ctx>, CodegenTy)>,
         label: &str,
     ) -> Result<FallibleCallResult<'ctx>, CodegenError> {
+        self.complete_parse_fallible_call_with(
+            is_err,
+            |_| Ok(input_str_ptr),
+            kind_tag,
+            success_value,
+            label,
+        )
+    }
+
+    /// `complete_parse_fallible_call` whose `input` text is built on the
+    /// error path only, by `input`: a caller whose refused value is not
+    /// already a String (`std::decimal::from_float`'s Float) formats it
+    /// there, so the success path pays nothing for it.
+    pub(crate) fn complete_parse_fallible_call_with(
+        &mut self,
+        is_err: IntValue<'ctx>,
+        input: impl FnOnce(&mut Self) -> Result<BasicValueEnum<'ctx>, CodegenError>,
+        kind_tag: &str,
+        success_value: Option<(BasicValueEnum<'ctx>, CodegenTy)>,
+        label: &str,
+    ) -> Result<FallibleCallResult<'ctx>, CodegenError> {
         let payload_ty = CodegenTy::TypeRef("ParseError".to_string());
         let out_err_slot = self.alloca_for(
             &payload_ty,
@@ -1552,6 +1573,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
 
         // err path: build ParseError, store in out_err_slot.
         self.builder.position_at_end(lazy_err_bb);
+        let input_str_ptr = input(self)?;
         let pe_ptr = self.emit_parse_error_alloc(input_str_ptr, kind_tag)?;
         self.builder
             .build_store(out_err_slot, pe_ptr)

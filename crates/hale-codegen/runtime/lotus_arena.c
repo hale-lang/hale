@@ -17006,6 +17006,65 @@ double lotus_decimal_to_float(int64_t hi, uint64_t lo) {
     return (double)m / 1.0e9;
 }
 
+/* `std::decimal::from_float(x)`: the Decimal nearest `x`'s exact
+ * binary value, rounded half away from zero at the ninth fractional
+ * digit (`0.1` is 0.1000000000000000055…, so `0.1d`; `1e29` is
+ * 99999999999999991433150857216, all of it). Computed exactly: the
+ * integer part converts exactly (split into two 64-bit halves — the
+ * wasm32 runtime has no `__fixdfti`, and a double of 2⁵³ or more is an
+ * integer, so the split is exact), and the fraction, `f × 2⁻ˢ` with
+ * `f < 2⁵³`, is scaled by 10⁹ as an integer (`f × 10⁹ < 2⁸³`) and
+ * shifted with the rounding; there is no Float multiplication to lose
+ * a digit. The mantissa goes out as hi:lo, the Decimal C ABI's split.
+ * Returns 0, or -1 when `x` is NaN, infinite, or its mantissa does not
+ * fit i128 (|x| past about 1.7e29), where nothing is written. */
+int64_t lotus_decimal_from_float(double x, int64_t *hi, uint64_t *lo) {
+    if (!(x == x)) return -1;                       /* NaN */
+    double a = x < 0 ? -x : x;
+    if (!(a < 1.8e29)) return -1;                   /* inf, or far past 2^127 / 10^9 */
+    /* the integer part, with no libm `trunc` (an -O0 build calls it, and
+     * the runtime links no libm): under 2^63 the conversion truncates and
+     * converts back exactly; from 2^53 on a double is an integer already */
+    double ip = a < 9223372036854775808.0 ? (double)(uint64_t)a : a;
+    double fp = a - ip;                             /* exact */
+    const double two64 = 18446744073709551616.0;
+    uint64_t ih = (uint64_t)(ip / two64);
+    uint64_t il = (uint64_t)(ip - (double)ih * two64);
+    unsigned __int128 m = (((unsigned __int128)ih << 64) | il) * 1000000000u;
+    if (fp > 0) {
+        uint64_t bits;
+        memcpy(&bits, &fp, sizeof bits);
+        int bexp = (int)((bits >> 52) & 0x7ff);
+        uint64_t f = bits & ((1ULL << 52) - 1);
+        int sh;                                     /* fp == f * 2^-sh, sh >= 53 */
+        if (bexp == 0) {
+            sh = 1074;
+        } else {
+            f |= 1ULL << 52;
+            sh = 1075 - bexp;
+        }
+        /* round(num / 2^sh), half up: t = num >> (sh - 1), then (t + 1) >> 1.
+         * num < 2^83 and sh - 1 >= 52, so t < 2^31. The variable shift is
+         * done on the two 64-bit halves: a 128-bit one is a compiler-rt
+         * libcall (`__lshrti3`) the wasm32 runtime does not provide. */
+        int s1 = sh - 1;
+        if (s1 < 128) {
+            unsigned __int128 num = (unsigned __int128)f * 1000000000u;
+            uint64_t nh = (uint64_t)(num >> 64), nl = (uint64_t)num;
+            uint64_t t = s1 >= 64 ? nh >> (s1 - 64)
+                                  : (nl >> s1) | (nh << (64 - s1));
+            m += (t + 1) >> 1;
+        }
+        /* s1 >= 128: fp × 10^9 < 2^83 / 2^127, far under half a unit */
+    }
+    unsigned __int128 limit = (unsigned __int128)1 << 127;
+    if (x < 0 ? m > limit : m >= limit) return -1;
+    unsigned __int128 u = x < 0 ? (~m + 1) : m;
+    *hi = (int64_t)(uint64_t)(u >> 64);
+    *lo = (uint64_t)u;
+    return 0;
+}
+
 void lotus_decimal_to_string(int64_t hi, uint64_t lo, char *buf) {
     __int128 m = ((__int128)hi << 64) | (__int128)lo;
     int neg = m < 0;
