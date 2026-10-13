@@ -1,0 +1,47 @@
+// tests/hale/process_spawn_in_birth_test.hl — a `let`-bound
+// `std::process::spawn` in a `birth()`, and in a fn a param default
+// calls, runs, and its child is reaped when the handle dissolves at
+// the scope's end.
+//
+// The handle's dissolve TERMs a child that has not exec'd yet. The
+// child was a copy of this process down to its signal handlers, so in
+// a program that reads `draining` (here `Watcher`) the TERM ran the
+// drain's handler in the child, whose byte woke THIS process's drain
+// watcher: with no live locus reading `draining`, the program ended
+// with exit 128 and its output unwritten (downstream handoff). The
+// runtime now blocks signals across the fork and resets the drain's
+// handlers in the child before unblocking.
+
+locus Watcher {
+    params { n: Int = 0; }
+    run() {
+        while !self.draining { std::time::sleep(10ms); }
+    }
+}
+
+// Whether `pid` names a live process: `kill -0` succeeds on one.
+fn alive(pid: Int) -> Bool {
+    let out = std::process::run(f"kill\n-0\n{pid}") or { return false; };
+    return out.code == 0;
+}
+
+fn spawned_pid() -> Int {
+    let c = std::process::spawn("sleep\n30") or std::process::Child { };
+    return c.pid;
+}
+
+locus Spawner {
+    params { from_default: Int = spawned_pid(); in_birth: Int = 0; }
+    birth() {
+        let c = std::process::spawn("sleep\n30") or std::process::Child { };
+        self.in_birth = c.pid;
+    }
+}
+
+fn main() {
+    let s = Spawner { };
+    std::test::assert(s.in_birth > 0, "the spawn in birth ran");
+    std::test::assert(s.from_default > 0, "the spawn in the param default ran");
+    std::test::assert(!alive(s.in_birth), "birth's child was reaped at birth's end");
+    std::test::assert(!alive(s.from_default), "the default's child was reaped at its fn's end");
+}
