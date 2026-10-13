@@ -423,7 +423,12 @@ Beyond the effect assertions above, all opt-in:
   `@bounded_by(open_requests)`); prefer it when you know. One or the
   other, not both.
 - `@form(lru_cache)` joins `vec` / `hashmap` / `ring_buffer` as a
-  cap-bounded collection shape.
+  cap-bounded collection shape; `remove(k)` takes an entry out, and an
+  `fn on_evict(k, v)` on the locus runs for each entry it evicts.
+- `@form(heap)` is the priority queue: `capacity { heap jobs of Job
+  ordered_by min priority; }` (or `max`), with `push`, `pop`, `peek`,
+  `len`, `is_empty`, `clear`. A `@form(vec)` also has `clear()` and
+  `truncate(n)` for a scratch list reused per message.
 
 ## Architecture as law (claims, constitutions, fleets)
 
@@ -554,7 +559,8 @@ restriction, not a style preference.
   `spec/grammar.ebnf`.
 - Stdlib surface: `spec/stdlib.md`.
 - Form library (`@form(vec)`, `@form(hashmap)`,
-  `@form(ring_buffer)`): `spec/forms.md`.
+  `@form(ring_buffer)`, `@form(lru_cache)`, `@form(heap)`):
+  `spec/forms.md`.
 - Memory / capacity slots / projection classes:
   `spec/memory.md`.
 - Per-feature anchor programs (in-tree):
