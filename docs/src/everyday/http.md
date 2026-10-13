@@ -489,6 +489,14 @@ let c = std::http::Client { keep_alive: true, max_retries: 2 };
 let r = c.get("http://api.local/health") or raise;
 ```
 
+The `Client` retries a 5xx too. A one-shot `get` hands a 5xx back as
+the response; the `Client`, once its retries are spent, fails with
+`retries_exhausted` and the last 5xx it received: `err.status`,
+`err.headers` and `err.body` are that response's, so a
+`503` with a `Retry-After` and a JSON reason still reaches you
+(`err.status` is `0` and the body empty when no attempt got an
+answer, and `err.detail` says what the last attempt hit).
+
 One placement note: **https calls block their thread** (the
 client's TLS handshake and reads don't park on `async_io`) — keep
 loci that make them on `pinned` or an ordinary cooperative pool,

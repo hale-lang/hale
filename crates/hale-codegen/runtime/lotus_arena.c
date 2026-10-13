@@ -5967,6 +5967,9 @@ static void lotus_arena_free_block_now(lotus_arena_t *a, void *blob,
  * LOTUS_RETIRE_OFF_NESTED, followed by the block's size, the length of
  * its descriptor and that descriptor (it used to be skipped, so a nested
  * record's block and its String/Bytes stayed in the arena for good).
+ * A payload-bearing enum's block is a NESTED entry also tagged
+ * LOTUS_RETIRE_OFF_ENUM, whose descriptor is a variant table
+ * (lotus_retire_variant).
  * `size` sentinels: -1 = old_blob is a NUL-terminated String
  * (strlen+1); -2 = old_blob is a Bytes blob (8 + len); >= 0 =
  * struct block of that many bytes. `n_offs` counts the descriptor's
@@ -5974,7 +5977,40 @@ static void lotus_arena_free_block_now(lotus_arena_t *a, void *blob,
  * loads + one call. */
 #define LOTUS_RETIRE_OFF_BYTES ((int32_t)1 << 30)
 #define LOTUS_RETIRE_OFF_NESTED ((int32_t)1 << 29)
-#define LOTUS_RETIRE_OFF_MASK (~(LOTUS_RETIRE_OFF_BYTES | LOTUS_RETIRE_OFF_NESTED))
+#define LOTUS_RETIRE_OFF_ENUM ((int32_t)1 << 28)
+#define LOTUS_RETIRE_OFF_MASK \
+    (~(LOTUS_RETIRE_OFF_BYTES | LOTUS_RETIRE_OFF_NESTED | LOTUS_RETIRE_OFF_ENUM))
+
+/* A NESTED entry also tagged LOTUS_RETIRE_OFF_ENUM points at a
+ * payload-bearing enum's storage block, `{ int32 tag, body }`: what the
+ * block owns depends on the variant it holds, so its descriptor is a
+ * variant table — the variant count, then per variant, in tag order,
+ * that variant's descriptor length and descriptor (over the block).
+ * The descriptor of the variant `block` holds, or NULL (an empty
+ * variant, a tag out of range, a malformed table). */
+static const int32_t *lotus_retire_variant(const char *block,
+                                           const int32_t *table,
+                                           int64_t table_n,
+                                           int64_t *out_n) {
+    *out_n = 0;
+    if (table_n < 1) return NULL;
+    int32_t tag;
+    memcpy(&tag, block, sizeof tag);
+    int64_t variants = table[0];
+    if (tag < 0 || tag >= variants) return NULL;
+    int64_t j = 1;
+    for (int32_t v = 0; v < variants; v++) {
+        if (j >= table_n) return NULL;
+        int64_t len = table[j];
+        if (len < 0 || j + 1 + len > table_n) return NULL;
+        if (v == tag) {
+            *out_n = len;
+            return table + j + 1;
+        }
+        j += 1 + len;
+    }
+    return NULL;
+}
 
 /* The blocks one element reaches through its descriptor. Small and on
  * the stack for the common shapes; grown on the heap past that. */
@@ -6045,7 +6081,9 @@ static int lotus_retire_collect(lotus_retire_blocks_t *b, const char *base,
             i += 2 + sub_n;
             if (!p) continue;
             if (!lotus_retire_blocks_push(b, p, bsize)) return 0;
-            if (!lotus_retire_collect(b, p, sub, sub_n, sized)) return 0;
+            if (e & LOTUS_RETIRE_OFF_ENUM)
+                sub = lotus_retire_variant(p, sub, sub_n, &sub_n);
+            if (sub && !lotus_retire_collect(b, p, sub, sub_n, sized)) return 0;
             continue;
         }
         if (!p) continue;
@@ -6226,7 +6264,9 @@ static void lotus_clone_out_walk(lotus_arena_t *dest, char *v,
             char *c = (char *)lotus_arena_alloc(dest, bsize, 16);
             if (!c) continue;
             memcpy(c, p, bsize);
-            lotus_clone_out_walk(dest, c, sub, sub_n);
+            if (e & LOTUS_RETIRE_OFF_ENUM)
+                sub = lotus_retire_variant(c, sub, sub_n, &sub_n);
+            if (sub) lotus_clone_out_walk(dest, c, sub, sub_n);
             memcpy(v + off, &c, sizeof c);
             continue;
         }
@@ -16342,7 +16382,8 @@ char *lotus_fmt_pad(lotus_arena_t *a, const char *s, int64_t width,
  * the standard civil-from-days algorithm so parse is exact and
  * dependency-free.
  */
-static int64_t lotus_time_parse_iso8601_raw(const char *s);
+static int lotus_time_parse_iso8601_parts(const char *s, int64_t *secs,
+                                          int64_t *frac);
 
 /* Days from civil date (Howard Hinnant's algorithm) — the exact
  * inverse of the calendar split gmtime_r performs. */
@@ -16355,38 +16396,64 @@ static int64_t lotus_days_from_civil(int64_t y, unsigned m, unsigned d) {
     return era * 146097 + (int64_t)doe - 719468;
 }
 
-/* Returns unix seconds, or INT64_MIN when the input is not a
- * well-formed `YYYY-MM-DDTHH:MM:SSZ`. The sentinel is out of any
- * plausible range, and the Hale wrapper turns it into a fallible. */
+/* 1 when `s` is a well-formed `YYYY-MM-DDTHH:MM:SS[.f]Z`; the Hale
+ * wrapper turns 0 into a fallible. Any four-digit year is unix
+ * SECONDS an Int holds, so this is the gate of `parse_iso8601`. */
 int lotus_time_can_parse_iso8601(const char *s) {
-    return lotus_time_parse_iso8601_raw(s) == INT64_MIN ? 0 : 1;
+    int64_t secs, frac;
+    return lotus_time_parse_iso8601_parts(s, &secs, &frac);
 }
 
-static int64_t lotus_floor_div_i64(int64_t a, int64_t b);
 int64_t lotus_time_parse_iso8601(const char *s) {
-    int64_t v = lotus_time_parse_iso8601_raw(s);
-    return v == INT64_MIN ? 0 : lotus_floor_div_i64(v, 1000000000LL);
+    int64_t secs, frac;
+    return lotus_time_parse_iso8601_parts(s, &secs, &frac) ? secs : 0;
 }
 
-static int64_t lotus_time_parse_iso8601_raw(const char *s) {
+/* The instant in NANOSECONDS, or 0 when there is none: when `s` is
+ * malformed, or names a date a `Time` (i64 nanoseconds since the
+ * epoch, 1677-09-21T00:12:43.145224192Z through
+ * 2262-04-11T23:47:16.854775807Z) does not hold. That second case
+ * used to wrap: `2999-01-01` parsed as a date in 1829. */
+static int lotus_time_parse_iso8601_ns_ok(const char *s, int64_t *ns) {
+    int64_t secs, frac, scaled;
+    if (!lotus_time_parse_iso8601_parts(s, &secs, &frac)) return 0;
+    /* Before the epoch with a fraction, borrow a second first so the
+     * earliest instant (`secs × 10⁹` alone is past INT64_MIN) fits. */
+    if (secs < 0 && frac > 0) { secs += 1; frac -= 1000000000LL; }
+    if (__builtin_mul_overflow(secs, (int64_t)1000000000LL, &scaled)) return 0;
+    if (__builtin_add_overflow(scaled, frac, ns)) return 0;
+    return 1;
+}
+
+/* The gate of `parse_time`: well-formed AND inside Time's range. */
+int lotus_time_can_parse_time(const char *s) {
+    int64_t ns;
+    return lotus_time_parse_iso8601_ns_ok(s, &ns);
+}
+
+static int lotus_time_parse_iso8601_parts(const char *s, int64_t *secs_out,
+                                          int64_t *frac_out) {
     /* GH #607: YYYY-MM-DDTHH:MM:SS, an optional fraction of one to
-     * nine digits, an optional trailing 'Z'; the value is NANOSECONDS
-     * since the epoch. Parsed by hand rather than with sscanf — the
-     * wasm target does not declare it, and a fixed-width format needs
-     * no scanner. A trailing offset like `+01:00` is REJECTED rather
+     * nine digits, an optional trailing 'Z'; the value is unix
+     * seconds and the fraction's nanoseconds, apart, so a date past
+     * Time's range is still seconds for `parse_iso8601` and
+     * `parse_time` refuses it rather than multiplying it into a wrap.
+     * Parsed by hand rather than with sscanf — the wasm target does
+     * not declare it, and a fixed-width format needs no scanner. A
+     * trailing offset like `+01:00` is REJECTED rather
      * than ignored, so a local-time string is never silently read as
      * UTC. The compile-time literal parser (hale-syntax
      * time_literal.rs) accepts exactly this shape. */
-    if (!s) return INT64_MIN;
+    if (!s) return 0;
     for (int i = 0; i < 19; i++) {
-        if (s[i] == '\0') return INT64_MIN;
+        if (s[i] == '\0') return 0;
     }
     static const char shape[] = "____-__-__T__:__:__";
     for (int i = 0; i < 19; i++) {
         if (shape[i] == '_') {
-            if (s[i] < '0' || s[i] > '9') return INT64_MIN;
+            if (s[i] < '0' || s[i] > '9') return 0;
         } else if (s[i] != shape[i]) {
-            return INT64_MIN;
+            return 0;
         }
     }
     int y  = (s[0]-'0')*1000 + (s[1]-'0')*100 + (s[2]-'0')*10 + (s[3]-'0');
@@ -16395,8 +16462,8 @@ static int64_t lotus_time_parse_iso8601_raw(const char *s) {
     int h  = (s[11]-'0')*10 + (s[12]-'0');
     int mi = (s[14]-'0')*10 + (s[15]-'0');
     int se = (s[17]-'0')*10 + (s[18]-'0');
-    if (mo < 1 || mo > 12 || d < 1 || d > 31) return INT64_MIN;
-    if (h > 23 || mi > 59 || se > 60) return INT64_MIN;
+    if (mo < 1 || mo > 12 || d < 1 || d > 31) return 0;
+    if (h > 23 || mi > 59 || se > 60) return 0;
     size_t i = 19;
     int64_t frac = 0;
     if (s[i] == '.') {
@@ -16407,14 +16474,15 @@ static int64_t lotus_time_parse_iso8601_raw(const char *s) {
             digits++;
             i++;
         }
-        if (digits == 0 || digits > 9) return INT64_MIN;
+        if (digits == 0 || digits > 9) return 0;
         for (int k = digits; k < 9; k++) frac *= 10;
     }
     if (s[i] == 'Z') i++;
-    if (s[i] != '\0') return INT64_MIN;
+    if (s[i] != '\0') return 0;
     int64_t days = lotus_days_from_civil(y, (unsigned)mo, (unsigned)d);
-    int64_t secs = days * 86400 + (int64_t)h * 3600 + (int64_t)mi * 60 + se;
-    return secs * 1000000000LL + frac;
+    *secs_out = days * 86400 + (int64_t)h * 3600 + (int64_t)mi * 60 + se;
+    *frac_out = frac;
+    return 1;
 }
 
 /* The inverse of lotus_days_from_civil (Hinnant). */
@@ -16470,8 +16538,47 @@ int64_t lotus_time_unix_seconds(int64_t ns) {
 }
 
 int64_t lotus_time_parse_iso8601_ns(const char *s) {
-    int64_t v = lotus_time_parse_iso8601_raw(s);
-    return v == INT64_MIN ? 0 : v;
+    int64_t ns;
+    return lotus_time_parse_iso8601_ns_ok(s, &ns) ? ns : 0;
+}
+
+/* A `Time` no i64 holds is refused where it would be made, never
+ * wrapped: `time_from_unix(n)` past 2262 (or before 1677), and
+ * `Time ± Duration` past either end. There is no caller frame to hand
+ * an error to (the operator and `time_from_unix` are total in the
+ * type), so this is a violation, the stale-view panic's shape. */
+__attribute__((noreturn, cold))
+static void lotus_time_range_violation(const char *what) {
+    fprintf(stderr,
+            "violation: %s is outside Time's range: a Time is i64 "
+            "nanoseconds since the epoch, 1677-09-21T00:12:43.145224192Z "
+            "through 2262-04-11T23:47:16.854775807Z\n",
+            what);
+    fflush(stderr);
+    exit(1);
+}
+
+int64_t lotus_time_from_unix_checked(int64_t secs) {
+    int64_t ns;
+    if (__builtin_mul_overflow(secs, (int64_t)1000000000LL, &ns)) {
+        char what[64];
+        snprintf(what, sizeof what, "time_from_unix(%lld)", (long long)secs);
+        lotus_time_range_violation(what);
+    }
+    return ns;
+}
+
+int64_t lotus_time_offset_checked(int64_t t, int64_t d, int32_t sub) {
+    int64_t out;
+    int bad = sub ? __builtin_sub_overflow(t, d, &out)
+                  : __builtin_add_overflow(t, d, &out);
+    if (bad) {
+        char what[96];
+        snprintf(what, sizeof what, "%lldns %c %lldns", (long long)t,
+                 sub ? '-' : '+', (long long)d);
+        lotus_time_range_violation(what);
+    }
+    return out;
 }
 
 char *lotus_str_from_duration(lotus_arena_t *a, int64_t ns) {
@@ -20596,10 +20703,13 @@ int lotus_str_can_parse_float(const char *s) {
 
 /*
  * Parse a Decimal literal source spelling into an i128 mantissa
- * with implicit scale 9. Mirrors parse_decimal_to_i128_scale9 in
- * codegen.rs — accepts optional trailing 'd', optional leading
- * sign, '_' digit separators, and truncates at exactly 9 fractional
- * digits (pads with zeros below 9). The i128 result is split into
+ * with implicit scale 9. Mirrors hale-syntax's decimal_literal.rs
+ * (the literal's parse) — accepts optional trailing 'd', optional
+ * leading sign, '_' digit separators, pads with zeros below 9
+ * fractional digits, and REFUSES a nonzero digit past the ninth:
+ * that is a value no Decimal holds, and it used to be truncated in
+ * silence (`parse_decimal("0.123456789012")` was 0.123456789).
+ * Zeros past the ninth place are the same value and are accepted. The i128 result is split into
  * two i64 halves (hi:lo) for ABI portability — same convention
  * used by lotus_decimal_to_string for the print path.
  *
@@ -20632,6 +20742,8 @@ static int parse_decimal_to_i128(const char *s, __int128 *out) {
                 /* overflow guard: re-divide and compare */
                 if (mantissa / 10 != prev) return 0;
                 if (seen_dot) frac_digits += 1;
+            } else if (c != '0') {
+                return 0;  /* past scale 9: not representable */
             }
         } else if (c == '.' && !seen_dot) {
             seen_dot = 1;

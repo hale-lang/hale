@@ -1550,17 +1550,18 @@ fn causes_operand_swap_is_refused() {
         r#"
 effect money;
 effect spare;
-topic Sig { payload: Int; subject: "app.sig"; }
+type SigMsg { v: Int; }
+topic Sig { payload: SigMsg; subject: "app.sig"; }
 locus P {
     params { n: Int = 0; }
     bus { publish Sig; }
     @effects(causes: { money })
-    fn poke(v: Int) { Sig <- v; }
+    fn poke(v: Int) { Sig <- SigMsg { v: v }; }
 }
 locus H {
     params { n: Int = 0; }
     bus { subscribe Sig as on_s; }
-    fn on_s(v: Int) { self.n = charge(v); }
+    fn on_s(m: SigMsg) { self.n = charge(m.v); }
 }
 @effects(is: { money })
 fn charge(v: Int) -> Int { return v; }

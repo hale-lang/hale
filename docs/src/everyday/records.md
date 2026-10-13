@@ -67,6 +67,14 @@ locus that needs a record of its own declares it just above
 itself. A `type` written inside a locus body is an error at the
 `type` keyword.
 
+A record cannot hold a **locus** either. A field (or an enum
+variant) whose type is a locus — `type Layer { w: Model; }` — is an
+error at the field: a record is copied by value and has no
+lifecycle, so it can neither own the locus nor keep it alive. Keep
+the locus in a locus: a `params` field of the locus that uses it,
+or a parameter. (A field typed by an *interface* is fine: it is a
+handle on a locus someone else owns.)
+
 ## Arrays
 
 A fixed sequence of one type is an array. `[T]` is a slice (a

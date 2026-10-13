@@ -17,9 +17,10 @@
 //! renderer:
 //!
 //!   * **position** — where the locus-producing expression is
-//!     written (27 of them: `let`, bare statement, receiver,
+//!     written (30 of them: `let`, bare statement, receiver,
 //!     argument retained / dropped, field read, `return` of a
-//!     literal / factory / carrier, param-field literal / factory /
+//!     literal / factory / carrier, `return` through a call that
+//!     hands back its argument, param-field literal / factory /
 //!     `or raise` / `or <literal>` / `or <call>` / default / nested
 //!     receiver, the same against an INTERFACE-typed field and a
 //!     factory into a `perspective(P)`-typed one, `if` / `match` /
@@ -76,7 +77,7 @@
 //!
 //! [`KNOWN_OPEN`] is **empty**. A4 landed with 200 open cells in
 //! four families; GH #921 A3 closed all four, and every one of the
-//! 1323 cells is now held to every oracle. An entry here is asserted
+//! 1470 cells is now held to every oracle. An entry here is asserted
 //! to FAIL, not skipped — so a cell that is listed and then passes
 //! fails the matrix just as a cell that is not listed and fails
 //! does. Adding one means a shape regressed, and it needs a reason
@@ -84,7 +85,7 @@
 //!
 //! ## Size
 //!
-//! The full matrix (27 × 7 × 7 = 1323 cells, ~140 s on seven threads)
+//! The full matrix (30 × 7 × 7 = 1470 cells, ~140 s on seven threads)
 //! is behind `HALE_MATRIX=full`, for a nightly job. The per-PR
 //! default runs a deterministic sample (~90 cells, ~17 s) that
 //! always contains one
@@ -140,7 +141,7 @@ const KNOWN_OPEN: &[(&str, &str)] = &[];
 /// How many cells the per-PR sample aims for.
 const TARGET_SAMPLE: usize = 60;
 
-/// A stride co-prime with the cell count (26 · 5 · 7 = 910 = 2·5·7·13),
+/// A stride co-prime with the cell count (30 · 7 · 7 = 1470 = 2·3·5·7²),
 /// so topping the sample up visits the space evenly and
 /// deterministically.
 const FILL_STRIDE: usize = 101;
@@ -388,6 +389,13 @@ fn make_f(n: Int) -> Subj fallible(String) {
 
 fn touch(t: Subj) -> Int { return t.probe(); }
 
+fn pass(t: Subj) -> Subj { return t; }
+
+fn pick(a: Subj, b: Subj, first: Bool) -> Subj {
+    if first { return a; }
+    return b;
+}
+
 fn retain(t: Subj) -> Int {
     let k = Keeper { c: t };
     return k.churn();
@@ -588,6 +596,38 @@ const POSITIONS: &[Position] = &[
         "fn produce() -> Subj {\n    let t = { make(1) };\n    return t;\n}\n",
         "let a = produce();\nprintln(\"u=\", a.probe());",
     ),
+    // --- `return` through a call that hands back its argument --
+    //
+    // `pass` returns its parameter, `pick` one of two. The value
+    // leaves `produce` through the call, which names no binding: the
+    // frame used to reclaim it on the way out, and the consumer read a
+    // dissolved subject (a `@form(vec)` child's buffer gone, len 0;
+    // friction sweep 2026-10-12, downstream handoff). The subject is
+    // the consumer's, and `pick`'s other argument is `produce`'s.
+    returning_position(
+        "return_pass_factory",
+        "fn produce() -> Subj {\n    return pass(make(1));\n}\n",
+        "fn produce() -> Subj {\n    let t = make(1);\n    return pass(t);\n}\n",
+        "let a = produce();\nprintln(\"u=\", a.probe());",
+    ),
+    returning_position(
+        "return_pass_literal",
+        "fn produce() -> Subj {\n    return pass(Subj { n: 1 });\n}\n",
+        "fn produce() -> Subj {\n    let t = Subj { n: 1 };\n    return pass(t);\n}\n",
+        "let a = produce();\nprintln(\"u=\", a.probe());",
+    ),
+    Position {
+        id: "return_pick",
+        decls: "fn produce() -> Subj {\n    return pick(make(1), make2(1), true);\n}\n",
+        stmts: "let a = produce();\nprintln(\"u=\", a.probe());",
+        twin_decls: Some(
+            "fn produce() -> Subj {\n    let t = make(1);\n    let u = make2(1);\n    return pick(t, u, true);\n}\n",
+        ),
+        twin_stmts: Some("let a = produce();\nprintln(\"u=\", a.probe());"),
+        instances: 2,
+        extra_tags: &[],
+        needs_fallible: false,
+    },
     // --- a locus-typed param field: an ownership TRANSFER ----
     //
     // No twins: `Holder { c: Subj { } }` and `let t = Subj { };
@@ -1361,12 +1401,12 @@ fn matrix_behind_an_untaken_guard() {
 /// generator that silently produces two cells passes every oracle.
 #[test]
 fn the_matrix_is_rectangular_and_non_vacuous() {
-    assert_eq!(POSITIONS.len(), 27, "position axis changed size");
+    assert_eq!(POSITIONS.len(), 30, "position axis changed size");
     assert_eq!(SHAPES.len(), 7, "type axis changed size");
     assert_eq!(CONTEXTS.len(), 7, "context axis changed size");
 
     let all = all_cells();
-    assert_eq!(all.len(), 27 * 7 * 7);
+    assert_eq!(all.len(), 30 * 7 * 7);
     let ids: BTreeSet<String> = all.iter().map(|c| cell_id(*c)).collect();
     assert_eq!(ids.len(), all.len(), "two cells share an id");
 
@@ -1480,8 +1520,9 @@ fn the_matrix_is_rectangular_and_non_vacuous() {
     let with_twin =
         POSITIONS.iter().filter(|p| p.twin_stmts.is_some()).count();
     assert_eq!(
-        with_twin, 9,
+        with_twin, 12,
         "the differential covers the four expression positions and the \
-         five `return` ones; if that set changed, say so here"
+         eight `return` ones (five direct, three through a call that \
+         hands back its argument); if that set changed, say so here"
     );
 }

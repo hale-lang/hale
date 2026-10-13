@@ -303,7 +303,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 (err_slot, CodegenTy::TypeRef("ClosureViolation".into())),
             );
 
-            let end = self.in_body(failure_decl.id, |cx| cx.lower_block(&failure_decl.body, &mut scope))?;
+            // A `return;` in the body is the fall-through below, taken
+            // early (`lower_failure_handler_return`).
+            self.in_failure_handler = true;
+            let end = self.in_body(failure_decl.id, |cx| cx.lower_block(&failure_decl.body, &mut scope));
+            self.in_failure_handler = false;
+            let end = end?;
             if end == BlockEnd::Open {
                 // m46-vocab follow-up: on_failure runs
                 // synchronously inside an outer substrate cell

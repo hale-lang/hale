@@ -77,7 +77,7 @@ main locus App {
     placement { web: cooperative(pool = web) where async_io; }
     run() {
         while !self.draining { std::time::sleep(20ms); }
-        STOP;
+        std::io::tcp::stop("web");
     }
 }
 fn main() { App { }; }
@@ -85,10 +85,12 @@ fn main() { App { }; }
 
 #[test]
 fn a_server_on_another_pool_is_stopped_by_name() {
-    let (ok, out, d) = check(&SERVER_STOP.replace("STOP", "std::io::tcp::stop(\"web\")"), "stop", &[]);
+    // The program as written stops the server by name; the harvested
+    // corpus reads it so, and the second case swaps the one statement.
+    let (ok, out, d) = check(SERVER_STOP, "stop", &[]);
     let _ = std::fs::remove_dir_all(&d);
     assert!(ok && !out.contains("warning"), "stop(name) is a free call, pool-neutral: {out}");
-    let (ok, out, d) = check(&SERVER_STOP.replace("STOP", "self.web.shutdown()"), "shutdown", &[]);
+    let (ok, out, d) = check(&SERVER_STOP.replace("std::io::tcp::stop(\"web\")", "self.web.shutdown()"), "shutdown", &[]);
     let _ = std::fs::remove_dir_all(&d);
     assert!(!ok && out.contains("cross-pool method call"), "the method across pools is refused, which is why stop exists: {out}");
 }

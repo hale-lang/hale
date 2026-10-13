@@ -2593,6 +2593,7 @@ fn extend_fresh_factories(
     for program in programs {
         collect_fns(&program.items, &mut fns);
     }
+    let pass = passthrough_fns(&fns, ids, loci, renames);
     loop {
         let mut added = false;
         for f in &fns {
@@ -2627,7 +2628,7 @@ fn extend_fresh_factories(
             // never a double free.
             let all_fresh = arms
                 .iter()
-                .all(|a| arm_is_fresh(a, &l, &out, renames, &bindings, 0));
+                .all(|a| arm_is_fresh(a, &l, &out, &pass, renames, &bindings, 0));
             if all_fresh {
                 out.insert(f.name.name.clone(), l);
                 added = true;
@@ -2640,23 +2641,129 @@ fn extend_fresh_factories(
     out
 }
 
+/// The fns that hand back their own locus parameters, each with the
+/// indices of the parameters it can hand back: every value the fn
+/// returns, through carriers, is one of its parameters — named
+/// directly, or handed back by a call to another such fn — and no `=`
+/// rebinds it. A call to one is the arguments it can hand back:
+/// `pass(make(1))` is the locus `make(1)` built, `let t = make(1);
+/// return pass(t);` hands `t` back, and `pick(a, b, c)` is `a` or `b`.
+/// A fixpoint, since one may delegate to another. A parameter's name is
+/// the declaration the snapshot resolves it to, so a `let` shadowing it
+/// is another binding and leaves the fn out.
+pub(crate) fn passthrough_fns(
+    fns: &[&FnDecl],
+    ids: &crate::snapshot::Snapshot,
+    loci: &BTreeSet<String>,
+    renames: &[(Vec<String>, String)],
+) -> BTreeMap<String, Vec<usize>> {
+    let mut out: BTreeMap<String, Vec<usize>> = BTreeMap::new();
+    loop {
+        let mut added = false;
+        for f in fns {
+            if out.contains_key(&f.name.name) || declared_ret_locus(f, loci, renames).is_none() {
+                continue;
+            }
+            let bindings = body_bindings(&f.body, ids);
+            let mut arms: Vec<&Expr> = Vec::new();
+            for r in &bindings.returns {
+                return_arms(r, &mut arms);
+            }
+            let mut leaves: Vec<&Expr> = Vec::new();
+            for a in &arms {
+                look_through(a, &out, renames, &mut leaves);
+            }
+            let mut index: Vec<usize> = Vec::new();
+            let all = !leaves.is_empty()
+                && leaves.iter().all(|a| {
+                    let Expr::Ident(i) = a else { return false };
+                    let Some(d) = ids.declaration_of(i.id) else { return false };
+                    let Some(k) = f.params.iter().position(|p| ids.site_id(p.name.id) == Some(d)) else {
+                        return false;
+                    };
+                    if bindings.assigned_names.contains(&i.name) {
+                        return false;
+                    }
+                    index.push(k);
+                    true
+                });
+            if all {
+                index.sort_unstable();
+                index.dedup();
+                out.insert(f.name.name.clone(), index);
+                added = true;
+            }
+        }
+        if !added {
+            break;
+        }
+    }
+    out
+}
+
+/// What a return arm can hand back, into `out`, once a call to a fn
+/// that hands back its parameters ([`passthrough_fns`]) is read as the
+/// arguments it can hand back. Anything else is itself.
+fn look_through<'e>(
+    a: &'e Expr,
+    pass: &BTreeMap<String, Vec<usize>>,
+    renames: &[(Vec<String>, String)],
+    out: &mut Vec<&'e Expr>,
+) {
+    look_through_at(a, pass, renames, out, 0)
+}
+
+fn look_through_at<'e>(
+    a: &'e Expr,
+    pass: &BTreeMap<String, Vec<usize>>,
+    renames: &[(Vec<String>, String)],
+    out: &mut Vec<&'e Expr>,
+    depth: u32,
+) {
+    if let Expr::Call { callee, args, .. } = a {
+        if depth < 8 {
+            if let Some(ks) = callee_fn_name(callee, renames).and_then(|n| pass.get(&n)) {
+                if ks.iter().all(|k| *k < args.len()) {
+                    for k in ks {
+                        look_through_at(&args[*k], pass, renames, out, depth + 1);
+                    }
+                    return;
+                }
+            }
+        }
+    }
+    out.push(a);
+}
+
 /// Is this return arm a value the fn freshly built?
 ///
 /// A literal of the declared locus, a call to a fn already proven to
 /// build one, or a name whose binding — the `let` it names, never
 /// re-assigned — holds either, including through a carrier, which is
 /// the `let t = if c { make(1) } else { make2(1) }; return t;` spelling
-/// of the same program.
+/// of the same program. A call to a fn that hands back its parameters
+/// is the arguments it can hand back (`return pass(make(1))`, `return
+/// pass(t)`, `return pick(a, b, c)`): the friction sweep of 2026-10-12
+/// (downstream handoff) found such a fn left out, so its caller owned
+/// nothing and the frame reclaimed the value on its way out.
 fn arm_is_fresh(
     a: &Expr,
     l: &str,
     known: &BTreeMap<String, String>,
+    pass: &BTreeMap<String, Vec<usize>>,
     renames: &[(Vec<String>, String)],
     bindings: &BodyBindings<'_, '_>,
     depth: u32,
 ) -> bool {
     if depth > 4 {
         return false;
+    }
+    let mut leaves = Vec::new();
+    look_through(a, pass, renames, &mut leaves);
+    if leaves.len() != 1 || !std::ptr::eq(leaves[0], a) {
+        return leaves
+            .iter()
+            .all(|x| arm_is_fresh(x, l, known, pass, renames, bindings, depth + 1));
     }
     match a {
         Expr::Struct { path, .. } => {
@@ -2686,7 +2793,7 @@ fn arm_is_fresh(
             return_arms(rhs, &mut inner);
             !inner.is_empty()
                 && inner.iter().all(|x| {
-                    arm_is_fresh(x, l, known, renames, bindings, depth + 1)
+                    arm_is_fresh(x, l, known, pass, renames, bindings, depth + 1)
                 })
         }
         _ => false,
@@ -2720,6 +2827,7 @@ pub fn extended_factory_rows(
     for program in programs {
         collect_fns(&program.items, &mut fns);
     }
+    let pass = passthrough_fns(&fns, ids, &loci, renames);
     // A fold-added fn's products, once every factory its arms call has
     // a row: a fixpoint, as the fold is.
     loop {
@@ -2736,7 +2844,9 @@ pub fn extended_factory_rows(
                 return_arms(r, &mut arms);
             }
             let mut products = Vec::new();
-            if !arms.is_empty() && arms.iter().all(|a| arm_products(a, l, &rows, renames, &bindings, 0, &mut products)) {
+            if !arms.is_empty()
+                && arms.iter().all(|a| arm_products(a, l, &rows, &pass, renames, &bindings, 0, &mut products))
+            {
                 products.sort();
                 products.dedup();
                 let row = FactoryRow { locus: l.clone(), products, fresh: Some(Fresh { returned_binding: None }) };
@@ -2754,10 +2864,12 @@ pub fn extended_factory_rows(
 /// What a fresh return arm of a fn returning `l` constructs, into `out`:
 /// a literal's (locus, supplied fields), a factory call's products, a
 /// binding's value's arms. `false` when a callee has no row yet.
+#[allow(clippy::too_many_arguments)]
 fn arm_products(
     a: &Expr,
     l: &str,
     rows: &FreshFactories,
+    pass: &BTreeMap<String, Vec<usize>>,
     renames: &[(Vec<String>, String)],
     bindings: &BodyBindings<'_, '_>,
     depth: u32,
@@ -2765,6 +2877,13 @@ fn arm_products(
 ) -> bool {
     if depth > 4 {
         return false;
+    }
+    let mut leaves = Vec::new();
+    look_through(a, pass, renames, &mut leaves);
+    if leaves.len() != 1 || !std::ptr::eq(leaves[0], a) {
+        return leaves
+            .iter()
+            .all(|x| arm_products(x, l, rows, pass, renames, bindings, depth + 1, out));
     }
     match a {
         Expr::Struct { inits, .. } => {
@@ -2787,7 +2906,7 @@ fn arm_products(
             };
             let mut inner = Vec::new();
             return_arms(rhs, &mut inner);
-            !inner.is_empty() && inner.iter().all(|x| arm_products(x, l, rows, renames, bindings, depth + 1, out))
+            !inner.is_empty() && inner.iter().all(|x| arm_products(x, l, rows, pass, renames, bindings, depth + 1, out))
         }
         _ => false,
     }

@@ -656,7 +656,7 @@ row	~.acc	Acc	main	inherited
 
 == crates/hale-stdlib/hl/file.hl#f57ba351
 
-== crates/hale-stdlib/hl/http_client.hl#3eb0a967
+== crates/hale-stdlib/hl/http_client.hl#299b071b
 
 == crates/hale-stdlib/hl/json.hl#8645f085
 
@@ -664,7 +664,7 @@ row	~.acc	Acc	main	inherited
 
 == crates/hale-stdlib/hl/metrics.hl#19f66cf4
 
-== crates/hale-stdlib/hl/process.hl#667d2582
+== crates/hale-stdlib/hl/process.hl#ea613e30
 
 == crates/hale-stdlib/hl/source.hl#fac6c107
 
@@ -686,7 +686,7 @@ shared	App@literal1.one	__StdIoTcpConnections #1e22aa30
 shared	App@literal1.zero	__StdIoTcpConnections #7f78c9f3
 shared	dynamic	sites in the seed #3837ddcb
 
-== crates/hale-cli/tests/check_tcp_substrate.rs#205ef77d
+== crates/hale-cli/tests/check_tcp_substrate.rs#63188846
 root	App	the entry
 domain	pool:web	async_io
 hole	App@literal1.web.conns.handler.handler	reuse `self.handler`
@@ -1130,7 +1130,7 @@ row	App@literal1	App	main	default
 row	App@literal1.s	Sink	main	default
 row	App@literal1.snd	Sender	main	default
 
-== crates/hale-cli/tests/topology_graph_cli.rs#c5fbd18c
+== crates/hale-cli/tests/topology_graph_cli.rs#86e02774
 root	App	the entry
 row	App@literal1	App	main	default
 row	App@literal1.h	H	main	default
@@ -2376,6 +2376,9 @@ dynamic	Queries	on main
 
 == crates/hale-codegen/tests/factory_locus_reclaim.rs#6e4215bc
 
+== crates/hale-codegen/tests/factory_return_through_call.rs#7022c0b0
+dynamic	Buf	on main	in the seed
+
 == crates/hale-codegen/tests/factory_returned_binding.rs#7f632a40
 
 == crates/hale-codegen/tests/factory_returned_binding.rs#f6549d7f
@@ -2414,6 +2417,9 @@ dynamic	Box	on main	in the seed
 
 == crates/hale-codegen/tests/fn_ptr.rs#6f0a1541
 row	L@main1	L	main	default
+
+== crates/hale-codegen/tests/form_enum_cells.rs#8ffb188f
+row	Book@main1	Book	main	default
 
 == crates/hale-codegen/tests/form_hashmap_codegen.rs#e9ab2b42
 row	RegistryL@main1	RegistryL	main	default
@@ -7015,6 +7021,12 @@ row	App@literal1	App	main	default
 row	App@literal1.a	Alpha	main	default
 row	App@literal1.b	Beta	main	default
 
+== tests/hale/on_failure_return_test.hl
+root	App	the entry
+row	App@literal1	App	main	default
+row	App@literal1.w	Worker	main	default
+dynamic	Probe	on main	in the seed
+
 == tests/hale/or_substitute_interface_test.hl
 row	NoopTool@main1	NoopTool	main	default
 row	NoopTool@main4	NoopTool	main	default
@@ -7082,6 +7094,9 @@ shared	Job@main1	Job #01dd0b0d
 -- dynamic	sites in the seed
 dynamic	Job	on main
 dynamic	__StdProcessChild	on main
+
+== tests/hale/process_close_stdin_test.hl
+row	__StdProcessChild@main1	__StdProcessChild	main	default
 
 == tests/hale/release_generic_owner_test.hl
 row	Manager_Job@main1	Manager_Job	main	default

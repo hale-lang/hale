@@ -1364,6 +1364,10 @@ recovery_modifier = "for" , expression
 violate_stmt      = "violate" , IDENTIFIER ,
                     [ "with" , expression ] , ";" ;
 
+(* The expression must do something: a call, a locus literal, or
+   an `or` over a fallible call. Any other expression's value would
+   be discarded unused, and the checker refuses it (semantics.md
+   § "Expression statements"). *)
 expr_stmt         = expression , ";" ;
 
 

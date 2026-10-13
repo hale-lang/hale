@@ -145,6 +145,8 @@ The recovery primitives:
 - **absorb** — just return; the failure is noted and contained.
   The child stops, but a child the parent holds in a field (or a
   binding holds) stays readable until the parent tears it down.
+  `return;` anywhere in the handler absorbs early (an
+  `if give_up { return; }` guard); the handler returns no value.
 - **`restart(child)`** — run it again: `birth()`, then `run()`,
   on the same instance, and where it ran the first time: a pinned
   child on its own thread, a child placed on a pool on that pool's
@@ -161,7 +163,9 @@ The recovery primitives:
   literal said, or its default as it evaluated then). A child held in
   a param stays the same child.
 - **`quarantine(child)`** — pause it, preserving state for
-  inspection.
+  inspection. The specified `quarantine(child) for d` (restart
+  automatically after `d`) and the `until` modifier are not
+  implemented, and the compiler refuses them at the statement.
 - **`bubble(err)`** — pass it up to *this* locus's parent.
 - **`dissolve(child)`** — force it down.
 

@@ -75,3 +75,18 @@ fn time_arithmetic_is_a_shift_or_a_difference() {
         assert_eq!(e, vec![why.to_string()], "{bad}");
     }
 }
+
+/// A `Time` is i64 nanoseconds, 1677-09-21 through 2262-04-11. A
+/// well-formed literal past either end is refused at the literal as a
+/// range, not as a malformed date; it used to build and wrap.
+#[test]
+fn a_time_literal_past_the_range_is_refused_at_the_literal() {
+    let range = "is outside `Time`'s range: a `Time` is i64 nanoseconds since the epoch, \
+                 1677-09-21T00:12:43.145224192Z through 2262-04-11T23:47:16.854775807Z";
+    for lit in ["`2999-01-01T00:00:00Z`", "`1600-01-01T00:00:00Z`", "`2262-04-11T23:47:16.854775808Z`"] {
+        let src = format!("fn main() {{\n    let t = {lit};\n}}\n");
+        let inner = lit.trim_matches('`');
+        assert_eq!(located(&src), [(lit.to_string(), format!("time literal `{inner}` {range}"))], "{lit}");
+    }
+    assert!(errors("fn main() { let a = `2262-04-11T23:47:16.854775807Z`; let b = `1677-09-21T00:12:43.145224192Z`; }").is_empty());
+}

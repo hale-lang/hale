@@ -68,16 +68,36 @@ type __StdHttpClientResponse {
 // The single error payload for every fallible surface here.
 // kinds: bad_url, unsupported_scheme, connect_failed,
 // send_failed, recv_failed, bad_response, too_large,
-// retries_exhausted. `status` carries the HTTP code when the
-// failure happened post-parse (a 5xx surfacing through the err
-// arm); 0 otherwise.
+// retries_exhausted. On retries_exhausted, `status`, `headers`
+// and `body` are the last 5xx response the retries received (a
+// 5xx surfacing through the err arm, its body kept: it used to be
+// dropped, and the pooled path dropped the status too); 0 and
+// empty when no attempt got a response. `detail` names the last
+// attempt's failure.
 /// The client's fallible payload. `kind` is one of: bad_url,
 /// unsupported_scheme, connect_failed, send_failed, recv_failed,
-/// bad_response, too_large, retries_exhausted.
+/// bad_response, too_large, retries_exhausted. A
+/// retries_exhausted carries the last 5xx response's `status`,
+/// `headers` and `body` (0 / empty when none arrived).
 type __StdHttpError {
     kind: String = "";
     status: Int = 0;
     detail: String = "";
+    headers: String = "";
+    body: Bytes = b"";
+}
+
+// The error a retry loop fails with once its attempts are spent:
+// the last 5xx response it saw (`resp.status` 0 when none) and the
+// last attempt's failure.
+fn __http_retries_exhausted(resp: std::http::ClientResponse, detail: String) -> std::http::HttpError {
+    return std::http::HttpError {
+        kind: "retries_exhausted",
+        status: resp.status,
+        detail: detail,
+        headers: resp.headers,
+        body: resp.body
+    };
 }
 
 // ---- URL parsing -----------------------------------------------------
@@ -553,12 +573,10 @@ fn __http_round_trip_oneshot(
     return resp;
 }
 
-fn __http_retry_sentinel(e: std::http::HttpError) -> std::http::ClientResponse {
-    return __http_empty_client_response();
-}
-
 // Retry wrapper: retries connect/send/recv failures + 5xx with
-// backoff; 4xx returns directly (the caller's business).
+// backoff; 4xx returns directly (the caller's business). Once the
+// attempts are spent it fails with the last 5xx response's status,
+// headers and body, and the last attempt's failure in `detail`.
 fn __http_round_trip_with_retry(
     req: std::http::ClientRequest,
     user_agent: String,
@@ -566,25 +584,30 @@ fn __http_round_trip_with_retry(
     max_retries: Int
 ) -> std::http::ClientResponse fallible(std::http::HttpError) {
     let mut attempt = 0;
-    let mut last_err = std::http::HttpError { kind: "retries_exhausted", status: 0, detail: "" };
+    let mut last_5xx = __http_empty_client_response();
+    let mut detail = "";
     let max_attempts = max_retries + 1;
     while attempt < max_attempts {
-        let resp = __http_round_trip_oneshot(req, user_agent, max_body)
-        or __http_retry_sentinel(err);
+        let mut failure = "";
+        let resp = __http_round_trip_oneshot(req, user_agent, max_body) or {
+            failure = err.kind + " " + err.detail;
+            __http_empty_client_response()
+        };
         if resp.status > 0 && resp.status < 500 {
             return resp;
         }
         if resp.status >= 500 {
-            last_err = std::http::HttpError {
-                kind: "retries_exhausted", status: resp.status, detail: "5xx after retries"
-            };
+            last_5xx = resp;
+            detail = "status " + to_string(resp.status);
+        } else {
+            detail = failure;
         }
         attempt = attempt + 1;
         if attempt < max_attempts {
             std::time::sleep(50ms);
         }
     }
-    fail last_err;
+    fail __http_retries_exhausted(last_5xx, detail + " after " + to_string(max_attempts) + " attempt(s)");
 }
 
 // ---- free-fn surface (one-shot) -------------------------------------
@@ -700,21 +723,34 @@ locus __StdHttpClient {
 
         let mut attempt = 0;
         let max_attempts = self.max_retries + 1;
+        let mut last_5xx = __http_empty_client_response();
+        let mut detail = "";
         while attempt < max_attempts {
             let fd = __http_dial_nd(host, port, is_tls);
-            if fd >= 0 {
+            if fd < 0 {
+                detail = "connect_failed";
+            } else {
                 let ex = __http_exchange_on_handle(fd, is_tls, req, self.user_agent, self.max_body);
                 if ex.ok && ex.resp.status < 500 {
                     if ex.reusable { self.__pool_put(host, port, fd, is_tls); }
                     else { __http_close_handle(fd, is_tls); }
                     return ex.resp;
                 }
+                if ex.ok {
+                    last_5xx = ex.resp;
+                    detail = "status " + to_string(ex.resp.status);
+                } else {
+                    detail = "no response";
+                }
                 __http_close_handle(fd, is_tls);
             }
             attempt = attempt + 1;
             if attempt < max_attempts { std::time::sleep(50ms); }
         }
-        fail std::http::HttpError { kind: "retries_exhausted", status: 0, detail: host + ":" + to_string(port) };
+        fail __http_retries_exhausted(
+            last_5xx,
+            host + ":" + to_string(port) + " " + detail + " after " + to_string(max_attempts) + " attempt(s)"
+        );
     }
 
     fn __pool_take(host: String, port: Int, is_tls: Bool) -> Int {

@@ -238,7 +238,10 @@ locus Reader {
 No fixed size is assumed (a differently-sized valid record isn't
 dropped), and you decode with the `std::bytes::read_*` pack readers and
 a discriminator branch. The topic is bound like `Ticks` above, to a
-`layout:` ring, but without `where zero_copy`: each record is copied
+`layout:` ring — it has to be: a `BytesView` topic subscribed or sent
+with no such binding, or bound to a ring with no `layout:`, is a
+compile error, since nothing else carries a raw frame — but without
+`where zero_copy`: each record is copied
 into a scratch blob for the pack readers, so raw-frame mode is not
 zero-copy. This is the path for reading real external
 mixed-record rings; the typed-struct binding stays the fast path for a
