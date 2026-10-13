@@ -420,7 +420,7 @@ fn a_subscriber_readied_on_main_mid_flood_closes_its_window() {
 /// while another pool floods it: `Owner`'s run() builds a `Counter`, whose
 /// birth opens the gate the source waits for and then spins 50 ms, so the
 /// source parks a queue's worth for it and waits at the readiness cap.
-/// `@PLACE@` places `Owner`. Readiness posted in rounds, each the list
+/// `Owner` is on pool `p`, or pinned in the variant ([`placed`]). Readiness posted in rounds, each the list
 /// parked during the last, and the thread's posts to its own full ring or
 /// mailbox never wait (they go to its overflow list), so it returned only
 /// when the 1M-cell flood ended: on a pool, with the flood in the worker's
@@ -465,7 +465,7 @@ const READY_ON_OWN_THREAD_MID_FLOOD: &str = r#"
     }
     main locus App {
         params { own: Owner = Owner { }; src: Source = Source { }; }
-        placement { own: @PLACE@; src: cooperative(pool = side); }
+        placement { own: cooperative(pool = p); src: cooperative(pool = side); }
         run() {
             let deadline = std::time::monotonic_ns() + 60000000000;
             while (self.own.ready == 0 && std::time::monotonic_ns() < deadline) { std::time::sleep(1ms); }
@@ -487,8 +487,16 @@ const READY_ON_OWN_THREAD_MID_FLOOD: &str = r#"
     fn main() { App { }; }
 "#;
 
-fn ready_on_own_thread_mid_flood(name: &str, place: &str) {
-    let src = READY_ON_OWN_THREAD_MID_FLOOD.replace("@PLACE@", place);
+/// `src` as written (its locus on pool `p`), or with `field` pinned
+/// instead: the embedded text stays a whole program the corpus parses.
+fn placed(src: &str, field: &str, pinned: bool) -> String {
+    let pool = format!("{field}: cooperative(pool = p);");
+    assert!(src.contains(&pool), "the program places `{field}` on pool `p`");
+    if pinned { src.replace(&pool, &format!("{field}: pinned;")) } else { src.to_string() }
+}
+
+fn ready_on_own_thread_mid_flood(name: &str, pinned: bool) {
+    let src = placed(READY_ON_OWN_THREAD_MID_FLOOD, "own", pinned);
     let field = run_fields(name, &src);
     let rss = harness::statm_resident_bytes(&field("rss_statm")) / 1048576;
     let at_ready: i64 = field("sent_at_ready").parse().expect("a count");
@@ -500,17 +508,17 @@ fn ready_on_own_thread_mid_flood(name: &str, place: &str) {
 
 #[test]
 fn a_subscriber_readied_on_its_pools_worker_mid_flood_closes_its_window() {
-    ready_on_own_thread_mid_flood("ready_on_pool", "cooperative(pool = p)");
+    ready_on_own_thread_mid_flood("ready_on_pool", false);
 }
 
 #[test]
 fn a_subscriber_readied_on_its_pinned_thread_mid_flood_closes_its_window() {
-    ready_on_own_thread_mid_flood("ready_on_pinned", "pinned");
+    ready_on_own_thread_mid_flood("ready_on_pinned", true);
 }
 
 /// A producer never waits on a ring whose consumer is not draining, as on
 /// main's queue (#1552): main reads `go`, publishes 100000 ticks to a
-/// subscriber of the worker `@PLACE@` places (more than its ring holds),
+/// subscriber of the worker on pool `p`, or pinned (more than its ring holds),
 /// and only then replies `done`, while the worker blocks reading that
 /// reply. A producer at a full ring waited for its consumer to free a slot,
 /// so the two stood still; the worker's heartbeat stands still now, so main
@@ -535,7 +543,7 @@ const RING_CONSUMER_BLOCKED_IN_READ: &str = r#"
     }
     main locus App {
         params { lfd: Int = 0; w: Worker = Worker { }; }
-        placement { w: @PLACE@; }
+        placement { w: cooperative(pool = p); }
         bus { publish "rk" of type Tick; }
         run() {
             let cfd = std::io::tcp::accept_one(self.lfd) or raise;
@@ -557,25 +565,25 @@ const RING_CONSUMER_BLOCKED_IN_READ: &str = r#"
     }
 "#;
 
-fn ring_consumer_blocked_in_read(name: &str, place: &str) {
-    let field = run_fields(name, &RING_CONSUMER_BLOCKED_IN_READ.replace("@PLACE@", place));
+fn ring_consumer_blocked_in_read(name: &str, pinned: bool) {
+    let field = run_fields(name, &placed(RING_CONSUMER_BLOCKED_IN_READ, "w", pinned));
     assert_eq!(field("sent"), "100000", "{name}");
     assert_eq!(field("delivered"), "100000", "{name}: every tick is delivered");
 }
 
 #[test]
 fn a_producer_never_waits_on_a_pool_worker_blocked_in_a_read() {
-    ring_consumer_blocked_in_read("pool_in_read", "cooperative(pool = p)");
+    ring_consumer_blocked_in_read("pool_in_read", false);
 }
 
 #[test]
 fn a_producer_never_waits_on_a_pinned_thread_blocked_in_a_read() {
-    ring_consumer_blocked_in_read("pinned_in_read", "pinned");
+    ring_consumer_blocked_in_read("pinned_in_read", true);
 }
 
 /// The spill behind a ring grows by a ring's worth per stall window, shared
 /// by every producer, and keeps each publisher's order. Four sources on four
-/// pools flood a subscriber `@PLACE@` places, with 64-cell rings; its
+/// pools flood a subscriber on pool `p`, or pinned, with 64-cell rings; its
 /// 100th handler blocks a second in `usleep`. While it does, the sources
 /// spill a ring's worth per 20 ms in all (about 3.1k; with a window per
 /// producer, 10.6k), and every tick arrives once it drains, each source's
@@ -624,7 +632,7 @@ const RING_SPILL_SHARED_WINDOW: &str = r#"
             s3: Source = Source { id: 3 };
         }
         placement {
-            sub: @PLACE@;
+            sub: cooperative(pool = p);
             s0: cooperative(pool = p0);
             s1: cooperative(pool = p1);
             s2: cooperative(pool = p2);
@@ -646,8 +654,9 @@ const RING_SPILL_SHARED_WINDOW: &str = r#"
     fn main() { App { }; }
 "#;
 
-fn ring_spill_shared_window(name: &str, place: &str) {
-    let field = run_fields_env(name, &RING_SPILL_SHARED_WINDOW.replace("@PLACE@", place), &[("LOTUS_BUS_QUEUE_CAP", "64")]);
+fn ring_spill_shared_window(name: &str, pinned: bool) {
+    let src = placed(RING_SPILL_SHARED_WINDOW, "sub", pinned);
+    let field = run_fields_env(name, &src, &[("LOTUS_BUS_QUEUE_CAP", "64")]);
     let sent: i64 = field("sent_while_blocked").parse().expect("a count");
     let blocked_ms: i64 = field("blocked_ms").parse().expect("a duration");
     let allowed = (blocked_ms / 20 + 2) * 64;
@@ -659,12 +668,12 @@ fn ring_spill_shared_window(name: &str, place: &str) {
 
 #[test]
 fn a_pool_rings_spill_grows_a_ring_per_window_in_order() {
-    ring_spill_shared_window("spill_pool", "cooperative(pool = p)");
+    ring_spill_shared_window("spill_pool", false);
 }
 
 #[test]
 fn a_pinned_mailboxs_spill_grows_a_ring_per_window_in_order() {
-    ring_spill_shared_window("spill_pinned", "pinned");
+    ring_spill_shared_window("spill_pinned", true);
 }
 
 /// A flood whose handler publishes: the at-cap inline drain runs `Sink`'s

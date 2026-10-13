@@ -1668,6 +1668,38 @@ row	App@literal1	App	main	default
 row	App@literal1.src	Source	pool:side	entry	off owner
 dynamic	Counter	on main	in the seed
 
+== crates/hale-codegen/tests/bus_backpressure.rs#9910970c
+root	App	the entry
+domain	pool:p
+domain	pool:side
+row	App@literal1	App	main	default
+row	App@literal1.own	Owner	pool:p	entry	off owner
+row	App@literal1.src	Source	pool:side	entry	off owner
+dynamic	Counter	on pool:p	in the seed
+
+== crates/hale-codegen/tests/bus_backpressure.rs#76fa6d42
+root	App	the entry
+domain	pool:p
+row	App@literal1	App	main	default
+dynamic	__StdIoTcpStream	on main|pool:p	in the seed
+-- App@literal1.w	Worker
+row	~	Worker	pool:p	entry	off owner
+row	~.sub	Counter	pool:p	inherited
+
+== crates/hale-codegen/tests/bus_backpressure.rs#30961f9e
+root	App	the entry
+domain	pool:p
+domain	pool:p0
+domain	pool:p1
+domain	pool:p2
+domain	pool:p3
+row	App@literal1	App	main	default
+row	App@literal1.s0	Source	pool:p0	entry	off owner
+row	App@literal1.s1	Source	pool:p1	entry	off owner
+row	App@literal1.s2	Source	pool:p2	entry	off owner
+row	App@literal1.s3	Source	pool:p3	entry	off owner
+row	App@literal1.sub	Counter	pool:p	entry	off owner
+
 == crates/hale-codegen/tests/bus_bounded_topics.rs#32b214f8
 root	App	the entry
 domain	pinned:App@literal1.p	cpus 0
