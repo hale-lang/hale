@@ -2341,8 +2341,10 @@ its `KNOWN_OPEN` table, which is empty today.
   is copied at the claim, or forwarded by a park after it, only to a
   claimant that publish did not reach itself: no cell is delivered
   twice or lost. The bound is each claimant's own: the reservation
-  retains the first cells any `bounded(N, drop_new)` or unbounded
-  claimant keeps and the last any `bounded(N, drop_old)` one keeps, and
+  retains, for each routing key (a keyed claimant's bound is over its
+  own key's cells), the first cells any `bounded(N, drop_new)` or
+  unbounded claimant keeps and the last any `bounded(N, drop_old)` one
+  keeps, never more than a queue's worth in all, and
   each claim takes its own bound's share of what is retained (the
   oldest N, or the newest N), counting what it lost on its own
   `ctr_dropped_full`, whichever field is built first; past `bounded(N);

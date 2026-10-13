@@ -492,6 +492,43 @@ fn each_claimant_keeps_its_own_bound() {
     }
 }
 
+const KEYED_BOUNDS: &str = r#"
+    type Ev { lane: Int; n: Int; }
+    topic Lanes { payload: Ev; subject: "rsv.lanes"; keyed_by lane; }
+    locus Burst {
+        params { x: Int = 0; }
+        bus { publish Lanes; }
+        birth() {
+            Lanes <- Ev { lane: 0, n: 0 };
+            Lanes <- Ev { lane: 0, n: 1 };
+            Lanes <- Ev { lane: 1, n: 0 };
+            Lanes <- Ev { lane: 1, n: 1 };
+        }
+    }
+    locus Ear {
+        params { lane: Int = 0; }
+        bus { subscribe Lanes as on_ev bounded(2, drop_new) where key == self.lane; }
+        fn on_ev(e: Ev) { println("ear " + to_string(self.lane) + " " + to_string(e.n)); }
+    }
+    main locus Root {
+        params { b: Burst = Burst { }; e0: Ear = Ear { lane: 0 }; e1: Ear = Ear { lane: 1 }; }
+        run() { yield; std::time::sleep(20ms); }
+    }
+    fn main() { Root { }; }
+"#;
+
+#[test]
+fn a_keyed_claimants_bound_is_over_its_own_keys_cells() {
+    // Two cells for each key; each Ear's bound of two is over its own
+    // key's cells, so neither loses one to the other key's, in either
+    // policy.
+    for policy in ["drop_new", "drop_old"] {
+        let src = KEYED_BOUNDS.replace("bounded(2, drop_new)", &format!("bounded(2, {policy})"));
+        let (out, stderr) = run_env("keyed_bounds", &src, false, &[]);
+        assert_eq!(out, ["ear 0 0", "ear 0 1", "ear 1 0", "ear 1 1"], "{policy}\n{stderr}");
+    }
+}
+
 /// A publisher on its own thread, started early in the tree, sends
 /// `count` numbered cells (a short pause every ten) while the rest of the
 /// tree is built, slowly; every subscriber, built before it or after,

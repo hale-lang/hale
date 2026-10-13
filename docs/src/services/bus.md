@@ -195,8 +195,9 @@ the loci its params build on its thread — still hears it:
 the messages wait, in order, and arrive once the subscriber's own
 `birth()` has returned. The wait is bounded like a queue, by each
 subscriber's own bound: a `bounded(N, drop_new)` subscriber gets the
-oldest N, a `bounded(N, drop_old)` one the newest N, whichever is built
-first, each counting what it lost; an `on_full: fail` topic sheds the
+oldest N, a `bounded(N, drop_old)` one the newest N — of its own key's
+messages, for a keyed one — whichever is built first, each counting
+what it lost; an `on_full: fail` topic sheds the
 newcomer and says so once on stderr, since by then there is no
 publisher to raise into; and with no bound, the reservation holds a
 queue's worth and sheds what comes after, counted, saying so once on

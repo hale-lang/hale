@@ -14927,6 +14927,9 @@ typedef struct lotus_bus_parked {
      * time a claim reads it). */
     lotus_bus_pubctx_t pc;
     char *key_str;
+    /* a reservation's cell: its predecessor in publish order, and the
+     * next cell of its key's retained tail */
+    struct lotus_bus_parked *prev, *bnext;
 } lotus_bus_parked_t;
 
 typedef struct {
@@ -15279,9 +15282,11 @@ static void lotus_bus_ready_forget(void *self) {
  * did not reach the claimant itself.
  *
  * The bound is each claimant's own (its `bounded(N, policy)`, the
- * topic's `on_full: fail`, else a queue's worth): the reservation retains
+ * topic's `on_full: fail`, else a queue's worth): the reservation retains,
+ * for each routing key (a keyed claimant's bound is over its key's cells),
  * the first `keep_first` cells (what a drop_new or unbounded claimant
  * keeps) and the last `keep_last` after them (what a drop_old one keeps),
+ * never more than a queue's worth in all,
  * and each claim takes its own share of what is retained — the oldest N,
  * or the newest N — counting what it lost on its `ctr_dropped_full`.
  * Shedding past what an unbounded claimant or an `on_full: fail` topic
@@ -15319,9 +15324,19 @@ typedef struct lotus_bus_resv {
     uint8_t shed_noted;
     int open;
     pthread_t ctor;
-    lotus_bus_parked_t *head, *tail;
-    lotus_bus_parked_t *first_tail;   /* the first part's last cell */
-    size_t nfirst, nlast;
+    lotus_bus_parked_t *head, *tail;  /* every retained cell, in publish order */
+    size_t nretained;
+    /* Retention is per routing key (one bucket for unkeyed publishes):
+     * a keyed claimant's bound is over its key's cells, so the first and
+     * last parts are kept for each key, not for the subject. */
+    struct lotus_bus_resv_key {
+        uint8_t keyed;
+        uint64_t lo, hi;
+        char *str;
+        size_t nfirst, nlast;
+        lotus_bus_parked_t *last_oldest, *last_newest;
+    } *keys;
+    size_t nkeys, capkeys;
     uint64_t ever_parked, dropped;
     uint64_t copied, forwarded;   /* for LOTUS_BUS_LOG_RESERVE */
     lotus_bus_claimant_t *claimants;
@@ -15438,8 +15453,12 @@ static void lotus_bus_resv_close_locked(lotus_bus_resv_t *r,
     }
     if (r->entry) r->entry->subject = NULL;
     *freeme = r->head;
-    r->head = r->tail = r->first_tail = NULL;
-    r->nfirst = r->nlast = 0;
+    r->head = r->tail = NULL;
+    r->nretained = 0;
+    for (size_t i = 0; i < r->nkeys; i++) free(r->keys[i].str);
+    free(r->keys);
+    r->keys = NULL;
+    r->nkeys = r->capkeys = 0;
     __atomic_sub_fetch(&lotus_bus_unready_count, 1, __ATOMIC_SEQ_CST);
 #ifndef __wasm__
     pthread_cond_broadcast(&g_bus_ready_cond);
@@ -15490,22 +15509,56 @@ static int lotus_bus_resv_park(void *token, lotus_bus_queue_t *queue,
                                                     rec_pub, wire_deser),
                             &later, &later_tail);
     }
-    /* And the ones still to come: the first part while it has room,
-     * else the last part, whose oldest goes past its room. */
+    /* And the ones still to come, retained per key: the first part
+     * while that key's has room, else its last part, whose oldest goes
+     * past its room; and never past a queue's worth in all. */
     if (r->open) {
         r->ever_parked++;
+        struct lotus_bus_resv_key *k = NULL;
+        for (size_t i = 0; i < r->nkeys && !k; i++) {
+            struct lotus_bus_resv_key *x = &r->keys[i];
+            if (x->keyed != pc->keyed) continue;
+            if (!pc->keyed) k = x;
+            else if (pkey ? (x->str && strcmp(x->str, pkey) == 0)
+                          : (x->lo == pc->key_lo && x->hi == pc->key_hi)) k = x;
+        }
+        if (!k) {
+            if (r->nkeys == r->capkeys) {
+                size_t nc = r->capkeys ? r->capkeys * 2 : 4;
+                struct lotus_bus_resv_key *g = realloc(r->keys, nc * sizeof *g);
+                if (!g) {
+                    pthread_mutex_unlock(&g_bus_ready_lock);
+                    fprintf(stderr, "lotus: out of memory holding a reserved cell\n");
+                    abort();
+                }
+                r->keys = g;
+                r->capkeys = nc;
+            }
+            k = &r->keys[r->nkeys++];
+            memset(k, 0, sizeof *k);
+            k->keyed = pc->keyed;
+            k->lo = pc->key_lo;
+            k->hi = pkey ? 0 : pc->key_hi;
+            k->str = pkey ? strdup(pkey) : NULL;
+        }
         int keep = 1, last = 0;
-        if (r->nfirst < r->keep_first && r->nlast == 0) {
+        if (k->nfirst < r->keep_first && k->nlast == 0) {
             last = 0;
         } else if (r->keep_last > 0) {
             last = 1;
         } else {
             keep = 0;
-            r->dropped++;
         }
-        if (r->ever_parked > r->keep_first && r->note && !r->shed_noted) {
-            r->shed_noted = 1;
-            note_shed = 1;
+        if (keep && !(last && k->nlast >= r->keep_last)
+            && r->nretained >= bus_queue_max_cap()) {
+            keep = 0;   /* a queue's worth in all */
+        }
+        if (!keep) {
+            r->dropped++;
+            if (r->note && !r->shed_noted) {
+                r->shed_noted = 1;
+                note_shed = 1;
+            }
         }
         if (keep) {
             lotus_bus_parked_t *p = calloc(1, sizeof *p);
@@ -15526,19 +15579,27 @@ static int lotus_bus_resv_park(void *token, lotus_bus_queue_t *queue,
             p->wire_deser = wire_deser;
             p->pc = *pc;
             p->key_str = key_copy;
+            p->prev = r->tail;
             if (r->tail) r->tail->next = p; else r->head = p;
             r->tail = p;
+            r->nretained++;
             if (!last) {
-                r->nfirst++;
-                r->first_tail = p;
-            } else if (++r->nlast > r->keep_last) {
-                /* the last part's oldest: right after the first part */
-                lotus_bus_parked_t **at = r->first_tail ? &r->first_tail->next : &r->head;
-                shed = *at;
-                *at = shed->next;
-                shed->next = NULL;
-                r->nlast--;
-                r->dropped++;
+                k->nfirst++;
+            } else {
+                if (k->last_newest) k->last_newest->bnext = p; else k->last_oldest = p;
+                k->last_newest = p;
+                if (++k->nlast > r->keep_last) {
+                    /* this key's oldest retained tail cell goes */
+                    shed = k->last_oldest;
+                    k->last_oldest = shed->bnext;
+                    if (!k->last_oldest) k->last_newest = NULL;
+                    if (shed->prev) shed->prev->next = shed->next; else r->head = shed->next;
+                    if (shed->next) shed->next->prev = shed->prev; else r->tail = shed->prev;
+                    shed->next = NULL;
+                    k->nlast--;
+                    r->nretained--;
+                    r->dropped++;
+                }
             }
         }
     }
@@ -15776,6 +15837,8 @@ static void lotus_bus_resv_destroy_all(void) {
     while (r) {
         lotus_bus_resv_t *next = r->next_all;
         lotus_bus_parked_free(r->head);
+        for (size_t i = 0; i < r->nkeys; i++) free(r->keys[i].str);
+        free(r->keys);
         free(r->claimants);
         free(r);
         r = next;
