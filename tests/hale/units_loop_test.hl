@@ -1,0 +1,51 @@
+// The loop variable of a `bounded[T; N]` or an array is a `T`
+// (spec/units.md): the check bound it to no type at all, so the
+// operator algebra read it as its other operand. `x / 1cent` over a
+// `bounded[Money; N]` stayed a `Money` (it printed `125cent`, where an
+// annotated `let` gave the count `125`), and `x - t` of two instants
+// stayed a `Time`.
+
+unit cent;
+type Money = quantity Int in cent;
+
+main locus Till {
+    params {
+        prices: bounded[Money; 4];
+        stamps: bounded[Time; 2];
+    }
+    run() {
+        push(self.prices, 125cent) or { };
+        push(self.prices, 3cent) or { };
+        let mut total = 0;
+        for x in self.prices {
+            let n: Int = x / 1cent;
+            total = total + n;
+            std::test::assert_eq_str(to_string(x / 1cent), to_string(n), "a quotient of two quantities is the count");
+        }
+        std::test::assert_eq_int(total, 128, "the counts of cents, summed");
+        let mut seen = 0cent;
+        for x in self.prices {
+            seen = seen + x;
+        }
+        std::test::assert_eq_str(to_string(seen), "128cent", "the loop variable is the quantity itself");
+
+        let fixed: [Money; 2] = [3cent, 4cent];
+        let mut cents = 0;
+        for y in fixed {
+            cents = cents + y / 1cent;
+        }
+        std::test::assert_eq_int(cents, 7, "an array's elements too");
+
+        let t = `2026-05-08T12:00:00Z`;
+        push(self.stamps, t) or { };
+        push(self.stamps, t + 90s) or { };
+        let mut gap = 0s;
+        for s in self.stamps {
+            gap = s - t;
+        }
+        std::test::assert(gap == 90s, "two instants differ by a Duration in a loop too");
+        std::test::assert_eq_str(to_string(gap), "90000000000ns", "and print as one");
+    }
+}
+
+fn main() { Till { }; }

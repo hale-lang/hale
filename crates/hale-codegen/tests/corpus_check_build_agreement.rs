@@ -2218,3 +2218,27 @@ fn the_friction_sweep_shapes_agree() {
         );
     }
 }
+
+/// `bounded[Time; N]` checked clean and the build refused its element
+/// type ("element type Time not supported"): a `Time` is the i64 a
+/// `Duration` is, so it lowers as a scalar element, in a type's field and
+/// in a locus's params. Behaviour: tests/hale/bounded_time_test.hl.
+///
+/// Plain string literals, for the reason given above.
+#[test]
+fn a_bounded_of_time_checks_and_builds() {
+    let builds = [
+        ("type W { seen: bounded[Time; 3]; }\n\
+          fn main() { let mut w = W { }; push(w.seen, `2026-05-08T12:00:00Z`) or { }; println(count(w.seen)); }\n",
+         "hale_cb_bounded_time_field"),
+        ("locus L {\n\
+          params { marks: bounded[Time; 2]; }\n\
+          run() { push(self.marks, `2026-05-08T12:00:00Z`) or { }; for x in self.marks { println(x); } }\n\
+          }\n\
+          fn main() { L { }; }\n",
+         "hale_cb_bounded_time_param"),
+    ];
+    for (src, tag) in builds {
+        assert_eq!(sweep_verdict(src, tag), Verdict::Built, "{}", src);
+    }
+}

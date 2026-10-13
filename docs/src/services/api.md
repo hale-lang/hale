@@ -228,6 +228,12 @@ answer it:
 let public = api::serve(Public, self.fixture, as: "public", receivers: { Orders: self.orders }, bound: 64, on_full: refuse);
 ```
 
+A library can ship a surface for an application to serve: the library
+declares `api Svc { … }` and the loci its rows name, and the application
+holds the receivers and names the surface by its path under the import
+alias, `api::serve(lib::Svc, …)`. The exposure describes it as `Svc`,
+its declared name.
+
 The transport is a locus that implements `std::api::Rpc`: it listens,
 frames a request, and writes each outcome in its protocol's terms. The
 standard library ships five today. `std::api::test::Rpc` has no socket: a

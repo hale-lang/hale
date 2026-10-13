@@ -387,6 +387,11 @@ are refused: "\`OrderId\` and \`SeqNo\` are distinct identities; convert
 one explicitly". A compound assignment (`x += 1`) is the operator and
 the store.
 
+**A loop variable.** The variable of `for x in xs`, where `xs` is a
+`bounded[T; N]` or an array of `T`, is a `T`, and the algebra reads it
+as one: over a `bounded[Money; N]`, `x / 1cent` is the `Int` count and
+`x` prints with its unit; over instants, `x - t` is a `Duration`.
+
 ## Literals
 
 A **quantity literal** names its unit in the units' namespace, which is

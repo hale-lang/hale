@@ -928,7 +928,10 @@ Semantics:
   surface. Whole-STRUCT copies carry elements + count by
   construction (the storage is inline).
 - Scalar elements (Int/Float/Bool/Decimal/Duration) are flat under
-  `zero_copy` and travel the bus as raw bytes. Pointer-shaped
+  `zero_copy` and travel the bus as raw bytes. A `Time` element is the
+  i64 a `Duration` is and lowers inline the same way; it is not flat
+  under `zero_copy`, as `[Time; N]` is not (`semantics.md` §
+  Payload-shape compatibility). Pointer-shaped
   elements (String/Bytes/struct) work in-process — push/set
   arena-anchor the element into the receiver's owning arena — but
   are rejected in cross-process bus payloads (post-v1 polish).

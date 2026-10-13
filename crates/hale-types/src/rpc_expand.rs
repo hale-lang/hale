@@ -888,12 +888,79 @@ fn inject_tcp_listener(programs: &mut [&mut Program]) {
     }
 }
 
+/// The surface `alias::name` names: the block the import table's row for
+/// `alias::api:name` identifies. A surface keeps its name through the
+/// mangler (it is the description's), so its row lives in the surfaces'
+/// own namespace (`mangle::API_KEY`), apart from a same-named locus or type
+/// of the seed, and maps to the identity the loader stamps on the block
+/// (`ApiDecl::origin`, `mangle::api_origin`). The row is the provenance: a
+/// block of another seed, the importer's own among them, has another
+/// origin or none, so the alias never reaches it.
+fn imported_surface(programs: &[&Program], renames: &[(Vec<String>, String)], alias: &str, name: &str) -> Option<String> {
+    let key = format!("{}{name}", crate::mangle::API_KEY);
+    let (_, origin) = renames.iter().find(|(path, _)| path.len() == 2 && path[0] == alias && path[1] == key)?;
+    programs.iter().flat_map(|p| flat_decls(&p.items)).find_map(|d| match d {
+        TopDecl::Api(a) if a.name.name == name && a.origin.as_ref() == Some(origin) => Some(a.name.name.clone()),
+        _ => None,
+    })
+}
+
+/// A serve site whose surface is written `alias::Name`, for a surface the
+/// imported seed `alias` declares, names the surface as declared (`Name`),
+/// so every reader of the site (the serve-site laws, this pass, the
+/// description) reads one spelling. No rename pass reaches it: the surface
+/// argument is a value-position path. A path that names no surface of the
+/// aliased seed is left as written, for the laws to refuse in the author's
+/// spelling.
+fn resolve_imported_surfaces(programs: &mut [&mut Program], renames: &[(Vec<String>, String)]) {
+    let mut resolved: BTreeMap<(String, String), String> = BTreeMap::new();
+    {
+        let ro: Vec<&Program> = programs.iter().map(|p| &**p).collect();
+        for p in &ro {
+            for d in flat_decls(&p.items) {
+                let TopDecl::Locus(l) = d else { continue };
+                for site in crate::surfaces::locus_serve_sites(l) {
+                    let Expr::Path(qn) = site.surface else { continue };
+                    let [alias, name] = qn.segments.as_slice() else { continue };
+                    if let Some(s) = imported_surface(&ro, renames, &alias.name, &name.name) {
+                        resolved.insert((alias.name.clone(), name.name.clone()), s);
+                    }
+                }
+            }
+        }
+    }
+    if resolved.is_empty() {
+        return;
+    }
+    let mut rewrite = |e: &mut Expr| {
+        let Expr::Path(qn) = e else { return };
+        let [alias, name] = qn.segments.as_slice() else { return };
+        if let Some(s) = resolved.get(&(alias.name.clone(), name.name.clone())) {
+            *e = Expr::Ident(Ident { name: s.clone(), span: qn.span, id: hale_syntax::ast::NodeId::NONE });
+        }
+    };
+    for p in programs.iter_mut() {
+        hale_syntax::ast::for_each_decl_mut(&mut p.items, &mut |d| {
+            let TopDecl::Locus(l) = d else { return };
+            for m in &mut l.members {
+                match m {
+                    LocusMember::Lifecycle(lc) => crate::surfaces::serve_surfaces_in_mut(&mut lc.body, &mut rewrite),
+                    LocusMember::Fn(f) => crate::surfaces::serve_surfaces_in_mut(&mut f.body, &mut rewrite),
+                    LocusMember::Mode(md) => crate::surfaces::serve_surfaces_in_mut(&mut md.body, &mut rewrite),
+                    _ => {}
+                }
+            }
+        });
+    }
+}
+
 /// Run the pass over a bundle's programs.
 pub fn expand(
     programs: &mut [&mut Program],
     renames: &[(Vec<String>, String)],
     default_surface: &str,
 ) -> Vec<Expansion> {
+    resolve_imported_surfaces(programs, renames);
     if mentions_tcp_serve(programs) {
         inject_tcp_serve(programs);
     }

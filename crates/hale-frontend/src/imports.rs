@@ -923,6 +923,14 @@ pub fn resolve_imports(
             if trace {
                 eprintln!("[import]     mangle done : {}", pf.path.display());
             }
+            // A surface's identity, as its row in the seed's rename table
+            // (`mangle::API_KEY`) names it: what an importer's
+            // `alias::Name` serve site is resolved by (`rpc_expand`).
+            hale_syntax::ast::for_each_decl_mut(&mut pf.program.items, &mut |d| {
+                if let hale_syntax::ast::TopDecl::Api(a) = d {
+                    a.origin = Some(hale_types::mangle::api_origin(&lib_id, &pf.stem, &a.name.name));
+                }
+            });
             merged_items.extend(pf.program.items);
             sources.insert(pf.canon, pf.source);
             let _ = pf.path; // path was only needed for diagnostics above

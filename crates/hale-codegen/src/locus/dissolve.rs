@@ -526,7 +526,7 @@ impl<'ctx, 'p> LocusDissolve<'ctx> for Cx<'ctx, 'p> {
                             .build_call(dissolve_fn, &[inner_ptr.into()], &format!("{}.cascade.dissolve", inner_name))
                             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
                     }
-                    Ok(())
+                    cx.emit_lru_evict_remaining(&inner_info, inner_ptr, &inner_name)
                 })
             })?;
             // GH #750: descend. Inner's own locus-typed param
