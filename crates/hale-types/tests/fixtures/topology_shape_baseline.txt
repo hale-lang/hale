@@ -713,6 +713,8 @@ crates/hale-codegen/tests/form_hashmap_serialized.rs#1 2b16ebb436826b0b
 crates/hale-codegen/tests/form_hashmap_synced_retire.rs#0 c118440b08584a32
 crates/hale-codegen/tests/form_hashmap_synced_retire.rs#1 a40a581598f2e3ca
 crates/hale-codegen/tests/form_hashmap_synced_retire.rs#2 5b2b7262e31c0f29
+crates/hale-codegen/tests/form_heap.rs#0 9b3a0fd731c6a163
+crates/hale-codegen/tests/form_heap.rs#3 3558cf5fc79987ca
 crates/hale-codegen/tests/form_iteration.rs#0 e92db74f86e5e52c
 crates/hale-codegen/tests/form_iteration.rs#1 e92db74f86e5e52c
 crates/hale-codegen/tests/form_iteration.rs#2 990eaaa5add6876f
@@ -722,6 +724,9 @@ crates/hale-codegen/tests/form_lru_cache_codegen.rs#1 cea5d5b4651482a5
 crates/hale-codegen/tests/form_lru_cache_codegen.rs#2 cea5d5b4651482a5
 crates/hale-codegen/tests/form_lru_cache_codegen.rs#3 cea5d5b4651482a5
 crates/hale-codegen/tests/form_lru_cache_codegen.rs#4 cea5d5b4651482a5
+crates/hale-codegen/tests/form_lru_cache_reclaim.rs#0 c77bf7ca12bd34cc
+crates/hale-codegen/tests/form_lru_cache_reclaim.rs#1 b467cd386ff1ae21
+crates/hale-codegen/tests/form_lru_cache_reclaim.rs#3 59d320aa535e19ce
 crates/hale-codegen/tests/form_ring_buffer_codegen.rs#0 d64b3e41a590cf50
 crates/hale-codegen/tests/form_ring_buffer_codegen.rs#1 d64b3e41a590cf50
 crates/hale-codegen/tests/form_ring_buffer_codegen.rs#2 d64b3e41a590cf50
@@ -736,6 +741,8 @@ crates/hale-codegen/tests/form_vec_bce.rs#3 efc78d92401867e9
 crates/hale-codegen/tests/form_vec_bce.rs#4 990eaaa5add6876f
 crates/hale-codegen/tests/form_vec_bce.rs#5 990eaaa5add6876f
 crates/hale-codegen/tests/form_vec_bce.rs#6 990eaaa5add6876f
+crates/hale-codegen/tests/form_vec_clear.rs#0 78604ab4260e059c
+crates/hale-codegen/tests/form_vec_clear.rs#2 9e274a7be6ce3a02
 crates/hale-codegen/tests/form_vec_codegen.rs#0 461ad2eb1d95428e
 crates/hale-codegen/tests/form_vec_codegen.rs#1 1e7c2c829ddd8c97
 crates/hale-codegen/tests/form_vec_codegen.rs#10 c95eecab336a0816
@@ -1489,6 +1496,7 @@ crates/hale-codegen/tests/wasm_target.rs#19 d3700f11332caa2b
 crates/hale-codegen/tests/wasm_target.rs#2 3218fa9dbdc01510
 crates/hale-codegen/tests/wasm_target.rs#20 cee899a36c15eda8
 crates/hale-codegen/tests/wasm_target.rs#21 7409ee5e1bea5782
+crates/hale-codegen/tests/wasm_target.rs#22 9e7240d456a5a42c
 crates/hale-codegen/tests/wasm_target.rs#5 3218fa9dbdc01510
 crates/hale-codegen/tests/ws1_ffi_handle_reassign.rs#1 ec84d76cf468d9b4
 crates/hale-codegen/tests/ws3_int_float_conversion.rs#0 865d341109268295
