@@ -613,8 +613,9 @@ let admin = api::serve(Admin, unix::Rpc { path: "/run/desk/admin.sock", roles: s
 one request to a connection (`Connection: close`: no keep-alive, no
 chunked bodies). It is written at a serve site, or held as a param and
 named, with the fields `bind` (`host:port`), `codec` (`json`, the one codec
-v1 has), `principals` (the bearer source, required) and `roles` (the role
-source):
+v1 has), `principals` (the bearer source, required), `roles` (the role
+source) and `cors` (the browser origins it answers CORS for, below;
+optional):
 
 ```hale,fragment
 let public = api::serve(Public, http::Rpc { bind: "127.0.0.1:8080", codec: json, principals: self.bearer, roles: self.public_roles }, as: "public", receivers: { Orders: self.orders }, bound: 64, on_full: refuse);
@@ -675,6 +676,26 @@ let public = api::serve(Public, http::Rpc { bind: "127.0.0.1:8080", codec: json,
   runs, once, and holds its place against the bound until it completes. An
   EOF is the whole signal, so a client that half-closes its end after
   sending is taken to have gone.
+- **CORS, when `cors` lists origins** (2026-10-12, downstream handoff).
+  `cors: String` is a comma-separated list of origins, each matched whole
+  against the request's `Origin` (`*` matches any); `""`, the default,
+  answers no CORS and changes nothing above. With it set, an `OPTIONS` of
+  a route the transport serves (`/call/<member>`, `/.description`) is a
+  preflight the transport answers itself: it reaches the runtime as a
+  request refused at framing (no credential is read, nothing is
+  dispatched), and its reply is `204` with no body when the origin is
+  listed, `403` with `{"refusal": {"kind": "unauthorized", "reason": …}}`
+  when it is not or none was sent. A listed origin's preflight carries
+  `Access-Control-Allow-Origin: <origin>`, `Access-Control-Allow-Methods:
+  POST, GET, OPTIONS`, `Access-Control-Allow-Headers: Authorization,
+  Content-Type, Hale-Surface-Digest` and `Access-Control-Max-Age: 600`;
+  every other response to a listed origin, refusals included, carries
+  `Access-Control-Allow-Origin: <origin>`, and no response to an origin
+  not listed carries a CORS header. Every response of a transport with
+  `cors` set carries `Vary: Origin`. An `OPTIONS` of any other path is
+  `malformed`, as without `cors`. CORS is the browser's guard and decides
+  no admission: a call is authenticated and authorized as it would be
+  without it.
 - **`stop()`** answers the executing calls, refuses the queued ones
   `shutting_down` (503), and closes the listener and every connection
   after the replies already sent. A request that arrives while `stop()`

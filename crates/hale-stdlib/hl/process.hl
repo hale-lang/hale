@@ -23,6 +23,21 @@
 //    std::process::spawn(…)` is refused because a locus-typed field
 //    takes only a locus LITERAL (GH #383).
 //
+// 3. `run_with(argv, opts)` / `spawn_with(argv, opts)` — the same two
+//    under a `SpawnOptions` record (2026-10-12, downstream handoff):
+//    the child's working directory, its environment (additions,
+//    removals, or a cleared one), a wall-clock timeout, and resource
+//    limits (CPU seconds, address space, open files, file size). All
+//    of it is applied in the forked child before its exec, so the
+//    parent's own cwd, environment and limits never change. A setup
+//    step that fails (a cwd that does not exist, a limit above the hard
+//    one) fails the call with its IoError; a missing program is still
+//    exit code 127, as with `run` / `spawn`.
+//
+//      let o = std::process::SpawnOptions { cwd: "/srv/job", timeout: 30s, open_files: 64 };
+//      let out = std::process::run_with("make\ntest", o) or raise;
+//      if out.timed_out { … }
+//
 // The `Child` locus's dissolve() reaps any unwaited child
 // (TERM → wait 100ms → KILL → waitpid) so an owner that is
 // reclaimed doesn't leave zombies behind. See "fd cleanup and who
@@ -94,6 +109,51 @@ type __StdProcessOutput {
     stdout: String;
     // Captured stderr as a String. Read to EOF.
     stderr: String;
+    // `run_with`'s timeout stopped the child (its process group got
+    // TERM, then KILL after 100 ms); `code` is then -1 and `stdout` /
+    // `stderr` hold what it wrote before. Always false from `run`.
+    timed_out: Bool = false;
+}
+
+// How `run_with` / `spawn_with` start the child. Every field has a
+// default that changes nothing, so a literal names only what it sets:
+// `std::process::SpawnOptions { cwd: "/tmp", timeout: 5s }`.
+/// Options for `run_with` / `spawn_with`: working directory,
+/// environment, timeout and resource limits, all applied in the child
+/// before its exec.
+type __StdProcessSpawnOptions {
+    // The child's working directory; "" inherits this process's.
+    cwd: String = "";
+    // Newline-separated `NAME=value` lines set in the child's
+    // environment, replacing an inherited value of the same name (the
+    // last line wins when a name repeats).
+    env: String = "";
+    // Newline-separated names removed from the inherited environment.
+    // `env` is applied after, so a name in both is set.
+    unset_env: String = "";
+    // Start the child from an EMPTY environment (then `env`), instead
+    // of this process's. With no PATH, `argv[0]` is looked up the way
+    // `execvp` does without one — give a full path to be sure.
+    clear_env: Bool = false;
+    // Wall-clock limit; 0 = none. `run_with` stops the child at it and
+    // says so in `timed_out`. For `spawn_with` the handle carries the
+    // deadline: `wait` returns at it and `try_wait` past it, either
+    // one stopping and reaping the child, returning -1 and setting the
+    // handle's `timed_out`.
+    timeout: Duration = 0ns;
+    // RLIMIT_CPU: seconds of CPU time; the kernel ends the child past
+    // it. 0 = unchanged.
+    cpu_seconds: Int = 0;
+    // RLIMIT_AS: bytes of address space; an allocation past it fails
+    // in the child. 0 = unchanged. (Linux enforces it; macOS accepts
+    // the setting and does not.)
+    address_space: Int = 0;
+    // RLIMIT_NOFILE: one more than the highest descriptor the child may
+    // open. 0 = unchanged.
+    open_files: Int = 0;
+    // RLIMIT_FSIZE: bytes the child may write to one file; past it the
+    // write fails (SIGXFSZ). 0 = unchanged.
+    file_size: Int = 0;
 }
 
 // Internal struct: opaque handle returned by the spawn path-call.
@@ -104,6 +164,8 @@ type __StdProcessSpawnHandle {
     stdin_fd: Int;
     stdout_fd: Int;
     stderr_fd: Int;
+    // `spawn_with`'s deadline (CLOCK_MONOTONIC ns), 0 = none.
+    deadline_ns: Int;
 }
 
 // Internal: outcome of a blocking wait.
@@ -152,6 +214,12 @@ locus __StdProcessChild {
         stdin_fd: Int = -1;
         stdout_fd: Int = -1;
         stderr_fd: Int = -1;
+        // `spawn_with`'s deadline, CLOCK_MONOTONIC nanoseconds; 0 =
+        // none. `wait` / `try_wait` stop the child there.
+        deadline_ns: Int = 0;
+        // Set when `wait` / `try_wait` stopped the child at its
+        // deadline (they return -1 then).
+        timed_out: Bool = false;
     }
     dissolve() {
         // One teardown spine (GH #716): dissolve and `adopt`'s
@@ -198,6 +266,8 @@ fn __std_process_release(c: std::process::Child) {
     }
     c.pid = -1;
     c.argv = "";
+    c.deadline_ns = 0;
+    c.timed_out = false;
 }
 
 // Move a spawned handle into a Child the caller already owns —
@@ -277,11 +347,15 @@ fn __std_process_adopt(dest: std::process::Child, src: std::process::Child) {
     dest.stdin_fd = src.stdin_fd;
     dest.stdout_fd = src.stdout_fd;
     dest.stderr_fd = src.stderr_fd;
+    dest.deadline_ns = src.deadline_ns;
+    dest.timed_out = src.timed_out;
     src.argv = "";
     src.pid = -1;
     src.stdin_fd = -1;
     src.stdout_fd = -1;
     src.stderr_fd = -1;
+    src.deadline_ns = 0;
+    src.timed_out = false;
 }
 
 // Spawn a subprocess. Returns a fully-populated Child. Cleanup is
@@ -314,9 +388,53 @@ fn __std_process_spawn(argv: String) -> std::process::Child fallible(IoError) {
     };
 }
 
+// `spawn` under a `SpawnOptions` (see "3." at the top). Surfaced as
+// `std::process::spawn_with`. A cwd that does not exist, an environment
+// line with no `=`, or a limit the kernel refuses fails here with its
+// IoError (the child never runs); a missing program is exit code 127
+// from a later `wait`, as with `spawn`. `close_stdin`, `write_stdin`,
+// the reads and `adopt` work on the handle exactly as on `spawn`'s.
+/// Spawn argv under a `SpawnOptions` (cwd, environment, timeout,
+/// limits); returns the Child without waiting. `wait` / `try_wait`
+/// enforce the timeout.
+fn __std_process_spawn_with(argv: String, o: std::process::SpawnOptions) -> std::process::Child fallible(IoError) {
+    let h = std::process::__spawn_with(argv, o.cwd, o.env, o.unset_env, o.clear_env, o.timeout / 1ns, o.cpu_seconds, o.address_space, o.open_files, o.file_size) or raise;
+    return std::process::Child {
+        argv: argv,
+        pid: h.pid,
+        stdin_fd: h.stdin_fd,
+        stdout_fd: h.stdout_fd,
+        stderr_fd: h.stderr_fd,
+        deadline_ns: h.deadline_ns,
+    };
+}
+
+// `run` under a `SpawnOptions`. Surfaced as `std::process::run_with`.
+// The timeout is a RESULT, not an error: the child's process group is
+// stopped at it (TERM, 100 ms, KILL) and reaped, and the output says
+// `timed_out` with whatever it wrote before.
+/// Run argv to completion under a `SpawnOptions`; `timed_out` on the
+/// output says the timeout stopped it.
+fn __std_process_run_with(argv: String, o: std::process::SpawnOptions) -> std::process::ProcessOutput fallible(IoError) {
+    return std::process::__run_with(argv, o.cwd, o.env, o.unset_env, o.clear_env, o.timeout / 1ns, o.cpu_seconds, o.address_space, o.open_files, o.file_size) or raise;
+}
+
+// A deadline outcome back to `wait` / `try_wait`'s answer: -3 is the
+// C side's "stopped at the deadline", which the handle records and the
+// caller reads as -1 (ended by a signal).
+fn __std_process_deadline_code(c: std::process::Child, code: Int) -> Int {
+    if code == -3 {
+        c.timed_out = true;
+        return -1;
+    }
+    return code;
+}
+
 // Block until the child exits. Returns the exit code (0..255 for
 // a normal exit, -1 if killed by a signal). Surfaced as
-// `std::process::wait`.
+// `std::process::wait`. On a `spawn_with` handle with a timeout it
+// returns at the deadline at the latest, the child stopped and reaped
+// (-1, and the handle's `timed_out` set).
 //
 // Errors:
 //   - kind="not_found" if the pid is already gone (ECHILD) — e.g.,
@@ -331,6 +449,10 @@ fn __std_process_spawn(argv: String) -> std::process::Child fallible(IoError) {
 fn __std_process_wait(c: std::process::Child) -> Int fallible(IoError) {
     if c.pid <= 0 {
         return 0;
+    }
+    if c.deadline_ns > 0 {
+        let d = std::process::__wait_deadline(c.pid, c.deadline_ns, 0) or raise;
+        return __std_process_deadline_code(c, d.code);
     }
     let o = std::process::__wait_pid(c.pid) or raise;
     return o.code;
@@ -420,12 +542,18 @@ fn __std_process_read_stderr(c: std::process::Child) -> String fallible(IoError)
 // reaped — e.g. wait()/try_wait() already returned it, or the
 // dissolve() race reaped first. Same manual-Child convention as
 // `wait`: pid <= 0 answers "already exited, code 0".
+// On a `spawn_with` handle past its deadline, the child still running
+// is stopped and reaped here: -1, and the handle's `timed_out` set.
 /// Non-blocking reap (waitpid WNOHANG): -2 = still running
 /// (poll again — the supervisor-tick idiom), 0..255 = exited,
 /// -1 = killed by signal. ECHILD surfaces kind="not_found".
 fn __std_process_try_wait(c: std::process::Child) -> Int fallible(IoError) {
     if c.pid <= 0 {
         return 0;
+    }
+    if c.deadline_ns > 0 {
+        let d = std::process::__wait_deadline(c.pid, c.deadline_ns, 1) or raise;
+        return __std_process_deadline_code(c, d.code);
     }
     let o = std::process::__try_wait_pid(c.pid) or raise;
     return o.code;

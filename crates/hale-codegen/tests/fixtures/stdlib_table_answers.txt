@@ -377,9 +377,12 @@ ns std::process open_prefixes=[]
   __kill_escalate syscall
   __pipe_read syscall|block
   __pipe_write syscall
+  __run_with syscall|block
   __signal_pid syscall
   __spawn syscall
+  __spawn_with syscall
   __try_wait_pid syscall
+  __wait_deadline syscall|block
   __wait_pid syscall|block
   adopt syscall
   close_stdin syscall
@@ -393,8 +396,10 @@ ns std::process open_prefixes=[]
   read_stdout syscall|block
   rss_bytes syscall
   run syscall|block
+  run_with syscall|block
   signal syscall
   spawn syscall
+  spawn_with syscall
   try_wait syscall
   wait syscall|block
   write_stdin syscall
@@ -946,12 +951,16 @@ std::name::Convention | lookup=- | locus=true | effects=- | sig=- | parks=false 
 std::os::getrandom | lookup=os@2 | locus=false | effects=syscall|entropy | sig=(Int) -> Bytes ! IoError | ret_ty=? | or=(Bytes, IoError) | parks=false | holds=false | unknown=- | suggest=getrandom
 std::process::Child | lookup=process@2 | locus=true | effects=- | sig=- | parks=false | holds=false | unknown=- | suggest=-
 std::process::ProcessOutput | lookup=process@2 | locus=true | effects=- | sig=- | parks=false | holds=false | unknown=- | suggest=-
+std::process::SpawnOptions | lookup=process@2 | locus=true | effects=- | sig=- | parks=false | holds=false | unknown=- | suggest=-
 std::process::__kill_escalate | lookup=process@2 | locus=false | effects=syscall | sig=(Int) -> Unit ! IoError | ret_ty=? | or=((), IoError) | parks=false | holds=false | unknown=- | suggest=__kill_escalate
 std::process::__pipe_read | lookup=process@2 | locus=false | effects=syscall|block | sig=(Int) -> Str ! IoError | ret_ty=? | or=(String, IoError) | parks=false | holds=true | unknown=- | suggest=__pipe_read
 std::process::__pipe_write | lookup=process@2 | locus=false | effects=syscall | sig=(Int, Str) -> Int ! IoError | ret_ty=? | or=(Int, IoError) | parks=false | holds=false | unknown=- | suggest=__pipe_write
+std::process::__run_with | lookup=process@2 | locus=false | effects=syscall|block | sig=(Str, Str, Str, Str, Bool, Int, Int, Int, Int, Int) -> Any ! IoError | ret_ty=? | or=(?, IoError) | parks=false | holds=true | unknown=- | suggest=__run_with
 std::process::__signal_pid | lookup=process@2 | locus=false | effects=syscall | sig=(Int, Int) -> Unit ! IoError | ret_ty=? | or=((), IoError) | parks=false | holds=false | unknown=- | suggest=__signal_pid
 std::process::__spawn | lookup=process@2 | locus=false | effects=syscall | sig=(Str) -> Any ! IoError | ret_ty=? | or=(?, IoError) | parks=false | holds=false | unknown=- | suggest=__spawn
+std::process::__spawn_with | lookup=process@2 | locus=false | effects=syscall | sig=(Str, Str, Str, Str, Bool, Int, Int, Int, Int, Int) -> Any ! IoError | ret_ty=? | or=(?, IoError) | parks=false | holds=false | unknown=- | suggest=__spawn_with
 std::process::__try_wait_pid | lookup=process@2 | locus=false | effects=syscall | sig=(Int) -> Any ! IoError | ret_ty=? | or=(?, IoError) | parks=false | holds=false | unknown=- | suggest=__try_wait_pid
+std::process::__wait_deadline | lookup=process@2 | locus=false | effects=syscall|block | sig=(Int, Int, Int) -> Any ! IoError | ret_ty=? | or=(?, IoError) | parks=false | holds=true | unknown=- | suggest=__wait_deadline
 std::process::__wait_pid | lookup=process@2 | locus=false | effects=syscall|block | sig=(Int) -> Any ! IoError | ret_ty=? | or=(?, IoError) | parks=false | holds=true | unknown=- | suggest=__wait_pid
 std::process::adopt | lookup=process@2 | locus=false | effects=syscall | sig=- | parks=false | holds=false | unknown=- | suggest=adopt
 std::process::close_stdin | lookup=process@2 | locus=false | effects=syscall | sig=- | parks=false | holds=false | unknown=- | suggest=close_stdin
@@ -964,8 +973,10 @@ std::process::read_stderr | lookup=process@2 | locus=false | effects=syscall|blo
 std::process::read_stdout | lookup=process@2 | locus=false | effects=syscall|block | sig=- | parks=false | holds=true | unknown=- | suggest=read_stdout
 std::process::rss_bytes | lookup=process@2 | locus=false | effects=syscall | sig=() -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=rss_bytes
 std::process::run | lookup=process@2 | locus=false | effects=syscall|block | sig=(Str) -> Any ! IoError | ret_ty=? | or=(?, IoError) | parks=false | holds=true | unknown=- | suggest=-
+std::process::run_with | lookup=process@2 | locus=false | effects=syscall|block | sig=- | parks=false | holds=true | unknown=- | suggest=run_with
 std::process::signal | lookup=process@2 | locus=false | effects=syscall | sig=- | parks=false | holds=false | unknown=- | suggest=signal
 std::process::spawn | lookup=process@2 | locus=false | effects=syscall | sig=(Str) -> Any ! IoError | ret_ty=? | or=(?, IoError) | parks=false | holds=false | unknown=- | suggest=spawn
+std::process::spawn_with | lookup=process@2 | locus=false | effects=syscall | sig=- | parks=false | holds=false | unknown=- | suggest=spawn_with
 std::process::try_wait | lookup=process@2 | locus=false | effects=syscall | sig=- | parks=false | holds=false | unknown=- | suggest=try_wait
 std::process::uid | lookup=process@2 | locus=false | effects=syscall | sig=() -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=-
 std::process::wait | lookup=process@2 | locus=false | effects=syscall|block | sig=(Int) -> Any ! IoError | ret_ty=? | or=(?, IoError) | parks=false | holds=true | unknown=- | suggest=wait

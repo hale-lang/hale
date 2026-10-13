@@ -341,3 +341,42 @@ fn a_5xx_after_retries_keeps_its_status_and_body() {
     assert!(out.contains("oneshot status=503 body=[overloaded attempt 5]"), "{out}");
     assert_eq!(accepts.load(Ordering::SeqCst), expected);
 }
+
+/// IPv6 (downstream handoff): a GET to a URL whose host is a bracketed
+/// IPv6 literal dials that address and sends the bracketed `Host`
+/// header. `parse_url` used to refuse `http://[::1]:<port>/` as
+/// bad_url, and the dial knew only IPv4. A host with no IPv6 loopback
+/// skips (the bind fails), rather than failing.
+#[test]
+fn a_get_to_an_ipv6_loopback_server() {
+    let listener = match TcpListener::bind("[::1]:0") {
+        Ok(l) => l,
+        Err(e) => {
+            eprintln!("skip: this host has no IPv6 loopback ({e})");
+            return;
+        }
+    };
+    let port = listener.local_addr().unwrap().port();
+    let server = thread::spawn(move || {
+        let (mut s, peer) = listener.accept().expect("accept");
+        s.set_read_timeout(Some(Duration::from_secs(5))).ok();
+        let req = read_one_request(&mut s).unwrap_or_default();
+        let _ = s.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 7\r\nConnection: close\r\n\r\nover v6");
+        (req, peer.is_ipv6())
+    });
+    let src = format!(
+        r#"
+        fn main() {{
+            let r = std::http::get("http://[::1]:{port}/v6?x=1") or raise;
+            println("status=", to_string(r.status), " body=[", std::str::from_bytes(r.body), "]");
+        }}
+    "#
+    );
+    let (out, status) = build_and_run("ipv6_get", &src);
+    let (req, from_v6) = server.join().expect("the server thread");
+    assert!(status.success(), "exit: {:?}\n{}", status, out);
+    assert!(out.contains("status=200 body=[over v6]"), "got:\n{}", out);
+    assert!(req.starts_with("GET /v6?x=1 HTTP/1.1\r\n"), "the request line:\n{req}");
+    assert!(req.contains(&format!("Host: [::1]:{port}\r\n")), "the Host header brackets the address:\n{req}");
+    assert!(from_v6, "the client came over IPv6");
+}
