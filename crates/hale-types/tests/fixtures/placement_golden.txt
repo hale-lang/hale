@@ -656,7 +656,7 @@ row	~.acc	Acc	main	inherited
 
 == crates/hale-stdlib/hl/file.hl#f57ba351
 
-== crates/hale-stdlib/hl/http_client.hl#299b071b
+== crates/hale-stdlib/hl/http_client.hl#12d927bf
 
 == crates/hale-stdlib/hl/json.hl#8645f085
 
@@ -6974,6 +6974,11 @@ row	App@literal1	App	main	default
 -- App@literal1.pub	Pub
 row	~	Pub	main	default
 row	~.sub	Sub	main	inherited
+
+== tests/hale/ipv6_test.hl
+-- __StdIoTcpAcceptor@main1	__StdIoTcpAcceptor
+row	~	__StdIoTcpAcceptor	main	default
+row	~.relay	__StdIoTcpRelay	main	inherited
 
 == tests/hale/is_route_test.hl
 row	Api@main1	Api	main	default

@@ -111,7 +111,11 @@ fn __http_default_port(scheme: String) -> Int {
 // `std::http::parse_url(s)` — scheme + host + optional :port +
 // optional path (query string rides in `path`; that's all a
 // request line needs). `//host/path` is tolerated as http.
-// Rejects bare paths, missing host, malformed port.
+// Rejects bare paths, missing host, malformed port. An IPv6
+// literal host is bracketed (`http://[::1]:9107/x`); `host` is
+// the address without its brackets (`::1`), which is what
+// `std::io::tcp::connect` takes, and the request's `Host` header
+// brackets it again.
 /// Decompose a URL string; fails with HttpError{bad_url} on
 /// malformed input.
 fn __http_parse_url(s: String) -> std::http::Url fallible(std::http::HttpError) {
@@ -151,14 +155,36 @@ fn __http_parse_url(s: String) -> std::http::Url fallible(std::http::HttpError) 
         fail std::http::HttpError { kind: "bad_url", status: 0, detail: "empty authority" };
     }
     let auth_len = len(authority);
-    let port_sep = std::str::index_of(authority, ":");
     let mut host = authority;
     let mut port = __http_default_port(scheme);
-    if port_sep >= 0 {
-        host = authority[0..port_sep];
-        let port_str = authority[(port_sep + 1)..auth_len];
+    // the port's text after the host: "" for none, else ":<port>"
+    let mut rest = "";
+    if authority[0..1] == "[" {
+        // an IPv6 literal is bracketed (`[::1]`, `[fe80::1%eth0]`); the
+        // host is what the brackets hold, and only a port may follow them
+        let close = std::str::index_of(authority, "]");
+        if close < 0 {
+            fail std::http::HttpError { kind: "bad_url", status: 0, detail: "an IPv6 host's [ is never closed" };
+        }
+        host = authority[1..close];
+        rest = authority[(close + 1)..auth_len];
+        if len(rest) > 0 && rest[0..1] != ":" {
+            fail std::http::HttpError { kind: "bad_url", status: 0, detail: "only a :port may follow an IPv6 host's ]" };
+        }
+        if std::str::index_of(host, ":") < 0 {
+            fail std::http::HttpError { kind: "bad_url", status: 0, detail: "brackets hold an IPv6 address" };
+        }
+    } else {
+        let port_sep = std::str::index_of(authority, ":");
+        if port_sep >= 0 {
+            host = authority[0..port_sep];
+            rest = authority[port_sep..auth_len];
+        }
+    }
+    if len(rest) > 0 {
+        let port_str = rest[1..len(rest)];
         port = std::str::parse_int(port_str) or 0;
-        if port <= 0 {
+        if port <= 0 || port > 65535 {
             fail std::http::HttpError { kind: "bad_url", status: 0, detail: "bad port" };
         }
     }
@@ -225,10 +251,19 @@ locus __StdHttpConn {
 
 // ---- wire format -----------------------------------------------------
 
+// A host as an authority writes it: an IPv6 address (it holds a `:`)
+// bracketed, anything else as it is.
+fn __http_host_text(host: String) -> String {
+    if std::str::index_of(host, ":") >= 0 && !std::str::starts_with(host, "[") {
+        return "[" + host + "]";
+    }
+    return host;
+}
+
 // Assemble the request header block. Body ships as a separate
 // trailing send. ASCII throughout, so String concat is safe.
 fn __http_build_request_headers(req: std::http::ClientRequest, user_agent: String, keep_alive: Bool) -> String {
-    let host_header = "Host: " + req.url.host + ":" + to_string(req.url.port) + "\r\n";
+    let host_header = "Host: " + __http_host_text(req.url.host) + ":" + to_string(req.url.port) + "\r\n";
     let ua_header = "User-Agent: " + user_agent + "\r\n";
     let cl_header = "Content-Length: " + to_string(len(req.body)) + "\r\n";
     let conn_header = if keep_alive { "Connection: keep-alive\r\n" } else { "Connection: close\r\n" };

@@ -17848,20 +17848,138 @@ void lotus_tcp_destroy(lotus_tcp_t *t) {
  * Listener locus IS the handle.
  */
 
+/* IPv6 (2026-10-12, downstream handoff): the std::io::tcp / udp
+ * primitives below took IPv4 only — `inet_pton(AF_INET)` and a
+ * `getaddrinfo(AF_INET)` fallback — so `[::1]` could be neither listened
+ * on nor dialled. An address is now resolved here, for either family:
+ *
+ *   - a host may be written bracketed (`[::1]`, as in a URL or a
+ *     `host:port` listener name) or bare (`::1`); one pair of brackets
+ *     is taken off;
+ *   - NULL / "" is the IPv4 wildcard when `passive` (a listen or a bind:
+ *     what it always was); NULL is `127.0.0.1` for a connect, and ""
+ *     names nothing there;
+ *   - an IPv4 or IPv6 literal is that address (an IPv6 one may carry a
+ *     `%zone`); with `numeric_only` (a listen or a bind) nothing else is
+ *     an address and the answer is EINVAL, as an invalid host was;
+ *   - a name is looked up with `getaddrinfo(AF_UNSPEC)`, and every
+ *     address it answers (up to LOTUS_INET_MAX, in the resolver's order)
+ *     is kept, so a connect can try the next when one refuses: a
+ *     `localhost` that answers `::1` first still reaches a server on
+ *     127.0.0.1. EAI_NONAME is ENOENT ("not_found"), any other lookup
+ *     failure EHOSTUNREACH, as before.
+ *
+ * Returns 0 with out->n >= 1, or -1 with errno. */
+#define LOTUS_INET_MAX 8
+typedef struct {
+    int n;
+    struct sockaddr_storage addr[LOTUS_INET_MAX];
+    socklen_t len[LOTUS_INET_MAX];
+} lotus_inet_addrs;
+
+static int lotus_inet_resolve(const char *host, uint16_t port, int socktype,
+                              int passive, int numeric_only,
+                              const char *what, lotus_inet_addrs *out) {
+    char buf[256];
+    out->n = 0;
+    const char *h = host;
+    if (h && h[0] == '[') {
+        size_t n = strlen(h);
+        if (n < 2 || h[n - 1] != ']' || n - 2 >= sizeof(buf)) {
+            errno = EINVAL;
+            return -1;
+        }
+        memcpy(buf, h + 1, n - 2);
+        buf[n - 2] = '\0';
+        h = buf;
+    }
+    if (!h && !passive) {
+        h = "127.0.0.1";
+    }
+    if (passive && (!h || !*h)) {
+        struct sockaddr_in *a = (struct sockaddr_in *)&out->addr[0];
+        memset(&out->addr[0], 0, sizeof(out->addr[0]));
+        a->sin_family = AF_INET;
+        a->sin_port = htons(port);
+        a->sin_addr.s_addr = htonl(INADDR_ANY);
+        out->len[0] = sizeof(struct sockaddr_in);
+        out->n = 1;
+        return 0;
+    }
+    /* (a connect's "" names nothing: the lookup below refuses it) */
+    struct sockaddr_in v4;
+    memset(&v4, 0, sizeof(v4));
+    if (inet_pton(AF_INET, h, &v4.sin_addr) == 1) {
+        v4.sin_family = AF_INET;
+        v4.sin_port = htons(port);
+        memset(&out->addr[0], 0, sizeof(out->addr[0]));
+        memcpy(&out->addr[0], &v4, sizeof(v4));
+        out->len[0] = sizeof(v4);
+        out->n = 1;
+        return 0;
+    }
+    struct addrinfo hints;
+    struct addrinfo *res = NULL;
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_family = AF_UNSPEC;
+    hints.ai_socktype = socktype;
+    if (numeric_only) hints.ai_flags |= AI_NUMERICHOST;
+    if (passive) hints.ai_flags |= AI_PASSIVE;
+    char port_str[16];
+    snprintf(port_str, sizeof(port_str), "%u", (unsigned)port);
+    int gai = getaddrinfo(h, port_str, &hints, &res);
+    if (gai != 0 || res == NULL) {
+        if (res) freeaddrinfo(res);
+        if (numeric_only) {
+            fprintf(stderr, "%s: invalid host %s\n", what, host);
+            errno = EINVAL;
+            return -1;
+        }
+        fprintf(stderr, "%s: resolve %s: %s\n", what, h, gai_strerror(gai));
+        errno = (gai == EAI_NONAME) ? ENOENT : EHOSTUNREACH;
+        return -1;
+    }
+    for (struct addrinfo *r = res; r && out->n < LOTUS_INET_MAX; r = r->ai_next) {
+        if (r->ai_family != AF_INET && r->ai_family != AF_INET6) continue;
+        if (r->ai_addrlen > sizeof(out->addr[0])) continue;
+        memset(&out->addr[out->n], 0, sizeof(out->addr[0]));
+        memcpy(&out->addr[out->n], r->ai_addr, r->ai_addrlen);
+        out->len[out->n] = (socklen_t)r->ai_addrlen;
+        out->n++;
+    }
+    freeaddrinfo(res);
+    if (out->n == 0) {
+        errno = EHOSTUNREACH;
+        return -1;
+    }
+    return 0;
+}
+
+/* The port of a socket address of either family, -1 for another. */
+static int64_t lotus_inet_port(const struct sockaddr_storage *a) {
+    if (a->ss_family == AF_INET) {
+        return (int64_t)ntohs(((const struct sockaddr_in *)a)->sin_port);
+    }
+    if (a->ss_family == AF_INET6) {
+        return (int64_t)ntohs(((const struct sockaddr_in6 *)a)->sin6_port);
+    }
+    return -1;
+}
+
 int lotus_tcp_listen_socket(const char *host, uint16_t port) {
-    struct sockaddr_in addr;
-    memset(&addr, 0, sizeof(addr));
-    addr.sin_family = AF_INET;
-    addr.sin_port   = htons(port);
-    if (!host) {
-        addr.sin_addr.s_addr = htonl(INADDR_ANY);
-    } else if (inet_pton(AF_INET, host, &addr.sin_addr) != 1) {
-        fprintf(stderr,
-                "lotus_tcp_listen_socket: invalid host %s\n", host);
+    /* An IPv4 or IPv6 literal (bracketed or not), or NULL for the IPv4
+     * wildcard; "" was refused and still is, as no literal. */
+    lotus_inet_addrs addrs;
+    if (host && !*host) {
+        fprintf(stderr, "lotus_tcp_listen_socket: invalid host %s\n", host);
         errno = EINVAL;
         return -1;
     }
-    int sock = socket(AF_INET, SOCK_STREAM, 0);
+    if (lotus_inet_resolve(host, port, SOCK_STREAM, 1, 1,
+                           "lotus_tcp_listen_socket", &addrs) < 0) {
+        return -1;
+    }
+    int sock = socket(addrs.addr[0].ss_family, SOCK_STREAM, 0);
     if (sock < 0) {
         perror("lotus_tcp_listen_socket: socket");
         return -1;
@@ -17893,7 +18011,7 @@ int lotus_tcp_listen_socket(const char *host, uint16_t port) {
      * load balancing, that belongs behind an explicit opt-in
      * (`Listener { exclusive: false }` / a dedicated primitive), not
      * the default path. */
-    if (bind(sock, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+    if (bind(sock, (struct sockaddr *)&addrs.addr[0], addrs.len[0]) < 0) {
         perror("lotus_tcp_listen_socket: bind");
         close(sock);
         return -1;
@@ -18188,43 +18306,16 @@ int lotus_tcp_connect_wait(const char *host, uint16_t port, int64_t wait_ns) {
      * quad), fall back to getaddrinfo(host, port_str, AF_INET +
      * SOCK_STREAM) and use the first returned address. The numeric
      * path is bit-for-bit identical to the pre-C6 behavior — only
-     * non-numeric hosts take the DNS branch. */
-    struct sockaddr_in addr;
-    memset(&addr, 0, sizeof(addr));
-    addr.sin_family = AF_INET;
-    addr.sin_port   = htons(port);
-    const char *h = host ? host : "127.0.0.1";
-    int pton = inet_pton(AF_INET, h, &addr.sin_addr);
-    if (pton != 1) {
-        /* C6: getaddrinfo fallback for hostname resolution. We map
-         * gai errors onto the existing IoError errno taxonomy so
-         * callers don't need a new error kind: EAI_NONAME (unknown
-         * host) -> ENOENT ("not_found"); everything else (DNS
-         * server failure, transient, no-address-for-family, etc.)
-         * -> EHOSTUNREACH ("host_unreachable"). gai_strerror is
-         * printed to stderr for diagnostic visibility but doesn't
-         * cross the IoError boundary. */
-        struct addrinfo hints;
-        struct addrinfo *res = NULL;
-        memset(&hints, 0, sizeof(hints));
-        hints.ai_family   = AF_INET;
-        hints.ai_socktype = SOCK_STREAM;
-        char port_str[16];
-        snprintf(port_str, sizeof(port_str), "%u", (unsigned)port);
-        int gai = getaddrinfo(h, port_str, &hints, &res);
-        if (gai != 0 || res == NULL) {
-            fprintf(stderr,
-                    "lotus_tcp_connect: resolve %s: %s\n",
-                    h, gai_strerror(gai));
-            if (res) freeaddrinfo(res);
-            errno = (gai == EAI_NONAME) ? ENOENT : EHOSTUNREACH;
-            return -1;
-        }
-        /* First result wins — round-robin / multi-A handling is
-         * the caller's job (they can pre-resolve if they want it). */
-        struct sockaddr_in *resolved = (struct sockaddr_in *)res->ai_addr;
-        addr.sin_addr = resolved->sin_addr;
-        freeaddrinfo(res);
+     * non-numeric hosts take the DNS branch.
+     *
+     * IPv6 (2026-10-12): `lotus_inet_resolve` answers an IPv4 or IPv6
+     * literal, bracketed or not, or every address a name resolves to
+     * (AF_UNSPEC); an attempt tries them in order, and a refusal is
+     * the answer only when every address refused. */
+    lotus_inet_addrs addrs;
+    if (lotus_inet_resolve(host, port, SOCK_STREAM, 0, 0,
+                           "lotus_tcp_connect", &addrs) < 0) {
+        return -1;
     }
     struct timespec backoff = { 0, 5L * 1000L * 1000L };
     int64_t deadline = lotus_now_mono_ns() + (wait_ns > 0 ? wait_ns : 0);
@@ -18235,21 +18326,31 @@ int lotus_tcp_connect_wait(const char *host, uint16_t port, int64_t wait_ns) {
          * the retry fails "Socket is already connected" (EISCONN) or
          * EINVAL — so a client that raced its server's listen() failed
          * outright there instead of retrying (GH #970). */
-        int sock = socket(AF_INET, SOCK_STREAM, 0);
-        if (sock < 0) {
-            perror("lotus_tcp_connect: socket");
-            return -1;
+        int refused = 0;
+        int err = 0;
+        for (int i = 0; i < addrs.n; i++) {
+            int sock = socket(addrs.addr[i].ss_family, SOCK_STREAM, 0);
+            if (sock < 0) {
+                err = errno;
+                continue;
+            }
+            lotus_set_cloexec(sock);
+            if (connect(sock, (struct sockaddr *)&addrs.addr[i], addrs.len[i]) == 0) {
+                int nodelay = 1;
+                (void)setsockopt(sock, IPPROTO_TCP, TCP_NODELAY,
+                                 &nodelay, sizeof(nodelay));
+                return sock;
+            }
+            int e = errno;
+            close(sock);
+            if (e == ECONNREFUSED || e == EAGAIN) {
+                refused = 1;
+            } else {
+                err = e;
+            }
         }
-        lotus_set_cloexec(sock);
-        if (connect(sock, (struct sockaddr *)&addr, sizeof(addr)) == 0) {
-            int nodelay = 1;
-            (void)setsockopt(sock, IPPROTO_TCP, TCP_NODELAY,
-                             &nodelay, sizeof(nodelay));
-            return sock;
-        }
-        int err = errno;
-        close(sock);
-        if (err != ECONNREFUSED && err != EAGAIN) {
+        if (!refused) {
+            /* No address refused: the last failure is the answer. */
             errno = err;
             perror("lotus_tcp_connect: connect");
             return -1;
@@ -18600,11 +18701,11 @@ int lotus_tcp_shutdown_listen_socket(int fd);
  * is its host and this port, so two port-0 listeners are two names. */
 int64_t lotus_tcp_local_port(int64_t fd) {
     if (fd < 0) return -1;
-    struct sockaddr_in a;
+    struct sockaddr_storage a;
     socklen_t len = sizeof(a);
     memset(&a, 0, sizeof(a));
     if (getsockname((int)fd, (struct sockaddr *)&a, &len) != 0) return -1;
-    return (int64_t)ntohs(a.sin_port);
+    return lotus_inet_port(&a);
 }
 
 /* `std::io::tcp::stop(name)`: shut the named listener's socket down (its
@@ -18703,18 +18804,15 @@ static ssize_t lotus_udp_recvfrom_async(int fd, void *buf, size_t cap,
                                         socklen_t *slen);
 
 int lotus_udp_bind(const char *host, uint16_t port) {
-    struct sockaddr_in addr;
-    memset(&addr, 0, sizeof(addr));
-    addr.sin_family = AF_INET;
-    addr.sin_port   = htons(port);
-    if (!host || *host == '\0' || strcmp(host, "0.0.0.0") == 0) {
-        addr.sin_addr.s_addr = htonl(INADDR_ANY);
-    } else if (inet_pton(AF_INET, host, &addr.sin_addr) != 1) {
-        fprintf(stderr, "lotus_udp_bind: invalid host %s\n", host);
-        errno = EINVAL;
+    /* An IPv4 or IPv6 literal (bracketed or not); NULL / "" the IPv4
+     * wildcard. A socket bound to an IPv6 address sends to IPv6 peers
+     * (and to IPv4 ones as v4-mapped, `lotus_udp_sendto`). */
+    lotus_inet_addrs addrs;
+    if (lotus_inet_resolve(host, port, SOCK_DGRAM, 1, 1, "lotus_udp_bind",
+                           &addrs) < 0) {
         return -1;
     }
-    int sock = socket(AF_INET, SOCK_DGRAM, 0);
+    int sock = socket(addrs.addr[0].ss_family, SOCK_DGRAM, 0);
     if (sock < 0) {
         perror("lotus_udp_bind: socket");
         return -1;
@@ -18726,7 +18824,7 @@ int lotus_udp_bind(const char *host, uint16_t port) {
         close(sock);
         return -1;
     }
-    if (bind(sock, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+    if (bind(sock, (struct sockaddr *)&addrs.addr[0], addrs.len[0]) < 0) {
         perror("lotus_udp_bind: bind");
         close(sock);
         return -1;
@@ -18740,17 +18838,38 @@ int lotus_udp_sendto(int fd, const char *host, uint16_t port,
         errno = EINVAL;
         return -1;
     }
-    struct sockaddr_in addr;
-    memset(&addr, 0, sizeof(addr));
-    addr.sin_family = AF_INET;
-    addr.sin_port   = htons(port);
-    if (inet_pton(AF_INET, host, &addr.sin_addr) != 1) {
-        fprintf(stderr, "lotus_udp_sendto: invalid host %s\n", host);
-        errno = EINVAL;
+    /* The peer is an IPv4 or IPv6 literal, in the socket's own family:
+     * an IPv4 peer of an IPv6 socket is sent to as v4-mapped
+     * (`::ffff:a.b.c.d`); an IPv6 peer of an IPv4 socket is EINVAL. */
+    lotus_inet_addrs addrs;
+    if (lotus_inet_resolve(host, port, SOCK_DGRAM, 0, 1, "lotus_udp_sendto",
+                           &addrs) < 0) {
         return -1;
     }
+    struct sockaddr_storage own;
+    socklen_t own_len = sizeof(own);
+    memset(&own, 0, sizeof(own));
+    if (getsockname(fd, (struct sockaddr *)&own, &own_len) == 0
+        && own.ss_family != addrs.addr[0].ss_family) {
+        if (own.ss_family == AF_INET6 && addrs.addr[0].ss_family == AF_INET) {
+            struct sockaddr_in v4;
+            memcpy(&v4, &addrs.addr[0], sizeof(v4));
+            struct sockaddr_in6 *m = (struct sockaddr_in6 *)&addrs.addr[0];
+            memset(&addrs.addr[0], 0, sizeof(addrs.addr[0]));
+            m->sin6_family = AF_INET6;
+            m->sin6_port = v4.sin_port;
+            m->sin6_addr.s6_addr[10] = 0xff;
+            m->sin6_addr.s6_addr[11] = 0xff;
+            memcpy(&m->sin6_addr.s6_addr[12], &v4.sin_addr, 4);
+            addrs.len[0] = sizeof(struct sockaddr_in6);
+        } else {
+            fprintf(stderr, "lotus_udp_sendto: %s is not an address of the socket's family\n", host);
+            errno = EINVAL;
+            return -1;
+        }
+    }
     ssize_t n = sendto(fd, buf, len, 0,
-                       (struct sockaddr *)&addr, sizeof(addr));
+                       (struct sockaddr *)&addrs.addr[0], addrs.len[0]);
     if (n < 0) {
         return -1;
     }
@@ -19027,7 +19146,7 @@ void *lotus_udp_recv_bytes_with_source(int fd, int max_bytes) {
      * (downstream handoff 2026-07-16). Freed before every return. */
     char *tmp = (char *)malloc(cap);
     if (!tmp) { errno = ENOMEM; return NULL; }
-    struct sockaddr_in src;
+    struct sockaddr_storage src;
     socklen_t src_len = sizeof(src);
     memset(&src, 0, sizeof(src));
     ssize_t n = lotus_udp_recvfrom_async(fd, tmp, cap,
@@ -19047,13 +19166,23 @@ void *lotus_udp_recv_bytes_with_source(int fd, int max_bytes) {
         g_udp_last_source_port = 0;
         return NULL;
     }
-    if (src.sin_family == AF_INET) {
-        if (!inet_ntop(AF_INET, &src.sin_addr,
+    if (src.ss_family == AF_INET) {
+        struct sockaddr_in *s4 = (struct sockaddr_in *)&src;
+        if (!inet_ntop(AF_INET, &s4->sin_addr,
                        g_udp_last_source_host,
                        sizeof(g_udp_last_source_host))) {
             g_udp_last_source_host[0] = '\0';
         }
-        g_udp_last_source_port = (int64_t)ntohs(src.sin_port);
+        g_udp_last_source_port = (int64_t)ntohs(s4->sin_port);
+    } else if (src.ss_family == AF_INET6) {
+        /* an IPv6 peer, unbracketed (`::1`), as `send` takes it back */
+        struct sockaddr_in6 *s6 = (struct sockaddr_in6 *)&src;
+        if (!inet_ntop(AF_INET6, &s6->sin6_addr,
+                       g_udp_last_source_host,
+                       sizeof(g_udp_last_source_host))) {
+            g_udp_last_source_host[0] = '\0';
+        }
+        g_udp_last_source_port = (int64_t)ntohs(s6->sin6_port);
     } else {
         g_udp_last_source_host[0] = '\0';
         g_udp_last_source_port = 0;
