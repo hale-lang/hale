@@ -5016,21 +5016,33 @@ The live half is memory's, projected from the record by the spine
   by finishing (exit 0), is brought up again (`compose: <service> <state>
   <code>; brought up again`); one compose is restarting under its own
   `restart:` policy is left to it. Every exit of the body once its lease is
-  held brings them down (`down --remove-orphans`; `the repository's compose
-  services are down`). A host that dies cannot, so before `up` the body
-  labels every service with its mark (`hale.dna.body=<holder>#<token>#<host
-  pid>#`, an override `.hale/dna/compose.body.yaml` beside the compose file)
-  and records who owns them in `.hale/dna/compose.owner` (the host's pid,
-  the mark, the project, the compose file, the project directory and the
-  override, a line each); without the record nothing is brought up. When
-  the body fence stops a lost body (its host gone, its lease lost or
-  expired) it reads the record: one that names its host and its mark has
-  the project brought down whole when every container in it carries that
-  mark, and only the marked containers otherwise; a record another body
-  wrote (a replacement host on this clone) is left, with its services. The
-  fence's status line says `compose down: <project>` or `compose not this
-  body's: <project>`, and the record and the override go once the
-  services are down, by the host or by the fence. Compose runs without the organism's credentials in its
+  held takes them down (`the repository's compose services are down`).
+  Before `up` the body labels every service with its mark
+  (`hale.dna.body=<holder>#<token>#<host pid>#`, an override
+  `.hale/dna/compose.body.yaml` beside the compose file) and records who
+  owns them in `.hale/dna/compose.owner` (the host's pid, the mark, the
+  project, the compose file, the project directory and the override, a line
+  each); without the record nothing is brought up. Nothing ever takes the
+  project down whole: `docker compose down` acts on whatever the project
+  holds when it runs, and the project is the organism's, so another clone of
+  the record on the same docker daemon — a replacement body, once this one's
+  lease is lost — brings its services up in it under a mark of its own. The
+  body's services go by the daemon's own label filter, evaluated container
+  by container: the project's containers that carry this body's mark are
+  stopped and removed (`docker rm -f`), then the project's networks are
+  removed, which the daemon refuses while any container is attached, so a
+  network a replacement uses stays; volumes are never removed. The host does
+  this on every exit, stopping them within 10s first — one of its exits
+  (`stop_body`) is taken after its lease is lost, when a replacement may
+  already be running, so its own exit is no safer for a project-wide down
+  than the fence's. A host that dies cannot: when the body fence stops a
+  lost body (its host gone, its lease lost or expired) it reads the record,
+  and one that names its host and its mark has that body's containers
+  removed at once, the same way; a record another body wrote (a replacement
+  host on this clone) is left, with its services. The fence's status line
+  says `compose removed this body's containers of <project>` or `compose not
+  this body's: <project>`, and the record and the override go once this
+  body's containers are gone, by the host or by the fence. Compose runs without the organism's credentials in its
   environment (the ones an application's start removes: the spine's, owner's,
   head's and reflexes' URLs and DSNs), so a compose file cannot interpolate
   them, and with nerves here it is handed the attached application's:

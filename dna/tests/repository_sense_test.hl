@@ -26,9 +26,11 @@
 //
 // The body fence covers compose too: where docker compose and nats:2 are
 // here (CI pulls nats:2 from its mirror), a repository whose one service is
-// a broker is run, its host killed outright, and the fence brings the
-// project down; run again with its ownership record naming another body (a
-// replacement host's), the fence leaves the services alone.
+// a broker is run, its host killed outright, and the fence removes the
+// body's containers, while a replacement body's container in the same
+// project (another mark, started before the kill) survives on the
+// project's network; run again with its ownership record naming another
+// body (a replacement host's), the fence leaves the services alone.
 
 import "../core" as dna;
 import "./onboarding/todo/api/nerves" as todo;
@@ -268,11 +270,19 @@ fn fenced(repo: String) {
     std::test::assert(std::str::starts_with(owner, host_pid_of(repo) + "\n"), "who owns the services is recorded before they come up: " + owner);
     let labelled = dna::run_tool("docker\nps\n-aq\n--filter\nlabel=com.docker.compose.project=" + project + "\n--filter\nlabel=hale.dna.body");
     std::test::assert(len(dna::trim_nl(labelled.stdout)) > 0, "the services carry the body's mark");
+    // a replacement body's service in the same project, on its network,
+    // under a mark of its own: whatever the fence does, it is not this body's
+    let replacement = dna::trim_nl(dna::run_tool("docker\nrun\n-d\n--name\n" + project + "-replacement\n--network\n" + project + "_default\n--label\ncom.docker.compose.project=" + project + "\n--label\nhale.dna.body=another-body#9#1#\nnats:2").stdout);
+    std::test::assert(len(replacement) > 0, "a replacement's container in " + project);
     let killed = dna::run_tool("kill\n-9\n" + host_pid_of(repo));
     std::test::assert_eq_int(killed.code, 0, "the host killed");
-    std::test::assert(fence_says(repo, "compose down: " + project, 60), "the fence brings the project down: " + fence_said(repo));
-    std::test::assert_eq_str(containers_of(project), "", "no container of " + project + " is left");
-    std::test::assert(!std::io::fs::file_exists(repo + "/.hale/dna/compose.owner"), "the record goes with the project");
+    std::test::assert(fence_says(repo, "compose removed this body's containers of " + project, 60), "the fence removes this body's containers: " + fence_said(repo));
+    std::test::assert_eq_str(containers_of(project), dna::trim_nl(dna::run_tool("docker\nps\n-aq\n--filter\nid=" + replacement).stdout), "only the replacement's container is left in " + project);
+    std::test::assert(std::str::contains(dna::run_tool("docker\ninspect\n-f\n{{.State.Running}}\n" + replacement).stdout, "true"), "and it still runs");
+    std::test::assert(dna::run_tool("docker\nnetwork\ninspect\n" + project + "_default").code == 0, "on the project's network, which the fence left since it is in use");
+    std::test::assert(!std::io::fs::file_exists(repo + "/.hale/dna/compose.owner"), "the record goes with this body's containers");
+    let gone = dna::run_tool("sh\n-c\ndocker rm -f \"$1\" >/dev/null && docker network rm \"$2_default\" >/dev/null\nsh\n" + replacement + "\n" + project);
+    std::test::assert_eq_int(gone.code, 0, "the replacement and the network taken down by hand: " + gone.stderr);
 
     // ---- the record names another body (a replacement host's): left alone
     let again = compose_body(repo);

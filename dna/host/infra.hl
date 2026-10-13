@@ -285,6 +285,18 @@ const NATS_APP_SECRET_ENV: String = "HALE_DNA_NATS_SECRET_APP";
 const COMPOSE_OWNER: String = "compose.owner";
 const COMPOSE_OVERRIDE: String = "compose.body.yaml";
 const COMPOSE_LABEL: String = "hale.dna.body";
+// How a body's compose services go, by the host and by the fence alike:
+// the containers of the project that carry the body's mark — the daemon's
+// own label filter, evaluated per container, so a replacement body's
+// containers in the same project (another clone of the record on this
+// daemon, labelled with its own mark) are never among them — stopped
+// within `grace` seconds (0: at once) and removed; then the project's
+// networks, which the daemon refuses to remove while any container is
+// attached, so one a replacement uses stays. Volumes are never removed.
+// Never a project-wide `docker compose down`: that acts on whatever the
+// project holds at that moment, a replacement's services included.
+// Arguments: project, mark, grace.
+const COMPOSE_REMOVE_MARKED: String = "proj=$1 mark=$2 grace=$3; ours=$(docker ps -aq --filter \"label=com.docker.compose.project=$proj\" --filter \"label=" + COMPOSE_LABEL + "=$mark\") || exit 1; if [ -n \"$ours\" ]; then if [ \"$grace\" -gt 0 ]; then docker stop --time \"$grace\" $ours >/dev/null 2>&1; fi; docker rm -f $ours >/dev/null || exit 1; fi; for n in $(docker network ls -q --filter \"label=com.docker.compose.project=$proj\"); do docker network rm \"$n\" >/dev/null 2>&1 || true; done";
 
 // The repository's compose file, where compose itself looks for one; ""
 // when there is none.
@@ -312,9 +324,10 @@ locus RepositoryCompose {
         active: Bool = false;
         checked: Int = 0; // when the services were last looked at
         last: String = "";
-        // the ownership record and the labelling override (own)
+        // the ownership record, the labelling override and the mark (own)
         owner: String = "";
         override: String = "";
+        mark: String = "";
     }
     // `docker compose` on this project and file, newline-separated, run
     // under `env` without the organism's credentials and with `self.env`
@@ -333,6 +346,7 @@ locus RepositoryCompose {
         if r.code != 0 { return dna::last_line(dna::trim_nl(r.stderr)); }
         self.owner = record;
         self.override = labels;
+        self.mark = mark;
         return "";
     }
     fn argv(args: String) -> String { return self.base() + "\n" + args; }
@@ -371,10 +385,14 @@ locus RepositoryCompose {
         return "compose: " + said + "; brought up again";
     }
     // Down with the body: "" when it went, else why not.
+    // Its containers stopped within 10s and removed, as the fence would
+    // (COMPOSE_REMOVE_MARKED): this exit may be one whose lease is already
+    // lost (`stop_body`), with a replacement's services in the project.
     fn down() -> String {
         if !self.active { return ""; }
         self.active = false;
-        let r = dna::run_tool(self.argv("down\n--remove-orphans\n--timeout\n10"));
+        if len(self.mark) == 0 { return ""; }
+        let r = dna::run_tool("sh\n-c\n" + COMPOSE_REMOVE_MARKED + "\nsh\n" + self.project + "\n" + self.mark + "\n10");
         if r.code != 0 { return dna::last_line(dna::trim_nl(r.stderr)); }
         if len(self.owner) > 0 { std::io::fs::unlink(self.owner) or discard; }
         if len(self.override) > 0 { std::io::fs::unlink(self.override) or discard; }
@@ -383,14 +401,15 @@ locus RepositoryCompose {
 }
 
 // The body fence's share of a lost body (`fence_stop`): the compose
-// services the host at `host_pid` brought up, down — when the ownership
-// record under `dir` is that host's and names `mark`. A record another body
-// wrote (a replacement host on this clone) is left with its services. Only
-// the containers labelled with `mark` are this body's: when the project
-// holds no other, it goes down whole (its network too); otherwise only
-// those containers go. The record and its override go once it is down.
+// services the host at `host_pid` brought up, removed — when the ownership
+// record under `dir` is that host's and names `mark` — by
+// COMPOSE_REMOVE_MARKED, at once: only containers carrying `mark` go, so a
+// replacement body's services in the same project stay whenever they
+// start. A record another body wrote (a replacement host on this clone) is
+// left, with its services. The record and its override go once this
+// body's containers are gone.
 fn fence_compose_down(dir: String, host_pid: Int, mark: String) -> String {
-    let script = "f=$1 pid=$2 mark=$3; shift 3; [ -f \"$f\" ] || exit 0; { read -r p; read -r m; read -r proj; read -r file; read -r pdir; read -r ovr; } < \"$f\"; [ \"$p\" = \"$pid\" ] && [ \"$m\" = \"$mark\" ] || { echo \"not this body's: $proj\"; exit 0; }; ours=$(docker ps -aq --filter \"label=com.docker.compose.project=$proj\" --filter \"label=" + COMPOSE_LABEL + "=$mark\" | sort); all=$(docker ps -aq --filter \"label=com.docker.compose.project=$proj\" | sort); if [ \"$ours\" = \"$all\" ]; then \"$@\" docker compose -p \"$proj\" -f \"$file\" -f \"$ovr\" --project-directory \"$pdir\" down --remove-orphans --timeout 10 >/dev/null 2>&1 || { [ -z \"$ours\" ] || docker rm -f $ours >/dev/null; }; else [ -z \"$ours\" ] || docker rm -f $ours >/dev/null; fi; rm -f \"$f\" \"$ovr\"; echo \"down: $proj\"";
-    let r = dna::run_tool("sh\n-c\n" + script + "\nsh\n" + dir + "/" + COMPOSE_OWNER + "\n" + to_string(host_pid) + "\n" + mark + "\nenv\n-u\n" + std::str::replace(APPLICATION_UNSET, " ", "\n-u\n"));
+    let script = "f=$1 pid=$2 mark=$3; [ -f \"$f\" ] || exit 0; { read -r p; read -r m; read -r proj; read -r file; read -r pdir; read -r ovr; } < \"$f\"; [ \"$p\" = \"$pid\" ] && [ \"$m\" = \"$mark\" ] || { echo \"not this body's: $proj\"; exit 0; }; sh -c \"$4\" sh \"$proj\" \"$mark\" 0 || { echo \"this body's containers of $proj not removed\"; exit 0; }; rm -f \"$f\" \"$ovr\"; echo \"removed this body's containers of $proj\"";
+    let r = dna::run_tool("sh\n-c\n" + script + "\nsh\n" + dir + "/" + COMPOSE_OWNER + "\n" + to_string(host_pid) + "\n" + mark + "\n" + COMPOSE_REMOVE_MARKED);
     return dna::trim_nl(r.stdout + r.stderr);
 }
