@@ -19142,6 +19142,30 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         }
     }
 
+    /// Call the `f64` overload of an LLVM float intrinsic
+    /// (`llvm.minimum`, `llvm.maximum`, `llvm.fabs`) on `args`.
+    fn call_f64_intrinsic(
+        &mut self,
+        intrinsic: &str,
+        args: &[inkwell::values::FloatValue<'ctx>],
+        label: &str,
+    ) -> Result<inkwell::values::FloatValue<'ctx>, CodegenError> {
+        let f64_t = self.context.f64_type();
+        let decl = inkwell::intrinsics::Intrinsic::find(intrinsic)
+            .and_then(|i| i.get_declaration(&self.module, &[f64_t.into()]))
+            .ok_or_else(|| CodegenError::LlvmEmit(format!("no `{}` intrinsic", intrinsic)))?;
+        let call_args: Vec<inkwell::values::BasicMetadataValueEnum<'ctx>> =
+            args.iter().map(|a| (*a).into()).collect();
+        let call = self
+            .builder
+            .build_call(decl, &call_args, label)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        call.try_as_basic_value()
+            .left()
+            .map(|v| v.into_float_value())
+            .ok_or_else(|| CodegenError::LlvmEmit(format!("`{}` returned no value", intrinsic)))
+    }
+
     /// m38: lower min(a, b) / max(a, b) / abs(x). All work
     /// across the four numeric types (Int / Duration via
     /// signed integer ops, Float / Decimal via float ops).
@@ -19196,25 +19220,24 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 Ok((v, Self::builtin_result(sig, &at)))
             }
             CodegenTy::Float => {
-                let pred = match name {
-                    "min" => inkwell::FloatPredicate::OLT,
-                    "max" => inkwell::FloatPredicate::OGT,
+                // IEEE 754-2019 `minimum` / `maximum`: a NaN operand
+                // makes the result NaN whichever side it is on, and
+                // -0.0 orders below 0.0. A compare + select (the old
+                // lowering) answered `min(nan, 1.0)` with 1.0 and
+                // `min(1.0, nan)` with NaN. The intrinsics lower
+                // inline — `f64.min` / `f64.max` on wasm32, a
+                // compare sequence on x86-64 — with no libm symbol.
+                let intrinsic = match name {
+                    "min" => "llvm.minimum",
+                    "max" => "llvm.maximum",
                     _ => unreachable!(),
                 };
-                let cmp = self
-                    .builder
-                    .build_float_compare(
-                        pred,
-                        av.into_float_value(),
-                        bv.into_float_value(),
-                        &format!("{}.fcmp", name),
-                    )
-                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                let v = self
-                    .builder
-                    .build_select(cmp, av, bv, &format!("{}.sel", name))
-                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                Ok((v, Self::builtin_result(sig, &at)))
+                let v = self.call_f64_intrinsic(
+                    intrinsic,
+                    &[av.into_float_value(), bv.into_float_value()],
+                    name,
+                )?;
+                Ok((v.into(), Self::builtin_result(sig, &at)))
             }
             other => Err(CodegenError::Unsupported(format!(
                 "`{}` not supported for type {:?}",
@@ -19261,26 +19284,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 Ok((chosen, Self::builtin_result(Self::builtin_sig("abs"), ty)))
             }
             CodegenTy::Float => {
-                let fv = v.into_float_value();
-                let neg = self
-                    .builder
-                    .build_float_neg(fv, "abs.fneg")
-                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                let zero = self.context.f64_type().const_float(0.0);
-                let is_neg = self
-                    .builder
-                    .build_float_compare(
-                        inkwell::FloatPredicate::OLT,
-                        fv,
-                        zero,
-                        "abs.is_neg",
-                    )
-                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                let chosen = self
-                    .builder
-                    .build_select(is_neg, neg.into(), v, "abs.sel")
-                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                Ok((chosen, Self::builtin_result(Self::builtin_sig("abs"), ty)))
+                // `llvm.fabs` clears the sign bit, so `abs(-0.0)` is
+                // 0.0 (a `< 0.0` compare + select kept -0.0) and a NaN
+                // stays NaN. Inline everywhere: `f64.abs` on wasm32.
+                let r = self.call_f64_intrinsic("llvm.fabs", &[v.into_float_value()], "abs")?;
+                Ok((r.into(), Self::builtin_result(Self::builtin_sig("abs"), ty)))
             }
             other => Err(CodegenError::Unsupported(format!(
                 "`abs` not supported for type {:?}",
@@ -25350,8 +25358,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 let l = lv.into_float_value();
                 let r = rv.into_float_value();
                 let pred = match op {
+                    // IEEE 754: `==` and the orderings are false when
+                    // either side is NaN (ordered predicates); `!=` is
+                    // their negation, so it is TRUE then — the
+                    // unordered `une`. `one` (ordered not-equal)
+                    // answered `nan != 1.0` with false.
                     BinOp::Eq => FP::OEQ,
-                    BinOp::NotEq => FP::ONE,
+                    BinOp::NotEq => FP::UNE,
                     BinOp::Lt => FP::OLT,
                     BinOp::Gt => FP::OGT,
                     BinOp::LtEq => FP::OLE,

@@ -6948,6 +6948,10 @@ dynamic	Wrap	on main
 root	App	the entry
 row	App@literal1	App	main	default
 
+== tests/hale/float_ieee_compare_test.hl
+root	App	the entry
+row	App@literal1	App	main	default
+
 == tests/hale/form_vec_owned_elements_test.hl
 -- Keeper@main1	Keeper
 row	~	Keeper	main	default

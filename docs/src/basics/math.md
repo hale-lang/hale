@@ -108,6 +108,20 @@ let d = std::math::trunc(3.7);          // 3   — toward zero, like float_to_in
 Both return an `Int` directly. (`floor` / `ceil` below return a
 `Float`; wrap them in `float_to_int` if you need an `Int`.)
 
+Float comparisons are IEEE 754's. A NaN (what `0.0 / 0.0` or
+`std::math::sqrt(-1.0)` produces) is unequal to everything,
+itself included: `==`, `<`, `<=`, `>` and `>=` are `false` when
+either side is NaN, and `!=` is `true`. `-0.0 == 0.0` holds.
+`min` and `max` return NaN when either argument is one, whichever
+side it is on, so a NaN can't hide inside a running minimum:
+
+```hale,fragment
+let nan = std::math::nan();
+let a = nan != nan;          // true — the NaN test, like std::math::is_nan
+let b = nan == nan;          // false
+let c = min(1.0, nan);       // NaN, and so is min(nan, 1.0)
+```
+
 The standard library covers the rest: `std::math::sqrt`,
 `exp`, `log`, `pow`, `floor`, `ceil`, the trig functions, and
 so on.
