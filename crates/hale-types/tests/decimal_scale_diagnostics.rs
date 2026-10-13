@@ -130,3 +130,89 @@ fn a_quantity_still_counts_an_int() {
     let (_, msg) = one("unit wei;\ntype Eth = quantity Decimal<18> in wei;\nfn main() {}\n");
     assert_eq!(msg, "type `Eth`: a quantity counts an `Int`, and `Decimal<18>` is not one: write `quantity Int in wei`");
 }
+
+/// Review of #1532: a composite literal flows into its place element by
+/// element, its shape held first. `[1.0d]` is not a `[Decimal; 2]` (the
+/// build read past a one-element allocation when the check let it by);
+/// a scale-less element takes the element scale beside a typed one, and
+/// a typed element of another scale is refused at the element, in an
+/// array, a nested array, a tuple, a `bounded` push and a generic field.
+#[test]
+fn a_composite_literal_keeps_its_shape_and_flows_each_element() {
+    let (at, msg) = one("fn main() {\n    let v: [Decimal; 2] = [1.0d];\n}\n");
+    assert_eq!(at, "[1.0d]");
+    assert_eq!(msg, "let `v`: expected `[Decimal; 2]`, got `[Decimal; 1]`");
+    let (at, _) = one("fn main() {\n    let a: Decimal<2> = 1d;\n    let v: [Decimal<2>; 3] = [a, 1d];\n}\n");
+    assert_eq!(at, "[a, 1d]");
+    let accepted = "type Box<T> { value: T; }\n\
+                    type W { s: bounded[Decimal<2>; 4]; }\n\
+                    fn main() {\n\
+                        let a: Decimal<2> = 1.23d;\n\
+                        let xs: [Decimal<2>; 2] = [a, 2.34d];\n\
+                        let n: [[Decimal<2>; 2]; 2] = [[a, 0.01d], [0.02d, 0.03d]];\n\
+                        let t: (Decimal<18>, Int, Decimal<2>) = (0.000000000000000001d, 3, a);\n\
+                        let w = W { };\n\
+                        push(w.s, 0.04d) or raise;\n\
+                        let b: Box<Decimal<18>> = Box { value: 0.000000000000000005d };\n\
+                    }\n";
+    assert!(located(accepted).is_empty(), "{:?}", located(accepted));
+    let differ = |got: &str, want: &str, to: u8| {
+        format!(
+            "`{got}` is not `{want}`: a Decimal's scale is part of its type, and two scales never mix; \
+             convert explicitly (`.rescale({to})`)"
+        )
+    };
+    let refused = "type Box<T> { value: T; }\n\
+                   type W { s: bounded[Decimal<2>; 4]; }\n\
+                   fn main() {\n\
+                       let a: Decimal<2> = 1d;\n\
+                       let b: Decimal = 1d;\n\
+                       let xs: [Decimal<2>; 2] = [a, b];\n\
+                       let n: [[Decimal<2>; 1]; 1] = [[b]];\n\
+                       let t: (Decimal<2>, Int) = (b, 1);\n\
+                       let w = W { };\n\
+                       push(w.s, b) or raise;\n\
+                       let g: Box<Decimal<18>> = Box { value: b };\n\
+                       let p: [Decimal<2>; 2] = [a, 1.001d];\n\
+                       let r: [Decimal<2>; 2] = [b; 2];\n\
+                       let m = max(a, b);\n\
+                   }\n";
+    let errs = located(refused);
+    let want: Vec<(String, String)> = vec![
+        ("b".into(), differ("Decimal", "Decimal<2>", 2)),
+        ("b".into(), differ("Decimal", "Decimal<2>", 2)),
+        ("b".into(), differ("Decimal", "Decimal<2>", 2)),
+        ("b".into(), differ("Decimal", "Decimal<2>", 2)),
+        ("b".into(), differ("Decimal", "Decimal<18>", 18)),
+        ("b".into(), differ("Decimal", "Decimal<2>", 2)),
+        ("b".into(), differ("Decimal", "Decimal<2>", 2)),
+        (
+            "1.001d".into(),
+            "Decimal literal `1.001d` cannot be represented: a `Decimal<2>` has 2 fractional digits, and this one \
+             has a nonzero digit past them (it would be truncated); round it to 2 places, or give the place it \
+             flows into a wider scale"
+                .into(),
+        ),
+    ];
+    assert_eq!(errs, want);
+}
+
+/// An `if` or a `match` in expression position joins its arms as an
+/// operator joins its operands: a scale-less arm takes the scale of the
+/// arms that have one; arms of two scales of their own are mismatched.
+#[test]
+fn if_and_match_arms_join_by_scale() {
+    let accepted = "fn main() {\n\
+                        let a: Decimal<2> = 1.23d;\n\
+                        let k = 1;\n\
+                        let y = if k > 0 { a } else { 0.05d };\n\
+                        let z: Decimal<2> = if k > 0 { 0.06d } else { a };\n\
+                        let m = match k { 0 -> 0.25d, _ -> a, };\n\
+                        let n: Decimal<2> = y + z + m;\n\
+                    }\n";
+    assert!(located(accepted).is_empty(), "{:?}", located(accepted));
+    let (_, msg) = one("fn main() {\n    let a: Decimal<2> = 1d;\n    let b: Decimal = 1d;\n    let y = if a > 0d { a } else { b };\n}\n");
+    assert_eq!(msg, "if-expression arms have mismatched types: then=`Decimal<2>`, else=`Decimal`");
+    let (_, msg) = one("fn main() {\n    let a: Decimal<2> = 1d;\n    let b: Decimal = 1d;\n    let k = 1;\n    let y = match k { 0 -> a, _ -> b, };\n}\n");
+    assert_eq!(msg, "match expression arms have mismatched types: `Decimal<2>` vs `Decimal`");
+}

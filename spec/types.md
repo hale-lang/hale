@@ -71,7 +71,17 @@ where nothing gives it one (`let a = 1.5d;`). So does an expression
 built only of such values: a negated literal, an arithmetic operator
 over two of them, a block or an `if` whose every value is one, an
 `or` over a `std::str::parse_decimal` / `range_parse_decimal` call
-whose fallback is one. The literal must fit that scale: a nonzero
+whose fallback is one. An array, a tuple or a `[v; N]` literal holding
+a Decimal flows into its place element by element, its shape (length,
+arity) held first: a scale-less element takes the element's scale
+whatever its neighbours are, and any other element is held to the
+element type (`[a, 2.34d]` into `[Decimal<2>; 2]`, `a` a `Decimal<2>`,
+is two `Decimal<2>`s; `[1.0d]` is not a `[Decimal; 2]`). So does a
+`bounded` push, and a generic struct literal's field of a parameter
+bound to a Decimal. An `if` or a `match` in expression position joins
+its arms as an operator joins its operands: a scale-less arm takes the
+scale the other arms have, and arms of two scales are mismatched.
+The literal must fit that scale: a nonzero
 digit past the scale's last place, or a mantissa no i128 holds at
 it, is a check error at the literal ("Decimal literal `1.505d`
 cannot be represented: a `Decimal<2>` has 2 fractional digits, and

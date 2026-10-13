@@ -59,6 +59,25 @@ fn main() {
         std::test::assert_eq_str("not", "compared", "1.5 > 1 at scale 18");
     }
 
+    // A composite literal flows element by element: a scale-less element
+    // takes the element scale beside a typed one, at any depth.
+    let xs: [Decimal<2>; 2] = [price, 0.01d];
+    std::test::assert_eq_str("" + xs[1], "0.01", "a literal beside a typed element");
+    let grid: [[Decimal<18>; 2]; 2] = [[wei, 1d], [0.000000000000000002d, a]];
+    std::test::assert_eq_str(s(grid[1][0]), "0.000000000000000002", "a nested array's literal");
+    let pair: (Decimal<18>, Decimal<2>) = (0.000000000000000004d, price);
+    std::test::assert_eq_str(s(pair.0), "0.000000000000000004", "a tuple's part");
+    let filled: [Decimal<2>; 3] = [0.07d; 3];
+    std::test::assert_eq_str("" + filled[2], "0.07", "a repeated literal");
+    // An `if` or a `match` joins its arms as an operator joins operands.
+    let chosen = if a > 2d { price } else { 0.05d };
+    std::test::assert_eq_str("" + chosen, "0.05", "an if's literal arm takes the typed arm's scale");
+    let picked = match whole {
+        7d -> 0.000000000000000003d,
+        _ -> a,
+    };
+    std::test::assert_eq_str(s(picked), "0.000000000000000003", "a match's literal arm takes the typed arm's scale");
+
     // rescale: widening is exact; narrowing says what becomes of the
     // dropped digits.
     let up = plain.rescale(18);
