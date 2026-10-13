@@ -173,10 +173,11 @@ jobs:
   #
   # `quick-build` compiles their ~180 test binaries (about six minutes:
   # each is a bin crate, which sccache cannot cache) and archives them;
-  # the four `quick` jobs run a hash quarter each of their ~2,500 tests
-  # (about 2,150 test-seconds, the longest single test ~210 s). One job
-  # building and running all of it was the workflow's longest, at 16
-  # minutes (2026-10-12).
+  # the six `quick` jobs run a hash sixth each of their ~2,500 tests
+  # (about 2,150 test-seconds; the ten corpus sweeps of hale-types take
+  # 60-260 s each, and three of them on one four-core runner made a part
+  # of four run 5.5 minutes). One job building and running all of it was
+  # the workflow's longest, at 16 minutes (2026-10-12).
   quick-build:
     name: quick build (LLVM-free test archive)
     runs-on: ubuntu-latest
@@ -233,13 +234,13 @@ jobs:
           retention-days: 1
 
   quick:
-    name: quick ${{ matrix.part }}/4 (parse, typecheck, model)
+    name: quick ${{ matrix.part }}/6 (parse, typecheck, model)
     needs: quick-build
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        part: [1, 2, 3, 4]
+        part: [1, 2, 3, 4, 5, 6]
     env:
       ARCHIVE: nextest-quick
     steps:
@@ -281,8 +282,8 @@ jobs:
           mkdir -p target/tmp
           du -sh target
 
-      - name: cargo nextest run (LLVM-free crates, part ${{ matrix.part }}/4)
-        run: cargo nextest run $NEXTEST_ARCHIVE --partition hash:${{ matrix.part }}/4
+      - name: cargo nextest run (LLVM-free crates, part ${{ matrix.part }}/6)
+        run: cargo nextest run $NEXTEST_ARCHIVE --partition hash:${{ matrix.part }}/6
 
   # A prose-only diff's only remaining exposure after `quick`: the
   # `hale mcp` docs-search serves spec/*.md embedded at build time
