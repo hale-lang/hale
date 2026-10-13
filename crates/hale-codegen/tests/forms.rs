@@ -1,4 +1,4 @@
-//! The `forms` integration-test binary: 15 test files of this area, kept
+//! The `forms` integration-test binary: 16 test files of this area, kept
 //! where they are (their paths, names and history unchanged) and built as
 //! modules of one binary, so the crate links once for the area instead of
 //! once per file. Each file is a module; a test's name is `<file>::<fn>`.
@@ -27,6 +27,8 @@ mod form_ring_buffer_codegen;
 mod form_set;
 #[path = "form_vec_bce.rs"]
 mod form_vec_bce;
+#[path = "form_vec_clear.rs"]
+mod form_vec_clear;
 #[path = "form_vec_codegen.rs"]
 mod form_vec_codegen;
 #[path = "form_vec_inline.rs"]

@@ -28,7 +28,7 @@ Three things are happening:
 
 - **`@form(vec)`** tells the compiler "this locus is a growable
   list." It synthesizes the methods for you: `push`, `get`,
-  `set`, `pop`, `len`, `is_empty`, and sorting.
+  `set`, `pop`, `len`, `is_empty`, `clear`, `truncate`, and sorting.
 - **`capacity { heap items of String; }`** is where the list's
   storage lives. Read it as "this list holds `String`s." The
   element type comes from here.
@@ -43,6 +43,11 @@ Three things are happening:
   `set` free the element the vec held. A vec used as a queue — push,
   then pop once handled — stays the same size for as long as the
   locus lives.
+- **Reuse a list with `clear()`.** `clear()` empties the vec and
+  `truncate(n)` keeps its first `n` elements; what they drop is freed
+  the way `pop` frees it, and the buffer keeps its room. A scratch
+  list you fill per message can live on the locus and be cleared
+  each time instead of rebuilt.
 
 Iterate with `for` over the items:
 

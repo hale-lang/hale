@@ -1942,6 +1942,23 @@ fn synthesize_form_vec_methods(methods: &mut Vec<MethodInfo>, cell_ty: &Ty) {
         ret: Ty::Unit,
         fallible: None,
     });
+    // Friction sweep 2026-10-12: a per-message scratch vec is hoisted
+    // and reused. Both drop elements the way `pop` does (each retired
+    // with what it owns) and keep the buffer's capacity.
+    methods.push(MethodInfo {
+        name: "clear".to_string(),
+        params: Vec::new(),
+        min_params: None,
+        ret: Ty::Unit,
+        fallible: None,
+    });
+    methods.push(MethodInfo {
+        name: "truncate".to_string(),
+        params: vec![Ty::Prim(PrimType::Int)],
+        min_params: None,
+        ret: Ty::Unit,
+        fallible: None,
+    });
 }
 
 /// v1.x-FORM-4 PR3: synthesize the standard `@form(hashmap)`

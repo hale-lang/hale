@@ -31,7 +31,7 @@ The five forms and what they require:
 
 | Form | Backing slot | Lowers to | Synthesized surface |
 |---|---|---|---|
-| `@form(vec)` | one `heap` | doubling contiguous buffer | `push`, `get`, `set`, `pop`, `len`, `is_empty`, `sort*` |
+| `@form(vec)` | one `heap` | doubling contiguous buffer | `push`, `get`, `set`, `pop`, `len`, `is_empty`, `sort*`, `clear`, `truncate` |
 | `@form(hashmap)` | one `pool` + `indexed_by` | intrusive open-addressing table | `set`, `get`, `has`, `remove`, `len`, `is_empty`, `key_at`, `entry_at`, `bump` |
 | `@form(set)` | one `pool` + `indexed_by` | the hashmap table, value never surfaced | `insert`, `contains -> Bool`, `remove`, `len`, `is_empty` |
 | `@form(ring_buffer, cap=N)` | one `pool` | fixed circular buffer | `push -> Bool`, `pop`, `len`, `is_full` |
@@ -55,7 +55,7 @@ A form owns what it holds. A `vec`'s `push` / `set` and a
 `hashmap`'s `set` store the form's own copy of the value —
 its Strings and Bytes, and any nested record, tuple, array or
 payload-carrying enum with what that owns — and when a `set` replaces an element or cell, or a
-`pop` / `remove` drops one, all of it is reclaimed and reused, at
+`pop` / `remove` (or a vec's `clear` / `truncate`) drops one, all of it is reclaimed and reused, at
 any depth, so a map or vec churned for hours keeps a flat arena (a
 `striped` or `lockfree` map does not reclaim yet). A
 value you read out stays whole: a vec's `get` hands you a copy, and

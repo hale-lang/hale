@@ -6144,6 +6144,33 @@ void lotus_form_retire_replaced(void *arena_ptr, void *old_blob,
     lotus_arena_free_block_now(a, old_blob, block_size);
 }
 
+/* @form(vec) `truncate(n)` / `clear()` (and `@form(heap)`'s `clear()`):
+ * shrink the vec to `new_len` elements (`new_len` < 0 counts as 0, and
+ * one at or past `len` changes nothing), retiring every removed
+ * element exactly as `pop` retires the one it removes —
+ * lotus_form_retire_replaced against no surviving value, so the
+ * element's block and everything its descriptor reaches go back on
+ * the arena's reuse freelist. `arena` NULL: the elements are scalars
+ * (stored inline, nothing to free) and only `len` moves. The buffer
+ * keeps its capacity for reuse; it is released at dissolve. */
+void lotus_vec_truncate(void *vec_ptr, int64_t new_len, void *arena,
+                        int64_t size, const int32_t *desc,
+                        int64_t n_desc) {
+    if (!vec_ptr) return;
+    lotus_vec_t *v = (lotus_vec_t *)vec_ptr;
+    size_t keep = new_len < 0 ? 0 : (size_t)new_len;
+    if (keep >= v->len) return;
+    if (arena && v->buf) {
+        void **elems = (void **)v->buf;
+        for (size_t i = v->len; i > keep; i--) {
+            void *old = elems[i - 1];
+            elems[i - 1] = NULL;
+            lotus_form_retire_replaced(arena, old, NULL, size, desc, n_desc);
+        }
+    }
+    v->len = keep;
+}
+
 /* Retire everything a dying or overwritten @form(hashmap) cell owns:
  * what the retire descriptor reaches from the old value — String and
  * Bytes fields, the blocks of nested records, tuples and out-of-line

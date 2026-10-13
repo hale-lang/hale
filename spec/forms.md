@@ -351,6 +351,8 @@ fn is_empty() -> Bool                        # infallible
 fn sort() -> ()                              # infallible; T in {Int, Float, String}
 fn sort_by(cmp: fn(T, T) -> Bool) -> ()      # infallible
 fn sort_desc_by(cmp: fn(T, T) -> Bool) -> () # infallible
+fn clear() -> ()                             # infallible
+fn truncate(n: Int) -> ()                    # infallible
 ```
 
 The fallible methods return the locus-defined `IndexError`
@@ -488,6 +490,27 @@ the owner lived.)
 
 `pop` does not free the underlying buffer — capacity does not
 shrink. Buffer release happens at locus dissolution.
+
+### `clear` and `truncate`
+
+```
+fn clear() -> ()
+fn truncate(n: Int) -> ()
+```
+
+`truncate(n)` keeps the first `n` elements and drops the rest; an
+`n` at or past `len()` changes nothing, and an `n` below zero drops
+every element. `clear()` is `truncate(0)`. Both are infallible.
+
+Each dropped element is reclaimed exactly as `pop` reclaims the one it
+removes — its block, its String and Bytes fields, and its nested
+records, tuples, arrays and payload enums with what they own, at any
+depth, back onto the arena's reuse freelist — and the buffer keeps its
+capacity, so a scratch vec hoisted into a locus and cleared once per
+message holds both its buffer and its arena flat. A value read out
+before the drop (a `get` or `pop` result) is the caller's own copy and
+stays whole. (Friction sweep 2026-10-12: there was no way to empty a
+vec but a `pop` loop, while `bounded[T; N]` had `clear`.)
 
 ### `len` and `is_empty`
 

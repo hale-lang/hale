@@ -311,6 +311,50 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             && self.retire_desc_for(fty, 1).is_some()
     }
 
+    /// The retire arguments of a `@form(vec)` element type, as
+    /// `lotus_form_retire_replaced` (and `lotus_vec_truncate`) take
+    /// them: the size sentinel (-1 a String, -2 a Bytes, else the
+    /// struct block's size), the descriptor global (null when it is
+    /// empty) and its word count. `None` for an element stored inline
+    /// (a scalar, an enum tag, a locus ref), which owns no block.
+    pub(crate) fn vec_retire_args(
+        &mut self,
+        elem_ty: &CodegenTy,
+    ) -> Option<(i64, PointerValue<'ctx>, i64)> {
+        let ptr_t = self.context.ptr_type(AddressSpace::default());
+        let i32_t = self.context.i32_type();
+        let (size_sentinel, offs): (i64, Vec<u32>) = match elem_ty {
+            CodegenTy::String => (-1, Vec::new()),
+            CodegenTy::Bytes => (-2, Vec::new()),
+            CodegenTy::TypeRef(tn) => {
+                let ti = self.user_types.get(tn)?;
+                let sz = self.target_data.get_abi_size(&ti.struct_ty) as i64;
+                (sz, self.retire_desc_for(elem_ty, 0).map(|(_, d)| d).unwrap_or_default())
+            }
+            _ => return None,
+        };
+        if offs.is_empty() {
+            return Some((size_sentinel, ptr_t.const_null(), 0));
+        }
+        let gname = match elem_ty {
+            CodegenTy::TypeRef(tn) => format!("__vec_retire_desc.{}", tn),
+            _ => unreachable!("only a struct element has field offsets"),
+        };
+        let g = match self.module.get_global(&gname) {
+            Some(g) => g,
+            None => {
+                let vals: Vec<_> = offs.iter().map(|o| i32_t.const_int(*o as u64, false)).collect();
+                let arr = i32_t.const_array(&vals);
+                let g = self.module.add_global(arr.get_type(), None, &gname);
+                g.set_initializer(&arr);
+                g.set_constant(true);
+                g.set_linkage(inkwell::module::Linkage::Internal);
+                g
+            }
+        };
+        Some((size_sentinel, g.as_pointer_value(), offs.len() as i64))
+    }
+
     /// Free a vec element the vec no longer holds — the one `set`
     /// replaces (iris handoff P1, 2026-07-27) or the one `pop` removes
     /// (GH #1037). Pointer-storage elements (structs / String / Bytes)
@@ -349,48 +393,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         tag: &str,
     ) -> Result<(), CodegenError> {
         let ptr_t = self.context.ptr_type(AddressSpace::default());
-        let i32_t = self.context.i32_type();
         let i64_t = self.context.i64_type();
-        let (size_sentinel, offs): (i64, Vec<u32>) = match elem_ty {
-            CodegenTy::String => (-1, Vec::new()),
-            CodegenTy::Bytes => (-2, Vec::new()),
-            CodegenTy::TypeRef(tn) => match self.user_types.get(tn) {
-                Some(ti) => {
-                    let sz = self.target_data.get_abi_size(&ti.struct_ty) as i64;
-                    (sz, self.retire_desc_for(elem_ty, 0).map(|(_, d)| d).unwrap_or_default())
-                }
-                None => return Ok(()),
-            },
-            _ => return Ok(()),
+        let Some((size_sentinel, desc_ptr, n_offs)) = self.vec_retire_args(elem_ty) else {
+            return Ok(());
         };
         let old_ptr = self
             .builder
             .build_load(ptr_t, slot, &format!("{}.vec.{}.old", locus_name, tag))
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-        let (desc_ptr, n_offs) = if offs.is_empty() {
-            (ptr_t.const_null(), 0i64)
-        } else {
-            let gname = match elem_ty {
-                CodegenTy::TypeRef(tn) => format!("__vec_retire_desc.{}", tn),
-                _ => unreachable!("only a struct element has field offsets"),
-            };
-            let g = match self.module.get_global(&gname) {
-                Some(g) => g,
-                None => {
-                    let vals: Vec<_> = offs
-                        .iter()
-                        .map(|o| i32_t.const_int(*o as u64, false))
-                        .collect();
-                    let arr = i32_t.const_array(&vals);
-                    let g = self.module.add_global(arr.get_type(), None, &gname);
-                    g.set_initializer(&arr);
-                    g.set_constant(true);
-                    g.set_linkage(inkwell::module::Linkage::Internal);
-                    g
-                }
-            };
-            (g.as_pointer_value(), offs.len() as i64)
-        };
         let retire_fn = self
             .module
             .get_function("lotus_form_retire_replaced")
@@ -407,6 +417,69 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     i64_t.const_int(n_offs as u64, false).into(),
                 ],
                 &format!("{}.vec.{}.retire", locus_name, tag),
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        Ok(())
+    }
+
+    /// `@form(vec)` `truncate(n)` / `clear()` (and `@form(heap)`'s
+    /// `clear()`): shrink the vec at `vec_field_ptr` to `new_len`
+    /// elements through `lotus_vec_truncate`, which retires each
+    /// removed element as `pop` does (`emit_vec_retire`, against no
+    /// surviving value) — so a hoisted scratch vec cleared per message
+    /// holds its arena flat. An element stored inline passes a null
+    /// arena: only `len` moves. Capacity is kept for reuse.
+    pub(crate) fn emit_vec_truncate(
+        &mut self,
+        info: &LocusInfo<'ctx>,
+        locus_self_ptr: PointerValue<'ctx>,
+        locus_name: &str,
+        elem_ty: &CodegenTy,
+        vec_field_ptr: PointerValue<'ctx>,
+        new_len: inkwell::values::IntValue<'ctx>,
+    ) -> Result<(), CodegenError> {
+        let ptr_t = self.context.ptr_type(AddressSpace::default());
+        let i64_t = self.context.i64_type();
+        let (arena, size_sentinel, desc_ptr, n_offs) = match self.vec_retire_args(elem_ty) {
+            Some((size, desc, n)) => {
+                let arena_field_ptr = self
+                    .builder
+                    .build_struct_gep(
+                        info.struct_ty,
+                        locus_self_ptr,
+                        info.arena_field_idx,
+                        &format!("{}.__arena.for_truncate.ptr", locus_name),
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                let arena = self
+                    .builder
+                    .build_load(ptr_t, arena_field_ptr, &format!("{}.__arena.for_truncate", locus_name))
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                    .into_pointer_value();
+                (arena, size, desc, n)
+            }
+            None => (ptr_t.const_null(), 0, ptr_t.const_null(), 0),
+        };
+        let new_len = self
+            .builder
+            .build_int_s_extend_or_bit_cast(new_len, i64_t, &format!("{}.vec.truncate.n", locus_name))
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let f = self
+            .module
+            .get_function("lotus_vec_truncate")
+            .expect("lotus_vec_truncate declared");
+        self.builder
+            .build_call(
+                f,
+                &[
+                    vec_field_ptr.into(),
+                    new_len.into(),
+                    arena.into(),
+                    i64_t.const_int(size_sentinel as u64, true).into(),
+                    desc_ptr.into(),
+                    i64_t.const_int(n_offs as u64, false).into(),
+                ],
+                &format!("{}.vec.truncate", locus_name),
             )
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         Ok(())
@@ -1927,7 +2000,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let is_synth = matches!(
             method_name,
             "push" | "get" | "pop" | "len" | "is_empty"
-            | "sort" | "sort_by" | "sort_desc_by"
+            | "sort" | "sort_by" | "sort_desc_by" | "clear" | "truncate"
         );
         if !is_synth {
             return Ok(None);
@@ -2214,6 +2287,29 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
 
                 self.builder.position_at_end(cont_bb);
+                Ok(Some(None))
+            }
+            "clear" | "truncate" => {
+                let new_len = if method_name == "clear" {
+                    if !args.is_empty() {
+                        return Err(CodegenError::Unsupported(format!(
+                            "@form(vec) `{}`.clear: takes no args, got {}",
+                            locus_name,
+                            args.len()
+                        )));
+                    }
+                    i64_t.const_int(0, false)
+                } else {
+                    if args.len() != 1 {
+                        return Err(CodegenError::Unsupported(format!(
+                            "@form(vec) `{}`.truncate: expects 1 arg, got {}",
+                            locus_name,
+                            args.len()
+                        )));
+                    }
+                    self.lower_expr(&args[0], scope)?.0.into_int_value()
+                };
+                self.emit_vec_truncate(info, locus_self_ptr, locus_name, &slot.elem_ty, vec_field_ptr, new_len)?;
                 Ok(Some(None))
             }
             "len" => {
