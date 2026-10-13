@@ -529,6 +529,7 @@ fn copied_api_binding_expressions_keep_params_birth_provenance() {
         "__RpcSurface_2 instance born outside the arrangement: owner and placement resolve at runtime",
         "__StdApiExposure instance born outside the arrangement: owner and placement resolve at runtime",
         "__StdApiHttpConns instance born outside the arrangement: owner and placement resolve at runtime",
+        "__StdApiHttpCorsTable instance born outside the arrangement: owner and placement resolve at runtime",
         "__StdApiHttpPeer instance born outside the arrangement: owner and placement resolve at runtime",
         "__StdApiHttpRpc instance born outside the arrangement: owner and placement resolve at runtime",
         "__StdApiNoExpiry instance born outside the arrangement: owner and placement resolve at runtime",

@@ -1,0 +1,84 @@
+// tests/hale/ipv6_test.hl — IPv6 addresses through std::http::parse_url
+// and std::io::tcp / udp (downstream handoff: `parse_url` refused
+// `http://[::1]:9107/x` as bad_url, and the socket primitives knew only
+// AF_INET). The URL forms run everywhere; the sockets need an IPv6
+// loopback, and a host without one (some CI containers) skips them.
+
+fn failed(e: std::http::HttpError) -> std::http::Url {
+    return std::http::Url { scheme: "", host: "bad_url: " + e.detail, port: -1, path: "" };
+}
+
+fn url_forms() {
+    let u = std::http::parse_url("http://[::1]:9107/x") or failed(err);
+    std::test::assert_eq_str(u.host, "::1", "the host is the address the brackets hold");
+    std::test::assert_eq_int(u.port, 9107, "the port after the brackets");
+    std::test::assert_eq_str(u.path, "/x", "and the path");
+    let d = std::http::parse_url("https://[2001:db8::7]/a?b=1") or failed(err);
+    std::test::assert_eq_str(d.host, "2001:db8::7", "a global address");
+    std::test::assert_eq_int(d.port, 443, "the scheme's default port");
+    std::test::assert_eq_str(d.path, "/a?b=1", "the query rides in the path");
+    let bare = std::http::parse_url("http://[::1]") or failed(err);
+    std::test::assert_eq_int(bare.port, 80, "no port: the default");
+    std::test::assert_eq_str(bare.path, "/", "no path: /");
+    let v4 = std::http::parse_url("http://127.0.0.1:8080/a") or failed(err);
+    std::test::assert_eq_str(v4.host, "127.0.0.1", "an IPv4 host as before");
+    std::test::assert_eq_int(v4.port, 8080, "with its port");
+    // malformed: an unclosed bracket, text after it, brackets around no
+    // IPv6 address, an unbracketed IPv6 address, a port out of range
+    for_bad("http://[::1:80/");
+    for_bad("http://[::1]x/");
+    for_bad("http://[127.0.0.1]/");
+    for_bad("http://::1:80/");
+    for_bad("http://[::1]:70000/");
+}
+
+fn for_bad(s: String) {
+    let u = std::http::parse_url(s) or failed(err);
+    std::test::assert(u.port == -1, "refused: " + s);
+}
+
+fn main() {
+    url_forms();
+
+    let lfd = std::io::tcp::__listen_socket("::1", 0);
+    if lfd < 0 {
+        println("skip: this host has no IPv6 loopback");
+        return;
+    }
+    let port = std::io::tcp::__local_port(lfd);
+    std::test::assert(port > 0, "a port-0 bind on ::1 was given a port");
+    // dial it bracketed, as a URL writes it, and bare
+    let c = std::io::tcp::connect("[::1]", port) or - 1;
+    std::test::assert(c >= 0, "connect to [::1]");
+    let s = std::io::tcp::accept_one(lfd) or - 1;
+    std::test::assert(s >= 0, "the listener took it");
+    std::io::tcp::send_fd(c, b"over v6") or discard;
+    let got = std::io::tcp::__recv(s, 64);
+    std::test::assert_eq_str(got, "over v6", "the bytes crossed ::1");
+    let c2 = std::io::tcp::connect("::1", port) or - 1;
+    std::test::assert(c2 >= 0, "connect to bare ::1");
+    std::io::tcp::__close_fd(c);
+    std::io::tcp::__close_fd(c2);
+    std::io::tcp::__close_fd(s);
+    std::io::tcp::__close_fd(lfd);
+
+    // a substrate listener on ::1 goes by `[::1]:<port>`, and stop(name)
+    // finds it by that name
+    let a = std::io::tcp::Acceptor { host: "::1", port: 0, max_accepts: 0 };
+    std::test::assert(std::str::starts_with(a.listener, "[::1]:"), "the listener's name is bracketed: " + a.listener);
+    std::test::assert_eq_str(a.listener, "[::1]:" + to_string(std::io::tcp::__local_port(a.listen_fd)), "and carries the bound port");
+    std::test::assert(std::io::tcp::stop(a.listener), "stop finds it by that name");
+
+    // udp: bind ::1, send to it, read the source back unbracketed
+    let u = std::io::udp::bind("::1", 0) or - 1;
+    std::test::assert(u >= 0, "udp bind on ::1");
+    let uport = std::io::tcp::__local_port(u);
+    let out = std::io::udp::bind("::1", 0) or - 1;
+    std::io::udp::send(out, "[::1]", uport, "dgram") or discard;
+    let d = std::io::udp::recv_with_source(u, 64) or b"";
+    std::test::assert_eq_str(std::str::from_bytes(d), "dgram", "the datagram crossed ::1");
+    std::test::assert_eq_str(std::io::udp::last_source_host(), "::1", "its source is ::1");
+    std::test::assert_eq_int(std::io::udp::last_source_port(), std::io::tcp::__local_port(out), "from the sender's port");
+    std::io::udp::close(u);
+    std::io::udp::close(out);
+}

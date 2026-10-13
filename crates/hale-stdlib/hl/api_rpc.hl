@@ -1662,6 +1662,9 @@ type __StdApiHttpOut {
     kind: Int;
     status: Int;
     body: String;
+    // header lines (each ending `\r\n`) a response carries besides the
+    // fixed ones: the CORS headers of an `http::Rpc` with `cors` set
+    headers: String = "";
 }
 
 /// The status a refusal kind has (spec/api.md § Outcomes).
@@ -1715,14 +1718,14 @@ locus __StdApiHttpPeer {
             }
         }
         if self.open && ((head_end < 0 && len(buf) >= 65536) || head_end > 65536) {
-            self.respond(400, "{\"refusal\":" + __api_refusal_object("malformed", "a request head is at most 65536 bytes", "") + "}");
+            self.respond(400, "{\"refusal\":" + __api_refusal_object("malformed", "a request head is at most 65536 bytes", "") + "}", "");
             self.open = false;
         }
         if self.open && head_end >= 0 {
             let head = std::http::parse_request(buf[0..(head_end + 4)]);
             let want = std::str::parse_int(std::http::header(head, "Content-Length")) or 0;
             if want > 1048576 {
-                self.respond(400, "{\"refusal\":" + __api_refusal_object("malformed", "a request body is at most 1048576 bytes", "") + "}");
+                self.respond(400, "{\"refusal\":" + __api_refusal_object("malformed", "a request body is at most 1048576 bytes", "") + "}", "");
                 self.open = false;
             } else {
                 let mut have = len(buf) - (head_end + 4);
@@ -1765,16 +1768,16 @@ locus __StdApiHttpPeer {
         }
         if o.kind != 0 || !self.open || self.answered { return; }
         self.answered = true;
-        self.respond(o.status, o.body);
+        self.respond(o.status, o.body, o.headers);
         self.hangup();
     }
     fn on_group(o: __StdApiHttpOut) {
         if o.kind == 1 { self.hangup(); }
     }
-    fn respond(status: Int, body: String) {
+    fn respond(status: Int, body: String, extra: String) {
         if self.fd < 0 { return; }
         // a write that fails closes this connection, and only this one
-        self.stream.send("HTTP/1.1 " + to_string(status) + " " + __status_phrase(status) + "\r\nContent-Type: application/json\r\nCache-Control: no-store\r\nContent-Length: " + to_string(len(body)) + "\r\nConnection: close\r\n\r\n" + body) or { self.open = false; };
+        self.stream.send("HTTP/1.1 " + to_string(status) + " " + __status_phrase(status) + "\r\nContent-Type: application/json\r\nCache-Control: no-store\r\n" + extra + "Content-Length: " + to_string(len(body)) + "\r\nConnection: close\r\n\r\n" + body) or { self.open = false; };
     }
     // Stop reading: the shutdown wakes the reader, which ends the connection.
     fn hangup() {
@@ -1906,18 +1909,72 @@ locus __StdApiHttpListener {
     }
 }
 
+/// What the HTTP transport keeps of a request between `frame` and `reply`
+/// when it answers CORS (`cors` set): corr, the connection (-1 for a free
+/// record); preflight, an `OPTIONS` for a route the transport serves;
+/// origin, the request's `Origin` when `cors` allows it, else "".
+type __StdApiHttpCors {
+    corr: Int = -1;
+    preflight: Bool = false;
+    origin: String = "";
+}
+
+@form(vec)
+locus __StdApiHttpCorsTable {
+    capacity { heap items of __StdApiHttpCors; }
+}
+
+/// Whether `origin` is one `cors` allows: `cors` is a comma-separated list
+/// of origins (`https://app.example.com`, `http://localhost:5173`), each
+/// matched whole, or `*` for every origin. An empty origin never is.
+fn __api_cors_allows(cors: String, origin: String) -> Bool {
+    if len(origin) == 0 { return false; }
+    let mut rest = cors;
+    while len(rest) > 0 {
+        let comma = std::str::index_of(rest, ",");
+        let mut one = rest;
+        if comma >= 0 {
+            one = rest[0..comma];
+            rest = rest[(comma + 1)..len(rest)];
+        } else {
+            rest = "";
+        }
+        let o = std::str::trim(one);
+        if o == "*" || o == origin { return true; }
+    }
+    return false;
+}
+
+/// The CORS headers of a response to a request whose `Origin` `cors`
+/// allows (`origin`; "" when it does not, or sent none): the origin echoed,
+/// and, for a preflight, what the routes take. Every response of a
+/// transport with `cors` set varies by `Origin`.
+fn __api_cors_headers(origin: String, preflight: Bool) -> String {
+    let mut h = "Vary: Origin\r\n";
+    if len(origin) == 0 { return h; }
+    h = h + "Access-Control-Allow-Origin: " + origin + "\r\n";
+    if preflight {
+        h = h + "Access-Control-Allow-Methods: POST, GET, OPTIONS\r\nAccess-Control-Allow-Headers: Authorization, Content-Type, Hale-Surface-Digest\r\nAccess-Control-Max-Age: 600\r\n";
+    }
+    return h;
+}
+
 /// The HTTP transport (`std::api::http::Rpc`; `http::Rpc` at a serve site).
 /// `tid` is the number of the exposure it serves, which the compiler writes
 /// into the literal, together with the listener it pairs with. The principal
 /// is the bearer `principals` names; the codec is JSON, the one v1 has.
+/// `cors` lists the browser origins it answers CORS for (spec/api.md § The
+/// HTTP transport); "" answers none, and a preflight is `malformed`.
 locus __StdApiHttpRpc {
     params {
         bind: String;
         principals: std::api::BearerSource;
         roles: std::api::RoleSource = __StdApiNoRoles { };
+        cors: String = "";
         tid: Int = 0;
         closed: Int = 0;
         stops: Int = 0;
+        pending: __StdApiHttpCorsTable = __StdApiHttpCorsTable { };
     }
     bus {
         subscribe __ApiHttpOutT as on_ask where key == self.tid;
@@ -1931,11 +1988,41 @@ locus __StdApiHttpRpc {
             __ApiHttpOutT <- __StdApiHttpOut { key: self.tid, kind: 3, status: 0, body: "" };
         }
     }
+    // With `cors` set, what `reply` needs of the request: one record per
+    // connection, the first free one taken (`reply` and `close_connection`
+    // free it), so the table is never longer than the connections waiting.
+    fn note(corr: Int, preflight: Bool, origin: String) {
+        let n = self.pending.len();
+        let mut k = 0;
+        while k < n {
+            let p = self.pending.get(k) or __StdApiHttpCors { };
+            if p.corr == -1 || p.corr == corr {
+                self.pending.set(k, __StdApiHttpCors { corr: corr, preflight: preflight, origin: origin }) or discard;
+                return;
+            }
+            k = k + 1;
+        }
+        self.pending.push(__StdApiHttpCors { corr: corr, preflight: preflight, origin: origin });
+    }
+    fn take(corr: Int) -> __StdApiHttpCors {
+        let n = self.pending.len();
+        let mut k = 0;
+        while k < n {
+            let p = self.pending.get(k) or __StdApiHttpCors { };
+            if p.corr == corr {
+                self.pending.set(k, __StdApiHttpCors { }) or discard;
+                return p;
+            }
+            k = k + 1;
+        }
+        return __StdApiHttpCors { corr: corr };
+    }
     // The raw message is the request as the client sent it.
     fn frame(raw: Bytes, correlation: Int) -> std::api::Request {
         let req = std::http::parse_request(std::str::from_bytes(raw));
         let nobody = std::api::Principal { mode: "bearer", name: "" };
         if len(req.method) == 0 || len(req.path) == 0 {
+            if len(self.cors) > 0 { self.note(correlation, false, ""); }
             return std::api::Request { kind: 2, bytes: raw, correlation: correlation, peer: nobody, reason: "not an HTTP request" };
         }
         let auth = std::http::header(req, "Authorization");
@@ -1944,6 +2031,19 @@ locus __StdApiHttpRpc {
         let mut path = req.path;
         let q = std::str::index_of(path, "?");
         if q >= 0 { path = path[0..q]; }
+        if len(self.cors) > 0 {
+            let origin = std::http::header(req, "Origin");
+            let allowed = if __api_cors_allows(self.cors, origin) { origin } else { "" };
+            // a preflight of a route this transport serves is answered by the
+            // transport (`reply`), never dispatched: it goes to the runtime
+            // as a request refused at framing, which needs no credential
+            let route = path == "/.description" || std::str::starts_with(path, "/call/");
+            let preflight = req.method == "OPTIONS" && route;
+            self.note(correlation, preflight, allowed);
+            if preflight {
+                return std::api::Request { kind: 2, bytes: raw, correlation: correlation, credential: token, peer: nobody, reason: "a CORS preflight" };
+            }
+        }
         if req.method == "GET" && path == "/.description" {
             return std::api::Request { kind: 1, bytes: raw, correlation: correlation, credential: token, peer: nobody, reason: "" };
         }
@@ -1968,12 +2068,30 @@ locus __StdApiHttpRpc {
             },
             __StdApiOutcome::ServerError -> { },
         }
-        __ApiHttpOutT <- __StdApiHttpOut { key: self.tid * 4294967296 + correlation, kind: 0, status: status, body: body };
+        let mut headers = "";
+        if len(self.cors) > 0 {
+            let p = self.take(correlation);
+            if p.preflight {
+                // an allowed origin's preflight is answered with what the
+                // routes take; any other origin's is refused, with no CORS
+                // headers, so the browser stops there
+                if len(p.origin) > 0 {
+                    status = 204;
+                    body = "";
+                } else {
+                    status = 403;
+                    body = "{\"refusal\":" + __api_refusal_object("unauthorized", "the origin is not one this exposure answers CORS for", "") + "}";
+                }
+            }
+            headers = __api_cors_headers(p.origin, p.preflight);
+        }
+        __ApiHttpOutT <- __StdApiHttpOut { key: self.tid * 4294967296 + correlation, kind: 0, status: status, body: body, headers: headers };
     }
     // The request's connection is gone and its work has completed: nothing
     // is written; whatever is left of the connection is closed.
     fn close_connection(correlation: Int) {
         self.closed = self.closed + 1;
+        if len(self.cors) > 0 { let _ = self.take(correlation); }
         __ApiHttpOutT <- __StdApiHttpOut { key: self.tid * 4294967296 + correlation, kind: 1, status: 0, body: "" };
     }
     // Close the listener and every connection, after the responses already
