@@ -8860,14 +8860,15 @@ fn literal_prim(e: &Expr) -> Option<PrimType> {
         Expr::Literal(lit, _) => match lit {
             Literal::Int(_) => Some(PrimType::Int),
             Literal::Float(_) => Some(PrimType::Float),
-            Literal::Decimal(_) => Some(PrimType::Decimal),
+            // a literal const has no place to give it a scale: the default
+            Literal::Decimal(_) => Some(PrimType::DECIMAL),
             Literal::String(_) => Some(PrimType::String),
             Literal::Bool(_) => Some(PrimType::Bool),
             Literal::Bytes(_) => Some(PrimType::Bytes),
             _ => None,
         },
         Expr::Unary { op: UnaryOp::Neg, operand, .. } => match literal_prim(operand)? {
-            p @ (PrimType::Int | PrimType::Float | PrimType::Decimal) => Some(p),
+            p @ (PrimType::Int | PrimType::Float | PrimType::Decimal(_)) => Some(p),
             _ => None,
         },
         _ => None,
