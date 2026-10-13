@@ -13,8 +13,11 @@
 //!   - a missing field raises `JsonError { kind: "missing_field", field }`,
 //!     UNLESS the field declares a literal `= default`, in which case the
 //!     default is kept (optional-with-default for free).
-//!   - field types: Int / Float / Bool / String. A type with any non-scalar
-//!     field is left ungenerated (nested types + arrays are a follow-up).
+//!   - field types: Int / Float / Bool / String / `Decimal<S>` (a JSON
+//!     number, its exact digits at the field's scale; a number with a
+//!     nonzero digit past the scale is the field's `wrong_type`, never a
+//!     truncation). A type with any non-scalar field is left ungenerated
+//!     (nested types + arrays are a follow-up).
 //!
 //! The pass runs BEFORE typecheck (so the generated parser is itself
 //! checked and `from_json` resolves to a real fallible function the caller
@@ -35,15 +38,18 @@ enum ScalarTy {
     Float,
     Bool,
     Str,
+    /// `Decimal<S>`, by its scale.
+    Decimal(u8),
 }
 
 impl ScalarTy {
-    fn type_name(self) -> &'static str {
+    fn type_name(self) -> String {
         match self {
-            ScalarTy::Int => "Int",
-            ScalarTy::Float => "Float",
-            ScalarTy::Bool => "Bool",
-            ScalarTy::Str => "String",
+            ScalarTy::Int => "Int".into(),
+            ScalarTy::Float => "Float".into(),
+            ScalarTy::Bool => "Bool".into(),
+            ScalarTy::Str => "String".into(),
+            ScalarTy::Decimal(s) => format!("Decimal<{s}>"),
         }
     }
     fn zero(self) -> &'static str {
@@ -52,6 +58,7 @@ impl ScalarTy {
             ScalarTy::Float => "0.0",
             ScalarTy::Bool => "false",
             ScalarTy::Str => "\"\"",
+            ScalarTy::Decimal(_) => "0d",
         }
     }
 }
@@ -223,6 +230,7 @@ fn scalar_of(te: &TypeExpr) -> Option<ScalarTy> {
         TypeExpr::Primitive(PrimType::Float, _) => Some(ScalarTy::Float),
         TypeExpr::Primitive(PrimType::Bool, _) => Some(ScalarTy::Bool),
         TypeExpr::Primitive(PrimType::String, _) => Some(ScalarTy::Str),
+        TypeExpr::Primitive(PrimType::Decimal(s), _) => Some(ScalarTy::Decimal(*s)),
         _ => None,
     }
 }
@@ -235,6 +243,8 @@ fn literal_src(e: &Expr) -> Option<String> {
         Expr::Literal(Literal::Int(n), _) => Some(n.to_string()),
         Expr::Literal(Literal::Bool(b), _) => Some(b.to_string()),
         Expr::Literal(Literal::Float(f), _) => Some(format!("{:?}", f)),
+        // The lexer keeps a Decimal's digits; the spelling had its `d`.
+        Expr::Literal(Literal::Decimal(d), _) => Some(format!("{}d", d.trim_end_matches('d'))),
         Expr::Literal(Literal::String(s), _) => {
             Some(format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\"")))
         }
@@ -338,6 +348,8 @@ fn scalar_value_expr(s: ScalarTy) -> &'static str {
         ScalarTy::Float => "std::str::parse_float(__s[__vs..__ve]) or 0.0",
         ScalarTy::Bool => "std::str::range_eq(__s, __vs, __ve, \"true\")",
         ScalarTy::Str => "std::json::unescape_string(__s[(__vs + 1)..(__ve - 1)])",
+        // Read strictly in either mode (`strict_scalar_value_expr`).
+        ScalarTy::Decimal(_) => "std::str::range_parse_decimal(__s, __vs, __ve) or 0d",
     }
 }
 
@@ -351,6 +363,10 @@ fn strict_scalar_value_expr(s: ScalarTy, key: &str) -> String {
         ),
         ScalarTy::Float => format!(
             "std::str::parse_float(__s[__vs..__ve]) or fail JsonError {{ kind: \"wrong_type\", field: \"{}\" }}",
+            key
+        ),
+        ScalarTy::Decimal(_) => format!(
+            "std::str::range_parse_decimal(__s, __vs, __ve) or fail JsonError {{ kind: \"wrong_type\", field: \"{}\" }}",
             key
         ),
         // Handled as a statement by the caller; never reached.
@@ -476,9 +492,9 @@ fn generate_parser_src_mode(t: &JsonType, prefix: &str, strict: bool) -> String 
         if strict {
             let want = match &f.kind {
                 FieldKind::Scalar(ScalarTy::Str) => "__c0 == 34",
-                FieldKind::Scalar(ScalarTy::Int) | FieldKind::Scalar(ScalarTy::Float) => {
-                    "__c0 == 45 || (__c0 >= 48 && __c0 <= 57)"
-                }
+                FieldKind::Scalar(ScalarTy::Int)
+                | FieldKind::Scalar(ScalarTy::Float)
+                | FieldKind::Scalar(ScalarTy::Decimal(_)) => "__c0 == 45 || (__c0 >= 48 && __c0 <= 57)",
                 FieldKind::Scalar(ScalarTy::Bool) => "__c0 == 116 || __c0 == 102",
                 FieldKind::Nested(_) => "__c0 == 123",
                 FieldKind::Time => "__c0 == 34",
@@ -506,7 +522,10 @@ fn generate_parser_src_mode(t: &JsonType, prefix: &str, strict: bool) -> String 
                 n = f.name,
                 k = f.key
             )),
-            FieldKind::Scalar(s) if strict => b.push_str(&format!(
+            // A Decimal with a nonzero digit past its field's scale is a
+            // value the field cannot hold: refused in either mode, never
+            // read as zero.
+            FieldKind::Scalar(s) if strict || matches!(s, ScalarTy::Decimal(_)) => b.push_str(&format!(
                 "                    __f_{} = {};\n",
                 f.name,
                 strict_scalar_value_expr(*s, &f.key)
@@ -859,7 +878,9 @@ fn generate_pb_parser_src(t: &JsonType) -> String {
         }
         let (want, what) = match &f.kind {
             FieldKind::Scalar(ScalarTy::Float) => (1, "f64"),
-            FieldKind::Scalar(ScalarTy::Str) | FieldKind::Nested(_) => (2, "len"),
+            FieldKind::Scalar(ScalarTy::Str) | FieldKind::Scalar(ScalarTy::Decimal(_)) | FieldKind::Nested(_) => {
+                (2, "len")
+            }
             FieldKind::Scalar(_) | FieldKind::Time => (0, "varint"),
             FieldKind::List { .. } => unreachable!("read above"),
         };
@@ -888,7 +909,15 @@ fn generate_pb_parser_src(t: &JsonType) -> String {
                             "            if len(__s) != __l {{ fail JsonError {{ kind: \"wrong_type\", field: \"{}\" }}; }}\n",
                             f.key
                         ));
-                        b.push_str(&format!("            __f_{} = __s;\n", f.name));
+                        if let FieldKind::Scalar(ScalarTy::Decimal(_)) = f.kind {
+                            // A Decimal is its digits (proto3 has no decimal).
+                            b.push_str(&format!(
+                                "            __f_{} = std::str::parse_decimal(__s) or fail JsonError {{ kind: \"wrong_type\", field: \"{}\" }};\n",
+                                f.name, f.key
+                            ));
+                        } else {
+                            b.push_str(&format!("            __f_{} = __s;\n", f.name));
+                        }
                     }
                 }
                 b.push_str("            __p = __e + __l;\n");
@@ -1048,6 +1077,7 @@ fn generate_pb_emit_src(t: &JsonType) -> String {
             FieldKind::Scalar(ScalarTy::Str) => format!("__api_pb_put_str({}, {v})", f.pb_no),
             FieldKind::Scalar(ScalarTy::Float) => format!("__api_pb_put_f64({}, {v})", f.pb_no),
             FieldKind::Scalar(ScalarTy::Bool) => format!("__api_pb_put_bool({}, {v})", f.pb_no),
+            FieldKind::Scalar(ScalarTy::Decimal(_)) => format!("__api_pb_put_str({}, to_string({v}))", f.pb_no),
             FieldKind::Scalar(ScalarTy::Int) => match &f.conv {
                 Some(c) => format!("__api_pb_put_int({}, {})", f.pb_no, c.to_int(&v)),
                 None => format!("__api_pb_put_int({}, {v})", f.pb_no),

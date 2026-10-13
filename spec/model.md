@@ -321,7 +321,8 @@ Both forms tag a field the same way when its type is flat:
 | `Int`, `Uint`, an identity, a range (`spec/units.md`) | `i` |
 | `Float` | `f` |
 | `Bool` | `b` |
-| `Decimal` | `d` |
+| `Decimal` (`Decimal<9>`) | `d` |
+| `Decimal<S>`, `S` other than 9 | `d<S>` (`Decimal<18>` is `d18`: the scale is part of the contract) |
 | `Time` | `t` |
 | `Duration` | `u` |
 | `String`, `StringView` | `s` |

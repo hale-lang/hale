@@ -43,7 +43,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             CodegenTy::Int
             | CodegenTy::Float
             | CodegenTy::Bool
-            | CodegenTy::Decimal
+            | CodegenTy::Decimal(_)
             | CodegenTy::Time
             | CodegenTy::Duration
             | CodegenTy::FnPtr { .. }
@@ -260,7 +260,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             CodegenTy::Int
             | CodegenTy::Float
             | CodegenTy::Bool
-            | CodegenTy::Decimal
+            | CodegenTy::Decimal(_)
             | CodegenTy::Time
             | CodegenTy::Duration
             | CodegenTy::BytesMut
@@ -842,10 +842,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 Some(dest_arena),
             )?;
             self.current_arena_override = prev_override;
+            // The payload's own deep copy (a nested enum's switch, a
+            // record's) adds blocks: the PHI's edge comes from the one
+            // the builder now stands in, not from `bb`, which only the
+            // switch targets.
             let end_bb = self
                 .builder
                 .get_insert_block()
-                .expect("builder positioned");
+                .expect("builder positioned in enum.dc variant");
             self.builder
                 .build_unconditional_branch(cont_bb)
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
@@ -965,7 +969,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             CodegenTy::Int
             | CodegenTy::Float
             | CodegenTy::Bool
-            | CodegenTy::Decimal
+            | CodegenTy::Decimal(_)
             | CodegenTy::Time
             | CodegenTy::Duration
             | CodegenTy::FnPtr { .. }

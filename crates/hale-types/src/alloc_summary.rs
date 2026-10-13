@@ -140,10 +140,11 @@ impl AllocKind {
 }
 
 /// Phase D / D2: the `@form(...)` names whose inserts grow without bound
-/// (backing buffer grows with population, frees only at dissolve). A
+/// (backing buffer grows with population, frees only at dissolve; a
+/// `heap` is a vec underneath). A
 /// `ring_buffer` / `lru_cache` is cap-bounded and excluded.
 fn form_grows(form_name: &str) -> bool {
-    matches!(form_name, "vec" | "hashmap")
+    matches!(form_name, "vec" | "hashmap" | "heap")
 }
 
 /// Phase D / D2: the method names that *insert* into a collection (vs read
@@ -2695,7 +2696,7 @@ pub fn summarize_identified(
                                     PrimType::Int
                                         | PrimType::Uint
                                         | PrimType::Float
-                                        | PrimType::Decimal
+                                        | PrimType::Decimal(_)
                                         | PrimType::String
                                         | PrimType::Bool
                                         | PrimType::Time
@@ -4311,7 +4312,7 @@ fn locus_inline_array_fields(l: &LocusDecl) -> BTreeSet<String> {
                             PrimType::Int
                                 | PrimType::Float
                                 | PrimType::Bool
-                                | PrimType::Decimal
+                                | PrimType::Decimal(_)
                                 | PrimType::Duration,
                             _,
                         )
@@ -6680,6 +6681,16 @@ impl<'a> Walker<'a> {
                 receiver_present =
                     !matches!(receiver.as_ref(), Expr::KwSelf(_))
                         && !is_alias;
+                // `Decimal<S>`'s `d.rescale(T)` (an integer literal scale)
+                // is a conversion lowering emits inline, no call: when no
+                // locus declares a `rescale` the call can be nothing else
+                // (the checker types it), so its receiver is no unknown.
+                if name.name == "rescale"
+                    && matches!(args, [Expr::Literal(Literal::Int(_), _)])
+                    && !self.known.keys().any(|(_, m)| m == "rescale")
+                {
+                    receiver_present = false;
+                }
                 // `self.m()` — the enclosing locus is the receiver type.
                 let owner = if matches!(receiver.as_ref(), Expr::KwSelf(_)) {
                     self.enclosing_locus.clone()
@@ -6734,7 +6745,45 @@ impl<'a> Walker<'a> {
                 }
             }
         }
+        // A `@form(lru_cache)` `put` runs the locus's `on_evict(k, v)`
+        // hook on the entry it evicts over `cap`: the synthesized method
+        // has no body to walk, so the hook is an edge of the call.
+        let evict_hook = match (&resolved, recv_ty.as_ref()) {
+            (Callee::Unresolved(m), Some(t)) if m == "put" => {
+                self.known.get(&(Some(t.clone()), "on_evict".to_string())).cloned()
+            }
+            _ => None,
+        };
         let spelling = CallSpelling::of(callee);
+        let allocating_recv = spelling.allocating_recv();
+        if let Some(hook) = evict_hook {
+            self.calls.push(CallEdge {
+                recv_ty: recv_ty.clone(),
+                receiver_present,
+                callee: Callee::Resolved(hook),
+                indirect: false,
+                through_param: false,
+                via_local: None,
+                unresolved_local: false,
+                bound_field: None,
+                loop_depth: depth,
+                in_unbounded_loop: self.loop_stack.iter().any(|bounded| !bounded),
+                escape,
+                receiver_slot: self_slot_receiver(callee),
+                via_interface: None,
+                dispatch_group: None,
+                via_value: None,
+                arity: 2,
+                allocating_recv: allocating_recv.clone(),
+                spelling: spelling.clone(),
+                in_loop: self.loops_as_written > 0,
+                let_span: None,
+                span,
+                callee_span: callee.span(),
+                arg_taints: vec![Taint::none(), Taint::none()],
+                self_call,
+            });
+        }
         self.calls.push(CallEdge {
             recv_ty,
             receiver_present,
@@ -6752,7 +6801,7 @@ impl<'a> Walker<'a> {
             dispatch_group: None,
             via_value: None,
             arity,
-            allocating_recv: spelling.allocating_recv(),
+            allocating_recv,
             spelling,
             in_loop: self.loops_as_written > 0,
             let_span: self.let_call.take().filter(|(c, _)| *c == span).map(|(_, s)| s),

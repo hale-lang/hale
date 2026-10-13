@@ -3570,6 +3570,79 @@ int lotus_vec_is_empty(void *vec_ptr) {
     return v->len == 0 ? 1 : 0;
 }
 
+/* @form(heap): a binary heap over the @form(vec) storage. The
+ * elements are pointers to records (the vec's pointer-storage); the
+ * order is the record's key field at byte offset `off`, of `kind` 0 (an
+ * int64_t: Int, Time, Duration), 1 (a double, NaN never ordered before
+ * anything) or 2 (a String, compared by bytes, strcmp), smallest at the
+ * root, or largest when `max`. The root is element 0; the vec's own
+ * push and pop move the elements in and out at the end, and these two
+ * restore the order around them. */
+static int lotus_heap_before(const void *a, const void *b, int64_t off,
+                             int64_t kind, int64_t max) {
+    const char *pa = (const char *)a + off;
+    const char *pb = (const char *)b + off;
+    int c;
+    if (kind == 1) {
+        double x, y;
+        memcpy(&x, pa, sizeof x);
+        memcpy(&y, pb, sizeof y);
+        c = x < y ? -1 : (x > y ? 1 : 0);
+    } else if (kind == 2) {
+        const char *x, *y;
+        memcpy(&x, pa, sizeof x);
+        memcpy(&y, pb, sizeof y);
+        c = strcmp(x ? x : "", y ? y : "");
+    } else {
+        int64_t x, y;
+        memcpy(&x, pa, sizeof x);
+        memcpy(&y, pb, sizeof y);
+        c = (x > y) - (x < y);
+    }
+    return max ? c > 0 : c < 0;
+}
+
+/* After a push: the new element is the last; move it up. */
+void lotus_heap_sift_up(void *vec_ptr, int64_t off, int64_t kind,
+                        int64_t max) {
+    lotus_vec_t *v = (lotus_vec_t *)vec_ptr;
+    if (!v || v->len < 2 || !v->buf) return;
+    void **e = (void **)v->buf;
+    size_t i = v->len - 1;
+    void *x = e[i];
+    while (i > 0) {
+        size_t p = (i - 1) / 2;
+        if (!lotus_heap_before(x, e[p], off, kind, max)) break;
+        e[i] = e[p];
+        i = p;
+    }
+    e[i] = x;
+}
+
+/* Before a pop: move the root to the end (where the vec's pop takes
+ * it) and restore the order over the elements before it. */
+void lotus_heap_pop_prep(void *vec_ptr, int64_t off, int64_t kind,
+                         int64_t max) {
+    lotus_vec_t *v = (lotus_vec_t *)vec_ptr;
+    if (!v || v->len < 2 || !v->buf) return;
+    void **e = (void **)v->buf;
+    size_t n = v->len - 1;
+    void *last = e[n];
+    e[n] = e[0];
+    size_t i = 0;
+    for (;;) {
+        size_t l = 2 * i + 1;
+        if (l >= n) break;
+        size_t c = l;
+        if (l + 1 < n && lotus_heap_before(e[l + 1], e[l], off, kind, max))
+            c = l + 1;
+        if (!lotus_heap_before(e[c], last, off, kind, max)) break;
+        e[i] = e[c];
+        i = c;
+    }
+    e[i] = last;
+}
+
 /* Typed comparators for the primitive `sort()` variants. qsort
  * is happy with these directly — no cookie / no trampoline. */
 static int cmp_i64(const void *a, const void *b) {
@@ -6144,6 +6217,36 @@ void lotus_form_retire_replaced(void *arena_ptr, void *old_blob,
     lotus_arena_free_block_now(a, old_blob, block_size);
 }
 
+/* @form(vec) `truncate(n)` / `clear()` (and `@form(heap)`'s `clear()`):
+ * shrink the vec to `new_len` elements (`new_len` < 0 counts as 0, and
+ * one at or past `len` changes nothing), retiring every removed
+ * element exactly as `pop` retires the one it removes —
+ * lotus_form_retire_replaced against no surviving value, so the
+ * element's block and everything its descriptor reaches go back on
+ * the arena's reuse freelist. `arena` NULL: the elements are scalars
+ * (stored inline, nothing to free) and only `len` moves. The buffer
+ * keeps its capacity for reuse; it is released at dissolve. */
+void lotus_vec_truncate(void *vec_ptr, int64_t new_len, void *arena,
+                        int64_t size, const int32_t *desc,
+                        int64_t n_desc) {
+    if (!vec_ptr) return;
+    lotus_vec_t *v = (lotus_vec_t *)vec_ptr;
+    /* Compare in 64 bits before narrowing: on wasm32 `size_t` is 32
+     * bits, and a cast first would wrap a valid `n` past UINT32_MAX
+     * to a small length and drop elements that must stay. */
+    if (new_len >= 0 && (uint64_t)new_len >= (uint64_t)v->len) return;
+    size_t keep = new_len < 0 ? 0 : (size_t)new_len;
+    if (arena && v->buf) {
+        void **elems = (void **)v->buf;
+        for (size_t i = v->len; i > keep; i--) {
+            void *old = elems[i - 1];
+            elems[i - 1] = NULL;
+            lotus_form_retire_replaced(arena, old, NULL, size, desc, n_desc);
+        }
+    }
+    v->len = keep;
+}
+
 /* Retire everything a dying or overwritten @form(hashmap) cell owns:
  * what the retire descriptor reaches from the old value — String and
  * Bytes fields, the blocks of nested records, tuples and out-of-line
@@ -6947,6 +7050,109 @@ int lotus_lru_get(void *cache_ptr, const void *key, void *out_value) {
     if (!*lotus_lru_occ(c, i)) return 0;
     memcpy(out_value, lotus_lru_valp(c, i), c->value_size);
     lotus_lru_set_tick(c, i, ++c->tick);   /* recency touch */
+    return 1;
+}
+
+/* Retire what an lru cell's value `old_v` owns — everything the retire
+ * descriptor reaches from it (String and Bytes fields, nested records,
+ * tuples, out-of-line arrays and payload enums, at any depth) — onto
+ * `arena`'s pending list, deferred to the owner's activation boundary
+ * exactly as a @form(hashmap) cell retires (lotus_hashmap_retire_cell):
+ * a value a `get` handed out this activation stays whole until then.
+ * `new_v` non-NULL is the replace path: a block the new value still
+ * reaches survives. A block reached twice is retired once. The value
+ * bytes themselves are the slot's (inline), never a block. The key of
+ * an lru cell is the value's own `indexed_by` field (put copies the
+ * key out of the value it stores), so the descriptor covers it. */
+void lotus_lru_retire_value(void *arena_ptr, const void *old_v,
+                            const void *new_v, const int32_t *desc,
+                            int64_t n_desc) {
+    lotus_arena_t *a = (lotus_arena_t *)arena_ptr;
+    if (!a || !old_v || n_desc <= 0 || !desc) return;
+    lotus_retire_blocks_t olds, news;
+    lotus_retire_blocks_init(&olds);
+    lotus_retire_blocks_init(&news);
+    int ok = lotus_retire_collect(&olds, (const char *)old_v, desc, n_desc, 1);
+    if (ok && new_v)
+        ok = lotus_retire_collect(&news, (const char *)new_v, desc, n_desc, 0);
+    if (ok) {
+        for (size_t i = 0; i < olds.n; i++) {
+            void *p = olds.p[i];
+            if (lotus_retire_blocks_has(&news, p)) continue;
+            int dup = 0;
+            for (size_t j = 0; j < i; j++)
+                if (olds.p[j] == p) { dup = 1; break; }
+            if (dup) continue;
+            lotus_arena_retire_sized_cls(a, p, olds.size[i], -1);
+        }
+    }
+    lotus_retire_blocks_free(&olds);
+    lotus_retire_blocks_free(&news);
+}
+
+/* `put` with reclamation and the eviction hook's hand-off. A present
+ * key's old value is retired against the new one (`arena`/`desc`, a
+ * NULL arena or empty descriptor retires nothing) before it is
+ * overwritten. A new key over capacity evicts the least-recently-used
+ * entry: its value is copied to `evicted_out` and 1 is returned, so the
+ * caller can run the locus's `on_evict(k, v)` and then retire the
+ * evicted value (lotus_lru_retire_value). `evicted_out` NULL: the
+ * evicted value is retired here. 0 when nothing was evicted. */
+int lotus_lru_put_ev(void *cache_ptr, const void *key, const void *value,
+                     void *evicted_out, void *arena,
+                     const int32_t *desc, int64_t n_desc) {
+    if (!cache_ptr || !key || !value) return 0;
+    lotus_lru_t *c = (lotus_lru_t *)cache_ptr;
+    size_t i = lotus_lru_find(c, key);
+    if (*lotus_lru_occ(c, i)) {
+        lotus_lru_retire_value(arena, lotus_lru_valp(c, i), value, desc, n_desc);
+        memcpy(lotus_lru_valp(c, i), value, c->value_size);
+        lotus_lru_set_tick(c, i, ++c->tick);
+        return 0;
+    }
+    int evicted = 0;
+    if (c->len >= c->cap) {
+        size_t best = c->table_cap;
+        uint64_t best_tick = 0;
+        for (size_t j = 0; j < c->table_cap; ++j) {
+            if (!*lotus_lru_occ(c, j)) continue;
+            uint64_t t = lotus_lru_tick_at(c, j);
+            if (best == c->table_cap || t < best_tick) {
+                best = j;
+                best_tick = t;
+            }
+        }
+        if (best != c->table_cap) {
+            if (evicted_out) {
+                memcpy(evicted_out, lotus_lru_valp(c, best), c->value_size);
+                evicted = 1;
+            } else {
+                lotus_lru_retire_value(arena, lotus_lru_valp(c, best), NULL, desc, n_desc);
+            }
+            lotus_lru_delete_at(c, best);
+        }
+        i = lotus_lru_find(c, key);
+    }
+    *lotus_lru_occ(c, i) = 1;
+    memcpy(lotus_lru_keyp(c, i), key, c->key_size);
+    memcpy(lotus_lru_valp(c, i), value, c->value_size);
+    lotus_lru_set_tick(c, i, ++c->tick);
+    c->len++;
+    return evicted;
+}
+
+/* `remove(k)`: take the entry out. Returns 1 and writes its value to
+ * `out_value` (the caller then copies it out as its own and retires
+ * the cell's blocks); 0 when `key` is absent. Recency of the other
+ * entries is untouched. */
+int lotus_lru_remove(void *cache_ptr, const void *key, void *out_value) {
+    if (!cache_ptr || !key || !out_value) return 0;
+    lotus_lru_t *c = (lotus_lru_t *)cache_ptr;
+    if (c->len == 0) return 0;
+    size_t i = lotus_lru_find(c, key);
+    if (!*lotus_lru_occ(c, i)) return 0;
+    memcpy(out_value, lotus_lru_valp(c, i), c->value_size);
+    lotus_lru_delete_at(c, i);
     return 1;
 }
 
@@ -16947,75 +17153,113 @@ int64_t lotus_str_index_of(const char *s, const char *sub) {
 }
 
 /*
- * m48: render a Decimal value (i128 mantissa with implicit
- * scale 9 — i.e., mantissa × 10^-9) into a NUL-terminated
- * string. The i128 is passed as two i64 halves (hi:lo) since
- * the LLVM/C ABI for __int128 is awkward to wire; codegen
- * splits the value before the call.
+ * m48 / Decimal<S>: render a Decimal value (an i128 mantissa at the
+ * scale `scale`, i.e. mantissa × 10^-scale, 0 <= scale <= 18) into a
+ * NUL-terminated string. Plain `Decimal` is scale 9. The i128 is
+ * passed as two i64 halves (hi:lo) since the LLVM/C ABI for __int128
+ * is awkward to wire; codegen splits the value before the call.
  *
- * Output format trims trailing zeros + dangling decimal point,
- * matching the interpreter's DecimalVal::display so both
- * backends print identically. Caller passes a buffer of at
- * least LOTUS_DECIMAL_BUF_LEN bytes.
+ * Output format trims trailing zeros + dangling decimal point, so
+ * `12.50d` prints `12.5` at every scale (the scale places the point;
+ * `std::decimal::format` is the fixed-places surface). Caller passes
+ * a buffer of at least LOTUS_DECIMAL_BUF_LEN bytes.
  */
 #define LOTUS_DECIMAL_BUF_LEN 64
 
+/* 10^n as an unsigned 64-bit integer, n in 0..=19. */
+static unsigned long long lotus_dec_pow10_u64(int64_t n) {
+    unsigned long long p = 1ULL;
+    for (int64_t i = 0; i < n; i++) p *= 10ULL;
+    return p;
+}
+
+static int64_t lotus_dec_clamp_scale(int64_t scale) {
+    if (scale < 0) return 0;
+    if (scale > 18) return 18;
+    return scale;
+}
+
+/* Exactly `width` decimal digits of `v` at `p`, zero-padded on the
+ * left (`v < 10^width`), NUL-terminated; returns `width`. Written by
+ * hand rather than with `%0*llu`: the wasm libc shim's snprintf has
+ * no `*` width. */
+static int lotus_u64_padded(char *p, unsigned long long v, int width) {
+    for (int i = width - 1; i >= 0; i--) {
+        p[i] = (char)('0' + (v % 10ULL));
+        v /= 10ULL;
+    }
+    p[width] = '\0';
+    return width;
+}
+
+/* The decimal digits of `v` at `p`; returns how many were written.
+ * An i128's magnitude has at most 39 digits: up to three chunks of
+ * 10^18, so every chunk printed is a u64. */
+static int lotus_u128_digits(unsigned __int128 v, char *p) {
+    const unsigned __int128 base = 1000000000000000000ULL;
+    if ((v >> 64) == 0) {
+        return snprintf(p, 24, "%llu", (unsigned long long)v);
+    }
+    unsigned __int128 top = v / base;
+    unsigned long long low = (unsigned long long)(v % base);
+    int n;
+    if ((top >> 64) == 0) {
+        n = snprintf(p, 24, "%llu", (unsigned long long)top);
+    } else {
+        n = snprintf(p, 48, "%llu%018llu",
+                     (unsigned long long)(top / base),
+                     (unsigned long long)(top % base));
+    }
+    n += snprintf(p + n, 24, "%018llu", low);
+    return n;
+}
+
 /* Helper used internally — exposed forward-decl form so the
  * arena-allocating sibling can call it. */
-void lotus_decimal_to_string(int64_t hi, uint64_t lo, char *buf);
+void lotus_decimal_to_string(int64_t hi, uint64_t lo, int64_t scale, char *buf);
 
 /*
  * Variant of lotus_decimal_to_string that allocates the buffer
  * inside the caller's arena and returns a pointer to it.
  * Mirrors lotus_str_from_float for the Float case.
  */
-char *lotus_str_from_decimal(lotus_arena_t *a, int64_t hi, uint64_t lo) {
+char *lotus_str_from_decimal(lotus_arena_t *a, int64_t hi, uint64_t lo,
+                             int64_t scale) {
     char *out = (char *)lotus_arena_alloc(a, LOTUS_DECIMAL_BUF_LEN, 1);
     if (!out) return NULL;
-    lotus_decimal_to_string(hi, lo, out);
+    lotus_decimal_to_string(hi, lo, scale, out);
     return out;
 }
 
 /* std::decimal::to_float (2026-05-21): direct i128 → f64
- * conversion at scale 9 (`mantissa × 10^-9`). Replaces the
- * `to_string(d)` → strip → `parse_float` ASCII round-trip
- * downstream consumers were doing for Decimal → Float in
- * hot paths. The C cast from __int128 to double is one
- * compiler intrinsic; the / 1e9 applies the implicit scale.
+ * conversion at the value's scale (`mantissa × 10^-scale`).
+ * Replaces the `to_string(d)` → strip → `parse_float` ASCII
+ * round-trip downstream consumers were doing for Decimal → Float
+ * in hot paths. The C cast from __int128 to double is one
+ * compiler intrinsic; the division applies the scale.
  * Loss-of-precision on very large mantissas is the same
  * floor as `(double)i64`, just over a wider range. */
-double lotus_decimal_to_float(int64_t hi, uint64_t lo) {
+double lotus_decimal_to_float(int64_t hi, uint64_t lo, int64_t scale) {
     __int128 m = ((__int128)hi << 64) | (__int128)lo;
-    return (double)m / 1.0e9;
+    return (double)m / (double)lotus_dec_pow10_u64(lotus_dec_clamp_scale(scale));
 }
 
-void lotus_decimal_to_string(int64_t hi, uint64_t lo, char *buf) {
+void lotus_decimal_to_string(int64_t hi, uint64_t lo, int64_t scale, char *buf) {
+    scale = lotus_dec_clamp_scale(scale);
     __int128 m = ((__int128)hi << 64) | (__int128)lo;
     int neg = m < 0;
     unsigned __int128 abs = neg ? (unsigned __int128)(-m) : (unsigned __int128)m;
-    unsigned __int128 pow9 = 1000000000ULL;
-    unsigned __int128 int_part = abs / pow9;
-    unsigned __int128 frac_part = abs % pow9;
+    unsigned __int128 pow = lotus_dec_pow10_u64(scale);
+    unsigned __int128 int_part = abs / pow;
+    unsigned long long frac_part = (unsigned long long)(abs % pow);
     char *p = buf;
     if (neg) {
         *p++ = '-';
     }
-    /* int_part may exceed 64 bits when the mantissa's integer
-     * part is over 10^19. The simple fast path covers the
-     * common case; the fallback decomposes into 10^18 chunks. */
-    if ((int_part >> 64) == 0) {
-        p += snprintf(p, 32, "%llu", (unsigned long long)int_part);
-    } else {
-        unsigned __int128 base = 1000000000000000000ULL;
-        unsigned __int128 hi_part = int_part / base;
-        unsigned __int128 lo_part = int_part % base;
-        p += snprintf(p, 48, "%llu%018llu",
-            (unsigned long long)hi_part,
-            (unsigned long long)lo_part);
-    }
+    p += lotus_u128_digits(int_part, p);
     if (frac_part != 0) {
-        char fb[16];
-        snprintf(fb, sizeof(fb), "%09llu", (unsigned long long)frac_part);
+        char fb[24];
+        lotus_u64_padded(fb, frac_part, (int)scale);
         size_t end = strlen(fb);
         while (end > 0 && fb[end - 1] == '0') {
             end--;
@@ -17030,30 +17274,28 @@ void lotus_decimal_to_string(int64_t hi, uint64_t lo, char *buf) {
 }
 
 /* GH #230 item 2: std::decimal::format(d, places) — render with
- * EXACTLY `places` fraction digits (0..=9, clamped), round
- * half-up away from zero. The default print deliberately trims
- * trailing zeros (declared precision isn't stored in the i128
- * scale-9 repr, so `12.50d` and `12.5d` are the same value);
- * this is the explicit surface for money-style fixed-places
- * display. Allocates in the caller's arena via the TLS route
- * (same lifetime class as lotus_str_from_decimal). */
+ * EXACTLY `places` fraction digits (0..=scale, clamped: there is no
+ * digit past the scale to print), round half-up away from zero. The
+ * default print deliberately trims trailing zeros (`12.50d` and
+ * `12.5d` are the same value); this is the explicit surface for
+ * money-style fixed-places display. Allocates in the caller's arena
+ * via the TLS route (same lifetime class as lotus_str_from_decimal). */
 lotus_arena_t *lotus_caller_arena_or_global(void);
 
-const char *lotus_decimal_format(int64_t hi, uint64_t lo,
+const char *lotus_decimal_format(int64_t hi, uint64_t lo, int64_t scale,
                                  int64_t places) {
+    scale = lotus_dec_clamp_scale(scale);
     if (places < 0) places = 0;
-    if (places > 9) places = 9;
+    if (places > scale) places = scale;
     __int128 m = ((__int128)hi << 64) | (__int128)lo;
     int neg = m < 0;
     unsigned __int128 abs =
         neg ? (unsigned __int128)(-m) : (unsigned __int128)m;
     /* Round half-up at the target scale: divide out the dropped
      * digits with +half correction. */
-    unsigned long long drop = 1ULL;
-    for (int64_t i = places; i < 9; i++) drop *= 10ULL;
+    unsigned long long drop = lotus_dec_pow10_u64(scale - places);
     abs = (abs + drop / 2) / drop;
-    unsigned long long keep = 1ULL;
-    for (int64_t i = 0; i < places; i++) keep *= 10ULL;
+    unsigned long long keep = lotus_dec_pow10_u64(places);
     unsigned __int128 int_part = abs / keep;
     unsigned long long frac = (unsigned long long)(abs % keep);
     char *out = (char *)lotus_arena_alloc(
@@ -17061,17 +17303,10 @@ const char *lotus_decimal_format(int64_t hi, uint64_t lo,
     if (!out) return "";
     char *p = out;
     if (neg && (int_part != 0 || frac != 0)) *p++ = '-';
-    if ((int_part >> 64) == 0) {
-        p += snprintf(p, 32, "%llu", (unsigned long long)int_part);
-    } else {
-        unsigned __int128 base = 1000000000000000000ULL;
-        p += snprintf(p, 48, "%llu%018llu",
-                      (unsigned long long)(int_part / base),
-                      (unsigned long long)(int_part % base));
-    }
+    p += lotus_u128_digits(int_part, p);
     if (places > 0) {
         *p++ = '.';
-        p += snprintf(p, 12, "%0*llu", (int)places, frac);
+        p += lotus_u64_padded(p, frac, (int)places);
     }
     *p = '\0';
     return out;
@@ -20907,13 +21142,14 @@ int lotus_str_can_parse_float(const char *s) {
 
 /*
  * Parse a Decimal literal source spelling into an i128 mantissa
- * with implicit scale 9. Mirrors hale-syntax's decimal_literal.rs
- * (the literal's parse) — accepts optional trailing 'd', optional
- * leading sign, '_' digit separators, pads with zeros below 9
- * fractional digits, and REFUSES a nonzero digit past the ninth:
- * that is a value no Decimal holds, and it used to be truncated in
+ * at the scale `scale` (Decimal<S>; plain Decimal is 9). Mirrors
+ * hale-syntax's decimal_literal.rs (the literal's parse) — accepts
+ * optional trailing 'd', optional leading sign, '_' digit
+ * separators, pads with zeros below `scale` fractional digits, and
+ * REFUSES a nonzero digit past the last place of the scale: that is
+ * a value no Decimal<S> holds, and it used to be truncated in
  * silence (`parse_decimal("0.123456789012")` was 0.123456789).
- * Zeros past the ninth place are the same value and are accepted. The i128 result is split into
+ * Zeros past the last place are the same value and are accepted. The i128 result is split into
  * two i64 halves (hi:lo) for ABI portability — same convention
  * used by lotus_decimal_to_string for the print path.
  *
@@ -20921,7 +21157,8 @@ int lotus_str_can_parse_float(const char *s) {
  * returns 0. Callers that need to distinguish "0.0" from "bad input"
  * gate on lotus_str_can_parse_decimal first.
  */
-static int parse_decimal_to_i128(const char *s, __int128 *out) {
+static int parse_decimal_to_i128(const char *s, int64_t scale, __int128 *out) {
+    scale = lotus_dec_clamp_scale(scale);
     if (!s) return 0;
     size_t n = strlen(s);
     if (n == 0) return 0;
@@ -20940,14 +21177,14 @@ static int parse_decimal_to_i128(const char *s, __int128 *out) {
         char c = s[i];
         if (c >= '0' && c <= '9') {
             seen_digit = 1;
-            if (!seen_dot || frac_digits < 9) {
+            if (!seen_dot || frac_digits < scale) {
                 __int128 prev = mantissa;
                 mantissa = mantissa * 10 + (__int128)(c - '0');
                 /* overflow guard: re-divide and compare */
                 if (mantissa / 10 != prev) return 0;
                 if (seen_dot) frac_digits += 1;
             } else if (c != '0') {
-                return 0;  /* past scale 9: not representable */
+                return 0;  /* past the scale: not representable */
             }
         } else if (c == '.' && !seen_dot) {
             seen_dot = 1;
@@ -20958,7 +21195,7 @@ static int parse_decimal_to_i128(const char *s, __int128 *out) {
         }
     }
     if (!seen_digit) return 0;
-    while (frac_digits < 9) {
+    while (frac_digits < scale) {
         __int128 prev = mantissa;
         mantissa = mantissa * 10;
         if (mantissa / 10 != prev) return 0;
@@ -20968,17 +21205,18 @@ static int parse_decimal_to_i128(const char *s, __int128 *out) {
     return 1;
 }
 
-void lotus_str_parse_decimal(const char *s, int64_t *out_hi, int64_t *out_lo) {
+void lotus_str_parse_decimal(const char *s, int64_t scale, int64_t *out_hi,
+                             int64_t *out_lo) {
     __int128 m = 0;
-    (void)parse_decimal_to_i128(s, &m);
+    (void)parse_decimal_to_i128(s, scale, &m);
     /* On failure m stays 0; the codegen guards on can_parse first. */
     *out_lo = (int64_t)(uint64_t)m;
     *out_hi = (int64_t)(m >> 64);
 }
 
-int lotus_str_can_parse_decimal(const char *s) {
+int lotus_str_can_parse_decimal(const char *s, int64_t scale) {
     __int128 m = 0;
-    return parse_decimal_to_i128(s, &m);
+    return parse_decimal_to_i128(s, scale, &m);
 }
 
 /*
@@ -21058,7 +21296,7 @@ int lotus_str_can_parse_int_range(const char *s, int64_t start,
  * 128-byte stack buffer covers any realistic input. */
 static int parse_decimal_to_i128_range(const char *s, int64_t start,
                                         int64_t end_exclusive,
-                                        __int128 *out)
+                                        int64_t scale, __int128 *out)
 {
     if (!s || start < 0 || end_exclusive <= start) return 0;
     size_t n = (size_t)(end_exclusive - start);
@@ -21066,24 +21304,24 @@ static int parse_decimal_to_i128_range(const char *s, int64_t start,
     char buf[128];
     memcpy(buf, s + start, n);
     buf[n] = '\0';
-    return parse_decimal_to_i128(buf, out);
+    return parse_decimal_to_i128(buf, scale, out);
 }
 
 void lotus_str_parse_decimal_range(const char *s, int64_t start,
-                                    int64_t end_exclusive,
+                                    int64_t end_exclusive, int64_t scale,
                                     int64_t *out_hi, int64_t *out_lo)
 {
     __int128 m = 0;
-    (void)parse_decimal_to_i128_range(s, start, end_exclusive, &m);
+    (void)parse_decimal_to_i128_range(s, start, end_exclusive, scale, &m);
     *out_lo = (int64_t)(uint64_t)m;
     *out_hi = (int64_t)(m >> 64);
 }
 
 int lotus_str_can_parse_decimal_range(const char *s, int64_t start,
-                                       int64_t end_exclusive)
+                                       int64_t end_exclusive, int64_t scale)
 {
     __int128 m = 0;
-    return parse_decimal_to_i128_range(s, start, end_exclusive, &m);
+    return parse_decimal_to_i128_range(s, start, end_exclusive, scale, &m);
 }
 
 /*
