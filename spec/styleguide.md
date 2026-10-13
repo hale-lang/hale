@@ -1208,18 +1208,11 @@ Write the workaround knowing it's a placeholder.
   v0.11.3; Bytes fields of a self-field struct store and of a vec
   element since GH #1033 / #1037; a replaced `@form(vec)` or
   `@form(hashmap)` cell retires its whole value, nested records,
-  tuples, arrays and Bytes included (spec/forms.md, "Cell
-  reclamation"). Until then: nested compound fields of a self-field
+  tuples, arrays and Bytes included, under every `sync =`
+  discipline (spec/forms.md, "Cell reclamation"; a synced map's
+  read copies the cell out, so on a read-heavy hot path weigh a
+  String-bearing synced map against a single-pool one). Until then: nested compound fields of a self-field
   struct in their own locus or flattened.
-- **`striped` / `lockfree` `@form` maps don't retire** replaced
-  cells — a churned String-bearing cell on those modes still
-  accumulates (~2.3 MiB over 200 000 replaces of 16 keys, on
-  each). (`sync = serialized` retires since 2026-08-03:
-  reads are owned snapshots cloned into the caller's arena, so
-  churned shared maps no longer need to stay single-pool. The
-  clone is per String field per read — a read-heavy hot path on
-  a String-bearing cell now pays it, so weigh serialized against
-  single-pool on read-dominated shapes.)
 - **Dynamic per-instance bus subjects** (the conversation-per-
   topic shape). Keyed routing covers the *bounded/known* key-set
   case — including String keys — but an unbounded,

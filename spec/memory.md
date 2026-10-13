@@ -1379,14 +1379,14 @@ reclaim on a real-world long-running workload:
      always exclusively owned.
 
      Nested-block single-owner (2026-10-12): a retiring map
-     (`sync = none` / `serialized`) retires a replaced cell's
+     (any `sync =` discipline) retires a replaced cell's
      nested records, tuples and out-of-line arrays too
      (forms.md § Cell reclamation), so those fields can no
      longer identity-skip on arena membership — a block another
      cell held would be freed under it. On such a map the walk
      copies a nested-block field unless it is the very block the
      same key's current cell holds at that field
-     (`lotus_hashmap_peek`, `sync = none` only; a serialized map
+     (`lotus_hashmap_peek`, `sync = none` only; a synced map
      always copies): the get-modify-set of a cell with a large
      nested field still allocates nothing, and the retire sees
      the block survive. Interface and payload-enum fields keep
