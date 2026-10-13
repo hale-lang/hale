@@ -1159,6 +1159,7 @@ crates/hale-codegen/tests/process_run.rs#1 53cadec6decfbc54
 crates/hale-codegen/tests/process_run.rs#2 912257afabeee6a8
 crates/hale-codegen/tests/process_run.rs#3 53cadec6decfbc54
 crates/hale-codegen/tests/process_run.rs#4 53cadec6decfbc54
+crates/hale-codegen/tests/process_run.rs#5 a7a4e0074f4713db
 crates/hale-codegen/tests/process_try_wait.rs#0 55d9bfc2e7b9f127
 crates/hale-codegen/tests/process_try_wait.rs#1 55d9bfc2e7b9f127
 crates/hale-codegen/tests/process_try_wait.rs#2 f2c1228edb650960
@@ -1377,6 +1378,7 @@ crates/hale-codegen/tests/tcp_connect_deadline.rs#0 816bc984f3b8c584
 crates/hale-codegen/tests/tcp_connect_deadline.rs#1 816bc984f3b8c584
 crates/hale-codegen/tests/tcp_connect_deadline.rs#3 f9c6d04e3ec0250f
 crates/hale-codegen/tests/tcp_connect_deadline.rs#4 e6a6288b544acf86
+crates/hale-codegen/tests/tcp_connect_deadline.rs#5 f9c6d04e3ec0250f
 crates/hale-codegen/tests/tcp_dns_connect.rs#2 02ea998120901589
 crates/hale-codegen/tests/tcp_listener.rs#1 05203a1c9cfc5d28
 crates/hale-codegen/tests/tcp_recv_bytes.rs#1 865d341109268295

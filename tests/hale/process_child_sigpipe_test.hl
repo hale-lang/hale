@@ -1,0 +1,26 @@
+// tests/hale/process_child_sigpipe_test.hl — a spawned child gets
+// SIGPIPE's default action back, so a writer whose reader has gone dies
+// of the signal as it does under a shell.
+//
+// The runtime ignores SIGPIPE so a write to a closed pipe is an EPIPE
+// IoError rather than the program's death, and an ignored disposition
+// survives exec: every child inherited it. `yes` piped into `head -1`
+// then met EPIPE instead of SIGPIPE ("yes: standard output: Broken
+// pipe", exit 1), and a filter that ignores its write errors never
+// ended. The child now resets SIGPIPE to the default before its exec.
+
+fn main() {
+    // `yes` dies of SIGPIPE once `head` has exited: 128 + 13.
+    let script = "sh\n-c\n(yes; echo status=$? >&2) | head -1";
+    let out = std::process::run(script) or raise;
+    std::test::assert_eq_int(out.code, 0, "the pipeline exits with head's status");
+    std::test::assert_eq_str(out.stdout, "y\n", "head printed one line");
+    std::test::assert_eq_str(out.stderr, "status=141\n", "yes died of SIGPIPE, not EPIPE");
+
+    // The same through `spawn`.
+    let c = std::process::spawn(script) or std::process::Child { };
+    std::test::assert(c.pid > 0, "the pipeline spawned");
+    let code = std::process::wait(c) or 99;
+    std::test::assert_eq_int(code, 0, "the spawned pipeline exits 0");
+    std::test::assert_eq_str(std::process::read_stderr(c) or "", "status=141\n", "the spawned yes died of SIGPIPE");
+}
