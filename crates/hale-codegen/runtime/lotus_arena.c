@@ -3570,6 +3570,79 @@ int lotus_vec_is_empty(void *vec_ptr) {
     return v->len == 0 ? 1 : 0;
 }
 
+/* @form(heap): a binary heap over the @form(vec) storage. The
+ * elements are pointers to records (the vec's pointer-storage); the
+ * order is the record's key field at byte offset `off`, of `kind` 0 (an
+ * int64_t: Int, Time, Duration), 1 (a double, NaN never ordered before
+ * anything) or 2 (a String, compared by bytes, strcmp), smallest at the
+ * root, or largest when `max`. The root is element 0; the vec's own
+ * push and pop move the elements in and out at the end, and these two
+ * restore the order around them. */
+static int lotus_heap_before(const void *a, const void *b, int64_t off,
+                             int64_t kind, int64_t max) {
+    const char *pa = (const char *)a + off;
+    const char *pb = (const char *)b + off;
+    int c;
+    if (kind == 1) {
+        double x, y;
+        memcpy(&x, pa, sizeof x);
+        memcpy(&y, pb, sizeof y);
+        c = x < y ? -1 : (x > y ? 1 : 0);
+    } else if (kind == 2) {
+        const char *x, *y;
+        memcpy(&x, pa, sizeof x);
+        memcpy(&y, pb, sizeof y);
+        c = strcmp(x ? x : "", y ? y : "");
+    } else {
+        int64_t x, y;
+        memcpy(&x, pa, sizeof x);
+        memcpy(&y, pb, sizeof y);
+        c = (x > y) - (x < y);
+    }
+    return max ? c > 0 : c < 0;
+}
+
+/* After a push: the new element is the last; move it up. */
+void lotus_heap_sift_up(void *vec_ptr, int64_t off, int64_t kind,
+                        int64_t max) {
+    lotus_vec_t *v = (lotus_vec_t *)vec_ptr;
+    if (!v || v->len < 2 || !v->buf) return;
+    void **e = (void **)v->buf;
+    size_t i = v->len - 1;
+    void *x = e[i];
+    while (i > 0) {
+        size_t p = (i - 1) / 2;
+        if (!lotus_heap_before(x, e[p], off, kind, max)) break;
+        e[i] = e[p];
+        i = p;
+    }
+    e[i] = x;
+}
+
+/* Before a pop: move the root to the end (where the vec's pop takes
+ * it) and restore the order over the elements before it. */
+void lotus_heap_pop_prep(void *vec_ptr, int64_t off, int64_t kind,
+                         int64_t max) {
+    lotus_vec_t *v = (lotus_vec_t *)vec_ptr;
+    if (!v || v->len < 2 || !v->buf) return;
+    void **e = (void **)v->buf;
+    size_t n = v->len - 1;
+    void *last = e[n];
+    e[n] = e[0];
+    size_t i = 0;
+    for (;;) {
+        size_t l = 2 * i + 1;
+        if (l >= n) break;
+        size_t c = l;
+        if (l + 1 < n && lotus_heap_before(e[l + 1], e[l], off, kind, max))
+            c = l + 1;
+        if (!lotus_heap_before(e[c], last, off, kind, max)) break;
+        e[i] = e[c];
+        i = c;
+    }
+    e[i] = last;
+}
+
 /* Typed comparators for the primitive `sort()` variants. qsort
  * is happy with these directly — no cookie / no trampoline. */
 static int cmp_i64(const void *a, const void *b) {
@@ -6144,6 +6217,36 @@ void lotus_form_retire_replaced(void *arena_ptr, void *old_blob,
     lotus_arena_free_block_now(a, old_blob, block_size);
 }
 
+/* @form(vec) `truncate(n)` / `clear()` (and `@form(heap)`'s `clear()`):
+ * shrink the vec to `new_len` elements (`new_len` < 0 counts as 0, and
+ * one at or past `len` changes nothing), retiring every removed
+ * element exactly as `pop` retires the one it removes —
+ * lotus_form_retire_replaced against no surviving value, so the
+ * element's block and everything its descriptor reaches go back on
+ * the arena's reuse freelist. `arena` NULL: the elements are scalars
+ * (stored inline, nothing to free) and only `len` moves. The buffer
+ * keeps its capacity for reuse; it is released at dissolve. */
+void lotus_vec_truncate(void *vec_ptr, int64_t new_len, void *arena,
+                        int64_t size, const int32_t *desc,
+                        int64_t n_desc) {
+    if (!vec_ptr) return;
+    lotus_vec_t *v = (lotus_vec_t *)vec_ptr;
+    /* Compare in 64 bits before narrowing: on wasm32 `size_t` is 32
+     * bits, and a cast first would wrap a valid `n` past UINT32_MAX
+     * to a small length and drop elements that must stay. */
+    if (new_len >= 0 && (uint64_t)new_len >= (uint64_t)v->len) return;
+    size_t keep = new_len < 0 ? 0 : (size_t)new_len;
+    if (arena && v->buf) {
+        void **elems = (void **)v->buf;
+        for (size_t i = v->len; i > keep; i--) {
+            void *old = elems[i - 1];
+            elems[i - 1] = NULL;
+            lotus_form_retire_replaced(arena, old, NULL, size, desc, n_desc);
+        }
+    }
+    v->len = keep;
+}
+
 /* Retire everything a dying or overwritten @form(hashmap) cell owns:
  * what the retire descriptor reaches from the old value — String and
  * Bytes fields, the blocks of nested records, tuples and out-of-line
@@ -6947,6 +7050,109 @@ int lotus_lru_get(void *cache_ptr, const void *key, void *out_value) {
     if (!*lotus_lru_occ(c, i)) return 0;
     memcpy(out_value, lotus_lru_valp(c, i), c->value_size);
     lotus_lru_set_tick(c, i, ++c->tick);   /* recency touch */
+    return 1;
+}
+
+/* Retire what an lru cell's value `old_v` owns — everything the retire
+ * descriptor reaches from it (String and Bytes fields, nested records,
+ * tuples, out-of-line arrays and payload enums, at any depth) — onto
+ * `arena`'s pending list, deferred to the owner's activation boundary
+ * exactly as a @form(hashmap) cell retires (lotus_hashmap_retire_cell):
+ * a value a `get` handed out this activation stays whole until then.
+ * `new_v` non-NULL is the replace path: a block the new value still
+ * reaches survives. A block reached twice is retired once. The value
+ * bytes themselves are the slot's (inline), never a block. The key of
+ * an lru cell is the value's own `indexed_by` field (put copies the
+ * key out of the value it stores), so the descriptor covers it. */
+void lotus_lru_retire_value(void *arena_ptr, const void *old_v,
+                            const void *new_v, const int32_t *desc,
+                            int64_t n_desc) {
+    lotus_arena_t *a = (lotus_arena_t *)arena_ptr;
+    if (!a || !old_v || n_desc <= 0 || !desc) return;
+    lotus_retire_blocks_t olds, news;
+    lotus_retire_blocks_init(&olds);
+    lotus_retire_blocks_init(&news);
+    int ok = lotus_retire_collect(&olds, (const char *)old_v, desc, n_desc, 1);
+    if (ok && new_v)
+        ok = lotus_retire_collect(&news, (const char *)new_v, desc, n_desc, 0);
+    if (ok) {
+        for (size_t i = 0; i < olds.n; i++) {
+            void *p = olds.p[i];
+            if (lotus_retire_blocks_has(&news, p)) continue;
+            int dup = 0;
+            for (size_t j = 0; j < i; j++)
+                if (olds.p[j] == p) { dup = 1; break; }
+            if (dup) continue;
+            lotus_arena_retire_sized_cls(a, p, olds.size[i], -1);
+        }
+    }
+    lotus_retire_blocks_free(&olds);
+    lotus_retire_blocks_free(&news);
+}
+
+/* `put` with reclamation and the eviction hook's hand-off. A present
+ * key's old value is retired against the new one (`arena`/`desc`, a
+ * NULL arena or empty descriptor retires nothing) before it is
+ * overwritten. A new key over capacity evicts the least-recently-used
+ * entry: its value is copied to `evicted_out` and 1 is returned, so the
+ * caller can run the locus's `on_evict(k, v)` and then retire the
+ * evicted value (lotus_lru_retire_value). `evicted_out` NULL: the
+ * evicted value is retired here. 0 when nothing was evicted. */
+int lotus_lru_put_ev(void *cache_ptr, const void *key, const void *value,
+                     void *evicted_out, void *arena,
+                     const int32_t *desc, int64_t n_desc) {
+    if (!cache_ptr || !key || !value) return 0;
+    lotus_lru_t *c = (lotus_lru_t *)cache_ptr;
+    size_t i = lotus_lru_find(c, key);
+    if (*lotus_lru_occ(c, i)) {
+        lotus_lru_retire_value(arena, lotus_lru_valp(c, i), value, desc, n_desc);
+        memcpy(lotus_lru_valp(c, i), value, c->value_size);
+        lotus_lru_set_tick(c, i, ++c->tick);
+        return 0;
+    }
+    int evicted = 0;
+    if (c->len >= c->cap) {
+        size_t best = c->table_cap;
+        uint64_t best_tick = 0;
+        for (size_t j = 0; j < c->table_cap; ++j) {
+            if (!*lotus_lru_occ(c, j)) continue;
+            uint64_t t = lotus_lru_tick_at(c, j);
+            if (best == c->table_cap || t < best_tick) {
+                best = j;
+                best_tick = t;
+            }
+        }
+        if (best != c->table_cap) {
+            if (evicted_out) {
+                memcpy(evicted_out, lotus_lru_valp(c, best), c->value_size);
+                evicted = 1;
+            } else {
+                lotus_lru_retire_value(arena, lotus_lru_valp(c, best), NULL, desc, n_desc);
+            }
+            lotus_lru_delete_at(c, best);
+        }
+        i = lotus_lru_find(c, key);
+    }
+    *lotus_lru_occ(c, i) = 1;
+    memcpy(lotus_lru_keyp(c, i), key, c->key_size);
+    memcpy(lotus_lru_valp(c, i), value, c->value_size);
+    lotus_lru_set_tick(c, i, ++c->tick);
+    c->len++;
+    return evicted;
+}
+
+/* `remove(k)`: take the entry out. Returns 1 and writes its value to
+ * `out_value` (the caller then copies it out as its own and retires
+ * the cell's blocks); 0 when `key` is absent. Recency of the other
+ * entries is untouched. */
+int lotus_lru_remove(void *cache_ptr, const void *key, void *out_value) {
+    if (!cache_ptr || !key || !out_value) return 0;
+    lotus_lru_t *c = (lotus_lru_t *)cache_ptr;
+    if (c->len == 0) return 0;
+    size_t i = lotus_lru_find(c, key);
+    if (!*lotus_lru_occ(c, i)) return 0;
+    memcpy(out_value, lotus_lru_valp(c, i), c->value_size);
+    lotus_lru_delete_at(c, i);
     return 1;
 }
 
