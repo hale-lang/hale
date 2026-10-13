@@ -1221,6 +1221,10 @@ and what `for e in m.entries` binds — is the reader's value: writing
 into it, at any depth, never changes the cell. Only the map's own
 operations (`set`, `remove`, `bump`) change a cell (ruling of
 2026-10-13; the same rule holds for `@form(lru_cache)`'s `get`).
+The same rule holds for a local bound from any place, a field or an
+element or a parameter (`spec/types.md` § A local bound from a place is
+yours); a `@form(vec)` walk, `for x in v.items`, still visits the vec's
+cells in place.
 
 How the read is made is the compiler's business, and it keeps it
 cheap. A synced map (`serialized`, `striped`, `lockfree`) reads a

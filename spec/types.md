@@ -322,6 +322,64 @@ replaced its field read the block the replace retired, reused by the
 next allocation (`spec/memory.md` rules 6 and 7), and a same-length
 store into the field changed the local in place.
 
+### A local bound from a place is yours
+
+Writing into a local bound from a place never changes the place, and
+writing into the place never changes the local (ruling of 2026-10-13).
+The local is any binding: a `let` or `let mut`, a bare `=`, a tuple
+`let`'s element, a `match` payload, a `for` element of an array; the
+place is a field (of `self`, a child, a record local, a parameter), an
+element, a local, a parameter, or a value carried out of one (a `match`
+or `if` result, a literal holding it). A write into it is an assignment
+at any depth (`a[0] = x`, `x.k = 1`, `b[i].inner.s = s`) or a call that
+may write through its parameter.
+
+```hale,fragment
+let mut a = self.r.names;
+a[0] = "x";                          // self.r.names is unchanged
+match self.r.e { P::A(i) -> { i.k = 1; }, P::B -> { }, }   // so is the payload
+for x in self.r.cells { x.k = 1; }   // and every element
+let held = r.names;
+r.names[0] = "y";                    // held[0] is what it was
+```
+
+How the compiler keeps this is its business, and it keeps reads free:
+the binding stays the place's own block until a write into it, which
+copies the whole value into the frame first (copy on write, a flag per
+local set at each binding, so one copy serves every later write; a `for`
+element is copied at its first write in each iteration). A struct `let`
+or `=` of a place is a copy already (§ A struct binding is a copy); a
+struct literal holding a place's value copies only the field written
+below (`let mut l = R { a: self.a }; l.a[0] = x;` copies `a`). A local
+handed to a call that may write through its parameter is bound as a
+copy, and so is a binding live across a write into the local's or
+parameter's value it was read from. Three shapes are not copies:
+
+- the get-modify-store of a self field, `let mut v = self.f; v.x[i] =
+  y; self.f = v;` — every binding of `v` reads that field, the store of
+  `v` back into it follows the write on every path, nothing that may
+  read the field (a read of it, a call of the program's, a publish or
+  `yield`) comes between, no other binding views it, and `v` is not
+  used after. The store keeps the block the field already holds
+  (`spec/memory.md` rule 6), so the write lands where the store would
+  have put it;
+- a parameter: an argument is passed by reference, and a callee that
+  writes through its parameter (`fn bump(r: R) { r.a[0] = 1; }`) writes
+  the caller's value;
+- a `@form(vec)` walk, `for x in v.items`, which visits the vec's cells
+  in place (`spec/forms.md`), and a value that is a locus handle.
+
+Each copy is a site of the allocation survey (`place-copy (<reason>)`:
+`copy: written local bound from a place`, `copy: a local bound from a
+place is passed to a call that may write through its parameter`, `copy:
+what the local was read from is written while it is live`), so it
+counts toward `@budget(alloc_per_call = N)` and the `alloc` effect, and
+the hot-path lint reports one in a loop, a bus handler or a `@hot` fn.
+A `bounded[T; N]` local is not a first-class value and is not copied:
+a bounded intrinsic on one bound from a field still writes the field.
+Before this rule the write landed in the place's block: `let mut a =
+self.r.names; a[0] = x;` changed the field.
+
 ## Type aliases
 
 `type Name = Type;` declares an **alias**: a second spelling of an

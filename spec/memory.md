@@ -1418,6 +1418,18 @@ reclaim on a real-world long-running workload:
      `hale_types::view_bindings`'s, and each copy it adds is an
      allocation-survey site.
 
+     Any place (2026-10-13): the same holds for a local bound from
+     any place without a copy — an array, a tuple's element, a
+     `match` payload, a `for` element read from a field, an element,
+     a local or a parameter is the place's own block, and a write
+     under the local root would land there. The first write copies
+     the whole value into the frame (`emit_local_cow`, behind a
+     per-local flag), unless it is a self field's get-modify-store
+     no one can observe: `self.f = v` keeps the block the field
+     already holds at each place, so `let mut v = self.f; v.x[i] =
+     y; self.f = v;` allocates nothing (types.md § A local bound
+     from a place is yours).
+
      The same holds for a retiring form's OWN fields (a
      `@form(vec)`, or a `@form(hashmap)` that retires — rule #6's
      `self.X = ...` in the form locus's methods): they live in

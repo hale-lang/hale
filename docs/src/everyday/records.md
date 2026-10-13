@@ -64,6 +64,30 @@ let mut copy = saved;
 copy.score = 9;               // saved.score is unchanged
 ```
 
+And the other way round: a local you read out of a place is yours to
+write. An array bound from a field, an element of one, a `match`
+payload, a `for` element, a tuple's element — writing into it, at any
+depth, never changes the field, the record local or the parameter it
+came from. The compiler copies the value at the first write into it
+(once: later writes go to the copy), so a local you only read costs
+nothing. To change the field, write the field (`self.row.scores[0] =
+9`), or set the local back:
+
+```hale,fragment
+let mut scores = self.row.scores;
+scores[0] = 9;                 // self.row.scores is unchanged here
+self.row.scores = scores;      // and now it holds the write
+```
+
+That last shape — read a field, write the local, store it back whole,
+with nothing reading the field between — copies nothing at all: the
+write lands in the field's own storage, which the store keeps. A
+parameter is different: it is the caller's value by reference, and a
+function that writes through its parameter (`fn bump(r: Row) {
+r.scores[0] = 9; }`) changes what the caller passed. A `for x in
+v.items` walk over a `@form(vec)` visits the vec's own cells, so a
+write through `x` changes the vec, as before.
+
 Records nest, and they're what travels on the bus and in and out
 of functions. When a record starts wanting *methods*, that's the
 signal to promote it to a [locus](./locus-gently.md).
