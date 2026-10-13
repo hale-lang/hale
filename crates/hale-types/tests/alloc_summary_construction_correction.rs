@@ -287,11 +287,18 @@ fn own_scope_let_block_scope_test() {
             // more fn and one more invoked unboundedly since the connect
             // deadlines (#1538); 435, and one more invoked unboundedly,
             // since the HTTP client writes its `Host` header through
-            // `__http_host_text`
+            // `__http_host_text`; 436 since `std::hex` came (its three fns)
+            // and the secret and JSON digit helpers it replaced went; 437
+            // since `std::test::assert_near` came; 441 since `std::url`
+            // came (its four fns; three more invoked unboundedly:
+            // `query_param`'s pair loop decodes through them); 446 since
+            // `std::rand::Rng` came (its birth, an entry point, and four
+            // methods; `next` invoked unboundedly by `next_int`'s rejection
+            // loop); 447 since `std::crypto::ed25519_keypair`'s body came
             changed_lines(&old.render(), &now.render()),
             [
-                "- # 435 fns, 27 entry points, 115 invoked-unboundedly",
-                "+ # 435 fns, 27 entry points, 114 invoked-unboundedly",
+                "- # 447 fns, 28 entry points, 119 invoked-unboundedly",
+                "+ # 447 fns, 28 entry points, 118 invoked-unboundedly",
                 "- call  count loop_depth=0 result=local",
                 "+ call  <unresolved: count> loop_depth=0 result=local",
                 "- call  count loop_depth=0 result=local",
@@ -464,7 +471,7 @@ fn reached_perspective_examples() {
         "crates/hale-codegen/tests/fixtures/examples/65-perspective-ctor-override",
         "tests/hale/perspective_ctor_override_test.hl",
     ] {
-        pinned_unreached(t, (116, 0), &["Gateway::handle", "RouterV1::route"], &[], &lines);
+        pinned_unreached(t, (120, 0), &["Gateway::handle", "RouterV1::route"], &[], &lines);
     }
 }
 
@@ -474,7 +481,7 @@ fn reached_perspective_examples() {
 fn reached_unowned_literal_positions() {
     pinned_unreached(
         "crates/hale-codegen/tests/fixtures/examples/90-unowned-literal-positions",
-        (116, 0),
+        (120, 0),
         &["Provider::submit", "Server::handle"],
         &["Provider::submit CollectionInsert(\"vec\") @1292..1320 InvokedUnboundedly"],
         &[
@@ -494,7 +501,7 @@ fn reached_unowned_literal_positions() {
 fn reached_oidc() {
     pinned_unreached(
         "dna/oidc",
-        (138, 2),
+        (142, 2),
         &[
             "b64",
             "decode",
@@ -561,7 +568,7 @@ fn reached_oidc() {
 fn reached_is_route_test() {
     pinned_unreached(
         "tests/hale/is_route_test.hl",
-        (118, 0),
+        (122, 0),
         &["Api::handle", "Api::list", "Api::rename", "Api::show"],
         &["Api::handle StructLit(\"std::http::Response\") @1449..1496 InvokedUnboundedly"],
         &[
@@ -598,7 +605,7 @@ fn reached_is_route_test() {
 fn reached_unit_quantities_test() {
     pinned_unreached(
         "tests/hale/unit_quantities_test.hl",
-        (115, 0),
+        (119, 0),
         &["later"],
         &[],
         &["- fn later   [invoked-unboundedly]", "+ fn later"],
