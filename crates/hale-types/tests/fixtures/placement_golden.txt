@@ -2677,7 +2677,7 @@ row	IntVec@main1	IntVec	main	default
 == crates/hale-codegen/tests/form_vec_bce.rs#b8a669c5
 row	IntVec@main1	IntVec	main	default
 
-== crates/hale-codegen/tests/form_vec_clear.rs#1ed8d1b4
+== crates/hale-codegen/tests/form_vec_clear.rs#b94557f1
 row	I@main2	I	main	default
 row	S@main3	S	main	default
 row	V@main1	V	main	default
@@ -4746,6 +4746,9 @@ row	__StdBytesBytesBuilder@main3	__StdBytesBytesBuilder	main	default
 == crates/hale-codegen/tests/wasm_target.rs#bf616e43
 
 == crates/hale-codegen/tests/wasm_target.rs#62135960
+
+== crates/hale-codegen/tests/wasm_target.rs#9f9ee9e7
+row	V@main1	V	main	default
 
 == crates/hale-codegen/tests/ws1_ffi_handle_reassign.rs#60aaaf4b
 dynamic	Conn	on main	in the seed

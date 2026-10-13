@@ -58,6 +58,7 @@ fn clear_and_truncate_semantics() {
             i.truncate(3);
             s.truncate(10);
             let s_len = s.len();
+            i.truncate(4294967296);
             s.truncate(-1);
             println(v.len(), " ", i.len(), " ", s_len, " ", s.len(), " ", held.s, held.inner.s);
             let a = v.get(1) or Msg { };

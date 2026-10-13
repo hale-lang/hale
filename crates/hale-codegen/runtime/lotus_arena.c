@@ -6231,8 +6231,11 @@ void lotus_vec_truncate(void *vec_ptr, int64_t new_len, void *arena,
                         int64_t n_desc) {
     if (!vec_ptr) return;
     lotus_vec_t *v = (lotus_vec_t *)vec_ptr;
+    /* Compare in 64 bits before narrowing: on wasm32 `size_t` is 32
+     * bits, and a cast first would wrap a valid `n` past UINT32_MAX
+     * to a small length and drop elements that must stay. */
+    if (new_len >= 0 && (uint64_t)new_len >= (uint64_t)v->len) return;
     size_t keep = new_len < 0 ? 0 : (size_t)new_len;
-    if (keep >= v->len) return;
     if (arena && v->buf) {
         void **elems = (void **)v->buf;
         for (size_t i = v->len; i > keep; i--) {
