@@ -656,7 +656,7 @@ row	~.acc	Acc	main	inherited
 
 == crates/hale-stdlib/hl/file.hl#f57ba351
 
-== crates/hale-stdlib/hl/http_client.hl#92ac6ec9
+== crates/hale-stdlib/hl/http_client.hl#ef024722
 
 == crates/hale-stdlib/hl/json.hl#8645f085
 
@@ -664,7 +664,7 @@ row	~.acc	Acc	main	inherited
 
 == crates/hale-stdlib/hl/metrics.hl#19f66cf4
 
-== crates/hale-stdlib/hl/process.hl#229cd237
+== crates/hale-stdlib/hl/process.hl#e44be954
 
 == crates/hale-stdlib/hl/source.hl#fac6c107
 
@@ -7217,6 +7217,9 @@ shared	Job@main1	Job #01dd0b0d
 -- dynamic	sites in the seed
 dynamic	Job	on main
 dynamic	__StdProcessChild	on main
+
+== tests/hale/process_child_sigpipe_test.hl
+row	__StdProcessChild@main1	__StdProcessChild	main	default
 
 == tests/hale/process_close_stdin_test.hl
 row	__StdProcessChild@main1	__StdProcessChild	main	default
