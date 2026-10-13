@@ -15881,7 +15881,7 @@ void lotus_bus_local_dispatch(lotus_bus_queue_t *queue,
         if (e->key_filter_kind != 0) continue;
         delivered += (size_t)lotus_bus_post_entry(
             e, queue, payload, payload_size, rec_pub, &pc);
-        if (lotus_obs_bus_deliver && lotus_obs_live) {
+        if (lotus_obs_bus_deliver && lotus_obs_live && e->handler != (void *)lotus_bus_resv_stub) {
             lotus_obs_bus_deliver(subject, e->self_ptr,
                                   (uint64_t)payload_size, obs_tok);
         }
@@ -16017,7 +16017,7 @@ void lotus_bus_local_dispatch_keyed(lotus_bus_queue_t *queue,
         /* iris handoff-4 P15: BUS_DELIVER per matched keyed target
          * (sibling of the non-keyed local_dispatch probe — the keyed
          * flavor had none, so keyed deliveries never counted). */
-        if (lotus_obs_bus_deliver && lotus_obs_live) {
+        if (lotus_obs_bus_deliver && lotus_obs_live && e->handler != (void *)lotus_bus_resv_stub) {
             lotus_obs_bus_deliver(subject, e->self_ptr,
                                   (uint64_t)payload_size, obs_tok);
         }
@@ -16035,7 +16035,7 @@ void lotus_bus_local_dispatch_keyed(lotus_bus_queue_t *queue,
             if (e->key_filter_kind != 2) continue;
             (void)lotus_bus_post_entry(e, queue, payload, payload_size,
                                        rec_pub, &pc);
-            if (lotus_obs_bus_deliver && lotus_obs_live) {
+            if (lotus_obs_bus_deliver && lotus_obs_live && e->handler != (void *)lotus_bus_resv_stub) {
                 lotus_obs_bus_deliver(subject, e->self_ptr,
                                       (uint64_t)payload_size, obs_tok);
             }
@@ -25134,7 +25134,7 @@ void lotus_bus_dispatch_wire_keyed(const char *subject,
         (void)lotus_bus_post_wire(e, g_bus_queue_for_remote,
                                   wire_bytes, wire_size, rec_pub, &pc);
         /* iris handoff-4 P15: BUS_DELIVER per matched keyed target. */
-        if (lotus_obs_bus_deliver && lotus_obs_live) {
+        if (lotus_obs_bus_deliver && lotus_obs_live && e->handler != (void *)lotus_bus_resv_stub) {
             lotus_obs_bus_deliver(subject, e->self_ptr,
                                   (uint64_t)wire_size, obs_tok);
         }
@@ -25148,7 +25148,7 @@ void lotus_bus_dispatch_wire_keyed(const char *subject,
             if (e->key_filter_kind != 2) continue;
             (void)lotus_bus_post_wire(e, g_bus_queue_for_remote,
                                       wire_bytes, wire_size, rec_pub, &pc);
-            if (lotus_obs_bus_deliver && lotus_obs_live) {
+            if (lotus_obs_bus_deliver && lotus_obs_live && e->handler != (void *)lotus_bus_resv_stub) {
                 lotus_obs_bus_deliver(subject, e->self_ptr,
                                       (uint64_t)wire_size, obs_tok);
             }
@@ -25226,7 +25226,7 @@ void lotus_bus_dispatch_wire(const char *subject,
             /* handoff-8 P21: BUS_DELIVER per matched target — the
              * plain wire flavor was the one fanout without it (its
              * keyed sibling gained the probe in handoff-4). */
-            if (lotus_obs_bus_deliver && lotus_obs_live) {
+            if (lotus_obs_bus_deliver && lotus_obs_live && e->handler != (void *)lotus_bus_resv_stub) {
                 lotus_obs_bus_deliver(subject, e->self_ptr,
                                       (uint64_t)wire_size, obs_tok);
             }
@@ -25311,7 +25311,7 @@ void lotus_bus_dispatch_static(lotus_bus_queue_t *queue,
                 lotus_bus_entry_t *e = at[k];
                 if (!e->subject) continue;           /* quarantined */
                 if (e->key_filter_kind != 0) continue;
-                if (lotus_obs_bus_deliver && lotus_obs_live) {
+                if (lotus_obs_bus_deliver && lotus_obs_live && e->handler != (void *)lotus_bus_resv_stub) {
                     lotus_obs_bus_deliver(subject, e->self_ptr,
                                           (uint64_t)struct_size, obs_tok);
                 }
@@ -25482,7 +25482,7 @@ void lotus_bus_dispatch_static(lotus_bus_queue_t *queue,
              * so a String/Bytes payload delivered correctly — the
              * handler ran — while `dlv` stayed 0 alongside the `pub`
              * gap. Both halves of the same omission. */
-            if (lotus_obs_bus_deliver && lotus_obs_live) {
+            if (lotus_obs_bus_deliver && lotus_obs_live && e->handler != (void *)lotus_bus_resv_stub) {
                 lotus_obs_bus_deliver(subject, e->self_ptr,
                                       (uint64_t)struct_size, obs_tok);
             }
@@ -25634,7 +25634,7 @@ void lotus_bus_dispatch_static_direct(uint32_t id,
                 ((lotus_handler_fn)e->handler)(e->self_ptr, (void *)payload);
             }
             g_bus_pending_gen = prev_gen;
-            if (lotus_obs_bus_deliver && lotus_obs_live) {
+            if (lotus_obs_bus_deliver && lotus_obs_live && e->handler != (void *)lotus_bus_resv_stub) {
                 lotus_obs_bus_deliver(subject, e->self_ptr, size, obs_tok);
             }
             delivered++;
