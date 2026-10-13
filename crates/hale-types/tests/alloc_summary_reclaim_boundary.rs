@@ -618,7 +618,7 @@ const PINNED: &[&str] = &[
     "dna/core: 0 go, 0 appear; dump 282 tags, 662 reclaim, 0 verdicts",
     "dna/host: 2 go, 0 appear; dump 422 tags, 843 reclaim, 2 verdicts",
     "dna/host/verb: 0 go, 0 appear; dump 422 tags, 739 reclaim, 712 verdicts",
-    "dna/oidc: 0 go, 0 appear; dump 1 tags, 0 reclaim, 0 verdicts",
+    "dna/oidc: 0 go, 0 appear; dump 2 tags, 0 reclaim, 0 verdicts",
     "dna/operations: 0 go, 0 appear; dump 342 tags, 753 reclaim, 0 verdicts",
     "dna/organism: 0 go, 0 appear; dump 293 tags, 680 reclaim, 0 verdicts",
     "dna/organization_runtime: 0 go, 0 appear; dump 342 tags, 753 reclaim, 0 verdicts",
@@ -645,4 +645,5 @@ const PINNED: &[&str] = &[
     "tests/hale/queued_self_cycle_test.hl: 0 go, 0 appear; dump 1 tags, 14 reclaim, 0 verdicts",
     "tests/hale/sigterm_drains_pinned_test.hl: 0 go, 0 appear; dump 1 tags, 16 reclaim, 0 verdicts",
     "tests/hale/sigterm_no_live_drain_reader_test.hl: 0 go, 0 appear; dump 3 tags, 13 reclaim, 0 verdicts",
+    "tests/hale/str_index_of_from_test.hl: 0 go, 0 appear; dump 1 tags, 0 reclaim, 0 verdicts",
 ];

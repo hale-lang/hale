@@ -11663,6 +11663,7 @@ shared	dynamic	sites in the stdlib #c3a51769
 root	App	the entry
 row	App@literal1	App	main	default
 dynamic	__StdIoTcpStream	on main	in tests/onboarding/todo/api
+dynamic	__StdBytesBytesBuilder	on main|unknown (no instance)	in the stdlib
 shared	dynamic	sites in core #ec318237
 -- dynamic	sites in tests
 dynamic	__StdSecretCredential	on main
