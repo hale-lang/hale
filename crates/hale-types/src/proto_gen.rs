@@ -11,7 +11,10 @@
 //! The rules (each is pinned by a test):
 //!   - a record is a top-level message named by the schema document's name
 //!     for it (`lib::Item` is `lib_Item`); a field that names another record
-//!     is a field of that message type;
+//!     is a field of that message type. A record named as the surface is
+//!     (a surface `Todo` over a type `Todo`) is the message `TodoMessage`:
+//!     the service keeps the surface's name, since it is the gRPC path
+//!     (`/Todo/<rpc>`), and proto3 gives a service and a message one scope;
 //!   - field numbers are the struct's declaration order, `1, 2, …`: the
 //!     surface digest folds the fields in that order, so a reorder or an
 //!     insertion moves the digest, and a number never moves while the digest
@@ -142,10 +145,17 @@ fn message(name: &str, fields: Vec<PField>) -> PMessage {
     PMessage { name: name.to_string(), comment: Vec::new(), fields, oneofs: Vec::new() }
 }
 
-/// The message a record has in the file: its document name with the `::` of
-/// an imported type spelled `_`.
-pub fn message_name(display: &str) -> String {
-    display.replace("::", "_")
+/// The message a record has in the file of `surface`: its document name with
+/// the `::` of an imported type spelled `_`, and `Message` after it when that
+/// is the surface's own name, which the service holds (a service and a
+/// message share proto3's scope, and the service's name is the gRPC path).
+pub fn message_name(display: &str, surface: &str) -> String {
+    let name = display.replace("::", "_");
+    if name == surface {
+        format!("{name}Message")
+    } else {
+        name
+    }
 }
 
 /// The rpc a member is: `Orders::place` is `Orders__place`.
@@ -199,13 +209,14 @@ fn hale_comment(hale_type: &Option<String>, unit: &Option<String>) -> Option<Str
 /// What a row's request, response or error is on the wire: the message that
 /// carries it, and a wrapper message if it is a scalar.
 fn carried(
+    surface: &str,
     member: &str,
     what: &str,
     f: &FieldSchema,
     wrappers: &mut Vec<PMessage>,
 ) -> Result<String, String> {
     match f {
-        FieldSchema::Ref(name) => Ok(message_name(name)),
+        FieldSchema::Ref(name) => Ok(message_name(name, surface)),
         FieldSchema::Scalar { json, hale_type, unit } => {
             let Some(s) = scalar_of(json) else {
                 return Err(format!("{member}: the {what} is a `{json}`, which proto3 has no scalar for"));
@@ -263,7 +274,7 @@ pub fn from_model(model: &ClientModel) -> Result<ProtoFile, String> {
     }
     let mut messages: Vec<PMessage> = Vec::new();
     for (display, schema) in model.types.iter().filter(|(d, _)| reached.contains(&d.as_str())) {
-        messages.push(record(display, schema)?);
+        messages.push(record(display, schema, surface)?);
     }
     // the rpcs, in the rows' order
     let mut wrappers: Vec<PMessage> = Vec::new();
@@ -277,14 +288,14 @@ pub fn from_model(model: &ClientModel) -> Result<ProtoFile, String> {
             format!("requires {}", m.requires.join(", "))
         });
         let input = match &m.request {
-            Some(f) => carried(&m.name, "Request", f, &mut wrappers)?,
+            Some(f) => carried(surface, &m.name, "Request", f, &mut wrappers)?,
             None => {
                 uses_empty = true;
                 EMPTY.to_string()
             }
         };
         let output = match &m.response {
-            Some(f) => carried(&m.name, "Response", f, &mut wrappers)?,
+            Some(f) => carried(surface, &m.name, "Response", f, &mut wrappers)?,
             None => {
                 uses_empty = true;
                 EMPTY.to_string()
@@ -294,7 +305,7 @@ pub fn from_model(model: &ClientModel) -> Result<ProtoFile, String> {
             ClientError::None => {}
             ClientError::Server => comment.push("a violation is the server error (ClosureViolation): status 13, no handler error".to_string()),
             ClientError::Type(f) => {
-                let e = carried(&m.name, "Error", f, &mut wrappers)?;
+                let e = carried(surface, &m.name, "Error", f, &mut wrappers)?;
                 comment.push(format!("handler error: status 9, a detail of type {}", type_url(&e)));
             }
         }
@@ -353,8 +364,8 @@ pub fn from_model(model: &ClientModel) -> Result<ProtoFile, String> {
     })
 }
 
-fn record(display: &str, schema: &TypeSchema) -> Result<PMessage, String> {
-    let name = message_name(display);
+fn record(display: &str, schema: &TypeSchema, surface: &str) -> Result<PMessage, String> {
+    let name = message_name(display, surface);
     if !is_ident(&name) {
         return Err(format!("the type `{display}` is not a proto3 message name"));
     }
@@ -389,7 +400,7 @@ fn record(display: &str, schema: &TypeSchema) -> Result<PMessage, String> {
                 p.comment = hale_comment(hale_type, unit);
                 p
             }
-            FieldSchema::Ref(n) => field(key, number, Ty::Message(message_name(n)), Label::Plain),
+            FieldSchema::Ref(n) => field(key, number, Ty::Message(message_name(n, surface)), Label::Plain),
             FieldSchema::Unformed => {
                 return Err(format!(
                     "{display}.{key}: a shape the codec does not carry (an enum, an array or a name the program does not declare) \
@@ -814,6 +825,23 @@ mod tests {
         assert!(two("a_b", "aC").is_ok());
         assert!(two("a", "b_a").is_ok());
         assert!(two("a_b", "a_c").is_ok());
+    }
+
+    /// A record named as the surface is the message `<Name>Message`, in its
+    /// own declaration and wherever a field or an rpc names it; the service
+    /// keeps the surface's name (the gRPC path).
+    #[test]
+    fn a_record_named_as_the_surface_is_its_message() {
+        let t = TypeSchema { properties: vec![("a".to_string(), int())], required: vec!["a".to_string()] };
+        let outer = TypeSchema { properties: vec![("s".to_string(), FieldSchema::Ref("S".to_string()))], required: Vec::new() };
+        let file = from_model(&model(FieldSchema::Ref("Outer".to_string()), vec![("Outer", outer), ("S", t)])).unwrap();
+        assert_eq!(file.service.as_ref().unwrap().name, "S");
+        let names: Vec<&str> = file.messages.iter().map(|m| m.name.as_str()).collect();
+        assert!(names.contains(&"SMessage") && !names.contains(&"S"), "{names:?}");
+        let outer = file.messages.iter().find(|m| m.name == "Outer").unwrap();
+        assert_eq!(outer.fields[0].ty, Ty::Message("SMessage".to_string()));
+        assert_eq!(message_name("S", "S"), "SMessage");
+        assert_eq!(message_name("a::S", "S"), "a_S");
     }
 
     /// Two names that land on one message are refused, not renamed.

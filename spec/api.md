@@ -898,7 +898,12 @@ closes the listener while the connections it accepted are served on.
   --surface NAME --proto` prints it. `syntax = "proto3"`, no package, one
   `service NAME` (the surface) with a unary rpc per member, named as above; a
   message per record the rows reach, named as the schema document names the
-  type with the `::` of an imported type as `_`; a field of record type is a
+  type with the `::` of an imported type as `_`, and `Message` after it when
+  that is the surface's own name (a service and a message share proto3's
+  scope, and the service keeps the surface's name because it is the gRPC
+  path: `api Todo` over `type Todo` is `service Todo` and `message
+  TodoMessage`, and its handler error's detail is
+  `type.hale.dev/TodoMessage`); a field of record type is a
   field of that message, and every scalar field is `optional`
   (`Int`, an identity, a range and a quantity `int64`, `Float` `double`, `Bool`
   `bool`, `String` `string`; a comment names the Hale type). A row whose

@@ -466,7 +466,9 @@ check --api --surface Public --proto` prints the file, and `hale api export
 default JSON names are the same (`a_b` and `aB`, or `a` and `_a`, which
 protoc compares without regard to case) make a file `protoc` refuses, so the
 record is refused instead, naming both fields; a `json:` tag on one of them
-renames it.
+renames it. A record with the surface's own name (`api Todo` over a `type
+Todo`) is the message `TodoMessage`: proto3 gives a service and a message one
+scope, and the service keeps the surface's name because it is the gRPC path.
 
 A client is whatever generates stubs from a `.proto`; `hale api client`
 makes Hale and TypeScript clients and neither speaks gRPC (a browser's
