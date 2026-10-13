@@ -774,7 +774,7 @@ fn readiness_into_its_pinned_full_mailbox_keeps_order() {
 /// A failed dequeue does not mean an empty ring (PR #1557's review): a
 /// producer claims its slot before it publishes it. Two sources flood a
 /// subscriber on pool `p` (or pinned) through a 64-cell ring, and
-/// `LOTUS_BUS_TEST_RESERVE_STALL_US` holds the 100th claim unpublished for
+/// `LOTUS_BUS_TEST_RING_CLAIM_STALL_US` holds the 100th claim unpublished for
 /// 100 ms: the consumer cannot take the ring's head, so its heartbeat stops,
 /// the other source fills the ring and spills. The consumer took the spill
 /// whenever its dequeue failed, so spilled numbers passed their source's
@@ -820,7 +820,7 @@ fn unpublished_head_keeps_order(name: &str, pinned: bool) {
     let field = run_fields_env(
         name,
         &src,
-        &[("LOTUS_BUS_QUEUE_CAP", "64"), ("LOTUS_BUS_TEST_RESERVE_STALL_US", "100000")],
+        &[("LOTUS_BUS_QUEUE_CAP", "64"), ("LOTUS_BUS_TEST_RING_CLAIM_STALL_US", "100000")],
     );
     assert_eq!(field("delivered"), "10000", "{name}: every number is delivered");
     assert_eq!(field("out_of_order"), "0", "{name}: each source's numbers arrive in the order sent");

@@ -9392,8 +9392,8 @@ static void lotus_mpsc_ring_destroy(lotus_mpsc_ring_t *r) {
 }
 
 #ifndef __wasm__
-/* Test only: `LOTUS_BUS_TEST_RESERVE_STALL_US=<us>` stalls the producer
- * holding the 100th reservation of the process's rings for that long,
+/* Test only: `LOTUS_BUS_TEST_RING_CLAIM_STALL_US=<us>` stalls the producer
+ * holding the 100th slot claim of the process's rings for that long,
  * between claiming its slot and publishing it, so a test can hold a ring's
  * head unpublished while later slots fill (`lotus_mpsc_ring_take_settled`).
  * Read once; unset costs one load per enqueue. Never set it in
@@ -9404,7 +9404,7 @@ static _Atomic uint64_t g_ring_test_reservations = 0;
 static void lotus_ring_test_stall(void) {
     int us = __atomic_load_n(&g_ring_test_stall_us, __ATOMIC_RELAXED);
     if (us < 0) {
-        const char *e = getenv("LOTUS_BUS_TEST_RESERVE_STALL_US");
+        const char *e = getenv("LOTUS_BUS_TEST_RING_CLAIM_STALL_US");
         us = (e && *e) ? atoi(e) : 0;
         if (us < 0) us = 0;
         __atomic_store_n(&g_ring_test_stall_us, us, __ATOMIC_RELAXED);
