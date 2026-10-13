@@ -771,6 +771,71 @@ fn readiness_into_its_pinned_full_mailbox_keeps_order() {
     ready_into_full_ring_keeps_order("ready_full_pinned", true);
 }
 
+/// A failed dequeue does not mean an empty ring (PR #1557's review): a
+/// producer claims its slot before it publishes it. Two sources flood a
+/// subscriber on pool `p` (or pinned) through a 64-cell ring, and
+/// `LOTUS_BUS_TEST_RESERVE_STALL_US` holds the 100th claim unpublished for
+/// 100 ms: the consumer cannot take the ring's head, so its heartbeat stops,
+/// the other source fills the ring and spills. The consumer took the spill
+/// whenever its dequeue failed, so spilled numbers passed their source's
+/// earlier ones still in the ring (3 out of order); it waits for the claim
+/// to be published now.
+const UNPUBLISHED_HEAD_KEEPS_ORDER: &str = r#"
+    type Num { src: Int; n: Int; }
+    locus Counter {
+        params { count: Int = 0; a: Int = -1; b: Int = -1; bad: Int = 0; }
+        bus { subscribe "rs" as on_num of type Num; }
+        fn on_num(m: Num) {
+            let mut last = self.b;
+            if m.src == 0 { last = self.a; }
+            if m.n != last + 1 { self.bad = self.bad + 1; }
+            if m.src == 0 { self.a = m.n; } else { self.b = m.n; }
+            self.count = self.count + 1;
+        }
+    }
+    locus Source {
+        params { id: Int = 0; sent: Int = 0; }
+        bus { publish "rs" of type Num; }
+        run() { while self.sent < 5000 { "rs" <- Num { src: self.id, n: self.sent }; self.sent = self.sent + 1; } }
+    }
+    main locus App {
+        params { sub: Counter = Counter { }; s0: Source = Source { id: 0 }; s1: Source = Source { id: 1 }; }
+        placement {
+            sub: cooperative(pool = p);
+            s0: cooperative(pool = pa);
+            s1: cooperative(pool = pb);
+        }
+        run() {
+            let deadline = std::time::monotonic_ns() + 60000000000;
+            while (self.sub.count < 10000 && std::time::monotonic_ns() < deadline) { std::time::sleep(1ms); }
+            println("delivered=" + to_string(self.sub.count));
+            println("out_of_order=" + to_string(self.sub.bad));
+        }
+    }
+    fn main() { App { }; }
+"#;
+
+fn unpublished_head_keeps_order(name: &str, pinned: bool) {
+    let src = placed(UNPUBLISHED_HEAD_KEEPS_ORDER, "sub", pinned);
+    let field = run_fields_env(
+        name,
+        &src,
+        &[("LOTUS_BUS_QUEUE_CAP", "64"), ("LOTUS_BUS_TEST_RESERVE_STALL_US", "100000")],
+    );
+    assert_eq!(field("delivered"), "10000", "{name}: every number is delivered");
+    assert_eq!(field("out_of_order"), "0", "{name}: each source's numbers arrive in the order sent");
+}
+
+#[test]
+fn a_pool_ring_takes_its_spill_only_once_its_head_is_published() {
+    unpublished_head_keeps_order("unpublished_head_pool", false);
+}
+
+#[test]
+fn a_pinned_mailbox_takes_its_spill_only_once_its_head_is_published() {
+    unpublished_head_keeps_order("unpublished_head_pinned", true);
+}
+
 /// A flood whose handler publishes: the at-cap inline drain runs `Sink`'s
 /// handler inside the `Source`'s post, and that handler publishes a
 /// `Reply`. The nested publish used to clear the wire deserializer the

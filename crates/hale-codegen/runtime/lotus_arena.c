@@ -9391,6 +9391,31 @@ static void lotus_mpsc_ring_destroy(lotus_mpsc_ring_t *r) {
     r->slots = NULL;
 }
 
+#ifndef __wasm__
+/* Test only: `LOTUS_BUS_TEST_RESERVE_STALL_US=<us>` stalls the producer
+ * holding the 100th reservation of the process's rings for that long,
+ * between claiming its slot and publishing it, so a test can hold a ring's
+ * head unpublished while later slots fill (`lotus_mpsc_ring_take_settled`).
+ * Read once; unset costs one load per enqueue. Never set it in
+ * production. */
+static int g_ring_test_stall_us = -1;
+static _Atomic uint64_t g_ring_test_reservations = 0;
+
+static void lotus_ring_test_stall(void) {
+    int us = __atomic_load_n(&g_ring_test_stall_us, __ATOMIC_RELAXED);
+    if (us < 0) {
+        const char *e = getenv("LOTUS_BUS_TEST_RESERVE_STALL_US");
+        us = (e && *e) ? atoi(e) : 0;
+        if (us < 0) us = 0;
+        __atomic_store_n(&g_ring_test_stall_us, us, __ATOMIC_RELAXED);
+    }
+    if (us == 0) return;
+    if (atomic_fetch_add_explicit(&g_ring_test_reservations, 1, memory_order_relaxed) != 99) return;
+    struct timespec ts = { us / 1000000, (long)(us % 1000000) * 1000L };
+    nanosleep(&ts, NULL);
+}
+#endif
+
 /* Producer. Copies *cell into the ring on success; returns 1, or 0 if
  * the ring is full. Safe for concurrent producers (CAS on the enqueue
  * cursor). Canonical Vyukov producer. */
@@ -9419,6 +9444,10 @@ static int lotus_mpsc_ring_try_enqueue(lotus_mpsc_ring_t *r,
                                        memory_order_relaxed);
         }
     }
+#ifndef __wasm__
+    if (__builtin_expect(__atomic_load_n(&g_ring_test_stall_us, __ATOMIC_RELAXED) != 0, 0))
+        lotus_ring_test_stall();
+#endif
     slot->cell = *cell;                     /* plain store — published below */
     atomic_store_explicit(&slot->seq, pos + 1, memory_order_release);
     return 1;
@@ -9458,6 +9487,26 @@ static int lotus_mpsc_ring_peek_nonempty(lotus_mpsc_ring_t *r) {
     uint64_t seq = atomic_load_explicit(&slot->seq, memory_order_acquire);
     return (int64_t)(seq - (pos + 1)) == 0;
 }
+
+#ifndef __wasm__
+/* Consumer only: the ring's head, waiting for it to be published when a
+ * producer has claimed it and not yet written it. A failed dequeue alone
+ * does not say the ring is empty: a producer claims its slot before it
+ * publishes the slot, so a claimed, unpublished head can stand in front of
+ * cells already published behind it. 0 only when no claim is outstanding
+ * (the two cursors meet). Taking the spill after a bare failed dequeue
+ * would deliver a spilled cell before a publisher's earlier ring cells;
+ * the claim is published within the producer's next few instructions. */
+static int lotus_mpsc_ring_take_settled(lotus_mpsc_ring_t *r, lotus_bus_cell_t *out) {
+    for (unsigned spins = 0;; spins++) {
+        if (lotus_mpsc_ring_try_dequeue(r, out)) return 1;
+        if (atomic_load_explicit(&r->enqueue_pos, memory_order_acquire)
+            == atomic_load_explicit(&r->dequeue_pos, memory_order_relaxed))
+            return 0;
+        if (spins >= 64) sched_yield();
+    }
+}
+#endif
 
 /* Approximate occupancy (enqueue_pos - dequeue_pos). Diagnostic only — a
  * relaxed snapshot that may count a reserved-but-not-yet-published slot.
@@ -9907,10 +9956,19 @@ static int lotus_mailbox_take(lotus_mailbox_t *mb, lotus_bus_cell_t *cell) {
         return 1;
     }
 #ifndef __wasm__
-    if (lotus_spill_pop(&mb->spill, &mb->lock, &mb->not_full,
-                        &mb->producers_waiting, cell)) {
-        lotus_spill_beat(&mb->spill);
-        return 1;
+    /* A spill is behind the ring: take it only once the ring is truly
+     * empty, not merely its head unpublished. */
+    if (atomic_load_explicit(&mb->spill.len, memory_order_acquire) > 0) {
+        if (lotus_mpsc_ring_take_settled(&mb->ring, cell)) {
+            lotus_mailbox_wake_producers(mb);
+            lotus_spill_beat(&mb->spill);
+            return 1;
+        }
+        if (lotus_spill_pop(&mb->spill, &mb->lock, &mb->not_full,
+                            &mb->producers_waiting, cell)) {
+            lotus_spill_beat(&mb->spill);
+            return 1;
+        }
     }
 #endif
     if (mb->overflow_head) {
@@ -9967,9 +10025,10 @@ int lotus_mailbox_drain_one(lotus_mailbox_t *mb) {
          * lock this recheck holds. */
         int got = lotus_mpsc_ring_try_dequeue(&mb->ring, &cell);
 #ifndef __wasm__
-        if (!got)
-            got = lotus_spill_pop_locked(&mb->spill, &mb->not_full,
-                                         &mb->producers_waiting, &cell);
+        if (!got && atomic_load_explicit(&mb->spill.len, memory_order_acquire) > 0)
+            got = lotus_mpsc_ring_take_settled(&mb->ring, &cell)
+                || lotus_spill_pop_locked(&mb->spill, &mb->not_full,
+                                          &mb->producers_waiting, &cell);
 #endif
         if (got) {
             atomic_store_explicit(&mb->parked, 0, memory_order_seq_cst);
@@ -11549,10 +11608,19 @@ static int lotus_coop_pool_take(lotus_coop_pool_t *p, lotus_bus_cell_t *cell) {
         return 1;
     }
 #ifndef __wasm__
-    if (lotus_spill_pop(&p->spill, &p->lock, &p->not_full,
-                        &p->producers_waiting, cell)) {
-        lotus_spill_beat(&p->spill);
-        return 1;
+    /* A spill is behind the ring: take it only once the ring is truly
+     * empty, not merely its head unpublished. */
+    if (atomic_load_explicit(&p->spill.len, memory_order_acquire) > 0) {
+        if (lotus_mpsc_ring_take_settled(&p->ring, cell)) {
+            lotus_coop_pool_wake_producers(p);
+            lotus_spill_beat(&p->spill);
+            return 1;
+        }
+        if (lotus_spill_pop(&p->spill, &p->lock, &p->not_full,
+                            &p->producers_waiting, cell)) {
+            lotus_spill_beat(&p->spill);
+            return 1;
+        }
     }
 #endif
     if (p->overflow_head) {
@@ -11635,9 +11703,10 @@ static int lotus_coop_pool_drain_one(lotus_coop_pool_t *p) {
          * cell is appended under the lock this recheck holds. */
         int got = lotus_mpsc_ring_try_dequeue(&p->ring, &cell);
 #ifndef __wasm__
-        if (!got)
-            got = lotus_spill_pop_locked(&p->spill, &p->not_full,
-                                         &p->producers_waiting, &cell);
+        if (!got && atomic_load_explicit(&p->spill.len, memory_order_acquire) > 0)
+            got = lotus_mpsc_ring_take_settled(&p->ring, &cell)
+                || lotus_spill_pop_locked(&p->spill, &p->not_full,
+                                          &p->producers_waiting, &cell);
 #endif
         if (got) {
             atomic_store_explicit(&p->parked, 0, memory_order_seq_cst);

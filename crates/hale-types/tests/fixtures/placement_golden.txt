@@ -1711,6 +1711,16 @@ dynamic	Counter	on pool:p	in the seed
 row	~	Owner	pool:p	entry	off owner
 row	~.fill	Filler	pool:p	inherited
 
+== crates/hale-codegen/tests/bus_backpressure.rs#0e77c593
+root	App	the entry
+domain	pool:p
+domain	pool:pa
+domain	pool:pb
+row	App@literal1	App	main	default
+row	App@literal1.s0	Source	pool:pa	entry	off owner
+row	App@literal1.s1	Source	pool:pb	entry	off owner
+row	App@literal1.sub	Counter	pool:p	entry	off owner
+
 == crates/hale-codegen/tests/bus_bounded_topics.rs#32b214f8
 root	App	the entry
 domain	pinned:App@literal1.p	cpus 0
