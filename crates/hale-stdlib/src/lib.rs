@@ -231,6 +231,10 @@ pub const AP_SOURCE: &str = concat!(
     // std::hex: base16 encode / decode / digit. Free fns only, so its
     // place is free; after time.hl so no other file's spans move.
     include_str!("../hl/hex.hl"),
+    "\n",
+    // std::url: percent-encoding. Free fns over hex.hl's digit; http.hl's
+    // path_param / query_param call it, which order does not constrain.
+    include_str!("../hl/url.hl"),
 );
 
 /// The same sources as `AP_SOURCE`, per file. `AP_SOURCE` is the
@@ -272,6 +276,7 @@ pub const AP_FILES: &[(&str, &str)] = &[
     ("term.hl", include_str!("../hl/term.hl")),
     ("time.hl", include_str!("../hl/time.hl")),
     ("hex.hl", include_str!("../hl/hex.hl")),
+    ("url.hl", include_str!("../hl/url.hl")),
 ];
 
 /// Map an `AP_SOURCE` byte offset to `(file_name, file_content,
@@ -391,6 +396,10 @@ pub const PATH_RENAMES: &[(&[&str], &str)] = &[
     (&["std", "hex", "digit"], "__std_hex_digit"),
     (&["std", "hex", "encode"], "__std_hex_encode"),
     (&["std", "iter", "Lines"], "__StdIterLines"),
+    // std::url (url.hl): percent-encoding.
+    (&["std", "url", "decode"], "__std_url_decode"),
+    (&["std", "url", "decode_query"], "__std_url_decode_query"),
+    (&["std", "url", "encode"], "__std_url_encode"),
     (&["std", "json", "ArrayIter"], "__JsonArrayIter"),
     (&["std", "json", "ArrayIterSpan"], "__JsonArrayIterSpan"),
     (&["std", "json", "ObjectIterSpan"], "__JsonObjectIterSpan"),

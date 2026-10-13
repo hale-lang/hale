@@ -78,6 +78,18 @@ locus Http {
         }
         return true;
     }
+    // A value `std::http::query_param` already percent-decoded: the
+    // checks `decode` makes on what it decodes (no control byte, valid
+    // UTF-8), without decoding it a second time.
+    fn checked(text: String) -> Decoded {
+        let mut i = 0;
+        while i < len(text) {
+            let c = std::str::byte_at_unchecked(text, i);
+            if c < 32 || c == 127 { return Decoded { }; }
+            i = i + 1;
+        }
+        return Decoded { ok: self.utf8(text), text: text };
+    }
     fn decode(raw: String) -> Decoded {
         let out = std::bytes::BytesBuilder { };
         let mut i = 0;

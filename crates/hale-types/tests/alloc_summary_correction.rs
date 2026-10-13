@@ -437,6 +437,7 @@ fn verdict_changes() {
             "GraphHttp::text",
             "GraphHttp::unhex",
             "GraphItems::result",
+            "Http::checked",
             "Http::error",
             "Http::page",
             "Http::query",
@@ -574,12 +575,12 @@ fn verdict_changes() {
         ],
         &[
             ("once-per-invocation -> ACCUMULATES-UNBOUNDED", 6),
-            ("once-per-invocation -> per-iteration-reclaim", 187),
+            ("once-per-invocation -> per-iteration-reclaim", 189),
             ("per-iteration-reclaim -> ACCUMULATES-UNBOUNDED", 2),
         ],
         &[
-            "__lib_dna__core___workspace__run_failed StructLit(\"std::process::ProcessOutput\") @1908366..1908445 InvokedUnboundedly",
-            "__lib_dna__core___workspace__run_tool StructLit(\"__lib_dna__core___workspace__RunResult\") @1909078..1909146 InvokedUnboundedly",
+            "__lib_dna__core___workspace__run_failed StructLit(\"std::process::ProcessOutput\") @1908869..1908948 InvokedUnboundedly",
+            "__lib_dna__core___workspace__run_tool StructLit(\"__lib_dna__core___workspace__RunResult\") @1909581..1909649 InvokedUnboundedly",
         ],
     );
     pinned(

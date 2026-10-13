@@ -480,6 +480,10 @@ ns std::text::base64 open_prefixes=[]
   decode pure
   encode pure
   url_encode pure
+ns std::url open_prefixes=[]
+  decode pure
+  decode_query pure
+  encode pure
 ns std::time open_prefixes=[]
   parse_iso8601 pure
   can_parse_iso8601 pure
@@ -1110,6 +1114,9 @@ std::ts::node_start_byte | lookup=ts@2 | locus=false | effects=pure | sig=(Int) 
 std::ts::node_text | lookup=ts@2 | locus=false | effects=pure | sig=(Int) -> Str | ret_ty=String | or=- | parks=false | holds=false | unknown=- | suggest=node_text
 std::ts::parse_go | lookup=ts@2 | locus=false | effects=alloc | sig=(Str) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=parse_go
 std::ts::root_node | lookup=ts@2 | locus=false | effects=pure | sig=(Int) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=root_node
+std::url::decode | lookup=url@2 | locus=false | effects=pure | sig=(Str) -> Str | ret_ty=String | or=- | parks=false | holds=false | unknown=- | suggest=decode
+std::url::decode_query | lookup=url@2 | locus=false | effects=pure | sig=(Str) -> Str | ret_ty=String | or=- | parks=false | holds=false | unknown=- | suggest=decode_query
+std::url::encode | lookup=url@2 | locus=false | effects=pure | sig=(Str) -> Str | ret_ty=String | or=- | parks=false | holds=false | unknown=- | suggest=encode
 std::vec::len | lookup=- | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=`std::vec::len` is not a stdlib function; the length of an array is the builtin `len(a)`
 std::x | lookup=- | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib namespace `std`
 std::yaml::Builder | lookup=- | locus=true | effects=- | sig=- | parks=false | holds=false | unknown=-

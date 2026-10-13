@@ -427,7 +427,8 @@ interface __StdHttpHandler {
 // boundary conversion existed only because vendored libs can't
 // alias stdlib types); the storage loci are declared before the
 // Router in this file, retiring pond's lists.hl name-ordering
-// workaround. URL-decoding of params is not performed at v1.
+// workaround. `path_param` / `query_param` percent-decode the value
+// they hand back (`std::url`, 2026-10-12).
 
 // Per-request capture state. `qs` is the raw query string with
 // the leading `?` stripped ("a=1&b=2") — kept raw because most
@@ -513,50 +514,54 @@ locus __StdHttpMwList {
 // ---- path / query helpers -------------------------------------------
 
 // `std::http::path_param(ctx.params, "name")` — the value a
-// `:name` pattern segment captured, or "" when absent.
-/// A `:name` capture's value for this request, or "" when the
-/// pattern had no such capture (sentinel shape; not URL-decoded).
+// `:name` pattern segment captured, percent-decoded, or "" when
+// absent. Matching ran on the raw segment; only the value handed back
+// is decoded, with `std::url::decode` (a `+` in a path is a plus).
+/// A `:name` capture's value for this request, percent-decoded
+/// (`%20` is a space, `+` stays `+`), or "" when the pattern had no
+/// such capture.
 fn __http_path_param(p: std::http::RouteParams, name: String) -> String {
     let n = count(p.path_keys);
     let mut i = 0;
     while i < n {
         let k = at(p.path_keys, i) or "";
         if k == name {
-            return at(p.path_vals, i) or "";
+            return __std_url_decode(at(p.path_vals, i) or "");
         }
         i = i + 1;
     }
     return "";
 }
 
-// `std::http::query_param(ctx.params, "q")` — the value of a
-// `k=v` pair in the query string, or "" when absent. Walks
+// `std::http::query_param(ctx.params, "q")` — the value of the
+// first `k=v` pair whose key is `name`, or "" when absent. Walks
 // pair-by-pair so an early hit skips the rest; comparisons are
-// case-sensitive; values are NOT URL-decoded at v1.
-/// A `k=v` query value, or "" when absent (not URL-decoded).
+// case-sensitive. Both sides of a pair are decoded with
+// `std::url::decode_query` (`%XX`, and `+` as a space) before the key
+// is compared, so `?first%20name=a+b` answers `query_param(p,
+// "first name")` with "a b". A pair with no `=` is a key with the
+// empty value.
+/// The value of the first `k=v` query pair whose key is `name`,
+/// percent-decoded with `+` as a space, or "" when absent.
 fn __http_query_param(p: std::http::RouteParams, name: String) -> String {
     let qs = p.qs;
     let total = len(qs);
     if total == 0 {
         return "";
     }
-    let needle = name + "=";
-    let needle_len = len(needle);
     let mut cursor = 0;
-    while cursor < total {
-        let rel = std::str::index_of(qs[cursor..total], "&");
-        let pair_end = if rel < 0 { total } else { cursor + rel };
-        let pair = qs[cursor..pair_end];
-        let plen = len(pair);
-        if plen >= needle_len {
-            if pair[0..needle_len] == needle {
-                if needle_len >= plen {
-                    return "";
-                }
-                return pair[needle_len..plen];
+    while cursor <= total {
+        let amp = std::str::index_of_from(qs, "&", cursor);
+        let pair_end = if amp < 0 { total } else { amp };
+        let eq = std::str::index_of_from(qs, "=", cursor);
+        let key_end = if eq < 0 || eq > pair_end { pair_end } else { eq };
+        if __std_url_decode_query(qs[cursor..key_end]) == name {
+            if key_end >= pair_end {
+                return "";
             }
+            return __std_url_decode_query(qs[key_end + 1..pair_end]);
         }
-        if rel < 0 {
+        if amp < 0 {
             return "";
         }
         cursor = pair_end + 1;

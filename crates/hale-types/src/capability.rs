@@ -1126,6 +1126,7 @@ pub const BEHAVIOURS: &[BehaviourRow] = &[
     std_ns("text::base64", STD_NATIVE, STD_NATIVE, STD_WASM),
     std_ns("time", STD_NATIVE, STD_NATIVE, WASM_TIME),
     std_ns("ts", STD_NATIVE, STD_NATIVE, WASM_TS),
+    std_ns("url", STD_NATIVE, STD_NATIVE, STD_WASM),
     std_ns("yaml", STD_NATIVE, STD_NATIVE, STD_WASM),
     // ---- link, exports, entry
     BehaviourRow {

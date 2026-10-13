@@ -1500,7 +1500,7 @@ crates/hale-stdlib/hl/cli.hl 7d556f7676875798
 crates/hale-stdlib/hl/core.hl 5bd71359097e00e6
 crates/hale-stdlib/hl/file.hl 59c75ee097af9bd8
 crates/hale-stdlib/hl/hex.hl eb377492db5d27b1
-crates/hale-stdlib/hl/http.hl 19ff298a820b65d4
+crates/hale-stdlib/hl/http.hl f2afa33461f44cd6
 crates/hale-stdlib/hl/http_client.hl e6c060bf1c364797
 crates/hale-stdlib/hl/io_tcp.hl 6be8920a3d36060a
 crates/hale-stdlib/hl/iter.hl 907139175ae346a1
@@ -1518,6 +1518,7 @@ crates/hale-stdlib/hl/tagged.hl 7b514c1ecd3e9de5
 crates/hale-stdlib/hl/term.hl f643d32e6ab5d1e6
 crates/hale-stdlib/hl/text.hl f79ff9cb8f4e3936
 crates/hale-stdlib/hl/ts.hl 8aa733706f2db819
+crates/hale-stdlib/hl/url.hl 72f955933d48d5c7
 crates/hale-syntax/tests/intra_locus_pool_safety.rs#0 136877c05cbac3b6
 crates/hale-syntax/tests/wrap_main.rs#0 865d341109268295
 crates/hale-syntax/tests/wrap_main.rs#1 80e8e4543ac850e6

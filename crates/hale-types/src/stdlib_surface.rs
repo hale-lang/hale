@@ -1382,6 +1382,16 @@ pub const SURFACES: &[NsSurface] = &[
         ],
         open_prefixes: &[],
     },
+    // std::url: percent-encoding, Hale bodies in `url.hl`.
+    NsSurface {
+        ns: &["url"],
+        fns: &[
+            row!("decode", PURE, [Str] -> Str, Renamed),
+            row!("decode_query", PURE, [Str] -> Str, Renamed),
+            row!("encode", PURE, [Str] -> Str, Renamed),
+        ],
+        open_prefixes: &[],
+    },
     NsSurface {
         ns: &["time"],
         // GH #1076 (U4): `Duration` and `Time` are declared in the stdlib's
