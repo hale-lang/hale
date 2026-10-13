@@ -548,6 +548,13 @@ fn run_one_fixture(f: &PathBuf, tag: &str, dsn: Option<&str>) -> Result<FixtureT
     if let Some(dsn) = dsn {
         cmd.env("HALE_DNA_MEMORY_DSN_OWNER", dsn);
     }
+    // A repository body brings its compose services up (ruling 11): a
+    // fixture's body must never build or pull a service's image or bind a
+    // service's fixed port, so every body a fixture starts inherits
+    // `off`. A fixture about compose (repository_sense_test) opts in on
+    // its own body with `HALE_DNA_COMPOSE=on`; each fixture that runs a
+    // repository body also says `off` itself, so a run by hand is as safe.
+    cmd.env("HALE_DNA_COMPOSE", "off");
     // GH #795: a fixture's bounded waits are written for a quiet
     // machine, and here they are not on one — the slices run beside the
     // rest of the workspace's tests, and beside one another, with an

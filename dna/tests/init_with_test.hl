@@ -70,7 +70,7 @@ fn make(scratch: String, name: String) -> String {
 // The command that starts a project's organization in the background, its
 // log in `.hale/body.log`.
 fn start_of(repo: String, owner: String, nats: String) -> String {
-    return "sh\n-c\ncd \"$1\" && unset ANTHROPIC_API_KEY OPENAI_API_KEY && export HALE_DNA_DISCOVER=off HALE_DNA_MEMORY_DSN_OWNER=\"$2\" HALE_DNA_NATS_URL_OWNER=\"$3\" && nohup timeout --foreground 900 \"$4\" dna dev . --no-iris >>.hale/body.log 2>&1 </dev/null & echo $!\nsh\n" + repo + "\n" + owner + "\n" + nats + "\n" + toolchain();
+    return "sh\n-c\ncd \"$1\" && unset ANTHROPIC_API_KEY OPENAI_API_KEY && export HALE_DNA_DISCOVER=off HALE_DNA_COMPOSE=off HALE_DNA_MEMORY_DSN_OWNER=\"$2\" HALE_DNA_NATS_URL_OWNER=\"$3\" && nohup timeout --foreground 900 \"$4\" dna dev . --no-iris >>.hale/body.log 2>&1 </dev/null & echo $!\nsh\n" + repo + "\n" + owner + "\n" + nats + "\n" + toolchain();
 }
 
 // The catalog the organism runs on: every backend a `dna::FakeModel`, so

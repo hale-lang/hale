@@ -154,6 +154,17 @@ file; add `HALE_TEST_KEEP_VAULT=1` to keep that too.
 HALE_DNA_KEEP_SCRATCH=1 HALE_TEST_KEEP_VAULT=1 hale test dna/tests/<name>_test.hl
 ```
 
+A fixture's body never runs a repository's compose services. A
+repository body (`dna dev`/`dna run` on a root with no Hale source)
+brings up the compose file at its root (ruling 11), which would pull
+and build real images and bind their fixed ports, so the DNA suite
+starts every fixture under `HALE_DNA_COMPOSE=off`, and a fixture that
+starts a repository body says `HALE_DNA_COMPOSE=off` on it as well, so
+a run by hand is as safe. Only a fixture about compose opts in, with
+`HALE_DNA_COMPOSE=on` on its own body (`repository_sense_test`), a
+compose project of the organism's own, and its containers taken down
+however the fixture ends.
+
 The process harness's acceptance is a from-scratch cycle on canned
 models (`scripts/dna-cycle/`): an organization opened around the todo
 repository, a position opened and filled, one ask delivered by the

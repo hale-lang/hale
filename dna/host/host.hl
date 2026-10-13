@@ -2149,8 +2149,8 @@ main locus Host {
     // the operator, as before.
     fn start_compose() {
         let file = compose_file_at(self.root);
-        if len(file) == 0 { self.say("a repository with no compose file: no application runs under this host; the organization oversees its seeds"); return; }
-        if std::env::var("HALE_DNA_COMPOSE") == "off" { self.say("the repository's compose services are the operator's (HALE_DNA_COMPOSE=off): this body does not bring them up"); return; }
+        if len(file) == 0 { self.say("a repository: no application runs under this host (it has no compose file); the organization oversees its seeds"); return; }
+        if std::env::var("HALE_DNA_COMPOSE") == "off" { self.say("a repository: its compose services are left to the operator (HALE_DNA_COMPOSE=off); the organization oversees its seeds"); return; }
         let app = attached_application(self.root);
         self.compose = RepositoryCompose { root: self.root, file: file, project: compose_project(record_identity(self.root), if len(app) > 0 { app } else { project_dir_name(self.root) }) };
         let handed = self.hand_compose_nerves(app);

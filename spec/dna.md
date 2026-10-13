@@ -5036,7 +5036,9 @@ The live half is memory's, projected from the record by the spine
   the address is not rewritten. A mounted entry is the file the vault held
   when the container was created: a password drawn anew reaches the service
   when the body next brings it up. `HALE_DNA_COMPOSE=off` leaves the
-  services to the operator, as before ruling 11. Not yet: a Mutation's
+  services to the operator, as before ruling 11, and the body says so; a
+  repository with no compose file runs no application under the body, which
+  says that too. Not yet: a Mutation's
   restart request does not bring a changed compose file up (the body says
   the repository has no application to restart), and the services' logs stay
   compose's (`docker compose -p <project> logs`).
@@ -5728,7 +5730,7 @@ otherwise.
 | `HALE_DNA_NATS_USER_APP=<user>` | unset | The attached application's own nerves user, `app-<name>` (`hale dna nerves migrate` prints it; GH #989). |
 | `HALE_DNA_NATS_VAULT_APP=<name>` | unset | The vault entry holding the application user's nerves password (`hale dna nerves migrate` prints it): presented on CONNECT, never carried in a URL (GH #989). |
 | `HALE_DNA_NATS_SECRET_APP=<path>` | unset | Handed by a repository body to its compose services alone: the path of the local vault's entry holding the application's nerves password, for the compose file to mount as a secret (ruling 11). |
-| `HALE_DNA_COMPOSE=off` | on | A repository body leaves its compose services to the operator: it neither brings them up nor down (ruling 11). |
+| `HALE_DNA_COMPOSE=off` | on | A repository body leaves its compose services to the operator: it neither brings them up nor down, and says `a repository: its compose services are left to the operator (HALE_DNA_COMPOSE=off)` (ruling 11). The DNA suite sets it for every fixture; a fixture about compose opts in with `on`. |
 | `HALE_DNA_NATS_VAULT_REFLEXES=<name>` | unset | The same for the reflexes user; `dna/reflexes` refuses to start without it. |
 | `HALE_DNA_COMMANDS_PORT=<port>` | unset | The loopback port of the API child's HTTP commands transport, given by `dna/face/start.sh` to the head and by the head to its API child; without it the head answers `commands_unavailable` (503). |
 | `HALE_DNA_NATS_ORG=<token>` | unset | The organization's token, the prefix of its subjects; `dev` hands it to the host and the host to the parts. |

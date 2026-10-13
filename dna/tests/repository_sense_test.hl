@@ -134,7 +134,7 @@ main locus App {
         let started = in_dir(repo, "sh\n-c\nHALE_DNA_COMPOSE=off HALE_DNA_NATS_URL_SPINE=\"$2\" HALE_DNA_NATS_ORG=\"$3\" nohup timeout --foreground 300 \"$1\" dna run . --no-iris >host.log 2>&1 </dev/null & echo $!\nsh\n" + toolchain() + "\n" + spine + "\n" + org);
         let host_pid = dna::trim_nl(started.stdout);
         std::test::assert(logged(repo, "the organization reads its facts from the nerves", 300) && logged(repo, "hale dna run: genome ", 60), "the organization came up on the repository record: " + host_log(repo));
-        std::test::assert(std::str::contains(host_log(repo), "the repository's compose services are the operator's (HALE_DNA_COMPOSE=off)"), "the body leaves compose alone when told: " + host_log(repo));
+        std::test::assert(std::str::contains(host_log(repo), "a repository: its compose services are left to the operator (HALE_DNA_COMPOSE=off)"), "the body leaves compose alone when told: " + host_log(repo));
 
         // ---- the application's own sense, as its main.hl wires it
         let sense = todo::Nerves { url: app_url, user: app_user, credential: std::secret::Credential { vault: app_vault }, org: org };
@@ -178,7 +178,7 @@ fn in_containers(repo: String, spine: String, org: String) {
     std::test::assert_eq_int(built.code, 0, "the api built, as the compose file expects: " + built.stdout + built.stderr);
     let port = dna::free_port(0);
     let ports = "TODO_PORT=" + to_string(port) + " TODO_MCP_PORT=" + to_string(dna::free_port(1)) + " TODO_STREAM_PORT=" + to_string(dna::free_port(2)) + " TODO_UI_PORT=" + to_string(dna::free_port(3));
-    let started = in_dir(repo, "sh\n-c\nexport " + ports + "; HALE_DNA_NATS_URL_SPINE=\"$2\" HALE_DNA_NATS_ORG=\"$3\" nohup timeout --foreground 900 \"$1\" dna run . --no-iris >host.log 2>&1 </dev/null & echo $!\nsh\n" + toolchain() + "\n" + spine + "\n" + org);
+    let started = in_dir(repo, "sh\n-c\nexport HALE_DNA_COMPOSE=on " + ports + "; HALE_DNA_NATS_URL_SPINE=\"$2\" HALE_DNA_NATS_ORG=\"$3\" nohup timeout --foreground 900 \"$1\" dna run . --no-iris >host.log 2>&1 </dev/null & echo $!\nsh\n" + toolchain() + "\n" + spine + "\n" + org);
     let host_pid = dna::trim_nl(started.stdout);
     std::test::assert(logged(repo, "compose project ", 300), "the body brings the repository's compose services up: " + host_log(repo));
     let project = compose_project_logged(repo);
