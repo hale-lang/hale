@@ -1757,7 +1757,13 @@ zero_copy binding produces.
   picks one of `restart` / `restart_in_place` / `quarantine` /
   `reorganize` / `bubble`, or absorbs (returns without calling
   any). A violation that bubbles past the root exits the
-  process non-zero with the violation report on stderr.
+  process non-zero with the violation report on stderr, at
+  the moment the check failed: nothing after it in `main`
+  runs. The report names the epoch the check ran at —
+  `failed at tick (after a delivered cell)`,
+  `at birth`, `at dissolve`, `at its duration epoch`, `at an
+  explicit check` — and a violation re-raised by `bubble(err)`
+  past the root says `bubbled past every on_failure handler`.
 - **No source-level panic / exceptions.** Hale has no
   `panic(msg)`, `assert(cond)`, `throw` / `catch`, or
   implicitly-propagating exception machinery. Failure is
@@ -3761,7 +3767,14 @@ for replay-under-a-different-plan) is the next milestone.
   `lotus_io_init` so writes to a closed pipe (subprocess stdin,
   closed TCP socket, etc.) surface as `EPIPE` through the
   IoError channel instead of synchronously killing the parent.
-  Applies process-wide — no opt-out.
+  Applies process-wide — no opt-out. It is the program's own
+  disposition, not its children's: an ignored signal stays ignored
+  across exec, so `lotus_process_fork` resets SIGPIPE to the default
+  in a `run`/`spawn` child before its exec, beside SIGINT and SIGTERM.
+  A spawned filter whose reader has gone (`yes` into `head -1`) dies
+  of SIGPIPE, as under a shell — `run` reports `signal: 13` — instead
+  of meeting `EPIPE` on every write and never ending. (Before
+  2026-10-12 the child inherited SIG_IGN.)
 - **Subprocess lifecycle** (added 2026-05-17, C2 — see
   [`spec/stdlib.md` § std::process](stdlib.md) for the API
   surface). Every spawned child gets its own process group via

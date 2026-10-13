@@ -97,6 +97,38 @@ different impls, the last designation wins, just as it would with
 two different defaults. Tests assemble a fake, deployments assemble
 the real one, and the holder's source never changes.
 
+A holder that should *use* the program's router without choosing one
+leaves the field without an initializer. That field **holds** the slot:
+constructing the holder builds no impl and re-points nothing, and its
+calls go wherever the program designated. This is how a child created
+on the fly reaches the impl its assembly picked:
+
+```hale
+locus Attempt {
+    params { router: perspective(Router); }   // hold, don't designate
+    run() { println(self.router.route(1)); }
+}
+
+locus Work {
+    accept(a: Attempt) { }
+    run() { Attempt { }; Attempt { }; }       // each routes through RouterV2
+}
+
+main locus App {
+    params {
+        router: perspective(Router) = RouterV2 { };   // the designation
+        w: Work = Work { };
+    }
+}
+```
+
+A holder may still be given an impl at its construction (`Attempt {
+router: RouterV1 { } }`), which designates as any override does. The
+build refuses a program in which something holds a perspective and
+nothing that is built designates it; and a call through a held slot
+that runs before any designation has (a field born ahead of the
+designating one, say) stops the program with the perspective named.
+
 `self.router.route(...)` doesn't call `RouterV1` directly — it goes
 through the perspective's **slot**. That indirection is the whole
 point: it's the seam a redeploy re-points.

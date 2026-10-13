@@ -4536,6 +4536,40 @@ per-instance one — two holders constructed with different impls
 race on one slot, last designation wins, the same as two holders
 with different defaults.
 
+**Holding without designating (GH #731).** A `perspective(P)`
+param with **no initializer** holds the slot: a construction may
+omit it (it is not a required param, unlike any other field with no
+initializer), and omitted it builds no impl, owns nothing, stores no
+impl pointer in the field and leaves `__persp.<P>` as it is — calls
+through the field dispatch to whatever the program designated, and a
+later `reperspective` by any holder reaches it through the same slot.
+A construction that does name an impl
+(`Attempt { performer: Impl { } }`) designates, exactly as the
+override above. Two rules keep the
+slot from being read empty:
+
+- **The build** refuses a program in which an instantiation it lowers
+  holds `P` this way and no instantiation it lowers designates `P`
+  — the error names `P` and the holding field `L.f`: "holds its slot
+  without designating it, and nothing in the program designates it".
+  A designation in a locus nothing builds does not count.
+- **At run time**, a call through a perspective that some declared
+  holder may hold without designating first checks the slot; a call
+  that runs before any designation — a field constructed ahead of the
+  designating one, whose birth calls through it — stops the program
+  with "runtime error: perspective `P`: `m` was called before
+  anything designated the perspective" on stderr and exit status 1.
+  Designation is ordered as construction is: a holder's fields in declaration
+  order, each child's birth before its next sibling's construction.
+  A perspective every holder designates is not checked: its slot is
+  written before any holder can call.
+
+What a call through a held slot reaches is, to every analysis that reads
+the call graph (effects, the portable capability check, the allocation
+summary), each locus that `serves P` — the only loci a designation may
+name — so a held slot is judged as the impls it can hold, never as an
+unknown receiver.
+
 **Cost.** Steady state is one load + one predicted indirect call
 per call into a perspective — near-direct. The mechanism is
 Linux/native-agnostic (no new runtime dependency); a program that

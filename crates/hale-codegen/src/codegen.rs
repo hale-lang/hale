@@ -1597,6 +1597,9 @@ pub fn build_resolved(
         locus_cascade_path: Vec::new(),
         instantiating_into_payload_arena: false,
         anchor_record_slot: None,
+        perspectives_holdable: BTreeSet::new(),
+        perspectives_held: BTreeMap::new(),
+        perspectives_designated: BTreeSet::new(),
         placement_for_field: None,
         numa_node_for_next_locus_instantiation: None,
         params_init_self: None,
@@ -4049,6 +4052,17 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// no entry on the building frame, which does not own the root at its
     /// exit.
     pub(crate) anchor_record_slot: Option<PointerValue<'ctx>>,
+    /// GH #731: the perspectives some declared holder may hold WITHOUT
+    /// designating (`p: perspective(P);`). Filled as the loci are
+    /// declared, so every call through one of them — lowered later —
+    /// checks the slot before it dispatches.
+    pub(crate) perspectives_holdable: BTreeSet<String>,
+    /// GH #731: the perspectives a lowered instantiation holds without
+    /// designating, each with its first such field as `Locus.field`.
+    pub(crate) perspectives_held: BTreeMap<String, String>,
+    /// GH #731: the perspectives a lowered instantiation designates
+    /// (a `= Impl { }` default or a constructor override).
+    pub(crate) perspectives_designated: BTreeSet<String>,
     /// F.31 (2026-05-23): the placement a `placement { }` entry
     /// gives one field, as `(entry, class)`.
     ///
@@ -5659,6 +5673,12 @@ pub(crate) enum DefaultInit {
     /// `lower_locus_instantiation` errors with a clear message
     /// otherwise.
     Required,
+    /// GH #731 (dna/FRICTION.md F.4): a `perspective(P)` param with no
+    /// initializer HOLDS the program's slot without designating it.
+    /// Omitted at the instantiation, the field stores no impl (null),
+    /// owns nothing and leaves `__persp.<P>` as the designating holder
+    /// set it; calls through the field dispatch through that slot.
+    HoldsSlot,
 }
 
 /// Compiled user `type` (a plain data record). No methods, no
@@ -9921,6 +9941,23 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let _ = ptr_t;
         self.in_main = false;
         self.current_fn = None;
+        // GH #731: a perspective held without a designation needs one
+        // somewhere in the program; with none, every call through it
+        // would reach the empty slot.
+        for (persp, holder) in &self.perspectives_held {
+            if !self.perspectives_designated.contains(persp) {
+                return Err(CodegenError::Unsupported(format!(
+                    "perspective `{}`: `{}` holds its slot without designating it, \
+                     and nothing in the program designates it — give one holder \
+                     an impl (`{}: perspective({}) = Impl {{ }}` or a constructor \
+                     override)",
+                    persp,
+                    holder,
+                    holder.rsplit('.').next().unwrap_or(holder),
+                    persp
+                )));
+            }
+        }
         // C32: the contract teardowns the bodies recorded, before the
         // drain observers are counted (their drains are some).
         self.synthesize_contract_teardowns()?;
@@ -27650,6 +27687,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             | Id::ProcessPipeWriteRaw
             | Id::ProcessSignalPidRaw
             | Id::ProcessSpawnRaw
+            | Id::ProcessSpawnWithRaw
+            | Id::ProcessRunWithRaw
+            | Id::ProcessWaitDeadlineRaw
             | Id::ProcessTryWaitPidRaw
             | Id::ProcessWaitPidRaw
             | Id::ProcessRun
@@ -27974,6 +28014,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // process.hl's spawn/wait/kill wrappers.
             Id::ProcessRun => self.lower_std_process_run_fallible(args, scope),
             Id::ProcessSpawnRaw => self.lower_std_process_spawn_fallible(args, scope),
+            Id::ProcessSpawnWithRaw => self.lower_std_process_spawn_with_fallible(args, scope),
+            Id::ProcessRunWithRaw => self.lower_std_process_run_with_fallible(args, scope),
+            Id::ProcessWaitDeadlineRaw => self.lower_std_process_wait_deadline_fallible(args, scope),
             Id::ProcessWaitPidRaw => self.lower_std_process_wait_pid_fallible(args, scope),
             Id::ProcessKillEscalateRaw => {
                 self.lower_std_process_kill_escalate_fallible(args, scope)
@@ -30715,6 +30758,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .build_load(ptr_t, vtable_slot_ptr, "persp.vtable")
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
             .into_pointer_value();
+        // GH #731: a perspective some holder holds without designating
+        // can be called before anything designated it. The call stops
+        // the program with the perspective named instead of jumping
+        // through an empty slot. A perspective every holder designates
+        // pays nothing: its slot is set before any holder can call.
+        if self.perspectives_holdable.contains(persp_name) {
+            self.emit_perspective_slot_check(persp_name, vtable_ptr, method_name)?;
+        }
         let vtable_ty = ptr_t.array_type(contract_fns.len() as u32);
         let i32_t = self.context.i32_type();
         let zero = i32_t.const_zero();
@@ -30945,7 +30996,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     ///   pass = diff <= tolerance
     ///   if pass: continue
     ///   else:
-    ///     dprintf(2, "ClosureViolation: locus `L` closure `C` failed at dissolve\n")
+    ///     dprintf(2, "ClosureViolation: locus `L` closure `C` failed at <epoch>\n")
     ///     exit(1)
     /// ```
     ///
@@ -31974,7 +32025,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             )
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         let fmt = self.global_string(
-            "runtime error: ClosureViolation: locus `%s` closure `%s` failed at dissolve\n",
+            "runtime error: ClosureViolation: locus `%s` closure `%s` failed; bubbled past every on_failure handler\n",
         );
         let dprintf_fn = self
             .module
@@ -32799,6 +32850,58 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// (`perspective(P) = Impl { }`) stores `{impl_self, vtable}`
     /// into it, and Phase 2b `reperspective` re-points it with one
     /// atomic store. Idempotent (get-or-create by name).
+    /// GH #731: stop the program, naming the perspective, when its
+    /// slot holds no impl at a call through it.
+    fn emit_perspective_slot_check(
+        &mut self,
+        persp_name: &str,
+        vtable_ptr: PointerValue<'ctx>,
+        method_name: &str,
+    ) -> Result<(), CodegenError> {
+        let func = self
+            .builder
+            .get_insert_block()
+            .and_then(|b| b.get_parent())
+            .ok_or_else(|| CodegenError::LlvmEmit("perspective call outside a function".into()))?;
+        let empty = self
+            .builder
+            .build_is_null(vtable_ptr, "persp.empty")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let empty_bb = self.context.append_basic_block(func, "persp.empty");
+        let ok_bb = self.context.append_basic_block(func, "persp.designated");
+        self.builder
+            .build_conditional_branch(empty, empty_bb, ok_bb)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder.position_at_end(empty_bb);
+        let i32_t = self.context.i32_type();
+        let ptr_t = self.context.ptr_type(AddressSpace::default());
+        let fflush_fn = self.module.get_function("fflush").expect("fflush declared");
+        self.builder
+            .build_call(fflush_fn, &[ptr_t.const_null().into()], "persp.empty.fflush")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let msg = self.global_string(&format!(
+            "runtime error: perspective `{}`: `{}` was called before anything designated the perspective\n",
+            persp_name, method_name
+        ));
+        let dprintf_fn = self.module.get_function("dprintf").expect("dprintf declared");
+        self.builder
+            .build_call(
+                dprintf_fn,
+                &[i32_t.const_int(2, false).into(), msg.into()],
+                "persp.empty.dprintf",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let exit_fn = self.module.get_function("exit").expect("exit declared");
+        self.builder
+            .build_call(exit_fn, &[i32_t.const_int(1, false).into()], "persp.empty.exit")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder
+            .build_unreachable()
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder.position_at_end(ok_bb);
+        Ok(())
+    }
+
     pub(crate) fn ensure_perspective_slot(
         &mut self,
         persp_name: &str,
