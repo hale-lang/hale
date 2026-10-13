@@ -149,7 +149,9 @@ repository's to change once the kickstart lands.
   `refers` edges between them cannot exist.
 - **`ui` is a process with no seed**, so it has no dev, no work item, and
   `ci/ui` guards nothing. A `package.json` (or a `hale.toml`) under `ui/` would
-  make it one; the page is deliberately buildless.
+  make it one; the page is deliberately buildless. Since the README links it
+  and the compose file mounts it, `init` notes that the head serves `ui/` as the
+  application's static assets, under `/app/`.
 - **The repository's own practices are one.** The README's `practice` item is
   the only one marked; the stock `design/*` and `operating/*` practices are
   DNA's and arrive with every organization.

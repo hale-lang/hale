@@ -500,6 +500,17 @@ locus Head {
         return http.error(status, code, message, retryable);
     }
 
+    // Ruling 11b: the attached project's `ui/` — a directory with no
+    // manifest that the repository references — as the application's
+    // static assets, under `/app/` (`ops::application_asset`).
+    fn app_assets(path: String) -> std::http::Response {
+        let ctx = context_of(self.cfg);
+        if len(ctx.active_id) == 0 { return self.command_error("head_detached"); }
+        let a = ops::application_asset(ctx.active_root, path);
+        if a.status != 200 { return self.error(404, "not_found", a.why, false); }
+        return std::http::Response { status: 200, content_type: a.content_type, headers: "Cache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nReferrer-Policy: no-referrer", body: a.body };
+    }
+
     // The head envelope (§2.4) around `data`.
     fn envelope(status: Int, active_id: String, data: String) -> std::http::Response {
         let http = api::Http { };
@@ -922,6 +933,7 @@ locus Head {
             }
         }
         if req.method == "GET" && self.web.serves(path) { return self.web.response(path); }
+        if req.method == "GET" && (path == ops::APP_ASSETS_PREFIX || std::str::starts_with(path, ops::APP_ASSETS_PREFIX + "/")) { return self.app_assets(path); }
         settle_all(self.cfg);
         if path == HEAD_PREFIX || path == HEAD_PREFIX + "/projects" || path == HEAD_PREFIX + "/logs" {
             if req.method != "GET" { return self.error(405, "method_not_allowed", "this head route is a read", false); }

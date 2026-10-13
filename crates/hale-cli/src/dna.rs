@@ -1521,7 +1521,7 @@ fn init(app_dir: &Path, library: bool) -> Result<Vec<String>, String> {
             (Some(app), Some((art, _))) => {
                 let (n, graph) = seed_journal(&app.root, app, art, &purpose_text)?;
                 out.push(format!("seeded  {RECORD_REF} ({n} observed event(s): application.attached, structure.observed, responsibility.proposed; then the purpose proposed and the application's graph)"));
-                out.push(format!("graph   {} (graph.node, graph.edge)", graph.trim()));
+                push_graph_lines(&mut out, &graph);
                 out.push(seat_initializer(&app.root, true)?);
             }
             _ => {
@@ -1533,7 +1533,7 @@ fn init(app_dir: &Path, library: bool) -> Result<Vec<String>, String> {
                     "seeded  {RECORD_REF} (application.attached `{}`: the repository's compose services are its expression; the purpose, proposed; then the graph)",
                     app_account_name(&project)
                 ));
-                out.push(format!("graph   {} (graph.node, graph.edge)", graph.trim()));
+                push_graph_lines(&mut out, &graph);
                 out.push(seat_initializer(&root, true)?);
             }
         }
@@ -3120,6 +3120,17 @@ impl Chain {
     }
     fn push(&mut self, kind: &str, entity: &str, body: &str) {
         self.lines.push((kind.to_string(), entity.to_string(), body.to_string()));
+    }
+}
+
+/// What `graph-ingest` answered, as `init` prints it: the counts on the
+/// `graph` line, then each note the ingest says once (ruling 11b: a `ui/`
+/// it took no seed from) on a `note` line of its own.
+fn push_graph_lines(out: &mut Vec<String>, graph: &str) {
+    let mut lines = graph.trim().lines();
+    out.push(format!("graph   {} (graph.node, graph.edge)", lines.next().unwrap_or("").trim()));
+    for note in lines.map(str::trim).filter(|l| !l.is_empty()) {
+        out.push(format!("note    {note}"));
     }
 }
 

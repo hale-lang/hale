@@ -1045,6 +1045,7 @@ fn dna_fixture_set_is_complete() {
             "task_evidence_test.hl",
             "tool_loop_test.hl",
             "two_owners_test.hl",
+            "ui_assets_test.hl",
             "usage_test.hl",
             "verification_test.hl",
             "workflow_admission_contention_test.hl",

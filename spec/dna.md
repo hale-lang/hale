@@ -4513,7 +4513,15 @@ The live half is memory's, projected from the record by the spine
   each directory holding `hale.toml`, `package.json`, `Cargo.toml`,
   `go.mod` or `pyproject.toml`, the outermost only (a workspace's
   members are its own), never the root; a process unfolds into the seed
-  of its name; **contracts** — `spec/*.yaml`, `spec/*.yml`, `spec/*.md`
+  of its name. A `ui/` at the root holding no manifest is **no seed**
+  (ruling 11b, 2026-10-12): when the repository references it — a link
+  in a tracked markdown document outside it resolves into it, or the
+  compose file names `./ui` (a volume or a build) — the head serves it as
+  the application's static assets under `/app/` (`/app/` its
+  `index.html`, `/app/<path>` the file `ui/<path>`, nothing outside it,
+  for the attached project: `ops::application_asset`), and `init` says so
+  on a `note` line; when nothing references it `init` says once that it
+  is ignored. Neither writes a row. **contracts** — `spec/*.yaml`, `spec/*.yml`, `spec/*.md`
   and each directory under `spec/vendor/`; **nouns** — a YAML contract's
   `components.schemas` and a markdown contract's `CREATE TABLE`s, named
   by the contract; a noun is its name, so two contracts that name one

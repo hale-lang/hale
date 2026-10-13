@@ -27,6 +27,9 @@ import "../core" as dna;
 
 const INGEST_MANIFESTS: String = "hale.toml package.json Cargo.toml go.mod pyproject.toml";
 const INGEST_COMPOSE: String = "compose.yaml compose.yml docker-compose.yaml docker-compose.yml";
+// Ruling 11b (2026-10-12): the directory a repository's browser page lives
+// in. Without a manifest it is no seed; see `GraphIngest.ui_assets`.
+const INGEST_ASSETS: String = "ui";
 
 // ---- paths and lines ------------------------------------------------------
 
@@ -258,7 +261,8 @@ fn md_item(line: String) -> String {
 
 // ---- the ingest ------------------------------------------------------------
 
-type IngestAnswer { rows: String = ""; nodes: Int = 0; edges: Int = 0; counts: String = ""; error: String = ""; }
+// `notes`: what the ingest took no row from and says once, one per line
+type IngestAnswer { rows: String = ""; nodes: Int = 0; edges: Int = 0; counts: String = ""; notes: String = ""; error: String = ""; }
 
 locus GraphIngest {
     params {
@@ -1220,14 +1224,22 @@ locus GraphIngest {
         }
         return n;
     }
-    // The graph's rows, or why the repository cannot be taken as it is.
-    fn ingest() -> IngestAnswer {
+    // The tracked files, as git holds them: "" when they were read, else why.
+    fn list_files() -> String {
         // paths as git holds them, not octal-quoted: a name with a byte
         // above ASCII is a name like any other
         let listed = dna::run_tool("git\n-C\n" + self.root + "\n-c\ncore.quotePath=false\nls-files");
-        if listed.code != 0 { return IngestAnswer { error: "git ls-files: " + dna::trim_nl(listed.stderr) }; }
+        if listed.code != 0 { return "git ls-files: " + dna::trim_nl(listed.stderr); }
         self.files = "\n" + listed.stdout;
         if !std::str::ends_with(self.files, "\n") { self.files = self.files + "\n"; }
+        return "";
+    }
+    // Ruling 11b: what the repository's `ui/` is (`ingest_ui_assets`).
+    fn ui_assets() -> String { return ingest_ui_assets(self.root, self.files); }
+    // The graph's rows, or why the repository cannot be taken as it is.
+    fn ingest() -> IngestAnswer {
+        let listed = self.list_files();
+        if len(listed) > 0 { return IngestAnswer { error: listed }; }
         self.purpose_step();
         self.compose_step();
         self.seeds_step();
@@ -1246,6 +1258,97 @@ locus GraphIngest {
             counts = counts + (if len(counts) > 0 { ", " } else { "" }) + to_string(self.count(k)) + " " + k;
             i = i + 1;
         }
-        return IngestAnswer { rows: self.rows, nodes: self.nodes, edges: self.edges, counts: counts };
+        let ui = self.ui_assets();
+        let notes = if ui == "assets" {
+            INGEST_ASSETS + "/ holds no manifest, so it is no seed: the head serves it as the application's static assets, at " + APP_ASSETS_PREFIX + "/\n"
+        } else if ui == "unreferenced" {
+            INGEST_ASSETS + "/ holds no manifest and nothing references it: no seed, and ignored\n"
+        } else { "" };
+        return IngestAnswer { rows: self.rows, nodes: self.nodes, edges: self.edges, counts: counts, notes: notes };
     }
+}
+
+// Ruling 11b: where the head serves a repository's `ui/`.
+const APP_ASSETS_PREFIX: String = "/app";
+
+// Ruling 11b: what the repository at `root` makes of its `ui/`, over its
+// tracked `files` ("\n"-led, one per line). A directory holding a manifest
+// is a seed like any other, and "" answers for it, as for a repository with
+// no `ui/`. Without one it is no seed: "assets" when the repository
+// references it — a link in a tracked markdown document outside it
+// resolves into it, or the compose file mounts or builds `./ui` — which the
+// head serves as the application's static assets; "unreferenced" when
+// nothing does, which the ingest says once and ignores.
+@bounded_by(files)
+fn ingest_ui_assets(root: String, files: String) -> String {
+    let dir = INGEST_ASSETS;
+    if !std::str::contains(files, "\n" + dir + "/") { return ""; }
+    let mut i = 0;
+    while len(dna::nth_word(INGEST_MANIFESTS, i)) > 0 {
+        if std::str::contains(files, "\n" + dir + "/" + dna::nth_word(INGEST_MANIFESTS, i) + "\n") { return ""; }
+        i = i + 1;
+    }
+    let mut c = 0;
+    while len(dna::nth_word(INGEST_COMPOSE, c)) > 0 {
+        let compose = dna::nth_word(INGEST_COMPOSE, c);
+        if std::str::contains(files, "\n" + compose + "\n") {
+            let text = std::io::fs::read_file(root + "/" + compose) or "";
+            if std::str::contains(text, "./" + dir + ":") || std::str::contains(text, "./" + dir + "/") || std::str::contains(text, "./" + dir + "\n") { return "assets"; }
+        }
+        c = c + 1;
+    }
+    let mut rest = files;
+    while len(rest) > 1 {
+        rest = rest[1..len(rest)];
+        let nl = std::str::index_of(rest, "\n");
+        let f = rest[0..nl];
+        rest = rest[nl..len(rest)];
+        if std::str::ends_with(f, ".md") && !std::str::starts_with(f, dir + "/") && links_into(ingest_dir(f), std::io::fs::read_file(root + "/" + f) or "", dir) { return "assets"; }
+    }
+    return "unreferenced";
+}
+
+// Whether a markdown document in `from` links into `dir`.
+@bounded_by(text)
+fn links_into(from: String, text: String, dir: String) -> Bool {
+    let mut links = md_links(text);
+    while len(links) > 0 {
+        let ln = std::str::index_of(links, "\n");
+        let link = links[0..ln];
+        links = links[(ln + 1)..len(links)];
+        let tab = std::str::index_of(link, "\t");
+        let to = ingest_join(from, link[(tab + 1)..len(link)]);
+        if to == dir || std::str::starts_with(to, dir + "/") { return true; }
+    }
+    return false;
+}
+
+// The directory under `root` the head serves as the application's static
+// assets, "" for none (`ingest_ui_assets`).
+fn application_assets(root: String) -> String {
+    let listed = dna::run_tool("git\n-C\n" + root + "\n-c\ncore.quotePath=false\nls-files");
+    if listed.code != 0 { return ""; }
+    return if ingest_ui_assets(root, "\n" + listed.stdout + (if std::str::ends_with(listed.stdout, "\n") { "" } else { "\n" })) == "assets" { INGEST_ASSETS } else { "" };
+}
+
+// One of the application's static assets, as the head answers a GET of
+// `path` (under `APP_ASSETS_PREFIX`): status 200 with the file, or 404
+// with why.
+type AppAsset { status: Int = 404; content_type: String = ""; body: String = ""; why: String = ""; }
+
+// `/app/` is the assets' `index.html` and `/app/<path>` the file at
+// `ui/<path>`, a path ending in `/` its directory's `index.html`. A
+// project with no assets, a path that climbs out or names a hidden file,
+// and a file that is not there are 404s.
+fn application_asset(root: String, path: String) -> AppAsset {
+    let dir = application_assets(root);
+    if len(dir) == 0 { return AppAsset { why: "the attached project has no static assets (a `" + INGEST_ASSETS + "/` with no manifest that the repository references)" }; }
+    let from = len(APP_ASSETS_PREFIX) + 1;
+    let rest = if len(path) > from { path[from..len(path)] } else { "" };
+    let rel = if len(rest) == 0 || std::str::ends_with(rest, "/") { rest + "index.html" } else { rest };
+    if std::str::contains("/" + rel, "/.") || std::str::contains(rel, "\\") || std::str::contains(rel, "//") { return AppAsset { why: "no such asset" }; }
+    let body = std::io::fs::read_file(root + "/" + dir + "/" + rel) or "";
+    if len(body) == 0 { return AppAsset { why: "no such asset: " + dir + "/" + rel }; }
+    let ct = if std::str::ends_with(rel, ".html") { "text/html; charset=utf-8" } else if std::str::ends_with(rel, ".js") || std::str::ends_with(rel, ".mjs") { "text/javascript; charset=utf-8" } else if std::str::ends_with(rel, ".css") { "text/css; charset=utf-8" } else if std::str::ends_with(rel, ".json") { "application/json" } else if std::str::ends_with(rel, ".svg") { "image/svg+xml" } else { "text/plain; charset=utf-8" };
+    return AppAsset { status: 200, content_type: ct, body: body };
 }

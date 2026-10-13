@@ -186,7 +186,8 @@ fn graph_ingest_verb(root: String, first: String, rows_path: String, app: String
     if !keeps_flush(root, keeps) { return fail("graph-ingest: the receipts could not be kept; nothing was seeded"); }
     let seeded = seed_rows(root, before + (if len(before) > 0 && !std::str::ends_with(before, "\n") { "\n" } else { "" }) + r.rows + proposals, "graph-ingest", memory);
     if !seeded.ok { return seeded; }
-    return answer(to_string(r.nodes) + " node(s), " + to_string(r.edges) + " edge(s): " + r.counts + "; " + to_string(holes.count) + " proposal(s)\n");
+    // ruling 11b: what the ingest took no row from, said once, a line each
+    return answer(to_string(r.nodes) + " node(s), " + to_string(r.edges) + " edge(s): " + r.counts + "; " + to_string(holes.count) + " proposal(s)\n" + r.notes);
 }
 
 // Whether the record attaches an application built from a seed

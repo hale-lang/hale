@@ -11829,6 +11829,10 @@ dynamic	__lib_dna__core___record__GitJournal	on main
 dynamic	__lib_dna__core__pond__realtime__nats___client__NatsClient	on main
 shared	dynamic	sites in the stdlib #c3a51769
 
+== dna/tests/ui_assets_test.hl
+root	App	the entry
+row	App@literal1	App	main	default
+
 == dna/tests/usage_test.hl
 root	App	the entry
 row	App@literal1	App	main	default
