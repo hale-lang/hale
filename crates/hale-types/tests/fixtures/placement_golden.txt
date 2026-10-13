@@ -4133,6 +4133,16 @@ row	BookL@main1	BookL	main	default
 == crates/hale-codegen/tests/self_field_index_assign.rs#3ccfabdd
 row	FxL@main1	FxL	main	default
 
+== crates/hale-codegen/tests/self_field_nested_retire.rs#6d6ba587
+row	H@main1	H	main	default
+
+== crates/hale-codegen/tests/self_field_nested_retire.rs#3380dce5
+root	App	the entry
+row	App@literal1	App	main	default
+-- App@literal1.w	Worker
+row	~	Worker	main	default
+row	~.log	Log	main	inherited
+
 == crates/hale-codegen/tests/serializer_shape.rs#8eb04513
 row	PingPub@main2	PingPub	main	default
 row	PingSub@main1	PingSub	main	default
@@ -7124,6 +7134,10 @@ dynamic	Router	on main|unknown (no caller)
 dynamic	Wrap	on main
 
 == tests/hale/float_cast_test.hl
+root	App	the entry
+row	App@literal1	App	main	default
+
+== tests/hale/float_ieee_compare_test.hl
 root	App	the entry
 row	App@literal1	App	main	default
 

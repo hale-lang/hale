@@ -223,6 +223,102 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         Some((size, self.retire_slots_desc(slots, depth)))
     }
 
+    /// The retire descriptor a compound `self.<field> = value` store of
+    /// type `ty` walks after the replace (`lotus_self_field_retire_replaced`),
+    /// over the field's block: for a record, its fields that point at a
+    /// block of their own (a nested record, a tuple, an out-of-line
+    /// array, a payload enum — with everything under them), leaving out
+    /// its top-level String and Bytes fields, which the per-field
+    /// fixups retire; for a tuple or an out-of-line array, every slot.
+    /// `None` when the store retires nothing beyond those fixups: a
+    /// record of scalars, Strings and Bytes, or a type that is not such
+    /// a block. A tuple or array of scalars answers `Some(vec![])`: it
+    /// owns nothing nested, but its store still builds a fresh copy to
+    /// retire.
+    pub(crate) fn self_field_retire_desc(&self, ty: &CodegenTy) -> Option<Vec<u32>> {
+        match ty {
+            CodegenTy::TypeRef(tn) => {
+                let ti = self.user_types.get(tn)?;
+                let mut slots = Vec::new();
+                for fname in &ti.field_order {
+                    let Some((idx, fty)) = ti.fields.get(fname) else { continue };
+                    if !self.record_field_owns_block(fty) {
+                        continue;
+                    }
+                    if let Some(o) = self.target_data.offset_of_element(&ti.struct_ty, *idx) {
+                        slots.push((o, fty.clone(), false));
+                    }
+                }
+                let desc = self.retire_slots_desc(slots, 0);
+                (!desc.is_empty()).then_some(desc)
+            }
+            CodegenTy::Tuple(_) => self.retire_desc_for(ty, 0).map(|(_, d)| d),
+            CodegenTy::Array(_, _) if Self::array_inline_spec(ty).is_none() => {
+                self.retire_desc_for(ty, 0).map(|(_, d)| d)
+            }
+            _ => None,
+        }
+    }
+
+    /// The LLVM type of the block a compound locus field of type `ty`
+    /// points at (a record's struct, a tuple's storage, an array's
+    /// `[N x T]`): what `emit_self_field_inplace_assign` snapshots the
+    /// replaced value into.
+    pub(crate) fn self_field_block_type(
+        &self,
+        ty: &CodegenTy,
+    ) -> Result<inkwell::types::BasicTypeEnum<'ctx>, CodegenError> {
+        match ty {
+            CodegenTy::TypeRef(tn) => self
+                .user_types
+                .get(tn)
+                .map(|t| t.struct_ty.into())
+                .ok_or_else(|| CodegenError::Unsupported(format!("unknown type `{}`", tn))),
+            CodegenTy::Tuple(elems) => Ok(self.llvm_tuple_storage_type(elems).into()),
+            CodegenTy::Array(elem, n) => Ok(self.llvm_array_storage_type(elem, *n).into()),
+            other => Err(CodegenError::Unsupported(format!("no field block for {:?}", other))),
+        }
+    }
+
+    /// The constant global holding `desc` (`self_field_retire_desc`),
+    /// one per distinct descriptor: named by its words, so two field
+    /// types with the same layout share it.
+    pub(crate) fn self_field_retire_desc_global(
+        &mut self,
+        desc: &[u32],
+    ) -> inkwell::values::GlobalValue<'ctx> {
+        let words: Vec<String> = desc.iter().map(|w| format!("{:x}", w)).collect();
+        let gname = format!("__self_field_retire_desc.{}", words.join("_"));
+        if let Some(g) = self.module.get_global(&gname) {
+            return g;
+        }
+        let i32_t = self.context.i32_type();
+        let vals: Vec<_> = desc.iter().map(|o| i32_t.const_int(*o as u64, false)).collect();
+        let arr = i32_t.const_array(&vals);
+        let g = self.module.add_global(arr.get_type(), None, &gname);
+        g.set_initializer(&arr);
+        g.set_constant(true);
+        g.set_linkage(inkwell::module::Linkage::Internal);
+        g
+    }
+
+    /// Can a store into a locus field of type `ty` retire a block into
+    /// the locus's arena — a String or Bytes field, a record carrying
+    /// one or a nested block, a tuple or an out-of-line array? Such a
+    /// locus flushes its arena's pending retires at each method's
+    /// activation boundary.
+    pub(crate) fn self_field_type_retires(&self, ty: &CodegenTy) -> bool {
+        match ty {
+            CodegenTy::String | CodegenTy::Bytes => true,
+            CodegenTy::TypeRef(tn) => {
+                self.user_types.get(tn).is_some_and(|t| {
+                    t.fields.values().any(|(_, f)| matches!(f, CodegenTy::String | CodegenTy::Bytes))
+                }) || self.self_field_retire_desc(ty).is_some()
+            }
+            _ => self.self_field_retire_desc(ty).is_some(),
+        }
+    }
+
     /// The descriptor words over a block's `(offset, type, inline)`
     /// slots (`retire_desc_for`).
     fn retire_slots_desc(&self, slots: Vec<(u64, CodegenTy, bool)>, depth: u32) -> Vec<u32> {

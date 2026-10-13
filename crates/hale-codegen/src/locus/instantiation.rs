@@ -3171,9 +3171,16 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // above to the new locus's __arena, so reusing the
             // same destination keeps the layout consistent with
             // the existing locus instantiation routing.
+            //
+            // The copy OWNS every String and Bytes in it, as a compound
+            // self-field store's does: the value was evaluated in this
+            // very arena, so a plain copy would keep a String another
+            // param or field shares (`o: Outer = Outer { s: self.text,
+            // inner: Inner { s: self.text } }`), and replacing one of
+            // them retires it under the others.
             let val = if let Some(dest_arena) = self.current_arena_override {
                 if Self::ty_needs_self_field_deep_copy(&declared_ty) {
-                    self.emit_return_value_deep_copy(
+                    self.emit_owned_deep_copy(
                         val, &declared_ty, dest_arena,
                     )?
                 } else {

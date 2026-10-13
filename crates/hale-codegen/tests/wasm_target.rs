@@ -560,6 +560,83 @@ console.log((a === 4n && b === -3n && c === 9n)
     );
 }
 
+/// IEEE 754 Float comparisons on wasm32, the same facts
+/// `tests/hale/float_ieee_compare_test.hl` holds natively: `!=` is the
+/// unordered `fcmp une` (`f64.ne`), so it is true when either side is
+/// NaN; `==` and the orderings are false then; `min` / `max` are
+/// `f64.min` / `f64.max` (NaN on either side wins, -0.0 below 0.0);
+/// `abs` is `f64.abs`. Each fact is one bit of `facts()`, every bit set
+/// when all hold, and the glue is EMPTY, so none of it may import.
+#[test]
+fn wasm_float_compare_is_ieee() {
+    let (Some(_clang), Some(_wasm_ld), Some(node)) =
+        (tool("clang"), tool("wasm-ld"), tool("node"))
+    else {
+        eprintln!("SKIP wasm_float_compare_is_ieee: toolchain missing");
+        return;
+    };
+    let src = r#"
+        target wasm { }
+        fn bit(b: Bool, k: Int) -> Int {
+            if b { return k; }
+            return 0;
+        }
+        fn is_nan(x: Float) -> Bool { return x != x; }
+        fn neg_zero(x: Float) -> Bool { return x == 0.0 && 1.0 / x < 0.0; }
+        @export locus M {
+            params { zero: Float = 0.0; one: Float = 1.0; }
+            birth() { }
+            fn facts() -> Int {
+                let z = self.zero;
+                let nan = z / z;
+                let inf = self.one / z;
+                let ninf = 0.0 - inf;
+                let nz = z * -1.0;
+                let mut f = 0;
+                f = f + bit(!(nan == nan), 1);
+                f = f + bit(nan != nan, 2);
+                f = f + bit(nan != 1.0, 4);
+                f = f + bit(!(nan < 1.0) && !(nan >= 1.0), 8);
+                f = f + bit(ninf < inf && inf == inf && inf != ninf, 16);
+                f = f + bit(nz == z && !(nz != z) && !(nz < z), 32);
+                f = f + bit(is_nan(min(nan, 1.0)) && is_nan(min(1.0, nan)), 64);
+                f = f + bit(is_nan(max(nan, 1.0)) && is_nan(max(1.0, nan)), 128);
+                f = f + bit(neg_zero(min(z, nz)) && !neg_zero(max(nz, z)), 256);
+                f = f + bit(!neg_zero(abs(nz)) && abs(ninf) == inf, 512);
+                return f;
+            }
+        }
+    "#;
+    let wasm = tmp("float_ieee.wasm");
+    build_wasm(src, &wasm);
+    let loader = wasm.with_extension("mjs");
+    let harness = wasm.with_extension("harness.mjs");
+    let loader_name = loader.file_name().unwrap().to_str().unwrap();
+    std::fs::write(
+        &harness,
+        format!(
+            r#"import {{ run }} from "./{loader_name}";
+const inst = await run(() => ({{}}));   // EMPTY glue — no host import allowed
+const f = inst.exports.facts();
+console.log(f === 1023n ? "FLOAT_IEEE_OK" : `FLOAT_IEEE_FAIL:${{f.toString(2)}}`);
+"#
+        ),
+    )
+    .expect("write harness");
+    let run = Command::new(&node).arg(&harness).output().expect("run node harness");
+    let stdout = String::from_utf8_lossy(&run.stdout);
+    let _ = std::fs::remove_file(&wasm);
+    let _ = std::fs::remove_file(&loader);
+    let _ = std::fs::remove_file(&harness);
+    assert!(
+        run.status.success() && stdout.contains("FLOAT_IEEE_OK"),
+        "Float comparisons must be IEEE 754 on wasm32 (missing bits name the facts):\n\
+         stdout: {}\nstderr: {}",
+        stdout,
+        String::from_utf8_lossy(&run.stderr)
+    );
+}
+
 /// Regression: an in-process typed bus (`subscribe` / `publish` across
 /// loci) must DELIVER under wasm32. The synthesized `__serialize_T` /
 /// `__deserialize_T` hardcoded an i64 return + i64 `size_t`-shaped params,

@@ -16750,6 +16750,70 @@ void lotus_str_field_replace_fixup(void *arena_ptr, char **slot,
     }
 }
 
+/* The nested half of a compound `self.<field> = value` store
+ * (codegen's emit_self_field_inplace_assign), called after the new
+ * value's bytes are memcpy'd over the field's block:
+ *   old_snap — a copy of the block's bytes from before that memcpy
+ *   new_block — the block itself, holding the new value
+ *   scrap, scrap_size — the fresh copy a tuple or array value was
+ *              built in before its bytes were copied over the block
+ *              (NULL for a record, which the walk anchors in place)
+ *   desc, n — the retire descriptor (lotus_form_retire_replaced's
+ *              format) over the block: for a record, its nested
+ *              records, tuples, out-of-line arrays and payload enums
+ *              (its top-level String / Bytes fields have their own
+ *              fixups above); for a tuple or array, every slot.
+ * Every block the old value reaches that the new one does not —
+ * nested blocks at any depth, with the Strings and Bytes inside
+ * them — is retired, pending until the activation-boundary flush
+ * like the String fixup's. It used to stay in the locus's arena for
+ * the locus's lifetime. Codegen copies every nested block the store
+ * keeps (cell_compound_owner, cell_owned_clone), except the very
+ * block the field already holds at that place, so no other owner
+ * shares a block this retires. A String the arena's capacity table
+ * knows (a field block, lotus_slot_alloc — a nested String assigned
+ * in place) retires at its class; everything else at its walked
+ * size. */
+void lotus_self_field_retire_replaced(void *arena_ptr, const void *old_snap,
+                                      const void *new_block, void *scrap,
+                                      int64_t scrap_size, const int32_t *desc,
+                                      int64_t n) {
+    lotus_arena_t *a = (lotus_arena_t *)arena_ptr;
+    if (!a) return;
+    if (scrap && scrap != new_block && scrap_size > 0)
+        lotus_arena_retire_sized_cls(a, scrap, (size_t)scrap_size, -1);
+    if (!old_snap || !new_block || !desc || n <= 0) return;
+    lotus_retire_blocks_t olds, news;
+    lotus_retire_blocks_init(&olds);
+    lotus_retire_blocks_init(&news);
+    int ok = lotus_retire_collect(&olds, (const char *)old_snap, desc, n, 1);
+    if (ok) ok = lotus_retire_collect(&news, (const char *)new_block, desc, n, 0);
+    if (ok) {
+        for (size_t i = 0; i < olds.n; i++) {
+            void *p = olds.p[i];
+            if (p == new_block || p == scrap) continue;
+            if (lotus_retire_blocks_has(&news, p)) continue; /* survives */
+            int dup = 0;
+            for (size_t j = 0; j < i; j++)
+                if (olds.p[j] == p) { dup = 1; break; }
+            if (dup) continue;
+            if (!lotus_arena_contains_ptr(a, p)) continue;
+            int c = -1;
+            if (a->slot_reuse) {
+                lotus_retire_lock(a);
+                c = lotus_slot_tab_take((lotus_slot_reuse_t *)a->slot_reuse, p);
+                lotus_retire_unlock(a);
+            }
+            if (c >= 0)
+                lotus_arena_retire_sized_cls(a, p, lotus_slot_class_cap(c), c);
+            else
+                lotus_arena_retire_sized_cls(a, p, olds.size[i], -1);
+        }
+    }
+    lotus_retire_blocks_free(&olds);
+    lotus_retire_blocks_free(&news);
+}
+
 /* GH #1033: the Bytes companion. A compound `self.f = Struct { ... }`
  * store replaced a Bytes field's blob without retiring it — one blob
  * per write for as long as the locus lived (8 bytes for an empty

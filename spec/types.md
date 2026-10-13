@@ -43,6 +43,28 @@ typecheck-rejected (platform-variable ABI or Hale-internal).
 See [`spec/ffi.md`](./ffi.md) for the full marshalling table and
 the lifetime contract.
 
+### Float comparison
+
+`Float` compares by IEEE 754. `==`, `<`, `<=`, `>` and `>=` are the
+*ordered* comparisons: each is `false` when either operand is NaN, so
+`nan == nan` is `false`. `!=` is the negation of `==` and is `true`
+when either operand is NaN — `nan != nan` and `nan != 1.0` are both
+`true` (codegen `fcmp une`; until 2026-10-12 it lowered to the ordered
+`fcmp one` and answered both `false`). `x != x` is therefore the NaN
+test, the same one `std::math::is_nan` makes. The two zeros are
+equal (`-0.0 == 0.0`) and neither orders below the other; the
+infinities order beyond every finite value and equal themselves. A
+`match` arm on a `Float` literal is an `==` test, so it never
+matches a NaN scrutinee.
+
+The value builtins follow IEEE 754-2019: `min(a, b)` / `max(a, b)` on
+`Float` are `minimum` / `maximum` — a NaN on either side makes the
+result NaN, and `-0.0` orders below `0.0` (`min(0.0, -0.0)` is
+`-0.0`) — and `abs(x)` clears the sign bit (`abs(-0.0)` is `0.0`,
+`abs(nan)` is NaN). They lower to `llvm.minimum` / `llvm.maximum` /
+`llvm.fabs`, inline on every target (`f64.min` / `f64.max` /
+`f64.abs` on `wasm32`), so none needs a libm symbol or host import.
+
 ## Decimal<S> — the scale is part of the type
 
 A `Decimal<S>` is a fixed-point number: an i128 mantissa `m` read as

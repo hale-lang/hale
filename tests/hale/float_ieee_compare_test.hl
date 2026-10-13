@@ -1,0 +1,102 @@
+// IEEE 754 comparison semantics for `Float` (spec/types.md, "Float
+// comparison"). `!=` lowered to LLVM's ORDERED not-equal (`fcmp one`),
+// which is false when either side is NaN, so `nan != 1.0` and
+// `nan != nan` were both false; `!=` is the negation of `==` and is
+// the unordered `fcmp une`. `min` / `max` were a compare + select whose
+// answer to a NaN operand depended on which side it sat (`min(nan, 1.0)`
+// was 1.0, `min(1.0, nan)` NaN); they are IEEE 754-2019 `minimum` /
+// `maximum` now. `abs(-0.0)` kept the sign; it is 0.0.
+
+fn is_nan(x: Float) -> Bool {
+    return x != x;
+}
+
+// `1.0 / x` tells the zeros apart: +inf for 0.0, -inf for -0.0.
+fn is_neg_zero(x: Float) -> Bool {
+    return x == 0.0 && 1.0 / x < 0.0;
+}
+
+main locus App {
+    params {
+        zero: Float = 0.0;
+        one: Float = 1.0;
+    }
+    run() {
+        let z = self.zero;
+        let nan = z / z;
+        let inf = self.one / z;
+        let ninf = 0.0 - inf;
+        let nz = z * -1.0;
+
+        // NaN: `==` and every ordering are false; `!=` is true.
+        std::test::assert(!(nan == nan), "nan == nan is false");
+        std::test::assert(nan != nan, "nan != nan is true");
+        std::test::assert(nan != 1.0, "nan != 1.0 is true");
+        std::test::assert(1.0 != nan, "1.0 != nan is true");
+        std::test::assert(!(nan == 1.0), "nan == 1.0 is false");
+        std::test::assert(!(nan < 1.0), "nan < 1.0 is false");
+        std::test::assert(!(nan <= 1.0), "nan <= 1.0 is false");
+        std::test::assert(!(nan > 1.0), "nan > 1.0 is false");
+        std::test::assert(!(nan >= 1.0), "nan >= 1.0 is false");
+        std::test::assert(!(1.0 < nan), "1.0 < nan is false");
+        std::test::assert(!(nan < inf), "nan < inf is false");
+        std::test::assert(nan != inf, "nan != inf is true");
+
+        // `!=` is exactly the negation of `==`, NaN included.
+        let xs = [nan, inf, ninf, z, nz, 1.0];
+        for i in 0..6 {
+            for j in 0..6 {
+                let a = xs[i];
+                let b = xs[j];
+                std::test::assert((a != b) == !(a == b), "!= is the negation of ==");
+            }
+        }
+
+        // Infinities order with the finite values and equal themselves.
+        std::test::assert(inf == inf, "inf == inf");
+        std::test::assert(ninf == ninf, "-inf == -inf");
+        std::test::assert(inf != ninf, "inf != -inf");
+        std::test::assert(ninf < inf, "-inf < inf");
+        std::test::assert(1.0e308 < inf, "the largest finite value < inf");
+        std::test::assert(ninf < -1.0e308, "-inf < the most negative finite value");
+        std::test::assert(inf >= inf, "inf >= inf");
+        std::test::assert(ninf <= ninf, "-inf <= -inf");
+        std::test::assert(!(inf > inf), "inf > inf is false");
+
+        // The two zeros are equal and neither orders below the other.
+        std::test::assert(nz == z, "-0.0 == 0.0");
+        std::test::assert(!(nz != z), "-0.0 != 0.0 is false");
+        std::test::assert(!(nz < z), "-0.0 < 0.0 is false");
+        std::test::assert(nz <= z && nz >= z, "-0.0 <= 0.0 and >= 0.0");
+        std::test::assert(is_neg_zero(nz), "the negative zero is negative");
+
+        // A match on a Float literal never matches NaN.
+        let m = match nan {
+            1.0 -> 1,
+            _ -> 0,
+        };
+        std::test::assert_eq_int(m, 0, "a NaN scrutinee falls to the wildcard");
+
+        // `min` / `max`: NaN on either side wins; -0.0 orders below 0.0.
+        std::test::assert(is_nan(min(nan, 1.0)), "min(nan, 1.0) is NaN");
+        std::test::assert(is_nan(min(1.0, nan)), "min(1.0, nan) is NaN");
+        std::test::assert(is_nan(max(nan, 1.0)), "max(nan, 1.0) is NaN");
+        std::test::assert(is_nan(max(1.0, nan)), "max(1.0, nan) is NaN");
+        std::test::assert(min(ninf, 1.0) == ninf, "min(-inf, 1.0) is -inf");
+        std::test::assert(max(inf, 1.0) == inf, "max(inf, 1.0) is inf");
+        std::test::assert(min(2.0, 1.0) == 1.0 && min(1.0, 2.0) == 1.0, "min picks the smaller");
+        std::test::assert(max(2.0, 1.0) == 2.0 && max(1.0, 2.0) == 2.0, "max picks the larger");
+        std::test::assert(is_neg_zero(min(z, nz)), "min(0.0, -0.0) is -0.0");
+        std::test::assert(is_neg_zero(min(nz, z)), "min(-0.0, 0.0) is -0.0");
+        std::test::assert(!is_neg_zero(max(z, nz)), "max(0.0, -0.0) is 0.0");
+        std::test::assert(!is_neg_zero(max(nz, z)), "max(-0.0, 0.0) is 0.0");
+
+        // `abs` clears the sign: -0.0 becomes 0.0, NaN stays NaN.
+        std::test::assert(!is_neg_zero(abs(nz)), "abs(-0.0) is 0.0");
+        std::test::assert(is_nan(abs(nan)), "abs(nan) is NaN");
+        std::test::assert(abs(ninf) == inf, "abs(-inf) is inf");
+        std::test::assert(abs(-2.5) == 2.5, "abs(-2.5) is 2.5");
+    }
+}
+
+fn main() { App { }; }

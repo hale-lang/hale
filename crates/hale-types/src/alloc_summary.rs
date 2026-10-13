@@ -297,6 +297,34 @@ fn param_str_types(params: &[Param]) -> Vec<(String, StrTy)> {
         .collect()
 }
 
+/// Does a struct field of type `ty` retire with its struct when a
+/// whole-field replace overwrites it (Gap D)? A scalar, a String or
+/// Bytes, a struct already found retirable, or a tuple or array of
+/// such. A view, an enum, an interface, a locus, a bounded field or
+/// anything unrecognized does not.
+fn retirable_field_ty(ty: &TypeExpr, retirable: &BTreeSet<String>) -> bool {
+    match ty {
+        TypeExpr::Primitive(
+            PrimType::Int
+            | PrimType::Uint
+            | PrimType::Float
+            | PrimType::Decimal(_)
+            | PrimType::String
+            | PrimType::Bytes
+            | PrimType::Bool
+            | PrimType::Time
+            | PrimType::Duration,
+            _,
+        ) => true,
+        TypeExpr::Named { path, generic_args, .. } => {
+            generic_args.is_empty() && path.segments.len() == 1 && retirable.contains(&path.segments[0].name)
+        }
+        TypeExpr::Tuple(elems, _) => elems.iter().all(|e| retirable_field_ty(e, retirable)),
+        TypeExpr::Array { elem, .. } => retirable_field_ty(elem, retirable),
+        _ => false,
+    }
+}
+
 /// The String and String-array fields of a struct type, by name.
 fn struct_str_fields(fields: &[StructField]) -> BTreeMap<String, StrTy> {
     fields
@@ -551,9 +579,11 @@ pub struct AllocSite {
     /// therefore no longer accumulates for these sites. The within-call
     /// loop verdict is NOT flipped: retires only flush at activation
     /// exit, so a `while true` churn inside one call (a `run()` loop)
-    /// still grows and stays flagged. Structs with Bytes / nested
-    /// compound / array fields keep the conservative verdict (those
-    /// leaves don't retire yet).
+    /// still grows and stays flagged. Since 2026-10-12 a struct with
+    /// Bytes fields and nested records, tuples and arrays of such
+    /// qualifies too (`lotus_self_field_retire_replaced` retires the
+    /// nested blocks); a view, enum or interface field keeps the
+    /// conservative verdict.
     pub retired_store: bool,
     /// The site is written inside a loop body. `loop_depth` is how
     /// deep the allocation repeats, which a `return` / `fail` payload
@@ -2445,11 +2475,14 @@ pub fn summarize_identified(
     // GH #540: what the program stores into each interface-typed slot.
     let mut slot_stores = SlotStores::default();
     let walked_stores = std::cell::RefCell::new(SlotStores::default());
-    // Gap D — struct types whose fields are ALL scalar / String: a
-    // whole-field replace of one fully reclaims via anchor retirement
-    // (Gap A). Conservative: any Bytes / nested compound / array /
-    // view field disqualifies (those leaves don't retire yet).
+    // Gap D — struct types a whole-field replace fully reclaims via
+    // anchor retirement (Gap A): fields of scalars, Strings, Bytes and
+    // records, tuples and arrays of such (`retirable_field_ty`).
+    // Conservative: a view, enum or interface field disqualifies.
     let mut retirable_structs: BTreeSet<String> = BTreeSet::new();
+    // Each struct declaration's field types, read into
+    // `retirable_structs` once every declaration is in.
+    let mut struct_decl_tys: BTreeMap<String, Vec<TypeExpr>> = BTreeMap::new();
     // 2026-07-01 — per-locus scalar-[T; N] param fields (inline layout).
     let mut locus_inline_arrays: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     // iris handoff P2.1 (2026-07-27): top-level `const` ints, so a
@@ -2689,25 +2722,8 @@ pub fn summarize_identified(
                                 fields.iter().map(|f| (f.name.name.clone(), f.default.clone())).collect(),
                             );
                         }
-                        let all_retirable = fields.iter().all(|f| {
-                            matches!(
-                                &f.ty,
-                                TypeExpr::Primitive(
-                                    PrimType::Int
-                                        | PrimType::Uint
-                                        | PrimType::Float
-                                        | PrimType::Decimal(_)
-                                        | PrimType::String
-                                        | PrimType::Bool
-                                        | PrimType::Time
-                                        | PrimType::Duration,
-                                    _
-                                )
-                            )
-                        });
-                        if all_retirable {
-                            retirable_structs.insert(td.name.name.clone());
-                        }
+                        struct_decl_tys
+                            .insert(td.name.name.clone(), fields.iter().map(|f| f.ty.clone()).collect());
                     }
                 }
                 TopDecl::Locus(l) => {
@@ -2867,6 +2883,24 @@ pub fn summarize_identified(
             if let Some(site) = ids.site_id(decl) {
                 member_bodies.push((site, body, ids));
             }
+        }
+    }
+
+    // Gap D, completed (2026-10-12): a struct whose fields are scalars,
+    // Strings, Bytes, or records, tuples and arrays of such retires
+    // whole when a whole-field replace overwrites it — its String
+    // clones and Bytes by the per-field fixups, its nested blocks by
+    // `lotus_self_field_retire_replaced`. A fixpoint, since a struct
+    // may name one declared after it.
+    loop {
+        let before = retirable_structs.len();
+        for (name, tys) in &struct_decl_tys {
+            if !retirable_structs.contains(name) && tys.iter().all(|t| retirable_field_ty(t, &retirable_structs)) {
+                retirable_structs.insert(name.clone());
+            }
+        }
+        if retirable_structs.len() == before {
+            break;
         }
     }
 
@@ -7749,16 +7783,17 @@ mod tests {
             "an all-scalar struct replace reclaims per activation (Gap A \
              retirement) — must NOT flag"
         );
-        // ...while a struct carrying a non-retirable leaf (Bytes /
-        // nested compound) keeps the conservative escape verdict —
-        // the escape-awareness this test exists to pin.
+        // ...while a struct carrying a non-retirable leaf (a view; Bytes
+        // and nested records retire since 2026-10-12) keeps the
+        // conservative escape verdict — the escape-awareness this test
+        // exists to pin.
         let stored_leaky = r#"
             type T { n: Int; }
-            type Tmp { a: Int; b: Bytes; }
+            type Tmp { a: Int; v: StringView; }
             locus L {
                 params { last: Tmp; }
                 bus { subscribe "in" as on_in of type T; }
-                fn on_in(m: T) { self.last = Tmp { a: m.n, b: std::bytes::from_string("x") }; }
+                fn on_in(m: T) { self.last = Tmp { a: m.n, v: "x" }; }
             }
             fn main() { }
         "#;
@@ -9164,15 +9199,18 @@ mod tests {
     }
 
     #[test]
-    fn bytes_field_struct_replace_still_flagged() {
-        // Bytes fields don't retire (v1) — the conservative verdict
-        // stays for structs carrying one.
+    fn bytes_and_nested_field_struct_replace_retires() {
+        // A struct carrying Bytes (GH #1033) or a nested record, tuple
+        // or array of such (2026-10-12, lotus_self_field_retire_replaced)
+        // retires whole on a replace in a method, like an all-String
+        // one, so the replace is not flagged...
         let src = r#"
-            type Cell { s: String = ""; b: Bytes; n: Int = 0; }
+            type Inner { s: String = ""; b: Bytes = b""; }
+            type Cell { s: String = ""; b: Bytes; n: Int = 0; inner: Inner = Inner { }; t: (Inner, Int) = (Inner { }, 0); }
             locus Rec {
                 params { st: Cell; }
                 fn record(i: Int) {
-                    self.st = Cell { s: "v" + i, b: std::bytes::from_string("x"), n: i };
+                    self.st = Cell { s: "v" + i, b: std::bytes::from_string("x"), n: i, inner: Inner { s: "w" + i }, t: (Inner { }, i) };
                 }
                 run() {
                     while true { self.record(1); }
@@ -9182,8 +9220,28 @@ mod tests {
         "#;
         let msgs = leak_msgs(src);
         assert!(
+            !msgs.iter().any(|m| m.contains("struct Cell")),
+            "a Bytes / nested-record struct replace retires, got: {:?}",
+            msgs
+        );
+        // ...while a view field keeps the conservative verdict.
+        let view = r#"
+            type Cell { s: String = ""; v: StringView; n: Int = 0; }
+            locus Rec {
+                params { st: Cell; }
+                fn record(i: Int) {
+                    self.st = Cell { s: "v" + i, v: "x", n: i };
+                }
+                run() {
+                    while true { self.record(1); }
+                }
+            }
+            fn main() { }
+        "#;
+        let msgs = leak_msgs(view);
+        assert!(
             msgs.iter().any(|m| m.contains("struct Cell")),
-            "Bytes-field struct replace must stay flagged, got: {:?}",
+            "a view-field struct replace must stay flagged, got: {:?}",
             msgs
         );
     }
