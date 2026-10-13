@@ -2333,8 +2333,10 @@ its `KNOWN_OPEN` table, which is empty today.
   (`lotus_bus_reserve_claim`), ahead of what its window holds, and its
   readiness delivers it after its `birth()`. The last expected claim
   closes the reservation, and the root's `birth()` closes what is left
-  (`lotus_bus_reserve_end`); one whose subscriber never registered,
-  holding cells, says so on stderr. A publish on another thread racing
+  (`lotus_bus_reserve_end`); so does any exit that leaves the
+  construction part-way (an initializer's propagated failure: the scope
+  sits in an entry-block slot every exit of the function closes). One
+  whose subscriber never registered, holding cells, says so on stderr. A publish on another thread racing
   a claim carries the count of the registrations it walked, and a cell
   is copied at the claim, or forwarded by a park after it, only to a
   claimant that publish did not reach itself: no cell is delivered
