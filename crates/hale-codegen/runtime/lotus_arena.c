@@ -16947,75 +16947,113 @@ int64_t lotus_str_index_of(const char *s, const char *sub) {
 }
 
 /*
- * m48: render a Decimal value (i128 mantissa with implicit
- * scale 9 — i.e., mantissa × 10^-9) into a NUL-terminated
- * string. The i128 is passed as two i64 halves (hi:lo) since
- * the LLVM/C ABI for __int128 is awkward to wire; codegen
- * splits the value before the call.
+ * m48 / Decimal<S>: render a Decimal value (an i128 mantissa at the
+ * scale `scale`, i.e. mantissa × 10^-scale, 0 <= scale <= 18) into a
+ * NUL-terminated string. Plain `Decimal` is scale 9. The i128 is
+ * passed as two i64 halves (hi:lo) since the LLVM/C ABI for __int128
+ * is awkward to wire; codegen splits the value before the call.
  *
- * Output format trims trailing zeros + dangling decimal point,
- * matching the interpreter's DecimalVal::display so both
- * backends print identically. Caller passes a buffer of at
- * least LOTUS_DECIMAL_BUF_LEN bytes.
+ * Output format trims trailing zeros + dangling decimal point, so
+ * `12.50d` prints `12.5` at every scale (the scale places the point;
+ * `std::decimal::format` is the fixed-places surface). Caller passes
+ * a buffer of at least LOTUS_DECIMAL_BUF_LEN bytes.
  */
 #define LOTUS_DECIMAL_BUF_LEN 64
 
+/* 10^n as an unsigned 64-bit integer, n in 0..=19. */
+static unsigned long long lotus_dec_pow10_u64(int64_t n) {
+    unsigned long long p = 1ULL;
+    for (int64_t i = 0; i < n; i++) p *= 10ULL;
+    return p;
+}
+
+static int64_t lotus_dec_clamp_scale(int64_t scale) {
+    if (scale < 0) return 0;
+    if (scale > 18) return 18;
+    return scale;
+}
+
+/* Exactly `width` decimal digits of `v` at `p`, zero-padded on the
+ * left (`v < 10^width`), NUL-terminated; returns `width`. Written by
+ * hand rather than with `%0*llu`: the wasm libc shim's snprintf has
+ * no `*` width. */
+static int lotus_u64_padded(char *p, unsigned long long v, int width) {
+    for (int i = width - 1; i >= 0; i--) {
+        p[i] = (char)('0' + (v % 10ULL));
+        v /= 10ULL;
+    }
+    p[width] = '\0';
+    return width;
+}
+
+/* The decimal digits of `v` at `p`; returns how many were written.
+ * An i128's magnitude has at most 39 digits: up to three chunks of
+ * 10^18, so every chunk printed is a u64. */
+static int lotus_u128_digits(unsigned __int128 v, char *p) {
+    const unsigned __int128 base = 1000000000000000000ULL;
+    if ((v >> 64) == 0) {
+        return snprintf(p, 24, "%llu", (unsigned long long)v);
+    }
+    unsigned __int128 top = v / base;
+    unsigned long long low = (unsigned long long)(v % base);
+    int n;
+    if ((top >> 64) == 0) {
+        n = snprintf(p, 24, "%llu", (unsigned long long)top);
+    } else {
+        n = snprintf(p, 48, "%llu%018llu",
+                     (unsigned long long)(top / base),
+                     (unsigned long long)(top % base));
+    }
+    n += snprintf(p + n, 24, "%018llu", low);
+    return n;
+}
+
 /* Helper used internally — exposed forward-decl form so the
  * arena-allocating sibling can call it. */
-void lotus_decimal_to_string(int64_t hi, uint64_t lo, char *buf);
+void lotus_decimal_to_string(int64_t hi, uint64_t lo, int64_t scale, char *buf);
 
 /*
  * Variant of lotus_decimal_to_string that allocates the buffer
  * inside the caller's arena and returns a pointer to it.
  * Mirrors lotus_str_from_float for the Float case.
  */
-char *lotus_str_from_decimal(lotus_arena_t *a, int64_t hi, uint64_t lo) {
+char *lotus_str_from_decimal(lotus_arena_t *a, int64_t hi, uint64_t lo,
+                             int64_t scale) {
     char *out = (char *)lotus_arena_alloc(a, LOTUS_DECIMAL_BUF_LEN, 1);
     if (!out) return NULL;
-    lotus_decimal_to_string(hi, lo, out);
+    lotus_decimal_to_string(hi, lo, scale, out);
     return out;
 }
 
 /* std::decimal::to_float (2026-05-21): direct i128 → f64
- * conversion at scale 9 (`mantissa × 10^-9`). Replaces the
- * `to_string(d)` → strip → `parse_float` ASCII round-trip
- * downstream consumers were doing for Decimal → Float in
- * hot paths. The C cast from __int128 to double is one
- * compiler intrinsic; the / 1e9 applies the implicit scale.
+ * conversion at the value's scale (`mantissa × 10^-scale`).
+ * Replaces the `to_string(d)` → strip → `parse_float` ASCII
+ * round-trip downstream consumers were doing for Decimal → Float
+ * in hot paths. The C cast from __int128 to double is one
+ * compiler intrinsic; the division applies the scale.
  * Loss-of-precision on very large mantissas is the same
  * floor as `(double)i64`, just over a wider range. */
-double lotus_decimal_to_float(int64_t hi, uint64_t lo) {
+double lotus_decimal_to_float(int64_t hi, uint64_t lo, int64_t scale) {
     __int128 m = ((__int128)hi << 64) | (__int128)lo;
-    return (double)m / 1.0e9;
+    return (double)m / (double)lotus_dec_pow10_u64(lotus_dec_clamp_scale(scale));
 }
 
-void lotus_decimal_to_string(int64_t hi, uint64_t lo, char *buf) {
+void lotus_decimal_to_string(int64_t hi, uint64_t lo, int64_t scale, char *buf) {
+    scale = lotus_dec_clamp_scale(scale);
     __int128 m = ((__int128)hi << 64) | (__int128)lo;
     int neg = m < 0;
     unsigned __int128 abs = neg ? (unsigned __int128)(-m) : (unsigned __int128)m;
-    unsigned __int128 pow9 = 1000000000ULL;
-    unsigned __int128 int_part = abs / pow9;
-    unsigned __int128 frac_part = abs % pow9;
+    unsigned __int128 pow = lotus_dec_pow10_u64(scale);
+    unsigned __int128 int_part = abs / pow;
+    unsigned long long frac_part = (unsigned long long)(abs % pow);
     char *p = buf;
     if (neg) {
         *p++ = '-';
     }
-    /* int_part may exceed 64 bits when the mantissa's integer
-     * part is over 10^19. The simple fast path covers the
-     * common case; the fallback decomposes into 10^18 chunks. */
-    if ((int_part >> 64) == 0) {
-        p += snprintf(p, 32, "%llu", (unsigned long long)int_part);
-    } else {
-        unsigned __int128 base = 1000000000000000000ULL;
-        unsigned __int128 hi_part = int_part / base;
-        unsigned __int128 lo_part = int_part % base;
-        p += snprintf(p, 48, "%llu%018llu",
-            (unsigned long long)hi_part,
-            (unsigned long long)lo_part);
-    }
+    p += lotus_u128_digits(int_part, p);
     if (frac_part != 0) {
-        char fb[16];
-        snprintf(fb, sizeof(fb), "%09llu", (unsigned long long)frac_part);
+        char fb[24];
+        lotus_u64_padded(fb, frac_part, (int)scale);
         size_t end = strlen(fb);
         while (end > 0 && fb[end - 1] == '0') {
             end--;
@@ -17030,30 +17068,28 @@ void lotus_decimal_to_string(int64_t hi, uint64_t lo, char *buf) {
 }
 
 /* GH #230 item 2: std::decimal::format(d, places) — render with
- * EXACTLY `places` fraction digits (0..=9, clamped), round
- * half-up away from zero. The default print deliberately trims
- * trailing zeros (declared precision isn't stored in the i128
- * scale-9 repr, so `12.50d` and `12.5d` are the same value);
- * this is the explicit surface for money-style fixed-places
- * display. Allocates in the caller's arena via the TLS route
- * (same lifetime class as lotus_str_from_decimal). */
+ * EXACTLY `places` fraction digits (0..=scale, clamped: there is no
+ * digit past the scale to print), round half-up away from zero. The
+ * default print deliberately trims trailing zeros (`12.50d` and
+ * `12.5d` are the same value); this is the explicit surface for
+ * money-style fixed-places display. Allocates in the caller's arena
+ * via the TLS route (same lifetime class as lotus_str_from_decimal). */
 lotus_arena_t *lotus_caller_arena_or_global(void);
 
-const char *lotus_decimal_format(int64_t hi, uint64_t lo,
+const char *lotus_decimal_format(int64_t hi, uint64_t lo, int64_t scale,
                                  int64_t places) {
+    scale = lotus_dec_clamp_scale(scale);
     if (places < 0) places = 0;
-    if (places > 9) places = 9;
+    if (places > scale) places = scale;
     __int128 m = ((__int128)hi << 64) | (__int128)lo;
     int neg = m < 0;
     unsigned __int128 abs =
         neg ? (unsigned __int128)(-m) : (unsigned __int128)m;
     /* Round half-up at the target scale: divide out the dropped
      * digits with +half correction. */
-    unsigned long long drop = 1ULL;
-    for (int64_t i = places; i < 9; i++) drop *= 10ULL;
+    unsigned long long drop = lotus_dec_pow10_u64(scale - places);
     abs = (abs + drop / 2) / drop;
-    unsigned long long keep = 1ULL;
-    for (int64_t i = 0; i < places; i++) keep *= 10ULL;
+    unsigned long long keep = lotus_dec_pow10_u64(places);
     unsigned __int128 int_part = abs / keep;
     unsigned long long frac = (unsigned long long)(abs % keep);
     char *out = (char *)lotus_arena_alloc(
@@ -17061,17 +17097,10 @@ const char *lotus_decimal_format(int64_t hi, uint64_t lo,
     if (!out) return "";
     char *p = out;
     if (neg && (int_part != 0 || frac != 0)) *p++ = '-';
-    if ((int_part >> 64) == 0) {
-        p += snprintf(p, 32, "%llu", (unsigned long long)int_part);
-    } else {
-        unsigned __int128 base = 1000000000000000000ULL;
-        p += snprintf(p, 48, "%llu%018llu",
-                      (unsigned long long)(int_part / base),
-                      (unsigned long long)(int_part % base));
-    }
+    p += lotus_u128_digits(int_part, p);
     if (places > 0) {
         *p++ = '.';
-        p += snprintf(p, 12, "%0*llu", (int)places, frac);
+        p += lotus_u64_padded(p, frac, (int)places);
     }
     *p = '\0';
     return out;
@@ -20907,13 +20936,14 @@ int lotus_str_can_parse_float(const char *s) {
 
 /*
  * Parse a Decimal literal source spelling into an i128 mantissa
- * with implicit scale 9. Mirrors hale-syntax's decimal_literal.rs
- * (the literal's parse) — accepts optional trailing 'd', optional
- * leading sign, '_' digit separators, pads with zeros below 9
- * fractional digits, and REFUSES a nonzero digit past the ninth:
- * that is a value no Decimal holds, and it used to be truncated in
+ * at the scale `scale` (Decimal<S>; plain Decimal is 9). Mirrors
+ * hale-syntax's decimal_literal.rs (the literal's parse) — accepts
+ * optional trailing 'd', optional leading sign, '_' digit
+ * separators, pads with zeros below `scale` fractional digits, and
+ * REFUSES a nonzero digit past the last place of the scale: that is
+ * a value no Decimal<S> holds, and it used to be truncated in
  * silence (`parse_decimal("0.123456789012")` was 0.123456789).
- * Zeros past the ninth place are the same value and are accepted. The i128 result is split into
+ * Zeros past the last place are the same value and are accepted. The i128 result is split into
  * two i64 halves (hi:lo) for ABI portability — same convention
  * used by lotus_decimal_to_string for the print path.
  *
@@ -20921,7 +20951,8 @@ int lotus_str_can_parse_float(const char *s) {
  * returns 0. Callers that need to distinguish "0.0" from "bad input"
  * gate on lotus_str_can_parse_decimal first.
  */
-static int parse_decimal_to_i128(const char *s, __int128 *out) {
+static int parse_decimal_to_i128(const char *s, int64_t scale, __int128 *out) {
+    scale = lotus_dec_clamp_scale(scale);
     if (!s) return 0;
     size_t n = strlen(s);
     if (n == 0) return 0;
@@ -20940,14 +20971,14 @@ static int parse_decimal_to_i128(const char *s, __int128 *out) {
         char c = s[i];
         if (c >= '0' && c <= '9') {
             seen_digit = 1;
-            if (!seen_dot || frac_digits < 9) {
+            if (!seen_dot || frac_digits < scale) {
                 __int128 prev = mantissa;
                 mantissa = mantissa * 10 + (__int128)(c - '0');
                 /* overflow guard: re-divide and compare */
                 if (mantissa / 10 != prev) return 0;
                 if (seen_dot) frac_digits += 1;
             } else if (c != '0') {
-                return 0;  /* past scale 9: not representable */
+                return 0;  /* past the scale: not representable */
             }
         } else if (c == '.' && !seen_dot) {
             seen_dot = 1;
@@ -20958,7 +20989,7 @@ static int parse_decimal_to_i128(const char *s, __int128 *out) {
         }
     }
     if (!seen_digit) return 0;
-    while (frac_digits < 9) {
+    while (frac_digits < scale) {
         __int128 prev = mantissa;
         mantissa = mantissa * 10;
         if (mantissa / 10 != prev) return 0;
@@ -20968,17 +20999,18 @@ static int parse_decimal_to_i128(const char *s, __int128 *out) {
     return 1;
 }
 
-void lotus_str_parse_decimal(const char *s, int64_t *out_hi, int64_t *out_lo) {
+void lotus_str_parse_decimal(const char *s, int64_t scale, int64_t *out_hi,
+                             int64_t *out_lo) {
     __int128 m = 0;
-    (void)parse_decimal_to_i128(s, &m);
+    (void)parse_decimal_to_i128(s, scale, &m);
     /* On failure m stays 0; the codegen guards on can_parse first. */
     *out_lo = (int64_t)(uint64_t)m;
     *out_hi = (int64_t)(m >> 64);
 }
 
-int lotus_str_can_parse_decimal(const char *s) {
+int lotus_str_can_parse_decimal(const char *s, int64_t scale) {
     __int128 m = 0;
-    return parse_decimal_to_i128(s, &m);
+    return parse_decimal_to_i128(s, scale, &m);
 }
 
 /*
@@ -21058,7 +21090,7 @@ int lotus_str_can_parse_int_range(const char *s, int64_t start,
  * 128-byte stack buffer covers any realistic input. */
 static int parse_decimal_to_i128_range(const char *s, int64_t start,
                                         int64_t end_exclusive,
-                                        __int128 *out)
+                                        int64_t scale, __int128 *out)
 {
     if (!s || start < 0 || end_exclusive <= start) return 0;
     size_t n = (size_t)(end_exclusive - start);
@@ -21066,24 +21098,24 @@ static int parse_decimal_to_i128_range(const char *s, int64_t start,
     char buf[128];
     memcpy(buf, s + start, n);
     buf[n] = '\0';
-    return parse_decimal_to_i128(buf, out);
+    return parse_decimal_to_i128(buf, scale, out);
 }
 
 void lotus_str_parse_decimal_range(const char *s, int64_t start,
-                                    int64_t end_exclusive,
+                                    int64_t end_exclusive, int64_t scale,
                                     int64_t *out_hi, int64_t *out_lo)
 {
     __int128 m = 0;
-    (void)parse_decimal_to_i128_range(s, start, end_exclusive, &m);
+    (void)parse_decimal_to_i128_range(s, start, end_exclusive, scale, &m);
     *out_lo = (int64_t)(uint64_t)m;
     *out_hi = (int64_t)(m >> 64);
 }
 
 int lotus_str_can_parse_decimal_range(const char *s, int64_t start,
-                                       int64_t end_exclusive)
+                                       int64_t end_exclusive, int64_t scale)
 {
     __int128 m = 0;
-    return parse_decimal_to_i128_range(s, start, end_exclusive, &m);
+    return parse_decimal_to_i128_range(s, start, end_exclusive, scale, &m);
 }
 
 /*

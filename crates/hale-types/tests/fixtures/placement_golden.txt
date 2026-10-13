@@ -6953,6 +6953,10 @@ row	App@literal1	App	main	default
 row	~	Board	main	default
 row	~.w	Worker	main	inherited
 
+== tests/hale/decimal_scale_wire_test.hl
+row	Sink@main1	Sink	main	default
+row	Source@main2	Source	main	default
+
 == tests/hale/decorator_stack_test.hl
 root	App	the entry
 row	App@literal1	App	main	default

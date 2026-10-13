@@ -27,7 +27,8 @@
 //!  * **canonical shape** — for a payload written as a bare,
 //!    non-generic named struct: the struct's fields in declaration
 //!    order as `<field>:<tag>` joined by `;`. Tags: `i` Int/Uint,
-//!    `f` Float, `b` Bool, `d` Decimal, `t` Time, `u` Duration,
+//!    `f` Float, `b` Bool, `d` Decimal (`d18` a `Decimal<18>`: a scale
+//!    other than 9 is part of the tag), `t` Time, `u` Duration,
 //!    `s` String/StringView, `y` Bytes/BytesView/BytesMut,
 //!    `struct` anything else (nested structs deliberately
 //!    name-free so the hash never depends on a declaring binary's
@@ -531,7 +532,13 @@ impl<'a> Shapes<'a> {
                     PrimType::Int | PrimType::Uint => "i",
                     PrimType::Float => "f",
                     PrimType::Bool => "b",
-                    PrimType::Decimal => "d",
+                    // A scale other than the default is part of the
+                    // contract (`d18`): a `Decimal<18>` field and a
+                    // `Decimal` field are different payloads.
+                    PrimType::Decimal(s) if *s != hale_syntax::decimal_literal::DEFAULT_SCALE => {
+                        return Some(format!("d{s}"));
+                    }
+                    PrimType::Decimal(_) => "d",
                     PrimType::Time => "t",
                     PrimType::Duration => "u",
                     PrimType::String | PrimType::StringView => "s",
@@ -826,6 +833,21 @@ mod tests {
         assert_eq!(contract, "a:i;b:i;c:f;d:b;e:d;f:t;g:u;h:s;i:y");
         assert_eq!(obs.as_deref(), Some(contract.as_str()), "a flat struct has one shape");
         assert_eq!(h, "de3f3333e812b5fb");
+    }
+
+    /// `Decimal<S>`: the scale is part of the contract. Plain `Decimal`
+    /// (`Decimal<9>`) keeps its letter, so no existing contract moves;
+    /// every other scale is the letter and the scale, so a `Decimal<18>`
+    /// payload and a `Decimal` one are different contracts.
+    #[test]
+    fn a_decimal_scale_is_part_of_the_contract() {
+        let (_, plain, plain_h) = forms("type P { e: Decimal; }", "P");
+        let (_, nine, nine_h) = forms("type P { e: Decimal<9>; }", "P");
+        let (_, wide, wide_h) = forms("type P { e: Decimal<18>; f: Decimal<0>; }", "P");
+        assert_eq!(plain, "e:d");
+        assert_eq!((nine, nine_h), (plain, plain_h.clone()), "Decimal<9> is Decimal");
+        assert_eq!(wide, "e:d18;f:d0");
+        assert_ne!(wide_h, plain_h);
     }
 
     /// The unit dialect's scalars: an identity is the `Int` it is, a

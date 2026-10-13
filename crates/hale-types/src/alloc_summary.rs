@@ -2695,7 +2695,7 @@ pub fn summarize_identified(
                                     PrimType::Int
                                         | PrimType::Uint
                                         | PrimType::Float
-                                        | PrimType::Decimal
+                                        | PrimType::Decimal(_)
                                         | PrimType::String
                                         | PrimType::Bool
                                         | PrimType::Time
@@ -4311,7 +4311,7 @@ fn locus_inline_array_fields(l: &LocusDecl) -> BTreeSet<String> {
                             PrimType::Int
                                 | PrimType::Float
                                 | PrimType::Bool
-                                | PrimType::Decimal
+                                | PrimType::Decimal(_)
                                 | PrimType::Duration,
                             _,
                         )
@@ -6680,6 +6680,16 @@ impl<'a> Walker<'a> {
                 receiver_present =
                     !matches!(receiver.as_ref(), Expr::KwSelf(_))
                         && !is_alias;
+                // `Decimal<S>`'s `d.rescale(T)` (an integer literal scale)
+                // is a conversion lowering emits inline, no call: when no
+                // locus declares a `rescale` the call can be nothing else
+                // (the checker types it), so its receiver is no unknown.
+                if name.name == "rescale"
+                    && matches!(args, [Expr::Literal(Literal::Int(_), _)])
+                    && !self.known.keys().any(|(_, m)| m == "rescale")
+                {
+                    receiver_present = false;
+                }
                 // `self.m()` — the enclosing locus is the receiver type.
                 let owner = if matches!(receiver.as_ref(), Expr::KwSelf(_)) {
                     self.enclosing_locus.clone()
