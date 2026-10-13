@@ -65,10 +65,50 @@
 //! when the variable was declared before the loop, wherever in the
 //! loop the instance holding the value was assigned. Field names stand
 //! in for fields of any type, so the answer only errs toward a copy.
+//!
+//! # Values read from a form's cell
+//!
+//! A value read from a `@form(hashmap)` that reads in place (`get`,
+//! `entry_at`; a map with no `sync =` or `sync = none`) or from a
+//! `@form(lru_cache)` (`get`) is the cell's bytes copied into the
+//! reader's frame: its top-level fields are the reader's own, its
+//! nested blocks (a nested record, a tuple, an out-of-line array, a
+//! payload enum, and what they hold) are still the cell's. The
+//! language rule is value semantics: a value you read is yours, and
+//! writing into it never changes the cell (spec/forms.md § Reading a
+//! cell). The pass keeps the read shared, and decides where a write
+//! needs a copy:
+//!
+//! - a read's value carries a marker key naming the form's place (its
+//!   receiver spelled as a path, `self.m`, a local by its variable);
+//!   a field, an element, a `match` payload or a `for` element of it
+//!   carries an in-cell marker instead — that value is the cell's
+//!   block itself, its top level included; `for e in m.entries` over
+//!   such a map is one too;
+//! - a write into a nested part of the local the read is bound to
+//!   (`c.inner.k = 7`, `c.big[j] = x`) copies that part into the
+//!   frame at the part's first write (copy on write: a flag per local
+//!   and part, cleared where the local is bound to a read), unless the
+//!   write is part of a get-modify-set: the local is set back into the
+//!   same form (`m.set(c)`, or a literal that keys the same cell), on
+//!   every path after the write, before any read that may see the cell
+//!   (another read of a form that may be this one, a call that may
+//!   read a form, a delivery the bus runs) and with the local not used
+//!   after the set. Then the write lands in the cell's block, which the
+//!   set keeps, and no one can tell — the idiom stays allocation-free;
+//! - a value in-cell that is written at all, a local the read is bound
+//!   to by any other binding, or one passed (whole or by a part) to a
+//!   call that may write through its parameter (a body that assigns
+//!   under a parameter, transitively; a callee the pass cannot identify
+//!   may), binds an owned copy instead, as a viewed binding does;
+//! - each copy this rule adds is reported with its reason
+//!   ([`OwnedViews::cell_copies`]), which the allocation survey turns
+//!   into a site of its own, so the hot-path lint and `@budget` see it.
 
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use hale_syntax::ast::*;
+use hale_syntax::Span;
 
 /// The binding sites lowering binds an owned copy at. A `match` is
 /// named by its span (a `MatchStmt` has no id); every other site by its
@@ -76,6 +116,56 @@ use hale_syntax::ast::*;
 #[derive(Debug, Clone, Default)]
 pub struct OwnedViews {
     sites: HashSet<Site>,
+    /// Assignments (by id) that write into a nested part of a local
+    /// bound to a form cell's read: the part (a field name) is copied
+    /// into the frame first, if the local's flag for it says the cell
+    /// still holds it.
+    cow_writes: HashMap<u32, String>,
+    /// The bindings (`let`, bare `=`, by id) of those locals, with the
+    /// parts their flags track: `true` when the value bound there is
+    /// the frame's own already (a fresh value, or an owned copy).
+    cow_binds: HashMap<u32, Vec<(String, bool)>>,
+    /// Every copy the cell-read rule adds, with its reason.
+    cell_copies: Vec<CellCopy>,
+    /// The bindings (by id) the cell-read rule owns: a `for` over a
+    /// map's entries copies each entry it binds only for this rule.
+    cell_owned: HashSet<u32>,
+}
+
+/// A copy the cell-read rule adds: where (a write's statement, a
+/// binding's statement, an argument), and why.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CellCopy {
+    /// The program (an index into the programs the pass ran over) whose
+    /// body holds it.
+    pub program: usize,
+    /// A statement's span (a write's, a binding's), or with `operand`
+    /// an argument's.
+    pub span: Span,
+    pub operand: bool,
+    pub reason: &'static str,
+}
+
+/// The reasons a write into a value read from a form's cell copies.
+pub mod reasons {
+    /// Another read of the form (or a call or delivery that may read
+    /// one) comes between the write and the set.
+    pub const READ_BEFORE_SET: &str = "copy: the cell is read again before the set";
+    /// The local is used after the set that would have kept the write.
+    pub const OUTLIVES_SET: &str = "copy: the value outlives the set";
+    /// No set of the local into its form follows the write.
+    pub const NO_SET: &str = "copy: the value is not set back into its map";
+    /// The set may not run after the write: it is in a branch or a
+    /// loop the write is not, or a path leaves before it.
+    pub const NOT_EVERY_PATH: &str = "copy: the set is not on every path after the write";
+    /// The set may key another cell than the one read.
+    pub const OTHER_KEY: &str = "copy: the set may key another cell";
+    /// The value, or a part of it, is passed to a call that may write
+    /// through its parameter.
+    pub const CALL_WRITES: &str = "copy: the value is passed to a call that may write through its parameter";
+    /// A binding that is the cell's own block (a part of the value, an
+    /// element, a payload, an iteration's entry) is written.
+    pub const VIEW_WRITTEN: &str = "copy: a binding into the cell is written";
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -98,14 +188,27 @@ enum Site {
 
 impl OwnedViews {
     /// Run the pass over every body of `programs` (lowering's merged
-    /// program); `renames` is the build's import table (a qualified path
-    /// to the declaration it names).
+    /// program; the survey's checked programs and the stdlib's analysis
+    /// copy); `renames` is the build's import table (a qualified path to
+    /// the declaration it names).
     pub fn of(programs: &[&Program], renames: &BTreeMap<Vec<String>, String>) -> Self {
         let mut out = OwnedViews::default();
-        for (site, _) in owned_view_sites_in(programs, renames) {
+        let found = analyze(programs, renames);
+        for (site, _) in found.sites {
             out.sites.insert(site);
         }
+        out.cow_writes = found.cow_writes;
+        out.cow_binds = found.cow_binds;
+        out.cell_copies = found.cell_copies;
+        out.cell_owned = found.cell_owned;
         out
+    }
+
+    /// Does the cell-read rule own the binding (a `let`, a `for`, by id)
+    /// with this id: a value read from a form's cell that is written
+    /// into, or handed to a call that may write through it?
+    pub fn cell_owned(&self, id: NodeId) -> bool {
+        !id.is_none() && self.cell_owned.contains(&id.0)
     }
 
     /// Does the `let`, tuple `let`, bare-local `=` or `for` with this id
@@ -117,6 +220,32 @@ impl OwnedViews {
     /// Do this match's payload bindings bind owned copies?
     pub fn match_arms(&self, m: &MatchStmt) -> bool {
         self.sites.contains(&Site::Match(m.span.start.0, m.span.end.0))
+    }
+
+    /// The part a write (an assignment, by id) into a local bound to a
+    /// form cell's read copies first, when the local's flag for it says
+    /// the cell still holds it.
+    pub fn cow_write(&self, id: NodeId) -> Option<&str> {
+        if id.is_none() {
+            return None;
+        }
+        self.cow_writes.get(&id.0).map(|s| s.as_str())
+    }
+
+    /// The parts whose flags a binding (`let`, bare `=`, by id) sets,
+    /// each with the value it sets: `true`, the bound value is the
+    /// frame's own already.
+    pub fn cow_bind(&self, id: NodeId) -> Option<&[(String, bool)]> {
+        if id.is_none() {
+            return None;
+        }
+        self.cow_binds.get(&id.0).map(|v| v.as_slice())
+    }
+
+    /// Every copy the cell-read rule adds, in body order: the copy on
+    /// write at a write, an owned binding, a copied argument.
+    pub fn cell_copies(&self) -> &[CellCopy] {
+        &self.cell_copies
     }
 
     /// Is `e` an operand read from a place a later write may replace,
@@ -213,6 +342,9 @@ enum Callee {
 /// Every body of the program, with the summaries the pass reads.
 struct Bodies<'a> {
     bodies: Vec<(&'a [Param], &'a Block)>,
+    /// Each body's program, by its index in the programs the pass runs
+    /// over.
+    body_program: Vec<usize>,
     /// Method name → the summaries' index of each body declaring it.
     methods: BTreeMap<String, Vec<usize>>,
     fns: BTreeMap<String, Vec<usize>>,
@@ -245,6 +377,19 @@ struct Bodies<'a> {
     form_fields: BTreeSet<String>,
     /// Field names every declaration of which holds an `@form` locus.
     form_only_fields: BTreeSet<String>,
+    /// The `@form` loci whose reads hand back the cell's nested blocks:
+    /// a `@form(hashmap)` with no `sync =` or `sync = none`, a
+    /// `@form(lru_cache)`. Every other form reads an owned copy.
+    view_form_loci: BTreeSet<String>,
+    /// Field names some declaration of which may hold such a form (or a
+    /// type the pass cannot place).
+    view_form_fields: BTreeSet<String>,
+    /// Every capacity slot's `indexed_by` field: the field a set keys a
+    /// cell by.
+    key_fields: BTreeSet<String>,
+    /// Field names every declaration of which is laid out inline in its
+    /// record: a write into one is the record's own.
+    inline_fields: BTreeSet<String>,
     /// Loci, interfaces and perspectives: a value of one of these is a
     /// handle, whose field reads view the locus's storage.
     loci: BTreeSet<String>,
@@ -333,7 +478,19 @@ impl<'a> Bodies<'a> {
                     return self.classify_name(&name);
                 }
                 TypeExpr::Primitive(..) => return Class::Value,
-                TypeExpr::Tuple(..) | TypeExpr::Array { .. } | TypeExpr::Bounded { .. } => return Class::Value,
+                // A fixed array of scalars and a bounded list are laid
+                // out inline in the record that holds them: no block of
+                // their own.
+                TypeExpr::Array { elem, .. }
+                    if matches!(
+                        elem.as_ref(),
+                        TypeExpr::Primitive(PrimType::Int | PrimType::Float | PrimType::Bool | PrimType::Decimal(_) | PrimType::Duration, _)
+                    ) =>
+                {
+                    return Class::Inline
+                }
+                TypeExpr::Bounded { .. } => return Class::Inline,
+                TypeExpr::Tuple(..) | TypeExpr::Array { .. } => return Class::Value,
                 TypeExpr::Function { .. } => return Class::FnValue,
                 TypeExpr::Perspective { .. } => return Class::Handle,
             }
@@ -344,7 +501,7 @@ impl<'a> Bodies<'a> {
     /// A declared name's class (aliases already followed).
     fn classify_name(&self, name: &str) -> Class {
         if self.form_loci.contains(name) {
-            Class::Form
+            Class::Form(self.view_form_loci.contains(name))
         } else if self.loci.contains(name) {
             Class::Handle
         } else if self.records.contains(name) || self.enums.contains(name) {
@@ -471,11 +628,16 @@ enum Class {
     /// A scalar, String or Bytes, record, enum, tuple or array: a value
     /// the frame holds (its fields view nothing another write replaces).
     Value,
+    /// A value laid out inline in the record holding it (a fixed array
+    /// of scalars, a bounded list): a write into it writes the record's
+    /// own bytes.
+    Inline,
     /// A locus, an interface, a perspective: its field reads view the
     /// locus's storage.
     Handle,
-    /// An `@form` locus: a handle whose reads may hand back a cell.
-    Form,
+    /// An `@form` locus: a handle whose reads may hand back a cell;
+    /// `true`, one whose reads leave the cell's nested blocks shared.
+    Form(bool),
     /// A fn type: calling one may run anything.
     FnValue,
     /// A type the pass cannot place: treated as a handle, and called as
@@ -485,7 +647,15 @@ enum Class {
 
 impl Class {
     fn may_be_handle(self) -> bool {
-        matches!(self, Class::Handle | Class::Form | Class::Unknown)
+        matches!(self, Class::Handle | Class::Form(_) | Class::Unknown)
+    }
+    /// May a value of this type be a form whose reads leave the cell's
+    /// nested blocks shared?
+    fn may_be_view_form(self) -> bool {
+        matches!(self, Class::Form(true) | Class::Unknown)
+    }
+    fn is_form(self) -> bool {
+        matches!(self, Class::Form(_))
     }
     fn may_be_fn(self) -> bool {
         matches!(self, Class::FnValue | Class::Unknown)
@@ -509,10 +679,24 @@ fn collect<'a>(items: &'a [TopDecl], p: &mut Bodies<'a>) {
             }
             TopDecl::Locus(l) => {
                 p.loci.extend(decl_names(&l.name.name));
-                if l.form.is_some() {
+                if let Some(form) = &l.form {
                     p.form_loci.extend(decl_names(&l.name.name));
+                    // A map that reads in place (no lock a reader takes)
+                    // and an LRU cache hand back the cell's nested blocks.
+                    use crate::form_rows::{sync_config, Discipline, SyncConfig};
+                    let in_place = match form.name.name.as_str() {
+                        "hashmap" => !matches!(sync_config(form), SyncConfig::Explicit(d) if d != Discipline::None),
+                        "lru_cache" => true,
+                        _ => false,
+                    };
+                    if in_place {
+                        p.view_form_loci.extend(decl_names(&l.name.name));
+                    }
                 }
                 for m in &l.members {
+                    if let LocusMember::Capacity(c) = m {
+                        p.key_fields.extend(c.slots.iter().filter_map(|s| s.indexed_by.as_ref().map(|i| i.name.clone())));
+                    }
                     match m {
                         LocusMember::Fn(f) => {
                             p.methods.entry(f.name.name.clone()).or_default().push(p.bodies.len());
@@ -586,12 +770,32 @@ fn owned_view_sites(program: &Program) -> Vec<(Site, String)> {
 
 #[cfg(test)]
 fn owned_view_sites_with(program: &Program, renames: &BTreeMap<Vec<String>, String>) -> Vec<(Site, String)> {
-    owned_view_sites_in(&[program], renames)
+    analyze(&[program], renames).sites
 }
 
-fn owned_view_sites_in(programs: &[&Program], renames: &BTreeMap<Vec<String>, String>) -> Vec<(Site, String)> {
+/// What the pass finds: the owned sites, and the cell-read rule's copies.
+#[derive(Default)]
+struct Found {
+    sites: Vec<(Site, String)>,
+    cow_writes: HashMap<u32, String>,
+    cow_binds: HashMap<u32, Vec<(String, bool)>>,
+    cell_copies: Vec<CellCopy>,
+    cell_owned: HashSet<u32>,
+}
+
+/// Per body, what its calls reach, transitively: the fields it may
+/// write, whether it may read a form's cell, whether it may write
+/// through a parameter.
+struct Summaries {
+    writes: Vec<Writes>,
+    reads: Vec<bool>,
+    writes_params: Vec<bool>,
+}
+
+fn analyze(programs: &[&Program], renames: &BTreeMap<Vec<String>, String>) -> Found {
     let mut p = Bodies {
         bodies: Vec::new(),
+        body_program: Vec::new(),
         methods: BTreeMap::new(),
         fns: BTreeMap::new(),
         fn_fields: BTreeSet::new(),
@@ -605,13 +809,18 @@ fn owned_view_sites_in(programs: &[&Program], renames: &BTreeMap<Vec<String>, St
         variants: BTreeSet::new(),
         form_fields: BTreeSet::new(),
         form_only_fields: BTreeSet::new(),
+        view_form_loci: BTreeSet::new(),
+        view_form_fields: BTreeSet::new(),
+        key_fields: BTreeSet::new(),
+        inline_fields: BTreeSet::new(),
         loci: BTreeSet::new(),
         returns: Vec::new(),
         handle_fns: BTreeSet::new(),
         field_ids: std::cell::RefCell::new(BTreeMap::new()),
     };
-    for program in programs {
+    for (i, program) in programs.iter().enumerate() {
         collect(&program.items, &mut p);
+        p.body_program.resize(p.bodies.len(), i);
     }
     // Every classification below reads `classify`: a fn or method name
     // some body of which may return a handle; a field a call may run as
@@ -630,33 +839,59 @@ fn owned_view_sites_in(programs: &[&Program], renames: &BTreeMap<Vec<String>, St
         .collect();
     p.handle_fns = handle_fns;
     p.fn_fields = classes.iter().filter(|(_, c)| c.may_be_fn()).map(|(f, _)| f.clone()).collect();
-    p.form_fields = classes.iter().filter(|(_, c)| matches!(c, Class::Form | Class::Unknown)).map(|(f, _)| f.clone()).collect();
-    let not_form: BTreeSet<&String> = classes.iter().filter(|(_, c)| *c != Class::Form).map(|(f, _)| f).collect();
+    p.form_fields = classes.iter().filter(|(_, c)| c.is_form() || *c == Class::Unknown).map(|(f, _)| f.clone()).collect();
+    p.view_form_fields = classes.iter().filter(|(_, c)| c.may_be_view_form()).map(|(f, _)| f.clone()).collect();
+    let not_form: BTreeSet<&String> = classes.iter().filter(|(_, c)| !c.is_form()).map(|(f, _)| f).collect();
     p.form_only_fields =
-        classes.iter().filter(|(f, c)| *c == Class::Form && !not_form.contains(f)).map(|(f, _)| f.clone()).collect();
+        classes.iter().filter(|(f, c)| c.is_form() && !not_form.contains(f)).map(|(f, _)| f.clone()).collect();
+    let not_inline: BTreeSet<&String> = classes.iter().filter(|(_, c)| *c != Class::Inline).map(|(f, _)| f).collect();
+    p.inline_fields =
+        classes.iter().filter(|(f, c)| *c == Class::Inline && !not_inline.contains(f)).map(|(f, _)| f.clone()).collect();
 
     // Each body's own writes and the calls it makes, then the fixpoint.
-    let mut direct: Vec<(Writes, BTreeSet<Callee>)> = Vec::with_capacity(p.bodies.len());
+    struct Direct {
+        writes: Writes,
+        callees: BTreeSet<Callee>,
+        reads: bool,
+        writes_params: bool,
+        param_callees: BTreeSet<Callee>,
+    }
+    let mut direct: Vec<Direct> = Vec::with_capacity(p.bodies.len());
     for (params, body) in &p.bodies {
         let mut w = Walk::new(&p, None, params);
         w.block(body);
-        direct.push((w.own, w.callees));
+        direct.push(Direct {
+            writes: w.own,
+            callees: w.callees,
+            reads: w.reads,
+            writes_params: w.writes_params,
+            param_callees: w.param_callees,
+        });
     }
     // Each body's callees, resolved once (a method name to every body
     // declaring it), then unioned until nothing changes.
-    let edges: Vec<Vec<usize>> = direct
-        .iter()
-        .map(|(_, callees)| {
-            let mut e: Vec<usize> = callees.iter().flat_map(|c| p.resolve(c)).collect();
-            e.sort_unstable();
-            e.dedup();
-            e
-        })
-        .collect();
-    let mut summary: Vec<Writes> = direct.into_iter().map(|(w, _)| w).collect();
+    let resolve_all = |callees: &BTreeSet<Callee>| -> Vec<usize> {
+        let mut e: Vec<usize> = callees.iter().flat_map(|c| p.resolve(c)).collect();
+        e.sort_unstable();
+        e.dedup();
+        e
+    };
+    let edges: Vec<Vec<usize>> = direct.iter().map(|d| resolve_all(&d.callees)).collect();
+    let param_edges: Vec<Vec<usize>> = direct.iter().map(|d| resolve_all(&d.param_callees)).collect();
+    let mut reads: Vec<bool> = direct.iter().map(|d| d.reads).collect();
+    let mut writes_params: Vec<bool> = direct.iter().map(|d| d.writes_params).collect();
+    let mut summary: Vec<Writes> = direct.into_iter().map(|d| d.writes).collect();
     loop {
         let mut changed = false;
         for i in 0..summary.len() {
+            if !reads[i] && edges[i].iter().any(|&j| reads[j]) {
+                reads[i] = true;
+                changed = true;
+            }
+            if !writes_params[i] && param_edges[i].iter().any(|&j| writes_params[j]) {
+                writes_params[i] = true;
+                changed = true;
+            }
             if summary[i].top {
                 continue;
             }
@@ -678,12 +913,17 @@ fn owned_view_sites_in(programs: &[&Program], renames: &BTreeMap<Vec<String>, St
             break;
         }
     }
+    let summaries = Summaries { writes: summary, reads, writes_params };
 
-    let mut out = Vec::new();
-    for (params, body) in &p.bodies {
-        let mut w = Walk::new(&p, Some(&summary), params);
+    let mut out = Found::default();
+    for (b, (params, body)) in p.bodies.iter().enumerate() {
+        let mut w = Walk::new(&p, Some(&summaries), params);
         w.block(body);
-        out.extend(w.flagged());
+        let before = out.cell_copies.len();
+        w.finish(&mut out);
+        for c in &mut out.cell_copies[before..] {
+            c.program = p.body_program[b];
+        }
     }
     out
 }
@@ -712,6 +952,100 @@ struct Inst {
     /// A literal's binding: the parts that view a place, copied where
     /// the literal is built instead of the literal copied whole.
     parts: Option<Vec<Site>>,
+    /// The binding's statement, where a copy it binds is reported.
+    span: Span,
+}
+
+/// The marker key of a form cell's read: the value's top level is the
+/// reader's own, its nested blocks the cell's. Followed by the form's
+/// place and, after `KEY_SEP`, the read's key (a local, by its
+/// variable) or `-`. No field name contains it.
+const CELL: &str = "\u{1}cell\u{1}";
+/// The marker key of a value inside a cell's blocks (a part of a
+/// read's value, an element, a payload, an iteration's entry): all of
+/// it is the cell's. Followed by the form's place.
+const IN_CELL: &str = "\u{1}in\u{1}";
+const KEY_SEP: char = '\u{2}';
+
+/// The form methods whose result may be a cell of a form that reads in
+/// place.
+const CELL_READS: &[&str] = &["get", "entry_at"];
+/// The form methods that read a cell's value (and so would see a write
+/// made into it).
+const VALUE_READS: &[&str] = &["get", "entry_at", "peek", "pop"];
+/// The form methods that store a value as a cell.
+const CELL_STORES: &[&str] = &["set", "put"];
+
+/// A value's keys with every cell marker turned in-cell: a part of a
+/// read's value is the cell's own block.
+fn in_cell(keys: Keys) -> Keys {
+    keys.map(|ks| {
+        ks.into_iter()
+            .map(|k| match k.strip_prefix(CELL) {
+                Some(rest) => format!("{IN_CELL}{}", rest.split(KEY_SEP).next().unwrap_or("")),
+                None => k,
+            })
+            .collect()
+    })
+}
+
+/// A value's keys with its cell markers dropped: a record bound from a
+/// local is copied (spec/types.md § A struct binding is a copy).
+fn without_cells(keys: Keys) -> Keys {
+    keys.and_then(|ks| {
+        let ks: BTreeSet<String> = ks.into_iter().filter(|k| !k.starts_with(CELL)).collect();
+        (!ks.is_empty()).then_some(ks)
+    })
+}
+
+/// One binding of a variable, whatever it binds: where it is, whether a
+/// flag can be set there (a `let` or a bare `=`), and its instance.
+struct Bind {
+    site: Site,
+    at: u32,
+    /// A `let` or a bare `=`: lowering can set a copy-on-write flag
+    /// there.
+    flaggable: bool,
+    inst: Option<usize>,
+}
+
+/// An assignment under a local: `v.f.. = x` (`first` the field) or
+/// `v[i].. = x` (`first` `None`), `depth` segments deep.
+struct AssignWrite {
+    var: usize,
+    first: Option<String>,
+    depth: usize,
+    id: u32,
+    span: Span,
+    at: u32,
+    /// The blocks the assignment is inside, innermost last.
+    blocks: Vec<u32>,
+}
+
+/// What a form's store (`m.set(x)`, `c.put(x)`) is handed.
+enum StoreArg {
+    /// A local.
+    Var(usize),
+    /// A record literal: each init of a key field, as what it reads.
+    Literal(Vec<KeyInit>),
+    Other,
+}
+
+enum KeyInit {
+    /// `id: v.id`: the same field of a local.
+    FieldOf(usize),
+    /// `id: k`: a local or a parameter, by its place.
+    Var(String),
+    Other,
+}
+
+/// A form's store: where, into which place, of what, and the block it
+/// is a statement of (`None`: inside an expression).
+struct StoreAt {
+    at: u32,
+    place: String,
+    arg: StoreArg,
+    block: Option<u32>,
 }
 
 /// A write event: the writes, and the positions it spans (a call's
@@ -726,7 +1060,7 @@ struct WriteAt {
 struct Walk<'p, 'a> {
     p: &'p Bodies<'a>,
     /// `None` on the summary pass: collect `own` and `callees` only.
-    summary: Option<&'p [Writes]>,
+    summary: Option<&'p Summaries>,
     own: Writes,
     callees: BTreeSet<Callee>,
     pos: u32,
@@ -756,6 +1090,40 @@ struct Walk<'p, 'a> {
     deliveries: Option<Writes>,
     /// Arguments passed to a call that may replace what they view.
     args: Vec<(Site, String)>,
+    /// The cell-read rule's facts. On the summary pass: whether the body
+    /// itself may read a form's cell or write through a parameter, and
+    /// the callees it passes a parameter to.
+    reads: bool,
+    writes_params: bool,
+    param_callees: BTreeSet<Callee>,
+    /// Every parameter's name.
+    params: BTreeSet<String>,
+    /// Per variable, whether it may hold a form whose reads leave the
+    /// cell's nested blocks shared; and such parameters.
+    view_forms: Vec<bool>,
+    view_form_params: BTreeSet<String>,
+    /// Per variable, every binding of it.
+    binds: Vec<Vec<Bind>>,
+    /// The blocks being walked, innermost last, and the next block's id.
+    block_stack: Vec<u32>,
+    next_block: u32,
+    /// The call a statement is (`m.set(c);`), by its span, while it is
+    /// walked.
+    stmt_call: Option<(u32, u32)>,
+    assigns: Vec<AssignWrite>,
+    stores: Vec<StoreAt>,
+    /// Reads of a cell: where, and the form's place (`None`: any form).
+    cell_reads: Vec<(u32, Option<String>)>,
+    /// Where a path may leave: `true` a `break` or `continue`, `false` a
+    /// `return`, `fail`, `violate`, `terminate` or `or raise`.
+    exits: Vec<(u32, bool)>,
+    /// Locals passed (whole or by a part, the part's depth) to a call
+    /// that may write through its parameter.
+    passed: Vec<(usize, usize)>,
+    /// Arguments of no local copied for such a call, by span.
+    passed_copies: Vec<Span>,
+    /// Parameters rebound (`k = ..`), and where.
+    param_rebinds: Vec<(String, u32)>,
 }
 
 fn pattern_names<'e>(p: &'e Pattern, out: &mut Vec<&'e Ident>) {
@@ -768,18 +1136,22 @@ fn pattern_names<'e>(p: &'e Pattern, out: &mut Vec<&'e Ident>) {
 }
 
 impl<'p, 'a> Walk<'p, 'a> {
-    fn new(p: &'p Bodies<'a>, summary: Option<&'p [Writes]>, params: &[Param]) -> Self {
+    fn new(p: &'p Bodies<'a>, summary: Option<&'p Summaries>, params: &[Param]) -> Self {
         let mut top = BTreeMap::new();
         let mut handle_params = BTreeSet::new();
         let mut form_params = BTreeSet::new();
+        let mut view_form_params = BTreeSet::new();
         for prm in params {
             top.insert(prm.name.name.clone(), None);
             let class = p.classify(&prm.ty);
             if class.may_be_handle() {
                 handle_params.insert(prm.name.name.clone());
             }
-            if class == Class::Form {
+            if class.is_form() {
                 form_params.insert(prm.name.name.clone());
+            }
+            if class.may_be_view_form() {
+                view_form_params.insert(prm.name.name.clone());
             }
         }
         Walk {
@@ -801,6 +1173,23 @@ impl<'p, 'a> Walk<'p, 'a> {
             loops: Vec::new(),
             args: Vec::new(),
             deliveries: None,
+            reads: false,
+            writes_params: false,
+            param_callees: BTreeSet::new(),
+            params: params.iter().map(|prm| prm.name.name.clone()).collect(),
+            view_forms: Vec::new(),
+            view_form_params,
+            binds: Vec::new(),
+            block_stack: Vec::new(),
+            next_block: 0,
+            stmt_call: None,
+            assigns: Vec::new(),
+            stores: Vec::new(),
+            cell_reads: Vec::new(),
+            exits: Vec::new(),
+            passed: Vec::new(),
+            passed_copies: Vec::new(),
+            param_rebinds: Vec::new(),
         }
     }
 
@@ -820,6 +1209,8 @@ impl<'p, 'a> Walk<'p, 'a> {
         self.vars.push(Vec::new());
         self.handles.push(false);
         self.forms.push(false);
+        self.view_forms.push(false);
+        self.binds.push(Vec::new());
         self.declared.push(self.pos);
         self.uses.push(Vec::new());
         self.scopes.last_mut().expect("a scope").insert(name.to_string(), Some(v));
@@ -835,10 +1226,13 @@ impl<'p, 'a> Walk<'p, 'a> {
         (!all.is_empty()).then_some(all)
     }
 
-    fn bind(&mut self, var: usize, site: Site, name: &str, keys: Option<BTreeSet<String>>) {
-        self.bind_parts(var, site, name, keys, None);
+    /// A binding no flag can be set at (a `match` payload, a `for`
+    /// element, a tuple `let`'s name).
+    fn bind(&mut self, var: usize, site: Site, name: &str, keys: Option<BTreeSet<String>>, span: Span) {
+        self.bind_parts(var, site, name, keys, None, span, false);
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn bind_parts(
         &mut self,
         var: usize,
@@ -846,14 +1240,20 @@ impl<'p, 'a> Walk<'p, 'a> {
         name: &str,
         keys: Option<BTreeSet<String>>,
         parts: Option<Vec<Site>>,
+        span: Span,
+        flaggable: bool,
     ) {
         let at = self.tick();
-        let Some(keys) = keys else { return };
+        let Some(keys) = keys else {
+            self.binds[var].push(Bind { site, at, flaggable, inst: None });
+            return;
+        };
         // Read out of a place, it may be a child's handle.
         self.handles[var] = true;
         let i = self.insts.len();
-        self.insts.push(Inst { var, site, name: name.to_string(), keys, at, parts });
+        self.insts.push(Inst { var, site, name: name.to_string(), keys, at, parts, span });
         self.vars[var].push(i);
+        self.binds[var].push(Bind { site, at, flaggable, inst: Some(i) });
     }
 
     /// The keys of `receiver.name`, the receiver's being `keys`: a field
@@ -865,7 +1265,7 @@ impl<'p, 'a> Walk<'p, 'a> {
         if keys.is_none() && !self.is_handle(receiver) {
             return None;
         }
-        let mut keys = keys.unwrap_or_default();
+        let mut keys = in_cell(keys).unwrap_or_default();
         keys.insert(name.name.clone());
         Some(keys)
     }
@@ -882,6 +1282,78 @@ impl<'p, 'a> Walk<'p, 'a> {
                 Some(None) => self.form_params.contains(&id.name),
                 None => false,
             },
+            _ => false,
+        }
+    }
+
+    /// The place `e` names, spelled as a path: `self`, a local (by its
+    /// variable, `@n`), a parameter (`$name`), a field of one. `None`:
+    /// no place a path names (a call's result, a literal).
+    fn place_of(&self, e: &Expr) -> Option<String> {
+        match e {
+            Expr::KwSelf(_) => Some("self".to_string()),
+            Expr::Ident(id) => match self.lookup(&id.name) {
+                Some(Some(v)) => Some(format!("@{v}")),
+                Some(None) => Some(format!("${}", id.name)),
+                None => None,
+            },
+            Expr::Field { receiver, name, .. } => Some(format!("{}.{}", self.place_of(receiver)?, name.name)),
+            _ => None,
+        }
+    }
+
+    /// May `e` be a form whose reads leave the cell's nested blocks
+    /// shared? A field some declaration of which holds one (or a type
+    /// the pass cannot place), a local or a parameter that may, and any
+    /// other value that may be a handle.
+    fn may_be_view_form(&self, e: &Expr) -> bool {
+        match e {
+            Expr::Field { name, .. } => self.p.view_form_fields.contains(&name.name),
+            Expr::Ident(id) => match self.lookup(&id.name) {
+                Some(Some(v)) => self.view_forms[v],
+                Some(None) => self.view_form_params.contains(&id.name),
+                None => false,
+            },
+            Expr::KwSelf(_) => false,
+            Expr::Struct { path, .. } => self.p.classify_path(path).may_be_view_form(),
+            other => self.is_handle(other),
+        }
+    }
+
+    /// May `e` be any `@form` locus?
+    fn may_be_form(&self, e: &Expr) -> bool {
+        match e {
+            Expr::Field { name, .. } => self.p.form_fields.contains(&name.name),
+            Expr::Ident(id) => match self.lookup(&id.name) {
+                Some(Some(v)) => self.forms[v] || self.view_forms[v] || self.handles[v],
+                Some(None) => self.handle_params.contains(&id.name),
+                None => false,
+            },
+            Expr::KwSelf(_) => false,
+            other => self.is_handle(other),
+        }
+    }
+
+    /// The local an expression is read from (`v`, `v.f`, `v[i].g`) and
+    /// how many segments below it.
+    fn root_local(&self, e: &Expr) -> Option<(usize, usize)> {
+        match e {
+            Expr::Ident(id) => match self.lookup(&id.name) {
+                Some(Some(v)) => Some((v, 0)),
+                _ => None,
+            },
+            Expr::Field { receiver, .. } | Expr::Index { receiver, .. } => {
+                self.root_local(receiver).map(|(v, d)| (v, d + 1))
+            }
+            _ => None,
+        }
+    }
+
+    /// Is `e` a parameter, or read from one (`p.f`, `p[i]`)?
+    fn rooted_at_param(&self, e: &Expr) -> bool {
+        match e {
+            Expr::Ident(id) => matches!(self.lookup(&id.name), Some(None)) && self.params.contains(&id.name),
+            Expr::Field { receiver, .. } | Expr::Index { receiver, .. } => self.rooted_at_param(receiver),
             _ => false,
         }
     }
@@ -947,7 +1419,7 @@ impl<'p, 'a> Walk<'p, 'a> {
     fn part_keys(&self, e: &Expr) -> Keys {
         match e {
             Expr::Field { receiver, name, .. } => self.field_keys(receiver, self.part_keys(receiver), name),
-            Expr::Index { receiver, .. } => self.part_keys(receiver),
+            Expr::Index { receiver, .. } => in_cell(self.part_keys(receiver)),
             Expr::Ident(id) => match self.lookup(&id.name) {
                 Some(Some(v)) => self.var_keys(v),
                 _ => None,
@@ -974,12 +1446,28 @@ impl<'p, 'a> Walk<'p, 'a> {
     /// Walk a block; the keys of its value (its tail's).
     fn block(&mut self, b: &Block) -> Keys {
         self.scopes.push(BTreeMap::new());
+        self.block_stack.push(self.next_block);
+        self.next_block += 1;
         for s in &b.stmts {
             self.stmt(s);
         }
         let keys = b.tail.as_ref().and_then(|t| self.expr(t));
+        self.block_stack.pop();
         self.scopes.pop();
         keys
+    }
+
+    fn exit(&mut self, jump: bool) {
+        let at = self.tick();
+        self.exits.push((at, jump));
+    }
+
+    /// A read that may see a cell of the form at `place` (`None`: of any
+    /// form).
+    fn cell_read(&mut self, place: Option<String>) {
+        self.reads = true;
+        let at = self.tick();
+        self.cell_reads.push((at, place));
     }
 
     fn in_loop(&mut self, f: impl FnOnce(&mut Self)) {
@@ -993,71 +1481,132 @@ impl<'p, 'a> Walk<'p, 'a> {
     /// expression, `if`, `match` or block statement.
     fn stmt(&mut self, s: &Stmt) -> Keys {
         match s {
-            Stmt::Let { name, ty, value, id, .. } => {
-                let keys = self.expr(value);
+            Stmt::Let { name, ty, value, id, span, .. } => {
+                let mut keys = self.expr(value);
+                // A record bound from a local is a copy (GH #713): what
+                // a read of a cell bound there, it is no more.
+                if matches!(value, Expr::Ident(_)) {
+                    keys = without_cells(keys);
+                }
                 let parts = self.literal_parts(value);
                 // A binding declared as a handle is one, whatever the
                 // value's own spelling says.
                 let handle = self.is_handle(value) || ty.as_ref().is_some_and(|t| self.p.classify(t).may_be_handle());
-                let form = match (ty, value) {
-                    (Some(t), _) => self.p.classify(t) == Class::Form,
-                    (None, Expr::Struct { path, .. }) => self.p.classify_path(path) == Class::Form,
-                    _ => false,
+                let (form, view_form) = match (ty, value) {
+                    (Some(t), _) => {
+                        let c = self.p.classify(t);
+                        (c.is_form(), c.may_be_view_form())
+                    }
+                    (None, Expr::Struct { path, .. }) => {
+                        let c = self.p.classify_path(path);
+                        (c.is_form(), c.may_be_view_form())
+                    }
+                    (None, other) => (false, self.may_be_view_form(other)),
                 };
                 let v = self.declare(&name.name);
                 self.handles[v] = handle;
                 self.forms[v] = form;
-                self.bind_parts(v, Site::Node(id.0), &name.name, keys, parts);
+                self.view_forms[v] = view_form;
+                self.bind_parts(v, Site::Node(id.0), &name.name, keys, parts, *span, true);
             }
-            Stmt::LetTuple { names, value, id, .. } => {
-                let keys = self.expr(value);
+            Stmt::LetTuple { names, value, id, span, .. } => {
+                let keys = in_cell(self.expr(value));
                 for n in names {
                     let v = self.declare(&n.name);
-                    self.bind(v, Site::Node(id.0), &n.name, keys.clone());
+                    self.bind(v, Site::Node(id.0), &n.name, keys.clone(), *span);
                 }
             }
-            Stmt::Assign { target, value, id, .. } => {
+            Stmt::Assign { target, value, id, span, .. } => {
                 for seg in &target.tail {
                     if let LValueSeg::Index(e) = seg {
                         self.expr(e);
                     }
                 }
-                let keys = self.expr(value);
+                let mut keys = self.expr(value);
                 let first = target.tail.iter().find_map(|seg| match seg {
                     LValueSeg::Field(f) => Some(f.name.as_str()),
                     LValueSeg::Index(_) => None,
                 });
+                let head = self.lookup(&target.head.name);
                 if target.tail.is_empty() {
                     // A bare local rebound: a new instance of it.
-                    if let Some(Some(v)) = self.lookup(&target.head.name) {
+                    if let Some(Some(v)) = head {
                         if self.is_handle(value) {
                             self.handles[v] = true;
                         }
+                        if self.may_be_view_form(value) {
+                            self.view_forms[v] = true;
+                        }
+                        if matches!(value, Expr::Ident(_)) {
+                            keys = without_cells(keys);
+                        }
                         let parts = self.literal_parts(value);
-                        self.bind_parts(v, Site::Node(id.0), &target.head.name, keys, parts);
+                        self.bind_parts(v, Site::Node(id.0), &target.head.name, keys, parts, *span, true);
+                    } else if matches!(head, Some(None)) {
+                        let at = self.tick();
+                        self.param_rebinds.push((target.head.name.clone(), at));
                     }
-                } else if let Some(f) = first {
-                    let id = self.p.field_id(f);
-                    self.write(Writes::field(id), None);
                 } else {
-                    // `x[i] = v` on a local or a parameter: the element
-                    // a binding of `x[j]` views.
-                    self.use_name(&target.head.name);
-                    let id = self.p.field_id(&target.head.name);
-                    self.write(Writes::field(id), None);
+                    if let Some(f) = first {
+                        let id = self.p.field_id(f);
+                        self.write(Writes::field(id), None);
+                    } else {
+                        // `x[i] = v` on a local or a parameter: the element
+                        // a binding of `x[j]` views.
+                        self.use_name(&target.head.name);
+                        let id = self.p.field_id(&target.head.name);
+                        self.write(Writes::field(id), None);
+                    }
+                    match head {
+                        // A write under a local: what the cell-read rule
+                        // decides about, once the body is walked.
+                        Some(Some(v)) => {
+                            let first = match target.tail.first() {
+                                Some(LValueSeg::Field(f)) => Some(f.name.clone()),
+                                _ => None,
+                            };
+                            let at = self.tick();
+                            self.assigns.push(AssignWrite {
+                                var: v,
+                                first,
+                                depth: target.tail.len(),
+                                id: id.0,
+                                span: *span,
+                                at,
+                                blocks: self.block_stack.clone(),
+                            });
+                        }
+                        // A write under a parameter reaches the caller's
+                        // value (an argument is passed by reference).
+                        Some(None) if self.params.contains(&target.head.name) => self.writes_params = true,
+                        _ => {}
+                    }
                 }
             }
             Stmt::If(i) => return self.if_stmt(i),
             Stmt::Match(m) => return self.match_stmt(m),
-            Stmt::For { name, iter, body, id, .. } => {
+            Stmt::For { name, iter, body, id, span, .. } => {
                 // The loop holds the array it walks from before its
                 // first iteration to its last, reading the next element
                 // at the top of each: the binding is the array's, made
                 // before the loop, and the element is that binding.
-                let keys = self.expr(iter);
+                let mut keys = in_cell(self.expr(iter));
+                // A form's walk (`m.entries`, `v.items`) reads its cells;
+                // a map that reads in place hands each entry as the cell
+                // itself.
+                if let Expr::Field { receiver, name: pseudo, .. } = iter {
+                    if matches!(pseudo.name.as_str(), "entries" | "items") && self.may_be_form(receiver) {
+                        let place = self.place_of(receiver);
+                        if pseudo.name == "entries" && self.may_be_view_form(receiver) {
+                            let marker = format!("{IN_CELL}{}", place.clone().unwrap_or_else(|| "?".to_string()));
+                            keys = union(keys, Some(BTreeSet::from([marker])));
+                        }
+                        self.cell_read(place);
+                    }
+                }
                 self.scopes.push(BTreeMap::new());
                 let v = self.declare(&name.name);
-                self.bind(v, Site::Node(id.0), &name.name, keys);
+                self.bind(v, Site::Node(id.0), &name.name, keys, *span);
                 self.in_loop(|w| {
                     let at = w.tick();
                     w.uses[v].push(at);
@@ -1073,14 +1622,17 @@ impl<'p, 'a> Walk<'p, 'a> {
                 if let Some(e) = e {
                     self.expr(e);
                 }
+                self.exit(false);
             }
             Stmt::Fail { value, .. } => {
                 self.expr(value);
+                self.exit(false);
             }
             Stmt::Violate { payload, .. } => {
                 if let Some(e) = payload {
                     self.expr(e);
                 }
+                self.exit(false);
             }
             Stmt::Send { subject, value, or_disposition, .. } => {
                 self.expr(subject);
@@ -1092,17 +1644,23 @@ impl<'p, 'a> Walk<'p, 'a> {
                 // returns.
                 let w = self.deliveries();
                 self.write(w, None);
+                self.delivery_reads();
             }
             Stmt::Yield(_) => {
                 let w = self.deliveries();
                 self.write(w, None);
+                self.delivery_reads();
             }
-            Stmt::Reperspective { .. } => self.write(Writes::top(), None),
+            Stmt::Reperspective { .. } => {
+                self.write(Writes::top(), None);
+                self.cell_read(None);
+            }
             Stmt::Recovery { args, .. } => {
                 args.iter().for_each(|a| {
                     self.expr(a);
                 });
                 self.write(Writes::top(), None);
+                self.cell_read(None);
             }
             Stmt::ShmWrite { max, binding, body, .. } => {
                 self.expr(max);
@@ -1112,8 +1670,19 @@ impl<'p, 'a> Walk<'p, 'a> {
                 self.scopes.pop();
             }
             Stmt::Block(b) => return self.block(b),
-            Stmt::Expr(e) => return self.expr(e),
-            Stmt::Break(_) | Stmt::Continue(_) | Stmt::Terminate(_) => {}
+            Stmt::Expr(e) => {
+                // A call written as a statement: a store there runs
+                // wherever the statement does.
+                let saved = self.stmt_call.take();
+                if let Expr::Call { span, .. } = e {
+                    self.stmt_call = Some((span.start.0, span.end.0));
+                }
+                let keys = self.expr(e);
+                self.stmt_call = saved;
+                return keys;
+            }
+            Stmt::Break(_) | Stmt::Continue(_) => self.exit(true),
+            Stmt::Terminate(_) => self.exit(false),
         }
         None
     }
@@ -1132,7 +1701,7 @@ impl<'p, 'a> Walk<'p, 'a> {
 
     /// Walk a `match`; the keys of its value, any arm's.
     fn match_stmt(&mut self, m: &MatchStmt) -> Keys {
-        let keys = self.expr(&m.scrutinee);
+        let keys = in_cell(self.expr(&m.scrutinee));
         let mut out = None;
         let site = Site::Match(m.span.start.0, m.span.end.0);
         for arm in &m.arms {
@@ -1141,7 +1710,7 @@ impl<'p, 'a> Walk<'p, 'a> {
             pattern_names(&arm.pattern, &mut names);
             for n in names {
                 let v = self.declare(&n.name);
-                self.bind(v, site, &n.name, keys.clone());
+                self.bind(v, site, &n.name, keys.clone(), m.span);
             }
             if let Some(g) = &arm.guard {
                 self.expr(g);
@@ -1164,9 +1733,18 @@ impl<'p, 'a> Walk<'p, 'a> {
                 self.scopes.last_mut().expect("a scope").insert("err".into(), None);
                 let keys = self.expr(e);
                 self.scopes.pop();
-                if matches!(d, OrDisposition::Substitute(_)) { keys } else { None }
+                if matches!(d, OrDisposition::Substitute(_)) {
+                    keys
+                } else {
+                    self.exit(false);
+                    None
+                }
             }
-            OrDisposition::Raise(_) | OrDisposition::Discard(_) | OrDisposition::Wait(_) => None,
+            OrDisposition::Raise(_) => {
+                self.exit(false);
+                None
+            }
+            OrDisposition::Discard(_) | OrDisposition::Wait(_) => None,
         }
     }
 
@@ -1204,7 +1782,7 @@ impl<'p, 'a> Walk<'p, 'a> {
                 self.expr(operand);
                 None
             }
-            Expr::Call { callee, args, .. } => self.call(callee, args),
+            Expr::Call { callee, args, span, .. } => self.call(callee, args, *span),
             Expr::Field { receiver, name, .. } => {
                 let keys = self.expr(receiver);
                 self.field_keys(receiver, keys, name)
@@ -1215,7 +1793,7 @@ impl<'p, 'a> Walk<'p, 'a> {
             }
             Expr::Index { receiver, index, .. } => {
                 let mut keys = self.operands(&[receiver, index]);
-                keys.swap_remove(0)
+                in_cell(keys.swap_remove(0))
             }
             Expr::Tuple(es, _) | Expr::Array(es, _) => {
                 let ops: Vec<&Expr> = es.iter().collect();
@@ -1252,12 +1830,18 @@ impl<'p, 'a> Walk<'p, 'a> {
         }
     }
 
-    fn call(&mut self, callee: &Expr, args: &[Expr]) -> Keys {
+    fn call(&mut self, callee: &Expr, args: &[Expr], span: Span) -> Keys {
         let start = self.tick();
         let mut writes = Writes::default();
         let mut ctor = false;
         let mut form_op = false;
         let mut receiver: Option<&Expr> = None;
+        // What the callee may do through its parameters and to a form's
+        // cells: `Some` a callee with a summary, by name.
+        let mut summarized: Option<Callee> = None;
+        // A callee the pass cannot identify: it may do anything.
+        let mut unknown = false;
+        let mut bounded = false;
         // A target the pass cannot positively identify may write
         // anything: missed precision costs a copy, never a use after a
         // retire.
@@ -1266,6 +1850,7 @@ impl<'p, 'a> Walk<'p, 'a> {
                 // A fn value held in a local or a parameter.
                 self.use_name(&id.name);
                 writes = Writes::top();
+                unknown = true;
             }
             Expr::Ident(_) | Expr::Path(_) | Expr::Field { .. } | Expr::Path2 { .. } => {
                 if let Expr::Field { receiver: r, .. } | Expr::Path2 { receiver: r, .. } = callee {
@@ -1277,8 +1862,14 @@ impl<'p, 'a> Walk<'p, 'a> {
                     }
                 }
                 match self.p.target(callee, self.on_form(callee)) {
-                    Target::Fn(n) => writes.add(&self.callee(Callee::Fn(n))),
-                    Target::Method(n) => writes.add(&self.callee(Callee::Method(n))),
+                    Target::Fn(n) => {
+                        writes.add(&self.callee(Callee::Fn(n.clone())));
+                        summarized = Some(Callee::Fn(n));
+                    }
+                    Target::Method(n) => {
+                        writes.add(&self.callee(Callee::Method(n.clone())));
+                        summarized = Some(Callee::Method(n));
+                    }
                     Target::Std => {
                         let segs: Vec<&str> = match callee {
                             Expr::Ident(id) => vec![id.name.as_str()],
@@ -1292,17 +1883,23 @@ impl<'p, 'a> Walk<'p, 'a> {
                     Target::Ctor => ctor = true,
                     Target::FormOp => form_op = true,
                     Target::Bounded => {
+                        // `count` and `at` read the list; the rest write it.
+                        bounded = !matches!(callee, Expr::Ident(id) if matches!(id.name.as_str(), "count" | "at"));
                         // The bounded field it is handed.
                         if let Some(Expr::Field { name: f, .. }) = args.first() {
                             writes.add(&Writes::field(self.p.field_id(&f.name)));
                         }
                     }
-                    Target::Unknown => writes = Writes::top(),
+                    Target::Unknown => {
+                        writes = Writes::top();
+                        unknown = true;
+                    }
                 }
             }
             other => {
                 self.expr(other);
                 writes = Writes::top();
+                unknown = true;
             }
         }
         // The receiver and the arguments, in the order they are
@@ -1331,7 +1928,84 @@ impl<'p, 'a> Walk<'p, 'a> {
                 k.insert(key);
                 result = union(result, Some(k));
             }
-            result = union(result, recv_keys);
+            result = union(result, recv_keys.clone());
+        }
+        // The cell-read rule: a read of a form's cell, a store into one.
+        let method = match callee {
+            Expr::Field { name, .. } | Expr::Path2 { name, .. } => Some(name.name.as_str()),
+            _ => None,
+        };
+        if let (Some(r), Some(m)) = (receiver, method) {
+            let on_any_form = form_op || self.may_be_form(r);
+            if on_any_form && VALUE_READS.contains(&m) {
+                self.cell_read(self.place_of(r));
+            }
+            if CELL_READS.contains(&m) && self.may_be_view_form(r) {
+                // The value read is the cell's bytes: its nested blocks
+                // the cell's. The key, when it is a local, is what a
+                // literal set back keys the same cell by.
+                let place = self.place_of(r).unwrap_or_else(|| format!("?{start}"));
+                let key = match (m, args.first()) {
+                    ("get", Some(a @ Expr::Ident(_))) => self.place_of(a).unwrap_or_else(|| "-".to_string()),
+                    _ => "-".to_string(),
+                };
+                let marker = format!("{CELL}{place}{KEY_SEP}{key}");
+                result = union(result, Some(BTreeSet::from([marker])));
+            }
+            if CELL_STORES.contains(&m) && self.may_be_view_form(r) && args.len() == 1 {
+                let place = self.place_of(r).unwrap_or_else(|| format!("?{start}"));
+                let arg = self.store_arg(&args[0]);
+                let block = (self.stmt_call == Some((span.start.0, span.end.0)))
+                    .then(|| self.block_stack.last().copied())
+                    .flatten();
+                // Placed at the store's write, below.
+                self.stores.push(StoreAt { at: 0, place, arg, block });
+            }
+        }
+        // What the callee may do with the arguments it is handed: write
+        // through them (a parameter is a reference to the caller's value),
+        // and read a form's cell.
+        let callee_reads = unknown || summarized.as_ref().is_some_and(|c| self.summarized(c, |s, j| s.reads[j]));
+        if callee_reads {
+            self.cell_read(None);
+        }
+        for (i, a) in args.iter().enumerate() {
+            if form_op || ctor {
+                continue;
+            }
+            let may_write = unknown
+                || (bounded && i == 0)
+                || summarized.as_ref().is_some_and(|c| self.summarized(c, |s, j| s.writes_params[j]));
+            if self.summary.is_none() {
+                // The summary pass: a parameter handed on.
+                if self.rooted_at_param(a) {
+                    if unknown || (bounded && i == 0) {
+                        self.writes_params = true;
+                    } else if let Some(c) = &summarized {
+                        self.param_callees.insert(c.clone());
+                    }
+                }
+                continue;
+            }
+            if !may_write {
+                continue;
+            }
+            match self.root_local(a) {
+                // A bounded intrinsic writes the list inline in its
+                // record: only one below the local's top level is in a
+                // nested block.
+                Some((v, depth)) if !(bounded && depth < 2) => self.passed.push((v, depth)),
+                Some(_) => {}
+                None => {
+                    // A read of a cell handed straight to the call: copied
+                    // where it is evaluated.
+                    let k = keys.get(i).cloned().flatten();
+                    if let Some(k) = k.filter(|ks| ks.iter().any(|k| k.starts_with(CELL) || k.starts_with(IN_CELL))) {
+                        self.flag_operand(a, &k, false);
+                        self.passed_copies.push(a.span());
+                    }
+                }
+            }
         }
         for (a, keys) in args.iter().zip(keys) {
             // An argument the callee may replace before it reads its
@@ -1354,7 +2028,55 @@ impl<'p, 'a> Walk<'p, 'a> {
         // A form's synthesized method has consumed its arguments by the
         // time it writes: the write spans no argument.
         self.write(writes, if form_op { None } else { Some(start) });
+        if let Some(store) = self.stores.last_mut().filter(|s| s.at == 0) {
+            store.at = self.pos;
+        }
         result
+    }
+
+    /// What a store is handed: a local, a literal (its key fields'
+    /// inits), or something else.
+    fn store_arg(&self, a: &Expr) -> StoreArg {
+        match a {
+            Expr::Ident(_) => match self.root_local(a) {
+                Some((v, 0)) => StoreArg::Var(v),
+                _ => StoreArg::Other,
+            },
+            Expr::Struct { inits, .. } => StoreArg::Literal(
+                inits
+                    .iter()
+                    .filter(|i| self.p.key_fields.contains(&i.name.name))
+                    .map(|i| match &i.value {
+                        Expr::Field { receiver, name, .. } if name.name == i.name.name => match self.root_local(receiver) {
+                            Some((v, 0)) => KeyInit::FieldOf(v),
+                            _ => KeyInit::Other,
+                        },
+                        Expr::Ident(_) => match self.place_of(&i.value) {
+                            Some(u) => KeyInit::Var(u),
+                            None => KeyInit::Other,
+                        },
+                        _ => KeyInit::Other,
+                    })
+                    .collect(),
+            ),
+            _ => StoreArg::Other,
+        }
+    }
+
+    /// Does some body `c` names answer `f` (over the summaries)? On the
+    /// summary pass, nothing is known yet: no.
+    fn summarized(&self, c: &Callee, f: impl Fn(&Summaries, usize) -> bool) -> bool {
+        let Some(s) = self.summary else { return false };
+        self.p.resolve(c).into_iter().any(|j| f(s, j))
+    }
+
+    /// A publish or a `yield`: the handlers it may run may read a cell.
+    fn delivery_reads(&mut self) {
+        let reads = self.summarized(&Callee::Deliveries, |s, j| s.reads[j]);
+        self.callees.insert(Callee::Deliveries);
+        if reads {
+            self.cell_read(None);
+        }
     }
 
     /// Walk operands evaluated in order and held until the last is: an
@@ -1427,7 +2149,9 @@ impl<'p, 'a> Walk<'p, 'a> {
         if parks_on_async_io(segs)
             || effects_for(segs).is_some_and(|e| !e.is_unclassified() && e.contains(EffectSet::PUBLISH))
         {
-            return self.deliveries();
+            let w = self.deliveries();
+            self.delivery_reads();
+            return w;
         }
         Writes::default()
     }
@@ -1436,7 +2160,7 @@ impl<'p, 'a> Walk<'p, 'a> {
         let mut w = Writes::default();
         if let Some(summary) = self.summary {
             for j in self.p.resolve(&c) {
-                w.add(&summary[j]);
+                w.add(&summary.writes[j]);
             }
         }
         self.callees.insert(c);
@@ -1444,10 +2168,11 @@ impl<'p, 'a> Walk<'p, 'a> {
     }
 
     /// The instances whose value some use reads after a write that may
-    /// change it.
-    fn flagged(&self) -> Vec<(Site, String)> {
+    /// change it: the sites to bind owned, and which instances they are.
+    fn flagged(&self) -> (Vec<(Site, String)>, Vec<bool>) {
         let mut out = self.args.clone();
-        for inst in &self.insts {
+        let mut owned = vec![false; self.insts.len()];
+        for (i, inst) in self.insts.iter().enumerate() {
             let hit = self.writes.iter().any(|w| {
                 w.at > inst.at
                     && w.writes.touches(&inst.keys, self.p)
@@ -1459,13 +2184,233 @@ impl<'p, 'a> Walk<'p, 'a> {
                     })
             });
             if hit {
-                match &inst.parts {
-                    Some(parts) => out.extend(parts.iter().map(|s| (*s, inst.name.clone()))),
-                    None => out.push((inst.site, inst.name.clone())),
+                owned[i] = true;
+                self.own_inst(inst, &mut out);
+            }
+        }
+        (out, owned)
+    }
+
+    fn own_inst(&self, inst: &Inst, out: &mut Vec<(Site, String)>) {
+        match &inst.parts {
+            Some(parts) => out.extend(parts.iter().map(|s| (*s, inst.name.clone()))),
+            None => out.push((inst.site, inst.name.clone())),
+        }
+    }
+
+    /// The cell markers an instance carries: each read's form place and
+    /// key; and whether it carries an in-cell one.
+    fn markers(&self, i: usize) -> (Vec<(String, String)>, bool) {
+        let mut cells = Vec::new();
+        let mut inside = false;
+        for k in &self.insts[i].keys {
+            if let Some(rest) = k.strip_prefix(CELL) {
+                let mut it = rest.splitn(2, KEY_SEP);
+                let place = it.next().unwrap_or("").to_string();
+                let key = it.next().unwrap_or("-").to_string();
+                cells.push((place, key));
+            } else if k.starts_with(IN_CELL) {
+                inside = true;
+            }
+        }
+        (cells, inside)
+    }
+
+    /// Is `at` inside a loop that `outer` is not (a loop containing `at`
+    /// whose body does not hold `outer`)?
+    fn loops_holding_not(&self, at: u32, outer: u32) -> Vec<(u32, u32)> {
+        self.loops.iter().copied().filter(|&(ls, le)| ls < at && at <= le && !(ls < outer && outer <= le)).collect()
+    }
+
+    /// Does the store `st` set the cell the local `v` was read from (its
+    /// reads `cells`), after the write `w`, so that the write lands in a
+    /// block the store keeps and no one sees it between? `Err` the
+    /// reason a copy is needed.
+    fn keeps_write(&self, w: &AssignWrite, st: &StoreAt, cells: &[(String, String)], first_bind: u32) -> Result<(), &'static str> {
+        let v = w.var;
+        let key_written = self.assigns.iter().any(|a| a.var == v && a.depth == 1 && a.first.as_ref().is_some_and(|f| self.p.key_fields.contains(f)));
+        // The same cell: the local itself (its key field unwritten), or a
+        // literal keyed by the local's key field or by the read's key.
+        match &st.arg {
+            StoreArg::Var(x) if *x == v => {
+                if key_written {
+                    return Err(reasons::OTHER_KEY);
+                }
+            }
+            StoreArg::Literal(inits) => {
+                let rebound = |u: &str| match u.strip_prefix('@').and_then(|n| n.parse::<usize>().ok()) {
+                    Some(x) => self.binds[x].iter().any(|b| b.at > first_bind && b.at < st.at),
+                    None => self.param_rebinds.iter().any(|(n, at)| u.strip_prefix('$') == Some(n.as_str()) && *at > first_bind && *at < st.at),
+                };
+                let ok = !inits.is_empty()
+                    && inits.iter().all(|k| match k {
+                        KeyInit::FieldOf(x) => *x == v && !key_written,
+                        KeyInit::Var(u) => cells.iter().all(|(_, key)| key == u) && !rebound(u),
+                        KeyInit::Other => false,
+                    });
+                if !ok {
+                    return Err(reasons::OTHER_KEY);
+                }
+            }
+            _ => return Err(reasons::NO_SET),
+        }
+        // On every path after the write: a statement of a block the write
+        // is in, with no way out between.
+        if !st.block.is_some_and(|b| w.blocks.contains(&b)) {
+            return Err(reasons::NOT_EVERY_PATH);
+        }
+        let around = self.loops_holding_not(w.at, st.at);
+        let leaves = self.exits.iter().any(|&(at, jump)| {
+            (at > w.at && at < st.at) || (!jump && around.iter().any(|&(ls, le)| ls < at && at <= le))
+        });
+        if leaves {
+            return Err(reasons::NOT_EVERY_PATH);
+        }
+        // No read that may see the cell between the write and the store.
+        let place = &cells[0].0;
+        let last = |p: &str| p.rsplit('.').next().unwrap_or(p).to_string();
+        let local = |p: &str| p.starts_with('@') || p.starts_with('$') || p.starts_with('?');
+        let may_alias = |q: &Option<String>| match q {
+            None => true,
+            Some(q) => q == place || last(q) == last(place) || local(q) || local(place),
+        };
+        let seen = self.cell_reads.iter().any(|(at, q)| {
+            may_alias(q) && ((*at > w.at && *at < st.at) || around.iter().any(|&(ls, le)| ls < *at && *at <= le))
+        });
+        if seen {
+            return Err(reasons::READ_BEFORE_SET);
+        }
+        // The local is done with at the store: a later use would read
+        // the cell's block (or a later replace's retire of it).
+        if self.uses[v].iter().any(|&u| u > st.at) {
+            return Err(reasons::OUTLIVES_SET);
+        }
+        // A form held in a local, rebound before the store, is another map.
+        if let Some(fv) = place.strip_prefix('@').and_then(|n| n.split('.').next()).and_then(|n| n.parse::<usize>().ok()) {
+            if fv < self.binds.len() && self.binds[fv].iter().any(|b| b.at > first_bind && b.at < st.at) {
+                return Err(reasons::OTHER_KEY);
+            }
+        }
+        Ok(())
+    }
+
+    /// The pass's answers for this body: the owned sites, and the
+    /// cell-read rule's copies on write, flags and reports.
+    fn finish(&self, found: &mut Found) {
+        let (mut out, mut owned) = self.flagged();
+        let mut reported: BTreeSet<usize> = BTreeSet::new();
+        // An instance owned for the cell-read rule, reported at its
+        // binding.
+        struct Owning<'o> {
+            out: &'o mut Vec<(Site, String)>,
+            owned: &'o mut Vec<bool>,
+            reported: &'o mut BTreeSet<usize>,
+        }
+        let own = |o: &mut Owning<'_>, i: usize, reason: &'static str, found: &mut Found| {
+            if !o.owned[i] {
+                o.owned[i] = true;
+                self.own_inst(&self.insts[i], o.out);
+            }
+            if let Site::Node(id) = self.insts[i].site {
+                found.cell_owned.insert(id);
+            }
+            if o.reported.insert(i) {
+                found.cell_copies.push(CellCopy { program: 0, span: self.insts[i].span, operand: false, reason });
+            }
+        };
+        let marked = |i: usize| {
+            let (cells, inside) = self.markers(i);
+            !cells.is_empty() || inside
+        };
+        // A local read from a cell (or into one) handed to a call that may
+        // write through its parameter: owned from its binding.
+        let mut o = Owning { out: &mut out, owned: &mut owned, reported: &mut reported };
+        for &(v, _) in &self.passed {
+            for &i in &self.vars[v] {
+                if marked(i) {
+                    own(&mut o, i, reasons::CALL_WRITES, found);
                 }
             }
         }
-        out
+        for span in &self.passed_copies {
+            found.cell_copies.push(CellCopy { program: 0, span: *span, operand: true, reason: reasons::CALL_WRITES });
+        }
+        let mut cow_binds: BTreeMap<u32, BTreeMap<String, bool>> = BTreeMap::new();
+        for w in &self.assigns {
+            let v = w.var;
+            let insts: Vec<usize> = self.vars[v].iter().copied().filter(|&i| marked(i)).collect();
+            if insts.is_empty() {
+                continue;
+            }
+            let inside = insts.iter().any(|&i| self.markers(i).1);
+            let flaggable = self.binds[v].iter().all(|b| b.flaggable);
+            // A write into a value that is the cell's block itself, an
+            // element written through a read's array, or a read bound
+            // where no flag can be kept: the binding is owned.
+            if inside || w.first.is_none() || !flaggable {
+                for &i in &insts {
+                    own(&mut o, i, reasons::VIEW_WRITTEN, found);
+                }
+                continue;
+            }
+            // A write to the read's own top level is the frame's, and so
+            // is one into a part laid out inline in it.
+            if w.depth < 2 || w.first.as_ref().is_some_and(|f| self.p.inline_fields.contains(f)) {
+                continue;
+            }
+            let field = w.first.clone().expect("a field write");
+            let shared: Vec<usize> = insts.iter().copied().filter(|&i| !o.owned[i]).collect();
+            if shared.is_empty() {
+                // Owned at its binding already (it is used after a write
+                // of its form): the write is the frame's.
+                for &i in &insts {
+                    if o.reported.insert(i) {
+                        found.cell_copies.push(CellCopy { program: 0, span: self.insts[i].span, operand: false, reason: reasons::OUTLIVES_SET });
+                    }
+                }
+                continue;
+            }
+            let cells: Vec<(String, String)> = shared.iter().flat_map(|&i| self.markers(i).0).collect();
+            let first_bind = shared.iter().map(|&i| self.insts[i].at).min().unwrap_or(0);
+            let one_place = cells.iter().all(|(p, _)| *p == cells[0].0);
+            let verdict = if !one_place {
+                Err(reasons::NO_SET)
+            } else {
+                let mut verdict = Err(reasons::NO_SET);
+                for st in self.stores.iter().filter(|st| st.at > w.at && st.place == cells[0].0) {
+                    match self.keeps_write(w, st, &cells, first_bind) {
+                        Ok(()) => {
+                            verdict = Ok(());
+                            break;
+                        }
+                        // The nearest store's reason, unless a later one
+                        // keeps the write.
+                        Err(r) => {
+                            if verdict == Err(reasons::NO_SET) {
+                                verdict = Err(r);
+                            }
+                        }
+                    }
+                }
+                verdict
+            };
+            let Err(reason) = verdict else { continue };
+            found.cow_writes.insert(w.id, field.clone());
+            found.cell_copies.push(CellCopy { program: 0, span: w.span, operand: false, reason });
+            for b in &self.binds[v] {
+                let Site::Node(id) = b.site else { continue };
+                let shared_here = b.inst.is_some_and(|i| shared.contains(&i));
+                // A flag says the frame owns the part: a binding of a
+                // fresh value, or of a copy, sets it; a read's sets it
+                // clear.
+                let entry = cow_binds.entry(id).or_default().entry(field.clone()).or_insert(!shared_here);
+                *entry = *entry && !shared_here;
+            }
+        }
+        for (id, fields) in cow_binds {
+            found.cow_binds.insert(id, fields.into_iter().collect());
+        }
+        found.sites.extend(out);
     }
 }
 
@@ -1814,5 +2759,107 @@ mod tests {
         assert_eq!(flagged(src), ["s"]);
         // A yield with no handler in the program runs nothing.
         assert!(with(r#"let s = self.g.s; yield; println(s);"#).is_empty());
+    }
+
+    /// The cell-read rule's copies in `body` (a fn of the program below,
+    /// `m` a map that reads in place), each as its statement's text and
+    /// its reason.
+    fn cell_copies(body: &str) -> Vec<(String, &'static str)> {
+        let src = CELLS.replace("BODY", body);
+        let program = hale_syntax::parse_source(&src).expect("parses");
+        let found = analyze(&[&program], &BTreeMap::new());
+        found
+            .cell_copies
+            .iter()
+            .map(|c| (src[c.span.start.0 as usize..c.span.end.0 as usize].to_string(), c.reason))
+            .collect()
+    }
+
+    const CELLS: &str = r#"
+        type In { s: String = ""; k: Int = 0; }
+        type Rec { id: Int = 0; body: String = ""; inner: In = In { }; big: [In; 4] = [In { }; 4]; counts: [Int; 4] = [0, 0, 0, 0]; }
+        @form(hashmap)
+        locus RecMap { capacity { pool items of Rec indexed_by id; } }
+        @form(hashmap, sync = serialized)
+        locus Deep { capacity { pool items of Rec indexed_by id; } }
+        fn peek(mm: RecMap, k: Int) -> Int { let c = mm.get(k) or Rec { }; return c.inner.k; }
+        fn poke(r: Rec) { r.inner.k = 9; }
+        fn show(r: Rec) { println(r.body); }
+        fn body(m: RecMap, d: Deep, k: Int, flag: Bool) { BODY }
+    "#;
+
+    #[test]
+    fn a_get_modify_set_keeps_the_read_shared() {
+        // The idiom: the write lands in the cell's block, which the set
+        // keeps; nothing reads the cell between.
+        assert!(cell_copies("let mut e = m.get(k) or Rec { id: k }; e.big[1] = In { k: 2 }; e.inner.k = 3; m.set(e);").is_empty());
+        // A literal keyed by the read's key, or by the local's key field.
+        assert!(cell_copies("let mut e = m.get(k) or Rec { id: k }; e.inner.k = 3; m.set(Rec { id: k, inner: e.inner });").is_empty());
+        assert!(cell_copies("let mut e = m.get(k) or Rec { id: k }; e.inner.k = 3; m.set(Rec { id: e.id, inner: e.inner });").is_empty());
+        // A write to the read's own top level is the frame's, and so is
+        // one into a part laid out inline in it.
+        assert!(cell_copies("let mut e = m.get(k) or Rec { }; e.body = \"x\"; e.id = 4; println(e.body);").is_empty());
+        assert!(cell_copies("let mut e = m.get(k) or Rec { }; e.counts[1] = 4; println(e.counts[1]);").is_empty());
+        // A map that reads a deep copy hands back the frame's own value.
+        assert!(cell_copies("let mut e = d.get(k) or Rec { }; e.inner.k = 3; println(e.inner.k);").is_empty());
+        // The write in a loop, the set after it.
+        assert!(cell_copies("let mut e = m.get(k) or Rec { id: k }; let mut i = 0; while i < 4 { e.big[i] = In { k: i }; i = i + 1; } m.set(e);").is_empty());
+    }
+
+    #[test]
+    fn a_write_the_cell_could_show_copies_on_write() {
+        use reasons::*;
+        assert_eq!(
+            cell_copies("let mut e = m.get(k) or Rec { }; e.inner.k = 3; println(e.inner.k);"),
+            [("e.inner.k = 3;".to_string(), NO_SET)]
+        );
+        assert_eq!(
+            cell_copies("let mut e = m.get(k) or Rec { id: k }; e.inner.k = 3; if flag { m.set(e); }"),
+            [("e.inner.k = 3;".to_string(), NOT_EVERY_PATH)]
+        );
+        assert_eq!(
+            cell_copies("let mut e = m.get(k) or Rec { id: k }; e.inner.k = 3; if flag { return; } m.set(e);"),
+            [("e.inner.k = 3;".to_string(), NOT_EVERY_PATH)]
+        );
+        assert_eq!(
+            cell_copies("let mut e = m.get(k) or Rec { id: k }; e.inner.k = 3; let n = peek(m, 2); m.set(e);"),
+            [("e.inner.k = 3;".to_string(), READ_BEFORE_SET)]
+        );
+        assert_eq!(
+            cell_copies("let mut e = m.get(k) or Rec { id: k }; e.inner.k = 3; m.set(Rec { id: 7, inner: e.inner });"),
+            [("e.inner.k = 3;".to_string(), OTHER_KEY)]
+        );
+        assert_eq!(
+            cell_copies("let mut e = m.get(k) or Rec { id: k }; e.id = 8; e.inner.k = 3; m.set(e);"),
+            [("e.inner.k = 3;".to_string(), OTHER_KEY)]
+        );
+    }
+
+    #[test]
+    fn a_read_used_after_its_set_is_owned_from_its_binding() {
+        // The set is a write of the map the local is used after: the
+        // binding is an owned copy, and the write is the frame's.
+        let got = cell_copies("let mut e = m.get(k) or Rec { id: k }; e.inner.k = 3; m.set(e); println(e.inner.k);");
+        assert_eq!(got, [("let mut e = m.get(k) or Rec { id: k };".to_string(), reasons::OUTLIVES_SET)]);
+    }
+
+    #[test]
+    fn a_binding_into_the_cell_written_or_handed_to_a_writer_is_owned() {
+        use reasons::*;
+        assert_eq!(
+            cell_copies("let e = m.get(k) or Rec { }; poke(e);"),
+            [("let e = m.get(k) or Rec { };".to_string(), CALL_WRITES)]
+        );
+        // A callee that writes nothing through its parameter shares it.
+        assert!(cell_copies("let e = m.get(k) or Rec { }; show(e);").is_empty());
+        assert_eq!(cell_copies("poke(m.get(k) or Rec { });"), [("m.get(k) or Rec { }".to_string(), CALL_WRITES)]);
+        assert_eq!(
+            cell_copies("let e = m.get(k) or Rec { }; for x in e.big { x.k = 1; }"),
+            [("for x in e.big { x.k = 1; }".to_string(), VIEW_WRITTEN)]
+        );
+        assert_eq!(
+            cell_copies("for e in m.entries { e.id = 1; }"),
+            [("for e in m.entries { e.id = 1; }".to_string(), VIEW_WRITTEN)]
+        );
     }
 }

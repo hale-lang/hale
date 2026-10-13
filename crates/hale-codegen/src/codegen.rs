@@ -1,7 +1,7 @@
 //! AST → LLVM IR → object file → executable, for the
 //! milestone-0 subset.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -1661,6 +1661,7 @@ pub fn build_resolved(
             &[merged],
             &import_renames.iter().map(|(segs, m)| (segs.clone(), m.clone())).collect(),
         ),
+        cell_part_flags: HashMap::new(),
         placement: &resolved.placement,
         owner_site: None,
         in_fresh_temp_hook: false,
@@ -4404,6 +4405,10 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// (`crate::view_bindings`): those bind an owned copy, every other
     /// one the field's own pointer.
     pub(crate) owned_views: hale_types::view_bindings::OwnedViews,
+    /// Per local (its slot) and part, the flag a copy on write reads:
+    /// does the frame own the part yet, or does the form's cell it was
+    /// read from (`hale_types::view_bindings`, the cell-read rule)?
+    pub(crate) cell_part_flags: HashMap<(PointerValue<'ctx>, String), PointerValue<'ctx>>,
     /// The snapshot's placement table (`LoweringView::placement`): the
     /// deployment plan is read from its root rows, domains and adapters
     /// (`collect_main_placement`).
@@ -17830,6 +17835,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                             .push((alloca, lname, None));
                     }
                 }
+                // A local a later write copies on write: whether the value
+                // bound is a form cell's read (its nested blocks the
+                // cell's) or the frame's own (`crate::view_bindings`).
+                if let Some(fields) = self.owned_views.cow_bind(*id) {
+                    let fields = fields.to_vec();
+                    self.set_cell_part_flags(alloca, &fields)?;
+                }
                 scope.locals.insert(name.name.clone(), (alloca, ty));
                 Ok(BlockEnd::Open)
             }
@@ -18329,6 +18341,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     // (`local.field = X`, `local.f1.f2 = X`,
                     // `local.f1[i].f2 = X`, etc.). Route through
                     // the general walker; emits a plain store.
+                    //
+                    // A write into a nested part of a value read from a
+                    // form's cell copies the part first, unless the frame
+                    // owns it already (`crate::view_bindings`).
+                    if let Some(field) = self.owned_views.cow_write(*assign_id) {
+                        let field = field.to_string();
+                        self.emit_cell_part_cow(&target.head.name, &field, scope)?;
+                    }
                     let (slot_ptr, slot_ty, slot_name) =
                         self.resolve_lvalue_chain(target, scope)?;
                     return self.finish_lvalue_assign(
@@ -18453,6 +18473,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     self.builder
                         .build_store(slot_ptr, new_val)
                         .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    // A local rebound: its copy-on-write flags follow the
+                    // value now bound (`crate::view_bindings`).
+                    if target.tail.is_empty() {
+                        if let Some(fields) = self.owned_views.cow_bind(*assign_id) {
+                            let fields = fields.to_vec();
+                            self.set_cell_part_flags(slot_ptr, &fields)?;
+                        }
+                    }
                 }
                 Ok(BlockEnd::Open)
             }
@@ -18464,7 +18492,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 // An element of an array read from a place views it, as
                 // a `let` of the place would (`crate::view_bindings`).
                 let owned = self.owned_views.node(*id);
-                self.lower_for(name, iter, body, owned, scope)
+                let cell_owned = self.owned_views.cell_owned(*id);
+                self.lower_for(name, iter, body, owned, cell_owned, scope)
             }
             Stmt::Break(_) => self.lower_break(),
             Stmt::Continue(_) => self.lower_continue(),
@@ -21393,6 +21422,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         iter: &Expr,
         body: &Block,
         owned: bool,
+        cell_owned: bool,
         scope: &mut Scope<'ctx>,
     ) -> Result<BlockEnd, CodegenError> {
         // Three iterator shapes today: `self.children` (built-in
@@ -21459,7 +21489,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                             {
                                 return self.lower_for_hashmap_entries(
                                     var_name, recv_ptr, &info, &slot, body,
-                                    scope,
+                                    cell_owned, scope,
                                 );
                             }
                         } else if let Some(slot) = info
@@ -21807,6 +21837,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         info: &LocusInfo<'ctx>,
         slot: &CapacitySlotLayout,
         body: &Block,
+        owned: bool,
         scope: &mut Scope<'ctx>,
     ) -> Result<BlockEnd, CodegenError> {
         let cell_name = match &slot.elem_ty {
@@ -22026,7 +22057,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         };
         // ptr mode: the buffer holds the cell POINTER — load it.
         // value mode: the buffer slot IS the cell — its address.
-        let entry_ptr: PointerValue = if ptr_mode {
+        let mut entry_ptr: PointerValue = if ptr_mode {
             self.builder
                 .build_load(ptr_t, elem_slot, "for.entries.cellptr")
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
@@ -22034,6 +22065,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         } else {
             elem_slot
         };
+        // An entry the body writes into is its own copy: a write never
+        // reaches the cell (`crate::view_bindings`, the cell-read rule).
+        if owned {
+            entry_ptr = self
+                .own_viewed_value(entry_ptr.into(), &CodegenTy::TypeRef(cell_name.clone()))?
+                .into_pointer_value();
+        }
         let var_slot = self
             .builder
             .build_alloca(ptr_t, &var_name.name)

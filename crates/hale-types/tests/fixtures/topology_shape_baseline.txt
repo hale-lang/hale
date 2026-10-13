@@ -754,6 +754,10 @@ crates/hale-codegen/tests/form_lru_cache_reclaim.rs#0 c77bf7ca12bd34cc
 crates/hale-codegen/tests/form_lru_cache_reclaim.rs#1 b467cd386ff1ae21
 crates/hale-codegen/tests/form_lru_cache_reclaim.rs#3 59d320aa535e19ce
 crates/hale-codegen/tests/form_lru_cache_reclaim.rs#4 af8028fee2d0f03f
+crates/hale-codegen/tests/form_read_value.rs#1 01827fb676cf7ff4
+crates/hale-codegen/tests/form_read_value.rs#2 bb22f78334b3fe44
+crates/hale-codegen/tests/form_read_value.rs#3 fab7d5479259db2a
+crates/hale-codegen/tests/form_read_value.rs#4 d794c7336ee7748f
 crates/hale-codegen/tests/form_ring_buffer_codegen.rs#0 d64b3e41a590cf50
 crates/hale-codegen/tests/form_ring_buffer_codegen.rs#1 d64b3e41a590cf50
 crates/hale-codegen/tests/form_ring_buffer_codegen.rs#2 d64b3e41a590cf50

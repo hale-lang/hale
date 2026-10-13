@@ -1878,7 +1878,7 @@ pub const FAMILIES: &[Family] = &[
         inputs: &["the merged program's bodies (place chains, calls, stores, loops, bus sends)", "the build's import table", "the declarations' types (loci, interfaces, perspectives, forms, records, enums, aliases), classified in lowering"],
         producer: None,
         legacy: &[Legacy {
-            site: site(VIEW_BINDINGS, "fn owned_view_sites_in"),
+            site: site(VIEW_BINDINGS, "fn analyze"),
             note: "a pass over every body, run in lowering (`OwnedViews::of`): per binding, the field names of the places its value views and the writes after it (a store's field, a callee's transitive write summary by name, a fn value, a publish's handlers), keyed by the `let`/assign/`for` node id, the `match`'s span and an operand's span. It classifies types itself (`classify`, `classify_name`, `classify_path`), resolving each spelling through the aliases, the import table and the minted names: a re-derivation of the types the checker resolves, which is why it errs toward a copy wherever a type or a callee is unknown",
             removal: "when the owner table carries a binding's owned-view column (and an operand's), computed in hale-types over the checker's resolved types and the effect rows' per-callee field writes, and lowering reads that column instead of running this pass",
         }],

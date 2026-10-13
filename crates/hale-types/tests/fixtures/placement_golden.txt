@@ -2829,6 +2829,20 @@ row	App@literal1.q	Pool	main	default
 dynamic	Holder	on main
 dynamic	Pool	on main
 
+== crates/hale-codegen/tests/form_read_value.rs#0891b115
+-- Holder@main1	Holder
+row	~	Holder	main	default
+row	~.m	RecMap	main	inherited
+
+== crates/hale-codegen/tests/form_read_value.rs#e23e03eb
+row	M@main1	M	main	default
+
+== crates/hale-codegen/tests/form_read_value.rs#8d8a9fee
+row	M@main1	M	main	default
+
+== crates/hale-codegen/tests/form_read_value.rs#c1c497a0
+row	RecMap@main1	RecMap	main	default
+
 == crates/hale-codegen/tests/form_ring_buffer_codegen.rs#6e1a7340
 row	RB@main1	RB	main	default
 
