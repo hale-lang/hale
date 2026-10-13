@@ -200,10 +200,35 @@ pub(crate) fn run_check_cli(rest: &[String], verify: bool) -> ExitCode {
             }
         },
     };
+    let target = PathBuf::from(positionals[0]);
+    // A `*_test.hl` file beside the seed is a program of its own, as
+    // `hale test` builds it, so the seed's check leaves it out; say so,
+    // and where it is checked (on stderr, and not under `--json`, whose
+    // stderr stays empty for a gate).
+    if target.is_dir() && !rest.iter().any(|a| a == "--json") {
+        let tests = hale_frontend::frontend::test_files_in(&target, &hale_frontend::source::Disk);
+        if !tests.is_empty() && tests.len() < count_hl(&target) {
+            eprintln!(
+                "note: {} `_test.hl` file(s) in {} are programs of their own, not members of this seed: \
+                 `hale test {}` checks and runs them, `hale {cmd} --workspace {}` checks each",
+                tests.len(),
+                target.display(),
+                target.display(),
+                target.display()
+            );
+        }
+    }
     ExitCode::from(run_check_impl_labelled(
-        &PathBuf::from(positionals[0]),
+        &target,
         verify,
         &adopt,
         env_name.as_deref(),
     ))
+}
+
+/// The `.hl` files directly in `dir`.
+fn count_hl(dir: &std::path::Path) -> usize {
+    std::fs::read_dir(dir)
+        .map(|es| es.flatten().filter(|e| e.path().extension().is_some_and(|x| x == "hl")).count())
+        .unwrap_or(0)
 }

@@ -204,6 +204,11 @@ pub struct LocusInfo {
     pub bus_publishes: Vec<BusPublishInfo>,
     pub bus_subscribes: Vec<BusSubscribeInfo>,
     pub accept_param: Option<(String, Ty)>,
+    /// The `accept` param's type as written, its path joined by `::`:
+    /// an interface's name when the clause accepts through one (the
+    /// resolved `accept_param` type is then `Unknown`, as every
+    /// interface-typed slot's is).
+    pub accept_written: Option<String>,
     pub mode_returns: BTreeMap<ModeKind, Ty>,
     pub annotations: Annotations,
     /// Fields the locus exposes upward to its coordinator

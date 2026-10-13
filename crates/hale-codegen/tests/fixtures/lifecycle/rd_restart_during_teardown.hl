@@ -32,7 +32,7 @@ main locus App {
     placement { kid: cooperative(pool = side); }
     on_failure(c: Kid, err: ClosureViolation) {
         println("ev handler");
-        restart (c) for 1;
+        restart(c) for 1;
     }
     run() { std::time::sleep(20ms); }
 }

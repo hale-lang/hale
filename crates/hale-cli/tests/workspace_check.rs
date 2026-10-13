@@ -191,3 +191,34 @@ fn verify_workspace_applies_the_stricter_gate() {
     let _ = std::fs::remove_dir_all(&r);
     assert_eq!(code, 0, "a clean seed passes verify too:\n{}", out);
 }
+
+/// A `*_test.hl` file is a program of its own, as `hale test` builds it
+/// (downstream handoff: two tests in one directory used to merge into one
+/// seed with a `main` each). The sweep checks the seed without them and
+/// each test as its own program; `hale check <dir>` checks the seed and
+/// says where its tests are checked; a broken test fails the sweep by name.
+#[test]
+fn test_files_are_programs_of_their_own() {
+    let r = root("tests");
+    seed(&r, "app", OK_SRC);
+    let test = "fn main() { std::test::assert(1 + 1 == 2, \"sum\"); }\n";
+    std::fs::write(r.join("app/main_test.hl"), test).expect("write test");
+    std::fs::create_dir_all(r.join("app/tests")).expect("mkdir tests");
+    std::fs::write(r.join("app/tests/a_test.hl"), test).expect("write test");
+    std::fs::write(r.join("app/tests/b_test.hl"), test).expect("write test");
+
+    let (out, code) = hale(&["check".as_ref(), "--workspace".as_ref(), r.as_os_str()]);
+    assert_eq!(code, 0, "{}", out);
+    assert!(out.contains("1 seed(s) and 3 test program(s) checked"), "got:\n{}", out);
+    assert!(out.contains("a_test.hl (test program)"), "got:\n{}", out);
+
+    let (out, code) = hale(&["check".as_ref(), r.join("app").as_os_str()]);
+    assert_eq!(code, 0, "the seed's check leaves its test out:\n{}", out);
+    assert!(out.contains("note: 1 `_test.hl` file(s)") && out.contains("hale test"), "got:\n{}", out);
+
+    std::fs::write(r.join("app/tests/b_test.hl"), "fn main() { let x: Int = \"no\"; }\n").expect("write test");
+    let (out, code) = hale(&["check".as_ref(), "--workspace".as_ref(), r.as_os_str()]);
+    let _ = std::fs::remove_dir_all(&r);
+    assert_ne!(code, 0, "{}", out);
+    assert!(out.contains("1 of 4 program(s) failed (1 seed(s) and 3 test program(s))") && out.contains("b_test.hl (exit"), "got:\n{}", out);
+}

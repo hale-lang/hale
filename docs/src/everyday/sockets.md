@@ -68,8 +68,8 @@ On a `where async_io` pool `next()` parks on `EPOLLIN` (kernel-woken,
 no busy-poll, no timeout quantum): an idle signal costs zero CPU and a
 datagram wakes the worker in microseconds. It parks until data arrives,
 so its only failures are a bind failure (first call) or a broken
-socket — both exceptional, hence `or raise` (not `or discard`, which is
-for Unit-returning fallibles). This is the event-driven, allocation-free
+socket — both exceptional, hence `or raise` (not `or discard`, which
+would throw the datagram away with the error). This is the event-driven, allocation-free
 ingest shape as a default you reach for rather than one you assemble.
 
 > **UDP as a bus transport.** The raw socket above is *not* the

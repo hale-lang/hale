@@ -508,7 +508,7 @@ impl Shift for KeyFilter {
 
 shift_struct!(LifecycleDecl { kind, params, ret, unbounded, bounded_by, body, span, id, synthesized });
 shift_unit_enum!(LifecycleKind { Birth, Accept, Release, Run, Drain, Dissolve });
-shift_struct!(ModeDecl { kind, params, ret, body, span, id });
+shift_struct!(ModeDecl { kind, params, ret, unbounded, bounded_by, body, span, id });
 shift_unit_enum!(ModeKind { Bulk, Harmonic, Resolution });
 shift_struct!(FailureDecl { params, body, span, id });
 shift_struct!(ClosureDecl { name, assertion, clauses, span, id });

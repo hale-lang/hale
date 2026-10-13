@@ -17,7 +17,7 @@ locus Kid {
 
 main locus App {
     accept(c: Kid) { }
-    release (c: Kid) { }
+    release(c: Kid) { }
     run() {
         Kid { tag: "a" };
         Kid { tag: "b" };

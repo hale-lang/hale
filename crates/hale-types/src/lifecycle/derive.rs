@@ -90,6 +90,9 @@ pub struct LifecycleInputs<'a> {
     pub handlers: &'a HandlerRouting,
     pub flows: &'a FlowRows,
     pub bus: &'a BusGraph,
+    /// The ownership graph: the loci an interface `accept(c: I)` admits
+    /// (its `accepts` relation), which no declaration spells.
+    pub ownership: &'a crate::ownership_graph::OwnershipGraph,
     /// The entry row: which `main locus` is the entry, whose deferred
     /// teardown is the main entry's spine.
     pub entry: &'a EntryRow,
@@ -631,8 +634,12 @@ fn subjects<'a>(
             Enclosing::Locus(enclosing) => {
                 sources.push(Source::Enclosed { decl: enclosing.clone(), domains: &d.domains, in_handler });
                 let acceptor = index.decl(enclosing.site);
+                // A concrete `accept` names the child's declaration; an
+                // interface's admits it in the graph's `accepts`.
                 let accepts = acceptor.is_some_and(|a| {
                     accept_types(a).any(|ty| index.names(ty, enclosing.site.universe) == Some(realizes.site))
+                        || (accept_types(a).any(|ty| index.names(ty, enclosing.site.universe).is_none())
+                            && inputs.ownership.accepts.get(&a.name.name).is_some_and(|c| c.contains(&realizes.lowered)))
                 });
                 if accepts {
                     How::Accepted { flow: is_flow(inputs.flows, &realizes.lowered) }
@@ -2507,8 +2514,16 @@ mod tests {
             let programs: Vec<_> = bundle.programs.values().copied().collect();
             let flows = crate::flows::survey(&programs, &bundle.import_renames);
             let entry = crate::entry::entry_row(bundle);
-            let inputs =
-                LifecycleInputs { bundle, placement: &placement, handlers: &handlers, flows: &flows, bus: &bus, entry: &entry };
+            let ownership = crate::ownership_graph::OwnershipGraph::default();
+            let inputs = LifecycleInputs {
+                bundle,
+                placement: &placement,
+                handlers: &handlers,
+                flows: &flows,
+                bus: &bus,
+                entry: &entry,
+                ownership: &ownership,
+            };
             let index = LocusIndex::of(bundle);
             let all = subjects(&inputs, &index, &literal_positions(bundle));
             assert_eq!(all.len(), 33, "one template per literal");

@@ -55,7 +55,7 @@ locus Coordinator {
         println("Coordinator: ", err.closure,
             " on ", err.locus,
             " — calling restart");
-        restart (c);
+        restart(c);
     }
 
     run() {

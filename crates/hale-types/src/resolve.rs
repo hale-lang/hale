@@ -34,11 +34,26 @@ pub struct TopScope {
     /// interface-typed slot resolves to `Unknown` in the checker (see
     /// `Ty::assignable_from`).
     pub names: KnownNames,
+    /// Each `type A = I;` alias whose target is an interface, through
+    /// any chain of aliases: alias name -> the interface's name. An
+    /// alias's `TypeKind::Alias` holds the target's resolved type, which
+    /// for an interface is `Unknown` (as every interface-typed slot's
+    /// is), so the interface it spells is kept here.
+    pub interface_aliases: BTreeMap<String, String>,
 }
 
 impl TopScope {
     pub fn lookup(&self, name: &str) -> Option<&TopSymbol> {
         self.symbols.get(name)
+    }
+
+    /// The interface `name` names: an interface itself, or an alias of
+    /// one ([`TopScope::interface_aliases`]).
+    pub fn interface_named(&self, name: &str) -> Option<&str> {
+        match self.symbols.get(name) {
+            Some(TopSymbol::Interface(_)) => self.symbols.get_key_value(name).map(|(k, _)| k.as_str()),
+            _ => self.interface_aliases.get(name).map(String::as_str),
+        }
     }
 
     /// The scope's name table, from its symbols and the bundle's
@@ -335,8 +350,9 @@ pub fn build_top_scope(bundle: &Bundle<'_>) -> (TopScope, Vec<Diag>) {
     // signature, a struct field, a locus param, a capacity slot,
     // an alias target — resolves to the merged declaration.
     known_names.set_imports(&bundle.import_renames);
+    let mut kinds: BTreeMap<String, &'static str> = BTreeMap::new();
     for program in bundle.programs.values() {
-        collect_type_names(&program.items, &mut known_names, &mut diags);
+        collect_type_names(&program.items, &mut known_names, &mut kinds, &mut diags);
     }
 
     // v1.x-FORM-1 PR3b: pre-register form-specific stdlib type
@@ -514,7 +530,38 @@ pub fn build_top_scope(bundle: &Bundle<'_>) -> (TopScope, Vec<Diag>) {
 
     scope.topics = topics;
     scope.names = scope.name_table(&bundle.import_renames);
+    scope.interface_aliases = interface_aliases(bundle, &scope);
     (scope, diags)
+}
+
+/// The aliases whose target, through any chain of aliases, is an
+/// interface ([`TopScope::interface_aliases`]).
+fn interface_aliases(bundle: &Bundle<'_>, scope: &TopScope) -> BTreeMap<String, String> {
+    let mut targets: BTreeMap<String, String> = BTreeMap::new();
+    for program in bundle.programs.values() {
+        for item in hale_syntax::ast::flat_decls(&program.items) {
+            let TopDecl::Type(td) = item else { continue };
+            let TypeDeclBody::Alias(TypeExpr::Named { path, generic_args, .. }) = &td.body else { continue };
+            if path.segments.len() == 1 && generic_args.is_empty() {
+                targets.insert(td.name.name.clone(), path.segments[0].name.clone());
+            }
+        }
+    }
+    let mut out = BTreeMap::new();
+    for alias in targets.keys() {
+        let mut at = alias.as_str();
+        // A chain of aliases ends at a declaration; a cycle is the
+        // alias pass's diagnostic, and names no interface here.
+        for _ in 0..=targets.len() {
+            let Some(next) = targets.get(at) else { break };
+            at = next;
+            if matches!(scope.symbols.get(at), Some(TopSymbol::Interface(_))) {
+                out.insert(alias.clone(), at.to_string());
+                break;
+            }
+        }
+    }
+    out
 }
 
 /// True when at least one locus in the bundle carries a
@@ -611,24 +658,31 @@ fn bundle_declares_a_quantity(bundle: &Bundle<'_>) -> bool {
 fn collect_type_names(
     items: &[TopDecl],
     known: &mut KnownNames,
+    kinds: &mut BTreeMap<String, &'static str>,
     diags: &mut Vec<Diag>,
 ) {
     for item in items {
-        match item {
-            TopDecl::Locus(l) => insert_name(known, &l.name, diags),
-            TopDecl::Type(t) => insert_name(known, &t.name, diags),
-            TopDecl::Perspective(p) => insert_name(known, &p.name, diags),
-            TopDecl::Interface(i) => insert_name(known, &i.name, diags),
-            TopDecl::Topic(t) => insert_name(known, &t.name, diags),
-            TopDecl::RingLayout(r) => insert_name(known, &r.name, diags),
-            TopDecl::Module(m) => collect_type_names(&m.items, known, diags),
-            _ => {}
-        }
+        let (kind, name) = match item {
+            TopDecl::Locus(l) => ("locus", &l.name),
+            TopDecl::Type(t) => ("type", &t.name),
+            TopDecl::Perspective(p) => ("perspective", &p.name),
+            TopDecl::Interface(i) => ("interface", &i.name),
+            TopDecl::Topic(t) => ("topic", &t.name),
+            TopDecl::RingLayout(r) => ("ring layout", &r.name),
+            TopDecl::Module(m) => {
+                collect_type_names(&m.items, known, kinds, diags);
+                continue;
+            }
+            _ => continue,
+        };
+        insert_name(known, kinds, kind, name, diags);
     }
 }
 
 fn insert_name(
     known: &mut KnownNames,
+    kinds: &mut BTreeMap<String, &'static str>,
+    kind: &'static str,
     ident: &Ident,
     diags: &mut Vec<Diag>,
 ) {
@@ -637,19 +691,38 @@ fn insert_name(
         // rides as a RELATED span, not a `{:?}`-formatted Span in
         // the message — this fn has no source text, but the
         // renderers (and the LSP's relatedInformation) do.
+        //
+        // Friction sweep 2026-10-12: the message names the clash and
+        // its fix. A topic named after its payload type is the shape
+        // authors reach for (`type Tick { … }` / `topic Tick { payload:
+        // Tick; }`), and "duplicate top-level name" alone did not say
+        // that topics and types share one namespace.
+        let prev_kind = kinds.get(&ident.name).copied().unwrap_or("declaration");
+        let n = &ident.name;
+        let hint = match (prev_kind, kind) {
+            ("type", "topic") | ("topic", "type") => format!(
+                ": a topic and its payload type share one namespace, so \
+                 `{n}` cannot name both — rename one, e.g. `topic \
+                 {n}Topic {{ payload: {n}; … }}` or `type {n}Payload {{ … }}`"
+            ),
+            (a, b) if a == b => String::new(),
+            (a, b) => format!(
+                ": `{n}` is declared as a {a} and as a {b}, and every \
+                 top-level declaration (type, locus, perspective, \
+                 interface, topic) shares one namespace — rename one"
+            ),
+        };
         diags.push(
             Diag::ty(
                 ident.span,
-                format!(
-                    "duplicate top-level name `{}`",
-                    ident.name
-                ),
+                format!("duplicate top-level name `{}`{}", n, hint),
             )
             .with_related(*prev, "previous declaration"),
         );
         return;
     }
     known.insert(ident.name.clone(), ident.span);
+    kinds.insert(ident.name.clone(), kind);
 }
 
 /// Report every topic whose parent chain is broken — a cycle or an
@@ -995,6 +1068,7 @@ fn register_locus(
     let mut bus_publishes: Vec<BusPublishInfo> = Vec::new();
     let mut bus_subscribes: Vec<BusSubscribeInfo> = Vec::new();
     let mut accept_param: Option<(String, Ty)> = None;
+    let mut accept_written: Option<String> = None;
     // GH #525 item 1: a locus accepts exactly one child type
     // (`spec/types.md`, single-accept-type per parent). The
     // singular `accept_param` used to be overwritten by a second
@@ -1123,6 +1197,11 @@ fn register_locus(
                     if let Some(p) = lc.params.first() {
                         let ty = resolve_type_expr(&p.ty, known);
                         accept_param = Some((p.name.name.clone(), ty));
+                        if let TypeExpr::Named { path, .. } = &p.ty {
+                            accept_written = Some(
+                                path.segments.iter().map(|s| s.name.as_str()).collect::<Vec<_>>().join("::"),
+                            );
+                        }
                     }
                 }
             }
@@ -1302,6 +1381,7 @@ fn register_locus(
         bus_publishes,
         bus_subscribes,
         accept_param,
+        accept_written,
         mode_returns,
         annotations,
         contract_expose,

@@ -40,6 +40,16 @@ Because a test is an ordinary binary, you can also just run it
 directly: `hale run arith_test.hl` passes silently or prints the
 failure.
 
+Each test file is a program of its own: the file and what its imports
+reach. It is never part of the seed of the directory it sits in, so
+`main_test.hl` beside `main.hl` does not clash with the program's
+`main`, and two tests in one `tests/` directory do not clash with each
+other. A test reaches the code it tests by importing it
+(`import ".." as app;` from `tests/`). `hale check <dir>` checks the
+seed without its tests and says how many it left out; `hale check
+--workspace <dir>` checks every seed and then every test as its own
+program.
+
 ## A failing test still cleans up after itself
 
 "The first failure stops the run" doesn't mean the program is shot
@@ -169,8 +179,10 @@ the program runs. Closures are part of Hale's
 but they're how you assert the things a unit test can't reach.
 
 The rest of the toolchain rides alongside: `hale bench` runs
-`*_bench.hl` benchmarks (zero-param `bench_*` fns, self-calibrated
-ns/op + allocs/op), `hale verify` is the CI gate (identical
+`*_bench.hl` benchmarks (`bench_*` fns, self-calibrated ns/op +
+allocs/op; a `bench_<name>(f: T)` gets its fixture from
+`setup_<name>() -> T`, built before each batch and never timed),
+`hale verify` is the CI gate (identical
 analysis to `check`, but *any* finding fails), `hale fmt` keeps
 everything canonical (`--check` in CI), and `hale doc` renders API
 references from `///` comments. Everything ships in the one

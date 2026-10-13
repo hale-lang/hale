@@ -112,7 +112,10 @@ about a cache.
 
 A lifecycle hook takes `@unbounded` or `@bounded_by(<name>)`, once, and
 nothing else — a hook is one-shot, so a per-call budget has no calls to
-divide by. Put the other contracts on a `fn` the hook calls.
+divide by. Put the other contracts on a `fn` the hook calls. A `mode`
+takes the same one decorator — `@unbounded mode bulk() { … }` — so the
+unbounded-allocation warning inside a mode body can be acknowledged
+where it fires.
 
 `@deterministic` is the one to know for replay: a fn that reads no
 clock, no randomness and no environment is a function of its inputs,

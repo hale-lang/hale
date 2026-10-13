@@ -23,7 +23,7 @@ pub(crate) fn usage() {
     eprintln!("        [--observe[=<port>]] [--dev] [--target-cpu <v>] [--link <lib>] [--csrc <file.c>]");
     eprintln!("        (flags before the target; after it is the program's own argv)");
     eprintln!("    hale build <file.hl | dir>    parse + typecheck + emit native binary");
-    eprintln!("    hale replay <rec> <file.hl>   re-run a LOTUS_OBS_RECORD recording");
+    eprintln!("    hale replay <rec> <file|dir>  re-run a LOTUS_OBS_RECORD recording");
     eprintln!("        [--diff: report first divergence, fail on any; per-category coverage on a match]");
     eprintln!("        [--json (with --diff): that verdict + coverage, machine-readable]");
     eprintln!("        [--at <n> | --at <consumer-id>:<ordinal>: SIGSTOP at that consume]");
@@ -59,7 +59,7 @@ pub(crate) fn usage() {
     eprintln!("    hale api describe <endpoint>  a running program's description for the caller: unix:<path> or http://host:port");
     eprintln!("        [--json] [--bearer <t>]");
     eprintln!("    hale api call <endpoint> <member> drive one member of a running program: --json <payload> or --<field> <value>");
-    eprintln!("        [--bearer <t>] [--id <id>] [--digest <d>] [--raw]");
+    eprintln!("        [--bearer <t>] [--request-id <id>] [--digest <d>] [--raw]");
     eprintln!();
     eprintln!("    hale --version               print the version, and the embedded DNA source's digest");
     eprintln!("    hale --help                  print this help");
@@ -256,7 +256,7 @@ that is not a flag is the target, as in `hale check`:
                                    warning
 ",
         "replay" => "\
-hale replay <recording> <program.hl>   re-run a LOTUS_OBS_RECORD recording
+hale replay <recording> <file | dir>   re-run a LOTUS_OBS_RECORD recording
 
 The recording is the journal a program wrote under
 `LOTUS_OBS_RECORD=<path>`; the program is the code to re-execute it
@@ -313,8 +313,12 @@ own output stays with its own file.
         "bench" => "\
 hale bench [file | dir]       run every `*_bench.hl`'s bench_* fns (default: cwd)
 
-Self-calibrating: each parameterless `bench_*` fn is run until the
-harness has a stable measurement, and reports ns/op and allocs/op. A
+Self-calibrating: each `bench_<name>` fn is run in batches growing x10
+until one takes 100 ms, and reports ns/op and allocs/op. A bench takes
+no parameter, or one: its fixture, which `fn setup_<name>() -> T` makes
+before each batch, outside the timing and the allocation count, and
+every call of the batch is handed. A `setup_<name>()` returning nothing
+runs before each batch of a parameterless bench, untimed. A
 `*_bench.hl` file may not declare `fn main`.
 
   -run <substr>   only benches whose NAME contains <substr>
@@ -413,8 +417,10 @@ pub(crate) fn check_usage(verify: bool) {
     println!("hale {} [flags] <file | dir>    {}", cmd, what);
     println!();
     println!("A directory is ONE seed: the `.hl` files directly inside");
-    println!("it are checked together, without recursing. Flags may");
-    println!("appear before or after the target.");
+    println!("it are checked together, without recursing. A `*_test.hl`");
+    println!("file is not one of them: it is a program of its own, as");
+    println!("`hale test` builds it. Flags may appear before or after the");
+    println!("target.");
     println!();
     println!("  --workspace                    check EVERY seed under the");
     println!("                                 target, each independently.");
@@ -422,6 +428,8 @@ pub(crate) fn check_usage(verify: bool) {
     println!("                                 dot-dirs. Every seed runs even");
     println!("                                 if an earlier one fails. It does");
     println!("                                 NOT connect seeds to each other.");
+    println!("                                 Each `*_test.hl` file is then");
+    println!("                                 checked as its own program.");
     println!("  --env <name>                   also adopt the constitution that");
     println!("                                 `[environments.<name>]` in hale.toml");
     println!("                                 requires. One entrypoint deployed to");

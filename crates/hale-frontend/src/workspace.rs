@@ -193,16 +193,30 @@ pub fn top_decl_ident(d: &hale_syntax::ast::TopDecl) -> Option<&str> {
 }
 
 /// Every SEED under `root`: a directory holding one or more `.hl`
-/// files directly. `check` operates on one seed and does not recurse
-/// — correctly, since a directory is one compilation unit — so a
-/// repository with many seeds needs something to enumerate them.
+/// files directly, `*_test.hl` files apart (each is a program of its
+/// own, [`collect_test_programs`]). `check` operates on one seed and
+/// does not recurse — correctly, since a directory is one compilation
+/// unit — so a repository with many seeds needs something to enumerate
+/// them.
 ///
 /// Skips `vendor` and dot-directories, matching `hale fmt`'s walk,
 /// plus `target`. A seed you do not own is not yours to gate.
 pub fn collect_seeds(root: &Path, out: &mut Vec<PathBuf>) {
+    walk_seeds(root, out, &mut Vec::new());
+}
+
+/// Every `*_test.hl` file under `root`, sorted as [`collect_seeds`]
+/// walks: each one a program of its own, loaded as `hale test` loads it
+/// (the file and what its imports reach).
+pub fn collect_test_programs(root: &Path, out: &mut Vec<PathBuf>) {
+    walk_seeds(root, &mut Vec::new(), out);
+}
+
+fn walk_seeds(root: &Path, seeds: &mut Vec<PathBuf>, tests: &mut Vec<PathBuf>) {
     let Ok(entries) = fs::read_dir(root) else { return };
     let mut has_hl = false;
     let mut subdirs: Vec<PathBuf> = Vec::new();
+    let mut here: Vec<PathBuf> = Vec::new();
     for entry in entries.flatten() {
         let p = entry.path();
         let name = entry.file_name();
@@ -213,16 +227,20 @@ pub fn collect_seeds(root: &Path, out: &mut Vec<PathBuf>) {
                 continue;
             }
             subdirs.push(p);
+        } else if crate::frontend::is_test_file(&p) {
+            here.push(p);
         } else if name.ends_with(".hl") {
             has_hl = true;
         }
     }
     if has_hl {
-        out.push(root.to_path_buf());
+        seeds.push(root.to_path_buf());
     }
+    here.sort();
+    tests.extend(here);
     subdirs.sort();
     for d in subdirs {
-        collect_seeds(&d, out);
+        walk_seeds(&d, seeds, tests);
     }
 }
 

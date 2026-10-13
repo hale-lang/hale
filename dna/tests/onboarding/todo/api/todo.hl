@@ -9,7 +9,8 @@ role editor includes reader;
 type TodoItem { id: Int; title: String; done: Bool; due: String; overdue: Bool; }
 
 type AddTodo { title: String; due: String = ""; }
-/// Which item: `todo`, not `id`, because `hale api call` takes `--id` for itself.
+/// Which item. Named `todo` from when `hale api call` kept `--id` for itself;
+/// the request id is `--request-id` now, and `--id` sets a field like any other.
 type TodoRef { todo: Int; }
 type ListQuery { open_only: Bool = false; }
 type Nothing { }

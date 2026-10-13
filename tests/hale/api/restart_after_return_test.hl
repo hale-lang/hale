@@ -67,7 +67,7 @@ main locus App {
         let mut i = 0;
         while !c.returned && i < 5000 { std::time::sleep(1ms); i = i + 1; }
         self.returned_when_decided = c.returned;
-        restart (c) for 3;
+        restart(c) for 3;
     }
 
     run() {

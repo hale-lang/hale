@@ -759,7 +759,11 @@ contract; will be answered as workloads surface demand.
    value). Mutating the form inside the body is unsupported (a
    grow rehashes/reallocs under the cursor). `break`/`continue`
    work. Ring-buffer iteration is still deferred (wrap-aware
-   oldest-first walk).
+   oldest-first walk). The pseudo-field is the form's, whatever the
+   capacity slot is named: a vec declared `heap cells of Int` is
+   still iterated as `v.items`, and `v.cells` is refused with a
+   hint naming `.items` (a slot is not a field; friction sweep
+   2026-10-12).
 2. **Bulk operations.** `extend(other: @form(vec))`, `clear()`,
    `truncate(n: Int)`. Useful but not foundational. Add after
    the core methods land.

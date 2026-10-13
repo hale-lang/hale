@@ -57,6 +57,11 @@ for name in names.items {
 }
 ```
 
+`.items` is the vec's own name for its elements, whatever you called
+the slot: a list declared `capacity { heap cells of Int; }` is still
+walked as `for c in list.items`, and the compiler points there if you
+write `list.cells`.
+
 (The indexed `while i < names.len()` + `.get(i)` walk also works,
 and is what you want when you need the index — but prefer `.items`
 as the default: it reads better and, on hashmaps especially, it's
@@ -283,6 +288,11 @@ let total = users.filter(it.active).map(it.age).sum();
 `map` rebinds the element; `sum` adds it up. Bare `sum()` is for Int
 elements; give it a seed and the seed's type drives the accumulator —
 `sum(0.0)` sums Floats, `sum(100)` starts an Int sum at 100.
+
+A chain needs at least one stage: `prices.sum(0.0d)` on a fixed array
+is not a chain (a bare `.sum(…)` could be a locus's own method), and
+the compiler says to write `prices.map(it).sum(0.0d)` — `map(it)`
+passes each element through.
 
 Position matters too, and there are stages for it:
 

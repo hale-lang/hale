@@ -13,7 +13,7 @@ locus ChildL {
     capacity { pool entries of Int; }
     run() {
         let c = self.entries.acquire();
-        self.entries.release (c);
+        self.entries.release(c);
     }
 }
 locus ParentL {

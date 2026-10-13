@@ -25,25 +25,29 @@
 /// literals, which highlighters colour as literals, not keywords).
 pub const HARD_KEYWORDS: &[&str] = &[
     "locus", "perspective", "type", "const", "fn", "import", "export", "module",
-    "params", "contract", "bus", "capacity", "as_parent_for", "indexed_by",
-    "birth", "accept", "run", "drain", "dissolve", "on_failure",
-    "bulk", "harmonic", "resolution",
-    "projection", "rich", "chunked", "recognition",
-    "closure", "epoch", "persists_through", "resets_on", "resets_per_epoch",
-    "restart", "restart_in_place", "quarantine", "reorganize", "bubble",
-    "expose", "consume", "inferred",
-    "subscribe", "publish", "on", "of",
-    "stable_when", "serialize_as",
     "let", "mut", "if", "else", "match", "for", "in", "while",
-    "return", "break", "continue", "tier", "self",
-    "trait", "impl", "interface", "async", "await", "yield",
-    "terminate", "release", "macro", "where",
+    "return", "break", "continue", "self",
+    "trait", "impl", "interface", "async", "await", "macro",
 ];
 
 /// Contextual keywords — lexed as `Ident`, coloured as keywords (matching
 /// `pond/heron`). Recognized by the parser in position; the parser still
 /// matches the strings inline, so this list is for tooling, not parsing.
 pub const CONTEXTUAL_KEYWORDS: &[&str] = &[
+    // Friction sweep 2026-10-12: the locus-member, lifecycle, mode,
+    // projection, closure, recovery, contract, bus, perspective and
+    // statement words that introduce syntax in one position each and are
+    // names everywhere else (spec/tokens.md § Reserved words).
+    "params", "contract", "bus", "capacity", "as_parent_for", "indexed_by",
+    "birth", "accept", "release", "run", "drain", "dissolve", "on_failure",
+    "bulk", "harmonic", "resolution",
+    "projection", "rich", "chunked", "recognition", "tier",
+    "closure", "epoch", "persists_through", "resets_on", "resets_per_epoch",
+    "restart", "restart_in_place", "quarantine", "reorganize", "bubble",
+    "expose", "consume", "inferred",
+    "subscribe", "publish", "on", "of",
+    "stable_when", "serialize_as",
+    "yield", "terminate", "where",
     "topic", "ring_layout", "as", "main",
     "mode", "bindings", "birth_check", "placement",
     "cooperative", "pinned", "pool", "core", "cores", "heap",

@@ -54,10 +54,50 @@ loci carry the synthetic members.
 A locus accepts **one** child type. Writing a second `accept` is a
 compile error that points at both clauses; if a parent needs to own
 two kinds of children, one of them belongs under a different owner
-(or the same owner one level down). The other direction is fine:
+(or the same owner one level down) — or both satisfy one interface,
+and the parent accepts that (below). The other direction is fine:
 several parent types may accept the *same* child type, and each
 child's `release` fires on the parent that actually accepted it,
 running that parent's own `release` body.
+
+### Accepting through an interface
+
+The type `accept` names may be an [interface](./perspectives.md#interface-or-perspective).
+The parent then accepts every locus that satisfies it:
+
+```hale
+interface Job { fn weight() -> Int; }
+
+locus Small { params { w: Int = 1; } fn weight() -> Int { return self.w; } }
+locus Big   { params { w: Int = 9; } fn weight() -> Int { return self.w * 2; } }
+
+locus Pool {
+    params { load: Int = 0; }
+    accept(j: Job) { self.load = self.load + j.weight(); }
+    fn fill() {
+        Small { w: 3 };        // accepted: Small is a Job
+        Big { w: 5 };          // accepted: so is Big
+    }
+}
+```
+
+Nothing about this is decided at run time. Every locus is built from
+a literal of one concrete type, so the compiler knows which accepted
+type each child is: it compiles the `accept` body once for `Small` and
+once for `Big`, and `j.weight()` is an ordinary direct call in each.
+In exchange the body may use only what the interface promises — the
+interface's methods, which every accepted type has — so `j.w` is a
+compile error even though both happen to have a `w`. `release(j: Job)`
+works the same way, and makes every `Job` a flow.
+
+The children are kept one type at a time. `self.children.count` and
+`self.children.is_empty` count all of them, but `for c in
+self.children` is refused: the children share no element type. Keep
+what you need from each child in `accept`, as `Pool` keeps the load.
+
+Ownership doesn't care which kind of clause it meets: the nearest
+ancestor whose `accept` takes the child's type owns it, whether the
+clause names that type or an interface the type satisfies.
 
 ## Bubbling: the nearest accepting ancestor collects the child
 
