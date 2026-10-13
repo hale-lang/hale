@@ -32,6 +32,7 @@ const PROGRAM: &str = r##"
         names: [String; 2] = ["", ""];
         tag: Tag = Tag::Empty;
     }
+    fn take(s: String, n: Int) -> String { return s + "!" + to_string(n); }
     locus Kid {
         params { name: String = ""; }
         fn rename(t: String) { self.name = t; }
@@ -162,6 +163,24 @@ const PROGRAM: &str = r##"
             }
             return out;
         }
+        // An operand held while a later operand replaces its place: a
+        // call's argument, a binary operator's left side, a literal's
+        // field.
+        fn reset() -> Int {
+            self.churn();
+            return 0;
+        }
+        fn operand_arg() -> String {
+            return take(match self.f.tag { Tag::Named(s) -> s, Tag::Empty -> "", }, self.reset());
+        }
+        fn operand_binary() -> String {
+            return self.f.s + to_string(self.reset());
+        }
+        fn operand_literal() -> String {
+            let r = Inner { s: self.f.s + to_string(self.reset()) };
+            let t = (self.f.inner.s, self.reset());
+            return r.s + "/" + t.0;
+        }
         fn in_place() -> String {
             let x = self.f.s;
             self.f.s = std::str::upper("abc");
@@ -190,6 +209,12 @@ const PROGRAM: &str = r##"
         println("kid=" + h.kid());
         h.put(std::str::upper("old"));
         println("in_place=" + h.in_place());
+        h.put(std::str::upper("old-argument-payload"));
+        println("operand_arg=" + h.operand_arg());
+        h.put(std::str::upper("old-argument-payload"));
+        println("operand_binary=" + h.operand_binary());
+        h.put(std::str::upper("old-argument-payload"));
+        println("operand_literal=" + h.operand_literal());
         h.put(std::str::upper("old-matched-payload-text"));
         println("match_escape=" + h.match_escape());
         h.put(std::str::upper("old-matched-payload-text"));
@@ -239,6 +264,9 @@ fn a_binding_held_across_a_replace_reads_the_old_value() {
         "rebound=OLD",
         "kid=OLD",
         "in_place=OLD",
+        "operand_arg=OLD-ARGUMENT-PAYLOAD!0\n",
+        "operand_binary=OLD-ARGUMENT-PAYLOAD0\n",
+        "operand_literal=OLD-ARGUMENT-PAYLOAD0/NEW-VALUE-49\n",
         "match_escape=OLD-MATCHED-PAYLOAD-TEXT\n",
         "if_escape=OLD-MATCHED-PAYLOAD-TEXT\n",
         "block_escape=OLD-BLOCK-RESULT-TEXT\n",

@@ -279,18 +279,26 @@ replaces the place while they are live. So does a value carried out of
 a place by another expression: a `match` arm's payload (`let held =
 match self.e { E::A(s) -> s, E::B -> "", };`), an `if` or block
 result, a tuple, array or record literal holding it, an `or`
-substitute, the result of a call it was passed to (a stdlib call may
-return its argument, an enum constructor holds it). A method returning
-such a value hands back an owned copy. The compiler keeps these the
+substitute, an enum constructor holding it. (A fn's, a method's or a
+stdlib call's result is copied out of its frame and is the caller's
+own.) The compiler keeps these the
 place's own pointer where it can, which costs nothing: it binds an
 owned copy only when a write that may replace the place comes between
-the binding and a use of it (or is the call it is passed to). Such a
+the binding and a use of it (or is the call it is passed to). An
+operand held while a later one is evaluated — an earlier argument of a
+call, a method's receiver, a binary operator's left side, an earlier
+field of a literal — is copied where it is evaluated when the later
+one may replace its place (`take(match self.e { E::A(s) -> s, E::B ->
+"", }, self.reset())`). Such a
 write is a store into the place's field (`self.f.s = ..`, `self.f =
 ..`, through any root), a call whose callee writes it, transitively (a
 method by its name, on any locus declaring one; a method called on the
 field itself, as a form's `set`), and anything that may run other code
-of the locus: a call through a fn value, a publish, `yield`, a recovery
-statement, a stdlib call that parks on an `async_io` pool. A write
+of the locus: a publish, `yield` and a stdlib call that parks on an
+`async_io` pool write what the program's bus handlers write, and a call
+through a fn value or a recovery statement may write anything. A field
+of a record the frame holds itself is never replaced under a binding of
+it (a write through a local root replaces the field's pointer). A write
 inside a loop reaches a use anywhere in the loop when the variable was
 declared before the loop — a local declared outside and rebound inside
 (`held = self.f.s;` then a replacing call, read on the next iteration)

@@ -20,29 +20,44 @@
 //! This pass finds the bindings for which that can happen, so lowering
 //! binds an owned copy of exactly those and leaves every other one a
 //! view. A value views the places it may have been read from, named by
-//! their field names, its keys: a field read (`self.a.b`, `h.name`,
-//! `self.arr[i].s`) views its field and what it is read from, and a
-//! value that carries another out — a `match` arm's payload, an `if`
-//! or block result, a tuple, array or record literal holding it, a
-//! call that may hand its argument back — views what that one does. A
-//! binding needs its own copy when some use of it comes after (or as
-//! an argument of) a write that may change one of its keys:
+//! their field names, its keys:
+//!
+//! - a field read views its field and what it is read from, when that
+//!   views a place or is a handle (`self`, a handle parameter or local,
+//!   a locus literal, a call declared to return one, any field read); a
+//!   field of a record value the frame holds itself views nothing a
+//!   write can replace (a write through a local root replaces the
+//!   field's pointer, GH #993);
+//! - a `match` arm's payload, an `if`, block or `or` result, and a
+//!   tuple, array or record literal view what they carry out (a
+//!   literal's binding copies the parts that view a place where the
+//!   literal is built, not the literal whole);
+//! - an enum constructor views its arguments and a form's read
+//!   (`self.v.get(i)`) its cell; any other call's result is copied out
+//!   of the callee's frame (a method's into the caller's arena, a
+//!   stdlib leaf's built fresh) and views nothing.
+//!
+//! A binding needs its own copy when some use of it comes after (or as
+//! an argument of) a write that may change one of its keys, and so
+//! does an operand held while a later sibling is evaluated (an earlier
+//! argument, a receiver, a binary operator's left side, a literal's
+//! earlier field) when that sibling's evaluation may change one:
 //!
 //! - an assignment `x.f... = v` (any root) writes key `f`;
 //! - a call writes what its callee writes, transitively: a locus
 //!   method by name, over every locus declaring one (the receiver's
 //!   type is not known here), a free fn by name, and a method called
 //!   on a field (`self.v.set(..)`, a form) writes that field too;
+//! - a publish, an explicit `yield` and a stdlib leaf that publishes
+//!   or parks on an `async_io` pool (where another delivery to the same
+//!   locus runs meanwhile) write what any bus handler writes;
 //! - a call through a fn value (a local, a parameter, a fn-typed
-//!   field), a publish, an explicit `yield`, a recovery statement and
-//!   a stdlib leaf that publishes or parks on an `async_io` pool (where
-//!   another delivery to the same locus runs meanwhile) may write
-//!   anything.
+//!   field) and a recovery statement may write anything.
 //!
 //! In a loop, a write anywhere in the body reaches a use anywhere in it
 //! when the variable was declared before the loop, wherever in the
-//! loop the instance holding the value was assigned. Field names stand in for
-//! fields of any type, so the answer only errs toward a copy.
+//! loop the instance holding the value was assigned. Field names stand
+//! in for fields of any type, so the answer only errs toward a copy.
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
@@ -65,11 +80,6 @@ enum Site {
     /// A call's argument read from a place the callee may replace (the
     /// callee reads its parameter after), by the argument's span.
     Arg(u32, u32),
-    /// A method's returned value that views a place, by the returned
-    /// expression's span: handed back as an owned copy, where the
-    /// return's same-arena skip would pass the field's own pointer
-    /// through to a caller whose arena holds it.
-    Ret(u32, u32),
 }
 
 impl OwnedViews {
@@ -93,13 +103,6 @@ impl OwnedViews {
         self.sites.contains(&Site::Match(m.span.start.0, m.span.end.0))
     }
 
-    /// Does the returned expression `e` view a place, so the return
-    /// hands back an owned copy?
-    pub(crate) fn ret(&self, e: &Expr) -> bool {
-        let span = e.span();
-        !self.sites.is_empty() && self.sites.contains(&Site::Ret(span.start.0, span.end.0))
-    }
-
     /// Is `e` a call's argument read from a place the callee may
     /// replace, passed as an owned copy?
     pub(crate) fn arg(&self, e: &Expr) -> bool {
@@ -115,29 +118,44 @@ impl OwnedViews {
 #[derive(Debug, Clone, Default, PartialEq)]
 struct Writes {
     top: bool,
-    fields: BTreeSet<String>,
+    /// Field names by their `Bodies::field_id`, a bit each: the
+    /// summaries' fixpoint unions these for every call edge of every
+    /// body, round after round.
+    bits: Vec<u64>,
 }
 
 impl Writes {
     fn top() -> Self {
-        Writes { top: true, fields: BTreeSet::new() }
+        Writes { top: true, bits: Vec::new() }
     }
-    fn field(name: &str) -> Self {
+    fn field(id: usize) -> Self {
         let mut w = Writes::default();
-        w.fields.insert(name.to_string());
+        let (i, b) = (id / 64, id % 64);
+        w.bits.resize(i + 1, 0);
+        w.bits[i] |= 1 << b;
         w
     }
     fn add(&mut self, o: &Writes) {
         self.top |= o.top;
-        if !self.top {
-            self.fields.extend(o.fields.iter().cloned());
+        if self.top {
+            self.bits.clear();
+            return;
+        }
+        if self.bits.len() < o.bits.len() {
+            self.bits.resize(o.bits.len(), 0);
+        }
+        for (a, b) in self.bits.iter_mut().zip(&o.bits) {
+            *a |= *b;
         }
     }
     fn is_empty(&self) -> bool {
-        !self.top && self.fields.is_empty()
+        !self.top && self.bits.iter().all(|w| *w == 0)
     }
-    fn touches(&self, keys: &BTreeSet<String>) -> bool {
-        self.top || keys.iter().any(|k| self.fields.contains(k))
+    fn has(&self, id: usize) -> bool {
+        self.bits.get(id / 64).is_some_and(|w| w & (1 << (id % 64)) != 0)
+    }
+    fn touches(&self, keys: &BTreeSet<String>, p: &Bodies<'_>) -> bool {
+        self.top || keys.iter().any(|k| p.known_field(k).is_some_and(|id| self.has(id)))
     }
 }
 
@@ -162,6 +180,8 @@ fn union(a: Keys, b: Keys) -> Keys {
 enum Callee {
     Method(String),
     Fn(String),
+    /// Every bus handler: what a publish, a `yield` or a park may run.
+    Deliveries,
 }
 
 /// Every body of the program, with the summaries the pass reads.
@@ -172,6 +192,45 @@ struct Bodies<'a> {
     fns: BTreeMap<String, Vec<usize>>,
     /// Field names declared with a fn type: `x.cb(..)` calls a value.
     fn_fields: BTreeSet<String>,
+    /// Bus handler names: a publish, a `yield` or a park may run any
+    /// of them before it returns.
+    handlers: BTreeSet<String>,
+    /// `@form` loci, and every params field naming one (by its type's
+    /// last segment): a form's read (`self.v.get(i)`) may hand back a
+    /// view of its cell, which the form's own writes retire.
+    form_loci: BTreeSet<String>,
+    field_types: Vec<(String, String)>,
+    form_fields: BTreeSet<String>,
+    /// Loci, interfaces and perspectives: a value of one of these is a
+    /// handle, whose field reads view the locus's storage.
+    loci: BTreeSet<String>,
+    /// Fns and methods whose declared return type is a handle, with
+    /// their declared return types until `loci` is complete.
+    returns: Vec<(String, &'a TypeExpr)>,
+    handle_fns: BTreeSet<String>,
+    /// Every field name a write names, numbered for `Writes`' bits.
+    field_ids: std::cell::RefCell<BTreeMap<String, usize>>,
+}
+
+impl Bodies<'_> {
+    fn field_id(&self, name: &str) -> usize {
+        let mut ids = self.field_ids.borrow_mut();
+        let n = ids.len();
+        *ids.entry(name.to_string()).or_insert(n)
+    }
+    fn known_field(&self, name: &str) -> Option<usize> {
+        self.field_ids.borrow().get(name).copied()
+    }
+}
+
+/// Does a value of type `ty` hold a handle (a locus, an interface, a
+/// perspective)?
+fn handle_ty(ty: &TypeExpr, loci: &BTreeSet<String>) -> bool {
+    match ty {
+        TypeExpr::Named { path, .. } => path.segments.last().is_some_and(|s| loci.contains(&s.name)),
+        TypeExpr::Perspective { .. } => true,
+        _ => false,
+    }
 }
 
 fn collect<'a>(items: &'a [TopDecl], p: &mut Bodies<'a>) {
@@ -180,21 +239,49 @@ fn collect<'a>(items: &'a [TopDecl], p: &mut Bodies<'a>) {
             TopDecl::Fn(f) => {
                 p.fns.entry(f.name.name.clone()).or_default().push(p.bodies.len());
                 p.bodies.push((&f.params, &f.body));
+                if let Some(r) = &f.ret {
+                    p.returns.push((f.name.name.clone(), r));
+                }
+            }
+            TopDecl::Interface(i) => {
+                p.loci.insert(i.name.name.clone());
             }
             TopDecl::Locus(l) => {
+                p.loci.insert(l.name.name.clone());
+                if l.form.is_some() {
+                    p.form_loci.insert(l.name.name.clone());
+                }
                 for m in &l.members {
                     match m {
                         LocusMember::Fn(f) => {
                             p.methods.entry(f.name.name.clone()).or_default().push(p.bodies.len());
                             p.bodies.push((&f.params, &f.body));
+                            if let Some(r) = &f.ret {
+                                p.returns.push((f.name.name.clone(), r));
+                            }
                         }
                         LocusMember::Lifecycle(d) => p.bodies.push((&d.params, &d.body)),
                         LocusMember::Mode(d) => p.bodies.push((&d.params, &d.body)),
                         LocusMember::Failure(d) => p.bodies.push((&d.params, &d.body)),
                         LocusMember::Params(pb) => {
                             for d in &pb.params {
-                                if matches!(d.ty, Some(TypeExpr::Function { .. })) {
-                                    p.fn_fields.insert(d.name.name.clone());
+                                match &d.ty {
+                                    Some(TypeExpr::Function { .. }) => {
+                                        p.fn_fields.insert(d.name.name.clone());
+                                    }
+                                    Some(TypeExpr::Named { path, .. }) => {
+                                        if let Some(last) = path.segments.last() {
+                                            p.field_types.push((d.name.name.clone(), last.name.clone()));
+                                        }
+                                    }
+                                    _ => {}
+                                }
+                            }
+                        }
+                        LocusMember::Bus(b) => {
+                            for bm in &b.members {
+                                if let BusMember::Subscribe { handler, .. } = bm {
+                                    p.handlers.insert(handler.name.clone());
                                 }
                             }
                         }
@@ -203,6 +290,7 @@ fn collect<'a>(items: &'a [TopDecl], p: &mut Bodies<'a>) {
                 }
             }
             TopDecl::Perspective(d) => {
+                p.loci.insert(d.name.name.clone());
                 for m in &d.members {
                     if let PerspectiveMember::Fn(f) = m {
                         p.methods.entry(f.name.name.clone()).or_default().push(p.bodies.len());
@@ -224,8 +312,26 @@ fn owned_view_sites(program: &Program) -> Vec<(Site, String)> {
         methods: BTreeMap::new(),
         fns: BTreeMap::new(),
         fn_fields: BTreeSet::new(),
+        handlers: BTreeSet::new(),
+        form_loci: BTreeSet::new(),
+        field_types: Vec::new(),
+        form_fields: BTreeSet::new(),
+        loci: BTreeSet::new(),
+        returns: Vec::new(),
+        handle_fns: BTreeSet::new(),
+        field_ids: std::cell::RefCell::new(BTreeMap::new()),
     };
     collect(&program.items, &mut p);
+    let handle_fns: BTreeSet<String> =
+        p.returns.iter().filter(|(_, r)| handle_ty(r, &p.loci)).map(|(n, _)| n.clone()).collect();
+    p.handle_fns = handle_fns;
+    let forms: BTreeSet<String> = p
+        .field_types
+        .iter()
+        .filter(|(_, ty)| p.form_loci.contains(ty))
+        .map(|(f, _)| f.clone())
+        .collect();
+    p.form_fields = forms;
 
     // Each body's own writes and the calls it makes, then the fixpoint.
     let mut direct: Vec<(Writes, BTreeSet<Callee>)> = Vec::with_capacity(p.bodies.len());
@@ -234,15 +340,31 @@ fn owned_view_sites(program: &Program) -> Vec<(Site, String)> {
         w.block(body);
         direct.push((w.own, w.callees));
     }
-    let mut summary: Vec<Writes> = direct.iter().map(|(w, _)| w.clone()).collect();
+    // Each body's callees, resolved once (a method name to every body
+    // declaring it), then unioned until nothing changes.
+    let edges: Vec<Vec<usize>> = direct
+        .iter()
+        .map(|(_, callees)| {
+            let mut e: Vec<usize> = callees.iter().flat_map(|c| p.resolve(c)).collect();
+            e.sort_unstable();
+            e.dedup();
+            e
+        })
+        .collect();
+    let mut summary: Vec<Writes> = direct.into_iter().map(|(w, _)| w).collect();
     loop {
         let mut changed = false;
         for i in 0..summary.len() {
+            if summary[i].top {
+                continue;
+            }
             let mut next = summary[i].clone();
-            for c in &direct[i].1 {
-                for j in p.resolve(c) {
-                    let sj = summary[j].clone();
-                    next.add(&sj);
+            for &j in &edges[i] {
+                if j != i {
+                    next.add(&summary[j]);
+                    if next.top {
+                        break;
+                    }
                 }
             }
             if next != summary[i] {
@@ -258,11 +380,7 @@ fn owned_view_sites(program: &Program) -> Vec<(Site, String)> {
     let mut out = Vec::new();
     for (params, body) in &p.bodies {
         let mut w = Walk::new(&p, Some(&summary), params);
-        // A body's tail is its value when the fn returns one.
-        let keys = w.block(body);
-        if let Some(t) = &body.tail {
-            w.returned(t, keys);
-        }
+        w.block(body);
         out.extend(w.flagged());
     }
     out
@@ -273,6 +391,9 @@ impl Bodies<'_> {
         let m = match c {
             Callee::Method(n) => self.methods.get(n),
             Callee::Fn(n) => self.fns.get(n),
+            Callee::Deliveries => {
+                return self.handlers.iter().filter_map(|h| self.methods.get(h)).flatten().copied().collect();
+            }
         };
         m.cloned().unwrap_or_default()
     }
@@ -286,6 +407,9 @@ struct Inst {
     name: String,
     keys: BTreeSet<String>,
     at: u32,
+    /// A literal's binding: the parts that view a place, copied where
+    /// the literal is built instead of the literal copied whole.
+    parts: Option<Vec<Site>>,
 }
 
 /// A write event: the writes, and the positions it spans (a call's
@@ -307,6 +431,12 @@ struct Walk<'p, 'a> {
     scopes: Vec<BTreeMap<String, Option<usize>>>,
     /// Per variable, its instances.
     vars: Vec<Vec<usize>>,
+    /// Per variable, whether it may hold a handle, whose field reads
+    /// view a locus's storage; a record value of the frame's own is
+    /// never replaced under a binding of its field.
+    handles: Vec<bool>,
+    /// The parameters that are handles.
+    handle_params: BTreeSet<String>,
     /// Per variable, where it was declared: a loop that starts after
     /// it carries its value round the back edge, whichever instance of
     /// it holds the value.
@@ -316,8 +446,9 @@ struct Walk<'p, 'a> {
     uses: Vec<Vec<u32>>,
     writes: Vec<WriteAt>,
     loops: Vec<(u32, u32)>,
-    /// Arguments passed to a call that may replace what they view, and
-    /// returned values that view a place.
+    /// What `Callee::Deliveries` writes, once the summaries are in.
+    deliveries: Option<Writes>,
+    /// Arguments passed to a call that may replace what they view.
     args: Vec<(Site, String)>,
 }
 
@@ -333,8 +464,12 @@ fn pattern_names<'e>(p: &'e Pattern, out: &mut Vec<&'e Ident>) {
 impl<'p, 'a> Walk<'p, 'a> {
     fn new(p: &'p Bodies<'a>, summary: Option<&'p [Writes]>, params: &[Param]) -> Self {
         let mut top = BTreeMap::new();
+        let mut handle_params = BTreeSet::new();
         for prm in params {
             top.insert(prm.name.name.clone(), None);
+            if handle_ty(&prm.ty, &p.loci) {
+                handle_params.insert(prm.name.name.clone());
+            }
         }
         Walk {
             p,
@@ -344,12 +479,15 @@ impl<'p, 'a> Walk<'p, 'a> {
             pos: 0,
             scopes: vec![top],
             vars: Vec::new(),
+            handles: Vec::new(),
+            handle_params,
             declared: Vec::new(),
             insts: Vec::new(),
             uses: Vec::new(),
             writes: Vec::new(),
             loops: Vec::new(),
             args: Vec::new(),
+            deliveries: None,
         }
     }
 
@@ -367,6 +505,7 @@ impl<'p, 'a> Walk<'p, 'a> {
     fn declare(&mut self, name: &str) -> usize {
         let v = self.vars.len();
         self.vars.push(Vec::new());
+        self.handles.push(false);
         self.declared.push(self.pos);
         self.uses.push(Vec::new());
         self.scopes.last_mut().expect("a scope").insert(name.to_string(), Some(v));
@@ -383,11 +522,119 @@ impl<'p, 'a> Walk<'p, 'a> {
     }
 
     fn bind(&mut self, var: usize, site: Site, name: &str, keys: Option<BTreeSet<String>>) {
+        self.bind_parts(var, site, name, keys, None);
+    }
+
+    fn bind_parts(
+        &mut self,
+        var: usize,
+        site: Site,
+        name: &str,
+        keys: Option<BTreeSet<String>>,
+        parts: Option<Vec<Site>>,
+    ) {
         let at = self.tick();
         let Some(keys) = keys else { return };
+        // Read out of a place, it may be a child's handle.
+        self.handles[var] = true;
         let i = self.insts.len();
-        self.insts.push(Inst { var, site, name: name.to_string(), keys, at });
+        self.insts.push(Inst { var, site, name: name.to_string(), keys, at, parts });
         self.vars[var].push(i);
+    }
+
+    /// The keys of `receiver.name`, the receiver's being `keys`: a field
+    /// read views its field when the receiver views a place or holds a
+    /// handle; a field of a record value the frame holds views nothing
+    /// another write can replace (a write through a local root replaces
+    /// the field's pointer, GH #993).
+    fn field_keys(&self, receiver: &Expr, keys: Keys, name: &Ident) -> Keys {
+        if keys.is_none() && !self.is_handle(receiver) {
+            return None;
+        }
+        let mut keys = keys.unwrap_or_default();
+        keys.insert(name.name.clone());
+        Some(keys)
+    }
+
+    /// May `e` be a handle? `self`, a handle parameter, a local that
+    /// may hold one, a locus literal, a call of a fn or method declared
+    /// to return one, and any field read (a field may hold a child).
+    fn is_handle(&self, e: &Expr) -> bool {
+        match e {
+            Expr::KwSelf(_) => true,
+            Expr::Ident(id) => match self.lookup(&id.name) {
+                Some(Some(v)) => self.handles[v],
+                Some(None) => self.handle_params.contains(&id.name),
+                None => false,
+            },
+            Expr::Struct { path, .. } => path.segments.last().is_some_and(|s| self.p.loci.contains(&s.name)),
+            Expr::Field { .. } | Expr::Index { .. } => true,
+            Expr::Call { callee, .. } => match callee.as_ref() {
+                Expr::Ident(id) => self.p.handle_fns.contains(&id.name),
+                Expr::Path(q) => q.segments.last().is_some_and(|s| self.p.handle_fns.contains(&s.name)),
+                Expr::Field { name, .. } | Expr::Path2 { name, .. } => self.p.handle_fns.contains(&name.name),
+                _ => true,
+            },
+            Expr::If(_) | Expr::Match(_) | Expr::Block(_) | Expr::Or { .. } => true,
+            _ => false,
+        }
+    }
+
+    /// For a tuple, array or record literal, the parts that view a
+    /// place (nested literals walked through), by span: an owned copy
+    /// of each where the literal is built leaves the literal owning
+    /// what it holds, where a copy of the whole would also copy every
+    /// scalar and fresh part. `None` for any other expression.
+    fn literal_parts(&self, e: &Expr) -> Option<Vec<Site>> {
+        fn walk(w: &Walk<'_, '_>, e: &Expr, out: &mut Vec<Site>) {
+            match e {
+                Expr::Tuple(es, _) | Expr::Array(es, _) => es.iter().for_each(|x| walk(w, x, out)),
+                Expr::Struct { inits, .. } => inits.iter().for_each(|i| walk(w, &i.value, out)),
+                Expr::ArrayRepeat { val, .. } => walk(w, val, out),
+                // What these carry out is known only inside them: the
+                // part is copied whole.
+                Expr::Match(_) | Expr::If(_) | Expr::Block(_) | Expr::Or { .. } => {
+                    let span = e.span();
+                    out.push(Site::Arg(span.start.0, span.end.0));
+                }
+                _ => {
+                    if w.part_keys(e).is_some() {
+                        let span = e.span();
+                        out.push(Site::Arg(span.start.0, span.end.0));
+                    }
+                }
+            }
+        }
+        if !matches!(e, Expr::Tuple(..) | Expr::Array(..) | Expr::Struct { .. } | Expr::ArrayRepeat { .. }) {
+            return None;
+        }
+        let mut out = Vec::new();
+        walk(self, e, &mut out);
+        Some(out)
+    }
+
+    /// The keys of a field read, a local or an enum constructor, read
+    /// without walking (`expr` has walked it already).
+    fn part_keys(&self, e: &Expr) -> Keys {
+        match e {
+            Expr::Field { receiver, name, .. } => self.field_keys(receiver, self.part_keys(receiver), name),
+            Expr::Index { receiver, .. } => self.part_keys(receiver),
+            Expr::Ident(id) => match self.lookup(&id.name) {
+                Some(Some(v)) => self.var_keys(v),
+                _ => None,
+            },
+            Expr::Call { callee, args, .. } => match callee.as_ref() {
+                Expr::Path(q)
+                    if q.segments.len() > 1
+                        && q.segments[0].name != "std"
+                        && !self.p.fns.contains_key(&q.segments.last().expect("segments").name) =>
+                {
+                    args.iter().fold(None, |acc, a| union(acc, self.part_keys(a)))
+                }
+                _ => None,
+            },
+            _ => None,
+        }
     }
 
     fn write(&mut self, writes: Writes, start: Option<u32>) {
@@ -422,8 +669,11 @@ impl<'p, 'a> Walk<'p, 'a> {
         match s {
             Stmt::Let { name, value, id, .. } => {
                 let keys = self.expr(value);
+                let parts = self.literal_parts(value);
+                let handle = self.is_handle(value);
                 let v = self.declare(&name.name);
-                self.bind(v, Site::Node(id.0), &name.name, keys);
+                self.handles[v] = handle;
+                self.bind_parts(v, Site::Node(id.0), &name.name, keys, parts);
             }
             Stmt::LetTuple { names, value, id, .. } => {
                 let keys = self.expr(value);
@@ -446,15 +696,21 @@ impl<'p, 'a> Walk<'p, 'a> {
                 if target.tail.is_empty() {
                     // A bare local rebound: a new instance of it.
                     if let Some(Some(v)) = self.lookup(&target.head.name) {
-                        self.bind(v, Site::Node(id.0), &target.head.name, keys);
+                        if self.is_handle(value) {
+                            self.handles[v] = true;
+                        }
+                        let parts = self.literal_parts(value);
+                        self.bind_parts(v, Site::Node(id.0), &target.head.name, keys, parts);
                     }
                 } else if let Some(f) = first {
-                    self.write(Writes::field(f), None);
+                    let id = self.p.field_id(f);
+                    self.write(Writes::field(id), None);
                 } else {
                     // `x[i] = v` on a local or a parameter: the element
                     // a binding of `x[j]` views.
                     self.use_name(&target.head.name);
-                    self.write(Writes::field(&target.head.name), None);
+                    let id = self.p.field_id(&target.head.name);
+                    self.write(Writes::field(id), None);
                 }
             }
             Stmt::If(i) => return self.if_stmt(i),
@@ -481,8 +737,7 @@ impl<'p, 'a> Walk<'p, 'a> {
             }),
             Stmt::Return(e, _) => {
                 if let Some(e) = e {
-                    let keys = self.expr(e);
-                    self.returned(e, keys);
+                    self.expr(e);
                 }
             }
             Stmt::Fail { value, .. } => {
@@ -501,9 +756,14 @@ impl<'p, 'a> Walk<'p, 'a> {
                 }
                 // A direct-dispatch subscriber runs before the publish
                 // returns.
-                self.write(Writes::top(), None);
+                let w = self.deliveries();
+                self.write(w, None);
             }
-            Stmt::Yield(_) | Stmt::Reperspective { .. } => self.write(Writes::top(), None),
+            Stmt::Yield(_) => {
+                let w = self.deliveries();
+                self.write(w, None);
+            }
+            Stmt::Reperspective { .. } => self.write(Writes::top(), None),
             Stmt::Recovery { args, .. } => {
                 args.iter().for_each(|a| {
                     self.expr(a);
@@ -576,15 +836,6 @@ impl<'p, 'a> Walk<'p, 'a> {
         }
     }
 
-    /// A returned value that views a place is handed back owned.
-    fn returned(&mut self, e: &Expr, keys: Keys) {
-        if let (Some(keys), true) = (keys, self.summary.is_some()) {
-            let span = e.span();
-            let name = keys.iter().next().cloned().unwrap_or_default();
-            self.args.push((Site::Ret(span.start.0, span.end.0), name));
-        }
-    }
-
     fn use_name(&mut self, name: &str) {
         if let Some(Some(v)) = self.lookup(name) {
             let at = self.tick();
@@ -612,8 +863,7 @@ impl<'p, 'a> Walk<'p, 'a> {
             }
             Expr::Literal(..) | Expr::Path(_) | Expr::KwSelf(_) => None,
             Expr::Binary { left, right, .. } => {
-                self.expr(left);
-                self.expr(right);
+                self.operands(&[left, right]);
                 None
             }
             Expr::Unary { operand, .. } => {
@@ -622,23 +872,25 @@ impl<'p, 'a> Walk<'p, 'a> {
             }
             Expr::Call { callee, args, .. } => self.call(callee, args),
             Expr::Field { receiver, name, .. } => {
-                let mut keys = self.expr(receiver).unwrap_or_default();
-                keys.insert(name.name.clone());
-                Some(keys)
+                let keys = self.expr(receiver);
+                self.field_keys(receiver, keys, name)
             }
             Expr::Path2 { receiver, .. } => {
                 self.expr(receiver);
                 None
             }
             Expr::Index { receiver, index, .. } => {
-                let keys = self.expr(receiver);
-                self.expr(index);
-                keys
+                let mut keys = self.operands(&[receiver, index]);
+                keys.swap_remove(0)
             }
             Expr::Tuple(es, _) | Expr::Array(es, _) => {
-                es.iter().fold(None, |acc, x| union(acc, self.expr(x)))
+                let ops: Vec<&Expr> = es.iter().collect();
+                self.operands(&ops).into_iter().fold(None, union)
             }
-            Expr::Struct { inits, .. } => inits.iter().fold(None, |acc, i| union(acc, self.expr(&i.value))),
+            Expr::Struct { inits, .. } => {
+                let ops: Vec<&Expr> = inits.iter().map(|i| &i.value).collect();
+                self.operands(&ops).into_iter().fold(None, union)
+            }
             Expr::Block(b) => self.block(b),
             Expr::If(i) => self.if_stmt(i),
             Expr::Match(m) => self.match_stmt(m),
@@ -669,7 +921,8 @@ impl<'p, 'a> Walk<'p, 'a> {
     fn call(&mut self, callee: &Expr, args: &[Expr]) -> Keys {
         let start = self.tick();
         let mut writes = Writes::default();
-        let mut result: Keys = None;
+        let mut ctor = false;
+        let mut receiver: Option<&Expr> = None;
         match callee {
             Expr::Ident(id) => match self.lookup(&id.name) {
                 // A fn value held in a local or a parameter.
@@ -682,9 +935,14 @@ impl<'p, 'a> Walk<'p, 'a> {
             Expr::Path(q) => {
                 let segs: Vec<&str> = q.segments.iter().map(|s| s.name.as_str()).collect();
                 writes.add(&self.named_fn(&segs));
+                // An enum constructor holds its arguments; a fn's or a
+                // stdlib leaf's result is copied out of its frame.
+                ctor = segs.len() > 1
+                    && segs[0] != "std"
+                    && !self.p.fns.contains_key(*segs.last().expect("a path has segments"));
             }
-            Expr::Field { receiver, name, .. } | Expr::Path2 { receiver, name, .. } => {
-                result = self.expr(receiver);
+            Expr::Field { receiver: r, name, .. } | Expr::Path2 { receiver: r, name, .. } => {
+                receiver = Some(r);
                 if self.p.fn_fields.contains(&name.name) {
                     writes = Writes::top();
                 } else {
@@ -692,8 +950,8 @@ impl<'p, 'a> Walk<'p, 'a> {
                 }
                 // A method of a field's value (a form's `set`, a
                 // child's) may change what the field holds.
-                if let Expr::Field { name: f, .. } = receiver.as_ref() {
-                    writes.add(&Writes::field(&f.name));
+                if let Expr::Field { name: f, .. } = r.as_ref() {
+                    writes.add(&Writes::field(self.p.field_id(&f.name)));
                 }
             }
             other => {
@@ -701,21 +959,90 @@ impl<'p, 'a> Walk<'p, 'a> {
                 writes = Writes::top();
             }
         }
-        for a in args {
-            let keys = self.expr(a);
-            // A local passed on is its own binding's use, inside the
-            // call: that binding answers for it.
-            if let (Some(keys), true, false) = (&keys, self.summary.is_some(), matches!(a, Expr::Ident(_))) {
-                if writes.touches(keys) {
-                    let span = a.span();
-                    let name = keys.iter().next().cloned().unwrap_or_default();
-                    self.args.push((Site::Arg(span.start.0, span.end.0), name));
+        // The receiver and the arguments, in the order they are
+        // evaluated: each is held while the later ones run.
+        let mut ops: Vec<&Expr> = Vec::with_capacity(args.len() + 1);
+        ops.extend(receiver);
+        ops.extend(args.iter());
+        let mut keys = self.operands(&ops);
+        let recv_keys = if receiver.is_some() { keys.remove(0) } else { None };
+        let mut result: Keys = None;
+        // A form's read may hand back its cell; any other method's
+        // result is copied into the caller's arena.
+        if let Some(Expr::Field { name: f, .. }) = receiver {
+            if self.p.form_fields.contains(&f.name) {
+                result = recv_keys;
+            }
+        }
+        for (a, keys) in args.iter().zip(keys) {
+            // An argument the callee may replace before it reads its
+            // parameter. A local passed on is its own binding's use,
+            // inside the call: that binding answers for it.
+            if let (Some(k), true, false) = (&keys, self.summary.is_some(), matches!(a, Expr::Ident(_))) {
+                if writes.touches(k, self.p) {
+                    self.flag_operand(a, k);
                 }
             }
-            result = union(result, keys);
+            if ctor {
+                result = union(result, keys);
+            }
         }
         self.write(writes, Some(start));
         result
+    }
+
+    /// Walk operands evaluated in order and held until the last is: an
+    /// operand that views a place is copied where it is evaluated when a
+    /// later operand's evaluation may replace that place (`take(match
+    /// self.e { .. }, self.reset())`, `self.f.s + self.renamed()`, a
+    /// record literal's fields). The keys of each.
+    fn operands(&mut self, ops: &[&Expr]) -> Vec<Keys> {
+        let first_write = self.writes.len();
+        let mut keys = Vec::with_capacity(ops.len());
+        let mut ends = Vec::with_capacity(ops.len());
+        for op in ops {
+            keys.push(self.expr(op));
+            ends.push(self.pos);
+        }
+        if self.summary.is_some() && ops.len() > 1 {
+            for i in 0..ops.len() - 1 {
+                let Some(k) = &keys[i] else { continue };
+                let hit = self.writes[first_write..]
+                    .iter()
+                    .any(|w| w.at > ends[i] && w.writes.touches(k, self.p));
+                if hit {
+                    let k = k.clone();
+                    self.flag_operand(ops[i], &k);
+                }
+            }
+        }
+        keys
+    }
+
+    /// Copy `a`, an operand that views `keys`, where it is evaluated: a
+    /// literal by its parts that view a place, anything else whole.
+    fn flag_operand(&mut self, a: &Expr, keys: &BTreeSet<String>) {
+        let name = keys.iter().next().cloned().unwrap_or_default();
+        match self.literal_parts(a) {
+            Some(parts) => self.args.extend(parts.into_iter().map(|s| (s, name.clone()))),
+            None => {
+                let span = a.span();
+                self.args.push((Site::Arg(span.start.0, span.end.0), name));
+            }
+        }
+    }
+
+    /// What a delivery the bus runs before returning may write: every
+    /// handler's writes.
+    fn deliveries(&mut self) -> Writes {
+        if let Some(w) = &self.deliveries {
+            return w.clone();
+        }
+        let w = self.callee(Callee::Deliveries);
+        if self.summary.is_some() {
+            self.deliveries = Some(w.clone());
+        }
+        w
     }
 
     /// A call of a free fn or a stdlib leaf by its path.
@@ -724,7 +1051,7 @@ impl<'p, 'a> Walk<'p, 'a> {
         if parks_on_async_io(segs)
             || effects_for(segs).is_some_and(|e| !e.is_unclassified() && e.contains(EffectSet::PUBLISH))
         {
-            return Writes::top();
+            return self.deliveries();
         }
         let last = segs.last().copied().unwrap_or_default();
         if segs.first() == Some(&"std") {
@@ -751,7 +1078,7 @@ impl<'p, 'a> Walk<'p, 'a> {
         for inst in &self.insts {
             let hit = self.writes.iter().any(|w| {
                 w.at > inst.at
-                    && w.writes.touches(&inst.keys)
+                    && w.writes.touches(&inst.keys, self.p)
                     && self.uses[inst.var].iter().any(|&u| {
                         u >= w.start
                             || self.loops.iter().any(|&(ls, le)| {
@@ -760,7 +1087,10 @@ impl<'p, 'a> Walk<'p, 'a> {
                     })
             });
             if hit {
-                out.push((inst.site, inst.name.clone()));
+                match &inst.parts {
+                    Some(parts) => out.extend(parts.iter().map(|s| (*s, inst.name.clone()))),
+                    None => out.push((inst.site, inst.name.clone())),
+                }
             }
         }
         out
@@ -925,8 +1255,11 @@ mod tests {
     fn a_literal_or_a_call_holding_a_view_is_a_view() {
         assert_eq!(with(r#"let t = (self.f.s, 1); self.put("n"); println(t.0);"#), ["t"]);
         assert_eq!(with(r#"let r = F { s: self.f.s }; self.put("n"); println(r.s);"#), ["r"]);
-        assert_eq!(with(r#"let t = std::str::trim(self.f.s); self.put("n"); println(t);"#), ["t"]);
-        // Concatenation is a fresh value.
+        // A call's result is copied out of its frame (a method's into
+        // the caller's arena, a stdlib leaf's built fresh); concatenation
+        // is a fresh value.
+        assert!(with(r#"let t = std::str::trim(self.f.s); self.put("n"); println(t);"#).is_empty());
+        assert!(with(r#"let t = self.via_name(); self.put("n"); println(t);"#).is_empty());
         assert!(with(r#"let t = self.f.s + "!"; self.put("n"); println(t);"#).is_empty());
     }
 
@@ -952,15 +1285,81 @@ mod tests {
     }
 
     #[test]
-    fn a_returned_view_is_owned() {
-        // The tail and a `return` alike; a fresh value is not.
-        assert_eq!(flagged(&LOCUS.replace("fn body() { BODY }", "fn name() -> String { self.f.s }")), ["f"]);
-        assert_eq!(with(r#"let s = self.f.s; return s;"#), ["f"]);
-        assert!(with(r#"return self.f.s + "!";"#).is_empty());
+    fn a_field_of_a_record_the_frame_holds_is_not_a_view() {
+        let src = r#"
+            type F { s: String = ""; }
+            locus K { params { name: String = ""; } fn rename() { self.name = "x"; } }
+            locus H {
+                params { f: F = F { }; }
+                fn put() { self.f = F { s: "n" }; }
+                fn make() -> F { return F { s: "m" }; }
+                fn record() { let r = self.make(); let s = r.s; self.put(); println(s); }
+                fn handle() { let k = K { }; let n = k.name; k.rename(); println(n); }
+            }
+        "#;
+        assert_eq!(flagged(src), ["n"]);
     }
 
     #[test]
-    fn a_publish_or_a_fn_value_may_write_anything() {
-        assert_eq!(with(r#"let s = self.g.s; yield; println(s);"#), ["s"]);
+    fn an_operand_held_across_a_later_operands_write_is_owned() {
+        let src = r#"
+            type E = enum { A(String), B };
+            type R { a: String = ""; n: Int = 0; }
+            fn take(s: String, n: Int) -> String { return s + "!"; }
+            locus H {
+                params { e: E = E::B; f: R = R { }; }
+                fn reset() -> Int { self.e = E::B; self.f = R { }; return 0; }
+                fn other() -> Int { return 1; }
+                fn arg() -> String { return take(match self.e { E::A(s) -> s, E::B -> "", }, self.reset()); }
+                fn binary() -> String { return self.f.a + to_string(self.reset()); }
+                fn literal() -> R { return R { a: self.f.a, n: self.reset() }; }
+                fn fine() -> String { return take(self.f.a, self.other()); }
+            }
+        "#;
+        let got = owned_view_sites(&hale_syntax::parse_source(src).expect("parses"));
+        assert_eq!(got.len(), 3, "{got:?}");
+    }
+
+    #[test]
+    fn an_enum_constructor_holds_its_argument() {
+        let src = r#"
+            type E = enum { A(String), B };
+            type F { s: String = ""; }
+            locus H {
+                params { f: F = F { }; }
+                fn put() { self.f = F { s: "n" }; }
+                fn body() { let e = E::A(self.f.s); self.put(); println(e); }
+            }
+        "#;
+        assert_eq!(flagged(src), ["e"]);
+    }
+
+    #[test]
+    fn a_publish_runs_the_handlers_writes() {
+        let src = r#"
+            type F { s: String = ""; }
+            locus H {
+                params { f: F = F { }; g: F = F { }; }
+                bus { subscribe "t" as on_t of type String; }
+                fn on_t(m: String) { self.f = F { s: m }; }
+                fn held() { let s = self.f.s; "t" <- "x"; println(s); }
+                fn other() { let s = self.g.s; "t" <- "x"; println(s); }
+            }
+        "#;
+        assert_eq!(flagged(src), ["s"]);
+    }
+
+    #[test]
+    fn a_fn_value_may_write_anything() {
+        let src = r#"
+            type F { s: String = ""; }
+            locus H {
+                params { g: F = F { }; }
+                fn hold(cb: fn(Int) -> Int) { let s = self.g.s; cb(1); println(s); }
+            }
+        "#;
+        assert_eq!(flagged(src), ["s"]);
+        // A yield with no handler in the program runs nothing.
+        assert!(with(r#"let s = self.g.s; yield; println(s);"#).is_empty());
     }
 }

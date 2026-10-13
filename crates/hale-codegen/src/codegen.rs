@@ -22999,16 +22999,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         declared_ty, got_ty
                     )));
                 }
-                // A method's returned value that views a place — `return
-                // self.f.s;`, a local read from a field, a match payload
-                // of one — goes back as an owned copy
-                // (`crate::view_bindings`). The return's copy into the
-                // caller's arena passes a pointer already there through,
-                // and only the owned copy promises the caller never holds
-                // the field's own block, whichever arena it calls from.
-                // It costs what the cross-arena copy did. (A free fn's
-                // return copies out of its own frame the same way.)
-                let owned_ret = self.owned_views.ret(e);
                 if in_free_fn {
                     let ret_alloca = self
                         .current_user_fn_ret_alloca
@@ -23021,20 +23011,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         .build_unconditional_branch(exit_bb)
                         .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
                 } else if in_method_with_scratch {
-                    let copied = if owned_ret && v.is_pointer_value() {
-                        let slot = self
-                            .current_method_caller_arena
-                            .expect("method scratch active implies caller-arena snapshot");
-                        let ptr_t = self.context.ptr_type(AddressSpace::default());
-                        let dest = self
-                            .builder
-                            .build_load(ptr_t, slot, "method.caller_arena.owned_ret")
-                            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
-                            .into_pointer_value();
-                        self.emit_owned_deep_copy(v, &declared_ty, dest)?
-                    } else {
-                        self.emit_method_return_deep_copy(v, &declared_ty)?
-                    };
+                    let copied = self.emit_method_return_deep_copy(v, &declared_ty)?;
                     // GH #383: flush before the scratch dies — see the
                     // void-return arm for the ordering argument. The
                     // deep-copy above already moved the return value
