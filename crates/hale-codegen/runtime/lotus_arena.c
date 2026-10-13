@@ -83,6 +83,7 @@
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <arpa/inet.h>
+#include <net/if.h>   /* if_indextoname: an IPv6 source's zone */
 #include <netdb.h>
 #include <unistd.h>
 #include <errno.h>
@@ -17955,6 +17956,38 @@ static int lotus_inet_resolve(const char *host, uint16_t port, int socktype,
     return 0;
 }
 
+/* An IPv6 address as text a resolve takes back: unbracketed, with its
+ * zone when it has one (`fe80::1%eth0`; the interface's index,
+ * `fe80::1%7`, when it has no name). A link-local address names its
+ * interface only through the scope id, so dropping it made a reply to
+ * the sender unroutable. 0, or -1 when the address does not fit. */
+static int lotus_inet6_format(const struct sockaddr_in6 *a, char *buf,
+                              size_t cap) {
+    if (!inet_ntop(AF_INET6, &a->sin6_addr, buf, (socklen_t)cap)) {
+        return -1;
+    }
+    if (a->sin6_scope_id == 0) {
+        return 0;
+    }
+    char zone[64];
+    zone[0] = '\0';
+#ifndef __wasm__
+    char ifname[IF_NAMESIZE];
+    if (if_indextoname(a->sin6_scope_id, ifname)) {
+        snprintf(zone, sizeof(zone), "%%%s", ifname);
+    }
+#endif
+    if (!zone[0]) {
+        snprintf(zone, sizeof(zone), "%%%u", (unsigned)a->sin6_scope_id);
+    }
+    size_t n = strlen(buf);
+    if (n + strlen(zone) + 1 > cap) {
+        return -1;
+    }
+    memcpy(buf + n, zone, strlen(zone) + 1);
+    return 0;
+}
+
 /* The port of a socket address of either family, -1 for another. */
 static int64_t lotus_inet_port(const struct sockaddr_storage *a) {
     if (a->ss_family == AF_INET) {
@@ -19175,11 +19208,11 @@ void *lotus_udp_recv_bytes_with_source(int fd, int max_bytes) {
         }
         g_udp_last_source_port = (int64_t)ntohs(s4->sin_port);
     } else if (src.ss_family == AF_INET6) {
-        /* an IPv6 peer, unbracketed (`::1`), as `send` takes it back */
+        /* an IPv6 peer, unbracketed (`::1`) and with its zone
+         * (`fe80::1%eth0`), as `send` takes it back */
         struct sockaddr_in6 *s6 = (struct sockaddr_in6 *)&src;
-        if (!inet_ntop(AF_INET6, &s6->sin6_addr,
-                       g_udp_last_source_host,
-                       sizeof(g_udp_last_source_host))) {
+        if (lotus_inet6_format(s6, g_udp_last_source_host,
+                               sizeof(g_udp_last_source_host)) < 0) {
             g_udp_last_source_host[0] = '\0';
         }
         g_udp_last_source_port = (int64_t)ntohs(s6->sin6_port);
