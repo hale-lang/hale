@@ -1526,6 +1526,7 @@ pub fn build_resolved(
         current_user_fn_ret: None,
         in_failure_handler: false,
         current_self: None,
+        current_accept_interface: None,
         loops: Vec::new(),
         bce_loops: Vec::new(),
         user_fns: BTreeMap::new(),
@@ -3481,6 +3482,12 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// `self.X` reads/writes lower to GEP+load/store on the struct
     /// pointer passed as the method's first arg.
     pub(crate) current_self: Option<SelfCx<'ctx>>,
+    /// The interface an `accept(c: I)` / `release(c: I)` monomorph's body
+    /// is being lowered for: the checker held the body to `I`'s contract,
+    /// so a call it typed fallible through `I` keeps that contract when the
+    /// concrete method is infallible (the known-success adaptation, as an
+    /// interface's vtable slot does; `lower_fallible_method_call`).
+    pub(crate) current_accept_interface: Option<String>,
     /// Stack of enclosing loops so `break` / `continue` can find
     /// their target blocks.
     pub(crate) loops: Vec<LoopFrame<'ctx>>,
@@ -5064,6 +5071,15 @@ pub(crate) struct FallibleCtx<'ctx> {
     pub(crate) payload_ty: CodegenTy,
 }
 
+/// One accepted child type's tracker: the indices of its `__children`
+/// buffer pointer, count and capacity fields in the owner's struct.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct ChildBuffer {
+    pub(crate) arr: u32,
+    pub(crate) cnt: u32,
+    pub(crate) cap: u32,
+}
+
 /// Compiled locus type. Lifecycle methods take `self_ptr` as their
 /// first arg; field access in their bodies lowers to GEPs against
 /// `struct_ty` using the index from `fields`.
@@ -5100,6 +5116,18 @@ pub(crate) struct LocusInfo<'ctx> {
     /// declares `release` of it, to fire `parent.release(owner, child)`
     /// on completion.
     pub(crate) release_param: Option<(String, String)>,
+    /// The `accept` fn for each child locus this locus accepts: the one
+    /// `accept` for a concrete `accept(c: C)`, keyed by `C`; for an
+    /// interface `accept(c: I)`, one fn per locus the ownership graph
+    /// admits (`<L>.accept.<C>`), each lowered with the child typed as
+    /// that locus. Every dispatch looks its child up here.
+    pub(crate) accept_fns: BTreeMap<String, FunctionValue<'ctx>>,
+    /// The `release` fns, keyed as `accept_fns`.
+    pub(crate) release_fns: BTreeMap<String, FunctionValue<'ctx>>,
+    /// The children tracker of each accepted child locus: one for a
+    /// concrete `accept` (the `children_field_idx` triple), one per
+    /// admitted locus for an interface's.
+    pub(crate) child_buffers: BTreeMap<String, ChildBuffer>,
     /// User-defined `fn` members on the locus (called as bus
     /// handlers, mode dispatchers, etc.). Each entry is
     /// (method name → LLVM function value). Methods take
@@ -5375,6 +5403,14 @@ pub(crate) struct LocusInfo<'ctx> {
     /// parents accepting one child type the first parent's body ran
     /// over the other parent's self — silent memory corruption.
     pub(crate) owner_release_field_idx: u32,
+    /// Index of the synthetic `__owner_tracker: ptr` field, for a type
+    /// more than one owner type tracks: the accepting owner's tracker
+    /// (its `__children` field's address), stored at accept dispatch and
+    /// read when a completed flow removes itself. `None` for a type one
+    /// owner type tracks, whose removal finds the tracker statically.
+    /// (`__owner_tracker`, `__owner_tracker_count`): the addresses of the
+    /// owner's buffer and count fields, as the owner's layout places them.
+    pub(crate) owner_tracker_field_idx: Option<(u32, u32)>,
     /// Interest-based ownership, artifact #2b — indices of the synthetic
     /// `__owner_for_<I>: ptr` fields, one per interest-type `I` in this
     /// locus's forwarding set (keyed by `I`). Threaded at birth: set to
@@ -7867,28 +7903,32 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 cs.locus_name
             ))
         })?;
-        let cnt_idx = info.child_count_field_idx.ok_or_else(|| {
-            CodegenError::Unsupported(format!(
+        if info.accept_param.is_none() {
+            return Err(CodegenError::Unsupported(format!(
                 "locus `{}` has no children tracker — `self.children.{}` \
                  needs the locus to `accept` a child type",
                 cs.locus_name, which
-            ))
-        })?;
+            )));
+        }
+        // The sum over the trackers: one for a concrete `accept`, one per
+        // admitted locus for an interface's.
         let i64_t = self.context.i64_type();
-        let ptr = self
-            .builder
-            .build_struct_gep(
-                cs.struct_ty,
-                cs.self_ptr,
-                cnt_idx,
-                "self.children.count.ptr",
-            )
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-        let cnt = self
-            .builder
-            .build_load(i64_t, ptr, "self.children.count")
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
-            .into_int_value();
+        let mut cnt = i64_t.const_zero();
+        for b in info.child_buffers.values() {
+            let ptr = self
+                .builder
+                .build_struct_gep(cs.struct_ty, cs.self_ptr, b.cnt, "self.children.count.ptr")
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            let one = self
+                .builder
+                .build_load(i64_t, ptr, "self.children.count")
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                .into_int_value();
+            cnt = self
+                .builder
+                .build_int_add(cnt, one, "self.children.count.sum")
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        }
         if which == "is_empty" {
             let zero = i64_t.const_int(0, false);
             let z = self
@@ -7906,19 +7946,82 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         }
     }
 
+    /// At accept dispatch, for a type more than one owner type tracks:
+    /// record the accepting owner's tracker on the child: the addresses
+    /// of its `__children` and `__child_count` fields for this type, each
+    /// as the owner's own struct GEP computed it (the fields' offsets are
+    /// the owner's layout's: on wasm32 a pointer is 4 bytes, so no
+    /// standalone struct shape can stand in for them), so the child's
+    /// removal reaches that owner's tracker (`emit_remove_self_from_owner`).
+    pub(crate) fn emit_store_owner_tracker(
+        &mut self,
+        info: &LocusInfo<'ctx>,
+        self_ptr: PointerValue<'ctx>,
+        arr_ptr: PointerValue<'ctx>,
+        cnt_ptr: PointerValue<'ctx>,
+        locus_name: &str,
+    ) -> Result<(), CodegenError> {
+        let Some((buf_idx, cnt_idx)) = info.owner_tracker_field_idx else { return Ok(()) };
+        let e = |e: inkwell::builder::BuilderError| CodegenError::LlvmEmit(e.to_string());
+        for (idx, value, what) in [(buf_idx, arr_ptr, "__owner_tracker"), (cnt_idx, cnt_ptr, "__owner_tracker_count")] {
+            let slot = self
+                .builder
+                .build_struct_gep(info.struct_ty, self_ptr, idx, &format!("{locus_name}.{what}.ptr"))
+                .map_err(e)?;
+            self.builder.build_store(slot, value).map_err(e)?;
+        }
+        Ok(())
+    }
+
+    /// A completed flow's removal from the tracker its accepting owner
+    /// recorded on it: its buffer field's address (`__owner_tracker`) and
+    /// its count field's (`__owner_tracker_count`). Null when no owner
+    /// accepted it.
+    fn emit_remove_self_from_recorded_tracker(
+        &mut self,
+        info: &LocusInfo<'ctx>,
+        (idx, cnt_idx): (u32, u32),
+        self_ptr: PointerValue<'ctx>,
+        locus_name: &str,
+    ) -> Result<(), CodegenError> {
+        let e = |e: inkwell::builder::BuilderError| CodegenError::LlvmEmit(e.to_string());
+        let ptr_t = self.context.ptr_type(AddressSpace::default());
+        let slot = self.builder.build_struct_gep(info.struct_ty, self_ptr, idx, &format!("{locus_name}.remove.tracker.ptr")).map_err(e)?;
+        let tracker = self.builder.build_load(ptr_t, slot, &format!("{locus_name}.remove.tracker")).map_err(e)?.into_pointer_value();
+        let none = self.builder.build_is_null(tracker, &format!("{locus_name}.remove.tracker.null")).map_err(e)?;
+        let func = self.current_fn.expect("reclaim current fn");
+        let do_bb = self.context.append_basic_block(func, "remove.tracked.do");
+        let after_bb = self.context.append_basic_block(func, "remove.tracked.after");
+        self.builder.build_conditional_branch(none, after_bb, do_bb).map_err(e)?;
+        self.builder.position_at_end(do_bb);
+        let buf = self.builder.build_load(ptr_t, tracker, &format!("{locus_name}.remove.tracked.buf")).map_err(e)?;
+        let count_slot =
+            self.builder.build_struct_gep(info.struct_ty, self_ptr, cnt_idx, &format!("{locus_name}.remove.tracker.count.ptr")).map_err(e)?;
+        let count_ptr = self.builder.build_load(ptr_t, count_slot, &format!("{locus_name}.remove.tracked.count")).map_err(e)?;
+        let remove_fn = self.module.get_function("lotus_children_remove").expect("lotus_children_remove declared");
+        self.builder
+            .build_call(remove_fn, &[buf.into(), count_ptr.into(), self_ptr.into()], &format!("{locus_name}.remove.tracked.call"))
+            .map_err(e)?;
+        self.builder.build_unconditional_branch(after_bb).map_err(e)?;
+        self.builder.position_at_end(after_bb);
+        Ok(())
+    }
+
     fn emit_remove_self_from_owner(
         &mut self,
         info: &LocusInfo<'ctx>,
         self_ptr: PointerValue<'ctx>,
         locus_name: &str,
     ) -> Result<(), CodegenError> {
+        // More than one owner type tracks this type: the owner that
+        // accepted the instance recorded its tracker on it.
+        if let Some(fields) = info.owner_tracker_field_idx {
+            return self.emit_remove_self_from_recorded_tracker(info, fields, self_ptr, locus_name);
+        }
         let ptr_t = self.context.ptr_type(AddressSpace::default());
         // Find the parent locus type(s) that accept this locus AND
         // track children in a buffer.
-        let mut accepters = self.user_loci.values().filter(|p| {
-            p.accept_param.as_ref().map(|(_, c)| c == locus_name).unwrap_or(false)
-                && p.children_field_idx.is_some()
-        });
+        let mut accepters = self.user_loci.values().filter(|p| p.child_buffers.contains_key(locus_name));
         let owner_info = match accepters.next() {
             Some(p) => p.clone(),
             None => return Ok(()),
@@ -7929,12 +8032,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // accepting the same child type and both iterating).
             return Ok(());
         }
-        let children_idx = owner_info
-            .children_field_idx
-            .expect("filtered to Some");
-        let count_idx = owner_info
-            .child_count_field_idx
-            .expect("paired with children_field_idx");
+        // The owner's tracker for THIS child type (an interface owner
+        // keeps one per admitted locus).
+        let buffer = owner_info.child_buffers[locus_name];
+        let children_idx = buffer.arr;
+        let count_idx = buffer.cnt;
         let fn_for_blocks = self.current_fn.expect("reclaim current fn");
         // owner = self.__owner_self
         let owner_field = self
@@ -8027,23 +8129,21 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         self_ptr: PointerValue<'ctx>,
         locus_name: &str,
     ) -> Result<(), CodegenError> {
-        let (children_idx, count_idx) =
-            match (info.children_field_idx, info.child_count_field_idx) {
-                (Some(a), Some(b)) => (a, b),
-                _ => return Ok(()),
-            };
-        let child_type = match &info.accept_param {
-            Some((_, c)) => c.clone(),
-            None => return Ok(()),
-        };
-        let reclaim_fn = match self.reclaim_fns.get(&child_type).copied() {
-            Some(f) => f,
-            None => return Ok(()),
-        };
+        // One tracker per accepted child type (several for an interface
+        // `accept`), each walked with its own type's reclaim fn.
+        let buffers: Vec<(u32, u32, FunctionValue<'ctx>)> = info
+            .child_buffers
+            .iter()
+            .filter_map(|(child, b)| self.reclaim_fns.get(child).map(|f| (b.arr, b.cnt, *f)))
+            .collect();
+        if buffers.is_empty() {
+            return Ok(());
+        }
         let retain = self.emit_reclaim_scope_enter(self_ptr)?;
         let ptr_t = self.context.ptr_type(AddressSpace::default());
         let i64_t = self.context.i64_type();
         let func = self.current_fn.expect("dissolve frame current fn");
+        for (children_idx, count_idx, reclaim_fn) in buffers {
         // count = self.__child_count
         let count_ptr = self
             .builder
@@ -8151,6 +8251,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .build_unconditional_branch(header)
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         self.builder.position_at_end(cont);
+        }
         self.emit_reclaim_scope_leave(retain)?;
         Ok(())
     }
@@ -15734,6 +15835,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             let v = if got != want {
                 if view_coerces_to(&got, &want) {
                     self.unpack_view_if_needed(v, &got)?
+                } else if let (CodegenTy::LocusRef(l), CodegenTy::Interface(i)) = (&got, &want) {
+                    // F.20: a locus into an interface param, as a
+                    // non-fallible method's argument coerces.
+                    self.coerce_to_interface(v.into_pointer_value(), l, i)?.into()
                 } else {
                     return Err(CodegenError::Unsupported(format!(
                         "locus `{}` method `{}`: arg {} type mismatch: \
@@ -21208,11 +21313,17 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .get(&cs.locus_name)
             .cloned()
             .expect("current_self points to a declared locus");
-        let arr_idx = info.children_field_idx.ok_or_else(|| {
-            CodegenError::Unsupported(format!(
+        let arr_idx = info.children_field_idx.ok_or_else(|| match &info.accept_param {
+            // The checker refuses it first, with the same reason.
+            Some((_, iface)) => CodegenError::Unsupported(format!(
+                "locus `{}` accepts through the interface `{}`: its children are of several types, \
+                 so `self.children` has no one element type to iterate",
+                cs.locus_name, iface
+            )),
+            None => CodegenError::Unsupported(format!(
                 "locus `{}` has no children (no accept declared)",
                 cs.locus_name
-            ))
+            )),
         })?;
         let cnt_idx = info.child_count_field_idx.expect("paired");
         let child_locus = info
@@ -24055,6 +24166,23 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 // the result's.
                 if let Some(result) = self.operator_result(*span) {
                     return self.lower_binop(*op, lv, rv, &result);
+                }
+                // A stdlib body has no operator rows (the checker records
+                // none for it: `conversion::row`), so its `n * 1ms` — the
+                // one spelling by which a count becomes a `Duration` —
+                // found no row and was refused here. The algebra's answer
+                // for that product is fixed whatever the site (spec/units.md:
+                // a quantity times an `Int` is the quantity, and a
+                // `Duration` counts nanoseconds, the `i64` both operands
+                // are), so it is the same multiply a row would emit.
+                if *op == BinOp::Mul
+                    && matches!(
+                        (&lt, &rt),
+                        (CodegenTy::Int, CodegenTy::Duration)
+                            | (CodegenTy::Duration, CodegenTy::Int)
+                    )
+                {
+                    return self.lower_binop(*op, lv, rv, &CodegenTy::Duration);
                 }
                 if lt != rt {
                     return Err(CodegenError::Unsupported(format!(
@@ -27535,12 +27663,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             | Id::IoTcpAcceptOne
             | Id::IoTcpConnect
             | Id::IoTcpConnectWait
+            | Id::IoTcpConnectWithin
             | Id::IoTcpListenSocket
             | Id::IoTcpSetNodelay
             | Id::IoTcpSetRecvTimeout
             | Id::IoTcpSetRxTimestamps
             | Id::IoTcpSetSendTimeout
             | Id::IoTlsConnect
+            | Id::IoTlsConnectWithin
             | Id::IoTlsSetNodelay
             | Id::IoTlsSetRecvTimeout
             | Id::IoTlsSetRxTimestamps
@@ -27780,6 +27910,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             Id::IoTcpListenSocket => self.lower_std_io_tcp_listen_socket_fallible(args, scope),
             Id::IoTcpConnect => self.lower_std_io_tcp_connect_fallible(args, scope),
             Id::IoTcpConnectWait => self.lower_std_io_tcp_connect_wait_fallible(args, scope),
+            Id::IoTcpConnectWithin => self.lower_std_io_tcp_connect_within_fallible(args, scope),
             Id::IoTcpAcceptOne => self.lower_std_io_tcp_accept_one_fallible(args, scope),
             // GH #1106: AF_UNIX stream sockets, the fd-level shape tcp has.
             Id::IoUnixListenSocket => self.lower_std_io_unix_listen_socket_fallible(args, scope),
@@ -27791,6 +27922,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // stay non-fallible (Int 0/-1 returns) to mirror the
             // tcp shape.
             Id::IoTlsConnect => self.lower_std_io_tls_connect_fallible(args, scope),
+            Id::IoTlsConnectWithin => self.lower_std_io_tls_connect_within_fallible(args, scope),
             // upgrade wraps an already-connected fd in a TLS session
             // (STARTTLS-style); same fallible(IoError) surface as
             // connect since it handshakes + optionally verifies.
@@ -32501,6 +32633,106 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     }
 
 
+
+    /// A call an interface `accept` / `release` monomorph makes through
+    /// its child to a method the interface declares `fallible(E)` and the
+    /// concrete locus implements infallibly (GH #732's satisfaction rule):
+    /// the call keeps the interface's contract, as the checker typed it.
+    /// The method is called directly and the call always takes the
+    /// success path (the path is the constant 0, so the `or`'s error arm
+    /// folds away); the error slot is the interface's `E`, never written.
+    /// `None` outside such a body, or when the interface does not declare
+    /// the method fallible.
+    pub(crate) fn try_lower_known_success_iface_call(
+        &mut self,
+        self_ptr: PointerValue<'ctx>,
+        info: &LocusInfo<'ctx>,
+        locus_name: &str,
+        method_name: &str,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<Option<FallibleCallResult<'ctx>>, CodegenError> {
+        let Some(iface) = self.current_accept_interface.clone() else { return Ok(None) };
+        if self.locus_method_is_fallible(locus_name, method_name) {
+            return Ok(None);
+        }
+        let sig = hale_syntax::ast::flat_decls(&self.program.items).find_map(|item| match item {
+            TopDecl::Interface(i) if i.name.name == iface => {
+                i.methods.iter().find(|m| m.name.name == method_name).cloned()
+            }
+            _ => None,
+        });
+        let Some(sig) = sig else { return Ok(None) };
+        let Some(payload_te) = &sig.fallible else { return Ok(None) };
+        let Some(func) = info.user_methods.get(method_name).copied() else { return Ok(None) };
+        let fd = hale_syntax::ast::flat_decls(&self.program.items).find_map(|item| match item {
+            TopDecl::Locus(l) if l.name.name == locus_name => l.members.iter().find_map(|m| match m {
+                LocusMember::Fn(fd) if fd.name.name == method_name => Some(fd.clone()),
+                _ => None,
+            }),
+            _ => None,
+        });
+        let Some(fd) = fd else { return Ok(None) };
+        if args.len() != fd.params.len() {
+            return Err(CodegenError::Unsupported(format!(
+                "locus `{}` method `{}`: expects {} args, got {}",
+                locus_name,
+                method_name,
+                fd.params.len(),
+                args.len()
+            )));
+        }
+        let payload_ty = self.type_expr_to_codegen_ty(payload_te)?;
+        let success_ty: Option<CodegenTy> = match &fd.ret {
+            None => None,
+            Some(TypeExpr::Tuple(parts, _)) if parts.is_empty() => None,
+            Some(t) => Some(self.type_expr_to_codegen_ty(t)?),
+        };
+        let out_val_slot = match &success_ty {
+            Some(st) => Some(self.alloca_for(st, "iface.known.out_val.slot")?),
+            None => None,
+        };
+        let out_err_slot = self.alloca_for(&payload_ty, "iface.known.out_err.slot")?;
+        let mut llvm_args: Vec<BasicMetadataValueEnum<'ctx>> = Vec::with_capacity(args.len() + 1);
+        llvm_args.push(self_ptr.into());
+        for (i, a) in args.iter().enumerate() {
+            let want = self.type_expr_to_codegen_ty(&fd.params[i].ty)?;
+            let (v, got) = self.lower_expr(a, scope)?;
+            let v = if got != want {
+                if view_coerces_to(&got, &want) {
+                    self.unpack_view_if_needed(v, &got)?
+                } else if let (CodegenTy::LocusRef(l), CodegenTy::Interface(i)) = (&got, &want) {
+                    // F.20: a locus into an interface param, as a
+                    // non-fallible method's argument coerces.
+                    self.coerce_to_interface(v.into_pointer_value(), l, i)?.into()
+                } else {
+                    return Err(CodegenError::Unsupported(format!(
+                        "locus `{}` method `{}`: arg {} type mismatch: expected {:?}, got {:?}",
+                        locus_name, method_name, i, want, got
+                    )));
+                }
+            } else {
+                v
+            };
+            llvm_args.push(v.into());
+        }
+        self.emit_set_caller_arena()?;
+        let call = self
+            .builder
+            .build_call(func, &llvm_args, &format!("{}.{}.known_success.call", locus_name, method_name))
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        if let Some(slot) = out_val_slot {
+            let v = call.try_as_basic_value().left().expect("a method with a success value returns one");
+            self.builder.build_store(slot, v).map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        }
+        Ok(Some(FallibleCallResult {
+            i1_path: self.context.bool_type().const_zero(),
+            out_val_slot,
+            out_err_slot,
+            success_ty,
+            payload_ty,
+        }))
+    }
 
     /// Whether the locus declares `method_name` with `fallible(E)`.
     fn locus_method_is_fallible(&self, locus_name: &str, method_name: &str) -> bool {

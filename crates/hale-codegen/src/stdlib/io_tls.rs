@@ -13,6 +13,11 @@ pub(crate) trait IoTlsStdlib<'ctx> {
         args: &[Expr],
         scope: &Scope<'ctx>,
     ) -> Result<FallibleCallResult<'ctx>, CodegenError>;
+    fn lower_std_io_tls_connect_within_fallible(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<FallibleCallResult<'ctx>, CodegenError>;
     fn lower_std_io_tls_upgrade_fallible(
         &mut self,
         args: &[Expr],
@@ -50,69 +55,18 @@ impl<'ctx, 'p> IoTlsStdlib<'ctx> for Cx<'ctx, 'p> {
         args: &[Expr],
         scope: &Scope<'ctx>,
     ) -> Result<FallibleCallResult<'ctx>, CodegenError> {
-        if args.len() != 2 {
-            return Err(CodegenError::Unsupported(format!(
-                "std::io::tls::connect takes 2 args (host, port), got {}",
-                args.len()
-            )));
-        }
-        let (host_val, host_ty) = self.lower_expr(&args[0], scope)?;
-        if !matches!(host_ty, CodegenTy::String | CodegenTy::StringView) {
-            return Err(CodegenError::Unsupported(format!(
-                "std::io::tls::connect: host must be String, got {:?}",
-                host_ty
-            )));
-        }
-        let host_val = self.unpack_view_if_needed(host_val, &host_ty)?;
-        let (port_val, port_ty) = self.lower_expr(&args[1], scope)?;
-        if port_ty != CodegenTy::Int {
-            return Err(CodegenError::Unsupported(format!(
-                "std::io::tls::connect: port must be Int, got {:?}",
-                port_ty
-            )));
-        }
-        let i16_t = self.context.i16_type();
-        let i32_t = self.context.i32_type();
-        let i64_t = self.context.i64_type();
-        let port_i16 = self
-            .builder
-            .build_int_truncate(port_val.into_int_value(), i16_t, "tls.port.i16")
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-        let f = self
-            .module
-            .get_function("lotus_tls_connect")
-            .expect("lotus_tls_connect declared");
-        let h_i32 = self
-            .builder
-            .build_call(
-                f,
-                &[host_val.into(), port_i16.into()],
-                "tls.connect.handle",
-            )
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
-            .try_as_basic_value()
-            .left()
-            .expect("returns i32")
-            .into_int_value();
-        let is_err = self
-            .builder
-            .build_int_compare(
-                inkwell::IntPredicate::SLT,
-                h_i32,
-                i32_t.const_zero(),
-                "tls.connect.is_err",
-            )
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-        let h_i64 = self
-            .builder
-            .build_int_s_extend(h_i32, i64_t, "tls.connect.handle.i64")
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-        self.complete_io_fallible_call(
-            is_err,
-            host_val,
-            Some((h_i64.into(), CodegenTy::Int)),
-            "tls.connect",
-        )
+        self.lower_tls_connect_common(args, scope, false)
+    }
+
+    /// `std::io::tls::connect_within(host, port, timeout) -> Int
+    /// fallible(IoError)`: `connect` with one deadline over the TCP dial
+    /// and the handshake; past it the call fails with kind `timeout`.
+    fn lower_std_io_tls_connect_within_fallible(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<FallibleCallResult<'ctx>, CodegenError> {
+        self.lower_tls_connect_common(args, scope, true)
     }
 
     /// `std::io::tls::upgrade(fd: Int, host: String, verify: Bool)
@@ -373,4 +327,106 @@ impl<'ctx, 'p> IoTlsStdlib<'ctx> for Cx<'ctx, 'p> {
         )
     }
 
+}
+
+impl<'ctx, 'p> Cx<'ctx, 'p> {
+    /// `connect` / `connect_within`: host, port, and — for the latter —
+    /// the deadline over the dial and the handshake.
+    fn lower_tls_connect_common(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+        with_timeout: bool,
+    ) -> Result<FallibleCallResult<'ctx>, CodegenError> {
+        let (name, want, arg_names) = if with_timeout {
+            ("connect_within", 3, "host, port, timeout")
+        } else {
+            ("connect", 2, "host, port")
+        };
+        if args.len() != want {
+            return Err(CodegenError::Unsupported(format!(
+                "std::io::tls::{} takes {} args ({}), got {}",
+                name,
+                want,
+                arg_names,
+                args.len()
+            )));
+        }
+        let (host_val, host_ty) = self.lower_expr(&args[0], scope)?;
+        if !matches!(host_ty, CodegenTy::String | CodegenTy::StringView) {
+            return Err(CodegenError::Unsupported(format!(
+                "std::io::tls::connect: host must be String, got {:?}",
+                host_ty
+            )));
+        }
+        let host_val = self.unpack_view_if_needed(host_val, &host_ty)?;
+        let (port_val, port_ty) = self.lower_expr(&args[1], scope)?;
+        if port_ty != CodegenTy::Int {
+            return Err(CodegenError::Unsupported(format!(
+                "std::io::tls::connect: port must be Int, got {:?}",
+                port_ty
+            )));
+        }
+        let timeout_ns = if with_timeout {
+            let (t, tt) = self.lower_expr(&args[2], scope)?;
+            if tt != CodegenTy::Duration {
+                return Err(CodegenError::Unsupported(format!(
+                    "std::io::tls::connect_within: timeout must be a Duration, got {:?}",
+                    tt
+                )));
+            }
+            Some(t.into_int_value())
+        } else {
+            None
+        };
+        let i16_t = self.context.i16_type();
+        let i32_t = self.context.i32_type();
+        let i64_t = self.context.i64_type();
+        let port_i16 = self
+            .builder
+            .build_int_truncate(port_val.into_int_value(), i16_t, "tls.port.i16")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let (f, call_args): (_, Vec<inkwell::values::BasicMetadataValueEnum<'ctx>>) =
+            match timeout_ns {
+                Some(t) => (
+                    self.module
+                        .get_function("lotus_tls_connect_within")
+                        .expect("lotus_tls_connect_within declared"),
+                    vec![host_val.into(), port_i16.into(), t.into()],
+                ),
+                None => (
+                    self.module
+                        .get_function("lotus_tls_connect")
+                        .expect("lotus_tls_connect declared"),
+                    vec![host_val.into(), port_i16.into()],
+                ),
+            };
+        let h_i32 = self
+            .builder
+            .build_call(f, &call_args, "tls.connect.handle")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .try_as_basic_value()
+            .left()
+            .expect("returns i32")
+            .into_int_value();
+        let is_err = self
+            .builder
+            .build_int_compare(
+                inkwell::IntPredicate::SLT,
+                h_i32,
+                i32_t.const_zero(),
+                "tls.connect.is_err",
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let h_i64 = self
+            .builder
+            .build_int_s_extend(h_i32, i64_t, "tls.connect.handle.i64")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.complete_io_fallible_call(
+            is_err,
+            host_val,
+            Some((h_i64.into(), CodegenTy::Int)),
+            "tls.connect",
+        )
+    }
 }

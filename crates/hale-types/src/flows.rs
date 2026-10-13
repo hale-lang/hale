@@ -64,6 +64,14 @@ pub struct FlowClause {
     /// Set when the clause's type mentions one of its owner's type
     /// parameters: the locus it names is the specialization's to decide.
     pub template: Option<TemplateClause>,
+    /// The type as written when it names no locus and no type parameter:
+    /// an interface's name, or a name that resolves to nothing.
+    pub interface: Option<String>,
+    /// For a clause whose type names an interface (`release(c: I)`), the
+    /// loci it admits: each locus the program declares that satisfies `I`
+    /// ([`FlowRows::admit_interfaces`]), every one a flow as if the owner
+    /// had declared `release(c: L)` for it. Empty for any other clause.
+    pub admits: Vec<String>,
 }
 
 /// A generic owner's clause, before substitution.
@@ -126,6 +134,9 @@ pub struct FlowRows {
     runs: Vec<RunRow>,
     declared: DeclaredNames,
     renames: Vec<(Vec<String>, String)>,
+    /// The non-generic loci the surveyed programs declare, in declaration
+    /// order: what an interface clause can admit.
+    concrete: Vec<String>,
 }
 
 impl std::ops::Deref for FlowRows {
@@ -182,11 +193,34 @@ impl FlowRows {
     pub fn with_stdlib(mut self, stdlib_items: &[TopDecl]) -> FlowRows {
         let mut by_child: BTreeMap<String, Vec<FlowClause>> = BTreeMap::new();
         let mut runs: Vec<RunRow> = Vec::new();
-        walk(stdlib_items, &self, &mut by_child, &mut runs);
+        let mut concrete: Vec<String> = Vec::new();
+        walk(stdlib_items, &self, &mut by_child, &mut runs, &mut concrete);
         for (child, mut clauses) in by_child {
             clauses.sort_by_key(|c| c.span.start.as_usize());
             self.flows.push(Flow { child, clauses });
         }
+        self
+    }
+
+    /// These rows with every interface clause's admitted loci filled in
+    /// (`check::interface_admits` over the surveyed programs' non-generic
+    /// loci): `release(c: I)` makes each locus satisfying `I` a flow, as
+    /// the ownership graph makes its owner's `accept(c: I)` accept each.
+    /// A clause whose type names no interface admits nothing. The
+    /// snapshot's rows are made with its scope; without one an interface
+    /// clause stays empty.
+    pub fn admit_interfaces(mut self, top: &crate::resolve::TopScope) -> FlowRows {
+        let concrete = std::mem::take(&mut self.concrete);
+        for c in self.flows.iter_mut().flat_map(|f| f.clauses.iter_mut()) {
+            if c.locus.is_some() || c.template.is_some() {
+                continue;
+            }
+            let Some(iface) = &c.interface else { continue };
+            c.admits = crate::check::interface_admits(top, iface, concrete.iter().map(String::as_str))
+                .into_iter()
+                .collect();
+        }
+        self.concrete = concrete;
         self
     }
 
@@ -203,7 +237,10 @@ impl FlowRows {
 /// A template's clause names no locus here; a consumer that creates
 /// specializations asks [`FlowRows::specialize`] for theirs.
 pub fn is_flow(flows: &[Flow], locus: &str) -> bool {
-    flows.iter().flat_map(|f| &f.clauses).any(|c| c.locus.as_deref() == Some(locus))
+    flows
+        .iter()
+        .flat_map(|f| &f.clauses)
+        .any(|c| c.locus.as_deref() == Some(locus) || c.admits.iter().any(|a| a == locus))
 }
 
 /// Whether `ty` mentions one of `generics`: the parameter itself, or a
@@ -219,10 +256,14 @@ fn walk(
     rows: &FlowRows,
     out: &mut BTreeMap<String, Vec<FlowClause>>,
     runs: &mut Vec<RunRow>,
+    concrete: &mut Vec<String>,
 ) {
     for item in items {
         match item {
             TopDecl::Locus(l) => {
+                if l.generics.is_empty() {
+                    concrete.push(l.name.name.clone());
+                }
                 let run = l.members.iter().find_map(|m| match m {
                     LocusMember::Lifecycle(lc) if lc.kind == LifecycleKind::Run => Some(&lc.body),
                     _ => None,
@@ -256,16 +297,19 @@ fn walk(
                         Some(_) => None,
                         None => rows.locus(&p.ty),
                     };
+                    let interface = (locus.is_none() && template.is_none()).then(|| child.clone());
                     out.entry(child).or_default().push(FlowClause {
                         owner: l.name.name.clone(),
                         param: p.name.name.clone(),
                         span: lc.span,
                         locus,
                         template,
+                        interface,
+                        admits: Vec::new(),
                     });
                 }
             }
-            TopDecl::Module(m) => walk(&m.items, rows, out, runs),
+            TopDecl::Module(m) => walk(&m.items, rows, out, runs, concrete),
             _ => {}
         }
     }
@@ -281,13 +325,16 @@ pub fn survey(programs: &[&Program], import_renames: &[(Vec<String>, String)]) -
         runs: Vec::new(),
         declared: DeclaredNames::of(programs),
         renames: import_renames.to_vec(),
+        concrete: Vec::new(),
     };
     let mut by_child: BTreeMap<String, Vec<FlowClause>> = BTreeMap::new();
     let mut runs: Vec<RunRow> = Vec::new();
+    let mut concrete: Vec<String> = Vec::new();
     for p in programs {
-        walk(&p.items, &rows, &mut by_child, &mut runs);
+        walk(&p.items, &rows, &mut by_child, &mut runs, &mut concrete);
     }
     rows.runs = runs;
+    rows.concrete = concrete;
     rows.flows = by_child
         .into_iter()
         .map(|(child, mut clauses)| {

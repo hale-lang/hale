@@ -15,11 +15,14 @@ name: macos
 #   (d) builds + RUNS a `where async_io` .hl — the kqueue backend,
 #   and then cross-builds a Linux binary and runs the whole DNA suite.
 #
-# A pull request runs the job only when its diff can reach DNA
-# (`scope`, from scripts/ci-scope.sh, the same rule tests.yml applies
-# to its DNA and face jobs); a push to main runs it always. The plan
-# runs two macOS jobs at a time, and every PR run was queueing behind
-# the others for an hour on 2026-09-26.
+# It runs on every push to main, nightly, and on demand; a pull request
+# and a merge group skip it, and `required (macos)` passes them. Over
+# 2026-10-11..12 it failed 1 of 46 merge groups and 1 of 118 pull
+# requests while its Apple Silicon runners added up to 20 minutes of
+# queueing to a merge group, so it gates main after the fact (a push run
+# on every merge, at most one merge behind) instead of every merge
+# before it. The plan runs two macOS jobs at a time, and every PR run was
+# queueing behind the others for an hour on 2026-09-26.
 #
 # Kept in its own workflow so it runs on push/PR without gating the
 # Linux-only required checks in tests.yml.
@@ -33,15 +36,17 @@ name: macos
 on:
   push:
     branches: [main]
+  # A pull request and a merge group still trigger the workflow so the
+  # required `required (macos)` check reports; the matrix skips them.
   pull_request:
     branches: [main]
-  # The merge queue runs the job whole (the `if` below is true off a
-  # pull request).
   merge_group:
+  schedule:
+    - cron: "17 7 * * *"
   workflow_dispatch:
 
 concurrency:
-  group: macos-${{ github.ref }}
+  group: macos-${{ github.ref }}-${{ github.event_name }}
   cancel-in-progress: true
 
 permissions:
@@ -70,7 +75,7 @@ jobs:
   macos:
     name: build + run (macos-14, Apple Silicon, ${{ matrix.part }}/4)
     needs: scope
-    if: github.event_name != 'pull_request' || needs.scope.outputs.dna == 'true'
+    if: github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: macos-14
     strategy:
       fail-fast: false

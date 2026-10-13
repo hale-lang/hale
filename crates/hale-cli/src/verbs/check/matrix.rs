@@ -3,7 +3,7 @@ use std::process::ExitCode;
 use std::path::Path;
 use std::path::PathBuf;
 use hale_syntax::ast::Program;
-use crate::shared::workspace::collect_seeds;
+use crate::shared::workspace::{collect_seeds, collect_test_programs};
 use std::fs;
 use hale_frontend::snapshot::Snapshot;
 use super::run_impl::run_check_impl;
@@ -302,6 +302,7 @@ pub(crate) fn seed_entry_kind(dir: &Path) -> EntryKind {
         .flatten()
         .map(|e| e.path())
         .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("hl"))
+        .filter(|p| !hale_frontend::frontend::is_test_file(p))
         .collect();
     files.sort();
     // The files in order, up to the first that does not read or parse:
@@ -337,7 +338,12 @@ pub(crate) fn seed_entry_kind(dir: &Path) -> EntryKind {
 pub(crate) fn run_workspace(root: &Path, verify: bool) -> ExitCode {
     let mut seeds = Vec::new();
     collect_seeds(root, &mut seeds);
-    if seeds.is_empty() {
+    // A `*_test.hl` file is no member of its directory's seed: it is a
+    // program of its own, checked as `hale test` loads it (the file and
+    // what its imports reach).
+    let mut tests = Vec::new();
+    collect_test_programs(root, &mut tests);
+    if seeds.is_empty() && tests.is_empty() {
         eprintln!(
             "no seeds under {} — a seed is a directory holding `.hl` \
              files",
@@ -357,17 +363,29 @@ pub(crate) fn run_workspace(root: &Path, verify: bool) -> ExitCode {
             failed.push((seed.clone(), code));
         }
     }
+    for test in &tests {
+        println!("=== {} (test program) ===", test.display());
+        let code = run_check_impl(test, verify);
+        if code != 0 {
+            failed.push((test.clone(), code));
+        }
+    }
 
+    let checked = if tests.is_empty() {
+        format!("{} seed(s)", seeds.len())
+    } else {
+        format!("{} seed(s) and {} test program(s)", seeds.len(), tests.len())
+    };
     println!();
     if failed.is_empty() {
-        println!("ok: {} seed(s) checked", seeds.len());
+        println!("ok: {checked} checked");
         return ExitCode::SUCCESS;
     }
-    eprintln!(
-        "{} of {} seed(s) failed:",
-        failed.len(),
-        seeds.len()
-    );
+    if tests.is_empty() {
+        eprintln!("{} of {checked} failed:", failed.len());
+    } else {
+        eprintln!("{} of {} program(s) failed ({checked}):", failed.len(), seeds.len() + tests.len());
+    }
     for (p, code) in &failed {
         eprintln!("  {} (exit {})", p.display(), code);
     }

@@ -98,6 +98,44 @@ fn bench_hello() {
 }
 ```
 
+**`hale bench` (shipped).** A `*_bench.hl` file declares benchmarks
+as free fns named `bench_<name>`, and no `main` (the runner appends
+its own driver). A bench runs in batches whose size grows ×10 from 1
+until a batch takes at least 100 ms (or reaches 10⁸ calls); the last
+batch gives ns/op and allocs/op (`std::diag::heap_alloc_count`).
+
+A bench's **setup** is the free fn `setup_<name>`, run before each
+batch, outside the batch's timing and its allocation count:
+
+- `fn setup_<name>() -> T` with `fn bench_<name>(f: T)`: the setup
+  makes the fixture, and every call of the batch is handed it, so the
+  fixture's construction is not part of ns/op. The fixture is
+  reclaimed when the batch ends; a bench that changes it sees its own
+  changes for the rest of that batch.
+- `fn setup_<name>()` (no result) with a parameterless
+  `fn bench_<name>()`: run for its effect (a file written, a table
+  filled) before each batch.
+
+A bench with a parameter and no setup, a setup that returns a fixture
+no bench takes, one that returns nothing to a bench that takes a
+parameter, and a setup with a parameter are refused, naming the fn to
+declare. A `bench_*` fn with two or more parameters is not a bench.
+
+```
+type Table { keys: String; n: Int; }
+
+fn setup_lookup() -> Table {
+    let mut keys = "";
+    let mut i = 0;
+    while i < 1000 { keys = keys + f"k{i},"; i = i + 1; }
+    return Table { keys: keys, n: 1000 };
+}
+
+fn bench_lookup(t: Table) {
+    if !std::str::contains(t.keys, "k999,") { std::process::exit(1); }
+}
+```
+
 Output is JSON-serializable for CI consumption. Baselines are
 checkpointed in version control; regressions produce a diff
 the developer must explicitly accept.
@@ -174,7 +212,11 @@ project/
 
 Or, alternatively, Go-style: `*_test.hl` lives next to the
 source it tests. Both layouts are supported; the runner finds
-tests by suffix (`_test.hl`) regardless of location.
+tests by suffix (`_test.hl`) regardless of location. Each test file is
+a program of its own (the file and what its imports reach), never a
+member of the seed of the directory it sits in (`spec/projects.md` §
+Seeds): a test beside its program reaches that program by an import,
+like a test in `tests/` does.
 
 ## Toolchain commands
 

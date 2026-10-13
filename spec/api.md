@@ -901,7 +901,12 @@ closes the listener while the connections it accepted are served on.
   --surface NAME --proto` prints it. `syntax = "proto3"`, no package, one
   `service NAME` (the surface) with a unary rpc per member, named as above; a
   message per record the rows reach, named as the schema document names the
-  type with the `::` of an imported type as `_`; a field of record type is a
+  type with the `::` of an imported type as `_`, and `Message` after it when
+  that is the surface's own name (a service and a message share proto3's
+  scope, and the service keeps the surface's name because it is the gRPC
+  path: `api Todo` over `type Todo` is `service Todo` and `message
+  TodoMessage`, and its handler error's detail is
+  `type.hale.dev/TodoMessage`); a field of record type is a
   field of that message, and every scalar field is `optional`
   (`Int`, an identity, a range and a quantity `int64`, `Float` `double`, `Bool`
   `bool`, `String` `string`; a comment names the Hale type). A row whose
@@ -2051,7 +2056,7 @@ payload typed by the member's schema, one request id of their own.
 ```text
 hale api describe <endpoint> [--json] [--bearer T]
 hale api call <endpoint> <member> [--json '<payload>' | --json - | --<field> <value> …]
-              [--bearer T] [--id ID] [--digest D] [--raw]
+              [--bearer T] [--request-id ID] [--digest D] [--raw]
 ```
 
 **Endpoints.** `unix:<path>` is a `unix::Rpc` socket, spoken as § The Unix
@@ -2117,14 +2122,16 @@ required field is missing, a flag names no field of the member's payload, a flag
 is given twice or a value does not parse as its field's type (a record or list value is checked recursively; the message names the path, `ship.city` or `items[0]`); so is `--json`
 together with typed flags, a `--json` that is not JSON and a typed-flag call of
 a member the description does not list (the message lists the members it does).
-The names `json`, `bearer`, `id`, `digest` and `raw` are the verb's own: a
-payload field of one of those names is given with `--json`. A `--json` payload
+The names `json`, `bearer`, `request-id`, `digest` and `raw` are the verb's
+own: a payload field of one of those names (`request_id` included, since a
+field's `_` may be written `-`) is given with `--json`. `id` is not among them:
+`--id 5` sets a payload field `id`. A `--json` payload
 is not checked against the schema: the server decides, and its refusal
 (`wrong_type`, `missing_field`) is the answer. The typed form and `--json` of
 the same payload produce the same wire line (the payload serialized from the
 parsed value, so key order and whitespace of the input do not reach the wire).
 
-The request id is the verb's: `hale-<pid>` unless `--id ID` gives one, sent as a
+The request id is the verb's: `hale-<pid>` unless `--request-id ID` gives one, sent as a
 JSON string. Over the Unix socket the reply's `id` must be it: a reply that
 answers another request is a transport failure, as is a connection that ends
 with no reply. (HTTP carries no id; the connection is the correlation.)

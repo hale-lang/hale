@@ -466,6 +466,8 @@ extern int errno;
 #define ETIMEDOUT 110
 #define ECONNREFUSED 111
 #define EHOSTUNREACH 113
+#define EALREADY 114
+#define EINPROGRESS 115
 #define EPIPE 32
 #define EMSGSIZE 90
 #define E2BIG 7

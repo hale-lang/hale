@@ -300,6 +300,12 @@ a closure-value surface Hale doesn't yet have — deferred.
 (`accept(c: TypeA)` and `accept(c: TypeB)` overloads — not
 yet in grammar) would need `self.children` as a sum type
 (`[TypeA | TypeB]`) and is deferred to a future version.
+(2026-10-12) The one clause may name an interface: it accepts every
+locus satisfying it, resolved statically per concrete type
+(`semantics.md` § Locus instantiation, "An interface `accept`"). Its
+children are of several types, so its `self.children` keeps the
+summary surface (`count`, `is_empty`) and is not an iterand; the sum
+type is still deferred.
 
 ### F.12 Bus send is the `<-` operator
 

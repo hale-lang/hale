@@ -2287,11 +2287,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 let value: PointerValue<'ctx> = match (&parent_ctx, &parent_info)
                 {
                     (Some(cs), Some(pinfo)) => {
-                        let p_accepts = pinfo
-                            .accept_param
-                            .as_ref()
-                            .map(|(_, ct)| ct == &interest)
-                            .unwrap_or(false);
+                        let p_accepts = pinfo.accept_fns.contains_key(&interest);
                         if p_accepts {
                             // (a) parent is the owner.
                             cs.self_ptr
@@ -3393,8 +3389,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             (Some(_), Some(owner_name)) => self
                 .user_loci
                 .get(owner_name)
-                .and_then(|p| p.accept_param.as_ref())
-                .is_some_and(|(_, child)| child == locus_name),
+                .is_some_and(|p| p.accept_fns.contains_key(locus_name)),
             _ => false,
         };
         // Line 6: a subscriber's delivery is eligible once its birth()
@@ -3470,8 +3465,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 .get(owner_name)
                 .cloned()
                 .expect("owner points to a declared locus");
-            if let Some((_, expected_child)) = &parent_info.accept_param {
-                if expected_child == locus_name {
+            if let Some(accept_fn) = parent_info.accept_fns.get(locus_name).copied() {
+                {
                     // 2026-05-30: record the accept'ing owner as this
                     // child's owner, so a flow child's run-wrapper can
                     // fire `owner.release(owner, child)` on completion.
@@ -3491,13 +3486,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     // child type, so reclaim calls the right body even
                     // when several parent types accept `locus_name`.
                     let ptr_t = self.context.ptr_type(AddressSpace::default());
-                    let owner_release_val = match &parent_info.release_param {
-                        Some((_, rel_child)) if rel_child == locus_name => parent_info
-                            .methods
-                            .get("release")
-                            .map(|f| f.as_global_value().as_pointer_value())
-                            .unwrap_or(ptr_t.const_null()),
-                        _ => ptr_t.const_null(),
+                    let owner_release_val = match parent_info.release_fns.get(locus_name) {
+                        Some(f) => f.as_global_value().as_pointer_value(),
+                        None => ptr_t.const_null(),
                     };
                     let owner_release_slot = self
                         .builder
@@ -3511,11 +3502,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     self.builder
                         .build_store(owner_release_slot, owner_release_val)
                         .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                    let accept_fn = parent_info
-                        .methods
-                        .get("accept")
-                        .copied()
-                        .expect("accept_param implies accept method");
                     // v1.x-FRAMEWORK: skip the parent.accept(...) call
                     // when the body is empty. The children-array
                     // append still fires below so `for child in
@@ -3546,11 +3532,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     // The helper grows the heap buffer on demand and
                     // bumps the count — no fixed cap, no adjacent-
                     // memory corruption past 16 children (2026-05-29).
-                    if let (Some(arr_idx), Some(cnt_idx), Some(cap_idx)) = (
-                        parent_info.children_field_idx,
-                        parent_info.child_count_field_idx,
-                        parent_info.child_cap_field_idx,
-                    ) {
+                    if let Some(&crate::codegen::ChildBuffer { arr: arr_idx, cnt: cnt_idx, cap: cap_idx }) =
+                        parent_info.child_buffers.get(locus_name)
+                    {
                         let arr_ptr = self
                             .builder
                             .build_struct_gep(
@@ -3569,6 +3553,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                                 "child.count.ptr",
                             )
                             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                        self.emit_store_owner_tracker(&info, self_ptr, arr_ptr, cnt_ptr, locus_name)?;
                         let cap_ptr = self
                             .builder
                             .build_struct_gep(
@@ -5558,12 +5543,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         store(self, info.reclaim_claimed_field_idx, zero, "__reclaim_claimed")?;
         // The children tracker: a NULL heap buffer, count and cap 0.
         // `lotus_children_push` allocates the buffer on the first accept.
-        if let (Some(arr), Some(cnt), Some(cap)) =
-            (info.children_field_idx, info.child_count_field_idx, info.child_cap_field_idx)
-        {
-            store(self, arr, null, "children")?;
-            store(self, cnt, zero, "child_count")?;
-            store(self, cap, zero, "child_cap")?;
+        for (child, b) in info.child_buffers.iter() {
+            store(self, b.arr, null, &format!("children.{child}"))?;
+            store(self, b.cnt, zero, &format!("child_count.{child}"))?;
+            store(self, b.cap, zero, &format!("child_cap.{child}"))?;
         }
         // m40: `restart(c)` bumps the count; `restart(c) for N` rewrites
         // the bound before restarting.
@@ -5605,13 +5588,15 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         let cap = self.usize_type().const_int(params.cap, false);
                         // The cell stride is the accepted child's struct.
                         let bytes = match &info.accept_param {
-                            Some((_, child)) => self
-                                .user_loci
-                                .get(child)
-                                .expect("accept target locus known")
-                                .struct_ty
-                                .size_of()
-                                .expect("child locus struct size known"),
+                            Some((_, child)) => match self.user_loci.get(child) {
+                                Some(c) => c.struct_ty.size_of().expect("child locus struct size known"),
+                                None => {
+                                    return Err(CodegenError::Unsupported(format!(
+                                        "locus `{locus_name}`: a recognition projection's cells are one child \
+                                         type's size, and its `accept` names the interface `{child}`"
+                                    )))
+                                }
+                            },
                             None => i64_t.const_zero(),
                         };
                         let bytes = self.size_to_usize(bytes)?;
@@ -5641,6 +5626,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // Set by the accept step, for an accepted child.
         store(self, info.owner_self_field_idx, null, "__owner_self")?;
         store(self, info.owner_release_field_idx, null, "__owner_release")?;
+        if let Some((buf, cnt)) = info.owner_tracker_field_idx {
+            store(self, buf, null, "__owner_tracker")?;
+            store(self, cnt, null, "__owner_tracker_count")?;
+        }
         // Set after the params, for a restart-in-place target.
         store(self, info.built_params_field_idx, null, "__built_params")?;
         // Set before the params, for a pinned locus whose tree subscribes.
@@ -6213,7 +6202,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // the params, before the birth). A cross-pool child subscribes to
         // nothing and runs nothing (`crosspool_child_shape_ok`), so the
         // stitch to A and the birth are the whole of it.
-        let accepted = owner_info.accept_param.as_ref().is_some_and(|(_, expected)| expected == child_locus);
+        let accepted = owner_info.accept_fns.contains_key(child_locus);
         let kinds: Vec<ObligationKind> =
             if accepted { vec![ObligationKind::Accept, ObligationKind::Birth] } else { vec![ObligationKind::Birth] };
         for step in self.birth_spine_order(child_locus, &kinds)? {
@@ -6274,7 +6263,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         child_ptr: PointerValue<'ctx>,
     ) -> Result<(), CodegenError> {
         let accept_call =
-            owner_info.methods.get("accept").copied().filter(|_| !owner_info.empty_lifecycle.contains("accept"));
+            owner_info.accept_fns.get(child_locus).copied().filter(|_| !owner_info.empty_lifecycle.contains("accept"));
         self.lc_in_spine("Instantiation", |cx| {
             cx.lc_step("Accept", Some(child_ptr), Some(child_locus), |cx| {
                 if let Some(accept_fn) = accept_call {
@@ -6285,14 +6274,17 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 Ok(())
             })
         })?;
-        if let (Some(arr_idx), Some(cnt_idx), Some(cap_idx)) =
-            (owner_info.children_field_idx, owner_info.child_count_field_idx, owner_info.child_cap_field_idx)
+        if let Some(&crate::codegen::ChildBuffer { arr: arr_idx, cnt: cnt_idx, cap: cap_idx }) =
+            owner_info.child_buffers.get(child_locus)
         {
             let e = |e: inkwell::builder::BuilderError| CodegenError::LlvmEmit(e.to_string());
             let arr_ptr =
                 self.builder.build_struct_gep(owner_info.struct_ty, a_self, arr_idx, "xpool.children.ptr").map_err(e)?;
             let cnt_ptr =
                 self.builder.build_struct_gep(owner_info.struct_ty, a_self, cnt_idx, "xpool.child_count.ptr").map_err(e)?;
+            if let Some(child_info) = self.user_loci.get(child_locus).cloned() {
+                self.emit_store_owner_tracker(&child_info, child_ptr, arr_ptr, cnt_ptr, child_locus)?;
+            }
             let cap_ptr =
                 self.builder.build_struct_gep(owner_info.struct_ty, a_self, cap_idx, "xpool.child_cap.ptr").map_err(e)?;
             let push_fn = self.module.get_function("lotus_children_push").expect("lotus_children_push declared");

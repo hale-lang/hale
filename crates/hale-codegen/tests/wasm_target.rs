@@ -875,3 +875,68 @@ fn wasm_struct_runs_self_contained() {
         String::from_utf8_lossy(&run.stderr)
     );
 }
+
+/// A flow type two owner types track (here two interface owners) records
+/// its accepting owner's tracker at accept: the addresses of the owner's
+/// buffer and count fields, as the owner's layout places them. On wasm32
+/// a pointer is 4 bytes, so the count does not sit 8 bytes past the
+/// buffer pointer: a removal that assumed it wrote past the count and
+/// corrupted the tracker. Each owner's tracker is empty once its flows
+/// complete, over a churn too. `Left` declares no params, the shape
+/// where the old removal went wrong.
+#[test]
+fn wasm_a_flow_two_owner_types_track_leaves_its_owners_tracker() {
+    let (Some(_clang), Some(_wasm_ld), Some(node)) =
+        (tool("clang"), tool("wasm-ld"), tool("node"))
+    else {
+        eprintln!("SKIP wasm_a_flow_two_owner_types_track_leaves_its_owners_tracker: toolchain missing");
+        return;
+    };
+    let src = r#"
+        target wasm { }
+        @ffi("js") fn console_log(msg: String);
+        interface Job { fn weight() -> Int; }
+        locus Small { fn weight() -> Int { return 3; } run() { } }
+        // No params: the tracker sits right after the 4-byte arena
+        // pointer, so its count is not 8 bytes past it.
+        locus Left {
+            accept(c: Job) { }
+            release (c: Job) { }
+            fn go(n: Int) {
+                let mut i = 0;
+                while i < n { Small { }; i = i + 1; }
+            }
+            fn kids() -> Int { return self.children.count; }
+        }
+        locus Right {
+            params { released: Int = 0; }
+            accept(c: Job) { }
+            release (c: Job) { self.released = self.released + 1; }
+            fn go(n: Int) {
+                let mut i = 0;
+                while i < n { Small { }; i = i + 1; }
+            }
+            fn kids() -> Int { return self.children.count; }
+        }
+        fn main() {
+            let l = Left { };
+            l.go(1);
+            let r = Right { };
+            r.go(1);
+            console_log("once left=" + l.kids() + " right=" + r.kids());
+            l.go(2000);
+            r.go(2000);
+            console_log("churn left=" + l.kids() + " right=" + r.kids() + "/" + r.released);
+        }
+    "#;
+    let wasm = tmp("two_owner_tracker.wasm");
+    build_wasm(src, &wasm);
+    let loader = wasm.with_extension("mjs");
+    let run = Command::new(&node).arg(&loader).output().expect("run node loader");
+    let stdout = String::from_utf8_lossy(&run.stdout);
+    let _ = std::fs::remove_file(&wasm);
+    let _ = std::fs::remove_file(&loader);
+    assert!(run.status.success(), "stdout: {stdout}\nstderr: {}", String::from_utf8_lossy(&run.stderr));
+    assert!(stdout.contains("once left=0 right=0"), "stdout: {stdout}\nstderr: {}", String::from_utf8_lossy(&run.stderr));
+    assert!(stdout.contains("churn left=0 right=0/2001"), "stdout: {stdout}\nstderr: {}", String::from_utf8_lossy(&run.stderr));
+}
