@@ -86,9 +86,9 @@ An agent: `claude mcp add todo -- hale mcp --app mcp://127.0.0.1:8090 --token t-
 (every member a tool), or any MCP host at `http://127.0.0.1:8090/mcp` with the
 bearer.
 
-The item is `todo`, not `id`, in `complete` and `remove`: `hale api call` takes
-`--id` for the call itself, so a field of that name could not be set from a
-flag.
+The item is `todo`, not `id`, in `complete` and `remove`: when this repository
+was written `hale api call` took `--id` for the call itself, so a field of that
+name could not be set from a flag. The call's id is `--request-id` now.
 
 ### The sense
 

@@ -466,7 +466,9 @@ check --api --surface Public --proto` prints the file, and `hale api export
 default JSON names are the same (`a_b` and `aB`, or `a` and `_a`, which
 protoc compares without regard to case) make a file `protoc` refuses, so the
 record is refused instead, naming both fields; a `json:` tag on one of them
-renames it.
+renames it. A record with the surface's own name (`api Todo` over a `type
+Todo`) is the message `TodoMessage`: proto3 gives a service and a message one
+scope, and the service keeps the surface's name because it is the gRPC path.
 
 A client is whatever generates stubs from a `.proto`; `hale api client`
 makes Hale and TypeScript clients and neither speaks gRPC (a browser's
@@ -651,6 +653,10 @@ the description gave: an integer or a quantity's count (`--qty 3`), a number,
 field and a flag that names no field are refused before anything is sent, with
 the field's schema in the message. `--json '{…}'` (or `--json -` for stdin)
 sends a payload as given, unchecked: the server's answer is then the check.
+The verb keeps five flags for itself, `--json`, `--bearer`, `--digest`, `--raw`
+and `--request-id` (the call's id, `hale-<pid>` by default); a payload field
+with one of those names goes in `--json`. A field named `id` is an ordinary
+flag: `--id 5`.
 
 A result prints its value on stdout and exits 0. Everything else prints what the
 wire said on stderr: a handler error exits 1, a refusal 2 (`unauthorized`,

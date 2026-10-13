@@ -166,6 +166,38 @@ fn journaled_inputs_replay_without_divergence() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// A directory seed replays as a file does: the seed recorded by `hale run
+/// <dir>` is admitted and served back by `hale replay <rec> <dir>`, and an
+/// edit to any file of the seed (not only the one holding `main`) is a
+/// different executable the admission refuses. It used to be refused
+/// outright: "directory seeds are not replayable yet" (downstream handoff).
+#[test]
+fn a_directory_seed_replays() {
+    let dir = workdir("seed_dir");
+    let seed = dir.join("app");
+    std::fs::create_dir_all(&seed).unwrap();
+    let (types, main) = JOURNALED.split_at(JOURNALED.find("main locus App").expect("the main locus"));
+    std::fs::write(seed.join("loci.hl"), types).unwrap();
+    std::fs::write(seed.join("main.hl"), main).unwrap();
+    let rec = record(&dir, &seed);
+
+    let replay = || hale().arg("replay").arg(&rec).arg(&seed).arg("--allow-live-effects").arg("--diff").output().expect("hale replay");
+    let out = replay();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "replay failed:\n{}\n{}", stdout, stderr);
+    assert!(stdout.contains("replay matches the recording"), "no match report:\n{}\n{}", stdout, stderr);
+    assert!(stderr.contains("journal served fully — 0 divergences"), "journal diverged:\n{}", stderr);
+
+    // the identity covers every file of the seed
+    std::fs::write(seed.join("loci.hl"), format!("{types}\n// edited\n")).unwrap();
+    let out = replay();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success(), "an edited seed must not be admitted:\n{}", stderr);
+    assert!(stderr.contains("different build inputs"), "{}", stderr);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn racing_publishers_replay_in_the_recorded_interleaving() {
     let dir = workdir("racing");

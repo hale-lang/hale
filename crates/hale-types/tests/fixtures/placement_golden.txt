@@ -7113,6 +7113,10 @@ dynamic	__StdProcessChild	on main
 == tests/hale/process_close_stdin_test.hl
 row	__StdProcessChild@main1	__StdProcessChild	main	default
 
+== tests/hale/process_spawn_in_birth_test.hl
+row	Spawner@main1	Spawner	main	default
+dynamic	__StdProcessChild	on main|unknown (no caller)	in the seed
+
 == tests/hale/release_generic_owner_test.hl
 row	Manager_Job@main1	Manager_Job	main	default
 dynamic	__lib_tests__hale__release_generic_owner_lib___main__Worker	on main	in the seed

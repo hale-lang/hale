@@ -350,10 +350,13 @@ impl<'a> Codec<'a> {
 /// expression that writes `v` as the message `<T>` or the one-field message
 /// of a scalar (`<rpc>Request`, …, `value = 1`), and what reads `bytes` as
 /// one. The records are `json_gen`'s `__api_pb_*` codecs.
+#[derive(Clone, Copy)]
 pub(crate) struct PbCodec<'a> {
     shapes: &'a Shapes<'a>,
     convs: &'a BTreeMap<String, Conv>,
     schemas: &'a crate::surfaces::Schemas<'a>,
+    /// The surface whose file names the messages (`proto_gen::message_name`).
+    surface: &'a str,
 }
 
 impl PbCodec<'_> {
@@ -413,7 +416,7 @@ impl PbCodec<'_> {
     pub(crate) fn message(&self, member: &str, what: &str, te: &TypeExpr) -> String {
         let mut scratch = BTreeMap::new();
         match self.schemas.type_ref(te, &mut scratch) {
-            crate::surfaces::FieldSchema::Ref(n) => crate::proto_gen::message_name(&n),
+            crate::surfaces::FieldSchema::Ref(n) => crate::proto_gen::message_name(&n, self.surface),
             _ => crate::proto_gen::wrapper_name(member, what),
         }
     }
@@ -1138,10 +1141,11 @@ pub fn expand(
     let shapes = Shapes::of_all(&slices);
     let codec = Codec { shapes: &shapes, convs: &convs };
     let schemas = crate::surfaces::Schemas::of(&ro_refs);
-    let pb = PbCodec { shapes: &shapes, convs: &convs, schemas: &schemas };
+    let pb = PbCodec { shapes: &shapes, convs: &convs, schemas: &schemas, surface: "" };
     for (i, plan) in plans.iter().enumerate() {
         let id = i as i64 + 1;
         let site = &plan.site;
+        let pb = PbCodec { surface: &site.surface, ..pb };
         generated.push_str(&surface_src(id, &plan.rows, &plan.slots, &confer, &codec, plan.grpc.then_some(&pb), &schemas));
         for (slot, ty) in plan.slots.iter().enumerate() {
             let members: Vec<(usize, &Row)> = plan
@@ -1155,6 +1159,7 @@ pub fn expand(
                 slot,
                 members: members.iter().map(|(m, r)| (*m, (*r).clone())).collect(),
                 grpc: plan.grpc,
+                surface: site.surface.clone(),
             });
         }
         out.push(Expansion {
@@ -1328,6 +1333,8 @@ struct Binding {
     members: Vec<(usize, Row)>,
     /// the exposure is served over `grpc::Rpc`: its calls may arrive as protobuf.
     grpc: bool,
+    /// the exposure's surface, whose `.proto` names the messages.
+    surface: String,
 }
 
 /// Whether a transport literal's path is the stdlib's Unix transport,
@@ -1886,7 +1893,7 @@ fn extend_receiver(l: &mut LocusDecl, bs: &[Binding], codec: &Codec<'_>, pb: &Pb
             if b.grpc {
                 // the call arrived as protobuf: the same steps, the other codec
                 fns.push_str("        if std::str::starts_with(c.body, \"pb:\") {\n");
-                fns.push_str(&thunk_body_pb(row, slot, pb));
+                fns.push_str(&thunk_body_pb(row, slot, &PbCodec { surface: &b.surface, ..*pb }));
                 fns.push_str("        return;\n        }\n");
             }
             fns.push_str(&thunk_body(row, slot, codec));

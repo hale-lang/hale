@@ -24,15 +24,48 @@ pub fn collect_target_files(
     match t {
         ImportTarget::SingleFile(p) => Ok(vec![p.clone()]),
         ImportTarget::Directory(d) => {
-            let out = src.hl_files(d).map_err(|e| e.to_string())?;
+            let out = seed_members(src.hl_files(d).map_err(|e| e.to_string())?);
             if out.is_empty() {
                 return Err(format!(
-                    "imported directory {} contains no .hl files",
-                    d.display()
+                    "imported directory {} contains no .hl files{}",
+                    d.display(),
+                    only_tests_note(src, d)
                 ));
             }
             Ok(out)
         }
+    }
+}
+
+/// A `*_test.hl` file: a program of its own, as `hale test` compiles it
+/// (the file and what its imports reach), never a member of the
+/// directory's seed. Two test files beside each other, or beside the seed
+/// they test, would otherwise merge into one program with a `main` each.
+pub fn is_test_file(p: &Path) -> bool {
+    p.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.ends_with("_test.hl"))
+}
+
+/// A directory's `.hl` files as its seed's members: every one but the
+/// `*_test.hl` files ([`is_test_file`]).
+pub fn seed_members(files: Vec<PathBuf>) -> Vec<PathBuf> {
+    files.into_iter().filter(|f| !is_test_file(f)).collect()
+}
+
+/// The `*_test.hl` files directly in `dir`, sorted: each a program of its own.
+pub fn test_files_in(dir: &Path, src: &dyn SourceProvider) -> Vec<PathBuf> {
+    src.hl_files(dir).unwrap_or_default().into_iter().filter(|f| is_test_file(f)).collect()
+}
+
+/// What to say of a directory with no seed members: that its `.hl` files
+/// are all tests, when they are.
+fn only_tests_note(src: &dyn SourceProvider, dir: &Path) -> String {
+    if test_files_in(dir, src).is_empty() {
+        String::new()
+    } else {
+        format!(
+            " other than `_test.hl` files, which are programs of their own (`hale test {}` runs them)",
+            dir.display()
+        )
     }
 }
 
@@ -43,7 +76,8 @@ pub fn collect_target_files(
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum LoadMode {
     /// The CLI (`check`, `build`, `run`, ...): the target as named — a
-    /// directory is the seed, a file is a seed of one — and the loaders
+    /// directory is the seed (its `.hl` files but the `*_test.hl` ones,
+    /// [`seed_members`]), a file is a seed of one — and the loaders
     /// above then follow every `import` it declares
     /// ([`collect_checkable`]).
     WholeSeed,
@@ -52,6 +86,7 @@ pub enum LoadMode {
     /// it (the F.19 seed of the file), and it is a member of that
     /// directory even when it exists only as an editor buffer; every
     /// `import` is then followed as [`LoadMode::WholeSeed`] follows it
+    /// (a `*_test.hl` file is a seed of one, as `hale test` loads it)
     /// ([`link_checkable`]), through the same source provider, so a
     /// buffer wins over its file wherever the load reaches it. Where
     /// the CLI's load fails, the editor's keeps what it read: a member
@@ -68,9 +103,9 @@ pub fn collect_ap_files(
     src: &dyn SourceProvider,
 ) -> Result<Vec<PathBuf>, String> {
     if src.is_dir(target) {
-        let out = src.hl_files(target).map_err(|e| e.to_string())?;
+        let out = seed_members(src.hl_files(target).map_err(|e| e.to_string())?);
         if out.is_empty() {
-            return Err(format!("no .hl files in {}", target.display()));
+            return Err(format!("no .hl files in {}{}", target.display(), only_tests_note(src, target)));
         }
         return Ok(out);
     }
@@ -81,11 +116,14 @@ pub fn collect_ap_files(
             }
             Err(format!("not a file or directory: {}", target.display()))
         }
+        // A test file is a seed of one, as `hale test` loads it: its
+        // siblings are not its members, nor it theirs.
+        LoadMode::Editor if is_test_file(target) => Ok(vec![target.to_path_buf()]),
         LoadMode::Editor => {
             let dir = seed_dir_of(target);
             // A directory that will not list leaves the target alone:
             // the file being edited is always checked.
-            let mut out = src.hl_files(dir).unwrap_or_default();
+            let mut out = seed_members(src.hl_files(dir).unwrap_or_default());
             if !out.iter().any(|f| same_file(f, target)) {
                 out.push(target.to_path_buf());
                 out.sort();
@@ -812,4 +850,46 @@ where
         span: first.span,
     };
     Some(merged)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::source::Disk;
+
+    /// A directory with a seed, a test beside it and a test-only
+    /// subdirectory, in a scratch of this test's own.
+    fn layout(name: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("hale-frontend-tests-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(d.join("tests")).unwrap();
+        std::fs::write(d.join("main.hl"), "fn main() { }\n").unwrap();
+        std::fs::write(d.join("util.hl"), "fn two() -> Int { return 2; }\n").unwrap();
+        std::fs::write(d.join("main_test.hl"), "fn main() { }\n").unwrap();
+        std::fs::write(d.join("tests/a_test.hl"), "fn main() { }\n").unwrap();
+        std::fs::write(d.join("tests/b_test.hl"), "fn main() { }\n").unwrap();
+        d.canonicalize().unwrap()
+    }
+
+    /// A `*_test.hl` file is a program of its own, as `hale test` builds
+    /// it: a directory's seed leaves it out (two tests, or a test and the
+    /// seed, would otherwise be one program with a `main` each), the
+    /// editor reads it as a seed of one, and a directory of tests alone
+    /// is no seed, saying where its files are run.
+    #[test]
+    fn a_test_file_is_no_member_of_its_directory_s_seed() {
+        let d = layout("members");
+        let whole = collect_ap_files(&d, LoadMode::WholeSeed, &Disk).unwrap();
+        assert_eq!(whole, vec![d.join("main.hl"), d.join("util.hl")]);
+        let editor = collect_ap_files(&d.join("util.hl"), LoadMode::Editor, &Disk).unwrap();
+        assert_eq!(editor, vec![d.join("main.hl"), d.join("util.hl")]);
+        let test = collect_ap_files(&d.join("main_test.hl"), LoadMode::Editor, &Disk).unwrap();
+        assert_eq!(test, vec![d.join("main_test.hl")]);
+        let err = collect_ap_files(&d.join("tests"), LoadMode::WholeSeed, &Disk).unwrap_err();
+        assert!(err.contains("other than `_test.hl` files") && err.contains("hale test"), "{err}");
+        let imported = collect_target_files(&ImportTarget::Directory(d.clone()), &Disk).unwrap();
+        assert_eq!(imported, whole, "an imported directory is its seed too");
+        assert_eq!(test_files_in(&d, &Disk), vec![d.join("main_test.hl")]);
+        let _ = std::fs::remove_dir_all(&d);
+    }
 }
