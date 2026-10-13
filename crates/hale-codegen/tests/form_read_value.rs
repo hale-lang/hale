@@ -424,3 +424,73 @@ fn main() {{
         assert_eq!(copied, !inline, "{tag}");
     }
 }
+
+/// Four more ways a callee's local may alias its parameter (review round
+/// 2 on #1558): a block's result, either branch of an `if`, a `match`
+/// payload, and a loop-carried rebind. Each is a local bound from a place
+/// (a part of the parameter), so the local-place rule copies it at its
+/// first write (spec/types.md § A local bound from a place is yours) —
+/// the write never reaches the caller's read, so the cell keeps its
+/// value; the writes-through-parameter flag stays as a second net.
+#[test]
+fn a_callee_writing_a_block_if_match_or_loop_alias_leaves_the_cell() {
+    let src = r#"
+        type Inner { k: Int = 0; s: String = ""; }
+        type Payload = enum { Some([Inner; 2]), None };
+        type Rec { id: Int = 0; big: [Inner; 2] = [Inner { }; 2]; p: Payload = Payload::None; }
+        @form(hashmap)
+        locus M { capacity { pool cells of Rec indexed_by id; } }
+        fn heap(s: String) -> String { return std::str::upper(s) + to_string(len(s)); }
+        fn poke_block(r: Rec) { let mut a = { let xs = r.big; xs }; a[0].k = 7; a[0].s = heap("w"); }
+        fn poke_if(r: Rec, f: Bool) {
+            let mut a = if f { let xs = r.big; xs } else { let ys = r.big; ys };
+            a[0].k = 7;
+            a[0].s = heap("w");
+        }
+        fn poke_match(r: Rec) {
+            let mut a = match r.p { Payload::Some(xs) -> xs, Payload::None -> [Inner { }; 2], };
+            a[0].k = 7;
+            a[0].s = heap("w");
+        }
+        fn poke_loop(r: Rec) {
+            let mut a = [Inner { }; 2];
+            let mut i = 0;
+            while i < 2 { a[0].k = 7; a[0].s = heap("w"); a = r.big; i = i + 1; }
+        }
+        fn cell(m: M) -> String {
+            let c = m.get(1) or Rec { };
+            let pk = match c.p { Payload::Some(xs) -> to_string(xs[0].k) + "/" + xs[0].s, Payload::None -> "-", };
+            return to_string(c.big[0].k) + "/" + c.big[0].s + " p=" + pk;
+        }
+        fn main() {
+            let m = M { };
+            m.set(Rec { id: 1, big: [Inner { k: 1, s: heap("a") }, Inner { k: 2 }], p: Payload::Some([Inner { k: 3, s: heap("p") }, Inner { }]) });
+            let c = m.get(1) or Rec { };
+            poke_block(c);
+            println("block cell=", cell(m));
+            poke_block(m.get(1) or Rec { });
+            println("block direct cell=", cell(m));
+            let d = m.get(1) or Rec { };
+            poke_if(d, true);
+            poke_if(d, false);
+            println("if cell=", cell(m));
+            poke_if(m.get(1) or Rec { }, true);
+            println("if direct cell=", cell(m));
+            let e = m.get(1) or Rec { };
+            poke_match(e);
+            println("match cell=", cell(m));
+            poke_match(m.get(1) or Rec { });
+            println("match direct cell=", cell(m));
+            let f = m.get(1) or Rec { };
+            poke_loop(f);
+            println("loop cell=", cell(m));
+            poke_loop(m.get(1) or Rec { });
+            println("loop direct cell=", cell(m));
+        }
+    "#;
+    let want: String = ["block", "block direct", "if", "if direct", "match", "match direct", "loop", "loop direct"]
+        .iter()
+        .map(|w| format!("{w} cell=1/A1 p=3/P1\n"))
+        .collect();
+    assert_eq!(run("callee_alias_round2", src), want);
+}

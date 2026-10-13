@@ -758,7 +758,8 @@ crates/hale-codegen/tests/form_read_value.rs#1 01827fb676cf7ff4
 crates/hale-codegen/tests/form_read_value.rs#2 bb22f78334b3fe44
 crates/hale-codegen/tests/form_read_value.rs#3 fab7d5479259db2a
 crates/hale-codegen/tests/form_read_value.rs#4 d794c7336ee7748f
-crates/hale-codegen/tests/form_read_value.rs#5 595f9bee6dd111a0
+crates/hale-codegen/tests/form_read_value.rs#5 123520725dcce708
+crates/hale-codegen/tests/form_read_value.rs#7 82184bdab6c1c0e5
 crates/hale-codegen/tests/form_ring_buffer_codegen.rs#0 d64b3e41a590cf50
 crates/hale-codegen/tests/form_ring_buffer_codegen.rs#1 d64b3e41a590cf50
 crates/hale-codegen/tests/form_ring_buffer_codegen.rs#2 d64b3e41a590cf50
