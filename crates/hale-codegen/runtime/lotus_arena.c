@@ -15337,6 +15337,8 @@ typedef struct lotus_bus_resv {
         lotus_bus_parked_t *last_oldest, *last_newest;
     } *keys;
     size_t nkeys, capkeys;
+    uint32_t *slots;              /* key records by hash: index + 1 */
+    size_t nslots;
     uint64_t ever_parked, dropped;
     uint64_t copied, forwarded;   /* for LOTUS_BUS_LOG_RESERVE */
     lotus_bus_claimant_t *claimants;
@@ -15444,12 +15446,12 @@ static void lotus_bus_resv_close_locked(lotus_bus_resv_t *r,
     if (lotus_bus_log_reserve_enabled()) {
         fprintf(stderr,
                 "[bus] reservation `%s` closed: parked %llu copied %llu "
-                "forwarded %llu shed %llu claimants %zu missing %lld\n",
+                "forwarded %llu shed %llu claimants %zu missing %lld keys %zu\n",
                 r->subject, (unsigned long long)r->ever_parked,
                 (unsigned long long)r->copied,
                 (unsigned long long)r->forwarded,
                 (unsigned long long)r->dropped, r->nclaim,
-                (long long)r->remaining);
+                (long long)r->remaining, r->nkeys);
     }
     if (r->entry) r->entry->subject = NULL;
     *freeme = r->head;
@@ -15457,12 +15459,89 @@ static void lotus_bus_resv_close_locked(lotus_bus_resv_t *r,
     r->nretained = 0;
     for (size_t i = 0; i < r->nkeys; i++) free(r->keys[i].str);
     free(r->keys);
+    free(r->slots);
     r->keys = NULL;
-    r->nkeys = r->capkeys = 0;
+    r->slots = NULL;
+    r->nkeys = r->capkeys = r->nslots = 0;
     __atomic_sub_fetch(&lotus_bus_unready_count, 1, __ATOMIC_SEQ_CST);
 #ifndef __wasm__
     pthread_cond_broadcast(&g_bus_ready_cond);
 #endif
+}
+
+/* A reservation's key records, found by hash: a String key's hash is
+ * the publish's own (`key_lo`, FNV-1a), a scalar key's is mixed from
+ * its two words; the unkeyed bucket hashes to 0 with `keyed` 0. The
+ * table holds record indices + 1, open addressing, grown at half load;
+ * records exist only for keys with a retained cell, so there are never
+ * more than a queue's worth. Under g_bus_ready_lock. */
+static uint64_t lotus_bus_resv_key_hash(const lotus_bus_pubctx_t *pc,
+                                        const char *pkey) {
+    if (!pc->keyed) return 0;
+    uint64_t x = pkey ? pc->key_lo : (pc->key_lo ^ (pc->key_hi * 0x9e3779b97f4a7c15ULL));
+    x ^= x >> 33; x *= 0xff51afd7ed558ccdULL;
+    x ^= x >> 33; x *= 0xc4ceb9fe1a85ec53ULL;
+    x ^= x >> 33;
+    return x | 1;   /* never 0: the unkeyed bucket's */
+}
+
+static int lotus_bus_resv_key_is(const struct lotus_bus_resv_key *x,
+                                 const lotus_bus_pubctx_t *pc,
+                                 const char *pkey) {
+    if (x->keyed != pc->keyed) return 0;
+    if (!pc->keyed) return 1;
+    if (pkey) return x->str && strcmp(x->str, pkey) == 0;
+    return x->lo == pc->key_lo && x->hi == pc->key_hi;
+}
+
+static struct lotus_bus_resv_key *lotus_bus_resv_key_find(
+    lotus_bus_resv_t *r, const lotus_bus_pubctx_t *pc, const char *pkey) {
+    if (!r->nslots) return NULL;
+    size_t mask = r->nslots - 1;
+    for (size_t i = (size_t)lotus_bus_resv_key_hash(pc, pkey) & mask;
+         r->slots[i]; i = (i + 1) & mask) {
+        struct lotus_bus_resv_key *x = &r->keys[r->slots[i] - 1];
+        if (lotus_bus_resv_key_is(x, pc, pkey)) return x;
+    }
+    return NULL;
+}
+
+static void lotus_bus_resv_key_slot(lotus_bus_resv_t *r, uint32_t idx) {
+    struct lotus_bus_resv_key *x = &r->keys[idx];
+    lotus_bus_pubctx_t pc = { 0, x->keyed, x->lo, x->hi };
+    size_t mask = r->nslots - 1;
+    size_t i = (size_t)lotus_bus_resv_key_hash(&pc, x->str) & mask;
+    while (r->slots[i]) i = (i + 1) & mask;
+    r->slots[i] = idx + 1;
+}
+
+static struct lotus_bus_resv_key *lotus_bus_resv_key_add(
+    lotus_bus_resv_t *r, const lotus_bus_pubctx_t *pc, const char *pkey) {
+    if (r->nkeys == r->capkeys) {
+        size_t nc = r->capkeys ? r->capkeys * 2 : 4;
+        struct lotus_bus_resv_key *g = realloc(r->keys, nc * sizeof *g);
+        if (!g) return NULL;
+        r->keys = g;
+        r->capkeys = nc;
+    }
+    if ((r->nkeys + 1) * 2 > r->nslots) {
+        size_t ns = r->nslots ? r->nslots * 2 : 8;
+        uint32_t *t = calloc(ns, sizeof *t);
+        if (!t) return NULL;
+        free(r->slots);
+        r->slots = t;
+        r->nslots = ns;
+        for (size_t i = 0; i < r->nkeys; i++) lotus_bus_resv_key_slot(r, (uint32_t)i);
+    }
+    struct lotus_bus_resv_key *k = &r->keys[r->nkeys];
+    memset(k, 0, sizeof *k);
+    k->keyed = pc->keyed;
+    k->lo = pc->key_lo;
+    k->hi = pkey ? 0 : pc->key_hi;
+    if (pkey && !(k->str = strdup(pkey))) return NULL;
+    lotus_bus_resv_key_slot(r, (uint32_t)r->nkeys);
+    r->nkeys++;
+    return k;
 }
 
 /* Test hook: LOTUS_BUS_TEST_RESERVE_STALL_US=N holds a publish on a
@@ -15514,44 +15593,30 @@ static int lotus_bus_resv_park(void *token, lotus_bus_queue_t *queue,
      * past its room; and never past a queue's worth in all. */
     if (r->open) {
         r->ever_parked++;
-        struct lotus_bus_resv_key *k = NULL;
-        for (size_t i = 0; i < r->nkeys && !k; i++) {
-            struct lotus_bus_resv_key *x = &r->keys[i];
-            if (x->keyed != pc->keyed) continue;
-            if (!pc->keyed) k = x;
-            else if (pkey ? (x->str && strcmp(x->str, pkey) == 0)
-                          : (x->lo == pc->key_lo && x->hi == pc->key_hi)) k = x;
-        }
-        if (!k) {
-            if (r->nkeys == r->capkeys) {
-                size_t nc = r->capkeys ? r->capkeys * 2 : 4;
-                struct lotus_bus_resv_key *g = realloc(r->keys, nc * sizeof *g);
-                if (!g) {
-                    pthread_mutex_unlock(&g_bus_ready_lock);
-                    fprintf(stderr, "lotus: out of memory holding a reserved cell\n");
-                    abort();
-                }
-                r->keys = g;
-                r->capkeys = nc;
-            }
-            k = &r->keys[r->nkeys++];
-            memset(k, 0, sizeof *k);
-            k->keyed = pc->keyed;
-            k->lo = pc->key_lo;
-            k->hi = pkey ? 0 : pc->key_hi;
-            k->str = pkey ? strdup(pkey) : NULL;
-        }
+        struct lotus_bus_resv_key *k = lotus_bus_resv_key_find(r, pc, pkey);
+        size_t knfirst = k ? k->nfirst : 0, knlast = k ? k->nlast : 0;
         int keep = 1, last = 0;
-        if (k->nfirst < r->keep_first && k->nlast == 0) {
+        if (knfirst < r->keep_first && knlast == 0) {
             last = 0;
         } else if (r->keep_last > 0) {
             last = 1;
         } else {
             keep = 0;
         }
-        if (keep && !(last && k->nlast >= r->keep_last)
+        /* A queue's worth in all: past it a cell is shed (and a key not
+         * seen yet gets no record), unless it replaces its own key's
+         * oldest tail cell. */
+        if (keep && !(last && knlast >= r->keep_last)
             && r->nretained >= bus_queue_max_cap()) {
-            keep = 0;   /* a queue's worth in all */
+            keep = 0;
+        }
+        if (keep && !k) {
+            k = lotus_bus_resv_key_add(r, pc, pkey);
+            if (!k) {
+                pthread_mutex_unlock(&g_bus_ready_lock);
+                fprintf(stderr, "lotus: out of memory holding a reserved cell\n");
+                abort();
+            }
         }
         if (!keep) {
             r->dropped++;
@@ -15839,6 +15904,7 @@ static void lotus_bus_resv_destroy_all(void) {
         lotus_bus_parked_free(r->head);
         for (size_t i = 0; i < r->nkeys; i++) free(r->keys[i].str);
         free(r->keys);
+        free(r->slots);
         free(r->claimants);
         free(r);
         r = next;

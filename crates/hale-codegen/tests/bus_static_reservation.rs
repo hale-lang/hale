@@ -529,6 +529,65 @@ fn a_keyed_claimants_bound_is_over_its_own_keys_cells() {
     }
 }
 
+const MANY_KEYS: &str = r#"
+    type Ev { lane: Int; n: Int; }
+    topic Lanes { payload: Ev; subject: "rsv.many"; keyed_by lane; }
+    locus Burst {
+        params { x: Int = 0; }
+        bus { publish Lanes; }
+        birth() { let mut i = 0; while i < 100000 { Lanes <- Ev { lane: i, n: i }; i = i + 1; } }
+    }
+    locus Ear {
+        params { lane: Int = 5; }
+        bus { subscribe Lanes as on_ev bounded(2, drop_new) where key == self.lane; }
+        fn on_ev(e: Ev) { println("ear " + to_string(e.n)); }
+    }
+    main locus Root {
+        params { b: Burst = Burst { }; e: Ear = Ear { }; }
+        run() { yield; std::time::sleep(20ms); }
+    }
+    fn main() { Root { }; }
+"#;
+
+const MANY_STRING_KEYS: &str = r#"
+    type Ev { lane: String; n: Int; }
+    topic Lanes { payload: Ev; subject: "rsv.many.str"; keyed_by lane; }
+    locus Burst {
+        params { x: Int = 0; }
+        bus { publish Lanes; }
+        birth() { let mut i = 0; while i < 100000 { Lanes <- Ev { lane: "l" + to_string(i), n: i }; i = i + 1; } }
+    }
+    locus Ear {
+        params { lane: String = "l5"; }
+        bus { subscribe Lanes as on_ev bounded(2, drop_new) where key == self.lane; }
+        fn on_ev(e: Ev) { println("ear " + to_string(e.n)); }
+    }
+    main locus Root {
+        params { b: Burst = Burst { }; e: Ear = Ear { }; }
+        run() { yield; std::time::sleep(20ms); }
+    }
+    fn main() { Root { }; }
+"#;
+
+#[test]
+fn a_flood_of_keys_holds_a_queues_worth_of_records() {
+    // 100,000 distinct keys before their one subscriber claims: the
+    // reservation keeps records only for keys it retains a cell of, never
+    // more than a queue's worth, found by hash; a key past the cap is shed
+    // with no record. The subscriber's own key came early and is kept.
+    for (tag, src, subject) in [("many_keys", MANY_KEYS, "rsv.many"), ("many_str_keys", MANY_STRING_KEYS, "rsv.many.str")] {
+        let started = std::time::Instant::now();
+        let (out, stderr) = run_env(tag, src, false, &[("LOTUS_BUS_LOG_RESERVE", "1")]);
+        assert_eq!(out, ["ear 5"], "{tag}\n{stderr}");
+        let counts = closed_counts(&stderr, subject);
+        let get = |k: &str| counts.iter().find(|(n, _)| n == k).map(|(_, v)| *v).unwrap_or(u64::MAX);
+        assert_eq!(get("parked"), 100000, "{stderr}");
+        assert_eq!(get("keys"), 8192, "one record per retained key, a queue's worth: {stderr}");
+        assert_eq!(get("shed"), 100000 - 8192, "{stderr}");
+        assert!(started.elapsed() < std::time::Duration::from_secs(60), "{tag} took {:?}", started.elapsed());
+    }
+}
+
 /// A publisher on its own thread, started early in the tree, sends
 /// `count` numbered cells (a short pause every ten) while the rest of the
 /// tree is built, slowly; every subscriber, built before it or after,
