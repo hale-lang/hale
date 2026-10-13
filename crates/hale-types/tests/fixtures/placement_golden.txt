@@ -7011,6 +7011,13 @@ dynamic	__StdProcessChild	on main
 == tests/hale/process_close_stdin_test.hl
 row	__StdProcessChild@main1	__StdProcessChild	main	default
 
+== tests/hale/rand_rng_test.hl
+row	__StdRandRng@main1	__StdRandRng	main	default
+row	__StdRandRng@main2	__StdRandRng	main	default
+row	__StdRandRng@main3	__StdRandRng	main	default
+row	__StdRandRng@main4	__StdRandRng	main	default
+row	__StdRandRng@main5	__StdRandRng	main	default
+
 == tests/hale/release_generic_owner_test.hl
 row	Manager_Job@main1	Manager_Job	main	default
 dynamic	__lib_tests__hale__release_generic_owner_lib___main__Worker	on main	in the seed

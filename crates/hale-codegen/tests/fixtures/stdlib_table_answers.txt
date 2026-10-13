@@ -983,6 +983,7 @@ std::process::try_wait | lookup=process@2 | locus=false | effects=syscall | sig=
 std::process::uid | lookup=process@2 | locus=false | effects=syscall | sig=() -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=-
 std::process::wait | lookup=process@2 | locus=false | effects=syscall|block | sig=(Int) -> Any ! IoError | ret_ty=? | or=(?, IoError) | parks=false | holds=true | unknown=- | suggest=wait
 std::process::write_stdin | lookup=process@2 | locus=false | effects=syscall | sig=- | parks=false | holds=false | unknown=- | suggest=write_stdin
+std::rand::Rng | lookup=rand@2 | locus=true | effects=- | sig=- | parks=false | holds=false | unknown=- | suggest=-
 std::rand::next_int | lookup=rand@2 | locus=false | effects=entropy | sig=(Int) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=next_int
 std::rand::seed_from_time | lookup=rand@2 | locus=false | effects=time|entropy | sig=() -> Unit | ret_ty=() | or=- | parks=false | holds=false | unknown=- | suggest=seed_from_time
 std::regex::find | lookup=regex@2 | locus=false | effects=pure | sig=(Str, Str) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=find

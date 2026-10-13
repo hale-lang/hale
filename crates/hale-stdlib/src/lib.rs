@@ -235,6 +235,10 @@ pub const AP_SOURCE: &str = concat!(
     // std::url: percent-encoding. Free fns over hex.hl's digit; http.hl's
     // path_param / query_param call it, which order does not constrain.
     include_str!("../hl/url.hl"),
+    "\n",
+    // std::rand::Rng: a seeded generator, a locus over Int arithmetic
+    // and `std::math::int_to_float`; nothing in the bundle precedes it.
+    include_str!("../hl/rand.hl"),
 );
 
 /// The same sources as `AP_SOURCE`, per file. `AP_SOURCE` is the
@@ -277,6 +281,7 @@ pub const AP_FILES: &[(&str, &str)] = &[
     ("time.hl", include_str!("../hl/time.hl")),
     ("hex.hl", include_str!("../hl/hex.hl")),
     ("url.hl", include_str!("../hl/url.hl")),
+    ("rand.hl", include_str!("../hl/rand.hl")),
 ];
 
 /// Map an `AP_SOURCE` byte offset to `(file_name, file_content,
@@ -396,6 +401,8 @@ pub const PATH_RENAMES: &[(&[&str], &str)] = &[
     (&["std", "hex", "digit"], "__std_hex_digit"),
     (&["std", "hex", "encode"], "__std_hex_encode"),
     (&["std", "iter", "Lines"], "__StdIterLines"),
+    // std::rand::Rng (rand.hl): the seeded generator.
+    (&["std", "rand", "Rng"], "__StdRandRng"),
     // std::url (url.hl): percent-encoding.
     (&["std", "url", "decode"], "__std_url_decode"),
     (&["std", "url", "decode_query"], "__std_url_decode_query"),

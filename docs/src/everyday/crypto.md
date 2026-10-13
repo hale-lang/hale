@@ -91,6 +91,22 @@ jitter, sampling, shuffling, game logic:
 let roll = std::rand::next_int(6) + 1;   // a die roll, [1, 6]
 ```
 
+When a run has to be repeatable — a simulation, a fuzz case, a test
+that shuffles — give it a generator of its own. A `std::rand::Rng`
+with the same `seed` gives the same sequence on every run and every
+target, and shares nothing with the global generator or another
+`Rng`:
+
+```hale,fragment
+let rng  = std::rand::Rng { seed: 42 };
+let roll = rng.range(1, 7);        // [1, 7): a die roll
+let pick = rng.next_int(10);       // [0, 10)
+let p    = rng.next_float();       // [0.0, 1.0)
+```
+
+It is SplitMix64 — fast and statistically sound, and just as
+**non-cryptographic** as `next_int`.
+
 For anything security-sensitive (tokens, nonces, keys), use the
 CSPRNG instead:
 
