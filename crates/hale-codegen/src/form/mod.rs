@@ -423,6 +423,69 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         Ok(())
     }
 
+    /// Call one of the `@form(heap)` order primitives
+    /// (`lotus_heap_sift_up` after a push, `lotus_heap_pop_prep` before
+    /// a pop) on the vec storage at `vec_field_ptr`. The elements are
+    /// pointers to `elem_ty` records; `order` names the key field and
+    /// whether the largest key is the root. The key's offset in the
+    /// record and its kind (0 an i64 — Int, Time, Duration; 1 a Float;
+    /// 2 a String, compared by bytes) are constants here.
+    fn emit_heap_call(
+        &mut self,
+        name: &str,
+        vec_field_ptr: PointerValue<'ctx>,
+        elem_ty: &CodegenTy,
+        order: &(String, bool),
+        locus_name: &str,
+    ) -> Result<(), CodegenError> {
+        let CodegenTy::TypeRef(tn) = elem_ty else {
+            return Err(CodegenError::Unsupported(format!(
+                "@form(heap) `{}`: the cell type must be a record with the `ordered_by` field, got {:?}",
+                locus_name, elem_ty
+            )));
+        };
+        let ti = self.user_types.get(tn).cloned().ok_or_else(|| {
+            CodegenError::Unsupported(format!("@form(heap) `{}`: cell type `{}` unregistered", locus_name, tn))
+        })?;
+        let (idx, kty) = ti.fields.get(&order.0).cloned().ok_or_else(|| {
+            CodegenError::Unsupported(format!(
+                "@form(heap) `{}`: `ordered_by` field `{}` not on `{}`",
+                locus_name, order.0, tn
+            ))
+        })?;
+        let kind: u64 = match kty {
+            CodegenTy::Int | CodegenTy::Time | CodegenTy::Duration => 0,
+            CodegenTy::Float => 1,
+            CodegenTy::String => 2,
+            other => {
+                return Err(CodegenError::Unsupported(format!(
+                    "@form(heap) `{}`: `ordered_by` field `{}` is {:?}; a heap orders by an Int, Float, \
+                     String, Time or Duration field",
+                    locus_name, order.0, other
+                )))
+            }
+        };
+        let off = self
+            .target_data
+            .offset_of_element(&ti.struct_ty, idx)
+            .expect("ordered_by field has an offset");
+        let i64_t = self.context.i64_type();
+        let f = self.module.get_function(name).expect("heap primitive declared");
+        self.builder
+            .build_call(
+                f,
+                &[
+                    vec_field_ptr.into(),
+                    i64_t.const_int(off, false).into(),
+                    i64_t.const_int(kind, false).into(),
+                    i64_t.const_int(u64::from(order.1), false).into(),
+                ],
+                &format!("{}.{}", locus_name, name),
+            )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        Ok(())
+    }
+
     /// `@form(vec)` `truncate(n)` / `clear()` (and `@form(heap)`'s
     /// `clear()`): shrink the vec at `vec_field_ptr` to `new_len`
     /// elements through `lotus_vec_truncate`, which retires each
@@ -528,11 +591,23 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         else {
             return Ok(None);
         };
-        if !matches!(method_name, "get" | "set" | "pop") {
+        // `@form(heap)` lowers to this same vec storage: its `pop` is the
+        // vec's after `lotus_heap_pop_prep` moved the root to the end,
+        // its `peek` the vec's `get(0)`, and both fail with `EmptyError`.
+        let heap = slot.heap_order.clone();
+        let handled = match heap {
+            Some(_) => matches!(method_name, "pop" | "peek"),
+            None => matches!(method_name, "get" | "set" | "pop"),
+        };
+        if !handled {
             return Ok(None);
         }
+        let peek = method_name == "peek";
+        let op = if peek { "get" } else { method_name };
         let elem_ty = slot.elem_ty.clone();
-        let payload_ty = CodegenTy::TypeRef("IndexError".to_string());
+        let payload_ty = CodegenTy::TypeRef(
+            if heap.is_some() { "EmptyError" } else { "IndexError" }.to_string(),
+        );
 
         let vec_field_ptr = self
             .builder
@@ -548,7 +623,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
 
         // `set` is Unit-success — only get/pop need an out_val_slot.
-        let out_val_slot_opt = if method_name == "set" {
+        let out_val_slot_opt = if op == "set" {
             None
         } else {
             Some(self.alloca_for(
@@ -571,23 +646,30 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let ptr_t = self.context.ptr_type(AddressSpace::default());
         let zero_i32 = i32_t.const_int(0, false);
 
-        let (c_ret, index_ssa) = match method_name {
+        let (c_ret, index_ssa) = match op {
             "get" => {
-                if args.len() != 1 {
+                if args.len() != usize::from(!peek) {
                     return Err(CodegenError::Unsupported(format!(
-                        "@form(vec) `{}`.get: expects 1 arg, got {}",
+                        "@form({}) `{}`.{}: expects {} arg, got {}",
+                        if peek { "heap" } else { "vec" },
                         locus_name,
+                        method_name,
+                        usize::from(!peek),
                         args.len()
                     )));
                 }
-                let (idx_val, idx_ty) = self.lower_expr(&args[0], scope)?;
-                if idx_ty != CodegenTy::Int {
-                    return Err(CodegenError::Unsupported(format!(
-                        "@form(vec) `{}`.get: index must be Int, got {:?}",
-                        locus_name, idx_ty
-                    )));
-                }
-                let idx_i64 = idx_val.into_int_value();
+                let idx_i64 = if peek {
+                    i64_t.const_int(0, false)
+                } else {
+                    let (idx_val, idx_ty) = self.lower_expr(&args[0], scope)?;
+                    if idx_ty != CodegenTy::Int {
+                        return Err(CodegenError::Unsupported(format!(
+                            "@form(vec) `{}`.get: index must be Int, got {:?}",
+                            locus_name, idx_ty
+                        )));
+                    }
+                    idx_val.into_int_value()
+                };
                 // BCE (counted-loop bounds-check elimination): when
                 // this get's index is the bare loop var of an
                 // enclosing `for VAR in 0..V.len()` proven safe over
@@ -600,7 +682,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 // to const-false, so the lazy-IndexError block and any
                 // enclosing `or` handler become statically dead and
                 // LLVM removes them; the loop body vectorizes.
-                let do_bce = matches!(&args[0], Expr::Ident(id)
+                let do_bce = !peek && matches!(&args[0], Expr::Ident(id)
                     if self
                         .bce_loops
                         .iter()
@@ -1047,6 +1129,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 let func = self
                     .current_fn
                     .expect("vec.pop inside fn body");
+                if let Some(order) = &heap {
+                    self.emit_heap_call("lotus_heap_pop_prep", vec_field_ptr, &elem_ty, order, locus_name)?;
+                }
                 // cap/len are C `size_t` (i64 native, i32 wasm32 —
                 // matching `usize_t`); use that width so the field
                 // offsets and the len decrement agree with the C
@@ -1237,7 +1322,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             )
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
 
-        let kind_str = match method_name {
+        let kind_str = match op {
             "get" | "set" => "out_of_bounds",
             "pop" => "empty",
             _ => unreachable!(),
@@ -1264,7 +1349,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
 
         self.builder.position_at_end(lazy_err_bb);
-        let len_ssa: IntValue<'ctx> = match method_name {
+        let len_ssa: IntValue<'ctx> = match op {
             "get" | "set" => {
                 // GEP into the inline vec struct's `len` field
                 // (index 1 of `{ usize cap, usize len, ptr buf }`)
@@ -1307,11 +1392,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             "pop" => i64_t.const_int(0, false),
             _ => unreachable!(),
         };
-        let ie_ptr = self.emit_index_error_alloc(
-            kind_str,
-            index_ssa,
-            len_ssa,
-        )?;
+        let ie_ptr = if heap.is_some() {
+            self.emit_empty_error_alloc("empty")?
+        } else {
+            self.emit_index_error_alloc(kind_str, index_ssa, len_ssa)?
+        };
         self.builder
             .build_store(out_err_slot, ie_ptr)
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
@@ -1321,7 +1406,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
 
         self.builder.position_at_end(join_bb);
 
-        let success_ty = if method_name == "set" {
+        let success_ty = if op == "set" {
             None
         } else {
             Some(elem_ty)
@@ -1998,11 +2083,15 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         else {
             return Ok(None);
         };
-        let is_synth = matches!(
-            method_name,
-            "push" | "get" | "pop" | "len" | "is_empty"
-            | "sort" | "sort_by" | "sort_desc_by" | "clear" | "truncate"
-        );
+        let is_synth = match slot.heap_order {
+            // `@form(heap)`'s infallible surface on the vec storage.
+            Some(_) => matches!(method_name, "push" | "len" | "is_empty" | "clear"),
+            None => matches!(
+                method_name,
+                "push" | "get" | "pop" | "len" | "is_empty"
+                | "sort" | "sort_by" | "sort_desc_by" | "clear" | "truncate"
+            ),
+        };
         if !is_synth {
             return Ok(None);
         }
@@ -2288,6 +2377,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
 
                 self.builder.position_at_end(cont_bb);
+                // `@form(heap)`: the new element entered at the end;
+                // sift it up to restore the heap order.
+                if let Some(order) = &slot.heap_order {
+                    self.emit_heap_call("lotus_heap_sift_up", vec_field_ptr, &slot.elem_ty, order, locus_name)?;
+                }
                 Ok(Some(None))
             }
             "clear" | "truncate" => {

@@ -11,8 +11,8 @@ form-before-parameter, F.22 capacity).
 This document specifies the form annotation system in general
 (syntax, contract, verification) and the `@form(vec)` contract
 in detail. Subsequent forms (`@form(hashmap)`,
-`@form(ring_buffer)`, `@form(lru_cache)`) get their own sections
-as they're committed.
+`@form(ring_buffer)`, `@form(lru_cache)`, `@form(heap)`) get their
+own sections as they're committed.
 
 ## Annotation syntax
 
@@ -158,6 +158,9 @@ locus SessionCache {
 
 `indexed_by` is a slot clause because indexing IS a storage
 commitment — it changes the pool's layout and access path.
+`@form(heap)`'s `ordered_by min <field>` / `ordered_by max <field>`
+is one for the same reason: the order decides where every cell sits.
+`ordered_by` on a slot of any other locus is a type error.
 
 ## Default lowering (no form annotation)
 
@@ -1786,3 +1789,96 @@ the same inline-header / heap-buffer split as `@form(vec)`,
 > Forward-looking / deferred items for this area now live in the
 > decision log — see [`decisions.md` § Deferred & future
 > work](./decisions.md#deferred--future-work).
+
+---
+
+# `@form(heap)`
+
+A priority queue: a binary heap of `T` records, ordered by one of
+their fields, smallest or largest first. The Hale analogue of
+`BinaryHeap<T>` / `std::priority_queue` / Go's `container/heap`
+(branch-and-bound searches, Dijkstra, timer wheels; friction sweep
+2026-10-12 — they hand-rolled one over `@form(vec)`).
+
+## Required capacity shape
+
+```hale
+type Job { name: String; priority: Int; }
+
+@form(heap)
+locus Jobs {
+    capacity { heap jobs of Job ordered_by min priority; }
+}
+```
+
+Rules verified at typecheck:
+
+- Exactly one slot, of kind `heap` (the growable contiguous
+  discipline; a `pool` slot is rejected).
+- The slot MUST declare `ordered_by min <field>` or `ordered_by max
+  <field>`. `min` puts the smallest key at the root (it comes out
+  first), `max` the largest. There is no default: the direction is
+  stated where the heap is declared. `ordered_by` is a contextual
+  word; `min` and `max` are read only in that position.
+- The cell type MUST be a user-declared record, and the named field
+  one of its fields, of type `Int`, `Float`, `String`, `Time` or
+  `Duration`. A `String` key orders by its bytes (`strcmp`); a
+  `Float` `NaN` is never ordered before anything.
+- No annotation arguments, no `indexed_by`, no `as_parent_for`. The
+  cell type may not be a locus.
+
+## Synthesized methods
+
+```
+fn push(x: T) -> ()                          # infallible
+fn pop() -> T fallible(EmptyError)           # the root, removed
+fn peek() -> T fallible(EmptyError)          # the root, left in place
+fn len() -> Int                              # infallible
+fn is_empty() -> Bool                        # infallible
+fn clear() -> ()                             # infallible
+```
+
+`EmptyError` is the payload `@form(ring_buffer)`'s `pop` fails with
+(`kind: "empty"`).
+
+- `push` adds `x` and restores the heap order: O(log n), amortized
+  over the buffer's doubling.
+- `pop` removes the root — the element with the smallest key under
+  `min`, the largest under `max` — and returns it: O(log n). Among
+  equal keys the order is unspecified (a binary heap is not stable;
+  carry a sequence number in the key's tie-breaker field if FIFO
+  among equals matters).
+- `peek` returns the root without removing it: O(1).
+- `clear` drops every element, as `@form(vec)`'s `clear` does.
+
+Like a vec's, `pop` and `peek` return the CALLER's own copy of the
+element (in the caller's current arena), and the heap owns what it
+stores (`push` stores its own copy). An element `pop` removes, and
+every element `clear` drops, is reclaimed exactly as `@form(vec)`
+reclaims a popped element — its block, its String and Bytes fields,
+its nested records with what they own — and the buffer keeps its
+capacity, so a queue held at a steady depth keeps a flat arena.
+
+There is no indexed access and no iteration: the elements past the
+root are in heap order, which is not an order a caller can use.
+Drain with `pop` for the sorted sequence.
+
+## Lowering strategy
+
+A `@form(heap)` slot is a `@form(vec)` slot — the same inline
+`{ cap, len, buf }` struct, the same pointer-storage elements and
+growth, the same dissolve — with the heap order kept over it: after
+the vec's `push`, `lotus_heap_sift_up` moves the new element up from
+the end; before the vec's `pop`, `lotus_heap_pop_prep` moves the root
+to the end and sifts the old last element down from the root; `peek`
+is the vec's `get(0)`. The key's byte offset in the record, its kind
+(an `i64` for `Int` / `Time` / `Duration`, a `double`, a `String`)
+and the direction are compile-time constants at each call.
+
+## Interaction with the locus tower
+
+As for the other forms: a `@form(heap)` locus can carry params,
+lifecycle bodies, closures, failure routing, bus membership and
+perspectives, and user methods beside the synthesized set (a user
+method may not take a synthesized method's name).
+

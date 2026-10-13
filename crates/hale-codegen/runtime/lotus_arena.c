@@ -3570,6 +3570,79 @@ int lotus_vec_is_empty(void *vec_ptr) {
     return v->len == 0 ? 1 : 0;
 }
 
+/* @form(heap): a binary heap over the @form(vec) storage. The
+ * elements are pointers to records (the vec's pointer-storage); the
+ * order is the record's key field at byte offset `off`, of `kind` 0 (an
+ * int64_t: Int, Time, Duration), 1 (a double, NaN never ordered before
+ * anything) or 2 (a String, compared by bytes, strcmp), smallest at the
+ * root, or largest when `max`. The root is element 0; the vec's own
+ * push and pop move the elements in and out at the end, and these two
+ * restore the order around them. */
+static int lotus_heap_before(const void *a, const void *b, int64_t off,
+                             int64_t kind, int64_t max) {
+    const char *pa = (const char *)a + off;
+    const char *pb = (const char *)b + off;
+    int c;
+    if (kind == 1) {
+        double x, y;
+        memcpy(&x, pa, sizeof x);
+        memcpy(&y, pb, sizeof y);
+        c = x < y ? -1 : (x > y ? 1 : 0);
+    } else if (kind == 2) {
+        const char *x, *y;
+        memcpy(&x, pa, sizeof x);
+        memcpy(&y, pb, sizeof y);
+        c = strcmp(x ? x : "", y ? y : "");
+    } else {
+        int64_t x, y;
+        memcpy(&x, pa, sizeof x);
+        memcpy(&y, pb, sizeof y);
+        c = (x > y) - (x < y);
+    }
+    return max ? c > 0 : c < 0;
+}
+
+/* After a push: the new element is the last; move it up. */
+void lotus_heap_sift_up(void *vec_ptr, int64_t off, int64_t kind,
+                        int64_t max) {
+    lotus_vec_t *v = (lotus_vec_t *)vec_ptr;
+    if (!v || v->len < 2 || !v->buf) return;
+    void **e = (void **)v->buf;
+    size_t i = v->len - 1;
+    void *x = e[i];
+    while (i > 0) {
+        size_t p = (i - 1) / 2;
+        if (!lotus_heap_before(x, e[p], off, kind, max)) break;
+        e[i] = e[p];
+        i = p;
+    }
+    e[i] = x;
+}
+
+/* Before a pop: move the root to the end (where the vec's pop takes
+ * it) and restore the order over the elements before it. */
+void lotus_heap_pop_prep(void *vec_ptr, int64_t off, int64_t kind,
+                         int64_t max) {
+    lotus_vec_t *v = (lotus_vec_t *)vec_ptr;
+    if (!v || v->len < 2 || !v->buf) return;
+    void **e = (void **)v->buf;
+    size_t n = v->len - 1;
+    void *last = e[n];
+    e[n] = e[0];
+    size_t i = 0;
+    for (;;) {
+        size_t l = 2 * i + 1;
+        if (l >= n) break;
+        size_t c = l;
+        if (l + 1 < n && lotus_heap_before(e[l + 1], e[l], off, kind, max))
+            c = l + 1;
+        if (!lotus_heap_before(e[c], last, off, kind, max)) break;
+        e[i] = e[c];
+        i = c;
+    }
+    e[i] = last;
+}
+
 /* Typed comparators for the primitive `sort()` variants. qsort
  * is happy with these directly — no cookie / no trampoline. */
 static int cmp_i64(const void *a, const void *b) {

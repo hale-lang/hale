@@ -101,3 +101,76 @@ fn a_put_reaches_what_the_eviction_hook_does() {
          fn main() {{ let p = P {{ }}; add(p, \"a\"); }}\n"
     ));
 }
+
+const JOB: &str = "type Job { name: String = \"\"; pri: Int = 0; tags: Bytes = b\"\"; }\n";
+
+#[test]
+fn heap_surface_is_typed() {
+    assert_clean(&format!(
+        "{JOB}@form(heap) locus Q {{ capacity {{ heap jobs of Job ordered_by min pri; }} }}\n\
+         fn main() {{\n\
+             let q = Q {{ }};\n\
+             q.push(Job {{ pri: 2 }});\n\
+             let a = q.peek() or Job {{ }};\n\
+             let b = q.pop() or Job {{ }};\n\
+             println(a.pri + b.pri + q.len());\n\
+             if q.is_empty() {{ q.clear(); }}\n\
+         }}\n"
+    ));
+    // pop and peek are fallible (EmptyError); a vec's index surface is absent.
+    assert_error(
+        &format!("{JOB}@form(heap) locus Q {{ capacity {{ heap jobs of Job ordered_by max pri; }} }}\nfn main() {{ let q = Q {{ }}; let a = q.pop(); }}\n"),
+        "`q.pop` can fail (EmptyError)",
+    );
+    assert_error(
+        &format!("{JOB}@form(heap) locus Q {{ capacity {{ heap jobs of Job ordered_by max pri; }} }}\nfn main() {{ let q = Q {{ }}; let a = q.get(0) or Job {{ }}; }}\n"),
+        "no field `get` on `Q`",
+    );
+}
+
+#[test]
+fn heap_shape_errors() {
+    for (slot, needle) in [
+        ("heap jobs of Job;", "must declare `ordered_by min <field>` or `ordered_by max <field>`"),
+        ("heap jobs of Job ordered_by min tags;", "the `ordered_by` field must be an `Int`, `Float`, `String`, `Time` or `Duration`"),
+        ("heap jobs of Job ordered_by max nope;", "cell type `Job` has no field `nope` to be ordered by"),
+        ("pool jobs of Job ordered_by max pri;", "got `pool jobs of ...`"),
+        ("heap jobs of Int ordered_by max pri;", "cell type must be a user-declared record"),
+        ("heap jobs of Job indexed_by name ordered_by min pri;", "drop `indexed_by`"),
+    ] {
+        assert_error(
+            &format!("{JOB}@form(heap) locus Q {{ capacity {{ {slot} }} }}\nfn main() {{ let q = Q {{ }}; }}\n"),
+            needle,
+        );
+    }
+    assert_error(
+        &format!("{JOB}@form(heap, cap = 3) locus Q {{ capacity {{ heap jobs of Job ordered_by min pri; }} }}\nfn main() {{ }}\n"),
+        "@form(heap) takes no arguments",
+    );
+}
+
+#[test]
+fn ordered_by_outside_a_heap_is_an_error() {
+    for decl in [
+        "@form(vec) locus Q { capacity { heap jobs of Job ordered_by max pri; } }",
+        "locus Q { capacity { heap jobs of Job ordered_by max pri; } }",
+    ] {
+        assert_error(
+            &format!("{JOB}{decl}\nfn main() {{ let q = Q {{ }}; }}\n"),
+            "`ordered_by` is the slot clause of `@form(heap)`",
+        );
+    }
+}
+
+#[test]
+fn ordered_by_names_min_or_max() {
+    let err = parse_source(&format!(
+        "{JOB}@form(heap) locus Q {{ capacity {{ heap jobs of Job ordered_by up pri; }} }}\nfn main() {{ }}\n"
+    ))
+    .expect_err("`up` is not a direction");
+    assert!(
+        err.iter().any(|d| d.message.contains("expected `min` or `max` after `ordered_by`")),
+        "{:?}",
+        err.iter().map(|d| &d.message).collect::<Vec<_>>()
+    );
+}

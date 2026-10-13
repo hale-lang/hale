@@ -140,10 +140,11 @@ impl AllocKind {
 }
 
 /// Phase D / D2: the `@form(...)` names whose inserts grow without bound
-/// (backing buffer grows with population, frees only at dissolve). A
+/// (backing buffer grows with population, frees only at dissolve; a
+/// `heap` is a vec underneath). A
 /// `ring_buffer` / `lru_cache` is cap-bounded and excluded.
 fn form_grows(form_name: &str) -> bool {
-    matches!(form_name, "vec" | "hashmap")
+    matches!(form_name, "vec" | "hashmap" | "heap")
 }
 
 /// Phase D / D2: the method names that *insert* into a collection (vs read

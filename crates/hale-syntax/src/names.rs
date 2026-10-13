@@ -393,11 +393,14 @@ fn locus_member<'a>(m: &'a LocusMember, f: &mut Visit<'_, 'a>) {
         LocusMember::Capacity(cb) => {
             let CapacityBlock { slots, span: _ } = cb;
             for s in slots {
-                let CapacitySlot { name: n, kind: _, elem_ty, as_parent_for, indexed_by, span: _ } = s;
+                let CapacitySlot { name: n, kind: _, elem_ty, as_parent_for, indexed_by, ordered_by, span: _ } = s;
                 name(n, f);
                 ty(elem_ty, f);
                 opt_name(as_parent_for, f);
                 opt_name(indexed_by, f);
+                if let Some(o) = ordered_by {
+                    name(&o.field, f);
+                }
             }
         }
         LocusMember::Bindings(bb) => {

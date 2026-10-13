@@ -5274,6 +5274,30 @@ impl Parser {
         } else {
             None
         };
+        // `@form(heap)` optional trailing clause (contextual):
+        //   `ordered_by min <fieldname>` / `ordered_by max <fieldname>`
+        let ordered_by = if matches!(self.peek(), TokenKind::Ident(w) if w == "ordered_by") {
+            let kw = self.bump().span;
+            let dir_ident = self.expect_ident("`min` or `max` after `ordered_by`")?;
+            let dir = match dir_ident.name.as_str() {
+                "min" => OrderDir::Min,
+                "max" => OrderDir::Max,
+                other => {
+                    return Err(Diag::parse(
+                        dir_ident.span,
+                        format!(
+                            "expected `min` or `max` after `ordered_by`, got `{}` \
+                             (`ordered_by min priority` puts the smallest key at the root)",
+                            other
+                        ),
+                    ));
+                }
+            };
+            let field = self.expect_ident("field name after `ordered_by min|max`")?;
+            Some(SlotOrder { dir, span: kw.merge(field.span), field })
+        } else {
+            None
+        };
         // F.22 v1.x-4 optional trailing clause:
         //   `as_parent_for <ChildLocus>`
         let as_parent_for = if self.eat(&TokenKind::AsParentFor) {
@@ -5289,6 +5313,7 @@ impl Parser {
             elem_ty,
             as_parent_for,
             indexed_by,
+            ordered_by,
         })
     }
 

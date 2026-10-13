@@ -424,7 +424,9 @@ impl Shift for TransportSpec {
 shift_unit_enum!(ShmRingOverflow { Block, Drop, Fail });
 shift_unit_enum!(TransportRole { Connect, Listen });
 shift_struct!(CapacityBlock { slots, span });
-shift_struct!(CapacitySlot { name, kind, elem_ty, as_parent_for, indexed_by, span });
+shift_struct!(CapacitySlot { name, kind, elem_ty, as_parent_for, indexed_by, ordered_by, span });
+shift_struct!(SlotOrder { dir, field, span });
+shift_unit_enum!(OrderDir { Min, Max });
 shift_unit_enum!(CapacitySlotKind { Pool, Heap });
 
 // Params, contracts, bus.

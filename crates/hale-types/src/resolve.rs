@@ -1277,6 +1277,11 @@ fn register_locus(
                 let cell_ty = form_ring_buffer_cell_ty(decl, known);
                 synthesize_form_ring_buffer_methods(&mut methods, &cell_ty);
             }
+            "heap" => {
+                // The single heap slot's cell type, as for vec.
+                let cell_ty = form_vec_cell_ty(decl, known);
+                synthesize_form_heap_methods(&mut methods, &cell_ty);
+            }
             "lru_cache" => {
                 // Same keyed shape as @form(hashmap): value struct S +
                 // key K from the `indexed_by` field. lru_cache pairs
@@ -2112,6 +2117,29 @@ fn synthesize_form_hashmap_methods(
     });
 }
 
+/// `@form(heap)`: a priority queue over cell type T, ordered by the
+/// slot's `ordered_by` field (`spec/forms.md` § `@form(heap)`):
+///   `push(x: T) -> ()`                  (infallible)
+///   `pop() -> T fallible(EmptyError)`   (the root: smallest or largest key)
+///   `peek() -> T fallible(EmptyError)`  (the root, left in place)
+///   `len() -> Int`, `is_empty() -> Bool`, `clear() -> ()`
+fn synthesize_form_heap_methods(methods: &mut Vec<MethodInfo>, cell_ty: &Ty) {
+    let empty_err = Ty::Named("EmptyError".to_string());
+    let m = |name: &str, params: Vec<Ty>, ret: Ty, fallible: Option<Ty>| MethodInfo {
+        name: name.to_string(),
+        params,
+        min_params: None,
+        ret,
+        fallible,
+    };
+    methods.push(m("push", vec![cell_ty.clone()], Ty::Unit, None));
+    methods.push(m("pop", Vec::new(), cell_ty.clone(), Some(empty_err.clone())));
+    methods.push(m("peek", Vec::new(), cell_ty.clone(), Some(empty_err)));
+    methods.push(m("len", Vec::new(), Ty::Prim(PrimType::Int), None));
+    methods.push(m("is_empty", Vec::new(), Ty::Prim(PrimType::Bool), None));
+    methods.push(m("clear", Vec::new(), Ty::Unit, None));
+}
+
 /// v1.x-FORM-5: extract cell type T from a `@form(ring_buffer)`
 /// locus. Same shape as `form_vec_cell_ty` — the cell type is
 /// the (single) pool slot's `elem_ty`. Returns `Ty::Unknown` if
@@ -2362,7 +2390,7 @@ fn scan_items_for_stdlib_usage(items: &[TopDecl], out: &mut StdlibErrorUsage) {
                     let error = match form.name.name.as_str() {
                         "vec" => Some("IndexError"),
                         "hashmap" | "lru_cache" => Some("KeyError"),
-                        "ring_buffer" => Some("EmptyError"),
+                        "ring_buffer" | "heap" => Some("EmptyError"),
                         _ => None,
                     };
                     if let Some(error) = error {

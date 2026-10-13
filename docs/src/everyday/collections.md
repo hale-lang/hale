@@ -127,6 +127,39 @@ new entry is not stored — so you decide whether to drop it, apply
 backpressure, or `pop` the oldest and push again. `pop` takes the
 oldest entry and is fallible on empty.
 
+## A priority queue — `@form(heap)`
+
+When you always want the most urgent item next — a job queue, a
+timer list, the frontier of a search — declare a heap and say which
+field orders it, and which end comes out first:
+
+```hale
+type Job { name: String; priority: Int; }
+
+@form(heap)
+locus Jobs {
+    capacity { heap jobs of Job ordered_by min priority; }
+}
+
+fn main() {
+    let q = Jobs { };
+    q.push(Job { name: "deploy", priority: 2 });
+    q.push(Job { name: "page", priority: 0 });
+    q.push(Job { name: "report", priority: 5 });
+    while !q.is_empty() {
+        let j = q.pop() or raise;
+        println(j.name);            // page, deploy, report
+    }
+}
+```
+
+`ordered_by min priority` pops the smallest `priority` first;
+`ordered_by max at` would pop the largest `at`. The field can be an
+`Int`, `Float`, `String`, `Time` or `Duration`. `pop` and `peek`
+(the next item, left in place) are fallible on an empty heap; there
+is no `get(i)` and no `for` over a heap — drain it with `pop` to see
+the items in order.
+
 ## A list inside a type — `bounded[T; N]`
 
 The forms above are *loci* — whole entities with their own

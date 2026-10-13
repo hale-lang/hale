@@ -27,7 +27,7 @@ buffer and the methods over it — `push`, `get`, `set`, `pop`,
 (here: a `{cap, len, buf}` struct with doubling realloc) and the
 method surface.
 
-The five forms and what they require:
+The six forms and what they require:
 
 | Form | Backing slot | Lowers to | Synthesized surface |
 |---|---|---|---|
@@ -36,6 +36,7 @@ The five forms and what they require:
 | `@form(set)` | one `pool` + `indexed_by` | the hashmap table, value never surfaced | `insert`, `contains -> Bool`, `remove`, `len`, `is_empty` |
 | `@form(ring_buffer, cap=N)` | one `pool` | fixed circular buffer | `push -> Bool`, `pop`, `len`, `is_full` |
 | `@form(lru_cache, cap=N)` | one `pool` + `indexed_by` | fixed keyed table, LRU eviction | `put`, `get`, `contains`, `len`, `remove` |
+| `@form(heap)` | one `heap` + `ordered_by min\|max <field>` | binary heap over a doubling buffer | `push`, `pop`, `peek`, `len`, `is_empty`, `clear` |
 
 `get` / `pop` / `remove` (and a vec's `set`) are `fallible`
 (bounds / missing-key / empty); `push` on `vec` is infallible, on `ring_buffer` returns
@@ -128,6 +129,9 @@ declare an `interface`.
   `@form(ring_buffer, cap = N)`.
 - **Bounded keyed cache, evict least-recently-used on full** →
   `@form(lru_cache, cap = N)` (`indexed_by` names the key field).
+- **Always take the smallest (or largest) next** — a priority
+  queue, a timer list, a search frontier → `@form(heap)`
+  (`ordered_by min <field>` or `ordered_by max <field>`).
 
 One form per locus — a locus is one container. Need two? That's
 two loci, which is usually the cleaner decomposition anyway.

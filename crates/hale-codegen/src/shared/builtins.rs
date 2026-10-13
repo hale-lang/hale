@@ -1317,6 +1317,19 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             ),
             None,
         );
+        // declare void @lotus_heap_sift_up(ptr vec, i64 key_off, i64 kind, i64 max)
+        // declare void @lotus_heap_pop_prep(ptr vec, i64 key_off, i64 kind, i64 max)
+        // @form(heap): the binary-heap order over the vec storage.
+        for name in ["lotus_heap_sift_up", "lotus_heap_pop_prep"] {
+            self.module.add_function(
+                name,
+                self.context.void_type().fn_type(
+                    &[ptr_t.into(), i64_t2.into(), i64_t2.into(), i64_t2.into()],
+                    false,
+                ),
+                None,
+            );
+        }
         self.module.add_function(
             "lotus_arena_alloc_reusable",
             ptr_t.fn_type(

@@ -5542,6 +5542,11 @@ pub(crate) struct CapacitySlotLayout {
     /// future F.32-1 ships; today the typechecker rejects
     /// those values.
     pub(crate) sync_mode: SyncMode,
+    /// `@form(heap)`: the `ordered_by` field of the cell record and
+    /// whether the largest key is the root (`max`). The slot is a
+    /// `SlotForm::Vec` (the same storage); this turns its method set
+    /// into the heap's. `None` for every other slot.
+    pub(crate) heap_order: Option<(String, bool)>,
 }
 
 /// F.32-1α (2026-05-24): which cross-pool sync discipline a

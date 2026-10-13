@@ -827,11 +827,18 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
         // (e.g. internal-test paths) AND grounds the error in
         // the same CodegenTy world the rest of codegen reasons
         // in.
-        let is_form_vec = l
+        // `@form(heap)` is a vec underneath: the same inline storage
+        // and runtime, kept in heap order (`CapacitySlotLayout::heap_order`).
+        let is_form_heap = l
             .form
             .as_ref()
-            .map(|f| f.name.name.as_str() == "vec")
-            .unwrap_or(false);
+            .is_some_and(|f| f.name.name.as_str() == "heap");
+        let is_form_vec = is_form_heap
+            || l
+                .form
+                .as_ref()
+                .map(|f| f.name.name.as_str() == "vec")
+                .unwrap_or(false);
         // #353: `@form(set)` is a hashmap whose value is carried but
         // never surfaced — `decisions.md` specifies it as "a
         // hashmap-without-value variant (the cell IS the key)". It
@@ -1080,6 +1087,13 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
                         .map(|i| i.name.clone()),
                     ring_buffer_cap,
                     sync_mode,
+                    heap_order: if is_form_heap {
+                        slot.ordered_by.as_ref().map(|o| {
+                            (o.field.name.clone(), o.dir == hale_syntax::ast::OrderDir::Max)
+                        })
+                    } else {
+                        None
+                    },
                 });
             }
         }

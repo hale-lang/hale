@@ -1857,7 +1857,30 @@ pub struct CapacitySlot {
     /// `@form(hashmap)` loci; typecheck flags misuse on other
     /// shapes. `None` for ordinary slots.
     pub indexed_by: Option<Ident>,
+    /// `@form(heap)` slot order: `ordered_by min <field>` /
+    /// `ordered_by max <field>` names the cell record's field the heap
+    /// orders by and which end is its root. Only meaningful on a
+    /// `@form(heap)` locus; typecheck flags it anywhere else. `None` for
+    /// ordinary slots.
+    pub ordered_by: Option<SlotOrder>,
     pub span: Span,
+}
+
+/// `ordered_by min <field>` / `ordered_by max <field>` on a capacity
+/// slot (`@form(heap)`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct SlotOrder {
+    pub dir: OrderDir,
+    pub field: Ident,
+    pub span: Span,
+}
+
+/// Which end of a `@form(heap)` is its root: the smallest key (`min`)
+/// or the largest (`max`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OrderDir {
+    Min,
+    Max,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
