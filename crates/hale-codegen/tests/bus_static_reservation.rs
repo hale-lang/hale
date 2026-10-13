@@ -184,6 +184,39 @@ fn keyed_later_subscribers_take_their_key_at_the_claim() {
 }
 
 #[test]
+fn a_keyed_parent_hears_its_childrens_birth_once() {
+    // A parent's keyed subscription registers after its params (its key
+    // may read them), so its children's births publish before it exists:
+    // the root's reservation holds them, and the parent's claim takes the
+    // one its key names, once — the other key's is not its, and nothing
+    // reaches it twice (the shape a DNA workflow's fixture builds: Works
+    // asking their state at birth, the fixture answering the left one).
+    let src = r#"
+        type Ask { scope: String; n: Int; }
+        topic Asked { payload: Ask; subject: "rsv.asked"; keyed_by scope; }
+        locus Work {
+            params { scope: String = ""; n: Int = 0; }
+            bus { publish Asked; }
+            birth() { Asked <- Ask { scope: self.scope, n: self.n }; }
+        }
+        main locus Fixture {
+            params {
+                left: Work = Work { scope: "left", n: 1 };
+                right: Work = Work { scope: "right", n: 2 };
+                heard: Int = 0;
+            }
+            bus { subscribe Asked as on_ask where key == "left"; }
+            fn on_ask(a: Ask) { self.heard = self.heard + 1; println("asked " + a.scope + " " + to_string(a.n)); }
+            run() { yield; std::time::sleep(20ms); println("heard " + to_string(self.heard)); }
+        }
+        fn main() { Fixture { }; }
+    "#;
+    let (out, stderr) = run_env("keyed_parent", src, false, &[("LOTUS_BUS_LOG_RESERVE", "1")]);
+    assert_eq!(out, ["asked left 1", "heard 1"], "{stderr}");
+    assert!(stderr.contains("reservation `rsv.asked` closed: parked 2 copied 1 forwarded 0 shed 0 claimants 1 missing 0"), "{stderr}");
+}
+
+#[test]
 fn a_pinned_anchor_hears_an_earlier_sibling() {
     let src = r#"
         type Note { n: Int; }
@@ -209,8 +242,7 @@ fn subtrees_built_on_an_anchors_thread_take_part() {
     // A pinned field's params and a pool-placed field's are built on
     // that field's own thread, in an init the root's thread waits for:
     // their subscribers claim from there, and what they publish there
-    // reaches a later sibling — past the queue's cap, since the root's
-    // thread waits for that init and the init must not wait for it.
+    // reaches a later sibling.
     let src = r#"
         type Note { n: Int; }
         topic Fact { payload: Note; subject: "rsv.anchor.fact"; }
@@ -224,14 +256,14 @@ fn subtrees_built_on_an_anchors_thread_take_part() {
         locus Flood {
             params { x: Int = 0; }
             bus { publish Echo; }
-            birth() { let mut i = 0; while i < 10000 { Echo <- Note { n: i }; i = i + 1; } }
+            birth() { let mut i = 0; while i < 5000 { Echo <- Note { n: i }; i = i + 1; } }
         }
         locus Hold { params { e: Ear = Ear { tag: "pinned.inner" }; f: Flood = Flood { }; } }
         locus PoolHold { params { e: Ear = Ear { tag: "pool.inner" }; } }
         locus Count {
             params { n: Int = 0; }
             bus { subscribe Echo as on_echo; }
-            fn on_echo(f: Note) { self.n = self.n + 1; if f.n == 9999 { println("echo " + to_string(self.n)); } }
+            fn on_echo(f: Note) { self.n = self.n + 1; if f.n == 4999 { println("echo " + to_string(self.n)); } }
         }
         main locus Root {
             params { t: Teller = Teller { }; h: Hold = Hold { }; p: PoolHold = PoolHold { }; c: Count = Count { }; }
@@ -241,8 +273,8 @@ fn subtrees_built_on_an_anchors_thread_take_part() {
         fn main() { Root { }; }
     "#;
     let (out, stderr) = run_env("anchors", src, false, &[("LOTUS_BUS_LOG_RESERVE", "1")]);
-    assert_eq!(out, ["echo 10000", "pinned.inner 7", "pool.inner 7"], "{stderr}");
-    assert!(stderr.contains("reservation `rsv.anchor.echo` closed: parked 10000 copied 10000"), "{stderr}");
+    assert_eq!(out, ["echo 5000", "pinned.inner 7", "pool.inner 7"], "{stderr}");
+    assert!(stderr.contains("reservation `rsv.anchor.echo` closed: parked 5000 copied 5000"), "{stderr}");
 }
 
 #[test]
@@ -338,6 +370,90 @@ fn a_construction_a_failure_leaves_closes_its_reservation() {
     assert_eq!(out, ["built 0", "ear 7"], "{stderr}");
     assert!(stderr.contains("reservation `rsv.left` closed: parked 1 copied 0 forwarded 0 shed 0 claimants 0 missing 1"), "{stderr}");
     assert!(stderr.contains("1 subscription(s) of `rsv.left` reserved for a statically built tree never registered"), "{stderr}");
+}
+
+#[test]
+fn a_publisher_never_waits_on_a_reservation_and_the_drain_completes() {
+    // The tree's reservation stays open while `Slow`'s birth waits for the
+    // drain, and a pinned publisher floods the subject meanwhile. Nothing
+    // waits on a reservation: past a queue's worth it sheds, counted and
+    // said once, so the publisher keeps running, sees the drain, and the
+    // process ends within the grace. (When a publisher on another thread
+    // waited at the cap for the reservation to close, it stood still at a
+    // queue's worth and could not see the drain while it waited.)
+    use std::io::{BufRead, BufReader};
+    use std::process::Stdio;
+    use std::sync::mpsc;
+    use std::time::Duration;
+    let src = r#"
+        type Note { n: Int; }
+        topic Feed { payload: Note; subject: "rsv.drain"; }
+        locus Pump {
+            params { sent: Int = 0; }
+            bus { publish Feed; }
+            run() {
+                while !self.draining { Feed <- Note { n: self.sent }; self.sent = self.sent + 1; }
+                println("pump sent " + to_string(self.sent));
+            }
+        }
+        locus Slow {
+            params { x: Int = 0; }
+            birth() {
+                println("slow waiting");
+                while !self.draining && self.x < 2000 { std::time::sleep(10ms); self.x = self.x + 1; }
+            }
+        }
+        locus Sink {
+            params { got: Int = 0; }
+            bus { subscribe Feed as on_feed; }
+            fn on_feed(f: Note) { self.got = self.got + 1; }
+        }
+        main locus Root {
+            params { p: Pump = Pump { }; w: Slow = Slow { }; s: Sink = Sink { }; }
+            placement { p: pinned; }
+            run() { while !self.draining { std::time::sleep(10ms); } }
+        }
+        fn main() { Root { }; }
+    "#;
+    let bin = harness::unique_bin("drain_open");
+    build_opts::build_source(src, &bin, &build_opts::options()).expect("build");
+    let mut child = Command::new(&bin)
+        .env("LOTUS_DRAIN_GRACE_MS", "3000")
+        .env("LOTUS_BUS_LOG_RESERVE", "1")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn");
+    let mut stdout = BufReader::new(child.stdout.take().unwrap());
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let mut first = String::new();
+        let _ = stdout.read_line(&mut first);
+        let _ = tx.send(first.clone());
+        let mut rest = String::new();
+        let _ = std::io::Read::read_to_string(&mut stdout, &mut rest);
+        let _ = tx.send(rest);
+    });
+    let first = rx.recv_timeout(Duration::from_secs(30)).expect("the tree starts");
+    assert_eq!(first.trim(), "slow waiting");
+    // the pump floods well past a queue's worth while the tree is built
+    std::thread::sleep(Duration::from_millis(300));
+    let killed = Command::new("kill").args(["-TERM", &child.id().to_string()]).status().expect("kill");
+    assert!(killed.success());
+    let rest = rx.recv_timeout(Duration::from_secs(20)).expect("the process ends");
+    let out = child.wait_with_output().expect("wait");
+    let _ = std::fs::remove_file(&bin);
+    let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+    assert!(!stderr.contains("did not finish within"), "the drain hit the grace:\n{stderr}");
+    assert!(out.status.success(), "{:?}\n{rest}\n{stderr}", out.status);
+    let sent: u64 = rest
+        .lines()
+        .find_map(|l| l.strip_prefix("pump sent "))
+        .and_then(|n| n.trim().parse().ok())
+        .unwrap_or_else(|| panic!("the pump never stopped:\n{rest}\n{stderr}"));
+    assert!(sent > 4 * 8192, "the pump stood still at the reservation's cap: sent {sent}\n{stderr}");
+    assert_eq!(stderr.matches("are held for it, a queue's worth; further ones are shed").count(), 1, "{stderr}");
+    assert!(stderr.contains("reservation `rsv.drain` closed: parked 8192 copied 8192"), "{stderr}");
 }
 
 /// A publisher on its own thread, started early in the tree, sends
