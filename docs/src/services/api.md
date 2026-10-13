@@ -518,8 +518,8 @@ Todo`) is the message `TodoMessage`: proto3 gives a service and a message one
 scope, and the service keeps the surface's name because it is the gRPC path.
 
 A client is whatever generates stubs from a `.proto`; `hale api client`
-makes Hale and TypeScript clients and neither speaks gRPC (a browser's
-`fetch` cannot, and neither client carries an HTTP/2 stack). The server also
+makes Hale, TypeScript and JavaScript clients and none speaks gRPC (a
+browser's `fetch` cannot, and no client carries an HTTP/2 stack). The server also
 answers gRPC server reflection (`grpc.reflection.v1`), so a tool that does not
 have the file finds the surface through the server: it lists three services
 (the surface, `hale.api.Description` and the reflection service itself) and
@@ -726,6 +726,7 @@ hale api export --surface Public --out api/public desk.hl
 hale api client --surface Public --lang hale --out client/desk.hl desk.hl
 hale api client --surface Public --lang ts   --out client/desk.ts desk.hl
 hale api client --surface Public --lang ts   --check client/desk.ts desk.hl   # exit 1 on drift
+hale api client --surface Public --lang js   --out web/desk.js desk.hl
 ```
 
 `export` writes a bundle: `Public.description.json` (every member with its
@@ -750,9 +751,13 @@ single file that needs only `fetch` and `WebSocket`: an async function per
 member answering a tagged union (`result`, `handler_error`, `refusal`,
 `server_error`; a connection that never answered is thrown as a
 `TransportError`, because that request may have run) and an async iterable
-per stream. Both send the surface's digest on every call, so a program that
-changed under a client refuses it `digest_mismatch`; both name the digest in
-a constant, and `--check` refuses a committed copy made against another one.
+per stream. The JavaScript one is that same client as an ES module a page
+loads as it is, with no compile step: the same functions by the same names,
+typed in JSDoc, so an editor (or `tsc --checkJs`) still checks a caller
+against the rows. Every client sends the surface's digest on every call, so a
+program that changed under it refuses it `digest_mismatch`; each names the
+digest in a constant, and `--check` refuses a committed copy made against
+another one.
 A client speaks `unix:PATH` and `http://` (the Hale client) and `http://` and
 `ws://` (both); TLS is not spoken, and neither is gRPC: a gRPC caller takes the
 `.proto` to its own language's stub generator, or finds the surface through

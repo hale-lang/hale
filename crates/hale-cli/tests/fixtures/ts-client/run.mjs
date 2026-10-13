@@ -1,4 +1,4 @@
-// GH #1417 (R8a): the generated TypeScript client speaks the contract's wire.
+// GH #1417 (R8a): the generated TypeScript and JavaScript clients speak the contract's wire.
 //
 //   node crates/hale-cli/tests/fixtures/ts-client/run.mjs
 //
@@ -13,7 +13,11 @@
 //   3. builds the replay server (tests/hale/api/client/replay) with the same
 //      `hale`, serves the contract's recordings over HTTP and the hub's frames
 //      over a WebSocket, and runs every outcome and every way a stream ends
-//      through the compiled client on node's `fetch` and `WebSocket`.
+//      through the compiled client on node's `fetch` and `WebSocket`;
+//   4. `hale api client --lang js`, the same client as a JavaScript module
+//      typed in JSDoc: checked by `tsc --checkJs --strict`, then put where the
+//      compiled TypeScript client was and run through the same compiled
+//      scenarios, to the same outcomes and the same recorded requests.
 //
 // The replay server compares each request the client wrote to the recorded
 // one (method, path, headers and body byte for byte, the credential of a hub
@@ -105,51 +109,69 @@ function serve(args, report) {
   return child;
 }
 
-const scenarios = await import(pathToFileURL(path.join(js, "scenarios.js")).href);
+// The scenarios, run through one client against the replay servers: every
+// outcome of wire/http, and each way a hub subscription ends.
+async function exercise(scenarios, lang) {
+  same(scenarios.digest(), "fnv1a64:a8930d6e7998e986", `${lang}: the client names Public's digest`);
 
-same(scenarios.digest(), "fnv1a64:a8930d6e7998e986", "the client names Public's digest");
+  // HTTP: every outcome of wire/http
+  {
+    const port = await freePort();
+    const report = path.join(scratch, `${lang}.http.report`);
+    serve(["http", wire, String(port), report, "result", "handler_error", "server_error", "refusal_digest_mismatch", "refusal_full", "~refusal_malformed", "refusal_shutting_down", "refusal_unauthenticated", "refusal_unauthorized", "refusal_unavailable"]);
+    await waitFor(report + ".ready", "the HTTP replay server");
+    const got = await scenarios.http(`http://127.0.0.1:${port}`);
+    same(got, [
+      "result:41:125000",
+      "handler_error:unknown_order:no order 999",
+      "server_error",
+      "refusal:digest_mismatch:the request was generated against fnv1a64:0123456789abcdef::fnv1a64:a8930d6e7998e986",
+      "refusal:full:the exposure holds its bound of requests accepted and not yet answered::",
+      "refusal:malformed:missing_field: qty::",
+      "refusal:shutting_down:the exposure is stopping::",
+      "refusal:unauthenticated:no such token::",
+      "refusal:unauthorized:Orders::cancel requires trader:trader:",
+      "refusal:unavailable:the receiver of Orders::place is unavailable; the call did not run::",
+    ], `${lang}: the outcomes of wire/http`);
+    await waitFor(report, "the HTTP report");
+    same(readFileSync(report, "utf8"), "ok result\nok handler_error\nok server_error\nok refusal_digest_mismatch\nok refusal_full\nok refusal_malformed\nok refusal_shutting_down\nok refusal_unauthenticated\nok refusal_unauthorized\nok refusal_unavailable\n", `${lang}: every request the client wrote is the recorded one`);
+    // nothing listening is a thrown TransportError, never an outcome
+    same(await scenarios.httpLost(`http://127.0.0.1:${await freePort()}`), "lost", `${lang}: a connection that is not answered is thrown`);
+  }
 
-// HTTP: every outcome of wire/http
-{
-  const port = await freePort();
-  const report = path.join(scratch, "http.report");
-  serve(["http", wire, String(port), report, "result", "handler_error", "server_error", "refusal_digest_mismatch", "refusal_full", "~refusal_malformed", "refusal_shutting_down", "refusal_unauthenticated", "refusal_unauthorized", "refusal_unavailable"]);
-  await waitFor(report + ".ready", "the HTTP replay server");
-  const got = await scenarios.http(`http://127.0.0.1:${port}`);
-  same(got, [
-    "result:41:125000",
-    "handler_error:unknown_order:no order 999",
-    "server_error",
-    "refusal:digest_mismatch:the request was generated against fnv1a64:0123456789abcdef::fnv1a64:a8930d6e7998e986",
-    "refusal:full:the exposure holds its bound of requests accepted and not yet answered::",
-    "refusal:malformed:missing_field: qty::",
-    "refusal:shutting_down:the exposure is stopping::",
-    "refusal:unauthenticated:no such token::",
-    "refusal:unauthorized:Orders::cancel requires trader:trader:",
-    "refusal:unavailable:the receiver of Orders::place is unavailable; the call did not run::",
-  ], "the outcomes of wire/http");
-  await waitFor(report, "the HTTP report");
-  same(readFileSync(report, "utf8"), "ok result\nok handler_error\nok server_error\nok refusal_digest_mismatch\nok refusal_full\nok refusal_malformed\nok refusal_shutting_down\nok refusal_unauthenticated\nok refusal_unauthorized\nok refusal_unavailable\n", "every request the client wrote is the recorded one");
-  // nothing listening is a thrown TransportError, never an outcome
-  same(await scenarios.httpLost(`http://127.0.0.1:${await freePort()}`), "lost", "a connection that is not answered is thrown");
+  // the hub: each way a subscription ends
+  {
+    const port = await freePort();
+    const report = path.join(scratch, `${lang}.ws.report`);
+    serve(["ws", String(port), report, "closed", "revoked", "expired", "refused", "abort", "late"]);
+    await waitFor(report + ".ready", "the hub replay server");
+    const endpoint = `ws://127.0.0.1:${port}`;
+    const event = "event:1:41:10:12500";
+    same(await scenarios.stream(endpoint), ["subscribed", event, "event:3:42:5:12400", "closed"], `${lang}: closed ends it, a gap in seq kept`);
+    same(await scenarios.stream(endpoint), ["subscribed", event, "revoked"], `${lang}: revoked ends it`);
+    same(await scenarios.stream(endpoint), ["subscribed", event, "expired"], `${lang}: expired ends it`);
+    same(await scenarios.stream(endpoint), ["refusal:unauthorized:Fills requires operator:operator:"], `${lang}: a refusal names the role`);
+    same(await scenarios.stream(endpoint), ["subscribed", event, "lost"], `${lang}: no closed frame is a thrown TransportError`);
+    same(await scenarios.stream(endpoint), ["subscribed", event, "closed"], `${lang}: an event that comes late comes`);
+    await waitFor(report, "the hub report");
+    same(readFileSync(report, "utf8"), "ok closed\nok revoked\nok expired\nok refused\nok abort\nok late\n", `${lang}: every subscribe frame and credential the client wrote is the contract's`);
+  }
 }
 
-// the hub: each way a subscription ends
+await exercise(await import(pathToFileURL(path.join(js, "scenarios.js")).href), "ts");
+
+// 4: the JavaScript client (`--lang js`), the same surface typed in JSDoc: it
+// checks under `tsc --checkJs --strict` and, in place of the compiled
+// TypeScript one, runs the same compiled scenarios to the same outcomes.
 {
-  const port = await freePort();
-  const report = path.join(scratch, "ws.report");
-  serve(["ws", String(port), report, "closed", "revoked", "expired", "refused", "abort", "late"]);
-  await waitFor(report + ".ready", "the hub replay server");
-  const endpoint = `ws://127.0.0.1:${port}`;
-  const event = "event:1:41:10:12500";
-  same(await scenarios.stream(endpoint), ["subscribed", event, "event:3:42:5:12400", "closed"], "closed ends it, a gap in seq kept");
-  same(await scenarios.stream(endpoint), ["subscribed", event, "revoked"], "revoked ends it");
-  same(await scenarios.stream(endpoint), ["subscribed", event, "expired"], "expired ends it");
-  same(await scenarios.stream(endpoint), ["refusal:unauthorized:Fills requires operator:operator:"], "a refusal names the role");
-  same(await scenarios.stream(endpoint), ["subscribed", event, "lost"], "no closed frame is a thrown TransportError");
-  same(await scenarios.stream(endpoint), ["subscribed", event, "closed"], "an event that comes late comes");
-  await waitFor(report, "the hub report");
-  same(readFileSync(report, "utf8"), "ok closed\nok revoked\nok expired\nok refused\nok abort\nok late\n", "every subscribe frame and credential the client wrote is the contract's");
+  const jsOnly = path.join(scratch, "js-client");
+  mkdirSync(jsOnly, { recursive: true });
+  writeFileSync(path.join(jsOnly, "package.json"), '{"type":"module"}\n');
+  run(hale, ["api", "client", "--surface", "Public", "--lang", "js", "--out", path.join(jsOnly, "client.js"), path.join(root, "tests/api-contract/program.hl")], "generate the JavaScript client");
+  run(hale, ["api", "client", "--surface", "Public", "--lang", "js", "--check", path.join(jsOnly, "client.js"), path.join(root, "tests/api-contract/program.hl")], "the generated JavaScript client is current");
+  run(tsc, ["--allowJs", "--checkJs", "--noEmit", "--strict", "--target", "es2022", "--lib", "es2022,dom", "--module", "es2022", "--moduleResolution", "bundler", path.join(jsOnly, "client.js")], "tsc --checkJs --strict");
+  copyFileSync(path.join(js, "scenarios.js"), path.join(jsOnly, "scenarios.js"));
+  await exercise(await import(pathToFileURL(path.join(jsOnly, "scenarios.js")).href), "js");
 }
 
-console.log(`ts client: ${checks} checks passed`);
+console.log(`ts and js clients: ${checks} checks passed`);

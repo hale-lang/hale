@@ -2043,7 +2043,7 @@ library's location. And a tool, a path or a schema is named by what the
 program declares, in an order the rows fix (members by name as bytes, schemas
 by name).
 
-**`hale api client --surface NAME --lang hale|ts [--out FILE | --check FILE]
+**`hale api client --surface NAME --lang hale|ts|js [--out FILE | --check FILE]
 [target]`** writes a client of the surface (to stdout without `--out`). A
 client:
 
@@ -2078,8 +2078,13 @@ dependency beyond `fetch` and `WebSocket` (`http://` and `ws://`; a socket is no
 spoken, `fetch` has none): an async function per member answering
 `{kind: "result" | "handler_error" | "refusal" | "server_error"}` and throwing
 `TransportError` for the fifth, and `subscribe<Topic>(opts)`, an async iterable
-of events; the credential rides a hub upgrade as `?access_token=`. TLS is not
-spoken by either. **Neither speaks gRPC, and that is by decision**: a gRPC call
+of events; the credential rides a hub upgrade as `?access_token=`. The
+**JavaScript client** (`--lang js`) is the TypeScript client as one ES module a
+page or `node` loads with no compile step: the same exports by the same names,
+the same wire and outcomes, its types JSDoc (`@typedef` per record and outcome,
+`@param` and `@returns` per function, a `// @ts-check` header), so an editor or
+`tsc --checkJs` holds a caller to the rows as the `.ts` module's types do. TLS
+is not spoken by any of them. **None speaks gRPC, and that is by decision**: a gRPC call
 needs HTTP/2 with trailers, which `fetch` does not give a script and which a
 generated Hale client has no stack for (nghttp2 is linked into served programs,
 not into a program that calls), so a gRPC mode would need a library beyond the
@@ -2093,7 +2098,8 @@ digest in the `hale-surface-digest` metadata and the bearer in `authorization`.
 the surface now generates, naming the digest it was made against when that is
 not the surface's. A client never carries more than the contract: the recorded
 requests of `tests/api-contract/wire/` are what the generated clients write, and
-the recorded replies what they read
+the recorded replies what they read (the TypeScript and JavaScript clients run
+the same compiled scenarios to the same outcomes)
 (`tests/hale/api/client_test.hl`, `crates/hale-cli/tests/fixtures/ts-client/`).
 
 ## Driving a served program

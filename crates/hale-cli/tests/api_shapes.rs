@@ -230,3 +230,59 @@ fn the_generated_clients_carry_a_list_and_an_instant() {
     }
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// What a page does with the served fixture through the JavaScript client.
+const JS_CALLER: &str = r#"import * as c from "./client.js";
+const opts = { endpoint: process.env.ENDPOINT, bearer: "t-reader" };
+const out = [];
+out.push(await c.libraryPut(opts, { books: [{ id: 7, title: "Kim" }, { id: 8, title: "Emma" }], label: "back" }));
+out.push(await c.libraryFind(opts, { ids: [8] }));
+out.push(await c.libraryCorner(opts, { at: [5, -6] }));
+out.push(await c.libraryStamp(opts, { at: "2026-10-12T03:04:05.5Z", every: 250 }));
+out.push(await c.libraryFind(opts, { ids: [1, 2, 3, 4, 5] }));
+for (const o of out) console.log(JSON.stringify(o));
+"#;
+
+/// The JavaScript client (`--lang js`) checks under `tsc --checkJs --strict`
+/// where a compiler is installed, carries a list and an instant against the
+/// served fixture on node's `fetch`, and a list over its bound comes back the
+/// server's refusal. It needs `node`; without it the test says so and
+/// passes, unless `HALE_REQUIRE_TS_CLIENT=1` (the face-browser job's
+/// `run.mjs` runs the JavaScript client against the contract's recordings).
+#[test]
+fn the_javascript_client_carries_a_list_and_an_instant() {
+    if !Command::new("node").arg("--version").output().is_ok_and(|o| o.status.success()) {
+        assert!(std::env::var("HALE_REQUIRE_TS_CLIENT").map_or(true, |v| v != "1"), "HALE_REQUIRE_TS_CLIENT=1, and node is not installed");
+        eprintln!("skipped: node is needed (the face-browser job runs the JavaScript client)");
+        return;
+    }
+    let dir = unique_dir("js");
+    let o = hale().args(["api", "client", "--surface", "Shelves", "--lang", "js", "--out"]).arg(dir.join("client.js")).arg(fixture()).output().expect("js client");
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    std::fs::write(dir.join("package.json"), "{\"type\":\"module\"}\n").unwrap();
+    std::fs::write(dir.join("caller.mjs"), JS_CALLER).unwrap();
+    let tsc = std::env::var("TSC").unwrap_or_else(|_| "tsc".to_string());
+    if Command::new(&tsc).arg("--version").output().is_ok_and(|o| o.status.success()) {
+        let c = Command::new(&tsc)
+            .args(["--allowJs", "--checkJs", "--strict", "--noEmit", "--target", "es2022", "--lib", "es2022,dom", "--module", "es2022", "--moduleResolution", "bundler"])
+            .arg(dir.join("client.js"))
+            .output()
+            .expect("tsc");
+        assert!(c.status.success(), "tsc --checkJs refused the client:\n{}{}", String::from_utf8_lossy(&c.stdout), String::from_utf8_lossy(&c.stderr));
+    }
+    let s = Served::start();
+    let r = Command::new("node").arg(dir.join("caller.mjs")).env("ENDPOINT", &s.endpoint).output().expect("run node");
+    assert!(r.status.success(), "{}", String::from_utf8_lossy(&r.stderr));
+    let lines: Vec<Value> = String::from_utf8_lossy(&r.stdout).lines().map(json_of).collect();
+    assert_eq!(
+        lines,
+        [
+            json!({"kind": "result", "value": {"books": [{"id": 7, "title": "Kim"}, {"id": 8, "title": "Emma"}], "label": "back"}}),
+            json!({"kind": "result", "value": {"books": [{"id": 8, "title": "Emma"}], "label": "found"}}),
+            json!({"kind": "result", "value": {"at": [5, -6]}}),
+            json!({"kind": "result", "value": {"at": "2026-10-12T03:04:05.50000025Z", "every": 500}}),
+            json!({"kind": "refusal", "refusal": {"kind": "malformed", "reason": "too_long: ids", "requires": []}}),
+        ]
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
