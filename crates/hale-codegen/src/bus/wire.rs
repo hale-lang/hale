@@ -458,7 +458,7 @@ impl<'ctx, 'p> BusWire<'ctx> for Cx<'ctx, 'p> {
             | CodegenTy::Bool
             | CodegenTy::Time
             | CodegenTy::Duration
-            | CodegenTy::Decimal => {
+            | CodegenTy::Decimal(_) => {
                 let elem_bytes =
                     codegen_ty_size_bytes(self.context, elem_ty);
                 let total_bytes = n * elem_bytes;
@@ -647,7 +647,7 @@ impl<'ctx, 'p> BusWire<'ctx> for Cx<'ctx, 'p> {
             | CodegenTy::Bool
             | CodegenTy::Time
             | CodegenTy::Duration
-            | CodegenTy::Decimal => {
+            | CodegenTy::Decimal(_) => {
                 let elem_bytes =
                     codegen_ty_size_bytes(self.context, elem_ty);
                 let total_bytes = n * elem_bytes;
@@ -891,7 +891,7 @@ impl<'ctx, 'p> BusWire<'ctx> for Cx<'ctx, 'p> {
                 | CodegenTy::Bool
                 | CodegenTy::Time
                 | CodegenTy::Duration
-                | CodegenTy::Decimal => {
+                | CodegenTy::Decimal(_) => {
                     let nbytes = codegen_ty_size_bytes(self.context, &field_ty);
                     let nbytes_iv = i64_t.const_int(nbytes, false);
                     self.emit_ser_memcpy(
@@ -1254,7 +1254,7 @@ impl<'ctx, 'p> BusWire<'ctx> for Cx<'ctx, 'p> {
                 | CodegenTy::Bool
                 | CodegenTy::Time
                 | CodegenTy::Duration
-                | CodegenTy::Decimal => {
+                | CodegenTy::Decimal(_) => {
                     let nbytes = codegen_ty_size_bytes(self.context, &field_ty);
                     let nbytes_iv = i64_t.const_int(nbytes, false);
                     self.emit_memcpy_call(
@@ -1664,7 +1664,7 @@ impl<'ctx, 'p> BusWire<'ctx> for Cx<'ctx, 'p> {
                 | CodegenTy::Bool
                 | CodegenTy::Time
                 | CodegenTy::Duration
-                | CodegenTy::Decimal => {
+                | CodegenTy::Decimal(_) => {
                     let nbytes = codegen_ty_size_bytes(self.context, &field_ty);
                     let nbytes_iv = i64_t.const_int(nbytes, false);
                     self.emit_memcpy_call(
@@ -1959,7 +1959,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             CodegenTy::Int
             | CodegenTy::Float
             | CodegenTy::Bool
-            | CodegenTy::Decimal
+            | CodegenTy::Decimal(_)
             | CodegenTy::Duration => true,
             // No-payload enum is a plain i32 tag (value semantics); a
             // payload-carrying enum is a pointer to its storage struct.

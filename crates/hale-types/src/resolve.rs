@@ -512,7 +512,6 @@ pub fn build_top_scope(bundle: &Bundle<'_>) -> (TopScope, Vec<Diag>) {
         &mut scope,
         bundle_uses_fail_topics(bundle),
         bundle_declares_a_range(bundle),
-        bundle_declares_a_quantity(bundle),
     );
     // FUv0.8.2 #1 (2026-05-25): if the user has declared a
     // type whose name shadows a stdlib error type but with
@@ -1657,7 +1656,7 @@ fn type_expr_mangle_token(
             PrimType::Bool => Some("Bool".into()),
             PrimType::String => Some("String".into()),
             PrimType::Duration => Some("Duration".into()),
-            PrimType::Decimal => Some("Decimal".into()),
+            PrimType::Decimal(s) => Some(crate::ty::decimal_mangle_token(*s).into()),
             PrimType::Time => Some("Time".into()),
             _ => None,
         },
@@ -2298,16 +2297,16 @@ fn synthesize_form_lru_cache_methods(
 /// `BusUnmatchedKey` publish payload. A synthesized `@form` method's,
 /// a `bounded` push's and a fallible stdlib call's error type then
 /// resolves with its fields. With `ranges` (a type declares a `range:`
-/// clause, GH #1076), the `RangeError` a narrowing carries; with
-/// `quantities` (a type is a quantity or a point, U3), the `InexactError`
-/// a conversion that divides carries.
+/// clause, GH #1076), the `RangeError` a narrowing carries. The
+/// `InexactError` a conversion that divides carries (a quantity's, U3,
+/// or a Decimal's `.rescale(S)`) is in every program.
 ///
 /// Idempotent per name: a name the scope already holds (declared by
 /// user code or a stdlib `.hl` file) wins, so a project that shipped
 /// its own error shapes keeps them (and `check_stdlib_error_shadowing`
 /// says when one cannot stand in for the stdlib's). The injected
 /// entries carry a zero span.
-pub(crate) fn inject_builtin_types(scope: &mut TopScope, fail_topics: bool, ranges: bool, quantities: bool) {
+pub(crate) fn inject_builtin_types(scope: &mut TopScope, fail_topics: bool, ranges: bool) {
     use crate::builtin_types::{Injected, BUILTIN_TYPES};
     let zero = Span::new(0, 0);
     for t in BUILTIN_TYPES {
@@ -2315,7 +2314,6 @@ pub(crate) fn inject_builtin_types(scope: &mut TopScope, fail_topics: bool, rang
             Injected::Always => true,
             Injected::WhenAFailTopic => fail_topics,
             Injected::WhenARange => ranges,
-            Injected::WhenAQuantity => quantities,
         };
         if !injected || scope.symbols.contains_key(t.name) {
             continue;
@@ -2740,7 +2738,7 @@ fn prim_display(p: PrimType) -> &'static str {
         PrimType::Int => "Int",
         PrimType::Uint => "Uint",
         PrimType::Float => "Float",
-        PrimType::Decimal => "Decimal",
+        PrimType::Decimal(s) => crate::ty::decimal_name(s),
         PrimType::Bool => "Bool",
         PrimType::String => "String",
         PrimType::Time => "Time",
@@ -2760,7 +2758,7 @@ fn infer_literal_ty(e: &Expr) -> Ty {
     match e {
         Expr::Literal(Literal::Int(_), _) => Ty::Prim(PrimType::Int),
         Expr::Literal(Literal::Float(_), _) => Ty::Prim(PrimType::Float),
-        Expr::Literal(Literal::Decimal(_), _) => Ty::Prim(PrimType::Decimal),
+        Expr::Literal(Literal::Decimal(_), _) => Ty::Prim(PrimType::DECIMAL),
         Expr::Literal(Literal::String(_), _) => Ty::Prim(PrimType::String),
         Expr::Literal(Literal::Bool(_), _) => Ty::Prim(PrimType::Bool),
         // A literal of the stdlib's time catalogue is a `Duration` (U4).

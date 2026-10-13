@@ -677,20 +677,25 @@ impl Shift for TypeExpr {
     }
 }
 
-shift_unit_enum!(PrimType {
-    Int,
-    Uint,
-    Float,
-    Decimal,
-    String,
-    Bool,
-    Time,
-    Duration,
-    Bytes,
-    BytesView,
-    StringView,
-    BytesMut,
-});
+// `Decimal<S>` carries its scale, a number and never a position.
+impl Shift for PrimType {
+    fn shift(&mut self, _: Move) {
+        match self {
+            PrimType::Int
+            | PrimType::Uint
+            | PrimType::Float
+            | PrimType::Decimal(_)
+            | PrimType::String
+            | PrimType::Bool
+            | PrimType::Time
+            | PrimType::Duration
+            | PrimType::Bytes
+            | PrimType::BytesView
+            | PrimType::StringView
+            | PrimType::BytesMut => {}
+        }
+    }
+}
 shift_struct!(QualifiedName { segments, span });
 
 // Statements.

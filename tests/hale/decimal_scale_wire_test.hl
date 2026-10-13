@@ -1,0 +1,76 @@
+// Decimal<S> on the wire: a field's scale is its type's, so what
+// crosses carries every digit the scale holds and lands at the same
+// scale. The bus carries the i128 mantissa itself (16 bytes, the one
+// layout every scale has; a topic's contract tags a Decimal<18> field
+// `d18`, so a publisher and a subscriber of different scales are
+// different contracts). The JSON codec writes the exact digits as a
+// number and reads them back at the field's scale; a digit past the
+// scale is the field's `wrong_type`, never a truncation.
+
+type Wire {
+    amount: Decimal<18> `json:"amount"`;
+    price: Decimal<2> `json:"price"`;
+    plain: Decimal = 1.5d;
+}
+
+// A String field makes the payload managed: it goes through the
+// serializer. The other is flat: a raw copy.
+type Managed { amount: Decimal<18>; note: String; }
+type Flat { amount: Decimal<18>; price: Decimal<2>; qty: Int; }
+
+locus Sink {
+    params {
+        managed: Decimal<18> = 0d;
+        flat: Decimal<18> = 0d;
+        price: Decimal<2> = 0d;
+    }
+    bus {
+        subscribe "dec.managed" as on_managed of type Managed;
+        subscribe "dec.flat" as on_flat of type Flat;
+    }
+    fn on_managed(m: Managed) { self.managed = m.amount; }
+    fn on_flat(f: Flat) {
+        self.flat = f.amount;
+        self.price = f.price;
+    }
+}
+
+locus Source {
+    bus {
+        publish "dec.managed" of type Managed;
+        publish "dec.flat" of type Flat;
+    }
+    run() {
+        "dec.managed" <- Managed { amount: 123.000000000000000456d, note: "n" };
+        "dec.flat" <- Flat { amount: -0.000000000000000001d, price: 19.99d, qty: 3 };
+    }
+}
+
+fn s(d: Decimal<18>) -> String { return "" + d; }
+
+fn main() {
+    // JSON: the exact digits out, the same value back at each scale.
+    let w = Wire { amount: 12345678901234567890.123456789012345678d, price: 19.99d };
+    let text = Wire::to_json(w);
+    std::test::assert_eq_str(
+        text,
+        "{\"amount\":12345678901234567890.123456789012345678,\"price\":19.99,\"plain\":1.5}",
+        "to_json writes each field's digits at its scale");
+    let back = Wire::from_json(text) or raise;
+    std::test::assert_eq_str(s(back.amount), "12345678901234567890.123456789012345678", "a Decimal<18> field round-trips");
+    std::test::assert_eq_str("" + back.price, "19.99", "a Decimal<2> field round-trips");
+    std::test::assert_eq_str("" + back.plain, "1.5", "a plain Decimal field round-trips");
+    let refused = Wire::from_json("{\"amount\": 1.5, \"price\": 1.234}") or {
+        std::test::assert_eq_str(err.kind, "wrong_type", "a third place is no Decimal<2>");
+        std::test::assert_eq_str(err.field, "price", "and the field is named");
+        w
+    };
+    std::test::assert_eq_str("" + refused.price, "19.99", "refused, not truncated to 1.23");
+
+    // The bus: the mantissa crosses whole.
+    let sink = Sink { };
+    Source { };
+    std::test::assert_eq_str(s(sink.managed), "123.000000000000000456", "a managed payload's Decimal<18> field");
+    std::test::assert_eq_str(s(sink.flat), "-0.000000000000000001", "a flat payload's Decimal<18> field");
+    std::test::assert_eq_str("" + sink.price, "19.99", "and its Decimal<2> field");
+}

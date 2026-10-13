@@ -1555,35 +1555,35 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             None,
         );
 
-        // m48: render a Decimal (i128 mantissa, implicit scale 9)
-        // into a NUL-terminated string buffer.
-        // declare void @lotus_decimal_to_string(i64 hi, i64 lo, ptr buf)
+        // m48 / `Decimal<S>`: render a Decimal (i128 mantissa at
+        // the scale S) into a NUL-terminated string buffer.
+        // declare void @lotus_decimal_to_string(i64 hi, i64 lo, i64 scale, ptr buf)
         let dec_to_str_ty = self.context.void_type().fn_type(
-            &[i64_t.into(), i64_t.into(), ptr_t.into()],
+            &[i64_t.into(), i64_t.into(), i64_t.into(), ptr_t.into()],
             false,
         );
         self.module
             .add_function("lotus_decimal_to_string", dec_to_str_ty, None);
-        // declare ptr @lotus_str_from_decimal(ptr arena, i64 hi, i64 lo)
+        // declare ptr @lotus_str_from_decimal(ptr arena, i64 hi, i64 lo, i64 scale)
         let dec_str_arena_ty =
-            ptr_t.fn_type(&[ptr_t.into(), i64_t.into(), i64_t.into()], false);
+            ptr_t.fn_type(&[ptr_t.into(), i64_t.into(), i64_t.into(), i64_t.into()], false);
         self.module
             .add_function("lotus_str_from_decimal", dec_str_arena_ty, None);
-        // declare double @lotus_decimal_to_float(i64 hi, i64 lo)
-        // 2026-05-21: direct i128 → f64 conversion at scale 9.
+        // declare double @lotus_decimal_to_float(i64 hi, i64 lo, i64 scale)
+        // 2026-05-21: direct i128 → f64 conversion at the scale.
         // Backs std::decimal::to_float(d), killing the ASCII
         // round-trip in downstream hot paths (DecimalFloat.to_float
         // used to format and re-parse).
         let f64_t = self.context.f64_type();
         let dec_to_float_ty =
-            f64_t.fn_type(&[i64_t.into(), i64_t.into()], false);
+            f64_t.fn_type(&[i64_t.into(), i64_t.into(), i64_t.into()], false);
         self.module
             .add_function("lotus_decimal_to_float", dec_to_float_ty, None);
 
         // GH #230 item 2: fixed-places decimal formatting.
-        // declare ptr @lotus_decimal_format(i64 hi, i64 lo, i64 places)
+        // declare ptr @lotus_decimal_format(i64 hi, i64 lo, i64 scale, i64 places)
         let dec_format_ty = ptr_t.fn_type(
-            &[i64_t.into(), i64_t.into(), i64_t.into()],
+            &[i64_t.into(), i64_t.into(), i64_t.into(), i64_t.into()],
             false,
         );
         self.module
@@ -3010,6 +3010,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .fn_type(&[ptr_t.into(), i16_t.into(), self.context.i64_type().into()], false);
         self.module
             .add_function("lotus_tcp_connect_wait", tcp_connect_wait_ty, None);
+        // declare i32 @lotus_tcp_connect_within(ptr host, i16 port, i64
+        // timeout_ns) — one attempt, bounded by timeout_ns (ETIMEDOUT).
+        self.module
+            .add_function("lotus_tcp_connect_within", tcp_connect_wait_ty, None);
 
         // declare i32 @lotus_tcp_close_fd(i32 fd)
         // close, returns 0 or -1.
@@ -3051,6 +3055,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             i32_t.fn_type(&[ptr_t.into(), i16_t.into()], false);
         self.module
             .add_function("lotus_tls_connect", tls_connect_ty, None);
+        // declare i32 @lotus_tls_connect_within(ptr host, i16 port, i64
+        // timeout_ns) — the dial and the handshake under one deadline.
+        let tls_connect_within_ty = i32_t
+            .fn_type(&[ptr_t.into(), i16_t.into(), self.context.i64_type().into()], false);
+        self.module
+            .add_function("lotus_tls_connect_within", tls_connect_within_ty, None);
         // declare i32 @lotus_tls_upgrade(i32 raw_fd, ptr host, i32 verify)
         // — wrap an already-connected fd in a client TLS session
         // (STARTTLS-style). `verify` is a Bool lowered to i32 (0/1).
@@ -3967,12 +3977,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             can_parse_float_ty,
             None,
         );
-        // declare void @lotus_str_parse_decimal(ptr s, ptr out_hi, ptr out_lo)
-        // The i128 mantissa is returned as two i64 halves via out
-        // pointers — matches the lotus_decimal_to_string convention
-        // (the LLVM/C ABI for __int128 is awkward to wire uniformly).
+        // declare void @lotus_str_parse_decimal(ptr s, i64 scale, ptr out_hi, ptr out_lo)
+        // The i128 mantissa at the scale (`Decimal<S>`) is returned as
+        // two i64 halves via out pointers — matches the
+        // lotus_decimal_to_string convention (the LLVM/C ABI for
+        // __int128 is awkward to wire uniformly).
         let parse_decimal_ty = self.context.void_type().fn_type(
-            &[ptr_t.into(), ptr_t.into(), ptr_t.into()],
+            &[ptr_t.into(), i64_t.into(), ptr_t.into(), ptr_t.into()],
             false,
         );
         self.module.add_function(
@@ -3980,8 +3991,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             parse_decimal_ty,
             None,
         );
-        // declare i32 @lotus_str_can_parse_decimal(ptr s)
-        let can_parse_decimal_ty = i32_t.fn_type(&[ptr_t.into()], false);
+        // declare i32 @lotus_str_can_parse_decimal(ptr s, i64 scale)
+        let can_parse_decimal_ty = i32_t.fn_type(&[ptr_t.into(), i64_t.into()], false);
         self.module.add_function(
             "lotus_str_can_parse_decimal",
             can_parse_decimal_ty,
@@ -4039,10 +4050,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             can_parse_int_range_ty,
             None,
         );
-        // declare void @lotus_str_parse_decimal_range(ptr s, i64 start, i64 end, ptr out_hi, ptr out_lo)
+        // declare void @lotus_str_parse_decimal_range(ptr s, i64 start, i64 end, i64 scale, ptr out_hi, ptr out_lo)
         let parse_decimal_range_ty = self.context.void_type().fn_type(
             &[
                 ptr_t.into(),
+                i64_t.into(),
                 i64_t.into(),
                 i64_t.into(),
                 ptr_t.into(),
@@ -4055,9 +4067,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             parse_decimal_range_ty,
             None,
         );
-        // declare i32 @lotus_str_can_parse_decimal_range(ptr s, i64 start, i64 end)
+        // declare i32 @lotus_str_can_parse_decimal_range(ptr s, i64 start, i64 end, i64 scale)
         let can_parse_decimal_range_ty = i32_t.fn_type(
-            &[ptr_t.into(), i64_t.into(), i64_t.into()],
+            &[ptr_t.into(), i64_t.into(), i64_t.into(), i64_t.into()],
             false,
         );
         self.module.add_function(

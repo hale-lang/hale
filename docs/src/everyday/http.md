@@ -498,6 +498,12 @@ let c = std::http::Client { keep_alive: true, max_retries: 2 };
 let r = c.get("http://api.local/health") or raise;
 ```
 
+The `Client`'s `timeout_ms` (30 s unless you say otherwise) bounds
+each attempt's connect — and, for https, the TLS handshake — so a host
+that never answers costs that long, not the kernel's two minutes; the
+error's `detail` names the timeout. `timeout_ms: 0` turns the bound
+off.
+
 The `Client` retries a 5xx too. A one-shot `get` hands a 5xx back as
 the response; the `Client`, once its retries are spent, fails with
 `retries_exhausted` and the last 5xx it received: `err.status`,
@@ -506,10 +512,12 @@ the response; the `Client`, once its retries are spent, fails with
 (`err.status` is `0` and the body empty when no attempt got an
 answer, and `err.detail` says what the last attempt hit).
 
-One placement note: **https calls block their thread** (the
-client's TLS handshake and reads don't park on `async_io`) — keep
-loci that make them on `pinned` or an ordinary cooperative pool,
-not an `async_io` one.
+On an `async_io` pool the client parks while it waits — on the
+connect, the TLS handshake, and every write and read — so http and
+https calls from many coroutines on one pool wait together instead
+of taking turns. The one thing that still runs on the worker is
+looking up a host *name*: if your resolver can be slow, dial an
+address or give the client its own pool.
 
 The `bindings` that wire a server across processes, and the lifecycle that lets a server shut down cleanly
 on Ctrl-C are all next-level topics — but the handler you wrote

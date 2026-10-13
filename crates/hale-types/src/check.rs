@@ -367,8 +367,12 @@ fn mangle_token_to_ty(
         "Bool" => Ty::Prim(PrimType::Bool),
         "String" => Ty::Prim(PrimType::String),
         "Duration" => Ty::Prim(PrimType::Duration),
-        "Decimal" => Ty::Prim(PrimType::Decimal),
+        "Decimal" => Ty::Prim(PrimType::DECIMAL),
         "Time" => Ty::Prim(PrimType::Time),
+        // `Decimal<18>`'s token, `Decimal18`: every scale names its own.
+        other if other.starts_with("Decimal") && crate::ty::prim_of_mangle_token(other).is_some() => {
+            Ty::Prim(crate::ty::prim_of_mangle_token(other).expect("guard checked"))
+        }
         other => {
             if known.contains_key(other) {
                 Ty::Named(other.to_string())
@@ -914,6 +918,8 @@ pub fn check_bundle_by_declaration(
         struct_defaults_typing: Vec::new(),
         default_evaluation: Vec::new(),
         array_elements: std::collections::HashMap::new(),
+        decimal_literals: Vec::new(),
+        decimal_scales: std::collections::HashMap::new(),
     };
     let mut reported: std::collections::BTreeSet<(usize, usize, String)> = std::collections::BTreeSet::new();
     for (key, program) in &bundle.programs {
@@ -925,6 +931,7 @@ pub fn check_bundle_by_declaration(
                     let start = cx.diags.len();
                     cx.decl_diags_start = start;
                     cx.check_top_decl(item);
+                    cx.settle_decimal_literals();
                     cx.settle_param_accesses(start);
                     cx.diags.split_off(start)
                 }
@@ -944,6 +951,7 @@ pub fn check_bundle_by_declaration(
         by_decl.insert(key.clone(), per);
     }
     cx.specialize_generic_bodies();
+    cx.settle_decimal_literals();
     // The walks per monomorph keep their param accesses alone: an access
     // through a value of a parameter type is judged there, against every
     // diagnostic the check has, a template's own included.
@@ -6586,6 +6594,25 @@ struct Checker<'a> {
     /// them, by node: a place of an array type flows each element into
     /// its element type from the element's own type (`flows_into`).
     array_elements: std::collections::HashMap<*const Expr, ArrayElements>,
+    /// `Decimal<S>`: every Decimal literal the walk typed, with the scale
+    /// of the place it flows into (`adopt_decimal_scale`), `Decimal`'s 9
+    /// until one says otherwise. Whether the literal fits that scale is
+    /// judged when the declaration's walk ends
+    /// (`settle_decimal_literals`): the literal is typed before the
+    /// place it flows into is known.
+    decimal_literals: Vec<PendingDecimal>,
+    /// The scale each Decimal literal took, by its span: a literal may be
+    /// walked again after it took one (an argument is walked more than
+    /// once), and every walk is the one literal.
+    decimal_scales: std::collections::HashMap<(usize, usize), u8>,
+}
+
+/// A Decimal literal awaiting its scale's judgment (`Decimal<S>`).
+#[derive(Clone)]
+struct PendingDecimal {
+    span: Span,
+    text: String,
+    scale: u8,
 }
 
 /// An array literal's elements as the walk typed them (GH #1076).
@@ -6692,6 +6719,7 @@ struct AccessVisit {
 struct WalkMark {
     diags: usize,
     visits: usize,
+    decimals: usize,
 }
 
 impl<'a> Checker<'a> {
@@ -6729,7 +6757,9 @@ impl<'a> Checker<'a> {
                 self.check_type_annotation(&c.ty);
                 let want = self.resolve_te(&c.ty);
                 let got = self.check_expr(&c.value);
-                if !want.assignable_from(&got) {
+                // `Decimal<S>`: a scale-less Decimal initializer takes the
+                // ascription's scale; two scales are refused there.
+                if self.decimal_flow(&want, &got, &c.value).is_none() && !want.assignable_from(&got) {
                     self.diags.push(Diag::ty(
                         c.value.span(),
                         format!(
@@ -10252,7 +10282,7 @@ impl<'a> Checker<'a> {
                             Ty::Prim(PrimType::Int)
                                 | Ty::Prim(PrimType::Uint)
                                 | Ty::Prim(PrimType::Float)
-                                | Ty::Prim(PrimType::Decimal)
+                                | Ty::Prim(PrimType::Decimal(_))
                         );
                         if !is_numeric {
                             self.diags.push(Diag::ty(
@@ -10732,13 +10762,32 @@ impl<'a> Checker<'a> {
             let ty = self.resolve_param_te(&p.ty);
             self.locals.insert(&p.name.name, LocalSym { ty, is_mut: false });
         }
-        self.check_block(&decl.body);
+        self.check_fn_body(&decl.body);
         self.locals.pop();
         self.fallible_ctx = prev_fallible;
         self.return_ctx = prev_return;
         self.in_fn_main = prev_main;
         self.current_locus = prev_locus;
         self.generic_params = prev_generics;
+    }
+
+    /// A fn's body: its block, and its tail is the returned value, which
+    /// flows into the declared return type where a Decimal's scale is
+    /// concerned (`Decimal<S>`: a scale-less tail takes the return type's
+    /// scale, and another scale is refused). The rest of a tail's
+    /// agreement with the return type is lowering's to check.
+    fn check_fn_body(&mut self, block: &Block) {
+        self.locals.push();
+        for stmt in &block.stmts {
+            self.check_stmt(stmt);
+        }
+        if let Some(tail) = &block.tail {
+            let got = self.check_expr(tail);
+            if let Some(want) = self.return_ctx.clone() {
+                let _ = self.decimal_flow(&want, &got, tail);
+            }
+        }
+        self.locals.pop();
     }
 
     fn check_block(&mut self, block: &Block) {
@@ -10915,6 +10964,9 @@ impl<'a> Checker<'a> {
                             .two_spellings_of_one_monomorph(
                                 &want, &got, true,
                             );
+                        if monomorph {
+                            self.adopt_monomorph_literal_decimals(&want, value);
+                        }
                         // F.23: an `Int` widens into a `Float`
                         // ascription (codegen emits the `sitofp` at the
                         // binding), as at a call. Only an `Int`: a
@@ -11536,6 +11588,31 @@ impl<'a> Checker<'a> {
             },
             None => Ty::Unit,
         };
+        // `Decimal<S>`: a scale-less arm takes the other arm's scale, as
+        // an operator's operand does; two typed arms of two scales are
+        // the mismatch below.
+        let (then_ty, else_ty) = match (&then_ty, &else_ty, stmt.else_block.as_deref()) {
+            (Ty::Prim(PrimType::Decimal(t)), Ty::Prim(PrimType::Decimal(e)), Some(else_branch)) if t != e => {
+                let else_value: Option<Expr> = match else_branch {
+                    ElseBranch::Else(blk) => Some(Expr::Block(blk.clone())),
+                    ElseBranch::ElseIf(nested) => Some(Expr::If(Box::new(nested.clone()))),
+                };
+                let then_value = Expr::Block(stmt.then_block.clone());
+                let else_value = else_value.expect("an else arm");
+                match (Self::decimal_adoptable(&then_value), Self::decimal_adoptable(&else_value)) {
+                    (true, false) => {
+                        self.adopt_decimal_scale(&then_value, *e);
+                        (else_ty.clone(), else_ty.clone())
+                    }
+                    (false, true) => {
+                        self.adopt_decimal_scale(&else_value, *t);
+                        (then_ty.clone(), then_ty.clone())
+                    }
+                    _ => (then_ty, else_ty),
+                }
+            }
+            _ => (then_ty, else_ty),
+        };
         if then_ty.display() != else_ty.display()
             && !then_ty.assignable_from(&else_ty)
             && !else_ty.assignable_from(&then_ty)
@@ -11599,6 +11676,7 @@ impl<'a> Checker<'a> {
     fn check_match_core(&mut self, stmt: &MatchStmt, as_expr: bool) -> Ty {
         let scrut_ty = self.check_expr(&stmt.scrutinee);
         let mut joined: Option<Ty> = None;
+        let mut arm_tys: Vec<Ty> = Vec::with_capacity(stmt.arms.len());
         for arm in &stmt.arms {
             // GH #721: an arm's pattern BINDS — `v`, `(a, b)`,
             // `Event::Tick(n)` — and the binders are in scope for the
@@ -11609,12 +11687,26 @@ impl<'a> Checker<'a> {
             // moment that stopped being free.
             self.locals.push();
             self.bind_pattern(&arm.pattern);
+            // `Decimal<S>`: a Decimal literal pattern is a value of the
+            // scrutinee's scale, judged at it.
+            if let (Pattern::Literal(Literal::Decimal(text), span), Ty::Prim(PrimType::Decimal(scale))) =
+                (&arm.pattern, &scrut_ty)
+            {
+                if self.specializing.is_none() {
+                    self.decimal_literals.push(PendingDecimal { span: *span, text: text.clone(), scale: *scale });
+                }
+            }
             if let Some(g) = &arm.guard {
                 let _ = self.check_expr(g);
             }
             let arm_ty = match &arm.body {
-                MatchArmBody::Expr(e) => self.check_expr(e),
+                MatchArmBody::Expr(e) => {
+                    let t = self.check_expr(e);
+                    arm_tys.push(t.clone());
+                    t
+                }
                 MatchArmBody::Block(b) => {
+                    arm_tys.push(Ty::Unknown);
                     self.check_block(b);
                     Ty::Unknown
                 }
@@ -11626,6 +11718,9 @@ impl<'a> Checker<'a> {
                     Some(prev) => {
                         if *prev == Ty::Unknown {
                             joined = Some(arm_ty);
+                        } else if matches!((prev, &arm_ty), (Ty::Prim(PrimType::Decimal(_)), Ty::Prim(PrimType::Decimal(_)))) {
+                            // `Decimal<S>`: joined below, once every arm
+                            // is typed.
                         } else if arm_ty != Ty::Unknown && arm_ty != *prev {
                             self.diags.push(Diag::ty(
                                 stmt.span,
@@ -11640,6 +11735,9 @@ impl<'a> Checker<'a> {
                     }
                 }
             }
+        }
+        if as_expr && matches!(joined, Some(Ty::Prim(PrimType::Decimal(_)))) {
+            joined = Some(self.join_decimal_arms(stmt, &arm_tys, joined.take().expect("a Decimal")));
         }
         if !match_is_exhaustive(&scrut_ty, &stmt.arms, self.top, self.known) {
             self.diags.push(Diag::ty(
@@ -12802,7 +12900,7 @@ impl<'a> Checker<'a> {
 
     /// The start of a walk whose findings may be discarded.
     fn walk_mark(&self) -> WalkMark {
-        WalkMark { diags: self.diags.len(), visits: self.access_visits.len() }
+        WalkMark { diags: self.diags.len(), visits: self.access_visits.len(), decimals: self.decimal_literals.len() }
     }
 
     /// Discard what the walk since `mark` found: its diagnostics and the
@@ -12810,6 +12908,7 @@ impl<'a> Checker<'a> {
     fn discard_since(&mut self, mark: WalkMark) {
         self.diags.truncate(mark.diags);
         self.access_visits.truncate(mark.visits);
+        self.decimal_literals.truncate(mark.decimals);
     }
 
     /// The end of a top-level declaration's walk: each access it reached
@@ -13262,6 +13361,11 @@ impl<'a> Checker<'a> {
     /// `true` so the caller adds no second error; `false` is the caller's
     /// own mismatch to report.
     fn flows_into(&mut self, want: &Ty, got: &Ty, value: &Expr) -> bool {
+        // `Decimal<S>`: a scale-less Decimal takes the place's scale; two
+        // scales never mix.
+        if let Some(handled) = self.decimal_flow(want, got, value) {
+            return handled;
+        }
         // GH #1076 (U3): a value counted in a denomination no declaration
         // names, meeting a place the checker has no type for (a generic
         // field of a literal, a parameter it cannot see), has nothing to
@@ -13403,6 +13507,12 @@ impl<'a> Checker<'a> {
     fn array_element(&mut self, array: &Expr, parts: &[Expr], tys: Vec<Ty>) -> Ty {
         let first = tys.first().cloned().unwrap_or(Ty::Unknown);
         if self.scalars.is_empty() {
+            // `Decimal<S>`: a place of a Decimal array type flows each
+            // element from its own type (`decimal_flow`), which a scale-
+            // less element and a typed one beside it can differ in.
+            if tys.iter().any(Self::holds_decimal) {
+                self.array_elements.insert(array as *const Expr, ArrayElements { tys, meet: None });
+            }
             return first;
         }
         let key = array as *const Expr;
@@ -13822,6 +13932,57 @@ impl<'a> Checker<'a> {
             self.typed.conversion(self.body, site, row);
         }
         Ty::Tuple(vec![Ty::Prim(PrimType::Int), rest])
+    }
+
+    /// `Decimal<S>`: `d.rescale(T)`, `d` a `Decimal<from>` and `T` an
+    /// integer literal from 0 to 18: the value at the scale `T`, typed
+    /// `Decimal<T>`, its row at the call. A widening (`T >= from`)
+    /// multiplies the mantissa by `10^(T - from)` and is exact. A
+    /// narrowing divides by `10^(from - T)` and may drop nonzero digits,
+    /// so it is fallible like a quantity's change of denomination: its
+    /// `or` says what becomes of them (`or trunc`, `or floor`, `or ceil`,
+    /// `or half_up`, `or half_even`; `or <value>`, `or raise`, a handler
+    /// of the `InexactError`), and a bare one is refused.
+    fn decimal_rescale(&mut self, call: NodeId, span: Span, from: u8, args: &[Expr]) -> Ty {
+        use crate::typed_bodies::{ConversionKind, ConversionRow, Scale};
+        use hale_syntax::decimal_literal::MAX_SCALE;
+        let to = match args {
+            [Expr::Literal(Literal::Int(n), _)] if (0..=i64::from(MAX_SCALE)).contains(n) => *n as u8,
+            [arg] => {
+                let _ = self.check_expr(arg);
+                self.diags.push(Diag::ty(
+                    arg.span(),
+                    format!(
+                        "`.rescale(S)`: the scale is part of the type, an integer literal from 0 to {MAX_SCALE}"
+                    ),
+                ));
+                return Ty::Unknown;
+            }
+            _ => {
+                for a in args {
+                    let _ = self.check_expr(a);
+                }
+                self.diags.push(Diag::ty(
+                    span,
+                    format!("`.rescale(S)` takes one scale, an integer literal from 0 to {MAX_SCALE}; it is given {}", args.len()),
+                ));
+                return Ty::Unknown;
+            }
+        };
+        let (from_ty, to_ty) = (Ty::Prim(PrimType::Decimal(from)), Ty::Prim(PrimType::Decimal(to)));
+        if self.specializing.is_none() {
+            let pow = |n: u8| num_bigint::BigInt::from(10u64.pow(u32::from(n)));
+            let (factor, kind) = if to >= from {
+                (crate::unit_graph::Ratio::new(pow(to - from), 1.into()), ConversionKind::Widening)
+            } else {
+                (crate::unit_graph::Ratio::new(1.into(), pow(from - to)), ConversionKind::Narrowing)
+            };
+            let mut row = ConversionRow::new(span, from_ty, to_ty.clone(), kind, to_ty.display());
+            row.scale = Some(Scale { factor: factor.expect("a positive power of ten"), offset: 0 });
+            let site = self.site(SiteKind::Cast(call.0));
+            self.typed.conversion(self.body, site, row);
+        }
+        to_ty
     }
 
     /// GH #1076 (U2): a call `T(x)` naming an identity or a range, or
@@ -14764,25 +14925,397 @@ impl<'a> Checker<'a> {
         ty
     }
 
-    /// Refuse a `Decimal` literal no `Decimal` represents, at its span.
+    /// A Decimal literal, typed `Decimal` (`Decimal<9>`) until the place
+    /// it flows into gives it another scale (`adopt_decimal_scale`);
+    /// whether it fits that scale is judged when the declaration's walk
+    /// ends (`settle_decimal_literals`). A generic body's walk per
+    /// monomorph judges nothing its template's walk did not.
     fn check_decimal_literal(&mut self, s: &str, span: Span) {
-        use hale_syntax::decimal_literal::{parse_scale9, DecimalLiteralError};
-        // The lexer keeps the digits; the spelling had its `d`.
-        let shown = if s.ends_with('d') { s.to_string() } else { format!("{s}d") };
-        let s = shown.as_str();
-        let msg = match parse_scale9(s) {
-            Ok(_) | Err(DecimalLiteralError::Malformed) => return,
-            Err(DecimalLiteralError::TooPrecise) => format!(
-                "Decimal literal `{s}` cannot be represented: a `Decimal` has 9 \
-                 fractional digits, and this one has a nonzero digit past the ninth \
-                 (it would be truncated); round it to 9 places"
-            ),
-            Err(DecimalLiteralError::Overflow) => format!(
-                "Decimal literal `{s}` cannot be represented: its mantissa at scale 9 \
-                 does not fit an i128"
-            ),
+        if self.specializing.is_some() {
+            return;
+        }
+        self.decimal_literals.push(PendingDecimal {
+            span,
+            text: s.to_string(),
+            scale: hale_syntax::decimal_literal::DEFAULT_SCALE,
+        });
+    }
+
+    /// Refuse each Decimal literal its scale does not represent, at its
+    /// span: a nonzero digit past the scale's last place, or a mantissa
+    /// no i128 holds at that scale. Never a silent truncation.
+    fn settle_decimal_literals(&mut self) {
+        use hale_syntax::decimal_literal::{parse_at_scale, DecimalLiteralError, DEFAULT_SCALE};
+        let mut judged = std::collections::BTreeSet::new();
+        let scales = std::mem::take(&mut self.decimal_scales);
+        for mut lit in std::mem::take(&mut self.decimal_literals) {
+            if let Some(s) = scales.get(&(lit.span.start.as_usize(), lit.span.end.as_usize())) {
+                lit.scale = *s;
+            }
+            // The lexer keeps the digits; the spelling had its `d`.
+            let s = if lit.text.ends_with('d') { lit.text.clone() } else { format!("{}d", lit.text) };
+            let scale = lit.scale;
+            let ty = crate::ty::decimal_name(scale);
+            let msg = match parse_at_scale(&s, scale) {
+                Ok(_) | Err(DecimalLiteralError::Malformed) => continue,
+                Err(DecimalLiteralError::TooPrecise) if scale == DEFAULT_SCALE => format!(
+                    "Decimal literal `{s}` cannot be represented: a `Decimal` has 9 \
+                     fractional digits, and this one has a nonzero digit past the ninth \
+                     (it would be truncated); round it to 9 places"
+                ),
+                Err(DecimalLiteralError::TooPrecise) => format!(
+                    "Decimal literal `{s}` cannot be represented: a `{ty}` has {scale} \
+                     fractional digit{}, and this one has a nonzero digit past them (it \
+                     would be truncated); round it to {scale} places, or give the place it \
+                     flows into a wider scale",
+                    if scale == 1 { "" } else { "s" }
+                ),
+                Err(DecimalLiteralError::Overflow) => format!(
+                    "Decimal literal `{s}` cannot be represented: its mantissa at scale {scale} \
+                     does not fit an i128"
+                ),
+            };
+            if judged.insert((lit.span.start.as_usize(), lit.span.end.as_usize())) {
+                self.diags.push(Diag::ty(lit.span, msg));
+            }
+        }
+    }
+
+    /// Whether `e` is a Decimal of no scale of its own, which takes the
+    /// scale of the place it flows into: a literal, its negation, a
+    /// `std::str::parse_decimal` / `range_parse_decimal` call, an `or`
+    /// over one whose fallback (if any) is one too, and an arithmetic
+    /// operator over two of them, and a block or an `if` whose every
+    /// value is one.
+    fn decimal_adoptable(e: &Expr) -> bool {
+        match e {
+            Expr::Block(b) => b.tail.as_deref().is_some_and(Self::decimal_adoptable),
+            Expr::If(i) => Self::if_adoptable(i),
+            Expr::Literal(Literal::Decimal(_), _) => true,
+            Expr::Unary { op: UnaryOp::Neg, operand, .. } => Self::decimal_adoptable(operand),
+            Expr::Binary { op: BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod, left, right, .. } => {
+                Self::decimal_adoptable(left) && Self::decimal_adoptable(right)
+            }
+            Expr::Call { callee, .. } => Self::is_decimal_parse(callee),
+            Expr::Or { inner, disposition, .. } => {
+                Self::decimal_adoptable(inner)
+                    && match disposition {
+                        OrDisposition::Substitute(rhs) => Self::decimal_adoptable(rhs),
+                        _ => true,
+                    }
+            }
+            _ => false,
+        }
+    }
+
+    /// An `if` expression whose every arm's value is a scale-less Decimal.
+    fn if_adoptable(i: &IfStmt) -> bool {
+        i.then_block.tail.as_deref().is_some_and(Self::decimal_adoptable)
+            && match i.else_block.as_deref() {
+                Some(ElseBranch::Else(b)) => b.tail.as_deref().is_some_and(Self::decimal_adoptable),
+                Some(ElseBranch::ElseIf(nested)) => Self::if_adoptable(nested),
+                None => false,
+            }
+    }
+
+    /// The arms' values of an adoptable `if`, given `scale`.
+    fn adopt_if_scale(&mut self, i: &IfStmt, scale: u8) {
+        if let Some(t) = i.then_block.tail.as_deref() {
+            self.adopt_decimal_scale(t, scale);
+        }
+        match i.else_block.as_deref() {
+            Some(ElseBranch::Else(b)) => {
+                if let Some(t) = b.tail.as_deref() {
+                    self.adopt_decimal_scale(t, scale);
+                }
+            }
+            Some(ElseBranch::ElseIf(nested)) => self.adopt_if_scale(nested, scale),
+            None => {}
+        }
+    }
+
+    /// Whether `callee` is `std::str::parse_decimal` or
+    /// `std::str::range_parse_decimal`, whose result takes its scale from
+    /// where it flows.
+    fn is_decimal_parse(callee: &Expr) -> bool {
+        let Expr::Path(qn) = callee else { return false };
+        let segs: Vec<&str> = qn.segments.iter().map(|s| s.name.as_str()).collect();
+        matches!(segs.as_slice(), [.., "str", "parse_decimal" | "range_parse_decimal"])
+    }
+
+    /// Give the scale-less Decimal `e` (`decimal_adoptable`) the scale of
+    /// the place it flows into: each literal is judged at `scale`, and
+    /// each literal and parse at a scale other than `Decimal`'s has the
+    /// row lowering reads its scale from (the literal's by its span, the
+    /// parse's by its call).
+    fn adopt_decimal_scale(&mut self, e: &Expr, scale: u8) {
+        use crate::typed_bodies::{ConversionKind, ConversionRow};
+        let record = |cx: &mut Self, kind: SiteKind, span: Span| {
+            if cx.specializing.is_some() || scale == hale_syntax::decimal_literal::DEFAULT_SCALE {
+                return;
+            }
+            let to = Ty::Prim(PrimType::Decimal(scale));
+            let row = ConversionRow::new(
+                span,
+                Ty::Prim(PrimType::DECIMAL),
+                to.clone(),
+                ConversionKind::Total,
+                to.display(),
+            );
+            let site = cx.site(kind);
+            cx.typed.reconversion(cx.body, site, row);
         };
-        self.diags.push(Diag::ty(span, msg));
+        match e {
+            Expr::Literal(Literal::Decimal(_), span) => {
+                // Every walk of this literal (an argument is walked more
+                // than once) is the one literal.
+                self.decimal_scales.insert((span.start.as_usize(), span.end.as_usize()), scale);
+                record(self, SiteKind::value(*span), *span);
+            }
+            Expr::Unary { operand, .. } => self.adopt_decimal_scale(operand, scale),
+            Expr::Block(b) => {
+                if let Some(t) = b.tail.as_deref() {
+                    self.adopt_decimal_scale(t, scale);
+                }
+            }
+            Expr::If(i) => self.adopt_if_scale(i, scale),
+            Expr::Binary { left, right, .. } => {
+                self.adopt_decimal_scale(left, scale);
+                self.adopt_decimal_scale(right, scale);
+            }
+            Expr::Call { id, span, .. } => record(self, SiteKind::Cast(id.0), *span),
+            Expr::Or { inner, disposition, .. } => {
+                self.adopt_decimal_scale(inner, scale);
+                if let OrDisposition::Substitute(rhs) = disposition {
+                    self.adopt_decimal_scale(rhs, scale);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// `Decimal<S>`: a value of `got`, the expression `value`, into a
+    /// place of `want`, when either is a Decimal. A scale-less Decimal
+    /// (a literal, a parse) takes the place's scale; any other value of
+    /// another scale is refused, naming both: a Decimal's scale is part
+    /// of its type and changes only by `.rescale(S)`. `None` when the
+    /// pair is no Decimal's, or the scales agree.
+    fn decimal_flow(&mut self, want: &Ty, got: &Ty, value: &Expr) -> Option<bool> {
+        match (want, got) {
+            (Ty::Prim(PrimType::Decimal(w)), Ty::Prim(PrimType::Decimal(g))) => {
+                if Self::decimal_adoptable(value) {
+                    self.adopt_decimal_scale(value, *w);
+                    return Some(true);
+                }
+                if w == g {
+                    return None;
+                }
+                self.diags.push(Diag::ty(value.span(), Self::decimal_scales_differ(got, want)));
+                Some(true)
+            }
+            // An array or a tuple literal of the place's shape, holding a
+            // Decimal: each element flows into its own place, so a
+            // scale-less one takes the element's scale whatever its
+            // neighbours are, and each other one is held to the element
+            // type. A literal of another shape (another length, another
+            // arity) is the ordinary mismatch, left to the caller.
+            (Ty::Array(we, wn), Ty::Array(ge, _)) if Self::holds_decimal(we) && matches!(value, Expr::ArrayRepeat { .. }) => {
+                let Expr::ArrayRepeat { val, count, .. } = value else { return None };
+                if wn.is_some_and(|n| n != *count) {
+                    return None;
+                }
+                if !self.flows_into(we, ge, val) {
+                    self.diags.push(Diag::ty(
+                        val.span(),
+                        format!("`[…; N]`: an element of `{}` where `{}` is expected", ge.display(), we.display()),
+                    ));
+                }
+                Some(true)
+            }
+            (Ty::Array(we, wn), _) if Self::holds_decimal(we) => {
+                let Expr::Array(elems, _) = value else { return None };
+                if elems.is_empty() || wn.is_some_and(|n| n != elems.len() as u64) {
+                    return None;
+                }
+                let tys = self.element_types(value, got, elems.len());
+                for (e, t) in elems.iter().zip(&tys) {
+                    if !self.flows_into(we, t, e) {
+                        self.diags.push(Diag::ty(
+                            e.span(),
+                            format!("`[…]`: an element of `{}` where `{}` is expected", t.display(), we.display()),
+                        ));
+                    }
+                }
+                Some(true)
+            }
+            (Ty::Tuple(ws), Ty::Tuple(gs)) if ws.iter().any(Self::holds_decimal) => {
+                let Expr::Tuple(parts, _) = value else { return None };
+                if ws.len() != parts.len() || gs.len() != parts.len() {
+                    return None;
+                }
+                for ((w, g), p) in ws.iter().zip(gs).zip(parts) {
+                    if !self.flows_into(w, g, p) {
+                        self.diags.push(Diag::ty(
+                            p.span(),
+                            format!("`(…)`: a part of `{}` where `{}` is expected", g.display(), w.display()),
+                        ));
+                    }
+                }
+                Some(true)
+            }
+            _ => None,
+        }
+    }
+
+    /// `Decimal<S>`: a match expression's arms, whose first typed arm is
+    /// the Decimal `first`: a scale-less arm (a literal, …) takes the
+    /// scale the other arms have of their own, and arms of two scales of
+    /// their own are refused as mismatched. The match's type.
+    fn join_decimal_arms(&mut self, stmt: &MatchStmt, arm_tys: &[Ty], first: Ty) -> Ty {
+        let values: Vec<(&Expr, &Ty)> = stmt
+            .arms
+            .iter()
+            .zip(arm_tys)
+            .filter_map(|(a, t)| match &a.body {
+                MatchArmBody::Expr(e) => Some((e, t)),
+                MatchArmBody::Block(_) => None,
+            })
+            .collect();
+        let mut own: Option<Ty> = None;
+        for (_, t) in values.iter().filter(|(e, _)| !Self::decimal_adoptable(e)) {
+            let t = (*t).clone();
+            if !matches!(t, Ty::Prim(PrimType::Decimal(_))) {
+                continue;
+            }
+            match &own {
+                None => own = Some(t),
+                Some(o) if *o != t => {
+                    self.diags.push(Diag::ty(
+                        stmt.span,
+                        format!("match expression arms have mismatched types: `{}` vs `{}`", o.display(), t.display()),
+                    ));
+                    return Ty::Unknown;
+                }
+                Some(_) => {}
+            }
+        }
+        let Some(Ty::Prim(PrimType::Decimal(scale))) = own else { return first };
+        for (e, _) in values.iter().filter(|(e, _)| Self::decimal_adoptable(e)) {
+            self.adopt_decimal_scale(e, scale);
+        }
+        Ty::Prim(PrimType::Decimal(scale))
+    }
+
+    /// Whether a value of `ty` is a Decimal, or holds one as an array's
+    /// element or a tuple's part.
+    fn holds_decimal(ty: &Ty) -> bool {
+        match ty {
+            Ty::Prim(PrimType::Decimal(_)) => true,
+            Ty::Array(e, _) | Ty::Bounded(e, _) => Self::holds_decimal(e),
+            Ty::Tuple(parts) => parts.iter().any(Self::holds_decimal),
+            _ => false,
+        }
+    }
+
+    /// The type each of the `n` elements of the array literal `array` was
+    /// typed with (`array_element` keeps them), or its element type for
+    /// each where none were kept.
+    fn element_types(&self, array: &Expr, got: &Ty, n: usize) -> Vec<Ty> {
+        if let Some(a) = self.array_elements.get(&(array as *const Expr)).filter(|a| a.tys.len() == n) {
+            return a.tys.clone();
+        }
+        let elem = match got {
+            Ty::Array(e, _) => e.as_ref().clone(),
+            _ => Ty::Unknown,
+        };
+        vec![elem; n]
+    }
+
+    /// `Decimal<S>`: a generic type's literal spelled with the template's
+    /// name (`Box { value: 0.1d }`) into a place of its monomorph
+    /// (`Box<Decimal<18>>`): a scale-less Decimal given to a field of a
+    /// type parameter bound to a `Decimal<S>` takes that scale, as a
+    /// field the template declares with a Decimal type takes its own
+    /// where the literal is typed.
+    fn adopt_monomorph_literal_decimals(&mut self, want: &Ty, value: &Expr) {
+        let (Ty::Named(w), Expr::Struct { inits, .. }) = (want, value) else { return };
+        let Some((GenericTemplate::Type(decl), bindings)) = self.resolve_generic_monomorph(w) else { return };
+        let TypeDeclBody::Struct(fields) = &decl.body else { return };
+        for init in inits {
+            let Some(field) = fields.iter().find(|f| f.name.name == init.name.name) else { continue };
+            let TypeExpr::Named { path, generic_args, .. } = &field.ty else { continue };
+            if path.segments.len() != 1 || !generic_args.is_empty() {
+                continue;
+            }
+            let Some(bound) = bindings.get(&path.segments[0].name).filter(|t| Self::holds_decimal(t)).cloned() else {
+                continue;
+            };
+            // The literal was typed against the template, where the field's
+            // type is the parameter: the value meets its bound type here, a
+            // scale-less Decimal taking the bound scale and any other value
+            // held to it. The walk that types it again is discarded but for
+            // the scale and the refusal this meeting decides.
+            let mark = self.walk_mark();
+            let got = self.check_expr(&init.value);
+            self.discard_since(mark);
+            if !self.flows_into(&bound, &got, &init.value) {
+                self.diags.push(Diag::ty(
+                    init.value.span(),
+                    format!(
+                        "type `{}`: field `{}` expects `{}`, got `{}`",
+                        decl.name.name,
+                        init.name.name,
+                        bound.display(),
+                        got.display()
+                    ),
+                ));
+            }
+        }
+    }
+
+    /// `Decimal<S>`: the operands of `min` / `max`, typed `tys`, where a
+    /// scale-less Decimal (a literal, a parse) takes the scale of an
+    /// operand that has its own: the operands' types after it does.
+    fn adopt_operand_decimal_scale(&mut self, args: &[Expr], mut tys: Vec<Ty>) -> Vec<Ty> {
+        let own = args
+            .iter()
+            .zip(&tys)
+            .find_map(|(a, t)| match t {
+                Ty::Prim(PrimType::Decimal(s)) if !Self::decimal_adoptable(a) => Some(*s),
+                _ => None,
+            });
+        let Some(scale) = own else { return tys };
+        // Two operands with scales of their own, and different ones, are
+        // two types: refused, as an operator's are.
+        for (a, t) in args.iter().zip(&tys) {
+            if let Ty::Prim(PrimType::Decimal(s)) = t {
+                if *s != scale && !Self::decimal_adoptable(a) {
+                    let want = Ty::Prim(PrimType::Decimal(scale));
+                    self.diags.push(Diag::ty(a.span(), Self::decimal_scales_differ(t, &want)));
+                }
+            }
+        }
+        for (a, t) in args.iter().zip(tys.iter_mut()) {
+            if matches!(t, Ty::Prim(PrimType::Decimal(_))) && Self::decimal_adoptable(a) {
+                self.adopt_decimal_scale(a, scale);
+                *t = Ty::Prim(PrimType::Decimal(scale));
+            }
+        }
+        tys
+    }
+
+    /// The refusal of a Decimal of one scale where another is expected.
+    fn decimal_scales_differ(got: &Ty, want: &Ty) -> String {
+        let to = match want {
+            Ty::Prim(PrimType::Decimal(s)) => *s,
+            _ => hale_syntax::decimal_literal::DEFAULT_SCALE,
+        };
+        format!(
+            "`{}` is not `{}`: a Decimal's scale is part of its type, and two scales never mix; \
+             convert explicitly (`.rescale({to})`)",
+            got.display(),
+            want.display()
+        )
     }
 
     fn check_expr_at(&mut self, expr: &Expr) -> Ty {
@@ -14941,6 +15474,18 @@ impl<'a> Checker<'a> {
                         let t = self.check_expr(receiver);
                         if let Some(q) = self.scalars.quantity(&t) {
                             return self.quantity_method(*call_id, *call_span, &name.name, t, q, arg);
+                        }
+                        self.discard_since(mark);
+                    }
+                }
+                // `Decimal<S>`: `d.rescale(T)`, the one conversion between
+                // scales.
+                if let Expr::Field { receiver, name, .. } = callee.as_ref() {
+                    if name.name == "rescale" {
+                        let mark = self.walk_mark();
+                        let t = self.check_expr(receiver);
+                        if let Ty::Prim(PrimType::Decimal(from)) = t {
+                            return self.decimal_rescale(*call_id, *call_span, from, args);
                         }
                         self.discard_since(mark);
                     }
@@ -15178,7 +15723,7 @@ impl<'a> Checker<'a> {
                                             PrimType::Int
                                                 | PrimType::Float
                                                 | PrimType::Duration
-                                                | PrimType::Decimal
+                                                | PrimType::Decimal(_)
                                         ) | Ty::Unknown
                                     );
                                     if !numeric {
@@ -15277,6 +15822,7 @@ impl<'a> Checker<'a> {
                                         )
                                     );
                                     if !widen_ok
+                                        && self.decimal_flow(&elem, &xt, x).is_none()
                                         && !elem.assignable_from(&xt)
                                     {
                                         self.diags.push(Diag::ty(
@@ -15329,7 +15875,10 @@ impl<'a> Checker<'a> {
                                                 Ty::Prim(PrimType::Int)
                                             )
                                         );
+                                        // `Decimal<S>`: a scale-less element
+                                        // takes the bounded element's scale.
                                         if !widen_ok
+                                            && self.decimal_flow(&elem, &xt, x).is_none()
                                             && !elem.assignable_from(&xt)
                                         {
                                             self.diags.push(Diag::ty(
@@ -16014,6 +16563,13 @@ impl<'a> Checker<'a> {
                             && self.top.lookup(&id.name).is_none()
                             && !self.generic_fns.contains_key(id.name.as_str()) =>
                     {
+                        // `Decimal<S>`: `min(d, 0d)`, a scale-less operand
+                        // takes the other's scale.
+                        let arg_tys = if matches!(id.name.as_str(), "min" | "max") {
+                            self.adopt_operand_decimal_scale(args, arg_tys.clone())
+                        } else {
+                            arg_tys.clone()
+                        };
                         crate::builtin_sigs::bare_builtin_sig(&id.name)
                             .and_then(|sig| sig.result(&arg_tys, |t| self.ty_is_printable(t)))
                             .unwrap_or(Ty::Unknown)
@@ -17052,7 +17608,7 @@ impl<'a> Checker<'a> {
         // did something.
         let fractional = matches!(
             vt,
-            Ty::Prim(PrimType::Float | PrimType::Decimal) | Ty::Unknown
+            Ty::Prim(PrimType::Float | PrimType::Decimal(_)) | Ty::Unknown
         );
         if spec.kind != SpecKind::Display
             && !matches!(vt, Ty::Prim(PrimType::Int) | Ty::Unknown)
@@ -17228,6 +17784,43 @@ impl<'a> Checker<'a> {
                 self.record_printed(operands.0, lt);
                 self.record_printed(operands.1, rt);
                 return Ty::Prim(PrimType::String);
+            }
+        }
+        // `Decimal<S>`: two scales never mix; a scale-less operand (a
+        // literal, a parse) takes the other's scale.
+        if let (Ty::Prim(PrimType::Decimal(l)), Ty::Prim(PrimType::Decimal(r))) = (lt, rt) {
+            let compared = matches!(op, Eq | NotEq | Lt | Gt | LtEq | GtEq);
+            if matches!(op, Add | Sub | Mul | Div | Mod) || compared {
+                let (l_free, r_free) = (Self::decimal_adoptable(operands.0), Self::decimal_adoptable(operands.1));
+                let scale = match (l_free, r_free) {
+                    (false, true) => Some(*l),
+                    (true, false) => Some(*r),
+                    _ if l == r => Some(*l),
+                    _ => None,
+                };
+                match scale {
+                    Some(s) => {
+                        if l_free && !r_free {
+                            self.adopt_decimal_scale(operands.0, s);
+                        } else if r_free && !l_free {
+                            self.adopt_decimal_scale(operands.1, s);
+                        }
+                        return if compared { Ty::Prim(PrimType::Bool) } else { Ty::Prim(PrimType::Decimal(s)) };
+                    }
+                    None => {
+                        self.diags.push(Diag::ty(
+                            span,
+                            format!(
+                                "binary op: `{}` and `{}` are different scales: a Decimal's scale is part of \
+                                 its type, and two scales never mix; convert one explicitly (`.rescale({})`)",
+                                lt.display(),
+                                rt.display(),
+                                l.max(r)
+                            ),
+                        ));
+                        return if compared { Ty::Prim(PrimType::Bool) } else { Ty::Unknown };
+                    }
+                }
             }
         }
         // GH #1076 (U3): a quantity or a point on either side: the
@@ -18056,7 +18649,7 @@ fn lit_ty(lit: &Literal) -> Ty {
     match lit {
         Literal::Int(_) => Ty::Prim(PrimType::Int),
         Literal::Float(_) => Ty::Prim(PrimType::Float),
-        Literal::Decimal(_) => Ty::Prim(PrimType::Decimal),
+        Literal::Decimal(_) => Ty::Prim(PrimType::DECIMAL),
         Literal::String(_) => Ty::Prim(PrimType::String),
         Literal::Bool(_) => Ty::Prim(PrimType::Bool),
         Literal::Nil => Ty::Unknown,

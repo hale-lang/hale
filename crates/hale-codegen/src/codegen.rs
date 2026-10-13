@@ -79,13 +79,11 @@ pub(crate) enum CodegenTy {
     Bool,
     String,
     Duration,
-    /// 64-bit decimal value. v0 codegen stores this as `f64` (same
-    /// hack the interpreter uses — `parse_decimal` calls
-    /// `s.parse::<f64>()`). Distinct from `Float` at the type level
-    /// so type-checking stays strict; same LLVM lowering. A real
-    /// fixed-point or arbitrary-precision representation lands
-    /// later when Decimal precision actually matters.
-    Decimal,
+    /// `Decimal<S>`: an i128 mantissa at the scale `S` (`mantissa ×
+    /// 10⁻ˢ`). Every scale has the one layout (16 bytes, align 16); the
+    /// scale decides what `*`, `/`, printing, parsing and a literal
+    /// mean. Plain `Decimal` is `Decimal(9)`.
+    Decimal(u8),
     /// Wall-clock instant. v0 codegen stores this as a pointer to
     /// the literal's source-spelling string (same hack the
     /// interpreter uses). Real `time_t` / `i64`-since-epoch
@@ -3399,7 +3397,7 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// rows of the generic calls its body makes.
     pub(crate) current_specialization: Option<(hale_syntax::ast::NodeId, Vec<hale_types::ty::Ty>)>,
     /// Source invocation whose omitted defaults are being lowered.
-    current_call: Option<NodeId>,
+    pub(crate) current_call: Option<NodeId>,
     default_invocations: Vec<u32>,
     /// While a default is lowered where it is evaluated: the evaluation
     /// path, outermost first, each a struct literal that leaves a field
@@ -8571,7 +8569,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     Some((lo, i64_t.const_zero()))
                 }
             }
-            CodegenTy::Decimal => {
+            CodegenTy::Decimal(_) => {
                 // i128: split into low + high i64 halves.
                 let iv = val.into_int_value();
                 let i128_t = self.context.i128_type();
@@ -9235,7 +9233,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // Scalar-literal fast path: same shape as locus-param
             // `params { ... }` defaults — value lowers to a
             // constant via `const_param` at every use site.
-            match param_value(&c.value) {
+            match param_value(&c.value, Some(&c.ty)) {
                 Ok(pv) => {
                     self.user_consts.insert(c.name.name.clone(), pv);
                 }
@@ -12028,7 +12026,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         TypeExpr::Primitive(
                             PrimType::Int
                                 | PrimType::Float
-                                | PrimType::Decimal
+                                | PrimType::Decimal(_)
                                 | PrimType::Duration,
                             _,
                         )
@@ -12446,7 +12444,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 | PrimType::Bool
                 | PrimType::String
                 | PrimType::Duration
-                | PrimType::Decimal
+                | PrimType::Decimal(_)
                 | PrimType::Time),
             ) => Ok(TypeExpr::Primitive(*p, span)),
             Ty::Named(n) if self.user_types.contains_key(n) || self.user_enums.contains_key(n) => {
@@ -13299,7 +13297,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 Some(CodegenTy::Float) => {
                     self.context.f64_type().fn_type(&llvm_param_tys, false)
                 }
-                Some(CodegenTy::Decimal) => {
+                Some(CodegenTy::Decimal(_)) => {
                     self.context.i128_type().fn_type(&llvm_param_tys, false)
                 }
                 Some(CodegenTy::Bool) => {
@@ -13993,7 +13991,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             | CodegenTy::Cell(_, _)
             | CodegenTy::FnPtr { .. }
             | CodegenTy::Drain(_)
-            | CodegenTy::Decimal => Err(CodegenError::Unsupported(format!(
+            | CodegenTy::Decimal(_) => Err(CodegenError::Unsupported(format!(
                 "@ffi fn `{}` parameter `{}`: type {:?} is not yet wired \
                  for FFI codegen at Stage 1. See spec/ffi.md.",
                 fn_name, param_name, ty
@@ -14648,7 +14646,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             CodegenTy::Int
             | CodegenTy::Float
             | CodegenTy::Bool
-            | CodegenTy::Decimal
+            | CodegenTy::Decimal(_)
             | CodegenTy::Time
             | CodegenTy::Duration
             | CodegenTy::FnPtr { .. }
@@ -14875,7 +14873,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             CodegenTy::Int
                 | CodegenTy::Float
                 | CodegenTy::Bool
-                | CodegenTy::Decimal
+                | CodegenTy::Decimal(_)
                 | CodegenTy::Time
                 | CodegenTy::Duration
                 | CodegenTy::FnPtr { .. }
@@ -16060,7 +16058,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             CodegenTy::Bool => "Bool".to_string(),
             CodegenTy::String => "String".to_string(),
             CodegenTy::Bytes => "Bytes".to_string(),
-            CodegenTy::Decimal => "Decimal".to_string(),
+            CodegenTy::Decimal(s) => hale_types::ty::decimal_name(*s).to_string(),
             CodegenTy::Time => "Time".to_string(),
             CodegenTy::Duration => "Duration".to_string(),
             other => format!("{:?}", other),
@@ -16568,7 +16566,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 CodegenTy::Int
                     | CodegenTy::Float
                     | CodegenTy::Bool
-                    | CodegenTy::Decimal
+                    | CodegenTy::Decimal(_)
                     | CodegenTy::Time
                     | CodegenTy::Duration
                     | CodegenTy::String
@@ -16726,7 +16724,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             CodegenTy::Int => ("Int", 64, SIGNED, false),
             CodegenTy::Float => ("Float", 64, FLOAT, false),
             CodegenTy::Bool => ("Bool", 32, BOOLEAN, false),
-            CodegenTy::Decimal => ("Decimal", 128, SIGNED, false),
+            CodegenTy::Decimal(_) => ("Decimal", 128, SIGNED, false),
             CodegenTy::Time => ("Time", 64, SIGNED, false),
             CodegenTy::Duration => ("Duration", 64, SIGNED, false),
             CodegenTy::String => ("String", 0, 0, true),
@@ -19174,7 +19172,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             )));
         }
         match at {
-            CodegenTy::Int | CodegenTy::Duration | CodegenTy::Decimal => {
+            CodegenTy::Int | CodegenTy::Duration | CodegenTy::Decimal(_) => {
                 let pred = match name {
                     "min" => inkwell::IntPredicate::SLT,
                     "max" => inkwell::IntPredicate::SGT,
@@ -19229,13 +19227,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         ty: &CodegenTy,
     ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
         match ty {
-            CodegenTy::Int | CodegenTy::Duration | CodegenTy::Decimal => {
+            CodegenTy::Int | CodegenTy::Duration | CodegenTy::Decimal(_) => {
                 // m48: Decimal lives in i128 so the int-abs path
                 // works for it directly — same neg + select shape
                 // as Int / Duration, just with the i128 zero
                 // constant instead of i64.
                 let zero: inkwell::values::IntValue<'ctx> =
-                    if matches!(ty, CodegenTy::Decimal) {
+                    if matches!(ty, CodegenTy::Decimal(_)) {
                         i128_const(self.context, 0)
                     } else {
                         self.context.i64_type().const_int(0, true)
@@ -19371,7 +19369,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             CodegenTy::Int => PrintShape::Prim(PrimType::Int),
             CodegenTy::Bool => PrintShape::Prim(PrimType::Bool),
             CodegenTy::Float => PrintShape::Prim(PrimType::Float),
-            CodegenTy::Decimal => PrintShape::Prim(PrimType::Decimal),
+            CodegenTy::Decimal(s) => PrintShape::Prim(PrimType::Decimal(*s)),
             CodegenTy::Duration => PrintShape::Prim(PrimType::Duration),
             CodegenTy::Time => PrintShape::Prim(PrimType::Time),
             CodegenTy::Bytes => PrintShape::Prim(PrimType::Bytes),
@@ -19535,7 +19533,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .expect("lotus_str_from_float returns ptr");
                 Ok(res)
             }
-            CodegenTy::Decimal => {
+            CodegenTy::Decimal(dec_scale) => {
                 let arena_ptr = self.current_arena_ptr()?;
                 let i128_v = v.into_int_value();
                 let i64_t = self.context.i64_type();
@@ -19560,7 +19558,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .builder
                     .build_call(
                         f,
-                        &[arena_ptr.into(), hi.into(), lo.into()],
+                        &[
+                            arena_ptr.into(),
+                            hi.into(),
+                            lo.into(),
+                            i64_t.const_int(u64::from(dec_scale), false).into(),
+                        ],
                         "to_string.decimal",
                     )
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
@@ -19863,14 +19866,15 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         .left()
                         .expect("lotus_fmt_float_prec returns ptr")
                 }
-                // Decimal is an i128 mantissa at fixed scale 9, NOT
+                // Decimal is an i128 mantissa at its scale S, NOT
                 // an f64 — so it goes through the exact fixed-point
                 // formatter `std::decimal::format` already uses.
                 // Routing it via a double would reintroduce, in the
                 // rendering of a money value, precisely the rounding
                 // the Decimal type exists to avoid. (Places clamp at
-                // 9: there is no tenth digit to print.)
-                Some(p) if ty == CodegenTy::Decimal => {
+                // S: there is no digit past the scale to print.)
+                Some(p) if matches!(ty, CodegenTy::Decimal(_)) => {
+                    let CodegenTy::Decimal(dec_scale) = ty else { unreachable!("guard checked") };
                     let i128_v = v.into_int_value();
                     let lo = self
                         .builder
@@ -19898,6 +19902,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                             &[
                                 hi.into(),
                                 lo.into(),
+                                i64_t.const_int(u64::from(dec_scale), false).into(),
                                 i64_t.const_int(p as u64, false).into(),
                             ],
                             "fmt.dec.prec",
@@ -19922,7 +19927,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 ty,
                 CodegenTy::Int
                     | CodegenTy::Float
-                    | CodegenTy::Decimal
+                    | CodegenTy::Decimal(_)
                     | CodegenTy::Duration
             ) || spec.kind != SpecKind::Display;
             let align = spec.align.unwrap_or(if numeric {
@@ -20356,7 +20361,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         name: &str,
     ) -> Result<inkwell::values::IntValue<'ctx>, CodegenError> {
         match ty {
-            CodegenTy::Int | CodegenTy::Duration | CodegenTy::Time | CodegenTy::Bool | CodegenTy::Decimal => self
+            CodegenTy::Int | CodegenTy::Duration | CodegenTy::Time | CodegenTy::Bool | CodegenTy::Decimal(_) => self
                 .builder
                 .build_int_compare(
                     inkwell::IntPredicate::EQ,
@@ -20517,8 +20522,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
                 }
                 Pattern::Literal(lit, span) => {
-                    let (lit_val, lit_ty) =
-                        self.lower_expr(&Expr::Literal(lit.clone(), *span), scope)?;
+                    let (lit_val, lit_ty) = self.lower_pattern_literal(lit, *span, &scrutinee_ty, scope)?;
                     if lit_ty != scrutinee_ty {
                         return Err(CodegenError::Unsupported(format!(
                             "match arm pattern type {:?} doesn't match \
@@ -20601,10 +20605,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                                 ));
                             }
                             Pattern::Literal(lit, span) => {
-                                let (lit_val, lit_ty) = self.lower_expr(
-                                    &Expr::Literal(lit.clone(), *span),
-                                    scope,
-                                )?;
+                                let (lit_val, lit_ty) =
+                                    self.lower_pattern_literal(lit, *span, &elem_tys[j], scope)?;
                                 if lit_ty != elem_tys[j] {
                                     return Err(CodegenError::Unsupported(
                                         format!(
@@ -20777,10 +20779,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                                     bindings.push((ident.name.clone(), val, ty));
                                 }
                                 Pattern::Literal(lit, span) => {
-                                    let (lit_val, lit_ty) = self.lower_expr(
-                                        &Expr::Literal(lit.clone(), *span),
-                                        scope,
-                                    )?;
+                                    let (lit_val, lit_ty) =
+                                        self.lower_pattern_literal(lit, *span, &fields[j].1, scope)?;
                                     let (field_val, field_ty) = fields[j].clone();
                                     if lit_ty != field_ty {
                                         return Err(CodegenError::Unsupported(
@@ -22861,7 +22861,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 self.context.ptr_type(AddressSpace::default()).into()
             }
             CodegenTy::Float => self.context.f64_type().into(),
-            CodegenTy::Decimal => self.context.i128_type().into(),
+            CodegenTy::Decimal(_) => self.context.i128_type().into(),
             CodegenTy::Bool => self.context.bool_type().into(),
             CodegenTy::Enum(en) => {
                 let payload = self
@@ -22961,7 +22961,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 | CodegenTy::Float
                 | CodegenTy::Bool
                 | CodegenTy::Duration
-                | CodegenTy::Decimal
+                | CodegenTy::Decimal(_)
                 | CodegenTy::Enum(_)
         )
     }
@@ -23265,6 +23265,27 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         result
     }
 
+    /// A match pattern's literal, compared against a value of `want`: a
+    /// Decimal literal is a mantissa at `want`'s scale (`Decimal<S>`).
+    fn lower_pattern_literal(
+        &mut self,
+        lit: &Literal,
+        span: hale_syntax::Span,
+        want: &CodegenTy,
+        scope: &Scope<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
+        if let (Literal::Decimal(text), CodegenTy::Decimal(scale)) = (lit, want) {
+            let m = hale_syntax::decimal_literal::parse_at_scale(text, *scale).map_err(|_| {
+                CodegenError::UnsupportedAt(
+                    format!("Decimal pattern `{text}` does not fit `{}`", hale_types::ty::decimal_name(*scale)),
+                    span,
+                )
+            })?;
+            return Ok((i128_const(self.context, m).into(), want.clone()));
+        }
+        self.lower_expr(&Expr::Literal(lit.clone(), span), scope)
+    }
+
     pub(crate) fn lower_expr(
         &mut self,
         e: &Expr,
@@ -23490,23 +23511,25 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .expect("lotus_bytes_from_buf returns ptr");
                 Ok((blob, CodegenTy::Bytes))
             }
-            Expr::Literal(Literal::Decimal(s), _) => {
-                // m48: lower Decimal literals to i128 mantissa
-                // with fixed scale 9 (mantissa × 10^-9). Per-value
-                // scale lives only in the interpreter; codegen
-                // picks one fixed scale so add/sub stay i128 ops
-                // without mantissa alignment, and mul/div compose
-                // via single division by 10^9. Source spelling
-                // round-trips through the runtime print helper
-                // because trailing zeros are trimmed at display.
-                let mantissa = parse_decimal_to_i128_scale9(s).ok_or_else(|| {
-                    CodegenError::Unsupported(format!(
-                        "Decimal literal `{}` failed to parse",
-                        s
-                    ))
+            Expr::Literal(Literal::Decimal(s), span) => {
+                // m48 / `Decimal<S>`: an i128 mantissa at the scale of
+                // the place the literal flows into, which the checker
+                // recorded at the literal (`Decimal`'s 9 when it
+                // recorded none). Add/sub stay i128 ops; mul/div
+                // divide by 10^S once.
+                let scale = self.decimal_scale_at_value(*span);
+                let mantissa = hale_syntax::decimal_literal::parse_at_scale(s, scale).map_err(|_| {
+                    CodegenError::UnsupportedAt(
+                        format!(
+                            "Decimal literal `{}` does not fit `{}` (the checker refuses it)",
+                            s,
+                            hale_types::ty::decimal_name(scale)
+                        ),
+                        *span,
+                    )
                 })?;
                 let v = i128_const(self.context, mantissa);
-                Ok((v.into(), CodegenTy::Decimal))
+                Ok((v.into(), CodegenTy::Decimal(scale)))
             }
             Expr::Literal(Literal::Time(s), _) => {
                 // GH #607: an instant, i64 nanoseconds since the
@@ -24059,6 +24082,23 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 // the result's.
                 if let Some(result) = self.operator_result(*span) {
                     return self.lower_binop(*op, lv, rv, &result);
+                }
+                // A stdlib body has no operator rows (the checker records
+                // none for it: `conversion::row`), so its `n * 1ms` — the
+                // one spelling by which a count becomes a `Duration` —
+                // found no row and was refused here. The algebra's answer
+                // for that product is fixed whatever the site (spec/units.md:
+                // a quantity times an `Int` is the quantity, and a
+                // `Duration` counts nanoseconds, the `i64` both operands
+                // are), so it is the same multiply a row would emit.
+                if *op == BinOp::Mul
+                    && matches!(
+                        (&lt, &rt),
+                        (CodegenTy::Int, CodegenTy::Duration)
+                            | (CodegenTy::Duration, CodegenTy::Int)
+                    )
+                {
+                    return self.lower_binop(*op, lv, rv, &CodegenTy::Duration);
                 }
                 if lt != rt {
                     return Err(CodegenError::Unsupported(format!(
@@ -25105,9 +25145,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 self.context.i64_type().const_int(*ns as u64, true).into(),
                 CodegenTy::Duration,
             ),
-            ParamValue::Decimal(m) => (
+            ParamValue::Decimal(m, scale) => (
                 i128_const(self.context, *m).into(),
-                CodegenTy::Decimal,
+                CodegenTy::Decimal(*scale),
             ),
             ParamValue::Time(s) => {
                 let ns = hale_syntax::time_literal::parse_iso8601_utc_ns(s).unwrap_or(0);
@@ -25265,22 +25305,28 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 let v = v.map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
                 Ok((v.into(), CodegenTy::Float))
             }
-            (BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod, CodegenTy::Decimal) => {
-                // m48: Decimal arithmetic on i128 mantissa with
-                // implicit scale 9. Add/Sub/Mod: direct i128 ops
-                // (the mantissas already share the implicit
-                // scale, so a%b at scale 9 is just `a_m %
-                // b_m` reinterpreted at scale 9). Mul: (a × b)
-                // is mantissa scale 18; divide by 10^9 to bring
-                // back to scale 9. Div: scale a's mantissa up by
-                // 10^9 first so (a × 10^9) / b lands at scale 9.
-                // Mul and div risk i128 overflow on the
-                // intermediate product when operands exceed
-                // ~10^19; v0.1 accepts the same wrap-around
-                // policy as Int multiplication.
+            (BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod, CodegenTy::Decimal(scale)) => {
+                // m48 / `Decimal<S>`: arithmetic on the i128 mantissa
+                // at the scale S both operands share (the checker
+                // refuses two scales). Add/Sub/Mod: direct i128 ops (a
+                // % b at scale S is `a_m % b_m` read at scale S). Mul:
+                // (a × b) is a mantissa at scale 2S; divide by 10^S to
+                // bring it back to S. Div: scale a's mantissa up by
+                // 10^S first so (a × 10^S) / b lands at S. Each
+                // division truncates toward zero.
+                //
+                // The intermediate: up to scale 9 it is the i128 itself
+                // (as `Decimal` always was), and wraps like `Int`
+                // arithmetic past it. Above 9 an i128 product would
+                // overflow for operands as small as 14 at scale 18, so
+                // the product and the scaled dividend are i256, and only
+                // a result no i128 holds wraps.
                 let l = lv.into_int_value();
                 let r = rv.into_int_value();
-                let pow9 = i128_const(self.context, 1_000_000_000i128);
+                if matches!(op, BinOp::Mul | BinOp::Div) && scale > hale_syntax::decimal_literal::DEFAULT_SCALE {
+                    return self.lower_wide_decimal_mul_div(op, l, r, scale);
+                }
+                let pow = i128_const(self.context, hale_syntax::decimal_literal::pow10(u32::from(scale)));
                 let v = match op {
                     BinOp::Add => self.builder.build_int_add(l, r, "decadd"),
                     BinOp::Sub => self.builder.build_int_sub(l, r, "decsub"),
@@ -25290,19 +25336,19 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                             .builder
                             .build_int_mul(l, r, "decmul_raw")
                             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                        self.builder.build_int_signed_div(prod, pow9, "decmul")
+                        self.builder.build_int_signed_div(prod, pow, "decmul")
                     }
                     BinOp::Div => {
                         let scaled = self
                             .builder
-                            .build_int_mul(l, pow9, "decdiv_scale")
+                            .build_int_mul(l, pow, "decdiv_scale")
                             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
                         self.builder.build_int_signed_div(scaled, r, "decdiv")
                     }
                     _ => unreachable!(),
                 };
                 let v = v.map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                Ok((v.into(), CodegenTy::Decimal))
+                Ok((v.into(), CodegenTy::Decimal(scale)))
             }
             (BinOp::Eq | BinOp::NotEq | BinOp::Lt | BinOp::Gt | BinOp::LtEq | BinOp::GtEq,
                 CodegenTy::Int) =>
@@ -25325,7 +25371,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 Ok((v.into(), CodegenTy::Bool))
             }
             (BinOp::Eq | BinOp::NotEq | BinOp::Lt | BinOp::Gt | BinOp::LtEq | BinOp::GtEq,
-                CodegenTy::Decimal) =>
+                CodegenTy::Decimal(_)) =>
             {
                 let l = lv.into_int_value();
                 let r = rv.into_int_value();
@@ -25579,7 +25625,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
                 Ok((r.into(), CodegenTy::Float))
             }
-            (UnaryOp::Neg, CodegenTy::Decimal) => {
+            (UnaryOp::Neg, t @ CodegenTy::Decimal(_)) => {
                 // m48: Decimal lives in i128; negate via subtract
                 // from i128 zero, mirroring Int's neg lowering.
                 let zero = i128_const(self.context, 0);
@@ -25587,7 +25633,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .builder
                     .build_int_sub(zero, v.into_int_value(), "decneg")
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                Ok((r.into(), CodegenTy::Decimal))
+                Ok((r.into(), t.clone()))
             }
             (UnaryOp::Not, CodegenTy::Bool) => {
                 let r = self
@@ -25692,7 +25738,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     printf_args
                         .push(BasicMetadataValueEnum::FloatValue(val.into_float_value()));
                 }
-                CodegenTy::Decimal => {
+                CodegenTy::Decimal(_) => {
                     // m48: render the i128 mantissa via the
                     // C runtime helper into a stack buffer, then
                     // splice the buffer in as %s. Splitting i128
@@ -25729,10 +25775,16 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                                 "lotus_decimal_to_string undeclared".into(),
                             )
                         })?;
+                    let CodegenTy::Decimal(dec_scale) = ty else { unreachable!("a Decimal arm") };
                     self.builder
                         .build_call(
                             dec_to_str,
-                            &[hi.into(), lo.into(), buf.into()],
+                            &[
+                                hi.into(),
+                                lo.into(),
+                                i64_t.const_int(u64::from(dec_scale), false).into(),
+                                buf.into(),
+                            ],
                             "dec_render",
                         )
                         .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
@@ -27539,12 +27591,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             | Id::IoTcpAcceptOne
             | Id::IoTcpConnect
             | Id::IoTcpConnectWait
+            | Id::IoTcpConnectWithin
             | Id::IoTcpListenSocket
             | Id::IoTcpSetNodelay
             | Id::IoTcpSetRecvTimeout
             | Id::IoTcpSetRxTimestamps
             | Id::IoTcpSetSendTimeout
             | Id::IoTlsConnect
+            | Id::IoTlsConnectWithin
             | Id::IoTlsSetNodelay
             | Id::IoTlsSetRecvTimeout
             | Id::IoTlsSetRxTimestamps
@@ -27787,6 +27841,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             Id::IoTcpListenSocket => self.lower_std_io_tcp_listen_socket_fallible(args, scope),
             Id::IoTcpConnect => self.lower_std_io_tcp_connect_fallible(args, scope),
             Id::IoTcpConnectWait => self.lower_std_io_tcp_connect_wait_fallible(args, scope),
+            Id::IoTcpConnectWithin => self.lower_std_io_tcp_connect_within_fallible(args, scope),
             Id::IoTcpAcceptOne => self.lower_std_io_tcp_accept_one_fallible(args, scope),
             // GH #1106: AF_UNIX stream sockets, the fd-level shape tcp has.
             Id::IoUnixListenSocket => self.lower_std_io_unix_listen_socket_fallible(args, scope),
@@ -27798,6 +27853,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // stay non-fallible (Int 0/-1 returns) to mirror the
             // tcp shape.
             Id::IoTlsConnect => self.lower_std_io_tls_connect_fallible(args, scope),
+            Id::IoTlsConnectWithin => self.lower_std_io_tls_connect_within_fallible(args, scope),
             // upgrade wraps an already-connected fd in a TLS session
             // (STARTTLS-style); same fallible(IoError) surface as
             // connect since it handshakes + optionally verifies.
@@ -30019,7 +30075,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             CodegenTy::Bool => "Bool".to_string(),
             CodegenTy::String => "String".to_string(),
             CodegenTy::Bytes => "Bytes".to_string(),
-            CodegenTy::Decimal => "Decimal".to_string(),
+            CodegenTy::Decimal(s) => hale_types::ty::decimal_mangle_token(*s).to_string(),
             CodegenTy::Duration => "Duration".to_string(),
             CodegenTy::Time => "Time".to_string(),
             CodegenTy::TypeRef(name) => format!("type_{}", name),
@@ -30997,7 +31053,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .build_store(slot_ptr, z)
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
             }
-            CodegenTy::Decimal => {
+            CodegenTy::Decimal(_) => {
                 let z = i128_const(self.context, 0);
                 self.builder
                     .build_store(slot_ptr, z)
@@ -31152,7 +31208,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .build_store(slot_ptr, next)
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
             }
-            CodegenTy::Decimal => {
+            CodegenTy::Decimal(_) => {
                 let i128_t = self.context.i128_type();
                 let prev = self
                     .builder
@@ -31275,9 +31331,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                             CodegenError::LlvmEmit(e.to_string())
                         })?,
                     CodegenTy::Float => sum_v.into_float_value(),
-                    CodegenTy::Decimal => {
-                        // Decimal sum is i128 with implicit scale 9.
-                        // Cast to f64 then divide by 10^9 so the
+                    CodegenTy::Decimal(dec_scale) => {
+                        // Decimal sum is i128 at its scale S.
+                        // Cast to f64 then divide by 10^S so the
                         // result is in real units before the
                         // count division. Loses some precision but
                         // mean is inherently real-valued so f64
@@ -31292,7 +31348,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                             .map_err(|e| {
                                 CodegenError::LlvmEmit(e.to_string())
                             })?;
-                        let scale = f64_t.const_float(1_000_000_000.0);
+                        let scale = f64_t.const_float(10f64.powi(i32::from(dec_scale)));
                         self.builder
                             .build_float_div(raw, scale, "mean.sum.dec.f")
                             .map_err(|e| {
@@ -31349,7 +31405,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 .builder
                 .build_load(self.context.f64_type(), slot_ptr, name)
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?,
-            CodegenTy::Decimal => self
+            CodegenTy::Decimal(_) => self
                 .builder
                 .build_load(self.context.i128_type(), slot_ptr, name)
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?,
@@ -34347,12 +34403,19 @@ pub(crate) enum ParamValue {
     Float(f64),
     Bool(bool),
     Duration(i64),
-    Decimal(i128),
+    /// The mantissa and its scale (`Decimal<S>`).
+    Decimal(i128, u8),
     /// Time literal stored as its source spelling.
     Time(String),
 }
 
-pub(crate) fn param_value(e: &Expr) -> Result<ParamValue, CodegenError> {
+/// The constant a `params` initializer or a `const`'s literal is;
+/// `ascribed`, the declared type, gives a Decimal literal its scale.
+pub(crate) fn param_value(e: &Expr, ascribed: Option<&TypeExpr>) -> Result<ParamValue, CodegenError> {
+    let decimal_scale = match ascribed {
+        Some(TypeExpr::Primitive(PrimType::Decimal(s), _)) => *s,
+        _ => hale_syntax::decimal_literal::DEFAULT_SCALE,
+    };
     match e {
         Expr::Literal(Literal::String(s), _) => Ok(ParamValue::String(s.clone())),
         Expr::Literal(Literal::Int(n), _) => Ok(ParamValue::Int(*n)),
@@ -34371,13 +34434,14 @@ pub(crate) fn param_value(e: &Expr) -> Result<ParamValue, CodegenError> {
             Ok(ParamValue::Duration(ns))
         }
         Expr::Literal(Literal::Decimal(s), _) => {
-            let m = parse_decimal_to_i128_scale9(s).ok_or_else(|| {
+            let m = hale_syntax::decimal_literal::parse_at_scale(s, decimal_scale).map_err(|_| {
                 CodegenError::Unsupported(format!(
-                    "Decimal literal `{}` failed to parse",
-                    s
+                    "Decimal literal `{}` does not fit `{}`",
+                    s,
+                    hale_types::ty::decimal_name(decimal_scale)
                 ))
             })?;
-            Ok(ParamValue::Decimal(m))
+            Ok(ParamValue::Decimal(m, decimal_scale))
         }
         Expr::Literal(Literal::Time(s), _) => Ok(ParamValue::Time(s.clone())),
         // GH #1076 (U3): a quantity literal's count is its row's, which a
@@ -34397,16 +34461,6 @@ pub(crate) fn param_value(e: &Expr) -> Result<ParamValue, CodegenError> {
 
 fn escape_format(s: &str) -> String {
     s.replace('%', "%%")
-}
-
-/// m48: parse a Decimal literal source spelling (e.g. `"100.40d"`,
-/// `"0.001"`) into the i128 mantissa with implicit scale 9.
-/// Strips an optional trailing `d`, an optional leading sign,
-/// underscores. Returns None on malformed input.
-fn parse_decimal_to_i128_scale9(s: &str) -> Option<i128> {
-    // The checker has refused a literal this cannot represent (past
-    // scale 9, or past i128), with its span; this is the same parse.
-    hale_syntax::decimal_literal::parse_scale9(s).ok()
 }
 
 /// Cheap edit-distance close-match for a "did you mean" hint on
@@ -34540,7 +34594,7 @@ pub(crate) fn codegen_ty_size_bytes<'ctx>(
     t: &CodegenTy,
 ) -> u64 {
     match t {
-        CodegenTy::Decimal => 16,
+        CodegenTy::Decimal(_) => 16,
         _ => 8,
     }
 }
@@ -34604,7 +34658,7 @@ pub(crate) fn accumulator_element_type(
     match elem {
         hale_types::ty::Ty::Prim(PrimType::Int) => Ok(CodegenTy::Int),
         hale_types::ty::Ty::Prim(PrimType::Float) => Ok(CodegenTy::Float),
-        hale_types::ty::Ty::Prim(PrimType::Decimal) => Ok(CodegenTy::Decimal),
+        hale_types::ty::Ty::Prim(PrimType::Decimal(s)) => Ok(CodegenTy::Decimal(*s)),
         hale_types::ty::Ty::Prim(PrimType::Duration) => Ok(CodegenTy::Duration),
         other => Err(CodegenError::Unsupported(format!(
             "closure `{}` on locus `{}`: accumulator `sum(self.{})` \
