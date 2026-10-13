@@ -131,6 +131,10 @@ ns std::http open_prefixes=[]
   query_param pure
   request syscall|block
   write_response syscall|block
+ns std::hex open_prefixes=[]
+  decode pure
+  digit pure
+  encode pure
 ns std::io::file open_prefixes=[]
   __at_eof syscall
   __close syscall
@@ -631,6 +635,9 @@ std::env::var | lookup=env@2 | locus=false | effects=env | sig=(Str) -> Str | re
 std::env::var_exists | lookup=env@2 | locus=false | effects=env | sig=(Str) -> Bool | ret_ty=Bool | or=- | parks=false | holds=false | unknown=- | suggest=var_exists
 std::fmt::print | lookup=- | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=`std::fmt::print` is not a stdlib function; writing to stdout is the builtin `print(x)`
 std::fmt::println | lookup=- | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=`std::fmt::println` is not a stdlib function; writing a line to stdout is the builtin `println(x)`
+std::hex::decode | lookup=hex@2 | locus=false | effects=pure | sig=(Str) -> Bytes ! ParseError | ret_ty=? | or=(Bytes, ParseError) | parks=false | holds=false | unknown=- | suggest=decode
+std::hex::digit | lookup=hex@2 | locus=false | effects=pure | sig=(Int) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=digit
+std::hex::encode | lookup=hex@2 | locus=false | effects=pure | sig=(Bytes) -> Str | ret_ty=String | or=- | parks=false | holds=false | unknown=- | suggest=encode
 std::http::Client | lookup=http@2 | locus=true | effects=- | sig=- | parks=false | holds=false | unknown=- | suggest=-
 std::http::ClientRequest | lookup=http@2 | locus=true | effects=- | sig=- | parks=false | holds=false | unknown=- | suggest=-
 std::http::ClientResponse | lookup=http@2 | locus=true | effects=- | sig=- | parks=false | holds=false | unknown=- | suggest=-

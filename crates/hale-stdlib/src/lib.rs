@@ -227,6 +227,10 @@ pub const AP_SOURCE: &str = concat!(
     // declarations. Last, so no other file's spans or sites move; the
     // checker reads them from the analysis copy (`units::derive_unit_rows`).
     include_str!("../hl/time.hl"),
+    "\n",
+    // std::hex: base16 encode / decode / digit. Free fns only, so its
+    // place is free; after time.hl so no other file's spans move.
+    include_str!("../hl/hex.hl"),
 );
 
 /// The same sources as `AP_SOURCE`, per file. `AP_SOURCE` is the
@@ -267,6 +271,7 @@ pub const AP_FILES: &[(&str, &str)] = &[
     ("mirror_ring.hl", include_str!("../hl/mirror_ring.hl")),
     ("term.hl", include_str!("../hl/term.hl")),
     ("time.hl", include_str!("../hl/time.hl")),
+    ("hex.hl", include_str!("../hl/hex.hl")),
 ];
 
 /// Map an `AP_SOURCE` byte offset to `(file_name, file_content,
@@ -381,6 +386,10 @@ pub const PATH_RENAMES: &[(&[&str], &str)] = &[
     (&["std", "io", "tcp", "Connections"], "__StdIoTcpConnections"),
     (&["std", "http", "Responder"], "__StdHttpResponder"),
     (&["std", "io", "udp", "Reader"], "__StdIoUdpReader"),
+    // std::hex (hex.hl): base16 text of bytes.
+    (&["std", "hex", "decode"], "__std_hex_decode"),
+    (&["std", "hex", "digit"], "__std_hex_digit"),
+    (&["std", "hex", "encode"], "__std_hex_encode"),
     (&["std", "iter", "Lines"], "__StdIterLines"),
     (&["std", "json", "ArrayIter"], "__JsonArrayIter"),
     (&["std", "json", "ArrayIterSpan"], "__JsonArrayIterSpan"),

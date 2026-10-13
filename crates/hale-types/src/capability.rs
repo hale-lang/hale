@@ -1099,6 +1099,7 @@ pub const BEHAVIOURS: &[BehaviourRow] = &[
     std_ns("decimal", STD_NATIVE, STD_NATIVE, STD_WASM),
     std_ns("diag", STD_NATIVE, STD_NATIVE, STD_WASM),
     std_ns("env", STD_NATIVE, STD_NATIVE, WASM_ENV),
+    std_ns("hex", STD_NATIVE, STD_NATIVE, STD_WASM),
     std_ns("io", STD_NATIVE, STD_NATIVE, STD_WASM),
     std_ns("io::mirror", STD_NATIVE, STD_NATIVE, WASM_SHM),
     std_ns("io::sockopt", STD_NATIVE, STD_NATIVE, WASM_SOCKOPT),

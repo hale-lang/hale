@@ -743,6 +743,16 @@ pub const SURFACES: &[NsSurface] = &[
         ],
         open_prefixes: &[],
     },
+    // std::hex: base16 text of bytes, Hale bodies in `hex.hl`.
+    NsSurface {
+        ns: &["hex"],
+        fns: &[
+            row!("decode", PURE, [Str] -> Bytes ! "ParseError", Renamed),
+            row!("digit", PURE, [Int] -> Int, Renamed),
+            row!("encode", PURE, [Bytes] -> Str, Renamed),
+        ],
+        open_prefixes: &[],
+    },
     NsSurface {
         ns: &["io", "file"],
         fns: &[

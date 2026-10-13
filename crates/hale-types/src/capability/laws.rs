@@ -455,6 +455,7 @@ fn every_stdlib_source_maps_to_namespace_rows() {
         ("mirror_ring.hl", &["io"]),
         ("term.hl", &["term"]),
         ("time.hl", &["time"]),
+        ("hex.hl", &["hex"]),
     ];
     // Codegen's native stdlib modules, by the namespace each lowers.
     const CG: &[(&str, &[&str])] = &[
@@ -544,7 +545,7 @@ fn the_tables_have_the_reviewed_shape() {
         .filter(|(_, _, b)| !b.is_lower())
         .map(|(c, cap, _)| format!("{} × {}", cap.label(), c.name()))
         .collect();
-    assert_eq!((m.behaviours.len(), std), (105, 48), "behaviour rows (all, std::)");
+    assert_eq!((m.behaviours.len(), std), (106, 49), "behaviour rows (all, std::)");
     assert_eq!(m.invocations.len(), 3);
     assert_eq!(m.obligations.len(), 10);
     // On wasm32: 18 namespaces (the 10 browser-unavailable, T3's 7, R7's HTTP/2 server),

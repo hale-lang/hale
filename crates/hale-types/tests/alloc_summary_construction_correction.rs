@@ -282,11 +282,13 @@ fn own_scope_let_block_scope_test() {
             // `__json_plain_byte` came); one fewer invoked unboundedly since
             // the HTTP client's `__http_retry_sentinel`, called in its retry
             // loop, went (`__http_retries_exhausted` came); 430 since
-            // `std::process::close_stdin` came
+            // `std::process::close_stdin` came; 431 since `std::hex` came
+            // (its three fns) and the secret and JSON digit helpers it
+            // replaced went
             changed_lines(&old.render(), &now.render()),
             [
-                "- # 430 fns, 27 entry points, 113 invoked-unboundedly",
-                "+ # 430 fns, 27 entry points, 112 invoked-unboundedly",
+                "- # 431 fns, 27 entry points, 113 invoked-unboundedly",
+                "+ # 431 fns, 27 entry points, 112 invoked-unboundedly",
                 "- call  count loop_depth=0 result=local",
                 "+ call  <unresolved: count> loop_depth=0 result=local",
                 "- call  count loop_depth=0 result=local",
@@ -756,7 +758,7 @@ fn program_declaration_only_stdlib_source_shares_a_name() {
             sharing += 1;
         }
     }
-    assert_eq!(sharing, 27, "the stdlib source files that share a name with the copy");
+    assert_eq!(sharing, 28, "the stdlib source files that share a name with the copy");
 }
 
 /// A stdlib file checked as itself keeps its own rows: every fn of the

@@ -307,10 +307,6 @@ fn __api_json_digit(c: Int) -> Bool {
     return c >= 48 && c <= 57;
 }
 
-fn __api_json_hex(c: Int) -> Bool {
-    return (c >= 48 && c <= 57) || (c >= 65 && c <= 70) || (c >= 97 && c <= 102);
-}
-
 /// The index past the run of one or more digits at `i`, or -1.
 fn __api_json_run(t: String, i: Int) -> Int {
     let n = len(t);
@@ -381,7 +377,7 @@ fn __api_json_is_string(t: String) -> Bool {
                 if i + 5 >= last { return false; }
                 let mut k = 2;
                 while k <= 5 {
-                    if !__api_json_hex(std::str::byte_at_unchecked(t, i + k)) { return false; }
+                    if __std_hex_digit(std::str::byte_at_unchecked(t, i + k)) < 0 { return false; }
                     k = k + 1;
                 }
                 i = i + 6;

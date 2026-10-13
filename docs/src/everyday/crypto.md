@@ -1,9 +1,9 @@
 # Hashing, encoding & randomness
 
 A grab-bag of the cryptographic and byte-wrangling helpers real
-programs reach for: digests, message authentication, base64, and
-random numbers. They live under `std::crypto`, `std::text`, and
-`std::rand` / `std::os`.
+programs reach for: digests, message authentication, base64 and hex, and
+random numbers. They live under `std::crypto`, `std::text`,
+`std::hex`, and `std::rand` / `std::os`.
 
 ## Hashes & checksums — `std::crypto`
 
@@ -33,7 +33,21 @@ transport it:
 
 ```hale,fragment
 println(std::text::base64::encode(digest));
+println(std::hex::encode(digest));   // 64 lowercase hex digits
 ```
+
+## Hex — `std::hex`
+
+```hale,fragment
+let text  = std::hex::encode(digest);            // Bytes -> String, lowercase
+let back  = std::hex::decode(text) or raise;     // String -> Bytes, either case
+let value = std::hex::digit(std::str::byte_at_unchecked("f", 0));  // 15
+```
+
+`decode` is strict: two digits a byte, no whitespace, no `0x`. An
+odd length or a byte that is not a hex digit is a `ParseError`
+(kind `"hex"`, carrying the input), so it takes an `or` like
+`parse_int`. `digit` is the value of one digit byte, or `-1`.
 
 ## Base64 — `std::text::base64`
 
