@@ -11368,11 +11368,24 @@ impl<'a> Checker<'a> {
                         }
                     }
                 }
-                if !handled {
-                    let _ = self.check_expr(iter);
-                }
+                // The loop variable of a `bounded[T; N]` or an array
+                // is a `T`, as lowering binds it (`lower_for_bounded`,
+                // `lower_for_array`): typed `Unknown`, the operator
+                // algebra read it as whatever its other operand was,
+                // so `x / 1cent` stayed a `Money` (printed `125cent`)
+                // and `x - t` of two `Time`s stayed a `Time`
+                // (spec/units.md). Every other iterand keeps the
+                // permissive binding.
+                let elem = if handled {
+                    Ty::Unknown
+                } else {
+                    match self.check_expr(iter) {
+                        Ty::Bounded(e, _) | Ty::Array(e, _) => *e,
+                        _ => Ty::Unknown,
+                    }
+                };
                 self.locals.push();
-                self.locals.insert(&name.name, LocalSym { ty: Ty::Unknown, is_mut: false });
+                self.locals.insert(&name.name, LocalSym { ty: elem, is_mut: false });
                 self.check_block(body);
                 self.locals.pop();
             }
