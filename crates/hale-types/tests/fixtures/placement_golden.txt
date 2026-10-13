@@ -652,7 +652,7 @@ row	App@literal1	App	main	default
 row	~	Grow	main	default
 row	~.acc	Acc	main	inherited
 
-== crates/hale-stdlib/hl/api_rpc.hl#42e36c6d
+== crates/hale-stdlib/hl/api_rpc.hl#9ad62dc6
 
 == crates/hale-stdlib/hl/file.hl#f57ba351
 
@@ -6863,6 +6863,9 @@ row	~.rows	Rows	main	inherited
 row	Cache_Int_String@main1	Cache_Int_String	main	default
 row	Holder_Int@main2	Holder_Int	main	default
 dynamic	Cache	on main|unresolved arguments	in the seed
+
+== tests/hale/http_status_phrase_test.hl
+dynamic	__StdIoTcpStream	on main	in the seed
 
 == tests/hale/identities_and_ranges_test.hl
 row	Book@main1	Book	main	default

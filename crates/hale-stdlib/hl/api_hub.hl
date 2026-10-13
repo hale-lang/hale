@@ -364,11 +364,7 @@ locus __StdApiWsPeer {
         return "";
     }
     fn http(status: Int, content_type: String, body: String) {
-        let mut phrase = "Status";
-        if status == 200 { phrase = "OK"; }
-        if status == 400 { phrase = "Bad Request"; }
-        if status == 401 { phrase = "Unauthorized"; }
-        if status == 404 { phrase = "Not Found"; }
+        let phrase = __status_phrase(status);
         self.stream.send("HTTP/1.1 " + to_string(status) + " " + phrase + "\r\nContent-Type: " + content_type + "\r\nContent-Length: " + to_string(len(body)) + "\r\nConnection: close\r\n\r\n" + body) or discard;
     }
     // `GET /.description`: the document for the caller, from the core.

@@ -1664,20 +1664,6 @@ type __StdApiHttpOut {
     body: String;
 }
 
-fn __api_http_phrase(status: Int) -> String {
-    if status == 200 { return "OK"; }
-    if status == 202 { return "Accepted"; }
-    if status == 400 { return "Bad Request"; }
-    if status == 401 { return "Unauthorized"; }
-    if status == 403 { return "Forbidden"; }
-    if status == 405 { return "Method Not Allowed"; }
-    if status == 409 { return "Conflict"; }
-    if status == 422 { return "Unprocessable Entity"; }
-    if status == 429 { return "Too Many Requests"; }
-    if status == 503 { return "Service Unavailable"; }
-    return "Internal Server Error";
-}
-
 /// The status a refusal kind has (spec/api.md § Outcomes).
 fn __api_http_refusal_status(kind: String) -> Int {
     if kind == "malformed" { return 400; }
@@ -1788,7 +1774,7 @@ locus __StdApiHttpPeer {
     fn respond(status: Int, body: String) {
         if self.fd < 0 { return; }
         // a write that fails closes this connection, and only this one
-        self.stream.send("HTTP/1.1 " + to_string(status) + " " + __api_http_phrase(status) + "\r\nContent-Type: application/json\r\nCache-Control: no-store\r\nContent-Length: " + to_string(len(body)) + "\r\nConnection: close\r\n\r\n" + body) or { self.open = false; };
+        self.stream.send("HTTP/1.1 " + to_string(status) + " " + __status_phrase(status) + "\r\nContent-Type: application/json\r\nCache-Control: no-store\r\nContent-Length: " + to_string(len(body)) + "\r\nConnection: close\r\n\r\n" + body) or { self.open = false; };
     }
     // Stop reading: the shutdown wakes the reader, which ends the connection.
     fn hangup() {

@@ -1,0 +1,38 @@
+// tests/hale/http_status_phrase_test.hl — the status line's reason
+// phrase: one table, every RFC 9110 status in its wording and the
+// others the IANA registry assigns. It held seven statuses, so a 201
+// went out as `HTTP/1.1 201 Status` (downstream handoff). Each response
+// is written by `std::http::write_response` over a loopback connection
+// and its status line read back.
+
+fn status_line(listen_fd: Int, port: Int, status: Int) -> String {
+    let client = std::io::tcp::connect("127.0.0.1", port) or - 1;
+    let served = std::io::tcp::accept_one(listen_fd) or - 1;
+    if client < 0 || served < 0 {
+        return "no connection";
+    }
+    let s = std::io::tcp::Stream { conn_fd: served };
+    std::http::write_response(s, std::http::Response { status: status, body: "" });
+    let c = std::io::tcp::Stream { conn_fd: client };
+    let got = c.recv(4096) or "";
+    let end = std::str::index_of(got, "\r\n");
+    if end < 0 {
+        return got;
+    }
+    return got[0..end];
+}
+
+fn main() {
+    let fd = std::io::tcp::listen_socket("127.0.0.1", 0) or - 1;
+    std::test::assert(fd >= 0, "a loopback listener");
+    let port = std::io::tcp::__local_port(fd);
+    std::test::assert_eq_str(status_line(fd, port, 201), "HTTP/1.1 201 Created", "201");
+    std::test::assert_eq_str(status_line(fd, port, 204), "HTTP/1.1 204 No Content", "204");
+    std::test::assert_eq_str(status_line(fd, port, 308), "HTTP/1.1 308 Permanent Redirect", "308");
+    std::test::assert_eq_str(status_line(fd, port, 413), "HTTP/1.1 413 Content Too Large", "413, RFC 9110's wording");
+    std::test::assert_eq_str(status_line(fd, port, 422), "HTTP/1.1 422 Unprocessable Content", "422, RFC 9110's wording");
+    std::test::assert_eq_str(status_line(fd, port, 429), "HTTP/1.1 429 Too Many Requests", "429, outside RFC 9110");
+    std::test::assert_eq_str(status_line(fd, port, 503), "HTTP/1.1 503 Service Unavailable", "503");
+    std::test::assert_eq_str(status_line(fd, port, 599), "HTTP/1.1 599 Status", "an unassigned status");
+    std::io::tcp::close_fd(fd);
+}

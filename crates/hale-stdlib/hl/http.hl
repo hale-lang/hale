@@ -111,20 +111,82 @@ type __StdHttpResponse {
     takeover_raw: Bool = false;
 }
 
-// Map a numeric HTTP status to its canonical reason phrase.
-// v0 covers the codes a doc-server actually emits (200/301/
-// 400/404/500); any other input falls through to a generic
-// phrase. Lives in the stdlib so user code that wants
-// reason-phrase rendering doesn't have to redo this table.
+// Map a numeric HTTP status to its reason phrase: the one table every
+// status line the stdlib writes uses (`write_response`, the TCP
+// substrate's takeover line in io_tcp_serve.hl, the api runtime's
+// replies in api_rpc.hl and api_hub.hl). Every status RFC 9110 § 15
+// defines, in its wording (413 is "Content Too Large", 422
+// "Unprocessable Content"), and the others the IANA registry assigns
+// (102, 103, 207, 208, 226, 423, 424, 425, 428, 429, 431, 451, 506, 507,
+// 508, 510, 511). An unassigned status reads "Status": a reason phrase
+// is advisory (RFC 9112 § 4), and a client reads the code. It held seven
+// statuses until 2026-10-12 (downstream handoff: a 201 or 503 went out
+// as "Status").
 fn __status_phrase(status: Int) -> String {
-    if status == 101 { return "Switching Protocols"; }
-    if status == 200 { return "OK"; }
-    if status == 301 { return "Moved Permanently"; }
-    if status == 400 { return "Bad Request"; }
-    if status == 404 { return "Not Found"; }
-    if status == 413 { return "Payload Too Large"; }
-    if status == 500 { return "Internal Server Error"; }
-    return "Status";
+    return match status {
+        100 -> "Continue",
+        101 -> "Switching Protocols",
+        102 -> "Processing",
+        103 -> "Early Hints",
+        200 -> "OK",
+        201 -> "Created",
+        202 -> "Accepted",
+        203 -> "Non-Authoritative Information",
+        204 -> "No Content",
+        205 -> "Reset Content",
+        206 -> "Partial Content",
+        207 -> "Multi-Status",
+        208 -> "Already Reported",
+        226 -> "IM Used",
+        300 -> "Multiple Choices",
+        301 -> "Moved Permanently",
+        302 -> "Found",
+        303 -> "See Other",
+        304 -> "Not Modified",
+        305 -> "Use Proxy",
+        307 -> "Temporary Redirect",
+        308 -> "Permanent Redirect",
+        400 -> "Bad Request",
+        401 -> "Unauthorized",
+        402 -> "Payment Required",
+        403 -> "Forbidden",
+        404 -> "Not Found",
+        405 -> "Method Not Allowed",
+        406 -> "Not Acceptable",
+        407 -> "Proxy Authentication Required",
+        408 -> "Request Timeout",
+        409 -> "Conflict",
+        410 -> "Gone",
+        411 -> "Length Required",
+        412 -> "Precondition Failed",
+        413 -> "Content Too Large",
+        414 -> "URI Too Long",
+        415 -> "Unsupported Media Type",
+        416 -> "Range Not Satisfiable",
+        417 -> "Expectation Failed",
+        421 -> "Misdirected Request",
+        422 -> "Unprocessable Content",
+        423 -> "Locked",
+        424 -> "Failed Dependency",
+        425 -> "Too Early",
+        426 -> "Upgrade Required",
+        428 -> "Precondition Required",
+        429 -> "Too Many Requests",
+        431 -> "Request Header Fields Too Large",
+        451 -> "Unavailable For Legal Reasons",
+        500 -> "Internal Server Error",
+        501 -> "Not Implemented",
+        502 -> "Bad Gateway",
+        503 -> "Service Unavailable",
+        504 -> "Gateway Timeout",
+        505 -> "HTTP Version Not Supported",
+        506 -> "Variant Also Negotiates",
+        507 -> "Insufficient Storage",
+        508 -> "Loop Detected",
+        510 -> "Not Extended",
+        511 -> "Network Authentication Required",
+        _ -> "Status",
+    };
 }
 
 // m84 — parse one HTTP request from a raw buffer.
