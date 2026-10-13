@@ -203,6 +203,7 @@ ns std::io::tcp open_prefixes=[]
   close_fd syscall
   connect syscall|block
   connect_wait syscall|block
+  connect_within syscall|block
   last_recv_kernel_ns pure
   last_recv_user_ns pure
   listen_socket syscall
@@ -261,6 +262,7 @@ ns std::io::sockopt open_prefixes=[]
 ns std::io::tls open_prefixes=[]
   close syscall
   connect syscall|block
+  connect_within syscall|block
   last_recv_kernel_ns pure
   last_recv_user_ns pure
   recv_bytes syscall|block
@@ -766,7 +768,7 @@ std::io::tcp::LogEvent | lookup=io::tcp@3 | locus=true | effects=- | sig=- | par
 std::io::tcp::Stream | lookup=io::tcp@3 | locus=true | effects=- | sig=- | parks=false | holds=false | unknown=- | suggest=-
 std::io::tcp::__accept_one | lookup=io::tcp@3 | locus=false | effects=syscall|block | sig=(Int) -> Int | ret_ty=Int | or=- | parks=true | holds=true | unknown=- | suggest=__accept_one
 std::io::tcp::__close_fd | lookup=io::tcp@3 | locus=false | effects=syscall | sig=(Int) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=__close_fd
-std::io::tcp::__connect | lookup=io::tcp@3 | locus=false | effects=syscall|block | sig=(Str, Int) -> Int | ret_ty=Int | or=- | parks=false | holds=true | unknown=- | suggest=__connect
+std::io::tcp::__connect | lookup=io::tcp@3 | locus=false | effects=syscall|block | sig=(Str, Int) -> Int | ret_ty=Int | or=- | parks=true | holds=true | unknown=- | suggest=__connect
 std::io::tcp::__io_error_kind | lookup=io::tcp@3 | locus=false | effects=pure | sig=(Int) -> Str | ret_ty=String | or=- | parks=false | holds=false | unknown=- | suggest=__io_error_kind
 std::io::tcp::__last_io_status | lookup=io::tcp@3 | locus=false | effects=pure | sig=() -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=__last_io_status
 std::io::tcp::__listen_socket | lookup=io::tcp@3 | locus=false | effects=syscall | sig=(Str, Int) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=__listen_socket
@@ -784,8 +786,9 @@ std::io::tcp::__stop_listener | lookup=io::tcp@3 | locus=false | effects=syscall
 std::io::tcp::accept_one | lookup=io::tcp@3 | locus=false | effects=syscall|block | sig=(Int) -> Int ! IoError | ret_ty=? | or=(Int, IoError) | parks=true | holds=true | unknown=- | suggest=accept_one
 std::io::tcp::close_fd | lookup=io::tcp@3 | locus=false | effects=syscall | sig=(Int) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=close_fd
 std::io::tcp::conect | lookup=io::tcp@3 | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib function `std::io::tcp::conect` — did you mean `std::io::tcp::connect`? | suggest=connect
-std::io::tcp::connect | lookup=io::tcp@3 | locus=false | effects=syscall|block | sig=(Str, Int) -> Int ! IoError | ret_ty=? | or=(Int, IoError) | parks=false | holds=true | unknown=- | suggest=connect
-std::io::tcp::connect_wait | lookup=io::tcp@3 | locus=false | effects=syscall|block | sig=(Str, Int, Duration) -> Int ! IoError | ret_ty=? | or=(Int, IoError) | parks=false | holds=true | unknown=- | suggest=connect_wait
+std::io::tcp::connect | lookup=io::tcp@3 | locus=false | effects=syscall|block | sig=(Str, Int) -> Int ! IoError | ret_ty=? | or=(Int, IoError) | parks=true | holds=true | unknown=- | suggest=connect
+std::io::tcp::connect_wait | lookup=io::tcp@3 | locus=false | effects=syscall|block | sig=(Str, Int, Duration) -> Int ! IoError | ret_ty=? | or=(Int, IoError) | parks=true | holds=true | unknown=- | suggest=connect_wait
+std::io::tcp::connect_within | lookup=io::tcp@3 | locus=false | effects=syscall|block | sig=(Str, Int, Duration) -> Int ! IoError | ret_ty=? | or=(Int, IoError) | parks=true | holds=true | unknown=- | suggest=connect_within
 std::io::tcp::last_recv_kernel_ns | lookup=io::tcp@3 | locus=false | effects=pure | sig=() -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=last_recv_kernel_ns
 std::io::tcp::last_recv_user_ns | lookup=io::tcp@3 | locus=false | effects=pure | sig=() -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=last_recv_user_ns
 std::io::tcp::listen_socket | lookup=io::tcp@3 | locus=false | effects=syscall | sig=(Str, Int) -> Int ! IoError | ret_ty=? | or=(Int, IoError) | parks=false | holds=false | unknown=- | suggest=listen_socket
@@ -799,6 +802,7 @@ std::io::tcp::set_send_timeout | lookup=io::tcp@3 | locus=false | effects=syscal
 std::io::tcp::stop | lookup=io::tcp@3 | locus=false | effects=syscall | sig=- | parks=false | holds=false | unknown=- | suggest=stop
 std::io::tls::close | lookup=io::tls@3 | locus=false | effects=syscall | sig=(Int) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=close
 std::io::tls::connect | lookup=io::tls@3 | locus=false | effects=syscall|block | sig=(Str, Int) -> Int ! IoError | ret_ty=? | or=(Int, IoError) | parks=false | holds=true | unknown=- | suggest=connect
+std::io::tls::connect_within | lookup=io::tls@3 | locus=false | effects=syscall|block | sig=(Str, Int, Duration) -> Int ! IoError | ret_ty=? | or=(Int, IoError) | parks=false | holds=true | unknown=- | suggest=connect_within
 std::io::tls::last_recv_kernel_ns | lookup=io::tls@3 | locus=false | effects=pure | sig=() -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=last_recv_kernel_ns
 std::io::tls::last_recv_user_ns | lookup=io::tls@3 | locus=false | effects=pure | sig=() -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=last_recv_user_ns
 std::io::tls::recv_bytes | lookup=io::tls@3 | locus=false | effects=syscall|block | sig=(Int, Int) -> Bytes | ret_ty=Bytes | or=- | parks=false | holds=true | unknown=- | suggest=recv_bytes

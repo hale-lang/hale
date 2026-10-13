@@ -656,7 +656,7 @@ row	~.acc	Acc	main	inherited
 
 == crates/hale-stdlib/hl/file.hl#f57ba351
 
-== crates/hale-stdlib/hl/http_client.hl#299b071b
+== crates/hale-stdlib/hl/http_client.hl#4a681f29
 
 == crates/hale-stdlib/hl/json.hl#8645f085
 
@@ -4389,6 +4389,20 @@ row	Desk@literal1.maker	Maker	main	default
 row	__StdApiHubStream@binding1	__StdApiHubStream	pinned:__StdApiHubStream@binding1	binding
 shared	Desk@literal1.__rpc_w_1	__StdApiWsListener #61e09f7c
 shared	dynamic	sites in the seed #648c1683
+
+== crates/hale-codegen/tests/tcp_connect_deadline.rs#5c595966
+row	__StdHttpClient@main1	__StdHttpClient	main	default
+row	__StdHttpClient@main2	__StdHttpClient	main	default
+-- dynamic	sites in the stdlib
+dynamic	__StdBytesBytesBuilder	on main
+dynamic	__StdHttpConn	on main
+
+== crates/hale-codegen/tests/tcp_connect_deadline.rs#d6647451
+root	App	the entry
+domain	pool:io	async_io
+row	App@literal1	App	main	default
+row	App@literal1.host	Host	pool:io	entry	off owner
+dynamic	Job	on pool:io	in the seed
 
 == crates/hale-codegen/tests/tcp_listener.rs#9d4fc3db
 shared	__StdIoTcpListener@main1	__StdIoTcpListener #0b638db1

@@ -190,18 +190,26 @@ fn __http_close_handle(handle: Int, is_tls: Bool) {
 }
 
 // Connect + TCP_NODELAY (Nagle costs up to ~40ms on small
-// writes). -1 on failure (the pooled path retries).
-fn __http_dial_nd(host: String, port: Int, is_tls: Bool) -> Int {
+// writes). `timeout_ms` bounds the dial — the TCP connect and, for
+// https, the TLS handshake — and `0` leaves it unbounded.
+fn __http_dial_nd(host: String, port: Int, is_tls: Bool, timeout_ms: Int) -> Int fallible(IoError) {
     if is_tls {
-        let h = std::io::tls::connect(host, port) or - 1;
-        if h < 0 { return -1; }
+        let h = std::io::tls::connect_within(host, port, timeout_ms * 1ms) or raise;
         std::io::tls::set_nodelay(h, true) or discard;
         return h;
     }
-    let fd = std::io::tcp::connect(host, port) or - 1;
-    if fd < 0 { return -1; }
+    let fd = std::io::tcp::connect_within(host, port, timeout_ms * 1ms) or raise;
     std::io::tcp::set_nodelay(fd, true) or discard;
     return fd;
+}
+
+// What a failed dial says: the IoError's kind, and for a dial the
+// deadline ended, the deadline.
+fn __http_connect_detail(e: IoError, timeout_ms: Int) -> String {
+    if e.kind == "timeout" {
+        return "timeout: no connection within " + to_string(timeout_ms) + " ms";
+    }
+    return e.kind;
 }
 
 // Auto-closing one-shot wrapper: dissolve closes the handle at
@@ -529,11 +537,11 @@ fn __http_exchange_on_handle(handle: Int, is_tls: Bool, req: std::http::ClientRe
 
 // ---- dial + one-shot round trip -------------------------------------
 
-fn __http_raise_connect(e: IoError, host: String, port: Int) -> Int fallible(std::http::HttpError) {
+fn __http_raise_connect(e: IoError, host: String, port: Int, timeout_ms: Int) -> Int fallible(std::http::HttpError) {
     fail std::http::HttpError {
         kind: "connect_failed",
         status: 0,
-        detail: host + ":" + to_string(port) + " " + e.kind
+        detail: host + ":" + to_string(port) + " " + __http_connect_detail(e, timeout_ms)
     };
 }
 
@@ -548,23 +556,18 @@ fn __http_check_scheme(scheme: String) -> Int fallible(std::http::HttpError) {
 }
 
 // One-shot exchange: connect, send, recv-to-close, parse. The
-// __StdHttpConn's fn-exit dissolve closes the handle.
+// __StdHttpConn's fn-exit dissolve closes the handle. `timeout_ms`
+// bounds the dial (0: unbounded).
 fn __http_round_trip_oneshot(
     req: std::http::ClientRequest,
     user_agent: String,
-    max_body: Int
+    max_body: Int,
+    timeout_ms: Int
 ) -> std::http::ClientResponse fallible(std::http::HttpError) {
     let host = req.url.host;
     let port = req.url.port;
     let is_tls = req.url.scheme == "https";
-    let mut handle = -1;
-    if is_tls {
-        handle = std::io::tls::connect(host, port) or __http_raise_connect(err, host, port);
-        std::io::tls::set_nodelay(handle, true) or discard;
-    } else {
-        handle = std::io::tcp::connect(host, port) or __http_raise_connect(err, host, port);
-        std::io::tcp::set_nodelay(handle, true) or discard;
-    }
+    let handle = __http_dial_nd(host, port, is_tls, timeout_ms) or __http_raise_connect(err, host, port, timeout_ms);
     let s = __StdHttpConn { handle: handle, is_tls: is_tls };
     let resp = __http_exchange_oneshot(s, req, user_agent, max_body);
     if resp.status <= 0 {
@@ -581,7 +584,8 @@ fn __http_round_trip_with_retry(
     req: std::http::ClientRequest,
     user_agent: String,
     max_body: Int,
-    max_retries: Int
+    max_retries: Int,
+    timeout_ms: Int
 ) -> std::http::ClientResponse fallible(std::http::HttpError) {
     let mut attempt = 0;
     let mut last_5xx = __http_empty_client_response();
@@ -589,7 +593,7 @@ fn __http_round_trip_with_retry(
     let max_attempts = max_retries + 1;
     while attempt < max_attempts {
         let mut failure = "";
-        let resp = __http_round_trip_oneshot(req, user_agent, max_body) or {
+        let resp = __http_round_trip_oneshot(req, user_agent, max_body, timeout_ms) or {
             failure = err.kind + " " + err.detail;
             __http_empty_client_response()
         };
@@ -620,7 +624,7 @@ fn __http_client_get(url_str: String) -> std::http::ClientResponse fallible(std:
     let u = __http_parse_url(url_str) or raise;
     let _ = __http_check_scheme(u.scheme) or raise;
     let req = std::http::ClientRequest { method: "GET", url: u, headers: "", body: b"" };
-    return __http_round_trip_oneshot(req, "hale-std-http/0.11", 16777216) or raise;
+    return __http_round_trip_oneshot(req, "hale-std-http/0.11", 16777216, 0) or raise;
 }
 
 // `std::http::post(url, body, content_type)`.
@@ -632,7 +636,7 @@ fn __http_client_post(url_str: String, body: Bytes, content_type: String) -> std
     let req = std::http::ClientRequest {
         method: "POST", url: u, headers: "Content-Type: " + content_type, body: body
     };
-    return __http_round_trip_oneshot(req, "hale-std-http/0.11", 16777216) or raise;
+    return __http_round_trip_oneshot(req, "hale-std-http/0.11", 16777216, 0) or raise;
 }
 
 // `std::http::request(req)` — full control over method / headers
@@ -640,7 +644,7 @@ fn __http_client_post(url_str: String, body: Bytes, content_type: String) -> std
 /// One-shot arbitrary request (build a ClientRequest yourself).
 fn __http_client_request(req: std::http::ClientRequest) -> std::http::ClientResponse fallible(std::http::HttpError) {
     let _ = __http_check_scheme(req.url.scheme) or raise;
-    return __http_round_trip_oneshot(req, "hale-std-http/0.11", 16777216) or raise;
+    return __http_round_trip_oneshot(req, "hale-std-http/0.11", 16777216, 0) or raise;
 }
 
 // ---- the pooled Client ----------------------------------------------
@@ -658,8 +662,10 @@ fn __http_client_request(req: std::http::ClientRequest) -> std::http::ClientResp
 /// The pooled client: `user_agent`/`timeout_ms`/`max_retries`/
 /// `max_body` params; `keep_alive: true` switches to framed
 /// reads (Content-Length or chunked) over a 4-slot per-host:port
-/// connection pool with retry-and-backoff. Same fallible
-/// get/post/request surface as the free fns.
+/// connection pool with retry-and-backoff. `timeout_ms` bounds each
+/// attempt's dial (the TCP connect and, for https, the handshake);
+/// `0` leaves it unbounded. Same fallible get/post/request surface
+/// as the free fns.
 locus __StdHttpClient {
     params {
         user_agent: String = "hale-std-http/0.11";
@@ -697,7 +703,7 @@ locus __StdHttpClient {
         let _ = __http_check_scheme(req.url.scheme) or raise;
         if self.keep_alive { return self.__pooled(req) or raise; }
         return __http_round_trip_with_retry(
-            req, self.user_agent, self.max_body, self.max_retries
+            req, self.user_agent, self.max_body, self.max_retries, self.timeout_ms
         ) or raise;
     }
 
@@ -726,10 +732,11 @@ locus __StdHttpClient {
         let mut last_5xx = __http_empty_client_response();
         let mut detail = "";
         while attempt < max_attempts {
-            let fd = __http_dial_nd(host, port, is_tls);
-            if fd < 0 {
-                detail = "connect_failed";
-            } else {
+            let fd = __http_dial_nd(host, port, is_tls, self.timeout_ms) or {
+                detail = "connect_failed " + __http_connect_detail(err, self.timeout_ms);
+                    -1
+            };
+            if fd >= 0 {
                 let ex = __http_exchange_on_handle(fd, is_tls, req, self.user_agent, self.max_body);
                 if ex.ok && ex.resp.status < 500 {
                     if ex.reusable { self.__pool_put(host, port, fd, is_tls); }

@@ -886,6 +886,7 @@ pub const SURFACES: &[NsSurface] = &[
             row!("close_fd", SYSCALL, [Int] -> Int, Intrinsic(IoTcpCloseFd)),
             row!("connect", SYSCALL | BLOCK, [Str, Int] -> Int ! "IoError", Intrinsic(IoTcpConnect)),
             row!("connect_wait", SYSCALL | BLOCK, [Str, Int, Duration] -> Int ! "IoError", Intrinsic(IoTcpConnectWait)),
+            row!("connect_within", SYSCALL | BLOCK, [Str, Int, Duration] -> Int ! "IoError", Intrinsic(IoTcpConnectWithin)),
             row!("last_recv_kernel_ns", PURE, [] -> Int, Intrinsic(IoTcpLastRecvKernelNs)),
             row!("last_recv_user_ns", PURE, [] -> Int, Intrinsic(IoTcpLastRecvUserNs)),
             row!("listen_socket", SYSCALL, [Str, Int] -> Int ! "IoError", Intrinsic(IoTcpListenSocket)),
@@ -979,6 +980,7 @@ pub const SURFACES: &[NsSurface] = &[
         fns: &[
             row!("close", SYSCALL, [Int] -> Int, Intrinsic(IoTlsClose)),
             row!("connect", SYSCALL | BLOCK, [Str, Int] -> Int ! "IoError", Intrinsic(IoTlsConnect)),
+            row!("connect_within", SYSCALL | BLOCK, [Str, Int, Duration] -> Int ! "IoError", Intrinsic(IoTlsConnectWithin)),
             row!("last_recv_kernel_ns", PURE, [] -> Int, Intrinsic(IoTlsLastRecvKernelNs)),
             row!("last_recv_user_ns", PURE, [] -> Int, Intrinsic(IoTlsLastRecvUserNs)),
             row!("recv_bytes", SYSCALL | BLOCK, [Int, Int] -> Bytes, Intrinsic(IoTlsRecvBytes)),
@@ -1587,6 +1589,7 @@ pub enum IntrinsicId {
     IoTcpCloseFd,
     IoTcpConnect,
     IoTcpConnectWait,
+    IoTcpConnectWithin,
     IoTcpLastRecvKernelNs,
     IoTcpLastRecvUserNs,
     IoTcpListenSocket,
@@ -1628,6 +1631,7 @@ pub enum IntrinsicId {
     IoSockoptTcpNodelay,
     IoTlsClose,
     IoTlsConnect,
+    IoTlsConnectWithin,
     IoTlsLastRecvKernelNs,
     IoTlsLastRecvUserNs,
     IoTlsRecvBytes,
@@ -2082,6 +2086,7 @@ pub fn effects_for(segs: &[&str]) -> Option<EffectSet> {
 /// |---|---|
 /// | `std::time::sleep` | `lotus_time_sleep_park_try` (timer-only park, PR #285) |
 /// | `std::io::tcp::accept_one`, `__accept_one` | `lotus_tcp_accept_one` |
+/// | `std::io::tcp::connect`, `connect_wait`, `connect_within`, `__connect` | `lotus_tcp_dial` (non-blocking `connect(2)` + `lotus_io_wait_fd`; the refused-retry backoff is a timer park) |
 /// | `std::io::tcp::__recv` | `lotus_tcp_recv_str` |
 /// | `std::io::tcp::__recv_bytes` | `lotus_tcp_recv_bytes` |
 /// | `std::io::tcp::recv_into` | `lotus_tcp_recv_into` |
@@ -2091,20 +2096,27 @@ pub fn effects_for(segs: &[&str]) -> Option<EffectSet> {
 /// | `std::io::tls::recv_into` | `lotus_tls_recv_into` |
 /// | `std::io::tls::recv_stamped_into` | `lotus_tls_recv_stamped_into` |
 ///
+/// The tcp dial resolves a non-numeric host with `getaddrinfo(3)` on the
+/// calling thread before it connects: the connect parks, the name lookup
+/// does not (spec/stdlib.md § std::io::tcp).
+///
 /// Deliberately ABSENT, and each for a reason read off the runtime:
-/// `tcp::connect` / `__connect` (`lotus_tcp_connect` — a blocking
-/// `connect(2)`, no park path), `tls::connect` / `upgrade` (blocking
+/// `tls::connect` / `upgrade` (blocking
 /// handshake), `tls::recv_bytes` (a plain `SSL_read`; only the
 /// `recv_into` family got the async_io park), `io::file` /
 /// `io::stdin` reads (regular files and the tty are not epoll-park
 /// targets here), `std::process::{run, wait, read_stdout,
-/// read_stderr}` and `std::http::*` (which reaches `connect`).
+/// read_stderr}` and `std::http::*` (which reaches `tls::connect`).
 /// These still stall the worker, so they still warn.
 pub const ASYNC_IO_PARKING: &[&[&str]] = &[
     &["std", "io", "tcp", "__accept_one"],
+    &["std", "io", "tcp", "__connect"],
     &["std", "io", "tcp", "__recv"],
     &["std", "io", "tcp", "__recv_bytes"],
     &["std", "io", "tcp", "accept_one"],
+    &["std", "io", "tcp", "connect"],
+    &["std", "io", "tcp", "connect_wait"],
+    &["std", "io", "tcp", "connect_within"],
     &["std", "io", "tcp", "recv_into"],
     &["std", "io", "tcp", "recv_stamped_into"],
     &["std", "io", "tls", "recv_into"],

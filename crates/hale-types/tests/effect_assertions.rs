@@ -530,6 +530,38 @@ fn async_io_placement_is_silent_about_a_parking_sleep() {
     );
 }
 
+/// A dial parks too (2026-10-12): on an async_io pool `connect`,
+/// `connect_wait` and `connect_within` are a non-blocking `connect(2)`
+/// whose wait for the socket parks the coroutine, so a handler that dials
+/// stalls nothing and the advisory is silent about it.
+#[test]
+fn async_io_placement_is_silent_about_a_parking_connect() {
+    let src = r#"
+        type Ev { n: Int; }
+        locus Worker {
+            bus { subscribe "e" as on_e of type Ev; }
+            fn on_e(e: Ev) {
+                let a = std::io::tcp::connect("127.0.0.1", e.n) or - 1;
+                let b = std::io::tcp::connect_wait("127.0.0.1", e.n, 1s) or - 1;
+                let c = std::io::tcp::connect_within("127.0.0.1", e.n, 1s) or - 1;
+                println(a + b + c);
+            }
+        }
+        main locus App {
+            params { w: Worker = Worker { }; }
+            placement { w: cooperative(pool = web) where async_io; }
+            run() { std::time::sleep(10ms); }
+        }
+        fn main() { App { }; }
+    "#;
+    let ds = diags_for(src);
+    assert!(
+        !ds.iter().any(|m| m.contains("stalls every other locus")),
+        "a handler whose dial parks must not be flagged: {:?}",
+        ds
+    );
+}
+
 /// The park exemption is per-LEAF, not per-handler: a handler that
 /// sleeps *and* blocks is still reported, and the witness path names
 /// the leaf that actually holds the worker.

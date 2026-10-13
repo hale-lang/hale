@@ -10,5 +10,6 @@ fn main() {
     std::io::tls::recv_stamped_into(h, buf, 64);
     let got = std::io::tls::recv_into(h, buf, 64);
     let closed = std::io::tls::close(h);
-    println(got + closed);
+    let within = std::io::tls::connect_within("localhost", 1, 10ms) or - 1;
+    println(got + closed + within);
 }

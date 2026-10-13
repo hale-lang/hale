@@ -10,6 +10,8 @@
  *
  * Client-only scope for v1:
  *   - lotus_tls_connect(host, port) -> int handle
+ *   - lotus_tls_connect_within(host, port, timeout_ns) -> int handle
+ *       (the dial and the handshake bounded by one deadline)
  *   - lotus_tls_upgrade(fd, host, verify) -> int handle  (wrap an
  *       already-connected fd; STARTTLS-style. Does NOT own/close the
  *       fd on failure — see the fn header for the ownership contract.)
@@ -51,6 +53,7 @@
 #include <sys/socket.h>   /* recvmsg, send, setsockopt, SO_TIMESTAMPNS, cmsg */
 #include <sys/uio.h>      /* struct iovec */
 #include <time.h>         /* clock_gettime, struct timespec */
+#include <fcntl.h>        /* fcntl: the handshake's non-blocking window */
 
 /* macOS portability (Phase 1): MSG_NOSIGNAL is a Linux extension. macOS
  * suppresses SIGPIPE on a socket via the SO_NOSIGPIPE setsockopt instead.
@@ -64,6 +67,8 @@
 
 /* Forward decls — bodies live in lotus_arena.c. */
 int   lotus_tcp_connect(const char *host, uint16_t port);
+int   lotus_tcp_connect_within(const char *host, uint16_t port,
+                               int64_t timeout_ns);
 int   lotus_tcp_set_nodelay(int fd, int on);
 int64_t lotus_bytes_len(const void *b);
 void *lotus_bytes_data(void *b);
@@ -90,6 +95,12 @@ void          *lotus_bytes_create(lotus_arena_t *a, int64_t len);
 int     lotus_io_on_async_io_pool(void);
 void    lotus_io_set_nonblock(int fd);
 int64_t lotus_sock_get_recv_timeout_ns(int fd);
+/* Wait for readiness until an absolute CLOCK_MONOTONIC deadline (0 =
+ * none): a park on an async_io pool's coroutine, poll(2) elsewhere.
+ * 0 = ready, 1 = deadline passed, -1 = the wait failed. Every blocking
+ * point of this file waits through it, so the handshake, the reads and the
+ * writes park on an async_io pool the way the plain-tcp primitives do. */
+int     lotus_io_wait_fd(int fd, uint32_t events, int64_t deadline_ns);
 int     lotus_coop_park_on_fd_deadline(int fd, uint32_t events,
                                        int64_t deadline_ns);
 /* Level-triggered epoll event bits; values mirror sys/epoll.h
@@ -100,6 +111,12 @@ int     lotus_coop_park_on_fd_deadline(int fd, uint32_t events,
 #ifndef EPOLLOUT
 #define EPOLLOUT 0x004
 #endif
+
+static int64_t lotus_tls__now_ns(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (int64_t)ts.tv_sec * 1000000000LL + (int64_t)ts.tv_nsec;
+}
 
 /* Local equivalent of lotus_arena.c's static lotus_bytes_empty_global:
  * the canonical "empty Bytes" return for error / EOF paths. Inline
@@ -332,7 +349,62 @@ static const BIO_METHOD *lotus_tls__recvmsg_bio(void) {
  *                semantics: e.g. AWS RDS, whose CA is not in the system
  *                trust store). SNI is still sent.
  */
+/* The TLS client handshake on `ssl`, bounded by `deadline_ns` (absolute
+ * CLOCK_MONOTONIC; 0 = none). With no deadline it is the blocking
+ * SSL_connect it always was. Otherwise the socket goes
+ * non-blocking for the handshake and each SSL_ERROR_WANT_READ /
+ * WANT_WRITE waits for the socket (lotus_io_wait_fd): on an async_io pool
+ * the coroutine parks and the worker keeps serving the pool, elsewhere the
+ * thread polls. The socket's own mode is restored afterwards. 1 = done;
+ * 0 = the handshake failed (`*err_out` = the SSL error); -1 = the deadline
+ * passed first (errno ETIMEDOUT). */
+static int lotus_tls__handshake(SSL *ssl, int raw_fd, int64_t deadline_ns,
+                                int *err_out) {
+    *err_out = 0;
+    if (deadline_ns <= 0) {
+        int r = SSL_connect(ssl);
+        if (r == 1) return 1;
+        *err_out = SSL_get_error(ssl, r);
+        return 0;
+    }
+    int flags = fcntl(raw_fd, F_GETFL, 0);
+    int set_nb = flags >= 0 && !(flags & O_NONBLOCK);
+    if (set_nb) (void)fcntl(raw_fd, F_SETFL, flags | O_NONBLOCK);
+    int out;
+    for (;;) {
+        int r = SSL_connect(ssl);
+        if (r == 1) {
+            out = 1;
+            break;
+        }
+        int err = SSL_get_error(ssl, r);
+        if (err == SSL_ERROR_WANT_READ || err == SSL_ERROR_WANT_WRITE) {
+            uint32_t ev = (err == SSL_ERROR_WANT_WRITE) ? EPOLLOUT : EPOLLIN;
+            int w = lotus_io_wait_fd(raw_fd, ev, deadline_ns);
+            if (w == 0) continue;
+            if (w == 1) {
+                out = -1;
+                break;
+            }
+        }
+        *err_out = err;
+        out = 0;
+        break;
+    }
+    if (set_nb) (void)fcntl(raw_fd, F_SETFL, flags);
+    if (out == -1) errno = ETIMEDOUT;
+    return out;
+}
+
+static int lotus_tls__upgrade_until(int raw_fd, const char *host, int verify,
+                                    int64_t deadline_ns);
+
 int lotus_tls_upgrade(int raw_fd, const char *host, int verify) {
+    return lotus_tls__upgrade_until(raw_fd, host, verify, 0);
+}
+
+static int lotus_tls__upgrade_until(int raw_fd, const char *host, int verify,
+                                    int64_t deadline_ns) {
     if (raw_fd < 0 || !host) {
         errno = EINVAL;
         return -1;
@@ -381,9 +453,17 @@ int lotus_tls_upgrade(int raw_fd, const char *host, int verify) {
         SSL_set_fd(ssl, raw_fd);
     }
 
-    int r = SSL_connect(ssl);
-    if (r != 1) {
-        int err = SSL_get_error(ssl, r);
+    int err = 0;
+    int hs = lotus_tls__handshake(ssl, raw_fd, deadline_ns, &err);
+    if (hs == -1) {
+        /* The deadline the caller asked for passed mid-handshake: the
+         * answer, not a fault — the IoError (kind `timeout`) says it. */
+        SSL_free(ssl);
+        /* Caller owns raw_fd — do NOT close it here. */
+        errno = ETIMEDOUT;
+        return -1;
+    }
+    if (hs != 1) {
         fprintf(stderr,
                 "lotus_tls_upgrade: handshake failed (host=%s verify=%d err=%d)\n",
                 host, verify, err);
@@ -421,12 +501,23 @@ int lotus_tls_upgrade(int raw_fd, const char *host, int verify) {
     return handle;
 }
 
+int lotus_tls_connect_within(const char *host, uint16_t port, int64_t timeout_ns);
+
 int lotus_tls_connect(const char *host, uint16_t port) {
+    return lotus_tls_connect_within(host, port, 0);
+}
+
+/* `std::io::tls::connect_within`: `connect` with one deadline over the
+ * TCP dial AND the handshake — `timeout_ns` from the call, after which
+ * either fails ETIMEDOUT (kind `timeout`). `timeout_ns <= 0` is `connect`
+ * (no deadline). */
+int lotus_tls_connect_within(const char *host, uint16_t port, int64_t timeout_ns) {
     if (!host) {
         errno = EINVAL;
         return -1;
     }
-    int raw_fd = lotus_tcp_connect(host, port);
+    int64_t deadline = timeout_ns > 0 ? lotus_tls__now_ns() + timeout_ns : 0;
+    int raw_fd = lotus_tcp_connect_within(host, port, timeout_ns);
     if (raw_fd < 0) {
         /* lotus_tcp_connect already set errno + logged. */
         return -1;
@@ -436,7 +527,7 @@ int lotus_tls_connect(const char *host, uint16_t port) {
      * verify=1 preserves connect's existing external contract (system
      * trust store + SNI hostname match), so the io_tls network tests
      * double as regression coverage for this dial+upgrade refactor. */
-    int handle = lotus_tls_upgrade(raw_fd, host, /*verify=*/1);
+    int handle = lotus_tls__upgrade_until(raw_fd, host, /*verify=*/1, deadline);
     if (handle < 0) {
         /* upgrade() already set errno (e.g. ECONNREFUSED/ENOMEM) so
          * the Hale layer can derive IoError.kind from it via
@@ -445,6 +536,13 @@ int lotus_tls_connect(const char *host, uint16_t port) {
          * otherwise the caller's error branch reads whatever close()
          * left behind instead of upgrade's real failure reason. */
         int saved_errno = errno;
+        if (saved_errno == ETIMEDOUT) {
+            /* The asked-for deadline: no stderr line (the IoError says
+             * it), only the socket to close. */
+            close(raw_fd);
+            errno = saved_errno;
+            return -1;
+        }
         /* Log connect-level context (host+port, which upgrade doesn't
          * have) but stay generic: upgrade fails for alloc reasons too
          * (ctx/SSL_new/realloc → ENOMEM), so don't claim "handshake

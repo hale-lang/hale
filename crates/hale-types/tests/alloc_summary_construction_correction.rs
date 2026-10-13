@@ -285,8 +285,8 @@ fn own_scope_let_block_scope_test() {
             // `std::process::close_stdin` came
             changed_lines(&old.render(), &now.render()),
             [
-                "- # 430 fns, 27 entry points, 113 invoked-unboundedly",
-                "+ # 430 fns, 27 entry points, 112 invoked-unboundedly",
+                "- # 431 fns, 27 entry points, 114 invoked-unboundedly",
+                "+ # 431 fns, 27 entry points, 113 invoked-unboundedly",
                 "- call  count loop_depth=0 result=local",
                 "+ call  <unresolved: count> loop_depth=0 result=local",
                 "- call  count loop_depth=0 result=local",
@@ -457,7 +457,7 @@ fn reached_perspective_examples() {
         "crates/hale-codegen/tests/fixtures/examples/65-perspective-ctor-override",
         "tests/hale/perspective_ctor_override_test.hl",
     ] {
-        pinned_unreached(t, (114, 0), &["Gateway::handle", "RouterV1::route"], &[], &lines);
+        pinned_unreached(t, (115, 0), &["Gateway::handle", "RouterV1::route"], &[], &lines);
     }
 }
 
@@ -467,7 +467,7 @@ fn reached_perspective_examples() {
 fn reached_unowned_literal_positions() {
     pinned_unreached(
         "crates/hale-codegen/tests/fixtures/examples/90-unowned-literal-positions",
-        (114, 0),
+        (115, 0),
         &["Provider::submit", "Server::handle"],
         &["Provider::submit CollectionInsert(\"vec\") @1292..1320 InvokedUnboundedly"],
         &[
@@ -487,7 +487,7 @@ fn reached_unowned_literal_positions() {
 fn reached_oidc() {
     pinned_unreached(
         "dna/oidc",
-        (136, 2),
+        (137, 2),
         &[
             "b64",
             "decode",
@@ -551,7 +551,7 @@ fn reached_oidc() {
 fn reached_is_route_test() {
     pinned_unreached(
         "tests/hale/is_route_test.hl",
-        (116, 0),
+        (117, 0),
         &["Api::handle", "Api::list", "Api::rename", "Api::show"],
         &["Api::handle StructLit(\"std::http::Response\") @1449..1496 InvokedUnboundedly"],
         &[
@@ -588,7 +588,7 @@ fn reached_is_route_test() {
 fn reached_unit_quantities_test() {
     pinned_unreached(
         "tests/hale/unit_quantities_test.hl",
-        (113, 0),
+        (114, 0),
         &["later"],
         &[],
         &["- fn later   [invoked-unboundedly]", "+ fn later"],

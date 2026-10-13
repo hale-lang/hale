@@ -99,6 +99,22 @@ yourself and it may not be listening yet, say how long to wait:
 `std::io::tcp::connect_wait(host, port, 2s)` retries a refused
 connect until then.
 
+A host that never answers at all — a blackholed address, a firewall
+that drops the SYN — is different: nothing refuses, so a plain
+`connect` waits until the kernel gives up, about two minutes. Give the
+dial a deadline with `connect_within`:
+
+```hale,fragment
+let fd = std::io::tcp::connect_within("10.0.0.7", 5432, 2s) or raise;
+let h = std::io::tls::connect_within("api.example.com", 443, 3s) or raise;
+```
+
+Past the deadline the call fails with `err.kind == "timeout"`; a
+refusal still answers at once. The tls one bounds the handshake too,
+and `connect_wait`'s wait bounds its whole dial the same way. On a
+`where async_io` pool a dial that is waiting parks its coroutine, so
+the rest of the pool keeps running.
+
 This is **client-side only** — there is no TLS *server* in the
 stdlib. `set_recv_timeout(h, d)` bounds a read; with one set,
 `recv_into` returns the `-2` "timed out, retryable" sentinel so a

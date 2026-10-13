@@ -23949,6 +23949,23 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 if let Some(result) = self.operator_result(*span) {
                     return self.lower_binop(*op, lv, rv, &result);
                 }
+                // A stdlib body has no operator rows (the checker records
+                // none for it: `conversion::row`), so its `n * 1ms` — the
+                // one spelling by which a count becomes a `Duration` —
+                // found no row and was refused here. The algebra's answer
+                // for that product is fixed whatever the site (spec/units.md:
+                // a quantity times an `Int` is the quantity, and a
+                // `Duration` counts nanoseconds, the `i64` both operands
+                // are), so it is the same multiply a row would emit.
+                if *op == BinOp::Mul
+                    && matches!(
+                        (&lt, &rt),
+                        (CodegenTy::Int, CodegenTy::Duration)
+                            | (CodegenTy::Duration, CodegenTy::Int)
+                    )
+                {
+                    return self.lower_binop(*op, lv, rv, &CodegenTy::Duration);
+                }
                 if lt != rt {
                     return Err(CodegenError::Unsupported(format!(
                         "binary op operands of mixed types {:?} and {:?}",
@@ -27428,12 +27445,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             | Id::IoTcpAcceptOne
             | Id::IoTcpConnect
             | Id::IoTcpConnectWait
+            | Id::IoTcpConnectWithin
             | Id::IoTcpListenSocket
             | Id::IoTcpSetNodelay
             | Id::IoTcpSetRecvTimeout
             | Id::IoTcpSetRxTimestamps
             | Id::IoTcpSetSendTimeout
             | Id::IoTlsConnect
+            | Id::IoTlsConnectWithin
             | Id::IoTlsSetNodelay
             | Id::IoTlsSetRecvTimeout
             | Id::IoTlsSetRxTimestamps
@@ -27673,6 +27692,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             Id::IoTcpListenSocket => self.lower_std_io_tcp_listen_socket_fallible(args, scope),
             Id::IoTcpConnect => self.lower_std_io_tcp_connect_fallible(args, scope),
             Id::IoTcpConnectWait => self.lower_std_io_tcp_connect_wait_fallible(args, scope),
+            Id::IoTcpConnectWithin => self.lower_std_io_tcp_connect_within_fallible(args, scope),
             Id::IoTcpAcceptOne => self.lower_std_io_tcp_accept_one_fallible(args, scope),
             // GH #1106: AF_UNIX stream sockets, the fd-level shape tcp has.
             Id::IoUnixListenSocket => self.lower_std_io_unix_listen_socket_fallible(args, scope),
@@ -27684,6 +27704,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // stay non-fallible (Int 0/-1 returns) to mirror the
             // tcp shape.
             Id::IoTlsConnect => self.lower_std_io_tls_connect_fallible(args, scope),
+            Id::IoTlsConnectWithin => self.lower_std_io_tls_connect_within_fallible(args, scope),
             // upgrade wraps an already-connected fd in a TLS session
             // (STARTTLS-style); same fallible(IoError) surface as
             // connect since it handshakes + optionally verifies.
