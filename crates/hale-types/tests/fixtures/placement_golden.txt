@@ -3452,6 +3452,12 @@ row	H@main1	H	main	default
 == crates/hale-codegen/tests/local_place_value.rs#83052a1c
 row	Pts@main1	Pts	main	default
 
+== crates/hale-codegen/tests/local_place_value.rs#986d0ab7
+row	H@main1	H	main	default
+
+== crates/hale-codegen/tests/local_place_value.rs#ba31f362
+row	H@main1	H	main	default
+
 == crates/hale-codegen/tests/locus_fallible_return_multichild.rs#46fdeeac
 -- dynamic	sites in the seed
 dynamic	M1	on main
