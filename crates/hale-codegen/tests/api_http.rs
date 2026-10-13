@@ -534,14 +534,31 @@ fn main() { Desk { }; }
 /// The application and the library laid out as `import "../lib"` reads
 /// them; the entry.
 fn library_seed(name: &str, surface: &str) -> PathBuf {
+    library_seed_shadowed(name, surface, None)
+}
+
+/// [`library_seed`], the library also declaring a locus named `Svc`, as
+/// the surface is, in `file` (`svc.hl`, the surface's own, or another),
+/// and the application holding one (`lib::Svc { tag: 7 }`).
+fn library_seed_shadowed(name: &str, surface: &str, file: Option<&str>) -> PathBuf {
     let dir = harness::unique_dir(name);
     std::fs::create_dir_all(dir.join("app")).expect("the app dir");
     std::fs::create_dir_all(dir.join("lib")).expect("the lib dir");
     std::fs::create_dir_all(dir.join("base")).expect("the base dir");
     std::fs::write(dir.join("base/n.hl"), BASE).expect("write the base");
     std::fs::write(dir.join("lib/svc.hl"), LIBRARY).expect("write the library");
+    let mut app = SERVES_LIBRARY.replace("@SURFACE@", surface);
+    if let Some(file) = file {
+        let shadow = "\nlocus Svc { params { tag: Int = 0; } }\n";
+        let path = dir.join("lib").join(file);
+        let before = std::fs::read_to_string(&path).unwrap_or_default();
+        std::fs::write(&path, before + shadow).expect("write the shadowing locus");
+        let held = "doubler: base::Doubler = base::Doubler { };";
+        assert!(app.contains(held));
+        app = app.replace(held, &format!("{held}\n        shadow: lib::Svc = lib::Svc {{ tag: 7 }};"));
+    }
     let entry = dir.join("app/main.hl");
-    std::fs::write(&entry, SERVES_LIBRARY.replace("@SURFACE@", surface)).expect("write the app");
+    std::fs::write(&entry, app).expect("write the app");
     entry
 }
 
@@ -598,4 +615,41 @@ fn a_qualified_surface_the_imported_seed_does_not_declare_is_refused_as_written(
     }
     let own = check("lib::Own");
     assert!(own.iter().any(|m| m.starts_with("serve of `lib::Own`: no surface `lib::Own` is declared")), "{own:?}");
+}
+
+/// A surface lives in a namespace of its own in the import table
+/// (`mangle::API_KEY`): a locus the library names like it, in another of
+/// its files or in the surface's own, keeps `lib::Svc` as a type (the
+/// application builds one) and `lib::Svc` in a serve site is still the
+/// surface. Before, the locus's row took the name and the surface was
+/// refused as undeclared when the two sat in different files.
+#[test]
+fn a_surface_and_a_same_named_locus_of_the_library_are_both_reached() {
+    for (file, tag) in [("shadow.hl", "other_file"), ("svc.hl", "same_file")] {
+        let entry = library_seed_shadowed(&format!("api_http_lib_surface_{tag}"), "lib::Svc", Some(file));
+        let bin = harness::unique_bin(&format!("api_http_lib_surface_{tag}"));
+        build_opts::build_seed_dir(&entry, &bin, &build_opts::options()).unwrap_or_else(|e| panic!("{file}: {e}"));
+        let snap = hale_frontend::snapshot::Snapshot::load(
+            &entry,
+            hale_frontend::frontend::LoadMode::WholeSeed,
+            &hale_frontend::source::Disk,
+            hale_frontend::snapshot::Config::check(false, false),
+        )
+        .ok()
+        .expect("a snapshot");
+        let errors: Vec<String> = match snap.demand_check() {
+            Ok(c) => c.diags.clone(),
+            Err(b) => b.because.clone(),
+        }
+        .iter()
+        .filter(|d| d.is_error())
+        .map(|d| d.message.clone())
+        .collect();
+        assert_eq!(errors, Vec::<String>::new(), "{file}");
+        let server = Server::start(&bin, &[]);
+        server.ready();
+        let got = request(server.port, "POST", "/call/Echoer::echo", &[bearer("t-alice")], Some("{\"n\":5}"));
+        assert_eq!((got.status, got.body.as_str()), (200, "{\"n\":105}"), "{file}");
+        assert!(server.finish().status.success());
+    }
 }

@@ -865,14 +865,16 @@ fn inject_tcp_listener(programs: &mut [&mut Program]) {
 }
 
 /// The surface `alias::name` names: the block the import table's row for
-/// `alias::name` identifies. A surface keeps its name through the mangler
-/// (it is the description's), so the loader registers it under the alias
-/// as it would a declaration of that seed, by the mangled name the block
-/// carries as its `origin` (`ApiDecl::origin`). The row is the provenance:
-/// a block of another seed, the importer's own among them, has another
+/// `alias::api:name` identifies. A surface keeps its name through the
+/// mangler (it is the description's), so its row lives in the surfaces'
+/// own namespace (`mangle::API_KEY`), apart from a same-named locus or type
+/// of the seed, and maps to the identity the loader stamps on the block
+/// (`ApiDecl::origin`, `mangle::api_origin`). The row is the provenance: a
+/// block of another seed, the importer's own among them, has another
 /// origin or none, so the alias never reaches it.
 fn imported_surface(programs: &[&Program], renames: &[(Vec<String>, String)], alias: &str, name: &str) -> Option<String> {
-    let (_, origin) = renames.iter().find(|(path, _)| path.len() == 2 && path[0] == alias && path[1] == name)?;
+    let key = format!("{}{name}", crate::mangle::API_KEY);
+    let (_, origin) = renames.iter().find(|(path, _)| path.len() == 2 && path[0] == alias && path[1] == key)?;
     programs.iter().flat_map(|p| flat_decls(&p.items)).find_map(|d| match d {
         TopDecl::Api(a) if a.name.name == name && a.origin.as_ref() == Some(origin) => Some(a.name.name.clone()),
         _ => None,
