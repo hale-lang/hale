@@ -1232,6 +1232,10 @@ hale check --workspace .        # every seed under `.`, each on its own
 hale verify --workspace .       # same, with advisories gated too
 ```
 
+A `*_test.hl` file is no member of its directory's seed: after the
+seeds, the sweep checks each test as the program `hale test` builds
+from it (the file and its imports), and the summary counts them apart.
+
 Every seed runs even if an earlier one fails — a runner that stopped
 at the first failure would report a subset of the truth. The summary
 names which seeds failed, and the exit status is the worst of them, so

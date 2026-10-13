@@ -24791,6 +24791,46 @@ const char *lotus_process_enoent_hint_label(
     return plain_label;
 }
 
+/* fork() for a subprocess (`run` and `spawn`). The child is a copy of
+ * this process up to its exec, signal handlers included: a SIGTERM
+ * that reached it in that window ran the drain's handler (GH #1039),
+ * whose byte went down the drain pipe the child shares with the parent
+ * — so the PARENT's watcher woke to a drain no signal began and, with
+ * nothing live reading `draining`, ended the program with `_exit(128)`
+ * and its buffered output unwritten. A `let`-bound `spawn` in a `birth`
+ * or a param default does exactly that: its handle dissolves at the
+ * scope's end, TERM-ing a child that has not exec'd yet (downstream
+ * handoff). Every signal is blocked across the fork; the child puts the
+ * runtime's handlers back to the default actions before it unblocks,
+ * so a TERM pending there ends the child and nothing else, and the
+ * parent unblocks to the mask it had (a signal that arrived meanwhile
+ * is delivered then). exec resets caught handlers anyway; this closes
+ * the window before it. */
+static pid_t lotus_process_fork(void) {
+#ifndef __wasm__
+    sigset_t all, old;
+    sigfillset(&all);
+    pthread_sigmask(SIG_SETMASK, &all, &old);
+    pid_t pid = fork();
+    if (pid == 0) {
+        struct sigaction dfl;
+        memset(&dfl, 0, sizeof(dfl));
+        dfl.sa_handler = SIG_DFL;
+        sigemptyset(&dfl.sa_mask);
+        sigaction(SIGINT, &dfl, NULL);
+        sigaction(SIGTERM, &dfl, NULL);
+        sigprocmask(SIG_SETMASK, &old, NULL);
+        return 0;
+    }
+    int saved = errno;
+    pthread_sigmask(SIG_SETMASK, &old, NULL);
+    errno = saved;
+    return pid;
+#else
+    return fork();
+#endif
+}
+
 int lotus_process_run(
     const char *argv_blob,
     int32_t *out_code,
@@ -24827,7 +24867,7 @@ int lotus_process_run(
         return saved;
     }
 
-    pid_t pid = fork();
+    pid_t pid = lotus_process_fork();
     if (pid < 0) {
         int saved = errno;
         close(out_pipe[0]); close(out_pipe[1]);
@@ -25042,7 +25082,7 @@ int lotus_process_spawn(
         return saved;
     }
 
-    pid_t pid = fork();
+    pid_t pid = lotus_process_fork();
     if (pid < 0) {
         int saved = errno;
         close(in_pipe[0]); close(in_pipe[1]);

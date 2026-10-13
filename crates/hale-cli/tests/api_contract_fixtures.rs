@@ -1438,6 +1438,50 @@ fn the_protobuf_form_follows_the_rules_over_shapes_of_its_own() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// A surface named as one of its records is (`api Todo` over `type Todo`, a
+/// downstream handoff's first surface) exports a `.proto` protoc takes: the
+/// service keeps the surface's name, since it is the gRPC path, and the record
+/// is the message `TodoMessage`, saying what it was. It used to be refused as
+/// "the message `Todo` is named twice".
+#[test]
+fn a_surface_named_as_its_record_exports_a_proto() {
+    let dir = scratch("proto_surface_type");
+    let program = dir.join("program.hl");
+    std::fs::write(
+        &program,
+        [
+            "type Todo { id: Int; title: String; }",
+            "type Holder { todo: Todo; }",
+            "locus Board {",
+            "    fn add(t: Todo) -> Holder { return Holder { todo: t }; }",
+            "    fn first(n: Int) -> Todo fallible(Todo) { return Todo { id: n, title: \"a\" }; }",
+            "}",
+            "api Todo { rpc Board::add; rpc Board::first; }",
+            "main locus App {",
+            "    params { board: Board = Board { }; }",
+            "    run() {",
+            "        let h = api::serve(Todo, unix::Rpc { path: \"/tmp/hale-proto-todo.sock\" }, as: \"todo\", receivers: { Board: self.board }, bound: 8, on_full: refuse);",
+            "        while !self.draining { std::time::sleep(100ms); }",
+            "        h.stop();",
+            "    }",
+            "}",
+            "fn main() { App { }; }",
+            "",
+        ]
+        .join("\n"),
+    )
+    .unwrap();
+    export_to(&program, "Todo", &dir.join("out"));
+    let proto = std::fs::read_to_string(dir.join("out/Todo.proto")).unwrap();
+    assert!(proto.contains("\nservice Todo {"), "{proto}");
+    assert!(proto.contains("// Hale: Todo\nmessage TodoMessage {\n  optional int64 id = 1;\n  optional string title = 2;\n}"), "{proto}");
+    assert!(proto.contains("message Holder {\n  TodoMessage todo = 1;\n}"), "{proto}");
+    assert!(proto.contains("rpc Board__add(TodoMessage) returns (Holder);"), "{proto}");
+    assert!(proto.contains("a detail of type type.hale.dev/TodoMessage"), "{proto}");
+    assert!(!proto.contains("message Todo {"), "{proto}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// Two fields of a record whose default proto3 JSON names collide (`a_b` and
 /// `aB` are both `aB`; protoc compares them without regard to case, so `a` and
 /// `_a` are `a` and `A`) make a `.proto` protoc refuses. `check --api

@@ -345,9 +345,11 @@ pub(crate) fn run_describe(rest: &[String]) -> ExitCode {
 // ---- call -------------------------------------------------------------------------
 
 /// The flags the verb owns; a payload field of the same name is given with `--json`.
-const OWN_FLAGS: [&str; 5] = ["json", "bearer", "id", "digest", "raw"];
+/// The request id is `--request-id`, not `--id`: `id` is the commonest payload field
+/// name there is, and an own flag of that name made it unsettable from a flag.
+const OWN_FLAGS: [&str; 5] = ["json", "bearer", "request-id", "digest", "raw"];
 
-const CALL_USAGE: &str = "usage: hale api call <endpoint> <member> [--json '<payload>' | --json - | --<field> <value> ...]\n  [--bearer T] [--id ID] [--digest D] [--raw]\n  endpoint: unix:<path> or http://host:port";
+const CALL_USAGE: &str = "usage: hale api call <endpoint> <member> [--json '<payload>' | --json - | --<field> <value> ...]\n  [--bearer T] [--request-id ID] [--digest D] [--raw]\n  endpoint: unix:<path> or http://host:port";
 
 /// A schema in full, compact, for a message that names a field.
 fn schema_text(schema: &Value) -> String {
@@ -514,7 +516,7 @@ fn members_listed(doc: &Value) -> String {
     }
 }
 
-/// `hale api call <endpoint> <member> [payload] [--bearer T] [--id ID] [--digest D] [--raw]`.
+/// `hale api call <endpoint> <member> [payload] [--bearer T] [--request-id ID] [--digest D] [--raw]`.
 pub(crate) fn run_call(rest: &[String]) -> ExitCode {
     let mut json_arg: Option<String> = None;
     let (mut token, mut id, mut digest) = (None, None, None);
@@ -528,7 +530,7 @@ pub(crate) fn run_call(rest: &[String]) -> ExitCode {
                 ("raw", None) => raw = true,
                 ("json", Some(v)) => json_arg = Some(v),
                 ("bearer", Some(v)) => token = Some(v),
-                ("id", Some(v)) => id = Some(v),
+                ("request-id", Some(v)) => id = Some(v),
                 ("digest", Some(v)) => digest = Some(v),
                 (k, _) => return usage_error("call", &format!("`--{k}` is incomplete\n{CALL_USAGE}")),
             },

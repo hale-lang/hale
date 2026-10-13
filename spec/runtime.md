@@ -3215,7 +3215,9 @@ totals; mismatches BEFORE exhaustion stay divergences either way.
 A trailer-FINALIZED artifact keeps the exact full-parse + count
 checks: with a finalize present, any truncation is corruption.
 
-**Replay (`hale replay <recording> <program.hl>`).** Admission,
+**Replay (`hale replay <recording> <program.hl | dir>`).** The
+program is a file or a directory seed, loaded as `hale run` loads it.
+Admission,
 strongest check first: the recording's `exec_digest` — a framed
 SHA-256 over the toolchain source hash (compiler + runtime +
 stdlib implementation, via the stale-CLI build hash), the CLI
@@ -3750,7 +3752,17 @@ for replay-under-a-different-plan) is the next milestone.
   kept for that line alone; nothing else reads them. A second signal does the same at once.
   Installed by the main prelude only in a program that reads
   `draining`; caught with `SA_RESTART`, never blocked, so spawned
-  subprocesses keep the default disposition.
+  subprocesses keep the default disposition. Between a subprocess's
+  fork and its exec (`std::process::run` and `spawn`) the child is a
+  copy of the program, handlers included, so `lotus_process_fork`
+  blocks every signal across the fork and the child resets SIGINT and
+  SIGTERM to their defaults before it unblocks: a TERM that reaches the
+  child before its exec (the dissolve of a `let`-bound `spawn` at the
+  end of a `birth` or a param default sends one) ends the child alone,
+  never writing the parent's drain pipe. (Before 2026-10-12 it did:
+  the parent's watcher woke to a drain no signal began and, with no
+  live instance reading `draining`, ended the program `_exit(128)`
+  with its buffered output unwritten.)
 - **SIGPIPE globally ignored** (added 2026-05-17, C2). The
   prelude installs `signal(SIGPIPE, SIG_IGN)` once at
   `lotus_io_init` so writes to a closed pipe (subprocess stdin,
