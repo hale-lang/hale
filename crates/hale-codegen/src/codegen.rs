@@ -30948,7 +30948,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     ///   pass = diff <= tolerance
     ///   if pass: continue
     ///   else:
-    ///     dprintf(2, "ClosureViolation: locus `L` closure `C` failed at dissolve\n")
+    ///     dprintf(2, "ClosureViolation: locus `L` closure `C` failed at <epoch>\n")
     ///     exit(1)
     /// ```
     ///
@@ -31977,7 +31977,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             )
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         let fmt = self.global_string(
-            "runtime error: ClosureViolation: locus `%s` closure `%s` failed at dissolve\n",
+            "runtime error: ClosureViolation: locus `%s` closure `%s` failed; bubbled past every on_failure handler\n",
         );
         let dprintf_fn = self
             .module

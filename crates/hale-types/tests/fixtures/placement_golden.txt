@@ -4774,6 +4774,10 @@ root	App	the entry
 row	App@literal1	App	main	default
 shared	App@literal1.gw	Gateway #7eef2531
 
+== crates/hale-codegen/tests/violate_build.rs#df440a92
+row	Feed@main2	Feed	main	default
+row	Guard@main1	Guard	main	default
+
 == crates/hale-codegen/tests/violate_child_state_read.rs#ee9ca4a3
 row	Parent@main1	Parent	main	default
 dynamic	Child	on main	in the seed
