@@ -432,6 +432,7 @@ ns std::str open_prefixes=[]
   range_copy pure
   slice pure
   index_of pure
+  index_of_from pure
   contains pure
   split_into pure
   join pure
@@ -1011,6 +1012,7 @@ std::str::ends_with | lookup=str@2 | locus=false | effects=pure | sig=(Str, Str)
 std::str::from_bytes | lookup=str@2 | locus=false | effects=pure | sig=(Bytes) -> Str | ret_ty=String | or=- | parks=false | holds=false | unknown=- | suggest=from_bytes
 std::str::from_int | lookup=str@2 | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=`std::str::from_int` is not a stdlib function; rendering a value as a String is the builtin `to_string(x)` | suggest=-
 std::str::index_of | lookup=str@2 | locus=false | effects=pure | sig=(Str, Str) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=index_of
+std::str::index_of_from | lookup=str@2 | locus=false | effects=pure | sig=(Str, Str, Int) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=index_of_from
 std::str::join | lookup=str@2 | locus=false | effects=pure | sig=(Any, Str) -> Str | ret_ty=String | or=- | parks=false | holds=false | unknown=- | suggest=join
 std::str::len | lookup=str@2 | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=`std::str::len` is not a stdlib function; the length of a String is the builtin `len(s)` | suggest=-
 std::str::lenght | lookup=str@2 | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib function `std::str::lenght` | suggest=-

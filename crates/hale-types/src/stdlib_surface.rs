@@ -1290,6 +1290,10 @@ pub const SURFACES: &[NsSurface] = &[
             row!("range_copy", PURE, [Str, Int, Int, Int] -> Str, Intrinsic(StrRangeCopy)),
             row!("slice", PURE, [Named("__StrByteView"), Int, Int] -> Str, Renamed),
             row!("index_of", PURE, [Str, Str] -> Int, Intrinsic(StrIndexOf)),
+            // `index_of` from a byte offset on, the index into `s`: a
+            // scanner's next search without slicing the tail (downstream
+            // handoff).
+            row!("index_of_from", PURE, [Str, Str, Int] -> Int, Intrinsic(StrIndexOfFrom)),
             row!("contains", PURE, [Str, Str] -> Bool, Intrinsic(StrContains)),
             // #353: the everyday predicates. The runtime carried
             // `lotus_str_contains` / `_starts_with` all along; `ends_with` is
@@ -1737,6 +1741,7 @@ pub enum IntrinsicId {
     StrFromBytes,
     StrRangeCopy,
     StrIndexOf,
+    StrIndexOfFrom,
     StrContains,
     StrSplitInto,
     StrJoin,

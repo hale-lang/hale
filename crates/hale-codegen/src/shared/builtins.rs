@@ -996,6 +996,15 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .module
             .add_function("lotus_str_index_of", str_index_of_ty, None);
         self.mark_pure_read(str_index_of_fn);
+        // declare i64 @lotus_str_index_of_from(ptr s, ptr sub, i64 start)
+        let str_index_of_from_ty =
+            i64_t.fn_type(&[ptr_t.into(), ptr_t.into(), i64_t.into()], false);
+        let str_index_of_from_fn = self.module.add_function(
+            "lotus_str_index_of_from",
+            str_index_of_from_ty,
+            None,
+        );
+        self.mark_pure_read(str_index_of_from_fn);
 
         // m89: Bytes value primitives.
         // declare ptr @lotus_bytes_create(ptr arena, i64 len)

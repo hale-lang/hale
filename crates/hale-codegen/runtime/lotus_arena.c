@@ -16946,6 +16946,23 @@ int64_t lotus_str_index_of(const char *s, const char *sub) {
     return (int64_t)(hit - s);
 }
 
+/* `std::str::index_of_from(s, sub, start)`: the byte index of the first
+ * occurrence of `sub` at or after byte `start`, or -1. A negative start
+ * is 0; a start past the end finds nothing. An empty needle is found at
+ * `start` itself (at 0..=len), as `index_of` finds it at 0. The index is
+ * into `s`, not into the tail, so a scanner passes it straight back as
+ * the next start. */
+int64_t lotus_str_index_of_from(const char *s, const char *sub, int64_t start) {
+    if (!s || !sub) return -1;
+    if (start < 0) start = 0;
+    size_t n = strlen(s);
+    if ((uint64_t)start > (uint64_t)n) return -1;
+    if (*sub == '\0') return start;
+    const char *hit = strstr(s + start, sub);
+    if (!hit) return -1;
+    return (int64_t)(hit - s);
+}
+
 /*
  * m48: render a Decimal value (i128 mantissa with implicit
  * scale 9 — i.e., mantissa × 10^-9) into a NUL-terminated
