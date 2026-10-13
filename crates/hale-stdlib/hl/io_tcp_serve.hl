@@ -51,7 +51,8 @@ fn __tcp_route(listener: String, shard: Int) -> String {
 // The name a listener goes by: the one it was given, or `unix:<path>` for a
 // Unix socket, or its host and the port its socket is bound to — the one a
 // port-0 bind was given — so two listeners never share a default name (two
-// on one explicit host:port, or on one path, cannot both bind).
+// on one explicit host:port, or on one path, cannot both bind). An IPv6
+// host is bracketed, `[::1]:8080`, however it was written.
 fn __tcp_listener_name(name: String, host: String, port: Int, path: String, listen_fd: Int) -> String {
     if len(name) > 0 {
         return name;
@@ -59,11 +60,15 @@ fn __tcp_listener_name(name: String, host: String, port: Int, path: String, list
     if len(path) > 0 {
         return "unix:" + path;
     }
+    let mut h = host;
+    if std::str::index_of(host, ":") >= 0 && !std::str::starts_with(host, "[") {
+        h = "[" + host + "]";
+    }
     let bound = std::io::tcp::__local_port(listen_fd);
     if bound < 0 {
-        return host + ":" + to_string(port);
+        return h + ":" + to_string(port);
     }
-    return host + ":" + to_string(bound);
+    return h + ":" + to_string(bound);
 }
 
 // A listener's socket, bound at each birth: a restart binds afresh (a

@@ -83,6 +83,7 @@
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <arpa/inet.h>
+#include <net/if.h>   /* if_indextoname: an IPv6 source's zone */
 #include <netdb.h>
 #include <unistd.h>
 #include <errno.h>
@@ -18083,20 +18084,170 @@ void lotus_tcp_destroy(lotus_tcp_t *t) {
  * Listener locus IS the handle.
  */
 
+/* IPv6 (2026-10-12, downstream handoff): the std::io::tcp / udp
+ * primitives below took IPv4 only — `inet_pton(AF_INET)` and a
+ * `getaddrinfo(AF_INET)` fallback — so `[::1]` could be neither listened
+ * on nor dialled. An address is now resolved here, for either family:
+ *
+ *   - a host may be written bracketed (`[::1]`, as in a URL or a
+ *     `host:port` listener name) or bare (`::1`); one pair of brackets
+ *     is taken off;
+ *   - NULL / "" is the IPv4 wildcard when `passive` (a listen or a bind:
+ *     what it always was); NULL is `127.0.0.1` for a connect, and ""
+ *     names nothing there;
+ *   - an IPv4 or IPv6 literal is that address (an IPv6 one may carry a
+ *     `%zone`); with `numeric_only` (a listen or a bind) nothing else is
+ *     an address and the answer is EINVAL, as an invalid host was;
+ *   - a name is looked up with `getaddrinfo(AF_UNSPEC)`, and every
+ *     address it answers (up to LOTUS_INET_MAX, in the resolver's order)
+ *     is kept, so a connect can try the next when one refuses: a
+ *     `localhost` that answers `::1` first still reaches a server on
+ *     127.0.0.1. EAI_NONAME is ENOENT ("not_found"), any other lookup
+ *     failure EHOSTUNREACH, as before.
+ *
+ * Returns 0 with out->n >= 1, or -1 with errno. */
+#define LOTUS_INET_MAX 8
+typedef struct {
+    int n;
+    struct sockaddr_storage addr[LOTUS_INET_MAX];
+    socklen_t len[LOTUS_INET_MAX];
+} lotus_inet_addrs;
+
+static int lotus_inet_resolve(const char *host, uint16_t port, int socktype,
+                              int passive, int numeric_only,
+                              const char *what, lotus_inet_addrs *out) {
+    char buf[256];
+    out->n = 0;
+    const char *h = host;
+    if (h && h[0] == '[') {
+        size_t n = strlen(h);
+        if (n < 2 || h[n - 1] != ']' || n - 2 >= sizeof(buf)) {
+            errno = EINVAL;
+            return -1;
+        }
+        memcpy(buf, h + 1, n - 2);
+        buf[n - 2] = '\0';
+        h = buf;
+    }
+    if (!h && !passive) {
+        h = "127.0.0.1";
+    }
+    if (passive && (!h || !*h)) {
+        struct sockaddr_in *a = (struct sockaddr_in *)&out->addr[0];
+        memset(&out->addr[0], 0, sizeof(out->addr[0]));
+        a->sin_family = AF_INET;
+        a->sin_port = htons(port);
+        a->sin_addr.s_addr = htonl(INADDR_ANY);
+        out->len[0] = sizeof(struct sockaddr_in);
+        out->n = 1;
+        return 0;
+    }
+    /* (a connect's "" names nothing: the lookup below refuses it) */
+    struct sockaddr_in v4;
+    memset(&v4, 0, sizeof(v4));
+    if (inet_pton(AF_INET, h, &v4.sin_addr) == 1) {
+        v4.sin_family = AF_INET;
+        v4.sin_port = htons(port);
+        memset(&out->addr[0], 0, sizeof(out->addr[0]));
+        memcpy(&out->addr[0], &v4, sizeof(v4));
+        out->len[0] = sizeof(v4);
+        out->n = 1;
+        return 0;
+    }
+    struct addrinfo hints;
+    struct addrinfo *res = NULL;
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_family = AF_UNSPEC;
+    hints.ai_socktype = socktype;
+    if (numeric_only) hints.ai_flags |= AI_NUMERICHOST;
+    if (passive) hints.ai_flags |= AI_PASSIVE;
+    char port_str[16];
+    snprintf(port_str, sizeof(port_str), "%u", (unsigned)port);
+    int gai = getaddrinfo(h, port_str, &hints, &res);
+    if (gai != 0 || res == NULL) {
+        if (res) freeaddrinfo(res);
+        if (numeric_only) {
+            fprintf(stderr, "%s: invalid host %s\n", what, host);
+            errno = EINVAL;
+            return -1;
+        }
+        fprintf(stderr, "%s: resolve %s: %s\n", what, h, gai_strerror(gai));
+        errno = (gai == EAI_NONAME) ? ENOENT : EHOSTUNREACH;
+        return -1;
+    }
+    for (struct addrinfo *r = res; r && out->n < LOTUS_INET_MAX; r = r->ai_next) {
+        if (r->ai_family != AF_INET && r->ai_family != AF_INET6) continue;
+        if (r->ai_addrlen > sizeof(out->addr[0])) continue;
+        memset(&out->addr[out->n], 0, sizeof(out->addr[0]));
+        memcpy(&out->addr[out->n], r->ai_addr, r->ai_addrlen);
+        out->len[out->n] = (socklen_t)r->ai_addrlen;
+        out->n++;
+    }
+    freeaddrinfo(res);
+    if (out->n == 0) {
+        errno = EHOSTUNREACH;
+        return -1;
+    }
+    return 0;
+}
+
+/* An IPv6 address as text a resolve takes back: unbracketed, with its
+ * zone when it has one (`fe80::1%eth0`; the interface's index,
+ * `fe80::1%7`, when it has no name). A link-local address names its
+ * interface only through the scope id, so dropping it made a reply to
+ * the sender unroutable. 0, or -1 when the address does not fit. */
+static int lotus_inet6_format(const struct sockaddr_in6 *a, char *buf,
+                              size_t cap) {
+    if (!inet_ntop(AF_INET6, &a->sin6_addr, buf, (socklen_t)cap)) {
+        return -1;
+    }
+    if (a->sin6_scope_id == 0) {
+        return 0;
+    }
+    char zone[64];
+    zone[0] = '\0';
+#ifndef __wasm__
+    char ifname[IF_NAMESIZE];
+    if (if_indextoname(a->sin6_scope_id, ifname)) {
+        snprintf(zone, sizeof(zone), "%%%s", ifname);
+    }
+#endif
+    if (!zone[0]) {
+        snprintf(zone, sizeof(zone), "%%%u", (unsigned)a->sin6_scope_id);
+    }
+    size_t n = strlen(buf);
+    if (n + strlen(zone) + 1 > cap) {
+        return -1;
+    }
+    memcpy(buf + n, zone, strlen(zone) + 1);
+    return 0;
+}
+
+/* The port of a socket address of either family, -1 for another. */
+static int64_t lotus_inet_port(const struct sockaddr_storage *a) {
+    if (a->ss_family == AF_INET) {
+        return (int64_t)ntohs(((const struct sockaddr_in *)a)->sin_port);
+    }
+    if (a->ss_family == AF_INET6) {
+        return (int64_t)ntohs(((const struct sockaddr_in6 *)a)->sin6_port);
+    }
+    return -1;
+}
+
 int lotus_tcp_listen_socket(const char *host, uint16_t port) {
-    struct sockaddr_in addr;
-    memset(&addr, 0, sizeof(addr));
-    addr.sin_family = AF_INET;
-    addr.sin_port   = htons(port);
-    if (!host) {
-        addr.sin_addr.s_addr = htonl(INADDR_ANY);
-    } else if (inet_pton(AF_INET, host, &addr.sin_addr) != 1) {
-        fprintf(stderr,
-                "lotus_tcp_listen_socket: invalid host %s\n", host);
+    /* An IPv4 or IPv6 literal (bracketed or not), or NULL for the IPv4
+     * wildcard; "" was refused and still is, as no literal. */
+    lotus_inet_addrs addrs;
+    if (host && !*host) {
+        fprintf(stderr, "lotus_tcp_listen_socket: invalid host %s\n", host);
         errno = EINVAL;
         return -1;
     }
-    int sock = socket(AF_INET, SOCK_STREAM, 0);
+    if (lotus_inet_resolve(host, port, SOCK_STREAM, 1, 1,
+                           "lotus_tcp_listen_socket", &addrs) < 0) {
+        return -1;
+    }
+    int sock = socket(addrs.addr[0].ss_family, SOCK_STREAM, 0);
     if (sock < 0) {
         perror("lotus_tcp_listen_socket: socket");
         return -1;
@@ -18128,7 +18279,7 @@ int lotus_tcp_listen_socket(const char *host, uint16_t port) {
      * load balancing, that belongs behind an explicit opt-in
      * (`Listener { exclusive: false }` / a dedicated primitive), not
      * the default path. */
-    if (bind(sock, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+    if (bind(sock, (struct sockaddr *)&addrs.addr[0], addrs.len[0]) < 0) {
         perror("lotus_tcp_listen_socket: bind");
         close(sock);
         return -1;
@@ -18516,49 +18667,23 @@ static int lotus_tcp_connect_attempt(int sock, const struct sockaddr *addr,
  * no bound: the kernel's own give-up, about two minutes for a SYN nobody
  * answers). A process drain ends the retry (nothing is going to come up
  * for a program that is stopping). Name resolution is not bounded: it is
- * getaddrinfo(3) on the calling thread. */
+ * getaddrinfo(3) on the calling thread.
+ *
+ * IPv6 (2026-10-12): `lotus_inet_resolve` answers an IPv4 or IPv6
+ * literal, bracketed or not, or every address a name resolves to
+ * (AF_UNSPEC). An attempt tries them in order, each through the same
+ * bounded connect and all within the one deadline: an address that
+ * fails moves on to the next, a deadline that passes ends the dial
+ * (ETIMEDOUT), and a refusal is the answer only when every address
+ * refused — so `localhost` answering ::1 first still reaches a server on
+ * 127.0.0.1. Gai errors keep their IoError mapping (EAI_NONAME ->
+ * ENOENT "not_found", anything else -> EHOSTUNREACH). */
 static int lotus_tcp_dial(const char *host, uint16_t port,
                           int64_t retry_ns, int64_t timeout_ns) {
-    /* C6 (pond follow-up): fast path is numeric-address via inet_pton;
-     * when that returns 0 (host isn't a dotted quad), fall back to
-     * getaddrinfo(host, port_str, AF_INET + SOCK_STREAM) and use the
-     * first returned address. */
-    struct sockaddr_in addr;
-    memset(&addr, 0, sizeof(addr));
-    addr.sin_family = AF_INET;
-    addr.sin_port   = htons(port);
-    const char *h = host ? host : "127.0.0.1";
-    int pton = inet_pton(AF_INET, h, &addr.sin_addr);
-    if (pton != 1) {
-        /* C6: getaddrinfo fallback for hostname resolution. We map
-         * gai errors onto the existing IoError errno taxonomy so
-         * callers don't need a new error kind: EAI_NONAME (unknown
-         * host) -> ENOENT ("not_found"); everything else (DNS
-         * server failure, transient, no-address-for-family, etc.)
-         * -> EHOSTUNREACH ("host_unreachable"). gai_strerror is
-         * printed to stderr for diagnostic visibility but doesn't
-         * cross the IoError boundary. */
-        struct addrinfo hints;
-        struct addrinfo *res = NULL;
-        memset(&hints, 0, sizeof(hints));
-        hints.ai_family   = AF_INET;
-        hints.ai_socktype = SOCK_STREAM;
-        char port_str[16];
-        snprintf(port_str, sizeof(port_str), "%u", (unsigned)port);
-        int gai = getaddrinfo(h, port_str, &hints, &res);
-        if (gai != 0 || res == NULL) {
-            fprintf(stderr,
-                    "lotus_tcp_connect: resolve %s: %s\n",
-                    h, gai_strerror(gai));
-            if (res) freeaddrinfo(res);
-            errno = (gai == EAI_NONAME) ? ENOENT : EHOSTUNREACH;
-            return -1;
-        }
-        /* First result wins — round-robin / multi-A handling is
-         * the caller's job (they can pre-resolve if they want it). */
-        struct sockaddr_in *resolved = (struct sockaddr_in *)res->ai_addr;
-        addr.sin_addr = resolved->sin_addr;
-        freeaddrinfo(res);
+    lotus_inet_addrs addrs;
+    if (lotus_inet_resolve(host, port, SOCK_STREAM, 0, 0,
+                           "lotus_tcp_connect", &addrs) < 0) {
+        return -1;
     }
     struct timespec backoff = { 0, 5L * 1000L * 1000L };
     int64_t start = lotus_now_mono_ns();
@@ -18571,29 +18696,40 @@ static int lotus_tcp_dial(const char *host, uint16_t port,
          * the retry fails "Socket is already connected" (EISCONN) or
          * EINVAL — so a client that raced its server's listen() failed
          * outright there instead of retrying (GH #970). */
-        int sock = socket(AF_INET, SOCK_STREAM, 0);
-        if (sock < 0) {
-            perror("lotus_tcp_connect: socket");
-            return -1;
+        int refused = 0;
+        int err = 0;
+        for (int i = 0; i < addrs.n; i++) {
+            int sock = socket(addrs.addr[i].ss_family, SOCK_STREAM, 0);
+            if (sock < 0) {
+                err = errno;
+                continue;
+            }
+            lotus_set_cloexec(sock);
+            if (lotus_tcp_connect_attempt(sock, (struct sockaddr *)&addrs.addr[i],
+                                          addrs.len[i], deadline) == 0) {
+                int nodelay = 1;
+                (void)setsockopt(sock, IPPROTO_TCP, TCP_NODELAY,
+                                 &nodelay, sizeof(nodelay));
+                return sock;
+            }
+            int e = errno;
+            close(sock);
+            if (e == ETIMEDOUT && deadline > 0 && lotus_now_mono_ns() >= deadline) {
+                /* The deadline the caller asked for passed: the answer,
+                 * not a fault — no stderr line; the IoError (kind
+                 * `timeout`) says it. It bounds the whole dial, so no
+                 * address after this one is tried. */
+                errno = ETIMEDOUT;
+                return -1;
+            }
+            if (e == ECONNREFUSED || e == EAGAIN) {
+                refused = 1;
+            } else {
+                err = e;
+            }
         }
-        lotus_set_cloexec(sock);
-        if (lotus_tcp_connect_attempt(sock, (struct sockaddr *)&addr,
-                                      sizeof(addr), deadline) == 0) {
-            int nodelay = 1;
-            (void)setsockopt(sock, IPPROTO_TCP, TCP_NODELAY,
-                             &nodelay, sizeof(nodelay));
-            return sock;
-        }
-        int err = errno;
-        close(sock);
-        if (err == ETIMEDOUT && deadline > 0) {
-            /* The deadline the caller asked for passed: the answer, not
-             * a fault — no stderr line; the IoError (kind `timeout`)
-             * says it. */
-            errno = ETIMEDOUT;
-            return -1;
-        }
-        if (err != ECONNREFUSED && err != EAGAIN) {
+        if (!refused) {
+            /* No address refused: the last failure is the answer. */
             errno = err;
             perror("lotus_tcp_connect: connect");
             return -1;
@@ -18981,11 +19117,11 @@ int lotus_tcp_shutdown_listen_socket(int fd);
  * is its host and this port, so two port-0 listeners are two names. */
 int64_t lotus_tcp_local_port(int64_t fd) {
     if (fd < 0) return -1;
-    struct sockaddr_in a;
+    struct sockaddr_storage a;
     socklen_t len = sizeof(a);
     memset(&a, 0, sizeof(a));
     if (getsockname((int)fd, (struct sockaddr *)&a, &len) != 0) return -1;
-    return (int64_t)ntohs(a.sin_port);
+    return lotus_inet_port(&a);
 }
 
 /* `std::io::tcp::stop(name)`: shut the named listener's socket down (its
@@ -19084,18 +19220,15 @@ static ssize_t lotus_udp_recvfrom_async(int fd, void *buf, size_t cap,
                                         socklen_t *slen);
 
 int lotus_udp_bind(const char *host, uint16_t port) {
-    struct sockaddr_in addr;
-    memset(&addr, 0, sizeof(addr));
-    addr.sin_family = AF_INET;
-    addr.sin_port   = htons(port);
-    if (!host || *host == '\0' || strcmp(host, "0.0.0.0") == 0) {
-        addr.sin_addr.s_addr = htonl(INADDR_ANY);
-    } else if (inet_pton(AF_INET, host, &addr.sin_addr) != 1) {
-        fprintf(stderr, "lotus_udp_bind: invalid host %s\n", host);
-        errno = EINVAL;
+    /* An IPv4 or IPv6 literal (bracketed or not); NULL / "" the IPv4
+     * wildcard. A socket bound to an IPv6 address sends to IPv6 peers
+     * (and to IPv4 ones as v4-mapped, `lotus_udp_sendto`). */
+    lotus_inet_addrs addrs;
+    if (lotus_inet_resolve(host, port, SOCK_DGRAM, 1, 1, "lotus_udp_bind",
+                           &addrs) < 0) {
         return -1;
     }
-    int sock = socket(AF_INET, SOCK_DGRAM, 0);
+    int sock = socket(addrs.addr[0].ss_family, SOCK_DGRAM, 0);
     if (sock < 0) {
         perror("lotus_udp_bind: socket");
         return -1;
@@ -19107,7 +19240,7 @@ int lotus_udp_bind(const char *host, uint16_t port) {
         close(sock);
         return -1;
     }
-    if (bind(sock, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+    if (bind(sock, (struct sockaddr *)&addrs.addr[0], addrs.len[0]) < 0) {
         perror("lotus_udp_bind: bind");
         close(sock);
         return -1;
@@ -19121,17 +19254,38 @@ int lotus_udp_sendto(int fd, const char *host, uint16_t port,
         errno = EINVAL;
         return -1;
     }
-    struct sockaddr_in addr;
-    memset(&addr, 0, sizeof(addr));
-    addr.sin_family = AF_INET;
-    addr.sin_port   = htons(port);
-    if (inet_pton(AF_INET, host, &addr.sin_addr) != 1) {
-        fprintf(stderr, "lotus_udp_sendto: invalid host %s\n", host);
-        errno = EINVAL;
+    /* The peer is an IPv4 or IPv6 literal, in the socket's own family:
+     * an IPv4 peer of an IPv6 socket is sent to as v4-mapped
+     * (`::ffff:a.b.c.d`); an IPv6 peer of an IPv4 socket is EINVAL. */
+    lotus_inet_addrs addrs;
+    if (lotus_inet_resolve(host, port, SOCK_DGRAM, 0, 1, "lotus_udp_sendto",
+                           &addrs) < 0) {
         return -1;
     }
+    struct sockaddr_storage own;
+    socklen_t own_len = sizeof(own);
+    memset(&own, 0, sizeof(own));
+    if (getsockname(fd, (struct sockaddr *)&own, &own_len) == 0
+        && own.ss_family != addrs.addr[0].ss_family) {
+        if (own.ss_family == AF_INET6 && addrs.addr[0].ss_family == AF_INET) {
+            struct sockaddr_in v4;
+            memcpy(&v4, &addrs.addr[0], sizeof(v4));
+            struct sockaddr_in6 *m = (struct sockaddr_in6 *)&addrs.addr[0];
+            memset(&addrs.addr[0], 0, sizeof(addrs.addr[0]));
+            m->sin6_family = AF_INET6;
+            m->sin6_port = v4.sin_port;
+            m->sin6_addr.s6_addr[10] = 0xff;
+            m->sin6_addr.s6_addr[11] = 0xff;
+            memcpy(&m->sin6_addr.s6_addr[12], &v4.sin_addr, 4);
+            addrs.len[0] = sizeof(struct sockaddr_in6);
+        } else {
+            fprintf(stderr, "lotus_udp_sendto: %s is not an address of the socket's family\n", host);
+            errno = EINVAL;
+            return -1;
+        }
+    }
     ssize_t n = sendto(fd, buf, len, 0,
-                       (struct sockaddr *)&addr, sizeof(addr));
+                       (struct sockaddr *)&addrs.addr[0], addrs.len[0]);
     if (n < 0) {
         return -1;
     }
@@ -19408,7 +19562,7 @@ void *lotus_udp_recv_bytes_with_source(int fd, int max_bytes) {
      * (downstream handoff 2026-07-16). Freed before every return. */
     char *tmp = (char *)malloc(cap);
     if (!tmp) { errno = ENOMEM; return NULL; }
-    struct sockaddr_in src;
+    struct sockaddr_storage src;
     socklen_t src_len = sizeof(src);
     memset(&src, 0, sizeof(src));
     ssize_t n = lotus_udp_recvfrom_async(fd, tmp, cap,
@@ -19428,13 +19582,23 @@ void *lotus_udp_recv_bytes_with_source(int fd, int max_bytes) {
         g_udp_last_source_port = 0;
         return NULL;
     }
-    if (src.sin_family == AF_INET) {
-        if (!inet_ntop(AF_INET, &src.sin_addr,
+    if (src.ss_family == AF_INET) {
+        struct sockaddr_in *s4 = (struct sockaddr_in *)&src;
+        if (!inet_ntop(AF_INET, &s4->sin_addr,
                        g_udp_last_source_host,
                        sizeof(g_udp_last_source_host))) {
             g_udp_last_source_host[0] = '\0';
         }
-        g_udp_last_source_port = (int64_t)ntohs(src.sin_port);
+        g_udp_last_source_port = (int64_t)ntohs(s4->sin_port);
+    } else if (src.ss_family == AF_INET6) {
+        /* an IPv6 peer, unbracketed (`::1`) and with its zone
+         * (`fe80::1%eth0`), as `send` takes it back */
+        struct sockaddr_in6 *s6 = (struct sockaddr_in6 *)&src;
+        if (lotus_inet6_format(s6, g_udp_last_source_host,
+                               sizeof(g_udp_last_source_host)) < 0) {
+            g_udp_last_source_host[0] = '\0';
+        }
+        g_udp_last_source_port = (int64_t)ntohs(s6->sin6_port);
     } else {
         g_udp_last_source_host[0] = '\0';
         g_udp_last_source_port = 0;
@@ -25176,16 +25340,280 @@ static pid_t lotus_process_fork(void) {
 #endif
 }
 
-int lotus_process_run(
+/* Spawn options (2026-10-12, downstream handoff): `run_with` /
+ * `spawn_with` take a `SpawnOptions` record — a working directory, the
+ * environment (additions, removals, or a cleared one), resource limits
+ * and, for `run_with` here and `wait` / `try_wait` through
+ * `lotus_process_wait_deadline`, a wall-clock deadline.
+ *
+ * Everything that changes the CHILD is applied in the forked child,
+ * after its pipes are in place and before its exec, so the parent's
+ * own cwd, environment and limits are never touched. The child may run
+ * only async-signal-safe calls there (another thread can hold the
+ * malloc lock at fork), so the environment is built in the PARENT —
+ * a NULL-terminated `envp` whose entries point into the parent's
+ * `environ` (a copy the child inherits) and into one malloc'd copy of
+ * the additions — and the child only stores it into `environ` before
+ * `execvp`, which reads PATH from it and hands it to the program.
+ * `chdir` and `setrlimit` are plain system calls.
+ *
+ * A setup step that fails (a missing cwd, a limit above the hard one)
+ * fails the CALL, not the child: the child writes its errno down a
+ * close-on-exec pipe and `_exit`s, and the parent, which reads that
+ * pipe until the exec closes it, reaps the child and returns the
+ * errno — so `spawn_with` with a cwd that does not exist is an
+ * IoError of kind `not_found`. A missing PROGRAM is still exit code
+ * 127 from a later wait (GH #794): the exec's own failure is not
+ * written down the pipe. */
+typedef struct {
+    const char *cwd;   /* NULL or "" = inherit */
+    char **envp;       /* NULL = inherit */
+    int64_t rl_cpu;    /* RLIMIT_CPU seconds; <= 0 = unchanged */
+    int64_t rl_as;     /* RLIMIT_AS bytes */
+    int64_t rl_nofile; /* RLIMIT_NOFILE descriptors */
+    int64_t rl_fsize;  /* RLIMIT_FSIZE bytes */
+} lotus_spawn_opts;
+
+#ifndef __wasm__
+extern char **environ;
+
+/* Monotonic nanoseconds for a deadline. Not `lotus_time_monotonic_ns`:
+ * a replay serves that one from a journal, and a child's deadline is
+ * the kernel's wall clock, not a recorded value. */
+static int64_t lotus_process_mono_ns(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (int64_t)ts.tv_sec * 1000000000LL + (int64_t)ts.tv_nsec;
+}
+
+/* Length of an environment entry's name: the bytes before its `=`. */
+static size_t lotus_process_env_key_len(const char *e) {
+    const char *eq = strchr(e, '=');
+    return eq ? (size_t)(eq - e) : strlen(e);
+}
+
+/* Whether `list[0..n)` names `key` (`klen` bytes) — a list of names
+ * (`unset_env`) or of `NAME=value` entries (`env`). */
+static int lotus_process_env_names(char **list, int n, const char *key,
+                                   size_t klen) {
+    for (int i = 0; i < n; i++) {
+        if (lotus_process_env_key_len(list[i]) == klen
+            && memcmp(list[i], key, klen) == 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/* Build the child's environment in the parent. `add` is newline-
+ * separated `NAME=value` lines, `unset` newline-separated names;
+ * `clear` starts from nothing instead of this process's environment.
+ * A name `add` sets replaces the inherited one (the last line wins
+ * when `add` names it twice); `unset` removes inherited names only, so
+ * `add` always wins. On success *out_envp is NULL when nothing changes
+ * (the child inherits as before), else a malloc'd array the caller
+ * frees together with *out_buf (the additions' storage). Returns 0, or
+ * -1 with errno: EINVAL for an addition with no `=` or an empty name,
+ * ENOMEM. */
+static int lotus_process_build_envp(const char *add, const char *unset,
+                                    int64_t clear, char ***out_envp,
+                                    char **out_buf) {
+    *out_envp = NULL;
+    *out_buf = NULL;
+    int has_add = add && add[0];
+    int has_unset = unset && unset[0];
+    if (!clear && !has_add && !has_unset) {
+        return 0;
+    }
+    char **adds = NULL, *add_buf = NULL;
+    int nadd = 0;
+    char **unsets = NULL, *unset_buf = NULL;
+    int nunset = 0;
+    if (has_add
+        && lotus_process_split_argv(add, &adds, &add_buf, &nadd) < 0) {
+        return -1;
+    }
+    for (int i = 0; i < nadd; i++) {
+        const char *eq = strchr(adds[i], '=');
+        if (!eq || eq == adds[i]) {
+            free(adds); free(add_buf);
+            errno = EINVAL;
+            return -1;
+        }
+    }
+    if (has_unset
+        && lotus_process_split_argv(unset, &unsets, &unset_buf, &nunset)
+               < 0) {
+        int saved = errno;
+        free(adds); free(add_buf);
+        errno = saved;
+        return -1;
+    }
+    size_t nbase = 0;
+    if (!clear && environ) {
+        while (environ[nbase]) nbase++;
+    }
+    char **envp = (char **)malloc(sizeof(char *) * (nbase + (size_t)nadd + 1));
+    if (!envp) {
+        free(adds); free(add_buf); free(unsets); free(unset_buf);
+        errno = ENOMEM;
+        return -1;
+    }
+    size_t k = 0;
+    for (size_t i = 0; i < nbase; i++) {
+        char *e = environ[i];
+        size_t kl = lotus_process_env_key_len(e);
+        if (lotus_process_env_names(unsets, nunset, e, kl)) continue;
+        if (lotus_process_env_names(adds, nadd, e, kl)) continue;
+        envp[k++] = e;
+    }
+    for (int i = 0; i < nadd; i++) {
+        size_t kl = lotus_process_env_key_len(adds[i]);
+        /* A later line names it again: that one wins. */
+        if (lotus_process_env_names(adds + i + 1, nadd - i - 1, adds[i], kl)) {
+            continue;
+        }
+        envp[k++] = adds[i];
+    }
+    envp[k] = NULL;
+    free(adds);
+    free(unsets); free(unset_buf);
+    *out_envp = envp;
+    *out_buf = add_buf;
+    return 0;
+}
+
+/* In the forked child, before exec: apply `o`. Async-signal-safe calls
+ * only. Returns 0, or the errno of the step that failed. */
+static int lotus_process_child_setup(const lotus_spawn_opts *o) {
+    if (!o) return 0;
+    if (o->cwd && o->cwd[0] && chdir(o->cwd) != 0) {
+        return errno;
+    }
+    const int res[4] = { RLIMIT_CPU, RLIMIT_AS, RLIMIT_NOFILE, RLIMIT_FSIZE };
+    const int64_t val[4] = { o->rl_cpu, o->rl_as, o->rl_nofile, o->rl_fsize };
+    for (int i = 0; i < 4; i++) {
+        if (val[i] <= 0) continue;
+        struct rlimit r;
+        r.rlim_cur = (rlim_t)val[i];
+        r.rlim_max = (rlim_t)val[i];
+        if (setrlimit(res[i], &r) != 0) {
+            return errno;
+        }
+    }
+    if (o->envp) {
+        environ = o->envp;
+    }
+    return 0;
+}
+
+/* The setup-failure channel: a pipe whose ends close on exec, so the
+ * parent's read sees EOF the moment the exec succeeds (or the child
+ * exits). Returns 0 or -1 with errno. */
+static int lotus_process_errpipe(int fds[2]) {
+    if (pipe(fds) < 0) return -1;
+    fcntl(fds[0], F_SETFD, FD_CLOEXEC);
+    fcntl(fds[1], F_SETFD, FD_CLOEXEC);
+    return 0;
+}
+
+/* Child side: report `err` down the setup pipe and end. */
+static void lotus_process_child_fail(int errfd, int err) {
+    int e = err;
+    ssize_t w;
+    do {
+        w = write(errfd, &e, sizeof e);
+    } while (w < 0 && errno == EINTR);
+    _exit(127);
+}
+
+/* Parent side: the child's setup errno, or 0 once its exec closed the
+ * pipe. Closes the read end. */
+static int lotus_process_errpipe_read(int fd) {
+    int e = 0;
+    ssize_t n;
+    do {
+        n = read(fd, &e, sizeof e);
+    } while (n < 0 && errno == EINTR);
+    close(fd);
+    return n == (ssize_t)sizeof e ? e : 0;
+}
+
+/* Reap `pid` after a failed setup (it `_exit`ed, or is about to). */
+static void lotus_process_reap(pid_t pid) {
+    int status = 0;
+    while (waitpid(pid, &status, 0) < 0 && errno == EINTR) {
+    }
+}
+
+/* Whether any process of the group `pgid` is still there (EPERM: one
+ * is, and is not ours to signal). */
+static int lotus_process_group_alive(pid_t pgid) {
+    return kill(-pgid, 0) == 0 || errno == EPERM;
+}
+
+/* The deadline's stop: TERM to the child's process group (it called
+ * `setpgid(0, 0)`, so a shell's own children go with it), up to 100 ms
+ * of grace polled at 5 ms, then KILL to whatever of the group is left,
+ * then reap the child. The child's own exit is not the group's: a
+ * leader that ends on TERM while a member of its group ignores it
+ * (`trap '' TERM`) leaves that member running, so the grace ends early
+ * only once the leader is reaped AND no member is left, and the KILL
+ * goes to the group whenever one is. A group that is already gone
+ * falls back to the pid. *status is the leader's reaped status (0 if
+ * something else reaped it). */
+static void lotus_process_stop_group(pid_t pid, int *status) {
+    *status = 0;
+    int reaped = 0;
+    if (kill(-pid, SIGTERM) < 0) kill(pid, SIGTERM);
+    for (int waited = 0; waited < 100000; waited += 5000) {
+        if (!reaped) {
+            pid_t w = waitpid(pid, status, WNOHANG);
+            if (w == pid || (w < 0 && errno != EINTR)) reaped = 1;
+        }
+        if (reaped && !lotus_process_group_alive(pid)) return;
+        struct timespec ts = { 0, 5000L * 1000L };
+        nanosleep(&ts, NULL);
+    }
+    /* The group's id is the leader's pid, which stays reserved while
+     * any member of the group lives, so a KILL to it reaches only them. */
+    if (lotus_process_group_alive(pid)) kill(-pid, SIGKILL);
+    if (reaped) return;
+    kill(pid, SIGKILL);
+    for (;;) {
+        pid_t w = waitpid(pid, status, 0);
+        if (w == pid) return;
+        if (w < 0 && errno == EINTR) continue;
+        return;
+    }
+}
+#endif /* !__wasm__ */
+
+/* The body of `run` and `run_with`: `o` NULL for `run`, `timeout_ns`
+ * <= 0 for no deadline. At the deadline the child's group is stopped
+ * (`lotus_process_stop_group`) and reaped, what it wrote so far is the
+ * output, and *out_timed_out is 1 — a result, not an error. */
+static int lotus_process_run_opts(
     const char *argv_blob,
+    const lotus_spawn_opts *o,
+    int64_t timeout_ns,
     int32_t *out_code,
     int32_t *out_signal,
     const char **out_stdout_str,
-    const char **out_stderr_str
+    const char **out_stderr_str,
+    int32_t *out_timed_out
 ) {
     if (!out_code || !out_signal || !out_stdout_str || !out_stderr_str) {
         return EINVAL;
     }
+    if (out_timed_out) *out_timed_out = 0;
+#ifdef __wasm__
+    (void)o;
+    (void)timeout_ns;
+#else
+    int64_t deadline = timeout_ns > 0 ? lotus_process_mono_ns() + timeout_ns : 0;
+    int timed_out = 0;
+#endif
     *out_code = -1;
     *out_signal = 0;
     *out_stdout_str = "";
@@ -25211,12 +25639,24 @@ int lotus_process_run(
         free(argv); free(argv_buf);
         return saved;
     }
+    /* The setup-failure channel, only when there is setup to fail. */
+    int setup_pipe[2] = { -1, -1 };
+#ifndef __wasm__
+    if (o && lotus_process_errpipe(setup_pipe) < 0) {
+        int saved = errno;
+        close(out_pipe[0]); close(out_pipe[1]);
+        close(err_pipe[0]); close(err_pipe[1]);
+        free(argv); free(argv_buf);
+        return saved;
+    }
+#endif
 
     pid_t pid = lotus_process_fork();
     if (pid < 0) {
         int saved = errno;
         close(out_pipe[0]); close(out_pipe[1]);
         close(err_pipe[0]); close(err_pipe[1]);
+        if (setup_pipe[0] >= 0) { close(setup_pipe[0]); close(setup_pipe[1]); }
         free(argv); free(argv_buf);
         return saved;
     }
@@ -25239,6 +25679,13 @@ int lotus_process_run(
             dup2(devnull, STDIN_FILENO);
             close(devnull);
         }
+#ifndef __wasm__
+        if (o) {
+            close(setup_pipe[0]);
+            int se = lotus_process_child_setup(o);
+            if (se) lotus_process_child_fail(setup_pipe[1], se);
+        }
+#endif
         execvp(argv[0], argv);
         _exit(127);
     }
@@ -25246,6 +25693,19 @@ int lotus_process_run(
     /* PARENT. Close the write ends; we only read. */
     close(out_pipe[1]); out_pipe[1] = -1;
     close(err_pipe[1]); err_pipe[1] = -1;
+#ifndef __wasm__
+    if (o) {
+        close(setup_pipe[1]);
+        int se = lotus_process_errpipe_read(setup_pipe[0]);
+        if (se) {
+            close(out_pipe[0]); close(err_pipe[0]);
+            lotus_process_reap(pid);
+            free(argv); free(argv_buf);
+            errno = se;
+            return se;
+        }
+    }
+#endif
 
     /* Drain both pipes via poll() so the child can write to
      * stdout and stderr in any order without filling either pipe
@@ -25269,7 +25729,20 @@ int lotus_process_run(
     while (!drain_err && (out_open || err_open)) {
         pfds[0].events = out_open ? POLLIN : 0;
         pfds[1].events = err_open ? POLLIN : 0;
-        int pn = poll(pfds, 2, -1);
+        int wait_ms = -1;
+#ifndef __wasm__
+        if (deadline > 0) {
+            int64_t left = deadline - lotus_process_mono_ns();
+            if (left <= 0) {
+                timed_out = 1;
+                break;
+            }
+            int64_t ms = (left + 999999) / 1000000;
+            wait_ms = ms > INT_MAX ? INT_MAX : (int)ms;
+        }
+#endif
+        int pn = poll(pfds, 2, wait_ms);
+        if (pn == 0) continue;
         if (pn < 0) {
             if (errno == EINTR) continue;
             drain_err = errno;
@@ -25319,8 +25792,38 @@ int lotus_process_run(
     close(out_pipe[0]); out_pipe[0] = -1;
     close(err_pipe[0]); err_pipe[0] = -1;
 
-    /* Reap. waitpid retries on EINTR. */
+    /* Reap. waitpid retries on EINTR. A child that reached its
+     * deadline is stopped first, its group with it. Pipes that stay
+     * open past the child's exit (a grandchild holding them) wait for
+     * the deadline too. */
     int status = 0;
+#ifndef __wasm__
+    if (!timed_out && deadline > 0) {
+        /* Both streams ended; the child may still be running (it
+         * closed them) — its exit still has to come by the deadline. */
+        for (;;) {
+            pid_t w = waitpid(pid, &status, WNOHANG);
+            if (w == pid) goto reaped;
+            if (w < 0) {
+                if (errno == EINTR) continue;
+                if (!drain_err) drain_err = errno;
+                goto reaped;
+            }
+            int64_t left = deadline - lotus_process_mono_ns();
+            if (left <= 0) {
+                timed_out = 1;
+                break;
+            }
+            struct timespec ts = { 0, left < 5000000 ? (long)left : 5000000L };
+            nanosleep(&ts, NULL);
+        }
+    }
+    if (timed_out) {
+        lotus_process_stop_group(pid, &status);
+        if (out_timed_out) *out_timed_out = 1;
+        goto reaped;
+    }
+#endif
     for (;;) {
         pid_t w = waitpid(pid, &status, 0);
         if (w == pid) break;
@@ -25328,6 +25831,9 @@ int lotus_process_run(
         if (!drain_err) drain_err = errno;
         break;
     }
+#ifndef __wasm__
+reaped:
+#endif
 
     if (drain_err) {
         free(out_buf); free(err_buf);
@@ -25356,7 +25862,17 @@ int lotus_process_run(
     *out_stdout_str = out_anchored;
     *out_stderr_str = err_anchored;
 
-    /* Decode exit status. */
+    /* Decode exit status. A child the deadline stopped reads -1 however
+     * it ended (one that catches TERM and exits 0 timed out all the
+     * same), with the signal that ended it when one did, and is never
+     * taken for an exec failure. */
+#ifndef __wasm__
+    if (timed_out) {
+        *out_code = -1;
+        *out_signal = WIFSIGNALED(status) ? WTERMSIG(status) : 0;
+        return 0;
+    }
+#endif
     if (WIFEXITED(status)) {
         *out_code = WEXITSTATUS(status);
         *out_signal = 0;
@@ -25381,6 +25897,69 @@ int lotus_process_run(
     return 0;
 }
 
+int lotus_process_run(
+    const char *argv_blob,
+    int32_t *out_code,
+    int32_t *out_signal,
+    const char **out_stdout_str,
+    const char **out_stderr_str
+) {
+    return lotus_process_run_opts(argv_blob, NULL, 0, out_code, out_signal,
+                                  out_stdout_str, out_stderr_str, NULL);
+}
+
+/* `std::process::run_with(argv, opts)`: `run` under a `SpawnOptions`
+ * (see "Spawn options" above). `clear_env` is 0/1; a limit <= 0 and a
+ * `timeout_ns` <= 0 are unset. *out_timed_out is 1 when the deadline
+ * stopped the child. */
+int lotus_process_run_with(
+    const char *argv_blob,
+    const char *cwd,
+    const char *env_add,
+    const char *env_unset,
+    int64_t clear_env,
+    int64_t timeout_ns,
+    int64_t rl_cpu,
+    int64_t rl_as,
+    int64_t rl_nofile,
+    int64_t rl_fsize,
+    int32_t *out_code,
+    int32_t *out_signal,
+    const char **out_stdout_str,
+    const char **out_stderr_str,
+    int32_t *out_timed_out
+) {
+#ifdef __wasm__
+    (void)argv_blob; (void)cwd; (void)env_add; (void)env_unset;
+    (void)clear_env; (void)timeout_ns; (void)rl_cpu; (void)rl_as;
+    (void)rl_nofile; (void)rl_fsize; (void)out_code; (void)out_signal;
+    (void)out_stdout_str; (void)out_stderr_str; (void)out_timed_out;
+    errno = EINVAL;
+    return EINVAL;
+#else
+    lotus_spawn_opts o;
+    char *env_buf = NULL;
+    o.cwd = cwd;
+    o.envp = NULL;
+    o.rl_cpu = rl_cpu;
+    o.rl_as = rl_as;
+    o.rl_nofile = rl_nofile;
+    o.rl_fsize = rl_fsize;
+    if (lotus_process_build_envp(env_add, env_unset, clear_env, &o.envp,
+                                 &env_buf) < 0) {
+        return errno ? errno : EINVAL;
+    }
+    int rc = lotus_process_run_opts(argv_blob, &o, timeout_ns, out_code,
+                                    out_signal, out_stdout_str,
+                                    out_stderr_str, out_timed_out);
+    int saved = errno;
+    free(o.envp);
+    free(env_buf);
+    errno = saved;
+    return rc;
+#endif
+}
+
 /* C2 surface 2a: async spawn. fork → setpgid → exec in the child;
  * parent gets back the pid + three pipe fds (stdin write, stdout
  * read, stderr read).
@@ -25388,13 +25967,17 @@ int lotus_process_run(
  * Returns 0 on success, errno on failure. All out-params are
  * populated only on success.
  */
-int lotus_process_spawn(
+static int lotus_process_spawn_opts(
     const char *argv_blob,
+    const lotus_spawn_opts *o,
     int32_t *out_pid,
     int32_t *out_stdin_fd,
     int32_t *out_stdout_fd,
     int32_t *out_stderr_fd
 ) {
+#ifdef __wasm__
+    (void)o;
+#endif
     if (!out_pid || !out_stdin_fd || !out_stdout_fd || !out_stderr_fd) {
         return EINVAL;
     }
@@ -25426,6 +26009,18 @@ int lotus_process_spawn(
         free(argv); free(argv_buf);
         return saved;
     }
+    /* The setup-failure channel, only when there is setup to fail. */
+    int setup_pipe[2] = { -1, -1 };
+#ifndef __wasm__
+    if (o && lotus_process_errpipe(setup_pipe) < 0) {
+        int saved = errno;
+        close(in_pipe[0]); close(in_pipe[1]);
+        close(out_pipe[0]); close(out_pipe[1]);
+        close(err_pipe[0]); close(err_pipe[1]);
+        free(argv); free(argv_buf);
+        return saved;
+    }
+#endif
 
     pid_t pid = lotus_process_fork();
     if (pid < 0) {
@@ -25433,6 +26028,7 @@ int lotus_process_spawn(
         close(in_pipe[0]); close(in_pipe[1]);
         close(out_pipe[0]); close(out_pipe[1]);
         close(err_pipe[0]); close(err_pipe[1]);
+        if (setup_pipe[0] >= 0) { close(setup_pipe[0]); close(setup_pipe[1]); }
         free(argv); free(argv_buf);
         return saved;
     }
@@ -25444,6 +26040,13 @@ int lotus_process_spawn(
         close(in_pipe[0]);  close(in_pipe[1]);
         close(out_pipe[0]); close(out_pipe[1]);
         close(err_pipe[0]); close(err_pipe[1]);
+#ifndef __wasm__
+        if (o) {
+            close(setup_pipe[0]);
+            int se = lotus_process_child_setup(o);
+            if (se) lotus_process_child_fail(setup_pipe[1], se);
+        }
+#endif
         execvp(argv[0], argv);
         _exit(127);
     }
@@ -25452,6 +26055,19 @@ int lotus_process_spawn(
     close(in_pipe[0]);  in_pipe[0] = -1;
     close(out_pipe[1]); out_pipe[1] = -1;
     close(err_pipe[1]); err_pipe[1] = -1;
+#ifndef __wasm__
+    if (o) {
+        close(setup_pipe[1]);
+        int se = lotus_process_errpipe_read(setup_pipe[0]);
+        if (se) {
+            close(in_pipe[1]); close(out_pipe[0]); close(err_pipe[0]);
+            lotus_process_reap(pid);
+            free(argv); free(argv_buf);
+            errno = se;
+            return se;
+        }
+    }
+#endif
 
     /* Mark the parent-side pipe fds non-blocking so reads return
      * EAGAIN promptly instead of blocking. stdin write stays
@@ -25472,6 +26088,134 @@ int lotus_process_spawn(
     *out_stdout_fd = (int32_t)out_pipe[0];
     *out_stderr_fd = (int32_t)err_pipe[0];
     return 0;
+}
+
+int lotus_process_spawn(
+    const char *argv_blob,
+    int32_t *out_pid,
+    int32_t *out_stdin_fd,
+    int32_t *out_stdout_fd,
+    int32_t *out_stderr_fd
+) {
+    return lotus_process_spawn_opts(argv_blob, NULL, out_pid, out_stdin_fd,
+                                    out_stdout_fd, out_stderr_fd);
+}
+
+/* `std::process::spawn_with(argv, opts)`: `spawn` under a
+ * `SpawnOptions` (see "Spawn options" above). The child's deadline is
+ * not enforced here — `spawn` returns at once — but handed back as
+ * *out_deadline_ns (CLOCK_MONOTONIC nanoseconds; 0 when `timeout_ns`
+ * <= 0) for the handle to carry: `wait` and `try_wait` stop the child
+ * there (`lotus_process_wait_deadline`). */
+int lotus_process_spawn_with(
+    const char *argv_blob,
+    const char *cwd,
+    const char *env_add,
+    const char *env_unset,
+    int64_t clear_env,
+    int64_t timeout_ns,
+    int64_t rl_cpu,
+    int64_t rl_as,
+    int64_t rl_nofile,
+    int64_t rl_fsize,
+    int32_t *out_pid,
+    int32_t *out_stdin_fd,
+    int32_t *out_stdout_fd,
+    int32_t *out_stderr_fd,
+    int64_t *out_deadline_ns
+) {
+#ifdef __wasm__
+    (void)argv_blob; (void)cwd; (void)env_add; (void)env_unset;
+    (void)clear_env; (void)timeout_ns; (void)rl_cpu; (void)rl_as;
+    (void)rl_nofile; (void)rl_fsize; (void)out_pid; (void)out_stdin_fd;
+    (void)out_stdout_fd; (void)out_stderr_fd; (void)out_deadline_ns;
+    errno = EINVAL;
+    return EINVAL;
+#else
+    if (!out_deadline_ns) return EINVAL;
+    *out_deadline_ns = 0;
+    lotus_spawn_opts o;
+    char *env_buf = NULL;
+    o.cwd = cwd;
+    o.envp = NULL;
+    o.rl_cpu = rl_cpu;
+    o.rl_as = rl_as;
+    o.rl_nofile = rl_nofile;
+    o.rl_fsize = rl_fsize;
+    if (lotus_process_build_envp(env_add, env_unset, clear_env, &o.envp,
+                                 &env_buf) < 0) {
+        return errno ? errno : EINVAL;
+    }
+    int64_t start = lotus_process_mono_ns();
+    int rc = lotus_process_spawn_opts(argv_blob, &o, out_pid, out_stdin_fd,
+                                      out_stdout_fd, out_stderr_fd);
+    int saved = errno;
+    free(o.envp);
+    free(env_buf);
+    if (rc == 0 && timeout_ns > 0) {
+        *out_deadline_ns = start + timeout_ns;
+    }
+    errno = saved;
+    return rc;
+#endif
+}
+
+/* `wait` / `try_wait` on a handle that carries a deadline
+ * (`spawn_with`'s timeout). `nonblocking` 0 waits for the exit or the
+ * deadline, whichever is first; 1 looks once, like `try_wait`. A child
+ * that exited decodes as `lotus_process_wait` does; one still running
+ * before the deadline is *out_code = -2 (nonblocking only); one still
+ * running AT the deadline is stopped with its group
+ * (`lotus_process_stop_group`), reaped, and reported *out_code = -3,
+ * *out_signal = the signal that ended it — the stdlib's "timed out".
+ * The blocking wait polls `waitpid(WNOHANG)` with a sleep that grows
+ * from 1 ms to 10 ms, never past the deadline. Returns errno on
+ * failure (ECHILD when already reaped). */
+int lotus_process_wait_deadline(
+    int32_t pid,
+    int64_t deadline_ns,
+    int64_t nonblocking,
+    int32_t *out_code,
+    int32_t *out_signal
+) {
+    if (!out_code || !out_signal) return EINVAL;
+    *out_code = -2;
+    *out_signal = 0;
+#ifdef __wasm__
+    (void)pid; (void)deadline_ns; (void)nonblocking;
+    return EINVAL;
+#else
+    long step_ns = 1000000L;
+    int status = 0;
+    for (;;) {
+        pid_t w = waitpid((pid_t)pid, &status, WNOHANG);
+        if (w == (pid_t)pid) break;
+        if (w < 0) {
+            if (errno == EINTR) continue;
+            return errno ? errno : ECHILD;
+        }
+        int64_t left = deadline_ns - lotus_process_mono_ns();
+        if (left <= 0) {
+            lotus_process_stop_group((pid_t)pid, &status);
+            *out_code = -3;
+            *out_signal = WIFSIGNALED(status) ? WTERMSIG(status) : 0;
+            return 0;
+        }
+        if (nonblocking) return 0;
+        struct timespec ts = { 0, left < step_ns ? (long)left : step_ns };
+        nanosleep(&ts, NULL);
+        if (step_ns < 10000000L) step_ns *= 2;
+        if (step_ns > 10000000L) step_ns = 10000000L;
+    }
+    if (WIFEXITED(status)) {
+        *out_code = WEXITSTATUS(status);
+        *out_signal = 0;
+    } else if (WIFSIGNALED(status)) {
+        *out_code = -1;
+        *out_signal = WTERMSIG(status);
+    }
+    return 0;
+#endif
 }
 
 /* C2 surface 2b: blocking wait. Reaps the child, decodes the exit
