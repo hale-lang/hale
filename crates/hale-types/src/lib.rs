@@ -376,7 +376,7 @@ mod flat_shapeable_tests {
                 PrimType::Int,
                 PrimType::Uint,
                 PrimType::Float,
-                PrimType::Decimal,
+                PrimType::DECIMAL,
                 PrimType::Bool,
                 PrimType::Time,
                 PrimType::Duration,

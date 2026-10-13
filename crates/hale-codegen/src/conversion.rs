@@ -79,7 +79,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         [arg] => Some(arg),
                         _ => None,
                     },
-                    Expr::Field { receiver, name, .. } if matches!(name.name.as_str(), "in" | "split") => {
+                    // `Decimal<S>`'s `d.rescale(T)` is a conversion between
+                    // scales, by the same rows.
+                    Expr::Field { receiver, name, .. } if matches!(name.name.as_str(), "in" | "split" | "rescale") => {
                         Some(receiver.as_ref())
                     }
                     _ => return None,
@@ -185,6 +187,27 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         self.row(SiteKind::printed(e.span()))?.printed.clone()
     }
 
+    /// `Decimal<S>`: the scale of the Decimal literal at `span`, from the
+    /// row the checker recorded where it flows (`Decimal`'s 9 with none).
+    pub(crate) fn decimal_scale_at_value(&self, span: Span) -> u8 {
+        self.decimal_scale_of(self.row(SiteKind::value(span)))
+    }
+
+    /// `Decimal<S>`: the scale of the `std::str::parse_decimal` call being
+    /// lowered (`current_call`), from the row the checker recorded at the
+    /// call where its result flows (`Decimal`'s 9 with none).
+    pub(crate) fn decimal_scale_at_call(&self) -> u8 {
+        let row = self.current_call.and_then(|call| self.row(SiteKind::Cast(call.0)));
+        self.decimal_scale_of(row)
+    }
+
+    fn decimal_scale_of(&self, row: Option<&ConversionRow>) -> u8 {
+        match row.map(|r| &r.to) {
+            Some(hale_types::ty::Ty::Prim(hale_syntax::ast::PrimType::Decimal(s))) => *s,
+            _ => hale_syntax::decimal_literal::DEFAULT_SCALE,
+        }
+    }
+
     /// The key of the conversion of `kind` here: inside a default, on the
     /// evaluation path being lowered (`default_evaluation`), the
     /// checker's key for the same evaluation (`site` in `hale-types`).
@@ -238,7 +261,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         scope: &Scope<'ctx>,
     ) -> Result<Converted<'ctx>, CodegenError> {
         let (v, ty) = self.lower_expr(arg, scope)?;
-        if !is_quantity_repr(&ty) {
+        if !is_quantity_repr(&ty) && !matches!(ty, CodegenTy::Decimal(_)) {
             return Err(CodegenError::UnsupportedAt(
                 format!("`{}(…)` converts an `Int`; its value lowered as {ty:?}", row.target),
                 arg.span(),
@@ -397,7 +420,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 row.span,
             )
         })?;
-        let i64_t = self.context.i64_type();
+        // The value's own width: an `Int`'s i64, or a `Decimal<S>`'s
+        // i128 mantissa (`.rescale(T)`).
+        let i64_t = v.get_type();
         let mut v = v;
         if machine.numerator != 1 {
             let p = i64_t.const_int(machine.numerator as u64, true);
@@ -433,7 +458,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// `v / q` rounded by `policy`, `q` positive: the truncating quotient
     /// and remainder, then one correction per policy.
     fn lower_rounding(&mut self, v: IntValue<'ctx>, q: IntValue<'ctx>, policy: RoundPolicy) -> Result<IntValue<'ctx>, CodegenError> {
-        let i64_t = self.context.i64_type();
+        let i64_t = v.get_type();
         let zero = i64_t.const_zero();
         let quo = emit(self.builder.build_int_signed_div(v, q, "unit.quo"))?;
         let rem = emit(self.builder.build_int_signed_rem(v, q, "unit.rem"))?;
@@ -486,12 +511,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let func = self
             .current_fn
             .ok_or_else(|| CodegenError::UnsupportedAt("a conversion outside a fn body".into(), row.span))?;
-        let i64_t = self.context.i64_type();
+        let i64_t = v.get_type();
         let quo = emit(self.builder.build_int_signed_div(v, q, "unit.quo"))?;
         let rem = emit(self.builder.build_int_signed_rem(v, q, "unit.rem"))?;
         let inexact = emit(self.builder.build_int_compare(IntPredicate::NE, rem, i64_t.const_zero(), "unit.inexact"))?;
         let payload_ty = CodegenTy::TypeRef("InexactError".into());
-        let out_val_slot = self.alloca_for(&CodegenTy::Int, "unit.val.slot")?;
+        let success_ty = quantity_repr(&row.to);
+        let out_val_slot = self.alloca_for(&success_ty, "unit.val.slot")?;
         let out_err_slot = self.alloca_for(&payload_ty, "unit.err.slot")?;
         let ok_bb = self.context.append_basic_block(func, "unit.ok");
         let err_bb = self.context.append_basic_block(func, "unit.err");
@@ -509,6 +535,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let size = info.struct_ty.size_of().expect("InexactError has a known size");
         let ptr = self.arena_alloc(size, "InexactError.alloc")?;
         let kind = self.global_string(&row.target);
+        // A `Decimal<S>`'s mantissa is an i128 and the error's fields are
+        // `Int`s: each is the nearest `Int`, exact for a mantissa within
+        // an `Int`'s range (the divisor, a power of ten, always is).
+        let (v, q) = (self.saturate_to_int(v)?, self.saturate_to_int(q)?);
         let fields: [(&str, BasicValueEnum<'ctx>); 3] = [("kind", kind.into()), ("value", v.into()), ("divisor", q.into())];
         for (name, value) in fields {
             let (idx, _) = info.fields.get(name).cloned().expect("a field of the row");
@@ -523,9 +553,25 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             i1_path: inexact,
             out_val_slot: Some(out_val_slot),
             out_err_slot,
-            success_ty: Some(quantity_repr(&row.to)),
+            success_ty: Some(success_ty),
             payload_ty,
         })
+    }
+
+    /// `v` as an `Int`: itself when it is one, else (a `Decimal`'s i128)
+    /// the nearest `Int`.
+    fn saturate_to_int(&mut self, v: IntValue<'ctx>) -> Result<IntValue<'ctx>, CodegenError> {
+        let i64_t = self.context.i64_type();
+        if v.get_type().get_bit_width() == 64 {
+            return Ok(v);
+        }
+        let wide = v.get_type();
+        let (max, min) = (wide.const_int(i64::MAX as u64, false), wide.const_int(i64::MIN as u64, true));
+        let above = emit(self.builder.build_int_compare(IntPredicate::SGT, v, max, "sat.above"))?;
+        let below = emit(self.builder.build_int_compare(IntPredicate::SLT, v, min, "sat.below"))?;
+        let v = emit(self.builder.build_select(above, max, v, "sat.hi"))?.into_int_value();
+        let v = emit(self.builder.build_select(below, min, v, "sat.lo"))?.into_int_value();
+        emit(self.builder.build_int_truncate(v, i64_t, "sat.int"))
     }
 
     /// `.split(u)`: the floored quotient by `u`'s count `d` and the
@@ -570,6 +616,7 @@ pub(crate) fn quantity_repr(t: &hale_types::ty::Ty) -> CodegenTy {
         hale_types::ty::Ty::Prim(PrimType::Duration) => CodegenTy::Duration,
         hale_types::ty::Ty::Prim(PrimType::Time) => CodegenTy::Time,
         hale_types::ty::Ty::Prim(PrimType::Bool) => CodegenTy::Bool,
+        hale_types::ty::Ty::Prim(PrimType::Decimal(s)) => CodegenTy::Decimal(*s),
         _ => CodegenTy::Int,
     }
 }

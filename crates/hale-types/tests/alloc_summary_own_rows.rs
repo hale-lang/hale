@@ -220,11 +220,13 @@ fn the_resource_budget_counts_the_programs_own_fd_sites() {
     whole.analysis_copy_loci.clear();
     whole.analysis_copy_interfaces.clear();
     let read_whole = hale_types::resource_budget::budget_for_programs(&bundle, table, &whole);
-    // 2: the HTTP server's fd-acquiring sites, then the Listener's own,
+    // 1: the HTTP server's fd-acquiring sites, then the Listener's own,
     // left the bundled stdlib for the TCP substrate, which joins only a
     // program that names it and is stdlib source there too (the budget
-    // leaves its bodies out as it does the copy's)
-    assert_eq!(read_whole.fd_open_sites, 3, "the copy's bodies hold 2 more, which are not the program's");
+    // leaves its bodies out as it does the copy's); and the http
+    // Client's two TCP dials (one-shot and pooled) are one dial helper
+    // since the connect deadline, so the copy holds one dial site
+    assert_eq!(read_whole.fd_open_sites, 2, "the copy's bodies hold 1 more, which is not the program's");
     assert!(hale_types::resource_budget::resource_leak_diags(summary).is_empty(), "no fd leak");
 }
 

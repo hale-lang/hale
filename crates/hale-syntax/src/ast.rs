@@ -2897,7 +2897,11 @@ pub enum PrimType {
     Int,
     Uint,
     Float,
-    Decimal,
+    /// `Decimal<S>`: an i128 mantissa at the scale `S` (`mantissa ×
+    /// 10⁻ˢ`), `S` from 0 to `decimal_literal::MAX_SCALE`. The scale is
+    /// part of the type: two scales never unify. Plain `Decimal` is
+    /// `Decimal<9>` (`decimal_literal::DEFAULT_SCALE`), the same type.
+    Decimal(u8),
     String,
     Bool,
     Time,
@@ -2928,6 +2932,19 @@ pub enum PrimType {
     /// directly via their `_raw` siblings. Length is carried in the
     /// struct, not a prefix.
     BytesMut,
+}
+
+impl PrimType {
+    /// Plain `Decimal`: `Decimal<9>`.
+    pub const DECIMAL: PrimType = PrimType::Decimal(crate::decimal_literal::DEFAULT_SCALE);
+
+    /// The scale of a `Decimal<S>`, `None` for every other primitive.
+    pub fn decimal_scale(self) -> Option<u8> {
+        match self {
+            PrimType::Decimal(s) => Some(s),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]

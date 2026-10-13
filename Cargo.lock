@@ -130,6 +130,7 @@ dependencies = [
  "hale-types",
  "inkwell",
  "libc",
+ "openssl",
  "prost",
  "prost-types",
  "protox",

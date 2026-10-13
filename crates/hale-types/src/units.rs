@@ -1587,7 +1587,7 @@ fn builtin_type(name: &str) -> Option<&'static str> {
             PrimType::Int => "the builtin integer type",
             PrimType::Uint => "the builtin unsigned integer type",
             PrimType::Float => "the builtin floating-point type",
-            PrimType::Decimal => "the builtin decimal type",
+            PrimType::Decimal(_) => "the builtin decimal type",
             PrimType::String => "the builtin string type",
             PrimType::StringView => "the builtin string view type",
             PrimType::Bool => "the builtin boolean type",

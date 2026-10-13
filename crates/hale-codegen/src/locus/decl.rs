@@ -63,7 +63,7 @@ fn apply_noalias_self_if_provable<'ctx>(
                 hale_syntax::ast::PrimType::Int
                     | hale_syntax::ast::PrimType::Float
                     | hale_syntax::ast::PrimType::Bool
-                    | hale_syntax::ast::PrimType::Decimal
+                    | hale_syntax::ast::PrimType::Decimal(_)
                     | hale_syntax::ast::PrimType::Duration,
                 _,
             )
@@ -263,7 +263,7 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
                     // Try to lock in as a literal Const first; fall
                     // back to deferred Expr if that fails.
                     let (default, default_ty): (DefaultInit, CodegenTy) =
-                        match param_value(default_expr) {
+                        match param_value(default_expr, p.ty.as_ref()) {
                             Ok(pv) => {
                                 let ty = match &pv {
                                     ParamValue::Int(_) => CodegenTy::Int,
@@ -273,7 +273,7 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
                                     ParamValue::Duration(_) => {
                                         CodegenTy::Duration
                                     }
-                                    ParamValue::Decimal(_) => CodegenTy::Decimal,
+                                    ParamValue::Decimal(_, scale) => CodegenTy::Decimal(*scale),
                                     ParamValue::Time(_) => CodegenTy::Time,
                                 };
                                 (DefaultInit::Const(pv), ty)
@@ -1815,7 +1815,7 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
                                     .context
                                     .f64_type()
                                     .fn_type(&llvm_param_tys, false),
-                                CodegenTy::Decimal => self
+                                CodegenTy::Decimal(_) => self
                                     .context
                                     .i128_type()
                                     .fn_type(&llvm_param_tys, false),
@@ -1983,7 +1983,7 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
                                     .context
                                     .f64_type()
                                     .fn_type(&llvm_param_tys, false),
-                                CodegenTy::Decimal => self
+                                CodegenTy::Decimal(_) => self
                                     .context
                                     .i128_type()
                                     .fn_type(&llvm_param_tys, false),

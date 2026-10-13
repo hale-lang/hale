@@ -173,7 +173,9 @@ pub fn report(rows: &UnitRows, typed: &TypedBodies, place: &dyn Fn(Span) -> Opti
     let mut narrowings: Vec<(Span, Narrowing)> = Vec::new();
     let mut seen = BTreeSet::new();
     for (_, row) in typed.conversion_sites() {
-        if row.kind != ConversionKind::Narrowing {
+        // A Decimal's `.rescale(S)` is no conversion of the unit
+        // dialect's types.
+        if row.kind != ConversionKind::Narrowing || matches!(row.to, crate::ty::Ty::Prim(hale_syntax::ast::PrimType::Decimal(_))) {
             continue;
         }
         let factor = row.scale.as_ref().map(|s| s.factor.to_string());
