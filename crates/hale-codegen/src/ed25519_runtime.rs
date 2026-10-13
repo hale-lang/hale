@@ -1,13 +1,17 @@
 //! Ed25519 as part of the runtime, for a program that signs or verifies
 //! with `std::crypto::ed25519_*`.
 //!
-//! Monocypher 4.0.2 (Loup Vaillant et al., BSD-2-Clause or CC0-1.0) is
+//! Monocypher 4.0.3 (Loup Vaillant et al., BSD-2-Clause or CC0-1.0) is
 //! vendored unmodified under `runtime/third_party/monocypher`: the core
 //! (`monocypher.c` / `.h`, whose field and group arithmetic the Ed25519
 //! of RFC 8032 is built on) and its optional SHA-512 Ed25519
 //! (`monocypher-ed25519.c` / `.h`), from the release tarball
-//! `monocypher-4.0.2.tar.gz` whose SHA-512 is the one monocypher.org
-//! publishes beside it (`bf275d4c…dc084714`). It is plain C99 with no
+//! `monocypher-4.0.3.tar.gz` whose SHA-512 is the one monocypher.org
+//! publishes beside it (`40904ada…880f8965`). 4.0.3 is the first release
+//! without the EdDSA timing leak upstream lists for 4.0.2 and earlier
+//! (a compiler that turns `fe_cswap` / `fe_ccopy`'s mask into a branch
+//! or a pointer swap; fixed with a `volatile` mask and an unrolled copy,
+//! monocypher.org/bugs), so a later bump keeps that floor. It is plain C99 with no
 //! libc call, no thread and no I/O, and `runtime/lotus_ed25519.c` is the
 //! glue: bytes in, bytes out.
 //!
