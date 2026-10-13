@@ -72,7 +72,7 @@ impl SigTy {
             SigTy::Str => Ty::Prim(PrimType::String),
             SigTy::Bytes => Ty::Prim(PrimType::Bytes),
             SigTy::BytesMut => Ty::Prim(PrimType::BytesMut),
-            SigTy::Decimal => Ty::Prim(PrimType::Decimal),
+            SigTy::Decimal => Ty::Prim(PrimType::DECIMAL),
             SigTy::Duration => Ty::Prim(PrimType::Duration),
             SigTy::Time => Ty::Prim(PrimType::Time),
             SigTy::Unit => Ty::Unit,
@@ -112,6 +112,10 @@ impl SigTy {
                     PrimType::Float | PrimType::Int | PrimType::Uint,
                 ),
             ) => true,
+            // A `Decimal` parameter reads every scale: the lowering
+            // takes the scale from the argument's type
+            // (`std::decimal::format`, `to_float`).
+            (SigTy::Decimal, Ty::Prim(PrimType::Decimal(_))) => true,
             _ => self.to_ty().assignable_from(got),
         }
     }
@@ -886,6 +890,7 @@ pub const SURFACES: &[NsSurface] = &[
             row!("close_fd", SYSCALL, [Int] -> Int, Intrinsic(IoTcpCloseFd)),
             row!("connect", SYSCALL | BLOCK, [Str, Int] -> Int ! "IoError", Intrinsic(IoTcpConnect)),
             row!("connect_wait", SYSCALL | BLOCK, [Str, Int, Duration] -> Int ! "IoError", Intrinsic(IoTcpConnectWait)),
+            row!("connect_within", SYSCALL | BLOCK, [Str, Int, Duration] -> Int ! "IoError", Intrinsic(IoTcpConnectWithin)),
             row!("last_recv_kernel_ns", PURE, [] -> Int, Intrinsic(IoTcpLastRecvKernelNs)),
             row!("last_recv_user_ns", PURE, [] -> Int, Intrinsic(IoTcpLastRecvUserNs)),
             row!("listen_socket", SYSCALL, [Str, Int] -> Int ! "IoError", Intrinsic(IoTcpListenSocket)),
@@ -979,6 +984,7 @@ pub const SURFACES: &[NsSurface] = &[
         fns: &[
             row!("close", SYSCALL, [Int] -> Int, Intrinsic(IoTlsClose)),
             row!("connect", SYSCALL | BLOCK, [Str, Int] -> Int ! "IoError", Intrinsic(IoTlsConnect)),
+            row!("connect_within", SYSCALL | BLOCK, [Str, Int, Duration] -> Int ! "IoError", Intrinsic(IoTlsConnectWithin)),
             row!("last_recv_kernel_ns", PURE, [] -> Int, Intrinsic(IoTlsLastRecvKernelNs)),
             row!("last_recv_user_ns", PURE, [] -> Int, Intrinsic(IoTlsLastRecvUserNs)),
             row!("recv_bytes", SYSCALL | BLOCK, [Int, Int] -> Bytes, Intrinsic(IoTlsRecvBytes)),
@@ -1587,6 +1593,7 @@ pub enum IntrinsicId {
     IoTcpCloseFd,
     IoTcpConnect,
     IoTcpConnectWait,
+    IoTcpConnectWithin,
     IoTcpLastRecvKernelNs,
     IoTcpLastRecvUserNs,
     IoTcpListenSocket,
@@ -1628,6 +1635,7 @@ pub enum IntrinsicId {
     IoSockoptTcpNodelay,
     IoTlsClose,
     IoTlsConnect,
+    IoTlsConnectWithin,
     IoTlsLastRecvKernelNs,
     IoTlsLastRecvUserNs,
     IoTlsRecvBytes,
@@ -2082,37 +2090,54 @@ pub fn effects_for(segs: &[&str]) -> Option<EffectSet> {
 /// |---|---|
 /// | `std::time::sleep` | `lotus_time_sleep_park_try` (timer-only park, PR #285) |
 /// | `std::io::tcp::accept_one`, `__accept_one` | `lotus_tcp_accept_one` |
+/// | `std::io::tcp::connect`, `connect_wait`, `connect_within`, `__connect` | `lotus_tcp_dial` (non-blocking `connect(2)` + `lotus_io_wait_fd`; the refused-retry backoff is a timer park) |
 /// | `std::io::tcp::__recv` | `lotus_tcp_recv_str` |
 /// | `std::io::tcp::__recv_bytes` | `lotus_tcp_recv_bytes` |
 /// | `std::io::tcp::recv_into` | `lotus_tcp_recv_into` |
 /// | `std::io::tcp::recv_stamped_into` | `lotus_tcp_recv_stamped` |
 /// | `std::io::udp::recv`, `__recv`, `recv_with_source` | `lotus_udp_recvfrom_async` |
 /// | `std::io::udp::recv_into` | `lotus_udp_recv_into` |
-/// | `std::io::tls::recv_into` | `lotus_tls_recv_into` |
-/// | `std::io::tls::recv_stamped_into` | `lotus_tls_recv_stamped_into` |
+/// | `std::io::tls::recv_into`, `recv_stamped_into`, `recv_bytes` | `lotus_tls__read` (`SSL_read` on the non-blocking socket, each `WANT_READ` / `WANT_WRITE` a park) |
+/// | `std::io::tls::connect`, `connect_within`, `upgrade` | the tcp dial, then `lotus_tls__handshake` (`SSL_connect` on the non-blocking socket, each `WANT_*` a park) |
+/// | `std::http::get`, `post`, `request` | Hale bodies (`http_client.hl`) whose every wait is one of the rows above or `tcp::__send_bytes` / `tls::send_bytes` (each a park on EPOLLOUT) |
+///
+/// The tcp dial resolves a non-numeric host with `getaddrinfo(3)` on the
+/// calling thread before it connects: the connect parks, the name lookup
+/// does not (spec/stdlib.md § std::io::tcp). With every TLS wait parking,
+/// the `std::http` client (dial, `send_bytes`, `recv_bytes`, the 50 ms
+/// retry `sleep`) reaches no leaf that holds the worker; the one-shot fns
+/// are rows of their own (the advisory meets them by name, before their
+/// bodies), so they are listed, and the `Client` locus's methods are
+/// walked into.
 ///
 /// Deliberately ABSENT, and each for a reason read off the runtime:
-/// `tcp::connect` / `__connect` (`lotus_tcp_connect` — a blocking
-/// `connect(2)`, no park path), `tls::connect` / `upgrade` (blocking
-/// handshake), `tls::recv_bytes` (a plain `SSL_read`; only the
-/// `recv_into` family got the async_io park), `io::file` /
-/// `io::stdin` reads (regular files and the tty are not epoll-park
-/// targets here), `std::process::{run, wait, read_stdout,
-/// read_stderr}` and `std::http::*` (which reaches `connect`).
-/// These still stall the worker, so they still warn.
+/// `io::file` / `io::stdin` reads (regular files and the tty are not
+/// epoll-park targets here) and `std::process::{run, wait, read_stdout,
+/// read_stderr}`. These still stall the worker, so they still warn.
 pub const ASYNC_IO_PARKING: &[&[&str]] = &[
     &["std", "io", "tcp", "__accept_one"],
+    &["std", "io", "tcp", "__connect"],
     &["std", "io", "tcp", "__recv"],
     &["std", "io", "tcp", "__recv_bytes"],
     &["std", "io", "tcp", "accept_one"],
+    &["std", "io", "tcp", "connect"],
+    &["std", "io", "tcp", "connect_wait"],
+    &["std", "io", "tcp", "connect_within"],
     &["std", "io", "tcp", "recv_into"],
     &["std", "io", "tcp", "recv_stamped_into"],
+    &["std", "io", "tls", "connect"],
+    &["std", "io", "tls", "connect_within"],
+    &["std", "io", "tls", "recv_bytes"],
     &["std", "io", "tls", "recv_into"],
     &["std", "io", "tls", "recv_stamped_into"],
+    &["std", "io", "tls", "upgrade"],
     &["std", "io", "udp", "__recv"],
     &["std", "io", "udp", "recv"],
     &["std", "io", "udp", "recv_into"],
     &["std", "io", "udp", "recv_with_source"],
+    &["std", "http", "get"],
+    &["std", "http", "post"],
+    &["std", "http", "request"],
     &["std", "time", "sleep"],
     &["std", "time", "__idle_wait"],
     &["std", "api", "run_until_stopped"],

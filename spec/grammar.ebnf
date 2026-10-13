@@ -1083,7 +1083,10 @@ bounded_type      = "bounded" , "[" , type_expr , ";" , INT_LIT , "]" ;
 primitive_type    = "Int"
                   | "Uint"
                   | "Float"
-                  | "Decimal"
+                  | "Decimal" , [ "<" , INT_LIT , ">" ]
+                                    (* Decimal<S>: the scale, 0..=18, is
+                                       part of the type; plain Decimal
+                                       is Decimal<9> (spec/types.md) *)
                   | "String"
                   | "Bool"
                   | "Time"

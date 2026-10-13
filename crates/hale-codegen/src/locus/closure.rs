@@ -113,7 +113,7 @@ impl<'ctx, 'p> LocusClosure<'ctx> for Cx<'ctx, 'p> {
         let mut int_diff: Option<inkwell::values::IntValue<'ctx>> = None;
 
         let pass = match &lt {
-            CodegenTy::Int | CodegenTy::Duration | CodegenTy::Decimal => {
+            CodegenTy::Int | CodegenTy::Duration | CodegenTy::Decimal(_) => {
                 let l = lv.into_int_value();
                 let r = rv.into_int_value();
                 let t = tv.into_int_value();
@@ -123,7 +123,7 @@ impl<'ctx, 'p> LocusClosure<'ctx> for Cx<'ctx, 'p> {
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
                 int_diff = Some(diff);
                 let zero: inkwell::values::IntValue<'ctx> =
-                    if matches!(lt, CodegenTy::Decimal) {
+                    if matches!(lt, CodegenTy::Decimal(_)) {
                         i128_const(self.context, 0)
                     } else {
                         self.context.i64_type().const_int(0, false)

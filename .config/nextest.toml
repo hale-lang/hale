@@ -77,3 +77,22 @@ inherits = "default"
 [[profile.small.overrides]]
 filter = 'binary(dna_native_suite)'
 test-group = 'dna-fixtures-small'
+
+# `--profile archive`: what tests.yml's two LLVM build jobs (`build-cli`,
+# `build-codegen`) archive with. Everything as the default profile, and
+# beside the test binaries (which the archive holds with the binaries they
+# run through CARGO_BIN_EXE_* and the build scripts' OUT_DIRs) the two
+# paths read from `target/` at run time by path instead: the shim
+# staticlib codegen path-probes beside the compiler
+# (`locate_ts_shim_staticlib`), and the compiler's dep-info, which the
+# jobs' `Compiler identity` step hashes into the toolchain cache's key.
+# `quick-build` archives LLVM-free crates that build neither, so it
+# archives with the default profile.
+[profile.archive]
+inherits = "default"
+
+[profile.archive.archive]
+include = [
+    { path = "release/libhale_ts_shim.a", relative-to = "target", on-missing = "error" },
+    { path = "release/hale.d", relative-to = "target", on-missing = "error" },
+]

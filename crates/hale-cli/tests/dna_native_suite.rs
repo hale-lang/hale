@@ -29,9 +29,9 @@ fn repo_root() -> PathBuf {
 /// because the suite has CI jobs of its own (`dna` in tests.yml) on
 /// 4-core runners, and every fixture builds and boots an organism, so
 /// one per core is where a fixture's bounded waits stop paying for
-/// contention (GH #795). Twenty slices of ~6 fixtures, so the
+/// contention (GH #795). Twenty slices of ~8 fixtures, so the
 /// round-robin (`count:`) partition over the test list spreads them
-/// evenly across four jobs
+/// evenly across five jobs
 /// and no slice carries two of the heaviest organism fixtures: every
 /// Board decision and every concern is an execution now (GH #995), and
 /// books_slice_test with graph_holes_test in one slice ran past the
@@ -61,24 +61,28 @@ const SLICES: usize = 20;
 ///
 /// The ORDER of this list is the deal. Slice `i` is the test
 /// `dna_fixtures_slice_<ii>` (zero-padded, so nextest's alphabetical
-/// listing is slice order), and CI's `--partition count:N/4` deals that
-/// listing round-robin over four jobs, each of which starts its slices
-/// in listing order, two at a time. So a heavy fixture's position picks
-/// its job and how early it starts there. They are placed so the four
-/// jobs' slice minutes come out level (700-775 s each, from the slice
-/// times of CI's runs), each job starts its longest slice first (a job
-/// used to start `legs_test`, its longest, last and leave its other
-/// worker idle behind that tail), and the two graph fixtures, which
-/// need the host's bound to themselves, sit in different jobs. Move one
-/// only with a look at those runs' per-slice times.
+/// listing is slice order), and CI's `--partition count:N/5` deals that
+/// listing round-robin over five jobs, each of which starts its slices
+/// in listing order, two at a time. Three of the suite's other tests
+/// sort before the slices, so slice `i` runs in job `(i + 3) % 5 + 1`
+/// with every fifth slice from it: each job gets two of these ten and
+/// two of the light slices 10-19. So a heavy fixture's position picks its job
+/// and how early it starts there. They are placed so the five jobs'
+/// slice minutes come out level (610-770 s each, from the slice times
+/// of CI's runs on 2026-10-12), each job starts its two longest slices
+/// first (a job used to start `legs_test`, its longest, last and leave
+/// its other worker idle behind that tail), and the two graph
+/// fixtures, which need the host's bound to themselves, sit in
+/// different jobs (slices 0 and 6: jobs 4 and 5). Move one only with a
+/// look at those runs' per-slice times.
 const HEAVY: [&str; 10] = [
     "graph_holes_test.hl",
     "dogfood_voice_test.hl",
     "legs_test.hl",
     "books_slice_test.hl",
     "body_lease_start_test.hl",
-    "graph_holds_test.hl",
     "body_claim_expired_test.hl",
+    "graph_holds_test.hl",
     "body_lease_blocked_test.hl",
     "senses_reflex_test.hl",
     "receipt_retention_test.hl",

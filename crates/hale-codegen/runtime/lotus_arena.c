@@ -3570,6 +3570,79 @@ int lotus_vec_is_empty(void *vec_ptr) {
     return v->len == 0 ? 1 : 0;
 }
 
+/* @form(heap): a binary heap over the @form(vec) storage. The
+ * elements are pointers to records (the vec's pointer-storage); the
+ * order is the record's key field at byte offset `off`, of `kind` 0 (an
+ * int64_t: Int, Time, Duration), 1 (a double, NaN never ordered before
+ * anything) or 2 (a String, compared by bytes, strcmp), smallest at the
+ * root, or largest when `max`. The root is element 0; the vec's own
+ * push and pop move the elements in and out at the end, and these two
+ * restore the order around them. */
+static int lotus_heap_before(const void *a, const void *b, int64_t off,
+                             int64_t kind, int64_t max) {
+    const char *pa = (const char *)a + off;
+    const char *pb = (const char *)b + off;
+    int c;
+    if (kind == 1) {
+        double x, y;
+        memcpy(&x, pa, sizeof x);
+        memcpy(&y, pb, sizeof y);
+        c = x < y ? -1 : (x > y ? 1 : 0);
+    } else if (kind == 2) {
+        const char *x, *y;
+        memcpy(&x, pa, sizeof x);
+        memcpy(&y, pb, sizeof y);
+        c = strcmp(x ? x : "", y ? y : "");
+    } else {
+        int64_t x, y;
+        memcpy(&x, pa, sizeof x);
+        memcpy(&y, pb, sizeof y);
+        c = (x > y) - (x < y);
+    }
+    return max ? c > 0 : c < 0;
+}
+
+/* After a push: the new element is the last; move it up. */
+void lotus_heap_sift_up(void *vec_ptr, int64_t off, int64_t kind,
+                        int64_t max) {
+    lotus_vec_t *v = (lotus_vec_t *)vec_ptr;
+    if (!v || v->len < 2 || !v->buf) return;
+    void **e = (void **)v->buf;
+    size_t i = v->len - 1;
+    void *x = e[i];
+    while (i > 0) {
+        size_t p = (i - 1) / 2;
+        if (!lotus_heap_before(x, e[p], off, kind, max)) break;
+        e[i] = e[p];
+        i = p;
+    }
+    e[i] = x;
+}
+
+/* Before a pop: move the root to the end (where the vec's pop takes
+ * it) and restore the order over the elements before it. */
+void lotus_heap_pop_prep(void *vec_ptr, int64_t off, int64_t kind,
+                         int64_t max) {
+    lotus_vec_t *v = (lotus_vec_t *)vec_ptr;
+    if (!v || v->len < 2 || !v->buf) return;
+    void **e = (void **)v->buf;
+    size_t n = v->len - 1;
+    void *last = e[n];
+    e[n] = e[0];
+    size_t i = 0;
+    for (;;) {
+        size_t l = 2 * i + 1;
+        if (l >= n) break;
+        size_t c = l;
+        if (l + 1 < n && lotus_heap_before(e[l + 1], e[l], off, kind, max))
+            c = l + 1;
+        if (!lotus_heap_before(e[c], last, off, kind, max)) break;
+        e[i] = e[c];
+        i = c;
+    }
+    e[i] = last;
+}
+
 /* Typed comparators for the primitive `sort()` variants. qsort
  * is happy with these directly — no cookie / no trampoline. */
 static int cmp_i64(const void *a, const void *b) {
@@ -6144,6 +6217,36 @@ void lotus_form_retire_replaced(void *arena_ptr, void *old_blob,
     lotus_arena_free_block_now(a, old_blob, block_size);
 }
 
+/* @form(vec) `truncate(n)` / `clear()` (and `@form(heap)`'s `clear()`):
+ * shrink the vec to `new_len` elements (`new_len` < 0 counts as 0, and
+ * one at or past `len` changes nothing), retiring every removed
+ * element exactly as `pop` retires the one it removes —
+ * lotus_form_retire_replaced against no surviving value, so the
+ * element's block and everything its descriptor reaches go back on
+ * the arena's reuse freelist. `arena` NULL: the elements are scalars
+ * (stored inline, nothing to free) and only `len` moves. The buffer
+ * keeps its capacity for reuse; it is released at dissolve. */
+void lotus_vec_truncate(void *vec_ptr, int64_t new_len, void *arena,
+                        int64_t size, const int32_t *desc,
+                        int64_t n_desc) {
+    if (!vec_ptr) return;
+    lotus_vec_t *v = (lotus_vec_t *)vec_ptr;
+    /* Compare in 64 bits before narrowing: on wasm32 `size_t` is 32
+     * bits, and a cast first would wrap a valid `n` past UINT32_MAX
+     * to a small length and drop elements that must stay. */
+    if (new_len >= 0 && (uint64_t)new_len >= (uint64_t)v->len) return;
+    size_t keep = new_len < 0 ? 0 : (size_t)new_len;
+    if (arena && v->buf) {
+        void **elems = (void **)v->buf;
+        for (size_t i = v->len; i > keep; i--) {
+            void *old = elems[i - 1];
+            elems[i - 1] = NULL;
+            lotus_form_retire_replaced(arena, old, NULL, size, desc, n_desc);
+        }
+    }
+    v->len = keep;
+}
+
 /* Retire everything a dying or overwritten @form(hashmap) cell owns:
  * what the retire descriptor reaches from the old value — String and
  * Bytes fields, the blocks of nested records, tuples and out-of-line
@@ -6947,6 +7050,109 @@ int lotus_lru_get(void *cache_ptr, const void *key, void *out_value) {
     if (!*lotus_lru_occ(c, i)) return 0;
     memcpy(out_value, lotus_lru_valp(c, i), c->value_size);
     lotus_lru_set_tick(c, i, ++c->tick);   /* recency touch */
+    return 1;
+}
+
+/* Retire what an lru cell's value `old_v` owns — everything the retire
+ * descriptor reaches from it (String and Bytes fields, nested records,
+ * tuples, out-of-line arrays and payload enums, at any depth) — onto
+ * `arena`'s pending list, deferred to the owner's activation boundary
+ * exactly as a @form(hashmap) cell retires (lotus_hashmap_retire_cell):
+ * a value a `get` handed out this activation stays whole until then.
+ * `new_v` non-NULL is the replace path: a block the new value still
+ * reaches survives. A block reached twice is retired once. The value
+ * bytes themselves are the slot's (inline), never a block. The key of
+ * an lru cell is the value's own `indexed_by` field (put copies the
+ * key out of the value it stores), so the descriptor covers it. */
+void lotus_lru_retire_value(void *arena_ptr, const void *old_v,
+                            const void *new_v, const int32_t *desc,
+                            int64_t n_desc) {
+    lotus_arena_t *a = (lotus_arena_t *)arena_ptr;
+    if (!a || !old_v || n_desc <= 0 || !desc) return;
+    lotus_retire_blocks_t olds, news;
+    lotus_retire_blocks_init(&olds);
+    lotus_retire_blocks_init(&news);
+    int ok = lotus_retire_collect(&olds, (const char *)old_v, desc, n_desc, 1);
+    if (ok && new_v)
+        ok = lotus_retire_collect(&news, (const char *)new_v, desc, n_desc, 0);
+    if (ok) {
+        for (size_t i = 0; i < olds.n; i++) {
+            void *p = olds.p[i];
+            if (lotus_retire_blocks_has(&news, p)) continue;
+            int dup = 0;
+            for (size_t j = 0; j < i; j++)
+                if (olds.p[j] == p) { dup = 1; break; }
+            if (dup) continue;
+            lotus_arena_retire_sized_cls(a, p, olds.size[i], -1);
+        }
+    }
+    lotus_retire_blocks_free(&olds);
+    lotus_retire_blocks_free(&news);
+}
+
+/* `put` with reclamation and the eviction hook's hand-off. A present
+ * key's old value is retired against the new one (`arena`/`desc`, a
+ * NULL arena or empty descriptor retires nothing) before it is
+ * overwritten. A new key over capacity evicts the least-recently-used
+ * entry: its value is copied to `evicted_out` and 1 is returned, so the
+ * caller can run the locus's `on_evict(k, v)` and then retire the
+ * evicted value (lotus_lru_retire_value). `evicted_out` NULL: the
+ * evicted value is retired here. 0 when nothing was evicted. */
+int lotus_lru_put_ev(void *cache_ptr, const void *key, const void *value,
+                     void *evicted_out, void *arena,
+                     const int32_t *desc, int64_t n_desc) {
+    if (!cache_ptr || !key || !value) return 0;
+    lotus_lru_t *c = (lotus_lru_t *)cache_ptr;
+    size_t i = lotus_lru_find(c, key);
+    if (*lotus_lru_occ(c, i)) {
+        lotus_lru_retire_value(arena, lotus_lru_valp(c, i), value, desc, n_desc);
+        memcpy(lotus_lru_valp(c, i), value, c->value_size);
+        lotus_lru_set_tick(c, i, ++c->tick);
+        return 0;
+    }
+    int evicted = 0;
+    if (c->len >= c->cap) {
+        size_t best = c->table_cap;
+        uint64_t best_tick = 0;
+        for (size_t j = 0; j < c->table_cap; ++j) {
+            if (!*lotus_lru_occ(c, j)) continue;
+            uint64_t t = lotus_lru_tick_at(c, j);
+            if (best == c->table_cap || t < best_tick) {
+                best = j;
+                best_tick = t;
+            }
+        }
+        if (best != c->table_cap) {
+            if (evicted_out) {
+                memcpy(evicted_out, lotus_lru_valp(c, best), c->value_size);
+                evicted = 1;
+            } else {
+                lotus_lru_retire_value(arena, lotus_lru_valp(c, best), NULL, desc, n_desc);
+            }
+            lotus_lru_delete_at(c, best);
+        }
+        i = lotus_lru_find(c, key);
+    }
+    *lotus_lru_occ(c, i) = 1;
+    memcpy(lotus_lru_keyp(c, i), key, c->key_size);
+    memcpy(lotus_lru_valp(c, i), value, c->value_size);
+    lotus_lru_set_tick(c, i, ++c->tick);
+    c->len++;
+    return evicted;
+}
+
+/* `remove(k)`: take the entry out. Returns 1 and writes its value to
+ * `out_value` (the caller then copies it out as its own and retires
+ * the cell's blocks); 0 when `key` is absent. Recency of the other
+ * entries is untouched. */
+int lotus_lru_remove(void *cache_ptr, const void *key, void *out_value) {
+    if (!cache_ptr || !key || !out_value) return 0;
+    lotus_lru_t *c = (lotus_lru_t *)cache_ptr;
+    if (c->len == 0) return 0;
+    size_t i = lotus_lru_find(c, key);
+    if (!*lotus_lru_occ(c, i)) return 0;
+    memcpy(out_value, lotus_lru_valp(c, i), c->value_size);
+    lotus_lru_delete_at(c, i);
     return 1;
 }
 
@@ -16947,75 +17153,113 @@ int64_t lotus_str_index_of(const char *s, const char *sub) {
 }
 
 /*
- * m48: render a Decimal value (i128 mantissa with implicit
- * scale 9 — i.e., mantissa × 10^-9) into a NUL-terminated
- * string. The i128 is passed as two i64 halves (hi:lo) since
- * the LLVM/C ABI for __int128 is awkward to wire; codegen
- * splits the value before the call.
+ * m48 / Decimal<S>: render a Decimal value (an i128 mantissa at the
+ * scale `scale`, i.e. mantissa × 10^-scale, 0 <= scale <= 18) into a
+ * NUL-terminated string. Plain `Decimal` is scale 9. The i128 is
+ * passed as two i64 halves (hi:lo) since the LLVM/C ABI for __int128
+ * is awkward to wire; codegen splits the value before the call.
  *
- * Output format trims trailing zeros + dangling decimal point,
- * matching the interpreter's DecimalVal::display so both
- * backends print identically. Caller passes a buffer of at
- * least LOTUS_DECIMAL_BUF_LEN bytes.
+ * Output format trims trailing zeros + dangling decimal point, so
+ * `12.50d` prints `12.5` at every scale (the scale places the point;
+ * `std::decimal::format` is the fixed-places surface). Caller passes
+ * a buffer of at least LOTUS_DECIMAL_BUF_LEN bytes.
  */
 #define LOTUS_DECIMAL_BUF_LEN 64
 
+/* 10^n as an unsigned 64-bit integer, n in 0..=19. */
+static unsigned long long lotus_dec_pow10_u64(int64_t n) {
+    unsigned long long p = 1ULL;
+    for (int64_t i = 0; i < n; i++) p *= 10ULL;
+    return p;
+}
+
+static int64_t lotus_dec_clamp_scale(int64_t scale) {
+    if (scale < 0) return 0;
+    if (scale > 18) return 18;
+    return scale;
+}
+
+/* Exactly `width` decimal digits of `v` at `p`, zero-padded on the
+ * left (`v < 10^width`), NUL-terminated; returns `width`. Written by
+ * hand rather than with `%0*llu`: the wasm libc shim's snprintf has
+ * no `*` width. */
+static int lotus_u64_padded(char *p, unsigned long long v, int width) {
+    for (int i = width - 1; i >= 0; i--) {
+        p[i] = (char)('0' + (v % 10ULL));
+        v /= 10ULL;
+    }
+    p[width] = '\0';
+    return width;
+}
+
+/* The decimal digits of `v` at `p`; returns how many were written.
+ * An i128's magnitude has at most 39 digits: up to three chunks of
+ * 10^18, so every chunk printed is a u64. */
+static int lotus_u128_digits(unsigned __int128 v, char *p) {
+    const unsigned __int128 base = 1000000000000000000ULL;
+    if ((v >> 64) == 0) {
+        return snprintf(p, 24, "%llu", (unsigned long long)v);
+    }
+    unsigned __int128 top = v / base;
+    unsigned long long low = (unsigned long long)(v % base);
+    int n;
+    if ((top >> 64) == 0) {
+        n = snprintf(p, 24, "%llu", (unsigned long long)top);
+    } else {
+        n = snprintf(p, 48, "%llu%018llu",
+                     (unsigned long long)(top / base),
+                     (unsigned long long)(top % base));
+    }
+    n += snprintf(p + n, 24, "%018llu", low);
+    return n;
+}
+
 /* Helper used internally — exposed forward-decl form so the
  * arena-allocating sibling can call it. */
-void lotus_decimal_to_string(int64_t hi, uint64_t lo, char *buf);
+void lotus_decimal_to_string(int64_t hi, uint64_t lo, int64_t scale, char *buf);
 
 /*
  * Variant of lotus_decimal_to_string that allocates the buffer
  * inside the caller's arena and returns a pointer to it.
  * Mirrors lotus_str_from_float for the Float case.
  */
-char *lotus_str_from_decimal(lotus_arena_t *a, int64_t hi, uint64_t lo) {
+char *lotus_str_from_decimal(lotus_arena_t *a, int64_t hi, uint64_t lo,
+                             int64_t scale) {
     char *out = (char *)lotus_arena_alloc(a, LOTUS_DECIMAL_BUF_LEN, 1);
     if (!out) return NULL;
-    lotus_decimal_to_string(hi, lo, out);
+    lotus_decimal_to_string(hi, lo, scale, out);
     return out;
 }
 
 /* std::decimal::to_float (2026-05-21): direct i128 → f64
- * conversion at scale 9 (`mantissa × 10^-9`). Replaces the
- * `to_string(d)` → strip → `parse_float` ASCII round-trip
- * downstream consumers were doing for Decimal → Float in
- * hot paths. The C cast from __int128 to double is one
- * compiler intrinsic; the / 1e9 applies the implicit scale.
+ * conversion at the value's scale (`mantissa × 10^-scale`).
+ * Replaces the `to_string(d)` → strip → `parse_float` ASCII
+ * round-trip downstream consumers were doing for Decimal → Float
+ * in hot paths. The C cast from __int128 to double is one
+ * compiler intrinsic; the division applies the scale.
  * Loss-of-precision on very large mantissas is the same
  * floor as `(double)i64`, just over a wider range. */
-double lotus_decimal_to_float(int64_t hi, uint64_t lo) {
+double lotus_decimal_to_float(int64_t hi, uint64_t lo, int64_t scale) {
     __int128 m = ((__int128)hi << 64) | (__int128)lo;
-    return (double)m / 1.0e9;
+    return (double)m / (double)lotus_dec_pow10_u64(lotus_dec_clamp_scale(scale));
 }
 
-void lotus_decimal_to_string(int64_t hi, uint64_t lo, char *buf) {
+void lotus_decimal_to_string(int64_t hi, uint64_t lo, int64_t scale, char *buf) {
+    scale = lotus_dec_clamp_scale(scale);
     __int128 m = ((__int128)hi << 64) | (__int128)lo;
     int neg = m < 0;
     unsigned __int128 abs = neg ? (unsigned __int128)(-m) : (unsigned __int128)m;
-    unsigned __int128 pow9 = 1000000000ULL;
-    unsigned __int128 int_part = abs / pow9;
-    unsigned __int128 frac_part = abs % pow9;
+    unsigned __int128 pow = lotus_dec_pow10_u64(scale);
+    unsigned __int128 int_part = abs / pow;
+    unsigned long long frac_part = (unsigned long long)(abs % pow);
     char *p = buf;
     if (neg) {
         *p++ = '-';
     }
-    /* int_part may exceed 64 bits when the mantissa's integer
-     * part is over 10^19. The simple fast path covers the
-     * common case; the fallback decomposes into 10^18 chunks. */
-    if ((int_part >> 64) == 0) {
-        p += snprintf(p, 32, "%llu", (unsigned long long)int_part);
-    } else {
-        unsigned __int128 base = 1000000000000000000ULL;
-        unsigned __int128 hi_part = int_part / base;
-        unsigned __int128 lo_part = int_part % base;
-        p += snprintf(p, 48, "%llu%018llu",
-            (unsigned long long)hi_part,
-            (unsigned long long)lo_part);
-    }
+    p += lotus_u128_digits(int_part, p);
     if (frac_part != 0) {
-        char fb[16];
-        snprintf(fb, sizeof(fb), "%09llu", (unsigned long long)frac_part);
+        char fb[24];
+        lotus_u64_padded(fb, frac_part, (int)scale);
         size_t end = strlen(fb);
         while (end > 0 && fb[end - 1] == '0') {
             end--;
@@ -17030,30 +17274,28 @@ void lotus_decimal_to_string(int64_t hi, uint64_t lo, char *buf) {
 }
 
 /* GH #230 item 2: std::decimal::format(d, places) — render with
- * EXACTLY `places` fraction digits (0..=9, clamped), round
- * half-up away from zero. The default print deliberately trims
- * trailing zeros (declared precision isn't stored in the i128
- * scale-9 repr, so `12.50d` and `12.5d` are the same value);
- * this is the explicit surface for money-style fixed-places
- * display. Allocates in the caller's arena via the TLS route
- * (same lifetime class as lotus_str_from_decimal). */
+ * EXACTLY `places` fraction digits (0..=scale, clamped: there is no
+ * digit past the scale to print), round half-up away from zero. The
+ * default print deliberately trims trailing zeros (`12.50d` and
+ * `12.5d` are the same value); this is the explicit surface for
+ * money-style fixed-places display. Allocates in the caller's arena
+ * via the TLS route (same lifetime class as lotus_str_from_decimal). */
 lotus_arena_t *lotus_caller_arena_or_global(void);
 
-const char *lotus_decimal_format(int64_t hi, uint64_t lo,
+const char *lotus_decimal_format(int64_t hi, uint64_t lo, int64_t scale,
                                  int64_t places) {
+    scale = lotus_dec_clamp_scale(scale);
     if (places < 0) places = 0;
-    if (places > 9) places = 9;
+    if (places > scale) places = scale;
     __int128 m = ((__int128)hi << 64) | (__int128)lo;
     int neg = m < 0;
     unsigned __int128 abs =
         neg ? (unsigned __int128)(-m) : (unsigned __int128)m;
     /* Round half-up at the target scale: divide out the dropped
      * digits with +half correction. */
-    unsigned long long drop = 1ULL;
-    for (int64_t i = places; i < 9; i++) drop *= 10ULL;
+    unsigned long long drop = lotus_dec_pow10_u64(scale - places);
     abs = (abs + drop / 2) / drop;
-    unsigned long long keep = 1ULL;
-    for (int64_t i = 0; i < places; i++) keep *= 10ULL;
+    unsigned long long keep = lotus_dec_pow10_u64(places);
     unsigned __int128 int_part = abs / keep;
     unsigned long long frac = (unsigned long long)(abs % keep);
     char *out = (char *)lotus_arena_alloc(
@@ -17061,17 +17303,10 @@ const char *lotus_decimal_format(int64_t hi, uint64_t lo,
     if (!out) return "";
     char *p = out;
     if (neg && (int_part != 0 || frac != 0)) *p++ = '-';
-    if ((int_part >> 64) == 0) {
-        p += snprintf(p, 32, "%llu", (unsigned long long)int_part);
-    } else {
-        unsigned __int128 base = 1000000000000000000ULL;
-        p += snprintf(p, 48, "%llu%018llu",
-                      (unsigned long long)(int_part / base),
-                      (unsigned long long)(int_part % base));
-    }
+    p += lotus_u128_digits(int_part, p);
     if (places > 0) {
         *p++ = '.';
-        p += snprintf(p, 12, "%0*llu", (int)places, frac);
+        p += lotus_u64_padded(p, frac, (int)places);
     }
     *p = '\0';
     return out;
@@ -18159,36 +18394,135 @@ int lotus_tcp_accept_one(int listen_fd) {
     }
 }
 
-int lotus_tcp_connect_wait(const char *host, uint16_t port, int64_t wait_ns);
-
-/* `std::io::tcp::connect`: one attempt. A refused connect is an answer
- * — nothing listens there — and returns -1 with errno ECONNREFUSED at
- * once (GH #1030). It used to retry for ~1 s (200 x 5 ms), which is the
- * right shape for a peer that is starting at the same moment and the
- * wrong default for a client: a dial to a store that is down cost each
- * read a second per attempt. A caller that is racing its peer's
- * listen() asks for the wait (`connect_wait`). */
-int lotus_tcp_connect(const char *host, uint16_t port) {
-    return lotus_tcp_connect_wait(host, port, 0);
+/* Wait until `fd` is ready for `events` (EPOLLIN / EPOLLOUT, the park
+ * vocabulary) or the absolute CLOCK_MONOTONIC `deadline_ns` passes (0 = no
+ * deadline). On an async_io pool's coroutine the wait is a park: the
+ * coroutine swaps out and the worker keeps serving the pool's other cells.
+ * Anywhere else (main, a pinned thread, a classic pool) it is poll(2) on
+ * the calling thread. 0 = ready (the caller retries its operation; a
+ * readiness the operation does not confirm is answered by waiting again),
+ * 1 = the deadline passed first, -1 = the wait itself failed (errno set).
+ * Non-static: lotus_tls.c waits on its handshake, reads and writes with it.
+ *
+ * A park the poller refuses (the fd is already registered by another
+ * coroutine parked on it) takes a 1 ms timer park and answers "ready", so
+ * the caller's retry loop re-asks without holding the worker — the same
+ * fallback lotus_io_wait_writable takes. */
+int lotus_io_wait_fd(int fd, uint32_t events, int64_t deadline_ns) {
+    if (fd < 0) {
+        errno = EBADF;
+        return -1;
+    }
+    if (lotus_io_on_async_io_pool()) {
+        int r = lotus_coop_park_on_fd_deadline(fd, events, deadline_ns);
+        if (r == 0 || r == 1) return r;
+        if (deadline_ns > 0 && lotus_now_mono_ns() >= deadline_ns) return 1;
+        if (lotus_time_sleep_park_try(1000000) == 1) return 0;
+    }
+    struct pollfd pfd;
+    pfd.fd = fd;
+    pfd.events = 0;
+    if (events & EPOLLIN) pfd.events |= POLLIN;
+    if (events & EPOLLOUT) pfd.events |= POLLOUT;
+    for (;;) {
+        int ms = -1;
+        if (deadline_ns > 0) {
+            int64_t left = deadline_ns - lotus_now_mono_ns();
+            if (left <= 0) return 1;
+            /* Round up: a wait that wakes a hair early only re-polls. */
+            int64_t lm = (left + 999999) / 1000000;
+            ms = lm > INT_MAX ? INT_MAX : (int)lm;
+        }
+        pfd.revents = 0;
+        int pr = poll(&pfd, 1, ms);
+        if (pr > 0) return 0;
+        if (pr == 0) continue;            /* re-check the deadline */
+        if (errno == EINTR) continue;
+        return -1;
+    }
 }
 
-/* `std::io::tcp::connect_wait`: retry a REFUSED connect (and EAGAIN)
- * every 5 ms until `wait_ns` has passed on the monotonic clock, then
- * report the refusal. Any other error ends it at once, and so does a
- * process drain (nothing is going to come up for a program that is
- * stopping). */
-int lotus_tcp_connect_wait(const char *host, uint16_t port, int64_t wait_ns) {
-    /* Mirrors lotus_tcp_create's CONNECT-role logic but returns a
-     * raw fd so it can be wrapped by `std::io::tcp::Stream {
-     * conn_fd }` from Hale source. Same retry-on-ECONNREFUSED
-     * shape (~1s window).
-     *
-     * C6 (pond follow-up): fast path is still numeric-address
-     * via inet_pton; when that returns 0 (host isn't a dotted
-     * quad), fall back to getaddrinfo(host, port_str, AF_INET +
-     * SOCK_STREAM) and use the first returned address. The numeric
-     * path is bit-for-bit identical to the pre-C6 behavior — only
-     * non-numeric hosts take the DNS branch. */
+/* One connect(2) on a fresh socket, bounded by `deadline_ns` (absolute
+ * CLOCK_MONOTONIC; 0 = none). 0 = connected; -1 = failed with errno set —
+ * ETIMEDOUT when the deadline passed with the connect neither accepted nor
+ * refused (a blackholed host, a SYN nobody answers).
+ *
+ * Off an async_io pool and with no deadline it is the classic blocking
+ * connect(2). Otherwise the socket goes non-blocking for the attempt: the
+ * connect answers EINPROGRESS, and the wait for the socket to turn writable
+ * parks the coroutine on an async_io pool (the worker serves its other
+ * cells meanwhile) and is poll(2) elsewhere; SO_ERROR then says how it
+ * ended. The socket's own mode is restored before it is handed back, so a
+ * connected fd is blocking as it always was (an async_io recv sets the
+ * flag again per call). */
+static int lotus_tcp_connect_attempt(int sock, const struct sockaddr *addr,
+                                     socklen_t alen, int64_t deadline_ns) {
+    if (deadline_ns <= 0 && !lotus_io_on_async_io_pool()) {
+        return connect(sock, addr, alen);
+    }
+    int flags = fcntl(sock, F_GETFL, 0);
+    if (flags < 0) return -1;
+    if (!(flags & O_NONBLOCK)) (void)fcntl(sock, F_SETFL, flags | O_NONBLOCK);
+    int rc = connect(sock, addr, alen);
+    if (rc != 0 && (errno == EINPROGRESS || errno == EINTR || errno == EALREADY)) {
+        for (;;) {
+            int w = lotus_io_wait_fd(sock, EPOLLOUT, deadline_ns);
+            if (w < 0) {
+                rc = -1;
+                break;
+            }
+            /* Confirm the readiness: a socket still connecting is not
+             * writable, and its SO_ERROR would read 0. Asked again when
+             * the deadline has passed too, so a connect that already
+             * ended (a loopback refusal answers within the call) reports
+             * how it ended rather than the deadline. */
+            struct pollfd pfd;
+            pfd.fd = sock;
+            pfd.events = POLLOUT;
+            pfd.revents = 0;
+            if (poll(&pfd, 1, 0) == 0) {
+                if (w == 1) {
+                    errno = ETIMEDOUT;
+                    rc = -1;
+                    break;
+                }
+                continue;
+            }
+            int soerr = 0;
+            socklen_t sl = sizeof(soerr);
+            if (getsockopt(sock, SOL_SOCKET, SO_ERROR, &soerr, &sl) < 0) {
+                rc = -1;
+                break;
+            }
+            if (soerr == 0) {
+                rc = 0;
+            } else {
+                errno = soerr;
+                rc = -1;
+            }
+            break;
+        }
+    }
+    int saved = errno;
+    if (!(flags & O_NONBLOCK)) (void)fcntl(sock, F_SETFL, flags);
+    errno = saved;
+    return rc;
+}
+
+/* The TCP dial behind `connect`, `connect_wait` and `connect_within`:
+ * resolve `host`, then connect. A REFUSED connect (and EAGAIN) is retried
+ * every 5 ms until `retry_ns` has passed (0 = one attempt), and each
+ * attempt's connect is bounded by `timeout_ns` from the dial's start (0 =
+ * no bound: the kernel's own give-up, about two minutes for a SYN nobody
+ * answers). A process drain ends the retry (nothing is going to come up
+ * for a program that is stopping). Name resolution is not bounded: it is
+ * getaddrinfo(3) on the calling thread. */
+static int lotus_tcp_dial(const char *host, uint16_t port,
+                          int64_t retry_ns, int64_t timeout_ns) {
+    /* C6 (pond follow-up): fast path is numeric-address via inet_pton;
+     * when that returns 0 (host isn't a dotted quad), fall back to
+     * getaddrinfo(host, port_str, AF_INET + SOCK_STREAM) and use the
+     * first returned address. */
     struct sockaddr_in addr;
     memset(&addr, 0, sizeof(addr));
     addr.sin_family = AF_INET;
@@ -18227,7 +18561,9 @@ int lotus_tcp_connect_wait(const char *host, uint16_t port, int64_t wait_ns) {
         freeaddrinfo(res);
     }
     struct timespec backoff = { 0, 5L * 1000L * 1000L };
-    int64_t deadline = lotus_now_mono_ns() + (wait_ns > 0 ? wait_ns : 0);
+    int64_t start = lotus_now_mono_ns();
+    int64_t retry_until = start + (retry_ns > 0 ? retry_ns : 0);
+    int64_t deadline = timeout_ns > 0 ? start + timeout_ns : 0;
     for (;;) {
         /* A fresh socket per attempt. After a refused connect(2) POSIX
          * leaves the socket's state unspecified: Linux lets the same
@@ -18241,7 +18577,8 @@ int lotus_tcp_connect_wait(const char *host, uint16_t port, int64_t wait_ns) {
             return -1;
         }
         lotus_set_cloexec(sock);
-        if (connect(sock, (struct sockaddr *)&addr, sizeof(addr)) == 0) {
+        if (lotus_tcp_connect_attempt(sock, (struct sockaddr *)&addr,
+                                      sizeof(addr), deadline) == 0) {
             int nodelay = 1;
             (void)setsockopt(sock, IPPROTO_TCP, TCP_NODELAY,
                              &nodelay, sizeof(nodelay));
@@ -18249,19 +18586,63 @@ int lotus_tcp_connect_wait(const char *host, uint16_t port, int64_t wait_ns) {
         }
         int err = errno;
         close(sock);
+        if (err == ETIMEDOUT && deadline > 0) {
+            /* The deadline the caller asked for passed: the answer, not
+             * a fault — no stderr line; the IoError (kind `timeout`)
+             * says it. */
+            errno = ETIMEDOUT;
+            return -1;
+        }
         if (err != ECONNREFUSED && err != EAGAIN) {
             errno = err;
             perror("lotus_tcp_connect: connect");
             return -1;
         }
-        if (lotus_now_mono_ns() >= deadline || lotus_process_draining()) {
+        int64_t now = lotus_now_mono_ns();
+        if (now >= retry_until || lotus_process_draining()) {
             /* Refused, and no (more) waiting asked for: the answer,
              * not a fault — no stderr line; the IoError says it. */
             errno = ECONNREFUSED;
             return -1;
         }
-        nanosleep(&backoff, NULL);
+        /* On an async_io pool the backoff is a timer park, so a dial
+         * waiting for its peer holds nobody else on the pool. */
+        if (!lotus_time_sleep_park_try(5L * 1000L * 1000L)) {
+            nanosleep(&backoff, NULL);
+        }
     }
+}
+
+/* `std::io::tcp::connect`: one attempt. A refused connect is an answer
+ * — nothing listens there — and returns -1 with errno ECONNREFUSED at
+ * once (GH #1030). It used to retry for ~1 s (200 x 5 ms), which is the
+ * right shape for a peer that is starting at the same moment and the
+ * wrong default for a client: a dial to a store that is down cost each
+ * read a second per attempt. A caller that is racing its peer's
+ * listen() asks for the wait (`connect_wait`); one that must not wait
+ * on a host that never answers asks for a deadline (`connect_within`).
+ * On an async_io pool the connect parks the coroutine. */
+int lotus_tcp_connect(const char *host, uint16_t port) {
+    return lotus_tcp_dial(host, port, 0, 0);
+}
+
+/* `std::io::tcp::connect_wait`: retry a REFUSED connect (and EAGAIN)
+ * every 5 ms until `wait_ns` has passed on the monotonic clock, then
+ * report the refusal. The same `wait_ns` bounds the whole dial: a connect
+ * that is neither accepted nor refused when it passes fails ETIMEDOUT
+ * (kind `timeout`) — a blackholed host used to hold it until the kernel
+ * gave up. `wait_ns <= 0` is `connect`. Any other error ends it at once,
+ * and so does a process drain. */
+int lotus_tcp_connect_wait(const char *host, uint16_t port, int64_t wait_ns) {
+    return lotus_tcp_dial(host, port, wait_ns, wait_ns);
+}
+
+/* `std::io::tcp::connect_within`: one attempt, bounded by `timeout_ns`:
+ * a refused connect answers at once (ECONNREFUSED), and one that is
+ * neither accepted nor refused within the deadline fails ETIMEDOUT
+ * (kind `timeout`). `timeout_ns <= 0` is `connect` (no deadline). */
+int lotus_tcp_connect_within(const char *host, uint16_t port, int64_t timeout_ns) {
+    return lotus_tcp_dial(host, port, 0, timeout_ns);
 }
 
 /* GH #1106: AF_UNIX stream siblings of the TCP fd primitives
@@ -19122,6 +19503,20 @@ int64_t lotus_sock_get_recv_timeout_ns(int fd) {
     return (int64_t)tv.tv_sec * 1000000000LL + (int64_t)tv.tv_usec * 1000LL;
 }
 
+/* SO_SNDTIMEO in ns, the send side of the above (0 = unset). On a
+ * non-blocking socket the kernel never applies it, so the waits a send
+ * makes there (an async_io pool's park, a classic context's poll) read
+ * it back and bound themselves with it: a peer that stops reading fails
+ * the send after the same quiet window a blocking send would wait.
+ * Non-static: lotus_tls.c bounds its writes and handshake with it. */
+int64_t lotus_sock_get_send_timeout_ns(int fd) {
+    if (fd < 0) return 0;
+    struct timeval tv;
+    socklen_t len = sizeof(tv);
+    if (getsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, &len) != 0) return 0;
+    return (int64_t)tv.tv_sec * 1000000000LL + (int64_t)tv.tv_usec * 1000LL;
+}
+
 /* The absolute park deadline for one recv call: computed ONCE at
  * call entry (before the first park) so spurious wakeups re-park
  * with the REMAINING time, not a fresh full window. 0 = no
@@ -19309,7 +19704,15 @@ const char *lotus_tcp_io_status_kind(int64_t errno_val) {
  * listener's flag) the classic contract is to block, so this waits
  * in poll(2). A BLOCKING fd's EAGAIN is a SO_SNDTIMEO expiry and
  * stays the timeout error it was. 0 = retry the write; -1 = give up
- * with errno as the syscall left it. */
+ * with errno as the syscall left it.
+ *
+ * `deadline_ns` (absolute CLOCK_MONOTONIC, 0 = none) is the socket's
+ * SO_SNDTIMEO counted from the send's last progress (the caller's
+ * lotus_send_stall_deadline): the kernel applies that timeout only to
+ * a blocking socket, so on a non-blocking one the park and the poll
+ * apply it here, and a send to a peer that stopped reading fails with
+ * EAGAIN — the error the blocking send's expiry gives — instead of
+ * waiting forever (PR #1538 review). */
 #if LOTUS_HAVE_ASYNC_IO
 static int lotus_fd_parked_by_another(lotus_coop_pool_t *p, int fd) {
     for (lotus_coro_t *c = p->parked_head; c; c = c->next) {
@@ -19318,34 +19721,66 @@ static int lotus_fd_parked_by_another(lotus_coop_pool_t *p, int fd) {
     return 0;
 }
 #endif
-static int lotus_io_wait_writable(int fd) {
+static int lotus_io_wait_writable(int fd, int64_t deadline_ns) {
     int saved = errno;
-#if LOTUS_HAVE_ASYNC_IO
-    lotus_coop_pool_t *p = g_current_pool_tls;
-    lotus_coro_t      *c = g_current_coro_tls;
-    if (p && c && p->async_io_enabled && p->epoll_fd >= 0) {
-        if (!lotus_fd_parked_by_another(p, fd)
-            && lotus_coop_park_on_fd(fd, EPOLLOUT) == 0) {
-            return 0;
-        }
-        if (lotus_time_sleep_park_try(1000000) == 1) return 0;
-    }
-#endif
     int flags = fcntl(fd, F_GETFL, 0);
     if (flags < 0 || !(flags & O_NONBLOCK)) {
         errno = saved;
         return -1;
     }
+    if (deadline_ns > 0 && lotus_now_mono_ns() >= deadline_ns) {
+        errno = EAGAIN;
+        return -1;
+    }
+#if LOTUS_HAVE_ASYNC_IO
+    lotus_coop_pool_t *p = g_current_pool_tls;
+    lotus_coro_t      *c = g_current_coro_tls;
+    if (p && c && p->async_io_enabled && p->epoll_fd >= 0) {
+        if (!lotus_fd_parked_by_another(p, fd)) {
+            int r = lotus_coop_park_on_fd_deadline(fd, EPOLLOUT, deadline_ns);
+            if (r == 0) return 0;
+            if (r == 1) {
+                errno = EAGAIN;
+                return -1;
+            }
+        }
+        if (lotus_time_sleep_park_try(1000000) == 1) return 0;
+    }
+#endif
     struct pollfd pfd;
     pfd.fd = fd;
     pfd.events = POLLOUT;
     pfd.revents = 0;
     for (;;) {
-        int r = poll(&pfd, 1, -1);
+        int ms = -1;
+        if (deadline_ns > 0) {
+            int64_t left = deadline_ns - lotus_now_mono_ns();
+            if (left <= 0) {
+                errno = EAGAIN;
+                return -1;
+            }
+            int64_t lm = (left + 999999) / 1000000;
+            ms = lm > INT_MAX ? INT_MAX : (int)lm;
+        }
+        int r = poll(&pfd, 1, ms);
         if (r > 0) return 0;
-        if (r < 0 && errno == EINTR) continue;
+        if (r == 0) continue;            /* re-check the deadline */
+        if (errno == EINTR) continue;
         return -1;
     }
+}
+
+/* The stall deadline of a send that would block: SO_SNDTIMEO from now,
+ * read back only once a write would block (no getsockopt on a send that
+ * never waits) and kept until the send makes progress again, so a wait
+ * that wakes without room does not restart the window. `*deadline` < 0 =
+ * not yet read; 0 = no timeout. */
+static int64_t lotus_send_stall_deadline(int fd, int64_t *deadline) {
+    if (*deadline < 0) {
+        int64_t t = lotus_sock_get_send_timeout_ns(fd);
+        *deadline = t > 0 ? lotus_now_mono_ns() + t : 0;
+    }
+    return *deadline;
 }
 
 int lotus_tcp_send_str(int fd, const char *msg) {
@@ -19369,16 +19804,18 @@ int lotus_tcp_send_str(int fd, const char *msg) {
     size_t len = strlen(msg);
     const char *p = msg;
     size_t      left = len;
+    int64_t stall = -1;
     while (left > 0) {
         ssize_t w = write(fd, p, left);
         if (w > 0) {
             p    += (size_t)w;
             left -= (size_t)w;
+            stall = -1;
             continue;
         }
         if (w < 0 && errno == EINTR) continue;
         if (w < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
-            if (lotus_io_wait_writable(fd) == 0) continue;
+            if (lotus_io_wait_writable(fd, lotus_send_stall_deadline(fd, &stall)) == 0) continue;
         }
         lotus_io_status_set(errno ? errno : EIO);
         perror("lotus_tcp_send_str: write");
@@ -19420,16 +19857,18 @@ int lotus_tcp_send_bytes(int fd, const void *bytes_ptr) {
     }
     const char *p = (const char *)bytes_ptr + sizeof(int64_t);
     size_t left = (size_t)total;
+    int64_t stall = -1;
     while (left > 0) {
         ssize_t w = write(fd, p, left);
         if (w > 0) {
             p    += (size_t)w;
             left -= (size_t)w;
+            stall = -1;
             continue;
         }
         if (w < 0 && errno == EINTR) continue;
         if (w < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
-            if (lotus_io_wait_writable(fd) == 0) continue;
+            if (lotus_io_wait_writable(fd, lotus_send_stall_deadline(fd, &stall)) == 0) continue;
         }
         lotus_io_status_set(errno ? errno : EIO);
         perror("lotus_tcp_send_bytes: write");
@@ -20703,13 +21142,14 @@ int lotus_str_can_parse_float(const char *s) {
 
 /*
  * Parse a Decimal literal source spelling into an i128 mantissa
- * with implicit scale 9. Mirrors hale-syntax's decimal_literal.rs
- * (the literal's parse) — accepts optional trailing 'd', optional
- * leading sign, '_' digit separators, pads with zeros below 9
- * fractional digits, and REFUSES a nonzero digit past the ninth:
- * that is a value no Decimal holds, and it used to be truncated in
+ * at the scale `scale` (Decimal<S>; plain Decimal is 9). Mirrors
+ * hale-syntax's decimal_literal.rs (the literal's parse) — accepts
+ * optional trailing 'd', optional leading sign, '_' digit
+ * separators, pads with zeros below `scale` fractional digits, and
+ * REFUSES a nonzero digit past the last place of the scale: that is
+ * a value no Decimal<S> holds, and it used to be truncated in
  * silence (`parse_decimal("0.123456789012")` was 0.123456789).
- * Zeros past the ninth place are the same value and are accepted. The i128 result is split into
+ * Zeros past the last place are the same value and are accepted. The i128 result is split into
  * two i64 halves (hi:lo) for ABI portability — same convention
  * used by lotus_decimal_to_string for the print path.
  *
@@ -20717,7 +21157,8 @@ int lotus_str_can_parse_float(const char *s) {
  * returns 0. Callers that need to distinguish "0.0" from "bad input"
  * gate on lotus_str_can_parse_decimal first.
  */
-static int parse_decimal_to_i128(const char *s, __int128 *out) {
+static int parse_decimal_to_i128(const char *s, int64_t scale, __int128 *out) {
+    scale = lotus_dec_clamp_scale(scale);
     if (!s) return 0;
     size_t n = strlen(s);
     if (n == 0) return 0;
@@ -20736,14 +21177,14 @@ static int parse_decimal_to_i128(const char *s, __int128 *out) {
         char c = s[i];
         if (c >= '0' && c <= '9') {
             seen_digit = 1;
-            if (!seen_dot || frac_digits < 9) {
+            if (!seen_dot || frac_digits < scale) {
                 __int128 prev = mantissa;
                 mantissa = mantissa * 10 + (__int128)(c - '0');
                 /* overflow guard: re-divide and compare */
                 if (mantissa / 10 != prev) return 0;
                 if (seen_dot) frac_digits += 1;
             } else if (c != '0') {
-                return 0;  /* past scale 9: not representable */
+                return 0;  /* past the scale: not representable */
             }
         } else if (c == '.' && !seen_dot) {
             seen_dot = 1;
@@ -20754,7 +21195,7 @@ static int parse_decimal_to_i128(const char *s, __int128 *out) {
         }
     }
     if (!seen_digit) return 0;
-    while (frac_digits < 9) {
+    while (frac_digits < scale) {
         __int128 prev = mantissa;
         mantissa = mantissa * 10;
         if (mantissa / 10 != prev) return 0;
@@ -20764,17 +21205,18 @@ static int parse_decimal_to_i128(const char *s, __int128 *out) {
     return 1;
 }
 
-void lotus_str_parse_decimal(const char *s, int64_t *out_hi, int64_t *out_lo) {
+void lotus_str_parse_decimal(const char *s, int64_t scale, int64_t *out_hi,
+                             int64_t *out_lo) {
     __int128 m = 0;
-    (void)parse_decimal_to_i128(s, &m);
+    (void)parse_decimal_to_i128(s, scale, &m);
     /* On failure m stays 0; the codegen guards on can_parse first. */
     *out_lo = (int64_t)(uint64_t)m;
     *out_hi = (int64_t)(m >> 64);
 }
 
-int lotus_str_can_parse_decimal(const char *s) {
+int lotus_str_can_parse_decimal(const char *s, int64_t scale) {
     __int128 m = 0;
-    return parse_decimal_to_i128(s, &m);
+    return parse_decimal_to_i128(s, scale, &m);
 }
 
 /*
@@ -20854,7 +21296,7 @@ int lotus_str_can_parse_int_range(const char *s, int64_t start,
  * 128-byte stack buffer covers any realistic input. */
 static int parse_decimal_to_i128_range(const char *s, int64_t start,
                                         int64_t end_exclusive,
-                                        __int128 *out)
+                                        int64_t scale, __int128 *out)
 {
     if (!s || start < 0 || end_exclusive <= start) return 0;
     size_t n = (size_t)(end_exclusive - start);
@@ -20862,24 +21304,24 @@ static int parse_decimal_to_i128_range(const char *s, int64_t start,
     char buf[128];
     memcpy(buf, s + start, n);
     buf[n] = '\0';
-    return parse_decimal_to_i128(buf, out);
+    return parse_decimal_to_i128(buf, scale, out);
 }
 
 void lotus_str_parse_decimal_range(const char *s, int64_t start,
-                                    int64_t end_exclusive,
+                                    int64_t end_exclusive, int64_t scale,
                                     int64_t *out_hi, int64_t *out_lo)
 {
     __int128 m = 0;
-    (void)parse_decimal_to_i128_range(s, start, end_exclusive, &m);
+    (void)parse_decimal_to_i128_range(s, start, end_exclusive, scale, &m);
     *out_lo = (int64_t)(uint64_t)m;
     *out_hi = (int64_t)(m >> 64);
 }
 
 int lotus_str_can_parse_decimal_range(const char *s, int64_t start,
-                                       int64_t end_exclusive)
+                                       int64_t end_exclusive, int64_t scale)
 {
     __int128 m = 0;
-    return parse_decimal_to_i128_range(s, start, end_exclusive, &m);
+    return parse_decimal_to_i128_range(s, start, end_exclusive, scale, &m);
 }
 
 /*

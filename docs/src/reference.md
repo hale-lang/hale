@@ -16,7 +16,7 @@ diagnostic's meaning, go there.
 | Operational semantics (lifecycle, bus, recovery, fallible) | [`spec/semantics.md`](https://github.com/hale-lang/hale/blob/main/spec/semantics.md) |
 | The type system | [`spec/types.md`](https://github.com/hale-lang/hale/blob/main/spec/types.md) |
 | Memory: regions, capacity slots, projection classes | [`spec/memory.md`](https://github.com/hale-lang/hale/blob/main/spec/memory.md) |
-| The form library (`vec` / `hashmap` / `ring_buffer`) | [`spec/forms.md`](https://github.com/hale-lang/hale/blob/main/spec/forms.md) |
+| The form library (`vec` / `hashmap` / `set` / `ring_buffer` / `lru_cache` / `heap`) | [`spec/forms.md`](https://github.com/hale-lang/hale/blob/main/spec/forms.md) |
 | The always-loaded runtime | [`spec/runtime.md`](https://github.com/hale-lang/hale/blob/main/spec/runtime.md) |
 | The standard library surface | [`spec/stdlib.md`](https://github.com/hale-lang/hale/blob/main/spec/stdlib.md) |
 | Idiomatic patterns, the seven shapes, correctness + speed rules | [`spec/styleguide.md`](https://github.com/hale-lang/hale/blob/main/spec/styleguide.md) |

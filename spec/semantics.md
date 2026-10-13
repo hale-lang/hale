@@ -2526,13 +2526,18 @@ payload picks the consumer mode:
   fallible(JsonError)` that parses the object in a single pass (driving
   the `std::json` object cursor), dispatching each key to the matching
   field and reading the value by the field's declared scalar type
-  (`Int` / `Float` / `Bool` / `String`). The key is the tag value, else
+  (`Int` / `Float` / `Bool` / `String` / `Decimal<S>`). A `Decimal<S>`
+  field is a JSON number read at the field's scale, every digit kept; a
+  number with a nonzero digit past the scale (or not a number) is
+  `JsonError { kind: "wrong_type", field }`, never truncated or read as
+  zero (spec/types.md § Decimal<S>). The key is the tag value, else
   the field name; unmatched keys (and nested objects/arrays under them)
   are skipped. A missing field raises `JsonError { kind, field }` unless
   the field declares a literal default (`= "USD"`), which fills it.
   `from_json` is `fallible`, so callers must address it. The same tags
   drive emit: `Type::to_json(v) -> String` serializes a value back (bare
-  numbers/bools, escaped strings, nested structs recursed), round-tripping
+  numbers/bools, a Decimal's exact digits at its scale, escaped strings,
+  nested structs recursed), round-tripping
   with `from_json`; it is not fallible. A field whose
   type is another generated JSON struct is parsed recursively (the nested
   object's raw text is handed to that type's parser; a nested failure
