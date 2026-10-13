@@ -1661,14 +1661,14 @@ row	App@literal1.c	Source	pool:pc	entry	off owner
 row	App@literal1.d	Source	pool:pd	entry	off owner
 row	App@literal1.sub	Counter	main	default
 
-== crates/hale-codegen/tests/bus_backpressure.rs#18fba47e
+== crates/hale-codegen/tests/bus_backpressure.rs#62e82ec3
 root	App	the entry
 domain	pool:side
 row	App@literal1	App	main	default
 row	App@literal1.src	Source	pool:side	entry	off owner
 dynamic	Counter	on main	in the seed
 
-== crates/hale-codegen/tests/bus_backpressure.rs#9910970c
+== crates/hale-codegen/tests/bus_backpressure.rs#d80a8ba8
 root	App	the entry
 domain	pool:p
 domain	pool:side

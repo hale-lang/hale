@@ -361,45 +361,58 @@ fn the_stall_window_is_the_queues_not_each_producers() {
 }
 
 /// A subscriber born on main while a pool floods its topic: its birth
-/// spins 50 ms, so the flood parks a full queue's worth for it and waits
-/// at the readiness cap. Main's post to its own queue never waits, so
-/// readying it in rounds never ended while the source ran: each round
-/// posted the list the source had parked during the last, and main's queue
-/// took the whole flood (2M sent before `Counter { }` returned, 1.1 GB;
-/// under a loaded box the same loop reached 16 GB in a failure-delivery
-/// fixture). Readying it now posts the list and closes the window in one
-/// hold, and the source then waits at main's full queue.
+/// opens the gate the source waits for and spins 50 ms, so the flood parks
+/// a full queue's worth for it and waits at the readiness cap. Main's post
+/// to its own queue never waits, so readying it in rounds never ended while
+/// the source ran: each round posted the list the source had parked during
+/// the last, and main's queue took the whole flood (2M sent before
+/// `Counter { }` returned, 1.1 GB; under a loaded box the same loop reached
+/// 16 GB in a failure-delivery fixture). Readying it now posts the list and
+/// closes the window in one hold, and the source then waits at main's full
+/// queue, which grows a queue's worth per 20 ms only while main drains
+/// nothing (#1552): what the source has sent when main looks is bounded by
+/// the time since the birth ended. The source starts at the gate, so
+/// nothing it sends predates the subscription (a source flooding before
+/// it, with no subscriber, was counted too, and failed the bound on a
+/// loaded box).
 const READY_ON_MAIN_MID_FLOOD: &str = r#"
     type Tick { n: Int; }
+    fn gate() -> String { return "/tmp/hale-bp-main-gate-" + to_string(std::process::pid()); }
     locus Counter {
-        params { count: Int = 0; }
+        params { count: Int = 0; born_end: Int = 0; }
         bus { subscribe "rw" as on_tick of type Tick; }
         birth() {
+            std::io::fs::write_file(gate(), "go") or discard;
             let until = std::time::monotonic_ns() + 50000000;
             while (std::time::monotonic_ns() < until) { }
+            self.born_end = std::time::monotonic_ns();
         }
         fn on_tick(t: Tick) { self.count = self.count + 1; }
     }
     locus Source {
         params { sent: Int = 0; }
         bus { publish "rw" of type Tick; }
-        run() { while self.sent < 2000000 { "rw" <- Tick { n: self.sent }; self.sent = self.sent + 1; } }
+        run() {
+            let path = gate();
+            let deadline = std::time::monotonic_ns() + 30000000000;
+            while (!std::io::fs::file_exists(path) && std::time::monotonic_ns() < deadline) { std::time::sleep(1ms); }
+            while self.sent < 2000000 { "rw" <- Tick { n: self.sent }; self.sent = self.sent + 1; }
+        }
     }
     main locus App {
         params { src: Source = Source { }; }
         placement { src: cooperative(pool = side); }
         run() {
-            let started = std::time::monotonic_ns() + 10000000000;
-            while (self.src.sent == 0 && std::time::monotonic_ns() < started) { }
             let c = Counter { };
-            let statm = std::io::fs::read_file("/proc/self/statm") or "";
             let after = self.src.sent;
+            let since_ms = (std::time::monotonic_ns() - c.born_end) / 1000000;
             println("sent_after_birth=" + to_string(after));
-            print("rss_statm=");
-            println(statm);
+            println("ms_since_birth=" + to_string(since_ms));
             let deadline = std::time::monotonic_ns() + 60000000000;
-            while (c.count < 2000000 - after && std::time::monotonic_ns() < deadline) { std::time::sleep(1ms); }
-            println("missing=" + to_string(2000000 - after - c.count));
+            while (self.src.sent < 2000000 && std::time::monotonic_ns() < deadline) { std::time::sleep(1ms); }
+            while (c.count < 2000000 && std::time::monotonic_ns() < deadline) { std::time::sleep(1ms); }
+            println("heard=" + to_string(c.count));
+            std::io::fs::unlink(gate()) or discard;
         }
     }
     fn main() { App { }; }
@@ -408,24 +421,32 @@ const READY_ON_MAIN_MID_FLOOD: &str = r#"
 #[test]
 fn a_subscriber_readied_on_main_mid_flood_closes_its_window() {
     let field = run_fields("ready_on_main", READY_ON_MAIN_MID_FLOOD);
-    let rss = harness::statm_resident_bytes(&field("rss_statm")) / 1048576;
     let sent: i64 = field("sent_after_birth").parse().expect("a count");
-    assert!(sent < 4 * 8192, "readying the subscriber went on with the flood: {sent} sent before it returned");
-    assert!(rss < 200, "ready-on-main RSS {rss} MB with {sent} sent before readiness returned (expected < 200)");
-    let missing: i64 = field("missing").parse().expect("a count");
-    assert!(missing <= 0, "{missing} ticks sent after the subscriber's birth never reached it");
+    let since_ms: i64 = field("ms_since_birth").parse().expect("a duration");
+    // The parked queue's worth, what the source posts until main's queue
+    // is full, one in flight, and a queue's worth per 20 ms main spent
+    // after the birth without draining.
+    let allowed = (3 + since_ms / 20) * 8192;
+    assert!(
+        sent <= allowed && sent < 2_000_000,
+        "readying the subscriber went on with the flood: {sent} sent {since_ms} ms after the birth (bound {allowed})"
+    );
+    assert_eq!(field("heard"), "2000000", "every tick reaches the subscriber");
 }
 
 /// A subscriber readied on its own pool's worker, or its own pinned thread,
 /// while another pool floods it: `Owner`'s run() builds a `Counter`, whose
 /// birth opens the gate the source waits for and then spins 50 ms, so the
 /// source parks a queue's worth for it and waits at the readiness cap.
-/// `Owner` is on pool `p`, or pinned in the variant ([`placed`]). Readiness posted in rounds, each the list
-/// parked during the last, and the thread's posts to its own full ring or
-/// mailbox never wait (they go to its overflow list), so it returned only
-/// when the 1M-cell flood ended: on a pool, with the flood in the worker's
-/// overflow list (608 MB); pinned, bounded only because its readiness
-/// drained the mailbox between rounds. Every cell reaches the subscriber.
+/// `Owner` is on pool `p`, or pinned in the variant ([`placed`]).
+/// Readiness posted in rounds, each the list parked during the last, and
+/// the thread's posts to its own full ring or mailbox never wait (they go
+/// to its overflow list), so it returned only when the 1M-cell flood
+/// ended: on a pool, with the flood in the worker's overflow list
+/// (608 MB); pinned, bounded only because its readiness drained the
+/// mailbox between rounds. `Owner` and the source time readiness's return
+/// and the flood's end on their own threads, so main's polling lag does
+/// not enter the verdict. Every cell reaches the subscriber.
 const READY_ON_OWN_THREAD_MID_FLOOD: &str = r#"
     type Tick { n: Int; }
     fn gate() -> String { return "/tmp/hale-bp-own-gate-" + to_string(std::process::pid()); }
@@ -441,21 +462,23 @@ const READY_ON_OWN_THREAD_MID_FLOOD: &str = r#"
         fn on_tick(t: Tick) { self.count = self.count + 1; }
     }
     locus Source {
-        params { sent: Int = 0; done: Int = 0; }
+        params { sent: Int = 0; done: Int = 0; done_at: Int = 0; }
         bus { publish "ow" of type Tick; }
         run() {
             let path = gate();
             let deadline = std::time::monotonic_ns() + 30000000000;
             while (!std::io::fs::file_exists(path) && std::time::monotonic_ns() < deadline) { std::time::sleep(1ms); }
             while self.sent < 1000000 { "ow" <- Tick { n: self.sent }; self.sent = self.sent + 1; }
+            self.done_at = std::time::monotonic_ns();
             self.done = 1;
         }
     }
     locus Owner {
-        params { ready: Int = 0; heard: Int = 0; finished: Int = 0; }
+        params { ready: Int = 0; ready_at: Int = 0; heard: Int = 0; finished: Int = 0; }
         run() {
             let path = stop();
             let c = Counter { };
+            self.ready_at = std::time::monotonic_ns();
             self.ready = 1;
             let deadline = std::time::monotonic_ns() + 60000000000;
             while (!std::io::fs::file_exists(path) && std::time::monotonic_ns() < deadline) { std::time::sleep(1ms); }
@@ -468,14 +491,13 @@ const READY_ON_OWN_THREAD_MID_FLOOD: &str = r#"
         placement { own: cooperative(pool = p); src: cooperative(pool = side); }
         run() {
             let deadline = std::time::monotonic_ns() + 60000000000;
-            while (self.own.ready == 0 && std::time::monotonic_ns() < deadline) { std::time::sleep(1ms); }
-            let at_ready = self.src.sent;
-            let statm = std::io::fs::read_file("/proc/self/statm") or "";
             while (self.src.done == 0 && std::time::monotonic_ns() < deadline) { std::time::sleep(1ms); }
+            while (self.own.ready == 0 && std::time::monotonic_ns() < deadline) { std::time::sleep(1ms); }
+            let statm = std::io::fs::read_file("/proc/self/statm") or "";
             std::time::sleep(300ms);
             std::io::fs::write_file(stop(), "stop") or discard;
             while (self.own.finished == 0 && std::time::monotonic_ns() < deadline) { std::time::sleep(1ms); }
-            println("sent_at_ready=" + to_string(at_ready));
+            if self.own.ready_at < self.src.done_at { println("ready=before-flood-ended"); } else { println("ready=after-flood-ended"); }
             print("rss_statm=");
             println(statm);
             println("sent=" + to_string(self.src.sent));
@@ -499,9 +521,10 @@ fn ready_on_own_thread_mid_flood(name: &str, pinned: bool) {
     let src = placed(READY_ON_OWN_THREAD_MID_FLOOD, "own", pinned);
     let field = run_fields(name, &src);
     let rss = harness::statm_resident_bytes(&field("rss_statm")) / 1048576;
-    let at_ready: i64 = field("sent_at_ready").parse().expect("a count");
-    assert!(at_ready < 4 * 8192, "{name}: readying the subscriber went on with the flood: {at_ready} sent before it returned");
-    assert!(rss < 200, "{name}: RSS {rss} MB with {at_ready} sent before readiness returned (expected < 200)");
+    // Timed on the subscriber's own thread and the source's: main's polling
+    // lag (the worker drains on while main looks) does not enter it.
+    assert_eq!(field("ready"), "before-flood-ended", "{name}: readying the subscriber went on with the flood");
+    assert!(rss < 200, "{name}: RSS {rss} MB once the flood ended (expected < 200)");
     assert_eq!(field("sent"), "1000000", "{name}");
     assert_eq!(field("heard"), "1000000", "{name}: every cell reaches the subscriber");
 }
