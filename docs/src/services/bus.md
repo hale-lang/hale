@@ -177,12 +177,31 @@ them.
 
 ## One ordering rule
 
-A subscriber must be *born before* a publisher sends, or the
-message has nowhere to land. In practice: instantiate your
-subscribers first in `main`. (This is the same rule you saw with
-the log sink.) Where `hale check` can see it — a publish written
-before the literal that builds a locus subscribing to it, in the same
-body — it warns at the publish ("publish before its subscriber").
+A subscriber must exist before a publisher sends, or the message
+has nowhere to land. In practice: instantiate your subscribers first
+in `main`. (This is the same rule you saw with the log sink.) Where
+`hale check` can see it — a publish written before the literal that
+builds a locus subscribing to it, in the same body — it warns at the
+publish ("publish before its subscriber").
+
+Within one literal's tree the order is handled for you. A literal
+and the loci its params build are one *static tree*, and before it
+builds any of them the literal reserves the subscriptions its tree
+will make for the topics its tree publishes. So when an earlier
+params sibling publishes from its `birth()` or `run()`, a later
+sibling subscribing to that topic — or a locus nested under it, a
+keyed subscriber taking its key, a pinned field — still hears it:
+the messages wait, in order, and arrive once the subscriber's own
+`birth()` has returned. The wait is bounded like a queue: past the
+topic's `bounded(N, drop_new | drop_old)` the reservation sheds and
+counts as the subscriber would; an `on_full: fail` topic sheds the
+newcomer and says so once on stderr, since by then there is no
+publisher to raise into; and with no bound, a publisher on another
+thread waits once a queue's worth is held. A locus a pinned or
+pool-placed field builds on its own thread is not part of the
+reservation — build such subscribers before their publishers.
+`LOTUS_BUS_LOG_RESERVE=1` prints each reservation's counts as it
+closes.
 
 The mirror-image rule at the *end* of a program is handled for
 you: at teardown, the runtime joins pinned workers (and drains

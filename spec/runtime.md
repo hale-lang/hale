@@ -2309,17 +2309,48 @@ its `KNOWN_OPEN` table, which is empty today.
   into a broadcast.
   A publish written before the literal that builds its subscriber, in
   one body, never reaches that subscriber, and `hale check` warns at it
-  (spec/verification.md, "Publish before its subscriber"). **Pending,
-  adopted 2026-10-12:** a subscriber of a statically built tree that
-  is built after its publisher — a later params sibling, one a pinned
-  or pool-placed field's subtree builds on its own thread, a keyed or
-  pinned subscriber — registers once it is built, so what an earlier
-  sibling's `birth()` or `run()` publishes before then reaches no
-  subscription of it, and is lost. The adopted rule reserves the static
-  tree's subscriptions before its first birth, so those cells park
-  until the subscriber's birth completes, bounded by the topic's
-  capacity and its `on_full`; not yet emitted (the parent's own
-  subscriptions are, above). Not yet true
+  (spec/verification.md, "Publish before its subscriber"). A
+  statically built tree reserves its subscriptions before its first
+  birth (#1534, adopted 2026-10-12; shipped, `bus_static_reservation.rs`).
+  The tree is a root literal (one no tree around it holds) and the
+  locus literals its params build, recursively: a param whose override
+  or default is a locus literal. Before the root's params are built
+  (`lotus_bus_reserve_begin`, then `lotus_bus_reserve` per subject),
+  the root reserves each subject a node of its tree subscribes to and
+  another node may publish before that subscriber registers: a
+  cooperative node publishes from its `birth()`, after its own params;
+  a subtree off the constructing thread (a pinned or pool-placed
+  field's params) from that field's instantiation; a subscriber
+  registers before its params where it does so early (above), else just
+  before its `birth()`. The reservation is a placeholder registration
+  every dispatch flavor posts to as to any subscriber; the cell waits
+  there in publish order. Each of the tree's registrations of the
+  subject on the constructing thread — the root's, a cooperative
+  node's, a pinned anchor's (it registers on the instantiating thread),
+  a keyed subscription's, its key applied — then claims its copy
+  (`lotus_bus_reserve_claim`), ahead of what its window holds, and its
+  readiness delivers it after its `birth()`. The last expected claim
+  closes the reservation, and the root's `birth()` closes what is left
+  (`lotus_bus_reserve_end`); one whose subscriber never registered,
+  holding cells, says so on stderr. A publish on another thread racing
+  a claim carries the count of the registrations it walked, and a cell
+  is copied at the claim, or forwarded by a park after it, only to a
+  claimant that publish did not reach itself: no cell is delivered
+  twice or lost. The bound is the topic's: past `bounded(N, drop_new |
+  drop_old)` the reservation sheds and counts on each claimant
+  (`ctr_dropped_full`); past `bounded(N); on_full: fail` it sheds the
+  newcomer, counted, and says so once on stderr, since no publisher is
+  left to raise into once the subscriber exists; with no bound a
+  publisher on another thread waits at the queue's cap until the
+  reservation closes, and the constructing thread never waits on its
+  own. A tree that needs no reservation emits none, and the publish
+  site is unchanged: a reservation holds a window open, so a baked
+  direct publish takes the helper through the window count it already
+  reads. Not yet true: a subscriber that a pinned or pool-placed
+  field's params build on that field's own thread registers there and
+  claims nothing, so what an earlier part of the tree published before
+  then reaches no subscription of it; nor a replicated field's
+  (`replicas = K`) instances. Not yet true
   in two further cases (inventory rows C51
   and R51). A subscribing locus that only stdlib or imported code
   builds, so that the lifecycle plan holds no template of it, opens
