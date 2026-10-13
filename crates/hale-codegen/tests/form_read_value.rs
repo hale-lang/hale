@@ -333,3 +333,94 @@ fn a_read_handed_to_a_writer_or_walked_and_written_is_owned() {
     "#;
     assert_eq!(run("handed", src), "caller=99 cell=1\ndirect cell=1\nwalked cell=1 IN2 has9=false\n");
 }
+
+/// A callee writes through its parameter by more than an assignment
+/// rooted at it: by a local bound from a part of it, by a `for` element
+/// of it, and by handing such a local to another writer. Each makes the
+/// caller's read its own, so the cell keeps its value.
+#[test]
+fn a_callee_writing_through_an_alias_of_its_parameter_leaves_the_cell() {
+    let src = r#"
+        type In { s: String = ""; k: Int = 0; }
+        type Rec { id: Int = 0; big: [In; 2] = [In { }, In { }]; }
+        @form(hashmap)
+        locus RecMap { capacity { pool items of Rec indexed_by id; } }
+        fn heap(s: String) -> String { return std::str::upper(s) + to_string(len(s)); }
+        fn poke_alias(r: Rec) { let mut a = r.big; a[0].k = 7; a[0].s = heap("alias"); }
+        fn poke_for(r: Rec) { for x in r.big { x.k = 8; } }
+        fn poke_arr(xs: [In; 2]) { xs[1].k = 9; }
+        fn poke_hand(r: Rec) { let a = r.big; poke_arr(a); }
+        fn cell(m: RecMap) -> String {
+            let c = m.get(1) or Rec { };
+            return to_string(c.big[0].k) + "/" + c.big[0].s + "/" + to_string(c.big[1].k);
+        }
+        fn main() {
+            let m = RecMap { };
+            m.set(Rec { id: 1, big: [In { s: heap("a"), k: 1 }, In { s: heap("b"), k: 2 }] });
+            let c = m.get(1) or Rec { };
+            poke_alias(c);
+            println("alias cell=", cell(m));
+            poke_alias(m.get(1) or Rec { });
+            println("alias direct cell=", cell(m));
+            let d = m.get(1) or Rec { };
+            poke_for(d);
+            println("for cell=", cell(m));
+            poke_for(m.get(1) or Rec { });
+            println("for direct cell=", cell(m));
+            let e = m.get(1) or Rec { };
+            poke_hand(e);
+            println("hand cell=", cell(m));
+            poke_hand(m.get(1) or Rec { });
+            println("hand direct cell=", cell(m));
+        }
+    "#;
+    let want: String = ["alias", "alias direct", "for", "for direct", "hand", "hand direct"]
+        .iter()
+        .map(|w| format!("{w} cell=1/A1/2\n"))
+        .collect();
+    assert_eq!(run("callee_alias", src), want);
+}
+
+/// The owned-view pass and lowering read an array field's layout by one
+/// rule: a write into an inline scalar array (however its element is
+/// spelled) is the local's own, so the pass reports no copy and lowering
+/// emits none; a write into an array of records copies the array, and
+/// both say so.
+#[test]
+fn the_survey_and_lowering_agree_on_inline_arrays() {
+    for (tag, elem, init, value, inline) in [
+        ("int", "Int", "[0, 0]", "4", true),
+        ("alias", "Count", "[0, 0]", "4", true),
+        ("distinct", "Hits", "[Hits(0), Hits(0)]", "Hits(4)", true),
+        ("float", "Float", "[0.0, 0.0]", "4.0", true),
+        ("record", "Lvl", "[Lvl { }, Lvl { }]", "Lvl { n: 4 }", false),
+    ] {
+        let src = format!(
+            r#"
+type Count = Int;
+type Hits = distinct Int;
+type Lvl {{ n: Int = 0; }}
+type Rec {{ id: Int = 0; xs: [{elem}; 2] = {init}; }}
+@form(hashmap)
+locus RecMap {{ capacity {{ pool items of Rec indexed_by id; }} }}
+fn write(m: RecMap) -> Int {{
+    let mut e = m.get(1) or Rec {{ }};
+    e.xs[1] = {value};
+    return e.id;
+}}
+fn main() {{
+    let m = RecMap {{ }};
+    m.set(Rec {{ id: 1 }});
+    println(write(m));
+}}
+"#
+        );
+        let program = hale_syntax::parse_source(&src).expect("parses");
+        let views = hale_types::view_bindings::OwnedViews::of(&[&program], &Default::default());
+        let reported = views.cell_copies().iter().any(|c| src[c.span.start.0 as usize..c.span.end.0 as usize].starts_with("e.xs[1]"));
+        let ir = ir(&format!("inline_{tag}"), &src);
+        let copied = !cow_blocks(body(&ir, "write")).is_empty();
+        assert_eq!(reported, copied, "{tag}: the survey says {reported}, lowering copies {copied}");
+        assert_eq!(copied, !inline, "{tag}");
+    }
+}

@@ -589,6 +589,7 @@ pub const FAMILIES: &[Family] = &[
             consumer_at("codegen (a `params` or `const` initializer's time literal, read without the typed bodies: its count of `Duration` from the stdlib's rows, `stdlib_literal`, U4)", CG, "stdlib_literal"),
             consumer_at("codegen (a time literal in a body the checker types no row in, the stdlib's own: its count from the stdlib's rows, `stdlib_literal`, U4)", CG_CONVERSION, "stdlib_literal"),
             consumer_at("check --units (the snapshot's rows, handed to the report)", V_CHECK, "demand_units"),
+            consumer_at("the owned-view pass (which scalar declarations lowering lays out as an `Int`, so an array of one is inline: `typed_scalar_names` over the declarations, as codegen reads them)", VIEW_BINDINGS, "typed_scalar_names"),
             consumer_at("check --units (the witness report, U5: each of the program's scalar declarations with its kind, its denomination and the declaration whose `in` fixed it, its policy and the declaration that writes it, a point's origin, its range and the narrowest machine width that holds it; the rows read through `ScalarTypes::of_rows`, no re-check; a development report, outside the hashed model half)", UNIT_REPORT, "pub fn report"),
         ],
         invariants: &[
@@ -619,7 +620,7 @@ pub const FAMILIES: &[Family] = &[
             // process (`stdlib_rows`, over an empty bundle)
             Seam { symbol: "derive_unit_rows(", allowed: &[(UNITS, 2), (SNAPSHOT, 1), (CHECK, 1)] },
             Seam { symbol: "unit_laws(", allowed: &[(UNITS, 1), (CHECK, 1)] },
-            Seam { symbol: "typed_scalar_names(", allowed: &[(RESOLVE, 1), (CG, 1), (TOPIC_ID, 1)] },
+            Seam { symbol: "typed_scalar_names(", allowed: &[(RESOLVE, 1), (CG, 1), (TOPIC_ID, 1), (VIEW_BINDINGS, 1)] },
         ],
     },
     Family {
@@ -1895,6 +1896,8 @@ pub const FAMILIES: &[Family] = &[
             "every question about a type goes through `classify`; no `TypeExpr` variant is matched elsewhere in the pass (`types_are_classified_in_one_place`)",
             "a value read from a form's cell is the reader's: a write into it never reaches the cell. A write into a nested part of the local a read is bound to copies the part at its first write, unless the local is set back into the same form, keyed to the same cell, on every path after the write, before anything that may read a form's cell, and is not used after the set; any other binding into the cell that is written, and a read handed to a callee that may write through its parameter, is owned at its binding",
             "unknown never means \"reads nothing\" or \"writes no parameter\": a callee the pass cannot identify may read any form's cell and write through any argument, and a receiver that may be a form that reads in place hands back a cell",
+            "a body writes through a parameter when it writes under the parameter, or under a local that may hold (a part of) the caller's value — bound from a part of the parameter, a `for` element or `match` payload of one, what an `or`, `if`, `match` or block carries out of one — or hands such a value to a callee that may write through its parameter",
+            "a write into an array field is the local's own (no copy) exactly when lowering lays the array out inline: one predicate, `hale_types::ty::inline_array_scalar`, read by lowering's `array_inline_spec` and by the pass over the element resolved through its aliases (a scalar declaration lowered as `Int` included)",
             "lowering and the survey run the same pass, so every copy lowering makes on the cell-read rule's account is a survey site; the survey sees a send where lowering sees the direct call the intra-locus rewrite made of it, which only adds reads, so the survey errs toward reporting a copy",
             "a local bound from a place is the frame's own: a write into a local whose value carries a place marker and was not copied at its binding (an owned view, a struct `let`/`=` of a place) copies the whole value at its first write, behind a flag set at every binding (`let`, `=`, tuple `let`, `for`, `match` payload); a struct literal copies only the field written below; reads stay views",
             "the get-modify-store of a self field copies nothing only when every binding of the local reads that one field, the store back follows the write on every path, nothing that may read the field (a read of it, a call of the program's, a delivery) comes between, no other binding views it and the local is not used after; anything else copies",
