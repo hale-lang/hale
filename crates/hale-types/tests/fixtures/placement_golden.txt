@@ -652,7 +652,7 @@ row	App@literal1	App	main	default
 row	~	Grow	main	default
 row	~.acc	Acc	main	inherited
 
-== crates/hale-stdlib/hl/api_rpc.hl#4fa1f91b
+== crates/hale-stdlib/hl/api_rpc.hl#a4932d72
 
 == crates/hale-stdlib/hl/file.hl#f57ba351
 
