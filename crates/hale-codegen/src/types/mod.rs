@@ -31,7 +31,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         match t {
             TypeExpr::Bounded { elem, cap, .. } => {
                 let e = self.type_expr_to_codegen_ty(elem)?;
-                if !matches!(
+                // A payload-free enum is its i32 tag: inline bytes, like
+                // a `Bool`. One with payloads is a pointer to its cell,
+                // which the slots' anchoring does not walk; the check
+                // refuses it (`bounded_element_refusal`).
+                let tag_enum = matches!(&e, CodegenTy::Enum(n)
+                    if self.user_enums.get(n.as_str()).is_some_and(|i| !i.has_payload));
+                if !tag_enum && !matches!(
                     e,
                     CodegenTy::Int
                         | CodegenTy::Float

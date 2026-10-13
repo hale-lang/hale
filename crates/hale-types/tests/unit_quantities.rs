@@ -923,7 +923,21 @@ fn an_unclassified_position_refuses_a_synthesized_denomination() {
     // count of it (U4), so literals of one quantity meet these positions
     // as one type: a time literal in a generic literal, an argument, an
     // `if`'s arms.
-    assert_eq!(check("    let b: Box<Span> = Box { v: 2sec };\n    let a = id(3sec);\n"), []);
+    assert_eq!(check("    let b: Box<Span> = Box { v: 2sec };\n"), []);
+    // A declared quantity as a generic FN's type argument is refused at
+    // the callee (2026-10-13): the generic body names `T`, and the unit a
+    // quantity prints and converts by lives in rows for the places that
+    // name the type, so the body would print the bare count. The build
+    // refused the argument before with no file or line.
+    assert_eq!(
+        check("    let a = id(3sec);\n"),
+        [(
+            "id".to_string(),
+            "generic fn `id`: `T` would be `Span`, a quantity, and a generic body has no unit to print or convert \
+             one by; write the fn over `Span`, or pass its count (`x / 1<unit>`)"
+                .to_string()
+        )]
+    );
     assert_eq!(check("    let flag = true;\n    let e: Span = if flag { 1sec } else { 2msec };\n"), []);
     assert_eq!(check("    let flag = true;\n    let e = if flag { 1s } else { 2ms };\n    let x = [1s, 500ms];\n"), []);
 }

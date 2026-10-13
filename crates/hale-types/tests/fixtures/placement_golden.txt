@@ -7314,6 +7314,11 @@ dynamic	Mx	on main	in the seed
 root	Clock	the entry
 row	Clock@literal1	Clock	main	default
 
+== tests/hale/bus_enum_field_test.hl
+root	App	the entry
+row	App@literal1	App	main	default
+row	App@literal1.w	Worker	main	default
+
 == tests/hale/bus_static_wide_payload_test.hl
 row	Printer@main1	Printer	main	default
 row	Producer@main2	Producer	main	default
@@ -7367,6 +7372,11 @@ row	~.b	Boom	main	inherited
 dynamic	Outer	on main
 dynamic	Pick	on main
 dynamic	Sup	on main
+
+== tests/hale/enum_tag_storage_test.hl
+root	App	the entry
+row	App@literal1	App	main	default
+row	App@literal1.b	Brush	main	default
 
 == tests/hale/factory_field_owner_test.hl
 root	App	the entry
@@ -7489,6 +7499,11 @@ dynamic	Probe	on main	in the seed
 root	App	the entry
 row	App@literal1	App	main	default
 row	App@literal1.c	Counter	main	default
+
+== tests/hale/or_statement_substitute_test.hl
+root	App	the entry
+row	App@literal1	App	main	default
+row	App@literal1.t	Tally	main	default
 
 == tests/hale/or_substitute_interface_test.hl
 row	NoopTool@main1	NoopTool	main	default

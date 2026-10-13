@@ -891,8 +891,11 @@ impl<'ctx, 'p> BusWire<'ctx> for Cx<'ctx, 'p> {
                 | CodegenTy::Bool
                 | CodegenTy::Time
                 | CodegenTy::Duration
-                | CodegenTy::Decimal(_) => {
-                    let nbytes = codegen_ty_size_bytes(self.context, &field_ty);
+                | CodegenTy::Decimal(_)
+                | CodegenTy::Enum(_)
+                    if self.wire_fixed_field(&field_ty) =>
+                {
+                    let nbytes = self.wire_fixed_size(&field_ty);
                     let nbytes_iv = i64_t.const_int(nbytes, false);
                     self.emit_ser_memcpy(
                         dst_at_cursor,
@@ -1254,8 +1257,11 @@ impl<'ctx, 'p> BusWire<'ctx> for Cx<'ctx, 'p> {
                 | CodegenTy::Bool
                 | CodegenTy::Time
                 | CodegenTy::Duration
-                | CodegenTy::Decimal(_) => {
-                    let nbytes = codegen_ty_size_bytes(self.context, &field_ty);
+                | CodegenTy::Decimal(_)
+                | CodegenTy::Enum(_)
+                    if self.wire_fixed_field(&field_ty) =>
+                {
+                    let nbytes = self.wire_fixed_size(&field_ty);
                     let nbytes_iv = i64_t.const_int(nbytes, false);
                     self.emit_memcpy_call(
                         dst_field_ptr,
@@ -1664,8 +1670,11 @@ impl<'ctx, 'p> BusWire<'ctx> for Cx<'ctx, 'p> {
                 | CodegenTy::Bool
                 | CodegenTy::Time
                 | CodegenTy::Duration
-                | CodegenTy::Decimal(_) => {
-                    let nbytes = codegen_ty_size_bytes(self.context, &field_ty);
+                | CodegenTy::Decimal(_)
+                | CodegenTy::Enum(_)
+                    if self.wire_fixed_field(&field_ty) =>
+                {
+                    let nbytes = self.wire_fixed_size(&field_ty);
                     let nbytes_iv = i64_t.const_int(nbytes, false);
                     self.emit_memcpy_call(
                         dst_field_ptr,
@@ -1973,6 +1982,27 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // LocusRef, TypeRef, Array, Tuple, FnPtr, Interface, Cell,
             // Drain — plus any future variant (default-false).
             _ => false,
+        }
+    }
+}
+
+impl<'ctx, 'p> Cx<'ctx, 'p> {
+    /// A field the wire carries as its fixed bytes: a scalar, or a
+    /// payload-free enum's i32 tag. An enum with payloads is a pointer to
+    /// its cell, which the wire does not carry (the check refuses it at
+    /// the topic, `struct_field_not_carried`).
+    fn wire_fixed_field(&self, t: &CodegenTy) -> bool {
+        match t {
+            CodegenTy::Enum(n) => self.user_enums.get(n.as_str()).is_some_and(|i| !i.has_payload),
+            _ => true,
+        }
+    }
+
+    /// The byte count of a fixed wire field (`wire_fixed_field`).
+    fn wire_fixed_size(&self, t: &CodegenTy) -> u64 {
+        match t {
+            CodegenTy::Enum(_) => 4,
+            _ => codegen_ty_size_bytes(self.context, t),
         }
     }
 }
