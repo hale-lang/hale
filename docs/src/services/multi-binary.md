@@ -54,6 +54,14 @@ adapter hands to `std::bus::__local_dispatch`: they carry no key,
 so the runtime decodes them once — through the binding's codec,
 when it has one — and routes by the key the payload holds.
 
+Such bytes are a publisher the program's `bus { }` blocks do not
+show, so the check counts the call as one: a topic that only ever
+arrives through `__local_dispatch` is not "subscribed but never
+published". A call that writes its subject as a literal publishes
+that subject; one that computes it — a broker connection
+dispatching whatever arrives — may publish any, so no subscribed
+topic of that program is reported as unpublished.
+
 A topic can also be bound to a **hub**, a listener that streams it to
 subscribers (a CLI, a dashboard) rather than to another binary, and a
 program offers operations to the same callers with `api::serve`; that is
@@ -181,7 +189,7 @@ main locus App {
     bindings { Evt: unix("/tmp/evt.sock", role: connect); }
     bus { publish Evt; }
     on_failure(t: std::bus::UnixTransport, err: ClosureViolation) {
-        restart (t);     // re-run the connect-with-retry
+        restart(t);      // re-run the connect-with-retry
     }
     run() { Evt <- Reading { v: 1 }; }
 }

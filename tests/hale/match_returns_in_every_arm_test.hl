@@ -1,0 +1,40 @@
+// Friction sweep 2026-10-12: a fn whose `match` returns in every arm
+// returns. The check typed it so and the build refused it ("fn `name`
+// falls through without returning a value"); codegen now ends the
+// block after such a match, the no-arm-matched edge (unreachable for
+// an exhaustive match) panicking rather than falling into the fn's end.
+type Phase = enum { birth, run, drain };
+
+fn name(p: Phase) -> String {
+    match p {
+        Phase::birth -> { return "birth"; },
+        Phase::run -> { return "run"; },
+        Phase::drain -> { return "drain"; },
+    }
+}
+
+fn pick(n: Int) -> Int {
+    match n {
+        0 -> { return 10; },
+        _ -> { return 20; },
+    }
+}
+
+locus Namer {
+    fn label(n: Int) -> String {
+        match n {
+            1 -> { return "one"; },
+            _ -> { return "other"; },
+        }
+    }
+}
+
+fn main() {
+    std::test::assert_eq_str(name(Phase::run), "run", "an enum match returning in every arm");
+    std::test::assert_eq_str(name(Phase::drain), "drain", "its last arm");
+    std::test::assert_eq_int(pick(0), 10, "an Int match, literal arm");
+    std::test::assert_eq_int(pick(7), 20, "and its wildcard arm");
+    let n = Namer { };
+    std::test::assert_eq_str(n.label(1), "one", "a locus method too");
+    std::test::assert_eq_str(n.label(2), "other", "its wildcard arm");
+}

@@ -128,7 +128,7 @@ fn a_lex_error_span_is_shifted_by_base_exactly_once() {
 /// costs the caret too (the renderer cannot find the line).
 #[test]
 fn a_parse_diagnostic_is_shifted_exactly_once() {
-    let src = "fn main() {\n    let where = 1;\n}\n";
+    let src = "fn main() {\n    let macro = 1;\n}\n";
     let base = 5000u32;
     let d0 = parse_source(src).unwrap_err();
     let db = parse_source_at(src, base).unwrap_err();

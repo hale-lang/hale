@@ -42,7 +42,7 @@ main locus App {
     placement { pump: pinned; }
     on_failure(c: Pump, err: ClosureViolation) {
         self.fired = self.fired + 1;
-        restart (c) for 5;
+        restart(c) for 5;
     }
     run() {
         let mut i = 0;

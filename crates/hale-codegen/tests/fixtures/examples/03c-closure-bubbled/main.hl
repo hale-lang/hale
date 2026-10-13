@@ -27,7 +27,7 @@ locus AuditL {
         println("AuditL saw violation on ", err.locus,
             " closure=", err.closure,
             "; bubbling.");
-        bubble (err);
+        bubble(err);
     }
 
     run() {
