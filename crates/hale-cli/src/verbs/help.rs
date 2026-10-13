@@ -23,7 +23,7 @@ pub(crate) fn usage() {
     eprintln!("        [--observe[=<port>]] [--dev] [--target-cpu <v>] [--link <lib>] [--csrc <file.c>]");
     eprintln!("        (flags before the target; after it is the program's own argv)");
     eprintln!("    hale build <file.hl | dir>    parse + typecheck + emit native binary");
-    eprintln!("    hale replay <rec> <file.hl>   re-run a LOTUS_OBS_RECORD recording");
+    eprintln!("    hale replay <rec> <file|dir>  re-run a LOTUS_OBS_RECORD recording");
     eprintln!("        [--diff: report first divergence, fail on any; per-category coverage on a match]");
     eprintln!("        [--json (with --diff): that verdict + coverage, machine-readable]");
     eprintln!("        [--at <n> | --at <consumer-id>:<ordinal>: SIGSTOP at that consume]");
@@ -256,7 +256,7 @@ that is not a flag is the target, as in `hale check`:
                                    warning
 ",
         "replay" => "\
-hale replay <recording> <program.hl>   re-run a LOTUS_OBS_RECORD recording
+hale replay <recording> <file | dir>   re-run a LOTUS_OBS_RECORD recording
 
 The recording is the journal a program wrote under
 `LOTUS_OBS_RECORD=<path>`; the program is the code to re-execute it

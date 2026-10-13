@@ -3210,7 +3210,9 @@ totals; mismatches BEFORE exhaustion stay divergences either way.
 A trailer-FINALIZED artifact keeps the exact full-parse + count
 checks: with a finalize present, any truncation is corruption.
 
-**Replay (`hale replay <recording> <program.hl>`).** Admission,
+**Replay (`hale replay <recording> <program.hl | dir>`).** The
+program is a file or a directory seed, loaded as `hale run` loads it.
+Admission,
 strongest check first: the recording's `exec_digest` — a framed
 SHA-256 over the toolchain source hash (compiler + runtime +
 stdlib implementation, via the stale-CLI build hash), the CLI

@@ -96,6 +96,7 @@ hale replay run.halerec app.hl --diff     # + compare, fail on any divergence
 hale replay run.halerec app.hl --diff --json   # ...that verdict, machine-readable
 hale replay run.halerec app.hl --at 4120  # SIGSTOP at consume #4120
 hale replay run.halerec app.hl --at 65:12 # ...at consumer 65's 12th consume
+hale replay run.halerec app/              # a directory seed, as `hale run app/` ran it
 ```
 
 `hale replay` recompiles the program through the same pipeline as
@@ -124,8 +125,9 @@ hale replay run.halerec app.hl --at 65:12 # ...at consumer 65's 12th consume
   `hale build` carries the identity `hale run` would give the same
   program — the debug information a build adds is not part of it —
   so you can record the binary you ship and replay it against its
-  source file; a *directory* build's recording replays against the
-  directory's entry file. A structurally compatible model with a
+  source; a *directory* seed's recording replays against the
+  directory, as `hale run` and `hale build` take it (`hale replay
+  run.halerec app/`), every file of the seed in its identity. A structurally compatible model with a
   changed function body is *not* the same executable — it is
   rejected, with `--allow-unverified-model` as the explicit
   override for unstamped or divergent-build recordings.
