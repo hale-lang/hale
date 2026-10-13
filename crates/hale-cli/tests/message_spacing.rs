@@ -32,6 +32,12 @@ use std::path::{Path, PathBuf};
 /// `(crate-relative path, enclosing fn, why)`.
 const ALIGNED: &[(&str, &str, &str)] = &[
     (
+        "crates/hale-cli/src/dna.rs",
+        "push_graph_lines",
+        "`hale dna init` prints its report as label-aligned lines (`graph   …`, \
+         `note    …`), the same column as the init report's other lines",
+    ),
+    (
         "crates/hale-types/src/rpc_expand.rs",
         "surface_src",
         "generated Hale source keeps its indentation so the expanded \

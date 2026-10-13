@@ -1161,6 +1161,7 @@ crates/hale-codegen/tests/process_run.rs#1 53cadec6decfbc54
 crates/hale-codegen/tests/process_run.rs#2 912257afabeee6a8
 crates/hale-codegen/tests/process_run.rs#3 53cadec6decfbc54
 crates/hale-codegen/tests/process_run.rs#4 53cadec6decfbc54
+crates/hale-codegen/tests/process_run.rs#5 a7a4e0074f4713db
 crates/hale-codegen/tests/process_try_wait.rs#0 55d9bfc2e7b9f127
 crates/hale-codegen/tests/process_try_wait.rs#1 55d9bfc2e7b9f127
 crates/hale-codegen/tests/process_try_wait.rs#2 f2c1228edb650960
@@ -1379,6 +1380,7 @@ crates/hale-codegen/tests/tcp_connect_deadline.rs#0 816bc984f3b8c584
 crates/hale-codegen/tests/tcp_connect_deadline.rs#1 816bc984f3b8c584
 crates/hale-codegen/tests/tcp_connect_deadline.rs#3 f9c6d04e3ec0250f
 crates/hale-codegen/tests/tcp_connect_deadline.rs#4 e6a6288b544acf86
+crates/hale-codegen/tests/tcp_connect_deadline.rs#5 f9c6d04e3ec0250f
 crates/hale-codegen/tests/tcp_dns_connect.rs#2 02ea998120901589
 crates/hale-codegen/tests/tcp_listener.rs#1 05203a1c9cfc5d28
 crates/hale-codegen/tests/tcp_recv_bytes.rs#1 865d341109268295
@@ -1479,6 +1481,7 @@ crates/hale-codegen/tests/view_storage_e2.rs#4 f2c1228edb650960
 crates/hale-codegen/tests/violate_build.rs#0 9f7a676eb9c51fa7
 crates/hale-codegen/tests/violate_build.rs#1 93201b3738444ce6
 crates/hale-codegen/tests/violate_build.rs#10 27b8ee6cf38093ae
+crates/hale-codegen/tests/violate_build.rs#11 59e20d663b18b6cd
 crates/hale-codegen/tests/violate_build.rs#2 c0885950803d2d22
 crates/hale-codegen/tests/violate_build.rs#3 02f5109577c31dca
 crates/hale-codegen/tests/violate_build.rs#4 9f7a676eb9c51fa7
@@ -1500,6 +1503,7 @@ crates/hale-codegen/tests/wasm_target.rs#2 3218fa9dbdc01510
 crates/hale-codegen/tests/wasm_target.rs#20 cee899a36c15eda8
 crates/hale-codegen/tests/wasm_target.rs#21 7409ee5e1bea5782
 crates/hale-codegen/tests/wasm_target.rs#22 9e7240d456a5a42c
+crates/hale-codegen/tests/wasm_target.rs#23 59ad3cb1fefefc89
 crates/hale-codegen/tests/wasm_target.rs#5 3218fa9dbdc01510
 crates/hale-codegen/tests/ws1_ffi_handle_reassign.rs#1 ec84d76cf468d9b4
 crates/hale-codegen/tests/ws3_int_float_conversion.rs#0 865d341109268295

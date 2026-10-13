@@ -1138,7 +1138,11 @@ fn register_locus(
                             ParamInit::Inferred => Ty::Unknown,
                         },
                     };
-                    let has_default = matches!(p.init, ParamInit::Value(_));
+                    // GH #731: a `perspective(P)` param with no
+                    // initializer holds the program's slot without
+                    // designating it — a construction may omit it
+                    let has_default = matches!(p.init, ParamInit::Value(_))
+                        || matches!(p.ty, Some(TypeExpr::Perspective { .. }));
                     params.push(ParamInfo {
                         name: p.name.name.clone(),
                         ty,

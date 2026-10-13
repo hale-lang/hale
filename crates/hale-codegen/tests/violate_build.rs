@@ -517,3 +517,49 @@ fn main() { App { }; }
         "{err}"
     );
 }
+
+/// A tick-epoch closure that fails while `main` is still running, with
+/// no `on_failure` above it, exits the process right there (spec/runtime.md
+/// § Failure handling: a violation past the root exits non-zero with the
+/// report on stderr) — and the report says it failed at tick. It used to
+/// say "failed at dissolve" for every epoch, which sent a downstream
+/// handoff looking for output lost at teardown when the line after the
+/// publish had simply never run.
+#[test]
+fn tick_violation_without_a_handler_is_reported_at_tick() {
+    let src = r#"
+type Level { v: Int = 0; }
+locus Guard {
+    params { level: Int = 0; }
+    closure bounded { self.level ~~ 0 within 5; epoch tick; }
+    bus { subscribe "level.set" as on_level of type Level; }
+    fn on_level(l: Level) { self.level = l.v; println("seen=", self.level); }
+}
+locus Feed {
+    bus { publish "level.set" of type Level; }
+    run() { "level.set" <- Level { v: 1 }; "level.set" <- Level { v: 50 }; }
+}
+fn main() {
+    let g = Guard { };
+    Feed { };
+    println("after publish");
+}
+"#;
+    let bin = harness::unique_bin("lotus_test_tick_violation_report");
+    build_opts::build_source(src, &bin, &build_opts::options()).expect("build");
+    let out = Command::new(&bin).output().expect("run");
+    let _ = std::fs::remove_file(&bin);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success(), "a violation past the root exits non-zero");
+    assert!(stdout.contains("seen=50"), "the violating cell was handled: {stdout}");
+    assert!(
+        stderr.contains("closure `bounded` failed at tick"),
+        "the report names the tick epoch: {stderr}"
+    );
+    assert!(!stderr.contains("at dissolve"), "not a dissolve failure: {stderr}");
+    assert!(
+        !stdout.contains("after publish"),
+        "the process exits at the violation: {stdout}"
+    );
+}

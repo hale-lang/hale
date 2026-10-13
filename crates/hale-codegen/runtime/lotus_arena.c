@@ -25019,7 +25019,9 @@ void *lotus_os_getrandom(int64_t n) {
  * Design notes:
  *   - SIGPIPE is ignored globally (see lotus_io_init); writes to a
  *     closed pipe surface EPIPE through errno instead of killing
- *     the parent.
+ *     the parent. The child gets the default back before its exec
+ *     (lotus_process_fork), since an ignored signal stays ignored
+ *     across exec.
  *   - Child gets its own process group (`setpgid(0, 0)` in child)
  *     so a parent crash doesn't strand orphans on shared session
  *     resources, and a `kill_escalate` against the pid can target
@@ -25340,7 +25342,14 @@ const char *lotus_process_enoent_hint_label(
  * so a TERM pending there ends the child and nothing else, and the
  * parent unblocks to the mask it had (a signal that arrived meanwhile
  * is delivered then). exec resets caught handlers anyway; this closes
- * the window before it. */
+ * the window before it.
+ *
+ * SIGPIPE is the one exec does NOT reset: the runtime ignores it
+ * (lotus_io_init), and an ignored disposition survives exec. A child
+ * that inherited SIG_IGN never dies of a closed pipe — `yes` piped into
+ * a reader that exited gets EPIPE on every write and spins forever,
+ * and every filter a program spawns behaves unlike it does under a
+ * shell. The child puts SIGPIPE back to the default with the others. */
 static pid_t lotus_process_fork(void) {
 #ifndef __wasm__
     sigset_t all, old;
@@ -25354,6 +25363,7 @@ static pid_t lotus_process_fork(void) {
         sigemptyset(&dfl.sa_mask);
         sigaction(SIGINT, &dfl, NULL);
         sigaction(SIGTERM, &dfl, NULL);
+        sigaction(SIGPIPE, &dfl, NULL);
         sigprocmask(SIG_SETMASK, &old, NULL);
         return 0;
     }

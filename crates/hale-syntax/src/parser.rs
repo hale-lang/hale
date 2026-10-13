@@ -1492,7 +1492,7 @@ impl Parser {
         if matches!(self.peek(), TokenKind::Ident(s) if s == "includes") {
             self.bump();
             loop {
-                includes.push(self.expect_ident("included role name")?);
+                includes.push(self.expect_qualified_ident("included role name")?);
                 if !self.eat(&TokenKind::Comma) {
                     break;
                 }
@@ -1566,7 +1566,10 @@ impl Parser {
         self.bump();
         let mut roles = Vec::new();
         while !self.at(&TokenKind::RBracket) {
-            roles.push(self.expect_ident("role name")?);
+            // T1: a role another seed declares is named through its
+            // import alias (`lib::reader`), joined as a perspective
+            // reference is; the rename pass collapses it to the role
+            roles.push(self.expect_qualified_ident("role name")?);
             if !self.eat(&TokenKind::Comma) {
                 break;
             }

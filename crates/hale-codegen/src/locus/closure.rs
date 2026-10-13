@@ -548,11 +548,16 @@ impl<'ctx, 'p> LocusClosure<'ctx> for Cx<'ctx, 'p> {
         }
 
         // bare_bb: no handler — emit the v0 fallback report and
-        // exit(1).
+        // exit(1). The report names the epoch the check ran at: a
+        // tick closure failing mid-`main` is not a dissolve-time
+        // failure, and saying so sent a downstream handoff looking
+        // for lost output at teardown.
         self.builder.position_at_end(bare_bb);
         let msg = format!(
-            "ClosureViolation: locus `{}` closure `{}` failed at dissolve\n",
-            locus_name, closure_name
+            "ClosureViolation: locus `{}` closure `{}` failed {}\n",
+            locus_name,
+            closure_name,
+            epoch_moment(&epoch)
         );
         let msg_ptr = self.global_string(&msg);
         let dprintf_fn = self
@@ -594,4 +599,17 @@ impl<'ctx, 'p> LocusClosure<'ctx> for Cx<'ctx, 'p> {
         Ok(())
     }
 
+}
+
+/// Where a closure's check ran, worded for the no-handler report
+/// ("closure `c` failed at tick").
+fn epoch_moment(epoch: &EpochSpec) -> &'static str {
+    match epoch {
+        EpochSpec::Tick => "at tick (after a delivered cell)",
+        EpochSpec::Duration(_) => "at its duration epoch",
+        EpochSpec::Birth => "at birth",
+        EpochSpec::Dissolve => "at dissolve",
+        EpochSpec::Explicit => "at an explicit check",
+        EpochSpec::Inline => "at `violate`",
+    }
 }
