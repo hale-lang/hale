@@ -28804,8 +28804,9 @@ int64_t lotus_spsc_read(const void *seg_base, const void *desc,
  * it so "ASSERTION FAILED" can report how many earlier
  * assertions passed instead of the file reading as 0/1. */
 static int64_t g_test_passes = 0;
-void lotus_test_note_pass(void) { g_test_passes++; }
-int64_t lotus_test_passes(void) { return g_test_passes; }
+/* Atomic: assertions may pass on any thread (a pinned locus's run()). */
+void lotus_test_note_pass(void) { __atomic_add_fetch(&g_test_passes, 1, __ATOMIC_RELAXED); }
+int64_t lotus_test_passes(void) { return __atomic_load_n(&g_test_passes, __ATOMIC_RELAXED); }
 
 /* GH #717: the recorded-failure latch. A failing std::test assert
  * used to call exit(1) from inside the assertion, which jumped
@@ -28866,21 +28867,33 @@ static int g_unwind_main_set = 0;
 #endif
 #define LOTUS_DRAIN_TEST ((int64_t)4)
 
+/* Whether the caller is main. The registry, its length and capacity, the
+ * head and `g_unwinding` are main's alone: every entry point asks this
+ * first and touches none of them off main (a worker's teardown emits a
+ * pop too, and main may grow the array meanwhile). `g_unwind_main` is
+ * written once, by main's prelude, before it is published by the
+ * release store of `g_unwind_main_set`. */
 static int lotus_unwind_on_main(void) {
 #ifdef __wasm__
     return 1;
 #else
-    return g_unwind_main_set && pthread_equal(pthread_self(), g_unwind_main);
+    return __atomic_load_n(&g_unwind_main_set, __ATOMIC_ACQUIRE)
+        && pthread_equal(pthread_self(), g_unwind_main);
 #endif
 }
 
 /* fn main's prelude: the head of the test-failure teardown, and which
  * thread main is. */
 void lotus_unwind_set_head(void *head) {
+    /* Main's own prelude; a later call off main changes nothing. */
+#ifndef __wasm__
+    if (__atomic_load_n(&g_unwind_main_set, __ATOMIC_ACQUIRE)
+        && !pthread_equal(pthread_self(), g_unwind_main)) return;
+#endif
     g_unwind_head = (void (*)(void))head;
 #ifndef __wasm__
     g_unwind_main = pthread_self();
-    g_unwind_main_set = 1;
+    __atomic_store_n(&g_unwind_main_set, 1, __ATOMIC_RELEASE);
 #endif
 }
 
@@ -28889,7 +28902,7 @@ void lotus_unwind_set_head(void *head) {
  * record. Only main's: an entry another thread holds is torn down by
  * that thread's own lifecycle, which the drain ends. */
 void lotus_unwind_push(void *fn, void *slot, void *tid) {
-    if (!fn || !slot || !lotus_unwind_on_main() || g_unwinding) return;
+    if (!lotus_unwind_on_main() || !fn || !slot || g_unwinding) return;
     for (size_t i = g_unwind_len; i-- > 0;) {
         if (g_unwind[i].slot == slot) {
             g_unwind[i].fn = (lotus_unwind_fn)fn;
@@ -28907,9 +28920,11 @@ void lotus_unwind_push(void *fn, void *slot, void *tid) {
     g_unwind[g_unwind_len++] = (lotus_unwind_rec_t){ (lotus_unwind_fn)fn, slot, tid };
 }
 
-/* The instance's own teardown begins: a failure no longer owes it. */
+/* The instance's own teardown begins: a failure no longer owes it. Off
+ * main there is nothing of this thread's in the registry: return before
+ * reading it. */
 void lotus_unwind_pop_slot(void *slot) {
-    if (!g_unwind_len || g_unwinding) return;
+    if (!lotus_unwind_on_main() || !g_unwind_len || g_unwinding) return;
     for (size_t i = g_unwind_len; i-- > 0;) {
         if (g_unwind[i].slot == slot) {
             memmove(&g_unwind[i], &g_unwind[i + 1],
@@ -28949,18 +28964,19 @@ static void lotus_unwind_run(void) {
  * a no-op). */
 void lotus_test_fail_unwind(void) {
     __atomic_fetch_or(&lotus_process_draining_flag, LOTUS_DRAIN_TEST, __ATOMIC_RELEASE);
-    if (g_unwinding) return;
     if (!lotus_unwind_on_main()) {
+        /* Main's state is main's: ask, and read nothing of it. */
         __atomic_store_n(&g_unwind_requested, 1, __ATOMIC_RELEASE);
         return;
     }
+    if (g_unwinding) return;
     lotus_unwind_run();
 }
 
 /* Main's drain point: a failure another thread raised is torn down here. */
 static void lotus_unwind_service(void) {
-    if (!__atomic_load_n(&g_unwind_requested, __ATOMIC_ACQUIRE) || g_unwinding) return;
     if (!lotus_unwind_on_main()) return;
+    if (!__atomic_load_n(&g_unwind_requested, __ATOMIC_ACQUIRE) || g_unwinding) return;
     lotus_unwind_run();
 }
 

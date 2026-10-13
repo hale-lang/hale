@@ -4671,6 +4671,13 @@ row	Holder@main1	Holder	main	default
 row	Provider@main1	Provider	main	default
 row	Provider@main2	Provider	main	default
 
+== crates/hale-codegen/tests/unwind_registry_threads.rs#7c3188a5
+root	App	the entry
+domain	pinned:App@literal1.w
+row	App@literal1	App	main	default
+row	App@literal1.w	Worker	pinned:App@literal1.w	entry	off owner
+dynamic	Child	on main|pinned:App@literal1.w	in the seed
+
 == crates/hale-codegen/tests/view_coerce_e1.rs#b21794f6
 row	__StdBytesBytesBuilder@main1	__StdBytesBytesBuilder	main	default
 
