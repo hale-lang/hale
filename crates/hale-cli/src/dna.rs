@@ -1528,8 +1528,11 @@ fn init(app_dir: &Path, library: bool) -> Result<Vec<String>, String> {
                 // the declared purpose's proposal and the graph in one
                 // checked seed: a repository the ingest refuses leaves no
                 // record behind, and one with nothing to ingest still has one
-                let graph = seed_repository(&root, &purpose_text)?;
-                out.push(format!("seeded  {RECORD_REF} (the purpose, proposed; then the graph)"));
+                let graph = seed_repository(&root, &project, &purpose_text)?;
+                out.push(format!(
+                    "seeded  {RECORD_REF} (application.attached `{}`: the repository's compose services are its expression; the purpose, proposed; then the graph)",
+                    app_account_name(&project)
+                ));
                 out.push(format!("graph   {} (graph.node, graph.edge)", graph.trim()));
                 out.push(seat_initializer(&root, true)?);
             }
@@ -3270,13 +3273,36 @@ fn seed_journal(root: &Path, app: &App, art: &Value, purpose: &str) -> Result<(u
 /// host's `graph-ingest` in one call that checks
 /// every row before any lands, so an ingest the graph refuses leaves no
 /// record and `init` can be run again. What it read, by kind.
-fn seed_repository(root: &Path, purpose: &str) -> Result<String, String> {
+///
+/// Ruling 11 (2026-10-12): a repository's application is its compose
+/// services — the compose file is the expression — and it is attached
+/// all the same, by the project's name, so the record names an
+/// application and the broker account `app-<name>` is drawn for it: what
+/// the repository's processes publish under `<org>.app.<name>.` reaches
+/// the heart. The row names no `main` and no artifact (no topology was
+/// cut) and says `repository: true`.
+fn seed_repository(root: &Path, project: &str, purpose: &str) -> Result<String, String> {
     let dna_dir = root.join(".hale/dna");
     fs::create_dir_all(&dna_dir).map_err(|e| e.to_string())?;
     let path = dna_dir.join(format!("purpose.{}.txt", std::process::id()));
     fs::write(&path, purpose).map_err(|e| e.to_string())?;
-    let out = host_run("graph-ingest", root, &[path.to_string_lossy().to_string()]);
+    let rows = dna_dir.join(format!("seed.{}.jsonl", std::process::id()));
+    let attached = serde_json::json!({
+        "kind": "application.attached",
+        "entity": ".",
+        "body": serde_json::json!({
+            "name": app_account_name(project), "repository": true, "toolchain": TOOLCHAIN, "provenance": "observed"
+        })
+        .to_string()
+    });
+    fs::write(&rows, format!("{attached}\n")).map_err(|e| e.to_string())?;
+    let out = host_run(
+        "graph-ingest",
+        root,
+        &[path.to_string_lossy().to_string(), "--rows".to_string(), rows.to_string_lossy().to_string()],
+    );
     let _ = fs::remove_file(&path);
+    let _ = fs::remove_file(&rows);
     out
 }
 

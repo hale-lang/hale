@@ -130,14 +130,17 @@ changes those counts, and the diff between two ingests is the review.
 Where the first run and this document disagree, or where the shape is the
 repository's to change once the kickstart lands.
 
-- **No application is attached.** Run on the repository root, `init` is in its
-  repository mode: it records the graph and the purpose but not
-  `application.attached`, so no application named `todo` exists for the record,
-  and the broker account `app-todo` (publish-only on `<org>.app.todo.>`) that
-  `HALE_DNA_NATS_USER_APP` names is not drawn for it. The sense in
-  `api/nerves.hl` is mute until it is. Attaching an application is
-  `hale dna init <app-dir>`, which puts `dna/` under that directory; this
-  repository keeps the seed in `api/` and the organization at the root.
+- **The application is attached; its compose services are not run.** Run on
+  the repository root, `init` is in its repository mode, and it attaches the
+  repository's application by the project's name (`application.attached`,
+  entity `.`, `repository: true`, no `main`), so the broker account `app-todo`
+  (publish-only on `<org>.app.todo.>`) is drawn and `hale dna nerves migrate`
+  prints the `*_APP` variables `api/nerves.hl` reads
+  (`dna/tests/repository_sense_test.hl` drives that sense into the heart). The
+  host does not run `compose.yaml`: `docker compose up` is the operator's, and
+  the compose file would have to pass the `*_APP` variables, the broker's
+  address as a container sees it and the vault entry's password for the
+  container's sense to speak.
 - **The exported contract is not read.** `init` takes `spec/*.yaml`, `*.yml` and
   `*.md` as contracts and `components.schemas` as nouns. `hale api export`
   writes JSON and a `.proto`, so `spec/todo.md` is a short hand-written index

@@ -189,11 +189,15 @@ fn graph_ingest_verb(root: String, first: String, rows_path: String, app: String
     return answer(to_string(r.nodes) + " node(s), " + to_string(r.edges) + " edge(s): " + r.counts + "; " + to_string(holes.count) + " proposal(s)\n");
 }
 
-// Whether the record attaches an application (`application.attached`).
+// Whether the record attaches an application built from a seed
+// (`application.attached` naming its `main`). A repository's own
+// attachment (ruling 11: its compose services are the expression) names
+// no `main` and does not count: a repository is re-ingested.
 fn attached_somewhere(j: dna::Journal) -> Bool {
     let mut i = 0;
     while i < j.revision() {
-        if j.read(i).kind == "application.attached" { return true; }
+        let e = j.read(i);
+        if e.kind == "application.attached" && len(std::json::find_string_field(e.body, "main")) > 0 { return true; }
         i = i + 1;
     }
     return false;
