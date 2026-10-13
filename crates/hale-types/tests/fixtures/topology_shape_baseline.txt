@@ -223,6 +223,7 @@ crates/hale-codegen/tests/alloc_model_rss.rs#7 3e225bdcf989ab9c
 crates/hale-codegen/tests/alloc_model_rss.rs#8 b7b4bed0c6963b79
 crates/hale-codegen/tests/alloc_model_rss.rs#9 b7b4bed0c6963b79
 crates/hale-codegen/tests/api_http.rs#1 626e14ee97a45f4e
+crates/hale-codegen/tests/api_http.rs#3 57566b651fb41cd7
 crates/hale-codegen/tests/api_hub.rs#0 c8e9ee4fbb6e2ab3
 crates/hale-codegen/tests/api_hub_desk.rs#0 d9c4a2fadf349d8a
 crates/hale-codegen/tests/api_mcp.rs#0 4b60b964f67218b2
@@ -734,6 +735,7 @@ crates/hale-codegen/tests/form_lru_cache_codegen.rs#4 cea5d5b4651482a5
 crates/hale-codegen/tests/form_lru_cache_reclaim.rs#0 c77bf7ca12bd34cc
 crates/hale-codegen/tests/form_lru_cache_reclaim.rs#1 b467cd386ff1ae21
 crates/hale-codegen/tests/form_lru_cache_reclaim.rs#3 59d320aa535e19ce
+crates/hale-codegen/tests/form_lru_cache_reclaim.rs#4 af8028fee2d0f03f
 crates/hale-codegen/tests/form_ring_buffer_codegen.rs#0 d64b3e41a590cf50
 crates/hale-codegen/tests/form_ring_buffer_codegen.rs#1 d64b3e41a590cf50
 crates/hale-codegen/tests/form_ring_buffer_codegen.rs#2 d64b3e41a590cf50
