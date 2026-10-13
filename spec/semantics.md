@@ -366,8 +366,9 @@ an `Int`) are reported by the typechecker. Neither reaches codegen.
    soon as its region exists, before its params are built, so what
    its params' children publish to it while they are born or run
    waits for it too (2026-10-12); a keyed one waits for the params
-   its key reads, and a pinned locus's and an accepted child's for
-   step 2's `accept`. A publish made before its subscriber is built
+   its key reads, a pinned locus's and an accepted child's for
+   step 2's `accept`, and one bound to an `shm_ring` (its reader
+   calls the handler outside the window) for the params too. A publish made before its subscriber is built
    at all reaches no subscription of it; `hale check` warns where it
    can see one in a body.
 5. `birth(args)` runs synchronously.

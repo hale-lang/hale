@@ -1221,6 +1221,7 @@ crates/hale-codegen/tests/shm_ring_nested_param_subscriber.rs#2 d37f9aa7766cde13
 crates/hale-codegen/tests/shm_ring_teardown_wait.rs#0 04cfd81aee6c2af4
 crates/hale-codegen/tests/shm_ring_teardown_wait.rs#2 5160da83fbd30806
 crates/hale-codegen/tests/shm_ring_teardown_wait.rs#3 684e33e83f010b95
+crates/hale-codegen/tests/shm_ring_teardown_wait.rs#4 b0fd9b310fe3f86d
 crates/hale-codegen/tests/shm_write_topic_mangle.rs#0 a58aaaa9c9b2fa60
 crates/hale-codegen/tests/sibling_field_forward_ref.rs#0 fb39e236b5857b2f
 crates/hale-codegen/tests/sibling_field_forward_ref.rs#1 3df45548c02ee998

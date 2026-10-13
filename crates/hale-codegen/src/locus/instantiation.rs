@@ -1418,10 +1418,17 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // does one the plan owes no readiness (a locus only stdlib or
         // imported code builds), whose cells no window would hold back
         // from its half-built params, and an accepted child, whose
-        // owner's `accept` precedes its subscriptions (line 5).
+        // owner's `accept` precedes its subscriptions (line 5). Nor does a
+        // subscription bound to an `shm_ring`: registering it starts the
+        // ring's reader thread, which calls the handler itself, outside
+        // the window, so a record already in the ring would reach the
+        // instance before its params are stored (and be written over by
+        // them: #1533's merge run, "got 8" of ten).
         let early_subscribe = !matches!(info.schedule_class, ScheduleClass::Pinned(_))
             && !info.subscriptions.is_empty()
-            && info.subscriptions.iter().all(|(_, _, _, key)| key.is_none())
+            && info.subscriptions.iter().all(|(subject, _, _, key)| {
+                key.is_none() && !self.shm_ring_subjects.contains_key(subject)
+            })
             && self.owes_readiness(locus_name)
             && owner_self_ptr.is_none()
             && !parent_accepts_us

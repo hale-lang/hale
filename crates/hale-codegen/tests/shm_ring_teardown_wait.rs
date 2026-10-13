@@ -340,6 +340,51 @@ fn a_producer_that_fills_the_ring_before_its_first_reader_waits_for_it() {
     filled_first(&ends(&bin, &[]));
 }
 
+/// The same, with the subscriber's params slow to build: its ring's reader
+/// starts at its registration and runs the handler on its own thread,
+/// outside the readiness window, so the subscription registers once the
+/// params are stored. Registered before them (a regression of #1533's
+/// early registration), the two records already in the ring were counted
+/// and then written over by the params' `got: 0`: "got 8".
+const FILLED_FIRST_SLOW_PARAMS: &str = r#"
+type M { n: Int = 0; }
+topic Ms { payload: M; }
+fn slow_zero() -> Int { std::time::sleep(100ms); return 0; }
+locus Sink {
+    params { got: Int = slow_zero(); }
+    bus { subscribe Ms as on_m; }
+    fn on_m(m: M) { self.got = self.got + 1; }
+    dissolve() { println("got ", self.got); }
+}
+locus Burst {
+    params { _u: Int = 0; }
+    bus { publish Ms; }
+    run() {
+        let mut i = 0;
+        while i < 10 {
+            Ms <- M { n: i };
+            i = i + 1;
+        }
+        println("published");
+    }
+}
+main locus App {
+    params { burst: Burst = Burst { }; sink: Sink = Sink { }; }
+    placement { burst: pinned; }
+    bindings { Ms: shm_ring("__NAME__", slot_count: 2, on_overflow: block) where zero_copy; }
+    run() { std::time::sleep(300ms); }
+}
+fn main() { App { }; }
+"#;
+
+#[test]
+fn a_ring_subscriber_registers_once_its_params_are_stored() {
+    let bin = harness::unique_bin("shm_teardown_filled_slow_params");
+    build_opts::build_source(&FILLED_FIRST_SLOW_PARAMS.replace("__NAME__", &shm_name("filledslow")), &bin, &build_opts::options())
+        .expect("build");
+    filled_first(&ends(&bin, &[]));
+}
+
 #[test]
 fn a_producer_that_fills_the_ring_before_its_first_reader_waits_for_it_under_asan() {
     let bin = harness::unique_bin("shm_teardown_filled_first_asan");
