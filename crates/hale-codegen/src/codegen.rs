@@ -5355,7 +5355,9 @@ pub(crate) struct LocusInfo<'ctx> {
     /// (its `__children` field's address), stored at accept dispatch and
     /// read when a completed flow removes itself. `None` for a type one
     /// owner type tracks, whose removal finds the tracker statically.
-    pub(crate) owner_tracker_field_idx: Option<u32>,
+    /// (`__owner_tracker`, `__owner_tracker_count`): the addresses of the
+    /// owner's buffer and count fields, as the owner's layout places them.
+    pub(crate) owner_tracker_field_idx: Option<(u32, u32)>,
     /// Interest-based ownership, artifact #2b — indices of the synthetic
     /// `__owner_for_<I>: ptr` fields, one per interest-type `I` in this
     /// locus's forwarding set (keyed by `I`). Threaded at birth: set to
@@ -7815,38 +7817,45 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     }
 
     /// At accept dispatch, for a type more than one owner type tracks:
-    /// record the accepting owner's tracker (`arr_ptr`, the address of
-    /// its `__children` field for this type) on the child, so the child's
+    /// record the accepting owner's tracker on the child: the addresses
+    /// of its `__children` and `__child_count` fields for this type, each
+    /// as the owner's own struct GEP computed it (the fields' offsets are
+    /// the owner's layout's: on wasm32 a pointer is 4 bytes, so no
+    /// standalone struct shape can stand in for them), so the child's
     /// removal reaches that owner's tracker (`emit_remove_self_from_owner`).
     pub(crate) fn emit_store_owner_tracker(
         &mut self,
         info: &LocusInfo<'ctx>,
         self_ptr: PointerValue<'ctx>,
         arr_ptr: PointerValue<'ctx>,
+        cnt_ptr: PointerValue<'ctx>,
         locus_name: &str,
     ) -> Result<(), CodegenError> {
-        let Some(idx) = info.owner_tracker_field_idx else { return Ok(()) };
-        let slot = self
-            .builder
-            .build_struct_gep(info.struct_ty, self_ptr, idx, &format!("{locus_name}.__owner_tracker.ptr"))
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-        self.builder.build_store(slot, arr_ptr).map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        let Some((buf_idx, cnt_idx)) = info.owner_tracker_field_idx else { return Ok(()) };
+        let e = |e: inkwell::builder::BuilderError| CodegenError::LlvmEmit(e.to_string());
+        for (idx, value, what) in [(buf_idx, arr_ptr, "__owner_tracker"), (cnt_idx, cnt_ptr, "__owner_tracker_count")] {
+            let slot = self
+                .builder
+                .build_struct_gep(info.struct_ty, self_ptr, idx, &format!("{locus_name}.{what}.ptr"))
+                .map_err(e)?;
+            self.builder.build_store(slot, value).map_err(e)?;
+        }
         Ok(())
     }
 
     /// A completed flow's removal from the tracker its accepting owner
-    /// recorded on it (`__owner_tracker`): the tracker's buffer and, in
-    /// the field beside it, its count. Null when no owner accepted it.
+    /// recorded on it: its buffer field's address (`__owner_tracker`) and
+    /// its count field's (`__owner_tracker_count`). Null when no owner
+    /// accepted it.
     fn emit_remove_self_from_recorded_tracker(
         &mut self,
         info: &LocusInfo<'ctx>,
-        idx: u32,
+        (idx, cnt_idx): (u32, u32),
         self_ptr: PointerValue<'ctx>,
         locus_name: &str,
     ) -> Result<(), CodegenError> {
         let e = |e: inkwell::builder::BuilderError| CodegenError::LlvmEmit(e.to_string());
         let ptr_t = self.context.ptr_type(AddressSpace::default());
-        let i64_t = self.context.i64_type();
         let slot = self.builder.build_struct_gep(info.struct_ty, self_ptr, idx, &format!("{locus_name}.remove.tracker.ptr")).map_err(e)?;
         let tracker = self.builder.build_load(ptr_t, slot, &format!("{locus_name}.remove.tracker")).map_err(e)?.into_pointer_value();
         let none = self.builder.build_is_null(tracker, &format!("{locus_name}.remove.tracker.null")).map_err(e)?;
@@ -7855,11 +7864,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let after_bb = self.context.append_basic_block(func, "remove.tracked.after");
         self.builder.build_conditional_branch(none, after_bb, do_bb).map_err(e)?;
         self.builder.position_at_end(do_bb);
-        // Every tracker is laid out as `__children: ptr`, `__child_count:
-        // i64`, `__child_cap: i64`, in adjacent fields (`ChildBuffer`).
-        let tracker_ty = self.context.struct_type(&[ptr_t.into(), i64_t.into(), i64_t.into()], false);
         let buf = self.builder.build_load(ptr_t, tracker, &format!("{locus_name}.remove.tracked.buf")).map_err(e)?;
-        let count_ptr = self.builder.build_struct_gep(tracker_ty, tracker, 1, &format!("{locus_name}.remove.tracked.count")).map_err(e)?;
+        let count_slot =
+            self.builder.build_struct_gep(info.struct_ty, self_ptr, cnt_idx, &format!("{locus_name}.remove.tracker.count.ptr")).map_err(e)?;
+        let count_ptr = self.builder.build_load(ptr_t, count_slot, &format!("{locus_name}.remove.tracked.count")).map_err(e)?;
         let remove_fn = self.module.get_function("lotus_children_remove").expect("lotus_children_remove declared");
         self.builder
             .build_call(remove_fn, &[buf.into(), count_ptr.into(), self_ptr.into()], &format!("{locus_name}.remove.tracked.call"))
@@ -7877,8 +7885,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     ) -> Result<(), CodegenError> {
         // More than one owner type tracks this type: the owner that
         // accepted the instance recorded its tracker on it.
-        if let Some(idx) = info.owner_tracker_field_idx {
-            return self.emit_remove_self_from_recorded_tracker(info, idx, self_ptr, locus_name);
+        if let Some(fields) = info.owner_tracker_field_idx {
+            return self.emit_remove_self_from_recorded_tracker(info, fields, self_ptr, locus_name);
         }
         let ptr_t = self.context.ptr_type(AddressSpace::default());
         // Find the parent locus type(s) that accept this locus AND

@@ -3484,7 +3484,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                                 "children.ptr",
                             )
                             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                        self.emit_store_owner_tracker(&info, self_ptr, arr_ptr, locus_name)?;
                         let cnt_ptr = self
                             .builder
                             .build_struct_gep(
@@ -3494,6 +3493,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                                 "child.count.ptr",
                             )
                             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                        self.emit_store_owner_tracker(&info, self_ptr, arr_ptr, cnt_ptr, locus_name)?;
                         let cap_ptr = self
                             .builder
                             .build_struct_gep(
@@ -5534,8 +5534,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // Set by the accept step, for an accepted child.
         store(self, info.owner_self_field_idx, null, "__owner_self")?;
         store(self, info.owner_release_field_idx, null, "__owner_release")?;
-        if let Some(idx) = info.owner_tracker_field_idx {
-            store(self, idx, null, "__owner_tracker")?;
+        if let Some((buf, cnt)) = info.owner_tracker_field_idx {
+            store(self, buf, null, "__owner_tracker")?;
+            store(self, cnt, null, "__owner_tracker_count")?;
         }
         // Set after the params, for a restart-in-place target.
         store(self, info.built_params_field_idx, null, "__built_params")?;
@@ -6187,11 +6188,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             let e = |e: inkwell::builder::BuilderError| CodegenError::LlvmEmit(e.to_string());
             let arr_ptr =
                 self.builder.build_struct_gep(owner_info.struct_ty, a_self, arr_idx, "xpool.children.ptr").map_err(e)?;
-            if let Some(child_info) = self.user_loci.get(child_locus).cloned() {
-                self.emit_store_owner_tracker(&child_info, child_ptr, arr_ptr, child_locus)?;
-            }
             let cnt_ptr =
                 self.builder.build_struct_gep(owner_info.struct_ty, a_self, cnt_idx, "xpool.child_count.ptr").map_err(e)?;
+            if let Some(child_info) = self.user_loci.get(child_locus).cloned() {
+                self.emit_store_owner_tracker(&child_info, child_ptr, arr_ptr, cnt_ptr, child_locus)?;
+            }
             let cap_ptr =
                 self.builder.build_struct_gep(owner_info.struct_ty, a_self, cap_idx, "xpool.child_cap.ptr").map_err(e)?;
             let push_fn = self.module.get_function("lotus_children_push").expect("lotus_children_push declared");

@@ -652,7 +652,10 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
         idx += 1;
         // Synthetic `__owner_tracker: ptr` — the accepting owner's
         // children tracker for this type (the address of its `__children`
-        // field, the count beside it), stored at accept dispatch, for a
+        // field), and `__owner_tracker_count: ptr` (its count field's
+        // address, recorded as such: the two fields' offsets in the owner
+        // are the owner's layout's, never assumed), stored at accept
+        // dispatch, for a
         // type more than one owner type tracks: which owner accepted an
         // instance is then a fact of the instance, and a completed flow
         // leaves that owner's tracker, never none. A type one owner type
@@ -665,8 +668,9 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
             .count();
         let owner_tracker_field_idx = if owner_types > 1 {
             llvm_field_tys.push(ptr_field_t.into());
-            idx += 1;
-            Some(idx - 1)
+            llvm_field_tys.push(ptr_field_t.into());
+            idx += 2;
+            Some((idx - 2, idx - 1))
         } else {
             None
         };
