@@ -288,6 +288,14 @@ A **serve site**, `api::serve(SURFACE, TRANSPORT, as: NAME, receivers:
 { TYPE: INSTANCE, … })`, pairs one surface with one transport instance
 and makes an **exposure**:
 
+- the **surface** is named as declared (`Public`); a surface an imported
+  seed declares is named by its path under the import alias
+  (`lib::Svc`), and it is that seed's surface, described by its declared
+  name (`Svc`): a library ships a surface and its receivers, and the
+  application serves it with receivers it holds (`echoer: lib::Echoer`).
+  A path that names no surface of the aliased seed is refused in the
+  author's spelling ("serve of `lib::Own`: no surface `lib::Own` is
+  declared");
 - the **transport instance** is a locus implementing `Rpc` (§ The `Rpc`
   interface), whose fields carry the listener (`bind:`, `path:`), the
   codec (`codec:`, F.36), the **bearer source** (`principals:`, a

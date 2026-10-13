@@ -369,3 +369,109 @@ fn a_receiver_built_where_the_serving_locus_is_constructed_serves_and_the_addres
     assert_eq!((got.status, got.body.as_str()), (200, "{\"n\":105}"), "the instance the literal at the construction site builds answers");
     assert!(server.finish().status.success());
 }
+
+/// A library seed that declares a surface and the receivers its rows name,
+/// for an application to serve (spec/api.md § Surfaces and their rows: "how
+/// a library ships one").
+const LIBRARY: &str = r#"
+type Ping { n: Int; }
+type Pong { n: Int; }
+
+api Svc { rpc Echoer::echo; }
+
+locus Echoer {
+    params { base: Int = 0; }
+    fn echo(p: Ping) -> Pong { return Pong { n: self.base + p.n }; }
+}
+"#;
+
+/// The application: it imports the library as `lib` and serves `@SURFACE@`
+/// over `http::Rpc`, its receiver a `lib::Echoer` it holds.
+const SERVES_LIBRARY: &str = r#"
+import "../lib" as lib;
+
+api Own { rpc Desk::ping; }
+
+locus Tokens {
+    fn principal(token: String) -> std::api::Principal {
+        if token == "t-alice" { return std::api::Principal { mode: "bearer", name: "alice" }; }
+        return std::api::Principal { mode: "bearer", name: "" };
+    }
+    fn refused() -> String { return "no such token"; }
+}
+
+locus Nobody {
+    fn holds(p: std::api::Principal, r: String) -> Bool { return false; }
+}
+
+main locus Desk {
+    params {
+        bearer: Tokens = Tokens { };
+        roles: Nobody = Nobody { };
+        echoer: lib::Echoer = lib::Echoer { base: 100 };
+    }
+    fn ping() -> Int { return 1; }
+    run() {
+        let h = api::serve(@SURFACE@, http::Rpc { bind: std::env::var("BIND"), codec: json, principals: self.bearer, roles: self.roles }, as: "svc", bound: 4, on_full: refuse);
+        let trigger = std::env::var("TRIGGER");
+        while !self.draining && (std::io::fs::read_file(trigger) or "") == "" {
+            std::time::sleep(10ms);
+        }
+        h.stop();
+    }
+}
+
+fn main() { Desk { }; }
+"#;
+
+/// The application and the library laid out as `import "../lib"` reads
+/// them; the entry.
+fn library_seed(name: &str, surface: &str) -> PathBuf {
+    let dir = harness::unique_dir(name);
+    std::fs::create_dir_all(dir.join("app")).expect("the app dir");
+    std::fs::create_dir_all(dir.join("lib")).expect("the lib dir");
+    std::fs::write(dir.join("lib/svc.hl"), LIBRARY).expect("write the library");
+    let entry = dir.join("app/main.hl");
+    std::fs::write(&entry, SERVES_LIBRARY.replace("@SURFACE@", surface)).expect("write the app");
+    entry
+}
+
+#[test]
+fn a_surface_an_imported_seed_declares_is_served_by_its_qualified_name() {
+    let entry = library_seed("api_http_lib_surface", "lib::Svc");
+    let bin = harness::unique_bin("api_http_lib_surface");
+    build_opts::build_seed_dir(&entry, &bin, &build_opts::options()).expect("serve `lib::Svc`");
+    let server = Server::start(&bin, &[]);
+    server.ready();
+    let got = request(server.port, "POST", "/call/Echoer::echo", &[bearer("t-alice")], Some("{\"n\":5}"));
+    assert_eq!((got.status, got.body.as_str()), (200, "{\"n\":105}"), "the library's row answers through the app's receiver");
+    let described = request(server.port, "GET", "/.description", &[bearer("t-alice")], None);
+    assert!(described.body.contains("\"Svc\""), "the exposure describes the surface by its declared name: {}", described.body);
+    assert!(server.finish().status.success());
+}
+
+#[test]
+fn a_qualified_surface_the_imported_seed_does_not_declare_is_refused_as_written() {
+    // `Own` is the application's surface, not the library's: `lib::Own`
+    // names nothing, and the check refuses it in the author's spelling,
+    // where `lib::Svc` is admitted.
+    let check = |surface: &str| -> Vec<String> {
+        let entry = library_seed("api_http_lib_surface_check", surface);
+        let snap = hale_frontend::snapshot::Snapshot::load(
+            &entry,
+            hale_frontend::frontend::LoadMode::WholeSeed,
+            &hale_frontend::source::Disk,
+            hale_frontend::snapshot::Config::check(false, false),
+        )
+        .ok()
+        .expect("a snapshot");
+        let diags = match snap.demand_check() {
+            Ok(c) => c.diags.clone(),
+            Err(b) => b.because.clone(),
+        };
+        diags.iter().filter(|d| d.is_error()).map(|d| d.message.clone()).collect()
+    };
+    assert_eq!(check("lib::Svc"), Vec::<String>::new());
+    let own = check("lib::Own");
+    assert!(own.iter().any(|m| m.starts_with("serve of `lib::Own`: no surface `lib::Own` is declared")), "{own:?}");
+}
