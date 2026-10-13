@@ -1331,9 +1331,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         )?;
 
         if let Some(desc) = nested_desc {
-            // A tuple or array value was deep-copied whole into a fresh
-            // block of this arena, and its bytes now live in the
-            // field's block: the fresh block is scrap.
+            // A tuple, array or payload enum value was deep-copied whole
+            // into a fresh block of this arena, and its bytes now live
+            // in the field's block: the fresh block is scrap.
             let scrap = if matches!(slot_ty, CodegenTy::TypeRef(_)) {
                 ptr_t.const_null()
             } else {
@@ -1353,10 +1353,17 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 self.self_field_retire_desc_global(&desc).as_pointer_value()
             };
             let old_ptr = old_snap.unwrap_or_else(|| ptr_t.const_null());
+            // A payload enum's descriptor is its variant table: the
+            // runtime picks each value's variant by its tag.
+            let retire_name = if matches!(slot_ty, CodegenTy::Enum(_)) {
+                "lotus_self_field_retire_replaced_enum"
+            } else {
+                "lotus_self_field_retire_replaced"
+            };
             let retire_fn = self
                 .module
-                .get_function("lotus_self_field_retire_replaced")
-                .expect("lotus_self_field_retire_replaced declared");
+                .get_function(retire_name)
+                .expect("self-field retire declared");
             self.builder
                 .build_call(
                     retire_fn,

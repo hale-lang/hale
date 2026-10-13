@@ -229,7 +229,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// block of their own (a nested record, a tuple, an out-of-line
     /// array, a payload enum — with everything under them), leaving out
     /// its top-level String and Bytes fields, which the per-field
-    /// fixups retire; for a tuple or an out-of-line array, every slot.
+    /// fixups retire; for a tuple or an out-of-line array, every slot;
+    /// for a payload enum, its variant table
+    /// (`lotus_self_field_retire_replaced_enum`).
     /// `None` when the store retires nothing beyond those fixups: a
     /// record of scalars, Strings and Bytes, or a type that is not such
     /// a block. A tuple or array of scalars answers `Some(vec![])`: it
@@ -256,6 +258,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             CodegenTy::Array(_, _) if Self::array_inline_spec(ty).is_none() => {
                 self.retire_desc_for(ty, 0).map(|(_, d)| d)
             }
+            // A payload enum's variant table (`retire_desc_for`), which
+            // the enum entry of the runtime walk indexes by each value's
+            // tag. A unit-only enum is an inline tag: `None`.
+            CodegenTy::Enum(_) => self.retire_desc_for(ty, 0).map(|(_, d)| d),
             _ => None,
         }
     }
@@ -276,6 +282,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 .ok_or_else(|| CodegenError::Unsupported(format!("unknown type `{}`", tn))),
             CodegenTy::Tuple(elems) => Ok(self.llvm_tuple_storage_type(elems).into()),
             CodegenTy::Array(elem, n) => Ok(self.llvm_array_storage_type(elem, *n).into()),
+            CodegenTy::Enum(name) => self
+                .user_enums
+                .get(name.as_str())
+                .map(|info| self.enum_storage_struct(info).into())
+                .ok_or_else(|| CodegenError::Unsupported(format!("unknown enum `{}`", name))),
             other => Err(CodegenError::Unsupported(format!("no field block for {:?}", other))),
         }
     }

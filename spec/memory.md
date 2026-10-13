@@ -1475,6 +1475,22 @@ reclaim on a real-world long-running workload:
      locus's lifetime: ~6 MiB over 200 000 replaces of a record
      holding a record of one String.
 
+     A payload-enum field itself (`self.e = E::A(s)`) is replaced
+     the same way: the field points at the enum's storage block,
+     the value is deep-copied into a fresh block (owned Strings and
+     Bytes) whose bytes are copied over it, and
+     `lotus_self_field_retire_replaced_enum` walks the old snapshot
+     with its own variant's descriptor and the new block with the
+     new one's (the enum's variant table, picked by each value's
+     tag), retiring the payload only the old value reached and the
+     fresh copy. Before, both stayed for the locus's lifetime (~32
+     bytes a replace of a short String payload). The small-block
+     freelist those blocks return to pops best fit within its
+     probe window, as the general one does (GH #1037): first fit
+     handed the replace's String the enum's 12-byte block and left
+     the enum's request only the String's, stranding a block and a
+     shell per replace.
+
      Retiring a nested block is sound only if nothing else holds
      it, so such a store follows the retiring form's rule below
      for its own fields: the walk runs over a stack snapshot of

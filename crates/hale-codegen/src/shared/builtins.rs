@@ -733,6 +733,24 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             ),
             None,
         );
+        // ... and a payload-enum field's: the same arguments, `desc`
+        // the enum's variant table.
+        self.module.add_function(
+            "lotus_self_field_retire_replaced_enum",
+            void_t.fn_type(
+                &[
+                    ptr_t.into(),
+                    ptr_t.into(),
+                    ptr_t.into(),
+                    ptr_t.into(),
+                    retire_i64.into(),
+                    ptr_t.into(),
+                    retire_i64.into(),
+                ],
+                false,
+            ),
+            None,
+        );
         // An on_failure handler never runs before its locus's params
         // are settled: open/settle bracket a handler-bearing locus's
         // params loop, and every routed failure asks hold first.
