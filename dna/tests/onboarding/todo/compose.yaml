@@ -7,46 +7,81 @@
 # binary, so build on a machine whose glibc is not newer than the image's.
 # It answers on 127.0.0.1:8080 (HTTP), 8090 (MCP) and 8081 (the stream); the
 # page on 127.0.0.1:8088 (http://127.0.0.1:8088/?token=t-bo). Nothing else is
-# published.
+# published. TODO_PORT, TODO_MCP_PORT, TODO_STREAM_PORT and TODO_UI_PORT move
+# them.
 #
 # The organism's own services (the record, the nerves, the host) are not
-# here: `hale dna dev` brings them up and hands the api its nerves. Without
-# them the api runs, and its sense says nothing.
+# here. When an organization runs this repository (`hale dna dev` or `run`),
+# its body brings these services up as a compose project of its own and
+# hands the api its nerves: the broker as the host reaches it
+# (HALE_DNA_NATS_URL_APP), the application's user, the organization's token,
+# and the path of the vault entry that holds the application's password
+# (HALE_DNA_NATS_SECRET_APP), mounted below as a secret and read as a vault
+# of one entry. The api is on the host's network so that it reaches the
+# broker where the host does: on Linux a broker on the host's loopback is out
+# of a bridge network's reach. Without them the api runs, and its sense says
+# nothing.
 
 name: todo
 
 services:
   api:
     image: ubuntu:24.04
+    network_mode: host
     # the binary needs OpenSSL's runtime library, which the image lacks
     command:
       - sh
       - -c
       - >-
         apt-get update -qq && apt-get install -y -qq --no-install-recommends libssl3 ca-certificates >/dev/null
-        && exec todo-api --host 0.0.0.0 --port 8080 --mcp 8090 --stream 8081
+        && exec todo-api --host 127.0.0.1 --port ${TODO_PORT:-8080} --mcp ${TODO_MCP_PORT:-8090} --stream ${TODO_STREAM_PORT:-8081}
     environment:
       TODO_TOKENS: ${TODO_TOKENS:-ada=t-ada,bo:reader=t-bo}
+      HALE_DNA_NATS_URL_APP: ${HALE_DNA_NATS_URL_APP:-}
+      HALE_DNA_NATS_USER_APP: ${HALE_DNA_NATS_USER_APP:-}
+      HALE_DNA_NATS_ORG: ${HALE_DNA_NATS_ORG:-}
+      # the password: the secret below, a vault of one entry
+      HALE_VAULT_DIR: /run/secrets
+      HALE_DNA_NATS_VAULT_APP: nats-app
+    secrets:
+      - nats-app
+    # not built yet: `up` says so, rather than make a directory in its place
     volumes:
-      - ./bin/todo-api:/usr/local/bin/todo-api:ro
-    ports:
-      - "127.0.0.1:8080:8080"
-      - "127.0.0.1:8090:8090"
-      - "127.0.0.1:8081:8081"
+      - type: bind
+        source: ./bin/todo-api
+        target: /usr/local/bin/todo-api
+        read_only: true
+        bind:
+          create_host_path: false
+    # healthy once the api answers (installing the library takes a while)
+    healthcheck:
+      test: ["CMD", "bash", "-c", ": </dev/tcp/127.0.0.1/${TODO_PORT:-8080}"]
+      interval: 5s
+      timeout: 2s
+      retries: 3
+      start_period: 300s
+      start_interval: 1s
 
   ui:
     image: node:22-alpine
-    # the generated client is TypeScript; a browser runs the JavaScript tsc makes of it
-    working_dir: /ui
+    # the generated client is TypeScript; a browser runs the JavaScript tsc
+    # makes of it. The page is built in a copy, so nothing is written into
+    # the repository.
     command:
       - sh
       - -c
       - >-
-        npm install --no-save --silent typescript@5 http-server@14
+        cp -r /src/. /ui && cd /ui
+        && npm install --no-save --silent typescript@5 http-server@14
         && node --test seq.test.mjs
         && npx tsc --target es2022 --module es2022 --lib es2022,dom --strict client/todo.ts
         && exec npx http-server -a 0.0.0.0 -p 8088 -c-1 .
     volumes:
-      - ./ui:/ui
+      - ./ui:/src:ro
     ports:
-      - "127.0.0.1:8088:8088"
+      - "127.0.0.1:${TODO_UI_PORT:-8088}:8088"
+
+secrets:
+  nats-app:
+    # run by hand, with no organization: an empty entry, and the sense says nothing
+    file: ${HALE_DNA_NATS_SECRET_APP:-/dev/null}

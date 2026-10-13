@@ -130,17 +130,18 @@ changes those counts, and the diff between two ingests is the review.
 Where the first run and this document disagree, or where the shape is the
 repository's to change once the kickstart lands.
 
-- **The application is attached; its compose services are not run.** Run on
-  the repository root, `init` is in its repository mode, and it attaches the
-  repository's application by the project's name (`application.attached`,
-  entity `.`, `repository: true`, no `main`), so the broker account `app-todo`
-  (publish-only on `<org>.app.todo.>`) is drawn and `hale dna nerves migrate`
-  prints the `*_APP` variables `api/nerves.hl` reads
-  (`dna/tests/repository_sense_test.hl` drives that sense into the heart). The
-  host does not run `compose.yaml`: `docker compose up` is the operator's, and
-  the compose file would have to pass the `*_APP` variables, the broker's
-  address as a container sees it and the vault entry's password for the
-  container's sense to speak.
+- **The application is attached, and its compose services are its
+  expression.** Run on the repository root, `init` is in its repository mode,
+  and it attaches the repository's application by the project's name
+  (`application.attached`, entity `.`, `repository: true`, no `main`), so the
+  broker account `app-todo` (publish-only on `<org>.app.todo.>`) is drawn. The
+  body (`hale dna dev` or `run`) brings `compose.yaml` up as the organism's own
+  compose project and hands it the `*_APP` variables `api/nerves.hl` reads, the
+  api on the host's network and its password the vault entry compose mounts as
+  a secret; `dna/tests/repository_sense_test.hl` drives the containerised api's
+  sense into the heart. A change to `compose.yaml` reaches the running services
+  when the body next brings them up (a restart of the body), not through a
+  Mutation's restart request yet.
 - **The exported contract is not read.** `init` takes `spec/*.yaml`, `*.yml` and
   `*.md` as contracts and `components.schemas` as nouns. `hale api export`
   writes JSON and a `.proto`, so `spec/todo.md` is a short hand-written index

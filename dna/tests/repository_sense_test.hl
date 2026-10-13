@@ -14,6 +14,15 @@
 // into the record. A repository is still re-ingested: its attachment is
 // not an application's artifact. Without a NATS server
 // (HALE_DNA_NATS_URL_OWNER) only the record half is exercised.
+//
+// The body runs the repository's compose services (ruling 11): where
+// docker compose and the todo compose file's images are on this machine,
+// `dna run` brings them up as the organism's own compose project, the
+// containerised api's sense says an overdue item that the heart puts into
+// the record once, a service killed under it is brought up again, and
+// stopping the body takes every container down. Elsewhere (CI pulls only
+// its mirror's images) the body is told to leave compose alone
+// (HALE_DNA_COMPOSE=off) and the test process speaks as the api would.
 
 import "../core" as dna;
 import "./onboarding/todo/api/nerves" as todo;
@@ -116,9 +125,16 @@ main locus App {
         let org = line_value(nerves.stdout, "HALE_DNA_NATS_ORG");
         std::test::assert(nerves.code == 0 && len(spine) > 0 && len(app_url) > 0 && app_user == "app-todo" && app_vault == "nats-" + org + "-app-todo", "the repository's application has its account: " + nerves.stdout + nerves.stderr);
 
-        let started = in_dir(repo, "sh\n-c\nHALE_DNA_NATS_URL_SPINE=\"$2\" HALE_DNA_NATS_ORG=\"$3\" nohup timeout --foreground 300 \"$1\" dna run . --no-iris >host.log 2>&1 </dev/null & echo $!\nsh\n" + toolchain() + "\n" + spine + "\n" + org);
+        if containers_here() {
+            in_containers(repo, spine, org);
+            dna::scratch_done(scratch);
+            return;
+        }
+        eprintln("repository_sense_test: the compose half not exercised (docker compose, or the images ubuntu:24.04 and node:22-alpine, are not on this machine); the test process speaks as the api would");
+        let started = in_dir(repo, "sh\n-c\nHALE_DNA_COMPOSE=off HALE_DNA_NATS_URL_SPINE=\"$2\" HALE_DNA_NATS_ORG=\"$3\" nohup timeout --foreground 300 \"$1\" dna run . --no-iris >host.log 2>&1 </dev/null & echo $!\nsh\n" + toolchain() + "\n" + spine + "\n" + org);
         let host_pid = dna::trim_nl(started.stdout);
         std::test::assert(logged(repo, "the organization reads its facts from the nerves", 300) && logged(repo, "hale dna run: genome ", 60), "the organization came up on the repository record: " + host_log(repo));
+        std::test::assert(std::str::contains(host_log(repo), "the repository's compose services are the operator's (HALE_DNA_COMPOSE=off)"), "the body leaves compose alone when told: " + host_log(repo));
 
         // ---- the application's own sense, as its main.hl wires it
         let sense = todo::Nerves { url: app_url, user: app_user, credential: std::secret::Credential { vault: app_vault }, org: org };
@@ -132,6 +148,65 @@ main locus App {
         let rest = dna::run_tool("sh\n-c\ncd \"$1\" && for f in org app; do [ -f .hale/dna/$f.pid ] && kill -9 $(cat .hale/dna/$f.pid) 2>/dev/null; done; true\nsh\n" + repo);
         dna::scratch_done(scratch);
     }
+}
+
+// Whether the body can run the todo compose file here: docker compose, and
+// its images already pulled (a fixture pulls nothing).
+fn containers_here() -> Bool {
+    return dna::run_tool("sh\n-c\ndocker compose version >/dev/null 2>&1 && docker image inspect ubuntu:24.04 node:22-alpine >/dev/null 2>&1").code == 0;
+}
+
+// The compose project the body named in its log ("" until it has).
+fn compose_project_logged(repo: String) -> String {
+    let log = host_log(repo);
+    let at = std::str::index_of(log, "compose project ");
+    if at < 0 { return ""; }
+    let rest = log[(at + 16)..len(log)];
+    let end = std::str::index_of(rest, " ");
+    return if end < 0 { "" } else { rest[0..end] };
+}
+
+// The containers of compose project `project`, any state, one id a line.
+fn containers_of(project: String) -> String {
+    return dna::trim_nl(dna::run_tool("docker\nps\n-aq\n--filter\nlabel=com.docker.compose.project=" + project).stdout);
+}
+
+// `dna run` on the repository with its compose services: the api in its
+// container, handed the nerves by the body.
+fn in_containers(repo: String, spine: String, org: String) {
+    let built = in_dir(repo, toolchain() + "\nbuild\napi\n-o\nbin/todo-api");
+    std::test::assert_eq_int(built.code, 0, "the api built, as the compose file expects: " + built.stdout + built.stderr);
+    let port = dna::free_port(0);
+    let ports = "TODO_PORT=" + to_string(port) + " TODO_MCP_PORT=" + to_string(dna::free_port(1)) + " TODO_STREAM_PORT=" + to_string(dna::free_port(2)) + " TODO_UI_PORT=" + to_string(dna::free_port(3));
+    let started = in_dir(repo, "sh\n-c\nexport " + ports + "; HALE_DNA_NATS_URL_SPINE=\"$2\" HALE_DNA_NATS_ORG=\"$3\" nohup timeout --foreground 900 \"$1\" dna run . --no-iris >host.log 2>&1 </dev/null & echo $!\nsh\n" + toolchain() + "\n" + spine + "\n" + org);
+    let host_pid = dna::trim_nl(started.stdout);
+    std::test::assert(logged(repo, "compose project ", 300), "the body brings the repository's compose services up: " + host_log(repo));
+    let project = compose_project_logged(repo);
+    // whatever becomes of this fixture, its containers go when it does
+    let reaper = dna::run_tool("sh\n-c\n(while kill -0 \"$1\" 2>/dev/null; do sleep 1; done; docker compose -p \"$2\" down --remove-orphans --timeout 5) </dev/null >/dev/null 2>&1 &\nsh\n" + to_string(std::process::pid()) + "\n" + project);
+    std::test::assert(std::str::starts_with(project, "dna_") && std::str::ends_with(project, "-todo"), "the organism's own compose project: " + project);
+    std::test::assert(std::str::contains(host_log(repo), "the nerves handed to them as app-todo at "), "the body hands compose the application's nerves: " + host_log(repo));
+    std::test::assert(std::str::contains(host_log(repo), "its password the vault's entry, mounted"), "and its password as the vault's entry, a file: " + host_log(repo));
+    std::test::assert(logged(repo, "the repository's compose services are up (compose project " + project + ")", 600), "the services came up, the api healthy: " + host_log(repo));
+    std::test::assert(logged(repo, "the organization reads its facts from the nerves", 120), "the organization reads the nerves: " + host_log(repo));
+
+    // ---- the containerised api's own sense: an item already overdue
+    let added = in_dir(repo, toolchain() + "\napi\ncall\nhttp://127.0.0.1:" + to_string(port) + "\nTodos::add\n--title\nfile the report\n--due\n2026-10-01T00:00:00Z\n--bearer\nt-ada");
+    std::test::assert_eq_int(added.code, 0, "the api in its container took the item: " + added.stdout + added.stderr);
+    let request = "todo/concern.raised/overdue-1";
+    std::test::assert(logged(repo, "a concern from todo/overdue (" + request + ") put into the record", 60), "the heart put the containerised api's concern into the record: " + host_log(repo));
+    std::test::assert_eq_int(concerns(repo, "concern.requested", request), 1, "once");
+
+    // ---- supervision: a service killed under the body is brought up again
+    let killed = dna::run_tool("docker\ncompose\n-p\n" + project + "\nkill\napi");
+    std::test::assert_eq_int(killed.code, 0, "the api killed: " + killed.stderr);
+    std::test::assert(logged(repo, "compose: api exited 137; brought up again", 60), "the body brings the api up again: " + host_log(repo));
+
+    // ---- stopping the body takes the services down
+    let k1 = dna::run_tool("kill\n" + host_pid);
+    std::test::assert(logged(repo, "the repository's compose services are down (compose project " + project + ")", 120), "stopping the body brings compose down: " + host_log(repo));
+    std::test::assert_eq_str(containers_of(project), "", "no container of " + project + " is left");
+    let rest = dna::run_tool("sh\n-c\ncd \"$1\" && for f in org app; do [ -f .hale/dna/$f.pid ] && kill -9 $(cat .hale/dna/$f.pid) 2>/dev/null; done; true\nsh\n" + repo);
 }
 
 fn main() { App { }; }
