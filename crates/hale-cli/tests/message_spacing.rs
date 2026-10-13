@@ -56,6 +56,24 @@ const ALIGNED: &[(&str, &str, &str)] = &[
          client is readable",
     ),
     (
+        "crates/hale-cli/src/api_gen/js_client.rs",
+        "struct_decl",
+        "a generated JSDoc `@typedef` aligns its ` *   name: type` \
+         field lines under the tag, as JSDoc reads them",
+    ),
+    (
+        "crates/hale-syntax/src/json_gen.rs",
+        "json_list_read",
+        "generated Hale source keeps its indentation so the expanded \
+         codec is readable in a dump",
+    ),
+    (
+        "crates/hale-syntax/src/json_gen.rs",
+        "pb_list_read",
+        "generated Hale source keeps its indentation so the expanded \
+         codec is readable in a dump",
+    ),
+    (
         "crates/hale-cli/src/verbs/api.rs",
         "api_usage",
         "a usage text aligns its continuation lines",
