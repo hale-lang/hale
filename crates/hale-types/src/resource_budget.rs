@@ -58,6 +58,8 @@ const FD_ACQUIRING_PATHS: &[&str] = &[
     // GH #1030's waiting dial, a descriptor like `connect`'s (missed when
     // it was added; F.40 phase 4, S5).
     "std::io::tcp::connect_wait",
+    // The deadline-bounded dial, a descriptor like `connect`'s.
+    "std::io::tcp::connect_within",
     "std::io::tcp::listen_socket",
     "std::io::tcp::__listen_socket",
     "std::io::tcp::accept_one",

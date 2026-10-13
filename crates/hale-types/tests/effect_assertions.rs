@@ -530,6 +530,80 @@ fn async_io_placement_is_silent_about_a_parking_sleep() {
     );
 }
 
+/// A dial parks too (2026-10-12): on an async_io pool `connect`,
+/// `connect_wait` and `connect_within` are a non-blocking `connect(2)`
+/// whose wait for the socket parks the coroutine, so a handler that dials
+/// stalls nothing and the advisory is silent about it.
+#[test]
+fn async_io_placement_is_silent_about_a_parking_connect() {
+    let src = r#"
+        type Ev { n: Int; }
+        locus Worker {
+            bus { subscribe "e" as on_e of type Ev; }
+            fn on_e(e: Ev) {
+                let a = std::io::tcp::connect("127.0.0.1", e.n) or - 1;
+                let b = std::io::tcp::connect_wait("127.0.0.1", e.n, 1s) or - 1;
+                let c = std::io::tcp::connect_within("127.0.0.1", e.n, 1s) or - 1;
+                println(a + b + c);
+            }
+        }
+        main locus App {
+            params { w: Worker = Worker { }; }
+            placement { w: cooperative(pool = web) where async_io; }
+            run() { std::time::sleep(10ms); }
+        }
+        fn main() { App { }; }
+    "#;
+    let ds = diags_for(src);
+    assert!(
+        !ds.iter().any(|m| m.contains("stalls every other locus")),
+        "a handler whose dial parks must not be flagged: {:?}",
+        ds
+    );
+}
+
+/// Every TLS wait parks too (2026-10-12): the handshake (`connect`,
+/// `connect_within`, `upgrade`) and `recv_bytes` joined the park list, so
+/// the `std::http` https client — dial, writes, reads, its retry sleep —
+/// reaches no leaf that holds the worker, and a handler that makes https
+/// calls on an async_io pool is not flagged. It used to be, through
+/// `tls::connect` and `tls::recv_bytes`.
+#[test]
+fn async_io_placement_is_silent_about_tls_and_the_https_client() {
+    let src = r#"
+        type Ev { n: Int; }
+        locus Worker {
+            bus { subscribe "e" as on_e of type Ev; }
+            fn on_e(e: Ev) {
+                let h = std::io::tls::connect("example.com", 443) or - 1;
+                let w = std::io::tls::connect_within("example.com", 443, 2s) or - 1;
+                let u = std::io::tls::upgrade(e.n, "example.com", true) or - 1;
+                let b = std::io::tls::recv_bytes(h, 64);
+                let r = std::http::get("https://example.com/") or {
+                    std::http::ClientResponse { status: 0, headers: "", body: b"" }
+                };
+                let c = std::http::Client { timeout_ms: 2000 };
+                let r2 = c.get("https://example.com/") or {
+                    std::http::ClientResponse { status: 0, headers: "", body: b"" }
+                };
+                println(h + w + u + len(b) + r.status + r2.status);
+            }
+        }
+        main locus App {
+            params { w: Worker = Worker { }; }
+            placement { w: cooperative(pool = web) where async_io; }
+            run() { std::time::sleep(10ms); }
+        }
+        fn main() { App { }; }
+    "#;
+    let ds = diags_for(src);
+    assert!(
+        !ds.iter().any(|m| m.contains("stalls every other locus")),
+        "a handler whose TLS and https calls park must not be flagged: {:?}",
+        ds
+    );
+}
+
 /// The park exemption is per-LEAF, not per-handler: a handler that
 /// sleeps *and* blocks is still reported, and the witness path names
 /// the leaf that actually holds the worker.

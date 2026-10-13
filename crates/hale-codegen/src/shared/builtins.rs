@@ -2973,6 +2973,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .fn_type(&[ptr_t.into(), i16_t.into(), self.context.i64_type().into()], false);
         self.module
             .add_function("lotus_tcp_connect_wait", tcp_connect_wait_ty, None);
+        // declare i32 @lotus_tcp_connect_within(ptr host, i16 port, i64
+        // timeout_ns) — one attempt, bounded by timeout_ns (ETIMEDOUT).
+        self.module
+            .add_function("lotus_tcp_connect_within", tcp_connect_wait_ty, None);
 
         // declare i32 @lotus_tcp_close_fd(i32 fd)
         // close, returns 0 or -1.
@@ -3014,6 +3018,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             i32_t.fn_type(&[ptr_t.into(), i16_t.into()], false);
         self.module
             .add_function("lotus_tls_connect", tls_connect_ty, None);
+        // declare i32 @lotus_tls_connect_within(ptr host, i16 port, i64
+        // timeout_ns) — the dial and the handshake under one deadline.
+        let tls_connect_within_ty = i32_t
+            .fn_type(&[ptr_t.into(), i16_t.into(), self.context.i64_type().into()], false);
+        self.module
+            .add_function("lotus_tls_connect_within", tls_connect_within_ty, None);
         // declare i32 @lotus_tls_upgrade(i32 raw_fd, ptr host, i32 verify)
         // — wrap an already-connected fd in a client TLS session
         // (STARTTLS-style). `verify` is a Bool lowered to i32 (0/1).

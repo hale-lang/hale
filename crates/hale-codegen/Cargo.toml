@@ -35,6 +35,11 @@ dynamic-llvm = ["inkwell/llvm18-0-prefer-dynamic"]
 [dev-dependencies]
 hale-corpus = { path = "../hale-corpus" }
 libc = "0.2"
+# Test-only: a local TLS server (a self-signed certificate made in the
+# test, an acceptor per connection) for the https client's async_io park
+# tests (tls_async_io_park.rs). The system OpenSSL the runtime links already;
+# hale-cli depends on the same crate.
+openssl = "0.10"
 # Test-only: `protox` compiles the generated `.proto` as protoc would, and the
 # reflection test holds the served descriptor to what it compiled to
 # (api_grpc_proto.rs). Nothing here is the runtime's or the stdlib's.
