@@ -221,7 +221,7 @@ stdlib, which keep their own representation class (the table above).
 | Bounded collection | `bounded[T; N]` | Fixed-capacity counted list, INLINE in its containing type/params (`{ i64 len, [N x T] }`). See § "bounded[T; N]" below. |
 | Tuple | `(A, B, C)` | Fixed-size heterogeneous |
 | Struct | `type Foo { x: Int; y: Int = 0; }` | Named record, a **value**: `let b = a;` copies (see § "A struct binding is a copy").  Each field can declare a default value (`= expr`); literals omitting a defaulted field fill it from the default at instantiation time. |
-| Enum | `type Foo = enum { A, B(int) };` | Tagged union (sum type) |
+| Enum | `type Foo = enum { A, B(int) };` | Tagged union (sum type). A constructor call carries the variant's declared values: `Foo::B(x)` is checked for the count and each value's type, a Decimal literal taking the field's scale ("\`Foo::B\` value 0: expected \`Int\`, got \`String\`"). A payload-free enum is stored as its tag. |
 | Alias | `type Thing = Int;` | A second SPELLING of a type, not a new type. See § "Type aliases". |
 | Function | `fn(A, B) -> C` | First-class function values |
 | Generic | `Foo<T>` | Parametric over type T |
@@ -994,6 +994,19 @@ own `bounded[T; N]` **shadows** the intrinsic for that receiver type
 `f.get(i)` is unaffected: method position is not the free-fn
 namespace.
 
+The element type is one a slot holds inline or by a pointer it
+anchors: a scalar (`Int`, `Float`, `Bool`, `Decimal<S>`, `Duration`,
+`Time`, an identity, a range or a quantity), an enum without payloads
+(its tag), `String`, `Bytes` or a struct. `hale check` refuses any
+other at the annotation, naming it: a tuple, an array, another
+`bounded`, an enum with payloads (a pointer to its cell, which the
+slots' anchoring does not walk) or an interface ("\`bounded[Shape;
+N]\`: \`Shape\` is an enum with payloads, which a bounded buffer cannot
+hold inline … wrap the element in a struct"). Until 2026-10-13 the
+check admitted them and the build refused the element type with no
+file or line, and a payload-free enum, which lowers as a `Bool` does,
+was refused too.
+
 Semantics:
 - Fields auto-initialize EMPTY. Literal init and whole-field
   assignment are rejected — the intrinsics are the only mutation
@@ -1141,7 +1154,14 @@ String / Duration / Decimal / Time / Bytes / BytesView / BytesMut
 
 A non-primitive argument is a single-segment named type (a user
 `type`, or another generic instantiation, which mangles
-recursively). An array, tuple, `bounded[T; N]` or function type as
+recursively). An identity or a range (spec/units.md) is one too, and
+lowers as its `Int`. A quantity or a point declared by the program is
+not: its unit lives in the checker's rows for the places that name the
+type, and a generic body names `T`, so it would print and convert as
+the bare count. A generic fn call that would bind one is refused at
+the callee ("generic fn \`id\`: \`T\` would be \`Money\`, a quantity,
+and a generic body has no unit to print or convert one by"); the
+stdlib's `Duration` and `Time` are primitives and bind. An array, tuple, `bounded[T; N]` or function type as
 an argument is refused at lowering; a qualified path is rewritten
 to a single segment by the import renames before the mangler sees
 it, which is why the checker's rule above is confined to
@@ -1768,6 +1788,19 @@ so the position reports no type mismatch beside the law's error.
   effect — including in **statement position**:
   `write_file(p, s) or { println("failed"); };` — the same as
   `or raise` / `or discard` there.
+
+  A statement `or` on a **value-bearing** fallible runs its
+  substitute the same way, for its effect: `parse(s) or { log(err);
+  };`, `parse(s) or note(err);` with a handler of any type, or
+  `parse(s) or 0;`. (Until 2026-10-13 the build refused a block with
+  no tail and a handler of another type there, which the check
+  admitted.)
+
+  The value of an `or` whose call succeeds with `()` is no value:
+  `let full = push(self.marks, t) or { };` is refused at the
+  expression, as every `()`-typed expression in a value position is
+  (spec/semantics.md § "Expressions with no value"). Write the call
+  as a statement.
 
 The `or` operator is right-associative: `a() or b() or raise`
 parses as `a() or (b() or raise)`, so each level disposes one

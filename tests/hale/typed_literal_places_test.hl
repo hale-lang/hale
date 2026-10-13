@@ -1,0 +1,49 @@
+// Literals typed by the place they stand in, where the check had not
+// typed them: a value an enum variant carries (a Decimal literal takes
+// the field's scale), a literal in a pattern (a quantity literal is its
+// count, converted into the scrutinee's denomination), and an identity
+// as a generic fn's type argument (lowered as its `Int`). Each checked
+// clean and the build refused it ("`Wr::One` arg 0: expected type
+// Decimal(2), got Decimal(9)", "quantity literal `1min` has no required
+// `expression_typing` row", "generic type argument `OrderId` not
+// supported").
+unit cent;
+type Money = quantity Int in cent;
+type OrderId = distinct Int;
+type Fee = enum { Flat(Decimal<2>), Waived };
+
+fn id<G>(x: G) -> G { return x; }
+
+fn amount(f: Fee) -> String {
+    match f {
+        Fee::Flat(d) -> { return to_string(d); },
+        _ -> { return "none"; },
+    }
+}
+
+fn main() {
+    std::test::assert_eq_str(amount(Fee::Flat(1.25d)), "1.25", "a variant's Decimal takes the field's scale");
+
+    let d = 60s;
+    let mut hit = "";
+    match d {
+        1min -> { hit = "a minute"; },
+        _ -> { hit = "other"; },
+    }
+    std::test::assert_eq_str(hit, "a minute", "`1min` is sixty seconds of Duration");
+    let m: Money = 3cent;
+    match m {
+        3cent -> { hit = "three"; },
+        _ -> { hit = "other"; },
+    }
+    std::test::assert_eq_str(hit, "three", "a quantity pattern of its own unit");
+    match Fee::Flat(2.5d) {
+        Fee::Flat(2.50d) -> { hit = "flat"; },
+        _ -> { hit = "other"; },
+    }
+    std::test::assert_eq_str(hit, "flat", "a Decimal sub-pattern at the payload's scale");
+
+    let o = OrderId(7);
+    let back = id(o);
+    std::test::assert_eq_int(Int(back), 7, "an identity through a generic fn");
+}

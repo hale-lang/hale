@@ -192,6 +192,12 @@ fn main() {
 }
 ```
 
+The element can be a scalar (`Int`, `Float`, `Bool`, `Decimal`,
+`Duration`, `Time`, one of your unit types), an enum without
+payloads, a `String`, `Bytes` or a struct. Anything else — a tuple,
+an array, an enum whose variants carry values — is refused at the
+annotation; wrap it in a struct.
+
 Six operations, all compiler intrinsics (types stay method-free,
 like `len(s)`):
 

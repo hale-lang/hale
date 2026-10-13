@@ -146,6 +146,18 @@ Phase 2b entry in `spec/stdlib.md`.
   `false` / empty for pointer-shaped types), mirroring the
   statement form's silent-no-op fallthrough.
 
+**A literal in a pattern** is a value of the type it is matched
+against, compared as lowering compares them (an identity's or a
+range's scrutinee is its `Int`): `match n { "a" -> … }` over an
+`Int`, or the `2` of `(1, 2)` against an `(Int, String)`, is refused
+at the literal ("this pattern is of type \`String\`, and the value
+matched is of type \`Int\`"). A quantity literal in a pattern is the
+quantity it is in an expression, converted into the scrutinee's
+denomination: `match d { 1min -> … }` over a `Duration` matches sixty
+seconds. A Decimal literal takes the scrutinee's scale. The values in
+an enum constructor's pattern (`Fee::Flat(2.50d)`) are matched against
+the variant's declared types the same way.
+
 **Scrutinee-less form.** `match { cond -> body, else -> body }`
 omits the scrutinee and tests guards directly:
 
@@ -196,6 +208,57 @@ A block's trailing expression with no `;` is not a statement and
 is not judged here (§ "Expressions — `if` and block tails"). Before
 this rule the checker accepted `a + 2;` and the backend refused it
 with no file or line.
+
+## Expressions with no value
+
+A call to a fn that returns nothing, an `or` on a `() fallible(E)`
+call (`push(self.marks, t) or { }`, `write_file(p, s) or discard`),
+and an `if` / `match` / block with no tail value produce no value:
+their type is `()`, and there is no `()` value to bind, store or
+compute with. Such an expression is a statement or nothing. Where a
+place takes the type of what it is given rather than checking it
+against a declared one — a `let` (with or without an annotation),
+a tuple or array element, an operand, a generic fn's argument — the
+check refuses it at the expression:
+
+```text
+main.hl:7:20: type error: let `full` needs a value, and this
+expression produces none (its type is `()`): a call to a fn that
+returns nothing, an `or` on a `() fallible(E)` call, or an `if` /
+`match` / block with no tail value. Write it as a statement of its
+own (`call() or { ... };`), or give it a value to produce.
+```
+
+A place with a declared type (a parameter, a field, a condition, a
+return) already refused `()` as a type mismatch. Until 2026-10-13
+the others checked clean and the build refused them with no file or
+line.
+
+## Operators and their operand types
+
+`==` `!=` `<` `>` `<=` `>=` and the arithmetic, bitwise and logical
+operators apply to these operands (both of one type; an `Int` widens
+into a `Float`, F.23):
+
+| Operand | Operators |
+|---|---|
+| `Int` (an identity's and a range's are the unit dialect's, spec/units.md) | `+ - * / %`, `& \| ^ << >>`, unary `-` `~`, every comparison |
+| `Float` | `+ - * /`, unary `-`, every comparison |
+| `Decimal<S>` | `+ - * / %`, unary `-`, every comparison (one scale) |
+| `Duration`, `Time`, a quantity, a point | the unit dialect's algebra (spec/units.md) |
+| `Bool` | `==` `!=`, `&&` `\|\|`, unary `!` |
+| `String` | `+` (concatenation; `String + <printable>` renders the other side), every comparison |
+| an enum | `==` `!=` |
+| `Bytes`, a struct, a tuple, an array, a `bounded`, a locus, an interface, a perspective | none |
+
+Anything else is refused at the operator, naming the operand and
+what its type has: "\`<\` does not apply to \`Bool\`: a \`Bool\` has
+\`==\`, \`!=\`, \`&&\`, \`\|\|\` and \`!\`". A compound assignment
+(`x += v`) is its operator's: `b += true` on a `Bool` is refused the
+same way. A struct, tuple or array is compared or combined through its
+parts. Until 2026-10-13 the check held only that the two sides were
+one type, and the build refused `true < false`, `p == q` of two
+structs, `b"a" + b"b"` and `!n` with no file or line.
 
 ## Binary data — Bytes and conversion
 
@@ -4060,8 +4123,17 @@ bus payload may carry a struct whose fields are primitives,
 Strings, Bytes, or other nested structs, at any depth. Serialize
 walks the field tree in declaration order; deserialize allocates
 each nested struct in the lazy global payload arena and recurses.
-Arrays, tuples, and enums as bus payload *fields* are post-v1
-polish.
+A payload-free enum field travels as its four-byte tag (so a topic
+`keyed_by` an enum field builds), and a `bounded[T; N]` of scalars or
+such enums and an array of scalars or structs are carried too. An
+enum with payloads, a tuple, a `bounded` of pointers (strings, bytes,
+structs) and an array of strings or arrays as a payload *field* (at
+any depth) are post-v1 polish, and a topic whose payload struct holds
+one is rejected at typecheck where it is delivered, as above, naming
+the field ("topic \`Ev\` declares \`payload: Msg\`, whose field \`x\` is
+a tuple (\`(Int, Int)\`), which the wire format does not carry").
+Until 2026-10-13 the check admitted every field and the build refused
+these, and every enum field, with no file or line.
 
 **Size.** A delivery is as large as its fields make it, and local
 delivery is bounded only by the payload arena (`spec/memory.md`):

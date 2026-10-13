@@ -12662,7 +12662,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 | PrimType::Decimal(_)
                 | PrimType::Time),
             ) => Ok(TypeExpr::Primitive(*p, span)),
-            Ty::Named(n) if self.user_types.contains_key(n) || self.user_enums.contains_key(n) => {
+            // An identity, a range or a quantity (GH #1076) is a name
+            // the alias table lowers as its `Int`.
+            Ty::Named(n)
+                if self.user_types.contains_key(n)
+                    || self.user_enums.contains_key(n)
+                    || self.user_type_aliases.contains_key(n) =>
+            {
                 Ok(TypeExpr::Named {
                     path: QualifiedName { segments: vec![Ident::new(n.clone(), span)], span },
                     generic_args: Vec::new(),
@@ -19040,7 +19046,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 // statement-position fallible-method shape this
                 // covers; non-Unit success values can also flow
                 // here harmlessly and get discarded).
-                let _ = self.lower_or_expr(inner, disposition, scope)?;
+                let _ = self.lower_or_expr(inner, disposition, scope, true)?;
                 Ok(BlockEnd::Open)
             }
             Stmt::Expr(_) => Err(CodegenError::Unsupported(
@@ -25013,7 +25019,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             }
             Expr::Or { inner, disposition, .. } => {
                 let (v_opt, ty_opt) =
-                    self.lower_or_expr(inner, disposition, scope)?;
+                    self.lower_or_expr(inner, disposition, scope, false)?;
                 match (v_opt, ty_opt) {
                     (Some(v), Some(ty)) => Ok((v, ty)),
                     // The check refuses this first (a used `or
@@ -25029,12 +25035,16 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                             e.span(),
                         ))
                     }
-                    _ => Err(CodegenError::Unsupported(
-                        "`or` expression in value position has Unit \
-                         success type — bare-statement use is fine, but \
-                         can't bind to `let` without a value (use \
-                         `let _: () = expr or ...;` if you want to ignore)"
+                    // The check refuses a `()` value where a value is
+                    // taken (`refuse_unit_value`); a harness build that
+                    // skips the check meets the same rule here.
+                    _ => Err(CodegenError::UnsupportedAt(
+                        "this `or` produces no value (the call succeeds \
+                         with `()`), so there is nothing to bind or \
+                         compute with; write it as a statement of its own \
+                         (`call() or { ... };`)"
                             .into(),
+                        e.span(),
                     )),
                 }
             }

@@ -1006,6 +1006,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // "existing buffer" — see the in-place-assign branch
             // below for the per-delta-leak fix.
             CodegenTy::String | CodegenTy::Bytes => false,
+            // A payload-free enum is its i32 tag, stored like any
+            // scalar; one with payloads is a pointer to its cell.
+            CodegenTy::Enum(name) => self
+                .user_enums
+                .get(name.as_str())
+                .map(|i| i.has_payload)
+                .unwrap_or(true),
             _ => true,
         };
 
@@ -1102,7 +1109,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         }
 
         if !compound {
-            let value = self.maybe_self_field_heap_copy(rhs, slot_ty)?;
+            let value = if matches!(slot_ty, CodegenTy::Enum(_)) {
+                // the tag itself: nothing on a heap to copy
+                rhs
+            } else {
+                self.maybe_self_field_heap_copy(rhs, slot_ty)?
+            };
             self.builder
                 .build_store(slot_ptr, value)
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;

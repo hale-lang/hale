@@ -79,6 +79,13 @@ parse_count(s)         or discard;            // ignore (as a statement)
   compiler refuses it and suggests `or <fallback>`, `or raise` or
   the statement form.
 
+As a statement, any `or` runs its fallback for its effect only — the
+value is thrown away — so the fallback needn't be a value of the
+success type: `parse_count(s) or { log(err.kind); };` is fine. And a
+call that succeeds with `()` has no value to keep: `let ok =
+write_file(p, s) or { };` is refused (there is nothing to bind); write
+the call as a statement.
+
 ## A real example
 
 Reading a file is fallible — the file might not exist:

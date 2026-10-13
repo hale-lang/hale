@@ -25,6 +25,18 @@ let negated = !ready;
 
 Bitwise operators (`& | ^ << >> ~`) are available on `Int`.
 
+Each operator applies to the types it means something for, and the
+checker says so at the operator when it doesn't: `%` is on `Int` and
+`Decimal` but not `Float`; a `Bool` has `==`, `!=`, `&&`, `||` and
+`!`; a `String` has `+` and the comparisons; an enum has `==` and
+`!=`. A struct, a tuple or an array has no operators at all — compare
+it field by field:
+
+```text
+type error: `==` does not apply to a struct (`Point`): it has no
+operators; compare or combine its parts
+```
+
 Comparisons don't chain: write `a < b && b < c`. On numbers,
 `a < b < c` is refused — it would compare the `Bool` from `a < b`
 with an `Int` — so the maths-notation habit can't slip through

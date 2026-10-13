@@ -715,11 +715,20 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// implicit main locus). Substitute joins via phi; raise
     /// terminates the err branch, so the join only has the ok
     /// branch as predecessor.
+    ///
+    /// `value_discarded`: the `or` is a statement, so its value is thrown
+    /// away. A substitute is then run for its effect, whatever the call's
+    /// success type, as the check reads it (spec/types.md: "In statement
+    /// position the substituted value is discarded, so the handler's
+    /// success type needn't match the call's"): `f() or { log(err); };`
+    /// on an `Int`-returning `f`, or `f() or note(err);` with a handler of
+    /// another type.
     pub(crate) fn lower_or_expr(
         &mut self,
         inner: &Expr,
         disposition: &OrDisposition,
         scope: &Scope<'ctx>,
+        value_discarded: bool,
     ) -> Result<(Option<BasicValueEnum<'ctx>>, Option<CodegenTy>), CodegenError> {
         // GH #793 — does this `or` hand back a proven-fresh factory's
         // locus? Decided from the AST BEFORE the inner call is
@@ -950,10 +959,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     // the GH #402 hook reads that decision where the
                     // substitute is lowered. A nested `or` needs no
                     // re-arming for the same reason.
-                    let (sub_v, sub_ty) = if call.success_ty.is_none() {
+                    let (sub_v, sub_ty) = if call.success_ty.is_none() || value_discarded {
                         // v1.x-FORM-4: Unit-success fallible (e.g.
                         // hashmap.remove / write_file). The substitute RHS
-                        // is Unit-typed.
+                        // is Unit-typed. A statement `or` on a value-bearing
+                        // call is the same: the substitute runs for its
+                        // effect and the join below gives no value.
                         let mut sub_mut_scope = Scope {
                             locals: sub_scope.locals.clone(),
                         };
@@ -974,9 +985,22 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                             // returning fn call works without the
                             // expression-position "fn returns no value"
                             // reject.
-                            _ => {
+                            Expr::Call { .. } | Expr::Or { .. } => {
                                 let s = Stmt::Expr(rhs.clone());
                                 self.lower_stmt(&s, &mut sub_mut_scope)?;
+                            }
+                            Expr::If(ifs) => {
+                                let s = Stmt::If((**ifs).clone());
+                                self.lower_stmt(&s, &mut sub_mut_scope)?;
+                            }
+                            Expr::Match(m) => {
+                                let s = Stmt::Match((**m).clone());
+                                self.lower_stmt(&s, &mut sub_mut_scope)?;
+                            }
+                            // A plain value thrown away (`f() or 0;`):
+                            // evaluated, and dropped.
+                            _ => {
+                                let _ = self.lower_expr_opt(rhs, &sub_mut_scope)?;
                             }
                         }
                         (None, None)
@@ -1025,7 +1049,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         } else {
                             (sub_v, sub_ty)
                         };
-                        if sub_ty != call.success_ty {
+                        if !value_discarded && sub_ty != call.success_ty {
                             return Err(CodegenError::Unsupported(format!(
                                 "`or` substitute type mismatch: expected \
                                  {:?}, got {:?}",
@@ -1066,8 +1090,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
                 self.builder.position_at_end(join_bb);
                 // `or discard` produces Unit whatever the call's
-                // success type: its value is thrown away.
-                if matches!(disposition, OrDisposition::Discard(_)) {
+                // success type: its value is thrown away; so does any
+                // statement `or`.
+                if value_discarded || matches!(disposition, OrDisposition::Discard(_)) {
                     return Ok((None, None));
                 }
                 match (ok_v_opt, sub_v, &call.success_ty) {

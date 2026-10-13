@@ -157,7 +157,13 @@ locus SessionCache {
 ```
 
 `indexed_by` is a slot clause because indexing IS a storage
-commitment — it changes the pool's layout and access path.
+commitment — it changes the pool's layout and access path. A
+`@form(hashmap)` key field is an `Int` or a `String` (an identity, a
+range or a quantity is its `Int`): the runtime hashes those two, and
+any other field type is refused at the `indexed_by` name ("@form(hashmap)
+key \`Row.k\` is a \`Bool\`: a hashmap's key is an \`Int\` or a
+\`String\`"). Until 2026-10-13 the check admitted it and the build
+refused the synthesized `get` / `set`.
 `@form(heap)`'s `ordered_by min <field>` / `ordered_by max <field>`
 is one for the same reason: the order decides where every cell sits.
 `ordered_by` on a slot of any other locus is a type error.
