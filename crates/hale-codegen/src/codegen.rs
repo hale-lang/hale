@@ -292,6 +292,22 @@ pub(crate) struct BceLoop {
     pub(crate) index_var: String,
 }
 
+/// Does this form slot retire its cells onto its locus's arena pending
+/// list, for the activation boundary to flush (anchor retirement)? A
+/// `sync = none` / `serialized` `@form(hashmap)` of record cells, and a
+/// `@form(lru_cache)` (whose put, eviction and remove retire the same
+/// way).
+pub(crate) fn slot_retires_cells_deferred(sl: &CapacitySlotLayout) -> bool {
+    match sl.form {
+        Some(SlotForm::Hashmap) => {
+            matches!(sl.sync_mode, SyncMode::None | SyncMode::Serialized)
+                && matches!(sl.elem_ty, CodegenTy::TypeRef(_))
+        }
+        Some(SlotForm::LruCache) => matches!(sl.elem_ty, CodegenTy::TypeRef(_)),
+        _ => false,
+    }
+}
+
 /// Read-only `@form(vec)` methods — calling one of these on the
 /// loop's vec (or any vec) cannot change `len`, so it never
 /// invalidates the BCE invariant. ANY other method name is treated
@@ -5560,6 +5576,11 @@ pub(crate) struct CapacitySlotLayout {
     /// future F.32-1 ships; today the typechecker rejects
     /// those values.
     pub(crate) sync_mode: SyncMode,
+    /// `@form(heap)`: the `ordered_by` field of the cell record and
+    /// whether the largest key is the root (`max`). The slot is a
+    /// `SlotForm::Vec` (the same storage); this turns its method set
+    /// into the heap's. `None` for every other slot.
+    pub(crate) heap_order: Option<(String, bool)>,
 }
 
 /// F.32-1α (2026-05-24): which cross-pool sync discipline a
@@ -19701,6 +19722,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let mut variant_blocks: Vec<(
             inkwell::values::IntValue<'ctx>,
             inkwell::basic_block::BasicBlock<'ctx>,
+            inkwell::basic_block::BasicBlock<'ctx>,
             BasicValueEnum<'ctx>,
         )> = Vec::new();
         for (idx, vinfo) in info.variants.iter().enumerate() {
@@ -19733,12 +19755,16 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .str_concat(acc.into(), close.into())?
                     .into_pointer_value();
             }
+            // A nested payload's rendering (an enum's own switch) adds
+            // blocks: the switch targets `case_bb`, the PHI's edge comes
+            // from the block the case ends in.
+            let final_bb = self.builder.get_insert_block().unwrap();
             self.builder
                 .build_unconditional_branch(cont_bb)
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-            let final_bb = self.builder.get_insert_block().unwrap();
             variant_blocks.push((
                 i32_t.const_int(idx as u64, false),
+                case_bb,
                 final_bb,
                 acc.into(),
             ));
@@ -19759,7 +19785,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             inkwell::basic_block::BasicBlock<'ctx>,
         )> = variant_blocks
             .iter()
-            .map(|(c, bb, _)| (*c, *bb))
+            .map(|(c, bb, _, _)| (*c, *bb))
             .collect();
         self.builder
             .build_switch(tag, default_bb, &cases)
@@ -19775,8 +19801,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             &dyn inkwell::values::BasicValue<'ctx>,
             inkwell::basic_block::BasicBlock<'ctx>,
         )> = Vec::new();
-        for (_, bb, acc) in &variant_blocks {
-            incoming.push((acc, *bb));
+        for (_, _, end_bb, acc) in &variant_blocks {
+            incoming.push((acc, *end_bb));
         }
         incoming.push((&default_acc, default_bb));
         phi.add_incoming(&incoming);
@@ -32306,6 +32332,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let mut variant_blocks: Vec<(
             inkwell::values::IntValue<'ctx>,
             inkwell::basic_block::BasicBlock<'ctx>,
+            inkwell::basic_block::BasicBlock<'ctx>,
             inkwell::values::IntValue<'ctx>,
         )> = Vec::new();
         let default_bb =
@@ -32339,12 +32366,20 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
                 }
             }
+            // A nested payload's comparison (an enum's own switch) adds
+            // blocks: the switch targets `case_bb`, the PHI's edge comes
+            // from the block the case ends in.
+            let end_bb = self
+                .builder
+                .get_insert_block()
+                .expect("builder positioned in enum.eq variant");
             self.builder
                 .build_unconditional_branch(cont_bb)
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
             variant_blocks.push((
                 i32_t.const_int(idx as u64, false),
                 case_bb,
+                end_bb,
                 acc,
             ));
         }
@@ -32370,7 +32405,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             inkwell::basic_block::BasicBlock<'ctx>,
         )> = variant_blocks
             .iter()
-            .map(|(c, b, _)| (*c, *b))
+            .map(|(c, b, _, _)| (*c, *b))
             .collect();
         self.builder
             .build_switch(lt, default_bb, &cases)
@@ -32389,8 +32424,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // SAFETY: each `acc` has bool_t type; PHI accepts any
         // BasicValue, so we coerce via &inkwell::values::IntValue
         // which implements BasicValue.
-        for (_, bb, acc) in &variant_blocks {
-            incoming.push((acc, *bb));
+        for (_, _, end_bb, acc) in &variant_blocks {
+            incoming.push((acc, *end_bb));
         }
         incoming.push((&default_acc, default_bb));
         incoming.push((&mismatch_acc, mismatch_bb));
@@ -34035,19 +34070,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         self.user_loci
                             .get(child_name)
                             .map(|child| {
-                                child.capacity_slots.iter().any(|sl| {
-                                    matches!(
-                                        sl.form,
-                                        Some(SlotForm::Hashmap)
-                                    ) && matches!(
-                                        sl.sync_mode,
-                                        SyncMode::None
-                                            | SyncMode::Serialized
-                                    ) && matches!(
-                                        sl.elem_ty,
-                                        CodegenTy::TypeRef(_)
-                                    )
-                                })
+                                child.capacity_slots.iter().any(slot_retires_cells_deferred)
                             })
                             .unwrap_or(false)
                     } else {
@@ -34115,20 +34138,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 if let CodegenTy::LocusRef(child_name) = fty {
                     if let Some(child) = self.user_loci.get(child_name)
                     {
-                        let retires = child.capacity_slots.iter().any(
-                            |sl| {
-                                matches!(
-                                    sl.form,
-                                    Some(SlotForm::Hashmap)
-                                ) && matches!(
-                                    sl.sync_mode,
-                                    SyncMode::None | SyncMode::Serialized
-                                ) && matches!(
-                                    sl.elem_ty,
-                                    CodegenTy::TypeRef(_)
-                                )
-                            },
-                        );
+                        let retires = child
+                            .capacity_slots
+                            .iter()
+                            .any(slot_retires_cells_deferred);
                         if retires {
                             child_flushes
                                 .push((fname.clone(), *fidx));

@@ -7840,6 +7840,27 @@ impl<'a> Checker<'a> {
         if let Some(form) = &decl.form {
             self.check_form_shape(decl, form);
         }
+        // `ordered_by` is `@form(heap)`'s slot clause and orders nothing
+        // anywhere else.
+        if decl.form.as_ref().is_none_or(|f| f.name.name != "heap") {
+            for member in &decl.members {
+                if let LocusMember::Capacity(cb) = member {
+                    for slot in &cb.slots {
+                        if let Some(o) = &slot.ordered_by {
+                            self.diags.push(Diag::ty(
+                                o.span,
+                                format!(
+                                    "`ordered_by` is the slot clause of `@form(heap)`; slot `{}` of `{}` \
+                                     is not a heap's, so it orders nothing. Annotate the locus \
+                                     `@form(heap)` for a priority queue, or drop the clause.",
+                                    slot.name.name, decl.name.name
+                                ),
+                            ));
+                        }
+                    }
+                }
+            }
+        }
 
         // Phase 2a: `locus L : serves P` conformance — L must
         // provide every contract method P declares (matching
@@ -8864,12 +8885,13 @@ impl<'a> Checker<'a> {
             "set" => self.check_form_hashmap_shape(decl, form),
             "ring_buffer" => self.check_form_ring_buffer_shape(decl, form),
             "lru_cache" => self.check_form_lru_cache_shape(decl, form),
+            "heap" => self.check_form_heap_shape(decl, form),
             other => {
                 self.diags.push(Diag::ty(
                     form.name.span,
                     format!(
-                        "unknown form `{}`; v1 recognizes: vec, hashmap, \
-                         ring_buffer, lru_cache",
+                        "unknown form `{}`; v1 recognizes: vec, hashmap, set, \
+                         ring_buffer, lru_cache, heap",
                         other
                     ),
                 ));
@@ -9159,20 +9181,24 @@ impl<'a> Checker<'a> {
             }
         };
         let cell_name = self.through_type_alias(cell_name);
+        let key_ty: Ty;
         match self.top.lookup(&cell_name) {
             Some(TopSymbol::Type(info)) => match &info.kind {
                 TypeKind::Struct(fields) => {
-                    if !fields.iter().any(|f| f.name == field_ident.name) {
-                        self.diags.push(Diag::ty(
-                            field_ident.span,
-                            format!(
-                                "@form(lru_cache) cell type `{}` has no field \
-                                 `{}` — the `indexed_by` field must exist on \
-                                 the cell struct",
-                                cell_name, field_ident.name
-                            ),
-                        ));
-                        return;
+                    match fields.iter().find(|f| f.name == field_ident.name) {
+                        Some(f) => key_ty = f.ty.clone(),
+                        None => {
+                            self.diags.push(Diag::ty(
+                                field_ident.span,
+                                format!(
+                                    "@form(lru_cache) cell type `{}` has no field \
+                                     `{}` — the `indexed_by` field must exist on \
+                                     the cell struct",
+                                    cell_name, field_ident.name
+                                ),
+                            ));
+                            return;
+                        }
                     }
                 }
                 TypeKind::Enum(_) => {
@@ -9238,6 +9264,37 @@ impl<'a> Checker<'a> {
                  override; form-lowered slots own their own allocator"
                     .to_string(),
             ));
+        }
+        // The eviction hook (friction sweep 2026-10-12): a method
+        // `on_evict(k: K, v: S)` the cache calls with each entry it
+        // evicts over `cap`, before it reclaims the cell.
+        let hook = decl.members.iter().find_map(|m| match m {
+            LocusMember::Fn(f) if f.name.name == "on_evict" => Some(f),
+            _ => None,
+        });
+        if let Some(f) = hook {
+            let cell_ty = Ty::Named(cell_name.clone());
+            let ok = f.params.len() == 2
+                && f.ret.is_none()
+                && f.fallible.is_none()
+                && f.generics.is_empty()
+                && self.resolve_te(&f.params[0].ty) == key_ty
+                && self.resolve_te(&f.params[1].ty) == cell_ty;
+            if !ok {
+                self.diags.push(Diag::ty(
+                    f.name.span,
+                    format!(
+                        "`{locus}.on_evict` is the eviction hook of \
+                         `@form(lru_cache)` and must be `fn on_evict(k: {k}, v: \
+                         {cell})` — no return value, not fallible: the cache \
+                         calls it with each entry it evicts over `cap`, before \
+                         reclaiming the cell",
+                        locus = decl.name.name,
+                        k = key_ty.display(),
+                        cell = cell_name,
+                    ),
+                ));
+            }
         }
     }
 
@@ -9619,6 +9676,146 @@ impl<'a> Checker<'a> {
                     ),
                 ));
             }
+        }
+    }
+
+    /// `@form(heap)`: exactly one `heap` slot of a record cell type with
+    /// an `ordered_by min|max <field>` clause, the field an `Int`,
+    /// `Float`, `String`, `Time` or `Duration`. No arguments, no
+    /// `indexed_by`, no `as_parent_for`.
+    fn check_form_heap_shape(&mut self, decl: &'a LocusDecl, form: &'a FormAnnotation) {
+        if !form.args.is_empty() {
+            self.diags.push(Diag::ty(
+                form.span,
+                format!(
+                    "@form(heap) takes no arguments; got {} (min or max is stated on the slot: \
+                     `heap jobs of Job ordered_by min priority;`)",
+                    form.args.len()
+                ),
+            ));
+        }
+        let shape = "@form(heap) requires exactly one `heap` capacity slot of a record type, \
+                     ordered by one of its fields: `capacity { heap jobs of Job ordered_by min \
+                     priority; }`";
+        let cb = decl.members.iter().find_map(|m| match m {
+            LocusMember::Capacity(cb) => Some(cb),
+            _ => None,
+        });
+        let Some(cb) = cb else {
+            self.diags.push(Diag::ty(form.span, format!("{shape}; found no `capacity {{ ... }}` block")));
+            return;
+        };
+        if cb.slots.len() != 1 {
+            self.diags.push(Diag::ty(cb.span, format!("{shape}; found {} slots", cb.slots.len())));
+            return;
+        }
+        let slot = &cb.slots[0];
+        if matches!(slot.kind, CapacitySlotKind::Pool) {
+            self.diags.push(Diag::ty(
+                slot.span,
+                format!(
+                    "{shape}; got `pool {} of ...`. A heap is a growable contiguous buffer \
+                     kept in heap order, the `heap` slot's discipline.",
+                    slot.name.name
+                ),
+            ));
+        }
+        if slot.indexed_by.is_some() {
+            self.diags.push(Diag::ty(
+                slot.span,
+                "@form(heap) orders its cells by `ordered_by`, it does not key them: drop \
+                 `indexed_by`"
+                    .to_string(),
+            ));
+        }
+        if slot.as_parent_for.is_some() {
+            self.diags.push(Diag::ty(
+                slot.span,
+                "@form(heap) slot cannot also be an `as_parent_for` override; form-lowered \
+                 slots own their own allocator"
+                    .to_string(),
+            ));
+        }
+        let Some(order) = &slot.ordered_by else {
+            self.diags.push(Diag::ty(
+                slot.span,
+                format!(
+                    "@form(heap) slot `{}` must declare `ordered_by min <field>` or `ordered_by \
+                     max <field>`: the cell field the heap orders by, and whether the smallest \
+                     or the largest key comes out first",
+                    slot.name.name
+                ),
+            ));
+            return;
+        };
+        let cell_name = match &slot.elem_ty {
+            TypeExpr::Named { path, .. } if path.segments.len() == 1 => {
+                self.through_type_alias(path.segments[0].name.clone())
+            }
+            _ => {
+                self.diags.push(Diag::ty(
+                    slot.elem_ty.span(),
+                    "@form(heap) cell type must be a user-declared record, so `ordered_by` can \
+                     name one of its fields"
+                        .to_string(),
+                ));
+                return;
+            }
+        };
+        let fields = match self.top.lookup(&cell_name) {
+            Some(TopSymbol::Type(info)) => match &info.kind {
+                TypeKind::Struct(fields) => fields.clone(),
+                _ => {
+                    self.diags.push(Diag::ty(
+                        slot.elem_ty.span(),
+                        format!(
+                            "@form(heap) cell type `{}` is not a record; `ordered_by` names a \
+                             field of a record",
+                            cell_name
+                        ),
+                    ));
+                    return;
+                }
+            },
+            Some(TopSymbol::Locus(_)) => {
+                self.diags.push(Diag::ty(
+                    slot.elem_ty.span(),
+                    format!(
+                        "@form(heap) cell type `{}` is a locus. Cells are data; loci are \
+                         managed entities.",
+                        cell_name
+                    ),
+                ));
+                return;
+            }
+            // Unresolved: the resolver has said so already.
+            _ => return,
+        };
+        let Some(field) = fields.iter().find(|f| f.name == order.field.name) else {
+            self.diags.push(Diag::ty(
+                order.field.span,
+                format!(
+                    "@form(heap) cell type `{}` has no field `{}` to be ordered by",
+                    cell_name, order.field.name
+                ),
+            ));
+            return;
+        };
+        let orderable = matches!(
+            field.ty,
+            Ty::Prim(PrimType::Int | PrimType::Float | PrimType::String | PrimType::Time | PrimType::Duration)
+        );
+        if !orderable {
+            self.diags.push(Diag::ty(
+                order.field.span,
+                format!(
+                    "@form(heap) orders by `{}.{}`, a `{}`; the `ordered_by` field must be an \
+                     `Int`, `Float`, `String`, `Time` or `Duration`",
+                    cell_name,
+                    order.field.name,
+                    field.ty.display()
+                ),
+            ));
         }
     }
 

@@ -1355,6 +1355,11 @@ fn register_locus(
                 let cell_ty = form_ring_buffer_cell_ty(decl, known);
                 synthesize_form_ring_buffer_methods(&mut methods, &cell_ty);
             }
+            "heap" => {
+                // The single heap slot's cell type, as for vec.
+                let cell_ty = form_vec_cell_ty(decl, known);
+                synthesize_form_heap_methods(&mut methods, &cell_ty);
+            }
             "lru_cache" => {
                 // Same keyed shape as @form(hashmap): value struct S +
                 // key K from the `indexed_by` field. lru_cache pairs
@@ -2021,6 +2026,23 @@ fn synthesize_form_vec_methods(methods: &mut Vec<MethodInfo>, cell_ty: &Ty) {
         ret: Ty::Unit,
         fallible: None,
     });
+    // Friction sweep 2026-10-12: a per-message scratch vec is hoisted
+    // and reused. Both drop elements the way `pop` does (each retired
+    // with what it owns) and keep the buffer's capacity.
+    methods.push(MethodInfo {
+        name: "clear".to_string(),
+        params: Vec::new(),
+        min_params: None,
+        ret: Ty::Unit,
+        fallible: None,
+    });
+    methods.push(MethodInfo {
+        name: "truncate".to_string(),
+        params: vec![Ty::Prim(PrimType::Int)],
+        min_params: None,
+        ret: Ty::Unit,
+        fallible: None,
+    });
 }
 
 /// v1.x-FORM-4 PR3: synthesize the standard `@form(hashmap)`
@@ -2174,6 +2196,29 @@ fn synthesize_form_hashmap_methods(
     });
 }
 
+/// `@form(heap)`: a priority queue over cell type T, ordered by the
+/// slot's `ordered_by` field (`spec/forms.md` § `@form(heap)`):
+///   `push(x: T) -> ()`                  (infallible)
+///   `pop() -> T fallible(EmptyError)`   (the root: smallest or largest key)
+///   `peek() -> T fallible(EmptyError)`  (the root, left in place)
+///   `len() -> Int`, `is_empty() -> Bool`, `clear() -> ()`
+fn synthesize_form_heap_methods(methods: &mut Vec<MethodInfo>, cell_ty: &Ty) {
+    let empty_err = Ty::Named("EmptyError".to_string());
+    let m = |name: &str, params: Vec<Ty>, ret: Ty, fallible: Option<Ty>| MethodInfo {
+        name: name.to_string(),
+        params,
+        min_params: None,
+        ret,
+        fallible,
+    };
+    methods.push(m("push", vec![cell_ty.clone()], Ty::Unit, None));
+    methods.push(m("pop", Vec::new(), cell_ty.clone(), Some(empty_err.clone())));
+    methods.push(m("peek", Vec::new(), cell_ty.clone(), Some(empty_err)));
+    methods.push(m("len", Vec::new(), Ty::Prim(PrimType::Int), None));
+    methods.push(m("is_empty", Vec::new(), Ty::Prim(PrimType::Bool), None));
+    methods.push(m("clear", Vec::new(), Ty::Unit, None));
+}
+
 /// v1.x-FORM-5: extract cell type T from a `@form(ring_buffer)`
 /// locus. Same shape as `form_vec_cell_ty` — the cell type is
 /// the (single) pool slot's `elem_ty`. Returns `Ty::Unknown` if
@@ -2288,6 +2333,15 @@ fn synthesize_form_lru_cache_methods(
         min_params: None,
         ret: Ty::Prim(PrimType::Int),
         fallible: None,
+    });
+    // Take-semantics (friction sweep 2026-10-12): the entry comes out
+    // as the caller's own value; a miss is a KeyError.
+    methods.push(MethodInfo {
+        name: "remove".to_string(),
+        params: vec![key_ty.clone()],
+        min_params: None,
+        ret: value_ty.clone(),
+        fallible: Some(Ty::Named("KeyError".to_string())),
     });
 }
 
@@ -2413,8 +2467,8 @@ fn scan_items_for_stdlib_usage(items: &[TopDecl], out: &mut StdlibErrorUsage) {
                 if let Some(form) = &l.form {
                     let error = match form.name.name.as_str() {
                         "vec" => Some("IndexError"),
-                        "hashmap" => Some("KeyError"),
-                        "ring_buffer" => Some("EmptyError"),
+                        "hashmap" | "lru_cache" => Some("KeyError"),
+                        "ring_buffer" | "heap" => Some("EmptyError"),
                         _ => None,
                     };
                     if let Some(error) = error {

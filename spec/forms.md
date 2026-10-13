@@ -11,8 +11,8 @@ form-before-parameter, F.22 capacity).
 This document specifies the form annotation system in general
 (syntax, contract, verification) and the `@form(vec)` contract
 in detail. Subsequent forms (`@form(hashmap)`,
-`@form(ring_buffer)`, `@form(lru_cache)`) get their own sections
-as they're committed.
+`@form(ring_buffer)`, `@form(lru_cache)`, `@form(heap)`) get their
+own sections as they're committed.
 
 ## Annotation syntax
 
@@ -158,6 +158,9 @@ locus SessionCache {
 
 `indexed_by` is a slot clause because indexing IS a storage
 commitment — it changes the pool's layout and access path.
+`@form(heap)`'s `ordered_by min <field>` / `ordered_by max <field>`
+is one for the same reason: the order decides where every cell sits.
+`ordered_by` on a slot of any other locus is a type error.
 
 ## Default lowering (no form annotation)
 
@@ -351,6 +354,8 @@ fn is_empty() -> Bool                        # infallible
 fn sort() -> ()                              # infallible; T in {Int, Float, String}
 fn sort_by(cmp: fn(T, T) -> Bool) -> ()      # infallible
 fn sort_desc_by(cmp: fn(T, T) -> Bool) -> () # infallible
+fn clear() -> ()                             # infallible
+fn truncate(n: Int) -> ()                    # infallible
 ```
 
 The fallible methods return the locus-defined `IndexError`
@@ -488,6 +493,27 @@ the owner lived.)
 
 `pop` does not free the underlying buffer — capacity does not
 shrink. Buffer release happens at locus dissolution.
+
+### `clear` and `truncate`
+
+```
+fn clear() -> ()
+fn truncate(n: Int) -> ()
+```
+
+`truncate(n)` keeps the first `n` elements and drops the rest; an
+`n` at or past `len()` changes nothing, and an `n` below zero drops
+every element. `clear()` is `truncate(0)`. Both are infallible.
+
+Each dropped element is reclaimed exactly as `pop` reclaims the one it
+removes — its block, its String and Bytes fields, and its nested
+records, tuples, arrays and payload enums with what they own, at any
+depth, back onto the arena's reuse freelist — and the buffer keeps its
+capacity, so a scratch vec hoisted into a locus and cleared once per
+message holds both its buffer and its arena flat. A value read out
+before the drop (a `get` or `pop` result) is the caller's own copy and
+stays whole. (Friction sweep 2026-10-12: there was no way to empty a
+vec but a `pop` loop, while `bounded[T; N]` had `clear`.)
 
 ### `len` and `is_empty`
 
@@ -1244,7 +1270,12 @@ frees its String and a replaced `Num(Int)` only its block; a
 hashmap `set` of a cell with a unit-only enum field was an internal
 compiler error, a replaced payload enum's block was never retired —
 at least 16 bytes a replace, in a map or a vec — and a vec `get` of
-an element holding one always failed.)
+an element holding one always failed.) An enum in another enum's
+payload (`Outer::X(Inner::A(s))`) is a block the outer enum's block
+points at, copied and retired the same way at any depth. (Before, a
+cell holding one failed to build: the copy's variant switch joined
+its result from each variant's first block, and the nested enum's own
+switch had added blocks after it.)
 
 A nested block in the cell belongs to that cell alone. A value that
 carries a nested block from the same key's current cell, at the same
@@ -1608,10 +1639,14 @@ fn put(x: S) -> ()                          # infallible; silent LRU evict
 fn get(k: K) -> S fallible(KeyError)        # lookup + recency touch
 fn contains(k: K) -> Bool                   # membership, NO recency touch
 fn len() -> Int                             # infallible; count <= cap
+fn remove(k: K) -> S fallible(KeyError)     # take the entry out
 ```
 
-`get`'s miss payload is the synthesized `KeyError` (shared with
-`@form(hashmap)`); no new payload type is introduced.
+`get`'s and `remove`'s miss payload is the synthesized `KeyError`
+(shared with `@form(hashmap)`); no new payload type is introduced.
+
+The locus may declare one more method the form calls itself, the
+eviction hook `fn on_evict(k: K, v: S)` (see below).
 
 ### `put`
 
@@ -1663,6 +1698,63 @@ fn len() -> Int
 
 Current live entry count, always `<= cap`. Infallible.
 
+### `remove`
+
+```
+fn remove(k: K) -> S fallible(KeyError)
+```
+
+Takes the entry keyed `k` out of the cache and returns its value —
+the CALLER's own copy, allocated in the caller's current arena, as a
+`@form(vec)` `pop` hands one back. On a miss it raises `KeyError`. The
+recency of the other entries is untouched, and `on_evict` is not
+called: the caller now holds the value and whatever it owns (an fd it
+carries, say), which is the take-semantics a pool of connections needs.
+
+### The eviction hook — `on_evict`
+
+```hale
+type Conn { host: String; fd: Int; }
+
+@form(lru_cache, cap = 4)
+locus Conns {
+    capacity { pool conns of Conn indexed_by host; }
+    fn on_evict(k: String, v: Conn) {
+        let _ = std::io::tcp::close_fd(v.fd);
+    }
+}
+```
+
+A `@form(lru_cache)` locus may declare `fn on_evict(k: K, v: S)` — no
+return value, not fallible; any other signature under that name is a
+type error. When a `put` of a new key evicts the least-recently-used
+entry, the cache calls `on_evict` with the evicted entry's key and
+value, then reclaims the cell — so a cell that owns a resource outside
+the arena (a socket, a file) can release it. Only capacity eviction
+calls it: a `put` over a present key replaces the value without the
+hook (the caller replacing a value owns what the old one held — `remove`
+it first to release it), and `remove` hands the entry to the caller.
+Dissolving the locus does not call it for the entries still held.
+
+The hook runs inside the `put` that evicted, so the call graph has an
+edge from every `put` on the locus to `on_evict`: an effect the hook
+performs (`syscall` for a `close_fd`) is one the `put`'s caller reaches.
+The hook must not `put` into its own cache.
+
+### Cell reclamation
+
+`put` stores the cell's own copy of everything the value points at,
+in the cache locus's arena, as `@form(hashmap)`'s `set` does (§ Cell
+reclamation there): a nested block read out of another cell is copied,
+never shared. A cell the cache drops — replaced by a `put` of its key,
+evicted over `cap` (after `on_evict`), or taken by `remove` — has
+everything it owned retired through the retire descriptor, deferred to
+the owner's activation boundary, so a value a `get` handed out stays
+whole for the rest of the activation; a block a replacing value still
+reaches survives. A churned cache's arena therefore stays flat. (Before,
+the cache reclaimed nothing: each put of a new value grew its arena for
+the locus's lifetime.)
+
 ## Lowering strategy
 
 `@form(lru_cache)` lowers the pool slot to an inline header struct
@@ -1701,3 +1793,96 @@ the same inline-header / heap-buffer split as `@form(vec)`,
 > Forward-looking / deferred items for this area now live in the
 > decision log — see [`decisions.md` § Deferred & future
 > work](./decisions.md#deferred--future-work).
+
+---
+
+# `@form(heap)`
+
+A priority queue: a binary heap of `T` records, ordered by one of
+their fields, smallest or largest first. The Hale analogue of
+`BinaryHeap<T>` / `std::priority_queue` / Go's `container/heap`
+(branch-and-bound searches, Dijkstra, timer wheels; friction sweep
+2026-10-12 — they hand-rolled one over `@form(vec)`).
+
+## Required capacity shape
+
+```hale
+type Job { name: String; priority: Int; }
+
+@form(heap)
+locus Jobs {
+    capacity { heap jobs of Job ordered_by min priority; }
+}
+```
+
+Rules verified at typecheck:
+
+- Exactly one slot, of kind `heap` (the growable contiguous
+  discipline; a `pool` slot is rejected).
+- The slot MUST declare `ordered_by min <field>` or `ordered_by max
+  <field>`. `min` puts the smallest key at the root (it comes out
+  first), `max` the largest. There is no default: the direction is
+  stated where the heap is declared. `ordered_by` is a contextual
+  word; `min` and `max` are read only in that position.
+- The cell type MUST be a user-declared record, and the named field
+  one of its fields, of type `Int`, `Float`, `String`, `Time` or
+  `Duration`. A `String` key orders by its bytes (`strcmp`); a
+  `Float` `NaN` is never ordered before anything.
+- No annotation arguments, no `indexed_by`, no `as_parent_for`. The
+  cell type may not be a locus.
+
+## Synthesized methods
+
+```
+fn push(x: T) -> ()                          # infallible
+fn pop() -> T fallible(EmptyError)           # the root, removed
+fn peek() -> T fallible(EmptyError)          # the root, left in place
+fn len() -> Int                              # infallible
+fn is_empty() -> Bool                        # infallible
+fn clear() -> ()                             # infallible
+```
+
+`EmptyError` is the payload `@form(ring_buffer)`'s `pop` fails with
+(`kind: "empty"`).
+
+- `push` adds `x` and restores the heap order: O(log n), amortized
+  over the buffer's doubling.
+- `pop` removes the root — the element with the smallest key under
+  `min`, the largest under `max` — and returns it: O(log n). Among
+  equal keys the order is unspecified (a binary heap is not stable;
+  carry a sequence number in the key's tie-breaker field if FIFO
+  among equals matters).
+- `peek` returns the root without removing it: O(1).
+- `clear` drops every element, as `@form(vec)`'s `clear` does.
+
+Like a vec's, `pop` and `peek` return the CALLER's own copy of the
+element (in the caller's current arena), and the heap owns what it
+stores (`push` stores its own copy). An element `pop` removes, and
+every element `clear` drops, is reclaimed exactly as `@form(vec)`
+reclaims a popped element — its block, its String and Bytes fields,
+its nested records with what they own — and the buffer keeps its
+capacity, so a queue held at a steady depth keeps a flat arena.
+
+There is no indexed access and no iteration: the elements past the
+root are in heap order, which is not an order a caller can use.
+Drain with `pop` for the sorted sequence.
+
+## Lowering strategy
+
+A `@form(heap)` slot is a `@form(vec)` slot — the same inline
+`{ cap, len, buf }` struct, the same pointer-storage elements and
+growth, the same dissolve — with the heap order kept over it: after
+the vec's `push`, `lotus_heap_sift_up` moves the new element up from
+the end; before the vec's `pop`, `lotus_heap_pop_prep` moves the root
+to the end and sifts the old last element down from the root; `peek`
+is the vec's `get(0)`. The key's byte offset in the record, its kind
+(an `i64` for `Int` / `Time` / `Duration`, a `double`, a `String`)
+and the direction are compile-time constants at each call.
+
+## Interaction with the locus tower
+
+As for the other forms: a `@form(heap)` locus can carry params,
+lifecycle bodies, closures, failure routing, bus membership and
+perspectives, and user methods beside the synthesized set (a user
+method may not take a synthesized method's name).
+

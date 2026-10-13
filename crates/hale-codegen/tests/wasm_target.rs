@@ -996,3 +996,47 @@ fn wasm_a_flow_two_owner_types_track_leaves_its_owners_tracker() {
     assert!(stdout.contains("once left=0 right=0"), "stdout: {stdout}\nstderr: {}", String::from_utf8_lossy(&run.stderr));
     assert!(stdout.contains("churn left=0 right=0/2001"), "stdout: {stdout}\nstderr: {}", String::from_utf8_lossy(&run.stderr));
 }
+
+/// `truncate(n)` with `n` at or past the length changes nothing, on
+/// wasm32 too, where `size_t` is 32 bits: an `n` past `UINT32_MAX` used
+/// to be narrowed before the comparison and wrap to a small length,
+/// emptying the vec and reclaiming its elements.
+#[test]
+fn wasm_vec_truncate_past_u32_keeps_the_vec() {
+    let (Some(_clang), Some(_wasm_ld), Some(node)) =
+        (tool("clang"), tool("wasm-ld"), tool("node"))
+    else {
+        eprintln!("SKIP wasm_vec_truncate_past_u32_keeps_the_vec: toolchain missing");
+        return;
+    };
+    let src = r#"
+        target wasm { }
+        @ffi("js") fn console_log(msg: String);
+        type Msg { s: String = ""; }
+        @form(vec) locus V { capacity { heap xs of Msg; } }
+        fn main() {
+            let v = V { };
+            v.push(Msg { s: "a" });
+            v.push(Msg { s: "b" });
+            v.push(Msg { s: "c" });
+            v.truncate(4294967296);
+            let last = v.get(2) or Msg { s: "gone" };
+            console_log("len=" + v.len() + " last=" + last.s);
+            v.truncate(1);
+            console_log("len=" + v.len());
+        }
+    "#;
+    let wasm = tmp("vec_truncate_u32.wasm");
+    build_wasm(src, &wasm);
+    let loader = wasm.with_extension("mjs");
+    let run = Command::new(&node).arg(&loader).output().expect("run node loader");
+    let stdout = String::from_utf8_lossy(&run.stdout);
+    let _ = std::fs::remove_file(&wasm);
+    let _ = std::fs::remove_file(&loader);
+    assert!(
+        stdout.contains("len=3 last=c") && stdout.contains("len=1"),
+        "truncate past u32 on wasm32:\nstdout: {}\nstderr: {}",
+        stdout,
+        String::from_utf8_lossy(&run.stderr)
+    );
+}
