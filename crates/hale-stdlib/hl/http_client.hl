@@ -4,7 +4,8 @@
 // Outbound HTTP/1.1 for both schemes:
 //   - `std::http::get(url)` / `post(url, body, content_type)` /
 //     `request(req)` — one-shot free fns, `Connection: close`,
-//     read-to-close. `fallible(std::http::HttpError)`.
+//     read-to-close, the dial bounded at 30 s (the `Client`'s
+//     default `timeout_ms`). `fallible(std::http::HttpError)`.
 //   - `std::http::Client` — pooled locus: per-host keep-alive
 //     (opt-in), retry-with-backoff, configurable user-agent /
 //     body cap.
@@ -615,15 +616,25 @@ fn __http_round_trip_with_retry(
 
 // ---- free-fn surface (one-shot) -------------------------------------
 
+// The one-shot fns' dial deadline, 30000 ms: the TCP connect and, for
+// https, the TLS handshake. 30 s, the pooled Client's default
+// `timeout_ms` (and Go's default dialer's), so a host that never
+// answers fails `connect_failed` with "timeout: no connection within
+// 30000 ms" instead of holding the caller for the kernel's ~2 min of
+// SYN retransmits. A different deadline is `std::http::Client {
+// timeout_ms: …, max_retries: 0 }`, whose default (keep_alive false)
+// is the same one-shot exchange. The three fns below pass it as the
+// literal 30000.
+
 // `std::http::get(url)`.
 /// One-shot GET: connect, send, read to close. `Connection:
-/// close`; https rides std::io::tls, which parks on an async_io
-/// pool like plain tcp.
+/// close`; the dial is bounded at 30 s; https rides std::io::tls,
+/// which parks on an async_io pool like plain tcp.
 fn __http_client_get(url_str: String) -> std::http::ClientResponse fallible(std::http::HttpError) {
     let u = __http_parse_url(url_str) or raise;
     let _ = __http_check_scheme(u.scheme) or raise;
     let req = std::http::ClientRequest { method: "GET", url: u, headers: "", body: b"" };
-    return __http_round_trip_oneshot(req, "hale-std-http/0.11", 16777216, 0) or raise;
+    return __http_round_trip_oneshot(req, "hale-std-http/0.11", 16777216, 30000) or raise;
 }
 
 // `std::http::post(url, body, content_type)`.
@@ -635,7 +646,7 @@ fn __http_client_post(url_str: String, body: Bytes, content_type: String) -> std
     let req = std::http::ClientRequest {
         method: "POST", url: u, headers: "Content-Type: " + content_type, body: body
     };
-    return __http_round_trip_oneshot(req, "hale-std-http/0.11", 16777216, 0) or raise;
+    return __http_round_trip_oneshot(req, "hale-std-http/0.11", 16777216, 30000) or raise;
 }
 
 // `std::http::request(req)` — full control over method / headers
@@ -643,7 +654,7 @@ fn __http_client_post(url_str: String, body: Bytes, content_type: String) -> std
 /// One-shot arbitrary request (build a ClientRequest yourself).
 fn __http_client_request(req: std::http::ClientRequest) -> std::http::ClientResponse fallible(std::http::HttpError) {
     let _ = __http_check_scheme(req.url.scheme) or raise;
-    return __http_round_trip_oneshot(req, "hale-std-http/0.11", 16777216, 0) or raise;
+    return __http_round_trip_oneshot(req, "hale-std-http/0.11", 16777216, 30000) or raise;
 }
 
 // ---- the pooled Client ----------------------------------------------

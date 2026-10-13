@@ -292,3 +292,75 @@ fn a_pending_connect_parks_its_coroutine_on_an_async_io_pool() {
          dial ends): ticks done at {ticks} ms, dial ended at {dial} ms: {out}"
     );
 }
+
+#[test]
+#[cfg_attr(not(target_os = "linux"), ignore = "the full-accept-queue blackhole is Linux's SYN-drop contract")]
+fn the_one_shot_http_fns_dial_under_a_30_s_deadline() {
+    // `std::http::get` / `post` / `request` passed a dial deadline of 0
+    // (unbounded) while the pooled Client's `timeout_ms` bounded its own,
+    // so a one-shot call to a host that never answers held its caller for
+    // the kernel's ~2 min of SYN retransmits. They dial under 30 s now,
+    // the Client's default. One binary, run three times at once (one per
+    // fn), so the test waits the 30 s once.
+    let hole = Blackhole::new();
+    let src = r#"
+        fn main() {
+            let which = std::env::arg(1);
+            let port = std::str::parse_int(std::env::arg(2)) or 0;
+            let url = "http://127.0.0.1:" + to_string(port) + "/";
+            let t = std::time::monotonic_ns();
+            let mut kind = "";
+            let mut detail = "";
+            let empty = std::http::ClientResponse { status: 0, headers: "", body: b"" };
+            if which == "get" {
+                let r = std::http::get(url) or { kind = err.kind; detail = err.detail; empty };
+            } else if which == "post" {
+                let r = std::http::post(url, b"x", "text/plain") or { kind = err.kind; detail = err.detail; empty };
+            } else {
+                let u = std::http::parse_url(url) or std::http::Url { };
+                let req = std::http::ClientRequest { method: "GET", url: u, headers: "", body: b"" };
+                let r = std::http::request(req) or { kind = err.kind; detail = err.detail; empty };
+            }
+            println("err kind=", kind, " ms=", (std::time::monotonic_ns() - t) / 1000000);
+            println("detail ", detail);
+        }
+    "#;
+    let bin = harness::unique_bin("hale_http_oneshot_dial_deadline");
+    build_opts::build_source(src, &bin, &build_opts::options()).expect("build");
+    let port = hole.port.to_string();
+    let children: Vec<_> = ["get", "post", "request"]
+        .iter()
+        .map(|which| {
+            let child = Command::new(&bin)
+                .args([which, port.as_str()])
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .spawn()
+                .expect("spawn");
+            (which, child)
+        })
+        .collect();
+    for (which, child) in children {
+        let out = child.wait_with_output().expect("wait");
+        let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+        assert!(
+            out.status.success(),
+            "{which}: {:?}; stdout: {stdout}; stderr: {}",
+            out.status,
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(field(&stdout, "err", "kind"), "connect_failed", "{which}: {stdout}");
+        let took = ms(&stdout, "err");
+        assert!(
+            (29_900..40_000).contains(&took),
+            "{which}: the dial must end at the 30 s default, not before it and \
+             not at the kernel's give-up; took {took} ms: {stdout}"
+        );
+        let line = stdout.lines().find(|l| l.starts_with("detail ")).expect("detail");
+        assert!(
+            line.contains("timeout: no connection within 30000 ms"),
+            "{which}: the error must name the deadline: {line:?}"
+        );
+    }
+    let _ = std::fs::remove_file(&bin);
+}
