@@ -886,6 +886,10 @@ The port was checked and built with this worktree's `target/release/hale`.
 - Immediately after the first native journal append, cached journal genesis was
   empty. Fixtures read authoritative identity through `GitRecord.identity()`.
 
+**Status:** FIXED (2026-10-12): `GitJournal.landed` records the root commit
+when it appends the chain's first row, so `genesis()` answers the identity at
+once; `dna/tests/journal_incremental_test.hl` pins it before any refresh.
+
 ## F.27 — The local compiler does not recognize eprint
 
 **Original context:** `dna/api/tests`; preserved port observations.

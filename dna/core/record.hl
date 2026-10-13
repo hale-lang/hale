@@ -1414,6 +1414,9 @@ locus GitJournal {
         self.authors.push(self.author);
         self.text = self.text + line;
         self.head_sha = a.id;
+        // the chain's first row is its root commit: a journal that
+        // appended it learns the record's identity here, as a load would
+        if seq == 0 && len(self.root_sha) == 0 { self.root_sha = a.id; }
         return AppendResult { ok: true, revision: seq + 1 };
     }
     // One event = one commit. Compare-and-append: the in-process check
