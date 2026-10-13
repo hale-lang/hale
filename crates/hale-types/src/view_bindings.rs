@@ -390,6 +390,12 @@ struct Bodies<'a> {
     /// Field names every declaration of which is laid out inline in its
     /// record: a write into one is the record's own.
     inline_fields: BTreeSet<String>,
+    /// The scalar declarations (`quantity`, `distinct`, `point`, a
+    /// refinement), and those of them lowering lays out as an `Int`
+    /// (`crate::units::typed_scalar_names`), by every name they answer
+    /// to.
+    scalar_decls: Vec<(&'a str, &'a ScalarDecl)>,
+    int_scalars: BTreeSet<String>,
     /// Loci, interfaces and perspectives: a value of one of these is a
     /// handle, whose field reads view the locus's storage.
     loci: BTreeSet<String>,
@@ -480,15 +486,10 @@ impl<'a> Bodies<'a> {
                 TypeExpr::Primitive(..) => return Class::Value,
                 // A fixed array of scalars and a bounded list are laid
                 // out inline in the record that holds them: no block of
-                // their own.
-                TypeExpr::Array { elem, .. }
-                    if matches!(
-                        elem.as_ref(),
-                        TypeExpr::Primitive(PrimType::Int | PrimType::Float | PrimType::Bool | PrimType::Decimal(_) | PrimType::Duration, _)
-                    ) =>
-                {
-                    return Class::Inline
-                }
+                // their own. The element is read as lowering lays it out
+                // (`array_inline_spec`): through its aliases, a typed
+                // scalar as the `Int` it is.
+                TypeExpr::Array { elem, .. } if self.inline_scalar(elem) => return Class::Inline,
                 TypeExpr::Bounded { .. } => return Class::Inline,
                 TypeExpr::Tuple(..) | TypeExpr::Array { .. } => return Class::Value,
                 TypeExpr::Function { .. } => return Class::FnValue,
@@ -496,6 +497,29 @@ impl<'a> Bodies<'a> {
             }
         }
         Class::Unknown
+    }
+
+    /// Is `ty`, its aliases followed, a scalar lowering stores inline in
+    /// a fixed array (`Int`, `Float`, `Bool`, `Decimal`, `Duration`, a
+    /// scalar declaration lowered as `Int`)? Anything it cannot place is
+    /// not: a block, which costs a copy.
+    fn inline_scalar(&self, ty: &TypeExpr) -> bool {
+        let mut cur = ty;
+        for _ in 0..16 {
+            match cur {
+                TypeExpr::Primitive(p, _) => return crate::ty::inline_array_scalar(*p),
+                TypeExpr::Named { path, generic_args, .. } if generic_args.is_empty() => {
+                    let Some(name) = self.path_name(&path.segments) else { return false };
+                    if let Some(next) = self.aliases.get(&name) {
+                        cur = next;
+                        continue;
+                    }
+                    return self.int_scalars.contains(&name);
+                }
+                _ => return false,
+            }
+        }
+        false
     }
 
     /// A declared name's class (aliases already followed).
@@ -747,7 +771,10 @@ fn collect<'a>(items: &'a [TopDecl], p: &mut Bodies<'a>) {
                             p.field_types.push((f.name.name.clone(), Some(&f.ty)));
                         }
                     }
-                    TypeDeclBody::Scalar(_) => p.records.extend(decl_names(&td.name.name)),
+                    TypeDeclBody::Scalar(sd) => {
+                        p.records.extend(decl_names(&td.name.name));
+                        p.scalar_decls.push((td.name.name.as_str(), sd));
+                    }
                     TypeDeclBody::Alias(_) => {}
                 }
                 if let TypeDeclBody::Alias(t) = &td.body {
@@ -813,6 +840,8 @@ fn analyze(programs: &[&Program], renames: &BTreeMap<Vec<String>, String>) -> Fo
         view_form_fields: BTreeSet::new(),
         key_fields: BTreeSet::new(),
         inline_fields: BTreeSet::new(),
+        scalar_decls: Vec::new(),
+        int_scalars: BTreeSet::new(),
         loci: BTreeSet::new(),
         returns: Vec::new(),
         handle_fns: BTreeSet::new(),
@@ -822,6 +851,8 @@ fn analyze(programs: &[&Program], renames: &BTreeMap<Vec<String>, String>) -> Fo
         collect(&program.items, &mut p);
         p.body_program.resize(p.bodies.len(), i);
     }
+    let scalars: BTreeMap<&str, &ScalarDecl> = p.scalar_decls.iter().copied().collect();
+    p.int_scalars = crate::units::typed_scalar_names(&scalars).into_iter().flat_map(decl_names).collect();
     // Every classification below reads `classify`: a fn or method name
     // some body of which may return a handle; a field a call may run as
     // a value; a field holding a form. A field with no declared type
@@ -1098,6 +1129,9 @@ struct Walk<'p, 'a> {
     param_callees: BTreeSet<Callee>,
     /// Every parameter's name.
     params: BTreeSet<String>,
+    /// Per variable, whether it may hold (a part of) the caller's value a
+    /// parameter refers to (`Walk::rooted_at_param`).
+    from_param: Vec<bool>,
     /// Per variable, whether it may hold a form whose reads leave the
     /// cell's nested blocks shared; and such parameters.
     view_forms: Vec<bool>,
@@ -1177,6 +1211,7 @@ impl<'p, 'a> Walk<'p, 'a> {
             writes_params: false,
             param_callees: BTreeSet::new(),
             params: params.iter().map(|prm| prm.name.name.clone()).collect(),
+            from_param: Vec::new(),
             view_forms: Vec::new(),
             view_form_params,
             binds: Vec::new(),
@@ -1210,6 +1245,7 @@ impl<'p, 'a> Walk<'p, 'a> {
         self.handles.push(false);
         self.forms.push(false);
         self.view_forms.push(false);
+        self.from_param.push(false);
         self.binds.push(Vec::new());
         self.declared.push(self.pos);
         self.uses.push(Vec::new());
@@ -1349,13 +1385,46 @@ impl<'p, 'a> Walk<'p, 'a> {
         }
     }
 
-    /// Is `e` a parameter, or read from one (`p.f`, `p[i]`)?
+    /// May `e` be (a part of) the caller's value a parameter refers to:
+    /// a parameter, a read from one (`p.f`, `p[i]`), a local bound from
+    /// one (`let a = p.big;`, a `for` element of `p.big`, a `match`
+    /// payload of `p.e`), or what an `or`, `if`, `match` or block may
+    /// carry out of one? A write through such a value, or handing it to
+    /// a callee that writes through its parameter, writes through the
+    /// parameter: an argument is passed by reference.
     fn rooted_at_param(&self, e: &Expr) -> bool {
         match e {
-            Expr::Ident(id) => matches!(self.lookup(&id.name), Some(None)) && self.params.contains(&id.name),
+            Expr::Ident(id) => match self.lookup(&id.name) {
+                Some(None) => self.params.contains(&id.name),
+                Some(Some(v)) => self.from_param[v],
+                None => false,
+            },
             Expr::Field { receiver, .. } | Expr::Index { receiver, .. } => self.rooted_at_param(receiver),
+            Expr::Or { inner, disposition, .. } => {
+                self.rooted_at_param(inner)
+                    || matches!(disposition, OrDisposition::Substitute(x) if self.rooted_at_param(x))
+            }
+            Expr::Block(b) => self.block_rooted_at_param(b),
+            Expr::If(i) => self.if_rooted_at_param(i),
+            Expr::Match(m) => m.arms.iter().any(|a| match &a.body {
+                MatchArmBody::Expr(x) => self.rooted_at_param(x),
+                MatchArmBody::Block(b) => self.block_rooted_at_param(b),
+            }),
             _ => false,
         }
+    }
+
+    fn block_rooted_at_param(&self, b: &Block) -> bool {
+        b.tail.as_ref().is_some_and(|t| self.rooted_at_param(t))
+    }
+
+    fn if_rooted_at_param(&self, i: &IfStmt) -> bool {
+        self.block_rooted_at_param(&i.then_block)
+            || match i.else_block.as_deref() {
+                Some(ElseBranch::Else(b)) => self.block_rooted_at_param(b),
+                Some(ElseBranch::ElseIf(e)) => self.if_rooted_at_param(e),
+                None => false,
+            }
     }
 
     /// May `e` be a handle? `self`, a handle parameter, a local that
@@ -1503,7 +1572,9 @@ impl<'p, 'a> Walk<'p, 'a> {
                     }
                     (None, other) => (false, self.may_be_view_form(other)),
                 };
+                let from_param = self.rooted_at_param(value);
                 let v = self.declare(&name.name);
+                self.from_param[v] = from_param;
                 self.handles[v] = handle;
                 self.forms[v] = form;
                 self.view_forms[v] = view_form;
@@ -1511,8 +1582,10 @@ impl<'p, 'a> Walk<'p, 'a> {
             }
             Stmt::LetTuple { names, value, id, span, .. } => {
                 let keys = in_cell(self.expr(value));
+                let from_param = self.rooted_at_param(value);
                 for n in names {
                     let v = self.declare(&n.name);
+                    self.from_param[v] = from_param;
                     self.bind(v, Site::Node(id.0), &n.name, keys.clone(), *span);
                 }
             }
@@ -1536,6 +1609,9 @@ impl<'p, 'a> Walk<'p, 'a> {
                         }
                         if self.may_be_view_form(value) {
                             self.view_forms[v] = true;
+                        }
+                        if self.rooted_at_param(value) {
+                            self.from_param[v] = true;
                         }
                         if matches!(value, Expr::Ident(_)) {
                             keys = without_cells(keys);
@@ -1561,6 +1637,11 @@ impl<'p, 'a> Walk<'p, 'a> {
                         // A write under a local: what the cell-read rule
                         // decides about, once the body is walked.
                         Some(Some(v)) => {
+                            // A local that may be (a part of) the caller's
+                            // value: the write reaches the caller.
+                            if self.from_param[v] {
+                                self.writes_params = true;
+                            }
                             let first = match target.tail.first() {
                                 Some(LValueSeg::Field(f)) => Some(f.name.clone()),
                                 _ => None,
@@ -1604,8 +1685,10 @@ impl<'p, 'a> Walk<'p, 'a> {
                         self.cell_read(place);
                     }
                 }
+                let from_param = self.rooted_at_param(iter);
                 self.scopes.push(BTreeMap::new());
                 let v = self.declare(&name.name);
+                self.from_param[v] = from_param;
                 self.bind(v, Site::Node(id.0), &name.name, keys, *span);
                 self.in_loop(|w| {
                     let at = w.tick();
@@ -1702,6 +1785,7 @@ impl<'p, 'a> Walk<'p, 'a> {
     /// Walk a `match`; the keys of its value, any arm's.
     fn match_stmt(&mut self, m: &MatchStmt) -> Keys {
         let keys = in_cell(self.expr(&m.scrutinee));
+        let from_param = self.rooted_at_param(&m.scrutinee);
         let mut out = None;
         let site = Site::Match(m.span.start.0, m.span.end.0);
         for arm in &m.arms {
@@ -1710,6 +1794,7 @@ impl<'p, 'a> Walk<'p, 'a> {
             pattern_names(&arm.pattern, &mut names);
             for n in names {
                 let v = self.declare(&n.name);
+                self.from_param[v] = from_param;
                 self.bind(v, site, &n.name, keys.clone(), m.span);
             }
             if let Some(g) = &arm.guard {
@@ -2777,13 +2862,21 @@ mod tests {
 
     const CELLS: &str = r#"
         type In { s: String = ""; k: Int = 0; }
-        type Rec { id: Int = 0; body: String = ""; inner: In = In { }; big: [In; 4] = [In { }; 4]; counts: [Int; 4] = [0, 0, 0, 0]; }
+        type Count = Int;
+        type Hits = distinct Int;
+        type Rec { id: Int = 0; body: String = ""; inner: In = In { }; big: [In; 4] = [In { }; 4]; counts: [Int; 4] = [0, 0, 0, 0];
+            tallies: [Count; 2] = [0, 0]; hits: [Hits; 2] = [Hits(0), Hits(0)]; }
         @form(hashmap)
         locus RecMap { capacity { pool items of Rec indexed_by id; } }
         @form(hashmap, sync = serialized)
         locus Deep { capacity { pool items of Rec indexed_by id; } }
         fn peek(mm: RecMap, k: Int) -> Int { let c = mm.get(k) or Rec { }; return c.inner.k; }
         fn poke(r: Rec) { r.inner.k = 9; }
+        fn poke_alias(r: Rec) { let mut a = r.big; a[0].k = 7; }
+        fn poke_for(r: Rec) { for x in r.big { x.k = 7; } }
+        fn poke_arr(xs: [In; 4]) { xs[0].k = 7; }
+        fn poke_hand(r: Rec) { let a = r.big; poke_arr(a); }
+        fn read_only(r: Rec) { let a = r.big; for x in a { println(x.s); } }
         fn show(r: Rec) { println(r.body); }
         fn body(m: RecMap, d: Deep, k: Int, flag: Bool) { BODY }
     "#;
@@ -2800,6 +2893,10 @@ mod tests {
         // one into a part laid out inline in it.
         assert!(cell_copies("let mut e = m.get(k) or Rec { }; e.body = \"x\"; e.id = 4; println(e.body);").is_empty());
         assert!(cell_copies("let mut e = m.get(k) or Rec { }; e.counts[1] = 4; println(e.counts[1]);").is_empty());
+        // Whatever the element is spelled as: an alias of a scalar, a
+        // scalar declaration lowered as an `Int`.
+        assert!(cell_copies("let mut e = m.get(k) or Rec { }; e.tallies[1] = 4; println(e.tallies[1]);").is_empty());
+        assert!(cell_copies("let mut e = m.get(k) or Rec { }; e.hits[1] = Hits(4); println(e.id);").is_empty());
         // A map that reads a deep copy hands back the frame's own value.
         assert!(cell_copies("let mut e = d.get(k) or Rec { }; e.inner.k = 3; println(e.inner.k);").is_empty());
         // The write in a loop, the set after it.
@@ -2852,6 +2949,22 @@ mod tests {
         );
         // A callee that writes nothing through its parameter shares it.
         assert!(cell_copies("let e = m.get(k) or Rec { }; show(e);").is_empty());
+        assert!(cell_copies("let e = m.get(k) or Rec { }; read_only(e);").is_empty());
+        // A callee writes through its parameter by a local bound from a
+        // part of it, by a `for` element of it, and by handing that local
+        // to another writer.
+        for callee in ["poke_alias", "poke_for", "poke_hand"] {
+            assert_eq!(
+                cell_copies(&format!("let e = m.get(k) or Rec {{ }}; {callee}(e);")),
+                [("let e = m.get(k) or Rec { };".to_string(), CALL_WRITES)],
+                "{callee}"
+            );
+            assert_eq!(
+                cell_copies(&format!("{callee}(m.get(k) or Rec {{ }});")),
+                [("m.get(k) or Rec { }".to_string(), CALL_WRITES)],
+                "{callee}"
+            );
+        }
         assert_eq!(cell_copies("poke(m.get(k) or Rec { });"), [("m.get(k) or Rec { }".to_string(), CALL_WRITES)]);
         assert_eq!(
             cell_copies("let e = m.get(k) or Rec { }; for x in e.big { x.k = 1; }"),

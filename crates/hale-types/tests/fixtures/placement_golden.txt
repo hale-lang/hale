@@ -2843,6 +2843,9 @@ row	M@main1	M	main	default
 == crates/hale-codegen/tests/form_read_value.rs#c1c497a0
 row	RecMap@main1	RecMap	main	default
 
+== crates/hale-codegen/tests/form_read_value.rs#83174894
+row	RecMap@main1	RecMap	main	default
+
 == crates/hale-codegen/tests/form_ring_buffer_codegen.rs#6e1a7340
 row	RB@main1	RB	main	default
 
