@@ -856,6 +856,19 @@ pub fn check_bundle_by_declaration(
             }
         }
     }
+    // The stdlib's record types too, after the program's (a program's
+    // own declaration of a name wins): a literal of one that leaves a
+    // field to its default has that default typed where it is evaluated
+    // (`type_omitted_defaults`), so a quantity literal there (`timeout:
+    // Duration = 0ns` on `std::process::SpawnOptions`) has the row
+    // lowering emits it from, as one in a program's own type does.
+    if let Some(program) = crate::stdlib_bodies::program() {
+        for decl in hale_syntax::ast::flat_decls(&program.items) {
+            if let TopDecl::Type(t) = decl {
+                type_decls.entry(t.name.name.clone()).or_insert(t);
+            }
+        }
+    }
     let mut cx = Checker {
         top,
         target_class,
