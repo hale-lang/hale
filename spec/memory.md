@@ -1402,6 +1402,22 @@ reclaim on a real-world long-running workload:
      the block survive. Interface and payload-enum fields keep
      the identity-skip; they are not retired.
 
+     Reads in place (2026-10-13): what a map that reads in place
+     (`sync = none`, or no `sync =`) or an LRU cache hands a
+     reader is the cell's bytes copied into the reader's frame, its
+     nested blocks still the cell's. A write under a LOCAL root
+     replaces a pointer in the block it writes into (rule #7), so a
+     write into a nested part of such a value would land in the
+     cell's block. The language rule is that it never does
+     (forms.md § Reading a cell): the first write into a nested part
+     copies the part into the frame (`own_viewed_value`, behind a
+     per-local, per-part flag), unless the write is part of a
+     get-modify-set no one can observe — then it stays in the
+     cell's block and the set above keeps that block, and the
+     idiom allocates nothing. The decision is
+     `hale_types::view_bindings`'s, and each copy it adds is an
+     allocation-survey site.
+
      The same holds for a retiring form's OWN fields (a
      `@form(vec)`, or a `@form(hashmap)` that retires — rule #6's
      `self.X = ...` in the form locus's methods): they live in

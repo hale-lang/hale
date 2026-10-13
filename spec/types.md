@@ -255,7 +255,11 @@ nested structs copied the same way, locus handles left as handles. The
 binding then follows nothing: replacing the source (`self.row = Row {
 }`) leaves `b` as it was read, and writing through the binding (`let
 mut c = self.row; c.n = 9;`) leaves the source untouched. A literal or
-a call result is fresh already and is bound as it is. Assignment
+a call result is fresh already and is bound as it is. A value read
+from a form's cell (`m.get(k) or d`) is the reader's in the same way:
+writing into it never changes the cell, though the compiler keeps its
+nested parts shared with the cell until a write could show
+(`spec/forms.md` § Reading a cell). Assignment
 reads the same way (GH #992): `b = <place>` on a struct local, and
 `arr[i] = <place>` or `b.inner = <place>` under one, store a copy.
 And a write through a local never reaches another (GH #993): a copy
