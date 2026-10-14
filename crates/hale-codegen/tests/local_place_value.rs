@@ -693,3 +693,45 @@ fn a_cell_read_through_a_call_handed_to_a_writer_leaves_the_cell() {
     assert!(out.contains("inline: k=1 s=IN2 b0=2"), "{out}");
     assert!(out.contains("bound: k=1 s=IN2 b0=2"), "{out}");
 }
+
+/// A store down a locus handle's field path from outside the locus
+/// (`fn put(l: L, r: R) { l.r.arr = r.arr; }`, `l.name = s`) is copied
+/// into that locus's arena, as a method's store into its own fields is:
+/// the locus's later in-place writes never reach the caller's value, and
+/// the caller's never reach the locus (a raw pointer store shared them).
+#[test]
+fn a_store_down_a_handles_field_path_copies_into_the_locus() {
+    let src = format!(
+        "{REVIEW_TYPES}
+        locus L {{
+            params {{ r: R = R {{ }}; name: String = \"\"; }}
+            fn bump() {{ self.r.arr[0].k = 9; self.r.arr[0].inner.k = 90; }}
+            fn rename() {{ self.name = \"ZZZ\"; }}
+            fn k0() -> Int {{ return self.r.arr[0].k; }}
+            fn get() -> String {{ return self.name; }}
+        }}
+        fn put(l: L, r: R) {{ l.r.arr = r.arr; }}
+        fn put_name(l: L, s: String) {{ l.name = s; }}
+        fn main() {{
+            let r = fresh();
+            let l = L {{ }};
+            put(l, r);
+            l.bump();
+            show(\"locus wrote\", r);
+            let q = fresh();
+            let l2 = L {{ }};
+            put(l2, q);
+            q.arr[0].k = 5;
+            println(\"caller wrote: l2.k0=\", l2.k0());
+            let s = heap(\"ab\");
+            let l3 = L {{ }};
+            put_name(l3, s);
+            l3.rename();
+            println(\"string: s=\", s, \" l=\", l3.get());
+        }}"
+    );
+    let out = run("handle_store", &src);
+    assert!(out.contains("locus wrote: a0=1/10 a1=2"), "{out}");
+    assert!(out.contains("caller wrote: l2.k0=1"), "{out}");
+    assert!(out.contains("string: s=AB2 l=ZZZ"), "{out}");
+}
