@@ -1,4 +1,4 @@
-//! The `lifecycle_flow` integration-test binary: 31 test files of this area, kept
+//! The `lifecycle_flow` integration-test binary: 32 test files of this area, kept
 //! where they are (their paths, names and history unchanged) and built as
 //! modules of one binary, so the crate links once for the area instead of
 //! once per file. Each file is a module; a test's name is `<file>::<fn>`.
@@ -45,6 +45,8 @@ mod on_failure_dispatch_by_child_type;
 mod or_block_disposer;
 #[path = "or_fallible_handler.rs"]
 mod or_fallible_handler;
+#[path = "or_statement_value.rs"]
+mod or_statement_value;
 #[path = "or_wait_loss_window.rs"]
 mod or_wait_loss_window;
 #[path = "placement_factory_default.rs"]

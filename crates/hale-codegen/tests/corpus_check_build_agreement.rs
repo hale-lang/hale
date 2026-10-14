@@ -90,18 +90,30 @@ fn has_entry_point(program: &hale_syntax::ast::Program) -> bool {
     })
 }
 
-/// GH #829: a program with no entry point, with `fn main() { }`
+/// Does the program have the top-level `fn main` a build starts at?
+fn has_fn_main(program: &hale_syntax::ast::Program) -> bool {
+    program.items.iter().any(|i| matches!(i, TopDecl::Fn(f) if f.name.name == "main"))
+}
+
+/// GH #829: a program with no `fn main`, with `fn main() { }`
 /// appended — the smallest thing that makes it a program without
 /// changing what codegen must lower. Every declaration it carries is
 /// still lowered (codegen walks the decls, not the call graph), so
 /// the divergences that hide in a library-shaped snippet are reached.
 ///
-/// A program that already has an entry point is returned untouched:
-/// a second `main` would be the harness inventing a compile error.
+/// That includes a library APPLICATION seed: a `main locus` with no
+/// `fn main`, which an importer starts and which checks clean alone.
+/// Built alone it is refused at the locus's name ("a `main locus` is
+/// started by `fn main` ..."), the build's located answer for a seed
+/// nothing starts, not a divergence; built as a library it reaches
+/// every declaration the same way.
+///
+/// A program that already has a `fn main` is returned untouched: a
+/// second one would be the harness inventing a compile error.
 fn with_synthetic_main(
     program: &hale_syntax::ast::Program,
 ) -> std::borrow::Cow<'_, hale_syntax::ast::Program> {
-    if has_entry_point(program) {
+    if has_fn_main(program) {
         return std::borrow::Cow::Borrowed(program);
     }
     let stub = hale_syntax::parse_source("fn main() { }\n")
@@ -482,6 +494,27 @@ fn an_entry_point_less_program_is_built() {
             src
         );
     }
+}
+
+/// A library application seed — a `main locus` with no `fn main`, which
+/// an importer starts — checks clean alone, and `hale build` of it alone
+/// is refused at the locus's name (`entry_point_placement`). The sweep
+/// builds it as the library it is, with the synthetic `fn main() { }`
+/// it gives every seed without one, so its declarations are lowered and
+/// its being unstarted is not counted as a divergence.
+///
+/// Plain string literals, for the reason given above.
+#[test]
+fn a_library_application_seed_is_built_as_a_library() {
+    let library = "main locus App {\n\
+                   run { println(\"hi\"); }\n\
+                   }\n";
+    let program = hale_syntax::parse_source(library).expect("parses");
+    assert!(!has_fn_main(&program));
+    let errors: Vec<String> =
+        entries::check_program(&program).into_iter().filter(|d| d.is_error()).map(|d| d.message).collect();
+    assert!(errors.is_empty(), "it checks clean alone: {errors:?}");
+    assert_eq!(sweep_verdict(library, "hale_cb_library_application"), Verdict::Built);
 }
 
 /// GH #1076 (U1, review): a quantity literal in a default checked clean

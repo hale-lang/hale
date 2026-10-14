@@ -396,7 +396,10 @@ crates/hale-codegen/tests/bus_static_reservation.rs#14 47a979f63f3dd130
 crates/hale-codegen/tests/bus_static_reservation.rs#15 20798f7199543acc
 crates/hale-codegen/tests/bus_static_reservation.rs#16 d370421f750ec85f
 crates/hale-codegen/tests/bus_static_reservation.rs#17 7bd8342ea191b87d
+crates/hale-codegen/tests/bus_static_reservation.rs#18 be67f8fe458f27a8
 crates/hale-codegen/tests/bus_static_reservation.rs#2 fccf97dc1520f456
+crates/hale-codegen/tests/bus_static_reservation.rs#20 ded1e9ab42f956e1
+crates/hale-codegen/tests/bus_static_reservation.rs#27 0a5401b038a4bba5
 crates/hale-codegen/tests/bus_static_reservation.rs#3 5431cdbd4e1d3153
 crates/hale-codegen/tests/bus_static_reservation.rs#4 110976e0ba76afa6
 crates/hale-codegen/tests/bus_static_reservation.rs#5 d04fe83f1a1bd363
@@ -917,6 +920,7 @@ crates/hale-codegen/tests/http_router.rs#0 d57a225f18d70f1a
 crates/hale-codegen/tests/http_router.rs#1 5bc731b350eb6731
 crates/hale-codegen/tests/http_router.rs#2 de8c5e36727bd8c1
 crates/hale-codegen/tests/http_router.rs#3 250342ebc529d515
+crates/hale-codegen/tests/http_router.rs#6 98233b29725ab32a
 crates/hale-codegen/tests/http_server_classic_pool_shutdown.rs#0 6dc1ace3433d4fbe
 crates/hale-codegen/tests/http_server_concurrent.rs#0 c41eb280a380f11e
 crates/hale-codegen/tests/http_server_concurrent.rs#1 c41eb280a380f11e
@@ -1148,6 +1152,7 @@ crates/hale-codegen/tests/or_block_disposer.rs#4 865d341109268295
 crates/hale-codegen/tests/or_block_disposer.rs#5 e31d9ded3d126504
 crates/hale-codegen/tests/or_fallible_handler.rs#0 57253c2ecab635e0
 crates/hale-codegen/tests/or_fallible_handler.rs#1 166aedd2e3fac361
+crates/hale-codegen/tests/or_statement_value.rs#0 13594e6dd6f40ccc
 crates/hale-codegen/tests/os_getrandom.rs#0 06171a026a661ad4
 crates/hale-codegen/tests/os_getrandom.rs#1 06171a026a661ad4
 crates/hale-codegen/tests/os_getrandom.rs#3 06171a026a661ad4

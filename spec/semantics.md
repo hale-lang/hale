@@ -2816,6 +2816,23 @@ first `main locus` of the seed's own, a module-nested one included;
 the refusal is what changed for the one seed that ran differently,
 whose only `main locus` is module-nested.
 
+The entry is started by the seed's top-level `fn main`, which
+instantiates it; a `main locus` does not start itself. A seed that
+declares its own top-level `main locus` and no `fn main` checks clean
+— an application another seed imports and starts is checked alone that
+way — but nothing in it starts the locus, so `hale build` and `hale
+run` refuse it with one located error at the locus's name (until
+2026-10-14 the build's spanless `program has no fn main()`):
+
+```text
+main.hl:1:12: codegen error: a `main locus` is started by `fn main`, and this seed has none: add `fn main() { App { }; }`
+```
+
+A program with neither says `program has no fn main(): a native
+program starts at its top-level fn main`. A module that `@export`s is
+the wasm entry inversion's instead (an export-only module needs no `fn
+main`: `spec/ffi.md` § "`@export` — exports").
+
 Whether a thread runs beside the bus's main drain, so that the bus
 queue takes its lock, is decided from what the build deploys (F.40
 phase 3, E2): a domain of the placement table that is not main (a
