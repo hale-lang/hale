@@ -150,7 +150,7 @@ main locus App {
         let st = self.in_dir(app, toolchain() + "\ndna\nstatus");
         std::test::assert(std::str::contains(st.stdout, "[unadmitted] call the agency about the late invoice — `org/collections` is owned by north, not acme"), "status shows it waiting for its owner: " + st.stdout);
         let other = scratch + "/north";
-        let cl = self.in_dir(scratch, "git\nclone\n-q\n" + bare + "\n" + other);
+        let cl = dna::clone_repo(bare, other);
         let f0 = self.in_dir(other, "git\nfetch\n-q\norigin\nrefs/dna/*:refs/dna/*");
         let c4 = self.in_dir(other, "git\nconfig\ndna.owner\nnorth");
         let st2 = self.in_dir(other, toolchain() + "\ndna\nstatus");

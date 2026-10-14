@@ -1721,7 +1721,7 @@ row	App@literal1.s0	Source	pool:pa	entry	off owner
 row	App@literal1.s1	Source	pool:pb	entry	off owner
 row	App@literal1.sub	Counter	pool:p	entry	off owner
 
-== crates/hale-codegen/tests/bus_backpressure.rs#d99a676f
+== crates/hale-codegen/tests/bus_backpressure.rs#07d4f16d
 root	App	the entry
 domain	pool:p0
 domain	pool:p1
@@ -2167,6 +2167,39 @@ row	Root@literal1.y	Tally	main	default
 root	Root	the entry
 row	Root@literal1	Root	main	default
 row	Root@literal1.t	Teller	main	default
+
+== crates/hale-codegen/tests/bus_static_reservation.rs#0c88109f
+root	App	the entry
+domain	pinned:App@literal1.h	cpus 0
+domain	pinned:App@literal2.h	cpus 0
+row	App@literal1	App	main	default
+row	App@literal2	App	main	default
+row	App@literal1.t	Teller	main	default
+row	App@literal2.t	Teller	main	default
+-- App@literal1.h	Hold
+row	~	Hold	pinned:~	entry	off owner
+row	~.e	Ear	pinned:~	inherited
+row	~.sub	App	pinned:~	inherited
+-- App@literal2.h	Hold
+row	~	Hold	pinned:~	entry	off owner
+row	~.e	Ear	pinned:~	inherited
+row	~.sub	Leaf	pinned:~	inherited
+
+== crates/hale-codegen/tests/bus_static_reservation.rs#6151eeb6
+root	App	the entry
+row	App@literal1	App	main	default
+row	App@literal1.a	All	main	default
+row	App@literal1.e	Exact	main	default
+row	App@literal1.n	Narrow	main	default
+row	App@literal1.s	Shouter	main	default
+row	App@literal1.t	Teller	main	default
+
+== crates/hale-codegen/tests/bus_static_reservation.rs#2d4d44f6
+root	App	the entry
+row	App@literal1	App	main	default
+row	App@literal1.a	All	main	default
+row	App@literal1.s	Shouter	main	default
+row	Watcher@main1	Watcher	main	default
 
 == crates/hale-codegen/tests/bus_subscriber.rs#13a2a6c3
 row	Sub@main1	Sub	main	default
@@ -3315,6 +3348,14 @@ shared	dynamic	sites in the seed #90ace0ba
 row	Classic@main2	Classic	main	default
 shared	__StdHttpRouter@main1	__StdHttpRouter #a16e8e74
 
+== crates/hale-codegen/tests/http_router.rs#5789282a
+-- App@main1	App
+row	~	App	main	default
+row	~.router	__StdHttpRouter	main	inherited
+row	~.router.entries	__StdHttpEntryList	main	inherited
+row	~.router.mws	__StdHttpMwList	main	inherited
+row	~.router.not_found	__StdHttpNotFound404	main	inherited
+
 == crates/hale-codegen/tests/http_server_classic_pool_shutdown.rs#5db2307f
 root	App	the entry
 domain	pool:io
@@ -4020,6 +4061,11 @@ row	~.child	Alpha	main	inherited
 
 == crates/hale-codegen/tests/or_fallible_handler.rs#fbcec405
 row	Q@main1	Q	main	default
+
+== crates/hale-codegen/tests/or_statement_value.rs#a7f09c56
+-- Pool@main1	Pool
+row	~	Pool	main	default
+row	~.fds	Ints	main	inherited
 
 == crates/hale-codegen/tests/owned_child_arena_reclaim.rs#6f8c650f
 

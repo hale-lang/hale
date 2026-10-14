@@ -8874,8 +8874,30 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         },
                     );
                 if !has_exports {
+                    // A seed's own top-level `main locus` is started by
+                    // `fn main` (spec/semantics.md, "The entry locus"),
+                    // so a build of one without it says so at the
+                    // locus's name, with the line to add. `hale check`
+                    // accepts the seed: an application another seed
+                    // imports and starts is checked alone that way.
+                    let main_locus = self.program.items.iter().find_map(|item| match item {
+                        TopDecl::Locus(l) if l.is_main && !l.imported => Some(l),
+                        _ => None,
+                    });
+                    if let Some(l) = main_locus {
+                        return Err(CodegenError::UnsupportedAt(
+                            format!(
+                                "a `main locus` is started by `fn main`, and this seed has none: \
+                                 add `fn main() {{ {} {{ }}; }}`",
+                                l.name.name
+                            ),
+                            l.name.span,
+                        ));
+                    }
                     return Err(CodegenError::Unsupported(
-                        "program has no `fn main()`".to_string(),
+                        "program has no `fn main()`: a native program starts at its top-level \
+                         `fn main`"
+                            .to_string(),
                     ));
                 }
                 let sp = self.program.span.clone();

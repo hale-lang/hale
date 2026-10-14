@@ -306,3 +306,101 @@ fn a_router_built_and_used_in_one_frame_reads_its_handler() {
     let out = run_under_oracles("one_frame", &src);
     assert!(out.contains("[D/canned][E/let] 64"), "{out}");
 }
+
+// ---- a dispatch loop inside one `run()` keeps its pace --------------
+//
+// A reviewer's probe: 20,000 `Router.dispatch` calls per round, rounds
+// back to back inside ONE `run()` activation, went 41.7 -> 399 ms per
+// round. The Router keeps nothing per request (its arenas are flat
+// below); what grows is the run activation's own scratch, which by the
+// styleguide's rule reclaims nothing until `run` returns. Every String
+// clone into that scratch — the capture `push`es into the request's
+// RouteParams — asked `lotus_ptr_in_arena` whether the source already
+// lived there, and a miss walked the whole chunk list: O(chunks) per
+// clone on an arena that gains a chunk every ~100 requests. The walk
+// now hands off to an address-sorted chunk index after a few chunks.
+//
+// The oracle is the ratio of the fastest of the last three rounds to the
+// fastest of the first three (min, so a noisy neighbour stretching one
+// round cannot fail it): ~5x before the index, ~1.05x after. The
+// residency dump after every round pins the Router's own arenas.
+
+#[test]
+fn a_dispatch_loop_in_one_run_keeps_its_pace_and_the_router_stays_flat() {
+    let src = r#"
+        fn hello(ctx: std::http::Context) -> std::http::Response {
+            return std::http::Response { status: 200, body: "hi " + std::http::path_param(ctx.params, "name") };
+        }
+        locus App {
+            params { router: std::http::Router = std::http::Router { }; }
+            run {
+                self.router.add_fn("GET", "/hello/:name", hello);
+                let mut total = 0;
+                let mut round = 0;
+                while round < 12 {
+                    let t0 = std::time::monotonic_ns();
+                    let mut i = 0;
+                    while i < 20000 {
+                        let resp = self.router.dispatch(std::http::Request { method: "GET", path: "/hello/world" });
+                        total = total + len(resp.body);
+                        i = i + 1;
+                    }
+                    println("round_us=", (std::time::monotonic_ns() - t0) / 1000);
+                    std::process::dump_arena_residency();
+                    round = round + 1;
+                }
+                println("total=", total);
+            }
+        }
+        fn main() { let a = App { }; }
+    "#;
+    let bin = harness::unique_bin("hale_http_router_run_loop_pace");
+    build_opts::build_source(src, &bin, &build_opts::options()).expect("build");
+    let out = Command::new(&bin).env("LOTUS_ARENA_RESIDENCY", "1").output().expect("run");
+    let _ = std::fs::remove_file(&bin);
+    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+    assert!(out.status.success(), "exit {:?}\n{stdout}\n{stderr}", out.status);
+    assert!(stdout.contains("total=1920000"), "every dispatch routed: {stdout}");
+
+    let rounds: Vec<u64> = stdout
+        .lines()
+        .filter_map(|l| l.strip_prefix("round_us="))
+        .map(|v| v.trim().parse().expect("round_us is an integer"))
+        .collect();
+    assert_eq!(rounds.len(), 12, "{stdout}");
+    let first = *rounds[..3].iter().min().unwrap();
+    let last = *rounds[9..].iter().min().unwrap();
+    assert!(
+        last < first * 2,
+        "dispatch slows as the run activation grows: first rounds {:?}, last rounds {:?} (all: {rounds:?})",
+        &rounds[..3],
+        &rounds[9..]
+    );
+
+    // The Router's arenas (and the App's) hold the same bytes after
+    // every round: nothing per request lands in them.
+    let dumps: Vec<Vec<String>> = stderr
+        .split("[arena_residency dump]")
+        .skip(1)
+        .take(12)
+        .map(|d| {
+            let mut rows: Vec<String> = d
+                .lines()
+                .filter(|l| l.contains("label=__StdHttp") || l.contains("label=App]"))
+                .map(|l| {
+                    let label = l.split("label=").nth(1).unwrap().split(']').next().unwrap();
+                    let used = l.split("used=").nth(1).unwrap().trim();
+                    format!("{label} used={used}")
+                })
+                .collect();
+            rows.sort();
+            rows
+        })
+        .collect();
+    assert_eq!(dumps.len(), 12, "{stderr}");
+    assert!(dumps[0].iter().any(|r| r.starts_with("__StdHttpRouter ")), "{:?}", dumps[0]);
+    for (n, d) in dumps.iter().enumerate().skip(1) {
+        assert_eq!(d, &dumps[0], "round {} moved a long-lived arena", n + 1);
+    }
+}

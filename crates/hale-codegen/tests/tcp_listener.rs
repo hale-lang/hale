@@ -75,7 +75,7 @@ impl Running {
                 let _ = tx.send(line);
             }
         });
-        let mut r = Running { child, lines, err, port: 0 };
+        let r = Running { child, lines, err, port: 0 };
         r.wait_line("__StdIoTcpListener.birth host=127.0.0.1 port=");
         r
     }

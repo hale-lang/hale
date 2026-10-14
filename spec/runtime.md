@@ -2339,11 +2339,24 @@ its `KNOWN_OPEN` table, which is empty today.
   subject — the root's, a cooperative node's, an anchor's (it registers
   on the instantiating thread), a node's an anchor's params build in
   the init its own thread or its pool's worker runs while the
-  instantiating thread waits (the init reads the scope through its
-  argument block), a keyed subscription's, its key applied — then
+  instantiating thread waits, an anchor among them included, whose own
+  params are built in an init of that init, at any depth (each init
+  reads the scope through its argument block, from the function that
+  starts it; #1555), each of a replicated field's (`replicas = K`) K
+  instances, an anchor apiece, a keyed subscription's, its key applied
+  (`where key == replica` claims its own replica's shard) — then
   claims its copy
   (`lotus_bus_reserve_claim`), ahead of what its window holds, and its
-  readiness delivers it after its `birth()`. The last expected claim
+  readiness delivers it after its `birth()`. A wildcard (`**`)
+  subscription is reserved under its own pattern: the placeholder
+  registers the pattern, so it holds every publish whose subject the
+  pattern matches, as the subscription itself would take it, a
+  computed subject sent under a publisher's declared pattern included,
+  and the claimant's bound is over all of them, as its queue's is. It
+  is reserved where a node's declared publish, a subject or a pattern,
+  can name a subject the pattern matches. A subscriber of a concrete
+  subject the pattern also covers claims from that subject's own
+  reservation, so each claimant takes each cell once (#1555). The last expected claim
   closes the reservation, and the root's `birth()` closes what is left
   (`lotus_bus_reserve_end`); so does any exit that leaves the
   construction part-way (an initializer's propagated failure: the scope
@@ -2370,12 +2383,7 @@ its `KNOWN_OPEN` table, which is empty today.
   not see the drain. A tree that needs no reservation emits none, and the publish
   site is unchanged: a reservation holds a window open, so a baked
   direct publish takes the helper through the window count it already
-  reads. Not yet true: an anchor nested in another anchor's params
-  builds its own params in an init of that init, and a subscriber there
-  claims nothing, so what an earlier part of the tree published before
-  it registered reaches no subscription of it; nor does a replicated
-  field's (`replicas = K`) instance. Not yet true
-  in two further cases (inventory rows C51
+  reads. Not yet true in two cases (inventory rows C51
   and R51). A subscribing locus that only stdlib or imported code
   builds, so that the lifecycle plan holds no template of it, opens
   no window, and what is published to it during its `birth()` is

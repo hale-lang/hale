@@ -211,6 +211,23 @@ fn run_tool(argv: String) -> RunResult {
     return RunResult { code: out.code, stdout: out.stdout, stderr: out.stderr };
 }
 
+// A clone of the local repository `src` at `dst`, for a fixture: through
+// git's transport (`--no-local`), never a copy of `src`'s object files.
+// A push into a bare `src` starts its auto-gc in the background, and a
+// local clone copying `objects/info/commit-graphs` while that gc rewrote
+// it failed with "failed to copy file to ...commit-graphs/..." (CI). The
+// clone's own auto-gc and maintenance are off, so it races nothing the
+// fixture does next either.
+fn clone_repo(src: String, dst: String) -> RunResult {
+    return clone_repo_with("", src, dst);
+}
+
+// `clone_repo` with more of `git clone`'s flags, one per line and each
+// line ended (`"-b\nmain\n"` checks out `main`).
+fn clone_repo_with(flags: String, src: String, dst: String) -> RunResult {
+    return run_tool("git\nclone\n--quiet\n--no-local\n--config\ngc.auto=0\n--config\nmaintenance.auto=false\n" + flags + src + "\n" + dst);
+}
+
 // `argv` under a wall-clock limit of `secs`; exit 124 when the limit
 // ends it, as GNU `timeout` reports it. `timeout` is coreutils: Linux
 // has it and a stock Mac does not, so where it is missing perl's
