@@ -590,17 +590,17 @@ dynamic	<hole>	on main|unresolved declaration `chat::Participant`	in the seed
 == crates/hale-cli/tests/fixtures/imported-main-claims/app-missing-collision/main.hl#374b15e0
 row	Bystander@main1	Bystander	main	default
 
-== crates/hale-cli/tests/fixtures/imported-main-claims/seed/chat.hl#a69ca5e3
+== crates/hale-cli/tests/fixtures/imported-main-claims/seed/chat.hl#5da70164
 root	ChatServer	the entry
-row	ChatServer@literal1	ChatServer	main	default
-row	ChatServer@literal1.ada	Participant	main	default
-shared	ChatServer@literal1.lobby	Room #1682ebfe
+row	ChatServer@entry	ChatServer	main	default
+row	ChatServer@entry.ada	Participant	main	default
+shared	ChatServer@entry.lobby	Room #1682ebfe
 
-== crates/hale-cli/tests/fixtures/imported-main-claims/seed-adopt/chat.hl#487222d2
+== crates/hale-cli/tests/fixtures/imported-main-claims/seed-adopt/chat.hl#addd1e6d
 root	ChatServer	the entry
-row	ChatServer@literal1	ChatServer	main	default
-row	ChatServer@literal1.ada	Participant	main	default
-shared	ChatServer@literal1.lobby	Room #1682ebfe
+row	ChatServer@entry	ChatServer	main	default
+row	ChatServer@entry.ada	Participant	main	default
+shared	ChatServer@entry.lobby	Room #1682ebfe
 
 == crates/hale-cli/tests/fixtures/p3-namespace-method-app/main.hl#3a047afc
 root	App	the entry
@@ -5502,6 +5502,28 @@ row	App@literal1.e	Echo	main	default
 
 == crates/hale-types/tests/call_arity.rs#700f7f93
 row	A@main1	A	main	default
+
+== crates/hale-types/tests/check_rules.rs#c55458f4
+root	App	the entry
+row	App@entry	App	main	default
+
+== crates/hale-types/tests/check_rules.rs#989b09ab
+root	App	the entry
+domain	pinned:MyAdapter@binding1
+row	App@entry	App	main	default
+row	MyAdapter@binding1	MyAdapter	pinned:MyAdapter@binding1	binding
+
+== crates/hale-types/tests/check_rules.rs#4a17c976
+root	App	the entry
+row	App@entry	App	main	default
+
+== crates/hale-types/tests/check_rules.rs#71a0e1c0
+root	App	the entry
+row	App@entry	App	main	default
+
+== crates/hale-types/tests/check_rules.rs#f9040aae
+root	App	the entry
+row	App@entry	App	main	default
 
 == crates/hale-types/tests/check_rules.rs#e2b2a850
 row	L@main1	L	main	default
@@ -15051,6 +15073,15 @@ row	App@literal1	App	main	default
 row	~	Holder	pinned:~	entry	off owner
 row	~.roles	Roles	pinned:~	inherited
 shared	Roles@main1	Roles #d44c6e0e
+
+== crates/hale-types/tests/fixtures/placement/library_alone.hl
+root	Lib	the entry
+domain	pinned:Lib@entry.w
+row	Lib@entry	Lib	main	default
+row	Lib@entry.idle	K	main	default
+-- Lib@entry.w	Worker
+row	~	Worker	pinned:~	entry	off owner
+row	~.k	K	pinned:~	inherited
 
 == crates/hale-types/tests/fixtures/placement/module_qualified.hl
 root	App	the entry

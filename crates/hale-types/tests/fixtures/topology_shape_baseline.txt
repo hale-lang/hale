@@ -64,9 +64,9 @@ crates/hale-cli/tests/fixtures/imported-main-claims/app-lib-missing/main.hl b644
 crates/hale-cli/tests/fixtures/imported-main-claims/app-missing-collision/main.hl b644c94d0d98e0d7
 crates/hale-cli/tests/fixtures/imported-main-claims/app-missing/main.hl f2c1228edb650960
 crates/hale-cli/tests/fixtures/imported-main-claims/app/main.hl f2c1228edb650960
-crates/hale-cli/tests/fixtures/imported-main-claims/seed-adopt/chat.hl c77559964835878e
+crates/hale-cli/tests/fixtures/imported-main-claims/seed-adopt/chat.hl 653102d16139102d
 crates/hale-cli/tests/fixtures/imported-main-claims/seed-policy/policy.hl af67c9605fa68550
-crates/hale-cli/tests/fixtures/imported-main-claims/seed/chat.hl c77559964835878e
+crates/hale-cli/tests/fixtures/imported-main-claims/seed/chat.hl 653102d16139102d
 crates/hale-cli/tests/fixtures/p3-namespace-method-app/main.hl b6eaa051f60dcfff
 crates/hale-cli/tests/fixtures/p3-namespace-method-lib/grid.hl 83dd3572f7c59f69
 crates/hale-cli/tests/fixtures/qualified-type-fwd-app/main.hl 6f6553a1d6df5be4
@@ -1674,12 +1674,15 @@ crates/hale-types/tests/bus_rules_over_graph.rs#9 4ae7edeaf25383d9
 crates/hale-types/tests/call_arity.rs#2 b7d8eb3457fbbdd2
 crates/hale-types/tests/call_arity.rs#4 979e9a0938ea4758
 crates/hale-types/tests/callgraph_witness.rs#0 2c8a176eca798985
+crates/hale-types/tests/check_rules.rs#0 e8428a078358423a
 crates/hale-types/tests/check_rules.rs#100 b6f5c37a20862edb
 crates/hale-types/tests/check_rules.rs#104 b1e7c383d7515c93
 crates/hale-types/tests/check_rules.rs#107 7ba49c53bd84fd5d
 crates/hale-types/tests/check_rules.rs#114 42b35222c64199a7
 crates/hale-types/tests/check_rules.rs#115 6a46121eb184de5c
 crates/hale-types/tests/check_rules.rs#116 3d60670cf45c2deb
+crates/hale-types/tests/check_rules.rs#14 ce6bd68bf1032e2a
+crates/hale-types/tests/check_rules.rs#15 e8428a078358423a
 crates/hale-types/tests/check_rules.rs#16 b6f5c37a20862edb
 crates/hale-types/tests/check_rules.rs#25 b6f5c37a20862edb
 crates/hale-types/tests/check_rules.rs#26 a3c9a6e31b375d11
@@ -1706,6 +1709,7 @@ crates/hale-types/tests/check_rules.rs#73 b6f5c37a20862edb
 crates/hale-types/tests/check_rules.rs#74 b6f5c37a20862edb
 crates/hale-types/tests/check_rules.rs#75 b6f5c37a20862edb
 crates/hale-types/tests/check_rules.rs#79 b6f5c37a20862edb
+crates/hale-types/tests/check_rules.rs#8 f6f6baa77f8b2265
 crates/hale-types/tests/check_rules.rs#81 55ef3e29b2d70702
 crates/hale-types/tests/check_rules.rs#82 55ef3e29b2d70702
 crates/hale-types/tests/check_rules.rs#84 b80b17da2f4c5cf0
@@ -1713,6 +1717,7 @@ crates/hale-types/tests/check_rules.rs#85 55ef3e29b2d70702
 crates/hale-types/tests/check_rules.rs#86 f97fa4bc9769a389
 crates/hale-types/tests/check_rules.rs#87 2c6934eeb411f715
 crates/hale-types/tests/check_rules.rs#89 b6f5c37a20862edb
+crates/hale-types/tests/check_rules.rs#9 e8428a078358423a
 crates/hale-types/tests/check_rules.rs#90 2299e9ee6bfd7146
 crates/hale-types/tests/check_rules.rs#91 2299e9ee6bfd7146
 crates/hale-types/tests/check_rules.rs#93 0da62e337323bb78
