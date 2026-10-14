@@ -365,8 +365,10 @@ main locus App {
 `http::Rpc`, `mcp::Rpc`, `grpc::Rpc`) accepts and reads on a coroutine
 that parks, so it runs on a named pool `where async_io`. The compiler adds
 it to the main locus as a param of its own (`__rpc_u_<n>`, `__rpc_h_<n>`,
-`__rpc_g_<n>`), born before the exposure it serves, and places it, with
-the connections it starts:
+`__rpc_g_<n>`) and places it, with the connections it starts. For an
+exposure the main locus holds, the listener is born just before the
+exposure; for one a server below it holds, just after the param of the
+main locus the server sits under, so the server is built first:
 
 - for an exposure the main locus holds, by the exposure's own row
   (`public: cooperative(pool = io) where async_io;` above). The row places
@@ -392,15 +394,22 @@ exposure whose holder the main locus does not hold through its params is
 refused ("exposure \`web\` is held by \`AdminServer\`, which no main locus
 holds through its params: …"), and so is one whose holder it holds twice,
 or as replicas ("exposure \`web\` is served twice: \`AdminServer\`, which
-holds it, is held by \`App\` as \`self.a\` and \`self.b\`; …"). The
-listener's address (`bind:`, `path:`) is written in the holder and read
-where the listener is born, before the param that holds the holder: each
-`self.<param>` it reads is followed up the literals that build the holder
-(the value a literal gives the param, else its default) to the main
-locus, where it must be a param declared before that one; an address that
-cannot be read there is refused, naming the read. The address a TCP
-listener bound (`host:<bound port>`) is handed back down the same
-literals, so the exposure describes the port the kernel gave it.
+holds it, is held by \`App\` as \`self.a\` and \`self.b\`; …"). A
+server's listener address (`bind:`, `path:`) is written in the server and
+read off the server as it was built: each `self.<param>` it reads is the
+main locus's `self.<path to the server>.<param>`, so the value a
+construction gives the param (a default, the literal of the param that
+holds the server, or an override at a construction of the main locus,
+`App { server: Server { bind: … } }`, at any depth) is the address the
+listener binds. A method of the server, or the server itself, cannot be
+read that way and is refused, naming it. The exposure starts from the
+`bind:` as written and is told the address the listener was bound to
+(`host:<bound port>`) when the listener first asks its transport whether
+the exposure is there, before anything is accepted, so its description
+names the port the kernel gave it. (Before, the address was followed up
+the defaults of the literals that build the server, which a
+construction's override bypassed, opening the listener on the default
+while the server held the override.)
 
 **A main locus with no `run()`** that holds a listener (its own exposure's,
 or one below it) serves until each of those exposures is stopped or the

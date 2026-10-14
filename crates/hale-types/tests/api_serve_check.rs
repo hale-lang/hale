@@ -331,19 +331,24 @@ fn a_server_locus_is_held_once_by_the_placed_tree() {
 
 #[test]
 fn a_server_locus_listener_address_is_read_by_the_main_locus() {
-    // the port the main locus's literal gives the server, or its default
+    // the port the main locus's literal gives the server, its default, or a
+    // construction's override: the listener reads it off the server as built
     assert_eq!(errors(&server(SERVED, "server: Server = Server { port: 9000 };")), Vec::<String>::new());
     assert_eq!(
         errors(&server(SERVED, "base: Int = 9000; server: Server = Server { port: self.base };")),
         Vec::<String>::new()
     );
-    // a main param declared after the one that holds the server is not born
-    // when the listener is
-    let late = server(SERVED, "server: Server = Server { port: self.base }; base: Int = 9000;");
-    let errs = errors(&late);
+    assert_eq!(
+        errors(&server(SERVED, "server: Server = Server { };").replace("fn main() { App { }; }", "fn main() { App { server: Server { port: 9001 } }; }")),
+        Vec::<String>::new()
+    );
+    // a method of the server is not a field the main locus can read
+    let method = server(&SERVED.replace("to_string(self.port)", "to_string(self.port_of())"), "server: Server = Server { };")
+        .replace("\n    }\n}\nmain locus App", "\n    }\n    fn port_of() -> Int { return self.port; }\n}\nmain locus App");
+    let errs = errors(&method);
     assert!(
-        errs.iter().any(|e| e.contains("exposure `web` held by `Server`: its listener is `App`'s, born before `self.server`")
-            && e.contains("`self.base` of `App`, which is not a param declared before `server`")),
+        errs.iter().any(|e| e.contains("exposure `web` held by `Server`: its listener is `App`'s, born after `self.server`")
+            && e.contains("`self.port_of(…)`, a method of the holder")),
         "{errs:#?}"
     );
 }

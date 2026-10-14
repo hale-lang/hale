@@ -281,7 +281,9 @@ locus __StdIoH2Listener {
         // nothing is accepted before the transport is subscribed, and the
         // asking repeats until it answers
         while !self.started && !self.stopped && !self.draining {
-            __ApiH2CmdT <- __StdIoH2Cmd { key: self.tid, kind: 4, stream: 0, code: 0, headers: __h2_none(), body: __h2_none(), trailers: __h2_none() };
+            // the asking names the address bound (`host:<bound port>`), for
+            // a transport that describes it
+            __ApiH2CmdT <- __StdIoH2Cmd { key: self.tid, kind: 4, stream: 0, code: 0, headers: __h2_none(), body: std::bytes::from_string(self.listener), trailers: __h2_none() };
             std::time::sleep(2ms);
         }
         if !self.stopped && !self.draining {

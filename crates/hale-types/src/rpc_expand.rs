@@ -14,7 +14,10 @@
 //!   fields); the call as written is kept beside it (`ParamDecl::serve`)
 //!   for the serve-site laws and the description;
 //! - for a socket transport, its listener: a param of the main locus,
-//!   born before the exposure, placed by the exposure's own row when the
+//!   born just before the exposure when main holds it, just after the
+//!   param a server below main sits under otherwise (reading its address
+//!   off the server as built, `address_for_main`), placed by the
+//!   exposure's own row when the
 //!   main locus holds it, by the row of the param that holds its holder
 //!   otherwise, when either puts it on a pool `where async_io`, and on the
 //!   transport's shared pool (`__api_http`, `__api_unix`, `__api_grpc`)
@@ -1193,7 +1196,7 @@ pub fn expand(
                         let Some(addr) = listener_address(l, Some(transport)) else { continue };
                         let mut ok = true;
                         for c in found {
-                            match address_for_main(&loci, &c, l, &addr) {
+                            match address_for_main(&c, &addr) {
                                 Ok(a) => chains.push((c, a)),
                                 Err(_) => ok = false,
                             }
@@ -1361,21 +1364,18 @@ pub fn expand(
         let grpc = is_grpc_site(l, transport);
         let mcp = is_mcp_site(l, transport);
         let is_main = l.is_main;
-        // A TCP listener the compiler adds (over http / mcp / grpc) is born
-        // before the exposure, and the exposure states the address it was
-        // bound to: its name, `host:<bound port>`, so a `bind:` of port 0 is
-        // described by the port the kernel gave it. The main locus reads it
-        // off its listener; a holder below it is handed it, down the
-        // literals that build it (`__rpc_a_<id>`). A Unix path is bound as
-        // written.
+        // A TCP listener the compiler adds (over http / mcp / grpc) states
+        // the address it was bound to, its name, `host:<bound port>`, so a
+        // `bind:` of port 0 is described by the port the kernel gave it. The
+        // main locus's own exposure reads it off its listener, born before
+        // it. A holder below main is built before its listener (the listener
+        // reads the address off the holder as built), so its exposure starts
+        // from the `bind:` as written and is told the bound name by its
+        // transport when the listener first asks for it (`RpcEvent` kind 7).
+        // A Unix path is bound as written.
         let kind = if grpc { "g" } else { "h" };
-        let bound_listener = http_bind.is_some().then(|| {
-            if is_main {
-                format!(", address: std::str::clone(self.__rpc_{kind}_{id}.listener)")
-            } else {
-                format!(", address: std::str::clone(self.__rpc_a_{id})")
-            }
-        });
+        let bound_listener =
+            (http_bind.is_some() && is_main).then(|| format!(", address: std::str::clone(self.__rpc_{kind}_{id}.listener)"));
         // the exposure: the param as declared, its init the exposure it builds
         let src = format!(
             "main locus __Tmp {{ params {{ {param}: std::api::Exposure = std::api::Exposure {{ id: {id}, name: {name}, surface: {surface}, digest: {digest}, bound: {bound}, rows: __RpcSurface_{id} {{ }}{address} }}; }} }}\n",
@@ -1448,12 +1448,6 @@ pub fn expand(
                 push_placement(l, rename_entry(row, &field).unwrap_or(default_entry), span);
                 waits.entry(l.name.name.clone()).or_default().push(exposure.param.clone());
             }
-        } else if !site.chains.is_empty() && bound_listener.is_some() {
-            // the address the listener was bound to, handed down
-            let addr = parse_params(&format!("main locus __Tmp {{ params {{ __rpc_a_{id}: String = \"\"; }} }}\n"));
-            if let Some(a) = addr {
-                insert_param_before(l, a, &exposure.param);
-            }
         }
         // a Unix transport the serving locus holds as a param is numbered
         // in the literal that builds it, as one written in the call is
@@ -1477,9 +1471,10 @@ pub fn expand(
             inject_key(l, field, &key_param, key, span);
         }
         // a holder below a main locus: each main locus that holds it gets
-        // the listener, before the param the chain starts at, on the pool
-        // that param's row names when a listener can run there, else the
-        // transport's shared pool
+        // the listener, after the param the chain starts at (so its address
+        // is read off the holder as every construction built it), on the
+        // pool that param's row names when a listener can run there, else
+        // the transport's shared pool
         for (chain, addr) in &site.chains {
             let Some((lp, default_entry)) = listener_for(addr.clone()) else { continue };
             let field = field_of(&lp);
@@ -1491,54 +1486,15 @@ pub fn expand(
                     .filter(|e| hosts_listener(e))
                     .and_then(|e| rename_entry(Some(e.clone()), &field))
                     .unwrap_or(default_entry.clone());
-                insert_param_before(main, lp.clone(), &root);
+                insert_param_after(main, lp.clone(), &root);
                 let mspan = main.name.span;
                 push_placement(main, entry, mspan);
                 placed = true;
                 break;
             }
-            if !placed {
-                continue;
-            }
-            let path = format!("{}.{}", chain.path(), exposure.param);
-            waits.entry(chain.main.clone()).or_default().push(path);
-            if bound_listener.is_none() {
-                continue;
-            }
-            // hand the bound address down the literals that build the holder
-            for (k, (owner, field)) in chain.fields.iter().enumerate() {
-                let value = if k == 0 {
-                    format!("std::str::clone(self.__rpc_{kind}_{id}.listener)")
-                } else {
-                    format!("std::str::clone(self.__rpc_a_{id})")
-                };
-                let Some(value) = parse_value(&value) else { continue };
-                for p in programs.iter_mut() {
-                    let Some(o) = find_locus_mut(&mut p.items, owner) else { continue };
-                    if k > 0 {
-                        let has = o.members.iter().any(|m| {
-                            matches!(m, LocusMember::Params(pb) if pb.params.iter().any(|p| p.name.name == format!("__rpc_a_{id}")))
-                        });
-                        if !has {
-                            if let Some(a) = parse_params(&format!("main locus __Tmp {{ params {{ __rpc_a_{id}: String = \"\"; }} }}\n")) {
-                                insert_param_first(o, a);
-                            }
-                        }
-                    }
-                    let key = format!("__rpc_a_{id}");
-                    for m in o.members.iter_mut() {
-                        let LocusMember::Params(pb) = m else { continue };
-                        for pd in pb.params.iter_mut().filter(|pd| pd.name.name == *field) {
-                            if let ParamInit::Value(Expr::Struct { inits, span: sp, .. }) = &mut pd.init {
-                                if !inits.iter().any(|i| i.name.name == key) {
-                                    let sp = *sp;
-                                    inits.push(StructInit { name: Ident::new(&key, sp), value: fresh(&value), span: sp });
-                                }
-                            }
-                        }
-                    }
-                    break;
-                }
+            if placed {
+                let path = format!("{}.{}", chain.path(), exposure.param);
+                waits.entry(chain.main.clone()).or_default().push(path);
             }
         }
     }
@@ -1858,11 +1814,13 @@ fn insert_param_before(l: &mut LocusDecl, param: ParamDecl, before: &str) {
     }
 }
 
-/// Insert `param` first among `l`'s params.
-fn insert_param_first(l: &mut LocusDecl, param: ParamDecl) {
+/// Insert `param` into `l`'s params just after the param `after` (at the
+/// end when there is none of the name).
+fn insert_param_after(l: &mut LocusDecl, param: ParamDecl, after: &str) {
     let span = l.name.span;
     if let Some(LocusMember::Params(pb)) = l.members.iter_mut().find(|m| matches!(m, LocusMember::Params(_))) {
-        pb.params.insert(0, param);
+        let at = pb.params.iter().position(|p| p.name.name == after).map_or(pb.params.len(), |i| i + 1);
+        pb.params.insert(at, param);
     } else {
         l.members.push(LocusMember::Params(hale_syntax::ast::ParamsBlock { params: vec![param], span }));
     }
@@ -1895,15 +1853,6 @@ fn push_placement(l: &mut LocusDecl, entry: hale_syntax::ast::PlacementEntry, sp
         pl.entries.push(entry);
     } else {
         l.members.push(LocusMember::Placement(hale_syntax::ast::PlacementBlock { entries: vec![entry], span }));
-    }
-}
-
-/// An expression the expansion writes, parsed.
-fn parse_value(src: &str) -> Option<Expr> {
-    let text = format!("main locus __Tmp {{ params {{ __x: Int = {src}; }} }}\n");
-    match parse_params(&text)?.init {
-        ParamInit::Value(e) => Some(e),
-        ParamInit::Inferred => None,
     }
 }
 
@@ -2518,118 +2467,41 @@ pub(crate) fn entry_replicas(e: &hale_syntax::ast::PlacementEntry) -> i64 {
 }
 
 /// An exposure's listener address (`bind:`, `path:`), written in its
-/// holder, as the main locus evaluates it: the listener is a param of the
-/// main locus born before the param that holds the holder, so each
-/// `self.<param>` the address reads is followed up the chain (the value
-/// the literal that builds the locus gives it, else the param's default)
-/// to the main locus, where it must be a param declared before that one.
-/// The error names the read that cannot be followed.
-pub(crate) fn address_for_main<'l>(
-    loci: &BTreeMap<&str, &'l LocusDecl>,
-    chain: &Chain,
-    holder: &'l LocusDecl,
-    e: &Expr,
-) -> Result<Expr, String> {
+/// holder, as the main locus reads it: the listener is a param of the main
+/// locus born after the param the chain starts at, so each `self.<param>`
+/// the address reads is the holder's field as its construction built it,
+/// read down the chain (`self.server.bind`), whatever literal built it (a
+/// default, or an override at a construction of the main locus). A method
+/// of `self` or `self` itself cannot be read there; the error names it.
+pub(crate) fn address_for_main(chain: &Chain, e: &Expr) -> Result<Expr, String> {
     const MAIN_SELF: &str = "__rpc_main_self";
-    let n = chain.fields.len();
-    let locus_at = |k: usize| -> Option<&'l LocusDecl> {
-        if k == n {
-            Some(holder)
-        } else {
-            loci.get(chain.fields[k].0.as_str()).copied()
+    let mut out = fresh(e);
+    let mut err: Option<String> = None;
+    walk_expr_mut(&mut out, &mut |x| {
+        if err.is_some() {
+            return;
         }
-    };
-    let default_of = |l: &LocusDecl, f: &str| -> Option<Option<Expr>> {
-        params_in_order(l).into_iter().find(|(p, _)| p.name.name == f).map(|(p, _)| match &p.init {
-            ParamInit::Value(v) => Some(v.clone()),
-            ParamInit::Inferred => None,
-        })
-    };
-    // the literal that builds the locus at level k (k >= 1): the default of
-    // the param that holds it
-    let literal_at = |k: usize| -> Option<Expr> {
-        let (owner, field) = &chain.fields[k - 1];
-        let l = loci.get(owner.as_str())?;
-        match default_of(l, field)? {
-            Some(e @ Expr::Struct { .. }) => Some(e),
-            _ => None,
-        }
-    };
-    fn go(
-        e: &Expr,
-        k: usize,
-        depth: usize,
-        at: &dyn Fn(usize, &str, usize) -> Result<Expr, String>,
-    ) -> Result<Expr, String> {
-        let mut out = e.clone();
-        let mut err: Option<String> = None;
-        walk_expr_mut(&mut out, &mut |x| {
-            if err.is_some() {
-                return;
-            }
-            match x {
-                Expr::Field { receiver, name, .. } if matches!(receiver.as_ref(), Expr::KwSelf(_)) => {
-                    match at(k, &name.name, depth) {
-                        Ok(v) => *x = v,
-                        Err(m) => err = Some(m),
-                    }
+        match x {
+            Expr::Call { callee, .. } if matches!(callee.as_ref(), Expr::Field { receiver, .. } if matches!(receiver.as_ref(), Expr::KwSelf(_))) => {
+                if let Expr::Field { name, .. } = callee.as_ref() {
+                    err = Some(format!("`self.{}(…)`, a method of the holder", name.name));
                 }
-                Expr::KwSelf(_) => err = Some("`self` itself".to_string()),
-                _ => {}
             }
-        });
-        match err {
-            Some(m) => Err(m),
-            None => Ok(out),
+            Expr::Field { receiver, .. } if matches!(receiver.as_ref(), Expr::KwSelf(_)) => {
+                let sp = receiver.span();
+                let mut base = Expr::Ident(Ident::new(MAIN_SELF, sp));
+                for (_, f) in &chain.fields {
+                    base = Expr::Field { receiver: Box::new(base), name: Ident::new(f, sp), span: sp };
+                }
+                *receiver = Box::new(base);
+            }
+            Expr::KwSelf(_) => err = Some("`self` itself".to_string()),
+            _ => {}
         }
+    });
+    if let Some(e) = err {
+        return Err(e);
     }
-    let root = chain.fields[0].1.clone();
-    let main_name = chain.main.clone();
-    #[allow(clippy::too_many_arguments)]
-    fn resolve<'a>(
-        k: usize,
-        f: &str,
-        depth: usize,
-        locus_at: &dyn Fn(usize) -> Option<&'a LocusDecl>,
-        literal_at: &dyn Fn(usize) -> Option<Expr>,
-        default_of: &dyn Fn(&LocusDecl, &str) -> Option<Option<Expr>>,
-        root: &str,
-        main_name: &str,
-    ) -> Result<Expr, String> {
-        if depth > 16 {
-            return Err(format!("`self.{f}`, which reads itself"));
-        }
-        let Some(l) = locus_at(k) else { return Err(format!("`self.{f}`")) };
-        if k == 0 {
-            let before: Vec<String> = params_in_order(l)
-                .into_iter()
-                .map(|(p, _)| p.name.name.clone())
-                .take_while(|p| p != root)
-                .collect();
-            if !before.iter().any(|p| p == f) {
-                return Err(format!("`self.{f}` of `{main_name}`, which is not a param declared before `{root}`"));
-            }
-            let span = l.name.span;
-            return Ok(Expr::Field {
-                receiver: Box::new(Expr::Ident(Ident::new(MAIN_SELF, span))),
-                name: Ident::new(f, span),
-                span,
-            });
-        }
-        let at = |k: usize, f: &str, depth: usize| resolve(k, f, depth + 1, locus_at, literal_at, default_of, root, main_name);
-        if let Some(Expr::Struct { inits, .. }) = literal_at(k) {
-            if let Some(i) = inits.iter().find(|i| i.name.name == f) {
-                return go(&i.value, k - 1, depth + 1, &at);
-            }
-        }
-        match default_of(l, f) {
-            Some(Some(v)) => go(&v, k, depth + 1, &at),
-            Some(None) => Err(format!("`self.{f}` of `{}`, which has no default and no value in the literal that builds it", l.name.name)),
-            None => Err(format!("`self.{f}`, which is no param of `{}`", l.name.name)),
-        }
-    }
-    let at = |k: usize, f: &str, depth: usize| resolve(k, f, depth, &locus_at, &literal_at, &default_of, &root, &main_name);
-    let mut out = go(e, n, 0, &at)?;
     walk_expr_mut(&mut out, &mut |x| {
         if let Expr::Ident(i) = x {
             if i.name == MAIN_SELF {
@@ -2637,7 +2509,7 @@ pub(crate) fn address_for_main<'l>(
             }
         }
     });
-    Ok(fresh(&out))
+    Ok(out)
 }
 
 /// Whether a serve site's transport has a listener the compiler adds: a

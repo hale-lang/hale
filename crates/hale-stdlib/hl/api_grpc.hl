@@ -376,12 +376,19 @@ locus __StdApiGrpcRpc {
         publish __ApiH2CmdT;
         publish __ApiRpcIngressT;
         publish __ApiRpcLostT;
+        publish __ApiRpcEventT;
     }
     fn attach(exposure: Int) -> String {
         return "grpc";
     }
     fn on_ask(c: __StdIoH2Cmd) {
         if c.kind == 4 {
+            // the listener's asking names the address it was bound to: the
+            // exposure's description states it
+            let bound = std::str::from_bytes(c.body);
+            if len(bound) > 0 {
+                __ApiRpcEventT <- __StdApiRpcEvent { exposure: self.tid, rid: 0, slot: 0, kind: 7, stamp: 0, body: bound };
+            }
             __ApiH2CmdT <- __StdIoH2Cmd { key: self.tid, kind: 3, stream: 0, code: 0, headers: __h2_none(), body: __h2_none(), trailers: __h2_none() };
         }
     }

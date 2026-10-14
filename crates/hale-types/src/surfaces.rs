@@ -1914,15 +1914,18 @@ fn serve_laws_of(
                     }
                 }
                 if let Some(addr) = &address {
-                    if let Err(what) = crate::rpc_expand::address_for_main(loci, c, l, addr) {
+                    if let Err(what) = crate::rpc_expand::address_for_main(c, addr) {
                         diags.push(Diag::ty(
                             addr.span(),
                             format!(
-                                "exposure `{name}` held by `{}`: its listener is `{}`'s, born before `self.{root}`, so \
-                                 the address it binds is read there, and {what} cannot be read there; compute the \
-                                 address from constants and `{}`'s params declared before `{root}`, handed down in the \
-                                 literals that build `{}` (spec/api.md § Serving)",
-                                l.name.name, c.main, c.main, l.name.name
+                                "exposure `{name}` held by `{}`: its listener is `{}`'s, born after `self.{root}`, so \
+                                 the address it binds is read off `{}` as it was built (`self.{}.<param>`), and {what} \
+                                 cannot be read that way; compute the address from `{}`'s params (spec/api.md § Serving)",
+                                l.name.name,
+                                c.main,
+                                l.name.name,
+                                c.path(),
+                                l.name.name
                             ),
                         ));
                     }

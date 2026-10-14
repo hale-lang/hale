@@ -362,8 +362,7 @@ a receiver of its own.
 A socket transport's listener and the connections it starts run on an
 `async_io` pool, where an accept or a read parks a coroutine instead of
 a thread. Only the main locus places, so the listener is a param of the
-main locus the compiler adds, born before the exposure it serves, and
-`placement { }` says where it runs:
+main locus the compiler adds, and `placement { }` says where it runs:
 
 - an exposure the main locus holds is placed by its own row, `public:
   cooperative(pool = io) where async_io;`. The row places the listener; the
@@ -397,11 +396,11 @@ the server sits under, a level down or several, when that row hosts
 or pinned). Two servers on two pools are two params with two rows. The
 main locus holds the listener, so it holds each server once (a server held
 twice, or placed as replicas, would serve one exposure twice and is
-refused), and the server's `bind:` is read where the listener is born:
-from constants, the server's own params as the literals that build it set
-them, and the main locus's params declared before the one that holds it.
-The address the listener was bound to is handed back to the exposure, so
-a server's description names the port the kernel gave it. `App` above
+refused). The listener is born after the server and reads the server's
+`bind:` off the server as it was built, so a construction that overrides
+it (`App { server: Server { bind: "127.0.0.1:9000" } }`) is the address
+the listener binds, and the address it was bound to is told to the
+exposure, so a server's description names the port the kernel gave it. `App` above
 writes no `run()`; it serves until SIGTERM.
 
 ### Serving over HTTP

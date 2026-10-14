@@ -271,3 +271,160 @@ fn wait_on_the_param_returns_on_the_drain() {
     assert!(done.status.success(), "{:?}\n{}", done.status, done.stderr);
     assert!(done.stdout.contains("wait returned"), "{}", done.stdout);
 }
+
+/// A server whose address is its own param, which a construction of the
+/// main locus may override, at one level or two: the listener (the main
+/// locus's) reads the address off the server as that construction built it,
+/// and the exposure describes the port the kernel gave it. The defaults
+/// listen on `127.0.0.3`; `Server::start` waits for `127.0.0.1`, `$BIND`.
+const OVERRIDDEN: &str = r#"
+locus Server {
+    params {
+        bind: String = "127.0.0.3:0";
+        tokens: Tokens = Tokens { };
+        echoer: Echoer = Echoer { base: 10 };
+        web: api::Exposure = api::serve(Echo, http::Rpc { bind: self.bind, codec: json, principals: self.tokens }, as: "web", receivers: { Echoer: self.echoer }, bound: 8, on_full: refuse);
+    }
+}
+
+locus Inner {
+    params {
+        bind: String = "127.0.0.3:0";
+        tokens: Tokens = Tokens { };
+        echoer: Echoer = Echoer { base: 20 };
+        api: api::Exposure = api::serve(Echo, http::Rpc { bind: self.bind, codec: json, principals: self.tokens }, as: "inner", receivers: { Echoer: self.echoer }, bound: 8, on_full: refuse);
+    }
+}
+
+locus Wrapper {
+    params { inner: Inner = Inner { }; }
+}
+
+main locus App {
+    params {
+        server: Server = Server { };
+        deep: Wrapper = Wrapper { };
+    }
+    placement {
+        server: cooperative(pool = io) where async_io;
+        deep: cooperative(pool = io2) where async_io;
+    }
+    run() {
+        while !self.draining && !written(std::env::var("TRIGGER")) { std::time::sleep(10ms); }
+    }
+}
+"#;
+
+fn overridden(name: &str, main_fn: &str) -> PathBuf {
+    built(name, &format!("{OVERRIDDEN}\n{main_fn}\n"))
+}
+
+/// `(status, address)` of the description at `to`.
+fn described(to: impl Reach) -> String {
+    let got = request(to, "GET", "/.description", &[(String::from("Authorization"), String::from("Bearer t-alice"))], None);
+    assert_eq!(got.status, 200, "{}", got.body);
+    got.body
+}
+
+#[test]
+fn a_construction_override_of_a_servers_address_is_the_address_its_listener_binds() {
+    // one level: `App { server: Server { bind: … } }`
+    let bin = overridden("api_exposure_override_one", "fn main() { App { server: Server { bind: std::env::var(\"BIND\") } }; }");
+    let server = Server::start(&bin, &[]);
+    server.ready();
+    let got = echo(server.port, 1);
+    assert_eq!(got.body, "{\"n\":11,\"by\":\"http\"}", "{}", got.body);
+    assert!(described(server.port).contains(&format!("\"address\":\"127.0.0.1:{}\"", server.port)));
+    assert!(server.finish().status.success());
+
+    // two levels: `App { deep: Wrapper { inner: Inner { bind: … } } }`
+    let bin = overridden("api_exposure_override_two", "fn main() { App { deep: Wrapper { inner: Inner { bind: std::env::var(\"BIND\") } } }; }");
+    let server = Server::start(&bin, &[]);
+    server.ready();
+    let got = echo(server.port, 2);
+    assert_eq!(got.body, "{\"n\":22,\"by\":\"http\"}", "{}", got.body);
+    assert!(described(server.port).contains(&format!("\"address\":\"127.0.0.1:{}\"", server.port)));
+    assert!(server.finish().status.success());
+}
+
+#[test]
+fn a_server_rebuilt_by_a_construction_keeps_the_bound_address() {
+    // `App { server: Server { } }` replaces the default literal: the listener
+    // still binds the server's address and the exposure still learns the port
+    let src = OVERRIDDEN.replace("bind: String = \"127.0.0.3:0\";\n        tokens: Tokens = Tokens { };\n        echoer: Echoer = Echoer { base: 10 };", "bind: String = std::env::var(\"BIND\");\n        tokens: Tokens = Tokens { };\n        echoer: Echoer = Echoer { base: 10 };");
+    assert_ne!(src, OVERRIDDEN);
+    let bin = built("api_exposure_rebuilt", &format!("{src}\nfn main() {{ App {{ server: Server {{ }} }}; }}\n"));
+    let server = Server::start(&bin, &[]);
+    server.ready();
+    assert_eq!(echo(server.port, 3).body, "{\"n\":13,\"by\":\"http\"}");
+    assert!(described(server.port).contains(&format!("\"address\":\"127.0.0.1:{}\"", server.port)));
+    assert!(server.finish().status.success());
+}
+
+/// A server another seed declares, binding its receiver explicitly (`receivers:
+/// { Worker: self.worker }`), over the Unix socket and HTTP: the binding names
+/// the library's own `Worker`, which the application's rows see by its
+/// mangled name.
+const SERVER_LIB: &str = r#"
+type Req { n: Int; }
+type Res { n: Int; }
+locus Worker {
+    params { base: Int = 300; }
+    fn ask(r: Req) -> Res { return Res { n: self.base + r.n }; }
+}
+api Public { rpc Worker::ask; }
+locus Tokens {
+    fn principal(token: String) -> std::api::Principal {
+        if token == "t-alice" { return std::api::Principal { mode: "bearer", name: "alice" }; }
+        return std::api::Principal { mode: "bearer", name: "" };
+    }
+    fn refused() -> String { return "no such token"; }
+}
+locus Server {
+    params {
+        tokens: Tokens = Tokens { };
+        worker: Worker = Worker { };
+        spare: Worker = Worker { base: 900 };
+        sock: api::Exposure = api::serve(Public, unix::Rpc { path: std::env::var("SOCK") }, as: "sock", receivers: { Worker: self.worker }, bound: 8, on_full: refuse);
+        web: api::Exposure = api::serve(Public, http::Rpc { bind: std::env::var("BIND"), codec: json, principals: self.tokens }, as: "web", receivers: { Worker: self.worker }, bound: 8, on_full: refuse);
+    }
+}
+"#;
+
+const SERVES_LIB: &str = r#"
+import "../lib" as lib;
+main locus App {
+    params { server: lib::Server = lib::Server { }; }
+    placement { server: cooperative(pool = io) where async_io; }
+}
+fn main() { App { }; }
+"#;
+
+#[test]
+fn an_imported_server_binds_its_receiver_explicitly() {
+    let dir = harness::unique_dir("api_exposure_imported");
+    std::fs::create_dir_all(dir.join("app")).expect("the app dir");
+    std::fs::create_dir_all(dir.join("lib")).expect("the lib dir");
+    std::fs::write(dir.join("lib/server.hl"), SERVER_LIB).expect("write the library");
+    let entry = dir.join("app/main.hl");
+    std::fs::write(&entry, SERVES_LIB).expect("write the app");
+    let bin = harness::unique_bin("api_exposure_imported");
+    build_opts::build_seed_dir(&entry, &bin, &build_opts::options()).expect("an explicit binding in an imported server builds");
+    let mut server = Server::start(&bin, &[]);
+    server.ready();
+    let got = request(
+        server.port,
+        "POST",
+        "/call/Worker::ask",
+        &[(String::from("Authorization"), String::from("Bearer t-alice")), (String::from("Content-Type"), String::from("application/json"))],
+        Some("{\"n\":4}"),
+    );
+    assert_eq!(got.status, 200, "{}", got.body);
+    assert_eq!(got.body, "{\"n\":304}", "the bound receiver answers, not the spare");
+    wait_accepting_unix(&server.sock());
+    let line = unix_ask(&server.sock(), "{\"call\": \"Worker::ask\", \"payload\": {\"n\": 5}, \"id\": 1}");
+    assert!(line.contains("\"value\":{\"n\":305}"), "{line}");
+    sigterm(server.pid());
+    let done = server.wait(Duration::from_secs(30));
+    assert!(done.status.success(), "{:?}\n{}", done.status, done.stderr);
+}
