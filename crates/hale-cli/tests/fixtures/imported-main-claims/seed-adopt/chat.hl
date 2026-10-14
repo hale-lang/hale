@@ -71,3 +71,6 @@ main locus ChatServer {
         std::time::sleep(10ms);
     }
 }
+
+// A `main locus` is started by `fn main`.
+fn main() { ChatServer { }; }

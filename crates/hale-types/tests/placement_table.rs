@@ -766,10 +766,16 @@ fn default_expr<'l>(l: &'l LocusDecl, field: &str) -> &'l Expr {
 
 /// Case 14: a library seed checked alone roots at its own entry; with no
 /// `fn main`, the entry is the root's own site, and its entries place the
-/// tower under it.
+/// tower under it. The check refuses the seed for that same missing
+/// `fn main` (a `main locus` is started by one), once, at the locus's
+/// name — and the table is still the one the rules judge it by.
 #[test]
 fn a_library_seed_alone_roots_at_its_entry() {
-    let s = clean("library_alone.hl");
+    let s = check(&fixture("library_alone.hl"));
+    assert_eq!(
+        errors(&s),
+        ["a `main locus` is started by `fn main`, and this seed has none: add `fn main() { Lib { }; }`"]
+    );
     let t = table(&s);
     let entry = Origin::Entry(root_site(t));
     let (_, w) = one(t, "w");
@@ -1046,9 +1052,8 @@ fn the_table_names_each_universe_and_joins_lowering_once() {
 }
 
 /// The fixtures every law test walks: those that check clean.
-const CLEAN: [&str; 19] = [
+const CLEAN: [&str; 18] = [
     "claims_only.hl",
-    "library_alone.hl",
     "verbs.hl",
     "two_instances.hl",
     "nested_inheritance.hl",

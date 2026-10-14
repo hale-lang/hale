@@ -83,7 +83,8 @@ fn bound_program(send: &str, path: &str) -> String {
             "main locus App {{\n\
                  bindings {{ {path}: unix(\"/tmp/hale-c2-subjects.sock\", role: listen); }}\n\
                  run() {{ let s = Sub {{ }}; Pub {{ }}; }}\n\
-             }}"
+             }}\n\
+             fn main() {{ App {{ }}; }}"
         ),
     )
 }
