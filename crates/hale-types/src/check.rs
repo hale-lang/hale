@@ -3957,6 +3957,7 @@ fn check_placement_single_thread(
 
     let decls = StoreDecls::of(bundle);
     let stores_through = free_fn_param_stores(bundle, &decls);
+    let summaries = ReturnSummaries::of(bundle);
 
     for program in bundle.programs.values() {
         walk_decls(&program.items, &mut |item| {
@@ -3971,6 +3972,17 @@ fn check_placement_single_thread(
                 }
                 for member in &l.members {
                     if let Some(body) = locus_member_body(member) {
+                        // A parameter of a fn type returning a locus (`pick:
+                        // fn() -> W`): a call through it may hand back any
+                        // instance of that type.
+                        let fn_values: BTreeMap<String, String> = match member {
+                            LocusMember::Fn(fd) => fd
+                                .params
+                                .iter()
+                                .filter_map(|p| Some((p.name.name.clone(), decls.fn_returns_locus(&p.ty)?)))
+                                .collect(),
+                            _ => BTreeMap::new(),
+                        };
                         let mut cx = PoolCheckCx {
                             enclosing_locus: l,
                             instances,
@@ -3981,11 +3993,13 @@ fn check_placement_single_thread(
                             inferred_sync: &inferred_sync,
                             stores_through: &stores_through,
                             decls: &decls,
-                            aliases: BTreeMap::new(),
+                            env: Env::default(),
+                            summaries: &summaries,
+                            fn_values,
                             quiet: false,
                             diags,
                         };
-                        walk_block_pool(body, &mut cx);
+                        eval_block(body, &mut cx);
                     }
                 }
             }
@@ -4055,9 +4069,13 @@ struct PoolCheckCx<'a> {
     stores_through: &'a ParamUses,
     /// The declarations a store's slot type is read from.
     decls: &'a StoreDecls<'a>,
-    /// Locals bound to a field that runs in another domain (`let w =
-    /// self.w;`): a store through one is the field's.
-    aliases: BTreeMap<String, CrossPool>,
+    /// The locals in scope and what each may hold (`Env`).
+    env: Env,
+    /// What each fn and method may hand back (`ReturnSummaries`).
+    summaries: &'a ReturnSummaries,
+    /// Locals and parameters holding a fn value whose declared result is
+    /// a locus type, by that type's name.
+    fn_values: BTreeMap<String, String>,
     /// A loop body's fixpoint walk: no diagnostics.
     quiet: bool,
     diags: &'a mut Vec<Diag>,
@@ -4071,289 +4089,625 @@ impl PoolCheckCx<'_> {
     }
 }
 
-fn walk_block_pool(block: &Block, cx: &mut PoolCheckCx) {
-    // A name a `let` of this block binds is the block's: when the block
-    // ends, the binding it shadowed is in scope again, with the origin it
-    // had then. A local of an enclosing block rebound here keeps what it
-    // was given (GH #1561).
-    let mut declared: BTreeSet<&str> = BTreeSet::new();
-    for stmt in &block.stmts {
-        match stmt {
-            Stmt::Let { name, .. } => {
-                declared.insert(name.name.as_str());
-            }
-            Stmt::LetTuple { names, .. } => declared.extend(names.iter().map(|n| n.name.as_str())),
-            _ => {}
+/// GH #1561: what a value may hold, for the cross-pool rule — a lattice
+/// per value. `whole`: the value itself may be an instance that runs in
+/// another domain (`self.b`, a local bound to it, an element of an array
+/// field); `parts`: something reachable inside it may be (a tuple, array
+/// or record holding such a handle, a fresh locus literal whose params
+/// do). A method call or a store into the value's own field reads
+/// `whole`; a part read out of it (`p.0`, `ws[1]`, `node.registry`) is
+/// `whole` from either. The join keeps a witness from either side.
+#[derive(Clone, Default)]
+struct Origin {
+    whole: Option<CrossPool>,
+    parts: Option<CrossPool>,
+}
+
+impl Origin {
+    fn whole(cp: CrossPool) -> Origin {
+        Origin { whole: Some(cp), parts: None }
+    }
+    fn join(self, o: Origin) -> Origin {
+        Origin { whole: self.whole.or(o.whole), parts: self.parts.or(o.parts) }
+    }
+    /// Anything cross-pool the value may be or hold.
+    fn any(&self) -> Option<CrossPool> {
+        self.whole.clone().or_else(|| self.parts.clone())
+    }
+    /// A part read out of the value.
+    fn part(self) -> Origin {
+        let any = self.any();
+        Origin { whole: any, parts: self.parts }
+    }
+    /// The value held inside a container (a tuple, array or record).
+    fn contained(self) -> Origin {
+        Origin { whole: None, parts: self.any() }
+    }
+    fn key(&self) -> (bool, bool) {
+        (self.whole.is_some(), self.parts.is_some())
+    }
+}
+
+/// The locals in scope, innermost last, each with what it may hold. A
+/// `let` declares in the innermost scope, shadowing an outer binding of
+/// the name, which is untouched and in scope again when the block ends;
+/// an assignment updates the binding it names, wherever it was declared.
+#[derive(Clone, Default)]
+struct Env {
+    scopes: Vec<BTreeMap<String, Origin>>,
+}
+
+impl Env {
+    fn lookup(&self, name: &str) -> Origin {
+        self.scopes.iter().rev().find_map(|s| s.get(name)).cloned().unwrap_or_default()
+    }
+    fn declare(&mut self, name: &str, o: Origin) {
+        if self.scopes.is_empty() {
+            self.scopes.push(BTreeMap::new());
         }
+        self.scopes.last_mut().expect("a scope").insert(name.to_string(), o);
     }
-    let shadowed: Vec<(&str, Option<CrossPool>)> =
-        declared.iter().map(|n| (*n, cx.aliases.get(*n).cloned())).collect();
-    for stmt in &block.stmts {
-        walk_stmt_pool(stmt, cx);
-    }
-    if let Some(tail) = &block.tail {
-        walk_expr_pool(tail, cx);
-    }
-    for (name, before) in shadowed {
-        match before {
-            Some(cp) => {
-                cx.aliases.insert(name.to_string(), cp);
+    fn assign(&mut self, name: &str, o: Origin) {
+        match self.scopes.iter_mut().rev().find(|s| s.contains_key(name)) {
+            Some(s) => {
+                s.insert(name.to_string(), o);
             }
+            // a parameter or a name declared outside the walk
             None => {
-                cx.aliases.remove(name);
+                if self.scopes.is_empty() {
+                    self.scopes.push(BTreeMap::new());
+                }
+                self.scopes[0].insert(name.to_string(), o);
+            }
+        }
+    }
+    fn push(&mut self) {
+        self.scopes.push(BTreeMap::new());
+    }
+    fn pop(&mut self) {
+        self.scopes.pop();
+    }
+    /// The join at a control-flow merge: the two states have the same
+    /// scopes (a branch's own scope is gone by the merge).
+    fn join(mut self, other: Env) -> Env {
+        for (mine, theirs) in self.scopes.iter_mut().zip(other.scopes) {
+            for (k, v) in theirs {
+                let joined = match mine.remove(&k) {
+                    Some(m) => m.join(v),
+                    None => v,
+                };
+                mine.insert(k, joined);
+            }
+        }
+        self
+    }
+    /// What a fixpoint compares: which bindings may hold what.
+    fn key(&self) -> Vec<(usize, String, (bool, bool))> {
+        self.scopes
+            .iter()
+            .enumerate()
+            .flat_map(|(d, s)| s.iter().map(move |(k, v)| (d, k.clone(), v.key())))
+            .collect()
+    }
+}
+
+/// What a fn or method body may hand back, by root: a parameter (by
+/// position) or a field of `self`, each either the value itself (or a
+/// part of it, which runs where it does) or a value held inside what is
+/// returned (a tuple, array or literal around it). Computed once, to a
+/// fixpoint over the calls between bodies.
+#[derive(Clone, Default, PartialEq)]
+struct Returns {
+    params: BTreeSet<(usize, bool)>,
+    self_fields: BTreeSet<(String, bool)>,
+}
+
+#[derive(Default)]
+struct ReturnSummaries {
+    /// Free fns by name (same-named fns joined).
+    fns: BTreeMap<String, Returns>,
+    /// Locus methods by (locus, method).
+    methods: BTreeMap<(String, String), Returns>,
+}
+
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
+enum Root {
+    Param(usize, bool),
+    SelfField(String, bool),
+}
+
+impl Root {
+    fn contained(self) -> Root {
+        match self {
+            Root::Param(i, _) => Root::Param(i, true),
+            Root::SelfField(f, _) => Root::SelfField(f, true),
+        }
+    }
+}
+
+impl ReturnSummaries {
+    fn of(bundle: &Bundle<'_>) -> ReturnSummaries {
+        let mut free: Vec<&FnDecl> = Vec::new();
+        let mut methods: Vec<(String, &FnDecl)> = Vec::new();
+        for program in bundle.programs.values() {
+            walk_decls(&program.items, &mut |item| match item {
+                TopDecl::Fn(f) => free.push(f),
+                TopDecl::Locus(l) => {
+                    for m in &l.members {
+                        if let LocusMember::Fn(f) = m {
+                            methods.push((l.name.name.clone(), f));
+                        }
+                    }
+                }
+                _ => {}
+            });
+        }
+        let mut sums = ReturnSummaries::default();
+        // Each round can only add roots, over a finite set of them.
+        loop {
+            let mut changed = false;
+            for f in &free {
+                let r = body_returns(f, &sums);
+                let e = sums.fns.entry(f.name.name.clone()).or_default();
+                let before = e.clone();
+                e.params.extend(r.params);
+                e.self_fields.extend(r.self_fields);
+                changed |= *e != before;
+            }
+            for (l, f) in &methods {
+                let r = body_returns(f, &sums);
+                let e = sums.methods.entry((l.clone(), f.name.name.clone())).or_default();
+                let before = e.clone();
+                e.params.extend(r.params);
+                e.self_fields.extend(r.self_fields);
+                changed |= *e != before;
+            }
+            if !changed {
+                return sums;
             }
         }
     }
 }
 
-/// The union of two alias maps at a control-flow merge: a local that may
-/// hold a cross-pool handle on either path may hold one after.
-fn merge_aliases(a: &mut BTreeMap<String, CrossPool>, b: BTreeMap<String, CrossPool>) {
-    for (k, v) in b {
-        a.entry(k).or_insert(v);
-    }
-}
-
-/// Walk a loop body: its locals' origins at entry are the fixpoint of
-/// the iterations (a rebind at the end of one reaches the next), found
-/// first without diagnostics; the body is then walked once with them,
-/// and the loop leaves the union of entry and exit (the body may run
-/// zero times).
-fn walk_loop_body_pool(body: &Block, cx: &mut PoolCheckCx) {
-    let quiet = std::mem::replace(&mut cx.quiet, true);
-    let mut entry = cx.aliases.clone();
-    for _ in 0..8 {
-        cx.aliases = entry.clone();
-        walk_block_pool(body, cx);
-        let before = entry.len();
-        merge_aliases(&mut entry, std::mem::take(&mut cx.aliases));
-        if entry.len() == before {
+/// What `fd`'s body may return, by root, with the summaries so far.
+fn body_returns(fd: &FnDecl, sums: &ReturnSummaries) -> Returns {
+    let params: BTreeMap<&str, usize> = fd.params.iter().enumerate().map(|(i, p)| (p.name.name.as_str(), i)).collect();
+    // The locals' roots, flow-insensitive: every binding and rebinding of
+    // the name, joined, to a fixpoint (a chain of locals).
+    let mut locals: BTreeMap<String, BTreeSet<Root>> = BTreeMap::new();
+    loop {
+        let before = locals.clone();
+        let mut add: Vec<(String, BTreeSet<Root>)> = Vec::new();
+        visit_block_stores(
+            &fd.body,
+            &mut |st| match st {
+                Stmt::Let { name, value, .. } => add.push((name.name.clone(), roots(value, &params, &before, sums))),
+                Stmt::Assign { target, value, .. } if target.tail.is_empty() => {
+                    add.push((target.head.name.clone(), roots(value, &params, &before, sums)))
+                }
+                Stmt::For { name, iter, .. } => add.push((name.name.clone(), roots(iter, &params, &before, sums))),
+                _ => {}
+            },
+            &mut |_| {},
+        );
+        for (k, v) in add {
+            locals.entry(k).or_default().extend(v);
+        }
+        if locals == before {
             break;
         }
     }
-    cx.quiet = quiet;
-    cx.aliases = entry.clone();
-    walk_block_pool(body, cx);
-    merge_aliases(&mut cx.aliases, entry);
-}
-
-/// What a local bound to (or rebound to) `e` may hold, for the
-/// cross-pool rule: a field that runs in another domain (`self.b`,
-/// `self.h.ws[i]`), another local that may (`w = v`), a part of one
-/// (`w.kid`), either branch of an `if`/`match`/block or `or` that may,
-/// or a call handed one (`pick(self.a, self.b)` may hand it back). `None`
-/// when no path brings a cross-pool handle in.
-fn origin_of(e: &Expr, cx: &PoolCheckCx) -> Option<CrossPool> {
-    if let Some(cp) = alias_of(e, cx) {
-        return Some(cp);
+    let mut out: BTreeSet<Root> = BTreeSet::new();
+    visit_block_stores(
+        &fd.body,
+        &mut |st| {
+            if let Stmt::Return(Some(e), _) = st {
+                out.extend(roots(e, &params, &locals, sums));
+            }
+        },
+        &mut |_| {},
+    );
+    if let Some(t) = &fd.body.tail {
+        out.extend(roots(t, &params, &locals, sums));
     }
-    match e {
-        Expr::Ident(id) => cx.aliases.get(&id.name).cloned(),
-        Expr::Field { receiver, .. } | Expr::Index { receiver, .. } => {
-            let mut cp = origin_of(receiver, cx)?;
-            cp.locus_type = None;
-            Some(cp)
-        }
-        // A stdlib call is pool-neutral and hands back its own value (a
-        // `std::metrics::gauge(self.senses.registry, ..)` is a gauge of
-        // the caller's), never an argument's handle.
-        Expr::Call { callee, .. }
-            if matches!(callee.as_ref(), Expr::Path(qp) if qp.segments.first().is_some_and(|s| s.name == "std")) =>
-        {
-            None
-        }
-        Expr::Call { callee, args, .. } => {
-            let recv = match callee.as_ref() {
-                Expr::Field { receiver, .. } => origin_of(receiver, cx),
-                _ => None,
-            };
-            recv.or_else(|| args.iter().find_map(|a| origin_of(a, cx))).map(|mut cp| {
-                cp.locus_type = None;
-                cp
-            })
-        }
-        Expr::Block(b) => b.tail.as_ref().and_then(|t| origin_of(t, cx)),
-        Expr::If(i) => origin_of_if(i, cx),
-        Expr::Match(m) => m.arms.iter().find_map(|arm| match &arm.body {
-            MatchArmBody::Expr(e) => origin_of(e, cx),
-            MatchArmBody::Block(b) => b.tail.as_ref().and_then(|t| origin_of(t, cx)),
-        }),
-        Expr::Or { inner, disposition, .. } => origin_of(inner, cx).or_else(|| match disposition {
-            OrDisposition::Substitute(x) => origin_of(x, cx),
-            _ => None,
-        }),
-        _ => None,
-    }
-}
-
-fn origin_of_if(i: &IfStmt, cx: &PoolCheckCx) -> Option<CrossPool> {
-    i.then_block.tail.as_ref().and_then(|t| origin_of(t, cx)).or_else(|| match i.else_block.as_deref() {
-        Some(ElseBranch::Else(b)) => b.tail.as_ref().and_then(|t| origin_of(t, cx)),
-        Some(ElseBranch::ElseIf(nested)) => origin_of_if(nested, cx),
-        None => None,
-    })
-}
-
-fn pattern_binders<'p>(p: &'p Pattern, out: &mut Vec<&'p str>) {
-    match p {
-        Pattern::Binding(id) => out.push(id.name.as_str()),
-        Pattern::Constructor { args, .. } => args.iter().for_each(|a| pattern_binders(a, out)),
-        Pattern::Tuple(ps, _) => ps.iter().for_each(|a| pattern_binders(a, out)),
-        Pattern::Literal(..) | Pattern::Wildcard(_) => {}
-    }
-}
-
-fn walk_stmt_pool(stmt: &Stmt, cx: &mut PoolCheckCx) {
-    match stmt {
-        Stmt::Let { name, value, .. } => {
-            walk_expr_pool(value, cx);
-            match origin_of(value, cx) {
-                Some(cp) => {
-                    cx.aliases.insert(name.name.clone(), cp);
-                }
-                None => {
-                    cx.aliases.remove(&name.name);
-                }
+    let mut r = Returns::default();
+    for root in out {
+        match root {
+            Root::Param(i, c) => {
+                r.params.insert((i, c));
+            }
+            Root::SelfField(f, c) => {
+                r.self_fields.insert((f, c));
             }
         }
+    }
+    r
+}
+
+/// The roots an expression's value may come from (see [`Returns`]).
+fn roots(
+    e: &Expr,
+    params: &BTreeMap<&str, usize>,
+    locals: &BTreeMap<String, BTreeSet<Root>>,
+    sums: &ReturnSummaries,
+) -> BTreeSet<Root> {
+    let go = |x: &Expr| roots(x, params, locals, sums);
+    let tail = |b: &Block| b.tail.as_ref().map(|t| roots(t, params, locals, sums)).unwrap_or_default();
+    match e {
+        Expr::Ident(id) => match (params.get(id.name.as_str()), locals.get(&id.name)) {
+            (_, Some(r)) => r.clone(),
+            (Some(&i), None) => BTreeSet::from([Root::Param(i, false)]),
+            _ => BTreeSet::new(),
+        },
+        Expr::Field { .. } | Expr::Index { .. } if self_rooted_field(e).is_some() => match self_rooted_field(e) {
+            Some(Expr::Field { name, .. }) => BTreeSet::from([Root::SelfField(name.name.clone(), false)]),
+            _ => BTreeSet::new(),
+        },
+        // a part of a value runs where the value does
+        Expr::Field { receiver, .. } | Expr::Index { receiver, .. } => go(receiver)
+            .into_iter()
+            .map(|r| match r {
+                Root::Param(i, _) => Root::Param(i, false),
+                Root::SelfField(f, _) => Root::SelfField(f, false),
+            })
+            .collect(),
+        Expr::Tuple(items, _) | Expr::Array(items, _) => items.iter().flat_map(|i| go(i)).map(Root::contained).collect(),
+        Expr::Struct { inits, .. } => inits.iter().flat_map(|i| go(&i.value)).map(Root::contained).collect(),
+        Expr::Block(b) => tail(b),
+        Expr::If(i) => if_tails_roots(i, params, locals, sums),
+        Expr::Match(m) => m
+            .arms
+            .iter()
+            .flat_map(|arm| match &arm.body {
+                MatchArmBody::Expr(x) => go(x),
+                MatchArmBody::Block(b) => tail(b),
+            })
+            .collect(),
+        Expr::Or { inner, disposition, .. } => {
+            let mut r = go(inner);
+            if let OrDisposition::Substitute(x) = disposition {
+                r.extend(go(x));
+            }
+            r
+        }
+        Expr::Call { callee, args, .. } => {
+            let through = |ret: &Returns| -> BTreeSet<Root> {
+                let mut out = BTreeSet::new();
+                for (i, c) in &ret.params {
+                    if let Some(a) = args.get(*i) {
+                        out.extend(go(a).into_iter().map(|r| if *c { r.contained() } else { r }));
+                    }
+                }
+                out
+            };
+            match callee.as_ref() {
+                Expr::Path(qp) if qp.segments.first().is_some_and(|s| s.name == "std") => {
+                    // a stdlib result: by its declared type, at the call
+                    // that reads it (`origin`); inside a body, every
+                    // argument (never fewer roots than it may carry)
+                    args.iter().flat_map(|a| go(a)).map(Root::contained).collect()
+                }
+                Expr::Ident(id) if params.contains_key(id.name.as_str()) || locals.contains_key(&id.name) => {
+                    // a fn value: anything its arguments reach
+                    args.iter().flat_map(|a| go(a)).map(Root::contained).collect()
+                }
+                Expr::Ident(id) => match sums.fns.get(&id.name) {
+                    Some(ret) => through(ret),
+                    None => args.iter().flat_map(|a| go(a)).map(Root::contained).collect(),
+                },
+                Expr::Path(qp) => match qp.segments.last().and_then(|s| sums.fns.get(&s.name)) {
+                    Some(ret) => through(ret),
+                    None => args.iter().flat_map(|a| go(a)).map(Root::contained).collect(),
+                },
+                // a method: its receiver and arguments, conservatively
+                Expr::Field { receiver, .. } => {
+                    let mut out: BTreeSet<Root> = go(receiver).into_iter().map(Root::contained).collect();
+                    out.extend(args.iter().flat_map(|a| go(a)).map(Root::contained));
+                    out
+                }
+                _ => args.iter().flat_map(|a| go(a)).map(Root::contained).collect(),
+            }
+        }
+        _ => BTreeSet::new(),
+    }
+}
+
+fn if_tails_roots(
+    i: &IfStmt,
+    params: &BTreeMap<&str, usize>,
+    locals: &BTreeMap<String, BTreeSet<Root>>,
+    sums: &ReturnSummaries,
+) -> BTreeSet<Root> {
+    let mut out = i.then_block.tail.as_ref().map(|t| roots(t, params, locals, sums)).unwrap_or_default();
+    match i.else_block.as_deref() {
+        Some(ElseBranch::Else(b)) => out.extend(b.tail.as_ref().map(|t| roots(t, params, locals, sums)).unwrap_or_default()),
+        Some(ElseBranch::ElseIf(n)) => out.extend(if_tails_roots(n, params, locals, sums)),
+        None => {}
+    }
+    out
+}
+
+/// What a call hands back, from the callee's return summary: an
+/// argument's origin where the callee may return (a part of) it, a field
+/// of the receiver where a method may return one; a stdlib call by its
+/// declared result type (`std_result_may_hold`); a fn value declared to
+/// return a locus type, any instance of that type; a callee the walk
+/// cannot name, anything its arguments may be.
+fn call_origin(callee: &Expr, recv: &Origin, arg_origins: &[Origin], cx: &PoolCheckCx) -> Origin {
+    let through = |ret: &Returns| -> Origin {
+        let mut o = Origin::default();
+        for (i, c) in &ret.params {
+            if let Some(a) = arg_origins.get(*i) {
+                o = o.join(if *c { a.clone().contained() } else { a.clone().part() });
+            }
+        }
+        o
+    };
+    let all_args = || arg_origins.iter().cloned().fold(Origin::default(), |o, a| o.join(a.part()));
+    match callee {
+        Expr::Path(qp) if qp.segments.first().is_some_and(|s| s.name == "std") => {
+            let segs: Vec<&str> = qp.segments.iter().map(|s| s.name.as_str()).collect();
+            let mut o = Origin::default();
+            for a in arg_origins {
+                if let Some(cp) = a.any() {
+                    let ty = cp.locus_type.clone().unwrap_or_else(|| cp.field_locus.clone());
+                    if std_result_may_hold(&segs, Some(&ty), cx.decls) {
+                        o = o.join(a.clone().part());
+                    }
+                }
+            }
+            o
+        }
+        // a serve site is typed as the exposure it builds (GH #1417)
+        Expr::Path(qp)
+            if qp.segments.len() >= 2
+                && qp.segments[qp.segments.len() - 2].name == "api"
+                && qp.segments[qp.segments.len() - 1].name == "serve" =>
+        {
+            Origin::default()
+        }
+        Expr::Ident(id) if cx.fn_values.contains_key(&id.name) => {
+            Origin { whole: any_cross_pool_instance(&cx.fn_values[&id.name], cx), parts: None }
+        }
+        Expr::Ident(id) if cx.env.lookup(&id.name).any().is_some() => all_args(),
+        Expr::Ident(id) => match cx.summaries.fns.get(&id.name) {
+            Some(ret) => through(ret),
+            None => all_args(),
+        },
+        Expr::Path(qp) => match qp.segments.last().and_then(|s| cx.summaries.fns.get(&s.name)) {
+            Some(ret) => through(ret),
+            None => all_args(),
+        },
+        Expr::Field { receiver, name, .. } => {
+            let ret = receiver_locus_type(receiver, cx).and_then(|l| {
+                let short = l.rsplit("::").next().unwrap_or(&l).to_string();
+                cx.summaries.methods.get(&(short, name.name.clone())).cloned()
+            });
+            match ret {
+                Some(ret) => {
+                    let mut o = through(&ret);
+                    for (f, c) in &ret.self_fields {
+                        let e = Expr::Field {
+                            receiver: receiver.clone(),
+                            name: Ident { name: f.clone(), span: receiver.span(), id: NodeId::NONE },
+                            span: receiver.span(),
+                        };
+                        let fo = match alias_of(&e, cx) {
+                            Some(cp) => Origin::whole(cp),
+                            None => recv.clone().part(),
+                        };
+                        o = o.join(if *c { fo.contained() } else { fo });
+                    }
+                    o
+                }
+                None => recv.clone().part().join(all_args()),
+            }
+        }
+        _ => all_args(),
+    }
+}
+
+/// Walk a block in a scope of its own; the origin of its value (its
+/// tail's), computed while its locals are still in scope.
+fn eval_block(block: &Block, cx: &mut PoolCheckCx) -> Origin {
+    cx.env.push();
+    for stmt in &block.stmts {
+        eval_stmt(stmt, cx);
+    }
+    let o = match &block.tail {
+        Some(t) => eval_expr(t, cx),
+        None => Origin::default(),
+    };
+    cx.env.pop();
+    o
+}
+
+/// A loop: its condition and body walked from the fixpoint of the
+/// states the loop can be entered with (each iteration's exit joined
+/// back into the entry, until no binding may hold more — a finite
+/// lattice, so it ends), silently; then once more from that state with
+/// diagnostics, the condition included, which runs at every iteration.
+/// The loop leaves the entry state joined with the last body's.
+fn eval_loop(cond: Option<&Expr>, binder: Option<(&str, Origin)>, body: &Block, cx: &mut PoolCheckCx) {
+    let run = |cx: &mut PoolCheckCx| {
+        if let Some(c) = cond {
+            eval_expr(c, cx);
+        }
+        cx.env.push();
+        if let Some((name, o)) = &binder {
+            cx.env.declare(name, o.clone());
+        }
+        eval_block(body, cx);
+        cx.env.pop();
+    };
+    let quiet = std::mem::replace(&mut cx.quiet, true);
+    let mut entry = cx.env.clone();
+    loop {
+        cx.env = entry.clone();
+        run(cx);
+        let next = entry.clone().join(std::mem::take(&mut cx.env));
+        if next.key() == entry.key() {
+            break;
+        }
+        entry = next;
+    }
+    cx.quiet = quiet;
+    cx.env = entry.clone();
+    run(cx);
+    let out = std::mem::take(&mut cx.env);
+    cx.env = entry.join(out);
+}
+
+fn eval_stmt(stmt: &Stmt, cx: &mut PoolCheckCx) {
+    match stmt {
+        Stmt::Let { name, ty, value, .. } => {
+            let o = eval_expr(value, cx);
+            let fn_ret = match (ty, value) {
+                (Some(t), _) => cx.decls.fn_returns_locus(t),
+                (None, Expr::Ident(id)) => cx.fn_values.get(&id.name).cloned(),
+                _ => None,
+            };
+            match fn_ret {
+                Some(t) => {
+                    cx.fn_values.insert(name.name.clone(), t);
+                }
+                None => {
+                    cx.fn_values.remove(&name.name);
+                }
+            }
+            cx.env.declare(&name.name, o);
+        }
         Stmt::LetTuple { names, value, .. } => {
-            walk_expr_pool(value, cx);
+            // each name may be any element
+            let o = eval_expr(value, cx).part();
             for n in names {
-                cx.aliases.remove(&n.name);
+                cx.env.declare(&n.name, o.clone());
             }
         }
         Stmt::Assign { target, value, span, .. } => {
+            // the store goes through what the target holds before the
+            // value is evaluated (lowering resolves the slot first)
             check_store_pool(target, *span, cx);
             for seg in &target.tail {
                 if let LValueSeg::Index(e) = seg {
-                    walk_expr_pool(e, cx);
+                    eval_expr(e, cx);
                 }
             }
-            walk_expr_pool(value, cx);
-            // A rebound local holds what the value may be (`w = self.b`,
-            // `w = w`): its origin is the value's, never forgotten.
+            let o = eval_expr(value, cx);
+            // a rebound local holds what the value may be (`w = self.b`,
+            // `w = w`)
             if target.tail.is_empty() {
-                match origin_of(value, cx) {
-                    Some(cp) => {
-                        cx.aliases.insert(target.head.name.clone(), cp);
-                    }
-                    None => {
-                        cx.aliases.remove(&target.head.name);
-                    }
-                }
+                cx.env.assign(&target.head.name, o);
             }
         }
-        Stmt::If(i) => walk_if_pool(i, cx),
-        Stmt::Match(m) => walk_match_pool(m, cx),
+        Stmt::If(i) => {
+            eval_if(i, cx);
+        }
+        Stmt::Match(m) => {
+            eval_match(m, cx);
+        }
         Stmt::For { name, iter, body, .. } => {
-            walk_expr_pool(iter, cx);
-            // An element of an array field that runs in another domain
-            // (`for w in self.ws`) is such a field's alias in the body.
-            let shadowed = match alias_of(iter, cx) {
-                Some(cp) => cx.aliases.insert(name.name.clone(), cp),
-                None => cx.aliases.remove(&name.name),
-            };
-            walk_loop_body_pool(body, cx);
-            match shadowed {
-                Some(cp) => {
-                    cx.aliases.insert(name.name.clone(), cp);
-                }
-                None => {
-                    cx.aliases.remove(&name.name);
-                }
-            }
+            // an element of what the loop walks
+            let o = eval_expr(iter, cx).part();
+            eval_loop(None, Some((&name.name, o)), body, cx);
         }
-        Stmt::While { cond, body, .. } => {
-            walk_expr_pool(cond, cx);
-            walk_loop_body_pool(body, cx);
-        }
+        Stmt::While { cond, body, .. } => eval_loop(Some(cond), None, body, cx),
         Stmt::Return(opt, _) => {
             if let Some(e) = opt {
-                walk_expr_pool(e, cx);
+                eval_expr(e, cx);
             }
         }
-        Stmt::Fail { value, .. } => walk_expr_pool(value, cx),
-        Stmt::Block(b) => walk_block_pool(b, cx),
+        Stmt::Fail { value, .. } => {
+            eval_expr(value, cx);
+        }
+        Stmt::Block(b) => {
+            eval_block(b, cx);
+        }
         Stmt::ShmWrite { max, body, .. } => {
-            walk_expr_pool(max, cx);
-            walk_block_pool(body, cx);
+            eval_expr(max, cx);
+            eval_block(body, cx);
         }
         Stmt::Recovery { args, .. } => {
             for a in args {
-                walk_expr_pool(a, cx);
+                eval_expr(a, cx);
             }
         }
         Stmt::Violate { payload, .. } => {
             if let Some(p) = payload {
-                walk_expr_pool(p, cx);
+                eval_expr(p, cx);
             }
         }
         Stmt::Send { subject, value, .. } => {
-            walk_expr_pool(subject, cx);
-            walk_expr_pool(value, cx);
+            eval_expr(subject, cx);
+            eval_expr(value, cx);
         }
-        Stmt::Expr(e) => walk_expr_pool(e, cx),
+        Stmt::Expr(e) => {
+            eval_expr(e, cx);
+        }
         Stmt::Yield(_) | Stmt::Break(_) | Stmt::Continue(_) | Stmt::Terminate(_)
         | Stmt::Reperspective { .. } => {}
     }
 }
 
-fn walk_if_pool(stmt: &IfStmt, cx: &mut PoolCheckCx) {
-    // Each branch starts from what holds before the `if`; after it, a
-    // local may hold what either branch left (GH #1561).
-    walk_expr_pool(&stmt.cond, cx);
-    let before = cx.aliases.clone();
-    walk_block_pool(&stmt.then_block, cx);
-    let then_out = std::mem::replace(&mut cx.aliases, before);
-    if let Some(eb) = &stmt.else_block {
-        match eb.as_ref() {
-            ElseBranch::Else(b) => walk_block_pool(b, cx),
-            ElseBranch::ElseIf(nested) => walk_if_pool(nested, cx),
-        }
-    }
-    merge_aliases(&mut cx.aliases, then_out);
+/// Each branch from the state before the `if`; after it, the join of
+/// the branches' (an absent `else` keeps the state before). Its value
+/// may be either branch's.
+fn eval_if(stmt: &IfStmt, cx: &mut PoolCheckCx) -> Origin {
+    eval_expr(&stmt.cond, cx);
+    let before = cx.env.clone();
+    let o_then = eval_block(&stmt.then_block, cx);
+    let then_out = std::mem::replace(&mut cx.env, before);
+    let o_else = match stmt.else_block.as_deref() {
+        Some(ElseBranch::Else(b)) => eval_block(b, cx),
+        Some(ElseBranch::ElseIf(nested)) => eval_if(nested, cx),
+        None => Origin::default(),
+    };
+    let else_out = std::mem::take(&mut cx.env);
+    cx.env = then_out.join(else_out);
+    o_then.join(o_else)
 }
 
-fn walk_match_pool(stmt: &MatchStmt, cx: &mut PoolCheckCx) {
-    walk_expr_pool(&stmt.scrutinee, cx);
-    let before = cx.aliases.clone();
-    let mut out: Option<BTreeMap<String, CrossPool>> = None;
+fn eval_match(stmt: &MatchStmt, cx: &mut PoolCheckCx) -> Origin {
+    // a payload bound by a pattern is a part of the scrutinee
+    let scrut = eval_expr(&stmt.scrutinee, cx).part();
+    let before = cx.env.clone();
+    let mut out: Option<Env> = None;
+    let mut value = Origin::default();
     for arm in &stmt.arms {
-        cx.aliases = before.clone();
-        // the arm's pattern binds its own names
+        cx.env = before.clone();
+        cx.env.push();
         let mut binders = Vec::new();
         pattern_binders(&arm.pattern, &mut binders);
-        for b in &binders {
-            cx.aliases.remove(*b);
+        for b in binders {
+            cx.env.declare(b, scrut.clone());
         }
         if let Some(g) = &arm.guard {
-            walk_expr_pool(g, cx);
+            eval_expr(g, cx);
         }
-        match &arm.body {
-            MatchArmBody::Expr(e) => walk_expr_pool(e, cx),
-            MatchArmBody::Block(b) => walk_block_pool(b, cx),
-        }
-        for b in &binders {
-            match before.get(*b) {
-                Some(cp) => {
-                    cx.aliases.insert(b.to_string(), cp.clone());
-                }
-                None => {
-                    cx.aliases.remove(*b);
-                }
-            }
-        }
-        let arm_out = std::mem::take(&mut cx.aliases);
-        match out.as_mut() {
-            Some(o) => merge_aliases(o, arm_out),
-            None => out = Some(arm_out),
-        }
+        let o = match &arm.body {
+            MatchArmBody::Expr(e) => eval_expr(e, cx),
+            MatchArmBody::Block(b) => eval_block(b, cx),
+        };
+        cx.env.pop();
+        value = value.join(o);
+        let arm_out = std::mem::take(&mut cx.env);
+        out = Some(match out {
+            Some(o) => o.join(arm_out),
+            None => arm_out,
+        });
     }
-    cx.aliases = out.unwrap_or(before);
+    cx.env = out.unwrap_or(before);
+    value
 }
 
-fn walk_expr_pool(expr: &Expr, cx: &mut PoolCheckCx) {
+/// Walk an expression — the F.31 checks of every call in it, the stores
+/// in its blocks — and say what its value may hold.
+fn eval_expr(expr: &Expr, cx: &mut PoolCheckCx) -> Origin {
     if let Expr::Call { callee, args, span, .. } = expr {
+        let recv_origin = match callee.as_ref() {
+            Expr::Field { receiver, .. } | Expr::Path2 { receiver, .. } => eval_expr(receiver, cx),
+            other => eval_expr(other, cx),
+        };
         // F.31 Phase 5: flag `self.X.foo(args)` where the
         // field X's locus type is on a different pool than
         // the enclosing locus. Only the `Field` callee
@@ -4365,14 +4719,12 @@ fn walk_expr_pool(expr: &Expr, cx: &mut PoolCheckCx) {
             // call site — not a type-global property. A locus type used
             // as a plain field in two loci on two pools yields two
             // independent instances, one co-located with each owner.
-            // GH #1561: through a local bound to such a field (`let w =
-            // self.w; w.m()`, a `for w in self.ws` element) too, and on an
-            // element of an array field (`self.ws[i].m()`).
+            // GH #1561: on any receiver whose value may be such a field's
+            // instance — a local (`let w = self.w; w.m()`), an element of
+            // an array field (`self.ws[i].m()`), a part of a value holding
+            // one — by the provenance the walk carries (`Origin`).
             if let Some(CrossPool { field_locus, caller_pool, callee_pool, held_by, locus_type }) =
-                receiver_cross_pool(receiver, cx).or_else(|| match receiver.as_ref() {
-                    Expr::Ident(id) => cx.aliases.get(&id.name).cloned(),
-                    _ => None,
-                })
+                receiver_cross_pool(receiver, cx).or_else(|| recv_origin.whole.clone())
             {
                 // F.32-0: receivers with an explicit
                 // sync discipline (`@form(..., sync = X)`,
@@ -4456,65 +4808,228 @@ fn walk_expr_pool(expr: &Expr, cx: &mut PoolCheckCx) {
                 }
             }
         }
-        check_call_stores_pool(callee, args, *span, cx);
-        walk_expr_pool(callee, cx);
-        for a in args {
-            walk_expr_pool(a, cx);
-        }
-        return;
+        let arg_origins: Vec<Origin> = args.iter().map(|a| eval_expr(a, cx)).collect();
+        check_call_stores_pool(callee, args, &arg_origins, *span, cx);
+        return call_origin(callee, &recv_origin, &arg_origins, cx);
+    }
+    if let Some(cp) = alias_of(expr, cx) {
+        // a field of `self` (or below it) that runs in another domain;
+        // its index expressions are walked too
+        walk_index_exprs(expr, cx);
+        return Origin::whole(cp);
     }
     match expr {
+        Expr::Ident(id) => cx.env.lookup(&id.name),
         Expr::Binary { left, right, .. } => {
-            walk_expr_pool(left, cx);
-            walk_expr_pool(right, cx);
+            eval_expr(left, cx);
+            eval_expr(right, cx);
+            Origin::default()
         }
-        Expr::Unary { operand, .. } => walk_expr_pool(operand, cx),
-        Expr::Field { receiver, .. } => walk_expr_pool(receiver, cx),
+        Expr::Unary { operand, .. } => {
+            eval_expr(operand, cx);
+            Origin::default()
+        }
+        Expr::Field { receiver, .. } | Expr::Path2 { receiver, .. } => eval_expr(receiver, cx).part(),
         Expr::Index { receiver, index, .. } => {
-            walk_expr_pool(receiver, cx);
-            walk_expr_pool(index, cx);
+            let o = eval_expr(receiver, cx).part();
+            eval_expr(index, cx);
+            o
         }
-        Expr::Path2 { receiver, .. } => walk_expr_pool(receiver, cx),
         Expr::Tuple(items, _) | Expr::Array(items, _) => {
-            for e in items {
-                walk_expr_pool(e, cx);
-            }
+            items.iter().fold(Origin::default(), |o, e| o.join(eval_expr(e, cx).contained()))
         }
+        // a record literal holds its fields' values; a locus literal is a
+        // fresh instance of this thread's, which holds its params'
         Expr::Struct { inits, .. } => {
-            for i in inits {
-                walk_expr_pool(&i.value, cx);
-            }
+            inits.iter().fold(Origin::default(), |o, i| o.join(eval_expr(&i.value, cx).contained()))
         }
-        Expr::Block(b) => walk_block_pool(b, cx),
-        Expr::If(stmt) => walk_if_pool(stmt, cx),
-        Expr::Match(stmt) => walk_match_pool(stmt, cx),
-        Expr::Sum(inner, _) | Expr::Prod(inner, _) => walk_expr_pool(inner, cx),
+        Expr::Block(b) => eval_block(b, cx),
+        Expr::If(stmt) => eval_if(stmt, cx),
+        Expr::Match(stmt) => eval_match(stmt, cx),
+        Expr::Sum(inner, _) | Expr::Prod(inner, _) => {
+            eval_expr(inner, cx);
+            Origin::default()
+        }
         Expr::Approx { left, right, tolerance, .. } => {
-            walk_expr_pool(left, cx);
-            walk_expr_pool(right, cx);
-            walk_expr_pool(tolerance, cx);
+            eval_expr(left, cx);
+            eval_expr(right, cx);
+            eval_expr(tolerance, cx);
+            Origin::default()
         }
         Expr::Range { lo, hi, .. } => {
-            walk_expr_pool(lo, cx);
-            walk_expr_pool(hi, cx);
+            eval_expr(lo, cx);
+            eval_expr(hi, cx);
+            Origin::default()
         }
-        Expr::ArrayRepeat { val, .. } => walk_expr_pool(val, cx),
+        Expr::ArrayRepeat { val, .. } => eval_expr(val, cx).contained(),
         Expr::Or { inner, disposition, .. } => {
-            walk_expr_pool(inner, cx);
+            let o = eval_expr(inner, cx);
             match disposition {
-                OrDisposition::Substitute(e) => walk_expr_pool(e, cx),
-                OrDisposition::Fail(e, _) => walk_expr_pool(e, cx),
-                OrDisposition::Raise(_)
-                | OrDisposition::Discard(_)
-                | OrDisposition::Wait(_) => {}
+                OrDisposition::Substitute(e) => o.join(eval_expr(e, cx)),
+                OrDisposition::Fail(e, _) => {
+                    eval_expr(e, cx);
+                    o
+                }
+                OrDisposition::Raise(_) | OrDisposition::Discard(_) | OrDisposition::Wait(_) => o,
             }
         }
-        Expr::Literal(_, _)
-        | Expr::Ident(_)
-        | Expr::Path(_)
-        | Expr::KwSelf(_) => {}
-        // Already handled above
-        Expr::Call { .. } => unreachable!(),
+        Expr::Literal(_, _) | Expr::Path(_) | Expr::KwSelf(_) => Origin::default(),
+        Expr::Call { .. } => unreachable!("handled above"),
+    }
+}
+
+/// The index expressions of a field-and-element chain (`self.ws[i]`).
+fn walk_index_exprs(e: &Expr, cx: &mut PoolCheckCx) {
+    match e {
+        Expr::Index { receiver, index, .. } => {
+            walk_index_exprs(receiver, cx);
+            eval_expr(index, cx);
+        }
+        Expr::Field { receiver, .. } => walk_index_exprs(receiver, cx),
+        _ => {}
+    }
+}
+
+/// The locus type a receiver expression holds: `self` is the enclosing
+/// locus, a chain below it is read from the declarations.
+fn receiver_locus_type(receiver: &Expr, cx: &PoolCheckCx) -> Option<String> {
+    fn path(e: &Expr, out: &mut Vec<LValueSeg>) -> bool {
+        match e {
+            Expr::KwSelf(_) => true,
+            Expr::Field { receiver, name, .. } => {
+                let ok = path(receiver, out);
+                out.push(LValueSeg::Field(name.clone()));
+                ok
+            }
+            Expr::Index { receiver, index, .. } => {
+                let ok = path(receiver, out);
+                out.push(LValueSeg::Index((**index).clone()));
+                ok
+            }
+            _ => false,
+        }
+    }
+    if let Expr::Ident(id) = receiver {
+        return cx.env.lookup(&id.name).whole.and_then(|cp| cp.locus_type);
+    }
+    let mut segs = Vec::new();
+    if !path(receiver, &mut segs) {
+        return None;
+    }
+    if segs.is_empty() {
+        return Some(cx.enclosing_locus.name.name.clone());
+    }
+    let t = cx.decls.resolve(cx.decls.slot_type(&cx.enclosing_locus.name.name, &segs)?);
+    let t = match t {
+        TypeExpr::Array { elem, .. } => cx.decls.resolve(elem),
+        t => t,
+    };
+    cx.decls.named(t).map(str::to_string)
+}
+
+/// An instance of the locus type `ty` that runs in another domain than
+/// some instance of the enclosing locus: what a call returning `ty`
+/// through a fn value may hand back.
+fn any_cross_pool_instance(ty: &str, cx: &PoolCheckCx) -> Option<CrossPool> {
+    let short = ty.rsplit("::").next().unwrap_or(ty);
+    let table = cx.running.table;
+    for owner in cx.instances {
+        let caller = cx.running.row(owner).domain;
+        for row in table.instances.values() {
+            let name = row.realizes.as_ref().and_then(|d| cx.decl_names.get(&d.site));
+            if name.is_some_and(|n| n.rsplit("::").next() == Some(short)) && row.domain != caller {
+                return Some(CrossPool {
+                    locus_type: Some(ty.to_string()),
+                    held_by: None,
+                    field_locus: ty.to_string(),
+                    caller_pool: PoolId::of_domain(table, caller),
+                    callee_pool: PoolId::of_domain(table, row.domain),
+                });
+            }
+        }
+    }
+    None
+}
+
+/// The type names a type expression spells, anywhere in it (a generic
+/// argument, a tuple's or an array's element), a stdlib path by the
+/// name its declaration carries.
+fn type_names(t: &TypeExpr, out: &mut Vec<String>) {
+    match t {
+        TypeExpr::Named { path, generic_args, .. } => {
+            let segs: Vec<&str> = path.segments.iter().map(|s| s.name.as_str()).collect();
+            let name = crate::stdlib_bodies::mangled_locus_name(&segs)
+                .map(str::to_string)
+                .or_else(|| segs.last().map(|s| s.to_string()));
+            out.extend(name);
+            generic_args.iter().for_each(|g| type_names(g, out));
+        }
+        TypeExpr::Projection { inner, .. } => type_names(inner, out),
+        TypeExpr::Array { elem, .. } | TypeExpr::Bounded { elem, .. } => type_names(elem, out),
+        TypeExpr::Tuple(ts, _) => ts.iter().for_each(|t| type_names(t, out)),
+        _ => {}
+    }
+}
+
+/// Two spellings of one declared type: the same last segment, or one a
+/// stdlib declaration's mangled name ending in the other's.
+fn same_type_name(a: &str, b: &str) -> bool {
+    let a = a.rsplit("::").next().unwrap_or(a);
+    let b = b.rsplit("::").next().unwrap_or(b);
+    a == b || (a.starts_with("__") && a.ends_with(b)) || (b.starts_with("__") && b.ends_with(a))
+}
+
+/// May a result of type `t` be, hold, or be held by a value of the type
+/// `arg`: a generic, `arg` itself, a type whose fields (a locus's params,
+/// a record's fields, transitively) can hold `arg`, or a type `arg`'s
+/// fields can hold (a part of the argument handed back)?
+fn type_may_hold(t: &TypeExpr, generics: &[GenericParam], arg: &str, decls: &StoreDecls<'_>) -> bool {
+    let mut ns = Vec::new();
+    type_names(t, &mut ns);
+    ns.iter().any(|n| {
+        generics.iter().any(|g| g.name.name == *n)
+            || same_type_name(n, arg)
+            || decls.type_holds(n, arg, &mut BTreeSet::new())
+            || decls.type_holds(arg, n, &mut BTreeSet::new())
+    })
+}
+
+/// May a stdlib call's result be (or hold) a value of the type `arg`
+/// names? A generic result may be anything; a result naming the type
+/// (last segment) may be it; a primitive result never is. A stdlib fn
+/// the analysis cannot find may hand back anything.
+fn std_result_may_hold(segs: &[&str], arg: Option<&str>, decls: &StoreDecls<'_>) -> bool {
+    let short = |n: &str| -> String {
+        let last = n.rsplit("::").next().unwrap_or(n).to_string();
+        // a mangled stdlib name (`__StdMetricsRegistry`) ends in its last segment
+        last
+    };
+    let Some(arg) = arg.map(short) else { return true };
+    let decl = crate::stdlib_bodies::mangled_locus_name(segs).and_then(|m| {
+        crate::stdlib_bodies::program()?.items.iter().find_map(|i| match i {
+            TopDecl::Fn(f) if f.name.name == m => Some(f),
+            _ => None,
+        })
+    });
+    if let Some(f) = decl {
+        return f.ret.as_ref().is_some_and(|r| type_may_hold(r, &f.generics, &arg, decls));
+    }
+    match crate::stdlib_surface::signature_for(segs) {
+        Some(sig) => match sig.ret {
+            crate::stdlib_surface::SigTy::Any => true,
+            crate::stdlib_surface::SigTy::Named(n) => short(n) == arg,
+            _ => false,
+        },
+        None => true,
+    }
+}
+
+fn pattern_binders<'p>(p: &'p Pattern, out: &mut Vec<&'p str>) {
+    match p {
+        Pattern::Binding(id) => out.push(id.name.as_str()),
+        Pattern::Constructor { args, .. } => args.iter().for_each(|a| pattern_binders(a, out)),
+        Pattern::Tuple(ps, _) => ps.iter().for_each(|a| pattern_binders(a, out)),
+        Pattern::Literal(..) | Pattern::Wildcard(_) => {}
     }
 }
 
@@ -4556,17 +5071,22 @@ fn check_store_pool(target: &LValue, span: Span, cx: &mut PoolCheckCx) {
         if target.tail.is_empty() {
             return;
         }
-        match cx.aliases.get(&target.head.name) {
-            // the alias's own locus type: an element reached below the
+        // What the local may hold: the store lands in the value itself
+        // (`w.name`), or, down a longer path, maybe in a handle the value
+        // holds (`r.h.name`, `p.0.name`).
+        let o = cx.env.lookup(&target.head.name);
+        let held = if target.tail.len() >= 2 { o.whole.or(o.parts) } else { o.whole };
+        match held {
+            // the value's own locus type: an element reached below the
             // field (`let x = self.h.ws[0]`) is the element's, not the
-            // holder's; one the declarations do not give is no scalar
+            // holder's; one the walk does not know is no scalar
             Some(cp)
                 if !cp
                     .locus_type
                     .as_deref()
                     .is_some_and(|t| cx.decls.slot_is_inline_scalar(t, &target.tail)) =>
             {
-                (cp.clone(), target.head.name.clone())
+                (cp, target.head.name.clone())
             }
             _ => return,
         }
@@ -4580,7 +5100,7 @@ fn check_store_pool(target: &LValue, span: Span, cx: &mut PoolCheckCx) {
 /// another domain (`put(self.w, s)`, or a local bound to one): the
 /// store would run on this instance's thread, so it is refused as the
 /// store written here would be.
-fn check_call_stores_pool(callee: &Expr, args: &[Expr], span: Span, cx: &mut PoolCheckCx) {
+fn check_call_stores_pool(callee: &Expr, args: &[Expr], arg_origins: &[Origin], span: Span, cx: &mut PoolCheckCx) {
     let fname = match callee {
         Expr::Ident(id) => id.name.clone(),
         // a stdlib path is not one of the bundle's fns, whatever its name
@@ -4596,10 +5116,11 @@ fn check_call_stores_pool(callee: &Expr, args: &[Expr], span: Span, cx: &mut Poo
     let calls = cx.stores_through.calls.get(&fname).unwrap_or(&none);
     for i in stores.union(calls).copied().collect::<Vec<usize>>() {
         let Some(arg) = args.get(i) else { continue };
-        let found = match arg {
-            Expr::Ident(id) => cx.aliases.get(&id.name).cloned().map(|cp| (cp, id.name.clone())),
-            other => receiver_cross_pool(other, cx).map(|cp| (cp, receiver_display(other))),
+        let shown = match arg {
+            Expr::Ident(id) => id.name.clone(),
+            other => receiver_display(other),
         };
+        let found = arg_origins.get(i).and_then(Origin::any).map(|cp| (cp, shown));
         let Some((cp, shown)) = found else { continue };
         if stores.contains(&i) {
             let what = format!("`{fname}(…)` stores, through its argument {}, into", i + 1);
@@ -4776,11 +5297,13 @@ struct ParamUses {
 struct StoreDecls<'a> {
     loci: BTreeMap<String, &'a LocusDecl>,
     types: BTreeMap<String, &'a TypeDecl>,
+    /// Free fns by name (same-named fns in two modules joined).
+    fns: BTreeMap<String, Vec<&'a FnDecl>>,
 }
 
 impl<'a> StoreDecls<'a> {
     fn of(bundle: &Bundle<'a>) -> Self {
-        let mut d = StoreDecls { loci: BTreeMap::new(), types: BTreeMap::new() };
+        let mut d = StoreDecls { loci: BTreeMap::new(), types: BTreeMap::new(), fns: BTreeMap::new() };
         for program in bundle.programs.values() {
             walk_decls(&program.items, &mut |item| match item {
                 TopDecl::Locus(l) => {
@@ -4789,10 +5312,65 @@ impl<'a> StoreDecls<'a> {
                 TopDecl::Type(t) => {
                     d.types.insert(t.name.name.clone(), t);
                 }
+                TopDecl::Fn(f) => d.fns.entry(f.name.name.clone()).or_default().push(f),
                 _ => {}
             });
         }
         d
+    }
+
+    /// The locus a fn type returns (`fn() -> W`, `fn(Int) -> [W; 2]`), its
+    /// aliases followed.
+    fn fn_returns_locus(&self, t: &TypeExpr) -> Option<String> {
+        let TypeExpr::Function { ret: Some(r), .. } = self.resolve(t) else { return None };
+        let r = match self.resolve(r) {
+            TypeExpr::Array { elem, .. } => self.resolve(elem),
+            r => r,
+        };
+        self.named(r).filter(|n| self.loci.contains_key(*n)).map(str::to_string)
+    }
+
+    /// Can a value of the declared type `outer` hold one of the type
+    /// `inner` in its fields (a locus's params, a record's fields, an
+    /// enum's payloads), transitively? The program's declarations and the
+    /// stdlib's, by name.
+    fn type_holds(&self, outer: &str, inner: &str, seen: &mut BTreeSet<String>) -> bool {
+        if !seen.insert(outer.to_string()) || seen.len() > 64 {
+            return false;
+        }
+        let mut field_tys: Vec<&TypeExpr> = Vec::new();
+        let take_locus = |l: &'a LocusDecl, out: &mut Vec<&'a TypeExpr>| {
+            for m in &l.members {
+                if let LocusMember::Params(pb) = m {
+                    out.extend(pb.params.iter().filter_map(|p| p.ty.as_ref()));
+                }
+            }
+        };
+        let take_type = |t: &'a TypeDecl, out: &mut Vec<&'a TypeExpr>| match &t.body {
+            TypeDeclBody::Struct(fs) => out.extend(fs.iter().map(|f| &f.ty)),
+            TypeDeclBody::Enum(vs) => out.extend(vs.iter().flat_map(|v| v.fields.iter())),
+            TypeDeclBody::Alias(a) => out.push(a),
+            TypeDeclBody::Scalar(_) => {}
+        };
+        let short = outer.rsplit("::").next().unwrap_or(outer);
+        if let Some(l) = self.loci.get(short) {
+            take_locus(l, &mut field_tys);
+        } else if let Some(t) = self.types.get(short) {
+            take_type(t, &mut field_tys);
+        } else if let Some(std) = crate::stdlib_bodies::program() {
+            for item in &std.items {
+                match item {
+                    TopDecl::Locus(l) if same_type_name(&l.name.name, outer) => take_locus(l, &mut field_tys),
+                    TopDecl::Type(t) if same_type_name(&t.name.name, outer) => take_type(t, &mut field_tys),
+                    _ => {}
+                }
+            }
+        }
+        field_tys.into_iter().any(|ft| {
+            let mut ns = Vec::new();
+            type_names(ft, &mut ns);
+            ns.iter().any(|n| same_type_name(n, inner) || self.type_holds(n, inner, seen))
+        })
     }
 
     /// The name a `Named` type expression spells (its last segment).
@@ -21171,4 +21749,25 @@ fn nearest_qualified_segment(name: &str, candidates: &[&str]) -> Option<String> 
         return Some((*hit).to_string());
     }
     crate::stdlib_surface::nearest_name(name, candidates.iter().copied())
+}
+
+#[cfg(test)]
+mod store_origin_tests {
+    use super::std_result_may_hold;
+
+    /// GH #1561: a stdlib call hands back an argument's handle only when
+    /// its declared result can be (or hold) that argument's type. A
+    /// metrics gauge is built from the registry it is handed and is not
+    /// that registry; a gauge argument could come back as the gauge; a
+    /// path the analysis cannot find may hand back anything.
+    #[test]
+    fn a_std_result_carries_an_argument_only_when_its_type_can() {
+        let gauge = ["std", "metrics", "gauge"];
+        let d = super::StoreDecls { loci: Default::default(), types: Default::default(), fns: Default::default() };
+        assert!(!std_result_may_hold(&gauge, Some("std::metrics::Registry"), &d));
+        assert!(std_result_may_hold(&gauge, Some("Gauge"), &d));
+        assert!(std_result_may_hold(&["std", "no", "such_fn"], Some("Registry"), &d));
+        assert!(std_result_may_hold(&gauge, None, &d), "an argument of unknown type");
+        assert!(!std_result_may_hold(&["std", "str", "upper"], Some("W"), &d), "a primitive result");
+    }
 }

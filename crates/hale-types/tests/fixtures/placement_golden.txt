@@ -6887,6 +6887,17 @@ domain	pool:workers
 row	App@literal1	App	main	default
 row	App@literal1.w	Coord	pool:workers	entry	off owner
 
+== crates/hale-types/tests/placement.rs#565bd3fa
+root	App	the entry
+domain	pool:senses
+row	App@literal1	App	main	default
+dynamic	__StdBytesBytesBuilder	on pool:senses	in the stdlib
+-- App@literal1.senses	Senses
+row	~	Senses	pool:senses	entry	off owner
+row	~.registry	__StdMetricsRegistry	pool:senses	inherited
+row	~.registry.histograms	__StdMetricsHistogramList	pool:senses	inherited
+row	~.registry.store	__StdMetricsMap	pool:senses	inherited
+
 == crates/hale-types/tests/placement_pairings.rs#3fcc4af7
 row	W@main1	W	main	default
 
