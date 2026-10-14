@@ -13,7 +13,8 @@
 //! seed and across seeds, a nested subscriber, a devirtualized (quiet)
 //! subscriber, keyed subscribers (scalar and String keys), a pinned
 //! anchor, the subtrees a pinned and a pool-placed field build on their
-//! own threads, an anchor nested in another anchor's params (#1555),
+//! own threads, an anchor nested in another anchor's params, each replica
+//! of a replicated field (its shard by key) (#1555),
 //! the topic's bound, and a publisher on another thread
 //! hammering while the tree is built — with and without a stall that
 //! makes a park land after the claim it raced (the forward path), and
@@ -861,14 +862,81 @@ fn an_anchor_nested_in_an_anchors_params_claims_under_asan() {
     assert_eq!(out, ["inner 1", "inner 2", "outer 1", "outer 2"]);
 }
 
+/// A replicated field: three pinned `Worker` replicas, each subscribing
+/// the sharded `Jobs` (`where key == replica`, its window bounded) and the
+/// broadcast `Fact`, built after `Source`, whose birth publishes to both.
+const REPLICAS: &str = r#"
+    type Job { shard: Int; v: Int; }
+    type Note { n: Int; }
+    topic Jobs { payload: Job; subject: "rsv.rep.jobs"; keyed_by shard; }
+    topic Fact { payload: Note; subject: "rsv.rep.fact"; }
+    locus Source {
+        params { x: Int = 0; }
+        bus { publish Jobs; publish Fact; }
+        birth() {
+            let mut s = 0;
+            while s < 3 {
+                let mut v = 0;
+                while v < 3 { Jobs <- Job { shard: s, v: s * 10 + v }; v = v + 1; }
+                s = s + 1;
+            }
+            Fact <- Note { n: 7 };
+        }
+    }
+    locus Worker {
+        params { x: Int = 0; }
+        bus {
+            subscribe Jobs as on_job bounded(2, drop_old) where key == replica;
+            subscribe Fact as on_fact;
+        }
+        fn on_job(j: Job) { println("job " + to_string(j.shard) + " " + to_string(j.v)); }
+        fn on_fact(f: Note) { println("fact " + to_string(f.n)); }
+    }
+    main locus App {
+        params { s: Source = Source { }; w: Worker = Worker { }; }
+        placement { w: pinned(replicas = 3); }
+        run() { std::time::sleep(50ms); }
+    }
+    fn main() { App { }; }
+"#;
+
+#[test]
+fn each_replica_of_a_replicated_field_claims_its_own_shard() {
+    // Each replica claims (before #1555 none did, and every cell was
+    // lost): the broadcast once per replica, and the sharded topic with
+    // its own replica index as the key, so its bound of two keeps the
+    // newest two of its own shard's three, whichever replica claims
+    // first. Each job reaches exactly one replica.
+    let (out, stderr) = run_env("replicas", REPLICAS, false, &[("LOTUS_BUS_LOG_RESERVE", "1")]);
+    assert_eq!(
+        out,
+        ["fact 7", "fact 7", "fact 7", "job 0 1", "job 0 2", "job 1 11", "job 1 12", "job 2 21", "job 2 22"],
+        "{stderr}"
+    );
+    assert!(stderr.contains("reservation `rsv.rep.jobs` closed: parked 9 copied 6"), "{stderr}");
+    assert!(stderr.contains("claimants 3 missing 0 keys 3"), "{stderr}");
+    assert!(stderr.contains("reservation `rsv.rep.fact` closed: parked 1 copied 3 forwarded 0 shed 0 claimants 3 missing 0"), "{stderr}");
+}
+
+#[test]
+fn each_replica_of_a_replicated_field_claims_under_asan() {
+    let (out, _) = run_env("replicas_asan", REPLICAS, true, &[]);
+    assert_eq!(out.len(), 9, "{out:?}");
+}
+
 #[test]
 fn trees_without_the_shapes_publishing_first_reserve_nothing() {
-    // A nested anchor is reserved only where a publish can precede its
-    // claim: with no publisher, it emits no reservation.
+    // A replicated field and a nested anchor are each reserved only where
+    // a publish can precede the claim: built before their publishers, or
+    // with none, neither emits a reservation.
+    let replicas_first = REPLICAS.replace(
+        "params { s: Source = Source { }; w: Worker = Worker { }; }",
+        "params { w: Worker = Worker { }; s: Source = Source { }; }",
+    );
     let nested_quiet = NESTED_ANCHORS
         .replace("bus { publish Fact; }", "")
         .replace("birth() { Fact <- Note { n: self.n }; }", "");
-    for (tag, src) in [("nested_quiet", nested_quiet)] {
+    for (tag, src) in [("replicas_first", replicas_first), ("nested_quiet", nested_quiet)] {
         let text = ir(tag, &src);
         assert!(!text.contains("@lotus_bus_reserve_begin") && !text.contains("@lotus_bus_reserve_claim"), "{tag} emitted a reservation");
     }

@@ -25,11 +25,12 @@
 //!   among them included (an init inside an init, its own params built in
 //!   an init of that one, the instantiating threads all waiting). Each
 //!   init reads the scope through its argument block, from the function
-//!   that starts it. A subscription registers through the bus (no
-//!   `shm_ring` binding) to a locus the plan owes readiness; keyed ones
-//!   take part, their key applied when they claim.
+//!   that starts it. A replicated field (`replicas = K`) is K anchors, each
+//!   claiming; a keyed subscription claims with its key applied, so `where
+//!   key == replica` takes its own shard. A subscription registers through
+//!   the bus (no `shm_ring` binding) to a locus the plan owes readiness.
 //! - **Publishers** are every node: an anchor publishes from its
-//!   instantiation on, a replicated field's instances too.
+//!   instantiation on.
 //!
 //! A subject is reserved only where some publisher may publish before
 //! some claimant registers: a cooperative node publishes from its birth,
@@ -39,8 +40,7 @@
 //! its birth. A tree whose subjects need none emits nothing, so a program
 //! with no such tree pays nothing.
 //!
-//! A replicated field's (`replicas = K`) instances are not claimants, and
-//! a wildcard (`**`) subscription is not reserved yet (#1555).
+//! A wildcard (`**`) subscription is not reserved yet (#1555).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
@@ -74,7 +74,8 @@ pub(crate) enum TreeChild {
     /// function, and its params are built in an init its own thread (or
     /// its pool's worker) runs while the instantiating thread waits.
     Anchor,
-    /// A replicated field's instances: publish only.
+    /// A replicated field (`replicas = K`): K anchors, built at its
+    /// parent's params.
     Replicated,
 }
 
@@ -157,7 +158,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
 
     /// The literals `locus`'s params build, built with `inits`: each
     /// field's override or `Expr` default that is a locus literal, with
-    /// the child's own inits, in the params loop's order.
+    /// the child's own inits, in the params loop's order. A replicated
+    /// field is its K anchors, in the order the loop builds them: replicas
+    /// 1 to K-1 from the field's default, then replica 0 from its value.
     fn static_tree_children(&self, locus: &str, inits: &[StructInit]) -> Vec<(String, TreeChild, Vec<StructInit>)> {
         let Some(info) = self.user_loci.get(locus) else { return Vec::new() };
         let is_main = self.is_entry_locus(locus);
@@ -171,10 +174,21 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 },
             };
             let field_ty = info.fields.get(fname).map(|(_, t)| t);
-            if let Some((child, how)) = self.static_tree_child(is_main, fname, value, field_ty) {
-                let Expr::Struct { inits: child_inits, .. } = value else { continue };
-                out.push((child, how, child_inits.clone()));
+            let Some((child, how)) = self.static_tree_child(is_main, fname, value, field_ty) else { continue };
+            let Expr::Struct { inits: child_inits, .. } = value else { continue };
+            if how == TreeChild::Replicated {
+                let k = self.deployment.main_placement_replicas.get(fname).map_or(1, Vec::len);
+                if let DefaultInit::Expr(rep @ Expr::Struct { inits: rep_inits, .. }) = default {
+                    if let Some((rep_child, _)) = self.static_tree_child(is_main, fname, rep, field_ty) {
+                        for _ in 1..k {
+                            out.push((rep_child.clone(), TreeChild::Anchor, rep_inits.clone()));
+                        }
+                    }
+                }
+                out.push((child, TreeChild::Anchor, child_inits.clone()));
+                continue;
             }
+            out.push((child, how, child_inits.clone()));
         }
         out
     }
@@ -207,10 +221,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// One node of the tree and, recursively, what its params build: its
     /// publishes, from where it may first publish, and its claims, at
     /// where it registers. Every node built while the root is, on any
-    /// thread its construction waits for, claims, but a replicated
-    /// field's subtree. `off_from`: inside one, the position its replicas
-    /// start from.
-    fn walk_tree(&self, locus: &str, inits: &[StructInit], how: TreeChild, off_from: Option<u32>, depth: u32, w: &mut Walk) {
+    /// thread its construction waits for, claims.
+    fn walk_tree(&self, locus: &str, inits: &[StructInit], how: TreeChild, depth: u32, w: &mut Walk) {
         // The lowering laws refuse a cycle through param defaults before
         // lowering; the bound is a belt.
         if depth > 64 {
@@ -222,24 +234,15 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let pre = w.pos;
         w.pos += 1;
         for (child, child_how, child_inits) in &self.static_tree_children(locus, inits) {
-            let child_off = match (off_from, child_how) {
-                (Some(f), _) => Some(f),
-                (None, TreeChild::Replicated) => Some(w.pos),
-                (None, _) => None,
-            };
-            self.walk_tree(child, child_inits, *child_how, child_off, depth + 1, w);
+            self.walk_tree(child, child_inits, *child_how, depth + 1, w);
         }
         let post = w.pos;
         w.pos += 1;
-        let from = match (off_from, how) {
-            (Some(f), _) => f,
-            (None, TreeChild::Cooperative) => post,
-            (None, _) => pre,
-        };
+        let from = if how == TreeChild::Cooperative { post } else { pre };
         for pattern in &info.publish_patterns {
             w.publishes.push(Publish { node, from, pattern: pattern.clone() });
         }
-        if off_from.is_some() || !self.owes_readiness(locus) {
+        if !self.owes_readiness(locus) {
             return;
         }
         let early = how == TreeChild::Cooperative && self.registers_early(locus);
@@ -262,7 +265,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// key). Empty when none does.
     pub(crate) fn static_tree_plan(&self, root: &str, inits: &[StructInit], root_how: TreeChild) -> Vec<ReservePlan> {
         let mut w = Walk::default();
-        self.walk_tree(root, inits, root_how, None, 0, &mut w);
+        self.walk_tree(root, inits, root_how, 0, &mut w);
         let mut plans = Vec::new();
         for (subject, claims) in &w.claims {
             let needed = w.publishes.iter().any(|p| {

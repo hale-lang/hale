@@ -2342,7 +2342,9 @@ its `KNOWN_OPEN` table, which is empty today.
   instantiating thread waits, an anchor among them included, whose own
   params are built in an init of that init, at any depth (each init
   reads the scope through its argument block, from the function that
-  starts it; #1555), a keyed subscription's, its key applied — then
+  starts it; #1555), each of a replicated field's (`replicas = K`) K
+  instances, an anchor apiece, a keyed subscription's, its key applied
+  (`where key == replica` claims its own replica's shard) — then
   claims its copy
   (`lotus_bus_reserve_claim`), ahead of what its window holds, and its
   readiness delivers it after its `birth()`. The last expected claim
@@ -2372,9 +2374,7 @@ its `KNOWN_OPEN` table, which is empty today.
   not see the drain. A tree that needs no reservation emits none, and the publish
   site is unchanged: a reservation holds a window open, so a baked
   direct publish takes the helper through the window count it already
-  reads. Not yet true: a replicated field's (`replicas = K`) instance
-  claims nothing, so what an earlier part of the tree published before
-  it registered reaches no subscription of it. Not yet true: a wildcard (`**`) subscription is reserved only
+  reads. Not yet true: a wildcard (`**`) subscription is reserved only
   where a publisher declares the same or a wider pattern; what a
   concrete or a narrower declared publish sends before it registers
   reaches no subscription of it. Not yet true

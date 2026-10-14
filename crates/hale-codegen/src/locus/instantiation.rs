@@ -2731,10 +2731,19 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         if hands_back_replicas {
                             self.anchor_record_slot = self.anchor_record_at(&info, self_ptr, fname, i as u32)?;
                         }
+                        // #1555: each replica is an anchor of the static
+                        // tree, claiming like replica 0 does below.
+                        if let Some(ctx) = &tree_ctx {
+                            let field_ty = info.fields.get(fname).map(|(_, t)| t.clone());
+                            if let Some((child, _)) = self.static_tree_child(is_main_locus, fname, &rep_expr, field_ty.as_ref()) {
+                                self.reserve_child_next = Some((child, ctx.clone()));
+                            }
+                        }
                         // Finding 4: replica exprs are default text.
                         let saved_ipd = self.in_params_default;
                         self.in_params_default = true;
                         let _ = self.in_body(info.decl, |cx| cx.lower_expr(&rep_expr, scope))?;
+                        self.reserve_child_next = None;
                         self.in_params_default = saved_ipd;
                         self.anchor_record_slot = None;
                     }
@@ -2833,8 +2842,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             if hands_back_replicas {
                 self.anchor_record_slot = self.anchor_record_at(&info, self_ptr, fname, 0)?;
             }
-            // #1534: the literal this field builds is a node of this
-            // instance's static tree.
+            // #1534: the literal this field builds (replica 0's, for a
+            // replicated field) is a node of this instance's static tree.
             if let Some(ctx) = &tree_ctx {
                 let value = match (overrides.get(fname.as_str()), default) {
                     (Some(e), _) => Some(*e),
@@ -2842,10 +2851,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     _ => None,
                 };
                 let field_ty = info.fields.get(fname).map(|(_, t)| t.clone());
-                if let Some((child, how)) = value.and_then(|v| self.static_tree_child(is_main_locus, fname, v, field_ty.as_ref())) {
-                    if how != crate::locus::reservation::TreeChild::Replicated {
-                        self.reserve_child_next = Some((child, ctx.clone()));
-                    }
+                if let Some((child, _)) = value.and_then(|v| self.static_tree_child(is_main_locus, fname, v, field_ty.as_ref())) {
+                    self.reserve_child_next = Some((child, ctx.clone()));
                 }
             }
             let (val, val_ty, owned_via_literal, came_from_literal) =
