@@ -590,17 +590,17 @@ dynamic	<hole>	on main|unresolved declaration `chat::Participant`	in the seed
 == crates/hale-cli/tests/fixtures/imported-main-claims/app-missing-collision/main.hl#374b15e0
 row	Bystander@main1	Bystander	main	default
 
-== crates/hale-cli/tests/fixtures/imported-main-claims/seed/chat.hl#5da70164
+== crates/hale-cli/tests/fixtures/imported-main-claims/seed/chat.hl#a69ca5e3
 root	ChatServer	the entry
-row	ChatServer@entry	ChatServer	main	default
-row	ChatServer@entry.ada	Participant	main	default
-shared	ChatServer@entry.lobby	Room #1682ebfe
+row	ChatServer@literal1	ChatServer	main	default
+row	ChatServer@literal1.ada	Participant	main	default
+shared	ChatServer@literal1.lobby	Room #1682ebfe
 
-== crates/hale-cli/tests/fixtures/imported-main-claims/seed-adopt/chat.hl#addd1e6d
+== crates/hale-cli/tests/fixtures/imported-main-claims/seed-adopt/chat.hl#487222d2
 root	ChatServer	the entry
-row	ChatServer@entry	ChatServer	main	default
-row	ChatServer@entry.ada	Participant	main	default
-shared	ChatServer@entry.lobby	Room #1682ebfe
+row	ChatServer@literal1	ChatServer	main	default
+row	ChatServer@literal1.ada	Participant	main	default
+shared	ChatServer@literal1.lobby	Room #1682ebfe
 
 == crates/hale-cli/tests/fixtures/p3-namespace-method-app/main.hl#3a047afc
 root	App	the entry
@@ -1721,7 +1721,7 @@ row	App@literal1.s0	Source	pool:pa	entry	off owner
 row	App@literal1.s1	Source	pool:pb	entry	off owner
 row	App@literal1.sub	Counter	pool:p	entry	off owner
 
-== crates/hale-codegen/tests/bus_backpressure.rs#d99a676f
+== crates/hale-codegen/tests/bus_backpressure.rs#07d4f16d
 root	App	the entry
 domain	pool:p0
 domain	pool:p1
@@ -3322,6 +3322,14 @@ shared	dynamic	sites in the seed #90ace0ba
 row	Classic@main2	Classic	main	default
 shared	__StdHttpRouter@main1	__StdHttpRouter #a16e8e74
 
+== crates/hale-codegen/tests/http_router.rs#5789282a
+-- App@main1	App
+row	~	App	main	default
+row	~.router	__StdHttpRouter	main	inherited
+row	~.router.entries	__StdHttpEntryList	main	inherited
+row	~.router.mws	__StdHttpMwList	main	inherited
+row	~.router.not_found	__StdHttpNotFound404	main	inherited
+
 == crates/hale-codegen/tests/http_server_classic_pool_shutdown.rs#5db2307f
 root	App	the entry
 domain	pool:io
@@ -4030,6 +4038,11 @@ row	~.child	Alpha	main	inherited
 
 == crates/hale-codegen/tests/or_fallible_handler.rs#fbcec405
 row	Q@main1	Q	main	default
+
+== crates/hale-codegen/tests/or_statement_value.rs#a7f09c56
+-- Pool@main1	Pool
+row	~	Pool	main	default
+row	~.fds	Ints	main	inherited
 
 == crates/hale-codegen/tests/owned_child_arena_reclaim.rs#6f8c650f
 
@@ -5489,28 +5502,6 @@ row	App@literal1.e	Echo	main	default
 
 == crates/hale-types/tests/call_arity.rs#700f7f93
 row	A@main1	A	main	default
-
-== crates/hale-types/tests/check_rules.rs#c55458f4
-root	App	the entry
-row	App@entry	App	main	default
-
-== crates/hale-types/tests/check_rules.rs#989b09ab
-root	App	the entry
-domain	pinned:MyAdapter@binding1
-row	App@entry	App	main	default
-row	MyAdapter@binding1	MyAdapter	pinned:MyAdapter@binding1	binding
-
-== crates/hale-types/tests/check_rules.rs#4a17c976
-root	App	the entry
-row	App@entry	App	main	default
-
-== crates/hale-types/tests/check_rules.rs#71a0e1c0
-root	App	the entry
-row	App@entry	App	main	default
-
-== crates/hale-types/tests/check_rules.rs#f9040aae
-root	App	the entry
-row	App@entry	App	main	default
 
 == crates/hale-types/tests/check_rules.rs#e2b2a850
 row	L@main1	L	main	default
@@ -15060,15 +15051,6 @@ row	App@literal1	App	main	default
 row	~	Holder	pinned:~	entry	off owner
 row	~.roles	Roles	pinned:~	inherited
 shared	Roles@main1	Roles #d44c6e0e
-
-== crates/hale-types/tests/fixtures/placement/library_alone.hl
-root	Lib	the entry
-domain	pinned:Lib@entry.w
-row	Lib@entry	Lib	main	default
-row	Lib@entry.idle	K	main	default
--- Lib@entry.w	Worker
-row	~	Worker	pinned:~	entry	off owner
-row	~.k	K	pinned:~	inherited
 
 == crates/hale-types/tests/fixtures/placement/module_qualified.hl
 root	App	the entry
