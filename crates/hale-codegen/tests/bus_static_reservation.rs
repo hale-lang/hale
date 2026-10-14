@@ -1048,3 +1048,38 @@ fn trees_without_the_shapes_publishing_first_reserve_nothing() {
         assert!(!text.contains("@lotus_bus_reserve_begin") && !text.contains("@lotus_bus_reserve_claim"), "{tag} emitted a reservation");
     }
 }
+
+#[test]
+fn a_subscriber_outside_the_tree_hears_each_cell_once_beside_a_wildcard_reservation() {
+    // `Watcher` registers before the tree, outside it (its own root, built
+    // by `main`), with the same pattern as the tree's late `All`. The
+    // reservation for `All` is a placeholder beside `Watcher`'s own
+    // registration, never instead of it: each publish reaches `Watcher`
+    // directly, once, and `All` its copy, once.
+    let src = r#"
+        type Note { n: Int; }
+        locus Shouter {
+            params { x: Int = 0; }
+            bus { publish "rsv.live.**" of type Note; }
+            birth() { let a = "rsv.live.a"; let b = "rsv.live.b.c"; a <- Note { n: 1 }; b <- Note { n: 2 }; }
+        }
+        locus All {
+            params { x: Int = 0; }
+            bus { subscribe "rsv.live.**" as on_any of type Note; }
+            fn on_any(f: Note) { println("all " + to_string(f.n)); }
+        }
+        locus Watcher {
+            params { x: Int = 0; }
+            bus { subscribe "rsv.live.**" as on_any of type Note; }
+            fn on_any(f: Note) { println("watcher " + to_string(f.n)); }
+        }
+        main locus App {
+            params { s: Shouter = Shouter { }; a: All = All { }; }
+            run() { yield; std::time::sleep(20ms); }
+        }
+        fn main() { let w = Watcher { }; App { }; }
+    "#;
+    let (out, stderr) = run_env("outside_tree", src, false, &[("LOTUS_BUS_LOG_RESERVE", "1")]);
+    assert_eq!(out, ["all 1", "all 2", "watcher 1", "watcher 2"], "{stderr}");
+    assert!(stderr.contains("reservation `rsv.live.**` closed: parked 2 copied 2 forwarded 0 shed 0 claimants 1 missing 0"), "{stderr}");
+}

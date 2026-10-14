@@ -2194,6 +2194,13 @@ row	App@literal1.n	Narrow	main	default
 row	App@literal1.s	Shouter	main	default
 row	App@literal1.t	Teller	main	default
 
+== crates/hale-codegen/tests/bus_static_reservation.rs#2d4d44f6
+root	App	the entry
+row	App@literal1	App	main	default
+row	App@literal1.a	All	main	default
+row	App@literal1.s	Shouter	main	default
+row	Watcher@main1	Watcher	main	default
+
 == crates/hale-codegen/tests/bus_subscriber.rs#13a2a6c3
 row	Sub@main1	Sub	main	default
 
