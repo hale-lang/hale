@@ -16553,6 +16553,29 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         stmt: &Stmt,
         scope: &mut Scope<'ctx>,
     ) -> Result<BlockEnd, CodegenError> {
+        let r = self.lower_stmt_traced(stmt, scope);
+        // A place's value assigned into a part of a local (`h.f = <place>`,
+        // `xs[i] = <place>`) makes the part another name's again: its
+        // copy-on-write flag is cleared after the store
+        // (`crate::view_bindings`, the local-place rule).
+        if let (Ok(BlockEnd::Open), Stmt::Assign { target, id, .. }) = (&r, stmt) {
+            if !target.tail.is_empty() && target.head.name != "self" {
+                if let Some(fields) = self.owned_views.cow_bind(*id, &target.head.name) {
+                    let fields = fields.to_vec();
+                    if let Some((slot, _)) = scope.locals.get(&target.head.name).cloned() {
+                        self.set_cell_part_flags(slot, &fields, false)?;
+                    }
+                }
+            }
+        }
+        r
+    }
+
+    fn lower_stmt_traced(
+        &mut self,
+        stmt: &Stmt,
+        scope: &mut Scope<'ctx>,
+    ) -> Result<BlockEnd, CodegenError> {
         if self.di.is_none() {
             return self.lower_stmt_inner(stmt, scope);
         }

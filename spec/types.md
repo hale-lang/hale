@@ -254,8 +254,10 @@ a binding the fn hands back), its `String` and `Bytes` fields cloned,
 nested structs copied the same way, locus handles left as handles. The
 binding then follows nothing: replacing the source (`self.row = Row {
 }`) leaves `b` as it was read, and writing through the binding (`let
-mut c = self.row; c.n = 9;`) leaves the source untouched. A literal or
-a call result is fresh already and is bound as it is. A value read
+mut c = self.row; c.n = 9;`) leaves the source untouched. A literal is
+fresh already and is bound as it is; so is a call's result, unless the
+callee may hand back a place's value (§ A local bound from a place is
+yours). A value read
 from a form's cell (`m.get(k) or d`) is the reader's in the same way:
 writing into it never changes the cell, though the compiler keeps its
 nested parts shared with the cell until a write could show
@@ -283,9 +285,11 @@ replaces the place while they are live. So does a value carried out of
 a place by another expression: a `match` arm's payload (`let held =
 match self.e { E::A(s) -> s, E::B -> "", };`), an `if` or block
 result, a tuple, array or record literal holding it, an `or`
-substitute, an enum constructor holding it. (A fn's, a method's or a
-stdlib call's result is copied out of its frame and is the caller's
-own.) The compiler keeps these the
+substitute, an enum constructor holding it. (A stdlib call's result is
+built fresh, and a method's copied out of its locus into the caller's
+arena; a call that may hand back a part of an argument or a form cell's
+read is a place's value, § A local bound from a place is yours.) The
+compiler keeps these the
 place's own pointer where it can, which costs nothing: it binds an
 owned copy only when a write that may replace the place comes between
 the binding and a use of it (or is the call it is passed to; an
@@ -327,10 +331,18 @@ store into the field changed the local in place.
 Writing into a local bound from a place never changes the place, and
 writing into the place never changes the local (ruling of 2026-10-13).
 The local is any binding: a `let` or `let mut`, a bare `=`, a tuple
-`let`'s element, a `match` payload, a `for` element of an array; the
-place is a field (of `self`, a child, a record local, a parameter), an
-element, a local, a parameter, or a value carried out of one (a `match`
-or `if` result, a literal holding it). A write into it is an assignment
+`let`'s element, a `match` payload, a `for` element of an array, and a
+part of a local assigned from a place (`h.arr = r.arr;`, `xs[0] = m.get(k)
+or d;`); the place is a field (of `self`, a child, a record local, a
+parameter), an element, a local, a parameter, or a value carried out of
+one (a `match` or `if` result, a literal holding it, the result of a
+call that may hand it back). A call may hand back a place's value when
+its callee returns a part of a parameter (`fn get_in(r: R) -> In {
+return r.arr[0]; }` returns the caller's block uncopied), a form cell's
+read (`fn read() -> Rec { return self.m.get(1) or Rec { }; }`), or what
+a callee that does returns — transitively, by which parameter; a callee
+the compiler cannot identify may hand back anything. A result declared a
+primitive or a handle never is one. A write into it is an assignment
 at any depth (`a[0] = x`, `x.k = 1`, `b[i].inner.s = s`) or a call that
 may write through its parameter.
 

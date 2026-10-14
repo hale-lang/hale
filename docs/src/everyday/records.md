@@ -45,8 +45,10 @@ into the frame — its Strings and Bytes cloned, nested records copied,
 a locus handle inside it left as a handle — the way a returned record
 already was. Replace the field afterwards and `saved` still reads
 what it read; write through a `let mut copy` and the original is
-untouched. A literal or a call result is bound as it is, since it was
-already yours. Assignment is the same: `copy = saved` copies too, and
+untouched. A literal is bound as it is, since it was already yours, and
+so is a call's result — unless the function hands back a part of what
+you passed it (`fn first(r: Row) -> Cell { return r.cells[0]; }`), which
+is then a value read from a place like any other. Assignment is the same: `copy = saved` copies too, and
 a write through one local never shows up in another.
 
 The same holds for a `String`, `Bytes`, tuple or array you read out of
@@ -78,6 +80,10 @@ let mut scores = self.row.scores;
 scores[0] = 9;                 // self.row.scores is unchanged here
 self.row.scores = scores;      // and now it holds the write
 ```
+
+A part you assign into a local is the same: after `h.scores =
+self.row.scores;` the local holds the field's array, and the first write
+through `h.scores` copies it, so the field never sees it.
 
 That last shape — read a field, write the local, store it back whole,
 with nothing reading the field between — copies nothing at all: the

@@ -1033,3 +1033,26 @@ fn main() { println(scalar(twice)); let h = H { }; }
     assert_eq!(copies.len(), 1, "{ds:?}");
     assert!(copies[0].0 && copies[0].1.contains("passed to a call that may write"), "{ds:?}");
 }
+
+/// A primitive however it is carried out — an `if`, a `match`, a block,
+/// a tuple `let` of a literal or of a tuple field, a method of a known
+/// locus named like a form's op — is no copy (review of #1558, finding
+/// 3: each was refused at `let b = a` though lowering only moves an
+/// `i64`).
+#[test]
+fn an_inferred_primitive_is_no_hot_path_copy() {
+    let src = r#"
+type R { ok: Bool = true; n: Int = 0; pair: (Int, Int) = (1, 2); }
+locus L { params { v: Int = 3; } fn get() -> Int { return self.v; } }
+@hot fn f_if(cb: fn(Int) -> Int, r: R) -> Int { let a = if r.ok { 1 } else { 2 }; let b = a; return cb(b); }
+@hot fn f_match(cb: fn(Int) -> Int, r: R) -> Int { let a = match r.n { 0 -> 1, _ -> 2, }; let b = a; return cb(b); }
+@hot fn f_block(cb: fn(Int) -> Int, r: R) -> Int { let a = { r.n }; let b = a; return cb(b); }
+@hot fn f_tup(cb: fn(Int) -> Int) -> Int { let (a, c) = (1, 2); let b = a; return cb(b) + c; }
+@hot fn f_pair(cb: fn(Int) -> Int, r: R) -> Int { let (a, c) = r.pair; let b = a; return cb(b) + c; }
+@hot fn f_get(cb: fn(Int) -> Int, l: L) -> Int { let a = l.get(); let b = a; return cb(b); }
+fn twice(x: Int) -> Int { return x * 2; }
+fn main() { let r = R { }; let l = L { }; println(f_if(twice, r) + f_match(twice, r) + f_block(twice, r) + f_tup(twice) + f_pair(twice, r) + f_get(twice, l)); }
+"#;
+    let ds = all_diags(src);
+    assert!(!ds.iter().any(|(_, m)| m.contains("hot-path copy")), "{ds:?}");
+}

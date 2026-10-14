@@ -432,6 +432,9 @@ fn the_survey_and_lowering_agree_on_place_copies() {
         fn word() -> String { return std::str::upper("w"); }
         fn poke_arr(xs: [In; 2]) { xs[0].k = 8; }
         fn twice(x: Int) -> Int { return x * 2; }
+        type P { n: Int = 0; pair: (Int, Int) = (1, 2); arr: [In; 2] = [In { }, In { }]; }
+        fn arr_of(p: P) -> [In; 2] { return p.arr; }
+        locus L { params { v: Int = 3; } fn get() -> Int { return self.v; } }
         locus H {
             params { source: [In; 2] = [In { }, In { }]; }
             fn s_int(cb: fn(Int) -> Int) -> Int { let a = one(); let b = a; return cb(b); }
@@ -444,6 +447,14 @@ fn the_survey_and_lowering_agree_on_place_copies() {
             fn c_write() -> Int { let mut a = self.source; a[0].k = 4; return a[0].k; }
             fn c_passed() { let a = self.source; poke_arr(a); }
             fn c_literal() { let lit = R { arr: self.source }; poke_arr(lit.arr); }
+            fn s_if(cb: fn(Int) -> Int, ok: Bool) -> Int { let a = if ok { 1 } else { 2 }; let b = a; return cb(b); }
+            fn s_match(cb: fn(Int) -> Int, n: Int) -> Int { let a = match n { 0 -> 1, _ -> 2, }; let b = a; return cb(b); }
+            fn s_block(cb: fn(Int) -> Int, p: P) -> Int { let a = { p.n }; let b = a; return cb(b); }
+            fn s_tuple(cb: fn(Int) -> Int) -> Int { let (a, c) = (1, 2); let b = a; return cb(b) + c; }
+            fn s_pair(cb: fn(Int) -> Int, p: P) -> Int { let (a, c) = p.pair; let b = a; return cb(b) + c; }
+            fn s_method(cb: fn(Int) -> Int, l: L) -> Int { let a = l.get(); let b = a; return cb(b); }
+            fn c_assigned() { let mut h = R { }; h.arr = self.source; h.arr[0].k = 5; }
+            fn c_returned(p: P) { let mut a = arr_of(p); a[0].k = 5; }
             run { println(self.s_int(twice)); }
         }
         fn main() { let h = H { }; }
@@ -469,11 +480,149 @@ fn the_survey_and_lowering_agree_on_place_copies() {
         let deep = ["fn.ret.arr.alloc", "fn.ret.struct.alloc", "fn.ret.str.clone", "lotus_str_clone_cell_owned"];
         cow_blocks(b).len() + usize::from(deep.iter().any(|d| b.contains(d)))
     };
-    for f in ["s_int", "s_alias", "s_distinct", "s_duration", "s_decimal", "s_time", "s_string"] {
+    for f in [
+        "s_int", "s_alias", "s_distinct", "s_duration", "s_decimal", "s_time", "s_string", "s_if", "s_match", "s_block",
+        "s_tuple", "s_pair", "s_method",
+    ] {
         assert_eq!((reported(f), copies(f)), (0, 0), "{f}: a primitive copies nothing");
     }
-    for f in ["c_write", "c_passed", "c_literal"] {
+    for f in ["c_write", "c_passed", "c_literal", "c_assigned", "c_returned"] {
         let (r, c) = (reported(f), copies(f));
         assert!(r == 1 && c >= 1, "{f}: reported {r}, lowering copies {c}");
     }
+}
+
+const REVIEW_TYPES: &str = r#"
+type Inner { k: Int = 0; s: String = ""; }
+type In { k: Int = 0; s: String = ""; inner: Inner = Inner { }; }
+type R { arr: [In; 2] = [In { }, In { }]; }
+type Holder { arr: [In; 2] = [In { }, In { }]; }
+type Rec { id: Int = 0; inner: Inner = Inner { }; big: [Inner; 2] = [Inner { }, Inner { }]; }
+type Wrap { rec: Rec = Rec { }; }
+type W { big: [Inner; 2] = [Inner { }, Inner { }]; }
+@form(hashmap)
+locus M { capacity { pool cells of Rec indexed_by id; } }
+fn heap(s: String) -> String { return std::str::upper(s) + to_string(len(s)); }
+fn fresh() -> R {
+    return R { arr: [In { k: 1, s: heap("a0"), inner: Inner { k: 10, s: heap("i0") } }, In { k: 2, s: heap("a1") }] };
+}
+fn freshrec(id: Int) -> Rec {
+    return Rec { id: id, inner: Inner { k: 1, s: heap("in") }, big: [Inner { k: 2, s: heap("b0") }, Inner { k: 3 }] };
+}
+fn show(label: String, r: R) { println(label, ": a0=", r.arr[0].k, "/", r.arr[0].inner.k, " a1=", r.arr[1].k); }
+fn showc(label: String, m: M) { let c = m.get(1) or Rec { }; println(label, ": k=", c.inner.k, " s=", c.inner.s, " b0=", c.big[0].k); }
+fn poke_arr(a: [In; 2]) { a[0].k = 7; a[0].inner.k = 70; }
+"#;
+
+/// A place's or a cell's value assigned into a part of a local (review of
+/// #1558, finding 1): the local holds that block now, as a literal field
+/// init would, and a write through it — or handing the part to a writer —
+/// copies the part first.
+#[test]
+fn a_place_assigned_into_a_part_of_a_local_is_copied_at_its_write() {
+    let src = format!(
+        "{REVIEW_TYPES}
+        fn work(r: R) {{ let mut h = Holder {{ }}; h.arr = r.arr; h.arr[1].k = 99; }}
+        fn poke_w(r: Rec) {{ let mut h = W {{ }}; h.big = r.big; h.big[0].k = 7; }}
+        fn main() {{
+            let r = fresh();
+            let mut h = Holder {{ }};
+            h.arr = r.arr;
+            h.arr[0].k = 7;
+            h.arr[0].inner.k = 70;
+            println(\"local h=\", h.arr[0].k, \"/\", h.arr[0].inner.k);
+            show(\"field\", r);
+            let mut g = Holder {{ }};
+            g.arr = r.arr;
+            poke_arr(g.arr);
+            show(\"handed\", r);
+            work(r);
+            show(\"callee\", r);
+            let m = M {{ }};
+            m.set(freshrec(1));
+            let mut w = Wrap {{ }};
+            w.rec = m.get(1) or Rec {{ }};
+            w.rec.inner.k = 7;
+            w.rec.big[0].k = 8;
+            println(\"wrap=\", w.rec.inner.k, \"/\", w.rec.big[0].k);
+            showc(\"cell field\", m);
+            let mut xs = [Rec {{ }}, Rec {{ }}];
+            xs[0] = m.get(1) or Rec {{ }};
+            xs[0].inner.k = 7;
+            xs[0].big[0].k = 8;
+            showc(\"cell element\", m);
+            let c = m.get(1) or Rec {{ }};
+            poke_w(c);
+            showc(\"cell callee\", m);
+        }}"
+    );
+    let out = run("part_assign", &src);
+    assert!(out.contains("local h=7/70"), "{out}");
+    for label in ["field", "handed", "callee"] {
+        assert!(out.contains(&format!("{label}: a0=1/10 a1=2")), "{label}:\n{out}");
+    }
+    assert!(out.contains("wrap=7/8"), "{out}");
+    for label in ["cell field", "cell element", "cell callee"] {
+        assert!(out.contains(&format!("{label}: k=1 s=IN2 b0=2")), "{label}:\n{out}");
+    }
+}
+
+/// A call's result can be a place's value (review of #1558, finding 2): a
+/// fn returning a part of its parameter hands back the caller's block, and
+/// a locus method returning a cell's read hands back the cell's nested
+/// blocks. A local bound from such a result is a local bound from a place,
+/// copied at its first write.
+#[test]
+fn a_call_returning_a_place_hands_back_a_place_bound_local() {
+    let src = format!(
+        "{REVIEW_TYPES}
+        fn get_in(r: R) -> In {{ return r.arr[0]; }}
+        fn get_arr(r: R) -> [In; 2] {{ return r.arr; }}
+        fn part(r: Rec) -> [Inner; 2] {{ return r.big; }}
+        fn poke_part(r: Rec) {{ let mut a = part(r); a[0].k = 7; }}
+        locus H {{
+            params {{ m: M = M {{ }}; }}
+            fn read() -> Rec {{ return self.m.get(1) or Rec {{ }}; }}
+            run {{
+                self.m.set(freshrec(1));
+                let mut c = self.read();
+                c.inner.s = heap(\"zz\");
+                c.big[0].k = 9;
+                println(\"method c=\", c.inner.s, \"/\", c.big[0].k);
+                showc(\"method\", self.m);
+            }}
+        }}
+        fn main() {{
+            let r = fresh();
+            let mut x = get_in(r);
+            x.k = 7;
+            x.inner.k = 70;
+            println(\"x=\", x.k, \"/\", x.inner.k);
+            show(\"get_in\", r);
+            let mut a = get_arr(r);
+            a[0].k = 7;
+            show(\"get_arr\", r);
+            let m = M {{ }};
+            m.set(freshrec(1));
+            let c = m.get(1) or Rec {{ }};
+            let mut b = part(c);
+            b[0].k = 7;
+            showc(\"part bound\", m);
+            let mut d = part(m.get(1) or Rec {{ }});
+            d[0].k = 7;
+            showc(\"part inline\", m);
+            let e = m.get(1) or Rec {{ }};
+            poke_part(e);
+            showc(\"part writer\", m);
+            let h = H {{ }};
+        }}"
+    );
+    let out = run("call_result", &src);
+    assert!(out.contains("x=7/70"), "{out}");
+    assert!(out.contains("get_in: a0=1/10 a1=2") && out.contains("get_arr: a0=1/10 a1=2"), "{out}");
+    for label in ["part bound", "part inline", "part writer"] {
+        assert!(out.contains(&format!("{label}: k=1 s=IN2 b0=2")), "{label}:\n{out}");
+    }
+    assert!(out.contains("method c=ZZ2/9"), "{out}");
+    assert!(out.contains("method: k=1 s=IN2 b0=2"), "{out}");
 }

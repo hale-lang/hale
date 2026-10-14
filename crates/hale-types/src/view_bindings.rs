@@ -35,7 +35,10 @@
 //! - an enum constructor views its arguments and a form's read
 //!   (`self.v.get(i)`) its cell; any other call's result is copied out
 //!   of the callee's frame (a method's into the caller's arena, a
-//!   stdlib leaf's built fresh) and views nothing.
+//!   stdlib leaf's built fresh) and views nothing a write may replace —
+//!   though, for the local-place rule below, it may be a place's value
+//!   when its callee returns a part of a parameter or a cell's read
+//!   (`Summaries::ret_views`).
 //!
 //! A binding needs its own copy when some use of it comes after (or as
 //! an argument of) a write that may change one of its keys, and so
@@ -143,9 +146,21 @@
 //!   that is live across a write into that value in place (a slot of
 //!   the block it holds, or anything under it written by a call) is
 //!   bound as an owned copy;
+//! - a part of a local assigned from a place (`h.arr = r.arr`, `xs[0] =
+//!   m.get(k) or d`) binds the local anew: a part marker for the field
+//!   (an element: the whole local), cleared again after the store, so the
+//!   next write through it copies that part;
+//! - a call's result is a place's value when a callee may return a part
+//!   of a parameter (the argument handed there), a cell's read, or what
+//!   an unidentified callee returns (`Summaries::ret_views`, by parameter
+//!   position, transitively; a method on `self` or on a value of a known
+//!   locus type resolves to that locus's method, and a locus's own
+//!   storage is copied out on return);
 //! - a `@form(vec)`'s `.items` walk, a map's `.entries` and a walk of
-//!   `self.children` keep visiting in place, and a value that surely
-//!   holds a handle carries no marker.
+//!   `self.children` keep visiting in place, and a value known to be a
+//!   primitive (a literal, an operator's result, a declared or inferred
+//!   scalar return, an `if`, `match` or block carrying one out, a tuple
+//!   element of one) or a handle carries no marker.
 //!
 //! The copies are reported like the cell rule's, with `PLACE_*` reasons.
 
@@ -496,6 +511,18 @@ struct Bodies<'a> {
     /// a typed scalar is what its base is (a primitive, for the
     /// local-place rule: nothing writes into one).
     scalar_bases: BTreeMap<String, &'a TypeExpr>,
+    /// Each struct's declared fields, by every name the struct answers
+    /// to (a suffix shared by two structs merges them: a field then has
+    /// both declarations' types, and is classified by neither alone).
+    struct_fields: BTreeMap<String, Vec<(String, &'a TypeExpr)>>,
+    /// Each locus's methods by (the locus, by every name it answers to;
+    /// the method) → their bodies, and the locus each body is a member
+    /// of: a call on `self`, or on a value of a known locus type, names
+    /// that locus's method only.
+    locus_methods: BTreeMap<(String, String), Vec<usize>>,
+    body_locus: Vec<Option<String>>,
+    /// Each body's declared return type (`None`: none, or no fn).
+    body_ret: Vec<Option<&'a TypeExpr>>,
     int_scalars: BTreeSet<String>,
     /// Loci, interfaces and perspectives: a value of one of these is a
     /// handle, whose field reads view the locus's storage.
@@ -508,6 +535,9 @@ struct Bodies<'a> {
     /// body of which declares a primitive return (a typed scalar too).
     handle_fns: BTreeSet<String>,
     scalar_fns: BTreeSet<String>,
+    /// Fn and method names every body of which returns nothing, a
+    /// primitive or a handle: a result no write goes into.
+    plain_fns: BTreeSet<String>,
     /// Every field name a write names, numbered for `Writes`' bits.
     field_ids: std::cell::RefCell<BTreeMap<String, usize>>,
 }
@@ -625,6 +655,74 @@ impl<'a> Bodies<'a> {
         false
     }
 
+    /// The classes of a tuple type's elements, its aliases followed;
+    /// `None` for any other type.
+    fn tuple_elems(&self, ty: &TypeExpr) -> Option<Vec<Class>> {
+        let mut cur = ty;
+        for _ in 0..16 {
+            match cur {
+                TypeExpr::Projection { inner, .. } => cur = inner,
+                TypeExpr::Named { path, .. } => {
+                    let name = self.path_name(&path.segments)?;
+                    cur = self.aliases.get(&name)?;
+                }
+                TypeExpr::Tuple(es, ..) => return Some(es.iter().map(|e| self.classify(e)).collect()),
+                _ => return None,
+            }
+        }
+        None
+    }
+
+    /// The locus `ty` names, its aliases followed; `None` for any other
+    /// type.
+    fn named_locus(&self, ty: &TypeExpr) -> Option<String> {
+        let mut cur = ty;
+        for _ in 0..16 {
+            match cur {
+                TypeExpr::Projection { inner, .. } => cur = inner,
+                TypeExpr::Named { path, .. } => {
+                    let name = self.path_name(&path.segments)?;
+                    if let Some(next) = self.aliases.get(&name) {
+                        cur = next;
+                        continue;
+                    }
+                    return self.loci.contains(&name).then_some(name);
+                }
+                _ => return None,
+            }
+        }
+        None
+    }
+
+    /// The struct `ty` names, its aliases followed; `None` for any other
+    /// type.
+    fn named_struct(&self, ty: &TypeExpr) -> Option<String> {
+        let mut cur = ty;
+        for _ in 0..16 {
+            match cur {
+                TypeExpr::Projection { inner, .. } => cur = inner,
+                TypeExpr::Named { path, .. } => {
+                    let name = self.path_name(&path.segments)?;
+                    if let Some(next) = self.aliases.get(&name) {
+                        cur = next;
+                        continue;
+                    }
+                    return self.structs.contains(&name).then_some(name);
+                }
+                _ => return None,
+            }
+        }
+        None
+    }
+
+    /// The class of the field `field` of the struct `st` (every
+    /// declaration the name answers to agreeing), or `None`.
+    fn struct_field_class(&self, st: &str, field: &str) -> Option<Class> {
+        let classes: Vec<Class> =
+            self.struct_fields.get(st)?.iter().filter(|(f, _)| f == field).map(|(_, t)| self.classify(t)).collect();
+        classes.first().copied().filter(|c| classes.iter().all(|x| x == c))
+    }
+
     /// A declared name's class (aliases already followed).
     fn classify_name(&self, name: &str) -> Class {
         if self.form_loci.contains(name) {
@@ -647,6 +745,27 @@ impl<'a> Bodies<'a> {
 
     /// The class a literal or constructor path names, its aliases
     /// followed.
+    /// The struct a literal's or constructor's path names, its aliases
+    /// followed.
+    fn struct_of_path(&self, path: &QualifiedName) -> Option<String> {
+        let name = self.path_name(&path.segments)?;
+        match self.aliases.get(&name) {
+            Some(t) => self.named_struct(t),
+            None => self.structs.contains(&name).then_some(name),
+        }
+    }
+
+    /// Is the field `field` of the struct `st` surely a primitive or a
+    /// handle (nothing a write into the struct's field path could reach
+    /// through it)?
+    fn plain_field(&self, st: Option<&str>, field: &str) -> bool {
+        let class = st.and_then(|st| self.struct_field_class(st, field));
+        match class {
+            Some(c) => matches!(c, Class::Scalar | Class::Handle | Class::Form(_)),
+            None => self.scalar_fields.contains(field) || self.handle_fields.contains(field),
+        }
+    }
+
     fn classify_path(&self, path: &QualifiedName) -> Class {
         let Some(name) = self.path_name(&path.segments) else { return Class::Unknown };
         match self.aliases.get(&name) {
@@ -811,6 +930,8 @@ fn collect<'a>(items: &'a [TopDecl], p: &mut Bodies<'a>) {
                     p.fns.entry(n.clone()).or_default().push(p.bodies.len());
                     p.returns.push((n, f.ret.as_ref()));
                 }
+                p.body_ret.resize(p.bodies.len(), None);
+                p.body_ret.push(f.ret.as_ref());
                 p.bodies.push((&f.params, &f.body));
             }
             TopDecl::Interface(i) => {
@@ -839,10 +960,21 @@ fn collect<'a>(items: &'a [TopDecl], p: &mut Bodies<'a>) {
                     match m {
                         LocusMember::Fn(f) => {
                             p.methods.entry(f.name.name.clone()).or_default().push(p.bodies.len());
+                            for n in decl_names(&l.name.name) {
+                                p.locus_methods.entry((n, f.name.name.clone())).or_default().push(p.bodies.len());
+                            }
+                            p.body_locus.resize(p.bodies.len(), None);
+                            p.body_locus.push(Some(l.name.name.clone()));
+                            p.body_ret.resize(p.bodies.len(), None);
+                            p.body_ret.push(f.ret.as_ref());
                             p.bodies.push((&f.params, &f.body));
                             p.returns.push((f.name.name.clone(), f.ret.as_ref()));
                         }
-                        LocusMember::Lifecycle(d) => p.bodies.push((&d.params, &d.body)),
+                        LocusMember::Lifecycle(d) => {
+                            p.body_locus.resize(p.bodies.len(), None);
+                            p.body_locus.push(Some(l.name.name.clone()));
+                            p.bodies.push((&d.params, &d.body))
+                        }
                         LocusMember::Mode(d) => p.bodies.push((&d.params, &d.body)),
                         LocusMember::Failure(d) => p.bodies.push((&d.params, &d.body)),
                         LocusMember::Params(pb) => {
@@ -885,6 +1017,12 @@ fn collect<'a>(items: &'a [TopDecl], p: &mut Bodies<'a>) {
                         // `x.name(..)` may run as a value, like a locus's.
                         for f in fields {
                             p.field_types.push((f.name.name.clone(), Some(&f.ty)));
+                        }
+                        for n in decl_names(&td.name.name) {
+                            p.struct_fields
+                                .entry(n)
+                                .or_default()
+                                .extend(fields.iter().map(|f| (f.name.name.clone(), &f.ty)));
                         }
                     }
                     TypeDeclBody::Scalar(sd) => {
@@ -943,6 +1081,11 @@ struct Summaries {
     /// bound from a parameter is not the parameter (it is copied at its
     /// first write, the local-place rule), so it writes none.
     param_masks: Vec<u64>,
+    /// Per body, whether what it returns may be (or hold) a block a
+    /// caller's name reaches: a parameter's part, a self field's, a form
+    /// cell's, or what a callee that does returns. A call of one hands
+    /// back a place's value, not a fresh one.
+    ret_views: Vec<RetView>,
 }
 
 fn analyze(programs: &[&Program], renames: &BTreeMap<Vec<String>, String>) -> Found {
@@ -973,11 +1116,16 @@ fn analyze(programs: &[&Program], renames: &BTreeMap<Vec<String>, String>) -> Fo
         inline_fields: BTreeSet::new(),
         scalar_decls: Vec::new(),
         scalar_bases: BTreeMap::new(),
+        struct_fields: BTreeMap::new(),
+        locus_methods: BTreeMap::new(),
+        body_locus: Vec::new(),
+        body_ret: Vec::new(),
         int_scalars: BTreeSet::new(),
         loci: BTreeSet::new(),
         returns: Vec::new(),
         handle_fns: BTreeSet::new(),
         scalar_fns: BTreeSet::new(),
+        plain_fns: BTreeSet::new(),
         field_ids: std::cell::RefCell::new(BTreeMap::new()),
     };
     for (i, program) in programs.iter().enumerate() {
@@ -1006,6 +1154,13 @@ fn analyze(programs: &[&Program], renames: &BTreeMap<Vec<String>, String>) -> Fo
         p.returns.iter().filter(|(_, r)| !r.is_some_and(|t| p.classify(t) == Class::Scalar)).map(|(n, _)| n).collect();
     p.scalar_fns =
         p.returns.iter().filter(|(n, _)| !not_scalar_fn.contains(n)).map(|(n, _)| n.clone()).collect();
+    let not_plain_fn: BTreeSet<&String> = p
+        .returns
+        .iter()
+        .filter(|(_, r)| r.is_some_and(|t| !matches!(p.classify(t), Class::Scalar | Class::Handle | Class::Form(_))))
+        .map(|(n, _)| n)
+        .collect();
+    p.plain_fns = p.returns.iter().filter(|(n, _)| !not_plain_fn.contains(n)).map(|(n, _)| n.clone()).collect();
     p.fn_fields = classes.iter().filter(|(_, c)| c.may_be_fn()).map(|(f, _)| f.clone()).collect();
     p.form_fields = classes.iter().filter(|(_, c)| c.is_form() || *c == Class::Unknown).map(|(f, _)| f.clone()).collect();
     p.view_form_fields = classes.iter().filter(|(_, c)| c.may_be_view_form()).map(|(f, _)| f.clone()).collect();
@@ -1041,11 +1196,21 @@ fn analyze(programs: &[&Program], renames: &BTreeMap<Vec<String>, String>) -> Fo
         param_callees: BTreeSet<Callee>,
         param_mask: u64,
         param_passes: Vec<(Callee, usize, usize)>,
+        ret_src: Src,
+        ret_marks: BTreeMap<String, (Vec<usize>, Vec<Src>)>,
     }
     let mut direct: Vec<Direct> = Vec::with_capacity(p.bodies.len());
-    for (params, body) in &p.bodies {
+    p.body_locus.resize(p.bodies.len(), None);
+    p.body_ret.resize(p.bodies.len(), None);
+    for (b, (params, body)) in p.bodies.iter().enumerate() {
         let mut w = Walk::new(&p, None, params);
-        w.block(body);
+        w.cur_locus = p.body_locus[b].clone();
+        let tail = w.block(body);
+        if let Some(t) = &body.tail {
+            w.note_return(t, tail);
+        }
+        let ret_src = w.result_views();
+        let ret_marks = std::mem::take(&mut w.ret_marks);
         direct.push(Direct {
             writes: w.own,
             callees: w.callees,
@@ -1054,6 +1219,8 @@ fn analyze(programs: &[&Program], renames: &BTreeMap<Vec<String>, String>) -> Fo
             param_callees: w.param_callees,
             param_mask: w.param_mask,
             param_passes: w.param_passes,
+            ret_src,
+            ret_marks,
         });
     }
     // Each body's callees, resolved once (a method name to every body
@@ -1069,11 +1236,12 @@ fn analyze(programs: &[&Program], renames: &BTreeMap<Vec<String>, String>) -> Fo
     let mut reads: Vec<bool> = direct.iter().map(|d| d.reads).collect();
     let mut writes_params: Vec<bool> = direct.iter().map(|d| d.writes_params).collect();
     let mut param_masks: Vec<u64> = direct.iter().map(|d| d.param_mask).collect();
+    let mut ret_views: Vec<RetView> = vec![RetView::default(); direct.len()];
     let param_passes: Vec<Vec<(Vec<usize>, usize, usize)>> = direct
         .iter()
         .map(|d| d.param_passes.iter().map(|(c, k, m)| (p.resolve(c), *k, *m)).collect())
         .collect();
-    let mut summary: Vec<Writes> = direct.into_iter().map(|d| d.writes).collect();
+    let mut summary: Vec<Writes> = direct.iter().map(|d| d.writes.clone()).collect();
     loop {
         let mut changed = false;
         for i in 0..summary.len() {
@@ -1083,6 +1251,11 @@ fn analyze(programs: &[&Program], renames: &BTreeMap<Vec<String>, String>) -> Fo
             }
             if !writes_params[i] && param_edges[i].iter().any(|&j| writes_params[j]) {
                 writes_params[i] = true;
+                changed = true;
+            }
+            let next = eval_src(&direct[i].ret_src, &direct[i].ret_marks, &ret_views, 0);
+            if next != ret_views[i] {
+                ret_views[i] = RetView { params: ret_views[i].params | next.params, other: ret_views[i].other || next.other };
                 changed = true;
             }
             for (bodies, k, m) in &param_passes[i] {
@@ -1113,16 +1286,47 @@ fn analyze(programs: &[&Program], renames: &BTreeMap<Vec<String>, String>) -> Fo
             break;
         }
     }
-    let summaries = Summaries { writes: summary, reads, writes_params, param_masks };
+    let summaries = Summaries { writes: summary, reads, writes_params, param_masks, ret_views };
 
     let mut out = Found::default();
     for (b, (params, body)) in p.bodies.iter().enumerate() {
         let mut w = Walk::new(&p, Some(&summaries), params);
+        w.cur_locus = p.body_locus[b].clone();
         w.block(body);
         let before = out.cell_copies.len();
         w.finish(&mut out);
         for c in &mut out.cell_copies[before..] {
             c.program = p.body_program[b];
+        }
+    }
+    out
+}
+
+/// What `src` may be, over the callees' current summaries: its own
+/// parameter bits and other, and for each call it may be the result of,
+/// what that call's callees return — a parameter of theirs read as the
+/// argument it was handed there.
+fn eval_src(src: &Src, marks: &BTreeMap<String, (Vec<usize>, Vec<Src>)>, views: &[RetView], depth: usize) -> RetView {
+    let mut out = RetView { params: src.params, other: src.other };
+    if depth > 8 {
+        out.other |= !src.calls.is_empty();
+        return out;
+    }
+    for mark in &src.calls {
+        let Some((bodies, args)) = marks.get(mark) else {
+            out.other = true;
+            continue;
+        };
+        for &j in bodies {
+            let rv = views[j];
+            out.other |= rv.other;
+            for (k, arg) in args.iter().enumerate() {
+                if rv.params & param_bit(k) != 0 {
+                    let a = eval_src(arg, marks, views, depth + 1);
+                    out.params |= a.params;
+                    out.other |= a.other;
+                }
+            }
         }
     }
     out
@@ -1207,8 +1411,33 @@ fn part_markers(keys: &BTreeSet<String>) -> impl Iterator<Item = (&str, &str)> {
 }
 
 
+/// Where a value may come from, for a body's return summary: which of
+/// the body's parameters it may be (a part of), whether it may be
+/// anything else a caller's name reaches (a self field's, a cell's, a
+/// handle's field), and which calls' results it may be (by their result
+/// markers, resolved against the callees' summaries).
+#[derive(Debug, Clone, Default, PartialEq)]
+struct Src {
+    params: u64,
+    other: bool,
+    calls: BTreeSet<String>,
+}
+
+/// What a body's result may be (`Summaries::ret_views`): a part of the
+/// parameters by these bits, or something else of the caller's.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+struct RetView {
+    params: u64,
+    other: bool,
+}
+
+/// The marker key of a call's result, on the summary pass: which
+/// callee it came from, so a body that returns it returns what that
+/// callee does (`Summaries::ret_views`). Followed by the callee.
+const RET: &str = "\u{1}ret\u{1}";
+
 fn is_place_marker(k: &str) -> bool {
-    k.starts_with(AT) || k.starts_with(PART)
+    k.starts_with(AT) || k.starts_with(PART) || k.starts_with(RET)
 }
 
 /// A struct literal's keys with its place markers turned into part
@@ -1438,6 +1667,10 @@ struct Walk<'p, 'a> {
     /// enum read from a place (a field every declaration of which holds
     /// one, or a local that does).
     compound_hint: Vec<bool>,
+    /// Per variable, the struct it is known to hold (a literal's, a
+    /// declared type's, a parameter's); and such parameters.
+    var_struct: Vec<Option<String>>,
+    param_structs: BTreeMap<String, String>,
     handle_only_params: BTreeSet<String>,
     record_params: BTreeSet<String>,
     /// Locals handed to a call that may write through its parameter,
@@ -1461,6 +1694,17 @@ struct Walk<'p, 'a> {
     param_passes: Vec<(Callee, usize, usize)>,
     /// Each parameter's position.
     param_index: BTreeMap<String, usize>,
+    /// On the summary pass: what each `return` (and the body's tail)
+    /// hands back — its keys and the local it names — and the callee
+    /// each result marker stands for.
+    returns: Vec<(Keys, Option<usize>)>,
+    ret_marks: BTreeMap<String, (Vec<usize>, Vec<Src>)>,
+    /// The locus this body is a member of, and the parameters of a known
+    /// locus type: a method call on `self` or on one of those resolves
+    /// to that locus's method alone (for what its result may be).
+    cur_locus: Option<String>,
+    param_loci: BTreeMap<String, String>,
+    var_locus: Vec<Option<String>>,
 }
 
 fn pattern_names<'e>(p: &'e Pattern, out: &mut Vec<&'e Ident>) {
@@ -1546,6 +1790,11 @@ impl<'p, 'a> Walk<'p, 'a> {
             scalar_hint: Vec::new(),
             scalar_params,
             compound_hint: Vec::new(),
+            var_struct: Vec::new(),
+            param_structs: params
+                .iter()
+                .filter_map(|prm| p.named_struct(&prm.ty).map(|s| (prm.name.name.clone(), s)))
+                .collect(),
             handle_only_params,
             record_params,
             place_passed: Vec::new(),
@@ -1556,6 +1805,14 @@ impl<'p, 'a> Walk<'p, 'a> {
             param_mask: 0,
             param_passes: Vec::new(),
             param_index: params.iter().enumerate().map(|(i, prm)| (prm.name.name.clone(), i)).collect(),
+            returns: Vec::new(),
+            ret_marks: BTreeMap::new(),
+            cur_locus: None,
+            var_locus: Vec::new(),
+            param_loci: params
+                .iter()
+                .filter_map(|prm| p.named_locus(&prm.ty).map(|l| (prm.name.name.clone(), l)))
+                .collect(),
         }
     }
 
@@ -1585,6 +1842,8 @@ impl<'p, 'a> Walk<'p, 'a> {
         self.handle_only.push(false);
         self.scalar_hint.push(false);
         self.compound_hint.push(false);
+        self.var_struct.push(None);
+        self.var_locus.push(None);
         self.scopes.last_mut().expect("a scope").insert(name.to_string(), Some(v));
         v
     }
@@ -1665,7 +1924,8 @@ impl<'p, 'a> Walk<'p, 'a> {
     /// hold a place's value (a field, an element, a local, a parameter,
     /// or a value that carries one out). Any other value's keys as given.
     fn struct_literal_keys(&self, value: &Expr, keys: Keys) -> Keys {
-        let Expr::Struct { inits, .. } = value else { return keys };
+        let Expr::Struct { inits, path, .. } = value else { return keys };
+        let st = self.p.struct_of_path(path);
         // Every place the literal as a whole may hold: what an init the
         // pass cannot read without walking may hold.
         let whole: Vec<String> = keys
@@ -1688,18 +1948,190 @@ impl<'p, 'a> Walk<'p, 'a> {
         let parts: Vec<(String, Vec<String>)> = inits
             .iter()
             .map(|i| {
-                let plain = self.p.scalar_fields.contains(&i.name.name) || self.p.handle_fields.contains(&i.name.name);
+                let plain = self.p.plain_field(st.as_deref(), &i.name.name);
                 let places = match &i.value {
                     _ if plain => Vec::new(),
                     Expr::Ident(_) | Expr::Field { .. } | Expr::Index { .. } => places_of(&self.part_keys(&i.value)),
                     Expr::Literal(..) | Expr::Binary { .. } | Expr::Unary { .. } | Expr::Range { .. } => Vec::new(),
-                    Expr::Call { callee, .. } if !matches!(callee.as_ref(), Expr::Path(q) if self.p.is_ctor(q)) => Vec::new(),
+                    // A call's result is fresh unless the call may hand back a
+                    // place's value (`?ret`): then whatever the literal holds.
+                    Expr::Call { callee, .. } if !matches!(callee.as_ref(), Expr::Path(q) if self.p.is_ctor(q)) => {
+                        if whole.iter().any(|q| q == "?ret") {
+                            whole.clone()
+                        } else {
+                            Vec::new()
+                        }
+                    }
                     _ => whole.clone(),
                 };
                 (i.name.name.clone(), places)
             })
             .collect();
         literal_part_markers(keys, &parts)
+    }
+
+    /// The bodies a call of `c` may run, its receiver read: `self`'s
+    /// locus's method, or a known locus type's, when the receiver says
+    /// which; every body of the name otherwise.
+    fn callee_bodies(&self, c: &Callee, receiver: Option<&Expr>) -> Vec<usize> {
+        if let Callee::Method(m) = c {
+            let locus = match receiver {
+                Some(Expr::KwSelf(_)) => self.cur_locus.clone(),
+                Some(Expr::Ident(id)) => match self.lookup(&id.name) {
+                    Some(None) => self.param_loci.get(&id.name).cloned(),
+                    Some(Some(v)) => self.var_locus[v].clone(),
+                    None => None,
+                },
+                _ => None,
+            };
+            if let Some(bodies) = locus.and_then(|l| self.p.locus_methods.get(&(l, m.clone()))) {
+                return bodies.clone();
+            }
+        }
+        self.p.resolve(c)
+    }
+
+    /// What a `return` (or the body's tail) hands back, for the summary.
+    fn note_return(&mut self, e: &Expr, keys: Keys) {
+        if self.summary.is_some() {
+            return;
+        }
+        // A literal is fresh: only its parts' place markers can reach a
+        // caller's block (its real keys name fields read for a primitive
+        // or handle part, which its part markers leave out).
+        let keys = if let Expr::Struct { .. } = e {
+            self.struct_literal_keys(e, keys).map(|ks| ks.into_iter().filter(|k| is_place_marker(k)).collect())
+        } else {
+            keys
+        };
+        let local = match e {
+            Expr::Ident(id) => match self.lookup(&id.name) {
+                Some(Some(v)) => Some(v),
+                _ => None,
+            },
+            _ => None,
+        };
+        self.returns.push((keys, local));
+    }
+
+    /// May what this body returns be a block a caller's name reaches,
+    /// and which callees' results does it return? A local returned is
+    /// judged by its instances: one copied at its binding (a struct `let`
+    /// of a place) or a primitive returns nothing of the caller's; a
+    /// local's own place (`@n`) is the frame's.
+    fn result_views(&self) -> Src {
+        let mut record = self.record_hint.clone();
+        for w in &self.assigns {
+            if w.first.as_ref().is_some_and(|f| !f.chars().all(|c| c.is_ascii_digit())) {
+                record[w.var] = true;
+            }
+        }
+        let mut out = Src::default();
+        for (keys, local) in &self.returns {
+            match local {
+                Some(v) => {
+                    if self.scalar_hint[*v] {
+                        continue;
+                    }
+                    for &i in &self.vars[*v] {
+                        let inst = &self.insts[i];
+                        if record[*v] && inst.place_rhs {
+                            continue;
+                        }
+                        self.src_of(&inst.keys, inst.place_parts.is_some(), &mut out);
+                    }
+                }
+                None => {
+                    if let Some(ks) = keys {
+                        self.src_of(ks, false, &mut out);
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// Where a value with these keys may come from (`Src`); `literal`, a
+    /// fresh literal's: only its markers count. A local's own place
+    /// (`@n`) is the frame's (its sources are among the keys already). A
+    /// locus's storage (`self`'s fields, a handle's) is copied into the
+    /// caller's arena on the way out, so it is none of the caller's; a
+    /// form cell's nested blocks are not (a read leaves them shared), nor
+    /// is what an unidentified call returned.
+    fn src_of(&self, ks: &BTreeSet<String>, literal: bool, out: &mut Src) {
+        let place = |p: &str, out: &mut Src| {
+            if let Some(rest) = p.strip_prefix('$') {
+                let name = rest.split('.').next().unwrap_or("");
+                match self.param_index.get(name) {
+                    Some(&i) => out.params |= param_bit(i),
+                    None => out.other = true,
+                }
+            } else if p.starts_with('?') {
+                out.other = true;
+            }
+        };
+        for k in ks {
+            if literal && !is_place_marker(k) {
+                continue;
+            }
+            if k.starts_with(RET) {
+                out.calls.insert(k.clone());
+            } else if let Some(p) = k.strip_prefix(AT) {
+                place(p, out);
+            } else if let Some(r) = k.strip_prefix(PART) {
+                place(r.split(KEY_SEP).nth(1).unwrap_or("?"), out);
+            } else if k.starts_with(CELL) || k.starts_with(IN_CELL) {
+                out.other = true;
+            }
+        }
+    }
+
+    /// `v.f.. = value` / `v[i].. = value`: when `value` may hold another
+    /// name's block (a place marker, a part marker's place, a cell read),
+    /// a new instance of `v` binds it — a part marker for the first field
+    /// of the path, or a whole marker when the path starts with an index.
+    /// Owning it copies `value` where the assignment evaluates it.
+    fn bind_assigned_part(&mut self, v: usize, target: &LValue, value: &Expr, keys: &Keys, id: u32, span: Span) {
+        if self.known_scalar(None, value) || self.surely_handle(None, value) {
+            return;
+        }
+        if let Some(LValueSeg::Field(f)) = target.tail.first() {
+            if target.tail.len() == 1 && self.p.plain_field(self.var_struct[v].as_deref(), &f.name) {
+                return;
+            }
+        }
+        let Some(ks) = keys else { return };
+        let mut places: Vec<String> = ks
+            .iter()
+            .filter_map(|k| {
+                if let Some(p) = k.strip_prefix(AT) {
+                    Some(p.to_string())
+                } else if let Some(r) = k.strip_prefix(PART) {
+                    Some(r.split(KEY_SEP).nth(1).unwrap_or("?").to_string())
+                } else if k.starts_with(CELL) || k.starts_with(IN_CELL) {
+                    Some("?".to_string())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        places.sort();
+        places.dedup();
+        if places.is_empty() {
+            return;
+        }
+        if self.rooted_at_param(value) {
+            self.from_param[v] = true;
+        }
+        let markers: BTreeSet<String> = match target.tail.first() {
+            Some(LValueSeg::Field(f)) => places.iter().map(|q| format!("{PART}{}{KEY_SEP}{q}", f.name)).collect(),
+            _ => places.iter().map(|q| format!("{AT}{q}")).collect(),
+        };
+        let all = markers;
+        let vspan = value.span();
+        let parts = (None, Some(vec![Site::Part(vspan.start.0, vspan.end.0)]));
+        let name = self.names[v].clone();
+        self.bind_parts(v, Site::Node(id), &name, Some(all), parts, span, true, false);
     }
 
     /// The field right below the local an argument is read from
@@ -1783,6 +2215,18 @@ impl<'p, 'a> Walk<'p, 'a> {
                 Some(None) => self.scalar_params.contains(&id.name),
                 None => false,
             },
+            // What an `if`, a `match` or a block carries out: a primitive
+            // when every way out is one (an arm's payload names are out
+            // of scope here, so an arm reading one is not known).
+            Expr::If(i) => self.if_scalar(i),
+            Expr::Block(b) => self.block_scalar(b),
+            Expr::Match(m) => {
+                !m.arms.is_empty()
+                    && m.arms.iter().all(|a| match &a.body {
+                        MatchArmBody::Expr(x) => self.known_scalar(None, x),
+                        MatchArmBody::Block(b) => self.block_scalar(b),
+                    })
+            }
             _ => false,
         }
     }
@@ -1821,10 +2265,69 @@ impl<'p, 'a> Walk<'p, 'a> {
                 );
             }
         }
+        // A method on `self` or on a value of a known locus type is that
+        // locus's, whatever a form's synthesized method of the name does.
+        if let Expr::Field { receiver, name, .. } = callee {
+            let c = Callee::Method(name.name.clone());
+            let bodies = self.callee_bodies(&c, Some(receiver));
+            let resolved = match receiver.as_ref() {
+                Expr::KwSelf(_) => self.cur_locus.is_some(),
+                Expr::Ident(id) => match self.lookup(&id.name) {
+                    Some(None) => self.param_loci.contains_key(&id.name),
+                    Some(Some(v)) => self.var_locus[v].is_some(),
+                    None => false,
+                },
+                _ => false,
+            };
+            if resolved && !bodies.is_empty() {
+                return bodies
+                    .iter()
+                    .all(|&j| self.p.body_ret.get(j).copied().flatten().is_some_and(|t| self.p.classify(t) == Class::Scalar));
+            }
+        }
         match self.p.target(callee, self.on_form(callee)) {
             Target::Fn(n) | Target::Method(n) => self.p.scalar_fns.contains(&n),
             _ => false,
         }
+    }
+
+    /// The element classes of a tuple-typed value: a field's declared
+    /// type (its struct's when the receiver's struct is known, else every
+    /// declaration of the name agreeing), a call's declared return.
+    fn tuple_classes(&self, value: &Expr) -> Option<Vec<Class>> {
+        match value {
+            Expr::Field { receiver, name, .. } => {
+                let st = match receiver.as_ref() {
+                    Expr::Ident(id) => match self.lookup(&id.name) {
+                        Some(Some(v)) => self.var_struct[v].clone(),
+                        Some(None) => self.param_structs.get(&id.name).cloned(),
+                        None => None,
+                    },
+                    _ => None,
+                };
+                let tys: Vec<&TypeExpr> = match st.as_ref().and_then(|st| self.p.struct_fields.get(st)) {
+                    Some(fields) => fields.iter().filter(|(f, _)| *f == name.name).map(|(_, t)| *t).collect(),
+                    None => self.p.field_types.iter().filter(|(f, _)| *f == name.name).filter_map(|(_, t)| *t).collect(),
+                };
+                let all: Vec<Vec<Class>> = tys.iter().filter_map(|t| self.p.tuple_elems(t)).collect();
+                (all.len() == tys.len() && !all.is_empty() && all.iter().all(|c| *c == all[0])).then(|| all[0].clone())
+            }
+            _ => None,
+        }
+    }
+
+    /// Is a block's value (its tail) surely a primitive?
+    fn block_scalar(&self, b: &Block) -> bool {
+        b.tail.as_ref().is_some_and(|t| self.known_scalar(None, t))
+    }
+
+    fn if_scalar(&self, i: &IfStmt) -> bool {
+        self.block_scalar(&i.then_block)
+            && match i.else_block.as_deref() {
+                Some(ElseBranch::Else(b)) => self.block_scalar(b),
+                Some(ElseBranch::ElseIf(e)) => self.if_scalar(e),
+                None => false,
+            }
     }
 
     /// Is `value`, bound to a fresh local, known to be a struct (its
@@ -2151,6 +2654,21 @@ impl<'p, 'a> Walk<'p, 'a> {
                 let scalar = self.known_scalar(ty.as_ref(), value);
                 let place_rhs = matches!(value, Expr::Ident(_) | Expr::Field { .. } | Expr::Index { .. });
                 let from_param = self.rooted_at_param(value);
+                let locus_name = match (ty, value) {
+                    (Some(t), _) => self.p.named_locus(t),
+                    (None, Expr::Struct { path, .. }) => self.p.path_name(&path.segments).filter(|n| self.p.loci.contains(n)),
+                    _ => None,
+                };
+                let struct_name = match (ty, value) {
+                    (Some(t), _) => self.p.named_struct(t),
+                    (None, Expr::Struct { path, .. }) => self.p.struct_of_path(path),
+                    (None, Expr::Ident(id)) => match self.lookup(&id.name) {
+                        Some(Some(u)) => self.var_struct[u].clone(),
+                        Some(None) => self.param_structs.get(&id.name).cloned(),
+                        None => None,
+                    },
+                    _ => None,
+                };
                 let compound = match value {
                     Expr::Field { name, .. } => self.p.compound_fields.contains(&name.name),
                     Expr::Ident(id) => matches!(self.lookup(&id.name), Some(Some(u)) if self.compound_hint[u]),
@@ -2171,15 +2689,30 @@ impl<'p, 'a> Walk<'p, 'a> {
                 self.record_hint[v] = record;
                 self.scalar_hint[v] = scalar;
                 self.compound_hint[v] = compound;
+                self.var_struct[v] = struct_name;
+                self.var_locus[v] = locus_name;
                 self.bind_parts(v, Site::Node(id.0), &name.name, keys, parts, *span, true, place_rhs);
             }
             Stmt::LetTuple { names, value, id, span, .. } => {
                 let keys = in_cell(self.expr(value));
                 let from_param = self.rooted_at_param(value);
-                for n in names {
+                // Each element known to be a primitive carries no place
+                // marker: a literal's element by its own value, a field's
+                // by the tuple type it is declared as.
+                let scalars: Vec<bool> = match value {
+                    Expr::Tuple(es, _) => es.iter().map(|e| self.known_scalar(None, e)).collect(),
+                    _ => {
+                        let classes = self.tuple_classes(value);
+                        (0..names.len()).map(|i| classes.as_ref().is_some_and(|c| c.get(i) == Some(&Class::Scalar))).collect()
+                    }
+                };
+                for (i, n) in names.iter().enumerate() {
                     let v = self.declare(&n.name);
                     self.from_param[v] = from_param;
-                    self.bind(v, Site::Node(id.0), &n.name, keys.clone(), *span);
+                    let scalar = scalars.get(i).copied().unwrap_or(false);
+                    self.scalar_hint[v] = scalar;
+                    let k = if scalar { real(&keys) } else { keys.clone() };
+                    self.bind(v, Site::Node(id.0), &n.name, k, *span);
                 }
             }
             Stmt::Assign { target, value, id, span, .. } => {
@@ -2279,6 +2812,15 @@ impl<'p, 'a> Walk<'p, 'a> {
                         }
                         _ => {}
                     }
+                    // A place's (or a cell's) value assigned into a part of
+                    // a local: the local holds that block now, as a literal
+                    // field init would. The assignment binds the part anew
+                    // (its flag cleared after the store): a field path marks
+                    // the field (`h.f = r.arr` → a part marker), an element
+                    // the whole local (`xs[0] = <cell read>`).
+                    if let Some(Some(v)) = head {
+                        self.bind_assigned_part(v, target, value, &keys, id.0, *span);
+                    }
                     // `self.f.. = v`, a local stored whole into a self
                     // field: what a get-modify-store sets back.
                     let fields: Option<Vec<&str>> = target
@@ -2343,7 +2885,8 @@ impl<'p, 'a> Walk<'p, 'a> {
             }),
             Stmt::Return(e, _) => {
                 if let Some(e) = e {
-                    self.expr(e);
+                    let keys = self.expr(e);
+                    self.note_return(e, keys);
                 }
                 self.exit(false);
             }
@@ -2646,6 +3189,7 @@ impl<'p, 'a> Walk<'p, 'a> {
         }
         // What a form's method hands back is a cell's read or a fresh
         // value, never the receiver's own block: no place marker.
+        let operand_keys: Keys = keys.iter().cloned().fold(None, union);
         let recv_keys = if receiver.is_some() { real(&keys.remove(0)) } else { None };
         let mut result: Keys = None;
         // A form's read may hand back its cell; any other method's
@@ -2667,6 +3211,70 @@ impl<'p, 'a> Walk<'p, 'a> {
                 result = union(result, Some(k));
             }
             result = union(result, recv_keys.clone());
+        }
+        // A call whose result may be what a caller's name reaches (it
+        // returns a parameter's part, a self field's, a cell's, or what a
+        // callee that does returns — `Summaries::ret_views`), or a callee
+        // the pass cannot identify: the result is a place's value, which
+        // may be what the call was handed. On the summary pass the result
+        // only names its callee.
+        if !form_op && !ctor {
+            let plain = matches!(&summarized, Some(Callee::Fn(n) | Callee::Method(n)) if self.p.plain_fns.contains(n));
+            if let (None, Some(c), false) = (self.summary, &summarized, plain) {
+                let bodies = self.callee_bodies(c, receiver);
+                let srcs: Vec<Src> = keys
+                    .iter()
+                    .map(|k| {
+                        let mut s = Src::default();
+                        if let Some(ks) = k {
+                            self.src_of(ks, false, &mut s);
+                        }
+                        s
+                    })
+                    .collect();
+                let mark = format!("{RET}{}", self.ret_marks.len());
+                self.ret_marks.insert(mark.clone(), (bodies, srcs));
+                result = union(result, Some(BTreeSet::from([mark])));
+            }
+            // What the callees return: something else of the caller's (or
+            // an unidentified callee's anything), or the arguments handed
+            // for the parameters they return a part of.
+            let markers = |ks: &Keys| -> Keys {
+                ks.as_ref().map(|ks| {
+                    ks.iter()
+                        .filter_map(|k| {
+                            if k.starts_with(AT) || k.starts_with(PART) {
+                                Some(k.clone())
+                            } else if k.starts_with(CELL) || k.starts_with(IN_CELL) {
+                                Some(format!("{AT}?"))
+                            } else {
+                                None
+                            }
+                        })
+                        .collect()
+                })
+            };
+            if let (Some(s), false) = (self.summary, plain) {
+                let rv = if unknown {
+                    RetView { params: 0, other: true }
+                } else if let Some(c) = &summarized {
+                    self.callee_bodies(c, receiver).into_iter().fold(RetView::default(), |a, j| RetView {
+                        params: a.params | s.ret_views[j].params,
+                        other: a.other || s.ret_views[j].other,
+                    })
+                } else {
+                    RetView::default()
+                };
+                if rv.other {
+                    result = union(result, union(markers(&operand_keys), at(Some("?ret".to_string()))));
+                } else {
+                    for (k, ak) in keys.iter().enumerate() {
+                        if rv.params & param_bit(k) != 0 {
+                            result = union(result, markers(ak));
+                        }
+                    }
+                }
+            }
         }
         // The cell-read rule: a read of a form's cell, a store into one.
         let method = match callee {
@@ -3310,13 +3918,17 @@ impl<'p, 'a> Walk<'p, 'a> {
         }
         for w in &self.assigns {
             let v = w.var;
-            let mut shared: Vec<usize> = self.vars[v].iter().copied().filter(|&i| open(o.owned, i) && whole(i)).collect();
+            // The instance a part assignment binds is bound after that
+            // very write.
+            let after = |i: usize| !(self.insts[i].at > w.at && self.insts[i].span == w.span);
+            let mut shared: Vec<usize> =
+                self.vars[v].iter().copied().filter(|&i| after(i) && open(o.owned, i) && whole(i)).collect();
             let mut part = String::new();
             if shared.is_empty() {
                 // A struct literal's field holding a place's value: a write
                 // below that field copies the field (`st.inner.k = 1`).
                 let Some(f) = w.first.as_ref().filter(|_| w.depth >= 2) else { continue };
-                shared = self.vars[v].iter().copied().filter(|&i| open(o.owned, i) && part_of(i, Some(f))).collect();
+                shared = self.vars[v].iter().copied().filter(|&i| after(i) && open(o.owned, i) && part_of(i, Some(f))).collect();
                 if shared.is_empty() {
                     continue;
                 }
