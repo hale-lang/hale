@@ -895,6 +895,7 @@ pub fn check_bundle_by_declaration(
         known,
         diags: &mut diags,
         locals: ScopeStack::new(),
+        params_default: None,
         current_locus: None,
         in_lifecycle: false,
         in_closure: false,
@@ -6648,6 +6649,10 @@ struct Checker<'a> {
     target_class: crate::capability::TargetClass,
     diags: &'a mut Vec<Diag>,
     locals: ScopeStack,
+    /// While a locus param's default is typed: the param, and the
+    /// params not yet initialized when it runs (itself and every one
+    /// declared after it).
+    params_default: Option<(String, BTreeSet<String>)>,
     current_locus: Option<&'a LocusInfo>,
     in_lifecycle: bool,
     in_closure: bool,
@@ -10357,7 +10362,15 @@ impl<'a> Checker<'a> {
                             continue;
                         }
                     }
+                    // Defaults run in declaration order, so a default
+                    // reads `self.<param>` of a param declared before it
+                    // only; the build refused a later one (or its own)
+                    // with no location.
+                    let at = pb.params.iter().position(|q| std::ptr::eq(q, p)).unwrap_or(0);
+                    let unready: BTreeSet<String> = pb.params[at..].iter().map(|q| q.name.name.clone()).collect();
+                    let prev_default = self.params_default.replace((p.name.name.clone(), unready));
                     let got = self.check_expr(init);
+                    self.params_default = prev_default;
                     let Some(te) = &p.ty else { continue };
                     let want = self.resolve_te(te);
                     // `Unknown` on either side is an unresolved
@@ -17528,6 +17541,24 @@ impl<'a> Checker<'a> {
                                 iface
                             ),
                         ));
+                    }
+                }
+                if let (Expr::KwSelf(_), Some((param, unready))) = (receiver.as_ref(), &self.params_default) {
+                    if unready.contains(&name.name) {
+                        let msg = if *param == name.name {
+                            format!(
+                                "param `{param}`'s default reads `self.{param}`, its own value, which the \
+                                 default is what initializes — pass the value at the creation site"
+                            )
+                        } else {
+                            format!(
+                                "param `{param}`'s default reads `self.{}` before it is initialized — defaults \
+                                 run in declaration order; declare `{}` before `{param}` or pass the value at \
+                                 the creation site",
+                                name.name, name.name
+                            )
+                        };
+                        self.diags.push(Diag::ty(*span, msg));
                     }
                 }
                 if let Some(cell) = self.cell_of(receiver) {

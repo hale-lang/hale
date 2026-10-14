@@ -389,8 +389,9 @@ an `Int`) are reported by the typechecker. Neither reaches codegen.
    including the field inits of a nested locus literal written in
    that default — `self.X` reads the locus being instantiated
    (earlier-declared siblings only; a default that reads a
-   later-declared sibling is a compile error, since defaults run
-   in declaration order). Inside an *override* expression, `self`
+   later-declared sibling, or its own param, is a type error at
+   the read, since defaults run in declaration order). Inside an
+   *override* expression, `self`
    belongs to the code that wrote the literal — the enclosing
    method's locus, or the enclosing params block when the literal
    itself sits in a default (F.4 call-site rule). This holds

@@ -2610,3 +2610,32 @@ fn a_generic_bound_is_held_by_the_check_not_the_build() {
     );
 }
 
+/// A locus param's default reading `self.<param>` of a param declared
+/// after it, or its own: defaults run in declaration order, and the
+/// build refused the read ("param default reads `self.b` before it is
+/// initialized"). A read of an earlier param builds.
+///
+/// Plain string literals, for the reason given above.
+#[test]
+fn a_param_default_read_before_its_param_is_set_is_refused_by_the_check_not_the_build() {
+    assert_refused_by_the_check(
+        &[
+            (
+                "locus L { params { a: Int = self.b; b: Int = 1; } }\nfn main() { L { }; }\n",
+                "self.b",
+                "param `a`'s default reads `self.b` before it is initialized",
+            ),
+            (
+                "locus L { params { a: Int = self.a + 1; } }\nfn main() { L { }; }\n",
+                "self.a",
+                "param `a`'s default reads `self.a`, its own value",
+            ),
+        ],
+        "param_default_order",
+    );
+    assert_built(
+        "locus L { params { a: Int = 1; b: Int = self.a + 1; } run() { println(self.b); } }\nfn main() { L { }; }\n",
+        "hale_cb_param_default_order_ok",
+    );
+}
+
