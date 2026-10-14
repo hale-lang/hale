@@ -347,10 +347,7 @@ holds such a value in a field (a returned struct literal around `r.arr[0]`)
 copies only when a write goes below that field. A free fn returning a
 field read through a handle parameter (`fn arr_of(k: K) -> [In; 2] {
 return k.r.arr; }`) hands back that locus's storage, a place's value; a
-locus's method returning its own fields hands back a copy. A store
-down a locus handle's field path from outside the locus (`fn put(l: L,
-r: R) { l.r.arr = r.arr; }`, `l.name = s`) is an owned copy in that
-locus's arena, as a method's store into its own fields is. A place's
+locus's method returning its own fields hands back a copy. A place's
 value assigned into a part of a parameter (`fn store(h: Holder, r: R) {
 h.arr = r.arr; }`) is stored as a copy, so the caller's two arguments
 never share a block, and a cell's read handed back through a call keeps

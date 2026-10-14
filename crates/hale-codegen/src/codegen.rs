@@ -18394,25 +18394,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     // the general walker; emits a plain store.
                     let (slot_ptr, slot_ty, slot_name) =
                         self.resolve_lvalue_chain(target, scope)?;
-                    // A store down a locus handle's field path (`l.r.arr =
-                    // v`, `l.name = s` in a free fn): the value goes into
-                    // that locus's own storage, so it is copied into the
-                    // locus's arena, as a method's store into its own
-                    // fields is — never the caller's block by pointer.
-                    let root_locus = match scope.locals.get(&target.head.name) {
-                        Some((slot, CodegenTy::LocusRef(l))) => {
-                            let ptr_t = self.context.ptr_type(AddressSpace::default());
-                            let p = self
-                                .builder
-                                .build_load(ptr_t, *slot, &format!("{}.locus", target.head.name))
-                                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
-                                .into_pointer_value();
-                            Some((p, l.clone()))
-                        }
-                        _ => None,
-                    };
-                    return self.finish_lvalue_assign_into(
-                        slot_ptr, slot_ty, slot_name, op, value, scope, false, root_locus,
+                    return self.finish_lvalue_assign(
+                        slot_ptr, slot_ty, slot_name, op, value, scope, false,
                     );
                 };
 
@@ -34086,7 +34069,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// place (as `let` does) or the fresh value itself, again by
     /// pointer. Nothing under a local root is ever mutated in place,
     /// so what two locals share is never observable.
-    #[allow(clippy::too_many_arguments)]
     fn finish_lvalue_assign(
         &mut self,
         slot_ptr: PointerValue<'ctx>,
@@ -34096,28 +34078,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         value: &Expr,
         scope: &Scope<'ctx>,
         root_is_self: bool,
-    ) -> Result<BlockEnd, CodegenError> {
-        self.finish_lvalue_assign_into(slot_ptr, slot_ty, slot_name, op, value, scope, root_is_self, None)
-    }
-
-    /// `finish_lvalue_assign`, with the locus a non-self root holds
-    /// (`root_locus`: a local or parameter of a locus type, by its
-    /// pointer and name): a String, Bytes or compound value stored down
-    /// its field path is an owned deep copy in that locus's arena, so its
-    /// storage never shares a block with the caller's value (a later
-    /// same-length String overwrite, or a write into the block, would
-    /// otherwise reach it).
-    #[allow(clippy::too_many_arguments)]
-    fn finish_lvalue_assign_into(
-        &mut self,
-        slot_ptr: PointerValue<'ctx>,
-        slot_ty: CodegenTy,
-        slot_name: String,
-        op: &AssignOp,
-        value: &Expr,
-        scope: &Scope<'ctx>,
-        root_is_self: bool,
-        root_locus: Option<(PointerValue<'ctx>, String)>,
     ) -> Result<BlockEnd, CodegenError> {
         let (rhs, rhs_ty) = self.lower_expr(value, scope)?;
         let new_val = if matches!(op, AssignOp::Eq) {
@@ -34151,49 +34111,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             let (v, _) = self.lower_binop(bin_op, cur, rhs, &slot_ty)?;
             v
         };
-        if let (false, Some((locus_ptr, locus))) = (root_is_self, root_locus) {
-            let owns_block = !matches!(
-                slot_ty,
-                CodegenTy::Int
-                    | CodegenTy::Float
-                    | CodegenTy::Bool
-                    | CodegenTy::Decimal(_)
-                    | CodegenTy::Time
-                    | CodegenTy::Duration
-                    | CodegenTy::FnPtr { .. }
-                    | CodegenTy::BytesView
-                    | CodegenTy::StringView
-                    | CodegenTy::LocusRef(_)
-                    | CodegenTy::Cell(_, _)
-                    | CodegenTy::Interface(_)
-                    | CodegenTy::Perspective(_)
-            );
-            if Self::array_inline_spec(&slot_ty).is_some() {
-                let size = self.compound_storage_size(&slot_ty)?;
-                self.emit_memcpy_call(slot_ptr, new_val.into_pointer_value(), size, "locus_field.inline.memcpy")?;
-                return Ok(BlockEnd::Open);
-            }
-            let info = self.user_loci.get(&locus).cloned();
-            if let (true, Some(info)) = (owns_block, info) {
-                let ptr_t = self.context.ptr_type(AddressSpace::default());
-                let arena_ptr = self
-                    .builder
-                    .build_struct_gep(info.struct_ty, locus_ptr, info.arena_field_idx, "locus_field.arena.ptr")
-                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                let arena = self
-                    .builder
-                    .build_load(ptr_t, arena_ptr, "locus_field.arena")
-                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
-                    .into_pointer_value();
-                let owned = self.emit_owned_deep_copy(new_val, &slot_ty, arena)?;
-                self.builder.build_store(slot_ptr, owned).map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                return Ok(BlockEnd::Open);
-            }
-            if !owns_block {
-                self.builder.build_store(slot_ptr, new_val).map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                return Ok(BlockEnd::Open);
-            }
-        }
         if !root_is_self {
             match &slot_ty {
                 // Every operator: `+=` builds a fresh String, and the
