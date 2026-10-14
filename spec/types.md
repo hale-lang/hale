@@ -1688,7 +1688,11 @@ instance, seeded from the `main locus`'s `placement { }` entries):
    iteration), with each block's `let`s in a scope of their own (a
    shadowed binding keeps its own rebinds) and a block's, `if`'s or
    `match`'s value taken from its tail before its locals go out of
-   scope. A value comes from a field of `self` (or below one), another
+   scope; a part written (`ws[0] = self.b`) joins into its container,
+   a field of `self` any member stores a handle into may be that handle
+   wherever it is read, and an operand or fallback that may be skipped
+   (`&&`, `||`, `or`) is joined with the state that skipped it. A value
+   comes from a field of `self` (or below one), another
    local, a part of one (`p.0`, `ws[1]`, `n.w`), a literal holding one,
    or a call: a fn or method by what its body may return (a parameter
    or a part of one, a field of `self`, or a value holding one —

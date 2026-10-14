@@ -3859,8 +3859,15 @@ fn check_placement_single_thread(
                 if instances.is_empty() {
                     return;
                 }
-                for member in &l.members {
-                    if let Some(body) = locus_member_body(member) {
+                // The fields of `self` any member stores a cross-pool handle
+                // into (`self.w2 = self.b`, `self.ws[0] = self.b`): found
+                // first by silent walks of every member, to a fixpoint (the
+                // set only grows, over the locus's fields), then read by the
+                // real walk wherever such a field is read.
+                let walk_members = |taint: BTreeMap<String, Origin>, quiet: bool, diags: &mut Vec<Diag>| {
+                    let mut taint = taint;
+                    for member in &l.members {
+                        let Some(body) = locus_member_body(member) else { continue };
                         // A parameter of a fn type returning a locus (`pick:
                         // fn() -> W`): a call through it may hand back any
                         // instance of that type.
@@ -3885,12 +3892,27 @@ fn check_placement_single_thread(
                             env: Env::default(),
                             summaries: &summaries,
                             fn_values,
-                            quiet: false,
-                            diags,
+                            self_taint: taint,
+                            quiet,
+                            diags: &mut *diags,
                         };
                         eval_block(body, &mut cx);
+                        taint = cx.self_taint;
+                    }
+                    taint
+                };
+                let mut taint: BTreeMap<String, Origin> = BTreeMap::new();
+                let key = |t: &BTreeMap<String, Origin>| -> Vec<(String, (bool, bool))> {
+                    t.iter().map(|(k, v)| (k.clone(), v.key())).collect()
+                };
+                loop {
+                    let before = key(&taint);
+                    taint = walk_members(taint, true, &mut *diags);
+                    if key(&taint) == before {
+                        break;
                     }
                 }
+                walk_members(taint, false, &mut *diags);
             }
         });
     }
@@ -3965,6 +3987,9 @@ struct PoolCheckCx<'a> {
     /// Locals and parameters holding a fn value whose declared result is
     /// a locus type, by that type's name.
     fn_values: BTreeMap<String, String>,
+    /// Fields of `self` a member stores a cross-pool handle into (or into
+    /// a part of), with a witness: a read of one may be that handle.
+    self_taint: BTreeMap<String, Origin>,
     /// A loop body's fixpoint walk: no diagnostics.
     quiet: bool,
     diags: &'a mut Vec<Diag>,
@@ -3978,8 +4003,49 @@ impl PoolCheckCx<'_> {
     }
 }
 
-/// GH #1561: what a value may hold, for the cross-pool rule — a lattice
-/// per value. `whole`: the value itself may be an instance that runs in
+/// GH #1561: the cross-pool provenance analysis. `eval_block` /
+/// `eval_stmt` / `eval_expr` walk a locus member's body as a dataflow
+/// over [`Env`] (a scope stack of locals, each with an `Origin`), and
+/// every value evaluates to its `Origin`; [`ReturnSummaries`] says what
+/// each fn and method body may hand back; `self_taint` says which fields
+/// of `self` any member stores a cross-pool handle into (a fixpoint over
+/// the locus's members, before the real walk). How each AST form moves
+/// origins (`cross_pool_provenance_table` in `tests/placement.rs` holds a
+/// row for every form that can carry a handle):
+///
+/// | Form | Rule |
+/// |---|---|
+/// | `Ident` | the binding's origin, by the scope that declares it |
+/// | `self.f…` (`Field`/`Index` chain on `self`) | `whole` when `self.f`'s instance runs in another domain; joined with `self_taint[f]` (the field itself, or a part below it) |
+/// | `Field` / `Index` / `Path2` on a value | a part: `whole` from the value's `whole` or `parts` |
+/// | `Tuple` / `Array` / `ArrayRepeat` | `parts`: the elements' origins, contained |
+/// | `Struct` (record or locus literal) | `parts`: the inits' origins (a locus literal is a fresh instance of this thread's) |
+/// | `Block` | its tail's origin, taken before its scope is popped |
+/// | `If` / `Match` | the join of the branches' values; the state after is the join of the branches' states (an absent `else` keeps the state before); a match arm's pattern binds parts of the scrutinee in the arm's scope |
+/// | `Or` | the join of the value and its fallback's; the state after joins the success path's and the fallback's |
+/// | `Binary` `&&` / `\|\|` | the right operand may be skipped: the state after joins with the state before it |
+/// | other `Binary`, `Unary`, `Sum`, `Prod`, `Approx`, `Range`, `Literal`, `Path`, `KwSelf` | no handle (numbers, Bools, Strings, ranges): their operands are walked for their effects |
+/// | `Call`, a fn or method of the program | the callee's summary: an argument's origin where the body may return it or a part (or hold it inside), a receiver's field where a method may |
+/// | `Call`, a stdlib fn | an argument's origin only when the declared result can be, hold or be held by its type (generics included) |
+/// | `Call` through a fn value declared to return a locus type | any instance of that type in another domain |
+/// | `Call`, a serve site (`api::serve`) | none: it is the exposure it builds |
+/// | `Call` the walk cannot name | anything its arguments may be |
+/// | `Let` | declares the value's origin in the innermost scope |
+/// | `LetTuple` | each name: a part of the value |
+/// | `Assign` to a local | the binding the name resolves to takes the value's origin |
+/// | `Assign` into a part of a local (`ws[0] = v`, `p.0 = v`, `h.b = v`) | the binding joins the value's origin, contained |
+/// | `Assign` into (a part of) a field of `self` | `self_taint[f]` joins the value (contained, below the field) |
+/// | `For` | its binder is a part of what it walks; condition-free loop to a fixpoint |
+/// | `While` | condition and body iterated to a fixpoint (finite lattice, no cap), then walked once with diagnostics; the state after joins entry and exit |
+/// | `Return`, `Fail`, `Send`, `Recovery`, `Violate`, `ShmWrite`, `Expr` | their expressions walked for effects (a `Return`'s roots feed the summaries) |
+/// | `Yield`, `Break`, `Continue`, `Terminate`, `Reperspective` | no origin |
+/// | `Pattern::Binding` / `Tuple` / `Constructor` | each binder: a part of the scrutinee |
+///
+/// The summaries use the same rules over roots (a parameter, a field of
+/// `self`, direct or held), with the body's own scopes, each binding the
+/// union of what it is given, loops to a fixpoint.
+///
+/// What a value may hold, for the cross-pool rule — a lattice per value. `whole`: the value itself may be an instance that runs in
 /// another domain (`self.b`, a local bound to it, an element of an array
 /// field); `parts`: something reachable inside it may be (a tuple, array
 /// or record holding such a handle, a fresh locus literal whose params
@@ -4049,6 +4115,12 @@ impl Env {
                 self.scopes[0].insert(name.to_string(), o);
             }
         }
+    }
+    /// A part of the binding written with a value: the binding may now
+    /// hold it (joined, not replaced: the other parts are as they were).
+    fn add_parts(&mut self, name: &str, o: Origin) {
+        let joined = self.lookup(name).join(o.contained());
+        self.assign(name, joined);
     }
     fn push(&mut self) {
         self.scopes.push(BTreeMap::new());
@@ -4158,49 +4230,21 @@ impl ReturnSummaries {
     }
 }
 
-/// What `fd`'s body may return, by root, with the summaries so far.
+/// What `fd`'s body may return, by root, with the summaries so far: a
+/// walk with the body's own scopes (a binding is the declaration it names,
+/// never another of the same spelling), each binding the union of every
+/// value it is given (a loop's body to a fixpoint), and every `return`'s
+/// and the body's tail's roots.
 fn body_returns(fd: &FnDecl, sums: &ReturnSummaries) -> Returns {
-    let params: BTreeMap<&str, usize> = fd.params.iter().enumerate().map(|(i, p)| (p.name.name.as_str(), i)).collect();
-    // The locals' roots, flow-insensitive: every binding and rebinding of
-    // the name, joined, to a fixpoint (a chain of locals).
-    let mut locals: BTreeMap<String, BTreeSet<Root>> = BTreeMap::new();
-    loop {
-        let before = locals.clone();
-        let mut add: Vec<(String, BTreeSet<Root>)> = Vec::new();
-        visit_block_stores(
-            &fd.body,
-            &mut |st| match st {
-                Stmt::Let { name, value, .. } => add.push((name.name.clone(), roots(value, &params, &before, sums))),
-                Stmt::Assign { target, value, .. } if target.tail.is_empty() => {
-                    add.push((target.head.name.clone(), roots(value, &params, &before, sums)))
-                }
-                Stmt::For { name, iter, .. } => add.push((name.name.clone(), roots(iter, &params, &before, sums))),
-                _ => {}
-            },
-            &mut |_| {},
-        );
-        for (k, v) in add {
-            locals.entry(k).or_default().extend(v);
-        }
-        if locals == before {
-            break;
-        }
+    let mut base: BTreeMap<String, BTreeSet<Root>> = BTreeMap::new();
+    for (i, p) in fd.params.iter().enumerate() {
+        base.insert(p.name.name.clone(), BTreeSet::from([Root::Param(i, false)]));
     }
-    let mut out: BTreeSet<Root> = BTreeSet::new();
-    visit_block_stores(
-        &fd.body,
-        &mut |st| {
-            if let Stmt::Return(Some(e), _) = st {
-                out.extend(roots(e, &params, &locals, sums));
-            }
-        },
-        &mut |_| {},
-    );
-    if let Some(t) = &fd.body.tail {
-        out.extend(roots(t, &params, &locals, sums));
-    }
+    let mut w = RootWalk { scopes: vec![base], sums, out: BTreeSet::new() };
+    let tail = w.block(&fd.body);
+    w.out.extend(tail);
     let mut r = Returns::default();
-    for root in out {
+    for root in w.out {
         match root {
             Root::Param(i, c) => {
                 r.params.insert((i, c));
@@ -4213,107 +4257,277 @@ fn body_returns(fd: &FnDecl, sums: &ReturnSummaries) -> Returns {
     r
 }
 
-/// The roots an expression's value may come from (see [`Returns`]).
-fn roots(
-    e: &Expr,
-    params: &BTreeMap<&str, usize>,
-    locals: &BTreeMap<String, BTreeSet<Root>>,
-    sums: &ReturnSummaries,
-) -> BTreeSet<Root> {
-    let go = |x: &Expr| roots(x, params, locals, sums);
-    let tail = |b: &Block| b.tail.as_ref().map(|t| roots(t, params, locals, sums)).unwrap_or_default();
-    match e {
-        Expr::Ident(id) => match (params.get(id.name.as_str()), locals.get(&id.name)) {
-            (_, Some(r)) => r.clone(),
-            (Some(&i), None) => BTreeSet::from([Root::Param(i, false)]),
-            _ => BTreeSet::new(),
-        },
-        Expr::Field { .. } | Expr::Index { .. } if self_rooted_field(e).is_some() => match self_rooted_field(e) {
-            Some(Expr::Field { name, .. }) => BTreeSet::from([Root::SelfField(name.name.clone(), false)]),
-            _ => BTreeSet::new(),
-        },
-        // a part of a value runs where the value does
-        Expr::Field { receiver, .. } | Expr::Index { receiver, .. } => go(receiver)
-            .into_iter()
-            .map(|r| match r {
-                Root::Param(i, _) => Root::Param(i, false),
-                Root::SelfField(f, _) => Root::SelfField(f, false),
-            })
-            .collect(),
-        Expr::Tuple(items, _) | Expr::Array(items, _) => items.iter().flat_map(|i| go(i)).map(Root::contained).collect(),
-        Expr::Struct { inits, .. } => inits.iter().flat_map(|i| go(&i.value)).map(Root::contained).collect(),
-        Expr::Block(b) => tail(b),
-        Expr::If(i) => if_tails_roots(i, params, locals, sums),
-        Expr::Match(m) => m
-            .arms
-            .iter()
-            .flat_map(|arm| match &arm.body {
-                MatchArmBody::Expr(x) => go(x),
-                MatchArmBody::Block(b) => tail(b),
-            })
-            .collect(),
-        Expr::Or { inner, disposition, .. } => {
-            let mut r = go(inner);
-            if let OrDisposition::Substitute(x) = disposition {
-                r.extend(go(x));
-            }
-            r
-        }
-        Expr::Call { callee, args, .. } => {
-            let through = |ret: &Returns| -> BTreeSet<Root> {
-                let mut out = BTreeSet::new();
-                for (i, c) in &ret.params {
-                    if let Some(a) = args.get(*i) {
-                        out.extend(go(a).into_iter().map(|r| if *c { r.contained() } else { r }));
-                    }
-                }
-                out
-            };
-            match callee.as_ref() {
-                Expr::Path(qp) if qp.segments.first().is_some_and(|s| s.name == "std") => {
-                    // a stdlib result: by its declared type, at the call
-                    // that reads it (`origin`); inside a body, every
-                    // argument (never fewer roots than it may carry)
-                    args.iter().flat_map(|a| go(a)).map(Root::contained).collect()
-                }
-                Expr::Ident(id) if params.contains_key(id.name.as_str()) || locals.contains_key(&id.name) => {
-                    // a fn value: anything its arguments reach
-                    args.iter().flat_map(|a| go(a)).map(Root::contained).collect()
-                }
-                Expr::Ident(id) => match sums.fns.get(&id.name) {
-                    Some(ret) => through(ret),
-                    None => args.iter().flat_map(|a| go(a)).map(Root::contained).collect(),
-                },
-                Expr::Path(qp) => match qp.segments.last().and_then(|s| sums.fns.get(&s.name)) {
-                    Some(ret) => through(ret),
-                    None => args.iter().flat_map(|a| go(a)).map(Root::contained).collect(),
-                },
-                // a method: its receiver and arguments, conservatively
-                Expr::Field { receiver, .. } => {
-                    let mut out: BTreeSet<Root> = go(receiver).into_iter().map(Root::contained).collect();
-                    out.extend(args.iter().flat_map(|a| go(a)).map(Root::contained));
-                    out
-                }
-                _ => args.iter().flat_map(|a| go(a)).map(Root::contained).collect(),
-            }
-        }
-        _ => BTreeSet::new(),
-    }
+type Roots = BTreeSet<Root>;
+
+fn contained(r: Roots) -> Roots {
+    r.into_iter().map(Root::contained).collect()
 }
 
-fn if_tails_roots(
-    i: &IfStmt,
-    params: &BTreeMap<&str, usize>,
-    locals: &BTreeMap<String, BTreeSet<Root>>,
-    sums: &ReturnSummaries,
-) -> BTreeSet<Root> {
-    let mut out = i.then_block.tail.as_ref().map(|t| roots(t, params, locals, sums)).unwrap_or_default();
-    match i.else_block.as_deref() {
-        Some(ElseBranch::Else(b)) => out.extend(b.tail.as_ref().map(|t| roots(t, params, locals, sums)).unwrap_or_default()),
-        Some(ElseBranch::ElseIf(n)) => out.extend(if_tails_roots(n, params, locals, sums)),
-        None => {}
+/// A part read out of a value runs where the value does (or is the
+/// handle the value held).
+fn part_of(r: Roots) -> Roots {
+    r.into_iter()
+        .map(|r| match r {
+            Root::Param(i, _) => Root::Param(i, false),
+            Root::SelfField(f, _) => Root::SelfField(f, false),
+        })
+        .collect()
+}
+
+struct RootWalk<'s> {
+    scopes: Vec<BTreeMap<String, Roots>>,
+    sums: &'s ReturnSummaries,
+    out: Roots,
+}
+
+impl RootWalk<'_> {
+    fn lookup(&self, name: &str) -> Roots {
+        self.scopes.iter().rev().find_map(|s| s.get(name)).cloned().unwrap_or_default()
     }
-    out
+    fn declare(&mut self, name: &str, r: Roots) {
+        self.scopes.last_mut().expect("a scope").insert(name.to_string(), r);
+    }
+    /// A rebinding, or a part written: the binding it names holds what it
+    /// held and this too.
+    fn add(&mut self, name: &str, r: Roots) {
+        if let Some(s) = self.scopes.iter_mut().rev().find(|s| s.contains_key(name)) {
+            s.get_mut(name).expect("found").extend(r);
+        }
+    }
+    fn block(&mut self, b: &Block) -> Roots {
+        self.scopes.push(BTreeMap::new());
+        for st in &b.stmts {
+            self.stmt(st);
+        }
+        let r = b.tail.as_ref().map(|t| self.expr(t)).unwrap_or_default();
+        self.scopes.pop();
+        r
+    }
+    /// A loop body, to a fixpoint (bindings only grow).
+    fn looped(&mut self, cond: Option<&Expr>, binder: Option<(&str, Roots)>, body: &Block) {
+        loop {
+            let before = self.scopes.clone();
+            let out_before = self.out.len();
+            if let Some(c) = cond {
+                self.expr(c);
+            }
+            self.scopes.push(BTreeMap::new());
+            if let Some((n, r)) = &binder {
+                self.declare(n, r.clone());
+            }
+            self.block(body);
+            self.scopes.pop();
+            if self.scopes == before && self.out.len() == out_before {
+                break;
+            }
+        }
+    }
+    fn stmt(&mut self, st: &Stmt) {
+        match st {
+            Stmt::Let { name, value, .. } => {
+                let r = self.expr(value);
+                self.declare(&name.name, r);
+            }
+            Stmt::LetTuple { names, value, .. } => {
+                let r = part_of(self.expr(value));
+                for n in names {
+                    self.declare(&n.name, r.clone());
+                }
+            }
+            Stmt::Assign { target, value, .. } => {
+                for seg in &target.tail {
+                    if let LValueSeg::Index(e) = seg {
+                        self.expr(e);
+                    }
+                }
+                let r = self.expr(value);
+                if target.tail.is_empty() {
+                    self.add(&target.head.name, r);
+                } else {
+                    self.add(&target.head.name, contained(r));
+                }
+            }
+            Stmt::If(i) => {
+                self.if_(i);
+            }
+            Stmt::Match(m) => {
+                self.match_(m);
+            }
+            Stmt::For { name, iter, body, .. } => {
+                let r = part_of(self.expr(iter));
+                self.looped(None, Some((&name.name, r)), body);
+            }
+            Stmt::While { cond, body, .. } => self.looped(Some(cond), None, body),
+            Stmt::Return(Some(e), _) => {
+                let r = self.expr(e);
+                self.out.extend(r);
+            }
+            Stmt::Block(b) => {
+                self.block(b);
+            }
+            Stmt::ShmWrite { max, body, .. } => {
+                self.expr(max);
+                self.block(body);
+            }
+            Stmt::Fail { value: e, .. } | Stmt::Expr(e) => {
+                self.expr(e);
+            }
+            Stmt::Send { subject, value, .. } => {
+                self.expr(subject);
+                self.expr(value);
+            }
+            Stmt::Recovery { args, .. } => {
+                for a in args {
+                    self.expr(a);
+                }
+            }
+            Stmt::Violate { payload: Some(p), .. } => {
+                self.expr(p);
+            }
+            _ => {}
+        }
+    }
+    fn if_(&mut self, i: &IfStmt) -> Roots {
+        self.expr(&i.cond);
+        let mut r = self.block(&i.then_block);
+        match i.else_block.as_deref() {
+            Some(ElseBranch::Else(b)) => r.extend(self.block(b)),
+            Some(ElseBranch::ElseIf(n)) => r.extend(self.if_(n)),
+            None => {}
+        }
+        r
+    }
+    fn match_(&mut self, m: &MatchStmt) -> Roots {
+        let scrut = part_of(self.expr(&m.scrutinee));
+        let mut r = Roots::new();
+        for arm in &m.arms {
+            self.scopes.push(BTreeMap::new());
+            let mut binders = Vec::new();
+            pattern_binders(&arm.pattern, &mut binders);
+            for b in binders {
+                self.declare(b, scrut.clone());
+            }
+            if let Some(g) = &arm.guard {
+                self.expr(g);
+            }
+            r.extend(match &arm.body {
+                MatchArmBody::Expr(e) => self.expr(e),
+                MatchArmBody::Block(b) => self.block(b),
+            });
+            self.scopes.pop();
+        }
+        r
+    }
+    /// The roots an expression's value may come from (see [`Returns`]).
+    fn expr(&mut self, e: &Expr) -> Roots {
+        if let Some(Expr::Field { name, .. }) = self_rooted_field(e) {
+            // a field of `self`, or below one (index expressions walked)
+            let mut x = e;
+            while let Expr::Field { receiver, .. } | Expr::Index { receiver, .. } = x {
+                if let Expr::Index { index, .. } = x {
+                    self.expr(index);
+                }
+                x = receiver;
+            }
+            return Roots::from([Root::SelfField(name.name.clone(), false)]);
+        }
+        match e {
+            Expr::Ident(id) => self.lookup(&id.name),
+            Expr::Field { receiver, .. } | Expr::Path2 { receiver, .. } => part_of(self.expr(receiver)),
+            Expr::Index { receiver, index, .. } => {
+                let r = part_of(self.expr(receiver));
+                self.expr(index);
+                r
+            }
+            Expr::Tuple(items, _) | Expr::Array(items, _) => {
+                let mut r = Roots::new();
+                for i in items {
+                    r.extend(contained(self.expr(i)));
+                }
+                r
+            }
+            Expr::ArrayRepeat { val, .. } => contained(self.expr(val)),
+            Expr::Struct { inits, .. } => {
+                let mut r = Roots::new();
+                for i in inits {
+                    r.extend(contained(self.expr(&i.value)));
+                }
+                r
+            }
+            Expr::Block(b) => self.block(b),
+            Expr::If(i) => self.if_(i),
+            Expr::Match(m) => self.match_(m),
+            Expr::Or { inner, disposition, .. } => {
+                let mut r = self.expr(inner);
+                match disposition {
+                    OrDisposition::Substitute(x) => r.extend(self.expr(x)),
+                    OrDisposition::Fail(x, _) => {
+                        self.expr(x);
+                    }
+                    _ => {}
+                }
+                r
+            }
+            Expr::Binary { left, right, .. } => {
+                self.expr(left);
+                self.expr(right);
+                Roots::new()
+            }
+            Expr::Unary { operand: x, .. } | Expr::Sum(x, _) | Expr::Prod(x, _) => {
+                self.expr(x);
+                Roots::new()
+            }
+            Expr::Approx { left, right, tolerance, .. } => {
+                self.expr(left);
+                self.expr(right);
+                self.expr(tolerance);
+                Roots::new()
+            }
+            Expr::Range { lo, hi, .. } => {
+                self.expr(lo);
+                self.expr(hi);
+                Roots::new()
+            }
+            Expr::Call { callee, args, .. } => {
+                let recv = match callee.as_ref() {
+                    Expr::Field { receiver, .. } | Expr::Path2 { receiver, .. } => Some(self.expr(receiver)),
+                    _ => None,
+                };
+                let arg_roots: Vec<Roots> = args.iter().map(|a| self.expr(a)).collect();
+                let all = || contained(arg_roots.iter().flatten().cloned().collect());
+                let through = |ret: &Returns| -> Roots {
+                    let mut out = Roots::new();
+                    for (i, c) in &ret.params {
+                        if let Some(a) = arg_roots.get(*i) {
+                            out.extend(if *c { contained(a.clone()) } else { part_of(a.clone()) });
+                        }
+                    }
+                    out
+                };
+                match callee.as_ref() {
+                    Expr::Path(qp) if qp.segments.first().is_some_and(|s| s.name == "std") => all(),
+                    Expr::Ident(id) if !self.lookup(&id.name).is_empty() || self.is_local(&id.name) => all(),
+                    Expr::Ident(id) => match self.sums.fns.get(&id.name) {
+                        Some(ret) => through(ret),
+                        None => all(),
+                    },
+                    Expr::Path(qp) => match qp.segments.last().and_then(|s| self.sums.fns.get(&s.name)) {
+                        Some(ret) => through(ret),
+                        None => all(),
+                    },
+                    _ => {
+                        let mut r = all();
+                        r.extend(contained(recv.unwrap_or_default()));
+                        r
+                    }
+                }
+            }
+            Expr::Literal(..) | Expr::Path(_) | Expr::KwSelf(_) => Roots::new(),
+        }
+    }
+    fn is_local(&self, name: &str) -> bool {
+        self.scopes.iter().any(|s| s.contains_key(name))
+    }
 }
 
 /// What a call hands back, from the callee's return summary: an
@@ -4483,10 +4697,22 @@ fn eval_stmt(stmt: &Stmt, cx: &mut PoolCheckCx) {
                 }
             }
             let o = eval_expr(value, cx);
-            // a rebound local holds what the value may be (`w = self.b`,
-            // `w = w`)
             if target.tail.is_empty() {
+                // a rebound local holds what the value may be (`w =
+                // self.b`, `w = w`)
                 cx.env.assign(&target.head.name, o);
+            } else if target.head.name == "self" {
+                // a value stored into a field of `self` (the field holds
+                // it) or into a part of one (the field holds it inside)
+                if let (Some(LValueSeg::Field(f)), true) = (target.tail.first(), o.any().is_some()) {
+                    let o = if target.tail.len() == 1 { o } else { o.contained() };
+                    let joined = cx.self_taint.remove(&f.name).unwrap_or_default().join(o);
+                    cx.self_taint.insert(f.name.clone(), joined);
+                }
+            } else {
+                // a part written (`ws[0] = self.b`, `p.0 = ..`, `r.f = ..`):
+                // the container now may hold the value too
+                cx.env.add_parts(&target.head.name, o);
             }
         }
         Stmt::If(i) => {
@@ -4701,14 +4927,30 @@ fn eval_expr(expr: &Expr, cx: &mut PoolCheckCx) -> Origin {
         check_call_stores_pool(callee, args, &arg_origins, *span, cx);
         return call_origin(callee, &recv_origin, &arg_origins, cx);
     }
-    if let Some(cp) = alias_of(expr, cx) {
-        // a field of `self` (or below it) that runs in another domain;
-        // its index expressions are walked too
+    if self_rooted_field(expr).is_some() {
+        // a field of `self` (or below it): one that runs in another
+        // domain, or one a member stored a cross-pool handle into; its
+        // index expressions are walked too
         walk_index_exprs(expr, cx);
-        return Origin::whole(cp);
+        let placed = match receiver_cross_pool(expr, cx) {
+            Some(_) => alias_of(expr, cx).map(Origin::whole).unwrap_or_default(),
+            None => Origin::default(),
+        };
+        return placed.join(tainted_self_field(expr, cx));
     }
     match expr {
         Expr::Ident(id) => cx.env.lookup(&id.name),
+        // `&&` / `||` may skip their right operand: its effects on the
+        // locals are joined with the state that skipped it, as an `if`
+        // with no `else`
+        Expr::Binary { op: BinOp::And | BinOp::Or, left, right, .. } => {
+            eval_expr(left, cx);
+            let skipped = cx.env.clone();
+            eval_expr(right, cx);
+            let ran = std::mem::take(&mut cx.env);
+            cx.env = skipped.join(ran);
+            Origin::default()
+        }
         Expr::Binary { left, right, .. } => {
             eval_expr(left, cx);
             eval_expr(right, cx);
@@ -4751,16 +4993,22 @@ fn eval_expr(expr: &Expr, cx: &mut PoolCheckCx) -> Origin {
             Origin::default()
         }
         Expr::ArrayRepeat { val, .. } => eval_expr(val, cx).contained(),
+        // an `or` fallback runs only on the failure: its effects are
+        // joined with the success path's state
         Expr::Or { inner, disposition, .. } => {
             let o = eval_expr(inner, cx);
-            match disposition {
+            let ok = cx.env.clone();
+            let o = match disposition {
                 OrDisposition::Substitute(e) => o.join(eval_expr(e, cx)),
                 OrDisposition::Fail(e, _) => {
                     eval_expr(e, cx);
                     o
                 }
                 OrDisposition::Raise(_) | OrDisposition::Discard(_) | OrDisposition::Wait(_) => o,
-            }
+            };
+            let failed = std::mem::take(&mut cx.env);
+            cx.env = ok.join(failed);
+            o
         }
         Expr::Literal(_, _) | Expr::Path(_) | Expr::KwSelf(_) => Origin::default(),
         Expr::Call { .. } => unreachable!("handled above"),
@@ -4947,7 +5195,15 @@ fn check_store_pool(target: &LValue, span: Span, cx: &mut PoolCheckCx) {
             name: f.clone(),
             span: target.head.span,
         };
-        match receiver_cross_pool(&recv, cx) {
+        // a field of `self` a member stored a cross-pool handle into: a
+        // store into that field's own slot goes through the handle when
+        // the field holds one; one further down, when it may hold one
+        // anywhere inside
+        let tainted = || {
+            let t = tainted_self_field(&recv, cx);
+            if target.tail.len() - below <= 1 { t.whole } else { t.any() }
+        };
+        match receiver_cross_pool(&recv, cx).or_else(tainted) {
             Some(mut cp) if !cx.decls.slot_is_inline_scalar(&cp.field_locus, &target.tail[below..]) => {
                 if below == 1 && cx.decls.path_crosses_locus(&cp.field_locus, &target.tail[1..]) {
                     cp.held_by = Some(shown.clone());
@@ -5543,12 +5799,31 @@ fn receiver_cross_pool(receiver: &Expr, cx: &PoolCheckCx) -> Option<CrossPool> {
 /// cross-pool facts, with its own locus type for the slot a store
 /// through the local writes.
 fn alias_of(value: &Expr, cx: &PoolCheckCx) -> Option<CrossPool> {
-    let mut cp = receiver_cross_pool(value, cx)?;
+    let Some(mut cp) = receiver_cross_pool(value, cx) else {
+        return tainted_self_field(value, cx).whole;
+    };
     cp.locus_type = match &cp.held_by {
         Some(_) => receiver_locus_below(value, &cp.field_locus, cx),
         None => Some(cp.field_locus.clone()),
     };
     Some(cp)
+}
+
+/// A field of `self` some member stored a cross-pool handle into (or
+/// below), read here (`self.w2`, `self.ws[0]`): it may be that handle.
+fn tainted_self_field(e: &Expr, cx: &PoolCheckCx) -> Origin {
+    let Some(root @ Expr::Field { name, .. }) = self_rooted_field(e) else { return Origin::default() };
+    let Some(t) = cx.self_taint.get(&name.name) else { return Origin::default() };
+    let t = Origin {
+        whole: t.whole.clone().map(|cp| CrossPool { locus_type: None, ..cp }),
+        parts: t.parts.clone(),
+    };
+    // the field itself holds the value stored; below it, a part of it
+    if std::ptr::eq(root, e) {
+        t
+    } else {
+        t.part()
+    }
 }
 
 /// The locus type a receiver reached below a field of `self` holds

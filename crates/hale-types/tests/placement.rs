@@ -3620,6 +3620,9 @@ fn main() { App { }; }
 enum Want {
     Refused(&'static str),
     Accepted,
+    /// A shape an existing rule already refuses (the needle names it):
+    /// no origin can flow that way.
+    Illegal(&'static str),
 }
 
 fn provenance_program(extra: &str, body: &str) -> String {
@@ -3646,8 +3649,13 @@ fn part(h: H) -> W {{ return h.b; }}
 fn put_in(w: W) -> (W, Int) {{ return (w, 1); }}
 fn count_of(w: W) -> Int {{ return len(w.name); }}
 fn fresh(w: W) -> R {{ return R {{ name: "fresh" }}; }}
+fn ok() -> Int fallible(String) {{ return 1; }}
+fn maybe_w(w: W) -> W fallible(String) {{ return w; }}
+fn pick_t(w: W) -> W {{ let (x, y) = (w, 1); return x; }}
+fn rep2(w: W) -> [W; 2] {{ return [w; 2]; }}
+fn pick_s(w: W, a: W) -> W {{ {{ let w = a; }} return w; }}
 main locus App {{
-    params {{ a: W = W {{}}; b: W = W {{ active: true }}; h: H = H {{ }}; }}
+    params {{ a: W = W {{}}; b: W = W {{ active: true }}; h: H = H {{ }}; c: W = W {{ }}; ws: [W; 2] = [W {{ }}, W {{ }}]; k: H = H {{ }}; }}
     placement {{ b: cooperative(pool = io) where async_io; h: cooperative(pool = io2); }}
     fn pair() -> (W, Int) {{ return (self.b, 1); }}
     fn arr() -> [W; 1] {{ return [self.b]; }}
@@ -3719,13 +3727,70 @@ fn cross_pool_provenance_table() {
         ("a part of that literal is the handle", "", "let n = Node { w: self.b }; n.w.name = \"x\";", Refused("`n.w.name = …`")),
         ("scalar store through a local", "", "let w = self.b; w.n = 3;", Accepted),
         ("pulse-style stdlib result of another type", "", "let r = std::str::upper(self.b.name); let w = self.a; w.name = r;", Accepted),
+        // round 3: a part written joins into its container
+        ("array element written", "", "let mut ws = [self.a, self.a]; ws[0] = self.b; let w = ws[0]; w.name = \"main\";", Refused("`w.name = …`")),
+        ("array element written, same pool", "", "let mut ws = [self.a, self.a]; ws[0] = self.a; let w = ws[0]; w.name = \"main\";", Accepted),
+        ("a handle stored into a local locus's field", "", "let h = H { }; h.b = self.b; h.b.name = \"x\";", Illegal("cannot assign an existing locus value into locus-typed field")),
+        // round 3: an operand or fallback that may be skipped
+        ("&& may skip its right operand", "", "let mut w = self.b; let flag = false && { w = self.a; true }; w.name = \"main\";", Refused("`w.name = …`")),
+        ("|| may skip its right operand", "", "let mut w = self.b; let flag = true || { w = self.a; false }; w.name = \"main\";", Refused("`w.name = …`")),
+        ("&& skipped, same pool", "", "let mut w = self.a; let flag = false && { w = self.a; true }; w.name = \"main\";", Accepted),
+        ("or fallback may be skipped", "", "let mut w = self.b; let n = ok() or { w = self.a; 0 }; w.name = \"main\";", Refused("`w.name = …`")),
+        ("or fallback skipped, same pool", "", "let mut w = self.a; let n = ok() or { w = self.a; 0 }; w.name = \"main\";", Accepted),
+        ("or substitute value", "", "let w = maybe_w(self.a) or self.b; w.name = \"x\";", Refused("`w.name = …`")),
+        ("or success value", "", "let w = maybe_w(self.b) or self.a; w.name = \"x\";", Refused("`w.name = …`")),
+        ("or, same pool both ways", "", "let w = maybe_w(self.a) or self.a; w.name = \"x\";", Accepted),
+        // round 3: tuple bindings and array repetition, in bodies and summaries
+        ("tuple let in a helper", "", "let w = pick_t(self.b); w.name = \"main\";", Refused("`w.name = …`")),
+        ("tuple let in a helper, same pool", "", "let w = pick_t(self.a); w.name = \"main\";", Accepted),
+        ("tuple let", "", "let (x, n) = (self.b, 1); x.name = \"x\";", Refused("`x.name = …`")),
+        ("array repetition in a helper", "", "let ws = rep2(self.b); let w = ws[0]; w.name = \"main\";", Refused("`w.name = …`")),
+        ("array repetition", "", "let ws = [self.b; 2]; let w = ws[0]; w.name = \"main\";", Refused("`w.name = …`")),
+        // round 3: a helper's shadow is its own binding
+        ("helper shadowing its parameter", "", "let w = pick_s(self.b, self.a); w.name = \"main\";", Refused("`w.name = …`")),
+        ("helper shadowing its parameter, same pool", "", "let w = pick_s(self.a, self.b); w.name = \"main\";", Accepted),
+        // audit: every other form that can carry a handle
+        ("match tail", "", "let w = match 1 { _ -> self.b, }; w.name = \"x\";", Refused("`w.name = …`")),
+        ("match binding of the scrutinee", "", "match self.b { w -> { w.name = \"x\"; } }", Refused("`w.name = …`")),
+        ("tuple pattern in a match", "", "match (self.b, 1) { (w, n) -> { w.name = \"x\"; }, _ -> { } }", Refused("`w.name = …`")),
+        ("tuple pattern in a match, same pool", "", "match (self.a, 1) { (w, n) -> { w.name = \"x\"; }, _ -> { } }", Accepted),
+        ("a handle stored into a field of self", "", "self.c = self.b;", Illegal("cannot assign an existing locus value into locus-typed field")),
+        ("a handle stored into an element of an array field of self", "", "self.ws[0] = self.b; let w = self.ws[0]; w.name = \"x\";", Refused("`w.name = …`")),
+        (
+            "... by another member",
+            "fn stash() { self.ws[0] = self.b; }",
+            "let w = self.ws[1]; w.name = \"x\";",
+            Refused("`w.name = …`"),
+        ),
+        ("... a same-pool handle", "", "self.ws[0] = self.a; let w = self.ws[0]; w.name = \"x\";", Accepted),
+        ("a handle stored into a field of a same-pool child", "", "self.k.b = self.b; self.k.b.name = \"x\";", Refused("`self.k.b.name = …`")),
+        ("... a same-pool handle", "", "self.k.b = self.a; self.k.b.name = \"x\";", Accepted),
     ];
     let mut failures = Vec::new();
     for (name, extra, body, want) in rows {
+        // every row is a program the checker otherwise accepts, but an
+        // Illegal one, which an existing rule refuses
+        let prog = parse_source(&provenance_program(extra, body)).expect("parse failed");
+        let other: Vec<String> = check_program(&prog)
+            .into_iter()
+            .filter(|d| d.is_error() && !d.message.contains("cross-pool"))
+            .map(|d| d.message)
+            .collect();
+        if let Illegal(needle) = want {
+            if !other.iter().any(|m| m.contains(needle)) || other.is_empty() {
+                failures.push(format!("{name}: expected the existing refusal `{needle}`: {other:#?}"));
+            }
+            continue;
+        }
+        if !other.is_empty() {
+            failures.push(format!("{name}: not otherwise clean: {other:#?}"));
+            continue;
+        }
         let got: Vec<String> = check(&provenance_program(extra, body)).into_iter().filter(|m| m.contains("cross-pool")).collect();
         let ok = match want {
             Refused(needle) => got.len() == 1 && got[0].contains(needle),
             Accepted => got.is_empty(),
+            Illegal(_) => unreachable!("judged above"),
         };
         if !ok {
             failures.push(format!("{name}: {got:#?}"));
