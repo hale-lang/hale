@@ -310,7 +310,7 @@ main locus App {
         let pid_a = self.start_body(app, spine_dsn, nats_spine, nats_org);
         std::test::assert(self.body_up(app, BOOT), "acme's body came up: " + (std::io::fs::read_file(app + "/.hale/body.log") or ""));
         let other = scratch + "/north";
-        let cl = in_dir(scratch, "git\nclone\n-q\n" + bare + "\n" + other);
+        let cl = dna::clone_repo(bare, other);
         std::test::assert_eq_int(cl.code, 0, "north clones the record: " + cl.stderr);
         self.configure(other, "bob", "north", "kb");
         let synced = as_head(other, head_dsn, toolchain() + "\ndna\nsync");
@@ -373,7 +373,7 @@ main locus App {
         // ---- a forced claim of acme's lease from a third clone of acme's:
         // the epoch rises, the old body stops, north's does not
         let third = scratch + "/acme-2";
-        let cl2 = in_dir(scratch, "git\nclone\n-q\n" + bare + "\n" + third);
+        let cl2 = dna::clone_repo(bare, third);
         self.configure(third, "carol", "acme", "ka");
         let s2 = as_head(third, head_dsn, toolchain() + "\ndna\nsync");
         let claimed = as_head(third, acme_dsn, toolchain() + "\ndna\nbody\nclaim\n--force\n--as\ncarol");

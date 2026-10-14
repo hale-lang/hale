@@ -152,7 +152,7 @@ main locus App {
         let pushed = in_dir(app, "git\npush\n-q\norigin\nmain\nrefs/dna/*:refs/dna/*");
         std::test::assert_eq_int(pushed.code, 0, "pushed: " + pushed.stderr);
         let other = scratch + "/other";
-        let cloned = in_dir(scratch, "git\nclone\n-q\n" + bare + "\n" + other);
+        let cloned = dna::clone_repo(bare, other);
         let o1 = in_dir(other, "git\nconfig\nuser.name\ntomasz");
         let o2 = in_dir(other, "git\nconfig\nuser.email\ntomasz@local");
         let synced = in_dir(other, toolchain() + "\ndna\nsync");

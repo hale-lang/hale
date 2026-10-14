@@ -147,8 +147,10 @@ main locus App {
         std::io::fs::write_file(self.app + "/hale.toml", manifest) or discard;
         let bare = scratch + "/origin.git";
         let edge = scratch + "/edge-1";
-        let c0 = in_dir(self.app, "sh\n-c\ngit init -q --bare -b main \"$0\" && git config user.name riley && git config user.email riley@dna && git add -A && git commit -q -m 'the app and its fleet' && git remote add origin \"$0\" && git push -q origin main 'refs/dna/*:refs/dna/*' && git clone -q \"$0\" \"$1\"\n" + bare + "\n" + edge);
-        std::test::assert_eq_int(c0.code, 0, "the application, its origin and the node's clone: " + c0.stderr);
+        let c0 = in_dir(self.app, "sh\n-c\ngit init -q --bare -b main \"$0\" && git config user.name riley && git config user.email riley@dna && git add -A && git commit -q -m 'the app and its fleet' && git remote add origin \"$0\" && git push -q origin main 'refs/dna/*:refs/dna/*'\n" + bare);
+        std::test::assert_eq_int(c0.code, 0, "the application and its origin: " + c0.stderr);
+        let c1 = dna::clone_repo(bare, edge);
+        std::test::assert_eq_int(c1.code, 0, "the node's clone: " + c1.stderr);
 
         // ---- the nerves and the store, from the seed's compose
         let nerves = in_dir(self.app, toolchain() + "\ndna\nnerves\nmigrate\n.");
