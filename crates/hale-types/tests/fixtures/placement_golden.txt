@@ -1721,7 +1721,7 @@ row	App@literal1.s0	Source	pool:pa	entry	off owner
 row	App@literal1.s1	Source	pool:pb	entry	off owner
 row	App@literal1.sub	Counter	pool:p	entry	off owner
 
-== crates/hale-codegen/tests/bus_backpressure.rs#f036b7fe
+== crates/hale-codegen/tests/bus_backpressure.rs#d99a676f
 root	App	the entry
 domain	pool:p0
 domain	pool:p1

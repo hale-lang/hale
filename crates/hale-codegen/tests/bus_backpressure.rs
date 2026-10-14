@@ -899,7 +899,7 @@ const HEADROOM_ON_MAIN: &str = r#"
     }
     main locus App {
         params {
-            count: Int = 0; resumed_at: Int = 0; samples: Int = 0; least: Int = -1;
+            count: Int = 0; resumed_at: Int = 0; samples: Int = 0; least: Int = -1; stopped: Int = 0;
             s0: Source = Source { };
             s1: Source = Source { };
             s2: Source = Source { };
@@ -925,12 +925,20 @@ const HEADROOM_ON_MAIN: &str = r#"
                 let backlog = self.s0.sent + self.s1.sent + self.s2.sent + self.s3.sent - self.count;
                 if self.least < 0 || backlog < self.least { self.least = backlog; }
                 self.samples = self.samples + 1;
-                if self.samples == 200 { std::io::fs::write_file(stop(), "stop") or discard; }
+            }
+            // The sources stop after the 200th sample, or 5 s after the
+            // stall whatever was sampled, so a regression fails, never hangs.
+            if self.stopped == 0 && self.resumed_at > 0
+                && (self.samples >= 200 || std::time::monotonic_ns() - self.resumed_at > 5000000000) {
+                std::io::fs::write_file(stop(), "stop") or discard;
+                self.stopped = 1;
             }
         }
         run() {
             let deadline = std::time::monotonic_ns() + 60000000000;
-            while (self.samples < 200 && std::time::monotonic_ns() < deadline) { std::time::sleep(1ms); }
+            while (self.stopped == 0 && std::time::monotonic_ns() < deadline) { std::time::sleep(1ms); }
+            std::io::fs::write_file(stop(), "stop") or discard;
+            println("samples=" + to_string(self.samples));
             println("least_backlog=" + to_string(self.least));
             std::io::fs::unlink(stop()) or discard;
         }
@@ -941,6 +949,7 @@ const HEADROOM_ON_MAIN: &str = r#"
 #[test]
 fn a_bound_raised_on_mains_queue_is_headroom_for_the_stall_only() {
     let field = run_fields_env("headroom_main", HEADROOM_ON_MAIN, &[("LOTUS_BUS_QUEUE_CAP", "64")]);
+    assert_eq!(field("samples"), "200", "main sampled its backlog 200 times after the stall");
     let least: i64 = field("least_backlog").parse().expect("a count");
     assert!(least <= 3 * 64, "main's backlog stayed at {least} after the stall (expected at most 3 caps of 64)");
 }
