@@ -410,6 +410,10 @@ struct Walked {
     walk: hale_types::check::TypingWalk,
     plan: Option<crate::typing_reuse::Plan>,
     reuse: TypingReuse,
+    /// The declarations the edit changed (indices into
+    /// [`Snapshot::declarations`]), whose dependents in this snapshot are
+    /// read once the walk is done ([`Snapshot::final_walk`]).
+    changed: Vec<usize>,
 }
 
 /// The top scope and what building it reported.
@@ -478,6 +482,10 @@ pub struct Snapshot {
     /// the owned-view column computed over what it typed, and the rules
     /// read the survey.
     walking: OnceCell<Result<Walked, Blocked>>,
+    /// The walk checked against this snapshot's own dependents of what the
+    /// edit changed: `None` when the first walk stands, else the walk that
+    /// checked again what those dependents add ([`Snapshot::final_walk`]).
+    verifying: OnceCell<Result<Option<Walked>, Blocked>>,
     typed_bodies: OnceCell<Result<TypedBodies, Blocked>>,
     /// The owned-view column ([`hale_types::view_bindings::OwnedViewColumn`],
     /// GH #1554): the survey and the lowering view read it.
@@ -669,6 +677,7 @@ impl Snapshot {
             forms: OnceCell::new(),
             typing: OnceCell::new(),
             walking: OnceCell::new(),
+            verifying: OnceCell::new(),
             typed_bodies: OnceCell::new(),
             owned_views: OnceCell::new(),
             previous: Cell::new(None),
@@ -1175,11 +1184,11 @@ impl Snapshot {
         // The editor's previous snapshot of the seed, if it offered
         // one: what its per-declaration passes may stand in for.
         let offered = if reusing { self.previous.take() } else { None };
-        let (plan, reuse) = match offered {
-            None => (None, TypingReuse::Fresh),
+        let (plan, reuse, changed) = match offered {
+            None => (None, TypingReuse::Fresh, Vec::new()),
             Some(prev) => match self.reuse_plan(&prev) {
-                Ok((plan, reuse)) => (Some(plan), reuse),
-                Err(why) => (None, TypingReuse::Whole(why)),
+                Ok((plan, reuse, changed)) => (Some(plan), reuse, changed),
+                Err(why) => (None, TypingReuse::Whole(why), Vec::new()),
             },
         };
         let walk = hale_types::check::walk_bundle_by_declaration(
@@ -1189,7 +1198,72 @@ impl Snapshot {
             self.config.whole_program,
             &|key, i| plan.as_ref()?.get(key)?.get(i)?.clone(),
         );
-        Ok(Walked { walk, plan, reuse })
+        Ok(Walked { walk, plan, reuse, changed })
+    }
+
+    /// The walk the check reads: [`Snapshot::walked`]'s, unless this
+    /// snapshot's own dependents of a declaration the edit changed name
+    /// one the walk reused (an edge the edit added), which are then checked
+    /// again in a second walk of those alone. The relation reads the
+    /// allocation summary, which reads the owned-view column, which reads
+    /// the first walk (GH #1554): a reused declaration's types do not move
+    /// with another's body, so the column stands, and only diagnostics are
+    /// derived again.
+    fn final_walk(&self) -> Result<&Walked, &Blocked> {
+        let first = self.walked()?;
+        match self.verifying.get_or_init(|| self.verify_walk(first)) {
+            Ok(Some(again)) => Ok(again),
+            Ok(None) => Ok(first),
+            Err(b) => Err(b),
+        }
+    }
+
+    fn verify_walk(&self, first: &Walked) -> Result<Option<Walked>, Blocked> {
+        let Some(plan) = &first.plan else { return Ok(None) };
+        if first.changed.is_empty() {
+            return Ok(None);
+        }
+        let dependents = |site| self.declaration_dependents(site).ok();
+        let side = Side { programs: &self.programs, decls: self.declarations(), dependents: &dependents };
+        let (plan, reuse, missed) = match crate::typing_reuse::missed(&side, &first.changed, plan) {
+            Ok(missed) if missed.is_empty() => return Ok(None),
+            Ok(missed) => {
+                let mut plan = plan.clone();
+                for (key, i) in &missed {
+                    if let Some(row) = plan.get_mut(key).and_then(|row| row.get_mut(*i)) {
+                        *row = None;
+                    }
+                }
+                let reused = plan.values().flatten().filter(|d| d.is_some()).count();
+                let total = self.declarations().len();
+                (Some(plan), TypingReuse::Reused { checked: total - reused, reused }, missed)
+            }
+            Err(why) => (None, TypingReuse::Whole(why), std::collections::BTreeSet::new()),
+        };
+        let scope = self.scope().map_err(Clone::clone)?;
+        let inputs = hale_types::check::WalkInputs {
+            top: &scope.top,
+            handlers: self.demand_handlers().map_err(Clone::clone)?,
+            bindings: self.demand_bindings().map_err(Clone::clone)?,
+            units: self.demand_units().map_err(Clone::clone)?,
+            target: self.demand_target().map_err(Clone::clone)?,
+        };
+        // What the first walk checked stands (but where the relation
+        // adds a declaration); what it reused stands but where it is
+        // missed.
+        let walk = hale_types::check::walk_bundle_by_declaration(
+            &self.bundle(),
+            &inputs,
+            self.config.whole_program,
+            self.config.whole_program,
+            &|key, i| match plan.as_ref() {
+                None => None,
+                Some(plan) => plan.get(key)?.get(i)?.clone().or_else(|| {
+                    (!missed.contains(&(key.to_string(), i))).then(|| first.walk.by_decl.get(key)?.get(i).cloned()).flatten()
+                }),
+            },
+        );
+        Ok(Some(Walked { walk, plan, reuse, changed: Vec::new() }))
     }
 
     /// The typing's check over the snapshot's families, the scope's
@@ -1197,7 +1271,7 @@ impl Snapshot {
     /// ([`hale_types::check::check_bundle_rules`]).
     fn check_typing(&self) -> Result<Typed, Blocked> {
         let scope = self.scope().map_err(Clone::clone)?;
-        let walked = self.walked().map_err(Clone::clone)?;
+        let walked = self.final_walk().map_err(Clone::clone)?;
         // The effect rows on request: a codec binding's purity
         // assertion demands them, nothing else in the check does.
         let effects = || self.demand_effects().ok();
@@ -1260,7 +1334,10 @@ impl Snapshot {
     /// seed checked whole and why, or how many declarations were checked
     /// and reused.
     pub fn typing_reuse(&self) -> Option<&TypingReuse> {
-        self.walking.get()?.as_ref().ok().map(|w| &w.reuse)
+        match self.verifying.get() {
+            Some(Ok(Some(again))) => Some(&again.reuse),
+            _ => self.walking.get()?.as_ref().ok().map(|w| &w.reuse),
+        }
     }
 
     fn reuse_key(&self) -> ReuseKey {
@@ -1286,7 +1363,7 @@ impl Snapshot {
         }
     }
 
-    fn reuse_plan(&self, prev: &Snapshot) -> Result<(Plan, TypingReuse), &'static str> {
+    fn reuse_plan(&self, prev: &Snapshot) -> Result<(Plan, TypingReuse, Vec<usize>), &'static str> {
         if prev.reuse_key() != self.reuse_key() {
             return Err("another load: the entry, mode, target, config or import renames changed");
         }
@@ -1294,7 +1371,8 @@ impl Snapshot {
             return Err("the previous snapshot was not typed");
         };
         let prev_dependents = |site| prev.declaration_dependents(site).ok();
-        let next_dependents = |site| self.declaration_dependents(site).ok();
+        // This snapshot's own are read once its walk is done (`final_walk`).
+        let next_dependents = |_| None;
         crate::typing_reuse::plan(
             &Side { programs: &prev.programs, decls: prev.declarations(), dependents: &prev_dependents },
             &done.by_decl,
@@ -1329,7 +1407,7 @@ impl Snapshot {
     pub fn demand_typed_bodies(&self) -> Result<&TypedBodies, &Blocked> {
         self.typed_bodies
             .get_or_init(|| {
-                let walked = self.walked().map_err(Clone::clone)?;
+                let walked = self.final_walk().map_err(Clone::clone)?;
                 let whole;
                 let record = match walked.reuse {
                     TypingReuse::Reused { reused, .. } if reused > 0 => {
@@ -1699,23 +1777,7 @@ impl Snapshot {
     fn dependency_index(&self) -> Result<&DependencyIndex, &Blocked> {
         self.dependency_index
             .get_or_init(|| {
-                // The relation reads the summary's call edges, which no
-                // owned-view copy moves. A typing still planning what it
-                // reuses (its walk not done, so no column and no summary
-                // yet: GH #1554) reads them from a summary over no column;
-                // every other reader, from the snapshot's.
-                let edges;
-                let summary: &AllocSummary = match self.walking.get() {
-                    Some(_) => self.alloc_summary().map_err(Clone::clone)?,
-                    None => {
-                        self.scope().map_err(Clone::clone)?;
-                        edges = hale_types::alloc_summary::derive_alloc_summary_over(
-                            &self.bundle(),
-                            &hale_types::view_bindings::OwnedViewColumn::default(),
-                        );
-                        &edges
-                    }
-                };
+                let summary = self.alloc_summary().map_err(Clone::clone)?;
                 let ownership = self.demand_ownership_graph().map_err(Clone::clone)?;
                 let bus = self.demand_bus_graph().map_err(Clone::clone)?;
                 let placement = self.demand_placement().map_err(Clone::clone)?;

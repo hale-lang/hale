@@ -348,8 +348,14 @@ call that may hand it back). A call may hand back a place's value when
 its callee returns a part of a parameter (`fn get_in(r: R) -> In {
 return r.arr[0]; }` returns the caller's block uncopied), a form cell's
 read (`fn read() -> Rec { return self.m.get(1) or Rec { }; }`), or what
-a callee that does returns — transitively, by which parameter; a callee
-the compiler cannot identify may hand back anything. A result declared a
+a callee that does returns — transitively, by which parameter. A callee
+the compiler cannot identify (a call through a fn value, a name nothing
+declares) may hand back a part of any argument its declared result type
+can be, hold or share a record, enum, array or tuple with (a `Response`
+handed back by `fn(Context) -> Response` is no part of the `Context`),
+and anything where that type is unknown; through a fn value that may be
+a method read as a value, also whatever that method's receiver holds. A
+result declared a
 primitive or a handle never is one; a result fresh at its top level that
 holds such a value in a field (a returned struct literal around `r.arr[0]`)
 copies only when a write goes below that field. A free fn returning a

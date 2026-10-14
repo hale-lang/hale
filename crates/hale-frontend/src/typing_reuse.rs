@@ -24,7 +24,11 @@
 //!   `on_failure`'s) is set aside. It is checked again, and so is every
 //!   declaration the families name as its dependent
 //!   (`Snapshot::declaration_dependents`), in the previous snapshot (an
-//!   edge the edit removed) and in the new one (an edge it added);
+//!   edge the edit removed) and in the new one (an edge it added; read
+//!   once the new snapshot's walk is done, since that relation reads the
+//!   allocation summary, which reads the walk's owned-view column, GH
+//!   #1554: a declaration it adds that the walk reused is checked again
+//!   then, in a second walk of those alone);
 //! - **anything else** checks the seed whole: a declaration added,
 //!   removed, renamed or reordered, an edit to what a declaration
 //!   declares (read through the scope, which no family records), a
@@ -90,8 +94,16 @@ pub(crate) struct Side<'a> {
 pub(crate) type Plan = BTreeMap<String, Vec<Option<DeclChecked>>>;
 
 /// The reuse of `prev`'s per-declaration results (`checked`) in `next`,
-/// or why the seed is checked whole.
-pub(crate) fn plan(prev: &Side<'_>, checked: &ByDeclaration, next: &Side<'_>) -> Result<(Plan, TypingReuse), &'static str> {
+/// or why the seed is checked whole, with the declarations that changed
+/// (indices into `next.decls`). The dependents read here are the previous
+/// snapshot's (an edge the edit removed): the new snapshot's (an edge it
+/// added) are read once its walk is done ([`missed`]). `next.dependents`
+/// is not called.
+pub(crate) fn plan(
+    prev: &Side<'_>,
+    checked: &ByDeclaration,
+    next: &Side<'_>,
+) -> Result<(Plan, TypingReuse, Vec<usize>), &'static str> {
     if !prev.programs.keys().eq(next.programs.keys()) {
         return Err("the seed's programs changed");
     }
@@ -130,7 +142,7 @@ pub(crate) fn plan(prev: &Side<'_>, checked: &ByDeclaration, next: &Side<'_>) ->
         }
     }
     let mut recheck: BTreeSet<usize> = changed.iter().copied().collect();
-    for side in [prev, next] {
+    for side in [prev] {
         let index: BTreeMap<SiteId, usize> =
             side.decls.iter().enumerate().filter_map(|(i, d)| Some((d.site?, i))).collect();
         for &c in &changed {
@@ -169,7 +181,34 @@ pub(crate) fn plan(prev: &Side<'_>, checked: &ByDeclaration, next: &Side<'_>) ->
         row.push(kept);
     }
     let total = next.decls.len();
-    Ok((plan, TypingReuse::Reused { checked: total - reused, reused }))
+    Ok((plan, TypingReuse::Reused { checked: total - reused, reused }, changed))
+}
+
+/// The declarations `plan` reuses that the new snapshot's dependents of a
+/// `changed` declaration name (an edge the edit added): each must be
+/// checked again, by program key and item. `Err` when the relation
+/// cannot answer (the seed is then checked whole).
+pub(crate) fn missed(next: &Side<'_>, changed: &[usize], plan: &Plan) -> Result<BTreeSet<(String, usize)>, &'static str> {
+    let index: BTreeMap<SiteId, usize> =
+        next.decls.iter().enumerate().filter_map(|(i, d)| Some((d.site?, i))).collect();
+    let mut out = BTreeSet::new();
+    for &c in changed {
+        let site = next.decls[c].site.ok_or("a changed declaration has no site")?;
+        match (next.dependents)(site) {
+            None => return Err("the families are blocked"),
+            Some(Dependents::Whole(why)) => return Err(why),
+            Some(Dependents::Decls(sites)) => {
+                for i in sites.iter().filter_map(|s| index.get(s)) {
+                    let d = &next.decls[*i];
+                    let key = d.program.display().to_string();
+                    if plan.get(&key).and_then(|row| row.get(d.index)).is_some_and(Option::is_some) {
+                        out.insert((key, d.index));
+                    }
+                }
+            }
+        }
+    }
+    Ok(out)
 }
 
 /// Every position of the diagnostic in the seed's space lies inside the
