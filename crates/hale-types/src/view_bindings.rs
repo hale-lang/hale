@@ -2870,7 +2870,11 @@ impl<'p, 'a> Walk<'p, 'a> {
                     // through either reaches the other (`h.arr = r.arr;
                     // h.arr[0].k = 7` with both parameters). The value is
                     // stored as a copy, as a struct field's is (GH #992).
-                    let param_head = matches!(head, Some(None)) && self.params.contains(&target.head.name);
+                    // (A handle parameter's field is a locus's own storage,
+                    // which a store copies into on its own.)
+                    let param_head = matches!(head, Some(None))
+                        && self.params.contains(&target.head.name)
+                        && !self.handle_only_params.contains(&target.head.name);
                     if param_head
                         && self.summary.is_some()
                         && keys.as_ref().is_some_and(|k| k.iter().any(|k| k.starts_with(AT) || k.starts_with(PART)))
