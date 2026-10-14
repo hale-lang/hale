@@ -219,7 +219,13 @@ fn run_tool(argv: String) -> RunResult {
 // clone's own auto-gc and maintenance are off, so it races nothing the
 // fixture does next either.
 fn clone_repo(src: String, dst: String) -> RunResult {
-    return run_tool("git\nclone\n--quiet\n--no-local\n--config\ngc.auto=0\n--config\nmaintenance.auto=false\n" + src + "\n" + dst);
+    return clone_repo_with("", src, dst);
+}
+
+// `clone_repo` with more of `git clone`'s flags, one per line and each
+// line ended (`"-b\nmain\n"` checks out `main`).
+fn clone_repo_with(flags: String, src: String, dst: String) -> RunResult {
+    return run_tool("git\nclone\n--quiet\n--no-local\n--config\ngc.auto=0\n--config\nmaintenance.auto=false\n" + flags + src + "\n" + dst);
 }
 
 // `argv` under a wall-clock limit of `secs`; exit 124 when the limit
