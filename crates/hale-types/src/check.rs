@@ -611,27 +611,38 @@ fn check_numbered_bundle(
 ) -> Vec<Diag> {
     let handlers = crate::bundle_handler_rows(bundle);
     let flows = crate::bundle_flow_rows(bundle, top);
+    let bindings = crate::binding_rows::derive_binding_rows(bundle, top);
+    let units = crate::units::derive_unit_rows(bundle);
+    let target = crate::capability::target_row(bundle);
+    // The walk first: the owned-view column the survey reads is computed
+    // over what it typed (GH #1554).
+    let walk = walk_bundle_by_declaration(
+        bundle,
+        &WalkInputs { top, handlers: &handlers, bindings: &bindings, units: &units, target: &target },
+        false,
+        false,
+        &|_, _| None,
+    );
+    let entry = crate::entry::entry_row(bundle);
+    let placement = crate::placement::derive_placement(bundle, top, &entry);
+    let intra_locus = crate::bundle_intra_locus(bundle, &placement);
+    let views =
+        crate::view_bindings::OwnedViewColumn::derive(&bundle.programs, &walk.record.views, &intra_locus, top, true);
     let alloc_summary =
-        std::sync::Arc::new(crate::alloc_summary::derive_alloc_summary(bundle));
+        std::sync::Arc::new(crate::alloc_summary::derive_alloc_summary_over(bundle, &views));
     let rows = std::cell::OnceCell::new();
     let effects = || {
         Some(rows.get_or_init(|| {
             crate::effect_rows::derive_effect_rows(bundle, top, alloc_summary.clone())
         }))
     };
-    let entry = crate::entry::entry_row(bundle);
-    let placement = crate::placement::derive_placement(bundle, top, &entry);
     let ownership = crate::ownership_graph::build_ownership_graph(bundle, top, &placement, &entry);
     let forms = crate::form_rows::form_rows(bundle, top, &placement, true);
-    let bindings = crate::binding_rows::derive_binding_rows(bundle, top);
     let bus = crate::bus_graph::build_bus_graph(bundle, top, &bindings, &placement, &entry);
-    let intra_locus = crate::bundle_intra_locus(bundle, &placement);
-    let target = crate::capability::target_row(bundle);
     let uses = crate::capability::uses::derive_capability_uses(bundle, &alloc_summary);
     let laws = crate::bundle_law_selection(bundle);
     let roles = crate::roles::role_rows(bundle);
     let surfaces = crate::surfaces::surface_rows(bundle, &entry, &placement, &top.topics);
-    let units = crate::units::derive_unit_rows(bundle);
     let inputs = CheckInputs {
         top,
         handlers: &handlers,
@@ -652,7 +663,9 @@ fn check_numbered_bundle(
         surfaces: &surfaces,
         units: &units,
     };
-    check_bundle_scoped(bundle, &inputs, allow_unowned_subscriber, false, false)
+    let (mut diags, _, _) = check_bundle_rules(bundle, &inputs, &walk, allow_unowned_subscriber, &|_, _| None);
+    diags.extend(typed_body_laws(bundle, &inputs, &walk.record));
+    diags
 }
 
 /// Two whole-program strictnesses, both off for a partial program.
@@ -699,13 +712,27 @@ pub fn check_bundle_reporting(
 ) -> (Vec<Diag>, crate::effects::EffectCertificates) {
     let (mut diags, certificates, record) =
         check_bundle_typing(bundle, inputs, allow_unowned_subscriber, strict_callees, strict_idents);
-    let table = crate::typed_bodies::typed_bodies(bundle, inputs.top, &record);
+    diags.extend(typed_body_laws(bundle, inputs, &record));
+    (diags, certificates)
+}
+
+/// The laws a bundle no snapshot holds runs over its typing's record,
+/// after the check: the `bare_fallible` law, the may-violate law, the
+/// surface laws and the closures' reach law, as the snapshot's typing
+/// stage runs them over its own.
+fn typed_body_laws(
+    bundle: &Bundle<'_>,
+    inputs: &CheckInputs<'_>,
+    record: &crate::typed_bodies::TypingRecord,
+) -> Vec<Diag> {
+    let mut diags = Vec::new();
+    let table = crate::typed_bodies::typed_bodies(bundle, inputs.top, record);
     diags.extend(crate::bare_fallible::bare_fallible_calls(&table));
     diags.extend(crate::violate_fallible::violate_fallible_laws(bundle, inputs.alloc_summary));
     diags.extend(crate::surfaces::surface_laws(bundle, inputs.surfaces, inputs.roles, inputs.alloc_summary));
     diags.extend(crate::surfaces::serve_laws(bundle, inputs.surfaces, inputs.entry));
     diags.extend(crate::closure_events::unreached_event_laws(bundle, inputs.handlers, inputs.entry, &table));
-    (diags, certificates)
+    diags
 }
 
 /// [`check_bundle_reporting`], with what the checker typed beside it
@@ -739,6 +766,9 @@ pub fn check_bundle_typing(
 pub struct DeclChecked {
     pub typing: Vec<Diag>,
     pub reveal: Vec<Diag>,
+    /// The `views` rows the walk recorded for the declaration
+    /// (`crate::typed_bodies::ViewTypes`, GH #1554).
+    pub views: std::sync::Arc<crate::typed_bodies::ViewTypes>,
 }
 
 /// Each program's declarations' [`DeclChecked`], by the bundle's program
@@ -755,6 +785,44 @@ pub type ByDeclaration = BTreeMap<String, Vec<DeclChecked>>;
 /// the whole check. The typing record holds what the walk typed, so it
 /// is the whole check's only when `reuse` answered none: a reused
 /// declaration's bodies are not in it.
+/// What the checker's walk of a bundle reads beside the bundle: the
+/// scope, the handler rows, the binding rows, the unit declarations and
+/// the effective target. The walk reads no family derived from the
+/// allocation survey, so the survey may read what the walk typed (the
+/// `views` column, GH #1554) and the bundle rules read the survey.
+pub struct WalkInputs<'a> {
+    pub top: &'a TopScope,
+    pub handlers: &'a crate::handler_routing::HandlerRouting,
+    pub bindings: &'a crate::binding_rows::BindingRows,
+    pub units: &'a crate::units::UnitRows,
+    pub target: &'a crate::capability::TargetRow,
+}
+
+impl<'a> WalkInputs<'a> {
+    /// The walk's inputs among the check's.
+    pub fn of(inputs: &CheckInputs<'a>) -> WalkInputs<'a> {
+        WalkInputs {
+            top: inputs.top,
+            handlers: inputs.handlers,
+            bindings: inputs.bindings,
+            units: inputs.units,
+            target: inputs.target,
+        }
+    }
+}
+
+/// The checker's walk of a bundle (GH #1554 split it from the bundle
+/// rules): what it reported, per declaration and after (the settled
+/// specializations and accesses), the typing record (the typed-body
+/// table's, the `views` column of every declaration included), and the
+/// per-declaration results, the reveal rule's not yet in.
+#[derive(Debug, Clone, Default)]
+pub struct TypingWalk {
+    pub diags: Vec<Diag>,
+    pub record: crate::typed_bodies::TypingRecord,
+    pub by_decl: ByDeclaration,
+}
+
 pub fn check_bundle_by_declaration(
     bundle: &Bundle<'_>,
     inputs: &CheckInputs<'_>,
@@ -763,6 +831,22 @@ pub fn check_bundle_by_declaration(
     strict_idents: bool,
     reuse: &dyn Fn(&str, usize) -> Option<DeclChecked>,
 ) -> (Vec<Diag>, crate::effects::EffectCertificates, crate::typed_bodies::TypingRecord, ByDeclaration) {
+    let walk = walk_bundle_by_declaration(bundle, &WalkInputs::of(inputs), strict_callees, strict_idents, reuse);
+    let (diags, certificates, by_decl) = check_bundle_rules(bundle, inputs, &walk, allow_unowned_subscriber, reuse);
+    (diags, certificates, walk.record, by_decl)
+}
+
+/// The checker's walk ([`TypingWalk`]): every declaration's own pass,
+/// or `reuse`'s answer for it, then the specializations and the
+/// accesses settled. The `views` column of the record is every
+/// declaration's rows, the reused ones' included.
+pub fn walk_bundle_by_declaration(
+    bundle: &Bundle<'_>,
+    inputs: &WalkInputs<'_>,
+    strict_callees: bool,
+    strict_idents: bool,
+    reuse: &dyn Fn(&str, usize) -> Option<DeclChecked>,
+) -> TypingWalk {
     let top = inputs.top;
     let mut diags = Vec::new();
     let reused: BTreeMap<&str, Vec<Option<DeclChecked>>> = bundle
@@ -771,18 +855,10 @@ pub fn check_bundle_by_declaration(
         .map(|(key, p)| (key.as_str(), (0..p.items.len()).map(|i| reuse(key, i)).collect()))
         .collect();
     let mut by_decl: ByDeclaration = BTreeMap::new();
-    let certificates;
     let known = &top.names;
     let mut typed = crate::typed_bodies::TypingRecord::default();
     let templates = GenericTemplates::of(bundle);
     monomorph_table(bundle, known, &templates, &mut typed.monomorphs);
-    // The effective target's own refusal: an explicit `--target` a
-    // written declaration contradicts (T1(b)).
-    diags.extend(inputs.target.refusals.iter().cloned());
-    // The admission law (F.40 phase 3, P3): every use whose cell is
-    // `Reject` on the effective target, located at its first site in
-    // the program's own sources, with its witness.
-    diags.extend(crate::capability::uses::admission_diags(inputs.uses, inputs.target, &bundle.import_renames));
     // GH #255: bundle-wide set of transport-bound topic names,
     // for the `or wait` legality check at publish sites.
     //
@@ -924,6 +1000,7 @@ pub fn check_bundle_by_declaration(
         typed: &mut typed,
         body: NodeId::NONE,
         expr_types: None,
+        views: Default::default(),
         locus_decl: None,
         templates: &templates,
         generic_bindings: BTreeMap::new(),
@@ -945,15 +1022,15 @@ pub fn check_bundle_by_declaration(
     for (key, program) in &bundle.programs {
         let mut per = Vec::with_capacity(program.items.len());
         for (i, item) in program.items.iter().enumerate() {
-            let typing = match &reused[key.as_str()][i] {
-                Some(done) => done.typing.clone(),
+            let (typing, views) = match &reused[key.as_str()][i] {
+                Some(done) => (done.typing.clone(), done.views.clone()),
                 None => {
                     let start = cx.diags.len();
                     cx.decl_diags_start = start;
                     cx.check_top_decl(item);
                     cx.settle_decimal_literals();
                     cx.settle_param_accesses(start);
-                    cx.diags.split_off(start)
+                    (cx.diags.split_off(start), std::sync::Arc::new(std::mem::take(&mut cx.views)))
                 }
             };
             // GH #1076 (U3): a quantity rule's error a default's walk found
@@ -966,7 +1043,7 @@ pub fn check_bundle_by_declaration(
                     cx.diags.push(d.clone());
                 }
             }
-            per.push(DeclChecked { typing, reveal: Vec::new() });
+            per.push(DeclChecked { typing, reveal: Vec::new(), views });
         }
         by_decl.insert(key.clone(), per);
     }
@@ -977,6 +1054,40 @@ pub fn check_bundle_by_declaration(
     // diagnostic the check has, a template's own included.
     cx.settle_param_accesses(0);
     debug_assert!(cx.access_visits.is_empty(), "every kept access is settled");
+    // Each declaration's table, not a copy of its rows.
+    typed.views = by_decl
+        .iter()
+        .map(|(key, rows)| (key.clone(), rows.iter().map(|done| done.views.clone()).collect()))
+        .collect();
+    TypingWalk { diags, record: typed, by_decl }
+}
+
+/// The bundle rules of the check, over the walk's results: the target's
+/// refusals and admission, the walk's diagnostics, then every
+/// bundle-wide rule and the reveal rule (its per-declaration results
+/// added to the walk's, `reuse` answering for a reused declaration).
+pub fn check_bundle_rules(
+    bundle: &Bundle<'_>,
+    inputs: &CheckInputs<'_>,
+    walk: &TypingWalk,
+    allow_unowned_subscriber: bool,
+    reuse: &dyn Fn(&str, usize) -> Option<DeclChecked>,
+) -> (Vec<Diag>, crate::effects::EffectCertificates, ByDeclaration) {
+    let top = inputs.top;
+    let known = &top.names;
+    let handlers = inputs.handlers;
+    let certificates;
+    let mut diags = Vec::new();
+    // The effective target's own refusal: an explicit `--target` a
+    // written declaration contradicts (T1(b)).
+    diags.extend(inputs.target.refusals.iter().cloned());
+    // The admission law (F.40 phase 3, P3): every use whose cell is
+    // `Reject` on the effective target, located at its first site in
+    // the program's own sources, with its witness.
+    diags.extend(crate::capability::uses::admission_diags(inputs.uses, inputs.target, &bundle.import_renames));
+    diags.extend(walk.diags.iter().cloned());
+    let mut by_decl = walk.by_decl.clone();
+    let raw_frame_topics = raw_frame_topics(bundle, inputs.bindings);
     // Bundle-level rules around topic bindings:
     //   - at most one `main` locus per bundle
     //   - bindings entries reference declared topics
@@ -1016,7 +1127,7 @@ pub fn check_bundle_by_declaration(
             bindings: inputs.bindings,
             entry: inputs.entry,
             ownership: &|| Some(inputs.ownership),
-            omitted: &typed.omitted_args,
+            omitted: &walk.record.omitted_args,
         },
     ));
     // F.40 phase 4, W3: the recovery events a closure's
@@ -1213,7 +1324,7 @@ pub fn check_bundle_by_declaration(
         &bundle.programs,
         &bundle.import_renames,
         &bundle.sources,
-        &|key, i| reused[key][i].as_ref().map(|done| done.reveal.clone()),
+        &|key, i| reuse(key, i).map(|done| done.reveal),
     );
     for (key, per) in reveals {
         let rows = by_decl.get_mut(&key).expect("the walk recorded every program");
@@ -1223,7 +1334,7 @@ pub fn check_bundle_by_declaration(
         }
     }
     diags.extend(crate::stdlib_names::stdlib_name_diags(&bundle.programs));
-    (diags, certificates, typed, by_decl)
+    (diags, certificates, by_decl)
 }
 
 /// The bundle's generic type and locus templates, by identity: the
@@ -7433,6 +7544,12 @@ struct Checker<'a> {
     /// each expression, by node, so its accumulators read the types of
     /// the very expressions they accumulate.
     expr_types: Option<Vec<(*const Expr, Ty)>>,
+    /// The `views` column's rows of the declaration being walked
+    /// (GH #1554, `crate::typed_bodies::ViewTypes`): every expression's
+    /// type, every binding's, every assignment target's, every call's
+    /// callee. Taken into the declaration's `DeclChecked` as its walk
+    /// ends.
+    views: crate::typed_bodies::ViewTypes,
     /// The locus declaration being walked, if any: a generic one's
     /// accumulator rows are specialized per monomorph.
     locus_decl: Option<&'a LocusDecl>,
@@ -11191,6 +11308,7 @@ impl<'a> Checker<'a> {
                             ty
                         }
                     };
+                    self.note_view_binding(&p.name, &ty, Some(&p.ty));
                     self.locals.insert(&p.name.name, LocalSym { ty, is_mut: false });
                 }
                 self.check_block(&lc.body);
@@ -11266,6 +11384,7 @@ impl<'a> Checker<'a> {
                 for p in &fd.params {
                     self.check_type_annotation(&p.ty);
                     let ty = self.resolve_te(&p.ty);
+                    self.note_view_binding(&p.name, &ty, Some(&p.ty));
                     self.locals.insert(&p.name.name, LocalSym { ty, is_mut: false });
                 }
                 self.check_block(&fd.body);
@@ -11879,6 +11998,7 @@ impl<'a> Checker<'a> {
         self.locals.push();
         for p in &decl.params {
             let ty = self.resolve_param_te(&p.ty);
+            self.note_view_binding(&p.name, &ty, Some(&p.ty));
             self.locals.insert(&p.name.name, LocalSym { ty, is_mut: false });
         }
         self.check_fn_body(&decl.body);
@@ -12152,6 +12272,7 @@ impl<'a> Checker<'a> {
                         got
                     }
                 };
+                self.note_view_binding(name, &bound, ty.as_ref());
                 self.locals.insert(
                     &name.name,
                     LocalSym { ty: bound, is_mut: *is_mut },
@@ -12197,6 +12318,7 @@ impl<'a> Checker<'a> {
                     }
                 };
                 for (n, t) in names.iter().zip(elem_tys.iter()) {
+                    self.note_view_binding(n, t, None);
                     self.locals.insert(
                         &n.name,
                         LocalSym { ty: t.clone(), is_mut: *is_mut },
@@ -12351,6 +12473,7 @@ impl<'a> Checker<'a> {
                     }
                 };
                 self.locals.push();
+                self.note_view_binding(name, &elem, None);
                 self.locals.insert(&name.name, LocalSym { ty: elem, is_mut: false });
                 self.check_block(body);
                 self.locals.pop();
@@ -13248,6 +13371,10 @@ impl<'a> Checker<'a> {
         } else {
             Ty::Unknown
         };
+        let records = self.records_views();
+        if records {
+            self.views.note_place(&lv.head, ty.clone());
+        }
         for seg in &lv.tail {
             match seg {
                 LValueSeg::Field(f) => {
@@ -13260,7 +13387,15 @@ impl<'a> Checker<'a> {
                     // worse than reading it. A write is a row of its own
                     // kind, so the rule says "writes one from outside".
                     self.record_param_access(&ty, f, f.span, crate::typed_bodies::AccessKind::Write);
+                    let owner = ty.clone();
                     ty = self.field_ty(&ty, &f.name).unwrap_or(Ty::Unknown);
+                    if records {
+                        let view = match &ty {
+                            Ty::Unknown => self.interface_field(&owner, &f.name).map(Ty::Named).unwrap_or(Ty::Unknown),
+                            t => t.clone(),
+                        };
+                        self.views.note_place(f, view);
+                    }
                 }
                 LValueSeg::Index(idx) => {
                     let _ = self.check_expr(idx);
@@ -13268,6 +13403,9 @@ impl<'a> Checker<'a> {
                         Ty::Array(elem, _) => *elem,
                         _ => Ty::Unknown,
                     };
+                    if records {
+                        self.views.note_place(idx, ty.clone());
+                    }
                 }
             }
         }
@@ -16151,7 +16289,255 @@ impl<'a> Checker<'a> {
         if let Some(seen) = &mut self.expr_types {
             seen.push((expr as *const Expr, ty.clone()));
         }
+        if self.records_views() {
+            self.note_view_expr(expr, &ty);
+        }
         ty
+    }
+
+    /// Whether the walk records the `views` column (GH #1554): the
+    /// ordinary walk of the declaration's own bodies. A specialization's
+    /// walk types the template's sites again under its arguments, and a
+    /// default walked where it is evaluated is another declaration's
+    /// text: neither records.
+    fn records_views(&self) -> bool {
+        self.specializing.is_none()
+            && self.struct_defaults_typing.is_empty()
+            && self.default_invocations.is_empty()
+            && self.default_evaluation.is_empty()
+    }
+
+    /// The `views` row of a binding's name: the type the local was bound
+    /// with, or, for a binding written as an interface (which the
+    /// checker's own slot types `Unknown`), that interface.
+    fn note_view_binding(&mut self, name: &Ident, ty: &Ty, written: Option<&TypeExpr>) {
+        if !self.records_views() {
+            return;
+        }
+        let ty = match (ty, written) {
+            (Ty::Unknown, Some(te)) => self.view_interface(te).map(Ty::Named).unwrap_or(Ty::Unknown),
+            _ => ty.clone(),
+        };
+        self.views.note_binding(name, ty);
+    }
+
+    /// The interface a type expression names, however it is written: a
+    /// name, an imported seed's `lib::I`, a stdlib path (`std::http::Handler`),
+    /// an alias of one. The `views` column holds it where the checker's
+    /// own slot types an interface `Unknown`.
+    fn view_interface(&self, te: &TypeExpr) -> Option<String> {
+        let TypeExpr::Named { path, generic_args, .. } = te else { return None };
+        if !generic_args.is_empty() {
+            return None;
+        }
+        let segs: Vec<&str> = path.segments.iter().map(|s| s.name.as_str()).collect();
+        let name = match segs.as_slice() {
+            [one] => one.to_string(),
+            _ => crate::stdlib_bodies::mangled_locus_name(&segs)
+                .map(str::to_string)
+                .or_else(|| self.known.import_target(&segs.join("::")).map(str::to_string))?,
+        };
+        if self.generic_params.contains(&name) || self.generic_bindings.contains_key(&name) {
+            return None;
+        }
+        self.top.interface_named(&name).map(str::to_string)
+    }
+
+    /// The `views` rows of an expression the walk typed `ty`: its type
+    /// (a field written as an interface is that interface, as a binding
+    /// is), and a call's callee.
+    fn note_view_expr(&mut self, expr: &Expr, ty: &Ty) {
+        // The pass reads a literal and an operator by their shape, and a
+        // local's read by its binding's row: no row of their own.
+        match expr {
+            Expr::Literal(..) | Expr::Binary { .. } | Expr::Unary { .. } | Expr::Range { .. } => return,
+            Expr::Ident(id) if self.locals.lookup(&id.name).is_some() => return,
+            _ => {}
+        }
+        let ty = match (ty, expr) {
+            (Ty::Unknown, Expr::Field { receiver, name, .. }) => {
+                self.interface_field(&self.view_expr_ty(receiver), &name.name).map(Ty::Named).unwrap_or(Ty::Unknown)
+            }
+            _ => ty.clone(),
+        };
+        self.views.note_expr(expr, ty);
+        if let Expr::Call { callee, args, .. } = expr {
+            let callee = self.view_callee(callee, args);
+            self.views.note_callee(expr, callee);
+        }
+    }
+
+    /// The interface the field `field` of a value of type `owner` is
+    /// written as (a locus's param, a record's field), if it is one.
+    fn interface_field(&self, owner: &Ty, field: &str) -> Option<String> {
+        let Ty::Named(owner) = owner else { return None };
+        if let Some(l) = self.locus_decls.get(owner.as_str()) {
+            for m in &l.members {
+                let LocusMember::Params(pb) = m else { continue };
+                if let Some(te) = pb.params.iter().find(|p| p.name.name == field).and_then(|p| p.ty.as_ref()) {
+                    return self.view_interface(te);
+                }
+            }
+            return None;
+        }
+        let t = self.type_decls.get(owner.as_str())?;
+        let TypeDeclBody::Struct(fields) = &t.body else { return None };
+        fields.iter().find(|f| f.name.name == field).and_then(|f| self.view_interface(&f.ty))
+    }
+
+    /// What a call names, as this walk resolved it (the `views` column's
+    /// callee row, GH #1554), read after the call was typed: its callee's
+    /// and its receiver's rows are in.
+    fn view_callee(&self, callee: &Expr, args: &[Expr]) -> crate::typed_bodies::CalleeRef {
+        use crate::typed_bodies::CalleeRef;
+        match callee {
+            Expr::Ident(id) => {
+                let n = id.name.as_str();
+                if self.locals.lookup(n).is_some() {
+                    return CalleeRef::Value;
+                }
+                if self.generic_fns.contains_key(n) {
+                    return CalleeRef::Fn(n.to_string());
+                }
+                match self.top.lookup(n) {
+                    Some(TopSymbol::Fn(_)) => return CalleeRef::Fn(n.to_string()),
+                    // A conversion to a declared scalar (`Session(n)`).
+                    Some(TopSymbol::Type(TypeInfo { kind: TypeKind::Scalar(_), .. })) => {
+                        return CalleeRef::Std(vec![n.to_string()])
+                    }
+                    _ => {}
+                }
+                if matches!(n, "push" | "at" | "set" | "count" | "clear" | "truncate")
+                    && args.first().is_some_and(|a| matches!(self.view_expr_ty(a), Ty::Bounded(..)))
+                {
+                    return CalleeRef::Bounded;
+                }
+                if crate::builtin_sigs::bare_builtin_sig(n).is_some()
+                    || crate::stdlib_surface::builtin_effects(n).is_some()
+                    || crate::stdlib_surface::row(&[n]).is_some()
+                    || BARE_BUILTIN_CALLEES.contains(&n)
+                {
+                    return CalleeRef::Std(vec![n.to_string()]);
+                }
+                CalleeRef::Unknown
+            }
+            Expr::Path(qn) => {
+                let segs: Vec<&str> = qn.segments.iter().map(|s| s.name.as_str()).collect();
+                // GH #470: a `std::` path to a Hale-source stdlib fn.
+                if let Some(m) = crate::stdlib_bodies::mangled_locus_name(&segs) {
+                    if let Some(TopSymbol::Fn(_)) = self.top.lookup(m) {
+                        return CalleeRef::Fn(m.to_string());
+                    }
+                }
+                if segs.first() == Some(&"std") || crate::stdlib_surface::row(&segs).is_some() {
+                    return CalleeRef::Std(segs.iter().map(|s| s.to_string()).collect());
+                }
+                if segs.len() == 2 {
+                    match self.top.symbols.get(segs[0]) {
+                        Some(TopSymbol::Type(TypeInfo { kind: TypeKind::Enum(variants), .. })) => {
+                            if variants.iter().any(|v| v.name == segs[1]) {
+                                return CalleeRef::Ctor;
+                            }
+                        }
+                        Some(TopSymbol::Locus(li)) if li.methods.iter().any(|m| m.name == segs[1]) => {
+                            return CalleeRef::Method { owner: segs[0].to_string(), name: segs[1].to_string() };
+                        }
+                        _ => {}
+                    }
+                }
+                if self.imported_fn(qn).is_some() {
+                    if let Some(m) = self.known.import_target(&segs.join("::")) {
+                        return CalleeRef::Fn(m.to_string());
+                    }
+                }
+                CalleeRef::Unknown
+            }
+            Expr::Field { receiver, name, .. } => self.view_method(&self.view_expr_ty(receiver), &name.name),
+            _ => CalleeRef::Unknown,
+        }
+    }
+
+    /// The type this walk gave `e`, as the `views` column holds it: a
+    /// local's read has no row of its own, its binding's type answers.
+    fn view_expr_ty(&self, e: &Expr) -> Ty {
+        match e {
+            Expr::Ident(id) => match self.locals.lookup(&id.name) {
+                Some(local) => local.ty.clone(),
+                None => self.views.expr(e).clone(),
+            },
+            e => self.views.expr(e).clone(),
+        }
+    }
+
+    /// The method `m` of a value of type `rt`, as the field arm resolves
+    /// it: a form's synthesized operation, a locus's declared method, a
+    /// fn-typed field (a value), a method through an interface or a
+    /// perspective, a stdlib handle's member sugar for its namespace's
+    /// fn. Anything else is unresolved.
+    fn view_method(&self, rt: &Ty, m: &str) -> crate::typed_bodies::CalleeRef {
+        use crate::typed_bodies::CalleeRef;
+        let rt = match rt {
+            Ty::Projection(_, inner) => inner.as_ref(),
+            t => t,
+        };
+        let Ty::Named(owner) = rt else { return CalleeRef::Unknown };
+        // A monomorph's methods are its template's.
+        let owner = match self.top.lookup(owner) {
+            Some(_) => owner.clone(),
+            None => match self.typed.monomorphs.named(owner).and_then(|mono| self.templates.by_key.get(&mono.template.0)) {
+                Some(GenericTemplate::Locus(ld)) => ld.name.name.clone(),
+                _ => return CalleeRef::Unknown,
+            },
+        };
+        let decl = self.locus_decls.get(owner.as_str()).copied().or_else(|| match self.templates.loci.get(owner.as_str()) {
+            Some(k) => match self.templates.by_key.get(k) {
+                Some(GenericTemplate::Locus(ld)) => Some(*ld),
+                _ => None,
+            },
+            None => None,
+        });
+        let declares = |d: &LocusDecl| d.members.iter().any(|x| matches!(x, LocusMember::Fn(f) if f.name.name == m));
+        if let Some(d) = decl {
+            if d.form.is_some() && crate::view_bindings::FORM_OPS.contains(&m) && !declares(d) {
+                return CalleeRef::FormOp(owner);
+            }
+            if declares(d) {
+                return CalleeRef::Method { owner, name: m.to_string() };
+            }
+        }
+        match self.top.lookup(&owner) {
+            Some(TopSymbol::Locus(li)) => {
+                if li.methods.iter().any(|x| x.name == m) {
+                    return CalleeRef::Method { owner, name: m.to_string() };
+                }
+                if li.params.iter().any(|p| p.name == m && matches!(p.ty, Ty::Function { .. })) {
+                    return CalleeRef::Value;
+                }
+            }
+            Some(TopSymbol::Interface(_)) | Some(TopSymbol::Perspective(_)) => {
+                return CalleeRef::Dispatch(m.to_string());
+            }
+            Some(TopSymbol::Type(TypeInfo { kind: TypeKind::Struct(fields), .. })) => {
+                if fields.iter().any(|f| f.name == m && matches!(f.ty, Ty::Function { .. })) {
+                    return CalleeRef::Value;
+                }
+            }
+            _ => {}
+        }
+        // GH #470: a stdlib handle's member, sugar for the namespace's fn
+        // (`f.write_line(x)` is `std::io::file::write_line(f, x)`).
+        if let Some(pub_path) = hale_stdlib::PATH_RENAMES.iter().find(|(_, mm)| *mm == owner.as_str()).map(|(p, _)| *p) {
+            let mut segs: Vec<&str> = pub_path.to_vec();
+            if let Some(last) = segs.last_mut() {
+                *last = m;
+            }
+            if let Some(m2) = crate::stdlib_bodies::mangled_locus_name(&segs) {
+                if let Some(TopSymbol::Fn(_)) = self.top.lookup(m2) {
+                    return CalleeRef::HandleFn(m2.to_string());
+                }
+            }
+        }
+        CalleeRef::Unknown
     }
 
     /// A Decimal literal, typed `Decimal` (`Decimal<9>`) until the place

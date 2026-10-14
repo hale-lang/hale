@@ -97,6 +97,40 @@ pub fn bus_rows() -> Option<&'static crate::bus_graph::BusRows> {
     .as_ref()
 }
 
+/// The `views` column of the stdlib's analysis copy (GH #1554): the
+/// checker's walk of its bodies ([`crate::check::walk_bundle_by_declaration`]),
+/// over the scope of no program, which holds the stdlib's declarations
+/// alone, once per process. The owned-view pass reads it for the stdlib's
+/// bodies as it reads a bundle's walk for the program's: the checker's
+/// types, never a spelling resolved again. The walk's diagnostics are
+/// dropped (the stdlib is not the user's code to fix, as the scope drops
+/// its own); a site it could not type is `Unknown`, which costs a copy.
+pub fn view_types() -> Option<&'static [std::sync::Arc<crate::typed_bodies::ViewTypes>]> {
+    static VIEWS: OnceLock<Option<Vec<std::sync::Arc<crate::typed_bodies::ViewTypes>>>> = OnceLock::new();
+    VIEWS
+        .get_or_init(|| {
+            let program = program()?;
+            let bundle =
+                crate::Bundle::new(std::iter::once((crate::snapshot::STDLIB_SEED.to_string(), program)).collect());
+            let (top, _) = crate::resolve::build_top_scope(&crate::Bundle::new(Default::default()));
+            let handlers = crate::bundle_handler_rows(&bundle);
+            let bindings = crate::binding_rows::derive_binding_rows(&bundle, &top);
+            let units = crate::units::derive_unit_rows(&bundle);
+            let target = crate::capability::target_row(&bundle);
+            let inputs = crate::check::WalkInputs {
+                top: &top,
+                handlers: &handlers,
+                bindings: &bindings,
+                units: &units,
+                target: &target,
+            };
+            let walk = crate::check::walk_bundle_by_declaration(&bundle, &inputs, false, false, &|_, _| None);
+            let mut views = walk.record.views;
+            views.remove(crate::snapshot::STDLIB_SEED)
+        })
+        .as_deref()
+}
+
 /// `["std","io","file","File"]` → `"__StdIoFileFile"`, the mangled
 /// name the bodies actually declare. Struct-literal paths in user
 /// code are written in the public spelling, so resolving a

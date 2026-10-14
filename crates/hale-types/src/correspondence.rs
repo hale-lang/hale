@@ -117,6 +117,12 @@ impl Correspondence {
         self.stdlib.get(&analysis.index).copied()
     }
 
+    /// The merged site the analysis copy's site with this index is, by
+    /// index: the node id the merged mint gave the stdlib's site.
+    pub fn merged_stdlib_node(&self, analysis: u32) -> Option<u32> {
+        self.stdlib.get(&analysis).map(|s| s.index)
+    }
+
     /// Every merged site's image, by the merged site's index.
     pub fn images(&self) -> impl Iterator<Item = (u32, Image)> + '_ {
         self.images.iter().map(|(i, image)| (*i, *image))

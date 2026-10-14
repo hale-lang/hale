@@ -1415,8 +1415,9 @@ reclaim on a real-world long-running workload:
      get-modify-set no one can observe — then it stays in the
      cell's block and the set above keeps that block, and the
      idiom allocates nothing. The decision is
-     `hale_types::view_bindings`'s, and each copy it adds is an
-     allocation-survey site.
+     `hale_types::view_bindings`'s, computed once per checked program
+     over the checker's types (the owned-view column, which lowering
+     reads), and each copy it adds is an allocation-survey site.
 
      Any place (2026-10-13): the same holds for a local bound from
      any place without a copy — an array, a tuple's element, a
@@ -1545,7 +1546,10 @@ reclaim on a real-world long-running workload:
      comes before a use of it — a callee's store retires the block
      and flushes at the callee's return, which the caller's frame
      outlives — and then it is an owned copy (`spec/types.md` §
-     "Any binding of a place keeps its value"). A locus
+     "Any binding of a place keeps its value"). Which writes may
+     replace the field is read over the checker's resolved types and
+     callees, the same answer the allocation survey reports; a value
+     or a callee the checker could not type costs the copy. A locus
      with such a field flushes its arena at each method's
      activation boundary, as one with a String field does.
 

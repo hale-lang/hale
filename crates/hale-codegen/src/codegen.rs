@@ -1252,6 +1252,16 @@ pub fn build_resolved(
     let lifecycle = resolved.lifecycle().ok_or_else(|| {
         CodegenError::missing_row("lifecycle_order", "the program's lifecycle plan, which every spine is emitted from", None)
     })?;
+    // The owned-view column (GH #1554): which bindings, operands and
+    // writes copy is the snapshot's answer, computed once over the
+    // checker's types; lowering runs no pass of its own.
+    let owned_views = resolved.owned_views().ok_or_else(|| {
+        CodegenError::missing_row(
+            "owned_views",
+            "the owned-view column, which says which bindings and operands take an owned copy and which writes copy on write",
+            None,
+        )
+    })?;
     let entry = resolved.entry().ok_or_else(|| {
         CodegenError::missing_row(
             "entrypoint",
@@ -1657,10 +1667,7 @@ pub fn build_resolved(
         replica_index_for_next_locus_instantiation: None,
         current_instantiation_replica_index: 0,
         owner_table,
-        owned_views: hale_types::view_bindings::OwnedViews::of(
-            &[merged],
-            &import_renames.iter().map(|(segs, m)| (segs.clone(), m.clone())).collect(),
-        ),
+        owned_views,
         cell_part_flags: HashMap::new(),
         cow_exempt_slots: HashSet::new(),
         placement: &resolved.placement,
@@ -4402,10 +4409,11 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// `CodegenError`, which is F.39's rule.
     pub(crate) owner_table: &'p crate::ownership::OwnerTable,
     /// The bindings of a field's String, Bytes or compound value that a
-    /// later write may replace while they are live
-    /// (`crate::view_bindings`): those bind an owned copy, every other
-    /// one the field's own pointer.
-    pub(crate) owned_views: hale_types::view_bindings::OwnedViews,
+    /// later write may replace while they are live, and the writes that
+    /// copy on write: the view's owned-view column
+    /// (`hale_types::view_bindings`, GH #1554). Those bind an owned copy,
+    /// every other one the field's own pointer.
+    pub(crate) owned_views: &'p hale_types::view_bindings::OwnedViews,
     /// Per local (its slot) and part, the flag a copy on write reads:
     /// does the frame own the part yet, or does the form's cell it was
     /// read from (`hale_types::view_bindings`, the cell-read rule)?

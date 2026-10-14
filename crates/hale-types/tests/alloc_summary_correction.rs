@@ -30,7 +30,7 @@ use hale_frontend::frontend::LoadMode;
 use hale_frontend::snapshot::{Config, Snapshot};
 use hale_frontend::source::Disk;
 use hale_syntax::ast::Program;
-use hale_types::alloc_summary::{advisory_leak_sites, summarize_identified, AllocSummary, LeakSite};
+use hale_types::alloc_summary::{advisory_leak_sites, summarize_identified_over, AllocSummary, LeakSite};
 
 fn root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..").canonicalize().unwrap()
@@ -169,7 +169,13 @@ fn change(target: &str) -> Change {
                 // The old answer: the stdlib bodies and the renames cleared.
                 let identified: Vec<(&Program, &hale_types::snapshot::Snapshot)> =
                     programs.iter().map(|p| (*p, &bundle.snapshot)).collect();
-                let mut before: AllocSummary = without_frames(&summarize_identified(&identified, &[]));
+                // The owned-view column is the snapshot's on both sides
+                // (GH #1554): its copies read the checker's types, which a
+                // renames-blind walk would not resolve, a difference that
+                // is not this one.
+                let views = snap.demand_owned_views().expect("the column");
+                let mut before: AllocSummary =
+                    without_frames(&summarize_identified_over(&identified, &[], views));
                 // This correction alone: the reclaim boundary's (E3b) and
                 // the startable loci's (GH #1490) cleared on both sides,
                 // and a field replace's store-latest answer (GH #1490,

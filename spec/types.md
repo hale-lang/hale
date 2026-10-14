@@ -305,14 +305,22 @@ one may replace its place (`take(match self.e { E::A(s) -> s, E::B ->
 "", }, self.reset())`). Such a
 write is a store into the place's field (`self.f.s = ..`, `self.f =
 ..`, through any root), a call whose callee writes it, transitively (a
-method by its name, on any locus declaring one; a method called on the
-field itself, as a form's `set`), and anything that may run other code
-of the locus: a publish, `yield` and a stdlib call that parks on an
-`async_io` pool write what the program's bus handlers write, and a call
-the compiler cannot positively identify — through a fn value or a field
-whose type is a fn (however spelled) or cannot be classified, of a name
-no declaration answers to — and a recovery statement may write
-anything. A field
+method of the locus its receiver's type names, only that locus's; a
+method through an interface or a perspective, any locus's of the name;
+a method called on the field itself, as a form's `set`), and anything
+that may run other code of the locus: a publish, `yield` and a stdlib
+call that parks on an `async_io` pool write what the program's bus
+handlers write (a publish lowered as a direct call of its one
+subscriber's handler writes what that handler writes), and a call the
+checker did not resolve — through a fn value (a local, a parameter, a
+field of fn type), of a name no declaration answers to, on a receiver it
+could not type — and a recovery statement may write anything. Every one
+of these questions is answered over the types the checker resolved (the
+ones it checks the program against: an alias, an imported seed's
+`lib::Kid`, a qualified name and a fn-typed alias are what they name,
+whatever the spelling), never over a spelling resolved again; where the
+checker has no type for a value or no callee for a call, the binding is
+an owned copy. A field
 of a record the frame holds itself is never replaced under a binding of
 it (a write through a local root replaces the field's pointer); a field
 read through a handle is — a value whose type is a locus, an interface

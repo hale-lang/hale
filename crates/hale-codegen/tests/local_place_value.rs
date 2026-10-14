@@ -470,13 +470,13 @@ fn the_survey_and_lowering_agree_on_place_copies() {
         }
         fn main() { let h = H { }; }
     "#;
-    // The pass's report, per fn.
-    let program = hale_syntax::parse_source(src).expect("parses");
-    let views = hale_types::view_bindings::OwnedViews::of(&[&program], &Default::default());
+    // The column's report, per fn: the snapshot's, the one lowering reads.
+    let views = column(src);
     let reported = |f: &str| -> usize {
         let start = src.find(&format!("fn {f}(")).expect("the fn");
         let end = src[start + 1..].find("\n            fn ").map_or(src.len(), |e| start + 1 + e);
         views
+            .program
             .cell_copies()
             .iter()
             .filter(|c| hale_types::view_bindings::reasons::is_place(c.reason))
@@ -795,4 +795,15 @@ fn a_writing_call_handed_a_self_field_never_reaches_a_value_read_from_it() {
     let out = run("self_field_writer", src);
     assert!(out.contains("literal: lit=1 source=7"), "{out}");
     assert!(out.contains("local: held=7 source=13"), "{out}");
+}
+
+/// The owned-view column of `src`'s harness snapshot (GH #1554): the one
+/// computation the allocation survey reads and lowering reads re-keyed.
+fn column(src: &str) -> hale_types::view_bindings::OwnedViewColumn {
+    use hale_frontend::snapshot::{Config, Snapshot, Target};
+    let program = hale_syntax::parse_source(src).expect("parses");
+    let Ok(snap) = Snapshot::from_program(program, Vec::new(), Config::harness(Target::host())) else {
+        panic!("the program does not load");
+    };
+    snap.demand_owned_views().expect("the column").clone()
 }

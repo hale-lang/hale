@@ -66,6 +66,15 @@
 //!    the checker typed the first argument: the locus that type names, a
 //!    monomorph's template. The unreached-event law reads it (F.40 phase
 //!    4's leftovers).
+//! 10. `views` ([`ViewTypes`], GH #1554), per top-level declaration and
+//!    by the node typed rather than by body: each expression's type, each
+//!    binding's (a `let`'s, a tuple `let`'s names, a `for` element's, a
+//!    parameter's), each assignment target's head and segments, and each
+//!    call's callee as the checker resolved it ([`CalleeRef`]). The
+//!    owned-view pass (`crate::view_bindings`) reads it instead of
+//!    resolving a spelling itself. A reused declaration's table comes
+//!    back with its other per-declaration results (`check::DeclChecked`),
+//!    re-keyed onto the new parse ([`ViewTypes::rekeyed`]).
 //!
 //! A site the checker could not type is a [`Hole`] with its reason, and
 //! a reader refuses it at its span rather than guessing.
@@ -73,7 +82,7 @@
 use std::collections::BTreeMap;
 
 use hale_syntax::ast::{
-    Block, BusMember, ClosureAssertion, ContractKind, ElseBranch, Expr, IfStmt, LValueSeg, LocusMember,
+    Block, BusMember, ClosureAssertion, ContractKind, ElseBranch, Expr, Ident, IfStmt, LValueSeg, LocusMember,
     MatchArmBody, MatchStmt, NodeId, OrDisposition, ParamInit, PerspectiveMember, QualifiedName,
     RecoveryModifier, ScalarClause, Stmt, TopDecl, TypeDeclBody, TypeExpr,
 };
@@ -758,6 +767,342 @@ impl Unsatisfied {
     }
 }
 
+/// What a call names, as the checker resolved it: the `views` column's
+/// callee row ([`ViewTypes::callee`], GH #1554).
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum CalleeRef {
+    /// A fn the program (or the stdlib's Hale source) declares, by its
+    /// declared name: a bare call, a generic fn, an imported `lib::f`, a
+    /// `std::` path to a Hale-source stdlib fn.
+    Fn(String),
+    /// A stdlib handle's member called as a method (`f.write_line(x)`):
+    /// the stdlib fn it is sugar for, the receiver its first argument.
+    HandleFn(String),
+    /// A method of the locus `owner` declares (its type, as resolved).
+    Method { owner: String, name: String },
+    /// A method through an interface or a perspective: whichever
+    /// declaration's of the name serves it.
+    Dispatch(String),
+    /// A form's synthesized method on the `@form` locus it names.
+    FormOp(String),
+    /// An enum variant's constructor.
+    Ctor,
+    /// A builtin, a stdlib leaf with no Hale body, a conversion to a
+    /// scalar type, a builtin member of a primitive value: by its path.
+    Std(Vec<String>),
+    /// A bare `bounded[T; N]` intrinsic over its first argument.
+    Bounded,
+    /// A fn value: a local or parameter bound to one, a field of fn type.
+    Value,
+    /// A callee the checker did not resolve.
+    Unknown,
+}
+
+/// The `views` column (GH #1554): what the checker typed for the
+/// owned-view pass, by the node it typed — an expression, a binding's
+/// name, an assignment target's head or segment — one table per top-level
+/// declaration. A node is named by its identity in the parsed program the
+/// walk and the pass both read (generated code shares spans, so a span
+/// names no node), and a reused declaration's table is re-keyed onto the
+/// new parse of it ([`ViewTypes::rekeyed`]). A node typed twice with two
+/// answers (one expression walked in two contexts) answers `Unknown`,
+/// which the pass reads as costing a copy; a node with no row is
+/// `Unknown` too.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ViewTypes {
+    exprs: std::collections::HashMap<usize, Ty>,
+    bindings: std::collections::HashMap<usize, Ty>,
+    places: std::collections::HashMap<usize, Ty>,
+    callees: std::collections::HashMap<usize, CalleeRef>,
+}
+
+/// Every declaration's `views` table, by program key, in item order (a
+/// walk's record holds the bundle's).
+pub type ProgramViews = BTreeMap<String, Vec<std::sync::Arc<ViewTypes>>>;
+
+static UNKNOWN_TY: Ty = Ty::Unknown;
+
+/// A node's identity: its address in the parsed program.
+fn node<T>(n: &T) -> usize {
+    n as *const T as usize
+}
+
+fn note<V: PartialEq>(map: &mut std::collections::HashMap<usize, V>, at: usize, v: V, unknown: impl FnOnce() -> V) {
+    match map.get_mut(&at) {
+        Some(held) if *held != v => *held = unknown(),
+        Some(_) => {}
+        None => {
+            map.insert(at, v);
+        }
+    }
+}
+
+impl ViewTypes {
+    /// The type the checker gave the expression `e`.
+    pub fn expr(&self, e: &Expr) -> &Ty {
+        self.exprs.get(&node(e)).unwrap_or(&UNKNOWN_TY)
+    }
+
+    /// Whether the checker typed the expression `e`.
+    pub fn has_expr(&self, e: &Expr) -> bool {
+        self.exprs.contains_key(&node(e))
+    }
+
+    /// The type of the binding named by `name`: a `let`'s, a tuple
+    /// `let`'s, a `for` element's, a parameter's. A binding declared as an
+    /// interface is that interface (`Ty::Named`), which the checker's own
+    /// slot types as `Unknown`.
+    pub fn binding(&self, name: &Ident) -> &Ty {
+        self.bindings.get(&node(name)).unwrap_or(&UNKNOWN_TY)
+    }
+
+    /// The type of an assignment target's head (by its name) or of its
+    /// path through a segment (a field by its name, an element by its
+    /// index expression).
+    pub fn place<T>(&self, at: &T) -> &Ty {
+        self.places.get(&node(at)).unwrap_or(&UNKNOWN_TY)
+    }
+
+    /// The callee of the call `call`.
+    pub fn callee(&self, call: &Expr) -> Option<&CalleeRef> {
+        self.callees.get(&node(call))
+    }
+
+    pub fn note_expr(&mut self, e: &Expr, ty: Ty) {
+        note(&mut self.exprs, node(e), ty, || Ty::Unknown);
+    }
+
+    pub fn note_binding(&mut self, name: &Ident, ty: Ty) {
+        note(&mut self.bindings, node(name), ty, || Ty::Unknown);
+    }
+
+    pub fn note_place<T>(&mut self, at: &T, ty: Ty) {
+        note(&mut self.places, node(at), ty, || Ty::Unknown);
+    }
+
+    pub fn note_callee(&mut self, call: &Expr, callee: CalleeRef) {
+        note(&mut self.callees, node(call), callee, || CalleeRef::Unknown);
+    }
+
+    /// The table of a declaration typed as `old`, re-keyed onto `new`, a
+    /// parse of the same declaration (equal but for its positions): the
+    /// nodes paired in the one order [`view_nodes`] visits both in. A
+    /// row of a node that order does not visit is dropped (it reads as
+    /// `Unknown`, which costs a copy).
+    pub fn rekeyed(&self, old: &TopDecl, new: &TopDecl) -> ViewTypes {
+        let (mut from, mut to) = (Vec::new(), Vec::new());
+        view_nodes(old, &mut from);
+        view_nodes(new, &mut to);
+        if from.len() != to.len() {
+            return ViewTypes::default();
+        }
+        let map: std::collections::HashMap<usize, usize> = from.into_iter().zip(to).collect();
+        fn move_rows<V: Clone>(
+            rows: &std::collections::HashMap<usize, V>,
+            map: &std::collections::HashMap<usize, usize>,
+        ) -> std::collections::HashMap<usize, V> {
+            rows.iter().filter_map(|(k, v)| Some((*map.get(k)?, v.clone()))).collect()
+        }
+        ViewTypes {
+            exprs: move_rows(&self.exprs, &map),
+            bindings: move_rows(&self.bindings, &map),
+            places: move_rows(&self.places, &map),
+            callees: move_rows(&self.callees, &map),
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.exprs.is_empty() && self.bindings.is_empty() && self.places.is_empty() && self.callees.is_empty()
+    }
+}
+
+/// Every node of `item` a `views` row may name, in one fixed order: each
+/// body's parameters' names and every expression, binding name and
+/// assignment target of the body (a fn's, a locus member's, a
+/// perspective's, a module's items' in turn). Two parses of one
+/// declaration visit their nodes pairwise.
+pub fn view_nodes(item: &TopDecl, out: &mut Vec<usize>) {
+    fn params(ps: &[hale_syntax::ast::Param], out: &mut Vec<usize>) {
+        for p in ps {
+            out.push(node(&p.name));
+        }
+    }
+    fn block(b: &Block, out: &mut Vec<usize>) {
+        for st in &b.stmts {
+            stmt(st, out);
+        }
+        if let Some(t) = &b.tail {
+            expr(t, out);
+        }
+    }
+    fn if_stmt(i: &IfStmt, out: &mut Vec<usize>) {
+        expr(&i.cond, out);
+        block(&i.then_block, out);
+        match i.else_block.as_deref() {
+            Some(ElseBranch::Else(b)) => block(b, out),
+            Some(ElseBranch::ElseIf(e)) => if_stmt(e, out),
+            None => {}
+        }
+    }
+    fn pattern(p: &hale_syntax::ast::Pattern, out: &mut Vec<usize>) {
+        use hale_syntax::ast::Pattern;
+        match p {
+            Pattern::Binding(id) => out.push(node(id)),
+            Pattern::Constructor { args, .. } | Pattern::Tuple(args, _) => args.iter().for_each(|a| pattern(a, out)),
+            Pattern::Literal(..) | Pattern::Wildcard(_) => {}
+        }
+    }
+    fn match_stmt(m: &MatchStmt, out: &mut Vec<usize>) {
+        expr(&m.scrutinee, out);
+        for arm in &m.arms {
+            pattern(&arm.pattern, out);
+            if let Some(g) = &arm.guard {
+                expr(g, out);
+            }
+            match &arm.body {
+                MatchArmBody::Expr(e) => expr(e, out),
+                MatchArmBody::Block(b) => block(b, out),
+            }
+        }
+    }
+    fn stmt(st: &Stmt, out: &mut Vec<usize>) {
+        match st {
+            Stmt::Let { name, value, .. } => {
+                expr(value, out);
+                out.push(node(name));
+            }
+            Stmt::LetTuple { names, value, .. } => {
+                expr(value, out);
+                names.iter().for_each(|n| out.push(node(n)));
+            }
+            Stmt::Assign { target, value, .. } => {
+                out.push(node(&target.head));
+                for seg in &target.tail {
+                    match seg {
+                        LValueSeg::Field(f) => out.push(node(f)),
+                        LValueSeg::Index(e) => expr(e, out),
+                    }
+                }
+                expr(value, out);
+            }
+            Stmt::If(i) => if_stmt(i, out),
+            Stmt::Match(m) => match_stmt(m, out),
+            Stmt::For { name, iter, body, .. } => {
+                expr(iter, out);
+                out.push(node(name));
+                block(body, out);
+            }
+            Stmt::While { cond, body, .. } => {
+                expr(cond, out);
+                block(body, out);
+            }
+            Stmt::Return(e, _) => e.iter().for_each(|e| expr(e, out)),
+            Stmt::Fail { value, .. } => expr(value, out),
+            Stmt::Recovery { args, .. } => args.iter().for_each(|e| expr(e, out)),
+            Stmt::Violate { payload, .. } => payload.iter().for_each(|e| expr(e, out)),
+            Stmt::Send { subject, value, or_disposition, .. } => {
+                expr(subject, out);
+                expr(value, out);
+                if let Some(d) = or_disposition {
+                    disposition(d, out);
+                }
+            }
+            Stmt::ShmWrite { max, body, .. } => {
+                expr(max, out);
+                block(body, out);
+            }
+            Stmt::Block(b) => block(b, out),
+            Stmt::Expr(e) => expr(e, out),
+            Stmt::Break(_) | Stmt::Continue(_) | Stmt::Yield(_) | Stmt::Terminate(_) | Stmt::Reperspective { .. } => {}
+        }
+    }
+    fn disposition(d: &OrDisposition, out: &mut Vec<usize>) {
+        match d {
+            OrDisposition::Substitute(e) | OrDisposition::Fail(e, _) => expr(e, out),
+            OrDisposition::Raise(_) | OrDisposition::Discard(_) | OrDisposition::Wait(_) => {}
+        }
+    }
+    fn expr(e: &Expr, out: &mut Vec<usize>) {
+        out.push(node(e));
+        match e {
+            Expr::Literal(..) | Expr::Ident(_) | Expr::Path(_) | Expr::KwSelf(_) => {}
+            Expr::Binary { left, right, .. } => {
+                expr(left, out);
+                expr(right, out);
+            }
+            Expr::Unary { operand, .. } => expr(operand, out),
+            Expr::Call { callee, args, .. } => {
+                expr(callee, out);
+                args.iter().for_each(|a| expr(a, out));
+            }
+            Expr::Field { receiver, .. } | Expr::Path2 { receiver, .. } => expr(receiver, out),
+            Expr::Index { receiver, index, .. } => {
+                expr(receiver, out);
+                expr(index, out);
+            }
+            Expr::Tuple(es, _) | Expr::Array(es, _) => es.iter().for_each(|x| expr(x, out)),
+            Expr::Struct { inits, .. } => inits.iter().for_each(|i| expr(&i.value, out)),
+            Expr::Block(b) => block(b, out),
+            Expr::If(i) => if_stmt(i, out),
+            Expr::Match(m) => match_stmt(m, out),
+            Expr::Sum(x, _) | Expr::Prod(x, _) => expr(x, out),
+            Expr::Approx { left, right, tolerance, .. } => {
+                expr(left, out);
+                expr(right, out);
+                expr(tolerance, out);
+            }
+            Expr::Range { lo, hi, .. } => {
+                expr(lo, out);
+                expr(hi, out);
+            }
+            Expr::ArrayRepeat { val, .. } => expr(val, out),
+            Expr::Or { inner, disposition: d, .. } => {
+                expr(inner, out);
+                disposition(d, out);
+            }
+        }
+    }
+    match item {
+        TopDecl::Fn(f) => {
+            params(&f.params, out);
+            block(&f.body, out);
+        }
+        TopDecl::Locus(l) => {
+            for m in &l.members {
+                match m {
+                    LocusMember::Fn(f) => {
+                        params(&f.params, out);
+                        block(&f.body, out);
+                    }
+                    LocusMember::Lifecycle(d) => {
+                        params(&d.params, out);
+                        block(&d.body, out);
+                    }
+                    LocusMember::Mode(d) => {
+                        params(&d.params, out);
+                        block(&d.body, out);
+                    }
+                    LocusMember::Failure(d) => {
+                        params(&d.params, out);
+                        block(&d.body, out);
+                    }
+                    _ => {}
+                }
+            }
+        }
+        TopDecl::Perspective(d) => {
+            for m in &d.members {
+                if let PerspectiveMember::Fn(f) = m {
+                    params(&f.params, out);
+                    block(&f.body, out);
+                }
+            }
+        }
+        TopDecl::Module(m) => m.items.iter().for_each(|i| view_nodes(i, out)),
+        _ => {}
+    }
+}
+
 /// Whether a concrete locus satisfies an interface, with the witness
 /// when it does not.
 #[derive(Debug, Clone, PartialEq)]
@@ -779,6 +1124,9 @@ pub struct TypingRecord {
     pub omitted_args: OmittedArgsByCall,
     /// Which body each conversion belongs to.
     pub conversion_sites: BTreeMap<ConversionSite, u32>,
+    /// The `views` column: every declaration's table, the reused ones'
+    /// included ([`ViewTypes`]), by program key and item.
+    pub views: ProgramViews,
     /// What a discarded walk changed, while one is open
     /// ([`Self::open_walk`]).
     walk: Option<WalkUndo>,
@@ -1010,6 +1358,7 @@ pub struct TypedBodies {
     monomorph_conformance: Vec<(Monomorph, u32, Result<(), Unsatisfied>)>,
     omitted_args: OmittedArgsByCall,
     conversion_sites: BTreeMap<ConversionSite, u32>,
+    views: ProgramViews,
     /// Whether a row changes a denomination, prints a unit (U3) or types
     /// an operator's result (U4): a program with none has no value row
     /// for lowering to look up.
@@ -1062,6 +1411,12 @@ impl TypedBodies {
     /// The `omitted_args` column: what each call leaves to its defaults.
     pub fn omitted_args(&self) -> &OmittedArgsByCall {
         &self.omitted_args
+    }
+
+    /// The `views` column ([`ViewTypes`]): each program's declarations'
+    /// tables, in item order.
+    pub fn views(&self) -> &ProgramViews {
+        &self.views
     }
 
     /// The rows of the body declared at `decl`.
@@ -1253,6 +1608,7 @@ pub fn typed_bodies(bundle: &crate::Bundle<'_>, top: &crate::resolve::TopScope, 
         monomorph_conformance: Vec::new(),
         omitted_args: record.omitted_args.clone(),
         conversion_sites: record.conversion_sites.clone(),
+        views: record.views.clone(),
         scaled: record.bodies.values().any(|b| {
             b.conversions.iter().any(|(site, r)| {
                 r.scale.is_some() || r.printed.is_some() || matches!(site.kind, SiteKind::Operator { .. })

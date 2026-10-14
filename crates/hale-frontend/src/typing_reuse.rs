@@ -15,7 +15,8 @@
 //!   start moved is the new one, position for position. The check's
 //!   per-declaration passes (the checker's walk, the reveal rule;
 //!   `hale_types::check::DeclChecked`) report for it what they reported
-//!   before, moved the same distance, so their result is reused — unless
+//!   before, moved the same distance, so their result is reused (the
+//!   walk's `views` rows too, GH #1554) — unless
 //!   one of its diagnostics has a position outside the declaration,
 //!   which the move would not carry, or the declaration is a dependent;
 //! - **changed in a body**: the two are one declaration once every
@@ -154,6 +155,12 @@ pub(crate) fn plan(prev: &Side<'_>, checked: &ByDeclaration, next: &Side<'_>) ->
                 .map(|done| DeclChecked {
                     typing: done.typing.iter().map(|d| d.clone().shifted(delta)).collect(),
                     reveal: done.reveal.iter().map(|d| d.clone().shifted(delta)).collect(),
+                    // The `views` table follows the declaration onto the
+                    // new parse of it (GH #1554).
+                    views: std::sync::Arc::new(done.views.rekeyed(
+                        &prev.programs[&a.program].items[a.index],
+                        &next.programs[&b.program].items[b.index],
+                    )),
                 }),
             _ => None,
         };
