@@ -638,7 +638,7 @@ row	App@literal1	App	main	default
 row	~	Grow	main	default
 row	~.acc	Acc	main	inherited
 
-== crates/hale-stdlib/hl/api_rpc.hl#bd65f78e
+== crates/hale-stdlib/hl/api_rpc.hl#ed264408
 
 == crates/hale-stdlib/hl/crypto.hl#79bd629e
 dynamic	<hole>	on unknown (no caller)|unresolved declaration `CryptoError`	in the seed
@@ -1332,6 +1332,11 @@ row	Rec@main1	Rec	main	default
 
 == crates/hale-codegen/tests/alloc_model_rss.rs#84467e50
 row	Rec@main1	Rec	main	default
+
+== crates/hale-codegen/tests/api_exposure_param.rs#6dac29a7
+root	App	the entry
+hole	the entry	entry decides nothing (`server`)
+row	App@literal1	App	main	default
 
 == crates/hale-codegen/tests/api_http.rs#4956efd0
 root	Desk	the entry
