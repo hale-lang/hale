@@ -1545,7 +1545,7 @@ pub const FAMILIES: &[Family] = &[
             "may violate is the direct reading: a `violate` statement in the fn's own body, or a resolved call to a value-returning fn that may violate and is not `fallible`; a violation in a method returning nothing is not the caller's failure, so a call to one carries nothing, and a `fallible` callee is answered at its call by the `bare_fallible` law; an edge the summary cannot resolve contributes nothing",
             "three verdicts, over the program's own fns only (the stdlib analysis copy is a callee; its fns are held to the law by `tests/violate_fallible.rs`): a value-returning fn that may violate and is not `fallible` is refused, naming the path (the closure, or the callee it goes through, with the call and the `violate` as notes); one declared `fallible(E)` with another `E` is refused; one returning nothing that is not `fallible` is warned about",
             "lifecycle bodies (no fn declaration), bus handlers (the summary's entry kind) and `fn main` are exempt: the runtime is their caller",
-            "a stated gap: a locus method serving a perspective fn (`serves`, matched by name as conformance matches it) is exempt from the law and the lint and carries nothing to its callers, and is warned about instead, until a `fallible` perspective call lowers (the build refuses one today, and conformance matches the perspective fn's fallibility both ways, so no spelling of it both checks and runs); it keeps today's lowering",
+            "a stated gap: a locus method serving a perspective fn (`serves`, matched by name as conformance matches it) is exempt from the law and the lint and carries nothing to its callers, and is warned about instead, until a `fallible` perspective call lowers (the check refuses a call to one today, as the build does, and conformance matches the perspective fn's fallibility both ways, so no spelling of it both checks and runs); it keeps today's lowering",
             "lowering agrees: in a `fallible(ClosureViolation)` fn a `violate` stores the record in the error slot and takes the failure return, after the owner's `on_failure` (in place, or posted to the owner's domain and awaited); the `undef` of the declared type is reached only by an exempt value-returning bus handler",
         ],
         missing: Missing::Hole,
@@ -2448,7 +2448,7 @@ pub const RULES: &[Rule] = &[
         title: "Stdlib error-type shadow",
         // The top scope's user types against the stdlib error shapes, gated on a usage fact (`StdlibErrorUsage`) the resolver collects from the declarations: which error a path-call fails with is its stdlib_surface row's error column, or the registered Hale-source fn's `fallible(E)` a path renames to (`stdlib_call_error`, the check's own order). Migrating: the usage is still a walk of the bodies, not the typed bodies' fallible-call rows, and the finding is a `Diag`, not a `law::Violation`.
         reads: Reads::Rows(&["top_scope", "stdlib_surface"]),
-        gist: "a user `type` named like a stdlib error type whose shape differs, when a fallible stdlib call reaches that error type, read from the call's stdlib surface row (error)",
+        gist: "a user `type` named like a stdlib error type whose shape differs, when the program or the bundled stdlib's own bodies (merged into every program) reach that error type: a fallible stdlib call, read from the call's stdlib surface row, a form, a `bounded` push, a closure or `on_failure`, or (in the stdlib) a literal of it (error)",
         family: "stdlib_surface",
         evaluator: Some(site(RESOLVE, "check_stdlib_error_shadowing")),
         state: State::Migrating,
@@ -2546,11 +2546,11 @@ pub const RULES: &[Rule] = &[
     Rule {
         id: "verification/structural/cell-slot-of-origin",
         title: "Cell slot-of-origin",
-        // The cell's type carries its (locus, slot) of origin; the release call is lowered from the declaration. A codegen error, not a check: no row.
+        // The cell's slot of origin is the checker's: the binding that holds a cell records the slot call that made it (`LocalSym::cell`); the release call is read from the declaration. Lowering keeps the cell type's own origin as its backstop.
         reads: Reads::Declaration,
-        gist: "releasing a `Cell<T>` into a different `(locus, slot)` than it was acquired from (error, at codegen)",
+        gist: "releasing a `Cell<T>` into a different `(locus, slot)` than it was acquired from (error, at the cell)",
         family: "forms",
-        evaluator: Some(site(CG, "try_lower_capacity_slot_method_call")),
+        evaluator: Some(site(CHECK, "check_capacity_slot_call")),
         state: State::Canonical,
     },
     Rule {

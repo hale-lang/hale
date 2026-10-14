@@ -82,6 +82,11 @@ child's `run()` runs *right there* — on the same thread, before the
 next sibling is touched. So a child whose `run()` never returns
 means the params after it are never born.
 
+Defaults run in that order too: a param's default may read
+`self.x` of a param declared before it, and `hale check` refuses
+one that reads a param declared after it (or its own), which has
+not been set yet when the default runs.
+
 ```hale
 locus Server {
     run() { while true { std::time::sleep(1s); } }   // never returns

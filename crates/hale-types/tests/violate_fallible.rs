@@ -296,20 +296,27 @@ fn conformance_matches_a_perspective_fn_s_fallibility_both_ways() {
         [format!("`RouterV1.route` is `fallible(ClosureViolation)` but `Router.route` is not: {MATCHES}")]
     );
     // The reverse: the perspective fallible, the impl not. Refused; the
-    // impl itself is the exempt shape, warned.
+    // impl itself is the exempt shape, warned. The call through the slot
+    // is refused too: a `fallible` perspective fn is not callable yet.
     let src = router(CV, "", "self.router.route(1) or 0");
-    assert_eq!(
-        errors(&src),
-        [format!("`Router.route` is `fallible(ClosureViolation)` but `RouterV1.route` is not: {MATCHES}")]
-    );
+    let errs = errors(&src);
+    assert_eq!(errs.len(), 2, "{errs:?}");
+    assert_eq!(errs[0], format!("`Router.route` is `fallible(ClosureViolation)` but `RouterV1.route` is not: {MATCHES}"));
+    assert!(errs[1].starts_with(UNCALLABLE), "{errs:?}");
     assert_eq!(verdicts(&src).len(), 1);
     assert!(!verdicts(&src)[0].0);
-    // Both fallible: check passes (the build refuses the perspective
-    // call, `build::violate_build` pins its wording).
+    // Both fallible: conformance holds, and the check refuses the call
+    // through the slot at the method name, as the build refuses it
+    // (`build::violate_build` pins the build's wording).
     let src = router(CV, CV, "self.router.route(1) or 0");
-    assert_eq!(errors(&src), Vec::<String>::new());
+    let errs = errors(&src);
+    assert_eq!(errs.len(), 1, "{errs:?}");
+    assert!(errs[0].starts_with(UNCALLABLE), "{errs:?}");
     assert_eq!(verdicts(&src), Vec::<(bool, String)>::new());
 }
+
+const UNCALLABLE: &str =
+    "`Router.route` is `fallible(ClosureViolation)`, and a perspective call cannot carry a failure yet (F.42)";
 
 fn root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..").canonicalize().unwrap()
@@ -454,6 +461,7 @@ fn the_tree_s_violators() {
             "tests/hale/on_failure_after_params_test.hl: lint Boom.check",
             "tests/hale/on_failure_per_child_type_test.hl: lint Alpha.go",
             "tests/hale/on_failure_per_child_type_test.hl: lint Beta.go",
+            "tests/hale/on_failure_publish_test.hl: lint Worker.go",
             "tests/hale/on_failure_return_test.hl: lint Worker.go",
             "tests/hale/passed_child_supervision_test.hl: lint Boom.check",
         ],

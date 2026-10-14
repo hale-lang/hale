@@ -213,6 +213,11 @@ fn an_unfollowable_call_withdraws_the_cost_account() {
     // The positive capability must not outlive the knowledge: an
     // indirect call may reach an allocation or a blocking call, and
     // the model cannot see past it.
+    //
+    // A method read as a value is the one callee the summary does not
+    // follow (a fn's name resolves since F.40 E5). `hale check` refuses
+    // it, since nothing lowers it; the model is derived over it anyway,
+    // which is the engine's behaviour this pins.
     let src = r#"
 fn apply(f: fn(Int) -> Int, v: Int) -> Int { return f(v); }
 main locus App {

@@ -83,6 +83,22 @@ Locus methods support defaults too. One caveat: bus-handler
 methods and mode methods reject them — their argument shape is
 fixed by the runtime, so there's no slot to fill at dispatch time.
 
+## Bounded type parameters
+
+A type parameter may carry one bound, `Numeric`: the argument is an
+`Int`, a `Float`, a `Decimal` or a `Duration`.
+
+```hale
+fn twice<T: Numeric>(x: T) -> T {
+    return x + x;
+}
+```
+
+`twice(2)` and `twice(1.5)` check; `twice("ab")` is refused at the
+call, and `Box<String>` of a `type Box<T: Numeric>` at the type
+argument. `Numeric` is the only bound — there is no trait system, so
+`<T: Eq>` is refused where it is declared.
+
 ## Generic calls inside loci
 
 A generic function can also be called from a generic locus. If a
@@ -121,6 +137,22 @@ to a named function. Hale has no *closures* — no inline
 callback needs context, you pass the context in explicitly, or
 (at higher levels) you reach for a locus that holds the state.
 This keeps every function value a plain, inspectable thing.
+
+For the same reason a locus's method is not a function value:
+`apply_twice(self.inc, 10)` would need the locus along with the
+function, so `hale check` refuses it at `inc`. Call the method
+where you need its result, or pass a free function.
+
+A function that can fail (`-> Int fallible(E)`) is not a function
+value either: whoever calls through the value would have no `or` to
+handle the failure with. Pass a small wrapper that handles it
+(`fn parse_or(s: String) -> Int { return parse(s) or 0; }`); `hale
+check` suggests one.
+
+A stdlib function written in Hale passes the same way
+(`apply(std::url::encode, s)`). One the compiler answers itself at a
+call (`std::math::abs`) has no function behind it to pass; `hale
+check` says so and suggests the one-line wrapper to pass instead.
 
 ## Free functions and where they live
 

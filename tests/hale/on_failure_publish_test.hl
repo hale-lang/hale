@@ -1,0 +1,50 @@
+// An `on_failure` body publishes like any other body: `Faults <- …;`
+// reports the failure on the bus. It checked clean and the build
+// refused it ("unknown identifier `Faults`"): the topic rewrite that
+// turns a send into its subject walked lifecycle hooks, modes and fns,
+// and not a failure handler.
+//
+// The worker fails twice; each failure reaches the handler, which
+// publishes what it read off the failed child, and the watcher sees
+// both.
+
+type Fault { n: Int = 0; }
+
+topic Faults { payload: Fault; subject: "test.on_failure.faults"; }
+
+locus Worker {
+    params { n: Int = 0; }
+    closure boom { captures: n; epoch inline; }
+    fn go() { self.n = self.n + 1; violate boom; }
+}
+
+locus Watcher {
+    params { seen: Int = 0; total: Int = 0; }
+    bus { subscribe Faults as on_fault; }
+    fn on_fault(f: Fault) { self.seen = self.seen + 1; self.total = self.total + f.n; }
+}
+
+locus Supervisor {
+    params { w: Worker = Worker { }; }
+    bus { publish Faults; }
+    on_failure(c: Worker, err: ClosureViolation) {
+        Faults <- Fault { n: c.n };
+    }
+    fn fail_twice() { self.w.go(); self.w.go(); }
+}
+
+main locus App {
+    params { watcher: Watcher = Watcher { }; sup: Supervisor = Supervisor { }; }
+    run() {
+        self.sup.fail_twice();
+        let mut waited = 0;
+        while self.watcher.seen < 2 && waited < 500 {
+            std::time::sleep(10ms);
+            waited = waited + 1;
+        }
+        std::test::assert_eq_int(self.watcher.seen, 2, "each failure was published from the handler");
+        std::test::assert_eq_int(self.watcher.total, 3, "the handler read the failed child (1 + 2)");
+    }
+}
+
+fn main() { App { }; }

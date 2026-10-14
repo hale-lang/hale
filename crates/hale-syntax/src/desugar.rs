@@ -429,6 +429,10 @@ fn rewrite_locus(l: &mut LocusDecl, topics: &Topics, out: &mut Vec<TopicRewrite>
             LocusMember::Lifecycle(lc) => rewrite_block(&mut lc.body, topics, out),
             LocusMember::Mode(md) => rewrite_block(&mut md.body, topics, out),
             LocusMember::Fn(fd) => rewrite_block(&mut fd.body, topics, out),
+            // An `on_failure` body publishes like any other (`Evt <- …;`
+            // reporting the failure): left unrewritten, lowering met the
+            // bare topic name ("unknown identifier `Evt`").
+            LocusMember::Failure(f) => rewrite_block(&mut f.body, topics, out),
             _ => {}
         }
     }
@@ -705,6 +709,7 @@ fn acc_items(items: &mut [TopDecl], w: &WireLayouts) {
                         LocusMember::Lifecycle(lc) => acc_block(&mut lc.body, w),
                         LocusMember::Mode(md) => acc_block(&mut md.body, w),
                         LocusMember::Fn(fd) => acc_block(&mut fd.body, w),
+                        LocusMember::Failure(f) => acc_block(&mut f.body, w),
                         _ => {}
                     }
                 }

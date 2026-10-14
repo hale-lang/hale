@@ -178,7 +178,8 @@ let total = price * 3d;         // 59.97, a Decimal<2>
 ```
 
 A literal takes the scale of wherever it goes — the annotation, the
-parameter, the field, the other side of an operator — and has to fit
+parameter, the field, the other side of an operator, through the arms
+of an `if` or a `match` that produces it — and has to fit
 it: `let p: Decimal<2> = 1.505d;` is a compile error at `1.505d`, not
 a quiet `1.50`. `std::str::parse_decimal` reads at the scale its
 result is stored at, and refuses text with more places.
