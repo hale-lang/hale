@@ -395,7 +395,10 @@ crates/hale-codegen/tests/bus_static_reservation.rs#14 47a979f63f3dd130
 crates/hale-codegen/tests/bus_static_reservation.rs#15 20798f7199543acc
 crates/hale-codegen/tests/bus_static_reservation.rs#16 d370421f750ec85f
 crates/hale-codegen/tests/bus_static_reservation.rs#17 7bd8342ea191b87d
+crates/hale-codegen/tests/bus_static_reservation.rs#18 be67f8fe458f27a8
 crates/hale-codegen/tests/bus_static_reservation.rs#2 fccf97dc1520f456
+crates/hale-codegen/tests/bus_static_reservation.rs#20 ded1e9ab42f956e1
+crates/hale-codegen/tests/bus_static_reservation.rs#27 0a5401b038a4bba5
 crates/hale-codegen/tests/bus_static_reservation.rs#3 5431cdbd4e1d3153
 crates/hale-codegen/tests/bus_static_reservation.rs#4 110976e0ba76afa6
 crates/hale-codegen/tests/bus_static_reservation.rs#5 d04fe83f1a1bd363

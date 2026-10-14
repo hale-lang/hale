@@ -522,7 +522,8 @@ so nothing tears it down twice. The rules that order gives you:
   earlier sibling published from its `birth()` or `run()`, after its
   own `birth()` — the literal reserves those subscriptions before it
   builds any of its params — a pinned or pool-placed field's own
-  params included, which that field's thread builds. A subscriber
+  params included, which that field's thread builds, a placed field
+  inside them and each replica of a `replicas = K` field too. A subscriber
   built *after* the publish anywhere else — a locus a body builds
   after sending — does not hear it: build subscribers first (`hale
   check` warns where it sees the order in one body).

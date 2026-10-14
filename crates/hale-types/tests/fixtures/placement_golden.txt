@@ -2168,6 +2168,39 @@ root	Root	the entry
 row	Root@literal1	Root	main	default
 row	Root@literal1.t	Teller	main	default
 
+== crates/hale-codegen/tests/bus_static_reservation.rs#0c88109f
+root	App	the entry
+domain	pinned:App@literal1.h	cpus 0
+domain	pinned:App@literal2.h	cpus 0
+row	App@literal1	App	main	default
+row	App@literal2	App	main	default
+row	App@literal1.t	Teller	main	default
+row	App@literal2.t	Teller	main	default
+-- App@literal1.h	Hold
+row	~	Hold	pinned:~	entry	off owner
+row	~.e	Ear	pinned:~	inherited
+row	~.sub	App	pinned:~	inherited
+-- App@literal2.h	Hold
+row	~	Hold	pinned:~	entry	off owner
+row	~.e	Ear	pinned:~	inherited
+row	~.sub	Leaf	pinned:~	inherited
+
+== crates/hale-codegen/tests/bus_static_reservation.rs#6151eeb6
+root	App	the entry
+row	App@literal1	App	main	default
+row	App@literal1.a	All	main	default
+row	App@literal1.e	Exact	main	default
+row	App@literal1.n	Narrow	main	default
+row	App@literal1.s	Shouter	main	default
+row	App@literal1.t	Teller	main	default
+
+== crates/hale-codegen/tests/bus_static_reservation.rs#2d4d44f6
+root	App	the entry
+row	App@literal1	App	main	default
+row	App@literal1.a	All	main	default
+row	App@literal1.s	Shouter	main	default
+row	Watcher@main1	Watcher	main	default
+
 == crates/hale-codegen/tests/bus_subscriber.rs#13a2a6c3
 row	Sub@main1	Sub	main	default
 
