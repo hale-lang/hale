@@ -1102,6 +1102,18 @@ pub fn expand(
                     if param.serve.is_some() {
                         continue;
                     }
+                    // the param is the exposure: typed as one, or the law says so
+                    let typed = match &param.ty {
+                        None => true,
+                        Some(TypeExpr::Named { path, .. }) => {
+                            let segs: Vec<&str> = path.segments.iter().map(|s| s.name.as_str()).collect();
+                            segs == ["std", "api", "Exposure"]
+                        }
+                        Some(_) => false,
+                    };
+                    if !typed {
+                        continue;
+                    }
                     let rows = rows_of_surface(&ro, &surface, renames, default_surface);
                     if rows.is_empty() {
                         continue;

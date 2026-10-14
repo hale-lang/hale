@@ -1797,6 +1797,31 @@ fn serve_laws_of(
         // places the listener; for one a locus below it holds, the listener
         // runs where the main locus places the param that holds that locus.
         let listener = crate::rpc_expand::has_listener(l, site.transport);
+        match socket_transport(l, site.transport) {
+            // a hub is the main locus's: its listener and its stream
+            // bindings are placed there (spec/api.md § Streams)
+            Some(kind @ ("ws::Hub" | "udp::Hub")) if !l.is_main => diags.push(Diag::ty(
+                site.span,
+                format!(
+                    "serve of `{surface}` over `{kind}` in `{}`: a hub is the main locus's, its listener and its \
+                     stream bindings placed there; serve over it from the main locus, or serve from `{}` over a \
+                     socket transport (`http::Rpc`, `unix::Rpc`) (spec/api.md § Streams)",
+                    l.name.name, l.name.name
+                ),
+            )),
+            // the compiler adds a socket transport's listener from the
+            // literal that builds the transport, and reads its address there
+            Some(kind) if !kind.ends_with("Hub") && !listener => diags.push(Diag::ty(
+                site.span,
+                format!(
+                    "serve of `{surface}` as `{name}` over `{kind}`: the compiler adds the transport's listener from \
+                     the literal that builds it and reads its address there, and this transport is built elsewhere; \
+                     write its literal at the serve site or in the param that holds it (spec/api.md § The `Rpc` \
+                     interface)"
+                ),
+            )),
+            _ => {}
+        }
         if l.is_main {
             if let Some(row) = crate::rpc_expand::placement_entry(l, pname) {
                 if !listener {

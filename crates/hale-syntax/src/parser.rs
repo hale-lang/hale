@@ -8770,8 +8770,8 @@ const RETIRED_GATED: &str = "`@gated` is retired: a role requirement is `require
 /// `serve:`, `http(…)` and the exposed reads it made of `expose` members.
 const RETIRED_API_BINDING: &str = "`bindings { api: … }` is retired: a program serves a surface. \
      Declare the operations as `api NAME { rpc Locus::handler requires: [role]; }` \
-     (or `@rpc` on the handler) and serve them with `api::serve(NAME, unix::Rpc { … })` \
-     or `http::Rpc { … }`, the role sources being the transport's `roles:` and \
+     (or `@rpc` on the handler) and serve them from an exposure param, `web: api::Exposure = \
+     api::serve(NAME, unix::Rpc { … }, …);` or over `http::Rpc { … }`, the role sources being the transport's `roles:` and \
      `principals:`; a stream is a topic binding to a hub, `Topic: self.hub requires: \
      [role];`; a read is an `rpc` row whose handler returns the value (spec/api.md)";
 

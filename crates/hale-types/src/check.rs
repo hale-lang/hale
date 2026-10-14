@@ -12978,6 +12978,17 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// Whether `got` is a locus that satisfies the interface `want`: the
+    /// coercion a bundled stdlib fn's interface parameter takes, as a user
+    /// fn's does (`std::api::run_until_stopped(self.web)`, an
+    /// `api::Exposure` as a `std::api::Handle`).
+    fn locus_meets_interface(&self, want: &Ty, got: &Ty) -> bool {
+        let (Ty::Named(iface), Ty::Named(arg)) = (want, got) else { return false };
+        matches!(self.top.lookup(iface), Some(TopSymbol::Interface(_)))
+            && matches!(self.top.lookup(arg), Some(TopSymbol::Locus(_)))
+            && self.check_structural_impl(arg, iface).is_ok()
+    }
+
     fn check_structural_impl(
         &self,
         locus_name: &str,
@@ -16134,7 +16145,7 @@ impl<'a> Checker<'a> {
                                     if let Some((_, want)) =
                                         f.params.get(i)
                                     {
-                                        if !self.flows_into(want, &got, a) {
+                                        if !self.flows_into(want, &got, a) && !self.locus_meets_interface(want, &got) {
                                             self.diags.push(Diag::ty(
                                                 a.span(),
                                                 format!(
