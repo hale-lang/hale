@@ -350,7 +350,15 @@ return k.r.arr; }`) hands back that locus's storage, a place's value; a
 locus's method returning its own fields hands back a copy. A place's
 value assigned into a part of a parameter (`fn store(h: Holder, r: R) {
 h.arr = r.arr; }`) is stored as a copy, so the caller's two arguments
-never share a block, and a cell's read handed back through a call keeps
+never share a block; so is a place's value (a `String` included) stored
+into a field of a locus handle parameter (`fn put(l: L, s: String) {
+l.name = s; }`), so the locus and the caller never share it. That copy
+lives where such a store's value always has, the caller's arena: a store
+into a locus's field from outside its methods is not yet owned by that
+locus — not copied into its arena, not retired when replaced, not
+checked across pools — and a store through a handle that is not a
+parameter (`ls[0].r.arr = r.arr`) still stores the value's own block
+(GH #1561). A cell's read handed back through a call keeps
 its kind: passed straight to a callee that writes through it, it is
 copied where it is evaluated. A write into it is an assignment
 at any depth (`a[0] = x`, `x.k = 1`, `b[i].inner.s = s`) or a call that
