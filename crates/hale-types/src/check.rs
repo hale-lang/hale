@@ -11505,6 +11505,60 @@ impl<'a> Checker<'a> {
         true
     }
 
+    /// A fn's name (a program's own, an imported seed's `alias::f`, a
+    /// Hale-bodied stdlib fn's `std::` path) read as a value: a fn
+    /// pointer, typed `fn(params) -> ret`. A `fallible(E)` fn has none to
+    /// give: its ABI returns the failure beside the value (an `i1` and
+    /// two out-slots), and a `fn(..)` value's call reads a plain result,
+    /// so the call wrote through an indeterminate pointer (a SIGSEGV
+    /// natively, a signature mismatch on wasm32) after the check
+    /// accepted it. The check refuses it at the name and names a wrapper
+    /// that handles the error.
+    fn fn_value(&mut self, shown: &str, sig: &FnSig, span: Span) -> Ty {
+        let ty = Ty::Function {
+            params: sig.params.iter().map(|(_, t)| t.clone()).collect(),
+            ret: Box::new(sig.ret.clone()),
+        };
+        let Some(err) = &sig.fallible else { return ty };
+        let name = shown.rsplit("::").next().unwrap_or(shown);
+        let names: Vec<String> = (0..sig.params.len()).map(|i| format!("a{i}")).collect();
+        let params: Vec<String> = names.iter().zip(&sig.params).map(|(n, (_, t))| format!("{n}: {}", t.display())).collect();
+        let fallback = match &sig.ret {
+            Ty::Prim(PrimType::Int) => "0",
+            Ty::Prim(PrimType::Float) => "0.0",
+            Ty::Prim(PrimType::Bool) => "false",
+            Ty::Prim(PrimType::String) => "\"\"",
+            Ty::Prim(PrimType::Bytes) => "b\"\"",
+            _ => "<fallback>",
+        };
+        let wrapper = match &sig.ret {
+            Ty::Unit => format!(
+                "`fn {name}_or({}) {{ {shown}({}) or {{ }}; }}`",
+                params.join(", "),
+                names.join(", ")
+            ),
+            ret => format!(
+                "`fn {name}_or({}) -> {} {{ return {shown}({}) or {fallback}; }}`",
+                params.join(", "),
+                ret.display(),
+                names.join(", ")
+            ),
+        };
+        self.diags.push(Diag::ty(
+            span,
+            format!(
+                "`{shown}` is `fallible{}`, and a fn value has no error channel: a call through it \
+                 could not address the failure. Wrap it in a fn that handles the error, {wrapper}, and \
+                 pass that",
+                match err {
+                    Ty::Unknown => String::new(),
+                    e => format!("({})", e.display()),
+                }
+            ),
+        ));
+        ty
+    }
+
     /// A `std::` path read as a value (`apply(std::url::encode, s)`). A
     /// stdlib fn with a Hale body is merged into the program under its
     /// rename and is a fn value like a program's own fn, typed by its
@@ -11515,10 +11569,8 @@ impl<'a> Checker<'a> {
         let segs: Vec<&str> = qn.segments.iter().map(|s| s.name.as_str()).collect();
         if let Some(mangled) = crate::stdlib_bodies::mangled_locus_name(&segs) {
             if let Some(TopSymbol::Fn(sig)) = self.top.lookup(mangled) {
-                return Ty::Function {
-                    params: sig.params.iter().map(|(_, t)| t.clone()).collect(),
-                    ret: Box::new(sig.ret.clone()),
-                };
+                let sig = sig.clone();
+                return self.fn_value(&segs.join("::"), &sig, qn.span);
             }
         }
         let path = segs.join("::");
@@ -16321,7 +16373,16 @@ impl<'a> Checker<'a> {
                 }
                 lit_ty(lit)
             }
-            Expr::Ident(id) => self.check_ident_expr(id, true),
+            Expr::Ident(id) => {
+                let is_callee = std::mem::take(&mut self.this_is_callee);
+                if !is_callee && self.locals.lookup(&id.name).is_none() {
+                    if let Some(TopSymbol::Fn(sig)) = self.top.lookup(&id.name) {
+                        let sig = sig.clone();
+                        return self.fn_value(&id.name, &sig, id.span);
+                    }
+                }
+                self.check_ident_expr(id, true)
+            }
             Expr::Path(qn) => {
                 let is_callee = std::mem::take(&mut self.this_is_callee);
                 if !is_callee && qn.segments.first().is_some_and(|s| s.name == "std") {
@@ -16357,6 +16418,10 @@ impl<'a> Checker<'a> {
                 // same-seed call gets (the call arm reads this type),
                 // and the value it returns has a type downstream.
                 if let Some((_, sig)) = self.imported_fn(qn) {
+                    if !is_callee {
+                        let shown = qn.segments.iter().map(|s| s.name.as_str()).collect::<Vec<_>>().join("::");
+                        return self.fn_value(&shown, &sig, qn.span);
+                    }
                     return Ty::Function {
                         params: sig.params.iter().map(|(_, t)| t.clone()).collect(),
                         ret: Box::new(sig.ret.clone()),

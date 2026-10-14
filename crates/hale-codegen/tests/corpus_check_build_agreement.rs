@@ -2781,3 +2781,45 @@ fn a_stdlib_fn_value_lowers_or_is_refused_by_the_check() {
         "stdlib_fn_value",
     );
 }
+
+/// A `fallible` fn read as a value, the stdlib's (`std::hex::decode`) or
+/// a program's own: a fn value's call reads a plain result, and the
+/// fallible ABI returns the failure beside the value (an `i1` and two
+/// out-slots), so the built call wrote through an indeterminate pointer
+/// (a SIGSEGV natively, a signature mismatch on wasm32) after the check
+/// accepted it. The check refuses each at the name and names a wrapper
+/// that handles the error; the wrappers, passed instead, build and run,
+/// and so does an infallible stdlib fn's value. (An imported seed's:
+/// hale-cli's `check_build_refusals`.)
+///
+/// Plain string literals, for the reason given above.
+#[test]
+fn a_fallible_fn_read_as_a_value_is_refused_by_the_check_not_the_build() {
+    let user = "type Oops { why: String = \"\"; }\n\
+                fn parse(s: String) -> Int fallible(Oops) { if s == \"bad\" { fail Oops { why: s }; } return 7; }\n\
+                fn apply(f: fn(String) -> Int, s: String) -> Int { return f(s); }\n";
+    let by_value = format!("{user}fn main() {{ println(apply(parse, \"ok\")); }}\n");
+    let by_let = format!("{user}fn main() {{ let g = parse; println(g(\"ok\")); }}\n");
+    let hex = "fn apply(f: fn(String) -> Bytes, s: String) -> Bytes { return f(s); }\n";
+    let hex_value = format!("{hex}fn main() {{ println(len(apply(std::hex::decode, \"61\"))); }}\n");
+    let hex_let = format!("{hex}fn main() {{ let f = std::hex::decode; println(len(f(\"61\"))); }}\n");
+    assert_refused_by_the_check(
+        &[
+            (&hex_value, "std::hex::decode", "`std::hex::decode` is `fallible"),
+            (&hex_let, "std::hex::decode", "`std::hex::decode` is `fallible"),
+            (&by_value, "parse", "`parse` is `fallible(Oops)`, and a fn value has no error channel"),
+            (&by_let, "parse", "`parse` is `fallible(Oops)`, and a fn value has no error channel"),
+        ],
+        "fallible_fn_value",
+    );
+    let wrapped = format!(
+        "{user}{hex}\
+         fn parse_or(a0: String) -> Int {{ return parse(a0) or 0; }}\n\
+         fn decode_or(a0: String) -> Bytes {{ return std::hex::decode(a0) or b\"\"; }}\n\
+         fn apply_s(f: fn(String) -> String, s: String) -> String {{ return f(s); }}\n\
+         fn main() {{ println(apply(parse_or, \"ok\")); println(len(apply(decode_or, \"6162\"))); println(apply_s(std::url::encode, \"a b\")); }}\n"
+    )
+    .replace("fn apply(f: fn(String) -> Bytes", "fn apply_b(f: fn(String) -> Bytes")
+    .replace("len(apply(decode_or", "len(apply_b(decode_or");
+    assert_eq!(build_and_run_probe(&wrapped, "fallible_fn_wrapped"), Ok("7\n2\na%20b\n".to_string()), "{}", wrapped);
+}

@@ -1412,10 +1412,25 @@ and a `fn(…)` value carries none, so it is not one. Pass a free fn,
 or call the method where the value is needed
 ```
 
+A `fallible(E)` fn is not a value either, a program's own, an
+imported seed's (`lib::parse`) or the stdlib's: its ABI returns the
+failure beside the value, and a `fn(…) -> T` value's call reads a
+plain result, so there is no error channel to carry it through. Its
+name read as a value is a type error at the name that names a wrapper
+handling the error:
+
+```
+main.hl:4:27: type error: `parse` is `fallible(Oops)`, and a fn value
+has no error channel: a call through it could not address the
+failure. Wrap it in a fn that handles the error, `fn parse_or(a0:
+String) -> Int { return parse(a0) or 0; }`, and pass that
+```
+
 A `std::` fn is a value when the stdlib writes it in Hale: its body is
 merged into the program under its rename, so `apply(std::url::encode,
 s)` passes that fn as `apply(dbl, 1)` passes `dbl`, typed by its
-signature. A builtin the stdlib answers at a call (`std::math::abs`,
+signature (a `fallible` one, `std::hex::decode`, is refused as
+above). A builtin the stdlib answers at a call (`std::math::abs`,
 `std::str::upper`) has no fn behind it, and its path in any position
 but a call's callee is a type error at the path that names a wrapper:
 

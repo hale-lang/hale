@@ -143,6 +143,12 @@ For the same reason a locus's method is not a function value:
 function, so `hale check` refuses it at `inc`. Call the method
 where you need its result, or pass a free function.
 
+A function that can fail (`-> Int fallible(E)`) is not a function
+value either: whoever calls through the value would have no `or` to
+handle the failure with. Pass a small wrapper that handles it
+(`fn parse_or(s: String) -> Int { return parse(s) or 0; }`); `hale
+check` suggests one.
+
 A stdlib function written in Hale passes the same way
 (`apply(std::url::encode, s)`). One the compiler answers itself at a
 call (`std::math::abs`) has no function behind it to pass; `hale
