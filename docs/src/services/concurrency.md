@@ -553,6 +553,16 @@ is placed on a different pool) is a compile error — it would run
 type is written: a stdlib locus by its path (`std::log::Logger`), an
 alias, or an interface the field's literal implements.
 
+A store into `other`'s field is the same work as a method call on
+`other`, so it is the same error across pools: `self.other.name = s`,
+`let o = self.other; o.name = s;`, and `put(self.other, s)` where
+`fn put(w: Worker, s: String) { w.name = s; }`. The store copies the
+value into `other`'s memory and recycles the value it replaces, and
+only `other`'s own thread may do that. Give `other` a method that makes
+the store, and reach it through the bus. A store of a plain number or
+flag (`self.other.gate = 1`) involves no memory of `other`'s and is
+not refused.
+
 One escape is deliberately **not** traced: a call made through a
 *handler function pointer* rather than a direct method reference —
 the canonical case being a `std::http::Server` handler that reads a

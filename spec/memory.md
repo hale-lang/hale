@@ -1566,6 +1566,27 @@ reclaim on a real-world long-running workload:
      not (~20 ns per construction for three such leaves, measured
      on a 1M-construction loop).
 
+     A record value is walked as a stack snapshot whenever it has a
+     field the walk rewrites (a String, Bytes, a nested block, a
+     payload enum), not only when the store retires nested blocks
+     (GH #1561): walked in place, a parameter's record (`fn set(x:
+     R) { self.r = x; }`) was left pointing at the clones the field
+     now owned, which the next store into the field retired under
+     the caller (its String read back empty).
+
+     A store into a locus's field from outside its methods
+     (`types.md` § A store into a locus's field is the locus's own:
+     `l.name = s` through a handle, `h.loc.f = v`, `ls[i].f = v`,
+     `self.loc.f = v`) is this store, and #7's, with the locus that
+     owns the field — the last on the lvalue's path — in place of
+     `self`. Its arena is the destination, whatever arena the caller
+     allocates in. The store then flushes that arena's pending
+     retires, as the method call it stands for would at its
+     activation boundary. Before, the slot took the caller's block
+     itself: a free fn storing 4M Strings into one locus left every
+     one in place, and a copy made in the arena of the path's root
+     was freed under a child that outlived it.
+
   7. **In-place String / Bytes reassignment at `self.X =
      heap_value`.** `lotus_str_assign_in_place(arena, old, new)`
      reuses the existing slot's buffer when `strlen(new) ==

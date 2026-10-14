@@ -350,21 +350,7 @@ return k.r.arr; }`) hands back that locus's storage, a place's value; a
 locus's method returning its own fields hands back a copy. A place's
 value assigned into a part of a parameter (`fn store(h: Holder, r: R) {
 h.arr = r.arr; }`) is stored as a copy, so the caller's two arguments
-never share a block; so is a value spelled as a place — a local, a
-field, an element, a `String` included — stored into a field of a locus
-handle parameter (`fn put(l: L, s: String) { l.name = s; }`), so the
-locus and the caller never share it. That is all this rule promises for
-a store into a locus's field from outside its methods; the rest is not
-yet owned by the locus (GH #1561): a `String` or `Bytes` carried there
-by an `if`, a `match`, a block, an `or` or a call (`l.name = if f { s }
-else { "xyz" };`), a `String` stored through a handle local (`let l = L
-{ }; l.name = s; l.rename();` rewrites `s`), a store through an element
-of an array of loci (`ls[0].r.arr = r.arr`), and the arena the value
-lives in, its retire when replaced, and the cross-pool check. (A
-compound value stored through a handle local or a child, `l.r.arr =
-r.arr`, `h.loc.r.arr = r.arr`, is copied.) The copy costs a clone per
-store: a free fn storing a `String` parameter into a handle's field 4M
-times ran 7 s and 62 MB longer. A cell's read handed back through a call keeps
+never share a block. A cell's read handed back through a call keeps
 its kind: passed straight to a callee that writes through it, it is
 copied where it is evaluated. A write into it is an assignment
 at any depth (`a[0] = x`, `x.k = 1`, `b[i].inner.s = s`) or a call that
@@ -539,6 +525,46 @@ Locus types have:
 Instantiating a locus type produces a **locus handle** of that
 type, allocated as a region within the enclosing scope (per
 `memory.md`).
+
+### A store into a locus's field is the locus's own
+
+A store into a locus's field from outside that locus's methods is the
+locus's own store, exactly as a method of it storing `self.f = v` (GH
+#1561). Such a store goes through a handle parameter (`fn put(l: L, s:
+String) { l.name = s; }`), a handle local (`let l = L { }; l.name =
+s;`), a child reached through a handle or through `self` (`h.loc.name =
+s`, `self.loc.name = s` in the parent's method), or an element of an
+array of loci (`ls[i].r.arr = r.arr`). The locus that owns the field is
+the last one on the store's path: `loc` in `h.loc.name`, the element in
+`ls[i].r.arr`.
+
+- **Owned.** The value is copied into the owning locus's storage
+  (`spec/memory.md` rules 6 and 7) whatever spelled it: a place, an
+  `if`, a `match`, a block, an `or`, a call, a concatenation. The locus
+  and the caller never share a block afterwards, in either direction. A
+  write into the locus (`self.r.arr[0].k = 9`, a same-length `self.name
+  = "ZZZ"`) never reaches the caller's value, and a write into the
+  caller's value never reaches the locus. The copy lives as long as the
+  locus that owns the field, whatever happens to the handle's root (a
+  child stored into through its parent outlives the parent).
+- **Retired.** The value the store replaces is retired, and the store
+  ends the way a method call on that locus does, at an activation
+  boundary that makes the locus's retired blocks reusable. A free fn
+  that stores a fresh `String` into a long-lived locus 200 000 times
+  stays at the same floor as the method form: 4.7 MB of resident memory
+  for both.
+- **One pool.** A store into the field of a locus that runs on another
+  pool is refused at check, as the cross-pool method call is (§
+  Single-threaded-method invariant (F.31)). A store into an inline
+  scalar slot (a number, a `Bool`, a `Time`, a payload-free enum) is
+  one plain store with no arena work, and is not refused, as a
+  cross-pool field read is not.
+
+A store below a record held in a locus's field (`l.r.arr = v`, `l.c.s =
+s`) is the same store, owned by that locus. The parameter-part rule (§
+A local bound from a place is yours: `h.arr = r.arr` copies) is about a
+record the caller holds, not a locus, and adds no copy to a store
+through a handle: the store's copy into the locus is the only one.
 
 ### `type` is a top-level declaration
 
@@ -1627,6 +1653,26 @@ instance, seeded from the `main locus`'s `placement { }` entries):
    pool, the call is rejected with a diagnostic naming both
    pools and pointing at the `placement { }` entries that
    picked them.
+
+   A store into a field of the receiver instance is that
+   locus's own work, as a method call on it is (§ A store into a
+   locus's field is the locus's own), and is rejected the same
+   way when the pools differ. Three forms are rejected: a store
+   down `self.field` (`self.w.name = s`, `self.w.r.k = 1`); a
+   store through a local bound to `self.field` (`let w = self.w;
+   w.name = s;`); and a call of a free fn that stores into a field
+   of the parameter it is handed `self.field` at (`put(self.w,
+   s)` with `fn put(w: W, s: String) { w.name = s; }`). The last
+   includes a fn that hands that parameter on to such a fn,
+   transitively. The diagnostic names the locus, both pools and
+   the store, and suggests a method of that locus, reached
+   through the bus. GH #1561: such a store copies the value into
+   the receiver's arena and retires what it replaces, which only
+   the receiver's own thread may do. A store whose slot is an
+   inline scalar (a number, a `Bool`, a `Time` or `Duration`, a
+   unit scalar, a payload-free enum, read from the declarations)
+   is one plain store with no arena work, and is not rejected, as a
+   cross-pool field read is not.
 5. Bus sends (`Topic <- v;` / `"subj" <- v;`) are unrestricted
    — the runtime's cross-thread dispatch (m28b condvar+memcpy)
    handles the boundary safely.
