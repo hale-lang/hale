@@ -2216,6 +2216,22 @@ impl<'p, 'a> Walk<'p, 'a> {
         }
     }
 
+    /// Does the assignment's slot surely lie in a locus's storage? Its
+    /// head is a handle parameter or local, or the path steps below a
+    /// field every declaration of which holds a handle (`h.loc.f`,
+    /// `holder.loc.f`). `head` is the head's lookup.
+    fn store_lands_in_locus(&self, target: &LValue, head: Option<Option<usize>>) -> bool {
+        let handle_head = match head {
+            Some(Some(v)) => self.handle_only[v],
+            Some(None) => self.handle_only_params.contains(&target.head.name),
+            None => false,
+        };
+        let below_child = target.tail.split_last().is_some_and(|(_, above)| {
+            above.iter().any(|seg| matches!(seg, LValueSeg::Field(f) if self.p.handle_fields.contains(&f.name)))
+        });
+        handle_head || below_child
+    }
+
     /// Does `value`, bound to a fresh local, surely hold a handle (its
     /// declared type, a field every declaration of which holds one, a
     /// local or a parameter that does, a locus literal)?
@@ -2862,7 +2878,15 @@ impl<'p, 'a> Walk<'p, 'a> {
                     // (its flag cleared after the store): a field path marks
                     // the field (`h.f = r.arr` → a part marker), an element
                     // the whole local (`xs[0] = <cell read>`).
-                    if let Some(Some(v)) = head {
+                    // A store whose slot is a locus's storage — through a
+                    // handle parameter or local, or below a child (`l.name =
+                    // s`, `h.loc.r.arr = r.arr`) — is that locus's own store:
+                    // lowering copies the value into the locus's arena and
+                    // retires what it replaces, as a method's `self.f = v`
+                    // (GH #1561). The locus never shares the caller's block,
+                    // so neither rule below adds a copy of its own.
+                    let into_locus = self.store_lands_in_locus(target, head);
+                    if let (Some(Some(v)), false) = (head, into_locus) {
                         self.bind_assigned_part(v, target, value, &keys, id.0, *span);
                     }
                     // A place's value assigned into a part of a parameter: the
@@ -2870,25 +2894,13 @@ impl<'p, 'a> Walk<'p, 'a> {
                     // through either reaches the other (`h.arr = r.arr;
                     // h.arr[0].k = 7` with both parameters). The value is
                     // stored as a copy, as a struct field's is (GH #992).
-                    // A handle parameter's field is that locus's storage, and
-                    // a store into it from outside the locus's methods is not
-                    // yet owned by the locus (the value stays where the caller's
-                    // arena holds it): a value spelled as a place (a local, a
-                    // field, an element), a String included, is a copy, so the
-                    // locus and the caller never share it (a later same-length
-                    // overwrite by the locus would otherwise rewrite the
-                    // caller's String). Nothing else is (a String carried by an
-                    // `if` or a call, a store through a handle local): GH #1561.
-                    // The clone costs: a free fn storing a String parameter
-                    // into a handle's field 4M times ran 7 s and 62 MB longer.
                     let param_head = matches!(head, Some(None)) && self.params.contains(&target.head.name);
-                    let handle_head = self.handle_only_params.contains(&target.head.name);
-                    let marked = keys.as_ref().is_some_and(|k| k.iter().any(|k| k.starts_with(AT) || k.starts_with(PART)));
-                    let place_value = matches!(value, Expr::Ident(_) | Expr::Field { .. } | Expr::Index { .. });
                     if param_head
+                        && !into_locus
                         && self.summary.is_some()
+                        && keys.as_ref().is_some_and(|k| k.iter().any(|k| k.starts_with(AT) || k.starts_with(PART)))
+                        && !self.known_scalar(None, value)
                         && !self.surely_handle(None, value)
-                        && ((marked && !self.known_scalar(None, value)) || (handle_head && place_value))
                     {
                         let vspan = value.span();
                         self.args.push((Site::Part(vspan.start.0, vspan.end.0), target.head.name.clone()));

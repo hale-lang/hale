@@ -15081,7 +15081,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// `i32` and handed it to the pointer-shaped deep copy — an ICE on
     /// any `@form(hashmap)` cell with an enum field (friction sweep
     /// 2026-10-12, downstream handoff).
-    fn field_needs_anchor(&self, ty: &CodegenTy) -> bool {
+    pub(crate) fn field_needs_anchor(&self, ty: &CodegenTy) -> bool {
         if Self::array_inline_spec(ty).is_some() {
             return false;
         }
@@ -18207,8 +18207,15 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         // residual allocation cost is acceptable;
                         // when a workload surfaces a hot path we
                         // can extend the in-place treatment.
-                        let (slot_ptr, slot_ty, slot_name) =
+                        let (slot_ptr, slot_ty, slot_name, owner) =
                             self.resolve_lvalue_chain(target, scope)?;
+                        // `self.loc.f = v`: the slot is the child's, so
+                        // the store is the child's own (GH #1561).
+                        if let Some(owner) = owner.filter(|o| !o.is_self) {
+                            return self.finish_locus_field_assign(
+                                slot_ptr, slot_ty, slot_name, op, value, scope, owner,
+                            );
+                        }
                         return self.finish_lvalue_assign(
                             slot_ptr, slot_ty, slot_name, op, value, scope, true,
                         );
@@ -18398,8 +18405,18 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     // (`local.field = X`, `local.f1.f2 = X`,
                     // `local.f1[i].f2 = X`, etc.). Route through
                     // the general walker; emits a plain store.
-                    let (slot_ptr, slot_ty, slot_name) =
+                    let (slot_ptr, slot_ty, slot_name, owner) =
                         self.resolve_lvalue_chain(target, scope)?;
+                    // A store into a locus's field from outside its
+                    // methods (`l.f = v` through a handle parameter or
+                    // local, `h.loc.f = v`, `ls[i].f = v`) is that
+                    // locus's own store, as a method's `self.f = v` is
+                    // (GH #1561).
+                    if let Some(owner) = owner {
+                        return self.finish_locus_field_assign(
+                            slot_ptr, slot_ty, slot_name, op, value, scope, owner,
+                        );
+                    }
                     return self.finish_lvalue_assign(
                         slot_ptr, slot_ty, slot_name, op, value, scope, false,
                     );
@@ -33470,13 +33487,21 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// Caller pairs this with `finish_lvalue_assign` for the rhs
     /// store. The walker itself emits no stores; just the GEPs +
     /// loads needed to address the final slot.
+    ///
+    /// The fourth result is the locus whose storage holds the slot (GH
+    /// #1561): the LAST locus the path steps through — the head (`self`,
+    /// a handle local or parameter) or a child or element reached below
+    /// it (`h.loc.f`, `ls[i].f`) — by its pointer and name, and whether
+    /// that is `self` itself. `None` when no locus holds the slot (a
+    /// record local's field, a local array's element).
     fn resolve_lvalue_chain(
         &mut self,
         target: &LValue,
         scope: &Scope<'ctx>,
-    ) -> Result<(PointerValue<'ctx>, CodegenTy, String), CodegenError> {
+    ) -> Result<(PointerValue<'ctx>, CodegenTy, String, Option<LvalueOwner<'ctx>>), CodegenError> {
         let ptr_t = self.context.ptr_type(AddressSpace::default());
         let i32_t = self.context.i32_type();
+        let mut owner: Option<LvalueOwner<'ctx>> = None;
 
         // State while walking:
         //   `cur_ptr` — current LLVM pointer.
@@ -33508,6 +33533,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             cur_struct = Some((cs.struct_ty, cs.fields.clone()));
             array_slot_ty = None;
             name = "self".to_string();
+            owner = Some(LvalueOwner { ptr: cs.self_ptr, locus: cs.locus_name.clone(), is_self: true });
         } else {
             let (alloca, ty) = scope
                 .locals
@@ -33557,6 +33583,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     cur_ptr = loaded;
                     cur_struct = Some((info.struct_ty, info.fields));
                     array_slot_ty = None;
+                    owner = Some(LvalueOwner { ptr: loaded, locus: n.clone(), is_self: false });
                 }
                 CodegenTy::Cell(inner, _)
                     if matches!(inner.as_ref(), CodegenTy::TypeRef(_)) =>
@@ -33636,7 +33663,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     name = format!("{}.{}", name, fident.name);
 
                     if is_last {
-                        return Ok((field_ptr, fty, name));
+                        return Ok((field_ptr, fty, name, owner));
                     }
 
                     match fty {
@@ -33677,6 +33704,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                             cur_ptr = loaded;
                             cur_struct = Some((info.struct_ty, info.fields));
                             array_slot_ty = None;
+                            owner = Some(LvalueOwner { ptr: loaded, locus: n.clone(), is_self: false });
                         }
                         CodegenTy::Cell(inner, _)
                             if matches!(inner.as_ref(), CodegenTy::TypeRef(_)) =>
@@ -33771,7 +33799,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     name = format!("{}[idx]", name);
 
                     if is_last {
-                        return Ok((slot_ptr, elem_ty, name));
+                        return Ok((slot_ptr, elem_ty, name, owner));
                     }
 
                     match elem_ty {
@@ -33812,6 +33840,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                             cur_ptr = loaded;
                             cur_struct = Some((info.struct_ty, info.fields));
                             array_slot_ty = None;
+                            owner = Some(LvalueOwner { ptr: loaded, locus: n.clone(), is_self: false });
                         }
                         other => {
                             return Err(CodegenError::Unsupported(format!(
@@ -34154,6 +34183,113 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         Ok(BlockEnd::Open)
     }
 
+
+    /// GH #1561: a store into a locus's field from outside that locus's
+    /// methods — through a handle parameter or local (`fn put(l: L, s:
+    /// String) { l.name = s; }`), a child reached through a handle or
+    /// through `self` (`h.loc.f = v`, `self.loc.f = v`), an element of
+    /// an array of loci (`ls[i].f = v`). `owner` is the last locus on
+    /// the path, whose storage holds the slot. The store is that
+    /// locus's own, exactly as a method of it storing `self.f = v`
+    /// (`spec/memory.md` rules 6 and 7): the value deep-copied or
+    /// anchored into the owner's `__arena`, never shared with the
+    /// caller's, and the value it replaces retired. A method call ends
+    /// at its activation boundary, which flushes the owner's pending
+    /// retires; so does this store, so a free fn storing into a
+    /// long-lived locus in a loop reuses the blocks it replaces. A
+    /// handle slot (a child, an interface, a perspective, a cell) is
+    /// stored as it is. The checker refuses such a store into a locus
+    /// that may run on another pool (F.31), so the owner's arena is
+    /// only ever written from its own thread.
+    #[allow(clippy::too_many_arguments)]
+    fn finish_locus_field_assign(
+        &mut self,
+        slot_ptr: PointerValue<'ctx>,
+        slot_ty: CodegenTy,
+        slot_name: String,
+        op: &AssignOp,
+        value: &Expr,
+        scope: &Scope<'ctx>,
+        owner: LvalueOwner<'ctx>,
+    ) -> Result<BlockEnd, CodegenError> {
+        let (rhs, rhs_ty) = self.lower_expr(value, scope)?;
+        let new_val = if matches!(op, AssignOp::Eq) {
+            if rhs_ty != slot_ty {
+                return Err(CodegenError::Unsupported(format!(
+                    "type mismatch in assignment to `{}`: \
+                     slot {:?} vs rhs {:?}",
+                    slot_name, slot_ty, rhs_ty
+                )));
+            }
+            rhs
+        } else {
+            let bin_op = match op {
+                AssignOp::PlusEq => BinOp::Add,
+                AssignOp::MinusEq => BinOp::Sub,
+                AssignOp::StarEq => BinOp::Mul,
+                AssignOp::SlashEq => BinOp::Div,
+                AssignOp::PercentEq => BinOp::Mod,
+                other => {
+                    return Err(CodegenError::Unsupported(format!(
+                        "compound assignment {:?}",
+                        other
+                    )));
+                }
+            };
+            let llvm_ty = self.llvm_basic_type(&slot_ty);
+            let cur = self
+                .builder
+                .build_load(llvm_ty, slot_ptr, &slot_name)
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            let (v, _) = self.lower_binop(bin_op, cur, rhs, &slot_ty)?;
+            v
+        };
+        if matches!(
+            slot_ty,
+            CodegenTy::LocusRef(_)
+                | CodegenTy::Interface(_)
+                | CodegenTy::Perspective(_)
+                | CodegenTy::Cell(_, _)
+        ) {
+            self.builder
+                .build_store(slot_ptr, new_val)
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            return Ok(BlockEnd::Open);
+        }
+        let retires = self.self_field_type_retires(&slot_ty);
+        let owner_ptr = owner.ptr;
+        let owner_locus = owner.locus.clone();
+        self.emit_locus_field_store(slot_ptr, new_val, &slot_ty, Some((owner_ptr, owner_locus.clone())))?;
+        // A form locus's arena is not flushed here, as its own methods
+        // never flush at their exit: a cell read the caller still holds
+        // may reach a block a `set` in this activation retired. The user
+        // activation around the store flushes it.
+        let info = self
+            .user_loci
+            .get(&owner_locus)
+            .cloned()
+            .expect("a field's owner is a declared locus");
+        let form_locus = info.capacity_slots.iter().any(|sl| sl.form.is_some());
+        if retires && !form_locus {
+            let ptr_t = self.context.ptr_type(AddressSpace::default());
+            let arena_field_ptr = self
+                .builder
+                .build_struct_gep(info.struct_ty, owner_ptr, info.arena_field_idx, "locus_field.flush.arena.ptr")
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            let arena = self
+                .builder
+                .build_load(ptr_t, arena_field_ptr, "locus_field.flush.arena")
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            let flush_fn = self
+                .module
+                .get_function("lotus_arena_flush_retired")
+                .expect("lotus_arena_flush_retired declared");
+            self.builder
+                .build_call(flush_fn, &[arena.into()], "locus_field.flush")
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        }
+        Ok(BlockEnd::Open)
+    }
 
     /// Sizeof helper for compound types, used by the in-place
     /// assign path's memcpy. Routes to the matching LLVM storage
@@ -34886,6 +35022,16 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
 
 
 
+}
+
+/// The locus whose storage holds an assignment's slot
+/// (`resolve_lvalue_chain`): the last locus on the lvalue's path, by its
+/// pointer and declared name, and whether it is the method's own `self`.
+#[derive(Clone)]
+pub(crate) struct LvalueOwner<'ctx> {
+    pub(crate) ptr: PointerValue<'ctx>,
+    pub(crate) locus: String,
+    pub(crate) is_self: bool,
 }
 
 #[derive(Default)]
