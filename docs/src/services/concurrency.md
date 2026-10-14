@@ -556,7 +556,12 @@ alias, or an interface the field's literal implements.
 A store into `other`'s field is the same work as a method call on
 `other`, so it is the same error across pools: `self.other.name = s`,
 `let o = self.other; o.name = s;`, and `put(self.other, s)` where
-`fn put(w: Worker, s: String) { w.name = s; }`. The store copies the
+`fn put(w: Worker, s: String) { w.name = s; }`. The method call is
+refused the same ways too: through a local (`let o = self.other;
+o.foo()`), through a free fn that calls a method on the handle you
+hand it (`poke(self.other)`), and on anything reached below the field
+(`self.other.helpers[i].foo()`), since a nested locus runs on its
+holder's thread. The store copies the
 value into `other`'s memory and recycles the value it replaces, and
 only `other`'s own thread may do that. Give `other` a method that makes
 the store, and reach it through the bus. A store of a plain number or

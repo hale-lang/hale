@@ -447,6 +447,10 @@ locus Kid {
     }
 }
 
+fn pick_of(k: Kid, o: Owner) -> Int {
+    return k.pick() or { println("or heard=", o.heard, " closure=", err.closure); 7 };
+}
+
 locus Owner {
     params {
         worker: Int = pthread_self();
@@ -466,7 +470,11 @@ main locus App {
     placement { o: cooperative(pool = side); }
     run() {
         let mine = pthread_self();
-        let b = self.o.kid.pick() or { println("or heard=", self.o.heard, " closure=", err.closure); 7 };
+        // through a fn value: F.31 refuses the direct call on a locus
+        // another pool holds (GH #1561), and a fn value is the escape it
+        // does not trace
+        let via: fn(Kid, Owner) -> Int = pick_of;
+        let b = via(self.o.kid, self.o);
         println("b=", b);
         if mine != self.o.worker { println("raised off the worker"); }
         if self.o.posted_on == self.o.worker { println("handled on the worker"); }

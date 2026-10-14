@@ -571,6 +571,10 @@ the last one on the store's path: `loc` in `h.loc.name`, the element in
   scalar slot (a number, a `Bool`, a `Time`, a payload-free enum) is
   one plain store with no arena work, and is not refused, as a
   cross-pool field read is not.
+- **A child replaced.** A locus-typed field given a fresh locus literal
+  (`h.loc = L { … }`) is the owner's lifecycle reassign (§
+  Reassigning a locus-typed field is a lifecycle transition): the old
+  child is reclaimed, the new one built as the owner's field.
 
 A store below a record held in a locus's field (`l.r.arr = v`, `l.c.s =
 s`) is the same store, owned by that locus. The parameter-part rule (§
@@ -1072,7 +1076,13 @@ reconfigure," prefer **in-place mutation** (`self.conn.url = …`),
 which keeps the locus's identity and resources and is cheaper.
 v1 limitation: the reassigned instance inherits the owner's pool;
 reassigning a field with an explicit non-default `placement` does
-not re-apply that placement.
+not re-apply that placement. The same holds from outside the owner
+(`h.loc = L { … }` in a free fn, `hs[i].loc = L { … }`, GH #1561):
+the store is the owner's, so the old child is reclaimed and the new
+one is built as the owner's field, exactly as the owner's own
+`self.loc = L { … }`. A field initializer of that literal may not
+read `self` in another locus's method (it would read the owner);
+bind the value to a local first.
 
 ## k_max as a typing rule
 
@@ -1666,11 +1676,20 @@ instance, seeded from the `main locus`'s `placement { }` entries):
    pools and pointing at the `placement { }` entries that
    picked them.
 
+   The receiver is the field instance however the call reaches it
+   (GH #1561): below the field (`self.h.w.m()`, `self.h.ws[i].m()`
+   — a nested instance, an element included, runs in its holder's
+   pool), through a local bound to it (`let w = self.w; w.m()`) or
+   a `for` over its elements, and through a free fn handed it that
+   calls a method on its parameter (`fn poke(w: W) { w.m(); }`,
+   `poke(self.w)`), directly or by handing the parameter on to such
+   a fn (by name, a fixpoint over the program's free fns).
+
    A store into a field of the receiver instance is that
    locus's own work, as a method call on it is (§ A store into a
    locus's field is the locus's own), and is rejected the same
-   way when the pools differ. Three forms are rejected: a store
-   down `self.field` (`self.w.name = s`, `self.w.r.k = 1`); a
+   way when the pools differ, reached the same ways: a store down
+   `self.field` (`self.w.name = s`, `self.h.ws[i].name = s`); a
    store through a local bound to `self.field` (`let w = self.w;
    w.name = s;`); and a call of a free fn that stores into a field
    of the parameter it is handed `self.field` at (`put(self.w,

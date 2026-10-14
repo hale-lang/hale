@@ -3343,3 +3343,96 @@ fn main() {{ App {{ }}; }}
     assert_eq!(cross_pool_stores(&src), Vec::<String>::new());
     assert!(check(&src).iter().all(|m| !m.contains("cross-pool")), "{:?}", check(&src));
 }
+
+// GH #1561, F.31 completeness: the method call `self.w.m()` refuses is
+// refused however the handle reaches the call — through a local bound
+// to the field (`let w = self.w; w.m()`), a `for` over an array's
+// elements, a free fn handed the handle that calls a method on its
+// parameter (directly or one fn down), or anything reached below the
+// field (`self.h.ws[i].m()`: a nested instance, an element included,
+// runs in its holder's domain); and a store through such an element is
+// refused as a store down `self.w` is. An inline scalar store is not,
+// as everywhere else.
+
+const CALL_LOCI: &str = r#"
+locus W {
+    params { name: String = ""; n: Int = 0; }
+    fn setname(s: String) { self.name = s; }
+    fn count() -> Int { return self.n; }
+}
+locus Holder {
+    params { ws: [W; 2] = [W { }, W { }]; one: W = W { }; }
+    fn tick() { }
+}
+fn poke(w: W) { w.setname("free fn"); }
+fn relay(x: W) { poke(x); }
+fn harmless(w: W) -> Int { return 1; }
+"#;
+
+fn f31(src: &str) -> Vec<String> {
+    check(src).into_iter().filter(|m| m.contains("cross-pool")).collect()
+}
+
+const F31_BODY: &str = r#"
+        let held = self.w;
+        held.setname("alias");
+        poke(self.w);
+        relay(held);
+        let n = harmless(self.w);
+        self.h.ws[1].setname("element");
+        self.h.ws[0].name = "element store";
+        self.h.ws[0].n = 3;
+        self.h.one.setname("nested");
+        for x in self.h.ws { x.setname("each"); }
+"#;
+
+#[test]
+fn a_method_call_on_a_cross_pool_handle_is_refused_however_it_is_reached() {
+    let src = format!(
+        r#"{CALL_LOCI}
+main locus App {{
+    params {{ w: W = W {{ }}; h: Holder = Holder {{ }}; }}
+    placement {{ w: cooperative(pool = p); h: pinned; }}
+    run() {{ {F31_BODY} }}
+}}
+fn main() {{ App {{ }}; }}
+"#
+    );
+    let got = f31(&src);
+    let w = "placed `cooperative(pool = p)`, but the enclosing locus `App` is placed `cooperative(pool = main)`.";
+    let h = "placed `pinned (at `h`)`, but the enclosing locus `App` is placed `cooperative(pool = main)`.";
+    let call = "Cross-pool coordination must go through the bus, not a direct call. See spec/types.md § \
+                \"Single-threaded-method invariant (F.31)\".";
+    let store = "A store into a locus's field is that locus's own work, as a method call on it is: give `Holder` a \
+                 method that makes the store and reach it through the bus. See spec/types.md § \
+                 \"Single-threaded-method invariant (F.31)\".";
+    assert_eq!(
+        got,
+        [
+            format!("cross-pool method call: `held.setname` invokes a method on locus `W` {w} {call}"),
+            format!("cross-pool method call: `poke(…)` invokes, through its argument 1, a method on locus `W` (`self.w`) {w} {call}"),
+            format!("cross-pool method call: `relay(…)` invokes, through its argument 1, a method on locus `W` (`held`) {w} {call}"),
+            format!("cross-pool method call: `self.h.ws[…].setname` invokes a method on a locus held by `Holder` (`self.h`) {h} {call}"),
+            format!("cross-pool field store: `self.h.ws[…].name = …` stores into a field of a locus held by `Holder` (`self.h`) {h} {store}"),
+            format!("cross-pool method call: `self.h.one.setname` invokes a method on a locus held by `Holder` (`self.h`) {h} {call}"),
+            format!("cross-pool method call: `x.setname` invokes a method on a locus held by `Holder` (`self.h`) {h} {call}"),
+        ],
+        "`harmless` calls no method on its parameter, and `self.h.ws[0].n = 3` is an inline scalar store"
+    );
+}
+
+/// The same reaches on the instance's own pool are the locus's own: no
+/// refusal.
+#[test]
+fn a_method_call_on_a_same_pool_handle_is_accepted_however_it_is_reached() {
+    let src = format!(
+        r#"{CALL_LOCI}
+main locus App {{
+    params {{ w: W = W {{ }}; h: Holder = Holder {{ }}; }}
+    run() {{ {F31_BODY} }}
+}}
+fn main() {{ App {{ }}; }}
+"#
+    );
+    assert_eq!(f31(&src), Vec::<String>::new());
+}
