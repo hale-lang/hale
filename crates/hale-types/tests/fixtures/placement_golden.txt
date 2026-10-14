@@ -2950,6 +2950,26 @@ row	App@literal1.q	Pool	main	default
 dynamic	Holder	on main
 dynamic	Pool	on main
 
+== crates/hale-codegen/tests/form_read_value.rs#0891b115
+-- Holder@main1	Holder
+row	~	Holder	main	default
+row	~.m	RecMap	main	inherited
+
+== crates/hale-codegen/tests/form_read_value.rs#e23e03eb
+row	M@main1	M	main	default
+
+== crates/hale-codegen/tests/form_read_value.rs#8d8a9fee
+row	M@main1	M	main	default
+
+== crates/hale-codegen/tests/form_read_value.rs#c1c497a0
+row	RecMap@main1	RecMap	main	default
+
+== crates/hale-codegen/tests/form_read_value.rs#83174894
+row	RecMap@main1	RecMap	main	default
+
+== crates/hale-codegen/tests/form_read_value.rs#e4643463
+row	M@main1	M	main	default
+
 == crates/hale-codegen/tests/form_ring_buffer_codegen.rs#6e1a7340
 row	RB@main1	RB	main	default
 
@@ -3546,6 +3566,18 @@ row	Stateless@main1	Stateless	main	default
 
 == crates/hale-codegen/tests/library_shape_http_json.rs#4312175b
 row	FdSet@main1	FdSet	main	default
+
+== crates/hale-codegen/tests/local_place_value.rs#2b732bd2
+row	H@main1	H	main	default
+
+== crates/hale-codegen/tests/local_place_value.rs#83052a1c
+row	Pts@main1	Pts	main	default
+
+== crates/hale-codegen/tests/local_place_value.rs#986d0ab7
+row	H@main1	H	main	default
+
+== crates/hale-codegen/tests/local_place_value.rs#db48c262
+row	H@main1	H	main	default
 
 == crates/hale-codegen/tests/locus_fallible_return_multichild.rs#46fdeeac
 -- dynamic	sites in the seed
@@ -5864,6 +5896,9 @@ root	App	the entry
 row	App@literal1	App	main	default
 dynamic	Child	on main	in the seed
 
+== crates/hale-types/tests/hot_path_alloc.rs#8b174f5c
+row	L@main1	L	main	default
+
 == crates/hale-types/tests/imported_main.rs#a9477106
 root	LibHead	the entry
 row	LibHead@literal1	LibHead	main	default
@@ -7475,6 +7510,9 @@ row	__StdBytesBytesBuilder@main1	__StdBytesBytesBuilder	main	default
 row	__StdBytesBytesBuilder@main2	__StdBytesBytesBuilder	main	default
 row	__StdBytesBytesBuilder@main3	__StdBytesBytesBuilder	main	default
 dynamic	__StdBytesBytesBuilder	on main	in the seed
+
+== tests/hale/local_place_value_test.hl
+row	App@main1	App	main	default
 
 == tests/hale/log_fields_test.hl
 root	App	the entry

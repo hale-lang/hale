@@ -44,7 +44,7 @@ crates/hale-cli/tests/fixtures/bounded-annotation/unbounded-use-script.hl 4d8526
 crates/hale-cli/tests/fixtures/bounded-annotation/unbounded-use-stdlib.hl ea979fb5aaccc20a
 crates/hale-cli/tests/fixtures/bounded-annotation/unbounded-use.hl 8f5063eb4b200eb0
 crates/hale-cli/tests/fixtures/form-hashmap-qualified-model/main.hl af67c9605fa68550
-crates/hale-cli/tests/fixtures/g34-app/main.hl 865d341109268295
+crates/hale-cli/tests/fixtures/g34-app/main.hl f2c1228edb650960
 crates/hale-cli/tests/fixtures/g34-lib-b/wrap.hl 99a6e5ca46fb7c70
 crates/hale-cli/tests/fixtures/g34-lib-c/box.hl 06bf004946c4ddcc
 crates/hale-cli/tests/fixtures/hale-test-mixed/nested/fail_test.hl b1e7c383d7515c93
@@ -71,7 +71,7 @@ crates/hale-cli/tests/fixtures/p3-namespace-method-app/main.hl b6eaa051f60dcfff
 crates/hale-cli/tests/fixtures/p3-namespace-method-lib/grid.hl 83dd3572f7c59f69
 crates/hale-cli/tests/fixtures/qualified-type-fwd-app/main.hl 6f6553a1d6df5be4
 crates/hale-cli/tests/fixtures/qualified-type-fwd-lib/main.hl af67c9605fa68550
-crates/hale-cli/tests/fixtures/three-hop-app/main.hl 865d341109268295
+crates/hale-cli/tests/fixtures/three-hop-app/main.hl f2c1228edb650960
 crates/hale-cli/tests/fixtures/three-hop-lib-mid/wrap.hl 6f502960693db966
 crates/hale-cli/tests/fixtures/three-hop-lib-util/box.hl f86b867c8ab3a29c
 crates/hale-cli/tests/fixtures/topology/pipeline.hl 8ae65dc1d9345936
@@ -189,7 +189,7 @@ crates/hale-cli/tests/topology_graph_cli.rs#36 dea7f37538f67e6b
 crates/hale-cli/tests/topology_graph_cli.rs#37 542f43255ecc42a5
 crates/hale-cli/tests/topology_graph_cli.rs#38 320be3aa78991326
 crates/hale-cli/tests/topology_graph_cli.rs#39 725494b4ad44f749
-crates/hale-cli/tests/topology_graph_cli.rs#4 7d5cf57defcf548e
+crates/hale-cli/tests/topology_graph_cli.rs#4 b6eaa051f60dcfff
 crates/hale-cli/tests/topology_graph_cli.rs#5 c09878edd9f20206
 crates/hale-cli/tests/topology_graph_cli.rs#6 37b8850647e390ba
 crates/hale-cli/tests/topology_graph_cli.rs#8 2e835b5b3a82a9dd
@@ -766,6 +766,12 @@ crates/hale-codegen/tests/form_lru_cache_reclaim.rs#0 c77bf7ca12bd34cc
 crates/hale-codegen/tests/form_lru_cache_reclaim.rs#1 b467cd386ff1ae21
 crates/hale-codegen/tests/form_lru_cache_reclaim.rs#3 59d320aa535e19ce
 crates/hale-codegen/tests/form_lru_cache_reclaim.rs#4 af8028fee2d0f03f
+crates/hale-codegen/tests/form_read_value.rs#1 01827fb676cf7ff4
+crates/hale-codegen/tests/form_read_value.rs#2 bb22f78334b3fe44
+crates/hale-codegen/tests/form_read_value.rs#3 fab7d5479259db2a
+crates/hale-codegen/tests/form_read_value.rs#4 d794c7336ee7748f
+crates/hale-codegen/tests/form_read_value.rs#5 123520725dcce708
+crates/hale-codegen/tests/form_read_value.rs#7 82184bdab6c1c0e5
 crates/hale-codegen/tests/form_ring_buffer_codegen.rs#0 d64b3e41a590cf50
 crates/hale-codegen/tests/form_ring_buffer_codegen.rs#1 d64b3e41a590cf50
 crates/hale-codegen/tests/form_ring_buffer_codegen.rs#2 d64b3e41a590cf50
@@ -1001,6 +1007,11 @@ crates/hale-codegen/tests/library_shape_http_json.rs#6 865d341109268295
 crates/hale-codegen/tests/library_shape_http_json.rs#7 865d341109268295
 crates/hale-codegen/tests/library_shape_http_json.rs#8 865d341109268295
 crates/hale-codegen/tests/library_shape_http_json.rs#9 91ec65224524cec1
+crates/hale-codegen/tests/local_place_value.rs#2 8a390da66ff0b4df
+crates/hale-codegen/tests/local_place_value.rs#3 e8cf1e52c4524571
+crates/hale-codegen/tests/local_place_value.rs#4 e803f6dff4c73ca2
+crates/hale-codegen/tests/local_place_value.rs#5 92e7d6e619816b4f
+crates/hale-codegen/tests/local_place_value.rs#6 afa0a4aba8f1844e
 crates/hale-codegen/tests/locus_fallible_return_multichild.rs#0 ccd3b7e0a8962c42
 crates/hale-codegen/tests/locus_fallible_return_multichild.rs#1 59e6dec03fafb880
 crates/hale-codegen/tests/locus_field_cascade.rs#0 a804d3c14b6b5bce
@@ -1814,6 +1825,7 @@ crates/hale-types/tests/hot_path_alloc.rs#23 234c5f1f87e43729
 crates/hale-types/tests/hot_path_alloc.rs#24 57668da480423fea
 crates/hale-types/tests/hot_path_alloc.rs#25 d58a6f68d4edfc90
 crates/hale-types/tests/hot_path_alloc.rs#26 d58a6f68d4edfc90
+crates/hale-types/tests/hot_path_alloc.rs#30 a6948bf8d48f2a72
 crates/hale-types/tests/hot_path_alloc.rs#4 234c5f1f87e43729
 crates/hale-types/tests/hot_path_alloc.rs#6 234c5f1f87e43729
 crates/hale-types/tests/hot_path_alloc.rs#7 8b5c9b6ca27eb054

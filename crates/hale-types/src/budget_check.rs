@@ -99,6 +99,12 @@ fn describe_kind(kind: &AllocKind) -> String {
             "a string concatenation (each `+` builds a fresh String)"
                 .to_string()
         }
+        AllocKind::CellCopy(reason) if crate::view_bindings::reasons::is_place(reason) => {
+            format!("a copy of a local bound from a place ({reason})")
+        }
+        AllocKind::CellCopy(reason) => {
+            format!("a copy of a value read from a form's cell ({reason})")
+        }
     }
 }
 

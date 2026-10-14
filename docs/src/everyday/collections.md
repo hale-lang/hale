@@ -109,6 +109,9 @@ fn main() {
   of its `indexed_by` field — there's no separate key argument.
 - **`get(key)`** and **`remove(key)`** are fallible (the key
   might be absent); `has(key)` returns a plain `Bool`.
+- **What you take out is yours.** Writing into the record `get`
+  returned never changes the stored one — `set` it back to change the
+  map. Setting it back right after the change costs nothing.
 - Keys are `Int` or `String`.
 
 This "the key is a field of the value" shape matches how keyed

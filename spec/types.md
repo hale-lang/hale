@@ -254,8 +254,14 @@ a binding the fn hands back), its `String` and `Bytes` fields cloned,
 nested structs copied the same way, locus handles left as handles. The
 binding then follows nothing: replacing the source (`self.row = Row {
 }`) leaves `b` as it was read, and writing through the binding (`let
-mut c = self.row; c.n = 9;`) leaves the source untouched. A literal or
-a call result is fresh already and is bound as it is. Assignment
+mut c = self.row; c.n = 9;`) leaves the source untouched. A literal is
+fresh already and is bound as it is; so is a call's result, unless the
+callee may hand back a place's value (§ A local bound from a place is
+yours). A value read
+from a form's cell (`m.get(k) or d`) is the reader's in the same way:
+writing into it never changes the cell, though the compiler keeps its
+nested parts shared with the cell until a write could show
+(`spec/forms.md` § Reading a cell). Assignment
 reads the same way (GH #992): `b = <place>` on a struct local, and
 `arr[i] = <place>` or `b.inner = <place>` under one, store a copy.
 And a write through a local never reaches another (GH #993): a copy
@@ -279,9 +285,11 @@ replaces the place while they are live. So does a value carried out of
 a place by another expression: a `match` arm's payload (`let held =
 match self.e { E::A(s) -> s, E::B -> "", };`), an `if` or block
 result, a tuple, array or record literal holding it, an `or`
-substitute, an enum constructor holding it. (A fn's, a method's or a
-stdlib call's result is copied out of its frame and is the caller's
-own.) The compiler keeps these the
+substitute, an enum constructor holding it. (A stdlib call's result is
+built fresh, and a method's copied out of its locus into the caller's
+arena; a call that may hand back a part of an argument or a form cell's
+read is a place's value, § A local bound from a place is yours.) The
+compiler keeps these the
 place's own pointer where it can, which costs nothing: it binds an
 owned copy only when a write that may replace the place comes between
 the binding and a use of it (or is the call it is passed to; an
@@ -317,6 +325,96 @@ included. Before this a String local held across a method that
 replaced its field read the block the replace retired, reused by the
 next allocation (`spec/memory.md` rules 6 and 7), and a same-length
 store into the field changed the local in place.
+
+### A local bound from a place is yours
+
+Writing into a local bound from a place never changes the place, and
+writing into the place never changes the local (ruling of 2026-10-13).
+The local is any binding: a `let` or `let mut`, a bare `=`, a tuple
+`let`'s element, a `match` payload, a `for` element of an array, and a
+part of a local assigned from a place (`h.arr = r.arr;`, `xs[0] = m.get(k)
+or d;`); the place is a field (of `self`, a child, a record local, a
+parameter), an element, a local, a parameter, or a value carried out of
+one (a `match` or `if` result, a literal holding it, the result of a
+call that may hand it back). A call may hand back a place's value when
+its callee returns a part of a parameter (`fn get_in(r: R) -> In {
+return r.arr[0]; }` returns the caller's block uncopied), a form cell's
+read (`fn read() -> Rec { return self.m.get(1) or Rec { }; }`), or what
+a callee that does returns — transitively, by which parameter; a callee
+the compiler cannot identify may hand back anything. A result declared a
+primitive or a handle never is one; a result fresh at its top level that
+holds such a value in a field (a returned struct literal around `r.arr[0]`)
+copies only when a write goes below that field. A free fn returning a
+field read through a handle parameter (`fn arr_of(k: K) -> [In; 2] {
+return k.r.arr; }`) hands back that locus's storage, a place's value; a
+locus's method returning its own fields hands back a copy. A place's
+value assigned into a part of a parameter (`fn store(h: Holder, r: R) {
+h.arr = r.arr; }`) is stored as a copy, so the caller's two arguments
+never share a block; so is a value spelled as a place — a local, a
+field, an element, a `String` included — stored into a field of a locus
+handle parameter (`fn put(l: L, s: String) { l.name = s; }`), so the
+locus and the caller never share it. That is all this rule promises for
+a store into a locus's field from outside its methods; the rest is not
+yet owned by the locus (GH #1561): a `String` or `Bytes` carried there
+by an `if`, a `match`, a block, an `or` or a call (`l.name = if f { s }
+else { "xyz" };`), a `String` stored through a handle local (`let l = L
+{ }; l.name = s; l.rename();` rewrites `s`), a store through an element
+of an array of loci (`ls[0].r.arr = r.arr`), and the arena the value
+lives in, its retire when replaced, and the cross-pool check. (A
+compound value stored through a handle local or a child, `l.r.arr =
+r.arr`, `h.loc.r.arr = r.arr`, is copied.) The copy costs a clone per
+store: a free fn storing a `String` parameter into a handle's field 4M
+times ran 7 s and 62 MB longer. A cell's read handed back through a call keeps
+its kind: passed straight to a callee that writes through it, it is
+copied where it is evaluated. A write into it is an assignment
+at any depth (`a[0] = x`, `x.k = 1`, `b[i].inner.s = s`) or a call that
+may write through its parameter.
+
+```hale,fragment
+let mut a = self.r.names;
+a[0] = "x";                          // self.r.names is unchanged
+match self.r.e { P::A(i) -> { i.k = 1; }, P::B -> { }, }   // so is the payload
+for x in self.r.cells { x.k = 1; }   // and every element
+let held = r.names;
+r.names[0] = "y";                    // held[0] is what it was
+```
+
+How the compiler keeps this is its business, and it keeps reads free:
+the binding stays the place's own block until a write into it, which
+copies the whole value into the frame first (copy on write, a flag per
+local set at each binding, so one copy serves every later write; a `for`
+element is copied at its first write in each iteration). A struct `let`
+or `=` of a place is a copy already (§ A struct binding is a copy); a
+struct literal holding a place's value copies only the field written
+below (`let mut l = R { a: self.a }; l.a[0] = x;` copies `a`). A local
+handed to a call that may write through its parameter is bound as a
+copy, and so is a binding live across a write into the local's or
+parameter's value it was read from. Three shapes are not copies:
+
+- the get-modify-store of a self field, `let mut v = self.f; v.x[i] =
+  y; self.f = v;` — every binding of `v` reads that field, the store of
+  `v` back into it follows the write on every path, nothing that may
+  read the field (a read of it, a call of the program's, a publish or
+  `yield`) comes between, no other binding views it, and `v` is not
+  used after. The store keeps the block the field already holds
+  (`spec/memory.md` rule 6), so the write lands where the store would
+  have put it;
+- a parameter: an argument is passed by reference, and a callee that
+  writes through its parameter (`fn bump(r: R) { r.a[0] = 1; }`) writes
+  the caller's value;
+- a `@form(vec)` walk, `for x in v.items`, which visits the vec's cells
+  in place (`spec/forms.md`), and a value that is a locus handle.
+
+Each copy is a site of the allocation survey (`place-copy (<reason>)`:
+`copy: written local bound from a place`, `copy: a local bound from a
+place is passed to a call that may write through its parameter`, `copy:
+what the local was read from is written while it is live`), so it
+counts toward `@budget(alloc_per_call = N)` and the `alloc` effect, and
+the hot-path lint reports one in a loop, a bus handler or a `@hot` fn.
+A `bounded[T; N]` local is not a first-class value and is not copied:
+a bounded intrinsic on one bound from a field still writes the field.
+Before this rule the write landed in the place's block: `let mut a =
+self.r.names; a[0] = x;` changed the field.
 
 ## Type aliases
 

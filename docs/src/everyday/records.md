@@ -45,8 +45,10 @@ into the frame — its Strings and Bytes cloned, nested records copied,
 a locus handle inside it left as a handle — the way a returned record
 already was. Replace the field afterwards and `saved` still reads
 what it read; write through a `let mut copy` and the original is
-untouched. A literal or a call result is bound as it is, since it was
-already yours. Assignment is the same: `copy = saved` copies too, and
+untouched. A literal is bound as it is, since it was already yours, and
+so is a call's result — unless the function hands back a part of what
+you passed it (`fn first(r: Row) -> Cell { return r.cells[0]; }`), which
+is then a value read from a place like any other. Assignment is the same: `copy = saved` copies too, and
 a write through one local never shows up in another.
 
 The same holds for a `String`, `Bytes`, tuple or array you read out of
@@ -63,6 +65,34 @@ self.row = Row { };           // saved is unchanged
 let mut copy = saved;
 copy.score = 9;               // saved.score is unchanged
 ```
+
+And the other way round: a local you read out of a place is yours to
+write. An array bound from a field, an element of one, a `match`
+payload, a `for` element, a tuple's element — writing into it, at any
+depth, never changes the field, the record local or the parameter it
+came from. The compiler copies the value at the first write into it
+(once: later writes go to the copy), so a local you only read costs
+nothing. To change the field, write the field (`self.row.scores[0] =
+9`), or set the local back:
+
+```hale,fragment
+let mut scores = self.row.scores;
+scores[0] = 9;                 // self.row.scores is unchanged here
+self.row.scores = scores;      // and now it holds the write
+```
+
+A part you assign into a local is the same: after `h.scores =
+self.row.scores;` the local holds the field's array, and the first write
+through `h.scores` copies it, so the field never sees it.
+
+That last shape — read a field, write the local, store it back whole,
+with nothing reading the field between — copies nothing at all: the
+write lands in the field's own storage, which the store keeps. A
+parameter is different: it is the caller's value by reference, and a
+function that writes through its parameter (`fn bump(r: Row) {
+r.scores[0] = 9; }`) changes what the caller passed. A `for x in
+v.items` walk over a `@form(vec)` visits the vec's own cells, so a
+write through `x` changes the vec, as before.
 
 Records nest, and they're what travels on the bus and in and out
 of functions. When a record starts wanting *methods*, that's the

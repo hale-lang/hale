@@ -1100,6 +1100,8 @@ fn get(key: K) -> S fallible(KeyError)
 
 Returns the entry whose indexed-by field equals `key`. If no
 such entry exists, fails with `KeyError { kind: "missing_key" }`.
+The entry returned is the caller's value: writing into it never
+changes the cell (§ Reading a cell).
 
 ```hale
 let entry = registry.get(name) or raise;
@@ -1218,6 +1220,73 @@ manual pattern. The Int field's name is detected at codegen —
 (`update_with(k, init, fn(S) -> S)`) is the natural follow-up
 once a use case surfaces.
 
+## Reading a cell
+
+**A value you read is yours.** What `get` and `entry_at` return —
+and what `for e in m.entries` binds — is the reader's value: writing
+into it, at any depth, never changes the cell. Only the map's own
+operations (`set`, `remove`, `bump`) change a cell (ruling of
+2026-10-13; the same rule holds for `@form(lru_cache)`'s `get`).
+The same rule holds for a local bound from any place, a field or an
+element or a parameter (`spec/types.md` § A local bound from a place is
+yours); a `@form(vec)` walk, `for x in v.items`, still visits the vec's
+cells in place.
+
+How the read is made is the compiler's business, and it keeps it
+cheap. A synced map (`serialized`, `striped`, `lockfree`) reads a
+deep copy (§ Cross-pool sync disciplines). A map that reads in place
+(no `sync =`, or `sync = none`) and an LRU cache copy the cell's bytes
+into the reader's frame — its top-level fields are the reader's own —
+and leave its nested blocks (a nested record, a tuple, an out-of-line
+array, a payload enum, and the Strings and Bytes in them) shared with
+the cell for as long as sharing cannot be seen. The first write into
+a shared part copies that part into the reader's frame first (copy on
+write: a flag per local and part, so a part is copied once however
+many writes follow), so `let mut c = m.get(1) or R { }; c.inner.k =
+7;` leaves the cell's `inner` as it was. Before this rule the write
+went straight into the cell's block: the cell changed with no `set`.
+
+**The get-modify-set idiom stays allocation-free.** A write is left in
+the cell's block — no copy — when it is part of a get-modify-set the
+compiler can prove no one observes:
+
+```hale,fragment
+let mut e = m.get(k) or Cell { id: k };
+e.big[j] = Level { p: x, q: x };     // lands in the cell's array
+e.inner.n = e.inner.n + 1;           // and in its nested record
+m.set(e);                            // which the set keeps
+```
+
+That holds when the local is set back into the same map — `m.set(e)`,
+or a literal whose key field is the local's (`id: e.id`) or the read's
+key (`id: k`) — on every path after the write (a statement of a block
+the write is in, no `return`, `break`, `fail` or `or raise` between),
+with nothing that may read the map between the write and the set
+(another read of a map that may be this one, a call that may read a
+form's cell, transitively, a publish or `yield` whose handlers may),
+and with the local not used after the set. A callee the compiler
+cannot identify may read anything. Anything else copies:
+
+| Shape | What is copied, and the reason reported |
+|---|---|
+| no set of the value follows the write | the part, at its first write: `copy: the value is not set back into its map` |
+| the set is in a branch or loop the write is not, or a path leaves before it | the part: `copy: the set is not on every path after the write` |
+| the map (or one that may be it) is read between the write and the set | the part: `copy: the cell is read again before the set` |
+| the set's literal keys another cell, or the key field was written | the part: `copy: the set may key another cell` |
+| the value is used after the set (or after any write of its map) | the whole value, at its binding: `copy: the value outlives the set` |
+| the value, or a part of it, is passed to a call that may write through its parameter | the whole value at its binding (an argument with no local, where it is evaluated): `copy: the value is passed to a call that may write through its parameter` |
+| a binding into the cell (a part bound to a local, a `for` element, a `match` payload, an entry of `for e in m.entries`) is written | that binding, whole: `copy: a binding into the cell is written` |
+
+A write to the value's own top level (`e.count = 3`, `e.name = s`)
+is never a copy: those fields were copied with the read.
+
+**Every copy is visible.** Each one is a site of the allocation
+survey (`hale check --dump-alloc-summary` prints `cell-copy (<reason>)`),
+so it counts toward `@budget(alloc_per_call = N)` and the `alloc`
+effect, and the hot-path lint reports it as it reports any other
+allocation there: a warning in a loop or a bus handler, an error
+anywhere in a `@hot` fn.
+
 ## Lowering strategy
 
 `@form(hashmap)` lowers the pool slot to an inline six-field C
@@ -1331,7 +1400,9 @@ carries a nested block from the same key's current cell, at the same
 field (`let e = m.get(k); m.set(Cell { k: k, big: e.big, ... })`),
 keeps it, so a get-modify-set allocates nothing for it; any other
 nested block — one read from another key's cell, one shared with a
-field — is copied. (Before, a nested block already in the map's arena
+field — is copied. A write the reader makes into such a block before
+the set lands in the cell's block only when no one can see it (§
+Reading a cell); otherwise the part is copied at the write. (Before, a nested block already in the map's arena
 was stored as-is whatever held it, so two cells could share one; and a
 cell whose only heap part was a nested record of scalars stored the
 pointer it was handed, into the setting method's scratch, which a
@@ -1723,6 +1794,11 @@ is what makes the policy LRU rather than FIFO: a `get` on an entry
 saves it from an eviction that a purely-oldest-inserted policy
 would take. On a miss it raises `KeyError`, addressed at the
 call site's `or` clause.
+
+The value returned is the reader's: writing into it never changes the
+cached entry, and a write into one of its nested parts copies that
+part first unless it is part of a get-modify-set (`put` back), as for
+a map that reads in place (`@form(hashmap)` § Reading a cell).
 
 ### `contains`
 

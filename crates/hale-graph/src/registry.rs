@@ -307,6 +307,7 @@ const CG_CONVERSION: &str = "crates/hale-codegen/src/conversion.rs";
 const CG_BUS_RT: &str = "crates/hale-codegen/src/bus/runtime.rs";
 const CG_TYPES: &str = "crates/hale-codegen/src/types/mod.rs";
 const CG_VIEW_BINDINGS: &str = "crates/hale-codegen/src/view_bindings.rs";
+const VIEW_BINDINGS: &str = "crates/hale-types/src/view_bindings.rs";
 const CAPABILITY: &str = "crates/hale-types/src/capability.rs";
 const CAPABILITY_TRANSPORT: &str = "crates/hale-types/src/capability/transport.rs";
 const CAPABILITY_USES: &str = "crates/hale-types/src/capability/uses.rs";
@@ -588,6 +589,7 @@ pub const FAMILIES: &[Family] = &[
             consumer_at("codegen (a `params` or `const` initializer's time literal, read without the typed bodies: its count of `Duration` from the stdlib's rows, `stdlib_literal`, U4)", CG, "stdlib_literal"),
             consumer_at("codegen (a time literal in a body the checker types no row in, the stdlib's own: its count from the stdlib's rows, `stdlib_literal`, U4)", CG_CONVERSION, "stdlib_literal"),
             consumer_at("check --units (the snapshot's rows, handed to the report)", V_CHECK, "demand_units"),
+            consumer_at("the owned-view pass (which scalar declarations lowering lays out as an `Int`, so an array of one is inline: `typed_scalar_names` over the declarations, as codegen reads them)", VIEW_BINDINGS, "typed_scalar_names"),
             consumer_at("check --units (the witness report, U5: each of the program's scalar declarations with its kind, its denomination and the declaration whose `in` fixed it, its policy and the declaration that writes it, a point's origin, its range and the narrowest machine width that holds it; the rows read through `ScalarTypes::of_rows`, no re-check; a development report, outside the hashed model half)", UNIT_REPORT, "pub fn report"),
         ],
         invariants: &[
@@ -618,7 +620,7 @@ pub const FAMILIES: &[Family] = &[
             // process (`stdlib_rows`, over an empty bundle)
             Seam { symbol: "derive_unit_rows(", allowed: &[(UNITS, 2), (SNAPSHOT, 1), (CHECK, 1)] },
             Seam { symbol: "unit_laws(", allowed: &[(UNITS, 1), (CHECK, 1)] },
-            Seam { symbol: "typed_scalar_names(", allowed: &[(RESOLVE, 1), (CG, 1), (TOPIC_ID, 1)] },
+            Seam { symbol: "typed_scalar_names(", allowed: &[(RESOLVE, 1), (CG, 1), (TOPIC_ID, 1), (VIEW_BINDINGS, 1)] },
         ],
     },
     Family {
@@ -1874,27 +1876,41 @@ pub const FAMILIES: &[Family] = &[
         layer: Layer::Lowering,
         state: State::Migrating,
         kind: Kind::Derivation,
-        answers: "Which bindings, operands and arguments of a field's String, Bytes or compound value a later write may replace while they are live, so lowering binds or passes an owned copy of exactly those and leaves every other one the field's own pointer.",
-        inputs: &["the merged program's bodies (place chains, calls, stores, loops, bus sends)", "the build's import table", "the declarations' types (loci, interfaces, perspectives, forms, records, enums, aliases), classified in lowering"],
+        answers: "Which bindings, operands and arguments of a field's String, Bytes or compound value a later write may replace while they are live, so lowering binds or passes an owned copy of exactly those and leaves every other one the field's own pointer; and, for a value read from a form's cell that reads in place, which write into it copies the part it writes first (copy on write) and which stays in the cell, uncopied, as a get-modify-set no one can observe; and, for a local bound from any place (a field, an element, a local, a parameter, a payload, a `for` element), which write into it copies the whole value first, which binding is owned because a callee may write through it or its source is written while it is live, and which get-modify-store of a self field stays in the field uncopied.",
+        inputs: &["the merged program's bodies (place chains, calls, stores, loops, bus sends, form reads and stores, exits)", "the build's import table", "the declarations' types (loci, interfaces, perspectives, forms and their sync discipline, records, enums, aliases), classified by the pass", "each body's transitive summaries: the fields it may write, whether it may read a form's cell, whether it may write through a parameter"],
         producer: None,
         legacy: &[Legacy {
-            site: site(CG_VIEW_BINDINGS, "fn owned_view_sites_with"),
-            note: "a pass over every body in lowering (`OwnedViews::of`): per binding, the field names of the places its value views and the writes after it (a store's field, a callee's transitive write summary by name, a fn value, a publish's handlers), keyed by the `let`/assign/`for` node id, the `match`'s span and an operand's span. It classifies types itself (`classify`, `classify_name`, `classify_path`), resolving each spelling through the aliases, the import table and the minted names: a re-derivation of the types the checker resolves, which is why it errs toward a copy wherever a type or a callee is unknown",
+            site: site(VIEW_BINDINGS, "fn analyze"),
+            note: "a pass over every body (`OwnedViews::of`), run by lowering over the merged program and by the allocation survey over the checked programs and the stdlib's analysis copy: per binding, the field names of the places its value views and the writes after it (a store's field, a callee's transitive write summary by name, a fn value, a publish's handlers), keyed by the `let`/assign/`for` node id, the `match`'s span and an operand's span; for a value read from a form's cell, a marker naming the form's place, the writes into it, the stores, reads and exits after them, keyed by the assignment's id (a copy on write) and the binding's (its flags). It classifies types itself (`classify`, `classify_name`, `classify_path`), resolving each spelling through the aliases, the import table and the minted names: a re-derivation of the types the checker resolves, which is why it errs toward a copy wherever a type or a callee is unknown",
             removal: "when the owner table carries a binding's owned-view column (and an operand's), computed in hale-types over the checker's resolved types and the effect rows' per-callee field writes, and lowering reads that column instead of running this pass",
         }],
-        consumers: &[consumer_at("codegen (a `let`, a tuple `let`, a bare-local `=`, a `for`'s array, a `match`'s payloads, an operand: an owned copy at the flagged site)", CG, "owned_views")],
+        consumers: &[
+            consumer_at("codegen (a `let`, a tuple `let`, a bare-local `=`, a `for`'s array, a `match`'s payloads, an operand: an owned copy at the flagged site; a write into a value read from a cell: the part copied on write behind its flag, set where the local is bound)", CG, "owned_views"),
+            consumer_at("the allocation survey (each copy the cell-read rule adds is a `cell-copy` site with its reason, which the hot-path lint, `@budget(alloc_per_call)` and the `alloc` effect read like any other)", ALLOC, "OwnedViews::of"),
+        ],
         invariants: &[
             "a binding is an owned copy only where a write that may replace what it views comes before a use of it (or is the call it is passed to); every other binding stays the field's own pointer, which costs nothing",
             "a type or a callee the pass cannot positively identify costs a copy, never a use after a retire: an unclassified type may be a handle and a fn value, an unidentified callee writes anything",
             "an argument is passed by reference: against its callee's writes only a String or Bytes argument is copied, so a record a callee writes through its parameter stays the caller's; an argument whose place a later argument's evaluation replaces is copied whole, a compound included",
             "a form's synthesized method is a target only on a receiver known to hold a form; a name alone (a record's fn-valued member called `pop`) is an unidentified callee",
             "every question about a type goes through `classify`; no `TypeExpr` variant is matched elsewhere in the pass (`types_are_classified_in_one_place`)",
+            "a value read from a form's cell is the reader's: a write into it never reaches the cell. A write into a nested part of the local a read is bound to copies the part at its first write, unless the local is set back into the same form, keyed to the same cell, on every path after the write, before anything that may read a form's cell, and is not used after the set; any other binding into the cell that is written, and a read handed to a callee that may write through its parameter, is owned at its binding",
+            "unknown never means \"reads nothing\" or \"writes no parameter\": a callee the pass cannot identify may read any form's cell and write through any argument, and a receiver that may be a form that reads in place hands back a cell",
+            "a body writes through a parameter when it writes under the parameter, or under a local that may hold (a part of) the caller's value — bound from a part of the parameter, a `for` element or `match` payload of one, what an `or`, `if`, `match` or block carries out of one — or hands such a value to a callee that may write through its parameter",
+            "a write into an array field is the local's own (no copy) exactly when lowering lays the array out inline: one predicate, `hale_types::ty::inline_array_scalar`, read by lowering's `array_inline_spec` and by the pass over the element resolved through its aliases (a scalar declaration lowered as `Int` included)",
+            "lowering and the survey run the same pass, so every copy lowering makes on the cell-read rule's account is a survey site; the survey sees a send where lowering sees the direct call the intra-locus rewrite made of it, which only adds reads, so the survey errs toward reporting a copy",
+            "a local bound from a place is the frame's own: a write into a local whose value carries a place marker and was not copied at its binding (an owned view, a struct `let`/`=` of a place) copies the whole value at its first write, behind a flag set at every binding (`let`, `=`, tuple `let`, `for`, `match` payload); a struct literal copies only the field written below; reads stay views",
+            "the get-modify-store of a self field copies nothing only when every binding of the local reads that one field, the store back follows the write on every path, nothing that may read the field (a read of it, a call of the program's, a delivery) comes between, no other binding views it and the local is not used after; anything else copies",
+            "a parameter stays the caller's value by reference (a callee writing through it is seen); a local bound from a place and handed to a callee that may write through that parameter (summarized by position: an assignment rooted at the parameter, or handing it on to a written one; a primitive or handle parameter is never written into) is owned at its binding, as is a binding live across an in-place write of the local or parameter it was read from",
+            "a `@form(vec)` `.items` walk, a map's `.entries` walk, `self.children` and a value that surely holds a handle carry no place marker, and lowering never copies on write a loop variable of a walk that visits in place by design",
+            "a part of a local assigned from a place or a cell read (`h.f = <place>`, `xs[i] = <read>`) binds that part anew, its flag cleared after the store; a call's result is a place's value when a callee may return a part of a parameter (the argument handed there), a cell's read, or what an unidentified callee returns — summarized per body by parameter position, transitively, a method on `self` or a known locus value resolved to that locus's; a locus's own storage is copied out on return by its methods (a free fn's result read through a handle parameter is that locus's storage), a result fresh at its top level that holds a place in a field copies only below that field, a cell read keeps its kind through a call, and a result declared a primitive or a handle is never one; a place's value assigned into a part of a parameter is stored as a copy, and so is a value spelled as a place (a local, field or element, a String included) stored into a field of a locus handle parameter, in the caller's arena; any other store into a locus's field from outside its methods (a String carried by an if, match, block, or or call, one through a handle local or an array element of loci, its arena, retire and cross-pool check) is not yet owned by that locus (GH #1561)",
+            "a value the pass knows is a primitive (a literal, an operator, a builtin's or stdlib leaf's or every declaration's primitive return, a typed scalar, an `if`/`match`/block carrying one out, a tuple element of one) carries no place marker, so the survey reports no copy lowering does not make",
         ],
         missing: Missing::NotApplicable,
-        tests: &["crates/hale-codegen/src/view_bindings.rs (unit tests)", "crates/hale-codegen/tests/held_field_view.rs", "crates/hale-codegen/tests/self_field_enum_retire.rs"],
-        spec: &["spec/types.md § Any binding of a place keeps its value", "spec/memory.md rule 6"],
-        owned: &[site(CG_VIEW_BINDINGS, "classify_name"), site(CG_VIEW_BINDINGS, "classify_path")],
-        seams: &[Seam { symbol: "OwnedViews::of(", allowed: &[(CG, 1)] }],
+        tests: &["crates/hale-types/src/view_bindings.rs (unit tests)", "crates/hale-codegen/tests/held_field_view.rs", "crates/hale-codegen/tests/self_field_enum_retire.rs", "crates/hale-codegen/tests/form_read_value.rs", "crates/hale-codegen/tests/local_place_value.rs", "tests/hale/local_place_value_test.hl"],
+        spec: &["spec/types.md § Any binding of a place keeps its value", "spec/memory.md rule 6", "spec/forms.md § Reading a cell", "spec/types.md § A local bound from a place is yours"],
+        owned: &[site(VIEW_BINDINGS, "classify_name"), site(VIEW_BINDINGS, "classify_path"), site(CG_VIEW_BINDINGS, "fn emit_cell_part_cow"), site(CG_VIEW_BINDINGS, "fn emit_local_cow")],
+        seams: &[Seam { symbol: "OwnedViews::of(", allowed: &[(CG, 1), (ALLOC, 1)] }],
     },
     Family {
         name: "law_backstops",

@@ -72,6 +72,12 @@ fn exempt(f: &Family) -> Option<&'static str> {
     if f.state == State::Migrating && f.legacy.iter().any(|l| l.site.path.starts_with("crates/hale-codegen/")) {
         return Some("codegen still derives it; its legacy producer is the inventory");
     }
+    // A pass with no producer yet, which lowering runs for itself (and
+    // another reader runs again: `owned_views`, run by lowering and by the
+    // allocation survey) reads no row either.
+    if f.state == State::Migrating && f.producer.is_none() && !f.legacy.is_empty() {
+        return Some("lowering still runs its pass; its legacy producer is the inventory");
+    }
     None
 }
 
@@ -134,7 +140,8 @@ fn the_exempt_families_are_the_known_ones() {
         .collect();
     let names: Vec<&str> = exempt.iter().map(|(n, _)| *n).collect();
     // `owned_views`: lowering still derives which bindings take an owned
-    // copy (its legacy producer in `view_bindings.rs`), until the owner
-    // table carries the column.
+    // copy and which writes copy on write (its legacy producer,
+    // `hale_types::view_bindings`, run in lowering), until the owner table
+    // carries the column.
     assert_eq!(names, ["desugar_sequence", "owned_views"], "{exempt:?}");
 }

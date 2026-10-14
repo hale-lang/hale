@@ -975,6 +975,14 @@ metrics code; not Hale-specific.) **[convention]**
   short-circuit every clone.
 - The metrics RMW shape (`e = store.get(k); store.set(E { key:
   e.key, ... })`) — same-arena skips make it zero-alloc.
+- Writing into a value read from a map and setting it back (`let
+  mut e = m.get(k) or E { key: k }; e.inner.n = n; m.set(e);`) —
+  the write stays in the cell's block, uncopied, when the set
+  follows on every path with no read of the map between and `e` is
+  done with at the set. Break any of those and the written part is
+  copied at its first write (a value you read is yours: a write into
+  it never changes the cell); `hale check` names each such copy and
+  why (spec/forms.md § Reading a cell).
 - Fresh literals in `return` position (sret routes them straight
   into the caller's arena). Returning via a `let` binding first
   forfeits that routing — inline the literal on hot paths.

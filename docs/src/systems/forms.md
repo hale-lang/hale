@@ -75,6 +75,28 @@ for the end of the current activation. Reading a nested record out of a map cell
 back under the same key costs nothing; storing it under another key
 copies it.
 
+What you read is yours: writing into it never changes the cell — only
+`set`, `remove` and the form's other operations do. A map that reads
+in place and an LRU cache hand you the cell's top-level fields as your
+own copy and keep its nested parts (a nested record, an array, a
+tuple, an enum with a payload) shared with the cell until you write
+into one; the first such write copies that part for you. The one
+exception is the idiom that wants the write in the cell anyway:
+
+```hale,fragment
+let mut e = m.get(k) or Cell { id: k };
+e.levels[j] = Level { price: p, qty: q };
+m.set(e);
+```
+
+When the value goes back into the same map with `set` right after —
+on every path, with nothing reading the map in between, and `e` not
+used after — the write lands in the cell's block, which `set` keeps,
+and the round trip allocates nothing. Anything else copies the part
+you wrote, and `hale check` reports each such copy with its reason; in
+a loop or a bus handler it is a hot-path warning, and an error in a
+`@hot` fn.
+
 By default a `@form(hashmap)` is single-pool: its densest layout
 has no synchronization, and a *cross-pool* call into one instance
 is rejected. "Cross-pool" is judged per instance, at the call

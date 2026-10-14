@@ -764,14 +764,23 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         ty: &CodegenTy,
     ) -> Option<(&CodegenTy, u64)> {
         match ty {
-            CodegenTy::Array(elem, n) => match elem.as_ref() {
-                CodegenTy::Int
-                | CodegenTy::Float
-                | CodegenTy::Bool
-                | CodegenTy::Decimal(_)
-                | CodegenTy::Duration => Some((elem.as_ref(), *n)),
-                _ => None,
-            },
+            // The element's layout is the one rule the owned-view pass
+            // reads a write into the field by
+            // (`hale_types::ty::inline_array_scalar`).
+            CodegenTy::Array(elem, n) => {
+                let prim = match elem.as_ref() {
+                    CodegenTy::Int => Some(PrimType::Int),
+                    CodegenTy::Float => Some(PrimType::Float),
+                    CodegenTy::Bool => Some(PrimType::Bool),
+                    CodegenTy::Decimal(s) => Some(PrimType::Decimal(*s)),
+                    CodegenTy::Duration => Some(PrimType::Duration),
+                    CodegenTy::Time => Some(PrimType::Time),
+                    CodegenTy::String => Some(PrimType::String),
+                    CodegenTy::Bytes => Some(PrimType::Bytes),
+                    _ => None,
+                };
+                prim.filter(|p| hale_types::ty::inline_array_scalar(*p)).map(|_| (elem.as_ref(), *n))
+            }
             _ => None,
         }
     }

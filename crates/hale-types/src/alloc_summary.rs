@@ -124,6 +124,16 @@ pub enum AllocKind {
     /// String concatenation (`a + b` where an operand is provably a
     /// String). Each `+` builds a fresh String in the arena.
     StringConcat,
+    /// A copy of a value read from a form's cell, which the cell-read
+    /// rule adds where a write into the value could otherwise show in
+    /// the cell (`crate::view_bindings`): a copy on write at the write, an
+    /// owned binding, a copied argument. The reason says why the write
+    /// could not stay in the cell (spec/forms.md § Reading a cell). The
+    /// local-place rule's copies are this kind too, with a `PLACE_*`
+    /// reason (labelled `place-copy`): a write into a local bound from a
+    /// place, copied at its first write (spec/types.md § A local bound
+    /// from a place is yours).
+    CellCopy(&'static str),
 }
 
 impl AllocKind {
@@ -135,6 +145,10 @@ impl AllocKind {
             AllocKind::BytesLit => "bytes-literal".to_string(),
             AllocKind::CollectionInsert(form) => format!("{}-insert", form),
             AllocKind::StringConcat => "string-concat".to_string(),
+            AllocKind::CellCopy(reason) if crate::view_bindings::reasons::is_place(reason) => {
+                format!("place-copy ({reason})")
+            }
+            AllocKind::CellCopy(reason) => format!("cell-copy ({reason})"),
         }
     }
 }
@@ -3086,6 +3100,29 @@ pub fn summarize_identified(
         }
     }
 
+    // The cell-read rule's copies (`crate::view_bindings`): the same pass
+    // lowering runs over the merged program, here over the checked
+    // programs and the stdlib's analysis copy — always the copy, whether
+    // or not this summary holds its rows, so the program's copies are the
+    // same summarized alone or beside it, and the same lowering finds —
+    // each copy keyed by its program's scope and its span.
+    let no_cell_copies: BTreeMap<(u32, u32), &'static str> = BTreeMap::new();
+    let cell_copies: BTreeMap<usize, BTreeMap<(u32, u32), &'static str>> = {
+        let renames: BTreeMap<Vec<String>, String> = import_renames.iter().cloned().collect();
+        let mut analyzed: Vec<&Program> = programs.to_vec();
+        let holds_copy = identified.iter().any(|(_, ids)| is_stdlib_copy(ids));
+        if let (false, Some(copy)) = (holds_copy, crate::stdlib_bodies::program()) {
+            analyzed.push(copy);
+        }
+        let views = crate::view_bindings::OwnedViews::of(&analyzed, &renames);
+        let mut by_scope: BTreeMap<usize, BTreeMap<(u32, u32), &'static str>> = BTreeMap::new();
+        for c in views.cell_copies() {
+            let Some((_, ids)) = identified.get(c.program) else { continue };
+            by_scope.entry(scope_index(ids)).or_default().insert((c.span.start.0, c.span.end.0), c.reason);
+        }
+        by_scope
+    };
+
     // Phase 2 — walk each body.
     let mut summary = AllocSummary::default();
     summary.eager_only_loci = eager_only_loci;
@@ -3164,6 +3201,8 @@ pub fn summarize_identified(
             in_place_sites: Vec::new(),
             sends: Vec::new(),
             retired_init: false,
+            cell_copies: cell_copies.get(&scope_index(ids)).unwrap_or(&no_cell_copies),
+            placed_cell_copies: BTreeSet::new(),
         };
         w.walk_block(body, 0, Escape::Local);
         let starts = std::mem::take(&mut w.starts);
@@ -5387,6 +5426,10 @@ struct Walker<'a> {
     /// GH #1490 (step 4): the expression walked next is a whole field
     /// of a retired struct replace (`AllocSite::retired_store`).
     retired_init: bool,
+    /// The cell-read rule's copies in this body's scope, by span
+    /// (`crate::view_bindings`), and the ones this walk has placed.
+    cell_copies: &'a BTreeMap<(u32, u32), &'static str>,
+    placed_cell_copies: BTreeSet<(u32, u32)>,
 }
 
 impl<'a> Walker<'a> {
@@ -5407,6 +5450,24 @@ impl<'a> Walker<'a> {
 
     fn push_site(&mut self, kind: AllocKind, escape: Escape, depth: u32, span: Span) {
         let site = self.site(kind, escape, depth, span);
+        self.sites.push(site);
+    }
+
+    /// A copy the cell-read rule adds at `span` (a statement, a binding,
+    /// an argument), once. A `for` over a map's entries copies each entry
+    /// it binds: the copy is in the loop.
+    fn place_cell_copy(&mut self, span: Span, depth: u32, per_iteration: bool) {
+        let key = (span.start.0, span.end.0);
+        let Some(reason) = self.cell_copies.get(&key).copied() else { return };
+        if !self.placed_cell_copies.insert(key) {
+            return;
+        }
+        let mut site = self.site(AllocKind::CellCopy(reason), Escape::Local, depth, span);
+        if per_iteration {
+            site.loop_depth = depth + 1;
+            site.in_loop = true;
+            site.in_unbounded_loop = true;
+        }
         self.sites.push(site);
     }
 
@@ -6143,6 +6204,8 @@ impl<'a> Walker<'a> {
     }
 
     fn walk_stmt(&mut self, stmt: &Stmt, depth: u32) {
+        let per_iteration = matches!(stmt, Stmt::For { iter: Expr::Field { name, .. }, .. } if name.name == "entries");
+        self.place_cell_copy(stmt.span(), depth, per_iteration);
         match stmt {
             Stmt::Let { name, ty, value, id, span, .. } => {
                 // D2: a typed `let v: T = …` extends the var→type map so a
@@ -6469,6 +6532,7 @@ impl<'a> Walker<'a> {
     }
 
     fn walk_expr(&mut self, expr: &Expr, depth: u32, escape: Escape) {
+        self.place_cell_copy(expr.span(), depth, false);
         match expr {
             Expr::Struct { path, inits, span, .. } => {
                 // The *qualified* path (joined) — a local struct is

@@ -943,3 +943,116 @@ fn main() {{ pump(); }}
     assert_eq!(hot_errors(&program("xs[Child { n: 0 }.get()]")), expected, "inside the index");
     assert_eq!(hot_errors(&program("Child { n: 0 }.get()")), expected, "the control");
 }
+
+// ---- the cell-read rule's copies (spec/forms.md § Reading a cell) ----
+
+/// A map that reads in place, and fns that write into what they read
+/// from it: `NOSET` writes and never sets the value back (a copy on
+/// write), `RMW` sets it straight back (no copy).
+fn cells(decorator: &str, body: &str) -> String {
+    format!(
+        r#"
+type Level {{ p: Int = 0; q: Int = 0; }}
+type Big {{ id: Int = 0; inner: Level = Level {{ }}; }}
+@form(hashmap)
+locus M {{ capacity {{ pool cells of Big indexed_by id; }} }}
+{decorator}
+fn walk(m: M, n: Int) -> Int {{
+    let mut t = 0;
+    let mut i = 0;
+    while i < n {{
+        let mut e = m.get(i) or Big {{ id: i }};
+        e.inner.p = e.inner.p + 1;
+        {body}
+        i = i + 1;
+    }}
+    return t;
+}}
+fn main() {{ let m = M {{ }}; println(walk(m, 3)); }}
+"#
+    )
+}
+const NOSET: &str = "t = t + e.inner.p;";
+const RMW: &str = "m.set(e);";
+
+#[test]
+fn a_cell_copy_in_a_loop_warns_and_names_its_reason() {
+    let ds = all_diags(&cells("", NOSET));
+    let found: Vec<&(bool, String)> = ds.iter().filter(|(_, m)| m.contains("hot-path copy")).collect();
+    assert_eq!(found.len(), 1, "{ds:?}");
+    assert!(!found[0].0, "a warning outside @hot: {ds:?}");
+    assert!(found[0].1.contains("copy: the value is not set back into its map"), "{ds:?}");
+}
+
+#[test]
+fn a_cell_copy_in_a_hot_fn_is_an_error() {
+    let ds = all_diags(&cells("@hot", NOSET));
+    assert!(ds.iter().any(|(is_err, m)| *is_err && m.contains("@hot") && m.contains("hot-path copy")), "{ds:?}");
+}
+
+#[test]
+fn a_get_modify_set_in_a_hot_loop_is_silent() {
+    let ds = all_diags(&cells("@hot", RMW));
+    assert!(!ds.iter().any(|(_, m)| m.contains("hot-path copy")), "{ds:?}");
+}
+
+#[test]
+fn a_cell_copy_counts_against_a_zero_allocation_budget() {
+    let ds = all_diags(&cells("@budget(alloc_per_call = 0)", NOSET));
+    assert!(
+        ds.iter().any(|(is_err, m)| *is_err && m.contains("a copy of a value read from a form's cell")),
+        "{ds:?}"
+    );
+    let ds = all_diags(&cells("@budget(alloc_per_call = 0)", RMW));
+    assert!(!ds.iter().any(|(_, m)| m.contains("a copy of a value read from a form's cell")), "{ds:?}");
+}
+
+/// A primitive bound from a call's result and handed on to a fn value
+/// is no copy at all (review round 3 on #1558): lowering loads and
+/// stores an `i64`, and the local-place rule must not report a
+/// `place-copy` the `@hot` check would refuse. An array read from a
+/// field and handed to a writer is one, and `@hot` refuses it.
+#[test]
+fn a_primitive_bound_from_a_call_is_no_hot_path_copy() {
+    let src = r#"
+type In { k: Int = 0; }
+fn one() -> Int { return 1; }
+fn poke(xs: [In; 2]) { xs[0].k = 8; }
+@hot
+fn scalar(cb: fn(Int) -> Int) -> Int { let a = one(); let b = a; return cb(b); }
+locus H {
+    params { arr: [In; 2] = [In { }, In { }]; }
+    @hot
+    fn compound() { let a = self.arr; poke(a); }
+}
+fn twice(x: Int) -> Int { return x * 2; }
+fn main() { println(scalar(twice)); let h = H { }; }
+"#;
+    let ds = all_diags(src);
+    let copies: Vec<&(bool, String)> = ds.iter().filter(|(_, m)| m.contains("hot-path copy")).collect();
+    assert_eq!(copies.len(), 1, "{ds:?}");
+    assert!(copies[0].0 && copies[0].1.contains("passed to a call that may write"), "{ds:?}");
+}
+
+/// A primitive however it is carried out — an `if`, a `match`, a block,
+/// a tuple `let` of a literal or of a tuple field, a method of a known
+/// locus named like a form's op — is no copy (review of #1558, finding
+/// 3: each was refused at `let b = a` though lowering only moves an
+/// `i64`).
+#[test]
+fn an_inferred_primitive_is_no_hot_path_copy() {
+    let src = r#"
+type R { ok: Bool = true; n: Int = 0; pair: (Int, Int) = (1, 2); }
+locus L { params { v: Int = 3; } fn get() -> Int { return self.v; } }
+@hot fn f_if(cb: fn(Int) -> Int, r: R) -> Int { let a = if r.ok { 1 } else { 2 }; let b = a; return cb(b); }
+@hot fn f_match(cb: fn(Int) -> Int, r: R) -> Int { let a = match r.n { 0 -> 1, _ -> 2, }; let b = a; return cb(b); }
+@hot fn f_block(cb: fn(Int) -> Int, r: R) -> Int { let a = { r.n }; let b = a; return cb(b); }
+@hot fn f_tup(cb: fn(Int) -> Int) -> Int { let (a, c) = (1, 2); let b = a; return cb(b) + c; }
+@hot fn f_pair(cb: fn(Int) -> Int, r: R) -> Int { let (a, c) = r.pair; let b = a; return cb(b) + c; }
+@hot fn f_get(cb: fn(Int) -> Int, l: L) -> Int { let a = l.get(); let b = a; return cb(b); }
+fn twice(x: Int) -> Int { return x * 2; }
+fn main() { let r = R { }; let l = L { }; println(f_if(twice, r) + f_match(twice, r) + f_block(twice, r) + f_tup(twice) + f_pair(twice, r) + f_get(twice, l)); }
+"#;
+    let ds = all_diags(src);
+    assert!(!ds.iter().any(|(_, m)| m.contains("hot-path copy")), "{ds:?}");
+}

@@ -1,4 +1,4 @@
-//! The `language` integration-test binary: 9 test files of this area, kept
+//! The `language` integration-test binary: 10 test files of this area, kept
 //! where they are (their paths, names and history unchanged) and built as
 //! modules of one binary, so the crate links once for the area instead of
 //! once per file. Each file is a module; a test's name is `<file>::<fn>`.
@@ -15,6 +15,8 @@ mod fn_nonalloc_add;
 mod fn_ptr;
 #[path = "if_expression.rs"]
 mod if_expression;
+#[path = "local_place_value.rs"]
+mod local_place_value;
 #[path = "match_expression.rs"]
 mod match_expression;
 #[path = "phase_b_fixes.rs"]
