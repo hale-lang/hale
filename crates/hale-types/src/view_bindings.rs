@@ -1254,8 +1254,15 @@ fn analyze(programs: &[&Program], renames: &BTreeMap<Vec<String>, String>) -> Fo
                 changed = true;
             }
             let next = eval_src(&direct[i].ret_src, &direct[i].ret_marks, &ret_views, 0);
-            if next != ret_views[i] {
-                ret_views[i] = RetView { params: ret_views[i].params | next.params, other: ret_views[i].other || next.other };
+            let cur = ret_views[i];
+            let merged = RetView {
+                params: cur.params | next.params,
+                other: cur.other || next.other,
+                pparams: cur.pparams | next.pparams,
+                pother: cur.pother || next.pother,
+            };
+            if merged != cur {
+                ret_views[i] = merged;
                 changed = true;
             }
             for (bodies, k, m) in &param_passes[i] {
@@ -1307,7 +1314,7 @@ fn analyze(programs: &[&Program], renames: &BTreeMap<Vec<String>, String>) -> Fo
 /// what that call's callees return — a parameter of theirs read as the
 /// argument it was handed there.
 fn eval_src(src: &Src, marks: &BTreeMap<String, (Vec<usize>, Vec<Src>)>, views: &[RetView], depth: usize) -> RetView {
-    let mut out = RetView { params: src.params, other: src.other };
+    let mut out = RetView { params: src.params, other: src.other, pparams: src.pparams, pother: src.pother };
     if depth > 8 {
         out.other |= !src.calls.is_empty();
         return out;
@@ -1320,11 +1327,23 @@ fn eval_src(src: &Src, marks: &BTreeMap<String, (Vec<usize>, Vec<Src>)>, views: 
         for &j in bodies {
             let rv = views[j];
             out.other |= rv.other;
+            out.pother |= rv.pother;
             for (k, arg) in args.iter().enumerate() {
-                if rv.params & param_bit(k) != 0 {
-                    let a = eval_src(arg, marks, views, depth + 1);
+                let (whole, part) = (rv.params & param_bit(k) != 0, rv.pparams & param_bit(k) != 0);
+                if !(whole || part) {
+                    continue;
+                }
+                let a = eval_src(arg, marks, views, depth + 1);
+                if whole {
                     out.params |= a.params;
                     out.other |= a.other;
+                    out.pparams |= a.pparams;
+                    out.pother |= a.pother;
+                } else {
+                    // Returned as a part of a fresh value: whatever the
+                    // argument was, it is only a part now.
+                    out.pparams |= a.params | a.pparams;
+                    out.pother |= a.other || a.pother;
                 }
             }
         }
@@ -1420,15 +1439,24 @@ fn part_markers(keys: &BTreeSet<String>) -> impl Iterator<Item = (&str, &str)> {
 struct Src {
     params: u64,
     other: bool,
+    /// The same, for a value that is fresh at its top level and only
+    /// holds such a block in a part (a struct literal's field).
+    pparams: u64,
+    pother: bool,
     calls: BTreeSet<String>,
 }
 
 /// What a body's result may be (`Summaries::ret_views`): a part of the
-/// parameters by these bits, or something else of the caller's.
+/// parameters by these bits, or something else of the caller's — the
+/// result itself (`params`, `other`), or only a part of a result fresh
+/// at its top level (`pparams`, `pother`: a write into its own fields is
+/// the caller's, one below a field may not be).
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 struct RetView {
     params: u64,
     other: bool,
+    pparams: u64,
+    pother: bool,
 }
 
 /// The marker key of a call's result, on the summary pass: which
@@ -2059,15 +2087,31 @@ impl<'p, 'a> Walk<'p, 'a> {
     /// form cell's nested blocks are not (a read leaves them shared), nor
     /// is what an unidentified call returned.
     fn src_of(&self, ks: &BTreeSet<String>, literal: bool, out: &mut Src) {
-        let place = |p: &str, out: &mut Src| {
+        let place = |p: &str, part: bool, out: &mut Src| {
             if let Some(rest) = p.strip_prefix('$') {
                 let name = rest.split('.').next().unwrap_or("");
-                match self.param_index.get(name) {
-                    Some(&i) => out.params |= param_bit(i),
-                    None => out.other = true,
+                // A field read through a handle parameter is that locus's
+                // storage, which a free fn hands back uncopied.
+                if rest.contains('.') && self.handle_params.contains(name) {
+                    if part {
+                        out.pother = true;
+                    } else {
+                        out.other = true;
+                    }
+                    return;
+                }
+                match (self.param_index.get(name), part) {
+                    (Some(&i), false) => out.params |= param_bit(i),
+                    (Some(&i), true) => out.pparams |= param_bit(i),
+                    (None, false) => out.other = true,
+                    (None, true) => out.pother = true,
                 }
             } else if p.starts_with('?') {
-                out.other = true;
+                if part {
+                    out.pother = true;
+                } else {
+                    out.other = true;
+                }
             }
         };
         for k in ks {
@@ -2077,9 +2121,9 @@ impl<'p, 'a> Walk<'p, 'a> {
             if k.starts_with(RET) {
                 out.calls.insert(k.clone());
             } else if let Some(p) = k.strip_prefix(AT) {
-                place(p, out);
+                place(p, false, out);
             } else if let Some(r) = k.strip_prefix(PART) {
-                place(r.split(KEY_SEP).nth(1).unwrap_or("?"), out);
+                place(r.split(KEY_SEP).nth(1).unwrap_or("?"), true, out);
             } else if k.starts_with(CELL) || k.starts_with(IN_CELL) {
                 out.other = true;
             }
@@ -2821,6 +2865,21 @@ impl<'p, 'a> Walk<'p, 'a> {
                     if let Some(Some(v)) = head {
                         self.bind_assigned_part(v, target, value, &keys, id.0, *span);
                     }
+                    // A place's value assigned into a part of a parameter: the
+                    // caller's value would hold that block, and a later write
+                    // through either reaches the other (`h.arr = r.arr;
+                    // h.arr[0].k = 7` with both parameters). The value is
+                    // stored as a copy, as a struct field's is (GH #992).
+                    let param_head = matches!(head, Some(None)) && self.params.contains(&target.head.name);
+                    if param_head
+                        && self.summary.is_some()
+                        && keys.as_ref().is_some_and(|k| k.iter().any(|k| k.starts_with(AT) || k.starts_with(PART)))
+                        && !self.known_scalar(None, value)
+                        && !self.surely_handle(None, value)
+                    {
+                        let vspan = value.span();
+                        self.args.push((Site::Part(vspan.start.0, vspan.end.0), target.head.name.clone()));
+                    }
                     // `self.f.. = v`, a local stored whole into a self
                     // field: what a get-modify-store sets back.
                     let fields: Option<Vec<&str>> = target
@@ -3243,10 +3302,14 @@ impl<'p, 'a> Walk<'p, 'a> {
                 ks.as_ref().map(|ks| {
                     ks.iter()
                         .filter_map(|k| {
-                            if k.starts_with(AT) || k.starts_with(PART) {
+                            if k.starts_with(AT) || k.starts_with(PART) || k.starts_with(IN_CELL) {
                                 Some(k.clone())
-                            } else if k.starts_with(CELL) || k.starts_with(IN_CELL) {
-                                Some(format!("{AT}?"))
+                            } else if let Some(rest) = k.strip_prefix(CELL) {
+                                // A cell's read handed back: the cell's block
+                                // itself now, its kind kept, so the cell-read
+                                // rule copies it where it is written or
+                                // handed to a writer.
+                                Some(format!("{IN_CELL}{}", rest.split(KEY_SEP).next().unwrap_or("")))
                             } else {
                                 None
                             }
@@ -3256,14 +3319,34 @@ impl<'p, 'a> Walk<'p, 'a> {
             };
             if let (Some(s), false) = (self.summary, plain) {
                 let rv = if unknown {
-                    RetView { params: 0, other: true }
+                    RetView { other: true, ..RetView::default() }
                 } else if let Some(c) = &summarized {
-                    self.callee_bodies(c, receiver).into_iter().fold(RetView::default(), |a, j| RetView {
-                        params: a.params | s.ret_views[j].params,
-                        other: a.other || s.ret_views[j].other,
+                    self.callee_bodies(c, receiver).into_iter().fold(RetView::default(), |a, j| {
+                        let v = s.ret_views[j];
+                        RetView {
+                            params: a.params | v.params,
+                            other: a.other || v.other,
+                            pparams: a.pparams | v.pparams,
+                            pother: a.pother || v.pother,
+                        }
                     })
                 } else {
                     RetView::default()
+                };
+                // A part's markers: every place a marker names, as a part
+                // marker any field matches (`*`).
+                let as_parts = |ks: Keys| -> Keys {
+                    ks.map(|ks| {
+                        ks.iter()
+                            .map(|k| {
+                                let place = match k.strip_prefix(AT) {
+                                    Some(p) => p.to_string(),
+                                    None => k.strip_prefix(PART).and_then(|r| r.split(KEY_SEP).nth(1)).unwrap_or("?").to_string(),
+                                };
+                                format!("{PART}*{KEY_SEP}{place}")
+                            })
+                            .collect()
+                    })
                 };
                 if rv.other {
                     result = union(result, union(markers(&operand_keys), at(Some("?ret".to_string()))));
@@ -3271,6 +3354,14 @@ impl<'p, 'a> Walk<'p, 'a> {
                     for (k, ak) in keys.iter().enumerate() {
                         if rv.params & param_bit(k) != 0 {
                             result = union(result, markers(ak));
+                        }
+                    }
+                    if rv.pother {
+                        result = union(result, as_parts(union(markers(&operand_keys), at(Some("?ret".to_string())))));
+                    }
+                    for (k, ak) in keys.iter().enumerate() {
+                        if rv.pparams & param_bit(k) != 0 {
+                            result = union(result, as_parts(markers(ak)));
                         }
                     }
                 }
@@ -3836,7 +3927,9 @@ impl<'p, 'a> Walk<'p, 'a> {
         // Its value whole may be another name's block (a place marker), or
         // a field of it may (a struct literal's part markers).
         let whole = |i: usize| has_at(&self.insts[i].keys);
-        let part_of = |i: usize, f: Option<&str>| part_markers(&self.insts[i].keys).any(|(g, _)| f.is_none_or(|f| f == g));
+        let part_of = |i: usize, f: Option<&str>| {
+            part_markers(&self.insts[i].keys).any(|(g, _)| g == "*" || f.is_none_or(|f| f == g))
+        };
         // Owned for the local-place rule: a literal by every part that
         // holds a place's value, anything else whole.
         let own_place = |o: &mut Owning<'_>, i: usize, reason: &'static str, found: &mut Found| {
@@ -4519,6 +4612,9 @@ mod tests {
         fn poke_via(a: [In; 2]) { poke(a); }
         fn poke_copy(a: [In; 2]) { let mut c = a; c[0].k = 1; }
         fn poke_rec(r: R) { r.arr[0].k = 8; }
+        type Out { flag: Bool = false; o: In = In { }; }
+        fn mk(r: R) -> Out { return Out { o: r.arr[0] }; }
+        fn whole(r: R) -> In { return r.arr[0]; }
         fn one() -> Int { return 1; }
         type Hits = distinct Int;
         fn hits() -> Hits { return Hits(1); }
@@ -4661,5 +4757,19 @@ mod tests {
         ] {
             assert!(place_copies(body).is_empty(), "{body}: {:?}", place_copies(body));
         }
+    }
+
+    /// A call's result fresh at its top level but holding a parameter's
+    /// block in a field (`mk` returns a literal around `r.arr[0]`): a write
+    /// into its own fields copies nothing, a write below that field copies
+    /// the field; a result that is the parameter's block itself copies at
+    /// any write (CI's dna/core verify gate: `x.reconciled = true` on such
+    /// a result was a reported copy in a loop).
+    #[test]
+    fn a_result_holding_a_place_in_a_part_copies_only_below_it() {
+        use reasons::*;
+        assert!(place_copies("let mut x = mk(p); x.flag = true;").is_empty());
+        assert_eq!(place_copies("let mut x = mk(p); x.o.k = 7;"), [("x.o.k = 7;".to_string(), PLACE_WRITTEN)]);
+        assert_eq!(place_copies("let mut y = whole(p); y.k = 7;"), [("y.k = 7;".to_string(), PLACE_WRITTEN)]);
     }
 }

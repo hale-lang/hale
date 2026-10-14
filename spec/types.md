@@ -342,7 +342,17 @@ return r.arr[0]; }` returns the caller's block uncopied), a form cell's
 read (`fn read() -> Rec { return self.m.get(1) or Rec { }; }`), or what
 a callee that does returns — transitively, by which parameter; a callee
 the compiler cannot identify may hand back anything. A result declared a
-primitive or a handle never is one. A write into it is an assignment
+primitive or a handle never is one; a result fresh at its top level that
+holds such a value in a field (a returned struct literal around `r.arr[0]`)
+copies only when a write goes below that field. A free fn returning a
+field read through a handle parameter (`fn arr_of(k: K) -> [In; 2] {
+return k.r.arr; }`) hands back that locus's storage, a place's value; a
+locus's method returning its own fields hands back a copy. A place's
+value assigned into a part of a parameter (`fn store(h: Holder, r: R) {
+h.arr = r.arr; }`) is stored as a copy, so the caller's two arguments
+never share a block, and a cell's read handed back through a call keeps
+its kind: passed straight to a callee that writes through it, it is
+copied where it is evaluated. A write into it is an assignment
 at any depth (`a[0] = x`, `x.k = 1`, `b[i].inner.s = s`) or a call that
 may write through its parameter.
 

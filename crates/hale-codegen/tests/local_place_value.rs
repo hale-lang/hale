@@ -434,6 +434,8 @@ fn the_survey_and_lowering_agree_on_place_copies() {
         fn twice(x: Int) -> Int { return x * 2; }
         type P { n: Int = 0; pair: (Int, Int) = (1, 2); arr: [In; 2] = [In { }, In { }]; }
         fn arr_of(p: P) -> [In; 2] { return p.arr; }
+        type Out { flag: Bool = false; o: In = In { }; }
+        fn mk(p: P) -> Out { return Out { o: p.arr[0] }; }
         locus L { params { v: Int = 3; } fn get() -> Int { return self.v; } }
         locus H {
             params { source: [In; 2] = [In { }, In { }]; }
@@ -455,6 +457,8 @@ fn the_survey_and_lowering_agree_on_place_copies() {
             fn s_method(cb: fn(Int) -> Int, l: L) -> Int { let a = l.get(); let b = a; return cb(b); }
             fn c_assigned() { let mut h = R { }; h.arr = self.source; h.arr[0].k = 5; }
             fn c_returned(p: P) { let mut a = arr_of(p); a[0].k = 5; }
+            fn s_fresh_top(p: P) -> Bool { let mut x = mk(p); x.flag = true; return x.flag; }
+            fn c_fresh_below(p: P) -> Int { let mut x = mk(p); x.o.k = 7; return x.o.k; }
             run { println(self.s_int(twice)); }
         }
         fn main() { let h = H { }; }
@@ -482,11 +486,11 @@ fn the_survey_and_lowering_agree_on_place_copies() {
     };
     for f in [
         "s_int", "s_alias", "s_distinct", "s_duration", "s_decimal", "s_time", "s_string", "s_if", "s_match", "s_block",
-        "s_tuple", "s_pair", "s_method",
+        "s_tuple", "s_pair", "s_method", "s_fresh_top",
     ] {
         assert_eq!((reported(f), copies(f)), (0, 0), "{f}: a primitive copies nothing");
     }
-    for f in ["c_write", "c_passed", "c_literal", "c_assigned", "c_returned"] {
+    for f in ["c_write", "c_passed", "c_literal", "c_assigned", "c_returned", "c_fresh_below"] {
         let (r, c) = (reported(f), copies(f));
         assert!(r == 1 && c >= 1, "{f}: reported {r}, lowering copies {c}");
     }
@@ -625,4 +629,67 @@ fn a_call_returning_a_place_hands_back_a_place_bound_local() {
     }
     assert!(out.contains("method c=ZZ2/9"), "{out}");
     assert!(out.contains("method: k=1 s=IN2 b0=2"), "{out}");
+}
+
+/// A place's value assigned into a part of a parameter is stored as a
+/// copy (two parameters would share a block, and a write through one
+/// reach the other); a free fn returning a field read through a handle
+/// parameter hands back that locus's storage, a place's value.
+#[test]
+fn a_parameter_part_assigned_and_a_handle_field_returned_stay_apart() {
+    let src = format!(
+        "{REVIEW_TYPES}
+        fn f(h: Holder, r: R) {{ h.arr = r.arr; h.arr[0].k = 7; h.arr[0].inner.k = 70; }}
+        locus K {{
+            params {{ r: R = R {{ }}; }}
+            birth() {{ self.r = fresh(); }}
+            fn k0() -> Int {{ return self.r.arr[0].k; }}
+        }}
+        fn arr_of(k: K) -> [In; 2] {{ return k.r.arr; }}
+        fn store(h: Holder, r: R) {{ h.arr = r.arr; }}
+        fn main() {{
+            let r = fresh();
+            let h = Holder {{ }};
+            f(h, r);
+            println(\"h=\", h.arr[0].k);
+            show(\"param part\", r);
+            let h2 = Holder {{ }};
+            store(h2, r);
+            h2.arr[1].k = 5;
+            show(\"stored then written\", r);
+            let k = K {{ }};
+            let mut a = arr_of(k);
+            a[0].k = 7;
+            println(\"handle field: local=\", a[0].k, \" locus=\", k.k0());
+        }}"
+    );
+    let out = run("param_part", &src);
+    assert!(out.contains("h=7"), "{out}");
+    assert!(out.contains("param part: a0=1/10 a1=2"), "{out}");
+    assert!(out.contains("stored then written: a0=1/10 a1=2"), "{out}");
+    assert!(out.contains("handle field: local=7 locus=1"), "{out}");
+}
+
+/// A call's result that is a cell's block, handed straight to a callee
+/// that writes through it, is copied where it is evaluated: the cell
+/// read's kind survives the call (`pokeb(part(m.get(1) or Rec { }))`).
+#[test]
+fn a_cell_read_through_a_call_handed_to_a_writer_leaves_the_cell() {
+    let src = format!(
+        "{REVIEW_TYPES}
+        fn part(r: Rec) -> [Inner; 2] {{ return r.big; }}
+        fn pokeb(b: [Inner; 2]) {{ b[0].k = 7; b[0].s = heap(\"w\"); }}
+        fn main() {{
+            let m = M {{ }};
+            m.set(freshrec(1));
+            pokeb(part(m.get(1) or Rec {{ }}));
+            showc(\"inline\", m);
+            let c = m.get(1) or Rec {{ }};
+            pokeb(part(c));
+            showc(\"bound\", m);
+        }}"
+    );
+    let out = run("cell_through_call", &src);
+    assert!(out.contains("inline: k=1 s=IN2 b0=2"), "{out}");
+    assert!(out.contains("bound: k=1 s=IN2 b0=2"), "{out}");
 }
