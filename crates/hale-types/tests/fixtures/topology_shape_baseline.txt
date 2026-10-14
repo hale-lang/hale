@@ -1998,6 +1998,7 @@ crates/hale-types/tests/placement.rs#74 638b42602935f283
 crates/hale-types/tests/placement.rs#8 aa981ce3fa820e36
 crates/hale-types/tests/placement.rs#85 e4e5c0079991b066
 crates/hale-types/tests/placement.rs#88 8110ec671cdc568a
+crates/hale-types/tests/placement.rs#94 bfa76e0ceeb15bf3
 crates/hale-types/tests/placement_pairings.rs#3 7fa08ae2a5239b16
 crates/hale-types/tests/placement_pairings.rs#6 19fbfff324159117
 crates/hale-types/tests/quantitative_budgets.rs#0 53bd236a4771f0ca

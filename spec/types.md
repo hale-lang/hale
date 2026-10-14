@@ -1680,10 +1680,24 @@ instance, seeded from the `main locus`'s `placement { }` entries):
    (GH #1561): below the field (`self.h.w.m()`, `self.h.ws[i].m()`
    — a nested instance, an element included, runs in its holder's
    pool), through a local bound to it (`let w = self.w; w.m()`) or
-   a `for` over its elements — a local follows every handle it may
-   hold, through rebinds (`w = self.b`, `w = w`), either branch of an
-   `if` or `match`, and a loop's later iterations, and a `let` inside a
-   block shadows only within it — and through a free fn handed it that
+   a `for` over its elements. The check is a dataflow over the body:
+   each local carries what it may be (a cross-pool instance) and what
+   it may hold (a tuple, array or record around one, a fresh locus
+   literal whose params do), joined where control flow merges, iterated
+   to a fixpoint over a loop (its condition included, at every
+   iteration), with each block's `let`s in a scope of their own (a
+   shadowed binding keeps its own rebinds) and a block's, `if`'s or
+   `match`'s value taken from its tail before its locals go out of
+   scope. A value comes from a field of `self` (or below one), another
+   local, a part of one (`p.0`, `ws[1]`, `n.w`), a literal holding one,
+   or a call: a fn or method by what its body may return (a parameter
+   or a part of one, a field of `self`, or a value holding one —
+   summarized per body, transitively; a fresh result of its own carries
+   nothing), a call through a fn value declared to return a locus type
+   by any instance of that type (one on another pool is enough), and a
+   stdlib call by its declared result, which carries an argument's
+   handle only when it can be or hold that argument's type, a generic
+   result included. (A method may not return a locus itself.) — and through a free fn handed it that
    calls a method on its parameter (`fn poke(w: W) { w.m(); }`,
    `poke(self.w)`), directly or by handing the parameter on to such
    a fn (by name, a fixpoint over the program's free fns).
