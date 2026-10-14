@@ -3962,7 +3962,7 @@ fn walk_stmt_pool(stmt: &Stmt, cx: &mut PoolCheckCx) {
     match stmt {
         Stmt::Let { name, value, .. } => {
             walk_expr_pool(value, cx);
-            match receiver_cross_pool(value, cx) {
+            match alias_of(value, cx) {
                 Some(cp) => {
                     cx.aliases.insert(name.name.clone(), cp);
                 }
@@ -3995,7 +3995,7 @@ fn walk_stmt_pool(stmt: &Stmt, cx: &mut PoolCheckCx) {
             walk_expr_pool(iter, cx);
             // An element of an array field that runs in another domain
             // (`for w in self.ws`) is such a field's alias in the body.
-            let shadowed = match receiver_cross_pool(iter, cx) {
+            let shadowed = match alias_of(iter, cx) {
                 Some(cp) => cx.aliases.insert(name.name.clone(), cp),
                 None => cx.aliases.remove(&name.name),
             };
@@ -4084,7 +4084,7 @@ fn walk_expr_pool(expr: &Expr, cx: &mut PoolCheckCx) {
             // GH #1561: through a local bound to such a field (`let w =
             // self.w; w.m()`, a `for w in self.ws` element) too, and on an
             // element of an array field (`self.ws[i].m()`).
-            if let Some(CrossPool { field_locus, caller_pool, callee_pool, held_by }) =
+            if let Some(CrossPool { field_locus, caller_pool, callee_pool, held_by, locus_type }) =
                 receiver_cross_pool(receiver, cx).or_else(|| match receiver.as_ref() {
                     Expr::Ident(id) => cx.aliases.get(&id.name).cloned(),
                     _ => None,
@@ -4100,7 +4100,7 @@ fn walk_expr_pool(expr: &Expr, cx: &mut PoolCheckCx) {
                 // below the field (`self.h.reg`) is judged by its
                 // own type, the declarations say it.
                 let receiver_type = match &held_by {
-                    Some(_) => receiver_locus_below(receiver, &field_locus, cx),
+                    Some(_) => receiver_locus_below(receiver, &field_locus, cx).or(locus_type),
                     None => Some(field_locus.clone()),
                 };
                 if !receiver_type.is_some_and(|t| cx.cross_pool_safe_loci.contains(&t)) {
@@ -4273,7 +4273,15 @@ fn check_store_pool(target: &LValue, span: Span, cx: &mut PoolCheckCx) {
             return;
         }
         match cx.aliases.get(&target.head.name) {
-            Some(cp) if !cx.decls.slot_is_inline_scalar(&cp.field_locus, &target.tail) => {
+            // the alias's own locus type: an element reached below the
+            // field (`let x = self.h.ws[0]`) is the element's, not the
+            // holder's; one the declarations do not give is no scalar
+            Some(cp)
+                if !cp
+                    .locus_type
+                    .as_deref()
+                    .is_some_and(|t| cx.decls.slot_is_inline_scalar(t, &target.tail)) =>
+            {
                 (cp.clone(), target.head.name.clone())
             }
             _ => return,
@@ -4724,6 +4732,10 @@ fn visit_expr_deep(e: &Expr, on_stmt: &mut dyn FnMut(&Stmt), on_expr: &mut dyn F
 /// it realizes, as the diagnostic names it, and the two pools.
 #[derive(Clone)]
 struct CrossPool {
+    /// For a local bound to the receiver (`alias_of`): the receiver's own
+    /// locus type, the element's for `self.h.ws[i]`, when the
+    /// declarations say.
+    locus_type: Option<String>,
     /// The receiver is reached below the field (`self.h.ws[i]`): the
     /// field it is held under, as written (`self.h`).
     held_by: Option<String>,
@@ -4764,6 +4776,7 @@ fn receiver_cross_pool(receiver: &Expr, cx: &PoolCheckCx) -> Option<CrossPool> {
                 continue;
             }
             return Some(CrossPool {
+                locus_type: None,
                 held_by: held_by.clone(),
                 field_locus: receiver_locus_name(row, cx.enclosing_locus, &name.name, cx.decl_names),
                 caller_pool: PoolId::of_domain(table, cx.running.row(owner).domain),
@@ -4772,6 +4785,19 @@ fn receiver_cross_pool(receiver: &Expr, cx: &PoolCheckCx) -> Option<CrossPool> {
         }
     }
     None
+}
+
+/// A local bound to a receiver that runs in another domain (`let x =
+/// self.w`, `let x = self.h.ws[0]`, `for x in self.h.ws`): the receiver's
+/// cross-pool facts, with its own locus type for the slot a store
+/// through the local writes.
+fn alias_of(value: &Expr, cx: &PoolCheckCx) -> Option<CrossPool> {
+    let mut cp = receiver_cross_pool(value, cx)?;
+    cp.locus_type = match &cp.held_by {
+        Some(_) => receiver_locus_below(value, &cp.field_locus, cx),
+        None => Some(cp.field_locus.clone()),
+    };
+    Some(cp)
 }
 
 /// The locus type a receiver reached below a field of `self` holds

@@ -3383,6 +3383,9 @@ const F31_BODY: &str = r#"
         self.h.ws[0].name = "element store";
         self.h.ws[0].n = 3;
         self.h.one.setname("nested");
+        let el = self.h.ws[0];
+        el.n = 4;
+        el.name = "through a local";
         for x in self.h.ws { x.setname("each"); }
 "#;
 
@@ -3415,9 +3418,11 @@ fn main() {{ App {{ }}; }}
             format!("cross-pool method call: `self.h.ws[…].setname` invokes a method on a locus held by `Holder` (`self.h`) {h} {call}"),
             format!("cross-pool field store: `self.h.ws[…].name = …` stores into a field of a locus held by `Holder` (`self.h`) {h} {store}"),
             format!("cross-pool method call: `self.h.one.setname` invokes a method on a locus held by `Holder` (`self.h`) {h} {call}"),
+            format!("cross-pool field store: `el.name = …` stores into a field of a locus held by `Holder` (`el`) {h} {store}"),
             format!("cross-pool method call: `x.setname` invokes a method on a locus held by `Holder` (`self.h`) {h} {call}"),
         ],
-        "`harmless` calls no method on its parameter, and `self.h.ws[0].n = 3` is an inline scalar store"
+        "`harmless` calls no method on its parameter, and `self.h.ws[0].n = 3` and `el.n = 4` (a local \
+         bound to that element, typed as the element) are inline scalar stores"
     );
 }
 
