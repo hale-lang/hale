@@ -85,13 +85,6 @@ main locus App {
 fn main() { App { }; }
 ```
 
-The `fn main` is what starts it: a `main locus` declares the
-deployment, and `fn main` builds it. A seed with a `main locus` and
-no `fn main` is refused by `hale check` at the locus's name — *a
-`main locus` is started by `fn main`, and this seed has none: add
-`fn main() { App { }; }`* — and by `hale build` and `hale run` with
-the same line.
-
 - `cooperative(pool = X)` puts the locus on pool `X`'s thread.
   The runtime spawns one OS worker per pool name it sees. A pool
   can take the same affinity forms as `pinned` —

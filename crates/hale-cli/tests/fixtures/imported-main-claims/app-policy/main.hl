@@ -38,6 +38,3 @@ main locus Lodge {
         println("idle ", self.b.idle, " ", self.s.stamp(1));
     }
 }
-
-// A `main locus` is started by `fn main`.
-fn main() { Lodge { }; }

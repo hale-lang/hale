@@ -985,9 +985,6 @@ pub fn check_bundle_by_declaration(
     // GH #911 (B6): and the entry point is top-level only, which the
     // build path has always assumed and check did not say.
     check_entry_point_placement(bundle, &mut diags);
-    // And a `main locus` is started by that `fn main`, which a seed
-    // with one has to declare.
-    check_main_locus_has_fn_main(bundle, inputs.entry, &mut diags);
     // Phase 3 routing-keys (2026-05-25): bundle-level checks
     //   - `on_unmatched: fallback` topics must have at least one
     //     `where key == _` subscriber program-wide.
@@ -4993,49 +4990,6 @@ fn check_entry_point_placement(bundle: &Bundle<'_>, diags: &mut Vec<Diag>) {
     for program in bundle.programs.values() {
         walk(&program.items, None, diags);
     }
-}
-
-/// A `main locus` is started by `fn main` (spec/semantics.md, "The entry
-/// locus": "A seed's entry point is its top-level `fn main` (or the `main
-/// locus` that one instantiates)"). Lowering emits the row's `fn main` as
-/// the process's entry point and deploys the `main locus` from it, so a
-/// seed that declares its own top-level `main locus` and no `fn main`
-/// checked clean and then failed to build with codegen's spanless
-/// `program has no `fn main()``. The two layers agree here instead, at
-/// the `main locus`'s name, with the line that starts it.
-///
-/// An imported application's `main locus` is not the importer's entry
-/// (the importer runs it, or does not), and a module-nested one is
-/// refused by its own law, so only the entry is judged. A module that
-/// exports is the wasm entry inversion's (its loader drives the
-/// exports, and the native build refuses it at the `@export`), so it is
-/// left to that rule.
-fn check_main_locus_has_fn_main(
-    bundle: &Bundle<'_>,
-    entry: &crate::entry::EntryRow,
-    diags: &mut Vec<Diag>,
-) {
-    if entry.fn_main.is_some() {
-        return;
-    }
-    let Some(main) = entry.entry() else { return };
-    let Some(decl) = main.decl(bundle) else { return };
-    let exports = bundle.programs.values().any(|p| {
-        hale_syntax::ast::flat_decls(&p.items).any(|item| {
-            matches!(item, TopDecl::Fn(f) if f.export) || matches!(item, TopDecl::Locus(l) if l.export)
-        })
-    });
-    if exports {
-        return;
-    }
-    diags.push(Diag::ty(
-        decl.name.span,
-        format!(
-            "a `main locus` is started by `fn main`, and this seed has none: \
-             add `fn main() {{ {name} {{ }}; }}`",
-            name = main.name
-        ),
-    ));
 }
 
 fn check_main_and_bindings(bundle: &Bundle<'_>, inputs: &CheckInputs<'_>, diags: &mut Vec<Diag>) {

@@ -50,7 +50,7 @@ fn messages(src: &str) -> Vec<String> {
 
 /// Wrap a body in a `main` so the checker sees a whole program.
 fn prog(body: &str) -> String {
-    format!("main locus App {{\n fn main() {{\n{body}\n }}\n}}\nfn main() {{ App {{ }}; }}\n")
+    format!("main locus App {{\n fn main() {{\n{body}\n }}\n}}\n")
 }
 
 // ---------------------------------------------------------------

@@ -484,32 +484,6 @@ fn an_entry_point_less_program_is_built() {
     }
 }
 
-/// A `main locus` with no `fn main` checked clean and was refused by the
-/// build, spanless ("program has no `fn main()`"): the sweep counts a
-/// `main locus` as an entry point and so appends no synthetic one, and
-/// the seed has nothing that starts it. The check refuses it now, at the
-/// locus's name, so the build is never reached. Its control — the same
-/// locus started by `fn main` — builds.
-///
-/// Plain string literals, for the reason given above.
-#[test]
-fn a_main_locus_with_no_fn_main_is_refused_by_the_check_not_the_build() {
-    let unstarted = "main locus App {\n\
-                     run { println(\"hi\"); }\n\
-                     }\n";
-    let program = hale_syntax::parse_source(unstarted).expect("parses");
-    assert!(has_entry_point(&program), "the sweep reads a `main locus` as an entry point");
-    let errors: Vec<hale_syntax::Diag> =
-        entries::check_program(&program).into_iter().filter(|d| d.is_error()).collect();
-    assert_eq!(errors.len(), 1, "one error from the check: {:?}", errors);
-    assert_eq!(errors[0].span.slice(unstarted), "App", "located at the locus's name");
-    assert!(errors[0].message.starts_with("a `main locus` is started by `fn main`"), "{}", errors[0].message);
-    assert_eq!(sweep_verdict(unstarted, "hale_cb_main_locus_unstarted"), Verdict::Skipped("the checker rejects it"));
-
-    let started = format!("{unstarted}fn main() {{ App {{ }}; }}\n");
-    assert_eq!(sweep_verdict(&started, "hale_cb_main_locus_started"), Verdict::Built);
-}
-
 /// GH #1076 (U1, review): a quantity literal in a default checked clean
 /// and was refused by the build. A parameter's default is typed at the
 /// invocation in a walk whose findings the check discards, which took

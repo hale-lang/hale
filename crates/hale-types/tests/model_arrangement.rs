@@ -294,14 +294,11 @@ fn nothing_is_arranged_below_an_unlinked_held_row() {
 /// stays outside the arrangement, a birth its hole accounts for.
 #[test]
 fn the_entry_adds_no_arrangement_row_of_its_own() {
-    let claims_only =
-        snapshot("locus Leaf { }\nmain locus App {\n    params {\n        l: Leaf = Leaf { };\n    }\n}\nfn main() { App { }; }\n");
+    let claims_only = snapshot("locus Leaf { }\nmain locus App {\n    params {\n        l: Leaf = Leaf { };\n    }\n}\n");
     let m = model(&claims_only);
     assert_eq!(arrangement(m), ["0 App App - main -", "1 App.l Leaf - main 0"]);
     assert!(locus_holes(m).is_empty(), "{:?}", locus_holes(m));
-    // The shape hash is this program's since it gained the `fn main` a
-    // `main locus` needs (2026-10-14); the obs-id digest did not move.
-    identities_hold(m, "ae10f3fd07e51814", "ccc8c3ec47f273ff");
+    identities_hold(m, "09f0e56b070be72d", "ccc8c3ec47f273ff");
 
     let with_side = snapshot(
         "locus Side { }\nlocus Leaf { }\nmain locus App {\n    params {\n        l: Leaf = Leaf { };\n    }\n}\n\
