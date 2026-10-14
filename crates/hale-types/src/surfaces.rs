@@ -1600,14 +1600,20 @@ fn imported_main_is_built(bundle: &Bundle<'_>, entry: &crate::entry::EntryRow, l
 }
 
 /// Whether the `receivers:` entry `i` binds the row type `ty`: by its key
-/// as written (`Orders`, `lib::Orders`), or by the type of the param it
-/// names. A holder another seed declares names its loci by their mangled
-/// names in its rows and param types (`ty`), while the key keeps its
-/// author's spelling; the param's type is the seed's own resolution of it.
+/// as written (`Orders`, `lib::Orders`), or, in a holder another seed
+/// declares, whose rows and param types name its loci by their mangled
+/// names (`__lib_…__Orders`) while the key keeps its author's spelling,
+/// by the param it names: that param's type is `ty`, the mangling of the
+/// key's name.
 pub(crate) fn binds_type(i: &hale_syntax::ast::StructInit, ty: &str, params: &BTreeMap<String, String>) -> bool {
-    i.name.name == ty
-        || i.name.name.rsplit("::").next().is_some_and(|tail| tail == ty)
-        || self_field(&i.value).and_then(|f| params.get(f)).is_some_and(|t| t == ty)
+    let key = &i.name.name;
+    let tail = key.rsplit("::").next().unwrap_or(key);
+    if key == ty || tail == ty {
+        return true;
+    }
+    let mangled_key = ty.starts_with("__lib_")
+        && (ty.ends_with(&format!("__{}", crate::mangle::name_component(tail.as_bytes()))) || ty.ends_with(&format!("_{tail}")));
+    mangled_key && self_field(&i.value).and_then(|f| params.get(f)).is_some_and(|t| t == ty)
 }
 
 /// The param form a serve site written in a body is (GH #1565): its `let`
