@@ -3441,3 +3441,69 @@ fn main() {{ App {{ }}; }}
     );
     assert_eq!(f31(&src), Vec::<String>::new());
 }
+
+// GH #1561 (codex review of #1566): a local's origin follows it through
+// rebinds, branches and loops. `w = self.b` after `let mut w = self.a`
+// makes `w` the io pool's W (its store lowered to an assign-in-place and
+// a retire flush on that W's arena from main's thread); so does `w = w`
+// after `let mut w = self.b`, a rebind in one branch of an `if`, or one at
+// the end of a loop body the next iteration stores through. A block's own
+// `let` shadows only within the block: after it, the outer `w` is `a`
+// again.
+
+fn rebind_program(body: &str) -> String {
+    format!(
+        r#"
+locus W {{
+    params {{ name: String = ""; active: Bool = false; }}
+    run() {{
+        while self.active && !self.draining {{
+            self.name = std::str::upper("worker");
+            yield;
+        }}
+    }}
+}}
+main locus App {{
+    params {{ a: W = W {{}}; b: W = W {{ active: true }}; }}
+    placement {{ b: cooperative(pool = io) where async_io; }}
+    run() {{
+        {body}
+    }}
+}}
+fn main() {{ App {{}}; }}
+"#
+    )
+}
+
+#[test]
+fn a_rebound_local_keeps_every_handle_it_may_hold() {
+    for body in [
+        "let mut w = self.a;\n        w = self.b;\n        w.name = \"main\";",
+        "let mut w = self.b;\n        w = w;\n        w.name = \"main\";",
+        "let mut w = self.a;\n        if self.a.active { w = self.b; }\n        w.name = \"main\";",
+        "let mut w = self.a;\n        let mut i = 0;\n        while i < 2 { w.name = \"main\"; w = self.b; i = i + 1; }",
+        "let mut w = self.a;\n        let v = if self.a.active { self.b } else { self.a };\n        w = v;\n        w.name = \"main\";",
+    ] {
+        let got = cross_pool_stores(&rebind_program(body));
+        assert_eq!(got.len(), 1, "{body}: {got:#?}");
+        assert!(
+            got[0].starts_with("cross-pool field store: `w.name = …` stores into a field of locus `W` (`w`) placed `cooperative(pool = io)`"),
+            "{body}: {}",
+            got[0]
+        );
+    }
+}
+
+#[test]
+fn a_block_scoped_shadow_leaves_the_outer_local_as_it_was() {
+    for body in [
+        "let w = self.a;\n        { let w = self.b; }\n        w.name = \"main\";",
+        "let mut w = self.a;\n        w = self.a;\n        w.name = \"main\";",
+        "let mut w = self.b;\n        w = self.a;\n        w.name = \"main\";",
+        "let w = self.a;\n        match 1 { _ -> { let w = self.b; } }\n        w.name = \"main\";",
+    ] {
+        let src = rebind_program(body);
+        assert_eq!(cross_pool_stores(&src), Vec::<String>::new(), "{body}");
+        assert!(check(&src).iter().all(|m| !m.contains("cross-pool")), "{body}: {:?}", check(&src));
+    }
+}

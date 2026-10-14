@@ -498,6 +498,9 @@ struct Bodies<'a> {
     /// an interface, a perspective, a form): a binding of one is the
     /// handle, which a write through it means to reach.
     handle_fields: BTreeSet<String>,
+    /// Field names every declaration of which holds a fixed array of
+    /// handles (`ws: [W; 2]`): an element of one is a locus.
+    handle_array_fields: BTreeSet<String>,
     /// Type aliases, by their normalized names: classified by what they
     /// name, never by their spelling.
     aliases: BTreeMap<String, &'a TypeExpr>,
@@ -674,6 +677,25 @@ impl<'a> Bodies<'a> {
                     }
                     return self.int_scalars.contains(&name);
                 }
+                _ => return false,
+            }
+        }
+        false
+    }
+
+    /// Is `ty`, its aliases followed, a fixed array whose elements are
+    /// handles (`[W; 2]`, an array of loci)?
+    fn handle_array(&self, ty: &TypeExpr) -> bool {
+        let mut cur = ty;
+        for _ in 0..16 {
+            match cur {
+                TypeExpr::Projection { inner, .. } => cur = inner,
+                TypeExpr::Named { path, .. } => {
+                    let Some(name) = self.path_name(&path.segments) else { return false };
+                    let Some(next) = self.aliases.get(&name) else { return false };
+                    cur = next;
+                }
+                TypeExpr::Array { elem, .. } => return matches!(self.classify(elem), Class::Handle | Class::Form(_)),
                 _ => return false,
             }
         }
@@ -1149,6 +1171,7 @@ fn analyze(programs: &[&Program], renames: &BTreeMap<Vec<String>, String>) -> Fo
         scalar_fields: BTreeSet::new(),
         compound_fields: BTreeSet::new(),
         handle_fields: BTreeSet::new(),
+        handle_array_fields: BTreeSet::new(),
         field_types: Vec::new(),
         aliases: BTreeMap::new(),
         renames: renames.clone(),
@@ -1224,6 +1247,10 @@ fn analyze(programs: &[&Program], renames: &BTreeMap<Vec<String>, String>) -> Fo
         classes.iter().filter(|(f, c)| *c == Class::Value && !not_compound.contains(f)).map(|(f, _)| f.clone()).collect();
     let not_handle: BTreeSet<&String> =
         classes.iter().filter(|(_, c)| !matches!(c, Class::Handle | Class::Form(_))).map(|(f, _)| f).collect();
+    let not_handle_array: BTreeSet<&String> =
+        p.field_types.iter().filter(|(_, t)| !t.is_some_and(|t| p.handle_array(t))).map(|(f, _)| f).collect();
+    p.handle_array_fields =
+        p.field_types.iter().filter(|(f, _)| !not_handle_array.contains(f)).map(|(f, _)| f.clone()).collect();
     p.handle_fields = classes
         .iter()
         .filter(|(f, c)| matches!(c, Class::Handle | Class::Form(_)) && !not_handle.contains(f))
@@ -1742,6 +1769,11 @@ struct Walk<'p, 'a> {
     names: Vec<String>,
     record_hint: Vec<bool>,
     handle_only: Vec<bool>,
+    /// Per variable, whether it surely holds an array of handles (a
+    /// declared `[W; N]`, a literal of handles, another such local); and
+    /// such parameters.
+    handle_array: Vec<bool>,
+    handle_array_params: BTreeSet<String>,
     /// Per variable, whether it surely holds a primitive (nothing writes
     /// into one); and such parameters.
     scalar_hint: Vec<bool>,
@@ -1895,6 +1927,8 @@ impl<'p, 'a> Walk<'p, 'a> {
             names: Vec::new(),
             record_hint: Vec::new(),
             handle_only: Vec::new(),
+            handle_array: Vec::new(),
+            handle_array_params: params.iter().filter(|prm| p.handle_array(&prm.ty)).map(|prm| prm.name.name.clone()).collect(),
             scalar_hint: Vec::new(),
             scalar_params,
             inline_scalar_params,
@@ -1950,6 +1984,7 @@ impl<'p, 'a> Walk<'p, 'a> {
         self.names.push(name.to_string());
         self.record_hint.push(false);
         self.handle_only.push(false);
+        self.handle_array.push(false);
         self.scalar_hint.push(false);
         self.compound_hint.push(false);
         self.var_struct.push(None);
@@ -2308,9 +2343,32 @@ impl<'p, 'a> Walk<'p, 'a> {
             Some(None) => self.handle_only_params.contains(&target.head.name),
             None => false,
         };
-        let below_child = target.tail.split_last().is_some_and(|(_, above)| {
-            above.iter().any(|seg| matches!(seg, LValueSeg::Field(f) if self.p.handle_fields.contains(&f.name)))
-        });
+        // Below a child, or below an element of an array of loci (`ls[0].f`,
+        // `h.ws[i].f`): the path, short of its last segment, steps into a
+        // locus.
+        let Some((_, above)) = target.tail.split_last() else { return handle_head };
+        let mut in_handle_array = match head {
+            Some(Some(v)) => self.handle_array[v],
+            Some(None) => self.handle_array_params.contains(&target.head.name),
+            None => false,
+        };
+        let mut below_child = false;
+        for seg in above {
+            match seg {
+                LValueSeg::Field(f) => {
+                    if self.p.handle_fields.contains(&f.name) {
+                        below_child = true;
+                    }
+                    in_handle_array = self.p.handle_array_fields.contains(&f.name);
+                }
+                LValueSeg::Index(_) => {
+                    if in_handle_array {
+                        below_child = true;
+                    }
+                    in_handle_array = false;
+                }
+            }
+        }
         handle_head || below_child
     }
 
@@ -2861,6 +2919,17 @@ impl<'p, 'a> Walk<'p, 'a> {
                 self.forms[v] = form;
                 self.view_forms[v] = view_form;
                 self.handle_only[v] = surely_handle;
+                self.handle_array[v] = match (ty, value) {
+                    (Some(t), _) => self.p.handle_array(t),
+                    (None, Expr::Array(es, _)) => !es.is_empty() && es.iter().all(|e| self.surely_handle(None, e)),
+                    (None, Expr::Ident(id)) => match self.lookup(&id.name) {
+                        Some(Some(u)) => self.handle_array[u],
+                        Some(None) => self.handle_array_params.contains(&id.name),
+                        None => false,
+                    },
+                    (None, Expr::Field { name, .. }) => self.p.handle_array_fields.contains(&name.name),
+                    _ => false,
+                };
                 self.record_hint[v] = record;
                 self.scalar_hint[v] = scalar;
                 self.compound_hint[v] = compound;

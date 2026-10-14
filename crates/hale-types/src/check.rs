@@ -3871,6 +3871,7 @@ fn check_placement_single_thread(
                             stores_through: &stores_through,
                             decls: &decls,
                             aliases: BTreeMap::new(),
+                            quiet: false,
                             diags,
                         };
                         walk_block_pool(body, &mut cx);
@@ -3946,15 +3947,148 @@ struct PoolCheckCx<'a> {
     /// Locals bound to a field that runs in another domain (`let w =
     /// self.w;`): a store through one is the field's.
     aliases: BTreeMap<String, CrossPool>,
+    /// A loop body's fixpoint walk: no diagnostics.
+    quiet: bool,
     diags: &'a mut Vec<Diag>,
 }
 
+impl PoolCheckCx<'_> {
+    fn emit(&mut self, d: Diag) {
+        if !self.quiet {
+            self.diags.push(d);
+        }
+    }
+}
+
 fn walk_block_pool(block: &Block, cx: &mut PoolCheckCx) {
+    // A name a `let` of this block binds is the block's: when the block
+    // ends, the binding it shadowed is in scope again, with the origin it
+    // had then. A local of an enclosing block rebound here keeps what it
+    // was given (GH #1561).
+    let mut declared: BTreeSet<&str> = BTreeSet::new();
+    for stmt in &block.stmts {
+        match stmt {
+            Stmt::Let { name, .. } => {
+                declared.insert(name.name.as_str());
+            }
+            Stmt::LetTuple { names, .. } => declared.extend(names.iter().map(|n| n.name.as_str())),
+            _ => {}
+        }
+    }
+    let shadowed: Vec<(&str, Option<CrossPool>)> =
+        declared.iter().map(|n| (*n, cx.aliases.get(*n).cloned())).collect();
     for stmt in &block.stmts {
         walk_stmt_pool(stmt, cx);
     }
     if let Some(tail) = &block.tail {
         walk_expr_pool(tail, cx);
+    }
+    for (name, before) in shadowed {
+        match before {
+            Some(cp) => {
+                cx.aliases.insert(name.to_string(), cp);
+            }
+            None => {
+                cx.aliases.remove(name);
+            }
+        }
+    }
+}
+
+/// The union of two alias maps at a control-flow merge: a local that may
+/// hold a cross-pool handle on either path may hold one after.
+fn merge_aliases(a: &mut BTreeMap<String, CrossPool>, b: BTreeMap<String, CrossPool>) {
+    for (k, v) in b {
+        a.entry(k).or_insert(v);
+    }
+}
+
+/// Walk a loop body: its locals' origins at entry are the fixpoint of
+/// the iterations (a rebind at the end of one reaches the next), found
+/// first without diagnostics; the body is then walked once with them,
+/// and the loop leaves the union of entry and exit (the body may run
+/// zero times).
+fn walk_loop_body_pool(body: &Block, cx: &mut PoolCheckCx) {
+    let quiet = std::mem::replace(&mut cx.quiet, true);
+    let mut entry = cx.aliases.clone();
+    for _ in 0..8 {
+        cx.aliases = entry.clone();
+        walk_block_pool(body, cx);
+        let before = entry.len();
+        merge_aliases(&mut entry, std::mem::take(&mut cx.aliases));
+        if entry.len() == before {
+            break;
+        }
+    }
+    cx.quiet = quiet;
+    cx.aliases = entry.clone();
+    walk_block_pool(body, cx);
+    merge_aliases(&mut cx.aliases, entry);
+}
+
+/// What a local bound to (or rebound to) `e` may hold, for the
+/// cross-pool rule: a field that runs in another domain (`self.b`,
+/// `self.h.ws[i]`), another local that may (`w = v`), a part of one
+/// (`w.kid`), either branch of an `if`/`match`/block or `or` that may,
+/// or a call handed one (`pick(self.a, self.b)` may hand it back). `None`
+/// when no path brings a cross-pool handle in.
+fn origin_of(e: &Expr, cx: &PoolCheckCx) -> Option<CrossPool> {
+    if let Some(cp) = alias_of(e, cx) {
+        return Some(cp);
+    }
+    match e {
+        Expr::Ident(id) => cx.aliases.get(&id.name).cloned(),
+        Expr::Field { receiver, .. } | Expr::Index { receiver, .. } => {
+            let mut cp = origin_of(receiver, cx)?;
+            cp.locus_type = None;
+            Some(cp)
+        }
+        // A stdlib call is pool-neutral and hands back its own value (a
+        // `std::metrics::gauge(self.senses.registry, ..)` is a gauge of
+        // the caller's), never an argument's handle.
+        Expr::Call { callee, .. }
+            if matches!(callee.as_ref(), Expr::Path(qp) if qp.segments.first().is_some_and(|s| s.name == "std")) =>
+        {
+            None
+        }
+        Expr::Call { callee, args, .. } => {
+            let recv = match callee.as_ref() {
+                Expr::Field { receiver, .. } => origin_of(receiver, cx),
+                _ => None,
+            };
+            recv.or_else(|| args.iter().find_map(|a| origin_of(a, cx))).map(|mut cp| {
+                cp.locus_type = None;
+                cp
+            })
+        }
+        Expr::Block(b) => b.tail.as_ref().and_then(|t| origin_of(t, cx)),
+        Expr::If(i) => origin_of_if(i, cx),
+        Expr::Match(m) => m.arms.iter().find_map(|arm| match &arm.body {
+            MatchArmBody::Expr(e) => origin_of(e, cx),
+            MatchArmBody::Block(b) => b.tail.as_ref().and_then(|t| origin_of(t, cx)),
+        }),
+        Expr::Or { inner, disposition, .. } => origin_of(inner, cx).or_else(|| match disposition {
+            OrDisposition::Substitute(x) => origin_of(x, cx),
+            _ => None,
+        }),
+        _ => None,
+    }
+}
+
+fn origin_of_if(i: &IfStmt, cx: &PoolCheckCx) -> Option<CrossPool> {
+    i.then_block.tail.as_ref().and_then(|t| origin_of(t, cx)).or_else(|| match i.else_block.as_deref() {
+        Some(ElseBranch::Else(b)) => b.tail.as_ref().and_then(|t| origin_of(t, cx)),
+        Some(ElseBranch::ElseIf(nested)) => origin_of_if(nested, cx),
+        None => None,
+    })
+}
+
+fn pattern_binders<'p>(p: &'p Pattern, out: &mut Vec<&'p str>) {
+    match p {
+        Pattern::Binding(id) => out.push(id.name.as_str()),
+        Pattern::Constructor { args, .. } => args.iter().for_each(|a| pattern_binders(a, out)),
+        Pattern::Tuple(ps, _) => ps.iter().for_each(|a| pattern_binders(a, out)),
+        Pattern::Literal(..) | Pattern::Wildcard(_) => {}
     }
 }
 
@@ -3962,7 +4096,7 @@ fn walk_stmt_pool(stmt: &Stmt, cx: &mut PoolCheckCx) {
     match stmt {
         Stmt::Let { name, value, .. } => {
             walk_expr_pool(value, cx);
-            match alias_of(value, cx) {
+            match origin_of(value, cx) {
                 Some(cp) => {
                     cx.aliases.insert(name.name.clone(), cp);
                 }
@@ -3985,8 +4119,17 @@ fn walk_stmt_pool(stmt: &Stmt, cx: &mut PoolCheckCx) {
                 }
             }
             walk_expr_pool(value, cx);
+            // A rebound local holds what the value may be (`w = self.b`,
+            // `w = w`): its origin is the value's, never forgotten.
             if target.tail.is_empty() {
-                cx.aliases.remove(&target.head.name);
+                match origin_of(value, cx) {
+                    Some(cp) => {
+                        cx.aliases.insert(target.head.name.clone(), cp);
+                    }
+                    None => {
+                        cx.aliases.remove(&target.head.name);
+                    }
+                }
             }
         }
         Stmt::If(i) => walk_if_pool(i, cx),
@@ -3999,7 +4142,7 @@ fn walk_stmt_pool(stmt: &Stmt, cx: &mut PoolCheckCx) {
                 Some(cp) => cx.aliases.insert(name.name.clone(), cp),
                 None => cx.aliases.remove(&name.name),
             };
-            walk_block_pool(body, cx);
+            walk_loop_body_pool(body, cx);
             match shadowed {
                 Some(cp) => {
                     cx.aliases.insert(name.name.clone(), cp);
@@ -4011,7 +4154,7 @@ fn walk_stmt_pool(stmt: &Stmt, cx: &mut PoolCheckCx) {
         }
         Stmt::While { cond, body, .. } => {
             walk_expr_pool(cond, cx);
-            walk_block_pool(body, cx);
+            walk_loop_body_pool(body, cx);
         }
         Stmt::Return(opt, _) => {
             if let Some(e) = opt {
@@ -4045,19 +4188,33 @@ fn walk_stmt_pool(stmt: &Stmt, cx: &mut PoolCheckCx) {
 }
 
 fn walk_if_pool(stmt: &IfStmt, cx: &mut PoolCheckCx) {
+    // Each branch starts from what holds before the `if`; after it, a
+    // local may hold what either branch left (GH #1561).
     walk_expr_pool(&stmt.cond, cx);
+    let before = cx.aliases.clone();
     walk_block_pool(&stmt.then_block, cx);
+    let then_out = std::mem::replace(&mut cx.aliases, before);
     if let Some(eb) = &stmt.else_block {
         match eb.as_ref() {
             ElseBranch::Else(b) => walk_block_pool(b, cx),
             ElseBranch::ElseIf(nested) => walk_if_pool(nested, cx),
         }
     }
+    merge_aliases(&mut cx.aliases, then_out);
 }
 
 fn walk_match_pool(stmt: &MatchStmt, cx: &mut PoolCheckCx) {
     walk_expr_pool(&stmt.scrutinee, cx);
+    let before = cx.aliases.clone();
+    let mut out: Option<BTreeMap<String, CrossPool>> = None;
     for arm in &stmt.arms {
+        cx.aliases = before.clone();
+        // the arm's pattern binds its own names
+        let mut binders = Vec::new();
+        pattern_binders(&arm.pattern, &mut binders);
+        for b in &binders {
+            cx.aliases.remove(*b);
+        }
         if let Some(g) = &arm.guard {
             walk_expr_pool(g, cx);
         }
@@ -4065,7 +4222,23 @@ fn walk_match_pool(stmt: &MatchStmt, cx: &mut PoolCheckCx) {
             MatchArmBody::Expr(e) => walk_expr_pool(e, cx),
             MatchArmBody::Block(b) => walk_block_pool(b, cx),
         }
+        for b in &binders {
+            match before.get(*b) {
+                Some(cp) => {
+                    cx.aliases.insert(b.to_string(), cp.clone());
+                }
+                None => {
+                    cx.aliases.remove(*b);
+                }
+            }
+        }
+        let arm_out = std::mem::take(&mut cx.aliases);
+        match out.as_mut() {
+            Some(o) => merge_aliases(o, arm_out),
+            None => out = Some(arm_out),
+        }
     }
+    cx.aliases = out.unwrap_or(before);
 }
 
 fn walk_expr_pool(expr: &Expr, cx: &mut PoolCheckCx) {
@@ -4151,7 +4324,7 @@ fn walk_expr_pool(expr: &Expr, cx: &mut PoolCheckCx) {
                         Some(root) => format!("a locus held by `{}` (`{}`)", field_locus, root),
                         None => format!("locus `{}`", field_locus),
                     };
-                    cx.diags.push(Diag::ty(
+                    cx.emit(Diag::ty(
                         *span,
                         format!(
                             "cross-pool method call: `{}.{}` invokes a method \
@@ -4288,7 +4461,7 @@ fn check_store_pool(target: &LValue, span: Span, cx: &mut PoolCheckCx) {
         }
     };
     let path = lvalue_display(target);
-    cx.diags.push(Diag::ty(span, cross_pool_store_message(&format!("`{path} = …` stores into"), &shown, &cp, cx)));
+    cx.emit(Diag::ty(span, cross_pool_store_message(&format!("`{path} = …` stores into"), &shown, &cp, cx)));
 }
 
 /// GH #1561: a call of a free fn that stores into a locus field through
@@ -4319,11 +4492,11 @@ fn check_call_stores_pool(callee: &Expr, args: &[Expr], span: Span, cx: &mut Poo
         let Some((cp, shown)) = found else { continue };
         if stores.contains(&i) {
             let what = format!("`{fname}(…)` stores, through its argument {}, into", i + 1);
-            cx.diags.push(Diag::ty(span, cross_pool_store_message(&what, &shown, &cp, cx)));
+            cx.emit(Diag::ty(span, cross_pool_store_message(&what, &shown, &cp, cx)));
         } else if !cx.cross_pool_safe_loci.contains(&cp.field_locus) {
             // F.31's own rule, one call down: the fn calls a method on
             // the handle it is handed (`fn f(w: W) { w.m() }`, `f(self.w)`).
-            cx.diags.push(Diag::ty(
+            cx.emit(Diag::ty(
                 span,
                 format!(
                     "cross-pool method call: `{fname}(…)` invokes, through its argument {}, a method \

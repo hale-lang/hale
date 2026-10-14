@@ -1117,3 +1117,37 @@ fn main() {{ let h = Holder {{ }}; let r = R {{ }}; put_array(h, r); let l = L {
     let plain = all_diags(&src(""));
     assert!(!plain.iter().any(|(_, m)| m.contains("hot-path copy")), "{plain:?}");
 }
+
+/// A store into a locus reached by indexing an array of loci (`ls[0].name
+/// = s`) copies into that element's arena as a store through a locus
+/// parameter does, so it is the same survey site: `@hot` and a zero
+/// allocation budget refuse it (codex review of #1566: the summary said
+/// `put` allocates nothing, while both targets' IR call
+/// `lotus_str_assign_in_place`, which takes a slot copy). A scalar store
+/// into the element copies nothing and stays accepted.
+#[test]
+fn a_store_into_an_element_of_an_array_of_loci_is_a_stores_copy() {
+    let src = r#"
+locus L { params { name: String = ""; n: Int = 0; } }
+@hot @budget(alloc_per_call = 0)
+fn put(ls: [L; 2], s: String) { ls[0].name = s; }
+@hot @budget(alloc_per_call = 0)
+fn put_n(ls: [L; 2], n: Int) { ls[0].n = n; }
+fn main() {
+    let a = L {}; let b = L {}; let ls = [a, b];
+    put(ls, std::str::upper("hello"));
+    put_n(ls, 3);
+}
+"#;
+    let ds = all_diags(src);
+    let errs: Vec<&String> = ds.iter().filter(|(e, _)| *e).map(|(_, m)| m).collect();
+    assert_eq!(errs.len(), 1, "only `put`'s String store copies: {ds:?}");
+    assert!(
+        errs[0].contains("hot-path copy") && errs[0].contains("a value stored into a locus's field from outside its methods"),
+        "{ds:?}"
+    );
+    let budget = all_diags(&src.replace("@hot ", ""));
+    let over: Vec<&String> = budget.iter().filter(|(e, m)| *e && m.contains("hot-path budget exceeded")).map(|(_, m)| m).collect();
+    assert_eq!(over.len(), 1, "{budget:?}");
+    assert!(over[0].contains("`put`"), "{budget:?}");
+}

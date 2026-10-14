@@ -1680,7 +1680,10 @@ instance, seeded from the `main locus`'s `placement { }` entries):
    (GH #1561): below the field (`self.h.w.m()`, `self.h.ws[i].m()`
    — a nested instance, an element included, runs in its holder's
    pool), through a local bound to it (`let w = self.w; w.m()`) or
-   a `for` over its elements, and through a free fn handed it that
+   a `for` over its elements — a local follows every handle it may
+   hold, through rebinds (`w = self.b`, `w = w`), either branch of an
+   `if` or `match`, and a loop's later iterations, and a `let` inside a
+   block shadows only within it — and through a free fn handed it that
    calls a method on its parameter (`fn poke(w: W) { w.m(); }`,
    `poke(self.w)`), directly or by handing the parameter on to such
    a fn (by name, a fixpoint over the program's free fns).
