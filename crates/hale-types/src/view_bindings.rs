@@ -648,6 +648,9 @@ struct Bodies<'a> {
     body_locus: Vec<Option<String>>,
     /// Every field name a write names, numbered for `Writes`' bits.
     field_ids: std::cell::RefCell<BTreeMap<String, usize>>,
+    /// Whether any program reads a method as a value (the checker's rows
+    /// say): a fn value may then hide the receiver it was read from.
+    method_values: bool,
 }
 
 impl Bodies<'_> {
@@ -751,6 +754,84 @@ impl<'a> Bodies<'a> {
         fields.iter().find(|f| f.name == field).map(|f| self.classify(&f.ty))
     }
 
+    /// What a value of type `ty` may reach (GH #1554): every block it is
+    /// or holds (a record, an enum, an array, a tuple, a locus's storage),
+    /// by type; whether a String or a Bytes leaf; and whether a type the
+    /// pass cannot see into (`Unknown`, a generic parameter, an interface
+    /// or a perspective, whatever serves it), which may be anything.
+    fn reach(&self, ty: &Ty, out: &mut Reach) {
+        use hale_syntax::ast::PrimType::{Bytes, BytesView, String as Str, StringView};
+        match ty {
+            Ty::Prim(Str | StringView) => out.strings = true,
+            Ty::Prim(Bytes | BytesView) => out.bytes = true,
+            Ty::Prim(_) | Ty::Unit | Ty::Function { .. } => {}
+            Ty::Unknown => out.opaque = true,
+            Ty::Projection(_, inner) => self.reach(inner, out),
+            Ty::Fallible { success, .. } => self.reach(success, out),
+            Ty::Array(e, _) | Ty::Bounded(e, _) => {
+                if out.blocks.insert(ty.display()) {
+                    self.reach(e, out);
+                }
+            }
+            Ty::Tuple(es) => {
+                if out.blocks.insert(ty.display()) {
+                    es.iter().for_each(|e| self.reach(e, out));
+                }
+            }
+            Ty::Named(n) => match self.top.lookup(n) {
+                Some(TopSymbol::Type(t)) => match &t.kind {
+                    TypeKind::Struct(fields) => {
+                        if out.blocks.insert(n.clone()) {
+                            fields.iter().for_each(|f| self.reach(&f.ty, out));
+                        }
+                    }
+                    TypeKind::Enum(variants) => {
+                        if out.blocks.insert(n.clone()) {
+                            variants.iter().flat_map(|v| &v.fields).for_each(|f| self.reach(f, out));
+                        }
+                    }
+                    TypeKind::Alias(t) => self.reach(t, out),
+                    TypeKind::Scalar(_) => {}
+                },
+                // A locus's storage, which a free fn may hand back through
+                // a handle parameter.
+                Some(TopSymbol::Locus(l)) => {
+                    if out.blocks.insert(n.clone()) {
+                        l.params.iter().for_each(|f| self.reach(&f.ty, out));
+                    }
+                }
+                Some(TopSymbol::Interface(_) | TopSymbol::Perspective(_)) | None => out.opaque = true,
+                Some(_) => {}
+            },
+        }
+    }
+
+    /// How what a call hands back, of type `result`, may alias an operand
+    /// of type `arg`: a block both may reach (it is, holds, or shares a
+    /// part with the other, a write into one reaching the other); only a
+    /// String or Bytes leaf (immutable, so no write into the result reaches
+    /// it, though a cell's leaf is still the cell's); or nothing.
+    fn alias(&self, result: &Ty, arg: &Ty) -> Alias {
+        let (mut r, mut a) = (Reach::default(), Reach::default());
+        self.reach(result, &mut r);
+        self.reach(arg, &mut a);
+        if r.opaque || a.opaque || r.blocks.intersection(&a.blocks).next().is_some() {
+            Alias::Block
+        } else if (r.strings && a.strings) || (r.bytes && a.bytes) {
+            Alias::Leaf
+        } else {
+            Alias::None
+        }
+    }
+
+    /// Whether a value of type `ty` may be anything (`reach` sees into
+    /// nothing of it).
+    fn opaque(&self, ty: &Ty) -> bool {
+        let mut r = Reach::default();
+        self.reach(ty, &mut r);
+        r.opaque
+    }
+
     /// The type of `self` in a member of `locus` (`Unknown` outside one).
     fn locus_ty(&self, locus: Option<&str>) -> Ty {
         locus.map_or(Ty::Unknown, |l| Ty::Named(l.to_string()))
@@ -811,6 +892,11 @@ impl Bodies<'_> {
                 Target::Method(Some(owner.clone()), name.clone())
             }
             CalleeRef::Dispatch(name) if self.methods.contains_key(name) => Target::Method(None, name.clone()),
+            // A method through an interface no locus declares: every value
+            // of the interface is a locus that declares it (its
+            // conformance), so none runs; unless a form's synthesized
+            // operation serves it.
+            CalleeRef::Dispatch(name) if !FORM_OPS.contains(&name.as_str()) => Target::Std(Vec::new()),
             CalleeRef::FormOp(_) => Target::FormOp,
             CalleeRef::Ctor => Target::Ctor,
             CalleeRef::Std(segs) => Target::Std(segs.clone()),
@@ -837,6 +923,23 @@ impl Bodies<'_> {
             None => Target::Unknown,
         }
     }
+}
+
+/// What a value of a type may reach (`Bodies::reach`).
+#[derive(Debug, Default)]
+struct Reach {
+    blocks: BTreeSet<String>,
+    strings: bool,
+    bytes: bool,
+    opaque: bool,
+}
+
+/// How a call's result may alias an operand (`Bodies::alias`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Alias {
+    Block,
+    Leaf,
+    None,
 }
 
 /// What a type is, as the pass needs to know it.
@@ -1016,6 +1119,7 @@ fn analyze(programs: &[Analyzed<'_>], top: &TopScope) -> Vec<Found> {
         locus_methods: BTreeMap::new(),
         body_locus: Vec::new(),
         field_ids: std::cell::RefCell::new(BTreeMap::new()),
+        method_values: programs.iter().any(|a| a.views.iter().any(|v| v.method_values())),
     };
     for (i, a) in programs.iter().enumerate() {
         for (k, item) in a.program.items.iter().enumerate() {
@@ -2896,6 +3000,9 @@ impl<'p, 'a> Walk<'p, 'a> {
     /// itself, when the program holds it (a send made a call has none).
     fn call_to(&mut self, target: Option<Target>, call: Option<&Expr>, callee: &Expr, args: &[&Expr], span: Span) -> Keys {
         let start = self.tick();
+        // A call through a fn value (a local's, a parameter's, a field of
+        // fn type): its declared signature types what it hands back.
+        let fn_value = target.is_none() || call.is_some_and(|c| matches!(self.views.callee(c), Some(CalleeRef::Value)));
         // A stdlib handle's member called as a method hands its receiver
         // to the fn as its first argument.
         let with_receiver: Vec<&Expr>;
@@ -2992,6 +3099,10 @@ impl<'p, 'a> Walk<'p, 'a> {
         // What a form's method hands back is a cell's read or a fresh
         // value, never the receiver's own block: no place marker.
         let operand_keys: Keys = keys.iter().cloned().fold(None, union);
+        // Each operand's keys with its type, for what a callee the checker
+        // did not resolve may hand back (below).
+        let operand_tys: Vec<(Keys, Ty)> = ops.iter().zip(&keys).map(|(o, k)| (k.clone(), self.ty(o).clone())).collect();
+        let result_ty: Option<Ty> = call.map(|c| self.views.expr(c).clone());
         let recv_keys = if receiver.is_some() { real(&keys.remove(0)) } else { None };
         let mut result: Keys = None;
         // A form's read may hand back its cell; any other method's
@@ -3065,6 +3176,38 @@ impl<'p, 'a> Walk<'p, 'a> {
                         .collect()
                 })
             };
+            // What a callee the checker did not resolve (a fn value, a
+            // method value, an unresolved name) may hand back: a part of an
+            // operand whose type can be, hold or be held by the result's
+            // (GH #1554: a `Response` is no part of the `Context` it is
+            // handed), its markers as the operand carried them; anything
+            // (`?ret`) where the result's type is not known. A callee may
+            // still write through every argument: only the return is
+            // narrowed.
+            // A fn value hides no receiver unless the program reads a
+            // method as a value; any other unresolved callee may hand back
+            // a place it reached some other way (`?ret`).
+            let other = (!fn_value || self.p.method_values).then(|| at(Some("?ret".to_string()))).flatten();
+            let unknown_result: Keys = match &result_ty {
+                Some(rt) if !self.p.opaque(rt) => {
+                    operand_tys.iter().fold(other, |acc, (k, t)| match self.p.alias(rt, t) {
+                        Alias::Block => union(acc, markers(k)),
+                        // a cell's leaf is still the cell's: its marker
+                        Alias::Leaf => union(
+                            acc,
+                            markers(k).and_then(|ks| {
+                                let ks: BTreeSet<String> = ks.into_iter().filter(|k| k.starts_with(IN_CELL)).collect();
+                                (!ks.is_empty()).then_some(ks)
+                            }),
+                        ),
+                        Alias::None => acc,
+                    })
+                }
+                _ => union(markers(&operand_keys), at(Some("?ret".to_string()))),
+            };
+            if self.summary.is_none() && unknown {
+                result = union(result, unknown_result.clone());
+            }
             if let (Some(s), false) = (self.summary, plain) {
                 let rv = if unknown {
                     RetView { other: true, ..RetView::default() }
@@ -3096,7 +3239,9 @@ impl<'p, 'a> Walk<'p, 'a> {
                             .collect()
                     })
                 };
-                if rv.other {
+                if unknown {
+                    result = union(result, unknown_result);
+                } else if rv.other {
                     result = union(result, union(markers(&operand_keys), at(Some("?ret".to_string()))));
                 } else {
                     for (k, ak) in keys.iter().enumerate() {

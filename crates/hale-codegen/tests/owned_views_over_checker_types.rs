@@ -285,13 +285,14 @@ fn an_imported_seeds_locus_is_its_own() {
 /// (`std::http::RouteHandler`), so `not_found.handle(cur)` is a call
 /// through the interface, and its result binds no copy. A route
 /// registered as a fn is called through a fn value (`__route_fn(cur)`):
-/// the checker types it (`fn(Context) -> Response`) but no checker can
-/// name which fn it holds, so the call may write anything and hand back
-/// anything, and the response it binds keeps its copy (a Response cannot
-/// hold a part of the Context it is handed, but the pass's summary of
-/// what a call hands back is by parameter, not by type).
+/// no checker can name which fn it holds, so it may write anything, but
+/// its declared signature (`fn(Context) -> Response`) says what it hands
+/// back, and a `Response` neither is, holds, nor shares a block with the
+/// `Context` it is handed: the response binds no copy either (it was
+/// copied once per routed request). A middleware's `before`/`after`, an
+/// interface method no locus of the program declares, runs nothing.
 #[test]
-fn the_route_chain_copies_only_the_fn_routes_response() {
+fn the_route_chain_copies_no_response() {
     let src = "fn main() { println(\"x\"); }\n";
     let program = hale_syntax::parse_source(src).expect("parses");
     let Ok(snap) = Snapshot::from_program(program, Vec::new(), Config::harness(Target::host())) else {
@@ -307,8 +308,60 @@ fn the_route_chain_copies_only_the_fn_routes_response() {
         .expect("the route chain");
     let mut got = BTreeSet::new();
     owned_in_all(&chain.body, &views.stdlib, &mut got);
-    assert!(!got.contains("let resp"), "the not-found handler's response binds no copy: {got:?}");
-    assert!(got.contains("assign resp = __route_fn"), "a fn route's response keeps its copy: {got:?}");
+    assert!(!got.iter().any(|g| g.contains("resp") || g.contains("cur")), "no response or context binds a copy: {got:?}");
+}
+
+/// What a call through a fn value hands back aliases (a part of) an
+/// argument only where the types allow it: the result is, holds, or
+/// shares a block with the argument. `take: fn(Wrap) -> In` may hand
+/// back `w.inner`, so a write into its result copies the result first
+/// (the caller's `self.w` keeps its value); `make: fn(Wrap) -> Out` shares
+/// no block with `Wrap` (only a String, which no write into the result
+/// reaches), so its result is written in place with no copy. Before, a
+/// call through a fn value handed back anything.
+#[test]
+fn a_fn_values_result_aliases_only_what_its_types_allow() {
+    let src = r#"
+        type In { k: Int = 0; s: String = ""; }
+        type Wrap { inner: In = In { }; }
+        type Out { n: Int = 0; s: String = ""; }
+        fn pick(w: Wrap) -> In { return w.inner; }
+        fn fresh(w: Wrap) -> Out { return Out { n: w.inner.k, s: w.inner.s }; }
+        locus H {
+            params { w: Wrap = Wrap { }; take: fn(Wrap) -> In = pick; make: fn(Wrap) -> Out = fresh; }
+            fn aliasing() -> Int {
+                let mut x = self.take(self.w);
+                x.k = 5;
+                return self.w.inner.k * 10 + x.k;
+            }
+            fn unrelated() -> String {
+                let mut o = self.make(self.w);
+                o.n = 9;
+                return o.s + to_string(o.n);
+            }
+        }
+        fn main() {
+            let h = H { };
+            h.w = Wrap { inner: In { k: 1, s: std::str::upper("x") } };
+            println("aliasing=" + to_string(h.aliasing()));
+            println("unrelated=" + h.unrelated());
+        }
+    "#;
+    let program = hale_syntax::parse_source(src).expect("parses");
+    let Ok(snap) = Snapshot::from_program(program, Vec::new(), Config::harness(Target::host())) else {
+        panic!("the program does not load");
+    };
+    let views = snap.demand_owned_views().expect("the column");
+    let copies: Vec<&str> = views
+        .program
+        .cell_copies()
+        .iter()
+        .filter(|c| c.span.start.as_usize() < src.find("fn main").expect("main"))
+        .map(|c| &src[c.span.start.as_usize()..c.span.end.as_usize()])
+        .collect();
+    assert_eq!(copies, ["x.k = 5;"], "only the write into what may be `w.inner` copies");
+    let out = run_asan("fn_value_alias", src);
+    assert!(out.contains("aliasing=15\n") && out.contains("unrelated=X9\n"), "{out}");
 }
 
 /// Every owned `let` and bare `=` of `b`, at any depth, as `let <name>`

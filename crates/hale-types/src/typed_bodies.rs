@@ -814,6 +814,9 @@ pub struct ViewTypes {
     bindings: std::collections::HashMap<usize, Ty>,
     places: std::collections::HashMap<usize, Ty>,
     callees: std::collections::HashMap<usize, CalleeRef>,
+    /// The declaration reads a method as a value (`let f = k.get;`): a
+    /// call through a fn value may hide the receiver it was read from.
+    method_values: bool,
 }
 
 /// Every declaration's `views` table, by program key, in item order (a
@@ -880,6 +883,15 @@ impl ViewTypes {
         note(&mut self.places, node(at), ty, || Ty::Unknown);
     }
 
+    /// Whether the declaration reads a method as a value.
+    pub fn method_values(&self) -> bool {
+        self.method_values
+    }
+
+    pub fn note_method_value(&mut self) {
+        self.method_values = true;
+    }
+
     pub fn note_callee(&mut self, call: &Expr, callee: CalleeRef) {
         note(&mut self.callees, node(call), callee, || CalleeRef::Unknown);
     }
@@ -908,6 +920,7 @@ impl ViewTypes {
             bindings: move_rows(&self.bindings, &map),
             places: move_rows(&self.places, &map),
             callees: move_rows(&self.callees, &map),
+            method_values: self.method_values,
         }
     }
 

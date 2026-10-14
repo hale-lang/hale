@@ -1001,6 +1001,7 @@ pub fn walk_bundle_by_declaration(
         body: NodeId::NONE,
         expr_types: None,
         views: Default::default(),
+        view_callee_node: 0,
         locus_decl: None,
         templates: &templates,
         generic_bindings: BTreeMap::new(),
@@ -8301,6 +8302,9 @@ struct Checker<'a> {
     /// callee. Taken into the declaration's `DeclChecked` as its walk
     /// ends.
     views: crate::typed_bodies::ViewTypes,
+    /// The callee the call being typed names (its node), so a method read
+    /// there is a call of it, not a method read as a value.
+    view_callee_node: usize,
     /// The locus declaration being walked, if any: a generic one's
     /// accumulator rows are specialized per monomorph.
     locus_decl: Option<&'a LocusDecl>,
@@ -17111,6 +17115,23 @@ impl<'a> Checker<'a> {
             }
             _ => ty.clone(),
         };
+        // A method read anywhere but as a call's callee is a method value.
+        if let (Ty::Function { .. }, Expr::Field { receiver, name, .. }) = (&ty, expr) {
+            if expr as *const Expr as usize != self.view_callee_node {
+                if let Ty::Named(owner) = self.view_expr_ty(receiver) {
+                    let method = match self.top.lookup(&owner) {
+                        Some(TopSymbol::Locus(li)) => {
+                            li.methods.iter().any(|m| m.name == name.name) && !li.params.iter().any(|p| p.name == name.name)
+                        }
+                        Some(TopSymbol::Perspective(_) | TopSymbol::Interface(_)) => true,
+                        _ => false,
+                    };
+                    if method {
+                        self.views.note_method_value();
+                    }
+                }
+            }
+        }
         self.views.note_expr(expr, ty);
         if let Expr::Call { callee, args, .. } = expr {
             let callee = self.view_callee(callee, args);
@@ -18722,7 +18743,10 @@ impl<'a> Checker<'a> {
                 // informative of the two.
                 let callee_ty = match callee.as_ref() {
                     Expr::Ident(id) => self.check_ident_expr(id, false),
-                    other => self.check_expr(other),
+                    other => {
+                        self.view_callee_node = other as *const Expr as usize;
+                        self.check_expr(other)
+                    }
                 };
                 // GH #583 (dna/FRICTION.md F.18): a bare callee that names
                 // nothing — not a local (a fn-pointer binding), not a
