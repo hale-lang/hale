@@ -496,7 +496,10 @@ main locus App {
 and Ctrl-C (or SIGTERM) ends that wait. A `main` with no `run()`
 ends as soon as its children's loops have seen the drain. A child
 loop that never checks the flag still holds the process until it
-returns.
+returns. A `main` that serves is the exception: one that holds an
+exposure over a socket (its own param, or a server locus's below it)
+and writes no `run()` waits until those exposures are stopped or the
+process drains, as `run() { self.web.wait(); }` would ([API](./api.md)).
 
 ## The order, rule by rule
 

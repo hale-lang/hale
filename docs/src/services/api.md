@@ -221,12 +221,25 @@ $ hale check --api desk.hl --surface Public --mcp
 
 ### Serving
 
-A serve site puts one surface on one transport for the instances that
-answer it:
+An *exposure* puts one surface on one transport for the instances that
+answer it. It is a param of the locus that holds it, and its literal is
+the serve call:
 
 ```hale,fragment
-let public = api::serve(Public, self.fixture, as: "public", receivers: { Orders: self.orders }, bound: 64, on_full: refuse);
+params {
+    orders: Orders = Orders { };
+    fixture: std::api::test::Rpc = std::api::test::Rpc { };
+    public: api::Exposure = api::serve(Public, self.fixture, as: "public", receivers: { Orders: self.orders }, bound: 64, on_full: refuse);
+}
 ```
+
+Like any param it is born with its holder, after the params declared
+before it (the receivers it binds are declared first, so they are born
+before it and outlive it), and it dissolves with the holder. The param is
+also the handle: `self.public.wait()` parks until the exposure is stopped
+or the process drains, `self.public.stop()` stops it. (Before GH #1565 a
+serve site was an expression in a body, `let public = api::serve(…);`;
+the compiler now refuses that form and shows the param to write.)
 
 A library can ship a surface for an application to serve: the library
 declares `api Svc { … }` and the loci its rows name, and the application
@@ -259,21 +272,24 @@ main locus Desk {
         admin_roles: Grants = Grants { operator: "uid:1000" };
         orders: Orders = Orders { };
         ledger: Ledger = Ledger { };
+        admin: api::Exposure = api::serve(Admin, unix::Rpc { path: "/run/desk/admin.sock", roles: self.admin_roles }, as: "admin", bound: 16, on_full: refuse);
     }
     run() {
-        let admin = api::serve(Admin, unix::Rpc { path: "/run/desk/admin.sock", roles: self.admin_roles }, as: "admin", bound: 16, on_full: refuse);
-        std::api::run_until_stopped(admin);
-        admin.stop();
+        self.admin.wait();
+        self.admin.stop();
     }
 }
 ```
 
-`std::api::run_until_stopped(admin)` is the serving locus's wait: it
-returns when the exposure is stopped or the process drains, and until
-then it parks, waking the moment a call arrives for the main thread, so a
-call is answered in the time the work takes. A `run()` that does
-periodic work of its own keeps its `while !self.draining { … sleep(…); }`
-loop; it works, and a call waits for the loop's next slice.
+`self.admin.wait()` (or `std::api::run_until_stopped(self.admin)`, the
+same call) is the holder's wait: it returns when the exposure is stopped
+or the process drains, and until then it parks, waking the moment a call
+arrives for the main thread, so a call is answered in the time the work
+takes. A `run()` that does periodic work of its own keeps its `while
+!self.draining { … sleep(…); }` loop; it works, and a call waits for the
+loop's next slice. A main locus that writes no `run()` at all serves until
+its exposures stop or the process drains: the compiler gives it the
+wait.
 
 The socket is bound when the program boots, so a path it cannot bind (a
 missing directory, a socket another program is serving) stops the
@@ -281,9 +297,12 @@ program with a diagnostic instead of running without it. (An empty `path`
 is not a path it cannot bind: it binds nothing, and the exposure has no
 socket. A program that finds its path is another process's to hold passes
 none.) Its accept and
-read loops run on a pool of their own, which only the main locus can
-place, so the serving locus is the main locus; the compiler adds the
-listener to it. A client writes one JSON object per line and reads one
+read loops park, so they run on an `async_io` pool: the compiler adds the
+listener to the main locus as a param of its own and places it where the
+exposure's row says (`admin: cooperative(pool = io) where async_io;` in
+`placement { }`), or, with no row, on a pool every unplaced Unix exposure
+shares (see *Where an exposure's listener runs* below). A client writes
+one JSON object per line and reads one
 per reply, each carrying the `id` it was sent with, the `request_id` the
 exposure assigned, and who the exposure took the caller to be:
 
@@ -305,12 +324,11 @@ written) is closed alone: the listener and the other connections go on.
 ends without calling it releases its sockets too, but a caller with a
 request in flight then sees the connection end instead of a reply.
 
-The serve site makes an *exposure* when its locus is born, and the
-call is the handle: `public.stop()` stops accepting, refuses what is
-queued, lets what is executing finish and releases the listener, and
-the locus's own teardown does the same if you never call it.
+The exposure is the handle: `self.public.stop()` stops accepting, refuses
+what is queued, lets what is executing finish and releases the listener,
+and the holder's own teardown does the same if you never call it.
 `receivers:` names the instance of each locus the surface's rows
-call; when the serving locus holds exactly one instance of a type, it
+call; when the holder holds exactly one instance of a type, it
 is inferred, and two with no binding is an error naming both. A
 request is checked in a fixed order before the handler's state can tell
 it arrived (who is calling, the surface digest, the member, the roles
@@ -338,6 +356,53 @@ receivers — instances of different types, each placed where its work
 belongs — or serve the surface through more than one exposure, each with
 a receiver of its own.
 
+### Where an exposure's listener runs
+
+A socket transport's listener and the connections it starts run on an
+`async_io` pool, where an accept or a read parks a coroutine instead of
+a thread. Only the main locus places, so the listener is a param of the
+main locus the compiler adds, born before the exposure it serves, and
+`placement { }` says where it runs:
+
+- an exposure the main locus holds is placed by its own row, `public:
+  cooperative(pool = io) where async_io;`. The row places the listener; the
+  exposure stays with the main locus, beside the sources it calls. A row
+  that is not a named pool `where async_io` is refused, saying so;
+- an unplaced exposure's listener shares a pool with every unplaced
+  exposure of its transport, as it always did.
+
+A server can be a locus of its own, holding its receivers, its sources
+and its exposure, and the main locus places it like any other child:
+
+```hale,fragment
+locus AdminServer {
+    params {
+        cfg: LiveConfig = LiveConfig { };
+        tokens: Tokens = Tokens { };
+        api: api::Exposure = api::serve(AdminApi, http::Rpc { bind: "127.0.0.1:8080", codec: json, principals: self.tokens }, as: "web", receivers: { LiveConfig: self.cfg }, bound: 64, on_full: refuse);
+    }
+}
+
+main locus App {
+    params { admin: AdminServer = AdminServer { }; }
+    placement { admin: cooperative(pool = io) where async_io; }
+}
+```
+
+The server, its receivers and its exposure run on `io`, and so does the
+listener: a server's listener runs where the main locus places the param
+the server sits under, a level down or several, when that row hosts
+`async_io`, and on the shared pool otherwise (a server on the main thread,
+or pinned). Two servers on two pools are two params with two rows. The
+main locus holds the listener, so it holds each server once (a server held
+twice, or placed as replicas, would serve one exposure twice and is
+refused), and the server's `bind:` is read where the listener is born:
+from constants, the server's own params as the literals that build it set
+them, and the main locus's params declared before the one that holds it.
+The address the listener was bound to is handed back to the exposure, so
+a server's description names the port the kernel gave it. `App` above
+writes no `run()`; it serves until SIGTERM.
+
 ### Serving over HTTP
 
 `http::Rpc` takes a `bind:` (`host:port`), a `codec:` (`json`, the one v1
@@ -364,20 +429,23 @@ main locus Desk {
         partner_roles: Grants = Grants { trader: "carol" };
         orders: Orders = Orders { };
         partner_orders: Orders = Orders { next: 9001 };
+        public: api::Exposure = api::serve(Public, http::Rpc { bind: "127.0.0.1:8080", codec: json, principals: self.bearer, roles: self.public_roles }, as: "public", receivers: { Orders: self.orders }, bound: 64, on_full: refuse);
+        partner: api::Exposure = api::serve(Public, http::Rpc { bind: "127.0.0.1:8081", codec: json, principals: self.bearer, roles: self.partner_roles }, as: "partner", receivers: { Orders: self.partner_orders }, bound: 64, on_full: refuse);
     }
+    placement { public: cooperative(pool = io) where async_io; }
     run() {
-        let public = api::serve(Public, http::Rpc { bind: "127.0.0.1:8080", codec: json, principals: self.bearer, roles: self.public_roles }, as: "public", receivers: { Orders: self.orders }, bound: 64, on_full: refuse);
-        let partner = api::serve(Public, http::Rpc { bind: "127.0.0.1:8081", codec: json, principals: self.bearer, roles: self.partner_roles }, as: "partner", receivers: { Orders: self.partner_orders }, bound: 64, on_full: refuse);
-        std::api::run_until_stopped(public);
-        public.stop();
-        partner.stop();
+        self.public.wait();
+        self.public.stop();
+        self.partner.stop();
     }
 }
 ```
 
 The listener is bound when the program boots (an address it cannot bind
 stops the program with a diagnostic) and, like the Unix socket's, runs on
-a pool of its own, so the serving locus is the main locus. The
+an `async_io` pool: `public`'s row puts its listener and connections on
+`io`, and `partner`, unplaced, takes the pool every unplaced HTTP exposure
+shares. The
 description it serves states the address it was bound to: a
 `bind: "127.0.0.1:0"` lets the kernel pick a port, and a client that
 reads `/.description` sees `127.0.0.1:<that port>`, not `:0`. Both are the
@@ -422,7 +490,7 @@ exposure answers CORS for that origin. `cors:` lists the origins,
 comma-separated (`"*"` for any); without it nothing changes:
 
 ```hale,fragment
-let public = api::serve(Public, http::Rpc { bind: "127.0.0.1:8080", codec: json, principals: self.bearer, roles: self.public_roles, cors: "https://app.example.com, http://localhost:5173" }, as: "public", receivers: { Orders: self.orders }, bound: 64, on_full: refuse);
+public: api::Exposure = api::serve(Public, http::Rpc { bind: "127.0.0.1:8080", codec: json, principals: self.bearer, roles: self.public_roles, cors: "https://app.example.com, http://localhost:5173" }, as: "public", receivers: { Orders: self.orders }, bound: 64, on_full: refuse);
 ```
 
 The browser's preflight (`OPTIONS /call/<member>` or `OPTIONS
@@ -449,7 +517,7 @@ escaped where they would run into that, as the spec says), and
 the same admission as an HTTP body:
 
 ```hale,fragment
-let public = api::serve(Public, mcp::Rpc { bind: "127.0.0.1:8090", principals: self.bearer, roles: self.public_roles }, as: "public", receivers: { Orders: self.orders }, bound: 64, on_full: refuse);
+public: api::Exposure = api::serve(Public, mcp::Rpc { bind: "127.0.0.1:8090", principals: self.bearer, roles: self.public_roles }, as: "public", receivers: { Orders: self.orders }, bound: 64, on_full: refuse);
 ```
 
 ```text
@@ -479,7 +547,7 @@ calls over HTTP/2, cleartext, many calls to a connection, in protobuf or in
 JSON as each caller asks:
 
 ```hale,fragment
-let public = api::serve(Public, grpc::Rpc { bind: "127.0.0.1:8070", codec: json, principals: self.bearer, roles: self.public_roles }, as: "public", receivers: { Orders: self.orders }, bound: 64, on_full: refuse);
+public: api::Exposure = api::serve(Public, grpc::Rpc { bind: "127.0.0.1:8070", codec: json, principals: self.bearer, roles: self.public_roles }, as: "public", receivers: { Orders: self.orders }, bound: 64, on_full: refuse);
 ```
 
 A call is `POST /<Surface>/<rpc>`, the rpc the member written as an MCP
@@ -899,11 +967,13 @@ locus RecordRoles {                      // a std::api::RoleSource
 }
 
 main locus Head {
-    params { roles: RecordRoles = RecordRoles { }; }
+    params {
+        roles: RecordRoles = RecordRoles { };
+        local: api::Exposure = api::serve(Billing, unix::Rpc { path: "/run/head.sock", roles: self.roles }, as: "head", bound: 64, on_full: refuse);
+    }
     run() {
-        let local = api::serve(Billing, unix::Rpc { path: "/run/head.sock", roles: self.roles }, as: "head", bound: 64, on_full: refuse);
-        std::api::run_until_stopped(local);
-        local.stop();
+        self.local.wait();
+        self.local.stop();
     }
 }
 
