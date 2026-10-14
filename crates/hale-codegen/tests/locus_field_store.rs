@@ -302,3 +302,66 @@ fn main() { App { }; }
         assert_eq!(stdout.trim(), "done true", "{stdout}");
     }
 }
+
+/// A locus-typed field replaced from outside its owner (`h.loc = L { }`
+/// in a free fn, `hs[i].loc = L { }`) is WS1#4's lifecycle reassign, as
+/// the owner's own `self.loc = L { }` is: the old child dissolves (once),
+/// and the new one is built as the owner's field, adopted by its
+/// lifecycle — alive after the replacing frame returns, dissolved once
+/// with its owner. Before, the new child was a temporary the replacing
+/// frame dissolved on return (the field held a torn-down locus) and the
+/// old child was never dissolved.
+#[test]
+fn a_child_replaced_from_outside_its_owner_is_reclaimed_and_adopted() {
+    let src = r#"
+fn heap(s: String) -> String { return std::str::upper(s) + to_string(len(s)); }
+locus L {
+    params { name: String = ""; }
+    birth() { println("birth ", self.name); }
+    dissolve() { println("dissolve ", self.name); }
+    fn nm() -> String { return self.name; }
+}
+locus HL {
+    params { loc: L = L { name: heap("first") }; }
+    fn renew() { self.loc = L { name: heap("method") }; }
+    fn locname() -> String { return self.loc.nm(); }
+}
+fn replace(h: HL) { h.loc = L { name: heap("outside") }; }
+fn churn() -> Int { let mut i = 0; let mut n = 0; while i < 300 { n = n + len(heap("zzzzzzzz" + to_string(i))); i = i + 1; } return n; }
+fn main() {
+    let h = HL { };
+    replace(h);
+    println(churn());
+    println("after replace: ", h.locname());
+    h.renew();
+    println("after renew: ", h.locname());
+    let hs = [HL { }, HL { }];
+    hs[1].loc = L { name: heap("element") };
+    println("element: ", hs[1].locname());
+}
+"#;
+    let out = build_run("reassign", src, hale_codegen::BuildOptions { asan: true, ..build_opts::options() });
+    let out = clean_stdout("reassign", &out);
+    let lines: Vec<&str> = out.lines().filter(|l| !l.chars().all(|c| c.is_ascii_digit())).collect();
+    assert_eq!(
+        lines,
+        [
+            "birth FIRST5",
+            "dissolve FIRST5",
+            "birth OUTSIDE7",
+            "after replace: OUTSIDE7",
+            "dissolve OUTSIDE7",
+            "birth METHOD6",
+            "after renew: METHOD6",
+            "birth FIRST5",
+            "birth FIRST5",
+            "dissolve FIRST5",
+            "birth ELEMENT7",
+            "element: ELEMENT7",
+            "dissolve ELEMENT7",
+            "dissolve FIRST5",
+            "dissolve METHOD6",
+        ],
+        "{out}"
+    );
+}

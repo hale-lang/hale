@@ -18213,7 +18213,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         // the store is the child's own (GH #1561).
                         if let Some(owner) = owner.filter(|o| !o.is_self) {
                             return self.finish_locus_field_assign(
-                                slot_ptr, slot_ty, slot_name, op, value, scope, owner,
+                                slot_ptr, slot_ty, slot_name, op, value, scope, owner, target,
                             );
                         }
                         return self.finish_lvalue_assign(
@@ -18414,7 +18414,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     // (GH #1561).
                     if let Some(owner) = owner {
                         return self.finish_locus_field_assign(
-                            slot_ptr, slot_ty, slot_name, op, value, scope, owner,
+                            slot_ptr, slot_ty, slot_name, op, value, scope, owner, target,
                         );
                     }
                     return self.finish_lvalue_assign(
@@ -33899,6 +33899,28 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 "locus-field reassignment outside a locus method".to_string(),
             )
         })?;
+        self.lower_locus_field_reassign_of(&cs, field_idx, field_locus, new_locus, inits, scope)
+    }
+
+    /// GH #1561: WS1#4's reassign of a locus-typed field of `cs`, the
+    /// locus that owns the field. A method's `self.loc = L { }` passes
+    /// its `self`; a store from outside the owner's methods (`h.loc = L
+    /// { }`, `ls[i].loc = L { }`) passes the owner its lvalue reaches,
+    /// and lowers the new instance as the owner's: the owner is
+    /// `current_self` while the literal is built (its accept, bubble and
+    /// failure routing are the owner's, as in the owner's method), and
+    /// its supervising parent. A literal that reads `self` in another
+    /// locus's method would read the owner there, so it is refused.
+    fn lower_locus_field_reassign_of(
+        &mut self,
+        cs: &SelfCx<'ctx>,
+        field_idx: u32,
+        field_locus: &str,
+        new_locus: &str,
+        inits: &[StructInit],
+        scope: &Scope<'ctx>,
+    ) -> Result<BlockEnd, CodegenError> {
+        let cs = cs.clone();
         let ptr_t = self.context.ptr_type(AddressSpace::default());
         let field_slot = self
             .builder
@@ -33973,7 +33995,17 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             owner: crate::ownership::ExprId::DECLARED,
             field: field_locus.to_string(),
         });
-        let new_ptr = self.lower_locus_instantiation(new_locus, inits, scope)?;
+        // From outside the owner's methods, the owner stands in for
+        // `self` while its new child is built (GH #1561).
+        let foreign = self.current_self.as_ref().map(|c| c.self_ptr) != Some(cs.self_ptr);
+        let prev_self = if foreign { self.current_self.replace(cs.clone()) } else { None };
+        let prev_pis = if foreign { self.params_init_self.replace(cs.clone()) } else { None };
+        let built = self.lower_locus_instantiation(new_locus, inits, scope);
+        if foreign {
+            self.current_self = prev_self;
+            self.params_init_self = prev_pis;
+        }
+        let new_ptr = built?;
         self.owner_site = None;
         self.declared_owner = None;
         self.current_arena_override = prev_arena;
@@ -34087,6 +34119,25 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// lowers to the pointer of that storage; a literal or a call
     /// result is fresh. The `let` (GH #713) and assignment (GH #992,
     /// #993) rules copy the first shape and bind the second as it is.
+    /// Does `e` read `self` anywhere (a conservative syntactic walk of
+    /// the shapes a field initializer takes)?
+    fn expr_reads_self(e: &Expr) -> bool {
+        match e {
+            Expr::KwSelf(_) => true,
+            Expr::Field { receiver, .. } | Expr::Path2 { receiver, .. } => Self::expr_reads_self(receiver),
+            Expr::Index { receiver, index, .. } => Self::expr_reads_self(receiver) || Self::expr_reads_self(index),
+            Expr::Call { callee, args, .. } => Self::expr_reads_self(callee) || args.iter().any(Self::expr_reads_self),
+            Expr::Binary { left, right, .. } => Self::expr_reads_self(left) || Self::expr_reads_self(right),
+            Expr::Unary { operand, .. } => Self::expr_reads_self(operand),
+            Expr::Tuple(es, _) | Expr::Array(es, _) => es.iter().any(Self::expr_reads_self),
+            Expr::Struct { inits, .. } => inits.iter().any(|i| Self::expr_reads_self(&i.value)),
+            Expr::Literal(..) | Expr::Ident(_) | Expr::Path(_) => false,
+            // anything else (a block, an `if`, a `match`, an `or`):
+            // assume it may
+            _ => true,
+        }
+    }
+
     pub(crate) fn expr_is_place(e: &Expr) -> bool {
         matches!(e, Expr::Ident(_) | Expr::Field { .. } | Expr::Index { .. })
     }
@@ -34211,7 +34262,46 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         value: &Expr,
         scope: &Scope<'ctx>,
         owner: LvalueOwner<'ctx>,
+        target: &LValue,
     ) -> Result<BlockEnd, CodegenError> {
+        // WS1#4 from outside the owner (`h.loc = L { }`): the old child
+        // is reclaimed and the new one built as the owner's field, as a
+        // method of the owner storing `self.loc = L { }` does.
+        if let (AssignOp::Eq, CodegenTy::LocusRef(field_locus), Expr::Struct { path, inits, .. }, Some(LValueSeg::Field(fname))) =
+            (op, &slot_ty, value, target.tail.last())
+        {
+            let resolved_new: Option<String> = if path.segments.len() == 1 {
+                Some(path.segments[0].name.clone())
+            } else {
+                let segs: Vec<&str> = path.segments.iter().map(|s| s.name.as_str()).collect();
+                self.mangled_for_path(&segs)
+            };
+            let info = self.user_loci.get(&owner.locus).cloned();
+            if let (Some(new_name), Some(info)) = (resolved_new, info) {
+                if self.user_loci.contains_key(&new_name) {
+                    if let Some((field_idx, _)) = info.fields.get(&fname.name).cloned() {
+                        let reads_self = self.current_self.as_ref().is_some_and(|c| c.self_ptr != owner.ptr)
+                            && inits.iter().any(|i| Self::expr_reads_self(&i.value));
+                        if reads_self {
+                            return Err(CodegenError::Unsupported(format!(
+                                "`{slot_name} = {new_name} {{ … }}` replaces a child of another locus, \
+                                 which builds the new child as that locus's own; a field initializer \
+                                 reading `self` here would read that locus. Bind the value to a local \
+                                 first and use the local in the literal."
+                            )));
+                        }
+                        let cx = SelfCx {
+                            locus_name: owner.locus.clone(),
+                            struct_ty: info.struct_ty,
+                            self_ptr: owner.ptr,
+                            fields: info.fields.clone(),
+                        };
+                        let field_locus = field_locus.clone();
+                        return self.lower_locus_field_reassign_of(&cx, field_idx, &field_locus, &new_name, inits, scope);
+                    }
+                }
+            }
+        }
         let (rhs, rhs_ty) = self.lower_expr(value, scope)?;
         let new_val = if matches!(op, AssignOp::Eq) {
             if rhs_ty != slot_ty {

@@ -1716,6 +1716,14 @@ transition**, not a value store. It is lowered **break-before-make**:
    child from params-init.
 3. The field is repointed at the live new instance.
 
+The same transition runs when the field is replaced from outside its
+owner (`h.loc = L { … }` in a free fn, `hs[i].loc = L { … }`), with
+the owner — the locus the store's path reaches — in place of `self`
+(GH #1561; `types.md` § A store into a locus's field is the locus's
+own). Before, the new instance was the replacing frame's temporary,
+dissolved when that frame returned, and the old one was never
+dissolved.
+
 The old instance's drain and dissolve finish before the new instance
 is constructed, unless its own failure is still outstanding: then
 its whole teardown follows its handler, and a restart that handler
