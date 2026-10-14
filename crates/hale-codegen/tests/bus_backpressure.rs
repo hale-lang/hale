@@ -869,6 +869,177 @@ fn a_pinned_mailbox_takes_its_spill_only_once_its_head_is_published() {
     unpublished_head_keeps_order("unpublished_head_pinned", true);
 }
 
+/// A bound raised while the consumer drained nothing is headroom for that
+/// stall only. Four sources flood main's subscriber through a 64-cell
+/// queue; its 100th handler blocks 300 ms in `usleep`, so the sources take
+/// main for blocked and raise the bound about fifteen times. Then main
+/// drains again, a little slower than the sources send (each handler spins
+/// 20 us), and samples the backlog (what the sources sent less what it
+/// took). The raised bound used to persist until main drained the queue to
+/// half the cap, which sources sending faster never let happen: the backlog
+/// stayed at the stall's level (about 900). It shrinks with every take now,
+/// so the sources wait at what is queued until main is back under the cap.
+const HEADROOM_ON_MAIN: &str = r#"
+    @ffi("c") fn usleep(us: Int) -> Int;
+
+    type Tick { n: Int; }
+    fn stop() -> String { return "/tmp/hale-bp-hr-main-" + to_string(std::process::pid()); }
+    locus Source {
+        params { sent: Int = 0; }
+        bus { publish "hm" of type Tick; }
+        run() {
+            let path = stop();
+            let mut going = true;
+            while going {
+                "hm" <- Tick { n: self.sent };
+                self.sent = self.sent + 1;
+                if self.sent % 64 == 0 { going = !std::io::fs::file_exists(path); }
+            }
+        }
+    }
+    main locus App {
+        params {
+            count: Int = 0; resumed_at: Int = 0; samples: Int = 0; least: Int = -1;
+            s0: Source = Source { };
+            s1: Source = Source { };
+            s2: Source = Source { };
+            s3: Source = Source { };
+        }
+        placement {
+            s0: cooperative(pool = p0);
+            s1: cooperative(pool = p1);
+            s2: cooperative(pool = p2);
+            s3: cooperative(pool = p3);
+        }
+        bus { subscribe "hm" as on_tick of type Tick; }
+        fn on_tick(t: Tick) {
+            self.count = self.count + 1;
+            if self.count == 100 {
+                usleep(300000);
+                self.resumed_at = std::time::monotonic_ns();
+            }
+            let busy = std::time::monotonic_ns() + 20000;
+            while (std::time::monotonic_ns() < busy) { }
+            if self.resumed_at > 0 && self.samples < 200 && self.count % 16 == 0
+                && std::time::monotonic_ns() - self.resumed_at > 50000000 {
+                let backlog = self.s0.sent + self.s1.sent + self.s2.sent + self.s3.sent - self.count;
+                if self.least < 0 || backlog < self.least { self.least = backlog; }
+                self.samples = self.samples + 1;
+                if self.samples == 200 { std::io::fs::write_file(stop(), "stop") or discard; }
+            }
+        }
+        run() {
+            let deadline = std::time::monotonic_ns() + 60000000000;
+            while (self.samples < 200 && std::time::monotonic_ns() < deadline) { std::time::sleep(1ms); }
+            println("least_backlog=" + to_string(self.least));
+            std::io::fs::unlink(stop()) or discard;
+        }
+    }
+    fn main() { App { }; }
+"#;
+
+#[test]
+fn a_bound_raised_on_mains_queue_is_headroom_for_the_stall_only() {
+    let field = run_fields_env("headroom_main", HEADROOM_ON_MAIN, &[("LOTUS_BUS_QUEUE_CAP", "64")]);
+    let least: i64 = field("least_backlog").parse().expect("a count");
+    assert!(least <= 3 * 64, "main's backlog stayed at {least} after the stall (expected at most 3 caps of 64)");
+}
+
+/// The same for a ring's spill: a subscriber on pool `p` (or pinned) blocks
+/// its 100th handler 300 ms while four sources flood it, then drains a
+/// little slower than they send, and main samples the backlog. The spill's
+/// raised bound persisted the same way (about 900); it shrinks with every
+/// take from the spill now. Every tick is delivered.
+const HEADROOM_ON_RING: &str = r#"
+    @ffi("c") fn usleep(us: Int) -> Int;
+
+    type Tick { n: Int; }
+    fn stop() -> String { return "/tmp/hale-bp-hr-ring-" + to_string(std::process::pid()); }
+    locus Counter {
+        params { count: Int = 0; resumed_at: Int = 0; }
+        bus { subscribe "hr" as on_tick of type Tick; }
+        fn on_tick(t: Tick) {
+            self.count = self.count + 1;
+            if self.count == 100 {
+                usleep(300000);
+                self.resumed_at = std::time::monotonic_ns();
+            }
+            let busy = std::time::monotonic_ns() + 20000;
+            while (std::time::monotonic_ns() < busy) { }
+        }
+    }
+    locus Source {
+        params { sent: Int = 0; done: Int = 0; }
+        bus { publish "hr" of type Tick; }
+        run() {
+            let path = stop();
+            let mut going = true;
+            while going {
+                "hr" <- Tick { n: self.sent };
+                self.sent = self.sent + 1;
+                if self.sent % 64 == 0 { going = !std::io::fs::file_exists(path); }
+            }
+            self.done = 1;
+        }
+    }
+    main locus App {
+        params {
+            sub: Counter = Counter { };
+            s0: Source = Source { };
+            s1: Source = Source { };
+            s2: Source = Source { };
+            s3: Source = Source { };
+        }
+        placement {
+            sub: cooperative(pool = p);
+            s0: cooperative(pool = p0);
+            s1: cooperative(pool = p1);
+            s2: cooperative(pool = p2);
+            s3: cooperative(pool = p3);
+        }
+        run() {
+            let deadline = std::time::monotonic_ns() + 60000000000;
+            while (self.sub.resumed_at == 0 && std::time::monotonic_ns() < deadline) { std::time::sleep(1ms); }
+            std::time::sleep(50ms);
+            let mut least = -1;
+            let mut i = 0;
+            while i < 200 {
+                let got = self.sub.count;
+                let backlog = self.s0.sent + self.s1.sent + self.s2.sent + self.s3.sent - got;
+                if least < 0 || backlog < least { least = backlog; }
+                std::time::sleep(1ms);
+                i = i + 1;
+            }
+            std::io::fs::write_file(stop(), "stop") or discard;
+            while ((self.s0.done + self.s1.done + self.s2.done + self.s3.done) < 4 && std::time::monotonic_ns() < deadline) { std::time::sleep(1ms); }
+            let total = self.s0.sent + self.s1.sent + self.s2.sent + self.s3.sent;
+            while (self.sub.count < total && std::time::monotonic_ns() < deadline) { std::time::sleep(1ms); }
+            println("least_backlog=" + to_string(least));
+            println("missing=" + to_string(total - self.sub.count));
+            std::io::fs::unlink(stop()) or discard;
+        }
+    }
+    fn main() { App { }; }
+"#;
+
+fn headroom_on_ring(name: &str, pinned: bool) {
+    let src = placed(HEADROOM_ON_RING, "sub", pinned);
+    let field = run_fields_env(name, &src, &[("LOTUS_BUS_QUEUE_CAP", "64")]);
+    let least: i64 = field("least_backlog").parse().expect("a count");
+    assert!(least <= 3 * 64, "{name}: the backlog stayed at {least} after the stall (expected at most 3 caps of 64)");
+    assert_eq!(field("missing"), "0", "{name}: every tick is delivered");
+}
+
+#[test]
+fn a_bound_raised_on_a_pool_ring_is_headroom_for_the_stall_only() {
+    headroom_on_ring("headroom_pool", false);
+}
+
+#[test]
+fn a_bound_raised_on_a_pinned_mailbox_is_headroom_for_the_stall_only() {
+    headroom_on_ring("headroom_pinned", true);
+}
+
 /// A flood whose handler publishes: the at-cap inline drain runs `Sink`'s
 /// handler inside the `Source`'s post, and that handler publishes a
 /// `Reply`. The nested publish used to clear the wire deserializer the

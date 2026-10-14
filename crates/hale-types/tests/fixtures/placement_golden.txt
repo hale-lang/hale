@@ -1721,6 +1721,32 @@ row	App@literal1.s0	Source	pool:pa	entry	off owner
 row	App@literal1.s1	Source	pool:pb	entry	off owner
 row	App@literal1.sub	Counter	pool:p	entry	off owner
 
+== crates/hale-codegen/tests/bus_backpressure.rs#f036b7fe
+root	App	the entry
+domain	pool:p0
+domain	pool:p1
+domain	pool:p2
+domain	pool:p3
+row	App@literal1	App	main	default
+row	App@literal1.s0	Source	pool:p0	entry	off owner
+row	App@literal1.s1	Source	pool:p1	entry	off owner
+row	App@literal1.s2	Source	pool:p2	entry	off owner
+row	App@literal1.s3	Source	pool:p3	entry	off owner
+
+== crates/hale-codegen/tests/bus_backpressure.rs#45675882
+root	App	the entry
+domain	pool:p
+domain	pool:p0
+domain	pool:p1
+domain	pool:p2
+domain	pool:p3
+row	App@literal1	App	main	default
+row	App@literal1.s0	Source	pool:p0	entry	off owner
+row	App@literal1.s1	Source	pool:p1	entry	off owner
+row	App@literal1.s2	Source	pool:p2	entry	off owner
+row	App@literal1.s3	Source	pool:p3	entry	off owner
+row	App@literal1.sub	Counter	pool:p	entry	off owner
+
 == crates/hale-codegen/tests/bus_bounded_topics.rs#32b214f8
 root	App	the entry
 domain	pinned:App@literal1.p	cpus 0
