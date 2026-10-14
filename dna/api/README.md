@@ -144,7 +144,13 @@ that does not build is `definitions_unavailable` with the reason. The face's
 definitions views read what the organization admits. A composed head supplies
 the application-owned catalog to `ops::DeclaredWorkflowCatalog`, alongside the
 same declared `AdmissionLimits` and the loaded-source `DefinitionProvenance`,
-then passes that provider to `api::serve(root, port, web, provider)` or `Api`.
+then hands that provider to the head it composes: as `definitions:` of the
+`Api` handler its `std::http::Server` param is built with, beside its own
+`Commands`, with the exposures of `HeadCommands` as params of its main locus
+(`dna/api/practice_review/main.hl` composes one this way), or through the
+seed's standalone entry, `serve_with_commands(root, port, web, provider,
+commands)` (`serve(root, port, web, provider)` with no commands; both are
+plain functions of `dna/api/main.hl`, not serve sites).
 The provider must share the actual catalog used by that application; no parallel
 sample or reconstructed catalog establishes this capability.
 
