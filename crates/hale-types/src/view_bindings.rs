@@ -2083,9 +2083,11 @@ impl<'p, 'a> Walk<'p, 'a> {
     }
 
     /// Does the assignment's slot surely lie in a locus's storage? Its
-    /// head is a handle parameter or local, or the path steps below a
-    /// field whose type is a handle (`h.loc.f`, `holder.loc.f`). `head`
-    /// is the head's lookup.
+    /// head is a handle parameter or local, or the path, short of its
+    /// last segment, steps into a locus: a field whose type is a handle
+    /// (`h.loc.f`, `holder.loc.f`) or an element of an array of loci
+    /// (`ls[0].f`, `h.ws[i].f`), by the type the checker gave the path at
+    /// that segment. `head` is the head's lookup.
     fn store_lands_in_locus(&self, target: &LValue, head: Option<Option<usize>>) -> bool {
         let handle_head = match head {
             Some(Some(v)) => self.handle_only[v],
@@ -2093,7 +2095,13 @@ impl<'p, 'a> Walk<'p, 'a> {
             None => false,
         };
         let below_child = target.tail.split_last().is_some_and(|(_, above)| {
-            above.iter().any(|seg| matches!(seg, LValueSeg::Field(f) if self.p.classify(self.views.place(f)).surely_handle()))
+            above.iter().any(|seg| {
+                let ty = match seg {
+                    LValueSeg::Field(f) => self.views.place(f),
+                    LValueSeg::Index(i) => self.views.place(i),
+                };
+                self.p.classify(ty).surely_handle()
+            })
         });
         handle_head || below_child
     }
