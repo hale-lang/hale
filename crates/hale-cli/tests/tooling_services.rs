@@ -5,6 +5,8 @@
 //! A new test file joins an area by a line here (and is refused by
 //! `every_test_file_is_built` until it does).
 
+#[path = "api_drain_asan.rs"]
+mod api_drain_asan;
 #[path = "api_drive.rs"]
 mod api_drive;
 #[path = "api_clients.rs"]

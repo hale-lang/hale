@@ -2,6 +2,7 @@ crates/hale-cli/tests/api_contract_fixtures.rs#2 fae132f30cf626ac
 crates/hale-cli/tests/api_contract_fixtures.rs#3 49649a8a55d7c971
 crates/hale-cli/tests/api_contract_fixtures.rs#4 12b424787237e947
 crates/hale-cli/tests/api_contract_fixtures.rs#5 af01dd6f540c9d06
+crates/hale-cli/tests/api_drain_asan.rs#0 025450f957133167
 crates/hale-cli/tests/check_arg_parsing.rs#0 f428caff9d863411
 crates/hale-cli/tests/check_tcp_substrate.rs#0 c77866f6c52f37e4
 crates/hale-cli/tests/check_tcp_substrate.rs#1 c77866f6c52f37e4
@@ -1027,6 +1028,7 @@ crates/hale-codegen/tests/locus_field_cascade.rs#4 66a306ee5b5d043b
 crates/hale-codegen/tests/locus_field_reorder.rs#0 e304f500611307a8
 crates/hale-codegen/tests/locus_field_reorder.rs#1 e304f500611307a8
 crates/hale-codegen/tests/locus_field_reorder.rs#2 0bbbcb83ff80ab56
+crates/hale-codegen/tests/locus_field_reorder.rs#3 895ebd9523e230a2
 crates/hale-codegen/tests/locus_let_lifecycle.rs#0 4a40f789dacc3330
 crates/hale-codegen/tests/locus_let_lifecycle.rs#1 eabd434a4b08e9cd
 crates/hale-codegen/tests/locus_let_lifecycle.rs#2 eabd434a4b08e9cd

@@ -664,6 +664,28 @@ dynamic	<hole>	on unknown (no caller)|unresolved declaration `ParseError`	in the
 
 == crates/hale-stdlib/hl/url.hl#a4efffbc
 
+== crates/hale-cli/tests/api_drain_asan.rs#2ab9cc3f
+root	App	the entry
+domain	pool:io	async_io
+row	App@literal1	App	main	default
+-- App@literal1.__rpc_h_1	__StdApiHttpListener
+row	~	__StdApiHttpListener	pool:io	entry	off owner
+row	~.conns	__StdIoTcpConnections	pool:io	inherited
+row	~.conns.flows	__StdIoTcpFlows	pool:io	inherited
+row	~.conns.handler	__StdApiHttpConns	pool:io	inherited
+row	~.relay	__StdIoTcpRelay	pool:io	inherited
+-- App@literal1.notes	NoteServer
+row	~	NoteServer	pool:io	entry	off owner
+row	~.keeper	Keeper	pool:io	inherited
+row	~.tokens	Tokens	pool:io	inherited
+-- dynamic	sites in the seed
+dynamic	__StdApiHttpConns	on pool:io
+dynamic	__StdApiHttpPeer	on pool:io
+dynamic	__StdIoTcpConnFlow	on pool:io
+dynamic	__StdIoTcpConnInline	on pool:io
+dynamic	__StdIoTcpConnections	on pool:io|unknown (no instance)
+dynamic	__StdIoTcpStream	on pool:io|unknown (no instance)
+
 == crates/hale-cli/tests/check_arg_parsing.rs#a354ed05
 root	App	the entry
 row	App@literal1	App	main	default
@@ -3620,6 +3642,12 @@ row	Counter@main1	Counter	main	default
 
 == crates/hale-codegen/tests/locus_field_reorder.rs#1d52b249
 row	Box@main1	Box	main	default
+
+== crates/hale-codegen/tests/locus_field_reorder.rs#498c8f02
+root	Holder	the entry
+row	Holder@literal1	Holder	main	default
+row	Holder@literal1.first	Part	main	default
+row	Holder@literal1.last	Part	main	default
 
 == crates/hale-codegen/tests/locus_let_lifecycle.rs#7390cea5
 row	Counter@main1	Counter	main	default
