@@ -91,7 +91,8 @@ comparison operator, the other argument of `min` / `max`, an array
 literal's element type, a match's scrutinee — and is `Decimal<9>`
 where nothing gives it one (`let a = 1.5d;`). So does an expression
 built only of such values: a negated literal, an arithmetic operator
-over two of them, a block or an `if` whose every value is one, an
+over two of them, a block, an `if` or a `match` whose every value is
+one (`let y: Decimal<2> = match n { 1 -> 1.25d, _ -> 0.5d, };`), an
 `or` over a `std::str::parse_decimal` / `range_parse_decimal` call
 whose fallback is one. An array, a tuple or a `[v; N]` literal holding
 a Decimal flows into its place element by element, its shape (length,

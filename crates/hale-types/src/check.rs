@@ -15883,6 +15883,14 @@ impl<'a> Checker<'a> {
         match e {
             Expr::Block(b) => b.tail.as_deref().is_some_and(Self::decimal_adoptable),
             Expr::If(i) => Self::if_adoptable(i),
+            // a `match` whose every arm's value is one, as an `if`'s
+            Expr::Match(m) => {
+                !m.arms.is_empty()
+                    && m.arms.iter().all(|a| match &a.body {
+                        MatchArmBody::Expr(e) => Self::decimal_adoptable(e),
+                        MatchArmBody::Block(b) => b.tail.as_deref().is_some_and(Self::decimal_adoptable),
+                    })
+            }
             Expr::Literal(Literal::Decimal(_), _) => true,
             Expr::Unary { op: UnaryOp::Neg, operand, .. } => Self::decimal_adoptable(operand),
             Expr::Binary { op: BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod, left, right, .. } => {
@@ -15971,6 +15979,18 @@ impl<'a> Checker<'a> {
                 }
             }
             Expr::If(i) => self.adopt_if_scale(i, scale),
+            Expr::Match(m) => {
+                for arm in &m.arms {
+                    match &arm.body {
+                        MatchArmBody::Expr(e) => self.adopt_decimal_scale(e, scale),
+                        MatchArmBody::Block(b) => {
+                            if let Some(t) = b.tail.as_deref() {
+                                self.adopt_decimal_scale(t, scale);
+                            }
+                        }
+                    }
+                }
+            }
             Expr::Binary { left, right, .. } => {
                 self.adopt_decimal_scale(left, scale);
                 self.adopt_decimal_scale(right, scale);

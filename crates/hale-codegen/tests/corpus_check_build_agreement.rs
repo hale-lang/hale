@@ -2734,3 +2734,17 @@ fn an_on_failure_send_builds() {
     );
 }
 
+/// The converse divergence: a `match` of scale-less Decimal arms flowing
+/// into a `Decimal<S>` was refused by the check ("`Decimal` is not
+/// `Decimal<2>`") where an `if` of the same arms took the place's scale.
+/// The arms adopt it now, and the program builds;
+/// tests/hale/decimal_match_scale_test.hl runs it.
+///
+/// Plain string literals, for the reason given above.
+#[test]
+fn a_decimal_match_takes_its_places_scale() {
+    assert_built(
+        "fn main() { let n = 1; let y: Decimal<2> = match n { 1 -> 1.25d, _ -> { 0.5d }, }; println(y); }\n",
+        "hale_cb_decimal_match",
+    );
+}
