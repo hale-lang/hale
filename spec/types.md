@@ -670,9 +670,13 @@ typecheck and codegen.
 | LLVM repr | `ptr` — a typed pointer to T's struct layout |
 | Element type | The boxed inner type carries T from the slot's `of T` declaration; `Cell<Int>` and `Cell<Float>` typecheck distinctly. |
 | Validity surface | Round-trip only: a value can flow through `let`-bindings, get re-supplied to `release` / `free`, and live inside the locus body. |
-| Forbidden ops | println, arithmetic, comparison, fn-return-boundary crossing. Each rejects with a focused build-time diagnostic. |
-| Field access (v1.x-2) | Struct cells support `cell.field` reads and `cell.field = v` writes; lowers to struct GEP + load/store. Primitive cells (`Cell<Int>` etc.) reject field access with a focused diagnostic. |
-| Slot-of-origin tracking (v1.x-5) | `Cell<T>` carries both T AND the originating `(locus, slot)` pair. Releasing a cell into a different slot than it came from is a hard error at codegen, with a diagnostic naming the originating slot. |
+| Forbidden ops | println, arithmetic, comparison, fn-return-boundary crossing. Printing a cell (`println`, `print`, `to_string`, an f-string) is a type error at the cell; the others reject with a focused build-time diagnostic. |
+| Field access (v1.x-2) | Struct cells support `cell.field` reads and `cell.field = v` writes; lowers to struct GEP + load/store, and a read types as the record's field. Primitive cells (`Cell<Int>` etc.) have no fields: `c.foo` is a type error at the field name. |
+| Slot-of-origin tracking (v1.x-5) | `Cell<T>` carries both T AND the originating `(locus, slot)` pair. Releasing a cell into a different slot than it came from is a type error at the cell, naming the originating slot. |
+
+The checker follows a cell from the slot call that makes it
+(`self.entries.acquire()`) through the `let` bindings that hold it;
+those are the cells its rules see.
 
 ## Perspective types
 

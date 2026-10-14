@@ -1,11 +1,5 @@
 crates/hale-cli/tests/fixtures/imported-main-claims/seed-adopt/chat.hl
 crates/hale-cli/tests/fixtures/imported-main-claims/seed/chat.hl
-crates/hale-codegen/tests/f22_as_parent_for_surface.rs#3
-crates/hale-codegen/tests/f22_capacity_acceptance.rs#4
-crates/hale-codegen/tests/f22_capacity_dispatch.rs#3
-crates/hale-codegen/tests/f22_capacity_dispatch.rs#4
-crates/hale-codegen/tests/f22_capacity_dispatch.rs#5
-crates/hale-codegen/tests/f22_cell_field_io.rs#2
 crates/hale-codegen/tests/generics.rs#8
 crates/hale-codegen/tests/library_shape_2026_05_16.rs#1
 crates/hale-codegen/tests/params_default_scalar_self_ref.rs#6

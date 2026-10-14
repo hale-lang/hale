@@ -2546,11 +2546,11 @@ pub const RULES: &[Rule] = &[
     Rule {
         id: "verification/structural/cell-slot-of-origin",
         title: "Cell slot-of-origin",
-        // The cell's type carries its (locus, slot) of origin; the release call is lowered from the declaration. A codegen error, not a check: no row.
+        // The cell's slot of origin is the checker's: the binding that holds a cell records the slot call that made it (`LocalSym::cell`); the release call is read from the declaration. Lowering keeps the cell type's own origin as its backstop.
         reads: Reads::Declaration,
-        gist: "releasing a `Cell<T>` into a different `(locus, slot)` than it was acquired from (error, at codegen)",
+        gist: "releasing a `Cell<T>` into a different `(locus, slot)` than it was acquired from (error, at the cell)",
         family: "forms",
-        evaluator: Some(site(CG, "try_lower_capacity_slot_method_call")),
+        evaluator: Some(site(CHECK, "check_capacity_slot_call")),
         state: State::Canonical,
     },
     Rule {

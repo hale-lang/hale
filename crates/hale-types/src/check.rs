@@ -6898,6 +6898,21 @@ struct LocalSym {
     /// loop vars rebind fresh each iteration, and pattern arm
     /// bindings exist only for the duration of the arm body.
     is_mut: bool,
+    /// F.22: the capacity slot a binding's cell came from, when the
+    /// binding holds a `Cell<T>` (`let c = self.entries.acquire();`).
+    /// A cell has no value-level type the checker reasons about
+    /// (`Unknown`); its slot is what the rules on it read.
+    cell: Option<CellOrigin>,
+}
+
+/// F.22: where a `Cell<T>` came from: the slot of the locus whose body
+/// acquired or allocated it, the slot's kind and its cell type.
+#[derive(Debug, Clone, PartialEq)]
+struct CellOrigin {
+    locus: String,
+    slot: String,
+    kind: CapacitySlotKind,
+    elem: Ty,
 }
 
 impl ScopeStack {
@@ -10527,7 +10542,7 @@ impl<'a> Checker<'a> {
                             ty
                         }
                     };
-                    self.locals.insert(&p.name.name, LocalSym { ty, is_mut: false });
+                    self.locals.insert(&p.name.name, LocalSym { ty, is_mut: false, cell: None });
                 }
                 self.check_block(&lc.body);
                 self.locals.pop();
@@ -10539,7 +10554,7 @@ impl<'a> Checker<'a> {
                 for p in &md.params {
                     self.check_type_annotation(&p.ty);
                     let ty = self.resolve_te(&p.ty);
-                    self.locals.insert(&p.name.name, LocalSym { ty, is_mut: false });
+                    self.locals.insert(&p.name.name, LocalSym { ty, is_mut: false, cell: None });
                 }
                 // A mode that declares `-> T` returns a value; one that
                 // does not returns nothing, like a hook. The value's
@@ -10602,7 +10617,7 @@ impl<'a> Checker<'a> {
                 for p in &fd.params {
                     self.check_type_annotation(&p.ty);
                     let ty = self.resolve_te(&p.ty);
-                    self.locals.insert(&p.name.name, LocalSym { ty, is_mut: false });
+                    self.locals.insert(&p.name.name, LocalSym { ty, is_mut: false, cell: None });
                 }
                 self.check_block(&fd.body);
                 self.locals.pop();
@@ -10940,10 +10955,50 @@ impl<'a> Checker<'a> {
                                         ),
                                     ));
                                 }
-                                // TODO v1.x-4b: also verify
-                                // kind + elem_ty match — needs
-                                // capacity-slot kind/ty info in
-                                // the symbol-level LocusInfo.
+                                // v1.x-4b: the child's slot takes the
+                                // parent's allocator, so it is the same
+                                // kind of slot holding the same cell
+                                // type; lowering refused a mismatch at
+                                // the accept, with no location.
+                                let child_slot = self.locus_decls.get(child_name.as_str()).and_then(|d| {
+                                    d.members.iter().find_map(|m| match m {
+                                        LocusMember::Capacity(ccb) => {
+                                            ccb.slots.iter().find(|s| s.name.name == slot.name.name)
+                                        }
+                                        _ => None,
+                                    })
+                                });
+                                if let Some(cs) = child_slot {
+                                    let child_word = match cs.kind {
+                                        CapacitySlotKind::Pool => "pool",
+                                        CapacitySlotKind::Heap => "heap",
+                                    };
+                                    if cs.kind != slot.kind {
+                                        self.diags.push(Diag::ty(
+                                            child_ident.span,
+                                            format!(
+                                                "capacity slot `{kind_word} {s}` declared `as_parent_for \
+                                                 {child_name}`, but `{child_name}`'s `{s}` is a `{child_word}` \
+                                                 slot — the child's slot takes this allocator, so the two \
+                                                 are the same kind of slot",
+                                                s = slot.name.name
+                                            ),
+                                        ));
+                                    } else if self.resolve_te(&cs.elem_ty) != elem_ty {
+                                        self.diags.push(Diag::ty(
+                                            child_ident.span,
+                                            format!(
+                                                "capacity slot `{kind_word} {s} of {}` declared `as_parent_for \
+                                                 {child_name}`, but `{child_name}`'s `{s}` holds `{}` — the \
+                                                 child's slot takes this allocator, so the two hold one \
+                                                 cell type",
+                                                elem_ty.display(),
+                                                self.resolve_te(&cs.elem_ty).display(),
+                                                s = slot.name.name
+                                            ),
+                                        ));
+                                    }
+                                }
                             }
                             Some(_) => {
                                 self.diags.push(Diag::ty(
@@ -11215,7 +11270,7 @@ impl<'a> Checker<'a> {
         self.locals.push();
         for p in &decl.params {
             let ty = self.resolve_param_te(&p.ty);
-            self.locals.insert(&p.name.name, LocalSym { ty, is_mut: false });
+            self.locals.insert(&p.name.name, LocalSym { ty, is_mut: false, cell: None });
         }
         self.check_fn_body(&decl.body);
         self.locals.pop();
@@ -11421,6 +11476,111 @@ impl<'a> Checker<'a> {
         true
     }
 
+    /// F.22: the current locus's capacity slot `name`, when `self.<name>`
+    /// is a slot whose methods lowering dispatches (`acquire` / `release`
+    /// on a pool, `alloc` / `free` on a heap). A `@form` locus's slot is
+    /// the form's, reached through its synthesized methods instead.
+    fn self_capacity_slot(&self, name: &str) -> Option<&'a CapacitySlot> {
+        let decl = self.locus_decl?;
+        if decl.form.is_some() {
+            return None;
+        }
+        decl.members.iter().find_map(|m| match m {
+            LocusMember::Capacity(cb) => cb.slots.iter().find(|s| s.name.name == name),
+            _ => None,
+        })
+    }
+
+    /// F.22: the slot a `Cell<T>` value came from, when `e` is one: a
+    /// slot's `acquire()` / `alloc()` in this locus's body, or a binding
+    /// of one.
+    fn cell_of(&self, e: &Expr) -> Option<CellOrigin> {
+        match e {
+            Expr::Ident(id) => self.locals.lookup(&id.name).and_then(|s| s.cell.clone()),
+            Expr::Call { callee, args, .. } if args.is_empty() => {
+                let Expr::Field { receiver, name: method, .. } = callee.as_ref() else { return None };
+                let Expr::Field { receiver: me, name: slot_name, .. } = receiver.as_ref() else { return None };
+                if !matches!(me.as_ref(), Expr::KwSelf(_)) {
+                    return None;
+                }
+                let slot = self.self_capacity_slot(&slot_name.name)?;
+                let gives = match slot.kind {
+                    CapacitySlotKind::Pool => "acquire",
+                    CapacitySlotKind::Heap => "alloc",
+                };
+                (method.name == gives).then(|| CellOrigin {
+                    locus: self.locus_decl.map(|l| l.name.name.clone()).unwrap_or_default(),
+                    slot: slot.name.name.clone(),
+                    kind: slot.kind,
+                    elem: self.resolve_te(&slot.elem_ty),
+                })
+            }
+            _ => None,
+        }
+    }
+
+    /// F.22: `self.<slot>.<method>(args)`, judged as lowering dispatches
+    /// it (spec/semantics.md § "Method-shaped slot dispatch"): a pool
+    /// slot takes `acquire()` and `release(c)`, a heap slot `alloc()` and
+    /// `free(c)`, and a cell is released only into the slot it came from.
+    /// The build refused each of these with no location.
+    fn check_capacity_slot_call(&mut self, callee: &Expr, args: &[Expr], call_span: Span) {
+        let Expr::Field { receiver, name: method, .. } = callee else { return };
+        let Expr::Field { receiver: me, name: slot_name, .. } = receiver.as_ref() else { return };
+        if !matches!(me.as_ref(), Expr::KwSelf(_)) {
+            return;
+        }
+        let Some(slot) = self.self_capacity_slot(&slot_name.name) else { return };
+        let (kind, gives, takes, other) = match slot.kind {
+            CapacitySlotKind::Pool => ("pool", "acquire", "release", "a heap slot's"),
+            CapacitySlotKind::Heap => ("heap", "alloc", "free", "a pool slot's"),
+        };
+        let m = method.name.as_str();
+        if m != gives && m != takes {
+            let foreign = matches!(m, "acquire" | "release" | "alloc" | "free");
+            self.diags.push(Diag::ty(
+                method.span,
+                format!(
+                    "{kind} slot `{slot}`: method `{m}` is not available{why} — use `{gives}()` to {verb} a \
+                     cell and `{takes}(cell)` to {back} it (spec/semantics.md § \"Method-shaped slot \
+                     dispatch\")",
+                    slot = slot.name.name,
+                    why = if foreign { format!(" (`{m}` is {other})") } else { String::new() },
+                    verb = if kind == "pool" { "borrow" } else { "allocate" },
+                    back = if kind == "pool" { "return" } else { "release" },
+                ),
+            ));
+            return;
+        }
+        let want = if m == gives { 0 } else { 1 };
+        if args.len() != want {
+            self.diags.push(Diag::ty(
+                call_span,
+                format!(
+                    "slot `{}`.{m}: takes {}, got {}",
+                    slot.name.name,
+                    if want == 0 { "no arguments".to_string() } else { "exactly one cell".to_string() },
+                    args.len()
+                ),
+            ));
+            return;
+        }
+        if m == takes {
+            if let Some(origin) = self.cell_of(&args[0]) {
+                if origin.slot != slot.name.name {
+                    self.diags.push(Diag::ty(
+                        args[0].span(),
+                        format!(
+                            "slot `{}`.{m}: this cell came from `{}.{}` — a cell is released only into the \
+                             slot it came from (F.22 slot-of-origin); `{takes}` it through `self.{}`",
+                            slot.name.name, origin.locus, origin.slot, origin.slot
+                        ),
+                    ));
+                }
+            }
+        }
+    }
+
     fn check_stmt(&mut self, stmt: &Stmt) {
         match stmt {
             Stmt::Let { is_mut, name, ty, value, .. } => {
@@ -11488,9 +11648,10 @@ impl<'a> Checker<'a> {
                         got
                     }
                 };
+                let cell = self.cell_of(value);
                 self.locals.insert(
                     &name.name,
-                    LocalSym { ty: bound, is_mut: *is_mut },
+                    LocalSym { ty: bound, is_mut: *is_mut, cell },
                 );
             }
             Stmt::LetTuple { is_mut, names, ty, value, .. } => {
@@ -11535,7 +11696,7 @@ impl<'a> Checker<'a> {
                 for (n, t) in names.iter().zip(elem_tys.iter()) {
                     self.locals.insert(
                         &n.name,
-                        LocalSym { ty: t.clone(), is_mut: *is_mut },
+                        LocalSym { ty: t.clone(), is_mut: *is_mut, cell: None },
                     );
                 }
             }
@@ -11687,7 +11848,7 @@ impl<'a> Checker<'a> {
                     }
                 };
                 self.locals.push();
-                self.locals.insert(&name.name, LocalSym { ty: elem, is_mut: false });
+                self.locals.insert(&name.name, LocalSym { ty: elem, is_mut: false, cell: None });
                 self.check_block(body);
                 self.locals.pop();
             }
@@ -12018,7 +12179,7 @@ impl<'a> Checker<'a> {
                 self.locals.push();
                 self.locals.insert(
                     &binding.name,
-                    LocalSym { ty: Ty::Unknown, is_mut: false },
+                    LocalSym { ty: Ty::Unknown, is_mut: false, cell: None },
                 );
                 for s in &body.stmts {
                     self.check_stmt(s);
@@ -12146,7 +12307,7 @@ impl<'a> Checker<'a> {
         match pat {
             Pattern::Binding(id) => self.locals.insert(
                 &id.name,
-                LocalSym { ty: Ty::Unknown, is_mut: false },
+                LocalSym { ty: Ty::Unknown, is_mut: false, cell: None },
             ),
             Pattern::Constructor { args, .. } => {
                 for a in args {
@@ -12393,6 +12554,7 @@ impl<'a> Checker<'a> {
                             LocalSym {
                                 ty: err_ty,
                                 is_mut: false,
+                                cell: None,
                             },
                         );
                         let _ = self.check_expr(rhs);
@@ -12407,6 +12569,7 @@ impl<'a> Checker<'a> {
                             LocalSym {
                                 ty: err_ty,
                                 is_mut: false,
+                                cell: None,
                             },
                         );
                         let new_payload_ty =
@@ -16036,6 +16199,7 @@ impl<'a> Checker<'a> {
                     return Ty::Unknown;
                 }
                 self.record_omitted_defaults(*call_id, callee, args.len());
+                self.check_capacity_slot_call(callee, args, *call_span);
                 if let Expr::Ident(id) = callee.as_ref() {
                     // GH #1076 (U2, U3): `Session(n)`, `OrderId(n)`,
                     // `Int(id)`, `Bucket(d)`: a conversion, classified and
@@ -16264,7 +16428,9 @@ impl<'a> Checker<'a> {
                                     self.warn_if_meant_an_fstring(a);
                                     let at = self.check_expr(a);
                                     self.record_printed(a, &at);
-                                    if !self.ty_is_printable(&at) {
+                                    if let Some(cell) = self.cell_of(a) {
+                                        self.refuse_printed_cell(&id.name, a, &cell);
+                                    } else if !self.ty_is_printable(&at) {
                                         self.diags.push(Diag::ty(
                                             a.span(),
                                             format!(
@@ -17289,6 +17455,36 @@ impl<'a> Checker<'a> {
                         ));
                     }
                 }
+                if let Some(cell) = self.cell_of(receiver) {
+                    // F.22 v1.x-2: a struct cell's field is its record's
+                    // field; a primitive cell has none (the build refused
+                    // `c.foo` of a `Cell<Int>` with no location).
+                    let _ = self.check_expr(receiver);
+                    if let Some(t) = self.field_ty(&cell.elem, &name.name) {
+                        return t;
+                    }
+                    let is_record = matches!(&cell.elem, Ty::Named(n) if matches!(
+                        self.top.lookup(n),
+                        Some(TopSymbol::Type(TypeInfo { kind: TypeKind::Struct(_), .. }))
+                    ));
+                    self.diags.push(Diag::ty(
+                        name.span,
+                        if is_record {
+                            format!("no field `{}` on a cell of `{}`", name.name, cell.elem.display())
+                        } else {
+                            format!(
+                                "`.{}` on a cell of `{}.{}`: its cell type `{}` has no fields — only a cell \
+                                 of a struct type exposes its record's fields (spec/types.md § \"Capacity-slot \
+                                 cell handles\")",
+                                name.name,
+                                cell.locus,
+                                cell.slot,
+                                cell.elem.display()
+                            )
+                        },
+                    ));
+                    return Ty::Unknown;
+                }
                 let rt = self.check_expr(receiver);
                 self.record_param_access(&rt, name, *span, crate::typed_bodies::AccessKind::Read);
                 match self.field_ty(&rt, &name.name) {
@@ -17827,6 +18023,7 @@ impl<'a> Checker<'a> {
                             LocalSym {
                                 ty: payload.clone(),
                                 is_mut: false,
+                                cell: None,
                             },
                         );
                         let new_payload_ty = self.check_expr(payload_expr);
@@ -17865,6 +18062,7 @@ impl<'a> Checker<'a> {
                             LocalSym {
                                 ty: payload.clone(),
                                 is_mut: false,
+                                cell: None,
                             },
                         );
                         self.next_handling = crate::typed_bodies::Handling::Handler(*span);
@@ -18216,6 +18414,23 @@ impl<'a> Checker<'a> {
     /// String, a decimal precision on an Int — and getting those
     /// wrong should read as a type error on the interpolation, not
     /// as a surprise at the far end of the pipeline.
+    /// F.22: a `Cell<T>` is an opaque round-trip handle (spec/types.md §
+    /// "Capacity-slot cell handles"), not a printable value; the build
+    /// refused one with no location.
+    fn refuse_printed_cell(&mut self, printer: &str, value: &Expr, cell: &CellOrigin) {
+        self.diags.push(Diag::ty(
+            value.span(),
+            format!(
+                "`{printer}` cannot render a cell of `{}.{}` — a capacity-slot cell is an opaque \
+                 handle to `{}`, not a printable value; print a field of it (a struct cell) or a \
+                 value you keep beside it",
+                cell.locus,
+                cell.slot,
+                cell.elem.display()
+            ),
+        ));
+    }
+
     fn check_fmt_builtin(&mut self, args: &[Expr], callee: &Expr) {
         use hale_syntax::fstring::{FormatSpec, SpecKind};
         if args.len() != 2 {
@@ -18230,6 +18445,10 @@ impl<'a> Checker<'a> {
             return;
         }
         let vt = self.check_expr(&args[0]);
+        if let Some(cell) = self.cell_of(&args[0]) {
+            self.refuse_printed_cell("an f-string", &args[0], &cell);
+            return;
+        }
         if !self.ty_is_printable(&vt) {
             self.diags.push(Diag::ty(
                 args[0].span(),

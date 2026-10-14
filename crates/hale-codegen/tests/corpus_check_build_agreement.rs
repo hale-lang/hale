@@ -2472,3 +2472,72 @@ fn a_builtin_error_name_of_another_shape_is_refused_by_the_check_not_the_build()
     assert_built("type EmptyError { code: Int; }\nfn main() { let e = EmptyError { code: 1 }; println(e.code); }\n", "hale_cb_empty_error_free");
 }
 
+/// F.22 capacity slots: the method-shaped dispatch (`acquire` /
+/// `release` on a pool, `alloc` / `free` on a heap), a cell released
+/// into another slot than its own, a cell printed, a field of a
+/// primitive cell, and an `as_parent_for` whose child slot is another
+/// kind: each checked clean (a slot read typed `Unknown`, and a cell
+/// with it) and the build refused it with no location. The valid
+/// round trips, a struct cell's field read and a matching
+/// `as_parent_for` build.
+///
+/// Plain string literals, for the reason given above.
+#[test]
+fn a_capacity_slot_misuse_is_refused_by_the_check_not_the_build() {
+    assert_refused_by_the_check(
+        &[
+            (
+                "locus L { capacity { pool entries of Int; } birth { let p = self.entries.alloc(); } }\nfn main() { L { }; }\n",
+                "alloc",
+                "pool slot `entries`: method `alloc` is not available",
+            ),
+            (
+                "locus L { capacity { heap reg of Int; } birth { let c = self.reg.acquire(); } }\nfn main() { L { }; }\n",
+                "acquire",
+                "heap slot `reg`: method `acquire` is not available",
+            ),
+            (
+                "locus L { capacity { pool a of Int; pool b of Int; } birth { let c = self.a.acquire(); self.b.release(c); } }\n\
+                 fn main() { L { }; }\n",
+                "c",
+                "slot `b`.release: this cell came from `L.a`",
+            ),
+            (
+                "locus L { capacity { pool entries of Int; } birth { let c = self.entries.acquire(); println(\"cell=\", c); } }\n\
+                 fn main() { L { }; }\n",
+                "c",
+                "`println` cannot render a cell of `L.entries`",
+            ),
+            (
+                "locus L { capacity { pool entries of Int; } birth { let c = self.entries.acquire(); let n = c.foo; } }\n\
+                 fn main() { L { }; }\n",
+                "foo",
+                "`.foo` on a cell of `L.entries`: its cell type `Int` has no fields",
+            ),
+            (
+                "locus Kid { capacity { heap entries of Int; } }\n\
+                 locus P { capacity { pool entries of Int as_parent_for Kid; } accept(c: Kid) { } run() { Kid { }; } }\n\
+                 fn main() { P { }; }\n",
+                "Kid",
+                "capacity slot `pool entries` declared `as_parent_for Kid`, but `Kid`'s `entries` is a `heap` slot",
+            ),
+        ],
+        "capacity_slot",
+    );
+    for (i, src) in [
+        "type Row { n: Int; }\n\
+         locus L { capacity { pool rows of Row; heap ints of Int; }\n\
+         birth { let c = self.rows.acquire(); c.n = 4; let k = c.n; println(k); self.rows.release(c); \
+         let d = self.ints.alloc(); let e = d; self.ints.free(e); } }\n\
+         fn main() { L { }; }\n",
+        "locus Kid { capacity { pool entries of Int; } }\n\
+         locus P { capacity { pool entries of Int as_parent_for Kid; } accept(c: Kid) { } run() { Kid { }; } }\n\
+         fn main() { P { }; }\n",
+    ]
+    .iter()
+    .enumerate()
+    {
+        assert_built(src, &format!("hale_cb_capacity_slot_ok_{i}"));
+    }
+}
+
