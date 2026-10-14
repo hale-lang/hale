@@ -2440,3 +2440,35 @@ fn a_value_where_its_place_cannot_hold_it_is_refused_by_the_check_not_the_build(
         assert_built(src, &format!("hale_cb_place_ok_{i}"));
     }
 }
+
+/// A program's type named like a builtin error type stands in for the
+/// builtin wherever lowering builds one, and the stdlib's own bodies,
+/// merged into every program, build them: `std::cli`'s `parse_int`
+/// reaches `ParseError`, `std::crypto` `CryptoError`, a `bounded` push
+/// `CapacityError`, a closure `ClosureViolation`. The check gated the
+/// shape rule on the program's own reach, so `type ParseError { code:
+/// Int; }` in a program calling no parser checked clean and the build
+/// refused it (an `IndexError`, a `KeyError` or a `CapacityError`
+/// panicked lowering). The stdlib's reach counts now; a type of the
+/// builtin's shape builds.
+///
+/// Plain string literals, for the reason given above.
+#[test]
+fn a_builtin_error_name_of_another_shape_is_refused_by_the_check_not_the_build() {
+    let shadow = |name: &str| format!("type {name} {{ code: Int; }}\nfn main() {{ let x = {name} {{ code: 1 }}; println(x.code); }}\n");
+    let cases: Vec<(String, String, String)> = ["ParseError", "CryptoError", "IndexError", "KeyError", "CapacityError", "ClosureViolation"]
+        .iter()
+        .map(|n| (shadow(n), format!("type {n} {{ code: Int; }}"), format!("user-declared `type {n}` shadows the stdlib's `{n}`")))
+        .collect();
+    let cases: Vec<(&str, &str, &str)> = cases.iter().map(|(s, a, h)| (s.as_str(), a.as_str(), h.as_str())).collect();
+    assert_refused_by_the_check(&cases, "builtin_error_shadow");
+    assert_built(
+        "type ParseError { kind: String; input: String; }\n\
+         fn main() { let p = ParseError { kind: \"k\", input: \"i\" }; println(p.kind); println(std::str::parse_int(\"x\") or 3); }\n",
+        "hale_cb_builtin_error_same_shape",
+    );
+    // `EmptyError` is reached by no stdlib body: a program that reaches
+    // none of its own keeps the name.
+    assert_built("type EmptyError { code: Int; }\nfn main() { let e = EmptyError { code: 1 }; println(e.code); }\n", "hale_cb_empty_error_free");
+}
+

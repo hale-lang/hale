@@ -1958,6 +1958,28 @@ scope so user code can name them in `fallible(...)` markers and
 `or` substitute clauses. All are idempotent — a user-declared
 type with the same name wins.
 
+Winning means standing in for the builtin wherever lowering builds
+one under that name, and the stdlib's own code is merged into every
+program: its parsers reach `ParseError`, `std::crypto` reaches
+`CryptoError`, its `bounded` pushes `CapacityError`, its closures
+`ClosureViolation`, its `@form` loci `IndexError` and `KeyError`, in
+every program whether or not the program calls them. So a program's
+type of one of those names that lacks a field of the builtin's shape
+(by name and primitive type) is a type error at its declaration:
+
+```
+main.hl:1:1: type error: user-declared `type ParseError` shadows the
+stdlib's `ParseError` but is missing the expected `kind: String`
+field (the stdlib's own code, merged into every program, and lowering
+build `ParseError` under that name on failure). Either match the
+stdlib shape, rename your type (e.g. `MyParseError`), or use
+`std::str::ParseError` qualified where you need the stdlib's shape.
+```
+
+`EmptyError` and the other builtins the stdlib does not reach are
+refused only in a program that reaches them itself (a `@form(heap)`,
+a `std::` call failing with one).
+
 | Trigger | Type | Fields |
 |---|---|---|
 | `@form(vec)` | `IndexError` | `kind: String`, `index: Int`, `len: Int` |

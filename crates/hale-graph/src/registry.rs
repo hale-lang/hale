@@ -2448,7 +2448,7 @@ pub const RULES: &[Rule] = &[
         title: "Stdlib error-type shadow",
         // The top scope's user types against the stdlib error shapes, gated on a usage fact (`StdlibErrorUsage`) the resolver collects from the declarations: which error a path-call fails with is its stdlib_surface row's error column, or the registered Hale-source fn's `fallible(E)` a path renames to (`stdlib_call_error`, the check's own order). Migrating: the usage is still a walk of the bodies, not the typed bodies' fallible-call rows, and the finding is a `Diag`, not a `law::Violation`.
         reads: Reads::Rows(&["top_scope", "stdlib_surface"]),
-        gist: "a user `type` named like a stdlib error type whose shape differs, when a fallible stdlib call reaches that error type, read from the call's stdlib surface row (error)",
+        gist: "a user `type` named like a stdlib error type whose shape differs, when the program or the bundled stdlib's own bodies (merged into every program) reach that error type: a fallible stdlib call, read from the call's stdlib surface row, a form, a `bounded` push, a closure or `on_failure`, or (in the stdlib) a literal of it (error)",
         family: "stdlib_surface",
         evaluator: Some(site(RESOLVE, "check_stdlib_error_shadowing")),
         state: State::Migrating,
