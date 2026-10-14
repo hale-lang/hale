@@ -357,6 +357,12 @@ fn placement_entry_consumed(rows: &LawRows<'_, '_, '_>, out: &mut Vec<Violation>
         let Some(param) = params.params.iter().find(|p| p.name.name == field) else {
             continue;
         };
+        // An exposure param's row is the serve-site law's (GH #1565): it
+        // places the exposure's listener, and a row that cannot is refused
+        // there, in its terms.
+        if crate::surfaces::param_serve_site(param).is_some() {
+            continue;
+        }
         // The literal form to suggest: the declared type as written (a
         // stdlib locus is a qualified path, and its literal is spelled
         // the same way), or `T` when the type is inferred from the

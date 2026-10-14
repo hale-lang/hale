@@ -432,7 +432,7 @@ shift_unit_enum!(CapacitySlotKind { Pool, Heap });
 // Params, contracts, bus.
 
 shift_struct!(ParamsBlock { params, span });
-shift_struct!(ParamDecl { name, ty, init, span, id });
+shift_struct!(ParamDecl { name, ty, init, span, id, serve });
 
 impl Shift for ParamInit {
     fn shift(&mut self, d: Move) {

@@ -5400,6 +5400,7 @@ impl Parser {
                     ty: None,
                     init: ParamInit::Inferred,
                     id: NodeId::NONE,
+                    serve: None,
                 });
             }
             Some(self.parse_type_expr()?)
@@ -5435,6 +5436,7 @@ impl Parser {
             ty,
             init,
             id: NodeId::NONE,
+            serve: None,
         })
     }
 
