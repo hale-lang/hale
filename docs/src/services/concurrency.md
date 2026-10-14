@@ -397,6 +397,13 @@ and the payload parameter still reads what it read at entry — it is
 that delivery's own until the handler returns, no matter how many
 other deliveries the pool starts in between.
 
+An API exposure is placed the same way. Its listener and the connections
+it starts accept and read, so they run on a `where async_io` pool: the
+exposure's own row places them (`web: cooperative(pool = io) where
+async_io;`, for a `web: api::Exposure = api::serve(…)` param of `main`),
+and a server locus's listener runs where the row of the param that holds
+the server puts it. See [API](./api.md#where-an-exposures-listener-runs).
+
 ## The compiler checks your placement
 
 These placement mistakes are caught for you, because both the

@@ -5239,6 +5239,57 @@ row	Billing@main1	Billing	main	default
 == crates/hale-types/tests/api_binding_check.rs#bc43cad1
 row	Head@main1	Head	main	default
 
+== crates/hale-types/tests/api_serve_check.rs#dc6ea11b
+root	App	the entry
+domain	pool:io	async_io
+domain	pool:__api_unix	async_io
+domain	pool:io2	async_io
+domain	pool:io3	async_io
+domain	pinned:App@literal1.solo
+row	App@literal1	App	main	default
+row	App@literal1.cfg	Cfg	main	default
+-- App@literal1.__rpc_u_1	__StdApiUnixListener
+row	~	__StdApiUnixListener	pool:io2	entry	off owner
+row	~.conns	__StdIoTcpConnections	pool:io2	inherited
+row	~.conns.flows	__StdIoTcpFlows	pool:io2	inherited
+row	~.conns.handler	__StdApiUnixConns	pool:io2	inherited
+row	~.relay	__StdIoTcpRelay	pool:io2	inherited
+-- App@literal1.__rpc_u_2	__StdApiUnixListener
+row	~	__StdApiUnixListener	pool:io3	entry	off owner
+row	~.conns	__StdIoTcpConnections	pool:io3	inherited
+row	~.conns.flows	__StdIoTcpFlows	pool:io3	inherited
+row	~.conns.handler	__StdApiUnixConns	pool:io3	inherited
+row	~.relay	__StdIoTcpRelay	pool:io3	inherited
+shared	App@literal1.__rpc_u_3	__StdApiUnixListener #e8cfe0e1
+shared	App@literal1.__rpc_u_4	__StdApiUnixListener #e8cfe0e1
+-- App@literal1.__rpc_u_5	__StdApiUnixListener
+row	~	__StdApiUnixListener	pool:io	entry	off owner
+row	~.conns	__StdIoTcpConnections	pool:io	inherited
+row	~.conns.flows	__StdIoTcpFlows	pool:io	inherited
+row	~.conns.handler	__StdApiUnixConns	pool:io	inherited
+row	~.relay	__StdIoTcpRelay	pool:io	inherited
+shared	App@literal1.__rpc_u_6	__StdApiUnixListener #e8cfe0e1
+-- App@literal1.admin	AdminServer
+row	~	AdminServer	pool:io2	entry	off owner
+row	~.cfg	Cfg	pool:io2	inherited
+-- App@literal1.deep	Wrapper
+row	~	Wrapper	pool:io3	entry	off owner
+row	~.inner	DeepServer	pool:io3	inherited
+row	~.inner.cfg	Cfg	pool:io3	inherited
+-- App@literal1.plain	PlainServer
+row	~	PlainServer	main	default
+row	~.cfg	Cfg	main	inherited
+-- App@literal1.solo	SoloServer
+row	~	SoloServer	pinned:~	entry	off owner
+row	~.cfg	Cfg	pinned:~	inherited
+-- dynamic	sites in the seed
+dynamic	__StdApiUnixConns	on pool:__api_unix|pool:io|pool:io2|pool:io3
+dynamic	__StdApiUnixPeer	on pool:__api_unix|pool:io|pool:io2|pool:io3
+dynamic	__StdIoTcpConnFlow	on pool:__api_unix|pool:io|pool:io2|pool:io3
+dynamic	__StdIoTcpConnInline	on pool:__api_unix|pool:io|pool:io2|pool:io3
+dynamic	__StdIoTcpConnections	on pool:__api_unix|pool:io|pool:io2|pool:io3|unknown (no instance)
+dynamic	__StdIoTcpStream	on pool:__api_unix|pool:io|pool:io2|pool:io3|unknown (no instance)
+
 == crates/hale-types/tests/artifact_integrity.rs#c1d558c2
 root	App	the entry
 row	App@literal1	App	main	default

@@ -222,6 +222,7 @@ crates/hale-codegen/tests/alloc_model_rss.rs#6 3e225bdcf989ab9c
 crates/hale-codegen/tests/alloc_model_rss.rs#7 3e225bdcf989ab9c
 crates/hale-codegen/tests/alloc_model_rss.rs#8 b7b4bed0c6963b79
 crates/hale-codegen/tests/alloc_model_rss.rs#9 b7b4bed0c6963b79
+crates/hale-codegen/tests/api_exposure_param.rs#0 118b7d12199a87fd
 crates/hale-codegen/tests/api_http.rs#1 726a1d4229eb622c
 crates/hale-codegen/tests/api_http.rs#3 57566b651fb41cd7
 crates/hale-codegen/tests/api_hub.rs#0 facd50426984d57b
@@ -1628,6 +1629,7 @@ crates/hale-types/tests/alloc_summary_reclaim_boundary.rs#8 b33e2322084d23f0
 crates/hale-types/tests/alloc_summary_reclaim_boundary.rs#9 8db892c998d3e354
 crates/hale-types/tests/api_binding_check.rs#0 8209347d14c8722f
 crates/hale-types/tests/api_binding_check.rs#1 9dbcce1e7ab99412
+crates/hale-types/tests/api_serve_check.rs#0 ae8bddf6342b7366
 crates/hale-types/tests/artifact_integrity.rs#2 ceb97d5adb719c07
 crates/hale-types/tests/artifact_law_projection.rs#1 489030bd07962ba4
 crates/hale-types/tests/artifact_law_projection.rs#11 a35d4c64d00f5eeb
