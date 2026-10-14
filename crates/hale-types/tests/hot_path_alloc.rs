@@ -1056,3 +1056,64 @@ fn main() { let r = R { }; let l = L { }; println(f_if(twice, r) + f_match(twice
     let ds = all_diags(src);
     assert!(!ds.iter().any(|(_, m)| m.contains("hot-path copy")), "{ds:?}");
 }
+
+/// A call through a parameter declared `fn(Int) -> Int` hands back a
+/// primitive, as a declared fn of that signature does: binding its
+/// result and copying the binding is no copy (codex review of #1558,
+/// post-merge). Lowering loads and stores an `i64`.
+#[test]
+fn a_typed_callbacks_primitive_result_is_no_hot_path_copy() {
+    let src = r#"
+@hot fn forward(cb: fn(Int) -> Int) -> Int {
+    let a = cb(1);
+    let b = a;
+    return cb(b);
+}
+fn identity(x: Int) -> Int { return x; }
+fn main() { println(forward(identity)); }
+"#;
+    let ds = all_diags(src);
+    assert!(!ds.iter().any(|(_, m)| m.contains("hot-path copy")), "{ds:?}");
+}
+
+/// The copies a store makes are allocations like any other: a place's
+/// value stored into a part of a parameter (`h.arr = r.arr`, copied so
+/// the caller's two arguments never share a block), and a value stored
+/// into a locus's field from outside its methods (the locus's own copy,
+/// GH #1561). `@hot` refuses both and a zero-allocation budget counts
+/// them (codex review of #1558, post-merge: lowering made three arena
+/// allocations the survey did not report). A store of an inline scalar
+/// copies nothing, and a locus store in a loop outside `@hot` is the
+/// store-latest copy a method's `self.f = v` is: no warning.
+#[test]
+fn a_stores_copy_counts_against_hot_and_a_zero_allocation_budget() {
+    let src = |ann: &str| {
+        format!(
+            r#"
+type In {{ k: Int = 0; }}
+type R {{ arr: [In; 2] = [In {{ }}, In {{ }}]; }}
+type Holder {{ arr: [In; 2] = [In {{ }}, In {{ }}]; }}
+locus L {{ params {{ name: String = ""; r: R = R {{ }}; n: Int = 0; ints: [Int; 3] = [0, 0, 0]; }} }}
+{ann} fn put_array(h: Holder, r: R) {{ h.arr = r.arr; }}
+{ann} fn put_name(l: L, s: String) {{ l.name = s; }}
+{ann} fn put_arr(l: L, r: R) {{ l.r.arr = r.arr; }}
+{ann} fn put_n(l: L, n: Int) {{ l.n = n; l.n = l.n + 1; l.r.arr[0].k = n; l.ints[1] = n; }}
+fn churn(l: L, s: String, n: Int) {{ let mut i = 0; while i < n {{ l.name = s; i = i + 1; }} }}
+fn main() {{ let h = Holder {{ }}; let r = R {{ }}; put_array(h, r); let l = L {{ }}; put_name(l, "x"); put_arr(l, r); put_n(l, 3); churn(l, "y", 3); }}
+"#
+        )
+    };
+    let hot = all_diags(&src("@hot"));
+    let copies: Vec<&String> = hot.iter().filter(|(e, m)| *e && m.contains("hot-path copy")).map(|(_, m)| m).collect();
+    assert_eq!(copies.len(), 3, "{hot:?}");
+    assert!(copies[0].contains("a place's value stored into a part of a parameter"), "{hot:?}");
+    assert!(copies[1].contains("a value stored into a locus's field from outside its methods"), "{hot:?}");
+    assert!(copies[2].contains("a value stored into a locus's field from outside its methods"), "{hot:?}");
+    let budget = all_diags(&src("@budget(alloc_per_call = 0)"));
+    let over: Vec<&String> =
+        budget.iter().filter(|(e, m)| *e && m.contains("hot-path budget exceeded")).map(|(_, m)| m).collect();
+    assert_eq!(over.len(), 3, "put_array, put_name and put_arr allocate; put_n does not: {budget:?}");
+    assert!(budget.iter().any(|(_, m)| m.contains("a store's copy of its value")), "{budget:?}");
+    let plain = all_diags(&src(""));
+    assert!(!plain.iter().any(|(_, m)| m.contains("hot-path copy")), "{plain:?}");
+}

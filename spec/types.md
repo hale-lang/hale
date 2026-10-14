@@ -397,6 +397,18 @@ place is passed to a call that may write through its parameter`, `copy:
 what the local was read from is written while it is live`), so it
 counts toward `@budget(alloc_per_call = N)` and the `alloc` effect, and
 the hot-path lint reports one in a loop, a bus handler or a `@hot` fn.
+A store's own copy is one too: `copy: a place's value stored into a
+part of a parameter` (`h.arr = r.arr`), and `copy: a value stored into
+a locus's field from outside its methods` (§ A store into a locus's
+field is the locus's own), unless the slot or the value is an inline
+scalar. The latter is store-latest, as a method's `self.f = v` is: a
+`@hot` fn's error and a budget's count, never a loop's or a handler's
+warning. A field of `self` handed to a call that may write through
+that parameter (`poke(self.source)`) is written there, as a store into
+it is, so a local or a literal's part viewing it is copied first. A call
+through a parameter declared a fn returning a primitive (`cb: fn(Int)
+-> Int`) hands back a primitive, as a declared fn of that signature
+does.
 A `bounded[T; N]` local is not a first-class value and is not copied:
 a bounded intrinsic on one bound from a field still writes the field.
 Before this rule the write landed in the place's block: `let mut a =

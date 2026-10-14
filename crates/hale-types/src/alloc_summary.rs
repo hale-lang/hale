@@ -508,6 +508,17 @@ pub enum LoopAt {
     Caller,
 }
 
+impl AllocSite {
+    /// GH #1561: the copy a store into a locus's field from outside its
+    /// methods makes into that locus. The store retires the value it
+    /// replaces and flushes the locus's retires at once, so the copy
+    /// never outlives the next store into the field: one block per
+    /// field, however often (or in whatever loop) the store runs.
+    pub fn store_latest_copy(&self) -> bool {
+        matches!(&self.kind, AllocKind::CellCopy(r) if *r == crate::view_bindings::reasons::LOCUS_STORED)
+    }
+}
+
 impl ReclaimScope {
     fn of(escape: Escape) -> Self {
         match escape {
@@ -620,6 +631,9 @@ impl AllocSite {
     pub fn verdict(&self) -> SiteVerdict {
         if self.loop_depth == 0 {
             SiteVerdict::OncePerInvocation
+        } else if self.store_latest_copy() {
+            // Retired by the next store into the field, at that store.
+            SiteVerdict::PerIterationReclaim
         } else if !self.reclaim.accumulates_in_loop(LoopAt::OwnBody) {
             SiteVerdict::PerIterationReclaim
         } else if self.in_unbounded_loop {
@@ -1790,6 +1804,13 @@ impl AllocSummary {
                     return SiteVerdict::PerIterationReclaim;
                 }
             }
+        }
+        // GH #1561: a store into a locus's field from outside its methods
+        // copies its value into that locus and retires the value it
+        // replaces, flushing the locus's retires at the store: one block
+        // per field, however often the store runs.
+        if site.store_latest_copy() {
+            return site.verdict();
         }
         let owner_scratchless = scratchless.contains(owner);
         // GH #1490 (C2): a returned value built in its fn's own loop —

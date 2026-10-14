@@ -2161,6 +2161,23 @@ fn hot_snapshot_message(method: &str) -> String {
 /// A copy of a value read from a form's cell, on the hot path
 /// (spec/forms.md § Reading a cell).
 fn hot_cell_copy_message(reason: &str, in_loop: bool) -> String {
+    let in_loop_text = if in_loop { " in a loop" } else { "" };
+    if reason == crate::view_bindings::reasons::PLACE_PARAM_STORED {
+        return format!(
+            "hot-path copy: a place's value stored into a part of a parameter \
+             is copied here{in_loop_text} ({reason}), so the caller's two \
+             arguments never share a block. Store a value the body built \
+             itself, or write the parameter's part in place."
+        );
+    }
+    if reason == crate::view_bindings::reasons::LOCUS_STORED {
+        return format!(
+            "hot-path copy: a value stored into a locus's field from outside \
+             its methods is copied into that locus here{in_loop_text} \
+             ({reason}), as the locus's own `self.f = v` would be (GH #1561). \
+             A store into an inline scalar field copies nothing."
+        );
+    }
     if crate::view_bindings::reasons::is_place(reason) {
         return format!(
             "hot-path copy: a local bound from a place is copied here{} \
@@ -2383,7 +2400,12 @@ fn hot_path_findings<'s>(
             // path like any other, and anywhere in a `@hot` fn, as a
             // whole-struct replace is.
             if let AllocKind::CellCopy(reason) = &s.kind {
-                if s.in_loop || handler || f.hot {
+                // A store into a locus's field from outside its methods is
+                // the locus's own store-latest copy (GH #1561), as a
+                // method's `self.f = v` is: a `@hot` fn's finding (and a
+                // budget's count), never a loop's or a handler's warning.
+                let store_latest = s.store_latest_copy();
+                if (!store_latest && (s.in_loop || handler)) || f.hot {
                     found.push((s.span, hot_cell_copy_message(reason, s.in_loop)));
                 }
                 continue;

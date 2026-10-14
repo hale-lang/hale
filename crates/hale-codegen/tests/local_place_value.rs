@@ -437,6 +437,8 @@ fn the_survey_and_lowering_agree_on_place_copies() {
         type Out { flag: Bool = false; o: In = In { }; }
         fn mk(p: P) -> Out { return Out { o: p.arr[0] }; }
         locus L { params { v: Int = 3; } fn get() -> Int { return self.v; } }
+        type Holder { arr: [In; 2] = [In { }, In { }]; }
+        locus K { params { r: R = R { }; name: String = ""; n: Int = 0; } }
         locus H {
             params { source: [In; 2] = [In { }, In { }]; }
             fn s_int(cb: fn(Int) -> Int) -> Int { let a = one(); let b = a; return cb(b); }
@@ -459,6 +461,11 @@ fn the_survey_and_lowering_agree_on_place_copies() {
             fn c_returned(p: P) { let mut a = arr_of(p); a[0].k = 5; }
             fn s_fresh_top(p: P) -> Bool { let mut x = mk(p); x.flag = true; return x.flag; }
             fn c_fresh_below(p: P) -> Int { let mut x = mk(p); x.o.k = 7; return x.o.k; }
+            fn c_param_store(h: Holder, r: R) { h.arr = r.arr; }
+            fn c_handle_store(l: K, r: R) { l.r.arr = r.arr; }
+            fn c_handle_string(l: K, s: String) { l.name = s; }
+            fn c_handle_fresh(l: K, s: String) { l.name = s + "!"; }
+            fn s_handle_int(l: K, n: Int) { l.n = n; l.n = l.n + 1; l.r.arr[0].k = n; }
             run { println(self.s_int(twice)); }
         }
         fn main() { let h = H { }; }
@@ -481,16 +488,39 @@ fn the_survey_and_lowering_agree_on_place_copies() {
     // copy (`emit_return_value_deep_copy`'s fresh blocks and clones).
     let copies = |f: &str| -> usize {
         let b = body(&text, &format!("@H.{f}("));
-        let deep = ["fn.ret.arr.alloc", "fn.ret.struct.alloc", "fn.ret.str.clone", "lotus_str_clone_cell_owned"];
+        let deep = [
+            "fn.ret.arr.alloc",
+            "fn.ret.struct.alloc",
+            "fn.ret.str.clone",
+            "lotus_str_clone_cell_owned",
+            // a store into a locus's field: its String store (GH #1561)
+            "@lotus_str_assign_in_place",
+        ];
         cow_blocks(b).len() + usize::from(deep.iter().any(|d| b.contains(d)))
     };
     for f in [
         "s_int", "s_alias", "s_distinct", "s_duration", "s_decimal", "s_time", "s_string", "s_if", "s_match", "s_block",
-        "s_tuple", "s_pair", "s_method", "s_fresh_top",
+        "s_tuple", "s_pair", "s_method", "s_fresh_top", "s_handle_int",
     ] {
         assert_eq!((reported(f), copies(f)), (0, 0), "{f}: a primitive copies nothing");
     }
-    for f in ["c_write", "c_passed", "c_literal", "c_assigned", "c_returned", "c_fresh_below"] {
+    // A store copies too: a place's value into a part of a parameter
+    // (the caller's two arguments never share a block), and any value but
+    // an inline scalar into a locus's field from outside its methods (the
+    // locus's own copy, GH #1561) — a fresh one included, which the store
+    // still copies into the locus.
+    for f in [
+        "c_write",
+        "c_passed",
+        "c_literal",
+        "c_assigned",
+        "c_returned",
+        "c_fresh_below",
+        "c_param_store",
+        "c_handle_store",
+        "c_handle_string",
+        "c_handle_fresh",
+    ] {
         let (r, c) = (reported(f), copies(f));
         assert!(r == 1 && c >= 1, "{f}: reported {r}, lowering copies {c}");
     }
@@ -735,4 +765,34 @@ fn a_store_down_a_handles_field_path_copies_into_the_locus() {
     assert!(out.contains("locus wrote: a0=1/10 a1=2"), "{out}");
     assert!(out.contains("caller wrote: l2.k0=1"), "{out}");
     assert!(out.contains("string: s=AB2 l=ZZZ"), "{out}");
+}
+
+/// A field of `self` handed to a call that writes through its parameter
+/// is written, as a store into it would be (`self.source[0].k = 10`): a
+/// literal part or a local still viewing the field is owned before the
+/// call, so the write never reaches it (codex review of #1558,
+/// post-merge: `let lit = R { arr: self.source }; poke_arr(self.source);`
+/// left `lit.arr` the field's own block, and it read the callee's write).
+#[test]
+fn a_writing_call_handed_a_self_field_never_reaches_a_value_read_from_it() {
+    let src = r#"
+        type In { k: Int = 0; }
+        type R { arr: [In; 2] = [In { }, In { }]; }
+        fn poke_arr(a: [In; 2]) { a[0].k = a[0].k + 6; }
+        locus H {
+            params { source: [In; 2] = [In { k: 1 }, In { k: 2 }]; }
+            fn test() {
+                let lit = R { arr: self.source };
+                poke_arr(self.source);
+                println("literal: lit=", lit.arr[0].k, " source=", self.source[0].k);
+                let held = self.source;
+                poke_arr(self.source);
+                println("local: held=", held[0].k, " source=", self.source[0].k);
+            }
+        }
+        fn main() { let h = H { }; h.test(); }
+    "#;
+    let out = run("self_field_writer", src);
+    assert!(out.contains("literal: lit=1 source=7"), "{out}");
+    assert!(out.contains("local: held=7 source=13"), "{out}");
 }
