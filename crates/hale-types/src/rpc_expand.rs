@@ -1135,9 +1135,7 @@ pub fn expand(
                     let mut fields: Vec<String> = Vec::new();
                     let mut ok = true;
                     for ty in &slots {
-                        let bound_here = site.receivers().iter().find(|i| {
-                            i.name.name == *ty || i.name.name.rsplit("::").next().is_some_and(|t| t == ty.as_str())
-                        });
+                        let bound_here = site.receivers().iter().find(|i| crate::surfaces::binds_type(i, ty, &params));
                         let field = match bound_here {
                             Some(i) => crate::surfaces::self_field(&i.value).map(str::to_string),
                             None => {

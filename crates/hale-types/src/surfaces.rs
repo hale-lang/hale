@@ -1599,6 +1599,17 @@ fn imported_main_is_built(bundle: &Bundle<'_>, entry: &crate::entry::EntryRow, l
     false
 }
 
+/// Whether the `receivers:` entry `i` binds the row type `ty`: by its key
+/// as written (`Orders`, `lib::Orders`), or by the type of the param it
+/// names. A holder another seed declares names its loci by their mangled
+/// names in its rows and param types (`ty`), while the key keeps its
+/// author's spelling; the param's type is the seed's own resolution of it.
+pub(crate) fn binds_type(i: &hale_syntax::ast::StructInit, ty: &str, params: &BTreeMap<String, String>) -> bool {
+    i.name.name == ty
+        || i.name.name.rsplit("::").next().is_some_and(|tail| tail == ty)
+        || self_field(&i.value).and_then(|f| params.get(f)).is_some_and(|t| t == ty)
+}
+
 /// The param form a serve site written in a body is (GH #1565): its `let`
 /// name, or its `as:` made a name, declared as an `api::Exposure`.
 fn param_form(site: &ServeSite<'_>, handle: Option<&String>) -> String {
@@ -1933,11 +1944,8 @@ fn serve_laws_of(
             }
         }
         // Law 4: a bound type is one the rows name.
-        let is_row_type = |written: &str| {
-            row_types.iter().any(|t| *t == written || written.rsplit("::").next().is_some_and(|tail| tail == *t))
-        };
         for i in site.receivers() {
-            if !is_row_type(&i.name.name) {
+            if !row_types.iter().any(|t| binds_type(i, t, &params)) {
                 diags.push(Diag::ty(
                     i.span,
                     format!(
@@ -1965,7 +1973,7 @@ fn serve_laws_of(
         for ty in &row_types {
             let ty: &str = ty;
             let bound_here = site.receivers().iter().find(|i| {
-                i.name.name == ty || i.name.name.rsplit("::").next().is_some_and(|tail| tail == ty)
+                binds_type(i, ty, &params)
             });
             let instance: Option<(&Expr, Span)> = bound_here.map(|i| (&i.value, i.span));
             let Some((expr, at)) = instance else {
