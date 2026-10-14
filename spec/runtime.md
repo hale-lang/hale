@@ -2347,7 +2347,16 @@ its `KNOWN_OPEN` table, which is empty today.
   (`where key == replica` claims its own replica's shard) — then
   claims its copy
   (`lotus_bus_reserve_claim`), ahead of what its window holds, and its
-  readiness delivers it after its `birth()`. The last expected claim
+  readiness delivers it after its `birth()`. A wildcard (`**`)
+  subscription is reserved under its own pattern: the placeholder
+  registers the pattern, so it holds every publish whose subject the
+  pattern matches, as the subscription itself would take it, a
+  computed subject sent under a publisher's declared pattern included,
+  and the claimant's bound is over all of them, as its queue's is. It
+  is reserved where a node's declared publish, a subject or a pattern,
+  can name a subject the pattern matches. A subscriber of a concrete
+  subject the pattern also covers claims from that subject's own
+  reservation, so each claimant takes each cell once (#1555). The last expected claim
   closes the reservation, and the root's `birth()` closes what is left
   (`lotus_bus_reserve_end`); so does any exit that leaves the
   construction part-way (an initializer's propagated failure: the scope
@@ -2374,11 +2383,7 @@ its `KNOWN_OPEN` table, which is empty today.
   not see the drain. A tree that needs no reservation emits none, and the publish
   site is unchanged: a reservation holds a window open, so a baked
   direct publish takes the helper through the window count it already
-  reads. Not yet true: a wildcard (`**`) subscription is reserved only
-  where a publisher declares the same or a wider pattern; what a
-  concrete or a narrower declared publish sends before it registers
-  reaches no subscription of it. Not yet true
-  in two further cases (inventory rows C51
+  reads. Not yet true in two cases (inventory rows C51
   and R51). A subscribing locus that only stdlib or imported code
   builds, so that the lifecycle plan holds no template of it, opens
   no window, and what is published to it during its `birth()` is

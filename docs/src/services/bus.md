@@ -193,7 +193,8 @@ sibling subscribing to that topic — or a locus nested under it, a
 keyed subscriber taking its key, a pinned or pool-placed field and
 the loci its params build on its thread (a placed field among them
 included), each replica of a `replicas = K` field (a `where key ==
-replica` subscriber taking its own shard) — still hears it:
+replica` subscriber taking its own shard), a wildcard subscriber
+whose pattern matches the subject — still hears it:
 the messages wait, in order, and arrive once the subscriber's own
 `birth()` has returned. The wait is bounded like a queue, by each
 subscriber's own bound: a `bounded(N, drop_new)` subscriber gets the
@@ -204,8 +205,8 @@ newcomer and says so once on stderr, since by then there is no
 publisher to raise into; and with no bound, the reservation holds a
 queue's worth and sheds what comes after, counted, saying so once on
 stderr — no publisher ever waits for a subscriber to be built. A
-wildcard subscriber is reserved only for a publisher declaring the
-same or a wider pattern — build it before concrete publishers.
+wildcard subscriber's bound is over everything its pattern matched,
+as its queue's is.
 `LOTUS_BUS_LOG_RESERVE=1` prints each reservation's counts as it
 closes.
 

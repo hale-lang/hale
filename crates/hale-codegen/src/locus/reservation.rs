@@ -40,7 +40,13 @@
 //! its birth. A tree whose subjects need none emits nothing, so a program
 //! with no such tree pays nothing.
 //!
-//! A wildcard (`**`) subscription is not reserved yet (#1555).
+//! A wildcard (`**`) subscription is reserved under its own pattern: the
+//! placeholder registers the pattern, so dispatch parks in it every
+//! publish whose subject the pattern matches, as it delivers to the
+//! subscription itself, computed subjects included, and the claimant's
+//! bound applies over all of them, as it does to its queue. It is
+//! reserved when a publisher's declared subject or pattern can name a
+//! subject the pattern matches ([`patterns_overlap`]).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
@@ -114,6 +120,20 @@ fn pattern_matches(pattern: &str, subject: &str) -> bool {
         },
         None => false,
     }
+}
+
+/// Whether some subject matches both `a` and `b`, each a subject or a
+/// trailing-`**` pattern: a publisher's declaration and a subscription.
+/// A pattern's narrowest subject is its root (`x.**` matches `x`), and two
+/// patterns share subjects exactly when one matches the other's root.
+fn patterns_overlap(a: &str, b: &str) -> bool {
+    fn root(p: &str) -> &str {
+        match p.strip_suffix("**") {
+            Some(pre) => pre.strip_suffix('.').unwrap_or(pre),
+            None => p,
+        }
+    }
+    pattern_matches(a, root(b)) || pattern_matches(b, root(a))
 }
 
 impl<'ctx, 'p> Cx<'ctx, 'p> {
@@ -269,7 +289,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let mut plans = Vec::new();
         for (subject, claims) in &w.claims {
             let needed = w.publishes.iter().any(|p| {
-                pattern_matches(&p.pattern, subject)
+                patterns_overlap(&p.pattern, subject)
                     && claims.iter().any(|c| c.node != p.node && p.from < c.reg)
             });
             if !needed {
@@ -500,7 +520,7 @@ pub(crate) struct ReservePlan {
 
 #[cfg(test)]
 mod tests {
-    use super::pattern_matches;
+    use super::{pattern_matches, patterns_overlap};
 
     #[test]
     fn wildcard_rule_matches_the_runtime() {
@@ -510,5 +530,22 @@ mod tests {
         assert!(pattern_matches("log.app.**", "log.app.db"));
         assert!(!pattern_matches("log.app.**", "log.apple"));
         assert!(!pattern_matches("log**", "log.x"));
+    }
+
+    #[test]
+    fn a_wildcard_subscription_overlaps_what_can_publish_into_it() {
+        // a concrete publish under the pattern, either way round
+        assert!(patterns_overlap("rsv.wild.a", "rsv.wild.**"));
+        assert!(patterns_overlap("rsv.wild.**", "rsv.wild.a"));
+        assert!(patterns_overlap("rsv.wild", "rsv.wild.**"));
+        // a narrower or a wider pattern
+        assert!(patterns_overlap("rsv.wild.b.**", "rsv.wild.**"));
+        assert!(patterns_overlap("rsv.wild.**", "rsv.wild.b.**"));
+        assert!(patterns_overlap("**", "rsv.wild.b.**"));
+        assert!(patterns_overlap("x.y", "x.y"));
+        // disjoint
+        assert!(!patterns_overlap("rsv.wild.a", "rsv.wild.b.**"));
+        assert!(!patterns_overlap("rsv.wilder.**", "rsv.wild.**"));
+        assert!(!patterns_overlap("x.y", "x.z"));
     }
 }

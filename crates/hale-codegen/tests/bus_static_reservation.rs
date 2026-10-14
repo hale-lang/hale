@@ -14,7 +14,7 @@
 //! subscriber, keyed subscribers (scalar and String keys), a pinned
 //! anchor, the subtrees a pinned and a pool-placed field build on their
 //! own threads, an anchor nested in another anchor's params, each replica
-//! of a replicated field (its shard by key) (#1555),
+//! of a replicated field (its shard by key), wildcard subscribers (#1555),
 //! the topic's bound, and a publisher on another thread
 //! hammering while the tree is built — with and without a stall that
 //! makes a park land after the claim it raced (the forward path), and
@@ -924,19 +924,126 @@ fn each_replica_of_a_replicated_field_claims_under_asan() {
     assert_eq!(out.len(), 9, "{out:?}");
 }
 
+/// Wildcard subscribers built after their publishers: `Teller` publishes
+/// the concrete `rsv.wild.a`, `Shouter` a computed subject under its
+/// declared `rsv.wild.b.**`; `All` subscribes `rsv.wild.**` (neither
+/// declaration is its pattern), `Narrow` `rsv.wild.b.**`, and `Exact`
+/// the concrete subject `All` also covers.
+const WILDCARDS: &str = r#"
+    type Note { n: Int; }
+    topic Fact { payload: Note; subject: "rsv.wild.a"; }
+    locus Teller {
+        params { x: Int = 0; }
+        bus { publish Fact; }
+        birth() { let mut i = 0; while i < 4 { Fact <- Note { n: i }; i = i + 1; } }
+    }
+    locus Shouter {
+        params { x: Int = 0; }
+        bus { publish "rsv.wild.b.**" of type Note; }
+        birth() { let s = "rsv.wild.b.c"; s <- Note { n: 9 }; }
+    }
+    locus All {
+        params { x: Int = 0; }
+        bus { subscribe "rsv.wild.**" as on_any of type Note; }
+        fn on_any(f: Note) { println("all " + to_string(f.n)); }
+    }
+    locus Narrow {
+        params { x: Int = 0; }
+        bus { subscribe "rsv.wild.b.**" as on_any of type Note; }
+        fn on_any(f: Note) { println("narrow " + to_string(f.n)); }
+    }
+    locus Exact {
+        params { x: Int = 0; }
+        bus { subscribe Fact as on_fact; }
+        fn on_fact(f: Note) { println("exact " + to_string(f.n)); }
+    }
+    main locus App {
+        params { t: Teller = Teller { }; s: Shouter = Shouter { }; a: All = All { }; n: Narrow = Narrow { }; e: Exact = Exact { }; }
+        run() { yield; std::time::sleep(20ms); }
+    }
+    fn main() { App { }; }
+"#;
+
+#[test]
+fn a_wildcard_subscriber_hears_what_its_pattern_matches_once() {
+    // `All`'s reservation is its own pattern, so it holds the concrete
+    // publish and the computed one alike (both were lost before #1555);
+    // `Exact` claims from the concrete subject's reservation, so a cell
+    // both cover reaches each of them once, not twice.
+    let (out, stderr) = run_env("wildcards", WILDCARDS, false, &[("LOTUS_BUS_LOG_RESERVE", "1")]);
+    assert_eq!(
+        out,
+        [
+            "all 0", "all 1", "all 2", "all 3", "all 9",
+            "exact 0", "exact 1", "exact 2", "exact 3",
+            "narrow 9",
+        ],
+        "{stderr}"
+    );
+    assert!(stderr.contains("reservation `rsv.wild.**` closed: parked 5 copied 5 forwarded 0 shed 0 claimants 1 missing 0"), "{stderr}");
+    assert!(stderr.contains("reservation `rsv.wild.a` closed: parked 4 copied 4 forwarded 0 shed 0 claimants 1 missing 0"), "{stderr}");
+}
+
+#[test]
+fn a_wildcard_claimants_bound_is_over_everything_its_pattern_matches() {
+    // `All` keeps the newest two of the five cells its pattern matched,
+    // across both subjects, as its queue would; `Exact` keeps its own four.
+    let src = WILDCARDS.replace(
+        r#"subscribe "rsv.wild.**" as on_any of type Note;"#,
+        r#"subscribe "rsv.wild.**" as on_any of type Note bounded(2, drop_old);"#,
+    );
+    let (out, stderr) = run_env("wildcard_bound", &src, false, &[]);
+    assert_eq!(
+        out,
+        ["all 3", "all 9", "exact 0", "exact 1", "exact 2", "exact 3", "narrow 9"],
+        "{stderr}"
+    );
+}
+
+#[test]
+fn a_cross_thread_publisher_into_a_wildcard_reservation_delivers_each_cell_once() {
+    // The hammer's sinks subscribe `rsv.**` instead of the topic, and the
+    // stall forces parks after the claims they raced: each cell reaches
+    // every sink once, in order, by its own publish, a copy or a forward.
+    let src = hammer(3000).replace(
+        "bus { subscribe Feed as on_feed; }",
+        r#"bus { subscribe "rsv.**" as on_feed of type Seq; }"#,
+    );
+    assert!(src.contains(r#"subscribe "rsv.**""#));
+    let (out, stderr) = run_env(
+        "hammer_wild",
+        &src,
+        false,
+        &[("LOTUS_BUS_LOG_RESERVE", "1"), ("LOTUS_BUS_TEST_RESERVE_STALL_US", "300")],
+    );
+    assert_eq!(out, hammer_heard(3000), "{stderr}");
+    let counts = closed_counts(&stderr, "rsv.**");
+    let get = |k: &str| counts.iter().find(|(n, _)| n == k).map(|(_, v)| *v).unwrap_or(0);
+    assert_eq!(get("missing"), 0, "{stderr}");
+    assert_eq!(get("claimants"), 8, "{stderr}");
+    assert!(get("forwarded") > 0, "the stall forced no forward:\n{stderr}");
+}
+
 #[test]
 fn trees_without_the_shapes_publishing_first_reserve_nothing() {
-    // A replicated field and a nested anchor are each reserved only where
-    // a publish can precede the claim: built before their publishers, or
-    // with none, neither emits a reservation.
+    // A replicated field, a wildcard subscriber and a nested anchor are
+    // each reserved only where a publish can precede the claim: built
+    // before their publishers, or with a publisher their pattern does not
+    // match, none of them emits a reservation.
     let replicas_first = REPLICAS.replace(
         "params { s: Source = Source { }; w: Worker = Worker { }; }",
         "params { w: Worker = Worker { }; s: Source = Source { }; }",
     );
+    let disjoint = WILDCARDS
+        .replace(r#"subject: "rsv.wild.a""#, r#"subject: "rsv.other.a""#)
+        .replace(
+            "t: Teller = Teller { }; s: Shouter = Shouter { }; a: All = All { }; n: Narrow = Narrow { }; e: Exact = Exact { };",
+            "e: Exact = Exact { }; t: Teller = Teller { }; a: All = All { }; n: Narrow = Narrow { }; s: Shouter = Shouter { };",
+        );
     let nested_quiet = NESTED_ANCHORS
         .replace("bus { publish Fact; }", "")
         .replace("birth() { Fact <- Note { n: self.n }; }", "");
-    for (tag, src) in [("replicas_first", replicas_first), ("nested_quiet", nested_quiet)] {
+    for (tag, src) in [("replicas_first", replicas_first), ("wild_disjoint", disjoint), ("nested_quiet", nested_quiet)] {
         let text = ir(tag, &src);
         assert!(!text.contains("@lotus_bus_reserve_begin") && !text.contains("@lotus_bus_reserve_claim"), "{tag} emitted a reservation");
     }
