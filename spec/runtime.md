@@ -2339,8 +2339,10 @@ its `KNOWN_OPEN` table, which is empty today.
   subject — the root's, a cooperative node's, an anchor's (it registers
   on the instantiating thread), a node's an anchor's params build in
   the init its own thread or its pool's worker runs while the
-  instantiating thread waits (the init reads the scope through its
-  argument block), a keyed subscription's, its key applied — then
+  instantiating thread waits, an anchor among them included, whose own
+  params are built in an init of that init, at any depth (each init
+  reads the scope through its argument block, from the function that
+  starts it; #1555), a keyed subscription's, its key applied — then
   claims its copy
   (`lotus_bus_reserve_claim`), ahead of what its window holds, and its
   readiness delivers it after its `birth()`. The last expected claim
@@ -2370,11 +2372,12 @@ its `KNOWN_OPEN` table, which is empty today.
   not see the drain. A tree that needs no reservation emits none, and the publish
   site is unchanged: a reservation holds a window open, so a baked
   direct publish takes the helper through the window count it already
-  reads. Not yet true: an anchor nested in another anchor's params
-  builds its own params in an init of that init, and a subscriber there
+  reads. Not yet true: a replicated field's (`replicas = K`) instance
   claims nothing, so what an earlier part of the tree published before
-  it registered reaches no subscription of it; nor does a replicated
-  field's (`replicas = K`) instance. Not yet true
+  it registered reaches no subscription of it. Not yet true: a wildcard (`**`) subscription is reserved only
+  where a publisher declares the same or a wider pattern; what a
+  concrete or a narrower declared publish sends before it registers
+  reaches no subscription of it. Not yet true
   in two further cases (inventory rows C51
   and R51). A subscribing locus that only stdlib or imported code
   builds, so that the lifecycle plan holds no template of it, opens

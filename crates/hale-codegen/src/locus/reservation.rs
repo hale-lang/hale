@@ -21,11 +21,13 @@
 //!   anchor (a pinned or pool-placed field), which registers on the
 //!   instantiating thread once its own thread (or its pool's worker) has
 //!   built its params — and the nodes of those params, which register in
-//!   that init while the instantiating thread waits for it; the init
-//!   reads the root's scope through its argument block. A subscription
-//!   registers through the bus (no `shm_ring` binding) to a locus the
-//!   plan owes readiness; keyed ones take part, their key applied when
-//!   they claim.
+//!   that init while the instantiating thread waits for it, an anchor
+//!   among them included (an init inside an init, its own params built in
+//!   an init of that one, the instantiating threads all waiting). Each
+//!   init reads the scope through its argument block, from the function
+//!   that starts it. A subscription registers through the bus (no
+//!   `shm_ring` binding) to a locus the plan owes readiness; keyed ones
+//!   take part, their key applied when they claim.
 //! - **Publishers** are every node: an anchor publishes from its
 //!   instantiation on, a replicated field's instances too.
 //!
@@ -37,9 +39,8 @@
 //! its birth. A tree whose subjects need none emits nothing, so a program
 //! with no such tree pays nothing.
 //!
-//! An anchor nested in another anchor's params builds its own params in
-//! an init of that init: those nodes, and a replicated field's
-//! (`replicas = K`) instances, are not claimants; that is the remainder.
+//! A replicated field's (`replicas = K`) instances are not claimants, and
+//! a wildcard (`**`) subscription is not reserved yet (#1555).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
@@ -59,13 +60,8 @@ pub(crate) struct ReserveCtx<'ctx> {
     pub(crate) scope: PointerValue<'ctx>,
     pub(crate) func: FunctionValue<'ctx>,
     pub(crate) subjects: Rc<BTreeSet<String>>,
-    /// 0 in the root's function; 1 in the params init of an anchor the
-    /// root's function builds (its thread's, or its pool worker's),
-    /// which reads `scope` through the init's argument block. Deeper
-    /// inits take part as publishers only.
-    pub(crate) depth: u8,
     /// The root site's entry-block slot holding `scope` while it is open
-    /// (`Cx::reserve_exit_slots`).
+    /// (`Cx::reserve_exit_slots`); only the root's function reads it.
     pub(crate) slot: PointerValue<'ctx>,
 }
 
@@ -208,20 +204,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 .any(|(s, _, _, k)| k.is_none() && !self.shm_ring_subjects.contains_key(s))
     }
 
-    /// `fn_depth`: the init depth of the function this node's literal is
-    /// lowered in (0, the root's). `off_from`: inside a replicated
-    /// field's subtree, the position its replicas start from.
-    #[allow(clippy::too_many_arguments)]
-    fn walk_tree(
-        &self,
-        locus: &str,
-        inits: &[StructInit],
-        how: TreeChild,
-        fn_depth: u32,
-        off_from: Option<u32>,
-        depth: u32,
-        w: &mut Walk,
-    ) {
+    /// One node of the tree and, recursively, what its params build: its
+    /// publishes, from where it may first publish, and its claims, at
+    /// where it registers. Every node built while the root is, on any
+    /// thread its construction waits for, claims, but a replicated
+    /// field's subtree. `off_from`: inside one, the position its replicas
+    /// start from.
+    fn walk_tree(&self, locus: &str, inits: &[StructInit], how: TreeChild, off_from: Option<u32>, depth: u32, w: &mut Walk) {
         // The lowering laws refuse a cycle through param defaults before
         // lowering; the bound is a belt.
         if depth > 64 {
@@ -232,15 +221,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         w.nodes += 1;
         let pre = w.pos;
         w.pos += 1;
-        let children = self.static_tree_children(locus, inits);
-        let child_depth = if how == TreeChild::Anchor { fn_depth + 1 } else { fn_depth };
-        for (child, child_how, child_inits) in &children {
+        for (child, child_how, child_inits) in &self.static_tree_children(locus, inits) {
             let child_off = match (off_from, child_how) {
                 (Some(f), _) => Some(f),
                 (None, TreeChild::Replicated) => Some(w.pos),
                 (None, _) => None,
             };
-            self.walk_tree(child, child_inits, *child_how, child_depth, child_off, depth + 1, w);
+            self.walk_tree(child, child_inits, *child_how, child_off, depth + 1, w);
         }
         let post = w.pos;
         w.pos += 1;
@@ -252,7 +239,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         for pattern in &info.publish_patterns {
             w.publishes.push(Publish { node, from, pattern: pattern.clone() });
         }
-        if off_from.is_some() || fn_depth > 1 || !self.owes_readiness(locus) {
+        if off_from.is_some() || !self.owes_readiness(locus) {
             return;
         }
         let early = how == TreeChild::Cooperative && self.registers_early(locus);
@@ -275,7 +262,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// key). Empty when none does.
     pub(crate) fn static_tree_plan(&self, root: &str, inits: &[StructInit], root_how: TreeChild) -> Vec<ReservePlan> {
         let mut w = Walk::default();
-        self.walk_tree(root, inits, root_how, 0, None, 0, &mut w);
+        self.walk_tree(root, inits, root_how, None, 0, &mut w);
         let mut plans = Vec::new();
         for (subject, claims) in &w.claims {
             let needed = w.publishes.iter().any(|p| {
@@ -427,7 +414,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         }
         self.builder.build_store(slot, scope).map_err(e)?;
         self.reserve_exit_slots.push((func, slot));
-        Ok(Some(ReserveCtx { scope, func, subjects: Rc::new(subjects), depth: 0, slot }))
+        Ok(Some(ReserveCtx { scope, func, subjects: Rc::new(subjects), slot }))
     }
 
     /// A node's registration of `subject` claims what the tree's

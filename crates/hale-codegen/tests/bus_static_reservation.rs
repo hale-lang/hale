@@ -13,7 +13,8 @@
 //! seed and across seeds, a nested subscriber, a devirtualized (quiet)
 //! subscriber, keyed subscribers (scalar and String keys), a pinned
 //! anchor, the subtrees a pinned and a pool-placed field build on their
-//! own threads, the topic's bound, and a publisher on another thread
+//! own threads, an anchor nested in another anchor's params (#1555),
+//! the topic's bound, and a publisher on another thread
 //! hammering while the tree is built — with and without a stall that
 //! makes a park land after the claim it raced (the forward path), and
 //! under ASan. The IR tests pin the cost: a tree that needs no
@@ -801,4 +802,74 @@ fn reservations_bracket_the_params_and_close_before_the_roots_birth() {
     assert!(root_birth == usize::MAX || end < root_birth, "the scope closes before the root's birth");
     // Three claimants of the one subject: `first`, `later`, `inner`.
     assert_eq!(text.matches("call void @lotus_bus_reserve_claim(").count(), 3);
+}
+
+// ---- #1555: the shapes #1551 left unreserved ----
+
+/// An anchor nested in another anchor's params: `h` is pinned, its params
+/// build a second `App` (through the interface-typed `sub`), whose own `h`
+/// is pinned again, so the inner `Ear` is built in an init of an init.
+/// Each `Teller` publishes at birth, before the inner `Ear` exists.
+const NESTED_ANCHORS: &str = r#"
+    type Note { n: Int; }
+    topic Fact { payload: Note; subject: "rsv.nested.fact"; }
+    interface Part { fn tag() -> String; }
+    locus Teller {
+        params { n: Int = 0; }
+        bus { publish Fact; }
+        birth() { Fact <- Note { n: self.n }; }
+    }
+    locus Ear {
+        params { tag: String = "?"; }
+        bus { subscribe Fact as on_fact; }
+        fn on_fact(f: Note) { println(self.tag + " " + to_string(f.n)); }
+    }
+    locus Leaf { params { x: Int = 0; } fn tag() -> String { return "leaf"; } }
+    locus Hold { params { e: Ear = Ear { }; sub: Part = Leaf { }; } }
+    main locus App {
+        params { t: Teller = Teller { }; h: Hold = Hold { }; }
+        placement { h: pinned(core = 0); }
+        run() { std::time::sleep(50ms); }
+        fn tag() -> String { return "app"; }
+    }
+    fn main() {
+        App {
+            t: Teller { n: 1 },
+            h: Hold { e: Ear { tag: "outer" }, sub: App { t: Teller { n: 2 }, h: Hold { e: Ear { tag: "inner" } } } }
+        };
+    }
+"#;
+
+#[test]
+fn an_anchor_nested_in_an_anchors_params_claims() {
+    // The inner Ear registers in the inner anchor's init, which the outer
+    // anchor's init starts and waits for: it claims both earlier births
+    // there, through the argument block of each init (it heard neither
+    // before #1555). The outer Ear claims the outer birth and hears the
+    // inner one directly, so the reservation copies three cells.
+    let (out, stderr) = run_env("nested_anchor", NESTED_ANCHORS, false, &[("LOTUS_BUS_LOG_RESERVE", "1")]);
+    assert_eq!(out, ["inner 1", "inner 2", "outer 1", "outer 2"], "{stderr}");
+    assert!(
+        stderr.contains("reservation `rsv.nested.fact` closed: parked 2 copied 3 forwarded 0 shed 0 claimants 2 missing 0"),
+        "{stderr}"
+    );
+}
+
+#[test]
+fn an_anchor_nested_in_an_anchors_params_claims_under_asan() {
+    let (out, _) = run_env("nested_anchor_asan", NESTED_ANCHORS, true, &[]);
+    assert_eq!(out, ["inner 1", "inner 2", "outer 1", "outer 2"]);
+}
+
+#[test]
+fn trees_without_the_shapes_publishing_first_reserve_nothing() {
+    // A nested anchor is reserved only where a publish can precede its
+    // claim: with no publisher, it emits no reservation.
+    let nested_quiet = NESTED_ANCHORS
+        .replace("bus { publish Fact; }", "")
+        .replace("birth() { Fact <- Note { n: self.n }; }", "");
+    for (tag, src) in [("nested_quiet", nested_quiet)] {
+        let text = ir(tag, &src);
+        assert!(!text.contains("@lotus_bus_reserve_begin") && !text.contains("@lotus_bus_reserve_claim"), "{tag} emitted a reservation");
+    }
 }
