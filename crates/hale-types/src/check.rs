@@ -13684,6 +13684,46 @@ impl<'a> Checker<'a> {
     /// and inventing a narrower type here would turn a scope fix into
     /// a new class of type error on programs that compile today. What
     /// this establishes is that the NAME exists.
+    /// The `views` rows of a pattern's bindings matched against a value of
+    /// type `ty` (GH #1554): a binding is the value it binds, a variant's
+    /// payload its declared field's type, a tuple's element its element's.
+    /// The checker's own locals stay as `bind_pattern` binds them (its
+    /// diagnostics are unchanged); only the owned-view pass reads these.
+    fn note_view_pattern(&mut self, pat: &Pattern, ty: &Ty) {
+        match pat {
+            Pattern::Binding(id) => self.note_view_binding(id, ty, None),
+            Pattern::Constructor { path, args, .. } => {
+                let Some(variant) = path.segments.last() else { return };
+                let named = |n: &str| match self.top.symbols.get(n) {
+                    Some(TopSymbol::Type(TypeInfo { kind: TypeKind::Enum(vs), .. })) => {
+                        vs.iter().find(|v| v.name == variant.name).map(|v| v.fields.clone())
+                    }
+                    _ => None,
+                };
+                let fields = match ty {
+                    Ty::Named(n) => named(n),
+                    _ => None,
+                }
+                .or_else(|| path.segments.first().filter(|_| path.segments.len() > 1).and_then(|e| named(&e.name)))
+                .unwrap_or_default();
+                for (i, a) in args.iter().enumerate() {
+                    let t = fields.get(i).cloned().unwrap_or(Ty::Unknown);
+                    self.note_view_pattern(a, &t);
+                }
+            }
+            Pattern::Tuple(ps, _) => {
+                for (i, p) in ps.iter().enumerate() {
+                    let t = match ty {
+                        Ty::Tuple(ts) => ts.get(i).cloned().unwrap_or(Ty::Unknown),
+                        _ => Ty::Unknown,
+                    };
+                    self.note_view_pattern(p, &t);
+                }
+            }
+            Pattern::Literal(..) | Pattern::Wildcard(_) => {}
+        }
+    }
+
     fn bind_pattern(&mut self, pat: &Pattern) {
         match pat {
             Pattern::Binding(id) => self.locals.insert(
@@ -13728,6 +13768,7 @@ impl<'a> Checker<'a> {
             // moment that stopped being free.
             self.locals.push();
             self.bind_pattern(&arm.pattern);
+            self.note_view_pattern(&arm.pattern, &scrut_ty);
             self.check_pattern_literals(&arm.pattern, &scrut_ty);
             // `Decimal<S>`: a Decimal literal pattern is a value of the
             // scrutinee's scale, judged at it.

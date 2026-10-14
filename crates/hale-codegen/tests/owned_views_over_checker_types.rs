@@ -408,3 +408,54 @@ fn owned_in_all(b: &Block, views: &OwnedViews, out: &mut BTreeSet<String>) {
         }
     }
 }
+
+/// A `match` payload is typed by its variant's field (the column's row;
+/// the checker's own local stays untyped, its diagnostics unchanged): a
+/// `String` payload handed to a fn value holds no block a write could
+/// reach, so it binds no copy; a record payload handed to a callee that
+/// may write through it is still bound as a copy, so the write never
+/// reaches the matched value. Before, every payload was a binding of
+/// unknown type, and both were copied.
+#[test]
+fn a_payload_is_its_variants_field() {
+    let src = r#"
+        type In { k: Int = 0; }
+        type E = enum { A(String), B(In) };
+        fn shout(s: String) -> Int { return len(s); }
+        fn bump(r: In) -> Int { r.k = r.k + 1; return r.k; }
+        locus H {
+            params { f: fn(String) -> Int = shout; g: fn(In) -> Int = bump; }
+            fn text(v: E) -> Int {
+                let n = match v { E::A(s) -> self.f(s), E::B(r) -> 0, };
+                return n;
+            }
+            fn record(v: E) -> Int {
+                let n = match v { E::B(r) -> self.g(r), E::A(s) -> 0, };
+                let after = match v { E::B(r) -> r.k, E::A(s) -> 0, };
+                return n * 10 + after;
+            }
+        }
+        fn main() {
+            let h = H { };
+            println("text=" + to_string(h.text(E::A(std::str::upper("abc")))));
+            println("record=" + to_string(h.record(E::B(In { k: 4 }))));
+        }
+    "#;
+    let program = hale_syntax::parse_source(src).expect("parses");
+    let Ok(snap) = Snapshot::from_program(program, Vec::new(), Config::harness(Target::host())) else {
+        panic!("the program does not load");
+    };
+    let views = snap.demand_owned_views().expect("the column");
+    let main_at = src.find("fn main").expect("main");
+    let copies: Vec<(&str, &str)> = views
+        .program
+        .cell_copies()
+        .iter()
+        .filter(|c| c.span.start.as_usize() < main_at)
+        .map(|c| (&src[c.span.start.as_usize()..c.span.end.as_usize()], c.reason))
+        .collect();
+    assert!(copies.iter().all(|(t, _)| !t.contains("self.f(s)")), "a String payload binds no copy: {copies:?}");
+    assert!(copies.iter().any(|(t, _)| t.contains("self.g(r)")), "a record payload handed to a writer is copied: {copies:?}");
+    let out = run_asan("payload", src);
+    assert!(out.contains("text=3\n") && out.contains("record=54\n"), "{out}");
+}

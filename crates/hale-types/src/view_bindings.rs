@@ -2715,6 +2715,9 @@ impl<'p, 'a> Walk<'p, 'a> {
                 self.scopes.push(BTreeMap::new());
                 let v = self.declare(&name.name, self.views.binding(&name).clone());
                 self.from_param[v] = from_param;
+                if self.scalar_hint[v] || self.handle_only[v] {
+                    keys = real(&keys);
+                }
                 self.bind(v, Site::Node(id.0), &name.name, keys, *span);
                 self.in_loop(|w| {
                     let at = w.tick();
@@ -2830,7 +2833,10 @@ impl<'p, 'a> Walk<'p, 'a> {
             for n in names {
                 let v = self.declare(&n.name, self.views.binding(&n).clone());
                 self.from_param[v] = from_param;
-                self.bind(v, site, &n.name, keys.clone(), m.span);
+                // A payload whose type is a primitive or a handle holds no
+                // block a write could reach: no place marker, as a `let`'s.
+                let k = if self.scalar_hint[v] || self.handle_only[v] { real(&keys) } else { keys.clone() };
+                self.bind(v, site, &n.name, k, m.span);
             }
             if let Some(g) = &arm.guard {
                 self.expr(g);
