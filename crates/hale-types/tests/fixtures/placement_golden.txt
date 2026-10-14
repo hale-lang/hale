@@ -3455,7 +3455,7 @@ row	Pts@main1	Pts	main	default
 == crates/hale-codegen/tests/local_place_value.rs#986d0ab7
 row	H@main1	H	main	default
 
-== crates/hale-codegen/tests/local_place_value.rs#ba31f362
+== crates/hale-codegen/tests/local_place_value.rs#6637bf29
 row	H@main1	H	main	default
 
 == crates/hale-codegen/tests/locus_fallible_return_multichild.rs#46fdeeac
@@ -5774,6 +5774,9 @@ dynamic	Child	on main	in the seed
 root	App	the entry
 row	App@literal1	App	main	default
 dynamic	Child	on main	in the seed
+
+== crates/hale-types/tests/hot_path_alloc.rs#8b174f5c
+row	L@main1	L	main	default
 
 == crates/hale-types/tests/imported_main.rs#a9477106
 root	LibHead	the entry
