@@ -1,7 +1,9 @@
-//! Lowering's half of the owned-view analysis
-//! (`hale_types::view_bindings`): the owned copy a flagged binding takes,
-//! and the copy on write a write takes first — into a nested part of a
-//! value read from a form's cell, or into a local bound from a place.
+//! Lowering's half of the owned-view analysis: the owned copy a flagged
+//! binding takes, and the copy on write a write takes first — into a
+//! nested part of a value read from a form's cell, or into a local bound
+//! from a place. Which ones is the lowering view's owned-view column
+//! (`hale_types::view_bindings::OwnedViewColumn`, computed once per
+//! snapshot over the checker's types, GH #1554); lowering runs no pass.
 
 use inkwell::values::{BasicValueEnum, PointerValue};
 use inkwell::AddressSpace;
