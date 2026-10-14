@@ -165,7 +165,7 @@ fn law_3_a_receiver_outlives_its_exposure() {
         errors(&src),
         vec![
             "serve of `Public` as `public`: `orders` is declared after `public`, the exposure that binds it; a \
-             receiver is born before its exposure and outlives it, so declare `orders` first"
+             receiver is born before the exposure that binds it, so declare `orders` first"
         ]
     );
     // a receiver is a param of the holder

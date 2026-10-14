@@ -434,12 +434,14 @@ that held one):
    that answers (\`receivers: { Orders: self.orders }\`)"; a type the
    holder does not hold at all is the same error with no instance to
    name.
-3. **A receiver outlives its exposure.** A receiver is a param of the
-   holder, born before the exposure and drained after it, so it is
-   declared before the exposure param: "serve of \`Public\` as \`public\`:
-   \`orders\` is declared after \`public\`, the exposure that binds it; a
-   receiver is born before its exposure and outlives it, so declare
-   \`orders\` first"; a receiver that is no param of the holder is refused,
+3. **A receiver lives as long as its exposure.** A receiver is a param of
+   the holder, as the exposure is, so the holder's lifetime is both's; it
+   is declared before the exposure param, so it is born before the
+   exposure binds it (the holder's fields are born, drained and dissolved
+   in declaration order, and the exposure's own shutdown refuses what it
+   still holds): "serve of \`Public\` as \`public\`: \`orders\` is declared
+   after \`public\`, the exposure that binds it; a receiver is born before
+   the exposure that binds it, so declare \`orders\` first"; a receiver that is no param of the holder is refused,
    "serve of \`Both\`: \`self.ledger\` is no param of \`Desk\`; hold the
    receiver as a param".
 4. **A bound type is one the rows name.** "serve of \`Public\`:

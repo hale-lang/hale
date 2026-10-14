@@ -235,7 +235,8 @@ params {
 
 Like any param it is born with its holder, after the params declared
 before it (the receivers it binds are declared first, so they are born
-before it and outlive it), and it dissolves with the holder. The param is
+before it; both are the holder's, born, drained and dissolved in
+declaration order), and it dissolves with the holder. The param is
 also the handle: `self.public.wait()` parks until the exposure is stopped
 or the process drains, `self.public.stop()` stops it. (Before GH #1565 a
 serve site was an expression in a body, `let public = api::serve(…);`;

@@ -1404,8 +1404,8 @@ fn let_handles(b: &Block, out: &mut BTreeMap<usize, String>) {
 /// 1. an exposure is named once;
 /// 2. every receiver type is bound: to the one instance the serving locus
 ///    holds, or by `receivers:`;
-/// 3. a receiver outlives its exposure: a param of the serving locus,
-///    built by a literal, never a `let`-bound child;
+/// 3. a receiver lives as long as its exposure: a param of the holder,
+///    built by a literal and declared before the exposure;
 /// 4. a bound type is one the rows name;
 /// 5. a serve site states its queue: `bound:` and `on_full: refuse`.
 ///
@@ -1948,15 +1948,15 @@ fn serve_laws_of(
             }
         }
         // Law 3, the order half: a receiver is born before the exposure that
-        // binds it, and so outlives it (a locus's params are built in
-        // declaration order and drained in it).
+        // binds it (a locus's params are built in declaration order); both
+        // are the holder's, so neither outlives the other's holder.
         let born_after = |field: &str, at: Span, diags: &mut Vec<Diag>| {
             if declared_at(field) > declared_at(pname) {
                 diags.push(Diag::ty(
                     at,
                     format!(
                         "serve of `{surface}` as `{name}`: `{field}` is declared after `{pname}`, the exposure that \
-                         binds it; a receiver is born before its exposure and outlives it, so declare `{field}` first"
+                         binds it; a receiver is born before the exposure that binds it, so declare `{field}` first"
                     ),
                 ));
             }
