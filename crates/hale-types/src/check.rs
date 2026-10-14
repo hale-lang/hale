@@ -11476,6 +11476,56 @@ impl<'a> Checker<'a> {
         true
     }
 
+    /// `@form(hashmap)`'s `bump(key)` increments the cell's one counter,
+    /// so its cell is the indexed-by key and one `Int` (spec/forms.md §
+    /// `@form(hashmap)`); the build refused any other cell at the call,
+    /// with no location.
+    fn check_hashmap_bump(&mut self, callee: &Expr) {
+        let Expr::Field { receiver, name, .. } = callee else { return };
+        if name.name != "bump" {
+            return;
+        }
+        let mark = self.walk_mark();
+        let rt = self.check_expr(receiver);
+        self.discard_since(mark);
+        let Ty::Named(locus) = &rt else { return };
+        let Some(decl) = self.locus_decls.get(locus.as_str()).copied() else { return };
+        if decl.form.as_ref().map(|f| f.name.name.as_str()) != Some("hashmap") {
+            return;
+        }
+        let Some(slot) = decl.members.iter().find_map(|m| match m {
+            LocusMember::Capacity(cb) => cb.slots.first(),
+            _ => None,
+        }) else {
+            return;
+        };
+        let Some(key) = &slot.indexed_by else { return };
+        let Ty::Named(cell) = self.resolve_te(&slot.elem_ty) else { return };
+        let Some(TopSymbol::Type(TypeInfo { kind: TypeKind::Struct(fields), .. })) = self.top.lookup(&cell) else {
+            return;
+        };
+        let rest: Vec<&FieldInfo> = fields.iter().filter(|f| f.name != key.name).collect();
+        let counts = |t: &Ty| match t {
+            Ty::Prim(PrimType::Int) => true,
+            Ty::Named(n) => matches!(self.top.lookup(n), Some(TopSymbol::Type(TypeInfo { kind: TypeKind::Scalar(_), .. }))),
+            _ => false,
+        };
+        if rest.len() == 1 && counts(&rest[0].ty) {
+            return;
+        }
+        let others: Vec<String> = rest.iter().map(|f| format!("`{}: {}`", f.name, f.ty.display())).collect();
+        self.diags.push(Diag::ty(
+            name.span,
+            format!(
+                "`{locus}.bump`: `bump(key)` increments the cell's one counter, so the cell is the \
+                 indexed-by key (`{key}`) and one `Int` — `{cell}` holds {} beside it. Use \
+                 `has` / `get` / `set` for a richer cell (spec/forms.md § `@form(hashmap)`)",
+                if others.is_empty() { "nothing".to_string() } else { others.join(", ") },
+                key = key.name
+            ),
+        ));
+    }
+
     /// F.22: the current locus's capacity slot `name`, when `self.<name>`
     /// is a slot whose methods lowering dispatches (`acquire` / `release`
     /// on a pool, `alloc` / `free` on a heap). A `@form` locus's slot is
@@ -16200,6 +16250,7 @@ impl<'a> Checker<'a> {
                 }
                 self.record_omitted_defaults(*call_id, callee, args.len());
                 self.check_capacity_slot_call(callee, args, *call_span);
+                self.check_hashmap_bump(callee);
                 if let Expr::Ident(id) = callee.as_ref() {
                     // GH #1076 (U2, U3): `Session(n)`, `OrderId(n)`,
                     // `Int(id)`, `Bucket(d)`: a conversion, classified and

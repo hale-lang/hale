@@ -2541,3 +2541,27 @@ fn a_capacity_slot_misuse_is_refused_by_the_check_not_the_build() {
     }
 }
 
+/// `@form(hashmap)`'s `bump(key)` increments the cell's one counter;
+/// a cell holding more than the key and one `Int` checked clean and the
+/// build refused the call ("cell `Triple` must have exactly two
+/// fields"). The counter cell builds.
+///
+/// Plain string literals, for the reason given above.
+#[test]
+fn a_hashmap_bump_over_a_richer_cell_is_refused_by_the_check_not_the_build() {
+    assert_refused_by_the_check(
+        &[(
+            "type Triple { k: String; a: Int; b: Int; }\n@form(hashmap)\nlocus M { capacity { pool entries of Triple indexed_by k; } }\n\
+             fn main() { let m = M { }; m.bump(\"x\"); }\n",
+            "bump",
+            "`M.bump`: `bump(key)` increments the cell's one counter",
+        )],
+        "hashmap_bump",
+    );
+    assert_built(
+        "type Hits { k: String; n: Int; }\n@form(hashmap)\nlocus M { capacity { pool entries of Hits indexed_by k; } }\n\
+         fn main() { let m = M { }; m.bump(\"x\"); m.bump(\"x\"); println(m.len()); }\n",
+        "hale_cb_hashmap_bump_ok",
+    );
+}
+
