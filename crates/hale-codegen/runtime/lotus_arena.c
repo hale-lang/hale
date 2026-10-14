@@ -8341,8 +8341,9 @@ static void lotus_bus_note_dispatched(void *handler, void *self_ptr);
  * look again. A raise starts the window again for every producer waiting
  * (`q->grant_at`), however long each has waited, so the queue grows by at
  * most a cap per stall window while the owner drains nothing, not a cap
- * per producer. Once the owner drains back to half the cap the
- * bound returns to the cap. Two cases go on at once: the owner blocked in
+ * per producer. The headroom is the stall's only: once the owner takes
+ * cells again the bound shrinks to what is queued, and is the cap again
+ * once that is below it. Two cases go on at once: the owner blocked in
  * a runtime wait (`g_bus_owner_waiting`), and the queue closing (main's
  * teardown). The owner's own posts never wait here (nothing else drains
  * its queue). */
@@ -9142,13 +9143,23 @@ void lotus_bus_queue_drain(lotus_bus_queue_t *q) {
             }
             lotus_bus_cell_t cell_copy = q->cells[q->head++];
 #ifndef __wasm__
-            /* The heartbeat a producer at the bound waits on; at half the
-             * cap the bound is the cap again, and a producer waiting goes
-             * on (`bus_queue_bound_wait`). */
+            /* The heartbeat a producer at the bound waits on. A bound raised
+             * while main drained nothing is headroom for that stall only:
+             * once main takes cells again it shrinks to what is queued,
+             * and is the cap again once that is below it, so a producer
+             * waits until main has drained back under the cap
+             * (`bus_queue_bound_wait`). At half the cap a producer waiting
+             * goes on. */
             atomic_fetch_add_explicit(&q->drains, 1, memory_order_release);
-            if (q->tail - q->head <= bus_queue_max_cap() / 2) {
-                q->limit = 0;
-                if (q->producers_waiting) pthread_cond_broadcast(&q->not_full);
+            {
+                size_t live = q->tail - q->head;
+                size_t cap = bus_queue_max_cap();
+                if (q->limit) {
+                    if (live <= cap) q->limit = 0;
+                    else if (q->limit > live) q->limit = live;
+                }
+                if (live <= cap / 2 && q->producers_waiting)
+                    pthread_cond_broadcast(&q->not_full);
             }
 #endif
             pthread_mutex_unlock(&q->lock);
@@ -9532,8 +9543,9 @@ static size_t lotus_mpsc_ring_size_approx(lotus_mpsc_ring_t *r) {
  * a ring's worth. The stall window is the spill's, not each producer's
  * (`grant_at`): a raise starts it again for every producer waiting, so the
  * spill grows by at most a ring's worth per window while the consumer
- * takes nothing. Once the consumer has drained the spill back to half a
- * ring, its bound is a ring again.
+ * takes nothing. The headroom is the stall's only: once the consumer takes
+ * from the spill again its bound shrinks to what the spill holds, and is a
+ * ring again once that is below it.
  *
  * Order: the consumer takes the ring, then the spill, then its own overflow
  * list. While the spill holds anything, every producer on another thread
@@ -9587,9 +9599,12 @@ static int lotus_spill_append_locked(lotus_spill_t *sp, const lotus_bus_cell_t *
     return 1;
 }
 
-/* Take the spill's oldest cell, the ring's lock held. A producer waiting
- * goes on once the spill is back to half a ring, where its bound is a
- * ring's worth again. */
+/* Take the spill's oldest cell, the ring's lock held. A bound raised while
+ * the consumer took nothing is headroom for that stall only: once it takes
+ * from the spill again the bound shrinks to what the spill holds, and is a
+ * ring's worth again once that is below it, so producers wait until the
+ * consumer has drained it back under a ring. A producer waiting is woken
+ * at every take (it re-checks every millisecond regardless). */
 static int lotus_spill_pop_locked(lotus_spill_t *sp, pthread_cond_t *not_full,
                                   _Atomic int *producers_waiting,
                                   lotus_bus_cell_t *out) {
@@ -9598,7 +9613,10 @@ static int lotus_spill_pop_locked(lotus_spill_t *sp, pthread_cond_t *not_full,
     sp->head = n->next;
     if (!sp->head) sp->tail = NULL;
     size_t len = atomic_fetch_sub_explicit(&sp->len, 1, memory_order_acq_rel) - 1;
-    if (len <= bus_queue_max_cap() / 2) sp->limit = 0;
+    if (sp->limit) {
+        if (len <= bus_queue_max_cap()) sp->limit = 0;
+        else if (sp->limit > len) sp->limit = len;
+    }
     if (atomic_load_explicit(producers_waiting, memory_order_seq_cst) > 0)
         pthread_cond_broadcast(not_full);
     *out = n->cell;
