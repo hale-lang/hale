@@ -183,12 +183,10 @@ fn an_imported_fallible_fn_read_as_a_value_is_refused_at_the_path() {
     let ((ok, out), (built, bout)) = check_and_build_seed(&[("main.hl", refused_main), ("lib/lib.hl", lib)], "imported_fallible_value");
     let head = "type error: `lib::parse` is `fallible(lib::Oops)`, and a fn value has no error channel";
     assert!(!ok && out.contains("main.hl:5:27: ") && out.contains(head), "check: {out}");
-    // (the build prints the payload's type by its merged name)
-    assert!(
-        !built && bout.contains("main.hl:5:27: type error: `lib::parse` is `fallible(") && bout.contains("a fn value has no error channel")
-            && !bout.contains("codegen error"),
-        "build: {bout}"
-    );
+    // The build renders the check's finding in the author's spelling
+    // too: `lib::Oops`, never the merged `__lib_…` name.
+    assert!(!built && bout.contains("main.hl:5:27: ") && bout.contains(head) && !bout.contains("__lib_"), "build: {bout}");
+    assert!(!bout.contains("codegen error"), "build: {bout}");
     let ok_main = "import \"./lib\" as lib;\n\nfn apply(f: fn(Int) -> Int, n: Int) -> Int { return f(n); }\n\nfn main() { println(apply(lib::twice, 4)); }\n";
     let ((ok, out), (built, bout)) = check_and_build_seed(&[("main.hl", ok_main), ("lib/lib.hl", lib)], "imported_infallible_value");
     assert!(ok, "check: {out}");

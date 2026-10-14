@@ -578,6 +578,22 @@ pub enum CodegenError {
     CapabilityRefused(String, Option<hale_syntax::Span>),
 }
 
+impl CodegenError {
+    /// The same error with its message passed through `f` (a demangling
+    /// into the author's spelling); the span and the kind are kept.
+    pub fn map_message(self, f: impl Fn(&str) -> String) -> CodegenError {
+        match self {
+            CodegenError::Unsupported(s) => CodegenError::Unsupported(f(&s)),
+            CodegenError::UnsupportedAt(s, at) => CodegenError::UnsupportedAt(f(&s), at),
+            CodegenError::LlvmInit(s) => CodegenError::LlvmInit(f(&s)),
+            CodegenError::LlvmEmit(s) => CodegenError::LlvmEmit(f(&s)),
+            CodegenError::Link(s) => CodegenError::Link(f(&s)),
+            CodegenError::MissingTsShim(s, at) => CodegenError::MissingTsShim(f(&s), at),
+            CodegenError::CapabilityRefused(s, at) => CodegenError::CapabilityRefused(f(&s), at),
+        }
+    }
+}
+
 impl std::fmt::Display for CodegenError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -1184,6 +1200,21 @@ fn entry_fn<'p>(entry: &hale_types::entry::EntryRow, program: &'p Program) -> Op
 /// knob) is in `options`, and `BuildOptions::new` takes the cache
 /// directory, so there is no way to build without choosing one.
 pub fn build_resolved(
+    resolved: &LoweringView,
+    output_path: &Path,
+    options: &BuildOptions,
+) -> Result<(), CodegenError> {
+    // Every refusal names things as the author wrote them: lowering works
+    // over the merged program, where an imported seed's declaration is
+    // `__lib_<alias>_…` and a Hale-source stdlib one `__std_…` /
+    // `__Std…`, names that appear nowhere in the author's source (the
+    // check renders its diagnostics through the same table).
+    build_resolved_lowered(resolved, output_path, options).map_err(|e| {
+        e.map_message(|m| hale_types::stdlib_bodies::Demangler::new(&resolved.import_renames).demangle(m))
+    })
+}
+
+fn build_resolved_lowered(
     resolved: &LoweringView,
     output_path: &Path,
     options: &BuildOptions,

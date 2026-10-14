@@ -2823,3 +2823,38 @@ fn a_fallible_fn_read_as_a_value_is_refused_by_the_check_not_the_build() {
     .replace("len(apply(decode_or", "len(apply_b(decode_or");
     assert_eq!(build_and_run_probe(&wrapped, "fallible_fn_wrapped"), Ok("7\n2\na%20b\n".to_string()), "{}", wrapped);
 }
+
+/// A codegen refusal names things as the author wrote them. Lowering
+/// works over the merged program, where an imported seed's locus is
+/// `__lib_<alias>_…` and a Hale-source stdlib one `__Std…`, names that
+/// appear nowhere in the author's source; `build_resolved` renders its
+/// errors through the table the check renders its diagnostics through.
+/// Built with the harness, which lowers without the check, so these are
+/// lowering's own messages: an imported locus prints `lib::Kid`, a
+/// stdlib one `std::bytes::BytesBuilder`.
+#[test]
+fn a_codegen_refusal_names_imported_and_stdlib_declarations_as_written() {
+    let dir = harness::unique_bin("hale_cb_demangled_seed");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("lib")).unwrap();
+    std::fs::write(dir.join("lib/kid.hl"), "locus Kid { params { n: Int = 1; } fn size() -> Int { return self.n; } }\n").unwrap();
+    std::fs::write(
+        dir.join("main.hl"),
+        "import \"./lib\" as lib;\n\nlocus L { params { k: lib::Kid = lib::Kid { }; } fn f() { self.k.nope(); } }\n\nfn main() { L { }; }\n",
+    )
+    .unwrap();
+    let imported = build_opts::build_seed_dir(&dir.join("main.hl"), &dir.join("bin"), &build_opts::options())
+        .expect_err("lowering refuses an unknown method")
+        .to_string();
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(imported.contains("locus `lib::Kid` has no method `nope`") && !imported.contains("__lib_"), "{imported}");
+    let stdlib = build_opts::build_source(
+        "locus L { params { b: std::bytes::BytesBuilder = std::bytes::BytesBuilder { initial_cap: 4 }; } fn f() { self.b.nope(); } }\n\
+         fn main() { L { }; }\n",
+        &harness::unique_bin("hale_cb_demangled_std"),
+        &build_opts::options(),
+    )
+    .expect_err("lowering refuses an unknown method")
+    .to_string();
+    assert!(stdlib.contains("locus `std::bytes::BytesBuilder` has no method `nope`") && !stdlib.contains("__Std"), "{stdlib}");
+}

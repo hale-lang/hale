@@ -61,17 +61,38 @@ pub(crate) fn render_codegen_error(
 /// lowering view's `resolve_rewritten`). One line each, joined.
 pub(crate) fn render_blocked(
     b: &hale_frontend::snapshot::Blocked,
+    demangler: &hale_types::stdlib_bodies::Demangler,
     file_bases: &[(u32, PathBuf, u32)],
     sources: &BTreeMap<PathBuf, String>,
 ) -> String {
     let mut lines: Vec<String> =
-        b.because.iter().map(|d| render_located(d, file_bases, sources)).collect();
+        b.because.iter().map(|d| render_authors(d, demangler, file_bases, sources)).collect();
     if let Some(msg) = &b.refused {
         lines.push(render_codegen_error(
-            &hale_codegen::CodegenError::Unsupported(msg.clone()),
+            &hale_codegen::CodegenError::Unsupported(demangler.demangle(msg)),
             file_bases,
             sources,
         ));
     }
     lines.join("\n")
+}
+
+/// A check diagnostic as a compiling command reports it, in the author's
+/// spelling: the snapshot's diagnostics name an imported seed's
+/// declarations and the Hale-source stdlib's by their merged names
+/// (`__lib_lib___lib__Oops`, `__std_hex_decode`), which `hale check`
+/// renders through the same table (`Demangler`). Without it `hale
+/// build` printed the merged name where `hale check` printed `lib::Oops`.
+pub(crate) fn render_authors(
+    d: &hale_syntax::Diag,
+    demangler: &hale_types::stdlib_bodies::Demangler,
+    file_bases: &[(u32, PathBuf, u32)],
+    sources: &BTreeMap<PathBuf, String>,
+) -> String {
+    if !d.message.contains("__") {
+        return render_located(d, file_bases, sources);
+    }
+    let mut shown = d.clone();
+    shown.message = demangler.demangle(&d.message);
+    render_located(&shown, file_bases, sources)
 }

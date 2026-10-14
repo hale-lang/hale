@@ -15,7 +15,7 @@ use crate::shared::frontend::LoadMode;
 use crate::shared::source::Disk;
 use crate::shared::diag::render_blocked;
 use crate::shared::diag::render_codegen_error;
-use crate::shared::diag::render_located;
+use crate::shared::diag::render_authors;
 use crate::replay;
 use hale_frontend::snapshot::{LoadError, Snapshot};
 /// `hale replay <recording> <program.hl | dir> [--diff [--json]] [--at N]`
@@ -242,13 +242,13 @@ pub(crate) fn run_replay(args: &[String]) -> ExitCode {
     let diags = match snap.demand_check() {
         Ok(c) => &c.diags,
         Err(b) => {
-            eprintln!("{}", render_blocked(b, file_bases, sources));
+            eprintln!("{}", render_blocked(b, snap.demangler(), file_bases, sources));
             return ExitCode::from(1);
         }
     };
     if !diags.is_empty() {
         for d in diags {
-            eprintln!("{}", render_located(d, file_bases, sources));
+            eprintln!("{}", render_authors(d, snap.demangler(), file_bases, sources));
         }
         if diags.iter().any(|d| d.is_error()) {
             return ExitCode::from(1);
@@ -262,7 +262,7 @@ pub(crate) fn run_replay(args: &[String]) -> ExitCode {
     let resolved = match snap.demand_lowering() {
         Ok(v) => v,
         Err(b) => {
-            eprintln!("{}", render_blocked(b, file_bases, sources));
+            eprintln!("{}", render_blocked(b, snap.demangler(), file_bases, sources));
             return ExitCode::from(1);
         }
     };
@@ -274,7 +274,7 @@ pub(crate) fn run_replay(args: &[String]) -> ExitCode {
     let identity = match model_identity(&snap, resolved, &build_options) {
         Ok(x) => x,
         Err(b) => {
-            eprintln!("{}", render_blocked(b, file_bases, sources));
+            eprintln!("{}", render_blocked(b, snap.demangler(), file_bases, sources));
             return ExitCode::from(1);
         }
     };
