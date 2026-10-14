@@ -61,7 +61,7 @@ main locus App {
         std::test::assert_eq_int(g5.code, 0, "pushed: " + g5.stderr);
         // a head elsewhere, with the record
         let head = scratch + "/head";
-        let c1 = in_dir(scratch, cache, "git\nclone\n-q\n-b\nmain\n" + bare + "\n" + head);
+        let c1 = dna::clone_repo_with("-b\nmain\n", bare, head);
         let c2 = in_dir(head, cache, "git\nconfig\nuser.name\nriley");
         let c3 = in_dir(head, cache, "git\nconfig\nuser.email\nriley@l");
         let c4 = in_dir(head, cache, toolchain() + "\ndna\nupgrade\n.");
