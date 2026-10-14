@@ -461,6 +461,7 @@ fn the_tree_s_violators() {
             "tests/hale/on_failure_after_params_test.hl: lint Boom.check",
             "tests/hale/on_failure_per_child_type_test.hl: lint Alpha.go",
             "tests/hale/on_failure_per_child_type_test.hl: lint Beta.go",
+            "tests/hale/on_failure_publish_test.hl: lint Worker.go",
             "tests/hale/on_failure_return_test.hl: lint Worker.go",
             "tests/hale/passed_child_supervision_test.hl: lint Boom.check",
         ],

@@ -5,4 +5,3 @@ crates/hale-types/tests/check_rules.rs#14
 crates/hale-types/tests/check_rules.rs#15
 crates/hale-types/tests/check_rules.rs#8
 crates/hale-types/tests/check_rules.rs#9
-crates/hale-types/tests/model_builder.rs#12

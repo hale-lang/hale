@@ -2716,3 +2716,21 @@ fn a_method_written_as_a_value_is_refused_by_the_check_not_the_build() {
     );
 }
 
+/// A topic send in an `on_failure` body checked clean and the build
+/// refused it ("unknown identifier `Evt`"): the topic rewrite that turns
+/// a send into its subject walked hooks, modes and fns, and not failure
+/// handlers. It is lowered now; tests/hale/on_failure_publish_test.hl
+/// runs it.
+///
+/// Plain string literals, for the reason given above.
+#[test]
+fn an_on_failure_send_builds() {
+    assert_built(
+        "type T { n: Int = 0; }\ntopic Evt { payload: T; subject: \"cb.evt\"; }\n\
+         locus Child { params { k: Int = 0; } closure c { captures: k; epoch inline; } fn poke() { violate c; } }\n\
+         locus Parent { params { c: Child = Child { }; } bus { publish Evt; } on_failure(c: Child, err: ClosureViolation) { Evt <- T { n: 1 }; } run() { self.c.poke(); } }\n\
+         fn main() { Parent { }; }\n",
+        "hale_cb_on_failure_send",
+    );
+}
+
