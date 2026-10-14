@@ -18,7 +18,7 @@ use crate::shared::options::model_identity;
 use crate::shared::options::parse_build_options;
 use crate::shared::diag::render_blocked;
 use crate::shared::diag::render_codegen_error;
-use crate::shared::diag::render_located;
+use crate::shared::diag::render_authors;
 use crate::shared::options::resolve_build_env;
 use crate::shared::options::source_frames;
 use crate::shared::options::take_output_flag;
@@ -117,7 +117,7 @@ pub(crate) fn run_build(target: &Path, flags: &[String]) -> ExitCode {
             options.target = compile_target(row.effective);
         }
         Err(b) => {
-            eprintln!("{}", render_blocked(b, file_bases, sources));
+            eprintln!("{}", render_blocked(b, snap.demangler(), file_bases, sources));
             return ExitCode::from(1);
         }
     }
@@ -133,13 +133,13 @@ pub(crate) fn run_build(target: &Path, flags: &[String]) -> ExitCode {
     let diags = match snap.demand_check() {
         Ok(c) => &c.diags,
         Err(b) => {
-            eprintln!("{}", render_blocked(b, file_bases, sources));
+            eprintln!("{}", render_blocked(b, snap.demangler(), file_bases, sources));
             return ExitCode::from(1);
         }
     };
     if !diags.is_empty() {
         for d in diags {
-            eprintln!("{}", render_located(d, file_bases, sources));
+            eprintln!("{}", render_authors(d, snap.demangler(), file_bases, sources));
         }
         // Warnings print but don't fail the build; only errors do.
         if diags.iter().any(|d| d.is_error()) {
@@ -377,14 +377,14 @@ pub(crate) fn run_build(target: &Path, flags: &[String]) -> ExitCode {
     let view = match snap.demand_lowering() {
         Ok(v) => v,
         Err(b) => {
-            eprintln!("{}", render_blocked(b, file_bases, sources));
+            eprintln!("{}", render_blocked(b, snap.demangler(), file_bases, sources));
             return ExitCode::from(1);
         }
     };
     let identity = match model_identity(&snap, view, &options) {
         Ok(x) => x,
         Err(b) => {
-            eprintln!("{}", render_blocked(b, file_bases, sources));
+            eprintln!("{}", render_blocked(b, snap.demangler(), file_bases, sources));
             return ExitCode::from(1);
         }
     };

@@ -1212,9 +1212,9 @@ m.bump(k);
 **Cell-shape requirement.** The entry type `S` MUST have exactly
 two fields: the `indexed_by` key field plus one `Int` field
 (the counter). Any other shape (zero Int fields, two Int fields,
-or extra non-Int fields) is a codegen error pointing at the
-manual pattern. The Int field's name is detected at codegen —
-"count", "n", "freq", "hits", etc. all work.
+or extra non-Int fields) is a type error at the `bump` call
+pointing at the manual pattern. The Int field's name is detected,
+not fixed — "count", "n", "freq", "hits", etc. all work.
 
 `bump` is infallible. Generalizing to arbitrary update fns
 (`update_with(k, init, fn(S) -> S)`) is the natural follow-up

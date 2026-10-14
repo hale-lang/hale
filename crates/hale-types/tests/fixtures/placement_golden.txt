@@ -2607,10 +2607,6 @@ row	Pager@main1	Pager	main	default
 row	ParentL@main1	ParentL	main	default
 dynamic	ChildL	on main	in the seed
 
-== crates/hale-codegen/tests/f22_as_parent_for_surface.rs#e3152250
-row	ParentL@main1	ParentL	main	default
-dynamic	ChildL	on main	in the seed
-
 == crates/hale-codegen/tests/f22_as_parent_for_surface.rs#0bcfd21e
 row	ParentL@main1	ParentL	main	default
 dynamic	ChildL	on main	in the seed
@@ -3265,9 +3261,6 @@ row	Container@main1	Container	main	default
 == crates/hale-codegen/tests/generics.rs#2f9fd56a
 row	Container@main1	Container	main	default
 
-== crates/hale-codegen/tests/generics.rs#9ac890d6
-dynamic	<hole>	on main|unresolved declaration `Box_String`	in the seed
-
 == crates/hale-codegen/tests/generics.rs#a4dc9233
 row	Compute_Int@main1	Compute_Int	main	default
 
@@ -3572,9 +3565,6 @@ row	CapL@main1	CapL	main	default
 
 == crates/hale-codegen/tests/library_shape_2026_05_16.rs#42bdfedd
 row	CountMap@main1	CountMap	main	default
-
-== crates/hale-codegen/tests/library_shape_2026_05_16.rs#8b11f96f
-row	M@main1	M	main	default
 
 == crates/hale-codegen/tests/library_shape_2026_05_16.rs#127b5444
 row	CM@main1	CM	main	default
@@ -4173,9 +4163,6 @@ row	__StdBytesBytesBuilder@main1	__StdBytesBytesBuilder	main	default
 == crates/hale-codegen/tests/params_default_scalar_self_ref.rs#3743867d
 row	M@main1	M	main	default
 dynamic	Conn	on main	in the seed
-
-== crates/hale-codegen/tests/params_default_scalar_self_ref.rs#0dd5f6d3
-row	L@main1	L	main	default
 
 == crates/hale-codegen/tests/params_default_scalar_self_ref.rs#2ebd91ab
 shared	Outer@main1	Outer #1047d3f2
@@ -5208,11 +5195,6 @@ row	App@literal1	App	main	default
 row	~	Owner	pool:side	entry	off owner
 row	~.kid	Kid	pool:side	inherited
 
-== crates/hale-codegen/tests/violate_build.rs#742e5d25
-root	App	the entry
-row	App@literal1	App	main	default
-shared	App@literal1.gw	Gateway #7eef2531
-
 == crates/hale-codegen/tests/violate_build.rs#df440a92
 row	Feed@main2	Feed	main	default
 row	Guard@main1	Guard	main	default
@@ -5784,7 +5766,7 @@ row	L@main1	L	main	default
 row	~	L	main	default
 row	~.s	__StdIoTcpStream	main	inherited
 
-== crates/hale-types/tests/diag_quality.rs#f2d1a944
+== crates/hale-types/tests/diag_quality.rs#15017ee9
 -- L@main1	L
 row	~	L	main	default
 row	~.p	V1	main	inherited
@@ -6314,10 +6296,6 @@ root	App	the entry
 row	App@literal1	App	main	default
 
 == crates/hale-types/tests/model_costs.rs#7a0794e8
-root	App	the entry
-row	App@literal1	App	main	default
-
-== crates/hale-types/tests/model_costs.rs#aa4d1c82
 root	App	the entry
 row	App@literal1	App	main	default
 
@@ -7598,6 +7576,14 @@ root	App	the entry
 row	App@literal1	App	main	default
 row	App@literal1.a	Alpha	main	default
 row	App@literal1.b	Beta	main	default
+
+== tests/hale/on_failure_publish_test.hl
+root	App	the entry
+row	App@literal1	App	main	default
+row	App@literal1.watcher	Watcher	main	default
+-- App@literal1.sup	Supervisor
+row	~	Supervisor	main	default
+row	~.w	Worker	main	inherited
 
 == tests/hale/on_failure_return_test.hl
 root	App	the entry

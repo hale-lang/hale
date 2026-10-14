@@ -38,6 +38,11 @@ The six forms and what they require:
 | `@form(lru_cache, cap=N)` | one `pool` + `indexed_by` | fixed keyed table, LRU eviction | `put`, `get`, `contains`, `len`, `remove` |
 | `@form(heap)` | one `heap` + `ordered_by min\|max <field>` | binary heap over a doubling buffer | `push`, `pop`, `peek`, `len`, `is_empty`, `clear` |
 
+A hashmap's `bump(k)` increments-or-inits a counter, so its cell is
+exactly the `indexed_by` key and one `Int` (`type Hits { word:
+String; n: Int; }`); `hale check` refuses `bump` on any other cell at
+the call and points at `has` / `get` / `set`.
+
 `get` / `pop` / `remove` (and a vec's `set`) are `fallible`
 (bounds / missing-key / empty); `push` on `vec` is infallible, on `ring_buffer` returns
 `Bool` (full is a normal condition, not an error). `lru_cache` is
