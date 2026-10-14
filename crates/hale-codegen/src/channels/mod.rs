@@ -793,11 +793,15 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // when there is one. v1.x-FORM-4: `() fallible(E)` calls
         // (e.g. hashmap.remove) carry `success_ty = None` and no
         // out_val_slot — the ok branch just falls through to the
-        // join.
+        // join. A statement `or` reads it only when it is a locus the
+        // owner registration below has to reclaim (GH #793): any other
+        // value nothing reads, so that branch loads nothing.
         self.builder.position_at_end(ok_bb);
         let ok_v_opt: Option<BasicValueEnum<'ctx>> =
             match (&call.success_ty, call.out_val_slot) {
-                (Some(succ_ty), Some(slot)) => {
+                (Some(succ_ty), Some(slot))
+                    if !value_discarded || matches!(succ_ty, CodegenTy::LocusRef(_)) =>
+                {
                     let llvm_succ_ty = self.llvm_basic_type(succ_ty);
                     let v = self
                         .builder
