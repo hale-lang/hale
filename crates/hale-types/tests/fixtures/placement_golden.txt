@@ -4055,6 +4055,22 @@ row	Q@main1	Q	main	default
 
 == crates/hale-codegen/tests/owned_child_arena_reclaim.rs#6f8c650f
 
+== crates/hale-codegen/tests/owned_views_over_checker_types.rs#7e921427
+-- H@main1	H
+row	~	H	main	default
+row	~.o	Other	main	inherited
+
+== crates/hale-codegen/tests/owned_views_over_checker_types.rs#00828c91
+-- H@main1	H
+row	~	H	main	default
+row	~.sc	Scorer	main	inherited
+
+== crates/hale-codegen/tests/owned_views_over_checker_types.rs#a7b994e9
+row	RecMap@main1	RecMap	main	default
+
+== crates/hale-codegen/tests/owned_views_over_checker_types.rs#a0dd41a0
+row	H@main1	H	main	default
+
 == crates/hale-codegen/tests/owner_table.rs#1f85ba34
 row	Parent@main1	Parent	main	default
 dynamic	Child	on main	in the seed
