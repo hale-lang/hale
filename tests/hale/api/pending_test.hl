@@ -45,6 +45,8 @@ main locus Desk {
         slow: Slow = Slow { };
         quick_f: std::api::test::Rpc = std::api::test::Rpc { };
         slow_f: std::api::test::Rpc = std::api::test::Rpc { };
+        q: api::Exposure = api::serve(Quick, self.quick_f, as: "quick", receivers: { Quick: self.quick }, bound: 1, on_full: refuse);
+        s: api::Exposure = api::serve(Slow, self.slow_f, as: "slow", receivers: { Slow: self.slow }, bound: 3, on_full: refuse);
     }
     placement {
         slow: cooperative(pool = slow) where async_io;
@@ -56,8 +58,6 @@ main locus Desk {
     }
 
     run() {
-        let q = api::serve(Quick, self.quick_f, as: "quick", receivers: { Quick: self.quick }, bound: 1, on_full: refuse);
-        let s = api::serve(Slow, self.slow_f, as: "slow", receivers: { Slow: self.slow }, bound: 3, on_full: refuse);
         let f = self.quick_f;
         let g = self.slow_f;
 
@@ -72,28 +72,28 @@ main locus Desk {
             let rid = f.request_id(i);
             if rid <= last { increasing = false; }
             last = rid;
-            let held = self.__rpc_x_quick.table_len();
+            let held = self.q.table_len();
             if held > widest { widest = held; }
             i = i + 1;
         }
         std::test::assert(increasing, "the request ids of 24 sequential calls are distinct and increasing");
-        std::test::assert_eq_int(self.__rpc_x_quick.pending(), 0, "nothing is pending once they are answered");
+        std::test::assert_eq_int(self.q.pending(), 0, "nothing is pending once they are answered");
         std::test::assert_eq_int(widest, 1, "the table never held more than the bound");
-        std::test::assert_eq_int(self.__rpc_x_quick.table_len(), 1, "and does not grow with the calls served");
+        std::test::assert_eq_int(self.q.table_len(), 1, "and does not grow with the calls served");
 
         // ---- a freed record is taken again; the queue keeps the ids' order ----
         g.call_as_peer(101, "Slow::go", "1", 1000);
         self.await_entered(1);
         g.call_as_peer(102, "Slow::go", "2", 1000);
         g.call_as_peer(103, "Slow::go", "3", 1000);
-        std::test::assert_eq_int(self.__rpc_x_slow.table_len(), 3, "three requests, three records");
+        std::test::assert_eq_int(self.s.table_len(), 3, "three requests, three records");
         self.slow.gate = 1;
         std::test::assert_eq_str(g.await_outcome(101, 2000), "result", "the first answers");
         self.await_entered(2);
         // the first record is free, the second call is running, the third queued
         g.call_as_peer(104, "Slow::go", "4", 1000);
-        std::test::assert_eq_int(self.__rpc_x_slow.pending(), 3, "the fourth is admitted: three accepted and not answered");
-        std::test::assert_eq_int(self.__rpc_x_slow.table_len(), 3, "in the record the first left");
+        std::test::assert_eq_int(self.s.pending(), 3, "the fourth is admitted: three accepted and not answered");
+        std::test::assert_eq_int(self.s.table_len(), 3, "in the record the first left");
         self.slow.gate = 4;
         std::test::assert_eq_str(g.await_outcome(104, 2000), "result", "the fourth answers");
         std::test::assert(g.request_id(104) > g.request_id(103), "with an id after the third's, whichever record it took");
@@ -109,8 +109,8 @@ main locus Desk {
         std::test::assert_eq_int(g.closed, 1, "the transport was told the connection is finished with, once");
         std::test::assert_eq_int(g.outcomes_of(105), 0, "and there is no reply");
         std::test::assert_eq_str(self.slow.order, "1,2,3,4,500,", "the work ran once");
-        std::test::assert_eq_int(self.__rpc_x_slow.pending(), 0, "the record was freed");
-        std::test::assert_eq_int(self.__rpc_x_slow.table_len(), 3, "and the table is still no longer than the bound");
+        std::test::assert_eq_int(self.s.pending(), 0, "the record was freed");
+        std::test::assert_eq_int(self.s.table_len(), 3, "and the table is still no longer than the bound");
     }
 }
 

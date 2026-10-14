@@ -61,6 +61,7 @@ main locus SenseDesk {
                 org: "testorg"
             }
         };
+        ex: api::Exposure = api::serve(Todo, self.door, as: "t", bound: 8, on_full: refuse);
     }
     placement { list: cooperative(pool = work) where async_io; broker: pinned; sense: pinned; }
 
@@ -69,7 +70,6 @@ main locus SenseDesk {
         std::io::fs::write_file(entry, "hunter2") or discard;
 
         // three items: overdue and open, overdue and done at once, not yet due
-        let ex = api::serve(Todo, self.door, as: "t", bound: 8, on_full: refuse);
         let d = self.door;
         d.call(1, "Todos::add", "{\"title\":\"milk\",\"due\":\"2020-01-01T00:00:00Z\"}", "t-ada");
         std::test::assert_eq_str(d.await_outcome(1, 2000), "result", "milk is added");
@@ -106,7 +106,7 @@ main locus SenseDesk {
         std::time::sleep(2500ms);
         std::test::assert_eq_int(self.mailbox.count, 1, "once, though the item stays overdue");
         std::io::fs::unlink(entry) or discard;
-        ex.stop();
+        self.ex.stop();
         std::process::exit(0);
     }
 }

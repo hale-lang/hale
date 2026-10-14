@@ -57,15 +57,15 @@ main locus FixtureHead {
         commands: api::Commands = api::Commands { };
         http_port: Int = 0;
         bearer: std::api::BearerSource = std::api::NoBearer { };
+        local: api::Exposure = api::serve(HeadCommands, unix::Rpc { path: self.served, roles: self.roles }, as: "fixture", bound: 64, on_full: refuse);
+        remote: api::Exposure = api::serve(HeadCommands, http::Rpc { bind: "127.0.0.1:" + to_string(self.http_port), codec: json, principals: self.bearer, roles: self.roles }, as: "fixture-commands", bound: 64, on_full: refuse);
     }
     placement { srv: cooperative(pool = io); commands: cooperative(pool = commands); }
     run() {
         if self.http_port > 0 { println("hale dna api: commands http://127.0.0.1:", self.http_port, "/"); }
-        let local = api::serve(HeadCommands, unix::Rpc { path: self.served, roles: self.roles }, as: "fixture", bound: 64, on_full: refuse);
-        let remote = api::serve(HeadCommands, http::Rpc { bind: "127.0.0.1:" + to_string(self.http_port), codec: json, principals: self.bearer, roles: self.roles }, as: "fixture-commands", bound: 64, on_full: refuse);
-        std::api::run_until_stopped(local);
-        local.stop();
-        remote.stop();
+        std::api::run_until_stopped(self.local);
+        self.local.stop();
+        self.remote.stop();
     }
 }
 

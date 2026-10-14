@@ -74,9 +74,10 @@ fn repo_root() -> PathBuf {
 /// The library seed the app reaches, in both directions.
 const LIB: &str = "fn f() -> String { return \"from-lib\"; }\n";
 
-/// `api::serve(…)` is the language's serve site (spec/api.md § Serving), not
-/// a path through an import alias: a library that serves a surface keeps
-/// working in an application that names the library `api`.
+/// `api::serve(…)` is the language's serve site (spec/api.md § Serving), and
+/// `api::Exposure` the type of the param it builds, not paths through an
+/// import alias: a library that serves a surface keeps working in an
+/// application that names the library `api`.
 #[test]
 fn api_serve_is_the_language_not_an_alias_another_seed_declares() {
     let lib = "type Ping { n: Int; }\n\
@@ -84,10 +85,12 @@ fn api_serve_is_the_language_not_an_alias_another_seed_declares() {
                api Echo { rpc Echoer::echo; }\n\
                locus Echoer { fn echo(p: Ping) -> Pong { return Pong { n: p.n }; } }\n\
                main locus Server {\n\
-               \x20   params { echoer: Echoer = Echoer { }; }\n\
+               \x20   params {\n\
+               \x20       echoer: Echoer = Echoer { };\n\
+               \x20       h: api::Exposure = api::serve(Echo, unix::Rpc { path: \"/tmp/never.sock\", roles: std::api::StaticRoles { } }, as: \"echo\", bound: 4, on_full: refuse);\n\
+               \x20   }\n\
                \x20   run() {\n\
-               \x20       let h = api::serve(Echo, unix::Rpc { path: \"/tmp/never.sock\", roles: std::api::StaticRoles { } }, as: \"echo\", bound: 4, on_full: refuse);\n\
-               \x20       h.stop();\n\
+               \x20       self.h.stop();\n\
                \x20   }\n\
                }\n";
     let d = seed(

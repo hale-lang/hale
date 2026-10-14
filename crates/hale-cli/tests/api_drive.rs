@@ -69,7 +69,7 @@ fn witness_source() -> String {
     swap("bind: \"127.0.0.1:9000\"", "bind: std::env::var(\"HUB\")");
     swap("operator: \"uid:1000\"", "operator: std::env::var(\"OPERATOR\")");
     swap(
-        "        std::api::run_until_stopped(public);\n",
+        "        std::api::run_until_stopped(self.public);\n",
         "        while !written(std::env::var(\"TRIGGER\")) { std::time::sleep(10ms); }\n",
     );
     swap("fn main() { Desk { }; }", "fn written(path: String) -> Bool {\n    return (std::io::fs::read_file(path) or \"\") != \"\";\n}\n\nfn main() { Desk { }; }");

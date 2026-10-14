@@ -160,6 +160,9 @@ main locus Desk {
         ledger: Ledger = Ledger { };
         orders_failed: Int = 0;
         ledger_failed: Int = 0;
+        public: api::Exposure = api::serve(Public, http::Rpc { bind: std::env::var("BIND"), codec: json, principals: self.bearer, roles: self.public_roles }, as: "public", receivers: { Orders: self.orders }, bound: @BOUND@, on_full: refuse);
+        partner: api::Exposure = api::serve(Public, http::Rpc { bind: std::env::var("BIND2"), codec: json, principals: self.bearer, roles: self.partner_roles }, as: "partner", receivers: { Orders: self.partner_orders }, bound: @BOUND@, on_full: refuse);
+        admin: api::Exposure = api::serve(Admin, unix::Rpc { path: std::env::var("SOCK"), roles: self.admin_roles }, as: "admin", receivers: { Orders: self.orders }, bound: 16, on_full: refuse);
     }
     placement {
         orders: cooperative(pool = desk) where async_io;
@@ -170,9 +173,6 @@ main locus Desk {
     on_failure(l: Ledger, err: ClosureViolation) { self.ledger_failed = self.ledger_failed + 1; }
 
     run() {
-        let public = api::serve(Public, http::Rpc { bind: std::env::var("BIND"), codec: json, principals: self.bearer, roles: self.public_roles }, as: "public", receivers: { Orders: self.orders }, bound: @BOUND@, on_full: refuse);
-        let partner = api::serve(Public, http::Rpc { bind: std::env::var("BIND2"), codec: json, principals: self.bearer, roles: self.partner_roles }, as: "partner", receivers: { Orders: self.partner_orders }, bound: @BOUND@, on_full: refuse);
-        let admin = api::serve(Admin, unix::Rpc { path: std::env::var("SOCK"), roles: self.admin_roles }, as: "admin", receivers: { Orders: self.orders }, bound: 16, on_full: refuse);
         let tp = std::env::var("TRIGGER_PUBLIC");
         let tq = std::env::var("TRIGGER_PARTNER");
         let ta = std::env::var("TRIGGER_ADMIN");
@@ -181,14 +181,14 @@ main locus Desk {
         let mut partner_up = true;
         let mut admin_up = true;
         while !self.draining && !written(all) {
-            if public_up && written(tp) { public.stop(); public_up = false; println("public stopped"); }
-            if partner_up && written(tq) { partner.stop(); partner_up = false; println("partner stopped"); }
-            if admin_up && written(ta) { admin.stop(); admin_up = false; println("admin stopped"); }
+            if public_up && written(tp) { self.public.stop(); public_up = false; println("public stopped"); }
+            if partner_up && written(tq) { self.partner.stop(); partner_up = false; println("partner stopped"); }
+            if admin_up && written(ta) { self.admin.stop(); admin_up = false; println("admin stopped"); }
             std::time::sleep(10ms);
         }
-        public.stop();
-        partner.stop();
-        admin.stop();
+        self.public.stop();
+        self.partner.stop();
+        self.admin.stop();
         println("stopped");
         println("orders_failed=" + to_string(self.orders_failed));
         println("ledger_failed=" + to_string(self.ledger_failed));

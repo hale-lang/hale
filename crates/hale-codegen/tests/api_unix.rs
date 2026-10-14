@@ -102,6 +102,7 @@ main locus Desk {
         admin_roles: Grants = Grants { operator: std::env::var("OPERATOR") };
         orders: Orders = Orders { };
         ledger: Ledger = Ledger { };
+        admin: api::Exposure = api::serve(Admin, unix::Rpc { path: std::env::var("SOCK"), roles: self.admin_roles }, as: "admin", bound: @BOUND@, on_full: refuse);
     }
     placement {
         orders: cooperative(pool = desk) where async_io;
@@ -109,12 +110,11 @@ main locus Desk {
     }
     on_failure(l: Ledger, err: ClosureViolation) { }
     run() {
-        let admin = api::serve(Admin, unix::Rpc { path: std::env::var("SOCK"), roles: self.admin_roles }, as: "admin", bound: @BOUND@, on_full: refuse);
         let trigger = std::env::var("TRIGGER");
         while !self.draining && (std::io::fs::read_file(trigger) or "") == "" {
             std::time::sleep(10ms);
         }
-        admin.stop();
+        self.admin.stop();
         println("stopped");
     }
 }

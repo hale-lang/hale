@@ -42,10 +42,9 @@ main locus Desk {
         roles: Anyone = Anyone { };
         fx: std::api::test::Rpc = std::api::test::Rpc { roles: self.roles };
         wire: std::api::unix::Rpc = std::api::unix::Rpc { path: "/tmp/hale-unix-wire-test-unused.sock", tid: 0 };
+        admin: api::Exposure = api::serve(Admin, self.fx, as: "admin", receivers: { Ledger: self.ledger }, bound: 4, on_full: refuse);
     }
     run() {
-        let admin = api::serve(Admin, self.fx, as: "admin", receivers: { Ledger: self.ledger }, bound: 4, on_full: refuse);
-
         // ---- framing: what a connection hands over is its credentials, a tab and the line ----
         let t = self.wire;
         let r = t.frame(std::bytes::from_string("-1:-1:-1:\t{\"call\":\"Ledger::rebalance\",\"payload\":{\"book\":\"main\"},\"id\":\"c-5\"}"), 5);
@@ -92,7 +91,7 @@ main locus Desk {
             "{\"request_id\":5,\"id\":\"c-5\",\"ok\":false,\"refusal\":{\"kind\":\"unauthenticated\",\"reason\":\"the kernel did not name the peer\"},\"caller\":{\"mode\":\"unix\",\"name\":\"uid:-1\",\"uid\":-1,\"gid\":-1,\"pid\":-1}}",
             "the reply line is the recorded one"
         );
-        admin.stop();
+        self.admin.stop();
     }
 }
 

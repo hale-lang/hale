@@ -391,7 +391,7 @@ row	App@literal1.listener	Listener	main	default
 dynamic	Counter	on main
 dynamic	Sensor	on main
 
-== crates/hale-codegen/tests/fixtures/examples/92-build-an-api/main.hl#d75133c9
+== crates/hale-codegen/tests/fixtures/examples/92-build-an-api/main.hl#fee7652a
 root	App	the entry
 domain	pool:work	async_io
 domain	pool:__api_ws	async_io
@@ -406,19 +406,7 @@ row	__StdApiHubStream@binding1	__StdApiHubStream	pinned:__StdApiHubStream@bindin
 shared	App@literal1.__rpc_h_2	__StdApiHttpListener #6e12d80d
 shared	App@literal1.__rpc_u_1	__StdApiUnixListener #e8cfe0e1
 shared	App@literal1.__rpc_w_1	__StdApiWsListener #61e09f7c
--- dynamic	sites in the seed
-dynamic	<hole>	on main|unresolved declaration `__api_receivers`|unresolved declaration `__api_serve`|unresolved declaration `http::Rpc`|unresolved declaration `unix::Rpc`
-dynamic	__StdApiHttpConns	on pool:__api_http
-dynamic	__StdApiHttpPeer	on pool:__api_http
-dynamic	__StdApiUnixConns	on pool:__api_unix
-dynamic	__StdApiUnixPeer	on pool:__api_unix
-dynamic	__StdApiWsConns	on pool:__api_ws
-dynamic	__StdApiWsPeer	on pool:__api_ws|unknown (no instance)
-dynamic	__StdBytesBytesBuilder	on pool:__api_ws
-dynamic	__StdIoTcpConnFlow	on pool:__api_http|pool:__api_unix|pool:__api_ws
-dynamic	__StdIoTcpConnInline	on pool:__api_http|pool:__api_unix|pool:__api_ws
-dynamic	__StdIoTcpConnections	on pool:__api_http|pool:__api_unix|pool:__api_ws
-dynamic	__StdIoTcpStream	on pool:__api_http|pool:__api_unix|pool:__api_ws
+shared	dynamic	sites in the seed #9c756fd5
 
 == crates/hale-codegen/tests/fixtures/examples/93-units/main.hl#c12c5daf
 row	Book@main1	Book	main	default
@@ -473,7 +461,7 @@ row	App@literal1.p	PluginHost	main	default
 row	~	Gateway	main	default
 row	~.s	Signer	main	inherited
 
-== crates/hale-cli/tests/fixtures/api_clients/main.hl#4f039638
+== crates/hale-cli/tests/fixtures/api_clients/main.hl#6fa2b522
 root	Desk	the entry
 domain	pool:desk	async_io
 domain	pool:__api_ws	async_io
@@ -491,21 +479,9 @@ shared	Desk@literal1.__rpc_h_2	__StdApiHttpListener #6e12d80d
 shared	Desk@literal1.__rpc_h_3	__StdApiHttpListener #6e12d80d
 shared	Desk@literal1.__rpc_u_1	__StdApiUnixListener #e8cfe0e1
 shared	Desk@literal1.__rpc_w_1	__StdApiWsListener #61e09f7c
--- dynamic	sites in the seed
-dynamic	<hole>	on main|unresolved declaration `__api_receivers`|unresolved declaration `__api_serve`|unresolved declaration `http::Rpc`|unresolved declaration `mcp::Rpc`|unresolved declaration `unix::Rpc`
-dynamic	__StdApiHttpConns	on pool:__api_http
-dynamic	__StdApiHttpPeer	on pool:__api_http
-dynamic	__StdApiUnixConns	on pool:__api_unix
-dynamic	__StdApiUnixPeer	on pool:__api_unix
-dynamic	__StdApiWsConns	on pool:__api_ws
-dynamic	__StdApiWsPeer	on pool:__api_ws|unknown (no instance)
-dynamic	__StdBytesBytesBuilder	on pool:__api_ws
-dynamic	__StdIoTcpConnFlow	on pool:__api_http|pool:__api_unix|pool:__api_ws
-dynamic	__StdIoTcpConnInline	on pool:__api_http|pool:__api_unix|pool:__api_ws
-dynamic	__StdIoTcpConnections	on pool:__api_http|pool:__api_unix|pool:__api_ws
-dynamic	__StdIoTcpStream	on pool:__api_http|pool:__api_unix|pool:__api_ws
+shared	dynamic	sites in the seed #9c756fd5
 
-== crates/hale-cli/tests/fixtures/api_description/main.hl#d536b3f3
+== crates/hale-cli/tests/fixtures/api_description/main.hl#10ef0352
 root	Shop	the entry
 domain	pool:work	async_io
 domain	pool:__api_unix	async_io
@@ -513,9 +489,9 @@ row	Shop@literal1	Shop	main	default
 row	Shop@literal1.billing	Billing	pool:work	entry	off owner
 row	Shop@literal1.staff	__StdApiStaticRoles	main	default
 shared	Shop@literal1.__rpc_u_1	__StdApiUnixListener #e8cfe0e1
-shared	dynamic	sites in the seed #38292389
+shared	dynamic	sites in the seed #09510ed0
 
-== crates/hale-cli/tests/fixtures/api_shapes/main.hl#4b27813e
+== crates/hale-cli/tests/fixtures/api_shapes/main.hl#c4706c77
 root	Desk	the entry
 domain	pool:__api_http	async_io
 row	Desk@literal1	Desk	main	default
@@ -523,7 +499,7 @@ row	Desk@literal1.bearer	Tokens	main	default
 row	Desk@literal1.library	Library	main	default
 row	Desk@literal1.roles	Nobody	main	default
 shared	Desk@literal1.__rpc_h_1	__StdApiHttpListener #6e12d80d
-shared	dynamic	sites in the seed #7c55c618
+shared	dynamic	sites in the seed #1c214750
 
 == crates/hale-cli/tests/fixtures/bounded-annotation/app.hl#588a6cd6
 row	Acc@main1	Acc	main	default
@@ -542,13 +518,13 @@ row	Src@main2	Src	main	default
 == crates/hale-cli/tests/fixtures/bounded-annotation/unbounded-use-script.hl#0217e859
 row	Acc@main1	Acc	main	default
 
-== crates/hale-cli/tests/fixtures/bounded-annotation/unbounded-use-stdlib.hl#b2fcf07a
+== crates/hale-cli/tests/fixtures/bounded-annotation/unbounded-use-stdlib.hl#11c109ea
 root	App	the entry
 domain	pool:__api_unix	async_io
 row	App@literal1	App	main	default
 row	App@literal1.echo	Echo	main	default
 shared	App@literal1.__rpc_u_1	__StdApiUnixListener #e8cfe0e1
-shared	dynamic	sites in the seed #38292389
+shared	dynamic	sites in the seed #09510ed0
 
 == crates/hale-cli/tests/fixtures/bounded-annotation/unbounded-use.hl#28ae77d3
 row	Acc@main1	Acc	main	default
@@ -1335,7 +1311,7 @@ row	Rec@main1	Rec	main	default
 == crates/hale-codegen/tests/alloc_model_rss.rs#84467e50
 row	Rec@main1	Rec	main	default
 
-== crates/hale-codegen/tests/api_http.rs#babf5820
+== crates/hale-codegen/tests/api_http.rs#4956efd0
 root	Desk	the entry
 domain	pool:__api_http	async_io
 row	Desk@literal1	Desk	main	default
@@ -1343,7 +1319,7 @@ row	Desk@literal1.bearer	Tokens	main	default
 row	Desk@literal1.echoer	Echoer	main	default
 row	Desk@literal1.roles	Nobody	main	default
 shared	Desk@literal1.__rpc_h_1	__StdApiHttpListener #6e12d80d
-shared	dynamic	sites in the seed #7c55c618
+shared	dynamic	sites in the seed #1c214750
 
 == crates/hale-codegen/tests/api_hub.rs#067b6ae6
 root	Desk	the entry
@@ -1357,7 +1333,7 @@ row	__StdApiHubStream@binding1	__StdApiHubStream	pinned:__StdApiHubStream@bindin
 shared	Desk@literal1.__rpc_w_1	__StdApiWsListener #61e09f7c
 shared	dynamic	sites in the seed #648c1683
 
-== crates/hale-codegen/tests/api_hub_desk.rs#70aa65e0
+== crates/hale-codegen/tests/api_hub_desk.rs#e55deb93
 root	Desk	the entry
 domain	pool:work	async_io
 domain	pool:__api_ws	async_io
@@ -1371,17 +1347,9 @@ row	Desk@literal1.orders	Orders	pool:work	entry	off owner
 row	__StdApiHubStream@binding1	__StdApiHubStream	pinned:__StdApiHubStream@binding1	binding
 row	__StdApiHubStream@binding2	__StdApiHubStream	pinned:__StdApiHubStream@binding2	binding
 shared	Desk@literal1.__rpc_w_1	__StdApiWsListener #61e09f7c
--- dynamic	sites in the seed
-dynamic	<hole>	on main|unresolved declaration `__api_receivers`|unresolved declaration `__api_serve`
-dynamic	__StdApiWsConns	on pool:__api_ws
-dynamic	__StdApiWsPeer	on pool:__api_ws|unknown (no instance)
-dynamic	__StdBytesBytesBuilder	on pool:__api_ws
-dynamic	__StdIoTcpConnFlow	on pool:__api_ws
-dynamic	__StdIoTcpConnInline	on pool:__api_ws
-dynamic	__StdIoTcpConnections	on pool:__api_ws|unknown (no instance)
-dynamic	__StdIoTcpStream	on pool:__api_ws|unknown (no instance)
+shared	dynamic	sites in the seed #648c1683
 
-== crates/hale-codegen/tests/api_mcp.rs#206f7719
+== crates/hale-codegen/tests/api_mcp.rs#f4ae4224
 root	D	the entry
 domain	pool:__api_http	async_io
 row	D@literal1	D	main	default
@@ -1389,33 +1357,24 @@ row	D@literal1.a	A	main	default
 row	D@literal1.ab	A__b	main	default
 row	D@literal1.t	Tok	main	default
 shared	D@literal1.__rpc_h_1	__StdApiHttpListener #6e12d80d
--- dynamic	sites in the seed
-dynamic	<hole>	on main|unresolved declaration `__api_serve`|unresolved declaration `mcp::Rpc`
-dynamic	__StdApiHttpConns	on pool:__api_http
-dynamic	__StdApiHttpPeer	on pool:__api_http
-dynamic	__StdIoTcpConnFlow	on pool:__api_http
-dynamic	__StdIoTcpConnInline	on pool:__api_http
-dynamic	__StdIoTcpConnections	on pool:__api_http|unknown (no instance)
-dynamic	__StdIoTcpStream	on pool:__api_http|unknown (no instance)
+shared	dynamic	sites in the seed #1c214750
 
-== crates/hale-codegen/tests/api_runtime.rs#c9cabfaf
+== crates/hale-codegen/tests/api_runtime.rs#9ea7cf1a
 root	App	the entry
 domain	pool:work	async_io
 row	App@literal1	App	main	default
 row	App@literal1.probe	Probe	main	default
 row	App@literal1.svc	Svc	pool:work	entry	off owner
-dynamic	<hole>	on main|unresolved declaration `__api_receivers`|unresolved declaration `__api_serve`	in the seed
 
-== crates/hale-codegen/tests/api_serve_build.rs#1a23f61d
+== crates/hale-codegen/tests/api_serve_build.rs#af879fb6
 root	Desk	the entry
 domain	pool:op	async_io
 row	Desk@literal1	Desk	main	default
 row	Desk@literal1.bearer	Tokens	main	default
 row	Desk@literal1.orders	Orders	pool:op	entry	off owner
 row	Desk@literal1.public_roles	Grants	main	default
-dynamic	<hole>	on main|unresolved declaration `__api_receivers`|unresolved declaration `__api_serve`	in the seed
 
-== crates/hale-codegen/tests/api_unix_lifecycle.rs#1348f54a
+== crates/hale-codegen/tests/api_unix_lifecycle.rs#f6d03bb1
 root	Desk	the entry
 domain	pool:desk	async_io
 domain	pool:partner	async_io
@@ -1435,7 +1394,6 @@ shared	Desk@literal1.__rpc_u_1	__StdApiUnixListener #e8cfe0e1
 shared	Desk@literal1.__rpc_u_2	__StdApiUnixListener #e8cfe0e1
 shared	Desk@literal1.__rpc_u_3	__StdApiUnixListener #e8cfe0e1
 -- dynamic	sites in the seed
-dynamic	<hole>	on main|unresolved declaration `__api_receivers`|unresolved declaration `__api_serve`|unresolved declaration `unix::Rpc`
 dynamic	Poisoned	on main
 dynamic	__StdApiUnixConns	on pool:__api_unix
 dynamic	__StdApiUnixPeer	on pool:__api_unix
@@ -6898,27 +6856,18 @@ hole	Tree@main1.leaf	unenumerable initializer
 row	~	Tree	main	default
 row	~.leaf	Leaf	main	inherited
 
-== crates/hale-types/tests/snapshot.rs#a0d6263e
+== crates/hale-types/tests/snapshot.rs#ea5282d7
 root	App	the entry
 row	App@literal1	App	main	default
 row	App@literal1.billing	Billing	main	default
-dynamic	<hole>	on main|unresolved declaration `__api_receivers`|unresolved declaration `__api_serve`	in the seed
 
-== crates/hale-types/tests/snapshot.rs#265ecc7f
+== crates/hale-types/tests/snapshot.rs#7cfc90e1
 root	App	the entry
 domain	pool:__api_unix	async_io
 row	App@literal1	App	main	default
 row	App@literal1.echo	Echo	main	default
 shared	App@literal1.__rpc_u_1	__StdApiUnixListener #e8cfe0e1
--- dynamic	sites in the seed
-dynamic	<hole>	on main|unresolved declaration `__api_receivers`|unresolved declaration `__api_serve`|unresolved declaration `unix::Rpc`
-dynamic	Table	on main
-dynamic	__StdApiUnixConns	on pool:__api_unix
-dynamic	__StdApiUnixPeer	on pool:__api_unix
-dynamic	__StdIoTcpConnFlow	on pool:__api_unix
-dynamic	__StdIoTcpConnInline	on pool:__api_unix
-dynamic	__StdIoTcpConnections	on pool:__api_unix|unknown (no instance)
-dynamic	__StdIoTcpStream	on pool:__api_unix|unknown (no instance)
+shared	dynamic	sites in the seed #09510ed0
 
 == crates/hale-types/tests/stdlib_name_check.rs#445e7d87
 row	__StdBytesBytesBuilder@main1	__StdBytesBytesBuilder	main	default
@@ -7082,7 +7031,6 @@ row	Desk@literal1	Desk	main	default
 row	Desk@literal1.bearer	Tokens	main	default
 row	Desk@literal1.echo	__lib_tests__hale__api__surface_lib___main__Echo	main	default
 row	Desk@literal1.local	Local	main	default
-dynamic	<hole>	on main|unresolved declaration `__api_receivers`|unresolved declaration `__api_serve`	in the seed
 
 == tests/hale/api/client_test.hl
 dynamic	__StdProcessChild	on main	in the seed
@@ -7106,7 +7054,6 @@ row	Desk@literal1	Desk	main	default
 row	Desk@literal1.bearer	Tokens	main	default
 row	Desk@literal1.local	Local	main	default
 row	Desk@literal1.other	Other	main	default
-dynamic	<hole>	on main|unresolved declaration `__api_receivers`|unresolved declaration `__api_serve`	in the seed
 
 == tests/hale/api/identity_test.hl
 root	App	the entry
@@ -7116,7 +7063,6 @@ row	App@literal1.plain	Plain	main	default
 row	App@literal1.revised	Revised	main	default
 row	App@literal1.svc	Svc	pool:work	entry	off owner
 row	App@literal1.tokens	Tokens	main	default
-dynamic	<hole>	on main|unresolved declaration `__api_receivers`|unresolved declaration `__api_serve`	in the seed
 
 == tests/hale/api/lifecycle_test.hl
 root	App	the entry
@@ -7125,13 +7071,11 @@ domain	pool:work2	async_io
 row	App@literal1	App	main	default
 row	App@literal1.svc	Svc	pool:work	entry	off owner
 row	App@literal1.tight	Svc	pool:work2	entry	off owner
-dynamic	<hole>	on main|unresolved declaration `__api_receivers`|unresolved declaration `__api_serve`	in the seed
 
 == tests/hale/api/lists_test.hl
 root	Desk	the entry
 row	Desk@literal1	Desk	main	default
 row	Desk@literal1.probe	Probe	main	default
-dynamic	<hole>	on main|unresolved declaration `__api_receivers`|unresolved declaration `__api_serve`	in the seed
 
 == tests/hale/api/pb_codec_test.hl
 root	Desk	the entry
@@ -7141,7 +7085,7 @@ row	Desk@literal1.bearer	Tokens	main	default
 row	Desk@literal1.probe	Probe	main	default
 shared	Desk@literal1.__rpc_g_1	__StdIoH2Listener #b0c4764c
 -- dynamic	sites in the seed
-dynamic	<hole>	on main|unresolved declaration `IndexError`|unresolved declaration `__api_receivers`|unresolved declaration `__api_serve`|unresolved declaration `grpc::Rpc`
+dynamic	<hole>	on main|unresolved declaration `IndexError`
 dynamic	__StdIoH2Conn	on pool:__api_grpc
 dynamic	__StdIoH2Conns	on pool:__api_grpc
 dynamic	__StdIoTcpConnFlow	on pool:__api_grpc
@@ -7156,7 +7100,7 @@ row	Desk@literal1	Desk	main	default
 row	Desk@literal1.bearer	Tokens	main	default
 row	Desk@literal1.probe	Probe	main	default
 shared	Desk@literal1.__rpc_g_1	__StdIoH2Listener #b0c4764c
-shared	dynamic	sites in the seed #ce231561
+shared	dynamic	sites in the seed #d81b1982
 
 == tests/hale/api/pending_test.hl
 root	Desk	the entry
@@ -7164,7 +7108,6 @@ domain	pool:slow	async_io
 row	Desk@literal1	Desk	main	default
 row	Desk@literal1.quick	Quick	main	default
 row	Desk@literal1.slow	Slow	pool:slow	entry	off owner
-dynamic	<hole>	on main|unresolved declaration `__api_receivers`|unresolved declaration `__api_serve`	in the seed
 
 == tests/hale/api/placement_test.hl
 root	App	the entry
@@ -7175,30 +7118,25 @@ row	App@literal1.far	Far	pool:far_pool	entry	off owner
 row	App@literal1.far_bad	FarBad	pool:bad_pool	entry	off owner
 row	App@literal1.near	Near	main	default
 row	App@literal1.near_bad	NearBad	main	default
-dynamic	<hole>	on main|unresolved declaration `__api_receivers`|unresolved declaration `__api_serve`	in the seed
 
 == tests/hale/api/replace_test.hl
 root	App	the entry
 domain	pool:work	async_io
 row	App@literal1	App	main	default
 row	App@literal1.svc	Svc	pool:work	entry	off owner
--- dynamic	sites in the seed
-dynamic	<hole>	on main|unresolved declaration `__api_receivers`|unresolved declaration `__api_serve`
-dynamic	Svc	on main
+dynamic	Svc	on main	in the seed
 
 == tests/hale/api/restart_after_return_test.hl
 root	App	the entry
 domain	pool:work	async_io
 row	App@literal1	App	main	default
 row	App@literal1.svc	Svc	pool:work	entry	off owner
-dynamic	<hole>	on main|unresolved declaration `__api_receivers`|unresolved declaration `__api_serve`	in the seed
 
 == tests/hale/api/restart_test.hl
 root	App	the entry
 domain	pool:work	async_io
 row	App@literal1	App	main	default
 row	App@literal1.svc	Svc	pool:work	entry	off owner
-dynamic	<hole>	on main|unresolved declaration `__api_receivers`|unresolved declaration `__api_serve`	in the seed
 
 == tests/hale/api/rpc_types_test.hl
 root	App	the entry
@@ -7216,13 +7154,12 @@ dynamic	__StdApiStaticRoles	on main
 root	Desk	the entry
 row	Desk@literal1	Desk	main	default
 row	Desk@literal1.sink	Sink	main	default
-dynamic	<hole>	on main|unresolved declaration `__api_receivers`|unresolved declaration `__api_serve`	in the seed
 
 == tests/hale/api/shapes_test.hl
 root	Desk	the entry
 row	Desk@literal1	Desk	main	default
 row	Desk@literal1.probe	Probe	main	default
-dynamic	<hole>	on main|unresolved declaration `IndexError`|unresolved declaration `__api_receivers`|unresolved declaration `__api_serve`	in the seed
+dynamic	<hole>	on main|unresolved declaration `IndexError`	in the seed
 
 == tests/hale/api/surface_test.hl
 root	Desk	the entry
@@ -7230,19 +7167,16 @@ row	Desk@literal1	Desk	main	default
 row	Desk@literal1.bearer	Tokens	main	default
 row	Desk@literal1.echo	__lib_tests__hale__api__surface_lib___main__Echo	main	default
 row	Desk@literal1.local	Local	main	default
-dynamic	<hole>	on main|unresolved declaration `__api_receivers`|unresolved declaration `__api_serve`	in the seed
 
 == tests/hale/api/teardown_test.hl
 root	App	the entry
 row	App@literal1	App	main	default
 row	App@literal1.collector	Collector	main	default
+dynamic	Server	on main	in the seed
 -- App@literal1.server	Server
 row	~	Server	main	default
 row	~.probe	Probe	main	inherited
 row	~.svc	Svc	main	inherited
--- dynamic	sites in the seed
-dynamic	<hole>	on main|unresolved declaration `__api_receivers`|unresolved declaration `__api_serve`
-dynamic	Server	on main
 
 == tests/hale/api/time_test.hl
 root	Desk	the entry
@@ -7251,14 +7185,13 @@ row	Desk@literal1	Desk	main	default
 row	Desk@literal1.bearer	Tokens	main	default
 row	Desk@literal1.clock	Clock	main	default
 shared	Desk@literal1.__rpc_g_1	__StdIoH2Listener #b0c4764c
-shared	dynamic	sites in the seed #ce231561
+shared	dynamic	sites in the seed #d81b1982
 
 == tests/hale/api/unix_wire_test.hl
 root	Desk	the entry
 row	Desk@literal1	Desk	main	default
 row	Desk@literal1.ledger	Ledger	main	default
 row	Desk@literal1.roles	Anyone	main	default
-dynamic	<hole>	on main|unresolved declaration `__api_receivers`|unresolved declaration `__api_serve`	in the seed
 
 == tests/hale/api/witness_test.hl
 root	Desk	the entry
@@ -7275,7 +7208,6 @@ row	Desk@literal1.orders	Orders	pool:desk	entry	off owner
 row	Desk@literal1.partner_orders	Orders	pool:partner	entry	off owner
 row	Desk@literal1.partner_roles	Grants	main	default
 row	Desk@literal1.public_roles	Grants	main	default
-dynamic	<hole>	on main|unresolved declaration `__api_receivers`|unresolved declaration `__api_serve`	in the seed
 
 == tests/hale/api_bearer_roles_test.hl
 shared	Api@main2	Api #a23e2495
@@ -7305,9 +7237,6 @@ row	App@literal1.echo	Echo	pool:work	entry	off owner
 shared	App@literal1.__rpc_h_2	__StdApiHttpListener #6e12d80d
 shared	App@literal1.__rpc_u_1	__StdApiUnixListener #e8cfe0e1
 -- dynamic	sites in the seed
-dynamic	<hole>	on main|unresolved declaration `__api_receivers`|unresolved declaration `__api_serve`|unresolved declaration `http::Rpc`|unresolved declaration `unix::Rpc`
-dynamic	Table	on main
-dynamic	Tokens	on main
 dynamic	__StdApiHttpConns	on pool:__api_http
 dynamic	__StdApiHttpPeer	on pool:__api_http
 dynamic	__StdApiUnixConns	on pool:__api_unix
@@ -7821,8 +7750,6 @@ row	~	__lib____main__Room	main	default
 row	~.s	__lib____main__SessionSigner	main	inherited
 
 == dna/api/practice_review/tests/adapter_test.hl
-dynamic	<hole>	on unknown (no instance)|unresolved declaration `__api_serve`|unresolved declaration `http::Rpc`|unresolved declaration `unix::Rpc`	in dna/api
-dynamic	<hole>	on unknown (no instance)|unresolved declaration `__api_serve`|unresolved declaration `http::Rpc`|unresolved declaration `unix::Rpc`	in dna/api/practice_review
 dynamic	__StdBytesBytesBuilder	on unknown (`rejected` passed as a value)|unknown (no caller)|unknown (no instance)	in dna/core
 -- dynamic	sites in dna/api/practice_review/tests
 dynamic	NativeStub	on main
@@ -7842,7 +7769,6 @@ dynamic	__lib_dna__operations___organization_json__OrganizationJson	on unknown (
 shared	dynamic	sites in the stdlib #60cf2d1f
 
 == dna/api/project_service/tests/head_api_s3_test.hl
-dynamic	<hole>	on unknown (no instance)|unresolved declaration `__api_serve`|unresolved declaration `http::Rpc`|unresolved declaration `unix::Rpc`	in api
 dynamic	__lib_dna__core___record__GitRecord	on main	in api/project_service/tests
 -- S3HeadCases@main1	S3HeadCases
 row	~	S3HeadCases	main	default
@@ -7857,7 +7783,6 @@ shared	dynamic	sites in api/project_service/tests/fixture #c6dc7898
 shared	dynamic	sites in core #b2c4d9f5
 
 == dna/api/project_service/tests/head_api_test.hl
-dynamic	<hole>	on unknown (no instance)|unresolved declaration `__api_serve`|unresolved declaration `http::Rpc`|unresolved declaration `unix::Rpc`	in api
 -- HeadCases@main1	HeadCases
 row	~	HeadCases	main	default
 row	~.f	__lib_dna__api__project_service__tests__fixture___main__HeadFixture	main	inherited
@@ -7929,7 +7854,6 @@ shared	dynamic	sites in core #b2c4d9f5
 
 == dna/api/project_service/tests/journal_test.hl
 row	JournalCases@main1	JournalCases	main	default
-dynamic	<hole>	on unknown (no instance)|unresolved declaration `__api_serve`|unresolved declaration `http::Rpc`|unresolved declaration `unix::Rpc`	in api
 dynamic	__StdBytesBytesBuilder	on main|unknown (no caller)|unknown (no instance)	in core
 -- dynamic	sites in api/project_service
 dynamic	__StdJsonBuilder	on main|unknown (no caller)|unknown (no instance)
@@ -7945,7 +7869,6 @@ shared	dynamic	sites in the stdlib #b156bdf1
 
 == dna/api/project_service/tests/operations_s3_test.hl
 row	S3Cases@main1	S3Cases	main	default
-dynamic	<hole>	on unknown (no instance)|unresolved declaration `__api_serve`|unresolved declaration `http::Rpc`|unresolved declaration `unix::Rpc`	in api
 shared	dynamic	sites in api/project_service #6a032362
 -- dynamic	sites in api/project_service/tests
 dynamic	S3Outcomes	on main
@@ -7959,7 +7882,6 @@ shared	dynamic	sites in the stdlib #b156bdf1
 == dna/api/project_service/tests/operations_test.hl
 row	OperationCases@main2	OperationCases	main	default
 row	__lib_dna__core___record__GitRecord@main1	__lib_dna__core___record__GitRecord	main	default
-dynamic	<hole>	on unknown (no instance)|unresolved declaration `__api_serve`|unresolved declaration `http::Rpc`|unresolved declaration `unix::Rpc`	in api
 -- dynamic	sites in api/project_service
 dynamic	__StdJsonBuilder	on main|unknown (no caller)|unknown (no instance)
 dynamic	__lib_dna__operations___governance_command__GovernanceCommandCodec	on main|unknown (no caller)|unknown (no instance)
@@ -7973,7 +7895,6 @@ shared	dynamic	sites in the stdlib #919aadb4
 
 == dna/api/tests/attempt_recovery_api_test.hl
 hole	RecoveryCases@main2.f	reuse `f`
-dynamic	<hole>	on unknown (no instance)|unresolved declaration `__api_serve`|unresolved declaration `http::Rpc`|unresolved declaration `unix::Rpc`	in dna/api/practice_review
 -- RecoveryCases@main2	RecoveryCases
 row	~	RecoveryCases	main	default
 row	~.f	__lib_dna__api__tests__fixture___main__Fixture	main	inherited	built by __lib_dna__api__tests__fixture___main__Fixture@main1
@@ -7988,7 +7909,6 @@ row	~.f.receipts.record	__lib_dna__core___record__GitRecord	main	inherited	built
 row	~.json	__lib_dna__api__tests__fixture___main__Json	main	inherited
 shared	__lib_dna__api__tests__fixture___main__Fixture@main1	__lib_dna__api__tests__fixture___main__Fixture #48188a69
 -- dynamic	sites in dna/api
-dynamic	<hole>	on unknown (no instance)|unresolved declaration `__api_serve`|unresolved declaration `http::Rpc`|unresolved declaration `unix::Rpc`
 dynamic	__StdBytesBytesBuilder	on main|unknown (no instance)
 dynamic	__StdIoTcpStream	on main
 dynamic	__StdJsonBuilder	on main|unknown (no caller)|unknown (no instance)
@@ -8126,7 +8046,7 @@ shared	dynamic	sites in the stdlib #919aadb4
 
 == dna/api/tests/binding_review_api_test.hl
 row	BindingReviewReadCases@main1	BindingReviewReadCases	main	default
-shared	dynamic	sites in api #33b097d0
+shared	dynamic	sites in api #ea696d87
 -- dynamic	sites in api/tests
 dynamic	BindingReadAuthority	on main
 dynamic	BindingReviewAuthority	on main
@@ -8178,6 +8098,7 @@ hole	CommandCases@main4.host	reuse `host`
 hole	CommandCases@main4.commands	reuse `commands`
 hole	CommandCases@main4.commands.provider	reuse `host`
 row	__lib_dna__api__tests__commands___main__ScriptedCommands@main2	__lib_dna__api__tests__commands___main__ScriptedCommands	main	default
+dynamic	__StdJsonBuilder	on main	in api/tests/commands
 -- CommandCases@main4	CommandCases
 row	~	CommandCases	main	default
 row	~.commands	__lib_dna__api___commands__CommandAdmission	main	inherited	built by __lib_dna__api___commands__CommandAdmission@main3
@@ -8229,7 +8150,6 @@ row	~.task_codec	__lib_dna__operations___task_command__TaskCommandCodec	main	inh
 row	~.wire	__lib_dna__api___commands__CommandWire	main	inherited
 shared	__lib_dna__api__tests__fixture___main__Fixture@main1	__lib_dna__api__tests__fixture___main__Fixture #48188a69
 -- dynamic	sites in api
-dynamic	<hole>	on unknown (no instance)|unresolved declaration `__api_serve`|unresolved declaration `http::Rpc`|unresolved declaration `unix::Rpc`
 dynamic	__StdBytesBytesBuilder	on main|unknown (no caller)|unknown (no instance)
 dynamic	__StdJsonBuilder	on main|unknown (no caller)|unknown (no instance)
 dynamic	__lib_dna__api___commands__CommandWire	on main|unknown (no caller)|unknown (no instance)
@@ -8247,9 +8167,6 @@ dynamic	__StdBytesBytesBuilder	on main
 dynamic	__lib_dna__api___commands__CommandAdmission	on main
 dynamic	__lib_dna__api___main__Wire	on main
 dynamic	__lib_dna__core___roles__RecordRoles	on main
--- dynamic	sites in api/tests/commands
-dynamic	<hole>	on unknown (no instance)|unresolved declaration `__api_serve`|unresolved declaration `http::Rpc`|unresolved declaration `unix::Rpc`
-dynamic	__StdJsonBuilder	on main
 shared	dynamic	sites in api/tests/fixture #56f971bf
 shared	dynamic	sites in core #c1bf73a0
 shared	dynamic	sites in operations #07070d4b
@@ -8270,7 +8187,7 @@ row	~.f.receipts	__lib_dna__core___record__GitReceipts	main	inherited	built by _
 row	~.f.receipts.record	__lib_dna__core___record__GitRecord	main	inherited	built by __lib_dna__api__tests__fixture___main__Fixture@main1.receipts.record
 row	~.json	__lib_dna__api__tests__fixture___main__Json	main	inherited
 shared	__lib_dna__api__tests__fixture___main__Fixture@main1	__lib_dna__api__tests__fixture___main__Fixture #48188a69
-shared	dynamic	sites in api #33b097d0
+shared	dynamic	sites in api #ea696d87
 -- dynamic	sites in api/tests
 dynamic	__lib_dna__api___main__Api	on main
 dynamic	__lib_dna__core___workflow_definition__WorkflowCatalog	on main
@@ -8308,7 +8225,7 @@ row	~.catalog.members	__lib_dna__core___workflow_definition__MemberDefRows	main	
 row	~.catalog.stats	__lib_dna__core___workflow_definition__DefStatRows	main	inherited
 row	~.catalog.workflows	__lib_dna__core___workflow_definition__WorkflowDefRows	main	inherited
 shared	__lib_dna__api__tests__fixture___main__Fixture@main1	__lib_dna__api__tests__fixture___main__Fixture #48188a69
-shared	dynamic	sites in api #33b097d0
+shared	dynamic	sites in api #ea696d87
 -- dynamic	sites in api/tests
 dynamic	__StdBytesBytesBuilder	on main
 dynamic	__lib_dna__api___definition_drafts__DefinitionDraftWire	on main
@@ -8342,7 +8259,7 @@ row	~.host.catalog.stats	__lib_dna__core___workflow_definition__DefStatRows	main
 row	~.host.catalog.workflows	__lib_dna__core___workflow_definition__WorkflowDefRows	main	inherited
 row	~.json	__lib_dna__api__tests__fixture___main__Json	main	inherited
 shared	__lib_dna__api__tests__fixture___main__Fixture@main1	__lib_dna__api__tests__fixture___main__Fixture #48188a69
-shared	dynamic	sites in api #33b097d0
+shared	dynamic	sites in api #ea696d87
 shared	dynamic	sites in api/tests/fixture #56f971bf
 shared	dynamic	sites in core #b3c0821e
 shared	dynamic	sites in operations #4444350e
@@ -8350,7 +8267,7 @@ shared	dynamic	sites in the stdlib #919aadb4
 
 == dna/api/tests/edge_review_api_test.hl
 row	EdgeReviewReadCases@main1	EdgeReviewReadCases	main	default
-shared	dynamic	sites in api #33b097d0
+shared	dynamic	sites in api #ea696d87
 -- dynamic	sites in api/tests
 dynamic	EdgeReadAuthority	on main
 dynamic	EdgeReviewAuthority	on main
@@ -8425,7 +8342,6 @@ row	~.f.receipts	__lib_dna__core___record__GitReceipts	main	inherited
 row	~.f.receipts.record	__lib_dna__core___record__GitRecord	main	inherited
 shared	__lib_dna__api__tests__fixture___main__Fixture@main1	__lib_dna__api__tests__fixture___main__Fixture #48188a69
 -- dynamic	sites in api
-dynamic	<hole>	on unknown (no instance)|unresolved declaration `__api_serve`|unresolved declaration `http::Rpc`|unresolved declaration `unix::Rpc`
 dynamic	__StdBytesBytesBuilder	on main
 dynamic	__StdIoTcpStream	on main
 dynamic	__StdJsonBuilder	on main|unknown (no instance)
@@ -8673,7 +8589,7 @@ row	~.roles.rows	__lib_dna__core___journal__EventRows	main	inherited
 row	~.roles.seats	__lib_dna__core___roles__HoldsReader	main	inherited
 row	~.wire	__lib_dna__api___commands__CommandWire	main	inherited
 shared	__lib_dna__api__tests__fixture___main__Fixture@main1	__lib_dna__api__tests__fixture___main__Fixture #48188a69
-shared	dynamic	sites in api #b8033fda
+shared	dynamic	sites in api #06a72893
 -- dynamic	sites in api/tests
 dynamic	__StdBytesBytesBuilder	on main
 dynamic	__lib_dna__api___knowledge_commands__KnowledgeAdmission	on main
@@ -8690,7 +8606,6 @@ shared	dynamic	sites in the stdlib #919aadb4
 == dna/api/tests/knowledge_local_test.hl
 row	LocalCommandCases@main1	LocalCommandCases	main	default
 -- dynamic	sites in api
-dynamic	<hole>	on unknown (no instance)|unresolved declaration `__api_serve`|unresolved declaration `http::Rpc`|unresolved declaration `unix::Rpc`
 dynamic	__lib_dna__core___record__GitRecord	on main|unknown (no caller)|unknown (no instance)
 dynamic	__lib_dna__operations___knowledge_admission__KnowledgeCommands	on main|unknown (no instance)
 dynamic	__lib_dna__operations___knowledge_policy__FixedKnowledgeAuthority	on main
@@ -8716,7 +8631,6 @@ shared	dynamic	sites in the stdlib #919aadb4
 == dna/api/tests/knowledge_memory_refused_test.hl
 dynamic	__lib_dna__api___knowledge_memory__LocalKnowledge	on unknown (`child` passed as a value)	in api/tests
 -- dynamic	sites in api
-dynamic	<hole>	on unknown (no instance)|unresolved declaration `__api_serve`|unresolved declaration `http::Rpc`|unresolved declaration `unix::Rpc`
 dynamic	__StdBytesBytesBuilder	on unknown (`child` passed as a value)|unknown (no caller)
 dynamic	__StdJsonBuilder	on unknown (`child` passed as a value)|unknown (no instance)
 dynamic	__lib_dna__api___http__Http	on unknown (`child` passed as a value)|unknown (no caller)|unknown (no instance)
@@ -8741,7 +8655,7 @@ dynamic	__StdIterLines	on unknown (`child` passed as a value)
 == dna/api/tests/organization_candidate_api_test.hl
 row	SourceCandidateCases@main1	SourceCandidateCases	main	default
 row	SourceCandidateCases@main2	SourceCandidateCases	main	default
-shared	dynamic	sites in api #a5657e08
+shared	dynamic	sites in api #0aebc4d4
 -- dynamic	sites in api/tests
 dynamic	__lib_dna__api___commands__CommandWire	on main
 dynamic	__lib_dna__api___main__Api	on main
@@ -8898,7 +8812,7 @@ row	~.roles.seats	__lib_dna__core___roles__HoldsReader	main	inherited
 row	~.structure_codec	__lib_dna__operations___structure_command__StructureCommandCodec	main	inherited
 row	~.task_codec	__lib_dna__operations___task_command__TaskCommandCodec	main	inherited
 row	~.wire	__lib_dna__api___commands__CommandWire	main	inherited
-shared	dynamic	sites in api #b8033fda
+shared	dynamic	sites in api #06a72893
 -- dynamic	sites in api/tests
 dynamic	__StdBytesBytesBuilder	on main
 dynamic	__lib_dna__operations___governance_command__GovernanceCommandCodec	on main
@@ -8909,7 +8823,7 @@ shared	dynamic	sites in the stdlib #919aadb4
 
 == dna/api/tests/organization_impact_api_test.hl
 row	OrganizationImpactApiCases@main1	OrganizationImpactApiCases	main	default
-shared	dynamic	sites in api #a5657e08
+shared	dynamic	sites in api #0aebc4d4
 -- dynamic	sites in api/tests
 dynamic	ImpactWork	on main
 dynamic	__lib_dna__api___commands__CommandWire	on main
@@ -8930,8 +8844,6 @@ shared	dynamic	sites in the stdlib #919aadb4
 
 == dna/api/tests/organization_receipt_api_test.hl
 row	SourceReceiptCases@main1	SourceReceiptCases	main	default
-dynamic	<hole>	on unknown (no instance)|unresolved declaration `__api_serve`|unresolved declaration `http::Rpc`|unresolved declaration `unix::Rpc`	in dna/api
-dynamic	<hole>	on unknown (no instance)|unresolved declaration `__api_serve`|unresolved declaration `http::Rpc`|unresolved declaration `unix::Rpc`	in dna/api/practice_review
 -- dynamic	sites in dna/api/tests
 dynamic	SourceService	on main
 dynamic	__lib_dna__api__practice_review___provider__PracticeReviewCommands	on main
@@ -8950,7 +8862,7 @@ dynamic	__lib_dna__organization_source___organization_dependencies__Organization
 
 == dna/api/tests/organization_status_api_test.hl
 row	OrganizationStatusCases@main1	OrganizationStatusCases	main	default
-shared	dynamic	sites in api #a5657e08
+shared	dynamic	sites in api #0aebc4d4
 -- dynamic	sites in api/tests
 dynamic	StatusRuntimeProbe	on main
 dynamic	__lib_dna__api___commands__CommandWire	on main
@@ -8976,7 +8888,6 @@ domain	pool:io
 hole	App@literal1.server.conns.handler.handler	reuse `self.handler`
 hole	App@literal1.server.conns.handler.handler	unresolved declaration `std::http::Handler`
 row	App@literal1	App	main	default
-dynamic	<hole>	on unknown (no instance)|unresolved declaration `__api_serve`|unresolved declaration `http::Rpc`|unresolved declaration `unix::Rpc`	in api
 shared	App@literal1.server	__StdHttpServer #ca00e9fa
 -- dynamic	sites in api/tests
 dynamic	Cases	on main
@@ -8998,7 +8909,6 @@ row	~	ReadWireCases	main	default
 row	~.json	__lib_dna__operations___organization_json__OrganizationJson	main	inherited
 row	~.wire	__lib_dna__api___main__Wire	main	inherited
 -- dynamic	sites in api
-dynamic	<hole>	on unknown (no instance)|unresolved declaration `__api_serve`|unresolved declaration `http::Rpc`|unresolved declaration `unix::Rpc`
 dynamic	__StdBytesBytesBuilder	on main|unknown (no caller)|unknown (no instance)
 dynamic	__StdJsonBuilder	on main|unknown (no caller)|unknown (no instance)
 dynamic	__lib_dna__api___commands__CommandWire	on main|unknown (no caller)|unknown (no instance)
@@ -9025,9 +8935,7 @@ shared	dynamic	sites in the stdlib #919aadb4
 
 == dna/api/tests/task_create_api_test.hl
 row	CreateApiCases@main1	CreateApiCases	main	default
-dynamic	<hole>	on unknown (no instance)|unresolved declaration `__api_serve`|unresolved declaration `http::Rpc`|unresolved declaration `unix::Rpc`	in dna/api/practice_review
 -- dynamic	sites in dna/api
-dynamic	<hole>	on unknown (no instance)|unresolved declaration `__api_serve`|unresolved declaration `http::Rpc`|unresolved declaration `unix::Rpc`
 dynamic	__lib_dna__core___record__GitRecord	on main|unknown (no caller)|unknown (no instance)
 dynamic	__lib_dna__operations___governance_admission__GovernanceCommands	on main|unknown (no instance)
 dynamic	__lib_dna__operations___governance_admission__GovernanceJournal	on main|unknown (no instance)
@@ -9058,7 +8966,6 @@ shared	dynamic	sites in the stdlib #919aadb4
 == dna/api/tests/task_query_test.hl
 row	TaskQueryCases@main1	TaskQueryCases	main	default
 -- dynamic	sites in api
-dynamic	<hole>	on unknown (no instance)|unresolved declaration `__api_serve`|unresolved declaration `http::Rpc`|unresolved declaration `unix::Rpc`
 dynamic	__StdBytesBytesBuilder	on main|unknown (no caller)|unknown (no instance)
 dynamic	__StdJsonBuilder	on main|unknown (no caller)|unknown (no instance)
 -- dynamic	sites in api/tests
@@ -9068,7 +8975,7 @@ shared	dynamic	sites in the stdlib #919aadb4
 
 == dna/api/tests/tasks_api_test.hl
 row	TaskApiCases@main1	TaskApiCases	main	default
-shared	dynamic	sites in api #33b097d0
+shared	dynamic	sites in api #ea696d87
 -- dynamic	sites in api/tests
 dynamic	__lib_dna__api___commands__CommandWire	on main
 dynamic	__lib_dna__api___main__Api	on main
@@ -9152,7 +9059,7 @@ row	~.f.receipts	__lib_dna__core___record__GitReceipts	main	inherited	built by _
 row	~.f.receipts.record	__lib_dna__core___record__GitRecord	main	inherited	built by __lib_dna__api__tests__fixture___main__Fixture@main1.receipts.record
 row	~.json	__lib_dna__api__tests__fixture___main__Json	main	inherited
 shared	__lib_dna__api__tests__fixture___main__Fixture@main1	__lib_dna__api__tests__fixture___main__Fixture #48188a69
-shared	dynamic	sites in api #33b097d0
+shared	dynamic	sites in api #ea696d87
 -- dynamic	sites in api/tests
 dynamic	__StdJsonBuilder	on main
 dynamic	__lib_dna__api___main__Api	on main
@@ -11062,7 +10969,6 @@ dynamic	__StdBytesBytesBuilder	on unknown (`maximum` passed as a value)|unknown 
 dynamic	__StdIterLines	on unknown (`maximum` passed as a value)
 
 == dna/tests/knowledge_store_test.hl
-dynamic	<hole>	on unknown (no instance)|unresolved declaration `__api_serve`|unresolved declaration `http::Rpc`|unresolved declaration `unix::Rpc`	in api
 dynamic	__lib_dna__core___memory_store__Pq	on main	in tests
 dynamic	__StdBytesBytesBuilder	on main|unknown (no instance)	in the stdlib
 -- App@main1	App
@@ -11464,7 +11370,6 @@ hole	App@literal1.server.conns.handler.handler	reuse `self.handler`
 hole	App@literal1.server.conns.handler.handler	unresolved declaration `std::http::Handler`
 row	App@literal1	App	main	default
 row	App@literal1.head	__StdProcessChild	main	default
-dynamic	<hole>	on unknown (no instance)|unresolved declaration `__api_serve`|unresolved declaration `http::Rpc`|unresolved declaration `unix::Rpc`	in api
 dynamic	__StdJsonBuilder	on main|unknown (no caller)|unknown (no instance)	in operations
 shared	App@literal1.server	__StdHttpServer #ca00e9fa
 shared	dynamic	sites in core #b2c4d9f5
@@ -11491,7 +11396,6 @@ row	RpcDesk@literal1.list	__lib_todo_todo_Todos	pool:work	entry	off owner
 row	RpcDesk@literal1.roles	__lib_auth_auth_Grants	main	default
 row	RpcDesk@literal1.tokens	__lib_auth_auth_Tokens	main	default
 row	RpcDesk@literal1.watcher	Watcher	main	default
-dynamic	<hole>	on main|unresolved declaration `__api_serve`	in tests
 
 == dna/tests/onboarding/todo/api/tests/sense/sense_test.hl
 root	SenseDesk	the entry
@@ -11503,7 +11407,6 @@ row	SenseDesk@literal1.broker	__lib_tests__fake___fake_nats__Broker	pinned:Sense
 row	SenseDesk@literal1.list	__lib_todo_todo_Todos	pool:work	entry	off owner
 row	SenseDesk@literal1.mailbox	__lib_tests__fake___fake_nats__Mailbox	main	default
 dynamic	__StdIoTcpStream	on pinned:SenseDesk@literal1.broker	in tests/fake
-dynamic	<hole>	on main|unresolved declaration `__api_serve`	in tests/sense
 dynamic	__StdIoTcpStream	on pinned:SenseDesk@literal1.sense	in the seed
 dynamic	__StdBytesBytesBuilder	on pinned:SenseDesk@literal1.sense	in the stdlib
 shared	SenseDesk@literal1.sense	__lib_tests__fake___fake_nats__Sense #206ba75b
@@ -11518,7 +11421,6 @@ row	SilentDesk@literal1.broker	__lib_tests__fake___fake_nats__Broker	pinned:Sile
 row	SilentDesk@literal1.list	__lib_todo_todo_Todos	pool:work	entry	off owner
 row	SilentDesk@literal1.mailbox	__lib_tests__fake___fake_nats__Mailbox	main	default
 dynamic	__StdIoTcpStream	on pinned:SilentDesk@literal1.broker	in tests/fake
-dynamic	<hole>	on main|unresolved declaration `__api_serve`	in tests/silent
 dynamic	__StdIoTcpStream	on pinned:SilentDesk@literal1.sense	in the seed
 dynamic	__StdBytesBytesBuilder	on pinned:SilentDesk@literal1.sense	in the stdlib
 shared	SilentDesk@literal1.sense	__lib_tests__fake___fake_nats__Sense #206ba75b
@@ -13208,8 +13110,6 @@ row	TrioApi@literal1.tally	Tally	main	default
 
 == dna/api
 root	Head	the entry
-template	Head@literal1	unbounded (built in a locus body, which can run any number of times)
-template	Head@literal2	unbounded (built in a locus body, which can run any number of times)
 domain	pool:io
 domain	pool:commands
 domain	pool:__api_unix	async_io
@@ -13316,7 +13216,6 @@ row	~.handler.roles.seats	__lib_dna__core___roles__HoldsReader	pool:io	inherited
 row	~.handler.web	WebAssets	pool:io	inherited
 row	~.relay	__StdIoTcpRelay	pool:io	inherited
 -- dynamic	sites in api
-dynamic	<hole>	on main|unresolved declaration `__api_serve`|unresolved declaration `http::Rpc`|unresolved declaration `unix::Rpc`
 dynamic	CommandWire	on pool:io
 dynamic	ContextWire	on pool:io
 dynamic	DefinitionDraftWire	on pool:io
@@ -13460,8 +13359,8 @@ shared	dynamic	sites in the stdlib #d1d49800
 
 == dna/api/practice_review
 root	PracticeReviewHead	the entry
-template	PracticeReviewHead@literal1	unbounded (built in a locus body, which can run any number of times)
-template	PracticeReviewHead@literal2	unbounded (built in a locus body, which can run any number of times)
+template	PracticeReviewHead@literal1	at most 2
+template	PracticeReviewHead@literal2	at most 2
 domain	pool:io
 domain	pool:commands
 domain	pool:__api_unix	async_io
@@ -13603,7 +13502,6 @@ row	~.handler.roles.seats	__lib_dna__core___roles__HoldsReader	pool:io	inherited
 row	~.handler.web	__lib_dna__api___web__WebAssets	pool:io	inherited
 row	~.relay	__StdIoTcpRelay	pool:io	inherited
 -- dynamic	sites in dna/api
-dynamic	<hole>	on unknown (no instance)|unresolved declaration `__api_serve`|unresolved declaration `http::Rpc`|unresolved declaration `unix::Rpc`
 dynamic	__StdBytesBytesBuilder	on main|pool:commands|pool:io
 dynamic	__StdIoTcpStream	on pool:io
 dynamic	__StdJsonBuilder	on main|pool:commands|pool:io
@@ -13656,7 +13554,6 @@ dynamic	__lib_dna__operations___queries__Queries	on pool:io
 dynamic	__lib_dna__operations___task_projection__TaskProjection	on pool:io
 dynamic	__lib_dna__operations___usage__Usage	on pool:io
 -- dynamic	sites in dna/api/practice_review
-dynamic	<hole>	on main|unresolved declaration `__api_serve`|unresolved declaration `http::Rpc`|unresolved declaration `unix::Rpc`
 dynamic	PracticeReviewCommands	on main
 dynamic	__StdApiHttpConns	on pool:__api_http
 dynamic	__StdApiHttpPeer	on pool:__api_http
@@ -13967,7 +13864,6 @@ dynamic	__StdIterLines	on main|pinned:Body@literal1.nerves
 
 == dna/api/project_service
 root	HeadMain	the entry
-template	HeadMain@literal1	unbounded (built in a locus body, which can run any number of times)
 domain	pool:io
 domain	pinned:HeadMain@literal1.watch
 domain	pool:senses
@@ -14018,7 +13914,6 @@ row	~.slots	PushSlots	pinned:~	inherited
 shared	__lib_dna__ui___main__Ui@main3	__lib_dna__ui___main__Ui #66e35d7b
 shared	__lib_dna__ui___main__Ui@main4	__lib_dna__ui___main__Ui #66e35d7b
 -- dynamic	sites in api
-dynamic	<hole>	on unknown (no instance)|unresolved declaration `__api_serve`|unresolved declaration `http::Rpc`|unresolved declaration `unix::Rpc`
 dynamic	__StdBytesBytesBuilder	on main|pool:io|unknown (no caller)|unknown (no instance)
 dynamic	__StdJsonBuilder	on main|pool:io|unknown (no caller)|unknown (no instance)
 dynamic	__lib_dna__api___http__Http	on main|pool:io|unknown (no caller)|unknown (no instance)
@@ -14105,9 +14000,8 @@ row	~.updated.catalog.stats	__lib_dna__core___workflow_definition__DefStatRows	m
 row	~.updated.catalog.workflows	__lib_dna__core___workflow_definition__WorkflowDefRows	main	inherited	built by __lib_dna__core___workflow_definition__WorkflowCatalog@main3.workflows
 shared	__lib_dna__core___workflow_definition__WorkflowCatalog@main2	__lib_dna__core___workflow_definition__WorkflowCatalog #747084a5
 shared	__lib_dna__core___workflow_definition__WorkflowCatalog@main3	__lib_dna__core___workflow_definition__WorkflowCatalog #747084a5
-shared	dynamic	sites in api #567e099a
+shared	dynamic	sites in api #d3993570
 -- dynamic	sites in api/tests/catalog
-dynamic	<hole>	on main|unresolved declaration `__api_serve`|unresolved declaration `http::Rpc`|unresolved declaration `unix::Rpc`
 dynamic	__StdApiHttpConns	on pool:__api_http
 dynamic	__StdApiHttpPeer	on pool:__api_http
 dynamic	__StdApiUnixConns	on pool:__api_unix
@@ -14163,9 +14057,8 @@ shared	FixtureHead@literal1.__rpc_u_1	__StdApiUnixListener #e8cfe0e1
 shared	FixtureHead@literal1.commands	__lib_dna__api___commands__Commands #9a3e4d3c
 shared	FixtureHead@literal1.roles	__lib_dna__core___roles__RecordRoles #a6435742
 shared	FixtureHead@literal1.srv	__StdHttpServer #05866f9a
-shared	dynamic	sites in api #567e099a
+shared	dynamic	sites in api #d3993570
 -- dynamic	sites in api/tests/commands
-dynamic	<hole>	on main|unresolved declaration `__api_serve`|unresolved declaration `http::Rpc`|unresolved declaration `unix::Rpc`
 dynamic	__StdApiHttpConns	on pool:__api_http
 dynamic	__StdApiHttpPeer	on pool:__api_http
 dynamic	__StdApiUnixConns	on pool:__api_unix
@@ -14866,7 +14759,6 @@ row	~	Sense	pinned:~	entry	off owner
 row	~.nerves	Nerves	pinned:~	inherited
 row	~.nerves.credential	__StdSecretCredential	pinned:~	inherited
 -- dynamic	sites in the seed
-dynamic	<hole>	on main|unresolved declaration `__api_receivers`|unresolved declaration `__api_serve`|unresolved declaration `http::Rpc`|unresolved declaration `mcp::Rpc`
 dynamic	__StdApiHttpConns	on pool:__api_http
 dynamic	__StdApiHttpPeer	on pool:__api_http
 dynamic	__StdApiWsConns	on pool:__api_ws
@@ -16534,15 +16426,25 @@ row	~	__lib_tests__hale__api__client__public___client__FillsSubscription	main	de
 row	~.ws	__lib_tests__hale__api__client__public___client__ApiWs	main	inherited
 row	~.ws.stream	__StdIoTcpStream	main	inherited
 
-== shared sites in api #33b097d0
-dynamic	<hole>	on unknown (no instance)|unresolved declaration `__api_serve`|unresolved declaration `http::Rpc`|unresolved declaration `unix::Rpc`
+== shared sites in api #06a72893
+dynamic	__StdBytesBytesBuilder	on main|unknown (no caller)|unknown (no instance)
+dynamic	__StdJsonBuilder	on main|unknown (no caller)|unknown (no instance)
+dynamic	__lib_dna__api___http__Http	on main|unknown (no caller)|unknown (no instance)
+dynamic	__lib_dna__api___source__JsonShape	on main
+dynamic	__lib_dna__core___record__GitRecord	on main|unknown (no caller)|unknown (no instance)
+dynamic	__lib_dna__operations___governance_admission__GovernanceCommands	on main|unknown (no instance)
+dynamic	__lib_dna__operations___governance_admission__GovernanceJournal	on main|unknown (no instance)
+dynamic	__lib_dna__operations___governance_admission__GovernanceReceipts	on main|unknown (no instance)
+dynamic	__lib_dna__operations___organization_json__OrganizationJson	on main|unknown (no caller)|unknown (no instance)
+
+== shared sites in api #0aebc4d4
 dynamic	__StdBytesBytesBuilder	on main|unknown (no instance)
 dynamic	__StdIoTcpStream	on main
 dynamic	__StdJsonBuilder	on main|unknown (no caller)|unknown (no instance)
 dynamic	__lib_dna__api___commands__CommandWire	on main
 dynamic	__lib_dna__api___context__ContextWire	on main
 dynamic	__lib_dna__api___definition_drafts__DefinitionDraftWire	on main
-dynamic	__lib_dna__api___http__Http	on main|unknown (no caller)|unknown (no instance)
+dynamic	__lib_dna__api___http__Http	on main|unknown (no caller)
 dynamic	__lib_dna__api___knowledge__KnowledgeWire	on main|unknown (no instance)
 dynamic	__lib_dna__api___main__Wire	on main
 dynamic	__lib_dna__api___organization_drafts__OrganizationDraftWire	on main
@@ -16557,6 +16459,7 @@ dynamic	__lib_dna__api___workflows__WorkflowWire	on main
 dynamic	__lib_dna__core___memory_spine__MemoryKnowledge	on main
 dynamic	__lib_dna__core___memory_spine__MemoryLedger	on main
 dynamic	__lib_dna__core___organization_launch__OrganizationLaunchCodec	on main
+dynamic	__lib_dna__core___organization_source_request__OrganizationSourceRequestCodec	on main
 dynamic	__lib_dna__core___record__GitJournal	on main|unknown (no instance)
 dynamic	__lib_dna__core___record__GitReceipts	on main
 dynamic	__lib_dna__core___record__GitRecord	on main|unknown (no caller)|unknown (no instance)
@@ -16568,20 +16471,20 @@ dynamic	__lib_dna__operations___definitions__Definitions	on main
 dynamic	__lib_dna__operations___governance_admission__GovernanceCommands	on main|unknown (no instance)
 dynamic	__lib_dna__operations___governance_admission__GovernanceJournal	on main|unknown (no instance)
 dynamic	__lib_dna__operations___governance_admission__GovernanceReceipts	on main|unknown (no instance)
-dynamic	__lib_dna__operations___governance_command__GovernanceCommandCodec	on main|unknown (no instance)
+dynamic	__lib_dna__operations___governance_command__GovernanceCommandCodec	on main
 dynamic	__lib_dna__operations___knowledge_admission__KnowledgeCommands	on main|unknown (no instance)
 dynamic	__lib_dna__operations___organization__Organization	on main
 dynamic	__lib_dna__operations___organization_application__OrganizationApplication	on main
+dynamic	__lib_dna__operations___organization_command__OrganizationCommandCodec	on main
 dynamic	__lib_dna__operations___organization_impact__OrganizationImpact	on main
-dynamic	__lib_dna__operations___organization_json__OrganizationJson	on main|unknown (no caller)|unknown (no instance)
-dynamic	__lib_dna__operations___organization_projection__OrganizationProjection	on main|unknown (no instance)
+dynamic	__lib_dna__operations___organization_json__OrganizationJson	on main|unknown (no caller)
+dynamic	__lib_dna__operations___organization_projection__OrganizationProjection	on main
 dynamic	__lib_dna__operations___queries__NoReceipts	on main
-dynamic	__lib_dna__operations___queries__Queries	on main|unknown (no instance)
+dynamic	__lib_dna__operations___queries__Queries	on main
 dynamic	__lib_dna__operations___task_projection__TaskProjection	on main
 dynamic	__lib_dna__operations___usage__Usage	on main
 
-== shared sites in api #567e099a
-dynamic	<hole>	on unknown (no instance)|unresolved declaration `__api_serve`|unresolved declaration `http::Rpc`|unresolved declaration `unix::Rpc`
+== shared sites in api #d3993570
 dynamic	__StdBytesBytesBuilder	on pool:commands|pool:io
 dynamic	__StdIoTcpStream	on pool:io
 dynamic	__StdJsonBuilder	on pool:commands|pool:io
@@ -16634,15 +16537,14 @@ dynamic	__lib_dna__operations___queries__Queries	on pool:io
 dynamic	__lib_dna__operations___task_projection__TaskProjection	on pool:io
 dynamic	__lib_dna__operations___usage__Usage	on pool:io
 
-== shared sites in api #a5657e08
-dynamic	<hole>	on unknown (no instance)|unresolved declaration `__api_serve`|unresolved declaration `http::Rpc`|unresolved declaration `unix::Rpc`
+== shared sites in api #ea696d87
 dynamic	__StdBytesBytesBuilder	on main|unknown (no instance)
 dynamic	__StdIoTcpStream	on main
 dynamic	__StdJsonBuilder	on main|unknown (no caller)|unknown (no instance)
 dynamic	__lib_dna__api___commands__CommandWire	on main
 dynamic	__lib_dna__api___context__ContextWire	on main
 dynamic	__lib_dna__api___definition_drafts__DefinitionDraftWire	on main
-dynamic	__lib_dna__api___http__Http	on main|unknown (no caller)
+dynamic	__lib_dna__api___http__Http	on main|unknown (no caller)|unknown (no instance)
 dynamic	__lib_dna__api___knowledge__KnowledgeWire	on main|unknown (no instance)
 dynamic	__lib_dna__api___main__Wire	on main
 dynamic	__lib_dna__api___organization_drafts__OrganizationDraftWire	on main
@@ -16657,7 +16559,6 @@ dynamic	__lib_dna__api___workflows__WorkflowWire	on main
 dynamic	__lib_dna__core___memory_spine__MemoryKnowledge	on main
 dynamic	__lib_dna__core___memory_spine__MemoryLedger	on main
 dynamic	__lib_dna__core___organization_launch__OrganizationLaunchCodec	on main
-dynamic	__lib_dna__core___organization_source_request__OrganizationSourceRequestCodec	on main
 dynamic	__lib_dna__core___record__GitJournal	on main|unknown (no instance)
 dynamic	__lib_dna__core___record__GitReceipts	on main
 dynamic	__lib_dna__core___record__GitRecord	on main|unknown (no caller)|unknown (no instance)
@@ -16669,30 +16570,17 @@ dynamic	__lib_dna__operations___definitions__Definitions	on main
 dynamic	__lib_dna__operations___governance_admission__GovernanceCommands	on main|unknown (no instance)
 dynamic	__lib_dna__operations___governance_admission__GovernanceJournal	on main|unknown (no instance)
 dynamic	__lib_dna__operations___governance_admission__GovernanceReceipts	on main|unknown (no instance)
-dynamic	__lib_dna__operations___governance_command__GovernanceCommandCodec	on main
+dynamic	__lib_dna__operations___governance_command__GovernanceCommandCodec	on main|unknown (no instance)
 dynamic	__lib_dna__operations___knowledge_admission__KnowledgeCommands	on main|unknown (no instance)
 dynamic	__lib_dna__operations___organization__Organization	on main
 dynamic	__lib_dna__operations___organization_application__OrganizationApplication	on main
-dynamic	__lib_dna__operations___organization_command__OrganizationCommandCodec	on main
 dynamic	__lib_dna__operations___organization_impact__OrganizationImpact	on main
-dynamic	__lib_dna__operations___organization_json__OrganizationJson	on main|unknown (no caller)
-dynamic	__lib_dna__operations___organization_projection__OrganizationProjection	on main
+dynamic	__lib_dna__operations___organization_json__OrganizationJson	on main|unknown (no caller)|unknown (no instance)
+dynamic	__lib_dna__operations___organization_projection__OrganizationProjection	on main|unknown (no instance)
 dynamic	__lib_dna__operations___queries__NoReceipts	on main
-dynamic	__lib_dna__operations___queries__Queries	on main
+dynamic	__lib_dna__operations___queries__Queries	on main|unknown (no instance)
 dynamic	__lib_dna__operations___task_projection__TaskProjection	on main
 dynamic	__lib_dna__operations___usage__Usage	on main
-
-== shared sites in api #b8033fda
-dynamic	<hole>	on unknown (no instance)|unresolved declaration `__api_serve`|unresolved declaration `http::Rpc`|unresolved declaration `unix::Rpc`
-dynamic	__StdBytesBytesBuilder	on main|unknown (no caller)|unknown (no instance)
-dynamic	__StdJsonBuilder	on main|unknown (no caller)|unknown (no instance)
-dynamic	__lib_dna__api___http__Http	on main|unknown (no caller)|unknown (no instance)
-dynamic	__lib_dna__api___source__JsonShape	on main
-dynamic	__lib_dna__core___record__GitRecord	on main|unknown (no caller)|unknown (no instance)
-dynamic	__lib_dna__operations___governance_admission__GovernanceCommands	on main|unknown (no instance)
-dynamic	__lib_dna__operations___governance_admission__GovernanceJournal	on main|unknown (no instance)
-dynamic	__lib_dna__operations___governance_admission__GovernanceReceipts	on main|unknown (no instance)
-dynamic	__lib_dna__operations___organization_json__OrganizationJson	on main|unknown (no caller)|unknown (no instance)
 
 == shared sites in api/project_service #6a032362
 dynamic	__StdJsonBuilder	on main|unknown (no caller)|unknown (no instance)
@@ -17560,18 +17448,25 @@ dynamic	__StdIoTcpConnInline	on pool:io
 dynamic	__StdIoTcpConnections	on pool:io
 dynamic	__StdIoTcpStream	on pool:io
 
-== shared sites in the seed #0ae7b8f9
-dynamic	Big	on main
-dynamic	Small	on main
-
-== shared sites in the seed #38292389
-dynamic	<hole>	on main|unresolved declaration `__api_receivers`|unresolved declaration `__api_serve`|unresolved declaration `unix::Rpc`
+== shared sites in the seed #09510ed0
 dynamic	__StdApiUnixConns	on pool:__api_unix
 dynamic	__StdApiUnixPeer	on pool:__api_unix
 dynamic	__StdIoTcpConnFlow	on pool:__api_unix
 dynamic	__StdIoTcpConnInline	on pool:__api_unix
 dynamic	__StdIoTcpConnections	on pool:__api_unix|unknown (no instance)
 dynamic	__StdIoTcpStream	on pool:__api_unix|unknown (no instance)
+
+== shared sites in the seed #0ae7b8f9
+dynamic	Big	on main
+dynamic	Small	on main
+
+== shared sites in the seed #1c214750
+dynamic	__StdApiHttpConns	on pool:__api_http
+dynamic	__StdApiHttpPeer	on pool:__api_http
+dynamic	__StdIoTcpConnFlow	on pool:__api_http
+dynamic	__StdIoTcpConnInline	on pool:__api_http
+dynamic	__StdIoTcpConnections	on pool:__api_http|unknown (no instance)
+dynamic	__StdIoTcpStream	on pool:__api_http|unknown (no instance)
 
 == shared sites in the seed #3837ddcb
 dynamic	__StdIoTcpConnFlow	on pool:one|pool:zero
@@ -17592,15 +17487,6 @@ dynamic	__StdIoTcpConnInline	on pool:__api_ws
 dynamic	__StdIoTcpConnections	on pool:__api_ws|unknown (no instance)
 dynamic	__StdIoTcpStream	on pool:__api_ws|unknown (no instance)
 
-== shared sites in the seed #7c55c618
-dynamic	<hole>	on main|unresolved declaration `__api_serve`|unresolved declaration `http::Rpc`
-dynamic	__StdApiHttpConns	on pool:__api_http
-dynamic	__StdApiHttpPeer	on pool:__api_http
-dynamic	__StdIoTcpConnFlow	on pool:__api_http
-dynamic	__StdIoTcpConnInline	on pool:__api_http
-dynamic	__StdIoTcpConnections	on pool:__api_http|unknown (no instance)
-dynamic	__StdIoTcpStream	on pool:__api_http|unknown (no instance)
-
 == shared sites in the seed #8900d651
 dynamic	Child	on pinned:App@literal1.w
 dynamic	Grand	on main|pinned:App@literal1.s
@@ -17617,6 +17503,19 @@ dynamic	__StdIoTcpConnFlow	on main
 dynamic	__StdIoTcpConnInline	on main
 dynamic	__StdIoTcpConnections	on main
 dynamic	__StdIoTcpStream	on main
+
+== shared sites in the seed #9c756fd5
+dynamic	__StdApiHttpConns	on pool:__api_http
+dynamic	__StdApiHttpPeer	on pool:__api_http
+dynamic	__StdApiUnixConns	on pool:__api_unix
+dynamic	__StdApiUnixPeer	on pool:__api_unix
+dynamic	__StdApiWsConns	on pool:__api_ws
+dynamic	__StdApiWsPeer	on pool:__api_ws|unknown (no instance)
+dynamic	__StdBytesBytesBuilder	on pool:__api_ws
+dynamic	__StdIoTcpConnFlow	on pool:__api_http|pool:__api_unix|pool:__api_ws
+dynamic	__StdIoTcpConnInline	on pool:__api_http|pool:__api_unix|pool:__api_ws
+dynamic	__StdIoTcpConnections	on pool:__api_http|pool:__api_unix|pool:__api_ws
+dynamic	__StdIoTcpStream	on pool:__api_http|pool:__api_unix|pool:__api_ws
 
 == shared sites in the seed #a43e7c60
 dynamic	B	on main
@@ -17643,8 +17542,7 @@ dynamic	__StdIoTcpConnInline	on pool:io
 dynamic	__StdIoTcpConnections	on pool:io
 dynamic	__StdIoTcpStream	on pool:io
 
-== shared sites in the seed #ce231561
-dynamic	<hole>	on main|unresolved declaration `__api_receivers`|unresolved declaration `__api_serve`|unresolved declaration `grpc::Rpc`
+== shared sites in the seed #d81b1982
 dynamic	__StdIoH2Conn	on pool:__api_grpc
 dynamic	__StdIoH2Conns	on pool:__api_grpc
 dynamic	__StdIoTcpConnFlow	on pool:__api_grpc

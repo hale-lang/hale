@@ -72,6 +72,7 @@ main locus App {
         fixture: std::api::test::Rpc = std::api::test::Rpc { };
         failures: Int = 0;
         answered_when_failed: Int = -1;
+        h: api::Exposure = api::serve(S, self.fixture, as: "svc", receivers: { Svc: self.svc }, bound: 8, on_full: refuse);
     }
     placement { svc: cooperative(pool = work) where async_io; }
     on_failure(c: Svc, err: ClosureViolation) {
@@ -81,7 +82,6 @@ main locus App {
     }
 
     run() {
-        let h = api::serve(S, self.fixture, as: "svc", receivers: { Svc: self.svc }, bound: 8, on_full: refuse);
         let f = self.fixture;
 
         f.call_as_peer(1, "Svc::fast", "{\"n\":1}", 1000);
@@ -115,7 +115,7 @@ main locus App {
         std::test::assert_eq_str(f.await_outcome(5, 3000), "result", "the restarted receiver serves again, without re-establishing the exposure");
         std::test::assert(std::str::contains(f.line(5), "\"value\":{\"n\":2}"), "in the second generation");
         std::test::assert_eq_int(self.svc.ran_fast, 2, "it ran once");
-        h.stop();
+        self.h.stop();
     }
 }
 

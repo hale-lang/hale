@@ -288,11 +288,7 @@ locus Tokens {{
     fn refused() -> String {{ return "no"; }}
 }}
 main locus Desk {{
-    params {{ probe: Probe = Probe {{ }}; bearer: Tokens = Tokens {{ }}; }}
-    fn serving() {{
-        let h = api::serve(Pb, grpc::Rpc {{ bind: "127.0.0.1:0", codec: json, principals: self.bearer }}, as: "pb", receivers: {{ Probe: self.probe }}, bound: 4, on_full: refuse);
-        h.stop();
-    }}
+    params {{ probe: Probe = Probe {{ }}; bearer: Tokens = Tokens {{ }}; h: api::Exposure = api::serve(Pb, grpc::Rpc {{ bind: "127.0.0.1:0", codec: json, principals: self.bearer }}, as: "pb", receivers: {{ Probe: self.probe }}, bound: 4, on_full: refuse); }}
     run() {{
         let w = __api_pb_decode_Whole({reviewer}) or {{ println("whole refused " + err.kind); return; }};
         println("whole " + to_string(w.part.a) + "," + to_string(w.part.b));
@@ -409,11 +405,7 @@ locus Tokens {{
     fn refused() -> String {{ return "no"; }}
 }}
 main locus Desk {{
-    params {{ probe: Probe = Probe {{ }}; bearer: Tokens = Tokens {{ }}; }}
-    fn serving() {{
-        let h = api::serve(Pb, grpc::Rpc {{ bind: "127.0.0.1:0", codec: json, principals: self.bearer }}, as: "pb", receivers: {{ Probe: self.probe }}, bound: 4, on_full: refuse);
-        h.stop();
-    }}
+    params {{ probe: Probe = Probe {{ }}; bearer: Tokens = Tokens {{ }}; h: api::Exposure = api::serve(Pb, grpc::Rpc {{ bind: "127.0.0.1:0", codec: json, principals: self.bearer }}, as: "pb", receivers: {{ Probe: self.probe }}, bound: 4, on_full: refuse); }}
     run() {{
         let s = __api_pb_decode_Shelf({bytes}) or {{ println("refused " + err.kind + " " + err.field); return; }};
         println(__api_encode_Shelf(s));
@@ -488,11 +480,7 @@ locus Tokens {
     fn refused() -> String { return "no"; }
 }
 main locus Desk {
-    params { probe: Probe = Probe { }; bearer: Tokens = Tokens { }; }
-    fn serving() {
-        let h = api::serve(Pb, grpc::Rpc { bind: "127.0.0.1:0", codec: json, principals: self.bearer }, as: "pb", receivers: { Probe: self.probe }, bound: 4, on_full: refuse);
-        h.stop();
-    }
+    params { probe: Probe = Probe { }; bearer: Tokens = Tokens { }; h: api::Exposure = api::serve(Pb, grpc::Rpc { bind: "127.0.0.1:0", codec: json, principals: self.bearer }, as: "pb", receivers: { Probe: self.probe }, bound: 4, on_full: refuse); }
     fn json(text: String) {
         let p = __api_decode_Prices(text) or { println("json refused " + err.kind + " " + err.field); return; };
         println("json " + __api_encode_Prices(p));

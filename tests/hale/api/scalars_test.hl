@@ -53,6 +53,7 @@ main locus Desk {
     params {
         sink: Sink = Sink { };
         f: std::api::test::Rpc = std::api::test::Rpc { };
+        h: api::Exposure = api::serve(Scalars, self.f, as: "scalars", receivers: { Sink: self.sink }, bound: 8, on_full: refuse);
     }
 
     fn refused(id: Int, member: String, body: String, what: String) {
@@ -73,8 +74,6 @@ main locus Desk {
     }
 
     run() {
-        let h = api::serve(Scalars, self.f, as: "scalars", receivers: { Sink: self.sink }, bound: 8, on_full: refuse);
-
         // ---- the wrong kind is refused before the handler ----
         self.refused(1, "Sink::flag", "123", "a number to a Bool");
         self.refused(2, "Sink::flag", "\"true\"", "a string to a Bool");

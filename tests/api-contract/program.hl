@@ -141,6 +141,9 @@ main locus Desk {
         hub: ws::Hub = ws::Hub { bind: "127.0.0.1:9000", principals: self.bearer, roles: self.hub_roles, as: "fills" };
         orders_failed: Int = 0;
         ledger_failed: Int = 0;
+        public: api::Exposure = api::serve(Public, http::Rpc { bind: "127.0.0.1:8080", codec: json, principals: self.bearer, roles: self.public_roles }, as: "public", receivers: { Orders: self.orders }, bound: 64, on_full: refuse);
+        partner: api::Exposure = api::serve(Public, http::Rpc { bind: "127.0.0.1:8081", codec: json, principals: self.bearer, roles: self.partner_roles }, as: "partner", receivers: { Orders: self.partner_orders }, bound: 64, on_full: refuse);
+        admin: api::Exposure = api::serve(Admin, unix::Rpc { path: "/run/desk/admin.sock", roles: self.admin_roles }, as: "admin", receivers: { Orders: self.orders }, bound: 16, on_full: refuse);
     }
     placement {
         orders: cooperative(pool = desk) where async_io;
@@ -154,13 +157,10 @@ main locus Desk {
     on_failure(l: Ledger, err: ClosureViolation) { self.ledger_failed = self.ledger_failed + 1; }
 
     run() {
-        let public = api::serve(Public, http::Rpc { bind: "127.0.0.1:8080", codec: json, principals: self.bearer, roles: self.public_roles }, as: "public", receivers: { Orders: self.orders }, bound: 64, on_full: refuse);
-        let partner = api::serve(Public, http::Rpc { bind: "127.0.0.1:8081", codec: json, principals: self.bearer, roles: self.partner_roles }, as: "partner", receivers: { Orders: self.partner_orders }, bound: 64, on_full: refuse);
-        let admin = api::serve(Admin, unix::Rpc { path: "/run/desk/admin.sock", roles: self.admin_roles }, as: "admin", receivers: { Orders: self.orders }, bound: 16, on_full: refuse);
-        std::api::run_until_stopped(public);
-        public.stop();
-        partner.stop();
-        admin.stop();
+        std::api::run_until_stopped(self.public);
+        self.public.stop();
+        self.partner.stop();
+        self.admin.stop();
     }
 }
 
