@@ -456,3 +456,108 @@ fn main() { App { }; }
     );
     assert_eq!(errors_of_seed(&types_only), Vec::<String>::new());
 }
+
+// ---- where the listeners run, by the placement table (GH #1565) ----
+
+/// A main locus serving five ways: its own exposure placed by its row
+/// (`web` on `io`) and one unplaced (`sock`); a server locus placed on an
+/// `async_io` pool (`admin` on `io2`); a server one level deeper, under a
+/// param placed on `io3`; a server on the main thread (`plain`) and one
+/// pinned (`solo`), whose listeners take the transport's shared pool.
+const PLACED: &str = r#"
+type Req { n: Int; }
+type Res { n: Int; }
+locus Cfg { fn ask(r: Req) -> Res { return Res { n: r.n }; } }
+api Admin { rpc Cfg::ask; }
+locus AdminServer {
+    params {
+        cfg: Cfg = Cfg { };
+        api: api::Exposure = api::serve(Admin, unix::Rpc { path: "/tmp/hale-1565-admin.sock" }, as: "admin", receivers: { Cfg: self.cfg }, bound: 8, on_full: refuse);
+    }
+}
+locus DeepServer {
+    params {
+        cfg: Cfg = Cfg { };
+        api: api::Exposure = api::serve(Admin, unix::Rpc { path: "/tmp/hale-1565-deep.sock" }, as: "deep", receivers: { Cfg: self.cfg }, bound: 8, on_full: refuse);
+    }
+}
+locus Wrapper { params { inner: DeepServer = DeepServer { }; } }
+locus PlainServer {
+    params {
+        cfg: Cfg = Cfg { };
+        api: api::Exposure = api::serve(Admin, unix::Rpc { path: "/tmp/hale-1565-plain.sock" }, as: "plain", receivers: { Cfg: self.cfg }, bound: 8, on_full: refuse);
+    }
+}
+locus SoloServer {
+    params {
+        cfg: Cfg = Cfg { };
+        api: api::Exposure = api::serve(Admin, unix::Rpc { path: "/tmp/hale-1565-solo.sock" }, as: "solo", receivers: { Cfg: self.cfg }, bound: 8, on_full: refuse);
+    }
+}
+main locus App {
+    params {
+        cfg: Cfg = Cfg { };
+        web: api::Exposure = api::serve(Admin, unix::Rpc { path: "/tmp/hale-1565-web.sock" }, as: "web", receivers: { Cfg: self.cfg }, bound: 8, on_full: refuse);
+        sock: api::Exposure = api::serve(Admin, unix::Rpc { path: "/tmp/hale-1565-sock.sock" }, as: "sock", receivers: { Cfg: self.cfg }, bound: 8, on_full: refuse);
+        admin: AdminServer = AdminServer { };
+        deep: Wrapper = Wrapper { };
+        plain: PlainServer = PlainServer { };
+        solo: SoloServer = SoloServer { };
+    }
+    placement {
+        web: cooperative(pool = io) where async_io;
+        admin: cooperative(pool = io2) where async_io;
+        deep: cooperative(pool = io3) where async_io;
+        solo: pinned;
+    }
+    run() { }
+}
+fn main() { App { }; }
+"#;
+
+/// Each instance the placement table places, as `path -> domain`.
+fn domains(src: &str) -> std::collections::BTreeMap<String, String> {
+    use hale_types::placement::DomainKind;
+    let parsed = hale_syntax::parse_source(src).unwrap_or_else(|d| panic!("parse: {:?}", d[0].message));
+    let snap = Snapshot::from_program(parsed, Vec::new(), Config::check(false, false)).ok().expect("a snapshot");
+    let checked = snap.demand_check().ok().expect("it checks");
+    let errors: Vec<&str> = checked.diags.iter().filter(|d| d.is_error()).map(|d| d.message.as_str()).collect();
+    assert!(errors.is_empty(), "{errors:#?}");
+    let table = snap.demand_placement().ok().expect("a placement table");
+    table
+        .instances
+        .iter()
+        .filter(|(k, _)| k.replica.is_none())
+        .map(|(k, r)| {
+            let d = match &table.domain(r.domain).kind {
+                DomainKind::Main => "main".to_string(),
+                DomainKind::Pool { name, .. } => format!("pool:{name}"),
+                DomainKind::Pinned { .. } => "pinned".to_string(),
+            };
+            (table.path_of(k), d)
+        })
+        .collect()
+}
+
+#[test]
+fn a_listener_runs_where_its_exposure_or_its_server_is_placed() {
+    let d = domains(PLACED);
+    let at = |path: &str| d.get(path).cloned().unwrap_or_else(|| panic!("no instance `{path}` in {d:#?}"));
+    // the listeners, numbered by exposure in declaration order: the
+    // servers' (1 admin, 2 deep, 3 plain, 4 solo) and then main's own
+    // (5 web, 6 sock)
+    assert_eq!(at("App.__rpc_u_5"), "pool:io", "main's exposure: its row places its listener");
+    assert_eq!(at("App.__rpc_u_6"), "pool:__api_unix", "unplaced: the transport's shared pool");
+    assert_eq!(at("App.__rpc_u_1"), "pool:io2", "a server placed on an async_io pool: its listener with it");
+    assert_eq!(at("App.__rpc_u_2"), "pool:io3", "a server a level deeper: its nearest placed ancestor's pool");
+    assert_eq!(at("App.__rpc_u_3"), "pool:__api_unix", "a server on the main thread: the shared pool");
+    assert_eq!(at("App.__rpc_u_4"), "pool:__api_unix", "a pinned server: the shared pool");
+    // the servers, and the receivers they hold, where main places them
+    assert_eq!(at("App.cfg"), "main");
+    assert_eq!(at("App.admin"), "pool:io2");
+    assert_eq!(at("App.admin.cfg"), "pool:io2");
+    assert_eq!(at("App.deep.inner"), "pool:io3");
+    assert_eq!(at("App.deep.inner.cfg"), "pool:io3");
+    assert_eq!(at("App.plain.cfg"), "main");
+    assert_eq!(at("App.solo.cfg"), "pinned");
+}
