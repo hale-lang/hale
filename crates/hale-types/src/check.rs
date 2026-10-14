@@ -896,6 +896,7 @@ pub fn check_bundle_by_declaration(
         diags: &mut diags,
         locals: ScopeStack::new(),
         params_default: None,
+        in_accept_params: false,
         current_locus: None,
         in_lifecycle: false,
         in_closure: false,
@@ -6653,6 +6654,9 @@ struct Checker<'a> {
     /// params not yet initialized when it runs (itself and every one
     /// declared after it).
     params_default: Option<(String, BTreeSet<String>)>,
+    /// While an `accept` / `release` param's type is checked: what it may
+    /// name is `refuse_non_locus_child`'s rule, not the annotation's.
+    in_accept_params: bool,
     current_locus: Option<&'a LocusInfo>,
     in_lifecycle: bool,
     in_closure: bool,
@@ -10540,8 +10544,11 @@ impl<'a> Checker<'a> {
                 for p in &lc.params {
                     // GH #877: `accept(c: Chld)` names the child
                     // locus; an undeclared name is the same typo in
-                    // the same position.
+                    // the same position. (What else it may name is
+                    // `refuse_non_locus_child`'s, below.)
+                    self.in_accept_params = matches!(lc.kind, LifecycleKind::Accept | LifecycleKind::Release);
                     self.check_type_annotation(&p.ty);
+                    self.in_accept_params = false;
                     let ty = match self.interface_named(&p.ty) {
                         // An interface `accept` / `release` is lowered once
                         // per admitted locus, the child typed as that
@@ -11490,6 +11497,32 @@ impl<'a> Checker<'a> {
             ),
         ));
         true
+    }
+
+    /// A call to a perspective fn declared `fallible(E)`: a perspective
+    /// call cannot carry a failure yet (F.42's stated gap,
+    /// spec/semantics.md § "Perspectives"), and the build refused one
+    /// ("fallible method call on non-locus value of type Perspective")
+    /// with no location.
+    fn refuse_fallible_perspective_call(&mut self, callee: &Expr) {
+        let Expr::Field { receiver, name, .. } = callee else { return };
+        let mark = self.walk_mark();
+        let rt = self.check_expr(receiver);
+        self.discard_since(mark);
+        let Ty::Named(p) = &rt else { return };
+        let Some(TopSymbol::Perspective(info)) = self.top.lookup(p) else { return };
+        let Some(m) = info.methods.iter().find(|m| m.name == name.name) else { return };
+        let Some(err) = &m.fallible else { return };
+        self.diags.push(Diag::ty(
+            name.span,
+            format!(
+                "`{p}.{}` is `fallible({})`, and a perspective call cannot carry a failure yet (F.42): a \
+                 `fallible` perspective fn is not callable. Declare it, and the methods serving it, \
+                 without `fallible`, or hold the impl through an interface, whose calls carry it",
+                name.name,
+                err.display()
+            ),
+        ));
     }
 
     /// `@form(hashmap)`'s `bump(key)` increments the cell's one counter,
@@ -12824,6 +12857,30 @@ impl<'a> Checker<'a> {
                     // let outside code CHOOSE the signing key, which is
                     // worse than reading it. A write is a row of its own
                     // kind, so the rule says "writes one from outside".
+                    // A perspective or an interface handle reaches its
+                    // locus through its methods only: a store through
+                    // one has no field to land in (the build refused it,
+                    // "non-addressable type Perspective", with no
+                    // location), as a read through one is refused.
+                    if let Ty::Named(n) = &ty {
+                        let handle = match self.top.lookup(n) {
+                            Some(TopSymbol::Perspective(_)) => Some("a perspective"),
+                            Some(TopSymbol::Interface(_)) => Some("an interface"),
+                            _ => None,
+                        };
+                        if let Some(kind) = handle {
+                            self.diags.push(Diag::ty(
+                                f.span,
+                                format!(
+                                    "`.{} = …` through a `{n}` handle: {kind} reaches the locus behind \
+                                     it through its methods only, so it has no field to store into — \
+                                     give `{n}` a method that sets it, and call that",
+                                    f.name
+                                ),
+                            ));
+                            return Ty::Unknown;
+                        }
+                    }
                     self.record_param_access(&ty, f, f.span, crate::typed_bodies::AccessKind::Write);
                     ty = self.field_ty(&ty, &f.name).unwrap_or(Ty::Unknown);
                 }
@@ -14976,6 +15033,7 @@ impl<'a> Checker<'a> {
         // multi-file seed reads as well as the whole bundle does.
         self.check_generic_arity(te);
         self.check_bounded_element(te);
+        self.check_bare_perspective_type(te);
         if !self.strict_idents {
             return;
         }
@@ -16267,6 +16325,7 @@ impl<'a> Checker<'a> {
                 self.record_omitted_defaults(*call_id, callee, args.len());
                 self.check_capacity_slot_call(callee, args, *call_span);
                 self.check_hashmap_bump(callee);
+                self.refuse_fallible_perspective_call(callee);
                 if let Expr::Ident(id) = callee.as_ref() {
                     // GH #1076 (U2, U3): `Session(n)`, `OrderId(n)`,
                     // `Int(id)`, `Bucket(d)`: a conversion, classified and
@@ -19333,6 +19392,32 @@ impl<'a> Checker<'a> {
                      `Float`, `Decimal` or `Duration`",
                     gp.name.name,
                     self.resolve_te(arg).display()
+                ),
+            ));
+        }
+    }
+
+    /// A perspective is held through its slot type, `perspective(P)`,
+    /// never by its bare name (spec/types.md § "Perspective types"): a
+    /// bare `P` names no type a value has, and the build refused it in
+    /// every position ("unknown type name `P` in signature") with no
+    /// location. Only the outermost name is judged; `accept(c: P)` has a
+    /// rule of its own.
+    fn check_bare_perspective_type(&mut self, te: &TypeExpr) {
+        let TypeExpr::Named { path, generic_args, span } = te else { return };
+        if path.segments.len() != 1 || !generic_args.is_empty() || self.in_accept_params {
+            return;
+        }
+        let name = &path.segments[0].name;
+        if self.generic_params.iter().any(|g| g == name) {
+            return;
+        }
+        if matches!(self.top.lookup(name), Some(TopSymbol::Perspective(_))) {
+            self.diags.push(Diag::ty(
+                *span,
+                format!(
+                    "`{name}` is a perspective, and a perspective is held through its slot type: write \
+                     `perspective({name})`. The bare name is no type a value has"
                 ),
             ));
         }

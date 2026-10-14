@@ -2639,3 +2639,53 @@ fn a_param_default_read_before_its_param_is_set_is_refused_by_the_check_not_the_
     );
 }
 
+/// A perspective handle reaches the locus behind it through the
+/// contract's methods, and its type is the slot type: a call to a
+/// `fallible` perspective fn (a perspective call cannot carry a failure
+/// yet, F.42), a field stored through the handle, and a bare `P` as a
+/// type each checked clean and the build refused it ("fallible method
+/// call on non-locus value of type Perspective", "non-addressable type
+/// Perspective", "unknown type name `P` in signature"). The same holder
+/// typed `perspective(P)`, calling an infallible contract fn, builds.
+///
+/// Plain string literals, for the reason given above.
+#[test]
+fn a_perspective_handle_misuse_is_refused_by_the_check_not_the_build() {
+    let named = "perspective Named { fn label() -> String; }\n\
+                 locus V1 : serves Named { params { tag: String = \"a\"; } fn label() -> String { return self.tag; } }\n";
+    let store = format!(
+        "{named}locus Holder {{ params {{ p: perspective(Named) = V1 {{ }}; }} fn go(s: String) {{ self.p.tag = s; }} run() {{ self.go(\"b\"); }} }}\n\
+         fn main() {{ Holder {{ }}; }}\n"
+    );
+    let store_param = format!("{named}fn rename(p: perspective(Named), s: String) {{ p.tag = s; }}\nfn main() {{ println(\"x\"); }}\n");
+    let bare = format!("{named}locus Holder {{ params {{ p: Named = V1 {{ }}; }} }}\nfn main() {{ Holder {{ }}; }}\n");
+    let fallible = "perspective Router { fn route(code: Int) -> Int fallible(ClosureViolation); }\n\
+                    locus RouterV1 : serves Router {\n\
+                    params { k: Int = 0; }\n\
+                    closure c { captures: k; epoch inline; }\n\
+                    fn route(code: Int) -> Int fallible(ClosureViolation) { if code > 5 { violate c; } return code + 100; }\n\
+                    }\n\
+                    locus Gateway {\n\
+                    params { router: perspective(Router) = RouterV1 { }; }\n\
+                    on_failure(r: RouterV1, err: ClosureViolation) { println(err.closure); }\n\
+                    run() { println(self.router.route(1) or 0); }\n\
+                    }\n\
+                    fn main() { Gateway { }; }\n";
+    assert_refused_by_the_check(
+        &[
+            (&store, "tag", "`.tag = …` through a `Named` handle: a perspective reaches the locus behind it"),
+            (&store_param, "tag", "`.tag = …` through a `Named` handle: a perspective reaches the locus behind it"),
+            (&bare, "Named", "`Named` is a perspective, and a perspective is held through its slot type"),
+            (fallible, "route", "`Router.route` is `fallible(ClosureViolation)`, and a perspective call cannot carry a failure yet"),
+        ],
+        "perspective_handle",
+    );
+    assert_built(
+        &format!(
+            "{named}locus Holder {{ params {{ p: perspective(Named) = V1 {{ }}; }} run() {{ println(self.p.label()); }} }}\n\
+             fn main() {{ Holder {{ }}; }}\n"
+        ),
+        "hale_cb_perspective_handle_ok",
+    );
+}
+
