@@ -331,12 +331,14 @@ fn every_check_clean_corpus_program_also_builds() {
         checked
     );
 
-    // A RATCHET, not a clean bill of health. 44 divergences exist
-    // today over 1507 swept programs (GH #829 widened the sweep by
-    // the 88 programs with no entry point, which found four more
-    // and fixed four); each is a check the compiler performs in
-    // codegen that the checker could perform earlier, with a span.
-    // They are recorded so that:
+    // A RATCHET, not a clean bill of health. Each recorded divergence
+    // is a check the compiler performs in codegen that the checker
+    // could perform earlier, with a span. 2026-10-14 closed fourteen
+    // of the twenty-one recorded then; the seven that remain are one
+    // shape, a `main locus` with no `fn main` ("program has no `fn
+    // main()`": five check_rules.rs programs and the two
+    // imported-main-claims seeds), whose check-side refusal is its own
+    // change. They are recorded so that:
     //
     //   * a NEW divergence fails immediately — that is the point;
     //   * a FIXED one also fails, so the list cannot quietly rot
