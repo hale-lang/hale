@@ -356,17 +356,33 @@ fn a_server_locus_listener_address_is_read_by_the_main_locus() {
 /// A server whose `run()` runs on the main thread while the main locus is
 /// built (the param that holds it is unplaced) holds back every later param
 /// of the main locus, its listener among them when the listener reads its
-/// address off the server: refused, located. Placed, or with an address
-/// that reads nothing of the server, it serves.
+/// address off the server. A run the blocking analysis says may not return
+/// (a wait on the exposure, directly or through a fn it calls; a `while`
+/// loop, which the classes cannot judge) is refused, located; one it proves
+/// returns is admitted, and so is any run of a placed server or of one
+/// whose address reads nothing of it.
 #[test]
 fn an_unplaced_servers_run_cannot_wait_ahead_of_a_listener_born_after_it() {
-    let waiting = server(SERVED, "server: Server = Server { };")
-        .replace("\n    }\n}\nmain locus App", "\n    }\n    run() { self.web.wait(); }\n}\nmain locus App");
-    let errs = errors(&waiting);
-    assert!(
-        errs.iter().any(|e| e.contains("exposure `web` held by `Server`: its address reads `Server`, so its listener (`App`'s) is born after `self.server`, and `Server`'s `run()` runs on the main thread")),
-        "{errs:#?}"
-    );
+    let with_run = |members: &str| {
+        server(SERVED, "server: Server = Server { };")
+            .replace("\n    }\n}\nmain locus App", &format!("\n    }}\n{members}\n}}\nmain locus App"))
+    };
+    let refused = |src: &str, why: &str| {
+        let errs = errors(src);
+        assert!(
+            errs.iter().any(|e| e.contains("exposure `web` held by `Server`: its address reads `Server`, so its listener (`App`'s) is born after `self.server`, and `Server`'s `run()` runs on the main thread")
+                && e.contains(why)),
+            "{why}: {errs:#?}"
+        );
+    };
+    let waiting = with_run("    run() { self.web.wait(); }");
+    refused(&waiting, "may not return (it may block");
+    // through a fn of its own: the analysis is interprocedural
+    refused(&with_run("    fn hold() { self.web.wait(); }\n    run() { self.hold(); }"), "may not return (it may block");
+    // a loop that spins without blocking: the classes cannot judge it
+    refused(&with_run("    run() { while !self.draining { } }"), "a `while` loop");
+    // a run that returns
+    assert_eq!(errors(&with_run("    run() { println(\"started\"); }")), Vec::<String>::new());
     let placed = waiting.replace("    run() { }\n}\nfn main", "    placement { server: cooperative(pool = io) where async_io; }\n    run() { }\n}\nfn main");
     assert_eq!(errors(&placed), Vec::<String>::new());
     let constant = waiting.replace("to_string(self.port)", "\"8080\"");

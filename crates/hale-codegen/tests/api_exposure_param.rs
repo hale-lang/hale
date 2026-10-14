@@ -487,3 +487,24 @@ fn a_server_whose_run_waits_on_its_exposure_is_served() {
         assert!(done.stdout.contains("server wait returned"), "{name}: {}", done.stdout);
     }
 }
+
+/// An unplaced server whose `run()` returns (it says it started) and whose
+/// address is its own `self.bind`: its listener is born after it, once its
+/// run has returned, and serves.
+#[test]
+fn an_unplaced_server_whose_run_returns_is_served_with_its_own_address() {
+    let src = WAITING
+        .replace("@BIND@", "self.bind")
+        .replace("@PLACEMENT@", "")
+        .replace("        self.web.wait();\n        println(\"server wait returned\");", "        println(\"server started\");");
+    assert!(src.contains("println(\"server started\")"));
+    let bin = built("api_exposure_run_returns", &src);
+    let mut server = Server::start(&bin, &[]);
+    server.ready();
+    assert_eq!(echo(server.port, 5).body, "{\"n\":45,\"by\":\"http\"}");
+    assert!(described(server.port).contains(&format!("\"address\":\"127.0.0.1:{}\"", server.port)));
+    sigterm(server.pid());
+    let done = server.wait(Duration::from_secs(30));
+    assert!(done.status.success(), "{:?}\n{}", done.status, done.stderr);
+    assert!(done.stdout.contains("server started"), "{}", done.stdout);
+}

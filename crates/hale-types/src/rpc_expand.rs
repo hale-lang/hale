@@ -1196,12 +1196,6 @@ pub fn expand(
                         let Some(addr) = listener_address(l, Some(transport)) else { continue };
                         let mut ok = true;
                         for c in found {
-                            // an address read off the server waits for the
-                            // server, which a run() on main's thread holds
-                            if reads_holder(&addr) && blocking_run_on_main(&loci, &c, l).is_some() {
-                                ok = false;
-                                continue;
-                            }
                             match address_for_main(&c, &addr) {
                                 Ok(a) => chains.push((c, a)),
                                 Err(_) => ok = false,
@@ -2496,13 +2490,16 @@ pub(crate) fn reads_holder(e: &Expr) -> bool {
     found
 }
 
-/// The locus of `chain` (down to and including `holder`) whose `run()`, a
-/// statement of its own, runs inline on main's thread while main is being
-/// built, holding back every param of main declared after the chain's root
-/// (spec: a child's `run()` runs where it is born, before the next sibling):
-/// the root is unplaced or on pool `main`. `None` when the chain runs off
-/// main's thread or no locus on it has a run of its own.
-pub(crate) fn blocking_run_on_main(loci: &BTreeMap<&str, &LocusDecl>, chain: &Chain, holder: &LocusDecl) -> Option<String> {
+/// The loci of `chain`, down to and including `holder`, when they are born
+/// on main's thread while main is being built (the root is unplaced or on
+/// pool `main`): each runs its `run()` where it is born, before the next
+/// param of main (spec/semantics.md § Birth order is load-bearing). `None`
+/// when the chain is placed off main's thread.
+pub(crate) fn chain_born_on_main<'l>(
+    loci: &BTreeMap<&str, &'l LocusDecl>,
+    chain: &Chain,
+    holder: &'l LocusDecl,
+) -> Option<Vec<&'l LocusDecl>> {
     use hale_syntax::ast::PlacementSpec;
     let main = loci.get(chain.main.as_str())?;
     let on_main = match placement_entry(main, &chain.fields[0].1) {
@@ -2512,12 +2509,9 @@ pub(crate) fn blocking_run_on_main(loci: &BTreeMap<&str, &LocusDecl>, chain: &Ch
     if !on_main {
         return None;
     }
-    let runs = |l: &LocusDecl| {
-        l.members.iter().any(|m| matches!(m, LocusMember::Lifecycle(lc) if lc.kind == LifecycleKind::Run && (!lc.body.stmts.is_empty() || lc.body.tail.is_some())))
-    };
     let mut on: Vec<&LocusDecl> = chain.fields.iter().skip(1).filter_map(|(owner, _)| loci.get(owner.as_str()).copied()).collect();
     on.push(holder);
-    on.into_iter().find(|l| runs(l)).map(|l| l.name.name.clone())
+    Some(on)
 }
 
 /// An exposure's listener address (`bind:`, `path:`), written in its

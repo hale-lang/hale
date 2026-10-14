@@ -375,13 +375,19 @@ born on the main thread runs its `run()` where it is born, before the next
 param of its owner is born (`spec/semantics.md` § Birth order is
 load-bearing), so a server whose address reads it, on
 the main thread (the param it sits under unplaced, or on pool `main`),
-with a `run()` of its own on the chain down to it, would run that `run()`
-before its listener exists, and a run that waits on the exposure would
-wait for ever: it is refused, naming the run ("…\`Server\`'s \`run()\`
-runs on the main thread while \`App\` is being built, before that
-listener exists…"), with three ways out: place the server on a pool, move
-the waiting into the main locus's `run()`, or write an address that
-reads nothing of the server. The listener is inserted into whichever of
+runs the `run()`s on the chain down to it before its listener exists. A
+`run()` that returns is fine: the listener is born after it. One that may
+not return is refused, naming it and why ("…\`Server\`'s \`run()\` runs on
+the main thread while \`App\` is being built, before that listener exists,
+and may not return (it may block: …)"), with three ways out: place the
+server on a pool, move the waiting into the main locus's `run()`, or write
+an address that reads nothing of the server. "May not return" is the
+blocking analysis's: the effect rows' `BLOCK` class, interprocedural (a
+wait on the exposure or `run_until_stopped`, a sleep, a read, reached
+through any fn or method the run calls), an edge the analysis cannot name,
+and, since the classes cannot judge a loop that spins without blocking, a
+`while` loop in the run or in a fn it reaches. `run() { println("started");
+}` is admitted. The listener is inserted into whichever of
 the main locus's `params` blocks declares that param. Then it is placed:
 
 - for an exposure the main locus holds, by the exposure's own row
