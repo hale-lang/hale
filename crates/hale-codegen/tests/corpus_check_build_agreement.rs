@@ -2565,3 +2565,48 @@ fn a_hashmap_bump_over_a_richer_cell_is_refused_by_the_check_not_the_build() {
     );
 }
 
+/// A generic declaration's `T: Numeric` bound, and a bound that is not
+/// `Numeric`: the check held neither, and the build refused the
+/// instantiation ("type arg for `T` must satisfy `Numeric` bound",
+/// "unrecognized bound `Eq`"). Refused at the type argument, at the
+/// generic fn's callee, and at the bound; a numeric argument, a
+/// parameter of an enclosing template, and an identity build.
+///
+/// Plain string literals, for the reason given above.
+#[test]
+fn a_generic_bound_is_held_by_the_check_not_the_build() {
+    assert_refused_by_the_check(
+        &[
+            (
+                "type Box<T: Numeric> { value: T; }\ntype Holder { b: Box<String>; }\nfn main() { println(\"x\"); }\n",
+                "String",
+                "generic type `Box`: `T` is bounded `Numeric`, and `String` is not one of",
+            ),
+            (
+                "fn twice<T: Numeric>(x: T) -> T { return x + x; }\nfn main() { println(twice(\"ab\")); }\n",
+                "twice",
+                "generic fn `twice`: `T` is bounded `Numeric`, and this call makes it `String`",
+            ),
+            (
+                "type OrderId = distinct Int;\nfn twice<T: Numeric>(x: T) -> T { return x + x; }\n\
+                 fn main() { println(Int(twice(OrderId(3)))); }\n",
+                "twice",
+                "generic fn `twice`: `T` is bounded `Numeric`, and this call makes it `OrderId`",
+            ),
+            (
+                "type Box<T: Eq> { value: T; }\nfn main() { let b: Box<Int> = Box { value: 1 }; println(b.value); }\n",
+                "Eq",
+                "generic type `Box`: `T` is bounded by something other than `Numeric`",
+            ),
+        ],
+        "generic_bound",
+    );
+    assert_built(
+        "type Box<T: Numeric> { value: T; }\ntype Outer<U: Numeric> { b: Box<U>; }\n\
+         fn twice<T: Numeric>(x: T) -> T { return x + x; }\n\
+         fn main() { let o: Outer<Int> = Outer { b: Box { value: 1 } }; let f: Box<Float> = Box { value: 1.5 }; \
+         println(o.b.value); println(f.value); println(twice(2)); println(twice(1.25d)); }\n",
+        "hale_cb_generic_bound_ok",
+    );
+}
+

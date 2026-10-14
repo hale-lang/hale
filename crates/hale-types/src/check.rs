@@ -7048,6 +7048,7 @@ impl<'a> Checker<'a> {
                         .map(|g| g.name.name.clone())
                         .collect(),
                 );
+                self.check_generic_bound_names("type", &t.name.name, &t.generics);
                 match &t.body {
                     TypeDeclBody::Struct(fields) => {
                         for f in fields {
@@ -8469,6 +8470,7 @@ impl<'a> Checker<'a> {
             &mut self.generic_params,
             decl.generics.iter().map(|g| g.name.name.clone()).collect(),
         );
+        self.check_generic_bound_names("locus", &decl.name.name, &decl.generics);
         for member in &decl.members {
             self.check_locus_member(member);
         }
@@ -11118,6 +11120,7 @@ impl<'a> Checker<'a> {
         let prev_generics = self.generic_params.clone();
         self.generic_params
             .extend(decl.generics.iter().map(|g| g.name.name.clone()));
+        self.check_generic_bound_names("fn", &decl.name.name, &decl.generics);
         for p in &decl.params {
             self.check_type_annotation(&p.ty);
         }
@@ -16833,6 +16836,27 @@ impl<'a> Checker<'a> {
                                 ));
                             }
                         }
+                        // `T: Numeric`, held at the binding this call
+                        // infers (the build refused the instantiation
+                        // with no location).
+                        for g in &template.generics {
+                            let numeric_bound = matches!(&g.bound, Some(TypeExpr::Named { path, .. })
+                                if path.segments.len() == 1 && path.segments[0].name == "Numeric");
+                            let Some(bound) = bindings.get(&g.name.name) else { continue };
+                            if !numeric_bound || self.satisfies_numeric(bound) {
+                                continue;
+                            }
+                            self.diags.push(Diag::ty(
+                                callee.span(),
+                                format!(
+                                    "generic fn `{}`: `{}` is bounded `Numeric`, and this call makes it `{}`, \
+                                     not one of `Int`, `Float`, `Decimal` or `Duration`",
+                                    id.name,
+                                    g.name.name,
+                                    bound.display()
+                                ),
+                            ));
+                        }
                         // Every generic must be pinned — UNLESS an
                         // arg typed Unknown could have pinned it
                         // (stay permissive where inference was).
@@ -19216,6 +19240,73 @@ impl<'a> Checker<'a> {
     /// annotation, and not gated on `strict_idents`: arity is
     /// decided by the declaration, which one file of a multi-file
     /// seed can see as well as the whole bundle can.
+    /// Whether a type a generic fn's call binds satisfies `Numeric`.
+    fn satisfies_numeric(&self, t: &Ty) -> bool {
+        match t {
+            Ty::Prim(PrimType::Int | PrimType::Float | PrimType::Decimal(_) | PrimType::Duration) | Ty::Unknown => true,
+            // an identity or a range is a named argument, which the
+            // monomorph's bound refuses like any other name
+            Ty::Named(n) => self.generic_params.iter().any(|g| g == n),
+            _ => false,
+        }
+    }
+
+    /// A generic parameter's bound names a bound the language has:
+    /// `Numeric` is the one (spec/types.md § "Generic bounds"). The build
+    /// refused any other name (`T: Eq`) as it instantiated the template,
+    /// with no location; the declaration is where it is written.
+    fn check_generic_bound_names(&mut self, kind: &str, name: &str, params: &[GenericParam]) {
+        for gp in params {
+            let Some(bound) = &gp.bound else { continue };
+            let known = matches!(bound, TypeExpr::Named { path, generic_args, .. }
+                if path.segments.len() == 1 && generic_args.is_empty() && path.segments[0].name == "Numeric");
+            if !known {
+                self.diags.push(Diag::ty(
+                    bound.span(),
+                    format!(
+                        "generic {kind} `{name}`: `{}` is bounded by something other than `Numeric`, the one \
+                         bound a type parameter takes; drop the bound or write `{}: Numeric`",
+                        gp.name.name, gp.name.name
+                    ),
+                ));
+            }
+        }
+    }
+
+    /// A generic declaration's `T: Numeric` bound, held at each
+    /// instantiation: the argument is `Int`, `Float`, a `Decimal` or a
+    /// `Duration` (spec/types.md § "Generic bounds"). The build refused
+    /// any other argument as it instantiated the template, with no
+    /// location. An argument that is itself a type parameter of the
+    /// enclosing template is decided where that template is instantiated.
+    fn check_generic_bounds(&mut self, kind: &str, name: &str, params: &[GenericParam], args: &[TypeExpr]) {
+        for (gp, arg) in params.iter().zip(args) {
+            let Some(TypeExpr::Named { path, generic_args, .. }) = &gp.bound else { continue };
+            if path.segments.len() != 1 || !generic_args.is_empty() || path.segments[0].name != "Numeric" {
+                continue;
+            }
+            let numeric = matches!(
+                arg,
+                TypeExpr::Primitive(PrimType::Int | PrimType::Float | PrimType::Decimal(_) | PrimType::Duration, _)
+            );
+            let a_parameter = matches!(arg, TypeExpr::Named { path, generic_args, .. }
+                if path.segments.len() == 1 && generic_args.is_empty()
+                    && self.generic_params.iter().any(|g| g == &path.segments[0].name));
+            if numeric || a_parameter {
+                continue;
+            }
+            self.diags.push(Diag::ty(
+                arg.span(),
+                format!(
+                    "generic {kind} `{name}`: `{}` is bounded `Numeric`, and `{}` is not one of `Int`, \
+                     `Float`, `Decimal` or `Duration`",
+                    gp.name.name,
+                    self.resolve_te(arg).display()
+                ),
+            ));
+        }
+    }
+
     fn check_generic_arity(&mut self, te: &TypeExpr) {
         match te {
             TypeExpr::Named { path, generic_args, span } => {
@@ -19233,6 +19324,7 @@ impl<'a> Checker<'a> {
                 };
                 let want = template.generics().len();
                 if generic_args.len() == want {
+                    self.check_generic_bounds(template.kind(), name, template.generics(), generic_args);
                     return;
                 }
                 self.diags.push(Diag::ty(

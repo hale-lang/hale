@@ -83,6 +83,22 @@ Locus methods support defaults too. One caveat: bus-handler
 methods and mode methods reject them — their argument shape is
 fixed by the runtime, so there's no slot to fill at dispatch time.
 
+## Bounded type parameters
+
+A type parameter may carry one bound, `Numeric`: the argument is an
+`Int`, a `Float`, a `Decimal` or a `Duration`.
+
+```hale
+fn twice<T: Numeric>(x: T) -> T {
+    return x + x;
+}
+```
+
+`twice(2)` and `twice(1.5)` check; `twice("ab")` is refused at the
+call, and `Box<String>` of a `type Box<T: Numeric>` at the type
+argument. `Numeric` is the only bound — there is no trait system, so
+`<T: Eq>` is refused where it is declared.
+
 ## Generic calls inside loci
 
 A generic function can also be called from a generic locus. If a

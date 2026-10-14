@@ -1211,15 +1211,25 @@ type Stack<T> { items: [T]; }
 locus Cache<K, V> { params { cap: Int = 1; } }
 ```
 
-The constraint syntax `<T: Constraint>` admits:
+### Generic bounds
 
-- `ProjectionClass` (built-in any-of-three; F.2)
-- A specific projection class: `Rich`, `Chunked`, `Recognition`
-- Concrete types: `<T: int>` is illegal (use the type directly);
-  `<T: SomeStruct>` is also illegal (no trait system in v0)
+The constraint syntax `<T: Bound>` admits one bound, `Numeric`:
+the argument is `Int`, `Float`, a `Decimal` or a `Duration`
+(`type Box<T: Numeric> { value: T; }`, `fn twice<T: Numeric>(x: T)
+-> T`). `hale check` holds it where the template is instantiated —
+at the argument of a type annotation (`Box<String>`), and at the
+callee of a generic fn call whose arguments bind `T` to another type
+(an identity or a range included: it is a named argument) — and
+refuses any other
+bound name at the declaration (`<T: Eq>`, `<T: SomeStruct>`): there
+is no trait system. An argument that is itself a type parameter of
+the enclosing template is held where that template is instantiated.
 
-V0 supports only projection-class constraints. Future versions
-may add traits.
+```
+main.hl:7:20: type error: generic type `Box`: `T` is bounded
+`Numeric`, and `String` is not one of `Int`, `Float`, `Decimal` or
+`Duration`
+```
 
 Monomorphization: the compiler emits one machine-code instance
 per concrete generic instantiation (per F.1 commitment to
