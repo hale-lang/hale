@@ -1686,7 +1686,7 @@ dynamic	__StdIoTcpStream	on main|pool:p	in the seed
 row	~	Worker	pool:p	entry	off owner
 row	~.sub	Counter	pool:p	inherited
 
-== crates/hale-codegen/tests/bus_backpressure.rs#30961f9e
+== crates/hale-codegen/tests/bus_backpressure.rs#bebf38cc
 root	App	the entry
 domain	pool:p
 domain	pool:p0
