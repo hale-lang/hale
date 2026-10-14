@@ -1196,6 +1196,12 @@ pub fn expand(
                         let Some(addr) = listener_address(l, Some(transport)) else { continue };
                         let mut ok = true;
                         for c in found {
+                            // an address read off the server waits for the
+                            // server, which a run() on main's thread holds
+                            if reads_holder(&addr) && blocking_run_on_main(&loci, &c, l).is_some() {
+                                ok = false;
+                                continue;
+                            }
                             match address_for_main(&c, &addr) {
                                 Ok(a) => chains.push((c, a)),
                                 Err(_) => ok = false,
@@ -1486,7 +1492,15 @@ pub fn expand(
                     .filter(|e| hosts_listener(e))
                     .and_then(|e| rename_entry(Some(e.clone()), &field))
                     .unwrap_or(default_entry.clone());
-                insert_param_after(main, lp.clone(), &root);
+                // as early in main's birth as the address allows: before the
+                // param the server sits under when the address reads nothing
+                // of the server (no run of a child born before it can hold
+                // it back), just after it when it reads the server as built
+                if reads_holder(addr) {
+                    insert_param_after(main, lp.clone(), &root);
+                } else {
+                    insert_param_before(main, lp.clone(), &root);
+                }
                 let mspan = main.name.span;
                 push_placement(main, entry, mspan);
                 placed = true;
@@ -1802,28 +1816,31 @@ fn parse_unix_listener(id: i64, path: Expr, span: Span) -> Option<(ParamDecl, ha
     Some((param, entry?))
 }
 
-/// Insert `param` into `l`'s params just before the param `before` (at the
-/// end when there is none of the name).
-fn insert_param_before(l: &mut LocusDecl, param: ParamDecl, before: &str) {
+/// Insert `param` into `l`'s params at the param `at` names, in whichever
+/// of the locus's params blocks declares it (offset 0 before it, 1 after
+/// it), or at the end of the first block when none does.
+fn insert_param_at(l: &mut LocusDecl, param: ParamDecl, name: &str, offset: usize) {
     let span = l.name.span;
-    if let Some(LocusMember::Params(pb)) = l.members.iter_mut().find(|m| matches!(m, LocusMember::Params(_))) {
-        let at = pb.params.iter().position(|p| p.name.name == before).unwrap_or(pb.params.len());
-        pb.params.insert(at, param);
-    } else {
-        l.members.push(LocusMember::Params(hale_syntax::ast::ParamsBlock { params: vec![param], span }));
+    let holder = l.members.iter().position(|m| matches!(m, LocusMember::Params(pb) if pb.params.iter().any(|p| p.name.name == name)));
+    let first = l.members.iter().position(|m| matches!(m, LocusMember::Params(_)));
+    match holder.or(first) {
+        Some(i) => {
+            let LocusMember::Params(pb) = &mut l.members[i] else { return };
+            let at = pb.params.iter().position(|p| p.name.name == name).map_or(pb.params.len(), |i| i + offset);
+            pb.params.insert(at, param);
+        }
+        None => l.members.push(LocusMember::Params(hale_syntax::ast::ParamsBlock { params: vec![param], span })),
     }
 }
 
-/// Insert `param` into `l`'s params just after the param `after` (at the
-/// end when there is none of the name).
+/// Insert `param` into `l`'s params just before the param `before`.
+fn insert_param_before(l: &mut LocusDecl, param: ParamDecl, before: &str) {
+    insert_param_at(l, param, before, 0);
+}
+
+/// Insert `param` into `l`'s params just after the param `after`.
 fn insert_param_after(l: &mut LocusDecl, param: ParamDecl, after: &str) {
-    let span = l.name.span;
-    if let Some(LocusMember::Params(pb)) = l.members.iter_mut().find(|m| matches!(m, LocusMember::Params(_))) {
-        let at = pb.params.iter().position(|p| p.name.name == after).map_or(pb.params.len(), |i| i + 1);
-        pb.params.insert(at, param);
-    } else {
-        l.members.push(LocusMember::Params(hale_syntax::ast::ParamsBlock { params: vec![param], span }));
-    }
+    insert_param_at(l, param, after, 1);
 }
 
 /// Take `field`'s placement row out of `l`'s placement block when it puts
@@ -2464,6 +2481,43 @@ pub(crate) fn entry_replicas(e: &hale_syntax::ast::PlacementEntry) -> i64 {
         hale_syntax::ast::PlacementSpec::Pinned { replicas: Some(k), .. } => *k,
         _ => 1,
     }
+}
+
+/// Whether an address written in a holder reads the holder (`self.bind`):
+/// then the main locus can read it only once the holder is built.
+pub(crate) fn reads_holder(e: &Expr) -> bool {
+    let mut e = e.clone();
+    let mut found = false;
+    walk_expr_mut(&mut e, &mut |x| {
+        if matches!(x, Expr::KwSelf(_)) {
+            found = true;
+        }
+    });
+    found
+}
+
+/// The locus of `chain` (down to and including `holder`) whose `run()`, a
+/// statement of its own, runs inline on main's thread while main is being
+/// built, holding back every param of main declared after the chain's root
+/// (spec: a child's `run()` runs where it is born, before the next sibling):
+/// the root is unplaced or on pool `main`. `None` when the chain runs off
+/// main's thread or no locus on it has a run of its own.
+pub(crate) fn blocking_run_on_main(loci: &BTreeMap<&str, &LocusDecl>, chain: &Chain, holder: &LocusDecl) -> Option<String> {
+    use hale_syntax::ast::PlacementSpec;
+    let main = loci.get(chain.main.as_str())?;
+    let on_main = match placement_entry(main, &chain.fields[0].1) {
+        None => true,
+        Some(e) => matches!(&e.spec, PlacementSpec::Cooperative { pool, .. } if pool.as_ref().is_none_or(|p| p.name == "main")),
+    };
+    if !on_main {
+        return None;
+    }
+    let runs = |l: &LocusDecl| {
+        l.members.iter().any(|m| matches!(m, LocusMember::Lifecycle(lc) if lc.kind == LifecycleKind::Run && (!lc.body.stmts.is_empty() || lc.body.tail.is_some())))
+    };
+    let mut on: Vec<&LocusDecl> = chain.fields.iter().skip(1).filter_map(|(owner, _)| loci.get(owner.as_str()).copied()).collect();
+    on.push(holder);
+    on.into_iter().find(|l| runs(l)).map(|l| l.name.name.clone())
 }
 
 /// An exposure's listener address (`bind:`, `path:`), written in its

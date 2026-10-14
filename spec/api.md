@@ -365,10 +365,24 @@ main locus App {
 `http::Rpc`, `mcp::Rpc`, `grpc::Rpc`) accepts and reads on a coroutine
 that parks, so it runs on a named pool `where async_io`. The compiler adds
 it to the main locus as a param of its own (`__rpc_u_<n>`, `__rpc_h_<n>`,
-`__rpc_g_<n>`) and places it, with the connections it starts. For an
-exposure the main locus holds, the listener is born just before the
-exposure; for one a server below it holds, just after the param of the
-main locus the server sits under, so the server is built first:
+`__rpc_g_<n>`) and places it, with the connections it starts. It is
+born as early in the main locus's birth as its address allows: for an
+exposure the main locus holds, just before the exposure; for one a server
+below it holds, just before the param of the main locus the server sits
+under when the address reads nothing of the server, and just after it
+when it does (`bind: self.bind`), so the server is built first. A child
+born on the main thread runs its `run()` where it is born, before the next
+param of its owner is born (`spec/semantics.md` § Birth order is
+load-bearing), so a server whose address reads it, on
+the main thread (the param it sits under unplaced, or on pool `main`),
+with a `run()` of its own on the chain down to it, would run that `run()`
+before its listener exists, and a run that waits on the exposure would
+wait for ever: it is refused, naming the run ("…\`Server\`'s \`run()\`
+runs on the main thread while \`App\` is being built, before that
+listener exists…"), with three ways out: place the server on a pool, move
+the waiting into the main locus's `run()`, or write an address that
+reads nothing of the server. The listener is inserted into whichever of
+the main locus's `params` blocks declares that param. Then it is placed:
 
 - for an exposure the main locus holds, by the exposure's own row
   (`public: cooperative(pool = io) where async_io;` above). The row places

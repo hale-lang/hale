@@ -353,6 +353,26 @@ fn a_server_locus_listener_address_is_read_by_the_main_locus() {
     );
 }
 
+/// A server whose `run()` runs on the main thread while the main locus is
+/// built (the param that holds it is unplaced) holds back every later param
+/// of the main locus, its listener among them when the listener reads its
+/// address off the server: refused, located. Placed, or with an address
+/// that reads nothing of the server, it serves.
+#[test]
+fn an_unplaced_servers_run_cannot_wait_ahead_of_a_listener_born_after_it() {
+    let waiting = server(SERVED, "server: Server = Server { };")
+        .replace("\n    }\n}\nmain locus App", "\n    }\n    run() { self.web.wait(); }\n}\nmain locus App");
+    let errs = errors(&waiting);
+    assert!(
+        errs.iter().any(|e| e.contains("exposure `web` held by `Server`: its address reads `Server`, so its listener (`App`'s) is born after `self.server`, and `Server`'s `run()` runs on the main thread")),
+        "{errs:#?}"
+    );
+    let placed = waiting.replace("    run() { }\n}\nfn main", "    placement { server: cooperative(pool = io) where async_io; }\n    run() { }\n}\nfn main");
+    assert_eq!(errors(&placed), Vec::<String>::new());
+    let constant = waiting.replace("to_string(self.port)", "\"8080\"");
+    assert_eq!(errors(&constant), Vec::<String>::new());
+}
+
 /// The R0 witness is admitted as R1 admitted it: its serve sites are over
 /// `http::Rpc` and `unix::Rpc`, which no check reads as a type, and its
 /// receivers are bound as the laws ask.

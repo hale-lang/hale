@@ -1920,6 +1920,23 @@ fn serve_laws_of(
                     }
                 }
                 if let Some(addr) = &address {
+                    if crate::rpc_expand::reads_holder(addr) {
+                        if let Some(runner) = crate::rpc_expand::blocking_run_on_main(loci, c, l) {
+                            diags.push(Diag::ty(
+                                addr.span(),
+                                format!(
+                                    "exposure `{name}` held by `{}`: its address reads `{}`, so its listener (`{}`'s) \
+                                     is born after `self.{root}`, and `{runner}`'s `run()` runs on the main thread while \
+                                     `{}` is being built, before that listener exists: a run that waits on the exposure \
+                                     would never see it served. Place `{root}` on a pool (`{root}: cooperative(pool = io) \
+                                     where async_io;`), move the waiting into `{}`'s `run()`, or write an address that \
+                                     reads nothing of `{}` (spec/api.md § Serving)",
+                                    l.name.name, l.name.name, c.main, c.main, c.main, l.name.name
+                                ),
+                            ));
+                            continue;
+                        }
+                    }
                     if let Err(what) = crate::rpc_expand::address_for_main(c, addr) {
                         diags.push(Diag::ty(
                             addr.span(),

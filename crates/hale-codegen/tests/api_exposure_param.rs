@@ -428,3 +428,62 @@ fn an_imported_server_binds_its_receiver_explicitly() {
     let done = server.wait(Duration::from_secs(30));
     assert!(done.status.success(), "{:?}\n{}", done.status, done.stderr);
 }
+
+/// A server whose `run()` waits on its own exposure. Unplaced, it runs on
+/// the main thread while `App` is being built, so its listener (`App`'s)
+/// must be born before it: an address that reads nothing of the server
+/// (here `$BIND`, read by `App`) puts it there. Placed on a pool, its run
+/// holds nothing of `App`'s birth, and an address read off the server
+/// (`self.bind`) is fine. A program that does both unplaced is refused
+/// (`crates/hale-types/tests/api_serve_check.rs`).
+const WAITING: &str = r#"
+locus Server {
+    params {
+        bind: String = std::env::var("BIND");
+        tokens: Tokens = Tokens { };
+        echoer: Echoer = Echoer { base: 40 };
+        web: api::Exposure = api::serve(Echo, http::Rpc { bind: @BIND@, codec: json, principals: self.tokens }, as: "web", receivers: { Echoer: self.echoer }, bound: 8, on_full: refuse);
+    }
+    run() {
+        self.web.wait();
+        println("server wait returned");
+    }
+}
+
+main locus App {
+    params { n: Int = 0; }
+    params { server: Server = Server { }; }
+    @PLACEMENT@
+    run() {
+        while !self.draining { std::time::sleep(10ms); }
+        println("app ran");
+    }
+}
+
+fn main() { App { }; }
+"#;
+
+fn waiting(name: &str, bind: &str, placement: &str) -> PathBuf {
+    built(name, &WAITING.replace("@BIND@", bind).replace("@PLACEMENT@", placement))
+}
+
+#[test]
+fn a_server_whose_run_waits_on_its_exposure_is_served() {
+    // unplaced, on the main thread: its listener is born before it; the
+    // second params block holds the server
+    for (name, bind, placement) in [
+        ("api_exposure_waiting_unplaced", "std::env::var(\"BIND\")", ""),
+        ("api_exposure_waiting_placed", "self.bind", "placement { server: cooperative(pool = io) where async_io; }"),
+    ] {
+        let bin = waiting(name, bind, placement);
+        let mut server = Server::start(&bin, &[]);
+        server.ready();
+        let got = echo(server.port, 2);
+        assert_eq!(got.body, "{\"n\":42,\"by\":\"http\"}", "{name}: {}", got.body);
+        assert!(described(server.port).contains(&format!("\"address\":\"127.0.0.1:{}\"", server.port)), "{name}");
+        sigterm(server.pid());
+        let done = server.wait(Duration::from_secs(30));
+        assert!(done.status.success(), "{name}: {:?}\n{}", done.status, done.stderr);
+        assert!(done.stdout.contains("server wait returned"), "{name}: {}", done.stdout);
+    }
+}

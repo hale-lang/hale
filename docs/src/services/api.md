@@ -396,12 +396,19 @@ the server sits under, a level down or several, when that row hosts
 or pinned). Two servers on two pools are two params with two rows. The
 main locus holds the listener, so it holds each server once (a server held
 twice, or placed as replicas, would serve one exposure twice and is
-refused). The listener is born after the server and reads the server's
-`bind:` off the server as it was built, so a construction that overrides
-it (`App { server: Server { bind: "127.0.0.1:9000" } }`) is the address
-the listener binds, and the address it was bound to is told to the
-exposure, so a server's description names the port the kernel gave it. `App` above
-writes no `run()`; it serves until SIGTERM.
+refused). A listener whose address reads the server (`bind:
+self.bind`) is born after the server and reads it off the server as it
+was built, so a construction that overrides it (`App { server: Server {
+bind: "127.0.0.1:9000" } }`) is the address the listener binds; one whose
+address reads nothing of the server is born before it. An unplaced
+server's `run()` runs on the main thread while `App` is being built
+(birth order is load-bearing, see [Lifecycle](./lifecycle.md)), so a
+server whose address reads it and whose `run()` waits on its exposure is
+refused (a `run()` of its own on the main thread is refused whatever it
+does, since the compiler cannot tell a wait from work): place it, or wait
+in `App`'s `run()`. Either way the address the listener was bound to is
+told to the exposure, so a server's description names the port the
+kernel gave it. `App` above writes no `run()`; it serves until SIGTERM.
 
 ### Serving over HTTP
 
