@@ -1698,7 +1698,23 @@ impl Snapshot {
     fn dependency_index(&self) -> Result<&DependencyIndex, &Blocked> {
         self.dependency_index
             .get_or_init(|| {
-                let summary = self.alloc_summary().map_err(Clone::clone)?;
+                // The relation reads the summary's call edges, which no
+                // owned-view copy moves. A typing still planning what it
+                // reuses (its walk not done, so no column and no summary
+                // yet: GH #1554) reads them from a summary over no column;
+                // every other reader, from the snapshot's.
+                let edges;
+                let summary: &AllocSummary = match self.walking.get() {
+                    Some(_) => self.alloc_summary().map_err(Clone::clone)?,
+                    None => {
+                        self.scope().map_err(Clone::clone)?;
+                        edges = hale_types::alloc_summary::derive_alloc_summary_over(
+                            &self.bundle(),
+                            &hale_types::view_bindings::OwnedViewColumn::default(),
+                        );
+                        &edges
+                    }
+                };
                 let ownership = self.demand_ownership_graph().map_err(Clone::clone)?;
                 let bus = self.demand_bus_graph().map_err(Clone::clone)?;
                 let placement = self.demand_placement().map_err(Clone::clone)?;
