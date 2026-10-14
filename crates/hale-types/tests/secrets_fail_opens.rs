@@ -623,7 +623,9 @@ fn an_indirect_call_leaves_attribution_uncertified() {
     //
     // F.40 E5 resolves a call through a function value to the program's
     // function values of its type, so the callee here is a method read
-    // as a value, the one the summary does not follow.
+    // as a value, the one the summary does not follow. Nothing lowers a
+    // method value, so `hale check` refuses it at the name; the program
+    // is refused either way, and never certified past its callee.
     let src = "
         fn invoke(f: fn(Int) -> Int, n: Int) -> Int { return f(n); }
         locus D {
@@ -642,7 +644,7 @@ fn an_indirect_call_leaves_attribution_uncertified() {
     ";
     let es = errors(src);
     assert!(
-        es.iter().any(|m| m.contains("uncertified")),
+        es.iter().any(|m| m.contains("uncertified") || m.contains("`.double` is a method of the locus `D`, written as a value")),
         "an opaque callee must not be certified past: {es:?}"
     );
 }

@@ -138,6 +138,11 @@ callback needs context, you pass the context in explicitly, or
 (at higher levels) you reach for a locus that holds the state.
 This keeps every function value a plain, inspectable thing.
 
+For the same reason a locus's method is not a function value:
+`apply_twice(self.inc, 10)` would need the locus along with the
+function, so `hale check` refuses it at `inc`. Call the method
+where you need its result, or pass a free function.
+
 ## Free functions and where they live
 
 A function declared at the top level of a file is a *free

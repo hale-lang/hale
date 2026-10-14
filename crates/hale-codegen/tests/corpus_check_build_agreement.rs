@@ -2689,3 +2689,30 @@ fn a_perspective_handle_misuse_is_refused_by_the_check_not_the_build() {
     );
 }
 
+/// A method written as a value (`apply(self.dbl, 1)`): a method is
+/// called on its locus, and a `fn(..)` value carries none, so the build
+/// refused it ("no field `dbl` on locus self"). The check refuses it at
+/// the method's name; a free fn passed the same way, and the method
+/// called, build.
+///
+/// Plain string literals, for the reason given above.
+#[test]
+fn a_method_written_as_a_value_is_refused_by_the_check_not_the_build() {
+    assert_refused_by_the_check(
+        &[(
+            "fn apply(f: fn(Int) -> Int, v: Int) -> Int { return f(v); }\n\
+             main locus App { params { n: Int = 0; } fn dbl(v: Int) -> Int { return v * 2; } run() { self.n = apply(self.dbl, 1); } }\n\
+             fn main() { App { }; }\n",
+            "dbl",
+            "`.dbl` is a method of the locus `App`, written as a value",
+        )],
+        "method_value",
+    );
+    assert_built(
+        "fn apply(f: fn(Int) -> Int, v: Int) -> Int { return f(v); }\nfn dbl(v: Int) -> Int { return v * 2; }\n\
+         main locus App { params { n: Int = 0; } fn twice(v: Int) -> Int { return v * 2; } run() { self.n = apply(dbl, 1) + self.twice(2); println(self.n); } }\n\
+         fn main() { App { }; }\n",
+        "hale_cb_method_value_ok",
+    );
+}
+

@@ -1398,6 +1398,19 @@ function within the locus's scope. Lifecycle methods (`birth`,
 `accept`, etc.) are not regular `fn`s — they have their own
 syntax and don't take `self` (it's implicit).
 
+A function value is a free fn's name read as a value
+(`apply(dbl, 1)`). A method is not one: it is called on its locus,
+and a `fn(A) -> B` value carries no locus, so `self.dbl` (or
+`h.dbl`, a perspective's or an interface's method) written anywhere
+but a call's callee is a type error at the method's name:
+
+```
+main.hl:3:33: type error: `.dbl` is a method of the locus `App`,
+written as a value: a method is called on its locus (`….dbl(…)`),
+and a `fn(…)` value carries none, so it is not one. Pass a free fn,
+or call the method where the value is needed
+```
+
 ### Calls to bare names
 
 A call whose callee is a bare identifier must name something: a

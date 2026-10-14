@@ -897,6 +897,8 @@ pub fn check_bundle_by_declaration(
         locals: ScopeStack::new(),
         params_default: None,
         in_accept_params: false,
+        callee_position: false,
+        this_is_callee: false,
         current_locus: None,
         in_lifecycle: false,
         in_closure: false,
@@ -6657,6 +6659,10 @@ struct Checker<'a> {
     /// While an `accept` / `release` param's type is checked: what it may
     /// name is `refuse_non_locus_child`'s rule, not the annotation's.
     in_accept_params: bool,
+    /// The next expression `check_expr` walks is a call's callee, and
+    /// (read by the field arm) the one it is walking is.
+    callee_position: bool,
+    this_is_callee: bool,
     current_locus: Option<&'a LocusInfo>,
     in_lifecycle: bool,
     in_closure: bool,
@@ -11499,6 +11505,39 @@ impl<'a> Checker<'a> {
         true
     }
 
+    /// `self.dbl` (a locus's, a perspective's or an interface's method)
+    /// written as a value rather than called: a method is called on its
+    /// locus, and a `fn(..)` value carries no locus, so there is no value
+    /// to take (the build refused it, "no field `dbl` on locus self",
+    /// with no location).
+    fn refuse_method_value(&mut self, receiver_ty: &Ty, name: &Ident) {
+        let Ty::Named(n) = receiver_ty else { return };
+        let (kind, is_method) = match self.top.lookup(n) {
+            Some(TopSymbol::Locus(info)) => (
+                "locus",
+                !info.params.iter().any(|p| p.name == name.name) && info.methods.iter().any(|m| m.name == name.name),
+            ),
+            Some(TopSymbol::Perspective(info)) => (
+                "perspective",
+                !info.params.iter().any(|p| p.name == name.name) && info.methods.iter().any(|m| m.name == name.name),
+            ),
+            Some(TopSymbol::Interface(info)) => ("interface", info.methods.iter().any(|m| m.name == name.name)),
+            _ => return,
+        };
+        if !is_method {
+            return;
+        }
+        self.diags.push(Diag::ty(
+            name.span,
+            format!(
+                "`.{m}` is a method of the {kind} `{n}`, written as a value: a method is called on its \
+                 {kind} (`….{m}(…)`), and a `fn(…)` value carries none, so it is not one. Pass a free \
+                 fn, or call the method where the value is needed",
+                m = name.name
+            ),
+        ));
+    }
+
     /// A call to a perspective fn declared `fallible(E)`: a perspective
     /// call cannot carry a failure yet (F.42's stated gap,
     /// spec/semantics.md § "Perspectives"), and the build refused one
@@ -15743,6 +15782,7 @@ impl<'a> Checker<'a> {
         use crate::typed_bodies::Handling;
         let handling = std::mem::replace(&mut self.next_handling, Handling::Bare);
         let outer = std::mem::replace(&mut self.handling, handling);
+        self.this_is_callee = std::mem::take(&mut self.callee_position);
         let ty = self.check_expr_at(expr);
         self.handling = outer;
         // The fallible column (F.40 phase 3, E4): a call this walk
@@ -17234,7 +17274,10 @@ impl<'a> Checker<'a> {
                 // informative of the two.
                 let callee_ty = match callee.as_ref() {
                     Expr::Ident(id) => self.check_ident_expr(id, false),
-                    other => self.check_expr(other),
+                    other => {
+                        self.callee_position = true;
+                        self.check_expr(other)
+                    }
                 };
                 // GH #583 (dna/FRICTION.md F.18): a bare callee that names
                 // nothing — not a local (a fn-pointer binding), not a
@@ -17548,6 +17591,7 @@ impl<'a> Checker<'a> {
                 }
             }
             Expr::Field { receiver, name, span } => {
+                let is_callee = std::mem::take(&mut self.this_is_callee);
                 // F.11 entity-collection sugar: `self.children.count`
                 // (Int) and `self.children.is_empty` (Bool) read the
                 // accept'd-child tracker's live count. `self.children`
@@ -17653,7 +17697,12 @@ impl<'a> Checker<'a> {
                 let rt = self.check_expr(receiver);
                 self.record_param_access(&rt, name, *span, crate::typed_bodies::AccessKind::Read);
                 match self.field_ty(&rt, &name.name) {
-                    Some(t) => t,
+                    Some(t) => {
+                        if !is_callee {
+                            self.refuse_method_value(&rt, name);
+                        }
+                        t
+                    }
                     None => {
                         // F.22: `self.<slot>` references a capacity
                         // slot, not a field. Slots don't have a
