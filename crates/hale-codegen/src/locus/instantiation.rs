@@ -2624,18 +2624,40 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // #1534: a literal this locus's params build is a node of its
         // static tree. Under an anchor whose params its own thread (or its
         // pool's worker) builds, in an init the function holding the scope
-        // starts, the nodes claim from that init, through a value of the
-        // init's own: the scope reaches it in the argument block, and an
-        // anchor among those nodes passes it on into its own init the same
-        // way, however deep (#1555).
+        // starts, the nodes claim from that init: the scope reaches it in
+        // the argument block, which carries whatever value of the starting
+        // function the init reads. That function's scope is the root's
+        // own value, or, in an init that itself starts one (an anchor
+        // nested in another anchor's params, #1555), a value of a third
+        // function, which no argument block carries: there the starting
+        // init takes its own copy first, so the scope passes from init to
+        // init however deep.
         let tree_ctx = match (&reserve_ctx, &pinned_init) {
             (Some(c), None) => Some(c.clone()),
             (Some(c), Some(p)) if p.saved_block.get_parent() == Some(c.func) => {
-                let i8_t = self.context.i8_type();
-                let zero = self.context.i64_type().const_zero();
-                // SAFETY: a zero offset from the scope pointer itself.
-                let scope = unsafe { self.builder.build_in_bounds_gep(i8_t, c.scope, &[zero], "bus.reserve.scope.in") }
-                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                let in_func = c
+                    .scope
+                    .as_instruction()
+                    .and_then(|i| i.get_parent())
+                    .and_then(|b| b.get_parent())
+                    == Some(c.func);
+                let scope = if in_func {
+                    c.scope
+                } else {
+                    let here = self.builder.get_insert_block().expect("the init's block");
+                    self.builder.position_at_end(p.saved_block);
+                    self.builder.unset_current_debug_location();
+                    let i8_t = self.context.i8_type();
+                    let zero = self.context.i64_type().const_zero();
+                    // SAFETY: a zero offset from the scope pointer itself.
+                    let own = unsafe { self.builder.build_in_bounds_gep(i8_t, c.scope, &[zero], "bus.reserve.scope.in") }
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    self.builder.position_at_end(here);
+                    if let Some(loc) = self.di_current_loc {
+                        self.builder.set_current_debug_location(loc);
+                    }
+                    own
+                };
                 Some(crate::locus::reservation::ReserveCtx { func: p.init_fn, scope, ..c.clone() })
             }
             _ => None,
