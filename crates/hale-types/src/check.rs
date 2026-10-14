@@ -11505,6 +11505,53 @@ impl<'a> Checker<'a> {
         true
     }
 
+    /// A `std::` path read as a value (`apply(std::url::encode, s)`). A
+    /// stdlib fn with a Hale body is merged into the program under its
+    /// rename and is a fn value like a program's own fn, typed by its
+    /// signature. Anything else (a builtin lowering answers at a call, with
+    /// no body to point at) has no value: the build refused it ("unresolved
+    /// path"), with no location, and the check refuses it at the path.
+    fn stdlib_fn_value(&mut self, qn: &QualifiedName) -> Ty {
+        let segs: Vec<&str> = qn.segments.iter().map(|s| s.name.as_str()).collect();
+        if let Some(mangled) = crate::stdlib_bodies::mangled_locus_name(&segs) {
+            if let Some(TopSymbol::Fn(sig)) = self.top.lookup(mangled) {
+                return Ty::Function {
+                    params: sig.params.iter().map(|(_, t)| t.clone()).collect(),
+                    ret: Box::new(sig.ret.clone()),
+                };
+            }
+        }
+        let path = segs.join("::");
+        let name = segs.last().copied().unwrap_or("f");
+        let wrapper = match crate::stdlib_surface::signature_for(&segs) {
+            Some(sig) if !sig.params.iter().any(|p| matches!(p, crate::stdlib_surface::SigTy::Any))
+                && !matches!(sig.ret, crate::stdlib_surface::SigTy::Any) =>
+            {
+                let names: Vec<String> = (0..sig.params.len()).map(|i| format!("a{i}")).collect();
+                let params: Vec<String> =
+                    names.iter().zip(sig.params).map(|(n, t)| format!("{n}: {}", t.to_ty().display())).collect();
+                let ret = match sig.ret {
+                    crate::stdlib_surface::SigTy::Unit => String::new(),
+                    t => format!(" -> {}", t.to_ty().display()),
+                };
+                format!(
+                    "`fn {name}_of({}){ret} {{ return {path}({}); }}`",
+                    params.join(", "),
+                    names.join(", ")
+                )
+            }
+            _ => format!("`fn {name}_of(…) {{ return {path}(…); }}`"),
+        };
+        self.diags.push(Diag::ty(
+            qn.span,
+            format!(
+                "`{path}` is not a fn value: the stdlib answers it at a call, and there is no fn behind \
+                 it to pass. Wrap it in a fn of your own, {wrapper}, and pass that"
+            ),
+        ));
+        Ty::Unknown
+    }
+
     /// `self.dbl` (a locus's, a perspective's or an interface's method)
     /// written as a value rather than called: a method is called on its
     /// locus, and a `fn(..)` value carries no locus, so there is no value
@@ -16276,6 +16323,10 @@ impl<'a> Checker<'a> {
             }
             Expr::Ident(id) => self.check_ident_expr(id, true),
             Expr::Path(qn) => {
+                let is_callee = std::mem::take(&mut self.this_is_callee);
+                if !is_callee && qn.segments.first().is_some_and(|s| s.name == "std") {
+                    return self.stdlib_fn_value(qn);
+                }
                 // m47-followup: 2-segment path may be an enum
                 // variant construction (`EnumName::VariantName`).
                 // Resolve to the enum type so let-bindings,

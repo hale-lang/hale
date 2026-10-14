@@ -2750,3 +2750,34 @@ fn a_decimal_match_takes_its_places_scale() {
         "hale_cb_decimal_match",
     );
 }
+
+/// A `std::` path read as a value checked clean and the build refused it
+/// ("unresolved path `std::math::abs`"), with no location. A stdlib fn
+/// with a Hale body is merged into the program under its rename, so its
+/// path lowers as that fn's pointer, the way a program's own fn's name
+/// does: `apply(std::url::encode, s)` builds and runs. A builtin the
+/// stdlib answers at a call has no fn behind it; the check refuses it
+/// at the path and names a wrapper.
+///
+/// Plain string literals, for the reason given above.
+#[test]
+fn a_stdlib_fn_value_lowers_or_is_refused_by_the_check() {
+    let bodied = "fn apply(f: fn(String) -> String, s: String) -> String { return f(s); }\n\
+                  fn main() { println(apply(std::url::encode, \"a b&c\")); let g = std::url::decode; println(g(\"a%20b\")); }\n";
+    assert_eq!(build_and_run_probe(bodied, "stdlib_fn_value"), Ok("a%20b%26c\na b\n".to_string()), "{}", bodied);
+    assert_refused_by_the_check(
+        &[
+            (
+                "fn apply(f: fn(Int) -> Int, x: Int) -> Int { return f(x); }\nfn main() { println(apply(std::math::abs, 0 - 3)); }\n",
+                "std::math::abs",
+                "`std::math::abs` is not a fn value: the stdlib answers it at a call",
+            ),
+            (
+                "fn apply(f: fn(String) -> String, s: String) -> String { return f(s); }\nfn main() { println(apply(std::str::upper, \"x\")); }\n",
+                "std::str::upper",
+                "`std::str::upper` is not a fn value: the stdlib answers it at a call",
+            ),
+        ],
+        "stdlib_fn_value",
+    );
+}

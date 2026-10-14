@@ -1412,6 +1412,20 @@ and a `fn(…)` value carries none, so it is not one. Pass a free fn,
 or call the method where the value is needed
 ```
 
+A `std::` fn is a value when the stdlib writes it in Hale: its body is
+merged into the program under its rename, so `apply(std::url::encode,
+s)` passes that fn as `apply(dbl, 1)` passes `dbl`, typed by its
+signature. A builtin the stdlib answers at a call (`std::math::abs`,
+`std::str::upper`) has no fn behind it, and its path in any position
+but a call's callee is a type error at the path that names a wrapper:
+
+```
+main.hl:2:27: type error: `std::str::upper` is not a fn value: the
+stdlib answers it at a call, and there is no fn behind it to pass.
+Wrap it in a fn of your own, `fn upper_of(a0: String) -> String {
+return std::str::upper(a0); }`, and pass that
+```
+
 ### Calls to bare names
 
 A call whose callee is a bare identifier must name something: a

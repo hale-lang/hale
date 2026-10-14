@@ -143,6 +143,11 @@ For the same reason a locus's method is not a function value:
 function, so `hale check` refuses it at `inc`. Call the method
 where you need its result, or pass a free function.
 
+A stdlib function written in Hale passes the same way
+(`apply(std::url::encode, s)`). One the compiler answers itself at a
+call (`std::math::abs`) has no function behind it to pass; `hale
+check` says so and suggests the one-line wrapper to pass instead.
+
 ## Free functions and where they live
 
 A function declared at the top level of a file is a *free
