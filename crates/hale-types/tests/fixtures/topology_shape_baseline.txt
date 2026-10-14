@@ -1022,6 +1022,9 @@ crates/hale-codegen/tests/locus_field_cascade.rs#4 66a306ee5b5d043b
 crates/hale-codegen/tests/locus_field_reorder.rs#0 e304f500611307a8
 crates/hale-codegen/tests/locus_field_reorder.rs#1 e304f500611307a8
 crates/hale-codegen/tests/locus_field_reorder.rs#2 0bbbcb83ff80ab56
+crates/hale-codegen/tests/locus_field_store.rs#0 ce86a5749b3c982d
+crates/hale-codegen/tests/locus_field_store.rs#2 6554df0964340bc4
+crates/hale-codegen/tests/locus_field_store.rs#3 23b3b2915a8c6226
 crates/hale-codegen/tests/locus_let_lifecycle.rs#0 4a40f789dacc3330
 crates/hale-codegen/tests/locus_let_lifecycle.rs#1 eabd434a4b08e9cd
 crates/hale-codegen/tests/locus_let_lifecycle.rs#2 eabd434a4b08e9cd
@@ -1990,6 +1993,7 @@ crates/hale-types/tests/placement.rs#72 eb89d2367f0fe029
 crates/hale-types/tests/placement.rs#73 eb89d2367f0fe029
 crates/hale-types/tests/placement.rs#74 638b42602935f283
 crates/hale-types/tests/placement.rs#8 aa981ce3fa820e36
+crates/hale-types/tests/placement.rs#85 f5a0194ad89d9034
 crates/hale-types/tests/placement_pairings.rs#3 7fa08ae2a5239b16
 crates/hale-types/tests/placement_pairings.rs#6 19fbfff324159117
 crates/hale-types/tests/quantitative_budgets.rs#0 53bd236a4771f0ca

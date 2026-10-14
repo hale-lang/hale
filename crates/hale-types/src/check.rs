@@ -3822,6 +3822,9 @@ fn check_placement_single_thread(
         .filter_map(|r| Some((r.locus.clone(), r.inferred.clone()?)))
         .collect();
 
+    let decls = StoreDecls::of(bundle);
+    let stores_through = free_fn_param_stores(bundle, &decls);
+
     for program in bundle.programs.values() {
         walk_decls(&program.items, &mut |item| {
             if let TopDecl::Locus(l) = item {
@@ -3843,6 +3846,9 @@ fn check_placement_single_thread(
                             cross_pool_safe_loci: &cross_pool_safe_loci,
                             form_bearing_loci: &form_bearing_loci,
                             inferred_sync: &inferred_sync,
+                            stores_through: &stores_through,
+                            decls: &decls,
+                            aliases: BTreeMap::new(),
                             diags,
                         };
                         walk_block_pool(body, &mut cx);
@@ -3908,6 +3914,16 @@ struct PoolCheckCx<'a> {
         String,
         crate::sync_inference::InferredSync,
     >,
+    /// GH #1561: each free fn's parameters, by position, whose locus
+    /// fields its body stores into (`fn put(w: W, s: String) { w.name =
+    /// s; }`), directly or by handing the parameter to a fn that does
+    /// (`free_fn_param_stores`). Keyed by the fn's name.
+    stores_through: &'a BTreeMap<String, BTreeSet<usize>>,
+    /// The declarations a store's slot type is read from.
+    decls: &'a StoreDecls<'a>,
+    /// Locals bound to a field that runs in another domain (`let w =
+    /// self.w;`): a store through one is the field's.
+    aliases: BTreeMap<String, CrossPool>,
     diags: &'a mut Vec<Diag>,
 }
 
@@ -3922,10 +3938,35 @@ fn walk_block_pool(block: &Block, cx: &mut PoolCheckCx) {
 
 fn walk_stmt_pool(stmt: &Stmt, cx: &mut PoolCheckCx) {
     match stmt {
-        Stmt::Let { value, .. } | Stmt::LetTuple { value, .. } => {
+        Stmt::Let { name, value, .. } => {
             walk_expr_pool(value, cx);
+            match receiver_cross_pool(value, cx) {
+                Some(cp) => {
+                    cx.aliases.insert(name.name.clone(), cp);
+                }
+                None => {
+                    cx.aliases.remove(&name.name);
+                }
+            }
         }
-        Stmt::Assign { value, .. } => walk_expr_pool(value, cx),
+        Stmt::LetTuple { names, value, .. } => {
+            walk_expr_pool(value, cx);
+            for n in names {
+                cx.aliases.remove(&n.name);
+            }
+        }
+        Stmt::Assign { target, value, span, .. } => {
+            check_store_pool(target, *span, cx);
+            for seg in &target.tail {
+                if let LValueSeg::Index(e) = seg {
+                    walk_expr_pool(e, cx);
+                }
+            }
+            walk_expr_pool(value, cx);
+            if target.tail.is_empty() {
+                cx.aliases.remove(&target.head.name);
+            }
+        }
         Stmt::If(i) => walk_if_pool(i, cx),
         Stmt::Match(m) => walk_match_pool(m, cx),
         Stmt::For { iter, body, .. } => {
@@ -4077,6 +4118,7 @@ fn walk_expr_pool(expr: &Expr, cx: &mut PoolCheckCx) {
                 }
             }
         }
+        check_call_stores_pool(callee, args, *span, cx);
         walk_expr_pool(callee, cx);
         for a in args {
             walk_expr_pool(a, cx);
@@ -4138,8 +4180,404 @@ fn walk_expr_pool(expr: &Expr, cx: &mut PoolCheckCx) {
     }
 }
 
+/// GH #1561: a store into a locus's field is that locus's own work,
+/// exactly as a method call on it is, so F.31 refuses it across pools:
+/// `self.w.name = s` (or deeper, `self.w.r.k = 1`), or through a local
+/// bound to such a field, where `self.w` runs in another domain than
+/// the enclosing instance. Lowering writes the value into the field's
+/// locus's arena and retires what it replaces, which only that locus's
+/// thread may do.
+fn check_store_pool(target: &LValue, span: Span, cx: &mut PoolCheckCx) {
+    let (cp, shown) = if target.head.name == "self" {
+        // `self.w.<...>`: the slot is below the field `w`.
+        let Some(LValueSeg::Field(f)) = target.tail.first() else { return };
+        if target.tail.len() < 2 {
+            return;
+        }
+        let recv = Expr::Field {
+            receiver: Box::new(Expr::KwSelf(target.head.span)),
+            name: f.clone(),
+            span: target.head.span,
+        };
+        match receiver_cross_pool(&recv, cx) {
+            Some(cp) if !cx.decls.slot_is_inline_scalar(&cp.field_locus, &target.tail[1..]) => {
+                (cp, format!("self.{}", f.name))
+            }
+            _ => return,
+        }
+    } else {
+        if target.tail.is_empty() {
+            return;
+        }
+        match cx.aliases.get(&target.head.name) {
+            Some(cp) if !cx.decls.slot_is_inline_scalar(&cp.field_locus, &target.tail) => {
+                (cp.clone(), target.head.name.clone())
+            }
+            _ => return,
+        }
+    };
+    let path = lvalue_display(target);
+    cx.diags.push(Diag::ty(span, cross_pool_store_message(&format!("`{path} = …` stores into"), &shown, &cp, cx)));
+}
+
+/// GH #1561: a call of a free fn that stores into a locus field through
+/// one of its parameters (`stores_through`), handed a field that runs in
+/// another domain (`put(self.w, s)`, or a local bound to one): the
+/// store would run on this instance's thread, so it is refused as the
+/// store written here would be.
+fn check_call_stores_pool(callee: &Expr, args: &[Expr], span: Span, cx: &mut PoolCheckCx) {
+    let fname = match callee {
+        Expr::Ident(id) => id.name.clone(),
+        Expr::Path(qp) => match qp.segments.last() {
+            Some(s) => s.name.clone(),
+            None => return,
+        },
+        _ => return,
+    };
+    let Some(positions) = cx.stores_through.get(&fname) else { return };
+    for &i in positions {
+        let Some(arg) = args.get(i) else { continue };
+        let found = match arg {
+            Expr::Ident(id) => cx.aliases.get(&id.name).cloned().map(|cp| (cp, id.name.clone())),
+            other => receiver_cross_pool(other, cx).map(|cp| (cp, receiver_display(other))),
+        };
+        if let Some((cp, shown)) = found {
+            let what = format!("`{fname}(…)` stores, through its argument {}, into", i + 1);
+            cx.diags.push(Diag::ty(span, cross_pool_store_message(&what, &shown, &cp, cx)));
+        }
+    }
+}
+
+fn cross_pool_store_message(what: &str, shown: &str, cp: &CrossPool, cx: &PoolCheckCx) -> String {
+    format!(
+        "cross-pool field store: {} a field of locus `{}` (`{}`) placed `{}`, \
+         but the enclosing locus `{}` is placed `{}`. A store into a locus's \
+         field is that locus's own work, as a method call on it is: give `{}` a \
+         method that makes the store and reach it through the bus. See \
+         spec/types.md § \"Single-threaded-method invariant (F.31)\".",
+        what,
+        cp.field_locus,
+        shown,
+        cp.callee_pool.display(),
+        cx.enclosing_locus.name.name,
+        cp.caller_pool.display(),
+        cp.field_locus,
+    )
+}
+
+fn lvalue_display(target: &LValue) -> String {
+    let mut s = target.head.name.clone();
+    for seg in &target.tail {
+        match seg {
+            LValueSeg::Field(f) => {
+                s.push('.');
+                s.push_str(&f.name);
+            }
+            LValueSeg::Index(_) => s.push_str("[…]"),
+        }
+    }
+    s
+}
+
+/// GH #1561: per free fn (by name; same-named fns in two modules are
+/// joined), the parameter positions whose fields the body stores into
+/// — `p.f = v` at any depth under the parameter `p` — or that it hands,
+/// as a bare name, to a fn at such a position: a fixpoint over the
+/// bundle's free fns. A parameter that is a locus handle is where the
+/// store lands in that locus's storage.
+fn free_fn_param_stores(bundle: &Bundle<'_>, decls: &StoreDecls<'_>) -> BTreeMap<String, BTreeSet<usize>> {
+    let mut fns: Vec<&FnDecl> = Vec::new();
+    for program in bundle.programs.values() {
+        walk_decls(&program.items, &mut |item| {
+            if let TopDecl::Fn(f) = item {
+                fns.push(f);
+            }
+        });
+    }
+    // Direct stores, and the passes of a parameter to another fn.
+    let mut out: BTreeMap<String, BTreeSet<usize>> = BTreeMap::new();
+    let mut passes: Vec<(String, usize, String, usize)> = Vec::new();
+    for f in &fns {
+        let params: BTreeMap<&str, usize> =
+            f.params.iter().enumerate().map(|(i, p)| (p.name.name.as_str(), i)).collect();
+        let mut stored: BTreeSet<usize> = BTreeSet::new();
+        let visit_stmt = |st: &Stmt, stored: &mut BTreeSet<usize>| {
+            if let Stmt::Assign { target, .. } = st {
+                if !target.tail.is_empty() {
+                    if let Some(&i) = params.get(target.head.name.as_str()) {
+                        // An inline scalar slot of a locus parameter is
+                        // a plain store, with no arena work.
+                        let scalar = decls
+                            .named(&f.params[i].ty)
+                            .is_some_and(|l| decls.slot_is_inline_scalar(l, &target.tail));
+                        if !scalar {
+                            stored.insert(i);
+                        }
+                    }
+                }
+            }
+        };
+        let mut calls: Vec<(String, usize, usize)> = Vec::new();
+        let mut visit_expr = |e: &Expr| {
+            if let Expr::Call { callee, args, .. } = e {
+                let name = match callee.as_ref() {
+                    Expr::Ident(id) => Some(id.name.clone()),
+                    Expr::Path(qp) => qp.segments.last().map(|s| s.name.clone()),
+                    _ => None,
+                };
+                if let Some(name) = name {
+                    for (j, a) in args.iter().enumerate() {
+                        if let Expr::Ident(id) = a {
+                            if let Some(&i) = params.get(id.name.as_str()) {
+                                calls.push((name.clone(), j, i));
+                            }
+                        }
+                    }
+                }
+            }
+        };
+        visit_block_stores(&f.body, &mut |st| visit_stmt(st, &mut stored), &mut visit_expr);
+        if !stored.is_empty() {
+            out.entry(f.name.name.clone()).or_default().extend(stored);
+        }
+        for (callee, j, i) in calls {
+            passes.push((f.name.name.clone(), i, callee, j));
+        }
+    }
+    loop {
+        let mut changed = false;
+        for (caller, i, callee, j) in &passes {
+            if out.get(callee).is_some_and(|s| s.contains(j)) && out.entry(caller.clone()).or_default().insert(*i) {
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    out
+}
+
+/// The locus and type declarations by name (the last segment of a path),
+/// for the type of a store's slot (GH #1561).
+struct StoreDecls<'a> {
+    loci: BTreeMap<String, &'a LocusDecl>,
+    types: BTreeMap<String, &'a TypeDecl>,
+}
+
+impl<'a> StoreDecls<'a> {
+    fn of(bundle: &Bundle<'a>) -> Self {
+        let mut d = StoreDecls { loci: BTreeMap::new(), types: BTreeMap::new() };
+        for program in bundle.programs.values() {
+            walk_decls(&program.items, &mut |item| match item {
+                TopDecl::Locus(l) => {
+                    d.loci.insert(l.name.name.clone(), l);
+                }
+                TopDecl::Type(t) => {
+                    d.types.insert(t.name.name.clone(), t);
+                }
+                _ => {}
+            });
+        }
+        d
+    }
+
+    /// The name a `Named` type expression spells (its last segment).
+    fn named<'t>(&self, t: &'t TypeExpr) -> Option<&'t str> {
+        match t {
+            TypeExpr::Named { path, .. } => path.segments.last().map(|s| s.name.as_str()),
+            _ => None,
+        }
+    }
+
+    /// Is the slot `path` names below the locus `locus` (by its
+    /// declaration's name) surely an inline scalar — a number, a
+    /// `Bool`, a `Time` or `Duration`, a unit scalar or alias of one, a
+    /// payload-free enum? Such a store is one plain store, with no
+    /// arena work; anything else, or a slot this cannot follow, is not.
+    fn slot_is_inline_scalar(&self, locus: &str, path: &[LValueSeg]) -> bool {
+        let short = locus.rsplit("::").next().unwrap_or(locus);
+        let Some(decl) = self.loci.get(short) else { return false };
+        let Some(LValueSeg::Field(first)) = path.first() else { return false };
+        let ty = decl.members.iter().find_map(|m| match m {
+            LocusMember::Params(pb) => pb.params.iter().find(|p| p.name.name == first.name).and_then(|p| p.ty.as_ref()),
+            _ => None,
+        });
+        let Some(mut ty) = ty else { return false };
+        for seg in &path[1..] {
+            let next = match (seg, self.resolve(ty)) {
+                (LValueSeg::Index(_), TypeExpr::Array { elem, .. }) => elem.as_ref(),
+                (LValueSeg::Field(f), t) => {
+                    let Some(TypeDeclBody::Struct(fields)) = self.named(t).and_then(|n| self.types.get(n)).map(|d| &d.body)
+                    else {
+                        return false;
+                    };
+                    match fields.iter().find(|sf| sf.name.name == f.name) {
+                        Some(sf) => &sf.ty,
+                        None => return false,
+                    }
+                }
+                _ => return false,
+            };
+            ty = next;
+        }
+        self.inline_scalar(ty, 0)
+    }
+
+    /// `t` with its aliases followed (a bounded number of times).
+    fn resolve<'t>(&'t self, mut t: &'t TypeExpr) -> &'t TypeExpr {
+        for _ in 0..16 {
+            match self.named(t).and_then(|n| self.types.get(n)).map(|d| &d.body) {
+                Some(TypeDeclBody::Alias(a)) => t = a,
+                _ => break,
+            }
+        }
+        t
+    }
+
+    fn inline_scalar(&self, t: &TypeExpr, depth: u32) -> bool {
+        if depth > 16 {
+            return false;
+        }
+        match t {
+            TypeExpr::Primitive(p, _) => matches!(
+                p,
+                PrimType::Int | PrimType::Uint | PrimType::Float | PrimType::Decimal(_) | PrimType::Bool
+                    | PrimType::Time | PrimType::Duration
+            ),
+            TypeExpr::Named { .. } => match self.named(t).and_then(|n| self.types.get(n)).map(|d| &d.body) {
+                Some(TypeDeclBody::Alias(a)) => self.inline_scalar(a, depth + 1),
+                Some(TypeDeclBody::Scalar(sd)) => self.inline_scalar(&sd.base, depth + 1),
+                Some(TypeDeclBody::Enum(vs)) => vs.iter().all(|v| v.fields.is_empty()),
+                _ => false,
+            },
+            _ => false,
+        }
+    }
+}
+
+/// Every statement and expression of a body, nested blocks included
+/// (the shapes the F.31 walk visits).
+fn visit_block_stores(block: &Block, on_stmt: &mut dyn FnMut(&Stmt), on_expr: &mut dyn FnMut(&Expr)) {
+    for st in &block.stmts {
+        visit_stmt_deep(st, on_stmt, on_expr);
+    }
+    if let Some(t) = &block.tail {
+        visit_expr_deep(t, on_stmt, on_expr);
+    }
+}
+
+fn visit_stmt_deep(st: &Stmt, on_stmt: &mut dyn FnMut(&Stmt), on_expr: &mut dyn FnMut(&Expr)) {
+    on_stmt(st);
+    match st {
+        Stmt::Let { value, .. } | Stmt::LetTuple { value, .. } | Stmt::Fail { value, .. } => {
+            visit_expr_deep(value, on_stmt, on_expr)
+        }
+        Stmt::Assign { target, value, .. } => {
+            for seg in &target.tail {
+                if let LValueSeg::Index(e) = seg {
+                    visit_expr_deep(e, on_stmt, on_expr);
+                }
+            }
+            visit_expr_deep(value, on_stmt, on_expr);
+        }
+        Stmt::If(i) => visit_if_deep(i, on_stmt, on_expr),
+        Stmt::Match(m) => visit_match_deep(m, on_stmt, on_expr),
+        Stmt::For { iter, body, .. } => {
+            visit_expr_deep(iter, on_stmt, on_expr);
+            visit_block_stores(body, on_stmt, on_expr);
+        }
+        Stmt::While { cond, body, .. } => {
+            visit_expr_deep(cond, on_stmt, on_expr);
+            visit_block_stores(body, on_stmt, on_expr);
+        }
+        Stmt::Return(Some(e), _) | Stmt::Expr(e) => visit_expr_deep(e, on_stmt, on_expr),
+        Stmt::Block(b) => visit_block_stores(b, on_stmt, on_expr),
+        Stmt::ShmWrite { max, body, .. } => {
+            visit_expr_deep(max, on_stmt, on_expr);
+            visit_block_stores(body, on_stmt, on_expr);
+        }
+        Stmt::Recovery { args, .. } => args.iter().for_each(|a| visit_expr_deep(a, on_stmt, on_expr)),
+        Stmt::Violate { payload: Some(p), .. } => visit_expr_deep(p, on_stmt, on_expr),
+        Stmt::Send { subject, value, .. } => {
+            visit_expr_deep(subject, on_stmt, on_expr);
+            visit_expr_deep(value, on_stmt, on_expr);
+        }
+        _ => {}
+    }
+}
+
+fn visit_if_deep(i: &IfStmt, on_stmt: &mut dyn FnMut(&Stmt), on_expr: &mut dyn FnMut(&Expr)) {
+    visit_expr_deep(&i.cond, on_stmt, on_expr);
+    visit_block_stores(&i.then_block, on_stmt, on_expr);
+    if let Some(eb) = &i.else_block {
+        match eb.as_ref() {
+            ElseBranch::Else(b) => visit_block_stores(b, on_stmt, on_expr),
+            ElseBranch::ElseIf(nested) => visit_if_deep(nested, on_stmt, on_expr),
+        }
+    }
+}
+
+fn visit_match_deep(m: &MatchStmt, on_stmt: &mut dyn FnMut(&Stmt), on_expr: &mut dyn FnMut(&Expr)) {
+    visit_expr_deep(&m.scrutinee, on_stmt, on_expr);
+    for arm in &m.arms {
+        if let Some(g) = &arm.guard {
+            visit_expr_deep(g, on_stmt, on_expr);
+        }
+        match &arm.body {
+            MatchArmBody::Expr(e) => visit_expr_deep(e, on_stmt, on_expr),
+            MatchArmBody::Block(b) => visit_block_stores(b, on_stmt, on_expr),
+        }
+    }
+}
+
+fn visit_expr_deep(e: &Expr, on_stmt: &mut dyn FnMut(&Stmt), on_expr: &mut dyn FnMut(&Expr)) {
+    on_expr(e);
+    let mut go = |x: &Expr| visit_expr_deep(x, on_stmt, on_expr);
+    match e {
+        Expr::Call { callee, args, .. } => {
+            go(callee);
+            args.iter().for_each(&mut go);
+        }
+        Expr::Binary { left, right, .. } => {
+            go(left);
+            go(right);
+        }
+        Expr::Unary { operand, .. } => go(operand),
+        Expr::Field { receiver, .. } | Expr::Path2 { receiver, .. } => go(receiver),
+        Expr::Index { receiver, index, .. } => {
+            go(receiver);
+            go(index);
+        }
+        Expr::Tuple(items, _) | Expr::Array(items, _) => items.iter().for_each(&mut go),
+        Expr::Struct { inits, .. } => inits.iter().for_each(|i| go(&i.value)),
+        Expr::Sum(inner, _) | Expr::Prod(inner, _) => go(inner),
+        Expr::Approx { left, right, tolerance, .. } => {
+            go(left);
+            go(right);
+            go(tolerance);
+        }
+        Expr::Range { lo, hi, .. } => {
+            go(lo);
+            go(hi);
+        }
+        Expr::ArrayRepeat { val, .. } => go(val),
+        Expr::Or { inner, disposition, .. } => {
+            go(inner);
+            if let OrDisposition::Substitute(x) | OrDisposition::Fail(x, _) = disposition {
+                go(x);
+            }
+        }
+        Expr::Block(b) => visit_block_stores(b, on_stmt, on_expr),
+        Expr::If(i) => visit_if_deep(i, on_stmt, on_expr),
+        Expr::Match(m) => visit_match_deep(m, on_stmt, on_expr),
+        Expr::Literal(..) | Expr::Ident(_) | Expr::Path(_) | Expr::KwSelf(_) => {}
+    }
+}
+
 /// A receiver that runs in another domain than its caller: the locus
 /// it realizes, as the diagnostic names it, and the two pools.
+#[derive(Clone)]
 struct CrossPool {
     field_locus: String,
     caller_pool: PoolId,

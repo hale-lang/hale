@@ -3243,3 +3243,103 @@ fn main() { App { }; }
     let msg = the_only_error(src);
     assert!(msg.contains("placement entry `w`") && msg.ends_with("(rule 6)"), "got: {msg}");
 }
+
+// GH #1561: a store into a locus's field is that locus's own work, as a
+// method call on it is, so F.31 refuses it across pools: a store down
+// `self.w`, a free fn handed `self.w` that stores into its parameter's
+// field (directly or through another fn), and a store through a local
+// bound to `self.w`. Lowering writes the value into the field's locus's
+// arena and retires what it replaces, which only that locus's thread
+// may do (a foreign-thread store crashed 5 runs in 12). A store into an
+// inline scalar slot (an `Int` gate a test raises) does no arena work and
+// is not refused, as a cross-pool field read is not.
+
+fn cross_pool_stores(src: &str) -> Vec<String> {
+    check(src).into_iter().filter(|m| m.contains("cross-pool field store")).collect()
+}
+
+const STORE_LOCI: &str = r#"
+locus W {
+    params { name: String = ""; n: Int = 0; }
+    fn setname(s: String) { self.name = s; }
+}
+fn put(w: W, s: String) { w.name = s; }
+fn relay(x: W, s: String) { put(x, s); }
+fn bump(w: W) { w.n = w.n + 1; }
+fn reads(w: W) -> Int { return w.n; }
+"#;
+
+#[test]
+fn a_store_into_a_cross_pool_field_is_refused() {
+    let src = format!(
+        r#"{STORE_LOCI}
+main locus App {{
+    params {{ w: W = W {{ }}; }}
+    placement {{ w: cooperative(pool = p); }}
+    run() {{
+        self.w.name = "direct";
+        put(self.w, "free fn");
+        relay(self.w, "two calls down");
+        bump(self.w);
+        self.w.n = 5;
+        let held = self.w;
+        held.name = "alias";
+        held.n = 3;
+        put(held, "through a local");
+        let n = reads(self.w);
+    }}
+}}
+fn main() {{ App {{ }}; }}
+"#
+    );
+    let got = cross_pool_stores(&src);
+    let tail = "placed `cooperative(pool = p)`, but the enclosing locus `App` is placed \
+                `cooperative(pool = main)`. A store into a locus's field is that locus's own work, as a \
+                method call on it is: give `W` a method that makes the store and reach it through the bus. \
+                See spec/types.md § \"Single-threaded-method invariant (F.31)\".";
+    assert_eq!(
+        got,
+        [
+            format!("cross-pool field store: `self.w.name = …` stores into a field of locus `W` (`self.w`) {tail}"),
+            format!(
+                "cross-pool field store: `put(…)` stores, through its argument 1, into a field of locus `W` \
+                 (`self.w`) {tail}"
+            ),
+            format!(
+                "cross-pool field store: `relay(…)` stores, through its argument 1, into a field of locus `W` \
+                 (`self.w`) {tail}"
+            ),
+            format!("cross-pool field store: `held.name = …` stores into a field of locus `W` (`held`) {tail}"),
+            format!(
+                "cross-pool field store: `put(…)` stores, through its argument 1, into a field of locus `W` \
+                 (`held`) {tail}"
+            ),
+        ],
+        "a free fn that only reads its parameter (`reads`) is not a store, and a store into an inline \
+         scalar slot (`self.w.n = 5`, `held.n = 3`, `bump`'s `w.n = w.n + 1`) is one plain store with \
+         no arena work, which the rule leaves to the program, as it leaves a cross-pool field read"
+    );
+}
+
+/// The same stores on the instance's own pool are the locus's own,
+/// exactly as a method call on it is: nothing is refused.
+#[test]
+fn a_store_into_a_same_pool_field_is_accepted() {
+    let src = format!(
+        r#"{STORE_LOCI}
+main locus App {{
+    params {{ w: W = W {{ }}; }}
+    run() {{
+        self.w.name = "direct";
+        put(self.w, "free fn");
+        relay(self.w, "two calls down");
+        let held = self.w;
+        held.n = 3;
+    }}
+}}
+fn main() {{ App {{ }}; }}
+"#
+    );
+    assert_eq!(cross_pool_stores(&src), Vec::<String>::new());
+    assert!(check(&src).iter().all(|m| !m.contains("cross-pool")), "{:?}", check(&src));
+}
