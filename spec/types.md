@@ -350,15 +350,21 @@ return k.r.arr; }`) hands back that locus's storage, a place's value; a
 locus's method returning its own fields hands back a copy. A place's
 value assigned into a part of a parameter (`fn store(h: Holder, r: R) {
 h.arr = r.arr; }`) is stored as a copy, so the caller's two arguments
-never share a block; so is a place's value (a `String` included) stored
-into a field of a locus handle parameter (`fn put(l: L, s: String) {
-l.name = s; }`), so the locus and the caller never share it. That copy
-lives where such a store's value always has, the caller's arena: a store
-into a locus's field from outside its methods is not yet owned by that
-locus — not copied into its arena, not retired when replaced, not
-checked across pools — and a store through a handle that is not a
-parameter (`ls[0].r.arr = r.arr`) still stores the value's own block
-(GH #1561). A cell's read handed back through a call keeps
+never share a block; so is a value spelled as a place — a local, a
+field, an element, a `String` included — stored into a field of a locus
+handle parameter (`fn put(l: L, s: String) { l.name = s; }`), so the
+locus and the caller never share it. That is all this rule promises for
+a store into a locus's field from outside its methods; the rest is not
+yet owned by the locus (GH #1561): a `String` or `Bytes` carried there
+by an `if`, a `match`, a block, an `or` or a call (`l.name = if f { s }
+else { "xyz" };`), a `String` stored through a handle local (`let l = L
+{ }; l.name = s; l.rename();` rewrites `s`), a store through an element
+of an array of loci (`ls[0].r.arr = r.arr`), and the arena the value
+lives in, its retire when replaced, and the cross-pool check. (A
+compound value stored through a handle local or a child, `l.r.arr =
+r.arr`, `h.loc.r.arr = r.arr`, is copied.) The copy costs a clone per
+store: a free fn storing a `String` parameter into a handle's field 4M
+times ran 7 s and 62 MB longer. A cell's read handed back through a call keeps
 its kind: passed straight to a callee that writes through it, it is
 copied where it is evaluated. A write into it is an assignment
 at any depth (`a[0] = x`, `x.k = 1`, `b[i].inner.s = s`) or a call that

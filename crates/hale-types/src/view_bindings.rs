@@ -2873,10 +2873,14 @@ impl<'p, 'a> Walk<'p, 'a> {
                     // A handle parameter's field is that locus's storage, and
                     // a store into it from outside the locus's methods is not
                     // yet owned by the locus (the value stays where the caller's
-                    // arena holds it): any place's value stored there, a String
-                    // included, is a copy, so the locus and the caller never
-                    // share it (a later same-length overwrite by the locus would
-                    // otherwise rewrite the caller's String).
+                    // arena holds it): a value spelled as a place (a local, a
+                    // field, an element), a String included, is a copy, so the
+                    // locus and the caller never share it (a later same-length
+                    // overwrite by the locus would otherwise rewrite the
+                    // caller's String). Nothing else is (a String carried by an
+                    // `if` or a call, a store through a handle local): GH #1561.
+                    // The clone costs: a free fn storing a String parameter
+                    // into a handle's field 4M times ran 7 s and 62 MB longer.
                     let param_head = matches!(head, Some(None)) && self.params.contains(&target.head.name);
                     let handle_head = self.handle_only_params.contains(&target.head.name);
                     let marked = keys.as_ref().is_some_and(|k| k.iter().any(|k| k.starts_with(AT) || k.starts_with(PART)));

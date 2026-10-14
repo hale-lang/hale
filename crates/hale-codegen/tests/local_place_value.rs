@@ -694,13 +694,13 @@ fn a_cell_read_through_a_call_handed_to_a_writer_leaves_the_cell() {
     assert!(out.contains("bound: k=1 s=IN2 b0=2"), "{out}");
 }
 
-/// A place's value stored into a field of a locus handle parameter
-/// (`fn put(l: L, r: R) { l.r.arr = r.arr; }`, `l.name = s`) is stored
-/// as a copy: the locus's later in-place writes never reach the caller's
-/// value, and the caller's never reach the locus (a raw pointer store
-/// shared them). The copy lives where the store's value always lived,
-/// the caller's arena: a store into a locus's field from outside its
-/// methods is not yet owned by that locus (GH #1561).
+/// A value spelled as a place stored into a field of a locus handle
+/// parameter (`fn put(l: L, r: R) { l.r.arr = r.arr; }`, `l.name = s`)
+/// is stored as a copy: the locus's later in-place writes never reach the
+/// caller's value, and the caller's never reach the locus (a raw pointer
+/// store shared them). The copy lives where the store's value always
+/// lived, the caller's arena; every other store into a locus's field from
+/// outside its methods is not yet owned by that locus (GH #1561).
 #[test]
 fn a_store_down_a_handles_field_path_copies_into_the_locus() {
     let src = format!(
