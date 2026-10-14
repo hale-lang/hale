@@ -106,7 +106,19 @@ pub fn bus_rows() -> Option<&'static crate::bus_graph::BusRows> {
 /// dropped (the stdlib is not the user's code to fix, as the scope drops
 /// its own); a site it could not type is `Unknown`, which costs a copy.
 pub fn view_types() -> Option<&'static [std::sync::Arc<crate::typed_bodies::ViewTypes>]> {
-    static VIEWS: OnceLock<Option<Vec<std::sync::Arc<crate::typed_bodies::ViewTypes>>>> = OnceLock::new();
+    stdlib_walk().map(|(views, _)| views.as_slice())
+}
+
+/// The monomorph shapes the stdlib's walk typed ([`view_types`]'s walk).
+pub fn mono_shapes() -> Option<&'static crate::typed_bodies::MonoShapes> {
+    stdlib_walk().map(|(_, monos)| monos)
+}
+
+#[allow(clippy::type_complexity)]
+fn stdlib_walk() -> Option<&'static (Vec<std::sync::Arc<crate::typed_bodies::ViewTypes>>, crate::typed_bodies::MonoShapes)> {
+    static VIEWS: OnceLock<
+        Option<(Vec<std::sync::Arc<crate::typed_bodies::ViewTypes>>, crate::typed_bodies::MonoShapes)>,
+    > = OnceLock::new();
     VIEWS
         .get_or_init(|| {
             let program = program()?;
@@ -126,9 +138,10 @@ pub fn view_types() -> Option<&'static [std::sync::Arc<crate::typed_bodies::View
             };
             let walk = crate::check::walk_bundle_by_declaration(&bundle, &inputs, false, false, &|_, _| None);
             let mut views = walk.record.views;
-            views.remove(crate::snapshot::STDLIB_SEED)
+            let monos = (*walk.record.mono_shapes).clone();
+            views.remove(crate::snapshot::STDLIB_SEED).map(|v| (v, monos))
         })
-        .as_deref()
+        .as_ref()
 }
 
 /// `["std","io","file","File"]` → `"__StdIoFileFile"`, the mangled

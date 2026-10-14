@@ -819,6 +819,22 @@ pub struct ViewTypes {
     method_values: bool,
 }
 
+/// A monomorph of a generic type or locus as its template is with its
+/// parameters bound to the monomorph's arguments (GH #1554).
+#[derive(Debug, Clone, PartialEq)]
+pub enum MonoShape {
+    /// A record: its fields' types.
+    Struct(Vec<Ty>),
+    /// An enum: each variant's payload types.
+    Enum(Vec<Vec<Ty>>),
+    /// A locus: whether an `@form`, whether one whose reads leave the
+    /// cell's nested blocks shared, and its params' types.
+    Locus { form: bool, view_form: bool, params: Vec<Ty> },
+}
+
+/// Every type and locus monomorph's shape, by its name.
+pub type MonoShapes = BTreeMap<String, MonoShape>;
+
 /// Every declaration's `views` table, by program key, in item order (a
 /// walk's record holds the bundle's).
 pub type ProgramViews = BTreeMap<String, Vec<std::sync::Arc<ViewTypes>>>;
@@ -1140,6 +1156,10 @@ pub struct TypingRecord {
     /// The `views` column: every declaration's table, the reused ones'
     /// included ([`ViewTypes`]), by program key and item.
     pub views: ProgramViews,
+    /// Each monomorph of a generic type or locus, by its name, as its
+    /// template is with its parameters bound ([`MonoShape`]): what the
+    /// owned-view pass classifies `Box_Int` through.
+    pub mono_shapes: std::sync::Arc<MonoShapes>,
     /// What a discarded walk changed, while one is open
     /// ([`Self::open_walk`]).
     walk: Option<WalkUndo>,

@@ -183,7 +183,7 @@ use hale_syntax::Span;
 use crate::resolve::TopScope;
 use crate::symbol::{TopSymbol, TypeKind};
 use crate::ty::Ty;
-use crate::typed_bodies::{CalleeRef, ViewTypes};
+use crate::typed_bodies::{CalleeRef, MonoShape, MonoShapes, ViewTypes};
 
 /// The binding sites lowering binds an owned copy at. A `match` is
 /// named by its span (a `MatchStmt` has no id); every other site by its
@@ -339,6 +339,7 @@ impl OwnedViewColumn {
     pub fn derive(
         programs: &BTreeMap<String, &Program>,
         views: &crate::typed_bodies::ProgramViews,
+        monos: &MonoShapes,
         sends: &[IntraLocusRewrite],
         top: &TopScope,
         stdlib: bool,
@@ -354,7 +355,15 @@ impl OwnedViewColumn {
             }
             _ => false,
         };
-        let mut found = OwnedViews::of(&analyzed, top);
+        // The monomorphs the walks typed: the program's, and the stdlib's
+        // own where the program names none of the same name.
+        let mut monos = monos.clone();
+        if copy {
+            for (n, m) in crate::stdlib_bodies::mono_shapes().into_iter().flatten() {
+                monos.entry(n.clone()).or_insert_with(|| m.clone());
+            }
+        }
+        let mut found = OwnedViews::of(&analyzed, top, &monos);
         let stdlib = if copy { found.pop().unwrap_or_default() } else { OwnedViews::default() };
         let mut program = OwnedViews::default();
         for f in found {
@@ -384,7 +393,7 @@ impl OwnedViewColumn {
         let entry = crate::entry::entry_row(bundle);
         let placement = crate::placement::derive_placement(bundle, &top, &entry);
         let sends = crate::bundle_intra_locus(bundle, &placement);
-        OwnedViewColumn::derive(&bundle.programs, &walk.record.views, &sends, &top, true)
+        OwnedViewColumn::derive(&bundle.programs, &walk.record.views, &walk.record.mono_shapes, &sends, &top, true)
     }
 
     /// The column re-keyed onto lowering's merged program: the bundle's
@@ -404,8 +413,8 @@ impl OwnedViewColumn {
 impl OwnedViews {
     /// Run the pass over every body of `programs`, the summaries over all
     /// of them at once: each program's answers, in order.
-    pub fn of(programs: &[Analyzed<'_>], top: &TopScope) -> Vec<OwnedViews> {
-        analyze(programs, top)
+    pub fn of(programs: &[Analyzed<'_>], top: &TopScope, monos: &MonoShapes) -> Vec<OwnedViews> {
+        analyze(programs, top, monos)
             .into_iter()
             .map(|found| OwnedViews {
                 sites: found.sites.into_iter().map(|(site, _)| site).collect(),
@@ -610,6 +619,9 @@ struct Bodies<'a> {
     /// The scope the checker resolved the programs against: what a
     /// resolved type names ([`Bodies::classify`]).
     top: &'a TopScope,
+    /// The monomorphs the checker typed, each as its template is with its
+    /// parameters bound: what `Box_Int` names.
+    monos: &'a MonoShapes,
     bodies: Vec<(&'a [Param], &'a Block)>,
     /// Each body's program, by its index in the programs the pass runs
     /// over, and its top-level item there: the checker's table it reads.
@@ -708,6 +720,16 @@ impl<'a> Bodies<'a> {
                             }
                         }
                     },
+                    // A monomorph, through its instantiation.
+                    None => {
+                        return match self.monos.get(n) {
+                            Some(MonoShape::Struct(_)) => Class::Record,
+                            Some(MonoShape::Enum(_)) => Class::Value,
+                            Some(MonoShape::Locus { form: true, view_form, .. }) => Class::Form(*view_form),
+                            Some(MonoShape::Locus { .. }) => Class::Handle,
+                            None => Class::Unknown,
+                        }
+                    }
                     _ => return Class::Unknown,
                 },
             }
@@ -800,7 +822,22 @@ impl<'a> Bodies<'a> {
                         l.params.iter().for_each(|f| self.reach(&f.ty, out));
                     }
                 }
-                Some(TopSymbol::Interface(_) | TopSymbol::Perspective(_)) | None => out.opaque = true,
+                Some(TopSymbol::Interface(_) | TopSymbol::Perspective(_)) => out.opaque = true,
+                // A monomorph, through its instantiation; a generic
+                // parameter or a name nothing declares may be anything.
+                None => match self.monos.get(n) {
+                    Some(shape) => {
+                        if out.blocks.insert(n.clone()) {
+                            let parts: Vec<&Ty> = match shape {
+                                MonoShape::Struct(fs) => fs.iter().collect(),
+                                MonoShape::Enum(vs) => vs.iter().flatten().collect(),
+                                MonoShape::Locus { params, .. } => params.iter().collect(),
+                            };
+                            parts.into_iter().for_each(|t| self.reach(t, out));
+                        }
+                    }
+                    None => out.opaque = true,
+                },
                 Some(_) => {}
             },
         }
@@ -1101,9 +1138,10 @@ struct Summaries {
     ret_views: Vec<RetView>,
 }
 
-fn analyze(programs: &[Analyzed<'_>], top: &TopScope) -> Vec<Found> {
+fn analyze(programs: &[Analyzed<'_>], top: &TopScope, monos: &MonoShapes) -> Vec<Found> {
     let mut p = Bodies {
         top,
+        monos,
         bodies: Vec::new(),
         body_program: Vec::new(),
         body_item: Vec::new(),
@@ -4036,7 +4074,8 @@ mod tests {
         let inputs =
             crate::check::WalkInputs { top: &top, handlers: &handlers, bindings: &bindings, units: &units, target: &target };
         let walk = crate::check::walk_bundle_by_declaration(&bundle, &inputs, false, false, &|_, _| None);
-        analyze(&[Analyzed { program: &program, views: &walk.record.views["t"], sends: &[] }], &top).remove(0)
+        analyze(&[Analyzed { program: &program, views: &walk.record.views["t"], sends: &[] }], &top, &walk.record.mono_shapes)
+            .remove(0)
     }
 
     fn found(src: &str) -> Found {

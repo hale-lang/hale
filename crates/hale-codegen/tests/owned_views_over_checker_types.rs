@@ -459,3 +459,56 @@ fn a_payload_is_its_variants_field() {
     let out = run_asan("payload", src);
     assert!(out.contains("text=3\n") && out.contains("record=54\n"), "{out}");
 }
+
+/// A monomorph (`Cfg<Int>` is `Cfg_Int`) is classified through its
+/// instantiation: a record, so a `let` of a field holding one is a copy
+/// already (a record read from a place), and handing the local to a
+/// callee that writes through its parameter (declared `Cfg<Int>`, a
+/// record) copies nothing more. As a name no declaration answers it was a
+/// type of unknown class, and the binding was copied again for the call.
+/// A String read from it and held across a replace of the field is still
+/// owned.
+#[test]
+fn a_monomorph_is_its_instantiation() {
+    let src = r#"
+        type Cfg<T> { n: T; label: String = ""; }
+        fn poke(c: Cfg<Int>) { c.n = 9; }
+        locus H {
+            params { cfg: Cfg<Int> = Cfg_Int { n: 1 }; }
+            fn reset() { self.cfg = Cfg_Int { n: 2, label: std::str::upper("new") }; }
+            fn record() -> Int {
+                let c = self.cfg;
+                poke(c);
+                return self.cfg.n * 10 + c.n;
+            }
+            fn held() -> String {
+                let s = self.cfg.label;
+                self.reset();
+                return s;
+            }
+        }
+        fn main() {
+            let h = H { };
+            h.cfg = Cfg_Int { n: 1, label: std::str::upper("old") };
+            println("record=" + to_string(h.record()));
+            println("held=" + h.held());
+        }
+    "#;
+    let program = hale_syntax::parse_source(src).expect("parses");
+    let Ok(snap) = Snapshot::from_program(program, Vec::new(), Config::harness(Target::host())) else {
+        panic!("the program does not load");
+    };
+    let views = snap.demand_owned_views().expect("the column");
+    let main_at = src.find("fn main").expect("main");
+    let copies: Vec<&str> = views
+        .program
+        .cell_copies()
+        .iter()
+        .filter(|c| c.span.start.as_usize() < main_at)
+        .map(|c| &src[c.span.start.as_usize()..c.span.end.as_usize()])
+        .collect();
+    assert!(copies.is_empty(), "a monomorph record bound by `let` is copied nothing more: {copies:?}");
+    assert!(owned_of(src).contains("held.s"), "the String held across the replace is owned");
+    let out = run_asan("monomorph", src);
+    assert!(out.contains("record=19\n") && out.contains("held=OLD\n"), "{out}");
+}

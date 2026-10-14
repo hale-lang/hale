@@ -627,7 +627,14 @@ fn check_numbered_bundle(
     let placement = crate::placement::derive_placement(bundle, top, &entry);
     let intra_locus = crate::bundle_intra_locus(bundle, &placement);
     let views =
-        crate::view_bindings::OwnedViewColumn::derive(&bundle.programs, &walk.record.views, &intra_locus, top, true);
+        crate::view_bindings::OwnedViewColumn::derive(
+            &bundle.programs,
+            &walk.record.views,
+            &walk.record.mono_shapes,
+            &intra_locus,
+            top,
+            true,
+        );
     let alloc_summary =
         std::sync::Arc::new(crate::alloc_summary::derive_alloc_summary_over(bundle, &views));
     let rows = std::cell::OnceCell::new();
@@ -1055,6 +1062,7 @@ pub fn walk_bundle_by_declaration(
     // diagnostic the check has, a template's own included.
     cx.settle_param_accesses(0);
     debug_assert!(cx.access_visits.is_empty(), "every kept access is settled");
+    typed.mono_shapes = std::sync::Arc::new(mono_shapes(&typed.monomorphs, &templates, known));
     // Each declaration's table, not a copy of its rows.
     typed.views = by_decl
         .iter()
@@ -1336,6 +1344,59 @@ pub fn check_bundle_rules(
     }
     diags.extend(crate::stdlib_names::stdlib_name_diags(&bundle.programs));
     (diags, certificates, by_decl)
+}
+
+/// Each type and locus monomorph of `monomorphs` as its template is with
+/// its parameters bound to the monomorph's arguments (the `views` column's
+/// shapes, GH #1554): a record's fields, an enum's payloads, a locus's
+/// params and whether it is a form.
+fn mono_shapes(
+    monomorphs: &crate::typed_bodies::Monomorphs,
+    templates: &GenericTemplates<'_>,
+    known: &KnownNames,
+) -> crate::typed_bodies::MonoShapes {
+    use crate::typed_bodies::MonoShape;
+    let mut out = crate::typed_bodies::MonoShapes::new();
+    for m in monomorphs.rows() {
+        let Some(template) = templates.by_key.get(&m.template.0) else { continue };
+        let generics = match template {
+            GenericTemplate::Type(t) => &t.generics,
+            GenericTemplate::Locus(l) => &l.generics,
+        };
+        let bindings: BTreeMap<String, Ty> =
+            generics.iter().map(|g| g.name.name.clone()).zip(m.args.iter().cloned()).collect();
+        let sub = |te: &TypeExpr| substitute_generic_ty(te, &bindings, known);
+        let shape = match template {
+            GenericTemplate::Type(t) => match &t.body {
+                TypeDeclBody::Struct(fields) => MonoShape::Struct(fields.iter().map(|f| sub(&f.ty)).collect()),
+                TypeDeclBody::Enum(vs) => MonoShape::Enum(vs.iter().map(|v| v.fields.iter().map(sub).collect()).collect()),
+                TypeDeclBody::Alias(_) | TypeDeclBody::Scalar(_) => continue,
+            },
+            GenericTemplate::Locus(l) => {
+                let view_form = l.form.as_ref().is_some_and(|form| {
+                    use crate::form_rows::{sync_config, Discipline, SyncConfig};
+                    match form.name.name.as_str() {
+                        "hashmap" => !matches!(sync_config(form), SyncConfig::Explicit(d) if d != Discipline::None),
+                        "lru_cache" => true,
+                        _ => false,
+                    }
+                });
+                let params = l
+                    .members
+                    .iter()
+                    .filter_map(|mm| match mm {
+                        LocusMember::Params(pb) => Some(pb),
+                        _ => None,
+                    })
+                    .flat_map(|pb| &pb.params)
+                    .map(|p| p.ty.as_ref().map_or(Ty::Unknown, sub))
+                    .collect();
+                MonoShape::Locus { form: l.form.is_some(), view_form, params }
+            }
+        };
+        out.insert(m.name.clone(), shape);
+    }
+    out
 }
 
 /// The bundle's generic type and locus templates, by identity: the

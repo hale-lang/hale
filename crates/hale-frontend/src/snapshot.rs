@@ -1557,6 +1557,7 @@ impl Snapshot {
                 Ok(Arc::new(hale_types::view_bindings::OwnedViewColumn::derive(
                     &bundle.programs,
                     &walked.walk.record.views,
+                    &walked.walk.record.mono_shapes,
                     sends,
                     &scope.top,
                     true,
