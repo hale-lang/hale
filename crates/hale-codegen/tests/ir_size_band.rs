@@ -97,10 +97,16 @@ const EMPTY: &str = "fn main() { }\n";
 // inline child, so every program using the Server compiles both. Back to
 // 2948, 30, 278 once the Server moved into the TCP substrate, which joins
 // only a program that names it (69-http-router routes without a socket).
-const FLOOR: IrSize = IrSize { lines: 64421, defines: 709, calls: 7111 };
-const BOUNDED_BUS: IrSize = IrSize { lines: 67894, defines: 750, calls: 7713 };
-const NESTED_TEARDOWN: IrSize = IrSize { lines: 69137, defines: 759, calls: 7589 };
-const HTTP_ROUTER: IrSize = IrSize { lines: 67369, defines: 739, calls: 7389 };
+// Re-measured 2026-10-15 for GH #1566 (F.31's backstop: each locus's
+// `__adopted` field, the adoption of what a field holds, and the vtable's
+// adoption fn — `__xpool_adopt_<L>` and `__xpool_restamp_<L>` for every
+// locus behind an interface, 8 of 69-http-router's defines): above the
+// floor 73-bounded-bus 3588, 43, 607; 89-nested-locus-teardown 5061, 54,
+// 506; 69-http-router 3173, 38, 282.
+const FLOOR: IrSize = IrSize { lines: 68403, defines: 716, calls: 7370 };
+const BOUNDED_BUS: IrSize = IrSize { lines: 71991, defines: 759, calls: 7977 };
+const NESTED_TEARDOWN: IrSize = IrSize { lines: 73464, defines: 770, calls: 7876 };
+const HTTP_ROUTER: IrSize = IrSize { lines: 71576, defines: 754, calls: 7652 };
 
 fn ir_size_of(tag: &str, src: &str) -> IrSize {
     let bin = harness::unique_bin(&format!("ir_size_band_{tag}"));

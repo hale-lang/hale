@@ -591,9 +591,9 @@ locus living on another pool. The static call-graph walk can't see
 through the pointer. What it can't see, the runtime checks: every
 locus remembers the pool it was built on, and a store into its field
 from outside its methods, or a method call on it through anything but
-`self.…` (or through a field of `self` that was handed an instance
-built elsewhere), compares that pool with the one the code is running
-on. A
+`self.…` (or through a field of `self` that was handed something other
+than a locus built right there), compares that pool with the one the
+code is running on. A
 mismatch stops the program (exit 1) with the site and both pools,
 instead of racing the owning thread:
 
@@ -601,11 +601,24 @@ instead of racing the owning thread:
 main.hl:8:9: violation: cross-pool store into `W.name` from pool `io`; this `W` runs on pool `main`: reach it through a method on the bus
 ```
 
-A handler handed another pool's locus through its params (a `/metrics`
-endpoint on the `io` pool given a registry that lives on a pinned
-gateway) holds that pool's locus: the checker refuses calling into it
-from the handler, and the runtime would stop it. Build the server where
-the registry lives, or hand the handler what it needs over the bus.
+One instance is never shared across pools. Handing a locus that runs
+on one pool to a locus that runs on another — a handler built in an
+`io` server's params given `self.a` from `main`, directly, through a
+block's local, or through a helper that builds the handler around its
+argument — is refused where it is handed:
+
+```text
+cross-pool alias: `W` (`self.a`) runs on `cooperative(pool = main)`; `mk(…)` hands it to `Routes`, which runs on `cooperative(pool = io)`, shares one instance across pools — build it on that side, or reach it through a method on the bus.
+```
+
+A locus you build and hand over is moved, not shared: it runs where its
+new holder does, with the loci it owns (`let web = Web { };` in `fn
+main`, passed through helpers into an `io` server's handler, serves
+from `io`). A stdlib locus may be shared — a `/metrics` endpoint on the
+`io` pool given a registry that lives on a pinned gateway holds that
+pool's registry — but the checker still refuses calling into it from
+the handler, and the runtime would stop it. Build the server where the
+registry lives, or hand the handler what it needs over the bus.
 
 Next: how loci nest and own each other — [Parents &
 children](./parents-children.md).

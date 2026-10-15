@@ -1711,7 +1711,6 @@ fn build_resolved_lowered(
         xpool_handlers: Vec::new(),
         xpool_handed_in: BTreeSet::new(),
         xpool_handed_in_names: BTreeSet::new(),
-        xpool_alias_uses: HashSet::new(),
         xpool_restamp_fns: HashMap::new(),
         xpool_fresh_slots: HashSet::new(),
         xpool_strings: HashMap::new(),
@@ -4524,16 +4523,12 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// The `on_failure` handler fns, with their child's locus: each runs
     /// with its failed child's domain reachable (`wrap_domain_fns`).
     pub(crate) xpool_handlers: Vec<(FunctionValue<'ctx>, String)>,
-    /// The locus fields some literal or store hands an instance built
-    /// elsewhere (`Routes { w: self.a }`, `h.w = x`), by (locus, field),
-    /// and the names of every such field: a receiver down `self` through
-    /// one is checked too (`xpool_skipped`).
+    /// The locus fields some literal or store fills with anything but a
+    /// value it builds right there (`Routes { w: w }`, `h.w = x`), by
+    /// (locus, field), and the names of every such field: a receiver down
+    /// `self` through one is checked too (`xpool_skipped`).
     pub(crate) xpool_handed_in: BTreeSet<(String, String)>,
     pub(crate) xpool_handed_in_names: BTreeSet<String>,
-    /// The `Ident` expressions (by address) that name a local bound to
-    /// (a part of) a field of `self`: a value handed over that is one is
-    /// shared, not adopted.
-    pub(crate) xpool_alias_uses: HashSet<usize>,
     /// The adoption re-stamp fn of each locus (`emit_adopt`).
     pub(crate) xpool_restamp_fns: HashMap<String, FunctionValue<'ctx>>,
     /// The slots of locals bound to a locus literal this code built, and
@@ -5509,6 +5504,8 @@ pub(crate) struct LocusInfo<'ctx> {
     pub(crate) held_by_owner_field_idx: u32,
     /// GH #1566: `__domain`, the domain the instance was built on.
     pub(crate) domain_field_idx: u32,
+    /// GH #1566: `__adopted`, 1 once a locus holds the instance in a field.
+    pub(crate) adopted_field_idx: u32,
     /// Index of the synthetic `__built_params: ptr` — the params this
     /// instance was built with, for `restart_in_place` (see
     /// `locus::restart`). Null unless the locus is restarted in place.
@@ -18786,9 +18783,20 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         slot_ptr, new_val, &slot_ty,
                     )?;
                     // GH #1566: the field adopts an instance handed over
-                    if let (AssignOp::Eq, CodegenTy::LocusRef(l)) = (op, &slot_ty) {
-                        let l = l.clone();
-                        self.emit_adopt(new_val.into_pointer_value(), &l, value)?;
+                    match (op, &slot_ty) {
+                        (AssignOp::Eq, CodegenTy::LocusRef(l)) => {
+                            if let Some(me) = self.current_self.as_ref().map(|c| c.self_ptr) {
+                                let l = l.clone();
+                                self.emit_adopt(new_val.into_pointer_value(), &l, matches!(value, Expr::Struct { .. }), me)?;
+                            }
+                        }
+                        (AssignOp::Eq, CodegenTy::Interface(i)) => {
+                            if let Some(me) = self.current_self.as_ref().map(|c| c.self_ptr) {
+                                let i = i.clone();
+                                self.emit_adopt_iface(new_val.into_pointer_value(), &i, me)?;
+                            }
+                        }
+                        _ => {}
                     }
                 } else {
                     self.builder
@@ -30321,6 +30329,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         {
             let what = format!("method call `{}.{}`", locus_name.rsplit("__").next().unwrap_or(&locus_name), method_name);
             self.emit_cross_pool_check(recv_val.into_pointer_value(), Some(receiver_expr), &locus_name.clone(), &what, receiver_expr.span(), scope)?;
+            self.emit_stdlib_call_site(&locus_name, receiver_expr.span())?;
         }
         // v1.x-FORM-2 PR5: intercept synthesized @form(vec) methods
         // before the user_methods lookup. They aren't real LLVM fns;
@@ -33301,6 +33310,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             self.target_data.offset_of_element(&info.struct_ty, info.domain_field_idx).unwrap_or(0)
         };
         entries.push(self.context.i64_type().const_int(domain_off, false).const_to_pointer(ptr_t));
+        // and its adoption (`__xpool_adopt_<L>`), which a field holding
+        // the locus through the interface calls (`emit_adopt_iface`)
+        let adopt = if self.xpool_check && domain_off != 0 {
+            self.ensure_adopt_fn(locus_name)?.as_global_value().as_pointer_value()
+        } else {
+            ptr_t.const_null()
+        };
+        entries.push(adopt);
         let array_ty = ptr_t.array_type(entries.len() as u32);
         let init = ptr_t.const_array(&entries);
         let global_name = format!("__vt.{}.{}", locus_name, iface_name);
@@ -34666,20 +34683,33 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             let inst = w.get_nth_param(param).expect("the instance param").into_pointer_value();
             let slot = self.builder.build_struct_gep(info.0, inst, info.1, "domain.ptr").map_err(e)?;
             let d = self.builder.build_load(i64_t, slot, "domain").map_err(e)?;
-            let (enter, leave) =
-                if also { ("lotus_domain_also_enter", "lotus_domain_also_restore") } else { ("lotus_domain_act", "lotus_domain_restore") };
-            let enter = self.module.get_function(enter).expect("declared");
-            let leave = self.module.get_function(leave).expect("declared");
-            let prev = self
-                .builder
-                .build_call(enter, &[d.into()], "domain.enter")
-                .map_err(e)?
-                .try_as_basic_value()
-                .left()
-                .expect("returns i64");
             let args: Vec<inkwell::values::BasicMetadataValueEnum<'ctx>> = w.get_param_iter().map(|p| p.into()).collect();
-            let r = self.builder.build_call(f, &args, "domain.call").map_err(e)?;
-            self.builder.build_call(leave, &[prev.into()], "domain.leave").map_err(e)?;
+            let r = if also {
+                // the failed child's domain, for what its own subtree holds
+                // (`__xpool_owns_<L>`), not for every instance on it
+                let owns = self.ensure_owns_fn(&locus)?;
+                self.builder.position_at_end(self.builder.get_insert_block().expect("in the wrapper"));
+                let enter = self.module.get_function("lotus_domain_also_enter").expect("declared");
+                let leave = self.module.get_function("lotus_domain_also_leave").expect("declared");
+                let owns_p = owns.as_global_value().as_pointer_value();
+                self.builder.build_call(enter, &[d.into(), inst.into(), owns_p.into()], "domain.enter").map_err(e)?;
+                let r = self.builder.build_call(f, &args, "domain.call").map_err(e)?;
+                self.builder.build_call(leave, &[], "domain.leave").map_err(e)?;
+                r
+            } else {
+                let enter = self.module.get_function("lotus_domain_act").expect("declared");
+                let leave = self.module.get_function("lotus_domain_restore").expect("declared");
+                let prev = self
+                    .builder
+                    .build_call(enter, &[d.into()], "domain.enter")
+                    .map_err(e)?
+                    .try_as_basic_value()
+                    .left()
+                    .expect("returns i64");
+                let r = self.builder.build_call(f, &args, "domain.call").map_err(e)?;
+                self.builder.build_call(leave, &[prev.into()], "domain.leave").map_err(e)?;
+                r
+            };
             match r.try_as_basic_value().left() {
                 Some(v) => self.builder.build_return(Some(&v)).map_err(e)?,
                 None => self.builder.build_return(None).map_err(e)?,
@@ -34757,7 +34787,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let i64_t = self.context.i64_type();
         let slot = self.builder.build_struct_gep(info.0, recv, info.1, "xpool.domain.ptr").map_err(e)?;
         let d = self.builder.build_load(i64_t, slot, "xpool.domain").map_err(e)?.into_int_value();
-        self.emit_xpool_compare(d, locus, what, span)
+        self.emit_xpool_compare(d, recv, locus, what, span)
     }
 
     /// GH #1566: the backstop is not emitted here — it is off, the
@@ -34775,9 +34805,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         }
         if matches!(root, Expr::KwSelf(_)) {
             // down `self`: the checker judges each instance the table
-            // holds, but a field some literal or store hands an instance
-            // built elsewhere (`Routes { w: self.a }`) holds one the
-            // table cannot place; a receiver through one is checked
+            // holds, but a field some literal or store fills with a value
+            // it did not build there may hold one another locus holds,
+            // which the table cannot place; a receiver through one is
+            // checked
             return !self.self_path_handed_in(e);
         }
         // an instance this code built, bound to a local nothing rebinds
@@ -34815,41 +34846,29 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             || rest.iter().any(|n| self.xpool_handed_in_names.contains(*n))
     }
 
-    /// GH #1566: every locus field a literal or a store hands an
-    /// instance built elsewhere — a value that is no locus literal, no
-    /// call, and no array or tuple of them (`xpool_handed_in`).
+    /// GH #1566: every locus field a literal or a store fills with
+    /// something other than an instance it builds right there — a local, a
+    /// parameter, a field of `self`, a call's result (`xpool_handed_in`):
+    /// it may hold an instance some other locus holds too, which keeps
+    /// running where it was, so a receiver down `self` through it is
+    /// checked.
     pub(crate) fn scan_handed_in_fields(&mut self) {
         let mut found: BTreeSet<(String, String)> = BTreeSet::new();
         let mut names: BTreeSet<String> = BTreeSet::new();
-        // A value that is (or holds) an instance a field of `self` holds —
-        // shared with the instance whose field it is, which keeps running
-        // where it was built (an instance a local or a parameter hands
-        // over is moved, as the placement table takes it).
-        fn shared(v: &Expr, aliases: &BTreeSet<String>) -> bool {
+        // An instance built by the value itself: a locus literal, or an
+        // array or tuple of them.
+        fn built_here(v: &Expr) -> bool {
             match v {
-                Expr::Ident(id) => aliases.contains(&id.name),
-                Expr::Field { .. } | Expr::Index { .. } => {
-                    let mut root = v;
-                    while let Expr::Field { receiver, .. } | Expr::Index { receiver, .. } = root {
-                        root = receiver;
-                    }
-                    matches!(root, Expr::KwSelf(_))
-                }
-                Expr::Array(xs, _) | Expr::Tuple(xs, _) => xs.iter().any(|x| shared(x, aliases)),
-                Expr::ArrayRepeat { val, .. } => shared(val, aliases),
+                Expr::Struct { .. } | Expr::Literal(..) => true,
+                Expr::Array(xs, _) | Expr::Tuple(xs, _) => xs.iter().all(built_here),
+                Expr::ArrayRepeat { val, .. } => built_here(val),
                 _ => false,
             }
         }
         let program = self.program;
         let mut assigns: Vec<String> = Vec::new();
-        let mut alias_uses: HashSet<usize> = HashSet::new();
-        let mut scan = |cx: &Self, aliases: &BTreeSet<String>, walk: &mut dyn FnMut(&mut dyn FnMut(&Expr), &mut dyn FnMut(&LValue, &Expr))| {
+        let mut scan = |cx: &Self, walk: &mut dyn FnMut(&mut dyn FnMut(&Expr), &mut dyn FnMut(&LValue, &Expr))| {
             let mut on_expr = |e: &Expr| {
-                if let Expr::Ident(id) = e {
-                    if aliases.contains(&id.name) {
-                        alias_uses.insert(e as *const Expr as usize);
-                    }
-                }
                 if let Expr::Struct { path, inits, .. } = e {
                     let segs: Vec<&str> = path.segments.iter().map(|s| s.name.as_str()).collect();
                     let name = if segs.len() == 1 { Some(segs[0].to_string()) } else { cx.mangled_for_path(&segs) };
@@ -34859,7 +34878,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     // adapter is)
                     if let Some(n) = name.filter(|n| cx.user_loci.contains_key(n) && !n.starts_with("__Std")) {
                         for i in inits {
-                            if shared(&i.value, aliases) {
+                            if !built_here(&i.value) {
                                 found.insert((n.clone(), i.name.name.clone()));
                                 names.insert(i.name.name.clone());
                             }
@@ -34869,14 +34888,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             };
             let mut on_assign = |t: &LValue, v: &Expr| {
                 if let Some(LValueSeg::Field(f)) = t.tail.last() {
-                    if shared(v, aliases) {
+                    if !built_here(v) {
                         assigns.push(f.name.clone());
                     }
                 }
             };
             walk(&mut on_expr, &mut on_assign);
         };
-        let none = BTreeSet::new();
         for item in hale_syntax::ast::flat_decls(&program.items) {
             let mut bodies: Vec<&Block> = Vec::new();
             match item {
@@ -34887,7 +34905,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                             LocusMember::Params(pb) => {
                                 for p in &pb.params {
                                     if let ParamInit::Value(e) = &p.init {
-                                        scan(self, &none, &mut |oe, oa| xpool_walk_expr(e, oe, oa));
+                                        scan(self, &mut |oe, oa| xpool_walk_expr(e, oe, oa));
                                     }
                                 }
                             }
@@ -34902,10 +34920,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 _ => {}
             }
             for b in bodies {
-                // the locals bound to (a part of) a field of `self`
-                let mut aliases: BTreeSet<String> = BTreeSet::new();
-                xpool_self_aliases(b, &mut aliases);
-                scan(self, &aliases, &mut |oe, oa| xpool_walk_block(b, oe, oa));
+                scan(self, &mut |oe, oa| xpool_walk_block(b, oe, oa));
             }
         }
         // a store hands its field what it is given (the locus is not
@@ -34918,50 +34933,310 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         }
         self.xpool_handed_in = found;
         self.xpool_handed_in_names = names;
-        self.xpool_alias_uses = alias_uses;
     }
 
-    /// GH #1566: a locus-typed slot of a holder adopts `inst`, the value
-    /// of `value`: an instance a local or a parameter hands over (no
-    /// literal or call built it here, and it is no field of `self` nor a
-    /// local bound to one, which stay shared) now runs where the holder
-    /// does, so it and the children it owns take the running domain.
-    /// A builder that kept an alias and reaches the instance from its own
-    /// domain afterwards is then caught by the check.
+    /// GH #1566: a locus-typed slot of `holder` adopts `inst`. Each
+    /// instance records its first holder (`__adopted`: 0 none yet, 1 a
+    /// placed root or what a `bindings { }` entry builds, else the
+    /// holder's address). An instance no locus held yet — built here, or
+    /// by a builder, and handed over through locals and parameters — is
+    /// this holder's from now on and runs where it does, moving with what
+    /// it holds first in turn (`__xpool_restamp_<L>`); one another locus
+    /// holds first (a field of another instance, however it got here) is
+    /// shared, keeps its domain, and a holder reaching it from another one
+    /// is caught by the check down `self` through that field
+    /// (`xpool_handed_in`). `built_here`: the value is a literal built right
+    /// there, on this domain already, which only records its holder.
     pub(crate) fn emit_adopt(
         &mut self,
         inst: PointerValue<'ctx>,
         locus: &str,
-        value: &Expr,
+        built_here: bool,
+        holder: PointerValue<'ctx>,
     ) -> Result<(), CodegenError> {
         if !self.xpool_check || self.xpool_shared || self.current_fn.is_none() || !self.user_loci.contains_key(locus) {
             return Ok(());
         }
-        fn built_here(v: &Expr) -> bool {
-            match v {
-                Expr::Struct { .. } | Expr::Call { .. } | Expr::Literal(..) => true,
-                Expr::Or { inner, .. } => built_here(inner),
-                _ => false,
-            }
-        }
-        let mut root = value;
-        while let Expr::Field { receiver, .. } | Expr::Index { receiver, .. } = root {
-            root = receiver;
-        }
-        if built_here(value) || matches!(root, Expr::KwSelf(_)) || self.xpool_alias_uses.contains(&(value as *const Expr as usize)) {
+        let e = |e: inkwell::builder::BuilderError| CodegenError::LlvmEmit(e.to_string());
+        if built_here {
+            let info = self.user_loci.get(locus).map(|i| (i.struct_ty, i.adopted_field_idx)).expect("checked");
+            let slot = self.builder.build_struct_gep(info.0, inst, info.1, "xpool.held.ptr").map_err(e)?;
+            let i64_t = self.context.i64_type();
+            let h = self.builder.build_ptr_to_int(holder, i64_t, "xpool.holder").map_err(e)?;
+            // (a placed root is held where it runs already)
+            let cur = self.builder.build_load(i64_t, slot, "xpool.held").map_err(e)?.into_int_value();
+            let none = self.builder.build_int_compare(inkwell::IntPredicate::EQ, cur, i64_t.const_zero(), "xpool.none").map_err(e)?;
+            let v = self.builder.build_select(none, h, cur, "xpool.first").map_err(e)?;
+            self.builder.build_store(slot, v).map_err(e)?;
             return Ok(());
         }
-        let f = self.ensure_restamp_fn(locus)?;
+        let f = self.ensure_adopt_fn(locus)?;
         let now = self.domain_now()?;
-        self.builder
-            .build_call(f, &[inst.into(), now.into()], "xpool.adopt")
-            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        self.builder.build_call(f, &[inst.into(), now.into(), holder.into()], "xpool.adopt").map_err(e)?;
         Ok(())
     }
 
-    /// GH #1566: `__xpool_restamp_<L>(self, d)`: `self` and every child
-    /// it owns (the owned bits of `__locus_ref_owned_mask`) take domain
-    /// `d`; one already on `d` stops the walk.
+    /// GH #1566: each element of an array of loci a slot of `holder`
+    /// adopts (`emit_adopt`); `arr` points at its `[n x ptr]` storage.
+    pub(crate) fn emit_adopt_elements(
+        &mut self,
+        arr: PointerValue<'ctx>,
+        ty: &CodegenTy,
+        built_here: bool,
+        holder: PointerValue<'ctx>,
+    ) -> Result<(), CodegenError> {
+        let CodegenTy::Array(elem, n) = ty else { return Ok(()) };
+        let CodegenTy::LocusRef(l) = elem.as_ref() else { return Ok(()) };
+        if !self.xpool_check || self.xpool_shared || self.current_fn.is_none() || !self.user_loci.contains_key(l) {
+            return Ok(());
+        }
+        let e = |e: inkwell::builder::BuilderError| CodegenError::LlvmEmit(e.to_string());
+        let ptr_t = self.context.ptr_type(AddressSpace::default());
+        let i64_t = self.context.i64_type();
+        let l = l.clone();
+        for k in 0..*n {
+            let slot = unsafe { self.builder.build_in_bounds_gep(ptr_t, arr, &[i64_t.const_int(k, false)], "xpool.adopt.el.ptr") }.map_err(e)?;
+            let el = self.builder.build_load(ptr_t, slot, "xpool.adopt.el").map_err(e)?.into_pointer_value();
+            self.emit_adopt(el, &l, built_here, holder)?;
+        }
+        Ok(())
+    }
+
+    /// The number of methods interface `iface` declares (its vtable's
+    /// backstop slots follow them).
+    fn iface_method_count(&self, iface: &str) -> Option<usize> {
+        hale_syntax::ast::flat_decls(&self.program.items).find_map(|item| match item {
+            TopDecl::Interface(i) if i.name.name == iface => Some(i.methods.len()),
+            _ => None,
+        })
+    }
+
+    /// GH #1566: the adoption (`__xpool_adopt_<L>(p, d, holder)`) of the
+    /// locus behind the fat pointer `fat` of interface `iface`, through the
+    /// fn its vtable carries after the methods and the `__domain` offset
+    /// (null: a locus the backstop does not check). `d` and `holder` as
+    /// the fn takes them; emitted in `func`.
+    fn emit_iface_adopt_call(
+        &mut self,
+        fat: PointerValue<'ctx>,
+        iface: &str,
+        d: inkwell::values::IntValue<'ctx>,
+        holder: PointerValue<'ctx>,
+        func: FunctionValue<'ctx>,
+    ) -> Result<(), CodegenError> {
+        let Some(n_methods) = self.iface_method_count(iface) else { return Ok(()) };
+        let e = |e: inkwell::builder::BuilderError| CodegenError::LlvmEmit(e.to_string());
+        let ptr_t = self.context.ptr_type(AddressSpace::default());
+        let i64_t = self.context.i64_type();
+        let fat_ty = self.iface_fat_struct_ty();
+        let has_fat = self.context.append_basic_block(func, "adopt.iface.fat");
+        let has_vt = self.context.append_basic_block(func, "adopt.iface.vt");
+        let call = self.context.append_basic_block(func, "adopt.iface.call");
+        let done = self.context.append_basic_block(func, "adopt.iface.done");
+        let no_fat = self.builder.build_is_null(fat, "adopt.iface.nofat").map_err(e)?;
+        self.builder.build_conditional_branch(no_fat, done, has_fat).map_err(e)?;
+        self.builder.position_at_end(has_fat);
+        let data_slot = self.builder.build_struct_gep(fat_ty, fat, 0, "adopt.iface.data.gep").map_err(e)?;
+        let data = self.builder.build_load(ptr_t, data_slot, "adopt.iface.data").map_err(e)?.into_pointer_value();
+        let vt_slot = self.builder.build_struct_gep(fat_ty, fat, 1, "adopt.iface.vt.gep").map_err(e)?;
+        let vt = self.builder.build_load(ptr_t, vt_slot, "adopt.iface.vt").map_err(e)?.into_pointer_value();
+        let no_vt = self.builder.build_is_null(vt, "adopt.iface.novt").map_err(e)?;
+        self.builder.build_conditional_branch(no_vt, done, has_vt).map_err(e)?;
+        self.builder.position_at_end(has_vt);
+        let fn_slot = unsafe {
+            self.builder.build_in_bounds_gep(ptr_t, vt, &[i64_t.const_int(n_methods as u64 + 1, false)], "adopt.iface.fn.gep")
+        }
+        .map_err(e)?;
+        let f = self.builder.build_load(ptr_t, fn_slot, "adopt.iface.fn").map_err(e)?.into_pointer_value();
+        let none = self.builder.build_is_null(f, "adopt.iface.none").map_err(e)?;
+        self.builder.build_conditional_branch(none, done, call).map_err(e)?;
+        self.builder.position_at_end(call);
+        let fn_ty = self.context.void_type().fn_type(&[ptr_t.into(), i64_t.into(), ptr_t.into()], false);
+        self.builder.build_indirect_call(fn_ty, f, &[data.into(), d.into(), holder.into()], "adopt.iface").map_err(e)?;
+        self.builder.build_unconditional_branch(done).map_err(e)?;
+        self.builder.position_at_end(done);
+        Ok(())
+    }
+
+    /// GH #1566: a slot of `holder` of interface type `iface` adopts the
+    /// locus behind the fat pointer `fat` (`emit_adopt`).
+    pub(crate) fn emit_adopt_iface(&mut self, fat: PointerValue<'ctx>, iface: &str, holder: PointerValue<'ctx>) -> Result<(), CodegenError> {
+        if !self.xpool_check || self.xpool_shared {
+            return Ok(());
+        }
+        let Some(func) = self.current_fn else { return Ok(()) };
+        let now = self.domain_now()?;
+        self.emit_iface_adopt_call(fat, iface, now, holder, func)
+    }
+
+    /// GH #1566: `__xpool_adopt_<L>(p, d, holder)`: an instance no locus
+    /// held yet becomes `holder`'s and, with what it holds first, takes
+    /// domain `d` (`__xpool_restamp_<L>`); one `holder` already held first
+    /// moves with it; one another locus holds first stays where it is.
+    fn ensure_adopt_fn(&mut self, locus: &str) -> Result<FunctionValue<'ctx>, CodegenError> {
+        let name = format!("__xpool_adopt_{locus}");
+        if let Some(f) = self.module.get_function(&name) {
+            return Ok(f);
+        }
+        let e = |e: inkwell::builder::BuilderError| CodegenError::LlvmEmit(e.to_string());
+        let ptr_t = self.context.ptr_type(AddressSpace::default());
+        let i64_t = self.context.i64_type();
+        let f = self.module.add_function(
+            &name,
+            self.context.void_type().fn_type(&[ptr_t.into(), i64_t.into(), ptr_t.into()], false),
+            Some(inkwell::module::Linkage::Internal),
+        );
+        let restamp = self.ensure_restamp_fn(locus)?;
+        let info = self.user_loci.get(locus).cloned().expect("checked");
+        let saved = self.builder.get_insert_block();
+        let saved_di = (self.di_current_loc, self.di_current_pos);
+        let entry = self.context.append_basic_block(f, "entry");
+        let check = self.context.append_basic_block(f, "check");
+        let free = self.context.append_basic_block(f, "free");
+        let own = self.context.append_basic_block(f, "own");
+        let take = self.context.append_basic_block(f, "take");
+        let done = self.context.append_basic_block(f, "done");
+        self.builder.position_at_end(entry);
+        self.di_begin_function();
+        let p = f.get_nth_param(0).expect("instance").into_pointer_value();
+        let d = f.get_nth_param(1).expect("domain").into_int_value();
+        let holder = f.get_nth_param(2).expect("holder").into_pointer_value();
+        let null = self.builder.build_is_null(p, "null").map_err(e)?;
+        self.builder.build_conditional_branch(null, done, check).map_err(e)?;
+        self.builder.position_at_end(check);
+        let slot = self.builder.build_struct_gep(info.struct_ty, p, info.adopted_field_idx, "adopted.ptr").map_err(e)?;
+        let held = self.builder.build_load(i64_t, slot, "adopted").map_err(e)?.into_int_value();
+        let h = self.builder.build_ptr_to_int(holder, i64_t, "holder").map_err(e)?;
+        let none = self.builder.build_int_compare(inkwell::IntPredicate::EQ, held, i64_t.const_zero(), "none").map_err(e)?;
+        self.builder.build_conditional_branch(none, free, own).map_err(e)?;
+        self.builder.position_at_end(free);
+        self.builder.build_store(slot, h).map_err(e)?;
+        self.builder.build_unconditional_branch(take).map_err(e)?;
+        self.builder.position_at_end(own);
+        let mine = self.builder.build_int_compare(inkwell::IntPredicate::EQ, held, h, "mine").map_err(e)?;
+        self.builder.build_conditional_branch(mine, take, done).map_err(e)?;
+        self.builder.position_at_end(take);
+        self.builder.build_call(restamp, &[p.into(), d.into()], "restamp").map_err(e)?;
+        self.builder.build_unconditional_branch(done).map_err(e)?;
+        self.builder.position_at_end(done);
+        self.builder.build_return(None).map_err(e)?;
+        if let Some(b) = saved {
+            self.builder.position_at_end(b);
+        }
+        self.di_current_loc = saved_di.0;
+        self.di_current_pos = saved_di.1;
+        Ok(f)
+    }
+
+    /// GH #1566: `__xpool_owns_<L>(root, target, depth)`: is `target`
+    /// `root` or in the subtree it owns (its owned children, the elements
+    /// of its arrays of loci, transitively)? What an `on_failure` handler
+    /// may reach on its failed child's domain.
+    pub(crate) fn ensure_owns_fn(&mut self, locus: &str) -> Result<FunctionValue<'ctx>, CodegenError> {
+        let name = format!("__xpool_owns_{locus}");
+        if let Some(f) = self.module.get_function(&name) {
+            return Ok(f);
+        }
+        let e = |e: inkwell::builder::BuilderError| CodegenError::LlvmEmit(e.to_string());
+        let ptr_t = self.context.ptr_type(AddressSpace::default());
+        let i64_t = self.context.i64_type();
+        let f = self.module.add_function(
+            &name,
+            i64_t.fn_type(&[ptr_t.into(), ptr_t.into(), i64_t.into()], false),
+            Some(inkwell::module::Linkage::Internal),
+        );
+        let info = self.user_loci.get(locus).cloned().expect("a user locus");
+        let saved = self.builder.get_insert_block();
+        let saved_di = (self.di_current_loc, self.di_current_pos);
+        let entry = self.context.append_basic_block(f, "entry");
+        let yes = self.context.append_basic_block(f, "yes");
+        let no = self.context.append_basic_block(f, "no");
+        self.builder.position_at_end(entry);
+        self.di_begin_function();
+        let root = f.get_nth_param(0).expect("root").into_pointer_value();
+        let target = f.get_nth_param(1).expect("target").into_pointer_value();
+        let depth = f.get_nth_param(2).expect("depth").into_int_value();
+        let same = self.builder.build_int_compare(inkwell::IntPredicate::EQ, root, target, "same").map_err(e)?;
+        let walk = self.context.append_basic_block(f, "walk");
+        self.builder.build_conditional_branch(same, yes, walk).map_err(e)?;
+        self.builder.position_at_end(walk);
+        let null = self.builder.build_is_null(root, "null").map_err(e)?;
+        let deep = self.builder.build_int_compare(inkwell::IntPredicate::UGT, depth, i64_t.const_int(64, false), "deep").map_err(e)?;
+        let stop = self.builder.build_or(null, deep, "stop").map_err(e)?;
+        let body = self.context.append_basic_block(f, "body");
+        self.builder.build_conditional_branch(stop, no, body).map_err(e)?;
+        self.builder.position_at_end(body);
+        let next_depth = self.builder.build_int_add(depth, i64_t.const_int(1, false), "depth.next").map_err(e)?;
+        let mask_ptr = self.builder.build_struct_gep(info.struct_ty, root, info.locus_ref_owned_mask_field_idx, "mask.ptr").map_err(e)?;
+        let mask = self.builder.build_load(i64_t, mask_ptr, "mask").map_err(e)?.into_int_value();
+        for (fname, (idx, ty)) in info.fields.clone() {
+            match &ty {
+                CodegenTy::LocusRef(child) if self.user_loci.contains_key(child) => {
+                    let Some(&bit) = info.locus_ref_bit_per_field.get(&fname) else { continue };
+                    let owned = self.builder.build_and(mask, i64_t.const_int(1u64 << bit, false), "owned").map_err(e)?;
+                    let owned = self.builder.build_int_compare(inkwell::IntPredicate::NE, owned, i64_t.const_zero(), "owned.b").map_err(e)?;
+                    let look = self.context.append_basic_block(f, "child");
+                    let next = self.context.append_basic_block(f, "next");
+                    self.builder.build_conditional_branch(owned, look, next).map_err(e)?;
+                    self.builder.position_at_end(look);
+                    let cslot = self.builder.build_struct_gep(info.struct_ty, root, idx, "child.ptr").map_err(e)?;
+                    let c = self.builder.build_load(ptr_t, cslot, "child").map_err(e)?;
+                    let cf = self.ensure_owns_fn(child)?;
+                    self.builder.position_at_end(look);
+                    let r = self.builder.build_call(cf, &[c.into(), target.into(), next_depth.into()], "owns.child").map_err(e)?;
+                    let r = r.try_as_basic_value().left().expect("i64").into_int_value();
+                    let hit = self.builder.build_int_compare(inkwell::IntPredicate::NE, r, i64_t.const_zero(), "hit").map_err(e)?;
+                    self.builder.build_conditional_branch(hit, yes, next).map_err(e)?;
+                    self.builder.position_at_end(next);
+                }
+                CodegenTy::Array(elem, n) => {
+                    let CodegenTy::LocusRef(child) = elem.as_ref() else { continue };
+                    if !self.user_loci.contains_key(child) {
+                        continue;
+                    }
+                    let cf = self.ensure_owns_fn(child)?;
+                    self.builder.position_at_end(self.builder.get_insert_block().expect("in body"));
+                    let aslot = self.builder.build_struct_gep(info.struct_ty, root, idx, "arr.ptr").map_err(e)?;
+                    let arr = self.builder.build_load(ptr_t, aslot, "arr").map_err(e)?.into_pointer_value();
+                    let has = self.context.append_basic_block(f, "arr");
+                    let after = self.context.append_basic_block(f, "arr.after");
+                    let anull = self.builder.build_is_null(arr, "arr.null").map_err(e)?;
+                    self.builder.build_conditional_branch(anull, after, has).map_err(e)?;
+                    self.builder.position_at_end(has);
+                    for k in 0..*n {
+                        let es = unsafe { self.builder.build_in_bounds_gep(ptr_t, arr, &[i64_t.const_int(k, false)], "el.ptr") }.map_err(e)?;
+                        let el = self.builder.build_load(ptr_t, es, "el").map_err(e)?;
+                        let r = self.builder.build_call(cf, &[el.into(), target.into(), next_depth.into()], "owns.el").map_err(e)?;
+                        let r = r.try_as_basic_value().left().expect("i64").into_int_value();
+                        let hit = self.builder.build_int_compare(inkwell::IntPredicate::NE, r, i64_t.const_zero(), "hit").map_err(e)?;
+                        let next = self.context.append_basic_block(f, "el.next");
+                        self.builder.build_conditional_branch(hit, yes, next).map_err(e)?;
+                        self.builder.position_at_end(next);
+                    }
+                    self.builder.build_unconditional_branch(after).map_err(e)?;
+                    self.builder.position_at_end(after);
+                }
+                _ => {}
+            }
+        }
+        self.builder.build_unconditional_branch(no).map_err(e)?;
+        self.builder.position_at_end(yes);
+        self.builder.build_return(Some(&i64_t.const_int(1, false))).map_err(e)?;
+        self.builder.position_at_end(no);
+        self.builder.build_return(Some(&i64_t.const_zero())).map_err(e)?;
+        if let Some(b) = saved {
+            self.builder.position_at_end(b);
+        }
+        self.di_current_loc = saved_di.0;
+        self.di_current_pos = saved_di.1;
+        Ok(f)
+    }
+
+    /// GH #1566: `__xpool_restamp_<L>(self, d)`: `self` takes domain `d`,
+    /// and so does everything it holds first — a locus in a field, behind
+    /// an interface, an element of an array of loci, whose first holder
+    /// it is (`__xpool_adopt_<C>(child, d, self)`); one already on `d`
+    /// stops the walk.
     fn ensure_restamp_fn(&mut self, locus: &str) -> Result<FunctionValue<'ctx>, CodegenError> {
         if let Some(f) = self.xpool_restamp_fns.get(locus) {
             return Ok(*f);
@@ -34995,33 +35270,43 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         self.builder.build_conditional_branch(same, done, walk).map_err(e)?;
         self.builder.position_at_end(walk);
         self.builder.build_store(slot, d).map_err(e)?;
-        let mask_ptr = self
-            .builder
-            .build_struct_gep(info.struct_ty, me, info.locus_ref_owned_mask_field_idx, "mask.ptr")
-            .map_err(e)?;
-        let mask = self.builder.build_load(i64_t, mask_ptr, "mask").map_err(e)?.into_int_value();
-        for (fname, (idx, ty)) in info.fields.clone() {
-            let CodegenTy::LocusRef(child) = ty else { continue };
-            let Some(&bit) = info.locus_ref_bit_per_field.get(&fname) else { continue };
-            if !self.user_loci.contains_key(&child) {
-                continue;
+        for (_, (idx, ty)) in info.fields.clone() {
+            match &ty {
+                CodegenTy::LocusRef(child) if self.user_loci.contains_key(child) => {
+                    let cf = self.ensure_adopt_fn(child)?;
+                    let cslot = self.builder.build_struct_gep(info.struct_ty, me, idx, "child.ptr").map_err(e)?;
+                    let c = self.builder.build_load(ptr_t, cslot, "child").map_err(e)?;
+                    self.builder.build_call(cf, &[c.into(), d.into(), me.into()], "move.child").map_err(e)?;
+                }
+                CodegenTy::Interface(iface) => {
+                    let iface = iface.clone();
+                    let cslot = self.builder.build_struct_gep(info.struct_ty, me, idx, "iface.ptr").map_err(e)?;
+                    let fat = self.builder.build_load(ptr_t, cslot, "iface").map_err(e)?.into_pointer_value();
+                    self.emit_iface_adopt_call(fat, &iface, d, me, f)?;
+                }
+                CodegenTy::Array(elem, n) => {
+                    let CodegenTy::LocusRef(child) = elem.as_ref() else { continue };
+                    if !self.user_loci.contains_key(child) {
+                        continue;
+                    }
+                    let cf = self.ensure_adopt_fn(child)?;
+                    let aslot = self.builder.build_struct_gep(info.struct_ty, me, idx, "arr.ptr").map_err(e)?;
+                    let arr = self.builder.build_load(ptr_t, aslot, "arr").map_err(e)?.into_pointer_value();
+                    let has = self.context.append_basic_block(f, "arr");
+                    let after = self.context.append_basic_block(f, "arr.after");
+                    let anull = self.builder.build_is_null(arr, "arr.null").map_err(e)?;
+                    self.builder.build_conditional_branch(anull, after, has).map_err(e)?;
+                    self.builder.position_at_end(has);
+                    for k in 0..*n {
+                        let es = unsafe { self.builder.build_in_bounds_gep(ptr_t, arr, &[i64_t.const_int(k, false)], "el.ptr") }.map_err(e)?;
+                        let el = self.builder.build_load(ptr_t, es, "el").map_err(e)?;
+                        self.builder.build_call(cf, &[el.into(), d.into(), me.into()], "move.el").map_err(e)?;
+                    }
+                    self.builder.build_unconditional_branch(after).map_err(e)?;
+                    self.builder.position_at_end(after);
+                }
+                _ => {}
             }
-            let owned = self
-                .builder
-                .build_and(mask, i64_t.const_int(1u64 << bit, false), "owned")
-                .map_err(e)?;
-            let owned = self.builder.build_int_compare(inkwell::IntPredicate::NE, owned, i64_t.const_zero(), "owned.b").map_err(e)?;
-            let yes = self.context.append_basic_block(f, "child");
-            let next = self.context.append_basic_block(f, "next");
-            self.builder.build_conditional_branch(owned, yes, next).map_err(e)?;
-            self.builder.position_at_end(yes);
-            let cslot = self.builder.build_struct_gep(info.struct_ty, me, idx, "child.ptr").map_err(e)?;
-            let c = self.builder.build_load(ptr_t, cslot, "child").map_err(e)?;
-            let cf = self.ensure_restamp_fn(&child)?;
-            self.builder.position_at_end(yes);
-            self.builder.build_call(cf, &[c.into(), d.into()], "restamp.child").map_err(e)?;
-            self.builder.build_unconditional_branch(next).map_err(e)?;
-            self.builder.position_at_end(next);
         }
         self.builder.build_unconditional_branch(done).map_err(e)?;
         self.builder.position_at_end(done);
@@ -35075,11 +35360,57 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         self.builder.position_at_end(chk);
         let at = unsafe { self.builder.build_in_bounds_gep(self.context.i8_type(), data, &[off], "iface.xpool.domain.ptr") }.map_err(e)?;
         let d = self.builder.build_load(i64_t, at, "iface.xpool.domain").map_err(e)?.into_int_value();
-        let what = format!("method call `{iface_name}.{method_name}`");
-        self.emit_xpool_compare(d, iface_name, &what, recv_expr.span())?;
+        let what = format!("method call `{}.{method_name}`", iface_name.rsplit("__").next().unwrap_or(iface_name));
+        self.emit_xpool_compare(d, data, iface_name, &what, recv_expr.span())?;
         self.builder.build_unconditional_branch(skip).map_err(e)?;
         self.builder.position_at_end(skip);
         Ok(())
+    }
+
+    /// GH #1566: a call from the program's own code into a stdlib locus's
+    /// method leaves its site in a thread-local (`lotus_xpool_user_site`):
+    /// a violation the backstop finds inside the stdlib, which has no
+    /// source location of its own, names the program's call it is under.
+    pub(crate) fn emit_stdlib_call_site(&mut self, locus: &str, span: hale_syntax::Span) -> Result<(), CodegenError> {
+        if !self.xpool_check || self.current_fn.is_none() || !locus.starts_with("__Std") {
+            return Ok(());
+        }
+        let site = self.site_of(span);
+        if site.is_empty() {
+            return Ok(());
+        }
+        let p = self.xpool_text(&site);
+        let ptr_t = self.context.ptr_type(AddressSpace::default());
+        let g = match self.module.get_global("lotus_xpool_user_site") {
+            Some(g) => g,
+            None => {
+                let g = self.module.add_global(ptr_t, None, "lotus_xpool_user_site");
+                g.set_linkage(inkwell::module::Linkage::External);
+                g.set_thread_local(true);
+                g.set_thread_local_mode(Some(inkwell::ThreadLocalMode::InitialExecTLSModel));
+                g
+            }
+        };
+        self.builder
+            .build_store(g.as_pointer_value(), p)
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        Ok(())
+    }
+
+    /// GH #1566: one constant string per text, shared by the backstop's
+    /// reports.
+    fn xpool_text(&mut self, t: &str) -> PointerValue<'ctx> {
+        if let Some(p) = self.xpool_strings.get(t) {
+            return *p;
+        }
+        let g = self.module.add_global(self.context.i8_type().array_type(t.len() as u32 + 1), None, "xpool.str");
+        g.set_initializer(&self.context.const_string(t.as_bytes(), true));
+        g.set_constant(true);
+        g.set_linkage(inkwell::module::Linkage::Private);
+        g.set_unnamed_addr(true);
+        let p = g.as_pointer_value();
+        self.xpool_strings.insert(t.to_string(), p);
+        p
     }
 
     /// GH #1566: `d` (a receiver's `__domain`) against the running
@@ -35087,6 +35418,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     fn emit_xpool_compare(
         &mut self,
         d: inkwell::values::IntValue<'ctx>,
+        recv: PointerValue<'ctx>,
         locus: &str,
         what: &str,
         span: hale_syntax::Span,
@@ -35110,22 +35442,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         self.builder.position_at_end(fail);
         let site = self.site_of(span);
         // one constant `{site, what, locus}` per site, its strings shared
-        let text = |cx: &mut Self, t: &str| -> PointerValue<'ctx> {
-            if let Some(p) = cx.xpool_strings.get(t) {
-                return *p;
-            }
-            let g = cx.module.add_global(cx.context.i8_type().array_type(t.len() as u32 + 1), None, "xpool.str");
-            g.set_initializer(&cx.context.const_string(t.as_bytes(), true));
-            g.set_constant(true);
-            g.set_linkage(inkwell::module::Linkage::Private);
-            g.set_unnamed_addr(true);
-            let p = g.as_pointer_value();
-            cx.xpool_strings.insert(t.to_string(), p);
-            p
-        };
-        let site_p = text(self, &site);
-        let what_p = text(self, what);
-        let locus_p = text(self, locus.rsplit("__").next().unwrap_or(locus));
+        let site_p = self.xpool_text(&site);
+        let what_p = self.xpool_text(what);
+        let locus_p = self.xpool_text(locus.rsplit("__").next().unwrap_or(locus));
         let desc_ty = self.context.struct_type(&[ptr_t.into(), ptr_t.into(), ptr_t.into()], false);
         let desc = self.module.add_global(desc_ty, None, "xpool.site");
         desc.set_initializer(&desc_ty.const_named_struct(&[site_p.into(), what_p.into(), locus_p.into()]));
@@ -35136,7 +35455,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .get_function("lotus_cross_pool_check_failed")
             .expect("lotus_cross_pool_check_failed declared");
         self.builder
-            .build_call(failed, &[desc.as_pointer_value().into(), d.into(), now.into()], "xpool.failed")
+            .build_call(failed, &[desc.as_pointer_value().into(), d.into(), now.into(), recv.into()], "xpool.failed")
             .map_err(e)?;
         self.builder.build_unconditional_branch(cont).map_err(e)?;
         self.builder.position_at_end(cont);
@@ -35288,9 +35607,16 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 .build_store(slot_ptr, new_val)
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
             // GH #1566: the owner's field adopts an instance handed over
-            if let (AssignOp::Eq, CodegenTy::LocusRef(l)) = (op, &slot_ty) {
-                let l = l.clone();
-                self.emit_adopt(new_val.into_pointer_value(), &l, value)?;
+            match (op, &slot_ty) {
+                (AssignOp::Eq, CodegenTy::LocusRef(l)) => {
+                    let l = l.clone();
+                    self.emit_adopt(new_val.into_pointer_value(), &l, matches!(value, Expr::Struct { .. }), owner.ptr)?;
+                }
+                (AssignOp::Eq, CodegenTy::Interface(i)) => {
+                    let i = i.clone();
+                    self.emit_adopt_iface(new_val.into_pointer_value(), &i, owner.ptr)?;
+                }
+                _ => {}
             }
             return Ok(BlockEnd::Open);
         }
@@ -36745,57 +37071,6 @@ fn xpool_walk_expr(e: &Expr, on_expr: &mut dyn FnMut(&Expr), on_assign: &mut dyn
             }
         }
         _ => {}
-    }
-}
-
-/// GH #1566: the names `b` binds to (a part of) a field of `self`
-/// (`let w = self.w`), at any depth.
-fn xpool_self_aliases(b: &Block, out: &mut BTreeSet<String>) {
-    fn self_rooted(v: &Expr) -> bool {
-        let mut root = v;
-        while let Expr::Field { receiver, .. } | Expr::Index { receiver, .. } = root {
-            root = receiver;
-        }
-        matches!(root, Expr::KwSelf(_)) && !matches!(v, Expr::KwSelf(_))
-    }
-    for s in &b.stmts {
-        match s {
-            Stmt::Let { name, value, .. } if self_rooted(value) => {
-                out.insert(name.name.clone());
-            }
-            Stmt::Assign { target, value, .. } if target.tail.is_empty() && self_rooted(value) => {
-                out.insert(target.head.name.clone());
-            }
-            Stmt::If(i) => {
-                let mut cur = Some(i);
-                while let Some(i) = cur {
-                    xpool_self_aliases(&i.then_block, out);
-                    cur = match i.else_block.as_deref() {
-                        Some(ElseBranch::Else(e)) => {
-                            xpool_self_aliases(e, out);
-                            None
-                        }
-                        Some(ElseBranch::ElseIf(n)) => Some(n),
-                        None => None,
-                    };
-                }
-            }
-            Stmt::For { name, iter, body, .. } => {
-                if self_rooted(iter) {
-                    out.insert(name.name.clone());
-                }
-                xpool_self_aliases(body, out);
-            }
-            Stmt::While { body, .. } | Stmt::Block(body) => xpool_self_aliases(body, out),
-            Stmt::Match(m) => {
-                for a in &m.arms {
-                    if let MatchArmBody::Block(b) = &a.body {
-                        xpool_self_aliases(b, out);
-                    }
-                }
-            }
-            _ => {}
-        }
     }
 }
 

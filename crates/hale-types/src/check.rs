@@ -4221,6 +4221,16 @@ fn check_placement_single_thread(
                             if let Some(b) = locus_member_body(m) {
                                 called_names(b, &mut roots);
                             }
+                            // GH #1566: a default is walked too (what it
+                            // hands a locus to hold)
+                            if let LocusMember::Params(pb) = m {
+                                for p in &pb.params {
+                                    if let ParamInit::Value(e) = &p.init {
+                                        let b = Block { stmts: Vec::new(), tail: Some(Box::new(e.clone())), span: e.span() };
+                                        called_names(&b, &mut roots);
+                                    }
+                                }
+                            }
                         }
                         if let LocusMember::Fn(f) = m {
                             all.push((BodyKey::Method(l.name.name.clone(), f.name.name.clone()), Some(l), f));
@@ -4357,6 +4367,7 @@ fn check_placement_single_thread(
                             acc_params: None,
                             read: std::cell::RefCell::new(BTreeSet::new()),
                             quiet,
+                            building_for: None,
                             diags: &mut *diags,
                         };
                         eval_block(body, &mut cx);
@@ -4380,6 +4391,74 @@ fn check_placement_single_thread(
                         break;
                     }
                     taint = after;
+                }
+                // GH #1566: the `params` defaults of a locus some of whose
+                // fields run off it (a root's `placement { }` entries). A
+                // default builds what fills its field, on that field's
+                // domain, so each is walked as that code — for what it hands
+                // a locus to hold (`srv: Server = Server { handler: Routes {
+                // w: self.a } }`, `self.a` on main and `srv` on io: one
+                // instance on both). Other findings in a default are not
+                // this walk's to make.
+                let params: Vec<&ParamDecl> = l
+                    .members
+                    .iter()
+                    .filter_map(|m| match m {
+                        LocusMember::Params(pb) => Some(pb.params.iter()),
+                        _ => None,
+                    })
+                    .flatten()
+                    .collect();
+                let placed = instances.iter().any(|owner| {
+                    params.iter().any(|p| {
+                        running
+                            .field(owner, &p.name.name)
+                            .iter()
+                            .any(|k| running.row(k).owner_relative == crate::placement::OwnerRelative::OffOwner)
+                    })
+                });
+                if placed {
+                    for owner in instances {
+                        for p in &params {
+                            let ParamInit::Value(e) = &p.init else { continue };
+                            if p.ty.as_ref().is_some_and(|t| !decls.type_can_hold_locus(t, 0)) {
+                                continue;
+                            }
+                            let mut domains: Vec<crate::placement::DomainId> =
+                                running.field(owner, &p.name.name).iter().map(|k| running.row(k).domain).collect();
+                            if domains.is_empty() {
+                                domains.push(running.row(owner).domain);
+                            }
+                            domains.sort();
+                            domains.dedup();
+                            for d in domains {
+                                let one = [*owner];
+                                let mut found: Vec<Diag> = Vec::new();
+                                let mut cx = PoolCheckCx {
+                                    enclosing_locus: Some(l),
+                                    instances: &one,
+                                    running: &running,
+                                    decl_names: &decl_names,
+                                    cross_pool_safe_loci: &cross_pool_safe_loci,
+                                    form_bearing_loci: &form_bearing_loci,
+                                    inferred_sync: &inferred_sync,
+                                    decls: &decls,
+                                    env: Env::default(),
+                                    summaries: &summaries,
+                                    fn_values: BTreeMap::new(),
+                                    self_taint: taint.clone(),
+                                    acc: None,
+                                    acc_params: None,
+                                    read: std::cell::RefCell::new(BTreeSet::new()),
+                                    quiet: false,
+                                    building_for: Some(d),
+                                    diags: &mut found,
+                                };
+                                eval_expr(e, &mut cx);
+                                diags.extend(found.into_iter().filter(|d| d.message.starts_with(ALIAS_PREFIX)));
+                            }
+                        }
+                    }
                 }
             }
         });
@@ -4583,6 +4662,11 @@ struct PoolCheckCx<'a> {
     read: std::cell::RefCell<BTreeSet<BodyKey>>,
     /// A loop body's fixpoint walk: no diagnostics.
     quiet: bool,
+    /// GH #1566: walking a `params` default of the enclosing locus, the
+    /// domain the field it fills runs on — what the value builds runs
+    /// there, and a field of `self` is judged against it. `None`: the
+    /// instance's own domain.
+    building_for: Option<crate::placement::DomainId>,
     diags: &'a mut Vec<Diag>,
 }
 
@@ -4617,7 +4701,7 @@ impl PoolCheckCx<'_> {
 /// | `Field` / `Index` / `Path2` on a value | a part: `whole` from the value's `whole` or `parts` (with what an instance the walk built that it is holds; one it holds inside is that instance); nothing for a field whose declared type can hold no locus handle |
 /// | `Tuple` / `Array` / `ArrayRepeat` | `parts`: the elements' origins, contained |
 /// | `Struct`, a record literal | `parts`: the inits' origins |
-/// | `Struct`, a locus literal | the instance (`objs`, by the literal), which every copy of the handle is; its inits held by field (`State::heap`) |
+/// | `Struct`, a locus literal | the instance (`objs`, by the literal), which every copy of the handle is; its inits held by field (`State::heap`). GH #1566: an init that may be an instance running in another domain is refused, the hand-over (`hand_over`); summarizing, what the body hands is the summary's `handed` |
 /// | `Block` | its tail's origin, taken before its scope is popped |
 /// | `If` / `Match` | the join of the branches' values; the state after is the join of the branches' states (an absent `else` keeps the state before); a match arm's pattern binds parts of the scrutinee in the arm's scope |
 /// | `Or` | the join of the value and its fallback's; the state after joins the success path's and the fallback's |
@@ -4637,7 +4721,7 @@ impl PoolCheckCx<'_> {
 /// | `Let` | declares the value's origin in the innermost scope |
 /// | `LetTuple` | each name: a part of the value |
 /// | `Assign` to a local | the binding the name resolves to takes the value's origin |
-/// | `Assign` into a part of a local or into (a part of) a field of `self` | `install_into`, the one write transfer: the binding joins the value (contained) — a binding that is only instances the walk built, those instances, by the field written — as does every parameter or `self` field the binding is an alias of; a field of `self` joins its taint (the slot itself for `self.f = v`) |
+/// | `Assign` into a part of a local or into (a part of) a field of `self` | a value landing in a locus that runs here (a field of `self`, an instance the walk built) that may be an instance running elsewhere is refused (`hand_to_target`), as is a callee's write or a form's store that lands so; then `install_into`, the one write transfer: the binding joins the value (contained) — a binding that is only instances the walk built, those instances, by the field written — as does every parameter or `self` field the binding is an alias of; a field of `self` joins its taint (the slot itself for `self.f = v`) |
 /// | `For` | its binder is a part of what it walks; condition-free loop to a fixpoint |
 /// | `While` | condition and body iterated to a fixpoint (finite lattice, no cap), then walked once with diagnostics; the state after joins entry and exit |
 /// | `Return`, `Fail`, `Send`, `Recovery`, `Violate`, `ShmWrite`, `Expr` | their expressions walked for effects (a `Return`'s roots feed the summaries) |
@@ -4657,7 +4741,9 @@ impl PoolCheckCx<'_> {
 /// calls through a function pointer (a serve site's receivers, an
 /// `std::http::Server` handler); a stdlib locus's own methods (the
 /// opaque transfer, with no judgement of what they store into or call on
-/// a locus they hold); a locus's `params` defaults. One instance stands
+/// a locus they hold). A locus's `params` defaults are walked for the
+/// hand-over only, each as the code that builds its field, on that
+/// field's domain (`PoolCheckCx::building_for`). One instance stands
 /// for every instance a literal (or a call of a builder) produces, and
 /// one summary for every free fn of a name.
 ///
@@ -5252,6 +5338,12 @@ struct Summary {
     /// holds, by field: a call site builds it, one instance however many
     /// bindings copy the handle it returns.
     built: Held,
+    /// GH #1566: what the body hands a locus to hold — a param of a locus
+    /// literal it builds, a store into a locus it built — by the holder
+    /// as a message names it, in the body's symbols: a caller refuses an
+    /// argument (or a field of its receiver) that runs in another domain
+    /// than the instance built at the call, which is the caller's.
+    handed: BTreeMap<String, Origin>,
 }
 
 impl Summary {
@@ -5275,6 +5367,10 @@ impl Summary {
             *self.self_calls.entry(k).or_default() |= v;
         }
         self.built = Lattice::join(std::mem::take(&mut self.built), o.built);
+        for (k, v) in o.handed {
+            let e = self.handed.remove(&k).unwrap_or_default().join(v);
+            self.handed.insert(k, e);
+        }
         self
     }
     /// What the worklist compares: whether the summary grew.
@@ -5288,6 +5384,8 @@ impl Summary {
             && self.self_stores == o.self_stores
             && self.self_calls == o.self_calls
             && Lattice::same(&self.built, &o.built)
+            && self.handed.len() == o.handed.len()
+            && self.handed.iter().zip(&o.handed).all(|((k, v), (j, w))| k == j && v.same(w))
     }
     /// A write into the target `sym`.
     fn write(&mut self, sym: Sym, o: Origin) {
@@ -5366,6 +5464,7 @@ fn body_summary(
         acc_params: Some(Rc::new(fd.params.iter().map(|p| p.ty.clone()).collect())),
         read: std::cell::RefCell::new(BTreeSet::new()),
         quiet: true,
+        building_for: None,
         diags: &mut sink,
     };
     let tail = eval_block(&fd.body, &mut cx);
@@ -5576,6 +5675,7 @@ fn apply_call_writes<'e>(
     args: &'e [Expr],
     arg_origins: &[Origin],
     recv_origin: &Origin,
+    span: Span,
     cx: &mut PoolCheckCx,
 ) {
     enum Kind<'s, 'e> {
@@ -5636,8 +5736,10 @@ fn apply_call_writes<'e>(
             // what the op stores is its arguments (an intrinsic's first
             // argument is the list itself)
             let skip = usize::from(matches!(callee, Expr::Ident(_)));
-            for o in arg_origins.iter().skip(skip) {
-                install_into(target, o.clone(), true, cx);
+            for (a, o) in args.iter().zip(arg_origins).skip(skip) {
+                let how = format!("storing it into `{}` through `{}(…)`", receiver_display(target), callee_display(callee));
+                let o = hand_to_target(target, o.clone(), value_display(a), &how, span, cx);
+                install_into(target, o, true, cx);
             }
         }
         Kind::Std(f) => {
@@ -5699,6 +5801,8 @@ fn apply_call_writes<'e>(
                     Sym::AnyOf(_) => {}
                     Sym::Param(i) => {
                         if let Some(target) = args.get(*i) {
+                            let how = format!("storing it into `{}` through `{}(…)`", receiver_display(target), callee_display(callee));
+                            let value = hand_to_target(target, value, written_display(written, args, recv), &how, span, cx);
                             install_into(target, value, false, cx);
                         }
                     }
@@ -5709,6 +5813,8 @@ fn apply_call_writes<'e>(
                                 name: Ident { name: f.to_string(), span: r.span(), id: NodeId::NONE },
                                 span: r.span(),
                             };
+                            let how = format!("storing it into `{}` through `{}(…)`", receiver_display(&target), callee_display(callee));
+                            let value = hand_to_target(&target, value, written_display(written, args, recv), &how, span, cx);
                             install_into(&target, value, false, cx);
                         }
                     }
@@ -5921,7 +6027,7 @@ fn eval_stmt(stmt: &Stmt, cx: &mut PoolCheckCx) {
         Stmt::Assign { target, value, span, .. } => {
             // the store goes through what the target holds before the
             // value is evaluated (lowering resolves the slot first)
-            check_store_pool(target, *span, cx);
+            let refused = check_store_pool(target, *span, cx);
             for seg in &target.tail {
                 if let LValueSeg::Index(e) = seg {
                     eval_expr(e, cx);
@@ -5944,6 +6050,14 @@ fn eval_stmt(stmt: &Stmt, cx: &mut PoolCheckCx) {
                 };
                 if slot_ty.is_none_or(|t| cx.decls.type_can_hold_locus(t, 0)) {
                     let into = lvalue_expr(target);
+                    // GH #1566: a locus that runs here holding an instance
+                    // that runs elsewhere is one instance shared across pools
+                    let o = if refused {
+                        o
+                    } else {
+                        let how = format!("storing it into `{}`", lvalue_display(target));
+                        hand_to_target(&into, o, value_display(value), &how, *span, cx)
+                    };
                     install_into(&into, o, false, cx);
                 }
             }
@@ -6202,19 +6316,26 @@ fn eval_expr(expr: &Expr, cx: &mut PoolCheckCx) -> Origin {
         // change what the receiver is)
         let resolved = callee_summary(callee, cx);
         check_call_stores_pool(callee, resolved, args, &arg_origins, &recv_origin, *span, cx);
-        apply_call_writes(callee, resolved, args, &arg_origins, &recv_origin, cx);
+        // GH #1566: what the callee hands a locus it builds to hold, here
+        let handed_refused = match resolved {
+            Some((sum, recv)) => check_call_handed(callee, sum, recv, args, &arg_origins, &recv_origin, *span, cx),
+            None => false,
+        };
+        apply_call_writes(callee, resolved, args, &arg_origins, &recv_origin, *span, cx);
         let o = call_origin(callee, resolved, &recv_origin, &arg_origins, cx);
         // an instance the callee builds and hands back: one built at this
         // call, holding what the callee's does
         return match resolved {
             Some((sum, recv)) if !sum.ret.objs.0.is_empty() || !sum.ret.part_objs.0.is_empty() => {
                 let site = &**callee as *const Expr as usize;
+                // (an alias refused at the call is not carried further)
+                let keep = |o: Origin| if handed_refused { strip_cross(o) } else { o };
                 for (f, v) in &sum.built.fields {
                     let v = instantiate(v, &arg_origins, recv, &recv_origin, cx);
-                    cx.env.st.hold(site, Some(f), v);
+                    cx.env.st.hold(site, Some(f), keep(v));
                 }
                 let any = instantiate(&sum.built.any, &arg_origins, recv, &recv_origin, cx);
-                cx.env.st.hold(site, None, any);
+                cx.env.st.hold(site, None, keep(any));
                 let mut o = o;
                 if !sum.ret.objs.0.is_empty() {
                     o.objs.extend(&Objs(vec![site]));
@@ -6294,9 +6415,14 @@ fn eval_expr(expr: &Expr, cx: &mut PoolCheckCx) -> Origin {
             if path.segments.last().is_some_and(|s| cx.decls.loci.contains_key(&s.name)) {
                 let holds = path.segments.last().is_some_and(|s| cx.decls.locus_holds_handles(&s.name));
                 let site = expr as *const Expr as usize;
+                let holder = format!("`{}`", path.segments.last().map_or("", |s| s.name.as_str()));
                 for i in inits {
                     let v = eval_expr(&i.value, cx);
                     let v = cx.env.materialize(v);
+                    // GH #1566: the literal's instance runs here; a param
+                    // that may be an instance running elsewhere would be one
+                    // instance shared across pools
+                    let v = hand_over(v, value_display(&i.value), &holder, &format!("handing it to {holder}"), i.value.span(), cx);
                     if holds {
                         cx.env.st.hold(site, Some(&i.name.name), v);
                     }
@@ -6344,6 +6470,183 @@ fn eval_expr(expr: &Expr, cx: &mut PoolCheckCx) -> Origin {
         Expr::Literal(_, _) | Expr::Path(_) | Expr::KwSelf(_) => Origin::default(),
         Expr::Call { .. } => unreachable!("handled above"),
     }
+}
+
+/// GH #1566: how a refusal of a cross-pool alias starts.
+const ALIAS_PREFIX: &str = "cross-pool alias:";
+
+/// GH #1566: a value with its cross-pool facts removed — an alias refused
+/// where it is made is not carried on to the uses that follow it.
+fn strip_cross(o: Origin) -> Origin {
+    Origin { whole: None, parts: None, ..o }
+}
+
+/// A value as a message shows it: a binding or a chain of fields, a
+/// block's tail, a call.
+fn value_display(e: &Expr) -> String {
+    match e {
+        Expr::Block(b) => match &b.tail {
+            Some(t) => value_display(t),
+            None => "the value".to_string(),
+        },
+        Expr::Call { callee, .. } => format!("{}(…)", callee_display(callee)),
+        Expr::Ident(_) | Expr::Field { .. } | Expr::Index { .. } | Expr::KwSelf(_) => receiver_display(e),
+        Expr::Array(xs, _) => format!("[{}]", xs.iter().map(value_display).collect::<Vec<_>>().join(", ")),
+        Expr::Tuple(xs, _) => format!("({})", xs.iter().map(value_display).collect::<Vec<_>>().join(", ")),
+        Expr::ArrayRepeat { val, .. } => format!("[{}; …]", value_display(val)),
+        Expr::Struct { path, .. } => format!("{} {{ … }}", path.segments.iter().map(|s| s.name.as_str()).collect::<Vec<_>>().join("::")),
+        _ => "the value".to_string(),
+    }
+}
+
+
+/// What a summary's symbol is at a call, as a message shows it.
+fn sym_display(sym: &Sym, args: &[Expr], recv: Option<&Expr>) -> String {
+    match sym {
+        Sym::Param(j) => args.get(*j).map_or_else(|| "an argument".to_string(), value_display),
+        Sym::SelfField(f) => match recv {
+            Some(r) => format!("{}.{f}", receiver_display(r)),
+            None => format!("self.{f}"),
+        },
+        Sym::AnyOf(t) => format!("an instance of `{t}` a fn value returns"),
+    }
+}
+
+/// What a callee's write is at a call, as a message shows it.
+fn written_display(written: &Origin, args: &[Expr], recv: Option<&Expr>) -> String {
+    written.syms().iter().next().map_or_else(|| "the value".to_string(), |s| sym_display(s, args, recv))
+}
+
+/// GH #1566: the refusal of one instance shared across pools.
+fn alias_message(shown: &str, how: &str, cp: &CrossPool) -> String {
+    let what = match (&cp.locus_type, &cp.held_by) {
+        (Some(t), _) => format!("`{t}`"),
+        (None, Some(_)) => format!("a locus held by `{}`", cp.field_locus),
+        (None, None) => format!("`{}`", cp.field_locus),
+    };
+    format!(
+        "{ALIAS_PREFIX} {what} (`{shown}`) runs on `{}`; {how}, which runs on `{}`, shares one \
+         instance across pools — build it on that side, or reach it through a method on the \
+         bus. See spec/types.md § \"Single-threaded-method invariant (F.31)\".",
+        cp.callee_pool.display(),
+        cp.caller_pool.display(),
+    )
+}
+
+/// GH #1566: `v` handed to `holder`, a locus that runs where this code
+/// does (a literal's param, a store into one). A value that may be an
+/// instance running elsewhere is refused here, and goes on without that
+/// fact. Summarizing: what the body hands, in its symbols, which a caller
+/// judges on what it hands in (`check_call_handed`).
+fn hand_over(v: Origin, shown: String, holder: &str, how: &str, span: Span, cx: &mut PoolCheckCx) -> Origin {
+    if let Some(acc) = cx.acc.as_mut() {
+        let syms = Origin { whole_syms: v.whole_syms.clone(), part_syms: v.part_syms.clone(), ..Origin::default() };
+        if !syms.is_empty() {
+            let e = acc.handed.remove(holder).unwrap_or_default().join(syms);
+            acc.handed.insert(holder.to_string(), e);
+        }
+        return v;
+    }
+    match v.any() {
+        Some(cp) if !alias_exempt(&cp, cx) => {
+            cx.emit(Diag::ty(span, alias_message(&shown, how, &cp)));
+            strip_cross(v)
+        }
+        _ => v,
+    }
+}
+
+/// GH #1566: an instance F.31 lets two pools share — a locus whose form
+/// synchronizes access from another domain, or a stdlib locus (a metrics
+/// registry, a router), whose own synchronization carries that contract
+/// (spec/types.md § F.31). What a holder does with it after is judged as
+/// before: a method call on it from the wrong pool is still refused.
+fn alias_exempt(cp: &CrossPool, cx: &PoolCheckCx) -> bool {
+    let t = match (&cp.locus_type, &cp.held_by) {
+        (Some(t), _) => t.as_str(),
+        (None, Some(_)) => return false,
+        (None, None) => cp.field_locus.as_str(),
+    };
+    let short = t.rsplit("::").next().unwrap_or(t);
+    !cx.decls.loci.contains_key(short) || cx.cross_pool_safe_loci.contains(short)
+}
+
+/// GH #1566: `o` written into `target`: when the write lands in a locus
+/// that runs here (a field of `self`, an instance this code built), it
+/// is handed to that locus (`hand_over`). A target that runs elsewhere is
+/// a cross-pool store, refused as one; one rooted at a parameter is the
+/// caller's to judge, from the summary's write.
+fn hand_to_target(target: &Expr, o: Origin, shown: String, how: &str, span: Span, cx: &mut PoolCheckCx) -> Origin {
+    let mut root = target;
+    while let Expr::Field { receiver, .. } | Expr::Index { receiver, .. } = root {
+        root = receiver;
+    }
+    let summarizing = cx.acc.is_some();
+    let holder = match root {
+        // summarizing, a write into `self` is the summary's write, which
+        // the caller installs, and judges, at its receiver
+        Expr::KwSelf(_) if summarizing => None,
+        Expr::KwSelf(_) => {
+            if self_rooted_field(target).is_some_and(|f| receiver_cross_pool(f, cx).is_some()) {
+                None
+            } else {
+                Some(format!("`{}`", cx.enclosing_name()))
+            }
+        }
+        Expr::Ident(id) => {
+            let holds = cx.env.lookup(&id.name);
+            if holds.whole.is_some() {
+                None
+            } else if !holds.objs.0.is_empty() {
+                Some(format!("`{}`", cx.env.locus_type(&id.name).unwrap_or("a locus this code builds")))
+            } else if !summarizing && holds.whole_syms.iter().any(|s| matches!(s, Sym::SelfField(_))) {
+                Some(format!("`{}`", cx.enclosing_name()))
+            } else {
+                None
+            }
+        }
+        _ => None,
+    };
+    match holder {
+        Some(h) => {
+            let how = format!("{how} hands it to {h}");
+            hand_over(o, shown, &h, &how, span, cx)
+        }
+        None => o,
+    }
+}
+
+/// GH #1566: what a callee hands a locus it builds to hold
+/// (`Summary::handed`), at this call: the instance is built here, so an
+/// argument (or a field of the receiver) that may run elsewhere is
+/// refused. Whether one was.
+#[allow(clippy::too_many_arguments)]
+fn check_call_handed(
+    callee: &Expr,
+    sum: &Summary,
+    recv: Option<&Expr>,
+    args: &[Expr],
+    arg_origins: &[Origin],
+    recv_origin: &Origin,
+    span: Span,
+    cx: &mut PoolCheckCx,
+) -> bool {
+    let mut refused = false;
+    for (holder, o) in &sum.handed {
+        let syms = o.whole_syms.iter().map(|s| (s, false)).chain(o.part_syms.iter().map(|s| (s, true)));
+        for (sym, part) in syms {
+            let one = if part {
+                Origin { part_syms: SymSet::one(sym.clone()), ..Origin::default() }
+            } else {
+                Origin::sym(sym.clone())
+            };
+            let v = instantiate(&one, arg_origins, recv, recv_origin, cx);
+            refused |= cx.acc.is_none() && v.any().is_some();
+            let how = format!("`{}(…)` hands it to {holder}", callee_display(callee));
+            hand_over(v, sym_display(sym, args, recv), holder, &how, span, cx);
+        }
+    }
+    refused
 }
 
 /// The index expressions of a field-and-element chain (`self.ws[i]`).
@@ -6408,7 +6711,7 @@ fn any_cross_pool_instance(ty: &str, cx: &PoolCheckCx) -> Option<CrossPool> {
     let short = ty.rsplit("::").next().unwrap_or(ty);
     let table = cx.running.table;
     for owner in cx.instances {
-        let caller = cx.running.row(owner).domain;
+        let caller = cx.building_for.unwrap_or(cx.running.row(owner).domain);
         for row in table.instances.values() {
             let name = row.realizes.as_ref().and_then(|d| cx.decl_names.get(&d.site));
             if name.is_some_and(|n| n.rsplit("::").next() == Some(short)) && row.domain != caller {
@@ -6508,18 +6811,18 @@ fn pattern_binders<'p>(p: &'p Pattern, out: &mut Vec<&'p str>) {
 /// the enclosing instance. Lowering writes the value into the field's
 /// locus's arena and retires what it replaces, which only that locus's
 /// thread may do.
-fn check_store_pool(target: &LValue, span: Span, cx: &mut PoolCheckCx) {
+fn check_store_pool(target: &LValue, span: Span, cx: &mut PoolCheckCx) -> bool {
     let (cp, shown) = if target.head.name == "self" {
         // `self.w.<...>`: the slot is below the field `w`; `self.ws[i].<...>`
         // below an element of the array field `ws`.
-        let Some(LValueSeg::Field(f)) = target.tail.first() else { return };
+        let Some(LValueSeg::Field(f)) = target.tail.first() else { return false };
         let (below, shown) = match target.tail.get(1) {
             Some(LValueSeg::Index(_)) => (2, format!("self.{}[…]", f.name)),
             _ => (1, format!("self.{}", f.name)),
         };
         // `self.ws[i] = v` stores a handle into self's own array.
         if target.tail.len() <= below {
-            return;
+            return false;
         }
         // Summarizing a method: a store into a locus its field holds is
         // the method's, judged at a call on a receiver the walk built
@@ -6551,11 +6854,11 @@ fn check_store_pool(target: &LValue, span: Span, cx: &mut PoolCheckCx) {
                 }
                 (cp, shown)
             }
-            _ => return,
+            _ => return false,
         }
     } else {
         if target.tail.is_empty() {
-            return;
+            return false;
         }
         // What the local may hold: the store lands in the value itself
         // (`w.name`), or, down a longer path, maybe in a handle the value
@@ -6565,7 +6868,7 @@ fn check_store_pool(target: &LValue, span: Span, cx: &mut PoolCheckCx) {
         // a caller judges it on what it hands in (GH #1561)
         if cx.acc.is_some() {
             record_param_store(target, &o, cx);
-            return;
+            return false;
         }
         let held = if target.tail.len() >= 2 { o.whole.or(o.parts) } else { o.whole };
         match held {
@@ -6580,11 +6883,12 @@ fn check_store_pool(target: &LValue, span: Span, cx: &mut PoolCheckCx) {
             {
                 ((*cp).clone(), target.head.name.clone())
             }
-            _ => return,
+            _ => return false,
         }
     };
     let path = lvalue_display(target);
     cx.emit(Diag::ty(span, cross_pool_store_message(&format!("`{path} = …` stores into"), &shown, &cp, cx)));
+    true
 }
 
 /// Summarizing: a store through a local that may be (a part of) a
@@ -7412,24 +7716,41 @@ fn receiver_cross_pool(receiver: &Expr, cx: &PoolCheckCx) -> Option<CrossPool> {
     }
     let table = cx.running.table;
     for owner in cx.instances {
+        let caller = cx.building_for.unwrap_or(cx.running.row(owner).domain);
         for field in cx.running.field(owner, &name.name) {
             let row = cx.running.row(field);
+            // GH #1566: walking a default for a field that runs elsewhere,
+            // every field of `self` is judged against that field's domain;
+            // one handed an instance an enclosing instance's field holds
+            // (`Routes { w: self.a }`) is that instance, which runs where
+            // its own row does
+            if cx.building_for.is_some() {
+                let src = reused_from_field(cx, field).unwrap_or(field);
+                let caller_pool = PoolId::of_domain(table, caller);
+                let callee_pool = PoolId::of_domain(table, cx.running.row(src).domain);
+                if caller_pool != callee_pool {
+                    return Some(CrossPool {
+                        locus_type: None,
+                        held_by: held_by.clone(),
+                        field_locus: receiver_locus_name(row, cx.enclosing_locus?, &name.name, cx.decl_names),
+                        caller_pool,
+                        callee_pool,
+                    });
+                }
+                continue;
+            }
             if row.owner_relative != crate::placement::OwnerRelative::OffOwner {
-                // GH #1566: a field handed an instance a field of an
-                // enclosing instance holds (`Routes { w: self.a }`) holds
-                // that instance, which runs where its own row does — the
-                // table places the held row in its holder's domain
+                // a field handed an instance an enclosing instance's field
+                // holds that a pool may share (a stdlib locus: the
+                // hand-over rule lets it through) holds it where it runs;
+                // a user locus so handed is refused at the hand-over
                 if let Some(src) = reused_from_field(cx, field) {
-                    let caller_pool = PoolId::of_domain(table, cx.running.row(owner).domain);
+                    let caller_pool = PoolId::of_domain(table, caller);
                     let callee_pool = PoolId::of_domain(table, cx.running.row(src).domain);
-                    if caller_pool != callee_pool {
-                        return Some(CrossPool {
-                            locus_type: None,
-                            held_by: held_by.clone(),
-                            field_locus: receiver_locus_name(row, cx.enclosing_locus?, &name.name, cx.decl_names),
-                            caller_pool,
-                            callee_pool,
-                        });
+                    let field_locus = receiver_locus_name(row, cx.enclosing_locus?, &name.name, cx.decl_names);
+                    let short = field_locus.rsplit("::").next().unwrap_or(&field_locus);
+                    if caller_pool != callee_pool && !cx.decls.loci.contains_key(short) {
+                        return Some(CrossPool { locus_type: None, held_by: held_by.clone(), field_locus, caller_pool, callee_pool });
                     }
                 }
                 continue;
@@ -7438,7 +7759,7 @@ fn receiver_cross_pool(receiver: &Expr, cx: &PoolCheckCx) -> Option<CrossPool> {
                 locus_type: None,
                 held_by: held_by.clone(),
                 field_locus: receiver_locus_name(row, cx.enclosing_locus?, &name.name, cx.decl_names),
-                caller_pool: PoolId::of_domain(table, cx.running.row(owner).domain),
+                caller_pool: PoolId::of_domain(table, caller),
                 callee_pool: PoolId::of_domain(table, row.domain),
             });
         }

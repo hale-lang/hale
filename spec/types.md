@@ -1887,19 +1887,42 @@ instance, seeded from the `main locus`'s `placement { }` entries):
    which are not summarized (a call on one may move any argument into
    any other and into the receiver, but what it stores into or calls
    on a locus it holds is not judged); the parameter effects of a
-   method on a receiver whose locus type the check cannot tell; a
-   call through an interface; and a locus's `params` defaults, which
-   are not walked. Where the check cannot tell instances apart it
+   method on a receiver whose locus type the check cannot tell; and a
+   call through an interface. A locus's `params` defaults are walked
+   only for the hand-over rule below. Where the check cannot tell instances apart it
    takes them as one: every instance one literal (or one call of a
    helper that builds one) produces, and every free fn of one name,
    so it may refuse a store into an instance that never holds the
    handle another one does.
 
-   A field a literal hands an instance a field of an enclosing
-   instance holds (`Routes { w: self.a }`, written in `App`'s params)
-   holds that instance, which runs where its own row does: down `self`
-   from the holder, a store into it or a method call on it is
-   cross-pool when the two pools differ.
+   **One instance is never shared across pools** (GH #1566). A locus
+   that holds an instance in a field reaches it as its own, on its own
+   thread, so handing it an instance that runs on another pool makes
+   one instance two threads write. Such a hand-over is refused where it
+   is made: a locus literal's param, a store into a locus's field (or
+   an element or part below one), or a call of a helper that does
+   either with an argument — whenever the value may be an existing
+   instance (a field of another instance, or a value reached from one,
+   through locals, blocks, parameters, returns and aggregates) that runs
+   on another pool than the locus receiving it. A literal or store in a
+   member runs on the member's pool; one in a `params` default builds
+   for the field it fills, so `srv: std::http::Server = std::http::Server
+   { .., handler: Routes { w: self.a } }`, with `srv` placed on `io` and
+   `a` on `main`, is refused at `self.a` — and so are `Routes { w: {
+   let x = self.a; x } }`, `mk(self.a)` with `fn mk(w: W) -> Routes {
+   return Routes { w: w }; }`, and the same with a local in `mk`:
+
+   ```text
+   cross-pool alias: `W` (`self.a`) runs on `cooperative(pool = main)`; `mk(…)` hands it to `Routes`, which runs on `cooperative(pool = io)`, shares one instance across pools — build it on that side, or reach it through a method on the bus.
+   ```
+
+   An instance the code builds itself and hands over (`Routes { w: W {
+   } }`, a helper that builds and returns one) is moved, not shared, and
+   is accepted; so is a hand-over within one pool. A locus whose form
+   synchronizes access from another domain, and a stdlib locus (a
+   metrics registry, a router), may be shared: their own
+   synchronization carries the contract, and a method call on one from
+   the wrong pool is still refused as above.
 
    The rule is checked statically where the walk follows the handle,
    and enforced at run time at every remaining site (GH #1566,
@@ -1917,22 +1940,32 @@ instance, seeded from the `main locus`'s `placement { }` entries):
    main.hl:8:9: violation: cross-pool store into `W.name` from pool `io`; this `W` runs on pool `main`: reach it through a method on the bus
    ```
 
-   An instance is on the domain it was built on until a holder adopts
-   it: a locus-typed field filled from a local or a parameter (a
-   literal's param, or a store into the field) moves the instance, and
-   the children it owns, onto the domain the holder runs on (`Web`
-   built in `fn main` and handed to an io-placed server's handler serves
-   from io). Hale does not refuse a use of the local after the hand-over,
-   so a builder that kept it and reaches the instance from its own
-   domain afterwards is caught at run time. A value that is a field of
-   `self`, or a local bound to one, is shared rather than adopted: the
-   instance stays where it runs, and down `self` a receiver is checked
-   when the path goes through a field so filled. A receiver whose form
-   synchronizes access from another domain, and a local bound to a
-   locus literal the running code built (never rebound, never handed
-   over), are not checked; a locus's `drain()` and `dissolve()` run as
-   its own domain wherever the runtime runs them, and an `on_failure`
-   handler reaches its failed child's.
+   An instance is on the domain it was built on until a locus first
+   holds it in a field (a literal's param, an element of an array param,
+   a store, a field of interface type): an instance no locus held yet —
+   one the code built and handed over through locals and parameters,
+   `Web` built in `fn main` and handed through helpers to an io-placed
+   server's handler — becomes that holder's and moves onto the domain
+   it runs on, with everything it is in turn the first holder of (a
+   provider composed from locals moves with the service it holds). An
+   instance a locus already holds is shared by a later holder, not
+   moved: it keeps its domain, so whichever side is not its owner is
+   caught (the hand-over the check cannot follow, a
+   builder called through a fn value, fails at the holder's first store
+   into it). Down `self`, a receiver is checked when the path goes
+   through a field filled with anything but a value the literal or store
+   builds right there. Hale does not refuse a use of a local after the
+   hand-over, so a builder that kept it and reaches the instance from
+   its own domain afterwards is caught at run time too. A receiver
+   whose form synchronizes access from another domain, and a local
+   bound to a locus literal the running code built (never rebound, never
+   handed over), are not checked; a locus's `drain()` and `dissolve()`
+   run as its own domain wherever the runtime runs them, and an
+   `on_failure` handler reaches its failed child, and the subtree the
+   child owns, on the child's domain — not any other instance there. A
+   violation found inside the stdlib, which has no location of its own,
+   is reported at the program's last call into a stdlib locus on that
+   thread.
 
    Two exemptions are by design. What a `bindings { }` entry builds (an
    adapter, a transport, a codec) belongs to no one domain: the runtime

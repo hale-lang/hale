@@ -1249,6 +1249,14 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
         let domain_field_idx = idx;
         llvm_field_tys.push(self.context.i64_type().into());
         idx += 1;
+        // GH #1566: synthetic `__adopted: i64` — 1 once a locus holds the
+        // instance in a field (or it is built where no one domain owns it,
+        // a `bindings { }` entry): the first holder of an instance nothing
+        // held moves it onto its own domain; a later one shares it, and
+        // leaves its domain where it is.
+        let adopted_field_idx = idx;
+        llvm_field_tys.push(self.context.i64_type().into());
+        idx += 1;
         let _ = idx;
 
         let struct_ty = self
@@ -1341,6 +1349,7 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
                 drain_requested_field_idx,
                 held_by_owner_field_idx,
                 domain_field_idx,
+                adopted_field_idx,
                 built_params_field_idx,
                 reclaim_claimed_field_idx,
                 slot_borrowed_mask_field_idx,

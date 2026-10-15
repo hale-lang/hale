@@ -3322,20 +3322,35 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .build_store(field_ptr, val)
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
             }
-            // GH #1566: an instance this field adopts from a local or a
-            // parameter now runs where this locus does
-            if let CodegenTy::LocusRef(l) = &declared_ty {
-                let adopted: Option<&Expr> = match overrides.get(fname.as_str()) {
-                    Some(e) => Some(*e),
-                    None => match default {
-                        DefaultInit::Expr(e) => Some(e),
-                        _ => None,
-                    },
-                };
-                if let Some(e) = adopted {
+            // GH #1566: the field holds the instance (or each of an array
+            // of them): one nothing held yet runs where this locus does
+            let written: Option<&Expr> = match overrides.get(fname.as_str()) {
+                Some(e) => Some(*e),
+                None => match default {
+                    DefaultInit::Expr(e) => Some(e),
+                    _ => None,
+                },
+            };
+            let built_here = match written {
+                Some(Expr::Struct { .. }) => true,
+                Some(Expr::Array(xs, _)) => xs.iter().all(|x| matches!(x, Expr::Struct { .. })),
+                Some(Expr::ArrayRepeat { val, .. }) => matches!(val.as_ref(), Expr::Struct { .. }),
+                _ => false,
+            };
+            match &declared_ty {
+                CodegenTy::LocusRef(l) => {
                     let l = l.clone();
-                    self.emit_adopt(val.into_pointer_value(), &l, e)?;
+                    self.emit_adopt(val.into_pointer_value(), &l, built_here, self_ptr)?;
                 }
+                CodegenTy::Array(..) if Self::array_inline_spec(&declared_ty).is_none() => {
+                    let ty = declared_ty.clone();
+                    self.emit_adopt_elements(val.into_pointer_value(), &ty, built_here, self_ptr)?;
+                }
+                CodegenTy::Interface(i) => {
+                    let i = i.clone();
+                    self.emit_adopt_iface(val.into_pointer_value(), &i, self_ptr)?;
+                }
+                _ => {}
             }
             // F.29 follow-up: OR the bit for this field into
             // `__locus_ref_owned_mask` if the field is LocusRef-
@@ -5185,6 +5200,15 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 .build_struct_gep(info.struct_ty, self_param, info.domain_field_idx, &format!("{locus_name}.__domain.ptr"))
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
             self.builder.build_store(slot, d).map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            // placed: the field it fills holds it where it runs, never
+            // moves it onto the owner's domain
+            let slot = self
+                .builder
+                .build_struct_gep(info.struct_ty, self_param, info.adopted_field_idx, &format!("{locus_name}.__adopted.ptr"))
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            self.builder
+                .build_store(slot, self.context.i64_type().const_int(1, false))
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         }
         let route = self.anchor_route.clone();
         if let (Some(mb_idx), Some(crate::codegen::AnchorRoute::Mailbox(_))) =
@@ -5771,6 +5795,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let domain: inkwell::values::BasicValueEnum<'ctx> =
             if self.xpool_check && !self.xpool_shared { self.domain_now()?.into() } else { zero };
         store(self, info.domain_field_idx, domain, "__domain")?;
+        // GH #1566: held by no locus yet; one built where no domain owns
+        // it (a `bindings { }` entry) is never moved onto one
+        let adopted: inkwell::values::BasicValueEnum<'ctx> =
+            if self.xpool_shared { i64_t.const_int(1, false).into() } else { zero };
+        store(self, info.adopted_field_idx, adopted, "__adopted")?;
         // m41 / m45 / F.27: quarantine, restart-in-place and drain latches.
         store(self, info.quarantined_field_idx, zero, "__quarantined")?;
         store(self, info.restart_in_place_pending_field_idx, zero, "__restart_in_place_pending")?;
