@@ -1157,3 +1157,147 @@ fn main() {
         &Expect::Refused("`Box` is a generic type"),
     );
 }
+
+// === every site admitting a template literal holds its fields ==
+// Review of #1568: a literal spelled with a generic template's name was
+// typed against the template, whose parameters are unknown, so at every
+// site that admits it (`admit_monomorph_literal`'s table) a field of a
+// parameter's type took anything: `self.b = Box { value: "bad" }` with
+// `b: Box<Int>` checked, and the build refused `Box_Int.value`. One row
+// per site: the bad field refused by the check (and so never built) at
+// the field, the good one checked, built and run. `[x; N]` is one of the
+// array rows: the checker typed it as an array, the build could not
+// lower its element.
+
+const SITE_DECLS: &str = r#"
+type Box<T> {
+    value: T;
+}
+
+type Outer {
+    b: Box<Int>;
+}
+
+type E<T> {
+    code: T;
+}
+
+locus Cache<K, V> {
+    params {
+        cap: K;
+    }
+}
+"#;
+
+/// (site, body with `VALUE` where the field's value goes, what it prints
+/// with `VALUE` = 7).
+const SITES: &[(&str, &str, &str)] = &[
+    ("let", "fn main() { let b: Box<Int> = Box { value: VALUE }; println(b.value); }", "7"),
+    (
+        "assign_local",
+        "fn main() { let mut b: Box<Int> = Box { value: 1 }; b = Box { value: VALUE }; println(b.value); }",
+        "7",
+    ),
+    (
+        "assign_self_field",
+        "locus H { params { b: Box<Int> = Box { value: 1 }; } fn set() { self.b = Box { value: VALUE }; } }\n\
+         fn main() { let h = H { }; h.set(); println(h.b.value); }",
+        "7",
+    ),
+    ("return", "fn make() -> Box<Int> { return Box { value: VALUE }; }\nfn main() { println(make().value); }", "7"),
+    (
+        "return_fallible",
+        "fn make() -> Box<Int> fallible(E<Int>) { return Box { value: VALUE }; }\n\
+         fn main() { let z: Box<Int> = Box { value: 0 }; let b = make() or z; println(b.value); }",
+        "7",
+    ),
+    (
+        "param_default",
+        "locus L { params { b: Box<Int> = Box { value: VALUE }; } }\nfn main() { let l = L { }; println(l.b.value); }",
+        "7",
+    ),
+    ("record_field", "fn main() { let o = Outer { b: Box { value: VALUE } }; println(o.b.value); }", "7"),
+    (
+        "locus_override",
+        "locus L { params { b: Box<Int> = Box { value: 1 }; } }\n\
+         fn main() { let l = L { b: Box { value: VALUE } }; println(l.b.value); }",
+        "7",
+    ),
+    (
+        "array_let",
+        "fn main() { let bs: [Box<Int>; 2] = [Box { value: 1 }, Box { value: VALUE }]; println(bs[1].value); }",
+        "7",
+    ),
+    ("array_repeat_let", "fn main() { let bs: [Box<Int>; 2] = [Box { value: VALUE }; 2]; println(bs[1].value); }", "7"),
+    (
+        "array_repeat_assign",
+        "locus H { params { bs: [Box<Int>; 2] = [Box { value: 1 }; 2]; } fn set() { self.bs = [Box { value: VALUE }; 2]; } }\n\
+         fn main() { let h = H { }; h.set(); println(h.bs[0].value); }",
+        "7",
+    ),
+    (
+        "array_repeat_default",
+        "locus H { params { bs: [Box<Int>; 2] = [Box { value: VALUE }; 2]; } }\n\
+         fn main() { let h = H { }; println(h.bs[1].value); }",
+        "7",
+    ),
+    ("tuple_let", "fn main() { let t: (Box<Int>, Int) = (Box { value: VALUE }, 1); println(t.0.value); }", "7"),
+    ("locus_let", "fn main() { let c: Cache<Int, String> = Cache { cap: VALUE }; println(c.cap); }", "7"),
+    (
+        "locus_assign",
+        "fn main() { let mut c: Cache<Int, String> = Cache { cap: 1 }; c = Cache { cap: VALUE }; println(c.cap); }",
+        "7",
+    ),
+];
+
+#[test]
+fn every_admitting_site_holds_the_literals_fields_to_the_monomorphs() {
+    for (site, body, prints) in SITES {
+        let good = format!("{SITE_DECLS}{}\n", body.replace("VALUE", "7"));
+        agree(&format!("site_{site}"), &good, &Expect::Runs(prints));
+        let bad = format!("{SITE_DECLS}{}\n", body.replace("VALUE", "\"bad\""));
+        let program = parse_source(&bad).unwrap_or_else(|e| panic!("[{site}] parse: {e:?}"));
+        let diags = check_program(&program);
+        let refusal = diags
+            .iter()
+            .find(|d| d.message.contains("expects `Int`, got `String`"))
+            .unwrap_or_else(|| panic!("[{site}] the bad field is refused: {:?}", diags.iter().map(|d| &d.message).collect::<Vec<_>>()));
+        assert_eq!(refusal.span.slice(&bad), "\"bad\"", "[{site}] located at the field's value");
+    }
+}
+
+#[test]
+fn an_array_repeat_of_generic_literals_runs_under_asan() {
+    let src = format!("{SITE_DECLS}{}\n", SITES.iter().find(|s| s.0 == "array_repeat_assign").unwrap().1.replace("VALUE", "7"));
+    asan_runs("array_repeat_assign", &src, "7");
+}
+
+#[test]
+fn a_field_of_an_aliased_argument_meets_the_aliased_type() {
+    // `Supervisor<Scalar>`'s `Cell<Scalar>` holds an `Int`: the bound
+    // type is read through the alias before the field's value meets it.
+    agree(
+        "alias_argument",
+        r#"
+type Scalar = Int;
+
+locus Cell<T> {
+    params {
+        value: T;
+    }
+}
+
+locus Supervisor<T> {
+    params {
+        child: Cell<T>;
+    }
+}
+
+fn main() {
+    let a: Supervisor<Scalar> = Supervisor { child: Cell { value: 17 } };
+    println(a.child.value);
+}
+"#,
+        &Expect::Runs("17"),
+    );
+}

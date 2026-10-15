@@ -580,9 +580,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
 
     /// A literal spelled with a generic template's name, written where
     /// `target` is the declared type: the literal rewritten to the
-    /// monomorph `target` names, and an array or tuple literal's elements
-    /// each the same way against their declared element type (`let cs:
-    /// [Cfg<Int>; 2] = [Cfg { .. }, Cfg { .. }]`). `None` where nothing
+    /// monomorph `target` names, and an array (`[x, y]`, `[x; N]`) or
+    /// tuple literal's elements each the same way against their declared
+    /// element type (`let cs: [Cfg<Int>; 2] = [Cfg { .. }, Cfg { .. }]`). `None` where nothing
     /// is rewritten. Every rewritten literal is the same source
     /// expression, renamed, and keeps its id (GH #921 A2).
     pub(crate) fn rewrite_generic_literal(&self, e: &Expr, target: &CodegenTy) -> Option<Expr> {
@@ -601,6 +601,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             (Expr::Array(parts, span), CodegenTy::Array(elem, _)) => {
                 Some(Expr::Array(each(parts, &mut std::iter::repeat(&**elem))?, *span))
             }
+            (Expr::ArrayRepeat { val, count, span }, CodegenTy::Array(elem, _)) => Some(Expr::ArrayRepeat {
+                val: Box::new(self.rewrite_generic_literal(val, elem)?),
+                count: *count,
+                span: *span,
+            }),
             (Expr::Tuple(parts, span), CodegenTy::Tuple(elems)) if parts.len() == elems.len() => {
                 Some(Expr::Tuple(each(parts, &mut elems.iter())?, *span))
             }

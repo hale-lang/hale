@@ -2785,7 +2785,9 @@ impl<'a, 'd> BodyWalk<'a, 'd> {
             Stmt::Assign { target, op, value, .. } => {
                 let start = self.literals.len();
                 self.expr(value);
-                if matches!(op, AssignOp::Eq) && matches!(value, Expr::Struct { .. } | Expr::Array(..) | Expr::Tuple(..)) {
+                if matches!(op, AssignOp::Eq)
+                    && matches!(value, Expr::Struct { .. } | Expr::Array(..) | Expr::ArrayRepeat { .. } | Expr::Tuple(..))
+                {
                     if let Some(ty) = self.decls.placed(target) {
                         self.place_into(start, value, &ty);
                     }
@@ -2864,6 +2866,7 @@ impl<'a, 'd> BodyWalk<'a, 'd> {
                     self.place_into(start, p, elem);
                 }
             }
+            (Expr::ArrayRepeat { val, .. }, TypeExpr::Array { elem, .. }) => self.place_into(start, val, elem),
             (Expr::Tuple(parts, _), TypeExpr::Tuple(tys, _)) if parts.len() == tys.len() => {
                 for (p, t) in parts.iter().zip(tys) {
                     self.place_into(start, p, t);
@@ -2881,6 +2884,10 @@ impl<'a, 'd> BodyWalk<'a, 'd> {
                 for p in parts {
                     self.typed_expr(p, Some(elem));
                 }
+                return;
+            }
+            (Some(TypeExpr::Array { elem, .. }), Expr::ArrayRepeat { val, .. }) => {
+                self.typed_expr(val, Some(elem));
                 return;
             }
             (Some(TypeExpr::Tuple(tys, _)), Expr::Tuple(parts, _)) if tys.len() == parts.len() => {

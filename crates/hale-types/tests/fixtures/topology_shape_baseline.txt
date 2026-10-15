@@ -869,6 +869,8 @@ crates/hale-codegen/tests/generic_monomorph_agreement.rs#3 92388174cfe61705
 crates/hale-codegen/tests/generic_monomorph_agreement.rs#31 dbbb62ecb2f687b6
 crates/hale-codegen/tests/generic_monomorph_agreement.rs#32 a5aecb8f0ef8df6b
 crates/hale-codegen/tests/generic_monomorph_agreement.rs#33 374369a4789d634b
+crates/hale-codegen/tests/generic_monomorph_agreement.rs#35 17d7222c69c9746c
+crates/hale-codegen/tests/generic_monomorph_agreement.rs#36 ac4dec586e402da6
 crates/hale-codegen/tests/generic_monomorph_agreement.rs#4 6577bd4b2d6e1852
 crates/hale-codegen/tests/generic_monomorph_agreement.rs#5 f2c1228edb650960
 crates/hale-codegen/tests/generic_monomorph_agreement.rs#6 f2c1228edb650960
@@ -1175,6 +1177,7 @@ crates/hale-codegen/tests/owned_views_over_checker_types.rs#4 f9c5dcb110eac374
 crates/hale-codegen/tests/owned_views_over_checker_types.rs#5 256cefa683aa37f8
 crates/hale-codegen/tests/owned_views_over_checker_types.rs#6 42d02cf3ce9d6a6d
 crates/hale-codegen/tests/owned_views_over_checker_types.rs#7 23fcd72063f77638
+crates/hale-codegen/tests/owned_views_over_checker_types.rs#8 7708e8ecbb775142
 crates/hale-codegen/tests/owner_table.rs#0 81b94f991b7122d7
 crates/hale-codegen/tests/owner_table.rs#1 508fa61c52bf1edf
 crates/hale-codegen/tests/ownership_bubble.rs#0 3408913d71b2bff6

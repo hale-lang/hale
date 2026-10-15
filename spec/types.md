@@ -1239,9 +1239,10 @@ declared type at the site. The sites that declare one are:
 - a declared field of a data type, at a literal's init — `Outer { inner: Box { value: 9 } }`
 - the place of a plain assignment (`=`, not `+=`) — `self.cfg = Cfg { n: 2 };`, a local, a record's field or an array's element, by the place's declared type
 
-An array or tuple literal at one of these sites hands each element the
-declared element type, so its template literals take that type's
-arguments: `let cs: [Cfg<Int>; 2] = [Cfg { n: 1 }, Cfg { n: 2 }];`,
+An array (`[x, y]` or `[x; N]`) or tuple literal at one of these sites
+hands each element the declared element type, so its template literals
+take that type's arguments: `let cs: [Cfg<Int>; 2] = [Cfg { n: 1 }, Cfg { n: 2 }];`,
+`let rs: [Cfg<Int>; 3] = [Cfg { n: 0 }; 3];`,
 `let t: (Cfg<Int>, String) = (Cfg { n: 1 }, "a");`, and a param default
 of array type (`params { cfgs: [Cfg<Int>; 2] = [Cfg { n: 1 }, Cfg { n: 2 }]; }`).
 
@@ -1251,6 +1252,14 @@ supplies the same arguments: `type IntBox = Box<Int>;` permits
 through their import aliases before specialization. Different aliases
 for one imported template retain the same declaration identity; each
 construction carries its own concrete arguments and child layouts.
+
+The literal's fields are then typed as the instantiation's: a field
+whose declared type mentions a parameter holds a value of the type the
+arguments make of it, so with `b: Box<Int>`, `b = Box { value: "x" };`
+is a type error at `"x"` (`type `Box`: field `value` expects `Int`, got
+`String``), wherever the literal stands. An `Int` widens into such a
+`Float` field of a data type, as into any data literal's (F.23), never
+into a locus param's.
 
 Anywhere else — an un-annotated `let` (of the literal, or of an array
 or tuple literal holding it), a literal in statement position — the

@@ -3258,6 +3258,9 @@ row	Keeper@main1	Keeper	main	default
 row	Cache_Int_String@main1	Cache_Int_String	main	default
 row	Cache_Int_String@main2	Cache_Int_String	main	default
 
+== crates/hale-codegen/tests/generic_monomorph_agreement.rs#ce7540ff
+shared	Supervisor_Scalar@main1	Supervisor_Scalar #b5a04dba
+
 == crates/hale-codegen/tests/generics.rs#d523f812
 dynamic	<hole>	on main|unresolved declaration `Box_Int`	in the seed
 
@@ -4119,6 +4122,9 @@ row	H@main1	H	main	default
 row	H@main1	H	main	default
 
 == crates/hale-codegen/tests/owned_views_over_checker_types.rs#5cd026ba
+row	H@main1	H	main	default
+
+== crates/hale-codegen/tests/owned_views_over_checker_types.rs#4f509e6c
 row	H@main1	H	main	default
 
 == crates/hale-codegen/tests/owner_table.rs#1f85ba34
@@ -15100,9 +15106,7 @@ dynamic	Job	on main
 
 == crates/hale-types/tests/fixtures/placement/generic_aliases.hl
 dynamic	Cell_Int	on main	in the seed
--- Supervisor_Scalar@main1	Supervisor_Scalar
-row	~	Supervisor_Scalar	main	default
-row	~.child	Cell_Scalar	main	inherited
+shared	Supervisor_Scalar@main1	Supervisor_Scalar #b5a04dba
 shared	Supervisor_String@main2	Supervisor_String #31a47877
 
 == crates/hale-types/tests/fixtures/placement/generic_constructions.hl
@@ -15752,6 +15756,10 @@ row	~.b.t	Tries	main	inherited
 == shared Supervisor_Int #0cce2c26
 row	~	Supervisor_Int	main	default
 row	~.child	Cell_Int	main	inherited
+
+== shared Supervisor_Scalar #b5a04dba
+row	~	Supervisor_Scalar	main	default
+row	~.child	Cell_Scalar	main	inherited
 
 == shared Supervisor_String #31a47877
 row	~	Supervisor_String	main	default

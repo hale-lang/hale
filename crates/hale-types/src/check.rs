@@ -13479,34 +13479,24 @@ impl<'a> Checker<'a> {
                                         ),
                                     _ => false,
                                 };
-                            // `b: Box<Int> = Box { value: 0 }` — the
-                            // annotation resolves to the mangled
-                            // monomorph `Box_Int` while the literal
-                            // types as the template `Box`. The
-                            // monomorph's own field validation
-                            // already checked the arguments; this is
-                            // the same value under two spellings.
-                            //
-                            // GH #911 B5: generic TYPES only.
-                            // `c: Cache<Int, String> = Cache { }` on
-                            // a generic LOCUS is refused at build
-                            // ("generic instantiation
-                            // `Cache_Int_String` not synthesized —
-                            // discovery missed the use site"), so
-                            // accepting it here would trade one
-                            // divergence for another.
-                            let monomorph_of_template = self
-                                .resolve_generic_monomorph(w)
-                                .is_some_and(|(t, _)| {
-                                    t.is_type() && t.name() == g.as_str()
-                                });
-                            serves_or_iface || monomorph_of_template
+                            serves_or_iface
                         }
-                        // An array or tuple default of template literals:
-                        // each element takes the declared element type's
-                        // arguments (generic TYPES only, as above).
-                        _ => self.two_spellings_of_one_monomorph(&want, &got, false),
+                        _ => false,
                     };
+                    // `b: Box<Int> = Box { value: 0 }` — the annotation
+                    // resolves to the mangled monomorph `Box_Int` while the
+                    // literal types as the template `Box`: the same value
+                    // under two spellings, its fields held to the
+                    // monomorph's (`admit_monomorph_literal`); an array or
+                    // tuple default element by element.
+                    //
+                    // GH #911 B5: generic TYPES only. `c: Cache<Int, String>
+                    // = Cache { }` on a generic LOCUS is refused at build
+                    // ("generic instantiation `Cache_Int_String` not
+                    // synthesized — discovery missed the use site"), so
+                    // accepting it here would trade one divergence for
+                    // another.
+                    let conforms = conforms || self.admit_monomorph_literal(&want, &got, init, false);
                     if !widen_ok && !conforms && !self.flows_into(&want, &got, init) {
                         self.diags.push(Diag::ty(
                             init.span(),
@@ -14530,13 +14520,7 @@ impl<'a> Checker<'a> {
                         // generic type; the checker refused both, so
                         // neither shape was reachable outside the
                         // codegen tests (which skip the checker).
-                        let monomorph = self
-                            .two_spellings_of_one_monomorph(
-                                &want, &got, true,
-                            );
-                        if monomorph {
-                            self.adopt_monomorph_literal_decimals(&want, value);
-                        }
+                        let monomorph = self.admit_monomorph_literal(&want, &got, value, true);
                         // F.23: an `Int` widens into a `Float`
                         // ascription (codegen emits the `sitofp` at the
                         // binding), as at a call. Only an `Int`: a
@@ -14696,11 +14680,7 @@ impl<'a> Checker<'a> {
                 // A declared place supplies a bare generic literal's
                 // arguments, as a `let` ascription does: codegen rewrites
                 // `self.cfg = Cfg { .. }` against the place's type.
-                let monomorph = matches!(op, AssignOp::Eq)
-                    && self.two_spellings_of_one_monomorph(&want, &got, true);
-                if monomorph {
-                    self.adopt_monomorph_literal_decimals(&want, value);
-                }
+                let monomorph = matches!(op, AssignOp::Eq) && self.admit_monomorph_literal(&want, &got, value, true);
                 if !monomorph && !self.flows_into(&want, &got, stored) {
                     self.diags.push(Diag::ty(
                         value.span(),
@@ -14843,12 +14823,7 @@ impl<'a> Checker<'a> {
                         // site codegen rewrites a bare generic
                         // template name at — `fn make() -> Box<Int> {
                         // return Box { value: 4 }; }` builds and runs.
-                        let monomorph = self
-                            .two_spellings_of_one_monomorph(
-                                expected_ret,
-                                &got,
-                                true,
-                            );
+                        let monomorph = self.admit_monomorph_literal(expected_ret, &got, e, true);
                         if !monomorph && !self.flows_into(expected_ret, &got, e) {
                             self.diags.push(Diag::ty(
                                 e.span(),
@@ -14874,12 +14849,7 @@ impl<'a> Checker<'a> {
                         );
                         // GH #911 B5: the same return-slot rewrite as
                         // the fallible branch above.
-                        let monomorph = self
-                            .two_spellings_of_one_monomorph(
-                                expected_ret,
-                                &got,
-                                true,
-                            );
+                        let monomorph = self.admit_monomorph_literal(expected_ret, &got, e, true);
                         if !widening
                             && !monomorph
                             && !self.flows_into(expected_ret, &got, e)
@@ -19206,54 +19176,110 @@ impl<'a> Checker<'a> {
         vec![elem; n]
     }
 
-    /// `Decimal<S>`: a generic type's literal spelled with the template's
-    /// name (`Box { value: 0.1d }`) into a place of its monomorph
-    /// (`Box<Decimal<18>>`): a scale-less Decimal given to a field of a
-    /// type parameter bound to a `Decimal<S>` takes that scale, as a
-    /// field the template declares with a Decimal type takes its own
-    /// where the literal is typed.
-    fn adopt_monomorph_literal_decimals(&mut self, want: &Ty, value: &Expr) {
+    /// A literal spelled with a generic template's name, admitted where the
+    /// declared type is one of its monomorphs
+    /// ([`Self::admit_monomorph_literal`]), meets that monomorph's field
+    /// types. It was typed against the template, whose parameters are
+    /// `Unknown`, so a field of a parameter's type took anything: `self.b =
+    /// Box { value: "bad" }` with `b: Box<Int>` checked and the build
+    /// refused `Box_Int.value` (review of #1568). Each field whose declared
+    /// type mentions a parameter is typed again and held to the type the
+    /// monomorph's arguments make of it; the other fields were held to
+    /// theirs where the literal was typed. A scale-less Decimal takes the
+    /// bound scale; an `Int` widens into a `Float` field of a data type, as
+    /// a data literal's does (F.23), never into a locus param; a nested
+    /// template literal meets its own monomorph. An array, an array repeat
+    /// and a tuple literal hand each element the element type.
+    fn meet_monomorph_literal(&mut self, want: &Ty, value: &Expr) {
         match (want, value) {
             (Ty::Array(elem, _), Expr::Array(parts, _)) => {
                 for p in parts {
-                    self.adopt_monomorph_literal_decimals(elem, p);
+                    self.meet_monomorph_literal(elem, p);
                 }
+                return;
+            }
+            (Ty::Array(elem, _), Expr::ArrayRepeat { val, .. }) => {
+                self.meet_monomorph_literal(elem, val);
                 return;
             }
             (Ty::Tuple(tys), Expr::Tuple(parts, _)) => {
                 for (t, p) in tys.iter().zip(parts) {
-                    self.adopt_monomorph_literal_decimals(t, p);
+                    self.meet_monomorph_literal(t, p);
                 }
                 return;
             }
             _ => {}
         }
+        fn mentions(te: &TypeExpr, params: &BTreeMap<String, Ty>) -> bool {
+            match te {
+                TypeExpr::Named { path, generic_args, .. } => {
+                    path.segments.len() == 1 && params.contains_key(&path.segments[0].name)
+                        || generic_args.iter().any(|t| mentions(t, params))
+                }
+                TypeExpr::Projection { inner, .. } => mentions(inner, params),
+                TypeExpr::Array { elem, .. } | TypeExpr::Bounded { elem, .. } => mentions(elem, params),
+                TypeExpr::Tuple(parts, _) => parts.iter().any(|t| mentions(t, params)),
+                TypeExpr::Function { params: ps, ret, .. } => {
+                    ps.iter().any(|t| mentions(t, params)) || ret.as_ref().is_some_and(|t| mentions(t, params))
+                }
+                TypeExpr::Primitive(..) | TypeExpr::Perspective { .. } => false,
+            }
+        }
         let (Ty::Named(w), Expr::Struct { inits, .. }) = (want, value) else { return };
-        let Some((GenericTemplate::Type(decl), bindings)) = self.resolve_generic_monomorph(w) else { return };
-        let TypeDeclBody::Struct(fields) = &decl.body else { return };
+        let Some((template, bindings)) = self.resolve_generic_monomorph(w) else { return };
         for init in inits {
-            let Some(field) = fields.iter().find(|f| f.name.name == init.name.name) else { continue };
-            let TypeExpr::Named { path, generic_args, .. } = &field.ty else { continue };
-            if path.segments.len() != 1 || !generic_args.is_empty() {
+            let declared: Option<&TypeExpr> = match template {
+                GenericTemplate::Type(decl) => match &decl.body {
+                    TypeDeclBody::Struct(fields) => {
+                        fields.iter().find(|f| f.name.name == init.name.name).map(|f| &f.ty)
+                    }
+                    _ => None,
+                },
+                GenericTemplate::Locus(l) => l
+                    .members
+                    .iter()
+                    .filter_map(|m| match m {
+                        LocusMember::Params(b) => Some(&b.params),
+                        _ => None,
+                    })
+                    .flatten()
+                    .find(|p| p.name.name == init.name.name)
+                    .and_then(|p| p.ty.as_ref()),
+            };
+            let Some(te) = declared.filter(|te| mentions(te, &bindings)) else { continue };
+            // As field access types it, then through a transparent alias
+            // (`Supervisor<Scalar>` with `type Scalar = Int;`).
+            let mut bound = self.monomorph_field_ty(te, &bindings);
+            for _ in 0..8 {
+                match &bound {
+                    Ty::Named(n) => match self.known.alias_target(n) {
+                        Some(t) => bound = t.clone(),
+                        None => break,
+                    },
+                    _ => break,
+                }
+            }
+            if matches!(bound, Ty::Unknown) {
                 continue;
             }
-            let Some(bound) = bindings.get(&path.segments[0].name).filter(|t| Self::holds_decimal(t)).cloned() else {
-                continue;
-            };
-            // The literal was typed against the template, where the field's
-            // type is the parameter: the value meets its bound type here, a
-            // scale-less Decimal taking the bound scale and any other value
-            // held to it. The walk that types it again is discarded but for
-            // the scale and the refusal this meeting decides.
+            // The walk that types the value again is discarded but for the
+            // scale and the refusal this meeting decides.
             let mark = self.walk_mark();
             let got = self.check_expr(&init.value);
             self.discard_since(mark);
-            if !self.flows_into(&bound, &got, &init.value) {
+            if self.two_spellings_of_one_monomorph(&bound, &got, true) {
+                self.meet_monomorph_literal(&bound, &init.value);
+                continue;
+            }
+            let widening = template.is_type()
+                && matches!((&bound, &got), (Ty::Prim(PrimType::Float), Ty::Prim(PrimType::Int)));
+            if !widening && !self.flows_into(&bound, &got, &init.value) {
                 self.diags.push(Diag::ty(
                     init.value.span(),
                     format!(
-                        "type `{}`: field `{}` expects `{}`, got `{}`",
-                        decl.name.name,
+                        "{} `{}`: field `{}` expects `{}`, got `{}`",
+                        template.kind(),
+                        template.name(),
                         init.name.name,
                         bound.display(),
                         got.display()
@@ -19261,6 +19287,40 @@ impl<'a> Checker<'a> {
                 ));
             }
         }
+    }
+
+    /// The one admission of a literal spelled with a generic template's
+    /// name at a site that declares its type: `want` and `got` the two
+    /// spellings of one monomorph ([`Self::two_spellings_of_one_monomorph`],
+    /// `allow_loci` the site's answer), and then the literal's fields held
+    /// to the monomorph's ([`Self::meet_monomorph_literal`]). Every site
+    /// codegen rewrites such a literal at asks it, so none admits the
+    /// spelling without the fields:
+    ///
+    /// | site | loci | codegen rewrite |
+    /// |---|---|---|
+    /// | `let` ascription | yes | `Stmt::Let` |
+    /// | plain assignment's place | yes | `Stmt::Assign` (`place_declared_ty`) |
+    /// | return slot (fallible or not) | yes | `lower_return` |
+    /// | locus param default | no | `locus/decl.rs` |
+    /// | record literal's field | no | `populate_user_type_fields` |
+    /// | locus literal's param override | yes | `locus/instantiation.rs` |
+    ///
+    /// Each takes an array (`[x, y]`, `[x; N]`) or tuple literal of such
+    /// literals under an array or tuple type, element by element. A `fail`
+    /// payload is the one site codegen rewrites that the checker refuses
+    /// (the payload's type is checked as written); an `or` substitute
+    /// (`make() or Box { .. }`) declares the success type but neither
+    /// admits the spelling there; and no site without a declared type
+    /// admits it
+    /// ([`Self::refuse_generic_literals_without_arguments`]). The rows are
+    /// `generic_monomorph_agreement.rs`'s, one per site.
+    fn admit_monomorph_literal(&mut self, want: &Ty, got: &Ty, value: &Expr, allow_loci: bool) -> bool {
+        let admitted = self.two_spellings_of_one_monomorph(want, got, allow_loci);
+        if admitted {
+            self.meet_monomorph_literal(want, value);
+        }
+        admitted
     }
 
     /// `Decimal<S>`: the operands of `min` / `max`, typed `tys`, where a
@@ -22381,6 +22441,9 @@ impl<'a> Checker<'a> {
                     self.refuse_generic_literals_without_arguments(elem, p);
                 }
             }
+            (Expr::ArrayRepeat { val, .. }, Ty::Array(elem, _)) => {
+                self.refuse_generic_literals_without_arguments(elem, val);
+            }
             (Expr::Tuple(parts, _), Ty::Tuple(tys)) => {
                 for (p, t) in parts.iter().zip(tys) {
                     self.refuse_generic_literals_without_arguments(t, p);
@@ -22908,9 +22971,7 @@ impl<'a> Checker<'a> {
                     // the same rewrite as typed defaults; data-record
                     // fields still admit only generic data types.
                     let monomorph_field = matches!(kind_label, "type" | "locus")
-                        && self.two_spellings_of_one_monomorph(
-                            want, &got, kind_label == "locus",
-                        );
+                        && self.admit_monomorph_literal(want, &got, &init.value, kind_label == "locus");
                     // F.23: an `Int` widens into a `Float` field of a
                     // data-type literal (codegen's
                     // `populate_user_type_fields` emits the `sitofp`),
