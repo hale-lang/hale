@@ -225,7 +225,13 @@ because it's how Hale frees resources without a `defer` or a
   its argument counts as returning it: with `fn pass(t: Ticker) ->
   Ticker { return t; }`, `let t = make_ticker(); return pass(t);`
   and `return pass(make_ticker());` both give your caller a live
-  ticker, and your caller's `let` releases it.
+  ticker, and your caller's `let` releases it. The same holds for an
+  argument a function *keeps*: written into a field
+  (`Server { handler: pass(Routes { }) }`), the argument is the
+  field's; handed to a builder that stores it in the locus it
+  returns (`fn routes(w: W) -> Routes { return Routes { w: w }; }`,
+  then `handler: routes(W { })`), it belongs to that returned locus
+  and goes when the locus does.
 - **A locus an `if`, a `match` or a block hands back** (`return if
   hot { fast_path() } else { make_ticker() };`): those forms have
   no value of their own — they pass along one arm's, and exactly
