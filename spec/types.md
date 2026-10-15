@@ -1691,7 +1691,13 @@ instance, seeded from the `main locus`'s `placement { }` entries):
    scope; a part written (`ws[0] = self.b`) joins into its container,
    a field of `self` any member stores a handle into may be that handle
    wherever it is read, and an operand or fallback that may be skipped
-   (`&&`, `||`, `or`) is joined with the state that skipped it. A value
+   (`&&`, `||`, `or`) is joined with the state that skipped it. A call
+   carries its callee's writes too: a helper that writes one argument
+   into a part of another (`fn install(ws: [W; 2], w: W) { ws[0] = w;
+   }`), or a method that writes an argument into its own field, leaves
+   the caller's container or field holding that argument's handle. A
+   value whose type can hold no locus handle (a record of data, a
+   `String`) carries none: reading one copies it. A value
    comes from a field of `self` (or below one), another
    local, a part of one (`p.0`, `ws[1]`, `n.w`), a literal holding one,
    or a call: a fn or method by what its body may return (a parameter

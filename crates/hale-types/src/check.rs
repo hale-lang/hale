@@ -4030,6 +4030,8 @@ impl PoolCheckCx<'_> {
 /// | `Call` through a fn value declared to return a locus type | any instance of that type in another domain |
 /// | `Call`, a serve site (`api::serve`) | none: it is the exposure it builds |
 /// | `Call` the walk cannot name | anything its arguments may be |
+/// | `Call` effects | the callee's writes (`param_writes`: argument `j` into a part of argument `i`; `self_writes`: argument `j` into the receiver's field) install argument `j`'s origin into the caller's container or `self_taint`; a store a callee makes into its parameter's field is judged on what the argument is (`whole`), or on what it may hold when the store goes through a locus the argument holds |
+/// | any value whose declared type can hold no locus handle (a record of data, a String) | no origin: reading it copies it (`type_can_hold_locus`) |
 /// | `Let` | declares the value's origin in the innermost scope |
 /// | `LetTuple` | each name: a part of the value |
 /// | `Assign` to a local | the binding the name resolves to takes the value's origin |
@@ -4161,6 +4163,13 @@ impl Env {
 struct Returns {
     params: BTreeSet<(usize, bool)>,
     self_fields: BTreeSet<(String, bool)>,
+    /// The body writes parameter `j`'s value (or a part of it) into a
+    /// part of parameter `i` (`ws[0] = w`, `h.ws[0] = w`): (i, j). The
+    /// caller's argument `i` then holds argument `j`'s handle.
+    param_writes: BTreeSet<(usize, usize)>,
+    /// A method writes parameter `j`'s value into its field `f` (whole,
+    /// `self.f = w`, or a part of it, `self.f[0] = w`): (f, j, part).
+    self_writes: BTreeSet<(String, usize, bool)>,
 }
 
 #[derive(Default)]
@@ -4213,6 +4222,8 @@ impl ReturnSummaries {
                 let before = e.clone();
                 e.params.extend(r.params);
                 e.self_fields.extend(r.self_fields);
+                e.param_writes.extend(r.param_writes);
+                e.self_writes.extend(r.self_writes);
                 changed |= *e != before;
             }
             for (l, f) in &methods {
@@ -4221,6 +4232,8 @@ impl ReturnSummaries {
                 let before = e.clone();
                 e.params.extend(r.params);
                 e.self_fields.extend(r.self_fields);
+                e.param_writes.extend(r.param_writes);
+                e.self_writes.extend(r.self_writes);
                 changed |= *e != before;
             }
             if !changed {
@@ -4240,10 +4253,16 @@ fn body_returns(fd: &FnDecl, sums: &ReturnSummaries) -> Returns {
     for (i, p) in fd.params.iter().enumerate() {
         base.insert(p.name.name.clone(), BTreeSet::from([Root::Param(i, false)]));
     }
-    let mut w = RootWalk { scopes: vec![base], sums, out: BTreeSet::new() };
+    let mut w = RootWalk {
+        scopes: vec![base],
+        sums,
+        out: BTreeSet::new(),
+        param_writes: BTreeSet::new(),
+        self_writes: BTreeSet::new(),
+    };
     let tail = w.block(&fd.body);
     w.out.extend(tail);
-    let mut r = Returns::default();
+    let mut r = Returns { param_writes: w.param_writes, self_writes: w.self_writes, ..Returns::default() };
     for root in w.out {
         match root {
             Root::Param(i, c) => {
@@ -4278,6 +4297,8 @@ struct RootWalk<'s> {
     scopes: Vec<BTreeMap<String, Roots>>,
     sums: &'s ReturnSummaries,
     out: Roots,
+    param_writes: BTreeSet<(usize, usize)>,
+    self_writes: BTreeSet<(String, usize, bool)>,
 }
 
 impl RootWalk<'_> {
@@ -4343,7 +4364,21 @@ impl RootWalk<'_> {
                 let r = self.expr(value);
                 if target.tail.is_empty() {
                     self.add(&target.head.name, r);
+                } else if target.head.name == "self" {
+                    // a parameter's value written into a field of `self`
+                    if let Some(LValueSeg::Field(f)) = target.tail.first() {
+                        for q in Self::params_in(&r) {
+                            self.self_writes.insert((f.name.clone(), q, target.tail.len() > 1));
+                        }
+                    }
                 } else {
+                    // a part of a parameter written reaches the caller's
+                    // argument (an argument is passed by reference)
+                    if let Some(p) = self.param_of(&target.head.name) {
+                        for q in Self::params_in(&r) {
+                            self.param_writes.insert((p, q));
+                        }
+                    }
                     self.add(&target.head.name, contained(r));
                 }
             }
@@ -4504,6 +4539,32 @@ impl RootWalk<'_> {
                     }
                     out
                 };
+                let callee_sum: Option<&Returns> = match callee.as_ref() {
+                    Expr::Path(qp) if qp.segments.first().is_some_and(|s| s.name == "std") => None,
+                    Expr::Ident(id) if self.is_local(&id.name) => None,
+                    Expr::Ident(id) => self.sums.fns.get(&id.name),
+                    Expr::Path(qp) => qp.segments.last().and_then(|s| self.sums.fns.get(&s.name)),
+                    // a method: every locus's method of the name (the
+                    // walk does not know the receiver's type here)
+                    Expr::Field { .. } => None,
+                    _ => None,
+                };
+                if let Some(ret) = callee_sum {
+                    let ret = ret.clone();
+                    self.call_writes(None, &ret, &arg_roots, args);
+                }
+                if let Expr::Field { receiver, name, .. } = callee.as_ref() {
+                    let rets: Vec<Returns> = self
+                        .sums
+                        .methods
+                        .iter()
+                        .filter(|((_, m), _)| *m == name.name)
+                        .map(|(_, r)| r.clone())
+                        .collect();
+                    for ret in rets {
+                        self.call_writes(Some(receiver), &ret, &arg_roots, args);
+                    }
+                }
                 match callee.as_ref() {
                     Expr::Path(qp) if qp.segments.first().is_some_and(|s| s.name == "std") => all(),
                     Expr::Ident(id) if !self.lookup(&id.name).is_empty() || self.is_local(&id.name) => all(),
@@ -4527,6 +4588,62 @@ impl RootWalk<'_> {
     }
     fn is_local(&self, name: &str) -> bool {
         self.scopes.iter().any(|s| s.contains_key(name))
+    }
+    /// The parameter a name is, when the binding it resolves to is the
+    /// parameter's own (not a local shadowing it).
+    fn param_of(&self, name: &str) -> Option<usize> {
+        let depth = self.scopes.iter().rposition(|s| s.contains_key(name))?;
+        if depth != 0 {
+            return None;
+        }
+        self.scopes[0].get(name)?.iter().find_map(|r| match r {
+            Root::Param(i, false) => Some(*i),
+            _ => None,
+        })
+    }
+    /// The parameters a value's roots name.
+    fn params_in(r: &Roots) -> Vec<usize> {
+        r.iter()
+            .filter_map(|r| match r {
+                Root::Param(j, _) => Some(*j),
+                _ => None,
+            })
+            .collect()
+    }
+    /// A callee's writes, at a call here: into a part of an argument that
+    /// is one of this body's parameters (or `self`, for a method called on
+    /// `self`), from an argument that is.
+    fn call_writes(&mut self, recv: Option<&Expr>, ret: &Returns, arg_roots: &[Roots], args: &[Expr]) {
+        for (i, j) in &ret.param_writes {
+            let (Some(target), Some(src)) = (args.get(*i), arg_roots.get(*j)) else { continue };
+            let target_param = match target {
+                Expr::Ident(id) => self.param_of(&id.name),
+                _ => None,
+            };
+            if let Some(p) = target_param {
+                for q in Self::params_in(src) {
+                    self.param_writes.insert((p, q));
+                }
+            }
+        }
+        for (f, j, part) in &ret.self_writes {
+            let Some(src) = arg_roots.get(*j) else { continue };
+            match recv {
+                Some(Expr::KwSelf(_)) => {
+                    for q in Self::params_in(src) {
+                        self.self_writes.insert((f.clone(), q, *part));
+                    }
+                }
+                Some(Expr::Ident(id)) => {
+                    if let Some(p) = self.param_of(&id.name) {
+                        for q in Self::params_in(src) {
+                            self.param_writes.insert((p, q));
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
     }
 }
 
@@ -4607,6 +4724,72 @@ fn call_origin(callee: &Expr, recv: &Origin, arg_origins: &[Origin], cx: &PoolCh
             }
         }
         _ => all_args(),
+    }
+}
+
+/// A callee's writes, at its call: argument `j`'s value written into a
+/// part of argument `i` (`install(ws, self.b)` with `fn install(ws: [W;
+/// 2], w: W) { ws[0] = w; }`), or a method's write of an argument into
+/// its receiver's field (`self.put(self.b)`, `k.put(self.b)`): the
+/// target now holds that argument's handle.
+fn apply_call_writes(callee: &Expr, args: &[Expr], arg_origins: &[Origin], cx: &mut PoolCheckCx) {
+    let (ret, recv): (Option<Returns>, Option<&Expr>) = match callee {
+        Expr::Path(qp) if qp.segments.first().is_some_and(|s| s.name == "std") => (None, None),
+        Expr::Ident(id) if cx.fn_values.contains_key(&id.name) => (None, None),
+        Expr::Ident(id) => (cx.summaries.fns.get(&id.name).cloned(), None),
+        Expr::Path(qp) => (qp.segments.last().and_then(|s| cx.summaries.fns.get(&s.name)).cloned(), None),
+        Expr::Field { receiver, name, .. } => {
+            let ret = receiver_locus_type(receiver, cx).and_then(|l| {
+                let short = l.rsplit("::").next().unwrap_or(&l).to_string();
+                cx.summaries.methods.get(&(short, name.name.clone())).cloned()
+            });
+            (ret, Some(receiver.as_ref()))
+        }
+        _ => (None, None),
+    };
+    let Some(ret) = ret else { return };
+    for (i, j) in &ret.param_writes {
+        if let (Some(target), Some(o)) = (args.get(*i), arg_origins.get(*j)) {
+            install_into(target, o.clone(), true, cx);
+        }
+    }
+    for (f, j, part) in &ret.self_writes {
+        let (Some(recv), Some(o)) = (recv, arg_origins.get(*j)) else { continue };
+        let target = Expr::Field {
+            receiver: Box::new(recv.clone()),
+            name: Ident { name: f.clone(), span: recv.span(), id: NodeId::NONE },
+            span: recv.span(),
+        };
+        install_into(&target, o.clone(), *part || !matches!(recv, Expr::KwSelf(_)), cx);
+    }
+}
+
+/// `o` written into `target` (a part of it, `part`, or its own slot): a
+/// local container joins it; a field of `self` (or below one) is tainted
+/// with it, when its type can hold a locus handle at all.
+fn install_into(target: &Expr, o: Origin, part: bool, cx: &mut PoolCheckCx) {
+    if o.any().is_none() {
+        return;
+    }
+    let mut root = target;
+    while let Expr::Field { receiver, .. } | Expr::Index { receiver, .. } = root {
+        if matches!(receiver.as_ref(), Expr::KwSelf(_)) {
+            break;
+        }
+        root = receiver;
+    }
+    match root {
+        Expr::Ident(id) => cx.env.add_parts(&id.name, o),
+        Expr::Field { name, receiver, .. } if matches!(receiver.as_ref(), Expr::KwSelf(_)) => {
+            let ty = cx.decls.slot_type(&cx.enclosing_locus.name.name, &[LValueSeg::Field(name.clone())]);
+            if ty.is_some_and(|t| !cx.decls.type_can_hold_locus(t, 0)) {
+                return;
+            }
+            let o = if part || !std::ptr::eq(root, target) { o.contained() } else { o };
+            let joined = cx.self_taint.remove(&name.name).unwrap_or_default().join(o);
+            cx.self_taint.insert(name.name.clone(), joined);
+        }
+        _ => {}
     }
 }
 
@@ -4704,7 +4887,11 @@ fn eval_stmt(stmt: &Stmt, cx: &mut PoolCheckCx) {
             } else if target.head.name == "self" {
                 // a value stored into a field of `self` (the field holds
                 // it) or into a part of one (the field holds it inside)
-                if let (Some(LValueSeg::Field(f)), true) = (target.tail.first(), o.any().is_some()) {
+                // (only a slot whose type can hold a locus handle at all: a
+                // plain record copied in is the locus's own value)
+                let slot_ty = cx.decls.slot_type(&cx.enclosing_locus.name.name, &target.tail);
+                let can_hold = slot_ty.is_none_or(|t| cx.decls.type_can_hold_locus(t, 0));
+                if let (Some(LValueSeg::Field(f)), true, true) = (target.tail.first(), o.any().is_some(), can_hold) {
                     let o = if target.tail.len() == 1 { o } else { o.contained() };
                     let joined = cx.self_taint.remove(&f.name).unwrap_or_default().join(o);
                     cx.self_taint.insert(f.name.clone(), joined);
@@ -4925,6 +5112,7 @@ fn eval_expr(expr: &Expr, cx: &mut PoolCheckCx) -> Origin {
         }
         let arg_origins: Vec<Origin> = args.iter().map(|a| eval_expr(a, cx)).collect();
         check_call_stores_pool(callee, args, &arg_origins, *span, cx);
+        apply_call_writes(callee, args, &arg_origins, cx);
         return call_origin(callee, &recv_origin, &arg_origins, cx);
     }
     if self_rooted_field(expr).is_some() {
@@ -4932,6 +5120,13 @@ fn eval_expr(expr: &Expr, cx: &mut PoolCheckCx) -> Origin {
         // domain, or one a member stored a cross-pool handle into; its
         // index expressions are walked too
         walk_index_exprs(expr, cx);
+        // a value whose type holds no locus handle (a record of data, a
+        // String) carries none: reading it copies it
+        if let Some(t) = self_path_type(expr, cx) {
+            if !cx.decls.type_can_hold_locus(t, 0) {
+                return Origin::default();
+            }
+        }
         let placed = match receiver_cross_pool(expr, cx) {
             Some(_) => alias_of(expr, cx).map(Origin::whole).unwrap_or_default(),
             None => Origin::default(),
@@ -4960,7 +5155,20 @@ fn eval_expr(expr: &Expr, cx: &mut PoolCheckCx) -> Origin {
             eval_expr(operand, cx);
             Origin::default()
         }
-        Expr::Field { receiver, .. } | Expr::Path2 { receiver, .. } => eval_expr(receiver, cx).part(),
+        Expr::Field { receiver, name, .. } | Expr::Path2 { receiver, name, .. } => {
+            let r = eval_expr(receiver, cx);
+            // a field of a known locus whose type holds no locus handle
+            let plain = r.whole.as_ref().and_then(|cp| cp.locus_type.as_deref()).is_some_and(|l| {
+                cx.decls
+                    .slot_type(l, &[LValueSeg::Field(name.clone())])
+                    .is_some_and(|t| !cx.decls.type_can_hold_locus(t, 0))
+            });
+            if plain {
+                Origin::default()
+            } else {
+                r.part()
+            }
+        }
         Expr::Index { receiver, index, .. } => {
             let o = eval_expr(receiver, cx).part();
             eval_expr(index, cx);
@@ -5265,7 +5473,13 @@ fn check_call_stores_pool(callee: &Expr, args: &[Expr], arg_origins: &[Origin], 
             Expr::Ident(id) => id.name.clone(),
             other => receiver_display(other),
         };
-        let found = arg_origins.get(i).and_then(Origin::any).map(|cp| (cp, shown));
+        // the argument itself, or (for a store or call through a locus it
+        // holds) anything it may hold
+        let deep = cx.stores_through.nested.get(&fname).is_some_and(|n| n.contains(&i));
+        let found = arg_origins
+            .get(i)
+            .and_then(|o| if deep { o.any() } else { o.whole.clone() })
+            .map(|cp| (cp, shown));
         let Some((cp, shown)) = found else { continue };
         if stores.contains(&i) {
             let what = format!("`{fname}(…)` stores, through its argument {}, into", i + 1);
@@ -5346,11 +5560,13 @@ fn free_fn_param_stores(bundle: &Bundle<'_>, decls: &StoreDecls<'_>) -> ParamUse
     // another fn.
     let mut out: BTreeMap<String, BTreeSet<usize>> = BTreeMap::new();
     let mut methods: BTreeMap<String, BTreeSet<usize>> = BTreeMap::new();
+    let mut nested: BTreeMap<String, BTreeSet<usize>> = BTreeMap::new();
     let mut passes: Vec<(String, usize, String, usize)> = Vec::new();
     for f in &fns {
         let params: BTreeMap<&str, usize> =
             f.params.iter().enumerate().map(|(i, p)| (p.name.name.as_str(), i)).collect();
         let mut stored: BTreeSet<usize> = BTreeSet::new();
+        let nested_here = std::cell::RefCell::new(BTreeSet::<usize>::new());
         let visit_stmt = |st: &Stmt, stored: &mut BTreeSet<usize>| {
             if let Stmt::Assign { target, .. } = st {
                 if !target.tail.is_empty() {
@@ -5362,6 +5578,9 @@ fn free_fn_param_stores(bundle: &Bundle<'_>, decls: &StoreDecls<'_>) -> ParamUse
                             .is_some_and(|l| decls.slot_is_inline_scalar(l, &target.tail));
                         if !scalar {
                             stored.insert(i);
+                            if decls.store_crosses_held_locus(&f.params[i].ty, &target.tail) {
+                                nested_here.borrow_mut().insert(i);
+                            }
                         }
                     }
                 }
@@ -5375,12 +5594,17 @@ fn free_fn_param_stores(bundle: &Bundle<'_>, decls: &StoreDecls<'_>) -> ParamUse
             if let Expr::Call { callee, .. } = e {
                 if let Expr::Field { receiver, .. } = callee.as_ref() {
                     let mut r = receiver.as_ref();
-                    while let Expr::Index { receiver, .. } = r {
+                    let mut through = false;
+                    while let Expr::Index { receiver, .. } | Expr::Field { receiver, .. } = r {
                         r = receiver.as_ref();
+                        through = true;
                     }
                     if let Expr::Ident(id) = r {
                         if let Some(&i) = params.get(id.name.as_str()) {
                             called.insert(i);
+                            if through {
+                                nested_here.borrow_mut().insert(i);
+                            }
                         }
                     }
                 }
@@ -5406,6 +5630,10 @@ fn free_fn_param_stores(bundle: &Bundle<'_>, decls: &StoreDecls<'_>) -> ParamUse
         if !stored.is_empty() {
             out.entry(f.name.name.clone()).or_default().extend(stored);
         }
+        let nested_here = nested_here.into_inner();
+        if !nested_here.is_empty() {
+            nested.entry(f.name.name.clone()).or_default().extend(nested_here);
+        }
         if !called.is_empty() {
             methods.entry(f.name.name.clone()).or_default().extend(called);
         }
@@ -5413,7 +5641,7 @@ fn free_fn_param_stores(bundle: &Bundle<'_>, decls: &StoreDecls<'_>) -> ParamUse
             passes.push((f.name.name.clone(), i, callee, j));
         }
     }
-    for map in [&mut out, &mut methods] {
+    for map in [&mut out, &mut methods, &mut nested] {
         loop {
             let mut changed = false;
             for (caller, i, callee, j) in &passes {
@@ -5426,7 +5654,7 @@ fn free_fn_param_stores(bundle: &Bundle<'_>, decls: &StoreDecls<'_>) -> ParamUse
             }
         }
     }
-    ParamUses { stores: out, calls: methods }
+    ParamUses { stores: out, calls: methods, nested }
 }
 
 /// Per free fn (by name), the parameter positions it stores into the
@@ -5435,6 +5663,10 @@ fn free_fn_param_stores(bundle: &Bundle<'_>, decls: &StoreDecls<'_>) -> ParamUse
 struct ParamUses {
     stores: BTreeMap<String, BTreeSet<usize>>,
     calls: BTreeMap<String, BTreeSet<usize>>,
+    /// The positions whose store or method call goes through a locus the
+    /// argument holds (an element of an array of loci): there, what the
+    /// argument may hold counts, not only what it is.
+    nested: BTreeMap<String, BTreeSet<usize>>,
 }
 
 /// The locus and type declarations by name (the last segment of a path),
@@ -5462,6 +5694,50 @@ impl<'a> StoreDecls<'a> {
             });
         }
         d
+    }
+
+    /// Does a store at `path` below a value of type `ty` go through a
+    /// locus the value holds (`ws[0].name` with `ws: [W; 2]`), rather than
+    /// into the value's own storage (`h.ws[0]` with `h` a locus)? A path
+    /// whose types the declarations do not give may.
+    fn store_crosses_held_locus(&self, ty: &TypeExpr, path: &[LValueSeg]) -> bool {
+        (1..path.len()).any(|k| match self.type_at(ty, &path[..k]) {
+            Some(t) => self.named(self.resolve(t)).is_some_and(|n| self.loci.contains_key(n)),
+            None => true,
+        })
+    }
+
+    /// Can a value of the type `t` be or hold a locus handle (a locus, an
+    /// interface, a perspective, or a record, tuple, array or enum
+    /// holding one)? A primitive never; a name the declarations do not
+    /// know (an interface, a stdlib type) conservatively may.
+    fn type_can_hold_locus(&self, t: &TypeExpr, depth: u32) -> bool {
+        if depth > 16 {
+            return true;
+        }
+        match self.resolve(t) {
+            TypeExpr::Primitive(..) => false,
+            TypeExpr::Function { .. } => false,
+            TypeExpr::Array { elem, .. } | TypeExpr::Bounded { elem, .. } => self.type_can_hold_locus(elem, depth + 1),
+            TypeExpr::Tuple(ts, _) => ts.iter().any(|t| self.type_can_hold_locus(t, depth + 1)),
+            TypeExpr::Projection { inner, .. } => self.type_can_hold_locus(inner, depth + 1),
+            t @ TypeExpr::Named { .. } => {
+                let Some(n) = self.named(t) else { return true };
+                if self.loci.contains_key(n) {
+                    return true;
+                }
+                match self.types.get(n).map(|d| &d.body) {
+                    Some(TypeDeclBody::Struct(fs)) => fs.iter().any(|f| self.type_can_hold_locus(&f.ty, depth + 1)),
+                    Some(TypeDeclBody::Enum(vs)) => {
+                        vs.iter().flat_map(|v| v.fields.iter()).any(|f| self.type_can_hold_locus(f, depth + 1))
+                    }
+                    Some(TypeDeclBody::Scalar(_)) => false,
+                    Some(TypeDeclBody::Alias(a)) => self.type_can_hold_locus(a, depth + 1),
+                    None => !matches!(n, "String" | "Bytes" | "Int" | "Float" | "Bool" | "Time" | "Duration"),
+                }
+            }
+            _ => true,
+        }
     }
 
     /// The locus a fn type returns (`fn() -> W`, `fn(Int) -> [W; 2]`), its
@@ -5557,11 +5833,17 @@ impl<'a> StoreDecls<'a> {
         let short = locus.rsplit("::").next().unwrap_or(locus);
         let decl = self.loci.get(short)?;
         let Some(LValueSeg::Field(first)) = path.first() else { return None };
-        let mut ty: &TypeExpr = decl.members.iter().find_map(|m| match m {
+        let ty: &TypeExpr = decl.members.iter().find_map(|m| match m {
             LocusMember::Params(pb) => pb.params.iter().find(|p| p.name.name == first.name).and_then(|p| p.ty.as_ref()),
             _ => None,
         })?;
-        for seg in &path[1..] {
+        self.type_at(ty, &path[1..])
+    }
+
+    /// The type reached from `ty` down `path` (fields of a record or a
+    /// locus's params, elements of an array).
+    fn type_at<'t>(&'t self, mut ty: &'t TypeExpr, path: &[LValueSeg]) -> Option<&'t TypeExpr> {
+        for seg in path {
             ty = match (seg, self.resolve(ty)) {
                 (LValueSeg::Index(_), TypeExpr::Array { elem, .. }) => elem.as_ref(),
                 (LValueSeg::Field(f), t) => {
@@ -5807,6 +6089,31 @@ fn alias_of(value: &Expr, cx: &PoolCheckCx) -> Option<CrossPool> {
         None => Some(cp.field_locus.clone()),
     };
     Some(cp)
+}
+
+/// The declared type of a chain of fields and elements below `self`.
+fn self_path_type<'a>(e: &Expr, cx: &PoolCheckCx<'a>) -> Option<&'a TypeExpr> {
+    fn path(e: &Expr, out: &mut Vec<LValueSeg>) -> bool {
+        match e {
+            Expr::KwSelf(_) => true,
+            Expr::Field { receiver, name, .. } => {
+                let ok = path(receiver, out);
+                out.push(LValueSeg::Field(name.clone()));
+                ok
+            }
+            Expr::Index { receiver, index, .. } => {
+                let ok = path(receiver, out);
+                out.push(LValueSeg::Index((**index).clone()));
+                ok
+            }
+            _ => false,
+        }
+    }
+    let mut segs = Vec::new();
+    if !path(e, &mut segs) || segs.is_empty() {
+        return None;
+    }
+    cx.decls.slot_type(&cx.enclosing_locus.name.name, &segs)
 }
 
 /// A field of `self` some member stored a cross-pool handle into (or

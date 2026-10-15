@@ -3629,7 +3629,7 @@ fn provenance_program(extra: &str, body: &str) -> String {
     format!(
         r#"
 locus W {{
-    params {{ name: String = ""; active: Bool = false; n: Int = 0; }}
+    params {{ name: String = ""; active: Bool = false; n: Int = 0; rec: R = R {{ }}; }}
     run() {{
         while self.active && !self.draining {{
             self.name = std::str::upper("worker");
@@ -3642,6 +3642,7 @@ locus W {{
     }}
 }}
 locus H {{ params {{ b: W = W {{ }}; }} }}
+locus H2 {{ params {{ ws: [W; 2] = [W {{ }}, W {{ }}]; }} fn put(w: W) {{ self.ws[0] = w; }} }}
 locus Node {{ params {{ w: W; }} fn ping() {{ }} }}
 type R {{ name: String = ""; }}
 fn id_w(w: W) -> W {{ return w; }}
@@ -3654,8 +3655,13 @@ fn maybe_w(w: W) -> W fallible(String) {{ return w; }}
 fn pick_t(w: W) -> W {{ let (x, y) = (w, 1); return x; }}
 fn rep2(w: W) -> [W; 2] {{ return [w; 2]; }}
 fn pick_s(w: W, a: W) -> W {{ {{ let w = a; }} return w; }}
+fn install(ws: [W; 2], w: W) {{ ws[0] = w; }}
+fn install2(ws: [W; 2], w: W) {{ install(ws, w); }}
+fn fill(h: H2, w: W) {{ h.ws[0] = w; }}
+fn poke_el(ws: [W; 2]) {{ ws[0].name = "x"; }}
 main locus App {{
-    params {{ a: W = W {{}}; b: W = W {{ active: true }}; h: H = H {{ }}; c: W = W {{ }}; ws: [W; 2] = [W {{ }}, W {{ }}]; k: H = H {{ }}; }}
+    params {{ a: W = W {{}}; b: W = W {{ active: true }}; h: H = H {{ }}; c: W = W {{ }}; ws: [W; 2] = [W {{ }}, W {{ }}]; k: H = H {{ }}; k2: H2 = H2 {{ }}; r: R = R {{ }}; }}
+    fn stash_w(w: W) {{ self.ws[0] = w; }}
     placement {{ b: cooperative(pool = io) where async_io; h: cooperative(pool = io2); }}
     fn pair() -> (W, Int) {{ return (self.b, 1); }}
     fn arr() -> [W; 1] {{ return [self.b]; }}
@@ -3765,6 +3771,23 @@ fn cross_pool_provenance_table() {
         ("... a same-pool handle", "", "self.ws[0] = self.a; let w = self.ws[0]; w.name = \"x\";", Accepted),
         ("a handle stored into a field of a same-pool child", "", "self.k.b = self.b; self.k.b.name = \"x\";", Refused("`self.k.b.name = …`")),
         ("... a same-pool handle", "", "self.k.b = self.a; self.k.b.name = \"x\";", Accepted),
+        // round 4: a helper's write into its argument reaches the caller
+        ("helper writing an argument into an array", "", "let mut ws = [self.a, self.a]; install(ws, self.b); let w = ws[0]; w.name = \"main\";", Refused("`w.name = …`")),
+        ("... one call down", "", "let mut ws = [self.a, self.a]; install2(ws, self.b); let w = ws[0]; w.name = \"main\";", Refused("`w.name = …`")),
+        ("... a same-pool handle", "", "let mut ws = [self.a, self.a]; install(ws, self.a); let w = ws[0]; w.name = \"main\";", Accepted),
+        ("helper writing into another locus through a handle param", "", "fill(self.k2, self.b); let w = self.k2.ws[0]; w.name = \"x\";", Refused("`w.name = …`")),
+        ("... a same-pool handle", "", "fill(self.k2, self.a); let w = self.k2.ws[0]; w.name = \"x\";", Accepted),
+        ("own method writing an argument into a field", "", "self.stash_w(self.b); let w = self.ws[0]; w.name = \"x\";", Refused("`w.name = …`")),
+        ("... a same-pool handle", "", "self.stash_w(self.a); let w = self.ws[0]; w.name = \"x\";", Accepted),
+        ("another locus's method writing an argument into its field", "", "self.k2.put(self.b); let w = self.k2.ws[0]; w.name = \"x\";", Refused("`w.name = …`")),
+        ("... a same-pool handle", "", "self.k2.put(self.a); let w = self.k2.ws[0]; w.name = \"x\";", Accepted),
+        ("helper storing through an element of its array argument", "", "poke_el([self.b, self.a]);", Refused("`poke_el(…)` stores")),
+        ("... same-pool elements", "", "poke_el([self.a, self.a]);", Accepted),
+        // round 4: a plain record copied in is the receiving locus's own
+        ("a record copied into self from a cross-pool locus", "", "self.r = self.b.rec; self.r.name = \"main\";", Accepted),
+        ("a record copied into a local", "", "let r = self.b.rec; r.name = \"main\";", Accepted),
+        ("a record copied through a local handle", "", "let w = self.b; let r = w.rec; r.name = \"main\";", Accepted),
+        ("... but a store into the locus's own record", "", "self.b.rec.name = \"main\";", Refused("`self.b.rec.name = …`")),
     ];
     let mut failures = Vec::new();
     for (name, extra, body, want) in rows {
