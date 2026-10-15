@@ -4071,6 +4071,16 @@ row	RecMap@main1	RecMap	main	default
 == crates/hale-codegen/tests/owned_views_over_checker_types.rs#a0dd41a0
 row	H@main1	H	main	default
 
+== crates/hale-codegen/tests/owned_views_over_checker_types.rs#dfee4678
+row	H@main1	H	main	default
+
+== crates/hale-codegen/tests/owned_views_over_checker_types.rs#775a4598
+row	H@main1	H	main	default
+
+== crates/hale-codegen/tests/owned_views_over_checker_types.rs#2134f7be
+row	H@main1	H	main	default
+dynamic	<hole>	on main|unresolved declaration `Cfg_Int`	in the seed
+
 == crates/hale-codegen/tests/owner_table.rs#1f85ba34
 row	Parent@main1	Parent	main	default
 dynamic	Child	on main	in the seed

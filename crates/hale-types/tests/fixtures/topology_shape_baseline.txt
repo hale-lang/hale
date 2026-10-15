@@ -1164,6 +1164,9 @@ crates/hale-codegen/tests/owned_views_over_checker_types.rs#1 06e4bc5b875cdd6c
 crates/hale-codegen/tests/owned_views_over_checker_types.rs#2 e7ace4cb9b804985
 crates/hale-codegen/tests/owned_views_over_checker_types.rs#3 c6bbbc37f8b18bca
 crates/hale-codegen/tests/owned_views_over_checker_types.rs#4 f9c5dcb110eac374
+crates/hale-codegen/tests/owned_views_over_checker_types.rs#5 256cefa683aa37f8
+crates/hale-codegen/tests/owned_views_over_checker_types.rs#6 42d02cf3ce9d6a6d
+crates/hale-codegen/tests/owned_views_over_checker_types.rs#7 23fcd72063f77638
 crates/hale-codegen/tests/owner_table.rs#0 81b94f991b7122d7
 crates/hale-codegen/tests/owner_table.rs#1 508fa61c52bf1edf
 crates/hale-codegen/tests/ownership_bubble.rs#0 3408913d71b2bff6
