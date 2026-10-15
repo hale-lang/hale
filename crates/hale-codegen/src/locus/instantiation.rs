@@ -5098,6 +5098,23 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let saved_in_main = std::mem::replace(&mut self.in_main, false);
         self.push_dissolve_frame();
         let self_param = init_fn.get_nth_param(0).expect("init self param").into_pointer_value();
+        // GH #1566: the root, and what its params build here, is this
+        // thread's domain
+        if self.xpool_check {
+            let here = self.module.get_function("lotus_domain_here").expect("lotus_domain_here declared");
+            let d = self
+                .builder
+                .build_call(here, &[], "domain.here")
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                .try_as_basic_value()
+                .left()
+                .expect("lotus_domain_here returns i64");
+            let slot = self
+                .builder
+                .build_struct_gep(info.struct_ty, self_param, info.domain_field_idx, &format!("{locus_name}.__domain.ptr"))
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            self.builder.build_store(slot, d).map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        }
         let route = self.anchor_route.clone();
         if let (Some(mb_idx), Some(crate::codegen::AnchorRoute::Mailbox(_))) =
             (info.mailbox_field_idx, &self.anchor_route)
@@ -5679,6 +5696,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // GH #1069: held by something that reclaims it later — everything
         // but a bare statement literal.
         store(self, info.held_by_owner_field_idx, i64_t.const_int(u64::from(held), false).into(), "__held_by_owner")?;
+        // GH #1566: built on this domain
+        let domain: inkwell::values::BasicValueEnum<'ctx> =
+            if self.xpool_check { self.domain_now()?.into() } else { zero };
+        store(self, info.domain_field_idx, domain, "__domain")?;
         // m41 / m45 / F.27: quarantine, restart-in-place and drain latches.
         store(self, info.quarantined_field_idx, zero, "__quarantined")?;
         store(self, info.restart_in_place_pending_field_idx, zero, "__restart_in_place_pending")?;

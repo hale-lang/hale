@@ -1765,12 +1765,34 @@ instance, seeded from the `main locus`'s `placement { }` entries):
    handler runs on the server's pool); a stdlib locus's own methods,
    which are not summarized (a call on one may move any argument into
    any other and into the receiver, but what it stores into or calls
-   on a locus it holds is not judged); and a locus's `params`
-   defaults, which are not walked. Where the check cannot tell
-   instances apart it takes them as one: every instance one literal
-   (or one call of a helper that builds one) produces, and every free
-   fn of one name, so it may refuse a store into an instance that
-   never holds the handle another one does.
+   on a locus it holds is not judged); the parameter effects of a
+   method on a receiver whose locus type the check cannot tell; a
+   call through an interface; and a locus's `params` defaults, which
+   are not walked. Where the check cannot tell instances apart it
+   takes them as one: every instance one literal (or one call of a
+   helper that builds one) produces, and every free fn of one name,
+   so it may refuse a store into an instance that never holds the
+   handle another one does.
+
+   The rule is checked statically where the walk follows the handle,
+   and enforced at run time at every remaining site (GH #1566,
+   spec/runtime.md § *Cross-pool backstop*): every instance records
+   the domain it was built on, and a store into a locus's field from
+   outside its methods (not an inline scalar slot) or a method call on
+   a locus reached any way but down `self` compares the receiver's
+   domain with the running code's. A mismatch is a violation: the
+   program prints the site, the store (or the method call, `cross-pool
+   method call` with the method) and both pools, and exits 1, before
+   the store or the call touches the other pool's locus:
+
+   ```text
+   main.hl:8:9: violation: cross-pool store into `W.name` from pool `io`; this `W` runs on pool `main`: reach it through a method on the bus
+   ```
+
+   A receiver whose form synchronizes access from
+   another domain, a local bound to a locus literal the running code
+   built (and never rebound), and an `on_failure` handler's failed
+   child are not checked.
 5. Bus sends (`Topic <- v;` / `"subj" <- v;`) are unrestricted
    — the runtime's cross-thread dispatch (m28b condvar+memcpy)
    handles the boundary safely.

@@ -571,15 +571,25 @@ the store, and reach it through the bus. A store of a plain number or
 flag (`self.other.gate = 1`) involves no memory of `other`'s and is
 not refused.
 
-One escape is deliberately **not** traced: a call made through a
+One escape is not traced by the checker: a call made through a
 *handler function pointer* rather than a direct method reference —
 the canonical case being a `std::http::Server` handler that reads a
 locus living on another pool. The static call-graph walk can't see
-through the pointer, so it's allowed. That's load-bearing (it's how
-a `/metrics` endpoint on the `io` pool reads a registry nested on a
-pinned gateway), but it's on *you* to keep that access safe —
-typically a read of stable, append-only state, not a mutation that
-would race the owning thread.
+through the pointer. What it can't see, the runtime checks: every
+locus remembers the pool it was built on, and a store into its field
+from outside its methods, or a method call on it through anything but
+`self.…`, compares that pool with the one the code is running on. A
+mismatch stops the program (exit 1) with the site and both pools,
+instead of racing the owning thread:
+
+```text
+main.hl:8:9: violation: cross-pool store into `W.name` from pool `io`; this `W` runs on pool `main`: reach it through a method on the bus
+```
+
+A handler reading a locus down its own fields (a `/metrics` endpoint
+on the `io` pool rendering the registry it was handed,
+`self.registry.render()`) is a direct path and stays allowed; keep
+that to reads of stable, append-only state.
 
 Next: how loci nest and own each other — [Parents &
 children](./parents-children.md).

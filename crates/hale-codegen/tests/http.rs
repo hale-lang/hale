@@ -1,10 +1,12 @@
-//! The `http` integration-test binary: 13 test files of this area, kept
+//! The `http` integration-test binary: 14 test files of this area, kept
 //! where they are (their paths, names and history unchanged) and built as
 //! modules of one binary, so the crate links once for the area instead of
 //! once per file. Each file is a module; a test's name is `<file>::<fn>`.
 //! A new test file joins an area by a line here (and is refused by
 //! `every_test_file_is_built` until it does).
 
+#[path = "cross_pool_backstop.rs"]
+mod cross_pool_backstop;
 #[path = "docs_server.rs"]
 mod docs_server;
 #[path = "http_client.rs"]

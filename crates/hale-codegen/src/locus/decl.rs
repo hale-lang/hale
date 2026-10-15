@@ -1268,6 +1268,13 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
         let reclaim_claimed_field_idx = idx;
         llvm_field_tys.push(self.context.i64_type().into());
         idx += 1;
+        // GH #1566: synthetic `__domain: i64` — the execution domain the
+        // instance was built on (`lotus_domain_now` at its header, a
+        // pinned or pool-placed root's own thread at its init), which
+        // F.31's runtime backstop compares with the running code's.
+        let domain_field_idx = idx;
+        llvm_field_tys.push(self.context.i64_type().into());
+        idx += 1;
         let _ = idx;
 
         let struct_ty = self
@@ -1359,6 +1366,7 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
                 restart_in_place_pending_field_idx,
                 drain_requested_field_idx,
                 held_by_owner_field_idx,
+                domain_field_idx,
                 built_params_field_idx,
                 reclaim_claimed_field_idx,
                 slot_borrowed_mask_field_idx,

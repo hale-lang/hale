@@ -2115,6 +2115,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                             locus_name
                         ))
                     })?;
+                // GH #1566: F.31's runtime backstop
+                let what = format!("method call `{}.{}`", locus_name.rsplit("__").next().unwrap_or(&locus_name), method_name);
+                self.emit_cross_pool_check(recv_val.into_pointer_value(), Some(receiver), &locus_name.clone(), &what, receiver.span(), scope)?;
                 (info, recv_val.into_pointer_value(), locus_name)
             };
 

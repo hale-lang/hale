@@ -706,6 +706,12 @@ pub struct BuildOptions {
     /// forwarding sets come out empty, so the build declares no
     /// threading fields and stitches nothing (`LOTUS_NO_OWNERSHIP_BUBBLE`).
     pub no_ownership_bubble: bool,
+    /// Build without F.31's runtime backstop (GH #1566,
+    /// `LOTUS_NO_XPOOL_BACKSTOP`): a store into or a method call on a
+    /// locus another pool runs is not checked at run time. Only for a
+    /// fixture that drives the runtime's off-domain machinery through the
+    /// escapes the checker does not follow (a call through a fn value).
+    pub no_xpool_backstop: bool,
     /// Build with AddressSanitizer and skip the O3 module pipeline,
     /// so a leak/UAF report carries accurate frames (`LOTUS_ASAN`).
     pub asan: bool,
@@ -791,6 +797,7 @@ impl BuildOptions {
             dump_ir_beside_output: Default::default(),
             no_bus_devirt: Default::default(),
             no_ownership_bubble: Default::default(),
+            no_xpool_backstop: Default::default(),
             asan: Default::default(),
             tsan: Default::default(),
             ubsan: Default::default(),
@@ -1668,6 +1675,10 @@ pub fn build_resolved(
         in_fresh_temp_hook: false,
         current_fn_skip_exit_drain: false,
         bus_inert,
+        xpool_check: !is_wasm && !options.no_xpool_backstop,
+        xpool_check_off: false,
+        xpool_fresh_slots: HashSet::new(),
+        xpool_strings: HashMap::new(),
         di: None,
         di_loc_stack: Vec::new(),
         di_trace: options.di_trace,
@@ -1737,6 +1748,7 @@ pub fn build_resolved(
                         }
                     }
                     files.push(DiFileEntry {
+                        path: f.path.display().to_string(),
                         base: f.base,
                         len: f.len,
                         file: difile,
@@ -4437,6 +4449,18 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// view) and read in `build_resolved`, where the comment has the
     /// producer enumeration.
     pub(crate) bus_inert: bool,
+    /// GH #1566: F.31's runtime backstop is emitted (native; wasm32 has
+    /// one thread). `xpool_check_off` holds it off around a call the
+    /// compiler itself proved same-domain (a devirtualized publish).
+    pub(crate) xpool_check: bool,
+    pub(crate) xpool_check_off: bool,
+    /// The slots of locals bound to a locus literal this code built, and
+    /// never rebound — an instance built here is this domain's — and of
+    /// an `on_failure` handler's failed child: the backstop is not
+    /// emitted on them.
+    pub(crate) xpool_fresh_slots: HashSet<PointerValue<'ctx>>,
+    /// The backstop's report strings, one global each.
+    pub(crate) xpool_strings: HashMap<String, PointerValue<'ctx>>,
     pub(crate) di: Option<DiState<'ctx>>,
     /// Per-statement debug-location stack: (function the location
     /// was set in, the location live before this statement). The
@@ -4502,6 +4526,8 @@ pub(crate) struct DiState<'ctx> {
 }
 
 pub(crate) struct DiFileEntry<'ctx> {
+    /// The file as a diagnostic names it.
+    pub(crate) path: String,
     pub(crate) base: u32,
     pub(crate) len: u32,
     pub(crate) file: inkwell::debug_info::DIFile<'ctx>,
@@ -5397,6 +5423,8 @@ pub(crate) struct LocusInfo<'ctx> {
     /// when something other than the instance itself reclaims it
     /// later (see `LATCH_FAILED`).
     pub(crate) held_by_owner_field_idx: u32,
+    /// GH #1566: `__domain`, the domain the instance was built on.
+    pub(crate) domain_field_idx: u32,
     /// Index of the synthetic `__built_params: ptr` — the params this
     /// instance was built with, for `restart_in_place` (see
     /// `locus::restart`). Null unless the locus is restarted in place.
@@ -12023,9 +12051,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         block: &Block,
         scope: &mut Scope<'ctx>,
     ) -> Result<BlockEnd, CodegenError> {
-        for stmt in &block.stmts {
+        for (i, stmt) in block.stmts.iter().enumerate() {
             match self.lower_stmt(stmt, scope)? {
-                BlockEnd::Open => continue,
+                BlockEnd::Open => self.note_fresh_locus_local(block, i, scope),
                 BlockEnd::Terminated => return Ok(BlockEnd::Terminated),
             }
         }
@@ -12037,6 +12065,22 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             let _ = self.lower_expr(tail, scope)?;
         }
         Ok(BlockEnd::Open)
+    }
+
+    /// GH #1566: `block.stmts[i]` just lowered; a `let` of a locus
+    /// literal no later statement of the block rebinds is an instance
+    /// this code built, on this domain (`xpool_fresh_slots`).
+    fn note_fresh_locus_local(&mut self, block: &Block, i: usize, scope: &Scope<'ctx>) {
+        if !self.xpool_check {
+            return;
+        }
+        let Stmt::Let { name, value: Expr::Struct { .. }, .. } = &block.stmts[i] else { return };
+        let Some((slot, CodegenTy::LocusRef(_))) = scope.locals.get(&name.name) else { return };
+        let rebound = block.stmts[i + 1..].iter().any(|s| stmt_assigns(s, &name.name))
+            || block.tail.as_deref().is_some_and(|t| expr_assigns(t, &name.name));
+        if !rebound {
+            self.xpool_fresh_slots.insert(*slot);
+        }
     }
 
     /// Lower a block in expression-context: lower its statements for
@@ -12070,9 +12114,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // on the tail's own node, so a `return { warm(make(1));
         // make(2) };` cannot hand the caller's ownership to
         // `make(1)` the way the one-shot flag did.
-        for stmt in &block.stmts {
+        for (i, stmt) in block.stmts.iter().enumerate() {
             match self.lower_stmt(stmt, scope)? {
-                BlockEnd::Open => continue,
+                BlockEnd::Open => self.note_fresh_locus_local(block, i, scope),
                 BlockEnd::Terminated => {
                     // Statements terminated control flow before reaching
                     // the tail. Synthesize a placeholder value so the
@@ -16397,7 +16441,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             if matches!(receiver.as_ref(), Expr::KwSelf(_)) {
                 self.lower_self_method_call(&name.name, args, scope)?;
             } else {
-                self.lower_external_method_call(receiver, &name.name, args, scope)?;
+                // the relation that rewrote the publish placed both
+                // ends on one domain
+                let off = std::mem::replace(&mut self.xpool_check_off, true);
+                let r = self.lower_external_method_call(receiver, &name.name, args, scope);
+                self.xpool_check_off = off;
+                r?;
             }
         }
         self.builder.build_unconditional_branch(join).map_err(e)?;
@@ -16539,7 +16588,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let call_result = if matches!(receiver.as_ref(), Expr::KwSelf(_)) {
             self.lower_self_method_call(&name.name, args, scope)
         } else {
-            self.lower_external_method_call(receiver, &name.name, args, scope)
+            // the relation that rewrote the publish placed both ends on
+            // one domain
+            let off = std::mem::replace(&mut self.xpool_check_off, true);
+            let r = self.lower_external_method_call(receiver, &name.name, args, scope);
+            self.xpool_check_off = off;
+            r
         };
         self.current_arena_override = saved_override;
         call_result?;
@@ -30075,6 +30129,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     locus_name
                 ))
             })?;
+        // GH #1566: the runtime backstop on a receiver not reached down
+        // `self`
+        {
+            let what = format!("method call `{}.{}`", locus_name.rsplit("__").next().unwrap_or(&locus_name), method_name);
+            self.emit_cross_pool_check(recv_val.into_pointer_value(), Some(receiver_expr), &locus_name.clone(), &what, receiver_expr.span(), scope)?;
+        }
         // v1.x-FORM-2 PR5: intercept synthesized @form(vec) methods
         // before the user_methods lookup. They aren't real LLVM fns;
         // they lower inline to lotus_vec_* on the inline vec slot.
@@ -34235,6 +34295,137 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     }
 
 
+    /// GH #1566: the running code's domain (`lotus_domain_now`, a
+    /// thread-local of the runtime's).
+    pub(crate) fn domain_now(&mut self) -> Result<inkwell::values::IntValue<'ctx>, CodegenError> {
+        let i64_t = self.context.i64_type();
+        let g = match self.module.get_global("lotus_domain_now") {
+            Some(g) => g,
+            None => {
+                let g = self.module.add_global(i64_t, None, "lotus_domain_now");
+                g.set_linkage(inkwell::module::Linkage::External);
+                g.set_thread_local(true);
+                g.set_thread_local_mode(Some(inkwell::ThreadLocalMode::InitialExecTLSModel));
+                g
+            }
+        };
+        Ok(self
+            .builder
+            .build_load(i64_t, g.as_pointer_value(), "domain.now")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .into_int_value())
+    }
+
+    /// GH #1566: F.31's runtime backstop at a store into, or a method
+    /// call on, the locus `recv` points at, reached by `recv_expr`. The
+    /// checker refuses such a site when the walk follows the handle to
+    /// an instance on another pool; at run time the receiver's domain
+    /// (`lotus_arena_t.domain`, the first word of its `__arena`, which
+    /// is the struct's first field) is compared with the running
+    /// code's (`lotus_domain_now`), and a mismatch is a violation
+    /// (`lotus_cross_pool_check_failed`, cold). Skipped where the
+    /// checker's answer is exact — a receiver down `self` (`self.w`,
+    /// `self.h.ws[i]`, judged per instance) — and for a receiver whose
+    /// form synchronizes access from another domain.
+    pub(crate) fn emit_cross_pool_check(
+        &mut self,
+        recv: PointerValue<'ctx>,
+        recv_expr: Option<&Expr>,
+        locus: &str,
+        what: &str,
+        span: hale_syntax::Span,
+        scope: &Scope<'ctx>,
+    ) -> Result<(), CodegenError> {
+        if !self.xpool_check || self.xpool_check_off {
+            return Ok(());
+        }
+        if let Some(e) = recv_expr {
+            let mut root = e;
+            while let Expr::Field { receiver, .. } | Expr::Index { receiver, .. } = root {
+                root = receiver;
+            }
+            if matches!(root, Expr::KwSelf(_)) {
+                return Ok(());
+            }
+            // an instance this code built, bound to a local nothing
+            // rebinds (`let b = Builder { }; b.add(..)`)
+            if let Expr::Ident(id) = e {
+                if scope.locals.get(&id.name).is_some_and(|(slot, _)| self.xpool_fresh_slots.contains(slot)) {
+                    return Ok(());
+                }
+            }
+        }
+        if self
+            .user_loci
+            .get(locus)
+            .is_some_and(|info| info.capacity_slots.iter().any(|sl| sl.sync_mode != SyncMode::None))
+        {
+            return Ok(());
+        }
+        let Some(func) = self.current_fn else { return Ok(()) };
+        // the receiver's `__domain` (an interface's implementor is not
+        // known here: its call is not checked)
+        let Some(info) = self.user_loci.get(locus).map(|i| (i.struct_ty, i.domain_field_idx)) else { return Ok(()) };
+        let e = |e: inkwell::builder::BuilderError| CodegenError::LlvmEmit(e.to_string());
+        let ptr_t = self.context.ptr_type(AddressSpace::default());
+        let i64_t = self.context.i64_type();
+        let slot = self.builder.build_struct_gep(info.0, recv, info.1, "xpool.domain.ptr").map_err(e)?;
+        let d = self.builder.build_load(i64_t, slot, "xpool.domain").map_err(e)?.into_int_value();
+        let now = self.domain_now()?;
+        let fail = self.context.append_basic_block(func, "xpool.fail");
+        let cont = self.context.append_basic_block(func, "xpool.cont");
+        let ne = self.builder.build_int_compare(inkwell::IntPredicate::NE, d, now, "xpool.other").map_err(e)?;
+        let br = self.builder.build_conditional_branch(ne, fail, cont).map_err(e)?;
+        // the mismatch is the cold side
+        let weights = self.context.metadata_node(&[
+            self.context.metadata_string("branch_weights").into(),
+            self.context.i32_type().const_int(1, false).into(),
+            self.context.i32_type().const_int(1 << 20, false).into(),
+        ]);
+        let kind = self.context.get_kind_id("prof");
+        br.set_metadata(weights, kind).map_err(|err| CodegenError::LlvmEmit(err.to_string()))?;
+        self.builder.position_at_end(fail);
+        let site = match self.di_locate(span) {
+            Some((idx, line, col)) => {
+                let path = self.di.as_ref().and_then(|d| d.files.get(idx)).map(|f| f.path.clone()).unwrap_or_default();
+                format!("{path}:{line}:{col}")
+            }
+            None => String::new(),
+        };
+        // one constant `{site, what, locus}` per site, its strings shared
+        let text = |cx: &mut Self, t: &str| -> PointerValue<'ctx> {
+            if let Some(p) = cx.xpool_strings.get(t) {
+                return *p;
+            }
+            let g = cx.module.add_global(cx.context.i8_type().array_type(t.len() as u32 + 1), None, "xpool.str");
+            g.set_initializer(&cx.context.const_string(t.as_bytes(), true));
+            g.set_constant(true);
+            g.set_linkage(inkwell::module::Linkage::Private);
+            g.set_unnamed_addr(true);
+            let p = g.as_pointer_value();
+            cx.xpool_strings.insert(t.to_string(), p);
+            p
+        };
+        let site_p = text(self, &site);
+        let what_p = text(self, what);
+        let locus_p = text(self, locus.rsplit("__").next().unwrap_or(locus));
+        let desc_ty = self.context.struct_type(&[ptr_t.into(), ptr_t.into(), ptr_t.into()], false);
+        let desc = self.module.add_global(desc_ty, None, "xpool.site");
+        desc.set_initializer(&desc_ty.const_named_struct(&[site_p.into(), what_p.into(), locus_p.into()]));
+        desc.set_constant(true);
+        desc.set_linkage(inkwell::module::Linkage::Private);
+        let failed = self
+            .module
+            .get_function("lotus_cross_pool_check_failed")
+            .expect("lotus_cross_pool_check_failed declared");
+        self.builder
+            .build_call(failed, &[desc.as_pointer_value().into(), d.into(), now.into()], "xpool.failed")
+            .map_err(e)?;
+        self.builder.build_unconditional_branch(cont).map_err(e)?;
+        self.builder.position_at_end(cont);
+        Ok(())
+    }
+
     /// GH #1561: a store into a locus's field from outside that locus's
     /// methods — through a handle parameter or local (`fn put(l: L, s:
     /// String) { l.name = s; }`), a child reached through a handle or
@@ -34301,6 +34492,23 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     }
                 }
             }
+        }
+        // GH #1566: the runtime backstop, before the value is built into
+        // the owner's arena; an inline scalar slot is one plain store
+        // and is let through, as the checker lets it through
+        let scalar = match &slot_ty {
+            CodegenTy::Int | CodegenTy::Float | CodegenTy::Bool | CodegenTy::Duration | CodegenTy::Time => true,
+            CodegenTy::Decimal(_) => true,
+            CodegenTy::Enum(_) => !self.self_field_type_retires(&slot_ty),
+            _ => false,
+        };
+        if !scalar && target.head.name != "self" {
+            let shown = format!("store into `{}.{}`", owner.locus.rsplit("__").next().unwrap_or(&owner.locus), slot_name.rsplit('.').next().unwrap_or(&slot_name));
+            // the store's owner, reached through the target's head when
+            // the head is the owner itself (`b.name = s`)
+            let head = Expr::Ident(target.head.clone());
+            let recv = if target.tail.len() == 1 { Some(&head) } else { None };
+            self.emit_cross_pool_check(owner.ptr, recv, &owner.locus.clone(), &shown, target.span, scope)?;
         }
         let (rhs, rhs_ty) = self.lower_expr(value, scope)?;
         let new_val = if matches!(op, AssignOp::Eq) {
@@ -35623,4 +35831,66 @@ pub fn stdlib_doc_source() -> &'static str {
 }
 pub fn stdlib_path_renames() -> &'static [(&'static [&'static str], &'static str)] {
     hale_stdlib::PATH_RENAMES
+}
+
+/// GH #1566: does `s` rebind the local `name` (`name = v`) anywhere in it?
+fn stmt_assigns(s: &Stmt, name: &str) -> bool {
+    match s {
+        Stmt::Assign { target, value, .. } => {
+            (target.head.name == name && target.tail.is_empty()) || expr_assigns(value, name)
+        }
+        Stmt::Let { value, .. } | Stmt::LetTuple { value, .. } | Stmt::Fail { value, .. } | Stmt::Expr(value) => {
+            expr_assigns(value, name)
+        }
+        Stmt::Return(Some(e), _) => expr_assigns(e, name),
+        Stmt::If(i) => if_assigns(i, name),
+        Stmt::Match(m) => match_assigns(m, name),
+        Stmt::For { iter: c, body, .. } | Stmt::While { cond: c, body, .. } => {
+            expr_assigns(c, name) || block_assigns(body, name)
+        }
+        Stmt::Block(b) | Stmt::ShmWrite { body: b, .. } => block_assigns(b, name),
+        _ => false,
+    }
+}
+
+fn block_assigns(b: &Block, name: &str) -> bool {
+    b.stmts.iter().any(|s| stmt_assigns(s, name)) || b.tail.as_deref().is_some_and(|t| expr_assigns(t, name))
+}
+
+fn if_assigns(i: &IfStmt, name: &str) -> bool {
+    expr_assigns(&i.cond, name)
+        || block_assigns(&i.then_block, name)
+        || match i.else_block.as_deref() {
+            Some(ElseBranch::Else(b)) => block_assigns(b, name),
+            Some(ElseBranch::ElseIf(n)) => if_assigns(n, name),
+            None => false,
+        }
+}
+
+fn match_assigns(m: &MatchStmt, name: &str) -> bool {
+    expr_assigns(&m.scrutinee, name)
+        || m.arms.iter().any(|a| match &a.body {
+            MatchArmBody::Expr(e) => expr_assigns(e, name),
+            MatchArmBody::Block(b) => block_assigns(b, name),
+        })
+}
+
+fn expr_assigns(e: &Expr, name: &str) -> bool {
+    match e {
+        Expr::Block(b) => block_assigns(b, name),
+        Expr::If(i) => if_assigns(i, name),
+        Expr::Match(m) => match_assigns(m, name),
+        Expr::Call { callee, args, .. } => expr_assigns(callee, name) || args.iter().any(|a| expr_assigns(a, name)),
+        Expr::Binary { left, right, .. } => expr_assigns(left, name) || expr_assigns(right, name),
+        Expr::Unary { operand, .. } => expr_assigns(operand, name),
+        Expr::Field { receiver, .. } | Expr::Path2 { receiver, .. } => expr_assigns(receiver, name),
+        Expr::Index { receiver, index, .. } => expr_assigns(receiver, name) || expr_assigns(index, name),
+        Expr::Tuple(xs, _) | Expr::Array(xs, _) => xs.iter().any(|x| expr_assigns(x, name)),
+        Expr::Struct { inits, .. } => inits.iter().any(|i| expr_assigns(&i.value, name)),
+        Expr::Or { inner, disposition, .. } => {
+            expr_assigns(inner, name)
+                || matches!(disposition, OrDisposition::Substitute(x) | OrDisposition::Fail(x, _) if expr_assigns(x, name))
+        }
+        _ => false,
+    }
 }

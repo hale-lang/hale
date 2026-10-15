@@ -1730,6 +1730,28 @@ static inline size_t lotus_align_up(size_t n, size_t a) {
 static const pthread_mutex_t LOTUS_SUBREGION_MUTEX_INIT =
     PTHREAD_MUTEX_INITIALIZER;
 
+/* GH #1566: F.31's runtime backstop. The domain the running code is
+ * on: main's token from the process's start, a cooperative pool's
+ * worker the pool (set in its loop), a pinned locus's thread its own
+ * (set when its init stamps the locus); 0 on a thread that runs no
+ * locus code. Exported: every instantiation stamps its locus's
+ * `__domain` with it, and the compiled check reads it inline. */
+__thread int64_t lotus_domain_now = 0;
+static __thread char t_domain_anchor;
+static int64_t g_main_domain_token = 0;
+
+__attribute__((constructor))
+static void lotus_domain_now_main(void) {
+    lotus_domain_now = (int64_t)(uintptr_t)&t_domain_anchor;
+    g_main_domain_token = lotus_domain_now;
+}
+
+/* This thread's domain token, made on first use. */
+static int64_t lotus_domain_here_token(void) {
+    if (!lotus_domain_now) lotus_domain_now = (int64_t)(uintptr_t)&t_domain_anchor;
+    return lotus_domain_now;
+}
+
 /* Initialize an arena struct wherever it lives: malloc'd by
  * lotus_arena_alloc_struct below, or carved inside a pooled chunk by
  * the bus's per-call arena (GH #1038). */
@@ -11771,6 +11793,60 @@ lotus_coop_pool_t *lotus_coop_pool_current(void) {
     return g_current_pool_tls;
 }
 
+/* GH #1566: the running thread's domain, made on first use: a pinned
+ * or pool-placed root's init stamps its locus with it on its own
+ * thread (a pinned thread has no token until then). */
+int64_t lotus_domain_here(void) {
+    return lotus_domain_here_token();
+}
+
+static void lotus_domain_describe(int64_t d, char *out, size_t n) {
+    if (d == g_main_domain_token) {
+        snprintf(out, n, "pool `main`");
+        return;
+    }
+    for (size_t i = 0; i < g_coop_pool_count; i++) {
+        if ((int64_t)(uintptr_t)g_coop_pools[i] == d) {
+            snprintf(out, n, "pool `%s`", g_coop_pools[i]->name);
+            return;
+        }
+    }
+    snprintf(out, n, "a pinned thread");
+}
+
+/* GH #1566: F.31's runtime backstop. The compiled check found the
+ * receiver's domain (its locus's `__domain`, stamped where it was built)
+ * differs from the running code's (`lotus_domain_now`): a
+ * store into, or a method call on, a locus that runs on another pool —
+ * reached a way the checker's walk does not follow (spec/types.md §
+ * F.31). Either side 0 is a domain the backstop does not know, and is
+ * let through. `at` is the site: its source location (empty when the
+ * build has no line table), the store or call, the receiver's type. A
+ * violation: the report on stderr, exit 1. */
+typedef struct {
+    const char *site;   /* `file:line:col`, or "" */
+    const char *what;   /* "store into `W.name`", "method call `W.step`" */
+    const char *locus;  /* the receiver's type */
+} lotus_xpool_site_t;
+
+__attribute__((cold, noinline))
+void lotus_cross_pool_check_failed(const lotus_xpool_site_t *at,
+                                   int64_t recv_domain, int64_t now) {
+    if (recv_domain == 0 || now == 0 || recv_domain == now) return;
+    const char *site = at->site, *what = at->what, *locus = at->locus;
+    char here[128], there[128];
+    lotus_domain_describe(now, here, sizeof here);
+    lotus_domain_describe(recv_domain, there, sizeof there);
+    fprintf(stderr,
+            "%s%sviolation: cross-pool %s from %s; this `%s` runs on %s: "
+            "reach it through a method on the bus (spec/types.md § "
+            "\"Single-threaded-method invariant (F.31)\")\n",
+            site && *site ? site : "", site && *site ? ": " : "",
+            what, here, locus, there);
+    fflush(stderr);
+    exit(1);
+}
+
 /* The start of a pool-placed root (inventory C50, the pool side of the
  * review of PR #1319's correction of U-6): its subtree initializes on
  * the pool's worker, as a pinned locus's does on its thread. The
@@ -14238,6 +14314,7 @@ void lotus_tree_drain_end(void) {
 static void *lotus_coop_pool_worker(void *arg) {
     lotus_coop_pool_t *p = (lotus_coop_pool_t *)arg;
     g_current_pool_tls = p;
+    lotus_domain_now = (int64_t)(uintptr_t)p;
     lotus_domain_pool_enter(p);
     /* GH #296: stable consumer identity — 16 + registration index
      * (registration order is program structure, so it survives a
@@ -14281,6 +14358,7 @@ static void *lotus_coop_pool_worker(void *arg) {
     lotus_failure_service_here();
     lotus_domain_pool_end(p);
     g_current_pool_tls = NULL;
+    lotus_domain_now = 0;
     return NULL;
 }
 

@@ -803,6 +803,18 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let ptr_arg_void = void_t.fn_type(&[ptr_t.into()], false);
         self.module
             .add_function("lotus_params_open", ptr_arg_void, None);
+        // GH #1566: F.31's runtime backstop — a pinned or pool-placed
+        // root's init stamps its domain; the compiled check's cold side.
+        self.module.add_function("lotus_domain_here", i64_t.fn_type(&[], false), None);
+        let xpool_failed = self.module.add_function(
+            "lotus_cross_pool_check_failed",
+            void_t.fn_type(&[ptr_t.into(), i64_t.into(), i64_t.into()], false),
+            None,
+        );
+        xpool_failed.add_attribute(
+            inkwell::attributes::AttributeLoc::Function,
+            self.context.create_enum_attribute(inkwell::attributes::Attribute::get_named_enum_kind_id("cold"), 0),
+        );
         self.module
             .add_function("lotus_params_settle", ptr_arg_void, None);
         let hold_ty = self.context.i64_type().fn_type(

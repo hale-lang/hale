@@ -483,7 +483,14 @@ main locus App {
 
 fn main() { App { }; }
 "#;
-    let out = build_and_run_full("violate_value_cross_pool", src);
+    // through a fn value, which the checker does not follow; F.31's runtime
+    // backstop would refuse the call, so it is off for this fixture of the
+    // off-domain delivery (GH #1566)
+    let bin = harness::unique_bin("lotus_test_violate_value_cross_pool");
+    let options = hale_codegen::BuildOptions { no_xpool_backstop: true, ..build_opts::options() };
+    build_opts::build_source(src, &bin, &options).expect("build");
+    let out = Command::new(&bin).output().expect("run");
+    let _ = std::fs::remove_file(&bin);
     let (stdout, stderr) = (String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
     assert!(out.status.success(), "{:?}\n{stderr}", out.status);
     assert_eq!(
