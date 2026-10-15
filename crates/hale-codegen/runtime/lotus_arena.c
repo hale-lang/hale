@@ -13086,16 +13086,26 @@ static void lotus_coro_free(lotus_coro_t *c) {
     lotus_run_hold_release(hold);
     c->run_ticket = NULL;
     /* A coro freed here either completed (release already disposed its
-     * payload) or is being ABANDONED mid-handler at pool shutdown. In
-     * the abandon case the heap buffer is plainly ours to free; the
-     * per-delivery subregion is deliberately NOT destroyed — the handler
-     * is frozen mid-flight and the subscriber arena's own teardown
-     * reclaims it, while destroying it from here would push chunks back
-     * into a parent arena the dissolve cascade may already have taken
-     * down. */
+     * payload) or is being ABANDONED mid-handler at pool shutdown: a
+     * served call parked in its handler (a sleep, a read) when the drain
+     * shut its receiver's pool down. The handler is frozen and never
+     * resumes, so what the delivery owns is ours to release: the heap
+     * buffer, and the per-delivery region the payload was deserialized
+     * into. That region has no parent (`lotus_bus_cell_materialize`: it
+     * is deliberately not a subregion of the subscriber's arena, so a
+     * handler that ends its own locus cannot strand it), so nothing else
+     * ever reclaims it, and destroying it writes no other arena's
+     * freelist. Before, it was left for "the subscriber arena's
+     * teardown", which never reached it, and every call abandoned
+     * mid-handler leaked its region (LeakSanitizer: the region's struct
+     * and its first chunk). */
     if (c->payload_heap) {
         free(c->payload_heap);
         c->payload_heap = NULL;
+    }
+    if (c->payload_region) {
+        lotus_arena_destroy(c->payload_region);
+        c->payload_region = NULL;
     }
     if (c->stack) free(c->stack);
     free(c);

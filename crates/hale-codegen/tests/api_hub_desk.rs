@@ -91,6 +91,7 @@ main locus Desk {
         hub: ws::Hub = ws::Hub { bind: std::env::var("BIND"), principals: self.bearer, roles: self.hub_roles, as: "feed" };
         orders: Orders = Orders { };
         maker: Maker = Maker { };
+        desk: api::Exposure = api::serve(Public, self.hub, as: "desk", receivers: { Orders: self.orders }, bound: 8, on_full: refuse);
     }
     placement { orders: cooperative(pool = work) where async_io; }
     bindings {
@@ -132,7 +133,6 @@ main locus Desk {
         return false;
     }
     run() {
-        let desk = api::serve(Public, self.hub, as: "desk", receivers: { Orders: self.orders }, bound: 8, on_full: refuse);
         let ctl = std::env::var("CTL");
         let mut done = false;
         while !done && !self.draining {
@@ -145,7 +145,7 @@ main locus Desk {
             std::time::sleep(5ms);
         }
         println("placed=", self.orders.placed, " made=", self.maker.made);
-        desk.stop();
+        self.desk.stop();
         self.hub.stop();
     }
 }

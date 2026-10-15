@@ -73,12 +73,12 @@ main locus App {
         svc: Svc = Svc { };
         revised_f: std::api::test::Rpc = std::api::test::Rpc { principals: self.tokens, roles: self.revised };
         plain_f: std::api::test::Rpc = std::api::test::Rpc { principals: self.tokens, roles: self.plain };
+        a: api::Exposure = api::serve(Desk, self.revised_f, as: "revised", receivers: { Svc: self.svc }, bound: 8, on_full: refuse);
+        b: api::Exposure = api::serve(Desk, self.plain_f, as: "plain", receivers: { Svc: self.svc }, bound: 8, on_full: refuse);
     }
     placement { svc: cooperative(pool = work) where async_io; }
 
     run() {
-        let a = api::serve(Desk, self.revised_f, as: "revised", receivers: { Svc: self.svc }, bound: 8, on_full: refuse);
-        let b = api::serve(Desk, self.plain_f, as: "plain", receivers: { Svc: self.svc }, bound: 8, on_full: refuse);
         let r = self.revised_f;
         let p = self.plain_f;
 
@@ -106,8 +106,8 @@ main locus App {
         p.call(6, "Svc::trade", "{\"n\":6}", "t-old");
         std::test::assert_eq_str(p.await_outcome(6, 2000), "refusal:unauthenticated", "so the plain-roles exposure refuses an expired credential too");
 
-        a.stop();
-        b.stop();
+        self.a.stop();
+        self.b.stop();
     }
 }
 

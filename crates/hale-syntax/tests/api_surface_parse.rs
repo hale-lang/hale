@@ -97,16 +97,18 @@ fn api_is_contextual() {
 fn a_serve_site_carries_its_named_arguments() {
     let p = parse_source(
         "main locus Desk {
+            params {
+                h: api::Exposure = api::serve(Public, http::Rpc { bind: \"127.0.0.1:8080\", codec: json }, as: \"public\", receivers: { Orders: self.orders, lib::Ledger: self.ledger }, bound: 64, on_full: refuse);
+            }
             run() {
-                let h = api::serve(Public, http::Rpc { bind: \"127.0.0.1:8080\", codec: json }, as: \"public\", receivers: { Orders: self.orders, lib::Ledger: self.ledger }, bound: 64, on_full: refuse);
-                h.stop();
+                self.h.stop();
             }
         }",
     )
     .expect("parse");
     let TopDecl::Locus(l) = &p.items[0] else { panic!("a locus") };
-    let LocusMember::Lifecycle(run) = &l.members[0] else { panic!("run") };
-    let Stmt::Let { value, .. } = &run.body.stmts[0] else { panic!("a let") };
+    let LocusMember::Params(pb) = &l.members[0] else { panic!("params") };
+    let hale_syntax::ast::ParamInit::Value(value) = &pb.params[0].init else { panic!("a default") };
     let site = ServeSite::of(value).expect("a serve site");
     assert!(matches!(site.surface, Expr::Ident(i) if i.name == "Public"));
     assert!(matches!(site.transport, Some(Expr::Struct { .. })));

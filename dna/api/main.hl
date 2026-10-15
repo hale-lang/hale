@@ -643,6 +643,8 @@ main locus Head {
         // GH #1135: the commands port (the HTTP exposure's), and who its bearers are
         http_port: Int = 0;
         bearer: std::api::BearerSource = std::api::NoBearer { };
+        local: api::Exposure = api::serve(HeadCommands, unix::Rpc { path: self.served, roles: self.roles }, as: "head", bound: 64, on_full: refuse);
+        remote: api::Exposure = api::serve(HeadCommands, http::Rpc { bind: "127.0.0.1:" + to_string(self.http_port), codec: json, principals: self.bearer, roles: self.roles }, as: "commands", bound: 64, on_full: refuse);
     }
     // The server off the main pool (a server born as a param on main's
     // pool would hold its birth thread before the exposures are born), a
@@ -658,11 +660,9 @@ main locus Head {
         // commands port the HTTP exposure listens on a port the system
         // picks, which nothing is told: the head has no HTTP commands.
         if self.http_port > 0 { println("hale dna api: commands http://127.0.0.1:", self.http_port, "/"); }
-        let local = api::serve(HeadCommands, unix::Rpc { path: self.served, roles: self.roles }, as: "head", bound: 64, on_full: refuse);
-        let remote = api::serve(HeadCommands, http::Rpc { bind: "127.0.0.1:" + to_string(self.http_port), codec: json, principals: self.bearer, roles: self.roles }, as: "commands", bound: 64, on_full: refuse);
-        std::api::run_until_stopped(local);
-        local.stop();
-        remote.stop();
+        std::api::run_until_stopped(self.local);
+        self.local.stop();
+        self.remote.stop();
     }
 }
 

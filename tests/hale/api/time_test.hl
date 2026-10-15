@@ -51,13 +51,10 @@ main locus Desk {
         clock: Clock = Clock { };
         bearer: Tokens = Tokens { };
         f: std::api::test::Rpc = std::api::test::Rpc { };
-    }
-
-    // Never called: the serve site is what makes the compiler write the
-    // protobuf codecs beside the JSON ones.
-    fn serving() {
-        let h = api::serve(Times, grpc::Rpc { bind: "127.0.0.1:0", codec: json, principals: self.bearer }, as: "pb", receivers: { Clock: self.clock }, bound: 4, on_full: refuse);
-        h.stop();
+        // Served over gRPC only so the compiler writes the protobuf codecs
+        // beside the JSON ones; nothing calls it.
+        h: api::Exposure = api::serve(Times, grpc::Rpc { bind: "127.0.0.1:0", codec: json, principals: self.bearer }, as: "pb", receivers: { Clock: self.clock }, bound: 4, on_full: refuse);
+        times: api::Exposure = api::serve(Times, self.f, as: "times", receivers: { Clock: self.clock }, bound: 8, on_full: refuse);
     }
 
     fn refused(id: Int, member: String, body: String, reason: String, what: String) {
@@ -78,8 +75,6 @@ main locus Desk {
     }
 
     run() {
-        let h = api::serve(Times, self.f, as: "times", receivers: { Clock: self.clock }, bound: 8, on_full: refuse);
-
         // ---- a record: an instant to the nanosecond, a duration, a list of instants ----
         let full = "{\"at\":\"2026-10-12T03:04:05.123456789Z\",\"every\":1500000000,\"seen\":[\"1969-07-20T20:17:40Z\",\"2026-10-12T00:00:00.5Z\"],\"since\":\"2026-02-03T04:05:06Z\",\"grace\":0}";
         self.ran(1, "Clock::stamp", full, full, "a record of times");

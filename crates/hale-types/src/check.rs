@@ -703,7 +703,7 @@ pub fn check_bundle_reporting(
     diags.extend(crate::bare_fallible::bare_fallible_calls(&table));
     diags.extend(crate::violate_fallible::violate_fallible_laws(bundle, inputs.alloc_summary));
     diags.extend(crate::surfaces::surface_laws(bundle, inputs.surfaces, inputs.roles, inputs.alloc_summary));
-    diags.extend(crate::surfaces::serve_laws(bundle, inputs.surfaces, inputs.entry));
+    diags.extend(crate::surfaces::serve_laws(bundle, inputs.surfaces, inputs.entry, inputs.effects, &table, inputs.placement));
     diags.extend(crate::closure_events::unreached_event_laws(bundle, inputs.handlers, inputs.entry, &table));
     (diags, certificates)
 }
@@ -712,6 +712,85 @@ pub fn check_bundle_reporting(
 /// (F.40 phase 3, E4): the record the snapshot's typed-body table is
 /// packaged from (`crate::typed_bodies`). The checker records its own
 /// answers as it walks, so the table costs no second walk.
+/// GH #1565: a publish written in a default. A default is evaluated where
+/// the literal or call that leaves it is (`spec/types.md` § Locus params),
+/// a scope that publishes nothing of the declaration's own bus, so lowering
+/// has no topic there to send on: such a program checked and then failed
+/// to build ("unknown identifier"). Refused at the send, for every default
+/// a program writes: a locus's param defaults, a record type's field
+/// defaults, and a fn's, method's or hook's param defaults.
+fn publish_in_default_diags(bundle: &Bundle<'_>) -> Vec<Diag> {
+    use crate::listener_window::{visit_expr, Visited};
+    fn sends(e: &Expr, out: &mut Vec<Diag>) {
+        visit_expr(e, &mut |v| {
+            let span = match v {
+                Visited::Stmt(Stmt::Send { span, .. }) | Visited::Stmt(Stmt::ShmWrite { span, .. }) => *span,
+                _ => return,
+            };
+            out.push(Diag::ty(
+                span,
+                "a publish in a default: a default is evaluated where the literal or call that leaves it is, \
+                 which publishes nothing of the declaration's bus, so it cannot be built there; publish from a \
+                 hook or a method instead (`birth()`, or a method the default calls)"
+                    .to_string(),
+            ));
+        });
+    }
+    let params = |ps: &[Param], out: &mut Vec<Diag>| {
+        for p in ps {
+            if let Some(d) = &p.default {
+                sends(d, out);
+            }
+        }
+    };
+    let fields = |t: &TypeDecl, out: &mut Vec<Diag>| {
+        if let TypeDeclBody::Struct(fs) = &t.body {
+            for f in fs {
+                if let Some(d) = &f.default {
+                    sends(d, out);
+                }
+            }
+        }
+    };
+    let mut out = Vec::new();
+    for p in bundle.programs.values() {
+        for d in flat_decls(&p.items) {
+            match d {
+                TopDecl::Fn(f) => params(&f.params, &mut out),
+                TopDecl::Type(t) => fields(t, &mut out),
+                TopDecl::Locus(l) => {
+                    for m in &l.members {
+                        match m {
+                            LocusMember::Params(pb) => {
+                                for p in &pb.params {
+                                    if let ParamInit::Value(e) = &p.init {
+                                        sends(e, &mut out);
+                                    }
+                                }
+                            }
+                            LocusMember::Fn(f) => params(&f.params, &mut out),
+                            LocusMember::Lifecycle(lc) => params(&lc.params, &mut out),
+                            LocusMember::Mode(md) => params(&md.params, &mut out),
+                            LocusMember::Failure(fd) => params(&fd.params, &mut out),
+                            LocusMember::Type(t) => fields(t, &mut out),
+                            _ => {}
+                        }
+                    }
+                }
+                TopDecl::Perspective(pd) => {
+                    for m in &pd.members {
+                        if let PerspectiveMember::Fn(f) = m {
+                            params(&f.params, &mut out);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    out
+}
+
 pub fn check_bundle_typing(
     bundle: &Bundle<'_>,
     inputs: &CheckInputs<'_>,
@@ -783,6 +862,7 @@ pub fn check_bundle_by_declaration(
     // `Reject` on the effective target, located at its first site in
     // the program's own sources, with its witness.
     diags.extend(crate::capability::uses::admission_diags(inputs.uses, inputs.target, &bundle.import_renames));
+    diags.extend(publish_in_default_diags(bundle));
     // GH #255: bundle-wide set of transport-bound topic names,
     // for the `or wait` legality check at publish sites.
     //
@@ -1020,7 +1100,7 @@ pub fn check_bundle_by_declaration(
             bindings: inputs.bindings,
             entry: inputs.entry,
             ownership: &|| Some(inputs.ownership),
-            omitted: &typed.omitted_args,
+            omitted: crate::typed_bodies::OmittedView { by_call: &typed.omitted_args, by_path: &typed.calls_by_path },
         },
     ));
     // F.40 phase 4, W3: the recovery events a closure's
@@ -13402,6 +13482,17 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// Whether `got` is a locus that satisfies the interface `want`: the
+    /// coercion a bundled stdlib fn's interface parameter takes, as a user
+    /// fn's does (`std::api::run_until_stopped(self.web)`, an
+    /// `api::Exposure` as a `std::api::Handle`).
+    fn locus_meets_interface(&self, want: &Ty, got: &Ty) -> bool {
+        let (Ty::Named(iface), Ty::Named(arg)) = (want, got) else { return false };
+        matches!(self.top.lookup(iface), Some(TopSymbol::Interface(_)))
+            && matches!(self.top.lookup(arg), Some(TopSymbol::Locus(_)))
+            && self.check_structural_impl(arg, iface).is_ok()
+    }
+
     fn check_structural_impl(
         &self,
         locus_name: &str,
@@ -14183,6 +14274,9 @@ impl<'a> Checker<'a> {
     /// mistake; reporting both would print two messages for one typo.
     fn check_ident_expr(&mut self, id: &Ident, report_unknown: bool) -> Ty {
         if let Some(s) = self.locals.lookup(&id.name) {
+            if !self.defaults_judged_at_literals {
+                self.typed.ident_read(id.id, &self.default_evaluation, crate::typed_bodies::READ_BINDING);
+            }
             return s.ty.clone();
         }
         let Some(sym) = self.top.lookup(&id.name) else {
@@ -14214,6 +14308,16 @@ impl<'a> Checker<'a> {
             }
             return Ty::Unknown;
         };
+        // not on a type declaration's walk of its fields' calls, which is
+        // no evaluation
+        if !self.defaults_judged_at_literals {
+            let read = match sym {
+                TopSymbol::Const(_) => crate::typed_bodies::READ_CONST,
+                TopSymbol::Fn(_) => crate::typed_bodies::READ_FN,
+                _ => 0,
+            };
+            self.typed.ident_read(id.id, &self.default_evaluation, read);
+        }
         match sym {
             TopSymbol::Const(c) => c.ty.clone(),
             TopSymbol::Fn(sig) => Ty::Function {
@@ -15056,24 +15160,9 @@ impl<'a> Checker<'a> {
     /// them. A default no literal leaves is never evaluated.
     fn type_omitted_defaults(&mut self, literal: NodeId, decl: &'a TypeDecl, inits: &[StructInit]) {
         let TypeDeclBody::Struct(fields) = &decl.body else { return };
-        // Without a scalar type of any kind no cast has a row to keep, and
-        // without a quantity literal no literal has an error to find.
-        let quantity_literal = || {
-            let mut found = false;
-            let mut walk = crate::lowering_laws::literals(|e: &Expr, _| {
-                found |= matches!(e, Expr::Literal(Literal::Quantity { .. }, _));
-            });
-            for f in fields {
-                if let Some(d) = &f.default {
-                    walk.expr(d);
-                }
-            }
-            drop(walk);
-            found
-        };
-        if self.scalars.is_empty() && !quantity_literal() {
-            return;
-        }
+        // Typed in every program, scalars or none: besides the conversion
+        // rows, the walk is where the `ident_reads` and `omitted_args`
+        // columns get each evaluation's answer (GH #1565).
         let field_tys: BTreeMap<String, Ty> = match self.top.lookup(&decl.name.name) {
             Some(TopSymbol::Type(TypeInfo { kind: TypeKind::Struct(infos), .. })) => {
                 infos.iter().map(|f| (f.name.clone(), f.ty.clone())).collect()
@@ -15812,6 +15901,18 @@ impl<'a> Checker<'a> {
             }
             _ => None,
         };
+        // The call on this evaluation (GH #1565): what it resolves to and
+        // what it leaves, a call that leaves nothing included. Not on a
+        // type declaration's walk of its fields' calls, which is no
+        // evaluation.
+        let user = decl.filter(|d| self.user_fns.contains(&(*d as *const FnDecl)));
+        if !self.defaults_judged_at_literals {
+            let row = crate::typed_bodies::CallRow {
+                callee: user.map(|d| d.id.0),
+                from: user.filter(|d| d.params.len() > supplied).map(|_| supplied),
+            };
+            self.typed.call_typed(invocation, &self.default_evaluation, row);
+        }
         let Some(decl) = decl else { return };
         // The `omitted_args` column: which defaults this call expands, in
         // whichever caller lowering lowers it under (the cross-pool value
@@ -16600,7 +16701,7 @@ impl<'a> Checker<'a> {
                                     if let Some((_, want)) =
                                         f.params.get(i)
                                     {
-                                        if !self.flows_into(want, &got, a) {
+                                        if !self.flows_into(want, &got, a) && !self.locus_meets_interface(want, &got) {
                                             self.diags.push(Diag::ty(
                                                 a.span(),
                                                 format!(
@@ -19670,6 +19771,9 @@ impl<'a> Checker<'a> {
         inits: &[StructInit],
         span: Span,
     ) -> Ty {
+        if !self.defaults_judged_at_literals {
+            self.typed.literal_typed(literal, &self.default_evaluation);
+        }
         let mut qualified_resolved: Option<String> = None;
         if path.segments.len() != 1 {
             // Resolve an imported qualified literal (`mat::Grid { }`)

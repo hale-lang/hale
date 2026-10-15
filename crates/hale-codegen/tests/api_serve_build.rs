@@ -76,11 +76,11 @@ main locus Desk {
         public_roles: Grants = Grants { trader: "alice" };
         orders: Orders = Orders { };
         fixture: std::api::test::Rpc = std::api::test::Rpc { principals: self.bearer, roles: self.public_roles };
+        public: api::Exposure = api::serve(Public, self.fixture, as: "public", receivers: { Orders: self.orders }, bound: 8, on_full: refuse);
     }
     placement { orders: cooperative(pool = op) where async_io; }
     on_failure(o: Orders, err: ClosureViolation) { }
     run() {
-        let public = api::serve(Public, self.fixture, as: "public", receivers: { Orders: self.orders }, bound: 8, on_full: refuse);
         let f = self.fixture;
         f.call(1, "Orders::place", "{\"symbol\":\"ACME\",\"qty\":3,\"limit\":125}", "t-alice");
         println("1 ", f.await_outcome(1, 2000));
@@ -90,7 +90,7 @@ main locus Desk {
         println("3 ", f.await_outcome(3, 2000));
         f.call(4, "Orders::place", "{\"symbol\":\"ACME\",\"qty\":99999,\"limit\":125}", "t-alice");
         println("4 ", f.await_outcome(4, 2000));
-        public.stop();
+        self.public.stop();
         f.call(5, "Orders::cancel", "{\"order\":41}", "t-alice");
         println("5 ", f.await_outcome(5, 2000));
     }

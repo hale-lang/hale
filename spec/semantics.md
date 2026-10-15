@@ -2215,9 +2215,10 @@ compiler carries no code to accept them. `spec/api.md` is the contract:
   requires: [role]; … }` block, or `@rpc` on a handler (§ Surfaces and their
   rows). A call is a call of the handler, authorized against the row's
   `requires`; a read is an `rpc` whose handler returns the value;
-- where and how it is offered is a **serve site**,
-  `api::serve(Surface, unix::Rpc { … } | http::Rpc { … } | mcp::Rpc { … },
-  as: "name", bound: N, on_full: refuse)`, in the main locus (§ Serving), over
+- where and how it is offered is a **serve site**, the literal of an
+  exposure param, `web: api::Exposure = api::serve(Surface, unix::Rpc { … } |
+  http::Rpc { … } | mcp::Rpc { … }, as: "name", bound: N, on_full: refuse);`,
+  in the params of the locus that holds it (§ Serving; GH #1565), over
   a transport that is a locus with lifecycle (§ The `Rpc` interface), under a
   role source and a bearer source the program supplies (§ Identity sources);
 - a stream is a **topic bound to a hub**, `bindings { Topic: self.hub
@@ -3348,7 +3349,14 @@ main locus App {
    field name → typecheck error pointing at the params block.
 3. **Field values are locus types.** A placement entry on a
    non-locus field (`port: Int`, `host: String`) is a typecheck
-   error — placement applies only to locus instances.
+   error — placement applies only to locus instances. An exposure
+   param (`web: api::Exposure = api::serve(…)`, GH #1565) is one,
+   and its row places the exposure's listener and the connections
+   it starts while the exposure stays with `main`, beside the
+   sources it calls: the row is `cooperative(pool = X) where
+   async_io`, and any other is refused (spec/api.md § Serving). A
+   server locus's listener runs where the row of the param that
+   holds it places it, when that row hosts `async_io`.
 4. **At most one placement entry per field.** Duplicate keys
    are a parse error.
 5. **Pool names use snake_case Idents.** The set of pool names
@@ -4965,7 +4973,9 @@ joined; the tree then dissolves, leaves first. So a `main` whose
 `run()` returns at once — or that declares none — ends its program
 once its children's loops see the drain: a server stays up because
 `main`'s `run()` waits (`while !self.draining { std::time::sleep(…); }`,
-or `std::api::run_until_stopped`), and SIGINT / SIGTERM end that wait.
+or `self.web.wait()` on an exposure param), and SIGINT / SIGTERM end that
+wait. A `main` that declares no `run()` and holds an exposure's listener
+is given the run that waits on its exposures (spec/api.md § Serving).
 A child's `run()` that never reads `self.draining` keeps the process
 alive until it returns, as under a signal; an `async_io` child parked
 on an untimed wait (a plain `accept`) is abandoned at its pool's

@@ -82,6 +82,7 @@ pub mod proto_gen;
 pub mod surface_doc;
 pub mod rpc_expand;
 pub mod surfaces;
+pub(crate) mod listener_window;
 pub mod unit_graph;
 pub mod units;
 pub mod unit_values;

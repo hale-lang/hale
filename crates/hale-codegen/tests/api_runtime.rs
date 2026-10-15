@@ -86,10 +86,10 @@ main locus App {
     params {
         svc: Svc = Svc { };
         probe: Probe = Probe { };
+        h: api::Exposure = api::serve(S, self.probe, as: "teardown", receivers: { Svc: self.svc }, bound: 3, on_full: refuse);
     }
     placement { svc: cooperative(pool = work) where async_io; }
     run() {
-        let h = api::serve(S, self.probe, as: "teardown", receivers: { Svc: self.svc }, bound: 3, on_full: refuse);
         std::time::sleep(20ms);
         self.probe.push(1);
         self.probe.push(2);

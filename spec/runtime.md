@@ -225,7 +225,11 @@ the model: runtime is automatic; stdlib is explicit.
   `epoll_wait(-1)` (the condvar broadcast can't), so the worker
   returns from the drain and the join completes instead of
   hanging. The parked coros are then *abandoned* — their stacks
-  freed without resuming them — because a forever-loop `run()`
+  freed without resuming them, and a bus handler's delivery released
+  with them (its payload buffer and the per-delivery region its
+  strings were deserialized into, which has no parent arena to reclaim
+  it; GH #1565: a served call parked in its handler at the drain leaked
+  both) — because a forever-loop `run()`
   (`while true { accept }`) cannot be cooperatively unwound
   without the loop checking `self.draining` (a future
   refinement), and the process is exiting anyway. Per-child

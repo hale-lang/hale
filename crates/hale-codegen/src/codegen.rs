@@ -959,23 +959,6 @@ fn row_disagrees(topic: &str) -> CodegenError {
     ))
 }
 
-/// GH #1417 (R2a): the handle an `api::serve(…)` call is. The exposure was
-/// built with the serving locus, as the param `rpc_expand` wrote for the
-/// site's `as:` (`__rpc_x_<as>`), so the call reads that field of `self`;
-/// nothing of its arguments is evaluated here.
-fn serve_site_handle(args: &[Expr], span: hale_syntax::Span) -> Option<Expr> {
-    let Some(Expr::Struct { inits, .. }) = args.last() else { return None };
-    let name = inits.iter().find_map(|i| match (&*i.name.name, &i.value) {
-        ("as", Expr::Literal(hale_syntax::ast::Literal::String(s), _)) => Some(s.as_str()),
-        _ => None,
-    })?;
-    Some(Expr::Field {
-        receiver: Box::new(Expr::KwSelf(span)),
-        name: hale_syntax::ast::Ident::new(hale_types::rpc_expand::exposure_param(name), span),
-        span,
-    })
-}
-
 fn single_segment_type_name(payload: &TypeExpr) -> Option<String> {
     match payload {
         TypeExpr::Named { path, generic_args, .. }
@@ -12487,6 +12470,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         init: p.init.clone(),
                         span: p.span.clone(),
                         id: p.id,
+                        serve: p.serve.clone(),
                     })
                     .collect(),
                 span: pb.span.clone(),
@@ -26513,14 +26497,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     ) -> Result<(), CodegenError> {
         let segs: Vec<&str> =
             qn.segments.iter().map(|s| s.name.as_str()).collect();
-        // GH #1417 (R2a): a serve site's exposure was built with its
-        // serving locus; the call is its handle (`lower_serve_site`).
-        if segs == ["api", "serve"] {
-            if let Some(handle) = serve_site_handle(args, qn.span) {
-                let _ = self.lower_expr(&handle, scope)?;
-                return Ok(());
-            }
-        }
         // m71: std::* paths route through the stdlib lowering. The
         // dispatcher returns Some(_) iff it recognized the path; an
         // unknown std::* path errors with the same shape as the rest
@@ -26595,12 +26571,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
         let segs: Vec<&str> =
             qn.segments.iter().map(|s| s.name.as_str()).collect();
-        // GH #1417 (R2a): the handle of a serve site's exposure.
-        if segs == ["api", "serve"] {
-            if let Some(handle) = serve_site_handle(args, qn.span) {
-                return self.lower_expr(&handle, scope);
-            }
-        }
         // GH #1417 (R2a): a variant of an enum another seed or the stdlib
         // declares, by its public path (`std::api::Outcome::Refusal(…)`):
         // the enum's mangled name and the variant.

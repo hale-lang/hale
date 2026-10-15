@@ -817,7 +817,7 @@ impl OwnershipGraph {
     pub fn expansions(
         &self,
         posted: &BTreeMap<(String, String), String>,
-        omitted: &crate::typed_bodies::OmittedArgsByCall,
+        omitted: crate::typed_bodies::OmittedView<'_>,
     ) -> Vec<Expansion> {
         #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
         enum Node {
@@ -854,43 +854,55 @@ impl OwnershipGraph {
         // assertion among them), each under that locus; and what a
         // position lowering emits at every use lowers, under every locus,
         // since no row says which uses it.
-        let mut pending: Vec<(Node, usize, Span, Option<PerUsePosition>)> = Vec::new();
+        // Each pending node carries the evaluation path it is reached on,
+        // as the checker keeps it (`default_evaluation`): a call in a
+        // default is resolved in the scope of that evaluation, so its
+        // callee is the column's answer on that path. A member body's own
+        // literal or call is on the empty path, and so is a params
+        // default (typed where its locus declares it); an argument default
+        // is one call further. A position lowered at every use (`None`)
+        // has no one path, so it asks every evaluation's answer.
+        type Path = Option<Vec<u32>>;
+        let mut pending: Vec<(Node, usize, Span, Option<PerUsePosition>, Path)> = Vec::new();
         for (i, site) in self.sites.iter().enumerate() {
             if !site.params_default && site.arg_default.is_none() {
-                pending.push((Node::Literal(ExpandedLiteral::Owned(i)), site.enclosing_decl, site.span, None));
+                pending.push((Node::Literal(ExpandedLiteral::Owned(i)), site.enclosing_decl, site.span, None, Some(Vec::new())));
             }
         }
         let every = 0..self.declarations.len();
         for (i, other) in self.other_sites.iter().enumerate() {
             let node = Node::Literal(ExpandedLiteral::Other(i));
             match (other.position, other.enclosing_decl) {
-                (OtherPosition::Closure, Some(decl)) => pending.push((node, decl, other.site.span, None)),
+                (OtherPosition::Closure, Some(decl)) => pending.push((node, decl, other.site.span, None, Some(Vec::new()))),
                 (OtherPosition::Closure, None) => {}
                 (OtherPosition::PerUse(p), _) => {
-                    pending.extend(every.clone().map(|d| (node, d, other.site.span, Some(p))))
+                    pending.extend(every.clone().map(|d| (node, d, other.site.span, Some(p), None)))
                 }
             }
         }
         for (c, call) in self.calls.iter().enumerate() {
             match (call.enclosing_decl, &call.params_field, &call.arg_default, call.per_use) {
-                (Some(decl), None, None, None) => pending.push((Node::Call(c), decl, call.span, None)),
-                (None, None, None, Some(p)) => pending.extend(every.clone().map(|d| (Node::Call(c), d, call.span, Some(p)))),
+                (Some(decl), None, None, None) => pending.push((Node::Call(c), decl, call.span, None, Some(Vec::new()))),
+                (None, None, None, Some(p)) => {
+                    pending.extend(every.clone().map(|d| (Node::Call(c), d, call.span, Some(p), None)))
+                }
                 _ => {}
             }
         }
         // Every node reached from a root is in a default: a root's own
         // literal is never reported, only what it expands.
-        let mut seen: BTreeSet<(Node, usize, u32, u32)> = BTreeSet::new();
+        let mut seen: BTreeSet<(Node, usize, u32, u32, Path)> = BTreeSet::new();
         let mut out = Vec::new();
-        while let Some((node, context, root, per_use)) = pending.pop() {
-            if !seen.insert((node, context, root.start.0, root.end.0)) {
+        while let Some((node, context, root, per_use, path)) = pending.pop() {
+            if !seen.insert((node, context, root.start.0, root.end.0, path.clone())) {
                 continue;
             }
-            let reached: Vec<Node> = match node {
+            // what `node` reaches, and the path it is reached on
+            let (reached, next_path): (Vec<Node>, Path) = match node {
                 Node::Literal(literal) => {
                     let s = self.literal(literal);
                     let (child_ty, child_decl, supplied) = (&s.child_ty, s.child_decl, &s.supplied);
-                    if posted.contains_key(&(self.declarations[context].name.clone(), child_ty.clone())) {
+                    let nodes = if posted.contains_key(&(self.declarations[context].name.clone(), child_ty.clone())) {
                         Vec::new()
                     } else if let Some(child) = child_decl {
                         params
@@ -901,22 +913,34 @@ impl OwnershipGraph {
                             .collect()
                     } else {
                         Vec::new()
-                    }
+                    };
+                    (nodes, Some(Vec::new()))
                 }
-                Node::Call(c) => omitted
-                    .get(&self.calls[c].id)
-                    .into_iter()
-                    .flatten()
-                    .flat_map(|o| {
-                        args.get(&o.callee).into_iter().flatten().filter(move |(i, _)| *i >= o.from).map(|(_, n)| *n)
-                    })
-                    .collect(),
+                Node::Call(c) => {
+                    let id = self.calls[c].id;
+                    // a call already on the path: the checker stops its
+                    // walk of a default that reaches itself there too
+                    if path.as_ref().is_some_and(|p| p.contains(&id)) {
+                        continue;
+                    }
+                    let nodes = omitted
+                        .at(id, path.as_deref())
+                        .into_iter()
+                        .flat_map(|o| {
+                            args.get(&o.callee).into_iter().flatten().filter(move |(i, _)| *i >= o.from).map(|(_, n)| *n)
+                        })
+                        .collect();
+                    (nodes, path.clone().map(|mut p| {
+                        p.push(id);
+                        p
+                    }))
+                }
             };
             for next in reached {
                 if let Node::Literal(literal) = next {
                     out.push(Expansion { literal, context, root, per_use });
                 }
-                pending.push((next, context, root, per_use));
+                pending.push((next, context, root, per_use, next_path.clone()));
             }
         }
         out.sort_by_key(|e| (e.literal, e.context, e.root.start.0, e.root.end.0));

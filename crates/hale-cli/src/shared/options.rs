@@ -225,8 +225,9 @@ pub(crate) fn parse_build_options(
             // binding it injected.
             "--api" => {
                 return Err("`--api <path>` is retired with `bindings { api: … }`: a program \
-                            serves a surface it declares, `api::serve(NAME, unix::Rpc { path: \
-                            \"…\" })` (spec/api.md); `hale check --api` prints its description"
+                            serves a surface it declares, from an exposure param, `web: api::Exposure = \
+                            api::serve(NAME, unix::Rpc { path: \"…\" }, as: \"web\", bound: 64, on_full: refuse);` \
+                            (spec/api.md); `hale check --api` prints its description"
                     .to_string());
             }
             // GH #1109: the deployment target. Its constitution is

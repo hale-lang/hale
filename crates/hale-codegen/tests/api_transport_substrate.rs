@@ -88,6 +88,8 @@ main locus Desk {
         w1: W1 = W1 { };
         w2: W2 = W2 { };
         w3: W3 = W3 { };
+        h: api::Exposure = api::serve(Bench, http::Rpc { bind: std::env::var("BIND"), codec: json, principals: self.bearer, roles: self.roles }, as: "bench", bound: 64, on_full: refuse);
+        u: api::Exposure = api::serve(Bench, unix::Rpc { path: std::env::var("SOCK"), roles: self.roles }, as: "ubench", bound: 64, on_full: refuse);
     }
     placement {
         w0: cooperative(pool = work) where async_io;
@@ -99,8 +101,6 @@ main locus Desk {
         publish __TcpAcceptedT;
     }
     run() {
-        let h = api::serve(Bench, http::Rpc { bind: std::env::var("BIND"), codec: json, principals: self.bearer, roles: self.roles }, as: "bench", bound: 64, on_full: refuse);
-        let u = api::serve(Bench, unix::Rpc { path: std::env::var("SOCK"), roles: self.roles }, as: "ubench", bound: 64, on_full: refuse);
         let stray = std::str::parse_int(std::env::var("STRAY_PORT")) or 0;
         if stray > 0 {
             let go = std::env::var("GO");
@@ -115,8 +115,8 @@ main locus Desk {
         while !self.draining && (std::io::fs::read_file(trigger) or "") == "" {
             std::time::sleep(10ms);
         }
-        h.stop();
-        u.stop();
+        self.h.stop();
+        self.u.stop();
         println("stopped");
     }
     // A connection relayed on a route of `listener` that no consumer takes.

@@ -684,7 +684,7 @@ fn a_cross_pool_spawn_in_another_locus_default_is_refused_at_the_default() {
     let crosspool = g.bubble_plans().crosspool;
     assert!(crosspool.contains_key(&("Driver".to_string(), "Ship".to_string())));
     let contexts: Vec<(String, String)> = g
-        .expansions(&crosspool, &Default::default())
+        .expansions(&crosspool, Default::default())
         .into_iter()
         .filter_map(|e| match e.literal {
             ExpandedLiteral::Owned(i) => Some((
