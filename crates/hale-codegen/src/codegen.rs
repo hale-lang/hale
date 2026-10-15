@@ -17965,6 +17965,31 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 Ok(BlockEnd::Open)
             }
             Stmt::Assign { target, op, value, id: assign_id, .. } => {
+                // A literal spelled with a generic template's name takes
+                // its arguments from the place's declared type, as at a
+                // `let` ascription: `self.cfg = Cfg { n: 2 }` with `cfg:
+                // Cfg<Int>` builds `Cfg_Int`. The literal keeps its id.
+                let rewritten;
+                let value: &Expr = match (op, value) {
+                    (AssignOp::Eq, Expr::Struct { path, inits, span: sspan, id: sid }) => {
+                        match self
+                            .place_declared_ty(target, scope)
+                            .and_then(|t| self.resolve_generic_struct_path_for_codegen_ty(path, &t))
+                        {
+                            Some(new_path) => {
+                                rewritten = Expr::Struct {
+                                    id: *sid,
+                                    path: new_path,
+                                    inits: inits.clone(),
+                                    span: *sspan,
+                                };
+                                &rewritten
+                            }
+                            None => value,
+                        }
+                    }
+                    _ => value,
+                };
                 // A write into a local whose part another name may still
                 // reach — a nested part of a form cell's read, or the
                 // whole of a local bound from a place — copies that part
@@ -33476,6 +33501,33 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         Ok(raw.into_pointer_value())
     }
 
+
+    /// The declared type of an assignment's place, read off the
+    /// layouts without emitting anything: the head's (`self`'s field,
+    /// a local's), then each field's or element's in turn. `None`
+    /// where a step is not a record's, a locus's or an array's.
+    fn place_declared_ty(&self, target: &LValue, scope: &Scope<'ctx>) -> Option<CodegenTy> {
+        let mut segs = target.tail.iter();
+        let mut ty = if target.head.name == "self" {
+            let LValueSeg::Field(f) = segs.next()? else { return None };
+            self.current_self.as_ref()?.fields.get(&f.name)?.1.clone()
+        } else {
+            scope.locals.get(&target.head.name)?.1.clone()
+        };
+        for seg in segs {
+            ty = match (seg, &ty) {
+                (LValueSeg::Field(f), CodegenTy::TypeRef(t)) => {
+                    self.user_types.get(t)?.fields.get(&f.name)?.1.clone()
+                }
+                (LValueSeg::Field(f), CodegenTy::LocusRef(l)) => {
+                    self.user_loci.get(l)?.fields.get(&f.name)?.1.clone()
+                }
+                (LValueSeg::Index(_), CodegenTy::Array(elem, _)) => (**elem).clone(),
+                _ => return None,
+            };
+        }
+        Some(ty)
+    }
 
     /// Generic lvalue walker for assignment targets that the
     /// fast-path branches in `Stmt::Assign` didn't match (1-segment

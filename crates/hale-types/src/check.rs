@@ -13210,7 +13210,15 @@ impl<'a> Checker<'a> {
                             .to_string(),
                     ));
                 }
-                if !self.flows_into(&want, &got, stored) {
+                // A declared place supplies a bare generic literal's
+                // arguments, as a `let` ascription does: codegen rewrites
+                // `self.cfg = Cfg { .. }` against the place's type.
+                let monomorph = matches!(op, AssignOp::Eq)
+                    && self.two_spellings_of_one_monomorph(&want, &got, true);
+                if monomorph {
+                    self.adopt_monomorph_literal_decimals(&want, value);
+                }
+                if !monomorph && !self.flows_into(&want, &got, stored) {
                     self.diags.push(Diag::ty(
                         value.span(),
                         format!(
@@ -20788,8 +20796,9 @@ impl<'a> Checker<'a> {
     ///
     /// `allow_loci` is a per-SITE answer, not a property of the
     /// question. Codegen does the rewrite for a generic locus as
-    /// well as a generic type at a `let` ascription and a return
-    /// slot, and at a locus literal's field override. A locus param
+    /// well as a generic type at a `let` ascription, a return slot
+    /// and an assignment's place, and at a locus literal's field
+    /// override. A locus param
     /// DEFAULT and a data-record field still admit only generic TYPE
     /// literals at this seam, so those sites pass `false` and keep
     /// check agreeing with the build. `crates/hale-codegen/tests/generic_monomorph_agreement.rs`

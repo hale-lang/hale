@@ -856,3 +856,109 @@ fn a_generic_locus_holds_an_array_of_its_parameter() {
     agree("locus_array_of_param", LOCUS_ARRAY_OF_THE_PARAMETER, &Expect::Runs("y2\n6\n"));
     asan_runs("locus_array_of_param", LOCUS_ARRAY_OF_THE_PARAMETER, "y2\n6\n");
 }
+
+// === an assignment's place supplies the arguments ==============
+// `self.cfg = Cfg { n: 2 };` with `cfg: Cfg<Int>` was refused by the
+// checker ("assignment: target type `Cfg_Int` not assignable from
+// `Cfg`"), and the build, which skips the checker, died unlocated at
+// `expression form Discriminant(12)`. The place's declared type
+// supplies the arguments, as a `let` ascription's does.
+
+const ASSIGNED_RECORDS: &str = r#"
+type Cfg<T> {
+    n: T;
+    label: String = "";
+}
+
+type Outer {
+    c: Cfg<Int>;
+}
+
+locus Keeper {
+    params {
+        cfg: Cfg<Int> = Cfg { n: 1, label: "one" };
+    }
+    run() {
+        self.cfg = Cfg { n: 2, label: "two" };
+        println(self.cfg.label, self.cfg.n);
+    }
+}
+
+fn main() {
+    let k = Keeper { };
+    let mut c: Cfg<Int> = Cfg { n: 1, label: "one" };
+    c = Cfg { n: 3, label: "three" };
+    println(c.label, c.n);
+    let o = Outer { c: Cfg { n: 1, label: "one" } };
+    o.c = Cfg { n: 4, label: "four" };
+    println(o.c.label, o.c.n);
+    let a: Cfg<Int> = Cfg { n: 1, label: "a" };
+    let b: Cfg<Int> = Cfg { n: 2, label: "b" };
+    let mut cs = [a, b];
+    cs[1] = Cfg { n: 5, label: "five" };
+    println(cs[1].label, cs[1].n);
+}
+"#;
+
+#[test]
+fn an_assignment_takes_the_arguments_from_its_place() {
+    // A locus's field, a local, a record's field, an array's element.
+    let wanted = "two2\nthree3\nfour4\nfive5\n";
+    agree("assign_record", ASSIGNED_RECORDS, &Expect::Runs(wanted));
+    asan_runs("assign_record", ASSIGNED_RECORDS, wanted);
+}
+
+const ASSIGNED_LOCI: &str = r#"
+locus Cache<K, V> {
+    params {
+        cap: Int = 1;
+    }
+    birth() {
+        println("cap=", self.cap);
+    }
+}
+
+locus Keeper {
+    params {
+        c: Cache<Int, String>;
+    }
+    run() {
+        self.c = Cache { cap: 5 };
+        println("now=", self.c.cap);
+    }
+}
+
+fn main() {
+    let k = Keeper { c: Cache { cap: 2 } };
+    let mut c: Cache<Int, String> = Cache { cap: 3 };
+    c = Cache { cap: 6 };
+    println("local=", c.cap);
+}
+"#;
+
+#[test]
+fn an_assignment_of_a_generic_locus_takes_them_too() {
+    // Each replacement is born where it is stored.
+    let wanted = "cap=2\ncap=5\nnow=5\ncap=3\ncap=6\nlocal=6\n";
+    agree("assign_locus", ASSIGNED_LOCI, &Expect::Runs(wanted));
+    asan_runs("assign_locus", ASSIGNED_LOCI, wanted);
+}
+
+#[test]
+fn a_compound_assignment_of_a_generic_literal_stays_refused() {
+    agree(
+        "assign_compound",
+        r#"
+type Cfg<T> {
+    n: T;
+}
+
+fn main() {
+    let mut c: Cfg<Int> = Cfg { n: 1 };
+    c += Cfg { n: 2 };
+    println(c.n);
+}
+"#,
+        &Expect::Refused("not assignable"),
+    );
+}

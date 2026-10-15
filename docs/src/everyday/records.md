@@ -299,7 +299,8 @@ fn main() {
 A declared return type does the same job (`fn make() -> Box<Int> {
 return Box { value: 4 }; }`), as does a declared field — both at
 its default and at a literal that fills it (`Outer { inner: Box {
-value: 9 } }`).
+value: 9 } }`). So does the place an assignment stores into: with
+`b: Box<Int>`, `b = Box { value: 2 };` builds a `Box<Int>`.
 
 What does *not* work is leaving it to the compiler to guess:
 

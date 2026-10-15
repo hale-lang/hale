@@ -1237,6 +1237,7 @@ declared type at the site. The sites that declare one are:
 - a declared return type — `fn make() -> Box<Int> { return Box { value: 4 }; }`
 - a declared field or param, at its DEFAULT — `params { b: Box<Int> = Box { value: 0 }; }`
 - a declared field of a data type, at a literal's init — `Outer { inner: Box { value: 9 } }`
+- the place of a plain assignment (`=`, not `+=`) — `self.cfg = Cfg { n: 2 };`, a local, a record's field or an array's element, by the place's declared type
 
 At a `let` ascription, a transparent alias of the whole instantiation
 supplies the same arguments: `type IntBox = Box<Int>;` permits
