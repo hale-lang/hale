@@ -1454,13 +1454,15 @@ impl<'a> GenericTemplates<'a> {
         self.by_key.get(&key.0).copied()
     }
 
-    /// The monomorph a mangled name spells (`Box_Int`,
-    /// `Cache_Int_String`): the template whose name and `_` prefix it,
-    /// with exactly as many `_`-joined tokens as the template has
-    /// parameters, each token a primitive, a known name, or else
-    /// `Unknown`. The mangle joins tokens with `_`, so a nested
-    /// instantiation's name is no template's. The monomorph table's
-    /// producer runs it once per name the program spells.
+    /// The monomorph a mangled name spelled in the source names
+    /// (`Box_Int { }`, `x: Cache_Int_String`): the template whose name and
+    /// `_` prefix it, with exactly as many `_`-joined tokens as the
+    /// template has parameters, each token a primitive, a known name, or
+    /// else `Unknown`. Only a bare spelled name has nothing but its string
+    /// to go on; an instantiation a type expression writes is read from
+    /// its structure ([`Self::instantiation`]), since `_` also joins a
+    /// nested instantiation's tokens (`Box_Box_Int` is `Box<Box<Int>>`)
+    /// and a name with `_` in it.
     fn parse(&self, name: &str, known: &KnownNames) -> Option<(NodeId, crate::typed_bodies::TemplateKind, Vec<Ty>)> {
         use crate::typed_bodies::TemplateKind;
         let candidates = self
@@ -1483,6 +1485,58 @@ impl<'a> GenericTemplates<'a> {
         None
     }
 
+    /// The monomorph a generic instantiation written as a type expression
+    /// names (`Box<Int>`, `Pair<Box<Int>, Box<String>>`), read from its
+    /// structure rather than from the name it mangles to: the template
+    /// its path names, and each argument as the mangle spells it (a
+    /// parameter as its binding, a nested instantiation as its own
+    /// monomorph, which goes into `rows` first, anything else as its
+    /// token's type, so an alias argument keeps its name, as the
+    /// monomorph's does). `None` for a path naming no template or an
+    /// argument the mangle cannot spell.
+    fn instantiation(
+        &self,
+        te: &TypeExpr,
+        known: &KnownNames,
+        bindings: &BTreeMap<String, Ty>,
+        rows: &mut Vec<crate::typed_bodies::Monomorph>,
+    ) -> Option<crate::typed_bodies::Monomorph> {
+        use crate::typed_bodies::TemplateKind;
+        let TypeExpr::Named { path, generic_args, .. } = te else { return None };
+        if path.segments.len() != 1 || generic_args.is_empty() || bindings.contains_key(&path.segments[0].name) {
+            return None;
+        }
+        let base = path.segments[0].name.as_str();
+        let (key, kind) = match (self.types.get(base), self.loci.get(base)) {
+            (Some(k), _) => (*k, TemplateKind::Type),
+            (None, Some(k)) => (*k, TemplateKind::Locus),
+            (None, None) => return None,
+        };
+        if self.by_key[&key].generics().len() != generic_args.len() {
+            return None;
+        }
+        let Ty::Named(name) = crate::resolve::resolve_type_expr_with(te, known, bindings) else { return None };
+        let mut args = Vec::with_capacity(generic_args.len());
+        for a in generic_args {
+            let arg = match a {
+                TypeExpr::Named { path, generic_args, .. }
+                    if path.segments.len() == 1 && generic_args.is_empty() && bindings.contains_key(&path.segments[0].name) =>
+                {
+                    bindings[&path.segments[0].name].clone()
+                }
+                TypeExpr::Named { generic_args, .. } if !generic_args.is_empty() => {
+                    let inner = self.instantiation(a, known, bindings, rows)?;
+                    let n = Ty::Named(inner.name.clone());
+                    rows.push(inner);
+                    n
+                }
+                _ => mangle_token_to_ty(&crate::resolve::type_expr_mangle_token(a, known, bindings)?, known),
+            };
+            args.push(arg);
+        }
+        Some(crate::typed_bodies::Monomorph { template: NodeId(key), kind, args, name })
+    }
+
     /// The specializations the table's rows from `from` on instantiate
     /// through their own fields, to a fixpoint: a field whose declared
     /// type applies a template to the row's parameters (`h: Holder<T>`
@@ -1503,12 +1557,12 @@ impl<'a> GenericTemplates<'a> {
             let Some(template) = self.get(m.template) else { continue };
             let bindings: BTreeMap<String, Ty> =
                 template.generics().iter().map(|g| g.name.name.clone()).zip(m.args.iter().cloned()).collect();
-            let mut names = std::collections::BTreeSet::new();
+            let (mut rows, mut names) = (Vec::new(), std::collections::BTreeSet::new());
             match template {
                 GenericTemplate::Type(td) => {
                     if let TypeDeclBody::Struct(fields) = &td.body {
                         for f in fields {
-                            spelled_monomorphs(&f.ty, known, &bindings, &mut names);
+                            self.spelled(&f.ty, known, &bindings, &mut rows, &mut names);
                         }
                     }
                 }
@@ -1516,64 +1570,91 @@ impl<'a> GenericTemplates<'a> {
                     for member in &ld.members {
                         if let LocusMember::Params(pb) = member {
                             for te in pb.params.iter().filter_map(|p| p.ty.as_ref()) {
-                                spelled_monomorphs(te, known, &bindings, &mut names);
+                                self.spelled(te, known, &bindings, &mut rows, &mut names);
                             }
                         }
                     }
                 }
             }
-            for name in names {
-                if let Some((template, kind, args)) = self.parse(&name, known) {
-                    if !args.iter().any(|t| matches!(t, Ty::Unknown)) {
-                        table.insert(crate::typed_bodies::Monomorph { template, kind, args, name });
-                    }
+            for row in rows {
+                if !row.args.iter().any(|t| matches!(t, Ty::Unknown)) {
+                    table.insert(row);
                 }
             }
         }
     }
 }
 
-/// The names a type expression spells that may name a monomorph, each
-/// generic instantiation resolved under `bindings` (`Box<Int>` as
-/// `Box_Int`); a name `bindings` holds is a parameter, not a type.
-fn spelled_monomorphs(
-    te: &TypeExpr,
+impl GenericTemplates<'_> {
+    /// What a type expression spells that may name a monomorph: each
+    /// generic instantiation it writes, read from its structure
+    /// ([`Self::instantiation`]), into `rows`; each bare name it spells
+    /// (a mangled one written out, `x: Box_Int`) into `names`, for
+    /// [`Self::parse`]. A name `bindings` holds is a parameter, not a type.
+    fn spelled(
+        &self,
+        te: &TypeExpr,
+        known: &KnownNames,
+        bindings: &BTreeMap<String, Ty>,
+        rows: &mut Vec<crate::typed_bodies::Monomorph>,
+        names: &mut std::collections::BTreeSet<String>,
+    ) {
+        match te {
+            TypeExpr::Named { path, generic_args, .. } => {
+                if generic_args.is_empty() {
+                    if path.segments.len() == 1 && !bindings.contains_key(&path.segments[0].name) {
+                        names.insert(path.segments[0].name.clone());
+                    }
+                    return;
+                }
+                if let Some(row) = self.instantiation(te, known, bindings, rows) {
+                    rows.push(row);
+                    return;
+                }
+                for a in generic_args {
+                    self.spelled(a, known, bindings, rows, names);
+                }
+            }
+            TypeExpr::Projection { inner, .. } => self.spelled(inner, known, bindings, rows, names),
+            TypeExpr::Array { elem, .. } | TypeExpr::Bounded { elem, .. } => {
+                self.spelled(elem, known, bindings, rows, names)
+            }
+            TypeExpr::Tuple(parts, _) => {
+                for p in parts {
+                    self.spelled(p, known, bindings, rows, names);
+                }
+            }
+            TypeExpr::Function { params, ret, .. } => {
+                for p in params {
+                    self.spelled(p, known, bindings, rows, names);
+                }
+                if let Some(r) = ret {
+                    self.spelled(r, known, bindings, rows, names);
+                }
+            }
+            TypeExpr::Primitive(..) | TypeExpr::Perspective { .. } => {}
+        }
+    }
+}
+
+/// The generic type a monomorph's name names in `bundle`, and its type
+/// arguments: the row of the table the bundle's spellings make
+/// ([`monomorph_table`]), so a nested argument (`Box_Box_Int`) or a name
+/// with `_` in it is read from the instantiation that writes it, never
+/// split back out of the name. `None` for a locus's monomorph or a name
+/// no spelling makes.
+pub(crate) fn type_instance<'a>(
+    bundle: &'a Bundle<'_>,
     known: &KnownNames,
-    bindings: &BTreeMap<String, Ty>,
-    names: &mut std::collections::BTreeSet<String>,
-) {
-    match te {
-        TypeExpr::Named { path, generic_args, .. } => {
-            for a in generic_args {
-                spelled_monomorphs(a, known, bindings, names);
-            }
-            if path.segments.len() != 1 || bindings.contains_key(&path.segments[0].name) {
-                return;
-            }
-            if generic_args.is_empty() {
-                names.insert(path.segments[0].name.clone());
-            } else if let Ty::Named(n) = crate::resolve::resolve_type_expr_with(te, known, bindings) {
-                names.insert(n);
-            }
-        }
-        TypeExpr::Projection { inner, .. } => spelled_monomorphs(inner, known, bindings, names),
-        TypeExpr::Array { elem, .. } | TypeExpr::Bounded { elem, .. } => {
-            spelled_monomorphs(elem, known, bindings, names)
-        }
-        TypeExpr::Tuple(parts, _) => {
-            for p in parts {
-                spelled_monomorphs(p, known, bindings, names);
-            }
-        }
-        TypeExpr::Function { params, ret, .. } => {
-            for p in params {
-                spelled_monomorphs(p, known, bindings, names);
-            }
-            if let Some(r) = ret {
-                spelled_monomorphs(r, known, bindings, names);
-            }
-        }
-        TypeExpr::Primitive(..) | TypeExpr::Perspective { .. } => {}
+    name: &str,
+) -> Option<(&'a TypeDecl, Vec<Ty>)> {
+    let templates = GenericTemplates::of(bundle);
+    let mut table = crate::typed_bodies::Monomorphs::default();
+    monomorph_table(bundle, known, &templates, &mut table);
+    let m = table.named(name)?;
+    match templates.get(m.template)? {
+        GenericTemplate::Type(t) => Some((t, m.args.clone())),
+        GenericTemplate::Locus(_) => None,
     }
 }
 
@@ -1584,8 +1665,10 @@ fn spelled_monomorphs(
 /// each name an annotation or a struct literal spells (`Box_Int { }`) —
 /// keyed by its template's site and its type arguments, and every
 /// specialization those rows instantiate through their fields
-/// ([`GenericTemplates::close_over_fields`]). The mangled name is parsed
-/// here, once per name; every lookup reads the row.
+/// ([`GenericTemplates::close_over_fields`]). An instantiation is read
+/// from the type expression that writes it; only a bare name spelled
+/// out is parsed, once, and only when no row has that name already.
+/// Every lookup reads the row.
 fn monomorph_table(
     bundle: &Bundle<'_>,
     known: &KnownNames,
@@ -1596,12 +1679,12 @@ fn monomorph_table(
     if templates.by_key.is_empty() {
         return;
     }
-    let mut names = std::collections::BTreeSet::new();
+    let (mut rows, mut names) = (Vec::new(), std::collections::BTreeSet::new());
     for program in bundle.programs.values() {
         crate::typed_bodies::for_each_type_spelling(&program.items, &mut |s, parameters| {
             let bindings = parameters.iter().map(|p| (p.clone(), Ty::Unknown)).collect();
             match s {
-                TypeSpelling::Annotation(te) => spelled_monomorphs(te, known, &bindings, &mut names),
+                TypeSpelling::Annotation(te) => templates.spelled(te, known, &bindings, &mut rows, &mut names),
                 TypeSpelling::Literal(path) => {
                     if path.segments.len() == 1 && !parameters.contains(&path.segments[0].name) {
                         names.insert(path.segments[0].name.clone());
@@ -1610,7 +1693,13 @@ fn monomorph_table(
             }
         });
     }
+    for row in rows {
+        out.insert(row);
+    }
     for name in names {
+        if out.named(&name).is_some() {
+            continue;
+        }
         if let Some((template, kind, args)) = templates.parse(&name, known) {
             out.insert(Monomorph { template, kind, args, name });
         }
@@ -17999,13 +18088,26 @@ impl<'a> Checker<'a> {
     /// generic fn). Queue its concrete monomorph in the same producer
     /// as the call rows, so that locus's bodies are walked in turn.
     fn record_specialized_type(&mut self, te: &TypeExpr) {
-        if let Ty::Named(name) = self.resolve_te(te) {
-            if let Some((template, kind, args)) = self.templates.parse(&name, self.known) {
-                if !args.iter().any(|t| matches!(t, Ty::Unknown)) {
-                    let from = self.typed.monomorphs.rows().len();
-                    self.typed.monomorphs.insert(crate::typed_bodies::Monomorph { template, kind, args, name });
-                    self.templates.close_over_fields(self.known, &mut self.typed.monomorphs, from);
+        // An instantiation by its structure (a nested one's row first); a
+        // bare name, a monomorph's mangled name written out, by parsing it.
+        let mut bindings: BTreeMap<String, Ty> =
+            self.generic_params.iter().map(|name| (name.clone(), Ty::Unknown)).collect();
+        bindings.extend(self.generic_bindings.iter().map(|(name, ty)| (name.clone(), ty.clone())));
+        let mut rows = Vec::new();
+        if let Some(row) = self.templates.instantiation(te, self.known, &bindings, &mut rows) {
+            rows.push(row);
+        } else if let (TypeExpr::Named { generic_args, .. }, Ty::Named(name)) = (te, self.resolve_te(te)) {
+            if generic_args.is_empty() {
+                if let Some((template, kind, args)) = self.templates.parse(&name, self.known) {
+                    rows.push(crate::typed_bodies::Monomorph { template, kind, args, name });
                 }
+            }
+        }
+        for row in rows {
+            if !row.args.iter().any(|t| matches!(t, Ty::Unknown)) {
+                let from = self.typed.monomorphs.rows().len();
+                self.typed.monomorphs.insert(row);
+                self.templates.close_over_fields(self.known, &mut self.typed.monomorphs, from);
             }
         }
         match te {

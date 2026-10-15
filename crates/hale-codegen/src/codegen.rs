@@ -1563,6 +1563,7 @@ pub fn build_resolved(
         current_user_fn_scratch_local: false,
         user_types: BTreeMap::new(),
         pending_type_names: BTreeSet::new(),
+        pending_enum_names: BTreeSet::new(),
         user_type_aliases: BTreeMap::new(),
         user_enums: BTreeMap::new(),
         user_interfaces: BTreeSet::new(),
@@ -3636,6 +3637,11 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// type even when the stdlib type's full TypeInfo hasn't
     /// been registered yet.
     pub(crate) pending_type_names: BTreeSet<String>,
+    /// The concrete enums among `pending_type_names`: a name that resolves
+    /// to `Enum` before its declaration lands, as a monomorph's field of
+    /// one (`Box<Mode>`'s `value`) does, the monomorphs being declared
+    /// first.
+    pub(crate) pending_enum_names: BTreeSet<String>,
     /// GH #759: `type Name = T;` — name → target type expression.
     /// An alias is TRANSPARENT: it declares no LLVM type of its
     /// own, and `type_expr_to_codegen_ty` resolves a use of the
@@ -9178,6 +9184,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         for t in &type_decls {
             if t.generics.is_empty() {
                 self.pending_type_names.insert(t.name.name.clone());
+                if matches!(t.body, TypeDeclBody::Enum(_)) {
+                    self.pending_enum_names.insert(t.name.name.clone());
+                }
             }
         }
 

@@ -102,7 +102,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     // own `declare_locus_struct` runs later in the
                     // same pass.
                     Ok(CodegenTy::LocusRef(name.clone()))
-                } else if self.user_enums.contains_key(name) {
+                } else if self.user_enums.contains_key(name) || self.pending_enum_names.contains(name) {
                     // Enums resolve to Enum(name) — BEFORE the
                     // user_types/pending_type_names branch. An enum
                     // name is also inserted into `pending_type_names`
@@ -195,7 +195,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     || self.pending_locus_names.contains(mangled)
                 {
                     Ok(CodegenTy::LocusRef(mangled.to_string()))
-                } else if self.user_enums.contains_key(mangled) {
+                } else if self.user_enums.contains_key(mangled) || self.pending_enum_names.contains(mangled) {
                     // Path-qualified enum (e.g. a cross-seed
                     // `lib::Result`). Checked before the
                     // user_types/pending_type_names branch for the

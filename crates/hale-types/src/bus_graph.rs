@@ -1623,27 +1623,12 @@ pub fn payload_is_flat(bundle: &Bundle<'_>, top: &TopScope, ty: &crate::ty::Ty) 
     // A generic instantiation resolves to its monomorph's name
     // (`Box<Int>` is `Box_Int`, `crate::resolve`), which no scope
     // declares: its fields are the generic declaration's, each type
-    // parameter replaced by the argument the name's tokens spell, as
-    // codegen's monomorph lays them out.
-    fn generic_instance_fields(bundle: &Bundle<'_>, name: &str) -> Option<Vec<Ty>> {
-        let decl = bundle.programs.values().find_map(|p| {
-            flat_decls(&p.items).find_map(|it| match it {
-                TopDecl::Type(t)
-                    if !t.generics.is_empty()
-                        && name.strip_prefix(t.name.name.as_str()).is_some_and(|r| r.starts_with('_')) =>
-                {
-                    Some(t)
-                }
-                _ => None,
-            })
-        })?;
-        let tokens: Vec<&str> = name[decl.name.name.len() + 1..].split('_').collect();
-        if tokens.len() != decl.generics.len() {
-            return None;
-        }
-        let arg = |tok: &str| -> Ty {
-            crate::ty::prim_of_mangle_token(tok).map(Ty::Prim).unwrap_or_else(|| Ty::Named(tok.to_string()))
-        };
+    // parameter replaced by its argument, as codegen's monomorph lays them
+    // out. The declaration and arguments are the monomorph table's row,
+    // read from the instantiation the program writes
+    // (`check::type_instance`), not split out of the name.
+    fn generic_instance_fields(bundle: &Bundle<'_>, top: &TopScope, name: &str) -> Option<Vec<Ty>> {
+        let (decl, args) = crate::check::type_instance(bundle, &top.names, name)?;
         let TypeDeclBody::Struct(fields) = &decl.body else { return None };
         Some(
             fields
@@ -1653,7 +1638,7 @@ pub fn payload_is_flat(bundle: &Bundle<'_>, top: &TopScope, ty: &crate::ty::Ty) 
                     TypeExpr::Named { path, generic_args, .. } if path.segments.len() == 1 && generic_args.is_empty() => {
                         let n = &path.segments[0].name;
                         match decl.generics.iter().position(|g| g.name.name == *n) {
-                            Some(i) => arg(tokens[i]),
+                            Some(i) => args.get(i).cloned().unwrap_or(Ty::Unknown),
                             None => Ty::Named(n.clone()),
                         }
                     }
@@ -1687,7 +1672,7 @@ pub fn payload_is_flat(bundle: &Bundle<'_>, top: &TopScope, ty: &crate::ty::Ty) 
                     // field and never a record, as `Int` is.
                     TypeKind::Enum(_) | TypeKind::Scalar(_) => false,
                 },
-                None => generic_instance_fields(bundle, n)
+                None => generic_instance_fields(bundle, top, n)
                     .is_some_and(|fields| fields.iter().all(|f| field_is_flat_scalar(top, f, 0))),
                 _ => false,
             },

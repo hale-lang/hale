@@ -3261,6 +3261,16 @@ row	Cache_Int_String@main2	Cache_Int_String	main	default
 == crates/hale-codegen/tests/generic_monomorph_agreement.rs#ce7540ff
 shared	Supervisor_Scalar@main1	Supervisor_Scalar #b5a04dba
 
+== crates/hale-codegen/tests/generic_monomorph_agreement.rs#097abf2f
+-- Show@main1	Show
+row	~	Show	main	default
+row	~.k	Keep_Box_String	main	inherited
+
+== crates/hale-codegen/tests/generic_monomorph_agreement.rs#82cb2ff7
+root	App	the entry
+row	App@literal1	App	main	default
+row	App@literal1.rx	Rx	main	default
+
 == crates/hale-codegen/tests/generics.rs#d523f812
 dynamic	<hole>	on main|unresolved declaration `Box_Int`	in the seed
 
@@ -3297,6 +3307,9 @@ row	Sub@main1	Sub	main	default
 
 == crates/hale-codegen/tests/generics.rs#74fdf6fb
 dynamic	<hole>	on main|unresolved declaration `Box_Int`|unresolved declaration `Tagged_Int`	in the seed
+
+== crates/hale-codegen/tests/generics.rs#97bc2087
+dynamic	<hole>	on main|unresolved declaration `Box_Box_Int`|unresolved declaration `Box_Int`	in the seed
 
 == crates/hale-codegen/tests/generics.rs#1098d8c5
 dynamic	<hole>	on main|unresolved declaration `Box_Int`	in the seed
@@ -4361,6 +4374,10 @@ row	Pool_Beta@main2	Pool_Beta	main	default
 -- dynamic	sites in the seed
 dynamic	Alpha	on main
 dynamic	Beta	on main
+
+== crates/hale-codegen/tests/release_generic_owner.rs#52aebe0c
+row	Manager_Cell_Int@main1	Manager_Cell_Int	main	default
+dynamic	Cell_Int	on main	in the seed
 
 == crates/hale-codegen/tests/release_two_parents.rs#fc39dee1
 root	App	the entry

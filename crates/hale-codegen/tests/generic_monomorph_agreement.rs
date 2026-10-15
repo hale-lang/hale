@@ -1301,3 +1301,124 @@ fn main() {
         &Expect::Runs("17"),
     );
 }
+
+// === a nested instantiation is read from its structure ==========
+// `let n: Box<Box<Int>> = ..; n.value.value` was refused, "no field
+// `value` on `Box_Box_Int`": the monomorph table parsed each mangled name
+// back into a template and `_`-split tokens, and `Box_Box_Int` splits
+// into two tokens for a one-parameter template. The table now reads an
+// instantiation from the type expression that writes it (the nested one's
+// row first), and the bus graph's payload flatness reads that row too, so
+// neither nesting nor a `_` in an argument's name is split back out.
+
+const NESTED: &str = r#"
+type Box<T> {
+    value: T;
+}
+
+type Pair<A, B> {
+    left: A;
+    right: B;
+}
+
+locus Keep<T> {
+    params {
+        held: T;
+    }
+    fn get() -> T {
+        return self.held;
+    }
+}
+
+locus Show {
+    params {
+        k: Keep<Box<String>>;
+    }
+    run() {
+        println(self.k.get().value);
+    }
+}
+
+fn main() {
+    let n: Box<Box<Int>> = Box { value: Box { value: 7 } };
+    println(n.value.value);
+    let p: Pair<Box<Int>, Box<String>> = Pair { left: Box { value: 1 }, right: Box { value: "two" } };
+    println(p.left.value, p.right.value);
+    let deep: Box<Pair<Box<Int>, Box<Box<String>>>> = Box { value: Pair { left: Box { value: 3 }, right: Box { value: Box { value: "four" } } } };
+    println(deep.value.left.value, deep.value.right.value.value);
+    let s = Show { k: Keep { held: Box { value: "kept" } } };
+}
+"#;
+
+#[test]
+fn a_nested_instantiation_is_its_structure() {
+    // Box<Box<Int>>, Pair<Box<Int>, Box<String>>, three levels, and a
+    // generic locus over a generic record.
+    let wanted = "7\n1two\n3four\nkept\n";
+    agree("nested", NESTED, &Expect::Runs(wanted));
+    asan_runs("nested", NESTED, wanted);
+}
+
+const ENUM_ARGUMENT: &str = r#"
+type Mode = enum { Fast, Slow };
+
+type Box<T> {
+    value: T;
+}
+
+fn main() {
+    let b: Box<Mode> = Box { value: Mode::Slow };
+    match b.value {
+        Mode::Fast -> println("fast"),
+        Mode::Slow -> println("slow"),
+    }
+}
+"#;
+
+#[test]
+fn an_enum_argument_is_an_enum_in_its_monomorph() {
+    // The monomorphs are declared before the program's enums: a field
+    // of a parameter bound to one resolved as a record, so `Box<Mode>`
+    // failed ("declared TypeRef(\"Mode\"), got Enum(\"Mode\")").
+    agree("enum_argument", ENUM_ARGUMENT, &Expect::Runs("slow\n"));
+}
+
+const BUS_PAYLOAD_INSTANCE: &str = r#"
+type Big_Mode = enum { Fast, Slow };
+
+type Pair<A, B> {
+    left: A;
+    right: B;
+}
+
+locus Rx {
+    bus {
+        subscribe "pairs" as on_pair of type Pair<Big_Mode, Int>;
+    }
+    fn on_pair(p: Pair<Big_Mode, Int>) {
+        println("right=", p.right);
+    }
+}
+
+main locus App {
+    params {
+        rx: Rx = Rx { };
+    }
+    bus {
+        publish "pairs" of type Pair<Big_Mode, Int>;
+    }
+    run() {
+        let p: Pair<Big_Mode, Int> = Pair { left: Big_Mode::Fast, right: 5 };
+        "pairs" <- p;
+    }
+}
+
+fn main() { App { }; }
+"#;
+
+#[test]
+fn a_bus_payload_instance_over_an_underscored_name_lowers() {
+    // `Pair<Big_Mode, Int>`: the payload's flatness is the row's fields,
+    // `Big_Mode` a payload-less enum, so the plan and the codec agree.
+    agree("bus_payload_instance", BUS_PAYLOAD_INSTANCE, &Expect::Runs("right=5\n"));
+}
