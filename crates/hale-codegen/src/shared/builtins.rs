@@ -808,11 +808,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         self.module.add_function("lotus_domain_here", i64_t.fn_type(&[], false), None);
         self.module.add_function("lotus_domain_act", i64_t.fn_type(&[i64_t.into()], false), None);
         self.module.add_function("lotus_domain_restore", void_t.fn_type(&[i64_t.into()], false), None);
-        self.module.add_function("lotus_domain_also_enter", i64_t.fn_type(&[i64_t.into()], false), None);
-        self.module.add_function("lotus_domain_also_restore", void_t.fn_type(&[i64_t.into()], false), None);
+        self.module.add_function("lotus_domain_also_enter", void_t.fn_type(&[i64_t.into(), ptr_t.into(), ptr_t.into()], false), None);
+        self.module.add_function("lotus_domain_also_leave", void_t.fn_type(&[], false), None);
         let xpool_failed = self.module.add_function(
             "lotus_cross_pool_check_failed",
-            void_t.fn_type(&[ptr_t.into(), i64_t.into(), i64_t.into()], false),
+            void_t.fn_type(&[ptr_t.into(), i64_t.into(), i64_t.into(), ptr_t.into()], false),
             None,
         );
         xpool_failed.add_attribute(

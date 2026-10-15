@@ -1758,8 +1758,22 @@ static void lotus_domain_now_main(void) {
 /* GH #1566: a second domain the running code may reach: an
  * `on_failure` handler's failed child's, for the handler's duration (the
  * child is stopped while its owner's handler runs, and the handler may
- * touch what it holds). 0: none. */
-__thread int64_t lotus_domain_also = 0;
+ * touch what it holds) — for the child and the subtree it owns only
+ * (`owns`, a compiled walk of it), not every instance on that domain.
+ * Handlers nest; the innermost few are kept. */
+typedef int64_t (*lotus_xpool_owns_fn)(void *root, void *target, int64_t depth);
+/* GH #1566: the site of the program's last call into a stdlib locus's
+ * method on this thread (compiled code stores it): what a violation
+ * found inside the stdlib is reported under. */
+__thread const char *lotus_xpool_user_site = 0;
+typedef struct {
+    int64_t             domain;
+    void               *root;
+    lotus_xpool_owns_fn owns;
+} lotus_domain_also_t;
+#define LOTUS_DOMAIN_ALSO_MAX 16
+static __thread lotus_domain_also_t t_domain_also[LOTUS_DOMAIN_ALSO_MAX];
+static __thread int t_domain_also_depth = 0;
 
 /* GH #1566: code the runtime runs on a thread that is not the
  * instance's on purpose — a pool-placed root's `drain()` / `dissolve()`
@@ -1775,16 +1789,19 @@ void lotus_domain_restore(int64_t prev) {
     lotus_domain_now = prev;
 }
 
-/* GH #1566: an `on_failure` handler's duration: its failed child's
- * domain is reachable too. Returns what to restore. */
-int64_t lotus_domain_also_enter(int64_t d) {
-    int64_t prev = lotus_domain_also;
-    lotus_domain_also = d;
-    return prev;
+/* GH #1566: an `on_failure` handler's duration: its failed child
+ * (`root`, on domain `d`) and what it owns are reachable too. */
+void lotus_domain_also_enter(int64_t d, void *root, void *owns) {
+    int i = t_domain_also_depth++;
+    if (i < LOTUS_DOMAIN_ALSO_MAX) {
+        t_domain_also[i].domain = d;
+        t_domain_also[i].root = root;
+        t_domain_also[i].owns = (lotus_xpool_owns_fn)owns;
+    }
 }
 
-void lotus_domain_also_restore(int64_t prev) {
-    lotus_domain_also = prev;
+void lotus_domain_also_leave(void) {
+    if (t_domain_also_depth > 0) t_domain_also_depth--;
 }
 
 /* This thread's domain token, made on first use. */
@@ -11881,20 +11898,32 @@ typedef struct {
 
 __attribute__((cold, noinline))
 void lotus_cross_pool_check_failed(const lotus_xpool_site_t *at,
-                                   int64_t recv_domain, int64_t now) {
+                                   int64_t recv_domain, int64_t now,
+                                   void *recv) {
     if (recv_domain == 0 || now == 0 || recv_domain == now) return;
-    /* an `on_failure` handler's failed child, and what it holds */
-    if (recv_domain == lotus_domain_also) return;
+    /* an `on_failure` handler's failed child, and what it owns */
+    int depth = t_domain_also_depth < LOTUS_DOMAIN_ALSO_MAX ? t_domain_also_depth : LOTUS_DOMAIN_ALSO_MAX;
+    for (int i = depth - 1; i >= 0; i--) {
+        const lotus_domain_also_t *a = &t_domain_also[i];
+        if (a->domain == recv_domain && (!a->owns || a->owns(a->root, recv, 0))) return;
+    }
     const char *site = at->site, *what = at->what, *locus = at->locus;
+    /* a site inside the stdlib has no location of its own: the program's
+     * last call into a stdlib locus on this thread is the one it is under */
+    const char *under = "";
+    if (!(site && *site) && lotus_xpool_user_site) {
+        site = lotus_xpool_user_site;
+        under = " (inside the stdlib, under the call here)";
+    }
     char here[128], there[128];
     lotus_domain_describe(now, here, sizeof here);
     lotus_domain_describe(recv_domain, there, sizeof there);
     fprintf(stderr,
-            "%s%sviolation: cross-pool %s from %s; this `%s` runs on %s: "
+            "%s%sviolation: cross-pool %s from %s%s; this `%s` runs on %s: "
             "reach it through a method on the bus (spec/types.md § "
             "\"Single-threaded-method invariant (F.31)\")\n",
             site && *site ? site : "", site && *site ? ": " : "",
-            what, here, locus, there);
+            what, here, under, locus, there);
     fflush(stderr);
     exit(1);
 }

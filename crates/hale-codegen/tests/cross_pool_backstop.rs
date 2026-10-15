@@ -421,3 +421,278 @@ fn main() {{
         "{stderr}"
     );
 }
+
+/// An instance a locus already holds, handed to a holder on another pool
+/// by a path the checker does not follow (a builder called through a fn
+/// value): the holder shares it, its domain stays its owner's, and the
+/// holder's store down `self` through that field is caught where it is
+/// made — whichever builder spelling hands it over. The same hand-over
+/// within one pool runs.
+#[test]
+fn an_alias_handed_across_pools_through_a_fn_value_is_caught() {
+    let program = |builder: &str, same_pool: bool| {
+        let placement = if same_pool {
+            "placement { srv: cooperative(pool = io); a: cooperative(pool = io); }"
+        } else {
+            "placement { srv: cooperative(pool = io); }"
+        };
+        format!(
+            r#"locus W {{ params {{ name: String = ""; }} }}
+locus Routes {{
+    params {{ w: W; }}
+    fn handle(req: std::http::Request) -> std::http::Response {{
+        self.w.name = std::str::upper("from the server's pool");
+        return std::http::Response {{ status: 200, body: "ok" }};
+    }}
+}}
+fn mk(w: W) -> Routes {{ return Routes {{ w: w }}; }}
+fn mk2(w: W) -> Routes {{ let r = Routes {{ w: w }}; return r; }}
+fn mk3(w: W) -> Routes {{ return Routes {{ w: {{ let x = w; x }} }}; }}
+fn via(f: fn(W) -> Routes, w: W) -> Routes {{ return f(w); }}
+main locus App {{
+    params {{
+        a: W = W {{ }};
+        srv: std::http::Server = std::http::Server {{ host: "127.0.0.1", port: 0, handler: via({builder}, self.a) }};
+    }}
+    {placement}
+    run() {{
+        let mut i = 0;
+        while i < 40 && !self.draining {{ std::time::sleep(50ms); i = i + 1; }}
+        println("APP DONE");
+    }}
+}}
+fn main() {{ App {{ }}; }}
+"#
+        )
+    };
+    for builder in ["mk", "mk2", "mk3"] {
+        let (status, stdout, stderr, _) = serve_one(&program(builder, false), "hale_1566_alias_fn_value", false);
+        assert_eq!(status.code(), Some(1), "{builder}: {status:?}\nstdout: {stdout}\nstderr: {stderr}");
+        assert!(stderr.contains(&format!("main.hl:5:9: {REPORT}")), "{builder}: {stderr}");
+        let (status, stdout, stderr, line) = serve_one(&program(builder, true), "hale_1566_alias_fn_value_same", false);
+        assert!(line.contains("200"), "{builder}: the request is answered: {line:?}; stderr: {stderr}");
+        assert!(status.success() && stdout.contains("APP DONE"), "{builder}: {status:?}\nstderr: {stderr}");
+    }
+}
+
+/// An `on_failure` handler reaches its failed child's domain for the
+/// child and what it owns only: a store through a fn value into the
+/// child's own child is let through, one into another instance running
+/// on that pool is a violation.
+#[test]
+fn an_on_failure_handler_reaches_only_its_failed_childs_subtree() {
+    let program = |target: &str| {
+        format!(
+            r#"locus C {{ params {{ name: String = "c"; }} }}
+fn touch(c: C) {{ c.name = std::str::upper("from the handler"); }}
+locus Q {{
+    params {{ c: C = C {{ name: "a" }}; n: Int = 0; }}
+    closure fuse {{ captures: n; epoch inline; }}
+    run() {{ violate fuse; }}
+}}
+locus R {{
+    params {{ c: C = C {{ name: "r" }}; }}
+    run() {{ while !self.draining {{ std::time::sleep(10ms); }} }}
+}}
+main locus App {{
+    params {{ q: Q = Q {{ }}; r: R = R {{ }}; }}
+    placement {{ q: cooperative(pool = io); r: cooperative(pool = io); }}
+    on_failure(q: Q, err: ClosureViolation) {{
+        let f: fn(C) = touch;
+        f({target});
+        println("HANDLED");
+    }}
+    run() {{ std::time::sleep(200ms); println("APP DONE"); }}
+}}
+fn main() {{ App {{ }}; }}
+"#
+        )
+    };
+    let out = build_run(&program("q.c"), "hale_1566_on_failure_own", false);
+    let (stdout, stderr) = (String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+    assert!(out.status.success() && stdout.contains("HANDLED"), "{:?}\nstdout: {stdout}\nstderr: {stderr}", out.status);
+    let out = build_run(&program("self.r.c"), "hale_1566_on_failure_other", false);
+    let (stdout, stderr) = (String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+    assert_eq!(out.status.code(), Some(1), "stdout: {stdout}\nstderr: {stderr}");
+    assert!(stderr.contains("violation: cross-pool store into `C.name` from pool `main`; this `C` runs on pool `io`"), "{stderr}");
+    assert!(!stdout.contains("HANDLED"), "{stdout}");
+}
+
+/// The hand-over the DNA head makes: an instance `fn main` builds goes
+/// through a chain of helpers' parameters into the literal of an
+/// io-placed server's handler. Nothing held it before, so it moves to
+/// io with what it owns and serves from there.
+#[test]
+fn a_fresh_instance_handed_through_parameters_serves_from_its_holders_pool() {
+    let src = r#"locus Inner { params { s: String = ""; } }
+locus Web {
+    params { name: String = "w"; inner: Inner = Inner { }; }
+    fn serves() -> Bool {
+        self.name = std::str::upper("on the server's pool");
+        let i = self.inner;
+        i.s = std::str::upper("on the server's pool");
+        return true;
+    }
+}
+locus Api {
+    params { web: Web; }
+    fn handle(req: std::http::Request) -> std::http::Response {
+        let ok = self.web.serves();
+        return std::http::Response { status: 200, body: "ok" };
+    }
+}
+main locus App {
+    params { srv: std::http::Server; }
+    placement { srv: cooperative(pool = io); }
+    run() {
+        let mut i = 0;
+        while i < 20 && !self.draining { std::time::sleep(50ms); i = i + 1; }
+        println("APP DONE");
+    }
+}
+fn up(web: Web) { App { srv: std::http::Server { host: "127.0.0.1", port: 0, handler: Api { web: web } } }; }
+fn serve(web: Web) { up(web); }
+fn main() {
+    let web = Web { };
+    let loaded = web.serves();
+    serve(web);
+}
+"#;
+    let (status, stdout, stderr, line) = serve_one(src, "hale_1566_adopt_params", false);
+    assert!(line.contains("200"), "the request is answered: {line:?}; stderr: {stderr}");
+    assert!(status.success() && stdout.contains("APP DONE"), "{status:?}\nstderr: {stderr}");
+}
+
+/// A violation the backstop finds inside the stdlib (here, the router
+/// calling a route handler that runs on main, from the server's pool) has
+/// no location of its own: it is reported at the program's call into the
+/// stdlib it is under.
+#[test]
+fn a_violation_inside_the_stdlib_names_the_programs_call() {
+    let src = r#"locus H {
+    params { note: String = ""; }
+    fn handle(ctx: std::http::Context) -> std::http::Response {
+        self.note = std::str::upper("hit");
+        return std::http::Response { status: 200, body: "h" };
+    }
+}
+locus Routes {
+    params { r: std::http::Router = std::http::Router { }; h: H; ready: Bool = false; }
+    fn handle(req: std::http::Request) -> std::http::Response {
+        if !self.ready { self.r.add("GET", "/", self.h); self.ready = true; }
+        return self.r.dispatch(req);
+    }
+}
+main locus App {
+    params {
+        h: H = H { };
+        srv: std::http::Server = std::http::Server { host: "127.0.0.1", port: 0, handler: Routes { h: self.h } };
+    }
+    placement { srv: cooperative(pool = io); }
+    run() {
+        let mut i = 0;
+        while i < 40 && !self.draining { std::time::sleep(50ms); i = i + 1; }
+        println("APP DONE");
+    }
+}
+fn main() { App { }; }
+"#;
+    let (status, _, stderr, _) = serve_one(src, "hale_1566_stdlib_site", false);
+    assert_eq!(status.code(), Some(1), "{stderr}");
+    assert!(
+        stderr.contains("main.hl:12:16: violation: cross-pool method call `StdHttpRouteHandler.handle` from pool `io` (inside the stdlib, under the call here); this `StdHttpRouteHandler` runs on pool `main`"),
+        "{stderr}"
+    );
+}
+
+/// The DNA API's shape (the face's Knowledge reads, CI on 6b70fc90c): a
+/// provider `fn main`'s helper builds — holding a store that owns a
+/// connection — is handed to an io-placed server's handler through a
+/// field of interface type. The provider moves to io with what it owns,
+/// so a free fn the store hands its connection to (`dial(self.conn)`)
+/// fills it on io, its own pool, and no violation is reported.
+#[test]
+fn a_provider_handed_through_an_interface_field_moves_with_what_it_owns() {
+    let src = r#"locus Conn { params { host: String = ""; } }
+fn dial(c: Conn, host: String) { c.host = host; }
+locus Store {
+    params { conn: Conn = Conn { }; }
+    fn open() -> Bool { dial(self.conn, std::str::upper("db")); return true; }
+}
+interface Provider { fn read() -> String; }
+locus Local {
+    params { root: String = "."; store: Store = Store { }; }
+    fn read() -> String { let ok = self.store.open(); return self.root; }
+}
+locus Api {
+    params { knowledge: Provider; }
+    fn handle(req: std::http::Request) -> std::http::Response {
+        return std::http::Response { status: 200, body: self.knowledge.read() };
+    }
+}
+main locus App {
+    params { srv: std::http::Server; }
+    placement { srv: cooperative(pool = io); }
+    run() {
+        let mut i = 0;
+        while i < 20 && !self.draining { std::time::sleep(50ms); i = i + 1; }
+        println("APP DONE");
+    }
+}
+fn up(knowledge: Provider) { App { srv: std::http::Server { host: "127.0.0.1", port: 0, handler: Api { knowledge: knowledge } } }; }
+fn main() {
+    let knowledge = Local { root: "r" };
+    up(knowledge);
+}
+"#;
+    let (status, stdout, stderr, line) = serve_one(src, "hale_1566_adopt_iface", false);
+    assert!(line.contains("200"), "the request is answered: {line:?}; stderr: {stderr}");
+    assert!(status.success() && stdout.contains("APP DONE"), "{status:?}\nstderr: {stderr}");
+    assert!(!stderr.contains("violation"), "{stderr}");
+}
+
+/// A graph composed from locals and handed over whole (the DNA heads
+/// build their command providers this way): the provider holds a service
+/// through an interface, the service a store of its own. The provider's
+/// first holder moves it, and it moves what it holds first in turn, so
+/// the service answers on the server's pool too.
+#[test]
+fn a_composed_graph_moves_with_its_first_holder() {
+    let src = r#"locus Conn { params { host: String = ""; } }
+fn dial(c: Conn, host: String) { c.host = host; }
+interface Service { fn supported() -> Bool; }
+locus Native {
+    params { conn: Conn = Conn { }; }
+    fn supported() -> Bool { dial(self.conn, std::str::upper("db")); return true; }
+}
+locus Provider {
+    params { service: Service; }
+    fn read() -> String { if self.service.supported() { return "yes"; } return "no"; }
+}
+locus Api {
+    params { provider: Provider; }
+    fn handle(req: std::http::Request) -> std::http::Response {
+        return std::http::Response { status: 200, body: self.provider.read() };
+    }
+}
+main locus App {
+    params { srv: std::http::Server; }
+    placement { srv: cooperative(pool = io); }
+    run() {
+        let mut i = 0;
+        while i < 20 && !self.draining { std::time::sleep(50ms); i = i + 1; }
+        println("APP DONE");
+    }
+}
+fn up(provider: Provider) { App { srv: std::http::Server { host: "127.0.0.1", port: 0, handler: Api { provider: provider } } }; }
+fn main() {
+    let native = Native { };
+    let provider = Provider { service: native };
+    up(provider);
+}
+"#;
+    let (status, stdout, stderr, line) = serve_one(src, "hale_1566_adopt_graph", false);
+    assert!(line.contains("200"), "the request is answered: {line:?}; stderr: {stderr}");
+    assert!(status.success() && stdout.contains("APP DONE"), "{status:?}\nstderr: {stderr}");
+    assert!(!stderr.contains("violation"), "{stderr}");
+}
