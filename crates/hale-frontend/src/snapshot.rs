@@ -1431,10 +1431,18 @@ impl Snapshot {
             .get_or_init(|| {
                 let scope = self.scope().map_err(Clone::clone)?;
                 let bindings = self.demand_bindings().map_err(Clone::clone)?;
-                let placement = self.demand_placement().map_err(Clone::clone)?;
                 let entry = self.demand_entry().map_err(Clone::clone)?;
                 self.count("bus_graph");
-                Ok(hale_types::bus_graph::build_bus_graph(&self.bundle(), &scope.top, bindings, placement, entry))
+                // The table without the checker's walk: the graph reads
+                // where instances run, and a request for it (the editor's
+                // `hale/busGraph`) builds no typing. What only the walk
+                // resolves (a generic locus literal assigned at a place,
+                // `derive_placement`'s `typing`) stays a hole here, an
+                // instance of no known domain: no direct call is planned
+                // through it.
+                let bundle = self.bundle();
+                let placement = hale_types::placement::derive_placement(&bundle, &scope.top, entry, None);
+                Ok(hale_types::bus_graph::build_bus_graph(&bundle, &scope.top, bindings, &placement, entry))
             })
             .as_ref()
     }

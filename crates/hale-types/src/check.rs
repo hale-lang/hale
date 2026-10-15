@@ -646,7 +646,9 @@ fn check_numbered_bundle(
     };
     let ownership = crate::ownership_graph::build_ownership_graph(bundle, top, &placement, &entry);
     let forms = crate::form_rows::form_rows(bundle, top, &placement, true);
-    let bus = crate::bus_graph::build_bus_graph(bundle, top, &bindings, &placement, &entry);
+    // The bus graph reads the table without the walk, as the snapshot's does.
+    let bus_placement = crate::placement::derive_placement(bundle, top, &entry, None);
+    let bus = crate::bus_graph::build_bus_graph(bundle, top, &bindings, &bus_placement, &entry);
     let uses = crate::capability::uses::derive_capability_uses(bundle, &alloc_summary);
     let laws = crate::bundle_law_selection(bundle);
     let roles = crate::roles::role_rows(bundle);
