@@ -387,6 +387,9 @@ fn what_main_builds_before_a_listener_born_after_its_server_must_return() {
     const RECORD_BUILDS_APP: &str = "type Holder { n: Int = { App { n: { while true { } 0 } }; 0 }; }\nfn main() { let h = Holder { }; }";
     const HELPER_SETTLES: &str = "fn settle() -> Int { std::time::sleep(1s); return 0; }\nfn helper(n: Int = settle()) -> Int { return n; }";
     const CONST_SETTLES: &str = "fn settle() -> Int { std::time::sleep(1s); return 0; }\nconst K: Int = settle();";
+    const PICK_FREE_SETTLES: &str =
+        "fn settle() -> Int { std::time::sleep(1s); return 0; }\nfn pick(n: Int = settle()) -> Int { return n; }";
+    const PICK_FREE_RETURNS: &str = "fn settle() -> Int { std::time::sleep(1s); return 0; }\nfn pick(n: Int = 0) -> Int { return n; }";
     const SHADOW_FN_LOCAL: &str =
         "fn settle() -> Int { std::time::sleep(1s); return 0; }\nconst K: Int = settle();\nfn quick() -> Int { let K = 0; return K; }";
     const SHADOW_FN_PARAM: &str =
@@ -463,6 +466,13 @@ fn what_main_builds_before_a_listener_born_after_its_server_must_return() {
         // a const that is no literal: evaluated where it is read
         ("a const read by a default", "", "n: Int = K; server: Server = Server { };", CONST_SETTLES, "", Some("the value of the const `K`")),
         ("a literal const read by a default", "", "n: Int = K; server: Server = Server { };", "const K: Int = 5;", "", None),
+        // the defaults a call leaves are its callee's as the checker resolves
+        // the call (the `omitted_args` column), as lowering expands them
+        ("a call by a fn's name a local fn value also has", "", "n: Int = { let helper = zero; helper() }; server: Server = Server { };", &format!("{HELPER_SETTLES}\nfn zero() -> Int {{ return 0; }}"), "", Some("the default of `helper`'s param `n`")),
+        ("a method call, a free fn of its name sleeping", "    fn pick(n: Int = 0) -> Int { return n; }\n    run() { let k = self.pick(); }", HOLDS, PICK_FREE_SETTLES, "", None),
+        ("a method call, the method sleeping", "    fn pick(n: Int = settle()) -> Int { return n; }\n    run() { let k = self.pick(); }", HOLDS, PICK_FREE_RETURNS, "", Some("`Server`'s `run()`")),
+        ("a free call in a method, a method of its name sleeping", "    fn pick(n: Int = settle()) -> Int { return n; }\n    run() { let k = pick(); }", HOLDS, PICK_FREE_RETURNS, "", None),
+        ("a free call in a default, a method of its name sleeping", "    fn pick(n: Int = settle()) -> Int { return n; }", "k: Int = pick(); server: Server = Server { };", PICK_FREE_RETURNS, "", None),
         // a const read is the checker's resolution: a binding in scope shadows it
         ("a let shadows the const", "", "n: Int = { let K = 0; K }; server: Server = Server { };", CONST_SETTLES, "", None),
         ("a fn's let shadows the const", "", "n: Int = quick(); server: Server = Server { };", SHADOW_FN_LOCAL, "", None),
@@ -550,6 +560,39 @@ fn an_imported_fn_called_before_the_listener_is_followed() {
     std::fs::write(d.join("lib/hale.toml"), "[deps]\n").unwrap();
     std::fs::write(d.join("lib/main.hl"), "fn settle() -> Int { while true { } return 0; }\nfn quick() -> Int { return 1; }\n").unwrap();
     std::fs::write(d.join("main.hl"), entry("quick")).unwrap();
+    assert_eq!(errors_of_seed(&d), Vec::<String>::new());
+    // an imported fn's param default, left by the call: evaluated at the
+    // call, as the checker's `omitted_args` column resolves it
+    let seed = || {
+        std::fs::create_dir_all(d.join("lib")).unwrap();
+        std::fs::write(d.join("hale.toml"), "[deps]\n").unwrap();
+        std::fs::write(d.join("lib/hale.toml"), "[deps]\n").unwrap();
+    };
+    seed();
+    std::fs::write(
+        d.join("lib/main.hl"),
+        "fn settle() -> Int { while true { } return 0; }\nfn helper(n: Int = settle()) -> Int { return n; }\n",
+    )
+    .unwrap();
+    let call = |args: &str| {
+        format!(
+            "import \"lib\" as lib;\n{}",
+            server(SERVED, &format!("n: Int = lib::helper({args}); server: Server = Server {{ }};"))
+        )
+    };
+    std::fs::write(d.join("main.hl"), call("")).unwrap();
+    let errs = errors_of_seed(&d);
+    assert!(
+        errs.iter().any(|e| e.contains("the default of `App.n`") && e.contains("'s param `n`") && e.contains("may not return")),
+        "{errs:#?}"
+    );
+    seed();
+    std::fs::write(
+        d.join("lib/main.hl"),
+        "fn settle() -> Int { while true { } return 0; }\nfn helper(n: Int = settle()) -> Int { return n; }\n",
+    )
+    .unwrap();
+    std::fs::write(d.join("main.hl"), call("1")).unwrap();
     assert_eq!(errors_of_seed(&d), Vec::<String>::new());
 }
 

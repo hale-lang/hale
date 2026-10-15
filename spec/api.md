@@ -391,7 +391,7 @@ and everything a walked expression evaluates without writing it:
 | a locus literal `C { … }` anywhere in a walked expression (an array or tuple element, a block, an `if`/`match` arm, a call's argument, a literal's field, a default) | the params it leaves to their defaults, recursively; the `where key == …` key of each of `C`'s subscriptions; `C`'s `birth()` and `birth_check` (awaited even when the param is placed on a pool: the main locus waits for a placed child's readiness); its `run()` (a child is built inline, its `run()` run where it is born), except the server's own param's when it is placed off the main thread |
 | a record literal `T { … }` | the fields it leaves to their defaults, recursively (`type Setup { n: Int = { Spinner { }; 0 }; }` built by `Setup { }` builds a `Spinner`; `Setup { n: 0 }` does not) |
 | a param with no value, typed as a record whose every field has a default | the `T { }` the compiler builds for it, its defaults walked |
-| a call that leaves out arguments | each omitted param's default, evaluated at the call site |
+| a call that leaves out arguments | each omitted param's default, evaluated at the call site, of the fn or method the checker resolves the call to (as lowering expands them) |
 | a const that is no literal, read | its value, evaluated where it is read; a read as the checker resolves the name, so a local or a parameter of the same name in scope shadows the const and a binding of a block that has ended does not |
 | a hook's params | their defaults |
 

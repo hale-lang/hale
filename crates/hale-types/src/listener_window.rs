@@ -19,7 +19,7 @@
 //! | a locus construction `C { … }` | each param of `C` the literal does not supply (its default, or the synthesized `T { }` of an all-defaulted record param, walked); the `where key == …` key of each of `C`'s subscriptions; `C`'s `birth()` (awaited even when `C` is placed on a pool) and `birth_check`; `C`'s `run()`, run where `C` is born, except the server's own param's when it is placed off the main thread |
 //! | a record construction `T { … }` | each field of `T` the literal does not supply: its default, walked in the literal's scope, so a record or locus literal in it is a construction in turn |
 //! | a call in a walked expression | resolved as the checker resolves it: a free fn (an imported one through the import renames), `self.m()`, `self.f.m()` by `f`'s type, a standard-library or builtin call by its classes; an enum variant's constructor returns |
-//! | the arguments a call leaves out | each omitted param's default, evaluated at the call site |
+//! | the arguments a call leaves out | each omitted param's default, evaluated at the call site: the callee and the first param it leaves are the checker's (the typed-body table's `omitted_args`), as lowering expands them, never the call's spelling |
 //! | a const read in a walked expression | its value: a const that is no literal is evaluated where it is read. A read is the checker's resolution of the site (the typed-body table's `ident_reads`): a local or a parameter of the same name in scope shadows the const, a binding of a block that has ended does not |
 //! | a resolved fn, a `birth()` or `run()` | judged by its effect row, and its body and every fn its row reaches walked for loops, `or wait`, literals, omitted arguments and consts read; a hook's params' defaults walked first |
 //!
@@ -353,6 +353,9 @@ pub(crate) struct Window<'a> {
     loci: &'a BTreeMap<&'a str, &'a LocusDecl>,
     bodies: BTreeMap<Key, &'a Block>,
     params: BTreeMap<Key, &'a [Param]>,
+    /// A fn or a method by its declaration's id, as the checker's
+    /// `omitted_args` column names a call's callee.
+    decls: BTreeMap<u32, Key>,
     records: BTreeMap<String, &'a [StructField]>,
     consts: BTreeMap<Key, &'a Expr>,
     renames: &'a [(Vec<String>, String)],
@@ -436,6 +439,7 @@ impl<'a> Window<'a> {
     ) -> Self {
         let mut bodies = BTreeMap::new();
         let mut params = BTreeMap::new();
+        let mut decls = BTreeMap::new();
         let mut records = BTreeMap::new();
         let mut consts = BTreeMap::new();
         let mut types = BTreeSet::new();
@@ -450,6 +454,7 @@ impl<'a> Window<'a> {
                     hale_syntax::ast::TopDecl::Fn(f) => {
                         bodies.insert((None, f.name.name.clone()), &f.body);
                         params.insert((None, f.name.name.clone()), f.params.as_slice());
+                        decls.insert(f.id.0, (None, f.name.name.clone()));
                     }
                     hale_syntax::ast::TopDecl::Const(c) => {
                         consts.insert((None, c.name.name.clone()), &c.value);
@@ -465,6 +470,7 @@ impl<'a> Window<'a> {
                                 LocusMember::Fn(f) => {
                                     bodies.insert((at.clone(), f.name.name.clone()), &f.body);
                                     params.insert((at.clone(), f.name.name.clone()), f.params.as_slice());
+                                    decls.insert(f.id.0, (at.clone(), f.name.name.clone()));
                                 }
                                 LocusMember::Lifecycle(lc) => {
                                     let hook = match lc.kind {
@@ -487,7 +493,7 @@ impl<'a> Window<'a> {
                 }
             }
         }
-        Window { effects, loci, bodies, params, records, consts, renames, types, typed }
+        Window { effects, loci, bodies, params, decls, records, consts, renames, types, typed }
     }
 
     fn row(&self, locus: Option<&str>, name: &str) -> Option<&'a crate::effect_rows::EffectRow> {
@@ -664,15 +670,19 @@ impl<'a> Window<'a> {
     /// What a walked expression or body evaluates without writing it: the
     /// defaults its calls leave to their params, and the value of each
     /// const it reads (a const that is not a literal is evaluated where
-    /// it is read).
+    /// it is read). Both are the checker's answers: the callee a call
+    /// leaves arguments of and from which param (the typed-body table's
+    /// `omitted_args`), and whether a name read a const (`ident_reads`),
+    /// never a matching spelling.
     fn implicit(&self, found: &Found<'a>, ctx: Option<&'a LocusDecl>, depth: usize) -> Option<(String, &'static str)> {
         if depth > 32 {
             return None;
         }
         for c in &found.calls {
-            let Expr::Call { callee, args, .. } = c else { continue };
-            if let Some(key) = self.callee(callee, ctx) {
-                if let Some(step) = self.omitted_args(&key, args.len(), ctx, depth) {
+            let Expr::Call { id, .. } = c else { continue };
+            for left in self.typed.omitted_args().get(&id.0).into_iter().flatten() {
+                let Some(key) = self.decls.get(&left.callee) else { continue };
+                if let Some(step) = self.omitted_args(key, left.from, ctx, depth) {
                     return Some(step);
                 }
             }
