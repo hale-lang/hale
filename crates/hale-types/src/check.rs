@@ -712,6 +712,85 @@ pub fn check_bundle_reporting(
 /// (F.40 phase 3, E4): the record the snapshot's typed-body table is
 /// packaged from (`crate::typed_bodies`). The checker records its own
 /// answers as it walks, so the table costs no second walk.
+/// GH #1565: a publish written in a default. A default is evaluated where
+/// the literal or call that leaves it is (`spec/types.md` § Locus params),
+/// a scope that publishes nothing of the declaration's own bus, so lowering
+/// has no topic there to send on: such a program checked and then failed
+/// to build ("unknown identifier"). Refused at the send, for every default
+/// a program writes: a locus's param defaults, a record type's field
+/// defaults, and a fn's, method's or hook's param defaults.
+fn publish_in_default_diags(bundle: &Bundle<'_>) -> Vec<Diag> {
+    use crate::listener_window::{visit_expr, Visited};
+    fn sends(e: &Expr, out: &mut Vec<Diag>) {
+        visit_expr(e, &mut |v| {
+            let span = match v {
+                Visited::Stmt(Stmt::Send { span, .. }) | Visited::Stmt(Stmt::ShmWrite { span, .. }) => *span,
+                _ => return,
+            };
+            out.push(Diag::ty(
+                span,
+                "a publish in a default: a default is evaluated where the literal or call that leaves it is, \
+                 which publishes nothing of the declaration's bus, so it cannot be built there; publish from a \
+                 hook or a method instead (`birth()`, or a method the default calls)"
+                    .to_string(),
+            ));
+        });
+    }
+    let params = |ps: &[Param], out: &mut Vec<Diag>| {
+        for p in ps {
+            if let Some(d) = &p.default {
+                sends(d, out);
+            }
+        }
+    };
+    let fields = |t: &TypeDecl, out: &mut Vec<Diag>| {
+        if let TypeDeclBody::Struct(fs) = &t.body {
+            for f in fs {
+                if let Some(d) = &f.default {
+                    sends(d, out);
+                }
+            }
+        }
+    };
+    let mut out = Vec::new();
+    for p in bundle.programs.values() {
+        for d in flat_decls(&p.items) {
+            match d {
+                TopDecl::Fn(f) => params(&f.params, &mut out),
+                TopDecl::Type(t) => fields(t, &mut out),
+                TopDecl::Locus(l) => {
+                    for m in &l.members {
+                        match m {
+                            LocusMember::Params(pb) => {
+                                for p in &pb.params {
+                                    if let ParamInit::Value(e) = &p.init {
+                                        sends(e, &mut out);
+                                    }
+                                }
+                            }
+                            LocusMember::Fn(f) => params(&f.params, &mut out),
+                            LocusMember::Lifecycle(lc) => params(&lc.params, &mut out),
+                            LocusMember::Mode(md) => params(&md.params, &mut out),
+                            LocusMember::Failure(fd) => params(&fd.params, &mut out),
+                            LocusMember::Type(t) => fields(t, &mut out),
+                            _ => {}
+                        }
+                    }
+                }
+                TopDecl::Perspective(pd) => {
+                    for m in &pd.members {
+                        if let PerspectiveMember::Fn(f) = m {
+                            params(&f.params, &mut out);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    out
+}
+
 pub fn check_bundle_typing(
     bundle: &Bundle<'_>,
     inputs: &CheckInputs<'_>,
@@ -783,6 +862,7 @@ pub fn check_bundle_by_declaration(
     // `Reject` on the effective target, located at its first site in
     // the program's own sources, with its witness.
     diags.extend(crate::capability::uses::admission_diags(inputs.uses, inputs.target, &bundle.import_renames));
+    diags.extend(publish_in_default_diags(bundle));
     // GH #255: bundle-wide set of transport-bound topic names,
     // for the `or wait` legality check at publish sites.
     //

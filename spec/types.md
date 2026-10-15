@@ -1304,7 +1304,13 @@ not supported in v0; explicit is preferred for the `inferred`-vs-
 Three init shapes:
 
 - `name: T = expr;` — default. Used when the caller omits the
-  field; evaluated in the caller's scope at instantiation time.
+  field; evaluated in the caller's scope at instantiation time. A
+  default publishes nothing: a `<-` (or a `Topic.write`) written in
+  any default (a locus's param, a record type's field, a fn's,
+  method's or hook's param) is refused at the send, since the scope
+  that evaluates it holds none of the declaration's bus ("a publish in
+  a default: …; publish from a hook or a method instead"). A method
+  the default calls may publish.
 - `name: T;` — **required**. The caller MUST supply the field at
   the locus literal site; instantiation without it is a compile
   error. Use for fields where no sensible default exists (e.g.

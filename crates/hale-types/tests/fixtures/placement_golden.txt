@@ -6925,6 +6925,12 @@ row	App@literal1	App	main	default
 row	App@literal1.a	A	pool:io	entry	off owner
 row	App@literal1.b	B	pool:io	entry	off owner
 
+== crates/hale-types/tests/publish_in_default.rs#eee05eb7
+root	App	the entry
+row	App@literal1	App	main	default
+row	App@literal1.p	Pub	main	default
+row	App@literal1.sub	Sub	main	default
+
 == crates/hale-types/tests/receiver_shapes.rs#034e2bf4
 
 == crates/hale-types/tests/receiver_shapes.rs#5ed01252

@@ -77,7 +77,10 @@ Two rules keep the calling convention unambiguous:
   default that builds a locus builds it in the caller too, so a
   worker on another pool that leaves such an argument out may be
   making a [cross-pool spawn](../services/parents-children.md),
-  which `hale check` refuses at that call.
+  which `hale check` refuses at that call. A default never
+  publishes: a `<-` written in one is refused, since the caller's
+  scope holds none of the declaring locus's bus; call a method that
+  publishes instead.
 
 Locus methods support defaults too. One caveat: bus-handler
 methods and mode methods reject them — their argument shape is
