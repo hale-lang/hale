@@ -1423,6 +1423,58 @@ fn a_bus_payload_instance_over_an_underscored_name_lowers() {
     agree("bus_payload_instance", BUS_PAYLOAD_INSTANCE, &Expect::Runs("right=5\n"));
 }
 
+// === a monomorph over one of the program's enums ==============
+// The monomorphs were declared before the program's enums, so a field of
+// a parameter bound to one took no layout of its own: replacing
+// `self.bm = Box { value: Mode::Off }` with `bm: Box<Mode>` crashed in
+// the retire walk (SEGV under ASan), the field laid out as a tag where
+// the enum is a pointer to its storage. The enums are declared first,
+// and one whose payload is itself a monomorph (`Wrap { Held(Box<Int>) }`)
+// in the monomorphs' dependency loop, so `Box<Wrap>` waits for it.
+
+const ENUM_FIELDS_REPLACED: &str = r#"
+type Mode = enum { On(Int), Off };
+type Light = enum { Red, Green };
+type Box<T> { value: T; }
+type Pair<A, B> { a: A; b: B; }
+type Wrap = enum { Held(Box<Int>), Empty };
+locus Keep<T> {
+    params { held: T; }
+    fn get() -> T { return self.held; }
+}
+locus H {
+    params {
+        bm: Box<Mode> = Box { value: Mode::On(3) };
+        bl: Box<Light> = Box { value: Light::Red };
+        pr: Pair<Mode, String> = Pair { a: Mode::Off, b: std::str::upper("x") };
+        bw: Box<Wrap> = Box { value: Wrap::Held(Box { value: 5 }) };
+        k: Keep<Mode>;
+    }
+    fn flip() {
+        self.bm = Box { value: Mode::Off };
+        self.bl = Box { value: Light::Green };
+        self.pr = Pair { a: Mode::On(4), b: std::str::upper("y") };
+        self.bw = Box { value: Wrap::Empty };
+    }
+    fn show() -> String {
+        let m = match self.bm.value { Mode::On(n) -> "on " + to_string(n), Mode::Off -> "off" };
+        let l = match self.bl.value { Light::Red -> "red", Light::Green -> "green" };
+        let p = match self.pr.a { Mode::On(n) -> "on " + to_string(n), Mode::Off -> "off" };
+        let w = match self.bw.value { Wrap::Held(b) -> "held " + to_string(b.value), Wrap::Empty -> "empty" };
+        let k = match self.k.get() { Mode::On(n) -> "on " + to_string(n), Mode::Off -> "off" };
+        return m + "/" + l + "/" + p + self.pr.b + "/" + w + "/" + k;
+    }
+}
+fn main() { let h = H { k: Keep { held: Mode::On(9) } }; println(h.show()); h.flip(); println(h.show()); }
+"#;
+
+#[test]
+fn a_monomorphs_enum_field_is_laid_out_and_retired_as_the_enum() {
+    let wanted = "on 3/red/offX/held 5/on 9\noff/green/on 4Y/empty/on 9\n";
+    agree("enum_fields_replaced", ENUM_FIELDS_REPLACED, &Expect::Runs(wanted));
+    asan_runs("enum_fields_replaced", ENUM_FIELDS_REPLACED, wanted);
+}
+
 // === a variant's construction holds its arguments ==============
 // `Wrap::Held("str")` with `Held(Box<Int>)` checked clean (the callee path
 // types as the enum and no argument was held to the payload) and the

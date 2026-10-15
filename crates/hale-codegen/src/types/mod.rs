@@ -102,7 +102,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     // own `declare_locus_struct` runs later in the
                     // same pass.
                     Ok(CodegenTy::LocusRef(name.clone()))
-                } else if self.user_enums.contains_key(name) || self.pending_enum_names.contains(name) {
+                } else if self.pending_enum_names.contains(name) && !self.user_enums.contains_key(name) {
+                    // An enum not declared yet: its layout is unknown until
+                    // it is, so whatever names it waits (`lower_program`'s
+                    // dependency loop), rather than taking a record's.
+                    Err(CodegenError::Unsupported(format!(
+                        "unknown type name `{name}` yet: an enum declared after its use"
+                    )))
+                } else if self.user_enums.contains_key(name) {
                     // Enums resolve to Enum(name) — BEFORE the
                     // user_types/pending_type_names branch. An enum
                     // name is also inserted into `pending_type_names`
@@ -195,7 +202,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     || self.pending_locus_names.contains(mangled)
                 {
                     Ok(CodegenTy::LocusRef(mangled.to_string()))
-                } else if self.user_enums.contains_key(mangled) || self.pending_enum_names.contains(mangled) {
+                } else if self.pending_enum_names.contains(mangled) && !self.user_enums.contains_key(mangled) {
+                    Err(CodegenError::Unsupported(format!(
+                        "unknown type name `{mangled}` yet: an enum declared after its use"
+                    )))
+                } else if self.user_enums.contains_key(mangled) {
                     // Path-qualified enum (e.g. a cross-seed
                     // `lib::Result`). Checked before the
                     // user_types/pending_type_names branch for the

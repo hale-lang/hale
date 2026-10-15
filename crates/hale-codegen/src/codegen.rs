@@ -3637,10 +3637,10 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// type even when the stdlib type's full TypeInfo hasn't
     /// been registered yet.
     pub(crate) pending_type_names: BTreeSet<String>,
-    /// The concrete enums among `pending_type_names`: a name that resolves
-    /// to `Enum` before its declaration lands, as a monomorph's field of
-    /// one (`Box<Mode>`'s `value`) does, the monomorphs being declared
-    /// first.
+    /// The concrete enums among `pending_type_names`: until its
+    /// declaration lands, a name that resolves to no layout (a monomorph's
+    /// field of one, `Box<Mode>`'s `value`, waits for it), never a
+    /// record's.
     pub(crate) pending_enum_names: BTreeSet<String>,
     /// GH #759: `type Name = T;` — name → target type expression.
     /// An alias is TRANSPARENT: it declares no LLVM type of its
@@ -9217,6 +9217,29 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             self.user_type_aliases.remove(&n);
         }
 
+        // The program's enums before the monomorphs: a monomorph's field
+        // of one (`Box<Mode>`'s `value`) takes its layout (a payload enum
+        // is a pointer to its storage, a payload-less one an i32 tag) and
+        // its retire walk from the enum's declaration, which the pending
+        // name alone cannot give. An enum whose payload names a type not
+        // declared yet (a monomorph, `Wrap { Held(Box<Int>) }`) joins the
+        // monomorphs' dependency loop below, and a monomorph naming an
+        // enum not declared yet waits there for it (the name resolves to
+        // no layout until then, `pending_enum_names`).
+        let mut late_enums: Vec<TypeDecl> = Vec::new();
+        for t in &type_decls {
+            if t.generics.is_empty() && matches!(t.body, TypeDeclBody::Enum(_)) {
+                match self.declare_user_type(t) {
+                    Ok(()) => {}
+                    Err(CodegenError::Unsupported(msg))
+                        if msg.contains("not synthesized") || msg.contains("unknown type name") =>
+                    {
+                        late_enums.push(t.clone());
+                    }
+                    Err(e) => return Err(e),
+                }
+            }
+        }
         // Phase 2: declare synthesized types in dependency order.
         // Each iteration, attempt every still-pending decl; keep
         // those whose declarations succeed and retry the rest.
@@ -9225,6 +9248,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // can't directly contain themselves) and surfaces a
         // clear error.
         let mut pending = synthesized_types;
+        pending.extend(late_enums);
         while !pending.is_empty() {
             let mut next_pending: Vec<TypeDecl> = Vec::new();
             let mut progress = false;
