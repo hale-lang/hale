@@ -3620,13 +3620,16 @@ fn main() { App { }; }
 enum Want {
     Refused(&'static str),
     Accepted,
+    /// A shape an existing rule already refuses (the needle names it):
+    /// no origin can flow that way.
+    Illegal(&'static str),
 }
 
 fn provenance_program(extra: &str, body: &str) -> String {
     format!(
         r#"
 locus W {{
-    params {{ name: String = ""; active: Bool = false; n: Int = 0; }}
+    params {{ name: String = ""; active: Bool = false; n: Int = 0; rec: R = R {{ }}; }}
     run() {{
         while self.active && !self.draining {{
             self.name = std::str::upper("worker");
@@ -3639,6 +3642,11 @@ locus W {{
     }}
 }}
 locus H {{ params {{ b: W = W {{ }}; }} }}
+locus H2 {{
+    params {{ ws: [W; 2] = [W {{ }}, W {{ }}]; }}
+    fn put(w: W) {{ self.ws[0] = w; }}
+    fn give(out: [W; 2]) {{ out[0] = self.ws[0]; }}
+}}
 locus Node {{ params {{ w: W; }} fn ping() {{ }} }}
 type R {{ name: String = ""; }}
 fn id_w(w: W) -> W {{ return w; }}
@@ -3646,8 +3654,48 @@ fn part(h: H) -> W {{ return h.b; }}
 fn put_in(w: W) -> (W, Int) {{ return (w, 1); }}
 fn count_of(w: W) -> Int {{ return len(w.name); }}
 fn fresh(w: W) -> R {{ return R {{ name: "fresh" }}; }}
+fn ok() -> Int fallible(String) {{ return 1; }}
+fn maybe_w(w: W) -> W fallible(String) {{ return w; }}
+fn pick_t(w: W) -> W {{ let (x, y) = (w, 1); return x; }}
+fn rep2(w: W) -> [W; 2] {{ return [w; 2]; }}
+fn pick_s(w: W, a: W) -> W {{ {{ let w = a; }} return w; }}
+fn install(ws: [W; 2], w: W) {{ ws[0] = w; }}
+fn install2(ws: [W; 2], w: W) {{ install(ws, w); }}
+fn fill(h: H2, w: W) {{ h.ws[0] = w; }}
+fn poke_el(ws: [W; 2]) {{ ws[0].name = "x"; }}
+fn fill_h(h: H2, w: W) {{ install(h.ws, w); }}
+fn fill_alias(h: H2, w: W) {{ let alias = h; alias.ws[0] = w; }}
+fn pick_i(a: W, w: W) -> W {{ let mut ws = [a, a]; install(ws, w); return ws[0]; }}
+fn pick_p(ws: [W; 2], w: W) -> W {{ install(ws, w); return ws[0]; }}
+fn copy_r(w: W) -> R {{ return w.rec; }}
+fn via_free(f: fn() -> W) {{ let w = f(); w.name = "x"; }}
+fn make_free(f: fn() -> W) -> W {{ return f(); }}
+fn mk_w() -> W {{ return W {{ }}; }}
+fn pick_o(a: W, b: W) -> W {{ let mut ws = [a, a]; observe_o(ws, b); return ws[0]; }}
+fn observe_o(ws: [W; 2], b: W) {{ }}
+locus H3 {{
+    params {{ ws: [W; 2] = [W {{ }}, W {{ }}]; w: W = W {{ }}; n: Int = 0; }}
+    fn poke() {{ self.ws[0].name = "main"; }}
+    fn poke_w() {{ self.w.name = "main"; }}
+    fn call() {{ let ok = self.ws[0].step(); }}
+    fn poke_via() {{ self.poke(); }}
+    fn count() {{ self.n = self.n + 1; self.ws[0].n = 1; }}
+    fn poke_alias() {{ let w = self.ws[0]; w.name = "main"; }}
+    fn poke_put() {{ put_w(self.ws[0]); }}
+    fn call_alias() {{ let w = self.ws[0]; let ok = w.step(); }}
+    fn poke_alias_n() {{ let w = self.ws[0]; w.n = 1; }}
+}}
+locus H4 {{ params {{ rec: R = R {{ }}; ws: [W; 2] = [W {{ }}, W {{ }}]; }} }}
+fn poke_h(h: H3) {{ h.poke(); }}
+fn put_w(w: W) {{ w.name = "main"; }}
+fn make_h2() -> H2 {{ return H2 {{ }}; }}
+fn pass_h2(h: H2) -> H2 {{ return h; }}
+fn make_h3(w: W) -> H3 {{ return H3 {{ ws: [w, w] }}; }}
 main locus App {{
-    params {{ a: W = W {{}}; b: W = W {{ active: true }}; h: H = H {{ }}; }}
+    params {{ a: W = W {{}}; b: W = W {{ active: true }}; h: H = H {{ }}; c: W = W {{ }}; ws: [W; 2] = [W {{ }}, W {{ }}]; k: H = H {{ }}; k2: H2 = H2 {{ }}; k3: H3 = H3 {{ }}; r: R = R {{ }}; bl: bounded[W; 4]; }}
+    fn stash_w(w: W) {{ self.ws[0] = w; }}
+    fn give(out: [W; 2]) {{ out[0] = self.b; }}
+    fn give_a(out: [W; 2]) {{ out[0] = self.a; }}
     placement {{ b: cooperative(pool = io) where async_io; h: cooperative(pool = io2); }}
     fn pair() -> (W, Int) {{ return (self.b, 1); }}
     fn arr() -> [W; 1] {{ return [self.b]; }}
@@ -3719,17 +3767,220 @@ fn cross_pool_provenance_table() {
         ("a part of that literal is the handle", "", "let n = Node { w: self.b }; n.w.name = \"x\";", Refused("`n.w.name = …`")),
         ("scalar store through a local", "", "let w = self.b; w.n = 3;", Accepted),
         ("pulse-style stdlib result of another type", "", "let r = std::str::upper(self.b.name); let w = self.a; w.name = r;", Accepted),
+        // round 3: a part written joins into its container
+        ("array element written", "", "let mut ws = [self.a, self.a]; ws[0] = self.b; let w = ws[0]; w.name = \"main\";", Refused("`w.name = …`")),
+        ("array element written, same pool", "", "let mut ws = [self.a, self.a]; ws[0] = self.a; let w = ws[0]; w.name = \"main\";", Accepted),
+        ("a handle stored into a local locus's field", "", "let h = H { }; h.b = self.b; h.b.name = \"x\";", Illegal("cannot assign an existing locus value into locus-typed field")),
+        // round 3: an operand or fallback that may be skipped
+        ("&& may skip its right operand", "", "let mut w = self.b; let flag = false && { w = self.a; true }; w.name = \"main\";", Refused("`w.name = …`")),
+        ("|| may skip its right operand", "", "let mut w = self.b; let flag = true || { w = self.a; false }; w.name = \"main\";", Refused("`w.name = …`")),
+        ("&& skipped, same pool", "", "let mut w = self.a; let flag = false && { w = self.a; true }; w.name = \"main\";", Accepted),
+        ("or fallback may be skipped", "", "let mut w = self.b; let n = ok() or { w = self.a; 0 }; w.name = \"main\";", Refused("`w.name = …`")),
+        ("or fallback skipped, same pool", "", "let mut w = self.a; let n = ok() or { w = self.a; 0 }; w.name = \"main\";", Accepted),
+        ("or substitute value", "", "let w = maybe_w(self.a) or self.b; w.name = \"x\";", Refused("`w.name = …`")),
+        ("or success value", "", "let w = maybe_w(self.b) or self.a; w.name = \"x\";", Refused("`w.name = …`")),
+        ("or, same pool both ways", "", "let w = maybe_w(self.a) or self.a; w.name = \"x\";", Accepted),
+        // round 3: tuple bindings and array repetition, in bodies and summaries
+        ("tuple let in a helper", "", "let w = pick_t(self.b); w.name = \"main\";", Refused("`w.name = …`")),
+        ("tuple let in a helper, same pool", "", "let w = pick_t(self.a); w.name = \"main\";", Accepted),
+        ("tuple let", "", "let (x, n) = (self.b, 1); x.name = \"x\";", Refused("`x.name = …`")),
+        ("array repetition in a helper", "", "let ws = rep2(self.b); let w = ws[0]; w.name = \"main\";", Refused("`w.name = …`")),
+        ("array repetition", "", "let ws = [self.b; 2]; let w = ws[0]; w.name = \"main\";", Refused("`w.name = …`")),
+        // round 3: a helper's shadow is its own binding
+        ("helper shadowing its parameter", "", "let w = pick_s(self.b, self.a); w.name = \"main\";", Refused("`w.name = …`")),
+        ("helper shadowing its parameter, same pool", "", "let w = pick_s(self.a, self.b); w.name = \"main\";", Accepted),
+        // audit: every other form that can carry a handle
+        ("match tail", "", "let w = match 1 { _ -> self.b, }; w.name = \"x\";", Refused("`w.name = …`")),
+        ("match binding of the scrutinee", "", "match self.b { w -> { w.name = \"x\"; } }", Refused("`w.name = …`")),
+        ("tuple pattern in a match", "", "match (self.b, 1) { (w, n) -> { w.name = \"x\"; }, _ -> { } }", Refused("`w.name = …`")),
+        ("tuple pattern in a match, same pool", "", "match (self.a, 1) { (w, n) -> { w.name = \"x\"; }, _ -> { } }", Accepted),
+        ("a handle stored into a field of self", "", "self.c = self.b;", Illegal("cannot assign an existing locus value into locus-typed field")),
+        ("a handle stored into an element of an array field of self", "", "self.ws[0] = self.b; let w = self.ws[0]; w.name = \"x\";", Refused("`w.name = …`")),
+        (
+            "... by another member",
+            "fn stash() { self.ws[0] = self.b; }",
+            "let w = self.ws[1]; w.name = \"x\";",
+            Refused("`w.name = …`"),
+        ),
+        ("... a same-pool handle", "", "self.ws[0] = self.a; let w = self.ws[0]; w.name = \"x\";", Accepted),
+        ("a handle stored into a field of a same-pool child", "", "self.k.b = self.b; self.k.b.name = \"x\";", Refused("`self.k.b.name = …`")),
+        ("... a same-pool handle", "", "self.k.b = self.a; self.k.b.name = \"x\";", Accepted),
+        // round 4: a helper's write into its argument reaches the caller
+        ("helper writing an argument into an array", "", "let mut ws = [self.a, self.a]; install(ws, self.b); let w = ws[0]; w.name = \"main\";", Refused("`w.name = …`")),
+        ("... one call down", "", "let mut ws = [self.a, self.a]; install2(ws, self.b); let w = ws[0]; w.name = \"main\";", Refused("`w.name = …`")),
+        ("... a same-pool handle", "", "let mut ws = [self.a, self.a]; install(ws, self.a); let w = ws[0]; w.name = \"main\";", Accepted),
+        ("helper writing into another locus through a handle param", "", "fill(self.k2, self.b); let w = self.k2.ws[0]; w.name = \"x\";", Refused("`w.name = …`")),
+        ("... a same-pool handle", "", "fill(self.k2, self.a); let w = self.k2.ws[0]; w.name = \"x\";", Accepted),
+        ("own method writing an argument into a field", "", "self.stash_w(self.b); let w = self.ws[0]; w.name = \"x\";", Refused("`w.name = …`")),
+        ("... a same-pool handle", "", "self.stash_w(self.a); let w = self.ws[0]; w.name = \"x\";", Accepted),
+        ("another locus's method writing an argument into its field", "", "self.k2.put(self.b); let w = self.k2.ws[0]; w.name = \"x\";", Refused("`w.name = …`")),
+        ("... a same-pool handle", "", "self.k2.put(self.a); let w = self.k2.ws[0]; w.name = \"x\";", Accepted),
+        ("helper storing through an element of its array argument", "", "poke_el([self.b, self.a]);", Refused("`poke_el(…)` stores")),
+        ("... same-pool elements", "", "poke_el([self.a, self.a]);", Accepted),
+        // a method's own field written into its parameter, per instance
+        ("own method writing its cross-pool field into an argument", "", "let mut ws = [self.a, self.a]; self.give(ws); let w = ws[0]; w.name = \"x\";", Refused("`w.name = …`")),
+        ("... its same-pool field", "", "let mut ws = [self.a, self.a]; self.give_a(ws); let w = ws[0]; w.name = \"x\";", Accepted),
+        (
+            "another locus's method writing a field that holds a cross-pool handle",
+            "",
+            "fill(self.k2, self.b); let mut ws = [self.a, self.a]; self.k2.give(ws); let w = ws[0]; w.name = \"x\";",
+            Refused("`w.name = …`"),
+        ),
+        ("... a field of its own", "", "let mut ws = [self.a, self.a]; self.k2.give(ws); let w = ws[0]; w.name = \"x\";", Accepted),
+        // calls with no body to read: the bounded-list intrinsics store
+        // their value; a fn value may write any argument into any other
+        ("bounded-list push", "", "push(self.bl, self.b) or discard; let w = at(self.bl, 0) or self.a; w.name = \"x\";", Refused("`w.name = …`")),
+        ("... a same-pool handle", "", "push(self.bl, self.a) or discard; let w = at(self.bl, 0) or self.a; w.name = \"x\";", Accepted),
+        (
+            "fn value handed a container and a handle",
+            "fn via(f: fn([W; 2], W), ws: [W; 2]) { f(ws, self.b); let w = ws[0]; w.name = \"x\"; }",
+            "",
+            Refused("`w.name = …`"),
+        ),
+        (
+            "... a same-pool handle",
+            "fn via(f: fn([W; 2], W), ws: [W; 2]) { f(ws, self.a); let w = ws[0]; w.name = \"x\"; }",
+            "",
+            Accepted,
+        ),
+        // round 5: a write's target followed to its roots through helpers
+        ("helper writing through a part of its parameter", "", "let h = H2 { }; fill_h(h, self.b); let w = h.ws[0]; w.name = \"main\";", Refused("`w.name = …`")),
+        ("... a same-pool handle", "", "let h = H2 { }; fill_h(h, self.a); let w = h.ws[0]; w.name = \"main\";", Accepted),
+        ("helper writing through an alias of its parameter", "", "let h = H2 { }; fill_alias(h, self.b); let w = h.ws[0]; w.name = \"main\";", Refused("`w.name = …`")),
+        ("... a same-pool handle", "", "let h = H2 { }; fill_alias(h, self.a); let w = h.ws[0]; w.name = \"main\";", Accepted),
+        // round 5: a callee's write is seen by the helper's later return
+        ("helper returning what a call installed", "", "let w = pick_i(self.a, self.b); w.name = \"main\";", Refused("`w.name = …`")),
+        ("... a same-pool handle", "", "let w = pick_i(self.a, self.a); w.name = \"main\";", Accepted),
+        ("helper returning what a call installed in its parameter", "", "let mut ws = [self.a, self.a]; let w = pick_p(ws, self.b); w.name = \"x\";", Refused("`w.name = …`")),
+        // a fn value's result inside a free fn: any instance of its type
+        ("free fn storing through a fn value's result", "", "via_free(mk_w);", Refused("`via_free(…)` stores, through a fn value's result")),
+        ("free fn returning a fn value's result", "", "let w = make_free(mk_w); w.name = \"x\";", Refused("`w.name = …`")),
+        // round 5: a call's result of a data type is a copy
+        ("a record returned by a helper from a cross-pool locus", "", "let r = copy_r(self.b); r.name = \"main\";", Accepted),
+        ("... read", "", "let r = copy_r(self.b); let s = r.name;", Accepted),
+        // round 4: a plain record copied in is the receiving locus's own
+        ("a record copied into self from a cross-pool locus", "", "self.r = self.b.rec; self.r.name = \"main\";", Accepted),
+        ("a record copied into a local", "", "let r = self.b.rec; r.name = \"main\";", Accepted),
+        ("a record copied through a local handle", "", "let w = self.b; let r = w.rec; r.name = \"main\";", Accepted),
+        ("... but a store into the locus's own record", "", "self.b.rec.name = \"main\";", Refused("`self.b.rec.name = …`")),
+        // round 6: an instance the walk built is one instance, whichever
+        // binding reaches it
+        (
+            "a write through an alias of a built locus, read through the other",
+            "",
+            "let h = H2 { }; let alias = h; alias.ws[0] = self.b; let w = h.ws[0]; w.name = \"main\";",
+            Refused("`w.name = …`"),
+        ),
+        (
+            "... the other way round",
+            "",
+            "let h = H2 { }; let alias = h; h.ws[0] = self.b; alias.ws[0].name = \"main\";",
+            Refused("`alias.ws[…].name = …`"),
+        ),
+        ("... same pool", "", "let h = H2 { }; let alias = h; alias.ws[0] = self.a; let w = h.ws[0]; w.name = \"main\";", Accepted),
+        // a method's stores through what its receiver's fields hold, on an
+        // instance the walk built
+        ("a built locus's method stores through its field", "", "let h = H3 { ws: [self.b, self.a] }; h.poke();", Refused("`h.poke(…)` stores")),
+        ("... same pool", "", "let h = H3 { ws: [self.a, self.a] }; h.poke();", Accepted),
+        ("... through the field itself", "", "let h = H3 { w: self.b }; h.poke_w();", Refused("`h.poke_w(…)` stores")),
+        ("... a method call through its field", "", "let h = H3 { ws: [self.b, self.a] }; h.call();", Refused("`h.call(…)` invokes")),
+        ("... through its own method", "", "let h = H3 { ws: [self.b, self.a] }; h.poke_via();", Refused("`h.poke_via(…)` stores")),
+        ("... through a free fn", "", "poke_h(H3 { ws: [self.b, self.a] });", Refused("`poke_h(…)` stores")),
+        (
+            "... through a method's parameter",
+            "fn poke_p(h: H3) { h.poke(); }",
+            "self.poke_p(H3 { ws: [self.b, self.a] });",
+            Refused("`poke_p(…)` stores"),
+        ),
+        ("... a parameter handed a same-pool instance", "fn poke_p(h: H3) { h.poke(); }", "self.poke_p(H3 { ws: [self.a, self.a] });", Accepted),
+        ("... a handle written in after it was built", "", "let h = H3 { }; h.ws[0] = self.b; h.poke();", Refused("`h.poke(…)` stores")),
+        ("... a scalar slot only", "", "let h = H3 { ws: [self.b, self.a] }; h.count();", Accepted),
+        ("... stored into a field, then its method", "", "self.k3 = H3 { ws: [self.b, self.a] }; self.k3.poke();", Refused("`self.k3.poke(…)` stores")),
+        ("... stored into a field, same pool", "", "self.k3 = H3 { ws: [self.a, self.a] }; self.k3.poke();", Accepted),
+        (
+            "... stored into a field, then read out",
+            "",
+            "self.k3 = H3 { ws: [self.b, self.a] }; let w = self.k3.ws[0]; w.name = \"main\";",
+            Refused("`w.name = …`"),
+        ),
+        ("... the table's own instance", "", "self.k3.poke();", Accepted),
+        // round 7: an instance a helper builds or is handed keeps its
+        // identity through the return
+        (
+            "an instance a helper builds, written through one copy, read through another",
+            "",
+            "let h = make_h2(); let alias = h; alias.ws[0] = self.b; let w = h.ws[0]; w.name = \"main\";",
+            Refused("`w.name = …`"),
+        ),
+        ("... same pool", "", "let h = make_h2(); let alias = h; alias.ws[0] = self.a; let w = h.ws[0]; w.name = \"main\";", Accepted),
+        (
+            "an instance handed back through a helper",
+            "",
+            "let h = pass_h2(H2 { }); let alias = h; alias.ws[0] = self.b; let w = h.ws[0]; w.name = \"main\";",
+            Refused("`w.name = …`"),
+        ),
+        ("a helper's instance holding its argument, its method", "", "let h = make_h3(self.b); h.poke();", Refused("`h.poke(…)` stores")),
+        ("... same pool", "", "let h = make_h3(self.a); h.poke();", Accepted),
+        // a method's held stores through its own locals and helpers
+        ("a method's store through a local bound to its field", "", "let h = H3 { ws: [self.b, self.a] }; h.poke_alias();", Refused("`h.poke_alias(…)` stores")),
+        ("... same pool", "", "let h = H3 { ws: [self.a, self.a] }; h.poke_alias();", Accepted),
+        ("... a scalar slot", "", "let h = H3 { ws: [self.b, self.a] }; h.poke_alias_n();", Accepted),
+        ("a method's store through a helper handed its field", "", "let h = H3 { ws: [self.b, self.a] }; h.poke_put();", Refused("`h.poke_put(…)` stores")),
+        ("a method's call through a local bound to its field", "", "let h = H3 { ws: [self.b, self.a] }; h.call_alias();", Refused("`h.call_alias(…)` invokes")),
+        // a plain record read off an instance the walk built is a copy
+        ("a record field of a built instance holding a cross-pool handle", "", "let h = H4 { ws: [self.b, self.a] }; let r = h.rec; r.name = \"main\";", Accepted),
+        ("... its handle field", "", "let h = H4 { ws: [self.b, self.a] }; let w = h.ws[0]; w.name = \"main\";", Refused("`w.name = …`")),
+        // a receiver whose locus type the walk cannot tell: any method of
+        // the name
+        ("a built instance's method, on an element of a local array", "", "let hs = [H3 { ws: [self.b, self.a] }]; hs[0].poke();", Refused("`hs[…].poke(…)` stores")),
+        ("... same pool", "", "let hs = [H3 { ws: [self.a, self.a] }]; hs[0].poke();", Accepted),
+        // a callee declared after its caller is walked before it is known
+        ("a known callee declared after its caller", "", "let w = pick_o(self.a, self.b); w.name = \"main\";", Accepted),
     ];
     let mut failures = Vec::new();
     for (name, extra, body, want) in rows {
+        // every row is a program the checker otherwise accepts, but an
+        // Illegal one, which an existing rule refuses
+        let prog = parse_source(&provenance_program(extra, body)).expect("parse failed");
+        let other: Vec<String> = check_program(&prog)
+            .into_iter()
+            .filter(|d| d.is_error() && !d.message.contains("cross-pool"))
+            .map(|d| d.message)
+            .collect();
+        if let Illegal(needle) = want {
+            if !other.iter().any(|m| m.contains(needle)) || other.is_empty() {
+                failures.push(format!("{name}: expected the existing refusal `{needle}`: {other:#?}"));
+            }
+            continue;
+        }
+        if !other.is_empty() {
+            failures.push(format!("{name}: not otherwise clean: {other:#?}"));
+            continue;
+        }
         let got: Vec<String> = check(&provenance_program(extra, body)).into_iter().filter(|m| m.contains("cross-pool")).collect();
         let ok = match want {
             Refused(needle) => got.len() == 1 && got[0].contains(needle),
             Accepted => got.is_empty(),
+            Illegal(_) => unreachable!("judged above"),
         };
         if !ok {
             failures.push(format!("{name}: {got:#?}"));
         }
     }
     assert!(failures.is_empty(), "{} rows disagree:\n{}", failures.len(), failures.join("\n"));
+}
+
+/// A form's synthesized ops that store an argument (a vec's `push` and
+/// `set`, a map's `set` / `insert`, a ring buffer's or heap's `push`, an
+/// LRU cache's `put`) are store effects of the provenance walk too; no
+/// handle can reach one, because a form's cell can never be a locus.
+#[test]
+fn a_forms_cell_never_holds_a_locus_handle() {
+    let src = r#"
+locus W { params { name: String = ""; } }
+@form(vec)
+locus V { capacity { heap items of W; } }
+fn main() { }
+"#;
+    assert!(check(src).iter().any(|m| m.contains("cell type cannot be a locus")), "{:?}", check(src));
 }
