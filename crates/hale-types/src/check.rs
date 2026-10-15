@@ -12017,7 +12017,10 @@ impl<'a> Checker<'a> {
                                 });
                             serves_or_iface || monomorph_of_template
                         }
-                        _ => false,
+                        // An array or tuple default of template literals:
+                        // each element takes the declared element type's
+                        // arguments (generic TYPES only, as above).
+                        _ => self.two_spellings_of_one_monomorph(&want, &got, false),
                     };
                     if !widen_ok && !conforms && !self.flows_into(&want, &got, init) {
                         self.diags.push(Diag::ty(
@@ -13079,12 +13082,7 @@ impl<'a> Checker<'a> {
                     }
                     None => {
                         // GH #911 B5: no annotation is no arguments.
-                        if matches!(value, Expr::Struct { .. }) {
-                            self.refuse_generic_literal_without_arguments(
-                                &got,
-                                value.span(),
-                            );
-                        }
+                        self.refuse_generic_literals_without_arguments(&got, value);
                         got
                     }
                 };
@@ -13596,12 +13594,7 @@ impl<'a> Checker<'a> {
                 // take the arguments from. (`App { };`, the ordinary
                 // main-locus instantiation, names no generic
                 // template and is untouched.)
-                if matches!(e, Expr::Struct { .. }) {
-                    self.refuse_generic_literal_without_arguments(
-                        &got,
-                        e.span(),
-                    );
-                }
+                self.refuse_generic_literals_without_arguments(&got, e);
             }
             Stmt::ShmWrite { topic, max, binding, body, span } => {
                 // The receiver must be a declared topic (its layout-bound
@@ -17735,6 +17728,21 @@ impl<'a> Checker<'a> {
     /// field the template declares with a Decimal type takes its own
     /// where the literal is typed.
     fn adopt_monomorph_literal_decimals(&mut self, want: &Ty, value: &Expr) {
+        match (want, value) {
+            (Ty::Array(elem, _), Expr::Array(parts, _)) => {
+                for p in parts {
+                    self.adopt_monomorph_literal_decimals(elem, p);
+                }
+                return;
+            }
+            (Ty::Tuple(tys), Expr::Tuple(parts, _)) => {
+                for (t, p) in tys.iter().zip(parts) {
+                    self.adopt_monomorph_literal_decimals(t, p);
+                }
+                return;
+            }
+            _ => {}
+        }
         let (Ty::Named(w), Expr::Struct { inits, .. }) = (want, value) else { return };
         let Some((GenericTemplate::Type(decl), bindings)) = self.resolve_generic_monomorph(w) else { return };
         let TypeDeclBody::Struct(fields) = &decl.body else { return };
@@ -20790,9 +20798,11 @@ impl<'a> Checker<'a> {
     /// A literal spelled with the template name carries no type
     /// arguments of its own; codegen takes them from the declared
     /// type at the site and rewrites the path to the monomorph
-    /// (`resolve_generic_struct_path`). The checker has to allow the
-    /// same thing at the same sites or it refuses programs the build
-    /// lowers.
+    /// (`rewrite_generic_literal`), and an array or tuple literal's
+    /// elements each against the declared element type: `[Cfg<Int>;
+    /// 2]` is two spellings of `[Cfg; 2]`, `(Cfg<Int>, Int)` of `(Cfg,
+    /// Int)`. The checker has to allow the same thing at the same
+    /// sites or it refuses programs the build lowers.
     ///
     /// `allow_loci` is a per-SITE answer, not a property of the
     /// question. Codegen does the rewrite for a generic locus as
@@ -20809,12 +20819,22 @@ impl<'a> Checker<'a> {
         got: &Ty,
         allow_loci: bool,
     ) -> bool {
-        let (Ty::Named(w), Ty::Named(g)) = (want, got) else {
-            return false;
-        };
-        self.resolve_generic_monomorph(w).is_some_and(|(t, _)| {
-            (allow_loci || t.is_type()) && t.name() == g.as_str()
-        })
+        match (want, got) {
+            (Ty::Named(w), Ty::Named(g)) => self.resolve_generic_monomorph(w).is_some_and(|(t, _)| {
+                (allow_loci || t.is_type()) && t.name() == g.as_str()
+            }),
+            (Ty::Array(w, wn), Ty::Array(g, gn)) => {
+                (wn == gn || wn.is_none() || gn.is_none()) && self.two_spellings_of_one_monomorph(w, g, allow_loci)
+            }
+            // Every part the same type or two spellings of one, and one
+            // part at least the latter.
+            (Ty::Tuple(ws), Ty::Tuple(gs)) => {
+                ws.len() == gs.len()
+                    && ws.iter().zip(gs).any(|(w, g)| self.two_spellings_of_one_monomorph(w, g, allow_loci))
+                    && ws.iter().zip(gs).all(|(w, g)| w == g || self.two_spellings_of_one_monomorph(w, g, allow_loci))
+            }
+            _ => false,
+        }
     }
 
     /// GH #911 B5: the generic template a literal's own path names,
@@ -20841,6 +20861,28 @@ impl<'a> Checker<'a> {
     /// inference from the literal's fields back to `T`, so there is
     /// nothing to infer the arguments from. The rule is therefore
     /// "say them", and the error carries the line that has to change.
+    /// [`Self::refuse_generic_literal_without_arguments`] for `value`,
+    /// typed `got`, at a site that declares no type: the literal itself,
+    /// or each element of an array or tuple literal (`let bs = [Box {
+    /// value: 1 }];`, which checked clean and died at build with the same
+    /// unlocated `Discriminant(12)`).
+    fn refuse_generic_literals_without_arguments(&mut self, got: &Ty, value: &Expr) {
+        match (value, got) {
+            (Expr::Struct { .. }, _) => self.refuse_generic_literal_without_arguments(got, value.span()),
+            (Expr::Array(parts, _), Ty::Array(elem, _)) => {
+                for p in parts {
+                    self.refuse_generic_literals_without_arguments(elem, p);
+                }
+            }
+            (Expr::Tuple(parts, _), Ty::Tuple(tys)) => {
+                for (p, t) in parts.iter().zip(tys) {
+                    self.refuse_generic_literals_without_arguments(t, p);
+                }
+            }
+            _ => {}
+        }
+    }
+
     fn refuse_generic_literal_without_arguments(
         &mut self,
         ty: &Ty,

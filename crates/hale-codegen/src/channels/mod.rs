@@ -1916,27 +1916,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // matching the Stmt::Fail and lower_return shapes.
         let payload_ty = enclosing.payload_ty.clone();
         let rewritten;
-        let e_to_lower: &Expr = match payload {
-            Expr::Struct { path, inits, span, id } => {
-                match self.resolve_generic_struct_path_for_codegen_ty(
-                    path,
-                    &payload_ty,
-                ) {
-                    Some(new_path) => {
-                        // GH #921 A2: same source expression,
-                        // renamed path — it keeps its id.
-                        rewritten = Expr::Struct {
-                            id: *id,
-                            path: new_path,
-                            inits: inits.clone(),
-                            span: *span,
-                        };
-                        &rewritten
-                    }
-                    None => payload,
-                }
+        let e_to_lower: &Expr = match self.rewrite_generic_literal(payload, &payload_ty) {
+            Some(r) => {
+                rewritten = r;
+                &rewritten
             }
-            _ => payload,
+            None => payload,
         };
 
         let (v, got_ty) = self.lower_expr(e_to_lower, scope)?;
@@ -2385,27 +2370,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // the payload is `Foo<T, U>`. Mirrors the lower_return shape.
         let rewritten;
         let payload_ty = fallible.payload_ty.clone();
-        let e_to_lower: &Expr = match value {
-            Expr::Struct { path, inits, span, id } => {
-                match self.resolve_generic_struct_path_for_codegen_ty(
-                    path,
-                    &payload_ty,
-                ) {
-                    Some(new_path) => {
-                        // GH #921 A2: same source expression,
-                        // renamed path — it keeps its id.
-                        rewritten = Expr::Struct {
-                            id: *id,
-                            path: new_path,
-                            inits: inits.clone(),
-                            span: *span,
-                        };
-                        &rewritten
-                    }
-                    None => value,
-                }
+        let e_to_lower: &Expr = match self.rewrite_generic_literal(value, &payload_ty) {
+            Some(r) => {
+                rewritten = r;
+                &rewritten
             }
-            _ => value,
+            None => value,
         };
 
         let (v, got_ty) = self.lower_expr(e_to_lower, scope)?;

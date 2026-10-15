@@ -17552,40 +17552,22 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 Ok(BlockEnd::Open)
             }
             Stmt::Let { name, ty: ascribed, value, id, span, .. } => {
-                // m61b: when a let has both a generic-typed
-                // ascription and a bare-name struct literal as
-                // its value, rewrite the literal's path to the
-                // mangled name. So `let b: Box<Int> = Box { value: 42 };`
-                // works without requiring the user to spell
-                // Box_Int.
+                // m61b: a literal spelled with a generic template's
+                // name takes the ascription's arguments — `let b:
+                // Box<Int> = Box { value: 42 };` builds `Box_Int` —
+                // and an array or tuple literal's elements each take
+                // the element type's (`rewrite_generic_literal`).
                 let rewritten;
-                let value_to_lower: &Expr = match (ascribed.as_ref(), value)
+                let value_to_lower: &Expr = match ascribed
+                    .as_ref()
+                    .and_then(|asc| self.type_expr_to_codegen_ty(asc).ok())
+                    .and_then(|t| self.rewrite_generic_literal(value, &t))
                 {
-                    (
-                        Some(asc),
-                        Expr::Struct {
-                            path,
-                            inits,
-                            span: sspan,
-                            id: sid,
-                        },
-                    ) => match self
-                        .resolve_generic_struct_path(path, asc)
-                    {
-                        Some(new_path) => {
-                            // GH #921 A2: same source expression,
-                            // renamed path — it keeps its id.
-                            rewritten = Expr::Struct {
-                                id: *sid,
-                                path: new_path,
-                                inits: inits.clone(),
-                                span: *sspan,
-                            };
-                            &rewritten
-                        }
-                        None => value,
-                    },
-                    _ => value,
+                    Some(r) => {
+                        rewritten = r;
+                        &rewritten
+                    }
+                    None => value,
                 };
                 // m82's rule — the binding is the user-visible
                 // handle, so the instance lives until that handle
@@ -17970,25 +17952,16 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 // `let` ascription: `self.cfg = Cfg { n: 2 }` with `cfg:
                 // Cfg<Int>` builds `Cfg_Int`. The literal keeps its id.
                 let rewritten;
-                let value: &Expr = match (op, value) {
-                    (AssignOp::Eq, Expr::Struct { path, inits, span: sspan, id: sid }) => {
-                        match self
-                            .place_declared_ty(target, scope)
-                            .and_then(|t| self.resolve_generic_struct_path_for_codegen_ty(path, &t))
-                        {
-                            Some(new_path) => {
-                                rewritten = Expr::Struct {
-                                    id: *sid,
-                                    path: new_path,
-                                    inits: inits.clone(),
-                                    span: *sspan,
-                                };
-                                &rewritten
-                            }
-                            None => value,
-                        }
+                let value: &Expr = match matches!(op, AssignOp::Eq)
+                    .then(|| self.place_declared_ty(target, scope))
+                    .flatten()
+                    .and_then(|t| self.rewrite_generic_literal(value, &t))
+                {
+                    Some(r) => {
+                        rewritten = r;
+                        &rewritten
                     }
-                    _ => value,
+                    None => value,
                 };
                 // A write into a local whose part another name may still
                 // reach — a nested part of a form cell's read, or the
@@ -23104,34 +23077,16 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 }
             }
             (Some(e), Some(declared_ty)) => {
-                // m67: rewrite a bare-name struct literal in return
-                // position to its mangled monomorph using the fn's
-                // declared return type as the target.
+                // m67: a literal spelled with a generic template's name
+                // in return position takes the fn's declared return type's
+                // arguments (`rewrite_generic_literal`).
                 let rewritten;
-                let e_to_lower: &Expr = match e {
-                    Expr::Struct { path, inits, span, id } => {
-                        match self
-                            .resolve_generic_struct_path_for_codegen_ty(
-                                path,
-                                &declared_ty,
-                            )
-                        {
-                            Some(new_path) => {
-                                // GH #921 A2: same source
-                                // expression, renamed path — it
-                                // keeps its id.
-                                rewritten = Expr::Struct {
-                                    id: *id,
-                                    path: new_path,
-                                    inits: inits.clone(),
-                                    span: *span,
-                                };
-                                &rewritten
-                            }
-                            None => e,
-                        }
+                let e_to_lower: &Expr = match self.rewrite_generic_literal(e, &declared_ty) {
+                    Some(r) => {
+                        rewritten = r;
+                        &rewritten
                     }
-                    _ => e,
+                    None => e,
                 };
                 // m49 sret-style return-arena routing
                 // (2026-05-22 PM, a downstream daemon / SymbolBook

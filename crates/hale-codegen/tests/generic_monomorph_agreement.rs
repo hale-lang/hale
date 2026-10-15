@@ -1044,3 +1044,116 @@ fn the_placement_table_reads_an_assignments_place() {
     agree("assign_any_place", ASSIGNED_AT_ANY_PLACE, &Expect::Runs(wanted));
     asan_runs("assign_any_place", ASSIGNED_AT_ANY_PLACE, wanted);
 }
+
+// === an array or tuple literal of template literals ============
+// `let cs: [Cfg<Int>; 2] = [Cfg { .. }, Cfg { .. }];` was refused
+// ("expected `[Cfg_Int; 2]`, got `[Cfg; 2]`"), and the build, which
+// skips the checker, could not lower the elements. Each element takes
+// the declared element type's arguments, at every site a single literal
+// takes the declared type's: a `let`, a param default, an assignment, a
+// return slot, a record field's init.
+
+const ARRAYS_AND_TUPLES: &str = r#"
+type Cfg<T> {
+    n: T;
+    label: String = "";
+}
+
+type Shelf {
+    pair: [Cfg<Int>; 2];
+}
+
+locus Keeper {
+    params {
+        cfgs: [Cfg<Int>; 2] = [Cfg { n: 1, label: "a" }, Cfg { n: 2, label: "b" }];
+        tagged: (Cfg<Int>, Int) = (Cfg { n: 3, label: "c" }, 4);
+    }
+    run() {
+        println(self.cfgs[1].label, self.cfgs[1].n, self.tagged.0.label, self.tagged.1);
+        self.cfgs = [Cfg { n: 5, label: "e" }, Cfg { n: 6, label: "f" }];
+        println(self.cfgs[0].label, self.cfgs[1].n);
+    }
+}
+
+fn pair() -> [Cfg<Int>; 2] {
+    return [Cfg { n: 7, label: "g" }, Cfg { n: 8, label: "h" }];
+}
+
+fn main() {
+    let k = Keeper { };
+    let cs: [Cfg<Int>; 2] = [Cfg { n: 9, label: "i" }, Cfg { n: 10, label: "j" }];
+    let t: (Cfg<Int>, String) = (Cfg { n: 11, label: "k" }, "l");
+    let s = Shelf { pair: [Cfg { n: 12, label: "m" }, Cfg { n: 13, label: "n" }] };
+    let p = pair();
+    println(cs[1].label, cs[0].n, t.0.label, t.1, s.pair[1].label, p[0].n);
+}
+"#;
+
+#[test]
+fn an_array_or_tuple_literal_takes_the_element_types_arguments() {
+    let wanted = "b2c4\ne6\nj9kln7\n";
+    agree("array_tuple", ARRAYS_AND_TUPLES, &Expect::Runs(wanted));
+    asan_runs("array_tuple", ARRAYS_AND_TUPLES, wanted);
+}
+
+const ARRAY_OF_GENERIC_LOCI: &str = r#"
+locus Cache<K, V> {
+    params {
+        cap: Int = 1;
+    }
+    birth() {
+        println("cap=", self.cap);
+    }
+}
+
+fn main() {
+    let cs: [Cache<Int, String>; 2] = [Cache { cap: 2 }, Cache { cap: 3 }];
+    println("sum=", cs[0].cap + cs[1].cap);
+}
+"#;
+
+#[test]
+fn an_array_of_generic_locus_literals_takes_them_too() {
+    let wanted = "cap=2\ncap=3\nsum=5\n";
+    agree("array_loci", ARRAY_OF_GENERIC_LOCI, &Expect::Runs(wanted));
+    asan_runs("array_loci", ARRAY_OF_GENERIC_LOCI, wanted);
+    // The placement table reads each element under the element type.
+    let program = parse_source(ARRAY_OF_GENERIC_LOCI).expect("parses");
+    let Ok(snap) = Snapshot::from_program(program, Vec::new(), Config::harness(Target::host())) else {
+        panic!("the program does not load");
+    };
+    let table = snap.demand_placement().expect("the placement table");
+    assert!(
+        !table.holes.iter().any(|h| matches!(h.kind, HoleKind::UnresolvedArguments)),
+        "{:?}",
+        table.holes
+    );
+    let realized: Vec<&str> = table
+        .instances
+        .values()
+        .filter_map(|r| r.realizes.as_ref())
+        .map(|r| r.lowered.as_str())
+        .filter(|l| l.starts_with("Cache"))
+        .collect();
+    assert_eq!(realized, ["Cache_Int_String", "Cache_Int_String"]);
+}
+
+#[test]
+fn an_unannotated_array_of_generic_literals_asks_for_the_arguments() {
+    // It checked clean and died at build, unlocated, at
+    // `expression form Discriminant(12)`.
+    agree(
+        "array_unannotated",
+        r#"
+type Box<T> {
+    value: T = 0;
+}
+
+fn main() {
+    let bs = [Box { value: 1 }, Box { value: 2 }];
+    println(bs[0].value);
+}
+"#,
+        &Expect::Refused("`Box` is a generic type"),
+    );
+}

@@ -105,7 +105,7 @@ use crate::resolve::TopScope;
 use crate::snapshot::{Site, Snapshot};
 use crate::symbol::Bundle;
 use crate::ty::Ty;
-use crate::typed_bodies::{TemplateKind, TypingRecord};
+use crate::typed_bodies::TypingRecord;
 
 // ------------------------------------------------------------ identity
 
@@ -1124,9 +1124,8 @@ impl<'a> Decls<'a> {
 
     /// The declared type of a plain assignment's place, as the checker's
     /// walk typed it: the last segment's type (the head's, for a bare
-    /// local), written back as the instantiation it names when it names
-    /// a generic locus's monomorph. `None` with no walk, or a place of
-    /// any other type: the literal there names its own declaration.
+    /// local), a monomorph written back as the instantiation it names.
+    /// `None` with no walk, or a type the placement cannot write.
     fn placed(&self, target: &LValue) -> Option<TypeExpr> {
         let typing = self.typing?;
         let tables = || typing.views.values().flatten();
@@ -1135,11 +1134,6 @@ impl<'a> Decls<'a> {
             Some(LValueSeg::Index(ix)) => tables().map(|v| v.place(ix)).find(|t| !matches!(t, Ty::Unknown)),
             None => tables().map(|v| v.place(&target.head)).find(|t| !matches!(t, Ty::Unknown)),
         }?;
-        let Ty::Named(n) = ty else { return None };
-        let m = typing.monomorphs.named(n)?;
-        if m.kind != TemplateKind::Locus {
-            return None;
-        }
         self.type_expr(ty)
     }
 
@@ -2791,11 +2785,9 @@ impl<'a, 'd> BodyWalk<'a, 'd> {
             Stmt::Assign { target, op, value, .. } => {
                 let start = self.literals.len();
                 self.expr(value);
-                if let (AssignOp::Eq, Expr::Struct { id, .. }) = (op, value) {
-                    let site = self.ids.site_id(*id);
-                    let placed = site.and_then(|_| self.decls.placed(target));
-                    if let Some(literal) = self.literals[start..].iter_mut().find(|l| Some(l.site.id) == site) {
-                        literal.placed = placed;
+                if matches!(op, AssignOp::Eq) && matches!(value, Expr::Struct { .. } | Expr::Array(..) | Expr::Tuple(..)) {
+                    if let Some(ty) = self.decls.placed(target) {
+                        self.place_into(start, value, &ty);
                     }
                 }
                 for seg in &target.tail {
@@ -2855,7 +2847,50 @@ impl<'a, 'd> BodyWalk<'a, 'd> {
         }
     }
 
+    /// The place's declared type `ty` handed down to the literals of the
+    /// value stored there, from `start` in this walk's literals: a generic
+    /// locus literal takes the instantiation `ty` names, and an array or
+    /// tuple literal's elements each the element type's.
+    fn place_into(&mut self, start: usize, value: &Expr, ty: &TypeExpr) {
+        match (value, ty) {
+            (Expr::Struct { id, .. }, TypeExpr::Named { generic_args, .. }) if !generic_args.is_empty() => {
+                let site = self.ids.site_id(*id);
+                if let Some(literal) = self.literals[start..].iter_mut().find(|l| Some(l.site.id) == site) {
+                    literal.placed = Some(ty.clone());
+                }
+            }
+            (Expr::Array(parts, _), TypeExpr::Array { elem, .. }) => {
+                for p in parts {
+                    self.place_into(start, p, elem);
+                }
+            }
+            (Expr::Tuple(parts, _), TypeExpr::Tuple(tys, _)) if parts.len() == tys.len() => {
+                for (p, t) in parts.iter().zip(tys) {
+                    self.place_into(start, p, t);
+                }
+            }
+            _ => {}
+        }
+    }
+
     fn typed_expr(&mut self, e: &'a Expr, declared: Option<&'a TypeExpr>) {
+        // An array or tuple literal under a declared array or tuple type:
+        // each element under the element type, as a literal under its own.
+        match (declared, e) {
+            (Some(TypeExpr::Array { elem, .. }), Expr::Array(parts, _)) => {
+                for p in parts {
+                    self.typed_expr(p, Some(elem));
+                }
+                return;
+            }
+            (Some(TypeExpr::Tuple(tys, _)), Expr::Tuple(parts, _)) if tys.len() == parts.len() => {
+                for (p, t) in parts.iter().zip(tys) {
+                    self.typed_expr(p, Some(t));
+                }
+                return;
+            }
+            _ => {}
+        }
         fn depends_on(ty: &TypeExpr, parameters: &BTreeSet<String>) -> bool {
             match ty {
                 TypeExpr::Named { path, generic_args, .. } => {

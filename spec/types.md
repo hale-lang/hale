@@ -1239,6 +1239,12 @@ declared type at the site. The sites that declare one are:
 - a declared field of a data type, at a literal's init — `Outer { inner: Box { value: 9 } }`
 - the place of a plain assignment (`=`, not `+=`) — `self.cfg = Cfg { n: 2 };`, a local, a record's field or an array's element, by the place's declared type
 
+An array or tuple literal at one of these sites hands each element the
+declared element type, so its template literals take that type's
+arguments: `let cs: [Cfg<Int>; 2] = [Cfg { n: 1 }, Cfg { n: 2 }];`,
+`let t: (Cfg<Int>, String) = (Cfg { n: 1 }, "a");`, and a param default
+of array type (`params { cfgs: [Cfg<Int>; 2] = [Cfg { n: 1 }, Cfg { n: 2 }]; }`).
+
 At a `let` ascription, a transparent alias of the whole instantiation
 supplies the same arguments: `type IntBox = Box<Int>;` permits
 `let b: IntBox = Box { value: 1 };`. Imported template paths resolve
@@ -1246,8 +1252,9 @@ through their import aliases before specialization. Different aliases
 for one imported template retain the same declaration identity; each
 construction carries its own concrete arguments and child layouts.
 
-Anywhere else — an un-annotated `let`, a literal in statement
-position — the arguments cannot be recovered, and the literal is a
+Anywhere else — an un-annotated `let` (of the literal, or of an array
+or tuple literal holding it), a literal in statement position — the
+arguments cannot be recovered, and the literal is a
 type error naming the template and the annotation to write. There
 is no inference from a literal's field values back to the
 parameters.
