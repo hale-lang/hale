@@ -243,10 +243,31 @@ pub mod reasons {
     /// local is bound as an owned copy.
     pub const PLACE_SOURCE_WRITTEN: &str = "copy: what the local was read from is written while it is live";
 
+    /// A place's value assigned into a part of a parameter (`h.arr =
+    /// r.arr`): stored as a copy, so the caller's two arguments never
+    /// share a block.
+    pub const PLACE_PARAM_STORED: &str = "copy: a place's value stored into a part of a parameter";
+
+    /// A value stored into a locus's field from outside its methods
+    /// (`l.name = s`, `h.loc.r.arr = v`): the locus's own store, copied
+    /// into its arena (GH #1561). The replaced value is retired, so the
+    /// copy is store-latest: it never accumulates.
+    pub const LOCUS_STORED: &str = "copy: a value stored into a locus's field from outside its methods";
+
+    /// Is the reason a store's own copy of its value (into a part of a
+    /// parameter, or into a locus's field)?
+    pub fn is_store(reason: &str) -> bool {
+        reason == PLACE_PARAM_STORED || reason == LOCUS_STORED
+    }
+
     /// Is the reason the local-place rule's (`PLACE_*`), not the
     /// cell-read rule's?
     pub fn is_place(reason: &str) -> bool {
-        reason == PLACE_WRITTEN || reason == PLACE_CALL_WRITES || reason == PLACE_SOURCE_WRITTEN
+        reason == PLACE_WRITTEN
+            || reason == PLACE_CALL_WRITES
+            || reason == PLACE_SOURCE_WRITTEN
+            || reason == PLACE_PARAM_STORED
+            || reason == LOCUS_STORED
     }
 }
 
@@ -477,6 +498,9 @@ struct Bodies<'a> {
     /// an interface, a perspective, a form): a binding of one is the
     /// handle, which a write through it means to reach.
     handle_fields: BTreeSet<String>,
+    /// Field names every declaration of which holds a fixed array of
+    /// handles (`ws: [W; 2]`): an element of one is a locus.
+    handle_array_fields: BTreeSet<String>,
     /// Type aliases, by their normalized names: classified by what they
     /// name, never by their spelling.
     aliases: BTreeMap<String, &'a TypeExpr>,
@@ -502,6 +526,10 @@ struct Bodies<'a> {
     /// Field names every declaration of which is laid out inline in its
     /// record: a write into one is the record's own.
     inline_fields: BTreeSet<String>,
+    /// Field names every declaration of which is typed as a scalar
+    /// lowering stores inline (`inline_scalar`): a store into one copies
+    /// nothing.
+    inline_scalar_fields: BTreeSet<String>,
     /// The scalar declarations (`quantity`, `distinct`, `point`, a
     /// refinement), and those of them lowering lays out as an `Int`
     /// (`crate::units::typed_scalar_names`), by every name they answer
@@ -649,6 +677,45 @@ impl<'a> Bodies<'a> {
                     }
                     return self.int_scalars.contains(&name);
                 }
+                _ => return false,
+            }
+        }
+        false
+    }
+
+    /// Is `ty`, its aliases followed, a fixed array whose elements are
+    /// handles (`[W; 2]`, an array of loci)?
+    fn handle_array(&self, ty: &TypeExpr) -> bool {
+        let mut cur = ty;
+        for _ in 0..16 {
+            match cur {
+                TypeExpr::Projection { inner, .. } => cur = inner,
+                TypeExpr::Named { path, .. } => {
+                    let Some(name) = self.path_name(&path.segments) else { return false };
+                    let Some(next) = self.aliases.get(&name) else { return false };
+                    cur = next;
+                }
+                TypeExpr::Array { elem, .. } => return matches!(self.classify(elem), Class::Handle | Class::Form(_)),
+                _ => return false,
+            }
+        }
+        false
+    }
+
+    /// Is `ty`, its aliases followed, a fn type whose declared result is
+    /// a primitive (`fn(Int) -> Int`)? A call through a value of it
+    /// hands back no block.
+    fn fn_returns_scalar(&self, ty: &TypeExpr) -> bool {
+        let mut cur = ty;
+        for _ in 0..16 {
+            match cur {
+                TypeExpr::Projection { inner, .. } => cur = inner,
+                TypeExpr::Named { path, .. } => {
+                    let Some(name) = self.path_name(&path.segments) else { return false };
+                    let Some(next) = self.aliases.get(&name) else { return false };
+                    cur = next;
+                }
+                TypeExpr::Function { ret: Some(r), .. } => return self.classify(r) == Class::Scalar,
                 _ => return false,
             }
         }
@@ -1104,6 +1171,7 @@ fn analyze(programs: &[&Program], renames: &BTreeMap<Vec<String>, String>) -> Fo
         scalar_fields: BTreeSet::new(),
         compound_fields: BTreeSet::new(),
         handle_fields: BTreeSet::new(),
+        handle_array_fields: BTreeSet::new(),
         field_types: Vec::new(),
         aliases: BTreeMap::new(),
         renames: renames.clone(),
@@ -1114,6 +1182,7 @@ fn analyze(programs: &[&Program], renames: &BTreeMap<Vec<String>, String>) -> Fo
         view_form_fields: BTreeSet::new(),
         key_fields: BTreeSet::new(),
         inline_fields: BTreeSet::new(),
+        inline_scalar_fields: BTreeSet::new(),
         scalar_decls: Vec::new(),
         scalar_bases: BTreeMap::new(),
         struct_fields: BTreeMap::new(),
@@ -1178,6 +1247,10 @@ fn analyze(programs: &[&Program], renames: &BTreeMap<Vec<String>, String>) -> Fo
         classes.iter().filter(|(f, c)| *c == Class::Value && !not_compound.contains(f)).map(|(f, _)| f.clone()).collect();
     let not_handle: BTreeSet<&String> =
         classes.iter().filter(|(_, c)| !matches!(c, Class::Handle | Class::Form(_))).map(|(f, _)| f).collect();
+    let not_handle_array: BTreeSet<&String> =
+        p.field_types.iter().filter(|(_, t)| !t.is_some_and(|t| p.handle_array(t))).map(|(f, _)| f).collect();
+    p.handle_array_fields =
+        p.field_types.iter().filter(|(f, _)| !not_handle_array.contains(f)).map(|(f, _)| f.clone()).collect();
     p.handle_fields = classes
         .iter()
         .filter(|(f, c)| matches!(c, Class::Handle | Class::Form(_)) && !not_handle.contains(f))
@@ -1186,6 +1259,10 @@ fn analyze(programs: &[&Program], renames: &BTreeMap<Vec<String>, String>) -> Fo
     let not_inline: BTreeSet<&String> = classes.iter().filter(|(_, c)| *c != Class::Inline).map(|(f, _)| f).collect();
     p.inline_fields =
         classes.iter().filter(|(f, c)| *c == Class::Inline && !not_inline.contains(f)).map(|(f, _)| f.clone()).collect();
+    let not_inline_scalar: BTreeSet<&String> =
+        p.field_types.iter().filter(|(_, t)| !t.is_some_and(|t| p.inline_scalar(t))).map(|(f, _)| f).collect();
+    p.inline_scalar_fields =
+        p.field_types.iter().filter(|(f, _)| !not_inline_scalar.contains(f)).map(|(f, _)| f.clone()).collect();
 
     // Each body's own writes and the calls it makes, then the fixpoint.
     struct Direct {
@@ -1679,6 +1756,11 @@ struct Walk<'p, 'a> {
     passed: Vec<(usize, usize)>,
     /// Arguments of no local copied for such a call, by span.
     passed_copies: Vec<Span>,
+    /// Values a store copies where it evaluates them, by span, and why:
+    /// a place's value stored into a part of a parameter, and any value
+    /// but an inline scalar or a handle stored into a locus's field from
+    /// outside its methods (GH #1561) — each an allocation-survey site.
+    stored_copies: Vec<(Span, &'static str)>,
     /// Parameters rebound (`k = ..`), and where.
     param_rebinds: Vec<(String, u32)>,
     /// The local-place rule's facts. Per variable: its name, whether it
@@ -1687,10 +1769,21 @@ struct Walk<'p, 'a> {
     names: Vec<String>,
     record_hint: Vec<bool>,
     handle_only: Vec<bool>,
+    /// Per variable, whether it surely holds an array of handles (a
+    /// declared `[W; N]`, a literal of handles, another such local); and
+    /// such parameters.
+    handle_array: Vec<bool>,
+    handle_array_params: BTreeSet<String>,
     /// Per variable, whether it surely holds a primitive (nothing writes
     /// into one); and such parameters.
     scalar_hint: Vec<bool>,
     scalar_params: BTreeSet<String>,
+    /// Parameters declared a scalar lowering stores inline (a number,
+    /// a `Bool`, a typed scalar): a store of one copies nothing.
+    inline_scalar_params: BTreeSet<String>,
+    /// Parameters of a fn type declared to return a primitive: a call
+    /// through one hands back no block.
+    scalar_fn_params: BTreeSet<String>,
     /// Per variable, whether it is known to hold an array, a tuple or an
     /// enum read from a place (a field every declaration of which holds
     /// one, or a local that does).
@@ -1735,6 +1828,16 @@ struct Walk<'p, 'a> {
     var_locus: Vec<Option<String>>,
 }
 
+/// The field of `self` a place expression is read below (`self.r.arr[0]`
+/// → `r`); `None` for one not rooted at `self`.
+fn self_first_field(e: &Expr) -> Option<String> {
+    match e {
+        Expr::Field { receiver, name, .. } if matches!(receiver.as_ref(), Expr::KwSelf(_)) => Some(name.name.clone()),
+        Expr::Field { receiver, .. } | Expr::Index { receiver, .. } => self_first_field(receiver),
+        _ => None,
+    }
+}
+
 fn pattern_names<'e>(p: &'e Pattern, out: &mut Vec<&'e Ident>) {
     match p {
         Pattern::Binding(id) => out.push(id),
@@ -1753,6 +1856,8 @@ impl<'p, 'a> Walk<'p, 'a> {
         let mut handle_only_params = BTreeSet::new();
         let mut record_params = BTreeSet::new();
         let mut scalar_params = BTreeSet::new();
+        let mut inline_scalar_params = BTreeSet::new();
+        let mut scalar_fn_params = BTreeSet::new();
         for prm in params {
             top.insert(prm.name.name.clone(), None);
             let class = p.classify(&prm.ty);
@@ -1761,6 +1866,12 @@ impl<'p, 'a> Walk<'p, 'a> {
             }
             if class == Class::Record {
                 record_params.insert(prm.name.name.clone());
+            }
+            if p.fn_returns_scalar(&prm.ty) {
+                scalar_fn_params.insert(prm.name.name.clone());
+            }
+            if class == Class::Scalar && p.inline_scalar(&prm.ty) {
+                inline_scalar_params.insert(prm.name.name.clone());
             }
             if class == Class::Scalar {
                 scalar_params.insert(prm.name.name.clone());
@@ -1811,12 +1922,17 @@ impl<'p, 'a> Walk<'p, 'a> {
             exits: Vec::new(),
             passed: Vec::new(),
             passed_copies: Vec::new(),
+            stored_copies: Vec::new(),
             param_rebinds: Vec::new(),
             names: Vec::new(),
             record_hint: Vec::new(),
             handle_only: Vec::new(),
+            handle_array: Vec::new(),
+            handle_array_params: params.iter().filter(|prm| p.handle_array(&prm.ty)).map(|prm| prm.name.name.clone()).collect(),
             scalar_hint: Vec::new(),
             scalar_params,
+            inline_scalar_params,
+            scalar_fn_params,
             compound_hint: Vec::new(),
             var_struct: Vec::new(),
             param_structs: params
@@ -1868,6 +1984,7 @@ impl<'p, 'a> Walk<'p, 'a> {
         self.names.push(name.to_string());
         self.record_hint.push(false);
         self.handle_only.push(false);
+        self.handle_array.push(false);
         self.scalar_hint.push(false);
         self.compound_hint.push(false);
         self.var_struct.push(None);
@@ -2216,6 +2333,76 @@ impl<'p, 'a> Walk<'p, 'a> {
         }
     }
 
+    /// Does the assignment's slot surely lie in a locus's storage? Its
+    /// head is a handle parameter or local, or the path steps below a
+    /// field every declaration of which holds a handle (`h.loc.f`,
+    /// `holder.loc.f`). `head` is the head's lookup.
+    fn store_lands_in_locus(&self, target: &LValue, head: Option<Option<usize>>) -> bool {
+        let handle_head = match head {
+            Some(Some(v)) => self.handle_only[v],
+            Some(None) => self.handle_only_params.contains(&target.head.name),
+            None => false,
+        };
+        // Below a child, or below an element of an array of loci (`ls[0].f`,
+        // `h.ws[i].f`): the path, short of its last segment, steps into a
+        // locus.
+        let Some((_, above)) = target.tail.split_last() else { return handle_head };
+        let mut in_handle_array = match head {
+            Some(Some(v)) => self.handle_array[v],
+            Some(None) => self.handle_array_params.contains(&target.head.name),
+            None => false,
+        };
+        let mut below_child = false;
+        for seg in above {
+            match seg {
+                LValueSeg::Field(f) => {
+                    if self.p.handle_fields.contains(&f.name) {
+                        below_child = true;
+                    }
+                    in_handle_array = self.p.handle_array_fields.contains(&f.name);
+                }
+                LValueSeg::Index(_) => {
+                    if in_handle_array {
+                        below_child = true;
+                    }
+                    in_handle_array = false;
+                }
+            }
+        }
+        handle_head || below_child
+    }
+
+    /// Does the store copy nothing — its slot surely an inline scalar (a
+    /// field every declaration of which is one, an element of an inline
+    /// scalar array), or its value surely one?
+    fn slot_is_inline_scalar(&self, target: &LValue, value: &Expr) -> bool {
+        let slot = match target.tail.split_last() {
+            Some((LValueSeg::Field(f), _)) => {
+                self.p.inline_scalar_fields.contains(&f.name) || self.p.inline_fields.contains(&f.name)
+            }
+            Some((LValueSeg::Index(_), above)) => {
+                matches!(above.last(), Some(LValueSeg::Field(f)) if self.p.inline_fields.contains(&f.name))
+            }
+            None => false,
+        };
+        slot || self.value_is_inline_scalar(value)
+    }
+
+    /// Is `value` surely a scalar lowering stores inline: a number or
+    /// `Bool` literal, a parameter declared one, a field every
+    /// declaration of which is one, an operator over such values?
+    fn value_is_inline_scalar(&self, value: &Expr) -> bool {
+        match value {
+            Expr::Literal(Literal::Int(..) | Literal::Float(..) | Literal::Bool(..) | Literal::Decimal(..), _) => true,
+            Expr::Literal(Literal::Quantity { .. }, _) => true,
+            Expr::Ident(id) => matches!(self.lookup(&id.name), Some(None)) && self.inline_scalar_params.contains(&id.name),
+            Expr::Field { name, .. } => self.p.inline_scalar_fields.contains(&name.name),
+            Expr::Unary { operand, .. } => self.value_is_inline_scalar(operand),
+            Expr::Binary { left, right, .. } => self.value_is_inline_scalar(left) && self.value_is_inline_scalar(right),
+            _ => false,
+        }
+    }
+
     /// Does `value`, bound to a fresh local, surely hold a handle (its
     /// declared type, a field every declaration of which holds one, a
     /// local or a parameter that does, a locus literal)?
@@ -2282,8 +2469,10 @@ impl<'p, 'a> Walk<'p, 'a> {
         use crate::builtin_sigs::{bare_builtin_sig, Returns};
         use crate::stdlib_surface::{signature_for, SigTy};
         if let Expr::Ident(id) = callee {
-            if self.lookup(&id.name).is_some() {
-                return false;
+            // A fn value: a parameter declared to return a primitive
+            // (`cb: fn(Int) -> Int`) hands back none of a place.
+            if let Some(bound) = self.lookup(&id.name) {
+                return bound.is_none() && self.scalar_fn_params.contains(&id.name);
             }
             if let Some(sig) = bare_builtin_sig(&id.name) {
                 return match sig.returns {
@@ -2730,6 +2919,17 @@ impl<'p, 'a> Walk<'p, 'a> {
                 self.forms[v] = form;
                 self.view_forms[v] = view_form;
                 self.handle_only[v] = surely_handle;
+                self.handle_array[v] = match (ty, value) {
+                    (Some(t), _) => self.p.handle_array(t),
+                    (None, Expr::Array(es, _)) => !es.is_empty() && es.iter().all(|e| self.surely_handle(None, e)),
+                    (None, Expr::Ident(id)) => match self.lookup(&id.name) {
+                        Some(Some(u)) => self.handle_array[u],
+                        Some(None) => self.handle_array_params.contains(&id.name),
+                        None => false,
+                    },
+                    (None, Expr::Field { name, .. }) => self.p.handle_array_fields.contains(&name.name),
+                    _ => false,
+                };
                 self.record_hint[v] = record;
                 self.scalar_hint[v] = scalar;
                 self.compound_hint[v] = compound;
@@ -2862,7 +3062,15 @@ impl<'p, 'a> Walk<'p, 'a> {
                     // (its flag cleared after the store): a field path marks
                     // the field (`h.f = r.arr` → a part marker), an element
                     // the whole local (`xs[0] = <cell read>`).
-                    if let Some(Some(v)) = head {
+                    // A store whose slot is a locus's storage — through a
+                    // handle parameter or local, or below a child (`l.name =
+                    // s`, `h.loc.r.arr = r.arr`) — is that locus's own store:
+                    // lowering copies the value into the locus's arena and
+                    // retires what it replaces, as a method's `self.f = v`
+                    // (GH #1561). The locus never shares the caller's block,
+                    // so neither rule below adds a copy of its own.
+                    let into_locus = self.store_lands_in_locus(target, head);
+                    if let (Some(Some(v)), false) = (head, into_locus) {
                         self.bind_assigned_part(v, target, value, &keys, id.0, *span);
                     }
                     // A place's value assigned into a part of a parameter: the
@@ -2870,28 +3078,26 @@ impl<'p, 'a> Walk<'p, 'a> {
                     // through either reaches the other (`h.arr = r.arr;
                     // h.arr[0].k = 7` with both parameters). The value is
                     // stored as a copy, as a struct field's is (GH #992).
-                    // A handle parameter's field is that locus's storage, and
-                    // a store into it from outside the locus's methods is not
-                    // yet owned by the locus (the value stays where the caller's
-                    // arena holds it): a value spelled as a place (a local, a
-                    // field, an element), a String included, is a copy, so the
-                    // locus and the caller never share it (a later same-length
-                    // overwrite by the locus would otherwise rewrite the
-                    // caller's String). Nothing else is (a String carried by an
-                    // `if` or a call, a store through a handle local): GH #1561.
-                    // The clone costs: a free fn storing a String parameter
-                    // into a handle's field 4M times ran 7 s and 62 MB longer.
                     let param_head = matches!(head, Some(None)) && self.params.contains(&target.head.name);
-                    let handle_head = self.handle_only_params.contains(&target.head.name);
-                    let marked = keys.as_ref().is_some_and(|k| k.iter().any(|k| k.starts_with(AT) || k.starts_with(PART)));
-                    let place_value = matches!(value, Expr::Ident(_) | Expr::Field { .. } | Expr::Index { .. });
                     if param_head
+                        && !into_locus
                         && self.summary.is_some()
+                        && keys.as_ref().is_some_and(|k| k.iter().any(|k| k.starts_with(AT) || k.starts_with(PART)))
+                        && !self.known_scalar(None, value)
                         && !self.surely_handle(None, value)
-                        && ((marked && !self.known_scalar(None, value)) || (handle_head && place_value))
                     {
                         let vspan = value.span();
                         self.args.push((Site::Part(vspan.start.0, vspan.end.0), target.head.name.clone()));
+                        self.stored_copies.push((vspan, reasons::PLACE_PARAM_STORED));
+                    }
+                    // The store's own copy into the locus, unless the slot
+                    // holds an inline scalar or a handle.
+                    if into_locus
+                        && self.summary.is_some()
+                        && !self.surely_handle(None, value)
+                        && !self.slot_is_inline_scalar(target, value)
+                    {
+                        self.stored_copies.push((value.span(), reasons::LOCUS_STORED));
                     }
                     // `self.f.. = v`, a local stored whole into a self
                     // field: what a get-modify-store sets back.
@@ -3488,6 +3694,15 @@ impl<'p, 'a> Walk<'p, 'a> {
                 let at = self.tick();
                 self.root_writes.push((place, at, true));
             }
+            // A field of `self` handed to a call that may write through
+            // it is written as a store into it would be (`self.f[0].k =
+            // 1`): a local or a literal part still viewing the field is
+            // owned before the call (`let lit = R { arr: self.source };
+            // poke_arr(self.source);`).
+            if let (Some(f), true) = (self_first_field(a), into) {
+                let id = self.p.field_id(&f);
+                self.write(Writes::field(id), None);
+            }
             match self.root_local(a) {
                 // A bounded intrinsic writes the list inline in its
                 // record: only one below the local's top level is in a
@@ -3837,6 +4052,9 @@ impl<'p, 'a> Walk<'p, 'a> {
         }
         for span in &self.passed_copies {
             found.cell_copies.push(CellCopy { program: 0, span: *span, operand: true, reason: reasons::CALL_WRITES });
+        }
+        for &(span, reason) in &self.stored_copies {
+            found.cell_copies.push(CellCopy { program: 0, span, operand: false, reason });
         }
         let mut cow_binds: HashMap<(Site, String), BTreeMap<String, bool>> = HashMap::new();
         for w in &self.assigns {

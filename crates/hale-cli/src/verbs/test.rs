@@ -132,6 +132,7 @@ pub(crate) fn compile_test_binary(
     h.write(entry.display().to_string().as_bytes());
     let bin = scratch.path(&format!("test_{}_{:016x}", nonce, h.finish()));
     let view = snap.demand_lowering().map_err(|b| render_blocked(b, snap.demangler(), file_bases, sources))?;
+    options.site_sources = Some(crate::shared::options::site_sources(file_bases, sources));
     if let Err(e) = hale_codegen::build_resolved(view, &bin, &options) {
         // GH #848: the per-fixture failure message is the located
         // rendering `build` prints, so a test that will not compile

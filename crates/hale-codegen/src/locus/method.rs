@@ -287,6 +287,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             self.builder
                 .build_store(child_slot, child_self)
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            // GH #1566: the failed child is stopped while its owner's
+            // handler runs, on the owner's domain: a store into it there
+            // (`a.host = …; restart(a)`) races nothing, and the checker
+            // lets it through as well
+            self.xpool_fresh_slots.insert(child_slot);
             scope.locals.insert(
                 child_param_name,
                 (child_slot, CodegenTy::LocusRef(child_locus_name.clone())),
@@ -305,6 +310,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
 
             // A `return;` in the body is the fall-through below, taken
             // early (`lower_failure_handler_return`).
+            // GH #1566: the failed child's domain is the handler's too
+            // (`wrap_domain_fns`)
+            self.xpool_handlers.push((ff, child_locus_name.clone()));
             self.in_failure_handler = true;
             let end = self.in_body(failure_decl.id, |cx| cx.lower_block(&failure_decl.body, &mut scope));
             self.in_failure_handler = false;

@@ -94,6 +94,15 @@ r.scores[0] = 9; }`) changes what the caller passed. A `for x in
 v.items` walk over a `@form(vec)` visits the vec's own cells, so a
 write through `x` changes the vec, as before.
 
+A locus is different again. A store into a locus's field from outside
+its methods, through a handle (`fn put(l: Ledger, s: String) { l.name
+= s; }`, `let l = Ledger { }; l.name = s;`, `h.child.name = s`,
+`ledgers[i].name = s`), is the locus's own store, exactly as if a method
+of it had written `self.name = s`. The value is copied into the locus,
+so the locus and your `s` never share a block, whatever wrote the value
+(a variable, an `if`, a call). The value it replaces is recycled, so a
+free fn that keeps storing into a long-lived locus does not grow it.
+
 Records nest, and they're what travels on the bus and in and out
 of functions. When a record starts wanting *methods*, that's the
 signal to promote it to a [locus](./locus-gently.md).

@@ -301,11 +301,20 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // stood back, so nobody reclaimed it. The table decided the
         // receiver and the field's value separately when it walked the
         // initialiser.
-        let parent_owns_via_field = matches!(
-            site_owner,
-            crate::ownership::Owner::Field { .. }
-                | crate::ownership::Owner::Placement(_)
-        );
+        // A locus literal an array (or tuple) param value holds, built in
+        // a pool-placed root's init job: the job's frame is gone once its
+        // params are, so the element lives in its owner's arena, as a
+        // field's child does (GH #1566: `cs: [C; 2] = [C { }, C { }]`
+        // read in `dissolve()` was a dead stack slot).
+        let held_by_composite_param = self.pool_init_composite_param
+            && self.current_arena_override.is_some()
+            && matches!(site_owner, crate::ownership::Owner::FrameTemp(_));
+        let parent_owns_via_field = held_by_composite_param
+            || matches!(
+                site_owner,
+                crate::ownership::Owner::Field { .. }
+                    | crate::ownership::Owner::Placement(_)
+            );
         // F.31 (2026-05-23): consume any placement override the
         // caller set. The override is applied to a LOCAL clone of
         // `info` for this instantiation only — nested
@@ -1152,7 +1161,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         )> = None;
         let new_arena = match acquire_strategy {
             AcquireStrategy::Fresh => {
-                if info.arena_elidable {
+                if held_by_composite_param {
+                    // its owner's arena, which the owner's teardown frees
+                    // with it (nothing tears the element down on its own)
+                    self.current_arena_override.expect("checked is_some").into()
+                } else if info.arena_elidable {
                     // Locus body is provably non-allocating
                     // (its elision row, `hale_types::alloc_routing`). Point
                     // `__arena` at the caller's current arena
@@ -2996,7 +3009,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         }
                         _ => expr,
                     };
+                    let composite = std::mem::replace(
+                        &mut self.pool_init_composite_param,
+                        self.pool_init && matches!(value, Expr::Array(..) | Expr::Tuple(..) | Expr::ArrayRepeat { .. }),
+                    );
                     let r = self.lower_expr(value, scope);
+                    self.pool_init_composite_param = composite;
                     self.field_holder = None;
                     let r = r?;
                     self.params_init_initialized = inner_init;
@@ -3044,7 +3062,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                             // question at the default site.
                             let owned = self.owner_table.field_owns(e);
                             // The locus's own text: typed in its body.
-                            let r = self.in_body(info.decl, |cx| cx.lower_expr(e, scope))?;
+                            let composite = std::mem::replace(
+                                &mut self.pool_init_composite_param,
+                                self.pool_init && matches!(e, Expr::Array(..) | Expr::Tuple(..) | Expr::ArrayRepeat { .. }),
+                            );
+                            let r = self.in_body(info.decl, |cx| cx.lower_expr(e, scope));
+                            self.pool_init_composite_param = composite;
+                            let r = r?;
                             self.in_params_default = saved_ipd;
                             let from_lit = matches!(
                                 e,
@@ -3304,6 +3328,36 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 self.builder
                     .build_store(field_ptr, val)
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            }
+            // GH #1566: the field holds the instance (or each of an array
+            // of them): one nothing held yet runs where this locus does
+            let written: Option<&Expr> = match overrides.get(fname.as_str()) {
+                Some(e) => Some(*e),
+                None => match default {
+                    DefaultInit::Expr(e) => Some(e),
+                    _ => None,
+                },
+            };
+            let built_here = match written {
+                Some(Expr::Struct { .. }) => true,
+                Some(Expr::Array(xs, _)) => xs.iter().all(|x| matches!(x, Expr::Struct { .. })),
+                Some(Expr::ArrayRepeat { val, .. }) => matches!(val.as_ref(), Expr::Struct { .. }),
+                _ => false,
+            };
+            match &declared_ty {
+                CodegenTy::LocusRef(l) => {
+                    let l = l.clone();
+                    self.emit_adopt(val.into_pointer_value(), &l, built_here, self_ptr)?;
+                }
+                CodegenTy::Array(..) if Self::array_inline_spec(&declared_ty).is_none() => {
+                    let ty = declared_ty.clone();
+                    self.emit_adopt_elements(val.into_pointer_value(), &ty, built_here, self_ptr)?;
+                }
+                CodegenTy::Interface(i) => {
+                    let i = i.clone();
+                    self.emit_adopt_iface(val.into_pointer_value(), &i, self_ptr)?;
+                }
+                _ => {}
             }
             // F.29 follow-up: OR the bit for this field into
             // `__locus_ref_owned_mask` if the field is LocusRef-
@@ -5137,6 +5191,32 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let saved_in_main = std::mem::replace(&mut self.in_main, false);
         self.push_dissolve_frame();
         let self_param = init_fn.get_nth_param(0).expect("init self param").into_pointer_value();
+        // GH #1566: the root, and what its params build here, is this
+        // thread's domain
+        if self.xpool_check && !self.xpool_shared {
+            let here = self.module.get_function("lotus_domain_here").expect("lotus_domain_here declared");
+            let d = self
+                .builder
+                .build_call(here, &[], "domain.here")
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                .try_as_basic_value()
+                .left()
+                .expect("lotus_domain_here returns i64");
+            let slot = self
+                .builder
+                .build_struct_gep(info.struct_ty, self_param, info.domain_field_idx, &format!("{locus_name}.__domain.ptr"))
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            self.builder.build_store(slot, d).map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            // placed: the field it fills holds it where it runs, never
+            // moves it onto the owner's domain
+            let slot = self
+                .builder
+                .build_struct_gep(info.struct_ty, self_param, info.adopted_field_idx, &format!("{locus_name}.__adopted.ptr"))
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            self.builder
+                .build_store(slot, self.context.i64_type().const_int(1, false))
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        }
         let route = self.anchor_route.clone();
         if let (Some(mb_idx), Some(crate::codegen::AnchorRoute::Mailbox(_))) =
             (info.mailbox_field_idx, &self.anchor_route)
@@ -5718,6 +5798,15 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // GH #1069: held by something that reclaims it later — everything
         // but a bare statement literal.
         store(self, info.held_by_owner_field_idx, i64_t.const_int(u64::from(held), false).into(), "__held_by_owner")?;
+        // GH #1566: built on this domain
+        let domain: inkwell::values::BasicValueEnum<'ctx> =
+            if self.xpool_check && !self.xpool_shared { self.domain_now()?.into() } else { zero };
+        store(self, info.domain_field_idx, domain, "__domain")?;
+        // GH #1566: held by no locus yet; one built where no domain owns
+        // it (a `bindings { }` entry) is never moved onto one
+        let adopted: inkwell::values::BasicValueEnum<'ctx> =
+            if self.xpool_shared { i64_t.const_int(1, false).into() } else { zero };
+        store(self, info.adopted_field_idx, adopted, "__adopted")?;
         // m41 / m45 / F.27: quarantine, restart-in-place and drain latches.
         store(self, info.quarantined_field_idx, zero, "__quarantined")?;
         store(self, info.restart_in_place_pending_field_idx, zero, "__restart_in_place_pending")?;

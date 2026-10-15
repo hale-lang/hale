@@ -2502,6 +2502,106 @@ row	~.frames	FrameBuffer	main	inherited
 == crates/hale-codegen/tests/cross_locus_from_method.rs#313a3c6e
 shared	Caller@main1	Caller #3e6a56f6
 
+== crates/hale-codegen/tests/cross_pool_backstop.rs#8231aa31
+root	App	the entry
+domain	pinned:Keep@binding1
+row	App@literal1	App	main	default
+-- Keep@binding1	Keep
+row	~	Keep	pinned:~	binding
+row	~.tally	Tally	pinned:~	inherited
+
+== crates/hale-codegen/tests/cross_pool_backstop.rs#24a2a3ff
+root	App	the entry
+domain	pool:io
+row	App@literal1	App	main	default
+-- App@literal1.q	P
+row	~	P	pool:io	entry	off owner
+row	~.c	C	pool:io	inherited
+
+== crates/hale-codegen/tests/cross_pool_backstop.rs#496b49d9
+root	App	the entry
+domain	pool:io
+row	App@literal1	App	main	default
+-- App@literal1.q	Q
+row	~	Q	pool:io	entry	off owner
+row	~.c	C	pool:io	inherited
+
+== crates/hale-codegen/tests/cross_pool_backstop.rs#a97ba0a2
+root	App	the entry
+domain	pool:io
+row	App@literal1	App	main	default
+row	App@literal1.q	P	pool:io	entry	off owner
+
+== crates/hale-codegen/tests/cross_pool_backstop.rs#f179a81a
+root	App	the entry
+domain	pool:io
+hole	App@literal1.srv.handler.web	reuse `web`
+hole	App@literal1.srv.conns.handler.handler	reuse `self.handler`
+hole	App@literal1.srv.conns.handler.handler	unresolved declaration `std::http::Handler`
+row	App@literal1	App	main	default
+-- App@literal1.srv	__StdHttpServer
+row	~	__StdHttpServer	pool:io	entry	off owner
+row	~.conns	__StdIoTcpConnections	pool:io	inherited
+row	~.conns.flows	__StdIoTcpFlows	pool:io	inherited
+row	~.conns.handler	__StdHttpResponder	pool:io	inherited
+row	~.conns.handler.handler	<hole>	pool:io	inherited
+row	~.handler	Api	pool:io	inherited
+row	~.handler.web	Web	pool:io	inherited
+row	~.relay	__StdIoTcpRelay	pool:io	inherited
+-- Web@main1	Web
+row	~	Web	main	default
+row	~.inner	Inner	main	inherited
+shared	dynamic	sites in the seed #b738f58e
+
+== crates/hale-codegen/tests/cross_pool_backstop.rs#a96954f3
+root	App	the entry
+domain	pool:io
+hole	App@literal1.srv.handler.knowledge	reuse `knowledge`
+hole	App@literal1.srv.handler.knowledge	unresolved declaration `Provider`
+hole	App@literal1.srv.conns.handler.handler	reuse `self.handler`
+hole	App@literal1.srv.conns.handler.handler	unresolved declaration `std::http::Handler`
+row	App@literal1	App	main	default
+-- App@literal1.srv	__StdHttpServer
+row	~	__StdHttpServer	pool:io	entry	off owner
+row	~.conns	__StdIoTcpConnections	pool:io	inherited
+row	~.conns.flows	__StdIoTcpFlows	pool:io	inherited
+row	~.conns.handler	__StdHttpResponder	pool:io	inherited
+row	~.conns.handler.handler	<hole>	pool:io	inherited
+row	~.handler	Api	pool:io	inherited
+row	~.handler.knowledge	<hole>	pool:io	inherited
+row	~.relay	__StdIoTcpRelay	pool:io	inherited
+-- Local@main1	Local
+row	~	Local	main	default
+row	~.store	Store	main	inherited
+row	~.store.conn	Conn	main	inherited
+shared	dynamic	sites in the seed #b738f58e
+
+== crates/hale-codegen/tests/cross_pool_backstop.rs#6378d979
+root	App	the entry
+domain	pool:io
+hole	App@literal1.srv.handler.provider	reuse `provider`
+hole	App@literal1.srv.conns.handler.handler	reuse `self.handler`
+hole	App@literal1.srv.conns.handler.handler	unresolved declaration `std::http::Handler`
+hole	Provider@main2.service	reuse `native`
+row	App@literal1	App	main	default
+-- App@literal1.srv	__StdHttpServer
+row	~	__StdHttpServer	pool:io	entry	off owner
+row	~.conns	__StdIoTcpConnections	pool:io	inherited
+row	~.conns.flows	__StdIoTcpFlows	pool:io	inherited
+row	~.conns.handler	__StdHttpResponder	pool:io	inherited
+row	~.conns.handler.handler	<hole>	pool:io	inherited
+row	~.handler	Api	pool:io	inherited
+row	~.handler.provider	Provider	pool:io	inherited
+row	~.relay	__StdIoTcpRelay	pool:io	inherited
+-- Native@main1	Native
+row	~	Native	main	default
+row	~.conn	Conn	main	inherited
+-- Provider@main2	Provider
+row	~	Provider	main	default
+row	~.service	Native	main	inherited	built by Native@main1
+row	~.service.conn	Conn	main	inherited	built by Native@main1.conn
+shared	dynamic	sites in the seed #b738f58e
+
 == crates/hale-codegen/tests/cross_seed_imports.rs#549b8136
 row	Parent@main1	Parent	main	default
 dynamic	<hole>	on main|unresolved declaration `lib::Child`	in the seed
@@ -3355,12 +3455,7 @@ row	~.conns.handler	__StdHttpResponder	pool:io	inherited
 row	~.conns.handler.handler	<hole>	pool:io	inherited
 row	~.handler	Routes	pool:io	inherited
 row	~.relay	__StdIoTcpRelay	pool:io	inherited
--- dynamic	sites in the seed
-dynamic	__StdHttpResponder	on pool:io
-dynamic	__StdIoTcpConnFlow	on pool:io
-dynamic	__StdIoTcpConnInline	on pool:io
-dynamic	__StdIoTcpConnections	on pool:io
-dynamic	__StdIoTcpStream	on pool:io
+shared	dynamic	sites in the seed #b738f58e
 
 == crates/hale-codegen/tests/http_server_concurrent.rs#a34912ce
 root	App	the entry
@@ -3592,7 +3687,10 @@ row	Pts@main1	Pts	main	default
 == crates/hale-codegen/tests/local_place_value.rs#986d0ab7
 row	H@main1	H	main	default
 
-== crates/hale-codegen/tests/local_place_value.rs#db48c262
+== crates/hale-codegen/tests/local_place_value.rs#33cc9335
+row	H@main1	H	main	default
+
+== crates/hale-codegen/tests/local_place_value.rs#c82f5a43
 row	H@main1	H	main	default
 
 == crates/hale-codegen/tests/locus_fallible_return_multichild.rs#46fdeeac
@@ -3643,6 +3741,25 @@ root	Holder	the entry
 row	Holder@literal1	Holder	main	default
 row	Holder@literal1.first	Part	main	default
 row	Holder@literal1.last	Part	main	default
+
+== crates/hale-codegen/tests/locus_field_store.rs#f9e71b27
+row	L@main1	L	main	default
+
+== crates/hale-codegen/tests/locus_field_store.rs#5f330281
+root	App	the entry
+domain	pool:p
+row	App@literal1	App	main	default
+row	App@literal1.c	C	main	default
+-- App@literal1.w	W
+row	~	W	pool:p	entry	off owner
+row	~.c	C	pool:p	inherited
+
+== crates/hale-codegen/tests/locus_field_store.rs#45b598f4
+row	L@main4	L	main	default
+dynamic	L	on main	in the seed
+shared	HL@main1	HL #2d352e59
+shared	HL@main2	HL #2d352e59
+shared	HL@main3	HL #2d352e59
 
 == crates/hale-codegen/tests/locus_let_lifecycle.rs#7390cea5
 row	Counter@main1	Counter	main	default
@@ -5178,7 +5295,7 @@ root	App	the entry
 row	App@literal1	App	main	default
 row	App@literal1.p	Picker	main	default
 
-== crates/hale-codegen/tests/violate_build.rs#c1aa6402
+== crates/hale-codegen/tests/violate_build.rs#eb1de14c
 root	App	the entry
 domain	pool:side
 row	App@literal1	App	main	default
@@ -6914,6 +7031,17 @@ root	App	the entry
 domain	pool:workers
 row	App@literal1	App	main	default
 row	App@literal1.w	Coord	pool:workers	entry	off owner
+
+== crates/hale-types/tests/placement.rs#565bd3fa
+root	App	the entry
+domain	pool:senses
+row	App@literal1	App	main	default
+dynamic	__StdBytesBytesBuilder	on pool:senses	in the stdlib
+-- App@literal1.senses	Senses
+row	~	Senses	pool:senses	entry	off owner
+row	~.registry	__StdMetricsRegistry	pool:senses	inherited
+row	~.registry.histograms	__StdMetricsHistogramList	pool:senses	inherited
+row	~.registry.store	__StdMetricsMap	pool:senses	inherited
 
 == crates/hale-types/tests/placement_pairings.rs#3fcc4af7
 row	W@main1	W	main	default
@@ -13490,7 +13618,7 @@ domain	pool:__api_http	async_io
 hole	PracticeReviewHead@literal1.srv.handler.web	reuse `web`
 hole	PracticeReviewHead@literal1.srv.handler.definitions	reuse `definitions`
 hole	PracticeReviewHead@literal1.srv.handler.definitions	unresolved declaration `__lib_dna__operations___definitions__WorkflowCatalogProvider`
-hole	PracticeReviewHead@literal1.srv.handler.people	reuse `commands`
+hole	PracticeReviewHead@literal1.srv.handler.people	reuse `people`
 hole	PracticeReviewHead@literal1.srv.handler.people	unresolved declaration `__lib_dna__api___people__PeopleProvider`
 hole	PracticeReviewHead@literal1.srv.handler.organization_candidates.authority	reuse `authority`
 hole	PracticeReviewHead@literal1.srv.handler.organization_candidates.authority	unresolved declaration `__lib_dna__operations___governance_admission__GovernanceAuthority`
@@ -13507,7 +13635,7 @@ hole	PracticeReviewHead@literal1.bearer.auth	unenumerable initializer
 hole	PracticeReviewHead@literal2.srv.handler.web	reuse `web`
 hole	PracticeReviewHead@literal2.srv.handler.definitions	reuse `definitions`
 hole	PracticeReviewHead@literal2.srv.handler.definitions	unresolved declaration `__lib_dna__operations___definitions__WorkflowCatalogProvider`
-hole	PracticeReviewHead@literal2.srv.handler.people	reuse `commands`
+hole	PracticeReviewHead@literal2.srv.handler.people	reuse `people`
 hole	PracticeReviewHead@literal2.srv.handler.people	unresolved declaration `__lib_dna__api___people__PeopleProvider`
 hole	PracticeReviewHead@literal2.srv.handler.organization_candidates.authority	reuse `authority`
 hole	PracticeReviewHead@literal2.srv.handler.organization_candidates.authority	unresolved declaration `__lib_dna__operations___governance_admission__GovernanceAuthority`
@@ -15524,6 +15652,10 @@ row	~.q	Q	main	inherited
 == shared H #95920e24
 row	~	H	main	default
 row	~.m	M	main	inherited
+
+== shared HL #2d352e59
+row	~	HL	main	default
+row	~.loc	L	main	inherited
 
 == shared Holder #532e241f
 row	~	Holder	pool:side	entry	off owner
@@ -17659,6 +17791,13 @@ dynamic	__StdIoTcpStream	on main
 
 == shared sites in the seed #b39898f4
 dynamic	__StdIoTcpCallback	on pool:io
+dynamic	__StdIoTcpConnFlow	on pool:io
+dynamic	__StdIoTcpConnInline	on pool:io
+dynamic	__StdIoTcpConnections	on pool:io
+dynamic	__StdIoTcpStream	on pool:io
+
+== shared sites in the seed #b738f58e
+dynamic	__StdHttpResponder	on pool:io
 dynamic	__StdIoTcpConnFlow	on pool:io
 dynamic	__StdIoTcpConnInline	on pool:io
 dynamic	__StdIoTcpConnections	on pool:io

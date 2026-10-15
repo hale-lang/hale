@@ -55,6 +55,7 @@ pub(crate) fn compile_and_exec(
         model_hash: Some(model_hash),
         exec_digest: Some(exec_digest),
         obs_entity_ids,
+        site_sources: Some(crate::shared::options::site_sources(file_bases, sources)),
         ..options
     };
     if let Err(e) = hale_codegen::build_resolved(resolved, &bin, &options) {

@@ -179,8 +179,8 @@ fn the_replay_gate_refuses_what_it_refused() {
 fn api() {
     pinned(
         "api",
-        309,
-        311,
+        310,
+        312,
         "
         Api::definition_draft_handle  does={syscall,block,env,alloc}
         Api::definitions_read  does={syscall,block,env,alloc}
@@ -207,12 +207,12 @@ fn host_verb() {
 fn host() {
     pinned(
         "host",
-        508,
+        510,
         515,
         "
         GovernanceCli::review_profile  does={syscall,block,time,entropy,env,alloc,secret_use}
         Host::ack_reading  does={publish,alloc}
-        Host::birth  does={env}
+        Host::birth  does={env,alloc}
         Host::bring_up  does={syscall,block,publish,time,entropy,env,alloc,secret_use,journal_io}
         Host::build_genome  does={syscall,block,env,alloc}
         Host::build_seed  does={syscall,block,env,alloc}
@@ -227,7 +227,7 @@ fn host() {
         Host::wait_nerves  does={syscall,block,time,entropy,env,alloc}
         LocalTransport::execute  does={syscall,block,alloc}
         LocalTransport::probe  does={syscall,block,alloc}
-        Node::birth  does={env}
+        Node::birth  does={env,alloc}
         Node::build  does={syscall,block,env,alloc}
         Projection::build_digest  does={syscall,block,alloc}
         Projection::review_of  does={syscall,block,time,entropy,env,alloc,secret_use}
@@ -325,8 +325,8 @@ fn host() {
 fn operations() {
     pinned(
         "operations",
-        510,
-        530,
+        511,
+        531,
         "
         AttemptCommandCodec::graph_position  does={alloc}
         AttemptCommandCodec::receipts_ok  does={alloc}
@@ -367,12 +367,12 @@ fn operations() {
 fn organization_runtime() {
     pinned(
         "organization_runtime",
-        24,
+        25,
         25,
         "
         HostAuthority::routing  does={syscall,block,time,entropy,env,alloc,secret_use}
         OrganizationLaunchSource::file_digest  does={syscall,block,alloc}
-        OrganizationRuntime::birth  does={env}
+        OrganizationRuntime::birth  does={env,alloc}
         organization_exit_code  does={syscall,block,alloc}
         ",
     );

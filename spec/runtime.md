@@ -783,6 +783,70 @@ Cross-binary flows (unix / shm_ring with their own reader
 threads) land in `g_bus_queue` and benefit from the sleep-folded
 drain above.
 
+#### Cross-pool backstop (GH #1566)
+
+F.31 (spec/types.md § "Single-threaded-method invariant (F.31)") is
+checked statically where the checker's walk follows a handle; the
+runtime enforces it at every other site. Each locus instance carries
+the domain it was built on (`__domain`, from the thread-local
+`lotus_domain_now`: main's token, a cooperative pool's worker's pool,
+a pinned locus's own thread; a pinned or pool-placed root takes its
+own thread's at its init there). Each also carries its first holder
+(`__adopted`: 0 none yet, else the holder's address; 1 for a placed
+root and what a `bindings { }` entry builds, held from the start): the
+first field that holds an instance nothing held — a literal's param, an
+element of an array param, a store, a field of interface type (through
+the adoption fn its vtable carries) — makes it that holder's and moves
+it onto the domain the holder runs on, and with it, transitively,
+everything it is the first holder of (`__xpool_adopt_<L>`,
+`__xpool_restamp_<L>`); a later holder shares it and leaves its domain
+alone. At a store into a locus's field from
+outside its methods whose slot is no inline scalar, and at a method
+call on a locus reached any way but down `self` — or down `self`
+through a field some literal or store fills with anything but a value
+it builds right there (`Routes { w: w }`, `h.w = x`), which the
+checker's per-instance answer does not cover — the compiled code compares the receiver's
+`__domain` with `lotus_domain_now`: one load and a compare, the
+mismatch side cold. A mismatch where both domains
+are known is a violation: `lotus_cross_pool_check_failed` prints the
+site (`file:line:col`; a build handed no source table prints none),
+the store or call, and both pools —
+
+    main.hl:8:9: violation: cross-pool store into `W.name` from pool `io`; this `W` runs on pool `main`: reach it through a method on the bus (spec/types.md § "Single-threaded-method invariant (F.31)")
+
+— on stderr and exits 1, like the runtime's other violations, before
+the store or the call runs. A thread that runs no locus code has no
+domain (0) and is not checked; neither is a receiver whose form
+synchronizes cross-domain access (`sync = serialized | striped |
+lockfree`), or a local bound to a locus literal the running code built
+and never rebound. Code the runtime runs off its instance's domain on
+purpose runs as that domain: every locus's `drain()` and `dissolve()`
+set `lotus_domain_now` to the instance's `__domain` for their duration
+(a pool-placed root's run on main after its pool joined), and an
+`on_failure` handler reaches its failed child's domain for its duration,
+for the child and what it owns only (`lotus_domain_also_enter`: the
+child is stopped while its owner's handler runs, so its subtree is as
+safe as its slot; the report asks the child's compiled
+`__xpool_owns_<L>` whether the receiver is in it, so another instance
+running on that domain is still a violation). A violation inside the
+stdlib, which has no location of its own, is reported at the program's
+last call into a stdlib locus's method on that thread, which compiled
+code leaves in the thread-local `lotus_xpool_user_site`. What a `bindings { }` entry
+builds — an adapter, a transport, a codec — belongs to no one domain:
+the runtime calls an adapter's `send` from every publishing thread
+through a function pointer, by design, so it and what its params build
+carry domain 0, and its own thread takes none. wasm32 has one thread
+and no check. A call through an interface is checked on the locus behind it:
+its vtable carries that locus's `__domain` offset after the methods,
+then its adoption fn.
+The site's location comes from the line table `hale build` emits, or,
+for `hale run` and `hale test`, from the source table they hand the
+build (`BuildOptions::site_sources`) without DWARF. No user turns the
+check off: `BuildOptions::no_xpool_backstop` is a test-harness option
+only (no variable or flag sets it), for the fixtures that drive the
+off-domain failure delivery through an escape the checker does not
+follow; it is part of the build identity.
+
 #### Long-running cooperative children: placement closes Item D
 
 Pre-F.31, declaring a long-running cooperative child as a

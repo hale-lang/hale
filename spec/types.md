@@ -351,21 +351,7 @@ return k.r.arr; }`) hands back that locus's storage, a place's value; a
 locus's method returning its own fields hands back a copy. A place's
 value assigned into a part of a parameter (`fn store(h: Holder, r: R) {
 h.arr = r.arr; }`) is stored as a copy, so the caller's two arguments
-never share a block; so is a value spelled as a place — a local, a
-field, an element, a `String` included — stored into a field of a locus
-handle parameter (`fn put(l: L, s: String) { l.name = s; }`), so the
-locus and the caller never share it. That is all this rule promises for
-a store into a locus's field from outside its methods; the rest is not
-yet owned by the locus (GH #1561): a `String` or `Bytes` carried there
-by an `if`, a `match`, a block, an `or` or a call (`l.name = if f { s }
-else { "xyz" };`), a `String` stored through a handle local (`let l = L
-{ }; l.name = s; l.rename();` rewrites `s`), a store through an element
-of an array of loci (`ls[0].r.arr = r.arr`), and the arena the value
-lives in, its retire when replaced, and the cross-pool check. (A
-compound value stored through a handle local or a child, `l.r.arr =
-r.arr`, `h.loc.r.arr = r.arr`, is copied.) The copy costs a clone per
-store: a free fn storing a `String` parameter into a handle's field 4M
-times ran 7 s and 62 MB longer. A cell's read handed back through a call keeps
+never share a block. A cell's read handed back through a call keeps
 its kind: passed straight to a callee that writes through it, it is
 copied where it is evaluated. A write into it is an assignment
 at any depth (`a[0] = x`, `x.k = 1`, `b[i].inner.s = s`) or a call that
@@ -412,6 +398,18 @@ place is passed to a call that may write through its parameter`, `copy:
 what the local was read from is written while it is live`), so it
 counts toward `@budget(alloc_per_call = N)` and the `alloc` effect, and
 the hot-path lint reports one in a loop, a bus handler or a `@hot` fn.
+A store's own copy is one too: `copy: a place's value stored into a
+part of a parameter` (`h.arr = r.arr`), and `copy: a value stored into
+a locus's field from outside its methods` (§ A store into a locus's
+field is the locus's own), unless the slot or the value is an inline
+scalar. The latter is store-latest, as a method's `self.f = v` is: a
+`@hot` fn's error and a budget's count, never a loop's or a handler's
+warning. A field of `self` handed to a call that may write through
+that parameter (`poke(self.source)`) is written there, as a store into
+it is, so a local or a literal's part viewing it is copied first. A call
+through a parameter declared a fn returning a primitive (`cb: fn(Int)
+-> Int`) hands back a primitive, as a declared fn of that signature
+does.
 A `bounded[T; N]` local is not a first-class value and is not copied:
 a bounded intrinsic on one bound from a field still writes the field.
 Before this rule the write landed in the place's block: `let mut a =
@@ -540,6 +538,50 @@ Locus types have:
 Instantiating a locus type produces a **locus handle** of that
 type, allocated as a region within the enclosing scope (per
 `memory.md`).
+
+### A store into a locus's field is the locus's own
+
+A store into a locus's field from outside that locus's methods is the
+locus's own store, exactly as a method of it storing `self.f = v` (GH
+#1561). Such a store goes through a handle parameter (`fn put(l: L, s:
+String) { l.name = s; }`), a handle local (`let l = L { }; l.name =
+s;`), a child reached through a handle or through `self` (`h.loc.name =
+s`, `self.loc.name = s` in the parent's method), or an element of an
+array of loci (`ls[i].r.arr = r.arr`). The locus that owns the field is
+the last one on the store's path: `loc` in `h.loc.name`, the element in
+`ls[i].r.arr`.
+
+- **Owned.** The value is copied into the owning locus's storage
+  (`spec/memory.md` rules 6 and 7) whatever spelled it: a place, an
+  `if`, a `match`, a block, an `or`, a call, a concatenation. The locus
+  and the caller never share a block afterwards, in either direction. A
+  write into the locus (`self.r.arr[0].k = 9`, a same-length `self.name
+  = "ZZZ"`) never reaches the caller's value, and a write into the
+  caller's value never reaches the locus. The copy lives as long as the
+  locus that owns the field, whatever happens to the handle's root (a
+  child stored into through its parent outlives the parent).
+- **Retired.** The value the store replaces is retired, and the store
+  ends the way a method call on that locus does, at an activation
+  boundary that makes the locus's retired blocks reusable. A free fn
+  that stores a fresh `String` into a long-lived locus 200 000 times
+  stays at the same floor as the method form: 4.7 MB of resident memory
+  for both.
+- **One pool.** A store into the field of a locus that runs on another
+  pool is refused at check, as the cross-pool method call is (§
+  Single-threaded-method invariant (F.31)). A store into an inline
+  scalar slot (a number, a `Bool`, a `Time`, a payload-free enum) is
+  one plain store with no arena work, and is not refused, as a
+  cross-pool field read is not.
+- **A child replaced.** A locus-typed field given a fresh locus literal
+  (`h.loc = L { … }`) is the owner's lifecycle reassign (§
+  Reassigning a locus-typed field is a lifecycle transition): the old
+  child is reclaimed, the new one built as the owner's field.
+
+A store below a record held in a locus's field (`l.r.arr = v`, `l.c.s =
+s`) is the same store, owned by that locus. The parameter-part rule (§
+A local bound from a place is yours: `h.arr = r.arr` copies) is about a
+record the caller holds, not a locus, and adds no copy to a store
+through a handle: the store's copy into the locus is the only one.
 
 ### `type` is a top-level declaration
 
@@ -1039,7 +1081,13 @@ reconfigure," prefer **in-place mutation** (`self.conn.url = …`),
 which keeps the locus's identity and resources and is cheaper.
 v1 limitation: the reassigned instance inherits the owner's pool;
 reassigning a field with an explicit non-default `placement` does
-not re-apply that placement.
+not re-apply that placement. The same holds from outside the owner
+(`h.loc = L { … }` in a free fn, `hs[i].loc = L { … }`, GH #1561):
+the store is the owner's, so the old child is reclaimed and the new
+one is built as the owner's field, exactly as the owner's own
+`self.loc = L { … }`. A field initializer of that literal may not
+read `self` in another locus's method (it would read the owner);
+bind the value to a local first.
 
 ## k_max as a typing rule
 
@@ -1690,6 +1738,190 @@ instance, seeded from the `main locus`'s `placement { }` entries):
    pool, the call is rejected with a diagnostic naming both
    pools and pointing at the `placement { }` entries that
    picked them.
+
+   The receiver is the field instance however the call reaches it
+   (GH #1561): below the field (`self.h.w.m()`, `self.h.ws[i].m()`
+   — a nested instance, an element included, runs in its holder's
+   pool), through a local bound to it (`let w = self.w; w.m()`) or
+   a `for` over its elements. The check is a dataflow over the body:
+   each local carries what it may be (a cross-pool instance) and what
+   it may hold (a tuple, array or record around one, a fresh locus
+   literal whose params do), joined where control flow merges, iterated
+   to a fixpoint over a loop (its condition included, at every
+   iteration), with each block's `let`s in a scope of their own (a
+   shadowed binding keeps its own rebinds) and a block's, `if`'s or
+   `match`'s value taken from its tail before its locals go out of
+   scope; a part written (`ws[0] = self.b`) joins into its container,
+   a field of `self` any member stores a handle into may be that handle
+   wherever it is read, and an operand or fallback that may be skipped
+   (`&&`, `||`, `or`) is joined with the state that skipped it. A call
+   carries its callee's writes too: a helper that writes one argument
+   into a part of another (`fn install(ws: [W; 2], w: W) { ws[0] = w;
+   }`), or a method that writes an argument into its own field, leaves
+   the caller's container or field holding that argument's handle, and
+   so does a method that writes one of its own fields into an argument
+   (that field of the receiver, per instance). A bounded-list `push` or
+   `set` stores its value into the list (no form cell can be a locus);
+   a stdlib fn may write an argument into another only when the other's
+   declared type can hold it; a call through a fn value, or one the
+   check cannot see into, may write any argument into any other; a
+   serve site (`api::serve`) writes none, its receivers being reached
+   through the bus. A
+   locus literal is one instance however many bindings copy its
+   handle: what is written into it through one (`let alias = h;
+   alias.ws[0] = self.b;`) is read through every other (`h.ws[0]`),
+   and its params' values are held by field. A method that stores
+   into, or calls a method on, a locus one of its own fields holds
+   (`fn poke() { self.ws[0].name = s; }`) is judged, on a receiver
+   that is no field of `self` (a literal, a local or a parameter
+   bound to one), on what that receiver's field may hold: `H { ws:
+   [self.b, self.a] }.poke()` is the store into `self.b` itself, as
+   is the same call on a field of `self` a member stored that
+   literal into, or through a local or helper inside the method (`let
+   w = self.ws[0]; w.name = s;`, `put(self.ws[0])`); a method of a
+   receiver whose locus type the check cannot tell (`hs[0].poke()`)
+   is judged as every method of that name. A locus a helper builds
+   and returns is one instance built at the call, holding what the
+   helper's held (`let h = make(); let alias = h;` share it), and one
+   it was handed is still that instance. A callee the check has not
+   yet summarized does nothing until it is, so the order fns are
+   declared in never changes a verdict. A
+   value whose type can hold no locus handle (a record of data, a
+   `String`) carries none: reading one copies it. A value
+   comes from a field of `self` (or below one), another
+   local, a part of one (`p.0`, `ws[1]`, `n.w`), a literal holding one,
+   or a call: a fn or method by what its body may return (a parameter
+   or a part of one, a field of `self`, or a value holding one —
+   summarized per body, transitively; a fresh record of its own carries
+   nothing, a fresh locus is the instance built at the call), a call through a fn value declared to return a locus type
+   by any instance of that type (one on another pool is enough), and a
+   stdlib call by its declared result, which carries an argument's
+   handle only when it can be or hold that argument's type, a generic
+   result included. (A method may not return a locus itself.) — and through a free fn handed it that
+   calls a method on its parameter (`fn poke(w: W) { w.m(); }`,
+   `poke(self.w)`), directly or by handing the parameter on to such
+   a fn (by name, a fixpoint over the program's free fns).
+
+   A store into a field of the receiver instance is that
+   locus's own work, as a method call on it is (§ A store into a
+   locus's field is the locus's own), and is rejected the same
+   way when the pools differ, reached the same ways: a store down
+   `self.field` (`self.w.name = s`, `self.h.ws[i].name = s`); a
+   store through a local bound to `self.field` (`let w = self.w;
+   w.name = s;`); and a call of a free fn that stores into a field
+   of the parameter it is handed `self.field` at (`put(self.w,
+   s)` with `fn put(w: W, s: String) { w.name = s; }`). The last
+   includes a fn that hands that parameter on to such a fn,
+   transitively. The diagnostic names the locus, both pools and
+   the store, and suggests a method of that locus, reached
+   through the bus. GH #1561: such a store copies the value into
+   the receiver's arena and retires what it replaces, which only
+   the receiver's own thread may do. A store whose slot is an
+   inline scalar (a number, a `Bool`, a `Time` or `Duration`, a
+   unit scalar, a payload-free enum, read from the declarations)
+   is one plain store with no arena work, and is not rejected, as a
+   cross-pool field read is not.
+
+   Not followed, known: what a handler the runtime calls through a
+   function pointer does (an `std::http::Server` handler, a serve
+   site's receivers: the site is the exposure it builds, and the
+   handler runs on the server's pool); a stdlib locus's own methods,
+   which are not summarized (a call on one may move any argument into
+   any other and into the receiver, but what it stores into or calls
+   on a locus it holds is not judged); the parameter effects of a
+   method on a receiver whose locus type the check cannot tell; and a
+   call through an interface. A locus's `params` defaults are walked
+   only for the hand-over rule below. Where the check cannot tell instances apart it
+   takes them as one: every instance one literal (or one call of a
+   helper that builds one) produces, and every free fn of one name,
+   so it may refuse a store into an instance that never holds the
+   handle another one does.
+
+   **One instance is never shared across pools** (GH #1566). A locus
+   that holds an instance in a field reaches it as its own, on its own
+   thread, so handing it an instance that runs on another pool makes
+   one instance two threads write. Such a hand-over is refused where it
+   is made: a locus literal's param, a store into a locus's field (or
+   an element or part below one), or a call of a helper that does
+   either with an argument — whenever the value may be an existing
+   instance (a field of another instance, or a value reached from one,
+   through locals, blocks, parameters, returns and aggregates) that runs
+   on another pool than the locus receiving it. A literal or store in a
+   member runs on the member's pool; one in a `params` default builds
+   for the field it fills, so `srv: std::http::Server = std::http::Server
+   { .., handler: Routes { w: self.a } }`, with `srv` placed on `io` and
+   `a` on `main`, is refused at `self.a` — and so are `Routes { w: {
+   let x = self.a; x } }`, `mk(self.a)` with `fn mk(w: W) -> Routes {
+   return Routes { w: w }; }`, and the same with a local in `mk`:
+
+   ```text
+   cross-pool alias: `W` (`self.a`) runs on `cooperative(pool = main)`; `mk(…)` hands it to `Routes`, which runs on `cooperative(pool = io)`, shares one instance across pools — build it on that side, or reach it through a method on the bus.
+   ```
+
+   A stdlib locus literal (`std::http::Server { handler: … }`) receives
+   its params the same way, and a field of `self` the placement table
+   places no instance for (a tuple or an array of loci, a field of
+   interface type) runs where its owner does: `handler: self.pr.0`, with
+   `pr: (Routes, W)` on main and the server on io, is refused. An
+   instance the code builds itself and hands over (`Routes { w: W {
+   } }`, a helper that builds and returns one) is moved, not shared, and
+   is accepted; so is a hand-over within one pool. A locus whose form
+   synchronizes access from another domain, and a stdlib locus (a
+   metrics registry, a router), may be shared: their own
+   synchronization carries the contract, and a method call on one from
+   the wrong pool is still refused as above.
+
+   The rule is checked statically where the walk follows the handle,
+   and enforced at run time at every remaining site (GH #1566,
+   spec/runtime.md § *Cross-pool backstop*): every instance records
+   the domain it was built on, and a store into a locus's field from
+   outside its methods (not an inline scalar slot) or a method call on
+   a locus reached any way but down `self` (through an interface, on
+   the locus behind it) compares the receiver's domain with the
+   running code's. A mismatch is a violation: the
+   program prints the site, the store (or the method call, `cross-pool
+   method call` with the method) and both pools, and exits 1, before
+   the store or the call touches the other pool's locus:
+
+   ```text
+   main.hl:8:9: violation: cross-pool store into `W.name` from pool `io`; this `W` runs on pool `main`: reach it through a method on the bus
+   ```
+
+   An instance is on the domain it was built on until a locus first
+   holds it in a field (a literal's param, an element of an array param,
+   a store, a field of interface type): an instance no locus held yet —
+   one the code built and handed over through locals and parameters,
+   `Web` built in `fn main` and handed through helpers to an io-placed
+   server's handler — becomes that holder's and moves onto the domain
+   it runs on, with everything it is in turn the first holder of (a
+   provider composed from locals moves with the service it holds). An
+   instance a locus already holds is shared by a later holder, not
+   moved: it keeps its domain, so whichever side is not its owner is
+   caught (the hand-over the check cannot follow, a
+   builder called through a fn value, fails at the holder's first store
+   into it). Down `self`, a receiver is checked when the path goes
+   through a field filled with anything but a value the literal or store
+   builds right there. Hale does not refuse a use of a local after the
+   hand-over, so a builder that kept it and reaches the instance from
+   its own domain afterwards is caught at run time too. A receiver
+   whose form synchronizes access from another domain, and a local
+   bound to a locus literal the running code built (never rebound, never
+   handed over), are not checked; a locus's `drain()` and `dissolve()`
+   run as its own domain wherever the runtime runs them, and an
+   `on_failure` handler reaches its failed child, and the subtree the
+   child owns, on the child's domain — not any other instance there. A
+   violation found inside the stdlib, which has no location of its own,
+   is reported at the program's last call into a stdlib locus on that
+   thread.
+
+   Two exemptions are by design. What a `bindings { }` entry builds (an
+   adapter, a transport, a codec) belongs to no one domain: the runtime
+   calls an adapter's `send` from every publishing thread through a
+   function pointer, and the adapter's own synchronization carries that
+   contract. And a stdlib locus handed a value of `self` at its literal
+   (an exposure its transport, a server its handler) is driven from the
+   pool its machinery runs on: the stdlib's own synchronization covers
+   it, so such a field is not checked down `self`.
 5. Bus sends (`Topic <- v;` / `"subj" <- v;`) are unrestricted
    — the runtime's cross-thread dispatch (m28b condvar+memcpy)
    handles the boundary safely.
