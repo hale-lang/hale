@@ -27,6 +27,9 @@
 mod entries;
 use std::process::Command;
 
+use hale_frontend::snapshot::{Config, Snapshot, Target};
+use hale_types::placement::HoleKind;
+
 use hale_syntax::parse_source;
 use entries::check_program;
 
@@ -961,4 +964,83 @@ fn main() {
 "#,
         &Expect::Refused("not assignable"),
     );
+}
+
+// === the placement table reads an assignment's place ==========
+// A generic locus literal assigned to a place takes the arguments the
+// place declares, in the placement table as at a `let`: the table reads
+// the place's type from the checker's walk. With a local's ascription or
+// `self.<param>` read off the syntax alone, `h.c = Cache { .. }` from
+// `main`, a nested field and an array's element were "unresolved
+// arguments" holes.
+
+const ASSIGNED_AT_ANY_PLACE: &str = r#"
+locus Cache<K, V> {
+    params {
+        cap: Int = 1;
+    }
+    birth() {
+        println("cap=", self.cap);
+    }
+}
+
+locus Inner {
+    params {
+        c: Cache<Int, String>;
+    }
+}
+
+locus Holder {
+    params {
+        c: Cache<Int, String>;
+        inner: Inner;
+        row: [Cache<Int, String>; 2];
+    }
+    run() {
+        self.c = Cache { cap: 8 };
+    }
+}
+
+fn main() {
+    let a: Cache<Int, String> = Cache { cap: 3 };
+    let b: Cache<Int, String> = Cache { cap: 4 };
+    let h: Holder = Holder { c: Cache { cap: 1 }, inner: Inner { c: Cache { cap: 2 } }, row: [a, b] };
+    h.c = Cache { cap: 5 };
+    h.inner.c = Cache { cap: 6 };
+    h.row[1] = Cache { cap: 7 };
+    let mut l: Cache<Int, String> = Cache { cap: 9 };
+    l = Cache { cap: 10 };
+    println("c=", h.c.cap, " inner=", h.inner.c.cap, " row=", h.row[1].cap, " l=", l.cap);
+}
+"#;
+
+#[test]
+fn the_placement_table_reads_an_assignments_place() {
+    let program = parse_source(ASSIGNED_AT_ANY_PLACE).expect("parses");
+    let Ok(snap) = Snapshot::from_program(program, Vec::new(), Config::harness(Target::host())) else {
+        panic!("the program does not load");
+    };
+    let table = snap.demand_placement().expect("the placement table");
+    let unresolved: Vec<_> = table
+        .holes
+        .iter()
+        .filter(|h| matches!(h.kind, HoleKind::UnresolvedArguments | HoleKind::UnresolvedDeclaration { .. }))
+        .collect();
+    assert!(unresolved.is_empty(), "every Cache literal's arguments resolve: {unresolved:?}");
+    let realized: Vec<&str> = table
+        .instances
+        .values()
+        .filter_map(|r| r.realizes.as_ref())
+        .chain(table.dynamic.iter().filter_map(|d| d.realizes.as_ref()))
+        .map(|r| r.lowered.as_str())
+        .filter(|l| l.starts_with("Cache"))
+        .collect();
+    assert!(realized.iter().all(|l| *l == "Cache_Int_String"), "{realized:?}");
+    // Ten literals of the template, each realized.
+    let literals = ASSIGNED_AT_ANY_PLACE.matches("Cache { cap").count();
+    assert_eq!(literals, 10);
+    assert!(realized.len() >= literals, "each literal is realized: {realized:?}");
+    let wanted = "c=5 inner=6 row=7 l=10";
+    agree("assign_any_place", ASSIGNED_AT_ANY_PLACE, &Expect::Runs(wanted));
+    asan_runs("assign_any_place", ASSIGNED_AT_ANY_PLACE, wanted);
 }

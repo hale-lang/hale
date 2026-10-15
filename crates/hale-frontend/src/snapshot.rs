@@ -1666,8 +1666,11 @@ impl Snapshot {
     /// from the entry row's root (its entry, or a refused module-nested
     /// `main` the check still judges), after the sequence and the
     /// mint, so every site it names is one a mint numbered. Blocked with
-    /// the scope; it reads declarations and bodies, not types, so it is
-    /// total over a program that does not typecheck. The check's F.31
+    /// the scope; it reads declarations and bodies, and of types only the
+    /// first walk's (which reads no placement): the places plain
+    /// assignments store generic locus literals into. A walk is total over
+    /// a program that does not typecheck, and a blocked one leaves those
+    /// literals' arguments unresolved, so the table is total too. The check's F.31
     /// rule and sync inference read it (F.40 phase 3, P1), and type-check
     /// rule 20 climbs the construction paths it records (C4).
     /// The lowering laws read it too, including on the harness path (C7).
@@ -1676,8 +1679,9 @@ impl Snapshot {
             .get_or_init(|| {
                 let scope = self.scope().map_err(Clone::clone)?;
                 let entry = self.demand_entry().map_err(Clone::clone)?;
+                let typing = self.walked().ok().map(|w| &w.walk.record);
                 self.count("placement");
-                Ok(hale_types::placement::derive_placement(&self.bundle(), &scope.top, entry))
+                Ok(hale_types::placement::derive_placement(&self.bundle(), &scope.top, entry, typing))
             })
             .as_ref()
     }

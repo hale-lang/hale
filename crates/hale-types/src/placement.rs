@@ -105,6 +105,7 @@ use crate::resolve::TopScope;
 use crate::snapshot::{Site, Snapshot};
 use crate::symbol::Bundle;
 use crate::ty::Ty;
+use crate::typed_bodies::{TemplateKind, TypingRecord};
 
 // ------------------------------------------------------------ identity
 
@@ -934,7 +935,7 @@ impl TypeDomains {
 /// ordinary producer then reads that copy's entry and source sites.
 /// Snapshot consumers pass their table directly.
 pub fn bundle_placement(bundle: &Bundle<'_>, top: &TopScope) -> PlacementTable {
-    crate::with_identities(bundle, |minted| derive_placement(minted, top, &crate::entry::entry_row(minted)))
+    crate::with_identities(bundle, |minted| derive_placement(minted, top, &crate::entry::entry_row(minted), None))
 }
 
 // ----------------------------------------------------- the producer
@@ -943,17 +944,32 @@ pub fn bundle_placement(bundle: &Bundle<'_>, top: &TopScope) -> PlacementTable {
 /// programs and the stdlib analysis copy, seeded from the entry row's
 /// root. `bundle` must be minted (its identities hold the
 /// programs' sites); a bundle nothing minted names no site and gets an
-/// empty table.
-pub fn derive_placement(bundle: &Bundle<'_>, top: &TopScope, entry: &EntryRow) -> PlacementTable {
-    build(bundle, top, entry)
+/// empty table. `typing`, the checker's walk over the same programs where
+/// the caller has one, types the places plain assignments store literals
+/// into: a generic locus literal assigned to a place declared as one of its
+/// instantiations takes that instantiation's arguments, as one under a
+/// `let` ascription takes its ascription's. Without it the literal is
+/// `UnresolvedArguments`.
+pub fn derive_placement(
+    bundle: &Bundle<'_>,
+    top: &TopScope,
+    entry: &EntryRow,
+    typing: Option<&TypingRecord>,
+) -> PlacementTable {
+    build(bundle, top, entry, typing)
 }
 
-fn build<'a>(bundle: &'a Bundle<'a>, top: &'a TopScope, entry: &EntryRow) -> PlacementTable {
+fn build<'a>(
+    bundle: &'a Bundle<'a>,
+    top: &'a TopScope,
+    entry: &EntryRow,
+    typing: Option<&'a TypingRecord>,
+) -> PlacementTable {
     let stdlib = match (crate::stdlib_bodies::program(), crate::stdlib_bodies::identities()) {
         (Some(p), Some(ids)) => Some((p, ids)),
         _ => None,
     };
-    let decls = Decls::of(bundle, stdlib);
+    let decls = Decls::of(bundle, stdlib, typing);
     let scopes = Scopes::of(bundle, stdlib, &decls);
     let mut b = Builder {
         decls: &decls,
@@ -1015,10 +1031,19 @@ struct Decls<'a> {
     renames: BTreeMap<String, String>,
     /// Every free fn, by universe and name.
     fns: BTreeSet<(SiteUniverse, String)>,
+    /// The checker's walk, where the caller has one: the types of
+    /// assignment places and the monomorphs they name.
+    typing: Option<&'a TypingRecord>,
+    /// Each user generic type's and locus's name, by its node.
+    templates: BTreeMap<u32, &'a str>,
 }
 
 impl<'a> Decls<'a> {
-    fn of(bundle: &Bundle<'a>, stdlib: Option<(&'a Program, &'a Snapshot)>) -> Decls<'a> {
+    fn of(
+        bundle: &Bundle<'a>,
+        stdlib: Option<(&'a Program, &'a Snapshot)>,
+        typing: Option<&'a TypingRecord>,
+    ) -> Decls<'a> {
         let mut d = Decls {
             user: Vec::new(),
             stdlib: Vec::new(),
@@ -1030,6 +1055,8 @@ impl<'a> Decls<'a> {
             types: BTreeSet::new(),
             renames: bundle.import_renames.iter().map(|(segs, m)| (segs.join("::"), m.clone())).collect(),
             fns: BTreeSet::new(),
+            typing,
+            templates: BTreeMap::new(),
         };
         for program in bundle.programs.values() {
             d.collect(&program.items, &bundle.snapshot, SiteUniverse::User, &mut Vec::new());
@@ -1044,6 +1071,9 @@ impl<'a> Decls<'a> {
         for item in items {
             match item {
                 TopDecl::Locus(l) => {
+                    if universe == SiteUniverse::User && !l.generics.is_empty() {
+                        self.templates.insert(l.id.0, l.name.name.as_str());
+                    }
                     let Some(id) = ids.site_id(l.id) else { continue };
                     let entry = DeclEntry { decl: l, site: SiteRef { universe, id }, module: module.clone() };
                     match universe {
@@ -1058,6 +1088,10 @@ impl<'a> Decls<'a> {
                     }
                 }
                 TopDecl::Type(t) => match &t.body {
+                    _ if universe == SiteUniverse::User && !t.generics.is_empty() => {
+                        self.templates.insert(t.id.0, t.name.name.as_str());
+                        self.types.insert(t.name.name.as_str());
+                    }
                     TypeDeclBody::Alias(te) if t.generics.is_empty() => {
                         let aliases = match universe {
                             SiteUniverse::User => &mut self.user_aliases,
@@ -1086,6 +1120,55 @@ impl<'a> Decls<'a> {
                 _ => {}
             }
         }
+    }
+
+    /// The declared type of a plain assignment's place, as the checker's
+    /// walk typed it: the last segment's type (the head's, for a bare
+    /// local), written back as the instantiation it names when it names
+    /// a generic locus's monomorph. `None` with no walk, or a place of
+    /// any other type: the literal there names its own declaration.
+    fn placed(&self, target: &LValue) -> Option<TypeExpr> {
+        let typing = self.typing?;
+        let tables = || typing.views.values().flatten();
+        let ty = match target.tail.last() {
+            Some(LValueSeg::Field(f)) => tables().map(|v| v.place(f)).find(|t| !matches!(t, Ty::Unknown)),
+            Some(LValueSeg::Index(ix)) => tables().map(|v| v.place(ix)).find(|t| !matches!(t, Ty::Unknown)),
+            None => tables().map(|v| v.place(&target.head)).find(|t| !matches!(t, Ty::Unknown)),
+        }?;
+        let Ty::Named(n) = ty else { return None };
+        let m = typing.monomorphs.named(n)?;
+        if m.kind != TemplateKind::Locus {
+            return None;
+        }
+        self.type_expr(ty)
+    }
+
+    /// `ty` as a type expression the placement reads: a monomorph as its
+    /// template's name over its arguments, each written back the same way.
+    fn type_expr(&self, ty: &Ty) -> Option<TypeExpr> {
+        let span = hale_syntax::Span::new(0, 0);
+        let named = |name: &str, generic_args| TypeExpr::Named {
+            path: hale_syntax::ast::QualifiedName { segments: vec![hale_syntax::ast::Ident::new(name.to_string(), span)], span },
+            generic_args,
+            span,
+        };
+        Some(match ty {
+            Ty::Prim(p) => TypeExpr::Primitive(*p, span),
+            Ty::Named(n) => match self.typing.and_then(|t| t.monomorphs.named(n)) {
+                Some(m) => {
+                    let template = self.templates.get(&m.template.0)?;
+                    named(template, m.args.iter().map(|a| self.type_expr(a)).collect::<Option<Vec<_>>>()?)
+                }
+                None => named(n, Vec::new()),
+            },
+            Ty::Tuple(parts) => TypeExpr::Tuple(parts.iter().map(|p| self.type_expr(p)).collect::<Option<Vec<_>>>()?, span),
+            Ty::Array(elem, n) => TypeExpr::Array {
+                elem: Box::new(self.type_expr(elem)?),
+                size: n.map(|n| Expr::Literal(hale_syntax::ast::Literal::Int(n as i64), span)),
+                span,
+            },
+            _ => return None,
+        })
     }
 
     fn entry(&self, universe: SiteUniverse, i: usize) -> &DeclEntry<'a> {
@@ -1191,7 +1274,7 @@ impl<'a> LocusIndex<'a> {
             (Some(p), Some(ids)) => Some((p, ids)),
             _ => None,
         };
-        LocusIndex { decls: Decls::of(bundle, stdlib) }
+        LocusIndex { decls: Decls::of(bundle, stdlib, None) }
     }
 
     /// The declaration at `site`.
@@ -1447,11 +1530,11 @@ impl<'d, 'a> Builder<'d, 'a> {
                 _ => {}
             }
         }
-        let mut constructions: Vec<(SiteRef, &'a [StructInit], Bound, &Lets, Option<&'a TypeExpr>)> = Vec::new();
+        let mut constructions: Vec<(SiteRef, &'a [StructInit], Bound, &Lets, Option<&TypeExpr>)> = Vec::new();
         for s in &scopes.scopes {
             for lit in &s.literals {
                 if lit.decl == Some(site) && s.universe == SiteUniverse::User {
-                    constructions.push((lit.site, lit.inits, scopes.bound(s, lit.in_loop), &s.lets, lit.declared));
+                    constructions.push((lit.site, lit.inits, scopes.bound(s, lit.in_loop), &s.lets, lit.declared()));
                 }
             }
         }
@@ -1485,7 +1568,7 @@ impl<'d, 'a> Builder<'d, 'a> {
         // A root no literal builds is the entry's implicit template, from
         // the declaration's defaults; its top's literal is the entry's
         // site, as an adapter's is its binding entry's.
-        let templates: Vec<(Origin, SiteRef, &'a [StructInit], Option<&Lets>, Option<&'a TypeExpr>)> = if constructions.is_empty() {
+        let templates: Vec<(Origin, SiteRef, &'a [StructInit], Option<&Lets>, Option<&TypeExpr>)> = if constructions.is_empty() {
             let entry_site = scopes.entry_fn().unwrap_or(site);
             vec![(Origin::Entry(entry_site), entry_site, &[], None, None)]
         } else {
@@ -1611,7 +1694,7 @@ impl<'d, 'a> Builder<'d, 'a> {
             let Some(d) = lit.decl.and_then(|d| scopes.decl_entry(self.decls, d)) else { continue };
             self.static_literals.insert(lit.site);
             let key = InstanceKey { origin: Origin::Construction(lit.site), path: Vec::new(), replica: None };
-            self.top(&key, d, lit.declared, lit.site, lit.inits, None, Some(&main.lets));
+            self.top(&key, d, lit.declared(), lit.site, lit.inits, None, Some(&main.lets));
             self.table.entry_literals.push(Construction { literal: lit.site, bound: scopes.bound(main, lit.in_loop) });
         }
     }
@@ -2132,7 +2215,7 @@ impl<'d, 'a> Builder<'d, 'a> {
                     continue;
                 }
                 let resolved = l.decl.and_then(|d| scopes.decl_entry(self.decls, d))
-                    .map(|e| self.decl_ref(e, l.declared, s.universe));
+                    .map(|e| self.decl_ref(e, l.declared(), s.universe));
                 if resolved.as_ref().is_some_and(|(_, known)| !known) {
                     self.hole(HoleAt::Dynamic(l.site), HoleKind::UnresolvedArguments);
                 }
@@ -2181,8 +2264,19 @@ struct Literal<'a> {
     inits: &'a [StructInit],
     /// The type of this whole literal, never an enclosing record's type.
     declared: Option<&'a TypeExpr>,
+    /// The declared type of the place a plain assignment stores it into,
+    /// as the checker's walk typed the place ([`Decls::placed`]).
+    placed: Option<TypeExpr>,
     in_loop: bool,
     written: String,
+}
+
+impl Literal<'_> {
+    /// What declares this literal's type: its `let` ascription, its
+    /// param's or field's type, or the place it is assigned to.
+    fn declared(&self) -> Option<&TypeExpr> {
+        self.declared.or(self.placed.as_ref())
+    }
 }
 
 /// A locus literal written where no scope's bodies reach.
@@ -2389,7 +2483,7 @@ impl<'a> Scopes<'a> {
                     let mut w = BodyWalk::new(ids, universe, decls);
                     w.type_parameters.extend(fd.generics.iter().map(|g| g.name.name.clone()));
                     for p in &fd.params {
-                        w.bind_typed(&p.name.name, None, Some(&p.ty));
+                        w.bind(&p.name.name, None);
                         if let Some(d) = &p.default {
                             w.typed_expr(d, Some(&p.ty));
                         }
@@ -2406,18 +2500,13 @@ impl<'a> Scopes<'a> {
                     let decl = SiteRef { universe, id };
                     let mut w = BodyWalk::new(ids, universe, decls);
                     w.type_parameters.extend(l.generics.iter().map(|g| g.name.name.clone()));
-                    w.params = l.members.iter()
-                        .filter_map(|m| match m { LocusMember::Params(b) => Some(&b.params), _ => None })
-                        .flatten()
-                        .filter_map(|p| p.ty.as_ref().map(|t| (p.name.name.clone(), t)))
-                        .collect();
                     for m in &l.members {
                         match m {
                             LocusMember::Fn(fd) => {
                                 let enclosing_parameters = w.type_parameters.clone();
                                 w.type_parameters.extend(fd.generics.iter().map(|g| g.name.name.clone()));
                                 for p in &fd.params {
-                                    w.bind_typed(&p.name.name, None, Some(&p.ty));
+                                    w.bind(&p.name.name, None);
                                     if let Some(d) = &p.default {
                                         w.typed_expr(d, Some(&p.ty));
                                     }
@@ -2586,11 +2675,6 @@ struct BodyWalk<'a, 'd> {
     calls: Vec<(String, bool)>,
     escapes: BTreeSet<String>,
     lets: Lets,
-    /// Each name's declared type, under the rule `lets` keeps: a second
-    /// binding of the name declares nothing.
-    ascribed: BTreeMap<String, Option<&'a TypeExpr>>,
-    /// The enclosing locus's params, by name, with their declared types.
-    params: BTreeMap<String, &'a TypeExpr>,
 }
 
 impl<'a, 'd> BodyWalk<'a, 'd> {
@@ -2605,8 +2689,6 @@ impl<'a, 'd> BodyWalk<'a, 'd> {
             calls: Vec::new(),
             escapes: BTreeSet::new(),
             lets: BTreeMap::new(),
-            ascribed: BTreeMap::new(),
-            params: BTreeMap::new(),
         }
     }
 
@@ -2625,25 +2707,7 @@ impl<'a, 'd> BodyWalk<'a, 'd> {
     /// `name` bound to `to`: a second binding of one name, anywhere in the
     /// scope, binds it to nothing the producer follows.
     fn bind(&mut self, name: &str, to: Option<SiteRef>) {
-        self.bind_typed(name, to, None);
-    }
-
-    /// `bind`, the name declared `ty` (a `let` ascription, a parameter's type).
-    fn bind_typed(&mut self, name: &str, to: Option<SiteRef>, ty: Option<&'a TypeExpr>) {
         self.lets.entry(name.to_string()).and_modify(|b| *b = None).or_insert(to);
-        self.ascribed.entry(name.to_string()).and_modify(|t| *t = None).or_insert(ty);
-    }
-
-    /// The declared type of a plain assignment's place, where the walk
-    /// can read it: a local's ascription or a parameter's type, or the
-    /// enclosing locus's param (`self.c`). It supplies a generic
-    /// literal's arguments as a `let` ascription does.
-    fn place_declared(&self, target: &'a LValue) -> Option<&'a TypeExpr> {
-        match (target.head.name.as_str(), target.tail.as_slice()) {
-            ("self", [LValueSeg::Field(f)]) => self.params.get(&f.name).copied(),
-            (head, []) if head != "self" => self.ascribed.get(head).copied().flatten(),
-            _ => None,
-        }
     }
 
     /// A match arm's bindings, each a name bound to nothing followed.
@@ -2715,7 +2779,7 @@ impl<'a, 'd> BodyWalk<'a, 'd> {
         match s {
             Stmt::Let { is_mut, name, ty, value, .. } => {
                 let to = if *is_mut { None } else { self.locus_literal(value) };
-                self.bind_typed(&name.name, to, ty.as_ref());
+                self.bind(&name.name, to);
                 self.typed_expr(value, ty.as_ref());
             }
             Stmt::LetTuple { names, value, .. } => {
@@ -2725,9 +2789,14 @@ impl<'a, 'd> BodyWalk<'a, 'd> {
                 self.expr(value);
             }
             Stmt::Assign { target, op, value, .. } => {
-                match op {
-                    AssignOp::Eq => self.typed_expr(value, self.place_declared(target)),
-                    _ => self.expr(value),
+                let start = self.literals.len();
+                self.expr(value);
+                if let (AssignOp::Eq, Expr::Struct { id, .. }) = (op, value) {
+                    let site = self.ids.site_id(*id);
+                    let placed = site.and_then(|_| self.decls.placed(target));
+                    if let Some(literal) = self.literals[start..].iter_mut().find(|l| Some(l.site.id) == site) {
+                        literal.placed = placed;
+                    }
                 }
                 for seg in &target.tail {
                     if let LValueSeg::Index(ix) = seg {
@@ -2870,6 +2939,7 @@ impl<'a, 'd> BodyWalk<'a, 'd> {
                             unknown,
                             inits,
                             declared: None,
+                            placed: None,
                             in_loop: self.loop_depth > 0,
                             written: written(&segs),
                         });

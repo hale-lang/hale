@@ -20,7 +20,7 @@ fn rows_of(program: &Program) -> FormRows {
     let mut bundle = Bundle::new(programs);
     bundle.snapshot = ids;
     let (top, diags) = hale_types::resolve::build_top_scope(&bundle);
-    let placement = hale_types::placement::derive_placement(&bundle, &top, &hale_types::entry::entry_row(&bundle));
+    let placement = hale_types::placement::derive_placement(&bundle, &top, &hale_types::entry::entry_row(&bundle), None);
     form_rows(&bundle, &top, &placement, diags.is_empty())
 }
 

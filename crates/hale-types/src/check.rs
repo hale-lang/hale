@@ -624,7 +624,7 @@ fn check_numbered_bundle(
         &|_, _| None,
     );
     let entry = crate::entry::entry_row(bundle);
-    let placement = crate::placement::derive_placement(bundle, top, &entry);
+    let placement = crate::placement::derive_placement(bundle, top, &entry, Some(&walk.record));
     let intra_locus = crate::bundle_intra_locus(bundle, &placement);
     let views =
         crate::view_bindings::OwnedViewColumn::derive(

@@ -3236,6 +3236,21 @@ dynamic	Cache_Int_String	on main	in the seed
 row	~	Keeper	main	default
 row	~.c	Cache_Int_String	main	inherited
 
+== crates/hale-codegen/tests/generic_monomorph_agreement.rs#47caff8a
+row	Cache_Int_String@main1	Cache_Int_String	main	default
+row	Cache_Int_String@main2	Cache_Int_String	main	default
+row	Cache_Int_String@main4	Cache_Int_String	main	default
+row	Cache_Int_String@main5	Cache_Int_String	main	default
+row	Cache_Int_String@main6	Cache_Int_String	main	default
+row	Cache_Int_String@main7	Cache_Int_String	main	default
+row	Cache_Int_String@main8	Cache_Int_String	main	default
+dynamic	Cache_Int_String	on main	in the seed
+-- Holder@main3	Holder
+row	~	Holder	main	default
+row	~.c	Cache_Int_String	main	inherited
+row	~.inner	Inner	main	inherited
+row	~.inner.c	Cache_Int_String	main	inherited
+
 == crates/hale-codegen/tests/generics.rs#d523f812
 dynamic	<hole>	on main|unresolved declaration `Box_Int`	in the seed
 

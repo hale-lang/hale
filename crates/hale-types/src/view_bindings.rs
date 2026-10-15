@@ -391,7 +391,7 @@ impl OwnedViewColumn {
         };
         let walk = crate::check::walk_bundle_by_declaration(bundle, &inputs, false, false, &|_, _| None);
         let entry = crate::entry::entry_row(bundle);
-        let placement = crate::placement::derive_placement(bundle, &top, &entry);
+        let placement = crate::placement::derive_placement(bundle, &top, &entry, Some(&walk.record));
         let sends = crate::bundle_intra_locus(bundle, &placement);
         OwnedViewColumn::derive(&bundle.programs, &walk.record.views, &walk.record.mono_shapes, &sends, &top, true)
     }
