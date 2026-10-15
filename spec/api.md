@@ -375,12 +375,20 @@ born on the main thread runs its `run()` where it is born, before the next
 param of its owner is born (`spec/semantics.md` § Birth order is
 load-bearing), so when the listener comes after the server,
 everything the main locus builds up to and including that param must
-finish first: each param's default (a call it makes), each locus param's
-own params, recursively (a child is built inline, its `run()` run where
-it is born), its `birth()` (awaited even when the param is placed on a
-pool: the main locus waits for a placed child's readiness), and its
-`run()` when it runs on the main thread (the param unplaced, or on pool
-`main`). A step that returns is fine. A step that may not return is
+finish first. It is judged over the actual construction: the literal a
+free fn builds the main locus with (`fn main() { App { server: Server {
+n: 0 } }; }`), else its defaults, a field a literal supplies replacing the
+default it would otherwise run, at every depth. In it: each param's value
+(a call it makes, resolved as the checker resolves it, an imported fn
+through the import renames; a call that cannot be resolved is taken to
+possibly not return), every locus built anywhere in a walked expression
+(an array or tuple element, a block, an `if`/`match` arm, a call's
+argument, a literal's field) with the params it leaves to their defaults,
+recursively (a child is built inline, its `run()` run where it is born),
+its `birth()` (awaited even when the param is placed on a pool: the main
+locus waits for a placed child's readiness), and its `run()`, except the
+server's own param's when it is placed off the main thread. A step that
+returns is fine. A step that may not return is
 refused, naming it and why ("…its listener (\`App\`'s) is born after
 \`self.server\`, once everything \`App\` builds up to it has finished, and
 \`Server\`'s \`birth()\` may not return (it may block: …)"), with three ways

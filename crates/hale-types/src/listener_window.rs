@@ -5,26 +5,31 @@
 //! has its listener (a param of the main locus the serve expansion adds,
 //! `rpc_expand`) born just after the param of the main locus the server
 //! sits under. Everything the main locus births up to and including that
-//! param must therefore finish before the listener can serve:
+//! param must therefore finish before the listener can serve. The window
+//! is walked over the **actual construction**: the literal of the main
+//! locus a free fn writes (`fn main() { App { server: Server { bind: … } }; }`),
+//! or its declaration's defaults, a field a literal supplies replacing the
+//! default it would otherwise run, at every depth.
 //!
-//! - each param's default, evaluated where it is born (a call it makes);
-//! - for a param that is a locus: its own params, recursively (a child is
-//!   built inline, its `run()` run where it is born: spec/semantics.md §
-//!   Birth order is load-bearing), its `birth()` (awaited even when the
-//!   param is placed on a pool: the main locus waits for a placed child's
-//!   readiness), and its `run()` when it runs on the main thread (the
-//!   param unplaced, or on pool `main`; a placed root's `run()` runs on its
-//!   pool, not awaited).
+//! | construction step in the window | walked |
+//! |---|---|
+//! | a param of the main locus, up to and including the server's | its value: the literal's field, else its default |
+//! | a locus literal anywhere in a walked expression (a param's value, an array or tuple element, a block's statement or tail, an `if`/`match` arm, a call's argument, another literal's field) | a construction: below |
+//! | a construction `C { … }` | each param of `C` the literal does not supply (its default, walked); `C`'s `birth()` (awaited even when `C` is placed on a pool); `C`'s `run()`, run where `C` is born, except the server's own param's when it is placed off the main thread |
+//! | a call in a walked expression | resolved as the checker resolves it: a free fn (an imported one through the import renames), `self.m()`, `self.f.m()` by `f`'s type, a standard-library or builtin call by its classes; an enum variant's constructor returns |
+//! | a resolved fn, a `birth()` or `run()` | judged by its effect row, and its body and every fn its row reaches walked for loops, `or wait` and locus literals |
 //!
-//! A step **may not return** when the blocking analysis says so: the effect
-//! rows' `BLOCK` class, interprocedural (a wait on an exposure, a sleep, a
-//! read, reached through any fn or method the step calls), or an edge the
-//! analysis cannot name. The classes cannot judge a loop that spins without
-//! blocking, nor a publish that waits for room (`or wait`), so a `while`
-//! loop and an `or wait` anywhere in a step's body or expressions, or in a
-//! fn it reaches, count too: the walk visits every statement and every
-//! expression ([`visit_block`], exhaustive over the AST, so a new form of
-//! either is a compile error here until it is visited).
+//! A step **may not return** when: its effect row is in the `BLOCK` class
+//! (interprocedural: a wait on an exposure, a sleep, a read), or reaches an
+//! edge the analysis cannot name; a call in a walked expression cannot be
+//! resolved (an edge whose return behaviour is unknown, never taken as
+//! proof that it returns); a standard-library call is classified `BLOCK` or
+//! unclassified; or a `while` loop or an `or wait` sits anywhere in the
+//! step's statements or expressions or in a fn it reaches (the classes
+//! cannot judge a loop that spins, nor a publish that waits for room). The
+//! walk visits every statement and expression ([`visit_block`], exhaustive
+//! over the AST, so a new form of either is a compile error here until it
+//! is visited).
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -197,21 +202,90 @@ pub(crate) fn visit_expr<'a>(e: &'a Expr, f: &mut dyn FnMut(Visited<'a>)) {
     }
 }
 
-/// The analysis the window asks: the effect rows and the bodies by key.
+/// The analysis the window asks: the effect rows, the bodies by key, the
+/// loci, the import renames and the declared types.
 pub(crate) struct Window<'a> {
     effects: Option<&'a EffectRows>,
     loci: &'a BTreeMap<&'a str, &'a LocusDecl>,
     bodies: BTreeMap<(Option<String>, String), &'a Block>,
+    renames: &'a [(Vec<String>, String)],
+    types: BTreeSet<String>,
+}
+
+/// What a walked expression holds, collected before it is judged.
+#[derive(Default)]
+struct Found<'a> {
+    loops: bool,
+    calls: Vec<&'a Expr>,
+    literals: Vec<&'a Expr>,
+}
+
+fn found_in_expr(e: &Expr) -> Found<'_> {
+    let mut found = Found::default();
+    visit_expr(e, &mut |v| collect(v, &mut found));
+    found
+}
+
+fn found_in_block(b: &Block) -> Found<'_> {
+    let mut found = Found::default();
+    visit_block(b, &mut |v| collect(v, &mut found));
+    found
+}
+
+fn collect<'a>(v: Visited<'a>, found: &mut Found<'a>) {
+    match v {
+        Visited::Stmt(Stmt::While { .. }) | Visited::OrWait => found.loops = true,
+        Visited::Expr(e @ Expr::Call { .. }) => found.calls.push(e),
+        Visited::Expr(e @ Expr::Struct { .. }) => found.literals.push(e),
+        _ => {}
+    }
+}
+
+const LOOP: &str = "a `while` loop or an `or wait`, which may not end";
+
+/// A step named by where it is reached from: `the default of `App.n``,
+/// through `settle` when the step is a call or a construction inside it.
+fn through(at: String, inner: String) -> String {
+    if inner.is_empty() { at } else { format!("{at}, through {inner},") }
 }
 
 impl<'a> Window<'a> {
-    pub(crate) fn new(programs: &[&'a Program], loci: &'a BTreeMap<&'a str, &'a LocusDecl>, effects: Option<&'a EffectRows>) -> Self {
+    /// The literals that build the main locus `main` in the programs' free
+    /// fns (`fn main() { App { … }; }`): its actual constructions.
+    pub(crate) fn constructions_of(&self, programs: &[&'a Program], main: &str) -> Vec<&'a Expr> {
+        let mut out = Vec::new();
+        for p in programs {
+            for d in flat_decls(&p.items) {
+                if let hale_syntax::ast::TopDecl::Fn(f) = d {
+                    for lit in found_in_block(&f.body).literals {
+                        let Expr::Struct { path, .. } = lit else { continue };
+                        let segs: Vec<&str> = path.segments.iter().map(|s| s.name.as_str()).collect();
+                        if self.resolve_path(&segs) == main {
+                            out.push(lit);
+                        }
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    pub(crate) fn new(
+        programs: &[&'a Program],
+        loci: &'a BTreeMap<&'a str, &'a LocusDecl>,
+        effects: Option<&'a EffectRows>,
+        renames: &'a [(Vec<String>, String)],
+    ) -> Self {
         let mut bodies = BTreeMap::new();
+        let mut types = BTreeSet::new();
         for p in programs {
             for d in flat_decls(&p.items) {
                 match d {
                     hale_syntax::ast::TopDecl::Fn(f) => {
                         bodies.insert((None, f.name.name.clone()), &f.body);
+                    }
+                    hale_syntax::ast::TopDecl::Type(t) => {
+                        types.insert(t.name.name.clone());
                     }
                     hale_syntax::ast::TopDecl::Locus(x) => {
                         for m in &x.members {
@@ -235,190 +309,244 @@ impl<'a> Window<'a> {
                 }
             }
         }
-        Window { effects, loci, bodies }
+        Window { effects, loci, bodies, renames, types }
     }
 
     fn row(&self, locus: Option<&str>, name: &str) -> Option<&'a crate::effect_rows::EffectRow> {
         self.effects?.rows.values().find(|r| r.key.locus.as_deref() == locus && r.key.fn_name == name)
     }
 
-    /// Whether a body may spin or wait where the classes say nothing: a
-    /// `while` loop or an `or wait`, here or in a fn it reaches.
-    fn loops(&self, b: &Block, row: Option<&crate::effect_rows::EffectRow>) -> bool {
-        let looping = |b: &Block| {
-            let mut found = false;
-            visit_block(b, &mut |v| {
-                if matches!(v, Visited::Stmt(Stmt::While { .. }) | Visited::OrWait) {
-                    found = true;
-                }
-            });
-            found
+    /// A path as the program names a declaration: itself, or what the
+    /// import renames make of it (`lib::settle` is the imported seed's).
+    fn resolve_path(&self, segs: &[&str]) -> String {
+        let owned: Vec<String> = segs.iter().map(|s| s.to_string()).collect();
+        self.renames
+            .iter()
+            .find(|(path, _)| *path == owned)
+            .map_or_else(|| segs.join("::"), |(_, mangled)| mangled.clone())
+    }
+
+    /// The locus a literal builds, when it builds one.
+    fn literal_locus(&self, e: &Expr) -> Option<&'a LocusDecl> {
+        let Expr::Struct { path, .. } = e else { return None };
+        let segs: Vec<&str> = path.segments.iter().map(|s| s.name.as_str()).collect();
+        let name = self.resolve_path(&segs);
+        self.loci.get(name.as_str()).copied()
+    }
+
+    /// A resolved fn, judged: its row's classes, and its body and every fn
+    /// its row reaches walked for loops and constructions.
+    fn judge_fn(&self, row: &'a crate::effect_rows::EffectRow, seen: &mut BTreeSet<&'a FnKey>, depth: usize) -> Option<(String, &'static str)> {
+        let show = |k: &FnKey| match &k.locus {
+            Some(l) => format!("`{l}::{}`", k.fn_name),
+            None => format!("`{}`", k.fn_name),
         };
-        if looping(b) {
-            return true;
+        if row.effects.contains(EffectSet::BLOCK) {
+            return Some((show(&row.key), "it may block: a wait, a sleep or a read, here or in what it calls"));
         }
-        let (Some(effects), Some(row)) = (self.effects, row) else { return false };
-        let mut seen: BTreeSet<&FnKey> = BTreeSet::new();
-        let mut stack: Vec<&FnKey> = row.targets.iter().collect();
+        if row.unknown {
+            return Some((show(&row.key), "it reaches a call the blocking analysis cannot name"));
+        }
+        let effects = self.effects?;
+        let mut stack: Vec<&'a FnKey> = vec![&row.key];
         while let Some(k) = stack.pop() {
             if !seen.insert(k) {
                 continue;
             }
-            if self.bodies.get(&(k.locus.clone(), k.fn_name.clone())).is_some_and(|b| looping(b)) {
-                return true;
+            if let Some(body) = self.bodies.get(&(k.locus.clone(), k.fn_name.clone())) {
+                let found = found_in_block(body);
+                if found.loops {
+                    return Some((show(k), LOOP));
+                }
+                for lit in found.literals {
+                    if let Some(step) = self.literal(lit, true, depth + 1) {
+                        return Some(step);
+                    }
+                }
             }
             if let Some(r) = effects.rows.get(k) {
                 stack.extend(r.targets.iter());
             }
         }
-        false
-    }
-
-    /// Why a row's fn may not return, by the classes.
-    fn row_blocks(row: &crate::effect_rows::EffectRow) -> Option<&'static str> {
-        if row.effects.contains(EffectSet::BLOCK) {
-            return Some("it may block: a wait, a sleep or a read, here or in what it calls");
-        }
-        if row.unknown {
-            return Some("it reaches a call the blocking analysis cannot name");
-        }
         None
     }
 
-    /// Why `locus`'s hook (`birth`, `run`) may not return.
-    fn hook(&self, locus: &LocusDecl, hook: &str) -> Option<&'static str> {
+    /// A hook (`birth`, `run`) of `locus`.
+    fn hook(&self, locus: &LocusDecl, hook: &str, depth: usize) -> Option<(String, &'static str)> {
         let body = self.bodies.get(&(Some(locus.name.name.clone()), hook.to_string()))?;
         if body.stmts.is_empty() && body.tail.is_none() {
             return None;
         }
+        let at = format!("`{}`'s `{hook}()`", locus.name.name);
         let Some(row) = self.row(Some(&locus.name.name), hook) else {
-            return Some("it has a statement of its own, and the blocking analysis has no row for it");
+            return Some((at, "it has a statement of its own, and the blocking analysis has no row for it"));
         };
-        if let Some(why) = Self::row_blocks(row) {
-            return Some(why);
-        }
-        self.loops(body, Some(row)).then_some("a `while` loop or an `or wait`, here or in what it calls, which may not end")
+        let mut seen = BTreeSet::new();
+        self.judge_fn(row, &mut seen, depth).map(|(_, why)| (at, why))
     }
 
-    /// Why an expression evaluated in `ctx` (a param's default) may not
-    /// return: a call that may block, a loop, an `or wait`.
-    fn expr(&self, e: &Expr, ctx: &LocusDecl) -> Option<&'static str> {
-        let mut why: Option<&'static str> = None;
-        visit_expr(e, &mut |v| {
-            if why.is_some() {
-                return;
-            }
-            match v {
-                Visited::Stmt(Stmt::While { .. }) | Visited::OrWait => {
-                    why = Some("a `while` loop or an `or wait`, which may not end");
-                }
-                Visited::Expr(Expr::Call { callee, .. }) => {
-                    let row = match callee.as_ref() {
-                        Expr::Ident(i) => self.row(None, &i.name).map(Some).unwrap_or_else(|| {
-                            // a builtin, by its classes
-                            if crate::stdlib_surface::builtin_effects(&i.name).is_some_and(|s| s.contains(EffectSet::BLOCK)) {
-                                why = Some("it may block: a builtin that blocks");
-                            }
-                            None
-                        }),
-                        Expr::Field { receiver, name, .. } if matches!(receiver.as_ref(), Expr::KwSelf(_)) => {
-                            self.row(Some(&ctx.name.name), &name.name)
-                        }
-                        Expr::Path(qn) => {
-                            let segs: Vec<&str> = qn.segments.iter().map(|s| s.name.as_str()).collect();
-                            match crate::stdlib_surface::effects_for(&segs) {
-                                Some(s) if s.contains(EffectSet::BLOCK) || s.is_unclassified() => {
-                                    why = Some("it may block: a standard-library call that blocks");
-                                }
-                                _ => {}
-                            }
-                            None
-                        }
-                        // a method of another instance: its class is the
-                        // receiver's, which this walk does not type
-                        _ => {
-                            why = Some("it calls a method the blocking analysis cannot name here");
-                            None
-                        }
-                    };
-                    if let Some(row) = row {
-                        if let Some(w) = Self::row_blocks(row) {
-                            why = Some(w);
-                        } else if self.bodies.get(&(row.key.locus.clone(), row.key.fn_name.clone())).is_some_and(|b| self.loops(b, Some(row))) {
-                            why = Some("a `while` loop or an `or wait` in what it calls, which may not end");
-                        }
-                    }
-                }
-                _ => {}
-            }
-        });
-        why
-    }
-
-    /// The first step of building `locus` (its params, recursively, its
-    /// `birth()`, and its `run()` when `with_run`) that may not return:
-    /// where, and why.
-    pub(crate) fn construction(&self, locus: &LocusDecl, with_run: bool, depth: usize) -> Option<(String, &'static str)> {
-        if depth > 16 {
+    /// A call in a walked expression evaluated in `ctx`, resolved as the
+    /// checker resolves it.
+    fn call(&self, call: &'a Expr, ctx: &LocusDecl, depth: usize) -> Option<(String, &'static str)> {
+        let Expr::Call { callee, .. } = call else { return None };
+        // a serve site: the exposure its param builds, whose pieces the walk
+        // visits where they are written
+        if hale_syntax::ast::ServeSite::of(call).is_some() {
             return None;
         }
-        let types = crate::surfaces::param_types(locus);
+        let unnamed = |what: String| Some((what, "an edge whose return the blocking analysis cannot name"));
+        let mut seen = BTreeSet::new();
+        match callee.as_ref() {
+            Expr::Ident(i) => match self.row(None, &i.name) {
+                Some(row) => self.judge_fn(row, &mut seen, depth),
+                None if crate::check::BARE_BUILTIN_CALLEES.contains(&i.name.as_str()) => None,
+                None => unnamed(format!("the call of `{}`", i.name)),
+            },
+            Expr::Field { receiver, name, .. } => {
+                let locus = match receiver.as_ref() {
+                    Expr::KwSelf(_) => Some(ctx.name.name.clone()),
+                    Expr::Field { receiver: inner, name: field, .. } if matches!(inner.as_ref(), Expr::KwSelf(_)) => {
+                        crate::surfaces::param_types(ctx).get(&field.name).cloned()
+                    }
+                    _ => None,
+                };
+                match locus.and_then(|l| self.row(Some(&l), &name.name)) {
+                    Some(row) => self.judge_fn(row, &mut seen, depth),
+                    None => unnamed(format!("the call of `{}`", name.name)),
+                }
+            }
+            Expr::Path(qn) => {
+                let segs: Vec<&str> = qn.segments.iter().map(|s| s.name.as_str()).collect();
+                if segs.first() == Some(&"std") {
+                    return match crate::stdlib_surface::effects_for(&segs) {
+                        Some(set) if set.contains(EffectSet::BLOCK) => {
+                            Some((format!("`{}`", segs.join("::")), "it may block: a standard-library call that blocks"))
+                        }
+                        Some(set) if !set.is_unclassified() => None,
+                        _ => unnamed(format!("`{}`", segs.join("::"))),
+                    };
+                }
+                let name = self.resolve_path(&segs);
+                if let Some(row) = self.row(None, &name) {
+                    return self.judge_fn(row, &mut seen, depth);
+                }
+                // `Type::member`: an associated fn the rows key under the
+                // type, or an enum variant's constructor
+                if let Some((member, owner)) = segs.split_last() {
+                    let owner = self.resolve_path(owner);
+                    if let Some(row) = self.row(Some(&owner), member) {
+                        return self.judge_fn(row, &mut seen, depth);
+                    }
+                    if self.types.contains(&owner) {
+                        return None;
+                    }
+                }
+                unnamed(format!("`{}`", segs.join("::")))
+            }
+            _ => unnamed("a call through a value".to_string()),
+        }
+    }
+
+    /// A walked expression evaluated in `ctx`: its loops, its calls, and
+    /// each locus literal in it, built (its `run()` run where it is born).
+    fn expr(&self, e: &'a Expr, ctx: &LocusDecl, depth: usize) -> Option<(String, &'static str)> {
+        let found = found_in_expr(e);
+        if found.loops {
+            return Some((String::new(), LOOP));
+        }
+        for c in found.calls {
+            if let Some(step) = self.call(c, ctx, depth) {
+                return Some(step);
+            }
+        }
+        for lit in found.literals {
+            if let Some(step) = self.literal(lit, true, depth + 1) {
+                return Some(step);
+            }
+        }
+        None
+    }
+
+    /// A locus literal `C { … }` built: the params of `C` it does not
+    /// supply (their defaults, walked; the fields it supplies are walked
+    /// where the literal is), `C`'s `birth()`, and its `run()` when
+    /// `with_run`.
+    fn literal(&self, lit: &'a Expr, with_run: bool, depth: usize) -> Option<(String, &'static str)> {
+        if depth > 32 {
+            return None;
+        }
+        let Some(locus) = self.literal_locus(lit) else { return None };
+        let Expr::Struct { inits, .. } = lit else { return None };
+        let given: BTreeSet<&str> = inits.iter().map(|i| i.name.name.as_str()).collect();
         for m in &locus.members {
             let LocusMember::Params(pb) = m else { continue };
             for p in &pb.params {
-                if let ParamInit::Value(e) = &p.init {
-                    if let Some(why) = self.expr(e, locus) {
-                        return Some((format!("the default of `{}.{}`", locus.name.name, p.name.name), why));
-                    }
+                if given.contains(p.name.name.as_str()) {
+                    continue;
                 }
-                if let Some(child) = types.get(&p.name.name).and_then(|t| self.loci.get(t.as_str())) {
-                    if !child.is_main {
-                        if let Some(found) = self.construction(child, true, depth + 1) {
-                            return Some(found);
-                        }
+                if let ParamInit::Value(e) = &p.init {
+                    if let Some((at, why)) = self.expr(e, locus, depth) {
+                        return Some((through(format!("the default of `{}.{}`", locus.name.name, p.name.name), at), why));
                     }
                 }
             }
         }
-        if let Some(why) = self.hook(locus, "birth") {
-            return Some((format!("`{}`'s `birth()`", locus.name.name), why));
+        if let Some(step) = self.hook(locus, "birth", depth) {
+            return Some(step);
         }
         if with_run {
-            if let Some(why) = self.hook(locus, "run") {
-                return Some((format!("`{}`'s `run()`", locus.name.name), why));
+            if let Some(step) = self.hook(locus, "run", depth) {
+                return Some(step);
             }
         }
         None
     }
 
     /// The first step the main locus `main` births up to and including the
-    /// param `root` that may not return: each param's default, and each
-    /// locus param's construction, its `run()` included when it runs on the
-    /// main thread. Compiler-added params (`__…`) are the runtime's.
-    pub(crate) fn before_listener(&self, main: &LocusDecl, root: &str) -> Option<(String, &'static str)> {
-        let types = crate::surfaces::param_types(main);
-        for m in &main.members {
-            let LocusMember::Params(pb) = m else { continue };
-            for p in &pb.params {
-                let name = p.name.name.as_str();
-                if !name.starts_with("__") {
-                    if let ParamInit::Value(e) = &p.init {
-                        if let Some(why) = self.expr(e, main) {
-                            return Some((format!("the default of `{}.{name}`", main.name.name), why));
+    /// param `root`, over its actual constructions (`site`: the literals a
+    /// free fn builds it with; none, its declaration's defaults), that may
+    /// not return: where, and why. Compiler-added params (`__…`) are the
+    /// runtime's.
+    pub(crate) fn before_listener(&self, main: &'a LocusDecl, root: &str, sites: &[&'a Expr]) -> Option<(String, &'static str)> {
+        let plain = [None];
+        let sites: Vec<Option<&'a Expr>> =
+            if sites.is_empty() { plain.to_vec() } else { sites.iter().map(|s| Some(*s)).collect() };
+        for site in sites {
+            let supplied = |name: &str| -> Option<&'a Expr> {
+                let Some(Expr::Struct { inits, .. }) = site else { return None };
+                inits.iter().find(|i| i.name.name == name).map(|i| &i.value)
+            };
+            'blocks: for m in &main.members {
+                let LocusMember::Params(pb) = m else { continue };
+                for p in &pb.params {
+                    let name = p.name.name.as_str();
+                    if !name.starts_with("__") {
+                        let value: Option<&'a Expr> = supplied(name).or(match &p.init {
+                            ParamInit::Value(e) => Some(e),
+                            ParamInit::Inferred => None,
+                        });
+                        if let Some(value) = value {
+                            let on_main = match crate::rpc_expand::placement_entry(main, name) {
+                                None => true,
+                                Some(e) => matches!(&e.spec, PlacementSpec::Cooperative { pool, .. } if pool.as_ref().is_none_or(|p| p.name == "main")),
+                            };
+                            // the param's own literal: its run() is the
+                            // param's, not awaited when it is placed
+                            let step = match value {
+                                Expr::Struct { inits, .. } if self.literal_locus(value).is_some() => self
+                                    .literal(value, on_main, 0)
+                                    .or_else(|| inits.iter().find_map(|i| self.expr(&i.value, main, 0))),
+                                _ => self.expr(value, main, 0),
+                            };
+                            if let Some((at, why)) = step {
+                                let what = if supplied(name).is_some() { "the value given" } else { "the default" };
+                                return Some((through(format!("{what} of `{}.{name}`", main.name.name), at), why));
+                            }
                         }
                     }
-                    if let Some(child) = types.get(name).and_then(|t| self.loci.get(t.as_str())) {
-                        let on_main = match crate::rpc_expand::placement_entry(main, name) {
-                            None => true,
-                            Some(e) => matches!(&e.spec, PlacementSpec::Cooperative { pool, .. } if pool.as_ref().is_none_or(|p| p.name == "main")),
-                        };
-                        if let Some(found) = self.construction(child, on_main, 0) {
-                            return Some(found);
-                        }
+                    if name == root {
+                        break 'blocks;
                     }
-                }
-                if name == root {
-                    return None;
                 }
             }
         }

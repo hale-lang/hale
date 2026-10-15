@@ -406,7 +406,10 @@ server's `run()` runs on the main thread while `App` is being built
 server whose address reads it must finish being built before its
 listener exists: its params, the children it holds (their `run()`s run
 where they are born), its `birth()` and, unplaced, its `run()`, and the
-params of `App` before it. Any of those that may not return is refused:
+params of `App` before it, as the program actually builds them (a field
+a literal supplies replaces its default, which is then not run; a locus
+built anywhere in a param's value counts). Any of those that may not
+return is refused:
 one that waits on its exposure (itself, or through a fn it calls), sleeps,
 reads, or loops in a `while`, wherever the loop sits. A step that
 returns, like `run() { println("started"); }`, is fine. Place a server

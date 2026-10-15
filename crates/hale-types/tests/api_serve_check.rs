@@ -355,79 +355,127 @@ fn a_server_locus_listener_address_is_read_by_the_main_locus() {
 
 /// A server whose listener reads its address off the server is born after
 /// the param of the main locus the server sits under, so everything the
-/// main locus builds up to it must finish first: the defaults, the
-/// children (built inline, their `run()`s where they are born), the
-/// `birth()`s (awaited even for a placed server), and the `run()`s of what
-/// runs on the main thread. A step the blocking analysis says may not
-/// return (a wait, directly or through a fn; a `while` loop or an `or wait`
-/// anywhere in its statements or expressions, here or in what it calls) is
-/// refused, located; a step it proves returns is admitted, and so is any
-/// step of a server whose address reads nothing of it.
+/// main locus builds up to it, over its actual construction, must return
+/// first (`listener_window`). One row per construction form and expression
+/// position, each review witness among them, with its accepted neighbour:
+/// `(row, server members, main params, declarations, fn main, refused at)`.
+/// `refused at` is a part of the step the refusal names; `None` is admitted.
 #[test]
 fn what_main_builds_before_a_listener_born_after_its_server_must_return() {
-    let program = |server_members: &str, main_params: &str, extra: &str| {
-        server(SERVED, "")
-            .replace("\n    }\n}\nmain locus App", &format!("\n    }}\n{server_members}\n}}\nmain locus App"))
-            .replace("    params {\n        \n    }\n    run() { }", &format!("    params {{\n        {main_params}\n    }}\n    run() {{ }}"))
-            .replace("fn main()", &format!("{extra}\nfn main()"))
-    };
-    let main_holds = "server: Server = Server { };";
-    let refused = |src: &str, step: &str, why: &str| {
-        let errs = errors(src);
-        assert!(
-            errs.iter().any(|e| e.contains("exposure `web` held by `Server`: its address reads `Server`, so its listener (`App`'s) is born after `self.server`")
-                && e.contains(&format!("{step} may not return ({why}"))),
-            "{step} / {why}: {errs:#?}"
-        );
-    };
-    let admitted = |src: &str| assert_eq!(errors(src), Vec::<String>::new(), "{src}");
-    // ---- run() of an unplaced server ----
-    refused(&program("    run() { self.web.wait(); }", main_holds, ""), "`Server`'s `run()`", "it may block");
-    refused(&program("    fn hold() { self.web.wait(); }\n    run() { self.hold(); }", main_holds, ""), "`Server`'s `run()`", "it may block");
-    admitted(&program("    run() { println(\"started\"); }", main_holds, ""));
-    // ---- birth(), awaited placed or not ----
-    let birth = program("    birth() { self.web.wait(); }", main_holds, "");
-    refused(&birth, "`Server`'s `birth()`", "it may block");
-    let placed_birth = birth.replace("    run() { }\n}\nfn main", "    placement { server: cooperative(pool = io) where async_io; }\n    run() { }\n}\nfn main");
-    refused(&placed_birth, "`Server`'s `birth()`", "it may block");
-    admitted(&program("    birth() { println(\"born\"); }", main_holds, ""));
-    // ---- a child the server holds, whose run() runs where it is born ----
-    let waiter = "locus Waiter {\n    params { web: std::api::Exposure; }\n    run() { self.web.wait(); }\n}";
-    let with_child = program("", main_holds, waiter).replace("bound: 8, on_full: refuse);\n    }", "bound: 8, on_full: refuse);\n        waiter: Waiter = Waiter { web: self.web };\n    }");
-    refused(&with_child, "`Waiter`'s `run()`", "it may block");
-    // ---- a param default that calls what blocks ----
-    refused(
-        &program("", "n: Int = settle(); server: Server = Server { };", "fn settle() -> Int { std::time::sleep(1s); return 0; }"),
-        "the default of `App.n`",
-        "it may block",
-    );
-    admitted(&program("", "n: Int = len(\"a\"); server: Server = Server { };", ""));
-    // ---- a sibling born before the server, on the main thread ----
-    let sibling = "locus Ticker { run() { while !self.draining { std::time::sleep(10ms); } } }";
-    refused(&program("", "ticker: Ticker = Ticker { }; server: Server = Server { };", sibling), "`Ticker`'s `run()`", "it may block");
-    let placed_sibling = program("", "ticker: Ticker = Ticker { }; server: Server = Server { };", sibling)
-        .replacen("    run() { }\n", "    placement { ticker: pinned; }\n    run() { }\n", 1);
-    admitted(&placed_sibling);
-    // ---- a loop in every expression position, in run() or a fn it calls ----
-    for (where_, body) in [
-        ("a let's initializer", "let n = { while !self.draining { } 0 };"),
-        ("a block's tail", "let n = { let m = 1; { while !self.draining { } m } };"),
-        ("an if expression", "let n = if self.port > 0 { while !self.draining { } 1 } else { 2 };"),
-        ("a match arm", "let n = match self.port { 0 -> { while !self.draining { } 1 }, _ -> 2, };"),
-        ("a call's argument", "println(to_string({ while !self.draining { } 1 }));"),
-        ("a struct literal's field", "let r = Req { n: { while !self.draining { } 1 } };"),
-    ] {
-        refused(&program(&format!("    run() {{ {body} }}"), main_holds, ""), "`Server`'s `run()`", "a `while` loop");
-        refused(
-            &program(&format!("    fn spin() {{ {body} }}\n    run() {{ self.spin(); }}"), main_holds, ""),
-            "`Server`'s `run()`",
-            "a `while` loop",
-        );
-        let _ = where_;
+    const HOLDS: &str = "server: Server = Server { };";
+    const SPINNER: &str = "locus Spinner { run() { while !self.draining { } } }";
+    const WAITER: &str = "locus Waiter {\n    params { web: std::api::Exposure; }\n    run() { self.web.wait(); }\n}";
+    const SETTLE: &str = "fn settle() -> Int { std::time::sleep(1s); return 0; }";
+    const PRINTED: &str = "fn printed() -> Int { println(\"x\"); return 0; }";
+    const CONSUME: &str = "fn consume(s: Spinner) -> Int { return 0; }";
+    let rows: &[(&str, &str, &str, &str, &str, Option<&str>)] = &[
+        // ---- the server's hooks ----
+        ("run() waits", "    run() { self.web.wait(); }", HOLDS, "", "", Some("`Server`'s `run()`")),
+        ("run() waits through a fn", "    fn hold() { self.web.wait(); }\n    run() { self.hold(); }", HOLDS, "", "", Some("`Server`'s `run()`")),
+        ("run() returns", "    run() { println(\"started\"); }", HOLDS, "", "", None),
+        ("birth() waits", "    birth() { self.web.wait(); }", HOLDS, "", "", Some("`Server`'s `birth()`")),
+        ("birth() returns", "    birth() { println(\"born\"); }", HOLDS, "", "", None),
+        // ---- a held child built inline, its run() where it is born ----
+        ("held child waits", "", HOLDS, WAITER, "", Some("`Waiter`'s `run()`")),
+        // ---- loops in every expression position, in run() and in a fn it calls ----
+        ("loop in a let initializer", "    run() { let n = { while !self.draining { } 0 }; }", HOLDS, "", "", Some("a `while` loop")),
+        ("loop in a helper's initializer", "    fn spin() -> Int { let n = { while !self.draining { } 0 }; return n; }\n    run() { let n = self.spin(); }", HOLDS, "", "", Some("a `while` loop")),
+        ("loop in a block tail", "    run() { let n = { let m = 1; { while !self.draining { } m } }; }", HOLDS, "", "", Some("a `while` loop")),
+        ("loop in an if arm", "    run() { let n = if self.port > 0 { while !self.draining { } 1 } else { 2 }; }", HOLDS, "", "", Some("a `while` loop")),
+        ("loop in a match arm", "    run() { let n = match self.port { 0 -> { while !self.draining { } 1 }, _ -> 2, }; }", HOLDS, "", "", Some("a `while` loop")),
+        ("loop in a call argument", "    run() { println(to_string({ while !self.draining { } 1 })); }", HOLDS, "", "", Some("a `while` loop")),
+        ("loop in a literal field", "    run() { let r = Req { n: { while !self.draining { } 1 } }; }", HOLDS, "", "", Some("a `while` loop")),
+        ("finite block initializer", "    run() { let n = { 0 }; println(to_string(n)); }", HOLDS, "", "", None),
+        // ---- a main param's default: calls ----
+        ("default calls a sleeping fn", "", "n: Int = settle(); server: Server = Server { };", SETTLE, "", Some("the default of `App.n`, through `settle`")),
+        ("default calls a printing fn", "", "n: Int = printed(); server: Server = Server { };", PRINTED, "", None),
+        ("default calls a builtin", "", "n: Int = len(\"a\"); server: Server = Server { };", "", "", None),
+        ("default calls an enum variant", "", "s: Shape = Shape::One(1); server: Server = Server { };", "type Shape = enum { One(Int), Zero };", "", None),
+        // ---- a main param's default: a locus built anywhere in it ----
+        ("an array of loci", "", "workers: [Spinner; 1] = [Spinner { }]; server: Server = Server { };", SPINNER, "", Some("`Spinner`'s `run()`")),
+        ("an array of loci after the server", "", "server: Server = Server { }; workers: [Spinner; 1] = [Spinner { }];", SPINNER, "", None),
+        ("a locus in a block default", "", "n: Int = { Spinner { }; 0 }; server: Server = Server { };", SPINNER, "", Some("`Spinner`'s `run()`")),
+        ("a locus in a tuple", "", "t: (Spinner, Int) = (Spinner { }, 1); server: Server = Server { };", SPINNER, "", Some("`Spinner`'s `run()`")),
+        ("a locus as a call argument", "", "n: Int = consume(Spinner { }); server: Server = Server { };", &format!("{SPINNER}\n{CONSUME}"), "", Some("`Spinner`'s `run()`")),
+        ("a locus in an if arm", "", "n: Int = if true { Spinner { }; 1 } else { 0 }; server: Server = Server { };", SPINNER, "", Some("`Spinner`'s `run()`")),
+        // ---- a sibling born before the server ----
+        ("an unplaced sibling spins", "", "spinner: Spinner = Spinner { }; server: Server = Server { };", SPINNER, "", Some("`Spinner`'s `run()`")),
+        // ---- the actual construction: a supplied field's default is not run ----
+        ("a blocking default the literal supplies", "        n: Int = settle();", "server: Server = Server { n: 0 };", SETTLE, "", None),
+        ("a blocking default the literal leaves", "        n: Int = settle();", HOLDS, SETTLE, "", Some("the default of `Server.n`, through `settle`")),
+        ("a blocking default fn main supplies", "        n: Int = settle();", HOLDS, SETTLE, "fn main() { App { server: Server { n: 0 } }; }", None),
+        ("a blocking value fn main gives", "", HOLDS, SETTLE, "fn main() { App { server: Server { port: settle() } }; }", Some("the value given of `App.server`")),
+    ];
+    for (row, members, params, decls, main_fn, refused_at) in rows {
+        let mut src = server(SERVED, "");
+        if members.starts_with("        ") {
+            // a param of the server
+            src = src.replace("        orders: Orders = Orders { };\n", &format!("        orders: Orders = Orders {{ }};\n{members}\n"));
+        } else if !members.is_empty() {
+            src = src.replace("\n    }\n}\nmain locus App", &format!("\n    }}\n{members}\n}}\nmain locus App"));
+        }
+        if *decls == WAITER {
+            src = src.replace("bound: 8, on_full: refuse);\n    }", "bound: 8, on_full: refuse);\n        waiter: Waiter = Waiter { web: self.web };\n    }");
+        }
+        src = src.replace("    params {\n        \n    }\n    run() { }", &format!("    params {{\n        {params}\n    }}\n    run() {{ }}"));
+        src = src.replace("fn main() { App { }; }", &format!("{decls}\n{}", if main_fn.is_empty() { "fn main() { App { }; }" } else { main_fn }));
+        let errs = errors(&src);
+        match refused_at {
+            None => assert_eq!(errs, Vec::<String>::new(), "{row}: admitted\n{src}"),
+            Some(at) => assert!(
+                errs.iter().any(|e| e.contains("exposure `web` held by `Server`: its address reads `Server`, so its listener (`App`'s) is born after `self.server`")
+                    && e.contains(at)
+                    && e.contains("may not return")),
+                "{row}: refused at {at}: {errs:#?}\n{src}"
+            ),
+        }
     }
-    admitted(&program("    run() { let n = { 0 }; println(to_string(n)); }", main_holds, ""));
-    // ---- a server whose address reads nothing of it: its listener is born first ----
-    admitted(&program("    birth() { self.web.wait(); }", main_holds, "").replace("to_string(self.port)", "\"8080\""));
+    // placed: the server's own run() runs on its pool, its birth() is awaited
+    let placed = |members: &str| {
+        server(SERVED, HOLDS)
+            .replace("\n    }\n}\nmain locus App", &format!("\n    }}\n{members}\n}}\nmain locus App"))
+            .replacen("    run() { }\n", "    placement { server: cooperative(pool = io) where async_io; }\n    run() { }\n", 1)
+    };
+    assert_eq!(errors(&placed("    run() { self.web.wait(); }")), Vec::<String>::new());
+    assert!(errors(&placed("    birth() { self.web.wait(); }")).iter().any(|e| e.contains("`Server`'s `birth()`")));
+    // a pinned sibling runs on its own thread
+    let pinned = server(SERVED, "spinner: Spinner = Spinner { }; server: Server = Server { };")
+        .replace("fn main()", &format!("{SPINNER}\nfn main()"))
+        .replacen("    run() { }\n", "    placement { spinner: pinned; }\n    run() { }\n", 1);
+    assert_eq!(errors(&pinned), Vec::<String>::new());
+    // an address that reads nothing of the server: the listener is born first
+    let constant = server(SERVED, HOLDS)
+        .replace("\n    }\n}\nmain locus App", "\n    }\n    birth() { self.web.wait(); }\n}\nmain locus App")
+        .replace("to_string(self.port)", "\"8080\"");
+    assert_eq!(errors(&constant), Vec::<String>::new());
+}
+
+/// A default that calls a fn an imported seed declares (`lib::settle()`)
+/// is followed through the import renames to that fn, as the checker
+/// resolves it, and refused when it may not return.
+#[test]
+fn an_imported_fn_called_before_the_listener_is_followed() {
+    let d = std::env::temp_dir().join(format!("hale_listener_window_import_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&d);
+    std::fs::create_dir_all(d.join("lib")).unwrap();
+    std::fs::write(d.join("hale.toml"), "[deps]\n").unwrap();
+    std::fs::write(d.join("lib/hale.toml"), "[deps]\n").unwrap();
+    std::fs::write(d.join("lib/main.hl"), "fn settle() -> Int { while true { } return 0; }\nfn quick() -> Int { return 1; }\n").unwrap();
+    let entry = |n: &str| {
+        format!(
+            "import \"lib\" as lib;\n{}",
+            server(SERVED, &format!("n: Int = lib::{n}(); server: Server = Server {{ }};"))
+        )
+    };
+    std::fs::write(d.join("main.hl"), entry("settle")).unwrap();
+    let errs = errors_of_seed(&d);
+    assert!(errs.iter().any(|e| e.contains("the default of `App.n`") && e.contains("may not return")), "{errs:#?}");
+    std::fs::create_dir_all(d.join("lib")).unwrap();
+    std::fs::write(d.join("hale.toml"), "[deps]\n").unwrap();
+    std::fs::write(d.join("lib/hale.toml"), "[deps]\n").unwrap();
+    std::fs::write(d.join("lib/main.hl"), "fn settle() -> Int { while true { } return 0; }\nfn quick() -> Int { return 1; }\n").unwrap();
+    std::fs::write(d.join("main.hl"), entry("quick")).unwrap();
+    assert_eq!(errors_of_seed(&d), Vec::<String>::new());
 }
 
 /// The R0 witness is admitted as R1 admitted it: its serve sites are over

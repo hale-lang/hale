@@ -1934,8 +1934,9 @@ fn serve_laws_of(
                 if let Some(addr) = &address {
                     if crate::rpc_expand::reads_holder(addr) {
                         let programs: Vec<&Program> = bundle.programs.values().copied().collect();
-                        let window = crate::listener_window::Window::new(&programs, loci, effects());
-                        let step = loci.get(c.main.as_str()).and_then(|m| window.before_listener(m, root));
+                        let window = crate::listener_window::Window::new(&programs, loci, effects(), &bundle.import_renames);
+                        let sites = window.constructions_of(&programs, &c.main);
+                        let step = loci.get(c.main.as_str()).and_then(|m| window.before_listener(m, root, &sites));
                         if let Some((step, why)) = step {
                             diags.push(Diag::ty(
                                 addr.span(),
