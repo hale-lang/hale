@@ -3922,7 +3922,14 @@ fn check_placement_single_thread(
             .into_iter()
             .filter(|(k, l, f)| reached.contains(&name_of(k)) && may_carry(*l, f))
             .collect();
+        // Every body starts at the bottom, an empty summary, before any
+        // is walked: a callee not yet walked is one that does nothing yet,
+        // never one the walk cannot see into (which would spread its
+        // arguments into each other for good).
         let mut sums = Summaries::default();
+        for (key, _, _) in &bodies {
+            sums.set(key, Summary::default());
+        }
         let mut readers: BTreeMap<BodyKey, BTreeSet<usize>> = BTreeMap::new();
         let mut work: std::collections::VecDeque<usize> = (0..bodies.len()).collect();
         let mut queued: Vec<bool> = vec![true; bodies.len()];
@@ -3935,11 +3942,6 @@ fn check_placement_single_thread(
             }
             let old = sums.get(key);
             let new = old.clone().join(s);
-            // a body walked once has a summary, even an empty one (a callee
-            // with no summary is one the walk cannot see into)
-            if !sums.has(key) {
-                sums.set(key, new.clone());
-            }
             if !new.same(&old) {
                 sums.set(key, new);
                 for &j in readers.get(key).into_iter().flatten() {
@@ -4260,11 +4262,12 @@ impl PoolCheckCx<'_> {
 ///
 /// | Form | Rule |
 /// |---|---|
-/// | `Ident` | the binding's origin, by the scope that declares it |
+/// | `Ident` | the binding's origin, by the scope that declares it, with what every instance it may be or hold holds (`Env::read`) |
 /// | `self.f…` (`Field`/`Index` chain on `self`) | `whole` when `self.f`'s instance runs in another domain; joined with `self_taint[f]` (the field itself, or a part below it) |
 /// | `Field` / `Index` / `Path2` on a value | a part: `whole` from the value's `whole` or `parts` |
 /// | `Tuple` / `Array` / `ArrayRepeat` | `parts`: the elements' origins, contained |
-/// | `Struct` (record or locus literal) | `parts`: the inits' origins (a locus literal is a fresh instance of this thread's) |
+/// | `Struct`, a record literal | `parts`: the inits' origins |
+/// | `Struct`, a locus literal | the instance (`objs`, by the literal), which every copy of the handle is; its inits held by field (`State::heap`) |
 /// | `Block` | its tail's origin, taken before its scope is popped |
 /// | `If` / `Match` | the join of the branches' values; the state after is the join of the branches' states (an absent `else` keeps the state before); a match arm's pattern binds parts of the scrutinee in the arm's scope |
 /// | `Or` | the join of the value and its fallback's; the state after joins the success path's and the fallback's |
@@ -4275,7 +4278,7 @@ impl PoolCheckCx<'_> {
 /// | `Call` through a fn value declared to return a locus type | any instance of that type in another domain (summarizing, the symbol `AnyOf`, which the caller resolves against its own domain; a store through it is the summary's `any_stores`) |
 /// | `Call`, a serve site (`api::serve`) | none: it is the exposure it builds |
 /// | `Call` the walk cannot name | anything its arguments may be |
-/// | `Call` effects, a fn or method of the program | the callee's summary writes, resolved at the call, go through `install_into` into the argument (or receiver field) each targets; its stores into and method calls on a parameter are judged on what the argument is (`whole`), or on what it may hold when they go through a locus the argument holds |
+/// | `Call` effects, a fn or method of the program | the callee's summary writes, resolved at the call, go through `install_into` into the argument (or receiver field) each targets; its stores into and method calls on a parameter are judged on what the argument is (`whole`), or on what it may hold when they go through a locus the argument holds; a method's stores into and calls on a locus its own field holds (`self_stores`, `self_calls`) on a receiver that is no instance of the table's, on what that field of the receiver may hold |
 /// | `Call` effects, a form's synthesized store (`push`, `set`, `insert`, `put`) or a bounded-list intrinsic | the arguments' origins go into the receiver (or the list) — no form cell can be a locus, so only a bounded list ever carries one |
 /// | `Call` effects, a stdlib fn | argument `j` into argument `i` only when `i`'s declared type can hold `j`'s (a generic may hold anything) |
 /// | `Call` effects, a fn value, an unresolved callee, a stdlib locus's method | any argument (and the receiver) into any other argument and the receiver |
@@ -4284,7 +4287,7 @@ impl PoolCheckCx<'_> {
 /// | `Let` | declares the value's origin in the innermost scope |
 /// | `LetTuple` | each name: a part of the value |
 /// | `Assign` to a local | the binding the name resolves to takes the value's origin |
-/// | `Assign` into a part of a local or into (a part of) a field of `self` | `install_into`, the one write transfer: the binding joins the value (contained), as does every parameter or `self` field the binding is an alias of; a field of `self` joins its taint (the slot itself for `self.f = v`) |
+/// | `Assign` into a part of a local or into (a part of) a field of `self` | `install_into`, the one write transfer: the binding joins the value (contained) — a binding that is only instances the walk built, those instances, by the field written — as does every parameter or `self` field the binding is an alias of; a field of `self` joins its taint (the slot itself for `self.f = v`) |
 /// | `For` | its binder is a part of what it walks; condition-free loop to a fixpoint |
 /// | `While` | condition and body iterated to a fixpoint (finite lattice, no cap), then walked once with diagnostics; the state after joins entry and exit |
 /// | `Return`, `Fail`, `Send`, `Recovery`, `Violate`, `ShmWrite`, `Expr` | their expressions walked for effects (a `Return`'s roots feed the summaries) |
@@ -4311,6 +4314,31 @@ struct Origin {
     /// site resolves to its arguments and its receiver's fields.
     whole_syms: SymSet,
     part_syms: SymSet,
+    /// The locus instances this walk saw built (a locus literal, by its
+    /// expression) the value may be (`objs`) or hold (`part_objs`): a
+    /// copy of the handle is the same instance, so a write through one
+    /// binding is read through every other (`State::heap`).
+    objs: Objs,
+    part_objs: Objs,
+}
+
+/// A set of literal sites (`Origin::objs`), sorted.
+#[derive(Clone, Default, PartialEq, Eq)]
+struct Objs(Vec<usize>);
+
+impl Objs {
+    fn extend(&mut self, o: &Objs) {
+        for x in &o.0 {
+            if let Err(i) = self.0.binary_search(x) {
+                self.0.insert(i, *x);
+            }
+        }
+    }
+    fn union(&self, o: &Objs) -> Objs {
+        let mut u = self.clone();
+        u.extend(o);
+        u
+    }
 }
 
 /// A symbolic source, in a body's summary: its parameter `i`, or its
@@ -4440,6 +4468,8 @@ impl Origin {
         self.parts = self.parts.or(o.parts);
         self.whole_syms.extend(o.whole_syms);
         self.part_syms.extend(o.part_syms);
+        self.objs.extend(&o.objs);
+        self.part_objs.extend(&o.part_objs);
         self
     }
     /// Anything cross-pool the value may be or hold.
@@ -4448,7 +4478,12 @@ impl Origin {
     }
     /// Nothing at all, concrete or symbolic.
     fn is_empty(&self) -> bool {
-        self.whole.is_none() && self.parts.is_none() && self.whole_syms.is_empty() && self.part_syms.is_empty()
+        self.whole.is_none()
+            && self.parts.is_none()
+            && self.whole_syms.is_empty()
+            && self.part_syms.is_empty()
+            && self.objs.0.is_empty()
+            && self.part_objs.0.is_empty()
     }
     /// Every symbol the value may be or hold.
     fn syms(&self) -> SymSet {
@@ -4460,13 +4495,24 @@ impl Origin {
     fn part(self) -> Origin {
         let any = self.any();
         let all = self.syms();
-        Origin { whole: any, parts: self.parts, whole_syms: all, part_syms: self.part_syms }
+        let objs = self.part_objs.clone();
+        Origin { whole: any, parts: self.parts, whole_syms: all, part_syms: self.part_syms, objs, part_objs: self.part_objs }
     }
     /// The value held inside a container (a tuple, array or record).
     fn contained(self) -> Origin {
         let any = self.any();
         let all = self.syms();
-        Origin { whole: None, parts: any, whole_syms: SymSet::default(), part_syms: all }
+        let part_objs = self.objs.union(&self.part_objs);
+        Origin { whole: None, parts: any, whole_syms: SymSet::default(), part_syms: all, objs: Objs::default(), part_objs }
+    }
+    /// Only instances the walk built, whose fields say what it holds.
+    fn built_only(&self) -> bool {
+        !self.objs.0.is_empty()
+            && self.whole.is_none()
+            && self.parts.is_none()
+            && self.whole_syms.is_empty()
+            && self.part_syms.is_empty()
+            && self.part_objs.0.is_empty()
     }
     /// What a fixpoint compares: whether each side may be cross-pool, and
     /// the symbols.
@@ -4475,6 +4521,8 @@ impl Origin {
             && self.parts.is_some() == o.parts.is_some()
             && self.whole_syms == o.whole_syms
             && self.part_syms == o.part_syms
+            && self.objs == o.objs
+            && self.part_objs == o.part_objs
     }
 }
 
@@ -4482,59 +4530,179 @@ impl Origin {
 /// that may hold something, in slot order. This is what a branch copies
 /// and a merge joins.
 #[derive(Clone, Default)]
-struct State(Vec<(u32, Origin)>);
+struct State {
+    vals: Vec<(u32, Origin)>,
+    /// What each locus instance built in the walk (`Origin::objs`) may
+    /// hold, by its literal: its params' values, and what was written
+    /// into it through any binding that may be it.
+    heap: Vec<(usize, Rc<Held>)>,
+}
+
+/// What a locus instance the walk built may hold: by field, the value
+/// each may be (its literal's init, a store into it), and what was
+/// written into it no field says (`any`, as held).
+#[derive(Clone, Default)]
+struct Held {
+    fields: BTreeMap<String, Origin>,
+    any: Origin,
+    /// Everything it may hold: `any` and every field's value, held.
+    all: Origin,
+}
+
+impl Held {
+    /// Everything it may hold.
+    fn holds(&self) -> &Origin {
+        &self.all
+    }
+    /// What its field `f` may be.
+    fn field(&self, f: &str) -> Origin {
+        let o = self.any.clone().part();
+        match self.fields.get(f) {
+            Some(v) => o.join(v.clone()),
+            None => o,
+        }
+    }
+}
+
+/// A join-semilattice a state's rows hold.
+trait Lattice: Default {
+    fn join(self, o: Self) -> Self;
+    fn same(&self, o: &Self) -> bool;
+}
+
+impl Lattice for Origin {
+    fn join(self, o: Origin) -> Origin {
+        Origin::join(self, o)
+    }
+    fn same(&self, o: &Origin) -> bool {
+        Origin::same(self, o)
+    }
+}
+
+/// Shared between the states a branch copies until one side writes.
+impl Lattice for Rc<Held> {
+    fn join(self, o: Rc<Held>) -> Rc<Held> {
+        if Rc::ptr_eq(&self, &o) || o.same(&self) {
+            return self;
+        }
+        Rc::new(Lattice::join(Rc::unwrap_or_clone(self), Rc::unwrap_or_clone(o)))
+    }
+    fn same(&self, o: &Rc<Held>) -> bool {
+        Rc::ptr_eq(self, o) || Lattice::same(&**self, &**o)
+    }
+}
+
+impl Lattice for Held {
+    fn join(mut self, o: Held) -> Held {
+        for (k, v) in o.fields {
+            let e = self.fields.remove(&k).unwrap_or_default().join(v);
+            self.fields.insert(k, e);
+        }
+        self.any = std::mem::take(&mut self.any).join(o.any);
+        self.all = std::mem::take(&mut self.all).join(o.all);
+        self
+    }
+    fn same(&self, o: &Held) -> bool {
+        self.any.same(&o.any)
+            && self.fields.len() == o.fields.len()
+            && self.fields.iter().zip(&o.fields).all(|((k, v), (j, w))| k == j && v.same(w))
+    }
+}
+
+/// Sorted `(key, origin)` rows: the merge two states join with.
+fn join_rows<K: Ord + Copy, V: Lattice>(a: Vec<(K, V)>, b: Vec<(K, V)>) -> Vec<(K, V)> {
+    if b.is_empty() {
+        return a;
+    }
+    if a.is_empty() {
+        return b;
+    }
+    let mut out = Vec::with_capacity(a.len().max(b.len()));
+    let mut a = a.into_iter().peekable();
+    let mut b = b.into_iter().peekable();
+    loop {
+        let take_a = match (a.peek(), b.peek()) {
+            (None, None) => break,
+            (Some(_), None) => true,
+            (None, Some(_)) => false,
+            (Some((x, _)), Some((y, _))) if x == y => {
+                let (k, m) = a.next().expect("peeked");
+                let (_, t) = b.next().expect("peeked");
+                out.push((k, if m.same(&t) { m } else { Lattice::join(m, t) }));
+                continue;
+            }
+            (Some((x, _)), Some((y, _))) => x < y,
+        };
+        out.push(if take_a { a.next() } else { b.next() }.expect("peeked"));
+    }
+    out
+}
+
+fn same_rows<K: Eq, V: Lattice>(a: &[(K, V)], b: &[(K, V)]) -> bool {
+    a.len() == b.len() && a.iter().zip(b).all(|((k, v), (j, w))| k == j && Lattice::same(v, w))
+}
 
 impl State {
+    /// What the instance built at `obj` may hold.
+    fn held(&self, obj: usize) -> Option<&Held> {
+        self.heap.binary_search_by_key(&obj, |(k, _)| *k).ok().map(|i| &*self.heap[i].1)
+    }
+    /// The instance built at `obj`, to write into.
+    fn held_mut(&mut self, obj: usize) -> &mut Held {
+        let i = match self.heap.binary_search_by_key(&obj, |(k, _)| *k) {
+            Ok(i) => i,
+            Err(i) => {
+                self.heap.insert(i, (obj, Rc::new(Held::default())));
+                i
+            }
+        };
+        Rc::make_mut(&mut self.heap[i].1)
+    }
+    /// `o` written into the field `f` of the instance built at `obj` (the
+    /// value the field may be), or, with no field, into it (as held).
+    fn hold(&mut self, obj: usize, f: Option<&str>, o: Origin) {
+        if o.is_empty() {
+            return;
+        }
+        let h = self.held_mut(obj);
+        match f {
+            Some(f) => {
+                h.all = std::mem::take(&mut h.all).join(o.clone().contained());
+                let e = h.fields.remove(f).unwrap_or_default().join(o);
+                h.fields.insert(f.to_string(), e);
+            }
+            None => {
+                h.all = std::mem::take(&mut h.all).join(o.clone());
+                h.any = std::mem::take(&mut h.any).join(o);
+            }
+        }
+    }
     fn get(&self, slot: u32) -> Option<&Origin> {
-        self.0.binary_search_by_key(&slot, |(k, _)| *k).ok().map(|i| &self.0[i].1)
+        self.vals.binary_search_by_key(&slot, |(k, _)| *k).ok().map(|i| &self.vals[i].1)
     }
     fn set(&mut self, slot: u32, o: Origin) {
-        match self.0.binary_search_by_key(&slot, |(k, _)| *k) {
+        match self.vals.binary_search_by_key(&slot, |(k, _)| *k) {
             Ok(i) if o.is_empty() => {
-                self.0.remove(i);
+                self.vals.remove(i);
             }
-            Ok(i) => self.0[i].1 = o,
+            Ok(i) => self.vals[i].1 = o,
             Err(_) if o.is_empty() => {}
-            Err(i) => self.0.insert(i, (slot, o)),
+            Err(i) => self.vals.insert(i, (slot, o)),
         }
     }
     fn remove(&mut self, slot: u32) {
-        if let Ok(i) = self.0.binary_search_by_key(&slot, |(k, _)| *k) {
-            self.0.remove(i);
+        if let Ok(i) = self.vals.binary_search_by_key(&slot, |(k, _)| *k) {
+            self.vals.remove(i);
         }
     }
-    /// The join at a control-flow merge: a binding may hold what it may
-    /// on either side.
+    /// The join at a control-flow merge: a binding, or an instance the
+    /// walk built, may hold what it may on either side.
     fn join(self, other: State) -> State {
-        if other.0.is_empty() {
-            return self;
-        }
-        if self.0.is_empty() {
-            return other;
-        }
-        let mut out = Vec::with_capacity(self.0.len().max(other.0.len()));
-        let mut a = self.0.into_iter().peekable();
-        let mut b = other.0.into_iter().peekable();
-        loop {
-            let take_a = match (a.peek(), b.peek()) {
-                (None, None) => break,
-                (Some(_), None) => true,
-                (None, Some(_)) => false,
-                (Some((x, _)), Some((y, _))) if x == y => {
-                    let (k, m) = a.next().expect("peeked");
-                    let (_, t) = b.next().expect("peeked");
-                    out.push((k, m.join(t)));
-                    continue;
-                }
-                (Some((x, _)), Some((y, _))) => x < y,
-            };
-            out.push(if take_a { a.next() } else { b.next() }.expect("peeked"));
-        }
-        State(out)
+        State { vals: join_rows(self.vals, other.vals), heap: join_rows(self.heap, other.heap) }
     }
     /// What a fixpoint compares: which bindings may hold what.
     fn same(&self, o: &State) -> bool {
-        self.0.len() == o.0.len() && self.0.iter().zip(&o.0).all(|((k, v), (j, w))| k == j && v.same(w))
+        same_rows(&self.vals, &o.vals) && same_rows(&self.heap, &o.heap)
     }
 }
 
@@ -4547,8 +4715,9 @@ impl State {
 /// joins, only what they hold (`State`).
 #[derive(Default)]
 struct Env {
-    /// Every binding in scope, outermost first: its name and its slot.
-    names: Vec<(String, u32)>,
+    /// Every binding in scope, outermost first: its name, its slot, and
+    /// the locus type it is declared or built as, when the walk can tell.
+    names: Vec<(String, u32, Option<String>)>,
     /// Where each scope's bindings start in `names`.
     marks: Vec<usize>,
     /// The next slot.
@@ -4565,23 +4734,67 @@ impl Env {
         for (i, p) in params.iter().enumerate() {
             // a parameter whose type can hold no locus handle carries none
             let o = if decls.type_can_hold_locus(&p.ty, 0) { Origin::sym(Sym::Param(i)) } else { Origin::default() };
-            env.declare(&p.name.name, o);
+            let ty = decls.named(&p.ty).filter(|t| decls.loci.contains_key(*t)).map(str::to_string);
+            env.declare_typed(&p.name.name, o, ty);
         }
         env
     }
-    fn slot(&self, name: &str) -> Option<u32> {
-        self.names.iter().rev().find(|(n, _)| n == name).map(|(_, s)| *s)
+    fn binding(&self, name: &str) -> Option<&(String, u32, Option<String>)> {
+        self.names.iter().rev().find(|(n, _, _)| n == name)
     }
+    fn slot(&self, name: &str) -> Option<u32> {
+        self.binding(name).map(|(_, s, _)| *s)
+    }
+    /// The locus type a binding is declared or built as.
+    fn locus_type(&self, name: &str) -> Option<&str> {
+        self.binding(name).and_then(|(_, _, t)| t.as_deref())
+    }
+    /// The binding's own state.
     fn lookup(&self, name: &str) -> Origin {
         self.slot(name).and_then(|s| self.st.get(s)).cloned().unwrap_or_default()
     }
+    /// What reading the binding gives: its state, and what was written
+    /// into any instance it may be or hold through another binding.
+    fn read(&self, name: &str) -> Origin {
+        self.materialize(self.lookup(name))
+    }
+    /// A value with what every instance the walk built that it may be or
+    /// hold holds, as its own parts.
+    fn materialize(&self, o: Origin) -> Origin {
+        if o.objs.0.is_empty() && o.part_objs.0.is_empty() {
+            return o;
+        }
+        let mut o = o;
+        let objs: Vec<usize> = o.objs.0.iter().chain(&o.part_objs.0).copied().collect();
+        for obj in objs {
+            if let Some(h) = self.st.held(obj) {
+                o = o.join(h.holds().clone());
+            }
+        }
+        o
+    }
+    /// What the field `f` of a value that is only instances the walk
+    /// built may be (`None` for any other value).
+    fn built_field(&self, o: &Origin, f: &str) -> Option<Origin> {
+        if !o.built_only() {
+            return None;
+        }
+        let v = o.objs.0.iter().fold(Origin::default(), |a, obj| match self.st.held(*obj) {
+            Some(h) => a.join(h.field(f)),
+            None => a,
+        });
+        Some(self.materialize(v))
+    }
     fn declare(&mut self, name: &str, o: Origin) {
+        self.declare_typed(name, o, None);
+    }
+    fn declare_typed(&mut self, name: &str, o: Origin, ty: Option<String>) {
         if self.marks.is_empty() {
             self.push();
         }
         let slot = self.next;
         self.next += 1;
-        self.names.push((name.to_string(), slot));
+        self.names.push((name.to_string(), slot, ty));
         self.st.set(slot, o);
     }
     fn assign(&mut self, name: &str, o: Origin) {
@@ -4595,7 +4808,7 @@ impl Env {
                 }
                 let slot = self.next;
                 self.next += 1;
-                self.names.insert(0, (name.to_string(), slot));
+                self.names.insert(0, (name.to_string(), slot, None));
                 for m in self.marks.iter_mut().skip(1) {
                     *m += 1;
                 }
@@ -4613,7 +4826,7 @@ impl Env {
     }
     fn pop(&mut self) {
         let Some(m) = self.marks.pop() else { return };
-        for (_, slot) in self.names.drain(m..) {
+        for (_, slot, _) in self.names.drain(m..) {
             self.st.remove(slot);
         }
     }
@@ -4642,6 +4855,14 @@ struct Summary {
     /// through a fn value (`Sym::AnyOf`): a caller judges each against
     /// its own domain.
     any_stores: BTreeSet<String>,
+    /// A method's stores into (`self.ws[0].name = v`) and method calls on
+    /// (`self.w.m()`) a locus one of its own fields holds, by the field,
+    /// and whether through a part of it. An instance in the table is
+    /// walked as itself, its fields per instance; a call on one the
+    /// walk built (`H { ws: [..] }.poke()`) is judged at the call on
+    /// what that receiver's field may hold.
+    self_stores: BTreeMap<String, bool>,
+    self_calls: BTreeMap<String, bool>,
 }
 
 impl Summary {
@@ -4658,6 +4879,12 @@ impl Summary {
             *self.calls.entry(k).or_default() |= v;
         }
         self.any_stores.extend(o.any_stores);
+        for (k, v) in o.self_stores {
+            *self.self_stores.entry(k).or_default() |= v;
+        }
+        for (k, v) in o.self_calls {
+            *self.self_calls.entry(k).or_default() |= v;
+        }
         self
     }
     /// What the worklist compares: whether the summary grew.
@@ -4668,6 +4895,8 @@ impl Summary {
             && self.stores == o.stores
             && self.calls == o.calls
             && self.any_stores == o.any_stores
+            && self.self_stores == o.self_stores
+            && self.self_calls == o.self_calls
     }
     /// A write into the target `sym`.
     fn write(&mut self, sym: Sym, o: Origin) {
@@ -4697,12 +4926,6 @@ impl Summaries {
         match k {
             BodyKey::Fn(n) => self.fns.get(n).cloned().unwrap_or_default(),
             BodyKey::Method(l, m) => self.methods.get(l).and_then(|ms| ms.get(m)).cloned().unwrap_or_default(),
-        }
-    }
-    fn has(&self, k: &BodyKey) -> bool {
-        match k {
-            BodyKey::Fn(n) => self.fns.contains_key(n),
-            BodyKey::Method(l, m) => self.methods.get(l).is_some_and(|ms| ms.contains_key(m)),
         }
     }
     fn set(&mut self, k: &BodyKey, s: Summary) {
@@ -4755,6 +4978,7 @@ fn body_summary(
         diags: &mut sink,
     };
     let tail = eval_block(&fd.body, &mut cx);
+    let tail = cx.env.materialize(tail);
     let mut sum = cx.acc.take().unwrap_or_default();
     sum.ret = sum.ret.join(tail);
     // a result whose declared type can hold no locus handle hands back
@@ -4923,7 +5147,9 @@ fn instantiate(o: &Origin, args: &[Origin], recv: Option<&Expr>, recv_origin: &O
                     if self_rooted_field(&field).is_some() {
                         self_chain_origin(&field, cx)
                     } else {
-                        recv_origin.clone().part()
+                        // an instance the walk built: what that field holds;
+                        // any other receiver: anything it may hold
+                        built_receiver_field(r, f, cx).unwrap_or_else(|| recv_origin.clone().part())
                     }
                 }
                 None => Origin::default(),
@@ -5099,18 +5325,45 @@ fn install_into(target: &Expr, o: Origin, part: bool, cx: &mut PoolCheckCx) {
     if o.is_empty() {
         return;
     }
+    // what an instance the walk built holds goes with it wherever it is
+    // written (a field of `self`, a summary's write)
+    let o = cx.env.materialize(o);
     let mut root = target;
+    // the step just below the root (`h.f` in `h.f[0].x`)
+    let mut first: Option<&Expr> = None;
     while let Expr::Field { receiver, .. } | Expr::Index { receiver, .. } = root {
         if matches!(receiver.as_ref(), Expr::KwSelf(_)) {
             break;
         }
+        first = Some(root);
         root = receiver;
     }
+    let raw = o.clone();
     let o = if part || !std::ptr::eq(root, target) { o.contained() } else { o };
     match root {
         Expr::Ident(id) => {
             let holds = cx.env.lookup(&id.name);
-            cx.env.assign(&id.name, holds.clone().join(o.clone()));
+            // a binding that is only instances the walk built holds what
+            // they hold (`Env::read`); any other joins the write itself
+            if !holds.built_only() {
+                cx.env.assign(&id.name, holds.clone().join(o.clone()));
+            }
+            // an instance the binding may be holds it in the field the
+            // write steps into (the field itself is the value written,
+            // `h.f = v`), or somewhere; one it may hold, somewhere —
+            // whichever binding reads it next
+            for obj in holds.objs.0.iter().copied() {
+                match first {
+                    Some(step @ Expr::Field { name, .. }) => {
+                        let v = if std::ptr::eq(step, target) && !part { raw.clone() } else { raw.clone().contained() };
+                        cx.env.st.hold(obj, Some(&name.name), v);
+                    }
+                    _ => cx.env.st.hold(obj, None, o.clone()),
+                }
+            }
+            for obj in holds.part_objs.0.iter().copied() {
+                cx.env.st.hold(obj, None, o.clone());
+            }
             // what the binding may be (an alias of a parameter or of a
             // `self` field) holds it too
             for sym in holds.whole_syms.0.clone() {
@@ -5244,11 +5497,20 @@ fn eval_stmt(stmt: &Stmt, cx: &mut PoolCheckCx) {
                     cx.fn_values.remove(&name.name);
                 }
             }
-            cx.env.declare(&name.name, o);
+            // the locus type the binding is declared or built as
+            let locus = |t: &str| cx.decls.loci.contains_key(t).then(|| t.to_string());
+            let lty = match (ty, value) {
+                (Some(t), _) => cx.decls.named(t).and_then(locus),
+                (None, Expr::Struct { path, .. }) => path.segments.last().and_then(|s| locus(&s.name)),
+                (None, Expr::Ident(id)) => cx.env.locus_type(&id.name).map(str::to_string),
+                _ => None,
+            };
+            cx.env.declare_typed(&name.name, o, lty);
         }
         Stmt::LetTuple { names, value, .. } => {
             // each name may be any element
-            let o = eval_expr(value, cx).part();
+            let o = eval_expr(value, cx);
+            let o = cx.env.materialize(o).part();
             for n in names {
                 cx.env.declare(&n.name, o.clone());
             }
@@ -5291,13 +5553,15 @@ fn eval_stmt(stmt: &Stmt, cx: &mut PoolCheckCx) {
         }
         Stmt::For { name, iter, body, .. } => {
             // an element of what the loop walks
-            let o = eval_expr(iter, cx).part();
+            let o = eval_expr(iter, cx);
+            let o = cx.env.materialize(o).part();
             eval_loop(None, Some((&name.name, o)), body, cx);
         }
         Stmt::While { cond, body, .. } => eval_loop(Some(cond), None, body, cx),
         Stmt::Return(opt, _) => {
             if let Some(e) = opt {
                 let o = eval_expr(e, cx);
+                let o = cx.env.materialize(o);
                 if let Some(acc) = cx.acc.as_mut() {
                     acc.ret = std::mem::take(&mut acc.ret).join(o);
                 }
@@ -5355,7 +5619,8 @@ fn eval_if(stmt: &IfStmt, cx: &mut PoolCheckCx) -> Origin {
 
 fn eval_match(stmt: &MatchStmt, cx: &mut PoolCheckCx) -> Origin {
     // a payload bound by a pattern is a part of the scrutinee
-    let scrut = eval_expr(&stmt.scrutinee, cx).part();
+    let scrut = eval_expr(&stmt.scrutinee, cx);
+    let scrut = cx.env.materialize(scrut).part();
     let before = cx.env.st.clone();
     let mut out: Option<State> = None;
     let mut value = Origin::default();
@@ -5390,10 +5655,11 @@ fn eval_match(stmt: &MatchStmt, cx: &mut PoolCheckCx) -> Origin {
 /// in its blocks — and say what its value may hold.
 fn eval_expr(expr: &Expr, cx: &mut PoolCheckCx) -> Origin {
     if let Expr::Call { callee, args, span, .. } = expr {
-        let recv_origin = match callee.as_ref() {
+        let recv_raw = match callee.as_ref() {
             Expr::Field { receiver, .. } | Expr::Path2 { receiver, .. } => eval_expr(receiver, cx),
             other => eval_expr(other, cx),
         };
+        let recv_origin = cx.env.materialize(recv_raw);
         // Summarizing: a method called on (a part of) a parameter is the
         // body's call through it, which a caller judges on what it hands in
         if let (Some(acc), Expr::Field { receiver, .. }) = (cx.acc.as_mut(), callee.as_ref()) {
@@ -5406,6 +5672,12 @@ fn eval_expr(expr: &Expr, cx: &mut PoolCheckCx) -> Origin {
             for s in &recv_origin.part_syms {
                 if let Sym::Param(p) = s {
                     acc.calls.insert(*p, true);
+                }
+            }
+            // a method called on a locus a field of `self` holds
+            if cx.enclosing_locus.is_some() && !matches!(receiver.as_ref(), Expr::KwSelf(_)) {
+                if let Some(root @ Expr::Field { name: f, .. }) = self_rooted_field(receiver) {
+                    *acc.self_calls.entry(f.name.clone()).or_default() |= !std::ptr::eq(root, receiver.as_ref());
                 }
             }
         }
@@ -5509,11 +5781,17 @@ fn eval_expr(expr: &Expr, cx: &mut PoolCheckCx) -> Origin {
                 }
             }
         }
-        let arg_origins: Vec<Origin> = args.iter().map(|a| eval_expr(a, cx)).collect();
+        let arg_origins: Vec<Origin> = args
+            .iter()
+            .map(|a| {
+                let o = eval_expr(a, cx);
+                cx.env.materialize(o)
+            })
+            .collect();
         // the callee's summary, resolved once (the call's writes never
         // change what the receiver is)
         let resolved = callee_summary(callee, cx);
-        check_call_stores_pool(callee, resolved, args, &arg_origins, *span, cx);
+        check_call_stores_pool(callee, resolved, args, &arg_origins, &recv_origin, *span, cx);
         apply_call_writes(callee, resolved, args, &arg_origins, &recv_origin, cx);
         return call_origin(callee, resolved, &recv_origin, &arg_origins, cx);
     }
@@ -5525,7 +5803,7 @@ fn eval_expr(expr: &Expr, cx: &mut PoolCheckCx) -> Origin {
         return self_chain_origin(expr, cx);
     }
     match expr {
-        Expr::Ident(id) => cx.env.lookup(&id.name),
+        Expr::Ident(id) => cx.env.read(&id.name),
         // `&&` / `||` may skip their right operand: its effects on the
         // locals are joined with the state that skipped it, as an `if`
         // with no `else`
@@ -5548,6 +5826,7 @@ fn eval_expr(expr: &Expr, cx: &mut PoolCheckCx) -> Origin {
         }
         Expr::Field { receiver, name, .. } | Expr::Path2 { receiver, name, .. } => {
             let r = eval_expr(receiver, cx);
+            let r = cx.env.materialize(r);
             // a field of a known locus whose type holds no locus handle
             let plain = r.whole.as_ref().and_then(|cp| cp.locus_type.as_deref()).is_some_and(|l| {
                 cx.decls
@@ -5561,7 +5840,8 @@ fn eval_expr(expr: &Expr, cx: &mut PoolCheckCx) -> Origin {
             }
         }
         Expr::Index { receiver, index, .. } => {
-            let o = eval_expr(receiver, cx).part();
+            let o = eval_expr(receiver, cx);
+            let o = cx.env.materialize(o).part();
             eval_expr(index, cx);
             o
         }
@@ -5570,7 +5850,21 @@ fn eval_expr(expr: &Expr, cx: &mut PoolCheckCx) -> Origin {
         }
         // a record literal holds its fields' values; a locus literal is a
         // fresh instance of this thread's, which holds its params'
-        Expr::Struct { inits, .. } => {
+        Expr::Struct { path, inits, .. } => {
+            // a locus literal: the instance, which every copy of the handle
+            // is (`Origin::objs`), its params' values held by field
+            // (one whose params can hold no locus handle holds nothing)
+            if path.segments.last().is_some_and(|s| cx.decls.loci.contains_key(&s.name)) {
+                let holds = path.segments.last().is_some_and(|s| cx.decls.locus_holds_handles(&s.name));
+                let site = expr as *const Expr as usize;
+                for i in inits {
+                    let v = eval_expr(&i.value, cx);
+                    if holds {
+                        cx.env.st.hold(site, Some(&i.name.name), v);
+                    }
+                }
+                return if holds { Origin { objs: Objs(vec![site]), ..Origin::default() } } else { Origin::default() };
+            }
             inits.iter().fold(Origin::default(), |o, i| o.join(eval_expr(&i.value, cx).contained()))
         }
         Expr::Block(b) => eval_block(b, cx),
@@ -5646,6 +5940,9 @@ fn receiver_locus_type(receiver: &Expr, cx: &PoolCheckCx) -> Option<String> {
         }
     }
     if let Expr::Ident(id) = receiver {
+        if let Some(t) = cx.env.locus_type(&id.name) {
+            return Some(t.to_string());
+        }
         return cx.env.lookup(&id.name).whole.and_then(|cp| cp.locus_type.clone());
     }
     let mut segs = Vec::new();
@@ -5783,6 +6080,15 @@ fn check_store_pool(target: &LValue, span: Span, cx: &mut PoolCheckCx) {
         if target.tail.len() <= below {
             return;
         }
+        // Summarizing a method: a store into a locus its field holds is
+        // the method's, judged at a call on a receiver the walk built
+        if cx.acc.is_some() && cx.enclosing_locus.is_some() {
+            if let Some(deep) = held_store(&target.tail, cx) {
+                if let Some(acc) = cx.acc.as_mut() {
+                    *acc.self_stores.entry(f.name.clone()).or_default() |= deep;
+                }
+            }
+        }
         let recv = Expr::Field {
             receiver: Box::new(Expr::KwSelf(target.head.span)),
             name: f.clone(),
@@ -5813,7 +6119,7 @@ fn check_store_pool(target: &LValue, span: Span, cx: &mut PoolCheckCx) {
         // What the local may hold: the store lands in the value itself
         // (`w.name`), or, down a longer path, maybe in a handle the value
         // holds (`r.h.name`, `p.0.name`).
-        let o = cx.env.lookup(&target.head.name);
+        let o = cx.env.read(&target.head.name);
         // Summarizing: a store into a parameter's value is the body's —
         // a caller judges it on what it hands in (GH #1561)
         if cx.acc.is_some() {
@@ -5877,6 +6183,144 @@ fn record_param_store(target: &LValue, o: &Origin, cx: &mut PoolCheckCx) {
     }
 }
 
+/// A method whose body stores into, or calls a method on, a locus one of
+/// its fields holds (`Summary::self_stores` / `self_calls`), called on
+/// `recv`. On `self` or a field of it: an instance the table holds, whose
+/// members are walked per instance — summarizing, the store is this
+/// body's own through the field. On a receiver the walk built or was
+/// handed (a local, a parameter, a literal): judged here on what that
+/// receiver's field may hold — summarizing, a store or call through what
+/// the parameter or field the receiver may be holds.
+fn check_held_through_receiver(
+    fname: &str,
+    sum: &Summary,
+    recv: &Expr,
+    arg_origins: &[Origin],
+    recv_origin: &Origin,
+    span: Span,
+    cx: &mut PoolCheckCx,
+) {
+    if sum.self_stores.is_empty() && sum.self_calls.is_empty() {
+        return;
+    }
+    if matches!(recv, Expr::KwSelf(_)) {
+        if let Some(acc) = cx.acc.as_mut() {
+            for (f, d) in &sum.self_stores {
+                *acc.self_stores.entry(f.clone()).or_default() |= *d;
+            }
+            for (f, d) in &sum.self_calls {
+                *acc.self_calls.entry(f.clone()).or_default() |= *d;
+            }
+        }
+        return;
+    }
+    if let Some(Expr::Field { name: g, .. }) = self_rooted_field(recv) {
+        if cx.acc.is_some() {
+            if cx.enclosing_locus.is_some() {
+                if let Some(acc) = cx.acc.as_mut() {
+                    if !sum.self_stores.is_empty() {
+                        acc.self_stores.insert(g.name.clone(), true);
+                    }
+                    if !sum.self_calls.is_empty() {
+                        acc.self_calls.insert(g.name.clone(), true);
+                    }
+                }
+            }
+            return;
+        }
+        // the instance the table holds is walked as itself; what a member
+        // stored into the field since (`self.k = H { .. }`) is judged here
+        if receiver_cross_pool(recv, cx).is_some() {
+            return;
+        }
+    }
+    if cx.acc.is_some() {
+        let syms = recv_origin.syms();
+        let in_locus = cx.enclosing_locus.is_some();
+        if let Some(acc) = cx.acc.as_mut() {
+            for s in syms.iter() {
+                match s {
+                    Sym::Param(p) => {
+                        if !sum.self_stores.is_empty() {
+                            acc.stores.insert(*p, true);
+                        }
+                        if !sum.self_calls.is_empty() {
+                            acc.calls.insert(*p, true);
+                        }
+                    }
+                    Sym::SelfField(g) if in_locus => {
+                        if !sum.self_stores.is_empty() {
+                            acc.self_stores.insert(g.to_string(), true);
+                        }
+                        if !sum.self_calls.is_empty() {
+                            acc.self_calls.insert(g.to_string(), true);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        return;
+    }
+    let shown = receiver_display(recv);
+    let fname = format!("{shown}.{fname}");
+    for (stores, map) in [(true, &sum.self_stores), (false, &sum.self_calls)] {
+        for (f, deep) in map {
+            let held = instantiate(&Origin::sym(Sym::SelfField(intern(f))), arg_origins, Some(recv), recv_origin, cx);            let Some(cp) = (if *deep { held.any() } else { held.whole.clone() }) else { continue };
+            let through = format!("{shown}.{f}");
+            if stores {
+                let what = format!("`{fname}(…)` stores, through the field `{f}` of its receiver `{shown}`, into");
+                cx.emit(Diag::ty(span, cross_pool_store_message(&what, &through, &cp, cx)));
+            } else if !cx.cross_pool_safe_loci.contains(&cp.field_locus) {
+                cx.emit(Diag::ty(
+                    span,
+                    format!(
+                        "cross-pool method call: `{fname}(…)` invokes, through the field `{f}` of its receiver \
+                         `{shown}`, a method on locus `{}` (`{through}`) placed `{}`, but the enclosing locus `{}` \
+                         is placed `{}`. Cross-pool coordination must go through the bus, not a direct call. See \
+                         spec/types.md § \"Single-threaded-method invariant (F.31)\".",
+                        cp.field_locus,
+                        cp.callee_pool.display(),
+                        cx.enclosing_name(),
+                        cp.caller_pool.display(),
+                    ),
+                ));
+            }
+        }
+    }
+}
+
+/// The field `f` of a receiver that is only instances the walk built —
+/// a binding of one, or the literal itself: what that field may be.
+fn built_receiver_field(r: &Expr, f: &str, cx: &PoolCheckCx) -> Option<Origin> {
+    let raw = match r {
+        Expr::Ident(id) => cx.env.lookup(&id.name),
+        Expr::Struct { .. } => Origin { objs: Objs(vec![r as *const Expr as usize]), ..Origin::default() },
+        _ => return None,
+    };
+    cx.env.built_field(&raw, f)
+}
+
+/// A store `self.f…`: whether it lands in a locus the field holds — the
+/// field's own instance (`self.w.name`, `Some(false)`) or one inside it
+/// (`self.ws[0].name`, `self.r.h.name`, `Some(true)`); `None` for a
+/// store into `self`'s own data, or into an inline scalar slot.
+fn held_store(tail: &[LValueSeg], cx: &PoolCheckCx) -> Option<bool> {
+    // the last locus the path steps into below `self`
+    let mut owner: Option<(usize, &str)> = None;
+    for n in 1..tail.len() {
+        let Some(t) = cx.decls.slot_type(cx.enclosing_name(), &tail[..n]) else { break };
+        if let Some(l) = cx.decls.named(cx.decls.resolve(t)).filter(|l| cx.decls.loci.contains_key(*l)) {
+            owner = Some((n, l));
+        }
+    }
+    let (n, l) = owner?;
+    if cx.decls.slot_is_inline_scalar(l, &tail[n..]) {
+        return None;
+    }
+    Some(n > 1)
+}
+
 /// GH #1561: a call of a free fn that stores into a locus field through
 /// one of its parameters (its `Summary`), handed a field that runs in
 /// another domain (`put(self.w, s)`, or a local bound to one): the
@@ -5887,6 +6331,7 @@ fn check_call_stores_pool(
     resolved: Option<(&Summary, Option<&Expr>)>,
     args: &[Expr],
     arg_origins: &[Origin],
+    recv_origin: &Origin,
     span: Span,
     cx: &mut PoolCheckCx,
 ) {
@@ -5896,7 +6341,10 @@ fn check_call_stores_pool(
         Expr::Field { name, .. } => name.name.clone(),
         _ => return,
     };
-    let Some((sum, _)) = resolved else { return };
+    let Some((sum, recv)) = resolved else { return };
+    if let Some(r) = recv {
+        check_held_through_receiver(&fname, sum, r, arg_origins, recv_origin, span, cx);
+    }
     // stores through a fn value's result: any instance of the type
     for t in &sum.any_stores {
         if cx.acc.is_some() {
@@ -6037,6 +6485,8 @@ struct StoreDecls<'a> {
     fns: BTreeMap<String, Vec<&'a FnDecl>>,
     /// `type_can_hold_locus` of a named type, once asked.
     can_hold: std::cell::RefCell<BTreeMap<String, bool>>,
+    /// `locus_holds_handles` of a locus, once asked.
+    holds_handles: std::cell::RefCell<BTreeMap<String, bool>>,
 }
 
 impl<'a> StoreDecls<'a> {
@@ -6046,6 +6496,7 @@ impl<'a> StoreDecls<'a> {
             types: BTreeMap::new(),
             fns: BTreeMap::new(),
             can_hold: std::cell::RefCell::new(BTreeMap::new()),
+            holds_handles: std::cell::RefCell::new(BTreeMap::new()),
         };
         for program in bundle.programs.values() {
             walk_decls(&program.items, &mut |item| match item {
@@ -6170,6 +6621,22 @@ impl<'a> StoreDecls<'a> {
     }
 
     /// The name a `Named` type expression spells (its last segment).
+    /// Can a param of the locus `name` hold a locus handle? (One with
+    /// none holds nothing a store could reach.)
+    fn locus_holds_handles(&self, name: &str) -> bool {
+        if let Some(b) = self.holds_handles.borrow().get(name) {
+            return *b;
+        }
+        let b = self.loci.get(name).is_some_and(|l| {
+            l.members.iter().any(|m| match m {
+                LocusMember::Params(pb) => pb.params.iter().any(|p| p.ty.as_ref().is_none_or(|t| self.type_can_hold_locus(t, 0))),
+                _ => false,
+            })
+        });
+        self.holds_handles.borrow_mut().insert(name.to_string(), b);
+        b
+    }
+
     fn named<'t>(&self, t: &'t TypeExpr) -> Option<&'t str> {
         match t {
             TypeExpr::Named { path, .. } => path.segments.last().map(|s| s.name.as_str()),
@@ -22223,7 +22690,7 @@ mod store_origin_tests {
     #[test]
     fn a_std_result_carries_an_argument_only_when_its_type_can() {
         let gauge = ["std", "metrics", "gauge"];
-        let d = super::StoreDecls { loci: Default::default(), types: Default::default(), fns: Default::default(), can_hold: Default::default() };
+        let d = super::StoreDecls { loci: Default::default(), types: Default::default(), fns: Default::default(), can_hold: Default::default(), holds_handles: Default::default() };
         assert!(!std_result_may_hold(&gauge, Some("std::metrics::Registry"), &d));
         assert!(std_result_may_hold(&gauge, Some("Gauge"), &d));
         assert!(std_result_may_hold(&["std", "no", "such_fn"], Some("Registry"), &d));

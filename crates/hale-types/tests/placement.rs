@@ -3671,8 +3671,19 @@ fn copy_r(w: W) -> R {{ return w.rec; }}
 fn via_free(f: fn() -> W) {{ let w = f(); w.name = "x"; }}
 fn make_free(f: fn() -> W) -> W {{ return f(); }}
 fn mk_w() -> W {{ return W {{ }}; }}
+fn pick_o(a: W, b: W) -> W {{ let mut ws = [a, a]; observe_o(ws, b); return ws[0]; }}
+fn observe_o(ws: [W; 2], b: W) {{ }}
+locus H3 {{
+    params {{ ws: [W; 2] = [W {{ }}, W {{ }}]; w: W = W {{ }}; n: Int = 0; }}
+    fn poke() {{ self.ws[0].name = "main"; }}
+    fn poke_w() {{ self.w.name = "main"; }}
+    fn call() {{ let ok = self.ws[0].step(); }}
+    fn poke_via() {{ self.poke(); }}
+    fn count() {{ self.n = self.n + 1; self.ws[0].n = 1; }}
+}}
+fn poke_h(h: H3) {{ h.poke(); }}
 main locus App {{
-    params {{ a: W = W {{}}; b: W = W {{ active: true }}; h: H = H {{ }}; c: W = W {{ }}; ws: [W; 2] = [W {{ }}, W {{ }}]; k: H = H {{ }}; k2: H2 = H2 {{ }}; r: R = R {{ }}; bl: bounded[W; 4]; }}
+    params {{ a: W = W {{}}; b: W = W {{ active: true }}; h: H = H {{ }}; c: W = W {{ }}; ws: [W; 2] = [W {{ }}, W {{ }}]; k: H = H {{ }}; k2: H2 = H2 {{ }}; k3: H3 = H3 {{ }}; r: R = R {{ }}; bl: bounded[W; 4]; }}
     fn stash_w(w: W) {{ self.ws[0] = w; }}
     fn give(out: [W; 2]) {{ out[0] = self.b; }}
     fn give_a(out: [W; 2]) {{ out[0] = self.a; }}
@@ -3843,6 +3854,49 @@ fn cross_pool_provenance_table() {
         ("a record copied into a local", "", "let r = self.b.rec; r.name = \"main\";", Accepted),
         ("a record copied through a local handle", "", "let w = self.b; let r = w.rec; r.name = \"main\";", Accepted),
         ("... but a store into the locus's own record", "", "self.b.rec.name = \"main\";", Refused("`self.b.rec.name = …`")),
+        // round 6: an instance the walk built is one instance, whichever
+        // binding reaches it
+        (
+            "a write through an alias of a built locus, read through the other",
+            "",
+            "let h = H2 { }; let alias = h; alias.ws[0] = self.b; let w = h.ws[0]; w.name = \"main\";",
+            Refused("`w.name = …`"),
+        ),
+        (
+            "... the other way round",
+            "",
+            "let h = H2 { }; let alias = h; h.ws[0] = self.b; alias.ws[0].name = \"main\";",
+            Refused("`alias.ws[…].name = …`"),
+        ),
+        ("... same pool", "", "let h = H2 { }; let alias = h; alias.ws[0] = self.a; let w = h.ws[0]; w.name = \"main\";", Accepted),
+        // a method's stores through what its receiver's fields hold, on an
+        // instance the walk built
+        ("a built locus's method stores through its field", "", "let h = H3 { ws: [self.b, self.a] }; h.poke();", Refused("`h.poke(…)` stores")),
+        ("... same pool", "", "let h = H3 { ws: [self.a, self.a] }; h.poke();", Accepted),
+        ("... through the field itself", "", "let h = H3 { w: self.b }; h.poke_w();", Refused("`h.poke_w(…)` stores")),
+        ("... a method call through its field", "", "let h = H3 { ws: [self.b, self.a] }; h.call();", Refused("`h.call(…)` invokes")),
+        ("... through its own method", "", "let h = H3 { ws: [self.b, self.a] }; h.poke_via();", Refused("`h.poke_via(…)` stores")),
+        ("... through a free fn", "", "poke_h(H3 { ws: [self.b, self.a] });", Refused("`poke_h(…)` stores")),
+        (
+            "... through a method's parameter",
+            "fn poke_p(h: H3) { h.poke(); }",
+            "self.poke_p(H3 { ws: [self.b, self.a] });",
+            Refused("`poke_p(…)` stores"),
+        ),
+        ("... a parameter handed a same-pool instance", "fn poke_p(h: H3) { h.poke(); }", "self.poke_p(H3 { ws: [self.a, self.a] });", Accepted),
+        ("... a handle written in after it was built", "", "let h = H3 { }; h.ws[0] = self.b; h.poke();", Refused("`h.poke(…)` stores")),
+        ("... a scalar slot only", "", "let h = H3 { ws: [self.b, self.a] }; h.count();", Accepted),
+        ("... stored into a field, then its method", "", "self.k3 = H3 { ws: [self.b, self.a] }; self.k3.poke();", Refused("`self.k3.poke(…)` stores")),
+        ("... stored into a field, same pool", "", "self.k3 = H3 { ws: [self.a, self.a] }; self.k3.poke();", Accepted),
+        (
+            "... stored into a field, then read out",
+            "",
+            "self.k3 = H3 { ws: [self.b, self.a] }; let w = self.k3.ws[0]; w.name = \"main\";",
+            Refused("`w.name = …`"),
+        ),
+        ("... the table's own instance", "", "self.k3.poke();", Accepted),
+        // a callee declared after its caller is walked before it is known
+        ("a known callee declared after its caller", "", "let w = pick_o(self.a, self.b); w.name = \"main\";", Accepted),
     ];
     let mut failures = Vec::new();
     for (name, extra, body, want) in rows {

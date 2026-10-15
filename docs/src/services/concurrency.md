@@ -561,7 +561,10 @@ refused the same ways too: through a local (`let o = self.other;
 o.foo()`), through a free fn that calls a method on the handle you
 hand it (`poke(self.other)`), and on anything reached below the field
 (`self.other.helpers[i].foo()`), since a nested locus runs on its
-holder's thread. The store copies the
+holder's thread. Handing `other` to a locus you build is no way
+around it either: `Holder { ws: [self.other] }.touch()`, where
+`touch` stores into or calls a method on `self.ws[0]`, does that work
+on `other` from your thread, and is refused the same way. The store copies the
 value into `other`'s memory and recycles the value it replaces, and
 only `other`'s own thread may do that. Give `other` a method that makes
 the store, and reach it through the bus. A store of a plain number or

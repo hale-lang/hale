@@ -1702,6 +1702,19 @@ instance, seeded from the `main locus`'s `placement { }` entries):
    a stdlib fn may write an argument into another only when the other's
    declared type can hold it; a call through a fn value, or one the
    check cannot see into, may write any argument into any other. A
+   locus literal is one instance however many bindings copy its
+   handle: what is written into it through one (`let alias = h;
+   alias.ws[0] = self.b;`) is read through every other (`h.ws[0]`),
+   and its params' values are held by field. A method that stores
+   into, or calls a method on, a locus one of its own fields holds
+   (`fn poke() { self.ws[0].name = s; }`) is judged, on a receiver
+   that is no field of `self` (a literal, a local or a parameter
+   bound to one), on what that receiver's field may hold: `H { ws:
+   [self.b, self.a] }.poke()` is the store into `self.b` itself, as
+   is the same call on a field of `self` a member stored that
+   literal into. A callee the check has not yet summarized does
+   nothing until it is, so the order fns are declared in never
+   changes a verdict. A
    value whose type can hold no locus handle (a record of data, a
    `String`) carries none: reading one copies it. A value
    comes from a field of `self` (or below one), another
