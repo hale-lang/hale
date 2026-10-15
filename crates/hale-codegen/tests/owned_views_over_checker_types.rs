@@ -581,3 +581,165 @@ fn a_view_saved_in_a_loop_is_copied_before_a_later_iterations_write() {
     let out = run_asan("loop_saved", src);
     assert_eq!(out, "OLD\n");
 }
+
+/// A place's String stored into an element of a local array is copied at
+/// the store, as one stored into a local's field is: the array outlives
+/// the block, which `self.put()` retires. In a loop (`keep[0] = s` in one
+/// arm, the write in the other, across the back-edge) the view `s` is no
+/// longer copied at its `let`, and without the store's copy `keep[0]`
+/// read a retired block (an empty line: the arena keeps it, so ASan alone
+/// does not see it); on one pass it read the new value. Each run prints
+/// the old value, under ASan.
+#[test]
+fn a_view_stored_into_a_local_arrays_element_is_copied_at_the_store() {
+    let src = r#"
+type F { s: String = ""; }
+locus H {
+    params { f: F = F { s: std::str::upper("old value long enough") }; }
+    fn put() { self.f = F { s: std::str::upper("new value long enough") }; }
+    fn probe() -> String {
+        let mut saved = "";
+        let mut keep = ["", ""];
+        for i in [0, 1] {
+            let s = self.f.s;
+            if i == 1 { self.put(); } else { keep[0] = s; }
+        }
+        saved = keep[0];
+        return saved;
+    }
+    fn straight() -> String {
+        let mut keep = ["", ""];
+        let s = self.f.s;
+        keep[0] = s;
+        self.put();
+        return keep[0];
+    }
+}
+fn main() { let h = H { }; println(h.probe()); let g = H { }; println(g.straight()); }
+    "#;
+    let out = run_asan("element_store", src);
+    assert_eq!(out, "OLD VALUE LONG ENOUGH\nOLD VALUE LONG ENOUGH\n");
+    // The field read straight into the element (an older gap: main read
+    // the new value), into an element of a local record's array, and the
+    // same across a loop's back-edge.
+    let direct = r#"
+type F { s: String = ""; }
+type K { arr: [String; 2]; }
+locus H {
+    params { f: F = F { s: std::str::upper("old value long enough") }; }
+    fn put() { self.f = F { s: std::str::upper("new value long enough") }; }
+    fn element() -> String {
+        let mut keep = ["", ""];
+        keep[0] = self.f.s;
+        self.put();
+        return keep[0];
+    }
+    fn record_element() -> String {
+        let mut k = K { arr: ["", ""] };
+        k.arr[1] = self.f.s;
+        self.put();
+        return k.arr[1];
+    }
+    fn element_in_loop() -> String {
+        let mut keep = ["", ""];
+        for i in [0, 1] {
+            if i == 1 { self.put(); } else { keep[0] = self.f.s; }
+        }
+        return keep[0];
+    }
+}
+fn main() {
+    let a = H { }; println(a.element());
+    let b = H { }; println(b.record_element());
+    let c = H { }; println(c.element_in_loop());
+}
+    "#;
+    let out = run_asan("element_store_direct", direct);
+    assert_eq!(out, "OLD VALUE LONG ENOUGH\n".repeat(3));
+}
+
+/// Every other place a loop's view can be stored to outlive the
+/// iteration keeps the old value: a field of an outer record, an element
+/// of an outer record's array, a tuple rebound, a `bounded` push, a
+/// `@form(vec)` push, and the `bounded` push on one pass.
+#[test]
+fn a_view_stored_anywhere_that_outlives_the_iteration_keeps_its_value() {
+    let src = r#"
+type F { s: String = ""; }
+type K { s: String = ""; arr: [String; 2]; }
+type Buf { vals: bounded[String; 4]; }
+type Row { s: String = ""; }
+
+@form(vec)
+locus Rows {
+    capacity {
+        heap rows of Row;
+    }
+}
+
+locus H {
+    params {
+        f: F = F { s: std::str::upper("old value long enough") };
+        rows: Rows = Rows { };
+    }
+    fn put() { self.f = F { s: std::str::upper("new value long enough") }; }
+    fn field() -> String {
+        let mut k = K { arr: ["", ""] };
+        for i in [0, 1] {
+            let s = self.f.s;
+            if i == 1 { self.put(); } else { k.s = s; }
+        }
+        return k.s;
+    }
+    fn nested_elem() -> String {
+        let mut k = K { arr: ["", ""] };
+        for i in [0, 1] {
+            let s = self.f.s;
+            if i == 1 { self.put(); } else { k.arr[1] = s; }
+        }
+        return k.arr[1];
+    }
+    fn tuple() -> String {
+        let mut t = ("", 0);
+        for i in [0, 1] {
+            let s = self.f.s;
+            if i == 1 { self.put(); } else { t = (s, 1); }
+        }
+        return t.0;
+    }
+    fn bounded_push() -> String {
+        let b = Buf { };
+        for i in [0, 1] {
+            let s = self.f.s;
+            if i == 1 { self.put(); } else { push(b.vals, s) or raise; }
+        }
+        return at(b.vals, 0) or "none";
+    }
+    fn vec_push() -> String {
+        for i in [0, 1] {
+            let s = self.f.s;
+            if i == 1 { self.put(); } else { self.rows.push(Row { s: s }); }
+        }
+        let r = self.rows.get(0) or Row { };
+        return r.s;
+    }
+    fn straight_bounded() -> String {
+        let b = Buf { };
+        let s = self.f.s;
+        push(b.vals, s) or raise;
+        self.put();
+        return at(b.vals, 0) or "none";
+    }
+}
+fn main() {
+    let a = H { }; println(a.field());
+    let b = H { }; println(b.nested_elem());
+    let c = H { }; println(c.tuple());
+    let d = H { }; println(d.bounded_push());
+    let e = H { }; println(e.vec_push());
+    let f = H { }; println(f.straight_bounded());
+}
+    "#;
+    let out = run_asan("outlives_iteration", src);
+    assert_eq!(out, "OLD VALUE LONG ENOUGH\n".repeat(6));
+}

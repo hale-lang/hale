@@ -18493,14 +18493,24 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 // survived it. The same for an element of a local
                 // array, `arr[i] = <place>`. A literal or a call
                 // result is fresh and is stored as it is.
+                //
+                // An element of a local array takes a copy of a place's
+                // String or Bytes too, as a local's field does
+                // (`finish_lvalue_assign`): the array outlives the place's
+                // block, which a later write may replace (`keep[0] = s`
+                // with `s` a view of `self.f.s`, then `self.put()`, then a
+                // read of `keep[0]`, in a loop's later iteration or on one
+                // pass). A bare local rebound to one is the view column's
+                // to decide (below).
                 let local_value_slot = target.head.name != "self"
                     && (target.tail.is_empty()
                         || (target.tail.len() == 1
                             && matches!(target.tail[0], LValueSeg::Index(_))));
+                let element_string = !target.tail.is_empty() && matches!(slot_ty, CodegenTy::String | CodegenTy::Bytes);
                 let mut bound_copy = false;
                 let new_val = if local_value_slot
                     && matches!(op, AssignOp::Eq)
-                    && matches!(slot_ty, CodegenTy::TypeRef(_))
+                    && (matches!(slot_ty, CodegenTy::TypeRef(_)) || element_string)
                     && Self::expr_is_place(value)
                 {
                     let dest = self.current_arena_ptr()?;
