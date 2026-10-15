@@ -1476,13 +1476,13 @@ fn a_monomorphs_enum_field_is_laid_out_and_retired_as_the_enum() {
 }
 
 // === a variant's construction holds its arguments ==============
-// `Wrap::Held("str")` with `Held(Box<Int>)` checked clean (the callee path
-// types as the enum and no argument was held to the payload) and the
+// `Wrap::Held("str")` with `Held(Box<Int>)` checked clean (the variant rule
+// skipped a payload type it did not name, and a monomorph is one) and the
 // build refused it, unlocated: "Wrap::Held arg 0: expected type
 // TypeRef(\"Box_Int\"), got String". `Wrap::Held(Box { value: 5 })` checked
-// clean too and died at build at `expression form Discriminant(12)`. Each
-// argument now meets the payload field's type, a template literal taking
-// its arguments, in the check and the build.
+// clean too and died at build at `expression form Discriminant(12)`. A
+// monomorph payload is held to, and a template literal takes its
+// arguments, in the check and the build.
 
 #[test]
 fn a_variants_arguments_meet_its_payload_types() {
@@ -1520,7 +1520,7 @@ fn main() {
     println(1);
 }
 "#,
-        &Expect::Refused("`Wrap::Held` argument 0: expected `Box_Int`, got `String`"),
+        &Expect::Refused("`Wrap::Held` value 0: expected `Box_Int`, got `String`"),
     );
     agree(
         "variant_arity",
@@ -1532,6 +1532,6 @@ fn main() {
     println(1);
 }
 "#,
-        &Expect::Refused("`Wrap::Held` takes 1 argument, got 2"),
+        &Expect::Refused("`Wrap::Held` carries 1 value, and this passes 2"),
     );
 }
