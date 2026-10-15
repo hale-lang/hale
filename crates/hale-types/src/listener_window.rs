@@ -47,6 +47,8 @@
 //! | a fn used as a value | a fn passed, stored or bound may be called by what receives it, so it is judged as a call of it |
 //! | a publish that may wait | to a topic a binding carries over a unix socket (a write), an adapter (its `send`, user code the window does not follow) or a shared-memory ring `on_overflow: block` |
 //! | a recovery | `restart`, `resume`, `quarantine`, …: it rebuilds a child the window does not follow |
+//! | a handler a publish reaches | every handler subscribed to the topic (by its name or its subject) is judged as a call: one on the main thread runs inside the window, delivered in place or drained from main's queue between births, and the window does not split the two (nor by where the subscriber is placed: over-approximate). The runtime's own loci (`__Std…`) are the standard library's, judged by their classes |
+//! | a `yield` | refused outright: it runs whatever main's queue holds, which no analysis of the step can name (judging every handler that could be queued on main would refuse the same programs less legibly) |
 //! | too deep | constructions and defaults nested past 32 levels |
 //!
 //! A `for` loop always ends: it iterates a range (bounds evaluated once),
@@ -383,6 +385,9 @@ pub(crate) struct Window<'a> {
     /// adapter's `send` (user code the window does not follow), a shared
     /// memory ring `on_overflow: block`.
     waiting_topics: BTreeSet<String>,
+    /// Every handler subscribed to a topic, by the topic's name and by its
+    /// subject: `(locus, handler)`.
+    handlers: BTreeMap<String, Vec<(String, String)>>,
     /// The evaluation path the walk is on, as the checker keeps it
     /// (`default_evaluation`): each struct literal that leaves a field and
     /// each call that leaves a parameter whose default is being walked,
@@ -422,6 +427,7 @@ fn collect<'a>(v: Visited<'a>, found: &mut Found<'a>) {
     match v {
         Visited::Stmt(Stmt::While { .. }) | Visited::OrWait => found.stall = Some(LOOP),
         Visited::Stmt(Stmt::Recovery { .. }) => found.stall = found.stall.or(Some(RECOVERY)),
+        Visited::Stmt(Stmt::Yield(_)) => found.stall = found.stall.or(Some(YIELD)),
         Visited::Stmt(Stmt::Send { subject, .. }) => match subject {
             Expr::Ident(i) => found.sends.push(&i.name),
             Expr::Path(qn) => found.sends.extend(qn.segments.last().map(|s| s.name.as_str())),
@@ -438,6 +444,7 @@ fn collect<'a>(v: Visited<'a>, found: &mut Found<'a>) {
 
 const LOOP: &str = "a `while` loop or an `or wait`, which may not end";
 const RECOVERY: &str = "a recovery (`restart`, `resume`, …) rebuilds a child the window does not follow";
+const YIELD: &str = "a `yield` runs whatever main's queue holds, handlers the window does not follow";
 const RECURSION: &str = "it is recursive (it reaches itself), and the window cannot prove a recursion ends";
 const SEND_WAITS: &str =
     "a publish to a topic bound to a transport that may wait (a socket write, an adapter's `send`, a ring that blocks when full)";
@@ -495,6 +502,7 @@ impl<'a> Window<'a> {
         let mut types = BTreeSet::new();
         let mut waiting_topics = BTreeSet::new();
         let mut subjects: BTreeMap<String, String> = BTreeMap::new();
+        let mut subscribed: Vec<(String, String, String)> = Vec::new();
         let record = |t: &'a TypeDecl, records: &mut BTreeMap<String, &'a [StructField]>| {
             if let TypeDeclBody::Struct(fields) = &t.body {
                 records.entry(t.name.name.clone()).or_insert(fields.as_slice());
@@ -542,6 +550,20 @@ impl<'a> Window<'a> {
                                     consts.insert((at.clone(), c.name.name.clone()), &c.value);
                                 }
                                 LocusMember::Type(t) => record(t, &mut records),
+                                LocusMember::Bus(b) => {
+                                    for m in &b.members {
+                                        if let BusMember::Subscribe { subject, handler, .. } = m {
+                                            let topic = match subject {
+                                                hale_syntax::ast::BusSubject::Literal { subject, .. } => subject.clone(),
+                                                hale_syntax::ast::BusSubject::Topic(t) => t.name.clone(),
+                                                hale_syntax::ast::BusSubject::QualifiedTopic(qn) => {
+                                                    qn.segments.last().map(|s| s.name.clone()).unwrap_or_default()
+                                                }
+                                            };
+                                            subscribed.push((topic, x.name.name.clone(), handler.name.clone()));
+                                        }
+                                    }
+                                }
                                 LocusMember::Bindings(b) => {
                                     for e in &b.entries {
                                         let waits = match &e.transport {
@@ -566,6 +588,16 @@ impl<'a> Window<'a> {
         }
         let by_subject: Vec<String> = waiting_topics.iter().filter_map(|t| subjects.get(t).cloned()).collect();
         waiting_topics.extend(by_subject);
+        // a handler is reached by a send naming its topic or its subject
+        let mut handlers: BTreeMap<String, Vec<(String, String)>> = BTreeMap::new();
+        for (topic, locus, handler) in subscribed {
+            let mut keys = vec![topic.clone()];
+            keys.extend(subjects.get(&topic).cloned());
+            keys.extend(subjects.iter().filter(|(_, s)| **s == topic).map(|(t, _)| t.clone()));
+            for k in keys {
+                handlers.entry(k).or_default().push((locus.clone(), handler.clone()));
+            }
+        }
         Window {
             effects,
             loci,
@@ -578,6 +610,7 @@ impl<'a> Window<'a> {
             types,
             typed,
             waiting_topics,
+            handlers,
             path: RefCell::new(Vec::new()),
         }
     }
@@ -648,6 +681,9 @@ impl<'a> Window<'a> {
                 let found = found_in_block(body);
                 if let Some(why) = self.stall(&found) {
                     return Some((show(k), why));
+                }
+                if let Some((at, why)) = self.delivered(&found, depth) {
+                    return Some((through(show(k), at), why));
                 }
                 // a body is typed where it is declared
                 let step = self.on_path(Vec::new(), || {
@@ -899,6 +935,30 @@ impl<'a> Window<'a> {
         found.stall.or_else(|| found.sends.iter().any(|t| self.waiting_topics.contains(*t)).then_some(SEND_WAITS))
     }
 
+    /// The handlers a publish in `found` reaches, each judged as a call of
+    /// it: every handler subscribed to the topic, wherever it runs (one on
+    /// the main thread runs inside the window, delivered in place or
+    /// drained from main's queue between births, and the window does not
+    /// split the two).
+    fn delivered(&self, found: &Found<'_>, depth: usize) -> Option<(String, &'static str)> {
+        for topic in &found.sends {
+            // the runtime's own loci (`__Std…`, the serve expansion's
+            // exposure among them) are the standard library's, judged by
+            // their classes where they are called, not walked here
+            for (locus, handler) in self.handlers.get(*topic).into_iter().flatten().filter(|(l, _)| !l.starts_with("__")) {
+                if let Some(row) = self.row(Some(locus), handler) {
+                    let mut seen = BTreeSet::new();
+                    if let Some((at, why)) = self.judge_fn(row, &mut seen, depth + 1) {
+                        let own = format!("`{locus}::{handler}`");
+                        let inner = if at == own { String::new() } else { at };
+                        return Some((through(format!("{own}, a handler of `{topic}`"), inner), why));
+                    }
+                }
+            }
+        }
+        None
+    }
+
     /// A fn of the program `start` reaches, through the effect rows' call
     /// edges, that reaches itself: a recursion, direct or mutual, through
     /// methods and the fn values the analysis resolves. Only the program's
@@ -906,7 +966,10 @@ impl<'a> Window<'a> {
     /// classes).
     fn cycle(&self, start: &'a FnKey) -> Option<&'a FnKey> {
         let effects = self.effects?;
-        let own = |k: &FnKey| self.bodies.contains_key(&(k.locus.clone(), k.fn_name.clone()));
+        let own = |k: &FnKey| {
+            !k.locus.as_deref().is_some_and(|l| l.starts_with("__"))
+                && self.bodies.contains_key(&(k.locus.clone(), k.fn_name.clone()))
+        };
         // 1: on the walk's stack; 2: finished, no cycle through it
         let mut state: BTreeMap<&'a FnKey, u8> = BTreeMap::new();
         let mut stack: Vec<(&'a FnKey, usize)> = vec![(start, 0)];
@@ -941,6 +1004,9 @@ impl<'a> Window<'a> {
         let found = found_in_expr(e);
         if let Some(why) = self.stall(&found) {
             return Some((String::new(), why));
+        }
+        if let Some(step) = self.delivered(&found, depth) {
+            return Some(step);
         }
         for c in &found.calls {
             if let Some(step) = self.call(c, ctx, depth) {

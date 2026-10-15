@@ -425,7 +425,8 @@ that may not return is refused:
 one that waits on its exposure (itself, or through a fn it calls), sleeps,
 reads, or loops in a `while`, wherever the loop sits; one that recurses
 (even a recursion with a base case: the check cannot prove it ends);
-one that publishes over a socket, an adapter or a blocking ring; and one
+one that publishes over a socket, an adapter or a blocking ring, or to a
+topic whose handler would itself be refused; one that `yield`s; and one
 that restarts a child. A step that
 returns, like `run() { println("started"); }`, is fine. Place a server
 whose `run()` waits, wait in `App`'s `run()`, or give the listener an

@@ -397,6 +397,10 @@ fn what_main_builds_before_a_listener_born_after_its_server_must_return() {
     // a call in a record default on a receiver the caller's scope binds:
     // `s` is whichever locus the literal's scope holds
     const PROBES: &str = "fn settle() -> Int { std::time::sleep(1s); return 0; }\nlocus Fast { fn pick(n: Int = 0) -> Int { return n; } }\nlocus Slow { fn pick(n: Int = settle()) -> Int { return n; } }\ntype Probe { n: Int = s.pick(); }";
+    const PINGS: &str = "type Ping { id: Int = 0; }\ntopic Pings { payload: Ping; subject: \"t.pings\"; }";
+    const SUB_SPINS: &str = "locus Sub {\n    bus { subscribe Pings as on_ping; }\n    fn on_ping(p: Ping) { while !self.draining { } }\n}";
+    const SUB_RETURNS: &str = "locus Sub {\n    bus { subscribe Pings as on_ping; }\n    fn on_ping(p: Ping) { println(\"ping\"); }\n}";
+    const PUB_BIRTH: &str = "locus Pub {\n    bus { publish Pings; }\n    birth() { Pings <- Ping { id: 1 }; }\n}";
     const SHADOW_FN_LOCAL: &str =
         "fn settle() -> Int { std::time::sleep(1s); return 0; }\nconst K: Int = settle();\nfn quick() -> Int { let K = 0; return K; }";
     const SHADOW_FN_PARAM: &str =
@@ -496,6 +500,14 @@ fn what_main_builds_before_a_listener_born_after_its_server_must_return() {
         ("a call that returns, no recursion", "", "n: Int = count(3); server: Server = Server { };", "fn count(k: Int) -> Int { return k; }", "", None),
         // a default that reaches its own call again
         ("a param default calling its own fn", "", "k: Int = grow(); server: Server = Server { };", "fn grow(n: Int = grow()) -> Int { return n; }", "", Some("may not return")),
+        // a publish runs its subscribers' handlers inside the window, and a
+        // `yield` runs whatever main's queue holds
+        ("a sibling's birth() publishes to a spinning handler", "", "sub: Sub = Sub { }; p: Pub = Pub { }; server: Server = Server { };", &format!("{PINGS}\n{SUB_SPINS}\n{PUB_BIRTH}"), "", Some("`Pub`'s `birth()`")),
+        ("a default calls a method that publishes to a spinning handler", "", "sub: Sub = Sub { }; p: Pub = Pub { }; n: Int = self.p.announce(); server: Server = Server { };", &format!("{PINGS}\n{SUB_SPINS}\nlocus Pub {{\n    bus {{ publish Pings; }}\n    fn announce() -> Int {{ Pings <- Ping {{ id: 1 }}; return 0; }}\n}}"), "", Some("the default of `App.n`, through `Pub::announce`, through `Sub::on_ping`, a handler of `Pings`")),
+        ("a sibling's birth() publishes to a returning handler", "", "sub: Sub = Sub { }; p: Pub = Pub { }; server: Server = Server { };", &format!("{PINGS}\n{SUB_RETURNS}\n{PUB_BIRTH}"), "", None),
+        ("a publish to a spinning handler after the server", "", "server: Server = Server { }; sub: Sub = Sub { }; p: Pub = Pub { };", &format!("{PINGS}\n{SUB_SPINS}\n{PUB_BIRTH}"), "", None),
+        ("a sibling's birth() yields", "", "y: Yielder = Yielder { }; server: Server = Server { };", "locus Yielder { birth() { println(\"y\"); yield; } }", "", Some("a `yield`")),
+        ("a sibling's birth() without a yield", "", "y: Yielder = Yielder { }; server: Server = Server { };", "locus Yielder { birth() { println(\"y\"); } }", "", None),
         // a fn used as a value: judged as a call of it
         ("a looping fn passed as a value", "", "n: Int = apply(spin1, 1); server: Server = Server { };", "fn spin1(n: Int) -> Int { while true { } return n; }\nfn apply(f: fn (Int) -> Int, n: Int) -> Int { return f(n); }", "", Some("`spin1`")),
         ("a returning fn passed as a value", "", "n: Int = apply(same, 1); server: Server = Server { };", "fn same(n: Int) -> Int { return n; }\nfn apply(f: fn (Int) -> Int, n: Int) -> Int { return f(n); }", "", None),

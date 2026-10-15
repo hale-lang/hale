@@ -424,7 +424,11 @@ param default that reaches its own call again; a fn used as a value,
 judged as a call of it; a publish to a topic a binding carries over a
 unix socket, an adapter or a shared-memory ring `on_overflow: block`; a
 recovery (`restart`, …), which rebuilds a child the check does not
-follow; and constructions nested past 32 levels. A `for` loop always ends
+follow; every handler subscribed to a topic the step publishes to, judged
+as a call (a handler on the main thread runs inside the window, delivered
+in place or drained from main's queue between births); a `yield`, which
+runs whatever main's queue holds and is refused outright; and
+constructions nested past 32 levels. A `for` loop always ends
 (its range, array, buffer, form or batch is finite when it starts).
 `run() { println("started"); }` is admitted. The listener is inserted into whichever of
 the main locus's `params` blocks declares that param. Then it is placed:
