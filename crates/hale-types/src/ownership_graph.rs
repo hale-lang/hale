@@ -926,7 +926,6 @@ impl OwnershipGraph {
                     let nodes = omitted
                         .at(id, path.as_deref())
                         .into_iter()
-                        .flatten()
                         .flat_map(|o| {
                             args.get(&o.callee).into_iter().flatten().filter(move |(i, _)| *i >= o.from).map(|(_, n)| *n)
                         })

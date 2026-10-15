@@ -486,6 +486,12 @@ fn what_main_builds_before_a_listener_born_after_its_server_must_return() {
         ("built in a record default, reading the const", "", APP_N, CONST_SETTLES, "type Holder { n: Int = { App { n: K }; 0 }; }\nfn main() { let h = Holder { }; }", Some("the value given of `App.n`, through the value of the const `K`")),
         ("built in a record default left twice, one shadowing", "", APP_N, CONST_SETTLES, "type Holder { n: Int = { App { n: K }; 0 }; }\nfn quiet() -> Int { let K = 0; let h = Holder { }; return h.n; }\nfn main() { let h = Holder { }; }", Some("the value given of `App.n`, through the value of the const `K`")),
         // a call in a default resolved in each evaluation's scope
+        // a call that leaves nothing on this evaluation is that answer, not
+        // a missing one: the declaration's const `s` is a Fast whose pick
+        // leaves its param, the literal's local `s` a Slow whose pick
+        // leaves none
+        ("a default's fully supplied call on the caller's looping Slow", "", "n: Int = { let s = Slow { }; let p = Probe { }; p.n }; server: Server = Server { };", "locus Fast { fn pick(n: Int = 0) -> Int { return n; } }\nlocus Slow { fn pick() -> Int { while true { } return 0; } }\nconst s: Fast = Fast { };\ntype Probe { n: Int = s.pick(); }", "", Some("the default of `Probe.n`, through `Slow::pick`")),
+        ("a default's fully supplied call on the caller's returning Slow", "", "n: Int = { let s = Slow { }; let p = Probe { }; p.n }; server: Server = Server { };", "locus Fast { fn pick(n: Int = 0) -> Int { return n; } }\nlocus Slow { fn pick() -> Int { return 0; } }\nconst s: Fast = Fast { };\ntype Probe { n: Int = s.pick(); }", "", None),
         ("a default's call on the caller's Fast, Slow elsewhere", "", "n: Int = { let s = Fast { }; let p = Probe { }; p.n }; server: Server = Server { };", &format!("{PROBES}\nfn other() -> Int {{ let s = Slow {{ }}; let p = Probe {{ }}; return p.n; }}"), "", None),
         ("a default's call on the caller's Slow, Fast elsewhere", "", "n: Int = { let s = Slow { }; let p = Probe { }; p.n }; server: Server = Server { };", &format!("{PROBES}\nfn other() -> Int {{ let s = Fast {{ }}; let p = Probe {{ }}; return p.n; }}"), "", Some("the default of `Probe.n`, through the default of `Slow::pick`'s param `n`")),
         // a const read is the checker's resolution: a binding in scope shadows it

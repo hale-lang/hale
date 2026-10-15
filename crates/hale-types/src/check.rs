@@ -1020,7 +1020,7 @@ pub fn check_bundle_by_declaration(
             bindings: inputs.bindings,
             entry: inputs.entry,
             ownership: &|| Some(inputs.ownership),
-            omitted: crate::typed_bodies::OmittedView { by_call: &typed.omitted_args, by_path: &typed.omitted_by_path },
+            omitted: crate::typed_bodies::OmittedView { by_call: &typed.omitted_args, by_path: &typed.calls_by_path },
         },
     ));
     // F.40 phase 4, W3: the recovery events a closure's
@@ -14194,7 +14194,9 @@ impl<'a> Checker<'a> {
     /// mistake; reporting both would print two messages for one typo.
     fn check_ident_expr(&mut self, id: &Ident, report_unknown: bool) -> Ty {
         if let Some(s) = self.locals.lookup(&id.name) {
-            self.typed.ident_read(id.id, &self.default_evaluation, false);
+            if !self.defaults_judged_at_literals {
+                self.typed.ident_read(id.id, &self.default_evaluation, false);
+            }
             return s.ty.clone();
         }
         let Some(sym) = self.top.lookup(&id.name) else {
@@ -14226,7 +14228,11 @@ impl<'a> Checker<'a> {
             }
             return Ty::Unknown;
         };
-        self.typed.ident_read(id.id, &self.default_evaluation, matches!(sym, TopSymbol::Const(_)));
+        // not on a type declaration's walk of its fields' calls, which is
+        // no evaluation
+        if !self.defaults_judged_at_literals {
+            self.typed.ident_read(id.id, &self.default_evaluation, matches!(sym, TopSymbol::Const(_)));
+        }
         match sym {
             TopSymbol::Const(c) => c.ty.clone(),
             TopSymbol::Fn(sig) => Ty::Function {
@@ -15810,12 +15816,24 @@ impl<'a> Checker<'a> {
             }
             _ => None,
         };
+        // The call on this evaluation (GH #1565): what it resolves to and
+        // what it leaves, a call that leaves nothing included. Not on a
+        // type declaration's walk of its fields' calls, which is no
+        // evaluation.
+        let user = decl.filter(|d| self.user_fns.contains(&(*d as *const FnDecl)));
+        if !self.defaults_judged_at_literals {
+            let row = crate::typed_bodies::CallRow {
+                callee: user.map(|d| d.id.0),
+                from: user.filter(|d| d.params.len() > supplied).map(|_| supplied),
+            };
+            self.typed.call_typed(invocation, &self.default_evaluation, row);
+        }
         let Some(decl) = decl else { return };
         // The `omitted_args` column: which defaults this call expands, in
         // whichever caller lowering lowers it under (the cross-pool value
         // law composes the two, C3 rest).
         if decl.params.len() > supplied && self.user_fns.contains(&(decl as *const FnDecl)) {
-            self.typed.omitted_args(invocation, &self.default_evaluation, decl.id, supplied);
+            self.typed.omitted_args(invocation, decl.id, supplied);
         }
         let defaults: Vec<(&Expr, &str, &TypeExpr)> = decl.params.iter().skip(supplied)
             .filter_map(|p| Some((p.default.as_ref()?, p.name.name.as_str(), &p.ty))).collect();
@@ -19668,7 +19686,9 @@ impl<'a> Checker<'a> {
         inits: &[StructInit],
         span: Span,
     ) -> Ty {
-        self.typed.literal_typed(literal, &self.default_evaluation);
+        if !self.defaults_judged_at_literals {
+            self.typed.literal_typed(literal, &self.default_evaluation);
+        }
         let mut qualified_resolved: Option<String> = None;
         if path.segments.len() != 1 {
             // Resolve an imported qualified literal (`mat::Grid { }`)

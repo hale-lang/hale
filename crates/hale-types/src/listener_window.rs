@@ -661,18 +661,15 @@ impl<'a> Window<'a> {
                 };
             }
         }
-        // a call that leaves arguments: the callee the checker resolved it
-        // to on this evaluation (a method on a receiver that is the
-        // caller's local, in a default, is typed in each caller's scope)
+        // the fn or method the checker resolved the call to on this
+        // evaluation (a method on a receiver that is the caller's local, in
+        // a default, is typed in each caller's scope); a call the checker
+        // never typed on this path, by what it leaves on any
         let Expr::Call { id, .. } = call else { return None };
-        let resolved: Vec<&Key> = self
-            .typed
-            .omitted_args()
-            .at(id.0, Some(&self.path.borrow()))
-            .into_iter()
-            .flatten()
-            .filter_map(|o| self.decls.get(&o.callee))
-            .collect();
+        let resolved: Vec<&Key> = match self.typed.omitted_args().calls_at(id.0, &self.path.borrow()) {
+            Some(rows) => rows.iter().filter_map(|r| self.decls.get(&r.callee?)).collect(),
+            None => self.typed.omitted_args().at(id.0, None).iter().filter_map(|o| self.decls.get(&o.callee)).collect(),
+        };
         if !resolved.is_empty() {
             for (locus, name) in resolved {
                 match self.row(locus.as_deref(), name) {
@@ -739,7 +736,7 @@ impl<'a> Window<'a> {
                 continue;
             }
             let left_on = self.typed.omitted_args().at(id.0, Some(&self.path.borrow()));
-            for left in left_on.into_iter().flatten() {
+            for left in left_on {
                 let Some(key) = self.decls.get(&left.callee) else { continue };
                 // the defaults the call leaves: one evaluation further
                 if let Some(step) = self.on_path(self.pushed(id.0), || self.omitted_args(key, left.from, ctx, depth)) {
