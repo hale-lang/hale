@@ -1263,6 +1263,7 @@ fn analyze(programs: &[Analyzed<'_>], top: &TopScope, monos: &MonoShapes) -> Vec
                 other: cur.other || next.other,
                 pparams: cur.pparams | next.pparams,
                 pother: cur.pother || next.pother,
+                hparams: cur.hparams | next.hparams,
             };
             if merged != cur {
                 ret_views[i] = merged;
@@ -1314,7 +1315,8 @@ fn analyze(programs: &[Analyzed<'_>], top: &TopScope, monos: &MonoShapes) -> Vec
 /// what that call's callees return — a parameter of theirs read as the
 /// argument it was handed there.
 fn eval_src(src: &Src, marks: &BTreeMap<String, (Vec<usize>, Vec<Src>)>, views: &[RetView], depth: usize) -> RetView {
-    let mut out = RetView { params: src.params, other: src.other, pparams: src.pparams, pother: src.pother };
+    let mut out =
+        RetView { params: src.params, other: src.other, pparams: src.pparams, pother: src.pother, hparams: src.hparams };
     if depth > 8 {
         out.other |= !src.calls.is_empty();
         return out;
@@ -1329,6 +1331,11 @@ fn eval_src(src: &Src, marks: &BTreeMap<String, (Vec<usize>, Vec<Src>)>, views: 
             out.other |= rv.other;
             out.pother |= rv.pother;
             for (k, arg) in args.iter().enumerate() {
+                // A handle argument's storage handed back: the storage of
+                // the handle parameter the caller handed on, if it was one.
+                if rv.hparams & param_bit(k) != 0 {
+                    out.hparams |= arg.hparams;
+                }
                 let (whole, part) = (rv.params & param_bit(k) != 0, rv.pparams & param_bit(k) != 0);
                 if !(whole || part) {
                     continue;
@@ -1444,6 +1451,9 @@ struct Src {
     /// holds such a block in a part (a struct literal's field).
     pparams: u64,
     pother: bool,
+    /// The storage of the locus a handle parameter is, by these bits: the
+    /// result is, or holds, a value read through it (`return l.name;`).
+    hparams: u64,
     calls: BTreeSet<String>,
 }
 
@@ -1458,12 +1468,22 @@ struct RetView {
     other: bool,
     pparams: u64,
     pother: bool,
+    /// The result is, or holds, a value read through these handle
+    /// parameters: the storage of the locus each is handed, which a later
+    /// write into that locus replaces.
+    hparams: u64,
 }
 
 /// The marker key of a call's result, on the summary pass: which
 /// callee it came from, so a body that returns it returns what that
 /// callee does (`Summaries::ret_views`). Followed by the callee.
 const RET: &str = "\u{1}ret\u{1}";
+
+/// The key of a read through the handle parameter it is followed by
+/// (`l.name`, `l.a.b` with `l` a locus handle): that locus's storage,
+/// which a free fn hands back uncopied (`Summaries::ret_views`'s
+/// `hparams`). Not a place marker: it travels with the value's keys.
+const HPARAM: &str = "\u{1}hp\u{1}";
 
 fn is_place_marker(k: &str) -> bool {
     k.starts_with(AT) || k.starts_with(PART) || k.starts_with(RET)
@@ -1967,6 +1987,13 @@ impl<'p, 'a> Walk<'p, 'a> {
         }
         let mut keys = in_cell(keys).unwrap_or_default();
         keys.insert(name.name.clone());
+        // Read through a handle parameter: that locus's storage.
+        if let Some(param) = self.place_of(receiver).as_deref().and_then(|p| p.strip_prefix('$')) {
+            let param = param.split('.').next().unwrap_or("");
+            if self.handle_params.contains(param) {
+                keys.insert(format!("{HPARAM}{param}"));
+            }
+        }
         union(Some(keys), marker)
     }
 
@@ -2132,6 +2159,12 @@ impl<'p, 'a> Walk<'p, 'a> {
             }
         };
         for k in ks {
+            if let Some(n) = k.strip_prefix(HPARAM) {
+                if let Some(&i) = self.param_index.get(n) {
+                    out.hparams |= param_bit(i);
+                }
+                continue;
+            }
             if literal && !is_place_marker(k) {
                 continue;
             }
@@ -2408,6 +2441,17 @@ impl<'p, 'a> Walk<'p, 'a> {
     /// May `e` be a handle? `self`, and any value whose type may be one
     /// (a locus, an interface, a perspective, a form, a type the pass
     /// cannot place).
+    /// The keys of a locus's storage, handed as an operand of type `ty`
+    /// with keys `keys`: the operand's own (the field of `self` holding the
+    /// handle, `self.l`) and every param the locus declares, which its
+    /// methods write and a store into it replaces. `None` for no locus.
+    fn locus_storage(&self, ty: &Ty, keys: &Keys) -> Keys {
+        let l = self.p.named_locus(ty)?;
+        let Some(TopSymbol::Locus(li)) = self.p.top.lookup(&l) else { return real(keys) };
+        let params: BTreeSet<String> = li.params.iter().map(|f| f.name.clone()).collect();
+        union(real(keys), (!params.is_empty()).then_some(params))
+    }
+
     fn is_handle(&self, e: &Expr) -> bool {
         matches!(e, Expr::KwSelf(_)) || self.class(e).may_be_handle()
     }
@@ -3223,14 +3267,23 @@ impl<'p, 'a> Walk<'p, 'a> {
                 let c = call.map_or(Class::Unknown, |call| self.p.classify(self.views.expr(call)));
                 c == Class::Scalar || c.surely_handle()
             };
-            if let (None, Some(c), false) = (self.summary, &summarized, plain) {
+            // (A primitive result still names its callee: it may be a
+            // String read through a handle parameter, `hparams`.)
+            if let (None, Some(c)) = (self.summary, &summarized) {
                 let bodies = self.p.resolve(c);
                 let srcs: Vec<Src> = keys
                     .iter()
-                    .map(|k| {
+                    .zip(args.iter())
+                    .map(|(k, a)| {
                         let mut s = Src::default();
                         if let Some(ks) = k {
                             self.src_of(ks, false, &mut s);
+                        }
+                        // A handle parameter handed on whole.
+                        if let Expr::Ident(id) = a {
+                            if let (true, Some(&i)) = (self.handle_params.contains(&id.name), self.param_index.get(&id.name)) {
+                                s.hparams |= param_bit(i);
+                            }
                         }
                         s
                     })
@@ -3276,6 +3329,11 @@ impl<'p, 'a> Walk<'p, 'a> {
             let unknown_result: Keys = match &result_ty {
                 Some(rt) if !self.p.opaque(rt) => {
                     operand_tys.iter().fold(other, |acc, (k, t)| match self.p.alias(rt, t) {
+                        // A locus handed whole: what is read through it is
+                        // its storage (a free fn hands it back uncopied).
+                        Alias::Block | Alias::Leaf if self.p.named_locus(t).is_some() => {
+                            union(acc, union(markers(k), self.locus_storage(t, k)))
+                        }
                         Alias::Block => union(acc, markers(k)),
                         // a cell's leaf is still the cell's: its marker
                         Alias::Leaf => union(
@@ -3293,7 +3351,7 @@ impl<'p, 'a> Walk<'p, 'a> {
             if self.summary.is_none() && unknown {
                 result = union(result, unknown_result.clone());
             }
-            if let (Some(s), false) = (self.summary, plain) {
+            if let Some(s) = self.summary {
                 let rv = if unknown {
                     RetView { other: true, ..RetView::default() }
                 } else if let Some(c) = &summarized {
@@ -3304,6 +3362,7 @@ impl<'p, 'a> Walk<'p, 'a> {
                             other: a.other || v.other,
                             pparams: a.pparams | v.pparams,
                             pother: a.pother || v.pother,
+                            hparams: a.hparams | v.hparams,
                         }
                     })
                 } else {
@@ -3324,23 +3383,37 @@ impl<'p, 'a> Walk<'p, 'a> {
                             .collect()
                     })
                 };
-                if unknown {
-                    result = union(result, unknown_result);
-                } else if rv.other {
-                    result = union(result, union(markers(&operand_keys), at(Some("?ret".to_string()))));
-                } else {
-                    for (k, ak) in keys.iter().enumerate() {
-                        if rv.params & param_bit(k) != 0 {
-                            result = union(result, markers(ak));
+                // A primitive or a handle result: no write goes into it,
+                // but a String read through a handle parameter is the
+                // storage of the locus handed for it (below) all the same.
+                if !plain {
+                    if unknown {
+                        result = union(result, unknown_result);
+                    } else if rv.other {
+                        result = union(result, union(markers(&operand_keys), at(Some("?ret".to_string()))));
+                    } else {
+                        for (k, ak) in keys.iter().enumerate() {
+                            if rv.params & param_bit(k) != 0 {
+                                result = union(result, markers(ak));
+                            }
+                        }
+                        if rv.pother {
+                            result = union(result, as_parts(union(markers(&operand_keys), at(Some("?ret".to_string())))));
+                        }
+                        for (k, ak) in keys.iter().enumerate() {
+                            if rv.pparams & param_bit(k) != 0 {
+                                result = union(result, as_parts(markers(ak)));
+                            }
                         }
                     }
-                    if rv.pother {
-                        result = union(result, as_parts(union(markers(&operand_keys), at(Some("?ret".to_string())))));
-                    }
-                    for (k, ak) in keys.iter().enumerate() {
-                        if rv.pparams & param_bit(k) != 0 {
-                            result = union(result, as_parts(markers(ak)));
-                        }
+                }
+                // A value read through a handle parameter: the storage of
+                // the locus handed for it, which a later write into that
+                // locus (its method, a store into its field, a replace of
+                // the field holding it) replaces.
+                for (k, a) in args.iter().enumerate() {
+                    if rv.hparams & param_bit(k) != 0 {
+                        result = union(result, self.locus_storage(self.ty(a), &keys[k]));
                     }
                 }
             }

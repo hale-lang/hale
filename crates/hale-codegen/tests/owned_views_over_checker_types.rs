@@ -743,3 +743,50 @@ fn main() {
     let out = run_asan("outlives_iteration", src);
     assert_eq!(out, "OLD VALUE LONG ENOUGH\n".repeat(6));
 }
+
+/// A free fn's result read through a locus handle parameter is that
+/// locus's storage (`fn get(l: L) -> String { return l.name; }`): the
+/// summary marks the result as a part of the handle parameter, and the
+/// call site binds it as a view of the storage of the locus it hands
+/// (`self.l`'s, a local handle's), so `rename()` after the binding copies
+/// it. It returned the renamed value on main: called directly, through a
+/// fn value, and from `main` on a local handle.
+#[test]
+fn a_free_fns_result_read_through_a_handle_is_that_locuss_storage() {
+    let src = r#"
+locus L {
+    params { name: String = std::str::upper("old name long enough"); }
+    fn rename() { self.name = std::str::upper("new name long enough"); }
+}
+fn get(l: L) -> String { return l.name; }
+locus H {
+    params { l: L = L { }; }
+    fn probe() -> String {
+        let s = get(self.l);
+        self.l.rename();
+        return s;
+    }
+    fn via_value() -> String {
+        let g = get;
+        let s = g(self.l);
+        self.l.rename();
+        return s;
+    }
+}
+fn main() {
+    let h = H { };
+    println(h.probe());
+    let k = H { };
+    println(k.via_value());
+    let l = L { };
+    let s = get(l);
+    l.rename();
+    println(s);
+}
+    "#;
+    let owned = owned_of(src);
+    assert!(owned.contains("probe.s"), "the binding of get(self.l) is owned: {owned:?}");
+    assert!(owned.contains("main.s"), "the binding of get(l) is owned: {owned:?}");
+    let out = run_asan("handle_result", src);
+    assert_eq!(out, "OLD NAME LONG ENOUGH\n".repeat(3));
+}
