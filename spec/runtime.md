@@ -225,7 +225,11 @@ the model: runtime is automatic; stdlib is explicit.
   `epoll_wait(-1)` (the condvar broadcast can't), so the worker
   returns from the drain and the join completes instead of
   hanging. The parked coros are then *abandoned* — their stacks
-  freed without resuming them — because a forever-loop `run()`
+  freed without resuming them, and a bus handler's delivery released
+  with them (its payload buffer and the per-delivery region its
+  strings were deserialized into, which has no parent arena to reclaim
+  it; GH #1565: a served call parked in its handler at the drain leaked
+  both) — because a forever-loop `run()`
   (`while true { accept }`) cannot be cooperatively unwound
   without the loop checking `self.draining` (a future
   refinement), and the process is exiting anyway. Per-child
@@ -778,6 +782,57 @@ must receive bus traffic while busy should yield in its loop.
 Cross-binary flows (unix / shm_ring with their own reader
 threads) land in `g_bus_queue` and benefit from the sleep-folded
 drain above.
+
+#### Cross-pool backstop (GH #1566)
+
+F.31 (spec/types.md § "Single-threaded-method invariant (F.31)") is
+checked statically where the checker's walk follows a handle; the
+runtime enforces it at every other site. Each locus instance carries
+the domain it was built on (`__domain`, from the thread-local
+`lotus_domain_now`: main's token, a cooperative pool's worker's pool,
+a pinned locus's own thread; a pinned or pool-placed root takes its
+own thread's at its init there; an instance a holder adopts — a
+locus-typed field filled from a local or a parameter — takes, with
+every child it owns, the domain the holder runs on, `__xpool_restamp_<L>`
+walking its owned fields). At a store into a locus's field from
+outside its methods whose slot is no inline scalar, and at a method
+call on a locus reached any way but down `self` — or down `self`
+through a field some literal or store hands an instance built elsewhere
+(`Routes { w: self.a }`, `h.w = x`), which the checker's per-instance
+answer does not cover — the compiled code compares the receiver's
+`__domain` with `lotus_domain_now`: one load and a compare, the
+mismatch side cold. A mismatch where both domains
+are known is a violation: `lotus_cross_pool_check_failed` prints the
+site (`file:line:col`; a build handed no source table prints none),
+the store or call, and both pools —
+
+    main.hl:8:9: violation: cross-pool store into `W.name` from pool `io`; this `W` runs on pool `main`: reach it through a method on the bus (spec/types.md § "Single-threaded-method invariant (F.31)")
+
+— on stderr and exits 1, like the runtime's other violations, before
+the store or the call runs. A thread that runs no locus code has no
+domain (0) and is not checked; neither is a receiver whose form
+synchronizes cross-domain access (`sync = serialized | striped |
+lockfree`), or a local bound to a locus literal the running code built
+and never rebound. Code the runtime runs off its instance's domain on
+purpose runs as that domain: every locus's `drain()` and `dissolve()`
+set `lotus_domain_now` to the instance's `__domain` for their duration
+(a pool-placed root's run on main after its pool joined), and an
+`on_failure` handler reaches its failed child's domain for its duration
+(`lotus_domain_also`: the child is stopped while its owner's handler
+runs, so its subtree is as safe as its slot). What a `bindings { }` entry
+builds — an adapter, a transport, a codec — belongs to no one domain:
+the runtime calls an adapter's `send` from every publishing thread
+through a function pointer, by design, so it and what its params build
+carry domain 0, and its own thread takes none. wasm32 has one thread
+and no check. A call through an interface is checked on the locus behind it:
+its vtable carries that locus's `__domain` offset after the methods.
+The site's location comes from the line table `hale build` emits, or,
+for `hale run` and `hale test`, from the source table they hand the
+build (`BuildOptions::site_sources`) without DWARF. No user turns the
+check off: `BuildOptions::no_xpool_backstop` is a test-harness option
+only (no variable or flag sets it), for the fixtures that drive the
+off-domain failure delivery through an escape the checker does not
+follow; it is part of the build identity.
 
 #### Long-running cooperative children: placement closes Item D
 
@@ -2339,11 +2394,24 @@ its `KNOWN_OPEN` table, which is empty today.
   subject — the root's, a cooperative node's, an anchor's (it registers
   on the instantiating thread), a node's an anchor's params build in
   the init its own thread or its pool's worker runs while the
-  instantiating thread waits (the init reads the scope through its
-  argument block), a keyed subscription's, its key applied — then
+  instantiating thread waits, an anchor among them included, whose own
+  params are built in an init of that init, at any depth (each init
+  reads the scope through its argument block, from the function that
+  starts it; #1555), each of a replicated field's (`replicas = K`) K
+  instances, an anchor apiece, a keyed subscription's, its key applied
+  (`where key == replica` claims its own replica's shard) — then
   claims its copy
   (`lotus_bus_reserve_claim`), ahead of what its window holds, and its
-  readiness delivers it after its `birth()`. The last expected claim
+  readiness delivers it after its `birth()`. A wildcard (`**`)
+  subscription is reserved under its own pattern: the placeholder
+  registers the pattern, so it holds every publish whose subject the
+  pattern matches, as the subscription itself would take it, a
+  computed subject sent under a publisher's declared pattern included,
+  and the claimant's bound is over all of them, as its queue's is. It
+  is reserved where a node's declared publish, a subject or a pattern,
+  can name a subject the pattern matches. A subscriber of a concrete
+  subject the pattern also covers claims from that subject's own
+  reservation, so each claimant takes each cell once (#1555). The last expected claim
   closes the reservation, and the root's `birth()` closes what is left
   (`lotus_bus_reserve_end`); so does any exit that leaves the
   construction part-way (an initializer's propagated failure: the scope
@@ -2370,12 +2438,7 @@ its `KNOWN_OPEN` table, which is empty today.
   not see the drain. A tree that needs no reservation emits none, and the publish
   site is unchanged: a reservation holds a window open, so a baked
   direct publish takes the helper through the window count it already
-  reads. Not yet true: an anchor nested in another anchor's params
-  builds its own params in an init of that init, and a subscriber there
-  claims nothing, so what an earlier part of the tree published before
-  it registered reaches no subscription of it; nor does a replicated
-  field's (`replicas = K`) instance. Not yet true
-  in two further cases (inventory rows C51
+  reads. Not yet true in two cases (inventory rows C51
   and R51). A subscribing locus that only stdlib or imported code
   builds, so that the lifecycle plan holds no template of it, opens
   no window, and what is published to it during its `birth()` is

@@ -318,7 +318,7 @@ fn __bench_drive_{b}() {{
     // Release profile on purpose: benchmarks measure the shipped
     // optimization level. A check that reports an error blocks the
     // view, and is the failure; a warning is not printed.
-    let view = snap.demand_lowering().map_err(|b| render_blocked(b, file_bases, sources))?;
+    let view = snap.demand_lowering().map_err(|b| render_blocked(b, snap.demangler(), file_bases, sources))?;
     hale_codegen::build_resolved(view, &bin, &options)
         .map_err(|e| render_codegen_error(&e, file_bases, sources))?;
 

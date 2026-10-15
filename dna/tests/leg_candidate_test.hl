@@ -85,7 +85,7 @@ locus App {
     fn commit(script: String) -> String {
         self.clones = self.clones + 1;
         let dir = self.scratch + "/leg" + to_string(self.clones);
-        let cloned = dna::run_tool("git\nclone\n--quiet\n" + self.repo + "\n" + dir);
+        let cloned = dna::clone_repo(self.repo, dir);
         std::test::assert_eq_int(cloned.code, 0, "a clone: " + cloned.stderr);
         let made = sh(dir, script + " && git add -A && git -c user.name=legs -c user.email=legs@dna commit -q -m change");
         std::test::assert_eq_int(made.code, 0, "the leg commits: " + made.stderr);

@@ -6,13 +6,23 @@
 //! a program that holds one buildable. For each well-formed site it adds,
 //! as `api_gen` does for the structural path, source the compiler writes:
 //!
-//! - on the serving locus, a param `__rpc_x_<as>: std::api::Exposure`
-//!   built from the site (its surface, digest, bound, transport instance,
-//!   the rows adapter below, the bearer and role sources copied from the
-//!   transport's fields), declared last, so the exposure is born with the
-//!   locus after the receivers and the transport it reads. The
-//!   `api::serve(…)` call itself stays in the body: the check types it as
-//!   that exposure and lowering reads the param (`lower_serve_site`);
+//! - the exposure param itself (GH #1565: `web: api::Exposure =
+//!   api::serve(…);`, a param of the locus that holds it) gets the
+//!   exposure as its init, `std::api::Exposure { … }` built from the site
+//!   (its surface, digest, bound, transport instance, the rows adapter
+//!   below, the bearer and role sources copied from the transport's
+//!   fields); the call as written is kept beside it (`ParamDecl::serve`)
+//!   for the serve-site laws and the description;
+//! - for a socket transport, its listener: a param of the main locus,
+//!   born just before the exposure when main holds it, just after the
+//!   param a server below main sits under otherwise (reading its address
+//!   off the server as built, `address_for_main`), placed by the
+//!   exposure's own row when the
+//!   main locus holds it, by the row of the param that holds its holder
+//!   otherwise, when either puts it on a pool `where async_io`, and on the
+//!   transport's shared pool (`__api_http`, `__api_unix`, `__api_grpc`)
+//!   when neither does; and, for a main locus that writes no `run()`, the
+//!   run that waits until its exposures stop;
 //! - a top-level locus `__RpcSurface_<n>` implementing
 //!   `std::api::Surface`: the rows as if-chains (member lookup, `requires`,
 //!   receiver slot, decoding by shape, the roles that confer a role);
@@ -56,12 +66,6 @@ pub struct Expansion {
     pub param: String,
 }
 
-/// The param a serve site's exposure is, by its `as:`.
-pub fn exposure_param(name: &str) -> String {
-    let safe: String = name.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '_' }).collect();
-    format!("__rpc_x_{safe}")
-}
-
 /// One row of a surface, as the pass reads it.
 #[derive(Debug, Clone)]
 struct Row {
@@ -82,10 +86,16 @@ struct Row {
 struct Site {
     program: usize,
     serving: String,
+    /// The exposure param that declares it.
+    param: String,
     surface: String,
     transport: Option<Expr>,
     name: String,
     bound: i64,
+    /// For a holder that is not a main locus and serves over a socket: each
+    /// main locus that holds it, the chain, and the listener's address as
+    /// that main locus evaluates it.
+    chains: Vec<(Chain, Expr)>,
 }
 
 fn lit_int(n: i64, span: Span) -> Expr {
@@ -919,7 +929,7 @@ fn resolve_imported_surfaces(programs: &mut [&mut Program], renames: &[(Vec<Stri
         for p in &ro {
             for d in flat_decls(&p.items) {
                 let TopDecl::Locus(l) = d else { continue };
-                for site in crate::surfaces::locus_serve_sites(l) {
+                for (_, site) in crate::surfaces::locus_serve_sites(l) {
                     let Expr::Path(qn) = site.surface else { continue };
                     let [alias, name] = qn.segments.as_slice() else { continue };
                     if let Some(s) = imported_surface(&ro, renames, &alias.name, &name.name) {
@@ -943,11 +953,38 @@ fn resolve_imported_surfaces(programs: &mut [&mut Program], renames: &[(Vec<Stri
         hale_syntax::ast::for_each_decl_mut(&mut p.items, &mut |d| {
             let TopDecl::Locus(l) = d else { return };
             for m in &mut l.members {
-                match m {
-                    LocusMember::Lifecycle(lc) => crate::surfaces::serve_surfaces_in_mut(&mut lc.body, &mut rewrite),
-                    LocusMember::Fn(f) => crate::surfaces::serve_surfaces_in_mut(&mut f.body, &mut rewrite),
-                    LocusMember::Mode(md) => crate::surfaces::serve_surfaces_in_mut(&mut md.body, &mut rewrite),
-                    _ => {}
+                if let LocusMember::Params(pb) = m {
+                    for p in &mut pb.params {
+                        if let ParamInit::Value(e) = &mut p.init {
+                            crate::surfaces::serve_surface_mut(e, &mut rewrite);
+                        }
+                    }
+                }
+            }
+        });
+    }
+}
+
+/// An exposure param is typed `api::Exposure` as its author writes it, the
+/// runtime's `std::api::Exposure`: spelled so here, whether or not the site
+/// is built, so a site the laws refuse is refused for what it is.
+fn type_exposure_params(programs: &mut [&mut Program]) {
+    for p in programs.iter_mut() {
+        hale_syntax::ast::for_each_decl_mut(&mut p.items, &mut |d| {
+            let TopDecl::Locus(l) = d else { return };
+            for m in &mut l.members {
+                let LocusMember::Params(pb) = m else { continue };
+                for p in &mut pb.params {
+                    if crate::surfaces::param_serve_site(p).is_none() {
+                        continue;
+                    }
+                    if let Some(TypeExpr::Named { path, .. }) = &mut p.ty {
+                        let short = path.segments.len() == 2 && path.segments[0].name == "api" && path.segments[1].name == "Exposure";
+                        if short {
+                            let sp = path.segments[0].span;
+                            path.segments.insert(0, Ident::new("std", sp));
+                        }
+                    }
                 }
             }
         });
@@ -961,6 +998,7 @@ pub fn expand(
     default_surface: &str,
 ) -> Vec<Expansion> {
     resolve_imported_surfaces(programs, renames);
+    type_exposure_params(programs);
     if mentions_tcp_serve(programs) {
         inject_tcp_serve(programs);
     }
@@ -1033,7 +1071,7 @@ pub fn expand(
         for (pi, p) in ro.iter().enumerate() {
             for d in flat_decls(&p.items) {
                 let TopDecl::Locus(l) = d else { continue };
-                for site in crate::surfaces::locus_serve_sites(l) {
+                for (param, site) in crate::surfaces::locus_serve_sites(l) {
                     let surface = match site.surface {
                         Expr::Ident(i) => i.name.clone(),
                         Expr::Path(qn) => qn.segments.iter().map(|s| s.name.as_str()).collect::<Vec<_>>().join("::"),
@@ -1063,10 +1101,20 @@ pub fn expand(
                     if !seen_names.insert(name.clone()) {
                         continue;
                     }
-                    if l.members.iter().any(|m| {
-                        matches!(m, LocusMember::Params(pb)
-                            if pb.params.iter().any(|p| p.name.name == exposure_param(name)))
-                    }) {
+                    // built already (the sequence runs again over its own output)
+                    if param.serve.is_some() {
+                        continue;
+                    }
+                    // the param is the exposure: typed as one, or the law says so
+                    let typed = match &param.ty {
+                        None => true,
+                        Some(TypeExpr::Named { path, .. }) => {
+                            let segs: Vec<&str> = path.segments.iter().map(|s| s.name.as_str()).collect();
+                            segs == ["std", "api", "Exposure"]
+                        }
+                        Some(_) => false,
+                    };
+                    if !typed {
                         continue;
                     }
                     let rows = rows_of_surface(&ro, &surface, renames, default_surface);
@@ -1090,9 +1138,7 @@ pub fn expand(
                     let mut fields: Vec<String> = Vec::new();
                     let mut ok = true;
                     for ty in &slots {
-                        let bound_here = site.receivers().iter().find(|i| {
-                            i.name.name == *ty || i.name.name.rsplit("::").next().is_some_and(|t| t == ty.as_str())
-                        });
+                        let bound_here = site.receivers().iter().find(|i| crate::surfaces::binds_type(i, ty, &params));
                         let field = match bound_here {
                             Some(i) => crate::surfaces::self_field(&i.value).map(str::to_string),
                             None => {
@@ -1122,6 +1168,42 @@ pub fn expand(
                     }
                     if !ok {
                         continue;
+                    }
+                    // the exposure is born after the receivers it binds: each
+                    // is a param declared before it (the law reports one after)
+                    let order: Vec<&str> = params_in_order(l).into_iter().map(|(p, _)| p.name.name.as_str()).collect();
+                    let at = |f: &str| order.iter().position(|p| *p == f);
+                    let me = at(&param.name.name);
+                    if fields.iter().any(|f| at(f) >= me) {
+                        continue;
+                    }
+                    // a socket's listener is the main locus's: a holder that is
+                    // not one is held by exactly one chain of params from each
+                    // main locus that holds it, its address readable there
+                    let mut chains: Vec<(Chain, Expr)> = Vec::new();
+                    if !l.is_main && has_listener(l, Some(transport)) {
+                        let found = holder_chains(&loci, &l.name.name);
+                        let mains: BTreeSet<&str> = found.iter().map(|c| c.main.as_str()).collect();
+                        let once = mains.len() == found.len()
+                            && found.iter().all(|c| {
+                                loci.get(c.main.as_str())
+                                    .and_then(|m| placement_entry(m, &c.fields[0].1))
+                                    .is_none_or(|e| entry_replicas(e) <= 1)
+                            });
+                        if found.is_empty() || !once {
+                            continue;
+                        }
+                        let Some(addr) = listener_address(l, Some(transport)) else { continue };
+                        let mut ok = true;
+                        for c in found {
+                            match address_for_main(&c, &addr) {
+                                Ok(a) => chains.push((c, a)),
+                                Err(_) => ok = false,
+                            }
+                        }
+                        if !ok {
+                            continue;
+                        }
                     }
                     // the sources: the transport literal's fields, or the
                     // literal of the param the transport names
@@ -1178,10 +1260,12 @@ pub fn expand(
                         site: Site {
                             program: pi,
                             serving: l.name.name.clone(),
+                            param: param.name.name.clone(),
                             surface,
                             transport: Some(fresh(transport)),
                             name: name.clone(),
                             bound: *bound,
+                            chains,
                         },
                         rows,
                         digest,
@@ -1259,11 +1343,14 @@ pub fn expand(
             surface: site.surface.clone(),
             digest: plan.digest,
             serving: site.serving.clone(),
-            param: exposure_param(&site.name),
+            param: site.param.clone(),
         });
     }
 
-    // ---- mutate: the serving loci ----
+    // ---- mutate: the holders ----
+    // the main loci a listener was added to, each with the exposures (by
+    // their path from it) a main that writes no `run()` serves until stopped
+    let mut waits: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for (i, plan) in plans.iter().enumerate() {
         let id = i as i64 + 1;
         let site = &plan.site;
@@ -1271,20 +1358,25 @@ pub fn expand(
         let program = &mut *programs[site.program];
         let Some(l) = find_locus_mut(&mut program.items, &site.serving) else { continue };
         let span = l.name.span;
-        // A TCP listener the compiler adds below (the main locus's, over
-        // http / mcp / grpc) is born before the exposure, and the exposure
-        // states the address it was bound to: its name, `host:<bound
-        // port>`, so a `bind:` of port 0 is described by the port the
-        // kernel gave it. A Unix path is bound as written, and a listener
-        // the compiler does not add states its `bind:` as written.
-        let bound_listener = (l.is_main
-            && unix_path_of(l, site.transport.as_ref()).is_none()
-            && http_bind_of(l, site.transport.as_ref()).is_some())
-        .then(|| {
-            let kind = if is_grpc_site(l, site.transport.as_ref()) { "g" } else { "h" };
-            format!(", address: std::str::clone(self.__rpc_{kind}_{id}.listener)")
-        });
-        // the exposure param
+        let transport = site.transport.as_ref();
+        let unix_path = unix_path_of(l, transport);
+        let http_bind = if unix_path.is_none() { http_bind_of(l, transport) } else { None };
+        let grpc = is_grpc_site(l, transport);
+        let mcp = is_mcp_site(l, transport);
+        let is_main = l.is_main;
+        // A TCP listener the compiler adds (over http / mcp / grpc) states
+        // the address it was bound to, its name, `host:<bound port>`, so a
+        // `bind:` of port 0 is described by the port the kernel gave it. The
+        // main locus's own exposure reads it off its listener, born before
+        // it. A holder below main is built before its listener (the listener
+        // reads the address off the holder as built), so its exposure starts
+        // from the `bind:` as written and is told the bound name by its
+        // transport when the listener first asks for it (`RpcEvent` kind 7).
+        // A Unix path is bound as written.
+        let kind = if grpc { "g" } else { "h" };
+        let bound_listener =
+            (http_bind.is_some() && is_main).then(|| format!(", address: std::str::clone(self.__rpc_{kind}_{id}.listener)"));
+        // the exposure: the param as declared, its init the exposure it builds
         let src = format!(
             "main locus __Tmp {{ params {{ {param}: std::api::Exposure = std::api::Exposure {{ id: {id}, name: {name}, surface: {surface}, digest: {digest}, bound: {bound}, rows: __RpcSurface_{id} {{ }}{address} }}; }} }}\n",
             address = bound_listener.as_deref().unwrap_or(""),
@@ -1295,15 +1387,15 @@ pub fn expand(
             digest = q(&hale_model::surface::digest_text(plan.digest)),
             bound = site.bound,
         );
-        let Some(mut param) = parse_params(&src) else { continue };
-        if let ParamInit::Value(Expr::Struct { inits, .. }) = &mut param.init {
+        let Some(mut generated) = parse_params(&src) else { continue };
+        if let ParamInit::Value(Expr::Struct { inits, .. }) = &mut generated.init {
             let mut push = |name: &str, value: Expr| {
                 inits.push(StructInit { name: Ident::new(name, span), value, span });
             };
-            if let Some(t) = &site.transport {
+            if let Some(t) = transport {
                 push("transport", as_stdlib_unix(t, id, &site.surface, &plan.files));
                 if bound_listener.is_none() {
-                    if let Some(addr) = unix_path_of(l, site.transport.as_ref()).or_else(|| http_bind_of(l, site.transport.as_ref())) {
+                    if let Some(addr) = unix_path.clone().or_else(|| http_bind.clone()) {
                         push("address", addr);
                     }
                 }
@@ -1323,43 +1415,43 @@ pub fn expand(
                 }
             }
         }
-        if let Some(LocusMember::Params(pb)) = l.members.iter_mut().find(|m| matches!(m, LocusMember::Params(_))) {
-            pb.params.push(param);
-        } else {
-            l.members.push(LocusMember::Params(hale_syntax::ast::ParamsBlock { params: vec![param], span }));
+        for m in l.members.iter_mut() {
+            let LocusMember::Params(pb) = m else { continue };
+            for p in pb.params.iter_mut().filter(|p| p.name.name == exposure.param) {
+                let ParamInit::Value(call) = std::mem::replace(&mut p.init, generated.init.clone()) else { continue };
+                p.serve = Some(Box::new(call));
+                p.ty = generated.ty.clone();
+            }
         }
-        // a Unix transport's listener: a param of the serving locus born
-        // after the authored params its path may read, and before the
-        // exposure (so it is subscribed when the exposure attaches), placed on a
-        // pool of its own
-        if l.is_main {
-            let unix_path = unix_path_of(l, site.transport.as_ref());
-            let http_bind = if unix_path.is_none() { http_bind_of(l, site.transport.as_ref()) } else { None };
-            let listener = match (unix_path, http_bind) {
-                (Some(path), _) => parse_unix_listener(id, path, span),
-                (None, Some(bind)) if is_grpc_site(l, site.transport.as_ref()) => parse_grpc_listener(id, bind, span),
-                (None, Some(bind)) => parse_http_listener(id, bind, is_mcp_site(l, site.transport.as_ref()), span),
+        // the listener of a socket transport: a param of the main locus,
+        // born after the authored params its address may read and before
+        // what serves through it (so it is subscribed when the exposure
+        // attaches), on the pool its placement row names
+        let listener_for = |bind: Expr| -> Option<(ParamDecl, hale_syntax::ast::PlacementEntry)> {
+            match (&unix_path, &http_bind) {
+                (Some(_), _) => parse_unix_listener(id, bind, span),
+                (None, Some(_)) if grpc => parse_grpc_listener(id, bind, span),
+                (None, Some(_)) => parse_http_listener(id, bind, mcp, span),
                 (None, None) => None,
-            };
-            {
-                if let Some((lp, entry)) = listener {
-                    if let Some(LocusMember::Params(pb)) = l.members.iter_mut().find(|m| matches!(m, LocusMember::Params(_))) {
-                        // after every authored param (the address may read one),
-                        // before the exposure just pushed
-                        let at = pb.params.iter().position(|p| p.name.name == exposure_param(&site.name)).unwrap_or(pb.params.len());
-                        pb.params.insert(at, lp);
-                    }
-                    if let Some(LocusMember::Placement(pl)) = l.members.iter_mut().find(|m| matches!(m, LocusMember::Placement(_))) {
-                        pl.entries.push(entry);
-                    } else {
-                        l.members.push(LocusMember::Placement(hale_syntax::ast::PlacementBlock { entries: vec![entry], span }));
-                    }
-                }
+            }
+        };
+        let field_of = |lp: &ParamDecl| lp.name.name.clone();
+        if is_main {
+            if let Some((lp, default_entry)) = unix_path.clone().or_else(|| http_bind.clone()).and_then(listener_for) {
+                let field = field_of(&lp);
+                insert_param_before(l, lp, &exposure.param);
+                // the exposure's own row places its listener (and the
+                // connections it starts); the exposure stays with its
+                // holder, beside the sources it calls. A row that cannot
+                // host a listener is left for the law to refuse.
+                let row = take_listener_row(l, &exposure.param);
+                push_placement(l, rename_entry(row, &field).unwrap_or(default_entry), span);
+                waits.entry(l.name.name.clone()).or_default().push(exposure.param.clone());
             }
         }
         // a Unix transport the serving locus holds as a param is numbered
         // in the literal that builds it, as one written in the call is
-        if let Some(f) = site.transport.as_ref().and_then(|t| crate::surfaces::self_field(t)) {
+        if let Some(f) = transport.and_then(|t| crate::surfaces::self_field(t)) {
             for m in l.members.iter_mut() {
                 if let LocusMember::Params(pb) = m {
                     for p in pb.params.iter_mut().filter(|p| p.name.name == f) {
@@ -1377,6 +1469,61 @@ pub fn expand(
             let key = id * 100 + slot as i64;
             let key_param = format!("__rpc_s_{id}");
             inject_key(l, field, &key_param, key, span);
+        }
+        // a holder below a main locus: each main locus that holds it gets
+        // the listener, after the param the chain starts at (so its address
+        // is read off the holder as every construction built it), on the
+        // pool that param's row names when a listener can run there, else
+        // the transport's shared pool
+        for (chain, addr) in &site.chains {
+            let Some((lp, default_entry)) = listener_for(addr.clone()) else { continue };
+            let field = field_of(&lp);
+            let root = chain.fields[0].1.clone();
+            let mut placed = false;
+            for p in programs.iter_mut() {
+                let Some(main) = find_locus_mut(&mut p.items, &chain.main) else { continue };
+                let entry = placement_entry(main, &root)
+                    .filter(|e| hosts_listener(e))
+                    .and_then(|e| rename_entry(Some(e.clone()), &field))
+                    .unwrap_or(default_entry.clone());
+                // as early in main's birth as the address allows: before the
+                // param the server sits under when the address reads nothing
+                // of the server (no run of a child born before it can hold
+                // it back), just after it when it reads the server as built
+                if reads_holder(addr) {
+                    insert_param_after(main, lp.clone(), &root);
+                } else {
+                    insert_param_before(main, lp.clone(), &root);
+                }
+                let mspan = main.name.span;
+                push_placement(main, entry, mspan);
+                placed = true;
+                break;
+            }
+            if placed {
+                let path = format!("{}.{}", chain.path(), exposure.param);
+                waits.entry(chain.main.clone()).or_default().push(path);
+            }
+        }
+    }
+
+    // ---- a main locus that writes no `run()` serves until its exposures stop ----
+    // (spec/api.md § Serving): the run it is given waits, as `h.wait()` does,
+    // until every exposure whose listener it holds has stopped or the
+    // process drains
+    for (main, paths) in &waits {
+        for p in programs.iter_mut() {
+            let Some(m) = find_locus_mut(&mut p.items, main) else { continue };
+            let has_run = m.members.iter().any(|x| matches!(x, LocusMember::Lifecycle(lc) if lc.kind == LifecycleKind::Run));
+            if !has_run {
+                let open: Vec<String> = paths.iter().map(|x| format!("!self.{x}.stopped")).collect();
+                let src = format!(
+                    "main locus __Tmp {{ run() {{ while !self.draining && ({}) {{ std::time::__idle_wait(100ms); }} }} }}\n",
+                    open.join(" || ")
+                );
+                m.members.extend(parse_members(&src));
+            }
+            break;
         }
     }
 
@@ -1661,6 +1808,63 @@ fn parse_unix_listener(id: i64, path: Expr, span: Span) -> Option<(ParamDecl, ha
         inits.push(StructInit { name: Ident::new("path", span), value: path, span });
     }
     Some((param, entry?))
+}
+
+/// Insert `param` into `l`'s params at the param `at` names, in whichever
+/// of the locus's params blocks declares it (offset 0 before it, 1 after
+/// it), or at the end of the first block when none does.
+fn insert_param_at(l: &mut LocusDecl, param: ParamDecl, name: &str, offset: usize) {
+    let span = l.name.span;
+    let holder = l.members.iter().position(|m| matches!(m, LocusMember::Params(pb) if pb.params.iter().any(|p| p.name.name == name)));
+    let first = l.members.iter().position(|m| matches!(m, LocusMember::Params(_)));
+    match holder.or(first) {
+        Some(i) => {
+            let LocusMember::Params(pb) = &mut l.members[i] else { return };
+            let at = pb.params.iter().position(|p| p.name.name == name).map_or(pb.params.len(), |i| i + offset);
+            pb.params.insert(at, param);
+        }
+        None => l.members.push(LocusMember::Params(hale_syntax::ast::ParamsBlock { params: vec![param], span })),
+    }
+}
+
+/// Insert `param` into `l`'s params just before the param `before`.
+fn insert_param_before(l: &mut LocusDecl, param: ParamDecl, before: &str) {
+    insert_param_at(l, param, before, 0);
+}
+
+/// Insert `param` into `l`'s params just after the param `after`.
+fn insert_param_after(l: &mut LocusDecl, param: ParamDecl, after: &str) {
+    insert_param_at(l, param, after, 1);
+}
+
+/// Take `field`'s placement row out of `l`'s placement block when it puts
+/// the field where a listener can run; a row that cannot is left for the
+/// serve-site law to refuse.
+fn take_listener_row(l: &mut LocusDecl, field: &str) -> Option<hale_syntax::ast::PlacementEntry> {
+    for m in l.members.iter_mut() {
+        let LocusMember::Placement(pb) = m else { continue };
+        let at = pb.entries.iter().position(|e| e.field.name == field && hosts_listener(e))?;
+        return Some(pb.entries.remove(at));
+    }
+    None
+}
+
+/// A placement row moved to another field: its spec and constraints, the
+/// field's name.
+fn rename_entry(e: Option<hale_syntax::ast::PlacementEntry>, field: &str) -> Option<hale_syntax::ast::PlacementEntry> {
+    let mut e = e?;
+    e.field = Ident::new(field, e.field.span);
+    e.id = hale_syntax::ast::NodeId::NONE;
+    Some(e)
+}
+
+/// Append a placement row to `l`'s placement block, making one if it has none.
+fn push_placement(l: &mut LocusDecl, entry: hale_syntax::ast::PlacementEntry, span: Span) {
+    if let Some(LocusMember::Placement(pl)) = l.members.iter_mut().find(|m| matches!(m, LocusMember::Placement(_))) {
+        pl.entries.push(entry);
+    } else {
+        l.members.push(LocusMember::Placement(hale_syntax::ast::PlacementBlock { entries: vec![entry], span }));
+    }
 }
 
 fn parse_params(src: &str) -> Option<ParamDecl> {
@@ -2160,6 +2364,189 @@ fn thunk_steps(row: &Row, slot: usize, wire: Wire<'_>) -> String {
     s
 }
 
+
+// ---- the holder of an exposure, and the main locus that places its listener (GH #1565) ----
+
+/// One way a main locus holds a locus: the params from the main locus down
+/// to it, each the locus that declares the param and the param.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Chain {
+    pub main: String,
+    /// `(owner, field)`, the main locus's first; the last field is the held
+    /// locus.
+    pub fields: Vec<(String, String)>,
+}
+
+impl Chain {
+    /// The fields as a path from the main locus: `admin.server`.
+    pub(crate) fn path(&self) -> String {
+        self.fields.iter().map(|(_, f)| f.as_str()).collect::<Vec<_>>().join(".")
+    }
+}
+
+/// Every locus the programs declare, by name.
+pub(crate) fn loci_by_name<'a>(programs: &[&'a Program]) -> BTreeMap<&'a str, &'a LocusDecl> {
+    let mut loci = BTreeMap::new();
+    for p in programs {
+        for d in flat_decls(&p.items) {
+            if let TopDecl::Locus(l) = d {
+                loci.insert(l.name.name.as_str(), l);
+            }
+        }
+    }
+    loci
+}
+
+/// The params of a locus in declaration order, each its name and its type
+/// as written (the declared type, or the path of its literal).
+fn params_in_order(l: &LocusDecl) -> Vec<(&ParamDecl, Option<String>)> {
+    let types = crate::surfaces::param_types(l);
+    l.members
+        .iter()
+        .filter_map(|m| match m {
+            LocusMember::Params(pb) => Some(pb.params.iter()),
+            _ => None,
+        })
+        .flatten()
+        .map(|p| (p, types.get(&p.name.name).cloned()))
+        .collect()
+}
+
+/// Every chain by which a main locus holds `holder` through its params and
+/// theirs: the placed tree, which only a main locus roots.
+pub(crate) fn holder_chains(loci: &BTreeMap<&str, &LocusDecl>, holder: &str) -> Vec<Chain> {
+    fn walk<'a>(
+        loci: &BTreeMap<&str, &'a LocusDecl>,
+        l: &'a LocusDecl,
+        holder: &str,
+        main: &str,
+        path: &mut Vec<(String, String)>,
+        on: &mut BTreeSet<String>,
+        out: &mut Vec<Chain>,
+    ) {
+        if path.len() >= 16 {
+            return;
+        }
+        for (p, ty) in params_in_order(l) {
+            let Some(ty) = ty else { continue };
+            path.push((l.name.name.clone(), p.name.name.clone()));
+            if ty == holder {
+                out.push(Chain { main: main.to_string(), fields: path.clone() });
+            } else if let Some(child) = loci.get(ty.as_str()) {
+                if !child.is_main && on.insert(ty.clone()) {
+                    walk(loci, child, holder, main, path, on, out);
+                    on.remove(&ty);
+                }
+            }
+            path.pop();
+        }
+    }
+    let mut out = Vec::new();
+    for (name, l) in loci {
+        if !l.is_main || *name == holder {
+            continue;
+        }
+        let mut on = BTreeSet::from([name.to_string()]);
+        walk(loci, l, holder, name, &mut Vec::new(), &mut on, &mut out);
+    }
+    out
+}
+
+/// The placement entry a main locus writes for `field`.
+pub(crate) fn placement_entry<'a>(main: &'a LocusDecl, field: &str) -> Option<&'a hale_syntax::ast::PlacementEntry> {
+    main.members.iter().find_map(|m| match m {
+        LocusMember::Placement(pb) => pb.entries.iter().find(|e| e.field.name == field),
+        _ => None,
+    })
+}
+
+/// Whether a placement entry puts its field where a listener can run: a
+/// named cooperative pool `where async_io`, the one place an accept or a
+/// read parks a coroutine instead of the thread.
+pub(crate) fn hosts_listener(e: &hale_syntax::ast::PlacementEntry) -> bool {
+    use hale_syntax::ast::{PlacementConstraint, PlacementSpec};
+    matches!(&e.spec, PlacementSpec::Cooperative { pool: Some(p), .. } if p.name != "main")
+        && e.constraints.iter().any(|c| matches!(c.kind, PlacementConstraint::AsyncIo))
+}
+
+/// How many instances a placement entry fans its field into.
+pub(crate) fn entry_replicas(e: &hale_syntax::ast::PlacementEntry) -> i64 {
+    match &e.spec {
+        hale_syntax::ast::PlacementSpec::Pinned { replicas: Some(k), .. } => *k,
+        _ => 1,
+    }
+}
+
+/// Whether an address written in a holder reads the holder (`self.bind`):
+/// then the main locus can read it only once the holder is built.
+pub(crate) fn reads_holder(e: &Expr) -> bool {
+    let mut e = e.clone();
+    let mut found = false;
+    walk_expr_mut(&mut e, &mut |x| {
+        if matches!(x, Expr::KwSelf(_)) {
+            found = true;
+        }
+    });
+    found
+}
+
+/// An exposure's listener address (`bind:`, `path:`), written in its
+/// holder, as the main locus reads it: the listener is a param of the main
+/// locus born after the param the chain starts at, so each `self.<param>`
+/// the address reads is the holder's field as its construction built it,
+/// read down the chain (`self.server.bind`), whatever literal built it (a
+/// default, or an override at a construction of the main locus). A method
+/// of `self` or `self` itself cannot be read there; the error names it.
+pub(crate) fn address_for_main(chain: &Chain, e: &Expr) -> Result<Expr, String> {
+    const MAIN_SELF: &str = "__rpc_main_self";
+    let mut out = fresh(e);
+    let mut err: Option<String> = None;
+    walk_expr_mut(&mut out, &mut |x| {
+        if err.is_some() {
+            return;
+        }
+        match x {
+            Expr::Call { callee, .. } if matches!(callee.as_ref(), Expr::Field { receiver, .. } if matches!(receiver.as_ref(), Expr::KwSelf(_))) => {
+                if let Expr::Field { name, .. } = callee.as_ref() {
+                    err = Some(format!("`self.{}(…)`, a method of the holder", name.name));
+                }
+            }
+            Expr::Field { receiver, .. } if matches!(receiver.as_ref(), Expr::KwSelf(_)) => {
+                let sp = receiver.span();
+                let mut base = Expr::Ident(Ident::new(MAIN_SELF, sp));
+                for (_, f) in &chain.fields {
+                    base = Expr::Field { receiver: Box::new(base), name: Ident::new(f, sp), span: sp };
+                }
+                *receiver = Box::new(base);
+            }
+            Expr::KwSelf(_) => err = Some("`self` itself".to_string()),
+            _ => {}
+        }
+    });
+    if let Some(e) = err {
+        return Err(e);
+    }
+    walk_expr_mut(&mut out, &mut |x| {
+        if let Expr::Ident(i) = x {
+            if i.name == MAIN_SELF {
+                *x = Expr::KwSelf(i.span);
+            }
+        }
+    });
+    Ok(out)
+}
+
+/// Whether a serve site's transport has a listener the compiler adds: a
+/// socket transport (`unix::Rpc`, `http::Rpc`, `mcp::Rpc`, `grpc::Rpc`),
+/// written at the site or held as a param of the holder.
+pub(crate) fn has_listener(l: &LocusDecl, transport: Option<&Expr>) -> bool {
+    unix_path_of(l, transport).is_some() || http_bind_of(l, transport).is_some()
+}
+
+/// The address a site's listener binds, as written in its holder.
+pub(crate) fn listener_address(l: &LocusDecl, transport: Option<&Expr>) -> Option<Expr> {
+    unix_path_of(l, transport).or_else(|| http_bind_of(l, transport))
+}
 
 // ---- the literals that build a serving locus (a construction site) ----
 

@@ -32,10 +32,10 @@ main locus Desk {
         echo: alias_test::Echo = alias_test::Echo { };
         local: Local = Local { };
         f: std::api::test::Rpc = std::api::test::Rpc { principals: self.bearer };
+        s: api::Exposure = api::serve(alias_test, self.f, as: "one", receivers: { Local: self.local }, bound: 4, on_full: refuse);
     }
 
     run() {
-        let s = api::serve(alias_test, self.f, as: "one", receivers: { Local: self.local }, bound: 4, on_full: refuse);
         let t = self.f;
 
         t.call(1, "Local::secret", "1", "t-a");

@@ -82,6 +82,11 @@ child's `run()` runs *right there* — on the same thread, before the
 next sibling is touched. So a child whose `run()` never returns
 means the params after it are never born.
 
+Defaults run in that order too: a param's default may read
+`self.x` of a param declared before it, and `hale check` refuses
+one that reads a param declared after it (or its own), which has
+not been set yet when the default runs.
+
 ```hale
 locus Server {
     run() { while true { std::time::sleep(1s); } }   // never returns
@@ -496,7 +501,10 @@ main locus App {
 and Ctrl-C (or SIGTERM) ends that wait. A `main` with no `run()`
 ends as soon as its children's loops have seen the drain. A child
 loop that never checks the flag still holds the process until it
-returns.
+returns. A `main` that serves is the exception: one that holds an
+exposure over a socket (its own param, or a server locus's below it)
+and writes no `run()` waits until those exposures are stopped or the
+process drains, as `run() { self.web.wait(); }` would ([API](./api.md)).
 
 ## The order, rule by rule
 
@@ -522,7 +530,8 @@ so nothing tears it down twice. The rules that order gives you:
   earlier sibling published from its `birth()` or `run()`, after its
   own `birth()` — the literal reserves those subscriptions before it
   builds any of its params — a pinned or pool-placed field's own
-  params included, which that field's thread builds. A subscriber
+  params included, which that field's thread builds, a placed field
+  inside them and each replica of a `replicas = K` field too. A subscriber
   built *after* the publish anywhere else — a locus a body builds
   after sending — does not hear it: build subscribers first (`hale
   check` warns where it sees the order in one body).

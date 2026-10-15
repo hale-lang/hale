@@ -1,0 +1,23 @@
+// A `match` whose every arm is a scale-less Decimal (a literal, a
+// parse, arithmetic of them) takes the scale of the place it flows
+// into, as an `if` and a block already did. `let y: Decimal<2> = match
+// n { 1 -> 1.25d, … }` was refused ("`Decimal` is not `Decimal<2>`"):
+// the arms kept plain `Decimal`'s scale 9.
+
+fn pick(n: Int) -> Decimal<2> {
+    return match n { 1 -> 1.25d, 2 -> { 2.5d }, _ -> -0.75d, };
+}
+
+fn tiny(n: Int) -> Decimal<18> {
+    return match n { 0 -> 0.1d, _ -> 0.000000000000000001d, };
+}
+
+fn main() {
+    let n = 1;
+    let y: Decimal<2> = match n { 1 -> 1.25d, _ -> 0.5d, };
+    std::test::assert_eq_str("" + y, "1.25", "a let's annotation gives the arms its scale");
+    std::test::assert_eq_str("" + pick(2), "2.5", "a block arm's tail takes it too");
+    std::test::assert_eq_str("" + pick(7), "-0.75", "and a negated literal");
+    std::test::assert_eq_str("" + tiny(3), "0.000000000000000001", "eighteen places, exact");
+    std::test::assert_eq_str("" + (y + pick(1)), "2.5", "the arms' values are of the place's type");
+}

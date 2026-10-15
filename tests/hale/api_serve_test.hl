@@ -39,11 +39,10 @@ fn app_with(held: String, sock: String, me: String, receivers: String) -> String
         + "    fn holds(p: std::api::Principal, r: String) -> Bool { return p.name == \"uid:" + me + "\"; }\n"
         + "}\n"
         + "main locus App {\n"
-        + "    params { " + held + " }\n"
+        + "    params { " + held + " h: api::Exposure = api::serve(lib, unix::Rpc { path: \"" + sock + "\", roles: Table { } }, as: \"lib\"" + receivers + ", bound: 8, on_full: refuse); }\n"
         + "    run() {\n"
-        + "        let h = api::serve(lib, unix::Rpc { path: \"" + sock + "\", roles: Table { } }, as: \"lib\"" + receivers + ", bound: 8, on_full: refuse);\n"
         + "        std::time::sleep(8s);\n"
-        + "        h.stop();\n"
+        + "        self.h.stop();\n"
         + "    }\n"
         + "}\n"
         + "fn main() { App { }; }\n";

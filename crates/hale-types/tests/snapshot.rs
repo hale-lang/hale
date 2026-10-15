@@ -201,10 +201,13 @@ locus Billing {
 }
 api Public { rpc Billing::on_verdict; }
 main locus App {
-    params { billing: Billing = Billing { }; fixture: std::api::test::Rpc = std::api::test::Rpc { }; }
+    params {
+        billing: Billing = Billing { };
+        fixture: std::api::test::Rpc = std::api::test::Rpc { };
+        public: api::Exposure = api::serve(Public, self.fixture, as: "public", receivers: { Billing: self.billing }, bound: 8, on_full: refuse);
+    }
     run() {
-        let public = api::serve(Public, self.fixture, as: "public", receivers: { Billing: self.billing }, bound: 8, on_full: refuse);
-        public.stop();
+        self.public.stop();
     }
 }
 fn main() {
@@ -300,8 +303,10 @@ fn main() {
 
 /// Review of phase 1, finding 19: the file-entry verbs mint before any
 /// desugar, and the serve expansion then copies the serve site's
-/// expressions (the socket path, `roles:`) into what it generates while
-/// the site stays. Every copy is a new site: the second mint neither
+/// expressions (the socket path, `roles:`) into what it generates. Since
+/// GH #1565 the site is an exposure param whose call the expansion keeps
+/// beside the exposure it builds (`ParamDecl::serve`), read by the laws and
+/// walked by no minter. Every copy is a new site: the second mint neither
 /// panics on a shared id nor lends a copy the original's.
 #[test]
 fn the_serve_expansion_copies_the_site_expressions_as_new_sites() {
@@ -314,10 +319,12 @@ locus Echo {
 }
 api Public { rpc Echo::on_ping; }
 main locus App {
-    params { echo: Echo = Echo { }; }
+    params {
+        echo: Echo = Echo { };
+        h: api::Exposure = api::serve(Public, unix::Rpc { path: sock(), roles: Table { } }, as: "public", receivers: { Echo: self.echo }, bound: 8, on_full: refuse);
+    }
     run() {
-        let h = api::serve(Public, unix::Rpc { path: sock(), roles: Table { } }, as: "public", receivers: { Echo: self.echo }, bound: 8, on_full: refuse);
-        h.stop();
+        self.h.stop();
     }
 }
 fn main() { App { }; }
@@ -340,9 +347,9 @@ fn main() { App { }; }
     unique.sort();
     unique.dedup();
     assert_eq!(unique.len(), after.len(), "no two sites share an id");
-    // An expression the expansion copies is two sites at one span: the
-    // site's, keeping its id, and the copy's, with an id the first mint
-    // never gave out.
+    // An expression the expansion copies is a site at its span with an id
+    // the first mint never gave out (the listener's and the exposure's
+    // copies of the path, the exposure's of `roles:`).
     for (written, text, kind) in [
         ("path: sock()", "sock()", SiteKind::Call),
         ("roles: Table { }", "Table { }", SiteKind::StructLiteral),
@@ -354,11 +361,11 @@ fn main() { App { }; }
             .filter(|s| s.kind == kind && s.span.start.0 == start)
             .map(|s| s.id.index)
             .collect();
-        assert!(at.len() >= 2, "`{text}`: the written site and a copy ({at:?})");
+        assert!(!at.is_empty(), "`{text}`: a copy ({at:?})");
         assert_eq!(
             at.iter().filter(|i| first.contains(i)).count(),
-            1,
-            "`{text}`: one site keeps the first mint's id, any copy's is fresh ({at:?}, first mint {first:?})"
+            0,
+            "`{text}`: every copy's id is fresh ({at:?}, first mint {first:?})"
         );
     }
 }

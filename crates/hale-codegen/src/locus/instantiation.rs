@@ -301,11 +301,20 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // stood back, so nobody reclaimed it. The table decided the
         // receiver and the field's value separately when it walked the
         // initialiser.
-        let parent_owns_via_field = matches!(
-            site_owner,
-            crate::ownership::Owner::Field { .. }
-                | crate::ownership::Owner::Placement(_)
-        );
+        // A locus literal an array (or tuple) param value holds, built in
+        // a pool-placed root's init job: the job's frame is gone once its
+        // params are, so the element lives in its owner's arena, as a
+        // field's child does (GH #1566: `cs: [C; 2] = [C { }, C { }]`
+        // read in `dissolve()` was a dead stack slot).
+        let held_by_composite_param = self.pool_init_composite_param
+            && self.current_arena_override.is_some()
+            && matches!(site_owner, crate::ownership::Owner::FrameTemp(_));
+        let parent_owns_via_field = held_by_composite_param
+            || matches!(
+                site_owner,
+                crate::ownership::Owner::Field { .. }
+                    | crate::ownership::Owner::Placement(_)
+            );
         // F.31 (2026-05-23): consume any placement override the
         // caller set. The override is applied to a LOCAL clone of
         // `info` for this instantiation only — nested
@@ -1152,7 +1161,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         )> = None;
         let new_arena = match acquire_strategy {
             AcquireStrategy::Fresh => {
-                if info.arena_elidable {
+                if held_by_composite_param {
+                    // its owner's arena, which the owner's teardown frees
+                    // with it (nothing tears the element down on its own)
+                    self.current_arena_override.expect("checked is_some").into()
+                } else if info.arena_elidable {
                     // Locus body is provably non-allocating
                     // (its elision row, `hale_types::alloc_routing`). Point
                     // `__arena` at the caller's current arena
@@ -2621,6 +2634,47 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             None
         };
         let self_ptr = pinned_init.as_ref().map_or(self_ptr, |p| p.self_param);
+        // #1534: a literal this locus's params build is a node of its
+        // static tree. Under an anchor whose params its own thread (or its
+        // pool's worker) builds, in an init the function holding the scope
+        // starts, the nodes claim from that init: the scope reaches it in
+        // the argument block, which carries whatever value of the starting
+        // function the init reads. That function's scope is the root's
+        // own value, or, in an init that itself starts one (an anchor
+        // nested in another anchor's params, #1555), a value of a third
+        // function, which no argument block carries: there the starting
+        // init takes its own copy first, so the scope passes from init to
+        // init however deep.
+        let tree_ctx = match (&reserve_ctx, &pinned_init) {
+            (Some(c), None) => Some(c.clone()),
+            (Some(c), Some(p)) if p.saved_block.get_parent() == Some(c.func) => {
+                let in_func = c
+                    .scope
+                    .as_instruction()
+                    .and_then(|i| i.get_parent())
+                    .and_then(|b| b.get_parent())
+                    == Some(c.func);
+                let scope = if in_func {
+                    c.scope
+                } else {
+                    let here = self.builder.get_insert_block().expect("the init's block");
+                    self.builder.position_at_end(p.saved_block);
+                    self.builder.unset_current_debug_location();
+                    let i8_t = self.context.i8_type();
+                    let zero = self.context.i64_type().const_zero();
+                    // SAFETY: a zero offset from the scope pointer itself.
+                    let own = unsafe { self.builder.build_in_bounds_gep(i8_t, c.scope, &[zero], "bus.reserve.scope.in") }
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    self.builder.position_at_end(here);
+                    if let Some(loc) = self.di_current_loc {
+                        self.builder.set_current_debug_location(loc);
+                    }
+                    own
+                };
+                Some(crate::locus::reservation::ReserveCtx { func: p.init_fn, scope, ..c.clone() })
+            }
+            _ => None,
+        };
         for (fname, default) in info.defaults.iter() {
             // F.31: per-field placement override for main-locus
             // params. Looked up by field name in
@@ -2712,10 +2766,19 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         if hands_back_replicas {
                             self.anchor_record_slot = self.anchor_record_at(&info, self_ptr, fname, i as u32)?;
                         }
+                        // #1555: each replica is an anchor of the static
+                        // tree, claiming like replica 0 does below.
+                        if let Some(ctx) = &tree_ctx {
+                            let field_ty = info.fields.get(fname).map(|(_, t)| t.clone());
+                            if let Some((child, _)) = self.static_tree_child(is_main_locus, fname, &rep_expr, field_ty.as_ref()) {
+                                self.reserve_child_next = Some((child, ctx.clone()));
+                            }
+                        }
                         // Finding 4: replica exprs are default text.
                         let saved_ipd = self.in_params_default;
                         self.in_params_default = true;
                         let _ = self.in_body(info.decl, |cx| cx.lower_expr(&rep_expr, scope))?;
+                        self.reserve_child_next = None;
                         self.in_params_default = saved_ipd;
                         self.anchor_record_slot = None;
                     }
@@ -2814,28 +2877,17 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             if hands_back_replicas {
                 self.anchor_record_slot = self.anchor_record_at(&info, self_ptr, fname, 0)?;
             }
-            // #1534: a literal this field builds is a node of this
-            // instance's static tree. Under an anchor whose params its own
-            // thread builds, in an init the root's function starts, the
-            // node claims from that init; deeper inits do not take part.
-            let child_ctx = match (&reserve_ctx, &pinned_init) {
-                (Some(c), None) => Some(c.clone()),
-                (Some(c), Some(p)) if c.depth == 0 && p.saved_block.get_parent() == Some(c.func) => {
-                    Some(crate::locus::reservation::ReserveCtx { func: p.init_fn, depth: 1, ..c.clone() })
-                }
-                _ => None,
-            };
-            if let Some(ctx) = &child_ctx {
+            // #1534: the literal this field builds (replica 0's, for a
+            // replicated field) is a node of this instance's static tree.
+            if let Some(ctx) = &tree_ctx {
                 let value = match (overrides.get(fname.as_str()), default) {
                     (Some(e), _) => Some(*e),
                     (None, DefaultInit::Expr(e)) => Some(e),
                     _ => None,
                 };
                 let field_ty = info.fields.get(fname).map(|(_, t)| t.clone());
-                if let Some((child, how)) = value.and_then(|v| self.static_tree_child(is_main_locus, fname, v, field_ty.as_ref())) {
-                    if how != crate::locus::reservation::TreeChild::Replicated {
-                        self.reserve_child_next = Some((child, ctx.clone()));
-                    }
+                if let Some((child, _)) = value.and_then(|v| self.static_tree_child(is_main_locus, fname, v, field_ty.as_ref())) {
+                    self.reserve_child_next = Some((child, ctx.clone()));
                 }
             }
             let (val, val_ty, owned_via_literal, came_from_literal) =
@@ -2950,7 +3002,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         }
                         None => expr,
                     };
+                    let composite = std::mem::replace(
+                        &mut self.pool_init_composite_param,
+                        self.pool_init && matches!(value, Expr::Array(..) | Expr::Tuple(..) | Expr::ArrayRepeat { .. }),
+                    );
                     let r = self.lower_expr(value, scope);
+                    self.pool_init_composite_param = composite;
                     self.field_holder = None;
                     let r = r?;
                     self.params_init_initialized = inner_init;
@@ -2998,7 +3055,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                             // question at the default site.
                             let owned = self.owner_table.field_owns(e);
                             // The locus's own text: typed in its body.
-                            let r = self.in_body(info.decl, |cx| cx.lower_expr(e, scope))?;
+                            let composite = std::mem::replace(
+                                &mut self.pool_init_composite_param,
+                                self.pool_init && matches!(e, Expr::Array(..) | Expr::Tuple(..) | Expr::ArrayRepeat { .. }),
+                            );
+                            let r = self.in_body(info.decl, |cx| cx.lower_expr(e, scope));
+                            self.pool_init_composite_param = composite;
+                            let r = r?;
                             self.in_params_default = saved_ipd;
                             let from_lit = matches!(
                                 e,
@@ -3258,6 +3321,21 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 self.builder
                     .build_store(field_ptr, val)
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            }
+            // GH #1566: an instance this field adopts from a local or a
+            // parameter now runs where this locus does
+            if let CodegenTy::LocusRef(l) = &declared_ty {
+                let adopted: Option<&Expr> = match overrides.get(fname.as_str()) {
+                    Some(e) => Some(*e),
+                    None => match default {
+                        DefaultInit::Expr(e) => Some(e),
+                        _ => None,
+                    },
+                };
+                if let Some(e) = adopted {
+                    let l = l.clone();
+                    self.emit_adopt(val.into_pointer_value(), &l, e)?;
+                }
             }
             // F.29 follow-up: OR the bit for this field into
             // `__locus_ref_owned_mask` if the field is LocusRef-
@@ -5091,6 +5169,23 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let saved_in_main = std::mem::replace(&mut self.in_main, false);
         self.push_dissolve_frame();
         let self_param = init_fn.get_nth_param(0).expect("init self param").into_pointer_value();
+        // GH #1566: the root, and what its params build here, is this
+        // thread's domain
+        if self.xpool_check && !self.xpool_shared {
+            let here = self.module.get_function("lotus_domain_here").expect("lotus_domain_here declared");
+            let d = self
+                .builder
+                .build_call(here, &[], "domain.here")
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                .try_as_basic_value()
+                .left()
+                .expect("lotus_domain_here returns i64");
+            let slot = self
+                .builder
+                .build_struct_gep(info.struct_ty, self_param, info.domain_field_idx, &format!("{locus_name}.__domain.ptr"))
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            self.builder.build_store(slot, d).map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        }
         let route = self.anchor_route.clone();
         if let (Some(mb_idx), Some(crate::codegen::AnchorRoute::Mailbox(_))) =
             (info.mailbox_field_idx, &self.anchor_route)
@@ -5672,6 +5767,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // GH #1069: held by something that reclaims it later — everything
         // but a bare statement literal.
         store(self, info.held_by_owner_field_idx, i64_t.const_int(u64::from(held), false).into(), "__held_by_owner")?;
+        // GH #1566: built on this domain
+        let domain: inkwell::values::BasicValueEnum<'ctx> =
+            if self.xpool_check && !self.xpool_shared { self.domain_now()?.into() } else { zero };
+        store(self, info.domain_field_idx, domain, "__domain")?;
         // m41 / m45 / F.27: quarantine, restart-in-place and drain latches.
         store(self, info.quarantined_field_idx, zero, "__quarantined")?;
         store(self, info.restart_in_place_pending_field_idx, zero, "__restart_in_place_pending")?;

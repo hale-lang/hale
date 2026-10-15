@@ -2424,6 +2424,10 @@ struct StdlibErrorUsage<'a> {
     /// path that renames to one fails with that fn's error type.
     scope: &'a TopScope,
     reached: std::collections::BTreeSet<String>,
+    /// Whether a struct literal naming a builtin error type reaches it:
+    /// the stdlib's (which builds the builtin's shape), never the
+    /// program's own (which builds its own type).
+    literals: bool,
 }
 
 /// Scan every top-level item, every fn / locus-method body,
@@ -2436,11 +2440,44 @@ fn scan_stdlib_error_usage<'a>(
     bundle: &Bundle<'_>,
     scope: &'a TopScope,
 ) -> StdlibErrorUsage<'a> {
-    let mut out = StdlibErrorUsage { scope, reached: Default::default() };
+    let mut out = StdlibErrorUsage { scope, reached: Default::default(), literals: false };
     for program in bundle.programs.values() {
         scan_items_for_stdlib_usage(&program.items, &mut out);
     }
+    // The stdlib's own bodies are merged into every program and lowered
+    // with it, and they build a builtin error type under its bare name
+    // (a parser's `ParseError`, `std::crypto`'s `fail CryptoError { .. }`,
+    // a `bounded` push's `CapacityError`), so a program's same-named type
+    // stands in for it there too: `std::cli`'s `parse_int` reaches
+    // `ParseError` whether or not the program calls a parser, and the
+    // build refused a `type ParseError { code: Int; }` the check accepted
+    // (and panicked on an `IndexError`, a `KeyError` or a
+    // `CapacityError`). What the stdlib reaches is read once.
+    out.reached.extend(stdlib_reached_errors(scope).iter().cloned());
     out
+}
+
+/// The builtin error types the bundled stdlib's own bodies reach, as a
+/// program's are read, plus each one a stdlib body spells as a literal.
+/// Read once: a stdlib path's error is its registered fn's or its
+/// surface row's, the same in every scope (every scope registers the
+/// stdlib's fns).
+fn stdlib_reached_errors(scope: &TopScope) -> &'static std::collections::BTreeSet<String> {
+    static REACHED: std::sync::OnceLock<std::collections::BTreeSet<String>> = std::sync::OnceLock::new();
+    REACHED.get_or_init(|| {
+        let mut out = StdlibErrorUsage { scope, reached: Default::default(), literals: true };
+        if let Some(stdlib) = crate::stdlib_bodies::program() {
+            scan_items_for_stdlib_usage(&stdlib.items, &mut out);
+            // A name the stdlib declares itself (`IoError`) is refused to
+            // a program by the internal-name rule (`stdlib_names`) already.
+            for item in &stdlib.items {
+                if let TopDecl::Type(t) = item {
+                    out.reached.remove(&t.name.name);
+                }
+            }
+        }
+        out.reached
+    })
 }
 
 /// The error type a stdlib path-call fails with, read as the check
@@ -2491,9 +2528,13 @@ fn scan_items_for_stdlib_usage(items: &[TopDecl], out: &mut StdlibErrorUsage) {
                             scan_block_for_stdlib_usage(&md.body, out)
                         }
                         LocusMember::Failure(fd) => {
+                            // lowering hands the handler a `ClosureViolation`
+                            out.reached.insert("ClosureViolation".to_string());
                             scan_block_for_stdlib_usage(&fd.body, out)
                         }
                         LocusMember::Closure(c) => {
+                            // a closure's breach is a `ClosureViolation`
+                            out.reached.insert("ClosureViolation".to_string());
                             if let Some(a) = &c.assertion {
                                 scan_expr_for_stdlib_usage(&a.left, out);
                                 scan_expr_for_stdlib_usage(&a.right, out);
@@ -2586,6 +2627,7 @@ fn scan_stmt_for_stdlib_usage(s: &Stmt, out: &mut StdlibErrorUsage) {
             }
         }
         Stmt::Violate { payload, .. } => {
+            out.reached.insert("ClosureViolation".to_string());
             if let Some(p) = payload {
                 scan_expr_for_stdlib_usage(p, out);
             }
@@ -2602,6 +2644,10 @@ fn scan_expr_for_stdlib_usage(e: &Expr, out: &mut StdlibErrorUsage) {
     match e {
         Expr::Call { callee, args, .. } => {
             check_callee_path_for_stdlib_error(callee, out);
+            // a `bounded` push at capacity fails with a `CapacityError`
+            if matches!(callee.as_ref(), Expr::Ident(i) if i.name == "push") {
+                out.reached.insert("CapacityError".to_string());
+            }
             scan_expr_for_stdlib_usage(callee, out);
             for a in args {
                 scan_expr_for_stdlib_usage(a, out);
@@ -2630,7 +2676,14 @@ fn scan_expr_for_stdlib_usage(e: &Expr, out: &mut StdlibErrorUsage) {
                 scan_expr_for_stdlib_usage(p, out);
             }
         }
-        Expr::Struct { inits, .. } => {
+        Expr::Struct { path, inits, .. } => {
+            if out.literals {
+                if let [name] = path.segments.as_slice() {
+                    if crate::builtin_types::builtin_type(&name.name).is_some() {
+                        out.reached.insert(name.name.clone());
+                    }
+                }
+            }
             for i in inits {
                 scan_expr_for_stdlib_usage(&i.value, out);
             }
@@ -2719,13 +2772,17 @@ fn check_stdlib_error_shadowing(
     // (stdlib type name, qualified-path suggestion to surface in the
     // diagnostic, "is this type actually used in this program" gate);
     // the expected fields are the builtin type's row.
-    let expected: &[(&str, &str)] = &[
-        ("ParseError", "std::str::ParseError"),
-        ("IoError", "std::io::IoError"),
-        ("IndexError", "std::index::IndexError"),
-        ("KeyError", "std::form::hashmap::KeyError"),
-        ("EmptyError", "std::form::ring_buffer::EmptyError"),
-        ("CryptoError", "std::crypto::CryptoError"),
+    let expected: &[(&str, Option<&str>)] = &[
+        ("ParseError", Some("std::str::ParseError")),
+        ("IoError", Some("std::io::IoError")),
+        ("IndexError", Some("std::index::IndexError")),
+        ("KeyError", Some("std::form::hashmap::KeyError")),
+        ("EmptyError", Some("std::form::ring_buffer::EmptyError")),
+        ("CryptoError", Some("std::crypto::CryptoError")),
+        // A `bounded` push's and an `on_failure` handler's: no path
+        // names the builtin, so the repair is the rename.
+        ("CapacityError", None),
+        ("ClosureViolation", None),
     ];
     for (name, qualified) in expected {
         let expected_fields = crate::builtin_types::builtin_type(name)
@@ -2744,17 +2801,19 @@ fn check_stdlib_error_shadowing(
         if ti.span.start.0 == 0 && ti.span.end.0 == 0 {
             continue;
         }
+        let qualify = match qualified {
+            Some(q) => format!(", or use `{q}` qualified where you need the stdlib's shape"),
+            None => String::new(),
+        };
         let TypeKind::Struct(actual) = &ti.kind else {
             diags.push(Diag::ty(
                 ti.span,
                 format!(
-                    "user-declared `type {}` shadows the stdlib's \
-                     `{}` (used by stdlib path-calls that return \
-                     `fallible({})`) but is not a struct type. \
-                     Either rename your type (e.g. `My{}`) or use \
-                     `{}` qualified where you need the stdlib's \
-                     shape.",
-                    name, name, name, name, qualified,
+                    "user-declared `type {name}` shadows the stdlib's \
+                     `{name}` (built under that name by the stdlib's own \
+                     code, merged into every program, and by lowering) but \
+                     is not a struct type. Rename your type (e.g. \
+                     `My{name}`){qualify}.",
                 ),
             ));
             continue;
@@ -2770,20 +2829,13 @@ fn check_stdlib_error_shadowing(
             diags.push(Diag::ty(
                 ti.span,
                 format!(
-                    "user-declared `type {}` shadows the stdlib's \
-                     `{}` but is missing the expected `{}: {}` \
-                     field (used by stdlib path-calls that \
-                     allocate `{}` on failure). Either match the \
-                     stdlib shape, rename your type (e.g. `My{}`), \
-                     or use `{}` qualified where you need the \
-                     stdlib's shape.",
-                    name,
-                    name,
-                    field_name,
+                    "user-declared `type {name}` shadows the stdlib's \
+                     `{name}` but is missing the expected `{field_name}: {}` \
+                     field (the stdlib's own code, merged into every \
+                     program, and lowering build `{name}` under that name on \
+                     failure). Either match the stdlib shape, rename your \
+                     type (e.g. `My{name}`){qualify}.",
                     prim_display(*expected_ty),
-                    name,
-                    name,
-                    qualified,
                 ),
             ));
             break;

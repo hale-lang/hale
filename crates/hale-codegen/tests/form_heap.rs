@@ -86,7 +86,7 @@ fn reference_ints(n: usize, max: bool) -> Vec<i64> {
     let mut out = Vec::new();
     let mut minh: BinaryHeap<Reverse<i64>> = BinaryHeap::new();
     let mut maxh: BinaryHeap<i64> = BinaryHeap::new();
-    let mut pop = |minh: &mut BinaryHeap<Reverse<i64>>, maxh: &mut BinaryHeap<i64>, out: &mut Vec<i64>| {
+    let pop = |minh: &mut BinaryHeap<Reverse<i64>>, maxh: &mut BinaryHeap<i64>, out: &mut Vec<i64>| {
         if max {
             if let Some(k) = maxh.pop() {
                 out.push(k)
@@ -103,7 +103,7 @@ fn reference_ints(n: usize, max: bool) -> Vec<i64> {
             pop(&mut minh, &mut maxh, &mut out);
         }
     }
-    while (if max { !maxh.is_empty() } else { !minh.is_empty() }) {
+    while !(if max { maxh.is_empty() } else { minh.is_empty() }) {
         pop(&mut minh, &mut maxh, &mut out);
     }
     out

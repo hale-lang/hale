@@ -78,6 +78,29 @@ async function waitFor(file, what) {
   process.exit(1);
 }
 
+// A server's report, once the server has exited. `write_file` creates the
+// file before it writes it, so a read the moment the file exists can find
+// it empty (a merge-queue run read "" for the hub's report); the server
+// writes its report last and exits, so its exit is when the report is
+// whole.
+async function reportOf(child, file, what) {
+  if (child.exitCode === null && child.signalCode === null) {
+    const exited = await Promise.race([
+      new Promise((r) => child.once("exit", () => r(true))),
+      new Promise((r) => setTimeout(() => r(false), 10000)),
+    ]);
+    if (!exited) {
+      console.error(`FAIL ${what}: the server never exited`);
+      process.exit(1);
+    }
+  }
+  if (!existsSync(file)) {
+    console.error(`FAIL ${what}: ${file} never appeared`);
+    process.exit(1);
+  }
+  return readFileSync(file, "utf8");
+}
+
 const scratch = mkdtempSync(path.join(tmpdir(), "hale-ts-client-"));
 const children = [];
 process.on("exit", () => {
@@ -118,7 +141,7 @@ async function exercise(scenarios, lang) {
   {
     const port = await freePort();
     const report = path.join(scratch, `${lang}.http.report`);
-    serve(["http", wire, String(port), report, "result", "handler_error", "server_error", "refusal_digest_mismatch", "refusal_full", "~refusal_malformed", "refusal_shutting_down", "refusal_unauthenticated", "refusal_unauthorized", "refusal_unavailable"]);
+    const server = serve(["http", wire, String(port), report, "result", "handler_error", "server_error", "refusal_digest_mismatch", "refusal_full", "~refusal_malformed", "refusal_shutting_down", "refusal_unauthenticated", "refusal_unauthorized", "refusal_unavailable"]);
     await waitFor(report + ".ready", "the HTTP replay server");
     const got = await scenarios.http(`http://127.0.0.1:${port}`);
     same(got, [
@@ -133,8 +156,7 @@ async function exercise(scenarios, lang) {
       "refusal:unauthorized:Orders::cancel requires trader:trader:",
       "refusal:unavailable:the receiver of Orders::place is unavailable; the call did not run::",
     ], `${lang}: the outcomes of wire/http`);
-    await waitFor(report, "the HTTP report");
-    same(readFileSync(report, "utf8"), "ok result\nok handler_error\nok server_error\nok refusal_digest_mismatch\nok refusal_full\nok refusal_malformed\nok refusal_shutting_down\nok refusal_unauthenticated\nok refusal_unauthorized\nok refusal_unavailable\n", `${lang}: every request the client wrote is the recorded one`);
+    same(await reportOf(server, report, "the HTTP report"), "ok result\nok handler_error\nok server_error\nok refusal_digest_mismatch\nok refusal_full\nok refusal_malformed\nok refusal_shutting_down\nok refusal_unauthenticated\nok refusal_unauthorized\nok refusal_unavailable\n", `${lang}: every request the client wrote is the recorded one`);
     // nothing listening is a thrown TransportError, never an outcome
     same(await scenarios.httpLost(`http://127.0.0.1:${await freePort()}`), "lost", `${lang}: a connection that is not answered is thrown`);
   }
@@ -143,7 +165,7 @@ async function exercise(scenarios, lang) {
   {
     const port = await freePort();
     const report = path.join(scratch, `${lang}.ws.report`);
-    serve(["ws", String(port), report, "closed", "revoked", "expired", "refused", "abort", "late"]);
+    const server = serve(["ws", String(port), report, "closed", "revoked", "expired", "refused", "abort", "late"]);
     await waitFor(report + ".ready", "the hub replay server");
     const endpoint = `ws://127.0.0.1:${port}`;
     const event = "event:1:41:10:12500";
@@ -153,8 +175,7 @@ async function exercise(scenarios, lang) {
     same(await scenarios.stream(endpoint), ["refusal:unauthorized:Fills requires operator:operator:"], `${lang}: a refusal names the role`);
     same(await scenarios.stream(endpoint), ["subscribed", event, "lost"], `${lang}: no closed frame is a thrown TransportError`);
     same(await scenarios.stream(endpoint), ["subscribed", event, "closed"], `${lang}: an event that comes late comes`);
-    await waitFor(report, "the hub report");
-    same(readFileSync(report, "utf8"), "ok closed\nok revoked\nok expired\nok refused\nok abort\nok late\n", `${lang}: every subscribe frame and credential the client wrote is the contract's`);
+    same(await reportOf(server, report, "the hub report"), "ok closed\nok revoked\nok expired\nok refused\nok abort\nok late\n", `${lang}: every subscribe frame and credential the client wrote is the contract's`);
   }
 }
 

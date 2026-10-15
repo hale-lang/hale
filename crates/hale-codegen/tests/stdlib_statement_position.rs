@@ -125,16 +125,16 @@ fn a_renamed_body_that_returns_nothing_is_called_as_a_statement() {
 #[test]
 fn a_hale_body_row_that_returns_unit_is_called_as_a_statement() {
     let serve = "api Public { rpc Echo::echo; }\nlocus Echo { fn echo(n: Int) -> Int { return n; } }\n\
-         main locus Desk {\n    params { echo: Echo = Echo { }; f: std::api::test::Rpc = std::api::test::Rpc { }; }\n    \
-         run() {\n        let h = api::serve(Public, self.f, as: \"p\", receivers: { Echo: self.echo }, bound: 8, \
-         on_full: refuse);\n";
+         main locus Desk {\n    params { echo: Echo = Echo { }; f: std::api::test::Rpc = std::api::test::Rpc { }; \
+         h: api::Exposure = api::serve(Public, self.f, as: \"p\", receivers: { Echo: self.echo }, bound: 8, \
+         on_full: refuse); }\n    run() {\n";
     let tail = "    }\n}\nfn main() { Desk { }; }\n";
-    let statement = format!("{serve}        std::api::run_until_stopped(h);\n{tail}");
+    let statement = format!("{serve}        std::api::run_until_stopped(self.h);\n{tail}");
     let bin = harness::unique_bin("stmt_unit_hale_body");
     harness::build_source_ir_text(checks_clean(&statement), &bin)
         .unwrap_or_else(|e| panic!("the statement form does not lower: {e:?}"));
     let _ = std::fs::remove_file(&bin);
-    let value = format!("{serve}        let x = std::api::run_until_stopped(h);\n{tail}");
+    let value = format!("{serve}        let x = std::api::run_until_stopped(self.h);\n{tail}");
     let (text, _) = lowering_error(&value, "value_unit_hale_body");
     assert_eq!(
         text,

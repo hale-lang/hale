@@ -65,17 +65,17 @@ main locus App {
         // The role table: LOTUS_API_ROLES at run time, `role=member,member;…`.
         staff: std::api::StaticRoles = std::api::StaticRoles { known: "clerk manager" };
         hub: ws::Hub = ws::Hub { bind: "127.0.0.1:8796", principals: self.tokens, roles: self.staff, as: "shipments" };
+        sock: api::Exposure = api::serve(Counter, unix::Rpc { path: "/tmp/shop.sock", roles: self.staff }, as: "counter", receivers: { Shop: self.shop }, bound: 64, on_full: refuse);
+        web: api::Exposure = api::serve(Counter, http::Rpc { bind: "127.0.0.1:8794", codec: json, principals: self.tokens, roles: self.staff }, as: "web", receivers: { Shop: self.shop }, bound: 64, on_full: refuse);
     }
     placement { shop: cooperative(pool = work) where async_io; }
     bindings {
         Shipments: self.hub requires: [clerk], bound: 64, on_full: drop_old;
     }
     run() {
-        let sock = api::serve(Counter, unix::Rpc { path: "/tmp/shop.sock", roles: self.staff }, as: "counter", receivers: { Shop: self.shop }, bound: 64, on_full: refuse);
-        let web = api::serve(Counter, http::Rpc { bind: "127.0.0.1:8794", codec: json, principals: self.tokens, roles: self.staff }, as: "web", receivers: { Shop: self.shop }, bound: 64, on_full: refuse);
         while !self.draining { std::time::sleep(100ms); }
-        sock.stop();
-        web.stop();
+        self.sock.stop();
+        self.web.stop();
     }
 }
 

@@ -33,11 +33,11 @@ main locus Desk {
         local: Local = Local { };
         toy_f: std::api::test::Rpc = std::api::test::Rpc { principals: self.bearer };
         local_f: std::api::test::Rpc = std::api::test::Rpc { principals: self.bearer };
+        imported: api::Exposure = api::serve(toy, self.toy_f, as: "toy", bound: 4, on_full: refuse);
+        own: api::Exposure = api::serve(surface_test, self.local_f, as: "own", receivers: { Local: self.local }, bound: 4, on_full: refuse);
     }
 
     run() {
-        let imported = api::serve(toy, self.toy_f, as: "toy", bound: 4, on_full: refuse);
-        let own = api::serve(surface_test, self.local_f, as: "own", receivers: { Local: self.local }, bound: 4, on_full: refuse);
         let t = self.toy_f;
         let l = self.local_f;
 

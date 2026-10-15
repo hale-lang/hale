@@ -544,6 +544,15 @@ typedef struct lotus_arena {
      * Taken only when shared_concurrent is set, so every
      * single-threaded arena keeps the untouched lock-free path. */
     pthread_mutex_t      retire_lock;
+    /* The address-sorted index of this arena's chunks that answers
+     * `lotus_ptr_in_arena` once the chunk list is longer than a short
+     * walk (see lotus_chunk_index_t). NULL until the first lookup
+     * that needs it; freed at destroy. `chunk_index_lock` is a spin
+     * flag held while the index is grown or read: the lookup is a
+     * read from its caller's side, and two threads asking about one
+     * arena must not both grow it. */
+    void                *chunk_index;
+    int                  chunk_index_lock;
 } lotus_arena_t;
 
 /* Per-thread freelist of default-sized chunks (2026-05-21
@@ -1730,6 +1739,60 @@ static inline size_t lotus_align_up(size_t n, size_t a) {
 static const pthread_mutex_t LOTUS_SUBREGION_MUTEX_INIT =
     PTHREAD_MUTEX_INITIALIZER;
 
+/* GH #1566: F.31's runtime backstop. The domain the running code is
+ * on: main's token from the process's start, a cooperative pool's
+ * worker the pool (set in its loop), a pinned locus's thread its own
+ * (set when its init stamps the locus); 0 on a thread that runs no
+ * locus code. Exported: every instantiation stamps its locus's
+ * `__domain` with it, and the compiled check reads it inline. */
+__thread int64_t lotus_domain_now = 0;
+static __thread char t_domain_anchor;
+static int64_t g_main_domain_token = 0;
+
+__attribute__((constructor))
+static void lotus_domain_now_main(void) {
+    lotus_domain_now = (int64_t)(uintptr_t)&t_domain_anchor;
+    g_main_domain_token = lotus_domain_now;
+}
+
+/* GH #1566: a second domain the running code may reach: an
+ * `on_failure` handler's failed child's, for the handler's duration (the
+ * child is stopped while its owner's handler runs, and the handler may
+ * touch what it holds). 0: none. */
+__thread int64_t lotus_domain_also = 0;
+
+/* GH #1566: code the runtime runs on a thread that is not the
+ * instance's on purpose — a pool-placed root's `drain()` / `dissolve()`
+ * on main after its pool joined — runs as the instance's domain for its
+ * duration (`d` 0 changes nothing). Returns what to restore. */
+int64_t lotus_domain_act(int64_t d) {
+    int64_t prev = lotus_domain_now;
+    if (d) lotus_domain_now = d;
+    return prev;
+}
+
+void lotus_domain_restore(int64_t prev) {
+    lotus_domain_now = prev;
+}
+
+/* GH #1566: an `on_failure` handler's duration: its failed child's
+ * domain is reachable too. Returns what to restore. */
+int64_t lotus_domain_also_enter(int64_t d) {
+    int64_t prev = lotus_domain_also;
+    lotus_domain_also = d;
+    return prev;
+}
+
+void lotus_domain_also_restore(int64_t prev) {
+    lotus_domain_also = prev;
+}
+
+/* This thread's domain token, made on first use. */
+static int64_t lotus_domain_here_token(void) {
+    if (!lotus_domain_now) lotus_domain_now = (int64_t)(uintptr_t)&t_domain_anchor;
+    return lotus_domain_now;
+}
+
 /* Initialize an arena struct wherever it lives: malloc'd by
  * lotus_arena_alloc_struct below, or carved inside a pooled chunk by
  * the bus's per-call arena (GH #1038). */
@@ -1765,6 +1828,8 @@ static void lotus_arena_init_struct(lotus_arena_t *a) {
     a->retire_free = NULL;
     a->retire_free_small = NULL;
     a->slot_reuse = NULL;
+    a->chunk_index = NULL;
+    a->chunk_index_lock = 0;
     a->numa_node = -1;  /* topology arena-on-node: unbound by default */
     /* 2026-05-26 substrate-race fix: subregion freelist mutex.
      * Used by create_subregion / destroy via the PARENT arena's
@@ -2925,6 +2990,8 @@ void lotus_arena_mark_shared(void *arena_ptr) {
 
 extern __thread lotus_arena_t *lotus_current_caller_arena;
 
+static void lotus_chunk_index_free(lotus_arena_t *a);
+
 LOTUS_HOT_ALIGN
 void lotus_arena_destroy(lotus_arena_t *a) {
     if (!a) return;
@@ -3027,6 +3094,7 @@ void lotus_arena_destroy(lotus_arena_t *a) {
      * unconditionally too. */
     pthread_mutex_destroy(&a->retire_lock);
     lotus_slot_reuse_free(a);
+    lotus_chunk_index_free(a);
     free(a);
 }
 
@@ -3128,6 +3196,8 @@ static void lotus_recpool_init_cell_arena(char *cell_base, size_t cell_bytes) {
     a->next_slot          = 0;
     a->fixed_size         = 1;
     a->slot_reuse         = NULL;
+    a->chunk_index        = NULL;
+    a->chunk_index_lock   = 0;
 }
 
 static size_t lotus_recpool_bitmap_words_for(size_t cap_count) {
@@ -3236,6 +3306,8 @@ lotus_recpool_slab_t *lotus_recpool_slab_create(size_t cap_count,
     a->next_slot          = 0;
     a->fixed_size         = 1;
     a->slot_reuse         = NULL;
+    a->chunk_index        = NULL;
+    a->chunk_index_lock   = 0;
     p->slab_arena = a;
     return p;
 }
@@ -11771,6 +11843,62 @@ lotus_coop_pool_t *lotus_coop_pool_current(void) {
     return g_current_pool_tls;
 }
 
+/* GH #1566: the running thread's domain, made on first use: a pinned
+ * or pool-placed root's init stamps its locus with it on its own
+ * thread (a pinned thread has no token until then). */
+int64_t lotus_domain_here(void) {
+    return lotus_domain_here_token();
+}
+
+static void lotus_domain_describe(int64_t d, char *out, size_t n) {
+    if (d == g_main_domain_token) {
+        snprintf(out, n, "pool `main`");
+        return;
+    }
+    for (size_t i = 0; i < g_coop_pool_count; i++) {
+        if ((int64_t)(uintptr_t)g_coop_pools[i] == d) {
+            snprintf(out, n, "pool `%s`", g_coop_pools[i]->name);
+            return;
+        }
+    }
+    snprintf(out, n, "a pinned thread");
+}
+
+/* GH #1566: F.31's runtime backstop. The compiled check found the
+ * receiver's domain (its locus's `__domain`, stamped where it was built)
+ * differs from the running code's (`lotus_domain_now`): a
+ * store into, or a method call on, a locus that runs on another pool —
+ * reached a way the checker's walk does not follow (spec/types.md §
+ * F.31). Either side 0 is a domain the backstop does not know, and is
+ * let through. `at` is the site: its source location (empty when the
+ * build has no line table), the store or call, the receiver's type. A
+ * violation: the report on stderr, exit 1. */
+typedef struct {
+    const char *site;   /* `file:line:col`, or "" */
+    const char *what;   /* "store into `W.name`", "method call `W.step`" */
+    const char *locus;  /* the receiver's type */
+} lotus_xpool_site_t;
+
+__attribute__((cold, noinline))
+void lotus_cross_pool_check_failed(const lotus_xpool_site_t *at,
+                                   int64_t recv_domain, int64_t now) {
+    if (recv_domain == 0 || now == 0 || recv_domain == now) return;
+    /* an `on_failure` handler's failed child, and what it holds */
+    if (recv_domain == lotus_domain_also) return;
+    const char *site = at->site, *what = at->what, *locus = at->locus;
+    char here[128], there[128];
+    lotus_domain_describe(now, here, sizeof here);
+    lotus_domain_describe(recv_domain, there, sizeof there);
+    fprintf(stderr,
+            "%s%sviolation: cross-pool %s from %s; this `%s` runs on %s: "
+            "reach it through a method on the bus (spec/types.md § "
+            "\"Single-threaded-method invariant (F.31)\")\n",
+            site && *site ? site : "", site && *site ? ": " : "",
+            what, here, locus, there);
+    fflush(stderr);
+    exit(1);
+}
+
 /* The start of a pool-placed root (inventory C50, the pool side of the
  * review of PR #1319's correction of U-6): its subtree initializes on
  * the pool's worker, as a pinned locus's does on its thread. The
@@ -13068,16 +13196,26 @@ static void lotus_coro_free(lotus_coro_t *c) {
     lotus_run_hold_release(hold);
     c->run_ticket = NULL;
     /* A coro freed here either completed (release already disposed its
-     * payload) or is being ABANDONED mid-handler at pool shutdown. In
-     * the abandon case the heap buffer is plainly ours to free; the
-     * per-delivery subregion is deliberately NOT destroyed — the handler
-     * is frozen mid-flight and the subscriber arena's own teardown
-     * reclaims it, while destroying it from here would push chunks back
-     * into a parent arena the dissolve cascade may already have taken
-     * down. */
+     * payload) or is being ABANDONED mid-handler at pool shutdown: a
+     * served call parked in its handler (a sleep, a read) when the drain
+     * shut its receiver's pool down. The handler is frozen and never
+     * resumes, so what the delivery owns is ours to release: the heap
+     * buffer, and the per-delivery region the payload was deserialized
+     * into. That region has no parent (`lotus_bus_cell_materialize`: it
+     * is deliberately not a subregion of the subscriber's arena, so a
+     * handler that ends its own locus cannot strand it), so nothing else
+     * ever reclaims it, and destroying it writes no other arena's
+     * freelist. Before, it was left for "the subscriber arena's
+     * teardown", which never reached it, and every call abandoned
+     * mid-handler leaked its region (LeakSanitizer: the region's struct
+     * and its first chunk). */
     if (c->payload_heap) {
         free(c->payload_heap);
         c->payload_heap = NULL;
+    }
+    if (c->payload_region) {
+        lotus_arena_destroy(c->payload_region);
+        c->payload_region = NULL;
     }
     if (c->stack) free(c->stack);
     free(c);
@@ -14238,6 +14376,7 @@ void lotus_tree_drain_end(void) {
 static void *lotus_coop_pool_worker(void *arg) {
     lotus_coop_pool_t *p = (lotus_coop_pool_t *)arg;
     g_current_pool_tls = p;
+    lotus_domain_now = (int64_t)(uintptr_t)p;
     lotus_domain_pool_enter(p);
     /* GH #296: stable consumer identity — 16 + registration index
      * (registration order is program structure, so it survives a
@@ -14281,6 +14420,7 @@ static void *lotus_coop_pool_worker(void *arg) {
     lotus_failure_service_here();
     lotus_domain_pool_end(p);
     g_current_pool_tls = NULL;
+    lotus_domain_now = 0;
     return NULL;
 }
 
@@ -17862,12 +18002,10 @@ int lotus_str_eq(const char *l, const char *r) {
  *      `store.set(MetricEntry { key: e.key, name: e.name, ... })`.
  *      `e.key` and `e.name` were cloned into the store's arena
  *      on the original insert; re-cloning them into the same
- *      arena on every update wastes O(N) bytes per call. Each
- *      arena typically holds 1-10 chunks, so the walk is cheap
- *      (single-digit ns at typical chunk counts). Long-running
- *      arenas with hundreds of chunks pay more — sortable
- *      chunk lookup is a future optimization if a workload
- *      surfaces the cost.
+ *      arena on every update wastes O(N) bytes per call. The
+ *      membership test walks a few chunks and then asks the
+ *      arena's address-sorted chunk index (lotus_chunk_index_t),
+ *      so it stays O(log chunks) on an arena that has grown.
  *
  * Both skips return src unchanged. The hashmap.set / vec.push /
  * locus-field-init deep-copy paths use this for their String
@@ -17886,12 +18024,119 @@ static inline int lotus_str_is_static_literal(const char *s) {
 }
 #endif
 
+/* The chunk index (2026-10-14). `lotus_ptr_in_arena` used to walk the
+ * whole chunk list, and a miss — the COMMON answer at a cross-arena
+ * clone, where the source lives in a callee's scratch — always walks
+ * it to the end. An arena that grows (a `run()` loop's activation,
+ * which reclaims nothing until it ends, or a locus holding a large
+ * store) therefore made every clone into it cost O(chunks): a Router
+ * dispatch loop inside one `run()` went 41.7 -> 399 ms per 20,000
+ * requests over ten rounds, all of it in this walk.
+ *
+ * The list is append-only — a fresh chunk is pushed at the head, and
+ * chunks leave only when the arena is destroyed — so the index is the
+ * chunks sorted by address, kept current by inserting whatever was
+ * pushed since the last lookup (`synced` is the head it last saw).
+ * The first LOTUS_CHUNK_WALK_MAX chunks are still walked first, so an
+ * arena of a few chunks (nearly every scratch) never builds one. */
+#define LOTUS_CHUNK_WALK_MAX 8
+
+typedef struct lotus_chunk_index {
+    const lotus_arena_chunk_t  *synced;
+    const lotus_arena_chunk_t **by_addr;
+    size_t                      n;
+    size_t                      cap;
+} lotus_chunk_index_t;
+
+static void lotus_chunk_index_free(lotus_arena_t *a) {
+    lotus_chunk_index_t *ix = (lotus_chunk_index_t *)a->chunk_index;
+    if (!ix) return;
+    a->chunk_index = NULL;
+    free(ix->by_addr);
+    free(ix);
+}
+
+/* Insert the chunks pushed since the last sync. 0 when the index could
+ * not be grown (the caller then walks the list). Caller holds the
+ * index lock. */
+static int lotus_chunk_index_sync(lotus_arena_t *a) {
+    lotus_chunk_index_t *ix = (lotus_chunk_index_t *)a->chunk_index;
+    if (!ix) {
+        ix = (lotus_chunk_index_t *)calloc(1, sizeof(*ix));
+        if (!ix) return 0;
+        a->chunk_index = ix;
+    }
+    for (const lotus_arena_chunk_t *c = a->head; c && c != ix->synced;
+         c = c->next) {
+        if (ix->n == ix->cap) {
+            size_t ncap = ix->cap ? ix->cap * 2 : 64;
+            const lotus_arena_chunk_t **nb =
+                (const lotus_arena_chunk_t **)realloc(
+                    (void *)ix->by_addr, ncap * sizeof(*nb));
+            if (!nb) {
+                /* Drop what was built: `synced` names the head of a
+                 * fully indexed list, which this one no longer is. */
+                lotus_chunk_index_free(a);
+                return 0;
+            }
+            ix->by_addr = nb;
+            ix->cap = ncap;
+        }
+        size_t lo = 0, hi = ix->n;
+        while (lo < hi) {
+            size_t mid = lo + (hi - lo) / 2;
+            if (ix->by_addr[mid] < c) lo = mid + 1; else hi = mid;
+        }
+        memmove((void *)&ix->by_addr[lo + 1], (void *)&ix->by_addr[lo],
+                (ix->n - lo) * sizeof(*ix->by_addr));
+        ix->by_addr[lo] = c;
+        ix->n++;
+    }
+    ix->synced = a->head;
+    return 1;
+}
+
+/* -1 when the index is unavailable (the caller walks instead). */
+static int lotus_chunk_index_lookup(lotus_arena_t *a, const char *cp) {
+    while (__atomic_exchange_n(&a->chunk_index_lock, 1, __ATOMIC_ACQUIRE)) {
+        while (__atomic_load_n(&a->chunk_index_lock, __ATOMIC_RELAXED)) {
+        }
+    }
+    int found = -1;
+    if (lotus_chunk_index_sync(a)) {
+        lotus_chunk_index_t *ix = (lotus_chunk_index_t *)a->chunk_index;
+        /* The last chunk whose data starts at or below `cp`. */
+        size_t lo = 0, hi = ix->n;
+        while (lo < hi) {
+            size_t mid = lo + (hi - lo) / 2;
+            if ((const char *)(ix->by_addr[mid] + 1) <= cp) lo = mid + 1;
+            else hi = mid;
+        }
+        found = 0;
+        if (lo > 0) {
+            const lotus_arena_chunk_t *c = ix->by_addr[lo - 1];
+            const char *base = (const char *)(c + 1);
+            found = cp < base + c->cap;
+        }
+    }
+    __atomic_store_n(&a->chunk_index_lock, 0, __ATOMIC_RELEASE);
+    return found;
+}
+
 static int lotus_ptr_in_arena(const lotus_arena_t *a, const void *p) {
     if (!a || !p) return 0;
     const char *cp = (const char *)p;
+    int walked = 0;
     for (const lotus_arena_chunk_t *c = a->head; c; c = c->next) {
         const char *base = (const char *)(c + 1);
         if (cp >= base && cp < base + c->cap) return 1;
+        /* The shared payload arena grows under its own lock, from more
+         * than one thread, so it keeps the plain walk. */
+        if (++walked == LOTUS_CHUNK_WALK_MAX && c->next
+            && !a->shared_concurrent) {
+            int found = lotus_chunk_index_lookup((lotus_arena_t *)a, cp);
+            if (found >= 0) return found;
+        }
     }
     return 0;
 }
@@ -17903,11 +18148,9 @@ static int lotus_ptr_in_arena(const lotus_arena_t *a, const void *p) {
  * scalar-field paths; this wrapper exists so the LLVM-side
  * outer-struct skip can call into the same arena walk without
  * exposing the chunk struct layout. Returns 1 if `p` is inside
- * one of `a`'s chunk data regions, 0 otherwise. O(chunks) — at
- * steady-state arenas usually hold 1-10 chunks so the cost is
- * single-digit ns; long-running arenas with hundreds of chunks
- * pay more (a sortable chunk index is a future optimization if
- * a workload surfaces the walk as a hotspot). */
+ * one of `a`'s chunk data regions, 0 otherwise. A walk of at
+ * most LOTUS_CHUNK_WALK_MAX chunks, then the chunk index's binary
+ * search — O(log chunks) on a long-running arena. */
 int lotus_arena_contains_ptr(const lotus_arena_t *a, const void *p) {
     return lotus_ptr_in_arena(a, p);
 }
@@ -25641,6 +25884,7 @@ static void lotus_bus_call_arena_close(lotus_arena_t *a) {
     int *fl = a->free_list;
     pthread_mutex_destroy(&a->retire_lock);
     lotus_slot_reuse_free(a);
+    lotus_chunk_index_free(a);
     if (fl) free(fl);
     /* The host chunk — the one carrying `a` — is the list's last
      * element (later chunks push at the head), so nothing below reads

@@ -27,7 +27,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use hale_syntax::ast::{
     flat_decls, Block, ElseBranch, Expr, FnDecl, LifecycleKind, LocusDecl, LocusMember, MatchArmBody, ModeKind,
-    ParamInit, Program, ServeSite, Stmt, TopDecl, TypeExpr,
+    ParamDecl, ParamInit, Program, ServeSite, Stmt, TopDecl, TypeExpr,
 };
 use hale_syntax::{Diag, Span};
 
@@ -452,47 +452,15 @@ fn if_sites<'a>(i: &'a hale_syntax::ast::IfStmt, out: &mut Vec<ServeSite<'a>>) {
     }
 }
 
-/// The surface argument of every serve site in a block, mutably: the
-/// statement shapes [`serve_sites_in`] reads, in its order.
-pub(crate) fn serve_surfaces_in_mut(b: &mut Block, f: &mut dyn FnMut(&mut Expr)) {
-    fn expr(e: &mut Expr, f: &mut dyn FnMut(&mut Expr)) {
-        if ServeSite::of(e).is_none() {
-            return;
-        }
-        if let Expr::Call { args, .. } = e {
-            if let Some(first) = args.first_mut() {
-                f(first);
-            }
-        }
+/// The surface argument of a serve site, mutably: `e` when it is one.
+pub(crate) fn serve_surface_mut(e: &mut Expr, f: &mut dyn FnMut(&mut Expr)) {
+    if ServeSite::of(e).is_none() {
+        return;
     }
-    fn if_stmt(i: &mut hale_syntax::ast::IfStmt, f: &mut dyn FnMut(&mut Expr)) {
-        serve_surfaces_in_mut(&mut i.then_block, f);
-        match i.else_block.as_deref_mut() {
-            Some(ElseBranch::Else(b)) => serve_surfaces_in_mut(b, f),
-            Some(ElseBranch::ElseIf(e)) => if_stmt(e, f),
-            None => {}
+    if let Expr::Call { args, .. } = e {
+        if let Some(first) = args.first_mut() {
+            f(first);
         }
-    }
-    for s in &mut b.stmts {
-        match s {
-            Stmt::Let { value, .. } | Stmt::LetTuple { value, .. } | Stmt::Assign { value, .. } => expr(value, f),
-            Stmt::Expr(e) => expr(e, f),
-            Stmt::If(i) => if_stmt(i, f),
-            Stmt::Match(m) => {
-                for arm in &mut m.arms {
-                    match &mut arm.body {
-                        MatchArmBody::Expr(e) => expr(e, f),
-                        MatchArmBody::Block(b) => serve_surfaces_in_mut(b, f),
-                    }
-                }
-            }
-            Stmt::For { body, .. } | Stmt::While { body, .. } => serve_surfaces_in_mut(body, f),
-            Stmt::Block(b) => serve_surfaces_in_mut(b, f),
-            _ => {}
-        }
-    }
-    if let Some(t) = &mut b.tail {
-        expr(t, f);
     }
 }
 
@@ -502,8 +470,9 @@ fn expr_sites<'a>(e: &'a Expr, out: &mut Vec<ServeSite<'a>>) {
     }
 }
 
-/// The serve sites a locus's bodies hold.
-pub(crate) fn locus_serve_sites(l: &LocusDecl) -> Vec<ServeSite<'_>> {
+/// The serve sites a locus's bodies hold: the form GH #1565 retired (an
+/// exposure is a param), read only to refuse it with the param to write.
+pub(crate) fn body_serve_sites(l: &LocusDecl) -> Vec<ServeSite<'_>> {
     let mut out = Vec::new();
     for m in &l.members {
         match m {
@@ -511,6 +480,34 @@ pub(crate) fn locus_serve_sites(l: &LocusDecl) -> Vec<ServeSite<'_>> {
             LocusMember::Fn(f) => serve_sites_in(&f.body, &mut out),
             LocusMember::Mode(md) => serve_sites_in(&md.body, &mut out),
             _ => {}
+        }
+    }
+    out
+}
+
+/// GH #1565: the serve site an exposure param declares (`web:
+/// api::Exposure = api::serve(…);`): the call the expansion kept once it
+/// built the exposure (`ParamDecl::serve`), or the param's init as written
+/// when it has not.
+pub fn param_serve_site(p: &ParamDecl) -> Option<ServeSite<'_>> {
+    match (&p.serve, &p.init) {
+        (Some(call), _) => ServeSite::of(call),
+        (None, ParamInit::Value(e)) => ServeSite::of(e),
+        _ => None,
+    }
+}
+
+/// The serve sites a locus holds: its exposure params, each with the site
+/// it declares, in declaration order.
+pub(crate) fn locus_serve_sites(l: &LocusDecl) -> Vec<(&ParamDecl, ServeSite<'_>)> {
+    let mut out = Vec::new();
+    for m in &l.members {
+        if let LocusMember::Params(pb) = m {
+            for p in &pb.params {
+                if let Some(site) = param_serve_site(p) {
+                    out.push((p, site));
+                }
+            }
         }
     }
     out
@@ -850,7 +847,19 @@ pub fn surface_rows(
         for d in flat_decls(&p.items) {
             let TopDecl::Locus(l) = d else { continue };
             let params = param_types(l);
-            for site in locus_serve_sites(l) {
+            let sites = locus_serve_sites(l);
+            // where the holder sits in the placed tree: the main locus, or
+            // the params from a main locus down to it (GH #1565)
+            let prefix: Vec<String> = if l.is_main || sites.is_empty() {
+                Vec::new()
+            } else {
+                crate::rpc_expand::holder_chains(&loci, &l.name.name)
+                    .into_iter()
+                    .next()
+                    .map(|c| c.fields.into_iter().map(|(_, f)| f).collect())
+                    .unwrap_or_default()
+            };
+            for (_, site) in sites {
                 let surface = match site.surface {
                     Expr::Ident(i) => Some(i.name.clone()),
                     Expr::Path(qn) => Some(qn.segments.iter().map(|s| s.name.as_str()).collect::<Vec<_>>().join("::")),
@@ -862,9 +871,9 @@ pub fn surface_rows(
                         .iter()
                         .find(|(k, r)| {
                             k.replica.is_none()
-                                && k.path.len() == 1
-                                && k.path[0].field == field
-                                && r.owner.as_ref().is_some_and(|o| o.path.is_empty())
+                                && k.path.len() == prefix.len() + 1
+                                && k.path.iter().zip(prefix.iter().map(String::as_str).chain([field])).all(|(a, b)| a.field == b)
+                                && r.owner.as_ref().is_some_and(|o| o.path.len() == prefix.len())
                         })
                         .map(|(_, r)| pool_label(placement, r.domain))
                 };
@@ -1027,24 +1036,14 @@ pub fn unserved_sites(programs: &[&Program]) -> Vec<Diag> {
             let TopDecl::Locus(l) = d else { continue };
             // A serve site whose exposure the expansion could not build:
             // over a transport this compiler does not ship yet.
-            for site in locus_serve_sites(l) {
-                let Some(Expr::Literal(hale_syntax::ast::Literal::String(name), _)) = site.option("as") else { continue };
-                if let (false, Some(kind)) = (l.is_main, socket_transport(l, site.transport)) {
-                    diags.push(Diag::ty(
-                        site.span,
-                        format!(
-                            "`api::serve` over `{kind}` in `{}`: a socket's listener runs on a pool of its own, which \
-                             only the main locus places; serve from the main locus (spec/api.md § The `Rpc` interface)",
-                            l.name.name
-                        ),
-                    ));
+            for (param, site) in locus_serve_sites(l) {
+                if param.serve.is_some() || !matches!(site.option("as"), Some(Expr::Literal(hale_syntax::ast::Literal::String(_), _))) {
                     continue;
                 }
-                let built = l.members.iter().any(|m| {
-                    matches!(m, LocusMember::Params(pb)
-                        if pb.params.iter().any(|p| p.name.name == crate::rpc_expand::exposure_param(name)))
-                });
-                if built {
+                // a socket transport the expansion left unbuilt is one a
+                // serve-site law refuses (its holder, its address, its
+                // receivers' order), not one this compiler lacks
+                if socket_transport(l, site.transport).is_some() {
                     continue;
                 }
                 let transport = match site.transport {
@@ -1405,18 +1404,32 @@ fn let_handles(b: &Block, out: &mut BTreeMap<usize, String>) {
 /// 1. an exposure is named once;
 /// 2. every receiver type is bound: to the one instance the serving locus
 ///    holds, or by `receivers:`;
-/// 3. a receiver outlives its exposure: a param of the serving locus,
-///    built by a literal, never a `let`-bound child;
+/// 3. a receiver lives as long as its exposure: a param of the holder,
+///    built by a literal and declared before the exposure;
 /// 4. a bound type is one the rows name;
 /// 5. a serve site states its queue: `bound:` and `on_full: refuse`.
 ///
 /// And what a site needs to be served at all: a surface that is declared,
 /// a name (`as:`), a transport instance, a place in a locus's body.
-pub fn serve_laws(bundle: &Bundle<'_>, rows: &SurfaceRows, entry: &crate::entry::EntryRow) -> Vec<Diag> {
+/// The effect rows, asked for only when they are needed (the check's
+/// `CheckInputs::effects`).
+pub type EffectsLookup<'e> = dyn Fn() -> Option<&'e crate::effect_rows::EffectRows> + 'e;
+
+/// `effects` is asked only when a server's listener is born after it on the
+/// main thread: the blocking analysis judges the server's `run()` then.
+pub fn serve_laws(
+    bundle: &Bundle<'_>,
+    rows: &SurfaceRows,
+    entry: &crate::entry::EntryRow,
+    effects: &EffectsLookup<'_>,
+    typed_bodies: &crate::typed_bodies::TypedBodies,
+    placement: &crate::placement::PlacementTable,
+) -> Vec<Diag> {
     let programs: Vec<&Program> = bundle.programs.values().copied().collect();
     let mut diags = Vec::new();
     let mut first_named: BTreeMap<String, Span> = BTreeMap::new();
     let surface_names: Vec<&str> = rows.surfaces.iter().map(|s| s.name.as_str()).collect();
+    let loci = crate::rpc_expand::loci_by_name(&programs);
     // the topics some locus publishes: the ones a stream can carry
     let published: BTreeSet<String> = programs
         .iter()
@@ -1444,19 +1457,22 @@ pub fn serve_laws(bundle: &Bundle<'_>, rows: &SurfaceRows, entry: &crate::entry:
                 TopDecl::Fn(f) => {
                     let mut out = Vec::new();
                     serve_sites_in(&f.body, &mut out);
+                    let mut handles = BTreeMap::new();
+                    let_handles(&f.body, &mut handles);
                     for s in out {
                         diags.push(Diag::ty(
                             s.span,
                             format!(
-                                "`api::serve` in `{}`: a serve site belongs to a locus's body, since its exposure is \
-                                 a param of the serving locus; serve from the locus that holds the receivers",
-                                f.name.name
+                                "`api::serve` in `{}`: an exposure is a param of the locus that holds it and its \
+                                 receivers; declare it in that locus's params, `{}` (spec/api.md § Serving)",
+                                f.name.name,
+                                param_form(&s, handles.get(&(s.span.start.0 as usize)))
                             ),
                         ));
                     }
                 }
                 TopDecl::Locus(l) => {
-                    serve_laws_of(bundle, entry, l, rows, &surface_names, &mut first_named, &mut diags);
+                    serve_laws_of(bundle, entry, l, rows, &surface_names, &loci, effects, typed_bodies, placement, &mut first_named, &mut diags);
                     hub_laws_of(l, &published, &mut first_named, &mut diags);
                 }
                 _ => {}
@@ -1596,15 +1612,79 @@ fn imported_main_is_built(bundle: &Bundle<'_>, entry: &crate::entry::EntryRow, l
     false
 }
 
+/// Whether the `receivers:` entry `i` binds the row type `ty`: by its key
+/// as written (`Orders`, `lib::Orders`), or, in a holder another seed
+/// declares, whose rows and param types name its loci by their mangled
+/// names (`__lib_…__Orders`) while the key keeps its author's spelling,
+/// by the param it names: that param's type is `ty`, the mangling of the
+/// key's name.
+pub(crate) fn binds_type(i: &hale_syntax::ast::StructInit, ty: &str, params: &BTreeMap<String, String>) -> bool {
+    let key = &i.name.name;
+    let tail = key.rsplit("::").next().unwrap_or(key);
+    if key == ty || tail == ty {
+        return true;
+    }
+    let mangled_key = ty.starts_with("__lib_")
+        && (ty.ends_with(&format!("__{}", crate::mangle::name_component(tail.as_bytes()))) || ty.ends_with(&format!("_{tail}")));
+    mangled_key && self_field(&i.value).and_then(|f| params.get(f)).is_some_and(|t| t == ty)
+}
+
+/// The param form a serve site written in a body is (GH #1565): its `let`
+/// name, or its `as:` made a name, declared as an `api::Exposure`.
+fn param_form(site: &ServeSite<'_>, handle: Option<&String>) -> String {
+    let surface = match site.surface {
+        Expr::Ident(i) => i.name.clone(),
+        Expr::Path(qn) => qn.segments.iter().map(|s| s.name.as_str()).collect::<Vec<_>>().join("::"),
+        _ => "…".to_string(),
+    };
+    let name = handle.cloned().or_else(|| match site.option("as") {
+        Some(Expr::Literal(hale_syntax::ast::Literal::String(s), _)) => {
+            Some(s.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '_' }).collect())
+        }
+        _ => None,
+    });
+    format!("{}: api::Exposure = api::serve({surface}, …);", name.as_deref().unwrap_or("web"))
+}
+
+#[allow(clippy::too_many_arguments)]
 fn serve_laws_of(
     bundle: &Bundle<'_>,
     entry: &crate::entry::EntryRow,
     l: &LocusDecl,
     rows: &SurfaceRows,
     surface_names: &[&str],
+    loci: &BTreeMap<&str, &LocusDecl>,
+    effects: &EffectsLookup<'_>,
+    typed_bodies: &crate::typed_bodies::TypedBodies,
+    placement: &crate::placement::PlacementTable,
     first_named: &mut BTreeMap<String, Span>,
     diags: &mut Vec<Diag>,
 ) {
+    // The form GH #1565 retired: a serve site in a body. Its exposure was
+    // always a param born with the locus; it is now declared as one.
+    let mut handles: BTreeMap<usize, String> = BTreeMap::new();
+    for m in &l.members {
+        match m {
+            LocusMember::Lifecycle(lc) => let_handles(&lc.body, &mut handles),
+            LocusMember::Fn(f) => let_handles(&f.body, &mut handles),
+            LocusMember::Mode(md) => let_handles(&md.body, &mut handles),
+            _ => {}
+        }
+    }
+    for site in body_serve_sites(l) {
+        let handle = handles.get(&(site.span.start.0 as usize));
+        let name = handle.cloned().unwrap_or_else(|| "web".to_string());
+        diags.push(Diag::ty(
+            site.span,
+            format!(
+                "`api::serve` in a body of `{}`: an exposure is a param of the locus that holds it, built with it and \
+                 placed by `placement {{ }}`; declare it in `params {{ }}`, `{}`, and use `self.{name}` where the body \
+                 used the handle (`self.{name}.wait()`, `self.{name}.stop()`) (spec/api.md § Serving)",
+                l.name.name,
+                param_form(&site, handle)
+            ),
+        ));
+    }
     let sites = locus_serve_sites(l);
     if sites.is_empty() {
         return;
@@ -1616,7 +1696,7 @@ fn serve_laws_of(
     // the entry's main only). A library whose main locus is merely imported
     // for its types has serve sites that never run, and says nothing here.
     if l.is_main && imported_main_is_built(bundle, entry, l) {
-        for site in &sites {
+        for (_, site) in &sites {
             diags.push(Diag::ty(
                 site.span,
                 format!(
@@ -1628,16 +1708,18 @@ fn serve_laws_of(
         }
         return;
     }
-    let mut handles: BTreeMap<usize, String> = BTreeMap::new();
-    for m in &l.members {
-        match m {
-            LocusMember::Lifecycle(lc) => let_handles(&lc.body, &mut handles),
-            LocusMember::Fn(f) => let_handles(&f.body, &mut handles),
-            LocusMember::Mode(md) => let_handles(&md.body, &mut handles),
-            _ => {}
-        }
-    }
     let params = param_types(l);
+    let order: Vec<&str> = l
+        .members
+        .iter()
+        .filter_map(|m| match m {
+            LocusMember::Params(pb) => Some(pb.params.iter()),
+            _ => None,
+        })
+        .flatten()
+        .map(|p| p.name.name.as_str())
+        .collect();
+    let declared_at = |f: &str| order.iter().position(|p| *p == f);
     let literal_params: BTreeSet<&str> = l
         .members
         .iter()
@@ -1649,7 +1731,8 @@ fn serve_laws_of(
         .filter(|p| matches!(&p.init, ParamInit::Value(Expr::Struct { .. })))
         .map(|p| p.name.name.as_str())
         .collect();
-    for site in sites {
+    for (param, site) in sites {
+        let pname = param.name.name.as_str();
         let surface = match site.surface {
             Expr::Ident(i) => Some(i.name.clone()),
             Expr::Path(qn) => Some(qn.segments.iter().map(|s| s.name.as_str()).collect::<Vec<_>>().join("::")),
@@ -1660,6 +1743,23 @@ fn serve_laws_of(
             Some(Expr::Literal(hale_syntax::ast::Literal::String(s), _)) => Some(s.clone()),
             _ => None,
         };
+        // The param is the exposure: it is typed as one.
+        let typed = match &param.ty {
+            None => true,
+            Some(TypeExpr::Named { path, .. }) => {
+                let segs: Vec<&str> = path.segments.iter().map(|s| s.name.as_str()).collect();
+                matches!(segs.as_slice(), ["api", "Exposure"] | ["std", "api", "Exposure"])
+            }
+            Some(_) => false,
+        };
+        if !typed {
+            diags.push(Diag::ty(
+                param.span,
+                format!(
+                    "exposure param `{pname}`: `api::serve(…)` builds an `api::Exposure`; declare `{pname}: api::Exposure`"
+                ),
+            ));
+        }
         if !surface_names.contains(&surface.as_str()) {
             diags.push(Diag::ty(
                 site.span,
@@ -1725,6 +1825,156 @@ fn serve_laws_of(
                 ),
             ));
         }
+        // The listener (GH #1565). A socket transport's listener is a param
+        // of the main locus: for an exposure the main locus holds, its row
+        // places the listener; for one a locus below it holds, the listener
+        // runs where the main locus places the param that holds that locus.
+        let listener = crate::rpc_expand::has_listener(l, site.transport);
+        match socket_transport(l, site.transport) {
+            // a hub is the main locus's: its listener and its stream
+            // bindings are placed there (spec/api.md § Streams)
+            Some(kind @ ("ws::Hub" | "udp::Hub")) if !l.is_main => diags.push(Diag::ty(
+                site.span,
+                format!(
+                    "serve of `{surface}` over `{kind}` in `{}`: a hub is the main locus's, its listener and its \
+                     stream bindings placed there; serve over it from the main locus, or serve from `{}` over a \
+                     socket transport (`http::Rpc`, `unix::Rpc`) (spec/api.md § Streams)",
+                    l.name.name, l.name.name
+                ),
+            )),
+            // the compiler adds a socket transport's listener from the
+            // literal that builds the transport, and reads its address there
+            Some(kind) if !kind.ends_with("Hub") && !listener => diags.push(Diag::ty(
+                site.span,
+                format!(
+                    "serve of `{surface}` as `{name}` over `{kind}`: the compiler adds the transport's listener from \
+                     the literal that builds it and reads its address there, and this transport is built elsewhere; \
+                     write its literal at the serve site or in the param that holds it (spec/api.md § The `Rpc` \
+                     interface)"
+                ),
+            )),
+            _ => {}
+        }
+        if l.is_main {
+            if let Some(row) = crate::rpc_expand::placement_entry(l, pname) {
+                if !listener {
+                    let over = match site.transport {
+                        Some(Expr::Struct { path, .. }) => {
+                            path.segments.iter().map(|s| s.name.as_str()).collect::<Vec<_>>().join("::")
+                        }
+                        Some(e) => self_field(e).and_then(|f| params.get(f)).cloned().unwrap_or_else(|| "its transport".to_string()),
+                        None => "its transport".to_string(),
+                    };
+                    diags.push(Diag::ty(
+                        row.span,
+                        format!(
+                            "placement entry `{pname}`: exposure `{name}` over `{over}` has no listener of its own to \
+                             place, and the exposure runs with `{}`, beside the sources it calls; drop the row",
+                            l.name.name
+                        ),
+                    ));
+                } else if !crate::rpc_expand::hosts_listener(row) {
+                    diags.push(Diag::ty(
+                        row.span,
+                        format!(
+                            "placement entry `{pname}`: an exposure's row places its listener, whose accept and reads \
+                             park a coroutine, so it runs on a named pool `where async_io`; write `{pname}: \
+                             cooperative(pool = io) where async_io` (spec/api.md § Serving)"
+                        ),
+                    ));
+                }
+            }
+        } else if listener {
+            let chains = crate::rpc_expand::holder_chains(loci, &l.name.name);
+            if chains.is_empty() {
+                diags.push(Diag::ty(
+                    param.span,
+                    format!(
+                        "exposure `{name}` is held by `{}`, which no main locus holds through its params: a socket's \
+                         listener is the main locus's, placed where it places the param that holds the server; hold \
+                         `{}` as a param of the main locus, or of a locus its params hold (spec/api.md § Serving)",
+                        l.name.name, l.name.name
+                    ),
+                ));
+            }
+            let mut by_main: BTreeMap<&str, Vec<String>> = BTreeMap::new();
+            for c in &chains {
+                by_main.entry(c.main.as_str()).or_default().push(c.path());
+            }
+            for (main, paths) in &by_main {
+                if paths.len() > 1 {
+                    let spelled: Vec<String> = paths.iter().map(|p| format!("`self.{p}`")).collect();
+                    diags.push(Diag::ty(
+                        param.span,
+                        format!(
+                            "exposure `{name}` is served twice: `{}`, which holds it, is held by `{main}` as {}; an \
+                             exposure is served from one place, so hold its server once",
+                            l.name.name,
+                            spelled.join(" and ")
+                        ),
+                    ));
+                }
+            }
+            let address = crate::rpc_expand::listener_address(l, site.transport);
+            for c in &chains {
+                if by_main.get(c.main.as_str()).is_some_and(|p| p.len() > 1) {
+                    continue;
+                }
+                let root = &c.fields[0].1;
+                if let Some(e) = loci.get(c.main.as_str()).and_then(|m| crate::rpc_expand::placement_entry(m, root)) {
+                    let k = crate::rpc_expand::entry_replicas(e);
+                    if k > 1 {
+                        diags.push(Diag::ty(
+                            param.span,
+                            format!(
+                                "exposure `{name}` is served {k} times: `{}` places `{root}`, which holds `{}`, as {k} \
+                                 replicas; an exposure is served from one place, so place its server unreplicated",
+                                c.main, l.name.name
+                            ),
+                        ));
+                        continue;
+                    }
+                }
+                if let Some(addr) = &address {
+                    if crate::rpc_expand::reads_holder(addr) {
+                        let programs: Vec<&Program> = bundle.programs.values().copied().collect();
+                        let window = crate::listener_window::Window::new(&programs, loci, effects(), &bundle.import_renames, typed_bodies, placement);
+                        let sites = window.constructions_of(&programs, &c.main);
+                        let step = loci.get(c.main.as_str()).and_then(|m| window.before_listener(m, root, &sites));
+                        if let Some((step, why)) = step {
+                            diags.push(Diag::ty(
+                                addr.span(),
+                                format!(
+                                    "exposure `{name}` held by `{}`: its address reads `{}`, so its listener (`{}`'s) \
+                                     is born after `self.{root}`, once everything `{}` builds up to it has finished, and \
+                                     {step} may not return ({why}): a step that waits on the exposure would never see it \
+                                     served. Place `{root}` on a pool (`{root}: cooperative(pool = io) where async_io;`) \
+                                     when only its `run()` waits, move the waiting into `{}`'s `run()`, or write an \
+                                     address that reads nothing of `{}` (spec/api.md § Serving)",
+                                    l.name.name, l.name.name, c.main, c.main, c.main, l.name.name
+                                ),
+                            ));
+                            continue;
+                        }
+                    }
+                    if let Err(what) = crate::rpc_expand::address_for_main(c, addr) {
+                        diags.push(Diag::ty(
+                            addr.span(),
+                            format!(
+                                "exposure `{name}` held by `{}`: its listener is `{}`'s, born after `self.{root}`, so \
+                                 the address it binds is read off `{}` as it was built (`self.{}.<param>`), and {what} \
+                                 cannot be read that way; compute the address from `{}`'s params (spec/api.md § Serving)",
+                                l.name.name,
+                                c.main,
+                                l.name.name,
+                                c.path(),
+                                l.name.name
+                            ),
+                        ));
+                    }
+                }
+            }
+        }
         // The types the surface's rows name, in the order written.
         let mut named: Vec<(usize, &str)> = rows
             .rows
@@ -1740,11 +1990,8 @@ fn serve_laws_of(
             }
         }
         // Law 4: a bound type is one the rows name.
-        let is_row_type = |written: &str| {
-            row_types.iter().any(|t| *t == written || written.rsplit("::").next().is_some_and(|tail| tail == *t))
-        };
         for i in site.receivers() {
-            if !is_row_type(&i.name.name) {
+            if !row_types.iter().any(|t| binds_type(i, t, &params)) {
                 diags.push(Diag::ty(
                     i.span,
                     format!(
@@ -1754,11 +2001,25 @@ fn serve_laws_of(
                 ));
             }
         }
+        // Law 3, the order half: a receiver is born before the exposure that
+        // binds it (a locus's params are built in declaration order); both
+        // are the holder's, so neither outlives the other's holder.
+        let born_after = |field: &str, at: Span, diags: &mut Vec<Diag>| {
+            if declared_at(field) > declared_at(pname) {
+                diags.push(Diag::ty(
+                    at,
+                    format!(
+                        "serve of `{surface}` as `{name}`: `{field}` is declared after `{pname}`, the exposure that \
+                         binds it; a receiver is born before the exposure that binds it, so declare `{field}` first"
+                    ),
+                ));
+            }
+        };
         // Laws 2 and 3, per receiver type the rows name.
         for ty in &row_types {
             let ty: &str = ty;
             let bound_here = site.receivers().iter().find(|i| {
-                i.name.name == ty || i.name.name.rsplit("::").next().is_some_and(|tail| tail == ty)
+                binds_type(i, ty, &params)
             });
             let instance: Option<(&Expr, Span)> = bound_here.map(|i| (&i.value, i.span));
             let Some((expr, at)) = instance else {
@@ -1774,6 +2035,8 @@ fn serve_laws_of(
                                     l.name.name
                                 ),
                             ));
+                        } else {
+                            born_after(one, site.span, diags);
                         }
                     }
                     [] => diags.push(Diag::ty(
@@ -1817,6 +2080,8 @@ fn serve_laws_of(
                                 l.name.name
                             ),
                         ));
+                    } else {
+                        born_after(field, at, diags);
                     }
                 }
                 Some(field) => diags.push(Diag::ty(
@@ -1826,32 +2091,14 @@ fn serve_laws_of(
                         l.name.name
                     ),
                 )),
-                None => {
-                    let local = match expr {
-                        Expr::Ident(i) => Some(i.name.clone()),
-                        _ => None,
-                    };
-                    let stop = handles
-                        .get(&(site.span.start.0 as usize))
-                        .map_or_else(|| "its `stop()`".to_string(), |h| format!("`{h}.stop()`"));
-                    match local {
-                        Some(local) => diags.push(Diag::ty(
-                            at,
-                            format!(
-                                "serve of `{surface}`: `{local}` is `let`-bound and dissolves at the end of this block, \
-                                 before {stop}; hold it as a param"
-                            ),
-                        )),
-                        None => diags.push(Diag::ty(
-                            at,
-                            format!(
-                                "serve of `{surface}`: the receiver of `{ty}` is no param of `{}`; hold it as a param \
-                                 and bind it as `self.<param>`",
-                                l.name.name
-                            ),
-                        )),
-                    }
-                }
+                None => diags.push(Diag::ty(
+                    at,
+                    format!(
+                        "serve of `{surface}`: the receiver of `{ty}` is no param of `{}`; hold it as a param \
+                         and bind it as `self.<param>`",
+                        l.name.name
+                    ),
+                )),
             }
         }
     }

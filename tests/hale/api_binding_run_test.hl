@@ -49,11 +49,13 @@ locus Echo {
 api Public { rpc Echo::on_ping; }
 
 main locus App {
-    params { echo: Echo = Echo { }; }
+    params {
+        echo: Echo = Echo { };
+        sock: api::Exposure = api::serve(Public, unix::Rpc { path: api_sock(), roles: Table { } }, as: "sock", receivers: { Echo: self.echo }, bound: 8, on_full: refuse);
+        web: api::Exposure = api::serve(Public, http::Rpc { bind: "127.0.0.1:" + to_string(free_port()), codec: json, principals: Tokens { }, roles: Table { } }, as: "web", receivers: { Echo: self.echo }, bound: 8, on_full: refuse);
+    }
     placement { echo: cooperative(pool = work) where async_io; }
     run() {
-        let sock = api::serve(Public, unix::Rpc { path: api_sock(), roles: Table { } }, as: "sock", receivers: { Echo: self.echo }, bound: 8, on_full: refuse);
-        let web = api::serve(Public, http::Rpc { bind: "127.0.0.1:" + to_string(free_port()), codec: json, principals: Tokens { }, roles: Table { } }, as: "web", receivers: { Echo: self.echo }, bound: 8, on_full: refuse);
         let fd = std::io::unix::connect_wait(api_sock(), 10s) or - 1;
         std::test::assert(fd >= 0, "connected to the exposure's socket");
         std::io::tcp::__set_recv_timeout_ns(fd, 200000000);
@@ -66,8 +68,8 @@ main locus App {
             if len(chunk) == 0 { i = i + 1; } else { got = got + chunk; }
         }
         std::test::assert(std::str::contains(got, "\"ok\":true") && std::str::contains(got, "\"n\":42"), "the call answered through the exposure: " + got);
-        sock.stop();
-        web.stop();
+        self.sock.stop();
+        self.web.stop();
         std::io::fs::unlink(api_sock()) or discard;
     }
 }

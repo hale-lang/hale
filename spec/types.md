@@ -91,7 +91,8 @@ comparison operator, the other argument of `min` / `max`, an array
 literal's element type, a match's scrutinee — and is `Decimal<9>`
 where nothing gives it one (`let a = 1.5d;`). So does an expression
 built only of such values: a negated literal, an arithmetic operator
-over two of them, a block or an `if` whose every value is one, an
+over two of them, a block, an `if` or a `match` whose every value is
+one (`let y: Decimal<2> = match n { 1 -> 1.25d, _ -> 0.5d, };`), an
 `or` over a `std::str::parse_decimal` / `range_parse_decimal` call
 whose fallback is one. An array, a tuple or a `[v; N]` literal holding
 a Decimal flows into its place element by element, its shape (length,
@@ -726,9 +727,13 @@ typecheck and codegen.
 | LLVM repr | `ptr` — a typed pointer to T's struct layout |
 | Element type | The boxed inner type carries T from the slot's `of T` declaration; `Cell<Int>` and `Cell<Float>` typecheck distinctly. |
 | Validity surface | Round-trip only: a value can flow through `let`-bindings, get re-supplied to `release` / `free`, and live inside the locus body. |
-| Forbidden ops | println, arithmetic, comparison, fn-return-boundary crossing. Each rejects with a focused build-time diagnostic. |
-| Field access (v1.x-2) | Struct cells support `cell.field` reads and `cell.field = v` writes; lowers to struct GEP + load/store. Primitive cells (`Cell<Int>` etc.) reject field access with a focused diagnostic. |
-| Slot-of-origin tracking (v1.x-5) | `Cell<T>` carries both T AND the originating `(locus, slot)` pair. Releasing a cell into a different slot than it came from is a hard error at codegen, with a diagnostic naming the originating slot. |
+| Forbidden ops | println, arithmetic, comparison, fn-return-boundary crossing. Printing a cell (`println`, `print`, `to_string`, an f-string) is a type error at the cell; the others reject with a focused build-time diagnostic. |
+| Field access (v1.x-2) | Struct cells support `cell.field` reads and `cell.field = v` writes; lowers to struct GEP + load/store, and a read types as the record's field. Primitive cells (`Cell<Int>` etc.) have no fields: `c.foo` is a type error at the field name. |
+| Slot-of-origin tracking (v1.x-5) | `Cell<T>` carries both T AND the originating `(locus, slot)` pair. Releasing a cell into a different slot than it came from is a type error at the cell, naming the originating slot. |
+
+The checker follows a cell from the slot call that makes it
+(`self.entries.acquire()`) through the `let` bindings that hold it;
+those are the cells its rules see.
 
 ## Perspective types
 
@@ -1286,15 +1291,25 @@ type Stack<T> { items: [T]; }
 locus Cache<K, V> { params { cap: Int = 1; } }
 ```
 
-The constraint syntax `<T: Constraint>` admits:
+### Generic bounds
 
-- `ProjectionClass` (built-in any-of-three; F.2)
-- A specific projection class: `Rich`, `Chunked`, `Recognition`
-- Concrete types: `<T: int>` is illegal (use the type directly);
-  `<T: SomeStruct>` is also illegal (no trait system in v0)
+The constraint syntax `<T: Bound>` admits one bound, `Numeric`:
+the argument is `Int`, `Float`, a `Decimal` or a `Duration`
+(`type Box<T: Numeric> { value: T; }`, `fn twice<T: Numeric>(x: T)
+-> T`). `hale check` holds it where the template is instantiated —
+at the argument of a type annotation (`Box<String>`), and at the
+callee of a generic fn call whose arguments bind `T` to another type
+(an identity or a range included: it is a named argument) — and
+refuses any other
+bound name at the declaration (`<T: Eq>`, `<T: SomeStruct>`): there
+is no trait system. An argument that is itself a type parameter of
+the enclosing template is held where that template is instantiated.
 
-V0 supports only projection-class constraints. Future versions
-may add traits.
+```
+main.hl:7:20: type error: generic type `Box`: `T` is bounded
+`Numeric`, and `String` is not one of `Int`, `Float`, `Decimal` or
+`Duration`
+```
 
 Monomorphization: the compiler emits one machine-code instance
 per concrete generic instantiation (per F.1 commitment to
@@ -1368,7 +1383,13 @@ not supported in v0; explicit is preferred for the `inferred`-vs-
 Three init shapes:
 
 - `name: T = expr;` — default. Used when the caller omits the
-  field; evaluated in the caller's scope at instantiation time.
+  field; evaluated in the caller's scope at instantiation time. A
+  default publishes nothing: a `<-` (or a `Topic.write`) written in
+  any default (a locus's param, a record type's field, a fn's,
+  method's or hook's param) is refused at the send, since the scope
+  that evaluates it holds none of the declaration's bus ("a publish in
+  a default: …; publish from a hook or a method instead"). A method
+  the default calls may publish.
 - `name: T;` — **required**. The caller MUST supply the field at
   the locus literal site; instantiation without it is a compile
   error. Use for fields where no sensible default exists (e.g.
@@ -1462,6 +1483,48 @@ A locus's `fn` member can be a method (takes `self`) or a free
 function within the locus's scope. Lifecycle methods (`birth`,
 `accept`, etc.) are not regular `fn`s — they have their own
 syntax and don't take `self` (it's implicit).
+
+A function value is a free fn's name read as a value
+(`apply(dbl, 1)`). A method is not one: it is called on its locus,
+and a `fn(A) -> B` value carries no locus, so `self.dbl` (or
+`h.dbl`, a perspective's or an interface's method) written anywhere
+but a call's callee is a type error at the method's name:
+
+```
+main.hl:3:33: type error: `.dbl` is a method of the locus `App`,
+written as a value: a method is called on its locus (`….dbl(…)`),
+and a `fn(…)` value carries none, so it is not one. Pass a free fn,
+or call the method where the value is needed
+```
+
+A `fallible(E)` fn is not a value either, a program's own, an
+imported seed's (`lib::parse`) or the stdlib's: its ABI returns the
+failure beside the value, and a `fn(…) -> T` value's call reads a
+plain result, so there is no error channel to carry it through. Its
+name read as a value is a type error at the name that names a wrapper
+handling the error:
+
+```
+main.hl:4:27: type error: `parse` is `fallible(Oops)`, and a fn value
+has no error channel: a call through it could not address the
+failure. Wrap it in a fn that handles the error, `fn parse_or(a0:
+String) -> Int { return parse(a0) or 0; }`, and pass that
+```
+
+A `std::` fn is a value when the stdlib writes it in Hale: its body is
+merged into the program under its rename, so `apply(std::url::encode,
+s)` passes that fn as `apply(dbl, 1)` passes `dbl`, typed by its
+signature (a `fallible` one, `std::hex::decode`, is refused as
+above). A builtin the stdlib answers at a call (`std::math::abs`,
+`std::str::upper`) has no fn behind it, and its path in any position
+but a call's callee is a type error at the path that names a wrapper:
+
+```
+main.hl:2:27: type error: `std::str::upper` is not a fn value: the
+stdlib answers it at a call, and there is no fn behind it to pass.
+Wrap it in a fn of your own, `fn upper_of(a0: String) -> String {
+return std::str::upper(a0); }`, and pass that
+```
 
 ### Calls to bare names
 
@@ -1811,12 +1874,62 @@ instance, seeded from the `main locus`'s `placement { }` entries):
    handler runs on the server's pool); a stdlib locus's own methods,
    which are not summarized (a call on one may move any argument into
    any other and into the receiver, but what it stores into or calls
-   on a locus it holds is not judged); and a locus's `params`
-   defaults, which are not walked. Where the check cannot tell
-   instances apart it takes them as one: every instance one literal
-   (or one call of a helper that builds one) produces, and every free
-   fn of one name, so it may refuse a store into an instance that
-   never holds the handle another one does.
+   on a locus it holds is not judged); the parameter effects of a
+   method on a receiver whose locus type the check cannot tell; a
+   call through an interface; and a locus's `params` defaults, which
+   are not walked. Where the check cannot tell instances apart it
+   takes them as one: every instance one literal (or one call of a
+   helper that builds one) produces, and every free fn of one name,
+   so it may refuse a store into an instance that never holds the
+   handle another one does.
+
+   A field a literal hands an instance a field of an enclosing
+   instance holds (`Routes { w: self.a }`, written in `App`'s params)
+   holds that instance, which runs where its own row does: down `self`
+   from the holder, a store into it or a method call on it is
+   cross-pool when the two pools differ.
+
+   The rule is checked statically where the walk follows the handle,
+   and enforced at run time at every remaining site (GH #1566,
+   spec/runtime.md § *Cross-pool backstop*): every instance records
+   the domain it was built on, and a store into a locus's field from
+   outside its methods (not an inline scalar slot) or a method call on
+   a locus reached any way but down `self` (through an interface, on
+   the locus behind it) compares the receiver's domain with the
+   running code's. A mismatch is a violation: the
+   program prints the site, the store (or the method call, `cross-pool
+   method call` with the method) and both pools, and exits 1, before
+   the store or the call touches the other pool's locus:
+
+   ```text
+   main.hl:8:9: violation: cross-pool store into `W.name` from pool `io`; this `W` runs on pool `main`: reach it through a method on the bus
+   ```
+
+   An instance is on the domain it was built on until a holder adopts
+   it: a locus-typed field filled from a local or a parameter (a
+   literal's param, or a store into the field) moves the instance, and
+   the children it owns, onto the domain the holder runs on (`Web`
+   built in `fn main` and handed to an io-placed server's handler serves
+   from io). Hale does not refuse a use of the local after the hand-over,
+   so a builder that kept it and reaches the instance from its own
+   domain afterwards is caught at run time. A value that is a field of
+   `self`, or a local bound to one, is shared rather than adopted: the
+   instance stays where it runs, and down `self` a receiver is checked
+   when the path goes through a field so filled. A receiver whose form
+   synchronizes access from another domain, and a local bound to a
+   locus literal the running code built (never rebound, never handed
+   over), are not checked; a locus's `drain()` and `dissolve()` run as
+   its own domain wherever the runtime runs them, and an `on_failure`
+   handler reaches its failed child's.
+
+   Two exemptions are by design. What a `bindings { }` entry builds (an
+   adapter, a transport, a codec) belongs to no one domain: the runtime
+   calls an adapter's `send` from every publishing thread through a
+   function pointer, and the adapter's own synchronization carries that
+   contract. And a stdlib locus handed a value of `self` at its literal
+   (an exposure its transport, a server its handler) is driven from the
+   pool its machinery runs on: the stdlib's own synchronization covers
+   it, so such a field is not checked down `self`.
 5. Bus sends (`Topic <- v;` / `"subj" <- v;`) are unrestricted
    — the runtime's cross-thread dispatch (m28b condvar+memcpy)
    handles the boundary safely.
@@ -2147,6 +2260,28 @@ The resolver injects four fallible-payload types into the top
 scope so user code can name them in `fallible(...)` markers and
 `or` substitute clauses. All are idempotent — a user-declared
 type with the same name wins.
+
+Winning means standing in for the builtin wherever lowering builds
+one under that name, and the stdlib's own code is merged into every
+program: its parsers reach `ParseError`, `std::crypto` reaches
+`CryptoError`, its `bounded` pushes `CapacityError`, its closures
+`ClosureViolation`, its `@form` loci `IndexError` and `KeyError`, in
+every program whether or not the program calls them. So a program's
+type of one of those names that lacks a field of the builtin's shape
+(by name and primitive type) is a type error at its declaration:
+
+```
+main.hl:1:1: type error: user-declared `type ParseError` shadows the
+stdlib's `ParseError` but is missing the expected `kind: String`
+field (the stdlib's own code, merged into every program, and lowering
+build `ParseError` under that name on failure). Either match the
+stdlib shape, rename your type (e.g. `MyParseError`), or use
+`std::str::ParseError` qualified where you need the stdlib's shape.
+```
+
+`EmptyError` and the other builtins the stdlib does not reach are
+refused only in a program that reaches them itself (a `@form(heap)`,
+a `std::` call failing with one).
 
 | Trigger | Type | Fields |
 |---|---|---|

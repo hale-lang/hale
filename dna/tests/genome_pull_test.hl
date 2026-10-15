@@ -115,7 +115,7 @@ main locus App {
         let a2 = in_dir(self.node, "git\npush\n-q\norigin\nmain\nrefs/dna/*:refs/dna/*");
         std::test::assert_eq_int(a2.code, 0, "the genome and the record at the forge: " + a2.stderr);
         let dev = scratch + "/dev";
-        let cl = in_dir(scratch, "git\nclone\n-q\n" + bare + "\n" + dev);
+        let cl = dna::clone_repo(bare, dev);
         std::test::assert_eq_int(cl.code, 0, "a developer's clone: " + cl.stderr);
         let g1 = in_dir(dev, "git\nconfig\nuser.name\ndev");
         let g2 = in_dir(dev, "git\nconfig\nuser.email\ndev@local");

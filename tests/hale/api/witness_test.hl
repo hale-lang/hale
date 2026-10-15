@@ -166,6 +166,11 @@ main locus Desk {
         orders_failed: Int = 0;
         ledger_failed: Int = 0;
         answered_before_failure: Int = -1;
+        public: api::Exposure = api::serve(Public, self.public_f, as: "public", receivers: { Orders: self.orders }, bound: 8, on_full: refuse);
+        partner: api::Exposure = api::serve(Public, self.partner_f, as: "partner", receivers: { Orders: self.partner_orders }, bound: 8, on_full: refuse);
+        admin: api::Exposure = api::serve(Admin, self.admin_f, as: "admin", receivers: { Orders: self.orders, Ledger: self.ledger }, bound: 8, on_full: refuse);
+        local: api::Exposure = api::serve(Local, self.local_f, as: "local", bound: 8, on_full: refuse);
+        gate: api::Exposure = api::serve(Gate, self.gate_f, as: "gate", receivers: { Hold: self.hold }, bound: 1, on_full: refuse);
     }
     placement {
         orders: cooperative(pool = desk) where async_io;
@@ -189,11 +194,6 @@ main locus Desk {
     on_failure(l: Ledger, err: ClosureViolation) { self.ledger_failed = self.ledger_failed + 1; }
 
     run() {
-        let public = api::serve(Public, self.public_f, as: "public", receivers: { Orders: self.orders }, bound: 8, on_full: refuse);
-        let partner = api::serve(Public, self.partner_f, as: "partner", receivers: { Orders: self.partner_orders }, bound: 8, on_full: refuse);
-        let admin = api::serve(Admin, self.admin_f, as: "admin", receivers: { Orders: self.orders, Ledger: self.ledger }, bound: 8, on_full: refuse);
-        let local = api::serve(Local, self.local_f, as: "local", bound: 8, on_full: refuse);
-        let gate = api::serve(Gate, self.gate_f, as: "gate", receivers: { Hold: self.hold }, bound: 1, on_full: refuse);
         let p = self.public_f;
         let q = self.partner_f;
         let a = self.admin_f;
@@ -348,11 +348,11 @@ main locus Desk {
         q.call(74, "Orders::place", order, "t-carol");
         std::test::assert_eq_str(q.await_outcome(74, 2000), "result", "partner_orders is another instance, and serves on");
 
-        public.stop();
-        partner.stop();
-        admin.stop();
-        local.stop();
-        gate.stop();
+        self.public.stop();
+        self.partner.stop();
+        self.admin.stop();
+        self.local.stop();
+        self.gate.stop();
     }
 }
 

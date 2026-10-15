@@ -856,6 +856,13 @@ locus __StdApiExposure {
         self.settle_slot(slot, 1);
     }
     fn on_event(ev: __StdApiRpcEvent) {
+        if ev.kind == 7 {
+            // the transport heard the address its listener was bound to (a
+            // listener born after this exposure, under a server locus the
+            // main locus holds): the description states it
+            if len(ev.body) > 0 { self.address = ev.body; }
+            return;
+        }
         if ev.kind == 5 {
             // an incarnation of the receiver is up. One announced twice (its
             // birth, and its answer to the exposure's hello) is one
@@ -1885,7 +1892,7 @@ locus __StdApiHttpListener {
         // see the Unix listener: nothing is accepted before the exposure is
         // subscribed, and the asking repeats until the transport answers
         while !self.started && !self.stopped && !self.draining {
-            __ApiHttpOutT <- __StdApiHttpOut { key: self.tid, kind: 4, status: 0, body: "" };
+            __ApiHttpOutT <- __StdApiHttpOut { key: self.tid, kind: 4, status: 0, body: self.listener };
             std::time::sleep(2ms);
         }
         if !self.stopped && !self.draining {
@@ -1981,12 +1988,18 @@ locus __StdApiHttpRpc {
     bus {
         subscribe __ApiHttpOutT as on_ask where key == self.tid;
         publish __ApiHttpOutT;
+        publish __ApiRpcEventT;
     }
     fn attach(exposure: Int) -> String {
         return "http";
     }
     fn on_ask(o: __StdApiHttpOut) {
         if o.kind == 4 {
+            // the listener's asking names the address it was bound to: the
+            // exposure's description states it
+            if len(o.body) > 0 {
+                __ApiRpcEventT <- __StdApiRpcEvent { exposure: self.tid, rid: 0, slot: 0, kind: 7, stamp: 0, body: o.body };
+            }
             __ApiHttpOutT <- __StdApiHttpOut { key: self.tid, kind: 3, status: 0, body: "" };
         }
     }
@@ -2274,12 +2287,18 @@ locus __StdApiMcpRpc {
     bus {
         subscribe __ApiHttpOutT as on_ask where key == self.tid;
         publish __ApiHttpOutT;
+        publish __ApiRpcEventT;
     }
     fn attach(exposure: Int) -> String {
         return "mcp";
     }
     fn on_ask(o: __StdApiHttpOut) {
         if o.kind == 4 {
+            // the listener's asking names the address it was bound to: the
+            // exposure's description states it
+            if len(o.body) > 0 {
+                __ApiRpcEventT <- __StdApiRpcEvent { exposure: self.tid, rid: 0, slot: 0, kind: 7, stamp: 0, body: o.body };
+            }
             __ApiHttpOutT <- __StdApiHttpOut { key: self.tid, kind: 3, status: 0, body: "" };
         }
     }

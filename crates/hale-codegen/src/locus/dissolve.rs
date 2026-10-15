@@ -1447,7 +1447,15 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     ) -> Result<Vec<(String, u32, CodegenTy)>, CodegenError> {
         let mut entries: Vec<(String, u32, CodegenTy)> =
             info.fields.iter().map(|(n, (idx, ty))| (n.clone(), *idx, ty.clone())).collect();
-        entries.sort_by_key(|(_, idx, _)| *idx);
+        // Declaration order, not the struct's layout: the layout puts the
+        // fields a body touches most first (F.32-1b, for the cache line),
+        // and a teardown's order is the declaration's whatever the bodies
+        // read (spec/runtime.md § Lifecycle obligations, line 12). The
+        // fields no param declares (the runtime's own slots) follow, in
+        // their layout order.
+        let declared: BTreeMap<&str, usize> =
+            info.defaults.iter().enumerate().map(|(i, (n, _))| (n.as_str(), i)).collect();
+        entries.sort_by_key(|(n, idx, _)| (declared.get(n.as_str()).copied().unwrap_or(usize::MAX), *idx));
         if !self.cascade_orders.contains_key(locus_name) {
             let plan = self.lifecycle;
             let steps = self.spines.cascade_order(locus_name).map_err(CodegenError::Unsupported)?;

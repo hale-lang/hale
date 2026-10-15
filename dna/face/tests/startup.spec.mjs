@@ -76,13 +76,20 @@ const test = base.extend({
         }
       }
       await sleep(500);
+      const signalled = [];
       for (const dir of stateDirs) {
         let names = [];
         try { names = await readdir(path.join(dir, 'children')); } catch { continue; }
         for (const name of names.filter(n => n.endsWith('.pid'))) {
-          try { const pid = Number((await readFile(path.join(dir, 'children', name), 'utf8')).trim()); if (pid > 0) process.kill(pid, 'SIGKILL'); } catch { }
+          try { const pid = Number((await readFile(path.join(dir, 'children', name), 'utf8')).trim()); if (pid > 0) { signalled.push(pid); process.kill(pid, 'SIGKILL'); } } catch { }
         }
       }
+      // A killed child (or the git it ran) can still be writing under the
+      // project's .git while it exits; wait, bounded, until each is gone,
+      // so the scratch removal below does not race it.
+      const gone = pid => { try { process.kill(pid, 0); return false; } catch { return true; } };
+      const until = Date.now() + 5000;
+      while (Date.now() < until && !signalled.every(gone)) await sleep(50);
     };
     try {
       await execute(generated.command, generated.args, { env, timeout: 300000, maxBuffer: 2097152 });
@@ -151,7 +158,10 @@ const test = base.extend({
           for (const name of names.filter(n => n.endsWith('.log'))) await testInfo.attach(`${path.basename(dir)}-${name}`, { path: path.join(dir, 'children', name), contentType: 'text/plain' });
         }
       }
-      await rm(scratch, { recursive: true, force: true });
+      // A process that outlived the stops above may still be writing in
+      // the tree (ENOTEMPTY on a .git/objects directory, seen in CI): the
+      // removal retries rather than failing the case on a racing writer.
+      await rm(scratch, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
       // A head whose drain outlasted the runtime's grace was ended by the
       // runtime, not by its own stop; the line it printed then says which
       // pool and locus it was waiting on. That is a defect of the head,

@@ -85,6 +85,12 @@ main locus App {
 fn main() { App { }; }
 ```
 
+The `fn main` is what starts it: a `main locus` declares the
+deployment, and `fn main` builds it. Without one the seed still
+checks (another seed may import it and start it), but `hale build`
+and `hale run` stop at the locus's name — *a `main locus` is started
+by `fn main`, and this seed has none: add `fn main() { App { }; }`*.
+
 - `cooperative(pool = X)` puts the locus on pool `X`'s thread.
   The runtime spawns one OS worker per pool name it sees. A pool
   can take the same affinity forms as `pinned` —
@@ -397,6 +403,13 @@ and the payload parameter still reads what it read at entry — it is
 that delivery's own until the handler returns, no matter how many
 other deliveries the pool starts in between.
 
+An API exposure is placed the same way. Its listener and the connections
+it starts accept and read, so they run on a `where async_io` pool: the
+exposure's own row places them (`web: cooperative(pool = io) where
+async_io;`, for a `web: api::Exposure = api::serve(…)` param of `main`),
+and a server locus's listener runs where the row of the param that holds
+the server puts it. See [API](./api.md#where-an-exposures-listener-runs).
+
 ## The compiler checks your placement
 
 These placement mistakes are caught for you, because both the
@@ -571,15 +584,28 @@ the store, and reach it through the bus. A store of a plain number or
 flag (`self.other.gate = 1`) involves no memory of `other`'s and is
 not refused.
 
-One escape is deliberately **not** traced: a call made through a
+One escape is not traced by the checker: a call made through a
 *handler function pointer* rather than a direct method reference —
 the canonical case being a `std::http::Server` handler that reads a
 locus living on another pool. The static call-graph walk can't see
-through the pointer, so it's allowed. That's load-bearing (it's how
-a `/metrics` endpoint on the `io` pool reads a registry nested on a
-pinned gateway), but it's on *you* to keep that access safe —
-typically a read of stable, append-only state, not a mutation that
-would race the owning thread.
+through the pointer. What it can't see, the runtime checks: every
+locus remembers the pool it was built on, and a store into its field
+from outside its methods, or a method call on it through anything but
+`self.…` (or through a field of `self` that was handed an instance
+built elsewhere), compares that pool with the one the code is running
+on. A
+mismatch stops the program (exit 1) with the site and both pools,
+instead of racing the owning thread:
+
+```text
+main.hl:8:9: violation: cross-pool store into `W.name` from pool `io`; this `W` runs on pool `main`: reach it through a method on the bus
+```
+
+A handler handed another pool's locus through its params (a `/metrics`
+endpoint on the `io` pool given a registry that lives on a pinned
+gateway) holds that pool's locus: the checker refuses calling into it
+from the handler, and the runtime would stop it. Build the server where
+the registry lives, or hand the handler what it needs over the bus.
 
 Next: how loci nest and own each other — [Parents &
 children](./parents-children.md).

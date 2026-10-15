@@ -222,12 +222,33 @@ fn a_body_is_provisioned_only_where_it_can_be_and_secrets_never_reach_the_record
     let mut host = run_host(&app, &home, &log);
     assert!(wait_org_up(&app, 180, &mut host), "{}", std::fs::read_to_string(&log).unwrap_or_default());
     assert!(std::fs::read_to_string(&log).unwrap().contains("the model's credential is present now"), "{}", std::fs::read_to_string(&log).unwrap());
-    let org_pid = std::fs::read_to_string(app.join(".hale/dna/org.pid")).unwrap().trim().to_string();
-    let environ = std::fs::read(format!("/proc/{org_pid}/environ")).unwrap_or_default();
+    let environ = org_environ(&app);
     assert!(!environ.is_empty() && !String::from_utf8_lossy(&environ).contains("sk-test-456"), "the organization's environment does not carry the key");
     let (ok, st) = hale_env(&["dna", "status"], &app, &home, None);
     assert!(ok && !st.contains("no credential"), "{st}");
     stop_host(&app, &mut host);
     assert!(journal(&app).contains("\"kind\": \"body.credential_present\", \"entity\": \"model\""));
     let _ = std::fs::remove_dir_all(&d);
+}
+
+/// The running organization's environment, read from `/proc`. One read
+/// can come back empty: the pid file names the process the host is
+/// restarting, whose environ reads empty while it exits (or before the
+/// replacement's exec). So it is read again, re-reading the pid file
+/// each time, until it is non-empty or 5 s have passed; an empty answer
+/// then fails the caller's assertion as it did.
+fn org_environ(app: &std::path::Path) -> Vec<u8> {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        let pid = std::fs::read_to_string(app.join(".hale/dna/org.pid")).unwrap_or_default().trim().to_string();
+        let environ = if pid.is_empty() {
+            Vec::new()
+        } else {
+            std::fs::read(format!("/proc/{pid}/environ")).unwrap_or_default()
+        };
+        if !environ.is_empty() || std::time::Instant::now() >= deadline {
+            return environ;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
 }

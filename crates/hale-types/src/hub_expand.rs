@@ -440,10 +440,17 @@ pub fn expand(programs: &mut [&mut Program]) -> Vec<HubExpansion> {
             }
         }
         // the listener: a param born after the authored ones (the address may
-        // read one), on a pool of its own
+        // read one), on a pool of its own; before the exposure params (GH
+        // #1565), which a surface served over the hub reaches it through,
+        // as when the compiler wrote the exposures last
         if let Some((lp, entry)) = parse_listener(plan.id, plan.kind, fresh(&plan.bind), span) {
             if let Some(LocusMember::Params(pb)) = l.members.iter_mut().find(|m| matches!(m, LocusMember::Params(_))) {
-                pb.params.push(lp);
+                let at = pb
+                    .params
+                    .iter()
+                    .position(|p| crate::surfaces::param_serve_site(p).is_some())
+                    .unwrap_or(pb.params.len());
+                pb.params.insert(at, lp);
             }
             if let Some(LocusMember::Placement(pl)) = l.members.iter_mut().find(|m| matches!(m, LocusMember::Placement(_))) {
                 pl.entries.push(entry);

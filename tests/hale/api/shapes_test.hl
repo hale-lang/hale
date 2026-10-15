@@ -57,6 +57,7 @@ main locus Desk {
     params {
         probe: Probe = Probe { };
         f: std::api::test::Rpc = std::api::test::Rpc { };
+        h: api::Exposure = api::serve(Shapes, self.f, as: "shapes", receivers: { Probe: self.probe }, bound: 8, on_full: refuse);
     }
 
     fn refused(id: Int, member: String, body: String, what: String) {
@@ -76,7 +77,6 @@ main locus Desk {
     }
 
     run() {
-        let h = api::serve(Shapes, self.f, as: "shapes", receivers: { Probe: self.probe }, bound: 8, on_full: refuse);
         let index = "{\"kind\":\"short\",\"index\":3,\"len\":2}";
         let wrapped = "{\"n\":5,\"why\":" + index + ",\"label\":\"x\",\"seat\":9}";
 
