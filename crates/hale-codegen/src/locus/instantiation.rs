@@ -589,12 +589,25 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // fn returning `X` that hands back something else is the
         // frame's and is reclaimed at its flush instead of living to
         // process exit.
+        // GH #1566 follow-up: a locus returned inside a tuple or an
+        // array (`fn both(w: W) -> (H, W) { return (H { w: w }, w); }`)
+        // escapes the frame as one returned whole does; it was a stack
+        // slot of the callee's, read after it returned
+        fn holds_locus(t: &CodegenTy, name: &str) -> bool {
+            match t {
+                CodegenTy::LocusRef(n) => n == name,
+                CodegenTy::Tuple(ts) => ts.iter().any(|t| holds_locus(t, name)),
+                CodegenTy::Array(e, _) => holds_locus(e, name),
+                _ => false,
+            }
+        }
         let escapes_by_declared_return =
             match self.current_user_fn_ret.as_ref().and_then(|r| r.as_ref()) {
                 Some(CodegenTy::LocusRef(n)) => n == locus_name,
                 Some(CodegenTy::Interface(iface)) => {
                     self.locus_satisfies_interface(locus_name, iface)?
                 }
+                Some(t @ (CodegenTy::Tuple(_) | CodegenTy::Array(..))) => holds_locus(t, locus_name),
                 _ => false,
             };
         let returns_this_locus =

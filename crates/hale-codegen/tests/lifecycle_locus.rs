@@ -1,4 +1,4 @@
-//! The `lifecycle_locus` integration-test binary: 25 test files of this area, kept
+//! The `lifecycle_locus` integration-test binary: 26 test files of this area, kept
 //! where they are (their paths, names and history unchanged) and built as
 //! modules of one binary, so the crate links once for the area instead of
 //! once per file. Each file is a module; a test's name is `<file>::<fn>`.
@@ -29,6 +29,8 @@ mod main_return_call_teardown;
 mod main_return_dissolve_frame;
 #[path = "method_call_from_free_fn.rs"]
 mod method_call_from_free_fn;
+#[path = "returned_aggregate_of_loci.rs"]
+mod returned_aggregate_of_loci;
 #[path = "params_default_scalar_self_ref.rs"]
 mod params_default_scalar_self_ref;
 #[path = "perspective_ctor_override_agreement.rs"]
