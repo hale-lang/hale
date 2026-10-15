@@ -1901,8 +1901,22 @@ fn param_field_kind(
         v.push(qname_joined(path));
         v
     };
+    // GH #1566 follow-up: an array or tuple of a locus type holds its
+    // elements as the owner's children, as a locus-typed field holds
+    // its one (an element of an interface or a perspective type has no
+    // recorded teardown of its own, and stays a value)
+    fn of_loci(t: &TypeExpr, is_locus: &dyn Fn(&QualifiedName) -> bool) -> bool {
+        match t {
+            TypeExpr::Named { path, generic_args, .. } => generic_args.is_empty() && is_locus(path),
+            TypeExpr::Array { elem, .. } => of_loci(elem, is_locus),
+            TypeExpr::Tuple(ts, _) => !ts.is_empty() && ts.iter().all(|t| of_loci(t, is_locus)),
+            _ => false,
+        }
+    }
+    let is_locus = |path: &QualifiedName| names(path).iter().any(|n| loci.contains(n));
     if let Some(t) = ty {
         return match t {
+            TypeExpr::Array { .. } | TypeExpr::Tuple(..) if of_loci(t, &is_locus) => FieldKind::Holder,
             TypeExpr::Perspective { .. } => FieldKind::Holder,
             TypeExpr::Named { path, .. } => {
                 // `std::http::RouteHandler` is declared as

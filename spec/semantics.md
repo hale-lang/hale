@@ -744,6 +744,18 @@ external handle passed in; or a call that hands back a locus
 somebody else built) is excluded at whatever depth it appears,
 and is torn down once by its real owner, at its owner's timing.
 
+**An array or a tuple of loci is the same tree.** A param holding an
+array or a tuple of a locus type (`cs: [C; 2] = [C { }, C { }]`, `t: (C,
+D) = (C { }, D { })`, or the same written at the owner's literal) holds
+each element its initializer builds as a parent-owned child: built in
+the owner's arena, drained before the owner in declaration order with
+element order inside, torn down after the owner's `dissolve()` body in
+the same order, each reclaimed once — whatever the owner's placement.
+An element written into the field later (`self.cs[i] = c`) is not the
+owner's: the element it replaces, while still one the literal built, is
+reclaimed at the store, and the instance written in is left to its own
+owner. A name handed whole (`cs: shared`) is a borrow, as above.
+
 **What the field is DECLARED as does not change any of this.**
 A param typed by a *contract* — an `interface` the child
 satisfies (`params { j: Counter = Churner { } }`) or a

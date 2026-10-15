@@ -240,7 +240,11 @@ because it's how Hale frees resources without a `defer` or a
   the enclosing function releases it. An **ascribed array or
   tuple** is the same story one level out: `let ts: [Ticker; 2] =
   [make_ticker(), make_ticker()];` names the array, and each
-  element is a handle the enclosing function releases.
+  element is a handle the enclosing function releases. Written into
+  a locus's param instead (`cs: [C; 2] = [C { }, C { }]`), the
+  elements are that locus's children: drained before it, in order,
+  and torn down after its `dissolve()`, as one locus-typed field's
+  child is.
 - **Long-lived** (the locus subscribes to the bus, or its `run()`
   hasn't returned): it stays alive until its scope exits,
   regardless of binding — it has to, to keep receiving messages.

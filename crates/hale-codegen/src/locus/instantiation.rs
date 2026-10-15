@@ -3411,6 +3411,22 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         .build_store(mask_ptr, new_mask)
                         .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
                 }
+                // GH #1566 follow-up: an array or a tuple of loci its
+                // literal built: every element is the owner's
+                if let (Some(&elems_idx), Some(children)) = (
+                    info.owned_elems_field_idxs.get(fname.as_str()),
+                    crate::locus::dissolve::composite_loci(&declared_ty),
+                ) {
+                    let n = children.len() as u32;
+                    let all = if n >= 64 { u64::MAX } else { (1u64 << n) - 1 };
+                    let slot = self
+                        .builder
+                        .build_struct_gep(info.struct_ty, self_ptr, elems_idx, &format!("{locus_name}.{fname}.__owned_elems.ptr"))
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    self.builder
+                        .build_store(slot, self.context.i64_type().const_int(all, false))
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                }
                 // GH #871: and, for an interface / perspective field,
                 // record WHICH locus the bit is about. The cascade is
                 // emitted once per owner type and the field's declared
@@ -5815,6 +5831,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // loop and the params loop OR bits and impls into.
         store(self, info.slot_borrowed_mask_field_idx, zero, "__slot_borrowed_mask")?;
         store(self, info.locus_ref_owned_mask_field_idx, zero, "__locus_ref_owned_mask")?;
+        for (fname, idx) in info.owned_elems_field_idxs.iter() {
+            store(self, *idx, zero, &format!("{fname}.__owned_elems"))?;
+        }
         for (fname, idx) in info.owned_child_reclaim_field_idxs.iter() {
             store(self, *idx, null, &format!("{fname}.__owned_child_reclaim"))?;
         }

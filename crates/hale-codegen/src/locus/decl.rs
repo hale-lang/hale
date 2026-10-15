@@ -1243,6 +1243,21 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
                 }
             }
         }
+        // GH #1566 follow-up: synthetic `__owned_elems_<f>: i64` per
+        // param holding an array or a tuple of loci — bit k set while
+        // element k is still the one the owner's literal built (an
+        // element written in later is left to its own owner), for the
+        // first 64 elements; the field's owned bit covers the rest.
+        let mut owned_elems_field_idxs: BTreeMap<String, u32> = BTreeMap::new();
+        for (fname, _) in defaults.iter() {
+            if let Some((_, ty)) = fields.get(fname) {
+                if crate::locus::dissolve::composite_loci(ty).is_some() {
+                    owned_elems_field_idxs.insert(fname.clone(), idx);
+                    llvm_field_tys.push(self.context.i64_type().into());
+                    idx += 1;
+                }
+            }
+        }
 
         // GH #1069: synthetic `__held_by_owner: i64` — 1 when the
         // literal that built this instance is held by something that
@@ -1319,7 +1334,8 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
                     CodegenTy::LocusRef(_)
                         | CodegenTy::Interface(_)
                         | CodegenTy::Perspective(_)
-                ) {
+                ) || crate::locus::dissolve::composite_loci(ty).is_some()
+                {
                     locus_ref_bit_per_field.insert(fname.clone(), next_bit);
                     next_bit += 1;
                 }
@@ -1382,6 +1398,7 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
                 locus_ref_owned_mask_field_idx,
                 locus_ref_bit_per_field,
                 owned_child_reclaim_field_idxs,
+                owned_elems_field_idxs,
                 recpool_field_idx,
                 recpool_release_pool_field_idx,
                 recpool_release_kind_field_idx,

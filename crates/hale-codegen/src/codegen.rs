@@ -2074,6 +2074,38 @@ fn build_resolved_lowered(
     // build (instrument, and skip the O3 pipeline that would move
     // the frames the sanitizer report names).
     let asan_diag = lotus_asan;
+    // Manual internalization, the diagnostic build's too (GH #1566
+    // follow-up): a program's own fn of a C library's name (`fn
+    // close(c: C)`) left external interposes on the library's — the
+    // runtime's `close(fd)` at exit called it with a descriptor. The
+    // optimized build's globaldce relies on it as well (below).
+    // Manual internalization (the textual `internalize` pass
+    // has no preserved-symbol parameter through
+    // PassBuilderOptions): every DEFINED fn except `main` goes
+    // Internal, then a leading globaldce strips the unreferenced
+    // stdlib before the main pipeline spends O3 on it.
+    if !is_wasm {
+        let mut f = cx.module.get_first_function();
+        while let Some(func) = f {
+            let name = func
+                .get_name()
+                .to_str()
+                .unwrap_or("")
+                .to_string();
+            // Crumb batch-2: `@export` wrappers are external
+            // API — a C caller links them by name, so they must
+            // survive internalize+globaldce like `main` does
+            // (their `__hale_impl_*` bodies survive through the
+            // wrapper's call edge).
+            if func.count_basic_blocks() > 0
+                && name != "main"
+                && !cx.native_exports.contains(&name)
+            {
+                func.set_linkage(inkwell::module::Linkage::Internal);
+            }
+            f = func.get_next_function();
+        }
+    }
     if !asan_diag {
         let pb_opts = inkwell::passes::PassBuilderOptions::create();
         // Native runs the aggressive O3 module pipeline; wasm stays O2
@@ -2087,33 +2119,6 @@ fn build_resolved_lowered(
         // handlers / pinned entries / fn-pointer callees are
         // address-taken and survive DCE through their uses. wasm
         // keeps its exports and skips internalization.
-        // Manual internalization (the textual `internalize` pass
-        // has no preserved-symbol parameter through
-        // PassBuilderOptions): every DEFINED fn except `main` goes
-        // Internal, then a leading globaldce strips the unreferenced
-        // stdlib before the main pipeline spends O3 on it.
-        if !is_wasm {
-            let mut f = cx.module.get_first_function();
-            while let Some(func) = f {
-                let name = func
-                    .get_name()
-                    .to_str()
-                    .unwrap_or("")
-                    .to_string();
-                // Crumb batch-2: `@export` wrappers are external
-                // API — a C caller links them by name, so they must
-                // survive internalize+globaldce like `main` does
-                // (their `__hale_impl_*` bodies survive through the
-                // wrapper's call edge).
-                if func.count_basic_blocks() > 0
-                    && name != "main"
-                    && !cx.native_exports.contains(&name)
-                {
-                    func.set_linkage(inkwell::module::Linkage::Internal);
-                }
-                f = func.get_next_function();
-            }
-        }
         let pass_pipeline = if is_wasm {
             "default<O2>"
         } else if options.dev_profile {
@@ -5549,6 +5554,10 @@ pub(crate) struct LocusInfo<'ctx> {
     /// owner TYPE — loads and indirect-calls it. NULL (the
     /// zero-init) means no owned child, and the cascade skips.
     pub(crate) owned_child_reclaim_field_idxs: BTreeMap<String, u32>,
+    /// GH #1566 follow-up: `__owned_elems_<f>` of each param holding an
+    /// array or a tuple of loci: bit k set while element k is the one
+    /// the owner's literal built.
+    pub(crate) owned_elems_field_idxs: BTreeMap<String, u32>,
     /// v1.x-3: index of the synthetic `__recpool: ptr` field —
     /// the parent-side handle into a recognition pool. Set at
     /// instantiation iff this locus's projection class is
@@ -18122,6 +18131,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 Ok(BlockEnd::Open)
             }
             Stmt::Assign { target, op, value, id: assign_id, .. } => {
+                // GH #1566 follow-up: an element written into an array or
+                // a tuple of loci its owner built is no longer the
+                // owner's to tear down
+                self.emit_composite_element_disown(target, scope)?;
                 // A write into a local whose part another name may still
                 // reach — a nested part of a form cell's read, or the
                 // whole of a local bound from a place — copies that part
@@ -34736,6 +34749,133 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         }
         self.xpool_handed_in = found;
         self.xpool_handed_in_names = names;
+    }
+
+    /// GH #1566 follow-up: `target` writes one element of an array or a
+    /// tuple of loci a locus holds (`self.cs[i] = v`, `h.cs[i] = v`,
+    /// `self.t.0 = v`). The element it replaces, while still the one the
+    /// owner's literal built, is the owner's: it is reclaimed here, and
+    /// the slot is no longer the owner's to tear down (the value written
+    /// in keeps its own owner). An index the store would evaluate again
+    /// with an effect, or one past the 64 the owned-elements word tracks,
+    /// leaves every element to its own owner instead.
+    fn emit_composite_element_disown(&mut self, target: &LValue, scope: &Scope<'ctx>) -> Result<(), CodegenError> {
+        let (f, pos) = match target.tail.as_slice() {
+            [LValueSeg::Field(f), LValueSeg::Index(ix)] => (f, Ok(ix)),
+            [LValueSeg::Field(f), LValueSeg::Field(n)] => match n.name.parse::<u64>() {
+                Ok(k) => (f, Err(k)),
+                Err(_) => return Ok(()),
+            },
+            _ => return Ok(()),
+        };
+        let ptr_t = self.context.ptr_type(AddressSpace::default());
+        let e = |e: inkwell::builder::BuilderError| CodegenError::LlvmEmit(e.to_string());
+        let holder: Option<(PointerValue<'ctx>, String)> = if target.head.name == "self" {
+            self.current_self.as_ref().map(|c| (c.self_ptr, c.locus_name.clone()))
+        } else {
+            match scope.locals.get(&target.head.name) {
+                Some((slot, CodegenTy::LocusRef(l))) => {
+                    let (slot, l) = (*slot, l.clone());
+                    let p = self.builder.build_load(ptr_t, slot, "disown.holder").map_err(e)?.into_pointer_value();
+                    Some((p, l))
+                }
+                _ => None,
+            }
+        };
+        let Some((holder, locus)) = holder else { return Ok(()) };
+        let Some(info) = self.user_loci.get(&locus).cloned() else { return Ok(()) };
+        let Some((field_idx, ty)) = info.fields.get(&f.name).cloned() else { return Ok(()) };
+        let Some(children) = crate::locus::dissolve::composite_loci(&ty) else { return Ok(()) };
+        let (Some(&bit), Some(&elems_idx)) =
+            (info.locus_ref_bit_per_field.get(&f.name), info.owned_elems_field_idxs.get(&f.name))
+        else {
+            return Ok(());
+        };
+        let i64_t = self.context.i64_type();
+        let mask_ptr = self.builder.build_struct_gep(info.struct_ty, holder, info.locus_ref_owned_mask_field_idx, "disown.mask.ptr").map_err(e)?;
+        let elems_ptr = self.builder.build_struct_gep(info.struct_ty, holder, elems_idx, "disown.elems.ptr").map_err(e)?;
+        let pure = |x: &Expr| {
+            let mut cur = x;
+            loop {
+                match cur {
+                    Expr::Literal(..) | Expr::Ident(_) | Expr::Path(_) | Expr::KwSelf(_) => return true,
+                    Expr::Field { receiver, .. } => cur = receiver,
+                    _ => return false,
+                }
+            }
+        };
+        // the element's position, when the store's own evaluation of it
+        // has no effect this one would repeat
+        let k: Option<inkwell::values::IntValue<'ctx>> = match pos {
+            Err(k) if k < 64 => Some(i64_t.const_int(k, false)),
+            Ok(ix) if pure(ix) => {
+                let (v, vty) = self.lower_expr(ix, scope)?;
+                matches!(vty, CodegenTy::Int).then(|| v.into_int_value())
+            }
+            _ => None,
+        };
+        let Some(k) = k else {
+            // every element left to its own owner
+            let mask = self.builder.build_load(i64_t, mask_ptr, "disown.mask").map_err(e)?.into_int_value();
+            let cleared = self.builder.build_and(mask, i64_t.const_int(!(1u64 << bit), false), "disown.cleared").map_err(e)?;
+            self.builder.build_store(mask_ptr, cleared).map_err(e)?;
+            return Ok(());
+        };
+        let Some(func) = self.current_fn else { return Ok(()) };
+        let mask = self.builder.build_load(i64_t, mask_ptr, "disown.mask").map_err(e)?.into_int_value();
+        let field_bit = self.builder.build_and(mask, i64_t.const_int(1u64 << bit, false), "disown.field").map_err(e)?;
+        let field_owned = self.builder.build_int_compare(inkwell::IntPredicate::NE, field_bit, i64_t.const_zero(), "disown.field.owned").map_err(e)?;
+        let in_word = self.builder.build_int_compare(inkwell::IntPredicate::ULT, k, i64_t.const_int(64, false), "disown.inword").map_err(e)?;
+        let shift = self.builder.build_select(in_word, k, i64_t.const_zero(), "disown.shift").map_err(e)?.into_int_value();
+        let one = self.builder.build_left_shift(i64_t.const_int(1, false), shift, "disown.one").map_err(e)?;
+        let word = self.builder.build_load(i64_t, elems_ptr, "disown.word").map_err(e)?.into_int_value();
+        let el_bit = self.builder.build_and(word, one, "disown.elbit").map_err(e)?;
+        let el_owned = self.builder.build_int_compare(inkwell::IntPredicate::NE, el_bit, i64_t.const_zero(), "disown.el.owned").map_err(e)?;
+        let both = self.builder.build_and(field_owned, el_owned, "disown.both").map_err(e)?;
+        let mine = self.builder.build_and(both, in_word, "disown.mine").map_err(e)?;
+        let reclaim_bb = self.context.append_basic_block(func, "disown.reclaim");
+        let done_bb = self.context.append_basic_block(func, "disown.done");
+        self.builder.build_conditional_branch(mine, reclaim_bb, done_bb).map_err(e)?;
+        self.builder.position_at_end(reclaim_bb);
+        // the old element: the owner's, reclaimed now
+        let slot = self.builder.build_struct_gep(info.struct_ty, holder, field_idx, "disown.slot").map_err(e)?;
+        let storage = self.builder.build_load(ptr_t, slot, "disown.storage").map_err(e)?.into_pointer_value();
+        let el_slot = match &ty {
+            CodegenTy::Tuple(ts) => {
+                let Err(kk) = pos else { unreachable!("a tuple's part is a field") };
+                let tuple_ty = self.llvm_tuple_storage_type(ts);
+                self.builder.build_struct_gep(tuple_ty, storage, kk as u32, "disown.el.ptr").map_err(e)?
+            }
+            _ => unsafe { self.builder.build_in_bounds_gep(ptr_t, storage, &[k], "disown.el.ptr") }.map_err(e)?,
+        };
+        let old = self.builder.build_load(ptr_t, el_slot, "disown.old").map_err(e)?.into_pointer_value();
+        let el_locus = match &ty {
+            CodegenTy::Tuple(_) => {
+                let Err(kk) = pos else { unreachable!() };
+                children.iter().find(|(p, _)| *p as u64 == kk).map(|(_, l)| l.clone())
+            }
+            _ => children.first().map(|(_, l)| l.clone()),
+        };
+        if let Some(reclaim) = el_locus.and_then(|l| self.reclaim_fns.get(&l).copied()) {
+            let request = self.module.get_function("lotus_reclaim_request").expect("reclaim request declared");
+            self.builder
+                .build_call(request, &[old.into(), holder.into(), reclaim.as_global_value().as_pointer_value().into()], "disown.reclaim_old")
+                .map_err(e)?;
+        }
+        let cleared = self.builder.build_and(word, self.builder.build_not(one, "disown.notone").map_err(e)?, "disown.word.cleared").map_err(e)?;
+        self.builder.build_store(elems_ptr, cleared).map_err(e)?;
+        self.builder.build_unconditional_branch(done_bb).map_err(e)?;
+        self.builder.position_at_end(done_bb);
+        // past the word: every element left to its own owner
+        let past_bb = self.context.append_basic_block(func, "disown.past");
+        let after_bb = self.context.append_basic_block(func, "disown.after");
+        self.builder.build_conditional_branch(in_word, after_bb, past_bb).map_err(e)?;
+        self.builder.position_at_end(past_bb);
+        let cleared = self.builder.build_and(mask, i64_t.const_int(!(1u64 << bit), false), "disown.cleared").map_err(e)?;
+        self.builder.build_store(mask_ptr, cleared).map_err(e)?;
+        self.builder.build_unconditional_branch(after_bb).map_err(e)?;
+        self.builder.position_at_end(after_bb);
+        Ok(())
     }
 
     /// GH #1566: a locus-typed slot of `holder` adopts `inst`. Each

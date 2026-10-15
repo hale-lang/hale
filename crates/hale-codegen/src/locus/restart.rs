@@ -528,6 +528,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 | CodegenTy::Perspective(_)
                 | CodegenTy::Drain(_)
                 | CodegenTy::Bounded(_, _) => false,
+                // an array or a tuple of loci holds children, as a
+                // locus-typed param does
+                ty if crate::locus::dissolve::composite_loci(ty).is_some() => false,
                 CodegenTy::TypeRef(n) => self.user_types.contains_key(n),
                 _ => true,
             })

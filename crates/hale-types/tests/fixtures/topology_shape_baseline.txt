@@ -233,6 +233,8 @@ crates/hale-codegen/tests/api_mcp.rs#0 9d513bd3f4c8b622
 crates/hale-codegen/tests/api_runtime.rs#0 2a9c72b1d29a94f7
 crates/hale-codegen/tests/api_serve_build.rs#0 db3db6da176af699
 crates/hale-codegen/tests/api_unix_lifecycle.rs#0 b32fc7359e217820
+crates/hale-codegen/tests/array_of_loci_teardown.rs#4 47537f49518887d5
+crates/hale-codegen/tests/array_of_loci_teardown.rs#5 73a9567b384d6b22
 crates/hale-codegen/tests/array_repeat.rs#0 f2c1228edb650960
 crates/hale-codegen/tests/array_repeat.rs#1 f2c1228edb650960
 crates/hale-codegen/tests/array_repeat.rs#2 3b217f0f698a6100
