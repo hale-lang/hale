@@ -13,12 +13,25 @@
 //!
 //! | construction step in the window | walked |
 //! |---|---|
-//! | where the main locus is built | every literal of it in a free fn, a const, a locus's param defaults, hooks (`birth`, `run`, …), modes, failure handlers, `birth_check`, closure assertions, fns and consts, a perspective's param defaults, `stable_when` and fns; each site's window judged, the program refused if any may not return; with no literal anywhere (built only dynamically), the declaration's defaults |
-//! | a param of the main locus, up to and including the server's | its value: the literal's field, else its default |
-//! | a locus literal anywhere in a walked expression (a param's value, an array or tuple element, a block's statement or tail, an `if`/`match` arm, a call's argument, another literal's field) | a construction: below |
-//! | a construction `C { … }` | each param of `C` the literal does not supply (its default, walked); `C`'s `birth()` (awaited even when `C` is placed on a pool) and `birth_check`; `C`'s `run()`, run where `C` is born, except the server's own param's when it is placed off the main thread |
+//! | where the main locus is built | every literal of it anywhere the programs hold an expression: a free fn's body and its params' defaults, a const, a record type's field defaults, a locus's param defaults, hooks (`birth`, `run`, …), modes, failure handlers (each with its params' defaults), `birth_check`, closure assertions, fns (with theirs), consts and subscription keys, a perspective's param defaults, `stable_when` and fns; each site's window judged, the program refused if any may not return; with no literal anywhere (built only dynamically), the declaration's defaults |
+//! | a param of the main locus, up to and including the server's | its value: the literal's field, else its default, else (no default, typed as a record whose every field has one) the `T { }` the compiler builds for it |
+//! | a literal anywhere in a walked expression (a param's value, an array or tuple element, a block's statement or tail, an `if`/`match` arm, a call's argument, another literal's field, a default) | a construction: below |
+//! | a locus construction `C { … }` | each param of `C` the literal does not supply (its default, or the synthesized `T { }` of an all-defaulted record param, walked); the `where key == …` key of each of `C`'s subscriptions; `C`'s `birth()` (awaited even when `C` is placed on a pool) and `birth_check`; `C`'s `run()`, run where `C` is born, except the server's own param's when it is placed off the main thread |
+//! | a record construction `T { … }` | each field of `T` the literal does not supply: its default, walked in the literal's scope, so a record or locus literal in it is a construction in turn |
 //! | a call in a walked expression | resolved as the checker resolves it: a free fn (an imported one through the import renames), `self.m()`, `self.f.m()` by `f`'s type, a standard-library or builtin call by its classes; an enum variant's constructor returns |
-//! | a resolved fn, a `birth()` or `run()` | judged by its effect row, and its body and every fn its row reaches walked for loops, `or wait` and locus literals |
+//! | the arguments a call leaves out | each omitted param's default, evaluated at the call site |
+//! | a const read in a walked expression | its value: a const that is no literal is evaluated where it is read |
+//! | a resolved fn, a `birth()` or `run()` | judged by its effect row, and its body and every fn its row reaches walked for loops, `or wait`, literals, omitted arguments and consts read; a hook's params' defaults walked first |
+//!
+//! What runs nothing at construction, so has nothing to walk: an enum
+//! variant's payload (no default in the grammar); a generic parameter (a
+//! type bound, no value); `@form(…)` arguments and capacity clauses
+//! (integer literals the compiler reads); an array type's size and a
+//! scalar's `range:` (compile-time constants); `placement`, `topology`,
+//! `bindings` and `claims` (the compiler's, emitting no user code); a
+//! closure assertion (judged at closure, not at birth); a perspective's
+//! `params` (not lowered: a perspective is a contract, its slot holds a
+//! locus built by a literal walked above).
 //!
 //! A step **may not return** when: its effect row is in the `BLOCK` class
 //! (interprocedural: a wait on an exposure, a sleep, a read), or reaches an
@@ -35,8 +48,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use hale_syntax::ast::{
-    flat_decls, Block, ElseBranch, Expr, IfStmt, LifecycleKind, LocusDecl, LocusMember, MatchArmBody,
-    MatchStmt, OrDisposition, ParamInit, PlacementSpec, Program, RecoveryModifier, Stmt, LValueSeg,
+    flat_decls, Block, BusMember, ElseBranch, Expr, IfStmt, KeyFilter, LifecycleKind, LocusDecl, LocusMember,
+    MatchArmBody, MatchStmt, OrDisposition, Param, ParamDecl, ParamInit, PlacementSpec, Program, RecoveryModifier,
+    Stmt, StructField, TypeDecl, TypeDeclBody, TypeExpr, LValueSeg,
 };
 
 use crate::alloc_summary::FnKey;
@@ -211,16 +225,38 @@ pub(crate) enum Root<'a> {
 
 /// Every place the programs hold an expression, exhaustive over the
 /// declarations and members that can hold one (a new kind is a compile
-/// error here until it is visited): a free fn's body; a const's value; a
-/// locus's param defaults, hooks, modes, failure handlers, closure
-/// assertions, fns and consts; a perspective's param defaults,
-/// `stable_when` and fns.
+/// error here until it is visited): a free fn's body and its params'
+/// defaults; a const's value; a record type's field defaults; a locus's
+/// param defaults, hooks, modes, failure handlers (each with its params'
+/// defaults), closure assertions, fns (with theirs), consts, record types'
+/// field defaults and subscriptions' `where key == …` keys; a
+/// perspective's param defaults, `stable_when` and fns (with theirs).
 pub(crate) fn for_each_expression_root<'a>(items: &'a [hale_syntax::ast::TopDecl], f: &mut dyn FnMut(Root<'a>)) {
     use hale_syntax::ast::{PerspectiveMember, TopDecl};
+    let defaults = |params: &'a [Param], f: &mut dyn FnMut(Root<'a>)| {
+        for p in params {
+            if let Some(d) = &p.default {
+                f(Root::Expr(d));
+            }
+        }
+    };
+    let fields = |t: &'a TypeDecl, f: &mut dyn FnMut(Root<'a>)| {
+        if let TypeDeclBody::Struct(fields) = &t.body {
+            for x in fields {
+                if let Some(d) = &x.default {
+                    f(Root::Expr(d));
+                }
+            }
+        }
+    };
     for d in flat_decls(items) {
         match d {
-            TopDecl::Fn(func) => f(Root::Block(&func.body)),
+            TopDecl::Fn(func) => {
+                defaults(&func.params, f);
+                f(Root::Block(&func.body));
+            }
             TopDecl::Const(c) => f(Root::Expr(&c.value)),
+            TopDecl::Type(t) => fields(t, f),
             TopDecl::Locus(l) => {
                 for m in &l.members {
                     match m {
@@ -231,9 +267,18 @@ pub(crate) fn for_each_expression_root<'a>(items: &'a [hale_syntax::ast::TopDecl
                                 }
                             }
                         }
-                        LocusMember::Lifecycle(lc) => f(Root::Block(&lc.body)),
-                        LocusMember::Mode(md) => f(Root::Block(&md.body)),
-                        LocusMember::Failure(fd) => f(Root::Block(&fd.body)),
+                        LocusMember::Lifecycle(lc) => {
+                            defaults(&lc.params, f);
+                            f(Root::Block(&lc.body));
+                        }
+                        LocusMember::Mode(md) => {
+                            defaults(&md.params, f);
+                            f(Root::Block(&md.body));
+                        }
+                        LocusMember::Failure(fd) => {
+                            defaults(&fd.params, f);
+                            f(Root::Block(&fd.body));
+                        }
                         LocusMember::Closure(c) => {
                             if let Some(a) = &c.assertion {
                                 f(Root::Expr(&a.left));
@@ -242,11 +287,18 @@ pub(crate) fn for_each_expression_root<'a>(items: &'a [hale_syntax::ast::TopDecl
                             }
                         }
                         LocusMember::BirthCheck(bc) => f(Root::Expr(&bc.cond)),
-                        LocusMember::Fn(func) => f(Root::Block(&func.body)),
+                        LocusMember::Fn(func) => {
+                            defaults(&func.params, f);
+                            f(Root::Block(&func.body));
+                        }
                         LocusMember::Const(c) => f(Root::Expr(&c.value)),
+                        LocusMember::Type(t) => fields(t, f),
+                        LocusMember::Bus(b) => {
+                            for k in key_filters(b) {
+                                f(Root::Expr(k));
+                            }
+                        }
                         LocusMember::Contract(_)
-                        | LocusMember::Bus(_)
-                        | LocusMember::Type(_)
                         | LocusMember::Capacity(_)
                         | LocusMember::Bindings(_)
                         | LocusMember::Placement(_)
@@ -266,7 +318,10 @@ pub(crate) fn for_each_expression_root<'a>(items: &'a [hale_syntax::ast::TopDecl
                             }
                         }
                         PerspectiveMember::StableWhen(b) => f(Root::Block(b)),
-                        PerspectiveMember::Fn(func) => f(Root::Block(&func.body)),
+                        PerspectiveMember::Fn(func) => {
+                            defaults(&func.params, f);
+                            f(Root::Block(&func.body));
+                        }
                         PerspectiveMember::SerializeAs(_) | PerspectiveMember::Bus(_) => {}
                     }
                 }
@@ -278,12 +333,28 @@ pub(crate) fn for_each_expression_root<'a>(items: &'a [hale_syntax::ast::TopDecl
     }
 }
 
-/// The analysis the window asks: the effect rows, the bodies by key, the
-/// loci, the import renames and the declared types.
+/// The `where key == …` expressions of a locus's subscriptions, evaluated
+/// where the locus is built.
+fn key_filters(b: &hale_syntax::ast::BusBlock) -> impl Iterator<Item = &Expr> {
+    b.members.iter().filter_map(|m| match m {
+        BusMember::Subscribe { key_filter: Some(KeyFilter::Specific { expr, .. }), .. } => Some(expr),
+        _ => None,
+    })
+}
+
+/// A fn, a method or a hook by where it is declared: `(locus, name)`.
+type Key = (Option<String>, String);
+
+/// The analysis the window asks: the effect rows, the bodies and the
+/// params by key, the loci, the record types, the consts, the import
+/// renames and the declared types.
 pub(crate) struct Window<'a> {
     effects: Option<&'a EffectRows>,
     loci: &'a BTreeMap<&'a str, &'a LocusDecl>,
-    bodies: BTreeMap<(Option<String>, String), &'a Block>,
+    bodies: BTreeMap<Key, &'a Block>,
+    params: BTreeMap<Key, &'a [Param]>,
+    records: BTreeMap<String, &'a [StructField]>,
+    consts: BTreeMap<Key, &'a Expr>,
     renames: &'a [(Vec<String>, String)],
     types: BTreeSet<String>,
 }
@@ -294,6 +365,9 @@ struct Found<'a> {
     loops: bool,
     calls: Vec<&'a Expr>,
     literals: Vec<&'a Expr>,
+    /// every name read (`Ident`, `Path`): a const among them is its
+    /// value, evaluated where it is read
+    names: Vec<&'a Expr>,
 }
 
 fn found_in_expr(e: &Expr) -> Found<'_> {
@@ -313,6 +387,7 @@ fn collect<'a>(v: Visited<'a>, found: &mut Found<'a>) {
         Visited::Stmt(Stmt::While { .. }) | Visited::OrWait => found.loops = true,
         Visited::Expr(e @ Expr::Call { .. }) => found.calls.push(e),
         Visited::Expr(e @ Expr::Struct { .. }) => found.literals.push(e),
+        Visited::Expr(e @ (Expr::Ident(_) | Expr::Path(_))) => found.names.push(e),
         _ => {}
     }
 }
@@ -356,21 +431,36 @@ impl<'a> Window<'a> {
         renames: &'a [(Vec<String>, String)],
     ) -> Self {
         let mut bodies = BTreeMap::new();
+        let mut params = BTreeMap::new();
+        let mut records = BTreeMap::new();
+        let mut consts = BTreeMap::new();
         let mut types = BTreeSet::new();
+        let record = |t: &'a TypeDecl, records: &mut BTreeMap<String, &'a [StructField]>| {
+            if let TypeDeclBody::Struct(fields) = &t.body {
+                records.entry(t.name.name.clone()).or_insert(fields.as_slice());
+            }
+        };
         for p in programs {
             for d in flat_decls(&p.items) {
                 match d {
                     hale_syntax::ast::TopDecl::Fn(f) => {
                         bodies.insert((None, f.name.name.clone()), &f.body);
+                        params.insert((None, f.name.name.clone()), f.params.as_slice());
+                    }
+                    hale_syntax::ast::TopDecl::Const(c) => {
+                        consts.insert((None, c.name.name.clone()), &c.value);
                     }
                     hale_syntax::ast::TopDecl::Type(t) => {
                         types.insert(t.name.name.clone());
+                        record(t, &mut records);
                     }
                     hale_syntax::ast::TopDecl::Locus(x) => {
+                        let at = Some(x.name.name.clone());
                         for m in &x.members {
                             match m {
                                 LocusMember::Fn(f) => {
-                                    bodies.insert((Some(x.name.name.clone()), f.name.name.clone()), &f.body);
+                                    bodies.insert((at.clone(), f.name.name.clone()), &f.body);
+                                    params.insert((at.clone(), f.name.name.clone()), f.params.as_slice());
                                 }
                                 LocusMember::Lifecycle(lc) => {
                                     let hook = match lc.kind {
@@ -378,8 +468,13 @@ impl<'a> Window<'a> {
                                         LifecycleKind::Run => "run",
                                         _ => continue,
                                     };
-                                    bodies.insert((Some(x.name.name.clone()), hook.to_string()), &lc.body);
+                                    bodies.insert((at.clone(), hook.to_string()), &lc.body);
+                                    params.insert((at.clone(), hook.to_string()), lc.params.as_slice());
                                 }
+                                LocusMember::Const(c) => {
+                                    consts.insert((at.clone(), c.name.name.clone()), &c.value);
+                                }
+                                LocusMember::Type(t) => record(t, &mut records),
                                 _ => {}
                             }
                         }
@@ -388,7 +483,7 @@ impl<'a> Window<'a> {
                 }
             }
         }
-        Window { effects, loci, bodies, renames, types }
+        Window { effects, loci, bodies, params, records, consts, renames, types }
     }
 
     fn row(&self, locus: Option<&str>, name: &str) -> Option<&'a crate::effect_rows::EffectRow> {
@@ -414,7 +509,8 @@ impl<'a> Window<'a> {
     }
 
     /// A resolved fn, judged: its row's classes, and its body and every fn
-    /// its row reaches walked for loops and constructions.
+    /// its row reaches walked for loops, constructions and what a body
+    /// evaluates implicitly ([`Window::implicit`]).
     fn judge_fn(&self, row: &'a crate::effect_rows::EffectRow, seen: &mut BTreeSet<&'a FnKey>, depth: usize) -> Option<(String, &'static str)> {
         let show = |k: &FnKey| match &k.locus {
             Some(l) => format!("`{l}::{}`", k.fn_name),
@@ -433,12 +529,16 @@ impl<'a> Window<'a> {
                 continue;
             }
             if let Some(body) = self.bodies.get(&(k.locus.clone(), k.fn_name.clone())) {
+                let ctx = k.locus.as_deref().and_then(|l| self.loci.get(l).copied());
                 let found = found_in_block(body);
                 if found.loops {
                     return Some((show(k), LOOP));
                 }
+                if let Some(step) = self.implicit(&found, ctx, depth + 1) {
+                    return Some(step);
+                }
                 for lit in found.literals {
-                    if let Some(step) = self.literal(lit, true, depth + 1) {
+                    if let Some(step) = self.literal(lit, ctx, true, depth + 1) {
                         return Some(step);
                     }
                 }
@@ -450,13 +550,18 @@ impl<'a> Window<'a> {
         None
     }
 
-    /// A hook (`birth`, `run`) of `locus`.
-    fn hook(&self, locus: &LocusDecl, hook: &str, depth: usize) -> Option<(String, &'static str)> {
-        let body = self.bodies.get(&(Some(locus.name.name.clone()), hook.to_string()))?;
+    /// A hook (`birth`, `run`) of `locus`: its params' defaults, then its
+    /// row.
+    fn hook(&self, locus: &'a LocusDecl, hook: &str, depth: usize) -> Option<(String, &'static str)> {
+        let key = (Some(locus.name.name.clone()), hook.to_string());
+        let at = format!("`{}`'s `{hook}()`", locus.name.name);
+        if let Some((inner, why)) = self.omitted_args(&key, 0, Some(locus), depth) {
+            return Some((through(at, inner), why));
+        }
+        let body = self.bodies.get(&key)?;
         if body.stmts.is_empty() && body.tail.is_none() {
             return None;
         }
-        let at = format!("`{}`'s `{hook}()`", locus.name.name);
         let Some(row) = self.row(Some(&locus.name.name), hook) else {
             return Some((at, "it has a statement of its own, and the blocking analysis has no row for it"));
         };
@@ -464,9 +569,39 @@ impl<'a> Window<'a> {
         self.judge_fn(row, &mut seen, depth).map(|(_, why)| (at, why))
     }
 
+    /// The declaration a call's callee names, as the checker resolves it:
+    /// `f(…)`, `lib::f(…)` through the import renames, `Type::member(…)`,
+    /// `self.m(…)`, `self.f.m(…)` by `f`'s type.
+    fn callee(&self, callee: &Expr, ctx: Option<&LocusDecl>) -> Option<Key> {
+        match callee {
+            Expr::Ident(i) => Some((None, i.name.clone())),
+            Expr::Field { receiver, name, .. } => {
+                let ctx = ctx?;
+                let locus = match receiver.as_ref() {
+                    Expr::KwSelf(_) => Some(ctx.name.name.clone()),
+                    Expr::Field { receiver: inner, name: field, .. } if matches!(inner.as_ref(), Expr::KwSelf(_)) => {
+                        crate::surfaces::param_types(ctx).get(&field.name).cloned()
+                    }
+                    _ => None,
+                }?;
+                Some((Some(locus), name.name.clone()))
+            }
+            Expr::Path(qn) => {
+                let segs: Vec<&str> = qn.segments.iter().map(|s| s.name.as_str()).collect();
+                let name = self.resolve_path(&segs);
+                if self.row(None, &name).is_some() || self.params.contains_key(&(None, name.clone())) {
+                    return Some((None, name));
+                }
+                let (member, owner) = segs.split_last()?;
+                Some((Some(self.resolve_path(owner)), member.to_string()))
+            }
+            _ => None,
+        }
+    }
+
     /// A call in a walked expression evaluated in `ctx`, resolved as the
     /// checker resolves it.
-    fn call(&self, call: &'a Expr, ctx: &LocusDecl, depth: usize) -> Option<(String, &'static str)> {
+    fn call(&self, call: &'a Expr, ctx: Option<&LocusDecl>, depth: usize) -> Option<(String, &'static str)> {
         let Expr::Call { callee, .. } = call else { return None };
         // a serve site: the exposure its param builds, whose pieces the walk
         // visits where they are written
@@ -475,98 +610,203 @@ impl<'a> Window<'a> {
         }
         let unnamed = |what: String| Some((what, "an edge whose return the blocking analysis cannot name"));
         let mut seen = BTreeSet::new();
-        match callee.as_ref() {
-            Expr::Ident(i) => match self.row(None, &i.name) {
-                Some(row) => self.judge_fn(row, &mut seen, depth),
-                None if crate::check::BARE_BUILTIN_CALLEES.contains(&i.name.as_str()) => None,
-                None => unnamed(format!("the call of `{}`", i.name)),
-            },
-            Expr::Field { receiver, name, .. } => {
-                let locus = match receiver.as_ref() {
-                    Expr::KwSelf(_) => Some(ctx.name.name.clone()),
-                    Expr::Field { receiver: inner, name: field, .. } if matches!(inner.as_ref(), Expr::KwSelf(_)) => {
-                        crate::surfaces::param_types(ctx).get(&field.name).cloned()
+        if let Expr::Path(qn) = callee.as_ref() {
+            let segs: Vec<&str> = qn.segments.iter().map(|s| s.name.as_str()).collect();
+            if segs.first() == Some(&"std") {
+                return match crate::stdlib_surface::effects_for(&segs) {
+                    Some(set) if set.contains(EffectSet::BLOCK) => {
+                        Some((format!("`{}`", segs.join("::")), "it may block: a standard-library call that blocks"))
                     }
-                    _ => None,
+                    Some(set) if !set.is_unclassified() => None,
+                    _ => unnamed(format!("`{}`", segs.join("::"))),
                 };
-                match locus.and_then(|l| self.row(Some(&l), &name.name)) {
-                    Some(row) => self.judge_fn(row, &mut seen, depth),
-                    None => unnamed(format!("the call of `{}`", name.name)),
-                }
             }
-            Expr::Path(qn) => {
+        }
+        let key = self.callee(callee, ctx);
+        if let Some((locus, name)) = &key {
+            if let Some(row) = self.row(locus.as_deref(), name) {
+                return self.judge_fn(row, &mut seen, depth);
+            }
+        }
+        match (callee.as_ref(), key) {
+            (Expr::Ident(i), _) if crate::check::BARE_BUILTIN_CALLEES.contains(&i.name.as_str()) => None,
+            // an enum variant's constructor
+            (Expr::Path(_), Some((Some(owner), _))) if self.types.contains(&owner) => None,
+            (Expr::Ident(i), _) => unnamed(format!("the call of `{}`", i.name)),
+            (Expr::Field { name, .. }, _) => unnamed(format!("the call of `{}`", name.name)),
+            (Expr::Path(qn), _) => {
                 let segs: Vec<&str> = qn.segments.iter().map(|s| s.name.as_str()).collect();
-                if segs.first() == Some(&"std") {
-                    return match crate::stdlib_surface::effects_for(&segs) {
-                        Some(set) if set.contains(EffectSet::BLOCK) => {
-                            Some((format!("`{}`", segs.join("::")), "it may block: a standard-library call that blocks"))
-                        }
-                        Some(set) if !set.is_unclassified() => None,
-                        _ => unnamed(format!("`{}`", segs.join("::"))),
-                    };
-                }
-                let name = self.resolve_path(&segs);
-                if let Some(row) = self.row(None, &name) {
-                    return self.judge_fn(row, &mut seen, depth);
-                }
-                // `Type::member`: an associated fn the rows key under the
-                // type, or an enum variant's constructor
-                if let Some((member, owner)) = segs.split_last() {
-                    let owner = self.resolve_path(owner);
-                    if let Some(row) = self.row(Some(&owner), member) {
-                        return self.judge_fn(row, &mut seen, depth);
-                    }
-                    if self.types.contains(&owner) {
-                        return None;
-                    }
-                }
                 unnamed(format!("`{}`", segs.join("::")))
             }
             _ => unnamed("a call through a value".to_string()),
         }
     }
 
-    /// A walked expression evaluated in `ctx`: its loops, its calls, and
-    /// each locus literal in it, built (its `run()` run where it is born).
-    fn expr(&self, e: &'a Expr, ctx: &LocusDecl, depth: usize) -> Option<(String, &'static str)> {
+    /// The defaults a call of `key` leaves to its params from `given` on,
+    /// evaluated at the call site in `ctx`.
+    fn omitted_args(&self, key: &Key, given: usize, ctx: Option<&'a LocusDecl>, depth: usize) -> Option<(String, &'static str)> {
+        let params = self.params.get(key)?;
+        for p in params.iter().skip(given) {
+            if let Some(d) = &p.default {
+                if let Some((at, why)) = self.expr(d, ctx, depth + 1) {
+                    let owner = key.0.as_ref().map(|l| format!("{l}::")).unwrap_or_default();
+                    return Some((through(format!("the default of `{owner}{}`'s param `{}`", key.1, p.name.name), at), why));
+                }
+            }
+        }
+        None
+    }
+
+    /// What a walked expression or body evaluates without writing it: the
+    /// defaults its calls leave to their params, and the value of each
+    /// const it reads (a const that is not a literal is evaluated where
+    /// it is read).
+    fn implicit(&self, found: &Found<'a>, ctx: Option<&'a LocusDecl>, depth: usize) -> Option<(String, &'static str)> {
+        if depth > 32 {
+            return None;
+        }
+        for c in &found.calls {
+            let Expr::Call { callee, args, .. } = c else { continue };
+            if let Some(key) = self.callee(callee, ctx) {
+                if let Some(step) = self.omitted_args(&key, args.len(), ctx, depth) {
+                    return Some(step);
+                }
+            }
+        }
+        for n in &found.names {
+            let (key, shown) = match n {
+                Expr::Ident(i) => {
+                    let top = (None, i.name.clone());
+                    let own = ctx.map(|l| (Some(l.name.name.clone()), i.name.clone()));
+                    match own.filter(|k| self.consts.contains_key(k)) {
+                        Some(k) => (k, i.name.clone()),
+                        None => (top, i.name.clone()),
+                    }
+                }
+                Expr::Path(qn) => {
+                    let segs: Vec<&str> = qn.segments.iter().map(|s| s.name.as_str()).collect();
+                    let name = self.resolve_path(&segs);
+                    let key = if self.consts.contains_key(&(None, name.clone())) {
+                        (None, name)
+                    } else {
+                        match segs.split_last() {
+                            Some((member, owner)) if !owner.is_empty() => (Some(self.resolve_path(owner)), member.to_string()),
+                            _ => (None, name),
+                        }
+                    };
+                    (key, segs.join("::"))
+                }
+                _ => continue,
+            };
+            if let Some(value) = self.consts.get(&key) {
+                if let Some((at, why)) = self.expr(value, ctx, depth + 1) {
+                    return Some((through(format!("the value of the const `{shown}`"), at), why));
+                }
+            }
+        }
+        None
+    }
+
+    /// A walked expression evaluated in `ctx`: its loops, its calls, what it
+    /// evaluates implicitly, and each literal in it, built (a locus's
+    /// `run()` run where it is born).
+    fn expr(&self, e: &'a Expr, ctx: Option<&'a LocusDecl>, depth: usize) -> Option<(String, &'static str)> {
+        if depth > 32 {
+            return None;
+        }
         let found = found_in_expr(e);
         if found.loops {
             return Some((String::new(), LOOP));
         }
-        for c in found.calls {
+        for c in &found.calls {
             if let Some(step) = self.call(c, ctx, depth) {
                 return Some(step);
             }
         }
+        if let Some(step) = self.implicit(&found, ctx, depth) {
+            return Some(step);
+        }
         for lit in found.literals {
-            if let Some(step) = self.literal(lit, true, depth + 1) {
+            if let Some(step) = self.literal(lit, ctx, true, depth + 1) {
                 return Some(step);
             }
         }
         None
     }
 
-    /// A locus literal `C { … }` built: the params of `C` it does not
-    /// supply (their defaults, walked; the fields it supplies are walked
-    /// where the literal is), `C`'s `birth()`, and its `run()` when
-    /// `with_run`.
-    fn literal(&self, lit: &'a Expr, with_run: bool, depth: usize) -> Option<(String, &'static str)> {
+    /// The record type a param of type `T` and no default is built as: the
+    /// compiler builds `T { }` for it when every field of `T` has a default.
+    fn synthesized(&self, p: &ParamDecl) -> Option<(&str, &'a [StructField])> {
+        if !matches!(p.init, ParamInit::Inferred) {
+            return None;
+        }
+        let Some(TypeExpr::Named { path, generic_args, .. }) = &p.ty else { return None };
+        if !generic_args.is_empty() || path.segments.len() != 1 {
+            return None;
+        }
+        let (name, fields) = self.records.get_key_value(&path.segments[0].name)?;
+        (!fields.is_empty() && fields.iter().all(|f| f.default.is_some())).then_some((name.as_str(), *fields))
+    }
+
+    /// The fields of the record `ty` a literal does not supply (`given`):
+    /// their defaults, walked in `ctx`, the literal's scope.
+    fn omitted_fields(&self, ty: &str, fields: &'a [StructField], given: &BTreeSet<&str>, ctx: Option<&'a LocusDecl>, depth: usize) -> Option<(String, &'static str)> {
+        for f in fields {
+            if given.contains(f.name.name.as_str()) {
+                continue;
+            }
+            if let Some(d) = &f.default {
+                if let Some((at, why)) = self.expr(d, ctx, depth) {
+                    return Some((through(format!("the default of `{ty}.{}`", f.name.name), at), why));
+                }
+            }
+        }
+        None
+    }
+
+    /// A literal built, in `ctx`. A record `T { … }`: the fields it does
+    /// not supply (their defaults, walked). A locus `C { … }`: the params
+    /// of `C` it does not supply (their defaults, or the `T { }` the
+    /// compiler builds for an all-defaulted record param, walked), the
+    /// `where key == …` keys of `C`'s subscriptions, `C`'s `birth()`, its
+    /// `birth_check`, and its `run()` when `with_run`. The fields a literal
+    /// supplies are walked where the literal is.
+    fn literal(&self, lit: &'a Expr, ctx: Option<&'a LocusDecl>, with_run: bool, depth: usize) -> Option<(String, &'static str)> {
         if depth > 32 {
             return None;
         }
-        let Some(locus) = self.literal_locus(lit) else { return None };
-        let Expr::Struct { inits, .. } = lit else { return None };
+        let Expr::Struct { path, inits, .. } = lit else { return None };
         let given: BTreeSet<&str> = inits.iter().map(|i| i.name.name.as_str()).collect();
+        let segs: Vec<&str> = path.segments.iter().map(|s| s.name.as_str()).collect();
+        let name = self.resolve_path(&segs);
+        let record = self.records.get_key_value(&name).or_else(|| segs.last().and_then(|l| self.records.get_key_value(*l)));
+        if let Some((ty, fields)) = record {
+            return self.omitted_fields(ty, fields, &given, ctx, depth + 1);
+        }
+        let Some(locus) = self.literal_locus(lit) else { return None };
         for m in &locus.members {
             let LocusMember::Params(pb) = m else { continue };
             for p in &pb.params {
                 if given.contains(p.name.name.as_str()) {
                     continue;
                 }
-                if let ParamInit::Value(e) = &p.init {
-                    if let Some((at, why)) = self.expr(e, locus, depth) {
-                        return Some((through(format!("the default of `{}.{}`", locus.name.name, p.name.name), at), why));
-                    }
+                let at = format!("the default of `{}.{}`", locus.name.name, p.name.name);
+                let step = match &p.init {
+                    ParamInit::Value(e) => self.expr(e, Some(locus), depth),
+                    ParamInit::Inferred => self
+                        .synthesized(p)
+                        .and_then(|(ty, fields)| self.omitted_fields(ty, fields, &BTreeSet::new(), Some(locus), depth + 1)),
+                };
+                if let Some((inner, why)) = step {
+                    return Some((through(at, inner), why));
+                }
+            }
+        }
+        for m in &locus.members {
+            let LocusMember::Bus(b) = m else { continue };
+            for k in key_filters(b) {
+                if let Some((at, why)) = self.expr(k, Some(locus), depth) {
+                    return Some((through(format!("a `where key == …` of `{}`", locus.name.name), at), why));
                 }
             }
         }
@@ -576,7 +816,7 @@ impl<'a> Window<'a> {
         // `birth_check` runs after `birth()`, before `run()`
         for m in &locus.members {
             if let LocusMember::BirthCheck(bc) = m {
-                if let Some((at, why)) = self.expr(&bc.cond, locus, depth) {
+                if let Some((at, why)) = self.expr(&bc.cond, Some(locus), depth) {
                     return Some((through(format!("`{}`'s `birth_check`", locus.name.name), at), why));
                 }
             }
@@ -612,23 +852,26 @@ impl<'a> Window<'a> {
                             ParamInit::Value(e) => Some(e),
                             ParamInit::Inferred => None,
                         });
-                        if let Some(value) = value {
-                            let on_main = match crate::rpc_expand::placement_entry(main, name) {
-                                None => true,
-                                Some(e) => matches!(&e.spec, PlacementSpec::Cooperative { pool, .. } if pool.as_ref().is_none_or(|p| p.name == "main")),
-                            };
+                        let on_main = match crate::rpc_expand::placement_entry(main, name) {
+                            None => true,
+                            Some(e) => matches!(&e.spec, PlacementSpec::Cooperative { pool, .. } if pool.as_ref().is_none_or(|p| p.name == "main")),
+                        };
+                        let step = match value {
                             // the param's own literal: its run() is the
                             // param's, not awaited when it is placed
-                            let step = match value {
-                                Expr::Struct { inits, .. } if self.literal_locus(value).is_some() => self
-                                    .literal(value, on_main, 0)
-                                    .or_else(|| inits.iter().find_map(|i| self.expr(&i.value, main, 0))),
-                                _ => self.expr(value, main, 0),
-                            };
-                            if let Some((at, why)) = step {
-                                let what = if supplied(name).is_some() { "the value given" } else { "the default" };
-                                return Some((through(format!("{what} of `{}.{name}`", main.name.name), at), why));
-                            }
+                            Some(value @ Expr::Struct { inits, .. }) if self.literal_locus(value).is_some() => self
+                                .literal(value, Some(main), on_main, 0)
+                                .or_else(|| inits.iter().find_map(|i| self.expr(&i.value, Some(main), 0))),
+                            Some(value) => self.expr(value, Some(main), 0),
+                            // no value written: the `T { }` the compiler
+                            // builds for an all-defaulted record param
+                            None => self
+                                .synthesized(p)
+                                .and_then(|(ty, fields)| self.omitted_fields(ty, fields, &BTreeSet::new(), Some(main), 1)),
+                        };
+                        if let Some((at, why)) = step {
+                            let what = if supplied(name).is_some() { "the value given" } else { "the default" };
+                            return Some((through(format!("{what} of `{}.{name}`", main.name.name), at), why));
                         }
                     }
                     if name == root {

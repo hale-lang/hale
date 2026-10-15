@@ -377,20 +377,30 @@ load-bearing), so when the listener comes after the server,
 everything the main locus builds up to and including that param must
 finish first. It is judged over the actual construction: each literal
 that builds the main locus, wherever the program writes it (a free fn, a
-method or hook of another locus, a param default, …; `fn main() { App {
-server: Server { n: 0 } }; }`), each site judged on its own, else, when
-none is written, its defaults; a field a literal supplies replaces the
-default it would otherwise run, at every depth. In it: each param's value
-(a call it makes, resolved as the checker resolves it, an imported fn
-through the import renames; a call that cannot be resolved is taken to
-possibly not return), every locus built anywhere in a walked expression
-(an array or tuple element, a block, an `if`/`match` arm, a call's
-argument, a literal's field) with the params it leaves to their defaults,
-recursively (a child is built inline, its `run()` run where it is born),
-its `birth()` and `birth_check` (awaited even when the param is placed on
-a pool: the main locus waits for a placed child's readiness), and its
-`run()`, except the
-server's own param's when it is placed off the main thread. A step that
+method or hook of another locus, a param default, a fn param's default, a
+record type's field default, …; `fn main() { App { server: Server { n: 0
+} }; }`), each site judged on its own, else, when none is written, its
+defaults; a field a literal supplies replaces the default it would
+otherwise run, at every depth. In it: each param's value (a call it makes,
+resolved as the checker resolves it, an imported fn through the import
+renames; a call that cannot be resolved is taken to possibly not return),
+and everything a walked expression evaluates without writing it:
+
+| evaluated implicitly | walked |
+|---|---|
+| a locus literal `C { … }` anywhere in a walked expression (an array or tuple element, a block, an `if`/`match` arm, a call's argument, a literal's field, a default) | the params it leaves to their defaults, recursively; the `where key == …` key of each of `C`'s subscriptions; `C`'s `birth()` and `birth_check` (awaited even when the param is placed on a pool: the main locus waits for a placed child's readiness); its `run()` (a child is built inline, its `run()` run where it is born), except the server's own param's when it is placed off the main thread |
+| a record literal `T { … }` | the fields it leaves to their defaults, recursively (`type Setup { n: Int = { Spinner { }; 0 }; }` built by `Setup { }` builds a `Spinner`; `Setup { n: 0 }` does not) |
+| a param with no value, typed as a record whose every field has a default | the `T { }` the compiler builds for it, its defaults walked |
+| a call that leaves out arguments | each omitted param's default, evaluated at the call site |
+| a const that is no literal, read | its value, evaluated where it is read |
+| a hook's params | their defaults |
+
+Nothing else runs code at construction: an enum variant's payload has no
+default, a generic parameter is a type, `@form(…)` arguments, capacity
+clauses, an array type's size and a scalar's `range:` are constants the
+compiler reads, `placement`, `topology`, `bindings` and `claims` emit no
+user code, a closure assertion is judged at closure, and a perspective's
+`params` are not lowered. A step that
 returns is fine. A step that may not return is
 refused, naming it and why ("…its listener (\`App\`'s) is born after
 \`self.server\`, once everything \`App\` builds up to it has finished, and

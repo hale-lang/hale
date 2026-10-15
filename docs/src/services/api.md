@@ -408,8 +408,20 @@ listener exists: its params, the children it holds (their `run()`s run
 where they are born), its `birth()` and, unplaced, its `run()`, and the
 params of `App` before it, as the program actually builds them (a field
 a literal supplies replaces its default, which is then not run; a locus
-built anywhere in a param's value counts). Any of those that may not
-return is refused:
+built anywhere in a param's value counts). What a construction runs
+without being written counts too:
+
+| run without being written | counted |
+|---|---|
+| a locus literal's left-out params | their defaults, and the locus's `birth()`, `birth_check`, `run()` and subscription keys |
+| a record literal's left-out fields (`Setup { }`) | their defaults, through any record or locus they build |
+| a record-typed param with no value | the `Cfg { }` the compiler builds for it |
+| a call's left-out arguments | their defaults, run where the call is |
+| a const that is not a literal | its value, run where it is read |
+
+Enum payloads, generic parameters, `@form` and capacity arguments, array
+sizes and scalar ranges are constants and run nothing. Any of those
+that may not return is refused:
 one that waits on its exposure (itself, or through a fn it calls), sleeps,
 reads, or loops in a `while`, wherever the loop sits. A step that
 returns, like `run() { println("started"); }`, is fine. Place a server

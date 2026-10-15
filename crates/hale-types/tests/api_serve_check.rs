@@ -380,6 +380,14 @@ fn what_main_builds_before_a_listener_born_after_its_server_must_return() {
     const TWO_SITES_ONE_SPINS: &str =
         "fn quick() { App { n: 1 }; }\nfn slow() { App { n: { while true { } 0 } }; }\nfn main() { quick(); slow(); }";
     const TWO_SITES_BOTH_RETURN: &str = "fn quick() { App { n: 1 }; }\nfn other() { App { n: 2 }; }\nfn main() { quick(); other(); }";
+    const SETUP_BUILDS: &str = "locus Spinner { run() { while !self.draining { } } }\ntype Setup { n: Int = { Spinner { }; 0 }; }";
+    const CFG_SETTLES: &str = "fn settle() -> Int { std::time::sleep(1s); return 0; }\ntype Cfg { n: Int = settle(); }";
+    const NESTED_SETTLES: &str =
+        "fn settle() -> Int { std::time::sleep(1s); return 0; }\ntype Inner { n: Int = settle(); }\ntype Outer { inner: Inner = Inner { }; }";
+    const RECORD_BUILDS_APP: &str = "type Holder { n: Int = { App { n: { while true { } 0 } }; 0 }; }\nfn main() { let h = Holder { }; }";
+    const HELPER_SETTLES: &str = "fn settle() -> Int { std::time::sleep(1s); return 0; }\nfn helper(n: Int = settle()) -> Int { return n; }";
+    const CONST_SETTLES: &str = "fn settle() -> Int { std::time::sleep(1s); return 0; }\nconst K: Int = settle();";
+    const KEYED_SUB: &str = "fn settle() -> Int { std::time::sleep(1s); return 0; }\nconst K: Int = settle();\ntype Ping { id: Int = 0; }\ntopic Pings { payload: Ping; subject: \"t.pings\"; keyed_by id; }\nlocus Sub {\n    bus { subscribe Pings as on_ping where key == K; }\n    fn on_ping(p: Ping) { }\n}";
     let rows: &[(&str, &str, &str, &str, &str, Option<&str>)] = &[
         // ---- the server's hooks ----
         ("run() waits", "    run() { self.web.wait(); }", HOLDS, "", "", Some("`Server`'s `run()`")),
@@ -392,7 +400,7 @@ fn what_main_builds_before_a_listener_born_after_its_server_must_return() {
         // ---- loops in every expression position, in run() and in a fn it calls ----
         ("loop in a let initializer", "    run() { let n = { while !self.draining { } 0 }; }", HOLDS, "", "", Some("a `while` loop")),
         ("loop in a helper's initializer", "    fn spin() -> Int { let n = { while !self.draining { } 0 }; return n; }\n    run() { let n = self.spin(); }", HOLDS, "", "", Some("a `while` loop")),
-        ("loop in a block tail", "    run() { let n = { let m = 1; { while !self.draining { } m } }; }", HOLDS, "", "", Some("a `while` loop")),
+        ("loop in a block tail", "    run() { let n = { let m = 1; m + { while !self.draining { } 0 } }; }", HOLDS, "", "", Some("a `while` loop")),
         ("loop in an if arm", "    run() { let n = if self.port > 0 { while !self.draining { } 1 } else { 2 }; }", HOLDS, "", "", Some("a `while` loop")),
         ("loop in a match arm", "    run() { let n = match self.port { 0 -> { while !self.draining { } 1 }, _ -> 2, }; }", HOLDS, "", "", Some("a `while` loop")),
         ("loop in a call argument", "    run() { println(to_string({ while !self.draining { } 1 })); }", HOLDS, "", "", Some("a `while` loop")),
@@ -428,7 +436,31 @@ fn what_main_builds_before_a_listener_born_after_its_server_must_return() {
         ("built in a free fn", "", APP_N, "", LAUNCH_FN_SPINS, Some("the value given of `App.n`")),
         ("built at two sites, one spins", "", APP_N, "", TWO_SITES_ONE_SPINS, Some("the value given of `App.n`")),
         ("built at two sites, both return", "", APP_N, "", TWO_SITES_BOTH_RETURN, None),
+        // ---- what a construction evaluates without writing it ----
+        // a record literal's omitted fields: their defaults
+        ("a record default builds a locus", "", "setup: Setup = Setup { }; server: Server = Server { };", SETUP_BUILDS, "", Some("the default of `Setup.n`")),
+        ("a record literal supplies that field", "", "setup: Setup = Setup { n: 0 }; server: Server = Server { };", SETUP_BUILDS, "", None),
+        ("a record default calls a sleeping fn", "", "cfg: Cfg = Cfg { }; server: Server = Server { };", CFG_SETTLES, "", Some("the default of `Cfg.n`, through `settle`")),
+        ("a record built inside a block default", "", "n: Int = { let c = Cfg { }; c.n }; server: Server = Server { };", CFG_SETTLES, "", Some("the default of `Cfg.n`")),
+        ("a record in a server's run()", "    run() { let c = Cfg { }; }", HOLDS, CFG_SETTLES, "", Some("`Server`'s `run()`")),
+        ("a record default's own record default", "", "o: Outer = Outer { }; server: Server = Server { };", NESTED_SETTLES, "", Some("the default of `Outer.inner`, through the default of `Inner.n`")),
+        ("a record default's record, its field supplied", "", "o: Outer = Outer { inner: Inner { n: 0 } }; server: Server = Server { };", NESTED_SETTLES, "", None),
+        // an all-defaulted record param with no value: the `T { }` the compiler builds
+        ("a record param with no value", "", "cfg: Cfg; server: Server = Server { };", CFG_SETTLES, "fn main() { }", Some("the default of `App.cfg`, through the default of `Cfg.n`")),
+        ("a record param with no value, after the server", "", "server: Server = Server { }; cfg: Cfg;", CFG_SETTLES, "fn main() { }", None),
+        // a record default is a place the main locus can be built
+        ("built in a record's field default", "", APP_N, "", RECORD_BUILDS_APP, Some("the value given of `App.n`")),
+        // a call's omitted arguments: its params' defaults, at the call site
+        ("a call leaves a sleeping param default", "", "k: Int = helper(); server: Server = Server { };", HELPER_SETTLES, "", Some("the default of `helper`'s param `n`")),
+        ("a call supplies that argument", "", "k: Int = helper(1); server: Server = Server { };", HELPER_SETTLES, "", None),
+        ("a method call leaves a sleeping param default", "    fn wait_for(n: Int = settle()) -> Int { return n; }\n    run() { let k = self.wait_for(); }", HOLDS, SETTLE, "", Some("`Server`'s `run()`")),
+        // a const that is no literal: evaluated where it is read
+        ("a const read by a default", "", "n: Int = K; server: Server = Server { };", CONST_SETTLES, "", Some("the value of the const `K`")),
+        ("a literal const read by a default", "", "n: Int = K; server: Server = Server { };", "const K: Int = 5;", "", None),
+        // a subscription's key: evaluated where its locus is built
+        ("a subscription key reads a sleeping const", "", "sub: Sub = Sub { }; server: Server = Server { };", KEYED_SUB, "", Some("a `where key == …` of `Sub`")),
     ];
+    let mut failures = Vec::new();
     for (row, members, params, decls, main_fn, refused_at) in rows {
         let mut src = server(SERVED, "");
         if members.starts_with("        ") {
@@ -443,16 +475,22 @@ fn what_main_builds_before_a_listener_born_after_its_server_must_return() {
         src = src.replace("    params {\n        \n    }\n    run() { }", &format!("    params {{\n        {params}\n    }}\n    run() {{ }}"));
         src = src.replace("fn main() { App { }; }", &format!("{decls}\n{}", if main_fn.is_empty() { "fn main() { App { }; }" } else { main_fn }));
         let errs = errors(&src);
-        match refused_at {
-            None => assert_eq!(errs, Vec::<String>::new(), "{row}: admitted\n{src}"),
-            Some(at) => assert!(
-                errs.iter().any(|e| e.contains("exposure `web` held by `Server`: its address reads `Server`, so its listener (`App`'s) is born after `self.server`")
-                    && e.contains(at)
-                    && e.contains("may not return")),
-                "{row}: refused at {at}: {errs:#?}\n{src}"
-            ),
+        // admitted: no error; refused: the refusal, naming the step, and
+        // nothing else
+        let ok = match refused_at {
+            None => errs.is_empty(),
+            Some(at) => {
+                errs.len() == 1
+                    && errs.iter().any(|e| e.contains("exposure `web` held by `Server`: its address reads `Server`, so its listener (`App`'s) is born after `self.server`")
+                        && e.contains(at)
+                        && e.contains("may not return"))
+            }
+        };
+        if !ok {
+            failures.push(format!("{row}: want {refused_at:?}: {errs:#?}\n{src}"));
         }
     }
+    assert!(failures.is_empty(), "{}", failures.join("\n\n"));
     // placed: the server's own run() runs on its pool, its birth() is awaited
     let placed = |members: &str| {
         server(SERVED, HOLDS)
