@@ -6323,6 +6323,8 @@ fn eval_expr(expr: &Expr, cx: &mut PoolCheckCx) -> Origin {
         };
         apply_call_writes(callee, resolved, args, &arg_origins, &recv_origin, *span, cx);
         let o = call_origin(callee, resolved, &recv_origin, &arg_origins, cx);
+        // (an alias refused at the call is not carried on in its value)
+        let o = if handed_refused { strip_cross(o) } else { o };
         // an instance the callee builds and hands back: one built at this
         // call, holding what the callee's does
         return match resolved {
@@ -6429,7 +6431,22 @@ fn eval_expr(expr: &Expr, cx: &mut PoolCheckCx) -> Origin {
                 }
                 return if holds { Origin { objs: Objs(vec![site]), ..Origin::default() } } else { Origin::default() };
             }
-            inits.iter().fold(Origin::default(), |o, i| o.join(eval_expr(&i.value, cx).contained()))
+            // GH #1566 follow-up: a stdlib locus literal (a server handed
+            // its handler) runs where this code builds it too: a param that
+            // may be an instance running elsewhere is refused as at a
+            // program's own locus literal (a record's fields can hold none)
+            let stdlib = path.segments.first().is_some_and(|s| s.name == "std");
+            let holder = format!("`{}`", path.segments.iter().map(|s| s.name.as_str()).collect::<Vec<_>>().join("::"));
+            inits.iter().fold(Origin::default(), |o, i| {
+                let v = eval_expr(&i.value, cx);
+                let v = if stdlib {
+                    let v = cx.env.materialize(v);
+                    hand_over(v, value_display(&i.value), &holder, &format!("handing it to {holder}"), i.value.span(), cx)
+                } else {
+                    v
+                };
+                o.join(v.contained())
+            })
         }
         Expr::Block(b) => eval_block(b, cx),
         Expr::If(stmt) => eval_if(stmt, cx),
@@ -7707,6 +7724,7 @@ fn receiver_cross_pool(receiver: &Expr, cx: &PoolCheckCx) -> Option<CrossPool> {
     // `self` they are reached through.
     let root = self_rooted_field(receiver)?;
     let held_by = (!std::ptr::eq(root, receiver)).then(|| receiver_display(root));
+    let reached = receiver;
     let receiver = root;
     let Expr::Field { receiver: inner, name, .. } = receiver else {
         return None;
@@ -7717,6 +7735,20 @@ fn receiver_cross_pool(receiver: &Expr, cx: &PoolCheckCx) -> Option<CrossPool> {
     let table = cx.running.table;
     for owner in cx.instances {
         let caller = cx.building_for.unwrap_or(cx.running.row(owner).domain);
+        // GH #1566 follow-up: walking a default for a field that runs
+        // elsewhere, a field of `self` the table places no row for (a
+        // tuple or an array of loci, a field of interface type) is held
+        // where its owner runs
+        if cx.building_for.is_some() && cx.running.field(owner, &name.name).is_empty() {
+            let caller_pool = PoolId::of_domain(table, caller);
+            let callee_pool = PoolId::of_domain(table, cx.running.row(owner).domain);
+            if caller_pool != callee_pool {
+                let field_locus = self_field_locus_name(cx.enclosing_locus?, &name.name, reached)
+                    .unwrap_or_else(|| name.name.clone());
+                return Some(CrossPool { locus_type: Some(field_locus.clone()), held_by: held_by.clone(), field_locus, caller_pool, callee_pool });
+            }
+            continue;
+        }
         for field in cx.running.field(owner, &name.name) {
             let row = cx.running.row(field);
             // GH #1566: walking a default for a field that runs elsewhere,
@@ -7776,7 +7808,7 @@ fn alias_of(value: &Expr, cx: &PoolCheckCx) -> Option<CrossPool> {
         return tainted_self_field(value, cx).whole.as_deref().cloned();
     };
     cp.locus_type = match &cp.held_by {
-        Some(_) => receiver_locus_below(value, &cp.field_locus, cx),
+        Some(_) => receiver_locus_below(value, &cp.field_locus, cx).or(cp.locus_type.clone()),
         None => Some(cp.field_locus.clone()),
     };
     Some(cp)
@@ -7895,6 +7927,40 @@ fn receiver_locus_name(
             _ => None,
         })
         .unwrap_or_else(|| field.to_string())
+}
+
+/// The locus type the chain `at` reaches below a field of `locus`, by
+/// the field's declared type: an array's element, a tuple's part, as
+/// written.
+fn self_field_locus_name(locus: &LocusDecl, field: &str, at: &Expr) -> Option<String> {
+    // the steps below the field, outermost first
+    fn steps<'e>(e: &'e Expr, out: &mut Vec<&'e Expr>) {
+        match e {
+            Expr::Field { receiver, .. } if matches!(receiver.as_ref(), Expr::KwSelf(_)) => {}
+            Expr::Field { receiver, .. } | Expr::Index { receiver, .. } => {
+                steps(receiver, out);
+                out.push(e);
+            }
+            _ => {}
+        }
+    }
+    let mut below = Vec::new();
+    steps(at, &mut below);
+    let mut t = locus.members.iter().find_map(|m| match m {
+        LocusMember::Params(pb) => pb.params.iter().find(|p| p.name.name == field).and_then(|p| p.ty.as_ref()),
+        _ => None,
+    })?;
+    for st in below {
+        t = match (st, t) {
+            (Expr::Index { .. }, TypeExpr::Array { elem, .. }) => elem,
+            (Expr::Field { name, .. }, TypeExpr::Tuple(ts, _)) => ts.get(name.name.parse::<usize>().ok()?)?,
+            _ => return None,
+        };
+    }
+    match t {
+        TypeExpr::Named { path, .. } => Some(path.segments.iter().map(|s| s.name.as_str()).collect::<Vec<_>>().join("::")),
+        _ => None,
+    }
 }
 
 fn receiver_display(e: &Expr) -> String {

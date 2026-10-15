@@ -194,10 +194,11 @@ fn an_or_wrapped_plain_call_reclaims_its_factory_argument() {
 }
 
 /// The same decision at a locus-typed FIELD (F.17 / GH #836). The
-/// field owns a factory result written straight into it, and nothing
-/// else: `pick(make(5), make(6))` hands back a locus `pick` was
-/// given, so both results are temporaries of the frame that built
-/// them and the field's ownership bit stays clear.
+/// field owns a factory result written straight into it, and one a
+/// call hands back unchanged (GH #1566 follow-up): `first(make(5),
+/// make(6))` hands back the locus `first` was given first, so that one
+/// is the field's, torn down in the owner's cascade, and the other is
+/// a temporary of the frame that built it.
 #[test]
 fn a_field_init_of_a_plain_call_dissolves_every_factory_argument_once() {
     let src = format!(
@@ -216,10 +217,10 @@ fn a_field_init_of_a_plain_call_dissolves_every_factory_argument_once() {
     let (out, verdict) = build_and_run("field_call_args", &src);
     assert!(verdict.is_empty(), "{}\n{}", verdict, out);
     assert_eq!(
-        out, "peek=5\nend\nrouter 1\nbye 6\nbye 5\n",
-        "the field reads its own value, the owner's cascade does not \
-         claim a locus it was merely handed, and each factory result \
-         is torn down exactly once"
+        out, "peek=5\nend\nrouter 1\nbye 5\nbye 6\n",
+        "the field reads its own value, the owner's cascade claims the \
+         argument the call hands back and not the other, and each \
+         factory result is torn down exactly once"
     );
 }
 

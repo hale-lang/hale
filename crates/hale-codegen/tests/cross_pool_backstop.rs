@@ -696,3 +696,63 @@ fn main() {
     assert!(status.success() && stdout.contains("APP DONE"), "{status:?}\nstderr: {stderr}");
     assert!(!stderr.contains("violation"), "{stderr}");
 }
+
+/// A locus literal handed to a holder through a call's argument — a fn
+/// that hands it back (`id(W { })`), a builder that keeps it in the
+/// instance it returns (`mk(W { })`, and with the instance bound first)
+/// — is owned where the call's value is: the holder's, torn down with
+/// it, never a temporary of the frame that built it. It was: the frame
+/// reclaimed it as soon as the server's params were built, and the
+/// handler then wrote into a freed instance whose `__domain` was whatever
+/// the memory held. Plain and sanitized, on a classic and an async_io
+/// pool.
+#[test]
+fn an_argument_the_holder_keeps_is_owned_by_the_holder() {
+    let program = |handler: &str, async_io: bool| {
+        let placement = if async_io { "srv: cooperative(pool = io) where async_io;" } else { "srv: cooperative(pool = io);" };
+        format!(
+            r#"locus W {{
+    params {{ name: String = "w"; }}
+    dissolve() {{ println(f"W.dissolve {{self.name}}"); }}
+}}
+locus Routes {{
+    params {{ w: W; }}
+    fn handle(req: std::http::Request) -> std::http::Response {{
+        self.w.name = std::str::upper("from the server's pool");
+        return std::http::Response {{ status: 200, body: "ok" }};
+    }}
+}}
+fn id(w: W) -> W {{ return w; }}
+fn mk(w: W) -> Routes {{ return Routes {{ w: w }}; }}
+fn mk2(w: W) -> Routes {{ let r = Routes {{ w: w }}; return r; }}
+main locus App {{
+    params {{
+        srv: std::http::Server = std::http::Server {{ host: "127.0.0.1", port: 0, handler: {handler} }};
+    }}
+    placement {{ {placement} }}
+    run() {{
+        let mut i = 0;
+        while i < 20 && !self.draining {{ std::time::sleep(50ms); i = i + 1; }}
+        println("APP DONE");
+    }}
+}}
+fn main() {{ App {{ }}; }}
+"#
+        )
+    };
+    for handler in ["Routes { w: id(W { }) }", "mk(W { })", "mk2(W { })"] {
+        for async_io in [false, true] {
+            for asan in [false, true] {
+                let what = format!("{handler}, async_io={async_io}, asan={asan}");
+                let (status, stdout, stderr, line) = serve_one(&program(handler, async_io), "hale_1566_kept_argument", asan);
+                assert!(line.contains("200"), "{what}: the request is answered: {line:?}; stderr: {stderr}");
+                assert!(status.success() && stdout.contains("APP DONE"), "{what}: {status:?}\nstderr: {stderr}");
+                assert!(!stderr.contains("violation") && !stderr.contains("Sanitizer"), "{what}: {stderr}");
+                // torn down once, with its holder, after the program's run
+                let done = stdout.find("APP DONE").expect("checked");
+                assert_eq!(stdout.matches("W.dissolve").count(), 1, "{what}: {stdout}");
+                assert!(stdout.find("W.dissolve").expect("counted") > done, "{what}: {stdout}");
+            }
+        }
+    }
+}

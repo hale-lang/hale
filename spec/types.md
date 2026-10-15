@@ -1917,7 +1917,12 @@ instance, seeded from the `main locus`'s `placement { }` entries):
    cross-pool alias: `W` (`self.a`) runs on `cooperative(pool = main)`; `mk(…)` hands it to `Routes`, which runs on `cooperative(pool = io)`, shares one instance across pools — build it on that side, or reach it through a method on the bus.
    ```
 
-   An instance the code builds itself and hands over (`Routes { w: W {
+   A stdlib locus literal (`std::http::Server { handler: … }`) receives
+   its params the same way, and a field of `self` the placement table
+   places no instance for (a tuple or an array of loci, a field of
+   interface type) runs where its owner does: `handler: self.pr.0`, with
+   `pr: (Routes, W)` on main and the server on io, is refused. An
+   instance the code builds itself and hands over (`Routes { w: W {
    } }`, a helper that builds and returns one) is moved, not shared, and
    is accepted; so is a hand-over within one pool. A locus whose form
    synchronizes access from another domain, and a stdlib locus (a

@@ -773,6 +773,20 @@ field owns whichever branch ran. A `reperspective` swap
 does not change it either — the swap replaces code and keeps
 state, so the holder still owns the impl its designation built.
 
+A locus literal written as a call's **argument** is an expression-position
+temporary of the frame unless the callee keeps it (GH #1566): a free fn
+that hands the argument back unchanged (`fn id(w: W) -> W { return w;
+}`) makes it the call's value, owned wherever the call's value is
+(`Routes { w: id(W { }) }` is `Routes { w: W { } }`), and a fresh factory
+that keeps it in a field of the locus it builds and returns (`fn mk(w:
+W) -> Routes { return Routes { w: w }; }`, or through a `let` bound to
+that literal) makes it that field's child, torn down with the returned
+locus — when the returned locus is held by a field, a placement or a
+binding. Which fns do either is read from their bodies: the parameter
+named nowhere but in the value handed back. Before, such an argument
+was reclaimed when the frame that built it ended, while the locus the
+call built still held it.
+
 A locus literal written inside the initializer of a param that
 **cannot hold a locus** is not an ownership transfer, because
 there is no field for the owner to cascade from. In `Lonely { n:

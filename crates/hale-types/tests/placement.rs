@@ -3285,6 +3285,7 @@ locus Routes {{
 fn mk(w: W) -> Routes {{ return Routes {{ w: w }}; }}
 fn mk2(w: W) -> Routes {{ let r = Routes {{ w: w }}; return r; }}
 fn mk_own() -> Routes {{ return Routes {{ w: W {{ }} }}; }}
+fn pair1(w: W) -> (Routes, Int) {{ return (Routes {{ w: w }}, 1); }}
 main locus App {{
     params {{
         a: W = W {{ }};
@@ -3305,6 +3306,7 @@ fn main() {{ App {{ }}; }}
         ("Routes { w: { let x = self.a; x } }", "handing it to `Routes`"),
         ("mk(self.a)", "`mk(…)` hands it to `Routes`"),
         ("mk2(self.a)", "`mk2(…)` hands it to `Routes`"),
+        ("pair1(self.a).0", "`pair1(…)` hands it to `Routes`"),
     ] {
         let got = aliases(&program(apart, handler));
         assert!(got.len() == 1 && got[0].starts_with("cross-pool alias:") && got[0].contains(needle), "{handler}: {got:#?}");
@@ -3314,6 +3316,44 @@ fn main() {{ App {{ }}; }}
     }
     let src = program(apart, "mk_own()");
     assert!(aliases(&src).is_empty(), "{:?}", check(&src));
+}
+
+/// A builder that returns a tuple keeps both of its parts on the field
+/// the tuple fills: a part handed on to a holder that runs elsewhere —
+/// here a stdlib server, built on its own pool — is an instance two
+/// pools reach, refused where it is handed.
+#[test]
+fn a_part_of_a_tuple_field_handed_across_pools_is_refused() {
+    let program = |placement: &str| {
+        format!(
+            r#"locus W {{ params {{ name: String = ""; }} }}
+locus Routes {{
+    params {{ w: W; }}
+    fn handle(req: std::http::Request) -> std::http::Response {{
+        self.w.name = std::str::upper("x");
+        return std::http::Response {{ status: 200, body: "ok" }};
+    }}
+}}
+fn pair() -> (Routes, W) {{ let w = W {{ }}; return (Routes {{ w: w }}, w); }}
+main locus App {{
+    params {{
+        pr: (Routes, W) = pair();
+        srv: std::http::Server = std::http::Server {{ host: "127.0.0.1", port: 0, handler: self.pr.0 }};
+    }}
+    placement {{ {placement} }}
+    run() {{ }}
+}}
+fn main() {{ App {{ }}; }}
+"#
+        )
+    };
+    let got: Vec<String> = check(&program("srv: cooperative(pool = io);")).into_iter().filter(|m| m.contains("cross-pool")).collect();
+    assert!(
+        got.len() == 1 && got[0].contains("cross-pool alias: `Routes` (`self.pr.0`)") && got[0].contains("handing it to `std::http::Server`"),
+        "{got:#?}"
+    );
+    let src = program("");
+    assert!(check(&src).iter().all(|m| !m.contains("cross-pool")), "{:?}", check(&src));
 }
 
 const STORE_LOCI: &str = r#"
