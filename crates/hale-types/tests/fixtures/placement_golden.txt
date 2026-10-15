@@ -3217,6 +3217,25 @@ dynamic	Display	on main	in the seed
 row	Holder_Int@main1	Holder_Int	main	default
 row	Holder_String@main2	Holder_String	main	default
 
+== crates/hale-codegen/tests/generic_monomorph_agreement.rs#80af01a5
+-- Rack@main1	Rack
+row	~	Rack	main	default
+row	~.bag	Bag_In	main	inherited
+-- Tally@main2	Tally
+row	~	Tally	main	default
+row	~.bag	Bag_Int	main	inherited
+
+== crates/hale-codegen/tests/generic_monomorph_agreement.rs#53f91391
+row	Keeper@main1	Keeper	main	default
+
+== crates/hale-codegen/tests/generic_monomorph_agreement.rs#00b09b2e
+row	Cache_Int_String@main2	Cache_Int_String	main	default
+row	Cache_Int_String@main3	Cache_Int_String	main	default
+dynamic	Cache_Int_String	on main	in the seed
+-- Keeper@main1	Keeper
+row	~	Keeper	main	default
+row	~.c	Cache_Int_String	main	inherited
+
 == crates/hale-codegen/tests/generics.rs#d523f812
 dynamic	<hole>	on main|unresolved declaration `Box_Int`	in the seed
 
@@ -4077,9 +4096,8 @@ row	H@main1	H	main	default
 == crates/hale-codegen/tests/owned_views_over_checker_types.rs#775a4598
 row	H@main1	H	main	default
 
-== crates/hale-codegen/tests/owned_views_over_checker_types.rs#2134f7be
+== crates/hale-codegen/tests/owned_views_over_checker_types.rs#5cd026ba
 row	H@main1	H	main	default
-dynamic	<hole>	on main|unresolved declaration `Cfg_Int`	in the seed
 
 == crates/hale-codegen/tests/owner_table.rs#1f85ba34
 row	Parent@main1	Parent	main	default

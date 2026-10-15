@@ -95,7 +95,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use hale_graph::ids::SiteId;
 use hale_syntax::ast::{
-    flat_decls, Block, ElseBranch, Expr, IfStmt, LValueSeg, LocusDecl, LocusMember, MatchArmBody, NodeId,
+    flat_decls, AssignOp, Block, ElseBranch, Expr, IfStmt, LValue, LValueSeg, LocusDecl, LocusMember, MatchArmBody, NodeId,
     OrDisposition, ParamInit, Pattern, PerspectiveMember, PinAffinity, PlacementConstraint, PlacementSpec, Program,
     RecoveryModifier, Stmt, StructInit, TopDecl, TopologyBlock, TransportSpec, TypeDecl, TypeDeclBody, TypeExpr,
 };
@@ -2389,7 +2389,7 @@ impl<'a> Scopes<'a> {
                     let mut w = BodyWalk::new(ids, universe, decls);
                     w.type_parameters.extend(fd.generics.iter().map(|g| g.name.name.clone()));
                     for p in &fd.params {
-                        w.bind(&p.name.name, None);
+                        w.bind_typed(&p.name.name, None, Some(&p.ty));
                         if let Some(d) = &p.default {
                             w.typed_expr(d, Some(&p.ty));
                         }
@@ -2406,13 +2406,18 @@ impl<'a> Scopes<'a> {
                     let decl = SiteRef { universe, id };
                     let mut w = BodyWalk::new(ids, universe, decls);
                     w.type_parameters.extend(l.generics.iter().map(|g| g.name.name.clone()));
+                    w.params = l.members.iter()
+                        .filter_map(|m| match m { LocusMember::Params(b) => Some(&b.params), _ => None })
+                        .flatten()
+                        .filter_map(|p| p.ty.as_ref().map(|t| (p.name.name.clone(), t)))
+                        .collect();
                     for m in &l.members {
                         match m {
                             LocusMember::Fn(fd) => {
                                 let enclosing_parameters = w.type_parameters.clone();
                                 w.type_parameters.extend(fd.generics.iter().map(|g| g.name.name.clone()));
                                 for p in &fd.params {
-                                    w.bind(&p.name.name, None);
+                                    w.bind_typed(&p.name.name, None, Some(&p.ty));
                                     if let Some(d) = &p.default {
                                         w.typed_expr(d, Some(&p.ty));
                                     }
@@ -2581,6 +2586,11 @@ struct BodyWalk<'a, 'd> {
     calls: Vec<(String, bool)>,
     escapes: BTreeSet<String>,
     lets: Lets,
+    /// Each name's declared type, under the rule `lets` keeps: a second
+    /// binding of the name declares nothing.
+    ascribed: BTreeMap<String, Option<&'a TypeExpr>>,
+    /// The enclosing locus's params, by name, with their declared types.
+    params: BTreeMap<String, &'a TypeExpr>,
 }
 
 impl<'a, 'd> BodyWalk<'a, 'd> {
@@ -2595,6 +2605,8 @@ impl<'a, 'd> BodyWalk<'a, 'd> {
             calls: Vec::new(),
             escapes: BTreeSet::new(),
             lets: BTreeMap::new(),
+            ascribed: BTreeMap::new(),
+            params: BTreeMap::new(),
         }
     }
 
@@ -2613,7 +2625,25 @@ impl<'a, 'd> BodyWalk<'a, 'd> {
     /// `name` bound to `to`: a second binding of one name, anywhere in the
     /// scope, binds it to nothing the producer follows.
     fn bind(&mut self, name: &str, to: Option<SiteRef>) {
+        self.bind_typed(name, to, None);
+    }
+
+    /// `bind`, the name declared `ty` (a `let` ascription, a parameter's type).
+    fn bind_typed(&mut self, name: &str, to: Option<SiteRef>, ty: Option<&'a TypeExpr>) {
         self.lets.entry(name.to_string()).and_modify(|b| *b = None).or_insert(to);
+        self.ascribed.entry(name.to_string()).and_modify(|t| *t = None).or_insert(ty);
+    }
+
+    /// The declared type of a plain assignment's place, where the walk
+    /// can read it: a local's ascription or a parameter's type, or the
+    /// enclosing locus's param (`self.c`). It supplies a generic
+    /// literal's arguments as a `let` ascription does.
+    fn place_declared(&self, target: &'a LValue) -> Option<&'a TypeExpr> {
+        match (target.head.name.as_str(), target.tail.as_slice()) {
+            ("self", [LValueSeg::Field(f)]) => self.params.get(&f.name).copied(),
+            (head, []) if head != "self" => self.ascribed.get(head).copied().flatten(),
+            _ => None,
+        }
     }
 
     /// A match arm's bindings, each a name bound to nothing followed.
@@ -2685,7 +2715,7 @@ impl<'a, 'd> BodyWalk<'a, 'd> {
         match s {
             Stmt::Let { is_mut, name, ty, value, .. } => {
                 let to = if *is_mut { None } else { self.locus_literal(value) };
-                self.bind(&name.name, to);
+                self.bind_typed(&name.name, to, ty.as_ref());
                 self.typed_expr(value, ty.as_ref());
             }
             Stmt::LetTuple { names, value, .. } => {
@@ -2694,8 +2724,11 @@ impl<'a, 'd> BodyWalk<'a, 'd> {
                 }
                 self.expr(value);
             }
-            Stmt::Assign { target, value, .. } => {
-                self.expr(value);
+            Stmt::Assign { target, op, value, .. } => {
+                match op {
+                    AssignOp::Eq => self.typed_expr(value, self.place_declared(target)),
+                    _ => self.expr(value),
+                }
                 for seg in &target.tail {
                     if let LValueSeg::Index(ix) = seg {
                         self.expr(ix);
