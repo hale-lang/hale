@@ -1422,3 +1422,64 @@ fn a_bus_payload_instance_over_an_underscored_name_lowers() {
     // `Big_Mode` a payload-less enum, so the plan and the codec agree.
     agree("bus_payload_instance", BUS_PAYLOAD_INSTANCE, &Expect::Runs("right=5\n"));
 }
+
+// === a variant's construction holds its arguments ==============
+// `Wrap::Held("str")` with `Held(Box<Int>)` checked clean (the callee path
+// types as the enum and no argument was held to the payload) and the
+// build refused it, unlocated: "Wrap::Held arg 0: expected type
+// TypeRef(\"Box_Int\"), got String". `Wrap::Held(Box { value: 5 })` checked
+// clean too and died at build at `expression form Discriminant(12)`. Each
+// argument now meets the payload field's type, a template literal taking
+// its arguments, in the check and the build.
+
+#[test]
+fn a_variants_arguments_meet_its_payload_types() {
+    agree(
+        "variant_template_literal",
+        r#"
+type Box<T> {
+    value: T;
+}
+
+type Wrap = enum { Held(Box<Int>), Empty };
+
+fn main() {
+    let w = Wrap::Held(Box { value: 5 });
+    let s = match w {
+        Wrap::Held(b) -> b.value,
+        Wrap::Empty -> 0,
+    };
+    println(s);
+}
+"#,
+        &Expect::Runs("5\n"),
+    );
+    agree(
+        "variant_mistyped",
+        r#"
+type Box<T> {
+    value: T;
+}
+
+type Wrap = enum { Held(Box<Int>), Empty };
+
+fn main() {
+    let w = Wrap::Held("str");
+    println(1);
+}
+"#,
+        &Expect::Refused("`Wrap::Held` argument 0: expected `Box_Int`, got `String`"),
+    );
+    agree(
+        "variant_arity",
+        r#"
+type Wrap = enum { Held(Int), Empty };
+
+fn main() {
+    let w = Wrap::Held(1, 2);
+    println(1);
+}
+"#,
+        &Expect::Refused("`Wrap::Held` takes 1 argument, got 2"),
+    );
+}

@@ -26649,7 +26649,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 let mut field_vals: Vec<(BasicValueEnum<'ctx>, CodegenTy)> =
                     Vec::with_capacity(args.len());
                 for (j, a) in args.iter().enumerate() {
-                    let (v, ty) = self.lower_expr(a, scope)?;
+                    // A literal spelled with a generic template's name
+                    // takes the payload field's arguments.
+                    let rewritten = self.rewrite_generic_literal(a, &variant.field_tys[j]);
+                    let (v, ty) = self.lower_expr(rewritten.as_ref().unwrap_or(a), scope)?;
                     if ty != variant.field_tys[j] {
                         return Err(CodegenError::Unsupported(format!(
                             "{}::{} arg {}: expected type {:?}, got {:?}",

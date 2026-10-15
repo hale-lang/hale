@@ -19631,6 +19631,55 @@ impl<'a> Checker<'a> {
                         return t;
                     }
                 }
+                // A variant's construction (`Wrap::Held(x)`): each argument
+                // is held to the payload field's type, as lowering holds it
+                // (it refused `Wrap::Held("str")`, unlocated, where the check
+                // passed it), a literal spelled with a generic template's
+                // name taking the field's arguments (`admit_monomorph_literal`).
+                if let Expr::Path(qn) = callee.as_ref() {
+                    if let [e, v] = qn.segments.as_slice() {
+                        let variant = match self.top.symbols.get(&e.name) {
+                            Some(TopSymbol::Type(TypeInfo { kind: TypeKind::Enum(variants), .. })) => {
+                                variants.iter().find(|x| x.name == v.name).cloned()
+                            }
+                            _ => None,
+                        };
+                        if let Some(variant) = variant {
+                            let _ = self.check_expr(callee);
+                            if args.len() != variant.fields.len() {
+                                self.diags.push(Diag::ty(
+                                    *call_span,
+                                    format!(
+                                        "`{}::{}` takes {} argument{}, got {}",
+                                        e.name,
+                                        v.name,
+                                        variant.fields.len(),
+                                        if variant.fields.len() == 1 { "" } else { "s" },
+                                        args.len()
+                                    ),
+                                ));
+                            }
+                            for (i, a) in args.iter().enumerate() {
+                                let got = self.check_expr(a);
+                                let Some(want) = variant.fields.get(i) else { continue };
+                                if !self.admit_monomorph_literal(want, &got, a, false) && !self.flows_into(want, &got, a) {
+                                    self.diags.push(Diag::ty(
+                                        a.span(),
+                                        format!(
+                                            "`{}::{}` argument {}: expected `{}`, got `{}`",
+                                            e.name,
+                                            v.name,
+                                            i,
+                                            want.display(),
+                                            got.display()
+                                        ),
+                                    ));
+                                }
+                            }
+                            return Ty::Named(e.name.clone());
+                        }
+                    }
+                }
                 // GH #1076 (U3): `x.in(u)` and `x.split(u)` of a quantity or
                 // a point.
                 if let (Expr::Field { receiver, name, .. }, [arg]) = (callee.as_ref(), args.as_slice()) {
