@@ -18825,7 +18825,7 @@ impl<'a> Checker<'a> {
         match callee {
             Expr::Ident(id) => {
                 let n = id.name.as_str();
-                if self.locals.lookup(n).is_some() {
+                if self.locals.lookup(n).is_some() && n != hale_syntax::parser::FMT_BUILTIN {
                     return CalleeRef::Value;
                 }
                 if self.generic_fns.contains_key(n) {
@@ -19842,8 +19842,11 @@ impl<'a> Checker<'a> {
                 // on the name NOT resolving to a user fn, so user
                 // shadowing keeps its own signature.
                 if let Expr::Ident(id) = callee.as_ref() {
-                    let shadowed = self.top.lookup(&id.name).is_some()
-                        || self.locals.lookup(&id.name).is_some();
+                    // `__fmt` is the desugaring of `f"{x:spec}"`, written
+                    // in the user's own scope: it is the compiler's, whatever
+                    // a binding of the name holds (as lowering reads it).
+                    let shadowed = id.name != hale_syntax::parser::FMT_BUILTIN
+                        && (self.top.lookup(&id.name).is_some() || self.locals.lookup(&id.name).is_some());
                     if !shadowed {
                         match id.name.as_str() {
                             "println" | "print" | "to_string" => {

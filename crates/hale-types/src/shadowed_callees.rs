@@ -9,13 +9,20 @@
 //! one place the rule lives is here, in the desugar sequence before the
 //! check: a call whose bare callee names a binding in scope (a parameter,
 //! a `let`, a tuple `let`'s name, a `for` binder, a `match` pattern's
-//! binding, a `shm_write` binding) and also one of the program's fns is
+//! binding, a `shm_write` binding) and also one of the program's fns or
+//! one of the builtins the compiler answers by name (`len`, `min`, a
+//! `bounded` intrinsic, a printer: `check::BARE_BUILTIN_CALLEES`) is
 //! rewritten to call the binding as a value, `{ f }(x)`. A callee that is
 //! not a bare name is a call through a value to every pass already (the
 //! checker types the block as the binding's fn type, lowering calls the
 //! value it evaluates to, the summaries treat it as indirect), and the
-//! name inside it is a read of the binding. A callee no fn shares its name
-//! with is left as written: it already calls the binding.
+//! name inside it is a read of the binding. A callee no fn or builtin
+//! shares its name with is left as written: it already calls the binding.
+//!
+//! `__fmt`, the desugaring of `f"{x:spec}"`, is the one builtin no binding
+//! shadows: the parser writes the call into the user's own scope, so it is
+//! the compiler's whatever a binding of the name holds, in the check as in
+//! lowering.
 //!
 //! Only bodies hold bindings: a fn's, a locus's fns and hooks, a
 //! perspective's fns and `stable_when`. The rewritten callee keeps its
@@ -26,18 +33,20 @@ use std::collections::BTreeSet;
 use hale_syntax::ast::*;
 
 /// Rewrite every call in `programs` whose bare callee a binding in scope
-/// shadows a fn of. `context` names fns too and is not rewritten.
+/// shadows a fn or a builtin of. `context` names fns too and is not
+/// rewritten.
 pub(crate) fn rewrite_shadowed_callees(programs: &mut [&mut Program], context: &[&Program]) {
-    let mut fns = BTreeSet::new();
+    let mut fns: BTreeSet<String> = crate::check::BARE_BUILTIN_CALLEES
+        .iter()
+        .filter(|n| **n != hale_syntax::parser::FMT_BUILTIN)
+        .map(|n| n.to_string())
+        .collect();
     for p in programs.iter().map(|p| &**p).chain(context.iter().copied()) {
         for item in flat_decls(&p.items) {
             if let TopDecl::Fn(f) = item {
                 fns.insert(f.name.name.clone());
             }
         }
-    }
-    if fns.is_empty() {
-        return;
     }
     for p in programs.iter_mut() {
         let mut w = Walk { fns: &fns, scopes: Vec::new() };

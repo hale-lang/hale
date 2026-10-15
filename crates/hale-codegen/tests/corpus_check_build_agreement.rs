@@ -640,6 +640,45 @@ fn a_fn_value_in_scope_shadows_a_fn_in_a_call() {
     }
 }
 
+/// A binding named like a builtin is what a call of the name runs, as one
+/// named like a program's fn is: the checker let the local win and
+/// lowering answered the builtin first. A parameter `len`, a local `min`,
+/// a local named like a `bounded` intrinsic (`count`). `__fmt`, the
+/// desugaring of `f"{x:spec}"`, stays the compiler's beside a local of the
+/// name (the checker had typed the f-string's call as the local).
+///
+/// Plain string literals, for the reason given above.
+#[test]
+fn a_fn_value_in_scope_shadows_a_builtin_in_a_call() {
+    let rows: [(&str, &str); 4] = [
+        (
+            "fn seven(s: String) -> Int { return 7; }\n\
+             fn run(len: fn(String) -> Int) -> Int { return len(\"abc\"); }\n\
+             fn main() { println(run(seven)); }\n",
+            "7\n",
+        ),
+        (
+            "fn lower(a: Int, b: Int) -> Int { return a * 100 + b; }\n\
+             fn main() { let min = lower; println(min(1, 2)); }\n",
+            "102\n",
+        ),
+        (
+            "type Buf { vals: bounded[Int; 4]; }\n\
+             fn noop(b: Buf) -> Int { return 42; }\n\
+             fn main() { let b = Buf { }; let count = noop; println(count(b)); }\n",
+            "42\n",
+        ),
+        (
+            "fn zero(x: Int) -> String { return \"zero\"; }\n\
+             fn main() { let __fmt = zero; let n = 3; println(f\"{n:>4}|\"); }\n",
+            "   3|\n",
+        ),
+    ];
+    for (i, (src, wanted)) in rows.iter().enumerate() {
+        assert_eq!(build_and_run_probe(src, &format!("shadowing_builtin_{i}")), Ok(wanted.to_string()), "{src}");
+    }
+}
+
 /// GH #1076 (U1, review 2): a struct field's default is evaluated in the
 /// scope of the literal that leaves the field, so `Money(1)` in it calls
 /// the constructing fn's local `Money` (a fn), not the scalar type the

@@ -1504,9 +1504,14 @@ names a binding in scope (a parameter, a `let`, a tuple `let`'s name, a
 `for` binder, a `match` pattern's binding) calls that binding, so
 `fn apply(f: fn(Int) -> Int, x: Int) -> Int { return f(x); }` beside a
 `fn f` calls the parameter, and `{ let helper = zero; helper() }` calls
-`zero`. A qualified callee (`lib::helper()`) names the declaration. The
-check and the build read the call one way: the desugar sequence calls
-such a binding as a value before either sees the program.
+`zero`. The same holds for a builtin's name (`len`, `min`, a `bounded`
+intrinsic, a printer): a binding of it in scope is what a call of the
+name runs. `__fmt`, the compiler's desugaring of `f"{x:spec}"`, is the
+one name no binding shadows: the call is written into the user's own
+scope, and it is always the compiler's. A qualified callee
+(`lib::helper()`) names the declaration. The check and the build read
+the call one way: the desugar sequence calls such a binding as a value
+before either sees the program.
 
 `hale check <file>` loads that file and what its own imports reach,
 never the other files of its directory — exactly what `hale build

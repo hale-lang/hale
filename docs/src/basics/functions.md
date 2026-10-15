@@ -124,7 +124,9 @@ This keeps every function value a plain, inspectable thing.
 
 A function value in scope shadows a function of the same name, in a
 call as anywhere else: `fn apply(f: fn(Int) -> Int, x: Int) -> Int {
-return f(x); }` calls the `f` it was handed, even beside a `fn f`.
+return f(x); }` calls the `f` it was handed, even beside a `fn f`. The
+same goes for a builtin's name: a parameter called `len` is what
+`len(s)` calls inside that function.
 
 ## Free functions and where they live
 
