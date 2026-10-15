@@ -1796,14 +1796,31 @@ instance, seeded from the `main locus`'s `placement { }` entries):
    main.hl:8:9: violation: cross-pool store into `W.name` from pool `io`; this `W` runs on pool `main`: reach it through a method on the bus
    ```
 
-   Down `self`, a receiver is checked when the path goes through a
-   field some literal or store hands an instance built elsewhere. A
-   receiver whose form synchronizes access from another domain, a local
-   bound to a locus literal the running code built (and never rebound),
-   and what a `bindings { }` entry builds (an adapter the runtime calls
-   from every publishing thread) are not checked; a locus's `drain()`
-   and `dissolve()` run as its own domain wherever the runtime runs
-   them, and an `on_failure` handler reaches its failed child's.
+   An instance is on the domain it was built on until a holder adopts
+   it: a locus-typed field filled from a local or a parameter (a
+   literal's param, or a store into the field) moves the instance, and
+   the children it owns, onto the domain the holder runs on (`Web`
+   built in `fn main` and handed to an io-placed server's handler serves
+   from io). Hale does not refuse a use of the local after the hand-over,
+   so a builder that kept it and reaches the instance from its own
+   domain afterwards is caught at run time. A value that is a field of
+   `self`, or a local bound to one, is shared rather than adopted: the
+   instance stays where it runs, and down `self` a receiver is checked
+   when the path goes through a field so filled. A receiver whose form
+   synchronizes access from another domain, and a local bound to a
+   locus literal the running code built (never rebound, never handed
+   over), are not checked; a locus's `drain()` and `dissolve()` run as
+   its own domain wherever the runtime runs them, and an `on_failure`
+   handler reaches its failed child's.
+
+   Two exemptions are by design. What a `bindings { }` entry builds (an
+   adapter, a transport, a codec) belongs to no one domain: the runtime
+   calls an adapter's `send` from every publishing thread through a
+   function pointer, and the adapter's own synchronization carries that
+   contract. And a stdlib locus handed a value of `self` at its literal
+   (an exposure its transport, a server its handler) is driven from the
+   pool its machinery runs on: the stdlib's own synchronization covers
+   it, so such a field is not checked down `self`.
 5. Bus sends (`Topic <- v;` / `"subj" <- v;`) are unrestricted
    — the runtime's cross-thread dispatch (m28b condvar+memcpy)
    handles the boundary safely.

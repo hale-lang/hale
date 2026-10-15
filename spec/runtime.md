@@ -787,7 +787,10 @@ runtime enforces it at every other site. Each locus instance carries
 the domain it was built on (`__domain`, from the thread-local
 `lotus_domain_now`: main's token, a cooperative pool's worker's pool,
 a pinned locus's own thread; a pinned or pool-placed root takes its
-own thread's at its init there). At a store into a locus's field from
+own thread's at its init there; an instance a holder adopts — a
+locus-typed field filled from a local or a parameter — takes, with
+every child it owns, the domain the holder runs on, `__xpool_restamp_<L>`
+walking its owned fields). At a store into a locus's field from
 outside its methods whose slot is no inline scalar, and at a method
 call on a locus reached any way but down `self` — or down `self`
 through a field some literal or store hands an instance built elsewhere

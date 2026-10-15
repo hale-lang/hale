@@ -1689,6 +1689,8 @@ pub fn build_resolved(
         xpool_handlers: Vec::new(),
         xpool_handed_in: BTreeSet::new(),
         xpool_handed_in_names: BTreeSet::new(),
+        xpool_alias_uses: HashSet::new(),
+        xpool_restamp_fns: HashMap::new(),
         xpool_fresh_slots: HashSet::new(),
         xpool_strings: HashMap::new(),
         site_files: options
@@ -4500,6 +4502,12 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// one is checked too (`xpool_skipped`).
     pub(crate) xpool_handed_in: BTreeSet<(String, String)>,
     pub(crate) xpool_handed_in_names: BTreeSet<String>,
+    /// The `Ident` expressions (by address) that name a local bound to
+    /// (a part of) a field of `self`: a value handed over that is one is
+    /// shared, not adopted.
+    pub(crate) xpool_alias_uses: HashSet<usize>,
+    /// The adoption re-stamp fn of each locus (`emit_adopt`).
+    pub(crate) xpool_restamp_fns: HashMap<String, FunctionValue<'ctx>>,
     /// The slots of locals bound to a locus literal this code built, and
     /// never rebound — an instance built here is this domain's — and of
     /// an `on_failure` handler's failed child: the backstop is not
@@ -12137,7 +12145,21 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let Some((slot, CodegenTy::LocusRef(_))) = scope.locals.get(&name.name) else { return };
         let rebound = block.stmts[i + 1..].iter().any(|s| stmt_assigns(s, &name.name))
             || block.tail.as_deref().is_some_and(|t| expr_assigns(t, &name.name));
-        if !rebound {
+        // handed over (a value somewhere but as a receiver): another
+        // locus may adopt it, and it then runs where that one does
+        let mut escapes = false;
+        {
+            let mut on_expr = |e: &Expr| {
+                if let Expr::Ident(id) = e {
+                    if id.name == name.name {
+                        escapes = true;
+                    }
+                }
+            };
+            let mut on_assign = |_: &LValue, _: &Expr| {};
+            xpool_walk_receivers_apart(&block.stmts[i + 1..], block.tail.as_deref(), &mut on_expr, &mut on_assign);
+        }
+        if !rebound && !escapes {
             self.xpool_fresh_slots.insert(*slot);
         }
     }
@@ -18651,6 +18673,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     self.emit_self_field_inplace_assign(
                         slot_ptr, new_val, &slot_ty,
                     )?;
+                    // GH #1566: the field adopts an instance handed over
+                    if let (AssignOp::Eq, CodegenTy::LocusRef(l)) = (op, &slot_ty) {
+                        let l = l.clone();
+                        self.emit_adopt(new_val.into_pointer_value(), &l, value)?;
+                    }
                 } else {
                     self.builder
                         .build_store(slot_ptr, new_val)
@@ -34584,8 +34611,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         }
         let program = self.program;
         let mut assigns: Vec<String> = Vec::new();
+        let mut alias_uses: HashSet<usize> = HashSet::new();
         let mut scan = |cx: &Self, aliases: &BTreeSet<String>, walk: &mut dyn FnMut(&mut dyn FnMut(&Expr), &mut dyn FnMut(&LValue, &Expr))| {
             let mut on_expr = |e: &Expr| {
+                if let Expr::Ident(id) = e {
+                    if aliases.contains(&id.name) {
+                        alias_uses.insert(e as *const Expr as usize);
+                    }
+                }
                 if let Expr::Struct { path, inits, .. } = e {
                     let segs: Vec<&str> = path.segments.iter().map(|s| s.name.as_str()).collect();
                     let name = if segs.len() == 1 { Some(segs[0].to_string()) } else { cx.mangled_for_path(&segs) };
@@ -34654,6 +34687,120 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         }
         self.xpool_handed_in = found;
         self.xpool_handed_in_names = names;
+        self.xpool_alias_uses = alias_uses;
+    }
+
+    /// GH #1566: a locus-typed slot of a holder adopts `inst`, the value
+    /// of `value`: an instance a local or a parameter hands over (no
+    /// literal or call built it here, and it is no field of `self` nor a
+    /// local bound to one, which stay shared) now runs where the holder
+    /// does, so it and the children it owns take the running domain.
+    /// A builder that kept an alias and reaches the instance from its own
+    /// domain afterwards is then caught by the check.
+    pub(crate) fn emit_adopt(
+        &mut self,
+        inst: PointerValue<'ctx>,
+        locus: &str,
+        value: &Expr,
+    ) -> Result<(), CodegenError> {
+        if !self.xpool_check || self.xpool_shared || self.current_fn.is_none() || !self.user_loci.contains_key(locus) {
+            return Ok(());
+        }
+        fn built_here(v: &Expr) -> bool {
+            match v {
+                Expr::Struct { .. } | Expr::Call { .. } | Expr::Literal(..) => true,
+                Expr::Or { inner, .. } => built_here(inner),
+                _ => false,
+            }
+        }
+        let mut root = value;
+        while let Expr::Field { receiver, .. } | Expr::Index { receiver, .. } = root {
+            root = receiver;
+        }
+        if built_here(value) || matches!(root, Expr::KwSelf(_)) || self.xpool_alias_uses.contains(&(value as *const Expr as usize)) {
+            return Ok(());
+        }
+        let f = self.ensure_restamp_fn(locus)?;
+        let now = self.domain_now()?;
+        self.builder
+            .build_call(f, &[inst.into(), now.into()], "xpool.adopt")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        Ok(())
+    }
+
+    /// GH #1566: `__xpool_restamp_<L>(self, d)`: `self` and every child
+    /// it owns (the owned bits of `__locus_ref_owned_mask`) take domain
+    /// `d`; one already on `d` stops the walk.
+    fn ensure_restamp_fn(&mut self, locus: &str) -> Result<FunctionValue<'ctx>, CodegenError> {
+        if let Some(f) = self.xpool_restamp_fns.get(locus) {
+            return Ok(*f);
+        }
+        let e = |e: inkwell::builder::BuilderError| CodegenError::LlvmEmit(e.to_string());
+        let ptr_t = self.context.ptr_type(AddressSpace::default());
+        let i64_t = self.context.i64_type();
+        let f = self.module.add_function(
+            &format!("__xpool_restamp_{locus}"),
+            self.context.void_type().fn_type(&[ptr_t.into(), i64_t.into()], false),
+            Some(inkwell::module::Linkage::Internal),
+        );
+        self.xpool_restamp_fns.insert(locus.to_string(), f);
+        let info = self.user_loci.get(locus).cloned().expect("checked");
+        let saved = self.builder.get_insert_block();
+        let saved_di = (self.di_current_loc, self.di_current_pos);
+        let entry = self.context.append_basic_block(f, "entry");
+        self.builder.position_at_end(entry);
+        self.di_begin_function();
+        let me = f.get_nth_param(0).expect("self").into_pointer_value();
+        let d = f.get_nth_param(1).expect("domain").into_int_value();
+        let walk = self.context.append_basic_block(f, "walk");
+        let done = self.context.append_basic_block(f, "done");
+        let null = self.builder.build_is_null(me, "null").map_err(e)?;
+        let check = self.context.append_basic_block(f, "check");
+        self.builder.build_conditional_branch(null, done, check).map_err(e)?;
+        self.builder.position_at_end(check);
+        let slot = self.builder.build_struct_gep(info.struct_ty, me, info.domain_field_idx, "domain.ptr").map_err(e)?;
+        let cur = self.builder.build_load(i64_t, slot, "domain").map_err(e)?.into_int_value();
+        let same = self.builder.build_int_compare(inkwell::IntPredicate::EQ, cur, d, "same").map_err(e)?;
+        self.builder.build_conditional_branch(same, done, walk).map_err(e)?;
+        self.builder.position_at_end(walk);
+        self.builder.build_store(slot, d).map_err(e)?;
+        let mask_ptr = self
+            .builder
+            .build_struct_gep(info.struct_ty, me, info.locus_ref_owned_mask_field_idx, "mask.ptr")
+            .map_err(e)?;
+        let mask = self.builder.build_load(i64_t, mask_ptr, "mask").map_err(e)?.into_int_value();
+        for (fname, (idx, ty)) in info.fields.clone() {
+            let CodegenTy::LocusRef(child) = ty else { continue };
+            let Some(&bit) = info.locus_ref_bit_per_field.get(&fname) else { continue };
+            if !self.user_loci.contains_key(&child) {
+                continue;
+            }
+            let owned = self
+                .builder
+                .build_and(mask, i64_t.const_int(1u64 << bit, false), "owned")
+                .map_err(e)?;
+            let owned = self.builder.build_int_compare(inkwell::IntPredicate::NE, owned, i64_t.const_zero(), "owned.b").map_err(e)?;
+            let yes = self.context.append_basic_block(f, "child");
+            let next = self.context.append_basic_block(f, "next");
+            self.builder.build_conditional_branch(owned, yes, next).map_err(e)?;
+            self.builder.position_at_end(yes);
+            let cslot = self.builder.build_struct_gep(info.struct_ty, me, idx, "child.ptr").map_err(e)?;
+            let c = self.builder.build_load(ptr_t, cslot, "child").map_err(e)?;
+            let cf = self.ensure_restamp_fn(&child)?;
+            self.builder.position_at_end(yes);
+            self.builder.build_call(cf, &[c.into(), d.into()], "restamp.child").map_err(e)?;
+            self.builder.build_unconditional_branch(next).map_err(e)?;
+            self.builder.position_at_end(next);
+        }
+        self.builder.build_unconditional_branch(done).map_err(e)?;
+        self.builder.position_at_end(done);
+        self.builder.build_return(None).map_err(e)?;
+        if let Some(b) = saved {
+            self.builder.position_at_end(b);
+        }
+        self.di_current_loc = saved_di.0;
+        self.di_current_pos = saved_di.1;
+        Ok(f)
     }
 
     /// GH #1566: the backstop on a call through an interface: the locus
@@ -34909,6 +35056,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             self.builder
                 .build_store(slot_ptr, new_val)
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            // GH #1566: the owner's field adopts an instance handed over
+            if let (AssignOp::Eq, CodegenTy::LocusRef(l)) = (op, &slot_ty) {
+                let l = l.clone();
+                self.emit_adopt(new_val.into_pointer_value(), &l, value)?;
+            }
             return Ok(BlockEnd::Open);
         }
         let retires = self.self_field_type_retires(&slot_ty);
@@ -36413,5 +36565,43 @@ fn xpool_self_aliases(b: &Block, out: &mut BTreeSet<String>) {
             }
             _ => {}
         }
+    }
+}
+
+/// GH #1566: `xpool_walk_block`, without visiting a bare `Ident` that is
+/// a receiver (`b.add(..)`, `b.f`, `b[i]`): what is left are the places
+/// the name is a value.
+fn xpool_walk_receivers_apart(
+    stmts: &[Stmt],
+    tail: Option<&Expr>,
+    on_expr: &mut dyn FnMut(&Expr),
+    on_assign: &mut dyn FnMut(&LValue, &Expr),
+) {
+    let mut filter = |e: &Expr| match e {
+        Expr::Field { receiver, .. } | Expr::Path2 { receiver, .. } | Expr::Index { receiver, .. }
+            if matches!(receiver.as_ref(), Expr::Ident(_)) => {}
+        _ => on_expr(e),
+    };
+    // a receiver Ident is visited after its Field; mark it skipped by
+    // walking with a filter that drops the Ident a Field/Index visit
+    // just named
+    let mut skip_next: Option<*const Expr> = None;
+    let mut wrapped = |e: &Expr| {
+        if skip_next == Some(e as *const Expr) {
+            skip_next = None;
+            return;
+        }
+        if let Expr::Field { receiver, .. } | Expr::Path2 { receiver, .. } | Expr::Index { receiver, .. } = e {
+            if matches!(receiver.as_ref(), Expr::Ident(_)) {
+                skip_next = Some(receiver.as_ref() as *const Expr);
+            }
+        }
+        filter(e);
+    };
+    for st in stmts {
+        xpool_walk_stmt(st, &mut wrapped, on_assign);
+    }
+    if let Some(t) = tail {
+        xpool_walk_expr(t, &mut wrapped, on_assign);
     }
 }

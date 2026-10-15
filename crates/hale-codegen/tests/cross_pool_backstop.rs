@@ -366,3 +366,58 @@ fn main() { App { }; }
         assert!(!stderr.contains("Sanitizer"), "asan={asan}: {stderr}");
     }
 }
+
+/// An instance a local hands to a holder on another pool is adopted:
+/// it, and the children it owns, run where the holder does — `Web`,
+/// built in `fn main` and handed to an io-placed server's handler, serves
+/// from io, its own child included. A builder that kept the local and
+/// reaches the instance from main afterwards is caught.
+#[test]
+fn an_instance_handed_over_runs_where_its_holder_does() {
+    let program = |keep: &str| {
+        format!(
+            r#"locus Inner {{ params {{ s: String = ""; }} }}
+locus Web {{
+    params {{ name: String = "w"; inner: Inner = Inner {{ }}; }}
+    fn serves() -> Bool {{
+        let i = self.inner;
+        i.s = std::str::upper("on the server's pool");
+        return true;
+    }}
+}}
+locus Api {{
+    params {{ web: Web; }}
+    fn handle(req: std::http::Request) -> std::http::Response {{
+        let w = self.web;
+        let ok = w.serves();
+        return std::http::Response {{ status: 200, body: "ok" }};
+    }}
+}}
+main locus App {{
+    params {{ srv: std::http::Server; }}
+    placement {{ srv: cooperative(pool = io); }}
+    run() {{
+        let mut i = 0;
+        while i < 20 && !self.draining {{ std::time::sleep(50ms); i = i + 1; }}
+        println("APP DONE");
+    }}
+}}
+fn main() {{
+    let web = Web {{ }};
+    App {{ srv: std::http::Server {{ host: "127.0.0.1", port: 0, handler: Api {{ web: web }} }} }};
+    {keep}
+}}
+"#
+        )
+    };
+    let (status, stdout, stderr, line) = serve_one(&program(""), "hale_1566_adopt", false);
+    assert!(line.contains("200"), "the request is answered: {line:?}; stderr: {stderr}");
+    assert!(status.success() && stdout.contains("APP DONE"), "{status:?}\nstderr: {stderr}");
+    let keep = "web.name = std::str::upper(\"from main\");";
+    let (status, _, stderr, _) = serve_one(&program(keep), "hale_1566_adopt_alias", false);
+    assert_eq!(status.code(), Some(1), "{stderr}");
+    assert!(
+        stderr.contains("main.hl:30:5: violation: cross-pool store into `Web.name` from pool `main`; this `Web` runs on pool `io`"),
+        "{stderr}"
+    );
+}

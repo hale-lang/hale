@@ -3290,6 +3290,21 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .build_store(field_ptr, val)
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
             }
+            // GH #1566: an instance this field adopts from a local or a
+            // parameter now runs where this locus does
+            if let CodegenTy::LocusRef(l) = &declared_ty {
+                let adopted: Option<&Expr> = match overrides.get(fname.as_str()) {
+                    Some(e) => Some(*e),
+                    None => match default {
+                        DefaultInit::Expr(e) => Some(e),
+                        _ => None,
+                    },
+                };
+                if let Some(e) = adopted {
+                    let l = l.clone();
+                    self.emit_adopt(val.into_pointer_value(), &l, e)?;
+                }
+            }
             // F.29 follow-up: OR the bit for this field into
             // `__locus_ref_owned_mask` if the field is LocusRef-
             // typed AND the value came from a parent-owned locus
