@@ -67,13 +67,16 @@
 //!    monomorph's template. The unreached-event law reads it (F.40 phase
 //!    4's leftovers).
 //! 10. `ident_reads`, per identifier expression the checker resolved as a
-//!    value: whether it read a top-level const, rather than a local or a
-//!    parameter in scope there (or another declaration). A site the
-//!    checker typed on several evaluation paths (a record field's default,
-//!    typed at each literal that leaves it, in that literal's scope) reads
-//!    a const when any of them does. The listener window follows a const
-//!    read into the const's value, evaluated where it is read, and reads
-//!    no other name as one (GH #1565).
+//!    value and per evaluation of it: whether it read a top-level const,
+//!    rather than a local or a parameter in scope there (or another
+//!    declaration). A default is evaluated, and typed, in the scope of
+//!    each literal or call that leaves it (`spec/types.md` § Locus
+//!    params), so one site has an answer per evaluation path (the
+//!    literals and calls, outermost first, as a conversion row's
+//!    `ConversionSite::path`); a site in a body or a declaration's own
+//!    default has the empty path. The listener window follows a const
+//!    read into the const's value, evaluated where it is read, on the
+//!    path it walks, and reads no other name as one (GH #1565).
 //!
 //! A site the checker could not type is a [`Hole`] with its reason, and
 //! a reader refuses it at its span rather than guessing.
@@ -787,9 +790,10 @@ pub struct TypingRecord {
     pub omitted_args: OmittedArgsByCall,
     /// Which body each conversion belongs to.
     pub conversion_sites: BTreeMap<ConversionSite, u32>,
-    /// The `ident_reads` column. A fact of the site, so a discarded walk
-    /// keeps what it adds: a field default is typed only in such a walk.
-    pub ident_reads: BTreeMap<u32, bool>,
+    /// The `ident_reads` column, by (site, evaluation path). A discarded
+    /// walk keeps what it adds: a field default is typed only in such a
+    /// walk, and each path is its own row.
+    pub ident_reads: BTreeMap<(u32, Vec<u32>), bool>,
     /// What a discarded walk changed, while one is open
     /// ([`Self::open_walk`]).
     walk: Option<WalkUndo>,
@@ -933,13 +937,14 @@ impl TypingRecord {
         self.bodies.get(body)?.conversions.get(site)
     }
 
-    /// Record what the identifier expression `site` read: a top-level
-    /// const (`constant`), or a binding in scope or another declaration.
-    pub fn ident_read(&mut self, site: NodeId, constant: bool) {
+    /// Record what the identifier expression `site` read on the
+    /// evaluation `path`: a top-level const (`constant`), or a binding in
+    /// scope or another declaration.
+    pub fn ident_read(&mut self, site: NodeId, path: &[u32], constant: bool) {
         if site.is_none() {
             return;
         }
-        *self.ident_reads.entry(site.0).or_insert(false) |= constant;
+        *self.ident_reads.entry((site.0, path.to_vec())).or_insert(false) |= constant;
     }
 
     /// Record that `call` leaves `callee`'s parameters from `from` on to
@@ -1030,7 +1035,7 @@ pub struct TypedBodies {
     monomorph_conformance: Vec<(Monomorph, u32, Result<(), Unsatisfied>)>,
     omitted_args: OmittedArgsByCall,
     conversion_sites: BTreeMap<ConversionSite, u32>,
-    ident_reads: BTreeMap<u32, bool>,
+    ident_reads: BTreeMap<(u32, Vec<u32>), bool>,
     /// Whether a row changes a denomination, prints a unit (U3) or types
     /// an operator's result (U4): a program with none has no value row
     /// for lowering to look up.
@@ -1085,11 +1090,12 @@ impl TypedBodies {
         &self.omitted_args
     }
 
-    /// The `ident_reads` column at the identifier expression `site`:
-    /// whether the checker resolved it to a top-level const; `None` for a
-    /// site it never typed as a value.
-    pub fn reads_const(&self, site: NodeId) -> Option<bool> {
-        self.ident_reads.get(&site.0).copied()
+    /// The `ident_reads` column at the identifier expression `site` on the
+    /// evaluation `path`: whether the checker resolved it to a top-level
+    /// const there. `None` for a site it never typed as a value on that
+    /// path.
+    pub fn reads_const(&self, site: NodeId, path: &[u32]) -> Option<bool> {
+        self.ident_reads.get(&(site.0, path.to_vec())).copied()
     }
 
     /// The rows of the body declared at `decl`.

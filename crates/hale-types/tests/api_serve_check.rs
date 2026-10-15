@@ -390,6 +390,10 @@ fn what_main_builds_before_a_listener_born_after_its_server_must_return() {
     const PICK_FREE_SETTLES: &str =
         "fn settle() -> Int { std::time::sleep(1s); return 0; }\nfn pick(n: Int = settle()) -> Int { return n; }";
     const PICK_FREE_RETURNS: &str = "fn settle() -> Int { std::time::sleep(1s); return 0; }\nfn pick(n: Int = 0) -> Int { return n; }";
+    // a default typed in each scope that evaluates it, one of them
+    // shadowing the const it reads
+    const SETUP_READS_K: &str = "fn settle() -> Int { std::time::sleep(1s); return 0; }\nconst K: Int = settle();\ntype Setup { n: Int = K; }";
+    const ARG_READS_K: &str = "fn settle() -> Int { std::time::sleep(1s); return 0; }\nconst K: Int = settle();\nfn pick_k(n: Int = K) -> Int { return n; }";
     const SHADOW_FN_LOCAL: &str =
         "fn settle() -> Int { std::time::sleep(1s); return 0; }\nconst K: Int = settle();\nfn quick() -> Int { let K = 0; return K; }";
     const SHADOW_FN_PARAM: &str =
@@ -479,6 +483,12 @@ fn what_main_builds_before_a_listener_born_after_its_server_must_return() {
         ("a fn's param shadows the const", "", "n: Int = twice(1); server: Server = Server { };", SHADOW_FN_PARAM, "", None),
         ("a match binding shadows the const", "", "n: Int = match Boxed::Of(1) { Boxed::Of(K) -> K, Boxed::Empty -> 0, }; server: Server = Server { };", SHADOW_MATCH, "", None),
         ("a for binding shadows the const", "", "n: Int = { let mut t = 0; for K in 0..3 { t = t + K; } t }; server: Server = Server { };", CONST_SETTLES, "", None),
+        // a default is evaluated, and resolved, in each scope that leaves
+        // it (spec/types.md): one evaluation's answer is not another's
+        ("a record default read under a caller's shadowing let", "", "n: Int = { let K = 0; let s = Setup { }; s.n }; server: Server = Server { };", &format!("{SETUP_READS_K}\nfn unused() -> Int {{ let s = Setup {{ }}; return s.n; }}"), "", None),
+        ("a record default read with no shadow, shadowed elsewhere", "", "n: Int = { let s = Setup { }; s.n }; server: Server = Server { };", &format!("{SETUP_READS_K}\nfn other() -> Int {{ let K = 0; let s = Setup {{ }}; return s.n; }}"), "", Some("the default of `Setup.n`, through the value of the const `K`")),
+        ("a param default read under a caller's shadowing let", "", "n: Int = { let K = 0; pick_k() }; server: Server = Server { };", &format!("{ARG_READS_K}\nfn unused() -> Int {{ return pick_k(); }}"), "", None),
+        ("a param default read with no shadow, shadowed elsewhere", "", "n: Int = pick_k(); server: Server = Server { };", &format!("{ARG_READS_K}\nfn other() -> Int {{ let K = 0; return pick_k(); }}"), "", Some("the default of `pick_k`'s param `n`, through the value of the const `K`")),
         ("a const read after a block whose let shadowed it", "", "n: Int = { { let K = 0; println(to_string(K)); } K }; server: Server = Server { };", CONST_SETTLES, "", Some("the value of the const `K`")),
         ("a fn's const read after its shadowing block", "", "n: Int = later(); server: Server = Server { };", &format!("{CONST_SETTLES}\nfn later() -> Int {{ {{ let K = 0; println(to_string(K)); }} return K; }}"), "", Some("the default of `App.n`, through the value of the const `K`")),
         // a subscription's key: evaluated where its locus is built

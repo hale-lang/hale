@@ -14194,7 +14194,7 @@ impl<'a> Checker<'a> {
     /// mistake; reporting both would print two messages for one typo.
     fn check_ident_expr(&mut self, id: &Ident, report_unknown: bool) -> Ty {
         if let Some(s) = self.locals.lookup(&id.name) {
-            self.typed.ident_read(id.id, false);
+            self.typed.ident_read(id.id, &self.default_evaluation, false);
             return s.ty.clone();
         }
         let Some(sym) = self.top.lookup(&id.name) else {
@@ -14226,7 +14226,7 @@ impl<'a> Checker<'a> {
             }
             return Ty::Unknown;
         };
-        self.typed.ident_read(id.id, matches!(sym, TopSymbol::Const(_)));
+        self.typed.ident_read(id.id, &self.default_evaluation, matches!(sym, TopSymbol::Const(_)));
         match sym {
             TopSymbol::Const(c) => c.ty.clone(),
             TopSymbol::Fn(sig) => Ty::Function {

@@ -20,7 +20,7 @@
 //! | a record construction `T { … }` | each field of `T` the literal does not supply: its default, walked in the literal's scope, so a record or locus literal in it is a construction in turn |
 //! | a call in a walked expression | resolved as the checker resolves it: a free fn (an imported one through the import renames), `self.m()`, `self.f.m()` by `f`'s type, a standard-library or builtin call by its classes; an enum variant's constructor returns |
 //! | the arguments a call leaves out | each omitted param's default, evaluated at the call site: the callee and the first param it leaves are the checker's (the typed-body table's `omitted_args`), as lowering expands them, never the call's spelling |
-//! | a const read in a walked expression | its value: a const that is no literal is evaluated where it is read. A read is the checker's resolution of the site (the typed-body table's `ident_reads`): a local or a parameter of the same name in scope shadows the const, a binding of a block that has ended does not |
+//! | a const read in a walked expression | its value: a const that is no literal is evaluated where it is read. A read is the checker's resolution of the site on the evaluation the walk is on (the typed-body table's `ident_reads`, by evaluation path): a local or a parameter of the same name in scope shadows the const, a binding of a block that has ended does not, and a default left by a literal or a call is resolved in that literal's or call's scope, not another's |
 //! | a resolved fn, a `birth()` or `run()` | judged by its effect row, and its body and every fn its row reaches walked for loops, `or wait`, literals, omitted arguments and consts read; a hook's params' defaults walked first |
 //!
 //! What runs nothing at construction, so has nothing to walk: an enum
@@ -45,6 +45,7 @@
 //! over the AST, so a new form of either is a compile error here until it
 //! is visited).
 
+use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 
 use hale_syntax::ast::{
@@ -363,6 +364,12 @@ pub(crate) struct Window<'a> {
     /// What the checker resolved each identifier to: a const read is
     /// the checker's answer, never a matching spelling.
     typed: &'a crate::typed_bodies::TypedBodies,
+    /// The evaluation path the walk is on, as the checker keeps it
+    /// (`default_evaluation`): each struct literal that leaves a field and
+    /// each call that leaves a parameter whose default is being walked,
+    /// outermost first; empty in a body or a declaration's own default,
+    /// which the checker types where they are declared.
+    path: RefCell<Vec<u32>>,
 }
 
 /// What a walked expression holds, collected before it is judged.
@@ -493,7 +500,23 @@ impl<'a> Window<'a> {
                 }
             }
         }
-        Window { effects, loci, bodies, params, decls, records, consts, renames, types, typed }
+        Window { effects, loci, bodies, params, decls, records, consts, renames, types, typed, path: RefCell::new(Vec::new()) }
+    }
+
+    /// `f`, walked on the evaluation path `path`.
+    fn on_path<R>(&self, path: Vec<u32>, f: impl FnOnce() -> R) -> R {
+        let saved = self.path.replace(path);
+        let r = f();
+        self.path.replace(saved);
+        r
+    }
+
+    /// The path the walk is on, one evaluation further: the literal or
+    /// call `step` leaves a default.
+    fn pushed(&self, step: u32) -> Vec<u32> {
+        let mut path = self.path.borrow().clone();
+        path.push(step);
+        path
     }
 
     fn row(&self, locus: Option<&str>, name: &str) -> Option<&'a crate::effect_rows::EffectRow> {
@@ -544,13 +567,13 @@ impl<'a> Window<'a> {
                 if found.loops {
                     return Some((show(k), LOOP));
                 }
-                if let Some(step) = self.implicit(&found, ctx, depth + 1) {
-                    return Some(step);
-                }
-                for lit in found.literals {
-                    if let Some(step) = self.literal(lit, ctx, true, depth + 1) {
-                        return Some(step);
-                    }
+                // a body is typed where it is declared
+                let step = self.on_path(Vec::new(), || {
+                    self.implicit(&found, ctx, depth + 1)
+                        .or_else(|| found.literals.iter().find_map(|lit| self.literal(lit, ctx, true, depth + 1)))
+                });
+                if step.is_some() {
+                    return step;
                 }
             }
             if let Some(r) = effects.rows.get(k) {
@@ -565,7 +588,7 @@ impl<'a> Window<'a> {
     fn hook(&self, locus: &'a LocusDecl, hook: &str, depth: usize) -> Option<(String, &'static str)> {
         let key = (Some(locus.name.name.clone()), hook.to_string());
         let at = format!("`{}`'s `{hook}()`", locus.name.name);
-        if let Some((inner, why)) = self.omitted_args(&key, 0, Some(locus), depth) {
+        if let Some((inner, why)) = self.on_path(Vec::new(), || self.omitted_args(&key, 0, Some(locus), depth)) {
             return Some((through(at, inner), why));
         }
         let body = self.bodies.get(&key)?;
@@ -682,7 +705,8 @@ impl<'a> Window<'a> {
             let Expr::Call { id, .. } = c else { continue };
             for left in self.typed.omitted_args().get(&id.0).into_iter().flatten() {
                 let Some(key) = self.decls.get(&left.callee) else { continue };
-                if let Some(step) = self.omitted_args(key, left.from, ctx, depth) {
+                // the defaults the call leaves: one evaluation further
+                if let Some(step) = self.on_path(self.pushed(id.0), || self.omitted_args(key, left.from, ctx, depth)) {
                     return Some(step);
                 }
             }
@@ -696,7 +720,7 @@ impl<'a> Window<'a> {
                 // literal leaves, which only the compiler's `T { }`
                 // builds, with no binding in scope) is read by its name
                 Expr::Ident(i) => {
-                    if self.typed.reads_const(i.id) == Some(false) {
+                    if self.typed.reads_const(i.id, &self.path.borrow()) == Some(false) {
                         continue;
                     }
                     ((None, i.name.clone()), i.name.clone())
@@ -717,7 +741,8 @@ impl<'a> Window<'a> {
                 _ => continue,
             };
             if let Some(value) = self.consts.get(&key) {
-                if let Some((at, why)) = self.expr(value, ctx, depth + 1) {
+                // a const's value is typed where it is declared
+                if let Some((at, why)) = self.on_path(Vec::new(), || self.expr(value, ctx, depth + 1)) {
                     return Some((through(format!("the value of the const `{shown}`"), at), why));
                 }
             }
@@ -793,14 +818,22 @@ impl<'a> Window<'a> {
         if depth > 32 {
             return None;
         }
-        let Expr::Struct { path, inits, .. } = lit else { return None };
+        let Expr::Struct { path, inits, id, .. } = lit else { return None };
         let given: BTreeSet<&str> = inits.iter().map(|i| i.name.name.as_str()).collect();
         let segs: Vec<&str> = path.segments.iter().map(|s| s.name.as_str()).collect();
         let name = self.resolve_path(&segs);
         let record = self.records.get_key_value(&name).or_else(|| segs.last().and_then(|l| self.records.get_key_value(*l)));
         if let Some((ty, fields)) = record {
-            return self.omitted_fields(ty, fields, &given, ctx, depth + 1);
+            // the fields the literal leaves: one evaluation further
+            return self.on_path(self.pushed(id.0), || self.omitted_fields(ty, fields, &given, ctx, depth + 1));
         }
+        // a locus's param defaults, subscription keys and hooks are typed
+        // where the locus declares them
+        self.on_path(Vec::new(), || self.built(lit, &given, with_run, depth))
+    }
+
+    /// The rest of [`Window::literal`] for a locus literal `lit`.
+    fn built(&self, lit: &'a Expr, given: &BTreeSet<&str>, with_run: bool, depth: usize) -> Option<(String, &'static str)> {
         let Some(locus) = self.literal_locus(lit) else { return None };
         for m in &locus.members {
             let LocusMember::Params(pb) = m else { continue };
