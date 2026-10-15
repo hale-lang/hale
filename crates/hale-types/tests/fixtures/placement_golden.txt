@@ -4140,6 +4140,28 @@ row	H@main1	H	main	default
 == crates/hale-codegen/tests/owned_views_over_checker_types.rs#4f509e6c
 row	H@main1	H	main	default
 
+== crates/hale-codegen/tests/owned_views_over_checker_types.rs#3cce0301
+row	H@main1	H	main	default
+row	H@main2	H	main	default
+
+== crates/hale-codegen/tests/owned_views_over_checker_types.rs#fbbc0307
+row	H@main1	H	main	default
+row	H@main2	H	main	default
+row	H@main3	H	main	default
+
+== crates/hale-codegen/tests/owned_views_over_checker_types.rs#736f85e3
+shared	H@main1	H #6b826d15
+shared	H@main2	H #6b826d15
+shared	H@main3	H #6b826d15
+shared	H@main4	H #6b826d15
+shared	H@main5	H #6b826d15
+shared	H@main6	H #6b826d15
+
+== crates/hale-codegen/tests/owned_views_over_checker_types.rs#275b0594
+row	L@main3	L	main	default
+shared	H@main1	H #711e522a
+shared	H@main2	H #711e522a
+
 == crates/hale-codegen/tests/owner_table.rs#1f85ba34
 row	Parent@main1	Parent	main	default
 dynamic	Child	on main	in the seed
@@ -15626,6 +15648,14 @@ row	~.router	RouterV2	main	inherited
 == shared H #540d0d6c
 row	~	H	main	default
 row	~.q	Q	main	inherited
+
+== shared H #6b826d15
+row	~	H	main	default
+row	~.rows	Rows	main	inherited
+
+== shared H #711e522a
+row	~	H	main	default
+row	~.l	L	main	inherited
 
 == shared H #95920e24
 row	~	H	main	default
