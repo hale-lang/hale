@@ -9164,6 +9164,50 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 synthesized_loci.push(synthesized);
             }
         }
+        // The concrete names and the alias targets are known before any
+        // monomorph is declared: a monomorph's field of a user record
+        // (`Holder<In>`'s `inner: In`, `[In; 2]`) resolves by the name, as
+        // a user record's own does, whatever the declaration order.
+        // B8: pre-register every concrete type name so fields
+        // typed as a forward-referenced or path-qualified stdlib
+        // type resolve cleanly. Parallels the pending_locus_names
+        // pre-pass for loci. Full TypeInfo lands in
+        // `declare_user_type` below; this set just keeps the
+        // existence check optimistic so cross-decl references
+        // don't fail on declaration order.
+        for t in &type_decls {
+            if t.generics.is_empty() {
+                self.pending_type_names.insert(t.name.name.clone());
+            }
+        }
+
+        // GH #759: record the alias targets before anything lowers
+        // a type expression. `type Thing = Int;` adds no LLVM type
+        // — a use of `Thing` lowers as `Int` — so the name must be
+        // resolvable from the first signature onwards.
+        for t in &type_decls {
+            if let TypeDeclBody::Alias(te) = &t.body {
+                if t.generics.is_empty() {
+                    self.user_type_aliases
+                        .insert(t.name.name.clone(), te.clone());
+                }
+            }
+        }
+        // Drop any alias whose chain comes back to its own name.
+        // `check` reports the cycle with a span; codegen only has
+        // to make sure the resolution below terminates — following
+        // `type A = B; type B = A;` would recurse until the stack
+        // ran out.
+        let cyclic: Vec<String> = self
+            .user_type_aliases
+            .keys()
+            .filter(|n| self.alias_chain_is_cyclic(n))
+            .cloned()
+            .collect();
+        for n in cyclic {
+            self.user_type_aliases.remove(&n);
+        }
+
         // Phase 2: declare synthesized types in dependency order.
         // Each iteration, attempt every still-pending decl; keep
         // those whose declarations succeed and retry the rest.
@@ -9221,46 +9265,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 self.generic_locus_templates
                     .insert(l.name.name.clone(), l.clone());
             }
-        }
-
-        // B8: pre-register every concrete type name so fields
-        // typed as a forward-referenced or path-qualified stdlib
-        // type resolve cleanly. Parallels the pending_locus_names
-        // pre-pass for loci. Full TypeInfo lands in
-        // `declare_user_type` below; this set just keeps the
-        // existence check optimistic so cross-decl references
-        // don't fail on declaration order.
-        for t in &type_decls {
-            if t.generics.is_empty() {
-                self.pending_type_names.insert(t.name.name.clone());
-            }
-        }
-
-        // GH #759: record the alias targets before anything lowers
-        // a type expression. `type Thing = Int;` adds no LLVM type
-        // — a use of `Thing` lowers as `Int` — so the name must be
-        // resolvable from the first signature onwards.
-        for t in &type_decls {
-            if let TypeDeclBody::Alias(te) = &t.body {
-                if t.generics.is_empty() {
-                    self.user_type_aliases
-                        .insert(t.name.name.clone(), te.clone());
-                }
-            }
-        }
-        // Drop any alias whose chain comes back to its own name.
-        // `check` reports the cycle with a span; codegen only has
-        // to make sure the resolution below terminates — following
-        // `type A = B; type B = A;` would recurse until the stack
-        // ran out.
-        let cyclic: Vec<String> = self
-            .user_type_aliases
-            .keys()
-            .filter(|n| self.alias_chain_is_cyclic(n))
-            .cloned()
-            .collect();
-        for n in cyclic {
-            self.user_type_aliases.remove(&n);
         }
 
         // Now declare concrete user-written non-generic decls.

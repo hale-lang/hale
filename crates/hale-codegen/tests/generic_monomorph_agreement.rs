@@ -718,3 +718,141 @@ fn main() {
         &Expect::Runs("9\n42\n42\ntext\ntext\n"),
     );
 }
+
+/// The same program built with AddressSanitizer and run with the arena's
+/// chunk recycling off: what it prints, after a clean exit.
+fn asan_runs(tag: &str, src: &str, wanted: &str) {
+    let bin = harness::unique_bin(&format!("hale_test_genmono_asan_{tag}"));
+    harness::build_source_asan(src, &bin);
+    let out = Command::new(&bin)
+        .env("LOTUS_NO_CHUNK_POOL", "1")
+        .output()
+        .unwrap_or_else(|e| panic!("[{tag}] asan run: {e:?}"));
+    let _ = std::fs::remove_file(&bin);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        out.status.success(),
+        "[{tag}] asan exit: {:?}; stderr: {}",
+        out.status,
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(stdout.contains(wanted), "[{tag}] asan stdout {stdout:?} lacks {wanted:?}");
+}
+
+// === an instantiation over a user record ======================
+// A monomorph was declared before the program's own records, so one
+// whose field is a user record (`inner: In`, `[In; 2]`) never
+// resolved: "generic-type dependency cycle or unresolvable dep among
+// synthesized monomorphs: [\"Holder_In\"]". `Holder<Int>` built.
+
+const ARRAY_OF_THE_PARAMETER: &str = r#"
+type In {
+    k: Int = 0;
+    label: String = "";
+}
+
+type Holder<T> {
+    items: [T; 2];
+}
+
+fn main() {
+    let h: Holder<In> = Holder { items: [In { k: 1, label: "a" }, In { k: 2, label: "b" }] };
+    let n: Holder<Int> = Holder { items: [3, 4] };
+    println(h.items[1].label, h.items[0].k, n.items[1]);
+}
+"#;
+
+#[test]
+fn an_array_of_the_parameter_holds_a_user_record() {
+    agree("array_of_param", ARRAY_OF_THE_PARAMETER, &Expect::Runs("b14"));
+    asan_runs("array_of_param", ARRAY_OF_THE_PARAMETER, "b14");
+}
+
+const ARRAY_OF_AN_INSTANTIATION: &str = r#"
+type In {
+    k: Int = 0;
+    label: String = "";
+}
+
+type Holder<T> {
+    items: [T; 2];
+}
+
+type Shelf<T> {
+    rows: [Holder<T>; 2];
+}
+
+type Wrap {
+    h: Holder<In>;
+    tag: String = "";
+}
+
+type Box<T> {
+    v: T;
+}
+
+fn main() {
+    let a: Holder<In> = Holder { items: [In { k: 1, label: "a" }, In { k: 2, label: "b" }] };
+    let b: Holder<In> = Holder { items: [In { k: 3, label: "c" }, In { k: 4, label: "d" }] };
+    let s: Shelf<In> = Shelf { rows: [a, b] };
+    println(s.rows[1].items[0].label, s.rows[1].items[0].k);
+    let w = Wrap { h: s.rows[0], tag: "w" };
+    let x: Box<Wrap> = Box { v: w };
+    println(x.v.tag, x.v.h.items[1].label);
+}
+"#;
+
+#[test]
+fn an_array_of_an_instantiation_nests() {
+    // `Shelf<In>`'s rows are `Holder<In>`s, and `Box<Wrap>` holds a
+    // record that holds a monomorph: each resolves by name, whatever
+    // order the declarations land in.
+    agree("array_of_instantiation", ARRAY_OF_AN_INSTANTIATION, &Expect::Runs("c3\nwb\n"));
+    asan_runs("array_of_instantiation", ARRAY_OF_AN_INSTANTIATION, "c3\nwb\n");
+}
+
+const LOCUS_ARRAY_OF_THE_PARAMETER: &str = r#"
+type In {
+    k: Int = 0;
+    label: String = "";
+}
+
+locus Bag<T> {
+    params {
+        items: [T; 2];
+    }
+    fn second() -> T {
+        return self.items[1];
+    }
+}
+
+locus Rack {
+    params {
+        bag: Bag<In>;
+    }
+    run() {
+        let s = self.bag.second();
+        println(s.label, s.k);
+    }
+}
+
+locus Tally {
+    params {
+        bag: Bag<Int>;
+    }
+    run() {
+        println(self.bag.second());
+    }
+}
+
+fn main() {
+    let r = Rack { bag: Bag { items: [In { k: 1, label: "x" }, In { k: 2, label: "y" }] } };
+    let t = Tally { bag: Bag { items: [5, 6] } };
+}
+"#;
+
+#[test]
+fn a_generic_locus_holds_an_array_of_its_parameter() {
+    agree("locus_array_of_param", LOCUS_ARRAY_OF_THE_PARAMETER, &Expect::Runs("y2\n6\n"));
+    asan_runs("locus_array_of_param", LOCUS_ARRAY_OF_THE_PARAMETER, "y2\n6\n");
+}
