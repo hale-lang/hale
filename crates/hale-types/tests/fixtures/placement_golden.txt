@@ -3271,6 +3271,11 @@ root	App	the entry
 row	App@literal1	App	main	default
 row	App@literal1.rx	Rx	main	default
 
+== crates/hale-codegen/tests/generic_monomorph_agreement.rs#3d9bd929
+-- H@main1	H
+row	~	H	main	default
+row	~.k	Keep_Mode	main	inherited
+
 == crates/hale-codegen/tests/generics.rs#d523f812
 dynamic	<hole>	on main|unresolved declaration `Box_Int`	in the seed
 

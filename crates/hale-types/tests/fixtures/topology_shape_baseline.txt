@@ -875,6 +875,8 @@ crates/hale-codegen/tests/generic_monomorph_agreement.rs#37 1323eb5ca8343d8c
 crates/hale-codegen/tests/generic_monomorph_agreement.rs#38 f2c1228edb650960
 crates/hale-codegen/tests/generic_monomorph_agreement.rs#39 228a29ddad366bb2
 crates/hale-codegen/tests/generic_monomorph_agreement.rs#4 6577bd4b2d6e1852
+crates/hale-codegen/tests/generic_monomorph_agreement.rs#40 d3904ac5a3b7bf08
+crates/hale-codegen/tests/generic_monomorph_agreement.rs#41 f2c1228edb650960
 crates/hale-codegen/tests/generic_monomorph_agreement.rs#5 f2c1228edb650960
 crates/hale-codegen/tests/generic_monomorph_agreement.rs#6 f2c1228edb650960
 crates/hale-codegen/tests/generics.rs#0 f2c1228edb650960
