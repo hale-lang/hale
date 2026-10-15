@@ -3691,6 +3691,8 @@ fn put_w(w: W) {{ w.name = "main"; }}
 fn make_h2() -> H2 {{ return H2 {{ }}; }}
 fn pass_h2(h: H2) -> H2 {{ return h; }}
 fn make_h3(w: W) -> H3 {{ return H3 {{ ws: [w, w] }}; }}
+fn make_hs() -> [H2; 1] {{ return [make_h2()]; }}
+locus H5 {{ fn put(w: W) {{ w.name = "main"; }} }}
 main locus App {{
     params {{ a: W = W {{}}; b: W = W {{ active: true }}; h: H = H {{ }}; c: W = W {{ }}; ws: [W; 2] = [W {{ }}, W {{ }}]; k: H = H {{ }}; k2: H2 = H2 {{ }}; k3: H3 = H3 {{ }}; r: R = R {{ }}; bl: bounded[W; 4]; }}
     fn stash_w(w: W) {{ self.ws[0] = w; }}
@@ -3934,6 +3936,37 @@ fn cross_pool_provenance_table() {
         // the name
         ("a built instance's method, on an element of a local array", "", "let hs = [H3 { ws: [self.b, self.a] }]; hs[0].poke();", Refused("`hs[…].poke(…)` stores")),
         ("... same pool", "", "let hs = [H3 { ws: [self.a, self.a] }]; hs[0].poke();", Accepted),
+        // round 8: a builder returning its instance inside an array
+        (
+            "an instance a helper builds, returned inside an array",
+            "",
+            "let hs = make_hs(); let h = hs[0]; let alias = h; alias.ws[0] = self.b; let w = h.ws[0]; w.name = \"main\";",
+            Refused("`w.name = …`"),
+        ),
+        (
+            "... same pool",
+            "",
+            "let hs = make_hs(); let h = hs[0]; let alias = h; alias.ws[0] = self.a; let w = h.ws[0]; w.name = \"main\";",
+            Accepted,
+        ),
+        // a method of an element of an array of loci, by its element type
+        ("a method on an array element storing into its argument", "", "let hs = [H5 { }]; hs[0].put(self.b);", Refused("`put(…)` stores, through its argument 1")),
+        ("... same pool", "", "let hs = [H5 { }]; hs[0].put(self.a);", Accepted),
+        ("... through a nested array", "", "let hss = [[H5 { }]]; hss[0][0].put(self.b);", Refused("`put(…)` stores, through its argument 1")),
+        ("... an element bound to a local", "", "let hs = [H5 { }]; let h = hs[0]; h.put(self.b);", Refused("`put(…)` stores, through its argument 1")),
+        // a holder taken out of an array keeps its type
+        (
+            "a record field of a holder taken out of an array",
+            "",
+            "let hs = [H4 { ws: [self.b, self.a] }]; let h = hs[0]; let r = h.rec; r.name = \"main\";",
+            Accepted,
+        ),
+        (
+            "... its handle field",
+            "",
+            "let hs = [H4 { ws: [self.b, self.a] }]; let h = hs[0]; let w = h.ws[0]; w.name = \"main\";",
+            Refused("`w.name = …`"),
+        ),
         // a callee declared after its caller is walked before it is known
         ("a known callee declared after its caller", "", "let w = pick_o(self.a, self.b); w.name = \"main\";", Accepted),
     ];

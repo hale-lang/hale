@@ -3911,9 +3911,7 @@ fn check_placement_single_thread(
         let may_carry = |l: Option<&LocusDecl>, f: &FnDecl| {
             f.params.iter().any(|p| decls.type_can_hold_locus(&p.ty, 0) || decls.fn_returns_locus(&p.ty).is_some())
                 // an instance it builds and hands back, holding something
-                || f.ret.as_ref().is_some_and(|t| {
-                    decls.named(decls.resolve(t)).is_some_and(|n| decls.locus_holds_handles(n))
-                })
+                || f.ret.as_ref().is_some_and(|t| decls.may_build(t, 0))
                 || l.is_some_and(|l| {
                     l.members.iter().any(|m| match m {
                         LocusMember::Params(pb) => {
@@ -4735,7 +4733,7 @@ impl State {
 struct Env {
     /// Every binding in scope, outermost first: its name, its slot, and
     /// the locus type it is declared or built as, when the walk can tell.
-    names: Vec<(String, u32, Option<String>)>,
+    names: Vec<(String, u32, Option<Lty>)>,
     /// Where each scope's bindings start in `names`.
     marks: Vec<usize>,
     /// The next slot.
@@ -4752,12 +4750,11 @@ impl Env {
         for (i, p) in params.iter().enumerate() {
             // a parameter whose type can hold no locus handle carries none
             let o = if decls.type_can_hold_locus(&p.ty, 0) { Origin::sym(Sym::Param(i)) } else { Origin::default() };
-            let ty = decls.named(&p.ty).filter(|t| decls.loci.contains_key(*t)).map(str::to_string);
-            env.declare_typed(&p.name.name, o, ty);
+            env.declare_typed(&p.name.name, o, lty_of_type(&p.ty, decls));
         }
         env
     }
-    fn binding(&self, name: &str) -> Option<&(String, u32, Option<String>)> {
+    fn binding(&self, name: &str) -> Option<&(String, u32, Option<Lty>)> {
         self.names.iter().rev().find(|(n, _, _)| n == name)
     }
     fn slot(&self, name: &str) -> Option<u32> {
@@ -4765,7 +4762,14 @@ impl Env {
     }
     /// The locus type a binding is declared or built as.
     fn locus_type(&self, name: &str) -> Option<&str> {
-        self.binding(name).and_then(|(_, _, t)| t.as_deref())
+        match self.binding(name) {
+            Some((_, _, Some((t, 0)))) => Some(t),
+            _ => None,
+        }
+    }
+    /// The locus type a binding is declared or built as, through arrays.
+    fn lty(&self, name: &str) -> Option<Lty> {
+        self.binding(name).and_then(|(_, _, t)| t.clone())
     }
     /// The binding's own state.
     fn lookup(&self, name: &str) -> Origin {
@@ -4822,7 +4826,7 @@ impl Env {
     fn declare(&mut self, name: &str, o: Origin) {
         self.declare_typed(name, o, None);
     }
-    fn declare_typed(&mut self, name: &str, o: Origin, ty: Option<String>) {
+    fn declare_typed(&mut self, name: &str, o: Origin, ty: Option<Lty>) {
         if self.marks.is_empty() {
             self.push();
         }
@@ -5553,29 +5557,9 @@ fn eval_stmt(stmt: &Stmt, cx: &mut PoolCheckCx) {
                 }
             }
             // the locus type the binding is declared or built as
-            let locus = |t: &str| cx.decls.loci.contains_key(t).then(|| t.to_string());
-            let lty = match (ty, value) {
-                (Some(t), _) => cx.decls.named(t).and_then(locus),
-                (None, Expr::Struct { path, .. }) => path.segments.last().and_then(|s| locus(&s.name)),
-                (None, Expr::Ident(id)) => cx.env.locus_type(&id.name).map(str::to_string),
-                // a field of `self` (or an element of one)
-                (None, v) if self_rooted_field(v).is_some() => {
-                    self_path_type(v, cx).and_then(|t| cx.decls.named(cx.decls.resolve(t))).and_then(locus)
-                }
-                // a fn's declared result
-                (None, Expr::Call { callee, .. }) => match callee.as_ref() {
-                    Expr::Ident(id) => cx.decls.fns.get(&id.name).and_then(|fs| fs.first()).and_then(|f| f.ret.as_ref()),
-                    Expr::Path(qp) if qp.segments.first().is_some_and(|s| s.name != "std") => qp
-                        .segments
-                        .last()
-                        .and_then(|l| cx.decls.fns.get(&l.name))
-                        .and_then(|fs| fs.first())
-                        .and_then(|f| f.ret.as_ref()),
-                    _ => None,
-                }
-                .and_then(|t| cx.decls.named(cx.decls.resolve(t)))
-                .and_then(locus),
-                _ => None,
+            let lty = match ty {
+                Some(t) => lty_of_type(t, cx.decls),
+                None => lty_of_expr(value, cx),
             };
             cx.env.declare_typed(&name.name, o, lty);
         }
@@ -6046,11 +6030,14 @@ fn receiver_locus_type(receiver: &Expr, cx: &PoolCheckCx) -> Option<String> {
             _ => false,
         }
     }
-    if let Expr::Ident(id) = receiver {
-        if let Some(t) = cx.env.locus_type(&id.name) {
-            return Some(t.to_string());
+    if self_rooted_field(receiver).is_none() && !matches!(receiver, Expr::KwSelf(_)) {
+        if let Some((t, 0)) = lty_of_expr(receiver, cx) {
+            return Some(t);
         }
-        return cx.env.lookup(&id.name).whole.and_then(|cp| cp.locus_type.clone());
+        if let Expr::Ident(id) = receiver {
+            return cx.env.lookup(&id.name).whole.and_then(|cp| cp.locus_type.clone());
+        }
+        return None;
     }
     let mut segs = Vec::new();
     if !path(receiver, &mut segs) {
@@ -6415,6 +6402,50 @@ fn check_held_through_receiver(
                 ));
             }
         }
+    }
+}
+
+/// A locus type through some arrays: `(W, 0)` a `W`, `(W, 1)` a `[W; n]`.
+type Lty = (String, u8);
+
+/// The locus a value of the declared type `t` is, through its arrays.
+fn lty_of_type(t: &TypeExpr, d: &StoreDecls<'_>) -> Option<Lty> {
+    match d.resolve(t) {
+        TypeExpr::Array { elem, .. } => lty_of_type(elem, d).map(|(n, k)| (n, k.saturating_add(1))),
+        t => d.named(t).filter(|n| d.loci.contains_key(*n)).map(|n| (n.to_string(), 0)),
+    }
+}
+
+/// The locus a value is, through its arrays, as far as the walk can
+/// tell: a literal, a binding's, an element of one, a field of `self` or
+/// of a value of a known locus, a fn's declared result.
+fn lty_of_expr(e: &Expr, cx: &PoolCheckCx) -> Option<Lty> {
+    if self_rooted_field(e).is_some() {
+        return self_path_type(e, cx).and_then(|t| lty_of_type(t, cx.decls));
+    }
+    match e {
+        Expr::Struct { path, .. } => {
+            path.segments.last().filter(|s| cx.decls.loci.contains_key(&s.name)).map(|s| (s.name.clone(), 0))
+        }
+        Expr::Array(items, _) => items.first().and_then(|i| lty_of_expr(i, cx)).map(|(n, k)| (n, k.saturating_add(1))),
+        Expr::ArrayRepeat { val, .. } => lty_of_expr(val, cx).map(|(n, k)| (n, k.saturating_add(1))),
+        Expr::Ident(id) => cx.env.lty(&id.name),
+        Expr::Index { receiver, .. } => lty_of_expr(receiver, cx).and_then(|(n, k)| (k > 0).then(|| (n, k - 1))),
+        Expr::Field { receiver, name, .. } => match lty_of_expr(receiver, cx)? {
+            (l, 0) => lty_of_type(cx.decls.slot_type(&l, &[LValueSeg::Field(name.clone())])?, cx.decls),
+            _ => None,
+        },
+        Expr::Call { callee, .. } => {
+            let f = match callee.as_ref() {
+                Expr::Ident(id) if !cx.env.is_bound(&id.name) => cx.decls.fns.get(&id.name),
+                Expr::Path(qp) if qp.segments.first().is_some_and(|s| s.name != "std") => {
+                    qp.segments.last().and_then(|l| cx.decls.fns.get(&l.name))
+                }
+                _ => None,
+            }?;
+            lty_of_type(f.first()?.ret.as_ref()?, cx.decls)
+        }
+        _ => None,
     }
 }
 
@@ -6793,6 +6824,33 @@ impl<'a> StoreDecls<'a> {
     }
 
     /// The name a `Named` type expression spells (its last segment).
+    /// Can a value of type `t` be or hold (in an array, a tuple, a record)
+    /// a locus whose params can hold a handle — an instance a body may
+    /// build and hand back?
+    fn may_build(&self, t: &TypeExpr, depth: u32) -> bool {
+        if depth > 16 {
+            return true;
+        }
+        match self.resolve(t) {
+            TypeExpr::Array { elem, .. } | TypeExpr::Bounded { elem, .. } => self.may_build(elem, depth + 1),
+            TypeExpr::Tuple(ts, _) => ts.iter().any(|t| self.may_build(t, depth + 1)),
+            TypeExpr::Projection { inner, .. } => self.may_build(inner, depth + 1),
+            t @ TypeExpr::Named { .. } => {
+                let Some(n) = self.named(t) else { return false };
+                if self.loci.contains_key(n) {
+                    return self.locus_holds_handles(n);
+                }
+                match self.types.get(n).map(|d| &d.body) {
+                    Some(TypeDeclBody::Struct(fs)) => fs.iter().any(|f| self.may_build(&f.ty, depth + 1)),
+                    Some(TypeDeclBody::Enum(vs)) => vs.iter().flat_map(|v| v.fields.iter()).any(|f| self.may_build(f, depth + 1)),
+                    Some(TypeDeclBody::Alias(a)) => self.may_build(a, depth + 1),
+                    _ => false,
+                }
+            }
+            _ => false,
+        }
+    }
+
     /// Can a param of the locus `name` hold a locus handle? (One with
     /// none holds nothing a store could reach.)
     fn locus_holds_handles(&self, name: &str) -> bool {
