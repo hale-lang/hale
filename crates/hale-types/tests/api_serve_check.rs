@@ -486,6 +486,19 @@ fn what_main_builds_before_a_listener_born_after_its_server_must_return() {
         ("built in a record default, reading the const", "", APP_N, CONST_SETTLES, "type Holder { n: Int = { App { n: K }; 0 }; }\nfn main() { let h = Holder { }; }", Some("the value given of `App.n`, through the value of the const `K`")),
         ("built in a record default left twice, one shadowing", "", APP_N, CONST_SETTLES, "type Holder { n: Int = { App { n: K }; 0 }; }\nfn quiet() -> Int { let K = 0; let h = Holder { }; return h.n; }\nfn main() { let h = Holder { }; }", Some("the value given of `App.n`, through the value of the const `K`")),
         // a call in a default resolved in each evaluation's scope
+        // recursion: the window cannot prove one ends, so it refuses any
+        // the step reaches, finite or not
+        ("a default calls a fn that calls itself", "", "n: Int = settle(); server: Server = Server { };", "fn settle() -> Int { return settle(); }", "", Some("`settle`")),
+        ("a default calls a finite recursion", "", "n: Int = count(3); server: Server = Server { };", "fn count(k: Int) -> Int { if k == 0 { return 0; } return count(k - 1); }", "", Some("`count`")),
+        ("a default calls two fns calling each other", "", "n: Int = ping(); server: Server = Server { };", "fn ping() -> Int { return pong(); }\nfn pong() -> Int { return ping(); }", "", Some("`p")),
+        ("the server's run() calls a method calling itself", "    fn again() -> Int { return self.again(); }\n    run() { let k = self.again(); }", HOLDS, "", "", Some("`Server`'s `run()`")),
+        ("a recursion after the server", "", "server: Server = Server { }; n: Int = settle();", "fn settle() -> Int { return settle(); }", "", None),
+        ("a call that returns, no recursion", "", "n: Int = count(3); server: Server = Server { };", "fn count(k: Int) -> Int { return k; }", "", None),
+        // a default that reaches its own call again
+        ("a param default calling its own fn", "", "k: Int = grow(); server: Server = Server { };", "fn grow(n: Int = grow()) -> Int { return n; }", "", Some("may not return")),
+        // a fn used as a value: judged as a call of it
+        ("a looping fn passed as a value", "", "n: Int = apply(spin1, 1); server: Server = Server { };", "fn spin1(n: Int) -> Int { while true { } return n; }\nfn apply(f: fn (Int) -> Int, n: Int) -> Int { return f(n); }", "", Some("`spin1`")),
+        ("a returning fn passed as a value", "", "n: Int = apply(same, 1); server: Server = Server { };", "fn same(n: Int) -> Int { return n; }\nfn apply(f: fn (Int) -> Int, n: Int) -> Int { return f(n); }", "", None),
         // a call that leaves nothing on this evaluation is that answer, not
         // a missing one: the declaration's const `s` is a Fast whose pick
         // leaves its param, the literal's local `s` a Slow whose pick
@@ -869,4 +882,42 @@ fn a_bundle_with_no_scalar_type_still_types_each_default_evaluation() {
     assert!(!refusal(&shadowed), "{shadowed:#?}");
     let read = errors_bare(&program("{ let s = Setup { }; s.n }"));
     assert!(refusal(&read), "{read:#?}");
+}
+
+/// What a step does that may not end without a loop of its own: a publish
+/// to a topic a transport that may wait carries (a unix socket's write
+/// here), and a recovery, which rebuilds a child the window does not
+/// follow. Each refused before the listener, with its admitted neighbour.
+#[test]
+fn a_publish_that_may_wait_and_a_recovery_before_the_listener_are_refused() {
+    let refused = |errs: &[String], why: &str| {
+        errs.iter().any(|e| {
+            e.contains("exposure `web` held by `Server`") && e.contains("`Server`'s `run()`") && e.contains(why)
+        })
+    };
+    let with_run = |run: &str| {
+        server(SERVED, "server: Server = Server { };")
+            .replace("\n    }\n}\nmain locus App", &format!("\n    }}\n    bus {{ publish Beat; }}\n{run}\n}}\nmain locus App"))
+            .replace("fn main()", "type Tick { n: Int = 0; }\ntopic Beat { payload: Tick; subject: \"demo.beat\"; }\nfn main()")
+    };
+    let publish = with_run("    run() { Beat <- Tick { n: 1 }; }");
+    let bound = publish.replacen(
+        "    run() { }\n",
+        "    bindings { Beat: unix(\"/tmp/hale-1565-beat.sock\", role: listen); }\n    run() { }\n",
+        1,
+    );
+    let errs = errors(&bound);
+    assert!(refused(&errs, "a publish to a topic bound to a transport that may wait"), "{errs:#?}\n{bound}");
+    // the same publish over the cooperative queue returns
+    assert_eq!(errors(&publish), Vec::<String>::new(), "{publish}");
+    let recovery = with_run("    run() { restart(self.orders); }");
+    let errs = errors(&recovery);
+    assert!(refused(&errs, "a recovery"), "{errs:#?}\n{recovery}");
+    // placed off the main thread, the server's run() is its own
+    let placed = recovery.replacen(
+        "    run() { }\n",
+        "    placement { server: cooperative(pool = io) where async_io; }\n    run() { }\n",
+        1,
+    );
+    assert_eq!(errors(&placed), Vec::<String>::new(), "{placed}");
 }

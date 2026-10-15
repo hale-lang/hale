@@ -14195,7 +14195,7 @@ impl<'a> Checker<'a> {
     fn check_ident_expr(&mut self, id: &Ident, report_unknown: bool) -> Ty {
         if let Some(s) = self.locals.lookup(&id.name) {
             if !self.defaults_judged_at_literals {
-                self.typed.ident_read(id.id, &self.default_evaluation, false);
+                self.typed.ident_read(id.id, &self.default_evaluation, crate::typed_bodies::READ_BINDING);
             }
             return s.ty.clone();
         }
@@ -14231,7 +14231,12 @@ impl<'a> Checker<'a> {
         // not on a type declaration's walk of its fields' calls, which is
         // no evaluation
         if !self.defaults_judged_at_literals {
-            self.typed.ident_read(id.id, &self.default_evaluation, matches!(sym, TopSymbol::Const(_)));
+            let read = match sym {
+                TopSymbol::Const(_) => crate::typed_bodies::READ_CONST,
+                TopSymbol::Fn(_) => crate::typed_bodies::READ_FN,
+                _ => 0,
+            };
+            self.typed.ident_read(id.id, &self.default_evaluation, read);
         }
         match sym {
             TopSymbol::Const(c) => c.ty.clone(),

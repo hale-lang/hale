@@ -77,8 +77,8 @@
 //!    4's leftovers).
 //! 10. `ident_reads`, per identifier expression the checker resolved as a
 //!    value and per evaluation of it: whether it read a top-level const,
-//!    rather than a local or a parameter in scope there (or another
-//!    declaration). A default is evaluated, and typed, in the scope of
+//!    a top-level fn (a callee, or a fn used as a value), or a local or a
+//!    parameter in scope there (or another declaration). A default is evaluated, and typed, in the scope of
 //!    each literal or call that leaves it (`spec/types.md` § Locus
 //!    params), so one site has an answer per evaluation path (the
 //!    literals and calls, outermost first, as a conversion row's
@@ -471,6 +471,14 @@ pub struct OmittedArgs {
 /// expanded at two callers, a generic body specialized) keeps every
 /// answer.
 pub type OmittedArgsByCall = BTreeMap<u32, std::collections::BTreeSet<OmittedArgs>>;
+
+/// An `ident_reads` answer: a local or a parameter in scope.
+pub const READ_BINDING: u8 = 1;
+/// An `ident_reads` answer: a top-level const.
+pub const READ_CONST: u8 = 2;
+/// An `ident_reads` answer: a top-level fn (a callee, or a fn used as a
+/// value).
+pub const READ_FN: u8 = 4;
 
 /// What the checker resolved one call to on one evaluation: the fn or
 /// method of the program it calls (`None`: none the program declares, a
@@ -865,7 +873,7 @@ pub struct TypingRecord {
     /// The `ident_reads` column, by (site, evaluation path). A discarded
     /// walk keeps what it adds: a field default is typed only in such a
     /// walk, and each path is its own row.
-    pub ident_reads: BTreeMap<(u32, Vec<u32>), bool>,
+    pub ident_reads: BTreeMap<(u32, Vec<u32>), u8>,
     /// Every evaluation path each struct or locus literal was typed on;
     /// kept across discarded walks, as `ident_reads` is.
     pub literal_paths: BTreeMap<u32, std::collections::BTreeSet<Vec<u32>>>,
@@ -1015,11 +1023,11 @@ impl TypingRecord {
     /// Record what the identifier expression `site` read on the
     /// evaluation `path`: a top-level const (`constant`), or a binding in
     /// scope or another declaration.
-    pub fn ident_read(&mut self, site: NodeId, path: &[u32], constant: bool) {
+    pub fn ident_read(&mut self, site: NodeId, path: &[u32], read: u8) {
         if site.is_none() {
             return;
         }
-        *self.ident_reads.entry((site.0, path.to_vec())).or_insert(false) |= constant;
+        *self.ident_reads.entry((site.0, path.to_vec())).or_insert(0) |= read;
     }
 
     /// Record that the struct or locus literal `literal` was typed on the
@@ -1129,7 +1137,7 @@ pub struct TypedBodies {
     omitted_args: OmittedArgsByCall,
     calls_by_path: CallsByPath,
     conversion_sites: BTreeMap<ConversionSite, u32>,
-    ident_reads: BTreeMap<(u32, Vec<u32>), bool>,
+    ident_reads: BTreeMap<(u32, Vec<u32>), u8>,
     literal_paths: BTreeMap<u32, std::collections::BTreeSet<Vec<u32>>>,
     /// Whether a row changes a denomination, prints a unit (U3) or types
     /// an operator's result (U4): a program with none has no value row
@@ -1191,6 +1199,15 @@ impl TypedBodies {
     /// const there. `None` for a site it never typed as a value on that
     /// path.
     pub fn reads_const(&self, site: NodeId, path: &[u32]) -> Option<bool> {
+        self.reads(site, path).map(|r| r & READ_CONST != 0)
+    }
+
+    /// The `ident_reads` column at the identifier expression `site` on the
+    /// evaluation `path`: what it read there, as [`READ_BINDING`],
+    /// [`READ_CONST`] and [`READ_FN`] bits (a site typed more than once
+    /// there has each answer's bit); `None` for a site the checker never
+    /// typed as a value on that path.
+    pub fn reads(&self, site: NodeId, path: &[u32]) -> Option<u8> {
         self.ident_reads.get(&(site.0, path.to_vec())).copied()
     }
 

@@ -33,14 +33,28 @@
 //! `params` (not lowered: a perspective is a contract, its slot holds a
 //! locus built by a literal walked above).
 //!
-//! A step **may not return** when: its effect row is in the `BLOCK` class
-//! (interprocedural: a wait on an exposure, a sleep, a read), or reaches an
-//! edge the analysis cannot name; a call in a walked expression cannot be
-//! resolved (an edge whose return behaviour is unknown, never taken as
-//! proof that it returns); a standard-library call is classified `BLOCK` or
-//! unclassified; or a `while` loop or an `or wait` sits anywhere in the
-//! step's statements or expressions or in a fn it reaches (the classes
-//! cannot judge a loop that spins, nor a publish that waits for room). The
+//! A step **may not return** when, and the window refuses it then (it
+//! proves no termination, so each of these is refused whether or not it
+//! would end; the ways out are the same three):
+//!
+//! | kind | how it is found |
+//! |---|---|
+//! | it blocks | its effect row is in the `BLOCK` class, interprocedural: a wait on an exposure, `std::api::run_until_stopped`, a sleep, a read, a stdlib call that retries with a backoff (`connect_wait`, the http `Client`'s retries) |
+//! | an edge nobody can name | its row reaches a call the analysis cannot name, or a call in a walked expression cannot be resolved (never taken as proof that it returns); a standard-library call is unclassified |
+//! | a loop | a `while` loop or an `or wait` anywhere in its statements or expressions or in a fn it reaches (the classes cannot judge a loop that spins, nor a publish that waits for room) |
+//! | a recursion | a fn of the program it reaches reaches itself, directly or through others, methods and the fn values the analysis resolves: refused even when it would end (a recursion with a base case), since the window cannot prove it does |
+//! | a default that reaches its own call | a param default whose evaluation leaves the same call's defaults again |
+//! | a fn used as a value | a fn passed, stored or bound may be called by what receives it, so it is judged as a call of it |
+//! | a publish that may wait | to a topic a binding carries over a unix socket (a write), an adapter (its `send`, user code the window does not follow) or a shared-memory ring `on_overflow: block` |
+//! | a recovery | `restart`, `resume`, `quarantine`, …: it rebuilds a child the window does not follow |
+//! | too deep | constructions and defaults nested past 32 levels |
+//!
+//! A `for` loop always ends: it iterates a range (bounds evaluated once),
+//! an array, a `bounded` buffer, a form's `entries` / `items`, a locus's
+//! `children` or a batch handler's `Drain<T>`, each finite when the loop
+//! starts.
+//!
+//! The
 //! walk visits every statement and expression ([`visit_block`], exhaustive
 //! over the AST, so a new form of either is a compile error here until it
 //! is visited).
@@ -364,6 +378,11 @@ pub(crate) struct Window<'a> {
     /// What the checker resolved each identifier to: a const read is
     /// the checker's answer, never a matching spelling.
     typed: &'a crate::typed_bodies::TypedBodies,
+    /// The topics (by name and by subject) a binding carries over a
+    /// transport whose publish may wait: a unix socket's write, an
+    /// adapter's `send` (user code the window does not follow), a shared
+    /// memory ring `on_overflow: block`.
+    waiting_topics: BTreeSet<String>,
     /// The evaluation path the walk is on, as the checker keeps it
     /// (`default_evaluation`): each struct literal that leaves a field and
     /// each call that leaves a parameter whose default is being walked,
@@ -375,7 +394,11 @@ pub(crate) struct Window<'a> {
 /// What a walked expression holds, collected before it is judged.
 #[derive(Default)]
 struct Found<'a> {
-    loops: bool,
+    /// a statement that may not end on its own: a `while` loop, an `or
+    /// wait`, a recovery
+    stall: Option<&'static str>,
+    /// the topics (or literal subjects) it publishes to
+    sends: Vec<&'a str>,
     calls: Vec<&'a Expr>,
     literals: Vec<&'a Expr>,
     /// every name read (`Ident`, `Path`): a const among them is its
@@ -397,7 +420,15 @@ fn found_in_block(b: &Block) -> Found<'_> {
 
 fn collect<'a>(v: Visited<'a>, found: &mut Found<'a>) {
     match v {
-        Visited::Stmt(Stmt::While { .. }) | Visited::OrWait => found.loops = true,
+        Visited::Stmt(Stmt::While { .. }) | Visited::OrWait => found.stall = Some(LOOP),
+        Visited::Stmt(Stmt::Recovery { .. }) => found.stall = found.stall.or(Some(RECOVERY)),
+        Visited::Stmt(Stmt::Send { subject, .. }) => match subject {
+            Expr::Ident(i) => found.sends.push(&i.name),
+            Expr::Path(qn) => found.sends.extend(qn.segments.last().map(|s| s.name.as_str())),
+            Expr::Literal(hale_syntax::ast::Literal::String(s), _) => found.sends.push(s),
+            _ => {}
+        },
+        Visited::Stmt(Stmt::ShmWrite { topic, .. }) => found.sends.push(&topic.name),
         Visited::Expr(e @ Expr::Call { .. }) => found.calls.push(e),
         Visited::Expr(e @ Expr::Struct { .. }) => found.literals.push(e),
         Visited::Expr(e @ (Expr::Ident(_) | Expr::Path(_))) => found.names.push(e),
@@ -406,6 +437,12 @@ fn collect<'a>(v: Visited<'a>, found: &mut Found<'a>) {
 }
 
 const LOOP: &str = "a `while` loop or an `or wait`, which may not end";
+const RECOVERY: &str = "a recovery (`restart`, `resume`, …) rebuilds a child the window does not follow";
+const RECURSION: &str = "it is recursive (it reaches itself), and the window cannot prove a recursion ends";
+const SEND_WAITS: &str =
+    "a publish to a topic bound to a transport that may wait (a socket write, an adapter's `send`, a ring that blocks when full)";
+const TOO_DEEP: &str = "constructions and defaults nested deeper than the window follows (32), which it cannot judge";
+const DEFAULT_REACHES_ITSELF: &str = "a default that reaches its own call again, which may not end";
 
 /// A step named by where it is reached from: `the default of `App.n``,
 /// through `settle` when the step is a call or a construction inside it.
@@ -456,6 +493,8 @@ impl<'a> Window<'a> {
         let mut records = BTreeMap::new();
         let mut consts = BTreeMap::new();
         let mut types = BTreeSet::new();
+        let mut waiting_topics = BTreeSet::new();
+        let mut subjects: BTreeMap<String, String> = BTreeMap::new();
         let record = |t: &'a TypeDecl, records: &mut BTreeMap<String, &'a [StructField]>| {
             if let TypeDeclBody::Struct(fields) = &t.body {
                 records.entry(t.name.name.clone()).or_insert(fields.as_slice());
@@ -471,6 +510,11 @@ impl<'a> Window<'a> {
                     }
                     hale_syntax::ast::TopDecl::Const(c) => {
                         consts.insert((None, c.name.name.clone()), &c.value);
+                    }
+                    hale_syntax::ast::TopDecl::Topic(t) => {
+                        if let Some(subject) = &t.subject {
+                            subjects.insert(t.name.name.clone(), subject.clone());
+                        }
                     }
                     hale_syntax::ast::TopDecl::Type(t) => {
                         types.insert(t.name.name.clone());
@@ -498,6 +542,20 @@ impl<'a> Window<'a> {
                                     consts.insert((at.clone(), c.name.name.clone()), &c.value);
                                 }
                                 LocusMember::Type(t) => record(t, &mut records),
+                                LocusMember::Bindings(b) => {
+                                    for e in &b.entries {
+                                        let waits = match &e.transport {
+                                            hale_syntax::ast::TransportSpec::Unix { .. }
+                                            | hale_syntax::ast::TransportSpec::Adapter { .. } => true,
+                                            hale_syntax::ast::TransportSpec::ShmRing { overflow, .. } => {
+                                                matches!(overflow, hale_syntax::ast::ShmRingOverflow::Block)
+                                            }
+                                        };
+                                        if waits {
+                                            waiting_topics.insert(e.topic.name.clone());
+                                        }
+                                    }
+                                }
                                 _ => {}
                             }
                         }
@@ -506,7 +564,22 @@ impl<'a> Window<'a> {
                 }
             }
         }
-        Window { effects, loci, bodies, params, decls, records, consts, renames, types, typed, path: RefCell::new(Vec::new()) }
+        let by_subject: Vec<String> = waiting_topics.iter().filter_map(|t| subjects.get(t).cloned()).collect();
+        waiting_topics.extend(by_subject);
+        Window {
+            effects,
+            loci,
+            bodies,
+            params,
+            decls,
+            records,
+            consts,
+            renames,
+            types,
+            typed,
+            waiting_topics,
+            path: RefCell::new(Vec::new()),
+        }
     }
 
     /// `f`, walked on the evaluation path `path`.
@@ -562,6 +635,9 @@ impl<'a> Window<'a> {
             return Some((show(&row.key), "it reaches a call the blocking analysis cannot name"));
         }
         let effects = self.effects?;
+        if let Some(k) = self.cycle(&row.key) {
+            return Some((show(k), RECURSION));
+        }
         let mut stack: Vec<&'a FnKey> = vec![&row.key];
         while let Some(k) = stack.pop() {
             if !seen.insert(k) {
@@ -570,8 +646,8 @@ impl<'a> Window<'a> {
             if let Some(body) = self.bodies.get(&(k.locus.clone(), k.fn_name.clone())) {
                 let ctx = k.locus.as_deref().and_then(|l| self.loci.get(l).copied());
                 let found = found_in_block(body);
-                if found.loops {
-                    return Some((show(k), LOOP));
+                if let Some(why) = self.stall(&found) {
+                    return Some((show(k), why));
                 }
                 // a body is typed where it is declared
                 let step = self.on_path(Vec::new(), || {
@@ -727,13 +803,14 @@ impl<'a> Window<'a> {
     /// never a matching spelling.
     fn implicit(&self, found: &Found<'a>, ctx: Option<&'a LocusDecl>, depth: usize) -> Option<(String, &'static str)> {
         if depth > 32 {
-            return None;
+            return Some((String::new(), TOO_DEEP));
         }
         for c in &found.calls {
             let Expr::Call { id, .. } = c else { continue };
-            // a call already on the path: the checker stops there too
+            // a call already on the path: a default that reaches its own
+            // call again
             if self.path.borrow().contains(&id.0) {
-                continue;
+                return Some((String::new(), DEFAULT_REACHES_ITSELF));
             }
             let left_on = self.typed.omitted_args().at(id.0, Some(&self.path.borrow()));
             for left in left_on {
@@ -780,6 +857,77 @@ impl<'a> Window<'a> {
                 }
             }
         }
+        // a fn used as a value (passed, stored, bound) may be called by
+        // whatever receives it: judged as a call of it would be
+        let callees: BTreeSet<*const Expr> = found
+            .calls
+            .iter()
+            .filter_map(|c| match c {
+                Expr::Call { callee, .. } => Some(callee.as_ref() as *const Expr),
+                _ => None,
+            })
+            .collect();
+        for n in &found.names {
+            if callees.contains(&(*n as *const Expr)) {
+                continue;
+            }
+            let name = match n {
+                Expr::Ident(i) => match self.typed.reads(i.id, &self.path.borrow()) {
+                    Some(read) if read & crate::typed_bodies::READ_FN == 0 => continue,
+                    _ => i.name.clone(),
+                },
+                Expr::Path(qn) => {
+                    let segs: Vec<&str> = qn.segments.iter().map(|s| s.name.as_str()).collect();
+                    self.resolve_path(&segs)
+                }
+                _ => continue,
+            };
+            if let Some(row) = self.row(None, &name) {
+                let mut seen = BTreeSet::new();
+                if let Some((at, why)) = self.judge_fn(row, &mut seen, depth + 1) {
+                    return Some((format!("{at}, used as a value"), why));
+                }
+            }
+        }
+        None
+    }
+
+    /// What in `found` may not end on its own: a `while` loop, an `or
+    /// wait`, a recovery, or a publish to a topic a transport that may wait
+    /// carries.
+    fn stall(&self, found: &Found<'_>) -> Option<&'static str> {
+        found.stall.or_else(|| found.sends.iter().any(|t| self.waiting_topics.contains(*t)).then_some(SEND_WAITS))
+    }
+
+    /// A fn of the program `start` reaches, through the effect rows' call
+    /// edges, that reaches itself: a recursion, direct or mutual, through
+    /// methods and the fn values the analysis resolves. Only the program's
+    /// own bodies count (the standard library's are judged by their
+    /// classes).
+    fn cycle(&self, start: &'a FnKey) -> Option<&'a FnKey> {
+        let effects = self.effects?;
+        let own = |k: &FnKey| self.bodies.contains_key(&(k.locus.clone(), k.fn_name.clone()));
+        // 1: on the walk's stack; 2: finished, no cycle through it
+        let mut state: BTreeMap<&'a FnKey, u8> = BTreeMap::new();
+        let mut stack: Vec<(&'a FnKey, usize)> = vec![(start, 0)];
+        state.insert(start, 1);
+        while let Some((k, next)) = stack.pop() {
+            let targets: Vec<&'a FnKey> =
+                effects.rows.get(k).map(|r| r.targets.iter().filter(|t| own(t)).collect()).unwrap_or_default();
+            if let Some(t) = targets.get(next) {
+                stack.push((k, next + 1));
+                match state.get(t) {
+                    Some(1) => return Some(t),
+                    Some(_) => {}
+                    None => {
+                        state.insert(t, 1);
+                        stack.push((t, 0));
+                    }
+                }
+            } else {
+                state.insert(k, 2);
+            }
+        }
         None
     }
 
@@ -788,11 +936,11 @@ impl<'a> Window<'a> {
     /// `run()` run where it is born).
     fn expr(&self, e: &'a Expr, ctx: Option<&'a LocusDecl>, depth: usize) -> Option<(String, &'static str)> {
         if depth > 32 {
-            return None;
+            return Some((String::new(), TOO_DEEP));
         }
         let found = found_in_expr(e);
-        if found.loops {
-            return Some((String::new(), LOOP));
+        if let Some(why) = self.stall(&found) {
+            return Some((String::new(), why));
         }
         for c in &found.calls {
             if let Some(step) = self.call(c, ctx, depth) {
@@ -849,7 +997,7 @@ impl<'a> Window<'a> {
     /// supplies are walked where the literal is.
     fn literal(&self, lit: &'a Expr, ctx: Option<&'a LocusDecl>, with_run: bool, depth: usize) -> Option<(String, &'static str)> {
         if depth > 32 {
-            return None;
+            return Some((String::new(), TOO_DEEP));
         }
         let Expr::Struct { path, inits, id, .. } = lit else { return None };
         let given: BTreeSet<&str> = inits.iter().map(|i| i.name.name.as_str()).collect();

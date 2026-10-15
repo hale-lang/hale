@@ -411,11 +411,21 @@ waiting into the main locus's `run()`, or write an address that reads
 nothing of the server. "May not return" is the blocking analysis's: the
 effect rows' `BLOCK` class, interprocedural (a wait on the exposure or
 `run_until_stopped`, a sleep, a read, reached through any fn or method the
-step calls), an edge the analysis cannot name, and, since the classes
-cannot judge a loop that spins without blocking nor a publish that waits
-for room, a `while` loop or an `or wait` anywhere in the step's statements
-or expressions (a `let`'s initializer, a block's tail, an `if` or `match`
-expression, a call's argument, a literal's field) or in a fn it reaches.
+step calls, a stdlib retry with a backoff among them), an edge the
+analysis cannot name, and, since the classes cannot judge a loop that
+spins without blocking nor a publish that waits for room, a `while` loop
+or an `or wait` anywhere in the step's statements or expressions (a
+`let`'s initializer, a block's tail, an `if` or `match` expression, a
+call's argument, a literal's field) or in a fn it reaches. Beside those:
+a recursion the step reaches (a fn of the program that reaches itself,
+directly or through others, methods and resolved fn values), refused even
+when it has a base case, since the check cannot prove a recursion ends; a
+param default that reaches its own call again; a fn used as a value,
+judged as a call of it; a publish to a topic a binding carries over a
+unix socket, an adapter or a shared-memory ring `on_overflow: block`; a
+recovery (`restart`, …), which rebuilds a child the check does not
+follow; and constructions nested past 32 levels. A `for` loop always ends
+(its range, array, buffer, form or batch is finite when it starts).
 `run() { println("started"); }` is admitted. The listener is inserted into whichever of
 the main locus's `params` blocks declares that param. Then it is placed:
 
