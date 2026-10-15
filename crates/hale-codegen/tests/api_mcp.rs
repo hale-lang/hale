@@ -315,14 +315,14 @@ main locus D {
         t: Tok = Tok { };
         a: A = A { };
         ab: A__b = A__b { };
+        h: api::Exposure = api::serve(S, mcp::Rpc { bind: std::env::var("BIND"), principals: self.t }, as: "s", bound: 4, on_full: refuse);
     }
     run() {
-        let h = api::serve(S, mcp::Rpc { bind: std::env::var("BIND"), principals: self.t }, as: "s", bound: 4, on_full: refuse);
         let trigger = std::env::var("TRIGGER");
         while !self.draining && (std::io::fs::read_file(trigger) or "") == "" {
             std::time::sleep(10ms);
         }
-        h.stop();
+        self.h.stop();
     }
 }
 

@@ -90,18 +90,30 @@ fn has_entry_point(program: &hale_syntax::ast::Program) -> bool {
     })
 }
 
-/// GH #829: a program with no entry point, with `fn main() { }`
+/// Does the program have the top-level `fn main` a build starts at?
+fn has_fn_main(program: &hale_syntax::ast::Program) -> bool {
+    program.items.iter().any(|i| matches!(i, TopDecl::Fn(f) if f.name.name == "main"))
+}
+
+/// GH #829: a program with no `fn main`, with `fn main() { }`
 /// appended — the smallest thing that makes it a program without
 /// changing what codegen must lower. Every declaration it carries is
 /// still lowered (codegen walks the decls, not the call graph), so
 /// the divergences that hide in a library-shaped snippet are reached.
 ///
-/// A program that already has an entry point is returned untouched:
-/// a second `main` would be the harness inventing a compile error.
+/// That includes a library APPLICATION seed: a `main locus` with no
+/// `fn main`, which an importer starts and which checks clean alone.
+/// Built alone it is refused at the locus's name ("a `main locus` is
+/// started by `fn main` ..."), the build's located answer for a seed
+/// nothing starts, not a divergence; built as a library it reaches
+/// every declaration the same way.
+///
+/// A program that already has a `fn main` is returned untouched: a
+/// second one would be the harness inventing a compile error.
 fn with_synthetic_main(
     program: &hale_syntax::ast::Program,
 ) -> std::borrow::Cow<'_, hale_syntax::ast::Program> {
-    if has_entry_point(program) {
+    if has_fn_main(program) {
         return std::borrow::Cow::Borrowed(program);
     }
     let stub = hale_syntax::parse_source("fn main() { }\n")
@@ -331,12 +343,14 @@ fn every_check_clean_corpus_program_also_builds() {
         checked
     );
 
-    // A RATCHET, not a clean bill of health. 44 divergences exist
-    // today over 1507 swept programs (GH #829 widened the sweep by
-    // the 88 programs with no entry point, which found four more
-    // and fixed four); each is a check the compiler performs in
-    // codegen that the checker could perform earlier, with a span.
-    // They are recorded so that:
+    // A RATCHET, not a clean bill of health. Each recorded divergence
+    // is a check the compiler performs in codegen that the checker
+    // could perform earlier, with a span. 2026-10-14 closed fourteen
+    // of the twenty-one recorded then; the seven that remain are one
+    // shape, a `main locus` with no `fn main` ("program has no `fn
+    // main()`": five check_rules.rs programs and the two
+    // imported-main-claims seeds), whose check-side refusal is its own
+    // change. They are recorded so that:
     //
     //   * a NEW divergence fails immediately — that is the point;
     //   * a FIXED one also fails, so the list cannot quietly rot
@@ -482,6 +496,27 @@ fn an_entry_point_less_program_is_built() {
             src
         );
     }
+}
+
+/// A library application seed — a `main locus` with no `fn main`, which
+/// an importer starts — checks clean alone, and `hale build` of it alone
+/// is refused at the locus's name (`entry_point_placement`). The sweep
+/// builds it as the library it is, with the synthetic `fn main() { }`
+/// it gives every seed without one, so its declarations are lowered and
+/// its being unstarted is not counted as a divergence.
+///
+/// Plain string literals, for the reason given above.
+#[test]
+fn a_library_application_seed_is_built_as_a_library() {
+    let library = "main locus App {\n\
+                   run { println(\"hi\"); }\n\
+                   }\n";
+    let program = hale_syntax::parse_source(library).expect("parses");
+    assert!(!has_fn_main(&program));
+    let errors: Vec<String> =
+        entries::check_program(&program).into_iter().filter(|d| d.is_error()).map(|d| d.message).collect();
+    assert!(errors.is_empty(), "it checks clean alone: {errors:?}");
+    assert_eq!(sweep_verdict(library, "hale_cb_library_application"), Verdict::Built);
 }
 
 /// GH #1076 (U1, review): a quantity literal in a default checked clean
@@ -2439,4 +2474,420 @@ fn a_value_where_its_place_cannot_hold_it_is_refused_by_the_check_not_the_build(
     {
         assert_built(src, &format!("hale_cb_place_ok_{i}"));
     }
+}
+
+/// A program's type named like a builtin error type stands in for the
+/// builtin wherever lowering builds one, and the stdlib's own bodies,
+/// merged into every program, build them: `std::cli`'s `parse_int`
+/// reaches `ParseError`, `std::crypto` `CryptoError`, a `bounded` push
+/// `CapacityError`, a closure `ClosureViolation`. The check gated the
+/// shape rule on the program's own reach, so `type ParseError { code:
+/// Int; }` in a program calling no parser checked clean and the build
+/// refused it (an `IndexError`, a `KeyError` or a `CapacityError`
+/// panicked lowering). The stdlib's reach counts now; a type of the
+/// builtin's shape builds.
+///
+/// Plain string literals, for the reason given above.
+#[test]
+fn a_builtin_error_name_of_another_shape_is_refused_by_the_check_not_the_build() {
+    let shadow = |name: &str| format!("type {name} {{ code: Int; }}\nfn main() {{ let x = {name} {{ code: 1 }}; println(x.code); }}\n");
+    let cases: Vec<(String, String, String)> = ["ParseError", "CryptoError", "IndexError", "KeyError", "CapacityError", "ClosureViolation"]
+        .iter()
+        .map(|n| (shadow(n), format!("type {n} {{ code: Int; }}"), format!("user-declared `type {n}` shadows the stdlib's `{n}`")))
+        .collect();
+    let cases: Vec<(&str, &str, &str)> = cases.iter().map(|(s, a, h)| (s.as_str(), a.as_str(), h.as_str())).collect();
+    assert_refused_by_the_check(&cases, "builtin_error_shadow");
+    assert_built(
+        "type ParseError { kind: String; input: String; }\n\
+         fn main() { let p = ParseError { kind: \"k\", input: \"i\" }; println(p.kind); println(std::str::parse_int(\"x\") or 3); }\n",
+        "hale_cb_builtin_error_same_shape",
+    );
+    // `EmptyError` is reached by no stdlib body: a program that reaches
+    // none of its own keeps the name.
+    assert_built("type EmptyError { code: Int; }\nfn main() { let e = EmptyError { code: 1 }; println(e.code); }\n", "hale_cb_empty_error_free");
+}
+
+/// F.22 capacity slots: the method-shaped dispatch (`acquire` /
+/// `release` on a pool, `alloc` / `free` on a heap), a cell released
+/// into another slot than its own, a cell printed, a field of a
+/// primitive cell, and an `as_parent_for` whose child slot is another
+/// kind: each checked clean (a slot read typed `Unknown`, and a cell
+/// with it) and the build refused it with no location. The valid
+/// round trips, a struct cell's field read and a matching
+/// `as_parent_for` build.
+///
+/// Plain string literals, for the reason given above.
+#[test]
+fn a_capacity_slot_misuse_is_refused_by_the_check_not_the_build() {
+    assert_refused_by_the_check(
+        &[
+            (
+                "locus L { capacity { pool entries of Int; } birth { let p = self.entries.alloc(); } }\nfn main() { L { }; }\n",
+                "alloc",
+                "pool slot `entries`: method `alloc` is not available",
+            ),
+            (
+                "locus L { capacity { heap reg of Int; } birth { let c = self.reg.acquire(); } }\nfn main() { L { }; }\n",
+                "acquire",
+                "heap slot `reg`: method `acquire` is not available",
+            ),
+            (
+                "locus L { capacity { pool a of Int; pool b of Int; } birth { let c = self.a.acquire(); self.b.release(c); } }\n\
+                 fn main() { L { }; }\n",
+                "c",
+                "slot `b`.release: this cell came from `L.a`",
+            ),
+            (
+                "locus L { capacity { pool entries of Int; } birth { let c = self.entries.acquire(); println(\"cell=\", c); } }\n\
+                 fn main() { L { }; }\n",
+                "c",
+                "`println` cannot render a cell of `L.entries`",
+            ),
+            (
+                "locus L { capacity { pool entries of Int; } birth { let c = self.entries.acquire(); let n = c.foo; } }\n\
+                 fn main() { L { }; }\n",
+                "foo",
+                "`.foo` on a cell of `L.entries`: its cell type `Int` has no fields",
+            ),
+            (
+                "locus Kid { capacity { heap entries of Int; } }\n\
+                 locus P { capacity { pool entries of Int as_parent_for Kid; } accept(c: Kid) { } run() { Kid { }; } }\n\
+                 fn main() { P { }; }\n",
+                "Kid",
+                "capacity slot `pool entries` declared `as_parent_for Kid`, but `Kid`'s `entries` is a `heap` slot",
+            ),
+        ],
+        "capacity_slot",
+    );
+    for (i, src) in [
+        "type Row { n: Int; }\n\
+         locus L { capacity { pool rows of Row; heap ints of Int; }\n\
+         birth { let c = self.rows.acquire(); c.n = 4; let k = c.n; println(k); self.rows.release(c); \
+         let d = self.ints.alloc(); let e = d; self.ints.free(e); } }\n\
+         fn main() { L { }; }\n",
+        "locus Kid { capacity { pool entries of Int; } }\n\
+         locus P { capacity { pool entries of Int as_parent_for Kid; } accept(c: Kid) { } run() { Kid { }; } }\n\
+         fn main() { P { }; }\n",
+    ]
+    .iter()
+    .enumerate()
+    {
+        assert_built(src, &format!("hale_cb_capacity_slot_ok_{i}"));
+    }
+}
+
+/// `@form(hashmap)`'s `bump(key)` increments the cell's one counter;
+/// a cell holding more than the key and one `Int` checked clean and the
+/// build refused the call ("cell `Triple` must have exactly two
+/// fields"). The counter cell builds.
+///
+/// Plain string literals, for the reason given above.
+#[test]
+fn a_hashmap_bump_over_a_richer_cell_is_refused_by_the_check_not_the_build() {
+    assert_refused_by_the_check(
+        &[(
+            "type Triple { k: String; a: Int; b: Int; }\n@form(hashmap)\nlocus M { capacity { pool entries of Triple indexed_by k; } }\n\
+             fn main() { let m = M { }; m.bump(\"x\"); }\n",
+            "bump",
+            "`M.bump`: `bump(key)` increments the cell's one counter",
+        )],
+        "hashmap_bump",
+    );
+    assert_built(
+        "type Hits { k: String; n: Int; }\n@form(hashmap)\nlocus M { capacity { pool entries of Hits indexed_by k; } }\n\
+         fn main() { let m = M { }; m.bump(\"x\"); m.bump(\"x\"); println(m.len()); }\n",
+        "hale_cb_hashmap_bump_ok",
+    );
+}
+
+/// A generic declaration's `T: Numeric` bound, and a bound that is not
+/// `Numeric`: the check held neither, and the build refused the
+/// instantiation ("type arg for `T` must satisfy `Numeric` bound",
+/// "unrecognized bound `Eq`"). Refused at the type argument, at the
+/// generic fn's callee, and at the bound; a numeric argument, a
+/// parameter of an enclosing template, and an identity build.
+///
+/// Plain string literals, for the reason given above.
+#[test]
+fn a_generic_bound_is_held_by_the_check_not_the_build() {
+    assert_refused_by_the_check(
+        &[
+            (
+                "type Box<T: Numeric> { value: T; }\ntype Holder { b: Box<String>; }\nfn main() { println(\"x\"); }\n",
+                "String",
+                "generic type `Box`: `T` is bounded `Numeric`, and `String` is not one of",
+            ),
+            (
+                "fn twice<T: Numeric>(x: T) -> T { return x + x; }\nfn main() { println(twice(\"ab\")); }\n",
+                "twice",
+                "generic fn `twice`: `T` is bounded `Numeric`, and this call makes it `String`",
+            ),
+            (
+                "type OrderId = distinct Int;\nfn twice<T: Numeric>(x: T) -> T { return x + x; }\n\
+                 fn main() { println(Int(twice(OrderId(3)))); }\n",
+                "twice",
+                "generic fn `twice`: `T` is bounded `Numeric`, and this call makes it `OrderId`",
+            ),
+            (
+                "type Box<T: Eq> { value: T; }\nfn main() { let b: Box<Int> = Box { value: 1 }; println(b.value); }\n",
+                "Eq",
+                "generic type `Box`: `T` is bounded by something other than `Numeric`",
+            ),
+        ],
+        "generic_bound",
+    );
+    assert_built(
+        "type Box<T: Numeric> { value: T; }\ntype Outer<U: Numeric> { b: Box<U>; }\n\
+         fn twice<T: Numeric>(x: T) -> T { return x + x; }\n\
+         fn main() { let o: Outer<Int> = Outer { b: Box { value: 1 } }; let f: Box<Float> = Box { value: 1.5 }; \
+         println(o.b.value); println(f.value); println(twice(2)); println(twice(1.25d)); }\n",
+        "hale_cb_generic_bound_ok",
+    );
+}
+
+/// A locus param's default reading `self.<param>` of a param declared
+/// after it, or its own: defaults run in declaration order, and the
+/// build refused the read ("param default reads `self.b` before it is
+/// initialized"). A read of an earlier param builds.
+///
+/// Plain string literals, for the reason given above.
+#[test]
+fn a_param_default_read_before_its_param_is_set_is_refused_by_the_check_not_the_build() {
+    assert_refused_by_the_check(
+        &[
+            (
+                "locus L { params { a: Int = self.b; b: Int = 1; } }\nfn main() { L { }; }\n",
+                "self.b",
+                "param `a`'s default reads `self.b` before it is initialized",
+            ),
+            (
+                "locus L { params { a: Int = self.a + 1; } }\nfn main() { L { }; }\n",
+                "self.a",
+                "param `a`'s default reads `self.a`, its own value",
+            ),
+        ],
+        "param_default_order",
+    );
+    assert_built(
+        "locus L { params { a: Int = 1; b: Int = self.a + 1; } run() { println(self.b); } }\nfn main() { L { }; }\n",
+        "hale_cb_param_default_order_ok",
+    );
+}
+
+/// A perspective handle reaches the locus behind it through the
+/// contract's methods, and its type is the slot type: a call to a
+/// `fallible` perspective fn (a perspective call cannot carry a failure
+/// yet, F.42), a field stored through the handle, and a bare `P` as a
+/// type each checked clean and the build refused it ("fallible method
+/// call on non-locus value of type Perspective", "non-addressable type
+/// Perspective", "unknown type name `P` in signature"). The same holder
+/// typed `perspective(P)`, calling an infallible contract fn, builds.
+///
+/// Plain string literals, for the reason given above.
+#[test]
+fn a_perspective_handle_misuse_is_refused_by_the_check_not_the_build() {
+    let named = "perspective Named { fn label() -> String; }\n\
+                 locus V1 : serves Named { params { tag: String = \"a\"; } fn label() -> String { return self.tag; } }\n";
+    let store = format!(
+        "{named}locus Holder {{ params {{ p: perspective(Named) = V1 {{ }}; }} fn go(s: String) {{ self.p.tag = s; }} run() {{ self.go(\"b\"); }} }}\n\
+         fn main() {{ Holder {{ }}; }}\n"
+    );
+    let store_param = format!("{named}fn rename(p: perspective(Named), s: String) {{ p.tag = s; }}\nfn main() {{ println(\"x\"); }}\n");
+    let bare = format!("{named}locus Holder {{ params {{ p: Named = V1 {{ }}; }} }}\nfn main() {{ Holder {{ }}; }}\n");
+    let fallible = "perspective Router { fn route(code: Int) -> Int fallible(ClosureViolation); }\n\
+                    locus RouterV1 : serves Router {\n\
+                    params { k: Int = 0; }\n\
+                    closure c { captures: k; epoch inline; }\n\
+                    fn route(code: Int) -> Int fallible(ClosureViolation) { if code > 5 { violate c; } return code + 100; }\n\
+                    }\n\
+                    locus Gateway {\n\
+                    params { router: perspective(Router) = RouterV1 { }; }\n\
+                    on_failure(r: RouterV1, err: ClosureViolation) { println(err.closure); }\n\
+                    run() { println(self.router.route(1) or 0); }\n\
+                    }\n\
+                    fn main() { Gateway { }; }\n";
+    assert_refused_by_the_check(
+        &[
+            (&store, "tag", "`.tag = …` through a `Named` handle: a perspective reaches the locus behind it"),
+            (&store_param, "tag", "`.tag = …` through a `Named` handle: a perspective reaches the locus behind it"),
+            (&bare, "Named", "`Named` is a perspective, and a perspective is held through its slot type"),
+            (fallible, "route", "`Router.route` is `fallible(ClosureViolation)`, and a perspective call cannot carry a failure yet"),
+        ],
+        "perspective_handle",
+    );
+    assert_built(
+        &format!(
+            "{named}locus Holder {{ params {{ p: perspective(Named) = V1 {{ }}; }} run() {{ println(self.p.label()); }} }}\n\
+             fn main() {{ Holder {{ }}; }}\n"
+        ),
+        "hale_cb_perspective_handle_ok",
+    );
+}
+
+/// A method written as a value (`apply(self.dbl, 1)`): a method is
+/// called on its locus, and a `fn(..)` value carries none, so the build
+/// refused it ("no field `dbl` on locus self"). The check refuses it at
+/// the method's name; a free fn passed the same way, and the method
+/// called, build.
+///
+/// Plain string literals, for the reason given above.
+#[test]
+fn a_method_written_as_a_value_is_refused_by_the_check_not_the_build() {
+    assert_refused_by_the_check(
+        &[(
+            "fn apply(f: fn(Int) -> Int, v: Int) -> Int { return f(v); }\n\
+             main locus App { params { n: Int = 0; } fn dbl(v: Int) -> Int { return v * 2; } run() { self.n = apply(self.dbl, 1); } }\n\
+             fn main() { App { }; }\n",
+            "dbl",
+            "`.dbl` is a method of the locus `App`, written as a value",
+        )],
+        "method_value",
+    );
+    assert_built(
+        "fn apply(f: fn(Int) -> Int, v: Int) -> Int { return f(v); }\nfn dbl(v: Int) -> Int { return v * 2; }\n\
+         main locus App { params { n: Int = 0; } fn twice(v: Int) -> Int { return v * 2; } run() { self.n = apply(dbl, 1) + self.twice(2); println(self.n); } }\n\
+         fn main() { App { }; }\n",
+        "hale_cb_method_value_ok",
+    );
+}
+
+/// A topic send in an `on_failure` body checked clean and the build
+/// refused it ("unknown identifier `Evt`"): the topic rewrite that turns
+/// a send into its subject walked hooks, modes and fns, and not failure
+/// handlers. It is lowered now; tests/hale/on_failure_publish_test.hl
+/// runs it.
+///
+/// Plain string literals, for the reason given above.
+#[test]
+fn an_on_failure_send_builds() {
+    assert_built(
+        "type T { n: Int = 0; }\ntopic Evt { payload: T; subject: \"cb.evt\"; }\n\
+         locus Child { params { k: Int = 0; } closure c { captures: k; epoch inline; } fn poke() { violate c; } }\n\
+         locus Parent { params { c: Child = Child { }; } bus { publish Evt; } on_failure(c: Child, err: ClosureViolation) { Evt <- T { n: 1 }; } run() { self.c.poke(); } }\n\
+         fn main() { Parent { }; }\n",
+        "hale_cb_on_failure_send",
+    );
+}
+
+/// The converse divergence: a `match` of scale-less Decimal arms flowing
+/// into a `Decimal<S>` was refused by the check ("`Decimal` is not
+/// `Decimal<2>`") where an `if` of the same arms took the place's scale.
+/// The arms adopt it now, and the program builds;
+/// tests/hale/decimal_match_scale_test.hl runs it.
+///
+/// Plain string literals, for the reason given above.
+#[test]
+fn a_decimal_match_takes_its_places_scale() {
+    assert_built(
+        "fn main() { let n = 1; let y: Decimal<2> = match n { 1 -> 1.25d, _ -> { 0.5d }, }; println(y); }\n",
+        "hale_cb_decimal_match",
+    );
+}
+
+/// A `std::` path read as a value checked clean and the build refused it
+/// ("unresolved path `std::math::abs`"), with no location. A stdlib fn
+/// with a Hale body is merged into the program under its rename, so its
+/// path lowers as that fn's pointer, the way a program's own fn's name
+/// does: `apply(std::url::encode, s)` builds and runs. A builtin the
+/// stdlib answers at a call has no fn behind it; the check refuses it
+/// at the path and names a wrapper.
+///
+/// Plain string literals, for the reason given above.
+#[test]
+fn a_stdlib_fn_value_lowers_or_is_refused_by_the_check() {
+    let bodied = "fn apply(f: fn(String) -> String, s: String) -> String { return f(s); }\n\
+                  fn main() { println(apply(std::url::encode, \"a b&c\")); let g = std::url::decode; println(g(\"a%20b\")); }\n";
+    assert_eq!(build_and_run_probe(bodied, "stdlib_fn_value"), Ok("a%20b%26c\na b\n".to_string()), "{}", bodied);
+    assert_refused_by_the_check(
+        &[
+            (
+                "fn apply(f: fn(Int) -> Int, x: Int) -> Int { return f(x); }\nfn main() { println(apply(std::math::abs, 0 - 3)); }\n",
+                "std::math::abs",
+                "`std::math::abs` is not a fn value: the stdlib answers it at a call",
+            ),
+            (
+                "fn apply(f: fn(String) -> String, s: String) -> String { return f(s); }\nfn main() { println(apply(std::str::upper, \"x\")); }\n",
+                "std::str::upper",
+                "`std::str::upper` is not a fn value: the stdlib answers it at a call",
+            ),
+        ],
+        "stdlib_fn_value",
+    );
+}
+
+/// A `fallible` fn read as a value, the stdlib's (`std::hex::decode`) or
+/// a program's own: a fn value's call reads a plain result, and the
+/// fallible ABI returns the failure beside the value (an `i1` and two
+/// out-slots), so the built call wrote through an indeterminate pointer
+/// (a SIGSEGV natively, a signature mismatch on wasm32) after the check
+/// accepted it. The check refuses each at the name and names a wrapper
+/// that handles the error; the wrappers, passed instead, build and run,
+/// and so does an infallible stdlib fn's value. (An imported seed's:
+/// hale-cli's `check_build_refusals`.)
+///
+/// Plain string literals, for the reason given above.
+#[test]
+fn a_fallible_fn_read_as_a_value_is_refused_by_the_check_not_the_build() {
+    let user = "type Oops { why: String = \"\"; }\n\
+                fn parse(s: String) -> Int fallible(Oops) { if s == \"bad\" { fail Oops { why: s }; } return 7; }\n\
+                fn apply(f: fn(String) -> Int, s: String) -> Int { return f(s); }\n";
+    let by_value = format!("{user}fn main() {{ println(apply(parse, \"ok\")); }}\n");
+    let by_let = format!("{user}fn main() {{ let g = parse; println(g(\"ok\")); }}\n");
+    let hex = "fn apply(f: fn(String) -> Bytes, s: String) -> Bytes { return f(s); }\n";
+    let hex_value = format!("{hex}fn main() {{ println(len(apply(std::hex::decode, \"61\"))); }}\n");
+    let hex_let = format!("{hex}fn main() {{ let f = std::hex::decode; println(len(f(\"61\"))); }}\n");
+    assert_refused_by_the_check(
+        &[
+            (&hex_value, "std::hex::decode", "`std::hex::decode` is `fallible"),
+            (&hex_let, "std::hex::decode", "`std::hex::decode` is `fallible"),
+            (&by_value, "parse", "`parse` is `fallible(Oops)`, and a fn value has no error channel"),
+            (&by_let, "parse", "`parse` is `fallible(Oops)`, and a fn value has no error channel"),
+        ],
+        "fallible_fn_value",
+    );
+    let wrapped = format!(
+        "{user}{hex}\
+         fn parse_or(a0: String) -> Int {{ return parse(a0) or 0; }}\n\
+         fn decode_or(a0: String) -> Bytes {{ return std::hex::decode(a0) or b\"\"; }}\n\
+         fn apply_s(f: fn(String) -> String, s: String) -> String {{ return f(s); }}\n\
+         fn main() {{ println(apply(parse_or, \"ok\")); println(len(apply(decode_or, \"6162\"))); println(apply_s(std::url::encode, \"a b\")); }}\n"
+    )
+    .replace("fn apply(f: fn(String) -> Bytes", "fn apply_b(f: fn(String) -> Bytes")
+    .replace("len(apply(decode_or", "len(apply_b(decode_or");
+    assert_eq!(build_and_run_probe(&wrapped, "fallible_fn_wrapped"), Ok("7\n2\na%20b\n".to_string()), "{}", wrapped);
+}
+
+/// A codegen refusal names things as the author wrote them. Lowering
+/// works over the merged program, where an imported seed's locus is
+/// `__lib_<alias>_…` and a Hale-source stdlib one `__Std…`, names that
+/// appear nowhere in the author's source; `build_resolved` renders its
+/// errors through the table the check renders its diagnostics through.
+/// Built with the harness, which lowers without the check, so these are
+/// lowering's own messages: an imported locus prints `lib::Kid`, a
+/// stdlib one `std::bytes::BytesBuilder`.
+#[test]
+fn a_codegen_refusal_names_imported_and_stdlib_declarations_as_written() {
+    let dir = harness::unique_bin("hale_cb_demangled_seed");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("lib")).unwrap();
+    std::fs::write(dir.join("lib/kid.hl"), "locus Kid { params { n: Int = 1; } fn size() -> Int { return self.n; } }\n").unwrap();
+    std::fs::write(
+        dir.join("main.hl"),
+        "import \"./lib\" as lib;\n\nlocus L { params { k: lib::Kid = lib::Kid { }; } fn f() { self.k.nope(); } }\n\nfn main() { L { }; }\n",
+    )
+    .unwrap();
+    let imported = build_opts::build_seed_dir(&dir.join("main.hl"), &dir.join("bin"), &build_opts::options())
+        .expect_err("lowering refuses an unknown method")
+        .to_string();
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(imported.contains("locus `lib::Kid` has no method `nope`") && !imported.contains("__lib_"), "{imported}");
+    let stdlib = build_opts::build_source(
+        "locus L { params { b: std::bytes::BytesBuilder = std::bytes::BytesBuilder { initial_cap: 4 }; } fn f() { self.b.nope(); } }\n\
+         fn main() { L { }; }\n",
+        &harness::unique_bin("hale_cb_demangled_std"),
+        &build_opts::options(),
+    )
+    .expect_err("lowering refuses an unknown method")
+    .to_string();
+    assert!(stdlib.contains("locus `std::bytes::BytesBuilder` has no method `nope`") && !stdlib.contains("__Std"), "{stdlib}");
 }

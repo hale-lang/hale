@@ -501,12 +501,13 @@ fn main() { App { }; }
 }
 
 /// A method serving a perspective, the perspective fn and the impl both
-/// `fallible(ClosureViolation)`: `hale check` passes (conformance matches
-/// the fallibility, `hale-types`' `violate_fallible.rs` pins it), and the
-/// build refuses the perspective call, as it refused every `fallible`
-/// perspective call before F.42. This is why F.42 exempts a
+/// `fallible(ClosureViolation)`: conformance matches the fallibility,
+/// and the build refuses the perspective call, as it refused every
+/// `fallible` perspective call before F.42 (`hale check` refuses the
+/// call first, at the method name, so the two agree:
+/// `corpus_check_build_agreement`). This is why F.42 exempts a
 /// perspective-served method: the day the call lowers, this pin fails
-/// and the exemption goes.
+/// and the exemption goes, with the check's refusal.
 #[test]
 fn a_fallible_perspective_call_is_refused_at_the_build() {
     let src = r#"

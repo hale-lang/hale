@@ -2291,11 +2291,11 @@ mod tests {
             vec![(
                 "user-declared `type ParseError` shadows the stdlib's \
                  `ParseError` but is missing the expected `kind: String` \
-                 field (used by stdlib path-calls that allocate \
-                 `ParseError` on failure). Either match the stdlib \
-                 shape, rename your type (e.g. `MyParseError`), or use \
-                 `std::str::ParseError` qualified where you need the \
-                 stdlib's shape.",
+                 field (the stdlib's own code, merged into every program, \
+                 and lowering build `ParseError` under that name on \
+                 failure). Either match the stdlib shape, rename your \
+                 type (e.g. `MyParseError`), or use `std::str::ParseError` \
+                 qualified where you need the stdlib's shape.",
                 "type ParseError { code: Int; }",
             )],
             "all diagnostics: {:?}",
@@ -2369,10 +2369,13 @@ mod tests {
     }
 
     #[test]
-    fn ok_user_parse_error_in_form_free_program() {
-        // Without any form machinery in use, inject_builtin_types
-        // doesn't run, so the collision check is skipped. The
-        // user is free to declare any type name.
+    fn err_user_parse_error_in_a_program_that_calls_no_parser() {
+        // The stdlib's own bodies are merged into every program and
+        // call `std::str::parse_int` (`std::cli`, `std::http`), so a
+        // program's `ParseError` stands in for the stdlib's whether or
+        // not the program calls a parser: the build refused this one
+        // after the check accepted it (the check/build agreement
+        // ratchet). The check refuses it at the declaration now.
         let src = r#"
             type ParseError { code: Int; }
             fn main() {
@@ -2381,9 +2384,8 @@ mod tests {
         "#;
         let diags = check(src);
         assert!(
-            diags.is_empty(),
-            "user-declared ParseError in a form-free program \
-             should typecheck clean; got: {:?}",
+            diags.iter().any(|d| d.message.contains("shadows the stdlib's `ParseError`")),
+            "expected the ParseError-shadow diagnostic; got: {:?}",
             diags
         );
     }

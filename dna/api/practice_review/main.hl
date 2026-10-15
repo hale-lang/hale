@@ -28,6 +28,8 @@ main locus PracticeReviewHead {
         // GH #1135: the commands port (the HTTP exposure's), and who its bearers are
         http_port: Int = 0;
         bearer: std::api::BearerSource = std::api::NoBearer { };
+        local: api::Exposure = api::serve(HeadCommands, unix::Rpc { path: self.served, roles: self.roles }, as: "composed", bound: 64, on_full: refuse);
+        remote: api::Exposure = api::serve(HeadCommands, http::Rpc { bind: "127.0.0.1:" + to_string(self.http_port), codec: json, principals: self.bearer, roles: self.roles }, as: "composed-commands", bound: 64, on_full: refuse);
     }
     // The server off the main pool, a command's git work on its own; a
     // SIGTERM drains the head (run() returns, the io pool's shutdown ends
@@ -37,11 +39,9 @@ main locus PracticeReviewHead {
         // the exposures listen before run(): announce the commands port a
         // launcher waits for (as dna/api's Head does)
         if self.http_port > 0 { println("hale dna api: commands http://127.0.0.1:", self.http_port, "/"); }
-        let local = api::serve(HeadCommands, unix::Rpc { path: self.served, roles: self.roles }, as: "composed", bound: 64, on_full: refuse);
-        let remote = api::serve(HeadCommands, http::Rpc { bind: "127.0.0.1:" + to_string(self.http_port), codec: json, principals: self.bearer, roles: self.roles }, as: "composed-commands", bound: 64, on_full: refuse);
-        std::api::run_until_stopped(local);
-        local.stop();
-        remote.stop();
+        std::api::run_until_stopped(self.local);
+        self.local.stop();
+        self.remote.stop();
     }
 }
 

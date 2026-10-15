@@ -28,8 +28,9 @@
 //! - **The surface's codecs**: the expansion of a surface's serve sites
 //!   (and of a hub's bindings) generates, from the types the rows carry,
 //!   a decoder and an encoder fn per type (`__api_decode_<T>`,
-//!   `__api_encode_<T>`), and adds a param (`__rpc_x_<as>`, `__rpc_w_<n>`)
-//!   to the locus the site sits in. A codec exists because some locus
+//!   `__api_encode_<T>`), and builds the exposure param of the locus
+//!   that holds the site (one whose `serve` is kept, GH #1565) or adds
+//!   one (`__rpc_w_<n>`) to it. A codec exists because some locus
 //!   holds such a site, and no call edge says so (the client-side halves
 //!   are called by nothing), so each codec is the neighbour of every
 //!   locus carrying one of those params: an edit that takes the site out
@@ -247,7 +248,7 @@ impl DependencyIndex {
                 TopDecl::Locus(l) => {
                     let carries = l.members.iter().any(|m| {
                         matches!(m, LocusMember::Params(pb) if pb.params.iter().any(|p| {
-                            p.name.name.starts_with("__rpc_x_") || p.name.name.starts_with("__rpc_w_")
+                            p.serve.is_some() || p.name.name.starts_with("__rpc_w_")
                         }))
                     });
                     if carries {

@@ -483,7 +483,7 @@ fn pin_affinity<'a>(a: &'a PinAffinity, f: &mut Visit<'_, 'a>) {
 fn params_block<'a>(pb: &'a ParamsBlock, f: &mut Visit<'_, 'a>) {
     let ParamsBlock { params: ps, span: _ } = pb;
     for p in ps {
-        let ParamDecl { name: n, ty: t, init, span: _, id: _ } = p;
+        let ParamDecl { name: n, ty: t, init, span: _, id: _, serve: _ } = p;
         name(n, f);
         opt_ty(t, f);
         match init {

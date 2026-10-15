@@ -25,6 +25,14 @@ fn parse_count(s: String) -> Int fallible(ParseError) {
 }
 ```
 
+(`ParseError` is also the name of the error the stdlib's parsers
+fail with, and a program's declaration of it stands in for the
+stdlib's everywhere — the stdlib's own code included. So it keeps the
+stdlib's fields, `kind` and `input`; `hale check` refuses a
+`ParseError`, `CryptoError`, `IndexError`, `KeyError`, `CapacityError`
+or `ClosureViolation` of your own that drops one. Give a different
+shape a different name.)
+
 `fail <payload>;` exits the function through the error path,
 carrying the payload. The function's result is now "either an
 `Int`, or a `ParseError`" — and the caller can't just use it as

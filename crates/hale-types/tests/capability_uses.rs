@@ -62,6 +62,25 @@ fn refused_on_wasm32(src: &str, want: &[(usize, usize, &str)]) {
     assert_eq!(check(src, None), vec![], "the host admits it");
 }
 
+/// `refused_on_wasm32` for a program holding a `std::` builtin read as a
+/// value (`let f = std::process::pid;`): the check refuses that on every
+/// column (it is no fn value; the build refused it), and the admission's
+/// refusals through it stand beside that one.
+fn refused_on_wasm32_beside_a_builtin_value(src: &str, want: &[(usize, usize, &str)]) {
+    let not_a_value = |m: &str| m.starts_with("`std::process::pid` is not a fn value");
+    let declared = format!("{src}\ntarget wasm {{ }}\n");
+    for (program, triple, selector) in
+        [(src, Some("wasm32"), "`--target wasm32`"), (declared.as_str(), None, "`target wasm`")]
+    {
+        let got: Vec<(usize, usize, String)> = check(program, triple).into_iter().filter(|(_, _, m)| !not_a_value(m)).collect();
+        let want: Vec<(usize, usize, String)> =
+            want.iter().map(|(l, c, m)| (*l, *c, m.replace("{selector}", selector))).collect();
+        assert_eq!(got, want, "under {selector}:\n{program}");
+    }
+    let host = check(src, None);
+    assert!(host.len() == 1 && not_a_value(&host[0].2), "the host refuses only the builtin value: {host:?}");
+}
+
 /// Admitted on every column.
 fn admitted(src: &str) {
     for triple in [None, Some("wasm32"), Some("x86_64-unknown-linux-musl")] {
@@ -254,9 +273,12 @@ const UNRESOLVED: &str = "the callee is a function value the summary cannot reso
 /// through it, in a fn's body and in a params initializer alike.
 #[test]
 fn a_call_through_a_let_bound_path_is_refused_through_the_local() {
+    // (`std::process::pid` read as a value is refused by the check on
+    // every column now, a builtin having no fn behind it; the admission
+    // still follows the local to the path.)
     let want = format!("`std::process` is unavailable under {{selector}}: {PROCESS} — witness: `f` → `std::process::pid`");
-    refused_on_wasm32("fn main() {\n    let f = std::process::pid;\n    let _ = f();\n}\n", &[(3, 13, &want)]);
-    refused_on_wasm32(
+    refused_on_wasm32_beside_a_builtin_value("fn main() {\n    let f = std::process::pid;\n    let _ = f();\n}\n", &[(3, 13, &want)]);
+    refused_on_wasm32_beside_a_builtin_value(
         "locus Holder {\n    params { n: Int = { let f = std::process::pid; f() }; }\n    run() { println(self.n); }\n}\n\n\
          fn main() { Holder { }; }\n",
         &[(2, 52, &want)],
@@ -314,7 +336,7 @@ fn a_call_through_a_local_a_loop_reassigns_is_a_hole() {
     );
     // The control: a local no assignment in the loop touches is followed
     // to the path it names, the witness through it.
-    refused_on_wasm32(
+    refused_on_wasm32_beside_a_builtin_value(
         "fn main() {\n    let f = std::process::pid;\n    let mut i = 0;\n    while i < 2 {\n        println(f());\n        \
          i = i + 1;\n    }\n}\n",
         &[(5, 17, &format!("`std::process` is unavailable under {{selector}}: {PROCESS} — witness: `f` → `std::process::pid`"))],

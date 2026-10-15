@@ -85,6 +85,12 @@ main locus App {
 fn main() { App { }; }
 ```
 
+The `fn main` is what starts it: a `main locus` declares the
+deployment, and `fn main` builds it. Without one the seed still
+checks (another seed may import it and start it), but `hale build`
+and `hale run` stop at the locus's name — *a `main locus` is started
+by `fn main`, and this seed has none: add `fn main() { App { }; }`*.
+
 - `cooperative(pool = X)` puts the locus on pool `X`'s thread.
   The runtime spawns one OS worker per pool name it sees. A pool
   can take the same affinity forms as `pinned` —
@@ -396,6 +402,13 @@ a read, a `sleep`, or a subprocess drain in the middle of a handler,
 and the payload parameter still reads what it read at entry — it is
 that delivery's own until the handler returns, no matter how many
 other deliveries the pool starts in between.
+
+An API exposure is placed the same way. Its listener and the connections
+it starts accept and read, so they run on a `where async_io` pool: the
+exposure's own row places them (`web: cooperative(pool = io) where
+async_io;`, for a `web: api::Exposure = api::serve(…)` param of `main`),
+and a server locus's listener runs where the row of the param that holds
+the server puts it. See [API](./api.md#where-an-exposures-listener-runs).
 
 ## The compiler checks your placement
 

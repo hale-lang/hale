@@ -291,11 +291,13 @@ fn legitimate_param_defaults_are_not_rejected() {
         ),
         (
             // The corpus's perspective fixtures do exactly this, and
-            // plain assignability does not know about `serves`.
+            // plain assignability does not know about `serves`. The
+            // holder's type is the slot type, `perspective(P)`: a bare
+            // `P` is no type a value has, and the check refuses it.
             "a locus serving the perspective the param is typed as",
             r#"perspective P { fn go(); }
                locus V1 : serves P { fn go() { } }
-               locus L { params { p: P = V1 { }; } }
+               locus L { params { p: perspective(P) = V1 { }; } }
                fn main() { let l = L { }; }"#,
         ),
     ] {

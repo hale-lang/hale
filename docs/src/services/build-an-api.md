@@ -90,8 +90,9 @@ The next step offers the handler.
 
 ## 2. A surface, served
 
-A **surface** is a table of operations: one `rpc` row per handler. A
-**serve site** puts it on a transport. Add both:
+A **surface** is a table of operations: one `rpc` row per handler. An
+**exposure** puts it on a transport: a param whose literal is the serve
+call. Add both:
 
 ```hale,fragment
 api Counter {
@@ -99,12 +100,14 @@ api Counter {
 }
 
 main locus App {
-    params { shop: Shop = Shop { }; }
+    params {
+        shop: Shop = Shop { };
+        sock: api::Exposure = api::serve(Counter, unix::Rpc { path: "/tmp/shop.sock" }, as: "counter", bound: 64, on_full: refuse);
+    }
     placement { shop: cooperative(pool = work) where async_io; }
     run() {
-        let sock = api::serve(Counter, unix::Rpc { path: "/tmp/shop.sock" }, as: "counter", bound: 64, on_full: refuse);
         while !self.draining { std::time::sleep(100ms); }
-        sock.stop();
+        self.sock.stop();
     }
 }
 ```
@@ -115,8 +118,11 @@ stream socket; `as:` names this exposure of the surface; `bound: 64` is
 the most requests it will hold accepted and not yet answered, and
 `on_full: refuse` the one policy for the next (a caller waiting for an
 answer cannot be shed silently). The socket is bound when the program
-boots, so a path it cannot bind stops the program with a diagnostic.
-`sock.stop()` answers what is executing, refuses what is queued, and
+boots, so a path it cannot bind stops the program with a diagnostic. The
+exposure is born with `App`, after `shop`, the receiver it binds, and its
+listener runs on a pool of its own unless `placement { }` gives it a row
+(`sock: cooperative(pool = io) where async_io;`).
+`self.sock.stop()` answers what is executing, refuses what is queued, and
 closes the socket after the replies; a program that ends without it
 releases the socket too.
 
@@ -299,12 +305,10 @@ main locus App {
         shop: Shop = Shop { };
         // The role table: LOTUS_API_ROLES at run time, `role=member,member;…`.
         staff: std::api::StaticRoles = std::api::StaticRoles { known: "clerk manager" };
+        sock: api::Exposure = api::serve(Counter, unix::Rpc { path: "/tmp/shop.sock", roles: self.staff }, as: "counter", receivers: { Shop: self.shop }, bound: 64, on_full: refuse);
     }
     placement { shop: cooperative(pool = work) where async_io; }
-    run() {
-        let sock = api::serve(Counter, unix::Rpc { path: "/tmp/shop.sock", roles: self.staff }, as: "counter", receivers: { Shop: self.shop }, bound: 64, on_full: refuse);
-        // …
-    }
+    // …
 }
 ```
 
@@ -396,13 +400,10 @@ main locus App {
         shop: Shop = Shop { };
         tokens: Tokens = Tokens { };
         staff: std::api::StaticRoles = std::api::StaticRoles { known: "clerk manager" };
+        sock: api::Exposure = api::serve(Counter, unix::Rpc { path: "/tmp/shop.sock", roles: self.staff }, as: "counter", receivers: { Shop: self.shop }, bound: 64, on_full: refuse);
+        web: api::Exposure = api::serve(Counter, http::Rpc { bind: "127.0.0.1:8794", codec: json, principals: self.tokens, roles: self.staff }, as: "web", receivers: { Shop: self.shop }, bound: 64, on_full: refuse);
     }
     // …
-    run() {
-        let sock = api::serve(Counter, unix::Rpc { path: "/tmp/shop.sock", roles: self.staff }, as: "counter", receivers: { Shop: self.shop }, bound: 64, on_full: refuse);
-        let web = api::serve(Counter, http::Rpc { bind: "127.0.0.1:8794", codec: json, principals: self.tokens, roles: self.staff }, as: "web", receivers: { Shop: self.shop }, bound: 64, on_full: refuse);
-        // …
-    }
 }
 ```
 
@@ -598,17 +599,17 @@ main locus App {
         // The role table: LOTUS_API_ROLES at run time, `role=member,member;…`.
         staff: std::api::StaticRoles = std::api::StaticRoles { known: "clerk manager" };
         hub: ws::Hub = ws::Hub { bind: "127.0.0.1:8796", principals: self.tokens, roles: self.staff, as: "shipments" };
+        sock: api::Exposure = api::serve(Counter, unix::Rpc { path: "/tmp/shop.sock", roles: self.staff }, as: "counter", receivers: { Shop: self.shop }, bound: 64, on_full: refuse);
+        web: api::Exposure = api::serve(Counter, http::Rpc { bind: "127.0.0.1:8794", codec: json, principals: self.tokens, roles: self.staff }, as: "web", receivers: { Shop: self.shop }, bound: 64, on_full: refuse);
     }
     placement { shop: cooperative(pool = work) where async_io; }
     bindings {
         Shipments: self.hub requires: [clerk], bound: 64, on_full: drop_old;
     }
     run() {
-        let sock = api::serve(Counter, unix::Rpc { path: "/tmp/shop.sock", roles: self.staff }, as: "counter", receivers: { Shop: self.shop }, bound: 64, on_full: refuse);
-        let web = api::serve(Counter, http::Rpc { bind: "127.0.0.1:8794", codec: json, principals: self.tokens, roles: self.staff }, as: "web", receivers: { Shop: self.shop }, bound: 64, on_full: refuse);
         while !self.draining { std::time::sleep(100ms); }
-        sock.stop();
-        web.stop();
+        self.sock.stop();
+        self.web.stop();
     }
 }
 

@@ -394,7 +394,7 @@ outer::inner::twice  does={unclassified}
 vocabulary::read_through  does={unclassified}
 wiring::Listener::on_ping  does={unclassified}
 ### 92-build-an-api
-App::run  does={unclassified}
+App::run  does={syscall,block,publish,time,alloc}
 Shop::__rpc_call_1  does={syscall,publish,alloc}
 Shop::__rpc_call_2  does={syscall,publish,alloc}
 Shop::__rpc_ev  does={publish,alloc}

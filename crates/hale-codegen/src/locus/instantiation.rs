@@ -2634,6 +2634,47 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             None
         };
         let self_ptr = pinned_init.as_ref().map_or(self_ptr, |p| p.self_param);
+        // #1534: a literal this locus's params build is a node of its
+        // static tree. Under an anchor whose params its own thread (or its
+        // pool's worker) builds, in an init the function holding the scope
+        // starts, the nodes claim from that init: the scope reaches it in
+        // the argument block, which carries whatever value of the starting
+        // function the init reads. That function's scope is the root's
+        // own value, or, in an init that itself starts one (an anchor
+        // nested in another anchor's params, #1555), a value of a third
+        // function, which no argument block carries: there the starting
+        // init takes its own copy first, so the scope passes from init to
+        // init however deep.
+        let tree_ctx = match (&reserve_ctx, &pinned_init) {
+            (Some(c), None) => Some(c.clone()),
+            (Some(c), Some(p)) if p.saved_block.get_parent() == Some(c.func) => {
+                let in_func = c
+                    .scope
+                    .as_instruction()
+                    .and_then(|i| i.get_parent())
+                    .and_then(|b| b.get_parent())
+                    == Some(c.func);
+                let scope = if in_func {
+                    c.scope
+                } else {
+                    let here = self.builder.get_insert_block().expect("the init's block");
+                    self.builder.position_at_end(p.saved_block);
+                    self.builder.unset_current_debug_location();
+                    let i8_t = self.context.i8_type();
+                    let zero = self.context.i64_type().const_zero();
+                    // SAFETY: a zero offset from the scope pointer itself.
+                    let own = unsafe { self.builder.build_in_bounds_gep(i8_t, c.scope, &[zero], "bus.reserve.scope.in") }
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    self.builder.position_at_end(here);
+                    if let Some(loc) = self.di_current_loc {
+                        self.builder.set_current_debug_location(loc);
+                    }
+                    own
+                };
+                Some(crate::locus::reservation::ReserveCtx { func: p.init_fn, scope, ..c.clone() })
+            }
+            _ => None,
+        };
         for (fname, default) in info.defaults.iter() {
             // F.31: per-field placement override for main-locus
             // params. Looked up by field name in
@@ -2725,10 +2766,19 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         if hands_back_replicas {
                             self.anchor_record_slot = self.anchor_record_at(&info, self_ptr, fname, i as u32)?;
                         }
+                        // #1555: each replica is an anchor of the static
+                        // tree, claiming like replica 0 does below.
+                        if let Some(ctx) = &tree_ctx {
+                            let field_ty = info.fields.get(fname).map(|(_, t)| t.clone());
+                            if let Some((child, _)) = self.static_tree_child(is_main_locus, fname, &rep_expr, field_ty.as_ref()) {
+                                self.reserve_child_next = Some((child, ctx.clone()));
+                            }
+                        }
                         // Finding 4: replica exprs are default text.
                         let saved_ipd = self.in_params_default;
                         self.in_params_default = true;
                         let _ = self.in_body(info.decl, |cx| cx.lower_expr(&rep_expr, scope))?;
+                        self.reserve_child_next = None;
                         self.in_params_default = saved_ipd;
                         self.anchor_record_slot = None;
                     }
@@ -2827,28 +2877,17 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             if hands_back_replicas {
                 self.anchor_record_slot = self.anchor_record_at(&info, self_ptr, fname, 0)?;
             }
-            // #1534: a literal this field builds is a node of this
-            // instance's static tree. Under an anchor whose params its own
-            // thread builds, in an init the root's function starts, the
-            // node claims from that init; deeper inits do not take part.
-            let child_ctx = match (&reserve_ctx, &pinned_init) {
-                (Some(c), None) => Some(c.clone()),
-                (Some(c), Some(p)) if c.depth == 0 && p.saved_block.get_parent() == Some(c.func) => {
-                    Some(crate::locus::reservation::ReserveCtx { func: p.init_fn, depth: 1, ..c.clone() })
-                }
-                _ => None,
-            };
-            if let Some(ctx) = &child_ctx {
+            // #1534: the literal this field builds (replica 0's, for a
+            // replicated field) is a node of this instance's static tree.
+            if let Some(ctx) = &tree_ctx {
                 let value = match (overrides.get(fname.as_str()), default) {
                     (Some(e), _) => Some(*e),
                     (None, DefaultInit::Expr(e)) => Some(e),
                     _ => None,
                 };
                 let field_ty = info.fields.get(fname).map(|(_, t)| t.clone());
-                if let Some((child, how)) = value.and_then(|v| self.static_tree_child(is_main_locus, fname, v, field_ty.as_ref())) {
-                    if how != crate::locus::reservation::TreeChild::Replicated {
-                        self.reserve_child_next = Some((child, ctx.clone()));
-                    }
+                if let Some((child, _)) = value.and_then(|v| self.static_tree_child(is_main_locus, fname, v, field_ty.as_ref())) {
+                    self.reserve_child_next = Some((child, ctx.clone()));
                 }
             }
             let (val, val_ty, owned_via_literal, came_from_literal) =

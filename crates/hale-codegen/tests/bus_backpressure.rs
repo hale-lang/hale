@@ -885,7 +885,7 @@ const HEADROOM_ON_MAIN: &str = r#"
     type Tick { n: Int; }
     fn stop() -> String { return "/tmp/hale-bp-hr-main-" + to_string(std::process::pid()); }
     locus Source {
-        params { sent: Int = 0; }
+        params { sent: Int = 0; done: Int = 0; }
         bus { publish "hm" of type Tick; }
         run() {
             let path = stop();
@@ -895,6 +895,7 @@ const HEADROOM_ON_MAIN: &str = r#"
                 self.sent = self.sent + 1;
                 if self.sent % 64 == 0 { going = !std::io::fs::file_exists(path); }
             }
+            self.done = 1;
         }
     }
     main locus App {
@@ -938,8 +939,13 @@ const HEADROOM_ON_MAIN: &str = r#"
             let deadline = std::time::monotonic_ns() + 60000000000;
             while (self.stopped == 0 && std::time::monotonic_ns() < deadline) { std::time::sleep(1ms); }
             std::io::fs::write_file(stop(), "stop") or discard;
+            // The marker stays until every source has seen it: one
+            // descheduled past its last check would otherwise find it
+            // gone and flood on.
+            while ((self.s0.done + self.s1.done + self.s2.done + self.s3.done) < 4 && std::time::monotonic_ns() < deadline) { std::time::sleep(1ms); }
             println("samples=" + to_string(self.samples));
             println("least_backlog=" + to_string(self.least));
+            println("sources_done=" + to_string(self.s0.done + self.s1.done + self.s2.done + self.s3.done));
             std::io::fs::unlink(stop()) or discard;
         }
     }
@@ -952,6 +958,7 @@ fn a_bound_raised_on_mains_queue_is_headroom_for_the_stall_only() {
     assert_eq!(field("samples"), "200", "main sampled its backlog 200 times after the stall");
     let least: i64 = field("least_backlog").parse().expect("a count");
     assert!(least <= 3 * 64, "main's backlog stayed at {least} after the stall (expected at most 3 caps of 64)");
+    assert_eq!(field("sources_done"), "4", "every source saw the stop marker before main removed it");
 }
 
 /// The same for a ring's spill: a subscriber on pool `p` (or pinned) blocks

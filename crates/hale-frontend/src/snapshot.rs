@@ -1747,7 +1747,8 @@ impl Snapshot {
                 diags.extend(hale_types::surfaces::surface_laws(&self.bundle(), surfaces, roles, summary));
                 let handlers = self.demand_handlers().map_err(Clone::clone)?;
                 let entry = self.demand_entry().map_err(Clone::clone)?;
-                diags.extend(hale_types::surfaces::serve_laws(&self.bundle(), surfaces, entry));
+                let effects = || self.demand_effects().ok();
+                diags.extend(hale_types::surfaces::serve_laws(&self.bundle(), surfaces, entry, &effects, typed, self.demand_placement().map_err(Clone::clone)?));
                 // So does the closures' reach law: whether a recovery
                 // reaches a locus is the typed receivers' answer.
                 diags.extend(hale_types::closure_events::unreached_event_laws(&self.bundle(), handlers, entry, typed));

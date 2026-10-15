@@ -389,8 +389,9 @@ an `Int`) are reported by the typechecker. Neither reaches codegen.
    including the field inits of a nested locus literal written in
    that default — `self.X` reads the locus being instantiated
    (earlier-declared siblings only; a default that reads a
-   later-declared sibling is a compile error, since defaults run
-   in declaration order). Inside an *override* expression, `self`
+   later-declared sibling, or its own param, is a type error at
+   the read, since defaults run in declaration order). Inside an
+   *override* expression, `self`
    belongs to the code that wrote the literal — the enclosing
    method's locus, or the enclosing params block when the literal
    itself sits in a default (F.4 call-site rule). This holds
@@ -1425,13 +1426,21 @@ matching C primitive:
 | `pool X of T` | `self.X.acquire() -> Cell<T>` (no args) | `self.X.release(c)` (one Cell<T> arg) |
 | `heap Y of T` | `self.Y.alloc() -> Cell<T>` (no args) | `self.Y.free(c)` (one Cell<T> arg) |
 
-Calling a pool method on a heap slot (or vice versa) is a
-build-time diagnostic that names the right method for the
-slot kind. The `Cell<T>` cell type is documented in
+Calling a pool method on a heap slot (or vice versa), or any
+other method on a slot, is a type error at the method name that
+names the right methods for the slot kind:
+
+```
+main.hl:7:38: type error: pool slot `entries`: method `alloc` is not
+available (`alloc` is a heap slot's) — use `acquire()` to borrow a
+cell and `release(cell)` to return it
+```
+
+The `Cell<T>` cell type is documented in
 `types.md`; struct cells support `cell.field` read/write (v1.x-2)
 and `Cell<T>` carries slot-of-origin so cross-slot release is
-a hard error (v1.x-5). Primitive cells (`Cell<Int>` etc.) still
-reject field access with a focused diagnostic — direct
+a type error at the cell (v1.x-5). Primitive cells (`Cell<Int>` etc.)
+still reject field access, at the field name — direct
 load/store through a primitive Cell handle (e.g. `*cell`) is
 the natural next surface but no current workload demands it.
 
@@ -1466,7 +1475,10 @@ as_parent_for Child;`) shipped via v1.x-4 (surface) + v1.x-4b
 `__slot_borrowed_mask` field carries one bit per slot, set when
 the slot was borrowed from a parent's matching slot at accept
 time; the dissolve pass skips destroy on borrowed slots so the
-parent retains ownership of the underlying allocator.
+parent retains ownership of the underlying allocator. The child's
+slot takes the parent's allocator, so it is declared with the same
+name, the same kind (`pool` or `heap`) and the same cell type; each
+mismatch is a type error at the `as_parent_for` clause's locus name.
 
 ## Lifecycle method invocation
 
@@ -2211,9 +2223,10 @@ compiler carries no code to accept them. `spec/api.md` is the contract:
   requires: [role]; … }` block, or `@rpc` on a handler (§ Surfaces and their
   rows). A call is a call of the handler, authorized against the row's
   `requires`; a read is an `rpc` whose handler returns the value;
-- where and how it is offered is a **serve site**,
-  `api::serve(Surface, unix::Rpc { … } | http::Rpc { … } | mcp::Rpc { … },
-  as: "name", bound: N, on_full: refuse)`, in the main locus (§ Serving), over
+- where and how it is offered is a **serve site**, the literal of an
+  exposure param, `web: api::Exposure = api::serve(Surface, unix::Rpc { … } |
+  http::Rpc { … } | mcp::Rpc { … }, as: "name", bound: N, on_full: refuse);`,
+  in the params of the locus that holds it (§ Serving; GH #1565), over
   a transport that is a locus with lifecycle (§ The `Rpc` interface), under a
   role source and a bearer source the program supplies (§ Identity sources);
 - a stream is a **topic bound to a hub**, `bindings { Topic: self.hub
@@ -2823,6 +2836,23 @@ first `main locus` of the seed's own, a module-nested one included;
 the refusal is what changed for the one seed that ran differently,
 whose only `main locus` is module-nested.
 
+The entry is started by the seed's top-level `fn main`, which
+instantiates it; a `main locus` does not start itself. A seed that
+declares its own top-level `main locus` and no `fn main` checks clean
+— an application another seed imports and starts is checked alone that
+way — but nothing in it starts the locus, so `hale build` and `hale
+run` refuse it with one located error at the locus's name (until
+2026-10-14 the build's spanless `program has no fn main()`):
+
+```text
+main.hl:1:12: codegen error: a `main locus` is started by `fn main`, and this seed has none: add `fn main() { App { }; }`
+```
+
+A program with neither says `program has no fn main(): a native
+program starts at its top-level fn main`. A module that `@export`s is
+the wasm entry inversion's instead (an export-only module needs no `fn
+main`: `spec/ffi.md` § "`@export` — exports").
+
 Whether a thread runs beside the bus's main drain, so that the bus
 queue takes its lock, is decided from what the build deploys (F.40
 phase 3, E2): a domain of the placement table that is not main (a
@@ -3327,7 +3357,14 @@ main locus App {
    field name → typecheck error pointing at the params block.
 3. **Field values are locus types.** A placement entry on a
    non-locus field (`port: Int`, `host: String`) is a typecheck
-   error — placement applies only to locus instances.
+   error — placement applies only to locus instances. An exposure
+   param (`web: api::Exposure = api::serve(…)`, GH #1565) is one,
+   and its row places the exposure's listener and the connections
+   it starts while the exposure stays with `main`, beside the
+   sources it calls: the row is `cooperative(pool = X) where
+   async_io`, and any other is refused (spec/api.md § Serving). A
+   server locus's listener runs where the row of the param that
+   holds it places it, when that row hosts `async_io`.
 4. **At most one placement entry per field.** Duplicate keys
    are a parse error.
 5. **Pool names use snake_case Idents.** The set of pool names
@@ -4384,8 +4421,8 @@ conformance matches it) is exempt from the law and the lint, and a
 call to it does not make its caller one that may violate. A
 perspective call cannot carry the failure yet: conformance holds
 the method to the perspective fn's fallibility (§ "Perspectives"),
-and the build refuses a `fallible` perspective call, so no spelling
-of such a method both checks and runs. Until that call lowers, the
+and `hale check` refuses a call to a `fallible` perspective fn, so
+no spelling of such a method both checks and runs. Until that call lowers, the
 method keeps today's behaviour, and a warning names the shape:
 "\`RouterV1.route\` serves \`Router.route\` and may violate
 (\`violate c\`); a perspective call cannot carry the failure yet,
@@ -4573,10 +4610,19 @@ reverse a failure the impl never sets. Either is a typecheck error
 naming both: "\`RouterV1.route\` is
 \`fallible(ClosureViolation)\` but \`Router.route\` is not: a
 method serving a perspective matches its fallibility". A
-`fallible` perspective fn is refused at the call by the build
-("fallible method call on non-locus value of type
-Perspective(\"Router\")"): a perspective call cannot carry a
-failure yet (F.42).
+call to a `fallible` perspective fn is a type error at the method
+name: "\`Router.route\` is \`fallible(ClosureViolation)\`, and a
+perspective call cannot carry a failure yet (F.42): a \`fallible\`
+perspective fn is not callable" (the build refused it, with no
+location, before the check did).
+
+A perspective handle reaches the locus behind it through the
+contract's methods only: a field read through it (`self.p.tag`) is
+refused as no field of the perspective, and so is a store through it
+(`self.p.tag = s;`, at the field name). And the handle's type is the
+slot type `perspective(P)`; the bare `P` is no type a value has, and
+`hale check` refuses it in a type position (`p: P = V1 { }`), naming
+`perspective(P)`.
 
 **Qualified contract names (2026-09-19, GH #724).** `P` may be an
 **imported** perspective, named through its import alias:
@@ -4935,7 +4981,9 @@ joined; the tree then dissolves, leaves first. So a `main` whose
 `run()` returns at once — or that declares none — ends its program
 once its children's loops see the drain: a server stays up because
 `main`'s `run()` waits (`while !self.draining { std::time::sleep(…); }`,
-or `std::api::run_until_stopped`), and SIGINT / SIGTERM end that wait.
+or `self.web.wait()` on an exposure param), and SIGINT / SIGTERM end that
+wait. A `main` that declares no `run()` and holds an exposure's listener
+is given the run that waits on its exposures (spec/api.md § Serving).
 A child's `run()` that never reads `self.draining` keeps the process
 alive until it returns, as under a signal; an `async_io` child parked
 on an untimed wait (a plain `accept`) is abandoned at its pool's

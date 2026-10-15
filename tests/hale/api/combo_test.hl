@@ -36,10 +36,10 @@ main locus Desk {
         local: Local = Local { };
         other: Other = Other { };
         f: std::api::test::Rpc = std::api::test::Rpc { principals: self.bearer };
+        combo: api::Exposure = api::serve(combo_test, self.f, as: "combo", receivers: { Local: self.local, Other: self.other }, bound: 4, on_full: refuse);
     }
 
     run() {
-        let combo = api::serve(combo_test, self.f, as: "combo", receivers: { Local: self.local, Other: self.other }, bound: 4, on_full: refuse);
         let f = self.f;
 
         f.call(1, "Other::echo", "1", "t-a");

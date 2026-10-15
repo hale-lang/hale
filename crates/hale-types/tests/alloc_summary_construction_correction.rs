@@ -689,15 +689,15 @@ fn own_entries_run_to_exit_programs() {
     assert_eq!(
         own,
         [
-            "tests/hale/api_context_test.hl: main StringConcat @12899..12990 InUnboundedLoop",
-            "tests/hale/api_context_test.hl: main StringConcat @12899..12982 InUnboundedLoop",
+            "tests/hale/api_context_test.hl: main StringConcat @12887..12978 InUnboundedLoop",
+            "tests/hale/api_context_test.hl: main StringConcat @12887..12970 InUnboundedLoop",
             // GH #1490 (step 3): `self.buf = self.buf + chunk`, an
             // append whose operands are typed by the field and the
             // `recv` result, not a literal.
-            "tests/hale/api_context_test.hl: Api::ask StringConcat @6440..6456 InvokedUnboundedly",
-            "tests/hale/api_roles_test.hl: main StringConcat @10367..10392 InUnboundedLoop",
-            "tests/hale/api_roles_test.hl: main StringConcat @10367..10385 InUnboundedLoop",
-            "tests/hale/api_roles_test.hl: main StringConcat @10395..10449 InUnboundedLoop",
+            "tests/hale/api_context_test.hl: Api::ask StringConcat @6428..6444 InvokedUnboundedly",
+            "tests/hale/api_roles_test.hl: main StringConcat @10383..10408 InUnboundedLoop",
+            "tests/hale/api_roles_test.hl: main StringConcat @10383..10401 InUnboundedLoop",
+            "tests/hale/api_roles_test.hl: main StringConcat @10411..10465 InUnboundedLoop",
             "tests/hale/chains_tranche2_test.hl: main CollectionInsert(\"vec\") @1882..1910 InUnboundedLoop",
             "tests/hale/chains_tranche2_test.hl: main CollectionInsert(\"vec\") @2095..2120 InUnboundedLoop",
             // a record per element of the array the shelf's decoder reads

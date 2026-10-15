@@ -15,7 +15,7 @@ use crate::shared::source::Disk;
 use crate::shared::workspace::find_workspace_root;
 use crate::shared::diag::render_blocked;
 use crate::shared::diag::render_codegen_error;
-use crate::shared::diag::render_located;
+use crate::shared::diag::render_authors;
 use hale_frontend::snapshot::{Config, LoadError, Snapshot, Target};
 /// Verdict for one `*_test.hl` file.
 pub(crate) struct TestOutcome {
@@ -108,12 +108,12 @@ pub(crate) fn compile_test_binary(
     // how to evaluate. Errors fail the test; warnings are not printed.
     let diags = match snap.demand_check() {
         Ok(c) => &c.diags,
-        Err(b) => return Err(render_blocked(b, file_bases, sources)),
+        Err(b) => return Err(render_blocked(b, snap.demangler(), file_bases, sources)),
     };
     if diags.iter().any(|d| d.is_error()) {
         let mut msg = String::new();
         for d in diags.iter().filter(|d| d.is_error()) {
-            msg.push_str(&render_located(d, file_bases, sources));
+            msg.push_str(&render_authors(d, snap.demangler(), file_bases, sources));
             msg.push('\n');
         }
         return Err(msg.trim_end().to_string());
@@ -131,7 +131,7 @@ pub(crate) fn compile_test_binary(
     let mut h = DefaultHasher::new();
     h.write(entry.display().to_string().as_bytes());
     let bin = scratch.path(&format!("test_{}_{:016x}", nonce, h.finish()));
-    let view = snap.demand_lowering().map_err(|b| render_blocked(b, file_bases, sources))?;
+    let view = snap.demand_lowering().map_err(|b| render_blocked(b, snap.demangler(), file_bases, sources))?;
     options.site_sources = Some(crate::shared::options::site_sources(file_bases, sources));
     if let Err(e) = hale_codegen::build_resolved(view, &bin, &options) {
         // GH #848: the per-fixture failure message is the located

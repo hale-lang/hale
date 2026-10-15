@@ -1,4 +1,5 @@
-//! GH #1417 (R2a): a build refuses what this compiler does not serve yet.
+//! GH #1417 (R2a): a build refuses what this compiler does not serve yet;
+//! GH #1565: a server locus below the main locus serves.
 //! The R0 witness serves `Public` over `http::Rpc` and `Admin` over
 //! `unix::Rpc`; `hale check` admits it (R1's description and the
 //! serve-site laws read it as written), and `hale build` says what it
@@ -59,13 +60,13 @@ locus Server {{
     params {{
         echo: Echo = Echo {{ }};
         {transport_param}
-    }}
-    run() {{
-        let h = api::serve(Public, {transport}, as: "public", bound: 2, on_full: refuse);
-        h.stop();
+        h: api::Exposure = api::serve(Public, {transport}, as: "public", bound: 2, on_full: refuse);
     }}
 }}
-main locus App {{ params {{ server: Server = Server {{ }}; }} }}
+main locus App {{
+    params {{ server: Server = Server {{ }}; }}
+    run() {{ }}
+}}
 fn main() {{ App {{ }}; }}
 "#
     )
@@ -95,28 +96,30 @@ fn build_source(name: &str, src: &str) -> (bool, String, String) {
     (out.status.success(), String::from_utf8_lossy(&out.stderr).into_owned(), ir)
 }
 
-const NON_MAIN: &str = "`api::serve` over `unix::Rpc` in `Server`: a socket's listener runs on a pool of its own";
+const BUILT_ELSEWHERE: &str = "the compiler adds the transport's listener from the literal that builds it";
 
-/// A Unix transport served from a locus that is not `main` has no listener
-/// (only the main locus places the pool it needs): refused whether the
-/// transport is written at the serve site or held as a param.
+/// GH #1565: a server locus serves over a Unix transport, written at the
+/// serve site or held as a param of the server: its listener is a param of
+/// the main locus that holds the server (`App.__rpc_u_1`). A transport a
+/// factory builds has no literal to read the listener from: refused.
 #[test]
-fn a_unix_serve_outside_main_is_refused_written_or_held() {
+fn a_unix_serve_in_a_server_locus_builds_written_or_held() {
     let written = unix_server("", "unix::Rpc { path: \"/tmp/hale_r2b_a.sock\" }");
-    let (ok, err, _) = build_source("written", &written);
-    assert!(!ok && err.contains(NON_MAIN), "written: {err}");
+    let (ok, err, ir) = build_source("written", &written);
+    assert!(ok, "written: {err}");
+    assert!(ir.contains("__rpc_u_1"), "the main locus holds the listener");
 
     let held = unix_server("rpc: std::api::unix::Rpc = std::api::unix::Rpc { path: \"/tmp/hale_r2b_b.sock\" };", "self.rpc");
-    let (ok, err, _) = build_source("held", &held);
-    assert!(!ok && err.contains(NON_MAIN), "held: {err}");
+    let (ok, err, ir) = build_source("held", &held);
+    assert!(ok, "held: {err}");
+    assert!(ir.contains("__rpc_u_1"), "the main locus holds the listener");
 
-    // the declared type alone says it: the default is built elsewhere
     let typed = unix_server("rpc: std::api::unix::Rpc = make_rpc();", "self.rpc").replace(
         "api Public",
         "fn make_rpc() -> std::api::unix::Rpc { return std::api::unix::Rpc { path: \"/tmp/hale_r2b_c.sock\" }; }\napi Public",
     );
     let (ok, err, _) = build_source("typed", &typed);
-    assert!(!ok && err.contains(NON_MAIN), "typed: {err}");
+    assert!(!ok && err.contains(BUILT_ELSEWHERE), "typed: {err}");
 }
 
 /// As `unix_server`, over an `http::Rpc`.
@@ -136,49 +139,50 @@ locus Server {{
         bearer: Tokens = Tokens {{ }};
         roles: Nobody = Nobody {{ }};
         {transport_param}
-    }}
-    run() {{
-        let h = api::serve(Public, {transport}, as: "public", bound: 2, on_full: refuse);
-        h.stop();
+        h: api::Exposure = api::serve(Public, {transport}, as: "public", bound: 2, on_full: refuse);
     }}
 }}
-main locus App {{ params {{ server: Server = Server {{ }}; }} }}
+main locus App {{
+    params {{ server: Server = Server {{ }}; }}
+    run() {{ }}
+}}
 fn main() {{ App {{ }}; }}
 "#
     )
 }
 
-const NON_MAIN_HTTP: &str = "`api::serve` over `http::Rpc` in `Server`: a socket's listener runs on a pool of its own";
 const HTTP_LIT: &str = "http::Rpc { bind: \"127.0.0.1:0\", codec: json, principals: self.bearer, roles: self.roles }";
 const HTTP_HELD: &str = "http::Rpc { bind: \"127.0.0.1:0\", codec: json, principals: Tokens { }, roles: Nobody { } }";
 
-/// The http listener is likewise `main`-only: refused written or held.
+/// The http listener likewise: a server locus serves, written or held.
 #[test]
-fn an_http_serve_outside_main_is_refused_written_or_held() {
+fn an_http_serve_in_a_server_locus_builds_written_or_held() {
     let written = http_server("", HTTP_LIT);
-    let (ok, err, _) = build_source("http_written", &written);
-    assert!(!ok && err.contains(NON_MAIN_HTTP), "written: {err}");
+    let (ok, err, ir) = build_source("http_written", &written);
+    assert!(ok, "written: {err}");
+    assert!(ir.contains("__rpc_h_1"), "the main locus holds the listener");
 
     let held = http_server(&format!("rpc: std::api::http::Rpc = std::api::{};", HTTP_HELD), "self.rpc");
-    let (ok, err, _) = build_source("http_held", &held);
-    assert!(!ok && err.contains(NON_MAIN_HTTP), "held: {err}");
+    let (ok, err, ir) = build_source("http_held", &held);
+    assert!(ok, "held: {err}");
+    assert!(ir.contains("__rpc_h_1"), "the main locus holds the listener");
 
-    // the declared type alone says it: the default is built elsewhere
     let typed = http_server("rpc: std::api::http::Rpc = make_rpc();", "self.rpc").replace(
         "api Public",
         "fn make_rpc() -> std::api::http::Rpc { return std::api::http::Rpc { bind: \"127.0.0.1:0\", codec: json, principals: Tokens { }, roles: Nobody { } }; }\napi Public",
     );
     let (ok, err, _) = build_source("http_typed", &typed);
-    assert!(!ok && err.contains(NON_MAIN_HTTP), "typed: {err}");
+    assert!(!ok && err.contains(BUILT_ELSEWHERE), "typed: {err}");
 }
 
-/// The hub's listener is likewise `main`-only: a serve over a `ws::Hub` or a
-/// `udp::Hub` from another locus is refused, written or held.
+/// A hub stays the main locus's (its listener and its stream bindings are
+/// placed there): a serve over a `ws::Hub` or a `udp::Hub` from another
+/// locus is refused, written or held.
 #[test]
 fn a_hub_serve_outside_main_is_refused_written_or_held() {
     for kind in ["ws", "udp"] {
         let lit = format!("{kind}::Hub {{ bind: \"127.0.0.1:0\", principals: self.bearer, roles: self.roles, as: \"hub\" }}");
-        let non_main = format!("`api::serve` over `{kind}::Hub` in `Server`: a socket's listener runs on a pool of its own");
+        let non_main = format!("over `{kind}::Hub` in `Server`: a hub is the main locus's");
         let written = http_server("", &lit);
         let (ok, err, _) = build_source(&format!("{kind}_written"), &written);
         assert!(!ok && err.contains(&non_main), "{kind} written: {err}");
@@ -211,10 +215,10 @@ main locus App {{
     params {{
         socket_path: String = "/tmp/hale_r2b_d.sock";
         echo: Echo = Echo {{ }};
+        h: api::Exposure = api::serve(Public, unix::Rpc {{ path: {path} }}, as: "public", bound: 2, on_full: refuse);
     }}
     run() {{
-        let h = api::serve(Public, unix::Rpc {{ path: {path} }}, as: "public", bound: 2, on_full: refuse);
-        h.stop();
+        self.h.stop();
     }}
 }}
 fn main() {{ App {{ }}; }}

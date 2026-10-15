@@ -1240,25 +1240,27 @@ fn main() { App { }; }
 /// then refused.
 #[test]
 fn an_uncertified_causes_row_explains_itself() {
+    // The publish leaves the program through an adapter binding, so who
+    // receives it is not knowable here. (This was an indirect call
+    // through a method read as a value, which the summary does not
+    // follow; `hale check` refuses a method value now, nothing lowering
+    // one, so the program could not show the law on the check path.)
     let src = r#"
 type T { n: Int = 0; }
 topic Settled { payload: T; subject: "settled"; }
-locus Bumper {
+locus Relay {
     params { n: Int = 0; }
-    fn bump(v: Int) -> Int { return v + 1; }
+    fn send(subject: String, bytes: Bytes) { self.n = self.n + 1; }
 }
 locus Ledger {
     bus { subscribe Settled as on_settled; }
-    params { n: Int = 0; b: Bumper = Bumper { }; }
-    fn on_settled(t: T) { self.n = apply(self.b.bump, t.n); }
+    params { n: Int = 0; }
+    fn on_settled(t: T) { self.n = t.n; }
 }
-// An INDIRECT call: its target is chosen by the caller, so what the
-// handler does is not knowable here (a method read as a value, which
-// the summary does not follow; a fn's name resolves since F.40 E5).
-fn apply(f: fn(Int) -> Int, v: Int) -> Int { return f(v); }
 main locus App {
     params { l: Ledger = Ledger { }; }
     bus { publish Settled; }
+    bindings { Settled: Relay { }; }
     @effects(causes: { publish })
     fn fire() { Settled <- T { n: 1 }; }
     run() { self.fire(); }

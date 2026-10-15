@@ -70,6 +70,14 @@ locus Gateway {
 }
 ```
 
+The handle's type is always `perspective(Router)`: a bare `Router`
+in a type position is refused, naming the slot type. And the handle
+reaches the impl through the contract's methods only — reading or
+storing a field through it (`self.router.hits = 0;`) is refused;
+give the contract a method that does it. A contract method declared
+`fallible` cannot be called through the slot yet (a perspective call
+does not carry a failure), so the checker refuses that call too.
+
 The locus that *assembles* a `Gateway` can pick the impl instead of
 taking the declaration's default, the same way it can fill any
 interface-typed field:

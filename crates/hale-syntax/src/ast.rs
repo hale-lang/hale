@@ -1915,6 +1915,13 @@ pub struct ParamDecl {
     pub span: Span,
     /// Snapshot identity, minted after desugar (F.40 1.1b); NONE until then.
     pub id: NodeId,
+    /// GH #1565: the `api::serve(…)` call an exposure param was declared
+    /// with (`web: api::Exposure = api::serve(…);`), kept as written once
+    /// the serve expansion (`rpc_expand`) has rewritten `init` to the
+    /// exposure it builds. The serve-site laws and the description read
+    /// the site here; nothing lowers it. `None` for every other param, and
+    /// for an exposure param the expansion has not built.
+    pub serve: Option<Box<Expr>>,
 }
 
 #[derive(Debug, Clone, PartialEq)]

@@ -59,6 +59,7 @@ main locus App {
         fixture: std::api::test::Rpc = std::api::test::Rpc { };
         failures: Int = 0;
         returned_when_decided: Bool = false;
+        h: api::Exposure = api::serve(S, self.fixture, as: "svc", receivers: { Svc: self.svc }, bound: 8, on_full: refuse);
     }
     placement { svc: cooperative(pool = work) where async_io; }
     on_failure(c: Svc, err: ClosureViolation) {
@@ -71,7 +72,6 @@ main locus App {
     }
 
     run() {
-        let h = api::serve(S, self.fixture, as: "svc", receivers: { Svc: self.svc }, bound: 8, on_full: refuse);
         let f = self.fixture;
 
         f.call_as_peer(1, "Svc::arm", "{\"n\":1}", 1000);
@@ -87,7 +87,7 @@ main locus App {
         std::test::assert_eq_str(f.await_outcome(2, 3000), "result", "the restarted receiver serves: the stop did not outlive the restart");
         std::test::assert(std::str::contains(f.line(2), "\"value\":{\"n\":2}"), "in the second generation");
         std::test::assert_eq_int(self.svc.ran_fast, 1, "it ran once");
-        h.stop();
+        self.h.stop();
     }
 }
 

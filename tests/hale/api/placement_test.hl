@@ -73,6 +73,7 @@ main locus App {
         far_failed: Int = 0;
         near_answered_first: Int = -1;
         far_answered_first: Int = -1;
+        h: api::Exposure = api::serve(S, self.fixture, as: "svc", receivers: { Near: self.near, Far: self.far, NearBad: self.near_bad, FarBad: self.far_bad }, bound: 8, on_full: refuse);
     }
     placement {
         far: cooperative(pool = far_pool) where async_io;
@@ -88,7 +89,6 @@ main locus App {
     }
 
     run() {
-        let h = api::serve(S, self.fixture, as: "svc", receivers: { Near: self.near, Far: self.far, NearBad: self.near_bad, FarBad: self.far_bad }, bound: 8, on_full: refuse);
         let f = self.fixture;
         let began = std::time::monotonic_ns();
 
@@ -121,7 +121,7 @@ main locus App {
         f.call_as_peer(7, "Far::wait", "{\"n\":7}", 1000);
         std::time::sleep(10ms);
         let before = std::time::monotonic_ns();
-        h.stop();
+        self.h.stop();
         std::test::assert_eq_str(f.outcome(7), "result", "stop() returned after the held call was answered");
         std::test::assert(std::time::monotonic_ns() - before >= 20000000, "and it waited for it");
         std::test::assert_eq_int(self.far.finished, 3, "every Far wait ran to completion");

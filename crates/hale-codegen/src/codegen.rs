@@ -578,6 +578,22 @@ pub enum CodegenError {
     CapabilityRefused(String, Option<hale_syntax::Span>),
 }
 
+impl CodegenError {
+    /// The same error with its message passed through `f` (a demangling
+    /// into the author's spelling); the span and the kind are kept.
+    pub fn map_message(self, f: impl Fn(&str) -> String) -> CodegenError {
+        match self {
+            CodegenError::Unsupported(s) => CodegenError::Unsupported(f(&s)),
+            CodegenError::UnsupportedAt(s, at) => CodegenError::UnsupportedAt(f(&s), at),
+            CodegenError::LlvmInit(s) => CodegenError::LlvmInit(f(&s)),
+            CodegenError::LlvmEmit(s) => CodegenError::LlvmEmit(f(&s)),
+            CodegenError::Link(s) => CodegenError::Link(f(&s)),
+            CodegenError::MissingTsShim(s, at) => CodegenError::MissingTsShim(f(&s), at),
+            CodegenError::CapabilityRefused(s, at) => CodegenError::CapabilityRefused(f(&s), at),
+        }
+    }
+}
+
 impl std::fmt::Display for CodegenError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -957,23 +973,6 @@ fn row_disagrees(topic: &str) -> CodegenError {
     ))
 }
 
-/// GH #1417 (R2a): the handle an `api::serve(…)` call is. The exposure was
-/// built with the serving locus, as the param `rpc_expand` wrote for the
-/// site's `as:` (`__rpc_x_<as>`), so the call reads that field of `self`;
-/// nothing of its arguments is evaluated here.
-fn serve_site_handle(args: &[Expr], span: hale_syntax::Span) -> Option<Expr> {
-    let Some(Expr::Struct { inits, .. }) = args.last() else { return None };
-    let name = inits.iter().find_map(|i| match (&*i.name.name, &i.value) {
-        ("as", Expr::Literal(hale_syntax::ast::Literal::String(s), _)) => Some(s.as_str()),
-        _ => None,
-    })?;
-    Some(Expr::Field {
-        receiver: Box::new(Expr::KwSelf(span)),
-        name: hale_syntax::ast::Ident::new(hale_types::rpc_expand::exposure_param(name), span),
-        span,
-    })
-}
-
 fn single_segment_type_name(payload: &TypeExpr) -> Option<String> {
     match payload {
         TypeExpr::Named { path, generic_args, .. }
@@ -1198,6 +1197,21 @@ fn entry_fn<'p>(entry: &hale_types::entry::EntryRow, program: &'p Program) -> Op
 /// knob) is in `options`, and `BuildOptions::new` takes the cache
 /// directory, so there is no way to build without choosing one.
 pub fn build_resolved(
+    resolved: &LoweringView,
+    output_path: &Path,
+    options: &BuildOptions,
+) -> Result<(), CodegenError> {
+    // Every refusal names things as the author wrote them: lowering works
+    // over the merged program, where an imported seed's declaration is
+    // `__lib_<alias>_…` and a Hale-source stdlib one `__std_…` /
+    // `__Std…`, names that appear nowhere in the author's source (the
+    // check renders its diagnostics through the same table).
+    build_resolved_lowered(resolved, output_path, options).map_err(|e| {
+        e.map_message(|m| hale_types::stdlib_bodies::Demangler::new(&resolved.import_renames).demangle(m))
+    })
+}
+
+fn build_resolved_lowered(
     resolved: &LoweringView,
     output_path: &Path,
     options: &BuildOptions,
@@ -8927,8 +8941,30 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         },
                     );
                 if !has_exports {
+                    // A seed's own top-level `main locus` is started by
+                    // `fn main` (spec/semantics.md, "The entry locus"),
+                    // so a build of one without it says so at the
+                    // locus's name, with the line to add. `hale check`
+                    // accepts the seed: an application another seed
+                    // imports and starts is checked alone that way.
+                    let main_locus = self.program.items.iter().find_map(|item| match item {
+                        TopDecl::Locus(l) if l.is_main && !l.imported => Some(l),
+                        _ => None,
+                    });
+                    if let Some(l) = main_locus {
+                        return Err(CodegenError::UnsupportedAt(
+                            format!(
+                                "a `main locus` is started by `fn main`, and this seed has none: \
+                                 add `fn main() {{ {} {{ }}; }}`",
+                                l.name.name
+                            ),
+                            l.name.span,
+                        ));
+                    }
                     return Err(CodegenError::Unsupported(
-                        "program has no `fn main()`".to_string(),
+                        "program has no `fn main()`: a native program starts at its top-level \
+                         `fn main`"
+                            .to_string(),
                     ));
                 }
                 let sp = self.program.span.clone();
@@ -12559,6 +12595,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         init: p.init.clone(),
                         span: p.span.clone(),
                         id: p.id,
+                        serve: p.serve.clone(),
                     })
                     .collect(),
                 span: pb.span.clone(),
@@ -24204,6 +24241,17 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         return self.lower_expr(&id, scope);
                     }
                 }
+                // A Hale-bodied stdlib fn used as a value
+                // (`apply(std::url::encode)`): the stdlib is merged into the
+                // program, so the path is the fn its rename names, the
+                // same fn pointer a user fn's name makes. An intrinsic has
+                // no body to point at; the check refuses it.
+                if let Some(mangled) = hale_types::stdlib_bodies::mangled_locus_name(&segs) {
+                    if self.module.get_function(mangled).is_some() {
+                        let id = Expr::Ident(Ident::new(mangled, qn.span));
+                        return self.lower_expr(&id, scope);
+                    }
+                }
                 Err(CodegenError::Unsupported(format!(
                     "unresolved path `{}`",
                     qn.segments
@@ -26606,14 +26654,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     ) -> Result<(), CodegenError> {
         let segs: Vec<&str> =
             qn.segments.iter().map(|s| s.name.as_str()).collect();
-        // GH #1417 (R2a): a serve site's exposure was built with its
-        // serving locus; the call is its handle (`lower_serve_site`).
-        if segs == ["api", "serve"] {
-            if let Some(handle) = serve_site_handle(args, qn.span) {
-                let _ = self.lower_expr(&handle, scope)?;
-                return Ok(());
-            }
-        }
         // m71: std::* paths route through the stdlib lowering. The
         // dispatcher returns Some(_) iff it recognized the path; an
         // unknown std::* path errors with the same shape as the rest
@@ -26688,12 +26728,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
         let segs: Vec<&str> =
             qn.segments.iter().map(|s| s.name.as_str()).collect();
-        // GH #1417 (R2a): the handle of a serve site's exposure.
-        if segs == ["api", "serve"] {
-            if let Some(handle) = serve_site_handle(args, qn.span) {
-                return self.lower_expr(&handle, scope);
-            }
-        }
         // GH #1417 (R2a): a variant of an enum another seed or the stdlib
         // declares, by its public path (`std::api::Outcome::Refusal(…)`):
         // the enum's mangled name and the variant.

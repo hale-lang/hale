@@ -1433,12 +1433,11 @@ locus Desk {\n\
 }\n\
 api Public { rpc Desk::on_order; }\n\
 main locus App {\n\
-    params { desk: Desk = Desk { }; fixture: std::api::test::Rpc = std::api::test::Rpc { }; }\n\
+    params { desk: Desk = Desk { }; fixture: std::api::test::Rpc = std::api::test::Rpc { }; h: api::Exposure = api::serve(Public, self.fixture, as: \"public\", receivers: { Desk: self.desk }, bound: 4, on_full: refuse); }\n\
     run() {\n\
-        let h = api::serve(Public, self.fixture, as: \"public\", receivers: { Desk: self.desk }, bound: 4, on_full: refuse);\n\
         let o = Order::from_json(\"{}\");\n\
         println(o.id);\n\
-        h.stop();\n\
+        self.h.stop();\n\
     }\n\
 }\n\
 fn main() { App { }; }\n",
@@ -1460,11 +1459,10 @@ locus Desk {\n\
 }\n\
 api Public { rpc Desk::on_order; }\n\
 main locus App {\n\
-    params { desk: Desk = Desk { }; fixture: std::api::test::Rpc = std::api::test::Rpc { }; }\n\
+    params { desk: Desk = Desk { }; fixture: std::api::test::Rpc = std::api::test::Rpc { }; h: api::Exposure = api::serve(Public, self.fixture, as: \"public\", receivers: { Desk: self.desk }, bound: 4, on_full: refuse); }\n\
     run() {\n\
-        let h = api::serve(Public, self.fixture, as: \"public\", receivers: { Desk: self.desk }, bound: 4, on_full: refuse);\n\
         println(\"up\");\n\
-        h.stop();\n\
+        self.h.stop();\n\
     }\n\
 }\n\
 fn main() { App { }; }\n";
@@ -2180,7 +2178,7 @@ fn lsp_and_check_agree_over_a_seed_with_generated_source() {
         check.iter().all(|(file, ..)| file == "main.hl"),
         "a finding positioned outside the author's file (inside generated source?): {check:?}"
     );
-    for line in [7u64, 16u64] {
+    for line in [7u64, 15u64] {
         assert!(
             check.iter().any(|(_, l, ..)| *l == line),
             "no finding at main.hl:{line}: {check:?}"
