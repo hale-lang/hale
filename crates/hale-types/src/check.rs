@@ -26,6 +26,7 @@
 //! path-call NAMES are validated by `stdlib_surface`).
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::rc::Rc;
 
 use hale_syntax::ast::*;
 use hale_syntax::{Diag, Span};
@@ -3882,22 +3883,27 @@ fn check_placement_single_thread(
                 _ => {}
             });
         }
-        let name_of = |k: &BodyKey| match k {
-            BodyKey::Fn(n) | BodyKey::Method(_, n) => n.clone(),
+        let name_of = |k: &BodyKey| -> String {
+            match k {
+                BodyKey::Fn(n) | BodyKey::Method(_, n) => n.clone(),
+            }
         };
+        let mut by_name: BTreeMap<String, Vec<usize>> = BTreeMap::new();
+        for (i, (k, _, _)) in all.iter().enumerate() {
+            by_name.entry(name_of(k)).or_default().push(i);
+        }
         let mut reached: BTreeSet<String> = BTreeSet::new();
         let mut frontier: Vec<String> = roots.into_iter().collect();
         while let Some(n) = frontier.pop() {
-            if !reached.insert(n.clone()) {
+            if reached.contains(&n) {
                 continue;
             }
-            for (k, _, f) in &all {
-                if name_of(k) == n {
-                    let mut more = BTreeSet::new();
-                    called_names(&f.body, &mut more);
-                    frontier.extend(more.into_iter().filter(|m| !reached.contains(m)));
-                }
+            for &i in by_name.get(&n).into_iter().flatten() {
+                let mut more = BTreeSet::new();
+                called_names(&all[i].2.body, &mut more);
+                frontier.extend(more.into_iter().filter(|m| !reached.contains(m) && *m != n));
             }
+            reached.insert(n);
         }
         // A body with no parameter and no `self` field that can hold a
         // locus handle has nothing to summarize: no symbol can reach it.
@@ -3934,7 +3940,7 @@ fn check_placement_single_thread(
             if !sums.has(key) {
                 sums.set(key, new.clone());
             }
-            if new.key() != old.key() {
+            if !new.same(&old) {
                 sums.set(key, new);
                 for &j in readers.get(key).into_iter().flatten() {
                     if !queued[j] {
@@ -4007,18 +4013,17 @@ fn check_placement_single_thread(
                     taint
                 };
                 let mut taint: BTreeMap<String, Origin> = BTreeMap::new();
-                let key = |t: &BTreeMap<String, Origin>| -> Vec<(String, OriginKey)> {
-                    t.iter().map(|(k, v)| (k.clone(), v.key())).collect()
+                let same = |a: &BTreeMap<String, Origin>, b: &BTreeMap<String, Origin>| {
+                    a.len() == b.len() && a.iter().zip(b).all(|((k, v), (j, w))| k == j && v.same(w))
                 };
                 // Each round is the real walk, its diagnostics kept aside:
                 // the round that adds no taint is the fixpoint's, and its
                 // diagnostics are the walk's (most loci store no handle
                 // into a field, and take one round).
                 loop {
-                    let before = key(&taint);
                     let mut found: Vec<Diag> = Vec::new();
                     let after = walk_members(taint.clone(), false, &mut found);
-                    if key(&after) == before {
+                    if same(&after, &taint) {
                         diags.extend(found);
                         break;
                     }
@@ -4220,7 +4225,7 @@ struct PoolCheckCx<'a> {
     /// walk of a member has none.
     acc: Option<Summary>,
     /// Summarizing: the body's parameters' declared types.
-    acc_params: Option<Vec<TypeExpr>>,
+    acc_params: Option<Rc<Vec<TypeExpr>>>,
     /// Summarizing: the bodies whose summaries this walk read (a body is
     /// walked again when one of them grows).
     read: std::cell::RefCell<BTreeSet<BodyKey>>,
@@ -4299,35 +4304,136 @@ impl PoolCheckCx<'_> {
 /// `whole` from either. The join keeps a witness from either side.
 #[derive(Clone, Default)]
 struct Origin {
-    whole: Option<CrossPool>,
-    parts: Option<CrossPool>,
+    whole: Option<Rc<CrossPool>>,
+    parts: Option<Rc<CrossPool>>,
     /// While a body is summarized: the parameters and `self` fields the
     /// value may be (`whole_syms`) or hold (`part_syms`), which a call
     /// site resolves to its arguments and its receiver's fields.
-    whole_syms: BTreeSet<Sym>,
-    part_syms: BTreeSet<Sym>,
+    whole_syms: SymSet,
+    part_syms: SymSet,
 }
 
 /// A symbolic source, in a body's summary: its parameter `i`, or its
-/// `self` field `f`.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+/// `self` field `f`. Names are shared (`intern`), so a symbol is copied
+/// without an allocation, and two are the same name when they share it.
+#[derive(Clone, Debug)]
 enum Sym {
     Param(usize),
-    SelfField(String),
+    SelfField(Rc<str>),
     /// Any instance of the locus type: what a call through a fn value
     /// declared to return it may hand back. A call site resolves it to
     /// an instance of that type in another domain than its own, if any.
-    AnyOf(String),
+    AnyOf(Rc<str>),
 }
 
-type OriginKey = (bool, bool, BTreeSet<Sym>, BTreeSet<Sym>);
+impl Sym {
+    fn rank(&self) -> u8 {
+        match self {
+            Sym::Param(_) => 0,
+            Sym::SelfField(_) => 1,
+            Sym::AnyOf(_) => 2,
+        }
+    }
+}
+
+impl PartialEq for Sym {
+    fn eq(&self, o: &Sym) -> bool {
+        self.cmp(o) == std::cmp::Ordering::Equal
+    }
+}
+
+impl Eq for Sym {}
+
+impl PartialOrd for Sym {
+    fn partial_cmp(&self, o: &Sym) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(o))
+    }
+}
+
+/// By kind, then by position or name (the names' order, as a set of
+/// them iterates).
+impl Ord for Sym {
+    fn cmp(&self, o: &Sym) -> std::cmp::Ordering {
+        match (self, o) {
+            (Sym::Param(a), Sym::Param(b)) => a.cmp(b),
+            (Sym::SelfField(a), Sym::SelfField(b)) | (Sym::AnyOf(a), Sym::AnyOf(b)) => {
+                if Rc::ptr_eq(a, b) {
+                    std::cmp::Ordering::Equal
+                } else {
+                    a.cmp(b)
+                }
+            }
+            _ => self.rank().cmp(&o.rank()),
+        }
+    }
+}
+
+/// One shared copy of each name a symbol carries.
+fn intern(name: &str) -> Rc<str> {
+    thread_local! {
+        static NAMES: std::cell::RefCell<std::collections::HashSet<Rc<str>>> = Default::default();
+    }
+    NAMES.with(|n| {
+        let mut n = n.borrow_mut();
+        match n.get(name) {
+            Some(r) => r.clone(),
+            None => {
+                let r: Rc<str> = Rc::from(name);
+                n.insert(r.clone());
+                r
+            }
+        }
+    })
+}
+
+/// A set of symbols, in order: most values carry none or one, so a
+/// sorted vector (empty, it holds no allocation).
+#[derive(Clone, Default, PartialEq, Eq)]
+struct SymSet(Vec<Sym>);
+
+impl SymSet {
+    fn one(s: Sym) -> SymSet {
+        SymSet(vec![s])
+    }
+    fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+    fn iter(&self) -> std::slice::Iter<'_, Sym> {
+        self.0.iter()
+    }
+    fn insert(&mut self, s: Sym) {
+        if let Err(i) = self.0.binary_search(&s) {
+            self.0.insert(i, s);
+        }
+    }
+    fn extend(&mut self, o: SymSet) {
+        if self.0.is_empty() {
+            *self = o;
+            return;
+        }
+        if o.0.is_empty() || self.0 == o.0 {
+            return;
+        }
+        for s in o.0 {
+            self.insert(s);
+        }
+    }
+}
+
+impl<'a> IntoIterator for &'a SymSet {
+    type Item = &'a Sym;
+    type IntoIter = std::slice::Iter<'a, Sym>;
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.iter()
+    }
+}
 
 impl Origin {
     fn whole(cp: CrossPool) -> Origin {
-        Origin { whole: Some(cp), ..Origin::default() }
+        Origin { whole: Some(Rc::new(cp)), ..Origin::default() }
     }
     fn sym(s: Sym) -> Origin {
-        Origin { whole_syms: BTreeSet::from([s]), ..Origin::default() }
+        Origin { whole_syms: SymSet::one(s), ..Origin::default() }
     }
     fn join(mut self, o: Origin) -> Origin {
         self.whole = self.whole.or(o.whole);
@@ -4337,7 +4443,7 @@ impl Origin {
         self
     }
     /// Anything cross-pool the value may be or hold.
-    fn any(&self) -> Option<CrossPool> {
+    fn any(&self) -> Option<Rc<CrossPool>> {
         self.whole.clone().or_else(|| self.parts.clone())
     }
     /// Nothing at all, concrete or symbolic.
@@ -4345,8 +4451,10 @@ impl Origin {
         self.whole.is_none() && self.parts.is_none() && self.whole_syms.is_empty() && self.part_syms.is_empty()
     }
     /// Every symbol the value may be or hold.
-    fn syms(&self) -> BTreeSet<Sym> {
-        self.whole_syms.union(&self.part_syms).cloned().collect()
+    fn syms(&self) -> SymSet {
+        let mut all = self.whole_syms.clone();
+        all.extend(self.part_syms.clone());
+        all
     }
     /// A part read out of the value.
     fn part(self) -> Origin {
@@ -4358,10 +4466,75 @@ impl Origin {
     fn contained(self) -> Origin {
         let any = self.any();
         let all = self.syms();
-        Origin { whole: None, parts: any, whole_syms: BTreeSet::new(), part_syms: all }
+        Origin { whole: None, parts: any, whole_syms: SymSet::default(), part_syms: all }
     }
-    fn key(&self) -> OriginKey {
-        (self.whole.is_some(), self.parts.is_some(), self.whole_syms.clone(), self.part_syms.clone())
+    /// What a fixpoint compares: whether each side may be cross-pool, and
+    /// the symbols.
+    fn same(&self, o: &Origin) -> bool {
+        self.whole.is_some() == o.whole.is_some()
+            && self.parts.is_some() == o.parts.is_some()
+            && self.whole_syms == o.whole_syms
+            && self.part_syms == o.part_syms
+    }
+}
+
+/// What the locals in scope may hold, by slot (`Env`): only the bindings
+/// that may hold something, in slot order. This is what a branch copies
+/// and a merge joins.
+#[derive(Clone, Default)]
+struct State(Vec<(u32, Origin)>);
+
+impl State {
+    fn get(&self, slot: u32) -> Option<&Origin> {
+        self.0.binary_search_by_key(&slot, |(k, _)| *k).ok().map(|i| &self.0[i].1)
+    }
+    fn set(&mut self, slot: u32, o: Origin) {
+        match self.0.binary_search_by_key(&slot, |(k, _)| *k) {
+            Ok(i) if o.is_empty() => {
+                self.0.remove(i);
+            }
+            Ok(i) => self.0[i].1 = o,
+            Err(_) if o.is_empty() => {}
+            Err(i) => self.0.insert(i, (slot, o)),
+        }
+    }
+    fn remove(&mut self, slot: u32) {
+        if let Ok(i) = self.0.binary_search_by_key(&slot, |(k, _)| *k) {
+            self.0.remove(i);
+        }
+    }
+    /// The join at a control-flow merge: a binding may hold what it may
+    /// on either side.
+    fn join(self, other: State) -> State {
+        if other.0.is_empty() {
+            return self;
+        }
+        if self.0.is_empty() {
+            return other;
+        }
+        let mut out = Vec::with_capacity(self.0.len().max(other.0.len()));
+        let mut a = self.0.into_iter().peekable();
+        let mut b = other.0.into_iter().peekable();
+        loop {
+            let take_a = match (a.peek(), b.peek()) {
+                (None, None) => break,
+                (Some(_), None) => true,
+                (None, Some(_)) => false,
+                (Some((x, _)), Some((y, _))) if x == y => {
+                    let (k, m) = a.next().expect("peeked");
+                    let (_, t) = b.next().expect("peeked");
+                    out.push((k, m.join(t)));
+                    continue;
+                }
+                (Some((x, _)), Some((y, _))) => x < y,
+            };
+            out.push(if take_a { a.next() } else { b.next() }.expect("peeked"));
+        }
+        State(out)
+    }
+    /// What a fixpoint compares: which bindings may hold what.
+    fn same(&self, o: &State) -> bool {
+        self.0.len() == o.0.len() && self.0.iter().zip(&o.0).all(|((k, v), (j, w))| k == j && v.same(w))
     }
 }
 
@@ -4369,9 +4542,18 @@ impl Origin {
 /// `let` declares in the innermost scope, shadowing an outer binding of
 /// the name, which is untouched and in scope again when the block ends;
 /// an assignment updates the binding it names, wherever it was declared.
-#[derive(Clone, Default)]
+/// The bindings are the same on both sides of a control-flow merge (a
+/// branch's own scope is gone by then), so a branch copies, and a merge
+/// joins, only what they hold (`State`).
+#[derive(Default)]
 struct Env {
-    scopes: Vec<BTreeMap<String, Origin>>,
+    /// Every binding in scope, outermost first: its name and its slot.
+    names: Vec<(String, u32)>,
+    /// Where each scope's bindings start in `names`.
+    marks: Vec<usize>,
+    /// The next slot.
+    next: u32,
+    st: State,
 }
 
 impl Env {
@@ -4387,60 +4569,53 @@ impl Env {
         }
         env
     }
+    fn slot(&self, name: &str) -> Option<u32> {
+        self.names.iter().rev().find(|(n, _)| n == name).map(|(_, s)| *s)
+    }
     fn lookup(&self, name: &str) -> Origin {
-        self.scopes.iter().rev().find_map(|s| s.get(name)).cloned().unwrap_or_default()
+        self.slot(name).and_then(|s| self.st.get(s)).cloned().unwrap_or_default()
     }
     fn declare(&mut self, name: &str, o: Origin) {
-        if self.scopes.is_empty() {
-            self.scopes.push(BTreeMap::new());
+        if self.marks.is_empty() {
+            self.push();
         }
-        self.scopes.last_mut().expect("a scope").insert(name.to_string(), o);
+        let slot = self.next;
+        self.next += 1;
+        self.names.push((name.to_string(), slot));
+        self.st.set(slot, o);
     }
     fn assign(&mut self, name: &str, o: Origin) {
-        match self.scopes.iter_mut().rev().find(|s| s.contains_key(name)) {
-            Some(s) => {
-                s.insert(name.to_string(), o);
-            }
-            // a parameter or a name declared outside the walk
+        let slot = match self.slot(name) {
+            Some(s) => s,
+            // a parameter or a name declared outside the walk: bound in
+            // the outermost scope
             None => {
-                if self.scopes.is_empty() {
-                    self.scopes.push(BTreeMap::new());
+                if self.marks.is_empty() {
+                    self.push();
                 }
-                self.scopes[0].insert(name.to_string(), o);
+                let slot = self.next;
+                self.next += 1;
+                self.names.insert(0, (name.to_string(), slot));
+                for m in self.marks.iter_mut().skip(1) {
+                    *m += 1;
+                }
+                slot
             }
-        }
+        };
+        self.st.set(slot, o);
     }
     /// Is the name a binding of the walk (a local or a parameter)?
     fn is_bound(&self, name: &str) -> bool {
-        self.scopes.iter().any(|s| s.contains_key(name))
+        self.slot(name).is_some()
     }
     fn push(&mut self) {
-        self.scopes.push(BTreeMap::new());
+        self.marks.push(self.names.len());
     }
     fn pop(&mut self) {
-        self.scopes.pop();
-    }
-    /// The join at a control-flow merge: the two states have the same
-    /// scopes (a branch's own scope is gone by the merge).
-    fn join(mut self, other: Env) -> Env {
-        for (mine, theirs) in self.scopes.iter_mut().zip(other.scopes) {
-            for (k, v) in theirs {
-                let joined = match mine.remove(&k) {
-                    Some(m) => m.join(v),
-                    None => v,
-                };
-                mine.insert(k, joined);
-            }
+        let Some(m) = self.marks.pop() else { return };
+        for (_, slot) in self.names.drain(m..) {
+            self.st.remove(slot);
         }
-        self
-    }
-    /// What a fixpoint compares: which bindings may hold what.
-    fn key(&self) -> Vec<(usize, String, OriginKey)> {
-        self.scopes
-            .iter()
-            .enumerate()
-            .flat_map(|(d, s)| s.iter().map(move |(k, v)| (d, k.clone(), v.key())))
-            .collect()
     }
 }
 
@@ -4469,8 +4644,6 @@ struct Summary {
     any_stores: BTreeSet<String>,
 }
 
-type SummaryKey = (OriginKey, Vec<(Sym, OriginKey)>, Vec<(usize, bool)>, Vec<(usize, bool)>, BTreeSet<String>);
-
 impl Summary {
     fn join(mut self, o: Summary) -> Summary {
         self.ret = self.ret.join(o.ret);
@@ -4487,14 +4660,14 @@ impl Summary {
         self.any_stores.extend(o.any_stores);
         self
     }
-    fn key(&self) -> SummaryKey {
-        (
-            self.ret.key(),
-            self.writes.iter().map(|(k, v)| (k.clone(), v.key())).collect(),
-            self.stores.iter().map(|(k, v)| (*k, *v)).collect(),
-            self.calls.iter().map(|(k, v)| (*k, *v)).collect(),
-            self.any_stores.clone(),
-        )
+    /// What the worklist compares: whether the summary grew.
+    fn same(&self, o: &Summary) -> bool {
+        self.ret.same(&o.ret)
+            && self.writes.len() == o.writes.len()
+            && self.writes.iter().zip(&o.writes).all(|((k, v), (j, w))| k == j && v.same(w))
+            && self.stores == o.stores
+            && self.calls == o.calls
+            && self.any_stores == o.any_stores
     }
     /// A write into the target `sym`.
     fn write(&mut self, sym: Sym, o: Origin) {
@@ -4515,21 +4688,21 @@ enum BodyKey {
 struct Summaries {
     /// Free fns by name (same-named fns joined).
     fns: BTreeMap<String, Summary>,
-    /// Locus methods by (locus, method).
-    methods: BTreeMap<(String, String), Summary>,
+    /// Locus methods by locus, then method.
+    methods: BTreeMap<String, BTreeMap<String, Summary>>,
 }
 
 impl Summaries {
     fn get(&self, k: &BodyKey) -> Summary {
         match k {
             BodyKey::Fn(n) => self.fns.get(n).cloned().unwrap_or_default(),
-            BodyKey::Method(l, m) => self.methods.get(&(l.clone(), m.clone())).cloned().unwrap_or_default(),
+            BodyKey::Method(l, m) => self.methods.get(l).and_then(|ms| ms.get(m)).cloned().unwrap_or_default(),
         }
     }
     fn has(&self, k: &BodyKey) -> bool {
         match k {
             BodyKey::Fn(n) => self.fns.contains_key(n),
-            BodyKey::Method(l, m) => self.methods.contains_key(&(l.clone(), m.clone())),
+            BodyKey::Method(l, m) => self.methods.get(l).is_some_and(|ms| ms.contains_key(m)),
         }
     }
     fn set(&mut self, k: &BodyKey, s: Summary) {
@@ -4538,7 +4711,7 @@ impl Summaries {
                 self.fns.insert(n.clone(), s);
             }
             BodyKey::Method(l, m) => {
-                self.methods.insert((l.clone(), m.clone()), s);
+                self.methods.entry(l.clone()).or_default().insert(m.clone(), s);
             }
         }
     }
@@ -4576,7 +4749,7 @@ fn body_summary(
         fn_values,
         self_taint: BTreeMap::new(),
         acc: Some(Summary::default()),
-        acc_params: Some(fd.params.iter().map(|p| p.ty.clone()).collect()),
+        acc_params: Some(Rc::new(fd.params.iter().map(|p| p.ty.clone()).collect())),
         read: std::cell::RefCell::new(BTreeSet::new()),
         quiet: true,
         diags: &mut sink,
@@ -4600,7 +4773,13 @@ fn body_summary(
 /// type. A fn value declared to return a locus type: any instance of
 /// it in another domain. A serve site: the exposure it builds. A callee
 /// the walk cannot name: anything its arguments may be.
-fn call_origin(callee: &Expr, recv: &Origin, arg_origins: &[Origin], cx: &PoolCheckCx) -> Origin {
+fn call_origin(
+    callee: &Expr,
+    resolved: Option<(&Summary, Option<&Expr>)>,
+    recv: &Origin,
+    arg_origins: &[Origin],
+    cx: &PoolCheckCx,
+) -> Origin {
     let all_args = || arg_origins.iter().cloned().fold(Origin::default(), |o, a| o.join(a.part()));
     match callee {
         Expr::Path(qp) if qp.segments.first().is_some_and(|s| s.name == "std") => {
@@ -4633,16 +4812,16 @@ fn call_origin(callee: &Expr, recv: &Origin, arg_origins: &[Origin], cx: &PoolCh
         }
         Expr::Ident(id) if cx.fn_values.contains_key(&id.name) => {
             let ty = cx.fn_values[&id.name].clone();
-            let o = Origin { whole: any_cross_pool_instance(&ty, cx), ..Origin::default() };
+            let o = Origin { whole: any_cross_pool_instance(&ty, cx).map(Rc::new), ..Origin::default() };
             // summarizing: which instance is the caller's to say
             if cx.acc.is_some() {
-                o.join(Origin::sym(Sym::AnyOf(ty)))
+                o.join(Origin::sym(Sym::AnyOf(intern(&ty))))
             } else {
                 o
             }
         }
-        _ => match callee_summary(callee, cx) {
-            Some((sum, recv_expr)) => instantiate(&sum.ret, arg_origins, recv_expr.as_ref(), recv, cx),
+        _ => match resolved {
+            Some((sum, recv_expr)) => instantiate(&sum.ret, arg_origins, recv_expr, recv, cx),
             None => match callee {
                 Expr::Field { .. } => recv.clone().part().join(all_args()),
                 _ => all_args(),
@@ -4688,24 +4867,30 @@ fn std_index() -> &'static StdIndex {
 /// a method): a free fn by name, a method by its receiver's locus type.
 /// `None` for a callee that is a local (a fn value), a stdlib fn, or a
 /// method of a receiver whose type the walk cannot tell.
-fn callee_summary<'s>(callee: &Expr, cx: &PoolCheckCx<'s>) -> Option<(&'s Summary, Option<Expr>)> {
+fn callee_summary<'s, 'e>(callee: &'e Expr, cx: &PoolCheckCx<'s>) -> Option<(&'s Summary, Option<&'e Expr>)> {
+    // summarizing: the bodies read, which are walked again when one grows
+    let read = |k: BodyKey| {
+        if cx.acc.is_some() {
+            cx.read.borrow_mut().insert(k);
+        }
+    };
     match callee {
         Expr::Path(qp) if qp.segments.first().is_some_and(|s| s.name == "std") => None,
         Expr::Ident(id) if cx.fn_values.contains_key(&id.name) || cx.env.is_bound(&id.name) => None,
         Expr::Ident(id) => {
-            cx.read.borrow_mut().insert(BodyKey::Fn(id.name.clone()));
+            read(BodyKey::Fn(id.name.clone()));
             cx.summaries.fns.get(&id.name).map(|s| (s, None))
         }
         Expr::Path(qp) => {
             let last = qp.segments.last()?;
-            cx.read.borrow_mut().insert(BodyKey::Fn(last.name.clone()));
+            read(BodyKey::Fn(last.name.clone()));
             cx.summaries.fns.get(&last.name).map(|s| (s, None))
         }
         Expr::Field { receiver, name, .. } => {
             let l = receiver_locus_type(receiver, cx)?;
-            let short = l.rsplit("::").next().unwrap_or(&l).to_string();
-            cx.read.borrow_mut().insert(BodyKey::Method(short.clone(), name.name.clone()));
-            cx.summaries.methods.get(&(short, name.name.clone())).map(|s| (s, Some((**receiver).clone())))
+            let short = l.rsplit("::").next().unwrap_or(&l);
+            read(BodyKey::Method(short.to_string(), name.name.clone()));
+            cx.summaries.methods.get(short).and_then(|m| m.get(&name.name)).map(|s| (s, Some(&**receiver)))
         }
         _ => None,
     }
@@ -4721,7 +4906,7 @@ fn instantiate(o: &Origin, args: &[Origin], recv: Option<&Expr>, recv_origin: &O
         match s {
             Sym::Param(j) => args.get(*j).cloned().unwrap_or_default(),
             Sym::AnyOf(t) => {
-                let o = Origin { whole: any_cross_pool_instance(t, cx), ..Origin::default() };
+                let o = Origin { whole: any_cross_pool_instance(t, cx).map(Rc::new), ..Origin::default() };
                 if cx.acc.is_some() {
                     o.join(Origin::sym(s.clone()))
                 } else {
@@ -4732,7 +4917,7 @@ fn instantiate(o: &Origin, args: &[Origin], recv: Option<&Expr>, recv_origin: &O
                 Some(r) => {
                     let field = Expr::Field {
                         receiver: Box::new(r.clone()),
-                        name: Ident { name: f.clone(), span: r.span(), id: NodeId::NONE },
+                        name: Ident { name: f.to_string(), span: r.span(), id: NodeId::NONE },
                         span: r.span(),
                     };
                     if self_rooted_field(&field).is_some() {
@@ -4763,25 +4948,26 @@ fn instantiate(o: &Origin, args: &[Origin], recv: Option<&Expr>, recv_origin: &O
 /// `j` into argument `i` only when `i`'s declared type can hold `j`'s. A
 /// fn value, an unresolved callee, a stdlib locus's method: any argument
 /// into any other, and into the receiver.
-fn apply_call_writes<'a>(
-    callee: &Expr,
-    args: &[Expr],
+fn apply_call_writes<'e>(
+    callee: &'e Expr,
+    resolved: Option<(&Summary, Option<&'e Expr>)>,
+    args: &'e [Expr],
     arg_origins: &[Origin],
     recv_origin: &Origin,
-    cx: &mut PoolCheckCx<'a>,
+    cx: &mut PoolCheckCx,
 ) {
-    enum Kind<'a> {
-        Summary(&'a Summary, Option<Expr>),
+    enum Kind<'s, 'e> {
+        Summary(&'s Summary, Option<&'e Expr>),
         /// A form's synthesized op that stores its arguments into the form.
-        FormStore(Expr),
+        FormStore(&'e Expr),
         /// A stdlib fn found in the stdlib's declarations.
         Std(&'static FnDecl),
         /// A builtin that writes nothing into its arguments.
         Pure,
         /// A callee the walk cannot see into.
-        Opaque(Option<Expr>),
+        Opaque(Option<&'e Expr>),
     }
-    let kind = match callee_summary(callee, cx) {
+    let kind = match resolved {
         Some((sum, recv)) => Kind::Summary(sum, recv),
         None => match callee {
             Expr::Path(qp) if qp.segments.first().is_some_and(|s| s.name == "std") => {
@@ -4795,7 +4981,7 @@ fn apply_call_writes<'a>(
             Expr::Ident(id) if cx.fn_values.contains_key(&id.name) || cx.env.is_bound(&id.name) => Kind::Opaque(None),
             // the bounded-list intrinsics store their value into the list
             Expr::Ident(id) if FORM_STORE_OPS.contains(&id.name.as_str()) => match args.first() {
-                Some(list) => Kind::FormStore(list.clone()),
+                Some(list) => Kind::FormStore(list),
                 None => Kind::Pure,
             },
             Expr::Ident(id) if crate::builtin_sigs::bare_builtin_sig(&id.name).is_some() => Kind::Pure,
@@ -4803,10 +4989,10 @@ fn apply_call_writes<'a>(
                 let short = receiver_locus_type(receiver, cx).map(|l| l.rsplit("::").next().unwrap_or(&l).to_string());
                 let is_form = short.as_deref().and_then(|l| cx.decls.loci.get(l)).is_some_and(|d| d.form.is_some());
                 match (is_form, FORM_STORE_OPS.contains(&name.name.as_str())) {
-                    (true, true) => Kind::FormStore((**receiver).clone()),
+                    (true, true) => Kind::FormStore(receiver),
                     (true, false) => Kind::Pure,
                     // a stdlib locus's method, or a receiver of unknown type
-                    _ => Kind::Opaque(Some((**receiver).clone())),
+                    _ => Kind::Opaque(Some(receiver)),
                 }
             }
             _ => Kind::Opaque(None),
@@ -4819,7 +5005,7 @@ fn apply_call_writes<'a>(
             // argument is the list itself)
             let skip = usize::from(matches!(callee, Expr::Ident(_)));
             for o in arg_origins.iter().skip(skip) {
-                install_into(&target, o.clone(), true, cx);
+                install_into(target, o.clone(), true, cx);
             }
         }
         Kind::Std(f) => {
@@ -4865,29 +5051,35 @@ fn apply_call_writes<'a>(
                         install_into(target, o.clone(), true, cx);
                     }
                 }
-                if let (Some(r), true) = (&recv, j < arg_origins.len()) {
+                if let (Some(r), true) = (recv, j < arg_origins.len()) {
                     install_into(r, o.clone(), true, cx);
                 }
             }
         }
         Kind::Summary(sum, recv) => {
             for (sym, written) in &sum.writes {
-                let value = instantiate(written, arg_origins, recv.as_ref(), recv_origin, cx);
-                let target = match sym {
-                    // a write into an instance a fn value handed back:
-                    // which one is unknown here, and it is no argument
-                    Sym::AnyOf(_) => None,
-                    Sym::Param(i) => args.get(*i).cloned(),
-                    Sym::SelfField(f) => recv.as_ref().map(|r| Expr::Field {
-                        receiver: Box::new(r.clone()),
-                        name: Ident { name: f.clone(), span: r.span(), id: NodeId::NONE },
-                        span: r.span(),
-                    }),
-                };
+                let value = instantiate(written, arg_origins, recv, recv_origin, cx);
                 // the value was shaped where the callee wrote it (held
                 // inside a parameter's part; the field itself for `self.f`)
-                if let Some(target) = target {
-                    install_into(&target, value, false, cx);
+                match sym {
+                    // a write into an instance a fn value handed back:
+                    // which one is unknown here, and it is no argument
+                    Sym::AnyOf(_) => {}
+                    Sym::Param(i) => {
+                        if let Some(target) = args.get(*i) {
+                            install_into(target, value, false, cx);
+                        }
+                    }
+                    Sym::SelfField(f) => {
+                        if let Some(r) = recv {
+                            let target = Expr::Field {
+                                receiver: Box::new(r.clone()),
+                                name: Ident { name: f.to_string(), span: r.span(), id: NodeId::NONE },
+                                span: r.span(),
+                            };
+                            install_into(&target, value, false, cx);
+                        }
+                    }
                 }
             }
         }
@@ -4921,7 +5113,7 @@ fn install_into(target: &Expr, o: Origin, part: bool, cx: &mut PoolCheckCx) {
             cx.env.assign(&id.name, holds.clone().join(o.clone()));
             // what the binding may be (an alias of a parameter or of a
             // `self` field) holds it too
-            for sym in holds.whole_syms.clone() {
+            for sym in holds.whole_syms.0.clone() {
                 record_write(sym, o.clone(), cx);
             }
         }
@@ -4930,7 +5122,7 @@ fn install_into(target: &Expr, o: Origin, part: bool, cx: &mut PoolCheckCx) {
             if ty.is_some_and(|t| !cx.decls.type_can_hold_locus(t, 0)) {
                 return;
             }
-            record_write(Sym::SelfField(name.name.clone()), o, cx);
+            record_write(Sym::SelfField(intern(&name.name)), o, cx);
         }
         _ => {}
     }
@@ -4946,8 +5138,8 @@ fn record_write(sym: Sym, o: Origin, cx: &mut PoolCheckCx) {
         return;
     }
     if let Sym::SelfField(f) = sym {
-        let joined = cx.self_taint.remove(&f).unwrap_or_default().join(o);
-        cx.self_taint.insert(f, joined);
+        let joined = cx.self_taint.remove(&*f).unwrap_or_default().join(o);
+        cx.self_taint.insert(f.to_string(), joined);
     }
 }
 
@@ -4963,7 +5155,7 @@ fn self_chain_origin(expr: &Expr, cx: &PoolCheckCx) -> Origin {
         }
     }
     let Some(root @ Expr::Field { name, .. }) = self_rooted_field(expr) else { return Origin::default() };
-    let sym = Origin::sym(Sym::SelfField(name.name.clone()));
+    let sym = Origin::sym(Sym::SelfField(intern(&name.name)));
     let sym = if std::ptr::eq(root, expr) { sym } else { sym.part() };
     let placed = match receiver_cross_pool(expr, cx) {
         Some(_) => alias_of(expr, cx).map(Origin::whole).unwrap_or_default(),
@@ -5012,12 +5204,12 @@ fn eval_loop(cond: Option<&Expr>, binder: Option<(&str, Origin)>, body: &Block, 
         cx.env.pop();
     };
     let quiet = std::mem::replace(&mut cx.quiet, true);
-    let mut entry = cx.env.clone();
+    let mut entry = cx.env.st.clone();
     loop {
-        cx.env = entry.clone();
+        cx.env.st = entry.clone();
         run(cx);
-        let next = entry.clone().join(std::mem::take(&mut cx.env));
-        if next.key() == entry.key() {
+        let next = entry.clone().join(std::mem::take(&mut cx.env.st));
+        if next.same(&entry) {
             break;
         }
         entry = next;
@@ -5026,13 +5218,13 @@ fn eval_loop(cond: Option<&Expr>, binder: Option<(&str, Origin)>, body: &Block, 
     if quiet {
         // already silent (an enclosing loop's fixpoint, a summary): the
         // last round's exit joined into the entry is the state after
-        cx.env = entry;
+        cx.env.st = entry;
         return;
     }
-    cx.env = entry.clone();
+    cx.env.st = entry.clone();
     run(cx);
-    let out = std::mem::take(&mut cx.env);
-    cx.env = entry.join(out);
+    let out = std::mem::take(&mut cx.env.st);
+    cx.env.st = entry.join(out);
 }
 
 fn eval_stmt(stmt: &Stmt, cx: &mut PoolCheckCx) {
@@ -5148,27 +5340,27 @@ fn eval_stmt(stmt: &Stmt, cx: &mut PoolCheckCx) {
 /// may be either branch's.
 fn eval_if(stmt: &IfStmt, cx: &mut PoolCheckCx) -> Origin {
     eval_expr(&stmt.cond, cx);
-    let before = cx.env.clone();
+    let before = cx.env.st.clone();
     let o_then = eval_block(&stmt.then_block, cx);
-    let then_out = std::mem::replace(&mut cx.env, before);
+    let then_out = std::mem::replace(&mut cx.env.st, before);
     let o_else = match stmt.else_block.as_deref() {
         Some(ElseBranch::Else(b)) => eval_block(b, cx),
         Some(ElseBranch::ElseIf(nested)) => eval_if(nested, cx),
         None => Origin::default(),
     };
-    let else_out = std::mem::take(&mut cx.env);
-    cx.env = then_out.join(else_out);
+    let else_out = std::mem::take(&mut cx.env.st);
+    cx.env.st = then_out.join(else_out);
     o_then.join(o_else)
 }
 
 fn eval_match(stmt: &MatchStmt, cx: &mut PoolCheckCx) -> Origin {
     // a payload bound by a pattern is a part of the scrutinee
     let scrut = eval_expr(&stmt.scrutinee, cx).part();
-    let before = cx.env.clone();
-    let mut out: Option<Env> = None;
+    let before = cx.env.st.clone();
+    let mut out: Option<State> = None;
     let mut value = Origin::default();
     for arm in &stmt.arms {
-        cx.env = before.clone();
+        cx.env.st = before.clone();
         cx.env.push();
         let mut binders = Vec::new();
         pattern_binders(&arm.pattern, &mut binders);
@@ -5184,13 +5376,13 @@ fn eval_match(stmt: &MatchStmt, cx: &mut PoolCheckCx) -> Origin {
         };
         cx.env.pop();
         value = value.join(o);
-        let arm_out = std::mem::take(&mut cx.env);
+        let arm_out = std::mem::take(&mut cx.env.st);
         out = Some(match out {
             Some(o) => o.join(arm_out),
             None => arm_out,
         });
     }
-    cx.env = out.unwrap_or(before);
+    cx.env.st = out.unwrap_or(before);
     value
 }
 
@@ -5233,7 +5425,7 @@ fn eval_expr(expr: &Expr, cx: &mut PoolCheckCx) -> Origin {
             // an array field (`self.ws[i].m()`), a part of a value holding
             // one — by the provenance the walk carries (`Origin`).
             if let Some(CrossPool { field_locus, caller_pool, callee_pool, held_by, locus_type }) =
-                receiver_cross_pool(receiver, cx).or_else(|| recv_origin.whole.clone())
+                receiver_cross_pool(receiver, cx).or_else(|| recv_origin.whole.as_deref().cloned())
             {
                 // F.32-0: receivers with an explicit
                 // sync discipline (`@form(..., sync = X)`,
@@ -5318,9 +5510,12 @@ fn eval_expr(expr: &Expr, cx: &mut PoolCheckCx) -> Origin {
             }
         }
         let arg_origins: Vec<Origin> = args.iter().map(|a| eval_expr(a, cx)).collect();
-        check_call_stores_pool(callee, args, &arg_origins, *span, cx);
-        apply_call_writes(callee, args, &arg_origins, &recv_origin, cx);
-        return call_origin(callee, &recv_origin, &arg_origins, cx);
+        // the callee's summary, resolved once (the call's writes never
+        // change what the receiver is)
+        let resolved = callee_summary(callee, cx);
+        check_call_stores_pool(callee, resolved, args, &arg_origins, *span, cx);
+        apply_call_writes(callee, resolved, args, &arg_origins, &recv_origin, cx);
+        return call_origin(callee, resolved, &recv_origin, &arg_origins, cx);
     }
     if self_rooted_field(expr).is_some() {
         // a field of `self` (or below it): one that runs in another
@@ -5336,10 +5531,10 @@ fn eval_expr(expr: &Expr, cx: &mut PoolCheckCx) -> Origin {
         // with no `else`
         Expr::Binary { op: BinOp::And | BinOp::Or, left, right, .. } => {
             eval_expr(left, cx);
-            let skipped = cx.env.clone();
+            let skipped = cx.env.st.clone();
             eval_expr(right, cx);
-            let ran = std::mem::take(&mut cx.env);
-            cx.env = skipped.join(ran);
+            let ran = std::mem::take(&mut cx.env.st);
+            cx.env.st = skipped.join(ran);
             Origin::default()
         }
         Expr::Binary { left, right, .. } => {
@@ -5401,7 +5596,7 @@ fn eval_expr(expr: &Expr, cx: &mut PoolCheckCx) -> Origin {
         // joined with the success path's state
         Expr::Or { inner, disposition, .. } => {
             let o = eval_expr(inner, cx);
-            let ok = cx.env.clone();
+            let ok = cx.env.st.clone();
             let o = match disposition {
                 OrDisposition::Substitute(e) => o.join(eval_expr(e, cx)),
                 OrDisposition::Fail(e, _) => {
@@ -5410,8 +5605,8 @@ fn eval_expr(expr: &Expr, cx: &mut PoolCheckCx) -> Origin {
                 }
                 OrDisposition::Raise(_) | OrDisposition::Discard(_) | OrDisposition::Wait(_) => o,
             };
-            let failed = std::mem::take(&mut cx.env);
-            cx.env = ok.join(failed);
+            let failed = std::mem::take(&mut cx.env.st);
+            cx.env.st = ok.join(failed);
             o
         }
         Expr::Literal(_, _) | Expr::Path(_) | Expr::KwSelf(_) => Origin::default(),
@@ -5451,7 +5646,7 @@ fn receiver_locus_type(receiver: &Expr, cx: &PoolCheckCx) -> Option<String> {
         }
     }
     if let Expr::Ident(id) = receiver {
-        return cx.env.lookup(&id.name).whole.and_then(|cp| cp.locus_type);
+        return cx.env.lookup(&id.name).whole.and_then(|cp| cp.locus_type.clone());
     }
     let mut segs = Vec::new();
     if !path(receiver, &mut segs) {
@@ -5599,7 +5794,8 @@ fn check_store_pool(target: &LValue, span: Span, cx: &mut PoolCheckCx) {
         // anywhere inside
         let tainted = || {
             let t = tainted_self_field(&recv, cx);
-            if target.tail.len() - below <= 1 { t.whole } else { t.any() }
+            let t = if target.tail.len() - below <= 1 { t.whole } else { t.any() };
+            t.as_deref().cloned()
         };
         match receiver_cross_pool(&recv, cx).or_else(tainted) {
             Some(mut cp) if !cx.decls.slot_is_inline_scalar(&cp.field_locus, &target.tail[below..]) => {
@@ -5635,7 +5831,7 @@ fn check_store_pool(target: &LValue, span: Span, cx: &mut PoolCheckCx) {
                     .as_deref()
                     .is_some_and(|t| cx.decls.slot_is_inline_scalar(t, &target.tail)) =>
             {
-                (cp, target.head.name.clone())
+                ((*cp).clone(), target.head.name.clone())
             }
             _ => return,
         }
@@ -5667,9 +5863,9 @@ fn record_param_store(target: &LValue, o: &Origin, cx: &mut PoolCheckCx) {
     }
     let any: Vec<String> = o
         .syms()
-        .into_iter()
+        .iter()
         .filter_map(|s| match s {
-            Sym::AnyOf(t) => Some(t),
+            Sym::AnyOf(t) => Some(t.to_string()),
             _ => None,
         })
         .collect();
@@ -5686,14 +5882,21 @@ fn record_param_store(target: &LValue, o: &Origin, cx: &mut PoolCheckCx) {
 /// another domain (`put(self.w, s)`, or a local bound to one): the
 /// store would run on this instance's thread, so it is refused as the
 /// store written here would be.
-fn check_call_stores_pool(callee: &Expr, args: &[Expr], arg_origins: &[Origin], span: Span, cx: &mut PoolCheckCx) {
+fn check_call_stores_pool(
+    callee: &Expr,
+    resolved: Option<(&Summary, Option<&Expr>)>,
+    args: &[Expr],
+    arg_origins: &[Origin],
+    span: Span,
+    cx: &mut PoolCheckCx,
+) {
     let fname = match callee {
         Expr::Ident(id) => id.name.clone(),
         Expr::Path(qp) => qp.segments.iter().map(|s| s.name.as_str()).collect::<Vec<_>>().join("::"),
         Expr::Field { name, .. } => name.name.clone(),
         _ => return,
     };
-    let Some((sum, _)) = callee_summary(callee, cx) else { return };
+    let Some((sum, _)) = resolved else { return };
     // stores through a fn value's result: any instance of the type
     for t in &sum.any_stores {
         if cx.acc.is_some() {
@@ -6140,7 +6343,7 @@ fn receiver_cross_pool(receiver: &Expr, cx: &PoolCheckCx) -> Option<CrossPool> {
 /// through the local writes.
 fn alias_of(value: &Expr, cx: &PoolCheckCx) -> Option<CrossPool> {
     let Some(mut cp) = receiver_cross_pool(value, cx) else {
-        return tainted_self_field(value, cx).whole;
+        return tainted_self_field(value, cx).whole.as_deref().cloned();
     };
     cp.locus_type = match &cp.held_by {
         Some(_) => receiver_locus_below(value, &cp.field_locus, cx),
@@ -6182,7 +6385,7 @@ fn tainted_self_field(e: &Expr, cx: &PoolCheckCx) -> Origin {
     // concrete only: a member's own parameter written into the field is
     // what its caller hands in, which the caller's walk applies
     let t = Origin {
-        whole: t.whole.clone().map(|cp| CrossPool { locus_type: None, ..cp }),
+        whole: t.whole.as_ref().map(|cp| Rc::new(CrossPool { locus_type: None, ..(**cp).clone() })),
         parts: t.parts.clone(),
         ..Origin::default()
     };
