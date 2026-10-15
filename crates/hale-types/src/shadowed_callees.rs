@@ -24,9 +24,12 @@
 //! the compiler's whatever a binding of the name holds, in the check as in
 //! lowering.
 //!
-//! Only bodies hold bindings: a fn's, a locus's fns and hooks, a
-//! perspective's fns and `stable_when`. The rewritten callee keeps its
-//! span.
+//! The walk reaches every expression the program holds, every declaration
+//! and member kind named (a new one is a compile error here, not a root
+//! the pass skips): bodies with their parameters in scope, and the roots
+//! outside them (a param's or a field's default, a const, a closure's
+//! assertion, an array type's size) with none, a block in one binding its
+//! own. The rewritten callee keeps its span.
 
 use std::collections::BTreeSet;
 
@@ -81,44 +84,240 @@ impl Walk<'_> {
 
     fn top_decl(&mut self, d: &mut TopDecl) {
         match d {
+            TopDecl::Locus(l) => {
+                if let Some(form) = &mut l.form {
+                    for arg in &mut form.args {
+                        self.expr(&mut arg.value);
+                    }
+                }
+                for member in &mut l.members {
+                    self.locus_member(member);
+                }
+            }
+            TopDecl::Perspective(p) => {
+                for member in &mut p.members {
+                    match member {
+                        PerspectiveMember::Params(pb) => self.params_block(pb),
+                        PerspectiveMember::StableWhen(b) => self.block(b),
+                        PerspectiveMember::SerializeAs(t) => self.ty(t),
+                        PerspectiveMember::Fn(fd) => self.fn_decl(fd),
+                        PerspectiveMember::Bus(bb) => self.bus(bb),
+                    }
+                }
+            }
+            TopDecl::Type(t) => self.type_decl(t),
+            TopDecl::Const(c) => self.const_decl(c),
             TopDecl::Fn(fd) => self.fn_decl(fd),
             TopDecl::Module(md) => {
                 for item in &mut md.items {
                     self.top_decl(item);
                 }
             }
-            TopDecl::Locus(l) => {
-                for member in &mut l.members {
-                    match member {
-                        LocusMember::Fn(fd) => self.fn_decl(fd),
-                        LocusMember::Lifecycle(ld) => self.body(&ld.params, &mut ld.body),
-                        LocusMember::Mode(md) => self.body(&md.params, &mut md.body),
-                        LocusMember::Failure(fd) => self.body(&fd.params, &mut fd.body),
-                        _ => {}
-                    }
+            TopDecl::Interface(i) => {
+                for sig in &mut i.methods {
+                    self.params(&mut sig.params);
                 }
             }
-            TopDecl::Perspective(p) => {
-                for member in &mut p.members {
-                    match member {
-                        PerspectiveMember::Fn(fd) => self.fn_decl(fd),
-                        PerspectiveMember::StableWhen(b) => self.block(b),
-                        _ => {}
-                    }
-                }
-            }
-            _ => {}
+            TopDecl::Topic(t) => self.ty(&mut t.payload),
+            TopDecl::Group(_)
+            | TopDecl::RingLayout(_)
+            | TopDecl::Target(_)
+            | TopDecl::Role(_)
+            | TopDecl::Claims(_)
+            | TopDecl::Constitution(_)
+            | TopDecl::Unit(_)
+            | TopDecl::Api(_) => {}
         }
     }
 
-    fn fn_decl(&mut self, fd: &mut FnDecl) {
-        self.body(&fd.params, &mut fd.body);
+    fn locus_member(&mut self, member: &mut LocusMember) {
+        match member {
+            LocusMember::Params(pb) => self.params_block(pb),
+            LocusMember::Contract(_) => {}
+            LocusMember::Bus(bb) => self.bus(bb),
+            LocusMember::Lifecycle(ld) => self.body(&mut ld.params, &mut ld.body),
+            LocusMember::Mode(md) => self.body(&mut md.params, &mut md.body),
+            LocusMember::Failure(fd) => self.body(&mut fd.params, &mut fd.body),
+            LocusMember::Closure(cd) => {
+                if let Some(a) = &mut cd.assertion {
+                    self.expr(&mut a.left);
+                    self.expr(&mut a.right);
+                    self.expr(&mut a.tolerance);
+                }
+                for clause in &mut cd.clauses {
+                    match clause {
+                        ClosureClause::Epoch(EpochSpec::Duration(e)) => self.expr(e),
+                        ClosureClause::Epoch(
+                            EpochSpec::Tick
+                            | EpochSpec::Birth
+                            | EpochSpec::Dissolve
+                            | EpochSpec::Explicit
+                            | EpochSpec::Inline,
+                        )
+                        | ClosureClause::PersistsThrough(_)
+                        | ClosureClause::ResetsOn(_)
+                        | ClosureClause::ResetsPerEpoch(_)
+                        | ClosureClause::Captures(_) => {}
+                    }
+                }
+            }
+            LocusMember::Fn(fd) => self.fn_decl(fd),
+            LocusMember::Const(c) => self.const_decl(c),
+            LocusMember::Type(t) => self.type_decl(t),
+            LocusMember::Capacity(cb) => {
+                for slot in &mut cb.slots {
+                    self.ty(&mut slot.elem_ty);
+                }
+            }
+            LocusMember::Bindings(bb) => {
+                for entry in &mut bb.entries {
+                    match &mut entry.transport {
+                        TransportSpec::Adapter { inits, .. } => self.struct_inits(inits),
+                        TransportSpec::Unix { .. } | TransportSpec::ShmRing { .. } => {}
+                    }
+                    if let Some(codec) = &mut entry.codec {
+                        self.struct_inits(&mut codec.inits);
+                    }
+                }
+            }
+            LocusMember::BirthCheck(bc) => {
+                self.expr(&mut bc.cond);
+                if let Some(p) = &mut bc.payload {
+                    self.expr(p);
+                }
+            }
+            LocusMember::Placement(_) | LocusMember::Topology(_) | LocusMember::Claims(_) => {}
+        }
     }
 
-    /// A body, its parameters in scope.
-    fn body(&mut self, ps: &[Param], b: &mut Block) {
+    fn params_block(&mut self, pb: &mut ParamsBlock) {
+        for p in &mut pb.params {
+            if let Some(t) = &mut p.ty {
+                self.ty(t);
+            }
+            match &mut p.init {
+                ParamInit::Value(e) => self.expr(e),
+                ParamInit::Inferred => {}
+            }
+        }
+    }
+
+    fn bus(&mut self, bb: &mut BusBlock) {
+        for member in &mut bb.members {
+            match member {
+                BusMember::Subscribe { ty, key_filter, .. } => {
+                    if let Some(t) = ty {
+                        self.ty(t);
+                    }
+                    match key_filter {
+                        Some(KeyFilter::Specific { expr, .. }) => self.expr(expr),
+                        Some(KeyFilter::Unmatched { .. } | KeyFilter::Replica { .. }) | None => {}
+                    }
+                }
+                BusMember::Publish { ty, .. } => {
+                    if let Some(t) = ty {
+                        self.ty(t);
+                    }
+                }
+            }
+        }
+    }
+
+    fn type_decl(&mut self, t: &mut TypeDecl) {
+        match &mut t.body {
+            TypeDeclBody::Alias(a) => self.ty(a),
+            TypeDeclBody::Struct(fields) => {
+                for field in fields {
+                    self.ty(&mut field.ty);
+                    if let Some(d) = &mut field.default {
+                        self.expr(d);
+                    }
+                }
+            }
+            TypeDeclBody::Enum(variants) => {
+                for v in variants {
+                    for t in &mut v.fields {
+                        self.ty(t);
+                    }
+                }
+            }
+            TypeDeclBody::Scalar(sc) => {
+                self.ty(&mut sc.base);
+                for c in &mut sc.clauses {
+                    if let ScalarClause::Range { lo, hi, .. } = c {
+                        self.expr(lo);
+                        self.expr(hi);
+                    }
+                }
+            }
+        }
+    }
+
+    fn const_decl(&mut self, c: &mut ConstDecl) {
+        self.ty(&mut c.ty);
+        self.expr(&mut c.value);
+    }
+
+    fn fn_decl(&mut self, fd: &mut FnDecl) {
+        self.body(&mut fd.params, &mut fd.body);
+    }
+
+    /// A parameter's default is evaluated where the call leaves it, in
+    /// no binding of the body's: walked outside the parameters' scope.
+    fn params(&mut self, ps: &mut [Param]) {
+        for p in ps {
+            self.ty(&mut p.ty);
+            if let Some(d) = &mut p.default {
+                self.expr(d);
+            }
+        }
+    }
+
+    /// A body: its parameters' types and defaults, then the body with the
+    /// parameters in scope.
+    fn body(&mut self, ps: &mut [Param], b: &mut Block) {
+        self.params(ps);
         let names = ps.iter().map(|p| p.name.name.clone()).collect();
         self.scoped(names, |w| w.block(b));
+    }
+
+    /// An array type's size is an expression.
+    fn ty(&mut self, t: &mut TypeExpr) {
+        match t {
+            TypeExpr::Named { generic_args, .. } => {
+                for a in generic_args {
+                    self.ty(a);
+                }
+            }
+            TypeExpr::Projection { inner, .. } => self.ty(inner),
+            TypeExpr::Array { elem, size, .. } => {
+                self.ty(elem);
+                if let Some(e) = size {
+                    self.expr(e);
+                }
+            }
+            TypeExpr::Bounded { elem, .. } => self.ty(elem),
+            TypeExpr::Tuple(elems, _) => {
+                for e in elems {
+                    self.ty(e);
+                }
+            }
+            TypeExpr::Function { params, ret, .. } => {
+                for p in params {
+                    self.ty(p);
+                }
+                if let Some(r) = ret {
+                    self.ty(r);
+                }
+            }
+            TypeExpr::Primitive(..) | TypeExpr::Perspective { .. } => {}
+        }
+    }
+
+    fn struct_inits(&mut self, inits: &mut [StructInit]) {
+        for init in inits {
+            self.expr(&mut init.value);
+        }
     }
 
     fn block(&mut self, b: &mut Block) {
@@ -249,11 +448,7 @@ impl Walk<'_> {
                     self.expr(a);
                 }
             }
-            Expr::Struct { inits, .. } => {
-                for i in inits {
-                    self.expr(&mut i.value);
-                }
-            }
+            Expr::Struct { inits, .. } => self.struct_inits(inits),
             Expr::Binary { left, right, .. } => {
                 self.expr(left);
                 self.expr(right);

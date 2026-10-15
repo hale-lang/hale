@@ -679,6 +679,30 @@ fn a_fn_value_in_scope_shadows_a_builtin_in_a_call() {
     }
 }
 
+/// The rule holds in every expression a program holds, not only in
+/// bodies: a block that binds a fn value in a const, a record field's
+/// default, a locus param's default or a fn param's default calls the
+/// binding (each printed 3, the top-level `f`'s answer).
+///
+/// Plain string literals, for the reason given above.
+#[test]
+fn a_fn_value_shadows_a_fn_outside_bodies_too() {
+    let src = "fn f(n: Int) -> Int { return n + 1; }\n\
+               fn g(n: Int) -> Int { return n * 10; }\n\
+               const C: Int = { let f = g; f(2) };\n\
+               type R { v: Int = { let f = g; f(3) }; }\n\
+               locus L {\n\
+                   params { p: Int = { let f = g; f(4) }; }\n\
+               }\n\
+               fn d(x: Int = { let f = g; f(5) }) -> Int { return x; }\n\
+               fn main() {\n\
+                   let l = L { };\n\
+                   let r = R { };\n\
+                   println(C, \" \", r.v, \" \", l.p, \" \", d());\n\
+               }\n";
+    assert_eq!(build_and_run_probe(src, "shadowing_outside_bodies"), Ok("20 30 40 50\n".to_string()), "{src}");
+}
+
 /// GH #1076 (U1, review 2): a struct field's default is evaluated in the
 /// scope of the literal that leaves the field, so `Money(1)` in it calls
 /// the constructing fn's local `Money` (a fn), not the scalar type the
