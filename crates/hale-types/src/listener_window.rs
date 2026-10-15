@@ -47,7 +47,7 @@
 //! | a fn used as a value | a fn passed, stored or bound may be called by what receives it, so it is judged as a call of it |
 //! | a publish that may wait | to a topic a binding carries over a unix socket (a write), an adapter (its `send`, user code the window does not follow) or a shared-memory ring `on_overflow: block` |
 //! | a recovery | `restart`, `resume`, `quarantine`, …: it rebuilds a child the window does not follow |
-//! | a handler a publish reaches | every handler subscribed to the topic (by its name or its subject) is judged as a call: one on the main thread runs inside the window, delivered in place or drained from main's queue between births, and the window does not split the two (nor by where the subscriber is placed: over-approximate). The runtime's own loci (`__Std…`) are the standard library's, judged by their classes |
+//! | a handler a publish reaches on the main thread | judged as a call: every subscription of a locus the placement table puts on main (or cannot place) whose pattern the runtime matches the publish's subject against (the topic's subject, or a trailing-`**` wildcard over it; a `where key == …` filter taken as matching); for a subject built at run time, every such subscription of the published record's type (every one, when the value is no record literal). A main-thread handler runs inside the window, delivered in place or drained from main's queue between births; a subscriber on another domain is a cross-thread enqueue main does not wait for. The runtime's own loci (`__Std…`) are the standard library's, judged by their classes |
 //! | a `yield` | refused outright: it runs whatever main's queue holds, which no analysis of the step can name (judging every handler that could be queued on main would refuse the same programs less legibly) |
 //! | too deep | constructions and defaults nested past 32 levels |
 //!
@@ -385,9 +385,14 @@ pub(crate) struct Window<'a> {
     /// adapter's `send` (user code the window does not follow), a shared
     /// memory ring `on_overflow: block`.
     waiting_topics: BTreeSet<String>,
-    /// Every handler subscribed to a topic, by the topic's name and by its
-    /// subject: `(locus, handler)`.
-    handlers: BTreeMap<String, Vec<(String, String)>>,
+    /// Each topic by name: its subject (its name when it declares none)
+    /// and its payload's type.
+    topics: BTreeMap<String, (String, Option<String>)>,
+    /// Every subscription whose locus may run on the main thread (an
+    /// instance the placement table puts on main, or one it cannot place):
+    /// `(pattern, payload type, locus, handler)`, the pattern the
+    /// subject or wildcard the runtime matches a publish against.
+    main_handlers: Vec<(String, Option<String>, String, String)>,
     /// The evaluation path the walk is on, as the checker keeps it
     /// (`default_evaluation`): each struct literal that leaves a field and
     /// each call that leaves a parameter whose default is being walked,
@@ -396,14 +401,24 @@ pub(crate) struct Window<'a> {
     path: RefCell<Vec<u32>>,
 }
 
+/// One publish: the subject as spelled (a topic's name, a literal subject,
+/// or a local holding a subject built at run time), whether it is a
+/// literal, and the payload's type when its value is a record literal.
+#[derive(Clone, Copy)]
+struct Sent<'a> {
+    spelled: Option<&'a str>,
+    literal: bool,
+    payload: Option<&'a str>,
+}
+
 /// What a walked expression holds, collected before it is judged.
 #[derive(Default)]
 struct Found<'a> {
     /// a statement that may not end on its own: a `while` loop, an `or
     /// wait`, a recovery
     stall: Option<&'static str>,
-    /// the topics (or literal subjects) it publishes to
-    sends: Vec<&'a str>,
+    /// what it publishes ([`Sent`])
+    sends: Vec<Sent<'a>>,
     calls: Vec<&'a Expr>,
     literals: Vec<&'a Expr>,
     /// every name read (`Ident`, `Path`): a const among them is its
@@ -428,13 +443,22 @@ fn collect<'a>(v: Visited<'a>, found: &mut Found<'a>) {
         Visited::Stmt(Stmt::While { .. }) | Visited::OrWait => found.stall = Some(LOOP),
         Visited::Stmt(Stmt::Recovery { .. }) => found.stall = found.stall.or(Some(RECOVERY)),
         Visited::Stmt(Stmt::Yield(_)) => found.stall = found.stall.or(Some(YIELD)),
-        Visited::Stmt(Stmt::Send { subject, .. }) => match subject {
-            Expr::Ident(i) => found.sends.push(&i.name),
-            Expr::Path(qn) => found.sends.extend(qn.segments.last().map(|s| s.name.as_str())),
-            Expr::Literal(hale_syntax::ast::Literal::String(s), _) => found.sends.push(s),
-            _ => {}
-        },
-        Visited::Stmt(Stmt::ShmWrite { topic, .. }) => found.sends.push(&topic.name),
+        Visited::Stmt(Stmt::Send { subject, value, .. }) => {
+            let payload = match value {
+                Expr::Struct { path, .. } => path.segments.last().map(|s| s.name.as_str()),
+                _ => None,
+            };
+            let (spelled, literal) = match subject {
+                Expr::Ident(i) => (Some(i.name.as_str()), false),
+                Expr::Path(qn) => (qn.segments.last().map(|s| s.name.as_str()), false),
+                Expr::Literal(hale_syntax::ast::Literal::String(s), _) => (Some(s.as_str()), true),
+                _ => (None, false),
+            };
+            found.sends.push(Sent { spelled, literal, payload });
+        }
+        Visited::Stmt(Stmt::ShmWrite { topic, .. }) => {
+            found.sends.push(Sent { spelled: Some(&topic.name), literal: false, payload: None })
+        }
         Visited::Expr(e @ Expr::Call { .. }) => found.calls.push(e),
         Visited::Expr(e @ Expr::Struct { .. }) => found.literals.push(e),
         Visited::Expr(e @ (Expr::Ident(_) | Expr::Path(_))) => found.names.push(e),
@@ -493,6 +517,7 @@ impl<'a> Window<'a> {
         effects: Option<&'a EffectRows>,
         renames: &'a [(Vec<String>, String)],
         typed: &'a crate::typed_bodies::TypedBodies,
+        placement: &crate::placement::PlacementTable,
     ) -> Self {
         let mut bodies = BTreeMap::new();
         let mut params = BTreeMap::new();
@@ -502,7 +527,12 @@ impl<'a> Window<'a> {
         let mut types = BTreeSet::new();
         let mut waiting_topics = BTreeSet::new();
         let mut subjects: BTreeMap<String, String> = BTreeMap::new();
-        let mut subscribed: Vec<(String, String, String)> = Vec::new();
+        let mut subscribed: Vec<(&'a hale_syntax::ast::BusSubject, Option<String>, String, String)> = Vec::new();
+        let mut topics: BTreeMap<String, (String, Option<String>)> = BTreeMap::new();
+        let type_name = |t: &TypeExpr| match t {
+            TypeExpr::Named { path, .. } => path.segments.last().map(|s| s.name.clone()),
+            _ => None,
+        };
         let record = |t: &'a TypeDecl, records: &mut BTreeMap<String, &'a [StructField]>| {
             if let TypeDeclBody::Struct(fields) = &t.body {
                 records.entry(t.name.name.clone()).or_insert(fields.as_slice());
@@ -523,6 +553,8 @@ impl<'a> Window<'a> {
                         if let Some(subject) = &t.subject {
                             subjects.insert(t.name.name.clone(), subject.clone());
                         }
+                        let subject = t.subject.clone().unwrap_or_else(|| t.name.name.clone());
+                        topics.insert(t.name.name.clone(), (subject, type_name(&t.payload)));
                     }
                     hale_syntax::ast::TopDecl::Type(t) => {
                         types.insert(t.name.name.clone());
@@ -552,15 +584,13 @@ impl<'a> Window<'a> {
                                 LocusMember::Type(t) => record(t, &mut records),
                                 LocusMember::Bus(b) => {
                                     for m in &b.members {
-                                        if let BusMember::Subscribe { subject, handler, .. } = m {
-                                            let topic = match subject {
-                                                hale_syntax::ast::BusSubject::Literal { subject, .. } => subject.clone(),
-                                                hale_syntax::ast::BusSubject::Topic(t) => t.name.clone(),
-                                                hale_syntax::ast::BusSubject::QualifiedTopic(qn) => {
-                                                    qn.segments.last().map(|s| s.name.clone()).unwrap_or_default()
-                                                }
-                                            };
-                                            subscribed.push((topic, x.name.name.clone(), handler.name.clone()));
+                                        if let BusMember::Subscribe { subject, handler, ty, .. } = m {
+                                            subscribed.push((
+                                                subject,
+                                                ty.as_ref().and_then(type_name),
+                                                x.name.name.clone(),
+                                                handler.name.clone(),
+                                            ));
                                         }
                                     }
                                 }
@@ -588,15 +618,34 @@ impl<'a> Window<'a> {
         }
         let by_subject: Vec<String> = waiting_topics.iter().filter_map(|t| subjects.get(t).cloned()).collect();
         waiting_topics.extend(by_subject);
-        // a handler is reached by a send naming its topic or its subject
-        let mut handlers: BTreeMap<String, Vec<(String, String)>> = BTreeMap::new();
-        for (topic, locus, handler) in subscribed {
-            let mut keys = vec![topic.clone()];
-            keys.extend(subjects.get(&topic).cloned());
-            keys.extend(subjects.iter().filter(|(_, s)| **s == topic).map(|(t, _)| t.clone()));
-            for k in keys {
-                handlers.entry(k).or_default().push((locus.clone(), handler.clone()));
+        // a handler runs inside the window only on the main thread: a
+        // publish to a subscriber on another domain is a cross-thread
+        // enqueue main does not wait for. The runtime's own loci (`__Std…`,
+        // the serve expansion's exposure among them) are the standard
+        // library's, judged by their classes where they are called.
+        let domains = placement.domains_by_type();
+        let on_main = |locus: &str| {
+            !locus.starts_with("__")
+                && domains
+                    .get(locus)
+                    .is_some_and(|d| d.unknown || d.known.contains(&crate::placement::PlacementTable::MAIN))
+        };
+        let mut main_handlers = Vec::new();
+        for (subject, ty, locus, handler) in subscribed {
+            if !on_main(&locus) {
+                continue;
             }
+            let (pattern, payload) = match subject {
+                hale_syntax::ast::BusSubject::Literal { subject, .. } => (subject.clone(), ty),
+                hale_syntax::ast::BusSubject::Topic(t) => {
+                    topics.get(&t.name).cloned().unwrap_or_else(|| (t.name.clone(), ty))
+                }
+                hale_syntax::ast::BusSubject::QualifiedTopic(qn) => {
+                    let name = qn.segments.last().map(|s| s.name.clone()).unwrap_or_default();
+                    topics.get(&name).cloned().unwrap_or((name, ty))
+                }
+            };
+            main_handlers.push((pattern, payload, locus, handler));
         }
         Window {
             effects,
@@ -610,7 +659,8 @@ impl<'a> Window<'a> {
             types,
             typed,
             waiting_topics,
-            handlers,
+            topics,
+            main_handlers,
             path: RefCell::new(Vec::new()),
         }
     }
@@ -717,7 +767,18 @@ impl<'a> Window<'a> {
             return Some((at, "it has a statement of its own, and the blocking analysis has no row for it"));
         };
         let mut seen = BTreeSet::new();
-        self.judge_fn(row, &mut seen, depth).map(|(_, why)| (at, why))
+        // the hook itself, or what it reaches (a fn it calls, a handler a
+        // publish in it runs)
+        let own = format!("`{}::{hook}`", locus.name.name);
+        self.judge_fn(row, &mut seen, depth).map(|(inner, why)| {
+            if inner == own {
+                (at, why)
+            } else if let Some(rest) = inner.strip_prefix(&format!("{own}, through ")) {
+                (format!("{at}, through {rest}"), why)
+            } else {
+                (through(at, inner), why)
+            }
+        })
     }
 
     /// The declaration a call's callee names, as the checker resolves it:
@@ -932,26 +993,50 @@ impl<'a> Window<'a> {
     /// wait`, a recovery, or a publish to a topic a transport that may wait
     /// carries.
     fn stall(&self, found: &Found<'_>) -> Option<&'static str> {
-        found.stall.or_else(|| found.sends.iter().any(|t| self.waiting_topics.contains(*t)).then_some(SEND_WAITS))
+        found
+            .stall
+            .or_else(|| found.sends.iter().any(|s| s.spelled.is_some_and(|t| self.waiting_topics.contains(t))).then_some(SEND_WAITS))
     }
 
-    /// The handlers a publish in `found` reaches, each judged as a call of
-    /// it: every handler subscribed to the topic, wherever it runs (one on
-    /// the main thread runs inside the window, delivered in place or
-    /// drained from main's queue between births, and the window does not
-    /// split the two).
+    /// The handlers a publish in `found` can run on the main thread, each
+    /// judged as a call of it: every main-thread subscription whose pattern
+    /// the runtime matches the publish's subject against (a topic's
+    /// subject, or a trailing-`**` wildcard over it; a `where key == …`
+    /// filter taken as matching). A subject built at run time may reach
+    /// any of them whose payload type is the published record's (any, when
+    /// the published value is no record literal). A handler on the main
+    /// thread runs inside the window, delivered in place or drained from
+    /// main's queue between births; one on another domain is a cross-thread
+    /// enqueue main does not wait for.
     fn delivered(&self, found: &Found<'_>, depth: usize) -> Option<(String, &'static str)> {
-        for topic in &found.sends {
-            // the runtime's own loci (`__Std…`, the serve expansion's
-            // exposure among them) are the standard library's, judged by
-            // their classes where they are called, not walked here
-            for (locus, handler) in self.handlers.get(*topic).into_iter().flatten().filter(|(l, _)| !l.starts_with("__")) {
+        for sent in &found.sends {
+            // the concrete subject, when the publish spells one
+            let subject: Option<String> = match sent.spelled {
+                Some(s) if sent.literal => Some(s.to_string()),
+                Some(name) => self.topics.get(name).map(|(subject, _)| subject.clone()),
+                None => None,
+            };
+            for (pattern, payload, locus, handler) in &self.main_handlers {
+                let reached = match &subject {
+                    Some(s) => crate::wildcard_match(pattern, s),
+                    None => match (sent.payload, payload) {
+                        (Some(sent), Some(sub)) => sent == sub,
+                        _ => true,
+                    },
+                };
+                if !reached {
+                    continue;
+                }
                 if let Some(row) = self.row(Some(locus), handler) {
                     let mut seen = BTreeSet::new();
                     if let Some((at, why)) = self.judge_fn(row, &mut seen, depth + 1) {
                         let own = format!("`{locus}::{handler}`");
                         let inner = if at == own { String::new() } else { at };
-                        return Some((through(format!("{own}, a handler of `{topic}`"), inner), why));
+                        let what = match &subject {
+                            Some(s) => format!("{own}, a handler on the main thread of `{s}`"),
+                            None => format!("{own}, a handler on the main thread a subject built at run time may reach"),
+                        };
+                        return Some((through(what, inner), why));
                     }
                 }
             }

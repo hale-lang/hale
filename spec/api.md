@@ -424,9 +424,15 @@ param default that reaches its own call again; a fn used as a value,
 judged as a call of it; a publish to a topic a binding carries over a
 unix socket, an adapter or a shared-memory ring `on_overflow: block`; a
 recovery (`restart`, …), which rebuilds a child the check does not
-follow; every handler subscribed to a topic the step publishes to, judged
-as a call (a handler on the main thread runs inside the window, delivered
-in place or drained from main's queue between births); a `yield`, which
+follow; every handler a publish in the step can run on the main thread,
+judged as a call: the subscriptions of loci placed on main (or that
+placement cannot place) whose pattern the runtime matches the subject
+against (the topic's subject, or a trailing `**` over it; a `where key
+== …` filter taken as matching), and, for a subject built at run time,
+every such subscription of the published payload's type (a handler on
+the main thread runs inside the window, delivered in place or drained
+from main's queue between births; a subscriber on another pool runs on
+its own thread, and main does not wait for it); a `yield`, which
 runs whatever main's queue holds and is refused outright; and
 constructions nested past 32 levels. A `for` loop always ends
 (its range, array, buffer, form or batch is finite when it starts).

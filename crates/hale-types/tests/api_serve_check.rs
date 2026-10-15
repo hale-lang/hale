@@ -503,7 +503,7 @@ fn what_main_builds_before_a_listener_born_after_its_server_must_return() {
         // a publish runs its subscribers' handlers inside the window, and a
         // `yield` runs whatever main's queue holds
         ("a sibling's birth() publishes to a spinning handler", "", "sub: Sub = Sub { }; p: Pub = Pub { }; server: Server = Server { };", &format!("{PINGS}\n{SUB_SPINS}\n{PUB_BIRTH}"), "", Some("`Pub`'s `birth()`")),
-        ("a default calls a method that publishes to a spinning handler", "", "sub: Sub = Sub { }; p: Pub = Pub { }; n: Int = self.p.announce(); server: Server = Server { };", &format!("{PINGS}\n{SUB_SPINS}\nlocus Pub {{\n    bus {{ publish Pings; }}\n    fn announce() -> Int {{ Pings <- Ping {{ id: 1 }}; return 0; }}\n}}"), "", Some("the default of `App.n`, through `Pub::announce`, through `Sub::on_ping`, a handler of `Pings`")),
+        ("a default calls a method that publishes to a spinning handler", "", "sub: Sub = Sub { }; p: Pub = Pub { }; n: Int = self.p.announce(); server: Server = Server { };", &format!("{PINGS}\n{SUB_SPINS}\nlocus Pub {{\n    bus {{ publish Pings; }}\n    fn announce() -> Int {{ Pings <- Ping {{ id: 1 }}; return 0; }}\n}}"), "", Some("the default of `App.n`, through `Pub::announce`, through `Sub::on_ping`, a handler on the main thread of `t.pings`")),
         ("a sibling's birth() publishes to a returning handler", "", "sub: Sub = Sub { }; p: Pub = Pub { }; server: Server = Server { };", &format!("{PINGS}\n{SUB_RETURNS}\n{PUB_BIRTH}"), "", None),
         ("a publish to a spinning handler after the server", "", "server: Server = Server { }; sub: Sub = Sub { }; p: Pub = Pub { };", &format!("{PINGS}\n{SUB_SPINS}\n{PUB_BIRTH}"), "", None),
         ("a sibling's birth() yields", "", "y: Yielder = Yielder { }; server: Server = Server { };", "locus Yielder { birth() { println(\"y\"); yield; } }", "", Some("a `yield`")),
@@ -932,4 +932,58 @@ fn a_publish_that_may_wait_and_a_recovery_before_the_listener_are_refused() {
         1,
     );
     assert_eq!(errors(&placed), Vec::<String>::new(), "{placed}");
+}
+
+/// A publish before the listener runs the handlers it can run on the main
+/// thread, matched as the runtime matches: a subscription on the topic's
+/// subject or a trailing-`**` wildcard over it, and, for a subject built
+/// at run time, any main-thread subscription of the published payload's
+/// type. A subscriber placed on another pool is a cross-thread enqueue
+/// main does not wait for.
+#[test]
+fn a_publish_before_the_listener_runs_its_main_thread_handlers() {
+    let program = |subscriber: &str, publisher_birth: &str, placement: &str| {
+        let src = server(SERVED, "s: Spin = Spin { }; p: Pub = Pub { }; server: Server = Server { };").replace(
+            "fn main()",
+            &format!(
+                "type Ping {{ id: Int = 0; }}\ntopic Pings {{ payload: Ping; subject: \"t.pings\"; }}\n{subscriber}\n\
+                 locus Pub {{\n    bus {{ publish Pings; publish \"t.**\" of type Ping; }}\n    birth() {{ {publisher_birth} }}\n}}\nfn main()"
+            ),
+        );
+        if placement.is_empty() {
+            src
+        } else {
+            src.replacen("    run() { }\n", &format!("    placement {{ {placement} }}\n    run() {{ }}\n"), 1)
+        }
+    };
+    let refused = |src: &str, at: &str| {
+        let errs = errors(src);
+        assert!(
+            errs.iter().any(|e| e.contains("`Pub`'s `birth()`") && e.contains(at) && e.contains("may not return")),
+            "refused at {at}: {errs:#?}\n{src}"
+        );
+    };
+    let admitted = |src: &str| assert_eq!(errors(src), Vec::<String>::new(), "{src}");
+    const WILD_SPINS: &str =
+        "locus Spin {\n    bus { subscribe \"t.**\" as on_any of type Ping; }\n    fn on_any(p: Ping) { while !self.draining { } }\n}";
+    const WILD_RETURNS: &str =
+        "locus Spin {\n    bus { subscribe \"t.**\" as on_any of type Ping; }\n    fn on_any(p: Ping) { println(\"any\"); }\n}";
+    const EXACT_SPINS: &str =
+        "locus Spin {\n    bus { subscribe Pings as on_ping; }\n    fn on_ping(p: Ping) { while !self.draining { } }\n}";
+    const EXACT_SLEEPS: &str =
+        "locus Spin {\n    bus { subscribe Pings as on_ping; }\n    fn on_ping(p: Ping) { std::time::sleep(2s); }\n}";
+    const PUBLISH: &str = "Pings <- Ping { id: 1 };";
+    const COMPUTED: &str = "let subj = \"t.\" + \"pings\"; subj <- Ping { id: 1 };";
+    // a wildcard subscription on main reaches the topic's publish
+    refused(&program(WILD_SPINS, PUBLISH, ""), "`Spin::on_any`, a handler on the main thread of `t.pings`");
+    // a subject built at run time reaches every main-thread handler of its payload
+    refused(&program(EXACT_SPINS, COMPUTED, ""), "a handler on the main thread a subject built at run time may reach");
+    // the same wildcard subscriber returning: admitted
+    admitted(&program(WILD_RETURNS, PUBLISH, ""));
+    admitted(&program(WILD_RETURNS, COMPUTED, ""));
+    // the subscriber on another pool: its handler runs there, main does not wait
+    admitted(&program(EXACT_SLEEPS, PUBLISH, "s: cooperative(pool = io);"));
+    admitted(&program(EXACT_SPINS, PUBLISH, "s: cooperative(pool = io);"));
+    // ... and on main it is refused
+    refused(&program(EXACT_SLEEPS, PUBLISH, ""), "`Spin::on_ping`");
 }

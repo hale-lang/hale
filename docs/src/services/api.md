@@ -426,7 +426,8 @@ one that waits on its exposure (itself, or through a fn it calls), sleeps,
 reads, or loops in a `while`, wherever the loop sits; one that recurses
 (even a recursion with a base case: the check cannot prove it ends);
 one that publishes over a socket, an adapter or a blocking ring, or to a
-topic whose handler would itself be refused; one that `yield`s; and one
+topic whose handler on the main thread would itself be refused (a
+subscriber on another pool runs there, and does not hold `App` up); one that `yield`s; and one
 that restarts a child. A step that
 returns, like `run() { println("started"); }`, is fine. Place a server
 whose `run()` waits, wait in `App`'s `run()`, or give the listener an

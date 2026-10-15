@@ -1423,6 +1423,7 @@ pub fn serve_laws(
     entry: &crate::entry::EntryRow,
     effects: &EffectsLookup<'_>,
     typed_bodies: &crate::typed_bodies::TypedBodies,
+    placement: &crate::placement::PlacementTable,
 ) -> Vec<Diag> {
     let programs: Vec<&Program> = bundle.programs.values().copied().collect();
     let mut diags = Vec::new();
@@ -1471,7 +1472,7 @@ pub fn serve_laws(
                     }
                 }
                 TopDecl::Locus(l) => {
-                    serve_laws_of(bundle, entry, l, rows, &surface_names, &loci, effects, typed_bodies, &mut first_named, &mut diags);
+                    serve_laws_of(bundle, entry, l, rows, &surface_names, &loci, effects, typed_bodies, placement, &mut first_named, &mut diags);
                     hub_laws_of(l, &published, &mut first_named, &mut diags);
                 }
                 _ => {}
@@ -1655,6 +1656,7 @@ fn serve_laws_of(
     loci: &BTreeMap<&str, &LocusDecl>,
     effects: &EffectsLookup<'_>,
     typed_bodies: &crate::typed_bodies::TypedBodies,
+    placement: &crate::placement::PlacementTable,
     first_named: &mut BTreeMap<String, Span>,
     diags: &mut Vec<Diag>,
 ) {
@@ -1936,7 +1938,7 @@ fn serve_laws_of(
                 if let Some(addr) = &address {
                     if crate::rpc_expand::reads_holder(addr) {
                         let programs: Vec<&Program> = bundle.programs.values().copied().collect();
-                        let window = crate::listener_window::Window::new(&programs, loci, effects(), &bundle.import_renames, typed_bodies);
+                        let window = crate::listener_window::Window::new(&programs, loci, effects(), &bundle.import_renames, typed_bodies, placement);
                         let sites = window.constructions_of(&programs, &c.main);
                         let step = loci.get(c.main.as_str()).and_then(|m| window.before_listener(m, root, &sites));
                         if let Some((step, why)) = step {
