@@ -3651,15 +3651,7 @@ impl<'p, 'a> Walk<'p, 'a> {
                 continue;
             }
             let hit = self.writes.iter().any(|w| {
-                w.at > inst.at
-                    && w.writes.touches(&inst.keys, self.p)
-                    && self.uses[inst.var].iter().any(|&u| {
-                        // after the write, on a path that runs both
-                        (u >= w.start && !self.exclusive(w.at, u))
-                            || self.loops.iter().any(|&(ls, le)| {
-                                ls > self.declared[inst.var] && ls <= u.min(w.start) && u.max(w.at) <= le
-                            })
-                    })
+                w.writes.touches(&inst.keys, self.p) && self.reaches(inst.var, inst.at, w.start, w.at, true)
             });
             if hit {
                 owned[i] = true;
@@ -3667,6 +3659,57 @@ impl<'p, 'a> Walk<'p, 'a> {
             }
         }
         (out, owned)
+    }
+
+    /// Whether a use of the local `v`, holding the instance bound at
+    /// `bound`, may run after a write evaluated over `start..=at`.
+    ///
+    /// On one pass through the body: a use at or after the write's start,
+    /// once the instance is bound before it, on a path that runs both
+    /// (`arms`: not in another arm of a branch the write is in).
+    ///
+    /// Across the back-edge of a loop holding the write whose iterations
+    /// `v` outlives (declared before the loop), which the text's order
+    /// does not show:
+    /// - bound before the loop, the instance meets every iteration's
+    ///   write: any use in the loop may follow one;
+    /// - bound in the loop where every iteration surely binds it again
+    ///   ([`Self::surely_bound`]), the instance lives until the next
+    ///   iteration's binding: a use ahead of that binding in the text,
+    ///   after a write behind the binding or ahead of the use;
+    /// - bound in the loop where an iteration may not bind it (in an arm,
+    ///   an inner loop, after a `break` or `continue`), it may live on
+    ///   through any later iteration and out of the loop: any use in the
+    ///   loop or after it (`saved = s` in one arm, the write in the
+    ///   other, which the text puts first).
+    fn reaches(&self, v: usize, bound: u32, start: u32, at: u32, arms: bool) -> bool {
+        self.uses[v].iter().any(|&u| {
+            (at > bound && u >= start && !(arms && self.exclusive(at, u)))
+                || self.loops.iter().any(|&(ls, le)| {
+                    if !(ls > self.declared[v] && ls <= start && at <= le) || bound > le {
+                        return false;
+                    }
+                    let in_loop = ls <= u && u <= le;
+                    if bound < ls {
+                        return in_loop;
+                    }
+                    if self.surely_bound(bound, ls, le) {
+                        in_loop && u < bound && (at > bound || start <= u)
+                    } else {
+                        u >= ls
+                    }
+                })
+        })
+    }
+
+    /// Does every iteration of the loop `ls..le` reach the binding at
+    /// `bound`: in no arm and no inner loop of it, and no `break` or
+    /// `continue` ahead of it?
+    fn surely_bound(&self, bound: u32, ls: u32, le: u32) -> bool {
+        let inside = |s: u32, e: u32| ls < s && e <= le && s < bound && bound <= e;
+        !self.arms.iter().flatten().any(|&(s, e)| inside(s, e))
+            && !self.loops.iter().any(|&(s, e)| (s, e) != (ls, le) && inside(s, e))
+            && !self.exits.iter().any(|&(x, _)| ls < x && x < bound)
     }
 
     fn own_inst(&self, inst: &Inst, out: &mut Vec<(Site, String)>) {
@@ -3962,9 +4005,6 @@ impl<'p, 'a> Walk<'p, 'a> {
                 }
             };
             for (i, inst) in self.insts.iter().enumerate() {
-                if inst.at >= at {
-                    continue;
-                }
                 let v = inst.var;
                 // A call writing anything under the place: only a binding
                 // known to hold a block that is neither a struct (copied at
@@ -3979,10 +4019,9 @@ impl<'p, 'a> Walk<'p, 'a> {
                 if written.strip_prefix('@').and_then(|r| r.split('.').next()).and_then(|n| n.parse::<usize>().ok()) == Some(v) {
                     continue;
                 }
-                let live = self.uses[v].iter().any(|&u| {
-                    u > at || self.loops.iter().any(|&(ls, le)| ls > self.declared[v] && ls <= u.min(at) && u.max(at) <= le)
-                });
-                if live {
+                // (A use strictly after the call: its arguments are uses
+                // before it.)
+                if self.reaches(v, inst.at, at + 1, at, false) {
                     hit.push(i);
                 }
             }
@@ -4190,6 +4229,43 @@ mod tests {
         );
         // Bound inside the loop: each iteration's binding is fresh.
         assert!(with(r#"let mut i = 0; while i < 2 { let s = self.f.s; println(s); self.put("n"); i = i + 1; }"#)
+            .is_empty());
+    }
+
+    /// A view saved, in one iteration, into a local the loop does not
+    /// rebind is seen after a write a later iteration makes, though the
+    /// text puts the write first (the review's `saved = s` in the `else`
+    /// arm, `self.put()` in the `then` arm): every use of the saved local,
+    /// in the loop or after it. The view bound in the iteration and dead
+    /// at its end stays one where only its own arm uses it.
+    #[test]
+    fn a_view_saved_across_a_back_edge_meets_a_later_iterations_write() {
+        let saved = with(
+            r#"let mut saved = ""; let mut i = 0; while i < 2 { let s = self.f.s; if i == 1 { self.put("n"); } else { saved = s; } i = i + 1; } println(saved);"#,
+        );
+        assert_eq!(saved, ["saved"], "the save is owned: {saved:?}");
+        // A use inside the loop, ahead of the save in the text.
+        assert_eq!(
+            with(
+                r#"let mut saved = ""; let mut i = 0; while i < 2 { println(saved); let s = self.f.s; if i == 1 { self.put("n"); } else { saved = s; } i = i + 1; }"#
+            ),
+            ["saved"]
+        );
+        // Saved after the write by every iteration: the instance a use
+        // after the loop reads is the last one's, bound after its write.
+        assert!(with(
+            r#"let mut saved = ""; let mut i = 0; while i < 2 { self.put("n"); let s = self.f.s; saved = s; i = i + 1; } println(saved);"#
+        )
+        .is_empty());
+        // ...unless a `break` may leave between the write and the save.
+        assert_eq!(
+            with(
+                r#"let mut saved = ""; let mut i = 0; while i < 2 { self.put("n"); if i == 1 { break; } let s = self.f.s; saved = s; i = i + 1; } println(saved);"#
+            ),
+            ["saved"]
+        );
+        // A local of the iteration's own, saved nowhere: a view still.
+        assert!(with(r#"let mut i = 0; while i < 2 { let s = self.f.s; if i == 1 { self.put("n"); } else { println(s); } i = i + 1; }"#)
             .is_empty());
     }
 

@@ -40,7 +40,12 @@ fn owned_in(b: &Block, fn_name: &str, views: &OwnedViews, out: &mut BTreeSet<Str
         }
         match s {
             Stmt::For { body, .. } | Stmt::While { body, .. } | Stmt::Block(body) => owned_in(body, fn_name, views, out),
-            Stmt::If(i) => owned_in(&i.then_block, fn_name, views, out),
+            Stmt::If(i) => {
+                owned_in(&i.then_block, fn_name, views, out);
+                if let Some(hale_syntax::ast::ElseBranch::Else(b)) = i.else_block.as_deref() {
+                    owned_in(b, fn_name, views, out);
+                }
+            }
             _ => {}
         }
     }
@@ -544,4 +549,35 @@ fn the_route_chain_under_a_middleware_copies_only_the_context() {
     let want: BTreeSet<String> =
         ["assign cur = before", "let mlen", "let rlen"].into_iter().map(str::to_string).collect();
     assert_eq!(got, want);
+}
+
+/// A view saved in one iteration of a loop into a local the loop does not
+/// rebind, and a write in a later iteration that the text puts first (the
+/// other arm of the same `if`): `saved` is copied where it is saved, or
+/// `H.put` retires the block it points at before the return reads it. The
+/// arms exclude each other within one iteration only. `s`, bound in the
+/// iteration and used in its own arm, stays a view.
+#[test]
+fn a_view_saved_in_a_loop_is_copied_before_a_later_iterations_write() {
+    let src = r#"
+        type F { s: String = ""; }
+        locus H {
+            params { f: F = F { s: std::str::upper("old") }; }
+            fn put() { self.f = F { s: std::str::upper("new") }; }
+            fn probe() -> String {
+                let mut saved = "";
+                for i in [0, 1] {
+                    let s = self.f.s;
+                    if i == 1 { self.put(); } else { saved = s; }
+                }
+                return saved;
+            }
+        }
+        fn main() { let h = H { }; println(h.probe()); }
+    "#;
+    let owned = owned_of(src);
+    assert!(owned.contains("probe.saved"), "the save is owned: {owned:?}");
+    assert!(!owned.contains("probe.s"), "the iteration's own view is not: {owned:?}");
+    let out = run_asan("loop_saved", src);
+    assert_eq!(out, "OLD\n");
 }
