@@ -66,6 +66,14 @@
 //!    the checker typed the first argument: the locus that type names, a
 //!    monomorph's template. The unreached-event law reads it (F.40 phase
 //!    4's leftovers).
+//! 10. `ident_reads`, per identifier expression the checker resolved as a
+//!    value: whether it read a top-level const, rather than a local or a
+//!    parameter in scope there (or another declaration). A site the
+//!    checker typed on several evaluation paths (a record field's default,
+//!    typed at each literal that leaves it, in that literal's scope) reads
+//!    a const when any of them does. The listener window follows a const
+//!    read into the const's value, evaluated where it is read, and reads
+//!    no other name as one (GH #1565).
 //!
 //! A site the checker could not type is a [`Hole`] with its reason, and
 //! a reader refuses it at its span rather than guessing.
@@ -779,6 +787,9 @@ pub struct TypingRecord {
     pub omitted_args: OmittedArgsByCall,
     /// Which body each conversion belongs to.
     pub conversion_sites: BTreeMap<ConversionSite, u32>,
+    /// The `ident_reads` column. A fact of the site, so a discarded walk
+    /// keeps what it adds: a field default is typed only in such a walk.
+    pub ident_reads: BTreeMap<u32, bool>,
     /// What a discarded walk changed, while one is open
     /// ([`Self::open_walk`]).
     walk: Option<WalkUndo>,
@@ -922,6 +933,15 @@ impl TypingRecord {
         self.bodies.get(body)?.conversions.get(site)
     }
 
+    /// Record what the identifier expression `site` read: a top-level
+    /// const (`constant`), or a binding in scope or another declaration.
+    pub fn ident_read(&mut self, site: NodeId, constant: bool) {
+        if site.is_none() {
+            return;
+        }
+        *self.ident_reads.entry(site.0).or_insert(false) |= constant;
+    }
+
     /// Record that `call` leaves `callee`'s parameters from `from` on to
     /// their defaults.
     pub fn omitted_args(&mut self, call: NodeId, callee: NodeId, from: usize) {
@@ -1010,6 +1030,7 @@ pub struct TypedBodies {
     monomorph_conformance: Vec<(Monomorph, u32, Result<(), Unsatisfied>)>,
     omitted_args: OmittedArgsByCall,
     conversion_sites: BTreeMap<ConversionSite, u32>,
+    ident_reads: BTreeMap<u32, bool>,
     /// Whether a row changes a denomination, prints a unit (U3) or types
     /// an operator's result (U4): a program with none has no value row
     /// for lowering to look up.
@@ -1062,6 +1083,13 @@ impl TypedBodies {
     /// The `omitted_args` column: what each call leaves to its defaults.
     pub fn omitted_args(&self) -> &OmittedArgsByCall {
         &self.omitted_args
+    }
+
+    /// The `ident_reads` column at the identifier expression `site`:
+    /// whether the checker resolved it to a top-level const; `None` for a
+    /// site it never typed as a value.
+    pub fn reads_const(&self, site: NodeId) -> Option<bool> {
+        self.ident_reads.get(&site.0).copied()
     }
 
     /// The rows of the body declared at `decl`.
@@ -1253,6 +1281,7 @@ pub fn typed_bodies(bundle: &crate::Bundle<'_>, top: &crate::resolve::TopScope, 
         monomorph_conformance: Vec::new(),
         omitted_args: record.omitted_args.clone(),
         conversion_sites: record.conversion_sites.clone(),
+        ident_reads: record.ident_reads.clone(),
         scaled: record.bodies.values().any(|b| {
             b.conversions.iter().any(|(site, r)| {
                 r.scale.is_some() || r.printed.is_some() || matches!(site.kind, SiteKind::Operator { .. })

@@ -387,6 +387,12 @@ fn what_main_builds_before_a_listener_born_after_its_server_must_return() {
     const RECORD_BUILDS_APP: &str = "type Holder { n: Int = { App { n: { while true { } 0 } }; 0 }; }\nfn main() { let h = Holder { }; }";
     const HELPER_SETTLES: &str = "fn settle() -> Int { std::time::sleep(1s); return 0; }\nfn helper(n: Int = settle()) -> Int { return n; }";
     const CONST_SETTLES: &str = "fn settle() -> Int { std::time::sleep(1s); return 0; }\nconst K: Int = settle();";
+    const SHADOW_FN_LOCAL: &str =
+        "fn settle() -> Int { std::time::sleep(1s); return 0; }\nconst K: Int = settle();\nfn quick() -> Int { let K = 0; return K; }";
+    const SHADOW_FN_PARAM: &str =
+        "fn settle() -> Int { std::time::sleep(1s); return 0; }\nconst K: Int = settle();\nfn twice(K: Int) -> Int { return K + K; }";
+    const SHADOW_MATCH: &str =
+        "fn settle() -> Int { std::time::sleep(1s); return 0; }\nconst K: Int = settle();\ntype Boxed = enum { Of(Int), Empty };";
     const KEYED_SUB: &str = "fn settle() -> Int { std::time::sleep(1s); return 0; }\nconst K: Int = settle();\ntype Ping { id: Int = 0; }\ntopic Pings { payload: Ping; subject: \"t.pings\"; keyed_by id; }\nlocus Sub {\n    bus { subscribe Pings as on_ping where key == K; }\n    fn on_ping(p: Ping) { }\n}";
     let rows: &[(&str, &str, &str, &str, &str, Option<&str>)] = &[
         // ---- the server's hooks ----
@@ -457,6 +463,14 @@ fn what_main_builds_before_a_listener_born_after_its_server_must_return() {
         // a const that is no literal: evaluated where it is read
         ("a const read by a default", "", "n: Int = K; server: Server = Server { };", CONST_SETTLES, "", Some("the value of the const `K`")),
         ("a literal const read by a default", "", "n: Int = K; server: Server = Server { };", "const K: Int = 5;", "", None),
+        // a const read is the checker's resolution: a binding in scope shadows it
+        ("a let shadows the const", "", "n: Int = { let K = 0; K }; server: Server = Server { };", CONST_SETTLES, "", None),
+        ("a fn's let shadows the const", "", "n: Int = quick(); server: Server = Server { };", SHADOW_FN_LOCAL, "", None),
+        ("a fn's param shadows the const", "", "n: Int = twice(1); server: Server = Server { };", SHADOW_FN_PARAM, "", None),
+        ("a match binding shadows the const", "", "n: Int = match Boxed::Of(1) { Boxed::Of(K) -> K, Boxed::Empty -> 0, }; server: Server = Server { };", SHADOW_MATCH, "", None),
+        ("a for binding shadows the const", "", "n: Int = { let mut t = 0; for K in 0..3 { t = t + K; } t }; server: Server = Server { };", CONST_SETTLES, "", None),
+        ("a const read after a block whose let shadowed it", "", "n: Int = { { let K = 0; println(to_string(K)); } K }; server: Server = Server { };", CONST_SETTLES, "", Some("the value of the const `K`")),
+        ("a fn's const read after its shadowing block", "", "n: Int = later(); server: Server = Server { };", &format!("{CONST_SETTLES}\nfn later() -> Int {{ {{ let K = 0; println(to_string(K)); }} return K; }}"), "", Some("the default of `App.n`, through the value of the const `K`")),
         // a subscription's key: evaluated where its locus is built
         ("a subscription key reads a sleeping const", "", "sub: Sub = Sub { }; server: Server = Server { };", KEYED_SUB, "", Some("a `where key == …` of `Sub`")),
     ];

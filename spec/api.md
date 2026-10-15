@@ -392,7 +392,7 @@ and everything a walked expression evaluates without writing it:
 | a record literal `T { … }` | the fields it leaves to their defaults, recursively (`type Setup { n: Int = { Spinner { }; 0 }; }` built by `Setup { }` builds a `Spinner`; `Setup { n: 0 }` does not) |
 | a param with no value, typed as a record whose every field has a default | the `T { }` the compiler builds for it, its defaults walked |
 | a call that leaves out arguments | each omitted param's default, evaluated at the call site |
-| a const that is no literal, read | its value, evaluated where it is read |
+| a const that is no literal, read | its value, evaluated where it is read; a read as the checker resolves the name, so a local or a parameter of the same name in scope shadows the const and a binding of a block that has ended does not |
 | a hook's params | their defaults |
 
 Nothing else runs code at construction: an enum variant's payload has no

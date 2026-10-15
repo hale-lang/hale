@@ -703,7 +703,7 @@ pub fn check_bundle_reporting(
     diags.extend(crate::bare_fallible::bare_fallible_calls(&table));
     diags.extend(crate::violate_fallible::violate_fallible_laws(bundle, inputs.alloc_summary));
     diags.extend(crate::surfaces::surface_laws(bundle, inputs.surfaces, inputs.roles, inputs.alloc_summary));
-    diags.extend(crate::surfaces::serve_laws(bundle, inputs.surfaces, inputs.entry, inputs.effects));
+    diags.extend(crate::surfaces::serve_laws(bundle, inputs.surfaces, inputs.entry, inputs.effects, &table));
     diags.extend(crate::closure_events::unreached_event_laws(bundle, inputs.handlers, inputs.entry, &table));
     (diags, certificates)
 }
@@ -14194,6 +14194,7 @@ impl<'a> Checker<'a> {
     /// mistake; reporting both would print two messages for one typo.
     fn check_ident_expr(&mut self, id: &Ident, report_unknown: bool) -> Ty {
         if let Some(s) = self.locals.lookup(&id.name) {
+            self.typed.ident_read(id.id, false);
             return s.ty.clone();
         }
         let Some(sym) = self.top.lookup(&id.name) else {
@@ -14225,6 +14226,7 @@ impl<'a> Checker<'a> {
             }
             return Ty::Unknown;
         };
+        self.typed.ident_read(id.id, matches!(sym, TopSymbol::Const(_)));
         match sym {
             TopSymbol::Const(c) => c.ty.clone(),
             TopSymbol::Fn(sig) => Ty::Function {

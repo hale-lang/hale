@@ -417,7 +417,7 @@ without being written counts too:
 | a record literal's left-out fields (`Setup { }`) | their defaults, through any record or locus they build |
 | a record-typed param with no value | the `Cfg { }` the compiler builds for it |
 | a call's left-out arguments | their defaults, run where the call is |
-| a const that is not a literal | its value, run where it is read |
+| a const that is not a literal | its value, run where it is read (unless a local or a parameter of the same name shadows it there) |
 
 Enum payloads, generic parameters, `@form` and capacity arguments, array
 sizes and scalar ranges are constants and run nothing. Any of those

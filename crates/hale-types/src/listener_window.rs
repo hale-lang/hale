@@ -20,7 +20,7 @@
 //! | a record construction `T { … }` | each field of `T` the literal does not supply: its default, walked in the literal's scope, so a record or locus literal in it is a construction in turn |
 //! | a call in a walked expression | resolved as the checker resolves it: a free fn (an imported one through the import renames), `self.m()`, `self.f.m()` by `f`'s type, a standard-library or builtin call by its classes; an enum variant's constructor returns |
 //! | the arguments a call leaves out | each omitted param's default, evaluated at the call site |
-//! | a const read in a walked expression | its value: a const that is no literal is evaluated where it is read |
+//! | a const read in a walked expression | its value: a const that is no literal is evaluated where it is read. A read is the checker's resolution of the site (the typed-body table's `ident_reads`): a local or a parameter of the same name in scope shadows the const, a binding of a block that has ended does not |
 //! | a resolved fn, a `birth()` or `run()` | judged by its effect row, and its body and every fn its row reaches walked for loops, `or wait`, literals, omitted arguments and consts read; a hook's params' defaults walked first |
 //!
 //! What runs nothing at construction, so has nothing to walk: an enum
@@ -357,6 +357,9 @@ pub(crate) struct Window<'a> {
     consts: BTreeMap<Key, &'a Expr>,
     renames: &'a [(Vec<String>, String)],
     types: BTreeSet<String>,
+    /// What the checker resolved each identifier to: a const read is
+    /// the checker's answer, never a matching spelling.
+    typed: &'a crate::typed_bodies::TypedBodies,
 }
 
 /// What a walked expression holds, collected before it is judged.
@@ -429,6 +432,7 @@ impl<'a> Window<'a> {
         loci: &'a BTreeMap<&'a str, &'a LocusDecl>,
         effects: Option<&'a EffectRows>,
         renames: &'a [(Vec<String>, String)],
+        typed: &'a crate::typed_bodies::TypedBodies,
     ) -> Self {
         let mut bodies = BTreeMap::new();
         let mut params = BTreeMap::new();
@@ -483,7 +487,7 @@ impl<'a> Window<'a> {
                 }
             }
         }
-        Window { effects, loci, bodies, params, records, consts, renames, types }
+        Window { effects, loci, bodies, params, records, consts, renames, types, typed }
     }
 
     fn row(&self, locus: Option<&str>, name: &str) -> Option<&'a crate::effect_rows::EffectRow> {
@@ -675,13 +679,17 @@ impl<'a> Window<'a> {
         }
         for n in &found.names {
             let (key, shown) = match n {
+                // a const read is the checker's resolution of the site: a
+                // local or a parameter in scope shadows the const, a
+                // binding of a block that has ended does not; a site the
+                // checker never typed (the default of a record field no
+                // literal leaves, which only the compiler's `T { }`
+                // builds, with no binding in scope) is read by its name
                 Expr::Ident(i) => {
-                    let top = (None, i.name.clone());
-                    let own = ctx.map(|l| (Some(l.name.name.clone()), i.name.clone()));
-                    match own.filter(|k| self.consts.contains_key(k)) {
-                        Some(k) => (k, i.name.clone()),
-                        None => (top, i.name.clone()),
+                    if self.typed.reads_const(i.id) == Some(false) {
+                        continue;
                     }
+                    ((None, i.name.clone()), i.name.clone())
                 }
                 Expr::Path(qn) => {
                     let segs: Vec<&str> = qn.segments.iter().map(|s| s.name.as_str()).collect();
