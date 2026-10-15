@@ -1695,7 +1695,13 @@ instance, seeded from the `main locus`'s `placement { }` entries):
    carries its callee's writes too: a helper that writes one argument
    into a part of another (`fn install(ws: [W; 2], w: W) { ws[0] = w;
    }`), or a method that writes an argument into its own field, leaves
-   the caller's container or field holding that argument's handle. A
+   the caller's container or field holding that argument's handle, and
+   so does a method that writes one of its own fields into an argument
+   (that field of the receiver, per instance). A bounded-list `push` or
+   `set` stores its value into the list (no form cell can be a locus);
+   a stdlib fn may write an argument into another only when the other's
+   declared type can hold it; a call through a fn value, or one the
+   check cannot see into, may write any argument into any other. A
    value whose type can hold no locus handle (a record of data, a
    `String`) carries none: reading one copies it. A value
    comes from a field of `self` (or below one), another

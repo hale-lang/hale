@@ -3642,7 +3642,11 @@ locus W {{
     }}
 }}
 locus H {{ params {{ b: W = W {{ }}; }} }}
-locus H2 {{ params {{ ws: [W; 2] = [W {{ }}, W {{ }}]; }} fn put(w: W) {{ self.ws[0] = w; }} }}
+locus H2 {{
+    params {{ ws: [W; 2] = [W {{ }}, W {{ }}]; }}
+    fn put(w: W) {{ self.ws[0] = w; }}
+    fn give(out: [W; 2]) {{ out[0] = self.ws[0]; }}
+}}
 locus Node {{ params {{ w: W; }} fn ping() {{ }} }}
 type R {{ name: String = ""; }}
 fn id_w(w: W) -> W {{ return w; }}
@@ -3659,9 +3663,19 @@ fn install(ws: [W; 2], w: W) {{ ws[0] = w; }}
 fn install2(ws: [W; 2], w: W) {{ install(ws, w); }}
 fn fill(h: H2, w: W) {{ h.ws[0] = w; }}
 fn poke_el(ws: [W; 2]) {{ ws[0].name = "x"; }}
+fn fill_h(h: H2, w: W) {{ install(h.ws, w); }}
+fn fill_alias(h: H2, w: W) {{ let alias = h; alias.ws[0] = w; }}
+fn pick_i(a: W, w: W) -> W {{ let mut ws = [a, a]; install(ws, w); return ws[0]; }}
+fn pick_p(ws: [W; 2], w: W) -> W {{ install(ws, w); return ws[0]; }}
+fn copy_r(w: W) -> R {{ return w.rec; }}
+fn via_free(f: fn() -> W) {{ let w = f(); w.name = "x"; }}
+fn make_free(f: fn() -> W) -> W {{ return f(); }}
+fn mk_w() -> W {{ return W {{ }}; }}
 main locus App {{
-    params {{ a: W = W {{}}; b: W = W {{ active: true }}; h: H = H {{ }}; c: W = W {{ }}; ws: [W; 2] = [W {{ }}, W {{ }}]; k: H = H {{ }}; k2: H2 = H2 {{ }}; r: R = R {{ }}; }}
+    params {{ a: W = W {{}}; b: W = W {{ active: true }}; h: H = H {{ }}; c: W = W {{ }}; ws: [W; 2] = [W {{ }}, W {{ }}]; k: H = H {{ }}; k2: H2 = H2 {{ }}; r: R = R {{ }}; bl: bounded[W; 4]; }}
     fn stash_w(w: W) {{ self.ws[0] = w; }}
+    fn give(out: [W; 2]) {{ out[0] = self.b; }}
+    fn give_a(out: [W; 2]) {{ out[0] = self.a; }}
     placement {{ b: cooperative(pool = io) where async_io; h: cooperative(pool = io2); }}
     fn pair() -> (W, Int) {{ return (self.b, 1); }}
     fn arr() -> [W; 1] {{ return [self.b]; }}
@@ -3783,6 +3797,47 @@ fn cross_pool_provenance_table() {
         ("... a same-pool handle", "", "self.k2.put(self.a); let w = self.k2.ws[0]; w.name = \"x\";", Accepted),
         ("helper storing through an element of its array argument", "", "poke_el([self.b, self.a]);", Refused("`poke_el(…)` stores")),
         ("... same-pool elements", "", "poke_el([self.a, self.a]);", Accepted),
+        // a method's own field written into its parameter, per instance
+        ("own method writing its cross-pool field into an argument", "", "let mut ws = [self.a, self.a]; self.give(ws); let w = ws[0]; w.name = \"x\";", Refused("`w.name = …`")),
+        ("... its same-pool field", "", "let mut ws = [self.a, self.a]; self.give_a(ws); let w = ws[0]; w.name = \"x\";", Accepted),
+        (
+            "another locus's method writing a field that holds a cross-pool handle",
+            "",
+            "fill(self.k2, self.b); let mut ws = [self.a, self.a]; self.k2.give(ws); let w = ws[0]; w.name = \"x\";",
+            Refused("`w.name = …`"),
+        ),
+        ("... a field of its own", "", "let mut ws = [self.a, self.a]; self.k2.give(ws); let w = ws[0]; w.name = \"x\";", Accepted),
+        // calls with no body to read: the bounded-list intrinsics store
+        // their value; a fn value may write any argument into any other
+        ("bounded-list push", "", "push(self.bl, self.b) or discard; let w = at(self.bl, 0) or self.a; w.name = \"x\";", Refused("`w.name = …`")),
+        ("... a same-pool handle", "", "push(self.bl, self.a) or discard; let w = at(self.bl, 0) or self.a; w.name = \"x\";", Accepted),
+        (
+            "fn value handed a container and a handle",
+            "fn via(f: fn([W; 2], W), ws: [W; 2]) { f(ws, self.b); let w = ws[0]; w.name = \"x\"; }",
+            "",
+            Refused("`w.name = …`"),
+        ),
+        (
+            "... a same-pool handle",
+            "fn via(f: fn([W; 2], W), ws: [W; 2]) { f(ws, self.a); let w = ws[0]; w.name = \"x\"; }",
+            "",
+            Accepted,
+        ),
+        // round 5: a write's target followed to its roots through helpers
+        ("helper writing through a part of its parameter", "", "let h = H2 { }; fill_h(h, self.b); let w = h.ws[0]; w.name = \"main\";", Refused("`w.name = …`")),
+        ("... a same-pool handle", "", "let h = H2 { }; fill_h(h, self.a); let w = h.ws[0]; w.name = \"main\";", Accepted),
+        ("helper writing through an alias of its parameter", "", "let h = H2 { }; fill_alias(h, self.b); let w = h.ws[0]; w.name = \"main\";", Refused("`w.name = …`")),
+        ("... a same-pool handle", "", "let h = H2 { }; fill_alias(h, self.a); let w = h.ws[0]; w.name = \"main\";", Accepted),
+        // round 5: a callee's write is seen by the helper's later return
+        ("helper returning what a call installed", "", "let w = pick_i(self.a, self.b); w.name = \"main\";", Refused("`w.name = …`")),
+        ("... a same-pool handle", "", "let w = pick_i(self.a, self.a); w.name = \"main\";", Accepted),
+        ("helper returning what a call installed in its parameter", "", "let mut ws = [self.a, self.a]; let w = pick_p(ws, self.b); w.name = \"x\";", Refused("`w.name = …`")),
+        // a fn value's result inside a free fn: any instance of its type
+        ("free fn storing through a fn value's result", "", "via_free(mk_w);", Refused("`via_free(…)` stores, through a fn value's result")),
+        ("free fn returning a fn value's result", "", "let w = make_free(mk_w); w.name = \"x\";", Refused("`w.name = …`")),
+        // round 5: a call's result of a data type is a copy
+        ("a record returned by a helper from a cross-pool locus", "", "let r = copy_r(self.b); r.name = \"main\";", Accepted),
+        ("... read", "", "let r = copy_r(self.b); let s = r.name;", Accepted),
         // round 4: a plain record copied in is the receiving locus's own
         ("a record copied into self from a cross-pool locus", "", "self.r = self.b.rec; self.r.name = \"main\";", Accepted),
         ("a record copied into a local", "", "let r = self.b.rec; r.name = \"main\";", Accepted),
@@ -3820,4 +3875,19 @@ fn cross_pool_provenance_table() {
         }
     }
     assert!(failures.is_empty(), "{} rows disagree:\n{}", failures.len(), failures.join("\n"));
+}
+
+/// A form's synthesized ops that store an argument (a vec's `push` and
+/// `set`, a map's `set` / `insert`, a ring buffer's or heap's `push`, an
+/// LRU cache's `put`) are store effects of the provenance walk too; no
+/// handle can reach one, because a form's cell can never be a locus.
+#[test]
+fn a_forms_cell_never_holds_a_locus_handle() {
+    let src = r#"
+locus W { params { name: String = ""; } }
+@form(vec)
+locus V { capacity { heap items of W; } }
+fn main() { }
+"#;
+    assert!(check(src).iter().any(|m| m.contains("cell type cannot be a locus")), "{:?}", check(src));
 }
