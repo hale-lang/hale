@@ -373,21 +373,28 @@ under when the address reads nothing of the server, and just after it
 when it does (`bind: self.bind`), so the server is built first. A child
 born on the main thread runs its `run()` where it is born, before the next
 param of its owner is born (`spec/semantics.md` § Birth order is
-load-bearing), so a server whose address reads it, on
-the main thread (the param it sits under unplaced, or on pool `main`),
-runs the `run()`s on the chain down to it before its listener exists. A
-`run()` that returns is fine: the listener is born after it. One that may
-not return is refused, naming it and why ("…\`Server\`'s \`run()\` runs on
-the main thread while \`App\` is being built, before that listener exists,
-and may not return (it may block: …)"), with three ways out: place the
-server on a pool, move the waiting into the main locus's `run()`, or write
-an address that reads nothing of the server. "May not return" is the
-blocking analysis's: the effect rows' `BLOCK` class, interprocedural (a
-wait on the exposure or `run_until_stopped`, a sleep, a read, reached
-through any fn or method the run calls), an edge the analysis cannot name,
-and, since the classes cannot judge a loop that spins without blocking, a
-`while` loop in the run or in a fn it reaches. `run() { println("started");
-}` is admitted. The listener is inserted into whichever of
+load-bearing), so when the listener comes after the server,
+everything the main locus builds up to and including that param must
+finish first: each param's default (a call it makes), each locus param's
+own params, recursively (a child is built inline, its `run()` run where
+it is born), its `birth()` (awaited even when the param is placed on a
+pool: the main locus waits for a placed child's readiness), and its
+`run()` when it runs on the main thread (the param unplaced, or on pool
+`main`). A step that returns is fine. A step that may not return is
+refused, naming it and why ("…its listener (\`App\`'s) is born after
+\`self.server\`, once everything \`App\` builds up to it has finished, and
+\`Server\`'s \`birth()\` may not return (it may block: …)"), with three ways
+out: place the server on a pool when only its `run()` waits, move the
+waiting into the main locus's `run()`, or write an address that reads
+nothing of the server. "May not return" is the blocking analysis's: the
+effect rows' `BLOCK` class, interprocedural (a wait on the exposure or
+`run_until_stopped`, a sleep, a read, reached through any fn or method the
+step calls), an edge the analysis cannot name, and, since the classes
+cannot judge a loop that spins without blocking nor a publish that waits
+for room, a `while` loop or an `or wait` anywhere in the step's statements
+or expressions (a `let`'s initializer, a block's tail, an `if` or `match`
+expression, a call's argument, a literal's field) or in a fn it reaches.
+`run() { println("started"); }` is admitted. The listener is inserted into whichever of
 the main locus's `params` blocks declares that param. Then it is placed:
 
 - for an exposure the main locus holds, by the exposure's own row

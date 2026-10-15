@@ -2490,30 +2490,6 @@ pub(crate) fn reads_holder(e: &Expr) -> bool {
     found
 }
 
-/// The loci of `chain`, down to and including `holder`, when they are born
-/// on main's thread while main is being built (the root is unplaced or on
-/// pool `main`): each runs its `run()` where it is born, before the next
-/// param of main (spec/semantics.md § Birth order is load-bearing). `None`
-/// when the chain is placed off main's thread.
-pub(crate) fn chain_born_on_main<'l>(
-    loci: &BTreeMap<&str, &'l LocusDecl>,
-    chain: &Chain,
-    holder: &'l LocusDecl,
-) -> Option<Vec<&'l LocusDecl>> {
-    use hale_syntax::ast::PlacementSpec;
-    let main = loci.get(chain.main.as_str())?;
-    let on_main = match placement_entry(main, &chain.fields[0].1) {
-        None => true,
-        Some(e) => matches!(&e.spec, PlacementSpec::Cooperative { pool, .. } if pool.as_ref().is_none_or(|p| p.name == "main")),
-    };
-    if !on_main {
-        return None;
-    }
-    let mut on: Vec<&LocusDecl> = chain.fields.iter().skip(1).filter_map(|(owner, _)| loci.get(owner.as_str()).copied()).collect();
-    on.push(holder);
-    Some(on)
-}
-
 /// An exposure's listener address (`bind:`, `path:`), written in its
 /// holder, as the main locus reads it: the listener is a param of the main
 /// locus born after the param the chain starts at, so each `self.<param>`

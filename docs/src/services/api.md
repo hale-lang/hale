@@ -403,11 +403,15 @@ bind: "127.0.0.1:9000" } }`) is the address the listener binds; one whose
 address reads nothing of the server is born before it. An unplaced
 server's `run()` runs on the main thread while `App` is being built
 (birth order is load-bearing, see [Lifecycle](./lifecycle.md)), so a
-server whose address reads it and whose `run()` may not return is
-refused: one that waits on its exposure (itself, or through a fn it
-calls), sleeps, reads, or loops in a `while`. A `run()` that returns, like
-`run() { println("started"); }`, is fine. Place a server that waits, or
-wait in `App`'s `run()`. Either way the address the listener was bound to is
+server whose address reads it must finish being built before its
+listener exists: its params, the children it holds (their `run()`s run
+where they are born), its `birth()` and, unplaced, its `run()`, and the
+params of `App` before it. Any of those that may not return is refused:
+one that waits on its exposure (itself, or through a fn it calls), sleeps,
+reads, or loops in a `while`, wherever the loop sits. A step that
+returns, like `run() { println("started"); }`, is fine. Place a server
+whose `run()` waits, wait in `App`'s `run()`, or give the listener an
+address that reads nothing of the server. Either way the address the listener was bound to is
 told to the exposure, so a server's description names the port the
 kernel gave it. `App` above writes no `run()`; it serves until SIGTERM.
 

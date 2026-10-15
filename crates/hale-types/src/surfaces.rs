@@ -1627,86 +1627,6 @@ pub(crate) fn binds_type(i: &hale_syntax::ast::StructInit, ty: &str, params: &BT
     mangled_key && self_field(&i.value).and_then(|f| params.get(f)).is_some_and(|t| t == ty)
 }
 
-/// Why `l`'s `run()` may not return, when it may not: the blocking
-/// analysis (the effect rows' `BLOCK` class, interprocedural: a sleep, a
-/// read, a wait on an exposure, reached through any fn or method `run()`
-/// calls; an edge the walk cannot name counts as blocking), and, where the
-/// classes say nothing, a `while` loop in `run()` or in a fn it reaches,
-/// which may spin without blocking. `None` for a `run()` with no statement
-/// and for one the analysis proves returns without blocking. With no
-/// effect rows (a bundle the check judges without them), any statement.
-fn run_may_block(bundle: &Bundle<'_>, l: &LocusDecl, effects: Option<&crate::effect_rows::EffectRows>) -> Option<&'static str> {
-    let run = l.members.iter().find_map(|m| match m {
-        LocusMember::Lifecycle(lc) if lc.kind == LifecycleKind::Run => Some(&lc.body),
-        _ => None,
-    })?;
-    if run.stmts.is_empty() && run.tail.is_none() {
-        return None;
-    }
-    let Some(effects) = effects else { return Some("its run() has a statement of its own") };
-    let row = effects.rows.values().find(|r| r.key.locus.as_deref() == Some(l.name.name.as_str()) && r.key.fn_name == "run");
-    let Some(row) = row else { return Some("its run() has a statement of its own") };
-    if row.effects.contains(crate::stdlib_surface::EffectSet::BLOCK) {
-        return Some("it may block: a wait, a sleep or a read, here or in what it calls");
-    }
-    if row.unknown {
-        return Some("it reaches a call the blocking analysis cannot name");
-    }
-    // the classes say nothing of a loop that spins without blocking
-    let mut bodies: BTreeMap<(Option<String>, String), &Block> = BTreeMap::new();
-    for p in bundle.programs.values() {
-        for d in flat_decls(&p.items) {
-            match d {
-                TopDecl::Fn(f) => {
-                    bodies.insert((None, f.name.name.clone()), &f.body);
-                }
-                TopDecl::Locus(x) => {
-                    for m in &x.members {
-                        if let LocusMember::Fn(f) = m {
-                            bodies.insert((Some(x.name.name.clone()), f.name.name.clone()), &f.body);
-                        }
-                    }
-                }
-                _ => {}
-            }
-        }
-    }
-    let mut seen: BTreeSet<&FnKey> = BTreeSet::new();
-    let mut stack: Vec<&FnKey> = row.targets.iter().collect();
-    let mut looping = has_while(run);
-    while let Some(k) = stack.pop() {
-        if looping || !seen.insert(k) {
-            continue;
-        }
-        if let Some(b) = bodies.get(&(k.locus.clone(), k.fn_name.clone())) {
-            looping = has_while(b);
-        }
-        if let Some(r) = effects.rows.get(k) {
-            stack.extend(r.targets.iter());
-        }
-    }
-    looping.then_some("a `while` loop, here or in what it calls, which may not end")
-}
-
-/// Whether a block holds a `while` loop, at any depth.
-fn has_while(b: &Block) -> bool {
-    fn in_if(i: &hale_syntax::ast::IfStmt) -> bool {
-        has_while(&i.then_block)
-            || match i.else_block.as_deref() {
-                Some(ElseBranch::Else(b)) => has_while(b),
-                Some(ElseBranch::ElseIf(e)) => in_if(e),
-                None => false,
-            }
-    }
-    b.stmts.iter().any(|s| match s {
-        Stmt::While { .. } => true,
-        Stmt::For { body, .. } | Stmt::Block(body) => has_while(body),
-        Stmt::If(i) => in_if(i),
-        Stmt::Match(m) => m.arms.iter().any(|a| matches!(&a.body, MatchArmBody::Block(b) if has_while(b))),
-        _ => false,
-    })
-}
-
 /// The param form a serve site written in a body is (GH #1565): its `let`
 /// name, or its `as:` made a name, declared as an `api::Exposure`.
 fn param_form(site: &ServeSite<'_>, handle: Option<&String>) -> String {
@@ -2013,18 +1933,19 @@ fn serve_laws_of(
                 }
                 if let Some(addr) = &address {
                     if crate::rpc_expand::reads_holder(addr) {
-                        let runner = crate::rpc_expand::chain_born_on_main(loci, c, l)
-                            .and_then(|on| on.into_iter().find_map(|d| run_may_block(bundle, d, effects()).map(|why| (d.name.name.clone(), why))));
-                        if let Some((runner, why)) = runner {
+                        let programs: Vec<&Program> = bundle.programs.values().copied().collect();
+                        let window = crate::listener_window::Window::new(&programs, loci, effects());
+                        let step = loci.get(c.main.as_str()).and_then(|m| window.before_listener(m, root));
+                        if let Some((step, why)) = step {
                             diags.push(Diag::ty(
                                 addr.span(),
                                 format!(
                                     "exposure `{name}` held by `{}`: its address reads `{}`, so its listener (`{}`'s) \
-                                     is born after `self.{root}`, and `{runner}`'s `run()` runs on the main thread while \
-                                     `{}` is being built, before that listener exists, and may not return ({why}): a run \
-                                     that waits on the exposure would never see it served. Place `{root}` on a pool \
-                                     (`{root}: cooperative(pool = io) where async_io;`), move the waiting into `{}`'s \
-                                     `run()`, or write an address that reads nothing of `{}` (spec/api.md § Serving)",
+                                     is born after `self.{root}`, once everything `{}` builds up to it has finished, and \
+                                     {step} may not return ({why}): a step that waits on the exposure would never see it \
+                                     served. Place `{root}` on a pool (`{root}: cooperative(pool = io) where async_io;`) \
+                                     when only its `run()` waits, move the waiting into `{}`'s `run()`, or write an \
+                                     address that reads nothing of `{}` (spec/api.md § Serving)",
                                     l.name.name, l.name.name, c.main, c.main, c.main, l.name.name
                                 ),
                             ));
