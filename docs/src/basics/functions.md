@@ -152,6 +152,13 @@ handle the failure with. Pass a small wrapper that handles it
 (`fn parse_or(s: String) -> Int { return parse(s) or 0; }`); `hale
 check` suggests one.
 
+A function that returns a locus is a value when it builds what it
+returns (`fn make() -> Worker { return Worker { }; }`): whoever calls
+through the value owns the fresh instance, as a direct call's caller
+does. One that may hand back a locus it was given (`fn pick(w:
+Worker) -> Worker { return w; }`) is refused at its name; call it
+directly instead.
+
 A stdlib function written in Hale passes the same way
 (`apply(std::url::encode, s)`). One the compiler answers itself at a
 call (`std::math::abs`) has no function behind it to pass; `hale

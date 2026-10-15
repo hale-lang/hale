@@ -1619,6 +1619,11 @@ struct Resolver<'s> {
     fresh: BTreeMap<String, String>,
     /// What each free fn does with its locus arguments (`ParamFlow`).
     flows: BTreeMap<String, ParamFlow>,
+    /// GH #1566 follow-up: the bindings of the frame being walked that
+    /// hold a fn value returning a locus, by name, the locus: a call
+    /// through one hands back a fresh instance (only a fresh factory may
+    /// be taken as a value), owned as a factory call's.
+    fn_vals: BTreeMap<String, String>,
     table: OwnerTable,
     next_slot: u32,
     /// The reclaim-scope stack; the last entry is the innermost.
@@ -1733,6 +1738,7 @@ pub fn resolve_owners(
 
     let flows = param_flows(&program.items);
     let mut r = Resolver {
+        fn_vals: BTreeMap::new(),
         flows,
         ids,
         renames: import_renames.to_vec(),
@@ -1975,6 +1981,14 @@ fn param_field_kind(
             } else {
                 FieldKind::Value
             }
+        }
+        // an array or a tuple of locus literals: typed by them, as a
+        // declared one (codegen's `default_literal_type`)
+        ParamInit::Value(Expr::Array(parts, _) | Expr::Tuple(parts, _))
+            if !parts.is_empty()
+                && parts.iter().all(|p| matches!(p, Expr::Struct { path, .. } if is_locus(path))) =>
+        {
+            FieldKind::Holder
         }
         _ => FieldKind::Value,
     }
@@ -2700,9 +2714,32 @@ pub fn fresh_factories(
             if rets.is_empty() {
                 continue;
             }
+            // GH #1566 follow-up: a parameter of a fn type returning the
+            // locus is a factory of it — a fn may be taken as a value
+            // only if it is one (the check's rule) — so a call through
+            // it hands back a fresh instance, constructing nothing this
+            // walk can name
+            let through_value = FactoryRow { locus: l.clone(), products: Vec::new(), fresh: Some(Fresh { returned_binding: None }) };
+            let value_params: BTreeSet<String> = f
+                .params
+                .iter()
+                .filter(|p| match &p.ty {
+                    TypeExpr::Function { ret: Some(r), .. } => match r.as_ref() {
+                        TypeExpr::Named { path, .. } => resolve(&qname(path), import_renames).as_deref() == Some(l.as_str()),
+                        _ => false,
+                    },
+                    _ => false,
+                })
+                .map(|p| p.name.name.clone())
+                .collect();
             // A factory of the same locus the fixpoint already
             // accepted, by the name a callee spells.
             let known = |callee: &Expr| {
+                if let Expr::Ident(i) = callee {
+                    if value_params.contains(&i.name) {
+                        return Some(&through_value);
+                    }
+                }
                 callee_name(callee, import_renames)
                     .and_then(|c| out.get(&c))
                     .filter(|row| row.locus == l)
@@ -2775,6 +2812,7 @@ pub fn fresh_factories(
                 };
                 let bound = match &binding.2 {
                     Freshness::Literal(p) => Some(vec![p.clone()]),
+                    Freshness::CallTo(c) if value_params.contains(c) => Some(Vec::new()),
                     Freshness::CallTo(c) => {
                         out.get(c).filter(|row| row.locus == l).map(|row| {
                             callees_fresh &= row.fresh.is_some();
@@ -3325,6 +3363,11 @@ impl Resolver<'_> {
 
     fn fresh_call_locus(&self, e: &Expr) -> Option<String> {
         let Expr::Call { callee, .. } = e else { return None };
+        if let Expr::Ident(i) = callee.as_ref() {
+            if let Some(l) = self.fn_vals.get(&i.name) {
+                return Some(l.clone());
+            }
+        }
         let n = callee_fn_name(callee, &self.renames)?;
         self.fresh.get(&n).cloned()
     }
@@ -3710,13 +3753,28 @@ impl Resolver<'_> {
 
     fn walk_stmt(&mut self, s: &Stmt) {
         match s {
-            Stmt::Let { name, value, id, .. } => {
+            Stmt::Let { name, value, id, ty, .. } => {
                 let d = if self.returned.let_is_returned(self.ids.site_id(*id), &name.name) {
                     Decision::Caller
                 } else {
                     Decision::Binding(self.slot_for(&name.name))
                 };
                 self.assign(value, d, "`let` RHS");
+                // a binding of a fn value returning a locus (`let f: fn(W)
+                // -> R = mk;`, or of a fresh factory's name)
+                let held = ty.as_ref().and_then(|t| self.fn_value_locus(t)).or_else(|| match value {
+                    Expr::Ident(i) if !self.fn_vals.contains_key(&i.name) => self.fresh.get(&i.name).cloned(),
+                    Expr::Ident(i) => self.fn_vals.get(&i.name).cloned(),
+                    _ => None,
+                });
+                match held {
+                    Some(l) => {
+                        self.fn_vals.insert(name.name.clone(), l);
+                    }
+                    None => {
+                        self.fn_vals.remove(&name.name);
+                    }
+                }
             }
             Stmt::LetTuple { names, value, .. } => {
                 let slot = match names.first() {
@@ -4002,6 +4060,12 @@ impl Resolver<'_> {
     fn walk_fn(&mut self, f: &FnDecl, prefix: &str, what: &str) {
         let decl = format!("{} {}{}", what, prefix, f.name.name);
         let saved = self.open_body_frame(&decl, &f.body);
+        let saved_vals = std::mem::take(&mut self.fn_vals);
+        for p in f.params.iter() {
+            if let Some(l) = self.fn_value_locus(&p.ty) {
+                self.fn_vals.insert(p.name.name.clone(), l);
+            }
+        }
         for p in f.params.iter() {
             if let Some(d) = &p.default {
                 self.assign(d, Decision::FrameTemp, "param default");
@@ -4011,7 +4075,15 @@ impl Resolver<'_> {
             &f.body,
             Some((Decision::Caller, "fn body tail")),
         );
+        self.fn_vals = saved_vals;
         self.close_frame(saved);
+    }
+
+    /// The locus a fn type returns (`fn(W) -> Routes`), when it names one.
+    fn fn_value_locus(&self, t: &TypeExpr) -> Option<String> {
+        let TypeExpr::Function { ret: Some(r), .. } = t else { return None };
+        let TypeExpr::Named { path, .. } = r.as_ref() else { return None };
+        self.locus_of_literal(path)
     }
 
     fn walk_param_defaults(&mut self, params: &[Param], decl: &str) {

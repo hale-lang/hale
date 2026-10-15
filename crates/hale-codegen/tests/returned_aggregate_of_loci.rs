@@ -79,3 +79,38 @@ fn a_locus_handed_back_inside_an_aggregate_outlives_its_builder() {
         let _ = std::fs::remove_file(&bin);
     }
 }
+
+/// A locus handed back through a fn value (a builder taken as a value,
+/// and a fn handing back what a fn value builds) is the caller's: held
+/// by a field it is torn down with the holder, bound or unbound it is
+/// the frame's. It was nobody's, and LeakSanitizer found its arena.
+#[test]
+fn a_locus_built_through_a_fn_value_is_owned_and_reclaimed() {
+    let src = r#"locus W { params { name: String = "w"; } dissolve() { println(f"bye {self.name}"); } }
+locus R { params { w: W; } dissolve() { println("bye r"); } }
+fn mk() -> R { return R { w: W { name: "r" } }; }
+fn mk_w(n: String) -> W { return W { name: n }; }
+fn via(f: fn() -> R) -> R { return f(); }
+fn local() {
+    let g: fn(String) -> W = mk_w;
+    let a = g("bound");
+    println(g("temporary").name);
+}
+main locus App {
+    params { r: R = via(mk); }
+    run() { local(); println("APP DONE"); }
+}
+fn main() { App { }; }
+"#;
+    let bin = harness::unique_bin("hale_fn_value_owned");
+    let options = hale_codegen::BuildOptions { asan: true, ..build_opts::options() };
+    build_opts::build_source(src, &bin, &options).expect("build");
+    let out = Command::new(&bin).env("LOTUS_NO_CHUNK_POOL", "1").output().expect("run");
+    let _ = std::fs::remove_file(&bin);
+    let (stdout, stderr) = (String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+    assert!(out.status.success() && !stderr.contains("Sanitizer"), "{stdout}\n{stderr}");
+    // `R` and the `W` it holds both say "bye r", torn down with `App`
+    for (who, n) in [("bye bound", 1), ("bye temporary", 1), ("bye r", 2)] {
+        assert_eq!(stdout.matches(who).count(), n, "{who}: {stdout}");
+    }
+}

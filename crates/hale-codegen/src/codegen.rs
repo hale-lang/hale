@@ -5947,6 +5947,25 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// GH #383: resolve a call's callee to the merged-program fn
     /// name, for the fresh-factory lookup. Accepts both `Path2` and
     /// `Field` spellings, matching the analysis pass.
+    /// The locus a call's callee freshly builds and hands back: a proven
+    /// fresh factory by name, or (GH #1566 follow-up) a binding holding a
+    /// fn value that returns a locus — only a fresh factory may be taken
+    /// as a value (the check's rule), so a call through one is one.
+    pub(crate) fn fresh_factory_locus(&self, callee: &Expr, scope: &Scope<'ctx>) -> Option<String> {
+        if let Expr::Ident(i) = callee {
+            if let Some((_, ty)) = scope.locals.get(&i.name) {
+                return match ty {
+                    CodegenTy::FnPtr { ret: Some(r), .. } => match r.as_ref() {
+                        CodegenTy::LocusRef(l) => Some(l.clone()),
+                        _ => None,
+                    },
+                    _ => None,
+                };
+            }
+        }
+        self.callee_fn_name(callee).and_then(|f| self.fresh_locus_factories.get(&f).cloned()).map(|(l, _)| l)
+    }
+
     pub(crate) fn callee_fn_name(&self, callee: &Expr) -> Option<String> {
         fn segs(e: &Expr, out: &mut Vec<String>) -> bool {
             match e {
@@ -17918,13 +17937,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 let mut fresh_dissolve_of: Option<String> = None;
                 if let CodegenTy::LocusRef(lname) = &ty {
                     if let Expr::Call { callee, .. } = value_to_lower {
-                        let is_fresh = self
-                            .callee_fn_name(callee)
-                            .and_then(|f| {
-                                self.fresh_locus_factories.get(&f).cloned()
-                            })
-                            .map(|(l, _)| l == *lname)
-                            .unwrap_or(false);
+                        let is_fresh = self.fresh_factory_locus(callee, scope).is_some_and(|l| l == *lname);
                         // Ownership transfers exactly once. If this
                         // binding is one the enclosing fn hands back,
                         // the CALLER owns it — dissolving here frees
@@ -23972,10 +23985,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let reentry = std::mem::replace(&mut self.in_fresh_temp_hook, false);
         if !reentry {
             if let Expr::Call { callee, .. } = e {
-                let factory = self
-                    .callee_fn_name(callee)
-                    .and_then(|f| self.fresh_locus_factories.get(&f).cloned());
-                if let Some((lname, _)) = factory {
+                let factory = self.fresh_factory_locus(callee, scope);
+                if let Some(lname) = factory {
                     let verdict = self
                         .owner_table
                         .temp_verdict(self.owner_table.entry_of(e));

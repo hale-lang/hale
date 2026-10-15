@@ -1480,6 +1480,24 @@ failure. Wrap it in a fn that handles the error, `fn parse_or(a0:
 String) -> Int { return parse(a0) or 0; }`, and pass that
 ```
 
+A fn returning a locus is a value only when it builds every instance it
+returns — a fresh factory (spec/semantics.md § Dissolve timing rules): a
+call through a fn value hands its caller a fresh instance to own (a
+binding's or a holder's, else the frame's temporary), so a fn that may
+hand back one it was given (`fn id(w: W) -> W { return w; }`) is a type
+error at its name:
+
+```
+main.hl:4:42: type error: `id` may hand back a `W` it did not build (one
+it was given, or one another binding keeps), and a call through a fn
+value hands its caller a fresh `W` to own: only a fn that builds every
+`W` it returns may be taken as a value. Pass a fn that builds one, or
+call `id` directly
+```
+
+A fn that hands back what a parameter of a fn type builds (`fn via(f:
+fn() -> R) -> R { return f(); }`) builds what it returns.
+
 A `std::` fn is a value when the stdlib writes it in Hale: its body is
 merged into the program under its rename, so `apply(std::url::encode,
 s)` passes that fn as `apply(dbl, 1)` passes `dbl`, typed by its

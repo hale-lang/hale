@@ -970,7 +970,29 @@ pub fn check_bundle_by_declaration(
             }
         }
     }
+    // GH #1566 follow-up: which of the program's fns returning a locus
+    // build every instance they return (the fresh-factory rows over the
+    // bundle's files, as lowering reads them).
+    let mut unfresh_builders: BTreeMap<String, String> = BTreeMap::new();
+    {
+        let programs: Vec<&Program> = bundle.programs.values().copied().collect();
+        let rows = crate::ownership::extended_factory_rows(&programs, &bundle.snapshot, &bundle.import_renames);
+        for program in &programs {
+            for decl in hale_syntax::ast::flat_decls(&program.items) {
+                let TopDecl::Fn(f) = decl else { continue };
+                let Some(TypeExpr::Named { path, .. }) = &f.ret else { continue };
+                let Some(l) = path.segments.last().map(|s| s.name.clone()) else { continue };
+                if !locus_decls.contains_key(&l) {
+                    continue;
+                }
+                if !rows.get(&f.name.name).is_some_and(|r| r.fresh.is_some()) {
+                    unfresh_builders.insert(f.name.name.clone(), l);
+                }
+            }
+        }
+    }
     let mut cx = Checker {
+        unfresh_builders,
         top,
         target_class,
         known,
@@ -10197,6 +10219,11 @@ struct Checker<'a> {
     generic_fns: BTreeMap<String, &'a FnDecl>,
     /// Declarations whose omitted defaults are evaluated in the caller.
     fn_decls: BTreeMap<String, &'a FnDecl>,
+    /// GH #1566 follow-up: the program's fns that return a locus they
+    /// may not have built (not fresh factories), by name, the locus. A
+    /// call through a fn value hands back a fresh instance its caller
+    /// owns, so one of these is refused as a value (`fn_value`).
+    unfresh_builders: BTreeMap<String, String>,
     locus_decls: BTreeMap<String, &'a LocusDecl>,
     /// The bundle's types, whose field defaults are evaluated at each
     /// literal that leaves the field (GH #1076).
@@ -15009,6 +15036,22 @@ impl<'a> Checker<'a> {
             params: sig.params.iter().map(|(_, t)| t.clone()).collect(),
             ret: Box::new(sig.ret.clone()),
         };
+        // GH #1566 follow-up: a fn value returning a locus hands back a
+        // fresh instance its caller owns; one that may hand back an
+        // instance it did not build (one it was given) is no such value
+        let last = shown.rsplit("::").next().unwrap_or(shown);
+        if let Some(l) = self.unfresh_builders.get(shown).or_else(|| self.unfresh_builders.get(last)) {
+            self.diags.push(Diag::ty(
+                span,
+                format!(
+                    "`{shown}` may hand back a `{l}` it did not build (one it was given, or one another \
+                     binding keeps), and a call through a fn value hands its caller a fresh `{l}` to own: \
+                     only a fn that builds every `{l}` it returns may be taken as a value. Pass a fn that \
+                     builds one, or call `{shown}` directly"
+                ),
+            ));
+            return ty;
+        }
         let Some(err) = &sig.fallible else { return ty };
         let name = shown.rsplit("::").next().unwrap_or(shown);
         let names: Vec<String> = (0..sig.params.len()).map(|i| format!("a{i}")).collect();

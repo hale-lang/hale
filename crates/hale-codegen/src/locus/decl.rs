@@ -292,13 +292,24 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
                                 // explicit type ascription so we
                                 // know the field's LLVM shape
                                 // without evaluating the default.
-                                let ascribed = p.ty.as_ref().ok_or_else(|| {
-                                    CodegenError::Unsupported(format!(
-                                        "locus `{}` param `{}`: non-literal \
-                                         default requires a type ascription",
-                                        l.name.name, p.name.name
-                                    ))
-                                })?;
+                                // GH #1566 follow-up: an unascribed default
+                                // whose literal names its type — a locus or
+                                // record literal, an array of one type's
+                                // literals, a tuple of those — is typed by it
+                                let inferred;
+                                let ascribed = match p.ty.as_ref() {
+                                    Some(t) => t,
+                                    None => {
+                                        inferred = default_literal_type(default_expr).ok_or_else(|| {
+                                            CodegenError::Unsupported(format!(
+                                                "locus `{}` param `{}`: non-literal \
+                                                 default requires a type ascription",
+                                                l.name.name, p.name.name
+                                            ))
+                                        })?;
+                                        &inferred
+                                    }
+                                };
                                 let ty = self.type_expr_to_codegen_ty(ascribed)?;
                                 // m61c: bare-name struct literal in
                                 // a typed param default rewrites to
@@ -2392,5 +2403,59 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// In name order, so the trackers' layout is deterministic.
     pub(crate) fn interface_children(&self, owner: &str) -> Vec<String> {
         self.ownership_accepts.get(owner).map(|s| s.iter().cloned().collect()).unwrap_or_default()
+    }
+}
+
+/// GH #1566 follow-up: the type an unascribed param default's literal
+/// names: a locus or record literal its path; an array of literals of
+/// one type, that type's array of their count; a tuple, its parts'. A
+/// scalar literal (inside a tuple) its scalar. `None` for anything else.
+fn default_literal_type(e: &Expr) -> Option<TypeExpr> {
+    use hale_syntax::ast::{Literal, PrimType};
+    match e {
+        Expr::Struct { path, span, .. } => Some(TypeExpr::Named { path: path.clone(), generic_args: Vec::new(), span: *span }),
+        Expr::Array(parts, span) if !parts.is_empty() => {
+            // the type's name, to compare the elements by
+            fn key(t: &TypeExpr) -> Option<String> {
+                match t {
+                    TypeExpr::Named { path, .. } => Some(path.segments.iter().map(|s| s.name.as_str()).collect::<Vec<_>>().join("::")),
+                    TypeExpr::Primitive(p, _) => Some(
+                        match p {
+                            PrimType::Int => "Int",
+                            PrimType::Float => "Float",
+                            PrimType::String => "String",
+                            PrimType::Bool => "Bool",
+                            _ => return None,
+                        }
+                        .to_string(),
+                    ),
+                    TypeExpr::Tuple(ts, _) => Some(format!("({})", ts.iter().map(key).collect::<Option<Vec<_>>>()?.join(","))),
+                    _ => None,
+                }
+            }
+            let first = default_literal_type(&parts[0])?;
+            let want = key(&first)?;
+            let same = parts.iter().all(|p| default_literal_type(p).and_then(|t| key(&t)).as_deref() == Some(want.as_str()));
+            same.then(|| TypeExpr::Array {
+                elem: Box::new(first),
+                size: Some(Expr::Literal(Literal::Int(parts.len() as i64), *span)),
+                span: *span,
+            })
+        }
+        Expr::Tuple(parts, span) if !parts.is_empty() => {
+            let ts: Option<Vec<TypeExpr>> = parts.iter().map(default_literal_type).collect();
+            Some(TypeExpr::Tuple(ts?, *span))
+        }
+        Expr::Literal(lit, span) => {
+            let prim = match lit {
+                Literal::Int(_) => PrimType::Int,
+                Literal::Float(_) => PrimType::Float,
+                Literal::String(_) => PrimType::String,
+                Literal::Bool(_) => PrimType::Bool,
+                _ => return None,
+            };
+            Some(TypeExpr::Primitive(prim, *span))
+        }
+        _ => None,
     }
 }

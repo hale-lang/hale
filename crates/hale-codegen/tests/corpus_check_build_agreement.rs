@@ -2891,3 +2891,54 @@ fn a_codegen_refusal_names_imported_and_stdlib_declarations_as_written() {
     .to_string();
     assert!(stdlib.contains("locus `std::bytes::BytesBuilder` has no method `nope`") && !stdlib.contains("__Std"), "{stdlib}");
 }
+
+/// GH #1566 follow-up: a param with no type ascription whose default is
+/// an array or a tuple literal checked clean and was refused by the build
+/// ("non-literal default requires a type ascription"). The build types
+/// it by its literal now: an array of one type's literals, a tuple of
+/// literals, a locus or record literal.
+///
+/// Plain string literals, for the reason given above.
+#[test]
+fn an_unascribed_composite_default_is_typed_by_its_literal() {
+    let src = "locus C { params { name: String = \"c\"; } }\n\
+               locus P { params { cs = [C { name: \"a\" }, C { name: \"b\" }]; t = (C { }, 1); n = [1, 2, 3]; c = C { }; } }\n\
+               main locus App { params { q: P = P { }; } run() { println(len(self.q.n)); } }\n\
+               fn main() { App { }; }\n";
+    assert_eq!(sweep_verdict(src, "hale_cb_unascribed_composite"), Verdict::Built, "{src}");
+}
+
+/// GH #1566 follow-up: a call through a fn value returning a locus hands
+/// its caller a fresh instance to own (a binding's, a holder's, or the
+/// frame's). So only a fn that builds every instance it returns may be
+/// taken as a value: one that may hand back an instance it was given
+/// (`id`) is refused at the name, as a fallible fn is. A builder taken
+/// as a value builds, runs, and its instance is torn down once by
+/// whoever holds the call's result — it was nobody's before, a leak.
+///
+/// Plain string literals, for the reason given above.
+#[test]
+fn a_locus_returning_fn_value_must_build_what_it_returns() {
+    let lib = "locus W { params { name: String = \"w\"; } dissolve() { println(\"bye \", self.name); } }\n\
+               fn id(w: W) -> W { return w; }\n\
+               fn apply(f: fn(W) -> W, w: W) -> W { return f(w); }\n";
+    let by_value = format!("{lib}fn main() {{ let w = W {{ }}; let v = apply(id, w); }}\n");
+    let by_let = format!("{lib}fn main() {{ let g = id; let w = W {{ }}; let v = g(w); }}\n");
+    assert_refused_by_the_check(
+        &[
+            (&by_value, "id", "`id` may hand back a `W` it did not build"),
+            (&by_let, "id", "`id` may hand back a `W` it did not build"),
+        ],
+        "unfresh_fn_value",
+    );
+    let built = "locus W { params { name: String = \"w\"; } dissolve() { println(\"bye \", self.name); } }\n\
+                 fn mk(n: String) -> W { return W { name: n }; }\n\
+                 fn make(f: fn(String) -> W, n: String) -> W { return f(n); }\n\
+                 fn main() {\n\
+                     let a = make(mk, \"a\");\n\
+                     let g: fn(String) -> W = mk;\n\
+                     let b = g(\"b\");\n\
+                     println(a.name, b.name);\n\
+                 }\n";
+    assert_eq!(build_and_run_probe(built, "fresh_fn_value"), Ok("ab\nbye b\nbye a\n".to_string()), "{built}");
+}
