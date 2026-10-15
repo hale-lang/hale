@@ -3906,9 +3906,14 @@ fn check_placement_single_thread(
             reached.insert(n);
         }
         // A body with no parameter and no `self` field that can hold a
-        // locus handle has nothing to summarize: no symbol can reach it.
+        // locus handle, and no built instance to hand back, has nothing to
+        // summarize: no symbol can reach it.
         let may_carry = |l: Option<&LocusDecl>, f: &FnDecl| {
             f.params.iter().any(|p| decls.type_can_hold_locus(&p.ty, 0) || decls.fn_returns_locus(&p.ty).is_some())
+                // an instance it builds and hands back, holding something
+                || f.ret.as_ref().is_some_and(|t| {
+                    decls.named(decls.resolve(t)).is_some_and(|n| decls.locus_holds_handles(n))
+                })
                 || l.is_some_and(|l| {
                     l.members.iter().any(|m| match m {
                         LocusMember::Params(pb) => {
@@ -4264,7 +4269,7 @@ impl PoolCheckCx<'_> {
 /// |---|---|
 /// | `Ident` | the binding's origin, by the scope that declares it, with what every instance it may be or hold holds (`Env::read`) |
 /// | `self.f…` (`Field`/`Index` chain on `self`) | `whole` when `self.f`'s instance runs in another domain; joined with `self_taint[f]` (the field itself, or a part below it) |
-/// | `Field` / `Index` / `Path2` on a value | a part: `whole` from the value's `whole` or `parts` |
+/// | `Field` / `Index` / `Path2` on a value | a part: `whole` from the value's `whole` or `parts` (with what an instance the walk built that it is holds; one it holds inside is that instance); nothing for a field whose declared type can hold no locus handle |
 /// | `Tuple` / `Array` / `ArrayRepeat` | `parts`: the elements' origins, contained |
 /// | `Struct`, a record literal | `parts`: the inits' origins |
 /// | `Struct`, a locus literal | the instance (`objs`, by the literal), which every copy of the handle is; its inits held by field (`State::heap`) |
@@ -4273,16 +4278,16 @@ impl PoolCheckCx<'_> {
 /// | `Or` | the join of the value and its fallback's; the state after joins the success path's and the fallback's |
 /// | `Binary` `&&` / `\|\|` | the right operand may be skipped: the state after joins with the state before it |
 /// | other `Binary`, `Unary`, `Sum`, `Prod`, `Approx`, `Range`, `Literal`, `Path`, `KwSelf` | no handle (numbers, Bools, Strings, ranges): their operands are walked for their effects |
-/// | `Call`, a fn or method of the program | the callee's summary result, its symbols resolved at the call (`instantiate`): a parameter to the argument's origin, a `self` field to that field of the receiver, per instance; nothing for a result whose declared type can hold no locus handle |
+/// | `Call`, a fn or method of the program | the callee's summary result, its symbols resolved at the call (`instantiate`): a parameter to the argument's origin, a `self` field to that field of the receiver, per instance (field by field on an instance the walk built); nothing for a result whose declared type can hold no locus handle; an instance the callee builds and returns, one built at the call holding what the callee's held (`built`) |
 /// | `Call`, a stdlib fn | an argument's origin only when the declared result can be, hold or be held by its type (generics included) |
 /// | `Call` through a fn value declared to return a locus type | any instance of that type in another domain (summarizing, the symbol `AnyOf`, which the caller resolves against its own domain; a store through it is the summary's `any_stores`) |
 /// | `Call`, a serve site (`api::serve`) | none: it is the exposure it builds |
-/// | `Call` the walk cannot name | anything its arguments may be |
+/// | `Call` the walk cannot name | anything its arguments may be (a method of a receiver of a type it cannot tell: its stores and calls through its own fields, as every method of that name's) |
 /// | `Call` effects, a fn or method of the program | the callee's summary writes, resolved at the call, go through `install_into` into the argument (or receiver field) each targets; its stores into and method calls on a parameter are judged on what the argument is (`whole`), or on what it may hold when they go through a locus the argument holds; a method's stores into and calls on a locus its own field holds (`self_stores`, `self_calls`) on a receiver that is no instance of the table's, on what that field of the receiver may hold |
 /// | `Call` effects, a form's synthesized store (`push`, `set`, `insert`, `put`) or a bounded-list intrinsic | the arguments' origins go into the receiver (or the list) — no form cell can be a locus, so only a bounded list ever carries one |
 /// | `Call` effects, a stdlib fn | argument `j` into argument `i` only when `i`'s declared type can hold `j`'s (a generic may hold anything) |
 /// | `Call` effects, a fn value, an unresolved callee, a stdlib locus's method | any argument (and the receiver) into any other argument and the receiver |
-/// | `Call` effects, a builtin | none |
+/// | `Call` effects, a builtin, a serve site (`api::serve`: its receivers are reached through the bus) | none |
 /// | any value whose declared type can hold no locus handle (a record of data, a String) | no origin: reading it copies it (`type_can_hold_locus`) |
 /// | `Let` | declares the value's origin in the innermost scope |
 /// | `LetTuple` | each name: a part of the value |
@@ -4296,7 +4301,20 @@ impl PoolCheckCx<'_> {
 ///
 /// While summarizing, a `Return`'s (and the body's tail's) origin is the
 /// summary's result, a write into a parameter or a `self` field its
-/// write, a store into or method call on a parameter its store or call.
+/// write, a store into or method call on a parameter its store or call;
+/// a store into or call on a locus a `self` field holds — down the field,
+/// through a local that may be (a part of) it, or through a helper handed
+/// it — its `self_stores` / `self_calls`; an instance it builds and
+/// returns, what that instance holds (`built`), which the caller builds
+/// at the call.
+///
+/// Not followed, known (spec/types.md § F.31): a handler the runtime
+/// calls through a function pointer (a serve site's receivers, an
+/// `std::http::Server` handler); a stdlib locus's own methods (the
+/// opaque transfer, with no judgement of what they store into or call on
+/// a locus they hold); a locus's `params` defaults. One instance stands
+/// for every instance a literal (or a call of a builder) produces, and
+/// one summary for every free fn of a name.
 ///
 /// What a value may hold, for the cross-pool rule — a lattice per value. `whole`: the value itself may be an instance that runs in
 /// another domain (`self.b`, a local bound to it, an element of an array
@@ -4756,7 +4774,23 @@ impl Env {
     /// What reading the binding gives: its state, and what was written
     /// into any instance it may be or hold through another binding.
     fn read(&self, name: &str) -> Origin {
-        self.materialize(self.lookup(name))
+        self.own(self.lookup(name))
+    }
+    /// A value with what each instance the walk built that it may be
+    /// holds, as its own parts — the instances it holds inside a
+    /// container stay instances (`part_objs`) until a part read reaches
+    /// them.
+    fn own(&self, o: Origin) -> Origin {
+        if o.objs.0.is_empty() {
+            return o;
+        }
+        let mut o = o;
+        for obj in o.objs.0.clone() {
+            if let Some(h) = self.st.held(obj) {
+                o = o.join(h.holds().clone());
+            }
+        }
+        o
     }
     /// A value with what every instance the walk built that it may be or
     /// hold holds, as its own parts.
@@ -4863,6 +4897,10 @@ struct Summary {
     /// what that receiver's field may hold.
     self_stores: BTreeMap<String, bool>,
     self_calls: BTreeMap<String, bool>,
+    /// What an instance the body builds and hands back (`ret`'s `objs`)
+    /// holds, by field: a call site builds it, one instance however many
+    /// bindings copy the handle it returns.
+    built: Held,
 }
 
 impl Summary {
@@ -4885,6 +4923,7 @@ impl Summary {
         for (k, v) in o.self_calls {
             *self.self_calls.entry(k).or_default() |= v;
         }
+        self.built = Lattice::join(std::mem::take(&mut self.built), o.built);
         self
     }
     /// What the worklist compares: whether the summary grew.
@@ -4897,6 +4936,7 @@ impl Summary {
             && self.any_stores == o.any_stores
             && self.self_stores == o.self_stores
             && self.self_calls == o.self_calls
+            && Lattice::same(&self.built, &o.built)
     }
     /// A write into the target `sym`.
     fn write(&mut self, sym: Sym, o: Origin) {
@@ -4978,13 +5018,18 @@ fn body_summary(
         diags: &mut sink,
     };
     let tail = eval_block(&fd.body, &mut cx);
-    let tail = cx.env.materialize(tail);
     let mut sum = cx.acc.take().unwrap_or_default();
     sum.ret = sum.ret.join(tail);
     // a result whose declared type can hold no locus handle hands back
     // nothing (a record of data is copied out)
     if fd.ret.as_ref().is_some_and(|t| !decls.type_can_hold_locus(t, 0)) {
         sum.ret = Origin::default();
+    }
+    // an instance the body builds and hands back: what it holds
+    for obj in sum.ret.objs.0.iter().chain(&sum.ret.part_objs.0) {
+        if let Some(h) = cx.env.st.held(*obj) {
+            sum.built = Lattice::join(std::mem::take(&mut sum.built), h.clone());
+        }
     }
     (sum, cx.read.take())
 }
@@ -5196,6 +5241,16 @@ fn apply_call_writes<'e>(
     let kind = match resolved {
         Some((sum, recv)) => Kind::Summary(sum, recv),
         None => match callee {
+            // a serve site is the exposure it builds (GH #1417): its
+            // receivers are reached through the bus, never held by the
+            // transport it is handed
+            Expr::Path(qp)
+                if qp.segments.len() >= 2
+                    && qp.segments[qp.segments.len() - 2].name == "api"
+                    && qp.segments[qp.segments.len() - 1].name == "serve" =>
+            {
+                Kind::Pure
+            }
             Expr::Path(qp) if qp.segments.first().is_some_and(|s| s.name == "std") => {
                 let segs: Vec<&str> = qp.segments.iter().map(|s| s.name.as_str()).collect();
                 match std_fn_decl(&segs) {
@@ -5503,6 +5558,23 @@ fn eval_stmt(stmt: &Stmt, cx: &mut PoolCheckCx) {
                 (Some(t), _) => cx.decls.named(t).and_then(locus),
                 (None, Expr::Struct { path, .. }) => path.segments.last().and_then(|s| locus(&s.name)),
                 (None, Expr::Ident(id)) => cx.env.locus_type(&id.name).map(str::to_string),
+                // a field of `self` (or an element of one)
+                (None, v) if self_rooted_field(v).is_some() => {
+                    self_path_type(v, cx).and_then(|t| cx.decls.named(cx.decls.resolve(t))).and_then(locus)
+                }
+                // a fn's declared result
+                (None, Expr::Call { callee, .. }) => match callee.as_ref() {
+                    Expr::Ident(id) => cx.decls.fns.get(&id.name).and_then(|fs| fs.first()).and_then(|f| f.ret.as_ref()),
+                    Expr::Path(qp) if qp.segments.first().is_some_and(|s| s.name != "std") => qp
+                        .segments
+                        .last()
+                        .and_then(|l| cx.decls.fns.get(&l.name))
+                        .and_then(|fs| fs.first())
+                        .and_then(|f| f.ret.as_ref()),
+                    _ => None,
+                }
+                .and_then(|t| cx.decls.named(cx.decls.resolve(t)))
+                .and_then(locus),
                 _ => None,
             };
             cx.env.declare_typed(&name.name, o, lty);
@@ -5510,7 +5582,7 @@ fn eval_stmt(stmt: &Stmt, cx: &mut PoolCheckCx) {
         Stmt::LetTuple { names, value, .. } => {
             // each name may be any element
             let o = eval_expr(value, cx);
-            let o = cx.env.materialize(o).part();
+            let o = cx.env.own(o).part();
             for n in names {
                 cx.env.declare(&n.name, o.clone());
             }
@@ -5554,14 +5626,13 @@ fn eval_stmt(stmt: &Stmt, cx: &mut PoolCheckCx) {
         Stmt::For { name, iter, body, .. } => {
             // an element of what the loop walks
             let o = eval_expr(iter, cx);
-            let o = cx.env.materialize(o).part();
+            let o = cx.env.own(o).part();
             eval_loop(None, Some((&name.name, o)), body, cx);
         }
         Stmt::While { cond, body, .. } => eval_loop(Some(cond), None, body, cx),
         Stmt::Return(opt, _) => {
             if let Some(e) = opt {
                 let o = eval_expr(e, cx);
-                let o = cx.env.materialize(o);
                 if let Some(acc) = cx.acc.as_mut() {
                     acc.ret = std::mem::take(&mut acc.ret).join(o);
                 }
@@ -5620,7 +5691,7 @@ fn eval_if(stmt: &IfStmt, cx: &mut PoolCheckCx) -> Origin {
 fn eval_match(stmt: &MatchStmt, cx: &mut PoolCheckCx) -> Origin {
     // a payload bound by a pattern is a part of the scrutinee
     let scrut = eval_expr(&stmt.scrutinee, cx);
-    let scrut = cx.env.materialize(scrut).part();
+    let scrut = cx.env.own(scrut).part();
     let before = cx.env.st.clone();
     let mut out: Option<State> = None;
     let mut value = Origin::default();
@@ -5674,10 +5745,18 @@ fn eval_expr(expr: &Expr, cx: &mut PoolCheckCx) -> Origin {
                     acc.calls.insert(*p, true);
                 }
             }
-            // a method called on a locus a field of `self` holds
+            // a method called on a locus a field of `self` holds: down the
+            // field (`self.ws[0].m()`), or through a local that may be (a
+            // part of) it (`let w = self.ws[0]; w.m()`)
             if cx.enclosing_locus.is_some() && !matches!(receiver.as_ref(), Expr::KwSelf(_)) {
                 if let Some(root @ Expr::Field { name: f, .. }) = self_rooted_field(receiver) {
                     *acc.self_calls.entry(f.name.clone()).or_default() |= !std::ptr::eq(root, receiver.as_ref());
+                } else {
+                    for s in recv_origin.whole_syms.iter().chain(recv_origin.part_syms.iter()) {
+                        if let Sym::SelfField(f) = s {
+                            acc.self_calls.insert(f.to_string(), true);
+                        }
+                    }
                 }
             }
         }
@@ -5793,7 +5872,29 @@ fn eval_expr(expr: &Expr, cx: &mut PoolCheckCx) -> Origin {
         let resolved = callee_summary(callee, cx);
         check_call_stores_pool(callee, resolved, args, &arg_origins, &recv_origin, *span, cx);
         apply_call_writes(callee, resolved, args, &arg_origins, &recv_origin, cx);
-        return call_origin(callee, resolved, &recv_origin, &arg_origins, cx);
+        let o = call_origin(callee, resolved, &recv_origin, &arg_origins, cx);
+        // an instance the callee builds and hands back: one built at this
+        // call, holding what the callee's does
+        return match resolved {
+            Some((sum, recv)) if !sum.ret.objs.0.is_empty() || !sum.ret.part_objs.0.is_empty() => {
+                let site = &**callee as *const Expr as usize;
+                for (f, v) in &sum.built.fields {
+                    let v = instantiate(v, &arg_origins, recv, &recv_origin, cx);
+                    cx.env.st.hold(site, Some(f), v);
+                }
+                let any = instantiate(&sum.built.any, &arg_origins, recv, &recv_origin, cx);
+                cx.env.st.hold(site, None, any);
+                let mut o = o;
+                if !sum.ret.objs.0.is_empty() {
+                    o.objs.extend(&Objs(vec![site]));
+                }
+                if !sum.ret.part_objs.0.is_empty() {
+                    o.part_objs.extend(&Objs(vec![site]));
+                }
+                o
+            }
+            _ => o,
+        };
     }
     if self_rooted_field(expr).is_some() {
         // a field of `self` (or below it): one that runs in another
@@ -5826,11 +5927,16 @@ fn eval_expr(expr: &Expr, cx: &mut PoolCheckCx) -> Origin {
         }
         Expr::Field { receiver, name, .. } | Expr::Path2 { receiver, name, .. } => {
             let r = eval_expr(receiver, cx);
-            let r = cx.env.materialize(r);
+            let r = cx.env.own(r);
             // a field of a known locus whose type holds no locus handle
-            let plain = r.whole.as_ref().and_then(|cp| cp.locus_type.as_deref()).is_some_and(|l| {
+            // (the receiver's type by its binding, a field of `self`, or a
+            // cross-pool witness)
+            let locus = receiver_locus_type(receiver, cx)
+                .or_else(|| r.whole.as_ref().and_then(|cp| cp.locus_type.clone()));
+            let plain = locus.is_some_and(|l| {
+                let l = l.rsplit("::").next().unwrap_or(&l).to_string();
                 cx.decls
-                    .slot_type(l, &[LValueSeg::Field(name.clone())])
+                    .slot_type(&l, &[LValueSeg::Field(name.clone())])
                     .is_some_and(|t| !cx.decls.type_can_hold_locus(t, 0))
             });
             if plain {
@@ -5841,7 +5947,7 @@ fn eval_expr(expr: &Expr, cx: &mut PoolCheckCx) -> Origin {
         }
         Expr::Index { receiver, index, .. } => {
             let o = eval_expr(receiver, cx);
-            let o = cx.env.materialize(o).part();
+            let o = cx.env.own(o).part();
             eval_expr(index, cx);
             o
         }
@@ -5859,6 +5965,7 @@ fn eval_expr(expr: &Expr, cx: &mut PoolCheckCx) -> Origin {
                 let site = expr as *const Expr as usize;
                 for i in inits {
                     let v = eval_expr(&i.value, cx);
+                    let v = cx.env.materialize(v);
                     if holds {
                         cx.env.st.hold(site, Some(&i.name.name), v);
                     }
@@ -6119,7 +6226,7 @@ fn check_store_pool(target: &LValue, span: Span, cx: &mut PoolCheckCx) {
         // What the local may hold: the store lands in the value itself
         // (`w.name`), or, down a longer path, maybe in a handle the value
         // holds (`r.h.name`, `p.0.name`).
-        let o = cx.env.read(&target.head.name);
+        let o = cx.env.materialize(cx.env.lookup(&target.head.name));
         // Summarizing: a store into a parameter's value is the body's —
         // a caller judges it on what it hands in (GH #1561)
         if cx.acc.is_some() {
@@ -6175,11 +6282,32 @@ fn record_param_store(target: &LValue, o: &Origin, cx: &mut PoolCheckCx) {
             _ => None,
         })
         .collect();
+    // a local that may be (a part of) a field of `self` (`let w =
+    // self.ws[0]; w.name = s`): the method's store through that field,
+    // unless the slot is an inline scalar of the local's locus type
+    let scalar = cx
+        .env
+        .locus_type(&target.head.name)
+        .is_some_and(|l| cx.decls.slot_is_inline_scalar(l, &target.tail));
+    let through_self: Vec<String> = if cx.enclosing_locus.is_some() && !scalar {
+        o.syms()
+            .iter()
+            .filter_map(|s| match s {
+                Sym::SelfField(f) => Some(f.to_string()),
+                _ => None,
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
     if let Some(acc) = cx.acc.as_mut() {
         for (i, nested) in found {
             *acc.stores.entry(i).or_default() |= nested;
         }
         acc.any_stores.extend(any);
+        for f in through_self {
+            acc.self_stores.insert(f, true);
+        }
     }
 }
 
@@ -6341,7 +6469,31 @@ fn check_call_stores_pool(
         Expr::Field { name, .. } => name.name.clone(),
         _ => return,
     };
-    let Some((sum, recv)) = resolved else { return };
+    let Some((sum, recv)) = resolved else {
+        // a method on a receiver whose locus type the walk cannot tell
+        // (`hs[0].poke()`): what every method of that name stores or calls
+        // through its own fields, judged on what the receiver may hold
+        if let Expr::Field { receiver, name, .. } = callee {
+            if !recv_origin.is_empty()
+                && !matches!(receiver.as_ref(), Expr::KwSelf(_))
+                && receiver_locus_type(receiver, cx).is_none()
+            {
+                let mut any = Summary::default();
+                for ms in cx.summaries.methods.values() {
+                    if let Some(m) = ms.get(&name.name) {
+                        for (f, d) in &m.self_stores {
+                            *any.self_stores.entry(f.clone()).or_default() |= *d;
+                        }
+                        for (f, d) in &m.self_calls {
+                            *any.self_calls.entry(f.clone()).or_default() |= *d;
+                        }
+                    }
+                }
+                check_held_through_receiver(&fname, &any, receiver, arg_origins, recv_origin, span, cx);
+            }
+        }
+        return;
+    };
     if let Some(r) = recv {
         check_held_through_receiver(&fname, sum, r, arg_origins, recv_origin, span, cx);
     }
@@ -6384,12 +6536,32 @@ fn check_call_stores_pool(
                     found.push((*p, true));
                 }
             }
+            // an argument that may be (a part of) a field of `self`: the
+            // method's store or call through that field
+            let through_self: Vec<String> = if cx.enclosing_locus.is_some() {
+                o.syms()
+                    .iter()
+                    .filter_map(|s| match s {
+                        Sym::SelfField(f) => Some(f.to_string()),
+                        _ => None,
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            };
             if let Some(acc) = cx.acc.as_mut() {
                 for (p, n) in found {
                     if stores {
                         *acc.stores.entry(p).or_default() |= n;
                     } else {
                         *acc.calls.entry(p).or_default() |= n;
+                    }
+                }
+                for f in through_self {
+                    if stores {
+                        acc.self_stores.insert(f, true);
+                    } else {
+                        acc.self_calls.insert(f, true);
                     }
                 }
             }

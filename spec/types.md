@@ -1701,7 +1701,9 @@ instance, seeded from the `main locus`'s `placement { }` entries):
    `set` stores its value into the list (no form cell can be a locus);
    a stdlib fn may write an argument into another only when the other's
    declared type can hold it; a call through a fn value, or one the
-   check cannot see into, may write any argument into any other. A
+   check cannot see into, may write any argument into any other; a
+   serve site (`api::serve`) writes none, its receivers being reached
+   through the bus. A
    locus literal is one instance however many bindings copy its
    handle: what is written into it through one (`let alias = h;
    alias.ws[0] = self.b;`) is read through every other (`h.ws[0]`),
@@ -1712,17 +1714,23 @@ instance, seeded from the `main locus`'s `placement { }` entries):
    bound to one), on what that receiver's field may hold: `H { ws:
    [self.b, self.a] }.poke()` is the store into `self.b` itself, as
    is the same call on a field of `self` a member stored that
-   literal into. A callee the check has not yet summarized does
-   nothing until it is, so the order fns are declared in never
-   changes a verdict. A
+   literal into, or through a local or helper inside the method (`let
+   w = self.ws[0]; w.name = s;`, `put(self.ws[0])`); a method of a
+   receiver whose locus type the check cannot tell (`hs[0].poke()`)
+   is judged as every method of that name. A locus a helper builds
+   and returns is one instance built at the call, holding what the
+   helper's held (`let h = make(); let alias = h;` share it), and one
+   it was handed is still that instance. A callee the check has not
+   yet summarized does nothing until it is, so the order fns are
+   declared in never changes a verdict. A
    value whose type can hold no locus handle (a record of data, a
    `String`) carries none: reading one copies it. A value
    comes from a field of `self` (or below one), another
    local, a part of one (`p.0`, `ws[1]`, `n.w`), a literal holding one,
    or a call: a fn or method by what its body may return (a parameter
    or a part of one, a field of `self`, or a value holding one —
-   summarized per body, transitively; a fresh result of its own carries
-   nothing), a call through a fn value declared to return a locus type
+   summarized per body, transitively; a fresh record of its own carries
+   nothing, a fresh locus is the instance built at the call), a call through a fn value declared to return a locus type
    by any instance of that type (one on another pool is enough), and a
    stdlib call by its declared result, which carries an argument's
    handle only when it can be or hold that argument's type, a generic
@@ -1750,6 +1758,19 @@ instance, seeded from the `main locus`'s `placement { }` entries):
    unit scalar, a payload-free enum, read from the declarations)
    is one plain store with no arena work, and is not rejected, as a
    cross-pool field read is not.
+
+   Not followed, known: what a handler the runtime calls through a
+   function pointer does (an `std::http::Server` handler, a serve
+   site's receivers: the site is the exposure it builds, and the
+   handler runs on the server's pool); a stdlib locus's own methods,
+   which are not summarized (a call on one may move any argument into
+   any other and into the receiver, but what it stores into or calls
+   on a locus it holds is not judged); and a locus's `params`
+   defaults, which are not walked. Where the check cannot tell
+   instances apart it takes them as one: every instance one literal
+   (or one call of a helper that builds one) produces, and every free
+   fn of one name, so it may refuse a store into an instance that
+   never holds the handle another one does.
 5. Bus sends (`Topic <- v;` / `"subj" <- v;`) are unrestricted
    — the runtime's cross-thread dispatch (m28b condvar+memcpy)
    handles the boundary safely.

@@ -3680,8 +3680,17 @@ locus H3 {{
     fn call() {{ let ok = self.ws[0].step(); }}
     fn poke_via() {{ self.poke(); }}
     fn count() {{ self.n = self.n + 1; self.ws[0].n = 1; }}
+    fn poke_alias() {{ let w = self.ws[0]; w.name = "main"; }}
+    fn poke_put() {{ put_w(self.ws[0]); }}
+    fn call_alias() {{ let w = self.ws[0]; let ok = w.step(); }}
+    fn poke_alias_n() {{ let w = self.ws[0]; w.n = 1; }}
 }}
+locus H4 {{ params {{ rec: R = R {{ }}; ws: [W; 2] = [W {{ }}, W {{ }}]; }} }}
 fn poke_h(h: H3) {{ h.poke(); }}
+fn put_w(w: W) {{ w.name = "main"; }}
+fn make_h2() -> H2 {{ return H2 {{ }}; }}
+fn pass_h2(h: H2) -> H2 {{ return h; }}
+fn make_h3(w: W) -> H3 {{ return H3 {{ ws: [w, w] }}; }}
 main locus App {{
     params {{ a: W = W {{}}; b: W = W {{ active: true }}; h: H = H {{ }}; c: W = W {{ }}; ws: [W; 2] = [W {{ }}, W {{ }}]; k: H = H {{ }}; k2: H2 = H2 {{ }}; k3: H3 = H3 {{ }}; r: R = R {{ }}; bl: bounded[W; 4]; }}
     fn stash_w(w: W) {{ self.ws[0] = w; }}
@@ -3895,6 +3904,36 @@ fn cross_pool_provenance_table() {
             Refused("`w.name = …`"),
         ),
         ("... the table's own instance", "", "self.k3.poke();", Accepted),
+        // round 7: an instance a helper builds or is handed keeps its
+        // identity through the return
+        (
+            "an instance a helper builds, written through one copy, read through another",
+            "",
+            "let h = make_h2(); let alias = h; alias.ws[0] = self.b; let w = h.ws[0]; w.name = \"main\";",
+            Refused("`w.name = …`"),
+        ),
+        ("... same pool", "", "let h = make_h2(); let alias = h; alias.ws[0] = self.a; let w = h.ws[0]; w.name = \"main\";", Accepted),
+        (
+            "an instance handed back through a helper",
+            "",
+            "let h = pass_h2(H2 { }); let alias = h; alias.ws[0] = self.b; let w = h.ws[0]; w.name = \"main\";",
+            Refused("`w.name = …`"),
+        ),
+        ("a helper's instance holding its argument, its method", "", "let h = make_h3(self.b); h.poke();", Refused("`h.poke(…)` stores")),
+        ("... same pool", "", "let h = make_h3(self.a); h.poke();", Accepted),
+        // a method's held stores through its own locals and helpers
+        ("a method's store through a local bound to its field", "", "let h = H3 { ws: [self.b, self.a] }; h.poke_alias();", Refused("`h.poke_alias(…)` stores")),
+        ("... same pool", "", "let h = H3 { ws: [self.a, self.a] }; h.poke_alias();", Accepted),
+        ("... a scalar slot", "", "let h = H3 { ws: [self.b, self.a] }; h.poke_alias_n();", Accepted),
+        ("a method's store through a helper handed its field", "", "let h = H3 { ws: [self.b, self.a] }; h.poke_put();", Refused("`h.poke_put(…)` stores")),
+        ("a method's call through a local bound to its field", "", "let h = H3 { ws: [self.b, self.a] }; h.call_alias();", Refused("`h.call_alias(…)` invokes")),
+        // a plain record read off an instance the walk built is a copy
+        ("a record field of a built instance holding a cross-pool handle", "", "let h = H4 { ws: [self.b, self.a] }; let r = h.rec; r.name = \"main\";", Accepted),
+        ("... its handle field", "", "let h = H4 { ws: [self.b, self.a] }; let w = h.ws[0]; w.name = \"main\";", Refused("`w.name = …`")),
+        // a receiver whose locus type the walk cannot tell: any method of
+        // the name
+        ("a built instance's method, on an element of a local array", "", "let hs = [H3 { ws: [self.b, self.a] }]; hs[0].poke();", Refused("`hs[…].poke(…)` stores")),
+        ("... same pool", "", "let hs = [H3 { ws: [self.a, self.a] }]; hs[0].poke();", Accepted),
         // a callee declared after its caller is walked before it is known
         ("a known callee declared after its caller", "", "let w = pick_o(self.a, self.b); w.name = \"main\";", Accepted),
     ];
