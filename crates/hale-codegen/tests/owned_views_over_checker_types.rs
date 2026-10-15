@@ -512,3 +512,34 @@ fn a_monomorph_is_its_instantiation() {
     let out = run_asan("monomorph", src);
     assert!(out.contains("record=19\n") && out.contains("held=OLD\n"), "{out}");
 }
+
+/// The route chain under a middleware (69-http-router's `Stamp`, whose
+/// `before` hands back the very Context it was given): `cur = m.before(cur)`
+/// binds a copy, and must. The matcher fills the captures by writing
+/// through `cur.params` (`__http_match_pattern_into(e.pattern, path_only,
+/// cur.params)`), and `cur` may be the Context the Router handed in, so
+/// without the copy the write would land in the caller's. Nothing else is
+/// copied: the route entry `e` (`entries.get(j)`, which a `@form(vec)`
+/// hands back as a deep copy) views no cell, and a write in one arm of
+/// `if e.is_fn` reaches no use in the other. (`mlen` and `rlen` are `Int`s
+/// read through a form's length: owning one copies nothing.)
+#[test]
+fn the_route_chain_under_a_middleware_copies_only_the_context() {
+    let entry = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/examples/69-http-router/main.hl");
+    let Ok(snap) = Snapshot::load(&entry, LoadMode::WholeSeed, &Disk, Config::check(false, false)) else {
+        panic!("the fixture does not load");
+    };
+    let views = snap.demand_owned_views().expect("the column");
+    let stdlib = hale_types::stdlib_bodies::program().expect("the stdlib parses");
+    let chain = hale_syntax::ast::flat_decls(&stdlib.items)
+        .find_map(|d| match d {
+            TopDecl::Fn(f) if f.name.name == "__http_run_chain" => Some(f),
+            _ => None,
+        })
+        .expect("the route chain");
+    let mut got = BTreeSet::new();
+    owned_in_all(&chain.body, &views.stdlib, &mut got);
+    let want: BTreeSet<String> =
+        ["assign cur = before", "let mlen", "let rlen"].into_iter().map(str::to_string).collect();
+    assert_eq!(got, want);
+}

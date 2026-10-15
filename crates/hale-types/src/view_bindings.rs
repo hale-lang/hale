@@ -646,6 +646,9 @@ struct Bodies<'a> {
     /// a `@form(hashmap)` with no `sync =` or `sync = none`, a
     /// `@form(lru_cache)`. Every other form reads an owned copy.
     view_form_loci: BTreeSet<String>,
+    /// The `@form(vec)` and `@form(heap)` loci: their `get` / `peek`
+    /// deep-copies a String, a Bytes or a record element into the reader.
+    owned_read_forms: BTreeSet<String>,
     /// Every capacity slot's `indexed_by` field: the field a set keys a
     /// cell by.
     key_fields: BTreeSet<String>,
@@ -1044,6 +1047,9 @@ fn collect<'a>(items: &'a [TopDecl], p: &mut Bodies<'a>) {
                     if in_place {
                         p.view_form_loci.insert(l.name.name.clone());
                     }
+                    if matches!(form.name.name.as_str(), "vec" | "heap") {
+                        p.owned_read_forms.insert(l.name.name.clone());
+                    }
                 }
                 for m in &l.members {
                     if let LocusMember::Capacity(c) = m {
@@ -1151,6 +1157,7 @@ fn analyze(programs: &[Analyzed<'_>], top: &TopScope, monos: &MonoShapes) -> Vec
         handlers: BTreeSet::new(),
         form_loci: BTreeSet::new(),
         view_form_loci: BTreeSet::new(),
+        owned_read_forms: BTreeSet::new(),
         key_fields: BTreeSet::new(),
         scalar_decls: Vec::new(),
         int_scalars: BTreeSet::new(),
@@ -1639,6 +1646,9 @@ struct Walk<'p, 'a> {
     uses: Vec<Vec<u32>>,
     writes: Vec<WriteAt>,
     loops: Vec<(u32, u32)>,
+    /// The arms of each `if` and `match`, by position: a write in one arm
+    /// reaches no use in another but round a loop (`Walk::exclusive`).
+    arms: Vec<Vec<(u32, u32)>>,
     /// What `Callee::Deliveries` writes, once the summaries are in.
     deliveries: Option<Writes>,
     /// Arguments passed to a call that may replace what they view.
@@ -1792,6 +1802,7 @@ impl<'p, 'a> Walk<'p, 'a> {
             uses: Vec::new(),
             writes: Vec::new(),
             loops: Vec::new(),
+            arms: Vec::new(),
             args: Vec::new(),
             deliveries: None,
             reads: false,
@@ -2849,13 +2860,25 @@ impl<'p, 'a> Walk<'p, 'a> {
     /// Walk an `if`; the keys of its value, either branch's.
     fn if_stmt(&mut self, i: &IfStmt) -> Keys {
         self.expr(&i.cond);
+        let start = self.pos;
         let then = self.block(&i.then_block);
+        let mid = self.pos;
         let other = match i.else_block.as_deref() {
             Some(ElseBranch::Else(b)) => self.block(b),
             Some(ElseBranch::ElseIf(e)) => self.if_stmt(e),
             None => None,
         };
+        self.arms.push(vec![(start, mid), (mid, self.pos)]);
         union(then, other)
+    }
+
+    /// Are the positions `a` and `b` in two arms of one `if` or `match`
+    /// (no path runs both, but a loop's next iteration)?
+    fn exclusive(&self, a: u32, b: u32) -> bool {
+        self.arms.iter().any(|g| {
+            let arm = |p: u32| g.iter().position(|&(s, e)| s < p && p <= e);
+            matches!((arm(a), arm(b)), (Some(x), Some(y)) if x != y)
+        })
     }
 
     /// Walk a `match`; the keys of its value, any arm's.
@@ -2863,6 +2886,7 @@ impl<'p, 'a> Walk<'p, 'a> {
         let keys = in_cell(self.expr(&m.scrutinee));
         let from_param = self.rooted_at_param(&m.scrutinee);
         let mut out = None;
+        let mut bodies = Vec::with_capacity(m.arms.len());
         let site = Site::Match(m.span.start.0, m.span.end.0);
         for arm in &m.arms {
             self.scopes.push(BTreeMap::new());
@@ -2879,13 +2903,17 @@ impl<'p, 'a> Walk<'p, 'a> {
             if let Some(g) = &arm.guard {
                 self.expr(g);
             }
+            // An arm's body (its guard runs whether it is taken or not).
+            let start = self.pos;
             let arm_keys = match &arm.body {
                 MatchArmBody::Expr(e) => self.expr(e),
                 MatchArmBody::Block(b) => self.block(b),
             };
+            bodies.push((start, self.pos));
             out = union(out, arm_keys);
             self.scopes.pop();
         }
+        self.arms.push(bodies);
         out
     }
 
@@ -3160,12 +3188,25 @@ impl<'p, 'a> Walk<'p, 'a> {
             // A form held in a local or a parameter: its cells are a place
             // of their own, named after it, which its writes (`set`,
             // `remove`, `pop`) retire and its reads may view.
-            if let Some(Expr::Ident(id)) = receiver {
+            if let Some(r @ Expr::Ident(id)) = receiver {
                 let key = format!("@{}", id.name);
                 writes.add(&Writes::field(self.p.field_id(&key)));
-                let mut k = BTreeSet::new();
-                k.insert(key);
-                result = union(result, Some(k));
+                // A `@form(vec)`'s `get` and a heap's `peek` hand back a
+                // String, a Bytes or a record as a deep copy (GH #577,
+                // `emit_vec_get_owned`): that read views none of its cells.
+                let op = match callee {
+                    Expr::Field { name, .. } => name.name.as_str(),
+                    _ => "",
+                };
+                let owned_read = matches!(op, "get" | "peek")
+                    && self.p.named_locus(self.ty(r)).is_some_and(|l| self.p.owned_read_forms.contains(&l))
+                    && call.is_some_and(|c| {
+                        let class = self.p.classify(self.views.expr(c));
+                        class == Class::Record || class == Class::Scalar
+                    });
+                if !owned_read {
+                    result = union(result, Some(BTreeSet::from([key])));
+                }
             }
             result = union(result, recv_keys.clone());
         }
@@ -3613,7 +3654,8 @@ impl<'p, 'a> Walk<'p, 'a> {
                 w.at > inst.at
                     && w.writes.touches(&inst.keys, self.p)
                     && self.uses[inst.var].iter().any(|&u| {
-                        u >= w.start
+                        // after the write, on a path that runs both
+                        (u >= w.start && !self.exclusive(w.at, u))
                             || self.loops.iter().any(|&(ls, le)| {
                                 ls > self.declared[inst.var] && ls <= u.min(w.start) && u.max(w.at) <= le
                             })
@@ -4107,6 +4149,20 @@ mod tests {
     fn a_local_held_across_a_replacing_call_is_owned() {
         assert_eq!(with(r#"let s = self.f.s; self.put("n"); println(s);"#), ["s"]);
         assert_eq!(with(r#"let s = self.f.s; self.via(); println(s);"#), ["s"]);
+    }
+
+    /// A write in one arm of an `if` or a `match` reaches no use in
+    /// another: no path runs both.
+    #[test]
+    fn a_write_in_one_arm_reaches_no_use_in_another() {
+        assert!(with(r#"let s = self.f.s; if self.count > 0 { self.put("n"); } else { println(s); }"#).is_empty());
+        // A use after the `if` is reached.
+        assert_eq!(with(r#"let s = self.f.s; if self.count > 0 { self.put("n"); } else { println(s); } println(s);"#), ["s"]);
+        // Round a loop, the next iteration's other arm is reached.
+        assert_eq!(
+            with(r#"let s = self.f.s; let mut i = 0; while i < 2 { if i == 0 { self.put("n"); } else { println(s); } i = i + 1; }"#),
+            ["s"]
+        );
     }
 
     #[test]
