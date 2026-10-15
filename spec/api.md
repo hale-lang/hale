@@ -375,9 +375,11 @@ born on the main thread runs its `run()` where it is born, before the next
 param of its owner is born (`spec/semantics.md` § Birth order is
 load-bearing), so when the listener comes after the server,
 everything the main locus builds up to and including that param must
-finish first. It is judged over the actual construction: the literal a
-free fn builds the main locus with (`fn main() { App { server: Server {
-n: 0 } }; }`), else its defaults, a field a literal supplies replacing the
+finish first. It is judged over the actual construction: each literal
+that builds the main locus, wherever the program writes it (a free fn, a
+method or hook of another locus, a param default, …; `fn main() { App {
+server: Server { n: 0 } }; }`), each site judged on its own, else, when
+none is written, its defaults; a field a literal supplies replaces the
 default it would otherwise run, at every depth. In it: each param's value
 (a call it makes, resolved as the checker resolves it, an imported fn
 through the import renames; a call that cannot be resolved is taken to
@@ -385,8 +387,9 @@ possibly not return), every locus built anywhere in a walked expression
 (an array or tuple element, a block, an `if`/`match` arm, a call's
 argument, a literal's field) with the params it leaves to their defaults,
 recursively (a child is built inline, its `run()` run where it is born),
-its `birth()` (awaited even when the param is placed on a pool: the main
-locus waits for a placed child's readiness), and its `run()`, except the
+its `birth()` and `birth_check` (awaited even when the param is placed on
+a pool: the main locus waits for a placed child's readiness), and its
+`run()`, except the
 server's own param's when it is placed off the main thread. A step that
 returns is fine. A step that may not return is
 refused, naming it and why ("…its listener (\`App\`'s) is born after

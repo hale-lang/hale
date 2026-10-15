@@ -368,6 +368,18 @@ fn what_main_builds_before_a_listener_born_after_its_server_must_return() {
     const SETTLE: &str = "fn settle() -> Int { std::time::sleep(1s); return 0; }";
     const PRINTED: &str = "fn printed() -> Int { println(\"x\"); return 0; }";
     const CONSUME: &str = "fn consume(s: Spinner) -> Int { return 0; }";
+    const APP_N: &str = "n: Int = 0; server: Server = Server { };";
+    const APP_N_SPINS: &str = "n: Int = { while true { } 0 }; server: Server = Server { };";
+    const LAUNCHER_METHOD_SPINS: &str =
+        "locus Launcher {\n    fn start() { App { n: { while true { } 0 } }; }\n}\nfn main() {\n    let l = Launcher { };\n    l.start();\n}";
+    const LAUNCHER_METHOD_ZERO: &str =
+        "locus Launcher {\n    fn start() { App { n: 0 }; }\n}\nfn main() {\n    let l = Launcher { };\n    l.start();\n}";
+    const LAUNCHER_RUN_SPINS: &str = "locus Launcher {\n    run() { App { n: { while true { } 0 } }; }\n}\nfn main() { Launcher { }; }";
+    const HOLDER_DEFAULT_SPINS: &str = "locus Holder {\n    params { app: App = App { n: { while true { } 0 } }; }\n}\nfn main() { Holder { }; }";
+    const LAUNCH_FN_SPINS: &str = "fn launch() { App { n: { while true { } 0 } }; }\nfn main() { launch(); }";
+    const TWO_SITES_ONE_SPINS: &str =
+        "fn quick() { App { n: 1 }; }\nfn slow() { App { n: { while true { } 0 } }; }\nfn main() { quick(); slow(); }";
+    const TWO_SITES_BOTH_RETURN: &str = "fn quick() { App { n: 1 }; }\nfn other() { App { n: 2 }; }\nfn main() { quick(); other(); }";
     let rows: &[(&str, &str, &str, &str, &str, Option<&str>)] = &[
         // ---- the server's hooks ----
         ("run() waits", "    run() { self.web.wait(); }", HOLDS, "", "", Some("`Server`'s `run()`")),
@@ -405,6 +417,17 @@ fn what_main_builds_before_a_listener_born_after_its_server_must_return() {
         ("a blocking default the literal leaves", "        n: Int = settle();", HOLDS, SETTLE, "", Some("the default of `Server.n`, through `settle`")),
         ("a blocking default fn main supplies", "        n: Int = settle();", HOLDS, SETTLE, "fn main() { App { server: Server { n: 0 } }; }", None),
         ("a blocking value fn main gives", "", HOLDS, SETTLE, "fn main() { App { server: Server { port: settle() } }; }", Some("the value given of `App.server`")),
+        // ---- birth_check runs after birth(), before the listener ----
+        ("a birth_check that spins", "    closure stalled { epoch inline; }\n    birth_check { { while !self.draining { } true } } -> violate stalled;", HOLDS, "", "", Some("`Server`'s `birth_check`")),
+        ("a birth_check that returns", "    closure stalled { epoch inline; }\n    birth_check { self.port > 0 } -> violate stalled;", HOLDS, "", "", None),
+        // ---- where the main locus is built: every place an expression sits ----
+        ("built in another locus's method", "", APP_N, "", LAUNCHER_METHOD_SPINS, Some("the value given of `App.n`")),
+        ("built in another locus's method, overriding a blocking default", "", APP_N_SPINS, "", LAUNCHER_METHOD_ZERO, None),
+        ("built in another locus's run()", "", APP_N, "", LAUNCHER_RUN_SPINS, Some("the value given of `App.n`")),
+        ("built in another locus's param default", "", APP_N, "", HOLDER_DEFAULT_SPINS, Some("the value given of `App.n`")),
+        ("built in a free fn", "", APP_N, "", LAUNCH_FN_SPINS, Some("the value given of `App.n`")),
+        ("built at two sites, one spins", "", APP_N, "", TWO_SITES_ONE_SPINS, Some("the value given of `App.n`")),
+        ("built at two sites, both return", "", APP_N, "", TWO_SITES_BOTH_RETURN, None),
     ];
     for (row, members, params, decls, main_fn, refused_at) in rows {
         let mut src = server(SERVED, "");

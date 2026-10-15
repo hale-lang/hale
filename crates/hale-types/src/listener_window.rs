@@ -6,16 +6,17 @@
 //! `rpc_expand`) born just after the param of the main locus the server
 //! sits under. Everything the main locus births up to and including that
 //! param must therefore finish before the listener can serve. The window
-//! is walked over the **actual construction**: the literal of the main
-//! locus a free fn writes (`fn main() { App { server: Server { bind: … } }; }`),
-//! or its declaration's defaults, a field a literal supplies replacing the
-//! default it would otherwise run, at every depth.
+//! is walked over the **actual construction**: each literal of the main
+//! locus the programs write anywhere ([`for_each_expression_root`]), a field
+//! a literal supplies replacing the default it would otherwise run, at every
+//! depth.
 //!
 //! | construction step in the window | walked |
 //! |---|---|
+//! | where the main locus is built | every literal of it in a free fn, a const, a locus's param defaults, hooks (`birth`, `run`, …), modes, failure handlers, `birth_check`, closure assertions, fns and consts, a perspective's param defaults, `stable_when` and fns; each site's window judged, the program refused if any may not return; with no literal anywhere (built only dynamically), the declaration's defaults |
 //! | a param of the main locus, up to and including the server's | its value: the literal's field, else its default |
 //! | a locus literal anywhere in a walked expression (a param's value, an array or tuple element, a block's statement or tail, an `if`/`match` arm, a call's argument, another literal's field) | a construction: below |
-//! | a construction `C { … }` | each param of `C` the literal does not supply (its default, walked); `C`'s `birth()` (awaited even when `C` is placed on a pool); `C`'s `run()`, run where `C` is born, except the server's own param's when it is placed off the main thread |
+//! | a construction `C { … }` | each param of `C` the literal does not supply (its default, walked); `C`'s `birth()` (awaited even when `C` is placed on a pool) and `birth_check`; `C`'s `run()`, run where `C` is born, except the server's own param's when it is placed off the main thread |
 //! | a call in a walked expression | resolved as the checker resolves it: a free fn (an imported one through the import renames), `self.m()`, `self.f.m()` by `f`'s type, a standard-library or builtin call by its classes; an enum variant's constructor returns |
 //! | a resolved fn, a `birth()` or `run()` | judged by its effect row, and its body and every fn its row reaches walked for loops, `or wait` and locus literals |
 //!
@@ -202,6 +203,81 @@ pub(crate) fn visit_expr<'a>(e: &'a Expr, f: &mut dyn FnMut(Visited<'a>)) {
     }
 }
 
+/// A place a program holds an expression: a body, or one expression.
+pub(crate) enum Root<'a> {
+    Block(&'a Block),
+    Expr(&'a Expr),
+}
+
+/// Every place the programs hold an expression, exhaustive over the
+/// declarations and members that can hold one (a new kind is a compile
+/// error here until it is visited): a free fn's body; a const's value; a
+/// locus's param defaults, hooks, modes, failure handlers, closure
+/// assertions, fns and consts; a perspective's param defaults,
+/// `stable_when` and fns.
+pub(crate) fn for_each_expression_root<'a>(items: &'a [hale_syntax::ast::TopDecl], f: &mut dyn FnMut(Root<'a>)) {
+    use hale_syntax::ast::{PerspectiveMember, TopDecl};
+    for d in flat_decls(items) {
+        match d {
+            TopDecl::Fn(func) => f(Root::Block(&func.body)),
+            TopDecl::Const(c) => f(Root::Expr(&c.value)),
+            TopDecl::Locus(l) => {
+                for m in &l.members {
+                    match m {
+                        LocusMember::Params(pb) => {
+                            for p in &pb.params {
+                                if let ParamInit::Value(e) = &p.init {
+                                    f(Root::Expr(e));
+                                }
+                            }
+                        }
+                        LocusMember::Lifecycle(lc) => f(Root::Block(&lc.body)),
+                        LocusMember::Mode(md) => f(Root::Block(&md.body)),
+                        LocusMember::Failure(fd) => f(Root::Block(&fd.body)),
+                        LocusMember::Closure(c) => {
+                            if let Some(a) = &c.assertion {
+                                f(Root::Expr(&a.left));
+                                f(Root::Expr(&a.right));
+                                f(Root::Expr(&a.tolerance));
+                            }
+                        }
+                        LocusMember::BirthCheck(bc) => f(Root::Expr(&bc.cond)),
+                        LocusMember::Fn(func) => f(Root::Block(&func.body)),
+                        LocusMember::Const(c) => f(Root::Expr(&c.value)),
+                        LocusMember::Contract(_)
+                        | LocusMember::Bus(_)
+                        | LocusMember::Type(_)
+                        | LocusMember::Capacity(_)
+                        | LocusMember::Bindings(_)
+                        | LocusMember::Placement(_)
+                        | LocusMember::Topology(_)
+                        | LocusMember::Claims(_) => {}
+                    }
+                }
+            }
+            TopDecl::Perspective(pd) => {
+                for m in &pd.members {
+                    match m {
+                        PerspectiveMember::Params(pb) => {
+                            for p in &pb.params {
+                                if let ParamInit::Value(e) = &p.init {
+                                    f(Root::Expr(e));
+                                }
+                            }
+                        }
+                        PerspectiveMember::StableWhen(b) => f(Root::Block(b)),
+                        PerspectiveMember::Fn(func) => f(Root::Block(&func.body)),
+                        PerspectiveMember::SerializeAs(_) | PerspectiveMember::Bus(_) => {}
+                    }
+                }
+            }
+            // `flat_decls` opens a module; the rest hold no expression
+            // a program evaluates
+            _ => {}
+        }
+    }
+}
+
 /// The analysis the window asks: the effect rows, the bodies by key, the
 /// loci, the import renames and the declared types.
 pub(crate) struct Window<'a> {
@@ -250,22 +326,25 @@ fn through(at: String, inner: String) -> String {
 }
 
 impl<'a> Window<'a> {
-    /// The literals that build the main locus `main` in the programs' free
-    /// fns (`fn main() { App { … }; }`): its actual constructions.
+    /// The literals that build the main locus `main` anywhere the
+    /// programs hold an expression ([`for_each_expression_root`]): its
+    /// actual constructions.
     pub(crate) fn constructions_of(&self, programs: &[&'a Program], main: &str) -> Vec<&'a Expr> {
         let mut out = Vec::new();
         for p in programs {
-            for d in flat_decls(&p.items) {
-                if let hale_syntax::ast::TopDecl::Fn(f) = d {
-                    for lit in found_in_block(&f.body).literals {
-                        let Expr::Struct { path, .. } = lit else { continue };
-                        let segs: Vec<&str> = path.segments.iter().map(|s| s.name.as_str()).collect();
-                        if self.resolve_path(&segs) == main {
-                            out.push(lit);
-                        }
+            for_each_expression_root(&p.items, &mut |root| {
+                let found = match root {
+                    Root::Block(b) => found_in_block(b),
+                    Root::Expr(e) => found_in_expr(e),
+                };
+                for lit in found.literals {
+                    let Expr::Struct { path, .. } = lit else { continue };
+                    let segs: Vec<&str> = path.segments.iter().map(|s| s.name.as_str()).collect();
+                    if self.resolve_path(&segs) == main {
+                        out.push(lit);
                     }
                 }
-            }
+            });
         }
         out
     }
@@ -493,6 +572,14 @@ impl<'a> Window<'a> {
         }
         if let Some(step) = self.hook(locus, "birth", depth) {
             return Some(step);
+        }
+        // `birth_check` runs after `birth()`, before `run()`
+        for m in &locus.members {
+            if let LocusMember::BirthCheck(bc) = m {
+                if let Some((at, why)) = self.expr(&bc.cond, locus, depth) {
+                    return Some((through(format!("`{}`'s `birth_check`", locus.name.name), at), why));
+                }
+            }
         }
         if with_run {
             if let Some(step) = self.hook(locus, "run", depth) {
