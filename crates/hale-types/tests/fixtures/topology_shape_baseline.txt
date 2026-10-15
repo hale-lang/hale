@@ -2003,9 +2003,9 @@ crates/hale-types/tests/placement.rs#72 eb89d2367f0fe029
 crates/hale-types/tests/placement.rs#73 eb89d2367f0fe029
 crates/hale-types/tests/placement.rs#74 638b42602935f283
 crates/hale-types/tests/placement.rs#8 aa981ce3fa820e36
-crates/hale-types/tests/placement.rs#86 e4e5c0079991b066
-crates/hale-types/tests/placement.rs#89 8110ec671cdc568a
-crates/hale-types/tests/placement.rs#95 bfa76e0ceeb15bf3
+crates/hale-types/tests/placement.rs#87 e4e5c0079991b066
+crates/hale-types/tests/placement.rs#90 8110ec671cdc568a
+crates/hale-types/tests/placement.rs#96 bfa76e0ceeb15bf3
 crates/hale-types/tests/placement_pairings.rs#3 7fa08ae2a5239b16
 crates/hale-types/tests/placement_pairings.rs#6 19fbfff324159117
 crates/hale-types/tests/publish_in_default.rs#4 bec821eb22f8e29f

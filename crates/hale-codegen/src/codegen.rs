@@ -23911,6 +23911,16 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         }
         let result = self.lower_expr_at(e, scope);
         self.current_call = previous;
+        // GH #1566 follow-up: a factory call that keeps an argument it was
+        // handed in the instance it returns: that field's child, its
+        // owned bit set (`OwnerTable::kept_fields`)
+        if let (Ok((v, CodegenTy::LocusRef(l))), Expr::Call { .. }) = (&result, e) {
+            let kept = self.owner_table.kept_fields(e).to_vec();
+            if !kept.is_empty() {
+                let (v, l) = (v.into_pointer_value(), l.clone());
+                self.emit_own_kept_fields(v, &l, &kept)?;
+            }
+        }
         // GH #1076 (U3): a value the checker converted where it stands.
         let (v, ty) = self.convert_value(e, result?)?;
         // An argument read from a place its callee may replace before
@@ -34875,6 +34885,24 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         self.builder.build_store(mask_ptr, cleared).map_err(e)?;
         self.builder.build_unconditional_branch(after_bb).map_err(e)?;
         self.builder.position_at_end(after_bb);
+        Ok(())
+    }
+
+    /// GH #1566 follow-up: the fields `kept` of the instance `inst` (of
+    /// locus `locus`) hold children it owns: their bits in
+    /// `__locus_ref_owned_mask`.
+    fn emit_own_kept_fields(&mut self, inst: PointerValue<'ctx>, locus: &str, kept: &[String]) -> Result<(), CodegenError> {
+        let Some(info) = self.user_loci.get(locus).cloned() else { return Ok(()) };
+        let bits: u64 = kept.iter().filter_map(|f| info.locus_ref_bit_per_field.get(f)).fold(0, |m, b| m | (1u64 << b));
+        if bits == 0 {
+            return Ok(());
+        }
+        let e = |e: inkwell::builder::BuilderError| CodegenError::LlvmEmit(e.to_string());
+        let i64_t = self.context.i64_type();
+        let ptr = self.builder.build_struct_gep(info.struct_ty, inst, info.locus_ref_owned_mask_field_idx, "kept.mask.ptr").map_err(e)?;
+        let m = self.builder.build_load(i64_t, ptr, "kept.mask").map_err(e)?.into_int_value();
+        let m = self.builder.build_or(m, i64_t.const_int(bits, false), "kept.mask.or").map_err(e)?;
+        self.builder.build_store(ptr, m).map_err(e)?;
         Ok(())
     }
 
