@@ -1062,6 +1062,7 @@ pub fn walk_bundle_by_declaration(
         in_accept_params: false,
         callee_position: false,
         this_is_callee: false,
+        callee_unshadowed: false,
         current_locus: None,
         in_lifecycle: false,
         in_closure: false,
@@ -10028,6 +10029,10 @@ struct Checker<'a> {
     /// (read by the field arm) the one it is walking is.
     callee_position: bool,
     this_is_callee: bool,
+    /// The identifier `check_ident_expr` is typing is a bare callee the
+    /// shadowing desugar left as written: it names the program's fn or
+    /// builtin, whatever binding of the name is in scope.
+    callee_unshadowed: bool,
     current_locus: Option<&'a LocusInfo>,
     in_lifecycle: bool,
     in_closure: bool,
@@ -17599,8 +17604,18 @@ impl<'a> Checker<'a> {
     /// diagnostic — which names fn-pointer bindings and generic fns,
     /// the things a callee may also be — already covers the same
     /// mistake; reporting both would print two messages for one typo.
+    /// Does a bare callee spelled `name` name one of the program's fns,
+    /// generic fns or the builtins the compiler answers by name: what a
+    /// call left as written by the shadowing desugar calls.
+    fn names_fn_or_builtin(&self, name: &str) -> bool {
+        matches!(self.top.lookup(name), Some(TopSymbol::Fn(_)))
+            || self.generic_fns.contains_key(name)
+            || BARE_BUILTIN_CALLEES.contains(&name)
+    }
+
     fn check_ident_expr(&mut self, id: &Ident, report_unknown: bool) -> Ty {
-        if let Some(s) = self.locals.lookup(&id.name) {
+        let unshadowed = std::mem::take(&mut self.callee_unshadowed);
+        if let Some(s) = self.locals.lookup(&id.name).filter(|_| !unshadowed) {
             if !self.defaults_judged_at_literals {
                 self.typed.ident_read(id.id, &self.default_evaluation, crate::typed_bodies::READ_BINDING);
             }
@@ -19475,7 +19490,7 @@ impl<'a> Checker<'a> {
         match callee {
             Expr::Ident(id) => {
                 let n = id.name.as_str();
-                if self.locals.lookup(n).is_some() && n != hale_syntax::parser::FMT_BUILTIN {
+                if self.locals.lookup(n).is_some() && !self.names_fn_or_builtin(n) {
                     return CalleeRef::Value;
                 }
                 if self.generic_fns.contains_key(n) {
@@ -20310,6 +20325,47 @@ impl<'a> Checker<'a> {
                     return Ty::Unknown;
                 }
                 self.record_omitted_defaults(*call_id, callee, args.len());
+                // A bare callee the shadowing desugar left as written names
+                // the program's fn or the builtin (`crate::shadowed_callees`).
+                // A binding of the name that is, or may be, a fn value the
+                // desugar could not see as one (a pattern's binding, a value
+                // read from a field or a call) would read as the callee and
+                // is not: refused rather than called past. A binding of a
+                // known type that is no fn (`let max = 10`) leaves the call
+                // to the fn or builtin, as it always did. A call the compiler wrote
+                // (its callee at the call's own span) is the compiler's.
+                if let Expr::Ident(id) = callee.as_ref() {
+                    let generated = id.span == *call_span;
+                    if !generated && self.names_fn_or_builtin(&id.name) {
+                        // A binding of a type the check does not know (a
+                        // tuple pattern's) may be a fn value as well.
+                        if let Some(sym) = self.locals.lookup(&id.name) {
+                            if matches!(sym.ty, Ty::Function { .. } | Ty::Unknown) {
+                                let bound = if matches!(sym.ty, Ty::Unknown) {
+                                    "bound here to a value the check cannot type, which may be a fn"
+                                } else {
+                                    "a fn value bound here"
+                                };
+                                self.diags.push(Diag::ty(
+                                    *call_span,
+                                    format!(
+                                        "`{n}` is {bound}, and a call of the name runs the {what} `{n}`: \
+                                         a binding shadows it in a call only where it is declared as a fn value (a \
+                                         parameter or a `let` written with a `fn(..)` type, a `let` of a fn's name) \
+                                         — write its type, or rename it",
+                                        n = id.name,
+                                        bound = bound,
+                                        what = if self.top.lookup(&id.name).is_some() || self.generic_fns.contains_key(id.name.as_str()) {
+                                            "fn"
+                                        } else {
+                                            "builtin"
+                                        },
+                                    ),
+                                ));
+                            }
+                        }
+                    }
+                }
                 self.check_capacity_slot_call(callee, args, *call_span);
                 self.check_hashmap_bump(callee);
                 self.refuse_fallible_perspective_call(callee);
@@ -20535,8 +20591,11 @@ impl<'a> Checker<'a> {
                     // `__fmt` is the desugaring of `f"{x:spec}"`, written
                     // in the user's own scope: it is the compiler's, whatever
                     // a binding of the name holds (as lowering reads it).
-                    let shadowed = id.name != hale_syntax::parser::FMT_BUILTIN
-                        && (self.top.lookup(&id.name).is_some() || self.locals.lookup(&id.name).is_some());
+                    // A binding of the name is the callee only where the
+                    // shadowing desugar made the call one through it
+                    // (`crate::shadowed_callees`); a bare name left here is
+                    // the builtin's, unless the program declares it.
+                    let shadowed = self.top.lookup(&id.name).is_some();
                     if !shadowed {
                         match id.name.as_str() {
                             "println" | "print" | "to_string" => {
@@ -21232,13 +21291,34 @@ impl<'a> Checker<'a> {
                 // messages for one typo, and the callee's is the more
                 // informative of the two.
                 let callee_ty = match callee.as_ref() {
-                    Expr::Ident(id) => self.check_ident_expr(id, false),
+                    Expr::Ident(id) => {
+                        self.callee_unshadowed = self.names_fn_or_builtin(&id.name);
+                        self.check_ident_expr(id, false)
+                    }
                     other => {
                         self.view_callee_node = other as *const Expr as usize;
                         self.callee_position = true;
                         self.check_expr(other)
                     }
                 };
+                // A call through a value that is no fn (a local `Int`, a
+                // block that is not a fn value): there is nothing to call,
+                // and lowering refused it unlocated.
+                let through_value = match callee.as_ref() {
+                    Expr::Ident(id) => self.locals.lookup(&id.name).is_some() && !self.names_fn_or_builtin(&id.name),
+                    Expr::Block(_) => true,
+                    _ => false,
+                };
+                if through_value && !matches!(callee_ty, Ty::Function { .. } | Ty::Unknown) {
+                    self.diags.push(Diag::ty(
+                        callee.span(),
+                        format!("this is a value of type `{}`, not a fn: there is nothing to call", callee_ty.display()),
+                    ));
+                    for a in args {
+                        let _ = self.check_expr(a);
+                    }
+                    return Ty::Unknown;
+                }
                 // GH #583 (dna/FRICTION.md F.18): a bare callee that names
                 // nothing — not a local (a fn-pointer binding), not a
                 // top-level fn, not a generic fn, not a builtin — was

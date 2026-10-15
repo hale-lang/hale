@@ -7,9 +7,11 @@
 //! a bare name, though, and every pass that follows calls resolves a bare
 //! callee by name, among the program's fns first; lowering did too. So the
 //! one place the rule lives is here, in the desugar sequence before the
-//! check: a call whose bare callee names a binding in scope (a parameter,
-//! a `let`, a tuple `let`'s name, a `for` binder, a `match` pattern's
-//! binding, a `shm_write` binding) and also one of the program's fns or
+//! check: a call whose bare callee names a binding in scope declared as a
+//! fn value (a parameter or a `let` written with a `fn(..)` type, a `let`
+//! or a tuple `let`'s part of a fn's name or of another such binding, a
+//! `for` over an array literal of fns' names) and also one of the
+//! program's fns or
 //! one of the builtins the compiler answers by name (`len`, `min`, a
 //! `bounded` intrinsic, a printer: `check::BARE_BUILTIN_CALLEES`) is
 //! rewritten to call the binding as a value, `{ f }(x)`. A callee that is
@@ -19,10 +21,14 @@
 //! name inside it is a read of the binding. A callee no fn or builtin
 //! shares its name with is left as written: it already calls the binding.
 //!
-//! `__fmt`, the desugaring of `f"{x:spec}"`, is the one builtin no binding
-//! shadows: the parser writes the call into the user's own scope, so it is
-//! the compiler's whatever a binding of the name holds, in the check as in
-//! lowering.
+//! A binding whose declaration says nothing of its type (a pattern's) is
+//! not one: the checker refuses a call through it when its type is, or may
+//! be, a fn, and leaves the fn or builtin the callee when it is known to
+//! be no fn. A call the compiler wrote into the user's scope (an
+//! f-string's `to_string` and `__fmt`, a `from_json`'s parser) carries its
+//! callee at the call's own span, which no written call does, and is the
+//! compiler's whatever binding of the name is in scope, here and in the
+//! check.
 //!
 //! The walk reaches every expression the program holds, every declaration
 //! and member kind named (a new one is a compile error here, not a root
@@ -31,7 +37,7 @@
 //! assertion, an array type's size) with none, a block in one binding its
 //! own. The rewritten callee keeps its span.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use hale_syntax::ast::*;
 
@@ -44,15 +50,17 @@ pub(crate) fn rewrite_shadowed_callees(programs: &mut [&mut Program], context: &
         .filter(|n| **n != hale_syntax::parser::FMT_BUILTIN)
         .map(|n| n.to_string())
         .collect();
+    let mut program_fns = BTreeSet::new();
     for p in programs.iter().map(|p| &**p).chain(context.iter().copied()) {
         for item in flat_decls(&p.items) {
             if let TopDecl::Fn(f) = item {
-                fns.insert(f.name.name.clone());
+                program_fns.insert(f.name.name.clone());
             }
         }
     }
+    fns.extend(program_fns.iter().cloned());
     for p in programs.iter_mut() {
-        let mut w = Walk { fns: &fns, scopes: Vec::new() };
+        let mut w = Walk { fns: &fns, program_fns: &program_fns, scopes: Vec::new() };
         for item in &mut p.items {
             w.top_decl(item);
         }
@@ -61,25 +69,49 @@ pub(crate) fn rewrite_shadowed_callees(programs: &mut [&mut Program], context: &
 
 struct Walk<'f> {
     fns: &'f BTreeSet<String>,
-    /// The bindings in scope, innermost last.
-    scopes: Vec<BTreeSet<String>>,
+    /// The program's fns alone: what a name read as a value may be.
+    program_fns: &'f BTreeSet<String>,
+    /// The bindings in scope, innermost last, each with whether it is
+    /// declared as a fn value ([`Walk::fn_valued`]).
+    scopes: Vec<BTreeMap<String, bool>>,
 }
 
 impl Walk<'_> {
-    fn bound(&self, name: &str) -> bool {
-        self.scopes.iter().any(|s| s.contains(name))
+    /// The innermost binding of `name` in scope: whether it is a fn value.
+    fn bound(&self, name: &str) -> Option<bool> {
+        self.scopes.iter().rev().find_map(|s| s.get(name).copied())
     }
 
-    fn bind(&mut self, name: &str) {
+    fn bind(&mut self, name: &str, is_fn: bool) {
         if let Some(s) = self.scopes.last_mut() {
-            s.insert(name.to_string());
+            s.insert(name.to_string(), is_fn);
         }
     }
 
-    fn scoped(&mut self, names: Vec<String>, f: impl FnOnce(&mut Self)) {
+    fn scoped(&mut self, names: Vec<(String, bool)>, f: impl FnOnce(&mut Self)) {
         self.scopes.push(names.into_iter().collect());
         f(self);
         self.scopes.pop();
+    }
+
+    /// Is a value spelled `e` a fn value, as far as its spelling says: a
+    /// fn's name (no binding in scope of the name, or one that is a fn
+    /// value itself).
+    fn fn_named(&self, e: &Expr) -> bool {
+        match e {
+            Expr::Ident(id) => self.bound(&id.name).unwrap_or_else(|| self.program_fns.contains(&id.name)),
+            _ => false,
+        }
+    }
+
+    /// Whether a binding declared with type `ty` (written or not) and
+    /// value `value` is a fn value, as its declaration says: its written
+    /// type is a fn type, or it is bound to a fn's name.
+    fn fn_valued(&self, ty: Option<&TypeExpr>, value: Option<&Expr>) -> bool {
+        match ty {
+            Some(t) => matches!(t, TypeExpr::Function { .. }),
+            None => value.is_some_and(|v| self.fn_named(v)),
+        }
     }
 
     fn top_decl(&mut self, d: &mut TopDecl) {
@@ -277,7 +309,7 @@ impl Walk<'_> {
     /// parameters in scope.
     fn body(&mut self, ps: &mut [Param], b: &mut Block) {
         self.params(ps);
-        let names = ps.iter().map(|p| p.name.name.clone()).collect();
+        let names = ps.iter().map(|p| (p.name.name.clone(), matches!(p.ty, TypeExpr::Function { .. }))).collect();
         self.scoped(names, |w| w.block(b));
     }
 
@@ -333,14 +365,21 @@ impl Walk<'_> {
 
     fn stmt(&mut self, s: &mut Stmt) {
         match s {
-            Stmt::Let { name, value, .. } => {
+            Stmt::Let { name, ty, value, .. } => {
                 self.expr(value);
-                self.bind(&name.name);
+                let is_fn = self.fn_valued(ty.as_ref(), Some(value));
+                self.bind(&name.name, is_fn);
             }
-            Stmt::LetTuple { names, value, .. } => {
+            Stmt::LetTuple { names, ty, value, .. } => {
                 self.expr(value);
-                for n in names.iter() {
-                    self.bind(&n.name);
+                for (i, n) in names.iter().enumerate() {
+                    let is_fn = match (&*ty, &*value) {
+                        (Some(TypeExpr::Tuple(parts, _)), _) => matches!(parts.get(i), Some(TypeExpr::Function { .. })),
+                        (Some(_), _) => false,
+                        (None, Expr::Tuple(parts, _)) => parts.get(i).is_some_and(|p| self.fn_named(p)),
+                        (None, _) => false,
+                    };
+                    self.bind(&n.name, is_fn);
                 }
             }
             Stmt::Assign { target, value, .. } => {
@@ -355,8 +394,10 @@ impl Walk<'_> {
             Stmt::Match(ms) => self.match_stmt(ms),
             Stmt::For { name, iter, body, .. } => {
                 self.expr(iter);
+                // Over an array literal of fns' names: a fn value each.
+                let is_fn = matches!(&*iter, Expr::Array(parts, _) if !parts.is_empty() && parts.iter().all(|p| self.fn_named(p)));
                 let name = name.name.clone();
-                self.scoped(vec![name], |w| w.block(body));
+                self.scoped(vec![(name, is_fn)], |w| w.block(body));
             }
             Stmt::While { cond, body, .. } => {
                 self.expr(cond);
@@ -384,7 +425,7 @@ impl Walk<'_> {
             Stmt::ShmWrite { max, binding, body, .. } => {
                 self.expr(max);
                 let name = binding.name.clone();
-                self.scoped(vec![name], |w| w.block(body));
+                self.scoped(vec![(name, false)], |w| w.block(body));
             }
             Stmt::Expr(e) => self.expr(e),
             Stmt::Return(None, _)
@@ -413,7 +454,8 @@ impl Walk<'_> {
         for arm in &mut ms.arms {
             let mut names = Vec::new();
             pattern_names(&arm.pattern, &mut names);
-            self.scoped(names, |w| {
+            // A pattern's binding says nothing of its type.
+            self.scoped(names.into_iter().map(|n| (n, false)).collect(), |w| {
                 if let Some(g) = &mut arm.guard {
                     w.expr(g);
                 }
@@ -434,9 +476,14 @@ impl Walk<'_> {
 
     fn expr(&mut self, e: &mut Expr) {
         match e {
-            Expr::Call { callee, args, .. } => {
+            Expr::Call { callee, args, span: call_span, .. } => {
                 if let Expr::Ident(id) = callee.as_ref() {
-                    if self.bound(&id.name) && self.fns.contains(&id.name) {
+                    // A call the compiler wrote (an f-string's `to_string`,
+                    // `__fmt`, a `from_json`'s parser) carries its callee at
+                    // the call's own span, which no written call does: the
+                    // compiler's, never a binding's.
+                    let generated = id.span == *call_span;
+                    if !generated && self.bound(&id.name) == Some(true) && self.fns.contains(&id.name) {
                         let span = id.span;
                         let read = std::mem::replace(callee.as_mut(), Expr::Literal(Literal::Nil, span));
                         **callee = Expr::Block(Block { stmts: Vec::new(), tail: Some(Box::new(read)), span });

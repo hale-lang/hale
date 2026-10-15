@@ -1561,20 +1561,32 @@ a condition, a fn or method body, a lifecycle hook, a bus handler, a
 library caller assembles (a styleguide snippet, a test harness's
 fragment) keeps the permissive reading (dna/FRICTION.md F.18).
 
-A local or parameter fn value shadows a top-level fn of the same name in
-a call, as it does wherever else the name is read: a bare callee that
-names a binding in scope (a parameter, a `let`, a tuple `let`'s name, a
-`for` binder, a `match` pattern's binding) calls that binding, so
-`fn apply(f: fn(Int) -> Int, x: Int) -> Int { return f(x); }` beside a
-`fn f` calls the parameter, and `{ let helper = zero; helper() }` calls
-`zero`. The same holds for a builtin's name (`len`, `min`, a `bounded`
-intrinsic, a printer): a binding of it in scope is what a call of the
-name runs. `__fmt`, the compiler's desugaring of `f"{x:spec}"`, is the
-one name no binding shadows: the call is written into the user's own
-scope, and it is always the compiler's. A qualified callee
+A binding declared as a fn value shadows a top-level fn, or a builtin
+(`len`, `min`, a `bounded` intrinsic, a printer), of the same name in a
+call, as it does wherever else the name is read. A binding is declared
+as a fn value when its declaration says so: a parameter or a `let`
+written with a `fn(..)` type, a `let` (or a tuple `let`'s part) of a
+fn's name or of another such binding, a `for` over an array literal of
+fns' names. So `fn apply(f: fn(Int) -> Int, x: Int) -> Int { return f(x); }`
+beside a `fn f` calls the parameter, and `{ let helper = zero; helper() }`
+calls `zero`.
+
+A bare callee no such binding shadows names the fn or the builtin. A
+binding of a known type that is no fn leaves it so (`let max = 10;
+max(1, 2)` calls the builtin, `max` still reads 10). A binding whose
+declaration does not show it to be a fn value, while its type is one or
+is one the check cannot name (a `match` pattern's binding, a value read
+from a field or a call), would read as the callee and is not: the check
+refuses the call, and the binding is given its type, or renamed. A call
+through a value that is no fn (`let x = 3; x(2)`) is refused at the
+callee.
+
+A call the compiler writes into the user's scope (an f-string's
+`to_string` and `__fmt`, a `from_json`'s parser) is the compiler's,
+whatever binding of the name is in scope. A qualified callee
 (`lib::helper()`) names the declaration. The check and the build read
-the call one way: the desugar sequence calls such a binding as a value
-before either sees the program.
+every call one way: the desugar sequence calls a shadowing binding as a
+value before either sees the program.
 
 `hale check <file>` loads that file and what its own imports reach,
 never the other files of its directory — exactly what `hale build

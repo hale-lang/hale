@@ -624,14 +624,15 @@ fn a_local_that_shadows_a_unit_type_is_the_callee() {
 /// the call runs the binding, as the code reads, in the check and the
 /// build alike (the desugar sequence calls the binding as a value). The
 /// call ran the top-level fn: `apply(g, 2)` beside `fn f` printed 3, and
-/// `{ let helper = zero; helper() }` printed 1. A parameter, a `let`, a
-/// `for` binder, a `match` pattern's binding, and a generic fn of the
-/// name; each checks, builds and runs the binding.
+/// `{ let helper = zero; helper() }` printed 1. A binding declared as a
+/// fn value (a parameter or a `let` of a `fn(..)` type, a `let` of a fn's
+/// name, a `for` over fns' names) shadows a fn, a generic fn among them;
+/// one the declaration does not show to be a fn value is refused.
 ///
 /// Plain string literals, for the reason given above.
 #[test]
 fn a_fn_value_in_scope_shadows_a_fn_in_a_call() {
-    let rows: [(&str, &str); 5] = [
+    let rows: [(&str, &str); 4] = [
         (
             "fn f(n: Int) -> Int { return n + 1; }\n\
              fn g(n: Int) -> Int { return n * 10; }\n\
@@ -652,18 +653,6 @@ fn a_fn_value_in_scope_shadows_a_fn_in_a_call() {
             "0\n0\n",
         ),
         (
-            "fn helper() -> Int { return 1; }\n\
-             fn zero() -> Int { return 0; }\n\
-             fn main() {\n\
-                 let pair = (zero, 5);\n\
-                 match pair {\n\
-                     (helper, n) -> println(helper() + n),\n\
-                     _ -> println(\"none\"),\n\
-                 }\n\
-             }\n",
-            "5\n",
-        ),
-        (
             "fn helper<T>(x: T) -> T { return x; }\n\
              fn plus(x: Int) -> Int { return x + 100; }\n\
              fn main() { let helper = plus; println(helper(5)); }\n",
@@ -673,19 +662,52 @@ fn a_fn_value_in_scope_shadows_a_fn_in_a_call() {
     for (i, (src, wanted)) in rows.iter().enumerate() {
         assert_eq!(build_and_run_probe(src, &format!("shadowing_fn_value_{i}")), Ok(wanted.to_string()), "{src}");
     }
+    // A binding the desugar cannot see as a fn value (a tuple pattern's,
+    // whose type the check does not know) would read as the callee and is
+    // not: refused at the call, rather than called past.
+    assert_refused_by_the_check(
+        &[(
+            "fn helper() -> Int { return 1; }\n\
+             fn zero() -> Int { return 0; }\n\
+             fn main() {\n\
+                 let pair = (zero, 5);\n\
+                 match pair {\n\
+                     (helper, n) -> println(helper() + n),\n\
+                     _ -> println(\"none\"),\n\
+                 }\n\
+             }\n",
+            "helper()",
+            "`helper` is bound here to a value the check cannot type",
+        )],
+        "shadowing_unseen",
+    );
 }
 
 /// A binding named like a builtin is what a call of the name runs, as one
-/// named like a program's fn is: the checker let the local win and
-/// lowering answered the builtin first. A parameter `len`, a local `min`,
-/// a local named like a `bounded` intrinsic (`count`). `__fmt`, the
-/// desugaring of `f"{x:spec}"`, stays the compiler's beside a local of the
-/// name (the checker had typed the f-string's call as the local).
+/// named like a program's fn is, when it is declared as a fn value: a
+/// parameter `len`, a local `min`, a local named like a `bounded`
+/// intrinsic (`count`). A call the compiler wrote is the compiler's: an
+/// f-string's `to_string` and `__fmt` beside bindings of those names. A
+/// binding of a type that is no fn (`let max = 10`) leaves the builtin
+/// the callee, and calling a value that is no fn is refused.
 ///
 /// Plain string literals, for the reason given above.
 #[test]
 fn a_fn_value_in_scope_shadows_a_builtin_in_a_call() {
-    let rows: [(&str, &str); 4] = [
+    let rows: [(&str, &str); 6] = [
+        // an f-string's rendering is the compiler's, beside a binding of
+        // `to_string` (it called the binding)
+        (
+            "fn ts(n: Int) -> String { return \"captured\"; }\n\
+             fn main() { let to_string = ts; let n = 7; println(f\"n={n}\"); }\n",
+            "n=7\n",
+        ),
+        // a binding of a known type that is no fn leaves the builtin the
+        // callee (it was a call through an `Int`, refused by the build)
+        (
+            "fn main() { let max = 10; println(max(1, 2), \" \", max); let len = 4; println(len(\"abc\"), \" \", len); }\n",
+            "2 10\n3 4\n",
+        ),
         (
             "fn seven(s: String) -> Int { return 7; }\n\
              fn run(len: fn(String) -> Int) -> Int { return len(\"abc\"); }\n\
@@ -712,6 +734,11 @@ fn a_fn_value_in_scope_shadows_a_builtin_in_a_call() {
     for (i, (src, wanted)) in rows.iter().enumerate() {
         assert_eq!(build_and_run_probe(src, &format!("shadowing_builtin_{i}")), Ok(wanted.to_string()), "{src}");
     }
+    // A call through a value that is no fn, refused at the callee.
+    assert_refused_by_the_check(
+        &[("fn main() { let x = 3; println(x(2)); }\n", "x", "this is a value of type `Int`, not a fn")],
+        "call_through_int",
+    );
 }
 
 /// The rule holds in every expression a program holds, not only in
