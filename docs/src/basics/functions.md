@@ -122,6 +122,11 @@ callback needs context, you pass the context in explicitly, or
 (at higher levels) you reach for a locus that holds the state.
 This keeps every function value a plain, inspectable thing.
 
+Give a function value its own name. A call `f()` where `f` is both a
+value in scope and a function the program declares would run the
+declared function, so the compiler refuses it and asks you to rename
+the local.
+
 ## Free functions and where they live
 
 A function declared at the top level of a file is a *free

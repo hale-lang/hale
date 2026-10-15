@@ -585,6 +585,59 @@ fn a_local_that_shadows_a_unit_type_is_the_callee() {
     assert_eq!(build_and_run_probe(&identity, "unit_identity_cast"), Ok("1\n".to_string()), "{}", identity);
 }
 
+/// A bare call to a name that is both a fn value bound in scope and a
+/// declared fn runs the declared fn: the checker resolves the callee by
+/// name among the fns, and lowering takes a free fn before a fn-pointer
+/// local, so `{ let helper = zero; helper() }` printed 1, not 0. The
+/// check refuses it at the call (a `let`, a parameter, a `for` binding,
+/// a generic fn), so the build is never reached; the same program with
+/// the local renamed checks, builds and runs the local.
+///
+/// Plain string literals, for the reason given above.
+#[test]
+fn a_local_fn_value_named_like_a_fn_is_refused_at_the_call() {
+    let decls = "fn helper() -> Int { return 1; }\n\
+                 fn zero() -> Int { return 0; }\n";
+    let shapes = [
+        ("fn main() { let helper = zero; println(helper()); }\n", "helper()"),
+        ("fn run(helper: fn() -> Int) -> Int { return helper(); }\n\
+          fn main() { println(run(zero)); }\n", "helper()"),
+        ("fn main() { for helper in [zero, zero] { println(helper()); } }\n", "helper()"),
+    ];
+    for (body, call) in shapes {
+        let src = format!("{decls}{body}");
+        let program = hale_syntax::parse_source(&src).expect("parses");
+        let errors: Vec<hale_syntax::Diag> =
+            entries::check_program(&program).into_iter().filter(|d| d.is_error()).collect();
+        assert_eq!(errors.len(), 1, "one error from the check: {:?}\n{}", errors, src);
+        assert_eq!(errors[0].span.slice(&src), call, "located at the call:\n{}", src);
+        assert!(
+            errors[0].message.starts_with(
+                "`helper` names both a local fn value and the fn `helper`; this call runs the fn"
+            ),
+            "{}",
+            errors[0].message
+        );
+        assert_eq!(
+            sweep_verdict(&src, "hale_cb_shadowed_fn"),
+            Verdict::Skipped("the checker rejects it"),
+            "the check refuses it, so the build is never reached:\n{}",
+            src
+        );
+    }
+    let generic = "fn helper<T>(x: T) -> T { return x; }\n\
+                   fn plus(x: Int) -> Int { return x + 100; }\n\
+                   fn main() { let helper = plus; println(helper(5)); }\n";
+    let program = hale_syntax::parse_source(generic).expect("parses");
+    let errors: Vec<hale_syntax::Diag> =
+        entries::check_program(&program).into_iter().filter(|d| d.is_error()).collect();
+    assert_eq!(errors.len(), 1, "{:?}", errors);
+    assert_eq!(errors[0].span.slice(generic), "helper(5)");
+    // Renamed, the local is the callee.
+    let renamed = format!("{decls}fn main() {{ let other = zero; println(other()); }}\n");
+    assert_eq!(build_and_run_probe(&renamed, "shadowed_fn_renamed"), Ok("0\n".to_string()), "{}", renamed);
+}
+
 /// GH #1076 (U1, review 2): a struct field's default is evaluated in the
 /// scope of the literal that leaves the field, so `Money(1)` in it calls
 /// the constructing fn's local `Money` (a fn), not the scalar type the

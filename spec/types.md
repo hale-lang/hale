@@ -1489,6 +1489,15 @@ a condition, a fn or method body, a lifecycle hook, a bus handler, a
 library caller assembles (a styleguide snippet, a test harness's
 fragment) keeps the permissive reading (dna/FRICTION.md F.18).
 
+A bare callee that names a top-level or generic fn calls that fn, even
+where a fn value bound in scope (a `let`, a parameter, a `for` or
+`match` binding) has the same name: `{ let helper = zero; helper() }`
+runs `helper`, not `zero`. Since that is not how the call reads, the
+checker refuses it at the call — `` `helper` names both a local fn value
+and the fn `helper`; this call runs the fn `` — and the local is renamed,
+or the value is called through another name. A qualified callee
+(`lib::helper()`) names one thing and is not affected.
+
 `hale check <file>` loads that file and what its own imports reach,
 never the other files of its directory — exactly what `hale build
 <file>` loads — so a fn only a sibling file defines is unbound in the
