@@ -33613,6 +33613,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let mut cur_struct: Option<(StructType<'ctx>, BTreeMap<String, (u32, CodegenTy)>)>;
         let mut array_slot_ty: Option<CodegenTy>;
         let mut array_storage_direct = false;
+        // Some when cur_ptr points at a tuple's storage: its element
+        // types, for the next (numeric) Field segment.
+        let mut cur_tuple: Option<Vec<CodegenTy>> = None;
         let mut name: String;
 
         if target.head.name == "self" {
@@ -33707,6 +33710,17 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     // payload POINTER (SSA repr), not the storage.
                     array_storage_direct = false;
                 }
+                // A tuple local: the alloca holds its storage's pointer.
+                CodegenTy::Tuple(elems) => {
+                    cur_ptr = self
+                        .builder
+                        .build_load(ptr_t, alloca, &name)
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                        .into_pointer_value();
+                    cur_struct = None;
+                    array_slot_ty = None;
+                    cur_tuple = Some(elems.clone());
+                }
                 other => {
                     return Err(CodegenError::Unsupported(format!(
                         "lvalue: head `{}` has non-addressable type {:?}",
@@ -33725,6 +33739,65 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
 
         for (i, seg) in target.tail.iter().enumerate() {
             let is_last = i == target.tail.len() - 1;
+            // A numeric part of a tuple (`t.0`), the tuple's storage at
+            // hand: its slot, and what it holds stepped into.
+            if let (LValueSeg::Field(fident), Some(elems)) = (seg, cur_tuple.take()) {
+                let k = fident.name.parse::<usize>().ok().filter(|k| *k < elems.len()).ok_or_else(|| {
+                    CodegenError::Unsupported(format!("no part `{}` of the tuple `{}`", fident.name, name))
+                })?;
+                let storage_ty = self.llvm_tuple_storage_type(&elems);
+                let slot = unsafe {
+                    self.builder
+                        .build_gep(
+                            storage_ty,
+                            cur_ptr,
+                            &[i32_t.const_int(0, false), i32_t.const_int(k as u64, false)],
+                            &format!("{}.{}.ptr", name, k),
+                        )
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                };
+                name = format!("{}.{}", name, k);
+                if is_last {
+                    return Ok((slot, elems[k].clone(), name, owner));
+                }
+                match elems[k].clone() {
+                    CodegenTy::TypeRef(n) => {
+                        let info = self.user_types.get(&n).cloned().ok_or_else(|| {
+                            CodegenError::Unsupported(format!("lvalue: type `{}` not declared", n))
+                        })?;
+                        cur_ptr = self
+                            .builder
+                            .build_load(ptr_t, slot, &name)
+                            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                            .into_pointer_value();
+                        cur_struct = Some((info.struct_ty, info.fields));
+                        array_slot_ty = None;
+                    }
+                    CodegenTy::Array(elem, n_cap) => {
+                        cur_ptr = slot;
+                        cur_struct = None;
+                        array_slot_ty = Some(CodegenTy::Array(elem, n_cap));
+                        array_storage_direct = false;
+                    }
+                    CodegenTy::Tuple(inner) => {
+                        cur_ptr = self
+                            .builder
+                            .build_load(ptr_t, slot, &name)
+                            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                            .into_pointer_value();
+                        cur_struct = None;
+                        array_slot_ty = None;
+                        cur_tuple = Some(inner);
+                    }
+                    other => {
+                        return Err(CodegenError::Unsupported(format!(
+                            "lvalue: cannot step into the tuple part `{}` of type {:?}",
+                            name, other
+                        )));
+                    }
+                }
+                continue;
+            }
             match seg {
                 LValueSeg::Field(fident) => {
                     let (struct_ty, fields) =
@@ -33837,6 +33910,16 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                             array_slot_ty =
                                 Some(CodegenTy::Array(elem, n_cap));
                         }
+                        CodegenTy::Tuple(inner) => {
+                            cur_ptr = self
+                                .builder
+                                .build_load(ptr_t, field_ptr, &name)
+                                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                                .into_pointer_value();
+                            cur_struct = None;
+                            array_slot_ty = None;
+                            cur_tuple = Some(inner);
+                        }
                         other => {
                             return Err(CodegenError::Unsupported(format!(
                                 "lvalue: cannot step into non-struct field `{}` \
@@ -33933,6 +34016,28 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                             cur_struct = Some((info.struct_ty, info.fields));
                             array_slot_ty = None;
                             owner = Some(LvalueOwner { ptr: loaded, locus: n.clone(), is_self: false });
+                        }
+                        // An element that is itself an array: the slot holds
+                        // its storage's pointer, or is its storage where
+                        // the element type is laid out inline.
+                        CodegenTy::Array(inner, n) => {
+                            array_storage_direct = matches!(
+                                self.llvm_basic_type(&CodegenTy::Array(inner.clone(), n)),
+                                inkwell::types::BasicTypeEnum::ArrayType(_)
+                            );
+                            cur_ptr = slot_ptr;
+                            cur_struct = None;
+                            array_slot_ty = Some(CodegenTy::Array(inner, n));
+                        }
+                        CodegenTy::Tuple(inner) => {
+                            cur_ptr = self
+                                .builder
+                                .build_load(ptr_t, slot_ptr, &name)
+                                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                                .into_pointer_value();
+                            cur_struct = None;
+                            array_slot_ty = None;
+                            cur_tuple = Some(inner);
                         }
                         other => {
                             return Err(CodegenError::Unsupported(format!(

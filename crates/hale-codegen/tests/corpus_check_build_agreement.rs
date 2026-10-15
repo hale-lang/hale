@@ -703,6 +703,36 @@ fn a_fn_value_shadows_a_fn_outside_bodies_too() {
     assert_eq!(build_and_run_probe(src, "shadowing_outside_bodies"), Ok("20 30 40 50\n".to_string()), "{src}");
 }
 
+/// A store into an element of an array held in an array (`kk[1][0] = s`)
+/// and into a part of a tuple (`t.0 = s`), at a local or under a record's
+/// field, checked clean and the build refused them ("lvalue: cannot step
+/// into non-struct array element", "non-addressable type"): they are
+/// ordinary places, and lowering walks to them now. A copy made before the
+/// store (`let copy = kk;`, `let u = t;`) keeps its value.
+///
+/// Plain string literals, for the reason given above.
+#[test]
+fn a_store_into_a_nested_element_or_a_tuple_part_lowers() {
+    let src = "type R { s: String = \"\"; pair: (String, Int); grid: [[Int; 2]; 2]; }\n\
+               fn main() {\n\
+                   let s = std::str::upper(\"x\");\n\
+                   let mut kk = [[\"a\", \"b\"], [\"c\", \"d\"]];\n\
+                   let copy = kk;\n\
+                   kk[1][0] = s;\n\
+                   println(kk[1][0], kk[0][1], copy[1][0]);\n\
+                   let mut t = (\"p\", 1);\n\
+                   let u = t;\n\
+                   t.0 = s;\n\
+                   t.1 = 7;\n\
+                   println(t.0, t.1, u.0, u.1);\n\
+                   let mut r = R { pair: (\"q\", 4), grid: [[1, 2], [3, 4]] };\n\
+                   r.pair.1 = 8;\n\
+                   r.grid[1][1] = 9;\n\
+                   println(r.pair.1, r.grid[1][1]);\n\
+               }\n";
+    assert_eq!(build_and_run_probe(src, "nested_lvalues"), Ok("Xbc\nX7p1\n89\n".to_string()), "{src}");
+}
+
 /// GH #1076 (U1, review 2): a struct field's default is evaluated in the
 /// scope of the literal that leaves the field, so `Money(1)` in it calls
 /// the constructing fn's local `Money` (a fn), not the scalar type the
