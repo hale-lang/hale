@@ -460,36 +460,38 @@ fn a_payload_is_its_variants_field() {
     assert!(out.contains("text=3\n") && out.contains("record=54\n"), "{out}");
 }
 
-/// A monomorph (`Cfg<Int>` is `Cfg_Int`) is classified through its
+/// A monomorph (`Cfg<Tag>` is `Cfg_Tag`) is classified through its
 /// instantiation: a record, so a `let` of a field holding one is a copy
 /// already (a record read from a place), and handing the local to a
-/// callee that writes through its parameter (declared `Cfg<Int>`, a
+/// callee that writes through its parameter (declared `Cfg<Tag>`, a
 /// record) copies nothing more. As a name no declaration answers it was a
 /// type of unknown class, and the binding was copied again for the call.
-/// A String read from it and held across a replace of the field is still
-/// owned.
+/// A String read from one of its `[T; 2]` elements and held across a
+/// replace of the field is still owned. Every literal spells the template
+/// and takes its arguments from the place it fills.
 #[test]
 fn a_monomorph_is_its_instantiation() {
     let src = r#"
-        type Cfg<T> { n: T; label: String = ""; }
-        fn poke(c: Cfg<Int>) { c.n = 9; }
+        type Tag { s: String = ""; }
+        type Cfg<T> { n: Int = 0; items: [T; 2]; }
+        fn poke(c: Cfg<Tag>) { c.n = 9; }
         locus H {
-            params { cfg: Cfg<Int> = Cfg_Int { n: 1 }; }
-            fn reset() { self.cfg = Cfg_Int { n: 2, label: std::str::upper("new") }; }
+            params { cfg: Cfg<Tag> = Cfg { n: 1, items: [Tag { }, Tag { }] }; }
+            fn reset() { self.cfg = Cfg { n: 2, items: [Tag { s: std::str::upper("new") }, Tag { }] }; }
             fn record() -> Int {
                 let c = self.cfg;
                 poke(c);
                 return self.cfg.n * 10 + c.n;
             }
             fn held() -> String {
-                let s = self.cfg.label;
+                let s = self.cfg.items[0].s;
                 self.reset();
                 return s;
             }
         }
         fn main() {
             let h = H { };
-            h.cfg = Cfg_Int { n: 1, label: std::str::upper("old") };
+            h.cfg = Cfg { n: 1, items: [Tag { s: std::str::upper("old") }, Tag { }] };
             println("record=" + to_string(h.record()));
             println("held=" + h.held());
         }
