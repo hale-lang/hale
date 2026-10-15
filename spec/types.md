@@ -1567,7 +1567,8 @@ call, as it does wherever else the name is read. A binding is declared
 as a fn value when its declaration says so: a parameter or a `let`
 written with a `fn(..)` type, a `let` (or a tuple `let`'s part) of a
 fn's name or of another such binding, a `for` over an array literal of
-fns' names. So `fn apply(f: fn(Int) -> Int, x: Int) -> Int { return f(x); }`
+fns' names, a `match` pattern's binding of a variant's value whose
+declared type is a `fn(..)` type (`Op::Use(f)` with `Use(fn(Int) -> Int)`). So `fn apply(f: fn(Int) -> Int, x: Int) -> Int { return f(x); }`
 beside a `fn f` calls the parameter, and `{ let helper = zero; helper() }`
 calls `zero`.
 
@@ -1575,7 +1576,7 @@ A bare callee no such binding shadows names the fn or the builtin. A
 binding of a known type that is no fn leaves it so (`let max = 10;
 max(1, 2)` calls the builtin, `max` still reads 10). A binding whose
 declaration does not show it to be a fn value, while its type is one or
-is one the check cannot name (a `match` pattern's binding, a value read
+is one the check cannot name (a tuple pattern's binding, a value read
 from a field or a call), would read as the callee and is not: the check
 refuses the call, and the binding is given its type, or renamed. A call
 through a value that is no fn (`let x = 3; x(2)`) is refused at the

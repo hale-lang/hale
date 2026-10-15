@@ -662,6 +662,21 @@ fn a_fn_value_in_scope_shadows_a_fn_in_a_call() {
     for (i, (src, wanted)) in rows.iter().enumerate() {
         assert_eq!(build_and_run_probe(src, &format!("shadowing_fn_value_{i}")), Ok(wanted.to_string()), "{src}");
     }
+    // A variant's binding is declared as its payload is: a fn-typed
+    // payload's binding shadows (it was refused, "cannot type", and a
+    // pattern can carry no annotation).
+    let variant = "type Op = enum { Use(fn(Int) -> Int), Pair(fn(Int) -> Int, Int), Nothing };\n\
+                   fn f(n: Int) -> Int { return n + 1; }\n\
+                   fn ten(n: Int) -> Int { return n * 10; }\n\
+                   fn main() {\n\
+                       let o = Op::Use(ten);\n\
+                       let r = match o { Op::Use(f) -> f(2), Op::Pair(f, k) -> f(k), Op::Nothing -> 0, };\n\
+                       println(r);\n\
+                       let p = Op::Pair(ten, 3);\n\
+                       let q = match p { Op::Pair(f, k) -> f(k), _ -> 0, };\n\
+                       println(q);\n\
+                   }\n";
+    assert_eq!(build_and_run_probe(variant, "shadowing_variant_payload"), Ok("20\n30\n".to_string()), "{variant}");
     // A binding the desugar cannot see as a fn value (a tuple pattern's,
     // whose type the check does not know) would read as the callee and is
     // not: refused at the call, rather than called past.

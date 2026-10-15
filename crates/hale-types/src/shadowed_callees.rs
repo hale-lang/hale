@@ -10,7 +10,8 @@
 //! check: a call whose bare callee names a binding in scope declared as a
 //! fn value (a parameter or a `let` written with a `fn(..)` type, a `let`
 //! or a tuple `let`'s part of a fn's name or of another such binding, a
-//! `for` over an array literal of fns' names) and also one of the
+//! `for` over an array literal of fns' names, a `match` pattern's binding
+//! of a variant's value declared with a `fn(..)` type) and also one of the
 //! program's fns or
 //! one of the builtins the compiler answers by name (`len`, `min`, a
 //! `bounded` intrinsic, a printer: `check::BARE_BUILTIN_CALLEES`) is
@@ -21,7 +22,7 @@
 //! name inside it is a read of the binding. A callee no fn or builtin
 //! shares its name with is left as written: it already calls the binding.
 //!
-//! A binding whose declaration says nothing of its type (a pattern's) is
+//! A binding whose declaration says nothing of its type (a tuple pattern's) is
 //! not one: the checker refuses a call through it when its type is, or may
 //! be, a fn, and leaves the fn or builtin the callee when it is known to
 //! be no fn. A call the compiler wrote into the user's scope (an
@@ -51,16 +52,27 @@ pub(crate) fn rewrite_shadowed_callees(programs: &mut [&mut Program], context: &
         .map(|n| n.to_string())
         .collect();
     let mut program_fns = BTreeSet::new();
+    let mut variants: BTreeMap<(String, String), Vec<TypeExpr>> = BTreeMap::new();
     for p in programs.iter().map(|p| &**p).chain(context.iter().copied()) {
         for item in flat_decls(&p.items) {
-            if let TopDecl::Fn(f) = item {
-                program_fns.insert(f.name.name.clone());
+            match item {
+                TopDecl::Fn(f) => {
+                    program_fns.insert(f.name.name.clone());
+                }
+                TopDecl::Type(t) if t.generics.is_empty() => {
+                    if let TypeDeclBody::Enum(vs) = &t.body {
+                        for v in vs {
+                            variants.insert((t.name.name.clone(), v.name.name.clone()), v.fields.clone());
+                        }
+                    }
+                }
+                _ => {}
             }
         }
     }
     fns.extend(program_fns.iter().cloned());
     for p in programs.iter_mut() {
-        let mut w = Walk { fns: &fns, program_fns: &program_fns, scopes: Vec::new() };
+        let mut w = Walk { fns: &fns, program_fns: &program_fns, variants: &variants, scopes: Vec::new() };
         for item in &mut p.items {
             w.top_decl(item);
         }
@@ -71,6 +83,9 @@ struct Walk<'f> {
     fns: &'f BTreeSet<String>,
     /// The program's fns alone: what a name read as a value may be.
     program_fns: &'f BTreeSet<String>,
+    /// Each (non-generic) enum variant's declared payload types: what a
+    /// constructor pattern's bindings are declared as.
+    variants: &'f BTreeMap<(String, String), Vec<TypeExpr>>,
     /// The bindings in scope, innermost last, each with whether it is
     /// declared as a fn value ([`Walk::fn_valued`]).
     scopes: Vec<BTreeMap<String, bool>>,
@@ -452,10 +467,12 @@ impl Walk<'_> {
     fn match_stmt(&mut self, ms: &mut MatchStmt) {
         self.expr(&mut ms.scrutinee);
         for arm in &mut ms.arms {
+            // A pattern's binding is declared as its variant's payload
+            // declares it (`Op::Use(f)` with `Use(fn(Int) -> Int)`); any
+            // other says nothing of its type.
             let mut names = Vec::new();
-            pattern_names(&arm.pattern, &mut names);
-            // A pattern's binding says nothing of its type.
-            self.scoped(names.into_iter().map(|n| (n, false)).collect(), |w| {
+            self.pattern_bindings(&arm.pattern, None, &mut names);
+            self.scoped(names, |w| {
                 if let Some(g) = &mut arm.guard {
                     w.expr(g);
                 }
@@ -534,14 +551,32 @@ impl Walk<'_> {
     }
 }
 
-fn pattern_names(p: &Pattern, out: &mut Vec<String>) {
-    match p {
-        Pattern::Binding(i) => out.push(i.name.clone()),
-        Pattern::Constructor { args, .. } | Pattern::Tuple(args, _) => {
-            for a in args {
-                pattern_names(a, out);
+impl Walk<'_> {
+    /// The names a pattern binds, each with whether it is declared as a fn
+    /// value: what `declared` (the type the place it matches is declared
+    /// with, where known) or a constructor's variant declares there.
+    fn pattern_bindings(&self, p: &Pattern, declared: Option<&TypeExpr>, out: &mut Vec<(String, bool)>) {
+        match p {
+            Pattern::Binding(i) => out.push((i.name.clone(), matches!(declared, Some(TypeExpr::Function { .. })))),
+            Pattern::Constructor { path, args, .. } => {
+                let fields = match path.segments.as_slice() {
+                    [e, v] => self.variants.get(&(e.name.clone(), v.name.clone())),
+                    _ => None,
+                };
+                for (i, a) in args.iter().enumerate() {
+                    self.pattern_bindings(a, fields.and_then(|f| f.get(i)), out);
+                }
             }
+            Pattern::Tuple(args, _) => {
+                let parts = match declared {
+                    Some(TypeExpr::Tuple(parts, _)) => Some(parts),
+                    _ => None,
+                };
+                for (i, a) in args.iter().enumerate() {
+                    self.pattern_bindings(a, parts.and_then(|ps| ps.get(i)), out);
+                }
+            }
+            Pattern::Literal(..) | Pattern::Wildcard(_) => {}
         }
-        Pattern::Literal(..) | Pattern::Wildcard(_) => {}
     }
 }
