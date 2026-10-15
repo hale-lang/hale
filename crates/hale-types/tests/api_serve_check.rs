@@ -558,6 +558,7 @@ fn what_main_builds_before_a_listener_born_after_its_server_must_return() {
             Some(at) => {
                 errs.len() == 1
                     && errs.iter().any(|e| e.contains("exposure `web` held by `Server`: its address reads `Server`, so its listener (`App`'s) is born after `self.server`")
+                        && !e.contains(",,")
                         && e.contains(at)
                         && e.contains("may not return"))
             }
@@ -986,4 +987,63 @@ fn a_publish_before_the_listener_runs_its_main_thread_handlers() {
     admitted(&program(EXACT_SPINS, PUBLISH, "s: cooperative(pool = io);"));
     // ... and on main it is refused
     refused(&program(EXACT_SLEEPS, PUBLISH, ""), "`Spin::on_ping`");
+}
+
+/// A subscriber (and its publisher) an imported seed declares: its handler
+/// on the main thread runs inside the window like the entry's own, judged
+/// under the name the merged program gives it.
+#[test]
+fn an_imported_main_thread_handler_is_judged() {
+    let run = |tag: &str, lib: &str, params: &str, entry_decls: &str| -> Vec<String> {
+        let d = std::env::temp_dir().join(format!("hale_listener_window_imported_handler_{tag}_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(d.join("lib")).unwrap();
+        std::fs::write(d.join("hale.toml"), "[deps]\n").unwrap();
+        std::fs::write(d.join("lib/hale.toml"), "[deps]\n").unwrap();
+        std::fs::write(d.join("lib/main.hl"), lib).unwrap();
+        let entry = format!(
+            "import \"lib\" as lib;\n{}",
+            server(SERVED, params).replace("fn main()", &format!("{entry_decls}\nfn main()"))
+        );
+        std::fs::write(d.join("main.hl"), entry).unwrap();
+        errors_of_seed(&d)
+    };
+    const TOPIC: &str = "type Ping { id: Int = 0; }\ntopic Pings { payload: Ping; subject: \"t.pings\"; }\n";
+    let spin = |body: &str| format!("locus Spin {{\n    bus {{ subscribe Pings as on_ping; }}\n    fn on_ping(p: Ping) {{ {body} }}\n}}\n");
+    const PUB: &str = "locus Pub {\n    bus { publish Pings; }\n    birth() { Pings <- Ping { id: 1 }; }\n}\n";
+    let refused = |errs: &[String]| {
+        errs.iter().any(|e| e.contains("a handler on the main thread of `t.pings`") && e.contains("may not return"))
+    };
+    // subscriber and publisher both imported
+    let errs = run(
+        "both",
+        &format!("{TOPIC}{}{PUB}", spin("while !self.draining { }")),
+        "s: lib::Spin = lib::Spin { }; p: lib::Pub = lib::Pub { }; server: Server = Server { };",
+        "",
+    );
+    assert!(refused(&errs), "{errs:#?}");
+    // only the subscriber imported: the entry publishes the library's topic
+    let errs = run(
+        "sub",
+        &format!("{TOPIC}{}", spin("while !self.draining { }")),
+        "s: lib::Spin = lib::Spin { }; p: Pub = Pub { }; server: Server = Server { };",
+        "locus Pub {\n    bus { publish lib::Pings; }\n    birth() { lib::Pings <- lib::Ping { id: 1 }; }\n}",
+    );
+    assert!(refused(&errs), "{errs:#?}");
+    // only the publisher imported: the entry subscribes to the library's topic
+    let errs = run(
+        "pub",
+        &format!("{TOPIC}{PUB}"),
+        "s: Spin = Spin { }; p: lib::Pub = lib::Pub { }; server: Server = Server { };",
+        "locus Spin {\n    bus { subscribe lib::Pings as on_ping; }\n    fn on_ping(p: lib::Ping) { while !self.draining { } }\n}",
+    );
+    assert!(refused(&errs), "{errs:#?}");
+    // imported, the handler returns: admitted
+    let errs = run(
+        "returns",
+        &format!("{TOPIC}{}{PUB}", spin("println(\"ping\");")),
+        "s: lib::Spin = lib::Spin { }; p: lib::Pub = lib::Pub { }; server: Server = Server { };",
+        "",
+    );
+    assert_eq!(errs, Vec::<String>::new());
 }

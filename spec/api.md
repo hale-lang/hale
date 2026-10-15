@@ -426,7 +426,7 @@ unix socket, an adapter or a shared-memory ring `on_overflow: block`; a
 recovery (`restart`, …), which rebuilds a child the check does not
 follow; every handler a publish in the step can run on the main thread,
 judged as a call: the subscriptions of loci placed on main (or that
-placement cannot place) whose pattern the runtime matches the subject
+placement cannot place, an imported seed's among them) whose pattern the runtime matches the subject
 against (the topic's subject, or a trailing `**` over it; a `where key
 == …` filter taken as matching), and, for a subject built at run time,
 every such subscription of the published payload's type (a handler on

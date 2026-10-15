@@ -47,7 +47,7 @@
 //! | a fn used as a value | a fn passed, stored or bound may be called by what receives it, so it is judged as a call of it |
 //! | a publish that may wait | to a topic a binding carries over a unix socket (a write), an adapter (its `send`, user code the window does not follow) or a shared-memory ring `on_overflow: block` |
 //! | a recovery | `restart`, `resume`, `quarantine`, …: it rebuilds a child the window does not follow |
-//! | a handler a publish reaches on the main thread | judged as a call: every subscription of a locus the placement table puts on main (or cannot place) whose pattern the runtime matches the publish's subject against (the topic's subject, or a trailing-`**` wildcard over it; a `where key == …` filter taken as matching); for a subject built at run time, every such subscription of the published record's type (every one, when the value is no record literal). A main-thread handler runs inside the window, delivered in place or drained from main's queue between births; a subscriber on another domain is a cross-thread enqueue main does not wait for. The runtime's own loci (`__Std…`) are the standard library's, judged by their classes |
+//! | a handler a publish reaches on the main thread | judged as a call: every subscription of a locus the placement table puts on main, cannot place, or holds no row of (looked up by the merged name, an imported seed's `__lib_…` included) whose pattern the runtime matches the publish's subject against (the topic's subject, or a trailing-`**` wildcard over it; a `where key == …` filter taken as matching); for a subject built at run time, every such subscription of the published record's type (every one, when the value is no record literal). A main-thread handler runs inside the window, delivered in place or drained from main's queue between births; a subscriber on another domain is a cross-thread enqueue main does not wait for. The standard library's runtime loci (`__Std…`) are judged by their classes; an imported seed's (`__lib_…`) are the program's own. Subjects, topics and payload types are read through the import renames |
 //! | a `yield` | refused outright: it runs whatever main's queue holds, which no analysis of the step can name (judging every handler that could be queued on main would refuse the same programs less legibly) |
 //! | too deep | constructions and defaults nested past 32 levels |
 //!
@@ -406,9 +406,9 @@ pub(crate) struct Window<'a> {
 /// literal, and the payload's type when its value is a record literal.
 #[derive(Clone, Copy)]
 struct Sent<'a> {
-    spelled: Option<&'a str>,
-    literal: bool,
-    payload: Option<&'a str>,
+    spelled: Option<&'a [hale_syntax::ast::Ident]>,
+    literal: Option<&'a str>,
+    payload: Option<&'a [hale_syntax::ast::Ident]>,
 }
 
 /// What a walked expression holds, collected before it is judged.
@@ -445,25 +445,33 @@ fn collect<'a>(v: Visited<'a>, found: &mut Found<'a>) {
         Visited::Stmt(Stmt::Yield(_)) => found.stall = found.stall.or(Some(YIELD)),
         Visited::Stmt(Stmt::Send { subject, value, .. }) => {
             let payload = match value {
-                Expr::Struct { path, .. } => path.segments.last().map(|s| s.name.as_str()),
+                Expr::Struct { path, .. } => Some(path.segments.as_slice()),
                 _ => None,
             };
             let (spelled, literal) = match subject {
-                Expr::Ident(i) => (Some(i.name.as_str()), false),
-                Expr::Path(qn) => (qn.segments.last().map(|s| s.name.as_str()), false),
-                Expr::Literal(hale_syntax::ast::Literal::String(s), _) => (Some(s.as_str()), true),
-                _ => (None, false),
+                Expr::Ident(i) => (Some(std::slice::from_ref(i)), None),
+                Expr::Path(qn) => (Some(qn.segments.as_slice()), None),
+                Expr::Literal(hale_syntax::ast::Literal::String(s), _) => (None, Some(s.as_str())),
+                _ => (None, None),
             };
             found.sends.push(Sent { spelled, literal, payload });
         }
         Visited::Stmt(Stmt::ShmWrite { topic, .. }) => {
-            found.sends.push(Sent { spelled: Some(&topic.name), literal: false, payload: None })
+            found.sends.push(Sent { spelled: Some(std::slice::from_ref(topic)), literal: None, payload: None })
         }
         Visited::Expr(e @ Expr::Call { .. }) => found.calls.push(e),
         Visited::Expr(e @ Expr::Struct { .. }) => found.literals.push(e),
         Visited::Expr(e @ (Expr::Ident(_) | Expr::Path(_))) => found.names.push(e),
         _ => {}
     }
+}
+
+/// A locus of the standard library's runtime (`__StdApiExposure`,
+/// `__StdIoTcpRelay`, …): judged by its classes where it is called, not
+/// walked. Not every `__` name is one: an imported seed's declarations are
+/// merged as `__lib_…`, and are the program's own.
+fn standard_library_locus(name: &str) -> bool {
+    name.starts_with("__Std")
 }
 
 const LOOP: &str = "a `while` loop or an `or wait`, which may not end";
@@ -478,7 +486,8 @@ const DEFAULT_REACHES_ITSELF: &str = "a default that reaches its own call again,
 /// A step named by where it is reached from: `the default of `App.n``,
 /// through `settle` when the step is a call or a construction inside it.
 fn through(at: String, inner: String) -> String {
-    if inner.is_empty() { at } else { format!("{at}, through {inner},") }
+    // a nested step already ends in its own comma
+    if inner.is_empty() { at } else { format!("{at}, through {},", inner.trim_end_matches(',')) }
 }
 
 impl<'a> Window<'a> {
@@ -529,8 +538,13 @@ impl<'a> Window<'a> {
         let mut subjects: BTreeMap<String, String> = BTreeMap::new();
         let mut subscribed: Vec<(&'a hale_syntax::ast::BusSubject, Option<String>, String, String)> = Vec::new();
         let mut topics: BTreeMap<String, (String, Option<String>)> = BTreeMap::new();
+        // a type as the merged program names it (`lib::Ping` through the
+        // import renames)
         let type_name = |t: &TypeExpr| match t {
-            TypeExpr::Named { path, .. } => path.segments.last().map(|s| s.name.clone()),
+            TypeExpr::Named { path, .. } => {
+                let segs: Vec<String> = path.segments.iter().map(|s| s.name.clone()).collect();
+                Some(renames.iter().find(|(p, _)| *p == segs).map_or_else(|| segs.join("::"), |(_, m)| m.clone()))
+            }
             _ => None,
         };
         let record = |t: &'a TypeDecl, records: &mut BTreeMap<String, &'a [StructField]>| {
@@ -625,10 +639,10 @@ impl<'a> Window<'a> {
         // library's, judged by their classes where they are called.
         let domains = placement.domains_by_type();
         let on_main = |locus: &str| {
-            !locus.starts_with("__")
-                && domains
-                    .get(locus)
-                    .is_some_and(|d| d.unknown || d.known.contains(&crate::placement::PlacementTable::MAIN))
+            // a type the table holds no row of is taken as possibly on
+            // main: it is never off it by default
+            !standard_library_locus(locus)
+                && domains.get(locus).is_none_or(|d| d.unknown || d.known.contains(&crate::placement::PlacementTable::MAIN))
         };
         let mut main_handlers = Vec::new();
         for (subject, ty, locus, handler) in subscribed {
@@ -641,7 +655,13 @@ impl<'a> Window<'a> {
                     topics.get(&t.name).cloned().unwrap_or_else(|| (t.name.clone(), ty))
                 }
                 hale_syntax::ast::BusSubject::QualifiedTopic(qn) => {
-                    let name = qn.segments.last().map(|s| s.name.clone()).unwrap_or_default();
+                    // `lib::Pings`: the merged name, through the import renames
+                    let segs: Vec<String> = qn.segments.iter().map(|s| s.name.clone()).collect();
+                    let name = renames
+                        .iter()
+                        .find(|(p, _)| *p == segs)
+                        .map(|(_, m)| m.clone())
+                        .unwrap_or_else(|| segs.last().cloned().unwrap_or_default());
                     topics.get(&name).cloned().unwrap_or((name, ty))
                 }
             };
@@ -693,6 +713,13 @@ impl<'a> Window<'a> {
             .iter()
             .find(|(path, _)| *path == owned)
             .map_or_else(|| segs.join("::"), |(_, mangled)| mangled.clone())
+    }
+
+    /// A path spelled as identifiers, resolved as [`Window::resolve_path`]
+    /// resolves it: the name the merged program gives the declaration.
+    fn resolve_idents(&self, segs: &[hale_syntax::ast::Ident]) -> String {
+        let segs: Vec<&str> = segs.iter().map(|s| s.name.as_str()).collect();
+        self.resolve_path(&segs)
     }
 
     /// The locus a literal builds, when it builds one.
@@ -995,7 +1022,16 @@ impl<'a> Window<'a> {
     fn stall(&self, found: &Found<'_>) -> Option<&'static str> {
         found
             .stall
-            .or_else(|| found.sends.iter().any(|s| s.spelled.is_some_and(|t| self.waiting_topics.contains(t))).then_some(SEND_WAITS))
+            .or_else(|| {
+                found
+                    .sends
+                    .iter()
+                    .any(|s| {
+                        s.literal.is_some_and(|l| self.waiting_topics.contains(l))
+                            || s.spelled.is_some_and(|p| self.waiting_topics.contains(&self.resolve_idents(p)))
+                    })
+                    .then_some(SEND_WAITS)
+            })
     }
 
     /// The handlers a publish in `found` can run on the main thread, each
@@ -1011,15 +1047,16 @@ impl<'a> Window<'a> {
     fn delivered(&self, found: &Found<'_>, depth: usize) -> Option<(String, &'static str)> {
         for sent in &found.sends {
             // the concrete subject, when the publish spells one
-            let subject: Option<String> = match sent.spelled {
-                Some(s) if sent.literal => Some(s.to_string()),
-                Some(name) => self.topics.get(name).map(|(subject, _)| subject.clone()),
-                None => None,
+            let subject: Option<String> = match (sent.literal, sent.spelled) {
+                (Some(s), _) => Some(s.to_string()),
+                (None, Some(p)) => self.topics.get(&self.resolve_idents(p)).map(|(subject, _)| subject.clone()),
+                (None, None) => None,
             };
+            let sent_payload = sent.payload.map(|p| self.resolve_idents(p));
             for (pattern, payload, locus, handler) in &self.main_handlers {
                 let reached = match &subject {
                     Some(s) => crate::wildcard_match(pattern, s),
-                    None => match (sent.payload, payload) {
+                    None => match (&sent_payload, payload) {
                         (Some(sent), Some(sub)) => sent == sub,
                         _ => true,
                     },
@@ -1052,7 +1089,7 @@ impl<'a> Window<'a> {
     fn cycle(&self, start: &'a FnKey) -> Option<&'a FnKey> {
         let effects = self.effects?;
         let own = |k: &FnKey| {
-            !k.locus.as_deref().is_some_and(|l| l.starts_with("__"))
+            !k.locus.as_deref().is_some_and(standard_library_locus)
                 && self.bodies.contains_key(&(k.locus.clone(), k.fn_name.clone()))
         };
         // 1: on the walk's stack; 2: finished, no cycle through it
