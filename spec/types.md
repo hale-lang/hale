@@ -1498,14 +1498,15 @@ a condition, a fn or method body, a lifecycle hook, a bus handler, a
 library caller assembles (a styleguide snippet, a test harness's
 fragment) keeps the permissive reading (dna/FRICTION.md F.18).
 
-A bare callee that names a top-level or generic fn calls that fn, even
-where a fn value bound in scope (a `let`, a parameter, a `for` or
-`match` binding) has the same name: `{ let helper = zero; helper() }`
-runs `helper`, not `zero`. Since that is not how the call reads, the
-checker refuses it at the call — `` `helper` names both a local fn value
-and the fn `helper`; this call runs the fn `` — and the local is renamed,
-or the value is called through another name. A qualified callee
-(`lib::helper()`) names one thing and is not affected.
+A local or parameter fn value shadows a top-level fn of the same name in
+a call, as it does wherever else the name is read: a bare callee that
+names a binding in scope (a parameter, a `let`, a tuple `let`'s name, a
+`for` binder, a `match` pattern's binding) calls that binding, so
+`fn apply(f: fn(Int) -> Int, x: Int) -> Int { return f(x); }` beside a
+`fn f` calls the parameter, and `{ let helper = zero; helper() }` calls
+`zero`. A qualified callee (`lib::helper()`) names the declaration. The
+check and the build read the call one way: the desugar sequence calls
+such a binding as a value before either sees the program.
 
 `hale check <file>` loads that file and what its own imports reach,
 never the other files of its directory — exactly what `hale build

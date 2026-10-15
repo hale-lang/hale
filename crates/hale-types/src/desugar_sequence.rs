@@ -36,6 +36,10 @@
 //!    the type in one file, the accessor in another). An accessor the
 //!    pass refuses (no such field, the wrong arity) stays as written,
 //!    for the checker to report.
+//! 7. shadowed callees: a call whose bare callee names a binding in
+//!    scope and also one of the program's fns calls the binding, as a
+//!    value (`{ f }(x)`, [`crate::shadowed_callees`]), so no pass that
+//!    resolves a bare callee by name reaches the fn instead.
 //!
 //! The first two generate declarations; everything after them sees the
 //! generated ones too. The bundled stdlib goes through the passes that
@@ -91,6 +95,7 @@ fn shape(programs: &mut [&mut Program], seq: &Sequence<'_>, context: &[&Program]
         hale_syntax::desugar::desugar_omitted_run(p);
     }
     hale_syntax::desugar::desugar_repr_accessors(programs);
+    crate::shadowed_callees::rewrite_shadowed_callees(programs, context);
 }
 
 /// The bundled stdlib, parsed once and put through the passes that

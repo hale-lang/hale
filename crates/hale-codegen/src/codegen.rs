@@ -15621,6 +15621,22 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         }
     }
 
+    /// A call through the fn value `callee` evaluates to: a block whose
+    /// value is a fn value bound in scope (`{ f }(x)`, the desugar of a
+    /// binding that shadows a fn of its name).
+    fn lower_computed_fn_call(
+        &mut self,
+        callee: &Expr,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<Option<(BasicValueEnum<'ctx>, CodegenTy)>, CodegenError> {
+        let (value, ty) = self.lower_expr(callee, scope)?;
+        let CodegenTy::FnPtr { args: arg_tys, ret: ret_ty } = ty else {
+            return Err(CodegenError::Unsupported(format!("call through a value of type {ty:?}, not a fn value")));
+        };
+        self.emit_fnptr_indirect_call(value.into_pointer_value(), &arg_tys, ret_ty.as_deref(), args, scope, "fn value")
+    }
+
     fn lower_user_fn_call(
         &mut self,
         name: &str,
@@ -17551,6 +17567,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                             args,
                             scope,
                         )?;
+                    }
+                    // A call through a value the callee evaluates to (a
+                    // fn value bound in scope that shadows a fn of its
+                    // name, `crate::shadowed_callees` in hale-types).
+                    Expr::Block(_) => {
+                        let _ = self.lower_computed_fn_call(callee, args, scope)?;
                     }
                     _ => {
                         return Err(CodegenError::Unsupported(
@@ -24776,6 +24798,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         ))
                     })
                 }
+                Expr::Block(_) => self.lower_computed_fn_call(callee, args, scope)?.ok_or_else(|| {
+                    CodegenError::Unsupported(
+                        "a fn value that returns no value is used in expression position".to_string(),
+                    )
+                }),
                 _ => Err(CodegenError::Unsupported(
                     self.diagnose_unresolved_callee(callee, scope),
                 )),

@@ -19623,28 +19623,6 @@ impl<'a> Checker<'a> {
                     return Ty::Unknown;
                 }
                 self.record_omitted_defaults(*call_id, callee, args.len());
-                // A bare callee that names both a fn value bound in scope (a
-                // `let`, a parameter, a `for` or `match` binding) and a
-                // top-level or generic fn calls the fn: lowering resolves a
-                // bare name to the declared fn before a fn-pointer local, so
-                // `{ let helper = zero; helper() }` runs `helper`, not `zero`,
-                // contrary to how it reads. Refused rather than changed. A
-                // qualified callee (`lib::helper()`) names one thing.
-                if let Expr::Ident(id) = callee.as_ref() {
-                    let name = id.name.as_str();
-                    let local_fn = self.locals.lookup(name).is_some_and(|s| matches!(s.ty, Ty::Function { .. }));
-                    let declared_fn =
-                        matches!(self.top.lookup(name), Some(TopSymbol::Fn(_))) || self.generic_fns.contains_key(name);
-                    if local_fn && declared_fn {
-                        self.diags.push(Diag::ty(
-                            *call_span,
-                            format!(
-                                "`{name}` names both a local fn value and the fn `{name}`; this call runs the fn \
-                                 — rename the local, or call the value through another name"
-                            ),
-                        ));
-                    }
-                }
                 if let Expr::Ident(id) = callee.as_ref() {
                     // GH #1076 (U2, U3): `Session(n)`, `OrderId(n)`,
                     // `Int(id)`, `Bucket(d)`: a conversion, classified and

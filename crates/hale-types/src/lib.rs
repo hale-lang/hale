@@ -92,6 +92,7 @@ pub mod snapshot;
 pub mod resource_budget;
 pub mod flows;
 mod fn_values;
+mod shadowed_callees;
 pub mod sealability;
 pub mod sealed_access;
 pub mod symbol;

@@ -6834,9 +6834,13 @@ impl<'a> Walker<'a> {
                     Callee::Unresolved(id.name.clone())
                 } else {
                     // A bare callee names a builtin or a fn before a
-                    // local, as codegen lowers it. A call through a
-                    // local the bindings follow to a fn reaches that fn;
-                    // through any other, the edge is what it always was.
+                    // local: a binding in scope that shadows a fn of its
+                    // name is called as a value, `{ f }(x)`, by the desugar
+                    // sequence (`crate::shadowed_callees`), so the name of
+                    // a fn reaches here only where no binding shadows it.
+                    // A call through a local the bindings follow to a fn
+                    // reaches that fn; through any other, the edge is what
+                    // it always was.
                     match self.local(&id.name) {
                         Some(Local::Fn(c)) => {
                             via_local = Some(id.name.clone());
@@ -9848,7 +9852,9 @@ mod tests {
 
     /// An inner binding shadows an outer one for its scope only; a
     /// parameter shadows a fn of the same name; a bare callee names a fn
-    /// before a local, as codegen lowers it.
+    /// before a local here, over a program the desugar sequence has not
+    /// shaped (it calls a shadowing binding as a value, `{ make }()`,
+    /// `crate::shadowed_callees`, before any pass reads the program).
     #[test]
     fn a_shadowing_binding_is_the_one_called() {
         let src = r#"

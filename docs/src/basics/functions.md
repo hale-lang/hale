@@ -122,10 +122,9 @@ callback needs context, you pass the context in explicitly, or
 (at higher levels) you reach for a locus that holds the state.
 This keeps every function value a plain, inspectable thing.
 
-Give a function value its own name. A call `f()` where `f` is both a
-value in scope and a function the program declares would run the
-declared function, so the compiler refuses it and asks you to rename
-the local.
+A function value in scope shadows a function of the same name, in a
+call as anywhere else: `fn apply(f: fn(Int) -> Int, x: Int) -> Int {
+return f(x); }` calls the `f` it was handed, even beside a `fn f`.
 
 ## Free functions and where they live
 
