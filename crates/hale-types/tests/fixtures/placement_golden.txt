@@ -2484,6 +2484,36 @@ row	~.frames	FrameBuffer	main	inherited
 == crates/hale-codegen/tests/cross_locus_from_method.rs#313a3c6e
 shared	Caller@main1	Caller #3e6a56f6
 
+== crates/hale-codegen/tests/cross_pool_backstop.rs#8231aa31
+root	App	the entry
+domain	pinned:Keep@binding1
+row	App@literal1	App	main	default
+-- Keep@binding1	Keep
+row	~	Keep	pinned:~	binding
+row	~.tally	Tally	pinned:~	inherited
+
+== crates/hale-codegen/tests/cross_pool_backstop.rs#24a2a3ff
+root	App	the entry
+domain	pool:io
+row	App@literal1	App	main	default
+-- App@literal1.q	P
+row	~	P	pool:io	entry	off owner
+row	~.c	C	pool:io	inherited
+
+== crates/hale-codegen/tests/cross_pool_backstop.rs#496b49d9
+root	App	the entry
+domain	pool:io
+row	App@literal1	App	main	default
+-- App@literal1.q	Q
+row	~	Q	pool:io	entry	off owner
+row	~.c	C	pool:io	inherited
+
+== crates/hale-codegen/tests/cross_pool_backstop.rs#a97ba0a2
+root	App	the entry
+domain	pool:io
+row	App@literal1	App	main	default
+row	App@literal1.q	P	pool:io	entry	off owner
+
 == crates/hale-codegen/tests/cross_seed_imports.rs#549b8136
 row	Parent@main1	Parent	main	default
 dynamic	<hole>	on main|unresolved declaration `lib::Child`	in the seed

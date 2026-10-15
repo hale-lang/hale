@@ -301,11 +301,20 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // stood back, so nobody reclaimed it. The table decided the
         // receiver and the field's value separately when it walked the
         // initialiser.
-        let parent_owns_via_field = matches!(
-            site_owner,
-            crate::ownership::Owner::Field { .. }
-                | crate::ownership::Owner::Placement(_)
-        );
+        // A locus literal an array (or tuple) param value holds, built in
+        // a pool-placed root's init job: the job's frame is gone once its
+        // params are, so the element lives in its owner's arena, as a
+        // field's child does (GH #1566: `cs: [C; 2] = [C { }, C { }]`
+        // read in `dissolve()` was a dead stack slot).
+        let held_by_composite_param = self.pool_init_composite_param
+            && self.current_arena_override.is_some()
+            && matches!(site_owner, crate::ownership::Owner::FrameTemp(_));
+        let parent_owns_via_field = held_by_composite_param
+            || matches!(
+                site_owner,
+                crate::ownership::Owner::Field { .. }
+                    | crate::ownership::Owner::Placement(_)
+            );
         // F.31 (2026-05-23): consume any placement override the
         // caller set. The override is applied to a LOCAL clone of
         // `info` for this instantiation only — nested
@@ -1152,7 +1161,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         )> = None;
         let new_arena = match acquire_strategy {
             AcquireStrategy::Fresh => {
-                if info.arena_elidable {
+                if held_by_composite_param {
+                    // its owner's arena, which the owner's teardown frees
+                    // with it (nothing tears the element down on its own)
+                    self.current_arena_override.expect("checked is_some").into()
+                } else if info.arena_elidable {
                     // Locus body is provably non-allocating
                     // (its elision row, `hale_types::alloc_routing`). Point
                     // `__arena` at the caller's current arena
@@ -2957,7 +2970,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         }
                         _ => expr,
                     };
+                    let composite = std::mem::replace(
+                        &mut self.pool_init_composite_param,
+                        self.pool_init && matches!(value, Expr::Array(..) | Expr::Tuple(..) | Expr::ArrayRepeat { .. }),
+                    );
                     let r = self.lower_expr(value, scope);
+                    self.pool_init_composite_param = composite;
                     self.field_holder = None;
                     let r = r?;
                     self.params_init_initialized = inner_init;
@@ -3005,7 +3023,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                             // question at the default site.
                             let owned = self.owner_table.field_owns(e);
                             // The locus's own text: typed in its body.
-                            let r = self.in_body(info.decl, |cx| cx.lower_expr(e, scope))?;
+                            let composite = std::mem::replace(
+                                &mut self.pool_init_composite_param,
+                                self.pool_init && matches!(e, Expr::Array(..) | Expr::Tuple(..) | Expr::ArrayRepeat { .. }),
+                            );
+                            let r = self.in_body(info.decl, |cx| cx.lower_expr(e, scope));
+                            self.pool_init_composite_param = composite;
+                            let r = r?;
                             self.in_params_default = saved_ipd;
                             let from_lit = matches!(
                                 e,
@@ -5100,7 +5124,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let self_param = init_fn.get_nth_param(0).expect("init self param").into_pointer_value();
         // GH #1566: the root, and what its params build here, is this
         // thread's domain
-        if self.xpool_check {
+        if self.xpool_check && !self.xpool_shared {
             let here = self.module.get_function("lotus_domain_here").expect("lotus_domain_here declared");
             let d = self
                 .builder
@@ -5698,7 +5722,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         store(self, info.held_by_owner_field_idx, i64_t.const_int(u64::from(held), false).into(), "__held_by_owner")?;
         // GH #1566: built on this domain
         let domain: inkwell::values::BasicValueEnum<'ctx> =
-            if self.xpool_check { self.domain_now()?.into() } else { zero };
+            if self.xpool_check && !self.xpool_shared { self.domain_now()?.into() } else { zero };
         store(self, info.domain_field_idx, domain, "__domain")?;
         // m41 / m45 / F.27: quarantine, restart-in-place and drain latches.
         store(self, info.quarantined_field_idx, zero, "__quarantined")?;

@@ -310,6 +310,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
 
             // A `return;` in the body is the fall-through below, taken
             // early (`lower_failure_handler_return`).
+            // GH #1566: the failed child's domain is the handler's too
+            // (`wrap_domain_fns`)
+            self.xpool_handlers.push((ff, child_locus_name.clone()));
             self.in_failure_handler = true;
             let end = self.in_body(failure_decl.id, |cx| cx.lower_block(&failure_decl.body, &mut scope));
             self.in_failure_handler = false;

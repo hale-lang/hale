@@ -41,7 +41,6 @@ pub(crate) fn build_options_from(get: impl Fn(&str) -> Option<String>) -> BuildO
     o.dump_ir_beside_output = is_set("LOTUS_DUMP_IR");
     o.no_bus_devirt = flag("LOTUS_NO_BUS_DEVIRT");
     o.no_ownership_bubble = flag("LOTUS_NO_OWNERSHIP_BUBBLE");
-    o.no_xpool_backstop = flag("LOTUS_NO_XPOOL_BACKSTOP");
     o.asan = flag("LOTUS_ASAN");
     o.tsan = flag("LOTUS_TSAN");
     o.ubsan = flag("LOTUS_UBSAN");

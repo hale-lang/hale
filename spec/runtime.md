@@ -789,12 +789,15 @@ the domain it was built on (`__domain`, from the thread-local
 a pinned locus's own thread; a pinned or pool-placed root takes its
 own thread's at its init there). At a store into a locus's field from
 outside its methods whose slot is no inline scalar, and at a method
-call on a locus reached any way but down `self`, the compiled code
-compares the receiver's `__domain` with `lotus_domain_now`: one load
-and a compare, the mismatch side cold. A mismatch where both domains
+call on a locus reached any way but down `self` — or down `self`
+through a field some literal or store hands an instance built elsewhere
+(`Routes { w: self.a }`, `h.w = x`), which the checker's per-instance
+answer does not cover — the compiled code compares the receiver's
+`__domain` with `lotus_domain_now`: one load and a compare, the
+mismatch side cold. A mismatch where both domains
 are known is a violation: `lotus_cross_pool_check_failed` prints the
-site (from the line table `hale build` emits; a build with none prints
-no location), the store or call, and both pools —
+site (`file:line:col`; a build handed no source table prints none),
+the store or call, and both pools —
 
     main.hl:8:9: violation: cross-pool store into `W.name` from pool `io`; this `W` runs on pool `main`: reach it through a method on the bus (spec/types.md § "Single-threaded-method invariant (F.31)")
 
@@ -802,11 +805,27 @@ no location), the store or call, and both pools —
 the store or the call runs. A thread that runs no locus code has no
 domain (0) and is not checked; neither is a receiver whose form
 synchronizes cross-domain access (`sync = serialized | striped |
-lockfree`), a local bound to a locus literal the running code built
-and never rebound, or an `on_failure` handler's failed child (it is
-stopped while its owner's handler runs). wasm32 has one thread and no
-check. `LOTUS_NO_XPOOL_BACKSTOP` / `BuildOptions::no_xpool_backstop`
-leaves the check out.
+lockfree`), or a local bound to a locus literal the running code built
+and never rebound. Code the runtime runs off its instance's domain on
+purpose runs as that domain: every locus's `drain()` and `dissolve()`
+set `lotus_domain_now` to the instance's `__domain` for their duration
+(a pool-placed root's run on main after its pool joined), and an
+`on_failure` handler reaches its failed child's domain for its duration
+(`lotus_domain_also`: the child is stopped while its owner's handler
+runs, so its subtree is as safe as its slot). What a `bindings { }` entry
+builds — an adapter, a transport, a codec — belongs to no one domain:
+the runtime calls an adapter's `send` from every publishing thread
+through a function pointer, by design, so it and what its params build
+carry domain 0, and its own thread takes none. wasm32 has one thread
+and no check. A call through an interface is checked on the locus behind it:
+its vtable carries that locus's `__domain` offset after the methods.
+The site's location comes from the line table `hale build` emits, or,
+for `hale run` and `hale test`, from the source table they hand the
+build (`BuildOptions::site_sources`) without DWARF. No user turns the
+check off: `BuildOptions::no_xpool_backstop` is a test-harness option
+only (no variable or flag sets it), for the fixtures that drive the
+off-domain failure delivery through an escape the checker does not
+follow; it is part of the build identity.
 
 #### Long-running cooperative children: placement closes Item D
 
@@ -3477,7 +3496,7 @@ path, so they frame one program alike. The build options include the environment
 change the binary (see *Build-time and toolchain environment*:
 `LOTUS_ASAN`, `LOTUS_TSAN`, `LOTUS_UBSAN`, `LOTUS_LTO`,
 `LOTUS_DISABLE_PREFETCH`, `LOTUS_NO_BUS_DEVIRT`,
-`LOTUS_NO_OWNERSHIP_BUBBLE`, `LOTUS_NO_XPOOL_BACKSTOP`, `HALE_NO_TS_SHIM`, `HALE_TS_SHIM_A`,
+`LOTUS_NO_OWNERSHIP_BUBBLE`, `HALE_NO_TS_SHIM`, `HALE_TS_SHIM_A`,
 `HALE_ZIG`, `HALE_TARGET_GLIBC`, `HALE_TARGET_SYSROOT`,
 `LOTUS_OPENSSL_PREFIX`), so a recording made under one is admitted by
 no replay built without it; what only narrates or times a build, the
@@ -4346,7 +4365,6 @@ build.
 | `LOTUS_DUMP_IR` (*set*) | `dump_ir_beside_output` | Write the pre-optimization LLVM IR to `<output>.ll`. A library caller may instead name the path in `dump_ir`. | off |
 | `LOTUS_NO_BUS_DEVIRT` | `no_bus_devirt` | Force the all-dynamic bus lowering: every subject's dispatch plan is empty. The differential harness's control arm. | off |
 | `LOTUS_NO_OWNERSHIP_BUBBLE` | `no_ownership_bubble` | Force the pre-bubble ownership lowering: no bubble plans, no forwarding sets, no threading fields. | off |
-| `LOTUS_NO_XPOOL_BACKSTOP` | `no_xpool_backstop` | Leave out F.31's runtime backstop (§ *Cross-pool backstop*): no store or method call is checked against its receiver's domain. For a fixture that drives the off-domain failure delivery through an escape the checker does not follow. | off |
 | `LOTUS_DISABLE_PREFETCH` | `disable_prefetch` | Compile the runtime without its prefetch hints. | off |
 | `LOTUS_DI_TRACE` (*set*) | `di_trace` | Narrate debug-location decisions on stderr. | off |
 | `HALE_DISPATCH_TRACE` | `dispatch_trace` | Print the flavor the bus dispatch plan chose for each subject, with its gate's `payload_flat` column, and the codec's flatness at each publish to a literal subject, on stderr. | off |

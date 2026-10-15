@@ -2087,6 +2087,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 // GH #732: a fallible method called through an
                 // interface dispatches through its vtable slot.
                 if let CodegenTy::Interface(iface_name) = &recv_ty {
+                    // GH #1566: the backstop on the locus behind it
+                    self.emit_iface_cross_pool_check(recv_val.into_pointer_value(), iface_name, method_name, receiver, scope)?;
                     return self.lower_iface_fallible_method_call(
                         recv_val.into_pointer_value(),
                         iface_name,

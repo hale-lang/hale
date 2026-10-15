@@ -513,6 +513,10 @@ crates/hale-codegen/tests/cross_locus_from_method.rs#4 0aff0fc117f854fc
 crates/hale-codegen/tests/cross_locus_from_method.rs#5 0a57b3f72f13b86d
 crates/hale-codegen/tests/cross_locus_from_method.rs#6 4dc3ef9029ded8d0
 crates/hale-codegen/tests/cross_locus_from_method.rs#7 fcd7b15eda245808
+crates/hale-codegen/tests/cross_pool_backstop.rs#1 a426dcca32bb7a0d
+crates/hale-codegen/tests/cross_pool_backstop.rs#2 d83fe81047bb96ff
+crates/hale-codegen/tests/cross_pool_backstop.rs#3 187f6dc5b09d2edc
+crates/hale-codegen/tests/cross_pool_backstop.rs#4 f7db1148777d5796
 crates/hale-codegen/tests/cross_seed_imports.rs#1 19c45840adcf5be3
 crates/hale-codegen/tests/cross_seed_imports.rs#3 89a7431e3e28532a
 crates/hale-codegen/tests/cross_seed_imports.rs#4 f2c1228edb650960
@@ -1996,9 +2000,9 @@ crates/hale-types/tests/placement.rs#72 eb89d2367f0fe029
 crates/hale-types/tests/placement.rs#73 eb89d2367f0fe029
 crates/hale-types/tests/placement.rs#74 638b42602935f283
 crates/hale-types/tests/placement.rs#8 aa981ce3fa820e36
-crates/hale-types/tests/placement.rs#85 e4e5c0079991b066
-crates/hale-types/tests/placement.rs#88 8110ec671cdc568a
-crates/hale-types/tests/placement.rs#94 bfa76e0ceeb15bf3
+crates/hale-types/tests/placement.rs#86 e4e5c0079991b066
+crates/hale-types/tests/placement.rs#89 8110ec671cdc568a
+crates/hale-types/tests/placement.rs#95 bfa76e0ceeb15bf3
 crates/hale-types/tests/placement_pairings.rs#3 7fa08ae2a5239b16
 crates/hale-types/tests/placement_pairings.rs#6 19fbfff324159117
 crates/hale-types/tests/quantitative_budgets.rs#0 53bd236a4771f0ca

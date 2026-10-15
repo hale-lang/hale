@@ -578,7 +578,9 @@ locus living on another pool. The static call-graph walk can't see
 through the pointer. What it can't see, the runtime checks: every
 locus remembers the pool it was built on, and a store into its field
 from outside its methods, or a method call on it through anything but
-`self.…`, compares that pool with the one the code is running on. A
+`self.…` (or through a field of `self` that was handed an instance
+built elsewhere), compares that pool with the one the code is running
+on. A
 mismatch stops the program (exit 1) with the site and both pools,
 instead of racing the owning thread:
 
@@ -586,10 +588,11 @@ instead of racing the owning thread:
 main.hl:8:9: violation: cross-pool store into `W.name` from pool `io`; this `W` runs on pool `main`: reach it through a method on the bus
 ```
 
-A handler reading a locus down its own fields (a `/metrics` endpoint
-on the `io` pool rendering the registry it was handed,
-`self.registry.render()`) is a direct path and stays allowed; keep
-that to reads of stable, append-only state.
+A handler handed another pool's locus through its params (a `/metrics`
+endpoint on the `io` pool given a registry that lives on a pinned
+gateway) holds that pool's locus: the checker refuses calling into it
+from the handler, and the runtime would stop it. Build the server where
+the registry lives, or hand the handler what it needs over the bus.
 
 Next: how loci nest and own each other — [Parents &
 children](./parents-children.md).

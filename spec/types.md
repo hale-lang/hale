@@ -1774,13 +1774,20 @@ instance, seeded from the `main locus`'s `placement { }` entries):
    so it may refuse a store into an instance that never holds the
    handle another one does.
 
+   A field a literal hands an instance a field of an enclosing
+   instance holds (`Routes { w: self.a }`, written in `App`'s params)
+   holds that instance, which runs where its own row does: down `self`
+   from the holder, a store into it or a method call on it is
+   cross-pool when the two pools differ.
+
    The rule is checked statically where the walk follows the handle,
    and enforced at run time at every remaining site (GH #1566,
    spec/runtime.md § *Cross-pool backstop*): every instance records
    the domain it was built on, and a store into a locus's field from
    outside its methods (not an inline scalar slot) or a method call on
-   a locus reached any way but down `self` compares the receiver's
-   domain with the running code's. A mismatch is a violation: the
+   a locus reached any way but down `self` (through an interface, on
+   the locus behind it) compares the receiver's domain with the
+   running code's. A mismatch is a violation: the
    program prints the site, the store (or the method call, `cross-pool
    method call` with the method) and both pools, and exits 1, before
    the store or the call touches the other pool's locus:
@@ -1789,10 +1796,14 @@ instance, seeded from the `main locus`'s `placement { }` entries):
    main.hl:8:9: violation: cross-pool store into `W.name` from pool `io`; this `W` runs on pool `main`: reach it through a method on the bus
    ```
 
-   A receiver whose form synchronizes access from
-   another domain, a local bound to a locus literal the running code
-   built (and never rebound), and an `on_failure` handler's failed
-   child are not checked.
+   Down `self`, a receiver is checked when the path goes through a
+   field some literal or store hands an instance built elsewhere. A
+   receiver whose form synchronizes access from another domain, a local
+   bound to a locus literal the running code built (and never rebound),
+   and what a `bindings { }` entry builds (an adapter the runtime calls
+   from every publishing thread) are not checked; a locus's `drain()`
+   and `dissolve()` run as its own domain wherever the runtime runs
+   them, and an `on_failure` handler reaches its failed child's.
 5. Bus sends (`Topic <- v;` / `"subj" <- v;`) are unrestricted
    — the runtime's cross-thread dispatch (m28b condvar+memcpy)
    handles the boundary safely.

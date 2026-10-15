@@ -806,6 +806,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // GH #1566: F.31's runtime backstop — a pinned or pool-placed
         // root's init stamps its domain; the compiled check's cold side.
         self.module.add_function("lotus_domain_here", i64_t.fn_type(&[], false), None);
+        self.module.add_function("lotus_domain_act", i64_t.fn_type(&[i64_t.into()], false), None);
+        self.module.add_function("lotus_domain_restore", void_t.fn_type(&[i64_t.into()], false), None);
+        self.module.add_function("lotus_domain_also_enter", i64_t.fn_type(&[i64_t.into()], false), None);
+        self.module.add_function("lotus_domain_also_restore", void_t.fn_type(&[i64_t.into()], false), None);
         let xpool_failed = self.module.add_function(
             "lotus_cross_pool_check_failed",
             void_t.fn_type(&[ptr_t.into(), i64_t.into(), i64_t.into()], false),

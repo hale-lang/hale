@@ -4763,7 +4763,7 @@ impl Env {
     /// The locus type a binding is declared or built as.
     fn locus_type(&self, name: &str) -> Option<&str> {
         match self.binding(name) {
-            Some((_, _, Some((t, 0)))) => Some(t),
+            Some((_, _, Some(Lty::Locus(t)))) => Some(t),
             _ => None,
         }
     }
@@ -6031,7 +6031,7 @@ fn receiver_locus_type(receiver: &Expr, cx: &PoolCheckCx) -> Option<String> {
         }
     }
     if self_rooted_field(receiver).is_none() && !matches!(receiver, Expr::KwSelf(_)) {
-        if let Some((t, 0)) = lty_of_expr(receiver, cx) {
+        if let Some(Lty::Locus(t)) = lty_of_expr(receiver, cx) {
             return Some(t);
         }
         if let Expr::Ident(id) = receiver {
@@ -6405,35 +6405,53 @@ fn check_held_through_receiver(
     }
 }
 
-/// A locus type through some arrays: `(W, 0)` a `W`, `(W, 1)` a `[W; n]`.
-type Lty = (String, u8);
+/// A value's locus type, as far as the walk can tell: a locus, an array
+/// of a type, a tuple of types (a part with none, `None`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Lty {
+    Locus(String),
+    Array(Box<Lty>),
+    Tuple(Vec<Option<Lty>>),
+}
 
-/// The locus a value of the declared type `t` is, through its arrays.
+/// The locus type a value of the declared type `t` is.
 fn lty_of_type(t: &TypeExpr, d: &StoreDecls<'_>) -> Option<Lty> {
     match d.resolve(t) {
-        TypeExpr::Array { elem, .. } => lty_of_type(elem, d).map(|(n, k)| (n, k.saturating_add(1))),
-        t => d.named(t).filter(|n| d.loci.contains_key(*n)).map(|n| (n.to_string(), 0)),
+        TypeExpr::Array { elem, .. } => lty_of_type(elem, d).map(|l| Lty::Array(Box::new(l))),
+        TypeExpr::Tuple(ts, _) => {
+            let parts: Vec<Option<Lty>> = ts.iter().map(|t| lty_of_type(t, d)).collect();
+            parts.iter().any(Option::is_some).then_some(Lty::Tuple(parts))
+        }
+        t => d.named(t).filter(|n| d.loci.contains_key(*n)).map(|n| Lty::Locus(n.to_string())),
     }
 }
 
-/// The locus a value is, through its arrays, as far as the walk can
-/// tell: a literal, a binding's, an element of one, a field of `self` or
-/// of a value of a known locus, a fn's declared result.
+/// The locus type a value is, as far as the walk can tell: a literal, a
+/// binding's, an element or a part of one, a field of `self` or of a
+/// value of a known locus, a fn's declared result.
 fn lty_of_expr(e: &Expr, cx: &PoolCheckCx) -> Option<Lty> {
     if self_rooted_field(e).is_some() {
         return self_path_type(e, cx).and_then(|t| lty_of_type(t, cx.decls));
     }
     match e {
         Expr::Struct { path, .. } => {
-            path.segments.last().filter(|s| cx.decls.loci.contains_key(&s.name)).map(|s| (s.name.clone(), 0))
+            path.segments.last().filter(|s| cx.decls.loci.contains_key(&s.name)).map(|s| Lty::Locus(s.name.clone()))
         }
-        Expr::Array(items, _) => items.first().and_then(|i| lty_of_expr(i, cx)).map(|(n, k)| (n, k.saturating_add(1))),
-        Expr::ArrayRepeat { val, .. } => lty_of_expr(val, cx).map(|(n, k)| (n, k.saturating_add(1))),
+        Expr::Array(items, _) => items.first().and_then(|i| lty_of_expr(i, cx)).map(|l| Lty::Array(Box::new(l))),
+        Expr::ArrayRepeat { val, .. } => lty_of_expr(val, cx).map(|l| Lty::Array(Box::new(l))),
+        Expr::Tuple(items, _) => {
+            let parts: Vec<Option<Lty>> = items.iter().map(|i| lty_of_expr(i, cx)).collect();
+            parts.iter().any(Option::is_some).then_some(Lty::Tuple(parts))
+        }
         Expr::Ident(id) => cx.env.lty(&id.name),
-        Expr::Index { receiver, .. } => lty_of_expr(receiver, cx).and_then(|(n, k)| (k > 0).then(|| (n, k - 1))),
-        Expr::Field { receiver, name, .. } => match lty_of_expr(receiver, cx)? {
-            (l, 0) => lty_of_type(cx.decls.slot_type(&l, &[LValueSeg::Field(name.clone())])?, cx.decls),
+        Expr::Index { receiver, .. } => match lty_of_expr(receiver, cx)? {
+            Lty::Array(inner) => Some(*inner),
             _ => None,
+        },
+        Expr::Field { receiver, name, .. } => match lty_of_expr(receiver, cx)? {
+            Lty::Locus(l) => lty_of_type(cx.decls.slot_type(&l, &[LValueSeg::Field(name.clone())])?, cx.decls),
+            Lty::Tuple(parts) => parts.get(name.name.parse::<usize>().ok()?).cloned().flatten(),
+            Lty::Array(_) => None,
         },
         Expr::Call { callee, .. } => {
             let f = match callee.as_ref() {
@@ -6991,6 +7009,36 @@ struct CrossPool {
     callee_pool: PoolId,
 }
 
+/// GH #1566: the row of the instance a held field was handed, when its
+/// source is a field of an enclosing instance (`self.a`, written in that
+/// instance's params): the nearest ancestor of the held row with a field
+/// of the name, followed down the source's path.
+fn reused_from_field<'t>(cx: &PoolCheckCx<'t>, held: &crate::placement::InstanceKey) -> Option<&'t crate::placement::InstanceKey> {
+    let table = cx.running.table;
+    let source = table.holes.iter().find_map(|h| match (&h.at, &h.kind) {
+        (crate::placement::HoleAt::Instance(k), crate::placement::HoleKind::Reuse { source }) if k == held => Some(source),
+        _ => None,
+    })?;
+    let mut segs = source.split('.');
+    if segs.next() != Some("self") {
+        return None;
+    }
+    let segs: Vec<&str> = segs.collect();
+    let (first, rest) = segs.split_first()?;
+    let mut anc = cx.running.row(held).owner.clone();
+    while let Some(a) = anc {
+        let Some(akey) = table.instances.get_key_value(&a).map(|(k, _)| k) else { break };
+        if let Some(mut at) = cx.running.field(akey, first).first().copied() {
+            for seg in rest {
+                at = cx.running.field(at, seg).first().copied()?;
+            }
+            return Some(at);
+        }
+        anc = cx.running.row(akey).owner.clone();
+    }
+    None
+}
+
 /// If `receiver` is `self.X`, where X is a field the placement table
 /// holds a row for under some instance of the enclosing locus, and one
 /// of those rows runs off its owner (`OwnerRelative::OffOwner`): the
@@ -7020,6 +7068,23 @@ fn receiver_cross_pool(receiver: &Expr, cx: &PoolCheckCx) -> Option<CrossPool> {
         for field in cx.running.field(owner, &name.name) {
             let row = cx.running.row(field);
             if row.owner_relative != crate::placement::OwnerRelative::OffOwner {
+                // GH #1566: a field handed an instance a field of an
+                // enclosing instance holds (`Routes { w: self.a }`) holds
+                // that instance, which runs where its own row does — the
+                // table places the held row in its holder's domain
+                if let Some(src) = reused_from_field(cx, field) {
+                    let caller_pool = PoolId::of_domain(table, cx.running.row(owner).domain);
+                    let callee_pool = PoolId::of_domain(table, cx.running.row(src).domain);
+                    if caller_pool != callee_pool {
+                        return Some(CrossPool {
+                            locus_type: None,
+                            held_by: held_by.clone(),
+                            field_locus: receiver_locus_name(row, cx.enclosing_locus?, &name.name, cx.decl_names),
+                            caller_pool,
+                            callee_pool,
+                        });
+                    }
+                }
                 continue;
             }
             return Some(CrossPool {

@@ -3258,6 +3258,52 @@ fn cross_pool_stores(src: &str) -> Vec<String> {
     check(src).into_iter().filter(|m| m.contains("cross-pool field store")).collect()
 }
 
+/// GH #1566: a field a literal hands an instance a field of an enclosing
+/// instance holds (`Routes { w: self.a }`, built in an io-placed server's
+/// params) holds that instance, which runs where its own row does: down
+/// `self` from the holder, a store into it and a method call on it are
+/// cross-pool when the two pools differ, and not when they agree.
+#[test]
+fn a_field_handed_an_enclosing_instances_handle_holds_it_where_it_runs() {
+    let program = |placement: &str, body: &str| {
+        format!(
+            r#"locus W {{
+    params {{ name: String = ""; }}
+    fn set(s: String) {{ self.name = s; }}
+}}
+locus Routes {{
+    params {{ w: W; }}
+    fn handle(req: std::http::Request) -> std::http::Response {{
+        {body}
+        return std::http::Response {{ status: 200, body: "ok" }};
+    }}
+}}
+main locus App {{
+    params {{
+        a: W = W {{ }};
+        srv: std::http::Server = std::http::Server {{ host: "127.0.0.1", port: 0, handler: Routes {{ w: self.a }} }};
+    }}
+    placement {{ {placement} }}
+    run() {{ }}
+}}
+fn main() {{ App {{ }}; }}
+"#
+        )
+    };
+    let apart = "srv: cooperative(pool = io);";
+    let together = "srv: cooperative(pool = io); a: cooperative(pool = io);";
+    let store = "self.w.name = std::str::upper(\"x\");";
+    let call = "self.w.set(std::str::upper(\"x\"));";
+    let alias = "let w = self.w; w.name = std::str::upper(\"x\");";
+    assert_eq!(cross_pool_stores(&program(apart, store)).len(), 1, "{:?}", check(&program(apart, store)));
+    assert_eq!(cross_pool(&program(apart, call)).len(), 1, "{:?}", check(&program(apart, call)));
+    assert_eq!(cross_pool_stores(&program(apart, alias)).len(), 1, "{:?}", check(&program(apart, alias)));
+    for body in [store, call, alias] {
+        let src = program(together, body);
+        assert!(cross_pool_stores(&src).is_empty() && cross_pool(&src).is_empty(), "{:?}", check(&src));
+    }
+}
+
 const STORE_LOCI: &str = r#"
 locus W {
     params { name: String = ""; n: Int = 0; }
@@ -3692,6 +3738,7 @@ fn make_h2() -> H2 {{ return H2 {{ }}; }}
 fn pass_h2(h: H2) -> H2 {{ return h; }}
 fn make_h3(w: W) -> H3 {{ return H3 {{ ws: [w, w] }}; }}
 fn make_hs() -> [H2; 1] {{ return [make_h2()]; }}
+fn mk_t() -> (H5, Int) {{ return (H5 {{ }}, 1); }}
 locus H5 {{ fn put(w: W) {{ w.name = "main"; }} }}
 main locus App {{
     params {{ a: W = W {{}}; b: W = W {{ active: true }}; h: H = H {{ }}; c: W = W {{ }}; ws: [W; 2] = [W {{ }}, W {{ }}]; k: H = H {{ }}; k2: H2 = H2 {{ }}; k3: H3 = H3 {{ }}; r: R = R {{ }}; bl: bounded[W; 4]; }}
@@ -3954,6 +4001,10 @@ fn cross_pool_provenance_table() {
         ("... same pool", "", "let hs = [H5 { }]; hs[0].put(self.a);", Accepted),
         ("... through a nested array", "", "let hss = [[H5 { }]]; hss[0][0].put(self.b);", Refused("`put(…)` stores, through its argument 1")),
         ("... an element bound to a local", "", "let hs = [H5 { }]; let h = hs[0]; h.put(self.b);", Refused("`put(…)` stores, through its argument 1")),
+        // a part of a tuple, by its part's type
+        ("a method on a tuple part storing into its argument", "", "let t = mk_t(); t.0.put(self.b);", Refused("`put(…)` stores, through its argument 1")),
+        ("... same pool", "", "let t = mk_t(); t.0.put(self.a);", Accepted),
+        ("... a tuple literal's part", "", "let t = (H5 { }, 1); t.0.put(self.b);", Refused("`put(…)` stores, through its argument 1")),
         // a holder taken out of an array keeps its type
         (
             "a record field of a holder taken out of an array",

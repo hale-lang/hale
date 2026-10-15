@@ -1746,6 +1746,38 @@ static void lotus_domain_now_main(void) {
     g_main_domain_token = lotus_domain_now;
 }
 
+/* GH #1566: a second domain the running code may reach: an
+ * `on_failure` handler's failed child's, for the handler's duration (the
+ * child is stopped while its owner's handler runs, and the handler may
+ * touch what it holds). 0: none. */
+__thread int64_t lotus_domain_also = 0;
+
+/* GH #1566: code the runtime runs on a thread that is not the
+ * instance's on purpose — a pool-placed root's `drain()` / `dissolve()`
+ * on main after its pool joined — runs as the instance's domain for its
+ * duration (`d` 0 changes nothing). Returns what to restore. */
+int64_t lotus_domain_act(int64_t d) {
+    int64_t prev = lotus_domain_now;
+    if (d) lotus_domain_now = d;
+    return prev;
+}
+
+void lotus_domain_restore(int64_t prev) {
+    lotus_domain_now = prev;
+}
+
+/* GH #1566: an `on_failure` handler's duration: its failed child's
+ * domain is reachable too. Returns what to restore. */
+int64_t lotus_domain_also_enter(int64_t d) {
+    int64_t prev = lotus_domain_also;
+    lotus_domain_also = d;
+    return prev;
+}
+
+void lotus_domain_also_restore(int64_t prev) {
+    lotus_domain_also = prev;
+}
+
 /* This thread's domain token, made on first use. */
 static int64_t lotus_domain_here_token(void) {
     if (!lotus_domain_now) lotus_domain_now = (int64_t)(uintptr_t)&t_domain_anchor;
@@ -11833,6 +11865,8 @@ __attribute__((cold, noinline))
 void lotus_cross_pool_check_failed(const lotus_xpool_site_t *at,
                                    int64_t recv_domain, int64_t now) {
     if (recv_domain == 0 || now == 0 || recv_domain == now) return;
+    /* an `on_failure` handler's failed child, and what it holds */
+    if (recv_domain == lotus_domain_also) return;
     const char *site = at->site, *what = at->what, *locus = at->locus;
     char here[128], there[128];
     lotus_domain_describe(now, here, sizeof here);
