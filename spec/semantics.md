@@ -146,6 +146,11 @@ Phase 2b entry in `spec/stdlib.md`.
   `false` / empty for pointer-shaped types), mirroring the
   statement form's silent-no-op fallthrough.
 
+**An enum-constructor pattern's values** are each a binding, `_` or a
+literal: a nested pattern there (`Op::Pair((a, b))`) is a type error at
+the nested pattern; bind the value and match or read the binding in the
+arm.
+
 **A literal in a pattern** is a value of the type it is matched
 against, compared as lowering compares them (an identity's or a
 range's scrutinee is its `Int`): `match n { "a" -> … }` over an

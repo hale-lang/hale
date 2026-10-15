@@ -23418,6 +23418,20 @@ impl<'a> Checker<'a> {
                 }
             }
             Pattern::Constructor { path, args, .. } => {
+                // Each value a variant's pattern takes is a binding, `_` or
+                // a literal: lowering matches nothing nested there (it
+                // refused `Op::Pair((a, b))`, unlocated, where the check
+                // passed it).
+                for a in args {
+                    if let Pattern::Tuple(_, sp) | Pattern::Constructor { span: sp, .. } = a {
+                        self.diags.push(Diag::ty(
+                            *sp,
+                            "a variant's pattern takes a binding, `_` or a literal for each of its values, \
+                             not a nested pattern: bind the value, and match the binding in the arm"
+                                .to_string(),
+                        ));
+                    }
+                }
                 let [enum_seg, variant_seg] = path.segments.as_slice() else { return };
                 let Some(TopSymbol::Type(TypeInfo { kind: TypeKind::Enum(variants), .. })) =
                     self.top.symbols.get(&enum_seg.name)

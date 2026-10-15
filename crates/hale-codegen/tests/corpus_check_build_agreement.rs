@@ -810,6 +810,31 @@ fn a_store_into_a_nested_element_or_a_tuple_part_lowers() {
     assert_eq!(build_and_run_probe(src, "nested_lvalues"), Ok("Xbc\nX7p1\n89\n".to_string()), "{src}");
 }
 
+/// A variant's pattern takes a binding, `_` or a literal for each value:
+/// a nested pattern there (`Op::Pair((a, b))`) checked clean and the build
+/// refused it, unlocated ("constructor pattern arg must be a binding, `_`,
+/// or literal at v0.1"). The check refuses it at the nested pattern; the
+/// neighbour that binds the value and reads its parts builds.
+///
+/// Plain string literals, for the reason given above.
+#[test]
+fn a_nested_pattern_in_a_variants_pattern_is_refused_by_the_check() {
+    assert_refused_by_the_check(
+        &[(
+            "type Op = enum { Pair((Int, Int)), Nothing };\n\
+             fn main() { let o = Op::Pair((1, 2)); let r = match o { Op::Pair((a, b)) -> a + b, Op::Nothing -> 0, }; println(r); }\n",
+            "(a, b)",
+            "a variant's pattern takes a binding, `_` or a literal for each of its values",
+        )],
+        "nested_variant_pattern",
+    );
+    assert_built(
+        "type Op = enum { Pair((Int, Int)), Nothing };\n\
+         fn main() { let o = Op::Pair((1, 2)); let r = match o { Op::Pair(t) -> t.0 + t.1, Op::Nothing -> 0, }; println(r); }\n",
+        "hale_cb_nested_variant_pattern_neighbour",
+    );
+}
+
 /// GH #1076 (U1, review 2): a struct field's default is evaluated in the
 /// scope of the literal that leaves the field, so `Money(1)` in it calls
 /// the constructing fn's local `Money` (a fn), not the scalar type the
