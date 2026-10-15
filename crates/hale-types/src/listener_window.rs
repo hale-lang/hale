@@ -13,13 +13,13 @@
 //!
 //! | construction step in the window | walked |
 //! |---|---|
-//! | where the main locus is built | every literal of it anywhere the programs hold an expression: a free fn's body and its params' defaults, a const, a record type's field defaults, a locus's param defaults, hooks (`birth`, `run`, …), modes, failure handlers (each with its params' defaults), `birth_check`, closure assertions, fns (with theirs), consts and subscription keys, a perspective's param defaults, `stable_when` and fns; each site's window judged, the program refused if any may not return; with no literal anywhere (built only dynamically), the declaration's defaults |
+//! | where the main locus is built | every literal of it anywhere the programs hold an expression: a free fn's body and its params' defaults, a const, a record type's field defaults, a locus's param defaults, hooks (`birth`, `run`, …), modes, failure handlers (each with its params' defaults), `birth_check`, closure assertions, fns (with theirs), consts and subscription keys, a perspective's param defaults, `stable_when` and fns; each site's window judged on each evaluation path the checker typed it on (the typed-body table's `literal_paths`: a literal in a default is a construction per literal or call that leaves the default, in that one's scope), the program refused if any may not return; with no literal anywhere (built only dynamically), the declaration's defaults |
 //! | a param of the main locus, up to and including the server's | its value: the literal's field, else its default, else (no default, typed as a record whose every field has one) the `T { }` the compiler builds for it |
 //! | a literal anywhere in a walked expression (a param's value, an array or tuple element, a block's statement or tail, an `if`/`match` arm, a call's argument, another literal's field, a default) | a construction: below |
 //! | a locus construction `C { … }` | each param of `C` the literal does not supply (its default, or the synthesized `T { }` of an all-defaulted record param, walked); the `where key == …` key of each of `C`'s subscriptions; `C`'s `birth()` (awaited even when `C` is placed on a pool) and `birth_check`; `C`'s `run()`, run where `C` is born, except the server's own param's when it is placed off the main thread |
 //! | a record construction `T { … }` | each field of `T` the literal does not supply: its default, walked in the literal's scope, so a record or locus literal in it is a construction in turn |
-//! | a call in a walked expression | resolved as the checker resolves it: a free fn (an imported one through the import renames), `self.m()`, `self.f.m()` by `f`'s type, a standard-library or builtin call by its classes; an enum variant's constructor returns |
-//! | the arguments a call leaves out | each omitted param's default, evaluated at the call site: the callee and the first param it leaves are the checker's (the typed-body table's `omitted_args`), as lowering expands them, never the call's spelling |
+//! | a call in a walked expression | resolved as the checker resolves it: a call that leaves arguments, by the typed-body table's `omitted_args` on the evaluation path walked (so a method on a receiver a default reads from its caller's scope is that caller's); else a free fn (an imported one through the import renames), `self.m()`, `self.f.m()` by `f`'s type, a standard-library or builtin call by its classes; an enum variant's constructor returns |
+//! | the arguments a call leaves out | each omitted param's default, evaluated at the call site: the callee and the first param it leaves are the checker's on the evaluation path walked (the typed-body table's `omitted_args`), as lowering expands them, never the call's spelling |
 //! | a const read in a walked expression | its value: a const that is no literal is evaluated where it is read. A read is the checker's resolution of the site on the evaluation the walk is on (the typed-body table's `ident_reads`, by evaluation path): a local or a parameter of the same name in scope shadows the const, a binding of a block that has ended does not, and a default left by a literal or a call is resolved in that literal's or call's scope, not another's |
 //! | a resolved fn, a `birth()` or `run()` | judged by its effect row, and its body and every fn its row reaches walked for loops, `or wait`, literals, omitted arguments and consts read; a hook's params' defaults walked first |
 //!
@@ -415,9 +415,11 @@ fn through(at: String, inner: String) -> String {
 
 impl<'a> Window<'a> {
     /// The literals that build the main locus `main` anywhere the
-    /// programs hold an expression ([`for_each_expression_root`]): its
-    /// actual constructions.
-    pub(crate) fn constructions_of(&self, programs: &[&'a Program], main: &str) -> Vec<&'a Expr> {
+    /// programs hold an expression ([`for_each_expression_root`]), each
+    /// with every evaluation path the checker typed it on: its actual
+    /// constructions (a literal in a default two literals leave is two).
+    /// A literal the checker never typed is taken on the empty path.
+    pub(crate) fn constructions_of(&self, programs: &[&'a Program], main: &str) -> Vec<(&'a Expr, Vec<u32>)> {
         let mut out = Vec::new();
         for p in programs {
             for_each_expression_root(&p.items, &mut |root| {
@@ -426,10 +428,14 @@ impl<'a> Window<'a> {
                     Root::Expr(e) => found_in_expr(e),
                 };
                 for lit in found.literals {
-                    let Expr::Struct { path, .. } = lit else { continue };
+                    let Expr::Struct { path, id, .. } = lit else { continue };
                     let segs: Vec<&str> = path.segments.iter().map(|s| s.name.as_str()).collect();
                     if self.resolve_path(&segs) == main {
-                        out.push(lit);
+                        let paths: Vec<Vec<u32>> = self.typed.literal_paths(*id).cloned().collect();
+                        if paths.is_empty() {
+                            out.push((lit, Vec::new()));
+                        }
+                        out.extend(paths.into_iter().map(|p| (lit, p)));
                     }
                 }
             });
@@ -655,6 +661,31 @@ impl<'a> Window<'a> {
                 };
             }
         }
+        // a call that leaves arguments: the callee the checker resolved it
+        // to on this evaluation (a method on a receiver that is the
+        // caller's local, in a default, is typed in each caller's scope)
+        let Expr::Call { id, .. } = call else { return None };
+        let resolved: Vec<&Key> = self
+            .typed
+            .omitted_args()
+            .at(id.0, Some(&self.path.borrow()))
+            .into_iter()
+            .flatten()
+            .filter_map(|o| self.decls.get(&o.callee))
+            .collect();
+        if !resolved.is_empty() {
+            for (locus, name) in resolved {
+                match self.row(locus.as_deref(), name) {
+                    Some(row) => {
+                        if let Some(step) = self.judge_fn(row, &mut seen, depth) {
+                            return Some(step);
+                        }
+                    }
+                    None => return unnamed(format!("the call of `{name}`")),
+                }
+            }
+            return None;
+        }
         let key = self.callee(callee, ctx);
         if let Some((locus, name)) = &key {
             if let Some(row) = self.row(locus.as_deref(), name) {
@@ -703,7 +734,12 @@ impl<'a> Window<'a> {
         }
         for c in &found.calls {
             let Expr::Call { id, .. } = c else { continue };
-            for left in self.typed.omitted_args().get(&id.0).into_iter().flatten() {
+            // a call already on the path: the checker stops there too
+            if self.path.borrow().contains(&id.0) {
+                continue;
+            }
+            let left_on = self.typed.omitted_args().at(id.0, Some(&self.path.borrow()));
+            for left in left_on.into_iter().flatten() {
                 let Some(key) = self.decls.get(&left.callee) else { continue };
                 // the defaults the call leaves: one evaluation further
                 if let Some(step) = self.on_path(self.pushed(id.0), || self.omitted_args(key, left.from, ctx, depth)) {
@@ -885,11 +921,16 @@ impl<'a> Window<'a> {
     /// free fn builds it with; none, its declaration's defaults), that may
     /// not return: where, and why. Compiler-added params (`__…`) are the
     /// runtime's.
-    pub(crate) fn before_listener(&self, main: &'a LocusDecl, root: &str, sites: &[&'a Expr]) -> Option<(String, &'static str)> {
-        let plain = [None];
-        let sites: Vec<Option<&'a Expr>> =
-            if sites.is_empty() { plain.to_vec() } else { sites.iter().map(|s| Some(*s)).collect() };
-        for site in sites {
+    pub(crate) fn before_listener(
+        &self,
+        main: &'a LocusDecl,
+        root: &str,
+        sites: &[(&'a Expr, Vec<u32>)],
+    ) -> Option<(String, &'static str)> {
+        let plain = [(None, Vec::new())];
+        let sites: Vec<(Option<&'a Expr>, Vec<u32>)> =
+            if sites.is_empty() { plain.to_vec() } else { sites.iter().map(|(s, p)| (Some(*s), p.clone())).collect() };
+        for (site, site_path) in sites {
             let supplied = |name: &str| -> Option<&'a Expr> {
                 let Some(Expr::Struct { inits, .. }) = site else { return None };
                 inits.iter().find(|i| i.name.name == name).map(|i| &i.value)
@@ -907,7 +948,11 @@ impl<'a> Window<'a> {
                             None => true,
                             Some(e) => matches!(&e.spec, PlacementSpec::Cooperative { pool, .. } if pool.as_ref().is_none_or(|p| p.name == "main")),
                         };
-                        let step = match value {
+                        // a value the site supplies is evaluated, and typed,
+                        // on the site's own path; a default where `main`
+                        // declares it
+                        let path = if supplied(name).is_some() { site_path.clone() } else { Vec::new() };
+                        let step = self.on_path(path, || match value {
                             // the param's own literal: its run() is the
                             // param's, not awaited when it is placed
                             Some(value @ Expr::Struct { inits, .. }) if self.literal_locus(value).is_some() => self
@@ -919,7 +964,7 @@ impl<'a> Window<'a> {
                             None => self
                                 .synthesized(p)
                                 .and_then(|(ty, fields)| self.omitted_fields(ty, fields, &BTreeSet::new(), Some(main), 1)),
-                        };
+                        });
                         if let Some((at, why)) = step {
                             let what = if supplied(name).is_some() { "the value given" } else { "the default" };
                             return Some((through(format!("{what} of `{}.{name}`", main.name.name), at), why));

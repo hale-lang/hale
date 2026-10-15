@@ -379,7 +379,8 @@ finish first. It is judged over the actual construction: each literal
 that builds the main locus, wherever the program writes it (a free fn, a
 method or hook of another locus, a param default, a fn param's default, a
 record type's field default, …; `fn main() { App { server: Server { n: 0
-} }; }`), each site judged on its own, else, when none is written, its
+} }; }`), each site judged on its own (a literal in a default once per
+literal or call that leaves the default, in that one's scope), else, when none is written, its
 defaults; a field a literal supplies replaces the default it would
 otherwise run, at every depth. In it: each param's value (a call it makes,
 resolved as the checker resolves it, an imported fn through the import

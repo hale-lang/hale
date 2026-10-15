@@ -27,7 +27,7 @@ use crate::law::{Law, RuleId, Severity, Violation, WitnessStep};
 use crate::ownership_graph::{ExpandedLiteral, OtherPosition, OwnershipGraph};
 use crate::placement::{Decision, DomainKind, Origin, PerUsePosition, PlacementTable, SiteRef, SiteUniverse};
 use crate::snapshot::Snapshot;
-use crate::typed_bodies::OmittedArgsByCall;
+use crate::typed_bodies::OmittedView;
 use crate::Bundle;
 
 /// The rows the laws read.
@@ -46,7 +46,7 @@ pub struct LoweringLawInputs<'a> {
     pub ownership: &'a dyn Fn() -> Option<&'a OwnershipGraph>,
     /// The typed-body table's `omitted_args` column: which defaults each
     /// call leaves to be expanded at it.
-    pub omitted: &'a OmittedArgsByCall,
+    pub omitted: OmittedView<'a>,
 }
 
 /// What a law on the shared finding type ([`Law`]) reads: the bundle and

@@ -1020,7 +1020,7 @@ pub fn check_bundle_by_declaration(
             bindings: inputs.bindings,
             entry: inputs.entry,
             ownership: &|| Some(inputs.ownership),
-            omitted: &typed.omitted_args,
+            omitted: crate::typed_bodies::OmittedView { by_call: &typed.omitted_args, by_path: &typed.omitted_by_path },
         },
     ));
     // F.40 phase 4, W3: the recovery events a closure's
@@ -15069,24 +15069,9 @@ impl<'a> Checker<'a> {
     /// them. A default no literal leaves is never evaluated.
     fn type_omitted_defaults(&mut self, literal: NodeId, decl: &'a TypeDecl, inits: &[StructInit]) {
         let TypeDeclBody::Struct(fields) = &decl.body else { return };
-        // Without a scalar type of any kind no cast has a row to keep, and
-        // without a quantity literal no literal has an error to find.
-        let quantity_literal = || {
-            let mut found = false;
-            let mut walk = crate::lowering_laws::literals(|e: &Expr, _| {
-                found |= matches!(e, Expr::Literal(Literal::Quantity { .. }, _));
-            });
-            for f in fields {
-                if let Some(d) = &f.default {
-                    walk.expr(d);
-                }
-            }
-            drop(walk);
-            found
-        };
-        if self.scalars.is_empty() && !quantity_literal() {
-            return;
-        }
+        // Typed in every program, scalars or none: besides the conversion
+        // rows, the walk is where the `ident_reads` and `omitted_args`
+        // columns get each evaluation's answer (GH #1565).
         let field_tys: BTreeMap<String, Ty> = match self.top.lookup(&decl.name.name) {
             Some(TopSymbol::Type(TypeInfo { kind: TypeKind::Struct(infos), .. })) => {
                 infos.iter().map(|f| (f.name.clone(), f.ty.clone())).collect()
@@ -15830,7 +15815,7 @@ impl<'a> Checker<'a> {
         // whichever caller lowering lowers it under (the cross-pool value
         // law composes the two, C3 rest).
         if decl.params.len() > supplied && self.user_fns.contains(&(decl as *const FnDecl)) {
-            self.typed.omitted_args(invocation, decl.id, supplied);
+            self.typed.omitted_args(invocation, &self.default_evaluation, decl.id, supplied);
         }
         let defaults: Vec<(&Expr, &str, &TypeExpr)> = decl.params.iter().skip(supplied)
             .filter_map(|p| Some((p.default.as_ref()?, p.name.name.as_str(), &p.ty))).collect();
@@ -19683,6 +19668,7 @@ impl<'a> Checker<'a> {
         inits: &[StructInit],
         span: Span,
     ) -> Ty {
+        self.typed.literal_typed(literal, &self.default_evaluation);
         let mut qualified_resolved: Option<String> = None;
         if path.segments.len() != 1 {
             // Resolve an imported qualified literal (`mat::Grid { }`)

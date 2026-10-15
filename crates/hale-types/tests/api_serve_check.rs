@@ -394,6 +394,9 @@ fn what_main_builds_before_a_listener_born_after_its_server_must_return() {
     // shadowing the const it reads
     const SETUP_READS_K: &str = "fn settle() -> Int { std::time::sleep(1s); return 0; }\nconst K: Int = settle();\ntype Setup { n: Int = K; }";
     const ARG_READS_K: &str = "fn settle() -> Int { std::time::sleep(1s); return 0; }\nconst K: Int = settle();\nfn pick_k(n: Int = K) -> Int { return n; }";
+    // a call in a record default on a receiver the caller's scope binds:
+    // `s` is whichever locus the literal's scope holds
+    const PROBES: &str = "fn settle() -> Int { std::time::sleep(1s); return 0; }\nlocus Fast { fn pick(n: Int = 0) -> Int { return n; } }\nlocus Slow { fn pick(n: Int = settle()) -> Int { return n; } }\ntype Probe { n: Int = s.pick(); }";
     const SHADOW_FN_LOCAL: &str =
         "fn settle() -> Int { std::time::sleep(1s); return 0; }\nconst K: Int = settle();\nfn quick() -> Int { let K = 0; return K; }";
     const SHADOW_FN_PARAM: &str =
@@ -477,6 +480,14 @@ fn what_main_builds_before_a_listener_born_after_its_server_must_return() {
         ("a method call, the method sleeping", "    fn pick(n: Int = settle()) -> Int { return n; }\n    run() { let k = self.pick(); }", HOLDS, PICK_FREE_RETURNS, "", Some("`Server`'s `run()`")),
         ("a free call in a method, a method of its name sleeping", "    fn pick(n: Int = settle()) -> Int { return n; }\n    run() { let k = pick(); }", HOLDS, PICK_FREE_RETURNS, "", None),
         ("a free call in a default, a method of its name sleeping", "    fn pick(n: Int = settle()) -> Int { return n; }", "k: Int = pick(); server: Server = Server { };", PICK_FREE_RETURNS, "", None),
+        // the main locus built inside a record default: its construction is
+        // walked on the path the checker typed it on (the Holder literal's)
+        ("built in a record default, under a shadowing let", "", APP_N, CONST_SETTLES, "type Holder { n: Int = { let K = 0; App { n: K }; 0 }; }\nfn main() { let h = Holder { }; }", None),
+        ("built in a record default, reading the const", "", APP_N, CONST_SETTLES, "type Holder { n: Int = { App { n: K }; 0 }; }\nfn main() { let h = Holder { }; }", Some("the value given of `App.n`, through the value of the const `K`")),
+        ("built in a record default left twice, one shadowing", "", APP_N, CONST_SETTLES, "type Holder { n: Int = { App { n: K }; 0 }; }\nfn quiet() -> Int { let K = 0; let h = Holder { }; return h.n; }\nfn main() { let h = Holder { }; }", Some("the value given of `App.n`, through the value of the const `K`")),
+        // a call in a default resolved in each evaluation's scope
+        ("a default's call on the caller's Fast, Slow elsewhere", "", "n: Int = { let s = Fast { }; let p = Probe { }; p.n }; server: Server = Server { };", &format!("{PROBES}\nfn other() -> Int {{ let s = Slow {{ }}; let p = Probe {{ }}; return p.n; }}"), "", None),
+        ("a default's call on the caller's Slow, Fast elsewhere", "", "n: Int = { let s = Slow { }; let p = Probe { }; p.n }; server: Server = Server { };", &format!("{PROBES}\nfn other() -> Int {{ let s = Fast {{ }}; let p = Probe {{ }}; return p.n; }}"), "", Some("the default of `Probe.n`, through the default of `Slow::pick`'s param `n`")),
         // a const read is the checker's resolution: a binding in scope shadows it
         ("a let shadows the const", "", "n: Int = { let K = 0; K }; server: Server = Server { };", CONST_SETTLES, "", None),
         ("a fn's let shadows the const", "", "n: Int = quick(); server: Server = Server { };", SHADOW_FN_LOCAL, "", None),
@@ -818,4 +829,38 @@ fn a_listener_runs_where_its_exposure_or_its_server_is_placed() {
     assert_eq!(at("App.deep.inner.cfg"), "pool:io3");
     assert_eq!(at("App.plain.cfg"), "main");
     assert_eq!(at("App.solo.cfg"), "pinned");
+}
+
+/// A bare bundle (the program alone, no stdlib program beside it, no
+/// scalar type of its own), checked through `check_bundle` as a harness
+/// does: a record default is typed at each literal that leaves it, so the
+/// window reads each evaluation's resolution of the const in it rather
+/// than its spelling. (The field-default walk no longer skips a program
+/// with no scalar type; the unit rows carry the stdlib's `Duration` and
+/// `Time` into every check, so that skip never fired.)
+#[test]
+fn a_bundle_with_no_scalar_type_still_types_each_default_evaluation() {
+    let errors_bare = |src: &str| -> Vec<String> {
+        let program = hale_syntax::parse_source(src).unwrap_or_else(|d| panic!("parse: {:?}", d[0].message));
+        let mut programs = std::collections::BTreeMap::new();
+        programs.insert("test.hl".to_string(), &program);
+        let bundle = hale_types::Bundle::new(programs);
+        let (top, mut diags) = hale_types::resolve::build_top_scope(&bundle);
+        diags.extend(hale_types::check::check_bundle(&bundle, &top, true));
+        diags.iter().filter(|d| d.is_error()).map(|d| d.message.clone()).collect()
+    };
+    let program = |n: &str| {
+        server(SERVED, &format!("n: Int = {n}; server: Server = Server {{ }};")).replace(
+            "fn main()",
+            "fn settle() -> Int { while true { } return 0; }\nconst K: Int = settle();\ntype Setup { n: Int = K; }\n\
+             fn other() -> Int { let s = Setup { }; return s.n; }\nfn main()",
+        )
+    };
+    let refusal = |errs: &[String]| {
+        errs.iter().any(|e| e.contains("the default of `Setup.n`, through the value of the const `K`") && e.contains("may not return"))
+    };
+    let shadowed = errors_bare(&program("{ let K = 0; let s = Setup { }; s.n }"));
+    assert!(!refusal(&shadowed), "{shadowed:#?}");
+    let read = errors_bare(&program("{ let s = Setup { }; s.n }"));
+    assert!(refusal(&read), "{read:#?}");
 }

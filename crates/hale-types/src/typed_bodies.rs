@@ -41,6 +41,12 @@
 //!    its receiver's type) and the first parameter it leaves. Lowering
 //!    expands those defaults at the call, in the caller's context; the
 //!    cross-pool value law reads where (C3 rest, the review of #1351).
+//!    A call in a default is resolved in the scope of each evaluation of
+//!    that default (a receiver that is the caller's local can be of one
+//!    type at one literal and another at the next), so the column also
+//!    keeps each answer by evaluation path ([`OmittedView::at`]), which
+//!    the cross-pool value law and the listener window read; the union
+//!    by call is what a reader with no path asks.
 //! 7. `param_accesses`, per body: each read or write of a locus's
 //!    `params` field through a receiver the checker typed as that locus
 //!    (`self.k`, `self.child.k`, `x.k = v`), with the locus it is read
@@ -76,7 +82,11 @@
 //!    `ConversionSite::path`); a site in a body or a declaration's own
 //!    default has the empty path. The listener window follows a const
 //!    read into the const's value, evaluated where it is read, on the
-//!    path it walks, and reads no other name as one (GH #1565).
+//!    path it walks, and reads no other name as one (GH #1565). Beside
+//!    it, `literal_paths`: every evaluation path each struct or locus
+//!    literal was typed on, so a reader starts a construction's walk on
+//!    the checker's own path for it (a literal in a default left at two
+//!    literals is two constructions) instead of rebuilding it.
 //!
 //! A site the checker could not type is a [`Hole`] with its reason, and
 //! a reader refuses it at its span rather than guessing.
@@ -459,6 +469,38 @@ pub struct OmittedArgs {
 /// answer.
 pub type OmittedArgsByCall = BTreeMap<u32, std::collections::BTreeSet<OmittedArgs>>;
 
+/// The `omitted_args` column by (call site, evaluation path): what a call
+/// leaves on the one evaluation the path names (the checker's
+/// `default_evaluation`, outermost first; empty in a body or a
+/// declaration's own default).
+pub type OmittedArgsByPath = BTreeMap<(u32, Vec<u32>), std::collections::BTreeSet<OmittedArgs>>;
+
+static NO_CALLS: OmittedArgsByCall = BTreeMap::new();
+static NO_PATHS: OmittedArgsByPath = BTreeMap::new();
+
+/// The `omitted_args` column as a reader asks it: by call, the union of
+/// every evaluation's answer, or on one evaluation path.
+#[derive(Debug, Clone, Copy)]
+pub struct OmittedView<'a> {
+    pub by_call: &'a OmittedArgsByCall,
+    pub by_path: &'a OmittedArgsByPath,
+}
+
+impl Default for OmittedView<'_> {
+    fn default() -> Self {
+        OmittedView { by_call: &NO_CALLS, by_path: &NO_PATHS }
+    }
+}
+
+impl<'a> OmittedView<'a> {
+    /// What `call` leaves on the evaluation `path`; with no path (a
+    /// reader that cannot say which evaluation it is on), or one the
+    /// checker did not type the call on, every evaluation's answer.
+    pub fn at(&self, call: u32, path: Option<&[u32]>) -> Option<&'a std::collections::BTreeSet<OmittedArgs>> {
+        path.and_then(|p| self.by_path.get(&(call, p.to_vec()))).or_else(|| self.by_call.get(&call))
+    }
+}
+
 /// Generic calls in defaults evaluated by one caller. Source sites
 /// stay unchanged; the invocation path distinguishes repeated expansion
 /// of a default, and the caller's arguments distinguish its monomorphs.
@@ -788,12 +830,19 @@ pub struct TypingRecord {
     pub monomorphs: Monomorphs,
     /// The `omitted_args` column.
     pub omitted_args: OmittedArgsByCall,
+    /// The `omitted_args` column by evaluation path. Each path is its own
+    /// row, so a discarded walk keeps what it adds (a field default's
+    /// calls are typed only in such a walk).
+    pub omitted_by_path: OmittedArgsByPath,
     /// Which body each conversion belongs to.
     pub conversion_sites: BTreeMap<ConversionSite, u32>,
     /// The `ident_reads` column, by (site, evaluation path). A discarded
     /// walk keeps what it adds: a field default is typed only in such a
     /// walk, and each path is its own row.
     pub ident_reads: BTreeMap<(u32, Vec<u32>), bool>,
+    /// Every evaluation path each struct or locus literal was typed on;
+    /// kept across discarded walks, as `ident_reads` is.
+    pub literal_paths: BTreeMap<u32, std::collections::BTreeSet<Vec<u32>>>,
     /// What a discarded walk changed, while one is open
     /// ([`Self::open_walk`]).
     walk: Option<WalkUndo>,
@@ -947,12 +996,22 @@ impl TypingRecord {
         *self.ident_reads.entry((site.0, path.to_vec())).or_insert(false) |= constant;
     }
 
+    /// Record that the struct or locus literal `literal` was typed on the
+    /// evaluation `path`.
+    pub fn literal_typed(&mut self, literal: NodeId, path: &[u32]) {
+        if literal.is_none() {
+            return;
+        }
+        self.literal_paths.entry(literal.0).or_default().insert(path.to_vec());
+    }
+
     /// Record that `call` leaves `callee`'s parameters from `from` on to
-    /// their defaults.
-    pub fn omitted_args(&mut self, call: NodeId, callee: NodeId, from: usize) {
+    /// their defaults, on the evaluation `path`.
+    pub fn omitted_args(&mut self, call: NodeId, path: &[u32], callee: NodeId, from: usize) {
         if call.is_none() || callee.is_none() {
             return;
         }
+        self.omitted_by_path.entry((call.0, path.to_vec())).or_default().insert(OmittedArgs { callee: callee.0, from });
         if let Some(undo) = &mut self.walk {
             undo.omitted_args.entry(call.0).or_insert_with(|| self.omitted_args.get(&call.0).cloned());
         }
@@ -1034,8 +1093,10 @@ pub struct TypedBodies {
     conformance: BTreeMap<(u32, u32), Conformance>,
     monomorph_conformance: Vec<(Monomorph, u32, Result<(), Unsatisfied>)>,
     omitted_args: OmittedArgsByCall,
+    omitted_by_path: OmittedArgsByPath,
     conversion_sites: BTreeMap<ConversionSite, u32>,
     ident_reads: BTreeMap<(u32, Vec<u32>), bool>,
+    literal_paths: BTreeMap<u32, std::collections::BTreeSet<Vec<u32>>>,
     /// Whether a row changes a denomination, prints a unit (U3) or types
     /// an operator's result (U4): a program with none has no value row
     /// for lowering to look up.
@@ -1085,9 +1146,10 @@ impl TypedBodies {
         self.bodies.values().flat_map(|b| b.conversions.iter().map(|(s, r)| (s.clone(), r)))
     }
 
-    /// The `omitted_args` column: what each call leaves to its defaults.
-    pub fn omitted_args(&self) -> &OmittedArgsByCall {
-        &self.omitted_args
+    /// The `omitted_args` column: what each call leaves to its defaults,
+    /// by call and by evaluation path.
+    pub fn omitted_args(&self) -> OmittedView<'_> {
+        OmittedView { by_call: &self.omitted_args, by_path: &self.omitted_by_path }
     }
 
     /// The `ident_reads` column at the identifier expression `site` on the
@@ -1096,6 +1158,12 @@ impl TypedBodies {
     /// path.
     pub fn reads_const(&self, site: NodeId, path: &[u32]) -> Option<bool> {
         self.ident_reads.get(&(site.0, path.to_vec())).copied()
+    }
+
+    /// Every evaluation path the checker typed the literal `literal` on:
+    /// each a construction of it.
+    pub fn literal_paths(&self, literal: NodeId) -> impl Iterator<Item = &Vec<u32>> {
+        self.literal_paths.get(&literal.0).into_iter().flatten()
     }
 
     /// The rows of the body declared at `decl`.
@@ -1286,8 +1354,10 @@ pub fn typed_bodies(bundle: &crate::Bundle<'_>, top: &crate::resolve::TopScope, 
         conformance: BTreeMap::new(),
         monomorph_conformance: Vec::new(),
         omitted_args: record.omitted_args.clone(),
+        omitted_by_path: record.omitted_by_path.clone(),
         conversion_sites: record.conversion_sites.clone(),
         ident_reads: record.ident_reads.clone(),
+        literal_paths: record.literal_paths.clone(),
         scaled: record.bodies.values().any(|b| {
             b.conversions.iter().any(|(site, r)| {
                 r.scale.is_some() || r.printed.is_some() || matches!(site.kind, SiteKind::Operator { .. })
@@ -1710,7 +1780,7 @@ mod tests {
         record.conversion(other, site(20), row(20, "Removed"));
         record.conversion(caller, site(30), row(30, "Overwritten"));
         record.generic_call(other, NodeId(40), call(1));
-        record.omitted_args(NodeId(50), NodeId(2), 1);
+        record.omitted_args(NodeId(50), &[], NodeId(2), 1);
         record.monomorphs.insert(mono(60, PrimType::Int, "f_Int"));
         let before = record.clone();
 
@@ -1723,8 +1793,8 @@ mod tests {
         record.restore_conversion(&site(31), None);
         record.generic_call(caller, NodeId(40), call(9));
         record.generic_call(fresh, NodeId(41), call(9));
-        record.omitted_args(NodeId(50), NodeId(2), 0);
-        record.omitted_args(NodeId(51), NodeId(2), 0);
+        record.omitted_args(NodeId(50), &[7], NodeId(2), 0);
+        record.omitted_args(NodeId(51), &[7], NodeId(2), 0);
         record.body(caller).enclosing_locus = Some(NodeId(70));
         record.monomorphs.insert(mono(60, PrimType::Float, "f_Float"));
         record.monomorphs.insert(mono(61, PrimType::Int, "f_Int"));
@@ -1733,6 +1803,8 @@ mod tests {
         assert_eq!(record.bodies, before.bodies);
         assert_eq!(record.sites, before.sites);
         assert_eq!(record.omitted_args, before.omitted_args);
+        // each evaluation path is its own row, kept
+        assert_eq!(record.omitted_by_path.len(), 3);
         assert_eq!(record.conversion_sites, before.conversion_sites);
         assert_eq!(record.monomorphs.rows, before.monomorphs.rows);
         assert_eq!(record.monomorphs.by_template, before.monomorphs.by_template);
