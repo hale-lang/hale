@@ -6513,10 +6513,13 @@ void lotus_form_retire_replaced_flat(void *arena_ptr, void *old_blob,
         if (!oldp) continue;
         if (new_v) {
             /* A block survives wherever the new element holds it
-             * (spec/forms.md), not only at the same field: a swap
-             * (`set(0, Row { id: self.b, note: self.a })` over one
-             * holding them the other way round) keeps both. The same
-             * field first, the common case. */
+             * (spec/forms.md), not only at the same field, as the
+             * nested walk keeps it. No vec store hands this two slots'
+             * worth of sharing today — `set` and `push` copy every
+             * field (emit_vec_cell_copy_ptr) and `pop`'s copy keeps the
+             * same offsets — so this is the walk's rule held for the
+             * flat path, not a case a program reaches. The same field
+             * first, the common case. */
             char *newp;
             memcpy(&newp, new_v + off, sizeof(char *));
             int survives = oldp == newp;

@@ -107,14 +107,6 @@ use crate::codegen::{
 };
 
 impl<'ctx, 'p> Cx<'ctx, 'p> {
-    /// GH #577: what `get` hands back is OWNED. A vec slot holds a
-    /// pointer to the element (a String's blob, a struct with its
-    /// blobs), and `set` retires the replaced element; a `get` that
-    /// returned that same pointer left the caller holding memory a
-    /// later `set` freed — two items swapped through `get` and `set`
-    /// segfaulted. So a heap-bearing element is deep-copied into the
-    /// caller's current arena on read (the same clone-on-read a
-    /// serialized hashmap does); scalars and locus refs pass through.
     /// The copy a `@form(vec)` `set` or `push` stores: the element's own,
     /// down to its String and Bytes fields. A field whose block already
     /// lives in the vec's arena — the locus's own String param, another
@@ -135,6 +127,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         res
     }
 
+    /// GH #577: what `get` hands back is OWNED. A vec slot holds a
+    /// pointer to the element (a String's blob, a struct with its
+    /// blobs), and `set` retires the replaced element; a `get` that
+    /// returned that same pointer left the caller holding memory a
+    /// later `set` freed — two items swapped through `get` and `set`
+    /// segfaulted. So a heap-bearing element is deep-copied into the
+    /// caller's current arena on read (the same clone-on-read a
+    /// serialized hashmap does); scalars and locus refs pass through.
     pub(crate) fn emit_vec_get_owned(
         &mut self,
         loaded: BasicValueEnum<'ctx>,
