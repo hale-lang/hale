@@ -921,7 +921,7 @@ impl Placement {
 /// graph's labels and `check_bounded_bus`'s. A type the table has no
 /// instance of runs nowhere and is absent (`SameThread` to a reader).
 pub fn type_placements(table: &crate::placement::PlacementTable) -> BTreeMap<String, Placement> {
-    table.domains_by_type().iter().map(|(name, d)| (name.clone(), Placement::of(d, table))).collect()
+    table.domains_by_template().iter().map(|(name, d)| (name.clone(), Placement::of(d, table))).collect()
 }
 
 /// A resolved publish site on a subject.

@@ -756,6 +756,17 @@ fn typed_body_laws(
 /// to build ("unknown identifier"). Refused at the send, for every default
 /// a program writes: a locus's param defaults, a record type's field
 /// defaults, and a fn's, method's or hook's param defaults.
+/// GH #1566 follow-up: a fn that may hand back a locus it did not build,
+/// read as a value.
+fn unfresh_fn_value_message(shown: &str, l: &str) -> String {
+    format!(
+        "`{shown}` may hand back a `{l}` it did not build (one it was given, or one another \
+         binding keeps), and a call through a fn value hands its caller a fresh `{l}` to own: \
+         only a fn that builds every `{l}` it returns may be taken as a value. Pass a fn that \
+         builds one, or call `{shown}` directly"
+    )
+}
+
 fn publish_in_default_diags(bundle: &Bundle<'_>) -> Vec<Diag> {
     use crate::listener_window::{visit_expr, Visited};
     fn sends(e: &Expr, out: &mut Vec<Diag>) {
@@ -1054,7 +1065,61 @@ pub fn walk_bundle_by_declaration(
             }
         }
     }
+    // GH #1566 follow-up: which of the program's fns returning a locus
+    // build every instance they return (the fresh-factory rows over the
+    // bundle's files, as lowering reads them).
+    let mut unfresh_builders: BTreeMap<String, String> = BTreeMap::new();
+    {
+        let programs: Vec<&Program> = bundle.programs.values().copied().collect();
+        let rows = crate::ownership::extended_factory_rows(&programs, &bundle.snapshot, &bundle.import_renames);
+        let fns: BTreeMap<&str, &FnDecl> = programs
+            .iter()
+            .flat_map(|p| hale_syntax::ast::flat_decls(&p.items))
+            .filter_map(|d| match d {
+                TopDecl::Fn(f) => Some((f.name.name.as_str(), f)),
+                _ => None,
+            })
+            .collect();
+        let fn_named = |n: &str| fns.get(n).copied();
+        for program in &programs {
+            for decl in hale_syntax::ast::flat_decls(&program.items) {
+                let TopDecl::Fn(f) = decl else { continue };
+                // GH #1569: a fn handing back a tuple or an array of loci
+                // builds every locus part, or hands back one it was given
+                let locus_named = |t: &TypeExpr| match t {
+                    TypeExpr::Named { path, .. } => {
+                        path.segments.last().is_some_and(|s| locus_decls.contains_key(&s.name))
+                    }
+                    _ => false,
+                };
+                if matches!(f.ret, Some(TypeExpr::Tuple(..) | TypeExpr::Array { .. }))
+                    && !crate::ownership::aggregate_builds_its_loci(f, &locus_named, &fn_named)
+                {
+                    let l = match &f.ret {
+                        Some(TypeExpr::Tuple(ts, _)) => ts.iter().find(|t| locus_named(t)),
+                        Some(TypeExpr::Array { elem, .. }) => Some(elem.as_ref()),
+                        _ => None,
+                    };
+                    if let Some(TypeExpr::Named { path, .. }) = l {
+                        if let Some(s) = path.segments.last() {
+                            unfresh_builders.insert(f.name.name.clone(), s.name.clone());
+                        }
+                    }
+                    continue;
+                }
+                let Some(TypeExpr::Named { path, .. }) = &f.ret else { continue };
+                let Some(l) = path.segments.last().map(|s| s.name.clone()) else { continue };
+                if !locus_decls.contains_key(&l) {
+                    continue;
+                }
+                if !rows.get(&f.name.name).is_some_and(|r| r.fresh.is_some()) {
+                    unfresh_builders.insert(f.name.name.clone(), l);
+                }
+            }
+        }
+    }
     let mut cx = Checker {
+        unfresh_builders,
         top,
         target_class,
         known,
@@ -1149,6 +1214,8 @@ pub fn walk_bundle_by_declaration(
     // diagnostic the check has, a template's own included.
     cx.settle_param_accesses(0);
     debug_assert!(cx.access_visits.is_empty(), "every kept access is settled");
+    let programs: Vec<&Program> = bundle.programs.values().copied().collect();
+    cx.refuse_unfresh_fn_values_everywhere(&programs, &bundle.snapshot);
     typed.mono_shapes = std::sync::Arc::new(mono_shapes(&typed.monomorphs, &templates, known));
     // Each declaration's table, not a copy of its rows.
     typed.views = by_decl
@@ -10466,6 +10533,11 @@ struct Checker<'a> {
     generic_fns: BTreeMap<String, &'a FnDecl>,
     /// Declarations whose omitted defaults are evaluated in the caller.
     fn_decls: BTreeMap<String, &'a FnDecl>,
+    /// GH #1566 follow-up: the program's fns that return a locus they
+    /// may not have built (not fresh factories), by name, the locus. A
+    /// call through a fn value hands back a fresh instance its caller
+    /// owns, so one of these is refused as a value (`fn_value`).
+    unfresh_builders: BTreeMap<String, String>,
     locus_decls: BTreeMap<String, &'a LocusDecl>,
     /// The bundle's types, whose field defaults are evaluated at each
     /// literal that leaves the field (GH #1076).
@@ -15283,6 +15355,14 @@ impl<'a> Checker<'a> {
             params: sig.params.iter().map(|(_, t)| t.clone()).collect(),
             ret: Box::new(sig.ret.clone()),
         };
+        // GH #1566 follow-up: a fn value returning a locus hands back a
+        // fresh instance its caller owns; one that may hand back an
+        // instance it did not build (one it was given) is no such value
+        let last = shown.rsplit("::").next().unwrap_or(shown);
+        if let Some(l) = self.unfresh_builders.get(shown).or_else(|| self.unfresh_builders.get(last)) {
+            self.diags.push(Diag::ty(span, unfresh_fn_value_message(shown, l)));
+            return ty;
+        }
         let Some(err) = &sig.fallible else { return ty };
         let name = shown.rsplit("::").next().unwrap_or(shown);
         let names: Vec<String> = (0..sig.params.len()).map(|i| format!("a{i}")).collect();
@@ -15579,6 +15659,47 @@ impl<'a> Checker<'a> {
                     ));
                 }
             }
+        }
+    }
+
+    /// GH #1569: a fn's name read as a value anywhere the programs write
+    /// an expression — a type's field default, a const, a params default,
+    /// a body — is held to `fn_value`'s rule. The walk types a default
+    /// only at a literal that leaves it, so a name there escaped it.
+    fn refuse_unfresh_fn_values_everywhere(&mut self, programs: &[&'a Program], ids: &crate::snapshot::Snapshot) {
+        if self.unfresh_builders.is_empty() {
+            return;
+        }
+        let mut callees: BTreeSet<*const Expr> = BTreeSet::new();
+        let mut values: Vec<&'a Expr> = Vec::new();
+        {
+            let mut walk = crate::lowering_laws::literals(|e: &'a Expr, _| match e {
+                Expr::Call { callee, .. } => {
+                    callees.insert(callee.as_ref() as *const Expr);
+                }
+                Expr::Ident(_) | Expr::Path(_) => values.push(e),
+                _ => {}
+            });
+            for p in programs {
+                walk.items(&p.items);
+            }
+        }
+        for e in values {
+            if callees.contains(&(e as *const Expr)) {
+                continue;
+            }
+            let (shown, span) = match e {
+                // a local binding's name is no fn's
+                Expr::Ident(i) if ids.declaration_of(i.id).is_none() => (i.name.clone(), i.span),
+                Expr::Path(q) => (q.segments.iter().map(|s| s.name.as_str()).collect::<Vec<_>>().join("::"), q.span),
+                _ => continue,
+            };
+            let last = shown.rsplit("::").next().unwrap_or(&shown).to_string();
+            let Some(l) = self.unfresh_builders.get(&shown).or_else(|| self.unfresh_builders.get(&last)).cloned() else { continue };
+            if self.diags.iter().any(|d| d.span == span) {
+                continue;
+            }
+            self.diags.push(Diag::ty(span, unfresh_fn_value_message(&shown, &l)));
         }
     }
 
@@ -17378,7 +17499,66 @@ impl<'a> Checker<'a> {
     /// check used to accept one, and lowering refused it with no span
     /// as `unknown type name in signature` (downstream handoff); the
     /// rule names the field and the two places a locus can live.
+    /// GH #1569: the locus a fn type written in `te` (at any depth of an
+    /// array, a tuple or a fn type) names as a parameter or a result.
+    fn locus_in_fn_type(&self, te: &TypeExpr) -> Option<String> {
+        self.locus_in_fn_type_at(te, 0)
+    }
+
+    /// `locus_in_fn_type`, through type aliases (`type Maker = fn() ->
+    /// W;`), transitively.
+    fn locus_in_fn_type_at(&self, te: &TypeExpr, depth: usize) -> Option<String> {
+        if depth > 32 {
+            return None;
+        }
+        match te {
+            TypeExpr::Array { elem, .. } | TypeExpr::Bounded { elem, .. } => self.locus_in_fn_type_at(elem, depth + 1),
+            TypeExpr::Tuple(parts, _) => parts.iter().find_map(|p| self.locus_in_fn_type_at(p, depth + 1)),
+            TypeExpr::Function { params, ret, .. } => params
+                .iter()
+                .chain(ret.as_deref())
+                .find_map(|t| self.locus_held_by(t).or_else(|| self.alias_locus(t, depth + 1)).or_else(|| self.locus_in_fn_type_at(t, depth + 1))),
+            TypeExpr::Named { path, generic_args, .. } if generic_args.is_empty() && path.segments.len() == 1 => {
+                match self.type_decls.get(path.segments[0].name.as_str()).map(|d| &d.body) {
+                    Some(TypeDeclBody::Alias(a)) => self.locus_in_fn_type_at(a, depth + 1),
+                    _ => None,
+                }
+            }
+            _ => None,
+        }
+    }
+
+    /// The locus an alias names, through further aliases (`type L = W;`).
+    fn alias_locus(&self, te: &TypeExpr, depth: usize) -> Option<String> {
+        if depth > 32 {
+            return None;
+        }
+        let TypeExpr::Named { path, generic_args, .. } = te else { return None };
+        if !generic_args.is_empty() || path.segments.len() != 1 {
+            return None;
+        }
+        match self.type_decls.get(path.segments[0].name.as_str()).map(|d| &d.body) {
+            Some(TypeDeclBody::Alias(a)) => self.locus_held_by(a).or_else(|| self.alias_locus(a, depth + 1)),
+            _ => None,
+        }
+    }
+
     fn refuse_locus_in_type(&mut self, type_name: &str, member: &str, te: &TypeExpr) {
+        // GH #1569: a fn value whose signature names a locus — a type's
+        // fields lower without the program's loci, so the build could
+        // not lay it out; refused where it is written
+        if let Some(locus) = self.locus_in_fn_type(te) {
+            self.diags.push(Diag::ty(
+                te.span(),
+                format!(
+                    "`type {type_name}`: {member} is a fn value whose signature names the locus \
+                     `{locus}`, and a `type` holds no locus, not even in a fn value's signature. \
+                     Hold the fn value in a locus's `params {{ ... }}` field, or pass it as a \
+                     parameter where it is used."
+                ),
+            ));
+            return;
+        }
         let Some(locus) = self.locus_held_by(te) else { return };
         self.diags.push(Diag::ty(
             te.span(),

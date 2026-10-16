@@ -649,7 +649,11 @@ lowered in (`spec/decisions.md` F.39).
   inside the callee and handed back, so the expression that
   consumes the handle is its owner, with **the same timing as a
   let-bound literal**. A binding owns what it names; a call
-  result nothing names is owned by the enclosing fn's scope. What
+  result nothing names is owned by the enclosing fn's scope. A
+  result **discarded** in statement position (`make(...);`, or a
+  call through a fn value, `f(...);`) is torn down at the
+  statement, as a discarded literal is: nothing can reach it
+  after the `;` (GH #1569). What
   a binding names is the expression written **at that position**,
   not a factory call nested inside it: in `let x = combine(a,
   make());` — and in `return combine(a, make());`, where the
@@ -691,7 +695,11 @@ lowered in (`spec/decisions.md` F.39).
   result to the caller, and the frame does not reclaim the locus
   it returns. Read through such calls, a fn whose every return is
   fresh is a factory like any other, so its caller's binding owns
-  the result; a call that can hand back one of several arguments
+  the result (fns handing back each other's calls are factories when
+  every return of theirs that is not such a call builds: `fn a(n)
+  -> W { if n == 0 { return W { }; } return b(n - 1); }` with `fn
+  b(n) -> W { return a(n); }`; a cycle with no way out returns
+  nothing, GH #1569); a call that can hand back one of several arguments
   (`return pick(x, y, c);`) hands back the one it returned, and
   the frame reclaims the rest. (Until the friction sweep of
   2026-10-12 the frame reclaimed it on the way out, and a caller
@@ -748,6 +756,57 @@ the owner did NOT construct (`Mid { leaf: shared }`, an
 external handle passed in; or a call that hands back a locus
 somebody else built) is excluded at whatever depth it appears,
 and is torn down once by its real owner, at its owner's timing.
+
+**An array or a tuple of loci is the same tree.** A param holding an
+array or a tuple of a locus type (`cs: [C; 2] = [C { }, C { }]`, `t: (C,
+D) = (C { }, D { })`, or the same written at the owner's literal) holds
+each element its initializer builds as a parent-owned child: built in
+the owner's arena, drained before the owner in declaration order with
+element order inside, torn down after the owner's `dissolve()` body in
+the same order, each reclaimed once — whatever the owner's placement. An
+element written into the field later (`self.cs[i] = c`) is not the
+owner's: the element it replaces, while still one the literal built, is
+reclaimed at the store, and the instance written in is left to its own
+owner. A locus literal written into an element (`self.cs[i] = C { }`,
+`self.t.0 = C { }`, `h.cs[i] = C { }` through a handle), or a literal of
+the whole array or tuple written over the field (`self.cs = [C { }, C {
+}]`), is the reassignment of a locus field, element by element: the
+element it replaces reclaimed while the owner owns it, the new one built
+in the owner's arena as its child and torn down with the owner, not with
+the method that wrote it. A whole array or tuple written from anywhere
+else (`self.cs = xs`) leaves the instances written in to their owners.
+The value is read before the store, and an element the owner owns is
+reclaimed once the field no longer holds it: one written back in
+(`self.cs = [self.cs[1], self.cs[0]]`) stays the owner's, at its new
+place. The owner tracks every element, whatever the array's length, and
+a path to the owner is evaluated once (`ls[next()].cs[0] = C { }` calls
+`next` once). The placement table holds a row per element (`cs.0`,
+`t.1`), and the lifecycle plan owes each one its teardown, in element
+order. A name handed whole (`cs: shared`) is a borrow, as above. A param
+written without a type takes its default literal's (`cs = [C { }, C {
+}]` is `cs: [C; 2]`, `t = (C { }, 1)` is `t: (C, Int)`, `n = [1, 2]` is
+`n: [Int; 2]`): an array of one type's literals, a tuple of literals, a
+locus or record literal.
+
+**A locus handed back inside a tuple or an array** (`fn both(w: W) ->
+(H, W) { return (H { w: w }, w); }`) is owned by whatever holds the
+aggregate (GH #1569): a param holding it (`p: (H, W) = both(W { })`)
+holds each part the fn built, and each argument handed back as a part,
+as its children, exactly as one built from a literal; a binding leaves
+them to the frame, which tears them down at its flush (each iteration's
+in a loop, before the next builds its own); a call whose result is
+discarded has them torn down at the statement, in order, then the
+arguments they kept. An argument a part keeps in a field (`H { w: w }`)
+goes with the last part keeping it, so every part that keeps it is torn
+down first. A builder that keeps an argument in a literal nested in the
+locus it returns (`K { a: H { w: w } }`) gives it to that nested holder.
+A tuple's parts of other types (`fn mk2() -> (W, Int) { return (W { },
+1); }`) change none of this: each locus part the fn builds is owned as a
+factory's direct return is, and so is each one a call through a fn value
+hands back, or a fn handing back such a call's result (`fn apply(f: fn()
+-> (W, Int)) -> (W, Int) { return f(); }`). A param holding a tuple with
+a locus part (`t: (W, Int) = (W { }, 5)`) holds it as an array or a
+tuple of loci holds its elements.
 
 **What the field is DECLARED as does not change any of this.**
 A param typed by a *contract* — an `interface` the child

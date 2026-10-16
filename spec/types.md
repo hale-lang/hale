@@ -1511,6 +1511,44 @@ failure. Wrap it in a fn that handles the error, `fn parse_or(a0:
 String) -> Int { return parse(a0) or 0; }`, and pass that
 ```
 
+A fn returning a locus is a value only when it builds every instance it
+returns — a fresh factory (spec/semantics.md § Dissolve timing rules): a
+call through a fn value hands its caller a fresh instance to own (a
+binding's or a holder's, else the frame's temporary), so a fn that may
+hand back one it was given (`fn id(w: W) -> W { return w; }`) is a type
+error at its name:
+
+```
+main.hl:4:42: type error: `id` may hand back a `W` it did not build (one
+it was given, or one another binding keeps), and a call through a fn
+value hands its caller a fresh `W` to own: only a fn that builds every
+`W` it returns may be taken as a value. Pass a fn that builds one, or
+call `id` directly
+```
+
+A fn that hands back what a parameter of a fn type builds (`fn via(f:
+fn() -> R) -> R { return f(); }`) builds what it returns.
+
+So every fn value returning a locus is a fresh factory, wherever it
+came from — a fn's name, a call that returns one (`let f = pick();`
+with `fn pick() -> fn() -> W`), an `if`, a loop variable over an array
+of them, a tuple pattern's name — and a call through one is owned as a
+factory call is: by the binding it is bound to, by the field or the
+caller it is handed to, else by the frame, and a discarded one at the
+statement.
+
+A fn handing back a tuple or an array with locus parts is a value
+under the same rule: only when it builds every locus part it returns
+(`fn mk2() -> (W, Int) { return (W { }, 1); }`), or hands back what a
+fn value it was handed builds, or a call of a fn that is one itself
+(`fn mk3() -> (W, Int) { return mk2(); }`, through any chain of such
+fns). The rule holds wherever a fn's name is
+read as a value. A record's field cannot hold such a fn value at all:
+a `type` holds no locus, not even in a fn type's signature, so `type R
+{ f: fn() -> W = mkw; }` is refused at `fn() -> W`, and so is a field or
+a variant typed by an alias of such a fn type (`type Maker = fn() ->
+W;`), through any chain of aliases.
+
 A `std::` fn is a value when the stdlib writes it in Hale: its body is
 merged into the program under its rename, so `apply(std::url::encode,
 s)` passes that fn as `apply(dbl, 1)` passes `dbl`, typed by its

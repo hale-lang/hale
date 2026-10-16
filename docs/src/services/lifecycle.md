@@ -213,6 +213,8 @@ because it's how Hale frees resources without a `defer` or a
   `let x = combine(a, make_ticker());` binds `combine`'s result to
   `x`, while `make_ticker()`'s result is one nothing names — the
   enclosing function owns that one and releases it at scope exit.
+  A result you drop (`make_ticker();` on its own) goes at the end of
+  that statement, as a dropped literal does.
   A **fallible** factory is reached through `or`, and that changes
   nothing: `let c = std::process::spawn(argv) or raise;` closes
   the child's pipes and reaps it when the scope exits, just as a
@@ -246,7 +248,18 @@ because it's how Hale frees resources without a `defer` or a
   the enclosing function releases it. An **ascribed array or
   tuple** is the same story one level out: `let ts: [Ticker; 2] =
   [make_ticker(), make_ticker()];` names the array, and each
-  element is a handle the enclosing function releases.
+  element is a handle the enclosing function releases. Written into
+  a locus's param instead (`cs: [C; 2] = [C { }, C { }]`), the
+  elements are that locus's children: drained before it, in order,
+  and torn down after its `dissolve()`, as one locus-typed field's
+  child is. The same holds for loci a function hands back inside a
+  tuple or an array (`p: (H, W) = both(W { })`): the param owns them;
+  bound with `let`, the enclosing function releases them, and
+  discarded (`both(W { });`), they go at the statement. A literal a
+  method writes into an element later (`self.cs[0] = C { }`, or
+  `self.cs = [C { }, C { }]`) is the locus's child as well: the
+  element it replaces is released, and the new one lives as long as
+  the locus does.
 - **Long-lived** (the locus subscribes to the bus, or its `run()`
   hasn't returned): it stays alive until its scope exits,
   regardless of binding — it has to, to keep receiving messages.

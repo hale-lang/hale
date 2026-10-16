@@ -769,7 +769,7 @@ fn dynamic_fields<'a>(
             let Some(site) = index.names(&ty, universe) else { continue };
             let Some(field_decl) = index.decl(site) else { continue };
             let Some(literal) = ids.site_id(*id).map(SiteRef::user) else { continue };
-            let realizes = DeclRef { site, args: Vec::new(), lowered: field_decl.name.name.clone() };
+            let realizes = DeclRef { site, args: Vec::new(), lowered: field_decl.name.name.clone(), template: field_decl.name.name.clone() };
             let field = p.name.name.clone();
             // Every instance of a literal shares its rows: a field literal
             // reached under several of its declaration's templates is one
@@ -2055,7 +2055,12 @@ impl<'b, 'a> Builder<'b, 'a> {
                 .flatten()
                 .collect();
             let name = |i: usize| self.subjects[i].field.as_deref().unwrap_or("");
-            let at = |i: usize| declared.iter().position(|f| *f == name(i));
+            // GH #1566 follow-up: an element of an array or a tuple of loci
+            // (`cs.1`, `t.0`) falls where its param does, in element order
+            let at = |i: usize| {
+                let (param, k) = element_of(name(i));
+                declared.iter().position(|f| *f == param).map(|p| (p, k))
+            };
             fields.retain(|&i| at(i).is_some() && fields_named(self.subjects, o, name(i)) == 1);
             fields.sort_by_key(|&i| at(i));
             for w in fields.windows(2) {
@@ -2568,4 +2573,15 @@ mod tests {
         assert_eq!(combine([on(0, delivered), on(0, crossing)]), None, "two rules on one domain: no claim");
         assert_eq!(combine([on(0, delivered), None]), None, "one occurrence's domain unknown: no claim");
     }
+}
+
+/// GH #1566 follow-up: a field step's param and its element position: the
+/// param itself (`cs`, 0), an element of an array or a tuple (`cs.1`, 1).
+fn element_of(step: &str) -> (&str, usize) {
+    if let Some((param, k)) = step.rsplit_once('.') {
+        if let Ok(k) = k.parse() {
+            return (param, k);
+        }
+    }
+    (step, 0)
 }

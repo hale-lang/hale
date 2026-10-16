@@ -1429,6 +1429,40 @@ dynamic	__StdIoTcpConnInline	on pool:__api_unix
 dynamic	__StdIoTcpConnections	on pool:__api_unix|unknown (no instance)
 dynamic	__StdIoTcpStream	on pool:__api_unix|unknown (no instance)
 
+== crates/hale-codegen/tests/array_of_loci_teardown.rs#3f7c147c
+root	App	the entry
+row	App@literal1	App	main	default
+-- App@literal1.q	P
+row	~	P	main	default
+row	~.cs.0	C	main	inherited
+row	~.cs.0.ds.0	D	main	inherited
+row	~.cs.1	C	main	inherited
+row	~.cs.1.ds.0	D	main	inherited
+
+== crates/hale-codegen/tests/array_of_loci_teardown.rs#72c213dc
+root	App	the entry
+row	App@literal1	App	main	default
+row	App@literal1.e	C	main	default
+shared	App@literal1.q	P #59372569
+
+== crates/hale-codegen/tests/array_of_loci_teardown.rs#de48f93b
+root	App	the entry
+row	App@literal1	App	main	default
+-- App@literal1.q	P
+row	~	P	main	default
+row	~.t.0	C	main	inherited
+row	~.t.1	D	main	inherited
+-- dynamic	sites in the seed
+dynamic	C	on main
+dynamic	D	on main
+
+== crates/hale-codegen/tests/array_of_loci_teardown.rs#e1f3f4db
+root	App	the entry
+row	App@literal1	App	main	default
+dynamic	C	on main	in the seed
+shared	App@literal1.ls.0	P #59372569
+shared	App@literal1.ls.1	P #59372569
+
 == crates/hale-codegen/tests/array_repeat_stack.rs#a0c62a98
 row	Holder@main1	Holder	main	default
 
@@ -2530,7 +2564,10 @@ row	~.c	C	pool:io	inherited
 root	App	the entry
 domain	pool:io
 row	App@literal1	App	main	default
-row	App@literal1.q	P	pool:io	entry	off owner
+-- App@literal1.q	P
+row	~	P	pool:io	entry	off owner
+row	~.cs.0	C	pool:io	inherited
+row	~.cs.1	C	pool:io	inherited
 
 == crates/hale-codegen/tests/cross_pool_backstop.rs#f179a81a
 root	App	the entry
@@ -4661,6 +4698,37 @@ root	App	the entry
 row	App@literal1	App	main	default
 row	App@literal1.bars	Bars	main	default
 shared	App@literal1.r	Ring #711a93c5
+
+== crates/hale-codegen/tests/returned_aggregate_of_loci.rs#72ef8966
+root	App	the entry
+hole	App@literal1.r	unenumerable initializer
+row	App@literal1	App	main	default
+row	App@literal1.r	R	main	default
+dynamic	W	on unknown (`mk_w` passed as a value)|unknown (no caller)	in the seed
+
+== crates/hale-codegen/tests/returned_aggregate_of_loci.rs#d5ce36a1
+-- dynamic	sites in the seed
+dynamic	H	on main
+dynamic	W	on main
+
+== crates/hale-codegen/tests/returned_aggregate_of_loci.rs#b542752e
+root	App	the entry
+row	App@literal1	App	main	default
+dynamic	W	on unknown (`mkw` passed as a value)	in the seed
+
+== crates/hale-codegen/tests/returned_aggregate_of_loci.rs#f06ce86a
+root	App	the entry
+row	App@literal1	App	main	default
+dynamic	W	on unknown (`mka` passed as a value)|unknown (`mkw` passed as a value)	in the seed
+
+== crates/hale-codegen/tests/returned_aggregate_of_loci.rs#72cf5c6b
+root	App	the entry
+row	App@literal1	App	main	default
+row	App@literal1.h	Hold	main	default
+dynamic	W	on main|unknown (`mk2` passed as a value)	in the seed
+
+== crates/hale-codegen/tests/returned_aggregate_of_loci.rs#647b11c1
+dynamic	W	on unknown (`cyc1` passed as a value)	in the seed
 
 == crates/hale-codegen/tests/self_containing_locus.rs#4ea4d0ba
 shared	Holder@main1	Holder #5d65043f
@@ -15830,6 +15898,11 @@ row	~.cat.workflows	__lib_dna__core___workflow_definition__WorkflowDefRows	main	
 == shared Owner #fc7aa7f5
 row	~	Owner	pinned:~	entry	off owner
 row	~.k	Kid	pinned:~	inherited
+
+== shared P #59372569
+row	~	P	main	default
+row	~.cs.0	C	main	inherited
+row	~.cs.1	C	main	inherited
 
 == shared Pair #78ca35e6
 row	~	Pair	main	default

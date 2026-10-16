@@ -2868,6 +2868,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             void_t.fn_type(&[ptr_t.into(), ptr_t.into(), ptr_t.into()], false),
             None,
         );
+        self.module.add_function(
+            "lotus_composite_array_restore",
+            void_t.fn_type(&[ptr_t.into(), ptr_t.into(), ptr_t.into(), i64_t.into(), ptr_t.into(), ptr_t.into(), ptr_t.into()], false),
+            None,
+        );
         for name in ["lotus_reclaim_flush_owned", "lotus_run_cancel_only", "lotus_reclaim_scope_leave", "lotus_reclaim_release_leave"] {
             self.module.add_function(name, void_t.fn_type(&[ptr_t.into()], false), None);
         }

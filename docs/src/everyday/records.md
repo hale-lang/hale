@@ -107,6 +107,12 @@ Records nest, and they're what travels on the bus and in and out
 of functions. When a record starts wanting *methods*, that's the
 signal to promote it to a [locus](./locus-gently.md).
 
+A record never holds a locus: it is plain data, copied by value, with
+no lifecycle to keep one alive. That goes for a function value whose
+signature names a locus too (`f: fn() -> Worker`), which `hale check`
+refuses at the field's type. Keep such a function in a locus's
+`params`, or pass it where it is used.
+
 A `type` is always declared at the **top level** — beside your
 `fn`s and `locus`es, never inside a locus body. It's in scope
 everywhere in the program, including inside every locus, so a

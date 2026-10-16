@@ -743,10 +743,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // have been consumed by an ARGUMENT of the inner call. A
         // per-node table has no such ordering to get right.
         let inner_fresh_locus: Option<String> = match inner {
-            Expr::Call { callee, .. } => self
-                .callee_fn_name(callee)
-                .and_then(|f| self.fresh_locus_factories.get(&f).cloned())
-                .map(|(l, _)| l),
+            Expr::Call { callee, .. } => self.fresh_factory_locus(callee, scope),
             _ => None,
         };
         let ok_owned_elsewhere = matches!(

@@ -34,6 +34,13 @@ pub(crate) enum ValueName {
 
 /// Every name the items read as a value, in no particular order.
 pub(crate) fn value_names(items: &[TopDecl], out: &mut Vec<ValueName>) {
+    let mut sites = Vec::new();
+    value_name_sites(items, &mut sites);
+    out.extend(sites.into_iter().map(|(n, _)| n));
+}
+
+/// The same, each with where it is read.
+pub(crate) fn value_name_sites(items: &[TopDecl], out: &mut Vec<(ValueName, hale_syntax::Span)>) {
     let mut w = Walk { out, scopes: Vec::new() };
     for item in items {
         w.top_decl(item);
@@ -41,7 +48,7 @@ pub(crate) fn value_names(items: &[TopDecl], out: &mut Vec<ValueName>) {
 }
 
 struct Walk<'o> {
-    out: &'o mut Vec<ValueName>,
+    out: &'o mut Vec<(ValueName, hale_syntax::Span)>,
     /// The bindings in scope, innermost last.
     scopes: Vec<BTreeSet<String>>,
 }
@@ -455,7 +462,7 @@ impl Walk<'_> {
             }
             Expr::Unary { operand, .. } => self.expr(operand),
             Expr::Field { receiver, name, .. } | Expr::Path2 { receiver, name, .. } => {
-                self.out.push(ValueName::Member(name.name.clone()));
+                self.out.push((ValueName::Member(name.name.clone()), name.span));
                 self.expr(receiver);
             }
             Expr::Index { receiver, index, .. } => {
@@ -487,11 +494,12 @@ impl Walk<'_> {
             }
             Expr::Ident(i) => {
                 if !self.bound(&i.name) {
-                    self.out.push(ValueName::Ident(i.name.clone()));
+                    self.out.push((ValueName::Ident(i.name.clone()), i.span));
                 }
             }
-            Expr::Path(qp) => self.out.push(ValueName::Path(
-                qp.segments.iter().map(|s| s.name.as_str()).collect::<Vec<_>>().join("::"),
+            Expr::Path(qp) => self.out.push((
+                ValueName::Path(qp.segments.iter().map(|s| s.name.as_str()).collect::<Vec<_>>().join("::")),
+                qp.span,
             )),
             Expr::Literal(..) | Expr::KwSelf(_) => {}
         }

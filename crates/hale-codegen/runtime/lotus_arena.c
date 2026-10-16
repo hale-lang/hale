@@ -9023,6 +9023,39 @@ void lotus_reclaim_request(void *child, void *owner, void *reclaim) {
     t_reclaim_owner = hint.prev;
 }
 
+/* GH #1569: a whole array of `n` loci stored over a field whose holder
+ * keeps an owned-elements bitmap (`words`, one bit per element). `old` is
+ * the field's elements before the store (NULL when the holder owned none
+ * of them), `now` its elements after, `built` the bitmap of the elements
+ * the store built as the holder's children (NULL when none). An element
+ * the holder owns now is one built here, or an owned one written back in
+ * at any place; an owned element no longer in the field is reclaimed, in
+ * element order, after the bitmap is rewritten. */
+void lotus_composite_array_restore(void *const *old, void *const *now, const uint64_t *built,
+                                   uint64_t n, uint64_t *words, void *holder, void *reclaim) {
+    uint64_t nw = (n + 63) / 64;
+    uint64_t was_small[4];
+    uint64_t *was = nw <= 4 ? was_small : malloc(nw * sizeof *was);
+    if (!was) abort();
+    for (uint64_t w = 0; w < nw; w++) { was[w] = old ? words[w] : 0; words[w] = 0; }
+#define LOTUS_BIT(m, k) (((m)[(k) / 64] >> ((k) % 64)) & 1)
+    for (uint64_t j = 0; j < n; j++) {
+        int mine = built && LOTUS_BIT(built, j);
+        for (uint64_t k = 0; !mine && old && k < n; k++)
+            mine = LOTUS_BIT(was, k) && old[k] == now[j];
+        if (mine) words[j / 64] |= 1ull << (j % 64);
+    }
+    for (uint64_t k = 0; old && reclaim && k < n; k++) {
+        if (!LOTUS_BIT(was, k) || !old[k]) continue;
+        int still = 0;
+        for (uint64_t j = 0; !still && j < n; j++)
+            still = !(built && LOTUS_BIT(built, j)) && now[j] == old[k];
+        if (!still) lotus_reclaim_request(old[k], holder, reclaim);
+    }
+#undef LOTUS_BIT
+    if (was != was_small) free(was);
+}
+
 static void lotus_reclaim_after_handler(void);
 
 /* A synchronous release can pump a handler during its hold wait too.

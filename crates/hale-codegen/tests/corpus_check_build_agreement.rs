@@ -3106,3 +3106,178 @@ fn a_codegen_refusal_names_imported_and_stdlib_declarations_as_written() {
     .to_string();
     assert!(stdlib.contains("locus `std::bytes::BytesBuilder` has no method `nope`") && !stdlib.contains("__Std"), "{stdlib}");
 }
+
+/// GH #1566 follow-up: a param with no type ascription whose default is
+/// an array or a tuple literal checked clean and was refused by the build
+/// ("non-literal default requires a type ascription"). The build types
+/// it by its literal now: an array of one type's literals, a tuple of
+/// literals, a locus or record literal.
+///
+/// Plain string literals, for the reason given above.
+#[test]
+fn an_unascribed_composite_default_is_typed_by_its_literal() {
+    let src = "locus C { params { name: String = \"c\"; } }\n\
+               locus P { params { cs = [C { name: \"a\" }, C { name: \"b\" }]; t = (C { }, 1); n = [1, 2, 3]; c = C { }; } }\n\
+               main locus App { params { q: P = P { }; } run() { println(len(self.q.n)); } }\n\
+               fn main() { App { }; }\n";
+    assert_eq!(sweep_verdict(src, "hale_cb_unascribed_composite"), Verdict::Built, "{src}");
+}
+
+/// GH #1566 follow-up: a call through a fn value returning a locus hands
+/// its caller a fresh instance to own (a binding's, a holder's, or the
+/// frame's). So only a fn that builds every instance it returns may be
+/// taken as a value: one that may hand back an instance it was given
+/// (`id`) is refused at the name, as a fallible fn is. A builder taken
+/// as a value builds, runs, and its instance is torn down once by
+/// whoever holds the call's result — it was nobody's before, a leak.
+///
+/// Plain string literals, for the reason given above.
+#[test]
+fn a_locus_returning_fn_value_must_build_what_it_returns() {
+    let lib = "locus W { params { name: String = \"w\"; } dissolve() { println(\"bye \", self.name); } }\n\
+               fn id(w: W) -> W { return w; }\n\
+               fn apply(f: fn(W) -> W, w: W) -> W { return f(w); }\n";
+    let by_value = format!("{lib}fn main() {{ let w = W {{ }}; let v = apply(id, w); }}\n");
+    let by_let = format!("{lib}fn main() {{ let g = id; let w = W {{ }}; let v = g(w); }}\n");
+    assert_refused_by_the_check(
+        &[
+            (&by_value, "id", "`id` may hand back a `W` it did not build"),
+            (&by_let, "id", "`id` may hand back a `W` it did not build"),
+        ],
+        "unfresh_fn_value",
+    );
+    let built = "locus W { params { name: String = \"w\"; } dissolve() { println(\"bye \", self.name); } }\n\
+                 fn mk(n: String) -> W { return W { name: n }; }\n\
+                 fn make(f: fn(String) -> W, n: String) -> W { return f(n); }\n\
+                 fn main() {\n\
+                     let a = make(mk, \"a\");\n\
+                     let g: fn(String) -> W = mk;\n\
+                     let b = g(\"b\");\n\
+                     println(a.name, b.name);\n\
+                 }\n";
+    assert_eq!(build_and_run_probe(built, "fresh_fn_value"), Ok("ab\nbye b\nbye a\n".to_string()), "{built}");
+}
+
+/// GH #1569: a fn value returning a locus is a fresh factory however the
+/// binding holding it was bound — only a fresh factory may be taken as a
+/// value at all — and a call through one is owned as a factory call is.
+/// One a top-level fn's call hands back (`let f = pick(); f()`) checked
+/// clean and failed the build with "no required `ownership` row"; so did
+/// one bound from an `if` or a method's call, by a tuple pattern, or as a
+/// loop variable. Each builds, and runs.
+///
+/// Plain string literals, for the reason given above.
+#[test]
+fn a_fn_value_from_a_call_is_a_fresh_factory() {
+    let lib = "locus W { params { name: String = \"w\"; } dissolve() { println(\"bye \", self.name); } }\n\
+               fn mkw() -> W { return W { name: \"made\" }; }\n\
+               fn pick() -> fn() -> W { return mkw; }\n";
+    let picked = format!(
+        "{lib}fn main() {{\n\
+             let f = pick();\n\
+             let w = f();\n\
+             f();\n\
+             let g: fn() -> W = if true {{ mkw }} else {{ pick() }};\n\
+             let v = g();\n\
+             println(w.name, v.name);\n\
+         }}\n"
+    );
+    assert_eq!(
+        build_and_run_probe(&picked, "fn_value_from_call"),
+        Ok("bye made\nmademade\nbye made\nbye made\n".to_string()),
+        "{picked}"
+    );
+    let shapes = [
+        ("by_if", format!("{lib}fn main() {{ let f = if true {{ mkw }} else {{ mkw }}; let w = f(); println(w.name); }}\n")),
+        (
+            "by_method",
+            format!(
+                "{lib}main locus App {{ fn pk() -> fn() -> W {{ return mkw; }} run() {{ let f = self.pk(); let w = f(); println(w.name); }} }}\n\
+                 fn main() {{ App {{ }}; }}\n"
+            ),
+        ),
+        ("by_tuple", format!("{lib}fn main() {{ let (f, n) = (mkw, 1); let w = f(); println(w.name); }}\n")),
+        (
+            "by_loop",
+            format!("{lib}fn main() {{ let fs: [fn() -> W; 2] = [mkw, mkw]; for f in fs {{ let w = f(); println(w.name); }} }}\n"),
+        ),
+        (
+            "by_param",
+            format!("{lib}fn each(fs: [fn() -> W; 2]) {{ for f in fs {{ let h: fn() -> W = f; h(); }} }}\nfn main() {{ each([mkw, mkw]); }}\n"),
+        ),
+    ];
+    for (tag, src) in shapes {
+        assert!(build_and_run_probe(&src, tag).is_ok_and(|out| out.contains("bye made")), "{tag}:\n{src}");
+    }
+}
+
+/// GH #1569: the fresh-factory rule holds wherever a fn's name is read as
+/// a value. A record field's default (`f: fn(W) -> W = id`) escaped it,
+/// since the walk types a default only at a literal that leaves it; and a
+/// record field whose fn type names a locus cannot be laid out at all, so
+/// it is refused at its type, whatever its default. And a
+/// fn handing back a tuple or an array of loci is a value only when it
+/// builds every locus part (`fn pass(w: W) -> (W, Int) { return (w, 1);
+/// }` hands one back it was given), or hands back a call of a fn that
+/// does, transitively (`mk3` of `mk2` is one; `fwd` of `pass` is not).
+///
+/// Plain string literals, for the reason given above.
+#[test]
+fn a_fn_value_is_a_fresh_factory_at_every_position() {
+    // (a record field's default escaped the rule; such a field is now
+    // refused at its type, whose signature names a locus a `type` cannot
+    // lay out: it checked clean and failed the build, even with a fresh
+    // factory as its default)
+    let field = "locus W { params { name: String = \"w\"; } }\n\
+                 fn mkw() -> W { return W { }; }\n\
+                 type R { f: fn() -> W = mkw; n: Int = 1; }\n\
+                 fn main() { let r = R { }; println(r.n); }\n";
+    let aggregate = "locus W { params { name: String = \"w\"; } }\n\
+                     fn pass(w: W) -> (W, Int) { return (w, 1); }\n\
+                     fn apply(f: fn(W) -> (W, Int), w: W) -> (W, Int) { return f(w); }\n\
+                     fn main() { let w = W { }; let t = apply(pass, w); }\n";
+    let forwarded = "locus W { params { name: String = \"w\"; } }\n\
+                     fn pass(w: W) -> (W, Int) { return (w, 1); }\n\
+                     fn fwd(w: W) -> (W, Int) { return pass(w); }\n\
+                     fn main() { let g = fwd; }\n";
+    // through type aliases, transitively, in a field and in a variant
+    let aliased = "locus W { params { name: String = \"w\"; } }\n\
+                   fn mkw() -> W { return W { }; }\n\
+                   type Maker = fn() -> W;\n\
+                   type Maker2 = Maker;\n\
+                   type T { f: Maker2 = mkw; n: Int = 1; }\n\
+                   fn main() { let t = T { }; println(t.n); }\n";
+    let variant = "locus W { params { name: String = \"w\"; } }\n\
+                   type Maker = fn() -> W;\n\
+                   type E = enum { A(Maker), B };\n\
+                   fn main() { println(1); }\n";
+    // a forwarder to a fn that may hand back what it was given
+    let id_forwarder = "locus W { params { name: String = \"w\"; } }\n\
+                        fn id(w: W) -> W { return w; }\n\
+                        fn fwd(w: W) -> W { return id(w); }\n\
+                        fn main() { let f = fwd; }\n";
+    assert_refused_by_the_check(
+        &[
+            (field, "fn() -> W", "`type R`: field `f` is a fn value whose signature names the locus `W`"),
+            (aliased, "Maker2", "`type T`: field `f` is a fn value whose signature names the locus `W`"),
+            (variant, "Maker", "`type E`: variant `A` is a fn value whose signature names the locus `W`"),
+            (id_forwarder, "fwd", "`fwd` may hand back a `W` it did not build"),
+            (aggregate, "pass", "`pass` may hand back a `W` it did not build"),
+            (forwarded, "fwd", "`fwd` may hand back a `W` it did not build"),
+        ],
+        "unfresh_everywhere",
+    );
+    // a fn handing back a fresh builder's call is one, through any number
+    // of them
+    let chained = "locus W { params { name: String = \"w\"; } dissolve() { println(\"bye \", self.name); } }\n\
+                   fn mk2(n: String) -> (W, Int) { return (W { name: n }, 1); }\n\
+                   fn mk3(n: String) -> (W, Int) { return mk2(n); }\n\
+                   fn mk4(n: String) -> (W, Int) { return mk3(n); }\n\
+                   fn main() { let g = mk3; let b = g(\"b\"); g(\"c\"); let h = mk4; let d = h(\"d\"); println(b.0.name, d.0.name); }\n";
+    assert_eq!(build_and_run_probe(chained, "fresh_forwarder_fn_value"), Ok("bye c\nbd\nbye d\nbye b\n".to_string()), "{chained}");
+    let built = "locus W { params { name: String = \"w\"; } dissolve() { println(\"bye \", self.name); } }\n\
+                 fn mk2(n: String) -> (W, Int) { return (W { name: n }, 1); }\n\
+                 fn apply(f: fn(String) -> (W, Int), n: String) -> (W, Int) { return f(n); }\n\
+                 fn main() { let t = apply(mk2, \"a\"); println(t.0.name, t.1); }\n";
+    assert_eq!(build_and_run_probe(built, "fresh_aggregate_fn_value"), Ok("a1\nbye a\n".to_string()), "{built}");
+}
