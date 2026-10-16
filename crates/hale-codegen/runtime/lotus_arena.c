@@ -734,8 +734,16 @@ static void lotus_chunk_pool_stats_thread_dtor(void *unused) {
 static pthread_key_t g_chunk_pool_free_key;
 static int g_chunk_pool_free_key_init = 0;
 
+static void lotus_delivery_region_cache_drain(void);
+static void lotus_delivery_region_release(struct lotus_arena *r);
+static void lotus_handler_hold_spares_drain(void);
+
 static void lotus_chunk_pool_free_thread_dtor(void *unused) {
     (void)unused;
+    /* The delivery regions this thread kept for reuse first: destroying
+     * them hands their chunks to the pool freed below. */
+    lotus_delivery_region_cache_drain();
+    lotus_handler_hold_spares_drain();
     /* The pool only ever holds malloc'd, default-size chunks:
      * lotus_arena_release_chunk munmaps `via_mmap` chunks before
      * they could be pooled, and only chunks with
@@ -6462,6 +6470,83 @@ static int lotus_retire_collect(lotus_retire_blocks_t *b, const char *base,
     return 1;
 }
 
+/* Free the element block itself, at the size its sentinel names (-1 a
+ * String, -2 a Bytes, else the struct's size). */
+static void lotus_form_retire_block(lotus_arena_t *a, void *old_blob,
+                                    int64_t size) {
+    size_t block_size;
+    if (size == -1) {
+        block_size = strlen((const char *)old_blob) + 1;
+    } else if (size == -2) {
+        block_size =
+            (size_t)lotus_bytes_len(old_blob) + sizeof(int64_t);
+    } else if (size >= 0) {
+        block_size = (size_t)size;
+    } else {
+        return;
+    }
+    lotus_arena_free_block_now(a, old_blob, block_size);
+}
+
+/* lotus_form_retire_replaced for an element whose descriptor has no
+ * nested block — a String, a Bytes, or a record whose heap fields are
+ * all top-level String and Bytes, which is most of them. The compiler
+ * calls this one when it knows that (emit_vec_retire), so a flat
+ * element never pays for the nested walk's block lists: it compares
+ * each old field with the new element's field at the same offset and
+ * frees the ones that do not survive. +23% on vec_queue_pop and
+ * vec_set_bytes when every element took the nested walk. */
+void lotus_form_retire_replaced_flat(void *arena_ptr, void *old_blob,
+                                     void *new_blob, int64_t size,
+                                     const int32_t *str_offs,
+                                     int64_t n_offs) {
+    lotus_arena_t *a = (lotus_arena_t *)arena_ptr;
+    if (!a || !old_blob || old_blob == new_blob) return;
+    if (!lotus_arena_contains_ptr(a, old_blob)) return;
+    const char *old_v = (const char *)old_blob;
+    const char *new_v = (const char *)new_blob;
+    for (int64_t i = 0; i < n_offs; i++) {
+        int32_t off = str_offs[i] & LOTUS_RETIRE_OFF_MASK;
+        int is_bytes = (str_offs[i] & LOTUS_RETIRE_OFF_BYTES) != 0;
+        char *oldp;
+        memcpy(&oldp, old_v + off, sizeof(char *));
+        if (!oldp) continue;
+        if (new_v) {
+            /* A block survives wherever the new element holds it
+             * (spec/forms.md), not only at the same field, as the
+             * nested walk keeps it. No vec store hands this two slots'
+             * worth of sharing today — `set` and `push` copy every
+             * field (emit_vec_cell_copy_ptr) and `pop`'s copy keeps the
+             * same offsets — so this is the walk's rule held for the
+             * flat path, not a case a program reaches. The same field
+             * first, the common case. */
+            char *newp;
+            memcpy(&newp, new_v + off, sizeof(char *));
+            int survives = oldp == newp;
+            for (int64_t k = 0; !survives && k < n_offs; k++) {
+                memcpy(&newp, new_v + (str_offs[k] & LOTUS_RETIRE_OFF_MASK),
+                       sizeof(char *));
+                survives = oldp == newp;
+            }
+            if (survives) continue;
+        }
+        int dup = 0;
+        for (int64_t j = 0; j < i; j++) {
+            char *pj;
+            memcpy(&pj, old_v + (str_offs[j] & LOTUS_RETIRE_OFF_MASK),
+                   sizeof(char *));
+            if (pj == oldp) { dup = 1; break; }
+        }
+        if (dup) continue;
+        if (!lotus_arena_contains_ptr(a, oldp)) continue;
+        size_t fsize = is_bytes
+            ? (size_t)lotus_bytes_len(oldp) + sizeof(int64_t)
+            : strlen(oldp) + 1;
+        lotus_arena_free_block_now(a, oldp, fsize);
+    }
+    lotus_form_retire_block(a, old_blob, size);
+}
+
 void lotus_form_retire_replaced(void *arena_ptr, void *old_blob,
                                 void *new_blob, int64_t size,
                                 const int32_t *str_offs,
@@ -6495,18 +6580,7 @@ void lotus_form_retire_replaced(void *arena_ptr, void *old_blob,
         lotus_retire_blocks_free(&news);
         if (!ok) return;
     }
-    size_t block_size;
-    if (size == -1) {
-        block_size = strlen((const char *)old_blob) + 1;
-    } else if (size == -2) {
-        block_size =
-            (size_t)lotus_bytes_len(old_blob) + sizeof(int64_t);
-    } else if (size >= 0) {
-        block_size = (size_t)size;
-    } else {
-        return;
-    }
-    lotus_arena_free_block_now(a, old_blob, block_size);
+    lotus_form_retire_block(a, old_blob, size);
 }
 
 /* @form(vec) `truncate(n)` / `clear()` (and `@form(heap)`'s `clear()`):
@@ -6529,11 +6603,20 @@ void lotus_vec_truncate(void *vec_ptr, int64_t new_len, void *arena,
     if (new_len >= 0 && (uint64_t)new_len >= (uint64_t)v->len) return;
     size_t keep = new_len < 0 ? 0 : (size_t)new_len;
     if (arena && v->buf) {
+        /* Decided once for the call: a descriptor with no nested entry
+         * (any word carrying the bit — a size word never reaches it)
+         * takes the flat retire. */
+        int nested = 0;
+        for (int64_t k = 0; k < n_desc; k++)
+            if (desc[k] & LOTUS_RETIRE_OFF_NESTED) { nested = 1; break; }
         void **elems = (void **)v->buf;
         for (size_t i = v->len; i > keep; i--) {
             void *old = elems[i - 1];
             elems[i - 1] = NULL;
-            lotus_form_retire_replaced(arena, old, NULL, size, desc, n_desc);
+            if (nested)
+                lotus_form_retire_replaced(arena, old, NULL, size, desc, n_desc);
+            else
+                lotus_form_retire_replaced_flat(arena, old, NULL, size, desc, n_desc);
         }
     }
     v->len = keep;
@@ -8764,7 +8847,7 @@ static void bus_inline_drain_one(lotus_bus_queue_t *q) {
     g_bus_pending_rec_pub = outer_rec_pub;
     g_bus_inline_drain_depth--;
     if (heap_ptr) free(heap_ptr);
-    if (region_ptr) lotus_arena_destroy((lotus_arena_t *)region_ptr);
+    if (region_ptr) lotus_delivery_region_release((lotus_arena_t *)region_ptr);
 }
 
 /* Re-entrancy guard: set while THIS THREAD is inside a drain. A nested
@@ -9239,7 +9322,7 @@ void lotus_bus_queue_drain(lotus_bus_queue_t *q) {
                             if (held.payload_heap)
                                 free(held.payload_heap);
                             if (held.payload_region)
-                                lotus_arena_destroy(
+                                lotus_delivery_region_release(
                                     held.payload_region);
                             lotus_reclaim_after_handler();
                         }
@@ -9312,7 +9395,7 @@ void lotus_bus_queue_drain(lotus_bus_queue_t *q) {
             t_bus_delivery_self = prev_delivery;
             if (cell_copy.payload_heap) free(cell_copy.payload_heap);
             if (cell_copy.payload_region)
-                lotus_arena_destroy(cell_copy.payload_region);
+                lotus_delivery_region_release(cell_copy.payload_region);
             lotus_reclaim_after_handler();
         }
     } else {
@@ -9366,7 +9449,7 @@ void lotus_bus_queue_drain(lotus_bus_queue_t *q) {
             ((lotus_handler_fn)handler_fn)(handler_self, payload_ptr);
             t_bus_delivery_self = prev_delivery;
             if (heap_ptr) free(heap_ptr);
-            if (region_ptr) lotus_arena_destroy((lotus_arena_t *)region_ptr);
+            if (region_ptr) lotus_delivery_region_release((lotus_arena_t *)region_ptr);
             lotus_reclaim_after_handler();
         }
     }
@@ -9934,7 +10017,7 @@ static void lotus_mailbox_dispatch_cell(lotus_bus_cell_t *cell) {
     lotus_bus_note_consume(cell->self_ptr, cell->rec_pub_id);
     ((lotus_handler_fn)cell->handler)(cell->self_ptr, payload_ptr);
     if (cell->payload_heap) free(cell->payload_heap);
-    if (cell->payload_region) lotus_arena_destroy(cell->payload_region);
+    if (cell->payload_region) lotus_delivery_region_release(cell->payload_region);
 }
 
 /* A ring slot just freed (the consumer dequeued). Wake any producer
@@ -10872,9 +10955,23 @@ static void lotus_run_ticket_free(lotus_run_ticket_t *t) {
         t->next = t_handler_hold_spare;
         t_handler_hold_spare = t;
         t_handler_hold_spares++;
+        /* freed at this thread's exit (lotus_handler_hold_spares_drain) */
+        lotus_mark_thread_for_pool_dtor();
         return;
     }
     free(t);
+}
+
+/* A pool worker's spare handler tickets, at its exit: they leaked one
+ * per worker that had ever run a handler (LeakSanitizer, with chunk
+ * recycling on). Runs from the chunk pool's thread-exit destructor. */
+static void lotus_handler_hold_spares_drain(void) {
+    while (t_handler_hold_spare) {
+        lotus_run_ticket_t *t = t_handler_hold_spare;
+        t_handler_hold_spare = t->next;
+        free(t);
+    }
+    t_handler_hold_spares = 0;
 }
 
 /* An admitted run returned, or its parked coroutine was abandoned at
@@ -11495,7 +11592,7 @@ static void lotus_coop_pool_dispatch_cell(lotus_coop_pool_t *p,
     /* The per-delivery region is a subregion of the subscriber's arena:
      * gone before the hold that keeps that arena ends. */
     if (cell->payload_heap) free(cell->payload_heap);
-    if (cell->payload_region) lotus_arena_destroy(cell->payload_region);
+    if (cell->payload_region) lotus_delivery_region_release(cell->payload_region);
     if (bus) lotus_handler_hold_settle(hold);
     else lotus_run_hold_release(hold);
     /* A handler its park points ran retired a release that waits for a
@@ -13242,7 +13339,7 @@ static void lotus_coro_payload_dispose(lotus_coro_t *c) {
         c->payload_heap = NULL;
     }
     if (c->payload_region) {
-        lotus_arena_destroy(c->payload_region);
+        lotus_delivery_region_release(c->payload_region);
         c->payload_region = NULL;
     }
     c->payload_ptr  = NULL;
@@ -13276,7 +13373,7 @@ static void lotus_coro_free(lotus_coro_t *c) {
         c->payload_heap = NULL;
     }
     if (c->payload_region) {
-        lotus_arena_destroy(c->payload_region);
+        lotus_delivery_region_release(c->payload_region);
         c->payload_region = NULL;
     }
     if (c->stack) free(c->stack);
@@ -13656,7 +13753,7 @@ static int lotus_async_start_cell(lotus_coop_pool_t *p,
         p->running_label = NULL;
         if (cell_copy->payload_heap) free(cell_copy->payload_heap);
         if (cell_copy->payload_region)
-            lotus_arena_destroy(cell_copy->payload_region);
+            lotus_delivery_region_release(cell_copy->payload_region);
         lotus_run_hold_release(hold);
         return 1;
     }
@@ -14966,7 +15063,7 @@ static int lotus_bus_shed_check(lotus_bus_entry_t *reg,
                     c->payload_heap = NULL;
                 }
                 if (c->payload_region) {
-                    lotus_arena_destroy(
+                    lotus_delivery_region_release(
                         (lotus_arena_t *)c->payload_region);
                     c->payload_region = NULL;
                 }
@@ -17206,6 +17303,61 @@ static int bus_cell_stale(const lotus_bus_cell_t *c) {
     return stale;
 }
 
+/* The per-delivery regions a thread keeps for its next delivery.
+ * Materializing a wire cell deserializes its payload into a region of
+ * its own, destroyed after the handler returns (GH #1516): built and
+ * torn down whole for every delivery, that arena — its malloc, its
+ * mutex, its first chunk, its destroy — was most of what a same-thread
+ * delivery with a String payload cost (+40% on bus_dispatch_heap_payload).
+ * A region that comes back clean — one ordinary chunk, nothing retired
+ * into it, no slots, no index — is rewound and kept here instead, and
+ * the next delivery on this thread takes it. Anything else is destroyed
+ * as before. Off where chunk recycling is off (LOTUS_NO_CHUNK_POOL, the
+ * ASan default), so a use of a payload past its handler still reads
+ * freed memory there. Drained at thread exit with the chunk pool. */
+#define LOTUS_DELIVERY_REGION_CACHE 4
+static __thread lotus_arena_t *t_delivery_regions[LOTUS_DELIVERY_REGION_CACHE];
+static __thread int t_delivery_region_count = 0;
+
+static void lotus_delivery_region_cache_drain(void) {
+    while (t_delivery_region_count > 0)
+        lotus_arena_destroy(t_delivery_regions[--t_delivery_region_count]);
+}
+
+static lotus_arena_t *lotus_delivery_region_take(int numa_node) {
+    if (t_delivery_region_count > 0
+        && t_delivery_regions[t_delivery_region_count - 1]->numa_node == numa_node)
+        return t_delivery_regions[--t_delivery_region_count];
+    lotus_arena_t *r = lotus_arena_alloc_struct(__builtin_return_address(0));
+    if (r) r->numa_node = numa_node;
+    return r;
+}
+
+/* The handler has returned: keep the region for the next delivery when
+ * it can be rewound to empty, destroy it otherwise. */
+static void lotus_delivery_region_release(struct lotus_arena *r) {
+    if (!r) return;
+    const lotus_arena_chunk_t *h = r->head;
+    int clean = !lotus_no_chunk_pool()
+        && t_delivery_region_count < LOTUS_DELIVERY_REGION_CACHE
+        && (!h || (!h->next && !h->via_mmap && h->cap <= LOTUS_ARENA_CHUNK_BYTES))
+        && !r->parent && !r->free_list && r->next_slot == 0 && !r->fixed_size
+        && !r->chunk_byte_cap && !r->cap_diag_name && !r->shared_concurrent
+        && !r->child_struct_free && !r->retire_pending && !r->retire_shells
+        && !r->retire_free && !r->retire_free_small && !r->slot_reuse
+        && !r->chunk_index;
+    if (!clean) {
+        lotus_arena_destroy(r);
+        return;
+    }
+    if (h) r->head->used = 0;
+    /* As lotus_arena_destroy does (GH #375): nothing may keep
+     * allocating into it as a caller arena once it is released. */
+    if (lotus_current_caller_arena == r) lotus_current_caller_arena = NULL;
+    lotus_mark_thread_for_pool_dtor();
+    t_delivery_regions[t_delivery_region_count++] = r;
+}
+
 static int lotus_bus_cell_materialize(lotus_bus_cell_t *c) {
     /* GH #703: a cell for a subscriber incarnation that ended after the
      * cell was posted is dropped here, whole, before anything is
@@ -17247,10 +17399,7 @@ static int lotus_bus_cell_materialize(lotus_bus_cell_t *c) {
      * to the prior behavior (deserialize into the global arena) and
      * leave payload_region NULL. */
     lotus_arena_t *region = NULL;
-    if (sub_arena) {
-        region = lotus_arena_alloc_struct(__builtin_return_address(0));
-        if (region) region->numa_node = sub_arena->numa_node;
-    }
+    if (sub_arena) region = lotus_delivery_region_take(sub_arena->numa_node);
     lotus_arena_t *prev = lotus_current_caller_arena;
     lotus_current_caller_arena = region ? region : sub_arena;
     ssize_t ssz = ((lotus_deserialize_fn)c->deserialize)(
@@ -17264,7 +17413,7 @@ static int lotus_bus_cell_materialize(lotus_bus_cell_t *c) {
             c->payload_heap = NULL;
         }
         if (c->payload_region) {
-            lotus_arena_destroy(c->payload_region);
+            lotus_delivery_region_release(c->payload_region);
             c->payload_region = NULL;
         }
         c->payload_size = 0;
@@ -17288,7 +17437,7 @@ static int lotus_bus_cell_materialize(lotus_bus_cell_t *c) {
             c->payload_heap = NULL;
         }
         if (c->payload_region) {
-            lotus_arena_destroy(c->payload_region);
+            lotus_delivery_region_release(c->payload_region);
             c->payload_region = NULL;
         }
         c->payload_size = 0;
@@ -18185,22 +18334,36 @@ static int lotus_chunk_index_lookup(lotus_arena_t *a, const char *cp) {
     return found;
 }
 
+/* Past the walk: the chunk index, or — for the shared payload arena,
+ * which grows under its own lock from more than one thread — the rest
+ * of the walk. Out of line, so the walk in lotus_ptr_in_arena stays a
+ * tight loop: with a counter and this call inside it, every clone into
+ * an arena paid 10-20% on the vec and field-store benches, whether or
+ * not the arena was ever long enough to reach the index. */
+__attribute__((noinline))
+static int lotus_ptr_in_arena_past_walk(const lotus_arena_t *a,
+                                        const lotus_arena_chunk_t *c,
+                                        const char *cp) {
+    if (!a->shared_concurrent) {
+        int found = lotus_chunk_index_lookup((lotus_arena_t *)a, cp);
+        if (found >= 0) return found;
+    }
+    for (; c; c = c->next) {
+        const char *base = (const char *)(c + 1);
+        if (cp >= base && cp < base + c->cap) return 1;
+    }
+    return 0;
+}
+
 static int lotus_ptr_in_arena(const lotus_arena_t *a, const void *p) {
     if (!a || !p) return 0;
     const char *cp = (const char *)p;
-    int walked = 0;
-    for (const lotus_arena_chunk_t *c = a->head; c; c = c->next) {
+    const lotus_arena_chunk_t *c = a->head;
+    for (int i = 0; c && i < LOTUS_CHUNK_WALK_MAX; i++, c = c->next) {
         const char *base = (const char *)(c + 1);
         if (cp >= base && cp < base + c->cap) return 1;
-        /* The shared payload arena grows under its own lock, from more
-         * than one thread, so it keeps the plain walk. */
-        if (++walked == LOTUS_CHUNK_WALK_MAX && c->next
-            && !a->shared_concurrent) {
-            int found = lotus_chunk_index_lookup((lotus_arena_t *)a, cp);
-            if (found >= 0) return found;
-        }
     }
-    return 0;
+    return c ? lotus_ptr_in_arena_past_walk(a, c, cp) : 0;
 }
 
 /* Public surface for the codegen's same-arena skip at cross-arena

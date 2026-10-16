@@ -466,7 +466,13 @@ vec.set(i, x)         or noop(err);   # swallow OOB
 > frees only what the vec held. Scalars and locus refs are copied by
 > value as before. (Before this, `get` handed back the slot's pointer
 > and a same-arena value passed through `set` uncopied; two items
-> swapped through `get` and `set` segfaulted.)
+> swapped through `get` and `set` segfaulted.) The copy goes down to
+> the String and Bytes fields: one whose block already lives in the
+> vec's arena, such as the locus's own String param
+> (`push(Row { id: self.a })`), is copied as well, not shared, as a
+> `@form(hashmap)` cell's store copies it. A slot that shared the
+> param's block freed it under the param when the slot was next
+> replaced (2026-10-16).
 >
 > The copy is an allocation in the caller's arena, freed with the
 > frame — the same cost and lifetime as a hashmap `get`. A frame that
