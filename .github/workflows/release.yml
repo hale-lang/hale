@@ -94,9 +94,17 @@ jobs:
 
       - name: Install LLVM (macOS)
         if: runner.os == 'macOS'
+        # No `brew update`, and no auto-update inside `install`: the
+        # runner image's formula revisions are the ones its bottles
+        # exist for. v0.24.0's `brew update` moved cmake, python and
+        # llvm@18 past them, and the tag's macOS build compiled LLVM
+        # from source for hours (2026-10-16). macos.yml installs the
+        # same way and takes seconds.
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: "1"
+          HOMEBREW_NO_INSTALLED_DEPENDENTS_CHECK: "1"
         run: |
           set -eux
-          brew update
           # llvm@18 transitively brings zstd, but we install zstd
           # explicitly to guard against the formula's deps shifting.
           brew install llvm@18 zstd
@@ -167,7 +175,10 @@ jobs:
         run: |
           set -eux
           mkdir -p dist
-          tarball="hale-${{ github.ref_name }}-${{ matrix.target }}.tar.gz"
+          # A dispatched smoke run on a branch names its tarball after
+          # the branch: `/` would make it a path (`ci/…` fails to open).
+          ref="${GITHUB_REF_NAME//\//-}"
+          tarball="hale-${ref}-${{ matrix.target }}.tar.gz"
           # Include LICENSE + README alongside the binary; both
           # become first-class in the user-visible tarball.
           cp target/release/hale dist/
