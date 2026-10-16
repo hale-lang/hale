@@ -6512,9 +6512,20 @@ void lotus_form_retire_replaced_flat(void *arena_ptr, void *old_blob,
         memcpy(&oldp, old_v + off, sizeof(char *));
         if (!oldp) continue;
         if (new_v) {
+            /* A block survives wherever the new element holds it
+             * (spec/forms.md), not only at the same field: a swap
+             * (`set(0, Row { id: self.b, note: self.a })` over one
+             * holding them the other way round) keeps both. The same
+             * field first, the common case. */
             char *newp;
             memcpy(&newp, new_v + off, sizeof(char *));
-            if (oldp == newp) continue; /* survives into the new element */
+            int survives = oldp == newp;
+            for (int64_t k = 0; !survives && k < n_offs; k++) {
+                memcpy(&newp, new_v + (str_offs[k] & LOTUS_RETIRE_OFF_MASK),
+                       sizeof(char *));
+                survives = oldp == newp;
+            }
+            if (survives) continue;
         }
         int dup = 0;
         for (int64_t j = 0; j < i; j++) {
@@ -17337,6 +17348,9 @@ static void lotus_delivery_region_release(struct lotus_arena *r) {
         return;
     }
     if (h) r->head->used = 0;
+    /* As lotus_arena_destroy does (GH #375): nothing may keep
+     * allocating into it as a caller arena once it is released. */
+    if (lotus_current_caller_arena == r) lotus_current_caller_arena = NULL;
     lotus_mark_thread_for_pool_dtor();
     t_delivery_regions[t_delivery_region_count++] = r;
 }

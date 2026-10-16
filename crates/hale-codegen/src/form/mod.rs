@@ -115,6 +115,26 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// segfaulted. So a heap-bearing element is deep-copied into the
     /// caller's current arena on read (the same clone-on-read a
     /// serialized hashmap does); scalars and locus refs pass through.
+    /// The copy a `@form(vec)` `set` or `push` stores: the element's own,
+    /// down to its String and Bytes fields. A field whose block already
+    /// lives in the vec's arena — the locus's own String param, another
+    /// slot's — is copied too (the cell single-owner clone, as a
+    /// hashmap cell's store does), not shared: the slot's retire frees
+    /// what it holds when it is replaced or popped, which freed the
+    /// param's block under it (`push(Row { id: self.a })`, then a `set`).
+    /// A value from another arena, the common case, clones as before.
+    pub(crate) fn emit_vec_cell_copy_ptr(
+        &mut self,
+        value: BasicValueEnum<'ctx>,
+        elem_ty: &CodegenTy,
+        dest_arena: PointerValue<'ctx>,
+    ) -> Result<BasicValueEnum<'ctx>, CodegenError> {
+        let prev = std::mem::replace(&mut self.cell_owned_clone, true);
+        let res = self.emit_owned_store_copy_ptr(value, elem_ty, dest_arena);
+        self.cell_owned_clone = prev;
+        res
+    }
+
     pub(crate) fn emit_vec_get_owned(
         &mut self,
         loaded: BasicValueEnum<'ctx>,
@@ -1080,7 +1100,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .into_pointer_value();
                 // GH #577: the vec owns what it stores — always a copy, so
                 // no two slots share a struct the retire below could free
-                let val = self.emit_owned_store_copy_ptr(val, &elem_ty, dest_arena)?;
+                let val = self.emit_vec_cell_copy_ptr(val, &elem_ty, dest_arena)?;
                 // FORM-vec hot-path inline (replaces the opaque
                 // lotus_vec_set C call). The vec slot is the inline
                 // struct `{ usize cap, usize len, ptr buf }`. The
@@ -2320,7 +2340,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     })?
                     .into_pointer_value();
                 // GH #577: the vec owns what it stores — always a copy (see set)
-                let arg_val = self.emit_owned_store_copy_ptr(arg_val, &slot.elem_ty, dest_arena)?;
+                let arg_val = self.emit_vec_cell_copy_ptr(arg_val, &slot.elem_ty, dest_arena)?;
                 // Materialize the (now arena-anchored) arg in an
                 // alloca so we can hand its address to
                 // lotus_vec_push. The runtime memcpys elem_size
