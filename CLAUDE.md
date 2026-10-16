@@ -96,7 +96,8 @@ so two shapes are invisible to it and land on whoever types
 everything.** `scripts/ci-scope.sh <base> <head>` prints `prose=`,
 `dna=` and `cli=`. `dna` is true for a change under `dna/` or `iris/`,
 the host code that runs them (`hale-dna`, `hale-iris`, hale-cli's dna,
-iris, fleet and mcp verbs and its `dna_*` tests), the DNA suite and its
+iris, fleet and mcp verbs, the generated API clients and its `dna_*`
+tests), the DNA suite and its
 support code, the workflows, `.config`, `scripts/` or the API contract
 programs. `cli` is true when `dna` is, or for a change to hale-cli and
 the crates only it builds, `tests/hale` or the workspace manifests. Both

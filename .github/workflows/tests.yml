@@ -467,7 +467,10 @@ jobs:
         # list. The list form silently excluded tests/hale (the
         # in-language suite), which drifted out of canonical form
         # unnoticed — an enumerated scope is a scope that goes stale
-        # every time a directory is added.
+        # every time a directory is added. The price of running it here:
+        # a formatting slip fails this build, so the codegen jobs that
+        # need its archive are skipped until it is fixed (in a cli job
+        # it failed that job alone).
         run: ./target/release/hale fmt --check .
       - *build-archive
       - *archive-upload

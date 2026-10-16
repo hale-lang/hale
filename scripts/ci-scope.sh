@@ -45,11 +45,12 @@ prose='^(README|AGENTS|CHANGELOG|CONTRIBUTING|LICENSE|SECURITY)|^(docs|spec|note
 # Paths that run the DNA and face jobs on a pull request: DNA's own tree
 # and the iris tree it embeds; the host code that runs them (hale-dna,
 # hale-iris, hale-cli's dna, iris, fleet and mcp verbs) and the cli
-# tests that drive it; the workflows, .config and scripts/; the API
+# tests that drive it; the generated API clients (api_gen/), which only
+# face-browser compiles under `tsc --strict` and runs; the workflows, .config and scripts/; the API
 # contract programs; and the DNA suite with its support code. A change
 # to the compiler's other crates does not: the merge queue runs every
 # job on every PR before anything reaches main (2026-10-16).
-dna='^(dna|iris|\.github/workflows|\.config|scripts|tests/api-contract|tests/hale/api/client)/|^crates/(hale-dna|hale-iris)/|^crates/hale-cli/src/(dna/|dna\.rs$|iris\.rs$|fleet[a-z_]*\.rs$|mcp\.rs$)|^crates/hale-cli/tests/dna_'
+dna='^(dna|iris|\.github/workflows|\.config|scripts|tests/api-contract|tests/hale/api/client)/|^crates/(hale-dna|hale-iris)/|^crates/hale-cli/src/(dna/|api_gen/|dna\.rs$|iris\.rs$|fleet[a-z_]*\.rs$|mcp\.rs$)|^crates/hale-cli/tests/dna_'
 dna_suite='^crates/hale-cli/tests/(dna_native_suite\.rs|support/|fixtures/)'
 # Paths that run the cli jobs on a pull request (as does any DNA path):
 # hale-cli and the crates only it builds, the in-language suite the cli

@@ -44,6 +44,7 @@ case_ iris-crate  false true  true  crates/hale-iris/src/lib.rs
 case_ dna-crate   false true  true  crates/hale-dna/build.rs
 case_ fleet-src   false true  true  crates/hale-cli/src/fleet_model.rs
 case_ dna-cli-test false true true  crates/hale-cli/tests/dna_orgs.rs
+case_ api-gen     false true  true  crates/hale-cli/src/api_gen/ts_client.rs
 case_ cli-src     false false true  crates/hale-cli/src/main.rs
 case_ lsp-src     false false true  crates/hale-lsp/src/lib.rs
 case_ cli-test    false false true  crates/hale-cli/tests/tooling.rs
