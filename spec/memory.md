@@ -1073,6 +1073,17 @@ its keyed variant, the static devirt path) gets a wire cell and a
 per-delivery region, on any thread. A payload with no owned
 fields (the flat paths) is unaffected (no wire cell, no region).
 
+**A region is reused, not rebuilt (2026-10-16).** Reclaiming a
+region at the handler's return no longer means destroying it: one
+that comes back clean (a single ordinary chunk, nothing retired into
+it, no slots) is rewound to empty and kept for the next delivery on
+the same thread, a few per thread, drained at the thread's exit.
+What the handler could see of the payload is gone either way. A
+region in any other state is destroyed as before. With chunk
+recycling off (`LOTUS_NO_CHUNK_POOL`, the ASan default) every region
+is destroyed, so a payload read past its handler is still a
+use-after-free the sanitizer reports.
+
 **"The instant the handler returns" includes parks (GH #781,
 2026-09-19).** On a `where async_io` pool the handler runs on a
 coroutine, so its return may come after any number of parks — and
