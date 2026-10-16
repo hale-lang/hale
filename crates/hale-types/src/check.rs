@@ -4400,7 +4400,10 @@ fn check_placement_single_thread(
                 // first by silent walks of every member, to a fixpoint (the
                 // set only grows, over the locus's fields), then read by the
                 // real walk wherever such a field is read.
-                let walk_members = |taint: BTreeMap<String, Origin>, quiet: bool, diags: &mut Vec<Diag>| {
+                let walk_members = |insts: &[&crate::placement::InstanceKey],
+                                     taint: BTreeMap<String, Origin>,
+                                     quiet: bool,
+                                     diags: &mut Vec<Diag>| {
                     let mut taint = taint;
                     for member in &l.members {
                         let Some(body) = locus_member_body(member) else { continue };
@@ -4421,7 +4424,7 @@ fn check_placement_single_thread(
                         };
                         let mut cx = PoolCheckCx {
                             enclosing_locus: Some(l),
-                            instances,
+                            instances: insts,
                             running: &running,
                             decl_names: &decl_names,
                             cross_pool_safe_loci: &cross_pool_safe_loci,
@@ -4452,47 +4455,64 @@ fn check_placement_single_thread(
                 // the round that adds no taint is the fixpoint's, and its
                 // diagnostics are the walk's (most loci store no handle
                 // into a field, and take one round).
-                // A stdlib or generated locus's body has no place in the program's files:
-                // what its walk finds is a consequence of how the program
-                // built and placed it (a handler from another pool handed to
-                // a `std::http::Server`), so it is reported at the program's
-                // literal that built the instance, naming the stdlib locus,
-                // never at a stdlib offset (which no seed file window holds,
-                // and which rendered as code generated for an `api::serve`).
-                let stdlib_site: Option<hale_syntax::Span> = {
-                    instances.iter().find_map(|k| {
-                        let mut cur: Option<crate::placement::InstanceKey> = Some((*k).clone());
-                        while let Some(key) = cur {
-                            let row = running.row(&key);
-                            if let Some(site) = row.literal.filter(|s| s.universe == crate::placement::SiteUniverse::User) {
-                                return bundle.snapshot.site(site.id).map(|s| s.span);
-                            }
-                            cur = row.built_by.clone().or_else(|| row.owner.clone());
-                        }
-                        None
-                    })
-                };
-                let reanchor = |d: Diag| -> Diag {
-                    // the serve expansion's parse space (the stdlib's
-                    // substrate code and an `api::serve` site's), which no
-                    // seed file holds
-                    if d.span.start.0 < hale_syntax::api_names::API_SYNTH_BASE {
-                        return d;
-                    }
-                    match stdlib_site {
-                        Some(span) => {
-                            let mut d2 = Diag::ty(span, format!("inside `{}`, built here: {}", l.name.name, d.message));
-                            d2.kind = d.kind;
-                            d2
-                        }
-                        None => d.in_stdlib(),
-                    }
-                };
                 loop {
                     let mut found: Vec<Diag> = Vec::new();
-                    let after = walk_members(taint.clone(), false, &mut found);
+                    let after = walk_members(instances, taint.clone(), false, &mut found);
                     if same(&after, &taint) {
-                        diags.extend(found.into_iter().map(&reanchor));
+                        // A finding in the serve expansion's parse space (the
+                        // stdlib's TCP substrate under a `std::http::Server`,
+                        // an `api::serve` site's code) has no place in the
+                        // program's files: it is a consequence of how the
+                        // program built and placed that instance (a handler
+                        // from another pool handed to the Server). Such
+                        // findings are found again per instance and each is
+                        // reported at the program literal that built its own
+                        // instance, naming the locus; the walk over every
+                        // instance at once cannot say which one a finding
+                        // came from. Most loci have none, and pay nothing.
+                        let synth = |d: &Diag| d.span.start.0 >= hale_syntax::api_names::API_SYNTH_BASE;
+                        let (generated, own): (Vec<Diag>, Vec<Diag>) = found.into_iter().partition(synth);
+                        diags.extend(own);
+                        if !generated.is_empty() {
+                            let mut seen: BTreeSet<(u32, String)> = BTreeSet::new();
+                            for k in instances.iter() {
+                                // the instance's own taint: the fixpoint
+                                // over every instance mixes what each
+                                // one's fields were handed
+                                let one = std::slice::from_ref(k);
+                                let mut own_taint: BTreeMap<String, Origin> = BTreeMap::new();
+                                loop {
+                                    let mut quiet_found: Vec<Diag> = Vec::new();
+                                    let next = walk_members(one, own_taint.clone(), true, &mut quiet_found);
+                                    if same(&next, &own_taint) {
+                                        break;
+                                    }
+                                    own_taint = next;
+                                }
+                                let mut per: Vec<Diag> = Vec::new();
+                                walk_members(one, own_taint, false, &mut per);
+                                let at = program_literal_of(k, &running, &bundle.snapshot);
+                                for d in per.into_iter().filter(synth) {
+                                    let d = match at {
+                                        Some(span) => {
+                                            let mut d2 = Diag::ty(
+                                                span,
+                                                format!("inside `{}`, built here: {}", l.name.name, d.message),
+                                            );
+                                            d2.kind = d.kind;
+                                            d2.related = d.related;
+                                            d2
+                                        }
+                                        // no program literal: the renderer
+                                        // names the runtime file and line
+                                        None => d,
+                                    };
+                                    if seen.insert((d.span.start.0, d.message.clone())) {
+                                        diags.push(d);
+                                    }
+                                }
+                            }
+                        }
                         break;
                     }
                     taint = after;
@@ -4784,6 +4804,35 @@ impl PoolCheckCx<'_> {
     fn enclosing_name(&self) -> &str {
         self.enclosing_locus.map_or("", |l| l.name.name.as_str())
     }
+}
+
+/// The span of the program literal that built `k`: its own, or the
+/// nearest one up its `built_by` / `owner` chain, skipping literals the
+/// serve expansion appended (user-universe sites whose span is in the
+/// expansion's parse space: the substrate's `__StdIoTcpConnections`, …),
+/// which no seed file holds either.
+fn program_literal_of(
+    k: &crate::placement::InstanceKey,
+    running: &crate::placement::Running<'_>,
+    snapshot: &crate::snapshot::Snapshot,
+) -> Option<hale_syntax::Span> {
+    let mut cur: Option<crate::placement::InstanceKey> = Some(k.clone());
+    let mut visited: BTreeSet<crate::placement::InstanceKey> = BTreeSet::new();
+    while let Some(key) = cur {
+        if !visited.insert(key.clone()) {
+            return None;
+        }
+        let row = running.row(&key);
+        if let Some(site) = row.literal.filter(|s| s.universe == crate::placement::SiteUniverse::User) {
+            if let Some(span) = snapshot.site(site.id).map(|s| s.span) {
+                if span.start.0 < hale_syntax::api_names::API_SYNTH_BASE {
+                    return Some(span);
+                }
+            }
+        }
+        cur = row.built_by.clone().or_else(|| row.owner.clone());
+    }
+    None
 }
 
 /// GH #1561: the cross-pool provenance analysis. `eval_block` /
