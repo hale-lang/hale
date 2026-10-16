@@ -1530,22 +1530,12 @@ A fn that hands back what a parameter of a fn type builds (`fn via(f:
 fn() -> R) -> R { return f(); }`) builds what it returns.
 
 So every fn value returning a locus is a fresh factory, wherever it
-came from, and a call through one is owned as a factory call is. The
-owner is named from what the binding holding the value is known to
-hold: a fn's name, another such binding, a call of a top-level fn
-declared to return one (`let f = pick();` with `fn pick() -> fn() ->
-W`), or the binding's ascription (`let f: fn() -> W = …`). A binding
-that says none of these holding a fn value returning a locus — an
-unascribed `let` of an `if`, a `match` or a method's call, a tuple
-pattern's name, a loop variable — is a type error at the binding:
-
-```
-main.hl:4:30: type error: `let f` holds a fn value returning a `W`, and
-a call through it hands its caller a fresh `W` to own; the owner is
-named from what the binding is known to hold, which an expression other
-than a name or a top-level fn's call does not say. Ascribe it: `let f:
-fn() -> W = …`
-```
+came from — a fn's name, a call that returns one (`let f = pick();`
+with `fn pick() -> fn() -> W`), an `if`, a loop variable over an array
+of them, a tuple pattern's name — and a call through one is owned as a
+factory call is: by the binding it is bound to, by the field or the
+caller it is handed to, else by the frame, and a discarded one at the
+statement.
 
 A `std::` fn is a value when the stdlib writes it in Hale: its body is
 merged into the program under its rename, so `apply(std::url::encode,

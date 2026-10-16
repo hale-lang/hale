@@ -15625,13 +15625,6 @@ impl<'a> Checker<'a> {
         }
     }
 
-    /// GH #1569: the locus a fn value of type `t` returns, when it is one.
-    fn fn_value_returned_locus(&self, t: &Ty) -> Option<String> {
-        let Ty::Function { ret, .. } = t else { return None };
-        let Ty::Named(l) = ret.as_ref() else { return None };
-        matches!(self.top.lookup(l), Some(TopSymbol::Locus(_))).then(|| l.clone())
-    }
-
     fn check_stmt(&mut self, stmt: &Stmt) {
         match stmt {
             Stmt::Let { is_mut, name, ty, value, .. } => {
@@ -15685,32 +15678,6 @@ impl<'a> Checker<'a> {
                     None => {
                         // GH #911 B5: no annotation is no arguments.
                         self.refuse_generic_literals_without_arguments(&got, value);
-                        // GH #1569: a fn value returning a locus, from
-                        // anything but a name or a top-level fn's call,
-                        // says what it returns by its ascription
-                        if let Some(l) = self.fn_value_returned_locus(&got) {
-                            let named = match value {
-                                Expr::Ident(_) => true,
-                                Expr::Call { callee, .. } => matches!(
-                                    callee.as_ref(),
-                                    Expr::Ident(f) if self.locals.lookup(&f.name).is_none()
-                                ),
-                                _ => false,
-                            };
-                            if !named {
-                                self.diags.push(Diag::ty(
-                                    value.span(),
-                                    format!(
-                                        "`let {n}` holds a fn value returning a `{l}`, and a call through it \
-                                         hands its caller a fresh `{l}` to own; the owner is named from what the \
-                                         binding is known to hold, which an expression other than a name or a \
-                                         top-level fn's call does not say. Ascribe it: `let {n}: {t} = …`",
-                                        n = name.name,
-                                        t = got.display()
-                                    ),
-                                ));
-                            }
-                        }
                         got
                     }
                 };
@@ -15761,21 +15728,6 @@ impl<'a> Checker<'a> {
                     }
                 };
                 for (n, t) in names.iter().zip(elem_tys.iter()) {
-                    // GH #1569: see `let`; a tuple binding takes no
-                    // ascription of its own name
-                    if let Some(l) = self.fn_value_returned_locus(t) {
-                        self.diags.push(Diag::ty(
-                            n.span,
-                            format!(
-                                "`{n}` holds a fn value returning a `{l}`, and a call through it hands its \
-                                 caller a fresh `{l}` to own; the owner is named from what the binding is \
-                                 known to hold, which a tuple binding does not say. Bind it with its own \
-                                 ascribed `let {n}: {t} = …`",
-                                n = n.name,
-                                t = t.display()
-                            ),
-                        ));
-                    }
                     self.note_view_binding(n, t, None);
                     self.locals.insert(
                         &n.name,
@@ -15934,20 +15886,6 @@ impl<'a> Checker<'a> {
                         _ => Ty::Unknown,
                     }
                 };
-                // GH #1569: see `let`
-                if let Some(l) = self.fn_value_returned_locus(&elem) {
-                    self.diags.push(Diag::ty(
-                        name.span,
-                        format!(
-                            "the loop variable `{n}` holds a fn value returning a `{l}`, and a call through \
-                             it hands its caller a fresh `{l}` to own; the owner is named from what the \
-                             binding is known to hold, which a loop variable does not say. Bind it in the \
-                             body with an ascribed `let`: `let g: {t} = {n};`",
-                            n = name.name,
-                            t = elem.display()
-                        ),
-                    ));
-                }
                 self.locals.push();
                 self.note_view_binding(name, &elem, None);
                 self.locals.insert(&name.name, LocalSym { ty: elem, is_mut: false, cell: None });

@@ -1645,6 +1645,10 @@ struct Resolver<'s> {
     /// through one hands back a fresh instance (only a fresh factory may
     /// be taken as a value), owned as a factory call's.
     fn_vals: BTreeMap<String, String>,
+    /// GH #1569: the bindings of the frame being walked declared as a fn
+    /// value that returns no locus (`f: fn(Int) -> Int`): a call through
+    /// one builds nothing the table decides.
+    fn_nonlocus: BTreeSet<String>,
     /// GH #1569: the free fns declared to return a fn value, by name, the
     /// declared return type.
     fn_value_rets: BTreeMap<String, TypeExpr>,
@@ -1763,6 +1767,7 @@ pub fn resolve_owners(
     let flows = param_flows(&program.items);
     let mut r = Resolver {
         fn_vals: BTreeMap::new(),
+        fn_nonlocus: BTreeSet::new(),
         fn_value_rets: fn_value_returns(&program.items),
         flows,
         ids,
@@ -3500,6 +3505,15 @@ impl Resolver<'_> {
             if let Some(l) = self.fn_vals.get(&i.name) {
                 return Some(l.clone());
             }
+            // GH #1569: a call through any other local binding — a loop
+            // variable, a tuple pattern's name, a `let` of an `if` or a
+            // method's call — is a call through a fn value, and only a
+            // fresh factory may be one: when it returns a locus, the
+            // instance is fresh, owned as a factory call's. The row
+            // names the binding; one declared to return no locus has none.
+            if self.ids.declaration_of(i.id).is_some() && !self.fn_nonlocus.contains(&i.name) {
+                return Some(i.name.clone());
+            }
         }
         let n = callee_fn_name(callee, &self.renames)?;
         self.fresh.get(&n).cloned()
@@ -3934,6 +3948,11 @@ impl Resolver<'_> {
                         self.fn_vals.remove(&name.name);
                     }
                 }
+                if ty.as_ref().is_some_and(|t| matches!(t, TypeExpr::Function { .. }) && self.fn_value_locus(t).is_none()) {
+                    self.fn_nonlocus.insert(name.name.clone());
+                } else {
+                    self.fn_nonlocus.remove(&name.name);
+                }
             }
             Stmt::LetTuple { names, value, .. } => {
                 let slot = match names.first() {
@@ -4220,9 +4239,12 @@ impl Resolver<'_> {
         let decl = format!("{} {}{}", what, prefix, f.name.name);
         let saved = self.open_body_frame(&decl, &f.body);
         let saved_vals = std::mem::take(&mut self.fn_vals);
+        let saved_nonlocus = std::mem::take(&mut self.fn_nonlocus);
         for p in f.params.iter() {
             if let Some(l) = self.fn_value_locus(&p.ty) {
                 self.fn_vals.insert(p.name.name.clone(), l);
+            } else if matches!(p.ty, TypeExpr::Function { .. }) {
+                self.fn_nonlocus.insert(p.name.name.clone());
             }
         }
         for p in f.params.iter() {
@@ -4235,6 +4257,7 @@ impl Resolver<'_> {
             Some((Decision::Caller, "fn body tail")),
         );
         self.fn_vals = saved_vals;
+        self.fn_nonlocus = saved_nonlocus;
         self.close_frame(saved);
     }
 

@@ -418,3 +418,90 @@ fn main() { App { }; }
         );
     }
 }
+
+/// GH #1569: the owned-elements bitmap has a bit for every element, so
+/// an array of 100 loci follows the rules above at every index: a literal
+/// stored at 0, 64 and 99 is the holder's child and reclaims the element
+/// it replaces, and a whole-array store reclaims, in element order, every
+/// owned element it does not write back in (`self.cs[99]`, moved to 50,
+/// stays the holder's). Each element is torn down once, sanitized.
+#[test]
+fn a_hundred_element_array_of_loci_is_tracked_at_every_index() {
+    let n = 100;
+    let lits: Vec<String> = (0..n).map(|k| format!("C {{ name: \"e{k}\" }}")).collect();
+    let whole: Vec<String> =
+        (0..n).map(|k| if k == 50 { "self.cs[99]".to_string() } else { format!("C {{ name: \"w{k}\" }}") }).collect();
+    let src = format!(
+        r#"locus C {{
+    params {{ name: String = "c"; }}
+    dissolve() {{ println(f"C.dissolve {{self.name}}"); }}
+}}
+locus P {{
+    params {{ cs: [C; {n}] = [{lits}]; }}
+    fn put() {{ self.cs[0] = C {{ name: "x0" }}; self.cs[64] = C {{ name: "x64" }}; self.cs[99] = C {{ name: "x99" }}; }}
+    fn whole() {{ self.cs = [{whole}]; }}
+    dissolve() {{ println("P.dissolve"); }}
+}}
+main locus App {{
+    params {{ q: P = P {{ }}; }}
+    run() {{ self.q.put(); println("P.put"); self.q.whole(); println("P.whole"); }}
+}}
+fn main() {{ App {{ }}; }}
+"#,
+        lits = lits.join(", "),
+        whole = whole.join(", ")
+    );
+    let name = |k: usize, put: bool| match k {
+        0 | 64 | 99 if put => format!("x{k}"),
+        _ => format!("e{k}"),
+    };
+    let mut want: Vec<String> = vec!["C.dissolve e0".into(), "C.dissolve e64".into(), "C.dissolve e99".into(), "P.put".into()];
+    want.extend((0..99).map(|k| format!("C.dissolve {}", name(k, true))));
+    want.push("P.whole".into());
+    want.push("P.dissolve".into());
+    want.extend((0..n).map(|k| if k == 50 { "C.dissolve x99".to_string() } else { format!("C.dissolve w{k}") }));
+    for asan in [false, true] {
+        let ran = run(&src, "hale_array_loci_hundred", asan, false);
+        assert!(ran.ok && !ran.stderr.contains("Sanitizer"), "asan={asan}: {}\n{}", ran.stdout, ran.stderr);
+        assert_eq!(hooks(&ran.stdout), want, "asan={asan}");
+    }
+}
+
+/// GH #1569: a store whose path to the holder indexes with an effect
+/// (`self.ls[self.next()].cs[0] = C { }`) evaluates the index once, and
+/// is the same owned store as one through a plain index: the element it
+/// replaces reclaimed, the literal the holder's child.
+#[test]
+fn an_index_with_an_effect_on_the_holders_path_is_evaluated_once() {
+    let src = r#"locus C {
+    params { name: String = "c"; }
+    dissolve() { println(f"C.dissolve {self.name}"); }
+}
+locus P {
+    params { cs: [C; 2] = [C { name: "a" }, C { name: "b" }]; tag: String = "p"; }
+    dissolve() { println(f"P.dissolve {self.tag}"); }
+}
+main locus App {
+    params { ls: [P; 2] = [P { tag: "p0" }, P { tag: "p1" }]; n: Int = 0; }
+    fn next() -> Int { println("C.next"); self.n = self.n + 1; return self.n - 1; }
+    run() {
+        self.ls[self.next()].cs[0] = C { name: "z" };
+        self.ls[self.next()].cs = [C { name: "w0" }, C { name: "w1" }];
+        println(f"C.read {self.ls[0].cs[0].name} {self.ls[1].cs[1].name} {self.n}");
+    }
+}
+fn main() { App { }; }
+"#;
+    for asan in [false, true] {
+        let ran = run(src, "hale_array_loci_effect_index", asan, false);
+        assert!(ran.ok && !ran.stderr.contains("Sanitizer"), "asan={asan}: {}\n{}", ran.stdout, ran.stderr);
+        assert_eq!(
+            hooks(&ran.stdout),
+            [
+                "C.next", "C.dissolve a", "C.next", "C.dissolve a", "C.dissolve b", "C.read z w1 2",
+                "P.dissolve p0", "C.dissolve z", "C.dissolve b", "P.dissolve p1", "C.dissolve w0", "C.dissolve w1",
+            ],
+            "asan={asan}"
+        );
+    }
+}

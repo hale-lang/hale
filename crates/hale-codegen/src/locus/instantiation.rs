@@ -3423,20 +3423,20 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     info.owned_elems_field_idxs.get(fname.as_str()),
                     crate::locus::dissolve::composite_loci(&declared_ty),
                 ) {
-                    let n = children.len() as u32;
+                    let n = children.len();
                     // (an aggregate a call hands back: the parts its owner
                     // owns, `OwnerTable::aggregate_parts`, GH #1569)
-                    let all = match written.and_then(|w| self.owner_table.aggregate_parts(w)) {
-                        Some(parts) => parts.iter().enumerate().take(64).filter(|(_, o)| **o).fold(0u64, |m, (k, _)| m | (1u64 << k)),
-                        None if n >= 64 => u64::MAX,
-                        None => (1u64 << n) - 1,
+                    let owned: Vec<bool> = match written.and_then(|w| self.owner_table.aggregate_parts(w)) {
+                        Some(parts) => (0..n).map(|k| parts.get(k).copied().unwrap_or(false)).collect(),
+                        None => vec![true; n],
                     };
+                    let bitmap = crate::locus::dissolve::owned_elems_bitmap(self.context, &owned);
                     let slot = self
                         .builder
                         .build_struct_gep(info.struct_ty, self_ptr, elems_idx, &format!("{locus_name}.{fname}.__owned_elems.ptr"))
                         .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
                     self.builder
-                        .build_store(slot, self.context.i64_type().const_int(all, false))
+                        .build_store(slot, bitmap)
                         .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
                 }
                 // GH #871: and, for an interface / perspective field,
@@ -5844,7 +5844,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         store(self, info.slot_borrowed_mask_field_idx, zero, "__slot_borrowed_mask")?;
         store(self, info.locus_ref_owned_mask_field_idx, zero, "__locus_ref_owned_mask")?;
         for (fname, idx) in info.owned_elems_field_idxs.iter() {
-            store(self, *idx, zero, &format!("{fname}.__owned_elems"))?;
+            let words = info
+                .fields
+                .get(fname)
+                .and_then(|(_, t)| crate::locus::dissolve::composite_loci(t))
+                .map_or(1, |c| crate::locus::dissolve::owned_elems_words(c.len()));
+            let none = self.context.i64_type().array_type(words).const_zero().into();
+            store(self, *idx, none, &format!("{fname}.__owned_elems"))?;
         }
         for (fname, idx) in info.owned_child_reclaim_field_idxs.iter() {
             store(self, *idx, null, &format!("{fname}.__owned_child_reclaim"))?;

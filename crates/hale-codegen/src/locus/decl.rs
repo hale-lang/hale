@@ -1228,17 +1228,18 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
                 }
             }
         }
-        // GH #1566 follow-up: synthetic `__owned_elems_<f>: i64` per
-        // param holding an array or a tuple of loci — bit k set while
-        // element k is still the one the owner's literal built (an
-        // element written in later is left to its own owner), for the
-        // first 64 elements; the field's owned bit covers the rest.
+        // GH #1566 follow-up: synthetic `__owned_elems_<f>` per param
+        // holding an array or a tuple of loci — bit k set while element k
+        // is one the owner built (an element written in later is left to
+        // its own owner). GH #1569: a bitmap of one bit per element, as
+        // many 64-bit words as the field has elements need.
         let mut owned_elems_field_idxs: BTreeMap<String, u32> = BTreeMap::new();
         for (fname, _) in defaults.iter() {
             if let Some((_, ty)) = fields.get(fname) {
-                if crate::locus::dissolve::composite_loci(ty).is_some() {
+                if let Some(children) = crate::locus::dissolve::composite_loci(ty) {
                     owned_elems_field_idxs.insert(fname.clone(), idx);
-                    llvm_field_tys.push(self.context.i64_type().into());
+                    let words = crate::locus::dissolve::owned_elems_words(children.len());
+                    llvm_field_tys.push(self.context.i64_type().array_type(words).into());
                     idx += 1;
                 }
             }

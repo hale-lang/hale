@@ -294,3 +294,58 @@ fn main() {{ App {{ }}; }}
     let per_call = grown / 200_000;
     assert!(per_call <= 512, "rss grew {grown} bytes over 200k discarded factory calls ({per_call} a call)");
 }
+
+/// GH #1569: a fn value returning a locus is a fresh factory however it
+/// was bound — a loop variable over an ascribed array or an array
+/// parameter, its ascribed rebinding, a tuple pattern's name, a `let` of
+/// an `if` or of a method's call — and each instance a call through one
+/// builds is torn down once: a discarded one at the statement, a bound
+/// one with its binding (in a loop, before the next iteration builds
+/// its own). Sanitized.
+#[test]
+fn a_fn_value_bound_any_way_builds_instances_owned_once() {
+    let src = r#"locus W { params { name: String = "w"; } dissolve() { println(f"W.dissolve {self.name}"); } }
+fn mkw() -> W { return W { name: "made" }; }
+fn mka() -> W { return W { name: "a" }; }
+fn over(fs: [fn() -> W; 2]) { for g in fs { g(); } println("over"); }
+@unbounded
+fn loops() {
+    let fs: [fn() -> W; 2] = [mkw, mka];
+    for g in fs { let h: fn() -> W = g; let w = h(); println(f"held {w.name}"); }
+    println("loops");
+}
+fn tuples() {
+    let (f, n) = (mkw, 1);
+    let w = f();
+    let g: fn() -> W = f;
+    g();
+    println(f"tuple {w.name} {n}");
+}
+main locus App {
+    fn pk() -> fn() -> W { return mka; }
+    run() {
+        let f = if true { mkw } else { mka };
+        let a = f();
+        let m = self.pk();
+        let b = m();
+        m();
+        println(f"run {a.name} {b.name}");
+    }
+}
+fn main() { over([mkw, mka]); loops(); tuples(); App { }; }
+"#;
+    let bin = harness::unique_bin("hale_fn_value_bound_any_way");
+    let options = hale_codegen::BuildOptions { asan: true, ..build_opts::options() };
+    build_opts::build_source(src, &bin, &options).expect("build");
+    let out = Command::new(&bin).env("LOTUS_NO_CHUNK_POOL", "1").output().expect("run");
+    let _ = std::fs::remove_file(&bin);
+    let (stdout, stderr) = (String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+    assert!(out.status.success() && !stderr.contains("Sanitizer"), "{stdout}\n{stderr}");
+    assert_eq!(
+        stdout,
+        "W.dissolve made\nW.dissolve a\nover\n\
+         held made\nW.dissolve made\nheld a\nloops\nW.dissolve a\n\
+         W.dissolve made\ntuple made 1\nW.dissolve made\n\
+         W.dissolve a\nrun made a\nW.dissolve a\nW.dissolve made\n"
+    );
+}

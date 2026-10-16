@@ -1465,7 +1465,44 @@ pub(crate) fn composite_loci(ty: &CodegenTy) -> Option<Vec<(u32, String)>> {
     }
 }
 
+/// GH #1569: the 64-bit words an owned-elements bitmap of `n` elements
+/// takes (one at least).
+pub(crate) fn owned_elems_words(n: usize) -> u32 {
+    n.div_ceil(64).max(1) as u32
+}
+
+/// GH #1569: the owned-elements bitmap with bit k set where `owned[k]`.
+pub(crate) fn owned_elems_bitmap<'ctx>(
+    context: &'ctx inkwell::context::Context,
+    owned: &[bool],
+) -> inkwell::values::BasicValueEnum<'ctx> {
+    let i64_t = context.i64_type();
+    let words: Vec<inkwell::values::IntValue<'ctx>> = (0..owned_elems_words(owned.len()) as usize)
+        .map(|w| {
+            let bits = (0..64).filter(|b| owned.get(w * 64 + b).copied().unwrap_or(false)).fold(0u64, |m, b| m | (1u64 << b));
+            i64_t.const_int(bits, false)
+        })
+        .collect();
+    i64_t.const_array(&words).into()
+}
+
 impl<'ctx, 'p> Cx<'ctx, 'p> {
+    /// GH #1569: the word of the owned-elements bitmap at `bitmap` that
+    /// holds element `k`'s bit, and that bit.
+    pub(crate) fn owned_elem_bit(
+        &mut self,
+        bitmap: PointerValue<'ctx>,
+        k: inkwell::values::IntValue<'ctx>,
+    ) -> Result<(PointerValue<'ctx>, inkwell::values::IntValue<'ctx>), CodegenError> {
+        let e = |e: inkwell::builder::BuilderError| CodegenError::LlvmEmit(e.to_string());
+        let i64_t = self.context.i64_type();
+        let w = self.builder.build_right_shift(k, i64_t.const_int(6, false), false, "owned.word.idx").map_err(e)?;
+        let b = self.builder.build_and(k, i64_t.const_int(63, false), "owned.bit.idx").map_err(e)?;
+        let word = unsafe { self.builder.build_in_bounds_gep(i64_t, bitmap, &[w], "owned.word.ptr") }.map_err(e)?;
+        let one = self.builder.build_left_shift(i64_t.const_int(1, false), b, "owned.bit").map_err(e)?;
+        Ok((word, one))
+    }
+
     /// GH #1566 follow-up: the self pointer of the child a field holds:
     /// the field's own (a locus-typed field, `pos` none), or element
     /// `pos` of the array or tuple of loci it points at (null when the
@@ -1504,10 +1541,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // an element written in after the literal built it is not the
         // owner's: null, which the teardown steps over
         let el = match owned_elems {
-            Some(word) if k < 64 => {
+            Some(bitmap) => {
                 let i64_t = self.context.i64_type();
+                let (word, one) = self.owned_elem_bit(bitmap, i64_t.const_int(k as u64, false))?;
                 let w = self.builder.build_load(i64_t, word, &format!("{tag}.el{k}.owned.word")).map_err(e)?.into_int_value();
-                let bit = self.builder.build_and(w, i64_t.const_int(1u64 << k, false), &format!("{tag}.el{k}.owned.bit")).map_err(e)?;
+                let bit = self.builder.build_and(w, one, &format!("{tag}.el{k}.owned.bit")).map_err(e)?;
                 let mine = self.builder.build_int_compare(inkwell::IntPredicate::NE, bit, i64_t.const_zero(), &format!("{tag}.el{k}.owned")).map_err(e)?;
                 self.builder.build_select(mine, el, ptr_t.const_null().into(), &format!("{tag}.el{k}.mine")).map_err(e)?
             }
@@ -1521,8 +1559,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         Ok(phi.as_basic_value().into_pointer_value())
     }
 
-    /// GH #1566 follow-up: the address of `__owned_elems_<fname>`, for a
-    /// param holding an array or a tuple of loci.
+    /// GH #1566 follow-up: the address of `__owned_elems_<fname>` (the
+    /// bitmap, GH #1569), for a param holding an array or a tuple of loci.
     pub(crate) fn owned_elems_word(
         &mut self,
         info: &LocusInfo<'ctx>,

@@ -774,12 +774,14 @@ else (`self.cs = xs`) leaves the instances written in to their owners.
 The value is read before the store, and an element the owner owns is
 reclaimed once the field no longer holds it: one written back in
 (`self.cs = [self.cs[1], self.cs[0]]`) stays the owner's, at its new
-place. The placement table holds a row per element (`cs.0`, `t.1`), and
-the lifecycle plan owes each one its teardown, in element order. A name
-handed whole (`cs: shared`) is a borrow, as above. A param written
-without a type takes its default literal's (`cs = [C { }, C { }]` is
-`cs: [C; 2]`, `t = (C { }, 1)` is `t: (C, Int)`, `n = [1, 2]` is `n:
-[Int; 2]`): an array of one type's literals, a tuple of literals, a
+place. The owner tracks every element, whatever the array's length, and
+a path to the owner is evaluated once (`ls[next()].cs[0] = C { }` calls
+`next` once). The placement table holds a row per element (`cs.0`,
+`t.1`), and the lifecycle plan owes each one its teardown, in element
+order. A name handed whole (`cs: shared`) is a borrow, as above. A param
+written without a type takes its default literal's (`cs = [C { }, C {
+}]` is `cs: [C; 2]`, `t = (C { }, 1)` is `t: (C, Int)`, `n = [1, 2]` is
+`n: [Int; 2]`): an array of one type's literals, a tuple of literals, a
 locus or record literal.
 
 **A locus handed back inside a tuple or an array** (`fn both(w: W) ->
