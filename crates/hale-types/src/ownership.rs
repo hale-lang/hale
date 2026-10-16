@@ -2167,27 +2167,50 @@ fn is_plain_value(e: &Expr) -> bool {
 /// returned literal whose locus parts (`is_locus` on each part's declared
 /// type) are each a literal it builds there. A fn value hands its caller
 /// what it returns to own, so only such a fn may be taken as one.
-pub fn aggregate_builds_its_loci(f: &FnDecl, is_locus: &dyn Fn(&TypeExpr) -> bool) -> bool {
-    let positions: Vec<bool> = match &f.ret {
-        Some(TypeExpr::Tuple(ts, _)) => ts.iter().map(is_locus).collect(),
-        Some(TypeExpr::Array { elem, .. }) if is_locus(elem) => {
-            let flow = param_flow(f);
-            return (flow.parts.is_none() && flow.returns_call_of == Some(CallOf::FnParam))
-                || flow.parts.is_some_and(|ps| ps.iter().all(|p| *p == PartFlow::Fresh));
-        }
-        _ => return true,
-    };
-    if !positions.iter().any(|b| *b) {
-        return true;
+pub fn aggregate_builds_its_loci<'f>(
+    f: &'f FnDecl,
+    is_locus: &dyn Fn(&TypeExpr) -> bool,
+    fn_named: &dyn Fn(&str) -> Option<&'f FnDecl>,
+) -> bool {
+    builds_its_loci(f, is_locus, fn_named, &mut BTreeSet::new())
+}
+
+/// `aggregate_builds_its_loci`, through the named fns whose call `f`
+/// hands back (each a fresh builder by the same summary; a cycle of them
+/// builds nothing).
+fn builds_its_loci<'f>(
+    f: &'f FnDecl,
+    is_locus: &dyn Fn(&TypeExpr) -> bool,
+    fn_named: &dyn Fn(&str) -> Option<&'f FnDecl>,
+    seen: &mut BTreeSet<String>,
+) -> bool {
+    if !seen.insert(f.name.name.clone()) {
+        return false;
     }
     let flow = param_flow(f);
-    // what a fn value it was handed builds
-    if flow.parts.is_none() && flow.returns_call_of == Some(CallOf::FnParam) {
-        return true;
+    // what a fn value it was handed builds, or what a named fn builds
+    let through = |seen: &mut BTreeSet<String>| match &flow.returns_call_of {
+        Some(CallOf::FnParam) => true,
+        Some(CallOf::Fn(m)) => fn_named(m).is_some_and(|g| builds_its_loci(g, is_locus, fn_named, seen)),
+        None => false,
+    };
+    match &f.ret {
+        Some(TypeExpr::Tuple(ts, _)) => {
+            let positions: Vec<bool> = ts.iter().map(is_locus).collect();
+            if !positions.iter().any(|b| *b) {
+                return true;
+            }
+            match &flow.parts {
+                Some(ps) => ps.len() == positions.len() && ps.iter().zip(&positions).all(|(p, l)| !*l || *p == PartFlow::Fresh),
+                None => through(seen),
+            }
+        }
+        Some(TypeExpr::Array { elem, .. }) if is_locus(elem) => match &flow.parts {
+            Some(ps) => ps.iter().all(|p| *p == PartFlow::Fresh),
+            None => through(seen),
+        },
+        _ => true,
     }
-    flow.parts.is_some_and(|ps| {
-        ps.len() == positions.len() && ps.iter().zip(&positions).all(|(p, l)| !*l || *p == PartFlow::Fresh)
-    })
 }
 
 /// The free fns declared to return a fn value (`fn pick() -> fn() -> W`),

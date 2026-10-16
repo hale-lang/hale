@@ -1072,6 +1072,15 @@ pub fn walk_bundle_by_declaration(
     {
         let programs: Vec<&Program> = bundle.programs.values().copied().collect();
         let rows = crate::ownership::extended_factory_rows(&programs, &bundle.snapshot, &bundle.import_renames);
+        let fns: BTreeMap<&str, &FnDecl> = programs
+            .iter()
+            .flat_map(|p| hale_syntax::ast::flat_decls(&p.items))
+            .filter_map(|d| match d {
+                TopDecl::Fn(f) => Some((f.name.name.as_str(), f)),
+                _ => None,
+            })
+            .collect();
+        let fn_named = |n: &str| fns.get(n).copied();
         for program in &programs {
             for decl in hale_syntax::ast::flat_decls(&program.items) {
                 let TopDecl::Fn(f) = decl else { continue };
@@ -1084,7 +1093,7 @@ pub fn walk_bundle_by_declaration(
                     _ => false,
                 };
                 if matches!(f.ret, Some(TypeExpr::Tuple(..) | TypeExpr::Array { .. }))
-                    && !crate::ownership::aggregate_builds_its_loci(f, &locus_named)
+                    && !crate::ownership::aggregate_builds_its_loci(f, &locus_named, &fn_named)
                 {
                     let l = match &f.ret {
                         Some(TypeExpr::Tuple(ts, _)) => ts.iter().find(|t| locus_named(t)),
@@ -17490,7 +17499,36 @@ impl<'a> Checker<'a> {
     /// check used to accept one, and lowering refused it with no span
     /// as `unknown type name in signature` (downstream handoff); the
     /// rule names the field and the two places a locus can live.
+    /// GH #1569: the locus a fn type written in `te` (at any depth of an
+    /// array, a tuple or a fn type) names as a parameter or a result.
+    fn locus_in_fn_type(&self, te: &TypeExpr) -> Option<String> {
+        match te {
+            TypeExpr::Array { elem, .. } | TypeExpr::Bounded { elem, .. } => self.locus_in_fn_type(elem),
+            TypeExpr::Tuple(parts, _) => parts.iter().find_map(|p| self.locus_in_fn_type(p)),
+            TypeExpr::Function { params, ret, .. } => params
+                .iter()
+                .chain(ret.as_deref())
+                .find_map(|t| self.locus_held_by(t).or_else(|| self.locus_in_fn_type(t))),
+            _ => None,
+        }
+    }
+
     fn refuse_locus_in_type(&mut self, type_name: &str, member: &str, te: &TypeExpr) {
+        // GH #1569: a fn value whose signature names a locus — a type's
+        // fields lower without the program's loci, so the build could
+        // not lay it out; refused where it is written
+        if let Some(locus) = self.locus_in_fn_type(te) {
+            self.diags.push(Diag::ty(
+                te.span(),
+                format!(
+                    "`type {type_name}`: {member} is a fn value whose signature names the locus \
+                     `{locus}`, and a `type` holds no locus, not even in a fn value's signature. \
+                     Hold the fn value in a locus's `params {{ ... }}` field, or pass it as a \
+                     parameter where it is used."
+                ),
+            ));
+            return;
+        }
         let Some(locus) = self.locus_held_by(te) else { return };
         self.diags.push(Diag::ty(
             te.span(),

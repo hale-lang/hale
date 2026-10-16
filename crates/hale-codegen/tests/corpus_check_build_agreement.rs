@@ -3212,29 +3212,50 @@ fn a_fn_value_from_a_call_is_a_fresh_factory() {
 }
 
 /// GH #1569: the fresh-factory rule holds wherever a fn's name is read as
-/// a value: a record field's default (`f: fn(W) -> W = id`) escaped it,
-/// since the walk types a default only at a literal that leaves it. And a
+/// a value. A record field's default (`f: fn(W) -> W = id`) escaped it,
+/// since the walk types a default only at a literal that leaves it; and a
+/// record field whose fn type names a locus cannot be laid out at all, so
+/// it is refused at its type, whatever its default. And a
 /// fn handing back a tuple or an array of loci is a value only when it
 /// builds every locus part (`fn pass(w: W) -> (W, Int) { return (w, 1);
-/// }` hands one back it was given).
+/// }` hands one back it was given), or hands back a call of a fn that
+/// does, transitively (`mk3` of `mk2` is one; `fwd` of `pass` is not).
 ///
 /// Plain string literals, for the reason given above.
 #[test]
 fn a_fn_value_is_a_fresh_factory_at_every_position() {
-    let lib = "locus W { params { name: String = \"w\"; } }\n\
-               fn id(w: W) -> W { return w; }\n";
-    let field = format!("{lib}type R {{ f: fn(W) -> W = id; n: Int = 1; }}\nfn main() {{ println(1); }}\n");
+    // (a record field's default escaped the rule; such a field is now
+    // refused at its type, whose signature names a locus a `type` cannot
+    // lay out: it checked clean and failed the build, even with a fresh
+    // factory as its default)
+    let field = "locus W { params { name: String = \"w\"; } }\n\
+                 fn mkw() -> W { return W { }; }\n\
+                 type R { f: fn() -> W = mkw; n: Int = 1; }\n\
+                 fn main() { let r = R { }; println(r.n); }\n";
     let aggregate = "locus W { params { name: String = \"w\"; } }\n\
                      fn pass(w: W) -> (W, Int) { return (w, 1); }\n\
                      fn apply(f: fn(W) -> (W, Int), w: W) -> (W, Int) { return f(w); }\n\
                      fn main() { let w = W { }; let t = apply(pass, w); }\n";
+    let forwarded = "locus W { params { name: String = \"w\"; } }\n\
+                     fn pass(w: W) -> (W, Int) { return (w, 1); }\n\
+                     fn fwd(w: W) -> (W, Int) { return pass(w); }\n\
+                     fn main() { let g = fwd; }\n";
     assert_refused_by_the_check(
         &[
-            (&field, "id", "`id` may hand back a `W` it did not build"),
+            (field, "fn() -> W", "`type R`: field `f` is a fn value whose signature names the locus `W`"),
             (aggregate, "pass", "`pass` may hand back a `W` it did not build"),
+            (forwarded, "fwd", "`fwd` may hand back a `W` it did not build"),
         ],
         "unfresh_everywhere",
     );
+    // a fn handing back a fresh builder's call is one, through any number
+    // of them
+    let chained = "locus W { params { name: String = \"w\"; } dissolve() { println(\"bye \", self.name); } }\n\
+                   fn mk2(n: String) -> (W, Int) { return (W { name: n }, 1); }\n\
+                   fn mk3(n: String) -> (W, Int) { return mk2(n); }\n\
+                   fn mk4(n: String) -> (W, Int) { return mk3(n); }\n\
+                   fn main() { let g = mk3; let b = g(\"b\"); g(\"c\"); let h = mk4; let d = h(\"d\"); println(b.0.name, d.0.name); }\n";
+    assert_eq!(build_and_run_probe(chained, "fresh_forwarder_fn_value"), Ok("bye c\nbd\nbye d\nbye b\n".to_string()), "{chained}");
     let built = "locus W { params { name: String = \"w\"; } dissolve() { println(\"bye \", self.name); } }\n\
                  fn mk2(n: String) -> (W, Int) { return (W { name: n }, 1); }\n\
                  fn apply(f: fn(String) -> (W, Int), n: String) -> (W, Int) { return f(n); }\n\
