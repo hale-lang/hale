@@ -327,6 +327,12 @@ pub struct Analyzed<'a> {
     /// The checker's table of each top-level item, in item order.
     pub views: &'a [std::sync::Arc<ViewTypes>],
     pub sends: &'a [IntraLocusRewrite],
+    /// The top-level items whose bodies the pass walks (`None`: every
+    /// one): the stdlib's analysis copy is walked where the program
+    /// reaches it ([`crate::stdlib_reach`]). Every item's declarations
+    /// are read, so what a call resolves to is what it resolves to over
+    /// the whole program.
+    pub within: Option<&'a crate::stdlib_reach::StdlibReach>,
 }
 
 impl OwnedViewColumn {
@@ -344,32 +350,70 @@ impl OwnedViewColumn {
         top: &TopScope,
         stdlib: bool,
     ) -> OwnedViewColumn {
-        let mut analyzed: Vec<Analyzed<'_>> = programs
-            .iter()
-            .map(|(key, p)| Analyzed { program: p, views: views.get(key).map_or(&[][..], |v| v.as_slice()), sends })
-            .collect();
-        let copy = match (stdlib, crate::stdlib_bodies::program(), crate::stdlib_bodies::view_types()) {
-            (true, Some(program), Some(views)) => {
-                analyzed.push(Analyzed { program, views, sends: &[] });
-                true
+        let mut whole = crate::stdlib_reach::StdlibReach::whole();
+        let reach = stdlib.then_some(&mut whole);
+        OwnedViewColumn::derive_within(programs, views, monos, sends, top, reach)
+    }
+
+    /// [`OwnedViewColumn::derive`] with the stdlib's analysis copy walked
+    /// where `reach` says (`None`: not beside the programs at all). A
+    /// body the pass walks that resolves a call into an item outside the
+    /// reach widens it, and the pass runs again over the wider reach, so
+    /// the column answers every walked body as the whole copy's would:
+    /// a body's answers read only its callees', and every callee of a
+    /// walked body is walked. `reach` is left holding the items walked.
+    pub fn derive_within(
+        programs: &BTreeMap<String, &Program>,
+        views: &crate::typed_bodies::ProgramViews,
+        monos: &MonoShapes,
+        sends: &[IntraLocusRewrite],
+        top: &TopScope,
+        mut reach: Option<&mut crate::stdlib_reach::StdlibReach>,
+    ) -> OwnedViewColumn {
+        loop {
+            let copy = match (&reach, crate::stdlib_bodies::program()) {
+                (Some(r), Some(program)) => {
+                    crate::stdlib_bodies::view_types_within(r).map(|v| (program, v))
+                }
+                _ => None,
+            };
+            let mut analyzed: Vec<Analyzed<'_>> = programs
+                .iter()
+                .map(|(key, p)| Analyzed {
+                    program: p,
+                    views: views.get(key).map_or(&[][..], |v| v.as_slice()),
+                    sends,
+                    within: None,
+                })
+                .collect();
+            if let (Some((program, walked)), Some(r)) = (&copy, &reach) {
+                analyzed.push(Analyzed { program, views: &walked.views, sends: &[], within: Some(&**r) });
             }
-            _ => false,
-        };
-        // The monomorphs the walks typed: the program's, and the stdlib's
-        // own where the program names none of the same name.
-        let mut monos = monos.clone();
-        if copy {
-            for (n, m) in crate::stdlib_bodies::mono_shapes().into_iter().flatten() {
-                monos.entry(n.clone()).or_insert_with(|| m.clone());
+            // The monomorphs the walks typed: the program's, and the
+            // stdlib's own where the program names none of the same name.
+            let mut monos = monos.clone();
+            if let Some((_, walked)) = &copy {
+                for (n, m) in walked.monos.iter() {
+                    monos.entry(n.clone()).or_insert_with(|| m.clone());
+                }
             }
+            let mut found = match analyze(&analyzed, top, &monos) {
+                Ok(found) => found,
+                Err(beyond) => {
+                    let Some(r) = reach.as_mut() else { unreachable!("only the copy is walked within a reach") };
+                    if r.widen(beyond) {
+                        continue;
+                    }
+                    unreachable!("a body outside the reach is in it once widened")
+                }
+            };
+            let stdlib = if copy.is_some() { found.pop().map(OwnedViews::from).unwrap_or_default() } else { OwnedViews::default() };
+            let mut program = OwnedViews::default();
+            for f in found {
+                program.merge(OwnedViews::from(f), |id| Some(id));
+            }
+            return OwnedViewColumn { program, stdlib };
         }
-        let mut found = OwnedViews::of(&analyzed, top, &monos);
-        let stdlib = if copy { found.pop().unwrap_or_default() } else { OwnedViews::default() };
-        let mut program = OwnedViews::default();
-        for f in found {
-            program.merge(f, |id| Some(id));
-        }
-        OwnedViewColumn { program, stdlib }
     }
 
     /// The column of a bundle no snapshot holds (a test's, a standalone
@@ -411,21 +455,6 @@ impl OwnedViewColumn {
 }
 
 impl OwnedViews {
-    /// Run the pass over every body of `programs`, the summaries over all
-    /// of them at once: each program's answers, in order.
-    pub fn of(programs: &[Analyzed<'_>], top: &TopScope, monos: &MonoShapes) -> Vec<OwnedViews> {
-        analyze(programs, top, monos)
-            .into_iter()
-            .map(|found| OwnedViews {
-                sites: found.sites.into_iter().map(|(site, _)| site).collect(),
-                cow_writes: found.cow_writes,
-                cow_binds: found.cow_binds,
-                cell_copies: found.cell_copies,
-                cell_owned: found.cell_owned,
-            })
-            .collect()
-    }
-
     /// `other`'s answers added, each id through `id` (an id it maps to
     /// nothing is dropped: no merged site is it). A binding's flags both
     /// hold say the frame owns a part only where both do.
@@ -1112,6 +1141,18 @@ fn collect<'a>(items: &'a [TopDecl], p: &mut Bodies<'a>) {
     }
 }
 
+impl From<Found> for OwnedViews {
+    fn from(found: Found) -> OwnedViews {
+        OwnedViews {
+            sites: found.sites.into_iter().map(|(site, _)| site).collect(),
+            cow_writes: found.cow_writes,
+            cow_binds: found.cow_binds,
+            cell_copies: found.cell_copies,
+            cell_owned: found.cell_owned,
+        }
+    }
+}
+
 /// What the pass finds for one program: the owned sites, and the
 /// cell-read rule's copies.
 #[derive(Default)]
@@ -1144,7 +1185,10 @@ struct Summaries {
     ret_views: Vec<RetView>,
 }
 
-fn analyze(programs: &[Analyzed<'_>], top: &TopScope, monos: &MonoShapes) -> Vec<Found> {
+/// The pass over `programs`, or, when a walked body resolves a call into
+/// a body a program's reach leaves out (`Analyzed::within`), the items of
+/// the stdlib's analysis copy those bodies are in.
+fn analyze(programs: &[Analyzed<'_>], top: &TopScope, monos: &MonoShapes) -> Result<Vec<Found>, BTreeSet<usize>> {
     let mut p = Bodies {
         top,
         monos,
@@ -1190,6 +1234,11 @@ fn analyze(programs: &[Analyzed<'_>], top: &TopScope, monos: &MonoShapes) -> Vec
         .collect();
     let sends: Vec<BTreeMap<u32, &IntraLocusRewrite>> =
         programs.iter().map(|a| a.sends.iter().filter(|r| !r.send.is_none()).map(|r| (r.send.0, r)).collect()).collect();
+    // The bodies walked: every body of a program walked whole, and the
+    // reached items' of one walked within a reach.
+    let walked: Vec<bool> = (0..p.bodies.len())
+        .map(|b| programs[p.body_program[b]].within.is_none_or(|r| r.contains(p.body_item[b])))
+        .collect();
 
     // Each body's own writes and the calls it makes, then the fixpoint.
     struct Direct {
@@ -1205,6 +1254,20 @@ fn analyze(programs: &[Analyzed<'_>], top: &TopScope, monos: &MonoShapes) -> Vec
     }
     let mut direct: Vec<Direct> = Vec::with_capacity(p.bodies.len());
     for (b, (params, body)) in p.bodies.iter().enumerate() {
+        if !walked[b] {
+            direct.push(Direct {
+                writes: Writes::default(),
+                callees: BTreeSet::new(),
+                reads: false,
+                writes_params: false,
+                param_callees: BTreeSet::new(),
+                param_mask: 0,
+                param_passes: Vec::new(),
+                ret_src: Src::default(),
+                ret_marks: BTreeMap::new(),
+            });
+            continue;
+        }
         let i = p.body_program[b];
         let mut w = Walk::new(&p, None, params, views_of(b), &sends[i]);
         w.in_locus(p.body_locus[b].clone());
@@ -1236,6 +1299,21 @@ fn analyze(programs: &[Analyzed<'_>], top: &TopScope, monos: &MonoShapes) -> Vec
     };
     let edges: Vec<Vec<usize>> = direct.iter().map(|d| resolve_all(&d.callees)).collect();
     let param_edges: Vec<Vec<usize>> = direct.iter().map(|d| resolve_all(&d.param_callees)).collect();
+    // A walked body's callee is walked, or the reach widens to it: a
+    // body's answers read its callees' summaries, and an unwalked body's
+    // summary is nothing.
+    let beyond: BTreeSet<usize> = (0..direct.len())
+        .filter(|&b| walked[b])
+        .flat_map(|b| {
+            let passes = direct[b].param_passes.iter().flat_map(|(c, _, _)| p.resolve(c));
+            edges[b].iter().chain(&param_edges[b]).copied().chain(passes).collect::<Vec<usize>>()
+        })
+        .filter(|&j| !walked[j])
+        .map(|j| p.body_item[j])
+        .collect();
+    if !beyond.is_empty() {
+        return Err(beyond);
+    }
     let mut reads: Vec<bool> = direct.iter().map(|d| d.reads).collect();
     let mut writes_params: Vec<bool> = direct.iter().map(|d| d.writes_params).collect();
     let mut param_masks: Vec<u64> = direct.iter().map(|d| d.param_mask).collect();
@@ -1248,6 +1326,9 @@ fn analyze(programs: &[Analyzed<'_>], top: &TopScope, monos: &MonoShapes) -> Vec
     loop {
         let mut changed = false;
         for i in 0..summary.len() {
+            if !walked[i] {
+                continue;
+            }
             if !reads[i] && edges[i].iter().any(|&j| reads[j]) {
                 reads[i] = true;
                 changed = true;
@@ -1301,13 +1382,16 @@ fn analyze(programs: &[Analyzed<'_>], top: &TopScope, monos: &MonoShapes) -> Vec
 
     let mut out: Vec<Found> = programs.iter().map(|_| Found::default()).collect();
     for (b, (params, body)) in p.bodies.iter().enumerate() {
+        if !walked[b] {
+            continue;
+        }
         let i = p.body_program[b];
         let mut w = Walk::new(&p, Some(&summaries), params, views_of(b), &sends[i]);
         w.in_locus(p.body_locus[b].clone());
         w.block(body);
         w.finish(&mut out[p.body_program[b]]);
     }
-    out
+    Ok(out)
 }
 
 /// What `src` may be, over the callees' current summaries: its own
@@ -4228,7 +4312,8 @@ mod tests {
         let inputs =
             crate::check::WalkInputs { top: &top, handlers: &handlers, bindings: &bindings, units: &units, target: &target };
         let walk = crate::check::walk_bundle_by_declaration(&bundle, &inputs, false, false, &|_, _| None);
-        analyze(&[Analyzed { program: &program, views: &walk.record.views["t"], sends: &[] }], &top, &walk.record.mono_shapes)
+        analyze(&[Analyzed { program: &program, views: &walk.record.views["t"], sends: &[], within: None }], &top, &walk.record.mono_shapes)
+            .unwrap_or_default()
             .remove(0)
     }
 

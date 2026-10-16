@@ -115,33 +115,108 @@ pub fn mono_shapes() -> Option<&'static crate::typed_bodies::MonoShapes> {
 }
 
 #[allow(clippy::type_complexity)]
+static STDLIB_WALK: OnceLock<
+    Option<(Vec<std::sync::Arc<crate::typed_bodies::ViewTypes>>, crate::typed_bodies::MonoShapes)>,
+> = OnceLock::new();
+
+#[allow(clippy::type_complexity)]
 fn stdlib_walk() -> Option<&'static (Vec<std::sync::Arc<crate::typed_bodies::ViewTypes>>, crate::typed_bodies::MonoShapes)> {
-    static VIEWS: OnceLock<
-        Option<(Vec<std::sync::Arc<crate::typed_bodies::ViewTypes>>, crate::typed_bodies::MonoShapes)>,
-    > = OnceLock::new();
-    VIEWS
-        .get_or_init(|| {
-            let program = program()?;
-            let bundle =
-                crate::Bundle::new(std::iter::once((crate::snapshot::STDLIB_SEED.to_string(), program)).collect());
-            let (top, _) = crate::resolve::build_top_scope(&crate::Bundle::new(Default::default()));
-            let handlers = crate::bundle_handler_rows(&bundle);
-            let bindings = crate::binding_rows::derive_binding_rows(&bundle, &top);
-            let units = crate::units::derive_unit_rows(&bundle);
-            let target = crate::capability::target_row(&bundle);
-            let inputs = crate::check::WalkInputs {
-                top: &top,
-                handlers: &handlers,
-                bindings: &bindings,
-                units: &units,
-                target: &target,
-            };
-            let walk = crate::check::walk_bundle_by_declaration(&bundle, &inputs, false, false, &|_, _| None);
-            let mut views = walk.record.views;
-            let monos = (*walk.record.mono_shapes).clone();
-            views.remove(crate::snapshot::STDLIB_SEED).map(|v| (v, monos))
-        })
-        .as_ref()
+    STDLIB_WALK.get_or_init(|| walk_copy(&|_, _| None)).as_ref()
+}
+
+/// The checker's walk of the copy over the scope of no program, the
+/// declarations `reuse` answers for stood in: each item's `views` table,
+/// in item order, and the monomorph shapes the walk typed.
+#[allow(clippy::type_complexity)]
+fn walk_copy(
+    reuse: &dyn Fn(&str, usize) -> Option<crate::check::DeclChecked>,
+) -> Option<(Vec<std::sync::Arc<crate::typed_bodies::ViewTypes>>, crate::typed_bodies::MonoShapes)> {
+    let program = program()?;
+    let bundle = crate::Bundle::new(std::iter::once((crate::snapshot::STDLIB_SEED.to_string(), program)).collect());
+    let (top, _) = crate::resolve::build_top_scope(&crate::Bundle::new(Default::default()));
+    let handlers = crate::bundle_handler_rows(&bundle);
+    let bindings = crate::binding_rows::derive_binding_rows(&bundle, &top);
+    let units = crate::units::derive_unit_rows(&bundle);
+    let target = crate::capability::target_row(&bundle);
+    let inputs =
+        crate::check::WalkInputs { top: &top, handlers: &handlers, bindings: &bindings, units: &units, target: &target };
+    let walk = crate::check::walk_bundle_by_declaration(&bundle, &inputs, false, false, reuse);
+    let mut views = walk.record.views;
+    let monos = (*walk.record.mono_shapes).clone();
+    views.remove(crate::snapshot::STDLIB_SEED).map(|v| (v, monos))
+}
+
+/// The `views` column of the items of the copy a program reaches
+/// ([`crate::stdlib_reach`]), each item's table as [`view_types`] holds
+/// it, and the monomorph shapes the walks typed. An item outside the
+/// reach has an empty table. Each item is walked once per process,
+/// however many reaches ask for it: the first time one does, by a walk of
+/// the copy that checks the items no walk has checked yet and stands the
+/// rest in (the reuse hook of
+/// [`crate::check::walk_bundle_by_declaration`]). A declaration's table
+/// is what its own walk records, so it is the same whichever walk checked
+/// it (`reached_walk_is_the_whole_walk` pins it). Once the whole copy's
+/// walk has run, it answers.
+pub fn view_types_within(reach: &crate::stdlib_reach::StdlibReach) -> Option<ReachedViews> {
+    use std::sync::{Arc, Mutex};
+    let program = program()?;
+    if reach.is_whole() || STDLIB_WALK.get().is_some() {
+        static WHOLE: OnceLock<Option<ReachedViews>> = OnceLock::new();
+        return WHOLE
+            .get_or_init(|| {
+                let (views, monos) = stdlib_walk()?;
+                Some(ReachedViews { views: views.clone(), monos: Arc::new(monos.clone()) })
+            })
+            .clone();
+    }
+    struct Walked {
+        views: Vec<Arc<crate::typed_bodies::ViewTypes>>,
+        walked: Vec<bool>,
+        monos: Arc<crate::typed_bodies::MonoShapes>,
+    }
+    static WALKED: Mutex<Option<Walked>> = Mutex::new(None);
+    let mut held = WALKED.lock().unwrap_or_else(|e| e.into_inner());
+    let held = held.get_or_insert_with(|| Walked {
+        views: vec![Arc::default(); program.items.len()],
+        walked: vec![false; program.items.len()],
+        monos: Arc::default(),
+    });
+    let missing: std::collections::BTreeSet<usize> = reach.items().filter(|&i| !held.walked[i]).collect();
+    if !missing.is_empty() {
+        let (views, monos) = walk_copy(&|_, i| {
+            (!missing.contains(&i)).then(|| crate::check::DeclChecked {
+                typing: Vec::new(),
+                reveal: Vec::new(),
+                views: Arc::default(),
+            })
+        })?;
+        for &i in &missing {
+            if let Some(v) = views.get(i) {
+                held.views[i] = v.clone();
+            }
+            held.walked[i] = true;
+        }
+        if monos.keys().any(|n| !held.monos.contains_key(n)) {
+            let mut all = (*held.monos).clone();
+            for (n, m) in monos {
+                all.entry(n).or_insert(m);
+            }
+            held.monos = Arc::new(all);
+        }
+    }
+    let empty: Arc<crate::typed_bodies::ViewTypes> = Arc::default();
+    Some(ReachedViews {
+        views: (0..program.items.len()).map(|i| if reach.contains(i) { held.views[i].clone() } else { empty.clone() }).collect(),
+        monos: held.monos.clone(),
+    })
+}
+
+/// What [`view_types_within`] answers: each item's `views` table, in item
+/// order, and the monomorph shapes the walks typed.
+#[derive(Clone)]
+pub struct ReachedViews {
+    pub views: Vec<std::sync::Arc<crate::typed_bodies::ViewTypes>>,
+    pub monos: std::sync::Arc<crate::typed_bodies::MonoShapes>,
 }
 
 /// `["std","io","file","File"]` → `"__StdIoFileFile"`, the mangled
@@ -423,5 +498,53 @@ mod tests {
                 assert_eq!(d.demangle(&text), scan(&d, &text), "{:?} over {text:?}", d.table);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod reached_walk {
+    use std::sync::Arc;
+
+    /// A walk of some of the copy's items, the rest stood in: each item it
+    /// checked has the table the whole copy's walk gives it, and every
+    /// monomorph shape it typed is the whole walk's. So an item's table is
+    /// the same whichever walk checked it, and the reached views
+    /// ([`super::view_types_within`]) are the whole copy's where a program
+    /// reaches.
+    #[test]
+    fn reached_walk_is_the_whole_walk() {
+        let (whole, whole_monos) = super::stdlib_walk().expect("the stdlib parses");
+        let n = whole.len();
+        let hello = hale_syntax::parse_source("fn main() { println(\"hi\"); }").expect("parses");
+        let reach = crate::stdlib_reach::StdlibReach::of(&[&hello]);
+        let mut parts: Vec<Vec<bool>> = (0..3).map(|k| (0..n).map(|i| i % 3 == k).collect()).collect();
+        parts.push((0..n).map(|i| reach.contains(i)).collect());
+        parts.push((0..n).map(|i| i >= n / 2).collect());
+        for (p, part) in parts.iter().enumerate() {
+            let (views, monos) = super::walk_copy(&|_, i| {
+                (!part[i]).then(|| crate::check::DeclChecked {
+                    typing: Vec::new(),
+                    reveal: Vec::new(),
+                    views: Arc::default(),
+                })
+            })
+            .expect("the stdlib parses");
+            for i in (0..n).filter(|&i| part[i]) {
+                assert!(views[i] == whole[i], "part {p}: item {i}'s table is not the whole walk's");
+            }
+            for (name, shape) in &monos {
+                assert_eq!(whole_monos.get(name), Some(shape), "part {p}: monomorph `{name}`");
+            }
+        }
+    }
+
+    /// The copy reads no method as a value, so no item outside a reach
+    /// holds the flag the owned-view pass reads for every program
+    /// (`crate::stdlib_reach` reaches no item for one).
+    #[test]
+    fn the_copy_reads_no_method_as_a_value() {
+        let views = super::view_types().expect("the stdlib parses");
+        let reading: Vec<usize> = (0..views.len()).filter(|&i| views[i].method_values()).collect();
+        assert!(reading.is_empty(), "items {reading:?} read a method as a value: reach them always in `stdlib_reach`");
     }
 }

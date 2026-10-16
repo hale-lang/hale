@@ -794,9 +794,11 @@ const GATE: &[GateRow] = &[
     row("law_selection", 1, 1, |s| { let _ = s.demand_law_selection(); }),
     row("role_rows", 1, 1, |s| { let _ = s.demand_role_rows(); }),
     row("surface", 1, 1, |s| { let _ = s.demand_surface_rows(); }),
-    // The owned-view column (GH #1554): computed once over the walk,
-    // read by the summary and by the lowering view.
-    row("owned_views", 1, 1, |s| { let _ = s.demand_owned_views(); }),
+    // The owned-view column (GH #1554) over the whole stdlib copy:
+    // lowering's. The check's summary derives its own over the stdlib the
+    // program reaches, inside the `alloc_summary` cell, so a check
+    // demands none.
+    row("owned_views", 0, 1, |s| { let _ = s.demand_owned_views(); }),
     row("alloc_summary", 1, 1, |s| { let _ = s.demand_alloc_summary(); }),
     row("effects", 1, 1, |s| { let _ = s.demand_effects(); }),
     row("placement", 1, 1, |s| { let _ = s.demand_placement(); }),

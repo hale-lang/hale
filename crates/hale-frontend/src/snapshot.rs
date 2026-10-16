@@ -1611,13 +1611,27 @@ impl Snapshot {
             .as_ref()
     }
 
+    /// The allocation summary, with the stdlib's analysis copy beside the
+    /// programs where they reach it
+    /// ([`hale_types::alloc_summary::derive_alloc_summary_reaching`]): its
+    /// owned-view column is derived over that reach from the first walk,
+    /// as [`Snapshot::demand_owned_views`]'s is over the whole copy, which
+    /// lowering reads. Every row of the program, and of the copy where the
+    /// program reaches it, is the row the whole copy beside it gives.
     fn alloc_summary(&self) -> Result<&Arc<AllocSummary>, &Blocked> {
         self.alloc_summary
             .get_or_init(|| {
-                self.scope().map_err(Clone::clone)?;
-                let views = self.demand_owned_views().map_err(Clone::clone)?;
+                let scope = self.scope().map_err(Clone::clone)?;
+                let walked = self.walked().map_err(Clone::clone)?;
+                let sends = &self.demand_intra_locus().map_err(Clone::clone)?.intra_locus;
                 self.count("alloc_summary");
-                Ok(Arc::new(hale_types::alloc_summary::derive_alloc_summary_over(&self.bundle(), views)))
+                Ok(Arc::new(hale_types::alloc_summary::derive_alloc_summary_reaching(
+                    &self.bundle(),
+                    &walked.walk.record.views,
+                    &walked.walk.record.mono_shapes,
+                    sends,
+                    &scope.top,
+                )))
             })
             .as_ref()
     }
