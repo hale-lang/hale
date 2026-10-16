@@ -1545,7 +1545,9 @@ fn value it was handed builds, or a call of a fn that is one itself
 fns). The rule holds wherever a fn's name is
 read as a value. A record's field cannot hold such a fn value at all:
 a `type` holds no locus, not even in a fn type's signature, so `type R
-{ f: fn() -> W = mkw; }` is refused at `fn() -> W`.
+{ f: fn() -> W = mkw; }` is refused at `fn() -> W`, and so is a field or
+a variant typed by an alias of such a fn type (`type Maker = fn() ->
+W;`), through any chain of aliases.
 
 A `std::` fn is a value when the stdlib writes it in Hale: its body is
 merged into the program under its rename, so `apply(std::url::encode,

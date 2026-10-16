@@ -4727,6 +4727,9 @@ row	App@literal1	App	main	default
 row	App@literal1.h	Hold	main	default
 dynamic	W	on main|unknown (`mk2` passed as a value)	in the seed
 
+== crates/hale-codegen/tests/returned_aggregate_of_loci.rs#647b11c1
+dynamic	W	on unknown (`cyc1` passed as a value)	in the seed
+
 == crates/hale-codegen/tests/self_containing_locus.rs#4ea4d0ba
 shared	Holder@main1	Holder #5d65043f
 

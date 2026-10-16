@@ -17502,13 +17502,43 @@ impl<'a> Checker<'a> {
     /// GH #1569: the locus a fn type written in `te` (at any depth of an
     /// array, a tuple or a fn type) names as a parameter or a result.
     fn locus_in_fn_type(&self, te: &TypeExpr) -> Option<String> {
+        self.locus_in_fn_type_at(te, 0)
+    }
+
+    /// `locus_in_fn_type`, through type aliases (`type Maker = fn() ->
+    /// W;`), transitively.
+    fn locus_in_fn_type_at(&self, te: &TypeExpr, depth: usize) -> Option<String> {
+        if depth > 32 {
+            return None;
+        }
         match te {
-            TypeExpr::Array { elem, .. } | TypeExpr::Bounded { elem, .. } => self.locus_in_fn_type(elem),
-            TypeExpr::Tuple(parts, _) => parts.iter().find_map(|p| self.locus_in_fn_type(p)),
+            TypeExpr::Array { elem, .. } | TypeExpr::Bounded { elem, .. } => self.locus_in_fn_type_at(elem, depth + 1),
+            TypeExpr::Tuple(parts, _) => parts.iter().find_map(|p| self.locus_in_fn_type_at(p, depth + 1)),
             TypeExpr::Function { params, ret, .. } => params
                 .iter()
                 .chain(ret.as_deref())
-                .find_map(|t| self.locus_held_by(t).or_else(|| self.locus_in_fn_type(t))),
+                .find_map(|t| self.locus_held_by(t).or_else(|| self.alias_locus(t, depth + 1)).or_else(|| self.locus_in_fn_type_at(t, depth + 1))),
+            TypeExpr::Named { path, generic_args, .. } if generic_args.is_empty() && path.segments.len() == 1 => {
+                match self.type_decls.get(path.segments[0].name.as_str()).map(|d| &d.body) {
+                    Some(TypeDeclBody::Alias(a)) => self.locus_in_fn_type_at(a, depth + 1),
+                    _ => None,
+                }
+            }
+            _ => None,
+        }
+    }
+
+    /// The locus an alias names, through further aliases (`type L = W;`).
+    fn alias_locus(&self, te: &TypeExpr, depth: usize) -> Option<String> {
+        if depth > 32 {
+            return None;
+        }
+        let TypeExpr::Named { path, generic_args, .. } = te else { return None };
+        if !generic_args.is_empty() || path.segments.len() != 1 {
+            return None;
+        }
+        match self.type_decls.get(path.segments[0].name.as_str()).map(|d| &d.body) {
+            Some(TypeDeclBody::Alias(a)) => self.locus_held_by(a).or_else(|| self.alias_locus(a, depth + 1)),
             _ => None,
         }
     }

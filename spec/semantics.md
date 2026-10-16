@@ -695,7 +695,11 @@ lowered in (`spec/decisions.md` F.39).
   result to the caller, and the frame does not reclaim the locus
   it returns. Read through such calls, a fn whose every return is
   fresh is a factory like any other, so its caller's binding owns
-  the result; a call that can hand back one of several arguments
+  the result (fns handing back each other's calls are factories when
+  every return of theirs that is not such a call builds: `fn a(n)
+  -> W { if n == 0 { return W { }; } return b(n - 1); }` with `fn
+  b(n) -> W { return a(n); }`; a cycle with no way out returns
+  nothing, GH #1569); a call that can hand back one of several arguments
   (`return pick(x, y, c);`) hands back the one it returned, and
   the frame reclaims the rest. (Until the friction sweep of
   2026-10-12 the frame reclaimed it on the way out, and a caller

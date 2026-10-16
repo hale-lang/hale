@@ -3240,9 +3240,28 @@ fn a_fn_value_is_a_fresh_factory_at_every_position() {
                      fn pass(w: W) -> (W, Int) { return (w, 1); }\n\
                      fn fwd(w: W) -> (W, Int) { return pass(w); }\n\
                      fn main() { let g = fwd; }\n";
+    // through type aliases, transitively, in a field and in a variant
+    let aliased = "locus W { params { name: String = \"w\"; } }\n\
+                   fn mkw() -> W { return W { }; }\n\
+                   type Maker = fn() -> W;\n\
+                   type Maker2 = Maker;\n\
+                   type T { f: Maker2 = mkw; n: Int = 1; }\n\
+                   fn main() { let t = T { }; println(t.n); }\n";
+    let variant = "locus W { params { name: String = \"w\"; } }\n\
+                   type Maker = fn() -> W;\n\
+                   type E = enum { A(Maker), B };\n\
+                   fn main() { println(1); }\n";
+    // a forwarder to a fn that may hand back what it was given
+    let id_forwarder = "locus W { params { name: String = \"w\"; } }\n\
+                        fn id(w: W) -> W { return w; }\n\
+                        fn fwd(w: W) -> W { return id(w); }\n\
+                        fn main() { let f = fwd; }\n";
     assert_refused_by_the_check(
         &[
             (field, "fn() -> W", "`type R`: field `f` is a fn value whose signature names the locus `W`"),
+            (aliased, "Maker2", "`type T`: field `f` is a fn value whose signature names the locus `W`"),
+            (variant, "Maker", "`type E`: variant `A` is a fn value whose signature names the locus `W`"),
+            (id_forwarder, "fwd", "`fwd` may hand back a `W` it did not build"),
             (aggregate, "pass", "`pass` may hand back a `W` it did not build"),
             (forwarded, "fwd", "`fwd` may hand back a `W` it did not build"),
         ],

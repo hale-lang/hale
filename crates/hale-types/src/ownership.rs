@@ -2176,16 +2176,17 @@ pub fn aggregate_builds_its_loci<'f>(
 }
 
 /// `aggregate_builds_its_loci`, through the named fns whose call `f`
-/// hands back (each a fresh builder by the same summary; a cycle of them
-/// builds nothing).
+/// hands back (each a fresh builder by the same summary).
 fn builds_its_loci<'f>(
     f: &'f FnDecl,
     is_locus: &dyn Fn(&TypeExpr) -> bool,
     fn_named: &dyn Fn(&str) -> Option<&'f FnDecl>,
     seen: &mut BTreeSet<String>,
 ) -> bool {
+    // a fn reached again on its own chain: assumed fresh (a greatest
+    // fixpoint; a cycle with no way out returns nothing)
     if !seen.insert(f.name.name.clone()) {
-        return false;
+        return true;
     }
     let flow = param_flow(f);
     // what a fn value it was handed builds, or what a named fn builds
@@ -3080,6 +3081,100 @@ pub fn fresh_factories(
         if !added {
             break;
         }
+    }
+    // GH #1569: the fixpoint above admits a fn once every factory it
+    // hands back is admitted, so fns handing back each other's calls
+    // (`cyc1` builds at its base case, else returns `cyc2(..)`, which
+    // returns `cyc1(..)`) never were. Their freshness is the GREATEST
+    // fixpoint: every fn whose every return is a literal of its locus,
+    // a call through a fn-typed parameter, or a call of a fresh factory
+    // of it is assumed fresh, and any returning a call of something else
+    // is removed until none is. Every path that returns builds a fresh
+    // instance; a cycle with no way out returns nothing.
+    type Candidate = (String, Vec<(String, Vec<String>)>, Vec<String>);
+    let mut cand: BTreeMap<String, Candidate> = BTreeMap::new();
+    for item in programs.iter().flat_map(|p| hale_syntax::ast::flat_decls(&p.items)) {
+        let TopDecl::Fn(f) = item else { continue };
+        if out.contains_key(&f.name.name) {
+            continue;
+        }
+        let Some(l) = ret_locus_name(f, import_renames) else { continue };
+        let mut rets = Vec::new();
+        let mut lets = Vec::new();
+        collect(&f.body, &mut rets, &mut lets, &l, import_renames);
+        if rets.is_empty() {
+            continue;
+        }
+        let value_param = |n: &str| {
+            f.params.iter().any(|p| {
+                p.name.name == n
+                    && matches!(&p.ty, TypeExpr::Function { ret: Some(r), .. }
+                        if matches!(r.as_ref(), TypeExpr::Named { path, .. } if resolve(&qname(path), import_renames).as_deref() == Some(l.as_str())))
+            })
+        };
+        let (mut products, mut callees, mut ok) = (Vec::new(), Vec::new(), true);
+        for r in &rets {
+            match r {
+                Expr::Struct { path, inits, .. } if resolve(&qname(path), import_renames).as_deref() == Some(l.as_str()) => {
+                    products.push(product(&l, inits));
+                }
+                Expr::Call { callee, .. } if matches!(callee.as_ref(), Expr::Ident(i) if value_param(&i.name)) => {}
+                Expr::Call { callee, .. } => match callee_name(callee, import_renames) {
+                    Some(n) => callees.push(n),
+                    None => ok = false,
+                },
+                _ => ok = false,
+            }
+        }
+        if ok {
+            cand.insert(f.name.name.clone(), (l, products, callees));
+        }
+    }
+    loop {
+        let gone: Vec<String> = cand
+            .iter()
+            .filter(|(_, (l, _, cs))| {
+                !cs.iter().all(|c| {
+                    out.get(c).is_some_and(|row| row.locus == *l && row.fresh.is_some())
+                        || cand.get(c).is_some_and(|(cl, _, _)| cl == l)
+                })
+            })
+            .map(|(n, _)| n.clone())
+            .collect();
+        if gone.is_empty() {
+            break;
+        }
+        for n in gone {
+            cand.remove(&n);
+        }
+    }
+    // what each constructs, through the calls it hands back
+    let mut products: BTreeMap<String, Vec<(String, Vec<String>)>> =
+        cand.iter().map(|(n, (_, p, _))| (n.clone(), p.clone())).collect();
+    loop {
+        let mut grew = false;
+        for (n, (_, _, cs)) in &cand {
+            let mut acc = products[n].clone();
+            for c in cs {
+                match out.get(c) {
+                    Some(row) => acc.extend(row.products.iter().cloned()),
+                    None => acc.extend(products.get(c).cloned().unwrap_or_default()),
+                }
+            }
+            acc.sort();
+            acc.dedup();
+            if acc.len() != products[n].len() {
+                products.insert(n.clone(), acc);
+                grew = true;
+            }
+        }
+        if !grew {
+            break;
+        }
+    }
+    for (n, (l, _, _)) in cand {
+        let products = products.remove(&n).unwrap_or_default();
+        out.insert(n, FactoryRow { locus: l, products, fresh: Some(Fresh { returned_binding: None }) });
     }
     out
 }

@@ -398,3 +398,35 @@ fn main() { let t = mk2("main"); println(f"main {t.0.name}"); App { }; }
          Hold.dissolve 1 7\nW.dissolve held\nW.dissolve lit2\nW.dissolve main\n"
     );
 }
+
+/// GH #1569: a fresh factory is the greatest fixpoint over the calls fns
+/// hand back: fns handing back each other's calls, one building at its
+/// base case (`cyc1` builds a `W` at 0, else returns `cyc2(..)`, which
+/// returns `cyc1(..)`), build every instance they return — a cycle with
+/// no way out returns nothing — so either may be taken as a value, and
+/// each instance a call builds is torn down once, bound or discarded.
+/// Sanitized.
+#[test]
+fn recursive_fresh_factories_build_what_they_return() {
+    let src = r#"locus W { params { name: String = "w"; } dissolve() { println(f"W.dissolve {self.name}"); } }
+fn cyc1(n: Int) -> W { if n == 0 { return W { name: f"base{n}" }; } return cyc2(n - 1); }
+fn cyc2(n: Int) -> W { return cyc1(n); }
+fn main() {
+    let f = cyc1;
+    let a = f(3);
+    f(2);
+    let g = cyc2;
+    let b = g(1);
+    cyc1(4);
+    println(f"{a.name} {b.name}");
+}
+"#;
+    let bin = harness::unique_bin("hale_recursive_factories");
+    let options = hale_codegen::BuildOptions { asan: true, ..build_opts::options() };
+    build_opts::build_source(src, &bin, &options).expect("build");
+    let out = Command::new(&bin).env("LOTUS_NO_CHUNK_POOL", "1").output().expect("run");
+    let _ = std::fs::remove_file(&bin);
+    let (stdout, stderr) = (String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+    assert!(out.status.success() && !stderr.contains("Sanitizer"), "{stdout}\n{stderr}");
+    assert_eq!(stdout, "W.dissolve base0\nW.dissolve base0\nbase0 base0\nW.dissolve base0\nW.dissolve base0\n");
+}
