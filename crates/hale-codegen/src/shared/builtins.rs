@@ -1420,6 +1420,23 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             ),
             None,
         );
+        // declare void @lotus_form_retire_replaced_flat(...) — the same
+        // arguments, for a descriptor with no nested entry.
+        self.module.add_function(
+            "lotus_form_retire_replaced_flat",
+            self.context.void_type().fn_type(
+                &[
+                    ptr_t.into(),
+                    ptr_t.into(),
+                    ptr_t.into(),
+                    i64_t2.into(),
+                    ptr_t.into(),
+                    i64_t2.into(),
+                ],
+                false,
+            ),
+            None,
+        );
         // declare void @lotus_vec_truncate(ptr vec, i64 new_len, ptr arena,
         //     i64 size, ptr desc, i64 n_desc) — @form(vec) truncate/clear,
         // each removed element retired as `pop` retires it.

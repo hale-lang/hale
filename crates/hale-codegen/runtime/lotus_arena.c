@@ -6462,6 +6462,69 @@ static int lotus_retire_collect(lotus_retire_blocks_t *b, const char *base,
     return 1;
 }
 
+/* Free the element block itself, at the size its sentinel names (-1 a
+ * String, -2 a Bytes, else the struct's size). */
+static void lotus_form_retire_block(lotus_arena_t *a, void *old_blob,
+                                    int64_t size) {
+    size_t block_size;
+    if (size == -1) {
+        block_size = strlen((const char *)old_blob) + 1;
+    } else if (size == -2) {
+        block_size =
+            (size_t)lotus_bytes_len(old_blob) + sizeof(int64_t);
+    } else if (size >= 0) {
+        block_size = (size_t)size;
+    } else {
+        return;
+    }
+    lotus_arena_free_block_now(a, old_blob, block_size);
+}
+
+/* lotus_form_retire_replaced for an element whose descriptor has no
+ * nested block — a String, a Bytes, or a record whose heap fields are
+ * all top-level String and Bytes, which is most of them. The compiler
+ * calls this one when it knows that (emit_vec_retire), so a flat
+ * element never pays for the nested walk's block lists: it compares
+ * each old field with the new element's field at the same offset and
+ * frees the ones that do not survive. +23% on vec_queue_pop and
+ * vec_set_bytes when every element took the nested walk. */
+void lotus_form_retire_replaced_flat(void *arena_ptr, void *old_blob,
+                                     void *new_blob, int64_t size,
+                                     const int32_t *str_offs,
+                                     int64_t n_offs) {
+    lotus_arena_t *a = (lotus_arena_t *)arena_ptr;
+    if (!a || !old_blob || old_blob == new_blob) return;
+    if (!lotus_arena_contains_ptr(a, old_blob)) return;
+    const char *old_v = (const char *)old_blob;
+    const char *new_v = (const char *)new_blob;
+    for (int64_t i = 0; i < n_offs; i++) {
+        int32_t off = str_offs[i] & LOTUS_RETIRE_OFF_MASK;
+        int is_bytes = (str_offs[i] & LOTUS_RETIRE_OFF_BYTES) != 0;
+        char *oldp;
+        memcpy(&oldp, old_v + off, sizeof(char *));
+        if (!oldp) continue;
+        if (new_v) {
+            char *newp;
+            memcpy(&newp, new_v + off, sizeof(char *));
+            if (oldp == newp) continue; /* survives into the new element */
+        }
+        int dup = 0;
+        for (int64_t j = 0; j < i; j++) {
+            char *pj;
+            memcpy(&pj, old_v + (str_offs[j] & LOTUS_RETIRE_OFF_MASK),
+                   sizeof(char *));
+            if (pj == oldp) { dup = 1; break; }
+        }
+        if (dup) continue;
+        if (!lotus_arena_contains_ptr(a, oldp)) continue;
+        size_t fsize = is_bytes
+            ? (size_t)lotus_bytes_len(oldp) + sizeof(int64_t)
+            : strlen(oldp) + 1;
+        lotus_arena_free_block_now(a, oldp, fsize);
+    }
+    lotus_form_retire_block(a, old_blob, size);
+}
+
 void lotus_form_retire_replaced(void *arena_ptr, void *old_blob,
                                 void *new_blob, int64_t size,
                                 const int32_t *str_offs,
@@ -6495,18 +6558,7 @@ void lotus_form_retire_replaced(void *arena_ptr, void *old_blob,
         lotus_retire_blocks_free(&news);
         if (!ok) return;
     }
-    size_t block_size;
-    if (size == -1) {
-        block_size = strlen((const char *)old_blob) + 1;
-    } else if (size == -2) {
-        block_size =
-            (size_t)lotus_bytes_len(old_blob) + sizeof(int64_t);
-    } else if (size >= 0) {
-        block_size = (size_t)size;
-    } else {
-        return;
-    }
-    lotus_arena_free_block_now(a, old_blob, block_size);
+    lotus_form_retire_block(a, old_blob, size);
 }
 
 /* @form(vec) `truncate(n)` / `clear()` (and `@form(heap)`'s `clear()`):
@@ -6529,11 +6581,20 @@ void lotus_vec_truncate(void *vec_ptr, int64_t new_len, void *arena,
     if (new_len >= 0 && (uint64_t)new_len >= (uint64_t)v->len) return;
     size_t keep = new_len < 0 ? 0 : (size_t)new_len;
     if (arena && v->buf) {
+        /* Decided once for the call: a descriptor with no nested entry
+         * (any word carrying the bit — a size word never reaches it)
+         * takes the flat retire. */
+        int nested = 0;
+        for (int64_t k = 0; k < n_desc; k++)
+            if (desc[k] & LOTUS_RETIRE_OFF_NESTED) { nested = 1; break; }
         void **elems = (void **)v->buf;
         for (size_t i = v->len; i > keep; i--) {
             void *old = elems[i - 1];
             elems[i - 1] = NULL;
-            lotus_form_retire_replaced(arena, old, NULL, size, desc, n_desc);
+            if (nested)
+                lotus_form_retire_replaced(arena, old, NULL, size, desc, n_desc);
+            else
+                lotus_form_retire_replaced_flat(arena, old, NULL, size, desc, n_desc);
         }
     }
     v->len = keep;

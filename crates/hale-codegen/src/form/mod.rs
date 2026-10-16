@@ -426,6 +426,18 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         &mut self,
         elem_ty: &CodegenTy,
     ) -> Option<(i64, PointerValue<'ctx>, i64)> {
+        self.vec_retire_args_nested(elem_ty).map(|(size, desc, n, _)| (size, desc, n))
+    }
+
+    /// `vec_retire_args`, plus whether the descriptor has a nested entry
+    /// (`LOTUS_RETIRE_OFF_NESTED`): without one the element is retired
+    /// by `lotus_form_retire_replaced_flat`, which skips the nested
+    /// walk's block lists.
+    fn vec_retire_args_nested(
+        &mut self,
+        elem_ty: &CodegenTy,
+    ) -> Option<(i64, PointerValue<'ctx>, i64, bool)> {
+        const LOTUS_RETIRE_OFF_NESTED: u32 = 1 << 29;
         let ptr_t = self.context.ptr_type(AddressSpace::default());
         let i32_t = self.context.i32_type();
         let (size_sentinel, offs): (i64, Vec<u32>) = match elem_ty {
@@ -439,8 +451,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             _ => return None,
         };
         if offs.is_empty() {
-            return Some((size_sentinel, ptr_t.const_null(), 0));
+            return Some((size_sentinel, ptr_t.const_null(), 0, false));
         }
+        let nested = offs.iter().any(|w| w & LOTUS_RETIRE_OFF_NESTED != 0);
         let gname = match elem_ty {
             CodegenTy::TypeRef(tn) => format!("__vec_retire_desc.{}", tn),
             _ => unreachable!("only a struct element has field offsets"),
@@ -457,7 +470,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 g
             }
         };
-        Some((size_sentinel, g.as_pointer_value(), offs.len() as i64))
+        Some((size_sentinel, g.as_pointer_value(), offs.len() as i64, nested))
     }
 
     /// Free a vec element the vec no longer holds — the one `set`
@@ -499,17 +512,16 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     ) -> Result<(), CodegenError> {
         let ptr_t = self.context.ptr_type(AddressSpace::default());
         let i64_t = self.context.i64_type();
-        let Some((size_sentinel, desc_ptr, n_offs)) = self.vec_retire_args(elem_ty) else {
+        let Some((size_sentinel, desc_ptr, n_offs, nested)) = self.vec_retire_args_nested(elem_ty) else {
             return Ok(());
         };
         let old_ptr = self
             .builder
             .build_load(ptr_t, slot, &format!("{}.vec.{}.old", locus_name, tag))
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-        let retire_fn = self
-            .module
-            .get_function("lotus_form_retire_replaced")
-            .expect("lotus_form_retire_replaced declared");
+        // An element with no nested block pays only the flat compare.
+        let retire_name = if nested { "lotus_form_retire_replaced" } else { "lotus_form_retire_replaced_flat" };
+        let retire_fn = self.module.get_function(retire_name).expect("form retire declared");
         self.builder
             .build_call(
                 retire_fn,
