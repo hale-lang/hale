@@ -219,6 +219,9 @@ pub struct DeclRef {
     pub args: Vec<Ty>,
     /// The name lowering keys on (`__StdIoTcpListener`, `Cache_Int_String`).
     pub lowered: String,
+    /// The declaration's own name (`Cache` for `Cache_Int_String`): what a
+    /// site written in the template's body names it by.
+    pub template: String,
 }
 
 impl PartialEq for DeclRef {
@@ -645,6 +648,30 @@ impl PlacementTable {
     /// unlinked held row holds (K-9: that template may be the held row's
     /// source, whose instance runs in the holder's domain). A declaration
     /// nothing builds has no entry.
+    /// [`PlacementTable::domains_by_type`], with each generic
+    /// declaration's monomorphs also joined under the declaration's own
+    /// name (`Sub` beside `Sub_Int`): a site written in the template's
+    /// body names its locus by that name, and its instances run wherever
+    /// any monomorph's does (GH #1566 follow-up).
+    pub fn domains_by_template(&self) -> BTreeMap<String, TypeDomains> {
+        let mut out = self.domains_by_type();
+        let templates: BTreeMap<&str, &str> = self
+            .instances
+            .values()
+            .filter_map(|r| r.realizes.as_ref())
+            .chain(self.dynamic.iter().filter_map(|s| s.realizes.as_ref()))
+            .filter(|d| d.template != d.lowered)
+            .map(|d| (d.lowered.as_str(), d.template.as_str()))
+            .collect();
+        for (lowered, template) in templates {
+            let Some(mono) = out.get(lowered).cloned() else { continue };
+            let e = out.entry(template.to_string()).or_default();
+            e.known.extend(mono.known);
+            e.unknown |= mono.unknown;
+        }
+        out
+    }
+
     pub fn domains_by_type(&self) -> BTreeMap<String, TypeDomains> {
         let handed_off = self.handed_off();
         let unlinked: BTreeSet<&str> = self
@@ -1520,16 +1547,16 @@ impl<'d, 'a> Builder<'d, 'a> {
     fn decl_ref(&self, e: &DeclEntry<'a>, declared: Option<&TypeExpr>, from: SiteUniverse) -> (DeclRef, bool) {
         let name = e.decl.name.name.clone();
         if e.decl.generics.is_empty() {
-            return (DeclRef { site: e.site, args: Vec::new(), lowered: name }, true);
+            return (DeclRef { site: e.site, args: Vec::new(), template: name.clone(), lowered: name }, true);
         }
         let args = match self.type_args(e, declared, from) {
             Some(args) => args,
-            None => return (DeclRef { site: e.site, args: Vec::new(), lowered: name }, false),
+            None => return (DeclRef { site: e.site, args: Vec::new(), template: name.clone(), lowered: name }, false),
         };
         let lowered = crate::mangle::mangle_generic_name(&name, &args);
         let tys: Vec<_> = args.iter().map(|a| crate::resolve::resolve_type_expr(a, &self.top.names)).collect();
         let known = lowered.is_ok() && tys.iter().all(|t| !matches!(t, crate::ty::Ty::Unknown));
-        (DeclRef { site: e.site, args: tys, lowered: lowered.unwrap_or(name) }, known)
+        (DeclRef { site: e.site, args: tys, template: name.clone(), lowered: lowered.unwrap_or(name) }, known)
     }
 
     fn hole(&mut self, at: HoleAt, kind: HoleKind) {
@@ -1580,7 +1607,7 @@ impl<'d, 'a> Builder<'d, 'a> {
             })
             .collect();
         expanded.sort_by_key(|e| e.literal);
-        let realizes = DeclRef { site, args: Vec::new(), lowered: l.name.name.clone() };
+        let realizes = DeclRef { site, args: Vec::new(), lowered: l.name.name.clone(), template: l.name.name.clone() };
         self.table.root = Some(RootRow {
             decl: root.clone(),
             realizes: realizes.clone(),

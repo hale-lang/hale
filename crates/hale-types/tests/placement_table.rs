@@ -163,9 +163,9 @@ fn two_universes_one_numeric_id_stay_two_identities() {
     // The collision is present, or the case proves nothing.
     assert_eq!(collider_id, reader_id, "the padding no longer lands `Collider` on the reader's id");
 
-    let user_decl = DeclRef { site: SiteRef::user(collider_id), args: Vec::new(), lowered: "Collider".into() };
+    let user_decl = DeclRef { site: SiteRef::user(collider_id), args: Vec::new(), lowered: "Collider".into(), template: "Collider".into() };
     let stdlib_decl =
-        DeclRef { site: SiteRef::stdlib(reader_id), args: Vec::new(), lowered: "__StdIoUdpReader".into() };
+        DeclRef { site: SiteRef::stdlib(reader_id), args: Vec::new(), lowered: "__StdIoUdpReader".into(), template: "__StdIoUdpReader".into() };
     assert_eq!(user_decl.site.id, stdlib_decl.site.id);
     assert_ne!(user_decl.site.universe, stdlib_decl.site.universe);
     assert_ne!(user_decl, stdlib_decl, "one numeric id, two canonical declaration keys");

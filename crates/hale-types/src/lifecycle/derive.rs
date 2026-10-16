@@ -769,7 +769,7 @@ fn dynamic_fields<'a>(
             let Some(site) = index.names(&ty, universe) else { continue };
             let Some(field_decl) = index.decl(site) else { continue };
             let Some(literal) = ids.site_id(*id).map(SiteRef::user) else { continue };
-            let realizes = DeclRef { site, args: Vec::new(), lowered: field_decl.name.name.clone() };
+            let realizes = DeclRef { site, args: Vec::new(), lowered: field_decl.name.name.clone(), template: field_decl.name.name.clone() };
             let field = p.name.name.clone();
             // Every instance of a literal shares its rows: a field literal
             // reached under several of its declaration's templates is one
