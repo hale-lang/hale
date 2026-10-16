@@ -1280,6 +1280,16 @@ fn build_resolved_lowered(
     let lifecycle = resolved.lifecycle().ok_or_else(|| {
         CodegenError::missing_row("lifecycle_order", "the program's lifecycle plan, which every spine is emitted from", None)
     })?;
+    // The owned-view column (GH #1554): which bindings, operands and
+    // writes copy is the snapshot's answer, computed once over the
+    // checker's types; lowering runs no pass of its own.
+    let owned_views = resolved.owned_views().ok_or_else(|| {
+        CodegenError::missing_row(
+            "owned_views",
+            "the owned-view column, which says which bindings and operands take an owned copy and which writes copy on write",
+            None,
+        )
+    })?;
     let entry = resolved.entry().ok_or_else(|| {
         CodegenError::missing_row(
             "entrypoint",
@@ -1581,6 +1591,7 @@ fn build_resolved_lowered(
         current_user_fn_scratch_local: false,
         user_types: BTreeMap::new(),
         pending_type_names: BTreeSet::new(),
+        pending_enum_names: BTreeSet::new(),
         user_type_aliases: BTreeMap::new(),
         user_enums: BTreeMap::new(),
         user_interfaces: BTreeSet::new(),
@@ -1686,10 +1697,7 @@ fn build_resolved_lowered(
         replica_index_for_next_locus_instantiation: None,
         current_instantiation_replica_index: 0,
         owner_table,
-        owned_views: hale_types::view_bindings::OwnedViews::of(
-            &[merged],
-            &import_renames.iter().map(|(segs, m)| (segs.clone(), m.clone())).collect(),
-        ),
+        owned_views,
         cell_part_flags: HashMap::new(),
         cow_exempt_slots: HashSet::new(),
         placement: &resolved.placement,
@@ -3686,6 +3694,11 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// type even when the stdlib type's full TypeInfo hasn't
     /// been registered yet.
     pub(crate) pending_type_names: BTreeSet<String>,
+    /// The concrete enums among `pending_type_names`: until its
+    /// declaration lands, a name that resolves to no layout (a monomorph's
+    /// field of one, `Box<Mode>`'s `value`, waits for it), never a
+    /// record's.
+    pub(crate) pending_enum_names: BTreeSet<String>,
     /// GH #759: `type Name = T;` — name → target type expression.
     /// An alias is TRANSPARENT: it declares no LLVM type of its
     /// own, and `type_expr_to_codegen_ty` resolves a use of the
@@ -4462,10 +4475,11 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// `CodegenError`, which is F.39's rule.
     pub(crate) owner_table: &'p crate::ownership::OwnerTable,
     /// The bindings of a field's String, Bytes or compound value that a
-    /// later write may replace while they are live
-    /// (`crate::view_bindings`): those bind an owned copy, every other
-    /// one the field's own pointer.
-    pub(crate) owned_views: hale_types::view_bindings::OwnedViews,
+    /// later write may replace while they are live, and the writes that
+    /// copy on write: the view's owned-view column
+    /// (`hale_types::view_bindings`, GH #1554). Those bind an owned copy,
+    /// every other one the field's own pointer.
+    pub(crate) owned_views: &'p hale_types::view_bindings::OwnedViews,
     /// Per local (its slot) and part, the flag a copy on write reads:
     /// does the frame own the part yet, or does the form's cell it was
     /// read from (`hale_types::view_bindings`, the cell-read rule)?
@@ -9273,6 +9287,76 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 synthesized_loci.push(synthesized);
             }
         }
+        // The concrete names and the alias targets are known before any
+        // monomorph is declared: a monomorph's field of a user record
+        // (`Holder<In>`'s `inner: In`, `[In; 2]`) resolves by the name, as
+        // a user record's own does, whatever the declaration order.
+        // B8: pre-register every concrete type name so fields
+        // typed as a forward-referenced or path-qualified stdlib
+        // type resolve cleanly. Parallels the pending_locus_names
+        // pre-pass for loci. Full TypeInfo lands in
+        // `declare_user_type` below; this set just keeps the
+        // existence check optimistic so cross-decl references
+        // don't fail on declaration order.
+        for t in &type_decls {
+            if t.generics.is_empty() {
+                self.pending_type_names.insert(t.name.name.clone());
+                if matches!(t.body, TypeDeclBody::Enum(_)) {
+                    self.pending_enum_names.insert(t.name.name.clone());
+                }
+            }
+        }
+
+        // GH #759: record the alias targets before anything lowers
+        // a type expression. `type Thing = Int;` adds no LLVM type
+        // — a use of `Thing` lowers as `Int` — so the name must be
+        // resolvable from the first signature onwards.
+        for t in &type_decls {
+            if let TypeDeclBody::Alias(te) = &t.body {
+                if t.generics.is_empty() {
+                    self.user_type_aliases
+                        .insert(t.name.name.clone(), te.clone());
+                }
+            }
+        }
+        // Drop any alias whose chain comes back to its own name.
+        // `check` reports the cycle with a span; codegen only has
+        // to make sure the resolution below terminates — following
+        // `type A = B; type B = A;` would recurse until the stack
+        // ran out.
+        let cyclic: Vec<String> = self
+            .user_type_aliases
+            .keys()
+            .filter(|n| self.alias_chain_is_cyclic(n))
+            .cloned()
+            .collect();
+        for n in cyclic {
+            self.user_type_aliases.remove(&n);
+        }
+
+        // The program's enums before the monomorphs: a monomorph's field
+        // of one (`Box<Mode>`'s `value`) takes its layout (a payload enum
+        // is a pointer to its storage, a payload-less one an i32 tag) and
+        // its retire walk from the enum's declaration, which the pending
+        // name alone cannot give. An enum whose payload names a type not
+        // declared yet (a monomorph, `Wrap { Held(Box<Int>) }`) joins the
+        // monomorphs' dependency loop below, and a monomorph naming an
+        // enum not declared yet waits there for it (the name resolves to
+        // no layout until then, `pending_enum_names`).
+        let mut late_enums: Vec<TypeDecl> = Vec::new();
+        for t in &type_decls {
+            if t.generics.is_empty() && matches!(t.body, TypeDeclBody::Enum(_)) {
+                match self.declare_user_type(t) {
+                    Ok(()) => {}
+                    Err(CodegenError::Unsupported(msg))
+                        if msg.contains("not synthesized") || msg.contains("unknown type name") =>
+                    {
+                        late_enums.push(t.clone());
+                    }
+                    Err(e) => return Err(e),
+                }
+            }
+        }
         // Phase 2: declare synthesized types in dependency order.
         // Each iteration, attempt every still-pending decl; keep
         // those whose declarations succeed and retry the rest.
@@ -9281,6 +9365,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // can't directly contain themselves) and surfaces a
         // clear error.
         let mut pending = synthesized_types;
+        pending.extend(late_enums);
         while !pending.is_empty() {
             let mut next_pending: Vec<TypeDecl> = Vec::new();
             let mut progress = false;
@@ -9330,46 +9415,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 self.generic_locus_templates
                     .insert(l.name.name.clone(), l.clone());
             }
-        }
-
-        // B8: pre-register every concrete type name so fields
-        // typed as a forward-referenced or path-qualified stdlib
-        // type resolve cleanly. Parallels the pending_locus_names
-        // pre-pass for loci. Full TypeInfo lands in
-        // `declare_user_type` below; this set just keeps the
-        // existence check optimistic so cross-decl references
-        // don't fail on declaration order.
-        for t in &type_decls {
-            if t.generics.is_empty() {
-                self.pending_type_names.insert(t.name.name.clone());
-            }
-        }
-
-        // GH #759: record the alias targets before anything lowers
-        // a type expression. `type Thing = Int;` adds no LLVM type
-        // — a use of `Thing` lowers as `Int` — so the name must be
-        // resolvable from the first signature onwards.
-        for t in &type_decls {
-            if let TypeDeclBody::Alias(te) = &t.body {
-                if t.generics.is_empty() {
-                    self.user_type_aliases
-                        .insert(t.name.name.clone(), te.clone());
-                }
-            }
-        }
-        // Drop any alias whose chain comes back to its own name.
-        // `check` reports the cycle with a span; codegen only has
-        // to make sure the resolution below terminates — following
-        // `type A = B; type B = A;` would recurse until the stack
-        // ran out.
-        let cyclic: Vec<String> = self
-            .user_type_aliases
-            .keys()
-            .filter(|n| self.alias_chain_is_cyclic(n))
-            .cloned()
-            .collect();
-        for n in cyclic {
-            self.user_type_aliases.remove(&n);
         }
 
         // Now declare concrete user-written non-generic decls.
@@ -15759,6 +15804,22 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         }
     }
 
+    /// A call through the fn value `callee` evaluates to: a block whose
+    /// value is a fn value bound in scope (`{ f }(x)`, the desugar of a
+    /// binding that shadows a fn of its name).
+    fn lower_computed_fn_call(
+        &mut self,
+        callee: &Expr,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<Option<(BasicValueEnum<'ctx>, CodegenTy)>, CodegenError> {
+        let (value, ty) = self.lower_expr(callee, scope)?;
+        let CodegenTy::FnPtr { args: arg_tys, ret: ret_ty } = ty else {
+            return Err(CodegenError::Unsupported(format!("call through a value of type {ty:?}, not a fn value")));
+        };
+        self.emit_fnptr_indirect_call(value.into_pointer_value(), &arg_tys, ret_ty.as_deref(), args, scope, "fn value")
+    }
+
     fn lower_user_fn_call(
         &mut self,
         name: &str,
@@ -17700,6 +17761,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                             scope,
                         )?;
                     }
+                    // A call through a value the callee evaluates to (a
+                    // fn value bound in scope that shadows a fn of its
+                    // name, `crate::shadowed_callees` in hale-types).
+                    Expr::Block(_) => {
+                        let _ = self.lower_computed_fn_call(callee, args, scope)?;
+                    }
                     _ => {
                         return Err(CodegenError::Unsupported(
                             "non-identifier callee".to_string(),
@@ -17709,40 +17776,22 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 Ok(BlockEnd::Open)
             }
             Stmt::Let { name, ty: ascribed, value, id, span, .. } => {
-                // m61b: when a let has both a generic-typed
-                // ascription and a bare-name struct literal as
-                // its value, rewrite the literal's path to the
-                // mangled name. So `let b: Box<Int> = Box { value: 42 };`
-                // works without requiring the user to spell
-                // Box_Int.
+                // m61b: a literal spelled with a generic template's
+                // name takes the ascription's arguments — `let b:
+                // Box<Int> = Box { value: 42 };` builds `Box_Int` —
+                // and an array or tuple literal's elements each take
+                // the element type's (`rewrite_generic_literal`).
                 let rewritten;
-                let value_to_lower: &Expr = match (ascribed.as_ref(), value)
+                let value_to_lower: &Expr = match ascribed
+                    .as_ref()
+                    .and_then(|asc| self.type_expr_to_codegen_ty(asc).ok())
+                    .and_then(|t| self.rewrite_generic_literal(value, &t))
                 {
-                    (
-                        Some(asc),
-                        Expr::Struct {
-                            path,
-                            inits,
-                            span: sspan,
-                            id: sid,
-                        },
-                    ) => match self
-                        .resolve_generic_struct_path(path, asc)
-                    {
-                        Some(new_path) => {
-                            // GH #921 A2: same source expression,
-                            // renamed path — it keeps its id.
-                            rewritten = Expr::Struct {
-                                id: *sid,
-                                path: new_path,
-                                inits: inits.clone(),
-                                span: *sspan,
-                            };
-                            &rewritten
-                        }
-                        None => value,
-                    },
-                    _ => value,
+                    Some(r) => {
+                        rewritten = r;
+                        &rewritten
+                    }
+                    None => value,
                 };
                 // m82's rule — the binding is the user-visible
                 // handle, so the instance lives until that handle
@@ -18122,6 +18171,22 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 Ok(BlockEnd::Open)
             }
             Stmt::Assign { target, op, value, id: assign_id, .. } => {
+                // A literal spelled with a generic template's name takes
+                // its arguments from the place's declared type, as at a
+                // `let` ascription: `self.cfg = Cfg { n: 2 }` with `cfg:
+                // Cfg<Int>` builds `Cfg_Int`. The literal keeps its id.
+                let rewritten;
+                let value: &Expr = match matches!(op, AssignOp::Eq)
+                    .then(|| self.place_declared_ty(target, scope))
+                    .flatten()
+                    .and_then(|t| self.rewrite_generic_literal(value, &t))
+                {
+                    Some(r) => {
+                        rewritten = r;
+                        &rewritten
+                    }
+                    None => value,
+                };
                 // A write into a local whose part another name may still
                 // reach — a nested part of a form cell's read, or the
                 // whole of a local bound from a place — copies that part
@@ -18643,14 +18708,24 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 // survived it. The same for an element of a local
                 // array, `arr[i] = <place>`. A literal or a call
                 // result is fresh and is stored as it is.
+                //
+                // An element of a local array takes a copy of a place's
+                // String or Bytes too, as a local's field does
+                // (`finish_lvalue_assign`): the array outlives the place's
+                // block, which a later write may replace (`keep[0] = s`
+                // with `s` a view of `self.f.s`, then `self.put()`, then a
+                // read of `keep[0]`, in a loop's later iteration or on one
+                // pass). A bare local rebound to one is the view column's
+                // to decide (below).
                 let local_value_slot = target.head.name != "self"
                     && (target.tail.is_empty()
                         || (target.tail.len() == 1
                             && matches!(target.tail[0], LValueSeg::Index(_))));
+                let element_string = !target.tail.is_empty() && matches!(slot_ty, CodegenTy::String | CodegenTy::Bytes);
                 let mut bound_copy = false;
                 let new_val = if local_value_slot
                     && matches!(op, AssignOp::Eq)
-                    && matches!(slot_ty, CodegenTy::TypeRef(_))
+                    && (matches!(slot_ty, CodegenTy::TypeRef(_)) || element_string)
                     && Self::expr_is_place(value)
                 {
                     let dest = self.current_arena_ptr()?;
@@ -23252,34 +23327,16 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 }
             }
             (Some(e), Some(declared_ty)) => {
-                // m67: rewrite a bare-name struct literal in return
-                // position to its mangled monomorph using the fn's
-                // declared return type as the target.
+                // m67: a literal spelled with a generic template's name
+                // in return position takes the fn's declared return type's
+                // arguments (`rewrite_generic_literal`).
                 let rewritten;
-                let e_to_lower: &Expr = match e {
-                    Expr::Struct { path, inits, span, id } => {
-                        match self
-                            .resolve_generic_struct_path_for_codegen_ty(
-                                path,
-                                &declared_ty,
-                            )
-                        {
-                            Some(new_path) => {
-                                // GH #921 A2: same source
-                                // expression, renamed path — it
-                                // keeps its id.
-                                rewritten = Expr::Struct {
-                                    id: *id,
-                                    path: new_path,
-                                    inits: inits.clone(),
-                                    span: *span,
-                                };
-                                &rewritten
-                            }
-                            None => e,
-                        }
+                let e_to_lower: &Expr = match self.rewrite_generic_literal(e, &declared_ty) {
+                    Some(r) => {
+                        rewritten = r;
+                        &rewritten
                     }
-                    _ => e,
+                    None => e,
                 };
                 // m49 sret-style return-arena routing
                 // (2026-05-22 PM, a downstream daemon / SymbolBook
@@ -24971,6 +25028,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         ))
                     })
                 }
+                Expr::Block(_) => self.lower_computed_fn_call(callee, args, scope)?.ok_or_else(|| {
+                    CodegenError::Unsupported(
+                        "a fn value that returns no value is used in expression position".to_string(),
+                    )
+                }),
                 _ => Err(CodegenError::Unsupported(
                     self.diagnose_unresolved_callee(callee, scope),
                 )),
@@ -26803,7 +26865,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 let mut field_vals: Vec<(BasicValueEnum<'ctx>, CodegenTy)> =
                     Vec::with_capacity(args.len());
                 for (j, a) in args.iter().enumerate() {
-                    let (v, ty) = self.lower_expr(a, scope)?;
+                    // A literal spelled with a generic template's name
+                    // takes the payload field's arguments.
+                    let rewritten = self.rewrite_generic_literal(a, &variant.field_tys[j]);
+                    let (v, ty) = self.lower_expr(rewritten.as_ref().unwrap_or(a), scope)?;
                     if ty != variant.field_tys[j] {
                         return Err(CodegenError::Unsupported(format!(
                             "{}::{} arg {}: expected type {:?}, got {:?}",
@@ -33683,6 +33748,33 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     }
 
 
+    /// The declared type of an assignment's place, read off the
+    /// layouts without emitting anything: the head's (`self`'s field,
+    /// a local's), then each field's or element's in turn. `None`
+    /// where a step is not a record's, a locus's or an array's.
+    fn place_declared_ty(&self, target: &LValue, scope: &Scope<'ctx>) -> Option<CodegenTy> {
+        let mut segs = target.tail.iter();
+        let mut ty = if target.head.name == "self" {
+            let LValueSeg::Field(f) = segs.next()? else { return None };
+            self.current_self.as_ref()?.fields.get(&f.name)?.1.clone()
+        } else {
+            scope.locals.get(&target.head.name)?.1.clone()
+        };
+        for seg in segs {
+            ty = match (seg, &ty) {
+                (LValueSeg::Field(f), CodegenTy::TypeRef(t)) => {
+                    self.user_types.get(t)?.fields.get(&f.name)?.1.clone()
+                }
+                (LValueSeg::Field(f), CodegenTy::LocusRef(l)) => {
+                    self.user_loci.get(l)?.fields.get(&f.name)?.1.clone()
+                }
+                (LValueSeg::Index(_), CodegenTy::Array(elem, _)) => (**elem).clone(),
+                _ => return None,
+            };
+        }
+        Some(ty)
+    }
+
     /// Generic lvalue walker for assignment targets that the
     /// fast-path branches in `Stmt::Assign` didn't match (1-segment
     /// `self.X`, 2-segment `self.X[i]`, 1-segment `local`,
@@ -33739,6 +33831,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let mut cur_struct: Option<(StructType<'ctx>, BTreeMap<String, (u32, CodegenTy)>)>;
         let mut array_slot_ty: Option<CodegenTy>;
         let mut array_storage_direct = false;
+        // Some when cur_ptr points at a tuple's storage: its element
+        // types, for the next (numeric) Field segment.
+        let mut cur_tuple: Option<Vec<CodegenTy>> = None;
         let mut name: String;
 
         if target.head.name == "self" {
@@ -33833,6 +33928,17 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     // payload POINTER (SSA repr), not the storage.
                     array_storage_direct = false;
                 }
+                // A tuple local: the alloca holds its storage's pointer.
+                CodegenTy::Tuple(elems) => {
+                    cur_ptr = self
+                        .builder
+                        .build_load(ptr_t, alloca, &name)
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                        .into_pointer_value();
+                    cur_struct = None;
+                    array_slot_ty = None;
+                    cur_tuple = Some(elems.clone());
+                }
                 other => {
                     return Err(CodegenError::Unsupported(format!(
                         "lvalue: head `{}` has non-addressable type {:?}",
@@ -33851,6 +33957,65 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
 
         for (i, seg) in target.tail.iter().enumerate() {
             let is_last = i == target.tail.len() - 1;
+            // A numeric part of a tuple (`t.0`), the tuple's storage at
+            // hand: its slot, and what it holds stepped into.
+            if let (LValueSeg::Field(fident), Some(elems)) = (seg, cur_tuple.take()) {
+                let k = fident.name.parse::<usize>().ok().filter(|k| *k < elems.len()).ok_or_else(|| {
+                    CodegenError::Unsupported(format!("no part `{}` of the tuple `{}`", fident.name, name))
+                })?;
+                let storage_ty = self.llvm_tuple_storage_type(&elems);
+                let slot = unsafe {
+                    self.builder
+                        .build_gep(
+                            storage_ty,
+                            cur_ptr,
+                            &[i32_t.const_int(0, false), i32_t.const_int(k as u64, false)],
+                            &format!("{}.{}.ptr", name, k),
+                        )
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                };
+                name = format!("{}.{}", name, k);
+                if is_last {
+                    return Ok((slot, elems[k].clone(), name, owner));
+                }
+                match elems[k].clone() {
+                    CodegenTy::TypeRef(n) => {
+                        let info = self.user_types.get(&n).cloned().ok_or_else(|| {
+                            CodegenError::Unsupported(format!("lvalue: type `{}` not declared", n))
+                        })?;
+                        cur_ptr = self
+                            .builder
+                            .build_load(ptr_t, slot, &name)
+                            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                            .into_pointer_value();
+                        cur_struct = Some((info.struct_ty, info.fields));
+                        array_slot_ty = None;
+                    }
+                    CodegenTy::Array(elem, n_cap) => {
+                        cur_ptr = slot;
+                        cur_struct = None;
+                        array_slot_ty = Some(CodegenTy::Array(elem, n_cap));
+                        array_storage_direct = false;
+                    }
+                    CodegenTy::Tuple(inner) => {
+                        cur_ptr = self
+                            .builder
+                            .build_load(ptr_t, slot, &name)
+                            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                            .into_pointer_value();
+                        cur_struct = None;
+                        array_slot_ty = None;
+                        cur_tuple = Some(inner);
+                    }
+                    other => {
+                        return Err(CodegenError::Unsupported(format!(
+                            "lvalue: cannot step into the tuple part `{}` of type {:?}",
+                            name, other
+                        )));
+                    }
+                }
+                continue;
+            }
             match seg {
                 LValueSeg::Field(fident) => {
                     let (struct_ty, fields) =
@@ -33963,6 +34128,16 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                             array_slot_ty =
                                 Some(CodegenTy::Array(elem, n_cap));
                         }
+                        CodegenTy::Tuple(inner) => {
+                            cur_ptr = self
+                                .builder
+                                .build_load(ptr_t, field_ptr, &name)
+                                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                                .into_pointer_value();
+                            cur_struct = None;
+                            array_slot_ty = None;
+                            cur_tuple = Some(inner);
+                        }
                         other => {
                             return Err(CodegenError::Unsupported(format!(
                                 "lvalue: cannot step into non-struct field `{}` \
@@ -34059,6 +34234,28 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                             cur_struct = Some((info.struct_ty, info.fields));
                             array_slot_ty = None;
                             owner = Some(LvalueOwner { ptr: loaded, locus: n.clone(), is_self: false });
+                        }
+                        // An element that is itself an array: the slot holds
+                        // its storage's pointer, or is its storage where
+                        // the element type is laid out inline.
+                        CodegenTy::Array(inner, n) => {
+                            array_storage_direct = matches!(
+                                self.llvm_basic_type(&CodegenTy::Array(inner.clone(), n)),
+                                inkwell::types::BasicTypeEnum::ArrayType(_)
+                            );
+                            cur_ptr = slot_ptr;
+                            cur_struct = None;
+                            array_slot_ty = Some(CodegenTy::Array(inner, n));
+                        }
+                        CodegenTy::Tuple(inner) => {
+                            cur_ptr = self
+                                .builder
+                                .build_load(ptr_t, slot_ptr, &name)
+                                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                                .into_pointer_value();
+                            cur_struct = None;
+                            array_slot_ty = None;
+                            cur_tuple = Some(inner);
                         }
                         other => {
                             return Err(CodegenError::Unsupported(format!(

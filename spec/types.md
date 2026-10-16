@@ -306,14 +306,22 @@ one may replace its place (`take(match self.e { E::A(s) -> s, E::B ->
 "", }, self.reset())`). Such a
 write is a store into the place's field (`self.f.s = ..`, `self.f =
 ..`, through any root), a call whose callee writes it, transitively (a
-method by its name, on any locus declaring one; a method called on the
-field itself, as a form's `set`), and anything that may run other code
-of the locus: a publish, `yield` and a stdlib call that parks on an
-`async_io` pool write what the program's bus handlers write, and a call
-the compiler cannot positively identify — through a fn value or a field
-whose type is a fn (however spelled) or cannot be classified, of a name
-no declaration answers to — and a recovery statement may write
-anything. A field
+method of the locus its receiver's type names, only that locus's; a
+method through an interface or a perspective, any locus's of the name;
+a method called on the field itself, as a form's `set`), and anything
+that may run other code of the locus: a publish, `yield` and a stdlib
+call that parks on an `async_io` pool write what the program's bus
+handlers write (a publish lowered as a direct call of its one
+subscriber's handler writes what that handler writes), and a call the
+checker did not resolve — through a fn value (a local, a parameter, a
+field of fn type), of a name no declaration answers to, on a receiver it
+could not type — and a recovery statement may write anything. Every one
+of these questions is answered over the types the checker resolved (the
+ones it checks the program against: an alias, an imported seed's
+`lib::Kid`, a qualified name and a fn-typed alias are what they name,
+whatever the spelling), never over a spelling resolved again; where the
+checker has no type for a value or no callee for a call, the binding is
+an owned copy. A field
 of a record the frame holds itself is never replaced under a binding of
 it (a write through a local root replaces the field's pointer); a field
 read through a handle is — a value whose type is a locus, an interface
@@ -341,8 +349,14 @@ call that may hand it back). A call may hand back a place's value when
 its callee returns a part of a parameter (`fn get_in(r: R) -> In {
 return r.arr[0]; }` returns the caller's block uncopied), a form cell's
 read (`fn read() -> Rec { return self.m.get(1) or Rec { }; }`), or what
-a callee that does returns — transitively, by which parameter; a callee
-the compiler cannot identify may hand back anything. A result declared a
+a callee that does returns — transitively, by which parameter. A callee
+the compiler cannot identify (a call through a fn value, a name nothing
+declares) may hand back a part of any argument its declared result type
+can be, hold or share a record, enum, array or tuple with (a `Response`
+handed back by `fn(Context) -> Response` is no part of the `Context`),
+and anything where that type is unknown; through a fn value that may be
+a method read as a value, also whatever that method's receiver holds. A
+result declared a
 primitive or a handle never is one; a result fresh at its top level that
 holds such a value in a field (a returned struct literal around `r.arr[0]`)
 copies only when a write goes below that field. A free fn returning a
@@ -1228,6 +1242,14 @@ declared type at the site. The sites that declare one are:
 - a declared return type — `fn make() -> Box<Int> { return Box { value: 4 }; }`
 - a declared field or param, at its DEFAULT — `params { b: Box<Int> = Box { value: 0 }; }`
 - a declared field of a data type, at a literal's init — `Outer { inner: Box { value: 9 } }`
+- the place of a plain assignment (`=`, not `+=`) — `self.cfg = Cfg { n: 2 };`, a local, a record's field or an array's element, by the place's declared type
+
+An array (`[x, y]` or `[x; N]`) or tuple literal at one of these sites
+hands each element the declared element type, so its template literals
+take that type's arguments: `let cs: [Cfg<Int>; 2] = [Cfg { n: 1 }, Cfg { n: 2 }];`,
+`let rs: [Cfg<Int>; 3] = [Cfg { n: 0 }; 3];`,
+`let t: (Cfg<Int>, String) = (Cfg { n: 1 }, "a");`, and a param default
+of array type (`params { cfgs: [Cfg<Int>; 2] = [Cfg { n: 1 }, Cfg { n: 2 }]; }`).
 
 At a `let` ascription, a transparent alias of the whole instantiation
 supplies the same arguments: `type IntBox = Box<Int>;` permits
@@ -1236,8 +1258,17 @@ through their import aliases before specialization. Different aliases
 for one imported template retain the same declaration identity; each
 construction carries its own concrete arguments and child layouts.
 
-Anywhere else — an un-annotated `let`, a literal in statement
-position — the arguments cannot be recovered, and the literal is a
+The literal's fields are then typed as the instantiation's: a field
+whose declared type mentions a parameter holds a value of the type the
+arguments make of it, so with `b: Box<Int>`, `b = Box { value: "x" };`
+is a type error at `"x"` (`type `Box`: field `value` expects `Int`, got
+`String``), wherever the literal stands. An `Int` widens into such a
+`Float` field of a data type, as into any data literal's (F.23), never
+into a locus param's.
+
+Anywhere else — an un-annotated `let` (of the literal, or of an array
+or tuple literal holding it), a literal in statement position — the
+arguments cannot be recovered, and the literal is a
 type error naming the template and the annotation to write. There
 is no inference from a literal's field values back to the
 parameters.
@@ -1529,6 +1560,34 @@ a condition, a fn or method body, a lifecycle hook, a bus handler, a
 `params` default, a `const` initializer. Only a partial program a
 library caller assembles (a styleguide snippet, a test harness's
 fragment) keeps the permissive reading (dna/FRICTION.md F.18).
+
+A binding declared as a fn value shadows a top-level fn, or a builtin
+(`len`, `min`, a `bounded` intrinsic, a printer), of the same name in a
+call, as it does wherever else the name is read. A binding is declared
+as a fn value when its declaration says so: a parameter or a `let`
+written with a `fn(..)` type, a `let` (or a tuple `let`'s part) of a
+fn's name or of another such binding, a `for` over an array literal of
+fns' names, a `match` pattern's binding of a variant's value whose
+declared type is a `fn(..)` type (`Op::Use(f)` with `Use(fn(Int) -> Int)`). So `fn apply(f: fn(Int) -> Int, x: Int) -> Int { return f(x); }`
+beside a `fn f` calls the parameter, and `{ let helper = zero; helper() }`
+calls `zero`.
+
+A bare callee no such binding shadows names the fn or the builtin. A
+binding of a known type that is no fn leaves it so (`let max = 10;
+max(1, 2)` calls the builtin, `max` still reads 10). A binding whose
+declaration does not show it to be a fn value, while its type is one or
+is one the check cannot name (a tuple pattern's binding, a value read
+from a field or a call), would read as the callee and is not: the check
+refuses the call, and the binding is given its type, or renamed. A call
+through a value that is no fn (`let x = 3; x(2)`) is refused at the
+callee.
+
+A call the compiler writes into the user's scope (an f-string's
+`to_string` and `__fmt`, a `from_json`'s parser) is the compiler's,
+whatever binding of the name is in scope. A qualified callee
+(`lib::helper()`) names the declaration. The check and the build read
+every call one way: the desugar sequence calls a shadowing binding as a
+value before either sees the program.
 
 `hale check <file>` loads that file and what its own imports reach,
 never the other files of its directory — exactly what `hale build

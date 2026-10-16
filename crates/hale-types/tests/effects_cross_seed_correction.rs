@@ -177,10 +177,14 @@ fn the_replay_gate_refuses_what_it_refused() {
 /// the six cross-seed rows listed is among them.
 #[test]
 fn api() {
+    // GH #1554: two more rows on both sides, `{alloc}` from the stores
+    // into a child locus's field from outside its methods (`self.reader.root
+    // = self.root`), which lowering copies (GH #1561) and the survey now
+    // sees through the checker's types.
     pinned(
         "api",
-        310,
         312,
+        314,
         "
         Api::definition_draft_handle  does={syscall,block,env,alloc}
         Api::definitions_read  does={syscall,block,env,alloc}
@@ -205,9 +209,11 @@ fn host_verb() {
 /// host: 106 of 515 rows.
 #[test]
 fn host() {
+    // GH #1554: the renames-blind side gains a row, `{alloc}` from a copy
+    // its walk, which resolves no imported type, cannot rule out.
     pinned(
         "host",
-        510,
+        511,
         515,
         "
         GovernanceCli::review_profile  does={syscall,block,time,entropy,env,alloc,secret_use}
@@ -323,9 +329,12 @@ fn host() {
 /// operations: 23 of 452 rows.
 #[test]
 fn operations() {
+    // GH #1554: the renames-blind side gains `ingest_ext  does={alloc}`
+    // (a copy its walk, which resolves no imported type, cannot rule
+    // out), so the row is no longer one the correction changes.
     pinned(
         "operations",
-        511,
+        512,
         531,
         "
         AttemptCommandCodec::graph_position  does={alloc}
@@ -356,7 +365,6 @@ fn operations() {
         held_machine  does={alloc}
         hold_person  does={alloc}
         hole_role_position  does={alloc}
-        ingest_ext  does={alloc}
         under_node_of  does={syscall,block,time,entropy,env,alloc,secret_use}
         ",
     );
@@ -381,9 +389,10 @@ fn organization_runtime() {
 /// organization_source: 4 of 48 rows.
 #[test]
 fn organization_source() {
+    // GH #1554: as `host`'s, the renames-blind side gains a row.
     pinned(
         "organization_source",
-        48,
+        49,
         49,
         "
         OrganizationPublicationInputs::birth  does={env,alloc}

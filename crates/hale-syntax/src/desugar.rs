@@ -911,6 +911,9 @@ fn rewrite_expr(e: &mut Expr, topics: &Topics, out: &mut Vec<TopicRewrite>) {
 #[derive(Debug, Clone)]
 struct EligibleRewrite {
     publisher_locus: String,
+    /// The locus whose handler the call runs: the publisher itself, or
+    /// the type of its one field the chain steps through.
+    subscriber_locus: String,
     access_chain: Vec<String>,
     /// GH #1108: the handler takes a second `std::api::Context`; the
     /// direct call passes `std::api::local_context()`, as the bus
@@ -981,6 +984,12 @@ pub struct IntraLocusRewrite {
     /// subscriber, on the publisher itself or on its one field of the
     /// subscriber's type.
     pub handler: String,
+    /// The fields the call steps through from `self` to the handler's
+    /// locus (empty: the publisher's own handler), and that locus: what
+    /// the owned-view pass reads the send as (`self.<receiver>.<handler>(v)`,
+    /// a call of that locus's method).
+    pub receiver: Vec<String>,
+    pub subscriber: String,
     /// The identity of the send's subject, the `Use` the rewrite erased
     /// with the send: the call that replaces the send names no topic.
     /// The lowering view's correspondence reads it
@@ -1104,6 +1113,7 @@ pub fn desugar_intra_locus_topics(
                 topic.clone(),
                 EligibleRewrite {
                     publisher_locus: pub_locus,
+                    subscriber_locus: sub_locus.clone(),
                     access_chain: vec![handler.clone()],
                     takes_context: ctx_handlers.contains(&(sub_locus.clone(), handler.clone())),
                 },
@@ -1141,6 +1151,7 @@ pub fn desugar_intra_locus_topics(
             topic.clone(),
             EligibleRewrite {
                 publisher_locus: pub_locus,
+                subscriber_locus: sub_locus.clone(),
                 access_chain: vec![field, handler.clone()],
                 takes_context: ctx_handlers.contains(&(sub_locus.clone(), handler.clone())),
             },
@@ -1373,6 +1384,8 @@ fn intra_rewrite_stmt(
                             .last()
                             .expect("eligible access chain is never empty")
                             .clone(),
+                        receiver: rw.access_chain[..rw.access_chain.len() - 1].to_vec(),
+                        subscriber: rw.subscriber_locus.clone(),
                         erased: id.id,
                         context: rw.takes_context,
                     });

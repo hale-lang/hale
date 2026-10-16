@@ -299,7 +299,10 @@ fn main() {
 A declared return type does the same job (`fn make() -> Box<Int> {
 return Box { value: 4 }; }`), as does a declared field — both at
 its default and at a literal that fills it (`Outer { inner: Box {
-value: 9 } }`).
+value: 9 } }`). So does the place an assignment stores into: with
+`b: Box<Int>`, `b = Box { value: 2 };` builds a `Box<Int>`. An array
+or a tuple passes its element type down, so `let bs: [Box<Int>; 2] =
+[Box { value: 1 }, Box { value: 2 }];` builds two.
 
 What does *not* work is leaving it to the compiler to guess:
 

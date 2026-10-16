@@ -478,8 +478,11 @@ fn what_main_builds_before_a_listener_born_after_its_server_must_return() {
         ("a const read by a default", "", "n: Int = K; server: Server = Server { };", CONST_SETTLES, "", Some("the value of the const `K`")),
         ("a literal const read by a default", "", "n: Int = K; server: Server = Server { };", "const K: Int = 5;", "", None),
         // the defaults a call leaves are its callee's as the checker resolves
-        // the call (the `omitted_args` column), as lowering expands them
-        ("a call by a fn's name a local fn value also has", "", "n: Int = { let helper = zero; helper() }; server: Server = Server { };", &format!("{HELPER_SETTLES}\nfn zero() -> Int {{ return 0; }}"), "", Some("the default of `helper`'s param `n`")),
+        // the call (the `omitted_args` column), as lowering expands them; a
+        // local fn value named like a fn is the callee (spec/types.md, the
+        // binding in scope shadows the fn): a call through a value, whose
+        // return the window cannot name, not `helper`'s sleeping default
+        ("a call by a fn's name a local fn value also has", "", "n: Int = { let helper = zero; helper() }; server: Server = Server { };", &format!("{HELPER_SETTLES}\nfn zero() -> Int {{ return 0; }}"), "", Some("a call through a value")),
         ("a method call, a free fn of its name sleeping", "    fn pick(n: Int = 0) -> Int { return n; }\n    run() { let k = self.pick(); }", HOLDS, PICK_FREE_SETTLES, "", None),
         ("a method call, the method sleeping", "    fn pick(n: Int = settle()) -> Int { return n; }\n    run() { let k = self.pick(); }", HOLDS, PICK_FREE_RETURNS, "", Some("`Server`'s `run()`")),
         ("a free call in a method, a method of its name sleeping", "    fn pick(n: Int = settle()) -> Int { return n; }\n    run() { let k = pick(); }", HOLDS, PICK_FREE_RETURNS, "", None),
