@@ -3432,7 +3432,7 @@ fn main() { App { }; }
     let artifact = dump_artifact(&dir, &src);
     let raw = std::fs::read_to_string(&artifact).unwrap();
     let v: serde_json::Value = serde_json::from_str(&raw).unwrap();
-    assert_eq!(v["schema"], "1.19");
+    assert_eq!(v["schema"], "1.20");
     let adequacy =
         v["adequacy"].as_object().expect("adequacy object");
     assert!(
@@ -3442,12 +3442,13 @@ fn main() { App { }; }
     );
     assert_eq!(
         adequacy.len(),
-        8,
-        "five older families plus causes, depends and budget: {:?}",
+        9,
+        "five older families plus causes, depends, budget and placement: {:?}",
         adequacy
     );
     assert!(adequacy.contains_key("depends"), "{:?}", adequacy);
     assert!(adequacy.contains_key("budget"), "{:?}", adequacy);
+    assert!(adequacy.contains_key("placement"), "{:?}", adequacy);
 
     // …and an artifact that omits it is refused, restamped or not.
     let cut = raw.replacen(",\n    \"causes\": \"exact\"", "", 1);

@@ -56,6 +56,7 @@ pub mod model_builder;
 pub mod key_routing;
 pub mod route_coverage;
 pub mod model_query;
+mod placement_claim;
 pub mod route_loss;
 pub mod topic_identity;
 pub mod topology;

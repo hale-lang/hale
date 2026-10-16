@@ -30,6 +30,7 @@ crates/hale-cli/tests/law_selection_reaches_the_artifact.rs#5	isolation	forbid r
 crates/hale-cli/tests/law_selection_reaches_the_artifact.rs#6	isolation	forbid reaches(sources, targets) avoiding mask	Invalid	None
 crates/hale-cli/tests/model_cli.rs#0	wired	require subscribes(some subs, topic Evt)	Holds	None
 crates/hale-cli/tests/model_diff.rs#0	consumed	require subscribes(some workers, topic Evt)	Holds	None
+crates/hale-cli/tests/placement_artifact.rs#0	separated	require separate_domains(all left, all right)	Holds	None
 crates/hale-cli/tests/topology_artifact_contract.rs#0	wired	require subscribes(some subs, topic Tk)	Holds	None
 crates/hale-cli/tests/topology_artifact_contract.rs#1	wired	require subscribes(some subs, topic Tk)	Violated	None
 crates/hale-cli/tests/topology_artifact_contract.rs#2	wired	require subscribes(some subs, topic Tk)	Holds	None
@@ -74,6 +75,8 @@ crates/hale-types/tests/claim_lowering.rs#1	quiet	count subscribers(topic Evt) =
 crates/hale-types/tests/claim_no_silent_loss.rs#2	loss	require no_silent_loss(topic Payments)	Holds	None
 crates/hale-types/tests/claim_no_silent_loss.rs#3	loss	require no_silent_loss(topic Payments)	Violated	None
 crates/hale-types/tests/claim_no_silent_loss.rs#6	loss	require no_silent_loss(all quiet)	Invalid	None
+crates/hale-types/tests/claim_placement.rs#0	separate	require separate_domains(all writers, all readers)	Holds	None
+crates/hale-types/tests/claim_placement.rs#1	separate	require separate_domains(all writers, all readers)	Invalid	None
 crates/hale-types/tests/claim_route_coverage.rs#1	route	cover keys(topic Orders in 0..=1): delivered_to(exactly_one workers)	Violated	None
 crates/hale-types/tests/claim_route_coverage.rs#2	route	cover keys(topic Orders in 7..=7): delivered_to(exactly_one workers)	Violated	None
 crates/hale-types/tests/claim_route_coverage.rs#3	route	cover keys(topic Orders in 0..=0): delivered_to(exactly_one workers)	Uncertified	None

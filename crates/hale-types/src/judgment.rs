@@ -188,7 +188,7 @@ impl BusHoles {
     }
 }
 
-fn span_of(
+pub(crate) fn span_of(
     prov: &hale_model::ProvenanceTable,
     bases: &[u32],
     pid: ProvenanceId,
@@ -232,7 +232,7 @@ fn span_of(
 /// message. What this decides is only whether a VERDICT may be
 /// recorded, and over a refused domain the honest answer is
 /// `Invalid` — there is no witness and no program it describes.
-fn domain_is_judgable(
+pub(crate) fn domain_is_judgable(
     table: &ClaimIrTable,
     gref: &hale_model::GroupRef,
 ) -> bool {
@@ -4725,6 +4725,7 @@ pub fn claim_law_diags_over(
             hale_model::JudgmentFamily::Reachability
                 | hale_model::JudgmentFamily::Boundary
                 | hale_model::JudgmentFamily::Endpoint
+                | hale_model::JudgmentFamily::Placement
                 | hale_model::JudgmentFamily::Bound
                 | hale_model::JudgmentFamily::Causes
                 | hale_model::JudgmentFamily::Depends

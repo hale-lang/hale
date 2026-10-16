@@ -147,7 +147,7 @@ locus OrganizationFixture {
         self.refused(self.reseal(std::str::replace(artifact, "\"owner\": \"Org.support\"", "\"owner\": \"Org.support.reviewer\"")), "cyclic containment refused");
         self.refused(self.reseal(std::str::replace(artifact, "\"type\": \"Int\"", "\"type\": 17")), "malformed contract field refused");
         self.refused(self.reseal(std::str::replace(artifact, "\"type\": \"Int\"", "\"type\": \"Int\", \"value\": \"private\"")), "unexpected value cannot leak via contract arrays");
-        self.refused(std::str::replace(artifact, "\"schema\": \"1.19\"", "\"schema\": \"9.99\""), "unknown schema refused");
+        self.refused(std::str::replace(artifact, "\"schema\": \"1.20\"", "\"schema\": \"9.99\""), "unknown schema refused");
         self.refused(std::str::replace(artifact, "\"semantics\": 2", "\"semantics\": 3"), "unknown semantics refused");
         self.refused(artifact + "{}", "trailing JSON refused");
         let archive_artifact = self.reseal(std::str::replace(artifact, "\"file\": \"main.hl\"", "\"file\": \"/tmp/owned-source/dna/org/main.hl\""));

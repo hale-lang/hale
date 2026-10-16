@@ -110,7 +110,11 @@ bound_form        = "bound" , effect_class_ref , "<=" , INT_LIT ,
                     "on" , "paths" , "from" , IDENTIFIER ;
 
 require_form      = require_endpoint | require_sealed
-                  | require_attributed | require_no_silent_loss ;
+                  | require_attributed | require_no_silent_loss
+                  | require_separate_domains ;
+require_separate_domains
+                  = "require" , "separate_domains" , "(" ,
+                    "all" , IDENTIFIER , "," , "all" , IDENTIFIER , ")" ;
 require_endpoint  = "require" , ( "subscribes" | "publishes" ) ,
                     "(" , "some" , IDENTIFIER , "," , "topic" ,
                     topic_ref , ")" ;
@@ -533,6 +537,43 @@ a declaration property, checked over the declared bus ends. The
 violation names the group and the topic. The topic reference must
 resolve to a declared topic (qualified refs canonicalize at the
 mangle stage; unknown names error with a did-you-mean).
+
+## `require separate_domains` — execution-domain separation
+
+```hale,fragment
+isolate_io: require separate_domains(all workers, all gateways);
+```
+
+Every arranged instance of a locus in `workers` must have a different
+execution domain from every arranged instance of a locus in `gateways`.
+The compiler uses the same placement facts as lowering. A named pool
+is one domain, each pinned instance starts a domain, and an unplaced
+child inherits its parent's domain. Two children of one pinned parent
+therefore share a domain; placing the children separately makes them
+distinct. Replicas and multiple instances of one declaration all count.
+
+Groups select declarations, not subtrees. Include a child's declaration
+in a group when it belongs in the claim. Function members do not add
+instances. Each side must select loci, and every selected locus must
+have an instance or recorded uncertainty about its population. Empty
+groups, function-only groups, and selected declarations with an exact
+zero population are invalid, including groups marked `may_be_empty`.
+
+A shared domain violates the claim. The diagnostic names the two
+instance paths and their shared domain, with source locations; selecting
+the same instance on both sides also violates it. When the compiler
+cannot determine a selected declaration's instances or placement, it
+reports `uncertified`. A known collision still violates the claim when
+other selected instances are unknown. Unrelated dynamic births do not
+affect the result.
+
+This is a property of the declared execution arrangement. Backend
+placement approximations and lifecycle callback scheduling retain their
+existing contracts. Separate pools or pinned instances
+may use overlapping CPU affinities; the claim promises neither CPU
+isolation nor a latency bound. It works in a main locus's claims block
+and in adopted constitutions, through `hale check`, `hale verify`, and
+the topology artifact's `placement` family.
 
 ## `require no_silent_loss` — no configured silent discard
 
@@ -999,6 +1040,7 @@ result is `invalid`):
 | unknown topic in a grant / `require` / `count` | + did-you-mean over declared topics |
 | `cover` over an alias with no topics | "the coverage domain would be empty" |
 | `no_silent_loss(all G)` over a group that publishes and subscribes nothing | "names no route" — it would hold while checking nothing |
+| `separate_domains` over no loci or a selected locus with an exact zero population | `invalid`: the selection would certify separation without an instance |
 | `during` phase naming nothing in the group | "a claim over an empty phase holds vacuously" |
 | `avoiding` overlapping an endpoint | "masking an endpoint makes the claim weaker than it reads" |
 | `cover keys` the answer cannot be counted (unknown filter, incomplete population, hole, no publish site and no interval, an unresolved publisher on the wire and no interval) | `uncertified`: "cannot be certified: …" + the reason, see [`cover keys`](#cover-keys--every-key-has-exactly-one-recipient) |
@@ -1014,6 +1056,7 @@ Violations (the claim's result is `violated`):
 | `cover` | every uncovered topic |
 | `cover keys` | every uncovered key or interval, or the registrations that overlap on a key |
 | `no_silent_loss` | every silent setting: the boundary (topic, subscriber, send, binding) and what it is set to |
+| `separate_domains` | two instance paths and their shared execution domain, with source locations |
 | `count` | the actual count + the participating loci |
 | any call-traversing claim | "cannot be certified" for indirect calls, untypeable receivers, computed subjects — with the repair named |
 
@@ -1445,11 +1488,11 @@ The artifact is a *projection* of the compiler's canonical model —
 see [The model](./the-model.md) for what that value is and why it
 records what it could not determine.
 
-The artifact shape (schema `1.19`):
+The artifact shape (schema `1.20`):
 
 ```text
 {
-  "schema": "1.19",
+  "schema": "1.20",
   "semantics": <model semantics version>,
   "shape_hash": "<fnv1a-64 over the model half>",
   "sorts":     { "loci": […], "fns": […], "topics": […] },
@@ -1528,7 +1571,7 @@ The artifact shape (schema `1.19`):
   "capabilities": { "exact_calls": bool, … },
   "adequacy":  { "<family>": "exact" | "degraded" },
   //   families: reachability, boundary, endpoint, bound,
-  //   certificate, causes, depends, budget — every migrated
+  //   certificate, causes, depends, budget, placement — every migrated
   //   family carries an account, and admission requires exactly
   //   the set its schema version names
   "evaluation": { "environment"?, "roots": […], "closure": […] },
