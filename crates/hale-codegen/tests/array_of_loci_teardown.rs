@@ -15,6 +15,10 @@
 
 use std::process::Command;
 
+use hale_frontend::frontend::LoadMode;
+use hale_frontend::snapshot::{Config, Snapshot};
+use hale_frontend::source::Disk;
+use hale_types::lifecycle::project::{self, Focus, RunPath};
 use hale_types::lifecycle::trace::{self, Trace};
 use hale_types::lifecycle::{ObligationKind, Point};
 
@@ -138,6 +142,23 @@ fn assert_owned_order(t: &Trace, what: &str) {
     assert!(seq(ObligationKind::Reclaim, Point::Completed, b) < seq(ObligationKind::Reclaim, Point::Entered, p), "{what}: elements reclaimed before the owner");
 }
 
+/// The plan the lifecycle producer derives for `src` (its placement
+/// table's rows, the elements' included), held over line 12's cascade:
+/// every violation of `t` against it.
+fn plan_violations(src: &str, tag: &str, t: &Trace) -> Vec<String> {
+    let dir = harness::unique_bin(&format!("hale_array_loci_plan_{tag}"));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("seed dir");
+    let path = dir.join("main.hl");
+    std::fs::write(&path, src).expect("write the seed");
+    let snap = Snapshot::load(&path, LoadMode::WholeSeed, &Disk, Config::check(false, false))
+        .unwrap_or_else(|_| panic!("{tag}: the seed does not load"));
+    let plan = snap.demand_lifecycle().unwrap_or_else(|_| panic!("{tag}: the lifecycle plan is blocked"));
+    let expected = project::expected(plan, Focus::Lines(&["12"]), &RunPath::default()).unwrap_or_else(|e| panic!("{tag}: {e}"));
+    let _ = std::fs::remove_dir_all(&dir);
+    expected.check(t, true).into_iter().map(|v| v.to_string()).collect()
+}
+
 fn check_all(holds: &str, tag: &str) {
     let walk = "for c in self.cs { c.bye(); } close(self.cs[0]);";
     for (placement, entry) in PLACEMENTS {
@@ -152,6 +173,14 @@ fn check_all(holds: &str, tag: &str) {
         );
         let t = trace::parse(&traced.stderr).unwrap_or_else(|e| panic!("{what}: the trace does not parse: {e}"));
         assert_owned_order(&t, &what);
+        let off = plan_violations(&src, &format!("{tag}_{placement}"), &t);
+        assert!(off.is_empty(), "{what}: the run departs from its derived plan: {off:#?}");
+        // the control: the plan owes each element its teardown, so a run
+        // without the elements' dissolves departs from it
+        let mut without = Trace { events: t.events.clone(), rest: String::new() };
+        without.events.retain(|e| !(e.kind == ObligationKind::Dissolve && e.decl.as_deref() == Some("C")));
+        let off = plan_violations(&src, &format!("{tag}_{placement}_control"), &without);
+        assert!(off.iter().any(|v| v.contains("C.Dissolve")), "{what}: the plan owes the elements nothing: {off:#?}");
         let asan = run(&src, &format!("hale_array_loci_{tag}_{placement}_asan"), true, false);
         assert!(asan.ok && !asan.stderr.contains("Sanitizer"), "{what}, ASan: {}\n{}", asan.stdout, asan.stderr);
         assert_eq!(hooks(&asan.stdout).len(), 9, "{what}, ASan: {}", asan.stdout);
@@ -161,6 +190,13 @@ fn check_all(holds: &str, tag: &str) {
 #[test]
 fn an_array_of_loci_is_its_owners_children() {
     check_all(r#"cs: [C; 2] = [C { name: "a" }, C { name: "b" }];"#, "array");
+}
+
+/// A param with no type whose default is an array of locus literals is
+/// typed by it, and holds its elements the same way.
+#[test]
+fn an_unascribed_array_of_loci_is_its_owners_children() {
+    check_all(r#"cs = [C { name: "a" }, C { name: "b" }];"#, "inferred");
 }
 
 /// The elements a literal builds for the owner it builds, the same:
@@ -175,6 +211,8 @@ fn an_array_of_loci_written_at_the_owners_literal_is_its_children() {
         assert!(traced.ok, "{what}: {}\n{}", traced.stdout, traced.stderr);
         let t = trace::parse(&traced.stderr).unwrap_or_else(|e| panic!("{what}: {e}"));
         assert_owned_order(&t, &what);
+        let off = plan_violations(&src, &what.replace([' ', ','], "_"), &t);
+        assert!(off.is_empty(), "{what}: the run departs from its derived plan: {off:#?}");
         let asan = run(&src, &format!("hale_array_loci_lit_{placement}_asan"), true, false);
         assert!(asan.ok && !asan.stderr.contains("Sanitizer"), "{what}, ASan: {}", asan.stderr);
     }
@@ -190,6 +228,8 @@ fn a_tuple_of_loci_is_its_owners_children() {
         assert!(traced.ok, "{what}: {}\n{}", traced.stdout, traced.stderr);
         let t = trace::parse(&traced.stderr).unwrap_or_else(|e| panic!("{what}: {e}"));
         assert_owned_order(&t, &what);
+        let off = plan_violations(&src, &what.replace([' ', ','], "_"), &t);
+        assert!(off.is_empty(), "{what}: the run departs from its derived plan: {off:#?}");
         let asan = run(&src, &format!("hale_tuple_loci_{placement}_asan"), true, false);
         assert!(asan.ok && !asan.stderr.contains("Sanitizer"), "{what}, ASan: {}", asan.stderr);
     }

@@ -1249,6 +1249,38 @@ fn substitute(ty: &TypeExpr, subst: &BTreeMap<String, TypeExpr>) -> TypeExpr {
 /// The literals an initializer chooses among: the literal itself, or
 /// the literal arm of each branch of an `if` / `match` (and a block's
 /// tail). `None` when any arm is something else (a call, a name).
+/// GH #1566 follow-up: the slots a param's initializer fills, each with
+/// its init and declared type: the param itself, or, for an array or a
+/// tuple whose every element is a locus literal (as written, or as its
+/// declared type says), one per element — `cs.0`, `t.1` (a replica's index is `[k]`) — each a field
+/// step of its own.
+fn element_slots<'a>(field: &str, init: Option<&'a Expr>, declared: Option<TypeExpr>) -> Vec<(String, Option<&'a Expr>, Option<TypeExpr>)> {
+    let literal = |e: &Expr| matches!(e, Expr::Struct { .. });
+    match (init, &declared) {
+        (Some(Expr::Array(parts, _)), Some(TypeExpr::Array { .. }) | None)
+            if !parts.is_empty() && parts.iter().all(literal) && declared.as_ref().is_none_or(|_| matches!(elem_of(&declared), Some(TypeExpr::Named { .. }))) =>
+        {
+            let elem = elem_of(&declared).cloned();
+            parts.iter().enumerate().map(|(k, e)| (format!("{field}.{k}"), Some(e), elem.clone())).collect()
+        }
+        (Some(Expr::Tuple(parts, _)), Some(TypeExpr::Tuple(ts, _))) if !parts.is_empty() && parts.iter().all(literal) && ts.len() == parts.len() => {
+            parts.iter().zip(ts).enumerate().map(|(k, (e, t))| (format!("{field}.{k}"), Some(e), Some(t.clone()))).collect()
+        }
+        (Some(Expr::Tuple(parts, _)), None) if !parts.is_empty() && parts.iter().all(literal) => {
+            parts.iter().enumerate().map(|(k, e)| (format!("{field}.{k}"), Some(e), None)).collect()
+        }
+        _ => vec![(field.to_string(), init, declared)],
+    }
+}
+
+/// An array type's element type.
+fn elem_of(t: &Option<TypeExpr>) -> Option<&TypeExpr> {
+    match t {
+        Some(TypeExpr::Array { elem, .. }) => Some(elem),
+        _ => None,
+    }
+}
+
 fn alternatives(e: &Expr) -> Option<Vec<&Expr>> {
     fn block<'e>(b: &'e Block, out: &mut Vec<&'e Expr>) -> Option<()> {
         if !b.stmts.is_empty() {
@@ -1719,13 +1751,18 @@ impl<'d, 'a> Builder<'d, 'a> {
         for m in &decl.decl.members {
             let LocusMember::Params(pb) = m else { continue };
             for p in &pb.params {
-                let field = p.name.name.as_str();
-                let written_here = inits.iter().find(|i| i.name.name == field).map(|i| &i.value);
-                let init: Option<&'a Expr> = written_here.or(match &p.init {
+                let param_field = p.name.name.as_str();
+                let written_here = inits.iter().find(|i| i.name.name == param_field).map(|i| &i.value);
+                let param_init: Option<&'a Expr> = written_here.or(match &p.init {
                     ParamInit::Value(e) => Some(e),
                     ParamInit::Inferred => None,
                 });
-                let declared: Option<TypeExpr> = p.ty.as_ref().map(|t| substitute(t, subst));
+                let param_declared: Option<TypeExpr> = p.ty.as_ref().map(|t| substitute(t, subst));
+                // GH #1566 follow-up: an array or a tuple of locus literals
+                // holds each element as the owner's child: a row per
+                // element (`cs.0`, `t.1`), as a locus-typed field's one
+                for (slot, init, declared) in element_slots(param_field, param_init, param_declared) {
+                let field = slot.as_str();
                 let declared_named = match &declared {
                     Some(TypeExpr::Named { path, .. }) => self.decls.resolve(&segments(path), universe),
                     _ => Named::NotALocus,
@@ -1903,6 +1940,7 @@ impl<'d, 'a> Builder<'d, 'a> {
                         self.fields(d, lit_inits, &below, &next, None, lets_below, stack);
                         stack.pop();
                     }
+                }
                 }
             }
         }

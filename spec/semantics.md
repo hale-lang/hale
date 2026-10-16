@@ -754,7 +754,9 @@ the same order, each reclaimed once — whatever the owner's placement.
 An element written into the field later (`self.cs[i] = c`) is not the
 owner's: the element it replaces, while still one the literal built, is
 reclaimed at the store, and the instance written in is left to its own
-owner. A name handed whole (`cs: shared`) is a borrow, as above. A
+owner. The placement table holds a row per element (`cs.0`, `t.1`),
+and the lifecycle plan owes each one its teardown, in element order. A
+name handed whole (`cs: shared`) is a borrow, as above. A
 param written without a type takes its default literal's
 (`cs = [C { }, C { }]` is `cs: [C; 2]`, `t = (C { }, 1)` is `t: (C,
 Int)`, `n = [1, 2]` is `n: [Int; 2]`): an array of one type's
