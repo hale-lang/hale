@@ -1653,7 +1653,7 @@ fn register_symbol(
 /// `known` and not primitive resolve to [`Ty::Unknown`].
 /// M3 stage 3 tranche 2: mirror of codegen's m61
 /// `type_expr_mangle_token` — one token per generic arg.
-fn type_expr_mangle_token(
+pub(crate) fn type_expr_mangle_token(
     t: &TypeExpr,
     known: &KnownNames,
     bindings: &BTreeMap<String, Ty>,

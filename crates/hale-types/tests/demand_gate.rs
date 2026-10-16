@@ -556,8 +556,10 @@ fn the_harness_snapshot_lowers_without_a_check() {
     // Lowering reads the form rows (F.40 phase 3, C1), which read the
     // scope: both are demanded once, where the load's sync inference
     // pre-pass used to build a scope of its own outside the counts.
-    // And the typed-body table, the typing's record: the typing and the
-    // families the checker reads run once for it.
+    // And the typed-body table, the typing's record: the checker's walk
+    // and the families it reads run once for it; the bundle rules do not
+    // run (GH #1554 split the walk from them), so nothing selects laws.
+    // The owned-view column the view carries runs once.
     // The lifecycle plan is carried to the emitters as well.
     for family in [
         "seed_loading",
@@ -569,10 +571,9 @@ fn the_harness_snapshot_lowers_without_a_check() {
         "bindings",
         "handler_routing",
         "flows",
-        "law_selection",
-        "role_rows",
         "ownership",
         "bus_graph",
+        "owned_views",
         "alloc_summary",
         "placement",
         "arrangement",
@@ -584,7 +585,7 @@ fn the_harness_snapshot_lowers_without_a_check() {
     ] {
         assert_eq!(builds[family], 1, "harness: `{family}`");
     }
-    for family in ["effects", "model", "claims"] {
+    for family in ["effects", "model", "claims", "law_selection", "role_rows"] {
         assert_eq!(builds[family], 0, "harness: `{family}` was not demanded");
     }
     assert!(s.source_map().is_empty(), "a bare program has no files");
@@ -738,8 +739,11 @@ fn law_selection_runs_once_per_snapshot_on_every_verb_path() {
                     assert!(artifact.contains("\"environment\": \"prod\""), "{name}: the label is the selection's");
                 }
             }
-            assert_eq!(s.builds()["law_selection"], 1, "{name} {path}: one selection, demanded by the check");
-            assert_eq!(selected() - before, 1, "{name} {path}: no reader selects beside the cell");
+            // The harness lowers without the check's rules, so it selects
+            // nothing (its view reads the walk alone, GH #1554).
+            let once = u32::from(*path != "harness");
+            assert_eq!(s.builds()["law_selection"], once, "{name} {path}: one selection, demanded by the check");
+            assert_eq!(selected() - before, u64::from(once), "{name} {path}: no reader selects beside the cell");
             assert_at_most_once(&s, path);
         }
         let _ = std::fs::remove_dir_all(&d);
@@ -790,6 +794,9 @@ const GATE: &[GateRow] = &[
     row("law_selection", 1, 1, |s| { let _ = s.demand_law_selection(); }),
     row("role_rows", 1, 1, |s| { let _ = s.demand_role_rows(); }),
     row("surface", 1, 1, |s| { let _ = s.demand_surface_rows(); }),
+    // The owned-view column (GH #1554): computed once over the walk,
+    // read by the summary and by the lowering view.
+    row("owned_views", 1, 1, |s| { let _ = s.demand_owned_views(); }),
     row("alloc_summary", 1, 1, |s| { let _ = s.demand_alloc_summary(); }),
     row("effects", 1, 1, |s| { let _ = s.demand_effects(); }),
     row("placement", 1, 1, |s| { let _ = s.demand_placement(); }),

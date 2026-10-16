@@ -508,7 +508,7 @@ fn an_unnumbered_send_is_refused_at_the_join() {
         }))
     };
     let entry = hale_types::entry::entry_row(&bundle);
-    let placement = hale_types::placement::derive_placement(&bundle, &top, &entry);
+    let placement = hale_types::placement::derive_placement(&bundle, &top, &entry, None);
     let ownership = hale_types::ownership_graph::build_ownership_graph(&bundle, &top, &placement, &hale_types::entry::entry_row(&bundle));
     let forms = hale_types::form_rows::form_rows(&bundle, &top, &placement, true);
     let bindings = hale_types::binding_rows::derive_binding_rows(&bundle, &top);

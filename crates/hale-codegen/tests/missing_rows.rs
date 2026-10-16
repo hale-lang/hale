@@ -213,6 +213,16 @@ fn law_backstops_a_value_use_the_law_did_not_judge_is_refused_at_the_literal() {
     assert_eq!(at(src, span.expect("located")), "Ship { hull: 7 }");
 }
 
+/// `owned_views`: which bindings take an owned copy and which writes copy
+/// on write is the snapshot's column (GH #1554); a view without it is
+/// refused before anything is lowered, never lowered with no copies.
+#[test]
+fn owned_views_a_view_without_the_column_is_refused() {
+    let src = "type F { s: String = \"\"; }\nlocus H {\n    params { f: F = F { }; }\n    fn put(t: String) { self.f = F { s: t }; }\n    run { let s = self.f.s; self.put(\"n\"); println(s); }\n}\nfn main() { H { }; }\n";
+    let (msg, _) = refused_without("owned_views", src, "owned_views", |v| v.owned_views = None);
+    assert!(msg.contains("owned-view column"), "{msg}");
+}
+
 /// `entrypoint`: the `main locus` lowering deploys and the `fn main` it
 /// emits are the entry row's; a view without the row is refused before
 /// anything is lowered, never given a `fn main` found by name.

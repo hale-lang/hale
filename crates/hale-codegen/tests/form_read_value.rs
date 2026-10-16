@@ -415,9 +415,8 @@ fn main() {{
 }}
 "#
         );
-        let program = hale_syntax::parse_source(&src).expect("parses");
-        let views = hale_types::view_bindings::OwnedViews::of(&[&program], &Default::default());
-        let reported = views.cell_copies().iter().any(|c| src[c.span.start.0 as usize..c.span.end.0 as usize].starts_with("e.xs[1]"));
+        let views = column(&src);
+        let reported = views.program.cell_copies().iter().any(|c| src[c.span.start.0 as usize..c.span.end.0 as usize].starts_with("e.xs[1]"));
         let ir = ir(&format!("inline_{tag}"), &src);
         let copied = !cow_blocks(body(&ir, "write")).is_empty();
         assert_eq!(reported, copied, "{tag}: the survey says {reported}, lowering copies {copied}");
@@ -493,4 +492,15 @@ fn a_callee_writing_a_block_if_match_or_loop_alias_leaves_the_cell() {
         .map(|w| format!("{w} cell=1/A1 p=3/P1\n"))
         .collect();
     assert_eq!(run("callee_alias_round2", src), want);
+}
+
+/// The owned-view column of `src`'s harness snapshot (GH #1554): the one
+/// computation the allocation survey reads and lowering reads re-keyed.
+fn column(src: &str) -> hale_types::view_bindings::OwnedViewColumn {
+    use hale_frontend::snapshot::{Config, Snapshot, Target};
+    let program = hale_syntax::parse_source(src).expect("parses");
+    let Ok(snap) = Snapshot::from_program(program, Vec::new(), Config::harness(Target::host())) else {
+        panic!("the program does not load");
+    };
+    snap.demand_owned_views().expect("the column").clone()
 }

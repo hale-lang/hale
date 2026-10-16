@@ -612,27 +612,47 @@ fn check_numbered_bundle(
 ) -> Vec<Diag> {
     let handlers = crate::bundle_handler_rows(bundle);
     let flows = crate::bundle_flow_rows(bundle, top);
+    let bindings = crate::binding_rows::derive_binding_rows(bundle, top);
+    let units = crate::units::derive_unit_rows(bundle);
+    let target = crate::capability::target_row(bundle);
+    // The walk first: the owned-view column the survey reads is computed
+    // over what it typed (GH #1554).
+    let walk = walk_bundle_by_declaration(
+        bundle,
+        &WalkInputs { top, handlers: &handlers, bindings: &bindings, units: &units, target: &target },
+        false,
+        false,
+        &|_, _| None,
+    );
+    let entry = crate::entry::entry_row(bundle);
+    let placement = crate::placement::derive_placement(bundle, top, &entry, Some(&walk.record));
+    let intra_locus = crate::bundle_intra_locus(bundle, &placement);
+    let views =
+        crate::view_bindings::OwnedViewColumn::derive(
+            &bundle.programs,
+            &walk.record.views,
+            &walk.record.mono_shapes,
+            &intra_locus,
+            top,
+            true,
+        );
     let alloc_summary =
-        std::sync::Arc::new(crate::alloc_summary::derive_alloc_summary(bundle));
+        std::sync::Arc::new(crate::alloc_summary::derive_alloc_summary_over(bundle, &views));
     let rows = std::cell::OnceCell::new();
     let effects = || {
         Some(rows.get_or_init(|| {
             crate::effect_rows::derive_effect_rows(bundle, top, alloc_summary.clone())
         }))
     };
-    let entry = crate::entry::entry_row(bundle);
-    let placement = crate::placement::derive_placement(bundle, top, &entry);
     let ownership = crate::ownership_graph::build_ownership_graph(bundle, top, &placement, &entry);
     let forms = crate::form_rows::form_rows(bundle, top, &placement, true);
-    let bindings = crate::binding_rows::derive_binding_rows(bundle, top);
-    let bus = crate::bus_graph::build_bus_graph(bundle, top, &bindings, &placement, &entry);
-    let intra_locus = crate::bundle_intra_locus(bundle, &placement);
-    let target = crate::capability::target_row(bundle);
+    // The bus graph reads the table without the walk, as the snapshot's does.
+    let bus_placement = crate::placement::derive_placement(bundle, top, &entry, None);
+    let bus = crate::bus_graph::build_bus_graph(bundle, top, &bindings, &bus_placement, &entry);
     let uses = crate::capability::uses::derive_capability_uses(bundle, &alloc_summary);
     let laws = crate::bundle_law_selection(bundle);
     let roles = crate::roles::role_rows(bundle);
     let surfaces = crate::surfaces::surface_rows(bundle, &entry, &placement, &top.topics);
-    let units = crate::units::derive_unit_rows(bundle);
     let inputs = CheckInputs {
         top,
         handlers: &handlers,
@@ -653,7 +673,9 @@ fn check_numbered_bundle(
         surfaces: &surfaces,
         units: &units,
     };
-    check_bundle_scoped(bundle, &inputs, allow_unowned_subscriber, false, false)
+    let (mut diags, _, _) = check_bundle_rules(bundle, &inputs, &walk, allow_unowned_subscriber, &|_, _| None);
+    diags.extend(typed_body_laws(bundle, &inputs, &walk.record));
+    diags
 }
 
 /// Two whole-program strictnesses, both off for a partial program.
@@ -700,13 +722,27 @@ pub fn check_bundle_reporting(
 ) -> (Vec<Diag>, crate::effects::EffectCertificates) {
     let (mut diags, certificates, record) =
         check_bundle_typing(bundle, inputs, allow_unowned_subscriber, strict_callees, strict_idents);
-    let table = crate::typed_bodies::typed_bodies(bundle, inputs.top, &record);
+    diags.extend(typed_body_laws(bundle, inputs, &record));
+    (diags, certificates)
+}
+
+/// The laws a bundle no snapshot holds runs over its typing's record,
+/// after the check: the `bare_fallible` law, the may-violate law, the
+/// surface laws and the closures' reach law, as the snapshot's typing
+/// stage runs them over its own.
+fn typed_body_laws(
+    bundle: &Bundle<'_>,
+    inputs: &CheckInputs<'_>,
+    record: &crate::typed_bodies::TypingRecord,
+) -> Vec<Diag> {
+    let mut diags = Vec::new();
+    let table = crate::typed_bodies::typed_bodies(bundle, inputs.top, record);
     diags.extend(crate::bare_fallible::bare_fallible_calls(&table));
     diags.extend(crate::violate_fallible::violate_fallible_laws(bundle, inputs.alloc_summary));
     diags.extend(crate::surfaces::surface_laws(bundle, inputs.surfaces, inputs.roles, inputs.alloc_summary));
     diags.extend(crate::surfaces::serve_laws(bundle, inputs.surfaces, inputs.entry, inputs.effects, &table, inputs.placement));
     diags.extend(crate::closure_events::unreached_event_laws(bundle, inputs.handlers, inputs.entry, &table));
-    (diags, certificates)
+    diags
 }
 
 /// [`check_bundle_reporting`], with what the checker typed beside it
@@ -819,6 +855,9 @@ pub fn check_bundle_typing(
 pub struct DeclChecked {
     pub typing: Vec<Diag>,
     pub reveal: Vec<Diag>,
+    /// The `views` rows the walk recorded for the declaration
+    /// (`crate::typed_bodies::ViewTypes`, GH #1554).
+    pub views: std::sync::Arc<crate::typed_bodies::ViewTypes>,
 }
 
 /// Each program's declarations' [`DeclChecked`], by the bundle's program
@@ -835,6 +874,44 @@ pub type ByDeclaration = BTreeMap<String, Vec<DeclChecked>>;
 /// the whole check. The typing record holds what the walk typed, so it
 /// is the whole check's only when `reuse` answered none: a reused
 /// declaration's bodies are not in it.
+/// What the checker's walk of a bundle reads beside the bundle: the
+/// scope, the handler rows, the binding rows, the unit declarations and
+/// the effective target. The walk reads no family derived from the
+/// allocation survey, so the survey may read what the walk typed (the
+/// `views` column, GH #1554) and the bundle rules read the survey.
+pub struct WalkInputs<'a> {
+    pub top: &'a TopScope,
+    pub handlers: &'a crate::handler_routing::HandlerRouting,
+    pub bindings: &'a crate::binding_rows::BindingRows,
+    pub units: &'a crate::units::UnitRows,
+    pub target: &'a crate::capability::TargetRow,
+}
+
+impl<'a> WalkInputs<'a> {
+    /// The walk's inputs among the check's.
+    pub fn of(inputs: &CheckInputs<'a>) -> WalkInputs<'a> {
+        WalkInputs {
+            top: inputs.top,
+            handlers: inputs.handlers,
+            bindings: inputs.bindings,
+            units: inputs.units,
+            target: inputs.target,
+        }
+    }
+}
+
+/// The checker's walk of a bundle (GH #1554 split it from the bundle
+/// rules): what it reported, per declaration and after (the settled
+/// specializations and accesses), the typing record (the typed-body
+/// table's, the `views` column of every declaration included), and the
+/// per-declaration results, the reveal rule's not yet in.
+#[derive(Debug, Clone, Default)]
+pub struct TypingWalk {
+    pub diags: Vec<Diag>,
+    pub record: crate::typed_bodies::TypingRecord,
+    pub by_decl: ByDeclaration,
+}
+
 pub fn check_bundle_by_declaration(
     bundle: &Bundle<'_>,
     inputs: &CheckInputs<'_>,
@@ -843,6 +920,22 @@ pub fn check_bundle_by_declaration(
     strict_idents: bool,
     reuse: &dyn Fn(&str, usize) -> Option<DeclChecked>,
 ) -> (Vec<Diag>, crate::effects::EffectCertificates, crate::typed_bodies::TypingRecord, ByDeclaration) {
+    let walk = walk_bundle_by_declaration(bundle, &WalkInputs::of(inputs), strict_callees, strict_idents, reuse);
+    let (diags, certificates, by_decl) = check_bundle_rules(bundle, inputs, &walk, allow_unowned_subscriber, reuse);
+    (diags, certificates, walk.record, by_decl)
+}
+
+/// The checker's walk ([`TypingWalk`]): every declaration's own pass,
+/// or `reuse`'s answer for it, then the specializations and the
+/// accesses settled. The `views` column of the record is every
+/// declaration's rows, the reused ones' included.
+pub fn walk_bundle_by_declaration(
+    bundle: &Bundle<'_>,
+    inputs: &WalkInputs<'_>,
+    strict_callees: bool,
+    strict_idents: bool,
+    reuse: &dyn Fn(&str, usize) -> Option<DeclChecked>,
+) -> TypingWalk {
     let top = inputs.top;
     let mut diags = Vec::new();
     let reused: BTreeMap<&str, Vec<Option<DeclChecked>>> = bundle
@@ -851,19 +944,10 @@ pub fn check_bundle_by_declaration(
         .map(|(key, p)| (key.as_str(), (0..p.items.len()).map(|i| reuse(key, i)).collect()))
         .collect();
     let mut by_decl: ByDeclaration = BTreeMap::new();
-    let certificates;
     let known = &top.names;
     let mut typed = crate::typed_bodies::TypingRecord::default();
     let templates = GenericTemplates::of(bundle);
     monomorph_table(bundle, known, &templates, &mut typed.monomorphs);
-    // The effective target's own refusal: an explicit `--target` a
-    // written declaration contradicts (T1(b)).
-    diags.extend(inputs.target.refusals.iter().cloned());
-    // The admission law (F.40 phase 3, P3): every use whose cell is
-    // `Reject` on the effective target, located at its first site in
-    // the program's own sources, with its witness.
-    diags.extend(crate::capability::uses::admission_diags(inputs.uses, inputs.target, &bundle.import_renames));
-    diags.extend(publish_in_default_diags(bundle));
     // GH #255: bundle-wide set of transport-bound topic names,
     // for the `or wait` legality check at publish sites.
     //
@@ -1002,6 +1086,7 @@ pub fn check_bundle_by_declaration(
         in_accept_params: false,
         callee_position: false,
         this_is_callee: false,
+        callee_unshadowed: false,
         current_locus: None,
         in_lifecycle: false,
         in_closure: false,
@@ -1031,6 +1116,8 @@ pub fn check_bundle_by_declaration(
         typed: &mut typed,
         body: NodeId::NONE,
         expr_types: None,
+        views: Default::default(),
+        view_callee_node: 0,
         locus_decl: None,
         templates: &templates,
         generic_bindings: BTreeMap::new(),
@@ -1052,15 +1139,15 @@ pub fn check_bundle_by_declaration(
     for (key, program) in &bundle.programs {
         let mut per = Vec::with_capacity(program.items.len());
         for (i, item) in program.items.iter().enumerate() {
-            let typing = match &reused[key.as_str()][i] {
-                Some(done) => done.typing.clone(),
+            let (typing, views) = match &reused[key.as_str()][i] {
+                Some(done) => (done.typing.clone(), done.views.clone()),
                 None => {
                     let start = cx.diags.len();
                     cx.decl_diags_start = start;
                     cx.check_top_decl(item);
                     cx.settle_decimal_literals();
                     cx.settle_param_accesses(start);
-                    cx.diags.split_off(start)
+                    (cx.diags.split_off(start), std::sync::Arc::new(std::mem::take(&mut cx.views)))
                 }
             };
             // GH #1076 (U3): a quantity rule's error a default's walk found
@@ -1073,7 +1160,7 @@ pub fn check_bundle_by_declaration(
                     cx.diags.push(d.clone());
                 }
             }
-            per.push(DeclChecked { typing, reveal: Vec::new() });
+            per.push(DeclChecked { typing, reveal: Vec::new(), views });
         }
         by_decl.insert(key.clone(), per);
     }
@@ -1084,6 +1171,42 @@ pub fn check_bundle_by_declaration(
     // diagnostic the check has, a template's own included.
     cx.settle_param_accesses(0);
     debug_assert!(cx.access_visits.is_empty(), "every kept access is settled");
+    typed.mono_shapes = std::sync::Arc::new(mono_shapes(&typed.monomorphs, &templates, known));
+    // Each declaration's table, not a copy of its rows.
+    typed.views = by_decl
+        .iter()
+        .map(|(key, rows)| (key.clone(), rows.iter().map(|done| done.views.clone()).collect()))
+        .collect();
+    TypingWalk { diags, record: typed, by_decl }
+}
+
+/// The bundle rules of the check, over the walk's results: the target's
+/// refusals and admission, the walk's diagnostics, then every
+/// bundle-wide rule and the reveal rule (its per-declaration results
+/// added to the walk's, `reuse` answering for a reused declaration).
+pub fn check_bundle_rules(
+    bundle: &Bundle<'_>,
+    inputs: &CheckInputs<'_>,
+    walk: &TypingWalk,
+    allow_unowned_subscriber: bool,
+    reuse: &dyn Fn(&str, usize) -> Option<DeclChecked>,
+) -> (Vec<Diag>, crate::effects::EffectCertificates, ByDeclaration) {
+    let top = inputs.top;
+    let known = &top.names;
+    let handlers = inputs.handlers;
+    let certificates;
+    let mut diags = Vec::new();
+    // The effective target's own refusal: an explicit `--target` a
+    // written declaration contradicts (T1(b)).
+    diags.extend(inputs.target.refusals.iter().cloned());
+    // The admission law (F.40 phase 3, P3): every use whose cell is
+    // `Reject` on the effective target, located at its first site in
+    // the program's own sources, with its witness.
+    diags.extend(crate::capability::uses::admission_diags(inputs.uses, inputs.target, &bundle.import_renames));
+    diags.extend(publish_in_default_diags(bundle));
+    diags.extend(walk.diags.iter().cloned());
+    let mut by_decl = walk.by_decl.clone();
+    let raw_frame_topics = raw_frame_topics(bundle, inputs.bindings);
     // Bundle-level rules around topic bindings:
     //   - at most one `main` locus per bundle
     //   - bindings entries reference declared topics
@@ -1123,7 +1246,7 @@ pub fn check_bundle_by_declaration(
             bindings: inputs.bindings,
             entry: inputs.entry,
             ownership: &|| Some(inputs.ownership),
-            omitted: crate::typed_bodies::OmittedView { by_call: &typed.omitted_args, by_path: &typed.calls_by_path },
+            omitted: crate::typed_bodies::OmittedView { by_call: &walk.record.omitted_args, by_path: &walk.record.calls_by_path },
         },
     ));
     // F.40 phase 4, W3: the recovery events a closure's
@@ -1320,7 +1443,7 @@ pub fn check_bundle_by_declaration(
         &bundle.programs,
         &bundle.import_renames,
         &bundle.sources,
-        &|key, i| reused[key][i].as_ref().map(|done| done.reveal.clone()),
+        &|key, i| reuse(key, i).map(|done| done.reveal),
     );
     for (key, per) in reveals {
         let rows = by_decl.get_mut(&key).expect("the walk recorded every program");
@@ -1330,7 +1453,60 @@ pub fn check_bundle_by_declaration(
         }
     }
     diags.extend(crate::stdlib_names::stdlib_name_diags(&bundle.programs));
-    (diags, certificates, typed, by_decl)
+    (diags, certificates, by_decl)
+}
+
+/// Each type and locus monomorph of `monomorphs` as its template is with
+/// its parameters bound to the monomorph's arguments (the `views` column's
+/// shapes, GH #1554): a record's fields, an enum's payloads, a locus's
+/// params and whether it is a form.
+fn mono_shapes(
+    monomorphs: &crate::typed_bodies::Monomorphs,
+    templates: &GenericTemplates<'_>,
+    known: &KnownNames,
+) -> crate::typed_bodies::MonoShapes {
+    use crate::typed_bodies::MonoShape;
+    let mut out = crate::typed_bodies::MonoShapes::new();
+    for m in monomorphs.rows() {
+        let Some(template) = templates.by_key.get(&m.template.0) else { continue };
+        let generics = match template {
+            GenericTemplate::Type(t) => &t.generics,
+            GenericTemplate::Locus(l) => &l.generics,
+        };
+        let bindings: BTreeMap<String, Ty> =
+            generics.iter().map(|g| g.name.name.clone()).zip(m.args.iter().cloned()).collect();
+        let sub = |te: &TypeExpr| substitute_generic_ty(te, &bindings, known);
+        let shape = match template {
+            GenericTemplate::Type(t) => match &t.body {
+                TypeDeclBody::Struct(fields) => MonoShape::Struct(fields.iter().map(|f| sub(&f.ty)).collect()),
+                TypeDeclBody::Enum(vs) => MonoShape::Enum(vs.iter().map(|v| v.fields.iter().map(sub).collect()).collect()),
+                TypeDeclBody::Alias(_) | TypeDeclBody::Scalar(_) => continue,
+            },
+            GenericTemplate::Locus(l) => {
+                let view_form = l.form.as_ref().is_some_and(|form| {
+                    use crate::form_rows::{sync_config, Discipline, SyncConfig};
+                    match form.name.name.as_str() {
+                        "hashmap" => !matches!(sync_config(form), SyncConfig::Explicit(d) if d != Discipline::None),
+                        "lru_cache" => true,
+                        _ => false,
+                    }
+                });
+                let params = l
+                    .members
+                    .iter()
+                    .filter_map(|mm| match mm {
+                        LocusMember::Params(pb) => Some(pb),
+                        _ => None,
+                    })
+                    .flat_map(|pb| &pb.params)
+                    .map(|p| p.ty.as_ref().map_or(Ty::Unknown, sub))
+                    .collect();
+                MonoShape::Locus { form: l.form.is_some(), view_form, params }
+            }
+        };
+        out.insert(m.name.clone(), shape);
+    }
+    out
 }
 
 /// The bundle's generic type and locus templates, by identity: the
@@ -1387,13 +1563,15 @@ impl<'a> GenericTemplates<'a> {
         self.by_key.get(&key.0).copied()
     }
 
-    /// The monomorph a mangled name spells (`Box_Int`,
-    /// `Cache_Int_String`): the template whose name and `_` prefix it,
-    /// with exactly as many `_`-joined tokens as the template has
-    /// parameters, each token a primitive, a known name, or else
-    /// `Unknown`. The mangle joins tokens with `_`, so a nested
-    /// instantiation's name is no template's. The monomorph table's
-    /// producer runs it once per name the program spells.
+    /// The monomorph a mangled name spelled in the source names
+    /// (`Box_Int { }`, `x: Cache_Int_String`): the template whose name and
+    /// `_` prefix it, with exactly as many `_`-joined tokens as the
+    /// template has parameters, each token a primitive, a known name, or
+    /// else `Unknown`. Only a bare spelled name has nothing but its string
+    /// to go on; an instantiation a type expression writes is read from
+    /// its structure ([`Self::instantiation`]), since `_` also joins a
+    /// nested instantiation's tokens (`Box_Box_Int` is `Box<Box<Int>>`)
+    /// and a name with `_` in it.
     fn parse(&self, name: &str, known: &KnownNames) -> Option<(NodeId, crate::typed_bodies::TemplateKind, Vec<Ty>)> {
         use crate::typed_bodies::TemplateKind;
         let candidates = self
@@ -1416,6 +1594,58 @@ impl<'a> GenericTemplates<'a> {
         None
     }
 
+    /// The monomorph a generic instantiation written as a type expression
+    /// names (`Box<Int>`, `Pair<Box<Int>, Box<String>>`), read from its
+    /// structure rather than from the name it mangles to: the template
+    /// its path names, and each argument as the mangle spells it (a
+    /// parameter as its binding, a nested instantiation as its own
+    /// monomorph, which goes into `rows` first, anything else as its
+    /// token's type, so an alias argument keeps its name, as the
+    /// monomorph's does). `None` for a path naming no template or an
+    /// argument the mangle cannot spell.
+    fn instantiation(
+        &self,
+        te: &TypeExpr,
+        known: &KnownNames,
+        bindings: &BTreeMap<String, Ty>,
+        rows: &mut Vec<crate::typed_bodies::Monomorph>,
+    ) -> Option<crate::typed_bodies::Monomorph> {
+        use crate::typed_bodies::TemplateKind;
+        let TypeExpr::Named { path, generic_args, .. } = te else { return None };
+        if path.segments.len() != 1 || generic_args.is_empty() || bindings.contains_key(&path.segments[0].name) {
+            return None;
+        }
+        let base = path.segments[0].name.as_str();
+        let (key, kind) = match (self.types.get(base), self.loci.get(base)) {
+            (Some(k), _) => (*k, TemplateKind::Type),
+            (None, Some(k)) => (*k, TemplateKind::Locus),
+            (None, None) => return None,
+        };
+        if self.by_key[&key].generics().len() != generic_args.len() {
+            return None;
+        }
+        let Ty::Named(name) = crate::resolve::resolve_type_expr_with(te, known, bindings) else { return None };
+        let mut args = Vec::with_capacity(generic_args.len());
+        for a in generic_args {
+            let arg = match a {
+                TypeExpr::Named { path, generic_args, .. }
+                    if path.segments.len() == 1 && generic_args.is_empty() && bindings.contains_key(&path.segments[0].name) =>
+                {
+                    bindings[&path.segments[0].name].clone()
+                }
+                TypeExpr::Named { generic_args, .. } if !generic_args.is_empty() => {
+                    let inner = self.instantiation(a, known, bindings, rows)?;
+                    let n = Ty::Named(inner.name.clone());
+                    rows.push(inner);
+                    n
+                }
+                _ => mangle_token_to_ty(&crate::resolve::type_expr_mangle_token(a, known, bindings)?, known),
+            };
+            args.push(arg);
+        }
+        Some(crate::typed_bodies::Monomorph { template: NodeId(key), kind, args, name })
+    }
+
     /// The specializations the table's rows from `from` on instantiate
     /// through their own fields, to a fixpoint: a field whose declared
     /// type applies a template to the row's parameters (`h: Holder<T>`
@@ -1436,12 +1666,12 @@ impl<'a> GenericTemplates<'a> {
             let Some(template) = self.get(m.template) else { continue };
             let bindings: BTreeMap<String, Ty> =
                 template.generics().iter().map(|g| g.name.name.clone()).zip(m.args.iter().cloned()).collect();
-            let mut names = std::collections::BTreeSet::new();
+            let (mut rows, mut names) = (Vec::new(), std::collections::BTreeSet::new());
             match template {
                 GenericTemplate::Type(td) => {
                     if let TypeDeclBody::Struct(fields) = &td.body {
                         for f in fields {
-                            spelled_monomorphs(&f.ty, known, &bindings, &mut names);
+                            self.spelled(&f.ty, known, &bindings, &mut rows, &mut names);
                         }
                     }
                 }
@@ -1449,64 +1679,91 @@ impl<'a> GenericTemplates<'a> {
                     for member in &ld.members {
                         if let LocusMember::Params(pb) = member {
                             for te in pb.params.iter().filter_map(|p| p.ty.as_ref()) {
-                                spelled_monomorphs(te, known, &bindings, &mut names);
+                                self.spelled(te, known, &bindings, &mut rows, &mut names);
                             }
                         }
                     }
                 }
             }
-            for name in names {
-                if let Some((template, kind, args)) = self.parse(&name, known) {
-                    if !args.iter().any(|t| matches!(t, Ty::Unknown)) {
-                        table.insert(crate::typed_bodies::Monomorph { template, kind, args, name });
-                    }
+            for row in rows {
+                if !row.args.iter().any(|t| matches!(t, Ty::Unknown)) {
+                    table.insert(row);
                 }
             }
         }
     }
 }
 
-/// The names a type expression spells that may name a monomorph, each
-/// generic instantiation resolved under `bindings` (`Box<Int>` as
-/// `Box_Int`); a name `bindings` holds is a parameter, not a type.
-fn spelled_monomorphs(
-    te: &TypeExpr,
+impl GenericTemplates<'_> {
+    /// What a type expression spells that may name a monomorph: each
+    /// generic instantiation it writes, read from its structure
+    /// ([`Self::instantiation`]), into `rows`; each bare name it spells
+    /// (a mangled one written out, `x: Box_Int`) into `names`, for
+    /// [`Self::parse`]. A name `bindings` holds is a parameter, not a type.
+    fn spelled(
+        &self,
+        te: &TypeExpr,
+        known: &KnownNames,
+        bindings: &BTreeMap<String, Ty>,
+        rows: &mut Vec<crate::typed_bodies::Monomorph>,
+        names: &mut std::collections::BTreeSet<String>,
+    ) {
+        match te {
+            TypeExpr::Named { path, generic_args, .. } => {
+                if generic_args.is_empty() {
+                    if path.segments.len() == 1 && !bindings.contains_key(&path.segments[0].name) {
+                        names.insert(path.segments[0].name.clone());
+                    }
+                    return;
+                }
+                if let Some(row) = self.instantiation(te, known, bindings, rows) {
+                    rows.push(row);
+                    return;
+                }
+                for a in generic_args {
+                    self.spelled(a, known, bindings, rows, names);
+                }
+            }
+            TypeExpr::Projection { inner, .. } => self.spelled(inner, known, bindings, rows, names),
+            TypeExpr::Array { elem, .. } | TypeExpr::Bounded { elem, .. } => {
+                self.spelled(elem, known, bindings, rows, names)
+            }
+            TypeExpr::Tuple(parts, _) => {
+                for p in parts {
+                    self.spelled(p, known, bindings, rows, names);
+                }
+            }
+            TypeExpr::Function { params, ret, .. } => {
+                for p in params {
+                    self.spelled(p, known, bindings, rows, names);
+                }
+                if let Some(r) = ret {
+                    self.spelled(r, known, bindings, rows, names);
+                }
+            }
+            TypeExpr::Primitive(..) | TypeExpr::Perspective { .. } => {}
+        }
+    }
+}
+
+/// The generic type a monomorph's name names in `bundle`, and its type
+/// arguments: the row of the table the bundle's spellings make
+/// ([`monomorph_table`]), so a nested argument (`Box_Box_Int`) or a name
+/// with `_` in it is read from the instantiation that writes it, never
+/// split back out of the name. `None` for a locus's monomorph or a name
+/// no spelling makes.
+pub(crate) fn type_instance<'a>(
+    bundle: &'a Bundle<'_>,
     known: &KnownNames,
-    bindings: &BTreeMap<String, Ty>,
-    names: &mut std::collections::BTreeSet<String>,
-) {
-    match te {
-        TypeExpr::Named { path, generic_args, .. } => {
-            for a in generic_args {
-                spelled_monomorphs(a, known, bindings, names);
-            }
-            if path.segments.len() != 1 || bindings.contains_key(&path.segments[0].name) {
-                return;
-            }
-            if generic_args.is_empty() {
-                names.insert(path.segments[0].name.clone());
-            } else if let Ty::Named(n) = crate::resolve::resolve_type_expr_with(te, known, bindings) {
-                names.insert(n);
-            }
-        }
-        TypeExpr::Projection { inner, .. } => spelled_monomorphs(inner, known, bindings, names),
-        TypeExpr::Array { elem, .. } | TypeExpr::Bounded { elem, .. } => {
-            spelled_monomorphs(elem, known, bindings, names)
-        }
-        TypeExpr::Tuple(parts, _) => {
-            for p in parts {
-                spelled_monomorphs(p, known, bindings, names);
-            }
-        }
-        TypeExpr::Function { params, ret, .. } => {
-            for p in params {
-                spelled_monomorphs(p, known, bindings, names);
-            }
-            if let Some(r) = ret {
-                spelled_monomorphs(r, known, bindings, names);
-            }
-        }
-        TypeExpr::Primitive(..) | TypeExpr::Perspective { .. } => {}
+    name: &str,
+) -> Option<(&'a TypeDecl, Vec<Ty>)> {
+    let templates = GenericTemplates::of(bundle);
+    let mut table = crate::typed_bodies::Monomorphs::default();
+    monomorph_table(bundle, known, &templates, &mut table);
+    let m = table.named(name)?;
+    match templates.get(m.template)? {
+        GenericTemplate::Type(t) => Some((t, m.args.clone())),
+        GenericTemplate::Locus(_) => None,
     }
 }
 
@@ -1517,8 +1774,10 @@ fn spelled_monomorphs(
 /// each name an annotation or a struct literal spells (`Box_Int { }`) —
 /// keyed by its template's site and its type arguments, and every
 /// specialization those rows instantiate through their fields
-/// ([`GenericTemplates::close_over_fields`]). The mangled name is parsed
-/// here, once per name; every lookup reads the row.
+/// ([`GenericTemplates::close_over_fields`]). An instantiation is read
+/// from the type expression that writes it; only a bare name spelled
+/// out is parsed, once, and only when no row has that name already.
+/// Every lookup reads the row.
 fn monomorph_table(
     bundle: &Bundle<'_>,
     known: &KnownNames,
@@ -1529,12 +1788,12 @@ fn monomorph_table(
     if templates.by_key.is_empty() {
         return;
     }
-    let mut names = std::collections::BTreeSet::new();
+    let (mut rows, mut names) = (Vec::new(), std::collections::BTreeSet::new());
     for program in bundle.programs.values() {
         crate::typed_bodies::for_each_type_spelling(&program.items, &mut |s, parameters| {
             let bindings = parameters.iter().map(|p| (p.clone(), Ty::Unknown)).collect();
             match s {
-                TypeSpelling::Annotation(te) => spelled_monomorphs(te, known, &bindings, &mut names),
+                TypeSpelling::Annotation(te) => templates.spelled(te, known, &bindings, &mut rows, &mut names),
                 TypeSpelling::Literal(path) => {
                     if path.segments.len() == 1 && !parameters.contains(&path.segments[0].name) {
                         names.insert(path.segments[0].name.clone());
@@ -1543,7 +1802,13 @@ fn monomorph_table(
             }
         });
     }
+    for row in rows {
+        out.insert(row);
+    }
     for name in names {
+        if out.named(&name).is_some() {
+            continue;
+        }
         if let Some((template, kind, args)) = templates.parse(&name, known) {
             out.insert(Monomorph { template, kind, args, name });
         }
@@ -10175,6 +10440,10 @@ struct Checker<'a> {
     /// (read by the field arm) the one it is walking is.
     callee_position: bool,
     this_is_callee: bool,
+    /// The identifier `check_ident_expr` is typing is a bare callee the
+    /// shadowing desugar left as written: it names the program's fn or
+    /// builtin, whatever binding of the name is in scope.
+    callee_unshadowed: bool,
     current_locus: Option<&'a LocusInfo>,
     in_lifecycle: bool,
     in_closure: bool,
@@ -10301,6 +10570,15 @@ struct Checker<'a> {
     /// each expression, by node, so its accumulators read the types of
     /// the very expressions they accumulate.
     expr_types: Option<Vec<(*const Expr, Ty)>>,
+    /// The `views` column's rows of the declaration being walked
+    /// (GH #1554, `crate::typed_bodies::ViewTypes`): every expression's
+    /// type, every binding's, every assignment target's, every call's
+    /// callee. Taken into the declaration's `DeclChecked` as its walk
+    /// ends.
+    views: crate::typed_bodies::ViewTypes,
+    /// The callee the call being typed names (its node), so a method read
+    /// there is a call of it, not a method read as a value.
+    view_callee_node: usize,
     /// The locus declaration being walked, if any: a generic one's
     /// accumulator rows are specialized per monomorph.
     locus_decl: Option<&'a LocusDecl>,
@@ -13954,31 +14232,24 @@ impl<'a> Checker<'a> {
                                         ),
                                     _ => false,
                                 };
-                            // `b: Box<Int> = Box { value: 0 }` — the
-                            // annotation resolves to the mangled
-                            // monomorph `Box_Int` while the literal
-                            // types as the template `Box`. The
-                            // monomorph's own field validation
-                            // already checked the arguments; this is
-                            // the same value under two spellings.
-                            //
-                            // GH #911 B5: generic TYPES only.
-                            // `c: Cache<Int, String> = Cache { }` on
-                            // a generic LOCUS is refused at build
-                            // ("generic instantiation
-                            // `Cache_Int_String` not synthesized —
-                            // discovery missed the use site"), so
-                            // accepting it here would trade one
-                            // divergence for another.
-                            let monomorph_of_template = self
-                                .resolve_generic_monomorph(w)
-                                .is_some_and(|(t, _)| {
-                                    t.is_type() && t.name() == g.as_str()
-                                });
-                            serves_or_iface || monomorph_of_template
+                            serves_or_iface
                         }
                         _ => false,
                     };
+                    // `b: Box<Int> = Box { value: 0 }` — the annotation
+                    // resolves to the mangled monomorph `Box_Int` while the
+                    // literal types as the template `Box`: the same value
+                    // under two spellings, its fields held to the
+                    // monomorph's (`admit_monomorph_literal`); an array or
+                    // tuple default element by element.
+                    //
+                    // GH #911 B5: generic TYPES only. `c: Cache<Int, String>
+                    // = Cache { }` on a generic LOCUS is refused at build
+                    // ("generic instantiation `Cache_Int_String` not
+                    // synthesized — discovery missed the use site"), so
+                    // accepting it here would trade one divergence for
+                    // another.
+                    let conforms = conforms || self.admit_monomorph_literal(&want, &got, init, false);
                     if !widen_ok && !conforms && !self.flows_into(&want, &got, init) {
                         self.diags.push(Diag::ty(
                             init.span(),
@@ -14087,6 +14358,7 @@ impl<'a> Checker<'a> {
                             ty
                         }
                     };
+                    self.note_view_binding(&p.name, &ty, Some(&p.ty));
                     self.locals.insert(&p.name.name, LocalSym { ty, is_mut: false, cell: None });
                 }
                 self.check_block(&lc.body);
@@ -14162,6 +14434,7 @@ impl<'a> Checker<'a> {
                 for p in &fd.params {
                     self.check_type_annotation(&p.ty);
                     let ty = self.resolve_te(&p.ty);
+                    self.note_view_binding(&p.name, &ty, Some(&p.ty));
                     self.locals.insert(&p.name.name, LocalSym { ty, is_mut: false, cell: None });
                 }
                 self.check_block(&fd.body);
@@ -14816,6 +15089,7 @@ impl<'a> Checker<'a> {
         self.locals.push();
         for p in &decl.params {
             let ty = self.resolve_param_te(&p.ty);
+            self.note_view_binding(&p.name, &ty, Some(&p.ty));
             self.locals.insert(&p.name.name, LocalSym { ty, is_mut: false, cell: None });
         }
         self.check_fn_body(&decl.body);
@@ -15372,13 +15646,7 @@ impl<'a> Checker<'a> {
                         // generic type; the checker refused both, so
                         // neither shape was reachable outside the
                         // codegen tests (which skip the checker).
-                        let monomorph = self
-                            .two_spellings_of_one_monomorph(
-                                &want, &got, true,
-                            );
-                        if monomorph {
-                            self.adopt_monomorph_literal_decimals(&want, value);
-                        }
+                        let monomorph = self.admit_monomorph_literal(&want, &got, value, true);
                         // F.23: an `Int` widens into a `Float`
                         // ascription (codegen emits the `sitofp` at the
                         // binding), as at a call. Only an `Int`: a
@@ -15409,15 +15677,11 @@ impl<'a> Checker<'a> {
                     }
                     None => {
                         // GH #911 B5: no annotation is no arguments.
-                        if matches!(value, Expr::Struct { .. }) {
-                            self.refuse_generic_literal_without_arguments(
-                                &got,
-                                value.span(),
-                            );
-                        }
+                        self.refuse_generic_literals_without_arguments(&got, value);
                         got
                     }
                 };
+                self.note_view_binding(name, &bound, ty.as_ref());
                 let cell = self.cell_of(value);
                 self.locals.insert(
                     &name.name,
@@ -15464,6 +15728,7 @@ impl<'a> Checker<'a> {
                     }
                 };
                 for (n, t) in names.iter().zip(elem_tys.iter()) {
+                    self.note_view_binding(n, t, None);
                     self.locals.insert(
                         &n.name,
                         LocalSym { ty: t.clone(), is_mut: *is_mut, cell: None },
@@ -15539,7 +15804,11 @@ impl<'a> Checker<'a> {
                             .to_string(),
                     ));
                 }
-                if !self.flows_into(&want, &got, stored) {
+                // A declared place supplies a bare generic literal's
+                // arguments, as a `let` ascription does: codegen rewrites
+                // `self.cfg = Cfg { .. }` against the place's type.
+                let monomorph = matches!(op, AssignOp::Eq) && self.admit_monomorph_literal(&want, &got, value, true);
+                if !monomorph && !self.flows_into(&want, &got, stored) {
                     self.diags.push(Diag::ty(
                         value.span(),
                         format!(
@@ -15618,6 +15887,7 @@ impl<'a> Checker<'a> {
                     }
                 };
                 self.locals.push();
+                self.note_view_binding(name, &elem, None);
                 self.locals.insert(&name.name, LocalSym { ty: elem, is_mut: false, cell: None });
                 self.check_block(body);
                 self.locals.pop();
@@ -15680,12 +15950,7 @@ impl<'a> Checker<'a> {
                         // site codegen rewrites a bare generic
                         // template name at — `fn make() -> Box<Int> {
                         // return Box { value: 4 }; }` builds and runs.
-                        let monomorph = self
-                            .two_spellings_of_one_monomorph(
-                                expected_ret,
-                                &got,
-                                true,
-                            );
+                        let monomorph = self.admit_monomorph_literal(expected_ret, &got, e, true);
                         if !monomorph && !self.flows_into(expected_ret, &got, e) {
                             self.diags.push(Diag::ty(
                                 e.span(),
@@ -15711,12 +15976,7 @@ impl<'a> Checker<'a> {
                         );
                         // GH #911 B5: the same return-slot rewrite as
                         // the fallible branch above.
-                        let monomorph = self
-                            .two_spellings_of_one_monomorph(
-                                expected_ret,
-                                &got,
-                                true,
-                            );
+                        let monomorph = self.admit_monomorph_literal(expected_ret, &got, e, true);
                         if !widening
                             && !monomorph
                             && !self.flows_into(expected_ret, &got, e)
@@ -15916,12 +16176,7 @@ impl<'a> Checker<'a> {
                 // take the arguments from. (`App { };`, the ordinary
                 // main-locus instantiation, names no generic
                 // template and is untouched.)
-                if matches!(e, Expr::Struct { .. }) {
-                    self.refuse_generic_literal_without_arguments(
-                        &got,
-                        e.span(),
-                    );
-                }
+                self.refuse_generic_literals_without_arguments(&got, e);
             }
             Stmt::ShmWrite { topic, max, binding, body, span } => {
                 // The receiver must be a declared topic (its layout-bound
@@ -16073,6 +16328,46 @@ impl<'a> Checker<'a> {
     /// and inventing a narrower type here would turn a scope fix into
     /// a new class of type error on programs that compile today. What
     /// this establishes is that the NAME exists.
+    /// The `views` rows of a pattern's bindings matched against a value of
+    /// type `ty` (GH #1554): a binding is the value it binds, a variant's
+    /// payload its declared field's type, a tuple's element its element's.
+    /// The checker's own locals stay as `bind_pattern` binds them (its
+    /// diagnostics are unchanged); only the owned-view pass reads these.
+    fn note_view_pattern(&mut self, pat: &Pattern, ty: &Ty) {
+        match pat {
+            Pattern::Binding(id) => self.note_view_binding(id, ty, None),
+            Pattern::Constructor { path, args, .. } => {
+                let Some(variant) = path.segments.last() else { return };
+                let named = |n: &str| match self.top.symbols.get(n) {
+                    Some(TopSymbol::Type(TypeInfo { kind: TypeKind::Enum(vs), .. })) => {
+                        vs.iter().find(|v| v.name == variant.name).map(|v| v.fields.clone())
+                    }
+                    _ => None,
+                };
+                let fields = match ty {
+                    Ty::Named(n) => named(n),
+                    _ => None,
+                }
+                .or_else(|| path.segments.first().filter(|_| path.segments.len() > 1).and_then(|e| named(&e.name)))
+                .unwrap_or_default();
+                for (i, a) in args.iter().enumerate() {
+                    let t = fields.get(i).cloned().unwrap_or(Ty::Unknown);
+                    self.note_view_pattern(a, &t);
+                }
+            }
+            Pattern::Tuple(ps, _) => {
+                for (i, p) in ps.iter().enumerate() {
+                    let t = match ty {
+                        Ty::Tuple(ts) => ts.get(i).cloned().unwrap_or(Ty::Unknown),
+                        _ => Ty::Unknown,
+                    };
+                    self.note_view_pattern(p, &t);
+                }
+            }
+            Pattern::Literal(..) | Pattern::Wildcard(_) => {}
+        }
+    }
+
     fn bind_pattern(&mut self, pat: &Pattern) {
         match pat {
             Pattern::Binding(id) => self.locals.insert(
@@ -16117,6 +16412,7 @@ impl<'a> Checker<'a> {
             // moment that stopped being free.
             self.locals.push();
             self.bind_pattern(&arm.pattern);
+            self.note_view_pattern(&arm.pattern, &scrut_ty);
             self.check_pattern_literals(&arm.pattern, &scrut_ty);
             // `Decimal<S>`: a Decimal literal pattern is a value of the
             // scrutinee's scale, judged at it.
@@ -16517,6 +16813,10 @@ impl<'a> Checker<'a> {
         } else {
             Ty::Unknown
         };
+        let records = self.records_views();
+        if records {
+            self.views.note_place(&lv.head, ty.clone());
+        }
         for seg in &lv.tail {
             match seg {
                 LValueSeg::Field(f) => {
@@ -16553,7 +16853,15 @@ impl<'a> Checker<'a> {
                         }
                     }
                     self.record_param_access(&ty, f, f.span, crate::typed_bodies::AccessKind::Write);
+                    let owner = ty.clone();
                     ty = self.field_ty(&ty, &f.name).unwrap_or(Ty::Unknown);
+                    if records {
+                        let view = match &ty {
+                            Ty::Unknown => self.interface_field(&owner, &f.name).map(Ty::Named).unwrap_or(Ty::Unknown),
+                            t => t.clone(),
+                        };
+                        self.views.note_place(f, view);
+                    }
                 }
                 LValueSeg::Index(idx) => {
                     let _ = self.check_expr(idx);
@@ -16561,6 +16869,9 @@ impl<'a> Checker<'a> {
                         Ty::Array(elem, _) => *elem,
                         _ => Ty::Unknown,
                     };
+                    if records {
+                        self.views.note_place(idx, ty.clone());
+                    }
                 }
             }
         }
@@ -17725,8 +18036,18 @@ impl<'a> Checker<'a> {
     /// diagnostic — which names fn-pointer bindings and generic fns,
     /// the things a callee may also be — already covers the same
     /// mistake; reporting both would print two messages for one typo.
+    /// Does a bare callee spelled `name` name one of the program's fns,
+    /// generic fns or the builtins the compiler answers by name: what a
+    /// call left as written by the shadowing desugar calls.
+    fn names_fn_or_builtin(&self, name: &str) -> bool {
+        matches!(self.top.lookup(name), Some(TopSymbol::Fn(_)))
+            || self.generic_fns.contains_key(name)
+            || BARE_BUILTIN_CALLEES.contains(&name)
+    }
+
     fn check_ident_expr(&mut self, id: &Ident, report_unknown: bool) -> Ty {
-        if let Some(s) = self.locals.lookup(&id.name) {
+        let unshadowed = std::mem::take(&mut self.callee_unshadowed);
+        if let Some(s) = self.locals.lookup(&id.name).filter(|_| !unshadowed) {
             if !self.defaults_judged_at_literals {
                 self.typed.ident_read(id.id, &self.default_evaluation, crate::typed_bodies::READ_BINDING);
             }
@@ -18851,13 +19172,26 @@ impl<'a> Checker<'a> {
     /// generic fn). Queue its concrete monomorph in the same producer
     /// as the call rows, so that locus's bodies are walked in turn.
     fn record_specialized_type(&mut self, te: &TypeExpr) {
-        if let Ty::Named(name) = self.resolve_te(te) {
-            if let Some((template, kind, args)) = self.templates.parse(&name, self.known) {
-                if !args.iter().any(|t| matches!(t, Ty::Unknown)) {
-                    let from = self.typed.monomorphs.rows().len();
-                    self.typed.monomorphs.insert(crate::typed_bodies::Monomorph { template, kind, args, name });
-                    self.templates.close_over_fields(self.known, &mut self.typed.monomorphs, from);
+        // An instantiation by its structure (a nested one's row first); a
+        // bare name, a monomorph's mangled name written out, by parsing it.
+        let mut bindings: BTreeMap<String, Ty> =
+            self.generic_params.iter().map(|name| (name.clone(), Ty::Unknown)).collect();
+        bindings.extend(self.generic_bindings.iter().map(|(name, ty)| (name.clone(), ty.clone())));
+        let mut rows = Vec::new();
+        if let Some(row) = self.templates.instantiation(te, self.known, &bindings, &mut rows) {
+            rows.push(row);
+        } else if let (TypeExpr::Named { generic_args, .. }, Ty::Named(name)) = (te, self.resolve_te(te)) {
+            if generic_args.is_empty() {
+                if let Some((template, kind, args)) = self.templates.parse(&name, self.known) {
+                    rows.push(crate::typed_bodies::Monomorph { template, kind, args, name });
                 }
+            }
+        }
+        for row in rows {
+            if !row.args.iter().any(|t| matches!(t, Ty::Unknown)) {
+                let from = self.typed.monomorphs.rows().len();
+                self.typed.monomorphs.insert(row);
+                self.templates.close_over_fields(self.known, &mut self.typed.monomorphs, from);
             }
         }
         match te {
@@ -19467,7 +19801,272 @@ impl<'a> Checker<'a> {
         if let Some(seen) = &mut self.expr_types {
             seen.push((expr as *const Expr, ty.clone()));
         }
+        if self.records_views() {
+            self.note_view_expr(expr, &ty);
+        }
         ty
+    }
+
+    /// Whether the walk records the `views` column (GH #1554): the
+    /// ordinary walk of the declaration's own bodies. A specialization's
+    /// walk types the template's sites again under its arguments, and a
+    /// default walked where it is evaluated is another declaration's
+    /// text: neither records.
+    fn records_views(&self) -> bool {
+        self.specializing.is_none()
+            && self.struct_defaults_typing.is_empty()
+            && self.default_invocations.is_empty()
+            && self.default_evaluation.is_empty()
+    }
+
+    /// The `views` row of a binding's name: the type the local was bound
+    /// with, or, for a binding written as an interface (which the
+    /// checker's own slot types `Unknown`), that interface.
+    fn note_view_binding(&mut self, name: &Ident, ty: &Ty, written: Option<&TypeExpr>) {
+        if !self.records_views() {
+            return;
+        }
+        let ty = match (ty, written) {
+            (Ty::Unknown, Some(te)) => self.view_interface(te).map(Ty::Named).unwrap_or(Ty::Unknown),
+            _ => ty.clone(),
+        };
+        self.views.note_binding(name, ty);
+    }
+
+    /// The interface a type expression names, however it is written: a
+    /// name, an imported seed's `lib::I`, a stdlib path (`std::http::Handler`),
+    /// an alias of one. The `views` column holds it where the checker's
+    /// own slot types an interface `Unknown`.
+    fn view_interface(&self, te: &TypeExpr) -> Option<String> {
+        let TypeExpr::Named { path, generic_args, .. } = te else { return None };
+        if !generic_args.is_empty() {
+            return None;
+        }
+        let segs: Vec<&str> = path.segments.iter().map(|s| s.name.as_str()).collect();
+        let name = match segs.as_slice() {
+            [one] => one.to_string(),
+            _ => crate::stdlib_bodies::mangled_locus_name(&segs)
+                .map(str::to_string)
+                .or_else(|| self.known.import_target(&segs.join("::")).map(str::to_string))?,
+        };
+        if self.generic_params.contains(&name) || self.generic_bindings.contains_key(&name) {
+            return None;
+        }
+        self.top.interface_named(&name).map(str::to_string)
+    }
+
+    /// The `views` rows of an expression the walk typed `ty`: its type
+    /// (a field written as an interface is that interface, as a binding
+    /// is), and a call's callee.
+    fn note_view_expr(&mut self, expr: &Expr, ty: &Ty) {
+        // The pass reads a literal and an operator by their shape, and a
+        // local's read by its binding's row: no row of their own.
+        match expr {
+            Expr::Literal(..) | Expr::Binary { .. } | Expr::Unary { .. } | Expr::Range { .. } => return,
+            Expr::Ident(id) if self.locals.lookup(&id.name).is_some() => return,
+            _ => {}
+        }
+        let ty = match (ty, expr) {
+            (Ty::Unknown, Expr::Field { receiver, name, .. }) => {
+                self.interface_field(&self.view_expr_ty(receiver), &name.name).map(Ty::Named).unwrap_or(Ty::Unknown)
+            }
+            _ => ty.clone(),
+        };
+        // A method read anywhere but as a call's callee is a method value.
+        if let (Ty::Function { .. }, Expr::Field { receiver, name, .. }) = (&ty, expr) {
+            if expr as *const Expr as usize != self.view_callee_node {
+                if let Ty::Named(owner) = self.view_expr_ty(receiver) {
+                    let method = match self.top.lookup(&owner) {
+                        Some(TopSymbol::Locus(li)) => {
+                            li.methods.iter().any(|m| m.name == name.name) && !li.params.iter().any(|p| p.name == name.name)
+                        }
+                        Some(TopSymbol::Perspective(_) | TopSymbol::Interface(_)) => true,
+                        _ => false,
+                    };
+                    if method {
+                        self.views.note_method_value();
+                    }
+                }
+            }
+        }
+        self.views.note_expr(expr, ty);
+        if let Expr::Call { callee, args, .. } = expr {
+            let callee = self.view_callee(callee, args);
+            self.views.note_callee(expr, callee);
+        }
+    }
+
+    /// The interface the field `field` of a value of type `owner` is
+    /// written as (a locus's param, a record's field), if it is one.
+    fn interface_field(&self, owner: &Ty, field: &str) -> Option<String> {
+        let Ty::Named(owner) = owner else { return None };
+        if let Some(l) = self.locus_decls.get(owner.as_str()) {
+            for m in &l.members {
+                let LocusMember::Params(pb) = m else { continue };
+                if let Some(te) = pb.params.iter().find(|p| p.name.name == field).and_then(|p| p.ty.as_ref()) {
+                    return self.view_interface(te);
+                }
+            }
+            return None;
+        }
+        let t = self.type_decls.get(owner.as_str())?;
+        let TypeDeclBody::Struct(fields) = &t.body else { return None };
+        fields.iter().find(|f| f.name.name == field).and_then(|f| self.view_interface(&f.ty))
+    }
+
+    /// What a call names, as this walk resolved it (the `views` column's
+    /// callee row, GH #1554), read after the call was typed: its callee's
+    /// and its receiver's rows are in.
+    fn view_callee(&self, callee: &Expr, args: &[Expr]) -> crate::typed_bodies::CalleeRef {
+        use crate::typed_bodies::CalleeRef;
+        match callee {
+            Expr::Ident(id) => {
+                let n = id.name.as_str();
+                if self.locals.lookup(n).is_some() && !self.names_fn_or_builtin(n) {
+                    return CalleeRef::Value;
+                }
+                if self.generic_fns.contains_key(n) {
+                    return CalleeRef::Fn(n.to_string());
+                }
+                match self.top.lookup(n) {
+                    Some(TopSymbol::Fn(_)) => return CalleeRef::Fn(n.to_string()),
+                    // A conversion to a declared scalar (`Session(n)`).
+                    Some(TopSymbol::Type(TypeInfo { kind: TypeKind::Scalar(_), .. })) => {
+                        return CalleeRef::Std(vec![n.to_string()])
+                    }
+                    _ => {}
+                }
+                if matches!(n, "push" | "at" | "set" | "count" | "clear" | "truncate")
+                    && args.first().is_some_and(|a| matches!(self.view_expr_ty(a), Ty::Bounded(..)))
+                {
+                    return CalleeRef::Bounded;
+                }
+                if crate::builtin_sigs::bare_builtin_sig(n).is_some()
+                    || crate::stdlib_surface::builtin_effects(n).is_some()
+                    || crate::stdlib_surface::row(&[n]).is_some()
+                    || BARE_BUILTIN_CALLEES.contains(&n)
+                {
+                    return CalleeRef::Std(vec![n.to_string()]);
+                }
+                CalleeRef::Unknown
+            }
+            Expr::Path(qn) => {
+                let segs: Vec<&str> = qn.segments.iter().map(|s| s.name.as_str()).collect();
+                // GH #470: a `std::` path to a Hale-source stdlib fn.
+                if let Some(m) = crate::stdlib_bodies::mangled_locus_name(&segs) {
+                    if let Some(TopSymbol::Fn(_)) = self.top.lookup(m) {
+                        return CalleeRef::Fn(m.to_string());
+                    }
+                }
+                if segs.first() == Some(&"std") || crate::stdlib_surface::row(&segs).is_some() {
+                    return CalleeRef::Std(segs.iter().map(|s| s.to_string()).collect());
+                }
+                if segs.len() == 2 {
+                    match self.top.symbols.get(segs[0]) {
+                        Some(TopSymbol::Type(TypeInfo { kind: TypeKind::Enum(variants), .. })) => {
+                            if variants.iter().any(|v| v.name == segs[1]) {
+                                return CalleeRef::Ctor;
+                            }
+                        }
+                        Some(TopSymbol::Locus(li)) if li.methods.iter().any(|m| m.name == segs[1]) => {
+                            return CalleeRef::Method { owner: segs[0].to_string(), name: segs[1].to_string() };
+                        }
+                        _ => {}
+                    }
+                }
+                if self.imported_fn(qn).is_some() {
+                    if let Some(m) = self.known.import_target(&segs.join("::")) {
+                        return CalleeRef::Fn(m.to_string());
+                    }
+                }
+                CalleeRef::Unknown
+            }
+            Expr::Field { receiver, name, .. } => self.view_method(&self.view_expr_ty(receiver), &name.name),
+            _ => CalleeRef::Unknown,
+        }
+    }
+
+    /// The type this walk gave `e`, as the `views` column holds it: a
+    /// local's read has no row of its own, its binding's type answers.
+    fn view_expr_ty(&self, e: &Expr) -> Ty {
+        match e {
+            Expr::Ident(id) => match self.locals.lookup(&id.name) {
+                Some(local) => local.ty.clone(),
+                None => self.views.expr(e).clone(),
+            },
+            e => self.views.expr(e).clone(),
+        }
+    }
+
+    /// The method `m` of a value of type `rt`, as the field arm resolves
+    /// it: a form's synthesized operation, a locus's declared method, a
+    /// fn-typed field (a value), a method through an interface or a
+    /// perspective, a stdlib handle's member sugar for its namespace's
+    /// fn. Anything else is unresolved.
+    fn view_method(&self, rt: &Ty, m: &str) -> crate::typed_bodies::CalleeRef {
+        use crate::typed_bodies::CalleeRef;
+        let rt = match rt {
+            Ty::Projection(_, inner) => inner.as_ref(),
+            t => t,
+        };
+        let Ty::Named(owner) = rt else { return CalleeRef::Unknown };
+        // A monomorph's methods are its template's.
+        let owner = match self.top.lookup(owner) {
+            Some(_) => owner.clone(),
+            None => match self.typed.monomorphs.named(owner).and_then(|mono| self.templates.by_key.get(&mono.template.0)) {
+                Some(GenericTemplate::Locus(ld)) => ld.name.name.clone(),
+                _ => return CalleeRef::Unknown,
+            },
+        };
+        let decl = self.locus_decls.get(owner.as_str()).copied().or_else(|| match self.templates.loci.get(owner.as_str()) {
+            Some(k) => match self.templates.by_key.get(k) {
+                Some(GenericTemplate::Locus(ld)) => Some(*ld),
+                _ => None,
+            },
+            None => None,
+        });
+        let declares = |d: &LocusDecl| d.members.iter().any(|x| matches!(x, LocusMember::Fn(f) if f.name.name == m));
+        if let Some(d) = decl {
+            if d.form.is_some() && crate::view_bindings::FORM_OPS.contains(&m) && !declares(d) {
+                return CalleeRef::FormOp(owner);
+            }
+            if declares(d) {
+                return CalleeRef::Method { owner, name: m.to_string() };
+            }
+        }
+        match self.top.lookup(&owner) {
+            Some(TopSymbol::Locus(li)) => {
+                if li.methods.iter().any(|x| x.name == m) {
+                    return CalleeRef::Method { owner, name: m.to_string() };
+                }
+                if li.params.iter().any(|p| p.name == m && matches!(p.ty, Ty::Function { .. })) {
+                    return CalleeRef::Value;
+                }
+            }
+            Some(TopSymbol::Interface(_)) | Some(TopSymbol::Perspective(_)) => {
+                return CalleeRef::Dispatch(m.to_string());
+            }
+            Some(TopSymbol::Type(TypeInfo { kind: TypeKind::Struct(fields), .. })) => {
+                if fields.iter().any(|f| f.name == m && matches!(f.ty, Ty::Function { .. })) {
+                    return CalleeRef::Value;
+                }
+            }
+            _ => {}
+        }
+        // GH #470: a stdlib handle's member, sugar for the namespace's fn
+        // (`f.write_line(x)` is `std::io::file::write_line(f, x)`).
+        if let Some(pub_path) = hale_stdlib::PATH_RENAMES.iter().find(|(_, mm)| *mm == owner.as_str()).map(|(p, _)| *p) {
+            let mut segs: Vec<&str> = pub_path.to_vec();
+            if let Some(last) = segs.last_mut() {
+                *last = m;
+            }
+            if let Some(m2) = crate::stdlib_bodies::mangled_locus_name(&segs) {
+                if let Some(TopSymbol::Fn(_)) = self.top.lookup(m2) {
+                    return CalleeRef::HandleFn(m2.to_string());
+                }
+            }
+        }
+        CalleeRef::Unknown
     }
 
     /// A Decimal literal, typed `Decimal` (`Decimal<9>`) until the place
@@ -19796,39 +20395,110 @@ impl<'a> Checker<'a> {
         vec![elem; n]
     }
 
-    /// `Decimal<S>`: a generic type's literal spelled with the template's
-    /// name (`Box { value: 0.1d }`) into a place of its monomorph
-    /// (`Box<Decimal<18>>`): a scale-less Decimal given to a field of a
-    /// type parameter bound to a `Decimal<S>` takes that scale, as a
-    /// field the template declares with a Decimal type takes its own
-    /// where the literal is typed.
-    fn adopt_monomorph_literal_decimals(&mut self, want: &Ty, value: &Expr) {
+    /// A literal spelled with a generic template's name, admitted where the
+    /// declared type is one of its monomorphs
+    /// ([`Self::admit_monomorph_literal`]), meets that monomorph's field
+    /// types. It was typed against the template, whose parameters are
+    /// `Unknown`, so a field of a parameter's type took anything: `self.b =
+    /// Box { value: "bad" }` with `b: Box<Int>` checked and the build
+    /// refused `Box_Int.value` (review of #1568). Each field whose declared
+    /// type mentions a parameter is typed again and held to the type the
+    /// monomorph's arguments make of it; the other fields were held to
+    /// theirs where the literal was typed. A scale-less Decimal takes the
+    /// bound scale; an `Int` widens into a `Float` field of a data type, as
+    /// a data literal's does (F.23), never into a locus param; a nested
+    /// template literal meets its own monomorph. An array, an array repeat
+    /// and a tuple literal hand each element the element type.
+    fn meet_monomorph_literal(&mut self, want: &Ty, value: &Expr) {
+        match (want, value) {
+            (Ty::Array(elem, _), Expr::Array(parts, _)) => {
+                for p in parts {
+                    self.meet_monomorph_literal(elem, p);
+                }
+                return;
+            }
+            (Ty::Array(elem, _), Expr::ArrayRepeat { val, .. }) => {
+                self.meet_monomorph_literal(elem, val);
+                return;
+            }
+            (Ty::Tuple(tys), Expr::Tuple(parts, _)) => {
+                for (t, p) in tys.iter().zip(parts) {
+                    self.meet_monomorph_literal(t, p);
+                }
+                return;
+            }
+            _ => {}
+        }
+        fn mentions(te: &TypeExpr, params: &BTreeMap<String, Ty>) -> bool {
+            match te {
+                TypeExpr::Named { path, generic_args, .. } => {
+                    path.segments.len() == 1 && params.contains_key(&path.segments[0].name)
+                        || generic_args.iter().any(|t| mentions(t, params))
+                }
+                TypeExpr::Projection { inner, .. } => mentions(inner, params),
+                TypeExpr::Array { elem, .. } | TypeExpr::Bounded { elem, .. } => mentions(elem, params),
+                TypeExpr::Tuple(parts, _) => parts.iter().any(|t| mentions(t, params)),
+                TypeExpr::Function { params: ps, ret, .. } => {
+                    ps.iter().any(|t| mentions(t, params)) || ret.as_ref().is_some_and(|t| mentions(t, params))
+                }
+                TypeExpr::Primitive(..) | TypeExpr::Perspective { .. } => false,
+            }
+        }
         let (Ty::Named(w), Expr::Struct { inits, .. }) = (want, value) else { return };
-        let Some((GenericTemplate::Type(decl), bindings)) = self.resolve_generic_monomorph(w) else { return };
-        let TypeDeclBody::Struct(fields) = &decl.body else { return };
+        let Some((template, bindings)) = self.resolve_generic_monomorph(w) else { return };
         for init in inits {
-            let Some(field) = fields.iter().find(|f| f.name.name == init.name.name) else { continue };
-            let TypeExpr::Named { path, generic_args, .. } = &field.ty else { continue };
-            if path.segments.len() != 1 || !generic_args.is_empty() {
+            let declared: Option<&TypeExpr> = match template {
+                GenericTemplate::Type(decl) => match &decl.body {
+                    TypeDeclBody::Struct(fields) => {
+                        fields.iter().find(|f| f.name.name == init.name.name).map(|f| &f.ty)
+                    }
+                    _ => None,
+                },
+                GenericTemplate::Locus(l) => l
+                    .members
+                    .iter()
+                    .filter_map(|m| match m {
+                        LocusMember::Params(b) => Some(&b.params),
+                        _ => None,
+                    })
+                    .flatten()
+                    .find(|p| p.name.name == init.name.name)
+                    .and_then(|p| p.ty.as_ref()),
+            };
+            let Some(te) = declared.filter(|te| mentions(te, &bindings)) else { continue };
+            // As field access types it, then through a transparent alias
+            // (`Supervisor<Scalar>` with `type Scalar = Int;`).
+            let mut bound = self.monomorph_field_ty(te, &bindings);
+            for _ in 0..8 {
+                match &bound {
+                    Ty::Named(n) => match self.known.alias_target(n) {
+                        Some(t) => bound = t.clone(),
+                        None => break,
+                    },
+                    _ => break,
+                }
+            }
+            if matches!(bound, Ty::Unknown) {
                 continue;
             }
-            let Some(bound) = bindings.get(&path.segments[0].name).filter(|t| Self::holds_decimal(t)).cloned() else {
-                continue;
-            };
-            // The literal was typed against the template, where the field's
-            // type is the parameter: the value meets its bound type here, a
-            // scale-less Decimal taking the bound scale and any other value
-            // held to it. The walk that types it again is discarded but for
-            // the scale and the refusal this meeting decides.
+            // The walk that types the value again is discarded but for the
+            // scale and the refusal this meeting decides.
             let mark = self.walk_mark();
             let got = self.check_expr(&init.value);
             self.discard_since(mark);
-            if !self.flows_into(&bound, &got, &init.value) {
+            if self.two_spellings_of_one_monomorph(&bound, &got, true) {
+                self.meet_monomorph_literal(&bound, &init.value);
+                continue;
+            }
+            let widening = template.is_type()
+                && matches!((&bound, &got), (Ty::Prim(PrimType::Float), Ty::Prim(PrimType::Int)));
+            if !widening && !self.flows_into(&bound, &got, &init.value) {
                 self.diags.push(Diag::ty(
                     init.value.span(),
                     format!(
-                        "type `{}`: field `{}` expects `{}`, got `{}`",
-                        decl.name.name,
+                        "{} `{}`: field `{}` expects `{}`, got `{}`",
+                        template.kind(),
+                        template.name(),
                         init.name.name,
                         bound.display(),
                         got.display()
@@ -19836,6 +20506,40 @@ impl<'a> Checker<'a> {
                 ));
             }
         }
+    }
+
+    /// The one admission of a literal spelled with a generic template's
+    /// name at a site that declares its type: `want` and `got` the two
+    /// spellings of one monomorph ([`Self::two_spellings_of_one_monomorph`],
+    /// `allow_loci` the site's answer), and then the literal's fields held
+    /// to the monomorph's ([`Self::meet_monomorph_literal`]). Every site
+    /// codegen rewrites such a literal at asks it, so none admits the
+    /// spelling without the fields:
+    ///
+    /// | site | loci | codegen rewrite |
+    /// |---|---|---|
+    /// | `let` ascription | yes | `Stmt::Let` |
+    /// | plain assignment's place | yes | `Stmt::Assign` (`place_declared_ty`) |
+    /// | return slot (fallible or not) | yes | `lower_return` |
+    /// | locus param default | no | `locus/decl.rs` |
+    /// | record literal's field | no | `populate_user_type_fields` |
+    /// | locus literal's param override | yes | `locus/instantiation.rs` |
+    ///
+    /// Each takes an array (`[x, y]`, `[x; N]`) or tuple literal of such
+    /// literals under an array or tuple type, element by element. A `fail`
+    /// payload is the one site codegen rewrites that the checker refuses
+    /// (the payload's type is checked as written); an `or` substitute
+    /// (`make() or Box { .. }`) declares the success type but neither
+    /// admits the spelling there; and no site without a declared type
+    /// admits it
+    /// ([`Self::refuse_generic_literals_without_arguments`]). The rows are
+    /// `generic_monomorph_agreement.rs`'s, one per site.
+    fn admit_monomorph_literal(&mut self, want: &Ty, got: &Ty, value: &Expr, allow_loci: bool) -> bool {
+        let admitted = self.two_spellings_of_one_monomorph(want, got, allow_loci);
+        if admitted {
+            self.meet_monomorph_literal(want, value);
+        }
+        admitted
     }
 
     /// `Decimal<S>`: the operands of `min` / `max`, typed `tys`, where a
@@ -20053,6 +20757,47 @@ impl<'a> Checker<'a> {
                     return Ty::Unknown;
                 }
                 self.record_omitted_defaults(*call_id, callee, args.len());
+                // A bare callee the shadowing desugar left as written names
+                // the program's fn or the builtin (`crate::shadowed_callees`).
+                // A binding of the name that is, or may be, a fn value the
+                // desugar could not see as one (a pattern's binding, a value
+                // read from a field or a call) would read as the callee and
+                // is not: refused rather than called past. A binding of a
+                // known type that is no fn (`let max = 10`) leaves the call
+                // to the fn or builtin, as it always did. A call the compiler wrote
+                // (its callee at the call's own span) is the compiler's.
+                if let Expr::Ident(id) = callee.as_ref() {
+                    let generated = id.span == *call_span;
+                    if !generated && self.names_fn_or_builtin(&id.name) {
+                        // A binding of a type the check does not know (a
+                        // tuple pattern's) may be a fn value as well.
+                        if let Some(sym) = self.locals.lookup(&id.name) {
+                            if matches!(sym.ty, Ty::Function { .. } | Ty::Unknown) {
+                                let bound = if matches!(sym.ty, Ty::Unknown) {
+                                    "bound here to a value the check cannot type, which may be a fn"
+                                } else {
+                                    "a fn value bound here"
+                                };
+                                self.diags.push(Diag::ty(
+                                    *call_span,
+                                    format!(
+                                        "`{n}` is {bound}, and a call of the name runs the {what} `{n}`: \
+                                         a binding shadows it in a call only where it is declared as a fn value (a \
+                                         parameter or a `let` written with a `fn(..)` type, a `let` of a fn's name) \
+                                         — write its type, or rename it",
+                                        n = id.name,
+                                        bound = bound,
+                                        what = if self.top.lookup(&id.name).is_some() || self.generic_fns.contains_key(id.name.as_str()) {
+                                            "fn"
+                                        } else {
+                                            "builtin"
+                                        },
+                                    ),
+                                ));
+                            }
+                        }
+                    }
+                }
                 self.check_capacity_slot_call(callee, args, *call_span);
                 self.check_hashmap_bump(callee);
                 self.refuse_fallible_perspective_call(callee);
@@ -20275,8 +21020,14 @@ impl<'a> Checker<'a> {
                 // on the name NOT resolving to a user fn, so user
                 // shadowing keeps its own signature.
                 if let Expr::Ident(id) = callee.as_ref() {
-                    let shadowed = self.top.lookup(&id.name).is_some()
-                        || self.locals.lookup(&id.name).is_some();
+                    // `__fmt` is the desugaring of `f"{x:spec}"`, written
+                    // in the user's own scope: it is the compiler's, whatever
+                    // a binding of the name holds (as lowering reads it).
+                    // A binding of the name is the callee only where the
+                    // shadowing desugar made the call one through it
+                    // (`crate::shadowed_callees`); a bare name left here is
+                    // the builtin's, unless the program declares it.
+                    let shadowed = self.top.lookup(&id.name).is_some();
                     if !shadowed {
                         match id.name.as_str() {
                             "println" | "print" | "to_string" => {
@@ -20875,7 +21626,16 @@ impl<'a> Checker<'a> {
                                 for (i, a) in args.iter().enumerate() {
                                     let got = self.check_expr(a);
                                     let Some(want) = fields.get(i) else { continue };
-                                    if !self.ty_is_nameable(want) {
+                                    // A literal spelled with a generic
+                                    // template's name takes the field's
+                                    // arguments, its fields held to the
+                                    // monomorph's; a monomorph is a type
+                                    // the checker names (`Box_Int`).
+                                    if self.admit_monomorph_literal(want, &got, a, false) {
+                                        continue;
+                                    }
+                                    let monomorph = matches!(want, Ty::Named(n) if self.typed.monomorphs.named(n).is_some());
+                                    if !self.ty_is_nameable(want) && !monomorph {
                                         continue;
                                     }
                                     if !self.flows_into(want, &got, a) {
@@ -20963,12 +21723,34 @@ impl<'a> Checker<'a> {
                 // messages for one typo, and the callee's is the more
                 // informative of the two.
                 let callee_ty = match callee.as_ref() {
-                    Expr::Ident(id) => self.check_ident_expr(id, false),
+                    Expr::Ident(id) => {
+                        self.callee_unshadowed = self.names_fn_or_builtin(&id.name);
+                        self.check_ident_expr(id, false)
+                    }
                     other => {
+                        self.view_callee_node = other as *const Expr as usize;
                         self.callee_position = true;
                         self.check_expr(other)
                     }
                 };
+                // A call through a value that is no fn (a local `Int`, a
+                // block that is not a fn value): there is nothing to call,
+                // and lowering refused it unlocated.
+                let through_value = match callee.as_ref() {
+                    Expr::Ident(id) => self.locals.lookup(&id.name).is_some() && !self.names_fn_or_builtin(&id.name),
+                    Expr::Block(_) => true,
+                    _ => false,
+                };
+                if through_value && !matches!(callee_ty, Ty::Function { .. } | Ty::Unknown) {
+                    self.diags.push(Diag::ty(
+                        callee.span(),
+                        format!("this is a value of type `{}`, not a fn: there is nothing to call", callee_ty.display()),
+                    ));
+                    for a in args {
+                        let _ = self.check_expr(a);
+                    }
+                    return Ty::Unknown;
+                }
                 // GH #583 (dna/FRICTION.md F.18): a bare callee that names
                 // nothing — not a local (a fn-pointer binding), not a
                 // top-level fn, not a generic fn, not a builtin — was
@@ -22747,6 +23529,20 @@ impl<'a> Checker<'a> {
                 }
             }
             Pattern::Constructor { path, args, .. } => {
+                // Each value a variant's pattern takes is a binding, `_` or
+                // a literal: lowering matches nothing nested there (it
+                // refused `Op::Pair((a, b))`, unlocated, where the check
+                // passed it).
+                for a in args {
+                    if let Pattern::Tuple(_, sp) | Pattern::Constructor { span: sp, .. } = a {
+                        self.diags.push(Diag::ty(
+                            *sp,
+                            "a variant's pattern takes a binding, `_` or a literal for each of its values, \
+                             not a nested pattern: bind the value, and match the binding in the arm"
+                                .to_string(),
+                        ));
+                    }
+                }
                 let [enum_seg, variant_seg] = path.segments.as_slice() else { return };
                 let Some(TopSymbol::Type(TypeInfo { kind: TypeKind::Enum(variants), .. })) =
                     self.top.symbols.get(&enum_seg.name)
@@ -22978,14 +23774,17 @@ impl<'a> Checker<'a> {
     /// A literal spelled with the template name carries no type
     /// arguments of its own; codegen takes them from the declared
     /// type at the site and rewrites the path to the monomorph
-    /// (`resolve_generic_struct_path`). The checker has to allow the
-    /// same thing at the same sites or it refuses programs the build
-    /// lowers.
+    /// (`rewrite_generic_literal`), and an array or tuple literal's
+    /// elements each against the declared element type: `[Cfg<Int>;
+    /// 2]` is two spellings of `[Cfg; 2]`, `(Cfg<Int>, Int)` of `(Cfg,
+    /// Int)`. The checker has to allow the same thing at the same
+    /// sites or it refuses programs the build lowers.
     ///
     /// `allow_loci` is a per-SITE answer, not a property of the
     /// question. Codegen does the rewrite for a generic locus as
-    /// well as a generic type at a `let` ascription and a return
-    /// slot, and at a locus literal's field override. A locus param
+    /// well as a generic type at a `let` ascription, a return slot
+    /// and an assignment's place, and at a locus literal's field
+    /// override. A locus param
     /// DEFAULT and a data-record field still admit only generic TYPE
     /// literals at this seam, so those sites pass `false` and keep
     /// check agreeing with the build. `crates/hale-codegen/tests/generic_monomorph_agreement.rs`
@@ -22996,12 +23795,22 @@ impl<'a> Checker<'a> {
         got: &Ty,
         allow_loci: bool,
     ) -> bool {
-        let (Ty::Named(w), Ty::Named(g)) = (want, got) else {
-            return false;
-        };
-        self.resolve_generic_monomorph(w).is_some_and(|(t, _)| {
-            (allow_loci || t.is_type()) && t.name() == g.as_str()
-        })
+        match (want, got) {
+            (Ty::Named(w), Ty::Named(g)) => self.resolve_generic_monomorph(w).is_some_and(|(t, _)| {
+                (allow_loci || t.is_type()) && t.name() == g.as_str()
+            }),
+            (Ty::Array(w, wn), Ty::Array(g, gn)) => {
+                (wn == gn || wn.is_none() || gn.is_none()) && self.two_spellings_of_one_monomorph(w, g, allow_loci)
+            }
+            // Every part the same type or two spellings of one, and one
+            // part at least the latter.
+            (Ty::Tuple(ws), Ty::Tuple(gs)) => {
+                ws.len() == gs.len()
+                    && ws.iter().zip(gs).any(|(w, g)| self.two_spellings_of_one_monomorph(w, g, allow_loci))
+                    && ws.iter().zip(gs).all(|(w, g)| w == g || self.two_spellings_of_one_monomorph(w, g, allow_loci))
+            }
+            _ => false,
+        }
     }
 
     /// GH #911 B5: the generic template a literal's own path names,
@@ -23028,6 +23837,31 @@ impl<'a> Checker<'a> {
     /// inference from the literal's fields back to `T`, so there is
     /// nothing to infer the arguments from. The rule is therefore
     /// "say them", and the error carries the line that has to change.
+    /// [`Self::refuse_generic_literal_without_arguments`] for `value`,
+    /// typed `got`, at a site that declares no type: the literal itself,
+    /// or each element of an array or tuple literal (`let bs = [Box {
+    /// value: 1 }];`, which checked clean and died at build with the same
+    /// unlocated `Discriminant(12)`).
+    fn refuse_generic_literals_without_arguments(&mut self, got: &Ty, value: &Expr) {
+        match (value, got) {
+            (Expr::Struct { .. }, _) => self.refuse_generic_literal_without_arguments(got, value.span()),
+            (Expr::Array(parts, _), Ty::Array(elem, _)) => {
+                for p in parts {
+                    self.refuse_generic_literals_without_arguments(elem, p);
+                }
+            }
+            (Expr::ArrayRepeat { val, .. }, Ty::Array(elem, _)) => {
+                self.refuse_generic_literals_without_arguments(elem, val);
+            }
+            (Expr::Tuple(parts, _), Ty::Tuple(tys)) => {
+                for (p, t) in parts.iter().zip(tys) {
+                    self.refuse_generic_literals_without_arguments(t, p);
+                }
+            }
+            _ => {}
+        }
+    }
+
     fn refuse_generic_literal_without_arguments(
         &mut self,
         ty: &Ty,
@@ -23643,9 +24477,7 @@ impl<'a> Checker<'a> {
                     // the same rewrite as typed defaults; data-record
                     // fields still admit only generic data types.
                     let monomorph_field = matches!(kind_label, "type" | "locus")
-                        && self.two_spellings_of_one_monomorph(
-                            want, &got, kind_label == "locus",
-                        );
+                        && self.admit_monomorph_literal(want, &got, &init.value, kind_label == "locus");
                     // F.23: an `Int` widens into a `Float` field of a
                     // data-type literal (codegen's
                     // `populate_user_type_fields` emits the `sitofp`),

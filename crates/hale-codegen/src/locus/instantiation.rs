@@ -3008,19 +3008,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     // the same concrete type hint as a typed default.
                     // Renaming preserves the source site's owner.
                     let rewritten;
-                    let value = match (expr, info.fields.get(fname)) {
-                        (Expr::Struct { path, inits, span, id }, Some((_, ty))) => {
-                            match self.resolve_generic_struct_path_for_codegen_ty(path, ty) {
-                                Some(path) => {
-                                    rewritten = Expr::Struct {
-                                        path, inits: inits.clone(), span: *span, id: *id,
-                                    };
-                                    &rewritten
-                                }
-                                None => expr,
-                            }
+                    let value = match info.fields.get(fname).and_then(|(_, ty)| self.rewrite_generic_literal(expr, ty)) {
+                        Some(r) => {
+                            rewritten = r;
+                            &rewritten
                         }
-                        _ => expr,
+                        None => expr,
                     };
                     let composite = std::mem::replace(
                         &mut self.pool_init_composite_param,

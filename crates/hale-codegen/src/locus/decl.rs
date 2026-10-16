@@ -318,35 +318,9 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
                                 // at instantiation sees the right
                                 // path. Mirrors the let-ascription
                                 // hook from m61b.
-                                let stored_default =
-                                    match default_expr {
-                                        Expr::Struct {
-                                            path,
-                                            inits,
-                                            span,
-                                            id,
-                                        } => match self
-                                            .resolve_generic_struct_path(
-                                                path, ascribed,
-                                            ) {
-                                            Some(new_path) => {
-                                                // GH #921 A2: the rewrite
-                                                // renames the path and
-                                                // changes nothing else, so
-                                                // this is the SAME source
-                                                // expression and keeps its
-                                                // id.
-                                                Expr::Struct {
-                                                    id: *id,
-                                                    path: new_path,
-                                                    inits: inits.clone(),
-                                                    span: *span,
-                                                }
-                                            }
-                                            None => default_expr.clone(),
-                                        },
-                                        _ => default_expr.clone(),
-                                    };
+                                let stored_default = self
+                                    .rewrite_generic_literal(default_expr, &ty)
+                                    .unwrap_or_else(|| default_expr.clone());
                                 (DefaultInit::Expr(stored_default), ty)
                             }
                         };

@@ -109,6 +109,9 @@ fn the_rewrite_returns_what_it_rewrote_once() {
             locus: "App".to_string(),
             subject: "PingT".to_string(),
             handler: "on_ping".to_string(),
+            // The handler is `Worker`'s, reached through `App`'s `w`.
+            receiver: vec!["w".to_string()],
+            subscriber: "Worker".to_string(),
             erased: NodeId::NONE,
             context: false,
         }]

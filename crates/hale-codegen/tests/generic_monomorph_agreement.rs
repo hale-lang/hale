@@ -27,6 +27,9 @@
 mod entries;
 use std::process::Command;
 
+use hale_frontend::snapshot::{Config, Snapshot, Target};
+use hale_types::placement::HoleKind;
+
 use hale_syntax::parse_source;
 use entries::check_program;
 
@@ -716,5 +719,819 @@ fn main() {
 }
 "#,
         &Expect::Runs("9\n42\n42\ntext\ntext\n"),
+    );
+}
+
+/// The same program built with AddressSanitizer and run with the arena's
+/// chunk recycling off: what it prints, after a clean exit.
+fn asan_runs(tag: &str, src: &str, wanted: &str) {
+    let bin = harness::unique_bin(&format!("hale_test_genmono_asan_{tag}"));
+    harness::build_source_asan(src, &bin);
+    let out = Command::new(&bin)
+        .env("LOTUS_NO_CHUNK_POOL", "1")
+        .output()
+        .unwrap_or_else(|e| panic!("[{tag}] asan run: {e:?}"));
+    let _ = std::fs::remove_file(&bin);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        out.status.success(),
+        "[{tag}] asan exit: {:?}; stderr: {}",
+        out.status,
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(stdout.contains(wanted), "[{tag}] asan stdout {stdout:?} lacks {wanted:?}");
+}
+
+// === an instantiation over a user record ======================
+// A monomorph was declared before the program's own records, so one
+// whose field is a user record (`inner: In`, `[In; 2]`) never
+// resolved: "generic-type dependency cycle or unresolvable dep among
+// synthesized monomorphs: [\"Holder_In\"]". `Holder<Int>` built.
+
+const ARRAY_OF_THE_PARAMETER: &str = r#"
+type In {
+    k: Int = 0;
+    label: String = "";
+}
+
+type Holder<T> {
+    items: [T; 2];
+}
+
+fn main() {
+    let h: Holder<In> = Holder { items: [In { k: 1, label: "a" }, In { k: 2, label: "b" }] };
+    let n: Holder<Int> = Holder { items: [3, 4] };
+    println(h.items[1].label, h.items[0].k, n.items[1]);
+}
+"#;
+
+#[test]
+fn an_array_of_the_parameter_holds_a_user_record() {
+    agree("array_of_param", ARRAY_OF_THE_PARAMETER, &Expect::Runs("b14"));
+    asan_runs("array_of_param", ARRAY_OF_THE_PARAMETER, "b14");
+}
+
+const ARRAY_OF_AN_INSTANTIATION: &str = r#"
+type In {
+    k: Int = 0;
+    label: String = "";
+}
+
+type Holder<T> {
+    items: [T; 2];
+}
+
+type Shelf<T> {
+    rows: [Holder<T>; 2];
+}
+
+type Wrap {
+    h: Holder<In>;
+    tag: String = "";
+}
+
+type Box<T> {
+    v: T;
+}
+
+fn main() {
+    let a: Holder<In> = Holder { items: [In { k: 1, label: "a" }, In { k: 2, label: "b" }] };
+    let b: Holder<In> = Holder { items: [In { k: 3, label: "c" }, In { k: 4, label: "d" }] };
+    let s: Shelf<In> = Shelf { rows: [a, b] };
+    println(s.rows[1].items[0].label, s.rows[1].items[0].k);
+    let w = Wrap { h: s.rows[0], tag: "w" };
+    let x: Box<Wrap> = Box { v: w };
+    println(x.v.tag, x.v.h.items[1].label);
+}
+"#;
+
+#[test]
+fn an_array_of_an_instantiation_nests() {
+    // `Shelf<In>`'s rows are `Holder<In>`s, and `Box<Wrap>` holds a
+    // record that holds a monomorph: each resolves by name, whatever
+    // order the declarations land in.
+    agree("array_of_instantiation", ARRAY_OF_AN_INSTANTIATION, &Expect::Runs("c3\nwb\n"));
+    asan_runs("array_of_instantiation", ARRAY_OF_AN_INSTANTIATION, "c3\nwb\n");
+}
+
+const LOCUS_ARRAY_OF_THE_PARAMETER: &str = r#"
+type In {
+    k: Int = 0;
+    label: String = "";
+}
+
+locus Bag<T> {
+    params {
+        items: [T; 2];
+    }
+    fn second() -> T {
+        return self.items[1];
+    }
+}
+
+locus Rack {
+    params {
+        bag: Bag<In>;
+    }
+    run() {
+        let s = self.bag.second();
+        println(s.label, s.k);
+    }
+}
+
+locus Tally {
+    params {
+        bag: Bag<Int>;
+    }
+    run() {
+        println(self.bag.second());
+    }
+}
+
+fn main() {
+    let r = Rack { bag: Bag { items: [In { k: 1, label: "x" }, In { k: 2, label: "y" }] } };
+    let t = Tally { bag: Bag { items: [5, 6] } };
+}
+"#;
+
+#[test]
+fn a_generic_locus_holds_an_array_of_its_parameter() {
+    agree("locus_array_of_param", LOCUS_ARRAY_OF_THE_PARAMETER, &Expect::Runs("y2\n6\n"));
+    asan_runs("locus_array_of_param", LOCUS_ARRAY_OF_THE_PARAMETER, "y2\n6\n");
+}
+
+// === an assignment's place supplies the arguments ==============
+// `self.cfg = Cfg { n: 2 };` with `cfg: Cfg<Int>` was refused by the
+// checker ("assignment: target type `Cfg_Int` not assignable from
+// `Cfg`"), and the build, which skips the checker, died unlocated at
+// `expression form Discriminant(12)`. The place's declared type
+// supplies the arguments, as a `let` ascription's does.
+
+const ASSIGNED_RECORDS: &str = r#"
+type Cfg<T> {
+    n: T;
+    label: String = "";
+}
+
+type Outer {
+    c: Cfg<Int>;
+}
+
+locus Keeper {
+    params {
+        cfg: Cfg<Int> = Cfg { n: 1, label: "one" };
+    }
+    run() {
+        self.cfg = Cfg { n: 2, label: "two" };
+        println(self.cfg.label, self.cfg.n);
+    }
+}
+
+fn main() {
+    let k = Keeper { };
+    let mut c: Cfg<Int> = Cfg { n: 1, label: "one" };
+    c = Cfg { n: 3, label: "three" };
+    println(c.label, c.n);
+    let o = Outer { c: Cfg { n: 1, label: "one" } };
+    o.c = Cfg { n: 4, label: "four" };
+    println(o.c.label, o.c.n);
+    let a: Cfg<Int> = Cfg { n: 1, label: "a" };
+    let b: Cfg<Int> = Cfg { n: 2, label: "b" };
+    let mut cs = [a, b];
+    cs[1] = Cfg { n: 5, label: "five" };
+    println(cs[1].label, cs[1].n);
+}
+"#;
+
+#[test]
+fn an_assignment_takes_the_arguments_from_its_place() {
+    // A locus's field, a local, a record's field, an array's element.
+    let wanted = "two2\nthree3\nfour4\nfive5\n";
+    agree("assign_record", ASSIGNED_RECORDS, &Expect::Runs(wanted));
+    asan_runs("assign_record", ASSIGNED_RECORDS, wanted);
+}
+
+const ASSIGNED_LOCI: &str = r#"
+locus Cache<K, V> {
+    params {
+        cap: Int = 1;
+    }
+    birth() {
+        println("cap=", self.cap);
+    }
+}
+
+locus Keeper {
+    params {
+        c: Cache<Int, String>;
+    }
+    run() {
+        self.c = Cache { cap: 5 };
+        println("now=", self.c.cap);
+    }
+}
+
+fn main() {
+    let k = Keeper { c: Cache { cap: 2 } };
+    let mut c: Cache<Int, String> = Cache { cap: 3 };
+    c = Cache { cap: 6 };
+    println("local=", c.cap);
+}
+"#;
+
+#[test]
+fn an_assignment_of_a_generic_locus_takes_them_too() {
+    // Each replacement is born where it is stored.
+    let wanted = "cap=2\ncap=5\nnow=5\ncap=3\ncap=6\nlocal=6\n";
+    agree("assign_locus", ASSIGNED_LOCI, &Expect::Runs(wanted));
+    asan_runs("assign_locus", ASSIGNED_LOCI, wanted);
+}
+
+#[test]
+fn a_compound_assignment_of_a_generic_literal_stays_refused() {
+    agree(
+        "assign_compound",
+        r#"
+type Cfg<T> {
+    n: T;
+}
+
+fn main() {
+    let mut c: Cfg<Int> = Cfg { n: 1 };
+    c += Cfg { n: 2 };
+    println(c.n);
+}
+"#,
+        &Expect::Refused("not assignable"),
+    );
+}
+
+// === the placement table reads an assignment's place ==========
+// A generic locus literal assigned to a place takes the arguments the
+// place declares, in the placement table as at a `let`: the table reads
+// the place's type from the checker's walk. With a local's ascription or
+// `self.<param>` read off the syntax alone, `h.c = Cache { .. }` from
+// `main`, a nested field and an array's element were "unresolved
+// arguments" holes.
+
+const ASSIGNED_AT_ANY_PLACE: &str = r#"
+locus Cache<K, V> {
+    params {
+        cap: Int = 1;
+    }
+    birth() {
+        println("cap=", self.cap);
+    }
+}
+
+locus Inner {
+    params {
+        c: Cache<Int, String>;
+    }
+}
+
+locus Holder {
+    params {
+        c: Cache<Int, String>;
+        inner: Inner;
+        row: [Cache<Int, String>; 2];
+    }
+    run() {
+        self.c = Cache { cap: 8 };
+    }
+}
+
+fn main() {
+    let a: Cache<Int, String> = Cache { cap: 3 };
+    let b: Cache<Int, String> = Cache { cap: 4 };
+    let h: Holder = Holder { c: Cache { cap: 1 }, inner: Inner { c: Cache { cap: 2 } }, row: [a, b] };
+    h.c = Cache { cap: 5 };
+    h.inner.c = Cache { cap: 6 };
+    h.row[1] = Cache { cap: 7 };
+    let mut l: Cache<Int, String> = Cache { cap: 9 };
+    l = Cache { cap: 10 };
+    println("c=", h.c.cap, " inner=", h.inner.c.cap, " row=", h.row[1].cap, " l=", l.cap);
+}
+"#;
+
+#[test]
+fn the_placement_table_reads_an_assignments_place() {
+    let program = parse_source(ASSIGNED_AT_ANY_PLACE).expect("parses");
+    let Ok(snap) = Snapshot::from_program(program, Vec::new(), Config::harness(Target::host())) else {
+        panic!("the program does not load");
+    };
+    let table = snap.demand_placement().expect("the placement table");
+    let unresolved: Vec<_> = table
+        .holes
+        .iter()
+        .filter(|h| matches!(h.kind, HoleKind::UnresolvedArguments | HoleKind::UnresolvedDeclaration { .. }))
+        .collect();
+    assert!(unresolved.is_empty(), "every Cache literal's arguments resolve: {unresolved:?}");
+    let realized: Vec<&str> = table
+        .instances
+        .values()
+        .filter_map(|r| r.realizes.as_ref())
+        .chain(table.dynamic.iter().filter_map(|d| d.realizes.as_ref()))
+        .map(|r| r.lowered.as_str())
+        .filter(|l| l.starts_with("Cache"))
+        .collect();
+    assert!(realized.iter().all(|l| *l == "Cache_Int_String"), "{realized:?}");
+    // Ten literals of the template, each realized.
+    let literals = ASSIGNED_AT_ANY_PLACE.matches("Cache { cap").count();
+    assert_eq!(literals, 10);
+    assert!(realized.len() >= literals, "each literal is realized: {realized:?}");
+    let wanted = "c=5 inner=6 row=7 l=10";
+    agree("assign_any_place", ASSIGNED_AT_ANY_PLACE, &Expect::Runs(wanted));
+    asan_runs("assign_any_place", ASSIGNED_AT_ANY_PLACE, wanted);
+}
+
+// === an array or tuple literal of template literals ============
+// `let cs: [Cfg<Int>; 2] = [Cfg { .. }, Cfg { .. }];` was refused
+// ("expected `[Cfg_Int; 2]`, got `[Cfg; 2]`"), and the build, which
+// skips the checker, could not lower the elements. Each element takes
+// the declared element type's arguments, at every site a single literal
+// takes the declared type's: a `let`, a param default, an assignment, a
+// return slot, a record field's init.
+
+const ARRAYS_AND_TUPLES: &str = r#"
+type Cfg<T> {
+    n: T;
+    label: String = "";
+}
+
+type Shelf {
+    pair: [Cfg<Int>; 2];
+}
+
+locus Keeper {
+    params {
+        cfgs: [Cfg<Int>; 2] = [Cfg { n: 1, label: "a" }, Cfg { n: 2, label: "b" }];
+        tagged: (Cfg<Int>, Int) = (Cfg { n: 3, label: "c" }, 4);
+    }
+    run() {
+        println(self.cfgs[1].label, self.cfgs[1].n, self.tagged.0.label, self.tagged.1);
+        self.cfgs = [Cfg { n: 5, label: "e" }, Cfg { n: 6, label: "f" }];
+        println(self.cfgs[0].label, self.cfgs[1].n);
+    }
+}
+
+fn pair() -> [Cfg<Int>; 2] {
+    return [Cfg { n: 7, label: "g" }, Cfg { n: 8, label: "h" }];
+}
+
+fn main() {
+    let k = Keeper { };
+    let cs: [Cfg<Int>; 2] = [Cfg { n: 9, label: "i" }, Cfg { n: 10, label: "j" }];
+    let t: (Cfg<Int>, String) = (Cfg { n: 11, label: "k" }, "l");
+    let s = Shelf { pair: [Cfg { n: 12, label: "m" }, Cfg { n: 13, label: "n" }] };
+    let p = pair();
+    println(cs[1].label, cs[0].n, t.0.label, t.1, s.pair[1].label, p[0].n);
+}
+"#;
+
+#[test]
+fn an_array_or_tuple_literal_takes_the_element_types_arguments() {
+    let wanted = "b2c4\ne6\nj9kln7\n";
+    agree("array_tuple", ARRAYS_AND_TUPLES, &Expect::Runs(wanted));
+    asan_runs("array_tuple", ARRAYS_AND_TUPLES, wanted);
+}
+
+const ARRAY_OF_GENERIC_LOCI: &str = r#"
+locus Cache<K, V> {
+    params {
+        cap: Int = 1;
+    }
+    birth() {
+        println("cap=", self.cap);
+    }
+}
+
+fn main() {
+    let cs: [Cache<Int, String>; 2] = [Cache { cap: 2 }, Cache { cap: 3 }];
+    println("sum=", cs[0].cap + cs[1].cap);
+}
+"#;
+
+#[test]
+fn an_array_of_generic_locus_literals_takes_them_too() {
+    let wanted = "cap=2\ncap=3\nsum=5\n";
+    agree("array_loci", ARRAY_OF_GENERIC_LOCI, &Expect::Runs(wanted));
+    asan_runs("array_loci", ARRAY_OF_GENERIC_LOCI, wanted);
+    // The placement table reads each element under the element type.
+    let program = parse_source(ARRAY_OF_GENERIC_LOCI).expect("parses");
+    let Ok(snap) = Snapshot::from_program(program, Vec::new(), Config::harness(Target::host())) else {
+        panic!("the program does not load");
+    };
+    let table = snap.demand_placement().expect("the placement table");
+    assert!(
+        !table.holes.iter().any(|h| matches!(h.kind, HoleKind::UnresolvedArguments)),
+        "{:?}",
+        table.holes
+    );
+    let realized: Vec<&str> = table
+        .instances
+        .values()
+        .filter_map(|r| r.realizes.as_ref())
+        .map(|r| r.lowered.as_str())
+        .filter(|l| l.starts_with("Cache"))
+        .collect();
+    assert_eq!(realized, ["Cache_Int_String", "Cache_Int_String"]);
+}
+
+#[test]
+fn an_unannotated_array_of_generic_literals_asks_for_the_arguments() {
+    // It checked clean and died at build, unlocated, at
+    // `expression form Discriminant(12)`.
+    agree(
+        "array_unannotated",
+        r#"
+type Box<T> {
+    value: T = 0;
+}
+
+fn main() {
+    let bs = [Box { value: 1 }, Box { value: 2 }];
+    println(bs[0].value);
+}
+"#,
+        &Expect::Refused("`Box` is a generic type"),
+    );
+}
+
+// === every site admitting a template literal holds its fields ==
+// Review of #1568: a literal spelled with a generic template's name was
+// typed against the template, whose parameters are unknown, so at every
+// site that admits it (`admit_monomorph_literal`'s table) a field of a
+// parameter's type took anything: `self.b = Box { value: "bad" }` with
+// `b: Box<Int>` checked, and the build refused `Box_Int.value`. One row
+// per site: the bad field refused by the check (and so never built) at
+// the field, the good one checked, built and run. `[x; N]` is one of the
+// array rows: the checker typed it as an array, the build could not
+// lower its element.
+
+const SITE_DECLS: &str = r#"
+type Box<T> {
+    value: T;
+}
+
+type Outer {
+    b: Box<Int>;
+}
+
+type E<T> {
+    code: T;
+}
+
+locus Cache<K, V> {
+    params {
+        cap: K;
+    }
+}
+"#;
+
+/// (site, body with `VALUE` where the field's value goes, what it prints
+/// with `VALUE` = 7).
+const SITES: &[(&str, &str, &str)] = &[
+    ("let", "fn main() { let b: Box<Int> = Box { value: VALUE }; println(b.value); }", "7"),
+    (
+        "assign_local",
+        "fn main() { let mut b: Box<Int> = Box { value: 1 }; b = Box { value: VALUE }; println(b.value); }",
+        "7",
+    ),
+    (
+        "assign_self_field",
+        "locus H { params { b: Box<Int> = Box { value: 1 }; } fn set() { self.b = Box { value: VALUE }; } }\n\
+         fn main() { let h = H { }; h.set(); println(h.b.value); }",
+        "7",
+    ),
+    ("return", "fn make() -> Box<Int> { return Box { value: VALUE }; }\nfn main() { println(make().value); }", "7"),
+    (
+        "return_fallible",
+        "fn make() -> Box<Int> fallible(E<Int>) { return Box { value: VALUE }; }\n\
+         fn main() { let z: Box<Int> = Box { value: 0 }; let b = make() or z; println(b.value); }",
+        "7",
+    ),
+    (
+        "param_default",
+        "locus L { params { b: Box<Int> = Box { value: VALUE }; } }\nfn main() { let l = L { }; println(l.b.value); }",
+        "7",
+    ),
+    ("record_field", "fn main() { let o = Outer { b: Box { value: VALUE } }; println(o.b.value); }", "7"),
+    (
+        "locus_override",
+        "locus L { params { b: Box<Int> = Box { value: 1 }; } }\n\
+         fn main() { let l = L { b: Box { value: VALUE } }; println(l.b.value); }",
+        "7",
+    ),
+    (
+        "array_let",
+        "fn main() { let bs: [Box<Int>; 2] = [Box { value: 1 }, Box { value: VALUE }]; println(bs[1].value); }",
+        "7",
+    ),
+    ("array_repeat_let", "fn main() { let bs: [Box<Int>; 2] = [Box { value: VALUE }; 2]; println(bs[1].value); }", "7"),
+    (
+        "array_repeat_assign",
+        "locus H { params { bs: [Box<Int>; 2] = [Box { value: 1 }; 2]; } fn set() { self.bs = [Box { value: VALUE }; 2]; } }\n\
+         fn main() { let h = H { }; h.set(); println(h.bs[0].value); }",
+        "7",
+    ),
+    (
+        "array_repeat_default",
+        "locus H { params { bs: [Box<Int>; 2] = [Box { value: VALUE }; 2]; } }\n\
+         fn main() { let h = H { }; println(h.bs[1].value); }",
+        "7",
+    ),
+    ("tuple_let", "fn main() { let t: (Box<Int>, Int) = (Box { value: VALUE }, 1); println(t.0.value); }", "7"),
+    ("locus_let", "fn main() { let c: Cache<Int, String> = Cache { cap: VALUE }; println(c.cap); }", "7"),
+    (
+        "locus_assign",
+        "fn main() { let mut c: Cache<Int, String> = Cache { cap: 1 }; c = Cache { cap: VALUE }; println(c.cap); }",
+        "7",
+    ),
+];
+
+#[test]
+fn every_admitting_site_holds_the_literals_fields_to_the_monomorphs() {
+    for (site, body, prints) in SITES {
+        let good = format!("{SITE_DECLS}{}\n", body.replace("VALUE", "7"));
+        agree(&format!("site_{site}"), &good, &Expect::Runs(prints));
+        let bad = format!("{SITE_DECLS}{}\n", body.replace("VALUE", "\"bad\""));
+        let program = parse_source(&bad).unwrap_or_else(|e| panic!("[{site}] parse: {e:?}"));
+        let diags = check_program(&program);
+        let refusal = diags
+            .iter()
+            .find(|d| d.message.contains("expects `Int`, got `String`"))
+            .unwrap_or_else(|| panic!("[{site}] the bad field is refused: {:?}", diags.iter().map(|d| &d.message).collect::<Vec<_>>()));
+        assert_eq!(refusal.span.slice(&bad), "\"bad\"", "[{site}] located at the field's value");
+    }
+}
+
+#[test]
+fn an_array_repeat_of_generic_literals_runs_under_asan() {
+    let src = format!("{SITE_DECLS}{}\n", SITES.iter().find(|s| s.0 == "array_repeat_assign").unwrap().1.replace("VALUE", "7"));
+    asan_runs("array_repeat_assign", &src, "7");
+}
+
+#[test]
+fn a_field_of_an_aliased_argument_meets_the_aliased_type() {
+    // `Supervisor<Scalar>`'s `Cell<Scalar>` holds an `Int`: the bound
+    // type is read through the alias before the field's value meets it.
+    agree(
+        "alias_argument",
+        r#"
+type Scalar = Int;
+
+locus Cell<T> {
+    params {
+        value: T;
+    }
+}
+
+locus Supervisor<T> {
+    params {
+        child: Cell<T>;
+    }
+}
+
+fn main() {
+    let a: Supervisor<Scalar> = Supervisor { child: Cell { value: 17 } };
+    println(a.child.value);
+}
+"#,
+        &Expect::Runs("17"),
+    );
+}
+
+// === a nested instantiation is read from its structure ==========
+// `let n: Box<Box<Int>> = ..; n.value.value` was refused, "no field
+// `value` on `Box_Box_Int`": the monomorph table parsed each mangled name
+// back into a template and `_`-split tokens, and `Box_Box_Int` splits
+// into two tokens for a one-parameter template. The table now reads an
+// instantiation from the type expression that writes it (the nested one's
+// row first), and the bus graph's payload flatness reads that row too, so
+// neither nesting nor a `_` in an argument's name is split back out.
+
+const NESTED: &str = r#"
+type Box<T> {
+    value: T;
+}
+
+type Pair<A, B> {
+    left: A;
+    right: B;
+}
+
+locus Keep<T> {
+    params {
+        held: T;
+    }
+    fn get() -> T {
+        return self.held;
+    }
+}
+
+locus Show {
+    params {
+        k: Keep<Box<String>>;
+    }
+    run() {
+        println(self.k.get().value);
+    }
+}
+
+fn main() {
+    let n: Box<Box<Int>> = Box { value: Box { value: 7 } };
+    println(n.value.value);
+    let p: Pair<Box<Int>, Box<String>> = Pair { left: Box { value: 1 }, right: Box { value: "two" } };
+    println(p.left.value, p.right.value);
+    let deep: Box<Pair<Box<Int>, Box<Box<String>>>> = Box { value: Pair { left: Box { value: 3 }, right: Box { value: Box { value: "four" } } } };
+    println(deep.value.left.value, deep.value.right.value.value);
+    let s = Show { k: Keep { held: Box { value: "kept" } } };
+}
+"#;
+
+#[test]
+fn a_nested_instantiation_is_its_structure() {
+    // Box<Box<Int>>, Pair<Box<Int>, Box<String>>, three levels, and a
+    // generic locus over a generic record.
+    let wanted = "7\n1two\n3four\nkept\n";
+    agree("nested", NESTED, &Expect::Runs(wanted));
+    asan_runs("nested", NESTED, wanted);
+}
+
+const ENUM_ARGUMENT: &str = r#"
+type Mode = enum { Fast, Slow };
+
+type Box<T> {
+    value: T;
+}
+
+fn main() {
+    let b: Box<Mode> = Box { value: Mode::Slow };
+    match b.value {
+        Mode::Fast -> println("fast"),
+        Mode::Slow -> println("slow"),
+    }
+}
+"#;
+
+#[test]
+fn an_enum_argument_is_an_enum_in_its_monomorph() {
+    // The monomorphs are declared before the program's enums: a field
+    // of a parameter bound to one resolved as a record, so `Box<Mode>`
+    // failed ("declared TypeRef(\"Mode\"), got Enum(\"Mode\")").
+    agree("enum_argument", ENUM_ARGUMENT, &Expect::Runs("slow\n"));
+}
+
+const BUS_PAYLOAD_INSTANCE: &str = r#"
+type Big_Mode = enum { Fast, Slow };
+
+type Pair<A, B> {
+    left: A;
+    right: B;
+}
+
+locus Rx {
+    bus {
+        subscribe "pairs" as on_pair of type Pair<Big_Mode, Int>;
+    }
+    fn on_pair(p: Pair<Big_Mode, Int>) {
+        println("right=", p.right);
+    }
+}
+
+main locus App {
+    params {
+        rx: Rx = Rx { };
+    }
+    bus {
+        publish "pairs" of type Pair<Big_Mode, Int>;
+    }
+    run() {
+        let p: Pair<Big_Mode, Int> = Pair { left: Big_Mode::Fast, right: 5 };
+        "pairs" <- p;
+    }
+}
+
+fn main() { App { }; }
+"#;
+
+#[test]
+fn a_bus_payload_instance_over_an_underscored_name_lowers() {
+    // `Pair<Big_Mode, Int>`: the payload's flatness is the row's fields,
+    // `Big_Mode` a payload-less enum, so the plan and the codec agree.
+    agree("bus_payload_instance", BUS_PAYLOAD_INSTANCE, &Expect::Runs("right=5\n"));
+}
+
+// === a monomorph over one of the program's enums ==============
+// The monomorphs were declared before the program's enums, so a field of
+// a parameter bound to one took no layout of its own: replacing
+// `self.bm = Box { value: Mode::Off }` with `bm: Box<Mode>` crashed in
+// the retire walk (SEGV under ASan), the field laid out as a tag where
+// the enum is a pointer to its storage. The enums are declared first,
+// and one whose payload is itself a monomorph (`Wrap { Held(Box<Int>) }`)
+// in the monomorphs' dependency loop, so `Box<Wrap>` waits for it.
+
+const ENUM_FIELDS_REPLACED: &str = r#"
+type Mode = enum { On(Int), Off };
+type Light = enum { Red, Green };
+type Box<T> { value: T; }
+type Pair<A, B> { a: A; b: B; }
+type Wrap = enum { Held(Box<Int>), Empty };
+locus Keep<T> {
+    params { held: T; }
+    fn get() -> T { return self.held; }
+}
+locus H {
+    params {
+        bm: Box<Mode> = Box { value: Mode::On(3) };
+        bl: Box<Light> = Box { value: Light::Red };
+        pr: Pair<Mode, String> = Pair { a: Mode::Off, b: std::str::upper("x") };
+        bw: Box<Wrap> = Box { value: Wrap::Held(Box { value: 5 }) };
+        k: Keep<Mode>;
+    }
+    fn flip() {
+        self.bm = Box { value: Mode::Off };
+        self.bl = Box { value: Light::Green };
+        self.pr = Pair { a: Mode::On(4), b: std::str::upper("y") };
+        self.bw = Box { value: Wrap::Empty };
+    }
+    fn show() -> String {
+        let m = match self.bm.value { Mode::On(n) -> "on " + to_string(n), Mode::Off -> "off" };
+        let l = match self.bl.value { Light::Red -> "red", Light::Green -> "green" };
+        let p = match self.pr.a { Mode::On(n) -> "on " + to_string(n), Mode::Off -> "off" };
+        let w = match self.bw.value { Wrap::Held(b) -> "held " + to_string(b.value), Wrap::Empty -> "empty" };
+        let k = match self.k.get() { Mode::On(n) -> "on " + to_string(n), Mode::Off -> "off" };
+        return m + "/" + l + "/" + p + self.pr.b + "/" + w + "/" + k;
+    }
+}
+fn main() { let h = H { k: Keep { held: Mode::On(9) } }; println(h.show()); h.flip(); println(h.show()); }
+"#;
+
+#[test]
+fn a_monomorphs_enum_field_is_laid_out_and_retired_as_the_enum() {
+    let wanted = "on 3/red/offX/held 5/on 9\noff/green/on 4Y/empty/on 9\n";
+    agree("enum_fields_replaced", ENUM_FIELDS_REPLACED, &Expect::Runs(wanted));
+    asan_runs("enum_fields_replaced", ENUM_FIELDS_REPLACED, wanted);
+}
+
+// === a variant's construction holds its arguments ==============
+// `Wrap::Held("str")` with `Held(Box<Int>)` checked clean (the variant rule
+// skipped a payload type it did not name, and a monomorph is one) and the
+// build refused it, unlocated: "Wrap::Held arg 0: expected type
+// TypeRef(\"Box_Int\"), got String". `Wrap::Held(Box { value: 5 })` checked
+// clean too and died at build at `expression form Discriminant(12)`. A
+// monomorph payload is held to, and a template literal takes its
+// arguments, in the check and the build.
+
+#[test]
+fn a_variants_arguments_meet_its_payload_types() {
+    agree(
+        "variant_template_literal",
+        r#"
+type Box<T> {
+    value: T;
+}
+
+type Wrap = enum { Held(Box<Int>), Empty };
+
+fn main() {
+    let w = Wrap::Held(Box { value: 5 });
+    let s = match w {
+        Wrap::Held(b) -> b.value,
+        Wrap::Empty -> 0,
+    };
+    println(s);
+}
+"#,
+        &Expect::Runs("5\n"),
+    );
+    agree(
+        "variant_mistyped",
+        r#"
+type Box<T> {
+    value: T;
+}
+
+type Wrap = enum { Held(Box<Int>), Empty };
+
+fn main() {
+    let w = Wrap::Held("str");
+    println(1);
+}
+"#,
+        &Expect::Refused("`Wrap::Held` value 0: expected `Box_Int`, got `String`"),
+    );
+    agree(
+        "variant_arity",
+        r#"
+type Wrap = enum { Held(Int), Empty };
+
+fn main() {
+    let w = Wrap::Held(1, 2);
+    println(1);
+}
+"#,
+        &Expect::Refused("`Wrap::Held` carries 1 value, and this passes 2"),
     );
 }

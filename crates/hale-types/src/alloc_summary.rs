@@ -2177,6 +2177,16 @@ fn carried_by(
 /// (`hale_frontend::snapshot::Snapshot::demand_alloc_summary`); a
 /// bundle no snapshot holds runs it once for itself.
 pub fn derive_alloc_summary(bundle: &crate::symbol::Bundle<'_>) -> AllocSummary {
+    derive_alloc_summary_over(bundle, &crate::view_bindings::OwnedViewColumn::of_bundle(bundle))
+}
+
+/// [`derive_alloc_summary`] over the owned-view column the snapshot
+/// computed for the bundle (`views`, GH #1554): each copy the pass adds is
+/// a site of the summary, the very copies lowering makes.
+pub fn derive_alloc_summary_over(
+    bundle: &crate::symbol::Bundle<'_>,
+    views: &crate::view_bindings::OwnedViewColumn,
+) -> AllocSummary {
     let mut identified: Vec<(&Program, &crate::snapshot::Snapshot)> =
         bundle.programs.values().map(|p| (*p, &bundle.snapshot)).collect();
     // The stdlib's analysis copy, with its own identities: a call through
@@ -2186,7 +2196,7 @@ pub fn derive_alloc_summary(bundle: &crate::symbol::Bundle<'_>) -> AllocSummary 
     {
         identified.push((program, ids));
     }
-    summarize_identified(&identified, &bundle.import_renames)
+    summarize_identified_over(&identified, &bundle.import_renames, views)
 }
 
 /// Every top-level locus of `programs` with a param whose type is one of
@@ -2331,6 +2341,30 @@ fn interface_admits_by_name(programs: &[&Program]) -> BTreeMap<String, BTreeSet<
 pub fn summarize_identified(
     identified: &[(&Program, &crate::snapshot::Snapshot)],
     import_renames: &[(Vec<String>, String)],
+) -> AllocSummary {
+    let is_copy = |ids: &crate::snapshot::Snapshot| {
+        crate::stdlib_bodies::identities().is_some_and(|s| std::ptr::eq(s, ids))
+    };
+    let own: BTreeMap<String, &Program> = identified
+        .iter()
+        .filter(|(_, ids)| !is_copy(ids))
+        .enumerate()
+        .map(|(i, (p, _))| (format!("{i:04}"), *p))
+        .collect();
+    let mut bundle = crate::symbol::Bundle::new(own);
+    bundle.import_renames = import_renames.to_vec();
+    let views = crate::view_bindings::OwnedViewColumn::of_bundle(&bundle);
+    summarize_identified_over(identified, import_renames, &views)
+}
+
+/// [`summarize_identified`] over an owned-view column already computed
+/// (`views`): the copies of the programs that are not the stdlib's
+/// analysis copy are the column's `program` part, the copy's its
+/// `stdlib` part.
+pub fn summarize_identified_over(
+    identified: &[(&Program, &crate::snapshot::Snapshot)],
+    import_renames: &[(Vec<String>, String)],
+    views: &crate::view_bindings::OwnedViewColumn,
 ) -> AllocSummary {
     let programs: Vec<&Program> = identified.iter().map(|(p, _)| *p).collect();
     let programs = programs.as_slice();
@@ -3121,28 +3155,21 @@ pub fn summarize_identified(
         }
     }
 
-    // The cell-read rule's copies (`crate::view_bindings`): the same pass
-    // lowering runs over the merged program, here over the checked
+    // The owned-view pass's copies (`crate::view_bindings`): the
+    // column's, the one computation lowering reads too, over the checked
     // programs and the stdlib's analysis copy — always the copy, whether
     // or not this summary holds its rows, so the program's copies are the
-    // same summarized alone or beside it, and the same lowering finds —
-    // each copy keyed by its program's scope and its span.
+    // same summarized alone or beside it — each copy keyed by its
+    // program's scope and its span.
     let no_cell_copies: BTreeMap<(u32, u32), &'static str> = BTreeMap::new();
-    let cell_copies: BTreeMap<usize, BTreeMap<(u32, u32), &'static str>> = {
-        let renames: BTreeMap<Vec<String>, String> = import_renames.iter().cloned().collect();
-        let mut analyzed: Vec<&Program> = programs.to_vec();
-        let holds_copy = identified.iter().any(|(_, ids)| is_stdlib_copy(ids));
-        if let (false, Some(copy)) = (holds_copy, crate::stdlib_bodies::program()) {
-            analyzed.push(copy);
-        }
-        let views = crate::view_bindings::OwnedViews::of(&analyzed, &renames);
-        let mut by_scope: BTreeMap<usize, BTreeMap<(u32, u32), &'static str>> = BTreeMap::new();
-        for c in views.cell_copies() {
-            let Some((_, ids)) = identified.get(c.program) else { continue };
-            by_scope.entry(scope_index(ids)).or_default().insert((c.span.start.0, c.span.end.0), c.reason);
-        }
-        by_scope
-    };
+    let cell_copies: BTreeMap<usize, BTreeMap<(u32, u32), &'static str>> = identified
+        .iter()
+        .map(|(_, ids)| {
+            let column = if is_stdlib_copy(ids) { &views.stdlib } else { &views.program };
+            let copies = column.cell_copies().iter().map(|c| ((c.span.start.0, c.span.end.0), c.reason)).collect();
+            (scope_index(ids), copies)
+        })
+        .collect();
 
     // Phase 2 — walk each body.
     let mut summary = AllocSummary::default();
@@ -6807,9 +6834,13 @@ impl<'a> Walker<'a> {
                     Callee::Unresolved(id.name.clone())
                 } else {
                     // A bare callee names a builtin or a fn before a
-                    // local, as codegen lowers it. A call through a
-                    // local the bindings follow to a fn reaches that fn;
-                    // through any other, the edge is what it always was.
+                    // local: a binding in scope that shadows a fn of its
+                    // name is called as a value, `{ f }(x)`, by the desugar
+                    // sequence (`crate::shadowed_callees`), so the name of
+                    // a fn reaches here only where no binding shadows it.
+                    // A call through a local the bindings follow to a fn
+                    // reaches that fn; through any other, the edge is what
+                    // it always was.
                     match self.local(&id.name) {
                         Some(Local::Fn(c)) => {
                             via_local = Some(id.name.clone());
@@ -9821,7 +9852,9 @@ mod tests {
 
     /// An inner binding shadows an outer one for its scope only; a
     /// parameter shadows a fn of the same name; a bare callee names a fn
-    /// before a local, as codegen lowers it.
+    /// before a local here, over a program the desugar sequence has not
+    /// shaped (it calls a shadowing binding as a value, `{ make }()`,
+    /// `crate::shadowed_callees`, before any pass reads the program).
     #[test]
     fn a_shadowing_binding_is_the_one_called() {
         let src = r#"

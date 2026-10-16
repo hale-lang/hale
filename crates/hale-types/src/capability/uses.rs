@@ -1086,8 +1086,10 @@ impl<'w, 'a> Walker<'w, 'a> {
                     }
                     // A call through a local is a use of the fn value it
                     // holds, or a hole: never nothing. A bare callee names
-                    // a builtin or a fn before a local, as codegen lowers
-                    // it.
+                    // a builtin or a fn before a local: a binding that
+                    // shadows a fn of its name is called as a value by the
+                    // desugar sequence (`crate::shadowed_callees`), so a
+                    // fn's name reaches here only where none shadows it.
                     Expr::Ident(id) if self.local(&id.name).is_some() && !self.names_fn(&id.name) => {
                         let value = self.local(&id.name).cloned().flatten();
                         self.call_value(value, id.name.clone(), id.span);

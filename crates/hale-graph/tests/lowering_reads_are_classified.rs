@@ -35,6 +35,9 @@ const LOWERING_READS: &[&str] = &[
     "restart",
     "closures",
     "blocking",
+    // GH #1554: the column the snapshot computes once over the checker's
+    // types; lowering reads it from the view.
+    "owned_views",
     "alloc_summary",
     "placement",
     "target_capability",
@@ -72,9 +75,8 @@ fn exempt(f: &Family) -> Option<&'static str> {
     if f.state == State::Migrating && f.legacy.iter().any(|l| l.site.path.starts_with("crates/hale-codegen/")) {
         return Some("codegen still derives it; its legacy producer is the inventory");
     }
-    // A pass with no producer yet, which lowering runs for itself (and
-    // another reader runs again: `owned_views`, run by lowering and by the
-    // allocation survey) reads no row either.
+    // A pass with no producer yet, which lowering runs for itself, reads
+    // no row either.
     if f.state == State::Migrating && f.producer.is_none() && !f.legacy.is_empty() {
         return Some("lowering still runs its pass; its legacy producer is the inventory");
     }
@@ -139,9 +141,7 @@ fn the_exempt_families_are_the_known_ones() {
         .filter_map(|f| exempt(f).map(|why| (f.name, why)))
         .collect();
     let names: Vec<&str> = exempt.iter().map(|(n, _)| *n).collect();
-    // `owned_views`: lowering still derives which bindings take an owned
-    // copy and which writes copy on write (its legacy producer,
-    // `hale_types::view_bindings`, run in lowering), until the owner table
-    // carries the column.
-    assert_eq!(names, ["desugar_sequence", "owned_views"], "{exempt:?}");
+    // (`owned_views` left the list with GH #1554: lowering reads the
+    // snapshot's column and runs no pass of its own.)
+    assert_eq!(names, ["desugar_sequence"], "{exempt:?}");
 }

@@ -164,6 +164,14 @@ A stdlib function written in Hale passes the same way
 call (`std::math::abs`) has no function behind it to pass; `hale
 check` says so and suggests the one-line wrapper to pass instead.
 
+A function value in scope shadows a function of the same name, in a
+call as anywhere else: `fn apply(f: fn(Int) -> Int, x: Int) -> Int {
+return f(x); }` calls the `f` it was handed, even beside a `fn f`. The
+same goes for a builtin's name: a parameter called `len` is what
+`len(s)` calls inside that function. What counts is that the binding is
+declared as a function (a `fn(..)` type, or a function's name as its
+value); a plain `let max = 10;` leaves `max(1, 2)` the builtin.
+
 ## Free functions and where they live
 
 A function declared at the top level of a file is a *free

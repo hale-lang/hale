@@ -620,6 +620,221 @@ fn a_local_that_shadows_a_unit_type_is_the_callee() {
     assert_eq!(build_and_run_probe(&identity, "unit_identity_cast"), Ok("1\n".to_string()), "{}", identity);
 }
 
+/// A fn value bound in scope shadows a fn of the same name in a call:
+/// the call runs the binding, as the code reads, in the check and the
+/// build alike (the desugar sequence calls the binding as a value). The
+/// call ran the top-level fn: `apply(g, 2)` beside `fn f` printed 3, and
+/// `{ let helper = zero; helper() }` printed 1. A binding declared as a
+/// fn value (a parameter or a `let` of a `fn(..)` type, a `let` of a fn's
+/// name, a `for` over fns' names) shadows a fn, a generic fn among them;
+/// one the declaration does not show to be a fn value is refused.
+///
+/// Plain string literals, for the reason given above.
+#[test]
+fn a_fn_value_in_scope_shadows_a_fn_in_a_call() {
+    let rows: [(&str, &str); 4] = [
+        (
+            "fn f(n: Int) -> Int { return n + 1; }\n\
+             fn g(n: Int) -> Int { return n * 10; }\n\
+             fn apply(f: fn(Int) -> Int, x: Int) -> Int { return f(x); }\n\
+             fn main() { println(apply(g, 2)); }\n",
+            "20\n",
+        ),
+        (
+            "fn helper() -> Int { return 1; }\n\
+             fn zero() -> Int { return 0; }\n\
+             fn main() { let helper = zero; println(helper()); }\n",
+            "0\n",
+        ),
+        (
+            "fn helper() -> Int { return 1; }\n\
+             fn zero() -> Int { return 0; }\n\
+             fn main() { for helper in [zero, zero] { println(helper()); } }\n",
+            "0\n0\n",
+        ),
+        (
+            "fn helper<T>(x: T) -> T { return x; }\n\
+             fn plus(x: Int) -> Int { return x + 100; }\n\
+             fn main() { let helper = plus; println(helper(5)); }\n",
+            "105\n",
+        ),
+    ];
+    for (i, (src, wanted)) in rows.iter().enumerate() {
+        assert_eq!(build_and_run_probe(src, &format!("shadowing_fn_value_{i}")), Ok(wanted.to_string()), "{src}");
+    }
+    // A variant's binding is declared as its payload is: a fn-typed
+    // payload's binding shadows (it was refused, "cannot type", and a
+    // pattern can carry no annotation).
+    let variant = "type Op = enum { Use(fn(Int) -> Int), Pair(fn(Int) -> Int, Int), Nothing };\n\
+                   fn f(n: Int) -> Int { return n + 1; }\n\
+                   fn ten(n: Int) -> Int { return n * 10; }\n\
+                   fn main() {\n\
+                       let o = Op::Use(ten);\n\
+                       let r = match o { Op::Use(f) -> f(2), Op::Pair(f, k) -> f(k), Op::Nothing -> 0, };\n\
+                       println(r);\n\
+                       let p = Op::Pair(ten, 3);\n\
+                       let q = match p { Op::Pair(f, k) -> f(k), _ -> 0, };\n\
+                       println(q);\n\
+                   }\n";
+    assert_eq!(build_and_run_probe(variant, "shadowing_variant_payload"), Ok("20\n30\n".to_string()), "{variant}");
+    // A binding the desugar cannot see as a fn value (a tuple pattern's,
+    // whose type the check does not know) would read as the callee and is
+    // not: refused at the call, rather than called past.
+    assert_refused_by_the_check(
+        &[(
+            "fn helper() -> Int { return 1; }\n\
+             fn zero() -> Int { return 0; }\n\
+             fn main() {\n\
+                 let pair = (zero, 5);\n\
+                 match pair {\n\
+                     (helper, n) -> println(helper() + n),\n\
+                     _ -> println(\"none\"),\n\
+                 }\n\
+             }\n",
+            "helper()",
+            "`helper` is bound here to a value the check cannot type",
+        )],
+        "shadowing_unseen",
+    );
+}
+
+/// A binding named like a builtin is what a call of the name runs, as one
+/// named like a program's fn is, when it is declared as a fn value: a
+/// parameter `len`, a local `min`, a local named like a `bounded`
+/// intrinsic (`count`). A call the compiler wrote is the compiler's: an
+/// f-string's `to_string` and `__fmt` beside bindings of those names. A
+/// binding of a type that is no fn (`let max = 10`) leaves the builtin
+/// the callee, and calling a value that is no fn is refused.
+///
+/// Plain string literals, for the reason given above.
+#[test]
+fn a_fn_value_in_scope_shadows_a_builtin_in_a_call() {
+    let rows: [(&str, &str); 6] = [
+        // an f-string's rendering is the compiler's, beside a binding of
+        // `to_string` (it called the binding)
+        (
+            "fn ts(n: Int) -> String { return \"captured\"; }\n\
+             fn main() { let to_string = ts; let n = 7; println(f\"n={n}\"); }\n",
+            "n=7\n",
+        ),
+        // a binding of a known type that is no fn leaves the builtin the
+        // callee (it was a call through an `Int`, refused by the build)
+        (
+            "fn main() { let max = 10; println(max(1, 2), \" \", max); let len = 4; println(len(\"abc\"), \" \", len); }\n",
+            "2 10\n3 4\n",
+        ),
+        (
+            "fn seven(s: String) -> Int { return 7; }\n\
+             fn run(len: fn(String) -> Int) -> Int { return len(\"abc\"); }\n\
+             fn main() { println(run(seven)); }\n",
+            "7\n",
+        ),
+        (
+            "fn lower(a: Int, b: Int) -> Int { return a * 100 + b; }\n\
+             fn main() { let min = lower; println(min(1, 2)); }\n",
+            "102\n",
+        ),
+        (
+            "type Buf { vals: bounded[Int; 4]; }\n\
+             fn noop(b: Buf) -> Int { return 42; }\n\
+             fn main() { let b = Buf { }; let count = noop; println(count(b)); }\n",
+            "42\n",
+        ),
+        (
+            "fn zero(x: Int) -> String { return \"zero\"; }\n\
+             fn main() { let __fmt = zero; let n = 3; println(f\"{n:>4}|\"); }\n",
+            "   3|\n",
+        ),
+    ];
+    for (i, (src, wanted)) in rows.iter().enumerate() {
+        assert_eq!(build_and_run_probe(src, &format!("shadowing_builtin_{i}")), Ok(wanted.to_string()), "{src}");
+    }
+    // A call through a value that is no fn, refused at the callee.
+    assert_refused_by_the_check(
+        &[("fn main() { let x = 3; println(x(2)); }\n", "x", "this is a value of type `Int`, not a fn")],
+        "call_through_int",
+    );
+}
+
+/// The rule holds in every expression a program holds, not only in
+/// bodies: a block that binds a fn value in a const, a record field's
+/// default, a locus param's default or a fn param's default calls the
+/// binding (each printed 3, the top-level `f`'s answer).
+///
+/// Plain string literals, for the reason given above.
+#[test]
+fn a_fn_value_shadows_a_fn_outside_bodies_too() {
+    let src = "fn f(n: Int) -> Int { return n + 1; }\n\
+               fn g(n: Int) -> Int { return n * 10; }\n\
+               const C: Int = { let f = g; f(2) };\n\
+               type R { v: Int = { let f = g; f(3) }; }\n\
+               locus L {\n\
+                   params { p: Int = { let f = g; f(4) }; }\n\
+               }\n\
+               fn d(x: Int = { let f = g; f(5) }) -> Int { return x; }\n\
+               fn main() {\n\
+                   let l = L { };\n\
+                   let r = R { };\n\
+                   println(C, \" \", r.v, \" \", l.p, \" \", d());\n\
+               }\n";
+    assert_eq!(build_and_run_probe(src, "shadowing_outside_bodies"), Ok("20 30 40 50\n".to_string()), "{src}");
+}
+
+/// A store into an element of an array held in an array (`kk[1][0] = s`)
+/// and into a part of a tuple (`t.0 = s`), at a local or under a record's
+/// field, checked clean and the build refused them ("lvalue: cannot step
+/// into non-struct array element", "non-addressable type"): they are
+/// ordinary places, and lowering walks to them now. A copy made before the
+/// store (`let copy = kk;`, `let u = t;`) keeps its value.
+///
+/// Plain string literals, for the reason given above.
+#[test]
+fn a_store_into_a_nested_element_or_a_tuple_part_lowers() {
+    let src = "type R { s: String = \"\"; pair: (String, Int); grid: [[Int; 2]; 2]; }\n\
+               fn main() {\n\
+                   let s = std::str::upper(\"x\");\n\
+                   let mut kk = [[\"a\", \"b\"], [\"c\", \"d\"]];\n\
+                   let copy = kk;\n\
+                   kk[1][0] = s;\n\
+                   println(kk[1][0], kk[0][1], copy[1][0]);\n\
+                   let mut t = (\"p\", 1);\n\
+                   let u = t;\n\
+                   t.0 = s;\n\
+                   t.1 = 7;\n\
+                   println(t.0, t.1, u.0, u.1);\n\
+                   let mut r = R { pair: (\"q\", 4), grid: [[1, 2], [3, 4]] };\n\
+                   r.pair.1 = 8;\n\
+                   r.grid[1][1] = 9;\n\
+                   println(r.pair.1, r.grid[1][1]);\n\
+               }\n";
+    assert_eq!(build_and_run_probe(src, "nested_lvalues"), Ok("Xbc\nX7p1\n89\n".to_string()), "{src}");
+}
+
+/// A variant's pattern takes a binding, `_` or a literal for each value:
+/// a nested pattern there (`Op::Pair((a, b))`) checked clean and the build
+/// refused it, unlocated ("constructor pattern arg must be a binding, `_`,
+/// or literal at v0.1"). The check refuses it at the nested pattern; the
+/// neighbour that binds the value and reads its parts builds.
+///
+/// Plain string literals, for the reason given above.
+#[test]
+fn a_nested_pattern_in_a_variants_pattern_is_refused_by_the_check() {
+    assert_refused_by_the_check(
+        &[(
+            "type Op = enum { Pair((Int, Int)), Nothing };\n\
+             fn main() { let o = Op::Pair((1, 2)); let r = match o { Op::Pair((a, b)) -> a + b, Op::Nothing -> 0, }; println(r); }\n",
+            "(a, b)",
+            "a variant's pattern takes a binding, `_` or a literal for each of its values",
+        )],
+        "nested_variant_pattern",
+    );
+    assert_built(
+        "type Op = enum { Pair((Int, Int)), Nothing };\n\
+         fn main() { let o = Op::Pair((1, 2)); let r = match o { Op::Pair(t) -> t.0 + t.1, Op::Nothing -> 0, }; println(r); }\n",
+        "hale_cb_nested_variant_pattern_neighbour",
+    );
+}
+
 /// GH #1076 (U1, review 2): a struct field's default is evaluated in the
 /// scope of the literal that leaves the field, so `Money(1)` in it calls
 /// the constructing fn's local `Money` (a fn), not the scalar type the
