@@ -1,11 +1,14 @@
 name: tests
 
 # Runs the workspace test suite on every pull request targeting
-# main and on every push to main. A pull request runs the DNA and
-# face jobs only when its diff can reach DNA (`scope.dna`, from
-# scripts/ci-scope.sh); the merge group runs every job, and a push to
-# main runs the DNA and face jobs whatever its diff, so a stack is
-# tested as the combination it becomes. Linux-only at v1; the macos
+# main and on every push to main. A pull request runs the compiler
+# suites (quick, codegen, the sanitizers); the DNA and face jobs only
+# when its diff reaches DNA (`scope.dna`), the cli jobs only when it
+# reaches the cli family or DNA (`scope.cli`), both from
+# scripts/ci-scope.sh; parity and cross never. The merge group runs
+# every job, and so does a push to main whatever its diff, so a change
+# is tested whole before it lands and a stack is tested as the
+# combination it becomes. Linux-only at v1; the macos
 # workflow and the release workflow cover macOS.
 #
 # Uses cargo-nextest (drop-in replacement for `cargo test`) for
@@ -118,10 +121,12 @@ jobs:
       # those tests live in hale-syntax, hale-types and one hale-cli
       # binary, and `quick` + `docs` run exactly those.
       code: ${{ steps.classify.outputs.substrate }}
-      # Whether the diff can reach what the DNA and face jobs run
-      # (scripts/ci-scope.sh lists the paths). Those jobs run on a
-      # pull request only when this is true.
+      # Whether the diff reaches DNA (its tree, its host code, what its
+      # jobs run) and whether it reaches the cli family or DNA
+      # (scripts/ci-scope.sh lists the paths): the DNA and face jobs,
+      # and the cli jobs, run on a pull request only when these are true.
       dna: ${{ steps.classify.outputs.dna }}
+      cli: ${{ steps.classify.outputs.cli }}
     steps:
       - uses: actions/checkout@v4
         with: { fetch-depth: 0 }
@@ -131,7 +136,7 @@ jobs:
           set -euo pipefail
           if [ "${{ github.event_name }}" = "merge_group" ]; then
             echo "merge group: every job runs"
-            { echo "substrate=true"; echo "dna=true"; } >> "$GITHUB_OUTPUT"
+            { echo "substrate=true"; echo "dna=true"; echo "cli=true"; } >> "$GITHUB_OUTPUT"
             exit 0
           fi
           base=""
@@ -164,7 +169,7 @@ jobs:
           else
             echo "substrate=true" >> "$GITHUB_OUTPUT"
           fi
-          printf '%s\n' "$verdict" | grep '^dna=' >> "$GITHUB_OUTPUT"
+          printf '%s\n' "$verdict" | grep -E '^(dna|cli)=' >> "$GITHUB_OUTPUT"
 
   # The fast lane: everything that needs no LLVM. hale-syntax,
   # hale-types, hale-model, hale-graph, hale-stdlib and hale-corpus have
@@ -173,13 +178,14 @@ jobs:
   #
   # `quick-build` compiles their ~180 test binaries (about six minutes:
   # each is a bin crate, which sccache cannot cache) and archives them;
-  # the six `quick` jobs run a sixth each of their ~2,500 tests
+  # the six `quick` jobs run a hash sixth each of their ~2,500 tests
   # (about 2,150 test-seconds; the ten corpus sweeps of hale-types take
   # 60-390 s each, and three of them on one four-core runner made a part
   # of four run 5.5 minutes). One job building and running all of it was
-  # the workflow's longest, at 16 minutes (2026-10-12). The sixths are
-  # dealt round-robin over the sorted test list (`count:`): by `hash:`
-  # they ran 1 to 8 minutes, as the sweeps happened to fall (2026-10-16).
+  # the workflow's longest, at 16 minutes (2026-10-12). Not `count:`: it
+  # restarts its round-robin at each of the ~180 binaries, and most
+  # sweeps sort first in theirs, so part 1 took seven of them and ran 15
+  # minutes (2026-10-16).
   quick-build:
     name: quick build (LLVM-free test archive)
     runs-on: ubuntu-latest
@@ -285,7 +291,7 @@ jobs:
           du -sh target
 
       - name: cargo nextest run (LLVM-free crates, part ${{ matrix.part }}/6)
-        run: cargo nextest run $NEXTEST_ARCHIVE --partition count:${{ matrix.part }}/6
+        run: cargo nextest run $NEXTEST_ARCHIVE --partition hash:${{ matrix.part }}/6
 
   # A prose-only diff's only remaining exposure after `quick`: the
   # `hale mcp` docs-search serves spec/*.md embedded at build time
@@ -356,9 +362,9 @@ jobs:
   build-cli:
     name: build (cli + dna test archive)
     needs: scope
-    # The cli and dna jobs' archive: on a pull request only when they run
-    # there (scripts/ci-scope.sh `dna`); the merge queue runs them always.
-    if: github.event_name != 'pull_request' || needs.scope.outputs.dna == 'true'
+    # The cli and dna jobs' archive: on a pull request only when one of
+    # them runs there (`scope.cli` is true whenever `scope.dna` is).
+    if: github.event_name != 'pull_request' || needs.scope.outputs.cli == 'true'
     runs-on: ubuntu-latest
     env:
       ARCHIVE: nextest-cli
@@ -452,6 +458,17 @@ jobs:
       - *build-llvm
       - *build-nextest
       - *build-workspace
+      - name: hale fmt --check (canonical-form gate)
+        # The styleguide's §5 fmt tier: the repo's own .hl surface must
+        # be canonical. Here, not in a cli job: this build runs on every
+        # code diff, a pull request's included, and has just built
+        # `hale`; the cli jobs skip a PR that reaches neither the cli
+        # family nor DNA (2026-10-16). Whole repo, not an enumerated
+        # list. The list form silently excluded tests/hale (the
+        # in-language suite), which drifted out of canonical form
+        # unnoticed — an enumerated scope is a scope that goes stale
+        # every time a directory is added.
+        run: ./target/release/hale fmt --check .
       - *build-archive
       - *archive-upload
       - *build-sccache-stats
@@ -459,9 +476,9 @@ jobs:
   cli:
     name: cli ${{ matrix.part }}/5
     needs: [scope, build-cli]
-    # On a pull request only when the diff reaches DNA (most of the cli
-    # suite's minutes are DNA organisms); every PR's merge-queue run has it.
-    if: needs.scope.outputs.code == 'true' && (github.event_name != 'pull_request' || needs.scope.outputs.dna == 'true')
+    # On a pull request only when the diff reaches the cli family or DNA
+    # (`scope.cli`); every PR's merge-queue run has it.
+    if: needs.scope.outputs.code == 'true' && (github.event_name != 'pull_request' || needs.scope.outputs.cli == 'true')
     # Free runners only: a paid 8-core runner was tried on 2026-09-26 and
     # cost about $200 a day; test time is cut at the cause instead.
     runs-on: ubuntu-latest
@@ -547,18 +564,6 @@ jobs:
       - *install-nextest
       - *archive-download
       - *archive-extract
-
-      - name: hale fmt --check (canonical-form gate)
-        # The styleguide's §5 fmt tier: the repo's own .hl surface
-        # must be canonical. Partition 1 only — the check is
-        # whole-repo and takes <1s; running it 3× adds nothing.
-        if: matrix.part == 1
-        run: |
-          # Whole repo, not an enumerated list. The list form silently
-          # excluded tests/hale (the in-language suite), which drifted
-          # out of canonical form unnoticed — an enumerated scope is a
-          # scope that goes stale every time a directory is added.
-          ./target/release/hale fmt --check .
 
       # The compiler's identity and the host's, for the toolchain cache
       # below and the face's builds cache in face-browser. A cached output
@@ -748,11 +753,11 @@ jobs:
         # `tests/<area>.rs` names its files with `#[path]`; see
         # `every_test_file_is_built`), where they were 352 binaries and
         # this step named half of them with `--test`. nextest deals the
-        # TESTS between the parts round-robin over the sorted list
-        # (`count:`; `hash:` left parts 5 to 7 minutes apart), the lib's
-        # unit tests included (about 3,450 test-seconds in all, none
-        # longer than ~85 s).
-        run: cargo nextest run $NEXTEST_ARCHIVE --partition count:${{ matrix.part }}/5
+        # TESTS between the parts by hash, the lib's unit tests included
+        # (about 3,450 test-seconds in all, none longer than ~85 s).
+        # Not `count:`: it restarts its round-robin at each binary, so
+        # every binary's first test lands on part 1 (2026-10-16).
+        run: cargo nextest run $NEXTEST_ARCHIVE --partition hash:${{ matrix.part }}/5
 
   dna:
     name: dna ${{ matrix.part }}/5

@@ -93,17 +93,22 @@ so two shapes are invisible to it and land on whoever types
   reason beside it.
 
 **A pull request runs the compiler suites; the merge queue runs
-everything.** `scripts/ci-scope.sh <base> <head>` prints `prose=` and
-`dna=`; `dna` is true for a change under `dna/`, `iris/`, the DNA suite
-and its support code, the workflows, `.config`, the scripts those jobs
-run or the API contract programs, and also when the base is unknown or
-the diff empty — not for a crate change. A PR runs the `dna`, `face` and
-`cli` jobs only when `dna` is true, and never `parity` or `cross`: a
-compiler PR's checks are `quick`, `codegen` and the sanitizers. The
-merge queue runs the full suite on the merge group before anything
-reaches `main`, and `main`'s own push run is the full suite as well, so
-a DNA or cli failure a compiler change causes stops it in the queue.
-`scripts/ci-scope-test.sh` pins the scope on synthetic diffs.
+everything.** `scripts/ci-scope.sh <base> <head>` prints `prose=`,
+`dna=` and `cli=`. `dna` is true for a change under `dna/` or `iris/`,
+the host code that runs them (`hale-dna`, `hale-iris`, hale-cli's dna,
+iris, fleet and mcp verbs and its `dna_*` tests), the DNA suite and its
+support code, the workflows, `.config`, `scripts/` or the API contract
+programs. `cli` is true when `dna` is, or for a change to hale-cli and
+the crates only it builds, `tests/hale` or the workspace manifests. Both
+are true when the base is unknown or the diff empty. A PR runs the
+`dna` and `face` jobs only when `dna` is true, the `cli` jobs only when
+`cli` is, and never `parity` or `cross`: a compiler PR's checks are
+`quick`, `codegen`, the sanitizers and the `hale fmt --check` gate in
+the codegen build. The merge queue runs the full suite on the merge
+group before anything reaches `main`, and `main`'s own push run is the
+full suite as well, so a DNA or cli failure a compiler change causes
+stops it in the queue. `scripts/ci-scope-test.sh` pins the scope on
+synthetic diffs.
 
 **CI tests from archives, built once.** `quick-build`, `build-cli` and
 `build-codegen` each compile a family's test binaries and hand them on
