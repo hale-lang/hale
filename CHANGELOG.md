@@ -17,24 +17,24 @@ A Hale program can now state its API and serve it. Two kinds of declaration defi
 
 **Transports.** `api::serve` serves a surface over Unix sockets, HTTP, MCP and gRPC, with HTTP/2 through a vendored nghttp2 that is sans-I/O. Streams are served over WebSocket and UDP hubs. Each transport reports the same five outcomes and answers the same per-caller description.
 
-**Clients and descriptions.** The toolchain exports a surface's description, OpenAPI, JSON Schema, MCP and protobuf. It generates typed Hale, TypeScript and JavaScript clients. `hale describe` and `hale call` drive any served program from its description alone.
+**Clients and descriptions.** The toolchain exports a surface's description, OpenAPI, JSON Schema, MCP and protobuf. It generates typed Hale, TypeScript and JavaScript clients. `hale describe` and `hale call` drive any program served over a Unix socket or HTTP from its description alone.
 
-**The TCP substrate.** Every server in the stdlib now stands on one TCP substrate, so `std::http::Server` placed on an `async_io` pool serves its connections concurrently.
+**The TCP substrate.** Every TCP and Unix-socket server in the stdlib now stands on one substrate, so `std::http::Server` placed on an `async_io` pool serves its connections concurrently.
 
-**The language and runtime.** A value you read is yours. A store into another locus's field is that locus's own write, and the runtime enforces it across pools. `hale check` refuses what the build used to refuse late. A season of forms, bus and lifecycle fixes closes leaks and lost messages.
+**The language and runtime.** A value you read is yours. A store into another locus's field is that locus's own write, and a store or method call across pools is refused: by the checker where it can follow the handle, by the runtime where it cannot. `hale check` refuses what the build used to refuse late. A season of forms, bus and lifecycle fixes closes leaks and lost messages.
 
 **Downstream smoke.** A downstream smoke test of the result gave the same answers as v0.23.0:
 
-- 76 apps build and 19 probes run, every output byte-identical.
+- All 76 check-clean apps build, and all 19 probes run with output byte-identical to v0.23.0 apart from RSS figures.
 - No crashes.
 - No runtime cross-pool aborts.
 
 It found one build-time regression and one mislocated diagnostic, both fixed before the tag (#1584). Every check failure it found is migration that an intended change asks for:
 
-- **F.42's fallible builders:** `or raise` at each `snapshot()`/`finish()` call.
+- **F.42's fallible builders (v0.23.0, #1426):** `or raise` at each `snapshot()`/`finish()` call. v0.23.0 already asked for this migration, and the apps had not yet made it.
 - **#1566's one-instance-per-pool rule:** an io-placed `std::http::Server` can no longer be handed a handler or registry that lives on another pool. Build it on the server's side, use `std::metrics::Registry`, which may be shared, or reach it over the bus.
 
-**Known issue.** `hale check` costs about twice as much per run as on v0.23.0. A trivial seed takes 15 → 32 ms, and a 226-seed workspace 3.0 → 6.3 s. The owned-view and allocation analyses of #1558 and #1568 run over the whole stdlib on every check, rather than only over what the program reaches. The fix is next; build times are unaffected.
+**Known issue.** `hale check` costs about twice as much per run as on v0.23.0. A trivial seed takes 15 → 32 ms, and a 226-seed workspace 3.0 → 6.3 s. The owned-view and allocation analyses of #1558 and #1568 run over the whole stdlib on every check, rather than only over what the program reaches. A build runs the same analyses, so it pays the same added time per run. The fix is next.
 
 The item-level notes for this release follow this page, one entry per change with every PR reference. The CHANGELOG as it stood at the tag is `git show v0.24.0:CHANGELOG.md`.
 
@@ -48,12 +48,12 @@ The item-level notes for this release follow this page, one entry per change wit
   | `@gated` | `requires: [...]` on the surface's rows |
   | `serve:` | `api::serve` |
   | exposed reads | a topic bound to a hub |
-  | `build --api` / `run --api` | (no direct replacement) |
+  | `build --api` / `run --api` | an exposure param serving a declared surface (`api::serve`) |
   | `hale check --dump-api` | `hale check --api` |
-- **An exposure is a param (#1567).** Declare it as `web: api::Exposure = api::serve(…);` and place it with `placement { }`. The old `let web = api::serve(…)` in a body is refused, with the param to write. A server can now be its own locus, and "only main serves" is gone.
-- **CLI flag renames.**
-  - `hale describe` and `hale call` (#1451): `--token` is now `--bearer`, `HALE_API_TOKEN` is now `HALE_API_BEARER`, and `--receipt` is now `--raw`. `hale describe FILE.hl` is gone; use `hale check --api`.
-  - `hale api call` (#1537): `--id` is now `--request-id`.
+- **`hale describe`, `call` and `watch` (#1438, #1451).**
+  - `hale describe` asks a running program only: `hale describe FILE.hl` and `hale describe DIR` are gone (use `hale check --api`), and so are `--openapi`, `--mcp`, `--full` and `-o` (use `hale check --api --surface S --openapi|--mcp`, or `hale api export`).
+  - `hale call --receipt` is now `--raw`, and its target is a surface member (exposed reads are gone).
+  - `hale watch` takes a hub's `ws://` endpoint instead of the binding's socket.
 - **Cross-pool access (F.31, #1566).**
   - The checker refuses a store into, or a method call on, a locus on another pool, however the handle reaches it.
   - Handing a locus an instance that runs on another pool is refused where it is handed.
@@ -64,7 +64,6 @@ The item-level notes for this release follow this page, one entry per change wit
   - unbound names in a single file;
   - unused-value statements;
   - ill-typed operators and patterns;
-  - fallible fns used as plain fn values;
   - field reads through an interface-typed parameter (#1531);
   - a publish inside a default (#1567);
   - more.
@@ -73,11 +72,15 @@ The item-level notes for this release follow this page, one entry per change wit
   - `parse_url` refuses ports outside 1..65535 (#1541).
   - `std::http::get`, `post` and `request` dial under a 30 s deadline (#1545).
   - Float `!=`, `min` and `max` follow IEEE 754 for NaN and −0.0 (#1542).
-  - A `Time` outside 1677–2262, and a Decimal literal with more than nine fractional digits, are refused instead of wrapping or truncating (#1526).
-  - `std::time::mock_clock` is gone from the docs (#1540).
+  - A `Time` outside 1677–2262 is refused instead of wrapping, and a Decimal literal or `parse_decimal` input with a nonzero digit past the ninth fractional place is refused instead of truncated (#1526).
+  - A TLS handshake that times out fails with kind `timeout`, not `connection_refused`; `connect_wait`'s wait bounds the whole dial, and `std::http::Client`'s `timeout_ms` bounds each attempt's connect and handshake (#1538).
+  - A child started by `std::process::run` or `spawn` no longer inherits an ignored SIGPIPE, so one writing to a closed pipe dies of the signal (#1545).
+- **Fallible fns as values (#1563).** A fallible fn used as a plain fn value is refused at its name, with a wrapper that handles the error; it used to build and crash at the call.
+- **A local fn value shadows a top-level fn (#1568).** In a call, a local or parameter fn value now shadows a top-level fn or builtin of the same name: `fn apply(f: fn(Int) -> Int, x: Int)` beside `fn f` calls the parameter, where it used to call the top-level `f`.
 - **Program shape.**
   - A `main` with no `run()` ends once its children see the drain (#1533).
   - A `*_test.hl` file is never part of its directory's seed (#1537).
+- **Repository mode runs compose (#1549).** On a repository record, `hale dna dev` and `hale dna run` bring the repository's compose services up with the body and take them down on exit; `HALE_DNA_COMPOSE=off` leaves them to the operator.
 
 ### API surfaces (GH #1417)
 
@@ -87,6 +90,7 @@ The item-level notes for this release follow this page, one entry per change wit
   - **Streams:** `ws::Hub` and `udp::Hub` serve them (#1436).
   - **Parking:** a served program parks until work arrives, and a call that waited out a 100 ms sleep slice takes about 34 µs (#1444).
   - **Lists and time:** codecs carry lists, and `Time` and `Duration` (#1544).
+  - **Exposures:** an exposure is a param of the locus that holds it, `web: api::Exposure = api::serve(…);`, placed with `placement { }`, so a server can be its own locus and "only main serves" is gone (#1567).
 - **Exports and clients.**
   - `hale api export` writes byte-stable description, OpenAPI, JSON Schema, MCP, `.proto` and digest files, with a drift check (#1441, #1442).
   - `hale api client --lang hale|ts|js` generates typed clients (#1441, #1544).
@@ -94,7 +98,7 @@ The item-level notes for this release follow this page, one entry per change wit
 
 ### Networking and processes
 
-- **One TCP substrate (#1508, #1509, #1514, #1519).** `std::io::tcp::Acceptor` and `Connections` sit under every listener: HTTP, the API transports, WebSocket, HTTP/2 and tcp. On an `async_io` pool, `std::http::Server` serves connections concurrently, so five one-second requests take one second, and `std::io::tcp::stop(name)` stops any listener.
+- **One TCP substrate (#1508, #1509, #1514, #1519).** `std::io::tcp::Acceptor` and `Connections` sit under every listener: HTTP, the API transports, WebSocket, HTTP/2 and tcp. On an `async_io` pool, `std::http::Server` serves connections concurrently, so five one-second requests take one second, and `std::io::tcp::stop(name)` stops a listener from any pool.
 - **Deadlines and parking (#1538).**
   - `connect_within` dials with a deadline.
   - TLS parks on `async_io` pools, so an https client can live there.
@@ -138,8 +142,9 @@ The item-level notes for this release follow this page, one entry per change wit
   - A run-time subscriber runs on its builder's thread (#1510, #1513).
   - Send order holds across topics (#1533).
   - Floods are bounded at main's queue, pool rings and pinned mailboxes (#1552, #1557, #1560).
+  - A cooperative locus's bus handlers run at the park points of its own looping `run()`, not only after it returns (#1533).
 - **Lifecycle.**
-  - `restart` re-runs a failed `birth()` and `birth_check` on the child's own thread (#1501, #1518, #1522).
+  - `restart` re-runs a failed `birth()` (a pool-placed child's on its own pool) and its `birth_check`, and a restarted child is served again (#1501, #1518, #1522).
   - A failed test assertion tears the tree down (#1533).
 - **Performance.**
   - JSON escaping is about 15× faster (#1524).
@@ -151,7 +156,7 @@ The item-level notes for this release follow this page, one entry per change wit
 ### DNA
 
 - **Onboarding without a checkout.** `hale dna head` runs from the installed toolchain (#1495). `hale dna init --with <pack>` and `review all approve` give a seated organization (#1505).
-  - The record writes in about 2 s instead of 80 (#1456).
+  - A default `init` writes its record in about 2 s instead of 80 (#1456).
   - An idle body uses about 2% of a core instead of 96% (#1515, #1524).
 - **Structure as batches (#1493).** Packs and the nursery, and `position open` (#1484).
 - **Mandates and equipment** for every position (#1458).
