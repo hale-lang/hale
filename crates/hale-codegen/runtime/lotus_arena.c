@@ -18185,22 +18185,36 @@ static int lotus_chunk_index_lookup(lotus_arena_t *a, const char *cp) {
     return found;
 }
 
+/* Past the walk: the chunk index, or — for the shared payload arena,
+ * which grows under its own lock from more than one thread — the rest
+ * of the walk. Out of line, so the walk in lotus_ptr_in_arena stays a
+ * tight loop: with a counter and this call inside it, every clone into
+ * an arena paid 10-20% on the vec and field-store benches, whether or
+ * not the arena was ever long enough to reach the index. */
+__attribute__((noinline))
+static int lotus_ptr_in_arena_past_walk(const lotus_arena_t *a,
+                                        const lotus_arena_chunk_t *c,
+                                        const char *cp) {
+    if (!a->shared_concurrent) {
+        int found = lotus_chunk_index_lookup((lotus_arena_t *)a, cp);
+        if (found >= 0) return found;
+    }
+    for (; c; c = c->next) {
+        const char *base = (const char *)(c + 1);
+        if (cp >= base && cp < base + c->cap) return 1;
+    }
+    return 0;
+}
+
 static int lotus_ptr_in_arena(const lotus_arena_t *a, const void *p) {
     if (!a || !p) return 0;
     const char *cp = (const char *)p;
-    int walked = 0;
-    for (const lotus_arena_chunk_t *c = a->head; c; c = c->next) {
+    const lotus_arena_chunk_t *c = a->head;
+    for (int i = 0; c && i < LOTUS_CHUNK_WALK_MAX; i++, c = c->next) {
         const char *base = (const char *)(c + 1);
         if (cp >= base && cp < base + c->cap) return 1;
-        /* The shared payload arena grows under its own lock, from more
-         * than one thread, so it keeps the plain walk. */
-        if (++walked == LOTUS_CHUNK_WALK_MAX && c->next
-            && !a->shared_concurrent) {
-            int found = lotus_chunk_index_lookup((lotus_arena_t *)a, cp);
-            if (found >= 0) return found;
-        }
     }
-    return 0;
+    return c ? lotus_ptr_in_arena_past_walk(a, c, cp) : 0;
 }
 
 /* Public surface for the codegen's same-arena skip at cross-arena
