@@ -175,7 +175,10 @@ jobs:
         run: |
           set -eux
           mkdir -p dist
-          tarball="hale-${{ github.ref_name }}-${{ matrix.target }}.tar.gz"
+          # A dispatched smoke run on a branch names its tarball after
+          # the branch: `/` would make it a path (`ci/…` fails to open).
+          ref="${GITHUB_REF_NAME//\//-}"
+          tarball="hale-${ref}-${{ matrix.target }}.tar.gz"
           # Include LICENSE + README alongside the binary; both
           # become first-class in the user-visible tarball.
           cp target/release/hale dist/
