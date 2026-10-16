@@ -5,7 +5,9 @@
 #
 # prints, on stdout, one line each:
 #   prose=true|false  every changed path is prose (docs, spec, notes, ...)
-#   dna=true|false    the diff can reach what the DNA and face jobs run
+#   dna=true|false    the diff touches DNA's own tree or what its jobs
+#                     run: the DNA, face and cli jobs run on the pull
+#                     request (the merge queue runs them for every PR)
 #
 # Fails SAFE: an unusable base or head, or an empty diff, is
 # prose=false dna=true. The workflow redirects the output into
@@ -36,18 +38,18 @@ echo "changed files:" >&2; echo "$changed" >&2
 # Paths that cannot reach the runtime, the models, or codegen.
 prose='^(README|AGENTS|CHANGELOG|CONTRIBUTING|LICENSE|SECURITY)|^(docs|spec|notes|agents|unreleased)/|\.md$'
 
-# Paths the DNA and face jobs build or run: DNA's own tree and the
-# iris tree it embeds; every crate (all of them build in
-# `--workspace`); the workspace manifests; the workflows; and the
-# scripts those jobs call.
-dna='^(dna|iris|\.github/workflows|\.config|scripts|tests/api-contract|tests/hale/api/client)/|^Cargo\.(toml|lock)$|^crates/'
-# ...except test files nothing in DNA runs. The DNA suite itself
-# (hale-cli's dna_native_suite and its support code) is the exception.
-dna_not='^crates/[^/]+/tests/'
+# Paths that run the DNA, face and cli jobs on a pull request: DNA's own
+# tree and the iris tree it embeds, the workflows, the scripts those jobs
+# call, the API contract programs, and the DNA suite with its support
+# code. A compiler change (any crate) does not: the merge queue runs
+# every job on every PR before anything reaches main, so a crate PR's
+# own run is the compiler suites alone and lands in about half the time
+# (2026-10-16). Fails safe as before: no usable diff runs everything.
+dna='^(dna|iris|\.github/workflows|\.config|scripts|tests/api-contract|tests/hale/api/client)/'
 dna_suite='^crates/hale-cli/tests/(dna_native_suite\.rs|support/|fixtures/)'
 
 nonprose=$(printf '%s\n' "$changed" | grep -cvE "$prose" || true)
-hit=$(printf '%s\n' "$changed" | grep -E "$dna" | grep -vE "$dna_not" | grep -c . || true)
+hit=$(printf '%s\n' "$changed" | grep -cE "$dna" || true)
 suite=$(printf '%s\n' "$changed" | grep -cE "$dna_suite" || true)
 
 p=false; [ "${nonprose:-1}" -eq 0 ] && p=true

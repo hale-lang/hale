@@ -26,7 +26,9 @@ case_() {
 case_ docs-only   true  false docs/a.md README.md
 case_ unreleased  true  false unreleased/1.md
 case_ tests-only  false false crates/hale-codegen/tests/t.rs
-case_ stdlib-edit false true  crates/hale-stdlib/hl/s.hl
+case_ stdlib-edit false false crates/hale-stdlib/hl/s.hl
+case_ codegen-src  false false crates/hale-codegen/src/x.rs
+case_ cargo-lock  false false Cargo.lock
 case_ dna-edit    false true  dna/a.hl
 case_ workflow    false true  .github/workflows/tests.yml
 case_ dna-suite   false true  crates/hale-cli/tests/dna_native_suite.rs

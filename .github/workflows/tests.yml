@@ -173,11 +173,13 @@ jobs:
   #
   # `quick-build` compiles their ~180 test binaries (about six minutes:
   # each is a bin crate, which sccache cannot cache) and archives them;
-  # the six `quick` jobs run a hash sixth each of their ~2,500 tests
+  # the six `quick` jobs run a sixth each of their ~2,500 tests
   # (about 2,150 test-seconds; the ten corpus sweeps of hale-types take
-  # 60-260 s each, and three of them on one four-core runner made a part
+  # 60-390 s each, and three of them on one four-core runner made a part
   # of four run 5.5 minutes). One job building and running all of it was
-  # the workflow's longest, at 16 minutes (2026-10-12).
+  # the workflow's longest, at 16 minutes (2026-10-12). The sixths are
+  # dealt round-robin over the sorted test list (`count:`): by `hash:`
+  # they ran 1 to 8 minutes, as the sweeps happened to fall (2026-10-16).
   quick-build:
     name: quick build (LLVM-free test archive)
     runs-on: ubuntu-latest
@@ -283,7 +285,7 @@ jobs:
           du -sh target
 
       - name: cargo nextest run (LLVM-free crates, part ${{ matrix.part }}/6)
-        run: cargo nextest run $NEXTEST_ARCHIVE --partition hash:${{ matrix.part }}/6
+        run: cargo nextest run $NEXTEST_ARCHIVE --partition count:${{ matrix.part }}/6
 
   # A prose-only diff's only remaining exposure after `quick`: the
   # `hale mcp` docs-search serves spec/*.md embedded at build time
@@ -354,7 +356,9 @@ jobs:
   build-cli:
     name: build (cli + dna test archive)
     needs: scope
-    if: needs.scope.outputs.code == 'true' || github.event_name != 'pull_request' || needs.scope.outputs.dna == 'true'
+    # The cli and dna jobs' archive: on a pull request only when they run
+    # there (scripts/ci-scope.sh `dna`); the merge queue runs them always.
+    if: github.event_name != 'pull_request' || needs.scope.outputs.dna == 'true'
     runs-on: ubuntu-latest
     env:
       ARCHIVE: nextest-cli
@@ -455,7 +459,9 @@ jobs:
   cli:
     name: cli ${{ matrix.part }}/5
     needs: [scope, build-cli]
-    if: needs.scope.outputs.code == 'true'
+    # On a pull request only when the diff reaches DNA (most of the cli
+    # suite's minutes are DNA organisms); every PR's merge-queue run has it.
+    if: needs.scope.outputs.code == 'true' && (github.event_name != 'pull_request' || needs.scope.outputs.dna == 'true')
     # Free runners only: a paid 8-core runner was tried on 2026-09-26 and
     # cost about $200 a day; test time is cut at the cause instead.
     runs-on: ubuntu-latest
@@ -742,9 +748,11 @@ jobs:
         # `tests/<area>.rs` names its files with `#[path]`; see
         # `every_test_file_is_built`), where they were 352 binaries and
         # this step named half of them with `--test`. nextest deals the
-        # TESTS between the parts by hash, the lib's unit tests included
-        # (about 3,450 test-seconds in all, none longer than ~85 s).
-        run: cargo nextest run $NEXTEST_ARCHIVE --partition hash:${{ matrix.part }}/5
+        # TESTS between the parts round-robin over the sorted list
+        # (`count:`; `hash:` left parts 5 to 7 minutes apart), the lib's
+        # unit tests included (about 3,450 test-seconds in all, none
+        # longer than ~85 s).
+        run: cargo nextest run $NEXTEST_ARCHIVE --partition count:${{ matrix.part }}/5
 
   dna:
     name: dna ${{ matrix.part }}/5
@@ -1364,7 +1372,8 @@ jobs:
   cross:
     name: cross (x86_64 → aarch64 gnu + musl, x86_64 musl; runs them)
     needs: scope
-    if: needs.scope.outputs.code == 'true'
+    # The merge queue's run, not the pull request's (2026-10-16).
+    if: needs.scope.outputs.code == 'true' && github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     env:
       ZIG_VERSION: 0.16.0
@@ -1497,7 +1506,8 @@ jobs:
   parity:
     name: parity (cargo test + doctests)
     needs: scope
-    if: needs.scope.outputs.code == 'true'
+    # The merge queue's run, not the pull request's (2026-10-16).
+    if: needs.scope.outputs.code == 'true' && github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

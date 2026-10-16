@@ -92,15 +92,18 @@ so two shapes are invisible to it and land on whoever types
   `ignore` only for real Rust that cannot stand alone, with the
   reason beside it.
 
-**A pull request runs the DNA and face jobs only when its diff can
-reach DNA.** `scripts/ci-scope.sh <base> <head>` prints `prose=` and
-`dna=`; `dna` is true for a change under `dna/`, `iris/`, any crate
-(its tests apart, except the DNA suite), `Cargo.toml`/`Cargo.lock`,
-the workflows or the scripts those jobs run, and also when the base is
-unknown or the diff empty. `scripts/ci-scope-test.sh` pins it on
-synthetic diffs. A PR's checks are that scoped suite; the merge queue
-runs the full suite on the merge group before anything reaches `main`,
-and `main`'s own push run is the full suite as well.
+**A pull request runs the compiler suites; the merge queue runs
+everything.** `scripts/ci-scope.sh <base> <head>` prints `prose=` and
+`dna=`; `dna` is true for a change under `dna/`, `iris/`, the DNA suite
+and its support code, the workflows, `.config`, the scripts those jobs
+run or the API contract programs, and also when the base is unknown or
+the diff empty — not for a crate change. A PR runs the `dna`, `face` and
+`cli` jobs only when `dna` is true, and never `parity` or `cross`: a
+compiler PR's checks are `quick`, `codegen` and the sanitizers. The
+merge queue runs the full suite on the merge group before anything
+reaches `main`, and `main`'s own push run is the full suite as well, so
+a DNA or cli failure a compiler change causes stops it in the queue.
+`scripts/ci-scope-test.sh` pins the scope on synthetic diffs.
 
 **CI tests from archives, built once.** `quick-build`, `build-cli` and
 `build-codegen` each compile a family's test binaries and hand them on
