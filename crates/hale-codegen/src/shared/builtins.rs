@@ -1468,7 +1468,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 None,
             );
         }
-        self.module.add_function(
+        let alloc_reusable_fn = self.module.add_function(
             "lotus_arena_alloc_reusable",
             ptr_t.fn_type(
                 &[ptr_t.into(), i64_t2.into(), i64_t2.into()],
@@ -1476,6 +1476,20 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             ),
             None,
         );
+        // A fresh-memory allocator like `lotus_arena_alloc` (see the
+        // arena family's aliasing block): the block it hands back is a
+        // retired one whose owner is dead, or a fresh bump allocation —
+        // malloc's contract. Without `noalias` on the return, LLVM kept
+        // the per-element copy of every returned fixed array (#1518 moved
+        // that copy here) unrolled: a locus with five `[T; 512]` params
+        // emitted 3x the object code (smoke 2026-10-16).
+        {
+            use inkwell::attributes::{Attribute, AttributeLoc};
+            let attr = |n: &str| self.context.create_enum_attribute(Attribute::get_named_enum_kind_id(n), 0);
+            alloc_reusable_fn.add_attribute(AttributeLoc::Return, attr("noalias"));
+            alloc_reusable_fn.add_attribute(AttributeLoc::Function, attr("nounwind"));
+            alloc_reusable_fn.add_attribute(AttributeLoc::Function, attr("willreturn"));
+        }
         // iris P4 — lifecycle observation probes (lotus_obs.c):
         // declare void @lotus_obs_locus_birth(ptr self, ptr type_name, ptr parent)
         // declare void @lotus_obs_locus_dissolve(ptr self, i64 reason)
