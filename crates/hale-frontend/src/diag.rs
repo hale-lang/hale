@@ -58,6 +58,16 @@ pub fn render_located(
     // binding, so no file of the bundle owns it; say that, rather than a
     // position in whichever file happens to be listed first.
     if off >= hale_syntax::api_names::API_SYNTH_BASE {
+        // The stdlib's runtime sources the expansion appends (the api
+        // runtime, the hubs, HTTP/2, gRPC, the TCP substrate) are named
+        // by file and line; the rest is code an `api::serve` site or a
+        // hub binding generated.
+        if let Some((file, src, local)) = hale_types::rpc_expand::runtime_source_at(off) {
+            let before = &src[..local.min(src.len())];
+            let line = before.matches('\n').count() + 1;
+            let col = before.rsplit('\n').next().map_or(0, |l| l.chars().count()) + 1;
+            return format!("{}: {} (in the stdlib's {file}:{line}:{col})", d.kind_str(), d.message);
+        }
         return format!(
             "{}: {} (in the code generated for an `api::serve` site or a hub binding; `hale check --api` shows what it serves)",
             d.kind_str(),
