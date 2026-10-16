@@ -3307,6 +3307,9 @@ row	App@literal1	App	main	default
 row	App@literal1.v	Rows	main	default
 dynamic	Churner	on main	in the seed
 
+== crates/hale-codegen/tests/form_vec_set_retire.rs#457d5edc
+row	Rows@main1	Rows	main	default
+
 == crates/hale-codegen/tests/framework_elision.rs#2459ddbd
 row	Coord@main1	Coord	main	default
 dynamic	Worker	on main	in the seed
