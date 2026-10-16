@@ -4452,11 +4452,47 @@ fn check_placement_single_thread(
                 // the round that adds no taint is the fixpoint's, and its
                 // diagnostics are the walk's (most loci store no handle
                 // into a field, and take one round).
+                // A stdlib or generated locus's body has no place in the program's files:
+                // what its walk finds is a consequence of how the program
+                // built and placed it (a handler from another pool handed to
+                // a `std::http::Server`), so it is reported at the program's
+                // literal that built the instance, naming the stdlib locus,
+                // never at a stdlib offset (which no seed file window holds,
+                // and which rendered as code generated for an `api::serve`).
+                let stdlib_site: Option<hale_syntax::Span> = {
+                    instances.iter().find_map(|k| {
+                        let mut cur: Option<crate::placement::InstanceKey> = Some((*k).clone());
+                        while let Some(key) = cur {
+                            let row = running.row(&key);
+                            if let Some(site) = row.literal.filter(|s| s.universe == crate::placement::SiteUniverse::User) {
+                                return bundle.snapshot.site(site.id).map(|s| s.span);
+                            }
+                            cur = row.built_by.clone().or_else(|| row.owner.clone());
+                        }
+                        None
+                    })
+                };
+                let reanchor = |d: Diag| -> Diag {
+                    // the serve expansion's parse space (the stdlib's
+                    // substrate code and an `api::serve` site's), which no
+                    // seed file holds
+                    if d.span.start.0 < hale_syntax::api_names::API_SYNTH_BASE {
+                        return d;
+                    }
+                    match stdlib_site {
+                        Some(span) => {
+                            let mut d2 = Diag::ty(span, format!("inside `{}`, built here: {}", l.name.name, d.message));
+                            d2.kind = d.kind;
+                            d2
+                        }
+                        None => d.in_stdlib(),
+                    }
+                };
                 loop {
                     let mut found: Vec<Diag> = Vec::new();
                     let after = walk_members(taint.clone(), false, &mut found);
                     if same(&after, &taint) {
-                        diags.extend(found);
+                        diags.extend(found.into_iter().map(&reanchor));
                         break;
                     }
                     taint = after;
