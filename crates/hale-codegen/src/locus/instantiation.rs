@@ -3423,13 +3423,16 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     info.owned_elems_field_idxs.get(fname.as_str()),
                     crate::locus::dissolve::composite_loci(&declared_ty),
                 ) {
-                    let n = children.len();
+                    let n = crate::locus::dissolve::composite_len(&declared_ty);
                     // (an aggregate a call hands back: the parts its owner
-                    // owns, `OwnerTable::aggregate_parts`, GH #1569)
-                    let owned: Vec<bool> = match written.and_then(|w| self.owner_table.aggregate_parts(w)) {
-                        Some(parts) => (0..n).map(|k| parts.get(k).copied().unwrap_or(false)).collect(),
-                        None => vec![true; n],
-                    };
+                    // owns, `OwnerTable::aggregate_part_owned`, GH #1569); only
+                    // a locus part is ever the owner's
+                    let owned: Vec<bool> = (0..n)
+                        .map(|k| {
+                            children.iter().any(|(p, _)| *p as usize == k)
+                                && written.and_then(|w| self.owner_table.aggregate_part_owned(w, k)).unwrap_or(true)
+                        })
+                        .collect();
                     let bitmap = crate::locus::dissolve::owned_elems_bitmap(self.context, &owned);
                     let slot = self
                         .builder
@@ -5847,8 +5850,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             let words = info
                 .fields
                 .get(fname)
-                .and_then(|(_, t)| crate::locus::dissolve::composite_loci(t))
-                .map_or(1, |c| crate::locus::dissolve::owned_elems_words(c.len()));
+                .map_or(1, |(_, t)| crate::locus::dissolve::owned_elems_words(crate::locus::dissolve::composite_len(t)));
             let none = self.context.i64_type().array_type(words).const_zero().into();
             store(self, *idx, none, &format!("{fname}.__owned_elems"))?;
         }

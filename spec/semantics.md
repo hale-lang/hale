@@ -796,6 +796,13 @@ arguments they kept. An argument a part keeps in a field (`H { w: w }`)
 goes with the last part keeping it, so every part that keeps it is torn
 down first. A builder that keeps an argument in a literal nested in the
 locus it returns (`K { a: H { w: w } }`) gives it to that nested holder.
+A tuple's parts of other types (`fn mk2() -> (W, Int) { return (W { },
+1); }`) change none of this: each locus part the fn builds is owned as a
+factory's direct return is, and so is each one a call through a fn value
+hands back, or a fn handing back such a call's result (`fn apply(f: fn()
+-> (W, Int)) -> (W, Int) { return f(); }`). A param holding a tuple with
+a locus part (`t: (W, Int) = (W { }, 5)`) holds it as an array or a
+tuple of loci holds its elements.
 
 **What the field is DECLARED as does not change any of this.**
 A param typed by a *contract* — an `interface` the child

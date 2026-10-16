@@ -3210,3 +3210,34 @@ fn a_fn_value_from_a_call_is_a_fresh_factory() {
         assert!(build_and_run_probe(&src, tag).is_ok_and(|out| out.contains("bye made")), "{tag}:\n{src}");
     }
 }
+
+/// GH #1569: the fresh-factory rule holds wherever a fn's name is read as
+/// a value: a record field's default (`f: fn(W) -> W = id`) escaped it,
+/// since the walk types a default only at a literal that leaves it. And a
+/// fn handing back a tuple or an array of loci is a value only when it
+/// builds every locus part (`fn pass(w: W) -> (W, Int) { return (w, 1);
+/// }` hands one back it was given).
+///
+/// Plain string literals, for the reason given above.
+#[test]
+fn a_fn_value_is_a_fresh_factory_at_every_position() {
+    let lib = "locus W { params { name: String = \"w\"; } }\n\
+               fn id(w: W) -> W { return w; }\n";
+    let field = format!("{lib}type R {{ f: fn(W) -> W = id; n: Int = 1; }}\nfn main() {{ println(1); }}\n");
+    let aggregate = "locus W { params { name: String = \"w\"; } }\n\
+                     fn pass(w: W) -> (W, Int) { return (w, 1); }\n\
+                     fn apply(f: fn(W) -> (W, Int), w: W) -> (W, Int) { return f(w); }\n\
+                     fn main() { let w = W { }; let t = apply(pass, w); }\n";
+    assert_refused_by_the_check(
+        &[
+            (&field, "id", "`id` may hand back a `W` it did not build"),
+            (aggregate, "pass", "`pass` may hand back a `W` it did not build"),
+        ],
+        "unfresh_everywhere",
+    );
+    let built = "locus W { params { name: String = \"w\"; } dissolve() { println(\"bye \", self.name); } }\n\
+                 fn mk2(n: String) -> (W, Int) { return (W { name: n }, 1); }\n\
+                 fn apply(f: fn(String) -> (W, Int), n: String) -> (W, Int) { return f(n); }\n\
+                 fn main() { let t = apply(mk2, \"a\"); println(t.0.name, t.1); }\n";
+    assert_eq!(build_and_run_probe(built, "fresh_aggregate_fn_value"), Ok("a1\nbye a\n".to_string()), "{built}");
+}

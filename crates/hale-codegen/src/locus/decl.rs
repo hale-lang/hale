@@ -1236,9 +1236,9 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
         let mut owned_elems_field_idxs: BTreeMap<String, u32> = BTreeMap::new();
         for (fname, _) in defaults.iter() {
             if let Some((_, ty)) = fields.get(fname) {
-                if let Some(children) = crate::locus::dissolve::composite_loci(ty) {
+                if crate::locus::dissolve::composite_loci(ty).is_some() {
                     owned_elems_field_idxs.insert(fname.clone(), idx);
-                    let words = crate::locus::dissolve::owned_elems_words(children.len());
+                    let words = crate::locus::dissolve::owned_elems_words(crate::locus::dissolve::composite_len(ty));
                     llvm_field_tys.push(self.context.i64_type().array_type(words).into());
                     idx += 1;
                 }

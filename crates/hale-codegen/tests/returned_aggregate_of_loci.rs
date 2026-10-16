@@ -349,3 +349,52 @@ fn main() { over([mkw, mka]); loops(); tuples(); App { }; }
          W.dissolve a\nrun made a\nW.dissolve a\nW.dissolve made\n"
     );
 }
+
+/// GH #1569: a locus the callee builds and hands back inside a tuple
+/// beside parts of other types (`fn mk2() -> (W, Int)`) is owned as a
+/// factory's direct return: by the binding (torn down at the frame's
+/// flush), in a method and in `main` and through a fn value; at the
+/// statement when the result is discarded; by a holder whose param holds
+/// it, and so is one written at the holder's literal (`(W { }, 5)`),
+/// replaced in place when a method writes the whole tuple. It was
+/// nobody's: LeakSanitizer found its arena. Each torn down once,
+/// sanitized.
+#[test]
+fn a_locus_a_callee_builds_inside_a_tuple_is_owned_like_a_factorys() {
+    let src = r#"locus W { params { name: String = "w"; } dissolve() { println(f"W.dissolve {self.name}"); } }
+fn mk2(n: String) -> (W, Int) { return (W { name: n }, 1); }
+fn mkp(n: String) -> (Int, W, W) { return (2, W { name: n }, W { name: f"{n}2" }); }
+locus Hold {
+    params { p: (W, Int) = mk2("held"); t: (W, Int) = (W { name: "lit" }, 5); }
+    fn swap() { self.t = (W { name: "lit2" }, 6); self.t.1 = 7; }
+    dissolve() { println(f"Hold.dissolve {self.p.1} {self.t.1}"); }
+}
+main locus App {
+    params { h: Hold = Hold { }; }
+    run() {
+        let t = mk2("method");
+        let f = mk2;
+        let u = f("value");
+        mk2("dropped");
+        f("dropped2");
+        let q = mkp("three");
+        self.h.swap();
+        println(f"run {t.0.name} {u.0.name} {q.1.name} {q.2.name} {t.1}");
+    }
+}
+fn main() { let t = mk2("main"); println(f"main {t.0.name}"); App { }; }
+"#;
+    let bin = harness::unique_bin("hale_tuple_built_part");
+    let options = hale_codegen::BuildOptions { asan: true, ..build_opts::options() };
+    build_opts::build_source(src, &bin, &options).expect("build");
+    let out = Command::new(&bin).env("LOTUS_NO_CHUNK_POOL", "1").output().expect("run");
+    let _ = std::fs::remove_file(&bin);
+    let (stdout, stderr) = (String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+    assert!(out.status.success() && !stderr.contains("Sanitizer"), "{stdout}\n{stderr}");
+    assert_eq!(
+        stdout,
+        "main main\nW.dissolve dropped\nW.dissolve dropped2\nW.dissolve lit\n\
+         run method value three three2 1\nW.dissolve three2\nW.dissolve three\nW.dissolve value\nW.dissolve method\n\
+         Hold.dissolve 1 7\nW.dissolve held\nW.dissolve lit2\nW.dissolve main\n"
+    );
+}

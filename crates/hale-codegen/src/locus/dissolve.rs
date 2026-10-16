@@ -1446,22 +1446,35 @@ impl<'ctx, 'p> LocusDissolve<'ctx> for Cx<'ctx, 'p> {
 }
 
 /// GH #1566 follow-up: the loci an array or a tuple of loci holds, by
-/// element: `(position, locus)`. `None` for any other type.
+/// element: `(position, locus)`. GH #1569: a tuple's locus parts, beside
+/// parts of other types (`(W, Int)`). `None` for a type holding none.
 pub(crate) fn composite_loci(ty: &CodegenTy) -> Option<Vec<(u32, String)>> {
     match ty {
         CodegenTy::Array(elem, n) => match elem.as_ref() {
             CodegenTy::LocusRef(l) => Some((0..*n as u32).map(|k| (k, l.clone())).collect()),
             _ => None,
         },
-        CodegenTy::Tuple(ts) if !ts.is_empty() => ts
-            .iter()
-            .enumerate()
-            .map(|(k, t)| match t {
-                CodegenTy::LocusRef(l) => Some((k as u32, l.clone())),
-                _ => None,
-            })
-            .collect(),
+        CodegenTy::Tuple(ts) => {
+            let parts: Vec<(u32, String)> = ts
+                .iter()
+                .enumerate()
+                .filter_map(|(k, t)| match t {
+                    CodegenTy::LocusRef(l) => Some((k as u32, l.clone())),
+                    _ => None,
+                })
+                .collect();
+            (!parts.is_empty()).then_some(parts)
+        }
         _ => None,
+    }
+}
+
+/// GH #1569: the elements of an array or a tuple, of any type.
+pub(crate) fn composite_len(ty: &CodegenTy) -> usize {
+    match ty {
+        CodegenTy::Array(_, n) => *n as usize,
+        CodegenTy::Tuple(ts) => ts.len(),
+        _ => 0,
     }
 }
 

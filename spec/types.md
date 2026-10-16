@@ -1537,6 +1537,13 @@ factory call is: by the binding it is bound to, by the field or the
 caller it is handed to, else by the frame, and a discarded one at the
 statement.
 
+A fn handing back a tuple or an array with locus parts is a value
+under the same rule: only when it builds every locus part it returns
+(`fn mk2() -> (W, Int) { return (W { }, 1); }`), or hands back what a
+fn value it was handed builds. The rule holds wherever a fn's name is
+read as a value, a record field's default included (`type R { f: fn(W)
+-> W = id; }` is refused at `id`).
+
 A `std::` fn is a value when the stdlib writes it in Hale: its body is
 merged into the program under its rename, so `apply(std::url::encode,
 s)` passes that fn as `apply(dbl, 1)` passes `dbl`, typed by its

@@ -1312,6 +1312,7 @@ crates/hale-codegen/tests/restart_in_place_params.rs#1 99ff75aafe86ddb1
 crates/hale-codegen/tests/returned_aggregate_of_loci.rs#16 188855bbdbf4adfc
 crates/hale-codegen/tests/returned_aggregate_of_loci.rs#17 e087de85d85bebc2
 crates/hale-codegen/tests/returned_aggregate_of_loci.rs#19 e6362c9e4a4aa104
+crates/hale-codegen/tests/returned_aggregate_of_loci.rs#20 b4ef24f49c19638d
 crates/hale-codegen/tests/returned_aggregate_of_loci.rs#6 85100876b7e9764c
 crates/hale-codegen/tests/self_containing_locus.rs#2 b9b48c565ea0f322
 crates/hale-codegen/tests/self_containing_locus.rs#3 e5e2c21efda8f602

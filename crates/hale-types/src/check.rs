@@ -756,6 +756,17 @@ fn typed_body_laws(
 /// to build ("unknown identifier"). Refused at the send, for every default
 /// a program writes: a locus's param defaults, a record type's field
 /// defaults, and a fn's, method's or hook's param defaults.
+/// GH #1566 follow-up: a fn that may hand back a locus it did not build,
+/// read as a value.
+fn unfresh_fn_value_message(shown: &str, l: &str) -> String {
+    format!(
+        "`{shown}` may hand back a `{l}` it did not build (one it was given, or one another \
+         binding keeps), and a call through a fn value hands its caller a fresh `{l}` to own: \
+         only a fn that builds every `{l}` it returns may be taken as a value. Pass a fn that \
+         builds one, or call `{shown}` directly"
+    )
+}
+
 fn publish_in_default_diags(bundle: &Bundle<'_>) -> Vec<Diag> {
     use crate::listener_window::{visit_expr, Visited};
     fn sends(e: &Expr, out: &mut Vec<Diag>) {
@@ -1064,6 +1075,29 @@ pub fn walk_bundle_by_declaration(
         for program in &programs {
             for decl in hale_syntax::ast::flat_decls(&program.items) {
                 let TopDecl::Fn(f) = decl else { continue };
+                // GH #1569: a fn handing back a tuple or an array of loci
+                // builds every locus part, or hands back one it was given
+                let locus_named = |t: &TypeExpr| match t {
+                    TypeExpr::Named { path, .. } => {
+                        path.segments.last().is_some_and(|s| locus_decls.contains_key(&s.name))
+                    }
+                    _ => false,
+                };
+                if matches!(f.ret, Some(TypeExpr::Tuple(..) | TypeExpr::Array { .. }))
+                    && !crate::ownership::aggregate_builds_its_loci(f, &locus_named)
+                {
+                    let l = match &f.ret {
+                        Some(TypeExpr::Tuple(ts, _)) => ts.iter().find(|t| locus_named(t)),
+                        Some(TypeExpr::Array { elem, .. }) => Some(elem.as_ref()),
+                        _ => None,
+                    };
+                    if let Some(TypeExpr::Named { path, .. }) = l {
+                        if let Some(s) = path.segments.last() {
+                            unfresh_builders.insert(f.name.name.clone(), s.name.clone());
+                        }
+                    }
+                    continue;
+                }
                 let Some(TypeExpr::Named { path, .. }) = &f.ret else { continue };
                 let Some(l) = path.segments.last().map(|s| s.name.clone()) else { continue };
                 if !locus_decls.contains_key(&l) {
@@ -1171,6 +1205,8 @@ pub fn walk_bundle_by_declaration(
     // diagnostic the check has, a template's own included.
     cx.settle_param_accesses(0);
     debug_assert!(cx.access_visits.is_empty(), "every kept access is settled");
+    let programs: Vec<&Program> = bundle.programs.values().copied().collect();
+    cx.refuse_unfresh_fn_values_everywhere(&programs, &bundle.snapshot);
     typed.mono_shapes = std::sync::Arc::new(mono_shapes(&typed.monomorphs, &templates, known));
     // Each declaration's table, not a copy of its rows.
     typed.views = by_decl
@@ -15315,15 +15351,7 @@ impl<'a> Checker<'a> {
         // instance it did not build (one it was given) is no such value
         let last = shown.rsplit("::").next().unwrap_or(shown);
         if let Some(l) = self.unfresh_builders.get(shown).or_else(|| self.unfresh_builders.get(last)) {
-            self.diags.push(Diag::ty(
-                span,
-                format!(
-                    "`{shown}` may hand back a `{l}` it did not build (one it was given, or one another \
-                     binding keeps), and a call through a fn value hands its caller a fresh `{l}` to own: \
-                     only a fn that builds every `{l}` it returns may be taken as a value. Pass a fn that \
-                     builds one, or call `{shown}` directly"
-                ),
-            ));
+            self.diags.push(Diag::ty(span, unfresh_fn_value_message(shown, l)));
             return ty;
         }
         let Some(err) = &sig.fallible else { return ty };
@@ -15622,6 +15650,47 @@ impl<'a> Checker<'a> {
                     ));
                 }
             }
+        }
+    }
+
+    /// GH #1569: a fn's name read as a value anywhere the programs write
+    /// an expression — a type's field default, a const, a params default,
+    /// a body — is held to `fn_value`'s rule. The walk types a default
+    /// only at a literal that leaves it, so a name there escaped it.
+    fn refuse_unfresh_fn_values_everywhere(&mut self, programs: &[&'a Program], ids: &crate::snapshot::Snapshot) {
+        if self.unfresh_builders.is_empty() {
+            return;
+        }
+        let mut callees: BTreeSet<*const Expr> = BTreeSet::new();
+        let mut values: Vec<&'a Expr> = Vec::new();
+        {
+            let mut walk = crate::lowering_laws::literals(|e: &'a Expr, _| match e {
+                Expr::Call { callee, .. } => {
+                    callees.insert(callee.as_ref() as *const Expr);
+                }
+                Expr::Ident(_) | Expr::Path(_) => values.push(e),
+                _ => {}
+            });
+            for p in programs {
+                walk.items(&p.items);
+            }
+        }
+        for e in values {
+            if callees.contains(&(e as *const Expr)) {
+                continue;
+            }
+            let (shown, span) = match e {
+                // a local binding's name is no fn's
+                Expr::Ident(i) if ids.declaration_of(i.id).is_none() => (i.name.clone(), i.span),
+                Expr::Path(q) => (q.segments.iter().map(|s| s.name.as_str()).collect::<Vec<_>>().join("::"), q.span),
+                _ => continue,
+            };
+            let last = shown.rsplit("::").next().unwrap_or(&shown).to_string();
+            let Some(l) = self.unfresh_builders.get(&shown).or_else(|| self.unfresh_builders.get(&last)).cloned() else { continue };
+            if self.diags.iter().any(|d| d.span == span) {
+                continue;
+            }
+            self.diags.push(Diag::ty(span, unfresh_fn_value_message(&shown, &l)));
         }
     }
 

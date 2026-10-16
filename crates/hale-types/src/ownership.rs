@@ -345,6 +345,10 @@ pub struct OwnerTable {
     /// children; a binding or the frame: reclaimed with the frame). A part
     /// handed in as an argument the frame already owns is the frame's.
     aggregates: BTreeMap<ExprId, Vec<bool>>,
+    /// GH #1569: the calls through a fn value the table decided (only a
+    /// fresh factory may be one): when it hands back a tuple or an array,
+    /// every locus part of it is the call's owner's.
+    fn_value_calls: BTreeSet<ExprId>,
     /// GH #1569: an argument a literal part of that aggregate keeps (and
     /// no part is itself): by the call, (part, field) — the last part
     /// keeping it, torn down after every other part that keeps it reads
@@ -412,8 +416,21 @@ impl OwnerTable {
         self.id_of(call).and_then(|id| self.aggregate_kept.get(&id)).map_or(&[], |v| v.as_slice())
     }
 
-    pub fn aggregate_parts(&self, call: &Expr) -> Option<&[bool]> {
-        self.id_of(call).and_then(|id| self.aggregates.get(&id)).map(|v| v.as_slice())
+    /// Whether the owner of the aggregate `call` hands back owns its part
+    /// `k` (`OwnerTable::aggregates`; a call through a fn value owns every
+    /// locus part); `None` for a call the table decided no parts of.
+    pub fn aggregate_part_owned(&self, call: &Expr, k: usize) -> Option<bool> {
+        let id = self.id_of(call)?;
+        if let Some(m) = self.aggregates.get(&id) {
+            return Some(m.get(k).copied().unwrap_or(false));
+        }
+        self.fn_value_calls.contains(&id).then_some(true)
+    }
+
+    /// Whether the table decided the parts of the aggregate `call` may
+    /// hand back (a call through a fn value may return one).
+    pub fn is_aggregate_call(&self, call: &Expr) -> bool {
+        self.id_of(call).is_some_and(|id| self.aggregates.contains_key(&id) || self.fn_value_calls.contains(&id))
     }
 
     pub fn kept_fields(&self, call: &Expr) -> &[String] {
@@ -506,8 +523,9 @@ impl OwnerTable {
                 return_arms(e, &mut arms);
                 arms.first().and_then(|a| self.leaf_entry_of(a))
             }
+            // (a tuple's first part with a row: `(W { }, 1)`, GH #1569)
             Expr::Array(parts, _) | Expr::Tuple(parts, _) => {
-                parts.first().and_then(|p| self.leaf_entry_of(p))
+                parts.iter().find_map(|p| self.leaf_entry_of(p))
             }
             _ => None,
         }
@@ -1787,6 +1805,7 @@ pub fn resolve_owners(
             passes: BTreeMap::new(),
             kept: BTreeMap::new(),
             aggregates: BTreeMap::new(),
+            fn_value_calls: BTreeSet::new(),
             aggregate_kept: BTreeMap::new(),
         },
         next_slot: 0,
@@ -1978,7 +1997,9 @@ fn param_field_kind(
         match t {
             TypeExpr::Named { path, generic_args, .. } => generic_args.is_empty() && is_locus(path),
             TypeExpr::Array { elem, .. } => of_loci(elem, is_locus),
-            TypeExpr::Tuple(ts, _) => !ts.is_empty() && ts.iter().all(|t| of_loci(t, is_locus)),
+            // GH #1569: a tuple with a locus part holds it, beside parts
+            // of other types (`(W, Int)`)
+            TypeExpr::Tuple(ts, _) => ts.iter().any(|t| matches!(t, TypeExpr::Named { path, generic_args, .. } if generic_args.is_empty() && is_locus(path))),
             _ => false,
         }
     }
@@ -2016,10 +2037,13 @@ fn param_field_kind(
         }
         // an array or a tuple of locus literals: typed by them, as a
         // declared one (codegen's `default_literal_type`)
-        ParamInit::Value(Expr::Array(parts, _) | Expr::Tuple(parts, _))
+        ParamInit::Value(Expr::Array(parts, _))
             if !parts.is_empty()
                 && parts.iter().all(|p| matches!(p, Expr::Struct { path, .. } if is_locus(path))) =>
         {
+            FieldKind::Holder
+        }
+        ParamInit::Value(Expr::Tuple(parts, _)) if parts.iter().any(|p| matches!(p, Expr::Struct { path, .. } if is_locus(path))) => {
             FieldKind::Holder
         }
         _ => FieldKind::Value,
@@ -2094,6 +2118,19 @@ struct ParamFlow {
     /// (part, parameter, field), the parameter named nowhere but inside
     /// the returned aggregate.
     part_holds: Vec<(usize, usize, String)>,
+    /// GH #1569: it hands back, from every `return`, what one call hands
+    /// back: a call through a parameter holding a fn value (every locus
+    /// part of an aggregate one returns is fresh: only a fresh factory may
+    /// be a fn value), or a call of the fn named (whose parts it passes on).
+    returns_call_of: Option<CallOf>,
+}
+
+/// What a fn hands back by handing back a call's result
+/// (`ParamFlow::returns_call_of`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum CallOf {
+    FnParam,
+    Fn(String),
 }
 
 /// A part of an aggregate a fn hands back (`ParamFlow::parts`).
@@ -2104,7 +2141,53 @@ pub enum PartFlow {
     /// The parameter at this position, named nowhere but inside the
     /// returned aggregate.
     Param(usize),
+    /// GH #1569: a value that is no locus whatever its type (a literal,
+    /// arithmetic, a range): the part the table decides nothing for.
+    Value,
     Other,
+}
+
+/// GH #1569: an expression whose value is no locus whatever its type: a
+/// literal, arithmetic, a reduction, a range.
+fn is_plain_value(e: &Expr) -> bool {
+    matches!(
+        e,
+        Expr::Literal(..)
+            | Expr::Binary { .. }
+            | Expr::Unary { .. }
+            | Expr::Sum(..)
+            | Expr::Prod(..)
+            | Expr::Approx { .. }
+            | Expr::Range { .. }
+    )
+}
+
+/// GH #1569: whether `f`, declared to return a tuple or an array holding
+/// loci, builds every locus part of every aggregate it returns: one
+/// returned literal whose locus parts (`is_locus` on each part's declared
+/// type) are each a literal it builds there. A fn value hands its caller
+/// what it returns to own, so only such a fn may be taken as one.
+pub fn aggregate_builds_its_loci(f: &FnDecl, is_locus: &dyn Fn(&TypeExpr) -> bool) -> bool {
+    let positions: Vec<bool> = match &f.ret {
+        Some(TypeExpr::Tuple(ts, _)) => ts.iter().map(is_locus).collect(),
+        Some(TypeExpr::Array { elem, .. }) if is_locus(elem) => {
+            let flow = param_flow(f);
+            return (flow.parts.is_none() && flow.returns_call_of == Some(CallOf::FnParam))
+                || flow.parts.is_some_and(|ps| ps.iter().all(|p| *p == PartFlow::Fresh));
+        }
+        _ => return true,
+    };
+    if !positions.iter().any(|b| *b) {
+        return true;
+    }
+    let flow = param_flow(f);
+    // what a fn value it was handed builds
+    if flow.parts.is_none() && flow.returns_call_of == Some(CallOf::FnParam) {
+        return true;
+    }
+    flow.parts.is_some_and(|ps| {
+        ps.len() == positions.len() && ps.iter().zip(&positions).all(|(p, l)| !*l || *p == PartFlow::Fresh)
+    })
 }
 
 /// The free fns declared to return a fn value (`fn pick() -> fn() -> W`),
@@ -2135,7 +2218,7 @@ fn param_flows(items: &[TopDecl]) -> BTreeMap<String, ParamFlow> {
             match item {
                 TopDecl::Fn(f) => {
                     let flow = param_flow(f);
-                    if flow.returns.is_some() || !flow.holds.is_empty() || flow.parts.is_some() {
+                    if flow.returns.is_some() || !flow.holds.is_empty() || flow.parts.is_some() || flow.returns_call_of.is_some() {
                         out.insert(f.name.name.clone(), flow);
                     }
                 }
@@ -2200,6 +2283,27 @@ fn param_flow(f: &FnDecl) -> ParamFlow {
             flow.returns = Some(*k);
         }
     }
+    // every return one call's result: a call through a fn-typed
+    // parameter, or of one fn (GH #1569)
+    let call_of = |r: &Expr| -> Option<CallOf> {
+        let Expr::Call { callee, .. } = r else { return None };
+        let Expr::Ident(i) = callee.as_ref() else { return None };
+        match f.params.iter().find(|p| p.name.name == i.name) {
+            // (one whose fn type may return a locus or an aggregate)
+            Some(p) => matches!(
+                &p.ty,
+                TypeExpr::Function { ret: Some(r), .. }
+                    if matches!(r.as_ref(), TypeExpr::Named { .. } | TypeExpr::Tuple(..) | TypeExpr::Array { .. })
+            )
+            .then_some(CallOf::FnParam),
+            None => Some(CallOf::Fn(i.name.clone())),
+        }
+    };
+    if let Some(first) = rets.first().and_then(|r| call_of(r)) {
+        if rets.iter().all(|r| call_of(r).as_ref() == Some(&first)) {
+            flow.returns_call_of = Some(first);
+        }
+    }
     // one returned tuple or array literal: each part
     if let [agg @ (Expr::Tuple(xs, _) | Expr::Array(xs, _))] = rets.as_slice() {
         let parts: Vec<PartFlow> = xs
@@ -2210,10 +2314,11 @@ fn param_flow(f: &FnDecl) -> ParamFlow {
                     Some(k) if expr_name_uses(agg, &i.name) == named(&i.name) => PartFlow::Param(k),
                     _ => PartFlow::Other,
                 },
+                x if is_plain_value(x) => PartFlow::Value,
                 _ => PartFlow::Other,
             })
             .collect();
-        if !parts.is_empty() && parts.iter().all(|p| *p != PartFlow::Other) {
+        if parts.iter().any(|p| matches!(p, PartFlow::Fresh | PartFlow::Param(_))) && parts.iter().all(|p| *p != PartFlow::Other) {
             flow.parts = Some(parts);
             for (k, x) in xs.iter().enumerate() {
                 let Expr::Struct { inits, .. } = x else { continue };
@@ -3476,8 +3581,42 @@ impl Resolver<'_> {
     /// The parts of the aggregate a call hands back (`ParamFlow::parts`).
     fn aggregate_flow(&self, e: &Expr) -> Option<Vec<PartFlow>> {
         let Expr::Call { callee, .. } = e else { return None };
-        let n = callee_fn_name(callee, &self.renames)?;
-        self.flows.get(&n).and_then(|f| f.parts.clone())
+        let mut n = callee_fn_name(callee, &self.renames)?;
+        // (through fns that hand back another fn's call, GH #1569)
+        for _ in 0..16 {
+            let f = self.flows.get(&n)?;
+            if let Some(parts) = &f.parts {
+                return Some(parts.clone());
+            }
+            match &f.returns_call_of {
+                Some(CallOf::Fn(m)) => n = m.clone(),
+                _ => return None,
+            }
+        }
+        None
+    }
+
+    /// GH #1569: whether every locus part of the aggregate the call `e`
+    /// may hand back is fresh: a call through a fn value, or of a fn
+    /// handing back one (through fns that hand back another fn's call).
+    fn aggregate_all_fresh(&self, e: &Expr) -> bool {
+        if self.is_fn_value_call(e) {
+            return true;
+        }
+        let Expr::Call { callee, .. } = e else { return false };
+        let Some(mut n) = callee_fn_name(callee, &self.renames) else { return false };
+        for _ in 0..16 {
+            let Some(f) = self.flows.get(&n) else { return false };
+            if f.parts.is_some() {
+                return false;
+            }
+            match &f.returns_call_of {
+                Some(CallOf::FnParam) => return true,
+                Some(CallOf::Fn(m)) => n = m.clone(),
+                None => return false,
+            }
+        }
+        false
     }
 
     /// The position of the argument a call hands back unchanged
@@ -3499,6 +3638,13 @@ impl Resolver<'_> {
         self.flows.get(&n).map(|f| f.holds.clone()).unwrap_or_default()
     }
 
+    /// GH #1569: a call through a binding holding a fn value.
+    fn is_fn_value_call(&self, e: &Expr) -> bool {
+        let Expr::Call { callee, .. } = e else { return false };
+        let Expr::Ident(i) = callee.as_ref() else { return false };
+        self.fn_vals.contains_key(&i.name) || (self.ids.declaration_of(i.id).is_some() && !self.fn_nonlocus.contains(&i.name))
+    }
+
     fn fresh_call_locus(&self, e: &Expr) -> Option<String> {
         let Expr::Call { callee, .. } = e else { return None };
         if let Expr::Ident(i) = callee.as_ref() {
@@ -3516,7 +3662,11 @@ impl Resolver<'_> {
             }
         }
         let n = callee_fn_name(callee, &self.renames)?;
-        self.fresh.get(&n).cloned()
+        if let Some(l) = self.fresh.get(&n) {
+            return Some(l.clone());
+        }
+        // GH #1569: one handing back what a fn value it was handed builds
+        self.aggregate_all_fresh(e).then(|| n.clone())
     }
 
     /// Is this expression one the table hands an owner to?
@@ -3547,9 +3697,15 @@ impl Resolver<'_> {
                 !arms.is_empty()
                     && arms.iter().all(|a| self.is_locus_producing(a))
             }
-            Expr::Array(parts, _) | Expr::Tuple(parts, _) => {
+            Expr::Array(parts, _) => {
                 !parts.is_empty()
                     && parts.iter().all(|p| self.is_locus_producing(p))
+            }
+            // GH #1569: a tuple's parts of other types are plain values
+            // (`(W { }, 5)`)
+            Expr::Tuple(parts, _) => {
+                parts.iter().any(|p| self.is_locus_producing(p))
+                    && parts.iter().all(|p| self.is_locus_producing(p) || is_plain_value(p))
             }
             _ => false,
         }
@@ -3633,6 +3789,9 @@ impl Resolver<'_> {
                 let span = e.span();
                 if let Some(lname) = lname {
                     let id = self.minted_id(e);
+                    if self.aggregate_all_fresh(e) && !matches!(d, Decision::Caller) {
+                        self.table.fn_value_calls.insert(id);
+                    }
                     let owner = self.owner_from(&d);
                     self.record(
                         id,
@@ -3671,7 +3830,7 @@ impl Resolver<'_> {
                         .map(|p| match p {
                             PartFlow::Fresh => true,
                             PartFlow::Param(k) => holds_parts && args.get(*k).is_some_and(|a| self.is_locus_producing(a)),
-                            PartFlow::Other => false,
+                            PartFlow::Value | PartFlow::Other => false,
                         })
                         .collect();
                     if !matches!(d, Decision::Caller) && mask.iter().any(|b| *b) {

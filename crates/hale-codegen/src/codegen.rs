@@ -5999,6 +5999,20 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         self.callee_fn_name(callee).and_then(|f| self.fresh_locus_factories.get(&f).cloned()).map(|(l, _)| l)
     }
 
+    /// GH #1569: the type a call's callee returns: a fn value's, through
+    /// the binding holding it, or a program fn's.
+    pub(crate) fn call_returned_ty(&self, callee: &Expr, scope: &Scope<'ctx>) -> Option<CodegenTy> {
+        if let Expr::Ident(i) = callee {
+            if let Some((_, ty)) = scope.locals.get(&i.name) {
+                return match ty {
+                    CodegenTy::FnPtr { ret: Some(r), .. } => Some(r.as_ref().clone()),
+                    _ => None,
+                };
+            }
+        }
+        self.callee_fn_name(callee).and_then(|f| self.user_fns.get(&f)).and_then(|sig| sig.ret.clone())
+    }
+
     pub(crate) fn callee_fn_name(&self, callee: &Expr) -> Option<String> {
         fn segs(e: &Expr, out: &mut Vec<String>) -> bool {
             match e {
@@ -17634,7 +17648,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // GH #1569: a discarded call handing back an aggregate of loci
             // its frame owns: through `lower_expr`, which reclaims them at
             // the statement
-            Stmt::Expr(call @ Expr::Call { .. }) if self.owner_table.aggregate_parts(call).is_some() => {
+            Stmt::Expr(call @ Expr::Call { callee, .. })
+                if self.owner_table.is_aggregate_call(call)
+                    && self.call_returned_ty(callee, scope).is_some_and(|t| crate::locus::dissolve::composite_loci(&t).is_some()) =>
+            {
                 let mark = self.deferred_dissolves.last().map_or(0, |f| f.len());
                 self.aggregate_discarded = true;
                 let res = self.lower_expr(call, scope);
@@ -18257,14 +18274,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 Ok(BlockEnd::Open)
             }
             Stmt::Assign { target, op, value, id: assign_id, .. } => {
-                // GH #1566 follow-up, GH #1569: a store into an array or
-                // a tuple of loci a locus holds keeps its owned-elements
-                // word: a literal written in is the holder's new child
-                // (WS1#4's reassign per element), and an element it owned
-                // is reclaimed once the field no longer holds it
-                if let Some(end) = self.lower_composite_store(target, op, value, scope)? {
-                    return Ok(end);
-                }
                 // A literal spelled with a generic template's name takes
                 // its arguments from the place's declared type, as at a
                 // `let` ascription: `self.cfg = Cfg { n: 2 }` with `cfg:
@@ -18281,6 +18290,15 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     }
                     None => value,
                 };
+                // GH #1566 follow-up, GH #1569: a store into an array or
+                // a tuple of loci a locus holds keeps its owned-elements
+                // word: a literal written in is the holder's new child
+                // (WS1#4's reassign per element), and an element it owned
+                // is reclaimed once the field no longer holds it (the
+                // literal spelled with a template's name already realized)
+                if let Some(end) = self.lower_composite_store(target, op, value, scope)? {
+                    return Ok(end);
+                }
                 // A write into a local whose part another name may still
                 // reach — a nested part of a form cell's read, or the
                 // whole of a local bound from a place — copies that part
@@ -24136,7 +24154,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let reentry = std::mem::replace(&mut self.in_fresh_temp_hook, false);
         // GH #1569: a call handing back a tuple or an array of loci that a
         // binding or the frame holds: the parts its owner owns
-        // (`OwnerTable::aggregate_parts`) are this frame's, each torn down
+        // (`OwnerTable::aggregate_part_owned`) are this frame's, each torn down
         // at its flush. In a loop each part's slot is minted before the
         // call runs and its previous occupant torn down there, before the
         // arguments are built again (a part may hold one). A field holding
@@ -24149,13 +24167,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     self.owner_table.entry_of(e).map(|x| &x.owner),
                     Some(crate::ownership::Owner::Binding(_) | crate::ownership::Owner::FrameTemp(_))
                 );
-                let ret = self.callee_fn_name(callee).and_then(|f| self.user_fns.get(&f)).and_then(|sig| sig.ret.clone());
-                let parts = self.owner_table.aggregate_parts(e).map(|p| p.to_vec());
-                if let (true, Some(parts), Some(ret_ty)) = (frame_owned, parts, ret) {
+                let ret = self.call_returned_ty(callee, scope).filter(|t| crate::locus::dissolve::composite_loci(t).is_some());
+                if let (true, true, Some(ret_ty)) = (frame_owned, self.owner_table.is_aggregate_call(e), ret) {
                     let children: Vec<(u32, String)> = crate::locus::dissolve::composite_loci(&ret_ty)
                         .unwrap_or_default()
                         .into_iter()
-                        .filter(|(k, l)| parts.get(*k as usize).copied().unwrap_or(false) && self.user_loci.contains_key(l))
+                        .filter(|(k, l)| self.owner_table.aggregate_part_owned(e, *k as usize).unwrap_or(false) && self.user_loci.contains_key(l))
                         .collect();
                     let mut slots = Vec::new();
                     for (k, l) in &children {
@@ -35365,15 +35382,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             (None, Expr::Array(es, _) | Expr::Tuple(es, _)) => es.iter().collect(),
             (None, _) => Vec::new(),
         };
-        for x in &elements {
-            if let Expr::Struct { path, .. } = x {
-                if self.struct_literal_locus(path).is_none() {
-                    return Ok(None);
-                }
-            }
-        }
         let Some(cf) = self.composite_field_of(&target.head, prefix, f, scope)? else { return Ok(None) };
-        let n = cf.children.len();
+        let n = crate::locus::dissolve::composite_len(&cf.ty);
         let foreign = self.current_self.as_ref().map(|c| c.self_ptr) != Some(cf.holder);
         let reads_self = elements.iter().any(|x| match x {
             Expr::Struct { inits, .. } => inits.iter().any(|i| Self::expr_reads_self(&i.value)),
@@ -35397,19 +35407,25 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let ptr_t = self.context.ptr_type(AddressSpace::default());
         let i64_t = self.context.i64_type();
         let tuple = matches!(cf.ty, CodegenTy::Tuple(_));
-        // the value, before anything is written: (pointer, built here)
-        let lower_element = |cx_self: &mut Self, x: &Expr, el_locus: &str| -> Result<(PointerValue<'ctx>, bool), CodegenError> {
-            match x {
-                Expr::Struct { path, inits, .. } => {
-                    let name = cx_self.struct_literal_locus(path).expect("checked above");
-                    Ok((cx_self.build_owned_field_child(&cx, el_locus, &name, inits, scope)?, true))
+        // the value, before anything is written: (value, built here); a
+        // locus literal at a locus element is built as the holder's child
+        let lower_element = |cx_self: &mut Self, x: &Expr, el_locus: Option<&str>| -> Result<(BasicValueEnum<'ctx>, bool), CodegenError> {
+            match (x, el_locus) {
+                (Expr::Struct { path, inits, .. }, Some(el_locus)) => {
+                    let name = cx_self.struct_literal_locus(path).ok_or_else(|| {
+                        let segs: Vec<&str> = path.segments.iter().map(|s| s.name.as_str()).collect();
+                        CodegenError::Unsupported(format!("`{}` is not a locus the element can hold", segs.join("::")))
+                    })?;
+                    Ok((cx_self.build_owned_field_child(&cx, el_locus, &name, inits, scope)?.into(), true))
                 }
                 _ => {
                     let (v, _) = cx_self.lower_expr(x, scope)?;
-                    Ok((v.into_pointer_value(), false))
+                    Ok((v, false))
                 }
             }
         };
+        // the locus a position holds, when it holds one
+        let locus_at = |k: u64| cf.children.iter().find(|(p, _)| *p as u64 == k).map(|(_, l)| l.clone());
         let mask_ptr = self.builder.build_struct_gep(cf.info.struct_ty, cf.holder, cf.info.locus_ref_owned_mask_field_idx, "composite.mask.ptr").map_err(e)?;
         let elems_ptr = self.builder.build_struct_gep(cf.info.struct_ty, cf.holder, cf.elems_idx, "composite.elems.ptr").map_err(e)?;
         let field_slot = self.builder.build_struct_gep(cf.info.struct_ty, cf.holder, cf.field_idx, "composite.slot").map_err(e)?;
@@ -35427,8 +35443,17 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 }
                 Err(k) => (i64_t.const_int(k, false), tuple.then_some(k)),
             };
+            // a tuple's part of another type: a plain store
+            if let Some(kk) = part.filter(|kk| locus_at(*kk).is_none()) {
+                let (v, _) = lower_element(self, value, None)?;
+                let storage = self.builder.build_load(ptr_t, field_slot, "composite.storage").map_err(e)?.into_pointer_value();
+                let slot = self.composite_element_slot(&cf, storage, k, Some(kk))?;
+                self.builder.build_store(slot, v).map_err(e)?;
+                return Ok(Some(BlockEnd::Open));
+            }
             let el_locus = Self::composite_element_locus(&cf, part);
-            let (new, built) = lower_element(self, value, &el_locus)?;
+            let (new, built) = lower_element(self, value, Some(&el_locus))?;
+            let new = new.into_pointer_value();
             let mask = self.builder.build_load(i64_t, mask_ptr, "composite.mask").map_err(e)?.into_int_value();
             let field_owned = {
                 let b = self.builder.build_and(mask, fbit, "composite.field").map_err(e)?;
@@ -35484,12 +35509,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let parts: Vec<Option<u64>> = (0..n as u64).map(|k| tuple.then_some(k)).collect();
         // the whole field: every new element, before anything is written
         let literal = elements.len() == n;
-        let mut news: Vec<(PointerValue<'ctx>, bool)> = Vec::new();
+        let mut news: Vec<(BasicValueEnum<'ctx>, bool)> = Vec::new();
         let mut from: Option<PointerValue<'ctx>> = None;
         if literal {
             for (k, x) in elements.iter().enumerate() {
-                let el_locus = Self::composite_element_locus(&cf, parts[k]);
-                news.push(lower_element(self, x, &el_locus)?);
+                let el_locus = locus_at(k as u64);
+                news.push(lower_element(self, x, el_locus.as_deref())?);
             }
         } else {
             let (v, _) = self.lower_expr(value, scope)?;
@@ -35508,7 +35533,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             _ => i64_t.const_int(8 * n as u64, false),
         };
         // the elements as they were, while the holder owned them
-        let snap = self.alloca_in_entry(ptr_t.array_type(n as u32).into(), "composite.old")?;
+        let snap_ty: inkwell::types::BasicTypeEnum<'ctx> = match &cf.ty {
+            CodegenTy::Tuple(ts) => self.llvm_tuple_storage_type(ts).into(),
+            _ => ptr_t.array_type(n as u32).into(),
+        };
+        let snap = self.alloca_in_entry(snap_ty, "composite.old")?;
         // the storage written: the holder's own while it holds the field;
         // fresh storage in its arena when the field held another's
         let func = self.current_fn.ok_or_else(|| CodegenError::Unsupported("a field store outside a function".to_string()))?;
@@ -35517,7 +35546,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let join_bb = self.context.append_basic_block(func, "composite.storage.join");
         self.builder.build_conditional_branch(keep_storage, own_bb, fresh_bb).map_err(e)?;
         self.builder.position_at_end(own_bb);
-        self.builder.build_memmove(snap, 8, storage, 8, i64_t.const_int(8 * n as u64, false)).map_err(e)?;
+        self.builder.build_memmove(snap, 8, storage, 8, size).map_err(e)?;
         self.builder.build_unconditional_branch(join_bb).map_err(e)?;
         self.builder.position_at_end(fresh_bb);
         let arena_slot = self.builder.build_struct_gep(cf.info.struct_ty, cf.holder, cf.info.arena_field_idx, "composite.arena.ptr").map_err(e)?;
@@ -35580,30 +35609,32 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 .map_err(e)?;
             return Ok(Some(BlockEnd::Open));
         }
-        // a tuple: its parts' loci differ, so the same, part by part
-        let mut olds: Vec<(PointerValue<'ctx>, inkwell::values::IntValue<'ctx>)> = Vec::new();
-        let mut nows: Vec<PointerValue<'ctx>> = Vec::new();
+        // a tuple: its parts' loci differ, so the same, part by part, for
+        // its locus parts
+        let locus_parts: Vec<u64> = cf.children.iter().map(|(p, _)| *p as u64).collect();
+        let mut olds: Vec<(u64, PointerValue<'ctx>, inkwell::values::IntValue<'ctx>)> = Vec::new();
+        let mut nows: Vec<(u64, PointerValue<'ctx>)> = Vec::new();
         let word = self.builder.build_load(i64_t, elems_ptr, "composite.word").map_err(e)?.into_int_value();
-        for (k, part) in parts.iter().enumerate() {
-            let s = self.composite_element_slot(&cf, snap, i64_t.const_int(k as u64, false), None)?;
-            let _ = part;
+        for &k in &locus_parts {
+            let kv = i64_t.const_int(k, false);
+            let s = self.composite_element_slot(&cf, snap, kv, Some(k))?;
             let p = self.builder.build_load(ptr_t, s, "composite.was").map_err(e)?.into_pointer_value();
             let b = self.builder.build_and(word, i64_t.const_int(1u64 << k, false), "composite.old.bit").map_err(e)?;
             let b = self.builder.build_int_compare(inkwell::IntPredicate::NE, b, i64_t.const_zero(), "composite.old.el").map_err(e)?;
             let owned = self.builder.build_and(keep_storage, b, "composite.old.owned").map_err(e)?;
-            olds.push((p, owned));
-            let d = self.composite_element_slot(&cf, dest, i64_t.const_int(k as u64, false), *part)?;
-            nows.push(self.builder.build_load(ptr_t, d, "composite.now").map_err(e)?.into_pointer_value());
+            olds.push((k, p, owned));
+            let d = self.composite_element_slot(&cf, dest, kv, Some(k))?;
+            nows.push((k, self.builder.build_load(ptr_t, d, "composite.now").map_err(e)?.into_pointer_value()));
         }
         // which parts the holder owns now: the ones built here, and an
         // owned one written back in at any place
         let mut new_word = i64_t.const_zero();
-        for (j, p) in nows.iter().enumerate() {
-            let mine = if built[j] {
+        for (j, p) in &nows {
+            let mine = if built[*j as usize] {
                 self.context.bool_type().const_all_ones()
             } else {
                 let mut any = self.context.bool_type().const_zero();
-                for (o, owned) in &olds {
+                for (_, o, owned) in &olds {
                     let same = self.builder.build_int_compare(inkwell::IntPredicate::EQ, *o, *p, "composite.moved").map_err(e)?;
                     let both = self.builder.build_and(same, *owned, "composite.moved.owned").map_err(e)?;
                     any = self.builder.build_or(any, both, "composite.moved.any").map_err(e)?;
@@ -35615,10 +35646,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         }
         self.builder.build_store(elems_ptr, new_word).map_err(e)?;
         // an owned part no longer in the field goes, in part order
-        for (k, (o, owned)) in olds.iter().enumerate() {
+        for (k, o, owned) in &olds {
             let mut still = self.context.bool_type().const_zero();
-            for (j, p) in nows.iter().enumerate() {
-                if built[j] {
+            for (j, p) in &nows {
+                if built[*j as usize] {
                     continue;
                 }
                 let same = self.builder.build_int_compare(inkwell::IntPredicate::EQ, *o, *p, "composite.still").map_err(e)?;
@@ -35626,7 +35657,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             }
             let not_still = self.builder.build_not(still, "composite.not_still").map_err(e)?;
             let gone = self.builder.build_and(*owned, not_still, "composite.gone").map_err(e)?;
-            let el_locus = Self::composite_element_locus(&cf, parts[k]);
+            let el_locus = Self::composite_element_locus(&cf, Some(*k));
             self.emit_reclaim_element_if(gone, *o, cf.holder, &el_locus)?;
         }
         Ok(Some(BlockEnd::Open))

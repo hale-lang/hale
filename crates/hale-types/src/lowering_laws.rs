@@ -467,7 +467,7 @@ impl<'a, F: FnMut(&'a Expr, bool)> Literals<F> {
     /// no body reaches (a params default of a locus or a perspective, a
     /// const, a type's field default, a closure's assertion, an adapter's
     /// inits, a perspective's members).
-    fn items(&mut self, items: &'a [TopDecl]) {
+    pub(crate) fn items(&mut self, items: &'a [TopDecl]) {
         for item in items {
             match item {
                 TopDecl::Fn(fd) => self.fn_decl(fd),
