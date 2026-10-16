@@ -111,6 +111,12 @@ Claim [37..44] unknown constitution `Missing` — nothing declares it
 Claim [345..349] claim `loss` violated: route `Payments` is configured to discard silently — topic `Payments` keyed by `id` is `on_unmatched: swallow`
 --- crates/hale-types/tests/claim_no_silent_loss.rs#6 ---
 Claim [233..237] claim `loss`: the routes of `quiet` names no route — no member publishes or subscribes anything, so `require no_silent_loss` would quantify over an empty set and hold while checking nothing. Name a topic, or a group whose members use the bus.
+--- crates/hale-types/tests/claim_placement.rs#1 ---
+Claim [117..127] group member `lib::Alpha` does not resolve — no imported declaration matches this path. Unknown names are errors, never empty sets
+Claim [99..130] group `readers` resolves to no declarations. A claim quantifying over an empty group holds vacuously — if the group may legitimately be empty, say `may_be_empty`
+Claim [391..398] claim `separate` is invalid: group `readers` has a refused selection; resolve its group diagnostics before checking execution-domain separation
+--- crates/hale-types/tests/claim_placement.rs#2 ---
+Claim [348..360] unknown constitution `PlacementLaw` — nothing declares it
 --- crates/hale-types/tests/claim_route_coverage.rs#1 ---
 Claim [791..796] claim `route` violated: not every key of `Orders` reaches exactly one registration of `workers` — overlapping: 2 registrations of `workers` receive key 0: `Alpha::on_alpha` (where key == 0) at `App.a`; `Beta::on_beta` (where key == 0) at `App.b`
 --- crates/hale-types/tests/claim_route_coverage.rs#2 ---

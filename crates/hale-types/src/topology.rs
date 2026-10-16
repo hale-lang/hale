@@ -175,7 +175,10 @@ use crate::symbol::Bundle;
 // stdlib re-emerges into user code only from inside its own loops,
 // which sets the bit either way — so this bumps the schema without
 // moving a single committed baseline hash.
-pub const TOPOLOGY_SCHEMA: &str = "1.19";
+// 1.20 (GH #1327): `require separate_domains` has a typed two-group
+// law payload, a `placement` judgment family and a required
+// `adequacy.placement` entry. Historical schemas do not admit this law.
+pub const TOPOLOGY_SCHEMA: &str = "1.20";
 
 /// GH #408 Phase 0: what the rows MEAN, as distinct from their shape.
 ///

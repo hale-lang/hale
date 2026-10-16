@@ -2130,6 +2130,28 @@ impl Parser {
     fn parse_require_form(&mut self) -> Result<ClaimForm, Diag> {
         self.bump(); // `require`
         let pred_tok = self.peek_token().clone();
+        if matches!(&pred_tok.kind, TokenKind::Ident(s) if s == "separate_domains")
+        {
+            self.bump();
+            self.expect(TokenKind::LParen, "(")?;
+            let group = |parser: &mut Self| -> Result<Ident, Diag> {
+                let q = parser.peek_token().clone();
+                if !matches!(&q.kind, TokenKind::Ident(s) if s == "all") {
+                    return Err(Diag::parse(
+                        q.span,
+                        "expected `all` before each group in \
+                         `require separate_domains(all A, all B)`",
+                    ));
+                }
+                parser.bump();
+                parser.expect_ident("group name")
+            };
+            let left = group(self)?;
+            self.expect(TokenKind::Comma, ",")?;
+            let right = group(self)?;
+            self.expect(TokenKind::RParen, ")")?;
+            return Ok(ClaimForm::RequireSeparateDomains { left, right });
+        }
         // GH #436: `require sealed(all G);` — a universal over the
         // group's members rather than an existential over endpoints,
         // so it parses its own shape.
@@ -2230,7 +2252,8 @@ impl Parser {
                     pred_tok.span,
                     format!(
                         "expected `subscribes`, `publishes`, \
-                         `sealed`, `attributed`, or `no_silent_loss` after `require`, \
+                         `sealed`, `attributed`, `no_silent_loss`, or \
+                         `separate_domains` after `require`, \
                          got {:?}",
                         other
                     ),

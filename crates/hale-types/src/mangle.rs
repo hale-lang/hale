@@ -1232,6 +1232,7 @@ fn rewrite_claim_topic_refs(
             | ClaimForm::RequireSealed { .. }
             | ClaimForm::RequireAttributed { .. }
             | ClaimForm::RequireNoSilentLossGroup { .. }
+            | ClaimForm::RequireSeparateDomains { .. }
             | ClaimForm::Cover { .. } => {}
         }
     }
@@ -1806,6 +1807,10 @@ impl<'a> Mangler<'a> {
                     | ClaimForm::RequireNoSilentLossGroup { group }
                     | ClaimForm::Cover { group, .. } => {
                         self.rewrite_group_ident(&mut group.name, bind);
+                    }
+                    ClaimForm::RequireSeparateDomains { left, right } => {
+                        self.rewrite_group_ident(&mut left.name, bind);
+                        self.rewrite_group_ident(&mut right.name, bind);
                     }
                     ClaimForm::RouteCoverage { group, topic, .. } => {
                         self.rewrite_group_ident(&mut group.name, bind);

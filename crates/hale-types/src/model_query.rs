@@ -16,6 +16,9 @@
 //!     modeled?** — [`endpoint_incomplete`]
 //!   * **what does this function definitely do, and is that all?** —
 //!     [`effects_of`]
+//!   * **which execution domains contain these locus declarations'
+//!     instances, and what placement is unknown?** —
+//!     [`instance_domains`]
 //!   * **what does this effect-class name mean, and how is a set of
 //!     them rendered?** — [`effect_class_atoms`],
 //!     [`render_effect_classes`]
@@ -33,6 +36,91 @@ use hale_model::{
     ApplicationModel, Entities, EntityRef, FunctionId, RelationSet,
     SubjectId,
 };
+
+/// One arranged instance and its execution domain, with both model
+/// records retained for a judgment's witness. Domain identity is the
+/// typed `placement.domain`, never a name or a CPU-affinity set.
+#[derive(Debug)]
+pub struct InstanceDomain<'a> {
+    /// The instance and the declaration it realizes, including the
+    /// relation's provenance. The instance entity carries birth
+    /// provenance.
+    pub realization: &'a hale_model::Realizes,
+    /// The instance's domain and the relation's provenance.
+    pub placement: &'a hale_model::PlacedIn,
+}
+
+/// The known placement of selected declarations, alongside its limits.
+/// Known rows remain available beside unknowns: a judgment may find a
+/// concrete collision even when it cannot prove complete separation.
+#[derive(Debug)]
+pub struct InstanceDomains<'a> {
+    /// Every represented, placed instance of a selected declaration,
+    /// in canonical instance order. Replicas and separate constructions
+    /// of one declaration remain separate rows.
+    pub placed: Vec<InstanceDomain<'a>>,
+    /// Represented instances for which the model supplies no domain.
+    /// Missing placement is unknown, never evidence of separation.
+    pub missing_placement: Vec<&'a hale_model::Realizes>,
+    /// Selected declarations with no represented instance. This is
+    /// distinct from an instance whose placement is missing; a hole
+    /// may additionally say that a declaration is born dynamically.
+    pub unrepresented: Vec<hale_model::LocusDeclId>,
+    /// Selected declarations' holes hiding population or placement.
+    /// Unrelated declarations' holes do not affect this projection.
+    pub holes: Vec<&'a hale_model::Hole>,
+}
+
+/// Project instance domains from the model's existing `realizes` and
+/// `placed_in` rows. The input IDs belong to this validated model.
+///
+/// Selection is exact: naming a declaration includes every instance of
+/// it, not the instances of its descendants or a same-spelled import.
+/// Births outside the arrangement are accounted for by the producer's
+/// typed holes; this query never re-walks source or reconstructs the
+/// placement table. It makes no decision about empty quantification or
+/// whether a counterexample outranks an unknown.
+pub fn instance_domains<'a>(
+    model: &'a ApplicationModel,
+    declarations: &BTreeSet<hale_model::LocusDeclId>,
+) -> InstanceDomains<'a> {
+    let mut out = InstanceDomains {
+        placed: Vec::new(),
+        missing_placement: Vec::new(),
+        unrepresented: Vec::new(),
+        holes: Vec::new(),
+    };
+    let mut represented = BTreeSet::new();
+    for realization in &model.relations.realizes {
+        if !declarations.contains(&realization.decl) {
+            continue;
+        }
+        represented.insert(realization.decl);
+        match model.relations.placed_in.binary_search_by_key(
+            &realization.instance,
+            |placement| placement.instance,
+        ) {
+            Ok(index) => out.placed.push(InstanceDomain {
+                realization,
+                placement: &model.relations.placed_in[index],
+            }),
+            Err(_) => out.missing_placement.push(realization),
+        }
+    }
+    out.unrepresented = declarations.difference(&represented).copied().collect();
+    let needed = RelationSet::OWNS
+        .union(RelationSet::PLACED)
+        .union(RelationSet::CARDINALITY);
+    out.holes = model
+        .holes
+        .iter()
+        .filter(|hole| {
+            hole.hides.intersects(needed)
+                && matches!(hole.at, EntityRef::LocusDecl(decl) if declarations.contains(&decl))
+        })
+        .collect();
+    out
+}
 
 /// Which side of an endpoint a judgment is walking.
 ///

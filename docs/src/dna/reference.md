@@ -498,7 +498,7 @@ $ hale dna status --json
       "main": "Refproj",
       "name": "refproj",
       "provenance": "observed",
-      "schema": "1.19",
+      "schema": "1.20",
       "shape_hash": "6aacbffe834a9fcd",
       "toolchain": "0.21.0",
       "verdict": "clean"

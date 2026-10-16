@@ -181,6 +181,10 @@ pub enum Law {
     RequireSealed {
         group: Ref,
     },
+    RequireSeparateDomains {
+        left: Ref,
+        right: Ref,
+    },
     RequireNoSilentLossTopic {
         topic: Ref,
     },
@@ -1811,6 +1815,7 @@ pub fn has_unresolved(law: &Law) -> bool {
             r(group) || r(topic)
         }
         Law::RequireSealed { group } => r(group),
+        Law::RequireSeparateDomains { left, right } => r(left) || r(right),
         Law::RequireNoSilentLossTopic { topic } => r(topic),
         Law::RequireNoSilentLossGroup { group } => r(group),
         Law::RequireAttributed { class } => c(class),
@@ -2013,6 +2018,18 @@ pub fn decode_law(
             )?;
             Ok(Law::RequireSealed {
                 group: cx.group(&law["group"], "group")?,
+            })
+        }
+        Some("require_separate_domains") => {
+            only_keys(
+                law,
+                "require_separate_domains",
+                &["kind", "left", "right"],
+                &[],
+            )?;
+            Ok(Law::RequireSeparateDomains {
+                left: cx.group(&law["left"], "left")?,
+                right: cx.group(&law["right"], "right")?,
             })
         }
         Some("require_no_silent_loss_topic") => {
@@ -2282,6 +2299,7 @@ pub fn family_of(law: &Law) -> JudgmentFamily {
     match law {
         Law::ForbidReaches { .. } => JudgmentFamily::Reachability,
         Law::OnlyEdges { .. } => JudgmentFamily::Boundary,
+        Law::RequireSeparateDomains { .. } => JudgmentFamily::Placement,
         Law::RequireEndpoint { .. }
         | Law::RequireSealed { .. }
         | Law::RequireNoSilentLossTopic { .. }
@@ -2345,6 +2363,9 @@ pub fn render_claims_form(law: &Law) -> Option<String> {
             form::require_endpoint(*publishers, &group.display, &topic.display)
         }
         Law::RequireSealed { group } => form::require_sealed(&group.display),
+        Law::RequireSeparateDomains { left, right } => {
+            form::require_separate_domains(&left.display, &right.display)
+        }
         Law::RequireNoSilentLossTopic { topic } => {
             form::require_no_silent_loss_topic(&topic.display)
         }
@@ -2689,6 +2710,13 @@ pub fn validate_law_account(
             )
         })?;
         let fam = family_of(&decoded);
+        if fam == JF::Placement && v["schema"] != "1.20" {
+            return Err(format!(
+                "{}: malformed artifact — law.rows[{}] carries \
+                 require_separate_domains, which requires schema 1.20",
+                label, i
+            ));
+        }
         if row["family"] != fam.as_str() {
             return Err(format!(
                 "{}: malformed artifact — law.rows[{}] declares \
@@ -3032,6 +3060,7 @@ pub fn validate_law_account(
                 | JF::Boundary
                 | JF::Endpoint
                 | JF::Bound
+                | JF::Placement
                 | JF::Causes
                 | JF::Depends
         ) && matches!(verdict, "violated" | "uncertified")
@@ -3079,6 +3108,7 @@ pub fn validate_law_account(
         if matches!(
             fam,
             JF::Reachability | JF::Boundary | JF::Endpoint | JF::Bound
+                | JF::Placement
         ) {
             claims_tier_ordinals
                 .push(row["ordinal"].as_u64().unwrap_or(0));
@@ -3324,8 +3354,20 @@ pub fn validate_law_account(
         JF::Depends,
         JF::Budget,
     ];
+    const MIGRATED_120: &[JF] = &[
+        JF::Reachability,
+        JF::Boundary,
+        JF::Endpoint,
+        JF::Bound,
+        JF::Certificate,
+        JF::Causes,
+        JF::Depends,
+        JF::Budget,
+        JF::Placement,
+    ];
     let schema = v["schema"].as_str().unwrap_or_default();
     let migrated: &[JF] = match schema {
+        "1.20" => MIGRATED_120,
         // 1.18 added the per-locus `contracts` section (GH #527
         // B4), 1.19 the declared `bindings` (GH #528); the family
         // account is 1.17's.
@@ -3445,6 +3487,7 @@ pub fn validate_law_account(
                         | JF::Boundary
                         | JF::Endpoint
                         | JF::Bound
+                        | JF::Placement
                 )
             ) {
                 let name = r["name"].as_str().unwrap_or("");

@@ -465,6 +465,10 @@ pub enum ClaimIr {
         dst: String,
         grants: Vec<String>,
     },
+    /// `require separate_domains(all A, all B)` — disjoint execution
+    /// domains over both groups' known, nonempty populations.
+    /// Appended so existing variants retain their semantic hash tags.
+    RequireSeparateDomains { left: GroupRef, right: GroupRef },
 }
 
 /// One lowered law row.
@@ -619,6 +623,8 @@ pub enum JudgmentFamily {
     Unmigrated,
     /// Fleet plan rows — Change 7's `FleetModel`.
     Fleet,
+    /// Execution-domain separation over realized instance populations.
+    Placement,
 }
 
 impl JudgmentFamily {
@@ -627,6 +633,7 @@ impl JudgmentFamily {
             JudgmentFamily::Reachability => "reachability",
             JudgmentFamily::Boundary => "boundary",
             JudgmentFamily::Endpoint => "endpoint",
+            JudgmentFamily::Placement => "placement",
             JudgmentFamily::Bound => "bound",
             JudgmentFamily::Certificate => "certificate",
             JudgmentFamily::Causes => "causes",
@@ -638,7 +645,7 @@ impl JudgmentFamily {
     }
 
     /// Every family, in declaration order.
-    pub const ALL: [JudgmentFamily; 10] = [
+    pub const ALL: [JudgmentFamily; 11] = [
         JudgmentFamily::Reachability,
         JudgmentFamily::Boundary,
         JudgmentFamily::Endpoint,
@@ -649,6 +656,7 @@ impl JudgmentFamily {
         JudgmentFamily::Budget,
         JudgmentFamily::Unmigrated,
         JudgmentFamily::Fleet,
+        JudgmentFamily::Placement,
     ];
 
     /// The family a stated word names (an artifact row's `family`);
@@ -676,6 +684,9 @@ impl JudgmentFamily {
                 .union(R::SUBSCRIBES)
                 .union(R::CARDINALITY)
                 .union(R::EFFECTS),
+            JudgmentFamily::Placement => R::OWNS
+                .union(R::PLACED)
+                .union(R::CARDINALITY),
             // PUBLISHES joins CALLS + EFFECTS (round 1): the
             // `@effects(publish: {…})` certificate walks publish
             // sites, and a computed subject is exactly the
@@ -1027,6 +1038,12 @@ impl ClaimRow {
                  \"group\": {}}}",
                 gref(group)
             ),
+            ClaimIr::RequireSeparateDomains { left, right } => format!(
+                "{{\"kind\": \"require_separate_domains\", \
+                 \"left\": {}, \"right\": {}}}",
+                gref(left),
+                gref(right)
+            ),
             ClaimIr::RequireAttributed { class } => format!(
                 "{{\"kind\": \"require_attributed\", \
                  \"class\": {}}}",
@@ -1237,6 +1254,7 @@ impl ClaimRow {
                 JudgmentFamily::Reachability
             }
             ClaimIr::OnlyEdges { .. } => JudgmentFamily::Boundary,
+            ClaimIr::RequireSeparateDomains { .. } => JudgmentFamily::Placement,
             ClaimIr::RequireEndpoint { .. }
             | ClaimIr::RequireSealed { .. }
             | ClaimIr::RequireAttributed { .. }
@@ -1289,6 +1307,12 @@ impl ClaimRow {
             }
             ClaimIr::RequireNoSilentLossGroup { group } => {
                 form::require_no_silent_loss_group(&group.name.display)
+            }
+            ClaimIr::RequireSeparateDomains { left, right } => {
+                form::require_separate_domains(
+                    &left.name.display,
+                    &right.name.display,
+                )
             }
             ClaimIr::ForbidReaches {
                 src,
@@ -1825,6 +1849,10 @@ impl ClaimIrTable {
                 }
                 ClaimIr::RequireNoSilentLossGroup { group } => {
                     group_ok(group)?
+                }
+                ClaimIr::RequireSeparateDomains { left, right } => {
+                    group_ok(left)?;
+                    group_ok(right)?;
                 }
                 ClaimIr::RequireAttributed { class } => {
                     class_ok(class)?

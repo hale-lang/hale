@@ -676,6 +676,9 @@ pub(crate) fn enumerate_clauses<'a>(
                     _ => None,
                 },
                 ClaimForm::OnlyEdges { src, .. } => Some(&src.name),
+                ClaimForm::RequireSeparateDomains { left, .. } => {
+                    Some(&left.name)
+                }
                 ClaimForm::Bound { from, .. } => Some(&from.name),
                 ClaimForm::Require { group, .. }
                 | ClaimForm::RequireSealed { group }
@@ -733,6 +736,12 @@ fn render_form(f: &ClaimForm) -> String {
         ClaimForm::RequireNoSilentLossGroup { group } => {
             hale_model::claim_form::require_no_silent_loss_group(
                 &group.name,
+            )
+        }
+        ClaimForm::RequireSeparateDomains { left, right } => {
+            hale_model::claim_form::require_separate_domains(
+                &left.name,
+                &right.name,
             )
         }
         ClaimForm::ForbidReaches {

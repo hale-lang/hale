@@ -350,6 +350,31 @@ The remaining verbs (#382 phases 2–5):
   the reader wants the whole list. Without it, sealing is per-locus
   discipline, and one unsealed member of a vault group is the whole
   hole.
+- **`require separate_domains(all A, all B)`** (GH #1327 § 5) —
+  every arranged instance of a locus selected by `A` is assigned an
+  execution domain distinct from every arranged instance selected by
+  `B`. The claim reads the model's `realizes` and `placed_in` rows:
+  declaration groups select all their instances, including replicas,
+  without implicitly selecting descendants. Domain identity is the
+  scheduler domain: the main domain, a named pool, or a pinned instance
+  and the children inheriting its domain. Distinct pinned instances or
+  pools are separate even when their CPU affinity overlaps; this makes
+  no CPU-isolation or timing guarantee. This checks the declared
+  execution arrangement; backend placement approximations and the
+  scheduling of lifecycle callbacks retain their existing contracts.
+
+  Both groups must select loci, and every selected locus must have a
+  represented instance or a recorded unknown population. An empty
+  selection (even `may_be_empty`), a function-only selection, or a
+  selected declaration with an exact zero population is `invalid`.
+  A known pair sharing a domain is `violated`, including one instance
+  selected on both sides; the evidence names both instance paths and
+  their shared domain with source provenance. Relevant placement or
+  population holes, or a missing placement row, make the result
+  `uncertified` when no such pair is known. Unknowns outside the
+  selected declarations do not withdraw this proof. Invalid selectors
+  take precedence over evaluation; otherwise a concrete collision
+  takes precedence over uncertainty.
 - **`require no_silent_loss(topic T | all G)`** (GH #1327 § 2) — no
   modeled boundary on a named route is configured to discard
   silently. A route is a wire subject; `all G` takes every route a

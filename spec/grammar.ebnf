@@ -452,7 +452,8 @@ edge_grant        = ( "publish" | "subscribe" ) , topic_ref , ";" ;
 bound_form        = "bound" , effect_class_ref , "<=" , INT_LIT ,
                     "on" , "paths" , "from" , IDENTIFIER ;
 require_form      = require_endpoint | require_sealed
-                  | require_attributed | require_no_silent_loss ;
+                  | require_attributed | require_no_silent_loss
+                  | require_separate_domains ;
 
 require_endpoint  = "require" , ( "subscribes" | "publishes" ) ,
                     "(" , "some" , IDENTIFIER , "," , "topic" ,
@@ -465,6 +466,12 @@ require_endpoint  = "require" , ( "subscribes" | "publishes" ) ,
    whether every member holds. See `spec/verification.md` § Secrets. *)
 require_sealed    = "require" , "sealed" ,
                     "(" , "all" , IDENTIFIER , ")" ;
+
+(* GH #1327 section 5: all arranged instances of the two groups
+   occupy distinct execution domains. See spec/verification.md. *)
+require_separate_domains
+                  = "require" , "separate_domains" , "(" ,
+                    "all" , IDENTIFIER , "," , "all" , IDENTIFIER , ")" ;
 
 (* GH #436: `require attributed(all syscall)` — every user fn that
    DIRECTLY performs an operation of the named BUILT-IN effect class

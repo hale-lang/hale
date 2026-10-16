@@ -630,6 +630,10 @@ pub enum ClaimForm {
     /// `require no_silent_loss(all G);` — the same policy over every
     /// route a member of G publishes or subscribes.
     RequireNoSilentLossGroup { group: Ident },
+    /// `require separate_domains(all A, all B);` — every realized
+    /// member of A executes in a different domain from every member
+    /// of B. Both groups must have a known, nonempty population.
+    RequireSeparateDomains { left: Ident, right: Ident },
     /// `count publishers(topic T) == N;` (`<=`, `>=`) — the
     /// cardinality family: exactly-one-publisher is the invariant
     /// behind every single-writer pattern. Counts distinct loci.

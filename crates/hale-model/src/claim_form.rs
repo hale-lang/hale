@@ -93,6 +93,11 @@ pub fn require_no_silent_loss_group(group: &str) -> String {
     format!("require no_silent_loss(all {})", group)
 }
 
+/// `require separate_domains(all A, all B)`.
+pub fn require_separate_domains(left: &str, right: &str) -> String {
+    format!("require separate_domains(all {}, all {})", left, right)
+}
+
 /// `require attributed(all C)`.
 pub fn require_attributed(class: &str) -> String {
     format!("require attributed(all {})", class)

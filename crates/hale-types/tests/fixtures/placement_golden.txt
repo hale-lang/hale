@@ -995,6 +995,14 @@ row	App@literal1	App	main	default
 root	App	the entry
 row	App@literal1	App	main	default
 
+== crates/hale-cli/tests/placement_artifact.rs#5259544f
+root	App	the entry
+domain	pinned:App@literal1.left
+domain	pinned:App@literal1.right
+row	App@literal1	App	main	default
+row	App@literal1.left	Left	pinned:App@literal1.left	entry	off owner
+row	App@literal1.right	Right	pinned:App@literal1.right	entry	off owner
+
 == crates/hale-cli/tests/replay_cli.rs#bf43a2c6
 root	App	the entry
 domain	pinned:App@literal1.p	cpus 0
@@ -6018,6 +6026,14 @@ root	App	the entry
 row	App@literal1	App	main	default
 row	App@literal1.l	Ledger	main	default
 
+== crates/hale-types/tests/claim_placement.rs#a61243ac
+root	App	the entry
+domain	pool:write
+domain	pool:read
+row	App@literal1	App	main	default
+row	App@literal1.a	Alpha	pool:write	entry	off owner
+row	App@literal1.b	Beta	pool:read	entry	off owner
+
 == crates/hale-types/tests/claim_route_coverage.rs#ab15e6a4
 root	App	the entry
 row	App@literal1	App	main	default
@@ -7229,6 +7245,42 @@ row	~	Senses	pool:senses	entry	off owner
 row	~.registry	__StdMetricsRegistry	pool:senses	inherited
 row	~.registry.histograms	__StdMetricsHistogramList	pool:senses	inherited
 row	~.registry.store	__StdMetricsMap	pool:senses	inherited
+
+== crates/hale-types/tests/placement_domain_query.rs#ac586248
+root	App	the entry
+domain	pool:work
+domain	pinned:App@literal1.c[0]
+domain	pinned:App@literal1.c[1]
+row	App@literal1	App	main	default
+shared	App@literal1.a	Worker #96096761
+shared	App@literal1.b	Worker #96096761
+shared	App@literal1.c[0]	Worker #f0ba3524
+shared	App@literal1.c[1]	Worker #f0ba3524
+
+== crates/hale-types/tests/placement_domain_query.rs#e0eb899c
+root	App	the entry
+domain	pinned:App@literal1.a	cpus 0
+domain	pinned:App@literal1.b	cpus 0
+row	App@literal1	App	main	default
+row	App@literal1.a	Worker	pinned:App@literal1.a	entry	off owner
+row	App@literal1.b	Worker	pinned:App@literal1.b	entry	off owner
+
+== crates/hale-types/tests/placement_domain_query.rs#b5009aff
+root	App	the entry
+row	App@literal1	App	main	default
+row	App@literal1.s	Stable	main	default
+row	App@literal1.w	Worker	main	default
+dynamic	Worker	on main	in the seed
+
+== crates/hale-types/tests/placement_domain_query.rs#3d4e144e
+root	App	the entry
+row	App@literal1	App	main	default
+dynamic	Dynamic	on main	in the seed
+
+== crates/hale-types/tests/placement_domain_query.rs#e905cbfc
+root	App	the entry
+row	App@literal1	App	main	default
+row	App@literal1.w	Worker	main	default
 
 == crates/hale-types/tests/placement_pairings.rs#3fcc4af7
 row	W@main1	W	main	default
@@ -16035,6 +16087,10 @@ row	~.inner{a2}.slot.b	Leaf	pinned:~	inherited	guarded
 row	~	Wide	pinned:~	entry	off owner
 row	~.inner	Box	pinned:~	inherited
 row	~.inner.slot	Leaf	pinned:~	inherited
+
+== shared Worker #96096761
+row	~	Worker	pool:work	entry	off owner
+row	~.leaf	Leaf	pool:work	inherited
 
 == shared Worker #f0ba3524
 row	~	Worker	pinned:~	entry	off owner

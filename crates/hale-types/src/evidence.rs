@@ -93,7 +93,10 @@ use crate::symbol::Bundle;
 // every constructor literal), and stays at every conformer when a
 // write is one the walk cannot name. Reachability results move toward
 // fewer callees, so v7 evidence must not be replayed.
-pub const ANALYSIS_SEMANTICS_VERSION: u32 = 8;
+// 9 (GH #1327): the law account includes instance-domain separation,
+// judged from ownership, placement and cardinality evidence. A sidecar
+// from the earlier engine cannot stand in for this expanded law account.
+pub const ANALYSIS_SEMANTICS_VERSION: u32 = 9;
 
 /// Digest of the certificate engines' inputs OUTSIDE the model:
 /// the analysis-semantics version above, the Hale-source stdlib

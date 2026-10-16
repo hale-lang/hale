@@ -807,6 +807,9 @@ pub fn judge_all(
     for j in crate::judgment::judge_endpoints(table, model, source_bases) {
         judged.insert(j.ordinal, j);
     }
+    for j in crate::placement_claim::judge(table, model, source_bases) {
+        judged.insert(j.ordinal, j);
+    }
     for j in crate::judgment::judge_bound(table, model, source_bases) {
         judged.insert(j.ordinal, j);
     }
@@ -1186,6 +1189,7 @@ pub fn family_adequacy(
         F::Reachability,
         F::Boundary,
         F::Endpoint,
+        F::Placement,
         F::Bound,
         F::Certificate,
         // Change 5f: a migrated family ships with its adequacy
