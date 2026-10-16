@@ -1448,6 +1448,17 @@ row	~	P	main	default
 row	~.cs.0	C	main	inherited
 row	~.cs.1	C	main	inherited
 
+== crates/hale-codegen/tests/array_of_loci_teardown.rs#de48f93b
+root	App	the entry
+row	App@literal1	App	main	default
+-- App@literal1.q	P
+row	~	P	main	default
+row	~.t.0	C	main	inherited
+row	~.t.1	D	main	inherited
+-- dynamic	sites in the seed
+dynamic	C	on main
+dynamic	D	on main
+
 == crates/hale-codegen/tests/array_repeat_stack.rs#a0c62a98
 row	Holder@main1	Holder	main	default
 
@@ -4690,6 +4701,16 @@ hole	App@literal1.r	unenumerable initializer
 row	App@literal1	App	main	default
 row	App@literal1.r	R	main	default
 dynamic	W	on unknown (`mk_w` passed as a value)|unknown (no caller)	in the seed
+
+== crates/hale-codegen/tests/returned_aggregate_of_loci.rs#d5ce36a1
+-- dynamic	sites in the seed
+dynamic	H	on main
+dynamic	W	on main
+
+== crates/hale-codegen/tests/returned_aggregate_of_loci.rs#b542752e
+root	App	the entry
+row	App@literal1	App	main	default
+dynamic	W	on unknown (`mkw` passed as a value)	in the seed
 
 == crates/hale-codegen/tests/self_containing_locus.rs#4ea4d0ba
 shared	Holder@main1	Holder #5d65043f

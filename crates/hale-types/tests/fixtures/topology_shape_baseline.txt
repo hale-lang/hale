@@ -235,6 +235,7 @@ crates/hale-codegen/tests/api_serve_build.rs#0 db3db6da176af699
 crates/hale-codegen/tests/api_unix_lifecycle.rs#0 b32fc7359e217820
 crates/hale-codegen/tests/array_of_loci_teardown.rs#5 47537f49518887d5
 crates/hale-codegen/tests/array_of_loci_teardown.rs#6 73a9567b384d6b22
+crates/hale-codegen/tests/array_of_loci_teardown.rs#8 330bbe3b249e5937
 crates/hale-codegen/tests/array_repeat.rs#0 f2c1228edb650960
 crates/hale-codegen/tests/array_repeat.rs#1 f2c1228edb650960
 crates/hale-codegen/tests/array_repeat.rs#2 3b217f0f698a6100
@@ -1307,6 +1308,8 @@ crates/hale-codegen/tests/restart_bound.rs#1 d4dabe7a57f79bfa
 crates/hale-codegen/tests/restart_bound.rs#2 e2835ba0ea5af51a
 crates/hale-codegen/tests/restart_in_place_params.rs#0 914e1d7f83215468
 crates/hale-codegen/tests/restart_in_place_params.rs#1 99ff75aafe86ddb1
+crates/hale-codegen/tests/returned_aggregate_of_loci.rs#16 188855bbdbf4adfc
+crates/hale-codegen/tests/returned_aggregate_of_loci.rs#17 e087de85d85bebc2
 crates/hale-codegen/tests/returned_aggregate_of_loci.rs#6 85100876b7e9764c
 crates/hale-codegen/tests/self_containing_locus.rs#2 b9b48c565ea0f322
 crates/hale-codegen/tests/self_containing_locus.rs#3 e5e2c21efda8f602

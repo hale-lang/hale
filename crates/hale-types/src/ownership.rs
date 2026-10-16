@@ -339,6 +339,17 @@ pub struct OwnerTable {
     /// by the call: those fields. The argument is that field's child,
     /// its owned bit set on the instance the call returns.
     kept: BTreeMap<ExprId, Vec<String>>,
+    /// GH #1569: a call of a fn handing back a tuple or an array of loci
+    /// (`ParamFlow::parts`), by the call: which parts the call's owner
+    /// owns — the holder of the aggregate (a field: its elements'
+    /// children; a binding or the frame: reclaimed with the frame). A part
+    /// handed in as an argument the frame already owns is the frame's.
+    aggregates: BTreeMap<ExprId, Vec<bool>>,
+    /// GH #1569: an argument a literal part of that aggregate keeps (and
+    /// no part is itself): by the call, (part, field) — the last part
+    /// keeping it, torn down after every other part that keeps it reads
+    /// it, owns it, its owned bit set at the call.
+    aggregate_kept: BTreeMap<ExprId, Vec<(usize, String)>>,
 }
 
 /// What a `let` needs to know about its own binding before it lowers
@@ -395,6 +406,16 @@ impl OwnerTable {
     /// GH #1566 follow-up: the fields of the instance a factory call
     /// returns that hold, as owned children, arguments the call was
     /// handed (`OwnerTable::kept`).
+    /// GH #1569: the parts of the aggregate a call hands back that its
+    /// owner owns (`OwnerTable::aggregates`), by position.
+    pub fn aggregate_kept(&self, call: &Expr) -> &[(usize, String)] {
+        self.id_of(call).and_then(|id| self.aggregate_kept.get(&id)).map_or(&[], |v| v.as_slice())
+    }
+
+    pub fn aggregate_parts(&self, call: &Expr) -> Option<&[bool]> {
+        self.id_of(call).and_then(|id| self.aggregates.get(&id)).map(|v| v.as_slice())
+    }
+
     pub fn kept_fields(&self, call: &Expr) -> &[String] {
         self.id_of(call).and_then(|id| self.kept.get(&id)).map_or(&[], |v| v.as_slice())
     }
@@ -1624,6 +1645,9 @@ struct Resolver<'s> {
     /// through one hands back a fresh instance (only a fresh factory may
     /// be taken as a value), owned as a factory call's.
     fn_vals: BTreeMap<String, String>,
+    /// GH #1569: the free fns declared to return a fn value, by name, the
+    /// declared return type.
+    fn_value_rets: BTreeMap<String, TypeExpr>,
     table: OwnerTable,
     next_slot: u32,
     /// The reclaim-scope stack; the last entry is the innermost.
@@ -1739,6 +1763,7 @@ pub fn resolve_owners(
     let flows = param_flows(&program.items);
     let mut r = Resolver {
         fn_vals: BTreeMap::new(),
+        fn_value_rets: fn_value_returns(&program.items),
         flows,
         ids,
         renames: import_renames.to_vec(),
@@ -1756,6 +1781,8 @@ pub fn resolve_owners(
             bindings: BTreeMap::new(),
             passes: BTreeMap::new(),
             kept: BTreeMap::new(),
+            aggregates: BTreeMap::new(),
+            aggregate_kept: BTreeMap::new(),
         },
         next_slot: 0,
         scopes: Vec::new(),
@@ -2054,6 +2081,46 @@ fn qname_joined(q: &QualifiedName) -> String {
 struct ParamFlow {
     returns: Option<usize>,
     holds: BTreeMap<usize, String>,
+    /// It hands back one tuple or array literal (`return (H { w: w },
+    /// w);`): what each part is — a literal it builds, a parameter named
+    /// nowhere but inside that literal, or something else.
+    parts: Option<Vec<PartFlow>>,
+    /// The parameters a literal part keeps in a field (`(H { w: w }, ..)`):
+    /// (part, parameter, field), the parameter named nowhere but inside
+    /// the returned aggregate.
+    part_holds: Vec<(usize, usize, String)>,
+}
+
+/// A part of an aggregate a fn hands back (`ParamFlow::parts`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PartFlow {
+    /// A literal the fn builds there.
+    Fresh,
+    /// The parameter at this position, named nowhere but inside the
+    /// returned aggregate.
+    Param(usize),
+    Other,
+}
+
+/// The free fns declared to return a fn value (`fn pick() -> fn() -> W`),
+/// by name, with that return type.
+fn fn_value_returns(items: &[TopDecl]) -> BTreeMap<String, TypeExpr> {
+    let mut out = BTreeMap::new();
+    fn go(items: &[TopDecl], out: &mut BTreeMap<String, TypeExpr>) {
+        for item in items {
+            match item {
+                TopDecl::Fn(f) => {
+                    if let Some(t @ TypeExpr::Function { .. }) = &f.ret {
+                        out.insert(f.name.name.clone(), t.clone());
+                    }
+                }
+                TopDecl::Module(m) => go(&m.items, out),
+                _ => {}
+            }
+        }
+    }
+    go(items, &mut out);
+    out
 }
 
 fn param_flows(items: &[TopDecl]) -> BTreeMap<String, ParamFlow> {
@@ -2063,7 +2130,7 @@ fn param_flows(items: &[TopDecl]) -> BTreeMap<String, ParamFlow> {
             match item {
                 TopDecl::Fn(f) => {
                     let flow = param_flow(f);
-                    if flow.returns.is_some() || !flow.holds.is_empty() {
+                    if flow.returns.is_some() || !flow.holds.is_empty() || flow.parts.is_some() {
                         out.insert(f.name.name.clone(), flow);
                     }
                 }
@@ -2128,6 +2195,35 @@ fn param_flow(f: &FnDecl) -> ParamFlow {
             flow.returns = Some(*k);
         }
     }
+    // one returned tuple or array literal: each part
+    if let [agg @ (Expr::Tuple(xs, _) | Expr::Array(xs, _))] = rets.as_slice() {
+        let parts: Vec<PartFlow> = xs
+            .iter()
+            .map(|x| match x {
+                Expr::Struct { .. } => PartFlow::Fresh,
+                Expr::Ident(i) => match param(&i.name) {
+                    Some(k) if expr_name_uses(agg, &i.name) == named(&i.name) => PartFlow::Param(k),
+                    _ => PartFlow::Other,
+                },
+                _ => PartFlow::Other,
+            })
+            .collect();
+        if !parts.is_empty() && parts.iter().all(|p| *p != PartFlow::Other) {
+            flow.parts = Some(parts);
+            for (k, x) in xs.iter().enumerate() {
+                let Expr::Struct { inits, .. } = x else { continue };
+                for init in inits {
+                    if let Expr::Ident(i) = &init.value {
+                        if let Some(p) = param(&i.name) {
+                            if expr_name_uses(agg, &i.name) == named(&i.name) {
+                                flow.part_holds.push((k, p, init.name.name.clone()));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
     // one returned literal (or a `let` bound to one) holding parameters
     if rets.len() == 1 {
         let lit: Option<&Expr> = match rets[0] {
@@ -2138,13 +2234,29 @@ fn param_flow(f: &FnDecl) -> ParamFlow {
             }),
             _ => None,
         };
-        if let Some(Expr::Struct { inits, .. }) = lit {
+        // a parameter kept in a field of the literal, or of a literal it
+        // holds (`K { a: H { w: w }, b: H { w: w } }`): the last field
+        // keeping it, as a path from the returned instance (`b.w`); the
+        // parameter named nowhere but inside the literal
+        fn walk(e: &Expr, path: &mut Vec<String>, out: &mut Vec<(String, String)>) {
+            let Expr::Struct { inits, .. } = e else { return };
             for init in inits {
-                if let Expr::Ident(i) = &init.value {
-                    if let Some(k) = param(&i.name) {
-                        if named(&i.name) == 1 {
-                            flow.holds.insert(k, init.name.name.clone());
-                        }
+                path.push(init.name.name.clone());
+                match &init.value {
+                    Expr::Ident(i) => out.push((i.name.clone(), path.join("."))),
+                    v @ Expr::Struct { .. } => walk(v, path, out),
+                    _ => {}
+                }
+                path.pop();
+            }
+        }
+        if let Some(lit) = lit {
+            let mut found = Vec::new();
+            walk(lit, &mut Vec::new(), &mut found);
+            for (name, path) in found {
+                if let Some(k) = param(&name) {
+                    if expr_name_uses(lit, &name) == named(&name) {
+                        flow.holds.insert(k, path);
                     }
                 }
             }
@@ -3342,6 +3454,27 @@ impl Resolver<'_> {
         None
     }
 
+    /// The arguments a literal part of the aggregate a call hands back
+    /// keeps, by position: the last part keeping it, and the field.
+    fn aggregate_holds(&self, e: &Expr) -> BTreeMap<usize, (usize, String)> {
+        let Expr::Call { callee, .. } = e else { return BTreeMap::new() };
+        let Some(n) = callee_fn_name(callee, &self.renames) else { return BTreeMap::new() };
+        let mut out = BTreeMap::new();
+        if let Some(f) = self.flows.get(&n) {
+            for (k, p, field) in &f.part_holds {
+                out.insert(*p, (*k, field.clone()));
+            }
+        }
+        out
+    }
+
+    /// The parts of the aggregate a call hands back (`ParamFlow::parts`).
+    fn aggregate_flow(&self, e: &Expr) -> Option<Vec<PartFlow>> {
+        let Expr::Call { callee, .. } = e else { return None };
+        let n = callee_fn_name(callee, &self.renames)?;
+        self.flows.get(&n).and_then(|f| f.parts.clone())
+    }
+
     /// The position of the argument a call hands back unchanged
     /// (`ParamFlow::returns`).
     fn passed_arg(&self, e: &Expr) -> Option<usize> {
@@ -3381,6 +3514,7 @@ impl Resolver<'_> {
             Expr::Call { args, .. } => {
                 self.fresh_call_locus(e).is_some()
                     || self.passed_arg(e).is_some_and(|k| args.get(k).is_some_and(|a| self.is_locus_producing(a)))
+                    || self.aggregate_flow(e).is_some_and(|ps| ps.iter().any(|p| *p == PartFlow::Fresh))
             }
             Expr::Or { inner, disposition, .. } => {
                 if !self.is_locus_producing(inner) {
@@ -3510,13 +3644,42 @@ impl Resolver<'_> {
                 // this frame's temporaries (a field, a placement, a
                 // binding); a returned call keeps today's temporary.
                 let passed = self.passed_arg(e);
+                // GH #1569: a call handing back a tuple or an array of
+                // loci: its owner owns the parts it builds, and, when the
+                // aggregate outlives this frame's temporaries (a field, a
+                // placement), the parts it was handed as literals too
+                let aggregate = self.aggregate_flow(e);
+                let holds_parts = matches!(d, Decision::Field { .. } | Decision::Placement(_));
+                if let Some(parts) = &aggregate {
+                    let call_id = self.minted_id(e);
+                    let mask: Vec<bool> = parts
+                        .iter()
+                        .map(|p| match p {
+                            PartFlow::Fresh => true,
+                            PartFlow::Param(k) => holds_parts && args.get(*k).is_some_and(|a| self.is_locus_producing(a)),
+                            PartFlow::Other => false,
+                        })
+                        .collect();
+                    if !matches!(d, Decision::Caller) && mask.iter().any(|b| *b) {
+                        let owner = self.owner_from(&d);
+                        self.record(call_id, owner, Produced::FactoryCall, "(aggregate)".to_string(), position, e.span());
+                        self.table.aggregates.insert(call_id, mask);
+                    }
+                }
                 let kept = match &d {
                     Decision::Field { .. } | Decision::Placement(_) | Decision::Binding(_) => self.kept_args(e),
                     Decision::FrameTemp | Decision::Caller => BTreeMap::new(),
                 };
                 let call_id = self.minted_id(e);
                 for (k, a) in args.iter().enumerate() {
-                    if passed == Some(k) && self.is_locus_producing(a) {
+                    let part_of = aggregate.as_ref().is_some_and(|ps| ps.iter().any(|p| *p == PartFlow::Param(k)));
+                    let held_by_part = if aggregate.is_some() { self.aggregate_holds(e).remove(&k) } else { None };
+                    if part_of && holds_parts && self.is_locus_producing(a) {
+                        self.assign(a, d.clone(), "argument handed back in an aggregate");
+                    } else if let Some((part, field)) = held_by_part.filter(|_| holds_parts && self.is_locus_producing(a)) {
+                        self.table.aggregate_kept.entry(call_id).or_default().push((part, field));
+                        self.assign(a, d.clone(), "argument kept by a part of the aggregate");
+                    } else if passed == Some(k) && self.is_locus_producing(a) {
                         self.table.passes.insert(call_id, k);
                         // (a binding names the call, as it names a
                         // carrier's join: the argument is then the
@@ -3762,11 +3925,7 @@ impl Resolver<'_> {
                 self.assign(value, d, "`let` RHS");
                 // a binding of a fn value returning a locus (`let f: fn(W)
                 // -> R = mk;`, or of a fresh factory's name)
-                let held = ty.as_ref().and_then(|t| self.fn_value_locus(t)).or_else(|| match value {
-                    Expr::Ident(i) if !self.fn_vals.contains_key(&i.name) => self.fresh.get(&i.name).cloned(),
-                    Expr::Ident(i) => self.fn_vals.get(&i.name).cloned(),
-                    _ => None,
-                });
+                let held = ty.as_ref().and_then(|t| self.fn_value_locus(t)).or_else(|| self.fn_value_held(value));
                 match held {
                     Some(l) => {
                         self.fn_vals.insert(name.name.clone(), l);
@@ -4077,6 +4236,24 @@ impl Resolver<'_> {
         );
         self.fn_vals = saved_vals;
         self.close_frame(saved);
+    }
+
+    /// The locus a fn value `e` returns when called, for a value spelled
+    /// as a binding holding one, a fresh factory's name, or (GH #1569) a
+    /// call of a fn declared to return a fn value returning a locus
+    /// (`fn pick() -> fn() -> W`): whatever that call hands back was
+    /// named as a value somewhere, which the check allows of a fresh
+    /// factory only.
+    fn fn_value_held(&self, e: &Expr) -> Option<String> {
+        match e {
+            Expr::Ident(i) if self.fn_vals.contains_key(&i.name) => self.fn_vals.get(&i.name).cloned(),
+            Expr::Ident(i) => self.fresh.get(&i.name).cloned(),
+            Expr::Call { callee, .. } => {
+                let n = callee_fn_name(callee, &self.renames)?;
+                self.fn_value_rets.get(&n).and_then(|t| self.fn_value_locus(t))
+            }
+            _ => None,
+        }
     }
 
     /// The locus a fn type returns (`fn(W) -> Routes`), when it names one.

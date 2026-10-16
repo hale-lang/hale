@@ -158,6 +158,13 @@ through the value owns the fresh instance, as a direct call's caller
 does. One that may hand back a locus it was given (`fn pick(w:
 Worker) -> Worker { return w; }`) is refused at its name; call it
 directly instead.
+Such a value can come out of a call too (`let f = pick();` with `fn
+pick() -> fn() -> Worker`). Bound any other way — from an `if`, from a
+method's call, by a tuple pattern or as a loop variable — the binding
+needs its type written (`let f: fn() -> Worker = …`), which `hale
+check` asks for: the compiler names who owns each `Worker` a call
+through it builds from what the binding is known to hold. A call
+whose result you drop (`f();`) tears the `Worker` down at the `;`.
 
 A stdlib function written in Hale passes the same way
 (`apply(std::url::encode, s)`). One the compiler answers itself at a

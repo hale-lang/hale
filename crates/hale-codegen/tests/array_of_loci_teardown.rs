@@ -291,3 +291,130 @@ fn main() { App { }; }
         assert_eq!(ran.stdout.matches("C.dissolve e").count(), 1, "asan={asan}: {}", ran.stdout);
     }
 }
+
+/// GH #1569: a locus literal stored into an element of an array or a
+/// tuple of loci, or over the whole of one, is the holder's new child —
+/// WS1#4's reassign, per element: the element it replaces reclaimed
+/// while the holder owns it, the new one built in the holder's arena
+/// and torn down with it. It was a temporary of the storing method,
+/// dissolved when the method returned and read after (ASan: SEGV), and
+/// the whole-array store dissolved it twice. From a method of the
+/// holder and from outside it (a fn holding a handle, a child reached
+/// through `self`); a value that is not a literal is left to its owner
+/// (`App`'s `e`, torn down with `App`). The value is read before the
+/// store: an element the holder owns written back in (`self.cs =
+/// [self.cs[1], self.cs[0]]`, `self.cs[0] = self.cs[0]`) stays its own,
+/// at its new place, and only one no longer in the field is reclaimed.
+#[test]
+fn a_literal_stored_into_an_element_is_the_holders_child() {
+    let cases: [(&str, &str, &str, &[&str]); 7] = [
+        (
+            "single",
+            "fn swap() { self.cs[0] = C { name: \"z\" }; }",
+            "self.q.swap();",
+            &["C.dissolve a", "show z b", "P.dissolve", "C.dissolve z", "C.dissolve b", "C.dissolve e"],
+        ),
+        (
+            "twice",
+            "fn swap() { self.cs[0] = C { name: \"y\" }; self.cs[0] = C { name: \"z\" }; }",
+            "self.q.swap();",
+            &["C.dissolve a", "C.dissolve y", "show z b", "P.dissolve", "C.dissolve z", "C.dissolve b", "C.dissolve e"],
+        ),
+        (
+            "whole",
+            "fn swap() { self.cs = [C { name: \"x\" }, C { name: \"y\" }]; }",
+            "self.q.swap();",
+            &["C.dissolve a", "C.dissolve b", "show x y", "P.dissolve", "C.dissolve x", "C.dissolve y", "C.dissolve e"],
+        ),
+        (
+            "indexed",
+            "fn swap(i: Int) { self.cs[i] = C { name: f\"n{i}\" }; }",
+            "self.q.swap(1); self.q.swap(1);",
+            &["C.dissolve b", "C.dissolve n1", "show a n1", "P.dissolve", "C.dissolve a", "C.dissolve n1", "C.dissolve e"],
+        ),
+        (
+            "outside",
+            "fn noop() { }",
+            "put(self.q, 1); self.q.cs = [C { name: \"m\" }, C { name: \"n\" }];",
+            &["C.dissolve b", "C.dissolve a", "C.dissolve f", "show m n", "P.dissolve", "C.dissolve m", "C.dissolve n", "C.dissolve e"],
+        ),
+        (
+            "mixed",
+            "fn swap(c: C) { self.cs = [C { name: \"x\" }, c]; }",
+            "self.q.swap(self.e);",
+            &["C.dissolve a", "C.dissolve b", "show x e", "P.dissolve", "C.dissolve x", "C.dissolve e"],
+        ),
+        (
+            "moved",
+            "fn swap() { self.cs = [self.cs[1], self.cs[0]]; }\n    fn same() { self.cs[0] = self.cs[0]; }\n    \
+             fn mix() { self.cs = [C { name: \"m\" }, self.cs[0]]; }",
+            "self.q.swap(); self.q.same(); self.q.mix();",
+            &["C.dissolve a", "show m b", "P.dissolve", "C.dissolve m", "C.dissolve b", "C.dissolve e"],
+        ),
+    ];
+    for (tag, method, call, want) in cases {
+        let src = format!(
+            r#"locus C {{
+    params {{ name: String = "c"; }}
+    dissolve() {{ println(f"C.dissolve {{self.name}}"); }}
+}}
+locus P {{
+    params {{ cs: [C; 2] = [C {{ name: "a" }}, C {{ name: "b" }}]; }}
+    {method}
+    fn show() {{ println(f"C.show {{self.cs[0].name}} {{self.cs[1].name}}"); }}
+    dissolve() {{ println("P.dissolve"); }}
+}}
+fn put(h: P, i: Int) {{ h.cs[i] = C {{ name: "f" }}; }}
+main locus App {{
+    params {{ q: P = P {{ }}; e: C = C {{ name: "e" }}; }}
+    run() {{ {call} self.q.show(); }}
+}}
+fn main() {{ App {{ }}; }}
+"#
+        );
+        for asan in [false, true] {
+            let ran = run(&src, &format!("hale_array_loci_literal_{tag}"), asan, false);
+            assert!(ran.ok && !ran.stderr.contains("Sanitizer"), "{tag} asan={asan}: {}\n{}", ran.stdout, ran.stderr);
+            let got: Vec<String> = hooks(&ran.stdout).iter().map(|l| l.replace("C.show", "show")).collect();
+            assert_eq!(got, want, "{tag} asan={asan}");
+        }
+    }
+}
+
+/// GH #1569: the same for a tuple of loci, part by part and whole.
+#[test]
+fn a_literal_stored_into_a_tuple_part_is_the_holders_child() {
+    let src = r#"locus C {
+    params { name: String = "c"; }
+    dissolve() { println(f"C.dissolve {self.name}"); }
+}
+locus D {
+    params { n: Int = 0; }
+    dissolve() { println(f"D.dissolve {self.n}"); }
+}
+locus P {
+    params { t: (C, D) = (C { name: "a" }, D { n: 1 }); }
+    fn swap() { self.t.0 = C { name: "z" }; self.t = (C { name: "w" }, D { n: 7 }); self.t.1 = D { n: 9 }; }
+    fn show() { println(f"P.show {self.t.0.name} {self.t.1.n}"); }
+    dissolve() { println("P.dissolve"); }
+}
+main locus App {
+    params { q: P = P { }; }
+    run() { self.q.swap(); self.q.show(); }
+}
+fn main() { App { }; }
+"#;
+    for asan in [false, true] {
+        let ran = run(src, "hale_tuple_loci_literal", asan, false);
+        assert!(ran.ok && !ran.stderr.contains("Sanitizer"), "asan={asan}: {}\n{}", ran.stdout, ran.stderr);
+        let got: Vec<&str> = ran.stdout.lines().filter(|l| l.contains(".dissolve") || l.contains(".show")).collect();
+        assert_eq!(
+            got,
+            [
+                "C.dissolve a", "C.dissolve z", "D.dissolve 1", "D.dissolve 7", "P.show w 9",
+                "P.dissolve", "C.dissolve w", "D.dissolve 9",
+            ],
+            "asan={asan}"
+        );
+    }
+}

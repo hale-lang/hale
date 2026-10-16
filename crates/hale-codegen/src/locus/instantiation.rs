@@ -3424,7 +3424,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     crate::locus::dissolve::composite_loci(&declared_ty),
                 ) {
                     let n = children.len() as u32;
-                    let all = if n >= 64 { u64::MAX } else { (1u64 << n) - 1 };
+                    // (an aggregate a call hands back: the parts its owner
+                    // owns, `OwnerTable::aggregate_parts`, GH #1569)
+                    let all = match written.and_then(|w| self.owner_table.aggregate_parts(w)) {
+                        Some(parts) => parts.iter().enumerate().take(64).filter(|(_, o)| **o).fold(0u64, |m, (k, _)| m | (1u64 << k)),
+                        None if n >= 64 => u64::MAX,
+                        None => (1u64 << n) - 1,
+                    };
                     let slot = self
                         .builder
                         .build_struct_gep(info.struct_ty, self_ptr, elems_idx, &format!("{locus_name}.{fname}.__owned_elems.ptr"))

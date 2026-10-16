@@ -3157,3 +3157,51 @@ fn a_locus_returning_fn_value_must_build_what_it_returns() {
                  }\n";
     assert_eq!(build_and_run_probe(built, "fresh_fn_value"), Ok("ab\nbye b\nbye a\n".to_string()), "{built}");
 }
+
+/// GH #1569: a fn value returning a locus is owned by what the binding
+/// holding it is known to hold. One a top-level fn's call hands back
+/// (`let f = pick(); f()`) is a fresh factory as one named is (only a
+/// fresh factory may be taken as a value at all), and builds; it checked
+/// clean and failed the build with "no required `ownership` row". One
+/// bound from anything else unascribed (an `if`, a method's call), by a
+/// tuple pattern, or as a loop variable is refused by the check at the
+/// binding, which an ascribed `let` answers.
+///
+/// Plain string literals, for the reason given above.
+#[test]
+fn a_fn_value_from_a_call_is_a_fresh_factory() {
+    let lib = "locus W { params { name: String = \"w\"; } dissolve() { println(\"bye \", self.name); } }\n\
+               fn mkw() -> W { return W { name: \"made\" }; }\n\
+               fn pick() -> fn() -> W { return mkw; }\n";
+    let picked = format!(
+        "{lib}fn main() {{\n\
+             let f = pick();\n\
+             let w = f();\n\
+             f();\n\
+             let g: fn() -> W = if true {{ mkw }} else {{ pick() }};\n\
+             let v = g();\n\
+             println(w.name, v.name);\n\
+         }}\n"
+    );
+    assert_eq!(
+        build_and_run_probe(&picked, "fn_value_from_call"),
+        Ok("bye made\nmademade\nbye made\nbye made\n".to_string()),
+        "{picked}"
+    );
+    let by_if = format!("{lib}fn main() {{ let f = if true {{ mkw }} else {{ mkw }}; let w = f(); }}\n");
+    let by_method = format!(
+        "{lib}main locus App {{ fn pk() -> fn() -> W {{ return mkw; }} run() {{ let f = self.pk(); let w = f(); }} }}\n\
+         fn main() {{ App {{ }}; }}\n"
+    );
+    let by_tuple = format!("{lib}fn main() {{ let (f, n) = (mkw, 1); let w = f(); }}\n");
+    let by_loop = format!("{lib}fn main() {{ let fs = [mkw, mkw]; for f in fs {{ let w = f(); }} }}\n");
+    assert_refused_by_the_check(
+        &[
+            (&by_if, "if true { mkw } else { mkw }", "`let f` holds a fn value returning a `W`"),
+            (&by_method, "self.pk()", "`let f` holds a fn value returning a `W`"),
+            (&by_tuple, "f", "`f` holds a fn value returning a `W`"),
+            (&by_loop, "f", "the loop variable `f` holds a fn value returning a `W`"),
+        ],
+        "unnamed_fn_value",
+    );
+}
