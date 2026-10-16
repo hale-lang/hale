@@ -734,8 +734,16 @@ static void lotus_chunk_pool_stats_thread_dtor(void *unused) {
 static pthread_key_t g_chunk_pool_free_key;
 static int g_chunk_pool_free_key_init = 0;
 
+static void lotus_delivery_region_cache_drain(void);
+static void lotus_delivery_region_release(struct lotus_arena *r);
+static void lotus_handler_hold_spares_drain(void);
+
 static void lotus_chunk_pool_free_thread_dtor(void *unused) {
     (void)unused;
+    /* The delivery regions this thread kept for reuse first: destroying
+     * them hands their chunks to the pool freed below. */
+    lotus_delivery_region_cache_drain();
+    lotus_handler_hold_spares_drain();
     /* The pool only ever holds malloc'd, default-size chunks:
      * lotus_arena_release_chunk munmaps `via_mmap` chunks before
      * they could be pooled, and only chunks with
@@ -8825,7 +8833,7 @@ static void bus_inline_drain_one(lotus_bus_queue_t *q) {
     g_bus_pending_rec_pub = outer_rec_pub;
     g_bus_inline_drain_depth--;
     if (heap_ptr) free(heap_ptr);
-    if (region_ptr) lotus_arena_destroy((lotus_arena_t *)region_ptr);
+    if (region_ptr) lotus_delivery_region_release((lotus_arena_t *)region_ptr);
 }
 
 /* Re-entrancy guard: set while THIS THREAD is inside a drain. A nested
@@ -9300,7 +9308,7 @@ void lotus_bus_queue_drain(lotus_bus_queue_t *q) {
                             if (held.payload_heap)
                                 free(held.payload_heap);
                             if (held.payload_region)
-                                lotus_arena_destroy(
+                                lotus_delivery_region_release(
                                     held.payload_region);
                             lotus_reclaim_after_handler();
                         }
@@ -9373,7 +9381,7 @@ void lotus_bus_queue_drain(lotus_bus_queue_t *q) {
             t_bus_delivery_self = prev_delivery;
             if (cell_copy.payload_heap) free(cell_copy.payload_heap);
             if (cell_copy.payload_region)
-                lotus_arena_destroy(cell_copy.payload_region);
+                lotus_delivery_region_release(cell_copy.payload_region);
             lotus_reclaim_after_handler();
         }
     } else {
@@ -9427,7 +9435,7 @@ void lotus_bus_queue_drain(lotus_bus_queue_t *q) {
             ((lotus_handler_fn)handler_fn)(handler_self, payload_ptr);
             t_bus_delivery_self = prev_delivery;
             if (heap_ptr) free(heap_ptr);
-            if (region_ptr) lotus_arena_destroy((lotus_arena_t *)region_ptr);
+            if (region_ptr) lotus_delivery_region_release((lotus_arena_t *)region_ptr);
             lotus_reclaim_after_handler();
         }
     }
@@ -9995,7 +10003,7 @@ static void lotus_mailbox_dispatch_cell(lotus_bus_cell_t *cell) {
     lotus_bus_note_consume(cell->self_ptr, cell->rec_pub_id);
     ((lotus_handler_fn)cell->handler)(cell->self_ptr, payload_ptr);
     if (cell->payload_heap) free(cell->payload_heap);
-    if (cell->payload_region) lotus_arena_destroy(cell->payload_region);
+    if (cell->payload_region) lotus_delivery_region_release(cell->payload_region);
 }
 
 /* A ring slot just freed (the consumer dequeued). Wake any producer
@@ -10933,9 +10941,23 @@ static void lotus_run_ticket_free(lotus_run_ticket_t *t) {
         t->next = t_handler_hold_spare;
         t_handler_hold_spare = t;
         t_handler_hold_spares++;
+        /* freed at this thread's exit (lotus_handler_hold_spares_drain) */
+        lotus_mark_thread_for_pool_dtor();
         return;
     }
     free(t);
+}
+
+/* A pool worker's spare handler tickets, at its exit: they leaked one
+ * per worker that had ever run a handler (LeakSanitizer, with chunk
+ * recycling on). Runs from the chunk pool's thread-exit destructor. */
+static void lotus_handler_hold_spares_drain(void) {
+    while (t_handler_hold_spare) {
+        lotus_run_ticket_t *t = t_handler_hold_spare;
+        t_handler_hold_spare = t->next;
+        free(t);
+    }
+    t_handler_hold_spares = 0;
 }
 
 /* An admitted run returned, or its parked coroutine was abandoned at
@@ -11556,7 +11578,7 @@ static void lotus_coop_pool_dispatch_cell(lotus_coop_pool_t *p,
     /* The per-delivery region is a subregion of the subscriber's arena:
      * gone before the hold that keeps that arena ends. */
     if (cell->payload_heap) free(cell->payload_heap);
-    if (cell->payload_region) lotus_arena_destroy(cell->payload_region);
+    if (cell->payload_region) lotus_delivery_region_release(cell->payload_region);
     if (bus) lotus_handler_hold_settle(hold);
     else lotus_run_hold_release(hold);
     /* A handler its park points ran retired a release that waits for a
@@ -13303,7 +13325,7 @@ static void lotus_coro_payload_dispose(lotus_coro_t *c) {
         c->payload_heap = NULL;
     }
     if (c->payload_region) {
-        lotus_arena_destroy(c->payload_region);
+        lotus_delivery_region_release(c->payload_region);
         c->payload_region = NULL;
     }
     c->payload_ptr  = NULL;
@@ -13337,7 +13359,7 @@ static void lotus_coro_free(lotus_coro_t *c) {
         c->payload_heap = NULL;
     }
     if (c->payload_region) {
-        lotus_arena_destroy(c->payload_region);
+        lotus_delivery_region_release(c->payload_region);
         c->payload_region = NULL;
     }
     if (c->stack) free(c->stack);
@@ -13717,7 +13739,7 @@ static int lotus_async_start_cell(lotus_coop_pool_t *p,
         p->running_label = NULL;
         if (cell_copy->payload_heap) free(cell_copy->payload_heap);
         if (cell_copy->payload_region)
-            lotus_arena_destroy(cell_copy->payload_region);
+            lotus_delivery_region_release(cell_copy->payload_region);
         lotus_run_hold_release(hold);
         return 1;
     }
@@ -15027,7 +15049,7 @@ static int lotus_bus_shed_check(lotus_bus_entry_t *reg,
                     c->payload_heap = NULL;
                 }
                 if (c->payload_region) {
-                    lotus_arena_destroy(
+                    lotus_delivery_region_release(
                         (lotus_arena_t *)c->payload_region);
                     c->payload_region = NULL;
                 }
@@ -17267,6 +17289,58 @@ static int bus_cell_stale(const lotus_bus_cell_t *c) {
     return stale;
 }
 
+/* The per-delivery regions a thread keeps for its next delivery.
+ * Materializing a wire cell deserializes its payload into a region of
+ * its own, destroyed after the handler returns (GH #1516): built and
+ * torn down whole for every delivery, that arena — its malloc, its
+ * mutex, its first chunk, its destroy — was most of what a same-thread
+ * delivery with a String payload cost (+40% on bus_dispatch_heap_payload).
+ * A region that comes back clean — one ordinary chunk, nothing retired
+ * into it, no slots, no index — is rewound and kept here instead, and
+ * the next delivery on this thread takes it. Anything else is destroyed
+ * as before. Off where chunk recycling is off (LOTUS_NO_CHUNK_POOL, the
+ * ASan default), so a use of a payload past its handler still reads
+ * freed memory there. Drained at thread exit with the chunk pool. */
+#define LOTUS_DELIVERY_REGION_CACHE 4
+static __thread lotus_arena_t *t_delivery_regions[LOTUS_DELIVERY_REGION_CACHE];
+static __thread int t_delivery_region_count = 0;
+
+static void lotus_delivery_region_cache_drain(void) {
+    while (t_delivery_region_count > 0)
+        lotus_arena_destroy(t_delivery_regions[--t_delivery_region_count]);
+}
+
+static lotus_arena_t *lotus_delivery_region_take(int numa_node) {
+    if (t_delivery_region_count > 0
+        && t_delivery_regions[t_delivery_region_count - 1]->numa_node == numa_node)
+        return t_delivery_regions[--t_delivery_region_count];
+    lotus_arena_t *r = lotus_arena_alloc_struct(__builtin_return_address(0));
+    if (r) r->numa_node = numa_node;
+    return r;
+}
+
+/* The handler has returned: keep the region for the next delivery when
+ * it can be rewound to empty, destroy it otherwise. */
+static void lotus_delivery_region_release(struct lotus_arena *r) {
+    if (!r) return;
+    const lotus_arena_chunk_t *h = r->head;
+    int clean = !lotus_no_chunk_pool()
+        && t_delivery_region_count < LOTUS_DELIVERY_REGION_CACHE
+        && (!h || (!h->next && !h->via_mmap && h->cap <= LOTUS_ARENA_CHUNK_BYTES))
+        && !r->parent && !r->free_list && r->next_slot == 0 && !r->fixed_size
+        && !r->chunk_byte_cap && !r->cap_diag_name && !r->shared_concurrent
+        && !r->child_struct_free && !r->retire_pending && !r->retire_shells
+        && !r->retire_free && !r->retire_free_small && !r->slot_reuse
+        && !r->chunk_index;
+    if (!clean) {
+        lotus_arena_destroy(r);
+        return;
+    }
+    if (h) r->head->used = 0;
+    lotus_mark_thread_for_pool_dtor();
+    t_delivery_regions[t_delivery_region_count++] = r;
+}
+
 static int lotus_bus_cell_materialize(lotus_bus_cell_t *c) {
     /* GH #703: a cell for a subscriber incarnation that ended after the
      * cell was posted is dropped here, whole, before anything is
@@ -17308,10 +17382,7 @@ static int lotus_bus_cell_materialize(lotus_bus_cell_t *c) {
      * to the prior behavior (deserialize into the global arena) and
      * leave payload_region NULL. */
     lotus_arena_t *region = NULL;
-    if (sub_arena) {
-        region = lotus_arena_alloc_struct(__builtin_return_address(0));
-        if (region) region->numa_node = sub_arena->numa_node;
-    }
+    if (sub_arena) region = lotus_delivery_region_take(sub_arena->numa_node);
     lotus_arena_t *prev = lotus_current_caller_arena;
     lotus_current_caller_arena = region ? region : sub_arena;
     ssize_t ssz = ((lotus_deserialize_fn)c->deserialize)(
@@ -17325,7 +17396,7 @@ static int lotus_bus_cell_materialize(lotus_bus_cell_t *c) {
             c->payload_heap = NULL;
         }
         if (c->payload_region) {
-            lotus_arena_destroy(c->payload_region);
+            lotus_delivery_region_release(c->payload_region);
             c->payload_region = NULL;
         }
         c->payload_size = 0;
@@ -17349,7 +17420,7 @@ static int lotus_bus_cell_materialize(lotus_bus_cell_t *c) {
             c->payload_heap = NULL;
         }
         if (c->payload_region) {
-            lotus_arena_destroy(c->payload_region);
+            lotus_delivery_region_release(c->payload_region);
             c->payload_region = NULL;
         }
         c->payload_size = 0;
