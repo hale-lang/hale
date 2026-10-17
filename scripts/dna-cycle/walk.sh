@@ -26,7 +26,7 @@ export XDG_STATE_HOME=$RUN/state HALE_DNA_API=$HEAD_API HALE_DNA_ID_TOKEN=$(cat 
 cd "$APP" || exit 1
 POSITION=position:api/steward
 
-rows() { git -C "$APP" show refs/dna/journal:journal.jsonl 2>/dev/null; }
+rows() { hale dna record-rows "$APP" 2>/dev/null; }
 # first <kind> [after] [needle]: the first row of a kind after row <after> whose entity or body holds <needle>
 first() { rows | python3 -c 'import sys,json
 k=sys.argv[1]; after=int(sys.argv[2]); needle=sys.argv[3]

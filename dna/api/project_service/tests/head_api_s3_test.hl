@@ -62,7 +62,7 @@ fn curl_slow(method: String, url: String, headers: String, body: String, max_tim
 
 // The rows of `kind` in a record's journal.
 fn count_rows(repo: String, kind: String) -> Int {
-    let text = in_dir(repo, "git\nshow\nrefs/dna/journal:journal.jsonl").stdout + "\n";
+    let text = in_dir(repo, toolchain() + "\ndna\nrecord-rows").stdout + "\n";
     let mut n = 0;
     let mut rest = text;
     while len(rest) > 0 {

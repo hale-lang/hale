@@ -7,6 +7,8 @@
 
 #[path = "support/vault.rs"]
 mod vault;
+#[path = "support/record.rs"]
+mod record;
 #[path = "support/reap.rs"]
 mod reap;
 #[path = "support/trace.rs"]
@@ -36,8 +38,7 @@ fn git(args: &[&str], cwd: &Path) -> String {
 }
 
 fn record(cwd: &Path) -> Vec<serde_json::Value> {
-    let out = Command::new("git").args(["show", "refs/dna/journal:journal.jsonl"]).current_dir(cwd).output().unwrap();
-    String::from_utf8_lossy(&out.stdout).lines().filter(|l| !l.trim().is_empty()).map(|l| serde_json::from_str(l).unwrap()).collect()
+    record::text(cwd).lines().filter(|l| !l.trim().is_empty()).map(|l| serde_json::from_str(l).unwrap()).collect()
 }
 
 /// `hale dna run` in the background, its stderr to a log; the log's path.

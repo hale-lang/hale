@@ -438,6 +438,13 @@ repository:
 - **One commit per event.** The commit's tree holds `journal.jsonl`,
   every event so far, one JSON object per line: `seq`, `kind`,
   `entity`, `body`, `author`. The commit's subject is `<kind> <entity>`.
+- **The rows are read through the toolchain (GH #1590).** `hale dna
+  record-rows [project]` prints the record's rows in that line format,
+  oldest first, nothing for a record with no rows, and exits 1 with the
+  reason when the record cannot be read. It prints the record's rows
+  alone; the Ledger's are memory's, and `hale dna history` walks both.
+  The DNA's tests and scripts read the record through it and never
+  through its storage, so the storage can change under them.
 - **The commit DAG is the chain.** An event's digest is its commit;
   its `prev` is the parent; the first event has no parent. Integrity
   is git's: the ref resolves, and its commit count is the event count.

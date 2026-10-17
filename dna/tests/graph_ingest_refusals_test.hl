@@ -55,7 +55,7 @@ fn init(repo: String) -> dna::RunResult {
 // The record is read whole.
 @bounded_by(repo)
 fn rows(repo: String) -> String {
-    let r = dna::run_tool("git\n-C\n" + repo + "\nshow\nrefs/dna/journal:journal.jsonl");
+    let r = dna::run_tool(toolchain() + "\ndna\nrecord-rows\n" + repo);
     if r.code != 0 { return ""; }
     let mut out = "";
     let mut rest = r.stdout;
@@ -68,7 +68,17 @@ fn rows(repo: String) -> String {
     return out;
 }
 
-fn has_record(repo: String) -> Bool { return dna::run_tool("git\n-C\n" + repo + "\nrev-parse\n-q\n--verify\nrefs/dna/journal").code == 0; }
+// Whether `repo` holds a record with a row: read through the toolchain
+// (`hale dna record-rows`). A repository the refused init left no DNA in
+// holds none; any other failure to read is the test's.
+fn has_record(repo: String) -> Bool {
+    let r = dna::run_tool(toolchain() + "\ndna\nrecord-rows\n" + repo);
+    if r.code != 0 {
+        std::test::assert(std::str::contains(r.stderr, "has no DNA"), "the record reads, or there is no DNA to read it with: " + r.stderr);
+        return false;
+    }
+    return len(r.stdout) > 0;
+}
 
 locus App {
     params { }

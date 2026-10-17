@@ -11,6 +11,8 @@
 
 #[path = "support/vault.rs"]
 mod vault;
+#[path = "support/record.rs"]
+mod record;
 #[path = "support/reap.rs"]
 mod reap;
 #[path = "support/trace.rs"]
@@ -32,9 +34,8 @@ fn hale(args: &[&str], cwd: &Path, env: &[(&str, &str)]) -> (bool, String) {
 }
 
 fn journal(app: &Path) -> Vec<(String, String, String)> {
-    let _s = trace::Span::new("git", "show refs/dna/journal:journal.jsonl");
-    let out = Command::new("git").args(["-C", &app.to_string_lossy(), "show", "refs/dna/journal:journal.jsonl"]).output().unwrap();
-    String::from_utf8_lossy(&out.stdout)
+    let _s = trace::Span::new("hale", "dna record-rows");
+    record::text(app)
         .lines()
         .filter(|l| !l.trim().is_empty())
         .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())

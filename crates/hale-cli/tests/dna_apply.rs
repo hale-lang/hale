@@ -11,6 +11,8 @@
 
 #[path = "support/vault.rs"]
 mod vault;
+#[path = "support/record.rs"]
+mod record;
 #[path = "support/reap.rs"]
 mod reap;
 #[path = "support/trace.rs"]
@@ -77,8 +79,8 @@ fn main() {
 /// JSON differently (the host's serde, the organism's Builder), so
 /// the file is parsed, never string-matched.
 fn journal(app: &Path) -> Vec<(String, String, String)> {
-    let _s = trace::Span::new("git", "show refs/dna/journal:journal.jsonl");
-    let text = Command::new("git").args(["-C", &app.to_string_lossy(), "show", "refs/dna/journal:journal.jsonl"]).output().map(|o| String::from_utf8_lossy(&o.stdout).to_string()).unwrap_or_default();
+    let _s = trace::Span::new("hale", "dna record-rows");
+    let text = record::text(app);
     text.lines()
         .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
         .map(|v| {

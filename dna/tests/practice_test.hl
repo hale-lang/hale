@@ -82,7 +82,7 @@ main locus App {
         std::test::assert(std::str::contains(dna_cli(app, "practice\nretire\nx"), "practice: `hale dna practice propose"), "an unknown subcommand");
         let requested = dna_cli(app, "practice\npropose\nacceptance/expense-receipt\n--text\nAn expense closes with its receipt.\n--because\nbills without receipts\n--as\nriley");
         std::test::assert(std::str::contains(requested, "practice acceptance/expense-receipt requested in the record by riley (p"), "requested: " + requested);
-        let journal = in_dir(app, "git\nshow\nrefs/dna/journal:journal.jsonl").stdout;
+        let journal = in_dir(app, toolchain() + "\ndna\nrecord-rows").stdout;
         std::test::assert(std::str::contains(journal, "\"kind\": \"practice.requested\"") && std::str::contains(journal, "\\\"because\\\": \\\"bills without receipts\\\""), "the row, with why");
         // a practice's text arrives byte for byte: newlines, a backslash,
         // UTF-8 and words that look like flags
@@ -91,7 +91,7 @@ main locus App {
         let sent = in_dir(app, "sh\n-c\nexec \"$1\" dna practice propose acceptance/multiline --text \"$(cat \"$2\")\" --as riley\nsh\n" + toolchain() + "\n" + scratch + "/practice.txt");
         std::test::assert(std::str::contains(sent.stdout, "practice acceptance/multiline requested in the record by riley"), "sent: " + sent.stdout + sent.stderr);
         let mut stored = "";
-        let mut lines = in_dir(app, "git\nshow\nrefs/dna/journal:journal.jsonl").stdout + "\n";
+        let mut lines = in_dir(app, toolchain() + "\ndna\nrecord-rows").stdout + "\n";
         while len(lines) > 0 {
             let nl = std::str::index_of(lines, "\n");
             let line = lines[0..nl];

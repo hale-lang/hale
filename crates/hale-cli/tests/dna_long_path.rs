@@ -13,6 +13,8 @@
 
 #[path = "support/vault.rs"]
 mod vault;
+#[path = "support/record.rs"]
+mod record;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
@@ -84,13 +86,7 @@ fn an_intent_reaches_the_organization_from_a_long_project_path() {
         panic!("the organization never read its facts from the nerves at this path:\n{}", std::fs::read_to_string(&log).unwrap_or_default());
     }
     let (ok, ask) = hale(&["dna", "task", "create", "write", "the", "changelog"], &app);
-    let record = || -> String {
-        Command::new("git")
-            .args(["-C", &app.to_string_lossy(), "show", "refs/dna/journal:journal.jsonl"])
-            .output()
-            .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
-            .unwrap_or_default()
-    };
+    let record = || -> String { record::text(&app) };
     let born = {
         let dl = Instant::now() + Duration::from_secs(20);
         loop {

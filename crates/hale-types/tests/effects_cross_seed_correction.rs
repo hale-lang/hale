@@ -206,15 +206,15 @@ fn host_verb() {
     pinned("host/verb", 1, 1, "main  does={unclassified}");
 }
 
-/// host: 106 of 515 rows.
+/// host: 106 of 516 rows.
 #[test]
 fn host() {
     // GH #1554: the renames-blind side gains a row, `{alloc}` from a copy
     // its walk, which resolves no imported type, cannot rule out.
     pinned(
         "host",
-        511,
-        515,
+        512,
+        516,
         "
         GovernanceCli::review_profile  does={syscall,block,time,entropy,env,alloc,secret_use}
         Host::ack_reading  does={publish,alloc}

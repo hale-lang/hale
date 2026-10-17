@@ -47,7 +47,7 @@ fn dna_cli(app: String, args: String) -> String {
 
 // The record's rows, one per line, as the chain holds them.
 fn journal(app: String) -> String {
-    return in_dir(app, "git\nshow\nrefs/dna/journal:journal.jsonl").stdout;
+    return in_dir(app, toolchain() + "\ndna\nrecord-rows").stdout;
 }
 
 // The end of the line that starts at `from` in `v`: the index of its

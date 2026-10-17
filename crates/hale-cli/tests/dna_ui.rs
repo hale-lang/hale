@@ -6,6 +6,8 @@
 
 #[path = "support/vault.rs"]
 mod vault;
+#[path = "support/record.rs"]
+mod record;
 #[path = "support/reap.rs"]
 mod reap;
 // The codegen suite's: what a child listens on, read from `/proc`.
@@ -145,8 +147,7 @@ fn the_surface_serves_the_record_and_takes_no_command() {
     // is refused, and the record is untouched
     let refused = http(port, "POST", "/api/verdict", r#"{"id":"m1","verdict":"reject","as":"riley","comment":"not like this"}"#).unwrap_or_default();
     assert!(refused.starts_with("HTTP/1.1 405") && refused.contains("parked"), "{refused}");
-    let rows = Command::new("git").args(["-C", &app.to_string_lossy(), "show", "refs/dna/journal:journal.jsonl"]).output().unwrap();
-    let rows = String::from_utf8_lossy(&rows.stdout).to_string();
+    let rows = record::text(&app);
     assert!(!rows.contains("review.verdict"), "a parked head writes nothing: {rows}");
     stop(&mut ui);
     let _ = std::fs::remove_dir_all(&d);

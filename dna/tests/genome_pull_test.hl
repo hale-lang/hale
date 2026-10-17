@@ -51,19 +51,48 @@ main locus App {
         }
         return false;
     }
-    // How many times the node has started, by the record's commits: read
-    // from git directly, so a read racing the node's own append is whole.
-    fn starts() -> Int {
-        let r = dna::run_tool("sh\n-c\ngit -C \"$1\" log --format=%s refs/dna/journal | grep -c '^node.started '\nsh\n" + self.node);
-        return std::str::parse_int(dna::trim_nl(r.stdout)) or - 1;
+    // The kinds of the node's record's rows, oldest first, one per line;
+    // "" when it could not be read. Read through the toolchain (`hale dna
+    // record-rows`), which reads a head and the rows at it, so a read
+    // racing the node's own append is whole.
+    fn kinds() -> String {
+        let r = dna::run_tool(toolchain() + "\ndna\nrecord-rows\n" + self.node);
+        if r.code != 0 { return ""; }
+        let mut out = "";
+        let mut rest = r.stdout;
+        while len(rest) > 0 {
+            let nl = std::str::index_of(rest, "\n");
+            let line = if nl < 0 { rest } else { rest[0..nl] };
+            rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
+            if len(line) > 0 { out = out + std::json::find_string_field(line, "kind") + "\n"; }
+        }
+        return out;
     }
+    // How many times the node has started since the row the last `stop`
+    // names ("" for the record's start), by the record's rows; -1 when the
+    // record could not be read.
+    fn started_since(stop: String) -> Int {
+        let ks = self.kinds();
+        if len(ks) == 0 { return -1; }
+        let mut n = 0;
+        let mut rest = ks;
+        while len(rest) > 0 {
+            let nl = std::str::index_of(rest, "\n");
+            let k = rest[0..nl];
+            rest = rest[(nl + 1)..len(rest)];
+            if k == stop { n = 0; }
+            if k == "node.started" { n = n + 1; }
+        }
+        return n;
+    }
+    // How many times the node has started.
+    fn starts() -> Int { return self.started_since(""); }
     // Whether the node comes to start again after its last failed build,
     // within `secs`: the start that fell back to the last genome that built.
     fn fell_back(secs: Int) -> Bool {
         let deadline = std::time::now() + dna::wait_secs(secs);
         while std::time::now() <= deadline {
-            let r = dna::run_tool("sh\n-c\ngit -C \"$1\" log --format=%s refs/dna/journal | sed '/^node.build_failed /q' | grep -c '^node.started '\nsh\n" + self.node);
-            if (std::str::parse_int(dna::trim_nl(r.stdout)) or 0) > 0 { return true; }
+            if self.started_since("node.build_failed") > 0 { return true; }
             std::time::sleep(500ms);
         }
         return false;
