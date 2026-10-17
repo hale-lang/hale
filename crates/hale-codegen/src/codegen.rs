@@ -1580,6 +1580,7 @@ fn build_resolved_lowered(
         bce_loops: Vec::new(),
         user_fns: BTreeMap::new(),
         user_loci: BTreeMap::new(),
+        returned_struct_loci: BTreeSet::new(),
         specialized_locus_decls: BTreeMap::new(),
         locus_decls_by_name: locus_decl_index(merged),
         pending_locus_names: BTreeSet::new(),
@@ -3643,6 +3644,15 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// `lower_program`; carries the LLVM struct type for the
     /// locus's params + the lifecycle methods compiled against it.
     pub(crate) user_loci: BTreeMap<String, LocusInfo<'ctx>>,
+    /// GH #1570: the locus types whose struct a fn may hand back — a
+    /// fn's or a method's declared return type names it (through a
+    /// tuple, an array or an interface it satisfies), or it is a locus
+    /// field of one. Such a struct comes from
+    /// `lotus_returned_struct_alloc` and goes back at its reclaim's
+    /// ReleaseStruct step; only these types' reclaims call the release.
+    /// Computed once before the reclaim spines are synthesized
+    /// (`compute_returned_struct_loci`).
+    pub(crate) returned_struct_loci: BTreeSet<String>,
     /// Substituted source declarations used to declare the concrete
     /// locus methods. Signature lookup must read these same declarations
     /// instead of searching the unspecialized program for a mangled name.
@@ -9594,6 +9604,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // 2026-06-01: synthesize the per-child reclaim spine BEFORE
         // the run-wrappers + handler-wrappers, which call
         // `__reclaim_<L>` on run-completion / terminate.
+        self.compute_returned_struct_loci();
         self.synthesize_reclaim_fns()?;
         self.declare_restart_fns();
         self.synthesize_coop_pool_run_wrappers()?;

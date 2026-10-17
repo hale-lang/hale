@@ -169,11 +169,20 @@ fn derivation_shaped(name: &str) -> bool {
 /// Derivation-shaped names that derive nothing about the program,
 /// each with the reason. Populated only with a stated reason; the
 /// goal state is empty.
-const NOT_SEMANTIC: &[(&str, &str, &str)] = &[(
-    "crates/hale-syntax/src/fmt.rs",
-    "classify_generic_angles",
-    "the formatter's lexical classification of `<` and `>`, no program fact",
-)];
+const NOT_SEMANTIC: &[(&str, &str, &str)] = &[
+    (
+        "crates/hale-syntax/src/fmt.rs",
+        "classify_generic_angles",
+        "the formatter's lexical classification of `<` and `>`, no program fact",
+    ),
+    (
+        "crates/hale-codegen/src/locus/dissolve.rs",
+        "compute_returned_struct_loci",
+        "lowering's allocator choice (GH #1570): the locus types written in declared return types, \
+         read off the declarations as written; no layer reads it, and a type it misses keeps the \
+         program-lifetime struct, so it decides which leaks close, never what the program means",
+    ),
+];
 
 #[test]
 fn derivation_shaped_definitions_are_registered_in_their_file() {

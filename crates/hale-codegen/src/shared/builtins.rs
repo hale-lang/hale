@@ -2879,6 +2879,15 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             child_struct_release_ty,
             None,
         );
+        // GH #1570: the struct of a locus a fn hands back.
+        // declare ptr @lotus_returned_struct_alloc(i64 size)
+        // declare void @lotus_returned_struct_release(ptr self, i64 size)
+        self.module.add_function("lotus_returned_struct_alloc", ptr_t.fn_type(&[i64_t.into()], false), None);
+        self.module.add_function(
+            "lotus_returned_struct_release",
+            void_t.fn_type(&[ptr_t.into(), i64_t.into()], false),
+            None,
+        );
         // declare void @lotus_run_cancel_queued(ptr child)
         // (decision line 19: the Reclaim bracket's first call, before
         //  the child's arena or struct is released, cancels the runs

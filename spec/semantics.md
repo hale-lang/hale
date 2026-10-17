@@ -1159,10 +1159,10 @@ is why the rule is shaped this narrowly:
   of its own; it's a method-dispatch wrapper around state that
   lives elsewhere.
 - **Mechanical sympathy** — every "method returns locus"
-  call site triggers per-call allocation through the m90
-  payload-arena routing (program-lifetime, never freed). The
-  pattern leaks by construction. Removing the shape removes
-  the allocation.
+  call site triggers a per-call allocation outside the frame
+  through the m90 routing (released at the instance's reclaim
+  since GH #1570, but still an allocation and a reclaim per
+  call). Removing the shape removes the allocation.
 
 These aren't five rules layered on top of each other — they're
 five lenses pointing at one structural error. The compiler
@@ -1313,28 +1313,50 @@ trigger of the m90 leak goes away by construction.
 
 ### Method-returning-locus heap allocation (m90)
 
-When a method declares `-> Some` and instantiates a `Some`
-in its body, the instance is allocated via the lazy global
-payload arena (program-lifetime), **not** the caller's stack
-or the callee's arena. Both the eager dissolve and the
-deferred-frame push are suppressed at the instantiation site;
-the locus semantically "moves" to the caller and lives for
-the program.
+When a fn or a method declares `-> Some` (or a tuple, an array or an
+interface that holds a `Some`) and instantiates a `Some` in its body,
+the instance's struct cannot live in the callee's frame: a stack slot
+is dangling the moment the fn returns, so the first read after the
+return sees still-valid memory and the second sees overwritten state.
+The struct is allocated outside the frame, and both the eager dissolve
+and the deferred-frame push are suppressed at the instantiation site;
+the locus moves to the caller, whose binding, holder or statement owns
+it (§ "Ownership", GH #1569). This covers both `return Some { ... };`
+and `let s = Some { }; ...; return s;`, and the locus literals the
+returned instance's params build.
 
-This is the codegen-side fix for "second method call on a
-returned locus reads stale state" — the first read sees
-still-valid memory, the second sees overwritten state. Heap
-allocation gives the returned handle program-lifetime safety
-at the cost of leaking the locus instance + its arena until
-process exit. Acceptable trade-off for v1 (matches `Bytes`
-lifetime semantics).
+**The struct goes back at the end of the instance's reclaim** (GH
+#1570). It comes from the runtime's returned-struct allocator
+(`lotus_returned_struct_alloc`) and is released at its reclaim's
+`ReleaseStruct` step, the last one: after the latch, the cancel of
+its queued runs, the wait for its admitted runs (a deferred reclaim
+releases when its runs end) and its arena's release. A loop over a
+factory therefore holds what is alive, not what was ever built: a
+discarded `mkw(i);`, a `let w = mkw(i);` and a call through a fn
+value each leave memory flat, however many locus types the loop hands
+back. A released struct is listed for reuse by a later struct of the
+same size, on a list of its own size (every size reachable, none scanned
+past a cap), and never returned to the
+operating system, as an accepted child's struct is: a stale teardown
+path reading the instance's `__arena` latch still reads memory the
+process owns, and finds it null. Where chunk recycling is off
+(`LOTUS_NO_CHUNK_POOL`, the default under a sanitizer, GH #816) each
+struct is allocated and freed on its own, so a read after the release
+is a sanitizer report.
 
-A return-slot ABI (caller passes a struct out-pointer +
-adopts the locus into its own deferred-dissolves frame) would
-tighten this without leaking — deferred to v1.x. Covers
-both `return Some { ... };` and `let s = Some { }; ...;
-return s;` because `current_user_fn_ret` is set during either
-literal's lowering.
+Which instances came from the allocator is decided per site and is
+not a property of the type, since a literal of the same type in a
+frame or a field lives elsewhere; the allocator records what it
+handed out and the release answers only for those. Codegen emits the
+release only in the reclaim of a type some fn's or method's declared
+return type names (through a tuple, an array or an interface it
+satisfies) or that is a locus field of one; a program that returns no
+locus from a fn emits nothing new. A literal of a type outside that
+set (a generic fn's `T`) and the program-lifetime literals codegen
+builds for `bindings { }` transports, adapters and codecs keep the
+program-lifetime payload arena. Deferred bloom (#1553), where a fn
+returns its plan and the locus is born at the consuming position, is
+the direction; this allocator is what the struct does until then.
 
 ## `@sealed` and a revealed secret
 
@@ -2963,8 +2985,8 @@ into `fn main`'s prelude, right after the bus queue is published:
 - Unix bindings call
   `lotus_bus_register_remote(subject, url, role)`.
 - Adapter bindings first instantiate the adapter locus with
-  program-lifetime allocation (same m90 routing the
-  `-> LocusRef(L)` return path uses), resolve the locus's `send`
+  program-lifetime allocation (the payload arena, which the
+  `-> LocusRef(L)` return path also used before GH #1570), resolve the locus's `send`
   method's function pointer, then call
   `lotus_bus_register_remote_adapter(subject, self, send_fn)`.
 

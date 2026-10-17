@@ -2754,6 +2754,25 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         self.builder
             .build_call(release_fn, &[owner_self_val.into(), self_ptr.into(), struct_size.into()], &name)
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        // GH #1570: a type whose struct a fn may hand back releases the
+        // struct here when this instance's came from
+        // `lotus_returned_struct_alloc`; the runtime answers only for a
+        // struct it handed out. Past this point nothing reads the struct
+        // but a stale teardown path's `__arena` latch, which the free-list
+        // keeps readable (and which ASan's malloc'd blocks make a report).
+        if self.returned_struct_loci.contains(locus_name) {
+            let returned_release = self
+                .module
+                .get_function("lotus_returned_struct_release")
+                .expect("lotus_returned_struct_release declared");
+            self.builder
+                .build_call(
+                    returned_release,
+                    &[self_ptr.into(), struct_size.into()],
+                    &format!("{name}.returned"),
+                )
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        }
         Ok(())
     }
 
@@ -2835,5 +2854,67 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             }
         }
         false
+    }
+}
+
+impl<'ctx, 'p> Cx<'ctx, 'p> {
+    /// GH #1570: fill `returned_struct_loci`, the locus types whose
+    /// struct a fn may hand back. The seeds are the declared return types
+    /// of the program's fns and locus methods: a locus they name, through
+    /// a tuple or an array, and each locus satisfying an interface they
+    /// name. The closure adds the locus fields of each, since a literal a
+    /// returned locus's params build lives as long as it does (m90's
+    /// `instantiating_into_payload_arena`). A return type the codegen
+    /// cannot type here (a generic fn's `T`) adds nothing: an
+    /// instantiation of a type outside the set keeps the program-lifetime
+    /// struct, so the set decides only which leaks are closed, never
+    /// whether a struct is released.
+    pub(crate) fn compute_returned_struct_loci(&mut self) {
+        let mut rets: Vec<hale_syntax::ast::TypeExpr> = Vec::new();
+        for item in hale_syntax::ast::flat_decls(&self.program.items) {
+            match item {
+                hale_syntax::ast::TopDecl::Fn(f) if f.generics.is_empty() => rets.extend(f.ret.clone()),
+                hale_syntax::ast::TopDecl::Locus(l) if l.generics.is_empty() => {
+                    for m in &l.members {
+                        if let hale_syntax::ast::LocusMember::Fn(f) = m {
+                            if f.generics.is_empty() {
+                                rets.extend(f.ret.clone());
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        let mut set: BTreeSet<String> = BTreeSet::new();
+        let mut work: Vec<CodegenTy> = Vec::new();
+        for te in &rets {
+            if let Ok(t) = self.type_expr_to_codegen_ty(te) {
+                work.push(t);
+            }
+        }
+        while let Some(t) = work.pop() {
+            match t {
+                CodegenTy::LocusRef(n) => {
+                    if self.user_loci.contains_key(&n) && set.insert(n.clone()) {
+                        let fields: Vec<CodegenTy> =
+                            self.user_loci[&n].fields.values().map(|(_, t)| t.clone()).collect();
+                        work.extend(fields);
+                    }
+                }
+                CodegenTy::Interface(iface) => {
+                    let names: Vec<String> = self.user_loci.keys().cloned().collect();
+                    for n in names {
+                        if !set.contains(&n) && self.locus_satisfies_interface(&n, &iface).unwrap_or(false) {
+                            work.push(CodegenTy::LocusRef(n));
+                        }
+                    }
+                }
+                CodegenTy::Tuple(ts) => work.extend(ts),
+                CodegenTy::Array(e, _) => work.push(*e),
+                _ => {}
+            }
+        }
+        self.returned_struct_loci = set;
     }
 }
