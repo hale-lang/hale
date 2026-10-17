@@ -1,0 +1,21 @@
+// The fn `quote` read as a value: its callers are not all known, so the
+// `Builder` it builds runs on domains the table cannot name.
+
+locus Builder {
+    params { n: Int = 0; }
+    fn add() { self.n = self.n + 1; }
+}
+
+fn quote(s: String) -> String {
+    let b = Builder { };
+    b.add();
+    return s;
+}
+
+fn apply(f: fn (String) -> String, s: String) -> String {
+    return f(s);
+}
+
+fn main() {
+    println(apply(quote, "x"));
+}

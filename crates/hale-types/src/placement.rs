@@ -1058,6 +1058,12 @@ struct Decls<'a> {
     renames: BTreeMap<String, String>,
     /// Every free fn, by universe and name.
     fns: BTreeSet<(SiteUniverse, String)>,
+    /// Every bare name read as a value with no binding in scope of it
+    /// (`crate::fn_values`), by universe, name and where it is read: a
+    /// fn's name read there is the fn passed as a value. A local, a
+    /// parameter or a pattern binder of the same name is the binding,
+    /// not the fn (F.40: a name is bound once).
+    value_reads: BTreeSet<(SiteUniverse, String, usize, usize)>,
     /// The checker's walk, where the caller has one: the types of
     /// assignment places and the monomorphs they name.
     typing: Option<&'a TypingRecord>,
@@ -1082,16 +1088,29 @@ impl<'a> Decls<'a> {
             types: BTreeSet::new(),
             renames: bundle.import_renames.iter().map(|(segs, m)| (segs.join("::"), m.clone())).collect(),
             fns: BTreeSet::new(),
+            value_reads: BTreeSet::new(),
             typing,
             templates: BTreeMap::new(),
         };
         for program in bundle.programs.values() {
             d.collect(&program.items, &bundle.snapshot, SiteUniverse::User, &mut Vec::new());
+            d.collect_value_reads(&program.items, SiteUniverse::User);
         }
         if let Some((program, ids)) = stdlib {
             d.collect(&program.items, ids, SiteUniverse::StdlibAnalysis, &mut Vec::new());
+            d.collect_value_reads(&program.items, SiteUniverse::StdlibAnalysis);
         }
         d
+    }
+
+    fn collect_value_reads(&mut self, items: &[TopDecl], universe: SiteUniverse) {
+        let mut sites = Vec::new();
+        crate::fn_values::value_name_sites(items, &mut sites);
+        for (name, span) in sites {
+            if let crate::fn_values::ValueName::Ident(n) = name {
+                self.value_reads.insert((universe, n, span.start.as_usize(), span.end.as_usize()));
+            }
+        }
     }
 
     fn collect(&mut self, items: &'a [TopDecl], ids: &Snapshot, universe: SiteUniverse, module: &mut Vec<String>) {
@@ -2996,8 +3015,9 @@ impl<'a, 'd> BodyWalk<'a, 'd> {
     fn expr(&mut self, e: &'a Expr) {
         match e {
             Expr::Ident(i) => {
-                // A name that is a free fn, read as a value.
-                if self.decls_has_fn(&i.name) {
+                // A free fn's name read as a value, where no binding in
+                // scope spells it.
+                if self.decls_has_fn(&i.name) && self.reads_fn_value(i) {
                     self.escapes.insert(i.name.clone());
                 }
             }
@@ -3091,6 +3111,10 @@ impl<'a, 'd> BodyWalk<'a, 'd> {
 
     fn decls_has_fn(&self, name: &str) -> bool {
         self.decls.fns.contains(&(self.universe, name.to_string()))
+    }
+
+    fn reads_fn_value(&self, i: &hale_syntax::ast::Ident) -> bool {
+        self.decls.value_reads.contains(&(self.universe, i.name.clone(), i.span.start.as_usize(), i.span.end.as_usize()))
     }
 }
 
