@@ -15910,23 +15910,29 @@ impl<'a> Checker<'a> {
                     }
                 }
                 let stored = stored.as_ref().unwrap_or(value);
-                // bounded[T; N] fields cannot be whole-assigned
-                // (even from another bounded of the same shape —
-                // no copy semantics exist; the mutation surface is
-                // push/clear).
-                if matches!(want, Ty::Bounded(_, _)) {
+                // A bounded[T; N] place is assigned whole only from
+                // another bounded value: the slots and the count are
+                // copied, as a whole-struct copy carries them
+                // (`spec/types.md` § bounded). Any other value (a
+                // literal, an array) has no bounded shape to copy;
+                // the intrinsics build one.
+                let bounded_refused = matches!(want, Ty::Bounded(_, _)) && !matches!(got, Ty::Bounded(_, _) | Ty::Unknown);
+                if bounded_refused {
                     self.diags.push(Diag::ty(
                         *span,
-                        "bounded[T; N] fields cannot be assigned as a \
-                         whole — mutate through push(...) / clear(...)"
-                            .to_string(),
+                        format!(
+                            "a `{}` is assigned whole only from another `{}`; build one \
+                             through push(...) / set(...) / clear(...)",
+                            want.display(),
+                            want.display()
+                        ),
                     ));
                 }
                 // A declared place supplies a bare generic literal's
                 // arguments, as a `let` ascription does: codegen rewrites
                 // `self.cfg = Cfg { .. }` against the place's type.
                 let monomorph = matches!(op, AssignOp::Eq) && self.admit_monomorph_literal(&want, &got, value, true);
-                if !monomorph && !self.flows_into(&want, &got, stored) {
+                if !monomorph && !bounded_refused && !self.flows_into(&want, &got, stored) {
                     self.diags.push(Diag::ty(
                         value.span(),
                         format!(

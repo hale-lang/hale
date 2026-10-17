@@ -1173,10 +1173,22 @@ file or line, and a payload-free enum, which lowers as a `Bool` does,
 was refused too.
 
 Semantics:
-- Fields auto-initialize EMPTY. Literal init and whole-field
-  assignment are rejected — the intrinsics are the only mutation
-  surface. Whole-STRUCT copies carry elements + count by
-  construction (the storage is inline).
+- Fields auto-initialize EMPTY. Literal init is rejected — the
+  intrinsics build a bounded value. Whole-STRUCT copies carry
+  elements + count by construction (the storage is inline).
+- A bounded place (a field, a locus param, a local bound from one) is
+  assigned whole only from a value of its own type, `bounded[T; N]`
+  with the same `T` and `N`: `row.models = req.models` copies the
+  count and the live slots, and each pointer-shaped element is
+  anchored in the place's owner's arena, as `push` anchors the one it
+  adds (the holding locus's arena, else the current one). It is a
+  copy: a later intrinsic on either side does not reach the other.
+  Any other value (an array literal, another element type or
+  capacity) is refused at the assignment ("a \`bounded[String; 4]\` is
+  assigned whole only from another \`bounded[String; 4]\` …").
+  Until 2026-10-17 every whole assignment was refused, with no
+  ruling behind it but a lowering that had none, so a copy between
+  two records' fields was a `push` loop.
 - Scalar elements (Int/Float/Bool/Decimal/Duration) are flat under
   `zero_copy` and travel the bus as raw bytes. A `Time` element is the
   i64 a `Duration` is and lowers inline the same way; it is not flat

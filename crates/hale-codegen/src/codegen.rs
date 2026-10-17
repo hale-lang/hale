@@ -18325,6 +18325,15 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         }
                     }
                 }
+                // A bounded[T; N] place assigned whole from another
+                // bounded value copies the slots and the count, as a
+                // whole-struct copy carries them (`spec/types.md` §
+                // bounded).
+                if matches!(op, AssignOp::Eq) {
+                    if let Some(CodegenTy::Bounded(elem, cap)) = self.place_declared_ty(target, scope) {
+                        return self.lower_bounded_whole_assign(target, &elem, cap, value, scope);
+                    }
+                }
                 // WS1#4: `self.<locusfield> = <LocusLiteral>` is a
                 // lifecycle transition (dissolve the old instance,
                 // construct a new one owned by the field), NOT a
@@ -33994,6 +34003,61 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             };
         }
         Some(ty)
+    }
+
+    /// `place = value` where the place is a `bounded[T; N]`: the
+    /// value's storage (`{ i64 len, [N x T] }`, inline in its
+    /// container) is copied over the place's, then each live slot of
+    /// a pointer-shaped element is anchored in the place's arena, as
+    /// a `push` anchors the one it adds: the holding locus's when a
+    /// locus holds the place (`self.r.names`, `h.names`), the current
+    /// one otherwise (a record local's field). A program that writes
+    /// no such assignment emits none of this.
+    fn lower_bounded_whole_assign(
+        &mut self,
+        target: &LValue,
+        elem: &CodegenTy,
+        cap: u64,
+        value: &Expr,
+        scope: &Scope<'ctx>,
+    ) -> Result<BlockEnd, CodegenError> {
+        let e = |err: inkwell::builder::BuilderError| CodegenError::LlvmEmit(err.to_string());
+        let (dest, owner) = if target.tail.is_empty() {
+            let (v, _) = self.lower_expr(&Expr::Ident(target.head.clone()), scope)?;
+            (v.into_pointer_value(), None)
+        } else {
+            let (slot, _, _, owner) = self.resolve_lvalue_chain(target, scope)?;
+            (slot, owner)
+        };
+        if let Some(o) = owner.as_ref().filter(|o| !o.is_self) {
+            let shown = format!("store into `{}`", o.locus.rsplit("__").next().unwrap_or(&o.locus));
+            let head = Expr::Ident(target.head.clone());
+            let recv = if target.tail.len() == 1 { Some(&head) } else { None };
+            let (ptr, locus) = (o.ptr, o.locus.clone());
+            self.emit_cross_pool_check(ptr, recv, &locus, &shown, target.span, scope)?;
+        }
+        let (src, src_ty) = self.lower_expr(value, scope)?;
+        if !matches!(&src_ty, CodegenTy::Bounded(se, sn) if se.as_ref() == elem && *sn == cap) {
+            return Err(CodegenError::Unsupported(format!(
+                "a `bounded` place assigned whole from a {src_ty:?}, not the place's own type"
+            )));
+        }
+        let arena = match owner {
+            Some(o) => {
+                let info = self.user_loci.get(&o.locus).cloned().expect("an lvalue's owner is a declared locus");
+                let ptr_t = self.context.ptr_type(AddressSpace::default());
+                let slot = self
+                    .builder
+                    .build_struct_gep(info.struct_ty, o.ptr, info.arena_field_idx, "bounded.assign.arena.ptr")
+                    .map_err(e)?;
+                self.builder.build_load(ptr_t, slot, "bounded.assign.arena").map_err(e)?.into_pointer_value()
+            }
+            None => self.current_arena_ptr()?,
+        };
+        let size = self.llvm_bounded_storage_type(elem, cap).size_of().expect("a sized bounded storage");
+        self.builder.build_memmove(dest, 8, src.into_pointer_value(), 8, size).map_err(e)?;
+        self.anchor_bounded_elems_in_place(dest, elem, cap, arena, "bounded.assign")?;
+        Ok(BlockEnd::Open)
     }
 
     /// Generic lvalue walker for assignment targets that the

@@ -312,3 +312,40 @@ fn legitimate_param_defaults_are_not_rejected() {
         );
     }
 }
+
+#[test]
+fn a_bounded_place_is_assigned_whole_from_its_own_type_only() {
+    // A bounded field copies another of its own type whole (the
+    // behaviour is pinned in tests/hale/bounded_whole_assign_test.hl);
+    // any other value is refused at the assignment, once, naming the
+    // place's type.
+    let ok = diags(
+        r#"
+        type A { xs: bounded[String; 4]; }
+        fn main() {
+            let mut a = A { };
+            let b = A { };
+            a.xs = b.xs;
+        }
+    "#,
+    );
+    assert!(ok.is_empty(), "a same-typed whole assignment checks clean; got: {ok:?}");
+    let ds = diags(
+        r#"
+        type A { xs: bounded[String; 4]; }
+        type B { xs: bounded[String; 8]; }
+        fn main() {
+            let mut a = A { };
+            let b = B { };
+            a.xs = b.xs;
+            a.xs = ["a"];
+        }
+    "#,
+    );
+    assert_eq!(ds.len(), 2, "one refusal per assignment; got: {ds:?}");
+    assert!(ds[0].contains("not assignable from `bounded[String; 8]`"), "got: {ds:?}");
+    assert!(
+        ds[1].contains("a `bounded[String; 4]` is assigned whole only from another `bounded[String; 4]`"),
+        "got: {ds:?}"
+    );
+}

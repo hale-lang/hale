@@ -246,6 +246,18 @@ is retired. Whole-struct copies carry the elements automatically, and
 scalar-element bounded values even cross the zero-copy bus as flat
 bytes.
 
+A bounded field can also be assigned whole from another bounded value
+of the same type, which copies its elements and its count:
+
+```hale,fragment
+row.tags = msg.tags;      // both bounded[String; 32]
+push(msg.tags, "late") or raise;
+println(count(row.tags)); // still 2: a copy, not a view
+```
+
+Anything else on the right — an array literal, a `bounded` of another
+element type or capacity — is refused; build the list with `push`.
+
 ## Why a form instead of a generic type
 
 A list isn't just "a type parameterized by its element" — it's a
