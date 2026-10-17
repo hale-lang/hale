@@ -361,7 +361,7 @@ impl<'a> Codec<'a> {
                     "if !__api_json_is_int(std::str::trim({body})) {{ {bail} }}\nlet {n} = std::str::parse_int(std::str::trim({body})) or {{ {bail} }};\n"
                 );
                 match c {
-                    Conv::Range(_) => format!("{ins}let {var} = {name}({n}) or {{ {bail} }};\n"),
+                    Conv::Range(..) => format!("{ins}let {var} = {name}({n}) or {{ {bail} }};\n"),
                     Conv::Identity(_) => format!("{ins}let {var} = {name}({n});\n"),
                     Conv::Quantity(m, u) => format!("{ins}let {var} = {n} * {m}{u};\n"),
                 }
@@ -436,7 +436,7 @@ impl PbCodec<'_> {
                 let n = format!("__n_{var}");
                 let ins = format!("let {n} = __api_pb_box_int({bytes}) or {{ {bail} }};\n");
                 match c {
-                    Conv::Range(_) => format!("{ins}let {var} = {name}({n}) or {{ {bail} }};\n"),
+                    Conv::Range(..) => format!("{ins}let {var} = {name}({n}) or {{ {bail} }};\n"),
                     Conv::Identity(_) => format!("{ins}let {var} = {name}({n});\n"),
                     Conv::Quantity(m, u) => format!("{ins}let {var} = {n} * {m}{u};\n"),
                 }
@@ -2089,12 +2089,19 @@ fn field_json(f: &crate::surfaces::FieldSchema) -> String {
             let min = if *exact { format!(",\"minItems\":{max}") } else { String::new() };
             format!("{{\"type\":\"array\",\"items\":{}{min},\"maxItems\":{max}}}", field_json(items))
         }
-        FieldSchema::Unformed => "{}".to_string(),
+        FieldSchema::Nullable { inner, .. } => format!("{{\"anyOf\":[{},{{\"type\":\"null\"}}]}}", field_json(inner)),
+        // no key of its own: `type_json` leaves it out
+        FieldSchema::Presence { .. } | FieldSchema::Unformed => "{}".to_string(),
     }
 }
 
 fn type_json(t: &crate::surfaces::TypeSchema) -> String {
-    let props: Vec<String> = t.properties.iter().map(|(k, f)| format!("{}:{}", jstr(k), field_json(f))).collect();
+    let props: Vec<String> = t
+        .properties
+        .iter()
+        .filter(|(_, f)| !matches!(f, crate::surfaces::FieldSchema::Presence { .. }))
+        .map(|(k, f)| format!("{}:{}", jstr(k), field_json(f)))
+        .collect();
     let req: Vec<String> = t.required.iter().map(|r| jstr(r)).collect();
     format!("{{\"type\":\"object\",\"properties\":{{{}}},\"required\":[{}]}}", props.join(","), req.join(","))
 }

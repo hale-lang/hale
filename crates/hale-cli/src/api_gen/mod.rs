@@ -18,6 +18,15 @@ pub(crate) fn unformed(what: &str) -> String {
     )
 }
 
+/// The refusal of an optional field (a presence pair, spec/api.md §
+/// Codecs), which the generated clients do not carry yet.
+pub(crate) fn optional_unsupported(what: &str) -> String {
+    format!(
+        "the surface names an optional field (`{what}`, a presence pair): the generated clients do not carry one \
+         yet, so the client is not generated rather than approximated"
+    )
+}
+
 /// A name the lexer reads as one plain identifier (not a keyword).
 fn is_plain_ident(name: &str) -> bool {
     use hale_syntax::lexer::{lex, TokenKind};

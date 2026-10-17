@@ -2121,6 +2121,14 @@ pub enum FieldSchema {
     /// `{"type": "array", "items": …, "maxItems": N}`, and `"minItems": N`
     /// for a fixed array (`exact`): a `bounded[T; N]` or a `[T; N]`.
     List { items: Box<FieldSchema>, max: u64, exact: bool },
+    /// An optional field, the first half of a presence pair (`x` beside
+    /// `has_x: Bool`, spec/api.md § Codecs): `{"anyOf": [<inner>, {"type":
+    /// "null"}]}`, never required. `flag` is its flag's field name.
+    Nullable { inner: Box<FieldSchema>, flag: String },
+    /// The presence flag of the optional field `of`: no JSON key (a JSON
+    /// document leaves it out of a record's properties), a `bool` field as
+    /// protobuf carries it.
+    Presence { of: String },
     /// A type the codec does not carry (law 5 refuses its row).
     Unformed,
 }
@@ -2205,12 +2213,28 @@ impl<'a> Schemas<'a> {
                     out.insert(name.to_string(), TypeSchema { properties: Vec::new(), required: Vec::new() });
                     let mut properties = Vec::new();
                     let mut required = Vec::new();
+                    let is_bool = |te: &TypeExpr| matches!(self.shapes.dealias(te), TypeExpr::Primitive(PrimType::Bool, _));
+                    let pairs = hale_syntax::json_gen::presence_pairs(fields, &is_bool);
                     for f in fields {
                         let key = f
                             .tag
                             .as_deref()
                             .and_then(|t| hale_syntax::desugar::tag_value(t, "json"))
                             .unwrap_or_else(|| f.name.name.clone());
+                        let name = f.name.name.as_str();
+                        if let Some((of, _)) = pairs.iter().find(|(_, flag)| *flag == name) {
+                            properties.push((key, FieldSchema::Presence { of: of.to_string() }));
+                            continue;
+                        }
+                        if let Some((_, flag)) = pairs.iter().find(|(of, _)| *of == name) {
+                            let inner = self.type_ref(&f.ty, out);
+                            let schema = match inner {
+                                FieldSchema::Unformed => FieldSchema::Unformed,
+                                inner => FieldSchema::Nullable { inner: Box::new(inner), flag: flag.to_string() },
+                            };
+                            properties.push((key, schema));
+                            continue;
+                        }
                         properties.push((key.clone(), self.type_ref(&f.ty, out)));
                         if hale_syntax::json_gen::wire_required(&self.shapes.dealias(&f.ty), f.default.is_some()) {
                             required.push(key);

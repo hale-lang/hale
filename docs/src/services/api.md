@@ -162,6 +162,25 @@ quantity crosses as its count: `1500000000` is `1.5s`. The description
 marks a `Time` `"format": "date-time"` and a `Duration` with its unit,
 `q(ns)`; the `.proto` carries both as `int64` nanoseconds.
 
+### Optional fields
+
+Hale has no optional type, so a field that may be missing says so with a
+partner: a `Bool` named `has_` and the field's name.
+
+```hale,fragment
+type Reply { text: String; has_text: Bool; reason: String; has_reason: Bool; }
+```
+
+On the wire `text` is a key the caller may leave out or send as `null`;
+either way `has_text` is `false` and `text` is its default (here `""`).
+Sent with a value, `has_text` is `true`. The flag is never a key of its
+own: the encoder writes `text` only when `has_text` is set and never writes
+`has_text`, and a request that sends `has_text` has it skipped like any
+unknown key. A list may be optional too, and then JSON tells "sent an empty
+list" (`[]`) from "left it out". The description marks the field as one
+that may be `null` and does not require it; the `.proto` carries both
+fields as they are declared.
+
 ### The digest
 
 Each surface folds into a **contract digest**: its rows in member

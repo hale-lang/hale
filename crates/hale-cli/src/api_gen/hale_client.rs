@@ -11,7 +11,7 @@ use std::collections::BTreeSet;
 use hale_types::surface_doc::{ClientError, ClientMember, ClientModel, ClientStream};
 use hale_types::surfaces::{FieldSchema, TypeSchema};
 
-use super::{camel, field_ident, hale_lit, json_quote, snake, type_ident, unformed};
+use super::{camel, field_ident, hale_lit, json_quote, optional_unsupported, snake, type_ident, unformed};
 
 const PREAMBLE: &str = include_str!("hale_preamble.hl");
 
@@ -32,6 +32,7 @@ fn hale_type(f: &FieldSchema, what: &str) -> Result<String, String> {
         FieldSchema::Time => Ok("Time".to_string()),
         FieldSchema::List { items, max, exact: false } => Ok(format!("bounded[{}; {max}]", hale_type(items, what)?)),
         FieldSchema::List { items, max, exact: true } => Ok(format!("[{}; {max}]", hale_type(items, what)?)),
+        FieldSchema::Nullable { .. } | FieldSchema::Presence { .. } => Err(optional_unsupported(what)),
         FieldSchema::Unformed => Err(unformed(what)),
     }
 }
@@ -64,6 +65,7 @@ fn encode(f: &FieldSchema, value: &str, what: &str) -> Result<String, String> {
         FieldSchema::Ref(name) => Ok(format!("api_enc_{}({value})", type_ident(name))),
         FieldSchema::Time => Ok(format!("api_str(std::time::iso8601({value}))")),
         // a list is written by its record's helper (`list_enc`), never inline
+        FieldSchema::Nullable { .. } | FieldSchema::Presence { .. } => Err(optional_unsupported(what)),
         FieldSchema::List { .. } | FieldSchema::Unformed => Err(unformed(what)),
     }
 }
@@ -80,6 +82,7 @@ fn decode_whole(f: &FieldSchema, json: &str, what: &str) -> Result<String, Strin
         FieldSchema::Ref(name) => Ok(format!("api_dec_{}({json})", type_ident(name))),
         FieldSchema::Time => Ok(format!("(std::time::parse_time(api_scalar_str({json})) or {EPOCH})")),
         // a list is read by its record's decoder (`list_dec`), never whole
+        FieldSchema::Nullable { .. } | FieldSchema::Presence { .. } => Err(optional_unsupported(what)),
         FieldSchema::List { .. } | FieldSchema::Unformed => Err(unformed(what)),
     }
 }
@@ -96,6 +99,7 @@ fn decode_field(f: &FieldSchema, json: &str, key: &str, what: &str) -> Result<St
         }),
         FieldSchema::Ref(name) => Ok(format!("api_dec_{}(std::json::find_field_raw({json}, {q}))", type_ident(name))),
         FieldSchema::Time => Ok(format!("(std::time::parse_time(std::json::find_string_field({json}, {q})) or {EPOCH})")),
+        FieldSchema::Nullable { .. } | FieldSchema::Presence { .. } => Err(optional_unsupported(what)),
         FieldSchema::List { .. } | FieldSchema::Unformed => Err(unformed(what)),
     }
 }

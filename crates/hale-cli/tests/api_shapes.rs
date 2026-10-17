@@ -286,3 +286,17 @@ fn the_javascript_client_carries_a_list_and_an_instant() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// An optional field (a presence pair, spec/api.md § Codecs) is carried by
+/// the served codecs and the description, and the generated clients refuse
+/// it by name rather than approximate it, in every language.
+#[test]
+fn the_generated_clients_refuse_an_optional_field_by_name() {
+    let program = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/hale/api/pb_optional_test.hl");
+    let program = program.to_str().expect("utf-8 path");
+    for lang in ["hale", "ts", "js"] {
+        let o = run(&["api", "client", "--surface", "PbOptional", "--lang", lang, program]);
+        assert_ne!(o.code, 0, "{lang}: a client was generated:\n{}", o.stdout);
+        assert!(o.stderr.contains("an optional field") && o.stderr.contains("presence pair"), "{lang}: {}", o.stderr);
+    }
+}

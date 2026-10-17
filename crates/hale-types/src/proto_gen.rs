@@ -247,6 +247,10 @@ fn carried(
         FieldSchema::List { .. } => Err(format!(
             "{member}: the {what} is a list, which crosses as a field of a record (law 5 refuses the row)"
         )),
+        // a presence pair is two fields of a record, never a row's whole shape
+        FieldSchema::Nullable { .. } | FieldSchema::Presence { .. } => Err(format!(
+            "{member}: the {what} is an optional field, which crosses as a field of a record"
+        )),
         FieldSchema::Unformed => Err(format!(
             "{member}: the {what} is a shape the codec does not carry (an enum, an array or a name the program does not declare), \
              so it has no proto3 encoding; no approximation is made"
@@ -283,6 +287,10 @@ pub fn from_model(model: &ClientModel) -> Result<ProtoFile, String> {
             reached.push(n);
             if let Some(t) = model.types.get(n) {
                 for (_, f) in &t.properties {
+                    let f = match f {
+                        FieldSchema::Nullable { inner, .. } => inner.as_ref(),
+                        f => f,
+                    };
                     match f {
                         FieldSchema::Ref(r) => work.push(r),
                         FieldSchema::List { items, .. } => {
@@ -415,7 +423,21 @@ fn record(display: &str, schema: &TypeSchema, surface: &str) -> Result<PMessage,
         }
         json_names.push((key, json));
         let number = i as u32 + 1;
-        fields.push(match f {
+        // an optional field is its value's field, its flag a field of its own
+        // (protobuf carries a presence pair as declared, spec/api.md § Codecs)
+        let (f, flag) = match f {
+            FieldSchema::Nullable { inner, flag } => (inner.as_ref(), Some(flag)),
+            f => (f, None),
+        };
+        let mut p = match f {
+            FieldSchema::Presence { of } => {
+                let mut p = field(key, number, Ty::Scalar(Scalar::Bool), Label::Optional);
+                p.comment = Some(format!("Hale: whether `{of}` is present"));
+                p
+            }
+            FieldSchema::Nullable { .. } => {
+                return Err(format!("{display}.{key}: an optional field inside an optional field has no proto3 encoding"))
+            }
             FieldSchema::Scalar { json, hale_type, unit } => {
                 let Some(s) = scalar_of(json) else {
                     return Err(format!("{display}.{key}: `{json}` has no proto3 scalar"));
@@ -469,7 +491,15 @@ fn record(display: &str, schema: &TypeSchema, surface: &str) -> Result<PMessage,
                      has no proto3 encoding; no approximation is made"
                 ))
             }
-        });
+        };
+        if let Some(flag) = flag {
+            let note = format!("optional, present when `{flag}`");
+            p.comment = Some(match p.comment.take() {
+                Some(c) => format!("{c}; {note}"),
+                None => format!("Hale: {note}"),
+            });
+        }
+        fields.push(p);
     }
     let mut m = message(&name, fields);
     if display != name {
