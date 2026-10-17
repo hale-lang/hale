@@ -194,6 +194,7 @@ fn api() {
         ContextWire::read  does={syscall,block,time,entropy,env,alloc,secret_use}
         KnowledgeWire::texts  does={alloc}
         LocalKnowledge::supported  does={env}
+        head_socket  does={syscall,block,time,env,alloc}
         launch_token  does={syscall,block,alloc}
         ",
     );
@@ -206,7 +207,7 @@ fn host_verb() {
     pinned("host/verb", 1, 1, "main  does={unclassified}");
 }
 
-/// host: 106 of 516 rows.
+/// host: 114 of 517 rows.
 #[test]
 fn host() {
     // GH #1554: the renames-blind side gains a row, `{alloc}` from a copy
@@ -214,7 +215,7 @@ fn host() {
     pinned(
         "host",
         512,
-        516,
+        517,
         "
         GovernanceCli::review_profile  does={syscall,block,time,entropy,env,alloc,secret_use}
         Host::ack_reading  does={publish,alloc}
@@ -261,6 +262,7 @@ fn host() {
         attached_application  does={syscall,block,alloc}
         base_of  does={syscall,block,time,entropy,env,alloc,secret_use}
         body_holder  does={syscall,block,env,alloc}
+        body_key  does={syscall,block,time,env,alloc}
         build_cache_dir  does={syscall,block,env,alloc}
         build_cache_keep  does={syscall,block,alloc}
         build_cache_touch  does={syscall,block,alloc}
@@ -299,6 +301,7 @@ fn host() {
         ledger_status  does={syscall,block,time,entropy,env,alloc,secret_use}
         memory_fence_for  does={syscall,block,time,entropy,env,alloc,secret_use}
         memory_migrate_verb  does={syscall,block,time,env,alloc,secret_use}
+        missing_drawn  does={syscall,block,time,env,alloc}
         model_key_vault  does={alloc}
         models_verb  does={syscall,block,alloc}
         nerves_drop_verb  does={syscall,block,time,entropy,env,alloc}
@@ -308,6 +311,7 @@ fn host() {
         node_main  does={syscall,env,alloc}
         nursery_sources_verb  does={syscall,block,time,entropy,env,alloc,secret_use}
         organism_here  does={syscall,block,time,env,alloc}
+        organism_secrets  does={syscall,block,time,env,alloc}
         owner_of_person_here  does={syscall,block,time,env,alloc}
         owners_here  does={syscall,block,time,env,alloc}
         ownership_graph_here  does={syscall,block,time,env,alloc}
@@ -315,7 +319,12 @@ fn host() {
         plan_rel_of  does={syscall,block,env,alloc}
         project_dir_name  does={syscall,block,alloc}
         project_name  does={syscall,block,alloc}
+        provision_secrets  does={syscall,block,time,env,alloc,secret_use}
+        record_identity  does={syscall,block,time,env,alloc}
         route_verb  does={syscall,block,time,env,alloc}
+        secrets_board  does={syscall,block,time,env,alloc}
+        secrets_provision_verb  does={syscall,block,time,env,alloc,secret_use}
+        secrets_status_verb  does={syscall,block,time,env,alloc}
         seeded_listing  does={syscall,block,time,entropy,env,alloc,secret_use}
         senses_up_verb  does={syscall,block,alloc}
         show_verb  does={syscall,block,time,env,alloc}
