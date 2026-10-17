@@ -68,6 +68,59 @@ fn genome_uncandidate(root: String, mutation: String) -> Bool {
     return genome(root, "update-ref\n-d\n" + dna::candidate_ref(mutation)).code == 0;
 }
 
+// Where a toolchain before GH #1590 kept candidates: read by the one-shot
+// migration below alone, never by a reader.
+const OLD_CANDIDATE_REFS: String = "refs/dna/candidates/";
+
+// What the migration did: candidates moved to their branches, old refs
+// whose branch already held the same commit, and why it stopped ("" when
+// it did not).
+type CandidatesMoved {
+    moved: Int = 0;
+    kept: Int = 0;
+    why: String = "";
+}
+
+// `hale dna upgrade`'s one-shot migration (GH #1590): every candidate a
+// toolchain before the branches kept as `refs/dna/candidates/<mutation>`
+// becomes the branch `dna/candidate/<mutation>`, and the old ref goes. A
+// branch already there at the same commit is kept; one at another commit
+// stops the migration with both named, and nothing about that candidate
+// is moved. Rerun, it moves what is left.
+@bounded_by(listed)
+fn genome_candidates_migrate(root: String) -> CandidatesMoved {
+    let listed = genome(root, "for-each-ref\n--format=%(refname) %(objectname)\n" + OLD_CANDIDATE_REFS);
+    if listed.code != 0 { return CandidatesMoved { why: "the old candidate refs could not be listed: " + dna::trim_nl(listed.stderr) }; }
+    let mut out = CandidatesMoved { };
+    let mut rest = listed.stdout;
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let line = if nl < 0 { rest } else { rest[0..nl] };
+        rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
+        let sp = std::str::index_of(line, " ");
+        if sp < 0 || !std::str::starts_with(line, OLD_CANDIDATE_REFS) { continue; }
+        let old = line[0..sp];
+        let sha = line[(sp + 1)..len(line)];
+        let mutation = old[len(OLD_CANDIDATE_REFS)..len(old)];
+        let held = genome_candidate(root, mutation);
+        if len(held) > 0 && held != sha {
+            out.why = "candidate " + mutation + ": " + old + " is at " + sha + ", but the branch dna/candidate/" + mutation + " is at " + held + "; neither is moved (keep one, delete the other, and upgrade again)";
+            return out;
+        }
+        if len(held) == 0 {
+            // created only where nothing is: a branch made meanwhile is not overwritten
+            let made = genome(root, "update-ref\n" + dna::candidate_ref(mutation) + "\n" + sha + "\n" + "0000000000000000000000000000000000000000");
+            if made.code != 0 { out.why = "candidate " + mutation + " could not become a branch: " + dna::trim_nl(made.stderr); return out; }
+            out.moved = out.moved + 1;
+        } else {
+            out.kept = out.kept + 1;
+        }
+        let gone = genome(root, "update-ref\n-d\n" + old + "\n" + sha);
+        if gone.code != 0 { out.why = "candidate " + mutation + " is a branch now, but " + old + " could not be removed: " + dna::trim_nl(gone.stderr); return out; }
+    }
+    return out;
+}
+
 // The branch a deployed revision is published as on the genome's forge, so
 // every node can fetch it by its sha (`genome_fetch_commit`).
 fn revision_branch(rev: String) -> String { return "dna/revision/" + rev; }
