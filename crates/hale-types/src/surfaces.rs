@@ -1132,6 +1132,11 @@ fn json_refusal(
         if path.is_empty() || hale_syntax::json_gen::wire_list(&elem).is_some() {
             return Some((path.clone(), type_text(te)));
         }
+        // an enum with payloads is no list's element (a `bounded` cannot
+        // hold one, spec/types.md § bounded[T; N]); a payload-free one is
+        if matches!(shapes.classify(&elem), TypeClass::Enum { variants, .. } if variants.iter().any(|v| !v.fields.is_empty())) {
+            return Some((path.clone(), type_text(te)));
+        }
         // an element refused is named as the list's field, by the list's type
         // when the element is no record (a record's own field names itself)
         return match json_refusal(shapes, &elem, path, seen) {
@@ -1155,6 +1160,33 @@ fn json_refusal(
             None
         }
         TypeClass::Builtin(_) => None,
+        // An enum is carried, a payload-free variant as its name and one
+        // with values as an object keyed by it (spec/api.md § Codecs). A
+        // value is what a field of its type is, but never a list and never
+        // an enum with payloads of its own; it is named as the variant.
+        TypeClass::Enum { name, variants } => {
+            if !seen.insert(name.to_string()) {
+                return None;
+            }
+            for v in variants {
+                for value in &v.fields {
+                    path.push(v.name.name.clone());
+                    let d = shapes.dealias(value);
+                    let nested_payload = matches!(
+                        shapes.classify(&d),
+                        TypeClass::Enum { variants, .. } if variants.iter().any(|v| !v.fields.is_empty())
+                    );
+                    if hale_syntax::json_gen::wire_list(&d).is_some() || nested_payload {
+                        return Some((path.clone(), type_text(value)));
+                    }
+                    if let Some(r) = json_refusal(shapes, value, path, seen) {
+                        return Some(r);
+                    }
+                    path.pop();
+                }
+            }
+            None
+        }
         TypeClass::Struct { name, fields } => {
             if !seen.insert(name.to_string()) {
                 return None;
@@ -2129,6 +2161,12 @@ pub enum FieldSchema {
     /// document leaves it out of a record's properties), a `bool` field as
     /// protobuf carries it.
     Presence { of: String },
+    /// An enum (spec/api.md § Codecs), inline where it is used: `name` its
+    /// declared name, and each variant with the schemas of its values (none
+    /// for a payload-free variant). A payload-free enum is `{"type":
+    /// "string", "enum": [...]}`; one with payloads a `oneOf` of that and an
+    /// object per variant with values, keyed by the variant.
+    Enum { name: String, variants: Vec<(String, Vec<FieldSchema>)> },
     /// A type the codec does not carry (law 5 refuses its row).
     Unformed,
 }
@@ -2259,7 +2297,21 @@ impl<'a> Schemas<'a> {
                 }
                 FieldSchema::Ref(name.to_string())
             }
-            TypeClass::Enum | TypeClass::Other => FieldSchema::Unformed,
+            TypeClass::Enum { name, variants } => {
+                let mut out_variants = Vec::new();
+                for v in variants {
+                    let mut values = Vec::new();
+                    for value in &v.fields {
+                        match self.type_ref(value, out) {
+                            FieldSchema::Unformed => return FieldSchema::Unformed,
+                            f => values.push(f),
+                        }
+                    }
+                    out_variants.push((v.name.name.clone(), values));
+                }
+                FieldSchema::Enum { name: self.shapes.display_name(name), variants: out_variants }
+            }
+            TypeClass::Other => FieldSchema::Unformed,
         }
     }
 }

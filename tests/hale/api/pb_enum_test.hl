@@ -1,0 +1,109 @@
+// An enum crosses the protobuf codec (spec/api.md § Codecs, § gRPC).
+//
+// A payload-free enum is its variant's number from 0, in declaration order: a
+// field of it is a varint, a list of it a `repeated` field. An enum with
+// payloads is a message of one `oneof`, its members numbered from 1 in
+// declaration order: a payload-free variant a `bool`, a variant of one value
+// that value's field, one of several a message of fields `v0`, `v1`, ... JSON
+// in, protobuf through, JSON out gives back the same text; a number no variant
+// has is `wrong_type`; a message with no member is `missing_field`; of two
+// members the last wins, as proto3 merges a `oneof`. This program names no
+// port: the serve site is in a method nothing calls, which is all the compiler
+// needs to write the codecs (and the gRPC thunks of a row that is an enum).
+
+unit cent;
+type Money = quantity Int in cent;
+
+type Inner { a: Int; }
+type Status = enum { Up, Down, Gone };
+type Shape = enum { Empty, Circle(Float), Tag(String), Rect(Int, Int), Boxed(Inner), At(Time), Mood(Status), Cost(Money) };
+type Holder { s: Status; shape: Shape; many: bounded[Status; 3]; }
+
+api PbEnum {
+    rpc Probe::holder;
+    rpc Probe::shape;
+    rpc Probe::status;
+}
+
+locus Probe {
+    fn holder(h: Holder) -> Holder { return h; }
+    fn shape(s: Shape) -> Shape { return s; }
+    fn status(s: Status) -> Status { return s; }
+}
+
+locus Tokens {
+    fn principal(token: String) -> std::api::Principal {
+        return std::api::Principal { mode: "bearer", name: "" };
+    }
+    fn refused() -> String { return "no such token"; }
+}
+
+main locus Desk {
+    params {
+        probe: Probe = Probe { };
+        bearer: Tokens = Tokens { };
+        // Served only so the compiler writes the codecs; nothing calls it.
+        h: api::Exposure = api::serve(PbEnum, grpc::Rpc { bind: "127.0.0.1:0", codec: json, principals: self.bearer }, as: "pb", receivers: { Probe: self.probe }, bound: 4, on_full: refuse);
+    }
+
+    // JSON in, protobuf through, JSON out: the same text.
+    fn round(json: String, what: String) {
+        let v = __api_decode_Holder(json) or {
+            std::test::assert(false, what + ": the JSON decoder: " + err.kind + " " + err.field);
+            return;
+        };
+        let back = __api_pb_decode_Holder(__api_pb_encode_Holder(v)) or {
+            std::test::assert(false, what + ": the protobuf decoder: " + err.kind + " " + err.field);
+            return;
+        };
+        std::test::assert_eq_str(__api_encode_Holder(back), json, what);
+    }
+
+    fn shape_reads(bytes: Bytes, json: String, what: String) {
+        let v = __api_pb_decode_Shape(bytes, "shape") or {
+            std::test::assert(false, what + ": " + err.kind + " " + err.field);
+            return;
+        };
+        std::test::assert_eq_str(__api_encode_Shape(v), json, what);
+    }
+
+    fn shape_fails(bytes: Bytes, kind: String, what: String) {
+        let got = __api_pb_decode_Shape(bytes, "shape") or {
+            std::test::assert_eq_str(err.kind, kind, what + ": the kind");
+            std::test::assert_eq_str(err.field, "shape", what + ": the field");
+            return;
+        };
+        std::test::assert(false, what + ": it decoded " + __api_encode_Shape(got));
+    }
+
+    run() {
+        // ---- every variant, through a record ----
+        self.round("{\"s\":\"Up\",\"shape\":\"Empty\",\"many\":[]}", "the first variants, an empty list");
+        self.round("{\"s\":\"Gone\",\"shape\":{\"Circle\":-2.5},\"many\":[\"Down\",\"Up\",\"Gone\"]}", "a value, a full list");
+        self.round("{\"s\":\"Down\",\"shape\":{\"Tag\":\"x y\"},\"many\":[\"Up\"]}", "a string value");
+        self.round("{\"s\":\"Down\",\"shape\":{\"Rect\":[0,-9]},\"many\":[]}", "several values, a zero among them");
+        self.round("{\"s\":\"Down\",\"shape\":{\"Boxed\":{\"a\":4}},\"many\":[]}", "a record value");
+        self.round("{\"s\":\"Down\",\"shape\":{\"At\":\"2026-10-17T03:04:05.5Z\"},\"many\":[]}", "an instant value");
+        self.round("{\"s\":\"Down\",\"shape\":{\"Mood\":\"Up\"},\"many\":[]}", "a payload-free enum value, at its zero");
+        self.round("{\"s\":\"Down\",\"shape\":{\"Cost\":125},\"many\":[]}", "a quantity value");
+
+        // ---- the wire, by hand ----
+        self.shape_reads(__api_pb_put_bool(1, true), "\"Empty\"", "member 1, a payload-free variant");
+        self.shape_reads(__api_pb_put_int(7, 2), "{\"Mood\":\"Gone\"}", "member 7, a payload-free enum's number");
+        let two = std::bytes::concat(__api_pb_put_str(3, "first"), __api_pb_put_int(4, 0));
+        self.shape_fails(two, "wrong_type", "member 4 sent as a varint, not its message");
+        let last = std::bytes::concat(__api_pb_put_str(3, "first"), __api_pb_put_bool(1, true));
+        self.shape_reads(last, "\"Empty\"", "of two members the last wins");
+        self.shape_fails(std::bytes::from_string(""), "missing_field", "no member");
+        self.shape_fails(__api_pb_put_int(7, 9), "wrong_type", "a number no variant has");
+
+        let bad_status = __api_pb_decode_Holder(std::bytes::concat(__api_pb_put_int(1, 3), __api_pb_put_msg(2, __api_pb_put_bool(1, true)))) or {
+            std::test::assert_eq_str(err.kind, "wrong_type", "a status no variant has: the kind");
+            std::test::assert_eq_str(err.field, "s", "a status no variant has: the field");
+            return;
+        };
+        std::test::assert(false, "a status no variant has decoded " + __api_encode_Holder(bad_status));
+    }
+}
+
+fn main() { Desk { }; }

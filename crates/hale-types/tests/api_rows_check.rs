@@ -346,3 +346,41 @@ fn a_qualified_role_nothing_declares_is_refused_as_written() {
         "{errors:#?}"
     );
 }
+
+/// An enum is carried, as a field, a payload-free one as a list's element,
+/// and as a whole request or response; a variant's value that is a list, or
+/// an enum with payloads of its own, is refused named by the variant, and so
+/// is a list of an enum with payloads (spec/api.md § Codecs).
+#[test]
+fn law_5_an_enum_is_carried() {
+    let enums = "
+type Inner { a: Int; }
+type Status = enum { Up, Down };
+type Shape = enum { Empty, Circle(Float), Rect(Int, Int), Boxed(Inner), Mood(Status), At(Time) };
+type Holder { s: Status; shape: Shape; many: bounded[Status; 4]; }
+type Listy = enum { Many(bounded[Int; 3]) };
+type Deep = enum { Inside(Shape) };
+type Shapes { all: bounded[Shape; 2]; }
+locus Board {
+    fn hold(h: Holder) -> Holder { return h; }
+    fn whole(s: Shape) -> Status { return Status::Up; }
+    fn listy(h: Holder) -> Listy { return Listy::Many([]); }
+    fn deep(h: Holder) -> Deep { return Deep::Inside(Shape::Empty); }
+    fn shapes(h: Holder) -> Shapes { return Shapes { }; }
+}
+";
+    let rows = |api: &str| row_errors(&format!("{BASE}\n{enums}\n{api}"));
+    assert!(rows("api Boards { rpc Board::hold; rpc Board::whole; }").is_empty(), "an enum is carried");
+    assert_eq!(
+        rows("api Boards { rpc Board::listy; }"),
+        vec!["rpc `Board::listy`: its response `Listy` has a field `Many: bounded[Int; 3]`, which the JSON codec does not carry"]
+    );
+    assert_eq!(
+        rows("api Boards { rpc Board::deep; }"),
+        vec!["rpc `Board::deep`: its response `Deep` has a field `Inside: Shape`, which the JSON codec does not carry"]
+    );
+    assert_eq!(
+        rows("api Boards { rpc Board::shapes; }"),
+        vec!["rpc `Board::shapes`: its response `Shapes` has a field `all: bounded[Shape; 2]`, which the JSON codec does not carry"]
+    );
+}

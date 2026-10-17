@@ -404,6 +404,38 @@ fn field_schema(f: &FieldSchema, base: &str) -> J {
         }
         // no key of its own: `type_schema` leaves it out
         FieldSchema::Presence { .. } | FieldSchema::Unformed => J::Obj(Vec::new()),
+        FieldSchema::Enum { name, variants } => {
+            let units: Vec<J> = variants.iter().filter(|(_, v)| v.is_empty()).map(|(n, _)| s(n)).collect();
+            let unit_count = units.len();
+            let unit = |units: Vec<J>| vec![("type".to_string(), s("string")), ("enum".to_string(), J::Arr(units))];
+            if unit_count == variants.len() {
+                let mut pairs = unit(units);
+                pairs.push(("x-hale-type".to_string(), s(name)));
+                return J::Obj(pairs);
+            }
+            let mut one = Vec::new();
+            if unit_count > 0 {
+                one.push(J::Obj(unit(units)));
+            }
+            for (v, values) in variants.iter().filter(|(_, v)| !v.is_empty()) {
+                let value = match values.as_slice() {
+                    [only] => field_schema(only, base),
+                    many => o(vec![
+                        ("type", s("array")),
+                        ("prefixItems", J::Arr(many.iter().map(|f| field_schema(f, base)).collect())),
+                        ("minItems", J::Int(many.len() as i64)),
+                        ("maxItems", J::Int(many.len() as i64)),
+                    ]),
+                };
+                one.push(o(vec![
+                    ("type", s("object")),
+                    ("properties", J::Obj(vec![(v.clone(), value)])),
+                    ("required", J::Arr(vec![s(v)])),
+                    ("additionalProperties", J::Bool(false)),
+                ]));
+            }
+            o(vec![("oneOf", J::Arr(one)), ("x-hale-type", s(name))])
+        }
     }
 }
 
