@@ -373,28 +373,36 @@ locus __StdIoTcpConnections {
 // time, so a stalled client holds the whole server for up to that
 // long; on an async_io pool each connection is a coroutine of its
 // own (`__StdIoTcpConnFlow`), the recv parks only that one, and the
-// deadline still ends it. A 1 MiB cap bounds
-// total request bytes: a declared Content-Length over the cap
-// answers 413 before buffering; overflow without a complete
-// header block closes without a response (the framing can't be
-// trusted). Keep-alive stays unsupported (Connection: close);
+// deadline still ends it. `max_request` (the Server's
+// `max_request_bytes`, 1 MiB unless set, at most 1 GiB) bounds total
+// request bytes: a declared Content-Length over the cap answers
+// `too_large` (the Server's, `413 payload too large` unless set)
+// before buffering; overflow without a complete header block closes
+// without a response (the framing can't be trusted). Keep-alive stays
+// unsupported (Connection: close);
 // Transfer-Encoding: chunked is not parsed.
-fn __http_handle_one_conn(conn_fd: Int, h: std::http::Handler) {
+fn __http_handle_one_conn(
+    conn_fd: Int,
+    h: std::http::Handler,
+    max_request_bytes: Int,
+    too_large_resp: std::http::Response
+) {
     let _ = std::io::tcp::__set_recv_timeout_ns(conn_fd, 5000000000);
     let s = std::io::tcp::Stream { conn_fd: conn_fd };
-    let max_request = 1048576;
+    let max_request = min(max_request_bytes, 1073741824);
     let mut raw = "";
     let mut header_end = 0 - 1;
     let mut need = 0;
     let mut too_large = false;
     // Each pass ends the loop or appends at least one byte, and
-    // `max_request` bytes end it: at most max_request + 1 reads. The
-    // ceiling says so where the memory survey reads it (a const-bounded
-    // `while` counter), so what a connection reads is known bounded and
-    // a connection served on a coroutine of its own (__StdIoTcpConnFlow)
-    // is one activation, not a long-lived frame.
+    // `max_request` bytes end it: at most max_request + 1 reads, and
+    // `max_request` is at most 1 GiB. The ceiling says so where the
+    // memory survey reads it (a const-bounded `while` counter), so what
+    // a connection reads is known bounded and a connection served on a
+    // coroutine of its own (__StdIoTcpConnFlow) is one activation, not a
+    // long-lived frame.
     let mut reads = 0;
-    while reads < 1048578 {
+    while reads < 1073741826 {
         if header_end >= 0 && len(raw) - (header_end + 4) >= need {
             break;
         }
@@ -427,10 +435,7 @@ fn __http_handle_one_conn(conn_fd: Int, h: std::http::Handler) {
         return;
     }
     if too_large {
-        std::http::write_response(s, std::http::Response {
-            status: 413,
-            body: "payload too large"
-        });
+        std::http::write_response(s, too_large_resp);
         return;
     }
     let mut req = std::http::parse_request(raw);
@@ -471,14 +476,20 @@ fn __http_handle_one_conn(conn_fd: Int, h: std::http::Handler) {
     std::http::write_response(s, resp);
 }
 
-/// The HTTP connection handler: reads one request (reassembled, 1 MiB cap,
-/// 5 s recv timeout), asks `handler`, writes the response.
+/// The HTTP connection handler: reads one request (reassembled, at most
+/// `max_request_bytes`, 5 s recv timeout), asks `handler`, writes the
+/// response; a request over the cap is answered `too_large`.
 locus __StdHttpResponder {
     params {
         handler: std::http::Handler;
+        max_request_bytes: Int = 1048576;
+        too_large: std::http::Response = std::http::Response {
+            status: 413,
+            body: "payload too large"
+        };
     }
     fn serve(c: __StdIoTcpAccepted) {
-        __http_handle_one_conn(c.fd, self.handler);
+        __http_handle_one_conn(c.fd, self.handler, self.max_request_bytes, self.too_large);
     }
 }
 
@@ -513,6 +524,14 @@ locus __StdHttpServer {
         ready_signal: String = "";
         // On an async_io pool, the most connections served at once.
         max_connections: Int = 256;
+        // The most bytes one request may carry, head and body (at most
+        // 1 GiB); a request with a larger declared Content-Length is
+        // answered `too_large` without reading its body.
+        max_request_bytes: Int = 1048576;
+        too_large: std::http::Response = std::http::Response {
+            status: 413,
+            body: "payload too large"
+        };
         // "" = the bound address (unique even for `port: 0`)
         name: String = "";
         // the name it goes by, and its socket: both set at birth
@@ -524,7 +543,11 @@ locus __StdHttpServer {
         // failed holds no subscription that matches a live listener's
         relay: __StdIoTcpRelay = __StdIoTcpRelay { };
         conns: __StdIoTcpConnections = __StdIoTcpConnections {
-            handler: __StdHttpResponder { handler: self.handler },
+            handler: __StdHttpResponder {
+                handler: self.handler,
+                max_request_bytes: self.max_request_bytes,
+                too_large: self.too_large
+            },
             armed: false
         };
     }
@@ -549,7 +572,11 @@ locus __StdHttpServer {
             // a rebirth: the consumer a previous birth built leaves its
             // route before this birth can fail
             self.conns = __StdIoTcpConnections {
-                handler: __StdHttpResponder { handler: self.handler },
+                handler: __StdHttpResponder {
+                    handler: self.handler,
+                    max_request_bytes: self.max_request_bytes,
+                    too_large: self.too_large
+                },
                 armed: false
             };
         }
@@ -567,7 +594,11 @@ locus __StdHttpServer {
         self.relay.armed = true;
         self.conns = __StdIoTcpConnections {
             listener: self.listener,
-            handler: __StdHttpResponder { handler: self.handler },
+            handler: __StdHttpResponder {
+                handler: self.handler,
+                max_request_bytes: self.max_request_bytes,
+                too_large: self.too_large
+            },
             max_connections: self.max_connections
         };
         if len(self.ready_signal) > 0 {

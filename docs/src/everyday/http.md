@@ -54,8 +54,13 @@ them — because the `Api` locus is alive for the whole run.
   bounds it to N requests (handy for tests); the default runs
   until stopped. POST bodies are reassembled per `Content-Length`,
   so clients that write headers and body in separate segments
-  (python's urllib, for one) work; requests are capped at 1 MiB
-  (oversized declared bodies get a `413`).
+  (python's urllib, for one) work. A request is capped at
+  `max_request_bytes` (1 MiB unless you set it, at most 1 GiB), and
+  one whose declared body is over the cap is answered with the
+  Server's `too_large` response without its body being read: a
+  plain-text `413 payload too large` unless you set your own, such as
+  `too_large: std::http::Response { status: 413, content_type:
+  "application/json", body: "{\"error\":\"too large\"}" }`.
 
 ## Serving many requests at once
 
