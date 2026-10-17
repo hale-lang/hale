@@ -54,8 +54,8 @@ crates/hale-cli/tests/fixtures/hale-test-mixed/pass_test.hl b1e7c383d7515c93
 crates/hale-cli/tests/fixtures/hale-test-pass/arith_test.hl 7ba49c53bd84fd5d
 crates/hale-cli/tests/fixtures/hale-test-pass/strings_test.hl 7ba49c53bd84fd5d
 crates/hale-cli/tests/fixtures/hot-factory-ambig/plain.hl 5fbea6e08b712dbc
-crates/hale-cli/tests/fixtures/hot-factory-app/main.hl 865d341109268295
-crates/hale-cli/tests/fixtures/hot-factory-lib/matrix.hl f58a9d028a76a94b
+crates/hale-cli/tests/fixtures/hot-factory-app/main.hl 90900b8058a0b246
+crates/hale-cli/tests/fixtures/hot-factory-lib/matrix.hl dc4c4982e1ee269c
 crates/hale-cli/tests/fixtures/imported-main-claims/app-adopt/main.hl f2c1228edb650960
 crates/hale-cli/tests/fixtures/imported-main-claims/app-bad-collision/main.hl c4d04e0410a37ec1
 crates/hale-cli/tests/fixtures/imported-main-claims/app-bad-own-main/main.hl c127bf169c3824bd

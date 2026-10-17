@@ -3,17 +3,26 @@ import "../hot-factory-ambig" as plain;
 
 fn main() {
     let mut i = 0;
-    // `zeros` has a unique tail: this must warn.
+    // `zeros` returns a locus: this must warn.
     while i < 3 {
         let m = mat::zeros(i);
         i = i + 1;
     }
-    // `build` is exported by BOTH seeds with different return types,
-    // so the tail is ambiguous and must stay silent.
+    // `build` is exported by BOTH seeds with different return types;
+    // the alias names the declaration: `mat::build` warns,
+    // `plain::build` does not.
     let mut j = 0;
     while j < 3 {
         let b = mat::build(j);
+        let c = plain::build(j);
         j = j + 1;
+    }
+    // A stdlib call is never a call of the program's fns, whatever
+    // their names end with: the library's `one_arg` returns a locus.
+    let mut k = 0;
+    while k < std::env::args_count() {
+        let a = std::env::arg(k);
+        k = k + 1;
     }
     println("done");
 }

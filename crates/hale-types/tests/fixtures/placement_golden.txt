@@ -535,7 +535,7 @@ dynamic	Conn	on main	in the seed
 == crates/hale-cli/tests/fixtures/g34-lib-b/wrap.hl#ebe49800
 dynamic	<hole>	on unknown (no caller)|unresolved declaration `c::Box`|unresolved declaration `c::Holder`	in the seed
 
-== crates/hale-cli/tests/fixtures/hot-factory-lib/matrix.hl#11822460
+== crates/hale-cli/tests/fixtures/hot-factory-lib/matrix.hl#7f96866b
 
 == crates/hale-cli/tests/fixtures/imported-main-claims/app/main.hl#3ee20fd1
 dynamic	<hole>	on main|unresolved declaration `chat::Room`	in the seed

@@ -1,5 +1,5 @@
-/// Same tail name as the factory next door, different return type.
-/// Neither seed can be told apart from a bare `build` at this layer.
+/// Same name as the factory next door, different return type: the
+/// alias a call is written through says which one it is.
 fn build(n: Int) -> Int {
     return n * 2;
 }
