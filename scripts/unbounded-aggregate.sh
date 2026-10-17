@@ -40,20 +40,24 @@ set -uo pipefail
 cd "$(dirname "$0")/.." || exit 1
 
 format=plain
-if [ "${1:-}" = "--markdown" ]; then
-    format=markdown
-    shift
-fi
-case "${1:-}" in
-    -h|--help)
-        sed -n '2,/^set -uo/p' "$0" | sed '$d; s/^# \{0,1\}//'
-        exit 0
-        ;;
-    -*)
-        echo "usage: scripts/unbounded-aggregate.sh [--markdown] [target ...]" >&2
-        exit 2
-        ;;
-esac
+# Options anywhere among the targets: a target never starts with `-`,
+# so a misplaced flag is not taken for one.
+targets=()
+for arg in "$@"; do
+    case "$arg" in
+        --markdown) format=markdown ;;
+        -h|--help)
+            sed -n '2,/^set -uo/p' "$0" | sed '$d; s/^# \{0,1\}//'
+            exit 0
+            ;;
+        -*)
+            echo "usage: scripts/unbounded-aggregate.sh [--markdown] [target ...]" >&2
+            exit 2
+            ;;
+        *) targets+=("$arg") ;;
+    esac
+done
+set -- "${targets[@]+"${targets[@]}"}"
 
 # shellcheck source=scripts/unbounded-reports.sh
 . scripts/unbounded-reports.sh || exit 1
@@ -90,8 +94,8 @@ cat "$work"/out/*[0-9] 2>/dev/null | awk -F'\t' -v OFS='\t' -v inventory="$work/
         }
     }
 ' > "$work/rows" || exit 1
-sort -t: -k1,1 -k2,2n "$work/rows" > "$work/byplace" || exit 1
-sort -t"$(printf '\t')" -k7,7nr -k8,8nr -k1,1 "$work/rows" > "$work/bysurvey" || exit 1
+LC_ALL=C sort -t: -k1,1 -k2,2n "$work/rows" > "$work/byplace" || exit 1
+LC_ALL=C sort -t"$(printf '\t')" -k7,7nr -k8,8nr -k1,1 "$work/rows" > "$work/bysurvey" || exit 1
 
 # The report as tagged lines, rendered below: `H` a heading, `P` a
 # paragraph, `T` a table's header, `R` its row, `E` its end, `D`/`/D`
@@ -151,7 +155,7 @@ awk -F'\t' -v OFS='\t' -v ntargets="$ntargets" -v reporting="$reporting" -v none
             if (!most && totsurvey > 0 && acc * 10 >= totsurvey * 8) most = i
         }
         if (totsurvey > 0)
-            print "P", "Concentration: the top 20 silence " top " of " totsurvey " survey sites (" pct(top, totsurvey) "); the top " half " silence half of them, the top " most " (" pct(most, judged) " of the judged) 80%."
+            print "P", "Concentration: the top 20 silence " top " of " totsurvey " survey sites (" pct(top, totsurvey) "); the top " half " silence half of them, the top " most " (" pct(most, judged) " of the judged) silence 80%."
         print "H", "Top 20 by survey sites silenced"
         print "T", "#", "place", "fn", "kind", "programs (silencing/reaching)", "survey sites", "hot-path warnings"
         for (i = 1; i <= nb && i <= 20; i++) row(bys[i], i)
@@ -232,5 +236,11 @@ if [ -s "$work/stray" ]; then
     # A reported line no decorator is written on: the report and the
     # inventory disagree about where a decorator is.
     cat "$work/stray" >&2
+fi
+# A report that every program failed to produce is all zeros and reads
+# as valid: say so and fail (a broken HALE_BIN, say).
+if [ "$reporting" -eq 0 ] && [ "$failed" -gt 0 ]; then
+    echo "unbounded-aggregate: no program reported ($failed did not check); the table above is empty" >&2
+    exit 1
 fi
 exit 0

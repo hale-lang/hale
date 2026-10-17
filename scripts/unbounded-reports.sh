@@ -45,7 +45,7 @@ unbounded_reports() {
 
     work=$(mktemp -d "${TMPDIR:-/tmp}/$me.XXXXXX") || exit 1
     # shellcheck disable=SC2064 # expand $work now: the trap outlives this function
-    trap "rm -rf '$work'" EXIT
+    trap "rm -rf $(printf '%q' "$work")" EXIT
 
     if [ "$#" -gt 0 ]; then
         printf '%s\n' "$@" > "$work/targets" || exit 1
