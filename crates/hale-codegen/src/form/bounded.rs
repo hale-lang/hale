@@ -485,6 +485,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 // call. The _ptr helper same-arena-skips (String
                 // clone skip / lotus_arena_contains_ptr gate), so
                 // an already-anchored value is identity.
+                self.refuse_element_through_member_param("push", &args[0], &elem, scope)?;
                 let xv = if Self::bounded_elem_is_ptr(&elem) {
                     let target = self.bounded_owner_arena(&args[0], place_owner.clone(), scope)?;
                     self.emit_cross_arena_store_deep_copy_ptr(
@@ -719,6 +720,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 self.builder.position_at_end(ok_bb);
                 // Pointer-shaped elements anchor into the
                 // receiver's owning arena, same as push.
+                self.refuse_element_through_member_param("set", &args[0], &elem, scope)?;
                 let xv = if Self::bounded_elem_is_ptr(&elem) {
                     let target = self.bounded_owner_arena(&args[0], place_owner.clone(), scope)?;
                     self.emit_cross_arena_store_deep_copy_ptr(
@@ -814,6 +816,37 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         }
         Ok(alloc_ptr)
+    }
+
+    /// The scope key that marks a locus member's parameter: not an
+    /// identifier, so no program name meets it.
+    pub(crate) fn param_place_key(name: &str) -> String {
+        format!("#member-param:{name}")
+    }
+
+    /// The backstop of the check's refusal (`check.rs`,
+    /// `refuse_element_through_param`): a pointer-shaped element stored
+    /// into a bounded place under a locus member's parameter would be kept
+    /// in the member's scratch, which its return frees under the caller's
+    /// place.
+    fn refuse_element_through_member_param(&self, intrinsic: &str, recv: &Expr, elem: &CodegenTy, scope: &Scope<'ctx>) -> Result<(), CodegenError> {
+        fn root(e: &Expr) -> Option<&str> {
+            match e {
+                Expr::Ident(i) => Some(i.name.as_str()),
+                Expr::Field { receiver, .. } | Expr::Index { receiver, .. } => root(receiver),
+                _ => None,
+            }
+        }
+        if !Self::bounded_elem_is_ptr(elem) {
+            return Ok(());
+        }
+        match root(recv) {
+            Some(r) if scope.locals.contains_key(&Self::param_place_key(r)) => Err(CodegenError::UnsupportedAt(
+                format!("`{intrinsic}` of a pointer-shaped element into a bounded place under the member parameter `{r}`"),
+                recv.span(),
+            )),
+            _ => Ok(()),
+        }
     }
 
     /// Pointer-shaped bounded element? (String/Bytes/TypeRef slots

@@ -474,3 +474,61 @@ fn ir_fn_body(ir: &str, name: &str) -> Option<String> {
     let end = lines.iter().position(|l| *l == "}")?;
     Some(lines[..=end].join("\n"))
 }
+
+/// GH #1608 follow-up: the shape the check gives in place of an element
+/// stored through a parameter's place: a free fn fills a record of the
+/// calling frame, and the method stores it whole into its field, which
+/// anchors the elements in the locus's arena. Under AddressSanitizer
+/// (chunk recycling off) the field reads whole after the methods returned.
+/// The refused member shape is refused by the build too.
+#[test]
+fn a_record_filled_by_a_free_fn_and_stored_whole_outlives_its_method_under_asan() {
+    let src = r#"
+        type Row { xs: bounded[String; 4]; }
+        fn fill(r: Row, k: Int) {
+            clear(r.xs);
+            push(r.xs, "free fn " + to_string(k)) or raise;
+            push(r.xs, std::str::upper("second ") + to_string(k)) or raise;
+        }
+        locus L {
+            params { row: Row = Row { }; }
+            fn put(k: Int) {
+                let mut mine = Row { };
+                fill(mine, k);
+                self.row = mine;
+            }
+            fn read() -> String { return (at(self.row.xs, 0) or "") + "|" + (at(self.row.xs, 1) or ""); }
+        }
+        fn main() {
+            let l = L { };
+            let mut k = 0;
+            while k < 50 {
+                l.put(k);
+                k = k + 1;
+            }
+            println(l.read());
+        }
+    "#;
+    let bin = harness::unique_bin("bounded_param_place_asan");
+    let options = hale_codegen::BuildOptions { asan: true, ..build_opts::options() };
+    build_opts::build_source(src, &bin, &options).expect("asan build");
+    let out = Command::new(&bin).output().expect("run");
+    let _ = std::fs::remove_file(&bin);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success() && !stderr.contains("AddressSanitizer"), "{:?}: {stderr}", out.status);
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "free fn 49|SECOND 49\n");
+
+    let refused = r#"
+        type Row { xs: bounded[String; 4]; }
+        locus L {
+            params { row: Row = Row { }; }
+            fn through(r: Row, k: Int) { push(r.xs, "m" + to_string(k)) or raise; }
+            fn put(k: Int) { self.through(self.row, k); }
+        }
+        fn main() { let l = L { }; l.put(1); }
+    "#;
+    let bin = harness::unique_bin("bounded_param_place_refused");
+    let err = build_opts::build_source(refused, &bin, &build_opts::options()).expect_err("the member shape is refused");
+    let _ = std::fs::remove_file(&bin);
+    assert!(format!("{err:?}").contains("under the member parameter `r`"), "{err:?}");
+}

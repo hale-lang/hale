@@ -485,12 +485,77 @@ fn an_assignment_target_names_only_declared_fields() {
                 r.ps[0].b = 3;
                 let h = Inner { };
                 h.repo = "v";
+
+/// GH #1608 follow-up: a pointer-shaped element stored into a bounded place
+/// under a parameter is kept in the frame that calls (a free fn) or in the
+/// member's scratch (a locus member). A free fn's call that hands it a
+/// place of a locus is refused at the argument, and so is a member doing
+/// it at all; a frame-local place, a copy of a record, a scalar element and
+/// a free fn's own body are sound.
+#[test]
+fn an_element_stored_through_a_parameters_place_is_refused_where_it_cannot_last() {
+    let ds = diags(
+        r#"
+        type Row { xs: bounded[String; 4]; n: bounded[Int; 4]; }
+        fn fill(r: Row, k: Int) { push(r.xs, "x" + to_string(k)) or raise; }
+        fn relay(r: Row, k: Int) { fill(r, k); }
+        fn ints(r: Row) { push(r.n, 1) or raise; }
+        locus L {
+            params { row: Row = Row { }; }
+            fn put(k: Int) {
+                fill(self.row, k);
+                relay(self.row, k);
+                ints(self.row);
+                let mut mine = Row { };
+                fill(mine, k);
+                let copy = self.row;
+                fill(copy, k);
+                self.row = mine;
+            }
+            fn through(r: Row, k: Int) {
+                set(r.xs, 0, "m" + to_string(k)) or raise;
             }
         }
         fn main() { }
     "#,
     );
     assert!(ds.is_empty(), "{ds:?}");
+    let calls: Vec<&String> = ds.iter().filter(|m| m.contains("stores pointer-shaped elements")).collect();
+    assert_eq!(calls.len(), 2, "fill(self.row) and relay(self.row); got: {ds:?}");
+    assert!(calls.iter().all(|m| m.contains("this locus's arena")), "{ds:?}");
+    assert!(calls[0].starts_with("`fill`") && calls[1].starts_with("`relay`"), "{ds:?}");
+    let member: Vec<&String> = ds.iter().filter(|m| m.contains("under a parameter of a locus member")).collect();
+    assert_eq!(member.len(), 1, "the member's own set; got: {ds:?}");
+    assert!(member[0].starts_with("`set` of a `String` element"), "{ds:?}");
+    assert_eq!(ds.len(), 3, "nothing else: {ds:?}");
+}
+
+/// The stdlib's `std::http::is_route` writes its captures into
+/// `ctx.params`: a context a locus holds is refused as its argument, and a
+/// frame's own is not.
+#[test]
+fn is_route_on_a_context_a_locus_holds_is_refused() {
+    let ds = diags(
+        r#"
+        locus Api {
+            params { last: std::http::Context = std::http::build_context(std::http::Request { method: "GET", path: "/", body: "" }); }
+            fn handle(req: std::http::Request) -> std::http::Response {
+                let ctx = std::http::build_context(req);
+                if std::http::is_route(ctx, "GET", "/u/:id") {
+                    return std::http::Response { status: 200, body: std::http::path_param(ctx.params, "id") };
+                }
+                if std::http::is_route(self.last, "GET", "/v/:id") {
+                    return std::http::Response { status: 200, body: "" };
+                }
+                return std::http::Response { status: 404, body: "" };
+            }
+        }
+        fn main() { }
+    "#,
+    );
+    let hits: Vec<&String> = ds.iter().filter(|m| m.contains("stores pointer-shaped elements")).collect();
+    assert_eq!(hits.len(), 1, "{ds:?}");
+    assert!(hits[0].starts_with("`std::http::is_route`"), "{ds:?}");
 }
 
 /// `==` on an enum holds only when every payload of every variant has its
