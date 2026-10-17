@@ -775,7 +775,7 @@ pub fn item_names_tcp_serve(item: &TopDecl) -> bool {
 }
 
 /// Where the substrate parses: the last window of the runtime's space.
-const TCP_SERVE_BASE: u32 = RUNTIME_BASE + 0x00F0_0000;
+pub const TCP_SERVE_BASE: u32 = RUNTIME_BASE + 0x00F0_0000;
 
 /// Where `std::io::tcp::Listener` parses: past the substrate, in the same
 /// last window of the runtime's space.
@@ -829,7 +829,7 @@ impl TcpServeDecls {
 }
 
 /// Where the substrate's topic parses.
-const TCP_TOPICS_BASE: u32 = API_SYNTH_BASE + 0x0500_0000 + 0x0030_0000;
+pub const TCP_TOPICS_BASE: u32 = API_SYNTH_BASE + 0x0500_0000 + 0x0030_0000;
 
 /// Whether an offset is in the TCP substrate's appended source or its
 /// topic's: a declaration [`inject_tcp_serve`] appended.

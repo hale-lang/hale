@@ -5576,6 +5576,9 @@ dynamic	Small	on main
 root	App	the entry
 row	App@literal1	App	main	default
 
+== crates/hale-types/tests/alloc_summary_reach.rs#a705abe6
+row	Book@main1	Book	main	default
+
 == crates/hale-types/tests/alloc_summary_reclaim_boundary.rs#2b149b94
 -- App@main1	App
 row	~	App	main	default

@@ -1189,11 +1189,13 @@ pub struct AllocSummary {
     pub locus_shapes: BTreeMap<String, LocusShape>,
     /// The fns the program reaches, when the summary holds the stdlib's
     /// analysis copy beside the program: the program's own fns, what
-    /// their calls reach, and the hooks and bus handlers of every locus
-    /// they start (an instantiation, or a param field of a started
-    /// locus). A copy's fn the program never reaches is not run, so it
-    /// invokes nothing ([`AllocSummary::unbounded_invoked`]). `None` when
-    /// every fn is the program's.
+    /// their calls reach (a method call whose receiver the walk could not
+    /// type, the method of its name of every copy locus they start), and
+    /// the hooks and
+    /// bus handlers of every locus they start (an instantiation, or a
+    /// param field of a started locus). A copy's fn the program never
+    /// reaches is not run, so it invokes, passes and consumes nothing
+    /// ([`AllocSummary::runs`]). `None` when every fn is the program's.
     pub reached: Option<BTreeSet<FnKey>>,
     /// The loci each body starts (a literal of the locus in it): what
     /// [`AllocSummary::unbounded_invoked`] follows from an unboundedly
@@ -1543,6 +1545,28 @@ pub struct LeakSite {
 }
 
 impl AllocSummary {
+    /// Whether the fn `key` can run: one the program reaches
+    /// ([`AllocSummary::reached`]), or any fn when every fn is the
+    /// program's. The passes that join over the rows read only these: a
+    /// copy's fn the program never reaches calls nothing, consumes
+    /// nothing and seeds no long-lived frame.
+    fn runs(&self, key: &FnKey) -> bool {
+        self.reached.as_ref().is_none_or(|r| r.contains(key))
+    }
+
+    /// Each fn's callers among the fns that run ([`AllocSummary::runs`]).
+    fn callers(&self) -> BTreeMap<FnKey, BTreeSet<FnKey>> {
+        let mut callers: BTreeMap<FnKey, BTreeSet<FnKey>> = BTreeMap::new();
+        for f in self.fns.values().filter(|f| self.runs(&f.key)) {
+            for c in &f.calls {
+                if let Callee::Resolved(callee) = &c.callee {
+                    callers.entry(callee.clone()).or_default().insert(f.key.clone());
+                }
+            }
+        }
+        callers
+    }
+
     /// Fns reached under an unbounded-multiplicity context — the call-graph
     /// half of the bound solver. Seeded with bus handlers (per-message),
     /// then a fixed point: a resolved callee is invoked unboundedly if its
@@ -1656,14 +1680,16 @@ impl AllocSummary {
     /// — a value consumed there dies at its exit. A flow's `run()` that
     /// is one activation ([`AllocSummary::flow_run_is_activation`]) is
     /// not long-lived either: it runs once per flow instance and the
-    /// flow's arena is reclaimed when it returns, so it seeds nothing.
+    /// flow's arena is reclaimed when it returns, so it seeds nothing,
+    /// and neither does a hook of the stdlib's analysis copy the program
+    /// never reaches ([`AllocSummary::runs`]).
     fn scratchless_longlived(&self) -> BTreeSet<FnKey> {
         let flow_run = |f: &FnSummary| self.flow_run_is_activation(f);
         let mut set: BTreeSet<FnKey> = self
             .fns
             .values()
             .filter(|f| {
-                matches!(f.entry, Some(EntryKind::Main) | Some(EntryKind::Run)) && !flow_run(f)
+                matches!(f.entry, Some(EntryKind::Main) | Some(EntryKind::Run)) && !flow_run(f) && self.runs(&f.key)
             })
             .map(|f| f.key.clone())
             .collect();
@@ -1966,17 +1992,7 @@ impl AllocSummary {
         let unbounded = self.unbounded_invoked();
         let scratchless = self.scratchless_longlived();
         let repeated = self.repeated_in_longlived(&scratchless);
-        let mut callers: BTreeMap<FnKey, BTreeSet<FnKey>> = BTreeMap::new();
-        for f in self.fns.values() {
-            for c in &f.calls {
-                if let Callee::Resolved(callee) = &c.callee {
-                    callers
-                        .entry(callee.clone())
-                        .or_default()
-                        .insert(f.key.clone());
-                }
-            }
-        }
+        let callers = self.callers();
         let mut out = Vec::new();
         for f in self.fns.values() {
             // `@unbounded` is the acknowledged carve-out — its sites never
@@ -2016,17 +2032,7 @@ impl AllocSummary {
         let unbounded = self.unbounded_invoked();
         let scratchless = self.scratchless_longlived();
         let repeated = self.repeated_in_longlived(&scratchless);
-        let mut callers: BTreeMap<FnKey, BTreeSet<FnKey>> = BTreeMap::new();
-        for f in self.fns.values() {
-            for c in &f.calls {
-                if let Callee::Resolved(callee) = &c.callee {
-                    callers
-                        .entry(callee.clone())
-                        .or_default()
-                        .insert(f.key.clone());
-                }
-            }
-        }
+        let callers = self.callers();
         let mut out = String::new();
         out.push_str("# allocation summary (GH #18 item 1, steps 1-3 + D1 slot shape)\n");
         let own_fns: Vec<&FnSummary> = self.fns.values().filter(|f| self.is_own(&f.key)).collect();
@@ -2199,14 +2205,16 @@ pub fn derive_alloc_summary_over(
     summarize_identified_over(&identified, &bundle.import_renames, views)
 }
 
-/// The check's allocation summary (and the effect rows', the certificate
-/// engine's and every reader's the snapshot hands it to): the summary of
-/// [`derive_alloc_summary_over`], over an owned-view column with the
-/// stdlib's analysis copy beside the programs where they can reach it
-/// ([`crate::stdlib_reach`]) rather than whole. The column is derived
-/// here, from the checker's walk of the programs (`views`, `monos`) and
-/// the intra-locus relation (`sends`); the snapshot's column, the one
-/// lowering reads, stays whole, since lowering lowers every stdlib body. Every body of the copy is summarized ([`summarize_within`]).
+/// The check's allocation summary, which the effect rows, the certificate
+/// engine and every reader the snapshot hands it to read: the summary of
+/// [`derive_alloc_summary_over`] with the stdlib's analysis copy beside
+/// the programs where they can reach it ([`crate::stdlib_reach`]) rather
+/// than whole ([`summarize_within`]).
+///
+/// The owned-view column it reads is derived here over the same reach,
+/// from the checker's walk of the programs (`views`, `monos`) and the
+/// intra-locus relation (`sends`). The snapshot's column, the one
+/// lowering reads, stays whole, since lowering lowers every stdlib body.
 /// When the column or the summary resolves into an item outside the
 /// reach, the reach widens and both are derived again, so every row of
 /// the program and every copy row it reaches is the row the whole copy
@@ -2417,19 +2425,19 @@ pub fn summarize_identified_over(
         .unwrap_or_else(|_| unreachable!("every body of the stdlib's analysis copy is walked without a reach"))
 }
 
-/// [`summarize_identified_over`] beside a restricted owned-view column:
-/// `views` holds the copies of the stdlib's analysis copy's bodies in
-/// `reach` alone (`None`: every one). Every body of the copy is still
-/// summarized, and every pass reads every row, as beside the whole copy:
-/// the passes that join over all the rows (a parameter's provenance, a
-/// long-lived frame's reach, a returned value's callers) read rows the
-/// program never reaches. A row outside the reach lacks only the column's
-/// copies, which no row the program reaches reads. So the summary is the
-/// whole copy's but for those copies, if the reach is closed under what
-/// the summary follows: no row of the program or of the reach calls a
-/// body outside it, or starts a locus outside it. When one does, the
-/// summary is `Err` with the items those are in, for the caller to widen
-/// the reach to.
+/// [`summarize_identified_over`] with the bodies of the stdlib's analysis
+/// copy summarized where `reach` says (`None`: every one), beside an
+/// owned-view column over the same reach. Every declaration of the copy
+/// is read whatever the reach, so what a call resolves to is what it
+/// resolves to beside the whole copy. The passes that join over the rows
+/// (a parameter's provenance, a long-lived frame's seeds, a returned
+/// value's callers) read only the rows the program reaches, as the
+/// unbounded-invocation fixpoint does, so a body outside the reach moves
+/// no row the program reaches. The summary is the whole copy's on every
+/// row it holds if the reach is closed under what the rows follow: no row
+/// inside it calls a body outside it, or starts a locus outside it. When
+/// one does, the summary is `Err` with the items those are in, for the
+/// caller to widen the reach to.
 pub fn summarize_within(
     identified: &[(&Program, &crate::snapshot::Snapshot)],
     import_renames: &[(Vec<String>, String)],
@@ -3388,7 +3396,9 @@ pub fn summarize_within(
         bodies.iter().enumerate()
     {
         if let Some(top) = beyond_body(ids, *decl) {
+            summary.analysis_copy.insert(key.clone());
             beyond_keys.insert(key.clone(), top);
+            continue;
         }
         let (row, starts, skipped) =
             walk(key, body, *entry, enclosing_locus, param_types, fn_params, param_elems, params, str_params, ids, (*hot, *mode, decl_index));
@@ -3753,6 +3763,18 @@ pub fn summarize_within(
                 }
             }
         }
+        // A method call whose receiver the walk could not type may be a
+        // call of a method of its name on any locus a value of the program
+        // can be: the copy's methods of the name, on each copy locus that
+        // reached code starts (an instance exists only where code that runs
+        // builds one), run, as the provenance pass taints them all.
+        let mut copy_methods: BTreeMap<&str, Vec<&FnKey>> = BTreeMap::new();
+        for b in bodies.iter().filter(|b| is_stdlib_copy(b.7)) {
+            if let Some(l) = &b.0.locus {
+                copy_methods.entry(l.as_str()).or_default().push(&b.0);
+            }
+        }
+        let mut untyped: BTreeSet<&str> = BTreeSet::new();
         let mut reached: BTreeSet<FnKey> = BTreeSet::new();
         let mut work: Vec<FnKey> = own.into_iter().collect();
         loop {
@@ -3767,6 +3789,8 @@ pub fn summarize_within(
                         .filter(|f| f.key.locus.as_ref() == Some(&l) && f.entry.is_some())
                         .map(|f| f.key.clone()),
                 );
+                let methods = copy_methods.get(l.as_str()).into_iter().flatten();
+                work.extend(methods.filter(|m| untyped.contains(m.fn_name.as_str())).map(|m| (*m).clone()));
                 pending.extend(param_starts.get(&l).into_iter().flatten().cloned());
             }
             let Some(k) = work.pop() else { break };
@@ -3775,8 +3799,17 @@ pub fn summarize_within(
             }
             let Some(f) = summary.fns.get(&k) else { continue };
             for c in &f.calls {
-                if let Callee::Resolved(callee) = &c.callee {
-                    work.push(callee.clone());
+                match &c.callee {
+                    Callee::Resolved(callee) => work.push(callee.clone()),
+                    Callee::Unresolved(name) if c.receiver_present => {
+                        if untyped.insert(name.as_str()) {
+                            for l in &started {
+                                let methods = copy_methods.get(l.as_str()).into_iter().flatten();
+                                work.extend(methods.filter(|m| m.fn_name == *name).map(|m| (*m).clone()));
+                            }
+                        }
+                    }
+                    Callee::Unresolved(_) => {}
                 }
             }
             pending.extend(starts_of.get(&k).into_iter().flatten().cloned());
@@ -3799,6 +3832,9 @@ pub fn summarize_within(
                 Callee::Unresolved(_) => None,
             })
             .collect();
+        // And a fn the program reaches through a call whose receiver the
+        // walk could not type is a row, so what it does counts.
+        beyond.extend(summary.reached.iter().flatten().filter_map(|k| beyond_keys.get(k).copied()));
         let starts = summary.starts.iter().filter(|(k, _)| !beyond_keys.contains_key(*k)).flat_map(|(_, s)| s);
         let started = starts.chain(&reached_loci).chain(summary.startable.iter().flatten());
         beyond.extend(started.filter_map(|l| beyond_loci.get(l).copied()));
@@ -3881,7 +3917,9 @@ fn idents_of(e: &Expr, out: &mut BTreeSet<String>) -> bool {
 /// no such record, and a parameter it leaves that has a default carries
 /// anything. A parameter with no call — a bus handler's
 /// message, a hook's argument — carries nothing: the runtime passes a
-/// fresh value.
+/// fresh value. Only a call in a fn that runs passes anything
+/// ([`AllocSummary::runs`]): a body of the stdlib's analysis copy the
+/// program never reaches is never executed.
 ///
 /// A field replace whose new value read only parameters then retires
 /// what it replaces when none of them may carry the field.
@@ -3908,7 +3946,7 @@ fn resolve_param_provenance(
             }
             false
         }
-        for f in summary.fns.values() {
+        for f in summary.fns.values().filter(|f| summary.runs(&f.key)) {
             for e in &f.calls {
                 let args: Vec<Taint> = e
                     .arg_taints
@@ -3966,7 +4004,7 @@ fn resolve_param_provenance(
         // transport's own pattern dialect, topics declared over subjects,
         // computed subjects) nor by type (aliases): every handler of the
         // locus receives what any of its publishes carries.
-        for f in summary.fns.values() {
+        for f in summary.fns.values().filter(|f| summary.runs(&f.key)) {
             let Some(locus) = &f.key.locus else { continue };
             let Some(subs) = subscriptions.get(locus) else { continue };
             for payload in &f.sends {

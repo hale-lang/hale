@@ -1670,6 +1670,7 @@ crates/hale-types/tests/accept_interface.rs#1 5ce01e4fb1d38105
 crates/hale-types/tests/accept_interface.rs#4 fea5ca7870373122
 crates/hale-types/tests/accept_interface.rs#5 761a88edace86511
 crates/hale-types/tests/alloc_summary_construction_correction.rs#1 8b8b4884fce28645
+crates/hale-types/tests/alloc_summary_reach.rs#0 a07acd3ac5e577da
 crates/hale-types/tests/alloc_summary_reclaim_boundary.rs#0 07485b203c148070
 crates/hale-types/tests/alloc_summary_reclaim_boundary.rs#2 f7961b180a777bce
 crates/hale-types/tests/alloc_summary_reclaim_boundary.rs#3 d37ebff210892572

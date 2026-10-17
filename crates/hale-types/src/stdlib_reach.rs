@@ -432,6 +432,22 @@ mod tests {
         }
     }
 
+    /// The copy declares no perspective: a perspective's fns are no rows
+    /// of the allocation summary, so the summary's reach reads loci and
+    /// fns alone (`summarize_within`'s out-of-reach declarations). A
+    /// perspective added to the stdlib is added there too.
+    #[test]
+    fn the_copy_declares_no_perspective() {
+        let program = crate::stdlib_bodies::program().expect("the stdlib parses");
+        let perspectives: Vec<&str> = hale_syntax::ast::flat_decls(&program.items)
+            .filter_map(|d| match d {
+                TopDecl::Perspective(p) => Some(p.name.name.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(perspectives.is_empty(), "the stdlib declares {perspectives:?}");
+    }
+
     /// A program reaches what it names and no more: hello world reaches
     /// only what every program does, and naming a stdlib locus by its
     /// path reaches it and the declarations it names.
