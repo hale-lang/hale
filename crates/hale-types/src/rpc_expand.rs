@@ -775,7 +775,7 @@ pub fn item_names_tcp_serve(item: &TopDecl) -> bool {
 }
 
 /// Where the substrate parses: the last window of the runtime's space.
-const TCP_SERVE_BASE: u32 = RUNTIME_BASE + 0x00F0_0000;
+pub const TCP_SERVE_BASE: u32 = RUNTIME_BASE + 0x00F0_0000;
 
 /// Where `std::io::tcp::Listener` parses: past the substrate, in the same
 /// last window of the runtime's space.
