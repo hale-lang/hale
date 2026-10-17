@@ -25,6 +25,9 @@ hale-dna = { path = "../hale-dna" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "0.8"
+# GH #1590: `hale dna init`/`upgrade` pin the record in hale.toml by
+# editing the parsed document, so the manifest's layout and comments survive.
+toml_edit = "0.22"
 # GH #408 Phase 7: ES256 fleet signatures. System OpenSSL on
 # purpose — it is already an inherent build/runtime dependency
 # (codegen links every native build against -lssl -lcrypto, and

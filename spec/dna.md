@@ -4002,9 +4002,15 @@ The live half is memory's, projected from the record by the spine
   the record has its first row, and `hale dna upgrade` pins a record
   made before the pin, so a clone knows which record — which schema,
   roles and nerves token — it belongs to from its genome.
-  `record_identity_at` (`dna/core/memory_spine.hl`) reads it: with no
-  pin the identity is the record's root commit, as before; with a pin
-  that is not 40 or 64 lowercase hex digits, or that names another
+  `init` and `upgrade` write it into the `dna` table wherever the
+  manifest keeps it (a `[dna]` header in any spelling, dotted keys, an
+  inline table), editing the parsed document so the rest of the file
+  survives. `record_identity_at` (`dna/core/memory_spine.hl`) reads it
+  wherever TOML lets it stand, as a basic or a literal string: with no
+  pin the identity is the record's root commit, as before; a pin present
+  but not readable there (not a string, a multi-line string, a basic
+  string with escapes) is refused, never taken for no pin; and with a
+  pin that is not 40 or 64 lowercase hex digits, or that names another
   record than the root commit this clone holds, there is none, and
   memory, its leases, its knowledge and `hale dna memory migrate`
   refuse with both identities named rather than open either record's

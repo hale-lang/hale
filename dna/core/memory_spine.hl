@@ -39,29 +39,134 @@ type RecordIdentity {
     why: String = "";
 }
 
-// The value of `key` in `hale.toml`'s `[dna]` table at `root`, "" when
-// the file, the table or the key is absent. A value is a basic string on
-// one line (`key = "value"`, a trailing comment allowed).
-fn manifest_dna(root: String, key: String) -> String {
+// A value of `hale.toml`'s `dna` table as read: absent (`present` false),
+// a string (`value`), or present and unreadable here (`why`), which a
+// caller refuses rather than reads as absent: a pin it cannot read is
+// never no pin (GH #1590).
+type ManifestValue {
+    present: Bool = false;
+    value: String = "";
+    why: String = "";
+}
+
+// `line` up to a `#` that is not inside a string.
+fn toml_uncomment(line: String) -> String {
+    let mut open_q = "";
+    let mut i = 0;
+    while i < len(line) {
+        let c = line[i..(i + 1)];
+        if len(open_q) == 0 {
+            if c == "#" { return line[0..i]; }
+            if c == "\"" || c == "'" { open_q = c; }
+        } else if c == open_q {
+            open_q = "";
+        } else if c == "\\" && open_q == "\"" {
+            i = i + 1;
+        }
+        i = i + 1;
+    }
+    return line;
+}
+
+// The first index of `ch` in `s` outside a string, -1 for none.
+fn toml_index_outside(s: String, ch: String) -> Int {
+    let mut open_q = "";
+    let mut i = 0;
+    while i < len(s) {
+        let c = s[i..(i + 1)];
+        if len(open_q) == 0 {
+            if c == ch { return i; }
+            if c == "\"" || c == "'" { open_q = c; }
+        } else if c == open_q {
+            open_q = "";
+        }
+        i = i + 1;
+    }
+    return -1;
+}
+
+// A key or a table name, its dotted parts unquoted and joined by `.`
+// (`"dna" . record` is `dna.record`); a part with an escape is `?`, which
+// matches nothing.
+fn toml_dotted(path: String) -> String {
+    let mut out = "";
+    let mut rest = path;
+    let mut more = true;
+    while more {
+        let dot = toml_index_outside(rest, ".");
+        let part = std::str::trim(if dot < 0 { rest } else { rest[0..dot] });
+        let mut name = part;
+        let basic = std::str::starts_with(part, "\"") && std::str::ends_with(part, "\"");
+        let literal = std::str::starts_with(part, "'") && std::str::ends_with(part, "'");
+        if len(part) >= 2 && (basic || literal) {
+            name = part[1..(len(part) - 1)];
+            if basic && std::str::contains(name, "\\") { name = "?"; }
+        }
+        out = if len(out) == 0 { name } else { out + "." + name };
+        more = dot >= 0;
+        rest = if dot < 0 { "" } else { rest[(dot + 1)..len(rest)] };
+    }
+    return out;
+}
+
+// A one-line string value: basic (`"…"`, without escapes) or literal (`'…'`).
+fn toml_string(raw: String) -> ManifestValue {
+    let v = std::str::trim(raw);
+    if std::str::starts_with(v, "\"\"\"") || std::str::starts_with(v, "'''") { return ManifestValue { present: true, why: "a multi-line string" }; }
+    if len(v) < 2 { return ManifestValue { present: true, why: "not a string" }; }
+    let q = v[0..1];
+    if q != "\"" && q != "'" { return ManifestValue { present: true, why: "not a string" }; }
+    let body = v[1..len(v)];
+    let close = std::str::index_of(body, q);
+    if close < 0 { return ManifestValue { present: true, why: "an unterminated string" }; }
+    let inner = body[0..close];
+    if q == "\"" && std::str::contains(inner, "\\") { return ManifestValue { present: true, why: "a string with escapes" }; }
+    if len(std::str::trim(body[(close + 1)..len(body)])) > 0 { return ManifestValue { present: true, why: "more than one value" }; }
+    return ManifestValue { present: true, value: inner };
+}
+
+// `key` of the `dna` table in `hale.toml` at `root`, wherever TOML lets it
+// stand: under a `[dna]` header (quoted, spaced or commented), as a dotted
+// key (`dna.key = …` at the root, `key = …` under `[dna]`), or in an inline
+// table (`dna = { key = … }`).
+fn manifest_dna_value(root: String, key: String) -> ManifestValue {
     let text = std::io::fs::read_file(root + "/hale.toml") or "";
+    let want = "dna." + key;
+    let mut table = "";
     let mut rest = text;
-    let mut inside = false;
     while len(rest) > 0 {
         let nl = std::str::index_of(rest, "\n");
-        let line = std::str::trim(if nl < 0 { rest } else { rest[0..nl] });
+        let line = std::str::trim(toml_uncomment(if nl < 0 { rest } else { rest[0..nl] }));
         rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
-        if std::str::starts_with(line, "[") { inside = line == "[dna]"; continue; }
-        if !inside || !std::str::starts_with(line, key) { continue; }
-        let after = std::str::trim(line[len(key)..len(line)]);
-        if !std::str::starts_with(after, "=") { continue; }
-        let value = std::str::trim(after[1..len(after)]);
-        if !std::str::starts_with(value, "\"") { return ""; }
-        let body = value[1..len(value)];
-        let close = std::str::index_of(body, "\"");
-        if close < 0 { return ""; }
-        return body[0..close];
+        if len(line) == 0 { continue; }
+        if std::str::starts_with(line, "[[") { table = "[[array]]"; continue; }
+        if std::str::starts_with(line, "[") {
+            let close = toml_index_outside(line, "]");
+            table = if close < 0 { "?" } else { toml_dotted(line[1..close]) };
+            continue;
+        }
+        let eq = toml_index_outside(line, "=");
+        if eq < 0 { continue; }
+        let k = toml_dotted(line[0..eq]);
+        let full = if len(table) == 0 { k } else { table + "." + k };
+        let value = line[(eq + 1)..len(line)];
+        if full == want { return toml_string(value); }
+        if full == "dna" {
+            let v = std::str::trim(value);
+            if !std::str::starts_with(v, "{") { return ManifestValue { present: true, why: "`dna` is not a table" }; }
+            let end = toml_index_outside(v, "}");
+            if end < 0 { return ManifestValue { present: true, why: "an inline `dna` table that does not end on its line" }; }
+            let mut items = v[1..end];
+            while len(std::str::trim(items)) > 0 {
+                let comma = toml_index_outside(items, ",");
+                let item = if comma < 0 { items } else { items[0..comma] };
+                items = if comma < 0 { "" } else { items[(comma + 1)..len(items)] };
+                let ieq = toml_index_outside(item, "=");
+                if ieq >= 0 && toml_dotted(item[0..ieq]) == key { return toml_string(item[(ieq + 1)..len(item)]); }
+            }
+        }
     }
-    return "";
+    return ManifestValue { };
 }
 
 // Lowercase hex digits, at least one.
@@ -79,9 +184,11 @@ fn hex_text(s: String) -> Bool {
 // The identity of the record at `repo`: the pin, checked against the
 // record this clone holds; the record's root commit when there is no pin.
 fn record_identity_at(repo: String) -> RecordIdentity {
-    let pinned = manifest_dna(repo, "record");
+    let pin = manifest_dna_value(repo, "record");
+    if len(pin.why) > 0 { return RecordIdentity { why: "hale.toml's [dna] record is present but not readable here (" + pin.why + "); write it as `record = \"<identity>\"`" }; }
+    let pinned = pin.value;
     let held = GitRecord { repo: repo }.identity();
-    if len(pinned) == 0 { return RecordIdentity { id: held }; }
+    if !pin.present { return RecordIdentity { id: held }; }
     if !hex_text(pinned) || (len(pinned) != 40 && len(pinned) != 64) { return RecordIdentity { why: "hale.toml's [dna] record is `" + pinned + "`, which is not a record's identity (40 or 64 lowercase hex digits)" }; }
     if len(held) > 0 && held != pinned { return RecordIdentity { why: "hale.toml's [dna] record names record " + pinned + ", but this clone's record is " + held + ": the genome was copied from another project, or the record from another genome, and neither is read into the other's memory" }; }
     return RecordIdentity { id: pinned };

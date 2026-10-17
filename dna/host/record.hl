@@ -435,11 +435,11 @@ fn record_identity(repo: String) -> String {
 }
 
 // `hale dna init` and `upgrade` pin the identity in the genome: what the
-// record this clone holds says it is ("none" when it holds no rows), and the
-// pin the genome carries now ("" for none), on two lines.
+// record this clone holds says it is ("none" when it holds no rows). The
+// driver reads the pin itself, with a TOML parser.
 fn record_identity_verb(root: String) -> Answer {
     let held = rec(root).identity();
-    return answer((if len(held) > 0 { held } else { "none" }) + "\n" + dna::manifest_dna(root, "record") + "\n");
+    return answer((if len(held) > 0 { held } else { "none" }) + "\n");
 }
 
 // The cell in this clone is not publication (the second review of #631: a
