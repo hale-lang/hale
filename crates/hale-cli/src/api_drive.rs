@@ -172,6 +172,12 @@ fn type_label(doc: &Value, schema: &Value) -> String {
     if let Some(inner) = nullable_inner(schema) {
         return format!("{} or null", type_label(doc, inner));
     }
+    // an enum: by its name (spec/api.md § Codecs)
+    if schema.get("enum").is_some() || schema.get("oneOf").is_some() {
+        if let Some(t) = schema.get("x-hale-type").and_then(Value::as_str) {
+            return t.to_string();
+        }
+    }
     let base = match schema.get("type").and_then(Value::as_str) {
         Some("integer") => "Int".to_string(),
         Some("number") => "Float".to_string(),
@@ -425,6 +431,21 @@ fn check_value(doc: &Value, path: &str, schema: &Value, v: &Value) -> Result<(),
     // an optional field takes `null` (its absence) or a value of its type
     if let Some(inner) = nullable_inner(schema) {
         return if v.is_null() { Ok(()) } else { check_value(doc, path, inner, v) };
+    }
+    // an enum's variant: a name it lists, or an object one of its forms admits
+    if let Some(any) = schema.get("oneOf").and_then(Value::as_array) {
+        return if any.iter().any(|f| check_value(doc, path, f, v).is_ok()) {
+            Ok(())
+        } else {
+            Err(format!("`{path}` is `{v}`, no variant of {}", type_label(doc, schema)))
+        };
+    }
+    if let Some(names) = schema.get("enum").and_then(Value::as_array) {
+        return if names.iter().any(|n| n == v) {
+            Ok(())
+        } else {
+            Err(format!("`{path}` is `{v}`, no variant of {}", type_label(doc, schema)))
+        };
     }
     let resolved = resolve(doc, schema);
     let misfit = |what: &str| format!("`{path}` is `{v}`, {what}; expected {}", type_label(doc, schema));

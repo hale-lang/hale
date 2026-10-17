@@ -274,6 +274,17 @@ pub(crate) fn struct_closure(
                 }
             }
         }
+        // an enum's codecs are generated beside the records', and its values
+        // reach what they reach
+        TypeClass::Enum { name, variants } => {
+            if out.insert(name.to_string()) {
+                for v in variants {
+                    for t in &v.fields {
+                        struct_closure(shapes, t, out, builtins);
+                    }
+                }
+            }
+        }
         TypeClass::Builtin(name) => {
             if out.insert(name.to_string()) {
                 let fields = shapes
@@ -312,7 +323,9 @@ impl<'a> Codec<'a> {
             TypeClass::Prim(PrimType::Time) => format!("\"\\\"\" + std::time::iso8601({v}) + \"\\\"\""),
             TypeClass::Prim(PrimType::Duration) => format!("to_string({v} / 1ns)"),
             TypeClass::Prim(_) => format!("to_string({v})"),
-            TypeClass::Struct { name, .. } | TypeClass::Builtin(name) => format!("__api_encode_{name}({v})"),
+            TypeClass::Struct { name, .. } | TypeClass::Builtin(name) | TypeClass::Enum { name, .. } => {
+                format!("__api_encode_{name}({v})")
+            }
             TypeClass::Named { name, base, .. } => match self.convs.get(name) {
                 Some(c) => format!("to_string({})", c.to_int(v)),
                 None if base == PrimType::String => format!("\"\\\"\" + std::json::escape_string({v}) + \"\\\"\""),
@@ -331,6 +344,10 @@ impl<'a> Codec<'a> {
         match self.shapes.classify(te) {
             TypeClass::Struct { name, .. } | TypeClass::Builtin(name) => {
                 format!("let {var} = __api_decode_{name}({body}) or {{ {bail} }};\n")
+            }
+            // an enum's decoder names the field it reads: a row's is the payload
+            TypeClass::Enum { name, .. } => {
+                format!("let {var} = __api_decode_{name}({body}, \"payload\") or {{ {bail} }};\n")
             }
             // a scalar payload is its complete JSON token of the type's kind
             // (the runtime's `__api_json_is_*`), checked before it is converted
@@ -397,6 +414,12 @@ impl PbCodec<'_> {
         };
         match self.shapes.classify(te) {
             TypeClass::Struct { name, .. } | TypeClass::Builtin(name) => format!("__api_pb_encode_{name}({v})"),
+            // an enum with payloads is its message; a payload-free one is
+            // its number, in the one-field message a scalar row has
+            TypeClass::Enum { name, variants } if variants.iter().any(|v| !v.fields.is_empty()) => {
+                format!("__api_pb_encode_{name}({v})")
+            }
+            TypeClass::Enum { name, .. } => format!("__api_pb_put_int(1, __api_pb_enum_no_{name}({v}))"),
             // an instant is its nanoseconds since the epoch, a `Duration` its count of them
             TypeClass::Prim(PrimType::Time) => format!("__api_pb_put_int(1, std::time::nanos({v}))"),
             TypeClass::Prim(PrimType::Duration) => format!("__api_pb_put_int(1, {v} / 1ns)"),
@@ -424,6 +447,12 @@ impl PbCodec<'_> {
             TypeClass::Struct { name, .. } | TypeClass::Builtin(name) => {
                 format!("let {var} = __api_pb_decode_{name}({bytes}) or {{ {bail} }};\n")
             }
+            TypeClass::Enum { name, variants } if variants.iter().any(|v| !v.fields.is_empty()) => {
+                format!("let {var} = __api_pb_decode_{name}({bytes}, \"payload\") or {{ {bail} }};\n")
+            }
+            TypeClass::Enum { name, .. } => format!(
+                "let __n_{var} = __api_pb_box_int({bytes}) or {{ {bail} }};\nlet {var} = __api_pb_enum_{name}(__n_{var}, \"payload\") or {{ {bail} }};\n"
+            ),
             TypeClass::Prim(PrimType::Time) => {
                 format!("let __n_{var} = __api_pb_box_int({bytes}) or {{ {bail} }};\nlet {var} = std::time::from_nanos(__n_{var});\n")
             }
@@ -451,6 +480,9 @@ impl PbCodec<'_> {
         let mut scratch = BTreeMap::new();
         match self.schemas.type_ref(te, &mut scratch) {
             crate::surfaces::FieldSchema::Ref(n) => crate::proto_gen::message_name(&n, self.surface),
+            crate::surfaces::FieldSchema::Enum { name, variants } if variants.iter().any(|(_, v)| !v.is_empty()) => {
+                crate::proto_gen::message_name(&name, self.surface)
+            }
             _ => crate::proto_gen::wrapper_name(member, what),
         }
     }
@@ -2092,6 +2124,33 @@ fn field_json(f: &crate::surfaces::FieldSchema) -> String {
         FieldSchema::Nullable { inner, .. } => format!("{{\"anyOf\":[{},{{\"type\":\"null\"}}]}}", field_json(inner)),
         // no key of its own: `type_json` leaves it out
         FieldSchema::Presence { .. } | FieldSchema::Unformed => "{}".to_string(),
+        FieldSchema::Enum { name, variants } => {
+            let units: Vec<String> = variants.iter().filter(|(_, v)| v.is_empty()).map(|(n, _)| jstr(n)).collect();
+            let unit = format!("{{\"type\":\"string\",\"enum\":[{}]", units.join(","));
+            if units.len() == variants.len() {
+                return format!("{unit},\"x-hale-type\":{}}}", jstr(name));
+            }
+            let mut one: Vec<String> = Vec::new();
+            if !units.is_empty() {
+                one.push(format!("{unit}}}"));
+            }
+            for (v, values) in variants.iter().filter(|(_, v)| !v.is_empty()) {
+                let value = match values.as_slice() {
+                    [only] => field_json(only),
+                    many => format!(
+                        "{{\"type\":\"array\",\"prefixItems\":[{}],\"minItems\":{n},\"maxItems\":{n}}}",
+                        many.iter().map(field_json).collect::<Vec<_>>().join(","),
+                        n = many.len()
+                    ),
+                };
+                one.push(format!(
+                    "{{\"type\":\"object\",\"properties\":{{{}:{value}}},\"required\":[{}],\"additionalProperties\":false}}",
+                    jstr(v),
+                    jstr(v)
+                ));
+            }
+            format!("{{\"oneOf\":[{}],\"x-hale-type\":{}}}", one.join(","), jstr(name))
+        }
     }
 }
 

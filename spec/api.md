@@ -2025,6 +2025,48 @@ absent one). A description gives `x` the schema `{"anyOf": [<its schema>,
 carrying neither reads as an absence, `x` at its default or zero. The
 digest is the record's shape, which already holds both fields.
 
+**An enum** crosses as its variant (2026-10-17), externally tagged: a
+payload-free variant is its name as a JSON string (`"Up"`), a variant
+of one value the object `{"<Variant>": <value>}`, and one of several
+`{"<Variant>": [<value>, ...]}` with exactly as many. A value is what a
+field of its type is (a scalar, an identity, a range or a quantity by its
+count, a `Time`, a record, a payload-free enum); a list, and an enum with
+payloads of its own, are not a variant's value, and law 5 refuses the
+row naming the variant. An enum may be a field, a list's element when it
+is payload-free (a `bounded` holds no enum with payloads, `spec/types.md`),
+a row's whole request or response, and its error type. Decoding is
+strict, and every refusal is `wrong_type` for the field the enum is read
+for (`payload` for a row's whole value): an unknown variant, a payload
+variant sent as a bare name, a payload-free one sent as an object, an
+object of other than one key, a value of the wrong kind, or the wrong
+number of values. An enum field has no default the codec reads, so an
+absent one is `missing_field`, unless it is optional (above): its zero is
+its first variant, with its values' zeros. A description gives a payload-free enum
+`{"type": "string", "enum": [<variants>], "x-hale-type": "<Enum>"}` and
+one with payloads, inline, `{"oneOf": [<that, for its payload-free
+variants>, {"type": "object", "properties": {"<Variant>": <value
+schema>}, "required": ["<Variant>"], "additionalProperties": false},
+...], "x-hale-type": "<Enum>"}`, a variant of several values an array
+schema with `prefixItems` and its count as `minItems` and `maxItems`.
+In protobuf a payload-free enum is a proto3 `enum` whose values are
+`<Enum>_<Variant>` (proto3 scopes an enum's values beside it, so the
+prefix keeps two enums apart), numbered from 0 in declaration order: a
+field of it is a varint, a list of it a `repeated` field, and a number no
+variant has is `wrong_type`. An enum with payloads is a message of one
+`oneof value`, a member per variant numbered from 1 in declaration order:
+a payload-free variant a `bool` (any value of it is the variant), a
+variant of one value that value's field, one of several the message
+`<Enum>_<Variant>` of fields `v0`, `v1`, ... A message carrying no
+member is `missing_field`; of several, the last wins, and a member whose
+value is a message (a record, several values) sent again before another is
+merged with the one before it, as proto3 merges a `oneof`. The message of
+several values has plain proto3 fields, which a client leaves out at their
+zero, so a value it does not carry is its zero (`0`, `""`, the epoch, the
+first variant), never `missing_field`. A row whose whole request or response is a payload-free enum
+crosses gRPC in the one-field message a scalar row has, its `value` the
+enum. The digest is the enum's shape, which holds its variants and their
+values.
+
 Decoding is strict: a value of the wrong JSON kind is `wrong_type`, an
 element of a list and an array that is not well-formed JSON included
 (a payload that is one scalar is that scalar's complete JSON token: `true`
@@ -2051,10 +2093,10 @@ the epoch (which is all of `Time`; the field's comment says so), not
 `google.protobuf.Timestamp`, which would make the well-known type a
 dependency of every file and of the descriptor reflection serves; a
 `Duration` is an `int64`, its nanoseconds. An optional field is its two
-fields (above). The set of shapes is the JSON codec's, so
-there is no shape without a proto3 encoding: a map and an
-enum are shapes the codec does not carry, and law 5 refuses the row
-before a `.proto` could be asked of it. The `.proto`
+fields, and an enum a proto3 `enum` or a `oneof` message (above). The set
+of shapes is the JSON codec's, so there is no shape without a proto3
+encoding: a map is a shape the codec does not carry, and law 5 refuses the
+row before a `.proto` could be asked of it. The `.proto`
 generator refuses all the same, by row, so that were the codec to carry one it
 would not be approximated.
 
@@ -2094,7 +2136,7 @@ caller's `Context` under that exposure's role source:
   and nothing else, a quantity's field carrying `x-hale-unit` (its
   `q(…)` tag), a `Time`'s `"format": "date-time"`, a list's `maxItems`,
   an optional field's `anyOf` with `null`, and no property for its
-  presence flag (§ Codecs);
+  presence flag, an enum inline with its variants (§ Codecs);
 - the notes, in the document's own text: authorization is a boundary
   check at the serve site, never a proof over the program's internal
   call paths; a request accepted runs to completion whatever becomes of

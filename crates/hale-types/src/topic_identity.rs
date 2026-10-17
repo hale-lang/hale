@@ -286,7 +286,8 @@ pub enum TypeClass<'a> {
     /// A builtin record (`ClosureViolation`, …), by name; its fields are
     /// [`Shapes::builtin_fields`].
     Builtin(&'static str),
-    Enum,
+    /// A declared enum: its name and variants (spec/api.md § Codecs).
+    Enum { name: &'a str, variants: &'a [hale_syntax::ast::EnumVariant] },
     /// Anything else: an array, a tuple, a generic, a name the program
     /// does not declare.
     Other,
@@ -416,7 +417,7 @@ impl<'a> Shapes<'a> {
         if let Some(td) = self.types.get(name) {
             match &td.body {
                 TypeDeclBody::Struct(fields) => return TypeClass::Struct { name: td.name.name.as_str(), fields },
-                TypeDeclBody::Enum(_) => return TypeClass::Enum,
+                TypeDeclBody::Enum(variants) => return TypeClass::Enum { name: td.name.name.as_str(), variants },
                 TypeDeclBody::Scalar(_) | TypeDeclBody::Alias(_) => {
                     let unit = self.quantities.get(name).cloned();
                     // An identity, a range, a quantity or a point over

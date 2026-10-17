@@ -181,6 +181,32 @@ list" (`[]`) from "left it out". The description marks the field as one
 that may be `null` and does not require it; the `.proto` carries both
 fields as they are declared.
 
+### Enums
+
+An enum crosses as the variant it holds. A variant with no values is its
+name; one with a value is an object keyed by the variant; one with
+several values holds them in an array:
+
+```hale,fragment
+type Status = enum { Open, Closed };
+type Change = enum { Renamed(String), Moved(Int, Int), Archived };
+```
+
+```text
+"Open"                  {"Renamed": "Q3 plan"}
+{"Moved": [3, 7]}       "Archived"
+```
+
+An enum can be a field, the element of a list (when no variant has
+values), a whole request or response, or a handler's error type, which
+is how a handler says which of several things went wrong:
+`fallible(Problem)` with `type Problem = enum { NotFound(String),
+Conflict };` answers `"Conflict"` or `{"NotFound": "order 7"}`. An
+unknown variant, the wrong shape for a variant or the wrong number of
+values is refused `malformed` with `wrong_type`, naming the field. The
+description lists the variants; the `.proto` makes an enum with no
+values a proto3 `enum` and one with values a message with a `oneof`.
+
 ### The digest
 
 Each surface folds into a **contract digest**: its rows in member
