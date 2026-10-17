@@ -627,17 +627,15 @@ fn check_numbered_bundle(
     let entry = crate::entry::entry_row(bundle);
     let placement = crate::placement::derive_placement(bundle, top, &entry, Some(&walk.record));
     let intra_locus = crate::bundle_intra_locus(bundle, &placement);
-    let views =
-        crate::view_bindings::OwnedViewColumn::derive(
-            &bundle.programs,
-            &walk.record.views,
-            &walk.record.mono_shapes,
-            &intra_locus,
-            top,
-            true,
-        );
-    let alloc_summary =
-        std::sync::Arc::new(crate::alloc_summary::derive_alloc_summary_over(bundle, &views));
+    // The stdlib's analysis copy where the program reaches it: the check
+    // emits nothing, so it reads no stdlib body the program cannot call.
+    let alloc_summary = std::sync::Arc::new(crate::alloc_summary::derive_alloc_summary_reaching(
+        bundle,
+        &walk.record.views,
+        &walk.record.mono_shapes,
+        &intra_locus,
+        top,
+    ));
     let rows = std::cell::OnceCell::new();
     let effects = || {
         Some(rows.get_or_init(|| {

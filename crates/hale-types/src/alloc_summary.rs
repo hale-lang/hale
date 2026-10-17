@@ -2199,6 +2199,53 @@ pub fn derive_alloc_summary_over(
     summarize_identified_over(&identified, &bundle.import_renames, views)
 }
 
+/// The check's allocation summary (and the effect rows', the certificate
+/// engine's and every reader's the snapshot hands it to): the summary of
+/// [`derive_alloc_summary_over`], over an owned-view column with the
+/// stdlib's analysis copy beside the programs where they can reach it
+/// ([`crate::stdlib_reach`]) rather than whole. The column is derived
+/// here, from the checker's walk of the programs (`views`, `monos`) and
+/// the intra-locus relation (`sends`); the snapshot's column, the one
+/// lowering reads, stays whole, since lowering lowers every stdlib body. Every body of the copy is summarized ([`summarize_within`]).
+/// When the column or the summary resolves into an item outside the
+/// reach, the reach widens and both are derived again, so every row of
+/// the program and every copy row it reaches is the row the whole copy
+/// beside it gives.
+pub fn derive_alloc_summary_reaching(
+    bundle: &crate::symbol::Bundle<'_>,
+    views: &crate::typed_bodies::ProgramViews,
+    monos: &crate::typed_bodies::MonoShapes,
+    sends: &[hale_syntax::desugar::IntraLocusRewrite],
+    top: &crate::resolve::TopScope,
+) -> AllocSummary {
+    let mut identified: Vec<(&Program, &crate::snapshot::Snapshot)> =
+        bundle.programs.values().map(|p| (*p, &bundle.snapshot)).collect();
+    let copy = crate::stdlib_bodies::program().zip(crate::stdlib_bodies::identities());
+    if let Some((program, ids)) = copy {
+        identified.push((program, ids));
+    }
+    let programs: Vec<&Program> = bundle.programs.values().copied().collect();
+    let mut reach = crate::stdlib_reach::StdlibReach::of(&programs);
+    loop {
+        let column = crate::view_bindings::OwnedViewColumn::derive_within(
+            &bundle.programs,
+            views,
+            monos,
+            sends,
+            top,
+            copy.is_some().then_some(&mut reach),
+        );
+        match summarize_within(&identified, &bundle.import_renames, &column, Some(&reach)) {
+            Ok(summary) => return summary,
+            Err(beyond) => {
+                if !reach.widen(beyond) {
+                    unreachable!("a body outside the reach is in it once widened");
+                }
+            }
+        }
+    }
+}
+
 /// Every top-level locus of `programs` with a param whose type is one of
 /// `sync_forms`: it holds that form, so a call into it can take the
 /// form's lock.
@@ -2366,6 +2413,29 @@ pub fn summarize_identified_over(
     import_renames: &[(Vec<String>, String)],
     views: &crate::view_bindings::OwnedViewColumn,
 ) -> AllocSummary {
+    summarize_within(identified, import_renames, views, None)
+        .unwrap_or_else(|_| unreachable!("every body of the stdlib's analysis copy is walked without a reach"))
+}
+
+/// [`summarize_identified_over`] beside a restricted owned-view column:
+/// `views` holds the copies of the stdlib's analysis copy's bodies in
+/// `reach` alone (`None`: every one). Every body of the copy is still
+/// summarized, and every pass reads every row, as beside the whole copy:
+/// the passes that join over all the rows (a parameter's provenance, a
+/// long-lived frame's reach, a returned value's callers) read rows the
+/// program never reaches. A row outside the reach lacks only the column's
+/// copies, which no row the program reaches reads. So the summary is the
+/// whole copy's but for those copies, if the reach is closed under what
+/// the summary follows: no row of the program or of the reach calls a
+/// body outside it, or starts a locus outside it. When one does, the
+/// summary is `Err` with the items those are in, for the caller to widen
+/// the reach to.
+pub fn summarize_within(
+    identified: &[(&Program, &crate::snapshot::Snapshot)],
+    import_renames: &[(Vec<String>, String)],
+    views: &crate::view_bindings::OwnedViewColumn,
+    reach: Option<&crate::stdlib_reach::StdlibReach>,
+) -> Result<AllocSummary, BTreeSet<usize>> {
     let programs: Vec<&Program> = identified.iter().map(|(p, _)| *p).collect();
     let programs = programs.as_slice();
     // Each seed's names resolve in its own scope. The programs minted
@@ -3171,6 +3241,34 @@ pub fn summarize_identified_over(
         })
         .collect();
 
+    // The copy's declarations outside the reach, whose rows lack the
+    // column's copies. A body's declaration is its fn's, or for a locus
+    // member its locus's; each is in one top-level item of the copy.
+    let mut beyond_items: BTreeMap<u32, usize> = BTreeMap::new();
+    let mut beyond_loci: BTreeMap<String, usize> = BTreeMap::new();
+    if let Some(reach) = reach {
+        for (program, ids) in identified.iter().filter(|(_, ids)| is_stdlib_copy(ids)) {
+            for (top, outer) in program.items.iter().enumerate().filter(|(top, _)| !reach.contains(*top)) {
+                for item in flat_decls(std::slice::from_ref(outer)).filter(|item| !shadowed(ids, item)) {
+                    match item {
+                        TopDecl::Fn(f) => {
+                            beyond_items.insert(f.id.0, top);
+                        }
+                        TopDecl::Locus(l) => {
+                            beyond_items.insert(l.id.0, top);
+                            beyond_loci.insert(l.name.name.clone(), top);
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+    }
+    let beyond_body = |ids: &crate::snapshot::Snapshot, decl: NodeId| -> Option<usize> {
+        is_stdlib_copy(ids).then(|| beyond_items.get(&decl.0).copied()).flatten()
+    };
+    let mut beyond_keys: BTreeMap<FnKey, usize> = BTreeMap::new();
+
     // Phase 2 — walk each body.
     let mut summary = AllocSummary::default();
     summary.eager_only_loci = eager_only_loci;
@@ -3289,6 +3387,9 @@ pub fn summarize_identified_over(
     for (decl_index, (key, body, entry, enclosing_locus, param_types, fn_params, param_elems, ids, (hot, mode), decl, params, str_params)) in
         bodies.iter().enumerate()
     {
+        if let Some(top) = beyond_body(ids, *decl) {
+            beyond_keys.insert(key.clone(), top);
+        }
         let (row, starts, skipped) =
             walk(key, body, *entry, enclosing_locus, param_types, fn_params, param_elems, params, str_params, ids, (*hot, *mode, decl_index));
         starts_of.insert(key.clone(), starts.clone());
@@ -3625,6 +3726,7 @@ pub fn summarize_identified_over(
     // hooks and bus handlers, and starts the loci its param fields hold
     // (by declared type, or a default's literal). Every locus of the
     // program's own is started.
+    let mut reached_loci: BTreeSet<String> = BTreeSet::new();
     if identified.iter().any(|(_, ids)| is_stdlib_copy(ids)) {
         let mut param_starts: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
         let mut started: BTreeSet<String> = BTreeSet::new();
@@ -3680,12 +3782,34 @@ pub fn summarize_identified_over(
             pending.extend(starts_of.get(&k).into_iter().flatten().cloned());
         }
         summary.reached = Some(reached);
+        reached_loci = started;
     }
     summary.startable = loci_started_from_main(identified, import_renames, &is_stdlib_copy, &summary);
+    // The reach is closed under what the summary followed: no row inside
+    // it calls a body outside it, and no locus the program reaches or
+    // starts is outside it (a started locus's hooks and handlers are rows
+    // the judgments read).
+    if !beyond_keys.is_empty() {
+        let inside = |f: &&FnSummary| !beyond_keys.contains_key(&f.key);
+        let rows = summary.fns.values().filter(inside).chain(summary.declaration_bodies.iter().map(|b| &b.summary));
+        let mut beyond: BTreeSet<usize> = rows
+            .flat_map(|f| &f.calls)
+            .filter_map(|c| match &c.callee {
+                Callee::Resolved(k) => beyond_keys.get(k).copied(),
+                Callee::Unresolved(_) => None,
+            })
+            .collect();
+        let starts = summary.starts.iter().filter(|(k, _)| !beyond_keys.contains_key(*k)).flat_map(|(_, s)| s);
+        let started = starts.chain(&reached_loci).chain(summary.startable.iter().flatten());
+        beyond.extend(started.filter_map(|l| beyond_loci.get(l).copied()));
+        if !beyond.is_empty() {
+            return Err(beyond);
+        }
+    }
     let param_order: BTreeMap<FnKey, Vec<String>> =
         bodies.iter().map(|b| (b.0.clone(), b.10.clone())).collect();
     resolve_param_provenance(&mut summary, &param_order, &param_info, &subscriptions);
-    summary
+    Ok(summary)
 }
 
 /// GH #1490 (step 4): each locus's bus handlers.

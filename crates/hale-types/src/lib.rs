@@ -68,6 +68,7 @@ pub mod view_bindings;
 pub mod secret_reveal;
 pub mod stdlib_names;
 pub mod stdlib_bodies;
+pub mod stdlib_reach;
 pub mod stdlib_surface;
 pub mod ownership;
 pub mod ownership_graph;
