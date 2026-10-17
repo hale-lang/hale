@@ -1,4 +1,4 @@
-//! The `forms` integration-test binary: 20 test files of this area, kept
+//! The `forms` integration-test binary: 21 test files of this area, kept
 //! where they are (their paths, names and history unchanged) and built as
 //! modules of one binary, so the crate links once for the area instead of
 //! once per file. Each file is a module; a test's name is `<file>::<fn>`.
@@ -15,6 +15,8 @@ mod form_hashmap_codegen;
 mod form_hashmap_nested_retire;
 #[path = "form_hashmap_lockfree.rs"]
 mod form_hashmap_lockfree;
+#[path = "form_hashmap_replace_slack.rs"]
+mod form_hashmap_replace_slack;
 #[path = "form_hashmap_serialized.rs"]
 mod form_hashmap_serialized;
 #[path = "form_hashmap_synced_retire.rs"]
