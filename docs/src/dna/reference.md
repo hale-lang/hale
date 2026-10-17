@@ -588,10 +588,10 @@ around an application you already have.
 | `refs/dna/receipts/<sha256>` | receipts, by the digest of their content |
 | `refs/dna/identity` | the record's identity; a sync publishes it to the remote |
 | `refs/dna/lease/<key>` | leases with fencing tokens; `refs/dna/lease/body` is the body lease |
-| `refs/dna/candidates/<mutation>` | a Mutation's candidate, kept whatever its Review decided |
-| `refs/dna/revisions/<rev>` | a revision a deploy asked the nodes to express |
+| `refs/heads/dna/candidate/<mutation>` | a Mutation's candidate, a branch of the genome kept whatever its Review decided |
 | `refs/dna/exchange/<identity>` | a connected record's mailbox in this one |
-| `refs/dna/remote/…` | what the last fetch brought from the remote (`journal`, `lease/body`, `genome`) |
+| `refs/dna/remote/…` | what the last fetch brought from the remote (`journal`, `lease/body`) |
+| `refs/hale/remote/genome` | the forge's default branch as the node's last pull fetched it |
 | `.git/config` | the record's settings (`dna.trust`, `dna.unix.member`, … above) |
 | `.hale/dna/` | this clone's scratch: `status.json`, the organization's log `org.log`, the topology artifacts, `embedded.digest`, the seed build cache `build/`, sandboxes `worktrees/`, `scratch/`, the built leg `legs/`, a person's kept worktrees `work/<attempt>`, an ingest's checkout `ingest/<sha>/` (removed after) |
 | `.hale/node/<name>/` | on a node: its instances' pid files and artifacts |

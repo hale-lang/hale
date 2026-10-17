@@ -500,18 +500,16 @@ fn apply_withdrawals(repo: String, j: dna::RoutedJournal) -> Int {
         let e = j.read(i);
         i = i + 1;
         if e.kind == "receipt.redacted" { n = n + redact_here(r, remote, e.entity); }
-        if e.kind == "candidate.dropped" { n = n + drop_here(r, remote, e.entity); }
+        if e.kind == "candidate.dropped" { n = n + drop_here(repo, e.entity); }
     }
     return n;
 }
 
 // A candidate the record says was dropped (`candidate.dropped
-// <mutation>`) is unpointed here and withdrawn from the remote, as a
-// redacted receipt is; its commits stay in the object store until git
+// <mutation>`) has its branch deleted here (GH #1590: a candidate is a
+// branch of the genome); its commits stay in the object store until git
 // collects them.
 fn apply_drops(repo: String) -> Int {
-    let r = rec(repo);
-    let remote = record_remote(repo);
     let mut n = 0;
     // `candidate.dropped` is a row of the record on every routing
     let j = dna::GitJournal { repo: repo, author: "host" };
@@ -519,30 +517,21 @@ fn apply_drops(repo: String) -> Int {
     while i < j.revision() {
         let e = j.read(i);
         i = i + 1;
-        if e.kind == "candidate.dropped" { n = n + drop_here(r, remote, e.entity); }
+        if e.kind == "candidate.dropped" { n = n + drop_here(repo, e.entity); }
     }
     return n;
 }
 
-// One dropped candidate unpointed here and withdrawn from the remote.
-fn drop_here(r: dna::GitRecord, remote: String, mutation: String) -> Int {
-    let mut n = 0;
-    let name = "candidates/" + mutation;
-    if len(r.pointer(name)) > 0 {
-        let gone = r.unpoint(name);
-        n = n + 1;
-    }
-    if len(remote) > 0 && len(r.remote_has(remote, name)) > 0 {
-        let w = r.withdraw(remote, name);
-        n = n + 1;
-    }
-    return n;
+// One dropped candidate's branch deleted here: 1 when one was kept.
+fn drop_here(repo: String, mutation: String) -> Int {
+    return if genome_uncandidate(repo, mutation) { 1 } else { 0 };
 }
 
-// The families a sync carries besides the journal: receipts by digest,
-// candidates by mutation, and (received only) every mailbox.
-const SYNC_SHARES: String = "journal,receipts,candidates";
-const SYNC_RECEIVES: String = "journal,receipts,exchange,candidates";
+// The families a sync carries besides the journal: receipts by digest, and
+// (received only) every mailbox. A candidate is a branch of the genome and
+// travels as one (GH #1590).
+const SYNC_SHARES: String = "journal,receipts";
+const SYNC_RECEIVES: String = "journal,receipts,exchange";
 
 // #639, narrowed option 3: under `signed` trust a reconcile rebuilds only
 // rows this clone signed (re-signed, with the original named) or never

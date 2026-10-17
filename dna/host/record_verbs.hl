@@ -9,11 +9,12 @@ import "../operations" as ops;
 
 // ---- hale dna candidates --------------------------------------------
 //
-// A candidate is a commit in the Mutation's worktree; the gateway points
-// `candidates/<mutation>` at it when it is made, sync shares the pointers
-// with the record, and a refused change stays readable as a diff after
-// its worktree is gone. `drop` is a row (`candidate.dropped`), applied at
-// every clone's sync the way a redaction is.
+// A candidate is a commit in the Mutation's worktree; the gateway keeps it
+// as a branch of the genome, `dna/candidate/<mutation>` (GH #1590), and
+// the record names its commit (`mutation.candidate`), so a refused change
+// stays readable as a diff after its worktree is gone. It travels as any
+// branch does. `drop` is a row (`candidate.dropped`); every clone deletes
+// its branch when it reads the row.
 
 fn review_for_mutation(p: Projection, mutation_id: String) -> ReviewRow {
     let ids = p.review_ids();
@@ -30,28 +31,26 @@ fn review_for_mutation(p: Projection, mutation_id: String) -> ReviewRow {
 fn candidates_verb(root: String, seed: String, sub: String, id_in: String, why: String, who_flag: String, memory: dna::Memory) -> Answer {
     let no_head = record_refusal(root);
     if len(no_head) > 0 { return fail(no_head); }
-    let r = rec(root);
     if len(sub) == 0 {
         let p = open_projection(root, seed, "", memory);
         let mut out = "";
         let mut n = 0;
-        let mut rest = r.pointers("candidates");
+        let mut rest = genome_candidates(root);
         while len(rest) > 0 {
             let nl = std::str::index_of(rest, "\n");
-            let name = if nl < 0 { rest } else { rest[0..nl] };
+            let mid = if nl < 0 { rest } else { rest[0..nl] };
             rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
-            if len(name) == 0 { continue; }
-            let mid = name[11..len(name)];
+            if len(mid) == 0 { continue; }
             let rv = review_for_mutation(p, mid);
             let state = if len(rv.id) == 0 { "no Review names it" } else { "review " + rv.id + " " + rv.state + (if rv.state == "pending" { "" } else { ": " + rv.settled }) };
-            out = out + "  " + mid + "  " + short(r.pointer(name)) + "  " + state + "\n";
+            out = out + "  " + mid + "  " + short(genome_candidate(root, mid)) + "  " + state + "\n";
             n = n + 1;
         }
         return answer("candidates: " + (if n == 0 { "none kept" } else { to_string(n) }) + "\n" + out + (if n > 0 { "`hale dna candidates <mutation>` shows one as a diff; `hale dna candidates drop <mutation> --why <why>` stops keeping it\n" } else { "" }));
     }
     if sub == "drop" {
         if len(id_in) == 0 || len(why) == 0 { return fail("candidates drop: `hale dna candidates drop <mutation> --why <why> [--as <who>]`"); }
-        if len(r.pointer("candidates/" + id_in)) == 0 { return fail("candidates drop: no candidate is kept for " + id_in); }
+        if len(genome_candidate(root, id_in)) == 0 { return fail("candidates drop: no candidate is kept for " + id_in); }
         let who = if len(who_flag) > 0 { who_flag } else { who_am_i() };
         let b = std::json::Builder { };
         b.begin_object();
@@ -61,11 +60,11 @@ fn candidates_verb(root: String, seed: String, sub: String, id_in: String, why: 
         if !append_as(root, "candidate.dropped", id_in, b.result(), who, memory) { return fail("the record refused the append"); }
         let dropped = apply_drops(root);
         let s = sync_record(root, memory);
-        return answer("candidate " + id_in + " dropped by " + who + ": " + why + " (candidate.dropped; no longer kept here or at the remote; every clone drops it at its next sync)\n");
+        return answer("candidate " + id_in + " dropped by " + who + ": " + why + " (candidate.dropped; its branch is deleted here, and every clone deletes its own when it reads the row; a branch pushed to a forge is deleted there as any branch is)\n");
     }
     // show one: the diff from the review's base
     let mid = sub;
-    let commit = r.pointer("candidates/" + mid);
+    let commit = genome_candidate(root, mid);
     if len(commit) == 0 { return fail("candidates: no candidate is kept for " + mid + " (`hale dna candidates` lists them)"); }
     let p = open_projection(root, seed, "", memory);
     let rv = review_for_mutation(p, mid);

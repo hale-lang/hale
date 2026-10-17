@@ -418,7 +418,8 @@ owner}` row; the node returns its checkout to the last genome that built
 (`.hale/dna/genome.built`), builds that, and serves it. A node that is up
 records `node.started <holder> {sha, by, owner}`. On its tick, every
 `HALE_DNA_GENOME_POLL` seconds (300 by default; 0 never), it fetches
-again, into `refs/dna/remote/genome` (never `FETCH_HEAD`, which any
+again, into `refs/hale/remote/genome` (the genome's, never the
+record's `refs/dna/`; never `FETCH_HEAD`, which any
 other fetch in the clone rewrites); when the forge's head is neither what it runs nor a sha that did
 not build here, it stops cleanly — the organization and the expression
 drain on SIGTERM, the body lease is given back (`body.released {why:
@@ -597,19 +598,24 @@ repository:
   no record yet is the local one's push**, not "up to date": the first
   sync after an ordinary `git push origin main` carries the record, so
   no one has to push `refs/dna/*` by hand for a second clone to have
-  the organization's history. Receipts and candidates travel
-  by refspec both ways; mailboxes are received. The remote is `dna.remote` in git config, or
+  the organization's history. Receipts travel by refspec both ways;
+  mailboxes are received. Candidates are branches of the genome and
+  travel as branches do (below). The remote is `dna.remote` in git config, or
   `origin`. A plain clone has no record until it syncs.
-- **Candidates are kept.** The gateway points `refs/dna/candidates/<mutation>`
-  at a candidate when it commits it, and sync carries the pointers with
-  the record, so a refused or revised change stays readable as a diff
-  after its worktree is gone: `hale dna candidates` lists them with
-  their Review's state, `hale dna candidates <mutation>` shows one from
-  its Review's base, and `hale dna candidates drop <mutation> --why <why>`
-  appends `candidate.dropped <mutation> {by, why}` and stops keeping it —
-  here, at the remote, and at every clone on its next sync, the way a
-  redaction removes a receipt. The commits stay in each object store
-  until git collects them.
+- **Candidates are kept, as branches of the genome (GH #1590).** The
+  gateway keeps a candidate when it commits it as the branch
+  `dna/candidate/<mutation>` (`refs/heads/dna/candidate/<mutation>`,
+  `dna::candidate_ref`), and the record names its commit
+  (`mutation.candidate <mutation>`, the sha), so a refused or revised
+  change stays readable as a diff after its worktree is gone: `hale dna
+  candidates` lists the branches with their Review's state, `hale dna
+  candidates <mutation>` shows one from its Review's base, and `hale dna
+  candidates drop <mutation> --why <why>` appends `candidate.dropped
+  <mutation> {by, why}` and deletes the branch here; every clone deletes
+  its own when it reads the row. A candidate is code, and travels as any
+  branch does: a person who pushes one to a forge deletes it there as
+  any branch is deleted. The commits stay in each object store until git
+  collects them.
 - **An apply expresses the candidate, tree and all.** An approval
   applies exactly the reviewed candidate, or nothing: the candidate's
   worktree head is the pinned digest, the genome's head is the base the
@@ -3074,8 +3080,9 @@ the tool: *chains* of rows appended under compare-and-swap at a head
 what the remote held at the last receive), a row *built* beside every
 chain and swapped in later, *bodies* kept by the digest of their
 content, *cells* swapped by version (a lease, the published identity),
-*pointers* naming an object the repository already holds
-(`candidates/<mutation>`, `revisions/<rev>`), *families* received from
+*pointers* naming an object the repository already holds (none is
+used since GH #1590: a candidate and a deployed revision are branches
+of the genome), *families* received from
 and shared with a remote, the *signer* of a row, and the `dna.*`
 settings. `GitRecord` is the one implementation over git plumbing —
 the only file in the core and the host that spells `git` for the
@@ -5387,8 +5394,10 @@ one arrangement of it:
   revision, the seed the change edits (`""` for the whole genome), the
   instances touched — every instance with a node whose seed is that
   directory — and the reason (`apply`, `rollback`, or the operator's).
-  The revision is pushed to `refs/dna/revisions/<rev>` on the record's
-  remote first, so every node can fetch it. Under `hale dna run` with
+  The revision is published first on the genome's forge (the record's
+  remote) as the branch `dna/revision/<rev>`, and every node fetches it
+  by its sha, as `hale fetch` fetches a pinned dependency (GH #1590: a
+  revision is the genome's, not the record's). Under `hale dna run` with
   `[dna] fleet` set, the host answers an application's
   `expression.restart_requested` with a deploy row; `hale dna deploy
   <revision>` and `hale dna rollback <mutation>` write the same row by
@@ -5397,7 +5406,8 @@ one arrangement of it:
   <name>] [--tick <ms>]` runs in a clone of the governed repository.
   Every tick it syncs the record and reads the latest `fleet.deploy`;
   when that names a revision it does not express, it fetches the
-  revision, checks it out, and for each instance the plan assigns to
+  revision by its sha from the forge (`git fetch <remote> <sha>`; a
+  fetch that fails is said and tried next tick), checks it out, and for each instance the plan assigns to
   the node that the deploy touches (or that is not up) cuts the
   artifact, builds the seed, restarts the process (cwd the clone,
   `LOTUS_OBS=1`, `HALE_DNA_NODE`, `HALE_DNA_INSTANCE`,

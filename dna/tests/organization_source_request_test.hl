@@ -121,7 +121,7 @@ main locus App {
         let raw = dna::run_tool("git\n-C\n" + repo + "\nshow\n" + candidate + ":dna/org/main.hl"); std::test::assert_eq_str(raw.stdout, PREPARED, "candidate preserves exact Unicode/CRLF/literal source");
         let head = dna::run_tool("git\n-C\n" + repo + "\nrev-parse\nHEAD"); std::test::assert_eq_str(dna::trim_nl(head.stdout), r.source_head, "Review creation does not publish source");
         std::test::assert_eq_int(source_count(reader(repo), "mutation.candidate", id), 1, "one exact candidate ack");
-        let pointer = dna::run_tool("git\n-C\n" + repo + "\nrev-parse\nrefs/dna/candidates/" + codec.candidate_key(r));
+        let pointer = dna::run_tool("git\n-C\n" + repo + "\nrev-parse\n" + dna::candidate_ref(codec.candidate_key(r)));
         std::test::assert_eq_str(dna::trim_nl(pointer.stdout), candidate, "exact candidate remains reachable under Git-safe native key");
         std::test::assert_eq_int(source_count(reader(repo), "review.requested", "review:" + id), 1, "one exact Review");
         std::test::assert_eq_int(source_count(reader(repo), "model.called", ""), 0, "prepared source never goes through a model rewrite");

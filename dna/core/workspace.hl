@@ -535,13 +535,22 @@ locus IsolatedWorktrees {
 
 // ---- the repository --------------------------------------------------
 
+// A Mutation's candidate is a branch of the genome (GH #1590): code, kept
+// where code is, whatever its Review decides. The record names its commit
+// (`mutation.committed`); the branch keeps the commit reachable after the
+// worktree is gone. It travels as any branch does: a person pushes it.
+const CANDIDATE_BRANCHES: String = "refs/heads/dna/candidate/";
+
+fn candidate_ref(mutation_id: String) -> String { return CANDIDATE_BRANCHES + mutation_id; }
+
 interface Repository {
     fn root() -> String; // the repository's path: what a harness must never reach (GH #583 M3)
     fn head(path: String) -> String;
     fn commit_all(path: String, message: String) -> String;
     // Keep a candidate reachable under the Mutation's name whatever the
-    // review decides and whatever collects its worktree (#649): the
-    // record shares `candidates/<mutation>` with the rest.
+    // review decides and whatever collects its worktree (#649): a branch
+    // of the genome, `dna/candidate/<mutation>` (`candidate_ref`), and the
+    // record names its commit (GH #1590).
     fn mark_candidate(mutation_id: String, commit: String) -> Bool;
     fn diff(path: String, base: String, candidate: String) -> String;
     fn contains(path: String, commit: String) -> Bool;
@@ -598,7 +607,7 @@ locus LocalGit {
         return self.head(path);
     }
     fn mark_candidate(mutation_id: String, commit: String) -> Bool {
-        let r = run_tool("git\n-C\n" + self.repo + "\nupdate-ref\nrefs/dna/candidates/" + mutation_id + "\n" + commit);
+        let r = run_tool("git\n-C\n" + self.repo + "\nupdate-ref\n" + candidate_ref(mutation_id) + "\n" + commit);
         if r.code != 0 { self.last_error = trim_nl(r.stderr); return false; }
         return true;
     }

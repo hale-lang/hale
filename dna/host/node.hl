@@ -89,11 +89,12 @@ locus Node {
         let rev = std::json::find_string_field(deploy.body, "revision");
         if len(rev) == 0 { self.say("fleet.deploy #" + to_string(deploy.seq) + ": a deploy with no revision"); return true; }
         let remote = record_remote(self.root);
-        // a fetch that failed is not a revision the forge lacks: say which
+        // the revision by its sha, from the genome's forge (GH #1590); a
+        // fetch that failed is said, and the deploy is tried next tick
         let mut unread = "";
         if len(remote) > 0 {
-            let f = rec(self.root).receive(remote, "revisions");
-            if !f.ok && !f.absent { unread = "; the fetch of revisions failed: " + f.why; }
+            let f = genome_fetch_commit(self.root, remote, rev);
+            if len(f) > 0 { unread = "; its fetch failed: " + f; }
         }
         if len(genome_commit(self.root, rev)) == 0 { self.say("fleet.deploy #" + to_string(deploy.seq) + ": revision " + short(rev) + " is not here yet" + unread + " (retrying next tick)"); return false; }
         let co = genome_checkout(self.root, rev);

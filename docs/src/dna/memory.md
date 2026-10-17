@@ -38,11 +38,15 @@ both memories as one sequence.
 | `refs/dna/journal` | the chain of rows, one commit per row |
 | `refs/dna/receipts/<sha256>` | evidence bodies, by the digest of their content |
 | `refs/dna/identity` | the record's identity, published so another record can connect to it |
-| `refs/dna/candidates/<mutation>` | the candidate commit each Mutation ended in |
-| `refs/dna/revisions/<rev>` | a revision a deploy asked for, so every node can fetch it |
 | `refs/dna/lease/<key>` | a lease on routing 0 (the body's, a Mutation's) |
 | `refs/dna/exchange/<identity>` | a mailbox: the rows a connected record wrote for this one ([below](#between-records)) |
-| `refs/dna/remote/journal`, `refs/dna/remote/genome` | what the remote held at the last fetch |
+| `refs/dna/remote/journal` | what the remote held at the last fetch |
+
+Candidates and deployed revisions are the genome's, not the record's:
+a candidate is the branch `dna/candidate/<mutation>`, a revision a
+deploy published is the branch `dna/revision/<rev>` on the forge, and
+the pull of the forge's default branch lands in
+`refs/hale/remote/genome`.
 
 A fresh project has the first three:
 
@@ -158,7 +162,7 @@ the remote's head, bodies and authors unchanged, and pushed. The
 reconciled chain is built beside the ref and swapped in with one
 compare-and-swap, so a reader's view only grows and a clone that
 appended meanwhile is not overwritten: the swap fails and the
-reconcile goes round. Receipts and candidates travel both ways;
+reconcile goes round. Receipts travel both ways;
 mailboxes are received. The remote is `dna.remote` in git config, or
 `origin`. A running node syncs on every tick, and a plain clone has no
 record until it syncs. With no remote there is nothing to do:
@@ -182,9 +186,10 @@ A fast-forward is never refused.
 
 ### Candidates
 
-Every candidate a Mutation commits is kept under
-`refs/dna/candidates/<mutation>` and travels with the record, so a
-refused or revised change stays readable after its worktree is gone:
+Every candidate a Mutation commits is kept as a branch of the genome,
+`dna/candidate/<mutation>`, and the record names its commit, so a
+refused or revised change stays readable after its worktree is gone.
+It is code, and travels as any branch does:
 
 ```sh
 hale dna candidates                            # every kept candidate, with its Review's state
@@ -192,9 +197,10 @@ hale dna candidates m7                         # one, as a diff from its Review'
 hale dna candidates drop m7 --why "superseded by m9"
 ```
 
-`drop` is a row, `candidate.dropped`; the pointer goes here, at the
-remote, and at every other clone on its next sync. The commits stay
-in each object store until git collects them.
+`drop` is a row, `candidate.dropped`; the branch goes here, and every
+other clone deletes its own when it reads the row. A candidate branch
+someone pushed to a forge is deleted there like any other branch. The
+commits stay in each object store until git collects them.
 
 ## Receipts and protected evidence
 
