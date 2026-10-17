@@ -8,6 +8,8 @@
 
 #[path = "support/vault.rs"]
 mod vault;
+#[path = "support/record.rs"]
+mod record;
 #[path = "support/trace.rs"]
 mod trace;
 use std::path::{Path, PathBuf};
@@ -47,9 +49,8 @@ fn supersedes_of(app: &Path, digest: &str) -> String {
 }
 
 fn journal(app: &Path) -> Vec<(String, String, String)> {
-    let _s = trace::Span::new("git", "show refs/dna/journal:journal.jsonl");
-    let out = Command::new("git").args(["show", "refs/dna/journal:journal.jsonl"]).current_dir(app).output().unwrap();
-    String::from_utf8_lossy(&out.stdout)
+    let _s = trace::Span::new("hale", "dna record-rows");
+    record::text(app)
         .lines()
         .filter(|l| !l.trim().is_empty())
         .map(|l| {

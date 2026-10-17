@@ -26,7 +26,7 @@ fn dna_cli(app: String, args: String) -> String {
 
 // The record's lines that carry every one of `needles` (tab-separated).
 fn record_lines_with(app: String, needles: String) -> Int {
-    let text = in_dir(app, "git\nshow\nrefs/dna/journal:journal.jsonl").stdout + "\n";
+    let text = in_dir(app, toolchain() + "\ndna\nrecord-rows").stdout + "\n";
     let tabbed = needles + "\t";
     let mut n = 0;
     let mut rest = text;

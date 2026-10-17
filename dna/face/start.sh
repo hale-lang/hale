@@ -102,7 +102,7 @@ done
 face=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 checkout=$(cd -- "$face/../.." && pwd -P)
 valid_path "$checkout" || fail 'checkout paths cannot contain newlines'
-command -v git >/dev/null || fail 'git is required to read the DNA Record'
+command -v git >/dev/null || fail 'git is required to read the project'
 # A caller's repository overrides must never redirect a named project.
 unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_NAMESPACE
 if [[ -n "$project" ]]; then
@@ -111,7 +111,6 @@ if [[ -n "$project" ]]; then
   project=$(cd -- "$project" && pwd -P)
   top=$(git -C "$project" rev-parse --show-toplevel 2>/dev/null) || fail 'project must be a Git worktree'
   [[ "$(cd -- "$top" && pwd -P)" == "$project" ]] || fail 'pass the DNA project root, not a subdirectory'
-  git -C "$project" rev-parse --verify 'refs/dna/journal^{commit}' >/dev/null 2>&1 || fail 'project has no DNA Record; create it from the Projects workspace, or with hale dna first'
 fi
 for asset in index.html app.js application.js definition-draft.js organization-draft.js knowledge-draft.js task-administration.js projects.js task-create.js styles.css; do
   [[ -r "$face/web/$asset" && -s "$face/web/$asset" ]] || fail "missing browser asset: $asset"
@@ -163,6 +162,12 @@ hale=$(command -v -- "$hale")
 [[ "$hale" == /* ]] || hale="$(pwd -P)/$hale"
 valid_path "$hale" || fail 'compiler paths cannot contain newlines'
 export HALE_BIN=$hale
+# the record is read through the toolchain (`hale dna record-rows`), never its storage
+if [[ -n "$project" ]]; then
+  rows=$("$hale" dna record-rows "$project" 2>/dev/null) || rows=
+  [[ -n "$rows" ]] || fail 'project has no DNA Record; create it from the Projects workspace, or with hale dna first'
+  unset rows
+fi
 
 # Builds the seeds this launch was not handed, straight from the checkout,
 # each into the temporary build directory with `hale build -o`, so a build

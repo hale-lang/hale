@@ -87,6 +87,20 @@ fn record_head_verb(root: String) -> Answer {
     return answer((if h.absent { "none" } else { h.id }) + "\n");
 }
 
+// GH #1590: the record's rows, one JSON object per line (`seq`, `kind`,
+// `entity`, `body`, `author`), oldest first: the record's own line format,
+// "" for a record with no rows. What a test or a script reads of the
+// record, so none of them reads the record's storage. The record's rows
+// alone: the Ledger's are memory's (`hale dna history` reads both).
+fn record_rows_verb(root: String) -> Answer {
+    let h = record_head(root);
+    if !h.ok { return fail("record-rows: the record in " + root + " could not be read: " + h.why); }
+    if h.absent { return answer(""); }
+    let text = journal_text_at(root, h.id);
+    if len(text) == 0 { return fail("record-rows: the record's rows at " + h.id + " could not be read"); }
+    return answer(text);
+}
+
 // Append every row of a file (one JSON object per line: kind, entity,
 // body) in order, in the identity of whoever runs this. The count.
 fn record_seed_verb(root: String, path: String, purpose_path: String, memory: dna::Memory) -> Answer {

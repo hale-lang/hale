@@ -8,6 +8,8 @@
 
 #[path = "support/vault.rs"]
 mod vault;
+#[path = "support/record.rs"]
+mod record;
 #[path = "support/reap.rs"]
 mod reap;
 // The codegen suite's: what a child listens on, read from `/proc`.
@@ -158,7 +160,7 @@ fn run_hosts_the_organism_with_plain_iris_and_holds_no_state() {
     assert!(!types.iter().any(|t| t.starts_with("__lib_")), "no mangled locus type names in the observation: {types:?}");
     // an intent over the nerves (`hale dna task create`) lands in the
     // organism's Journal
-    let record = |app: &Path| -> String { Command::new("git").args(["-C", &app.to_string_lossy(), "show", "refs/dna/journal:journal.jsonl"]).output().map(|o| String::from_utf8_lossy(&o.stdout).to_string()).unwrap_or_default() };
+    let record = |app: &Path| -> String { record::text(app) };
     let before = record(&app).lines().count();
     let ask = vault::hale()
         .args(["dna", "task", "create", "write", "the", "changelog"])

@@ -15,6 +15,7 @@
 //!   hale dna status [--json]    the status projection, from the Journal
 //!   hale dna task create <outcome…>  ask for an outcome: a Task, a row a node relays to the organism
 //!   hale dna history [<entity>] walk the Journal by causal links
+//!   hale dna record-rows [project]  the record's rows, one JSON object per line
 //!   hale dna show org|processes [--json] [project]  the graph's two perspectives, from memory
 //!   hale dna review <id> <verdict> a verdict, a row a node relays (the Review decides)
 //!   hale dna --embedded-digest  the DNA source this binary embeds, by name (GH #726)
@@ -817,6 +818,12 @@ pub fn run(args: &[String]) -> ExitCode {
             let (dir, rest) = project_arg(&args[1..], false);
             host_exec("history", &dir, &rest)
         }
+        // GH #1590: the record's rows, one JSON object per line, for a test
+        // or a script that reads the record without reading its storage
+        Some("record-rows") => {
+            let dir = args.get(1).map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."));
+            host_exec("record-rows", &dir, &[])
+        }
         Some("body") => host_exec("body", Path::new("."), &args[1..]),
         Some("secret") => host_exec("secret", Path::new("."), &args[1..]),
         // GH #989: every secret the organism requires, and whether the vault holds it
@@ -1053,6 +1060,7 @@ fn usage(code: u8) -> ExitCode {
     eprintln!("       hale dna status [project] [--json]");
     eprintln!("                                    the organism's status projection, from the Journal");
     eprintln!("       hale dna history [<entity>]  walk the Journal by causal links (works offline)");
+    eprintln!("       hale dna record-rows [project]  the record's rows, one JSON object per line (for tests and scripts)");
     eprintln!("       hale dna fill <position> <holder> [project] [--as <who>]");
     eprintln!("                                    ask the organization to propose who holds a position, for the Board");
     eprintln!("       hale dna ingest [project] [--at <rev>]");

@@ -117,6 +117,9 @@ fn main() {
         ans = host::senses_up_verb(root);
     } else if verb == "record-head" {
         ans = host::record_head_verb(root);
+    } else if verb == "record-rows" {
+        // GH #1590: the record's rows in its line format, for tests and scripts
+        ans = host::record_rows_verb(root);
     } else if verb == "record-seed" {
         // `hale dna init` seeds the record through the host: its rows, one
         // JSON object per line in a file, and the declared purpose (GH #995)

@@ -18,6 +18,8 @@
 
 #[path = "support/vault.rs"]
 mod vault;
+#[path = "support/record.rs"]
+mod record;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -48,10 +50,8 @@ fn pipeline_app(tag: &str) -> PathBuf {
 }
 
 fn journal_rows(root: &Path) -> Vec<serde_json::Value> {
-    // the record is the branch refs/dna/journal; its tree holds the events
-    let out = std::process::Command::new("git").args(["-C", &root.to_string_lossy(), "show", "refs/dna/journal:journal.jsonl"]).output().unwrap();
-    String::from_utf8_lossy(&out.stdout)
-        .to_string()
+    // the record's rows, as the toolchain reads them
+    record::text(root)
         .lines()
         .filter(|l| !l.is_empty())
         .map(|l| serde_json::from_str(l).expect("journal line is JSON"))

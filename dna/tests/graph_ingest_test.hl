@@ -106,8 +106,8 @@ locus App {
         std::test::assert(std::str::contains(init.stdout, "1 purpose, 17 axiom, 5 process, 5 seed, 6 contract, 96 noun, 3 deployment, 7 gate, 7 document, 4 witness, 0 position, 0 work"), "by kind: " + init.stdout);
 
         // ---- the record, read back
-        let journal = dna::run_tool("git\n-C\n" + repo + "\nshow\nrefs/dna/journal:journal.jsonl");
-        std::test::assert_eq_int(journal.code, 0, "the record is on refs/dna/journal: " + journal.stderr);
+        let journal = dna::run_tool(toolchain() + "\ndna\nrecord-rows\n" + repo);
+        std::test::assert_eq_int(journal.code, 0, "the record reads back: " + journal.stderr);
         let mut rest = journal.stdout;
         while len(rest) > 0 {
             let nl = std::str::index_of(rest, "\n");

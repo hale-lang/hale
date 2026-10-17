@@ -8,6 +8,8 @@
 
 #[path = "support/vault.rs"]
 mod vault;
+#[path = "support/record.rs"]
+mod record;
 #[path = "support/reap.rs"]
 mod reap;
 use std::path::{Path, PathBuf};
@@ -31,8 +33,7 @@ fn git(args: &[&str], cwd: &Path) -> String {
 }
 
 fn record(app: &Path) -> Vec<serde_json::Value> {
-    let out = Command::new("git").args(["-C", &app.to_string_lossy(), "show", "refs/dna/journal:journal.jsonl"]).output().unwrap();
-    String::from_utf8_lossy(&out.stdout).lines().filter(|l| !l.trim().is_empty()).filter_map(|l| serde_json::from_str(l).ok()).collect()
+    record::text(app).lines().filter(|l| !l.trim().is_empty()).filter_map(|l| serde_json::from_str(l).ok()).collect()
 }
 
 /// One row on the record by plumbing, the shape `GitRecord` writes.

@@ -7,6 +7,8 @@
 
 #[path = "support/vault.rs"]
 mod vault;
+#[path = "support/record.rs"]
+mod record;
 #[path = "support/reap.rs"]
 mod reap;
 use std::path::{Path, PathBuf};
@@ -26,8 +28,7 @@ fn hale(args: &[&str], cwd: &Path) -> (bool, String) {
 }
 
 fn journal(app: &Path) -> Vec<(String, String, String, String)> {
-    let out = Command::new("git").args(["show", "refs/dna/journal:journal.jsonl"]).current_dir(app).output().unwrap();
-    String::from_utf8_lossy(&out.stdout)
+    record::text(app)
         .lines()
         .filter(|l| !l.trim().is_empty())
         .map(|l| {

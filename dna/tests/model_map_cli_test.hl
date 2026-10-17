@@ -20,7 +20,7 @@ fn in_dir(dir: String, argv: String) -> dna::RunResult {
 
 fn models(app: String, args: String) -> dna::RunResult { return in_dir(app, toolchain() + "\ndna\nmodels\n" + args); }
 
-fn journal(app: String) -> String { return in_dir(app, "git\nshow\nrefs/dna/journal:journal.jsonl").stdout; }
+fn journal(app: String) -> String { return in_dir(app, toolchain() + "\ndna\nrecord-rows").stdout; }
 
 main locus App {
     run() {

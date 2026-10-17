@@ -44,6 +44,7 @@ hale dna --embedded-digest [--from-tree <dir>]
 hale dna status [project] [--json]
                              the organism's status projection, from the Journal
 hale dna history [<entity>]  walk the Journal by causal links (works offline)
+hale dna record-rows [project]  the record's rows, one JSON object per line
 hale dna sync [project]      fetch, reconcile and push the record (refs/dna/*) with origin
 hale dna candidates [<mutation> | drop <mutation> --why <w>]
                              the candidates the record keeps, whatever the review decided; one as a diff; stop keeping one

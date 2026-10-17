@@ -10,6 +10,8 @@
 
 #[path = "support/reap.rs"]
 mod reap;
+#[path = "support/record.rs"]
+mod record;
 #[path = "support/trace.rs"]
 mod trace;
 use std::path::{Path, PathBuf};
@@ -47,9 +49,8 @@ fn git(args: &[&str], cwd: &Path) -> String {
 }
 
 fn journal(cwd: &Path) -> String {
-    let _s = trace::Span::new("git", "show refs/dna/journal:journal.jsonl");
-    let out = Command::new("git").args(["show", "refs/dna/journal:journal.jsonl"]).current_dir(cwd).output().unwrap();
-    String::from_utf8_lossy(&out.stdout).to_string()
+    let _s = trace::Span::new("hale", "dna record-rows");
+    record::text(cwd)
 }
 
 fn run_host(app: &Path, home: &Path, log: &Path) -> std::process::Child {

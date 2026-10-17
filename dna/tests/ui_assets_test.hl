@@ -52,7 +52,7 @@ fn init(repo: String) -> dna::RunResult {
     return dna::run_tool_timeout(900, "sh\n-c\ncd \"$1\" && unset ANTHROPIC_API_KEY OPENAI_API_KEY && export HALE_DNA_DISCOVER=off && exec \"$2\" dna init . --no-library\nsh\n" + repo + "\n" + toolchain());
 }
 
-fn journal(repo: String) -> String { return dna::run_tool("git\n-C\n" + repo + "\nshow\nrefs/dna/journal:journal.jsonl").stdout; }
+fn journal(repo: String) -> String { return dna::run_tool(toolchain() + "\ndna\nrecord-rows\n" + repo).stdout; }
 
 const SERVED: String = "note    ui/ holds no manifest, so it is no seed: the head serves it as the application's static assets, at /app/";
 const IGNORED: String = "note    ui/ holds no manifest and nothing references it: no seed, and ignored";
