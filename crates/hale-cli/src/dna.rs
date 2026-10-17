@@ -1427,6 +1427,17 @@ fn init(app_dir: &Path, library: bool) -> Result<Vec<String>, String> {
         TOOLCHAIN,
         hale_dna::embedded_short()
     ));
+    // 2b. GH #1590: a manifest that pins a record this clone holds none
+    //     of belongs to another organism's genome: init would start a
+    //     second record beside it
+    if let Some(pinned) = manifest_pin(&manifest)? {
+        if record_held(&root)?.is_none() {
+            return Err(format!(
+                "{}'s [dna] record pins record {pinned}, and this clone holds none of it: a clone of an existing organism syncs its record (`hale dna sync`) rather than starting another; a manifest copied from another project loses its `[dna] record` line first",
+                manifest.display()
+            ));
+        }
+    }
     // 3. the artifact, cut by the toolchain as a subprocess — an
     //    application's; a repository's structure is read at step 7
     let me = std::env::current_exe().map_err(|e| e.to_string())?;
@@ -1563,6 +1574,10 @@ fn init(app_dir: &Path, library: bool) -> Result<Vec<String>, String> {
         // the starting model mapping, from the hosted models this machine
         // has a key for
         out.extend(seed_model_map(&root, &found)?);
+    }
+    // 7b. GH #1590: the record's identity, pinned in the genome
+    if let Some(line) = pin_identity(&root)? {
+        out.push(line);
     }
     // 8. .gitignore hygiene
     let gi = root.join(".gitignore");
@@ -1701,6 +1716,11 @@ fn upgrade(dir: &Path) -> Result<Vec<String>, String> {
     // an existing record declares, or does not, is its own
     if record_exists(&root)? {
         out.push(seat_initializer(&root, false)?);
+    }
+    // GH #1590: a record from before the pin gets its identity pinned in the
+    // genome; a pin naming another record is refused here
+    if let Some(line) = pin_identity(&root)? {
+        out.push(line);
     }
     // GH #596: an organization from before the charter gets one, and
     // the toolchain's design is proposed again where it changed — each
@@ -3330,6 +3350,91 @@ fn record_exists(root: &Path) -> Result<bool, String> {
     Ok(host_run("record-head", root, &[])?.trim() != "none")
 }
 
+/// GH #1590: the record's identity as this clone's record holds it
+/// (`None` before its first row), from the host's `record-identity`.
+fn record_held(root: &Path) -> Result<Option<String>, String> {
+    let out = host_run("record-identity", root, &[])?;
+    Ok(out.lines().map(str::trim).next().filter(|l| !l.is_empty() && *l != "none").map(str::to_string))
+}
+
+/// GH #1590: the identity `hale.toml` pins, as a TOML parser reads it:
+/// `None` when the file, the `dna` table or its `record` key is absent;
+/// an error when the manifest does not parse or the pin is not a string,
+/// which is never taken for no pin.
+fn manifest_pin(path: &Path) -> Result<Option<String>, String> {
+    let Ok(text) = fs::read_to_string(path) else { return Ok(None) };
+    manifest_pin_in(&text).map_err(|e| format!("{}: {e}", path.display()))
+}
+
+fn manifest_pin_in(text: &str) -> Result<Option<String>, String> {
+    let table: toml::Table = text.parse().map_err(|e| format!("does not parse: {e}"))?;
+    match table.get("dna").and_then(|d| d.get("record")) {
+        None => Ok(None),
+        Some(toml::Value::String(s)) => Ok(Some(s.clone())),
+        Some(other) => Err(format!("[dna] record is {other}, not a string")),
+    }
+}
+
+/// GH #1590: `record = "<identity>"` in the manifest's `dna` table, wherever
+/// the manifest keeps that table — a `[dna]` header in any spelling, dotted
+/// keys (`dna.fleet = …`), an inline table — edited in the parsed document,
+/// so every other line, comment and layout survives; the table appended
+/// where there is none.
+fn pin_record_in_manifest(path: &Path, identity: &str) -> Result<(), String> {
+    let text = fs::read_to_string(path).unwrap_or_default();
+    let new = pinned_manifest(&text, identity).map_err(|e| format!("{}: {e}", path.display()))?;
+    fs::write(path, new).map_err(|e| format!("write {}: {e}", path.display()))
+}
+
+fn pinned_manifest(text: &str, identity: &str) -> Result<String, String> {
+    let mut doc: toml_edit::DocumentMut = text.parse().map_err(|e| format!("does not parse: {e}"))?;
+    match doc.get_mut("dna") {
+        None => {
+            let mut t = toml_edit::Table::new();
+            t.insert("record", toml_edit::value(identity));
+            t.decor_mut().set_prefix("\n# hale dna: the record this genome belongs to, by its identity (GH #1590)\n");
+            doc.insert("dna", toml_edit::Item::Table(t));
+        }
+        Some(item) => match item.as_table_like_mut() {
+            Some(t) => {
+                t.insert("record", toml_edit::value(identity));
+            }
+            None => return Err("`dna` is not a table".to_string()),
+        },
+    }
+    let new = doc.to_string();
+    if manifest_pin_in(&new)?.as_deref() != Some(identity) {
+        return Err("the pin did not land in its [dna] table".to_string());
+    }
+    Ok(new)
+}
+
+/// GH #1590: pin the record's identity in the genome, so a clone knows
+/// which record (and which memory) it belongs to before it holds a row of
+/// it. A pin naming another record is refused: the manifest was copied
+/// from another project, or the record from another genome. `None` when
+/// the record has no rows yet.
+fn pin_identity(root: &Path) -> Result<Option<String>, String> {
+    let manifest = root.join("hale.toml");
+    let pinned = manifest_pin(&manifest)?;
+    match (record_held(root)?, pinned) {
+        (None, _) => Ok(None),
+        (Some(held), Some(pinned)) if held == pinned => Ok(Some(format!("kept    {} ([dna] record pins this record, {})", manifest.display(), short_id(&held)))),
+        (Some(held), Some(pinned)) => Err(format!(
+            "{}'s [dna] record names record {pinned}, but this clone's record is {held}; remove the line if the manifest was copied from another project",
+            manifest.display()
+        )),
+        (Some(held), None) => {
+            pin_record_in_manifest(&manifest, &held)?;
+            Ok(Some(format!("pinned  {} ([dna] record = {}…, the record's identity)", manifest.display(), short_id(&held))))
+        }
+    }
+}
+
+fn short_id(id: &str) -> &str {
+    &id[..id.len().min(12)]
+}
+
 /// One seeded family, proposed where the record does not hold its current
 /// text (all of it at `init`; what changed, or a family the record has
 /// never seen, at `upgrade`): the
@@ -3671,5 +3776,54 @@ fn design_text(p: &SeededPractice) -> String {
     match std::env::var("HALE_DNA_DESIGN_SUFFIX") {
         Ok(s) if !s.is_empty() => format!("{}{s}", p.text),
         _ => p.text.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod pin_tests {
+    use super::*;
+
+    const ID: &str = "4f1c0de4f1c0de4f1c0de4f1c0de4f1c0de4f1c0";
+
+    /// GH #1590: the pin lands in the `dna` table wherever the manifest keeps
+    /// it, and every other line survives.
+    #[test]
+    fn the_pin_lands_in_every_valid_dna_table() {
+        let layouts = [
+            "[deps]\n",
+            "[dna]\nfleet = \"production\"\n",
+            "[dna] # deployment\nfleet = \"production\"\n",
+            "[\"dna\"]\nfleet = \"production\"\n",
+            "[ dna ]\nfleet = \"production\"\n",
+            "dna.fleet = \"production\"\n[deps]\n",
+            "dna = { fleet = \"production\" }\n",
+            "[dna]\nrecord = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'\n",
+        ];
+        for text in layouts {
+            let new = pinned_manifest(text, ID).unwrap_or_else(|e| panic!("{text:?}: {e}"));
+            assert_eq!(manifest_pin_in(&new).unwrap().as_deref(), Some(ID), "{text:?} -> {new:?}");
+            let table: toml::Table = new.parse().unwrap();
+            if text.contains("fleet") {
+                assert_eq!(table["dna"]["fleet"].as_str(), Some("production"), "{text:?} keeps its fleet: {new:?}");
+            }
+            if text.contains("# deployment") {
+                assert!(new.contains("# deployment"), "a comment survives: {new:?}");
+            }
+        }
+    }
+
+    /// A pin the parser reads is read, whatever its string form; one that is
+    /// not a string is an error, never no pin.
+    #[test]
+    fn a_pin_reads_in_every_string_form_and_refuses_otherwise() {
+        let lit = format!("[dna]\nrecord = '{ID}'\n");
+        assert_eq!(manifest_pin_in(&lit).unwrap().as_deref(), Some(ID));
+        let commented = format!("[dna] # the record\nrecord = \"{ID}\"\n");
+        assert_eq!(manifest_pin_in(&commented).unwrap().as_deref(), Some(ID));
+        let dotted = format!("dna.record = \"{ID}\"\n");
+        assert_eq!(manifest_pin_in(&dotted).unwrap().as_deref(), Some(ID));
+        assert_eq!(manifest_pin_in("[deps]\n").unwrap(), None);
+        assert!(manifest_pin_in("[dna]\nrecord = 7\n").is_err());
+        assert!(pinned_manifest("dna = 3\n", ID).is_err());
     }
 }

@@ -427,8 +427,19 @@ fn synced(repo: String, s: SyncResult, j: dna::RoutedJournal) -> SyncResult {
 // GH #615: a record's identity is the root commit of its journal. It is
 // published as a cell under refs/dna/identity, so another record can name
 // this one (and write into its mailbox for it) without reading its journal.
+// GH #1590: the genome pins it (`[dna] record` in hale.toml), and a clone
+// whose record disagrees with the pin has none ("", `dna::record_identity_at`
+// says why).
 fn record_identity(repo: String) -> String {
-    return rec(repo).identity();
+    return dna::record_scope(repo);
+}
+
+// `hale dna init` and `upgrade` pin the identity in the genome: what the
+// record this clone holds says it is ("none" when it holds no rows). The
+// driver reads the pin itself, with a TOML parser.
+fn record_identity_verb(root: String) -> Answer {
+    let held = rec(root).identity();
+    return answer((if len(held) > 0 { held } else { "none" }) + "\n");
 }
 
 // The cell in this clone is not publication (the second review of #631: a

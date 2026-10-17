@@ -116,6 +116,12 @@ const ALIGNED: &[(&str, &str, &str)] = &[
     ),
     (
         "crates/hale-cli/src/dna.rs",
+        "pin_identity",
+        "the `kept    <path>` outcome column of init's and upgrade's report, \
+         which this fn's line joins",
+    ),
+    (
+        "crates/hale-cli/src/dna.rs",
         "report",
         "the `found   <path>` outcome column",
     ),
