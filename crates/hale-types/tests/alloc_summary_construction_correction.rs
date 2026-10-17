@@ -509,15 +509,12 @@ fn reached_unowned_literal_positions() {
 }
 
 /// dna/oidc is the issuer's library seed: `oidc/serve` starts the HTTP
-/// loop over its `StubIssuer` in a program of its own. Its bus-handled
-/// code calls methods on receivers the walk cannot type, which reach every
-/// copy method of their names, so 31 fns stay invoked unboundedly beside
-/// the copy, not 2: the copy's, none of the program's own.
+/// loop over its `StubIssuer` in a program of its own.
 #[test]
 fn reached_oidc() {
     pinned_unreached(
         "dna/oidc",
-        (142, 31),
+        (142, 2),
         &[
             "b64",
             "decode",

@@ -1190,7 +1190,8 @@ pub struct AllocSummary {
     /// The fns the program reaches, when the summary holds the stdlib's
     /// analysis copy beside the program: the program's own fns, what
     /// their calls reach (a method call whose receiver the walk could not
-    /// type, every method of the copy's of its name), and the hooks and
+    /// type, the method of its name of every copy locus they start), and
+    /// the hooks and
     /// bus handlers of every locus they start (an instantiation, or a
     /// param field of a started locus). A copy's fn the program never
     /// reaches is not run, so it invokes, passes and consumes nothing
@@ -3763,12 +3764,17 @@ pub fn summarize_within(
             }
         }
         // A method call whose receiver the walk could not type may be a
-        // call of any locus's method of its name: every one of the copy's
-        // runs, as the provenance pass taints them all.
+        // call of a method of its name on any locus a value of the program
+        // can be: the copy's methods of the name, on each copy locus that
+        // reached code starts (an instance exists only where code that runs
+        // builds one), run, as the provenance pass taints them all.
         let mut copy_methods: BTreeMap<&str, Vec<&FnKey>> = BTreeMap::new();
-        for b in bodies.iter().filter(|b| b.0.locus.is_some() && is_stdlib_copy(b.7)) {
-            copy_methods.entry(b.0.fn_name.as_str()).or_default().push(&b.0);
+        for b in bodies.iter().filter(|b| is_stdlib_copy(b.7)) {
+            if let Some(l) = &b.0.locus {
+                copy_methods.entry(l.as_str()).or_default().push(&b.0);
+            }
         }
+        let mut untyped: BTreeSet<&str> = BTreeSet::new();
         let mut reached: BTreeSet<FnKey> = BTreeSet::new();
         let mut work: Vec<FnKey> = own.into_iter().collect();
         loop {
@@ -3783,6 +3789,8 @@ pub fn summarize_within(
                         .filter(|f| f.key.locus.as_ref() == Some(&l) && f.entry.is_some())
                         .map(|f| f.key.clone()),
                 );
+                let methods = copy_methods.get(l.as_str()).into_iter().flatten();
+                work.extend(methods.filter(|m| untyped.contains(m.fn_name.as_str())).map(|m| (*m).clone()));
                 pending.extend(param_starts.get(&l).into_iter().flatten().cloned());
             }
             let Some(k) = work.pop() else { break };
@@ -3794,7 +3802,12 @@ pub fn summarize_within(
                 match &c.callee {
                     Callee::Resolved(callee) => work.push(callee.clone()),
                     Callee::Unresolved(name) if c.receiver_present => {
-                        work.extend(copy_methods.get(name.as_str()).into_iter().flatten().map(|k| (*k).clone()))
+                        if untyped.insert(name.as_str()) {
+                            for l in &started {
+                                let methods = copy_methods.get(l.as_str()).into_iter().flatten();
+                                work.extend(methods.filter(|m| m.fn_name == *name).map(|m| (*m).clone()));
+                            }
+                        }
                     }
                     Callee::Unresolved(_) => {}
                 }

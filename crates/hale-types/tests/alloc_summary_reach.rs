@@ -4,8 +4,8 @@
 //! over the rows read only the rows that run (`AllocSummary::runs`).
 //!
 //! - A finding whose cause is code the program reaches stands, a method
-//!   call whose receiver the walk cannot type reaching every copy method
-//!   of its name.
+//!   call whose receiver the walk cannot type reaching the method of its
+//!   name on every copy locus reached code starts.
 //! - A finding caused only by copy bodies the program never reaches is
 //!   gone.
 //! - Every row the program reaches, and its effect row, is the row the
@@ -58,13 +58,14 @@ fn own_leaks(name: &str, src: &str) -> Vec<String> {
 }
 
 /// A generic fn calls `set` on a value whose type the walk cannot see:
-/// it may be any locus's `set`, the copy's `std::metrics::Gauge` (which
-/// the program hands it) among them. The gauge's `set` runs, and its
+/// it may be any started locus's `set`, the copy's `std::metrics::Gauge`
+/// (which the program builds through the registry and hands it) among
+/// them. The gauge's `set` runs, and its
 /// call of `set` with what it was passed makes every `set` carry
 /// anything, the program's own: the program's `Acc::set` keeps its
 /// finding.
 #[test]
-fn an_untyped_receiver_reaches_every_copy_method_of_its_name() {
+fn an_untyped_receiver_reaches_the_method_on_every_started_copy_locus() {
     // A plain string, not a raw one, so the shared corpus does not
     // harvest it: that corpus holds programs whose own rows the copy
     // beside them leaves alone (`alloc_summary_own_rows`), and here the
@@ -177,6 +178,10 @@ fn every_reached_row_is_the_whole_copys() {
             let whole = derive_alloc_summary_over(&snap.bundle(), snap.demand_owned_views().expect("viewed"));
             let reached = reaching.reached.as_ref().expect("the copy is beside the program");
             assert_eq!(whole.reached.as_ref(), Some(reached), "{target}: the rows that run");
+            let copy = |k: &FnKey| k.decl.is_some_and(|d| d.universe == hale_types::placement::SiteUniverse::StdlibAnalysis);
+            let rowless: Vec<String> =
+                reached.iter().filter(|k| copy(k) && !reaching.fns.contains_key(*k)).map(FnKey::display).collect();
+            assert!(rowless.is_empty(), "{target}: reached copy fns with no row: {rowless:?}");
             let keys: Vec<&FnKey> = reached.iter().filter(|k| reaching.fns.contains_key(*k)).collect();
             assert!(keys.iter().all(|k| whole.fns.contains_key(*k)), "{target}");
             let (r, w) = (canonical(reaching, &keys), canonical(&whole, &keys));
