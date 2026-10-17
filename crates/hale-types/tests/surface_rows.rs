@@ -168,3 +168,34 @@ fn a_locus_without_rows_has_no_surface() {
     let rows = snap.demand_surface_rows().expect("rows");
     assert!(rows.is_empty(), "{rows:?}");
 }
+
+/// A `requires` on the surface is its rows' default: a row that writes none
+/// holds it, one that writes its own (`requires: []` included) holds that.
+/// The rows are what everything reads, so a surface written with the
+/// default and the same surface written row by row are one table and one
+/// digest.
+#[test]
+fn a_surface_requires_default_is_held_by_the_rows_that_write_none() {
+    const DECLS: &str = "role operator;\nrole trader;\n\
+        locus A { fn x(n: Int) -> Int { return n; } fn y(n: Int) -> Int { return n; } fn z(n: Int) -> Int { return n; } }\n\
+        fn main() { }\n";
+    let with_default = source(&format!(
+        "{DECLS}api Ops requires: [operator] {{ rpc A::x; rpc A::y requires: [trader]; rpc A::z requires: []; }}\n"
+    ));
+    let written_out = source(&format!(
+        "{DECLS}api Ops {{ rpc A::x requires: [operator]; rpc A::y requires: [trader]; rpc A::z; }}\n"
+    ));
+    let a = with_default.demand_surface_rows().expect("rows");
+    let b = written_out.demand_surface_rows().expect("rows");
+    let roles = |rows: &SurfaceRows| -> Vec<String> {
+        rows.rows_of("Ops")
+            .map(|r| {
+                let req: Vec<&str> = r.requires.iter().map(|(n, _)| n.as_str()).collect();
+                format!("{} {}", r.member, if req.is_empty() { "-".to_string() } else { req.join(",") })
+            })
+            .collect()
+    };
+    assert_eq!(roles(a), vec!["A::x operator", "A::y trader", "A::z -"]);
+    assert_eq!(roles(a), roles(b));
+    assert_eq!(a.surfaces[0].digest, b.surfaces[0].digest, "one table, one digest");
+}

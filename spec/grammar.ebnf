@@ -124,7 +124,7 @@ unit_decl         = "unit" , IDENTIFIER , [ "=" , unit_factor ] , ";" ;
    `Locus::fn`. Surface names are never mangled. The `@rpc` annotation
    (`rpc_annotation`) contributes the same row to the seed's default
    surface. *)
-api_decl          = "api" , IDENTIFIER , "{" , { rpc_row } , "}" ;
+api_decl          = "api" , IDENTIFIER , [ requires_clause ] , "{" , { rpc_row } , "}" ;
 rpc_row           = "rpc" , IDENTIFIER , "::" , IDENTIFIER , { "::" , IDENTIFIER } ,
                     [ requires_clause ] , ";" ;
 requires_clause   = "requires" , ":" , "[" , [ role_ref , { "," , role_ref } , [ "," ] ] , "]" ;
