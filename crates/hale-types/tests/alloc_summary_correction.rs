@@ -298,6 +298,7 @@ const VERDICT_TARGETS: [&str; 13] = [
     "tests/hale/api_binding_run_test.hl",
     "tests/hale/api_enum_field_test.hl",
     "tests/hale/api_optional_field_test.hl",
+    "tests/hale/http_request_cap_test.hl",
     "tests/hale/http_stream_test.hl",
     "tests/hale/router_middleware_test.hl",
 ];
@@ -1826,6 +1827,19 @@ fn verdict_changes() {
             "Table::holds",
         ],
         &[
+        ],
+        &[
+        ],
+    );
+    // the request cap's handler: the Server calls it per connection
+    pinned(
+        "tests/hale/http_request_cap_test.hl",
+        2,
+        &[
+            "Echo::handle",
+        ],
+        &[
+            ("once-per-invocation -> per-iteration-reclaim", 2),
         ],
         &[
         ],
