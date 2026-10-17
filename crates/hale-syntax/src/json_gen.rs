@@ -1686,7 +1686,25 @@ pub fn generate_json_parsers(program: &mut Program) {
     }
 
     let names: HashSet<String> = types.iter().map(|t| t.name.clone()).collect();
-    rewrite_items(&mut program.items, &names);
+    // `T::from_json(s)` / `T::to_json(o)` with T a generated type ->
+    // `__json_parse_T(s)` / `__json_to_json_T(o)`.
+    rewrite_items(&mut program.items, &mut |e: &mut Expr| {
+        let Expr::Call { callee, args, span, .. } = e else { return };
+        if args.len() != 1 {
+            return;
+        }
+        let Expr::Path(qn) = callee.as_ref() else { return };
+        if qn.segments.len() != 2 || !names.contains(&qn.segments[0].name) {
+            return;
+        }
+        let prefix = match qn.segments[1].name.as_str() {
+            "from_json" => "__json_parse_",
+            "to_json" => "__json_to_json_",
+            _ => return,
+        };
+        let fname = format!("{}{}", prefix, qn.segments[0].name);
+        *callee = Box::new(Expr::Ident(Ident::new(fname, *span)));
+    });
 }
 
 /// Mark the generated `JsonError` as synthesized. The generated fns
@@ -1704,78 +1722,78 @@ fn mark_synthetic(mut items: Vec<TopDecl>) -> Vec<TopDecl> {
 
 // ---- `T::from_json(s)` -> `__json_parse_T(s)` rewrite (full expr walk) ----
 
-fn rewrite_items(items: &mut [TopDecl], names: &HashSet<String>) {
+fn rewrite_items(items: &mut [TopDecl], visit: &mut dyn FnMut(&mut Expr)) {
     for item in items {
         match item {
-            TopDecl::Fn(f) => rewrite_block(&mut f.body, names),
+            TopDecl::Fn(f) => rewrite_block(&mut f.body, visit),
             TopDecl::Locus(l) => {
                 for m in &mut l.members {
                     match m {
-                        LocusMember::Lifecycle(lc) => rewrite_block(&mut lc.body, names),
-                        LocusMember::Mode(md) => rewrite_block(&mut md.body, names),
-                        LocusMember::Fn(fd) => rewrite_block(&mut fd.body, names),
+                        LocusMember::Lifecycle(lc) => rewrite_block(&mut lc.body, visit),
+                        LocusMember::Mode(md) => rewrite_block(&mut md.body, visit),
+                        LocusMember::Fn(fd) => rewrite_block(&mut fd.body, visit),
                         _ => {}
                     }
                 }
             }
-            TopDecl::Module(m) => rewrite_items(&mut m.items, names),
+            TopDecl::Module(m) => rewrite_items(&mut m.items, visit),
             _ => {}
         }
     }
 }
 
-fn rewrite_block(b: &mut Block, names: &HashSet<String>) {
+fn rewrite_block(b: &mut Block, visit: &mut dyn FnMut(&mut Expr)) {
     for s in &mut b.stmts {
-        rewrite_stmt(s, names);
+        rewrite_stmt(s, visit);
     }
     if let Some(t) = &mut b.tail {
-        rewrite_expr(t, names);
+        rewrite_expr(t, visit);
     }
 }
 
-fn rewrite_stmt(s: &mut Stmt, names: &HashSet<String>) {
+fn rewrite_stmt(s: &mut Stmt, visit: &mut dyn FnMut(&mut Expr)) {
     match s {
-        Stmt::Let { value, .. } | Stmt::LetTuple { value, .. } => rewrite_expr(value, names),
+        Stmt::Let { value, .. } | Stmt::LetTuple { value, .. } => rewrite_expr(value, visit),
         Stmt::Assign { target, value, .. } => {
-            rewrite_expr(value, names);
+            rewrite_expr(value, visit);
             for seg in &mut target.tail {
                 if let crate::ast::LValueSeg::Index(e) = seg {
-                    rewrite_expr(e, names);
+                    rewrite_expr(e, visit);
                 }
             }
         }
-        Stmt::If(if_stmt) => rewrite_if(if_stmt, names),
-        Stmt::Match(m) => rewrite_match(m, names),
+        Stmt::If(if_stmt) => rewrite_if(if_stmt, visit),
+        Stmt::Match(m) => rewrite_match(m, visit),
         Stmt::For { iter, body, .. } => {
-            rewrite_expr(iter, names);
-            rewrite_block(body, names);
+            rewrite_expr(iter, visit);
+            rewrite_block(body, visit);
         }
         Stmt::While { cond, body, .. } => {
-            rewrite_expr(cond, names);
-            rewrite_block(body, names);
+            rewrite_expr(cond, visit);
+            rewrite_block(body, visit);
         }
-        Stmt::Return(Some(e), _) => rewrite_expr(e, names),
-        Stmt::Fail { value, .. } => rewrite_expr(value, names),
+        Stmt::Return(Some(e), _) => rewrite_expr(e, visit),
+        Stmt::Fail { value, .. } => rewrite_expr(value, visit),
         Stmt::Send { subject, value, .. } => {
-            rewrite_expr(subject, names);
-            rewrite_expr(value, names);
+            rewrite_expr(subject, visit);
+            rewrite_expr(value, visit);
         }
-        Stmt::Block(b) => rewrite_block(b, names),
+        Stmt::Block(b) => rewrite_block(b, visit),
         Stmt::Recovery { args, .. } => {
             for a in args {
-                rewrite_expr(a, names);
+                rewrite_expr(a, visit);
             }
         }
         Stmt::Violate { payload, .. } => {
             if let Some(p) = payload {
-                rewrite_expr(p, names);
+                rewrite_expr(p, visit);
             }
         }
         Stmt::ShmWrite { max, body, .. } => {
-            rewrite_expr(max, names);
-            rewrite_block(body, names);
+            rewrite_expr(max, visit);
+            rewrite_block(body, visit);
         }
-        Stmt::Expr(e) => rewrite_expr(e, names),
+        Stmt::Expr(e) => rewrite_expr(e, visit),
         Stmt::Return(None, _)
         | Stmt::Break(_)
         | Stmt::Continue(_)
@@ -1785,97 +1803,136 @@ fn rewrite_stmt(s: &mut Stmt, names: &HashSet<String>) {
     }
 }
 
-fn rewrite_if(if_stmt: &mut IfStmt, names: &HashSet<String>) {
-    rewrite_expr(&mut if_stmt.cond, names);
-    rewrite_block(&mut if_stmt.then_block, names);
+fn rewrite_if(if_stmt: &mut IfStmt, visit: &mut dyn FnMut(&mut Expr)) {
+    rewrite_expr(&mut if_stmt.cond, visit);
+    rewrite_block(&mut if_stmt.then_block, visit);
     if let Some(eb) = &mut if_stmt.else_block {
         match eb.as_mut() {
-            ElseBranch::Else(b) => rewrite_block(b, names),
-            ElseBranch::ElseIf(inner) => rewrite_if(inner, names),
+            ElseBranch::Else(b) => rewrite_block(b, visit),
+            ElseBranch::ElseIf(inner) => rewrite_if(inner, visit),
         }
     }
 }
 
-fn rewrite_match(m: &mut MatchStmt, names: &HashSet<String>) {
-    rewrite_expr(&mut m.scrutinee, names);
+fn rewrite_match(m: &mut MatchStmt, visit: &mut dyn FnMut(&mut Expr)) {
+    rewrite_expr(&mut m.scrutinee, visit);
     for arm in &mut m.arms {
         match &mut arm.body {
-            MatchArmBody::Block(b) => rewrite_block(b, names),
-            MatchArmBody::Expr(e) => rewrite_expr(e, names),
+            MatchArmBody::Block(b) => rewrite_block(b, visit),
+            MatchArmBody::Expr(e) => rewrite_expr(e, visit),
         }
     }
 }
 
-fn rewrite_expr(e: &mut Expr, names: &HashSet<String>) {
+fn rewrite_expr(e: &mut Expr, visit: &mut dyn FnMut(&mut Expr)) {
     match e {
-        Expr::Call { callee, args, span, .. } => {
-            rewrite_expr(callee, names);
+        Expr::Call { callee, args, .. } => {
+            rewrite_expr(callee, visit);
             for a in args.iter_mut() {
-                rewrite_expr(a, names);
+                rewrite_expr(a, visit);
             }
-            // `T::from_json(s)` / `T::to_json(o)` with T a generated type
-            // -> `__json_parse_T(s)` / `__json_to_json_T(o)`.
-            if args.len() == 1 {
-                if let Expr::Path(qn) = callee.as_ref() {
-                    if qn.segments.len() == 2 && names.contains(&qn.segments[0].name) {
-                        let prefix = match qn.segments[1].name.as_str() {
-                            "from_json" => Some("__json_parse_"),
-                            "to_json" => Some("__json_to_json_"),
-                            _ => None,
-                        };
-                        if let Some(prefix) = prefix {
-                            let fname = format!("{}{}", prefix, qn.segments[0].name);
-                            *callee = Box::new(Expr::Ident(Ident::new(fname, *span)));
-                        }
-                    }
-                }
-            }
+            visit(e);
         }
         Expr::Binary { left, right, .. } => {
-            rewrite_expr(left, names);
-            rewrite_expr(right, names);
+            rewrite_expr(left, visit);
+            rewrite_expr(right, visit);
         }
-        Expr::Unary { operand, .. } => rewrite_expr(operand, names),
-        Expr::Field { receiver, .. } => rewrite_expr(receiver, names),
+        Expr::Unary { operand, .. } => rewrite_expr(operand, visit),
+        Expr::Field { receiver, .. } => rewrite_expr(receiver, visit),
         Expr::Index { receiver, index, .. } => {
-            rewrite_expr(receiver, names);
-            rewrite_expr(index, names);
+            rewrite_expr(receiver, visit);
+            rewrite_expr(index, visit);
         }
-        Expr::Path2 { receiver, .. } => rewrite_expr(receiver, names),
+        Expr::Path2 { receiver, .. } => rewrite_expr(receiver, visit),
         Expr::Tuple(es, _) | Expr::Array(es, _) => {
             for x in es {
-                rewrite_expr(x, names);
+                rewrite_expr(x, visit);
             }
         }
         Expr::Struct { inits, .. } => {
             for i in inits {
-                rewrite_expr(&mut i.value, names);
+                rewrite_expr(&mut i.value, visit);
             }
         }
-        Expr::Block(b) => rewrite_block(b, names),
-        Expr::If(if_stmt) => rewrite_if(if_stmt, names),
-        Expr::Match(m) => rewrite_match(m, names),
-        Expr::Sum(inner, _) | Expr::Prod(inner, _) => rewrite_expr(inner, names),
+        Expr::Block(b) => rewrite_block(b, visit),
+        Expr::If(if_stmt) => rewrite_if(if_stmt, visit),
+        Expr::Match(m) => rewrite_match(m, visit),
+        Expr::Sum(inner, _) | Expr::Prod(inner, _) => rewrite_expr(inner, visit),
         Expr::Approx { left, right, tolerance, .. } => {
-            rewrite_expr(left, names);
-            rewrite_expr(right, names);
-            rewrite_expr(tolerance, names);
+            rewrite_expr(left, visit);
+            rewrite_expr(right, visit);
+            rewrite_expr(tolerance, visit);
         }
         Expr::Range { lo, hi, .. } => {
-            rewrite_expr(lo, names);
-            rewrite_expr(hi, names);
+            rewrite_expr(lo, visit);
+            rewrite_expr(hi, visit);
         }
-        Expr::ArrayRepeat { val, .. } => rewrite_expr(val, names),
+        Expr::ArrayRepeat { val, .. } => rewrite_expr(val, visit),
         Expr::Or { inner, disposition, .. } => {
-            rewrite_expr(inner, names);
+            rewrite_expr(inner, visit);
             if let OrDisposition::Substitute(s) = disposition {
-                rewrite_expr(s, names);
+                rewrite_expr(s, visit);
             }
         }
         Expr::Literal(..) | Expr::Ident(_) | Expr::Path(_) | Expr::KwSelf(_) => {}
     }
 }
 
+
+// ---- GH #1530 step 0: the api codec, called by a program ----
+
+/// The types a program asks the api codec of (spec/api.md § Codecs):
+/// `T::api_decode(text)` and `T::api_encode(value)`, each type once, with the
+/// index of the first program that asks.
+pub fn api_codec_targets(programs: &mut [&mut Program]) -> Vec<(usize, String)> {
+    let mut out: Vec<(usize, String)> = Vec::new();
+    for (i, p) in programs.iter_mut().enumerate() {
+        rewrite_items(&mut p.items, &mut |e: &mut Expr| {
+            let Expr::Call { callee, args, .. } = e else { return };
+            if args.len() != 1 {
+                return;
+            }
+            let Expr::Path(qn) = callee.as_ref() else { return };
+            if let [t, m] = qn.segments.as_slice() {
+                if matches!(m.name.as_str(), "api_decode" | "api_encode") && !out.iter().any(|(_, n)| *n == t.name) {
+                    out.push((i, t.name.clone()));
+                }
+            }
+        });
+    }
+    out
+}
+
+/// Rewrite `T::api_decode(text)` to `__api_decode_T(text)` and
+/// `T::api_encode(v)` to `__api_encode_T(v)` for each `T` in `carried`, the
+/// codecs `generate_rpc_codecs` wrote; an enum's decoder (one of `enums`)
+/// names the field it reads, and a whole value's is `payload`, as a row's
+/// is. A call of another type is left as written, for the checker to refuse.
+pub fn rewrite_api_codec_calls(programs: &mut [&mut Program], carried: &HashSet<String>, enums: &HashSet<String>) {
+    for p in programs.iter_mut() {
+        rewrite_items(&mut p.items, &mut |e: &mut Expr| {
+            let Expr::Call { callee, args, span, .. } = e else { return };
+            if args.len() != 1 {
+                return;
+            }
+            let Expr::Path(qn) = callee.as_ref() else { return };
+            let [t, m] = qn.segments.as_slice() else { return };
+            if !carried.contains(&t.name) {
+                return;
+            }
+            let prefix = match m.name.as_str() {
+                "api_decode" => "__api_decode_",
+                "api_encode" => "__api_encode_",
+                _ => return,
+            };
+            let fname = format!("{prefix}{}", t.name);
+            if prefix == "__api_decode_" && enums.contains(&t.name) {
+                args.push(Expr::Literal(Literal::String("payload".to_string()), *span));
+            }
+            *callee = Box::new(Expr::Ident(Ident::new(fname, *span)));
+        });
+    }
+}
 
 // ---- GH #1417: codecs for a surface's type set --------------------------
 

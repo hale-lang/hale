@@ -431,3 +431,38 @@ fn main() { }
         vec!["`indexed_by` on `Bad.checks`: key `Check.n` is a `Int`: a wire map's key is a `String` (it is the object's key on the JSON wire); key the element by one"]
     );
 }
+
+/// A program calls the api codec of a record or an enum the codec carries
+/// (`T::api_decode` / `T::api_encode`, spec/api.md § Codecs); a call of
+/// any other type is refused at the call.
+#[test]
+fn a_program_calls_the_codec_of_a_carried_record() {
+    let errors = |src: &str| -> Vec<String> {
+        let program = hale_syntax::parse_source(src).unwrap_or_else(|d| panic!("parse: {:?}", d[0].message));
+        let snap = Snapshot::from_program(program, Vec::new(), Config::check(false, false)).ok().expect("a snapshot");
+        let diags = match snap.demand_check() {
+            Ok(c) => c.diags.clone(),
+            Err(b) => b.because.clone(),
+        };
+        diags.iter().filter(|d| d.is_error()).map(|d| d.message.clone()).collect()
+    };
+    let carried = "type Item { id: Int; tags: bounded[String; 2]; }\n\
+                   fn main() { let i = Item::api_decode(\"{}\") or { return; }; println(Item::api_encode(i)); }\n";
+    assert!(errors(carried).is_empty(), "{:?}", errors(carried));
+    let blob = "type Blob { raw: Bytes; }\nfn main() { let b = Blob::api_decode(\"{}\") or { return; }; }\n";
+    assert_eq!(
+        errors(blob),
+        vec!["`Blob::api_decode`: the api codec carries `Blob` only if it is a record or an enum all of which the \
+              JSON codec carries (spec/api.md § Codecs); it is not one, so there is no codec to call"]
+    );
+    // an enum whole, as a row's request may be one
+    let status = "type Status = enum { Open, Held(String) };\n\
+                  fn main() { let s = Status::api_decode(\"\\\"Open\\\"\") or { return; }; println(Status::api_encode(s)); }\n";
+    assert!(errors(status).is_empty(), "{:?}", errors(status));
+    let listy = "type Listy = enum { Many(bounded[Int; 2]) };\nfn show(l: Listy) { println(Listy::api_encode(l)); }\nfn main() { }\n";
+    assert_eq!(
+        errors(listy),
+        vec!["`Listy::api_encode`: the api codec carries `Listy` only if it is a record or an enum all of which the \
+              JSON codec carries (spec/api.md § Codecs); it is not one, so there is no codec to call"]
+    );
+}

@@ -349,30 +349,9 @@ type CancelOrder {
     order: Int;
 }
 
-fn api_enc_CancelOrder(v: CancelOrder) -> String {
-    return "{\"order\":" + to_string(v.order) + "}";
-}
-
-fn api_dec_CancelOrder(json: String) -> CancelOrder {
-    return CancelOrder {
-        order: std::json::find_int_field(json, "order"),
-    };
-}
-
 type Cancelled {
     order: Int;
     was_open: Bool;
-}
-
-fn api_enc_Cancelled(v: Cancelled) -> String {
-    return "{\"order\":" + to_string(v.order) + ",\"was_open\":" + (if v.was_open { "true" } else { "false" }) + "}";
-}
-
-fn api_dec_Cancelled(json: String) -> Cancelled {
-    return Cancelled {
-        order: std::json::find_int_field(json, "order"),
-        was_open: std::json::find_bool_field(json, "was_open"),
-    };
 }
 
 type Fill {
@@ -381,68 +360,28 @@ type Fill {
     price: Int;
 }
 
-fn api_enc_Fill(v: Fill) -> String {
-    return "{\"order\":" + to_string(v.order) + ",\"qty\":" + to_string(v.qty) + ",\"price\":" + to_string(v.price) + "}";
-}
-
-fn api_dec_Fill(json: String) -> Fill {
-    return Fill {
-        order: std::json::find_int_field(json, "order"),
-        qty: std::json::find_int_field(json, "qty"),
-        price: std::json::find_int_field(json, "price"),
-    };
-}
-
 type OrderError {
     code: String;
     reason: String;
-}
-
-fn api_enc_OrderError(v: OrderError) -> String {
-    return "{\"code\":" + api_str(v.code) + ",\"reason\":" + api_str(v.reason) + "}";
-}
-
-fn api_dec_OrderError(json: String) -> OrderError {
-    return OrderError {
-        code: std::json::find_string_field(json, "code"),
-        reason: std::json::find_string_field(json, "reason"),
-    };
 }
 
 type Rebalance {
     book: String;
 }
 
-fn api_enc_Rebalance(v: Rebalance) -> String {
-    return "{\"book\":" + api_str(v.book) + "}";
-}
-
-fn api_dec_Rebalance(json: String) -> Rebalance {
-    return Rebalance {
-        book: std::json::find_string_field(json, "book"),
-    };
-}
-
 type Rebalanced {
     moved: Int;
-}
-
-fn api_enc_Rebalanced(v: Rebalanced) -> String {
-    return "{\"moved\":" + to_string(v.moved) + "}";
-}
-
-fn api_dec_Rebalanced(json: String) -> Rebalanced {
-    return Rebalanced {
-        moved: std::json::find_int_field(json, "moved"),
-    };
 }
 
 // Ledger::rebalance, requires operator
 type LedgerRebalanceOutcome = enum { Result(Rebalanced), Refusal(ApiRefusal), ServerError, Lost(String) };
 
 fn ledger_rebalance(endpoint: String, bearer: String, request: Rebalance) -> LedgerRebalanceOutcome {
-    let raw = api_call(endpoint, bearer, "Ledger::rebalance", api_enc_Rebalance(request));
-    if raw.outcome == 0 { return LedgerRebalanceOutcome::Result(api_dec_Rebalanced(raw.body)); }
+    let raw = api_call(endpoint, bearer, "Ledger::rebalance", Rebalance::api_encode(request));
+    if raw.outcome == 0 {
+        let value = Rebalanced::api_decode(raw.body) or { return LedgerRebalanceOutcome::Lost("the result did not decode: " + err.kind + ": " + err.field); };
+        return LedgerRebalanceOutcome::Result(value);
+    }
     if raw.outcome == 2 { return LedgerRebalanceOutcome::Refusal(api_refusal(raw)); }
     if raw.outcome == 3 { return LedgerRebalanceOutcome::ServerError; }
     if raw.outcome == 1 { return LedgerRebalanceOutcome::Lost("the member has no handler error, and one came: " + raw.body); }
@@ -453,9 +392,15 @@ fn ledger_rebalance(endpoint: String, bearer: String, request: Rebalance) -> Led
 type OrdersCancelOutcome = enum { Result(Cancelled), HandlerError(OrderError), Refusal(ApiRefusal), ServerError, Lost(String) };
 
 fn orders_cancel(endpoint: String, bearer: String, request: CancelOrder) -> OrdersCancelOutcome {
-    let raw = api_call(endpoint, bearer, "Orders::cancel", api_enc_CancelOrder(request));
-    if raw.outcome == 0 { return OrdersCancelOutcome::Result(api_dec_Cancelled(raw.body)); }
-    if raw.outcome == 1 { return OrdersCancelOutcome::HandlerError(api_dec_OrderError(raw.body)); }
+    let raw = api_call(endpoint, bearer, "Orders::cancel", CancelOrder::api_encode(request));
+    if raw.outcome == 0 {
+        let value = Cancelled::api_decode(raw.body) or { return OrdersCancelOutcome::Lost("the result did not decode: " + err.kind + ": " + err.field); };
+        return OrdersCancelOutcome::Result(value);
+    }
+    if raw.outcome == 1 {
+        let error = OrderError::api_decode(raw.body) or { return OrdersCancelOutcome::Lost("the handler error did not decode: " + err.kind + ": " + err.field); };
+        return OrdersCancelOutcome::HandlerError(error);
+    }
     if raw.outcome == 2 { return OrdersCancelOutcome::Refusal(api_refusal(raw)); }
     if raw.outcome == 3 { return OrdersCancelOutcome::ServerError; }
     return OrdersCancelOutcome::Lost(raw.why);
@@ -510,7 +455,8 @@ locus FillsSubscription {
         if kind == "subscribed" { return FillsEvent::Subscribed; }
         if kind == "event" {
             let payload = std::json::find_field_raw(text, "payload");
-            return FillsEvent::Event(std::json::find_int_field(text, "seq"), api_dec_Fill(payload));
+            let value = Fill::api_decode(payload) or { self.ended = "a payload did not decode: " + err.kind + ": " + err.field; return FillsEvent::Lost(self.ended); };
+            return FillsEvent::Event(std::json::find_int_field(text, "seq"), value);
         }
         if kind == "refusal" {
             self.ended = "the subscription was refused";

@@ -491,7 +491,7 @@ row	Shop@literal1.staff	__StdApiStaticRoles	main	default
 shared	Shop@literal1.__rpc_u_1	__StdApiUnixListener #e8cfe0e1
 shared	dynamic	sites in the seed #09510ed0
 
-== crates/hale-cli/tests/fixtures/api_shapes/main.hl#c4706c77
+== crates/hale-cli/tests/fixtures/api_shapes/main.hl#70438654
 root	Desk	the entry
 domain	pool:__api_http	async_io
 row	Desk@literal1	Desk	main	default

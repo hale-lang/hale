@@ -10,28 +10,34 @@
 use std::collections::BTreeSet;
 
 use hale_types::surface_doc::{ClientError, ClientMember, ClientModel, ClientStream};
-use hale_types::surfaces::TypeSchema;
+use hale_types::surfaces::{FieldSchema, TypeSchema};
 
-use super::ts_client::{access, decode_in, encode, lower_camel, prop, type_in};
+use super::ts_client::{access, decode_in, encode, enum_decl, lower_camel, prop, type_in};
 use super::{camel, json_quote, type_ident};
 
 const PREAMBLE: &str = include_str!("js_preamble.js");
 
+/// The helpers that lift a wire map's keys out and put them back, carried
+/// only by a client whose surface names a map.
+const MAP_HELPERS: &str = include_str!("js_map.js");
+
 fn struct_decl(name: &str, t: &TypeSchema) -> Result<String, String> {
     let ident = type_ident(name);
     let mut out = String::from("/**\n * @typedef {{\n");
-    for (key, f) in &t.properties {
-        out.push_str(&format!(" *   {}: {},\n", prop(key), type_in(f, &format!("{name}.{key}"), true)?));
+    // an optional field is an optional property; its flag is the property's presence
+    for (key, f) in t.properties.iter().filter(|(_, f)| !matches!(f, FieldSchema::Presence { .. })) {
+        let q = if matches!(f, FieldSchema::Nullable { .. }) { "?" } else { "" };
+        out.push_str(&format!(" *   {}{q}: {},\n", prop(key), type_in(f, &format!("{name}.{key}"), true)?));
     }
     out.push_str(&format!(" * }}}} {ident}\n */\n\n"));
     out.push_str(&format!("/**\n * @param {{{ident}}} v\n * @returns {{unknown}}\n */\nexport function encode_{ident}(v) {{\n  return {{\n"));
-    for (key, f) in &t.properties {
+    for (key, f) in t.properties.iter().filter(|(_, f)| !matches!(f, FieldSchema::Presence { .. })) {
         out.push_str(&format!("    {}: {},\n", prop(key), encode(f, &access("v", key), &format!("{name}.{key}"))?));
     }
     out.push_str("  };\n}\n\n");
     out.push_str(&format!("/**\n * @param {{unknown}} json\n * @returns {{{ident}}}\n */\nexport function decode_{ident}(json) {{\n"));
     out.push_str("  const o = /** @type {globalThis.Record<string, unknown>} */ (json ?? {});\n  return {\n");
-    for (key, f) in &t.properties {
+    for (key, f) in t.properties.iter().filter(|(_, f)| !matches!(f, FieldSchema::Presence { .. })) {
         out.push_str(&format!(
             "    {}: {},\n",
             prop(key),
@@ -114,7 +120,7 @@ pub fn generate(model: &ClientModel) -> Result<String, String> {
     };
     for name in [
         "SURFACE", "SURFACE_DIGEST", "ClientOptions", "StreamOptions", "Refusal", "TransportError", "Outcome", "describe",
-        "StreamEvent", "Subscription", "apiCall", "apiRefusal", "apiSubscribe",
+        "StreamEvent", "Subscription", "apiCall", "apiRefusal", "apiSubscribe", "apiMapEncode", "apiMapDecode",
     ] {
         claim(name.to_string())?;
     }
@@ -138,6 +144,16 @@ pub fn generate(model: &ClientModel) -> Result<String, String> {
     );
     out.push_str(PREAMBLE);
     out.push('\n');
+    if super::model_has_map(model) {
+        out.push_str(MAP_HELPERS);
+        out.push('\n');
+    }
+    for (name, variants) in &super::model_enums(model) {
+        claim(type_ident(name))?;
+        claim(format!("encode_{}", type_ident(name)))?;
+        claim(format!("decode_{}", type_ident(name)))?;
+        out.push_str(&enum_decl(name, variants, true)?);
+    }
     for (name, t) in &model.types {
         claim(type_ident(name))?;
         claim(format!("encode_{}", type_ident(name)))?;

@@ -21124,6 +21124,28 @@ impl<'a> Checker<'a> {
                         self.discard_since(mark);
                     }
                 }
+                // The api codec a program calls (spec/api.md § Codecs): the
+                // desugar rewrote every call of a record or enum the codec carries,
+                // so one left as written names something it does not.
+                if let Expr::Path(qn) = callee.as_ref() {
+                    if let [t, m] = qn.segments.as_slice() {
+                        if matches!(m.name.as_str(), "api_decode" | "api_encode") && args.len() == 1 {
+                            self.diags.push(Diag::ty(
+                                *call_span,
+                                format!(
+                                    "`{}::{}`: the api codec carries `{}` only if it is a record or an enum all of \
+                                     which the JSON codec carries (spec/api.md § Codecs); it is not one, so there \
+                                     is no codec to call",
+                                    t.name, m.name, t.name
+                                ),
+                            ));
+                            for a in args.iter() {
+                                self.check_expr(a);
+                            }
+                            return Ty::Unknown;
+                        }
+                    }
+                }
                 // (Stdlib target-gating is the capability admission's:
                 // `crate::capability::uses`, over the resolved graph,
                 // every way a program reaches a namespace, not only a

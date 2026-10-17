@@ -9,21 +9,67 @@ pub(crate) mod hale_client;
 pub(crate) mod js_client;
 pub(crate) mod ts_client;
 
+/// An enum a client declares: its variants, each with its values' schemas.
+pub(crate) type ClientEnum = Vec<(String, Vec<hale_types::surfaces::FieldSchema>)>;
+
+/// Every enum the model's shapes name, by name: a client declares each once,
+/// beside the records (an enum is inline in the description, so the model's
+/// types do not list it).
+pub(crate) fn model_enums(model: &hale_types::surface_doc::ClientModel) -> std::collections::BTreeMap<String, ClientEnum> {
+    model_shapes(model).0
+}
+
+/// Whether the model names a wire map: a client carries the helpers that
+/// lift and restore a map's keys only when one does.
+pub(crate) fn model_has_map(model: &hale_types::surface_doc::ClientModel) -> bool {
+    model_shapes(model).1
+}
+
+fn model_shapes(model: &hale_types::surface_doc::ClientModel) -> (std::collections::BTreeMap<String, ClientEnum>, bool) {
+    use hale_types::surface_doc::ClientError;
+    use hale_types::surfaces::FieldSchema;
+    type Out = (std::collections::BTreeMap<String, ClientEnum>, bool);
+    fn walk(f: &FieldSchema, out: &mut Out) {
+        match f {
+            FieldSchema::Enum { name, variants } => {
+                if !out.0.contains_key(name) {
+                    out.0.insert(name.clone(), variants.clone());
+                    for (_, values) in variants {
+                        values.iter().for_each(|v| walk(v, out));
+                    }
+                }
+            }
+            FieldSchema::List { items, .. } => walk(items, out),
+            FieldSchema::Nullable { inner, .. } => walk(inner, out),
+            FieldSchema::Map { value, .. } => {
+                out.1 = true;
+                value.properties.iter().for_each(|(_, v)| walk(v, out));
+            }
+            _ => {}
+        }
+    }
+    let mut out: Out = (std::collections::BTreeMap::new(), false);
+    for t in model.types.values() {
+        t.properties.iter().for_each(|(_, f)| walk(f, &mut out));
+    }
+    for m in &model.members {
+        m.request.iter().chain(m.response.iter()).for_each(|f| walk(f, &mut out));
+        if let ClientError::Type(e) = &m.error {
+            walk(e, &mut out);
+        }
+    }
+    for s in &model.streams {
+        s.payload.iter().for_each(|f| walk(f, &mut out));
+    }
+    out
+}
+
 /// The generators' refusal of a shape the codec does not carry: reported,
 /// never approximated.
 pub(crate) fn unformed(what: &str) -> String {
     format!(
         "the surface names a shape a client cannot express (`{what}`): the JSON codec does not carry it, so the \
          client is not generated rather than approximated"
-    )
-}
-
-/// The refusal of an optional field (a presence pair, spec/api.md §
-/// Codecs), which the generated clients do not carry yet.
-pub(crate) fn optional_unsupported(what: &str) -> String {
-    format!(
-        "the surface names an optional field (`{what}`, a presence pair): the generated clients do not carry one \
-         yet, so the client is not generated rather than approximated"
     )
 }
 

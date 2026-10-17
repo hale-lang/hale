@@ -1,6 +1,9 @@
 // The shapes a payload carries beyond scalars and records, served over HTTP
 // (`crates/hale-cli/tests/api_shapes.rs`): a list (`bounded[T; N]`, `[T; N]`),
-// an instant (`Time`) and a `Duration`.
+// an instant (`Time`) and a `Duration`, an optional field (a presence
+// pair), an enum (payload-free and with payloads, a field, a list's element
+// and a whole request and response) and a wire map (`indexed_by`), optional
+// too.
 // The listener binds port 0; the test reads back the port it was given.
 
 type Book { id: Int; title: String; }
@@ -8,12 +11,27 @@ type Shelf { books: bounded[Book; 3]; label: String; }
 type Find { ids: bounded[Int; 4]; }
 type Corner { at: [Int; 2]; }
 type Stamp { at: Time; every: Duration; }
+type Note { text: String; has_text: Bool; tags: bounded[String; 2]; has_tags: Bool; }
+type Mood = enum { Calm, Busy };
+type Shape = enum { Empty, Circle(Float), Rect(Int, Int), Boxed(Book), Feel(Mood) };
+type Check { name: String; status: String; }
+type Board {
+    mood: Mood;
+    shape: Shape;
+    moods: bounded[Mood; 3];
+    checks: bounded[Check; 3] indexed_by name;
+    extra: bounded[Check; 2] indexed_by name;
+    has_extra: Bool;
+}
 
 api Shelves {
     rpc Library::put;
     rpc Library::find;
     rpc Library::corner;
     rpc Library::stamp;
+    rpc Library::note;
+    rpc Library::board;
+    rpc Library::flip;
 }
 
 locus Tokens {
@@ -45,6 +63,27 @@ locus Library {
     }
     fn corner(c: Corner) -> Corner { return c; }
     fn stamp(s: Stamp) -> Stamp { return Stamp { at: s.at + s.every, every: s.every * 2 }; }
+    // an absent text is answered as "none", present; tags pass through
+    fn note(n: Note) -> Note {
+        let mut out = n;
+        if !out.has_text {
+            out.text = "none";
+            out.has_text = true;
+        }
+        return out;
+    }
+    // a board passes through; an absent extra map is answered present and empty
+    fn board(b: Board) -> Board {
+        let mut out = b;
+        out.has_extra = true;
+        return out;
+    }
+    fn flip(m: Mood) -> Shape {
+        return match m {
+            Mood::Calm -> Shape::Empty,
+            Mood::Busy -> Shape::Rect(2, -3),
+        };
+    }
 }
 
 main locus Desk {
