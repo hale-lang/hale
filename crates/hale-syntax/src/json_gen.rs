@@ -2291,7 +2291,7 @@ fn variant_records(e: &JsonEnum) -> Vec<(String, JsonType)> {
                 // its proto3 zero, never `missing_field`; a record value is a
                 // message, whose presence is explicit
                 let (kind, conv, default_src) = match elem {
-                    Elem::Scalar(s, c) => (FieldKind::Scalar(*s), c.clone(), Some(s.zero().to_string())),
+                    Elem::Scalar(s, c) => (FieldKind::Scalar(*s), c.clone(), Some(wire_zero(*s, c, &None))),
                     Elem::Time => (FieldKind::Time, None, Some(EPOCH.to_string())),
                     Elem::Nested(tn) => (FieldKind::Nested(tn.clone()), None, None),
                     Elem::Enum { name, unit_only } => {

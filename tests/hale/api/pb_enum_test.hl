@@ -22,12 +22,15 @@ type Holder { s: Status; shape: Shape; many: bounded[Status; 3]; }
 // several values
 type Point { x: Int = 0; y: Int = 0; }
 type Choice = enum { Empty, Rect(Int, Int), PointValue(Point) };
+// optional enums: a message carrying neither is their zeros, the flags false
+type Maybe { s: Status; has_s: Bool; shape: Shape; has_shape: Bool; }
 
 api PbEnum {
     rpc Probe::holder;
     rpc Probe::shape;
     rpc Probe::status;
     rpc Probe::choice;
+    rpc Probe::maybe;
 }
 
 locus Probe {
@@ -35,6 +38,7 @@ locus Probe {
     fn shape(s: Shape) -> Shape { return s; }
     fn status(s: Status) -> Status { return s; }
     fn choice(c: Choice) -> Choice { return c; }
+    fn maybe(m: Maybe) -> Maybe { return m; }
 }
 
 locus Tokens {
@@ -91,6 +95,19 @@ main locus Desk {
     }
 
     run() {
+        // ---- optional enums ----
+        let none = __api_pb_decode_Maybe(std::bytes::from_string("")) or {
+            std::test::assert(false, "a message of no optional enum: " + err.kind + " " + err.field);
+            return;
+        };
+        std::test::assert(!none.has_s && !none.has_shape, "no flag is set");
+        std::test::assert_eq_str(__api_encode_Maybe(none), "{}", "and JSON writes neither");
+        let back = __api_pb_decode_Maybe(__api_pb_encode_Maybe(__api_decode_Maybe("{\"s\":\"Down\",\"shape\":{\"Tag\":\"t\"}}") or Maybe { s: Status::Up, has_s: false, shape: Shape::Empty, has_shape: false })) or {
+            std::test::assert(false, "present optional enums: " + err.kind + " " + err.field);
+            return;
+        };
+        std::test::assert_eq_str(__api_encode_Maybe(back), "{\"s\":\"Down\",\"shape\":{\"Tag\":\"t\"}}", "present optional enums through protobuf");
+
         // ---- a client's encodings (review of #1604) ----
         // proto3 leaves a zero out: `Rect(0, 0)` is the member with an empty message
         self.choice_reads(b"\x12\x00", "{\"Rect\":[0,0]}", "an omitted zero is the zero");

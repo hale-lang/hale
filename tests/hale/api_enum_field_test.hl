@@ -25,6 +25,8 @@ type Shape = enum { Empty, Circle(Float), Tag(String), Rect(Int, Int), Boxed(Inn
 type Problem = enum { NotFound(String), Conflict };
 
 type Req { s: Status; shape: Shape; many: bounded[Status; 3]; }
+// optional enums (a presence pair): absent, each is its zero, its first variant
+type Maybe { s: Status; has_s: Bool; shape: Shape; has_shape: Bool; }
 type Out { s: Status; shape: Shape; n: Int; }
 
 locus Echo {
@@ -32,6 +34,7 @@ locus Echo {
         return Out { s: r.s, shape: r.shape, n: count(r.many) };
     }
     fn whole(s: Shape) -> Shape { return s; }
+    fn maybe(m: Maybe) -> Maybe { return m; }
     fn status(s: Status) -> Status { return s; }
     fn find(n: Int) -> Int fallible(Problem) {
         if n == 0 { fail Problem::Conflict; }
@@ -45,6 +48,7 @@ api Public {
     rpc Echo::whole;
     rpc Echo::status;
     rpc Echo::find;
+    rpc Echo::maybe;
 }
 
 locus Conn {
@@ -124,6 +128,14 @@ main locus App {
         self.shape_round("{\"Cost\":125}", "a quantity value, by its count");
         std::test::assert_eq_str(self.conn.value("Echo::status", "\"Up\""), "\"Up\"", "a payload-free enum row");
         std::test::assert_eq_str(self.conn.value("Echo::whole", " { \"Rect\" : [ 4 , 5 ] } "), "{\"Rect\":[4,5]}", "whitespace around and within");
+
+        // ---- optional enums ----
+        std::test::assert_eq_str(self.conn.value("Echo::maybe", "{}"), "{}", "absent optional enums");
+        std::test::assert_eq_str(self.conn.value("Echo::maybe", "{\"s\":null,\"shape\":null}"), "{}", "null optional enums");
+        std::test::assert_eq_str(
+            self.conn.value("Echo::maybe", "{\"s\":\"Gone\",\"shape\":{\"Rect\":[1,2]}}"),
+            "{\"s\":\"Gone\",\"shape\":{\"Rect\":[1,2]}}",
+            "present optional enums");
 
         // ---- strict ----
         self.refused("Echo::on", "{\"s\":\"Sideways\",\"shape\":\"Empty\"}", "wrong_type: s", "an unknown variant");
