@@ -123,7 +123,7 @@ locus NervesWatch {
         let reg = Registry { state_dir: self.cfg.state_dir };
         let a = reg.active();
         if !a.ok || len(a.root) == 0 { return Followed { }; }
-        let id = dna::GitRecord { repo: a.root }.identity();
+        let id = dna::record_scope(a.root);
         return Followed { root: a.root, org: if len(id) == 0 { "" } else { dna::schema_for(id) } };
     }
     // The server the head subscribes on for the project at `root`, as the

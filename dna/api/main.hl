@@ -607,7 +607,7 @@ fn token_matches(given: String, expected: String) -> Bool {
 fn head_socket(root: String) -> String {
     let given = std::env::var("HALE_DNA_RPC_SOCKET");
     if len(given) > 0 { return given; }
-    let id = dna::GitRecord { repo: root }.identity();
+    let id = dna::record_scope(root);
     let name = (if len(id) >= 12 { id[0..12] } else if len(id) > 0 { id } else { "head" }) + ".sock";
     let runtime = std::env::var("XDG_RUNTIME_DIR");
     let mut dir = if len(runtime) > 0 && len(id) > 0 { runtime + "/hale/dna" } else { root + "/.hale/dna" };
