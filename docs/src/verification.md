@@ -178,7 +178,10 @@ dissolves** — with loop-ranking that *proves* a `while v < N`
 counter bounded. The survey follows calls into imported seeds and
 into the stdlib's own Hale bodies: a handler the stdlib's HTTP loop
 dispatches to is invoked once per request when your program starts
-that loop, and not otherwise. Run-to-exit programs (a `main` with no
+that loop, and not otherwise. Stdlib code your program never
+reaches counts for nothing: a stdlib body that calls a method named
+`set` does not make your own `set` method suspect unless your
+program runs that body. Run-to-exit programs (a `main` with no
 `run` loop and no bus handler of their own) warn nothing — a script
 owes no bound proof. A library's loops and handlers count only where
 your program starts their locus: a program that imports a seed full
