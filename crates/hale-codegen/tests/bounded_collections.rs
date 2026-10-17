@@ -401,3 +401,56 @@ fn an_element_stored_through_a_bounded_view_outlives_its_method_under_asan() {
     assert_eq!(String::from_utf8_lossy(&out.stdout), "first 49|SECOND 49|SECOND 49\n");
     assert_eq!(String::from_utf8_lossy(&out.stdout), "set 49|SECOND 49|alias 49|outer 49\n");
 }
+
+/// GH #1608 review: a bounded place is evaluated once. A view bound from an
+/// indexed place (`let v = self.slots[self.next()].xs;`) calls the index's
+/// method once, and the arena the view's elements anchor in is the owner
+/// that same evaluation reached: the IR holds one call of `next`, and the
+/// element pushed through the view reads whole after the method returned.
+#[test]
+fn an_indexed_bounded_place_is_evaluated_once() {
+    let src = r#"
+        locus Slot { params { xs: bounded[String; 4]; } fn first() -> String { return at(self.xs, 0) or ""; } }
+        locus Store {
+            params { slots: [Slot; 2] = [Slot { }, Slot { }]; calls: Int = 0; }
+            fn next() -> Int { self.calls = self.calls + 1; return 0; }
+            fn view(k: Int) {
+                let v = self.slots[self.next()].xs;
+                clear(v);
+                push(v, "viewed " + to_string(k)) or raise;
+            }
+        }
+        fn main() {
+            let s = Store { };
+            s.view(1);
+            s.view(2);
+            println(s.calls);
+            println(s.slots[0].first());
+        }
+    "#;
+    let bin = harness::unique_bin("bounded_indexed_once");
+    let options = hale_codegen::BuildOptions { asan: true, ..build_opts::options() };
+    build_opts::build_source(src, &bin, &options).expect("build");
+    let out = Command::new(&bin).output().expect("run");
+    let _ = std::fs::remove_file(&bin);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success() && !stderr.contains("AddressSanitizer"), "{:?}: {stderr}", out.status);
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "2\nviewed 2\n");
+
+    let ir_bin = harness::unique_bin("bounded_indexed_once_ir");
+    let ir = harness::build_source_ir_text(src, &ir_bin).expect("ir");
+    let _ = std::fs::remove_file(&ir_bin);
+    for f in ["Store.view"] {
+        let body = ir_fn_body(&ir, f).unwrap_or_else(|| panic!("no `{f}` in the IR"));
+        let calls = body.lines().filter(|l| l.contains("call") && l.contains("Store.next")).count();
+        assert_eq!(calls, 1, "`{f}` calls `next` once:\n{body}");
+    }
+}
+
+/// The body of the IR function whose name contains `name`.
+fn ir_fn_body(ir: &str, name: &str) -> Option<String> {
+    let start = ir.lines().position(|l| l.starts_with("define") && l.contains(&format!("@\"{name}\"")) || l.starts_with("define") && l.contains(&format!("@{name}(")))?;
+    let lines: Vec<&str> = ir.lines().skip(start).collect();
+    let end = lines.iter().position(|l| *l == "}")?;
+    Some(lines[..=end].join("\n"))
+}
