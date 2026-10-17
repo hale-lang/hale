@@ -232,7 +232,7 @@ fn change(target: &str) -> Change {
     })
 }
 
-/// The 32 targets below are the only ones the correction changes.
+/// The 35 targets below are the only ones the correction changes.
 #[test]
 fn no_other_target_changes() {
     let corrected: Vec<String> = targets().into_iter().filter(|t| !change(t).is_empty()).collect();
@@ -286,7 +286,7 @@ const CALL_LINES_ONLY: [(&str, usize); 24] = [
 ];
 
 /// The targets whose verdicts move, each pinned in `verdict_changes`.
-const VERDICT_TARGETS: [&str; 10] = [
+const VERDICT_TARGETS: [&str; 11] = [
     "crates/hale-codegen/tests/fixtures/examples/69-http-router",
     "crates/hale-codegen/tests/fixtures/examples/92-build-an-api",
     "dna/api",
@@ -296,6 +296,7 @@ const VERDICT_TARGETS: [&str; 10] = [
     "dna/organization_runtime",
     "dna/ui",
     "tests/hale/api_binding_run_test.hl",
+    "tests/hale/http_stream_test.hl",
     "tests/hale/router_middleware_test.hl",
 ];
 
@@ -1807,6 +1808,20 @@ fn verdict_changes() {
             "Table::holds",
             "Tokens::principal",
             "Tokens::refused",
+        ],
+        &[
+            ("once-per-invocation -> per-iteration-reclaim", 1),
+        ],
+        &[
+        ],
+    );
+    // the streamed body's handler: its writers' stdlib bodies only the
+    // renames name, and the Server calls the handler per connection
+    pinned(
+        "tests/hale/http_stream_test.hl",
+        17,
+        &[
+            "Streams::handle",
         ],
         &[
             ("once-per-invocation -> per-iteration-reclaim", 1),

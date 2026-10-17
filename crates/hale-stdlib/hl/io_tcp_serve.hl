@@ -461,6 +461,13 @@ fn __http_handle_one_conn(conn_fd: Int, h: std::http::Handler) {
         let _ = s.release_fd();
         return;
     }
+    if resp.streamed {
+        // A streamed body: the handler's writer sent the head and every
+        // chunk. The body ends here, with the zero-length last chunk, and
+        // the connection closes at scope exit like any other.
+        s.send("0\r\n\r\n") or discard;
+        return;
+    }
     std::http::write_response(s, resp);
 }
 

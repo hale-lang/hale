@@ -320,6 +320,10 @@ pub const LOCUS_PATHS: &[&[&str]] = &[
     &["std", "http", "RouteParams"],
     &["std", "http", "Router"],
     &["std", "http", "Server"],
+    // a streamed response body (http.hl, 2026-10-17)
+    &["std", "http", "BodyWriter"],
+    &["std", "http", "SseEvent"],
+    &["std", "http", "SseWriter"],
     &["std", "io", "MirrorRing"],
     &["std", "io", "file", "File"],
     // R7: the HTTP/2 server's loci and its two messages (io_h2.hl)
