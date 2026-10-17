@@ -1333,8 +1333,10 @@ its queued runs, the wait for its admitted runs (a deferred reclaim
 releases when its runs end) and its arena's release. A loop over a
 factory therefore holds what is alive, not what was ever built: a
 discarded `mkw(i);`, a `let w = mkw(i);` and a call through a fn
-value each leave memory flat. A released struct is listed for reuse
-by a later struct of the same size and never returned to the
+value each leave memory flat, however many locus types the loop hands
+back. A released struct is listed for reuse by a later struct of the
+same size, on a list of its own size (every size reachable, none scanned
+past a cap), and never returned to the
 operating system, as an accepted child's struct is: a stale teardown
 path reading the instance's `__arena` latch still reads memory the
 process owns, and finds it null. Where chunk recycling is off

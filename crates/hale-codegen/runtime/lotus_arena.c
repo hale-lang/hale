@@ -2570,7 +2570,8 @@ void lotus_child_struct_release(void *owner_self, void *child,
  * instance's reclaim (the plan's ReleaseStruct step, past the latch,
  * the queued-run cancel and the wait for admitted runs, so nothing
  * queued or running reaches it afterwards). It is released into a
- * size-keyed free-list and never handed back to the OS, the posture
+ * free-list of its own size (every size reachable, none scanned past) and
+ * never handed back to the OS, the posture
  * of `lotus_child_struct_release`: a stale teardown path that reads
  * the NULL'd `__arena` latch at offset 0 still reads memory the
  * process owns, and offset 0 of a listed block is never written.
@@ -2585,7 +2586,6 @@ void lotus_child_struct_release(void *owner_self, void *child,
  * answers only for a member. Codegen emits the release call only for
  * those types (`Cx::returned_struct_loci`); no other reclaim pays for
  * it. */
-#define LOTUS_RETURNED_FREE_SCAN_MAX 8
 
 void lotus_arena_destroy(lotus_arena_t *a);
 
@@ -2594,7 +2594,6 @@ static void          **g_returned_set = NULL;   /* NULL = empty, (void*)1 = tomb
 static uint64_t        g_returned_cap = 0;      /* power of two */
 static uint64_t        g_returned_used = 0;     /* live + tombstones */
 static uint64_t        g_returned_live = 0;
-static void           *g_returned_free = NULL;  /* node: next @8, size @16 */
 static lotus_arena_t  *g_returned_arena = NULL;
 
 #define LOTUS_RETURNED_TOMB ((void *)1)
@@ -2608,8 +2607,13 @@ static inline uint64_t lotus_returned_hash(const void *p) {
 }
 
 /* Called with g_returned_mutex held. */
+/* Rehash: tombstones dropped, the table sized by what is live (at most
+ * half full after), so a churn of inserts and removes rehashes in place
+ * instead of doubling the table each time its tombstones fill it. */
 static int lotus_returned_set_grow(void) {
-    uint64_t ncap = g_returned_cap ? g_returned_cap * 2 : 64;
+    uint64_t ncap = 64;
+    while ((g_returned_live + 1) * 2 > ncap) ncap *= 2;
+    if (ncap < g_returned_cap && (g_returned_live + 1) * 4 > g_returned_cap) ncap = g_returned_cap;
     void **nset = (void **)calloc(ncap, sizeof(void *));
     if (!nset) return 0;
     for (uint64_t i = 0; i < g_returned_cap; i++) {
@@ -2663,6 +2667,49 @@ static int lotus_returned_set_remove(void *p) {
     return 0;
 }
 
+/* The released structs, a free-list per size: `g_returned_classes` is
+ * sorted by size and found by binary search, so every size a program
+ * releases is reachable however many there are (a single list scanned to a
+ * cap kept carving new blocks once a loop handed back more sizes than the
+ * cap). A node keeps offset 0 untouched (the NULL'd `__arena` latch) and
+ * links through offset 8. */
+typedef struct {
+    uint64_t size;
+    void    *head;
+} lotus_returned_class_t;
+
+static lotus_returned_class_t *g_returned_classes = NULL;
+static uint64_t                g_returned_class_count = 0;
+static uint64_t                g_returned_class_cap = 0;
+
+/* Called with g_returned_mutex held: the head of `size`'s list, added (empty)
+ * when `add` and absent; NULL when absent and not added, or out of memory. */
+static void **lotus_returned_class(uint64_t size, int add) {
+    uint64_t lo = 0, hi = g_returned_class_count;
+    while (lo < hi) {
+        uint64_t mid = lo + (hi - lo) / 2;
+        if (g_returned_classes[mid].size < size) lo = mid + 1; else hi = mid;
+    }
+    if (lo < g_returned_class_count && g_returned_classes[lo].size == size) {
+        return &g_returned_classes[lo].head;
+    }
+    if (!add) return NULL;
+    if (g_returned_class_count == g_returned_class_cap) {
+        uint64_t ncap = g_returned_class_cap ? g_returned_class_cap * 2 : 16;
+        lotus_returned_class_t *n = (lotus_returned_class_t *)realloc(
+            g_returned_classes, ncap * sizeof(lotus_returned_class_t));
+        if (!n) return NULL;
+        g_returned_classes = n;
+        g_returned_class_cap = ncap;
+    }
+    memmove(&g_returned_classes[lo + 1], &g_returned_classes[lo],
+            (g_returned_class_count - lo) * sizeof(lotus_returned_class_t));
+    g_returned_classes[lo].size = size;
+    g_returned_classes[lo].head = NULL;
+    g_returned_class_count++;
+    return &g_returned_classes[lo].head;
+}
+
 void *lotus_returned_struct_alloc(uint64_t size) {
     if (size < LOTUS_CHILD_STRUCT_MIN) size = LOTUS_CHILD_STRUCT_MIN;
     pthread_mutex_lock(&g_returned_mutex);
@@ -2670,21 +2717,11 @@ void *lotus_returned_struct_alloc(uint64_t size) {
     if (lotus_no_chunk_pool()) {
         p = malloc(size);
     } else {
-        /* Bounded first-fit on exact size, as the child-struct recycler. */
-        void **prev = &g_returned_free;
-        void  *node = g_returned_free;
-        int    scanned = 0;
-        while (node && scanned < LOTUS_RETURNED_FREE_SCAN_MAX) {
-            void    **next_p = (void **)((char *)node + 8);
-            uint64_t *size_p = (uint64_t *)((char *)node + 16);
-            if (*size_p == size) {
-                *prev = *next_p;
-                p = node;
-                break;
-            }
-            prev = next_p;
-            node = *next_p;
-            scanned++;
+        /* the head of this size's list, if one was released */
+        void **head = lotus_returned_class(size, 0);
+        if (head && *head) {
+            p = *head;
+            *head = *(void **)((char *)p + 8);
         }
         if (!p) {
             if (!g_returned_arena) g_returned_arena = lotus_arena_create();
@@ -2712,7 +2749,9 @@ static void lotus_returned_structs_destroy(void) {
     free(g_returned_set);
     g_returned_set = NULL;
     g_returned_cap = g_returned_used = g_returned_live = 0;
-    g_returned_free = NULL;
+    free(g_returned_classes);
+    g_returned_classes = NULL;
+    g_returned_class_count = g_returned_class_cap = 0;
     if (g_returned_arena) {
         lotus_arena_destroy(g_returned_arena);
         g_returned_arena = NULL;
@@ -2728,9 +2767,13 @@ void lotus_returned_struct_release(void *p, uint64_t size) {
         if (lotus_no_chunk_pool()) {
             free(p);
         } else {
-            *(void **)((char *)p + 8)     = g_returned_free;
-            *(uint64_t *)((char *)p + 16) = size;
-            g_returned_free               = p;
+            /* listed under its size; without memory for a new size's list
+             * the block is kept unlisted (never reused, never freed early) */
+            void **head = lotus_returned_class(size, 1);
+            if (head) {
+                *(void **)((char *)p + 8) = *head;
+                *head = p;
+            }
         }
     }
     pthread_mutex_unlock(&g_returned_mutex);

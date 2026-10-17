@@ -443,3 +443,72 @@ fn main() {
     assert!(out.status.success() && !stderr.contains("Sanitizer"), "{stdout}\n{stderr}");
     assert_eq!(stdout, "W.dissolve base0\nW.dissolve base0\nbase0 base0\nW.dissolve base0\nW.dissolve base0\n");
 }
+
+/// GH #1570 review: the released structs are kept a list per size, so a loop
+/// that hands back more distinct struct sizes than a scan would reach reuses
+/// every one of them. Twelve locus types of twelve sizes, each built by a
+/// factory and dropped at the statement, 20k turns: RSS stays flat (a single
+/// list scanned to its first eight blocks carved a new struct for the sizes
+/// past them every turn). The same program runs clean under ASan with chunk
+/// recycling off, where each struct is allocated and freed on its own.
+#[test]
+fn a_loop_over_many_returned_struct_sizes_reuses_every_size() {
+    const KINDS: usize = 12;
+    let program = |turns: u32| {
+        let mut src = String::new();
+        for k in 0..KINDS {
+            let fields: Vec<String> = (0..=k).map(|f| format!("f{f}: String = \"x\";")).collect();
+            // a birth that writes its arena, as the one-size test's `W` does (a
+            // locus with no arena keeps a fresh String field elsewhere)
+            src.push_str(&format!(
+                "locus W{k} {{ params {{ {} }} birth() {{ self.f0 = f\"{{self.f0}} born\"; }} dissolve() {{ }} }}\n",
+                fields.join(" ")
+            ));
+            src.push_str(&format!("fn mk{k}(n: Int) -> W{k} {{ return W{k} {{ f0: f\"made {{n}}\" }}; }}\n"));
+        }
+        let calls: Vec<String> = (0..KINDS).map(|k| format!("mk{k}(i);")).collect();
+        src.push_str(&format!(
+            r#"main locus App {{
+    @unbounded
+    fn churn(n: Int) {{
+        let mut i = 0;
+        while i < n {{ {} i = i + 1; }}
+    }}
+    run() {{
+        self.churn(500);
+        print("base_statm=");
+        println(std::io::fs::read_file("/proc/self/statm") or "");
+        self.churn({turns});
+        print("grown_statm=");
+        println(std::io::fs::read_file("/proc/self/statm") or "");
+    }}
+}}
+fn main() {{ App {{ }}; }}
+"#,
+            calls.join(" ")
+        ));
+        src
+    };
+
+    let bin = harness::unique_bin("hale_returned_sizes_rss");
+    build_opts::build_source(&program(20_000), &bin, &build_opts::options()).expect("build");
+    let out = Command::new(&bin).output().expect("run");
+    let _ = std::fs::remove_file(&bin);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(out.status.success(), "{stdout}\n{}", String::from_utf8_lossy(&out.stderr));
+    let read = |key: &str| -> i64 {
+        let line = stdout.lines().find_map(|l| l.strip_prefix(key)).unwrap_or_else(|| panic!("missing {key}: {stdout}"));
+        harness::statm_resident_bytes(line)
+    };
+    let grown = read("grown_statm=") - read("base_statm=");
+    let per_turn = grown / 20_000;
+    assert!(per_turn <= 32, "rss grew {grown} bytes over 20k turns of {KINDS} returned sizes ({per_turn} a turn)");
+
+    let bin = harness::unique_bin("hale_returned_sizes_asan");
+    let options = hale_codegen::BuildOptions { asan: true, ..build_opts::options() };
+    build_opts::build_source(&program(200), &bin, &options).expect("build");
+    let out = Command::new(&bin).env("LOTUS_NO_CHUNK_POOL", "1").output().expect("run");
+    let _ = std::fs::remove_file(&bin);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success() && !stderr.contains("Sanitizer"), "{}\n{stderr}", String::from_utf8_lossy(&out.stdout));
+}
