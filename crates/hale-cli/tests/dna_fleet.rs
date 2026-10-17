@@ -217,8 +217,11 @@ fn bring_up(tag: &str) -> Fleet {
 "#,
     )
     .unwrap();
-    let mut manifest = std::fs::read_to_string(app.join("hale.toml")).unwrap();
-    manifest.push_str("\n[fleets]\nproduction = \"fleet.plan.json\"\n\n[dna]\nfleet = \"production\"\n");
+    // init pinned the record in a `[dna]` table (GH #1590): the fleet joins it
+    let manifest = std::fs::read_to_string(app.join("hale.toml")).unwrap();
+    assert!(manifest.contains("\n[dna]\n"), "init pins the record in [dna]:\n{manifest}");
+    let mut manifest = manifest.replacen("\n[dna]\n", "\n[dna]\nfleet = \"production\"\n", 1);
+    manifest.push_str("\n[fleets]\nproduction = \"fleet.plan.json\"\n");
     std::fs::write(app.join("hale.toml"), manifest).unwrap();
     git(&["init", "-q", "--bare", "-b", "main", &f.bare.to_string_lossy()], &d);
     git(&["config", "user.name", "riley"], &app);

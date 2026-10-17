@@ -120,6 +120,9 @@ fn main() {
     } else if verb == "record-rows" {
         // GH #1590: the record's rows in its line format, for tests and scripts
         ans = host::record_rows_verb(root);
+    } else if verb == "record-identity" {
+        // GH #1590: init and upgrade pin the record's identity in hale.toml
+        ans = host::record_identity_verb(root);
     } else if verb == "record-seed" {
         // `hale dna init` seeds the record through the host: its rows, one
         // JSON object per line in a file, and the declared purpose (GH #995)

@@ -3997,6 +3997,21 @@ The live half is memory's, projected from the record by the spine
   never read. A record with no rows yet has no identity: its projection
   opens under `dna_unscoped`, where nothing is ever applied, and moves
   to the record's own schema once its first row lands.
+- **The genome pins the identity (GH #1590).** `hale dna init` writes
+  `[dna] record = "<identity>"` into the repository's `hale.toml` once
+  the record has its first row, and `hale dna upgrade` pins a record
+  made before the pin, so a clone knows which record — which schema,
+  roles and nerves token — it belongs to from its genome.
+  `record_identity_at` (`dna/core/memory_spine.hl`) reads it: with no
+  pin the identity is the record's root commit, as before; with a pin
+  that is not 40 or 64 lowercase hex digits, or that names another
+  record than the root commit this clone holds, there is none, and
+  memory, its leases, its knowledge and `hale dna memory migrate`
+  refuse with both identities named rather than open either record's
+  schema. `upgrade` refuses the same pin. `init` in a clone that holds
+  no record under a pinned genome refuses too: it would start a second
+  record under the first one's name (a clone of an organism syncs its
+  record; a manifest copied from another project loses the line).
 - **The spine projects; readers read.** `MemoryProjection`
   (`dna/operations/memory_tail.hl`) applies the record into the graph
   on the host's tick, as the record's spine role, on every node (**The

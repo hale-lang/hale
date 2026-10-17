@@ -1427,6 +1427,18 @@ fn init(app_dir: &Path, library: bool) -> Result<Vec<String>, String> {
         TOOLCHAIN,
         hale_dna::embedded_short()
     ));
+    // 2b. GH #1590: a manifest that pins a record this clone holds none
+    //     of belongs to another organism's genome: init would start a
+    //     second record beside it
+    let pinned_here = fs::read_to_string(&manifest).ok().and_then(|t| t.parse::<toml::Table>().ok()).is_some_and(|t| t.get("dna").and_then(|d| d.get("record")).is_some());
+    if pinned_here {
+        if let (None, Some(pinned)) = record_identity_pair(&root)? {
+            return Err(format!(
+                "{}'s [dna] record pins record {pinned}, and this clone holds none of it: a clone of an existing organism syncs its record (`hale dna sync`) rather than starting another; a manifest copied from another project loses its `[dna] record` line first",
+                manifest.display()
+            ));
+        }
+    }
     // 3. the artifact, cut by the toolchain as a subprocess — an
     //    application's; a repository's structure is read at step 7
     let me = std::env::current_exe().map_err(|e| e.to_string())?;
@@ -1563,6 +1575,10 @@ fn init(app_dir: &Path, library: bool) -> Result<Vec<String>, String> {
         // the starting model mapping, from the hosted models this machine
         // has a key for
         out.extend(seed_model_map(&root, &found)?);
+    }
+    // 7b. GH #1590: the record's identity, pinned in the genome
+    if let Some(line) = pin_identity(&root)? {
+        out.push(line);
     }
     // 8. .gitignore hygiene
     let gi = root.join(".gitignore");
@@ -1701,6 +1717,11 @@ fn upgrade(dir: &Path) -> Result<Vec<String>, String> {
     // an existing record declares, or does not, is its own
     if record_exists(&root)? {
         out.push(seat_initializer(&root, false)?);
+    }
+    // GH #1590: a record from before the pin gets its identity pinned in the
+    // genome; a pin naming another record is refused here
+    if let Some(line) = pin_identity(&root)? {
+        out.push(line);
     }
     // GH #596: an organization from before the charter gets one, and
     // the toolchain's design is proposed again where it changed — each
@@ -3328,6 +3349,90 @@ fn seed_repository(root: &Path, project: &str, purpose: &str) -> Result<String, 
 /// Whether the record exists: the host answers `none` or its head.
 fn record_exists(root: &Path) -> Result<bool, String> {
     Ok(host_run("record-head", root, &[])?.trim() != "none")
+}
+
+/// GH #1590: the record's identity as this clone's record holds it
+/// (`None` before its first row) and as `hale.toml` pins it (`None`
+/// unpinned), from the host's `record-identity`.
+fn record_identity_pair(root: &Path) -> Result<(Option<String>, Option<String>), String> {
+    let out = host_run("record-identity", root, &[])?;
+    let mut lines = out.lines().map(str::trim);
+    let held = lines.next().filter(|l| !l.is_empty() && *l != "none").map(str::to_string);
+    let pinned = lines.next().filter(|l| !l.is_empty()).map(str::to_string);
+    Ok((held, pinned))
+}
+
+/// GH #1590: `[dna] record = "<identity>"` in the manifest at `path`: the
+/// key replaced where the `[dna]` table has it, added at the table's end
+/// where it does not, and the table appended where there is none. Every
+/// other line is kept as it was.
+fn pin_record_in_manifest(path: &Path, identity: &str) -> Result<(), String> {
+    let text = fs::read_to_string(path).unwrap_or_default();
+    let line = format!("record = \"{identity}\"");
+    let mut out: Vec<String> = Vec::new();
+    let (mut inside, mut table, mut done) = (false, false, false);
+    for l in text.lines() {
+        let t = l.trim();
+        if t.starts_with('[') {
+            if inside && !done {
+                out.push(line.clone());
+                done = true;
+            }
+            inside = t == "[dna]";
+            table |= inside;
+            out.push(l.to_string());
+            continue;
+        }
+        if inside && !done && t.strip_prefix("record").is_some_and(|r| r.trim_start().starts_with('=')) {
+            out.push(line.clone());
+            done = true;
+            continue;
+        }
+        out.push(l.to_string());
+    }
+    if inside && !done {
+        out.push(line.clone());
+        done = true;
+    }
+    let mut new = out.join("\n");
+    if !new.is_empty() {
+        new.push('\n');
+    }
+    if !table && !done {
+        if !new.is_empty() {
+            new.push('\n');
+        }
+        new.push_str("# hale dna: the record this genome belongs to, by its identity (GH #1590)\n[dna]\n");
+        new.push_str(&line);
+        new.push('\n');
+    }
+    new.parse::<toml::Table>().map_err(|e| format!("{}: the pinned manifest does not parse: {e}", path.display()))?;
+    fs::write(path, new).map_err(|e| format!("write {}: {e}", path.display()))
+}
+
+/// GH #1590: pin the record's identity in the genome, so a clone knows
+/// which record (and which memory) it belongs to before it holds a row of
+/// it. A pin naming another record is refused: the manifest was copied
+/// from another project, or the record from another genome. `None` when
+/// the record has no rows yet.
+fn pin_identity(root: &Path) -> Result<Option<String>, String> {
+    let manifest = root.join("hale.toml");
+    match record_identity_pair(root)? {
+        (None, _) => Ok(None),
+        (Some(held), Some(pinned)) if held == pinned => Ok(Some(format!("kept    {} ([dna] record pins this record, {})", manifest.display(), short_id(&held)))),
+        (Some(held), Some(pinned)) => Err(format!(
+            "{}'s [dna] record names record {pinned}, but this clone's record is {held}; remove the line if the manifest was copied from another project",
+            manifest.display()
+        )),
+        (Some(held), None) => {
+            pin_record_in_manifest(&manifest, &held)?;
+            Ok(Some(format!("pinned  {} ([dna] record = {}…, the record's identity)", manifest.display(), short_id(&held))))
+        }
+    }
+}
+
+fn short_id(id: &str) -> &str {
+    &id[..id.len().min(12)]
 }
 
 /// One seeded family, proposed where the record does not hold its current
