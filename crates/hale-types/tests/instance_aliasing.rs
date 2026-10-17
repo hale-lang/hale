@@ -122,3 +122,94 @@ fn main() {{ App {{ }}; }}"
         "but as a warning, not a type error"
     );
 }
+
+// ---- GH #984: a borrow across thread domains --------------------------
+//
+// A handle stored by name into a locus-carrying field is a borrow (GH
+// #730), and the lifetime pass decides only whether it outlives its holder.
+// The thread-domain axis is the cross-pool hand-over rule of GH #1566
+// (spec/types.md § "One instance is never shared across pools"), kept apart
+// from the lifetime table so a program is told which axis it is wrong on.
+// These pin #984's acceptance against it.
+
+const BORROWED: &str = "\
+locus Store { params { n: Int = 0; } fn bump() -> Int { self.n = self.n + 1; return self.n; } }
+locus Reader { params { store: Store; } fn read() -> Int { return self.store.bump(); } }
+";
+
+fn app(placement: &str) -> String {
+    format!(
+        "{BORROWED}
+main locus App {{
+    params {{ store: Store = Store {{ }}; reader: Reader = Reader {{ store: self.store }}; }}
+    placement {{ {placement} }}
+    run() {{ }}
+}}
+fn main() {{ App {{ }}; }}"
+    )
+}
+
+#[test]
+fn gh984_a_borrow_between_two_instances_of_one_pool_checks_clean() {
+    let ds = diags(&app("store: cooperative(pool = io); reader: cooperative(pool = io);"));
+    assert!(ds.is_empty(), "{ds:?}");
+}
+
+#[test]
+fn gh984_a_borrow_across_a_placement_boundary_is_refused_naming_both_domains() {
+    for (placement, there, here) in [
+        ("store: cooperative(pool = io);", "cooperative(pool = io)", "cooperative(pool = main)"),
+        ("store: pinned(core = 0); reader: cooperative(pool = io);", "pinned", "cooperative(pool = io)"),
+    ] {
+        let ds = diags(&app(placement));
+        let hit = ds
+            .iter()
+            .find(|m| m.starts_with("cross-pool alias:"))
+            .unwrap_or_else(|| panic!("{placement}: the borrow across domains must be refused: {ds:?}"));
+        assert!(hit.contains("`self.store`") && hit.contains("`Reader`"), "the witness names the handle and its holder: {hit}");
+        assert!(hit.contains(there) && hit.contains(here), "{placement}: both domains are named: {hit}");
+        assert!(!ds.iter().any(|m| m.contains("does not outlive")), "the lifetime axis says nothing: {ds:?}");
+    }
+}
+
+#[test]
+fn gh984_a_synced_type_crossing_is_admitted() {
+    let src = "\
+type Row { id: Int; v: Int = 0; }
+@form(hashmap, sync = serialized)
+locus Table { capacity { pool rows of Row indexed_by id; } }
+locus Reader { params { t: Table; } fn read() -> Int { return self.t.len(); } }
+main locus App {
+    params { t: Table = Table { }; reader: Reader = Reader { t: self.t }; }
+    placement { t: cooperative(pool = io); }
+    run() { println(self.reader.read()); }
+}
+fn main() { App { }; }";
+    let ds = diags(src);
+    assert!(ds.is_empty(), "{ds:?}");
+}
+
+#[test]
+fn gh984_a_bus_delivered_copy_is_not_a_borrow() {
+    let src = "\
+type Snap { n: Int; }
+topic Snaps { payload: Snap; subject: \"t.snaps\"; }
+locus Store {
+    params { n: Int = 0; }
+    bus { publish Snaps; }
+    run() { self.n = self.n + 1; Snaps <- Snap { n: self.n }; }
+}
+locus Reader {
+    params { last: Snap = Snap { n: 0 }; }
+    bus { subscribe Snaps as on_snap; }
+    fn on_snap(s: Snap) { self.last = s; }
+}
+main locus App {
+    params { store: Store = Store { }; reader: Reader = Reader { }; }
+    placement { store: cooperative(pool = io); }
+    run() { }
+}
+fn main() { App { }; }";
+    let ds = diags(src);
+    assert!(ds.is_empty(), "{ds:?}");
+}
