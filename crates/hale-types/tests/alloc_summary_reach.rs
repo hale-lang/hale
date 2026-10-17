@@ -57,22 +57,27 @@ fn own_leaks(name: &str, src: &str) -> Vec<String> {
     leaks
 }
 
+/// The programs below are plain strings, not raw ones, so the shared
+/// corpus does not harvest them: that corpus holds programs whose own
+/// rows the copy beside them leaves alone (`alloc_summary_own_rows`), and
+/// in these the copy's `set` moves the program's.
+///
 /// A generic fn calls `set` on a value whose type the walk cannot see:
 /// it may be any started locus's `set`, the copy's `std::metrics::Gauge`
-/// (which the program builds through the registry and hands it) among
-/// them. The gauge's `set` runs, and its
-/// call of `set` with what it was passed makes every `set` carry
-/// anything, the program's own: the program's `Acc::set` keeps its
-/// finding.
+/// among them, which the program builds through its registry's `gauge`
+/// (a handle's member, sugar for `std::metrics::gauge`) and hands it as a
+/// `Settable`. The gauge's `set` runs, and its call of `set` with what it
+/// was passed makes every `set` carry anything, the program's own: the
+/// program's `Acc::set` keeps its finding.
 #[test]
 fn an_untyped_receiver_reaches_the_method_on_every_started_copy_locus() {
-    // A plain string, not a raw one, so the shared corpus does not
-    // harvest it: that corpus holds programs whose own rows the copy
-    // beside them leaves alone (`alloc_summary_own_rows`), and here the
-    // copy's `set` moves the program's.
     let src = concat!(
         "type Note {\n",
         "    text: String;\n",
+        "}\n",
+        "\n",
+        "interface Settable {\n",
+        "    fn set(v: Float);\n",
         "}\n",
         "\n",
         "fn poke<T>(g: T) {\n",
@@ -82,7 +87,7 @@ fn an_untyped_receiver_reaches_the_method_on_every_started_copy_locus() {
         "locus Acc {\n",
         "    params {\n",
         "        text: String = \"\";\n",
-        "        depth: std::metrics::Gauge;\n",
+        "        depth: Settable;\n",
         "    }\n",
         "    bus {\n",
         "        subscribe \"demo.note\" as on_note of type Note;\n",
@@ -99,12 +104,93 @@ fn an_untyped_receiver_reaches_the_method_on_every_started_copy_locus() {
         "}\n",
         "\n",
         "fn main() {\n",
-        "    let r = std::metrics::Registry { };\n",
-        "    Acc { depth: r.gauge(\"depth\", std::metrics::Labels { kv: \"\" }) };\n",
+        "    let reg = std::metrics::Registry { };\n",
+        "    Acc { depth: reg.gauge(\"depth\", std::metrics::Labels { kv: \"\" }) };\n",
         "}\n",
-        "\n",
     );
     assert_eq!(own_leaks("untyped", src), ["Acc::set"]);
+}
+
+/// The gauge built by a call of the stdlib's factory by its public path,
+/// in `main` or in a param's default: the factory runs, so the locus it
+/// builds is started and its `set` runs.
+#[test]
+fn a_factory_called_by_its_public_path_starts_what_it_builds() {
+    let in_main = concat!(
+        "type Note {\n",
+        "    text: String;\n",
+        "}\n",
+        "\n",
+        "interface Settable {\n",
+        "    fn set(v: Float);\n",
+        "}\n",
+        "\n",
+        "fn poke<T>(g: T) {\n",
+        "    g.set(2.0);\n",
+        "}\n",
+        "\n",
+        "locus Acc {\n",
+        "    params {\n",
+        "        text: String = \"\";\n",
+        "        depth: Settable;\n",
+        "    }\n",
+        "    bus {\n",
+        "        subscribe \"demo.note\" as on_note of type Note;\n",
+        "    }\n",
+        "\n",
+        "    fn on_note(n: Note) {\n",
+        "        poke(self.depth);\n",
+        "        self.set(n.text);\n",
+        "    }\n",
+        "\n",
+        "    fn set(s: String) {\n",
+        "        self.text = s + \"!\";\n",
+        "    }\n",
+        "}\n",
+        "\n",
+        "fn main() {\n",
+        "    let reg = std::metrics::Registry { };\n",
+        "    Acc { depth: std::metrics::gauge(reg, \"depth\", std::metrics::Labels { kv: \"\" }) };\n",
+        "}\n",
+    );
+    assert_eq!(own_leaks("factory-main", in_main), ["Acc::set"]);
+    let in_default = concat!(
+        "type Note {\n",
+        "    text: String;\n",
+        "}\n",
+        "\n",
+        "interface Settable {\n",
+        "    fn set(v: Float);\n",
+        "}\n",
+        "\n",
+        "fn poke<T>(g: T) {\n",
+        "    g.set(2.0);\n",
+        "}\n",
+        "\n",
+        "locus Acc {\n",
+        "    params {\n",
+        "        text: String = \"\";\n",
+        "        depth: Settable = std::metrics::gauge(std::metrics::Registry { }, \"depth\", std::metrics::Labels { kv: \"\" });\n",
+        "    }\n",
+        "    bus {\n",
+        "        subscribe \"demo.note\" as on_note of type Note;\n",
+        "    }\n",
+        "\n",
+        "    fn on_note(n: Note) {\n",
+        "        poke(self.depth);\n",
+        "        self.set(n.text);\n",
+        "    }\n",
+        "\n",
+        "    fn set(s: String) {\n",
+        "        self.text = s + \"!\";\n",
+        "    }\n",
+        "}\n",
+        "\n",
+        "fn main() {\n",
+        "    Acc { };\n",
+        "}\n",
+    );
+    assert_eq!(own_leaks("factory-default", in_default), ["Acc::set"]);
 }
 
 /// The program's `set`, called from a bus handler, stores what it was

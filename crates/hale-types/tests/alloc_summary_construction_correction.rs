@@ -459,6 +459,10 @@ fn reached_no_other_target_changes() {
 /// failure in place: `__http_retry_sentinel`, called in that loop, went.
 /// One more since the client writes its `Host` header through
 /// `__http_host_text` (an IPv6 host is bracketed), called per request.
+/// And the copy's fns a program calls by their public path
+/// (`std::…`) run where they are called, so a bus
+/// handler's such calls invoke them unboundedly beside the copy: is_route
+/// six of them, oidc ten more. None is the program's own.
 fn pinned_unreached(target: &str, invoked: (usize, usize), own: &[&str], leaks: &[&str], lines: &[&str]) {
     let u = unreached(target, &stdlib_fns()).expect("the target loads");
     let strs = |v: &[&str]| -> Vec<String> { v.iter().map(|s| s.to_string()).collect() };
@@ -514,7 +518,7 @@ fn reached_unowned_literal_positions() {
 fn reached_oidc() {
     pinned_unreached(
         "dna/oidc",
-        (142, 2),
+        (142, 12),
         &[
             "b64",
             "decode",
@@ -581,7 +585,7 @@ fn reached_oidc() {
 fn reached_is_route_test() {
     pinned_unreached(
         "tests/hale/is_route_test.hl",
-        (122, 0),
+        (122, 6),
         &["Api::handle", "Api::list", "Api::rename", "Api::show"],
         &["Api::handle StructLit(\"std::http::Response\") @1449..1496 InvokedUnboundedly"],
         &[
