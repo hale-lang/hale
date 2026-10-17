@@ -1309,7 +1309,6 @@ fn ingest_ui_assets(root: String, files: String) -> String {
 }
 
 // Whether a markdown document in `from` links into `dir`.
-@bounded_by(text)
 fn links_into(from: String, text: String, dir: String) -> Bool {
     let mut links = md_links(text);
     while len(links) > 0 {
