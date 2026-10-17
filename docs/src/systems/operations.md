@@ -292,10 +292,11 @@ one descriptor triple both close it.
 
 Teardown rides on the owner: when the locus holding the field
 dissolves, the field's `dissolve` closes the pipes and reaps the
-child. A handle you only `let`-bind has no such owner — a
-factory-returned locus is never reclaimed, so its `dissolve` never
-runs and the child is still alive when your program exits. Moving it
-into a field is what gives it a teardown.
+child. A handle you only `let`-bind is owned by its binding: when
+the enclosing scope exits, its `dissolve` closes the pipes and reaps
+the child, as it would for a literal written there. A child that has
+to outlive the function that spawned it belongs in a field, whose
+owner gives it the longer teardown.
 
 A supervising daemon reaps without blocking via
 `std::process::try_wait(c)` — `-2` means still running (poll again
