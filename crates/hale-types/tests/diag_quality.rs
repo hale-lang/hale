@@ -349,3 +349,48 @@ fn a_bounded_place_is_assigned_whole_from_its_own_type_only() {
         "got: {ds:?}"
     );
 }
+
+#[test]
+fn a_route_params_copy_taken_before_the_match_is_warned_at_its_capture_read() {
+    // `is_route` writes its `:name` captures into `c.params`; a copy
+    // taken before the match never sees them, so `path_param` on it is
+    // "" for every route. Warned at the read, naming the working spelling.
+    let ds = diags(
+        r#"
+        fn route(req: std::http::Request) -> String {
+            let c = std::http::build_context(req);
+            let p = c.params;
+            if std::http::is_route(c, "GET", "/m/:model") {
+                return std::http::path_param(p, "model");
+            }
+            return "";
+        }
+        fn main() { }
+    "#,
+    );
+    let warned: Vec<&String> = ds.iter().filter(|m| m.contains("is a copy of `c.params`")).collect();
+    assert_eq!(warned.len(), 1, "one warning at the read; got: {ds:?}");
+    assert!(warned[0].contains("`std::http::path_param(c.params, …)`"), "got: {ds:?}");
+
+    // The shapes that read what the match wrote, or need no capture,
+    // are not warned: the context's own params after the match, a copy
+    // taken after the match, a query read through the early copy.
+    let clean = diags(
+        r#"
+        fn route(req: std::http::Request) -> String {
+            let c = std::http::build_context(req);
+            let early = c.params;
+            if std::http::is_route(c, "GET", "/a/:id") {
+                return std::http::path_param(c.params, "id") + std::http::query_param(early, "q");
+            }
+            if std::http::is_route(c, "GET", "/b/:id") {
+                let late = c.params;
+                return std::http::path_param(late, "id");
+            }
+            return "";
+        }
+        fn main() { }
+    "#,
+    );
+    assert!(!clean.iter().any(|m| m.contains("is a copy of")), "got: {clean:?}");
+}

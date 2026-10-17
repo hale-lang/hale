@@ -368,6 +368,14 @@ them cleared, so the `if` ladder is first-match-wins in written
 order with no stale captures. The endpoint methods are plain
 direct calls with `self` in scope: state without ceremony.
 
+Read a capture from `ctx.params` *after* the match. A record is a
+value, so `let p = ctx.params;` taken before the ladder is a copy made
+while the captures were still empty, and `path_param(p, "id")` would
+be `""` in every branch. `hale check` warns at that read and names the
+spelling that works, `std::http::path_param(ctx.params, "id")`. (A
+query read through such a copy is fine: `build_context` already split
+the query string.)
+
 Don't reach for a fancier router on performance instinct: at
 service-sized route counts (tens of routes) this linear scan
 costs about 90 ns per route it tries (measured worst case: the
