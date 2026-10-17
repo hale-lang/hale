@@ -1102,11 +1102,12 @@ closes the listener while the connections it accepted are served on.
   skipped by its wire type, and the last of a field sent twice wins. Every
   scalar is written whether or not it equals its default (the `.proto` marks it
   `optional`), so a zero is a value. The codec joins a program only with a
-  `grpc::Rpc` exposure; a non-gRPC exposure's generated code is unchanged. The
-  exposure holds a protobuf call as the text `pb:` + a message name + `:` +
-  the base64 of the message (a String ends at its first NUL, a message does
-  not); the adapters of a gRPC exposure branch on the prefix and run the same
-  steps with the other codec.
+  `grpc::Rpc` exposure; a non-gRPC exposure's generated code is unchanged. A
+  protobuf call crosses the runtime interfaces as `pb:` + a message name + `:`
+  and the message's bytes (§ The `Rpc` interface, a body is bytes); the
+  exposure holds it as the same prefix and the message in base64 (a String
+  ends at its first NUL, a message does not), and the adapters of a gRPC
+  exposure branch on the prefix and run the same steps with the other codec.
 - **The `.proto`** is generated from the rows (§ Generated specs and
   clients): `hale api export` writes `NAME.proto` and `hale check --api
   --surface NAME --proto` prints it. `syntax = "proto3"`, no package, one
@@ -1241,13 +1242,17 @@ type std::api::Request {
 // The outcome: what the runtime hands Rpc.reply. A transport failure is
 // the absence of a reply, so it has no variant.
 type std::api::Outcome = enum {
-    Result(String),             // the response by the codec
-    HandlerError(String),       // the handler's E by the codec
+    Result(Bytes),              // the response by the codec
+    HandlerError(Bytes, std::api::ErrorClass),  // the handler's E by the
+                                // codec, and the class its variant declares
     Refusal(String, String, String),  // kind, reason, the extra: `served` on
                                 // digest_mismatch, `requires` (comma-joined)
                                 // on unauthorized, else ""
     ServerError,                // the handler violated; says nothing of it
 };
+
+// The class of a handler error, which a transport renders (§ Outcomes).
+type std::api::ErrorClass = enum { Unclassed, NotFound, Conflict, Invalid, Forbidden, Unavailable };
 
 // What a caller is handed to hold; stop() is idempotent. wait() returns
 // when stop() or the drain has ended the exposure (§ Parking).
@@ -1256,6 +1261,19 @@ interface std::api::Handle { fn stop(); fn wait(); }
 // h.wait() as a free function, for a serving main locus's run().
 fn std::api::run_until_stopped(h: std::api::Handle);
 ```
+
+**A body is bytes.** A request's payload (`Request.bytes`) and an
+outcome's body are the codec's bytes: the JSON text's, or for a protobuf
+call (`grpc::Rpc`) the prefix `pb:<message name>:` and the message itself
+(a request's name is empty, `pb::`), so a message carrying a NUL byte
+crosses whole. The exposure holds a body as text internally (the
+message in base64 behind the same prefix) and converts at the boundary,
+which no transport sees. Until 2026-10-17 `Result` and `HandlerError`
+carried a String, and a protobuf body crossed the interfaces in base64:
+a transport the program writes now matches `Result(b)` on `Bytes` and
+`HandlerError(b, class)`, a breaking change for a custom transport
+(`std::str::from_bytes(b)` is the text a JSON codec wrote). The class is
+`Unclassed` until an error type's variants declare one.
 
 **Receiving.** A request is received when the transport has published
 it. The runtime takes the server's **request id** for it then, an

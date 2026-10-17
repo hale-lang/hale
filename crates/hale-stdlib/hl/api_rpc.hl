@@ -125,11 +125,48 @@ type __StdApiRequest {
 
 /// The outcome the runtime hands a transport to encode.
 type __StdApiOutcome = enum {
-    Result(String),
-    HandlerError(String),
+    Result(Bytes),
+    HandlerError(Bytes, __StdApiErrorClass),
     Refusal(String, String, String),
     ServerError,
 };
+
+/// The class a handler error's variant declares (spec/api.md § Outcomes),
+/// which a transport renders; `Unclassed` for a variant that declares none
+/// and for an error type that is no enum.
+type __StdApiErrorClass = enum {
+    Unclassed,
+    NotFound,
+    Conflict,
+    Invalid,
+    Forbidden,
+    Unavailable,
+};
+
+// The exposure holds a body as text: the codec's JSON, or a protobuf
+// message as `pb:<message name>:` and the message in base64 (a String ends
+// at its first NUL, a message does not). The runtime interfaces carry Bytes
+// (`Request.bytes`, an `Outcome`'s body): the JSON's bytes, or `pb:<message
+// name>:` and the message itself. These two convert at that boundary.
+
+/// A body as the runtime interfaces carry it, from the exposure's text.
+fn __api_body_bytes(text: String) -> Bytes {
+    if !std::str::starts_with(text, "pb:") { return std::bytes::from_string(text); }
+    let rest = text[3..len(text)];
+    let colon = std::str::index_of(rest, ":");
+    let head = text[0..(colon + 4)];
+    return std::bytes::concat(std::bytes::from_string(head), std::text::base64::decode(rest[(colon + 1)..len(rest)]));
+}
+
+/// A body as the exposure holds it, from the runtime interfaces' bytes.
+fn __api_body_text(b: Bytes) -> String {
+    let n = len(b);
+    if n < 3 || std::str::from_bytes(std::bytes::slice(b, 0, 3)) != "pb:" { return std::str::from_bytes(b); }
+    let mut colon = 3;
+    while colon < n && (std::bytes::read_u8(b, colon) or 58) != 58 { colon = colon + 1; }
+    if colon >= n { return std::str::from_bytes(b); }
+    return std::str::from_bytes(std::bytes::slice(b, 0, colon + 1)) + std::text::base64::encode(std::bytes::slice(b, colon + 1, n));
+}
 
 /// What a transport implements (spec/api.md § The `Rpc` interface).
 interface __StdApiRpc {
@@ -663,7 +700,7 @@ locus __StdApiExposure {
             return;
         }
         if r.kind == 1 {
-            self.transport.reply(i.correlation, rid, who, __StdApiOutcome::Result(self.describe_full(who)));
+            self.transport.reply(i.correlation, rid, who, __StdApiOutcome::Result(std::bytes::from_string(self.describe_full(who))));
             return;
         }
         if len(r.digest) > 0 && r.digest != self.digest {
@@ -691,7 +728,7 @@ locus __StdApiExposure {
             self.refuse(i.correlation, rid, who, "unauthorized", self.rows.name_of(m) + " requires " + miss, req);
             return;
         }
-        let body = std::str::from_bytes(r.bytes);
+        let body = __api_body_text(r.bytes);
         let why = self.rows.check(m, body);
         if len(why) > 0 {
             self.refuse(i.correlation, rid, who, "malformed", why, "");
@@ -919,8 +956,8 @@ locus __StdApiExposure {
         }
         let e = self.entries.get(k) or __StdApiRpcEntry { };
         let slot = e.slot;
-        if ev.kind == 0 { self.finish(k, __StdApiOutcome::Result(ev.body)); }
-        if ev.kind == 1 { self.finish(k, __StdApiOutcome::HandlerError(ev.body)); }
+        if ev.kind == 0 { self.finish(k, __StdApiOutcome::Result(__api_body_bytes(ev.body))); }
+        if ev.kind == 1 { self.finish(k, __StdApiOutcome::HandlerError(__api_body_bytes(ev.body), __StdApiErrorClass::Unclassed)); }
         if ev.kind == 2 { self.finish(k, __StdApiOutcome::ServerError); }
         if ev.kind == 3 { self.unavailable(k); }
         self.pump(slot);
@@ -1003,7 +1040,7 @@ fn __api_outcome_kind(outcome: std::api::Outcome) -> String {
     let mut kind = "";
     match outcome {
         __StdApiOutcome::Result(b) -> { kind = "result"; },
-        __StdApiOutcome::HandlerError(b) -> { kind = "handler_error"; },
+        __StdApiOutcome::HandlerError(b, c) -> { kind = "handler_error"; },
         __StdApiOutcome::Refusal(k, r, x) -> { kind = "refusal:" + k; },
         __StdApiOutcome::ServerError -> { kind = "server_error"; },
     }
@@ -1066,10 +1103,10 @@ fn __api_outcome_answer(outcome: std::api::Outcome) -> String {
     let mut answer = "";
     match outcome {
         __StdApiOutcome::Result(b) -> {
-            answer = "\"ok\":true,\"value\":" + b;
+            answer = "\"ok\":true,\"value\":" + std::str::from_bytes(b);
         },
-        __StdApiOutcome::HandlerError(b) -> {
-            answer = "\"ok\":false,\"error\":" + b;
+        __StdApiOutcome::HandlerError(b, c) -> {
+            answer = "\"ok\":false,\"error\":" + std::str::from_bytes(b);
         },
         __StdApiOutcome::Refusal(k, r, x) -> {
             answer = "\"ok\":false,\"refusal\":" + __api_refusal_object(k, r, x);
@@ -2075,8 +2112,8 @@ locus __StdApiHttpRpc {
         let mut status = 500;
         let mut body = "{\"refusal\":{\"kind\":\"server\"}}";
         match outcome {
-            __StdApiOutcome::Result(b) -> { status = 200; body = b; },
-            __StdApiOutcome::HandlerError(b) -> { status = 422; body = b; },
+            __StdApiOutcome::Result(b) -> { status = 200; body = std::str::from_bytes(b); },
+            __StdApiOutcome::HandlerError(b, c) -> { status = 422; body = std::str::from_bytes(b); },
             __StdApiOutcome::Refusal(k, r, x) -> {
                 status = __api_http_refusal_status(k);
                 body = "{\"refusal\":" + __api_refusal_object(k, r, x) + "}";
@@ -2403,7 +2440,8 @@ locus __StdApiMcpRpc {
         let mut status = 200;
         let mut body = "";
         match outcome {
-            __StdApiOutcome::Result(b) -> {
+            __StdApiOutcome::Result(raw) -> {
+                let b = std::str::from_bytes(raw);
                 if p.kind == 1 {
                     let mut version = p.version;
                     if len(version) == 0 { version = "2025-06-18"; }
@@ -2419,8 +2457,8 @@ locus __StdApiMcpRpc {
                     body = "{\"jsonrpc\":\"2.0\",\"id\":" + p.id + ",\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"" + std::json::escape_string(b) + "\"}]" + structured + ",\"isError\":false}}";
                 }
             },
-            __StdApiOutcome::HandlerError(b) -> {
-                body = __api_mcp_error(p.id, -32001, "handler_error", b);
+            __StdApiOutcome::HandlerError(b, c) -> {
+                body = __api_mcp_error(p.id, -32001, "handler_error", std::str::from_bytes(b));
             },
             __StdApiOutcome::Refusal(k, r, x) -> {
                 if k == "unauthenticated" { status = 401; }

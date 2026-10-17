@@ -55,8 +55,9 @@ locus Probe {
     fn reply(correlation: Int, request_id: Int, caller: std::api::Principal, outcome: std::api::Outcome) {
         let mut kind = "other";
         match outcome {
-            std::api::Outcome::Result(b) -> { kind = "result"; },
-            std::api::Outcome::HandlerError(b) -> { kind = "handler_error"; },
+            // the body is the codec's bytes: here the response's JSON
+            std::api::Outcome::Result(b) -> { kind = "result " + std::str::from_bytes(b); },
+            std::api::Outcome::HandlerError(b, c) -> { kind = "handler_error"; },
             std::api::Outcome::Refusal(k, r, x) -> { kind = "refusal:" + k; },
             std::api::Outcome::ServerError -> { kind = "server_error"; },
             _ -> { kind = "other"; },
@@ -104,7 +105,7 @@ main locus App {
         self.server.probe.push(1, "{\"n\":1}");
         let mut i = 0;
         while i < 3000 && len(self.collector.log) == 0 { std::time::sleep(1ms); i = i + 1; }
-        std::test::assert_eq_str(self.collector.log, "1:result,", "the third-party transport is served: the call was answered");
+        std::test::assert_eq_str(self.collector.log, "1:result {\"n\":1},", "the third-party transport is served: the call was answered, its body the response's bytes");
         std::test::assert_eq_int(self.collector.closings, 0, "the listener is open while the exposure lives");
 
         // the owner replaces the serving locus: its teardown is the shutdown

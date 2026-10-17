@@ -297,17 +297,30 @@ fn __api_grpc_frame(body: Bytes) -> Bytes {
     return std::bytes::concat(std::bytes::concat(std::bytes::from_int(0), size), body);
 }
 
-/// The message in a protobuf body (`pb:<message name>:<base64>`).
-fn __api_pb_text_bytes(text: String) -> Bytes {
-    let rest = text[3..len(text)];
-    let colon = std::str::index_of(rest, ":");
-    return std::text::base64::decode(rest[(colon + 1)..len(rest)]);
+/// Whether an outcome's body is a protobuf message (`pb:<message name>:`
+/// and the message).
+fn __api_pb_is(b: Bytes) -> Bool {
+    return len(b) >= 3 && std::str::from_bytes(std::bytes::slice(b, 0, 3)) == "pb:";
+}
+
+/// Where the message name of a protobuf body ends: its second `:`.
+fn __api_pb_colon(b: Bytes) -> Int {
+    let n = len(b);
+    let mut i = 3;
+    while i < n && (std::bytes::read_u8(b, i) or 58) != 58 { i = i + 1; }
+    return i;
+}
+
+/// The message in a protobuf body.
+fn __api_pb_text_bytes(b: Bytes) -> Bytes {
+    let colon = __api_pb_colon(b);
+    if colon >= len(b) { return std::bytes::slice(b, len(b), len(b)); }
+    return std::bytes::slice(b, colon + 1, len(b));
 }
 
 /// The name of the message in a protobuf body.
-fn __api_pb_text_name(text: String) -> String {
-    let rest = text[3..len(text)];
-    return rest[0..std::str::index_of(rest, ":")];
+fn __api_pb_text_name(b: Bytes) -> String {
+    return std::str::from_bytes(std::bytes::slice(b, 3, __api_pb_colon(b)));
 }
 
 /// A refusal as its message (`HaleRefusal`): the kind and the reason, the
@@ -700,10 +713,11 @@ locus __StdApiGrpcRpc {
         if len(body) != 5 + n { return __api_grpc_bad(raw, correlation, token, "a unary call carries exactly one message"); }
         let digest = __api_grpc_header(h, "hale-surface-digest");
         if proto {
-            // the exposure holds a call as text: `pb::` and the message in
-            // base64 (the generated adapters branch on that prefix)
-            let text = "pb::" + std::text::base64::encode(std::bytes::slice(body, 5, 5 + n));
-            return std::api::Request { kind: 0, member: member, bytes: std::bytes::from_string(text), digest: digest, correlation: correlation, credential: token, peer: nobody, reason: "" };
+            // a protobuf call is `pb::` and the message itself (the
+            // exposure holds it as text, in base64; the generated adapters
+            // branch on the prefix)
+            let bytes = std::bytes::concat(std::bytes::from_string("pb::"), std::bytes::slice(body, 5, 5 + n));
+            return std::api::Request { kind: 0, member: member, bytes: bytes, digest: digest, correlation: correlation, credential: token, peer: nobody, reason: "" };
         }
         if n == 0 { return __api_grpc_bad(raw, correlation, token, "a call carries a message"); }
         let text = std::str::from_bytes(std::bytes::slice(body, 5, 5 + n));
@@ -739,18 +753,18 @@ locus __StdApiGrpcRpc {
         match outcome {
             __StdApiOutcome::Result(b) -> {
                 if !proto {
-                    body = __api_grpc_prefix(b);
-                } else if std::str::starts_with(b, "pb:") {
+                    body = __api_grpc_prefix(std::str::from_bytes(b));
+                } else if __api_pb_is(b) {
                     body = __api_grpc_frame(__api_pb_text_bytes(b));
                 } else {
                     // the description: `hale.api.DescriptionDocument { json = 1 }`
-                    body = __api_grpc_frame(__api_pb_put_str(1, b));
+                    body = __api_grpc_frame(__api_pb_put_str(1, std::str::from_bytes(b)));
                 }
                 trailers = "grpc-status: 0\n";
             },
-            __StdApiOutcome::HandlerError(b) -> {
-                let mut details = __api_grpc_details(9, "handler_error", "type.hale.dev/hale.api.HandlerError", b);
-                if proto && std::str::starts_with(b, "pb:") {
+            __StdApiOutcome::HandlerError(b, c) -> {
+                let mut details = __api_grpc_details(9, "handler_error", "type.hale.dev/hale.api.HandlerError", std::str::from_bytes(b));
+                if proto && __api_pb_is(b) {
                     details = __api_grpc_details_bytes(9, "handler_error", "type.hale.dev/" + __api_pb_text_name(b), __api_pb_text_bytes(b));
                 }
                 headers = head + "grpc-status: 9\ngrpc-message: handler_error\ngrpc-status-details-bin: " + details + "\n";

@@ -536,6 +536,7 @@ const RUNTIME_NAMES: &[&str] = &[
     "ExpiringBearerSource",
     "Request",
     "Outcome",
+    "ErrorClass",
     "Rpc",
     "Handle",
     "Surface",

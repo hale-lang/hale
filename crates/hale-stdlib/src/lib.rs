@@ -458,6 +458,7 @@ pub const PATH_RENAMES: &[(&[&str], &str)] = &[
     (&["std", "api", "ServedContext"], "__StdApiServedContext"),
     (&["std", "api", "Request"], "__StdApiRequest"),
     (&["std", "api", "Outcome"], "__StdApiOutcome"),
+    (&["std", "api", "ErrorClass"], "__StdApiErrorClass"),
     (&["std", "api", "Rpc"], "__StdApiRpc"),
     (&["std", "api", "Handle"], "__StdApiHandle"),
     (&["std", "api", "run_until_stopped"], "__std_api_run_until_stopped"),
