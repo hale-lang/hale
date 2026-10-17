@@ -2084,7 +2084,10 @@ key as the value (`{"db": {"status": "up"}, "cache": {"status":
 restored on decode, where a value's own key field, if a payload sends
 one, is not read. A key the object repeats is refused `malformed`,
 `duplicate_key`; more entries than the list holds is `too_long`; an
-absent map is empty, as an absent `bounded` list is. The description
+absent map is empty, as an absent `bounded` list is. A map may be
+optional (a presence pair, above): an absent key and `null` are its
+absence, `{}` a present empty map, and its schema is the map's or `null`;
+in protobuf its flag is a field of its own, as any optional field's is. The description
 gives it `{"type": "object", "additionalProperties": <the record's schema
 without its key>, "maxProperties": N, "x-hale-key": "<key>"}`. In
 protobuf it is a proto3 `map<string, T>`, each entry its key and the

@@ -2269,16 +2269,8 @@ impl<'a> Schemas<'a> {
                             properties.push((key, FieldSchema::Presence { of: of.to_string() }));
                             continue;
                         }
-                        if let Some((_, flag)) = pairs.iter().find(|(of, _)| *of == name) {
-                            let inner = self.type_ref(&f.ty, out);
-                            let schema = match inner {
-                                FieldSchema::Unformed => FieldSchema::Unformed,
-                                inner => FieldSchema::Nullable { inner: Box::new(inner), flag: flag.to_string() },
-                            };
-                            properties.push((key, schema));
-                            continue;
-                        }
                         // a wire map: the element's schema without its key
+                        let mut map = None;
                         if let (Some(k), Some((elem, max, false))) =
                             (&f.indexed_by, hale_syntax::json_gen::wire_list(&self.shapes.dealias(&f.ty)))
                         {
@@ -2293,9 +2285,23 @@ impl<'a> Schemas<'a> {
                                 let mut value = out.get(&elem_name).cloned().unwrap_or(TypeSchema { properties: Vec::new(), required: Vec::new() });
                                 value.properties.retain(|(p, _)| *p != lifted);
                                 value.required.retain(|r| *r != lifted);
-                                properties.push((key, FieldSchema::Map { name: elem_name, key: k.name.clone(), value, max }));
-                                continue;
+                                map = Some(FieldSchema::Map { name: elem_name, key: k.name.clone(), value, max });
                             }
+                        }
+                        // an optional field (a map among them) is its value's
+                        // schema or `null`
+                        if let Some((_, flag)) = pairs.iter().find(|(of, _)| *of == name) {
+                            let inner = map.unwrap_or_else(|| self.type_ref(&f.ty, out));
+                            let schema = match inner {
+                                FieldSchema::Unformed => FieldSchema::Unformed,
+                                inner => FieldSchema::Nullable { inner: Box::new(inner), flag: flag.to_string() },
+                            };
+                            properties.push((key, schema));
+                            continue;
+                        }
+                        if let Some(m) = map {
+                            properties.push((key, m));
+                            continue;
                         }
                         properties.push((key.clone(), self.type_ref(&f.ty, out)));
                         if hale_syntax::json_gen::wire_required(&self.shapes.dealias(&f.ty), f.default.is_some()) {

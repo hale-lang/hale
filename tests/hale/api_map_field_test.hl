@@ -4,8 +4,10 @@
 // key as the value: the key lifted out on encode, in the list's order, and
 // restored on decode. A duplicate key is refused (`malformed`,
 // `duplicate_key`), more entries than the list holds `too_long`; the
-// value's own key field, if a payload sends one, is not read. Served over a
-// Unix exposure, with the description's schema.
+// value's own key field, if a payload sends one, is not read. A record that
+// holds a map beside an optional field, and an optional map, crosses both
+// ways too, an absent optional map written as no key. Served over a Unix
+// exposure, with the description's schema.
 
 fn api_sock() -> String {
     return "/tmp/hale-api-map-" + to_string(std::process::pid()) + ".sock";
@@ -18,6 +20,13 @@ locus Table {
 type Check { name: String; status: String; detail: String = ""; }
 type Health { checks: bounded[Check; 3] indexed_by name; ok: Bool = true; }
 type Seen { count: Int; names: String; back: Health; }
+type Spare {
+    checks: bounded[Check; 2] indexed_by name;
+    note: String;
+    has_note: Bool;
+    extra: bounded[Check; 2] indexed_by name;
+    has_extra: Bool;
+}
 
 locus Echo {
     fn on(h: Health) -> Seen {
@@ -27,9 +36,10 @@ locus Echo {
         }
         return Seen { count: count(h.checks), names: names, back: h };
     }
+    fn spare(s: Spare) -> Spare { return s; }
 }
 
-api Public { rpc Echo::on; }
+api Public { rpc Echo::on; rpc Echo::spare; }
 
 locus Conn {
     params {
@@ -60,6 +70,9 @@ locus Conn {
     }
     fn call(payload: String) -> String {
         return self.ask("{\"call\":\"Echo::on\",\"payload\":" + payload + ",\"id\":\"c\"}");
+    }
+    fn spare(payload: String) -> String {
+        return self.ask("{\"call\":\"Echo::spare\",\"payload\":" + payload + ",\"id\":\"s\"}");
     }
 }
 
@@ -99,11 +112,23 @@ main locus App {
         let missing = self.conn.call("{\"checks\":{\"db\":{}}}");
         std::test::assert(std::str::contains(missing, "missing_field: status"), "a value's own required field: " + missing);
 
+        // a map beside an optional field, and an optional map: absent (no
+        // key written), present and empty, present with an entry
+        let noted = self.conn.spare("{\"checks\":{\"db\":{\"status\":\"up\"}},\"note\":\"n\"}");
+        std::test::assert(std::str::contains(noted, "{\"checks\":{\"db\":{\"status\":\"up\",\"detail\":\"\"}},\"note\":\"n\"}"), "a map beside an optional field: " + noted);
+        let empty = self.conn.spare("{\"extra\":{}}");
+        std::test::assert(std::str::contains(empty, "{\"checks\":{},\"extra\":{}}"), "a present empty optional map: " + empty);
+        let extra = self.conn.spare("{\"extra\":{\"a\":{\"status\":\"x\"}},\"note\":null}");
+        std::test::assert(std::str::contains(extra, "{\"checks\":{},\"extra\":{\"a\":{\"status\":\"x\",\"detail\":\"\"}}}"), "an optional map with an entry: " + extra);
+
         // the description: an object of the record without its key
         let doc = self.conn.ask("{\"describe\":true}");
         std::test::assert(
             std::str::contains(doc, "\"checks\":{\"type\":\"object\",\"additionalProperties\":{\"type\":\"object\",\"properties\":{\"status\":{\"type\":\"string\"},\"detail\":{\"type\":\"string\"}},\"required\":[\"status\"]},\"maxProperties\":3,\"x-hale-key\":\"name\"}"),
             "a wire map's schema: " + doc);
+        std::test::assert(
+            std::str::contains(doc, "\"extra\":{\"anyOf\":[{\"type\":\"object\",\"additionalProperties\":{\"type\":\"object\",\"properties\":{\"status\":{\"type\":\"string\"},\"detail\":{\"type\":\"string\"}},\"required\":[\"status\"]},\"maxProperties\":2,\"x-hale-key\":\"name\"},{\"type\":\"null\"}]}"),
+            "an optional map's schema is the map's or null: " + doc);
 
         self.sock.stop();
         std::io::fs::unlink(api_sock()) or discard;

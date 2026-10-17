@@ -1181,6 +1181,12 @@ fn generate_emit_src_mode(t: &JsonType, fn_prefix: &str) -> String {
                 ));
                 b.push_str(&format!("        __n_{n} = __n_{n} + 1;\n    }}\n", n = f.name));
                 b.push_str("    __b = __b + \"}\";\n");
+                if dynamic {
+                    b.push_str("    __sep = \",\";\n");
+                }
+                if matches!(f.presence, Presence::Tracked(_)) {
+                    b.push_str("    }\n");
+                }
                 continue;
             }
             FieldKind::List { elem, elem_ty, .. } => {
