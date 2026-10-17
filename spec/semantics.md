@@ -1952,8 +1952,14 @@ chain the walk cannot follow is left alone, never guessed at. A
 borrow the holder reads only in `birth()` is birth-scoped and sound —
 the instantiation runs inside the frame that owns the handle — which
 is the shape a resident uses to copy what it was handed before the
-dispatch ends. Not decided here: a borrow across thread domains
-(GH #730). A container a handler built and handed to a resident's
+dispatch ends. The other axis of a borrow, the thread domain, is a rule
+of its own (GH #984): a borrow is read from its holder's thread, so a
+handle whose instance runs on another pool is refused where it is handed
+over, naming both domains and the hand-over (`spec/types.md` § "One
+instance is never shared across pools", GH #1566); a type that
+synchronizes access from another domain is admitted, and a value that
+crosses by the bus is a copy, not a borrow. A program wrong on one axis
+is told that axis alone. A container a handler built and handed to a resident's
 form-typed field is the `let` row of this table (GH #712); the data
 it holds is copied at the store and is not a borrow.
 

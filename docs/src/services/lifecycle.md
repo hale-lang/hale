@@ -308,6 +308,14 @@ site. The one allowance is a handle the holder reads only in
 `birth()`: it copies what it needs while the handle is live, and
 never touches it again.
 
+A borrow also has to stay on its holder's thread. The holder reads it
+from wherever the holder runs, so handing a locus a handle whose
+instance is placed on another pool (`Reader { store: self.store }`
+with `store` on `io` and the reader on `main`) is refused at the hand-
+over, naming both pools. Two instances of one pool share freely, a
+`@form` that synchronizes access (`sync = serialized`, …) may cross,
+and a value sent over the bus is a copy, not a borrow.
+
 This is what a bus handler hands a child that stays. A String, a row or
 a payload field is copied into the child's own storage as it is stored,
 so the child can read it long after the handler returned. A

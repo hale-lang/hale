@@ -31,8 +31,11 @@
 //! into the holder's arena at the store and is not a borrow at all
 //! (`resident_transfer.rs` pins both sides).
 //!
-//! What this pass does not do: thread domains (a borrow across pools;
-//! the per-instance pool inference is codegen's).
+//! What this pass does not do: thread domains. A borrow across pools is
+//! the cross-pool hand-over rule (GH #984 is decided by GH #1566's
+//! `check.rs` walk over the placement table: `ALIAS_PREFIX`, spec/types.md
+//! § "One instance is never shared across pools"), kept apart from this
+//! table so a program is told which axis it is wrong on.
 //!
 //! GH #1048 extends the table to a handle a **method keeps**: a
 //! parameter of a locus-carrying type that the method's body stores into
