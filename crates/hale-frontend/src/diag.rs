@@ -75,8 +75,9 @@ pub fn render_located(
 /// source the expansion appends rather than code it generated: the api
 /// runtime, the hubs, HTTP/2, gRPC and the TCP substrate are named by
 /// file, line and column (`in the stdlib's io_tcp_serve.hl:3:5`), and the
-/// topic the substrate declares by what it is. `None` for any other
-/// offset. The text and the JSON renderers both say it.
+/// topic the expansion declares for the substrate (no stdlib file holds
+/// it) by what it is. `None` for any other offset. The text and the JSON
+/// renderers both say it.
 fn appended_source_note(off: u32) -> Option<String> {
     if let Some((file, src, local)) = hale_types::rpc_expand::runtime_source_at(off) {
         // The nearest char boundary at or before the offset: a span is a
@@ -87,7 +88,7 @@ fn appended_source_note(off: u32) -> Option<String> {
         return Some(format!("in the stdlib's {file}:{line}:{col}"));
     }
     hale_types::rpc_expand::is_tcp_serve_appended_pos(off)
-        .then(|| "in the topic the stdlib's TCP substrate declares (io_tcp_serve.hl)".to_string())
+        .then(|| "in the topic `__TcpAcceptedT` the TCP substrate publishes on".to_string())
 }
 
 /// One NDJSON diagnostic line for `hale check --json`.
@@ -553,5 +554,26 @@ mod tests {
         assert_eq!(text, format!("type error: a finding {note}"));
         let json = render_diag_json(&d, &[], &BTreeMap::new());
         assert!(json.contains(&format!("\"message\":\"a finding {note}\"")), "{json}");
+    }
+
+    /// An offset inside a character names the character's position, and
+    /// one in the substrate's topic names that topic.
+    #[test]
+    fn a_finding_inside_a_character_or_in_the_substrate_topic() {
+        let base = hale_types::rpc_expand::TCP_SERVE_BASE;
+        let (_, src, _) = hale_types::rpc_expand::runtime_source_at(base).expect("the substrate's window");
+        let (at, ch) = src.char_indices().find(|(_, c)| c.len_utf8() > 1).expect("the substrate spells a non-ASCII character");
+        let line = src[..at].matches('\n').count() + 1;
+        let col = src[..at].rsplit('\n').next().map_or(0, |l| l.chars().count()) + 1;
+        let inside = base as usize + at + ch.len_utf8() - 1;
+        let d = hale_syntax::Diag::ty(hale_syntax::Span::new(inside, inside + 1), "a finding");
+        let text = render_located(&d, &[], &BTreeMap::new());
+        assert_eq!(text, format!("type error: a finding (in the stdlib's io_tcp_serve.hl:{line}:{col})"));
+        let topic = hale_types::rpc_expand::TCP_TOPICS_BASE as usize + 3;
+        let d = hale_syntax::Diag::ty(hale_syntax::Span::new(topic, topic + 1), "a finding");
+        let note = "(in the topic `__TcpAcceptedT` the TCP substrate publishes on)";
+        assert_eq!(render_located(&d, &[], &BTreeMap::new()), format!("type error: a finding {note}"));
+        let json = render_diag_json(&d, &[], &BTreeMap::new());
+        assert!(json.contains(&format!("\"message\":\"a finding {}\"", note)), "{json}");
     }
 }

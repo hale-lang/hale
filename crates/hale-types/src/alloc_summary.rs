@@ -1189,11 +1189,12 @@ pub struct AllocSummary {
     pub locus_shapes: BTreeMap<String, LocusShape>,
     /// The fns the program reaches, when the summary holds the stdlib's
     /// analysis copy beside the program: the program's own fns, what
-    /// their calls reach, and the hooks and bus handlers of every locus
-    /// they start (an instantiation, or a param field of a started
-    /// locus). A copy's fn the program never reaches is not run, so it
-    /// invokes, passes and consumes nothing ([`AllocSummary::runs`]). `None` when
-    /// every fn is the program's.
+    /// their calls reach (a method call whose receiver the walk could not
+    /// type, every method of the copy's of its name), and the hooks and
+    /// bus handlers of every locus they start (an instantiation, or a
+    /// param field of a started locus). A copy's fn the program never
+    /// reaches is not run, so it invokes, passes and consumes nothing
+    /// ([`AllocSummary::runs`]). `None` when every fn is the program's.
     pub reached: Option<BTreeSet<FnKey>>,
     /// The loci each body starts (a literal of the locus in it): what
     /// [`AllocSummary::unbounded_invoked`] follows from an unboundedly
@@ -3761,6 +3762,13 @@ pub fn summarize_within(
                 }
             }
         }
+        // A method call whose receiver the walk could not type may be a
+        // call of any locus's method of its name: every one of the copy's
+        // runs, as the provenance pass taints them all.
+        let mut copy_methods: BTreeMap<&str, Vec<&FnKey>> = BTreeMap::new();
+        for b in bodies.iter().filter(|b| b.0.locus.is_some() && is_stdlib_copy(b.7)) {
+            copy_methods.entry(b.0.fn_name.as_str()).or_default().push(&b.0);
+        }
         let mut reached: BTreeSet<FnKey> = BTreeSet::new();
         let mut work: Vec<FnKey> = own.into_iter().collect();
         loop {
@@ -3783,8 +3791,12 @@ pub fn summarize_within(
             }
             let Some(f) = summary.fns.get(&k) else { continue };
             for c in &f.calls {
-                if let Callee::Resolved(callee) = &c.callee {
-                    work.push(callee.clone());
+                match &c.callee {
+                    Callee::Resolved(callee) => work.push(callee.clone()),
+                    Callee::Unresolved(name) if c.receiver_present => {
+                        work.extend(copy_methods.get(name.as_str()).into_iter().flatten().map(|k| (*k).clone()))
+                    }
+                    Callee::Unresolved(_) => {}
                 }
             }
             pending.extend(starts_of.get(&k).into_iter().flatten().cloned());
@@ -3807,6 +3819,9 @@ pub fn summarize_within(
                 Callee::Unresolved(_) => None,
             })
             .collect();
+        // And a fn the program reaches through a call whose receiver the
+        // walk could not type is a row, so what it does counts.
+        beyond.extend(summary.reached.iter().flatten().filter_map(|k| beyond_keys.get(k).copied()));
         let starts = summary.starts.iter().filter(|(k, _)| !beyond_keys.contains_key(*k)).flat_map(|(_, s)| s);
         let started = starts.chain(&reached_loci).chain(summary.startable.iter().flatten());
         beyond.extend(started.filter_map(|l| beyond_loci.get(l).copied()));
