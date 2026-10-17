@@ -89,7 +89,6 @@ fn ledger_holding(app: String, head_dsn: String, needles: String, secs: Int) -> 
 }
 
 // Every line of `text` holding `needle`, newline-joined.
-@bounded_by(text)
 fn row_with_all(text: String, needle: String) -> String {
     let mut out = "";
     let mut rest = text;
