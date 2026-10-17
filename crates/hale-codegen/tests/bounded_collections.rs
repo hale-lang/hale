@@ -312,3 +312,51 @@ fn set_truncate_drop_front_idiom() {
     assert!(out.contains("oob idx=99"), "got: {:?}", out);
     assert!(out.contains("t0=0"), "got: {:?}", out);
 }
+
+/// A whole assignment of a locus's bounded field from a record built in
+/// a method, its Strings computed there: the field's elements are
+/// anchored in the locus's arena, not the method's scratch, so they are
+/// whole after the method returns and its scratch is freed. Under
+/// AddressSanitizer (with the chunk pool off, which an ASan build
+/// defaults), a slot left in the scratch is a use-after-free at the
+/// read. A record local's field and a nested record field of the
+/// locus's are the other two places.
+#[test]
+fn a_whole_assigned_bounded_field_outlives_its_method_under_asan() {
+    let src = r#"
+        type R { xs: bounded[String; 2]; }
+        type Row { name: String = ""; xs: bounded[String; 2]; }
+        locus L {
+            params { xs: bounded[String; 2]; row: Row = Row { }; }
+            fn put(k: Int) {
+                let mut r = R { };
+                push(r.xs, "first " + to_string(k)) or raise;
+                push(r.xs, std::str::upper("second ") + to_string(k)) or raise;
+                self.xs = r.xs;
+                let mut local = Row { name: "l" };
+                local.xs = r.xs;
+                self.row.xs = local.xs;
+            }
+            fn read() -> String {
+                return (at(self.xs, 0) or "") + "|" + (at(self.xs, 1) or "") + "|" + (at(self.row.xs, 1) or "");
+            }
+        }
+        fn main() {
+            let l = L { };
+            let mut k = 0;
+            while k < 50 {
+                l.put(k);
+                k = k + 1;
+            }
+            println(l.read());
+        }
+    "#;
+    let bin = harness::unique_bin("bounded_whole_assign_asan");
+    let options = hale_codegen::BuildOptions { asan: true, ..build_opts::options() };
+    build_opts::build_source(src, &bin, &options).expect("asan build");
+    let out = Command::new(&bin).output().expect("run");
+    let _ = std::fs::remove_file(&bin);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success() && !stderr.contains("AddressSanitizer"), "{:?}: {stderr}", out.status);
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "first 49|SECOND 49|SECOND 49\n");
+}

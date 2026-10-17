@@ -703,8 +703,10 @@ fn own_entries_run_to_exit_programs() {
     // `tests/hale/json_escape_runs_test.hl`, the property test of the
     // run-appending JSON escaper; 5:
     // `tests/hale/enum_return_copy_loops_test.hl`, whose decoder builds a
-    // record per element of a JSON array.
-    assert_eq!(moved, 5, "the run-to-exit programs among the targets that lose a site");
+    // record per element of a JSON array; 6:
+    // `tests/hale/bounded_whole_assign_test.hl`, whose `fill` builds a
+    // String per pushed element.
+    assert_eq!(moved, 6, "the run-to-exit programs among the targets that lose a site");
     assert_eq!(more, [], "the copy's leak sites");
     assert_eq!(
         own,
@@ -718,6 +720,7 @@ fn own_entries_run_to_exit_programs() {
             "tests/hale/api_roles_test.hl: main StringConcat @10383..10408 InUnboundedLoop",
             "tests/hale/api_roles_test.hl: main StringConcat @10383..10401 InUnboundedLoop",
             "tests/hale/api_roles_test.hl: main StringConcat @10411..10465 InUnboundedLoop",
+            "tests/hale/bounded_whole_assign_test.hl: fill StringConcat @1534..1552 InUnboundedLoop",
             "tests/hale/chains_tranche2_test.hl: main CollectionInsert(\"vec\") @1882..1910 InUnboundedLoop",
             "tests/hale/chains_tranche2_test.hl: main CollectionInsert(\"vec\") @2095..2120 InUnboundedLoop",
             // a record per element of the array the shelf's decoder reads

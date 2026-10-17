@@ -54,8 +54,13 @@ them — because the `Api` locus is alive for the whole run.
   bounds it to N requests (handy for tests); the default runs
   until stopped. POST bodies are reassembled per `Content-Length`,
   so clients that write headers and body in separate segments
-  (python's urllib, for one) work; requests are capped at 1 MiB
-  (oversized declared bodies get a `413`).
+  (python's urllib, for one) work. A request is capped at
+  `max_request_bytes` (1 MiB unless you set it, at most 1 GiB), and
+  one whose declared body is over the cap is answered with the
+  Server's `too_large` response without its body being read: a
+  plain-text `413 payload too large` unless you set your own, such as
+  `too_large: std::http::Response { status: 413, content_type:
+  "application/json", body: "{\"error\":\"too large\"}" }`.
 
 ## Serving many requests at once
 
@@ -367,6 +372,14 @@ captures land in `ctx.params` on a hit, and *any* miss leaves
 them cleared, so the `if` ladder is first-match-wins in written
 order with no stale captures. The endpoint methods are plain
 direct calls with `self` in scope: state without ceremony.
+
+Read a capture from `ctx.params` *after* the match. A record is a
+value, so `let p = ctx.params;` taken before the ladder is a copy made
+while the captures were still empty, and `path_param(p, "id")` would
+be `""` in every branch. `hale check` warns at that read and names the
+spelling that works, `std::http::path_param(ctx.params, "id")`. (A
+query read through such a copy is fine: `build_context` already split
+the query string.)
 
 Don't reach for a fancier router on performance instinct: at
 service-sized route counts (tens of routes) this linear scan

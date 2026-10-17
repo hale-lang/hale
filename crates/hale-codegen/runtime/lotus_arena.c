@@ -19326,7 +19326,14 @@ static int lotus_time_parse_iso8601_parts(const char *s, int64_t *secs_out,
     int h  = (s[11]-'0')*10 + (s[12]-'0');
     int mi = (s[14]-'0')*10 + (s[15]-'0');
     int se = (s[17]-'0')*10 + (s[18]-'0');
-    if (mo < 1 || mo > 12 || d < 1 || d > 31) return 0;
+    if (mo < 1 || mo > 12 || d < 1) return 0;
+    /* A day past its month's length names no date: refused, not rolled
+     * into the next month (`2099-02-30` used to read as 2099-03-02). */
+    {
+        static const int mdays[12] = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
+        int leap = (y % 4 == 0 && y % 100 != 0) || y % 400 == 0;
+        if (d > mdays[mo - 1] + (mo == 2 && leap)) return 0;
+    }
     if (h > 23 || mi > 59 || se > 60) return 0;
     size_t i = 19;
     int64_t frac = 0;

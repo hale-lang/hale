@@ -91,7 +91,7 @@ fn parse_parts(s: &str) -> Option<(i64, i64)> {
     };
     let (y, mo, d, h, mi, se) =
         (num(0, 4), num(5, 2), num(8, 2), num(11, 2), num(14, 2), num(17, 2));
-    if !(1..=12).contains(&mo) || !(1..=31).contains(&d) || h > 23 || mi > 59 || se > 60 {
+    if !(1..=12).contains(&mo) || d < 1 || d > days_in_month(y, mo) || h > 23 || mi > 59 || se > 60 {
         return None;
     }
     let mut i = 19;
@@ -125,6 +125,18 @@ fn parse_parts(s: &str) -> Option<(i64, i64)> {
     }
     let secs = days_from_civil(y, mo as u32, d as u32) * 86400 + h * 3600 + mi * 60 + se;
     Some((secs, frac))
+}
+
+/// The days of month `mo` (1..=12) of proleptic Gregorian year `y`: a day
+/// past it names no date, and is refused rather than rolled into the next
+/// month (`2099-02-30` was read as `2099-03-02`).
+fn days_in_month(y: i64, mo: i64) -> i64 {
+    match mo {
+        2 if (y % 4 == 0 && y % 100 != 0) || y % 400 == 0 => 29,
+        2 => 28,
+        4 | 6 | 9 | 11 => 30,
+        _ => 31,
+    }
 }
 
 /// `YYYY-MM-DDTHH:MM:SS[.fraction]Z`; the fraction only when it is not
@@ -174,6 +186,13 @@ mod tests {
         assert_eq!(format_iso8601_utc_ns(i64::MAX), TIME_MAX_TEXT);
         for far in ["2999-01-01T00:00:00Z", "2262-04-11T23:47:17Z", "1677-09-21T00:12:43.145224191Z", "0001-01-01T00:00:00Z"] {
             assert_eq!(parse_iso8601_utc(far), Err(TimeLiteralError::OutOfRange), "{far}");
+        }
+        // a day past its month's length names no date (leap years included)
+        for bad in ["2099-02-30T00:00:00Z", "2100-02-29T00:00:00Z", "2026-04-31T00:00:00Z", "2026-02-29T00:00:00Z", "2026-05-00T00:00:00Z"] {
+            assert!(parse_iso8601_utc_ns(bad).is_none(), "{bad}");
+        }
+        for leap in ["2000-02-29T00:00:00Z", "2024-02-29T00:00:00Z", "2026-12-31T00:00:00Z", "2026-04-30T00:00:00Z"] {
+            assert!(parse_iso8601_utc_ns(leap).is_some(), "{leap}");
         }
         for bad in ["2026-05-08 12:00:00Z", "2026-13-01T00:00:00Z", "2026-05-08T12:00:00+01:00", "2026-05-08T12:00:00.Z", "2026-05-08T12:00:00.1234567891Z", "now"] {
             assert!(parse_iso8601_utc_ns(bad).is_none(), "{bad}");

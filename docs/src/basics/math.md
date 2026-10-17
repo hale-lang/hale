@@ -327,7 +327,9 @@ println(deadline);                                // 2026-05-08T12:30:00Z
 
 `std::time::current()` is the wall clock as a `Time`; `iso8601(t)` and
 `parse_time(s)` go to and from text (`parse_time` is fallible, so a
-malformed string is an `or` branch, not a sentinel); `unix(t)`,
+malformed string is an `or` branch, not a sentinel, and so is a date
+that does not exist: `2099-02-30`, or `2100-02-29` in a year that is
+not a leap year); `unix(t)`,
 `nanos(t)`, `from_nanos(n)` and `time_from_unix(secs)` are the integer
 views. `now()` keeps returning epoch seconds as an `Int` for code that
 wants a number.

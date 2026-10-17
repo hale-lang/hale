@@ -278,6 +278,7 @@ crates/hale-codegen/tests/bounded_collections.rs#4 e5c8db1bac6d85da
 crates/hale-codegen/tests/bounded_collections.rs#5 94269bb5a98073c3
 crates/hale-codegen/tests/bounded_collections.rs#6 dd3cf93fbd38d003
 crates/hale-codegen/tests/bounded_collections.rs#7 f2c1228edb650960
+crates/hale-codegen/tests/bounded_collections.rs#8 69acb5fb34b7f7f7
 crates/hale-codegen/tests/bounded_receiver_dispatch.rs#0 f224362364f184e2
 crates/hale-codegen/tests/bounded_receiver_dispatch.rs#1 40da4c883815a7a2
 crates/hale-codegen/tests/bounded_receiver_dispatch.rs#2 ba8fdb8ddfce8eab
@@ -1812,6 +1813,9 @@ crates/hale-types/tests/diag_quality.rs#13 b6f5c37a20862edb
 crates/hale-types/tests/diag_quality.rs#14 b6f5c37a20862edb
 crates/hale-types/tests/diag_quality.rs#15 b6f5c37a20862edb
 crates/hale-types/tests/diag_quality.rs#16 46c1063d3d86a7e2
+crates/hale-types/tests/diag_quality.rs#17 7ba49c53bd84fd5d
+crates/hale-types/tests/diag_quality.rs#20 995fe52341dde502
+crates/hale-types/tests/diag_quality.rs#21 995fe52341dde502
 crates/hale-types/tests/diag_quality.rs#3 f2c1228edb650960
 crates/hale-types/tests/diag_quality.rs#5 865d341109268295
 crates/hale-types/tests/diag_quality.rs#8 d6325a0b5e9d93db

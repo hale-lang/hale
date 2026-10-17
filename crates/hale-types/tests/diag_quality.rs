@@ -312,3 +312,103 @@ fn legitimate_param_defaults_are_not_rejected() {
         );
     }
 }
+
+#[test]
+fn a_bounded_place_is_assigned_whole_from_its_own_type_only() {
+    // A bounded field copies another of its own type whole (the
+    // behaviour is pinned in tests/hale/bounded_whole_assign_test.hl);
+    // any other value is refused at the assignment, once, naming the
+    // place's type.
+    let ok = diags(
+        r#"
+        type A { xs: bounded[String; 4]; }
+        fn main() {
+            let mut a = A { };
+            let b = A { };
+            a.xs = b.xs;
+        }
+    "#,
+    );
+    assert!(ok.is_empty(), "a same-typed whole assignment checks clean; got: {ok:?}");
+    let ds = diags(
+        r#"
+        type A { xs: bounded[String; 4]; }
+        type B { xs: bounded[String; 8]; }
+        fn main() {
+            let mut a = A { };
+            let b = B { };
+            a.xs = b.xs;
+            a.xs = ["a"];
+        }
+    "#,
+    );
+    assert_eq!(ds.len(), 2, "one refusal per assignment; got: {ds:?}");
+    assert!(ds[0].contains("not assignable from `bounded[String; 8]`"), "got: {ds:?}");
+    assert!(
+        ds[1].contains("a `bounded[String; 4]` is assigned whole only from another `bounded[String; 4]`"),
+        "got: {ds:?}"
+    );
+    // A bounded local views the place it was bound from: assigned whole,
+    // its elements would be anchored in the frame, not where the place
+    // lives. Refused, naming the place to assign.
+    let ds = diags(
+        r#"
+        type R { xs: bounded[String; 2]; }
+        locus L {
+            params { xs: bounded[String; 2]; }
+            fn put(r: R) {
+                let mut dest = self.xs;
+                dest = r.xs;
+            }
+        }
+        fn main() { }
+    "#,
+    );
+    assert_eq!(ds.len(), 1, "one refusal; got: {ds:?}");
+    assert!(ds[0].contains("`dest` is a `bounded[String; 2]` local, a view of the place"), "got: {ds:?}");
+}
+
+#[test]
+fn a_route_params_copy_taken_before_the_match_is_warned_at_its_capture_read() {
+    // `is_route` writes its `:name` captures into `c.params`; a copy
+    // taken before the match never sees them, so `path_param` on it is
+    // "" for every route. Warned at the read, naming the working spelling.
+    let ds = diags(
+        r#"
+        fn route(req: std::http::Request) -> String {
+            let c = std::http::build_context(req);
+            let p = c.params;
+            if std::http::is_route(c, "GET", "/m/:model") {
+                return std::http::path_param(p, "model");
+            }
+            return "";
+        }
+        fn main() { }
+    "#,
+    );
+    let warned: Vec<&String> = ds.iter().filter(|m| m.contains("is a copy of `c.params`")).collect();
+    assert_eq!(warned.len(), 1, "one warning at the read; got: {ds:?}");
+    assert!(warned[0].contains("`std::http::path_param(c.params, …)`"), "got: {ds:?}");
+
+    // The shapes that read what the match wrote, or need no capture,
+    // are not warned: the context's own params after the match, a copy
+    // taken after the match, a query read through the early copy.
+    let clean = diags(
+        r#"
+        fn route(req: std::http::Request) -> String {
+            let c = std::http::build_context(req);
+            let early = c.params;
+            if std::http::is_route(c, "GET", "/a/:id") {
+                return std::http::path_param(c.params, "id") + std::http::query_param(early, "q");
+            }
+            if std::http::is_route(c, "GET", "/b/:id") {
+                let late = c.params;
+                return std::http::path_param(late, "id");
+            }
+            return "";
+        }
+        fn main() { }
+    "#,
+    );
+    assert!(!clean.iter().any(|m| m.contains("is a copy of")), "got: {clean:?}");
+}

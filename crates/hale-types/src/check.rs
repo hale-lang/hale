@@ -1247,6 +1247,7 @@ pub fn check_bundle_rules(
     // the program's own sources, with its witness.
     diags.extend(crate::capability::uses::admission_diags(inputs.uses, inputs.target, &bundle.import_renames));
     diags.extend(publish_in_default_diags(bundle));
+    diags.extend(crate::route_params_copy::stale_route_params_diags(bundle));
     diags.extend(walk.diags.iter().cloned());
     let mut by_decl = walk.by_decl.clone();
     let raw_frame_topics = raw_frame_topics(bundle, inputs.bindings);
@@ -15910,23 +15911,49 @@ impl<'a> Checker<'a> {
                     }
                 }
                 let stored = stored.as_ref().unwrap_or(value);
-                // bounded[T; N] fields cannot be whole-assigned
-                // (even from another bounded of the same shape —
-                // no copy semantics exist; the mutation surface is
-                // push/clear).
-                if matches!(want, Ty::Bounded(_, _)) {
+                // A bounded[T; N] place is assigned whole only from
+                // another bounded value: the slots and the count are
+                // copied, as a whole-struct copy carries them
+                // (`spec/types.md` § bounded). Any other value (a
+                // literal, an array) has no bounded shape to copy;
+                // the intrinsics build one.
+                // A bounded local is a view of the place it was bound from
+                // (`spec/types.md` § bounded), whose owner a whole
+                // assignment needs, to anchor the elements where the place
+                // lives: the place is assigned instead.
+                let bounded_local = matches!(want, Ty::Bounded(_, _))
+                    && target.tail.is_empty()
+                    && matches!(op, AssignOp::Eq);
+                if bounded_local {
                     self.diags.push(Diag::ty(
                         *span,
-                        "bounded[T; N] fields cannot be assigned as a \
-                         whole — mutate through push(...) / clear(...)"
-                            .to_string(),
+                        format!(
+                            "`{0}` is a `{1}` local, a view of the place it was bound from, and a whole \
+                             assignment through it would keep its elements in this frame, not where that \
+                             place lives; assign the place itself (`self.xs = …`, `row.xs = …`)",
+                            target.head.name,
+                            want.display()
+                        ),
+                    ));
+                }
+                let bounded_refused =
+                    bounded_local || (matches!(want, Ty::Bounded(_, _)) && !matches!(got, Ty::Bounded(_, _) | Ty::Unknown));
+                if bounded_refused && !bounded_local {
+                    self.diags.push(Diag::ty(
+                        *span,
+                        format!(
+                            "a `{}` is assigned whole only from another `{}`; build one \
+                             through push(...) / set(...) / clear(...)",
+                            want.display(),
+                            want.display()
+                        ),
                     ));
                 }
                 // A declared place supplies a bare generic literal's
                 // arguments, as a `let` ascription does: codegen rewrites
                 // `self.cfg = Cfg { .. }` against the place's type.
                 let monomorph = matches!(op, AssignOp::Eq) && self.admit_monomorph_literal(&want, &got, value, true);
-                if !monomorph && !self.flows_into(&want, &got, stored) {
+                if !monomorph && !bounded_refused && !self.flows_into(&want, &got, stored) {
                     self.diags.push(Diag::ty(
                         value.span(),
                         format!(
