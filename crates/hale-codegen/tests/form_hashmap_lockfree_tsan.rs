@@ -293,3 +293,84 @@ fn lockfree_grow_under_contention_tsan_clean() {
         stderr,
     );
 }
+
+/// String rows, replaced concurrently from two pools on a `sync =
+/// lockfree` and on a `sync = striped` map: the first replaces publish the
+/// map arena's String slot state (GH #1490's size classes, which a
+/// replaced cell's Strings join) while the other pool's cell clone reads
+/// it before its set claims a cell. Each pool first inserts its own keys,
+/// then both replace them with Strings of varying length, so the first
+/// replacement of each pool races the other's. The publication and every
+/// read of it are atomic; an unsynchronized one is a ThreadSanitizer
+/// report here.
+fn string_rows_replaced_from_two_pools(sync: &str) {
+    if std::env::var("LOTUS_TSAN").ok().as_deref() != Some("1") {
+        panic!("requires LOTUS_TSAN=1 in the environment; otherwise the binary is built without ThreadSanitizer");
+    }
+    let src = format!(
+        r#"
+        type Row {{ id: Int; name: String = ""; note: String = ""; }}
+
+        @form(hashmap, sync = {sync}, cap = 4096)
+        locus Registry {{
+            capacity {{ pool entries of Row indexed_by id; }}
+        }}
+
+        locus PoolHost {{
+            params {{ reg: Registry = Registry {{ }}; done: Bool = false; }}
+            run() {{
+                let mut round = 0;
+                while round < 20 {{
+                    let mut i = 0;
+                    while i < 200 {{
+                        self.reg.set(Row {{ id: i * 2 + 1, name: std::str::repeat("ab", (i + round) % 23), note: "odd " + to_string(round) }});
+                        i = i + 1;
+                    }}
+                    round = round + 1;
+                }}
+                self.done = true;
+            }}
+        }}
+
+        main locus App {{
+            params {{ host: PoolHost = PoolHost {{ }}; }}
+            placement {{ host: cooperative(pool = io); }}
+            run() {{
+                let mut round = 0;
+                while round < 20 {{
+                    let mut i = 0;
+                    while i < 200 {{
+                        self.host.reg.set(Row {{ id: i * 2, name: std::str::repeat("cd", (i + round) % 19), note: "even " + to_string(round) }});
+                        i = i + 1;
+                    }}
+                    round = round + 1;
+                }}
+                while self.host.reg.len() < 400 {{
+                    std::time::sleep(1ms);
+                }}
+                let r = self.host.reg.get(0) or Row {{ id: -1 }};
+                print("len="); println(self.host.reg.len());
+                print("row0="); println(r.note);
+            }}
+        }}
+
+        fn main() {{ App {{ }}; }}
+    "#
+    );
+    let (stdout, stderr, status) = build_and_run(&format!("string_rows_{sync}"), &src);
+    assert!(status.success(), "exit={status:?}. stdout: {stdout}\n--- TSAN stderr ---\n{stderr}");
+    assert!(stdout.contains("len=400") && stdout.contains("row0=even 19"), "{stdout}");
+    assert!(!stderr.contains("WARNING: ThreadSanitizer"), "ThreadSanitizer surfaced a race:\n{stderr}");
+}
+
+#[test]
+#[ignore]
+fn lockfree_string_rows_replaced_from_two_pools_tsan_clean() {
+    string_rows_replaced_from_two_pools("lockfree");
+}
+
+#[test]
+#[ignore]
+fn striped_string_rows_replaced_from_two_pools_tsan_clean() {
+    string_rows_replaced_from_two_pools("striped");
+}
