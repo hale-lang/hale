@@ -1657,7 +1657,7 @@ crates/hale-stdlib/hl/mirror_ring.hl 67d1b5dd2519f196
 crates/hale-stdlib/hl/name.hl a0cb9c4bfee2b3ec
 crates/hale-stdlib/hl/process.hl 42d1930e7e552fa7
 crates/hale-stdlib/hl/rand.hl 0fcacf844a971187
-crates/hale-stdlib/hl/secret.hl 78ed79ffce27946d
+crates/hale-stdlib/hl/secret.hl ef10cedbbe98801b
 crates/hale-stdlib/hl/source.hl 5dee20cb0f0c4164
 crates/hale-stdlib/hl/str_view.hl b618b984ded1ff8b
 crates/hale-stdlib/hl/tagged.hl 7b514c1ecd3e9de5

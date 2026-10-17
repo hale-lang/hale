@@ -108,9 +108,7 @@ fn exchange_migrate(c: nats::NatsClient, root: String, id: String, org: String) 
     let mut consumer_why = "";
     nats::js_consumer_create(c, stream, nats::ConsumerSpec { durable: dna::EXCHANGE_DURABLE, filter: dna::exchange_inbox_filter(org), deliver: "all" }) or { consumer_why = c.last_error; };
     if len(consumer_why) > 0 { return "its inbox consumer: " + consumer_why; }
-    let roots = dna::run_tool("git\n-C\n" + root + "\nrev-list\n--max-parents=0\nHEAD");
-    let genome = if roots.code == 0 { dna::trim_nl(dna::line_at(roots.stdout, 0)) } else { "" };
-    let card = key.card(id, genome);
+    let card = key.card(id, genome_root(root));
     if len(card) == 0 { return "the card could not be signed"; }
     // one card: the one before goes, so a bounded subject never fills with them
     let purged = nats::js_call(c, "$JS.API.STREAM.PURGE." + stream, "{\"filter\":\"" + dna::exchange_card_subject(org) + "\"}") or "";
