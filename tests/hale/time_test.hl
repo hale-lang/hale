@@ -42,6 +42,21 @@ fn main() {
     std::test::assert_eq_str(std::time::iso8601(first), "1677-09-21T00:12:43.145224192Z", "and formats");
     let past_last = std::time::parse_time("2262-04-11T23:47:16.854775808Z") or zero;
     std::test::assert(past_last == zero, "one nanosecond past the last is refused");
+    // A day past its month's length names no date: refused, not rolled
+    // into the next month (2099-02-30 used to read as 2099-03-02).
+    let rolled = std::time::parse_time("2099-02-30T00:00:00Z") or zero;
+    std::test::assert(rolled == zero, "February 30 is refused");
+    let not_leap = std::time::parse_time("2100-02-29T00:00:00Z") or zero;
+    std::test::assert(not_leap == zero, "February 29 of a century that is not a leap year is refused");
+    let april = std::time::parse_time("2026-04-31T00:00:00Z") or zero;
+    std::test::assert(april == zero, "April 31 is refused");
+    let leap = std::time::parse_time("2000-02-29T00:00:00Z") or zero;
+    std::test::assert_eq_str(std::time::iso8601(leap), "2000-02-29T00:00:00Z", "February 29 of a leap year parses");
+    let leap4 = std::time::parse_time("2024-02-29T12:00:00Z") or zero;
+    std::test::assert_eq_str(std::time::iso8601(leap4), "2024-02-29T12:00:00Z", "and of a fourth year");
+    let month_end = std::time::parse_time("2026-04-30T00:00:00Z") or zero;
+    std::test::assert_eq_str(std::time::iso8601(month_end), "2026-04-30T00:00:00Z", "a month's last day parses");
+    std::test::assert_eq_int(std::time::parse_iso8601("2099-02-30T00:00:00Z") or 0, 0, "parse_iso8601 refuses it too");
     let now_s = std::time::now();
     let cur = std::time::current();
     std::test::assert(cur > `2026-01-01T00:00:00Z`, "the wall clock reads as an instant");
