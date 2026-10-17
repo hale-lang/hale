@@ -24,8 +24,9 @@
 // table the spine rewrote from the owners map.
 // 7 (GH #987): the routing table's `reading` family, an application's
 // readings, which the insert function admits to the ledger. 8 (GH #988):
-// its `reflex` family, what a reflex made the body do.
-const MEMORY_SCHEMA_VERSION: Int = 8;
+// its `reflex` family, what a reflex made the body do. 9 (GH #1590): the
+// exchange's inbox, `exchange_rows`, kept through `exchange_keep` alone.
+const MEMORY_SCHEMA_VERSION: Int = 9;
 
 type Migrated {
     ok: Bool = false;
@@ -211,6 +212,9 @@ fn ledger_ddl() -> String {
     // that built one or the head that read one, so replay renders from
     // the recorded hat and never the live graph
         + "CREATE TABLE IF NOT EXISTS hats (digest text PRIMARY KEY, head text NOT NULL, watermark bigint NOT NULL, body text NOT NULL, kept_at timestamptz NOT NULL DEFAULT now());"
+    // GH #1590: the envelopes other records sent this one, each once by id,
+    // as they arrived (the signed line whole), never changed
+        + "CREATE TABLE IF NOT EXISTS exchange_rows (id text PRIMARY KEY, sender text NOT NULL, kind text NOT NULL, entity text NOT NULL, line text NOT NULL, stream_seq bigint NOT NULL, received_at timestamptz NOT NULL DEFAULT now());"
         + ledger_gate_ddl();
 }
 
@@ -328,7 +332,12 @@ fn receipt_functions(sch: String) -> String {
         + "DELETE FROM protected_receipts WHERE digest = p_digest; "
         + "INSERT INTO protected_redactions (digest, erased_at) VALUES (p_digest, p_at) ON CONFLICT (digest) DO NOTHING; "
         + "RETURN true; END $f$;"
-        + "REVOKE ALL ON FUNCTION " + sch + ".receipt_file(text, text, text, bigint), " + sch + ".receipt_read(text), " + sch + ".receipt_erase(text, bigint) FROM PUBLIC";
+        + "REVOKE ALL ON FUNCTION " + sch + ".receipt_file(text, text, text, bigint), " + sch + ".receipt_read(text), " + sch + ".receipt_erase(text, bigint) FROM PUBLIC;"
+        // GH #1590: an envelope is kept once by its id and never changed: the
+        // writers insert through this function alone
+        + "CREATE OR REPLACE FUNCTION " + sch + ".exchange_keep(p_id text, p_sender text, p_kind text, p_entity text, p_line text, p_seq bigint) RETURNS boolean LANGUAGE plpgsql SECURITY DEFINER SET search_path = " + sch + ", public AS $x$ BEGIN "
+        + "INSERT INTO exchange_rows (id, sender, kind, entity, line, stream_seq) VALUES (p_id, p_sender, p_kind, p_entity, p_line, p_seq) ON CONFLICT (id) DO NOTHING; RETURN true; END $x$;"
+        + "REVOKE ALL ON FUNCTION " + sch + ".exchange_keep(text, text, text, text, text, bigint) FROM PUBLIC";
 }
 
 // Match the public bytewise tuple order with database indexes, so
@@ -394,6 +403,8 @@ fn spine_grants(sch: String, role: String) -> String {
         + "REVOKE ALL ON " + sch + ".memory_keys FROM " + role + ";"
         + "REVOKE ALL ON " + sch + ".memory_principals FROM " + role + ";"
         + "REVOKE ALL ON " + sch + ".protected_receipts, " + sch + ".protected_redactions FROM " + role + ";"
+        + "REVOKE ALL ON " + sch + ".exchange_rows FROM " + role + ";"
+        + "GRANT SELECT ON " + sch + ".exchange_rows TO " + role + ";"
         + "GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA " + sch + " TO " + role + ";"
         + "GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA " + sch + " TO " + role;
 }
@@ -410,8 +421,10 @@ fn head_grants(sch: String, role: String) -> String {
         + sch + ".org_members, " + sch + ".org_retired TO " + role + ";"
         + "GRANT INSERT, UPDATE ON " + sch + ".claims TO " + role + ";"
         + "GRANT SELECT, INSERT ON " + sch + ".hats TO " + role + ";"
+        + "GRANT SELECT ON " + sch + ".exchange_rows TO " + role + ";"
         + "GRANT EXECUTE ON FUNCTION " + sch + ".receipt_file(text, text, text, bigint), " + sch + ".receipt_read(text), "
-        + sch + ".ledger_append(bigint, text, text, text, text, text, bigint, text) TO " + role;
+        + sch + ".ledger_append(bigint, text, text, text, text, text, bigint, text), "
+        + sch + ".exchange_keep(text, text, text, text, text, bigint) TO " + role;
 }
 
 // The receipt key memory seals protected evidence under, from the owner's

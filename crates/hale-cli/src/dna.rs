@@ -1126,7 +1126,7 @@ fn usage(code: u8) -> ExitCode {
     eprintln!("       hale dna retire <who>        a person retires: the handed Tasks they hold move to --to <successor>, as rows");
     eprintln!("       hale dna practice propose <name> --text <text> [--because <why>] [--supersedes <digest>]");
     eprintln!("                                    propose a practice for the Board to ratify (a knowledge Review); `hale dna practice` lists them");
-    eprintln!("       hale dna connect <record-url> --name <n> --as <position> --purpose <p> --classes <internal,customer,…>");
+    eprintln!("       hale dna connect <nerves-url> --record <identity> --name <n> --as <position> --purpose <p> --classes <internal,customer,…>");
     eprintln!("                                    propose a connection to another record (a Board Review); `hale dna connect` lists them;");
     eprintln!("                                    `hale dna disconnect <n> --why <w>` closes one");
     eprintln!("       hale dna handoff <n> task <id> | receipt <digest>");

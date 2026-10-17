@@ -173,8 +173,8 @@ fn main() {
         // GH #602: `hale dna practice [propose <name> --text <t> [--because …] [--supersedes <digest>]]`
         ans = host::practice_command_verb(root, seed, host::word(a, 0), host::word(a, 1), host::flag(a, "--text"), host::flag(a, "--because"), host::flag(a, "--supersedes"), host::flag(a, "--as"), host::flag(a, "--request-id"), host::has_flag(a, "--no-wait"), memory);
     } else if verb == "connect" {
-        // GH #615: `hale dna connect [<record-url> --name <n> --as <position> --purpose <p> --classes <c,…>]`
-        ans = host::connect_verb(root, seed, host::word(a, 0), host::flag(a, "--name"), host::flag(a, "--as"), host::flag(a, "--purpose"), host::flag(a, "--classes"), host::flag(a, "--by"), memory);
+        // GH #615, #1590: `hale dna connect [<nerves-url> --record <identity> --name <n> --as <position> --purpose <p> --classes <c,…>]`
+        ans = host::connect_verb(root, seed, host::word(a, 0), host::flag(a, "--record"), host::flag(a, "--name"), host::flag(a, "--as"), host::flag(a, "--purpose"), host::flag(a, "--classes"), host::flag(a, "--by"), memory);
     } else if verb == "disconnect" {
         ans = host::disconnect_verb(root, seed, host::word(a, 0), host::flag(a, "--why"), host::flag(a, "--by"), memory);
     } else if verb == "handoff" {

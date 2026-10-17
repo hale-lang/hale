@@ -77,6 +77,7 @@ pub const FILES: &[EmbeddedFile] = core![
     "knowledge_node_request",
     "knowledge_record",
     "memory_embed",
+    "memory_exchange",
     "memory_ledger",
     "memory_protected",
     "memory_schema",

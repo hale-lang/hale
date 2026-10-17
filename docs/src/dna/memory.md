@@ -39,7 +39,6 @@ both memories as one sequence.
 | `refs/dna/receipts/<sha256>` | evidence bodies, by the digest of their content |
 | `refs/dna/identity` | the record's identity, published so another record can connect to it |
 | `refs/dna/lease/<key>` | a lease on routing 0 (the body's, a Mutation's) |
-| `refs/dna/exchange/<identity>` | a mailbox: the rows a connected record wrote for this one ([below](#between-records)) |
 | `refs/dna/remote/journal` | what the remote held at the last fetch |
 
 Candidates and deployed revisions are the genome's, not the record's:
@@ -100,8 +99,8 @@ published identity), pointers (a candidate, a revision), families
 shared with a remote, the signer of a row, and the `dna.*` settings.
 `GitRecord` is the implementation over git plumbing, the only file in
 the core and the host that spells `git` for the record; the core's
-`GitJournal`, `GitReceipts` and `GitLeases`, the host's sync and body
-lease, and the mailboxes between records are built on it. `MemRecord`,
+`GitJournal`, `GitReceipts` and `GitLeases`, and the host's sync and
+body lease are built on it (the exchange between records is the nerves'). `MemRecord`,
 the implementation fixtures use, shows the race:
 
 ```hale
@@ -497,33 +496,40 @@ naming it.
 
 Sync copies your whole record to people inside it. Work that leaves
 the organization goes to another record through a **connection**,
-which says what may cross:
+which says what may cross. Records meet on their nerves:
 
 ```sh
-hale dna connect git@example.com:acme/record.git --name acme --as accountant \
-    --purpose "year-end books" --classes internal,customer
+hale dna connect nats://acme.example:4222 --record 4f1c… --name acme \
+    --as accountant --purpose "year-end books" --classes internal,customer
 hale dna handoff acme task t7
 ```
 
-- `connect` reads the other record's identity through its git remote,
-  and nothing else of it; a service URL (`http://…`, `https://…`) is
-  refused. It opens a Board Review, and the connection is in force
-  once a Board verdict from someone other than its proposer approves
-  it. `hale dna connect` alone lists connections.
-- `handoff <name> task <id> | receipt <digest>` writes one envelope
-  into this record's mailbox in the other record,
-  `refs/dna/exchange/<this record's identity>`: the fact, where it came
-  from, its history here and its purpose. Only a handed task crosses.
-  A receipt crosses as its digest and class, never its body, and only
-  if the connection carries its class. A retried handoff is one
-  envelope.
+- Every record publishes a **card** on its nerves (`hale dna nerves
+  migrate` does it): its identity, its genome and the key it signs
+  with, signed by that key. `connect` reads the card of the record you
+  name (its identity is `[dna] record` in its `hale.toml`) and pins its
+  key, and nothing else of it. It needs the card, not a running peer.
+  It opens a Board Review, and the connection is in force once a Board
+  verdict from someone other than its proposer approves it.
+  `hale dna connect` alone lists connections.
+- To deliver into another record's inbox you need its **inbox key**,
+  the password of its nerves' `exchange` user: its operator hands it to
+  yours, who keeps it in your vault as `nats-<its org>-exchange`.
+- `handoff <name> task <id> | receipt <digest>` signs one envelope with
+  your record's key and delivers it to the other record's inbox: the
+  fact, where it came from, its history here and its purpose. Only a
+  handed task crosses. A receipt crosses as its digest and class, never
+  its body, and only if the connection carries its class. A retried
+  handoff is one envelope. An inbox is bounded per sender; a full one
+  refuses the handoff, and nothing is recorded here.
 - The other side admits it only through a connection of its own back
-  to you, and accepts it with `hale dna handoff accept <id>`. Your
-  `hale dna handoff sync` reads the acceptance back, and only then
-  does your task settle.
+  to you, under the key that connection pinned, and accepts it with
+  `hale dna handoff accept <id>`. Your `hale dna handoff sync` reads the
+  acceptance back, and only then does your task settle.
 - `hale dna disconnect acme --why "the engagement ended"` stops
   anything further crossing. Both records keep what already did.
 
-Neither record reads the other's journal. This clone's cache for a
-connection holds the other record's identity and this record's own
-mailbox there, nothing else.
+Neither record reads the other's record: a connection reads one card,
+and an inbox holds only the envelopes sent to it. A connection
+proposed before the nerves exchange pinned no key and is proposed
+again.

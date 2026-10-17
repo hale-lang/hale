@@ -868,30 +868,22 @@ fn s3_handoffs_json(root: String, journal: String) -> String {
         let state = if e.kind == "handoff.accepted" { "accepted" } else if e.kind == "handoff.refused" { "refused" } else if s3_has_row(journal, "handoff.accepted_by_peer", e.entity) { "accepted_by_peer" } else { "published" };
         items = items + (if len(items) > 0 { "," } else { "" }) + s3_handoff_item(e.entity, std::json::find_string_field(e.body, "connection"), std::json::find_string_field(e.body, "kind"), std::json::find_string_field(e.body, "subject"), state);
     }
-    let r = dna::GitRecord { repo: root };
-    let mut refs = r.pointers("exchange");
-    while len(refs) > 0 {
-        let nl = std::str::index_of(refs, "\n");
-        let ref = if nl < 0 { refs } else { refs[0..nl] };
-        refs = if nl < 0 { "" } else { refs[(nl + 1)..len(refs)] };
-        if !std::str::starts_with(ref, "exchange/") { continue; }
-        let sender = ref[9..len(ref)];
-        // display only: an unreadable exchange shows no handoffs, as the
-        // project's `record: null` already shows it unread
-        let mut lines = r.text_at(r.head(ref).id);
-        while len(lines) > 0 {
-            let lnl = std::str::index_of(lines, "\n");
-            let line = if lnl < 0 { lines } else { lines[0..lnl] };
-            lines = if lnl < 0 { "" } else { lines[(lnl + 1)..len(lines)] };
-            if len(line) == 0 { continue; }
-            let e = dna::parse_row(line, "");
-            if e.kind != "handoff.received" || std::json::find_string_field(e.body, "origin_record") != sender { continue; }
-            if s3_has_row(journal, "handoff.accepted", e.entity) { continue; }
-            let key = "\nreceived " + e.entity + "\n";
-            if std::str::contains(seen, key) { continue; }
-            seen = seen + "received " + e.entity + "\n";
-            items = items + (if len(items) > 0 { "," } else { "" }) + s3_handoff_item(e.entity, s3_connection_to(journal, sender), std::json::find_string_field(e.body, "kind"), std::json::find_string_field(e.body, "subject"), "received");
-        }
+    // GH #1590: what other records sent, as this record's memory keeps it
+    // (display only: an inbox memory could not read shows no handoffs)
+    let inbox = dna::MemoryExchange { repo: root, dsn_env: dna::own_dsn_env() };
+    let mut lines = inbox.lines();
+    while len(lines) > 0 {
+        let lnl = std::str::index_of(lines, "\n");
+        let line = if lnl < 0 { lines } else { lines[0..lnl] };
+        lines = if lnl < 0 { "" } else { lines[(lnl + 1)..len(lines)] };
+        if len(line) == 0 { continue; }
+        let e = dna::envelope_of(std::json::find_string_field(line, "envelope"));
+        if e.kind != "received" || !dna::signed_line_holds(line) { continue; }
+        if s3_has_row(journal, "handoff.accepted", e.entity) { continue; }
+        let key = "\nreceived " + e.entity + "\n";
+        if std::str::contains(seen, key) { continue; }
+        seen = seen + "received " + e.entity + "\n";
+        items = items + (if len(items) > 0 { "," } else { "" }) + s3_handoff_item(e.entity, s3_connection_to(journal, e.sender), std::json::find_string_field(e.body, "kind"), std::json::find_string_field(e.body, "subject"), "received");
     }
     return "[" + items + "]";
 }

@@ -205,28 +205,28 @@ schedule — adopted through the same steps a live organism takes, its
 projections read before and after, and a redaction after adoption
 removing a body filed before it (`dna_ledger.rs`).
 
-**Handoffs between records (stage 5, #662).** A handoff crosses
-between records as an envelope through an `Exchange`, the core's
-contract for one record's mailbox in another: `peer_identity`,
-`deliver` (idempotent by the envelope's kind and entity — its entity
-is `handoff:<id>` and the id is the handoff's origin, peer, kind and
-subject, so a delivery repeated after an interruption is one
-envelope), `delivered` (whether the peer already holds it), `received`
-(every mailbox of this record). The exchange is git's alone: mailbox
-refs in a private peer cache of the other record's remote,
-`refs/dna/exchange/<sender>`, beside the identity each record
-publishes under `refs/dna/identity`. `hale dna connect` refuses an
-`http://` or `https://` url: a connection exchanges through the other
-record's git remote. The exchange keeps the contract #646 set:
-**durable delivery** — a handoff published here whose envelope the
-peer does not hold is delivered again, once, by `hale dna handoff sync`
-from the envelope kept with its `handoff.published` row; a delivery
-that cannot reach the peer at all records nothing and says to deliver
-again; **the disclosure scope** is the connection's classes, checked
-before anything is delivered and again before anything is admitted;
-**settlement only on the receiver's acceptance** — the origin's task
-moves to `transfer_accepted` when the receiver's `handoff.accepted`
-envelope reaches it through the exchange, never when a delivery
+**Handoffs between records (stage 5, #662; over the nerves, GH
+#1590).** A handoff crosses between records as a signed envelope through
+an `Exchange`, the core's contract (`dna/core/exchange.hl`): `card(url,
+record)` reads the card the other record publishes, `deliver(url, peer,
+id, line)` puts a signed envelope in its inbox, idempotent by the
+envelope's id (`<handoff id>.<kind>`; the handoff id is its origin, peer,
+kind and subject, so a delivery repeated after an interruption is one
+envelope), and `received()` is every envelope this record's inbox holds.
+`NatsExchange` (`dna/host/connections.hl`) is the nerves' and
+`MemExchange` the fixtures'. The contract #646 set holds: **durable
+delivery** — an envelope is stored by the receiver's exchange stream,
+which keeps it until the receiver has drained it (no age limit), before
+`deliver` returns; one delivered again by its id within a week is stored
+once, and the receiver keeps one in memory whenever it arrived; a
+delivery that cannot reach the peer records nothing and says to deliver
+again; **authorship** — every envelope is signed
+with the sending record's own key, and a receiver admits one only under
+a connection that pinned that key; **the disclosure scope** is the
+connection's classes, checked before anything is delivered and again
+before anything is admitted; **settlement only on the receiver's
+acceptance** — the origin's task moves to `transfer_accepted` when the
+receiver's `accepted` envelope reaches it, never when a delivery
 returned.
 
 **Coordination in memory (stage 2, #651).** On routing 1 every lease
@@ -599,8 +599,9 @@ repository:
   sync after an ordinary `git push origin main` carries the record, so
   no one has to push `refs/dna/*` by hand for a second clone to have
   the organization's history. Receipts travel by refspec both ways;
-  mailboxes are received. Candidates are branches of the genome and
-  travel as branches do (below). The remote is `dna.remote` in git config, or
+  another record's envelopes arrive on the nerves, not by sync (GH
+  #1590). Candidates are branches of the genome and travel as branches
+  do (below). The remote is `dna.remote` in git config, or
   `origin`. A plain clone has no record until it syncs.
 - **Candidates are kept, as branches of the genome (GH #1590).** The
   gateway keeps a candidate when it commits it as the branch
@@ -725,63 +726,95 @@ repository:
   `hale dna practice` lists every named practice with its state (in
   force, awaiting the Board, declined, retired), its first line, who
   proposed it and why, and requests not yet heard.
-- **Cross-record handoff (GH #615).** A replica of one record is inside
-  the horizon: sync carries all of it, to equally trusted readers. A
-  *handoff* crosses a horizon into a separate record, and a connection is
-  its only path; nothing selective leaves a record by sync. `hale dna
-  connect <record-url> --name <name> --as <position> --purpose <purpose>
-  --classes <internal,customer,confidential> [--by <who>]` (the url is
-  the other record's git remote; an `http://` or `https://` url is
-  refused as a service url) reads the other record's identity — its genesis, the root commit of its journal,
-  which every record publishes as a blob under `refs/dna/identity` when it
-  syncs (until a push of it to the remote as it is now has succeeded —
-  `dna.identitypublished` names that remote and blob — each sync asks the
-  remote and pushes it, never forced, and `sync` says when it could not)
-  — and nothing else of it; it refuses this record's own, and appends `connection.proposed` (`name`, `url`, `peer`,
-  `position`, `purpose`, `classes`, `by`, `review_id`) with a Board
-  Review `c-<name>-<n>`. The connection is in force once a `board`
-  verdict approves that Review from someone other than its proposer —
-  the host then settles the Review in the approver's name — and until
-  `hale dna disconnect <name> --why <why>` appends `connection.closed`.
-  `hale dna handoff <name> task <id> | receipt <digest> [--note …] [--as
-  <who>]` writes one `handoff.received` envelope into the other
-  record's **mailbox for this record**, `refs/dna/exchange/<this record's
-  identity>` — a chain of rows only this record writes, pushed there under
-  compare-and-swap. Neither record reads the other's journal: this clone's
-  cache for a connection (`.hale/dna/peers/<name>.git`) holds the other
-  record's identity and this record's own mailbox there, nothing else. The
-  envelope carries `handoff` (`h` and twelve hex
-  digits of the origin genesis, kind and subject, so a fact crosses
-  once), `origin_record`, `origin_url`, `origin_author`, `origin_row`
-  (the source row's digest), `lineage` (the subject's rows here, as
-  `kind#seq`), `purpose`, `position`, `via`, `kind`, `subject`, `class`,
-  `fact`, `note`. This record then appends `handoff.published` (with
-  `peer_row`, the commit it landed as) and, for a Task,
-  `task.transfer_requested`. A handoff retried after a crash completes
-  what the first try left (#637): an envelope already in the mailbox is
-  reused, never written twice, and a published Task missing its
-  `task.transfer_requested` gets it. Only a handed Task crosses. A receipt
-  crosses as its digest and class; its body never leaves this record. A
-  fact whose class the connection does not carry is refused at the edge
-  as `handoff.refused`, with nothing written across. The receiving record
-  reads its own mailboxes (`sync` fetches `refs/dna/exchange/*` from its
-  remote; a row claiming another origin than the mailbox it is in is
-  ignored) and admits what arrives under its own policy: `hale dna
-  handoff` lists a received handoff as admitted only under a connection in
-  force back to its origin record that carries its class, and `hale dna
-  handoff accept <id> [--as <who>]`, only for an admitted one, appends
-  `handoff.accepted` to its own journal (with the envelope's origin,
-  lineage, purpose and fact) and sends a `handoff.accepted` envelope into
-  the origin's mailbox for it. `hale dna handoff sync` reads, for every
-  connection in force, the envelopes the other record sent to this
-  record's mailbox: each acceptance of a handoff published through it is
-  admitted once, as
-  `handoff.accepted_by_peer` and, for a Task, `task.transfer_accepted`,
-  each row checked on its own, so a crash between the two is completed at
-  the next sync rather than suppressing it (#637).
-  The Task settles only then, the rule retirement follows (GH #604 rule
-  5). A closed connection is not read, so history stays in both records
-  and nothing further is admitted.
+- **Cross-record handoff (GH #615; over the nerves, GH #1590).** A
+  replica of one record is inside the horizon: sync carries all of it,
+  to equally trusted readers. A *handoff* crosses a horizon into a
+  separate record, and a connection is its only path; nothing selective
+  leaves a record by sync.
+  - **The card.** Every record publishes a card on its nerves:
+    `{identity, genome, key}` — its identity, its genome's root commit
+    and the ed25519 public key its envelopes are signed with — signed by
+    that key, the one message of `exchange.<org>.card` in its exchange
+    stream (`DNA_<ID>_EXCHANGE` over `exchange.<org>.>`). `hale dna
+    nerves migrate` creates the stream, its inbox consumer (`exchange`,
+    over `exchange.<org>.in.>`) and the card, purging the one before.
+    The key's seed is the SHA-256 of the vault's `dna-exchange-<org>`,
+    drawn by `init`/`upgrade` like the organism's other secrets; it signs
+    through `std::secret::Credential.sign_ed25519`, so neither the secret
+    nor the seed leaves the vault's credential. The record is the signer
+    (a record-to-record act); the person who acted is named in the
+    envelope.
+  - **Connecting.** `hale dna connect <nerves-url> --record <identity>
+    --name <name> --as <position> --purpose <purpose> --classes
+    <internal,customer,confidential> [--by <who>]` reads the other
+    record's card at its nerves (a direct get: **connect needs the
+    peer's card, published by its nerves, and no process of it
+    running**), checks the card's signature and that it is
+    `<identity>`'s (the identity its genome pins, `[dna] record`), refuses
+    this record's own, and appends `connection.proposed` (`name`, `url`,
+    `peer`, `peer_key`, `peer_genome`, `position`, `purpose`, `classes`,
+    `by`, `review_id`, `exchange: "nerves"`) with a Board Review
+    `c-<name>-<n>`. The connection is in force once a `board` verdict
+    approves that Review from someone other than its proposer — the host
+    then settles the Review in the approver's name — and until `hale dna
+    disconnect <name> --why <why>` appends `connection.closed`. **A
+    connection proposed before the nerves exchange** (`exchange: "git"`,
+    no key pinned) **is not in force**: it is proposed again.
+  - **The inbox key.** The other record's server holds a user
+    `exchange` (`nats-<org>-exchange` in the vault, `dna/nats.conf`) that
+    may publish into `exchange.<org>.in.>` and read the card, and nothing
+    else. Its operator hands it to a connected record's operator, who
+    keeps it under the same vault name; a sender whose vault lacks it
+    connects without credentials, which an open server alone admits. The
+    sender is proven by the envelope's signature, not by the key.
+  - **Handing off.** `hale dna handoff <name> task <id> | receipt
+    <digest> [--note …] [--as <who>]` signs one envelope (`kind:
+    received`) and publishes it to
+    `exchange.<peer org>.in.<this org>.received` with `Nats-Msg-Id` its
+    id; once the other record's stream has stored it, this record
+    appends `handoff.published` (with `peer_row`, `<stream>#<seq>`, and
+    the signed envelope) and, for a Task, `task.transfer_requested`. The
+    envelope's body carries `handoff` (`h` and twelve hex digits of the
+    origin's identity, kind and subject), `origin_record`,
+    `origin_author`, `origin_row`, `lineage` (the subject's rows here, as
+    `kind#seq`), `purpose`, `position`, `via`, `kind`, `subject`,
+    `class`, `fact`, `note`. A handoff retried after a crash completes
+    what the first try left (#637): the envelope is delivered once by its
+    id, and a published Task missing its `task.transfer_requested` gets
+    it. Only a handed Task crosses. A receipt crosses as its digest and
+    class; its body never leaves this record. A fact whose class the
+    connection does not carry is refused at the edge as
+    `handoff.refused`, with nothing published.
+  - **The bounded inbox.** The exchange stream refuses what overflows it
+    rather than dropping what it holds (`discard: new`): each sender's
+    subject holds at most 10 000 envelopes of a kind
+    (`max_msgs_per_subject`, `discard_new_per_subject`) and the stream
+    256 MiB, so a connected record cannot flood another's disk. A
+    handoff refused as full records nothing here and says so.
+  - **Receiving.** The receiving record's verbs (`hale dna handoff`,
+    `handoff accept`, `handoff sync`) first drain its inbox into memory:
+    each envelope addressed to this record, from the sender its subject
+    names, whose signature holds under the key it carries, is kept once
+    by its id in `exchange_rows` through `exchange_keep` (insert-only;
+    memory schema 9), and acknowledged; anything else is acknowledged and
+    refused. The drain reaches its own nerves as the spine
+    (`HALE_DNA_NATS_URL_SPINE`, else the owner's server, else compose's
+    `nerves` if it is up) and says so when it reached none. `hale dna
+    handoff` lists a received handoff as admitted only under a
+    connection in force back to its origin record that pinned the key
+    the envelope is signed with and carries its class; `hale dna handoff
+    accept <id> [--as <who>]`, only for an admitted one, appends
+    `handoff.accepted` to its own record (with the envelope's origin,
+    lineage, purpose and fact) and delivers an `accepted` envelope into
+    the origin's inbox; accepting it again delivers that envelope again.
+    `hale dna handoff sync` admits, for every connection in force, each
+    acceptance the other record sent — under the pinned key — once, as `handoff.accepted_by_peer` and, for a Task,
+    `task.transfer_accepted`, each row checked on its own, so a crash
+    between the two is completed at the next sync rather than
+    suppressing it (#637). The Task settles only then, the rule
+    retirement follows (GH #604 rule 5). A closed connection is not
+    read, so history stays in both records and nothing further is
+    admitted.
 - **An attributed external decision (GH #616).** A decision made by
   someone who does not run Hale — a manager, a client, an accountant —
   enters as a fact reported by a position inside the horizon, never as
@@ -3074,11 +3107,11 @@ through `receipt_file`, `receipt_read` and `receipt_erase`; GH #606,
 
 **The record has an API of its own (GH #646 stage 0).** `Record` is
 the one boundary the git-backed `GitJournal`, `GitReceipts` and
-`GitLeases` and the host's sync, reconcile, body lease, identity and
-exchange mailboxes all stand on, with a vocabulary that never names
-the tool: *chains* of rows appended under compare-and-swap at a head
-(`journal`; `exchange/<identity>` for a mailbox; `remote/journal` for
-what the remote held at the last receive), a row *built* beside every
+`GitLeases` and the host's sync, reconcile, body lease and identity
+all stand on (the exchange between records is the nerves', GH #1590),
+with a vocabulary that never names the tool: *chains* of rows appended
+under compare-and-swap at a head (`journal`; `remote/journal` for what
+the remote held at the last receive), a row *built* beside every
 chain and swapped in later, *bodies* kept by the digest of their
 content, *cells* swapped by version (a lease, the published identity),
 *pointers* naming an object the repository already holds (none is

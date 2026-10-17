@@ -45,8 +45,11 @@ fn nerves_migrate_verb(root: String) -> Answer {
     if !open { return fail("nerves migrate: " + c.last_error); }
     if !c.jetstream { c.close(); return fail("nerves migrate: the server does not run JetStream (start it with -js)"); }
     let m = nerves_migrate(c, org);
+    // GH #1590: the exchange's stream, its inbox consumer and the card
+    let x = if m.ok { exchange_migrate(c, root, id, org) } else { "" };
     c.close();
     if !m.ok { return fail("nerves migrate: " + m.why); }
+    if len(x) > 0 { return fail("nerves migrate: the exchange: " + x); }
     let mut out = dna::NATS_ORG_ENV + "=" + org + "\n";
     out = out + dna::NATS_SPINE_URL_ENV + "=" + url + "\n";
     out = out + dna::NATS_HEAD_URL_ENV + "=" + url + "\n";
@@ -87,6 +90,36 @@ fn nerves_migrate(c: nats::NatsClient, org: String) -> NervesMigration {
     return NervesMigration { ok: true, stream: stream };
 }
 
+// GH #1590: the record's exchange stream created or brought to this
+// configuration (bounded, refusing what overflows), its inbox consumer,
+// and its card published anew — signed with the record's exchange key, so
+// a peer that reads it can pin that key. "" when done, else why not.
+fn exchange_migrate(c: nats::NatsClient, root: String, id: String, org: String) -> String {
+    let key = dna::ExchangeKey { vault: dna::exchange_key_vault(org) };
+    if !key.ready() { return "the vault holds no exchange key (`" + dna::exchange_key_vault(org) + "`; `hale dna upgrade` provisions it)"; }
+    let stream = dna::exchange_stream(org);
+    let config = dna::exchange_stream_config(org, dna::exchange_per_sender());
+    let made = nats::js_call(c, "$JS.API.STREAM.CREATE." + stream, config) or "";
+    if len(made) == 0 {
+        if !std::str::contains(c.last_error, "10058") { return c.last_error; }
+        let updated = nats::js_call(c, "$JS.API.STREAM.UPDATE." + stream, config) or "";
+        if len(updated) == 0 { return c.last_error; }
+    }
+    let mut consumer_why = "";
+    nats::js_consumer_create(c, stream, nats::ConsumerSpec { durable: dna::EXCHANGE_DURABLE, filter: dna::exchange_inbox_filter(org), deliver: "all" }) or { consumer_why = c.last_error; };
+    if len(consumer_why) > 0 { return "its inbox consumer: " + consumer_why; }
+    let roots = dna::run_tool("git\n-C\n" + root + "\nrev-list\n--max-parents=0\nHEAD");
+    let genome = if roots.code == 0 { dna::trim_nl(dna::line_at(roots.stdout, 0)) } else { "" };
+    let card = key.card(id, genome);
+    if len(card) == 0 { return "the card could not be signed"; }
+    // one card: the one before goes, so a bounded subject never fills with them
+    let purged = nats::js_call(c, "$JS.API.STREAM.PURGE." + stream, "{\"filter\":\"" + dna::exchange_card_subject(org) + "\"}") or "";
+    if len(purged) == 0 { return "the old card could not be purged: " + c.last_error; }
+    let ack = nats::js_publish(c, dna::exchange_card_subject(org), std::bytes::from_string(card)) or nats::PubAck { };
+    if ack.seq == 0 { return "the card could not be published: " + c.last_error; }
+    return "";
+}
+
 // Whether the organization is reading its facts: its durable consumer
 // has a pull outstanding (a connection that went away leaves none once
 // its pull expires). "" when it is; otherwise why not. The host asks
@@ -118,6 +151,8 @@ fn nerves_drop_verb(root: String) -> Answer {
     let stream = dna::nerves_stream(org);
     let gone = nats::js_call(c, "$JS.API.STREAM.DELETE." + stream, "") or "";
     let why = c.last_error;
+    // GH #1590: the exchange's stream goes with it (absent is not an error)
+    let inbox_gone = nats::js_call(c, "$JS.API.STREAM.DELETE." + dna::exchange_stream(org), "") or "";
     c.close();
     if len(gone) > 0 { return answer("dropped " + stream + "\n"); }
     // err_code 10059: stream not found
