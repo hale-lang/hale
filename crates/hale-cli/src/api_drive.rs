@@ -147,6 +147,17 @@ fn resolve<'a>(doc: &'a Value, schema: &'a Value) -> &'a Value {
     cur
 }
 
+/// The value schema of an optional field (`{"anyOf": [<schema>, {"type":
+/// "null"}]}`, spec/api.md § Codecs), if `schema` is one.
+fn nullable_inner(schema: &Value) -> Option<&Value> {
+    let any = schema.get("anyOf").and_then(Value::as_array)?;
+    let is_null = |s: &Value| s.get("type").and_then(Value::as_str) == Some("null");
+    if !any.iter().any(is_null) {
+        return None;
+    }
+    any.iter().find(|s| !is_null(s))
+}
+
 /// The name a `$ref` schema carries, if it is one.
 fn ref_name(schema: &Value) -> Option<&str> {
     schema.get("$ref").and_then(Value::as_str).and_then(|r| r.rsplit('/').next())
@@ -157,6 +168,9 @@ fn ref_name(schema: &Value) -> Option<&str> {
 fn type_label(doc: &Value, schema: &Value) -> String {
     if let Some(n) = ref_name(schema) {
         return n.to_string();
+    }
+    if let Some(inner) = nullable_inner(schema) {
+        return format!("{} or null", type_label(doc, inner));
     }
     let base = match schema.get("type").and_then(Value::as_str) {
         Some("integer") => "Int".to_string(),
@@ -408,6 +422,10 @@ fn typed_value(doc: &Value, field: &str, schema: &Value, text: Option<&str>) -> 
 /// all fit the item type; a quantity or a distinct integer fits by its count. A schema
 /// with no `type` constrains nothing.
 fn check_value(doc: &Value, path: &str, schema: &Value, v: &Value) -> Result<(), String> {
+    // an optional field takes `null` (its absence) or a value of its type
+    if let Some(inner) = nullable_inner(schema) {
+        return if v.is_null() { Ok(()) } else { check_value(doc, path, inner, v) };
+    }
     let resolved = resolve(doc, schema);
     let misfit = |what: &str| format!("`{path}` is `{v}`, {what}; expected {}", type_label(doc, schema));
     match resolved.get("type").and_then(Value::as_str) {

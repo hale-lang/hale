@@ -2002,6 +2002,27 @@ request or response is never itself a list: a page of records is a
 record, `type Page { items: bounded[Item; 50]; }`, which leaves room
 for what a page says beside its items.
 
+**An optional field** is a presence pair (2026-10-17): a field `x` beside
+a field `has_x` of the same record whose type is `Bool` (an alias of it
+included). Hale has no optional type; the flag is the presence. On the
+JSON wire `x` is a key that may be left out, and `null` is its absence
+as well: a payload carrying `x` with a value other than `null` sets
+`has_x`, one that leaves it out or sends `null` leaves `has_x` false and
+`x` at its default, or its type's zero where it declares none (a record's
+zero is built of its fields' defaults and zeros; a `bounded` list's is
+empty). `has_x` is no key: the decoder skips one a payload sends, as it
+skips any unknown key, and the encoder never writes it. The encoder writes
+`x` only when `has_x` is set. The value is as strict as any field's: `"x":
+5` for a `String` is `wrong_type`. Any shape a field may have may be
+optional, a list included (JSON tells a present empty list, `[]`, from an
+absent one). A description gives `x` the schema `{"anyOf": [<its schema>,
+{"type": "null"}]}`, lists it under no `required`, and has no property for
+`has_x`. Protobuf carries the pair as declared: `x` its field, `has_x` a
+`bool` field of its own, each numbered by its place in the record (the
+`.proto` notes the pair in the two fields' comments), and a message
+carrying neither reads as an absence, `x` at its default or zero. The
+digest is the record's shape, which already holds both fields.
+
 Decoding is strict: a value of the wrong JSON kind is `wrong_type`, an
 element of a list and an array that is not well-formed JSON included
 (a payload that is one scalar is that scalar's complete JSON token: `true`
@@ -2027,8 +2048,9 @@ element, in any mix, holding the bound as the JSON codec does
 the epoch (which is all of `Time`; the field's comment says so), not
 `google.protobuf.Timestamp`, which would make the well-known type a
 dependency of every file and of the descriptor reflection serves; a
-`Duration` is an `int64`, its nanoseconds. The set of shapes is the JSON codec's, so
-there is no shape without a proto3 encoding: a map, an `optional` and an
+`Duration` is an `int64`, its nanoseconds. An optional field is its two
+fields (above). The set of shapes is the JSON codec's, so
+there is no shape without a proto3 encoding: a map and an
 enum are shapes the codec does not carry, and law 5 refuses the row
 before a `.proto` could be asked of it. The `.proto`
 generator refuses all the same, by row, so that were the codec to carry one it
@@ -2068,8 +2090,9 @@ caller's `Context` under that exposure's role source:
 - the transport's **outcome encoding** (§ Outcomes);
 - the JSON Schema of every type the listed members and streams name,
   and nothing else, a quantity's field carrying `x-hale-unit` (its
-  `q(…)` tag), a `Time`'s `"format": "date-time"`, a list's `maxItems`
-  (§ Codecs);
+  `q(…)` tag), a `Time`'s `"format": "date-time"`, a list's `maxItems`,
+  an optional field's `anyOf` with `null`, and no property for its
+  presence flag (§ Codecs);
 - the notes, in the document's own text: authorization is a boundary
   check at the serve site, never a proof over the program's internal
   call paths; a request accepted runs to completion whatever becomes of
@@ -2264,7 +2287,9 @@ client:
   a `string`, in TypeScript, since a `Date` holds milliseconds; a list is
   the client language's: `bounded[T; N]` or `[T; N]` in Hale, an array in
   TypeScript, whose bound the server holds; an enum or any shape the JSON codec
-  does not carry is refused, never approximated), and
+  does not carry is refused, never approximated, and so, for now, is an
+  optional field: a surface whose records hold a presence pair gets no
+  generated client yet), and
   one function per member taking the endpoint, the bearer and the request;
 - sends the surface's digest on every call (`digest` in the line over a socket,
   `Hale-Surface-Digest` over HTTP) and names it in a constant, so a program

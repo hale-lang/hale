@@ -12,7 +12,7 @@ use std::collections::BTreeSet;
 use hale_types::surface_doc::{ClientError, ClientMember, ClientModel, ClientStream};
 use hale_types::surfaces::{FieldSchema, TypeSchema};
 
-use super::{camel, json_quote, type_ident, unformed};
+use super::{camel, json_quote, optional_unsupported, type_ident, unformed};
 
 const PREAMBLE: &str = include_str!("ts_preamble.ts");
 
@@ -69,6 +69,7 @@ pub(super) fn type_in(f: &FieldSchema, what: &str, jsdoc: bool) -> Result<String
         FieldSchema::Time => Ok("string".to_string()),
         FieldSchema::List { items, .. } if jsdoc => Ok(format!("globalThis.Array<{}>", type_in(items, what, true)?)),
         FieldSchema::List { items, .. } => Ok(format!("__Array<{}>", ts_type(items, what)?)),
+        FieldSchema::Nullable { .. } | FieldSchema::Presence { .. } => Err(optional_unsupported(what)),
         FieldSchema::Unformed => Err(unformed(what)),
     }
 }
@@ -83,6 +84,7 @@ pub(super) fn encode(f: &FieldSchema, value: &str, what: &str) -> Result<String,
             FieldSchema::Scalar { .. } | FieldSchema::Time => Ok(value.to_string()),
             i => Ok(format!("({value}).map((e) => {})", encode(i, "e", what)?)),
         },
+        FieldSchema::Nullable { .. } | FieldSchema::Presence { .. } => Err(optional_unsupported(what)),
         FieldSchema::Unformed => Err(unformed(what)),
     }
 }
@@ -110,6 +112,7 @@ pub(super) fn decode_in(f: &FieldSchema, json: &str, what: &str, js: bool) -> Re
             "(globalThis.Array.isArray({json}) ? ({json} as unknown[]).map((e) => {}) : [])",
             decode(items, "e", what)?
         )),
+        FieldSchema::Nullable { .. } | FieldSchema::Presence { .. } => Err(optional_unsupported(what)),
         FieldSchema::Unformed => Err(unformed(what)),
     }
 }

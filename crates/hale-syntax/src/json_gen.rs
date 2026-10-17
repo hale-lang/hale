@@ -134,14 +134,63 @@ struct JsonField {
     /// struct's declared fields counted from 1 (0 where no protobuf codec
     /// is made).
     pb_no: u32,
+    /// A presence pair (the api codecs only, spec/api.md § Codecs): the
+    /// field is optional, or it is another field's presence flag.
+    presence: Presence,
+}
+
+/// A field's part in a presence pair: `x` with a sibling `has_x: Bool`
+/// is optional, present on the JSON wire as a key with a value other
+/// than `null`, and `has_x` says whether it was; the flag is no JSON key.
+/// Protobuf carries both fields as declared.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Presence {
+    No,
+    /// The optional field; its flag's name.
+    Tracked(String),
+    /// The flag; the optional field's name.
+    Flag(String),
 }
 
 impl JsonField {
-    /// Whether the decoder tracks the field's presence: every field
-    /// without a default, but a `bounded[T; N]`, which is empty when absent.
+    /// Whether a payload must carry the field: every field without a
+    /// default, but a `bounded[T; N]` (empty when absent) and either half
+    /// of a presence pair (an absent optional field is its flag's `false`).
     fn needs_seen(&self) -> bool {
-        self.default_src.is_none() && !matches!(self.kind, FieldKind::List { exact: false, .. })
+        self.presence == Presence::No
+            && self.default_src.is_none()
+            && !matches!(self.kind, FieldKind::List { exact: false, .. })
     }
+    /// Whether the JSON decoder records that the field's key was read:
+    /// a required field, and an optional one (its flag's value).
+    fn tracks(&self) -> bool {
+        self.needs_seen() || matches!(self.presence, Presence::Tracked(_))
+    }
+    /// The presence flag: no JSON key.
+    fn is_flag(&self) -> bool {
+        matches!(self.presence, Presence::Flag(_))
+    }
+}
+
+/// The presence pairs of a struct's fields (spec/api.md § Codecs): each
+/// `(x, has_x)` where `has_x` is a field of the same struct whose type
+/// `is_bool` admits and `x` another field of it. `x` is optional on the
+/// JSON wire, and `has_x` says whether a payload carried it.
+pub fn presence_pairs<'a>(
+    fields: &'a [crate::ast::StructField],
+    is_bool: &dyn Fn(&TypeExpr) -> bool,
+) -> Vec<(&'a str, &'a str)> {
+    let mut out = Vec::new();
+    for f in fields {
+        let Some(of) = f.name.name.strip_prefix("has_") else { continue };
+        if of.is_empty() || !is_bool(&f.ty) {
+            continue;
+        }
+        if fields.iter().any(|g| g.name.name == of) {
+            out.push((of, f.name.name.as_str()));
+        }
+    }
+    out
 }
 
 /// How a scalar of the unit dialect crosses the JSON wire as its `Int`.
@@ -326,6 +375,7 @@ fn collect_json_types(items: &[TopDecl], names: &HashSet<String>, out: &mut Vec<
                             default_src,
                             conv: None,
                             pb_no: 0,
+                            presence: Presence::No,
                         });
                     }
                     if ok && !jfields.is_empty() {
@@ -395,6 +445,10 @@ fn generate_parser_src_mode(t: &JsonType, prefix: &str, strict: bool) -> String 
     // construction). A presence flag is omitted when a scalar default
     // covers a missing key.
     for f in &t.fields {
+        // a presence flag is no key: its value is whether its field was read
+        if f.is_flag() {
+            continue;
+        }
         match &f.kind {
             FieldKind::Scalar(s) => {
                 let init = f.default_src.as_deref().unwrap_or_else(|| s.zero());
@@ -416,7 +470,7 @@ fn generate_parser_src_mode(t: &JsonType, prefix: &str, strict: bool) -> String 
                 b.push_str(&format!("    let mut __h_{} = {} {{ }};\n", f.name, holder_name(&t.name, &f.name)));
             }
         }
-        if f.needs_seen() {
+        if f.tracks() {
             b.push_str(&format!("    let mut __seen_{}: Bool = false;\n", f.name));
         }
     }
@@ -480,7 +534,7 @@ fn generate_parser_src_mode(t: &JsonType, prefix: &str, strict: bool) -> String 
     b.push_str("                }\n");
     // Per-field dispatch on the key span.
     let mut first = true;
-    for f in &t.fields {
+    for f in t.fields.iter().filter(|f| !f.is_flag()) {
         let kw = if first { "if" } else { "} else if" };
         first = false;
         b.push_str(&format!(
@@ -489,6 +543,15 @@ fn generate_parser_src_mode(t: &JsonType, prefix: &str, strict: bool) -> String 
             f.key.len(),
             f.key
         ));
+        // an optional field's `null` is its absence (the last of a key sent
+        // twice wins, as for any field)
+        let optional = matches!(f.presence, Presence::Tracked(_));
+        if optional {
+            b.push_str(&format!(
+                "                if std::str::range_eq(__s, __vs, __ve, \"null\") {{ __seen_{} = false; }} else {{\n",
+                f.name
+            ));
+        }
         if strict {
             let want = match &f.kind {
                 FieldKind::Scalar(ScalarTy::Str) => "__c0 == 34",
@@ -548,8 +611,11 @@ fn generate_parser_src_mode(t: &JsonType, prefix: &str, strict: bool) -> String 
             }
             FieldKind::List { elem, .. } => b.push_str(&json_list_read(f, elem, prefix)),
         }
-        if f.needs_seen() {
+        if f.tracks() {
             b.push_str(&format!("                    __seen_{} = true;\n", f.name));
+        }
+        if optional {
+            b.push_str("                }\n");
         }
     }
     if !first {
@@ -568,18 +634,72 @@ fn generate_parser_src_mode(t: &JsonType, prefix: &str, strict: bool) -> String 
             ));
         }
     }
-    // Recurse into nested fields (their JsonError propagates via `or raise`).
+    // Recurse into nested fields (their JsonError propagates via `or raise`);
+    // an absent optional record is its type's zero.
     for f in &t.fields {
         if let FieldKind::Nested(tn) = &f.kind {
+            if matches!(f.presence, Presence::Tracked(_)) {
+                b.push_str(&format!("    let mut __p_{} = {ZERO}{}() or raise;\n", f.name, tn));
+                b.push_str(&format!(
+                    "    if __seen_{n} {{ __p_{n} = {}{}(__raw_{n}) or raise; }}\n",
+                    prefix,
+                    tn,
+                    n = f.name
+                ));
+                continue;
+            }
             b.push_str(&format!(
                 "    let __p_{} = {}{}(__raw_{}) or raise;\n",
                 f.name, prefix, tn, f.name
             ));
         }
     }
-    b.push_str(&construct_src(t));
+    b.push_str(&construct_src(t, true));
     b.push_str("}\n");
     b
+}
+
+/// The prefix of a record's zero (`__api_zero_<T>`): the value an absent
+/// optional record of type `T` holds, every field its default or its
+/// type's zero (spec/api.md § Codecs). Fallible only for a range a zero
+/// leaves (`wrong_type`).
+const ZERO: &str = "__api_zero_";
+
+/// A list element's zero: its scalar's (through its conversion), the
+/// epoch, or its record's zero.
+fn elem_zero(elem: &Elem, key: &str) -> String {
+    match elem {
+        Elem::Scalar(s, Some(c)) => c.from_int(s.zero(), key),
+        Elem::Scalar(s, None) => s.zero().to_string(),
+        Elem::Time => EPOCH.to_string(),
+        Elem::Nested(tn) => format!("{ZERO}{tn}() or raise"),
+    }
+}
+
+/// `__api_zero_<T>() -> T fallible(JsonError)`.
+fn generate_zero_src(t: &JsonType) -> String {
+    let mut inits = Vec::new();
+    for f in &t.fields {
+        let v = match &f.kind {
+            FieldKind::Scalar(s) => {
+                let d = f.default_src.clone().unwrap_or_else(|| s.zero().to_string());
+                match &f.conv {
+                    Some(c) => c.from_int(&d, &f.key),
+                    None => d,
+                }
+            }
+            FieldKind::Time => f.default_src.clone().unwrap_or_else(|| EPOCH.to_string()),
+            FieldKind::Nested(tn) => format!("{ZERO}{tn}() or raise"),
+            FieldKind::List { exact: false, .. } => continue,
+            FieldKind::List { elem, cap, exact: true, .. } => format!("[{}; {cap}]", elem_zero(elem, &f.key)),
+        };
+        inits.push(format!("{}: {v}", f.name));
+    }
+    format!(
+        "fn {ZERO}{n}() -> {n} fallible(JsonError) {{\n    return {n} {{ {} }};\n}}\n",
+        inits.join(", "),
+        n = t.name
+    )
 }
 
 /// The name of the holder a list field is decoded into.
@@ -624,11 +744,26 @@ fn unheld(elem: &Elem, v: &str) -> String {
 /// constructed from the fields read, and each `bounded` field filled from
 /// its holder (the record's own field starts empty, and the holder holds
 /// no more than it does).
-fn construct_src(t: &JsonType) -> String {
+fn construct_src(t: &JsonType, json: bool) -> String {
     let mut b = String::new();
     for f in &t.fields {
         if let FieldKind::List { elem, cap, exact: true, .. } = &f.kind {
             let short = format!("fail JsonError {{ kind: \"too_short\", field: \"{}\" }}", f.key);
+            // an optional fixed array the payload does not carry is its
+            // elements' zeros: absent from JSON (or `null`), or no occurrence
+            // in a message
+            if matches!(f.presence, Presence::Tracked(_)) {
+                let absent = if json { format!("!__seen_{}", f.name) } else { format!("count(__h_{}.b) == 0", f.name) };
+                b.push_str(&format!("    let mut __a_{n} = [{}; {cap}];\n", elem_zero(elem, &f.key), n = f.name));
+                b.push_str(&format!("    if !({absent}) {{\n"));
+                b.push_str(&format!("        if count(__h_{n}.b) != {cap} {{ {short}; }}\n", n = f.name));
+                b.push_str(&format!("        let mut __ai_{n} = 0;\n", n = f.name));
+                b.push_str(&format!("        while __ai_{n} < {cap} {{\n", n = f.name));
+                b.push_str(&format!("            let __av_{n} = at(__h_{n}.b, __ai_{n}) or {short};\n", n = f.name));
+                b.push_str(&format!("            __a_{n}[__ai_{n}] = {};\n", unheld(elem, &format!("__av_{}", f.name)), n = f.name));
+                b.push_str(&format!("            __ai_{n} = __ai_{n} + 1;\n        }}\n    }}\n", n = f.name));
+                continue;
+            }
             b.push_str(&format!("    if count(__h_{n}.b) != {cap} {{ {short}; }}\n", n = f.name));
             b.push_str(&format!("    let __a0_{n} = at(__h_{n}.b, 0) or {short};\n", n = f.name));
             b.push_str(&format!("    let mut __a_{n} = [{}; {cap}];\n", unheld(elem, &format!("__a0_{}", f.name)), n = f.name));
@@ -643,6 +778,11 @@ fn construct_src(t: &JsonType) -> String {
         .fields
         .iter()
         .filter_map(|f| match (&f.kind, &f.conv) {
+            // on the JSON wire a presence flag is whether its field was read
+            _ if json && f.is_flag() => {
+                let Presence::Flag(of) = &f.presence else { unreachable!("a flag") };
+                Some(format!("{}: __seen_{of}", f.name))
+            }
             (FieldKind::Scalar(_), Some(c)) => Some(format!("{}: {}", f.name, c.from_int(&format!("__f_{}", f.name), &f.key))),
             (FieldKind::Scalar(_), None) => Some(format!("{}: __f_{}", f.name, f.name)),
             (FieldKind::Nested(_), _) => Some(format!("{}: __p_{}", f.name, f.name)),
@@ -778,9 +918,26 @@ fn generate_emit_src_mode(t: &JsonType, fn_prefix: &str) -> String {
         fn_prefix, t.name, t.name
     ));
     b.push_str("    let mut __b: String = \"{\";\n");
+    // A record with an optional field writes a key only when its field is
+    // present (and never its flag), so its separators are decided as it is
+    // written; any other record's are fixed here, as they always were.
+    let dynamic = t.fields.iter().any(|f| f.presence != Presence::No);
+    if dynamic {
+        b.push_str("    let mut __sep: String = \"\";\n");
+    }
     for (i, f) in t.fields.iter().enumerate() {
+        if f.is_flag() {
+            continue;
+        }
         let sep = if i == 0 { "" } else { "," };
-        let prefix = prefix_lit(sep, &f.key);
+        let prefix = if dynamic {
+            format!("__sep + {}", prefix_lit("", &f.key))
+        } else {
+            prefix_lit(sep, &f.key)
+        };
+        if let Presence::Tracked(flag) = &f.presence {
+            b.push_str(&format!("    if __v.{flag} {{\n"));
+        }
         let value = match &f.kind {
             FieldKind::Scalar(ScalarTy::Str) => format!(
                 "\"\\\"\" + std::json::escape_string(__v.{}) + \"\\\"\"",
@@ -801,10 +958,22 @@ fn generate_emit_src_mode(t: &JsonType, fn_prefix: &str) -> String {
                 b.push_str(&format!("        __b = __b + {};\n", json_elem_write(elem, "__xe", fn_prefix)));
                 b.push_str(&format!("        __n_{n} = __n_{n} + 1;\n    }}\n", n = f.name));
                 b.push_str("    __b = __b + \"]\";\n");
+                if dynamic {
+                    b.push_str("    __sep = \",\";\n");
+                }
+                if matches!(f.presence, Presence::Tracked(_)) {
+                    b.push_str("    }\n");
+                }
                 continue;
             }
         };
         b.push_str(&format!("    __b = __b + {} + {};\n", prefix, value));
+        if dynamic {
+            b.push_str("    __sep = \",\";\n");
+        }
+        if matches!(f.presence, Presence::Tracked(_)) {
+            b.push_str("    }\n");
+        }
     }
     b.push_str("    __b = __b + \"}\";\n");
     b.push_str("    return __b;\n}\n");
@@ -971,10 +1140,20 @@ fn generate_pb_parser_src(t: &JsonType) -> String {
     }
     for f in &t.fields {
         if let FieldKind::Nested(tn) = &f.kind {
+            // an optional record its message does not carry is its type's zero
+            if matches!(f.presence, Presence::Tracked(_)) {
+                b.push_str(&format!("    let mut __p_{} = {ZERO}{}() or raise;\n", f.name, tn));
+                b.push_str(&format!(
+                    "    if len(__raw_{n}) > 0 {{ __p_{n} = __api_pb_decode_{}(__raw_{n}) or raise; }}\n",
+                    tn,
+                    n = f.name
+                ));
+                continue;
+            }
             b.push_str(&format!("    let __p_{} = __api_pb_decode_{}(__raw_{}) or raise;\n", f.name, tn, f.name));
         }
     }
-    b.push_str(&construct_src(t));
+    b.push_str(&construct_src(t, false));
     b.push_str("}\n");
     b
 }
@@ -1494,6 +1673,7 @@ fn generate_codecs(
                     default_src: None,
                     conv: None,
                     pb_no: at as u32 + 1,
+                    presence: Presence::No,
                 })
             })
             .collect();
@@ -1504,6 +1684,17 @@ fn generate_codecs(
     let mut src = String::new();
     if !have_jsonerror && !protobuf {
         src.push_str("type JsonError { kind: String; field: String; }\n");
+    }
+    // the zeros an absent optional record holds, made only where a field
+    // is optional (every record of the set: a zero is built of its fields'
+    // zeros)
+    let zeros = types.iter().any(|t| t.fields.iter().any(|f| matches!(f.presence, Presence::Tracked(_))));
+    if zeros {
+        for t in &types {
+            if existing_fns.insert(format!("{ZERO}{}", t.name)) {
+                src.push_str(&generate_zero_src(t));
+            }
+        }
     }
     for t in &types {
         // the holders of the record's lists, which both codecs decode into
@@ -1645,7 +1836,18 @@ fn collect_api_types(
                         default_src,
                         conv,
                         pb_no: at as u32 + 1,
+                        presence: Presence::No,
                     });
+                }
+                let is_bool = |te: &TypeExpr| matches!(through_aliases(te, aliases), TypeExpr::Primitive(PrimType::Bool, _));
+                for (of, flag) in presence_pairs(fields, &is_bool) {
+                    for jf in jfields.iter_mut() {
+                        if jf.name == of {
+                            jf.presence = Presence::Tracked(flag.to_string());
+                        } else if jf.name == flag {
+                            jf.presence = Presence::Flag(of.to_string());
+                        }
+                    }
                 }
                 out.push(JsonType { name: td.name.name.clone(), fields: jfields });
             }

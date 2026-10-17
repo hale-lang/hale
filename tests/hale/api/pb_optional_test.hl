@@ -1,0 +1,87 @@
+// An optional field crosses the protobuf codec as declared (spec/api.md §
+// Codecs, § gRPC).
+//
+// A presence pair, `x` beside `has_x: Bool`, is two fields of the message:
+// the value and its flag, each numbered by its place among the record's
+// declared fields. JSON in, protobuf through, JSON out gives back the same
+// text whether the field was present or not; a message that carries neither
+// field reads as an absence, the value its type's zero (a record's zero is
+// built of its fields' defaults and zeros). This program names no port: the
+// serve site is in a method nothing calls, which is all the compiler needs to
+// write the codecs.
+
+type Inner { a: Int; b: String = "dflt"; }
+type Opt {
+    name: String;
+    note: String;
+    has_note: Bool;
+    tags: bounded[String; 3];
+    has_tags: Bool;
+    inner: Inner;
+    has_inner: Bool;
+}
+
+api PbOptional {
+    rpc Probe::opt;
+}
+
+locus Probe {
+    fn opt(o: Opt) -> Opt { return o; }
+}
+
+locus Tokens {
+    fn principal(token: String) -> std::api::Principal {
+        return std::api::Principal { mode: "bearer", name: "" };
+    }
+    fn refused() -> String { return "no such token"; }
+}
+
+main locus Desk {
+    params {
+        probe: Probe = Probe { };
+        bearer: Tokens = Tokens { };
+        // Served only so the compiler writes the codecs; nothing calls it.
+        h: api::Exposure = api::serve(PbOptional, grpc::Rpc { bind: "127.0.0.1:0", codec: json, principals: self.bearer }, as: "pb", receivers: { Probe: self.probe }, bound: 4, on_full: refuse);
+    }
+
+    // JSON in, protobuf through, JSON out: the same text.
+    fn round(json: String, what: String) {
+        let v = __api_decode_Opt(json) or {
+            std::test::assert(false, what + ": the JSON decoder: " + err.kind + " " + err.field);
+            return;
+        };
+        let back = __api_pb_decode_Opt(__api_pb_encode_Opt(v)) or {
+            std::test::assert(false, what + ": the protobuf decoder: " + err.kind + " " + err.field);
+            return;
+        };
+        std::test::assert_eq_str(__api_encode_Opt(back), json, what);
+    }
+
+    run() {
+        self.round("{\"name\":\"a\"}", "every optional field absent");
+        self.round("{\"name\":\"b\",\"note\":\"\",\"tags\":[],\"inner\":{\"a\":0,\"b\":\"\"}}", "every optional field present at its zero");
+        self.round("{\"name\":\"c\",\"note\":\"x\",\"tags\":[\"p\",\"q\"],\"inner\":{\"a\":7,\"b\":\"y\"}}", "every optional field present");
+
+        // a message carrying only the name: every flag false, every value its zero
+        let only = __api_pb_decode_Opt(__api_pb_put_str(1, "d")) or {
+            std::test::assert(false, "a message of the name alone: " + err.kind + " " + err.field);
+            return;
+        };
+        std::test::assert(!only.has_note && !only.has_tags && !only.has_inner, "no flag is set");
+        std::test::assert_eq_str(only.note, "", "an absent string is empty");
+        std::test::assert_eq_int(count(only.tags), 0, "an absent list is empty");
+        std::test::assert_eq_int(only.inner.a, 0, "an absent record is its zero");
+        std::test::assert_eq_str(only.inner.b, "dflt", "an absent record's field keeps its default");
+        std::test::assert_eq_str(__api_encode_Opt(only), "{\"name\":\"d\"}", "and JSON writes none of them");
+
+        // the flag is read from its own field: set, with no value, it is a presence of the zero
+        let flagged = std::bytes::concat(__api_pb_put_str(1, "e"), __api_pb_put_bool(3, true));
+        let f = __api_pb_decode_Opt(flagged) or {
+            std::test::assert(false, "a flag alone: " + err.kind + " " + err.field);
+            return;
+        };
+        std::test::assert_eq_str(__api_encode_Opt(f), "{\"name\":\"e\",\"note\":\"\"}", "a flag alone is a presence of the zero");
+    }
+}
+
+fn main() { Desk { }; }

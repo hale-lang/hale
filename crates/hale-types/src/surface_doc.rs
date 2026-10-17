@@ -399,14 +399,27 @@ fn field_schema(f: &FieldSchema, base: &str) -> J {
             pairs.push(("maxItems".to_string(), J::Int(*max as i64)));
             J::Obj(pairs)
         }
-        FieldSchema::Unformed => J::Obj(Vec::new()),
+        FieldSchema::Nullable { inner, .. } => {
+            o(vec![("anyOf", J::Arr(vec![field_schema(inner, base), o(vec![("type", s("null"))])]))])
+        }
+        // no key of its own: `type_schema` leaves it out
+        FieldSchema::Presence { .. } | FieldSchema::Unformed => J::Obj(Vec::new()),
     }
 }
 
 fn type_schema(t: &TypeSchema, base: &str) -> J {
     o(vec![
         ("type", s("object")),
-        ("properties", J::Obj(t.properties.iter().map(|(k, f)| (k.clone(), field_schema(f, base))).collect())),
+        (
+            "properties",
+            J::Obj(
+                t.properties
+                    .iter()
+                    .filter(|(_, f)| !matches!(f, FieldSchema::Presence { .. }))
+                    .map(|(k, f)| (k.clone(), field_schema(f, base)))
+                    .collect(),
+            ),
+        ),
         ("required", strs(t.required.iter().map(String::as_str))),
     ])
 }

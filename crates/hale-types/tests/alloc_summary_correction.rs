@@ -232,7 +232,7 @@ fn change(target: &str) -> Change {
     })
 }
 
-/// The 35 targets below are the only ones the correction changes.
+/// The 36 targets below are the only ones the correction changes.
 #[test]
 fn no_other_target_changes() {
     let corrected: Vec<String> = targets().into_iter().filter(|t| !change(t).is_empty()).collect();
@@ -286,7 +286,7 @@ const CALL_LINES_ONLY: [(&str, usize); 24] = [
 ];
 
 /// The targets whose verdicts move, each pinned in `verdict_changes`.
-const VERDICT_TARGETS: [&str; 11] = [
+const VERDICT_TARGETS: [&str; 12] = [
     "crates/hale-codegen/tests/fixtures/examples/69-http-router",
     "crates/hale-codegen/tests/fixtures/examples/92-build-an-api",
     "dna/api",
@@ -296,6 +296,7 @@ const VERDICT_TARGETS: [&str; 11] = [
     "dna/organization_runtime",
     "dna/ui",
     "tests/hale/api_binding_run_test.hl",
+    "tests/hale/api_optional_field_test.hl",
     "tests/hale/http_stream_test.hl",
     "tests/hale/router_middleware_test.hl",
 ];
@@ -1811,6 +1812,19 @@ fn verdict_changes() {
         ],
         &[
             ("once-per-invocation -> per-iteration-reclaim", 1),
+        ],
+        &[
+        ],
+    );
+    // an optional field served over a Unix exposure: its role source is
+    // called per request, and no site verdict moves
+    pinned(
+        "tests/hale/api_optional_field_test.hl",
+        2,
+        &[
+            "Table::holds",
+        ],
+        &[
         ],
         &[
         ],
