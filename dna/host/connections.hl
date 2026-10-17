@@ -46,13 +46,8 @@ type Connection {
 fn own_nerves(root: String) -> String {
     if dna::dsn_set(dna::NATS_SPINE_URL_ENV) { return std::env::var(dna::NATS_SPINE_URL_ENV); }
     if dna::dsn_set(dna::NATS_OWNER_URL_ENV) { return dna::nerves_server_url(std::env::var(dna::NATS_OWNER_URL_ENV)); }
-    let compose = root + "/dna/compose.yaml";
-    if !std::io::fs::file_exists(compose) { return ""; }
-    let port = dna::run_tool("docker\ncompose\n-f\n" + compose + "\nport\nnerves\n4222");
-    let hp = dna::trim_nl(port.stdout);
-    let colon = std::str::index_of(hp, ":");
-    if port.code != 0 || colon < 0 { return ""; }
-    return "nats://127.0.0.1:" + hp[(colon + 1)..len(hp)];
+    let infra = ReferenceInfrastructure { root: root };
+    return infra.nerves_if_up();
 }
 
 // A client of the server at `url` as `user`, presenting the vault's

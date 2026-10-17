@@ -168,6 +168,17 @@ locus ReferenceInfrastructure {
         if port.code != 0 || colon < 0 { return dna::Database { why: "cannot read the nerves' port from compose: " + dna::trim_nl(port.stderr) }; }
         return dna::Database { present: true, dsn: "nats://127.0.0.1:" + hp[(colon + 1)..len(hp)] };
     }
+    // The nerves' server if compose's `nerves` is up, never brought up from
+    // here: its URL, without a user ("" when it is not up).
+    fn nerves_if_up() -> String {
+        let compose = self.root + "/dna/compose.yaml";
+        if !std::io::fs::file_exists(compose) { return ""; }
+        let port = dna::run_tool("docker\ncompose\n-f\n" + compose + "\nport\nnerves\n4222");
+        let hp = dna::trim_nl(port.stdout);
+        let colon = std::str::index_of(hp, ":");
+        if port.code != 0 || colon < 0 { return ""; }
+        return "nats://127.0.0.1:" + hp[(colon + 1)..len(hp)];
+    }
     // The senses' store (GH #988), from dna/compose.yaml's `senses`
     // service, brought up when it is not: its read URL.
     fn senses_store(project: String) -> dna::Database {
