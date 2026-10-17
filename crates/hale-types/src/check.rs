@@ -15917,8 +15917,28 @@ impl<'a> Checker<'a> {
                 // (`spec/types.md` § bounded). Any other value (a
                 // literal, an array) has no bounded shape to copy;
                 // the intrinsics build one.
-                let bounded_refused = matches!(want, Ty::Bounded(_, _)) && !matches!(got, Ty::Bounded(_, _) | Ty::Unknown);
-                if bounded_refused {
+                // A bounded local is a view of the place it was bound from
+                // (`spec/types.md` § bounded), whose owner a whole
+                // assignment needs, to anchor the elements where the place
+                // lives: the place is assigned instead.
+                let bounded_local = matches!(want, Ty::Bounded(_, _))
+                    && target.tail.is_empty()
+                    && matches!(op, AssignOp::Eq);
+                if bounded_local {
+                    self.diags.push(Diag::ty(
+                        *span,
+                        format!(
+                            "`{0}` is a `{1}` local, a view of the place it was bound from, and a whole \
+                             assignment through it would keep its elements in this frame, not where that \
+                             place lives; assign the place itself (`self.xs = …`, `row.xs = …`)",
+                            target.head.name,
+                            want.display()
+                        ),
+                    ));
+                }
+                let bounded_refused =
+                    bounded_local || (matches!(want, Ty::Bounded(_, _)) && !matches!(got, Ty::Bounded(_, _) | Ty::Unknown));
+                if bounded_refused && !bounded_local {
                     self.diags.push(Diag::ty(
                         *span,
                         format!(

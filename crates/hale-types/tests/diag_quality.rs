@@ -348,6 +348,24 @@ fn a_bounded_place_is_assigned_whole_from_its_own_type_only() {
         ds[1].contains("a `bounded[String; 4]` is assigned whole only from another `bounded[String; 4]`"),
         "got: {ds:?}"
     );
+    // A bounded local views the place it was bound from: assigned whole,
+    // its elements would be anchored in the frame, not where the place
+    // lives. Refused, naming the place to assign.
+    let ds = diags(
+        r#"
+        type R { xs: bounded[String; 2]; }
+        locus L {
+            params { xs: bounded[String; 2]; }
+            fn put(r: R) {
+                let mut dest = self.xs;
+                dest = r.xs;
+            }
+        }
+        fn main() { }
+    "#,
+    );
+    assert_eq!(ds.len(), 1, "one refusal; got: {ds:?}");
+    assert!(ds[0].contains("`dest` is a `bounded[String; 2]` local, a view of the place"), "got: {ds:?}");
 }
 
 #[test]

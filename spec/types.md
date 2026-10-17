@@ -1176,7 +1176,7 @@ Semantics:
 - Fields auto-initialize EMPTY. Literal init is rejected — the
   intrinsics build a bounded value. Whole-STRUCT copies carry
   elements + count by construction (the storage is inline).
-- A bounded place (a field, a locus param, a local bound from one) is
+- A bounded place (a field, a locus param) is
   assigned whole only from a value of its own type, `bounded[T; N]`
   with the same `T` and `N`: `row.models = req.models` copies the
   count and the live slots, and each pointer-shaped element is
@@ -1185,7 +1185,12 @@ Semantics:
   copy: a later intrinsic on either side does not reach the other.
   Any other value (an array literal, another element type or
   capacity) is refused at the assignment ("a \`bounded[String; 4]\` is
-  assigned whole only from another \`bounded[String; 4]\` …").
+  assigned whole only from another \`bounded[String; 4]\` …"). A bounded
+  local is not assigned whole: it is a view of the place it was bound
+  from, and the assignment would anchor the elements in the frame rather
+  than where that place lives (a locus's field would hold blocks its
+  method's scratch frees), so the check refuses it and names the place
+  to assign instead.
   Until 2026-10-17 every whole assignment was refused, with no
   ruling behind it but a lowering that had none, so a copy between
   two records' fields was a `push` loop.

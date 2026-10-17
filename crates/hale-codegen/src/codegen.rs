@@ -34022,13 +34022,15 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         scope: &Scope<'ctx>,
     ) -> Result<BlockEnd, CodegenError> {
         let e = |err: inkwell::builder::BuilderError| CodegenError::LlvmEmit(err.to_string());
-        let (dest, owner) = if target.tail.is_empty() {
-            let (v, _) = self.lower_expr(&Expr::Ident(target.head.clone()), scope)?;
-            (v.into_pointer_value(), None)
-        } else {
-            let (slot, _, _, owner) = self.resolve_lvalue_chain(target, scope)?;
-            (slot, owner)
-        };
+        // A bounded local is a view whose owner is not known here: the
+        // check refuses its whole assignment.
+        if target.tail.is_empty() {
+            return Err(CodegenError::UnsupportedAt(
+                format!("a whole assignment through the bounded local `{}`", target.head.name),
+                target.span,
+            ));
+        }
+        let (dest, _, _, owner) = self.resolve_lvalue_chain(target, scope)?;
         if let Some(o) = owner.as_ref().filter(|o| !o.is_self) {
             let shown = format!("store into `{}`", o.locus.rsplit("__").next().unwrap_or(&o.locus));
             let head = Expr::Ident(target.head.clone());
