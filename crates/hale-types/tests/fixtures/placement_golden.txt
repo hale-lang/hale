@@ -8295,23 +8295,23 @@ row	~	__lib____main__Room	main	default
 row	~.s	__lib____main__SessionSigner	main	inherited
 
 == dna/api/practice_review/tests/adapter_test.hl
-dynamic	__StdBytesBytesBuilder	on unknown (`rejected` passed as a value)|unknown (no caller)|unknown (no instance)	in dna/core
+dynamic	__StdBytesBytesBuilder	on main|unknown (no caller)|unknown (no instance)	in dna/core
 -- dynamic	sites in dna/api/practice_review/tests
 dynamic	NativeStub	on main
 dynamic	__StdBytesBytesBuilder	on main
 dynamic	__lib_dna__api__practice_review___provider__PracticeReviewCommands	on main
 dynamic	__lib_dna__core___journal__MemJournal	on main
-dynamic	__lib_dna__operations___governance_policy__AuthorityPolicyCodec	on main|unknown (`rejected` passed as a value)
+dynamic	__lib_dna__operations___governance_policy__AuthorityPolicyCodec	on main
 dynamic	__lib_dna__operations___governance_policy__FixedAuthority	on main
 -- dynamic	sites in dna/operations
-dynamic	__StdBytesBytesBuilder	on unknown (`rejected` passed as a value)|unknown (no instance)
-dynamic	__StdJsonBuilder	on unknown (`rejected` passed as a value)|unknown (no caller)|unknown (no instance)
-dynamic	__lib_dna__core___native_json__NativeJson	on unknown (`rejected` passed as a value)
-dynamic	__lib_dna__operations___definitions__DefinitionCodec	on unknown (`rejected` passed as a value)|unknown (no instance)
-dynamic	__lib_dna__operations___governance_command__GovernanceCommandCodec	on main|unknown (`rejected` passed as a value)|unknown (no caller)|unknown (no instance)
+dynamic	__StdBytesBytesBuilder	on main|unknown (no instance)
+dynamic	__StdJsonBuilder	on main|unknown (no caller)|unknown (no instance)
+dynamic	__lib_dna__core___native_json__NativeJson	on main
+dynamic	__lib_dna__operations___definitions__DefinitionCodec	on main|unknown (no instance)
+dynamic	__lib_dna__operations___governance_command__GovernanceCommandCodec	on main|unknown (no caller)|unknown (no instance)
 dynamic	__lib_dna__operations___governance_policy__AuthorityPolicyCodec	on main|unknown (no instance)
-dynamic	__lib_dna__operations___organization_json__OrganizationJson	on unknown (`rejected` passed as a value)|unknown (no instance)
-shared	dynamic	sites in the stdlib #60cf2d1f
+dynamic	__lib_dna__operations___organization_json__OrganizationJson	on main|unknown (no instance)
+shared	dynamic	sites in the stdlib #919aadb4
 
 == dna/api/project_service/tests/head_api_s3_test.hl
 dynamic	__lib_dna__core___record__GitRecord	on main	in api/project_service/tests
@@ -8406,23 +8406,23 @@ dynamic	__lib_dna__operations___governance_command__GovernanceCommandCodec	on ma
 dynamic	__lib_dna__operations___organization_json__OrganizationJson	on main|unknown (no caller)|unknown (no instance)
 -- dynamic	sites in api/project_service/tests
 dynamic	ProbeOutcomes	on main
-dynamic	__StdJsonBuilder	on unknown (`request` passed as a value)
+dynamic	__StdJsonBuilder	on main
 dynamic	__lib_dna__api__project_service___journal__HeadJournal	on main
 dynamic	__lib_dna__api__project_service___registry__Registry	on main
 shared	dynamic	sites in operations #547a6538
-shared	dynamic	sites in the stdlib #b156bdf1
+shared	dynamic	sites in the stdlib #919aadb4
 
 == dna/api/project_service/tests/operations_s3_test.hl
 row	S3Cases@main1	S3Cases	main	default
 shared	dynamic	sites in api/project_service #6a032362
 -- dynamic	sites in api/project_service/tests
 dynamic	S3Outcomes	on main
-dynamic	__StdJsonBuilder	on unknown (`request` passed as a value)
+dynamic	__StdJsonBuilder	on main
 dynamic	__lib_dna__api__project_service___journal__HeadJournal	on main
 dynamic	__lib_dna__core___record__GitRecord	on main
 shared	dynamic	sites in core #0ca7b9c1
 shared	dynamic	sites in operations #547a6538
-shared	dynamic	sites in the stdlib #b156bdf1
+shared	dynamic	sites in the stdlib #919aadb4
 
 == dna/api/project_service/tests/operations_test.hl
 row	OperationCases@main2	OperationCases	main	default
@@ -9174,28 +9174,23 @@ shared	dynamic	sites in operations #250079bd
 shared	dynamic	sites in the stdlib #919aadb4
 
 == dna/api/tests/knowledge_memory_refused_test.hl
-dynamic	__lib_dna__api___knowledge_memory__LocalKnowledge	on unknown (`child` passed as a value)	in api/tests
+dynamic	__lib_dna__api___knowledge_memory__LocalKnowledge	on main	in api/tests
 -- dynamic	sites in api
-dynamic	__StdBytesBytesBuilder	on unknown (`child` passed as a value)|unknown (no caller)
-dynamic	__StdJsonBuilder	on unknown (`child` passed as a value)|unknown (no instance)
-dynamic	__lib_dna__api___http__Http	on unknown (`child` passed as a value)|unknown (no caller)|unknown (no instance)
-dynamic	__lib_dna__api___knowledge__KnowledgeWire	on unknown (`child` passed as a value)|unknown (no instance)
-dynamic	__lib_dna__api___knowledge_memory__GraphHttp	on unknown (`child` passed as a value)
-dynamic	__lib_dna__api___knowledge_memory__GraphItems	on unknown (`child` passed as a value)
-dynamic	__lib_dna__core___memory_store__GraphRules	on unknown (`child` passed as a value)
-dynamic	__lib_dna__core___record__GitJournal	on unknown (`child` passed as a value)|unknown (no instance)
-dynamic	__lib_dna__operations___memory_tail__KnowledgeVisibility	on unknown (`child` passed as a value)
-dynamic	__lib_dna__operations___organization_json__OrganizationJson	on unknown (`child` passed as a value)|unknown (no caller)|unknown (no instance)
--- dynamic	sites in core
-dynamic	__StdBytesBytesBuilder	on unknown (`child` passed as a value)|unknown (no caller)|unknown (no instance)
-dynamic	__lib_dna__core___native_json__NativeJson	on unknown (`child` passed as a value)
-dynamic	__lib_dna__core___record__RowBatch	on unknown (`child` passed as a value)|unknown (no instance)
+dynamic	__StdBytesBytesBuilder	on main|unknown (no caller)
+dynamic	__StdJsonBuilder	on main|unknown (no instance)
+dynamic	__lib_dna__api___http__Http	on main|unknown (no caller)|unknown (no instance)
+dynamic	__lib_dna__api___knowledge__KnowledgeWire	on main|unknown (no instance)
+dynamic	__lib_dna__api___knowledge_memory__GraphHttp	on main
+dynamic	__lib_dna__api___knowledge_memory__GraphItems	on main
+dynamic	__lib_dna__core___memory_store__GraphRules	on main
+dynamic	__lib_dna__core___record__GitJournal	on main|unknown (no instance)
+dynamic	__lib_dna__operations___memory_tail__KnowledgeVisibility	on main
+dynamic	__lib_dna__operations___organization_json__OrganizationJson	on main|unknown (no caller)|unknown (no instance)
+shared	dynamic	sites in core #d0e27670
 -- dynamic	sites in operations
-dynamic	__StdBytesBytesBuilder	on unknown (`child` passed as a value)|unknown (no instance)
-dynamic	__lib_dna__core___native_json__NativeJson	on unknown (`child` passed as a value)
--- dynamic	sites in the stdlib
-dynamic	__StdBytesBytesBuilder	on unknown (`child` passed as a value)|unknown (no caller)
-dynamic	__StdIterLines	on unknown (`child` passed as a value)
+dynamic	__StdBytesBytesBuilder	on main|unknown (no instance)
+dynamic	__lib_dna__core___native_json__NativeJson	on main
+shared	dynamic	sites in the stdlib #919aadb4
 
 == dna/api/tests/organization_candidate_api_test.hl
 row	SourceCandidateCases@main1	SourceCandidateCases	main	default
@@ -9664,11 +9659,7 @@ shared	dynamic	sites in the stdlib #919aadb4
 
 == dna/operations/tests/definition_drafts_test.hl
 row	DraftProof@main1	DraftProof	main	default
--- dynamic	sites in core
-dynamic	__StdBytesBytesBuilder	on main|unknown (no caller)|unknown (no instance)
-dynamic	__StdJsonBuilder	on main|unknown (no caller)|unknown (no instance)
-dynamic	__lib_dna__core___workflow_definition__BoundNodeRows	on main
-dynamic	__lib_dna__core___workflow_definition__DefStatRows	on main
+shared	dynamic	sites in core #c9841375
 -- dynamic	sites in operations
 dynamic	__StdBytesBytesBuilder	on main|unknown (no instance)
 dynamic	__StdJsonBuilder	on main|unknown (no caller)|unknown (no instance)
@@ -9690,141 +9681,68 @@ dynamic	__lib_dna__operations___definitions__Definitions	on main
 shared	dynamic	sites in the stdlib #919aadb4
 
 == dna/operations/tests/definitions_test.hl
--- dynamic	sites in core
-dynamic	__StdBytesBytesBuilder	on unknown (`invalid` passed as a value)|unknown (no caller)|unknown (no instance)
-dynamic	__StdJsonBuilder	on main|unknown (no caller)|unknown (no instance)
-dynamic	__lib_dna__core___workflow_definition__BoundNodeRows	on main
-dynamic	__lib_dna__core___workflow_definition__DefStatRows	on main
--- dynamic	sites in operations
-dynamic	__StdBytesBytesBuilder	on unknown (`invalid` passed as a value)|unknown (no instance)
-dynamic	__StdJsonBuilder	on unknown (`invalid` passed as a value)|unknown (no caller)|unknown (no instance)
-dynamic	__lib_dna__core___native_json__NativeJson	on unknown (`invalid` passed as a value)
-dynamic	__lib_dna__operations___definitions__DefinitionCodec	on unknown (`invalid` passed as a value)|unknown (no instance)
-dynamic	__lib_dna__operations___organization_json__OrganizationJson	on unknown (`invalid` passed as a value)|unknown (no instance)
+shared	dynamic	sites in core #c9841375
+shared	dynamic	sites in operations #547a6538
 -- dynamic	sites in operations/tests
-dynamic	CapturedProvider	on main|unknown (`invalid` passed as a value)
+dynamic	CapturedProvider	on main
 dynamic	__lib_dna__core___workflow_definition__WorkflowCatalog	on main
 dynamic	__lib_dna__operations___definitions__DeclaredWorkflowCatalog	on main
-dynamic	__lib_dna__operations___definitions__Definitions	on main|unknown (`invalid` passed as a value)
--- dynamic	sites in the stdlib
-dynamic	__StdBytesBytesBuilder	on unknown (`invalid` passed as a value)|unknown (no caller)
-dynamic	__StdIterLines	on unknown (`invalid` passed as a value)
+dynamic	__lib_dna__operations___definitions__Definitions	on main
+shared	dynamic	sites in the stdlib #919aadb4
 
 == dna/operations/tests/governance_admission_test.hl
--- dynamic	sites in core
-dynamic	__StdBytesBytesBuilder	on main|unknown (`subject` passed as a value)|unknown (no instance)
-dynamic	__StdJsonBuilder	on main|unknown (no caller)|unknown (no instance)
-dynamic	__lib_dna__core___knowledge_binding__KnowledgeBindingCodec	on main|unknown (no instance)
-dynamic	__lib_dna__core___knowledge_binding__KnowledgeBindingReplacements	on main
-dynamic	__lib_dna__core___knowledge_node_request__KnowledgeNodeRequestCodec	on main|unknown (no instance)
-dynamic	__lib_dna__core___native_json__NativeJson	on unknown (`subject` passed as a value)
-dynamic	__lib_dna__core___record__GitRecord	on main|unknown (`subject` passed as a value)|unknown (no caller)|unknown (no instance)
-dynamic	__lib_dna__core___record__RowBatch	on unknown (`subject` passed as a value)|unknown (no instance)
+shared	dynamic	sites in core #fd739ca5
 shared	dynamic	sites in operations #07070d4b
 -- dynamic	sites in operations/tests
 dynamic	Authority	on main
 dynamic	FaultRecord	on main
 dynamic	__StdBytesBytesBuilder	on main
-dynamic	__lib_dna__core___record__GitJournal	on main|unknown (`subject` passed as a value)
-dynamic	__lib_dna__core___record__GitReceipts	on unknown (`subject` passed as a value)
-dynamic	__lib_dna__core___record__GitRecord	on main|unknown (`subject` passed as a value)|unknown (`who` passed as a value)
+dynamic	__lib_dna__core___record__GitJournal	on main
+dynamic	__lib_dna__core___record__GitReceipts	on main
+dynamic	__lib_dna__core___record__GitRecord	on main
 dynamic	__lib_dna__operations___governance_admission__GovernanceCommands	on main
 dynamic	__lib_dna__operations___governance_admission__GovernanceJournal	on main
 dynamic	__lib_dna__operations___governance_command__GovernanceCommandCodec	on main
 shared	dynamic	sites in the stdlib #919aadb4
 
 == dna/operations/tests/governance_command_codec_test.hl
-dynamic	__StdBytesBytesBuilder	on unknown (`rejected` passed as a value)|unknown (no caller)|unknown (no instance)	in core
--- dynamic	sites in operations
-dynamic	__StdBytesBytesBuilder	on unknown (`rejected` passed as a value)|unknown (no instance)
-dynamic	__StdJsonBuilder	on unknown (`rejected` passed as a value)|unknown (no caller)|unknown (no instance)
-dynamic	__lib_dna__core___native_json__NativeJson	on unknown (`rejected` passed as a value)
-dynamic	__lib_dna__operations___definitions__DefinitionCodec	on unknown (`rejected` passed as a value)|unknown (no instance)
-dynamic	__lib_dna__operations___organization_json__OrganizationJson	on unknown (`rejected` passed as a value)|unknown (no instance)
+dynamic	__StdBytesBytesBuilder	on main|unknown (no caller)|unknown (no instance)	in core
+shared	dynamic	sites in operations #547a6538
 -- dynamic	sites in operations/tests
 dynamic	__StdBytesBytesBuilder	on main
-dynamic	__lib_dna__operations___governance_command__GovernanceCommandCodec	on main|unknown (`rejected` passed as a value)
-shared	dynamic	sites in the stdlib #60cf2d1f
+dynamic	__lib_dna__operations___governance_command__GovernanceCommandCodec	on main
+shared	dynamic	sites in the stdlib #919aadb4
 
 == dna/operations/tests/governance_knowledge_review_test.hl
--- dynamic	sites in core
-dynamic	__StdBytesBytesBuilder	on main|unknown (`candidate` passed as a value)|unknown (no instance)
-dynamic	__StdJsonBuilder	on main|unknown (no caller)|unknown (no instance)
-dynamic	__lib_dna__core___knowledge_binding__KnowledgeBindingCodec	on main|unknown (no instance)
-dynamic	__lib_dna__core___knowledge_binding__KnowledgeBindingReplacements	on main
-dynamic	__lib_dna__core___knowledge_node_request__KnowledgeNodeRequestCodec	on main|unknown (no instance)
-dynamic	__lib_dna__core___native_json__NativeJson	on unknown (`candidate` passed as a value)
-dynamic	__lib_dna__core___record__GitRecord	on main|unknown (`candidate` passed as a value)|unknown (no caller)|unknown (no instance)
-dynamic	__lib_dna__core___record__RowBatch	on unknown (`candidate` passed as a value)|unknown (no instance)
+shared	dynamic	sites in core #fd739ca5
 shared	dynamic	sites in operations #07070d4b
 -- dynamic	sites in operations/tests
 dynamic	NodeReviewAuthority	on main
 dynamic	__StdBytesBytesBuilder	on main
-dynamic	__StdJsonBuilder	on main|unknown (`candidate` passed as a value)
-dynamic	__lib_dna__core___record__GitJournal	on main|unknown (`candidate` passed as a value)
-dynamic	__lib_dna__core___record__GitReceipts	on main|unknown (`candidate` passed as a value)
-dynamic	__lib_dna__core___record__GitRecord	on main|unknown (`candidate` passed as a value)
+dynamic	__StdJsonBuilder	on main
+dynamic	__lib_dna__core___record__GitJournal	on main
+dynamic	__lib_dna__core___record__GitReceipts	on main
+dynamic	__lib_dna__core___record__GitRecord	on main
 dynamic	__lib_dna__operations___governance_admission__GovernanceCommands	on main
 dynamic	__lib_dna__operations___queries__Queries	on main
-shared	dynamic	sites in the stdlib #530e81ca
+shared	dynamic	sites in the stdlib #919aadb4
 
 == dna/operations/tests/governance_projection_test.hl
 -- dynamic	sites in core
-dynamic	__StdBytesBytesBuilder	on unknown (`admission` passed as a value)|unknown (no instance)
-dynamic	__StdJsonBuilder	on unknown (`admission` passed as a value)|unknown (no caller)|unknown (no instance)
-dynamic	__lib_dna__core___knowledge_binding__KnowledgeBindingCodec	on unknown (`admission` passed as a value)|unknown (no instance)
-dynamic	__lib_dna__core___knowledge_binding__KnowledgeBindingReplacements	on unknown (`admission` passed as a value)
-dynamic	__lib_dna__core___knowledge_node_request__KnowledgeNodeRequestCodec	on unknown (`admission` passed as a value)|unknown (no instance)
-dynamic	__lib_dna__core___native_json__NativeJson	on unknown (`admission` passed as a value)
-dynamic	__lib_dna__core___record__GitRecord	on unknown (`admission` passed as a value)|unknown (no caller)|unknown (no instance)
--- dynamic	sites in operations
-dynamic	__StdBytesBytesBuilder	on unknown (`admission` passed as a value)|unknown (no instance)
-dynamic	__StdJsonBuilder	on unknown (`admission` passed as a value)|unknown (no caller)|unknown (no instance)
-dynamic	__lib_dna__core___knowledge_binding__KnowledgeBindingCodec	on unknown (`admission` passed as a value)|unknown (no caller)|unknown (no instance)
-dynamic	__lib_dna__core___knowledge_edge_review__KnowledgeEdgeCodec	on unknown (`admission` passed as a value)|unknown (no caller)|unknown (no instance)
-dynamic	__lib_dna__core___knowledge_node_request__KnowledgeNodeRequestCodec	on unknown (`admission` passed as a value)|unknown (no instance)
-dynamic	__lib_dna__core___memory_spine__MemoryLeases	on unknown (`admission` passed as a value)
-dynamic	__lib_dna__core___memory_spine__MemoryLedger	on unknown (`admission` passed as a value)
-dynamic	__lib_dna__core___memory_spine__MemoryVault	on unknown (`admission` passed as a value)
-dynamic	__lib_dna__core___native_json__NativeJson	on unknown (`admission` passed as a value)
-dynamic	__lib_dna__core___organization_source_request__OrganizationSourceRequestCodec	on unknown (`admission` passed as a value)
-dynamic	__lib_dna__core___record__GitReceipts	on unknown (`admission` passed as a value)
-dynamic	__lib_dna__core___record__GitRecord	on unknown (`admission` passed as a value)|unknown (no instance)
-dynamic	__lib_dna__core___record__Texts	on unknown (`admission` passed as a value)
-dynamic	__lib_dna__core___routing__RoutedJournal	on unknown (`admission` passed as a value)
-dynamic	__lib_dna__operations___attempt_command__AttemptCommandCodec	on unknown (`admission` passed as a value)
-dynamic	__lib_dna__operations___definitions__DefinitionCodec	on unknown (`admission` passed as a value)|unknown (no instance)
-dynamic	__lib_dna__operations___governance_admission__GovernanceCommands	on unknown (`admission` passed as a value)|unknown (no caller)|unknown (no instance)
-dynamic	__lib_dna__operations___governance_admission__GovernanceJournal	on unknown (`admission` passed as a value)|unknown (no instance)
-dynamic	__lib_dna__operations___governance_admission__GovernanceReceipts	on unknown (`admission` passed as a value)
-dynamic	__lib_dna__operations___governance_command__GovernanceCommandCodec	on unknown (`admission` passed as a value)|unknown (no instance)
-dynamic	__lib_dna__operations___governance_policy__AuthorityPolicyCodec	on unknown (`admission` passed as a value)|unknown (no instance)
-dynamic	__lib_dna__operations___governance_projection__GovernanceProjection	on unknown (`admission` passed as a value)|unknown (no instance)
-dynamic	__lib_dna__operations___knowledge_binding_command__KnowledgeBindingCommandCodec	on unknown (`admission` passed as a value)|unknown (no caller)|unknown (no instance)
-dynamic	__lib_dna__operations___knowledge_command__KnowledgeCommandCodec	on unknown (`admission` passed as a value)|unknown (no caller)|unknown (no instance)
-dynamic	__lib_dna__operations___knowledge_edge_command__KnowledgeEdgeCommandCodec	on unknown (`admission` passed as a value)|unknown (no caller)|unknown (no instance)
-dynamic	__lib_dna__operations___knowledge_edge_command__StrictKnowledgeDirectEdgeFacts	on unknown (`admission` passed as a value)|unknown (no caller)|unknown (no instance)
-dynamic	__lib_dna__operations___knowledge_node_command__KnowledgeNodeCommandCodec	on unknown (`admission` passed as a value)|unknown (no instance)
-dynamic	__lib_dna__operations___organization_admission__OrganizationAdmission	on unknown (`admission` passed as a value)
-dynamic	__lib_dna__operations___organization_application__OrganizationApplication	on unknown (`admission` passed as a value)
-dynamic	__lib_dna__operations___organization_command__OrganizationCommandCodec	on unknown (`admission` passed as a value)|unknown (no instance)
-dynamic	__lib_dna__operations___organization_json__OrganizationJson	on unknown (`admission` passed as a value)|unknown (no instance)
-dynamic	__lib_dna__operations___organization_projection__OrganizationProjection	on unknown (`admission` passed as a value)
-dynamic	__lib_dna__operations___organization_review_command__OrganizationReviewCommandCodec	on unknown (`admission` passed as a value)|unknown (no instance)
-dynamic	__lib_dna__operations___person_retirement__PersonRetirement	on unknown (`admission` passed as a value)
-dynamic	__lib_dna__operations___person_retirement__PersonRetirementCodec	on unknown (`admission` passed as a value)
-dynamic	__lib_dna__operations___person_retirement__RetirementPrefix	on unknown (`admission` passed as a value)
-dynamic	__lib_dna__operations___queries__Queries	on unknown (`admission` passed as a value)|unknown (no instance)
-dynamic	__lib_dna__operations___structure_command__StructureCommandCodec	on unknown (`admission` passed as a value)
-dynamic	__lib_dna__operations___task_command__TaskCommandCodec	on unknown (`admission` passed as a value)
-dynamic	__lib_dna__operations___task_create_command__TaskCreateCommandCodec	on unknown (`admission` passed as a value)
-dynamic	__lib_dna__operations___task_projection__TaskProjection	on unknown (`admission` passed as a value)
+dynamic	__StdBytesBytesBuilder	on main|unknown (no instance)
+dynamic	__StdJsonBuilder	on main|unknown (no caller)|unknown (no instance)
+dynamic	__lib_dna__core___knowledge_binding__KnowledgeBindingCodec	on main|unknown (no instance)
+dynamic	__lib_dna__core___knowledge_binding__KnowledgeBindingReplacements	on main
+dynamic	__lib_dna__core___knowledge_node_request__KnowledgeNodeRequestCodec	on main|unknown (no instance)
+dynamic	__lib_dna__core___native_json__NativeJson	on main
+dynamic	__lib_dna__core___record__GitRecord	on main|unknown (no caller)|unknown (no instance)
+shared	dynamic	sites in operations #07070d4b
 -- dynamic	sites in operations/tests
-dynamic	__StdJsonBuilder	on main|unknown (`candidate` passed as a value)|unknown (`ratified` passed as a value)|unknown (`requested` passed as a value)|unknown (`retired` passed as a value)
+dynamic	__StdJsonBuilder	on main
 dynamic	__lib_dna__core___journal__MemJournal	on main
-dynamic	__lib_dna__operations___governance_admission__GovernanceCommands	on unknown (`admission` passed as a value)
-dynamic	__lib_dna__operations___governance_command__GovernanceCommandCodec	on unknown (`admission` passed as a value)
-shared	dynamic	sites in the stdlib #530e81ca
+dynamic	__lib_dna__operations___governance_admission__GovernanceCommands	on main
+dynamic	__lib_dna__operations___governance_command__GovernanceCommandCodec	on main
+shared	dynamic	sites in the stdlib #919aadb4
 
 == dna/operations/tests/knowledge_admission_test.hl
 root	App	the entry
@@ -9975,15 +9893,7 @@ dynamic	__lib_dna__operations___knowledge_policy__KnowledgePolicyCodec	on main
 shared	dynamic	sites in the stdlib #919aadb4
 
 == dna/operations/tests/organization_admission_test.hl
--- dynamic	sites in core
-dynamic	__StdBytesBytesBuilder	on main|unknown (`command` passed as a value)|unknown (no instance)
-dynamic	__StdJsonBuilder	on main|unknown (no caller)|unknown (no instance)
-dynamic	__lib_dna__core___knowledge_binding__KnowledgeBindingCodec	on main|unknown (no instance)
-dynamic	__lib_dna__core___knowledge_binding__KnowledgeBindingReplacements	on main
-dynamic	__lib_dna__core___knowledge_node_request__KnowledgeNodeRequestCodec	on main|unknown (no instance)
-dynamic	__lib_dna__core___native_json__NativeJson	on unknown (`command` passed as a value)
-dynamic	__lib_dna__core___record__GitRecord	on main|unknown (`command` passed as a value)|unknown (no caller)|unknown (no instance)
-dynamic	__lib_dna__core___record__RowBatch	on main|unknown (no instance)
+shared	dynamic	sites in core #fd739ca5
 shared	dynamic	sites in operations #07070d4b
 -- dynamic	sites in operations/tests
 dynamic	Authority	on main
@@ -9992,7 +9902,7 @@ dynamic	SourceInputs	on main
 dynamic	__lib_dna__core___journal__MemJournal	on main
 dynamic	__lib_dna__core___organization_source_request__OrganizationSourceRequestCodec	on main
 dynamic	__lib_dna__core___record__GitJournal	on main
-dynamic	__lib_dna__core___record__GitRecord	on main|unknown (`command` passed as a value)
+dynamic	__lib_dna__core___record__GitRecord	on main
 dynamic	__lib_dna__operations___governance_admission__GovernanceCommands	on main
 dynamic	__lib_dna__operations___governance_admission__GovernanceJournal	on main
 dynamic	__lib_dna__operations___governance_command__GovernanceCommandCodec	on main
@@ -10045,26 +9955,7 @@ dynamic	__lib_dna__operations___queries__Queries	on main
 shared	dynamic	sites in the stdlib #919aadb4
 
 == dna/operations/tests/organization_projection_test.hl
--- dynamic	sites in core
-dynamic	__StdBytesBytesBuilder	on main|unknown (`who` passed as a value)|unknown (no instance)
-dynamic	__StdJsonBuilder	on main|unknown (no caller)|unknown (no instance)
-dynamic	__lib_dna__core___knowledge_binding__KnowledgeBindingCodec	on main|unknown (no instance)
-dynamic	__lib_dna__core___knowledge_binding__KnowledgeBindingReplacements	on main
-dynamic	__lib_dna__core___knowledge_edge_review__KnowledgeEdgeCodec	on main|unknown (no instance)
-dynamic	__lib_dna__core___knowledge_node_request__KnowledgeNodeRequestCodec	on main|unknown (no instance)
-dynamic	__lib_dna__core___native_json__NativeJson	on unknown (`who` passed as a value)
-dynamic	__lib_dna__core___organization_source_request__OrganizationSourceRequestCodec	on main|unknown (no instance)
-dynamic	__lib_dna__core___record__GitRecord	on main|unknown (`who` passed as a value)|unknown (no caller)|unknown (no instance)
-dynamic	__lib_dna__core___record__RowBatch	on main|unknown (no instance)
-dynamic	__lib_dna__core___review__Review	on main
-dynamic	__lib_dna__core___workflow_runtime__ChildSpecRows	on main
-dynamic	__lib_dna__core___workflow_runtime__Executions	on main
-dynamic	__lib_dna__core___workflow_runtime__LeafSpecRows	on main
-dynamic	__lib_dna__core___workflow_runtime__StepRun	on main
-dynamic	__lib_dna__core___workflow_runtime__TaskRun	on main
-dynamic	__lib_dna__core___workflow_runtime__WorkRun	on main
-dynamic	__lib_dna__core___workflow_runtime__WorkflowRun	on main
-dynamic	__lib_dna__core___workflow_runtime__WorkflowRuntime	on main
+shared	dynamic	sites in core #55125a37
 shared	dynamic	sites in operations #e3c33461
 -- dynamic	sites in operations/tests
 dynamic	ApplicationJournal	on main
@@ -10078,7 +9969,7 @@ dynamic	__lib_dna__core___ownership__Ownership	on main
 dynamic	__lib_dna__core___record__GitJournal	on main
 dynamic	__lib_dna__core___record__GitLeases	on main
 dynamic	__lib_dna__core___record__GitReceipts	on main
-dynamic	__lib_dna__core___record__GitRecord	on main|unknown (`who` passed as a value)
+dynamic	__lib_dna__core___record__GitRecord	on main
 dynamic	__lib_dna__core___review__Review	on main
 dynamic	__lib_dna__core___verification__HaleVerification	on main
 dynamic	__lib_dna__core___workspace__IsolatedWorktrees	on main
@@ -10174,13 +10065,11 @@ dynamic	__lib_dna__core___native_json__NativeJson	on main
 dynamic	__lib_dna__core___record__RowBatch	on main|unknown (no instance)
 shared	dynamic	sites in operations #21f552fe
 -- dynamic	sites in operations/tests
-dynamic	__StdJsonBuilder	on unknown (`propose` passed as a value)
+dynamic	__StdJsonBuilder	on main
 dynamic	__lib_dna__core___record__GitJournal	on main
 dynamic	__lib_dna__core___record__GitReceipts	on main
 dynamic	__lib_dna__operations___queries__Queries	on main
--- dynamic	sites in the stdlib
-dynamic	__StdBytesBytesBuilder	on unknown (`propose` passed as a value)|unknown (no caller)
-dynamic	__StdIterLines	on unknown (`propose` passed as a value)
+shared	dynamic	sites in the stdlib #919aadb4
 
 == dna/operations/tests/task_administration_test.hl
 row	TaskCases@main1	TaskCases	main	default
@@ -10647,10 +10536,10 @@ shared	dynamic	sites in the stdlib #c3a51769
 == dna/tests/batch_apply_test.hl
 root	App	the entry
 row	App@literal1	App	main	default
-shared	dynamic	sites in core #b970ca30
+shared	dynamic	sites in core #d0e27670
 -- dynamic	sites in tests
-dynamic	__lib_dna__core___record__GitJournal	on unknown (`check` passed as a value)
-dynamic	__lib_dna__core___record__GitReceipts	on unknown (`check` passed as a value)
+dynamic	__lib_dna__core___record__GitJournal	on main
+dynamic	__lib_dna__core___record__GitReceipts	on main
 
 == dna/tests/binding_store_test.hl
 root	App	the entry
@@ -10663,14 +10552,8 @@ dynamic	__lib_dna__core___memory_store__Pq	on main
 == dna/tests/body_claim_expired_test.hl
 root	App	the entry
 row	App@literal1	App	main	default
--- dynamic	sites in core
-dynamic	__StdBytesBytesBuilder	on main|unknown (`rows` passed as a value)|unknown (no caller)|unknown (no instance)
-dynamic	__lib_dna__core___native_json__NativeJson	on unknown (`rows` passed as a value)
-dynamic	__lib_dna__core___record__GitRecord	on main|unknown (no caller)|unknown (no instance)
-dynamic	__lib_dna__core___record__RowBatch	on unknown (`rows` passed as a value)|unknown (no instance)
--- dynamic	sites in tests
-dynamic	__lib_dna__core___record__GitJournal	on unknown (`rows` passed as a value)
-dynamic	__lib_dna__core___record__GitRecord	on main
+shared	dynamic	sites in core #b2c4d9f5
+shared	dynamic	sites in tests #896d9fd0
 
 == dna/tests/body_lease_blocked_test.hl
 root	App	the entry
@@ -10724,41 +10607,15 @@ dynamic	__lib_dna__core___record__GitRecord	on main
 
 == dna/tests/command_relay_trust_test.hl
 row	App@main1	App	main	default
--- dynamic	sites in dna/core
-dynamic	__StdBytesBytesBuilder	on unknown (`check` passed as a value)|unknown (no instance)
-dynamic	__StdJsonBuilder	on unknown (`check` passed as a value)|unknown (no caller)|unknown (no instance)
-dynamic	__lib_dna__core___knowledge_binding__KnowledgeBindingCodec	on unknown (`check` passed as a value)|unknown (no instance)
-dynamic	__lib_dna__core___knowledge_binding__KnowledgeBindingReplacements	on unknown (`check` passed as a value)
-dynamic	__lib_dna__core___knowledge_node_request__KnowledgeNodeRequestCodec	on unknown (`check` passed as a value)|unknown (no instance)
-dynamic	__lib_dna__core___memory_embed__Floats	on unknown (`check` passed as a value)|unknown (no caller)
-dynamic	__lib_dna__core___memory_embed__Words	on unknown (`check` passed as a value)
-dynamic	__lib_dna__core___memory_store__GraphRules	on unknown (`check` passed as a value)|unknown (no instance)
-dynamic	__lib_dna__core___native_json__NativeJson	on unknown (`check` passed as a value)
-dynamic	__lib_dna__core___record__GitRecord	on unknown (`check` passed as a value)|unknown (no caller)|unknown (no instance)
-dynamic	__lib_dna__core___record__RowBatch	on unknown (`check` passed as a value)|unknown (no instance)
-dynamic	__lib_dna__core__pond__db___args__Args	on unknown (`check` passed as a value)|unknown (no caller)|unknown (no instance)
--- dynamic	sites in dna/host
-dynamic	__StdJsonBuilder	on unknown (`check` passed as a value)|unknown (no caller)|unknown (no instance)
-dynamic	__lib_dna__core___knowledge_binding__KnowledgeBindingCodec	on unknown (`check` passed as a value)
-dynamic	__lib_dna__core___knowledge_edge_review__KnowledgeEdgeCodec	on unknown (`check` passed as a value)
-dynamic	__lib_dna__core___knowledge_node_request__KnowledgeNodeRequestCodec	on unknown (`check` passed as a value)
-dynamic	__lib_dna__core___memory_store__Pq	on unknown (`check` passed as a value)|unknown (no caller)
-dynamic	__lib_dna__core___ownership__Ownership	on unknown (`check` passed as a value)|unknown (no caller)
-dynamic	__lib_dna__core___record__GitJournal	on unknown (`check` passed as a value)|unknown (no caller)|unknown (no instance)
-dynamic	__lib_dna__core___record__GitReceipts	on unknown (`check` passed as a value)|unknown (no caller)|unknown (no instance)
-dynamic	__lib_dna__core___record__GitRecord	on unknown (`check` passed as a value)|unknown (no caller)|unknown (no instance)
-dynamic	__lib_dna__core___routing__RoutedJournal	on unknown (`check` passed as a value)|unknown (no caller)|unknown (no instance)
-dynamic	__lib_dna__host___projection__Projection	on unknown (`check` passed as a value)|unknown (no instance)
-dynamic	__lib_dna__organization_runtime___authority__HostAuthority	on unknown (`check` passed as a value)|unknown (no caller)
--- dynamic	sites in dna/organization_runtime
-dynamic	__lib_dna__core___record__GitJournal	on unknown (`check` passed as a value)|unknown (no instance)
-dynamic	__lib_dna__core___record__GitRecord	on unknown (`check` passed as a value)
+shared	dynamic	sites in dna/core #9cea11a6
+shared	dynamic	sites in dna/host #2925b732
+shared	dynamic	sites in dna/organization_runtime #1a33f9eb
 -- dynamic	sites in dna/tests
-dynamic	__StdJsonBuilder	on main|unknown (`check` passed as a value)
-dynamic	__lib_dna__core___memory_spine__Memory	on main|unknown (`check` passed as a value)
-dynamic	__lib_dna__core___record__GitJournal	on main|unknown (`check` passed as a value)
-dynamic	__lib_dna__host___host__NodeRelay	on unknown (`check` passed as a value)
-shared	dynamic	sites in the stdlib #f3f955da
+dynamic	__StdJsonBuilder	on main
+dynamic	__lib_dna__core___memory_spine__Memory	on main
+dynamic	__lib_dna__core___record__GitJournal	on main
+dynamic	__lib_dna__host___host__NodeRelay	on main
+shared	dynamic	sites in the stdlib #919aadb4
 
 == dna/tests/compose_projects_test.hl
 
@@ -10966,12 +10823,12 @@ shared	dynamic	sites in the stdlib #c3a51769
 root	App	the entry
 row	App@literal1	App	main	default
 -- dynamic	sites in dna/core
-dynamic	__StdBytesBytesBuilder	on unknown (`observed` passed as a value)|unknown (no caller)|unknown (no instance)
-dynamic	__lib_dna__core___native_json__NativeJson	on unknown (`observed` passed as a value)
-dynamic	__lib_dna__core___record__RowBatch	on unknown (`observed` passed as a value)|unknown (no instance)
+dynamic	__StdBytesBytesBuilder	on main|unknown (no caller)|unknown (no instance)
+dynamic	__lib_dna__core___native_json__NativeJson	on main
+dynamic	__lib_dna__core___record__RowBatch	on main|unknown (no instance)
 -- dynamic	sites in dna/tests
 dynamic	__lib_dna__core___memory_spine__Memory	on main
-dynamic	__lib_dna__core___record__GitJournal	on main|unknown (`observed` passed as a value)
+dynamic	__lib_dna__core___record__GitJournal	on main
 dynamic	__lib_dna__host___forge_github__FileForge	on main
 
 == dna/tests/genome_pull_test.hl
@@ -11024,14 +10881,9 @@ dynamic	__lib_dna__core___record__GitJournal	on main
 dynamic	__lib_dna__core___record__GitRecord	on main
 
 == dna/tests/graph_holes_edges_test.hl
-dynamic	__lib_dna__operations___graph_ingest__GraphIngest	on unknown (`graph` passed as a value)	in tests
--- dynamic	sites in operations
-dynamic	__StdIterLines	on unknown (`graph` passed as a value)
-dynamic	__StdJsonBuilder	on unknown (`graph` passed as a value)|unknown (no caller)|unknown (no instance)
-dynamic	__lib_dna__operations___graph__GraphEdge	on unknown (`graph` passed as a value)|unknown (no caller)|unknown (no instance)
--- dynamic	sites in the stdlib
-dynamic	__StdBytesBytesBuilder	on unknown (`graph` passed as a value)|unknown (no caller)
-dynamic	__StdIterLines	on unknown (`graph` passed as a value)
+dynamic	__lib_dna__operations___graph_ingest__GraphIngest	on main	in tests
+shared	dynamic	sites in operations #f6dd8606
+shared	dynamic	sites in the stdlib #919aadb4
 
 == dna/tests/graph_holes_test.hl
 row	App@main1	App	main	default
@@ -11112,7 +10964,7 @@ shared	dynamic	sites in core #b2c4d9f5
 == dna/tests/hands_test.hl
 root	App	the entry
 row	App@literal1	App	main	default
-dynamic	__lib_dna__core___journal__MemJournal	on unknown (`check` passed as a value)	in tests
+dynamic	__lib_dna__core___journal__MemJournal	on main	in tests
 
 == dna/tests/harness_test.hl
 root	App	the entry
@@ -11188,12 +11040,9 @@ shared	dynamic	sites in the stdlib #919aadb4
 == dna/tests/heart_reading_test.hl
 root	App	the entry
 row	App@literal1	App	main	default
-shared	dynamic	sites in core #ec318237
+shared	dynamic	sites in core #d0e27670
 shared	dynamic	sites in core/pond/realtime/nats #164fddea
--- dynamic	sites in tests
-dynamic	__StdSecretCredential	on main
-dynamic	__lib_dna__core___record__GitJournal	on main|unknown (`concerns` passed as a value)
-dynamic	__lib_dna__core__pond__realtime__nats___client__NatsClient	on main
+shared	dynamic	sites in tests #07fed850
 shared	dynamic	sites in the stdlib #c3a51769
 
 == dna/tests/hosted_hat_test.hl
@@ -11243,22 +11092,22 @@ dynamic	__lib_dna__core___record__RowBatch	on main
 == dna/tests/ingest_test.hl
 root	App	the entry
 row	App@literal1	App	main	default
-shared	dynamic	sites in core #b970ca30
+shared	dynamic	sites in core #d0e27670
 -- dynamic	sites in operations
-dynamic	__StdBytesBytesBuilder	on unknown (`check` passed as a value)|unknown (no instance)
-dynamic	__StdJsonBuilder	on unknown (`check` passed as a value)|unknown (no caller)|unknown (no instance)
-dynamic	__lib_dna__core___native_json__NativeJson	on unknown (`check` passed as a value)
-dynamic	__lib_dna__operations___definitions__DefinitionCodec	on unknown (`check` passed as a value)|unknown (no instance)
-dynamic	__lib_dna__operations___governance_command__GovernanceCommandCodec	on unknown (`check` passed as a value)|unknown (no instance)
-dynamic	__lib_dna__operations___organization_json__OrganizationJson	on unknown (`check` passed as a value)|unknown (no instance)
-dynamic	__lib_dna__operations___task_command__TaskCommandCodec	on unknown (`check` passed as a value)|unknown (no instance)
+dynamic	__StdBytesBytesBuilder	on main|unknown (no instance)
+dynamic	__StdJsonBuilder	on main|unknown (no caller)|unknown (no instance)
+dynamic	__lib_dna__core___native_json__NativeJson	on main
+dynamic	__lib_dna__operations___definitions__DefinitionCodec	on main|unknown (no instance)
+dynamic	__lib_dna__operations___governance_command__GovernanceCommandCodec	on main|unknown (no instance)
+dynamic	__lib_dna__operations___organization_json__OrganizationJson	on main|unknown (no instance)
+dynamic	__lib_dna__operations___task_command__TaskCommandCodec	on main|unknown (no instance)
 -- dynamic	sites in tests
-dynamic	__lib_dna__core___journal__FileReceipts	on unknown (`check` passed as a value)
-dynamic	__lib_dna__core___journal__MemJournal	on unknown (`check` passed as a value)
-dynamic	__lib_dna__core___record__GitJournal	on unknown (`check` passed as a value)
-dynamic	__lib_dna__core___record__GitReceipts	on unknown (`check` passed as a value)
-dynamic	__lib_dna__operations___attempt_command__AttemptCommandCodec	on unknown (`check` passed as a value)
-shared	dynamic	sites in the stdlib #f3f955da
+dynamic	__lib_dna__core___journal__FileReceipts	on main
+dynamic	__lib_dna__core___journal__MemJournal	on main
+dynamic	__lib_dna__core___record__GitJournal	on main
+dynamic	__lib_dna__core___record__GitReceipts	on main
+dynamic	__lib_dna__operations___attempt_command__AttemptCommandCodec	on main
+shared	dynamic	sites in the stdlib #919aadb4
 
 == dna/tests/init_with_test.hl
 row	App@main1	App	main	default
@@ -11307,36 +11156,14 @@ dynamic	__lib_dna__core___record__GitReceipts	on main
 == dna/tests/knowledge_binding_recovery_test.hl
 root	App	the entry
 row	App@literal1	App	main	default
--- dynamic	sites in core
-dynamic	__StdBytesBytesBuilder	on main|unknown (`event` passed as a value)|unknown (no instance)
-dynamic	__StdJsonBuilder	on main|unknown (`event` passed as a value)|unknown (no caller)|unknown (no instance)
-dynamic	__lib_dna__core___knowledge_binding__KnowledgeBindingCodec	on main
-dynamic	__lib_dna__core___knowledge_binding__KnowledgeBindingReplacements	on unknown (`event` passed as a value)
-dynamic	__lib_dna__core___knowledge_edge_review__KnowledgeEdgeCodec	on main
-dynamic	__lib_dna__core___knowledge_node_request__KnowledgeNodeRequestCodec	on main|unknown (`event` passed as a value)|unknown (no instance)
-dynamic	__lib_dna__core___memory_embed__Floats	on main|unknown (no caller)
-dynamic	__lib_dna__core___memory_embed__Words	on main
-dynamic	__lib_dna__core___memory_store__GraphRules	on main|unknown (no instance)
-dynamic	__lib_dna__core___native_json__NativeJson	on unknown (`event` passed as a value)
-dynamic	__lib_dna__core___organization_source_request__OrganizationSourceRequestCodec	on main|unknown (no instance)
-dynamic	__lib_dna__core___record__RowBatch	on main
-dynamic	__lib_dna__core___review__Review	on main
-dynamic	__lib_dna__core___workflow_runtime__ChildSpecRows	on main
-dynamic	__lib_dna__core___workflow_runtime__Executions	on main
-dynamic	__lib_dna__core___workflow_runtime__LeafSpecRows	on main
-dynamic	__lib_dna__core___workflow_runtime__StepRun	on main
-dynamic	__lib_dna__core___workflow_runtime__TaskRun	on main
-dynamic	__lib_dna__core___workflow_runtime__WorkRun	on main
-dynamic	__lib_dna__core___workflow_runtime__WorkflowRun	on main
-dynamic	__lib_dna__core___workflow_runtime__WorkflowRuntime	on main
-dynamic	__lib_dna__core__pond__db___args__Args	on main|unknown (no caller)|unknown (no instance)
+shared	dynamic	sites in core #45d19eb1
 shared	dynamic	sites in operations #11da8ca7
 -- dynamic	sites in tests
 dynamic	BindingStageJournal	on main
 dynamic	__StdJsonBuilder	on main
 dynamic	__lib_dna__core___assembly__Board	on main
 dynamic	__lib_dna__core___assembly__Dna	on main
-dynamic	__lib_dna__core___knowledge_binding__KnowledgeBindingCodec	on main|unknown (`event` passed as a value)
+dynamic	__lib_dna__core___knowledge_binding__KnowledgeBindingCodec	on main
 dynamic	__lib_dna__core___knowledge_record__KnowledgeRecord	on main
 dynamic	__lib_dna__core___memory_store__Pq	on main
 dynamic	__lib_dna__core___record__GitJournal	on main
@@ -11345,7 +11172,7 @@ dynamic	__lib_dna__core___verification__HaleVerification	on main
 dynamic	__lib_dna__operations___knowledge_binding_command__KnowledgeBindingCommandCodec	on main
 dynamic	__lib_dna__operations___knowledge_command__KnowledgeCommandCodec	on main
 dynamic	__lib_dna__operations___organization_json__OrganizationJson	on main
-shared	dynamic	sites in the stdlib #8d361d8b
+shared	dynamic	sites in the stdlib #919aadb4
 
 == dna/tests/knowledge_context_test.hl
 root	App	the entry
@@ -11379,42 +11206,20 @@ shared	dynamic	sites in the stdlib #c3a51769
 root	App	the entry
 row	App@literal1	App	main	default
 -- dynamic	sites in tests
-dynamic	__StdBytesBytesBuilder	on unknown (`check` passed as a value)
-dynamic	__StdJsonBuilder	on unknown (`check` passed as a value)
-shared	dynamic	sites in the stdlib #f3f955da
+dynamic	__StdBytesBytesBuilder	on main
+dynamic	__StdJsonBuilder	on main
+shared	dynamic	sites in the stdlib #919aadb4
 
 == dna/tests/knowledge_edge_review_test.hl
 root	App	the entry
 row	App@literal1	App	main	default
--- dynamic	sites in core
-dynamic	__StdBytesBytesBuilder	on main|unknown (`event` passed as a value)|unknown (no instance)
-dynamic	__StdJsonBuilder	on main|unknown (`event` passed as a value)|unknown (no caller)|unknown (no instance)
-dynamic	__lib_dna__core___knowledge_binding__KnowledgeBindingCodec	on main|unknown (`event` passed as a value)
-dynamic	__lib_dna__core___knowledge_binding__KnowledgeBindingReplacements	on unknown (`event` passed as a value)
-dynamic	__lib_dna__core___knowledge_edge_review__KnowledgeEdgeCodec	on main
-dynamic	__lib_dna__core___knowledge_node_request__KnowledgeNodeRequestCodec	on main|unknown (`event` passed as a value)|unknown (no instance)
-dynamic	__lib_dna__core___memory_embed__Floats	on main|unknown (no caller)
-dynamic	__lib_dna__core___memory_embed__Words	on main
-dynamic	__lib_dna__core___memory_store__GraphRules	on main|unknown (no instance)
-dynamic	__lib_dna__core___native_json__NativeJson	on unknown (`event` passed as a value)
-dynamic	__lib_dna__core___organization_source_request__OrganizationSourceRequestCodec	on main|unknown (no instance)
-dynamic	__lib_dna__core___record__RowBatch	on main
-dynamic	__lib_dna__core___review__Review	on main
-dynamic	__lib_dna__core___workflow_runtime__ChildSpecRows	on main
-dynamic	__lib_dna__core___workflow_runtime__Executions	on main
-dynamic	__lib_dna__core___workflow_runtime__LeafSpecRows	on main
-dynamic	__lib_dna__core___workflow_runtime__StepRun	on main
-dynamic	__lib_dna__core___workflow_runtime__TaskRun	on main
-dynamic	__lib_dna__core___workflow_runtime__WorkRun	on main
-dynamic	__lib_dna__core___workflow_runtime__WorkflowRun	on main
-dynamic	__lib_dna__core___workflow_runtime__WorkflowRuntime	on main
-dynamic	__lib_dna__core__pond__db___args__Args	on main|unknown (no caller)|unknown (no instance)
+shared	dynamic	sites in core #45d19eb1
 shared	dynamic	sites in operations #11da8ca7
 -- dynamic	sites in tests
 dynamic	EdgeStageJournal	on main
 dynamic	__lib_dna__core___assembly__Board	on main
 dynamic	__lib_dna__core___assembly__Dna	on main
-dynamic	__lib_dna__core___knowledge_edge_review__KnowledgeEdgeCodec	on main|unknown (`event` passed as a value)
+dynamic	__lib_dna__core___knowledge_edge_review__KnowledgeEdgeCodec	on main
 dynamic	__lib_dna__core___knowledge_record__KnowledgeRecord	on main
 dynamic	__lib_dna__core___memory_store__Pq	on main
 dynamic	__lib_dna__core___ownership__Ownership	on main
@@ -11424,7 +11229,7 @@ dynamic	__lib_dna__core___verification__HaleVerification	on main
 dynamic	__lib_dna__operations___knowledge_command__KnowledgeCommandCodec	on main
 dynamic	__lib_dna__operations___knowledge_edge_command__KnowledgeEdgeCommandCodec	on main
 dynamic	__lib_dna__operations___knowledge_edge_command__StrictKnowledgeDirectEdgeFacts	on main
-shared	dynamic	sites in the stdlib #8d361d8b
+shared	dynamic	sites in the stdlib #919aadb4
 
 == dna/tests/knowledge_events_test.hl
 root	App	the entry
@@ -11439,31 +11244,13 @@ shared	dynamic	sites in the stdlib #c3a51769
 == dna/tests/knowledge_node_recovery_test.hl
 root	App	the entry
 row	App@literal1	App	main	default
--- dynamic	sites in core
-dynamic	__StdBytesBytesBuilder	on main|unknown (`request` passed as a value)|unknown (no instance)
-dynamic	__StdJsonBuilder	on main|unknown (no caller)|unknown (no instance)
-dynamic	__lib_dna__core___knowledge_binding__KnowledgeBindingCodec	on main|unknown (no instance)
-dynamic	__lib_dna__core___knowledge_binding__KnowledgeBindingReplacements	on main
-dynamic	__lib_dna__core___knowledge_edge_review__KnowledgeEdgeCodec	on main|unknown (no instance)
-dynamic	__lib_dna__core___knowledge_node_request__KnowledgeNodeRequestCodec	on main|unknown (no instance)
-dynamic	__lib_dna__core___native_json__NativeJson	on unknown (`request` passed as a value)
-dynamic	__lib_dna__core___organization_source_request__OrganizationSourceRequestCodec	on main|unknown (no instance)
-dynamic	__lib_dna__core___record__RowBatch	on main|unknown (no instance)
-dynamic	__lib_dna__core___review__Review	on main
-dynamic	__lib_dna__core___workflow_runtime__ChildSpecRows	on main
-dynamic	__lib_dna__core___workflow_runtime__Executions	on main
-dynamic	__lib_dna__core___workflow_runtime__LeafSpecRows	on main
-dynamic	__lib_dna__core___workflow_runtime__StepRun	on main
-dynamic	__lib_dna__core___workflow_runtime__TaskRun	on main
-dynamic	__lib_dna__core___workflow_runtime__WorkRun	on main
-dynamic	__lib_dna__core___workflow_runtime__WorkflowRun	on main
-dynamic	__lib_dna__core___workflow_runtime__WorkflowRuntime	on main
+shared	dynamic	sites in core #c9a20264
 -- dynamic	sites in tests
 dynamic	NodeStageJournal	on main
 dynamic	__StdBytesBytesBuilder	on main
 dynamic	__lib_dna__core___assembly__Board	on main
 dynamic	__lib_dna__core___assembly__Dna	on main
-dynamic	__lib_dna__core___knowledge_node_request__KnowledgeNodeRequestCodec	on main|unknown (`request` passed as a value)
+dynamic	__lib_dna__core___knowledge_node_request__KnowledgeNodeRequestCodec	on main
 dynamic	__lib_dna__core___ownership__Ownership	on main
 dynamic	__lib_dna__core___record__GitJournal	on main
 dynamic	__lib_dna__core___record__GitReceipts	on main
@@ -11474,44 +11261,16 @@ shared	dynamic	sites in the stdlib #919aadb4
 -- App@main1	App
 row	~	App	main	default
 row	~.probe	Probe	main	inherited
--- dynamic	sites in dna/core
-dynamic	__StdBytesBytesBuilder	on unknown (`maximum` passed as a value)|unknown (no instance)
-dynamic	__StdJsonBuilder	on unknown (`maximum` passed as a value)|unknown (no caller)|unknown (no instance)
-dynamic	__lib_dna__core___knowledge_binding__KnowledgeBindingCodec	on unknown (`maximum` passed as a value)|unknown (no instance)
-dynamic	__lib_dna__core___knowledge_binding__KnowledgeBindingReplacements	on unknown (`maximum` passed as a value)
-dynamic	__lib_dna__core___knowledge_node_request__KnowledgeNodeRequestCodec	on unknown (`maximum` passed as a value)|unknown (no instance)
-dynamic	__lib_dna__core___memory_embed__Floats	on unknown (`maximum` passed as a value)|unknown (no caller)
-dynamic	__lib_dna__core___memory_embed__Words	on unknown (`maximum` passed as a value)
-dynamic	__lib_dna__core___memory_store__GraphRules	on unknown (`maximum` passed as a value)|unknown (no instance)
-dynamic	__lib_dna__core___native_json__NativeJson	on unknown (`maximum` passed as a value)
-dynamic	__lib_dna__core___record__GitRecord	on unknown (`maximum` passed as a value)|unknown (no caller)|unknown (no instance)
-dynamic	__lib_dna__core___record__RowBatch	on unknown (`maximum` passed as a value)|unknown (no instance)
-dynamic	__lib_dna__core__pond__db___args__Args	on unknown (`maximum` passed as a value)|unknown (no caller)|unknown (no instance)
--- dynamic	sites in dna/host
-dynamic	__StdJsonBuilder	on unknown (`maximum` passed as a value)|unknown (no caller)|unknown (no instance)
-dynamic	__lib_dna__core___knowledge_binding__KnowledgeBindingCodec	on unknown (`maximum` passed as a value)
-dynamic	__lib_dna__core___knowledge_edge_review__KnowledgeEdgeCodec	on unknown (`maximum` passed as a value)
-dynamic	__lib_dna__core___knowledge_node_request__KnowledgeNodeRequestCodec	on unknown (`maximum` passed as a value)
-dynamic	__lib_dna__core___memory_store__Pq	on unknown (`maximum` passed as a value)|unknown (no caller)
-dynamic	__lib_dna__core___ownership__Ownership	on unknown (`maximum` passed as a value)|unknown (no caller)
-dynamic	__lib_dna__core___record__GitJournal	on unknown (`maximum` passed as a value)|unknown (no caller)|unknown (no instance)
-dynamic	__lib_dna__core___record__GitReceipts	on unknown (`maximum` passed as a value)|unknown (no caller)|unknown (no instance)
-dynamic	__lib_dna__core___record__GitRecord	on unknown (`maximum` passed as a value)|unknown (no caller)|unknown (no instance)
-dynamic	__lib_dna__core___routing__RoutedJournal	on unknown (`maximum` passed as a value)|unknown (no caller)|unknown (no instance)
-dynamic	__lib_dna__host___projection__Projection	on unknown (`maximum` passed as a value)|unknown (no instance)
-dynamic	__lib_dna__organization_runtime___authority__HostAuthority	on unknown (`maximum` passed as a value)|unknown (no caller)
--- dynamic	sites in dna/organization_runtime
-dynamic	__lib_dna__core___record__GitJournal	on unknown (`maximum` passed as a value)|unknown (no instance)
-dynamic	__lib_dna__core___record__GitRecord	on unknown (`maximum` passed as a value)
+shared	dynamic	sites in dna/core #9cea11a6
+shared	dynamic	sites in dna/host #2925b732
+shared	dynamic	sites in dna/organization_runtime #1a33f9eb
 -- dynamic	sites in dna/tests
-dynamic	__StdBytesBytesBuilder	on unknown (`controls` passed as a value)|unknown (`maximum` passed as a value)
-dynamic	__lib_dna__core___knowledge_node_request__KnowledgeNodeRequestCodec	on main|unknown (`check` passed as a value)|unknown (`maximum` passed as a value)|unknown (`request` passed as a value)
-dynamic	__lib_dna__core___memory_spine__Memory	on unknown (`check` passed as a value)|unknown (`maximum` passed as a value)
-dynamic	__lib_dna__core___record__GitJournal	on unknown (`check` passed as a value)|unknown (`maximum` passed as a value)
-dynamic	__lib_dna__host___host__NodeRelay	on unknown (`maximum` passed as a value)
--- dynamic	sites in the stdlib
-dynamic	__StdBytesBytesBuilder	on unknown (`maximum` passed as a value)|unknown (no caller)
-dynamic	__StdIterLines	on unknown (`maximum` passed as a value)
+dynamic	__StdBytesBytesBuilder	on main
+dynamic	__lib_dna__core___knowledge_node_request__KnowledgeNodeRequestCodec	on main
+dynamic	__lib_dna__core___memory_spine__Memory	on main
+dynamic	__lib_dna__core___record__GitJournal	on main
+dynamic	__lib_dna__host___host__NodeRelay	on main
+shared	dynamic	sites in the stdlib #919aadb4
 
 == dna/tests/knowledge_store_test.hl
 dynamic	__lib_dna__core___memory_store__Pq	on main	in tests
@@ -11805,18 +11564,15 @@ row	App@literal1	App	main	default
 == dna/tests/model_map_test.hl
 root	App	the entry
 row	App@literal1	App	main	default
-dynamic	__StdJsonBuilder	on unknown (`check` passed as a value)|unknown (no caller)|unknown (no instance)	in core
--- dynamic	sites in core/legs
-dynamic	__StdJsonBuilder	on unknown (`check` passed as a value)|unknown (no caller)|unknown (no instance)
-dynamic	__lib_dna__core__legs___client__Head	on unknown (`check` passed as a value)|unknown (no instance)
-dynamic	__lib_dna__core__legs___tool_loop__ToolBench	on unknown (`check` passed as a value)|unknown (no instance)
+dynamic	__StdJsonBuilder	on main|unknown (no caller)|unknown (no instance)	in core
+shared	dynamic	sites in core/legs #4c4f9d62
 -- dynamic	sites in tests
-dynamic	__lib_dna__core___journal__MemJournal	on unknown (`check` passed as a value)
-dynamic	__lib_dna__core___models__FakeModel	on unknown (`check` passed as a value)
-dynamic	__lib_dna__core___models__ModelRouter	on unknown (`check` passed as a value)
-dynamic	__lib_dna__core__legs___hands__Hands	on unknown (`check` passed as a value)
-dynamic	__lib_dna__core__legs___model__ModelPerformer	on unknown (`check` passed as a value)
-shared	dynamic	sites in the stdlib #f3f955da
+dynamic	__lib_dna__core___journal__MemJournal	on main
+dynamic	__lib_dna__core___models__FakeModel	on main
+dynamic	__lib_dna__core___models__ModelRouter	on main
+dynamic	__lib_dna__core__legs___hands__Hands	on main
+dynamic	__lib_dna__core__legs___model__ModelPerformer	on main
+shared	dynamic	sites in the stdlib #919aadb4
 
 == dna/tests/mutation_review_test.hl
 root	App	the entry
@@ -11830,12 +11586,12 @@ shared	dynamic	sites in the stdlib #c3a51769
 == dna/tests/native_json_test.hl
 root	App	the entry
 row	App@literal1	App	main	default
-dynamic	__StdBytesBytesBuilder	on unknown (`check` passed as a value)|unknown (no caller)|unknown (no instance)	in core
+dynamic	__StdBytesBytesBuilder	on main|unknown (no caller)|unknown (no instance)	in core
 -- dynamic	sites in tests
-dynamic	__StdBytesBytesBuilder	on unknown (`check` passed as a value)
-dynamic	__StdJsonBuilder	on unknown (`check` passed as a value)
-dynamic	__lib_dna__core___native_json__NativeJson	on unknown (`check` passed as a value)
-shared	dynamic	sites in the stdlib #f3f955da
+dynamic	__StdBytesBytesBuilder	on main
+dynamic	__StdJsonBuilder	on main
+dynamic	__lib_dna__core___native_json__NativeJson	on main
+shared	dynamic	sites in the stdlib #919aadb4
 
 == dna/tests/nats_connect_password_test.hl
 
@@ -11866,9 +11622,9 @@ shared	dynamic	sites in the stdlib #c3a51769
 == dna/tests/nerves_loss_test.hl
 root	App	the entry
 row	App@literal1	App	main	default
-shared	dynamic	sites in core #5d183e93
+shared	dynamic	sites in core #d0e27670
 shared	dynamic	sites in core/pond/realtime/nats #164fddea
-shared	dynamic	sites in tests #25861d1e
+shared	dynamic	sites in tests #07fed850
 shared	dynamic	sites in the stdlib #c3a51769
 
 == dna/tests/node_document_test.hl
@@ -12043,26 +11799,7 @@ shared	dynamic	sites in the stdlib #c3a51769
 == dna/tests/organization_source_request_test.hl
 root	App	the entry
 row	App@literal1	App	main	default
--- dynamic	sites in core
-dynamic	__StdBytesBytesBuilder	on main|unknown (`reader` passed as a value)|unknown (no instance)
-dynamic	__StdJsonBuilder	on main|unknown (no caller)|unknown (no instance)
-dynamic	__lib_dna__core___knowledge_binding__KnowledgeBindingCodec	on main|unknown (no instance)
-dynamic	__lib_dna__core___knowledge_binding__KnowledgeBindingReplacements	on main
-dynamic	__lib_dna__core___knowledge_edge_review__KnowledgeEdgeCodec	on main|unknown (no instance)
-dynamic	__lib_dna__core___knowledge_node_request__KnowledgeNodeRequestCodec	on main|unknown (no instance)
-dynamic	__lib_dna__core___native_json__NativeJson	on unknown (`reader` passed as a value)
-dynamic	__lib_dna__core___organization_source_request__OrganizationSourceRequestCodec	on main|unknown (no instance)
-dynamic	__lib_dna__core___record__GitRecord	on main|unknown (no caller)|unknown (no instance)
-dynamic	__lib_dna__core___record__RowBatch	on unknown (`reader` passed as a value)|unknown (no instance)
-dynamic	__lib_dna__core___review__Review	on main
-dynamic	__lib_dna__core___workflow_runtime__ChildSpecRows	on main
-dynamic	__lib_dna__core___workflow_runtime__Executions	on main
-dynamic	__lib_dna__core___workflow_runtime__LeafSpecRows	on main
-dynamic	__lib_dna__core___workflow_runtime__StepRun	on main
-dynamic	__lib_dna__core___workflow_runtime__TaskRun	on main
-dynamic	__lib_dna__core___workflow_runtime__WorkRun	on main
-dynamic	__lib_dna__core___workflow_runtime__WorkflowRun	on main
-dynamic	__lib_dna__core___workflow_runtime__WorkflowRuntime	on main
+shared	dynamic	sites in core #55125a37
 -- dynamic	sites in operations
 dynamic	__StdBytesBytesBuilder	on main|unknown (no instance)
 dynamic	__StdJsonBuilder	on main|unknown (no caller)|unknown (no instance)
@@ -12084,7 +11821,7 @@ dynamic	__lib_dna__core___assembly__OrgPolicy	on main
 dynamic	__lib_dna__core___org_source__OrganizationSourceRecord	on main
 dynamic	__lib_dna__core___organization_source_request__OrganizationSourceRequestCodec	on main
 dynamic	__lib_dna__core___ownership__Ownership	on main
-dynamic	__lib_dna__core___record__GitJournal	on main|unknown (`reader` passed as a value)
+dynamic	__lib_dna__core___record__GitJournal	on main
 dynamic	__lib_dna__core___record__GitLeases	on main
 dynamic	__lib_dna__core___record__GitReceipts	on main
 dynamic	__lib_dna__core___verification__HaleVerification	on main
@@ -12335,14 +12072,14 @@ row	App@literal1	App	main	default
 shared	dynamic	sites in core #c9a20264
 -- dynamic	sites in tests
 dynamic	PracticeStageJournal	on main
-dynamic	__StdBytesBytesBuilder	on unknown (`request` passed as a value)
-dynamic	__StdJsonBuilder	on main|unknown (`request` passed as a value)
+dynamic	__StdBytesBytesBuilder	on main
+dynamic	__StdJsonBuilder	on main
 dynamic	__lib_dna__core___assembly__Board	on main
 dynamic	__lib_dna__core___assembly__Dna	on main
 dynamic	__lib_dna__core___record__GitJournal	on main
 dynamic	__lib_dna__core___record__GitReceipts	on main
 dynamic	__lib_dna__core___verification__HaleVerification	on main
-shared	dynamic	sites in the stdlib #b156bdf1
+shared	dynamic	sites in the stdlib #919aadb4
 
 == dna/tests/practice_lifecycle_test.hl
 root	App	the entry
@@ -12444,7 +12181,7 @@ row	App@literal1	App	main	default
 shared	dynamic	sites in core #0ca7b9c1
 -- dynamic	sites in tests
 dynamic	__lib_dna__core___record__GitRecord	on main
-dynamic	__lib_dna__core___record__RowBatch	on unknown (`batch` passed as a value)
+dynamic	__lib_dna__core___record__RowBatch	on main
 
 == dna/tests/record_batch_test.hl
 root	App	the entry
@@ -12534,14 +12271,11 @@ shared	dynamic	sites in the stdlib #c3a51769
 == dna/tests/relay_repeated_request_test.hl
 root	App	the entry
 row	App@literal1	App	main	default
--- dynamic	sites in core
-dynamic	__StdBytesBytesBuilder	on unknown (`answers` passed as a value)|unknown (no caller)|unknown (no instance)
-dynamic	__lib_dna__core___native_json__NativeJson	on unknown (`answers` passed as a value)
-dynamic	__lib_dna__core___record__RowBatch	on unknown (`answers` passed as a value)|unknown (no instance)
+shared	dynamic	sites in core #d0e27670
 shared	dynamic	sites in core/pond/realtime/nats #164fddea
 -- dynamic	sites in tests
 dynamic	__StdSecretCredential	on main
-dynamic	__lib_dna__core___record__GitJournal	on main|unknown (`answers` passed as a value)|unknown (`record` passed as a value)|unknown (`rows` passed as a value)
+dynamic	__lib_dna__core___record__GitJournal	on main|unknown (no caller)
 dynamic	__lib_dna__core__pond__realtime__nats___client__NatsClient	on main
 shared	dynamic	sites in the stdlib #c3a51769
 
@@ -12550,10 +12284,10 @@ root	App	the entry
 row	App@literal1	App	main	default
 dynamic	__StdIoTcpStream	on main	in tests/onboarding/todo/api
 dynamic	__StdBytesBytesBuilder	on main|unknown (no instance)	in the stdlib
-shared	dynamic	sites in core #ec318237
+shared	dynamic	sites in core #d0e27670
 -- dynamic	sites in tests
 dynamic	__StdSecretCredential	on main
-dynamic	__lib_dna__core___record__GitJournal	on main|unknown (`concerns` passed as a value)
+dynamic	__lib_dna__core___record__GitJournal	on main
 dynamic	__lib_dna__tests__onboarding__todo__api__nerves__nerves__Nerves	on main
 
 == dna/tests/retired_admission_test.hl
@@ -12608,46 +12342,16 @@ shared	App@literal1.org	__lib_dna__core___assembly__Dna #733000a1
 row	~	__lib_dna__core___review__ReviewJournal	main	default
 row	~.inner	__lib_dna__core___journal__MemJournal	main	inherited
 row	~.inner.rows	__lib_dna__core___journal__EventRows	main	inherited
--- dynamic	sites in core
-dynamic	__StdBytesBytesBuilder	on main|unknown (`review` passed as a value)|unknown (no instance)
-dynamic	__StdJsonBuilder	on main|unknown (`review` passed as a value)|unknown (no caller)|unknown (no instance)
-dynamic	__lib_dna__core___knowledge_binding__KnowledgeBindingCodec	on main
-dynamic	__lib_dna__core___knowledge_binding__KnowledgeBindingReplacements	on main
-dynamic	__lib_dna__core___knowledge_edge_review__KnowledgeEdgeCodec	on main
-dynamic	__lib_dna__core___knowledge_node_request__KnowledgeNodeRequestCodec	on main|unknown (`review` passed as a value)|unknown (no instance)
-dynamic	__lib_dna__core___memory_embed__Floats	on main|unknown (no caller)
-dynamic	__lib_dna__core___memory_embed__Words	on main
-dynamic	__lib_dna__core___memory_store__GraphRules	on main|unknown (no instance)
-dynamic	__lib_dna__core___native_json__NativeJson	on unknown (`review` passed as a value)
-dynamic	__lib_dna__core___organization_source_request__OrganizationSourceRequestCodec	on main|unknown (`review` passed as a value)|unknown (no instance)
-dynamic	__lib_dna__core___record__GitJournal	on main|unknown (no instance)
-dynamic	__lib_dna__core___record__GitRecord	on main|unknown (no caller)|unknown (no instance)
-dynamic	__lib_dna__core___record__RowBatch	on main
-dynamic	__lib_dna__core___review__Review	on main
-dynamic	__lib_dna__core___route__Router	on main|unknown (no caller)
-dynamic	__lib_dna__core___steps__StepAsks	on main
-dynamic	__lib_dna__core___workflow_definition__BoundNodeRows	on main
-dynamic	__lib_dna__core___workflow_definition__DefStatRows	on main
-dynamic	__lib_dna__core___workflow_runtime__ChildSpecRows	on main
-dynamic	__lib_dna__core___workflow_runtime__Executions	on main
-dynamic	__lib_dna__core___workflow_runtime__LeafSpecRows	on main
-dynamic	__lib_dna__core___workflow_runtime__StepRun	on main
-dynamic	__lib_dna__core___workflow_runtime__TaskRun	on main
-dynamic	__lib_dna__core___workflow_runtime__WorkRun	on main
-dynamic	__lib_dna__core___workflow_runtime__WorkflowRun	on main
-dynamic	__lib_dna__core___workflow_runtime__WorkflowRuntime	on main
-dynamic	__lib_dna__core__pond__db___args__Args	on main|unknown (no caller)|unknown (no instance)
+shared	dynamic	sites in core #8d8c3bcd
 shared	dynamic	sites in core/pond/pq #39e83e0a
 -- dynamic	sites in tests
 dynamic	__lib_dna__core___assembly__Dna	on main
 dynamic	__lib_dna__core___assembly__NoDeployment	on main
 dynamic	__lib_dna__core___journal__FileReceipts	on main
 dynamic	__lib_dna__core___record__GitJournal	on main
-dynamic	__lib_dna__core___review__Review	on main|unknown (`review` passed as a value)
+dynamic	__lib_dna__core___review__Review	on main
 dynamic	__lib_dna__core___verification__HaleVerification	on main
--- dynamic	sites in the stdlib
-dynamic	__StdBytesBytesBuilder	on main|unknown (`review` passed as a value)
-dynamic	__StdIterLines	on unknown (`review` passed as a value)
+shared	dynamic	sites in the stdlib #c3a51769
 
 == dna/tests/routing_test.hl
 root	App	the entry
@@ -12719,9 +12423,9 @@ shared	dynamic	sites in the stdlib #c3a51769
 == dna/tests/senses_reflex_test.hl
 root	App	the entry
 row	App@literal1	App	main	default
-shared	dynamic	sites in core #5d183e93
+shared	dynamic	sites in core #d0e27670
 shared	dynamic	sites in core/pond/realtime/nats #164fddea
-shared	dynamic	sites in tests #25861d1e
+shared	dynamic	sites in tests #07fed850
 shared	dynamic	sites in the stdlib #c3a51769
 
 == dna/tests/status_chain_race_test.hl
@@ -12777,9 +12481,7 @@ row	App@literal1	App	main	default
 shared	App@literal1.core	__lib_dna__core___assembly__Dna #733000a1
 shared	dynamic	sites in core #8d8c3bcd
 shared	dynamic	sites in core/pond/pq #39e83e0a
--- dynamic	sites in tests
-dynamic	__lib_dna__core___record__GitJournal	on main
-dynamic	__lib_dna__core___record__GitRecord	on main
+shared	dynamic	sites in tests #896d9fd0
 shared	dynamic	sites in the stdlib #c3a51769
 
 == dna/tests/task_decide_test.hl
@@ -12803,21 +12505,16 @@ shared	dynamic	sites in the stdlib #919aadb4
 == dna/tests/tool_loop_test.hl
 root	App	the entry
 row	App@literal1	App	main	default
-dynamic	__StdJsonBuilder	on unknown (`check` passed as a value)|unknown (`performer` passed as a value)|unknown (no caller)|unknown (no instance)	in core
--- dynamic	sites in core/legs
-dynamic	__StdJsonBuilder	on unknown (`performer` passed as a value)|unknown (no caller)|unknown (no instance)
-dynamic	__lib_dna__core__legs___client__Head	on unknown (`performer` passed as a value)|unknown (no instance)
-dynamic	__lib_dna__core__legs___tool_loop__ToolBench	on unknown (`performer` passed as a value)|unknown (no instance)
+dynamic	__StdJsonBuilder	on main|unknown (no caller)|unknown (no instance)	in core
+shared	dynamic	sites in core/legs #4c4f9d62
 -- dynamic	sites in tests
-dynamic	__lib_dna__core___journal__MemJournal	on unknown (`check` passed as a value)
-dynamic	__lib_dna__core___models__FakeModel	on unknown (`check` passed as a value)|unknown (`performer` passed as a value)
-dynamic	__lib_dna__core___models__ModelRouter	on unknown (`check` passed as a value)|unknown (`performer` passed as a value)
-dynamic	__lib_dna__core___tape__RecordedModel	on unknown (`check` passed as a value)
-dynamic	__lib_dna__core__legs___hands__Hands	on unknown (`check` passed as a value)
-dynamic	__lib_dna__core__legs___model__ModelPerformer	on unknown (`check` passed as a value)|unknown (`performer` passed as a value)
--- dynamic	sites in the stdlib
-dynamic	__StdBytesBytesBuilder	on unknown (`performer` passed as a value)|unknown (no caller)
-dynamic	__StdIterLines	on unknown (`performer` passed as a value)
+dynamic	__lib_dna__core___journal__MemJournal	on main
+dynamic	__lib_dna__core___models__FakeModel	on main
+dynamic	__lib_dna__core___models__ModelRouter	on main
+dynamic	__lib_dna__core___tape__RecordedModel	on main
+dynamic	__lib_dna__core__legs___hands__Hands	on main
+dynamic	__lib_dna__core__legs___model__ModelPerformer	on main
+shared	dynamic	sites in the stdlib #919aadb4
 
 == dna/tests/two_owners_test.hl
 root	App	the entry
@@ -12850,12 +12547,10 @@ dynamic	__StdJsonBuilder	on main|unknown (no caller)|unknown (no instance)
 dynamic	__lib_dna__core___native_json__NativeJson	on main
 dynamic	__lib_dna__core___record__RowBatch	on main|unknown (no instance)
 -- dynamic	sites in tests
-dynamic	__StdJsonBuilder	on unknown (`seed` passed as a value)
+dynamic	__StdJsonBuilder	on main
 dynamic	__lib_dna__core___record__GitJournal	on main
 dynamic	__lib_dna__operations___usage__Usage	on main
--- dynamic	sites in the stdlib
-dynamic	__StdBytesBytesBuilder	on unknown (`seed` passed as a value)|unknown (no caller)
-dynamic	__StdIterLines	on unknown (`seed` passed as a value)
+shared	dynamic	sites in the stdlib #919aadb4
 
 == dna/tests/verification_test.hl
 root	App	the entry
@@ -14464,7 +14159,7 @@ dynamic	__StdJsonBuilder	on main|pool:io|unknown (no caller)|unknown (no instanc
 dynamic	__lib_dna__api___http__Http	on main|pool:io|unknown (no caller)|unknown (no instance)
 dynamic	__lib_dna__operations___organization_json__OrganizationJson	on main|pool:io|unknown (no caller)|unknown (no instance)
 -- dynamic	sites in api/project_service
-dynamic	HeadJournal	on main|pool:io|unknown (`body_alive` passed as a value)
+dynamic	HeadJournal	on main|pool:io
 dynamic	HeadOutcomes	on main|pool:io
 dynamic	PushSlots	on main
 dynamic	Registry	on main|pinned:HeadMain@literal1.watch|pool:io
@@ -14473,18 +14168,18 @@ dynamic	__StdIoTcpConnFlow	on pool:io
 dynamic	__StdIoTcpConnInline	on pool:io|pool:senses
 dynamic	__StdIoTcpConnections	on pool:io|pool:senses|unknown (no instance)
 dynamic	__StdIoTcpStream	on pinned:HeadMain@literal1.watch|pool:io|pool:senses|unknown (no instance)
-dynamic	__StdJsonBuilder	on main|pinned:HeadMain@literal1.watch|pool:io|unknown (`body_alive` passed as a value)
+dynamic	__StdJsonBuilder	on main|pinned:HeadMain@literal1.watch|pool:io
 dynamic	__StdSecretCredential	on pinned:HeadMain@literal1.watch|pool:io
 dynamic	__lib_dna__api___commands__CommandWire	on main|pool:io
 dynamic	__lib_dna__api___http__Http	on pool:io
 dynamic	__lib_dna__core___record__GitRecord	on main|pinned:HeadMain@literal1.watch|pool:io
-dynamic	__lib_dna__operations___governance_command__GovernanceCommandCodec	on main|pinned:HeadMain@literal1.watch|pool:io|unknown (`body_alive` passed as a value)
+dynamic	__lib_dna__operations___governance_command__GovernanceCommandCodec	on main|pinned:HeadMain@literal1.watch|pool:io
 dynamic	__lib_dna__operations___governance_policy__AuthorityPolicyCodec	on pool:io
-dynamic	__lib_dna__operations___organization_json__OrganizationJson	on pool:io|unknown (`body_alive` passed as a value)
+dynamic	__lib_dna__operations___organization_json__OrganizationJson	on main|pool:io
 dynamic	__lib_dna__operations___organization_policy__OrganizationAuthorityPolicyCodec	on pool:io
 dynamic	__lib_dna__operations___task_policy__TaskAuthorityPolicyCodec	on pool:io
 -- dynamic	sites in core
-dynamic	__StdBytesBytesBuilder	on main|pinned:HeadMain@literal1.watch|pool:io|unknown (`body_alive` passed as a value)|unknown (no caller)|unknown (no instance)
+dynamic	__StdBytesBytesBuilder	on main|pinned:HeadMain@literal1.watch|pool:io|unknown (no caller)|unknown (no instance)
 dynamic	__StdHttpServer	on pool:senses
 dynamic	__StdMetricsEndpoint	on pool:senses
 dynamic	__lib_dna__core___native_json__NativeJson	on main|pinned:HeadMain@literal1.watch|pool:io
@@ -14493,16 +14188,16 @@ dynamic	__lib_dna__core___record__GitRecord	on main|pinned:HeadMain@literal1.wat
 dynamic	__StdBytesBytesBuilder	on pinned:HeadMain@literal1.watch
 dynamic	__StdJsonBuilder	on pinned:HeadMain@literal1.watch|unknown (no caller)
 -- dynamic	sites in operations
-dynamic	__StdBytesBytesBuilder	on unknown (`body_alive` passed as a value)|unknown (no instance)
-dynamic	__StdJsonBuilder	on unknown (`body_alive` passed as a value)|unknown (no caller)|unknown (no instance)
-dynamic	__lib_dna__core___native_json__NativeJson	on unknown (`body_alive` passed as a value)
-dynamic	__lib_dna__operations___definitions__DefinitionCodec	on pool:io|unknown (`body_alive` passed as a value)|unknown (no instance)
+dynamic	__StdBytesBytesBuilder	on main|pinned:HeadMain@literal1.watch|pool:io|unknown (no instance)
+dynamic	__StdJsonBuilder	on main|pinned:HeadMain@literal1.watch|pool:io|unknown (no caller)|unknown (no instance)
+dynamic	__lib_dna__core___native_json__NativeJson	on main|pinned:HeadMain@literal1.watch|pool:io
+dynamic	__lib_dna__operations___definitions__DefinitionCodec	on main|pinned:HeadMain@literal1.watch|pool:io|unknown (no instance)
 dynamic	__lib_dna__operations___governance_command__GovernanceCommandCodec	on pool:io|unknown (no caller)|unknown (no instance)
 dynamic	__lib_dna__operations___governance_policy__AuthorityPolicyCodec	on pool:io|unknown (no instance)
-dynamic	__lib_dna__operations___organization_json__OrganizationJson	on pool:io|unknown (`body_alive` passed as a value)|unknown (no instance)
+dynamic	__lib_dna__operations___organization_json__OrganizationJson	on main|pinned:HeadMain@literal1.watch|pool:io|unknown (no instance)
 -- dynamic	sites in the stdlib
-dynamic	__StdBytesBytesBuilder	on main|pinned:HeadMain@literal1.watch|pool:io|pool:senses|unknown (`body_alive` passed as a value)
-dynamic	__StdIterLines	on unknown (`body_alive` passed as a value)
+dynamic	__StdBytesBytesBuilder	on main|pinned:HeadMain@literal1.watch|pool:io|pool:senses
+dynamic	__StdIterLines	on main|pinned:HeadMain@literal1.watch|pool:io
 
 == dna/api/tests/catalog
 root	FixtureHead	the entry
@@ -14739,7 +14434,7 @@ shared	Host@literal2.senses	__lib_dna__core___senses__Senses #7cd25e64
 shared	Host@literal2.vault	__lib_dna__core___memory_spine__MemoryVault #e64e4dab
 shared	Host@literal2.view	Projection #e90a4ca5
 -- dynamic	sites in dna/core
-dynamic	__StdBytesBytesBuilder	on main|unknown (`synced` passed as a value)
+dynamic	__StdBytesBytesBuilder	on main
 dynamic	__StdHttpServer	on pool:senses
 dynamic	__StdJsonBuilder	on main|unknown (no caller)|unknown (no instance)
 dynamic	__StdMetricsEndpoint	on pool:senses
@@ -14749,11 +14444,11 @@ dynamic	__lib_dna__core___knowledge_node_request__KnowledgeNodeRequestCodec	on m
 dynamic	__lib_dna__core___memory_embed__Floats	on main|unknown (no caller)
 dynamic	__lib_dna__core___memory_embed__Words	on main
 dynamic	__lib_dna__core___memory_store__GraphRules	on main|unknown (no instance)
-dynamic	__lib_dna__core___native_json__NativeJson	on unknown (`synced` passed as a value)
+dynamic	__lib_dna__core___native_json__NativeJson	on main
 dynamic	__lib_dna__core___organization_source_request__OrganizationSourceRequestCodec	on main|unknown (no instance)
 dynamic	__lib_dna__core___record__GitJournal	on main|unknown (no instance)
 dynamic	__lib_dna__core___record__GitLeases	on main
-dynamic	__lib_dna__core___record__GitRecord	on main|unknown (`synced` passed as a value)|unknown (no caller)|unknown (no instance)
+dynamic	__lib_dna__core___record__GitRecord	on main|unknown (no caller)|unknown (no instance)
 dynamic	__lib_dna__core___record__RowBatch	on main|unknown (no instance)
 dynamic	__lib_dna__core__pond__db___args__Args	on main|unknown (no caller)
 shared	dynamic	sites in dna/core/pond/pq #39e83e0a
@@ -14785,7 +14480,7 @@ dynamic	__lib_dna__core___organization_source_request__OrganizationSourceRequest
 dynamic	__lib_dna__core___ownership__Ownership	on main|unknown (no caller)
 dynamic	__lib_dna__core___record__GitJournal	on main|unknown (no caller)
 dynamic	__lib_dna__core___record__GitReceipts	on main|unknown (no caller)
-dynamic	__lib_dna__core___record__GitRecord	on main|unknown (`synced` passed as a value)|unknown (no caller)|unknown (no instance)
+dynamic	__lib_dna__core___record__GitRecord	on main|unknown (no caller)|unknown (no instance)
 dynamic	__lib_dna__core___routing__RoutedJournal	on main|unknown (no caller)
 dynamic	__lib_dna__core__pond__realtime__nats___client__NatsClient	on main|unknown (no caller)
 dynamic	__lib_dna__organization_runtime___authority__HostAuthority	on main|unknown (no caller)
@@ -15436,6 +15131,9 @@ row	App@literal1.h	Hub	main	default
 dynamic	Child	on main
 dynamic	Job	on main
 
+== crates/hale-types/tests/fixtures/placement/fn_passed_as_value.hl
+dynamic	Builder	on unknown (`quote` passed as a value)	in the seed
+
 == crates/hale-types/tests/fixtures/placement/generic_aliases.hl
 dynamic	Cell_Int	on main	in the seed
 shared	Supervisor_Scalar@main1	Supervisor_Scalar #b5a04dba
@@ -15504,6 +15202,9 @@ row	Lib@entry.idle	K	main	default
 -- Lib@entry.w	Worker
 row	~	Worker	pinned:~	entry	off owner
 row	~.k	K	pinned:~	inherited
+
+== crates/hale-types/tests/fixtures/placement/local_shadows_fn.hl
+dynamic	Builder	on main	in the seed
 
 == crates/hale-types/tests/fixtures/placement/module_qualified.hl
 root	App	the entry
@@ -17227,6 +16928,30 @@ dynamic	__lib_dna__core___memory_embed__Words	on main
 dynamic	__lib_dna__core___memory_store__GraphRules	on main|unknown (no instance)
 dynamic	__lib_dna__core__pond__db___args__Args	on main|unknown (no caller)|unknown (no instance)
 
+== shared sites in core #45d19eb1
+dynamic	__StdBytesBytesBuilder	on main|unknown (no instance)
+dynamic	__StdJsonBuilder	on main|unknown (no caller)|unknown (no instance)
+dynamic	__lib_dna__core___knowledge_binding__KnowledgeBindingCodec	on main
+dynamic	__lib_dna__core___knowledge_binding__KnowledgeBindingReplacements	on main
+dynamic	__lib_dna__core___knowledge_edge_review__KnowledgeEdgeCodec	on main
+dynamic	__lib_dna__core___knowledge_node_request__KnowledgeNodeRequestCodec	on main|unknown (no instance)
+dynamic	__lib_dna__core___memory_embed__Floats	on main|unknown (no caller)
+dynamic	__lib_dna__core___memory_embed__Words	on main
+dynamic	__lib_dna__core___memory_store__GraphRules	on main|unknown (no instance)
+dynamic	__lib_dna__core___native_json__NativeJson	on main
+dynamic	__lib_dna__core___organization_source_request__OrganizationSourceRequestCodec	on main|unknown (no instance)
+dynamic	__lib_dna__core___record__RowBatch	on main
+dynamic	__lib_dna__core___review__Review	on main
+dynamic	__lib_dna__core___workflow_runtime__ChildSpecRows	on main
+dynamic	__lib_dna__core___workflow_runtime__Executions	on main
+dynamic	__lib_dna__core___workflow_runtime__LeafSpecRows	on main
+dynamic	__lib_dna__core___workflow_runtime__StepRun	on main
+dynamic	__lib_dna__core___workflow_runtime__TaskRun	on main
+dynamic	__lib_dna__core___workflow_runtime__WorkRun	on main
+dynamic	__lib_dna__core___workflow_runtime__WorkflowRun	on main
+dynamic	__lib_dna__core___workflow_runtime__WorkflowRuntime	on main
+dynamic	__lib_dna__core__pond__db___args__Args	on main|unknown (no caller)|unknown (no instance)
+
 == shared sites in core #47f5f26d
 dynamic	__StdBytesBytesBuilder	on main
 dynamic	__StdJsonBuilder	on main|unknown (no caller)|unknown (no instance)
@@ -17271,11 +16996,6 @@ dynamic	__lib_dna__core___workflow_runtime__TaskRun	on main
 dynamic	__lib_dna__core___workflow_runtime__WorkRun	on main
 dynamic	__lib_dna__core___workflow_runtime__WorkflowRun	on main
 dynamic	__lib_dna__core___workflow_runtime__WorkflowRuntime	on main
-
-== shared sites in core #5d183e93
-dynamic	__StdBytesBytesBuilder	on unknown (`rows` passed as a value)|unknown (no caller)|unknown (no instance)
-dynamic	__lib_dna__core___native_json__NativeJson	on unknown (`rows` passed as a value)
-dynamic	__lib_dna__core___record__RowBatch	on unknown (`rows` passed as a value)|unknown (no instance)
 
 == shared sites in core #8ba90e4b
 dynamic	__StdBytesBytesBuilder	on main|unknown (no caller)|unknown (no instance)
@@ -17358,11 +17078,6 @@ dynamic	__lib_dna__core___record__RowBatch	on main|unknown (no instance)
 dynamic	__lib_dna__core___workflow_definition__BoundNodeRows	on main
 dynamic	__lib_dna__core___workflow_definition__DefStatRows	on main
 
-== shared sites in core #b970ca30
-dynamic	__StdBytesBytesBuilder	on unknown (`check` passed as a value)|unknown (no caller)|unknown (no instance)
-dynamic	__lib_dna__core___native_json__NativeJson	on unknown (`check` passed as a value)
-dynamic	__lib_dna__core___record__RowBatch	on unknown (`check` passed as a value)|unknown (no instance)
-
 == shared sites in core #c1bf73a0
 dynamic	__StdBytesBytesBuilder	on main|unknown (no instance)
 dynamic	__StdJsonBuilder	on main|unknown (no caller)|unknown (no instance)
@@ -17386,6 +17101,12 @@ dynamic	__lib_dna__core___memory_store__GraphRules	on main|unknown (no instance)
 dynamic	__lib_dna__core___native_json__NativeJson	on main
 dynamic	__lib_dna__core___record__RowBatch	on main|unknown (no instance)
 dynamic	__lib_dna__core__pond__db___args__Args	on main|unknown (no caller)|unknown (no instance)
+
+== shared sites in core #c9841375
+dynamic	__StdBytesBytesBuilder	on main|unknown (no caller)|unknown (no instance)
+dynamic	__StdJsonBuilder	on main|unknown (no caller)|unknown (no instance)
+dynamic	__lib_dna__core___workflow_definition__BoundNodeRows	on main
+dynamic	__lib_dna__core___workflow_definition__DefStatRows	on main
 
 == shared sites in core #c9a20264
 dynamic	__StdBytesBytesBuilder	on main|unknown (no instance)
@@ -17442,11 +17163,6 @@ dynamic	__lib_dna__core___workflow_runtime__WorkflowRun	on main
 dynamic	__lib_dna__core___workflow_runtime__WorkflowRuntime	on main
 dynamic	__lib_dna__core__pond__db___args__Args	on main|unknown (no caller)
 
-== shared sites in core #ec318237
-dynamic	__StdBytesBytesBuilder	on unknown (`concerns` passed as a value)|unknown (no caller)|unknown (no instance)
-dynamic	__lib_dna__core___native_json__NativeJson	on unknown (`concerns` passed as a value)
-dynamic	__lib_dna__core___record__RowBatch	on unknown (`concerns` passed as a value)|unknown (no instance)
-
 == shared sites in core #fd739ca5
 dynamic	__StdBytesBytesBuilder	on main|unknown (no instance)
 dynamic	__StdJsonBuilder	on main|unknown (no caller)|unknown (no instance)
@@ -17456,6 +17172,11 @@ dynamic	__lib_dna__core___knowledge_node_request__KnowledgeNodeRequestCodec	on m
 dynamic	__lib_dna__core___native_json__NativeJson	on main
 dynamic	__lib_dna__core___record__GitRecord	on main|unknown (no caller)|unknown (no instance)
 dynamic	__lib_dna__core___record__RowBatch	on main|unknown (no instance)
+
+== shared sites in core/legs #4c4f9d62
+dynamic	__StdJsonBuilder	on main|unknown (no caller)|unknown (no instance)
+dynamic	__lib_dna__core__legs___client__Head	on main|unknown (no instance)
+dynamic	__lib_dna__core__legs___tool_loop__ToolBench	on main|unknown (no instance)
 
 == shared sites in core/pond/pq #39e83e0a
 dynamic	__StdBytesBytesBuilder	on main
@@ -17470,6 +17191,20 @@ dynamic	__StdSecretCredential	on pool:io
 == shared sites in core/pond/realtime/nats #164fddea
 dynamic	__StdBytesBytesBuilder	on main
 dynamic	__StdJsonBuilder	on main|unknown (no caller)
+
+== shared sites in dna/core #9cea11a6
+dynamic	__StdBytesBytesBuilder	on main|unknown (no instance)
+dynamic	__StdJsonBuilder	on main|unknown (no caller)|unknown (no instance)
+dynamic	__lib_dna__core___knowledge_binding__KnowledgeBindingCodec	on main|unknown (no instance)
+dynamic	__lib_dna__core___knowledge_binding__KnowledgeBindingReplacements	on main
+dynamic	__lib_dna__core___knowledge_node_request__KnowledgeNodeRequestCodec	on main|unknown (no instance)
+dynamic	__lib_dna__core___memory_embed__Floats	on main|unknown (no caller)
+dynamic	__lib_dna__core___memory_embed__Words	on main
+dynamic	__lib_dna__core___memory_store__GraphRules	on main|unknown (no instance)
+dynamic	__lib_dna__core___native_json__NativeJson	on main
+dynamic	__lib_dna__core___record__GitRecord	on main|unknown (no caller)|unknown (no instance)
+dynamic	__lib_dna__core___record__RowBatch	on main|unknown (no instance)
+dynamic	__lib_dna__core__pond__db___args__Args	on main|unknown (no caller)|unknown (no instance)
 
 == shared sites in dna/core #ba99a4a0
 dynamic	__StdBytesBytesBuilder	on main|unknown (no instance)
@@ -17950,6 +17685,11 @@ dynamic	__StdProcessChild	on pool:io
 dynamic	__lib_dna__core___record__GitRecord	on pool:io|unknown (no instance)
 dynamic	__lib_dna__organization_source___organization_dependencies__OrganizationInspection	on pool:io|unknown (no instance)
 
+== shared sites in tests #07fed850
+dynamic	__StdSecretCredential	on main
+dynamic	__lib_dna__core___record__GitJournal	on main
+dynamic	__lib_dna__core__pond__realtime__nats___client__NatsClient	on main
+
 == shared sites in tests #1b7b00d4
 dynamic	__StdJsonBuilder	on main
 dynamic	__lib_dna__core___record__GitJournal	on main
@@ -17961,11 +17701,6 @@ dynamic	__lib_dna__core___assembly__Dna	on main
 dynamic	__lib_dna__core___record__GitJournal	on main
 dynamic	__lib_dna__core___record__GitReceipts	on main
 dynamic	__lib_dna__core___verification__HaleVerification	on main
-
-== shared sites in tests #25861d1e
-dynamic	__StdSecretCredential	on main
-dynamic	__lib_dna__core___record__GitJournal	on unknown (`rows` passed as a value)
-dynamic	__lib_dna__core__pond__realtime__nats___client__NatsClient	on main
 
 == shared sites in tests #513052a6
 dynamic	__lib_dna__core___memory_store__Pq	on main
@@ -17999,6 +17734,10 @@ dynamic	__lib_dna__core___editing__SourceEditor	on main
 dynamic	__lib_dna__core___editing__WorktreeTools	on main
 dynamic	__lib_dna__core___models__FakeModel	on main
 dynamic	__lib_dna__core___models__ModelRouter	on main
+
+== shared sites in tests #896d9fd0
+dynamic	__lib_dna__core___record__GitJournal	on main
+dynamic	__lib_dna__core___record__GitRecord	on main
 
 == shared sites in tests #aaf83225
 dynamic	__lib_dna__core___assembly__Dna	on main
@@ -18125,18 +17864,6 @@ dynamic	__StdIoTcpConnInline	on pool:__api_grpc
 dynamic	__StdIoTcpConnections	on pool:__api_grpc|unknown (no instance)
 dynamic	__StdIoTcpStream	on pool:__api_grpc|unknown (no instance)
 
-== shared sites in the stdlib #530e81ca
-dynamic	__StdBytesBytesBuilder	on unknown (`candidate` passed as a value)|unknown (no caller)
-dynamic	__StdIterLines	on unknown (`candidate` passed as a value)
-
-== shared sites in the stdlib #60cf2d1f
-dynamic	__StdBytesBytesBuilder	on unknown (`rejected` passed as a value)|unknown (no caller)
-dynamic	__StdIterLines	on unknown (`rejected` passed as a value)
-
-== shared sites in the stdlib #8d361d8b
-dynamic	__StdBytesBytesBuilder	on unknown (`event` passed as a value)|unknown (no caller)
-dynamic	__StdIterLines	on unknown (`event` passed as a value)
-
 == shared sites in the stdlib #919aadb4
 dynamic	__StdBytesBytesBuilder	on main|unknown (no caller)
 dynamic	__StdIterLines	on main
@@ -18145,10 +17872,6 @@ dynamic	__StdIterLines	on main
 dynamic	__StdBytesBytesBuilder	on main|pool:io
 dynamic	__StdIterLines	on main|pool:io
 
-== shared sites in the stdlib #b156bdf1
-dynamic	__StdBytesBytesBuilder	on unknown (`request` passed as a value)|unknown (no caller)
-dynamic	__StdIterLines	on unknown (`request` passed as a value)
-
 == shared sites in the stdlib #c3a51769
 dynamic	__StdBytesBytesBuilder	on main
 dynamic	__StdIterLines	on main
@@ -18156,7 +17879,3 @@ dynamic	__StdIterLines	on main
 == shared sites in the stdlib #d1d49800
 dynamic	__StdBytesBytesBuilder	on main|pool:commands|pool:io
 dynamic	__StdIterLines	on main|pool:commands|pool:io
-
-== shared sites in the stdlib #f3f955da
-dynamic	__StdBytesBytesBuilder	on unknown (`check` passed as a value)|unknown (no caller)
-dynamic	__StdIterLines	on unknown (`check` passed as a value)

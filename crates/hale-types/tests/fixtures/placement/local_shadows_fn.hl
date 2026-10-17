@@ -1,0 +1,25 @@
+// A local of a fn's name is the local where it is read, not the fn: the
+// fn `quote` is only called, so the `Builder` it builds runs where its
+// callers do (main).
+
+locus Builder {
+    params { n: Int = 0; }
+    fn add() { self.n = self.n + 1; }
+}
+
+fn quote(s: String) -> String {
+    let b = Builder { };
+    b.add();
+    return s;
+}
+
+fn render(n: Int) -> Int {
+    let mut quote = n;
+    quote = quote + 1;
+    return quote;
+}
+
+fn main() {
+    println(quote("x"));
+    println(render(1));
+}

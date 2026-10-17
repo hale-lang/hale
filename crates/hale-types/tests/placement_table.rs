@@ -1146,3 +1146,29 @@ fn the_table_keeps_its_laws_over_every_fixture() {
         assert!(static_holes.is_empty(), "{name}: {static_holes:?}");
     }
 }
+
+/// A local that shares a fn's name is the local where it is read (F.40: a
+/// name is bound once, by the binding in scope), not the fn passed as a
+/// value: the `Builder` the fn `quote` builds runs on main, where its one
+/// caller does. The placement walk took every bare read of a fn's name for
+/// the fn, so `let mut quote` in another fn made the `Builder` row unknown
+/// ("`quote` passed as a value"). The fn really read as a value still is.
+#[test]
+fn a_local_of_a_fns_name_is_not_the_fn_passed_as_a_value() {
+    let s = clean("local_shadows_fn.hl");
+    let t = table(&s);
+    assert_eq!(dynamic_domains(t, "Builder"), [PlacementTable::MAIN].into_iter().collect());
+    assert!(t.holes.iter().all(|h| !matches!(h.kind, HoleKind::UnknownDomains { .. })), "{:?}", t.holes);
+
+    let s = clean("fn_passed_as_value.hl");
+    let t = table(&s);
+    let unknown: Vec<String> = t
+        .holes
+        .iter()
+        .filter_map(|h| match &h.kind {
+            HoleKind::UnknownDomains { reason } => Some(reason.clone()),
+            _ => None,
+        })
+        .collect();
+    assert!(unknown.iter().any(|r| r.contains("`quote` is passed as a value")), "{unknown:?}");
+}
