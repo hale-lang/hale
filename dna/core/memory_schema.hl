@@ -333,8 +333,8 @@ fn receipt_functions(sch: String) -> String {
         + "INSERT INTO protected_redactions (digest, erased_at) VALUES (p_digest, p_at) ON CONFLICT (digest) DO NOTHING; "
         + "RETURN true; END $f$;"
         + "REVOKE ALL ON FUNCTION " + sch + ".receipt_file(text, text, text, bigint), " + sch + ".receipt_read(text), " + sch + ".receipt_erase(text, bigint) FROM PUBLIC;"
-        // GH #1590: an envelope is kept once by its id and never changed: the
-        // writers insert through this function alone
+    // GH #1590: an envelope is kept once by its id and never changed: the
+    // writers insert through this function alone
         + "CREATE OR REPLACE FUNCTION " + sch + ".exchange_keep(p_id text, p_sender text, p_kind text, p_entity text, p_line text, p_seq bigint) RETURNS boolean LANGUAGE plpgsql SECURITY DEFINER SET search_path = " + sch + ", public AS $x$ BEGIN "
         + "INSERT INTO exchange_rows (id, sender, kind, entity, line, stream_seq) VALUES (p_id, p_sender, p_kind, p_entity, p_line, p_seq) ON CONFLICT (id) DO NOTHING; RETURN true; END $x$;"
         + "REVOKE ALL ON FUNCTION " + sch + ".exchange_keep(text, text, text, text, text, bigint) FROM PUBLIC";
