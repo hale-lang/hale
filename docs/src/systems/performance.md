@@ -65,6 +65,13 @@ buffer instead of N throwaway strings. Use it (or
 `std::json::Builder` for JSON output) anywhere you build a result
 incrementally.
 
+The same goes for a locus built in such a loop. A locus with no
+`birth()` that writes its own arena gets no arena at all and borrows
+its caller's, so a fresh String you build it with (`W { name:
+f"made {i}" }`) lives until that calling frame ends, not until the
+instance goes away. In a loop that runs inside one long call, that is
+one more value per iteration, returned when the call returns.
+
 ## A fixed scratch table is free
 
 A helper often wants a small fixed table — a lookup, a histogram,

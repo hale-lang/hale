@@ -890,6 +890,17 @@ multithreading):
   allocator. Alignment is **16** per the Arena alignment
   contract (was 8 — a latent `Decimal`-param `movaps` trap).
 
+**An elided arena borrows its frame's.** A locus whose bodies allocate
+nothing (no `birth()` that writes its arena, the elision row of
+`hale_types::alloc_routing`) gets no arena of its own: `__arena` is the
+arena current where it is built (its parent's, for a child), so a fresh
+heap value it is built with (`W { name: f"made {i}" }`) lives in that
+frame's arena until the frame ends, not until the instance is reclaimed.
+Built in a loop inside one long call, such instances accumulate their
+fresh fields as any value the loop body builds does (frame
+accumulation, returned at the frame's end), and an arena per instance
+to avoid it would cost every user (ruled 2026-10-17).
+
 Steady-state churn (accept → run → reclaim per event) therefore
 reuses one struct slot per concurrent child, per type. Resident
 children don't route through mid-life reclaim and are unaffected.

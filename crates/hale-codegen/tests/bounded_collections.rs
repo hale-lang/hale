@@ -339,6 +339,45 @@ fn a_whole_assigned_bounded_field_outlives_its_method_under_asan() {
             }
             fn read() -> String {
                 return (at(self.xs, 0) or "") + "|" + (at(self.xs, 1) or "") + "|" + (at(self.row.xs, 1) or "");
+/// A bounded local is a view of the place it was bound from, and the
+/// elements a `push` or a `set` stores through it are anchored where that
+/// place lives: a locus's own field (`let mut dest = self.xs`), a child's
+/// (`let d = self.child.xs`), an alias of a view (`let e = d`), and an
+/// inner block's view of another place shadowing an outer one. Each used
+/// to anchor in the method's scratch, which its return frees under the
+/// field. Under AddressSanitizer (chunk recycling off, as an ASan build
+/// defaults), a slot left there is a use-after-free at the read after the
+/// methods returned.
+#[test]
+fn an_element_stored_through_a_bounded_view_outlives_its_method_under_asan() {
+    let src = r#"
+        locus Child {
+            params { xs: bounded[String; 4]; }
+            fn first() -> String { return at(self.xs, 0) or ""; }
+        }
+        locus L {
+            params { child: Child = Child { }; xs: bounded[String; 4]; ys: bounded[String; 4]; }
+            fn put(k: Int) {
+                let mut dest = self.xs;
+                clear(dest);
+                push(dest, "first " + to_string(k)) or raise;
+                push(dest, std::str::upper("second ") + to_string(k)) or raise;
+                set(dest, 0, "set " + to_string(k)) or raise;
+                let d = self.child.xs;
+                clear(d);
+                push(d, "child " + to_string(k)) or raise;
+                let e = d;
+                set(e, 0, "alias " + to_string(k)) or raise;
+                let v = self.ys;
+                if k > 0 {
+                    let v = self.child.xs;
+                    push(v, "inner " + to_string(k)) or discard;
+                }
+                clear(v);
+                push(v, "outer " + to_string(k)) or raise;
+            }
+            fn read() -> String {
+                return (at(self.xs, 0) or "") + "|" + (at(self.xs, 1) or "") + "|" + self.child.first() + "|" + (at(self.ys, 0) or "");
             }
         }
         fn main() {
@@ -352,6 +391,7 @@ fn a_whole_assigned_bounded_field_outlives_its_method_under_asan() {
         }
     "#;
     let bin = harness::unique_bin("bounded_whole_assign_asan");
+    let bin = harness::unique_bin("bounded_view_anchor_asan");
     let options = hale_codegen::BuildOptions { asan: true, ..build_opts::options() };
     build_opts::build_source(src, &bin, &options).expect("asan build");
     let out = Command::new(&bin).output().expect("run");
@@ -359,4 +399,5 @@ fn a_whole_assigned_bounded_field_outlives_its_method_under_asan() {
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(out.status.success() && !stderr.contains("AddressSanitizer"), "{:?}: {stderr}", out.status);
     assert_eq!(String::from_utf8_lossy(&out.stdout), "first 49|SECOND 49|SECOND 49\n");
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "set 49|SECOND 49|alias 49|outer 49\n");
 }

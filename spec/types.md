@@ -425,7 +425,12 @@ through a parameter declared a fn returning a primitive (`cb: fn(Int)
 -> Int`) hands back a primitive, as a declared fn of that signature
 does.
 A `bounded[T; N]` local is not a first-class value and is not copied:
-a bounded intrinsic on one bound from a field still writes the field.
+a bounded intrinsic on one bound from a field still writes the field,
+and the element a `push` or a `set` stores through it is anchored where
+that field lives (the holding locus's arena, for `let mut dest =
+self.xs` or a child's field), as on the field itself; until 2026-10-17
+it went to the current arena, so a method's view of `self.xs` left the
+field holding Strings its scratch freed at return.
 Before this rule the write landed in the place's block: `let mut a =
 self.r.names; a[0] = x;` changed the field.
 
