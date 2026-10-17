@@ -225,10 +225,11 @@ fn main() { bound(); dropped(); looped(); println("end"); }
 /// factory may be one) — is reclaimed at the statement, in `main` and in
 /// a method alike. It was nobody's: LeakSanitizer found its arena, and
 /// 200k calls of a `W` that writes its arena at birth grew RSS by ~980
-/// MB (~4.9 KB a call). What stays is the instance's own struct, which a
-/// fn handing back a locus builds in the program-lifetime payload arena
-/// (a reclaim may still be pending on it after the statement): ~170
-/// bytes a call here, under the budget of 512.
+/// MB (~4.9 KB a call). GH #1570: the instance's own struct stayed, built
+/// in the program-lifetime payload arena (~170 bytes a call); it now
+/// goes back at the end of the instance's reclaim, so 200k discarded
+/// calls and 200k `let`-bound ones leave RSS flat (under 8 bytes a call,
+/// page noise).
 #[test]
 fn a_discarded_factory_result_is_reclaimed_at_the_statement() {
     let traced = r#"locus W { params { name: String = "w"; } dissolve() { println(f"W.dissolve {self.name}"); } }
@@ -255,7 +256,7 @@ fn main() { mkw("main"); App { }; }
     assert!(out.status.success() && !stderr.contains("Sanitizer"), "{stdout}\n{stderr}");
     assert_eq!(stdout, "W.dissolve main\nW.dissolve named\nW.dissolve value\nW.dissolve picked\nAPP DONE\n");
 
-    let churn = |n: u32| {
+    let churn = |n: u32, m: u32| {
         format!(
             r#"locus W {{ params {{ name: String = "w"; }} birth() {{ self.name = f"{{self.name}} born"; }} dissolve() {{ }} }}
 fn mkw(n: Int) -> W {{ return W {{ name: f"made {{n}}" }}; }}
@@ -266,12 +267,21 @@ main locus App {{
         let mut i = 0;
         while i < n {{ mkw(i); f(i); i = i + 1; }}
     }}
+    @unbounded
+    fn bind(n: Int) {{
+        let mut i = 0;
+        while i < n {{ let w = mkw(i); i = i + 1 + len(w.name) - len(w.name); }}
+    }}
     run() {{
         self.churn(1000);
+        self.bind(1000);
         print("base_statm=");
         println(std::io::fs::read_file("/proc/self/statm") or "");
         self.churn({n});
         print("grown_statm=");
+        println(std::io::fs::read_file("/proc/self/statm") or "");
+        self.bind({m});
+        print("bound_statm=");
         println(std::io::fs::read_file("/proc/self/statm") or "");
     }}
 }}
@@ -279,7 +289,7 @@ fn main() {{ App {{ }}; }}
 "#
         )
     };
-    let src = churn(100_000);
+    let src = churn(100_000, 200_000);
     let bin = harness::unique_bin("hale_discarded_factory_rss");
     build_opts::build_source(&src, &bin, &build_opts::options()).expect("build");
     let out = Command::new(&bin).output().expect("run");
@@ -292,7 +302,10 @@ fn main() {{ App {{ }}; }}
     };
     let grown = read("grown_statm=") - read("base_statm=");
     let per_call = grown / 200_000;
-    assert!(per_call <= 512, "rss grew {grown} bytes over 200k discarded factory calls ({per_call} a call)");
+    assert!(per_call <= 8, "rss grew {grown} bytes over 200k discarded factory calls ({per_call} a call)");
+    let bound = read("bound_statm=") - read("grown_statm=");
+    let per_bind = bound / 200_000;
+    assert!(per_bind <= 8, "rss grew {bound} bytes over 200k let-bound factory calls ({per_bind} a call)");
 }
 
 /// GH #1569: a fn value returning a locus is a fresh factory however it

@@ -559,13 +559,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // becomes dangling the moment the method returns, so the first
         // post-return read of `s.field` (or `s.method()`) sees still-
         // valid stack memory but the second sees overwritten state.
-        // Detect the escape ahead of time and heap-allocate via the
-        // program-lifetime payload arena instead. The eager dissolve
-        // + arena_destroy are also skipped below — the locus is
-        // semantically "moved" to the caller and lives for the
-        // program. v1 trade-off; a return-slot ABI (caller-provided
-        // out-pointer + scoped dissolve in the caller's frame) would
-        // tighten this without leaking. The same heap path also
+        // Detect the escape ahead of time and allocate the struct
+        // outside the frame instead. The eager dissolve +
+        // arena_destroy are also skipped below — the locus is
+        // semantically "moved" to the caller, whose owner reclaims it;
+        // since GH #1570 the struct is the runtime's returned-struct
+        // allocator's and goes back at that reclaim's ReleaseStruct
+        // step (it lived in the program-lifetime payload arena until
+        // exit before). The same heap path also
         // covers `let s = X{}; ...; return s;` because the let-bound
         // literal is instantiated with `current_user_fn_ret` still
         // pointing at the matching LocusRef.
@@ -801,7 +802,30 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // by every pass through it) rather than from an arena? Only
         // that shape can hold a previous iteration's instance.
         let mut self_is_entry_hoisted = false;
-        let self_ptr = if go_to_payload_arena {
+        let self_ptr = if go_to_payload_arena
+            && !program_lifetime
+            && self.returned_struct_loci.contains(locus_name)
+        {
+            // GH #1570: a struct a fn hands back (or a literal its params
+            // build) is the instance's, released at the end of its
+            // reclaim; it no longer stays in the program-lifetime payload
+            // arena until exit (`lotus_returned_struct_alloc`).
+            let alloc_fn = self
+                .module
+                .get_function("lotus_returned_struct_alloc")
+                .expect("lotus_returned_struct_alloc declared");
+            let size = info
+                .struct_ty
+                .size_of()
+                .expect("locus struct ty has known size");
+            self.builder
+                .build_call(alloc_fn, &[size.into()], &format!("{}.self.returned", locus_name))
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                .try_as_basic_value()
+                .left()
+                .expect("lotus_returned_struct_alloc returns ptr")
+                .into_pointer_value()
+        } else if go_to_payload_arena {
             let alloc_fn = self
                 .module
                 .get_function("lotus_bus_payload_arena_alloc")
@@ -4845,10 +4869,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // return (returns_this_locus from above), suppress the
         // eager dissolve + arena_destroy and DO NOT push onto the
         // deferred_dissolves frame either — the fn-exit flush
-        // would otherwise dissolve it on the way out. The locus
-        // leaks (heap allocation + uncleaned arena live until
-        // process exit); see the alloca branch above for the
-        // trade-off note.
+        // would otherwise dissolve it on the way out. The caller's
+        // owner reclaims it (GH #1569), struct included (GH #1570).
         // 3d+3e fix: parent-accepted children behave the same way
         // — the parent's children-array retains the pointer past
         // the spawning fn's stack frame, so dissolve happens at

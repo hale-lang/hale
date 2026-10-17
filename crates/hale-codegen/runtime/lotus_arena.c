@@ -2556,6 +2556,186 @@ void lotus_child_struct_release(void *owner_self, void *child,
     if (mt) pthread_mutex_unlock(&owner->subregion_lock);
 }
 
+/* GH #1570 — the struct of a locus a fn hands back.
+ *
+ * A fn that builds a locus and returns it cannot keep the instance's
+ * struct in its own frame (m90, spec/semantics.md § "Method-returning-
+ * locus heap allocation"), and the caller's frame does not exist yet
+ * when the literal is built. The struct used to come from the
+ * program-lifetime payload arena and stayed there until exit, whoever
+ * reclaimed the instance: ~170-200 bytes a call, so a loop over a
+ * factory grew without bound.
+ *
+ * Now such a struct comes from here, and goes back at the end of the
+ * instance's reclaim (the plan's ReleaseStruct step, past the latch,
+ * the queued-run cancel and the wait for admitted runs, so nothing
+ * queued or running reaches it afterwards). It is released into a
+ * size-keyed free-list and never handed back to the OS, the posture
+ * of `lotus_child_struct_release`: a stale teardown path that reads
+ * the NULL'd `__arena` latch at offset 0 still reads memory the
+ * process owns, and offset 0 of a listed block is never written.
+ * With chunk recycling off (LOTUS_NO_CHUNK_POOL, the ASan default,
+ * GH #816) each struct is malloc'd and really freed, so a read after
+ * the release is a sanitizer report and not a silent one.
+ *
+ * The reclaim of a locus type a fn may hand back cannot tell from the
+ * type whether this instance came from here (a literal of the same
+ * type in a frame or a field lives elsewhere), so every struct handed
+ * out is recorded in an open-addressed pointer set and the release
+ * answers only for a member. Codegen emits the release call only for
+ * those types (`Cx::returned_struct_loci`); no other reclaim pays for
+ * it. */
+#define LOTUS_RETURNED_FREE_SCAN_MAX 8
+
+void lotus_arena_destroy(lotus_arena_t *a);
+
+static pthread_mutex_t g_returned_mutex = PTHREAD_MUTEX_INITIALIZER;
+static void          **g_returned_set = NULL;   /* NULL = empty, (void*)1 = tombstone */
+static uint64_t        g_returned_cap = 0;      /* power of two */
+static uint64_t        g_returned_used = 0;     /* live + tombstones */
+static uint64_t        g_returned_live = 0;
+static void           *g_returned_free = NULL;  /* node: next @8, size @16 */
+static lotus_arena_t  *g_returned_arena = NULL;
+
+#define LOTUS_RETURNED_TOMB ((void *)1)
+
+static inline uint64_t lotus_returned_hash(const void *p) {
+    uint64_t x = (uint64_t)(uintptr_t)p;
+    x ^= x >> 33;
+    x *= 0xff51afd7ed558ccdULL;
+    x ^= x >> 33;
+    return x;
+}
+
+/* Called with g_returned_mutex held. */
+static int lotus_returned_set_grow(void) {
+    uint64_t ncap = g_returned_cap ? g_returned_cap * 2 : 64;
+    void **nset = (void **)calloc(ncap, sizeof(void *));
+    if (!nset) return 0;
+    for (uint64_t i = 0; i < g_returned_cap; i++) {
+        void *p = g_returned_set[i];
+        if (!p || p == LOTUS_RETURNED_TOMB) continue;
+        uint64_t j = lotus_returned_hash(p) & (ncap - 1);
+        while (nset[j]) j = (j + 1) & (ncap - 1);
+        nset[j] = p;
+    }
+    free(g_returned_set);
+    g_returned_set = nset;
+    g_returned_cap = ncap;
+    g_returned_used = g_returned_live;
+    return 1;
+}
+
+/* Called with g_returned_mutex held. */
+static void lotus_returned_set_insert(void *p) {
+    if ((g_returned_used + 1) * 4 >= g_returned_cap * 3) {
+        if (!lotus_returned_set_grow()) return;
+    }
+    uint64_t mask = g_returned_cap - 1;
+    uint64_t j = lotus_returned_hash(p) & mask;
+    void **tomb = NULL;
+    while (g_returned_set[j]) {
+        if (g_returned_set[j] == LOTUS_RETURNED_TOMB && !tomb) tomb = &g_returned_set[j];
+        j = (j + 1) & mask;
+    }
+    if (tomb) {
+        *tomb = p;
+    } else {
+        g_returned_set[j] = p;
+        g_returned_used++;
+    }
+    g_returned_live++;
+}
+
+/* Called with g_returned_mutex held: 1 when `p` was a member (now removed). */
+static int lotus_returned_set_remove(void *p) {
+    if (!g_returned_cap) return 0;
+    uint64_t mask = g_returned_cap - 1;
+    uint64_t j = lotus_returned_hash(p) & mask;
+    while (g_returned_set[j]) {
+        if (g_returned_set[j] == p) {
+            g_returned_set[j] = LOTUS_RETURNED_TOMB;
+            g_returned_live--;
+            return 1;
+        }
+        j = (j + 1) & mask;
+    }
+    return 0;
+}
+
+void *lotus_returned_struct_alloc(uint64_t size) {
+    if (size < LOTUS_CHILD_STRUCT_MIN) size = LOTUS_CHILD_STRUCT_MIN;
+    pthread_mutex_lock(&g_returned_mutex);
+    void *p = NULL;
+    if (lotus_no_chunk_pool()) {
+        p = malloc(size);
+    } else {
+        /* Bounded first-fit on exact size, as the child-struct recycler. */
+        void **prev = &g_returned_free;
+        void  *node = g_returned_free;
+        int    scanned = 0;
+        while (node && scanned < LOTUS_RETURNED_FREE_SCAN_MAX) {
+            void    **next_p = (void **)((char *)node + 8);
+            uint64_t *size_p = (uint64_t *)((char *)node + 16);
+            if (*size_p == size) {
+                *prev = *next_p;
+                p = node;
+                break;
+            }
+            prev = next_p;
+            node = *next_p;
+            scanned++;
+        }
+        if (!p) {
+            if (!g_returned_arena) g_returned_arena = lotus_arena_create();
+            p = g_returned_arena ? lotus_arena_alloc(g_returned_arena, size, 8) : NULL;
+        }
+    }
+    if (p) lotus_returned_set_insert(p);
+    pthread_mutex_unlock(&g_returned_mutex);
+    return p;
+}
+
+/* Process shutdown (the bus tables' tail): free what is still handed
+ * out — an instance nothing reclaimed — and the bookkeeping. */
+static void lotus_returned_structs_destroy(void) {
+    /* A program that handed back no locus allocated nothing here: no
+     * lock at its exit either. The pools are joined by now. */
+    if (!__atomic_load_n(&g_returned_set, __ATOMIC_ACQUIRE)) return;
+    pthread_mutex_lock(&g_returned_mutex);
+    if (lotus_no_chunk_pool()) {
+        for (uint64_t i = 0; i < g_returned_cap; i++) {
+            void *p = g_returned_set[i];
+            if (p && p != LOTUS_RETURNED_TOMB) free(p);
+        }
+    }
+    free(g_returned_set);
+    g_returned_set = NULL;
+    g_returned_cap = g_returned_used = g_returned_live = 0;
+    g_returned_free = NULL;
+    if (g_returned_arena) {
+        lotus_arena_destroy(g_returned_arena);
+        g_returned_arena = NULL;
+    }
+    pthread_mutex_unlock(&g_returned_mutex);
+}
+
+void lotus_returned_struct_release(void *p, uint64_t size) {
+    if (!p) return;
+    if (size < LOTUS_CHILD_STRUCT_MIN) size = LOTUS_CHILD_STRUCT_MIN;
+    pthread_mutex_lock(&g_returned_mutex);
+    if (lotus_returned_set_remove(p)) {
+        if (lotus_no_chunk_pool()) {
+            free(p);
+        } else {
+            *(void **)((char *)p + 8)     = g_returned_free;
+            *(uint64_t *)((char *)p + 16) = size;
+            g_returned_free               = p;
+        }
+    }
+    pthread_mutex_unlock(&g_returned_mutex);
+}
+
 /* Carve a sub-region of `parent`. The sub-region holds its own
  * chunk list (independent allocation lifetime is *bounded* by
  * the parent's, but the chunks themselves are separate from the
@@ -30746,6 +30926,10 @@ void lotus_bus_remote_destroy_all(void) {
         g_bus_payload_arena = NULL;
     }
     pthread_mutex_unlock(&g_bus_payload_arena_mutex);
+    /* GH #1570: the structs of handed-back loci, at the same point
+     * as the payload arena they used to live in: every teardown has
+     * run, so what is left is an instance nothing reclaimed. */
+    lotus_returned_structs_destroy();
 }
 
 /*

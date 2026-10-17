@@ -215,6 +215,9 @@ because it's how Hale frees resources without a `defer` or a
   enclosing function owns that one and releases it at scope exit.
   A result you drop (`make_ticker();` on its own) goes at the end of
   that statement, as a dropped literal does.
+  All of its memory goes with it, the instance's own struct
+  included, so a loop that calls a factory holds only the instances
+  still alive, however many it has built.
   A **fallible** factory is reached through `or`, and that changes
   nothing: `let c = std::process::spawn(argv) or raise;` closes
   the child's pipes and reaps it when the scope exits, just as a
