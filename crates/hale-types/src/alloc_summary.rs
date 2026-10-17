@@ -1189,8 +1189,10 @@ pub struct AllocSummary {
     pub locus_shapes: BTreeMap<String, LocusShape>,
     /// The fns the program reaches, when the summary holds the stdlib's
     /// analysis copy beside the program: the program's own fns, what
-    /// their calls reach (a method call whose receiver the walk could not
-    /// type, the method of its name of every copy locus they start), and
+    /// their calls reach (a stdlib fn called by its public path or as a
+    /// handle's member, the copy's fn; a method call whose receiver the
+    /// walk could not type, the method of its name of every copy locus
+    /// they start), the calls of the program's declaration bodies, and
     /// the hooks and
     /// bus handlers of every locus they start (an instantiation, or a
     /// param field of a started locus). A copy's fn the program never
@@ -3774,9 +3776,29 @@ pub fn summarize_within(
                 copy_methods.entry(l.as_str()).or_default().push(&b.0);
             }
         }
+        // A call of a stdlib fn by its public path (`std::metrics::gauge(..)`)
+        // is a call of the copy's fn it is the spelling of, and a stdlib
+        // handle's member (`reg.gauge(..)`) one of its namespace's fn: what
+        // either builds is started.
+        let copy_fns: BTreeMap<&str, &FnKey> = bodies
+            .iter()
+            .filter(|b| b.0.locus.is_none() && is_stdlib_copy(b.7))
+            .map(|b| (b.0.fn_name.as_str(), &b.0))
+            .collect();
+        let public: BTreeMap<&str, &[&str]> = hale_stdlib::PATH_RENAMES.iter().map(|(p, m)| (*m, *p)).collect();
+        let copy_fn_at = |path: &[&str]| crate::stdlib_bodies::mangled_locus_name(path).and_then(|m| copy_fns.get(m)).map(|k| (*k).clone());
         let mut untyped: BTreeSet<&str> = BTreeSet::new();
         let mut reached: BTreeSet<FnKey> = BTreeSet::new();
         let mut work: Vec<FnKey> = own.into_iter().collect();
+        // The calls still to follow: a reached row's, and the program's
+        // declaration bodies' (a started locus's params initializers and
+        // hooks, a constant's value), which run with what declares them.
+        let mut calls: Vec<&[CallEdge]> = summary
+            .declaration_bodies
+            .iter()
+            .filter(|b| b.summary.key.locus.is_none())
+            .map(|b| b.summary.calls.as_slice())
+            .collect();
         loop {
             while let Some(l) = pending.pop() {
                 if !started.insert(l.clone()) {
@@ -3791,27 +3813,40 @@ pub fn summarize_within(
                 );
                 let methods = copy_methods.get(l.as_str()).into_iter().flatten();
                 work.extend(methods.filter(|m| untyped.contains(m.fn_name.as_str())).map(|m| (*m).clone()));
+                let declared = summary.declaration_bodies.iter().filter(|b| b.summary.key.locus.as_ref() == Some(&l));
+                calls.extend(declared.map(|b| b.summary.calls.as_slice()));
                 pending.extend(param_starts.get(&l).into_iter().flatten().cloned());
+            }
+            if let Some(cs) = calls.pop() {
+                for c in cs {
+                    match &c.callee {
+                        Callee::Resolved(callee) => work.push(callee.clone()),
+                        Callee::Unresolved(name) if c.receiver_present => {
+                            if untyped.insert(name.as_str()) {
+                                for l in &started {
+                                    let methods = copy_methods.get(l.as_str()).into_iter().flatten();
+                                    work.extend(methods.filter(|m| m.fn_name == *name).map(|m| (*m).clone()));
+                                }
+                            }
+                            let member = c.recv_ty.as_deref().and_then(|t| public.get(t)).and_then(|p| {
+                                let (_, ns) = p.split_last()?;
+                                copy_fn_at(&ns.iter().copied().chain([name.as_str()]).collect::<Vec<&str>>())
+                            });
+                            work.extend(member);
+                        }
+                        Callee::Unresolved(name) => {
+                            work.extend(copy_fn_at(&name.split("::").collect::<Vec<&str>>()));
+                        }
+                    }
+                }
+                continue;
             }
             let Some(k) = work.pop() else { break };
             if !reached.insert(k.clone()) {
                 continue;
             }
             let Some(f) = summary.fns.get(&k) else { continue };
-            for c in &f.calls {
-                match &c.callee {
-                    Callee::Resolved(callee) => work.push(callee.clone()),
-                    Callee::Unresolved(name) if c.receiver_present => {
-                        if untyped.insert(name.as_str()) {
-                            for l in &started {
-                                let methods = copy_methods.get(l.as_str()).into_iter().flatten();
-                                work.extend(methods.filter(|m| m.fn_name == *name).map(|m| (*m).clone()));
-                            }
-                        }
-                    }
-                    Callee::Unresolved(_) => {}
-                }
-            }
+            calls.push(&f.calls);
             pending.extend(starts_of.get(&k).into_iter().flatten().cloned());
         }
         summary.reached = Some(reached);
