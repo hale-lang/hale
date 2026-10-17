@@ -146,6 +146,13 @@ main locus App {
         let line = one.seal(e);
         std::test::assert(dna::signed_line_holds(line), "an envelope's signature holds");
         std::test::assert(!dna::signed_line_holds(std::str::replace(line, "riley", "mallory")), "a changed envelope's does not");
+        // one key, several kinds of message: each signed under its own tag
+        let text = std::json::find_string_field(line, "envelope");
+        let sig = std::json::find_string_field(line, "sig");
+        std::test::assert(dna::signature_holds(one.public(), dna::SIG_TAG_ENVELOPE, text, sig), "an envelope's signature holds as an envelope's");
+        std::test::assert(!dna::signature_holds(one.public(), dna::SIG_TAG_ROW, text, sig) && !dna::signature_holds(one.public(), dna::SIG_TAG_CARD, text, sig), "and never as a row's or a card's");
+        let one_card = one.card("a", "g-a");
+        std::test::assert(dna::signed_line_holds_as(one_card, dna::SIG_TAG_CARD) && !dna::signed_line_holds(one_card), "a card's signature is a card's, not an envelope's");
         std::test::assert(ex.deliver("mem://b", "b", e.id, line).ok && ex.deliver("mem://b", "b", e.id, line).ok, "delivered twice");
         std::test::assert_eq_int(text_lines_with(ex.received(), "h1.received"), 1, "and kept once");
         ex.full_at = 1;

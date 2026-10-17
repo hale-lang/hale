@@ -5822,6 +5822,7 @@ otherwise.
 | `HALE_DNA_TRANSPORT_HOME=<dir>` | unset | With `local`, the body's home directory. |
 | `HALE_DNA_GIT_TIMEOUT=<s>` | 8 | Seconds a record `fetch`, `push` or `ls-remote` may take before it is killed. |
 | `HALE_DNA_NODE=<name>` | `<hostname>:<pid>` | This node's name in its claims (GH #1026). |
+| `HALE_DNA_EXCHANGE_PER_SENDER=<n>` | 10000 | How many envelopes of a kind one sender's subject of this record's exchange stream holds (`max_msgs_per_subject`), set when `hale dna nerves migrate` creates or updates the stream; a fixture lowers it to test a full inbox (GH #1590). |
 | `HALE_DNA_OWNER=<org>` | unnamed | The organization this body is, for the ownership graph. |
 | `HALE_DNA_LEASE=<name>` | unset | The lease a body holds; set by the body for the processes it starts. |
 | `HALE_DNA_LEASE_TOKEN=<n>` | unset | The lease's fencing token; set with `HALE_DNA_LEASE`. |

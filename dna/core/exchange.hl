@@ -107,13 +107,16 @@ fn signed_line(text: String, key: String, sig: String) -> String {
 }
 
 // Whether a signed line's signature holds over its envelope under the key
-// it names (integrity; whether that key is the sender's is the
-// connection's to say).
-fn signed_line_holds(line: String) -> Bool {
+// it names and the domain `tag` (integrity; whether that key is the
+// sender's is the connection's to say).
+fn signed_line_holds_as(line: String, tag: String) -> Bool {
     let text = std::json::find_string_field(line, "envelope");
     let key = std::json::find_string_field(line, "key");
-    return len(text) > 0 && signature_holds(key, text, std::json::find_string_field(line, "sig"));
+    return len(text) > 0 && signature_holds(key, tag, text, std::json::find_string_field(line, "sig"));
 }
+
+// An envelope's signed line.
+fn signed_line_holds(line: String) -> Bool { return signed_line_holds_as(line, SIG_TAG_ENVELOPE); }
 
 // ---- signing: the record's own key -----------------------------------------
 //
@@ -140,9 +143,26 @@ fn hex_bytes(s: String) -> Bytes {
     return b.snapshot() or b"";
 }
 
-fn signature_holds(key: String, text: String, sig: String) -> Bool {
+// One key signs several kinds of message — envelopes, the card, and (once
+// the record is memory's) its rows — so each kind is signed under a tag of
+// its own: the bytes signed are the tag, a NUL, then the text. A signature
+// made for one kind never verifies as another's.
+const SIG_TAG_ENVELOPE: String = "hale-dna-envelope";
+const SIG_TAG_CARD: String = "hale-dna-card";
+const SIG_TAG_ROW: String = "hale-dna-row";
+
+fn tagged_bytes(tag: String, text: String) -> Bytes {
+    let b = std::bytes::BytesBuilder { };
+    b.append_str(tag);
+    b.append_u8(0);
+    b.append_str(text);
+    return b.snapshot() or b"";
+}
+
+// Whether `sig` is `key`'s over `text` under `tag`.
+fn signature_holds(key: String, tag: String, text: String, sig: String) -> Bool {
     if !std::str::starts_with(sig, "ed25519:") { return false; }
-    return std::crypto::ed25519_verify(hex_bytes(key), std::bytes::from_string(text), hex_bytes(sig[8..len(sig)]));
+    return std::crypto::ed25519_verify(hex_bytes(key), tagged_bytes(tag, text), hex_bytes(sig[8..len(sig)]));
 }
 
 // The record's key, held where the vault holds it: the secret is revealed
@@ -151,15 +171,16 @@ locus ExchangeKey {
     params { vault: String = ""; }
     fn ready() -> Bool { return std::secret::Credential { vault: self.vault }.ready(); }
     fn public() -> String { return hex(std::secret::Credential { vault: self.vault }.ed25519_public()); }
-    fn sign(text: String) -> String {
-        let sig = std::secret::Credential { vault: self.vault }.sign_ed25519(std::bytes::from_string(text));
+    // `text` signed under `tag` (`SIG_TAG_*`): "ed25519:<hex>", "" when the key is missing.
+    fn sign(tag: String, text: String) -> String {
+        let sig = std::secret::Credential { vault: self.vault }.sign_ed25519(tagged_bytes(tag, text));
         if len(sig) == 0 { return ""; }
         return "ed25519:" + hex(sig);
     }
     // An envelope as it travels, signed ("" when the key is missing).
     fn seal(e: Envelope) -> String {
         let text = envelope_json(e);
-        let sig = self.sign(text);
+        let sig = self.sign(SIG_TAG_ENVELOPE, text);
         if len(sig) == 0 { return ""; }
         return signed_line(text, self.public(), sig);
     }
@@ -168,7 +189,7 @@ locus ExchangeKey {
         let key = self.public();
         if len(key) == 0 { return ""; }
         let text = card_text(identity, genome, key);
-        return signed_line(text, key, self.sign(text));
+        return signed_line(text, key, self.sign(SIG_TAG_CARD, text));
     }
 }
 
@@ -186,7 +207,7 @@ fn card_text(identity: String, genome: String, key: String) -> String {
 // A card as read: its signature must hold under the key it names, and it
 // must be `record`'s.
 fn card_of(line: String, record: String) -> Card {
-    if !signed_line_holds(line) { return Card { why: "the card's signature does not hold" }; }
+    if !signed_line_holds_as(line, SIG_TAG_CARD) { return Card { why: "the card's signature does not hold" }; }
     let text = std::json::find_string_field(line, "envelope");
     let c = Card { ok: true, identity: std::json::find_string_field(text, "identity"), genome: std::json::find_string_field(text, "genome"), key: std::json::find_string_field(text, "key") };
     if c.key != std::json::find_string_field(line, "key") { return Card { why: "the card names another key than it is signed with" }; }
