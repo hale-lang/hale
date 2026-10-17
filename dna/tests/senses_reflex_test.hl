@@ -143,7 +143,8 @@ main locus App {
         std::io::fs::write_file(self.app + "/dna/senses.yml", told) or discard;
         let plan = "{\"schema\":\"1.2\",\"name\":\"production\",\"instances\":[{\"id\":\"api-0\",\"seed\":\".\",\"node\":\"edge-1\",\"labels\":[\"api\"]}]}\n";
         std::io::fs::write_file(self.app + "/fleet.plan.json", plan) or discard;
-        let manifest = text_of(self.app + "/hale.toml") + "\n[fleets]\nproduction = \"fleet.plan.json\"\n\n[dna]\nfleet = \"production\"\n";
+        // init pinned the record in a `[dna]` table (GH #1590): the fleet joins it
+        let manifest = std::str::replace(text_of(self.app + "/hale.toml"), "\n[dna]\n", "\n[dna]\nfleet = \"production\"\n") + "\n[fleets]\nproduction = \"fleet.plan.json\"\n";
         std::io::fs::write_file(self.app + "/hale.toml", manifest) or discard;
         let bare = scratch + "/origin.git";
         let edge = scratch + "/edge-1";

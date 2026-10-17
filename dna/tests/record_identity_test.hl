@@ -9,8 +9,19 @@
 // organization heard and answered the other's facts. The dates are
 // pinned here so the collision would be certain; the first commit's
 // nonce is what keeps the two apart.
+//
+// GH #1590: the genome pins the identity (`[dna] record` in hale.toml),
+// and a pin that names another record than the clone's is refused, by
+// memory and by `init` and `upgrade`, rather than read into the other
+// record's memory.
 
 import "../core" as dna;
+
+// The project's hale.toml with its `[dna] record` line replaced by `line`.
+fn repin(app: String, line: String) -> Bool {
+    let r = dna::run_tool("sh\n-c\nsed -i \"s/^record = .*$/$2/\" \"$1/hale.toml\"\nsh\n" + app + "\n" + line);
+    return r.code == 0;
+}
 
 fn toolchain() -> String {
     if std::env::var_exists("HALE_BIN") { return std::env::var("HALE_BIN"); }
@@ -46,6 +57,32 @@ main locus App {
         std::test::assert(later.ok, "a second row lands: " + later.error);
         let head = dna::run_tool("git\n-C\n" + scratch + "/a/app\nlog\n-1\n--format=%B\nrefs/dna/journal").stdout;
         std::test::assert(!std::str::contains(head, "Record-Nonce"), "and carries no nonce: " + head);
+        // GH #1590: init pinned each identity in its genome
+        let a_app = scratch + "/a/app";
+        let b_app = scratch + "/b/app";
+        std::test::assert_eq_str(dna::manifest_dna(a_app, "record"), ia, "hale.toml pins a's record");
+        std::test::assert_eq_str(dna::manifest_dna(b_app, "record"), ib, "hale.toml pins b's record");
+        std::test::assert_eq_str(dna::record_scope(a_app), ia, "the scope is the pin, which the record agrees with");
+        // a pin naming another record: no scope, and the reason
+        std::test::assert(repin(b_app, "record = \"" + ia + "\""), "b's pin rewritten to a's");
+        let crossed = dna::record_identity_at(b_app);
+        std::test::assert(len(crossed.id) == 0 && std::str::contains(crossed.why, ib), "a pin naming another record has no scope: " + crossed.id + " / " + crossed.why);
+        let up = dna::run_tool("sh\n-c\ncd \"$1\" && exec \"$2\" dna upgrade\nsh\n" + b_app + "\n" + toolchain());
+        std::test::assert(up.code != 0 && std::str::contains(up.stderr, "[dna] record"), "upgrade refuses the crossed pin: " + up.stdout + up.stderr);
+        // with no pin, the record's root commit, as before the pin
+        std::test::assert(repin(b_app, ""), "b's pin removed");
+        std::test::assert_eq_str(dna::record_scope(b_app), ib, "an unpinned genome is its record's root commit");
+        let again = dna::run_tool("sh\n-c\ncd \"$1\" && exec \"$2\" dna upgrade\nsh\n" + b_app + "\n" + toolchain());
+        std::test::assert(again.code == 0 && std::str::contains(again.stdout, "pinned"), "upgrade pins a record from before the pin: " + again.stdout + again.stderr);
+        std::test::assert_eq_str(dna::manifest_dna(b_app, "record"), ib, "and the pin is b's own");
+        // a genome copied with its pin, into a clone holding no record: init
+        // refuses to start a second record under the first one's name
+        let c_app = scratch + "/c";
+        let copied = dna::run_tool("sh\n-c\ncp -r \"$1\" \"$2\" && rm -rf \"$2/.git\" && git init -q \"$2\"\nsh\n" + a_app + "\n" + c_app);
+        std::test::assert(copied.code == 0, "a copy of a's genome, with no record: " + copied.stderr);
+        let init = dna::run_tool("sh\n-c\ncd \"$1\" && HALE_DNA_DISCOVER=off exec \"$2\" dna init\nsh\n" + c_app + "\n" + toolchain());
+        std::test::assert(init.code != 0 && std::str::contains(init.stderr, ia), "init refuses a pin of another record: " + init.stdout + init.stderr);
+        std::test::assert(len(dna::GitRecord { repo: c_app }.identity()) == 0, "and starts no record");
         dna::scratch_done(scratch);
     }
 }

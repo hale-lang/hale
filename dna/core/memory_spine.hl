@@ -19,10 +19,79 @@ fn own_dsn_env() -> String { if dsn_set(SPINE_DSN_ENV) { return SPINE_DSN_ENV; }
 
 fn dsn_set(env_name: String) -> Bool { return len(env_name) > 0 && std::env::var_exists(env_name) && len(std::env::var(env_name)) > 0; }
 
-// The identity of the record at `repo`: the scope of its schema.
+// ---- the record's identity (GH #1590) ---------------------------------------
+//
+// A record's identity names its memory: the schema `dna_<identity>`, the
+// nerves' organization token, the roles. It is pinned in the genome, as
+// `[dna] record = "<identity>"` in the repository's `hale.toml`, written by
+// `hale dna init` and `upgrade`, so a clone knows which record it belongs
+// to before it holds a row of it. While the record is on git the identity
+// is the root commit of `refs/dna/journal`, and the pin must agree with
+// it: a `hale.toml` copied from another project names another record, and
+// a clone whose record is not the one its genome names is refused rather
+// than read into the other record's memory. A genome with no pin is the
+// record's root commit, as before the pin.
+
+// The identity, or why there is none to use: `id` "" with `why` "" is a
+// record that has no rows yet and no pin.
+type RecordIdentity {
+    id: String = "";
+    why: String = "";
+}
+
+// The value of `key` in `hale.toml`'s `[dna]` table at `root`, "" when
+// the file, the table or the key is absent. A value is a basic string on
+// one line (`key = "value"`, a trailing comment allowed).
+fn manifest_dna(root: String, key: String) -> String {
+    let text = std::io::fs::read_file(root + "/hale.toml") or "";
+    let mut rest = text;
+    let mut inside = false;
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let line = std::str::trim(if nl < 0 { rest } else { rest[0..nl] });
+        rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
+        if std::str::starts_with(line, "[") { inside = line == "[dna]"; continue; }
+        if !inside || !std::str::starts_with(line, key) { continue; }
+        let after = std::str::trim(line[len(key)..len(line)]);
+        if !std::str::starts_with(after, "=") { continue; }
+        let value = std::str::trim(after[1..len(after)]);
+        if !std::str::starts_with(value, "\"") { return ""; }
+        let body = value[1..len(value)];
+        let close = std::str::index_of(body, "\"");
+        if close < 0 { return ""; }
+        return body[0..close];
+    }
+    return "";
+}
+
+// Lowercase hex digits, at least one.
+fn hex_text(s: String) -> Bool {
+    if len(s) == 0 { return false; }
+    let mut i = 0;
+    while i < len(s) {
+        let c = s[i..(i + 1)];
+        if !((c >= "0" && c <= "9") || (c >= "a" && c <= "f")) { return false; }
+        i = i + 1;
+    }
+    return true;
+}
+
+// The identity of the record at `repo`: the pin, checked against the
+// record this clone holds; the record's root commit when there is no pin.
+fn record_identity_at(repo: String) -> RecordIdentity {
+    let pinned = manifest_dna(repo, "record");
+    let held = GitRecord { repo: repo }.identity();
+    if len(pinned) == 0 { return RecordIdentity { id: held }; }
+    if !hex_text(pinned) || (len(pinned) != 40 && len(pinned) != 64) { return RecordIdentity { why: "hale.toml's [dna] record is `" + pinned + "`, which is not a record's identity (40 or 64 lowercase hex digits)" }; }
+    if len(held) > 0 && held != pinned { return RecordIdentity { why: "hale.toml's [dna] record names record " + pinned + ", but this clone's record is " + held + ": the genome was copied from another project, or the record from another genome, and neither is read into the other's memory" }; }
+    return RecordIdentity { id: pinned };
+}
+
+// The identity of the record at `repo`: the scope of its schema. "" when
+// it has none yet, or when the pin and the record disagree
+// (`record_identity_at` says why).
 fn record_scope(repo: String) -> String {
-    let r = GitRecord { repo: repo };
-    return r.identity();
+    return record_identity_at(repo).id;
 }
 
 // ---- the ledger ------------------------------------------------------------
@@ -61,7 +130,9 @@ locus MemoryLedger {
     fn ensure_open() -> Bool {
         if self.opened { return true; }
         if !self.ready() { self.failure = self.dsn_env + " is not set: no ledger"; return false; }
-        let scope = record_scope(self.repo);
+        let who = record_identity_at(self.repo);
+        if len(who.why) > 0 { self.failure = who.why; return false; }
+        let scope = who.id;
         self.store.dsn_env = self.dsn_env;
         self.leases.dsn_env = self.dsn_env;
         self.store.scope(scope);
@@ -184,8 +255,10 @@ locus MemoryLeases {
     fn ensure_open() -> Bool {
         if self.opened { return true; }
         if !self.ready() { self.last_error = self.dsn_env + " is not set: no leases"; return false; }
+        let who = record_identity_at(self.repo);
+        if len(who.why) > 0 { self.last_error = who.why; return false; }
         self.store.dsn_env = self.dsn_env;
-        self.store.scope(record_scope(self.repo));
+        self.store.scope(who.id);
         if !self.store.open() { self.last_error = "the leases are not open: " + self.store.last_error(); return false; }
         self.opened = true;
         return true;
@@ -343,6 +416,10 @@ locus MemoryKnowledge {
     // schema), and a connection that still answers.
     fn ensure_open() -> Bool {
         let scope = self.record_identity();
+        if len(scope) == 0 {
+            let who = record_identity_at(self.repo);
+            if len(who.why) > 0 { self.last_error = who.why; return false; }
+        }
         self.store.dsn_env = self.dsn_env;
         if scope != self.store.record() { self.store.scope(scope); }
         if self.store.healthy() { return true; }

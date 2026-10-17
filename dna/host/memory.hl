@@ -23,7 +23,9 @@ fn memory_migrate_verb(root: String) -> Answer {
         if !db.present { return answer("none: " + db.why + "\n"); }
         owner = db.dsn;
     }
-    let m = dna::migrate(dna::parse_dsn(owner), record_identity(root));
+    let who = dna::record_identity_at(root);
+    if len(who.why) > 0 { return fail("memory migrate: " + who.why); }
+    let m = dna::migrate(dna::parse_dsn(owner), who.id);
     if !m.ok { return fail("memory migrate: " + m.why); }
     let mut out = dna::SPINE_DSN_ENV + "=" + m.spine_dsn + "\n" + dna::HEAD_DSN_ENV + "=" + m.head_dsn + "\n";
     let mut rest = m.owner_dsns;

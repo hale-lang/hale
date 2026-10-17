@@ -64,6 +64,20 @@ The record's identity is its first commit, the same in every clone
 and different for every record. Memory's schema and the nerves' token
 are both named after it (`dna_<identity>`).
 
+The genome pins it. `hale dna init` writes it into `hale.toml`, and
+`hale dna upgrade` adds it to a project initialized before the pin:
+
+```toml
+[dna]
+record = "4f1c…"   # the record's identity, written by init
+```
+
+A clone knows its record from the genome, before it holds a row of it.
+A pin that names a different record than the one the clone holds — a
+`hale.toml` copied from another project — is refused: memory will not
+open, and `upgrade` and `init` say which two records disagree. Remove
+the line from a copied manifest and run `init` again.
+
 `.hale/dna/` is not the record. It holds the status projection,
 worktrees and the toolchain's scratch; delete it and nothing the
 record holds is lost.
