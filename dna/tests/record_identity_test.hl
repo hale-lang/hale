@@ -82,6 +82,9 @@ main locus App {
         std::test::assert(self.reads(b_app, "dna.record = \"" + ib + "\"\n[deps]\n", ib, ""), "a dotted key");
         std::test::assert(self.reads(b_app, "dna = { fleet = \"x\", record = \"" + ib + "\" }\n", ib, ""), "an inline table");
         std::test::assert(self.reads(b_app, "[dna]\nrecord = 7\n", "", "not readable"), "a pin that is not a string");
+        // keys this reader cannot decode, which TOML reads as the pin: refused
+        std::test::assert(self.reads(b_app, "[dna]\n\"\\u0072ecord\" = '" + ia + "'\n", "", "not readable"), "an escaped quoted key");
+        std::test::assert(self.reads(b_app, "[\"\\u0064na\"]\nrecord = '" + ia + "'\n", "", "not readable"), "an escaped quoted header");
         std::test::assert(self.reads(b_app, "[dna]\nrecord = \"\"\"" + ib + "\"\"\"\n", "", "not readable"), "a multi-line string");
         std::io::fs::write_file(b_app + "/hale.toml", original) or discard;
         // the codex case through the CLI: a literal-string pin of another record

@@ -143,11 +143,15 @@ fn manifest_dna_value(root: String, key: String) -> ManifestValue {
         if std::str::starts_with(line, "[") {
             let close = toml_index_outside(line, "]");
             table = if close < 0 { "?" } else { toml_dotted(line[1..close]) };
+            // a header this reader cannot decode might be `dna`
+            if std::str::contains(table, "?") { return ManifestValue { present: true, why: "a table header with escapes or unclosed" }; }
             continue;
         }
         let eq = toml_index_outside(line, "=");
         if eq < 0 { continue; }
         let k = toml_dotted(line[0..eq]);
+        // a key this reader cannot decode, where it might be the pin
+        if std::str::contains(k, "?") && (len(table) == 0 || table == "dna" || std::str::starts_with(table, "dna.")) { return ManifestValue { present: true, why: "a quoted key with escapes" }; }
         let full = if len(table) == 0 { k } else { table + "." + k };
         let value = line[(eq + 1)..len(line)];
         if full == want { return toml_string(value); }
@@ -162,7 +166,9 @@ fn manifest_dna_value(root: String, key: String) -> ManifestValue {
                 let item = if comma < 0 { items } else { items[0..comma] };
                 items = if comma < 0 { "" } else { items[(comma + 1)..len(items)] };
                 let ieq = toml_index_outside(item, "=");
-                if ieq >= 0 && toml_dotted(item[0..ieq]) == key { return toml_string(item[(ieq + 1)..len(item)]); }
+                let ik = if ieq < 0 { "" } else { toml_dotted(item[0..ieq]) };
+                if std::str::contains(ik, "?") { return ManifestValue { present: true, why: "a quoted key with escapes" }; }
+                if ieq >= 0 && ik == key { return toml_string(item[(ieq + 1)..len(item)]); }
             }
         }
     }
