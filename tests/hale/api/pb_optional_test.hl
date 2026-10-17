@@ -11,6 +11,9 @@
 // write the codecs.
 
 type Inner { a: Int; b: String = "dflt"; }
+// a range that leaves out zero: an absent record of it holds the range's least value
+type Pos = Int { range: 1..10; };
+type Ranged { n: Pos; }
 type Opt {
     name: String;
     note: String;
@@ -19,6 +22,8 @@ type Opt {
     has_tags: Bool;
     inner: Inner;
     has_inner: Bool;
+    ranged: Ranged;
+    has_ranged: Bool;
 }
 
 api PbOptional {
@@ -61,6 +66,7 @@ main locus Desk {
         self.round("{\"name\":\"a\"}", "every optional field absent");
         self.round("{\"name\":\"b\",\"note\":\"\",\"tags\":[],\"inner\":{\"a\":0,\"b\":\"\"}}", "every optional field present at its zero");
         self.round("{\"name\":\"c\",\"note\":\"x\",\"tags\":[\"p\",\"q\"],\"inner\":{\"a\":7,\"b\":\"y\"}}", "every optional field present");
+        self.round("{\"name\":\"r\",\"ranged\":{\"n\":5}}", "an optional record of a range that leaves out zero");
 
         // a message carrying only the name: every flag false, every value its zero
         let only = __api_pb_decode_Opt(__api_pb_put_str(1, "d")) or {
@@ -72,6 +78,7 @@ main locus Desk {
         std::test::assert_eq_int(count(only.tags), 0, "an absent list is empty");
         std::test::assert_eq_int(only.inner.a, 0, "an absent record is its zero");
         std::test::assert_eq_str(only.inner.b, "dflt", "an absent record's field keeps its default");
+        std::test::assert_eq_int(Int(only.ranged.n), 1, "an absent record of a range holds its least value");
         std::test::assert_eq_str(__api_encode_Opt(only), "{\"name\":\"d\"}", "and JSON writes none of them");
 
         // the flag is read from its own field: set, with no value, it is a presence of the zero

@@ -361,7 +361,7 @@ impl<'a> Codec<'a> {
                     "if !__api_json_is_int(std::str::trim({body})) {{ {bail} }}\nlet {n} = std::str::parse_int(std::str::trim({body})) or {{ {bail} }};\n"
                 );
                 match c {
-                    Conv::Range(_) => format!("{ins}let {var} = {name}({n}) or {{ {bail} }};\n"),
+                    Conv::Range(..) => format!("{ins}let {var} = {name}({n}) or {{ {bail} }};\n"),
                     Conv::Identity(_) => format!("{ins}let {var} = {name}({n});\n"),
                     Conv::Quantity(m, u) => format!("{ins}let {var} = {n} * {m}{u};\n"),
                 }
@@ -436,7 +436,7 @@ impl PbCodec<'_> {
                 let n = format!("__n_{var}");
                 let ins = format!("let {n} = __api_pb_box_int({bytes}) or {{ {bail} }};\n");
                 match c {
-                    Conv::Range(_) => format!("{ins}let {var} = {name}({n}) or {{ {bail} }};\n"),
+                    Conv::Range(..) => format!("{ins}let {var} = {name}({n}) or {{ {bail} }};\n"),
                     Conv::Identity(_) => format!("{ins}let {var} = {name}({n});\n"),
                     Conv::Quantity(m, u) => format!("{ins}let {var} = {n} * {m}{u};\n"),
                 }

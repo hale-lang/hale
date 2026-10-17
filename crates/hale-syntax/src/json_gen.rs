@@ -203,8 +203,10 @@ pub enum Conv {
     Quantity(u64, String),
     /// A range (`Int { range: 0..10; }`, or an identity with one):
     /// narrowing from the wire's `Int` may leave the range, which is a
-    /// wrong type — `Lvl(n) or fail …` and `Int(l)`.
-    Range(String),
+    /// wrong type — `Lvl(n) or fail …` and `Int(l)`. The `Int` is the
+    /// range's zero, the value an absent optional field of it holds: `0`
+    /// where the range holds it, its least value where it does not.
+    Range(String, i64),
 }
 
 impl Conv {
@@ -213,7 +215,7 @@ impl Conv {
         match self {
             Conv::Identity(n) => format!("{}({})", n, int),
             Conv::Quantity(m, u) => format!("{} * {}{}", int, m, u),
-            Conv::Range(n) => format!(
+            Conv::Range(n, _) => format!(
                 "{}({}) or fail JsonError {{ kind: \"wrong_type\", field: \"{}\" }}",
                 n, int, key
             ),
@@ -222,7 +224,7 @@ impl Conv {
     /// The expression that writes the field's value `v` as the wire's `Int`.
     pub fn to_int(&self, v: &str) -> String {
         match self {
-            Conv::Identity(_) | Conv::Range(_) => format!("Int({})", v),
+            Conv::Identity(_) | Conv::Range(..) => format!("Int({})", v),
             Conv::Quantity(m, u) => format!("({} / {}{})", v, m, u),
         }
     }
@@ -240,6 +242,27 @@ pub fn scalar_convs(programs: &[&Program]) -> std::collections::BTreeMap<String,
                     let TypeDeclBody::Scalar(sd) = &td.body else { continue };
                     let name = td.name.name.clone();
                     let ranged = sd.clauses.iter().any(|c| matches!(c, ScalarClause::Range { .. }));
+                    // the range's zero: 0 where it holds it, its least value otherwise
+                    let lit = |e: &Expr| match e {
+                        Expr::Literal(Literal::Int(n), _) => Some(*n),
+                        Expr::Unary { op: crate::ast::UnaryOp::Neg, operand, .. } => match operand.as_ref() {
+                            Expr::Literal(Literal::Int(n), _) => Some(-*n),
+                            _ => None,
+                        },
+                        _ => None,
+                    };
+                    let zero = sd
+                        .clauses
+                        .iter()
+                        .find_map(|c| match c {
+                            ScalarClause::Range { lo, hi, inclusive, .. } => {
+                                let (lo, hi) = (lit(lo)?, lit(hi)?);
+                                let holds = lo <= 0 && if *inclusive { 0 <= hi } else { 0 < hi };
+                                Some(if holds { 0 } else { lo })
+                            }
+                            _ => None,
+                        })
+                        .unwrap_or(0);
                     let conv = match sd.kind {
                         Some(ScalarKind::Point) => None,
                         Some(ScalarKind::Quantity) => sd
@@ -248,9 +271,9 @@ pub fn scalar_convs(programs: &[&Program]) -> std::collections::BTreeMap<String,
                             .filter(|_| matches!(sd.base, TypeExpr::Primitive(PrimType::Int, _)))
                             .map(|d| Conv::Quantity(d.multiple, d.unit.name.clone())),
                         Some(ScalarKind::Distinct) => {
-                            Some(if ranged { Conv::Range(name.clone()) } else { Conv::Identity(name.clone()) })
+                            Some(if ranged { Conv::Range(name.clone(), zero) } else { Conv::Identity(name.clone()) })
                         }
-                        None => ranged.then(|| Conv::Range(name.clone())),
+                        None => ranged.then(|| Conv::Range(name.clone(), zero)),
                     };
                     if let Some(c) = conv {
                         out.insert(name, c);
@@ -451,7 +474,12 @@ fn generate_parser_src_mode(t: &JsonType, prefix: &str, strict: bool) -> String 
         }
         match &f.kind {
             FieldKind::Scalar(s) => {
-                let init = f.default_src.as_deref().unwrap_or_else(|| s.zero());
+                // an optional field left out holds its zero, a range's own
+                let init = if matches!(f.presence, Presence::Tracked(_)) {
+                    wire_zero(*s, &f.conv, &f.default_src)
+                } else {
+                    f.default_src.clone().unwrap_or_else(|| s.zero().to_string())
+                };
                 b.push_str(&format!(
                     "    let mut __f_{}: {} = {};\n",
                     f.name,
@@ -547,8 +575,16 @@ fn generate_parser_src_mode(t: &JsonType, prefix: &str, strict: bool) -> String 
         // twice wins, as for any field)
         let optional = matches!(f.presence, Presence::Tracked(_));
         if optional {
+            // a `null` after an earlier occurrence leaves nothing of it: the
+            // field is back at its default (or zero), a list empty
+            let reset = match &f.kind {
+                FieldKind::Scalar(s) => format!("__f_{} = {};", f.name, wire_zero(*s, &f.conv, &f.default_src)),
+                FieldKind::Time => format!("__f_{} = {};", f.name, f.default_src.as_deref().unwrap_or(EPOCH)),
+                FieldKind::Nested(_) => format!("__raw_{} = \"\";", f.name),
+                FieldKind::List { .. } => format!("clear(__h_{}.b);", f.name),
+            };
             b.push_str(&format!(
-                "                if std::str::range_eq(__s, __vs, __ve, \"null\") {{ __seen_{} = false; }} else {{\n",
+                "                if std::str::range_eq(__s, __vs, __ve, \"null\") {{ __seen_{} = false; {reset} }} else {{\n",
                 f.name
             ));
         }
@@ -639,13 +675,7 @@ fn generate_parser_src_mode(t: &JsonType, prefix: &str, strict: bool) -> String 
     for f in &t.fields {
         if let FieldKind::Nested(tn) = &f.kind {
             if matches!(f.presence, Presence::Tracked(_)) {
-                b.push_str(&format!("    let mut __p_{} = {ZERO}{}() or raise;\n", f.name, tn));
-                b.push_str(&format!(
-                    "    if __seen_{n} {{ __p_{n} = {}{}(__raw_{n}) or raise; }}\n",
-                    prefix,
-                    tn,
-                    n = f.name
-                ));
+                b.push_str(&format!("    let __p_{n} = __api_optional_{tn}(__seen_{n}, __raw_{n}) or raise;\n", n = f.name));
                 continue;
             }
             b.push_str(&format!(
@@ -665,15 +695,75 @@ fn generate_parser_src_mode(t: &JsonType, prefix: &str, strict: bool) -> String 
 /// leaves (`wrong_type`).
 const ZERO: &str = "__api_zero_";
 
+/// The wire value a scalar field holds before a payload sets it: its
+/// default, else its type's zero (a range's own, spec/api.md § Codecs).
+fn wire_zero(s: ScalarTy, conv: &Option<Conv>, default: &Option<String>) -> String {
+    match (default, conv) {
+        (Some(d), _) => d.clone(),
+        (None, Some(Conv::Range(_, z))) => z.to_string(),
+        (None, _) => s.zero().to_string(),
+    }
+}
+
 /// A list element's zero: its scalar's (through its conversion), the
 /// epoch, or its record's zero.
 fn elem_zero(elem: &Elem, key: &str) -> String {
     match elem {
-        Elem::Scalar(s, Some(c)) => c.from_int(s.zero(), key),
+        Elem::Scalar(s, Some(c)) => c.from_int(&wire_zero(*s, &Some(c.clone()), &None), key),
         Elem::Scalar(s, None) => s.zero().to_string(),
         Elem::Time => EPOCH.to_string(),
         Elem::Nested(tn) => format!("{ZERO}{tn}() or raise"),
     }
+}
+
+/// The reader of the optional fixed array `field` of `record`.
+fn optional_array_name(record: &str, field: &str) -> String {
+    format!("__api_optional_{record}__{field}")
+}
+
+/// The readers of an optional value, which build its zero only when it is
+/// absent (a zero can fail, for a range that leaves it out, where the value
+/// sent is valid): `__api_optional_<T>(present, text)` and
+/// `__api_pb_optional_<T>(bytes)` for a record, and
+/// `__api_optional_<T>__<field>(present, holder)` for each optional fixed
+/// array of `t`.
+fn generate_optional_src(t: &JsonType, protobuf: bool) -> String {
+    let n = &t.name;
+    let mut b = if protobuf {
+        format!(
+            "fn __api_pb_optional_{n}(__raw: Bytes) -> {n} fallible(JsonError) {{\n    if len(__raw) > 0 {{ return __api_pb_decode_{n}(__raw) or raise; }}\n    return {ZERO}{n}() or raise;\n}}\n"
+        )
+    } else {
+        format!(
+            "fn __api_optional_{n}(__present: Bool, __raw: String) -> {n} fallible(JsonError) {{\n    if __present {{ return __api_decode_{n}(__raw) or raise; }}\n    return {ZERO}{n}() or raise;\n}}\n"
+        )
+    };
+    if protobuf {
+        return b;
+    }
+    for f in &t.fields {
+        let FieldKind::List { elem, elem_ty, cap, exact: true } = &f.kind else { continue };
+        if !matches!(f.presence, Presence::Tracked(_)) {
+            continue;
+        }
+        let short = format!("fail JsonError {{ kind: \"too_short\", field: \"{}\" }}", f.key);
+        b.push_str(&format!(
+            "fn {}(__present: Bool, __h: {}) -> [{elem_ty}; {cap}] fallible(JsonError) {{\n",
+            optional_array_name(n, &f.name),
+            holder_name(n, &f.name)
+        ));
+        b.push_str(&format!("    if !__present {{ return [{}; {cap}]; }}\n", elem_zero(elem, &f.key)));
+        b.push_str(&format!("    if count(__h.b) != {cap} {{ {short}; }}\n"));
+        b.push_str(&format!("    let __a0 = at(__h.b, 0) or {short};\n"));
+        b.push_str(&format!("    let mut __a = [{}; {cap}];\n", unheld(elem, "__a0")));
+        b.push_str("    let mut __ai = 1;\n");
+        b.push_str(&format!("    while __ai < {cap} {{\n"));
+        b.push_str(&format!("        let __av = at(__h.b, __ai) or {short};\n"));
+        b.push_str(&format!("        __a[__ai] = {};\n", unheld(elem, "__av")));
+        b.push_str("        __ai = __ai + 1;\n    }\n");
+        b.push_str("    return __a;\n}\n");
+    }
+    b
 }
 
 /// `__api_zero_<T>() -> T fallible(JsonError)`.
@@ -682,7 +772,7 @@ fn generate_zero_src(t: &JsonType) -> String {
     for f in &t.fields {
         let v = match &f.kind {
             FieldKind::Scalar(s) => {
-                let d = f.default_src.clone().unwrap_or_else(|| s.zero().to_string());
+                let d = wire_zero(*s, &f.conv, &f.default_src);
                 match &f.conv {
                     Some(c) => c.from_int(&d, &f.key),
                     None => d,
@@ -753,15 +843,12 @@ fn construct_src(t: &JsonType, json: bool) -> String {
             // elements' zeros: absent from JSON (or `null`), or no occurrence
             // in a message
             if matches!(f.presence, Presence::Tracked(_)) {
-                let absent = if json { format!("!__seen_{}", f.name) } else { format!("count(__h_{}.b) == 0", f.name) };
-                b.push_str(&format!("    let mut __a_{n} = [{}; {cap}];\n", elem_zero(elem, &f.key), n = f.name));
-                b.push_str(&format!("    if !({absent}) {{\n"));
-                b.push_str(&format!("        if count(__h_{n}.b) != {cap} {{ {short}; }}\n", n = f.name));
-                b.push_str(&format!("        let mut __ai_{n} = 0;\n", n = f.name));
-                b.push_str(&format!("        while __ai_{n} < {cap} {{\n", n = f.name));
-                b.push_str(&format!("            let __av_{n} = at(__h_{n}.b, __ai_{n}) or {short};\n", n = f.name));
-                b.push_str(&format!("            __a_{n}[__ai_{n}] = {};\n", unheld(elem, &format!("__av_{}", f.name)), n = f.name));
-                b.push_str(&format!("            __ai_{n} = __ai_{n} + 1;\n        }}\n    }}\n", n = f.name));
+                let present = if json { format!("__seen_{}", f.name) } else { format!("count(__h_{}.b) > 0", f.name) };
+                b.push_str(&format!(
+                    "    let __a_{n} = {}({present}, __h_{n}) or raise;\n",
+                    optional_array_name(&t.name, &f.name),
+                    n = f.name
+                ));
                 continue;
             }
             b.push_str(&format!("    if count(__h_{n}.b) != {cap} {{ {short}; }}\n", n = f.name));
@@ -1023,7 +1110,12 @@ fn generate_pb_parser_src(t: &JsonType) -> String {
     for f in &t.fields {
         match &f.kind {
             FieldKind::Scalar(s) => {
-                let init = f.default_src.as_deref().unwrap_or_else(|| s.zero());
+                // an optional field left out holds its zero, a range's own
+                let init = if matches!(f.presence, Presence::Tracked(_)) {
+                    wire_zero(*s, &f.conv, &f.default_src)
+                } else {
+                    f.default_src.clone().unwrap_or_else(|| s.zero().to_string())
+                };
                 b.push_str(&format!("    let mut __f_{}: {} = {};\n", f.name, s.type_name(), init));
             }
             FieldKind::Nested(_) => {
@@ -1142,12 +1234,7 @@ fn generate_pb_parser_src(t: &JsonType) -> String {
         if let FieldKind::Nested(tn) = &f.kind {
             // an optional record its message does not carry is its type's zero
             if matches!(f.presence, Presence::Tracked(_)) {
-                b.push_str(&format!("    let mut __p_{} = {ZERO}{}() or raise;\n", f.name, tn));
-                b.push_str(&format!(
-                    "    if len(__raw_{n}) > 0 {{ __p_{n} = __api_pb_decode_{}(__raw_{n}) or raise; }}\n",
-                    tn,
-                    n = f.name
-                ));
+                b.push_str(&format!("    let __p_{n} = __api_pb_optional_{tn}(__raw_{n}) or raise;\n", n = f.name));
                 continue;
             }
             b.push_str(&format!("    let __p_{} = __api_pb_decode_{}(__raw_{}) or raise;\n", f.name, tn, f.name));
@@ -1693,6 +1780,10 @@ fn generate_codecs(
         for t in &types {
             if existing_fns.insert(format!("{ZERO}{}", t.name)) {
                 src.push_str(&generate_zero_src(t));
+            }
+            let reader = if protobuf { format!("__api_pb_optional_{}", t.name) } else { format!("__api_optional_{}", t.name) };
+            if existing_fns.insert(reader) {
+                src.push_str(&generate_optional_src(t, protobuf));
             }
         }
     }

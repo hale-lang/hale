@@ -2008,9 +2008,11 @@ included). Hale has no optional type; the flag is the presence. On the
 JSON wire `x` is a key that may be left out, and `null` is its absence
 as well: a payload carrying `x` with a value other than `null` sets
 `has_x`, one that leaves it out or sends `null` leaves `has_x` false and
-`x` at its default, or its type's zero where it declares none (a record's
-zero is built of its fields' defaults and zeros; a `bounded` list's is
-empty). `has_x` is no key: the decoder skips one a payload sends, as it
+`x` at its default, or its type's zero where it declares none (a range
+that leaves out `0` has its least value as its zero; a record's zero is
+built of its fields' defaults and zeros, and is built only when the record
+is absent; a `bounded` list's is empty). The last of a key sent twice wins:
+a `null` after a value is an absence, the earlier value gone. `has_x` is no key: the decoder skips one a payload sends, as it
 skips any unknown key, and the encoder never writes it. The encoder writes
 `x` only when `has_x` is set. The value is as strict as any field's: `"x":
 5` for a `String` is `wrong_type`. Any shape a field may have may be

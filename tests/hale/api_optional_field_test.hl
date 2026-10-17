@@ -16,6 +16,9 @@ locus Table {
 }
 
 type Inner { a: Int; b: String; }
+// a range that leaves out zero: an absent value of it is its least value
+type Pos = Int { range: 1..10; };
+type Ranged { n: Pos; }
 
 type Req {
     name: String;
@@ -25,6 +28,14 @@ type Req {
     has_tags: Bool;
     opt: Inner;
     has_opt: Bool;
+    mood: String = "calm";
+    has_mood: Bool;
+    ranged: Ranged;
+    has_ranged: Bool;
+    pair: [Pos; 2];
+    has_pair: Bool;
+    lvl: Pos;
+    has_lvl: Bool;
 }
 
 type Seen {
@@ -32,12 +43,19 @@ type Seen {
     tags: Bool;
     opt: Bool;
     tag_count: Int;
+    mood: String;
+    ranged: Int;
+    pair: Int;
+    lvl: Int;
     echo: Req;
 }
 
 locus Echo {
     fn on_req(r: Req) -> Seen {
-        return Seen { note: r.has_note, tags: r.has_tags, opt: r.has_opt, tag_count: count(r.tags), echo: r };
+        return Seen {
+            note: r.has_note, tags: r.has_tags, opt: r.has_opt, tag_count: count(r.tags),
+            mood: r.mood, ranged: Int(r.ranged.n), pair: Int(r.pair[0]), lvl: Int(r.lvl), echo: r
+        };
     }
 }
 
@@ -108,6 +126,17 @@ main locus App {
         // the flag is no key: sent, it is an unknown key and skipped
         let flag = self.conn.call("{\"name\":\"e\",\"has_note\":true}");
         std::test::assert(std::str::contains(flag, "\"note\":false"), "a flag sent is no presence: " + flag);
+
+        // a range that leaves out zero: present values decode on their own,
+        // and an absence is the range's least value
+        let ranged = self.conn.call("{\"name\":\"g\",\"ranged\":{\"n\":5},\"pair\":[3,4],\"lvl\":7}");
+        std::test::assert(std::str::contains(ranged, "\"ranged\":5,\"pair\":3,\"lvl\":7"), "present values of a range: " + ranged);
+        let floor = self.conn.call("{\"name\":\"h\"}");
+        std::test::assert(std::str::contains(floor, "\"mood\":\"calm\",\"ranged\":1,\"pair\":1,\"lvl\":1"), "absent values of a range: " + floor);
+
+        // the last of a key sent twice wins: a null after a value is an absence, the value gone
+        let twice = self.conn.call("{\"name\":\"i\",\"mood\":\"old\",\"mood\":null,\"tags\":[\"a\"],\"tags\":null}");
+        std::test::assert(std::str::contains(twice, "\"tags\":false,\"opt\":false,\"tag_count\":0,\"mood\":\"calm\""), "a null after a value: " + twice);
 
         // the value is still strict
         let wrong = self.conn.call("{\"name\":\"f\",\"note\":5}");
