@@ -403,10 +403,18 @@ fn __http_handle_one_conn(
     // long-lived frame.
     let mut reads = 0;
     while reads < 1073741826 {
+        // The cap first: a request whose bytes or declared body are over
+        // it is refused however its bytes were segmented, a complete one
+        // read in one recv included.
+        if len(raw) > max_request || (header_end >= 0 && need > max_request) {
+            too_large = true;
+            break;
+        }
         if header_end >= 0 && len(raw) - (header_end + 4) >= need {
             break;
         }
-        if len(raw) >= max_request || (header_end >= 0 && need > max_request) {
+        // At the cap and not complete: the rest would be over it.
+        if len(raw) >= max_request {
             too_large = true;
             break;
         }

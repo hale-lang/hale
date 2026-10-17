@@ -65,7 +65,14 @@ main locus App {
         std::test::assert(
             std::str::ends_with(post(small, 10, "0123456789"), "\r\n\r\ngot 10"),
             "a request under the set cap is served");
-        // a declared body over the set cap: the Server's own answer
+        // a declared body over the set cap: the Server's own answer, the
+        // headers alone and the whole request in one write alike
+        let too_large = "HTTP/1.1 413 Content Too Large\r\nContent-Type: application/json\r\nContent-Length: 21\r\nConnection: close\r\n\r\n"
+            + "{\"error\":\"too large\"}";
+        let hundred = "0123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789";
+        std::test::assert_eq_str(post(small, 100, hundred), too_large, "a whole request over the set cap in one write");
+        // a request whose head and body together pass the cap, the body under it
+        std::test::assert_eq_str(post(small, 40, "0123456789012345678901234567890123456789"), too_large, "head and body together over the set cap");
         std::test::assert_eq_str(
             post(small, 100, ""),
             "HTTP/1.1 413 Content Too Large\r\nContent-Type: application/json\r\nContent-Length: 21\r\nConnection: close\r\n\r\n"
@@ -74,7 +81,6 @@ main locus App {
 
         // the defaults: a body of 100 bytes is served, one declared over
         // 1 MiB is today's plain-text 413
-        let hundred = "0123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789";
         std::test::assert(
             std::str::ends_with(post(plain, 100, hundred), "\r\n\r\ngot 100"),
             "the default cap serves what the set one refused");
