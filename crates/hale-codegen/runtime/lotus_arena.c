@@ -6193,6 +6193,30 @@ static inline void lotus_retire_unlock(lotus_arena_t *a) {
     if (a->shared_concurrent) pthread_mutex_unlock(&a->retire_lock);
 }
 
+/* A form cell's replace: the arena's first one allocates its String
+ * slot state (lotus_slot_reuse_t), as a locus's first String field
+ * replace does, and from then on a String the cell stores is a field
+ * block of its size class (lotus_str_clone_cell_owned), which the next
+ * replace retires whole onto its class list. Before it a String was
+ * retired at its strlen+1 through the general freelists, and a block
+ * the freelist handed to a shorter value lost its slack for good: a
+ * map whose rows were replaced with values of varying length grew its
+ * arena without bound (2.3 KB per 10,000 replaces). A map that is only
+ * inserted into never allocates the state. */
+static void lotus_slot_reuse_begin(lotus_arena_t *a) {
+    if (!a || a->slot_reuse) return;
+    lotus_slot_reuse_t *r =
+        (lotus_slot_reuse_t *)calloc(1, sizeof(lotus_slot_reuse_t));
+    if (!r) return;
+    lotus_retire_lock(a);
+    if (!a->slot_reuse) {
+        a->slot_reuse = r;
+        r = NULL;
+    }
+    lotus_retire_unlock(a);
+    free(r);
+}
+
 typedef struct lotus_retire_shell {
     void *blob;                    /* [i64 len][bytes][NUL] blob   */
     size_t size;                   /* full block size              */
@@ -6212,6 +6236,19 @@ static void lotus_arena_retire_sized_cls(lotus_arena_t *a, void *blob,
     if (!a || !blob) return;
     if (!lotus_arena_contains_ptr(a, blob)) return;
     lotus_retire_lock(a);
+    /* A field block (GH #1490: a String stored at its size class's
+     * capacity, lotus_slot_alloc) retires at that capacity onto its
+     * class list, whichever path retires it: a caller that walked the
+     * value only knows its strlen+1, and filing the block under that
+     * would lose its slack and leave a stale record in the table. An
+     * arena that never replaced a field or a form cell has no table. */
+    if (cls < 0 && a->slot_reuse) {
+        int c = lotus_slot_tab_take((lotus_slot_reuse_t *)a->slot_reuse, blob);
+        if (c >= 0) {
+            cls = c;
+            size = lotus_slot_class_cap(c);
+        }
+    }
     lotus_retire_shell_t *sh = (lotus_retire_shell_t *)a->retire_shells;
     if (sh) {
         a->retire_shells = sh->next;
@@ -6304,6 +6341,16 @@ int64_t lotus_bytes_len(const void *b); /* defined below */
 static void lotus_arena_free_block_now(lotus_arena_t *a, void *blob,
                                        size_t size) {
     if (!a || !blob) return;
+    /* A field block goes back to its size class whole, as at the
+     * deferred flush (lotus_arena_retire_sized_cls). */
+    if (a->slot_reuse) {
+        lotus_retire_lock(a);
+        int c = lotus_slot_tab_take((lotus_slot_reuse_t *)a->slot_reuse, blob);
+        int filed = c >= 0 && lotus_slot_reuse_push(a, blob, c);
+        lotus_retire_unlock(a);
+        if (filed) return;
+        if (c >= 0) size = lotus_slot_class_cap(c);
+    }
     if (size >= 16) {
         char *b = (char *)blob;
         memcpy(b, &size, sizeof(size_t));
@@ -6653,6 +6700,9 @@ static void lotus_hashmap_retire_cell(lotus_hashmap_t *m, char *slot,
                                       const char *new_v) {
     lotus_arena_t *a = (lotus_arena_t *)m->retire_arena;
     if (!a) return;
+    /* A replace (not a remove): the map's Strings become field blocks
+     * of their size class from here on. */
+    if (new_v) lotus_slot_reuse_begin(a);
     const char *old_v = slot + 1 + m->key_size;
     int string_key = m->key_type_tag == LOTUS_HASHMAP_KEY_STRING;
     lotus_retire_blocks_t olds, news;
@@ -19491,6 +19541,10 @@ void lotus_bytes_field_replace_fixup(void *arena_ptr, void **slot,
 char *lotus_str_clone_cell_owned(lotus_arena_t *a, const char *s) {
     if (!s) return NULL;
     if (lotus_str_is_static_literal(s)) return (char *)s;
+    /* An arena that replaces cells keeps its Strings in field blocks of
+     * their size class (lotus_slot_reuse_begin); one that never did
+     * pays this one load. */
+    if (a && a->slot_reuse && s[0]) return lotus_slot_copy(a, s, 0);
     if (lotus_ptr_in_arena(a, s)) return lotus_str_copy_owned(a, s);
     return lotus_str_clone(a, s);
 }

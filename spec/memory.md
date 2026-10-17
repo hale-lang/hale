@@ -1676,7 +1676,14 @@ reclaim on a real-world long-running workload:
      as before. The compound store of #6 clones a struct's top-level
      String fields into field blocks too (`lotus_str_clone_slot`), and
      its fixup retires them the same way. Bytes fields keep the
-     general freelist.
+     general freelist. A form cell's Strings join the scheme at the
+     map's first replace (`spec/forms.md` § `@form(hashmap)`): the
+     cell-owned clone takes a field block once the arena has a table,
+     and every retire in such an arena (the deferred one,
+     `lotus_arena_retire_sized_cls`, and the immediate one,
+     `lotus_arena_free_block_now`) looks the block up first, so a
+     field block goes back to its class whole whichever path retires
+     it and the table keeps no record of a block it gave back.
 
   8. **m49 sret-pattern return-arena routing.** When a method-
      with-scratch is about to return a heap-typed value, the

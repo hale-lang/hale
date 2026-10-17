@@ -1383,6 +1383,21 @@ String fields retired: a replaced cell's Bytes and its nested records
 cell holding a nested record carrying a String and Bytes grew the
 arena from 64 KiB to 10.7 MiB over 100,000 sets.
 
+From a map's first replace, the Strings its cells store are field
+blocks of their size class (`memory.md` § anchor retirement, the
+field blocks of GH #1490: allocated at the class's whole capacity and
+recorded in the arena's capacity table), and a replace or a remove
+retires each one whole onto its class's list, where the next String of
+the class takes it. Until 2026-10-17 a cell's Strings were retired at
+their strlen+1 through the general freelist, which hands a block to a
+request up to a quarter larger, so a block reused for a shorter value
+lost its slack at its next retire, and a map whose rows were replaced
+with Strings of varying length grew without bound (about 2.3 KB per
+10,000 replaces, downstream handoff: too slowly for a process's RSS to
+show over 10,000 requests). A map that is only inserted into
+allocates no table and its Strings keep their exact size. Bytes keep
+the general freelist.
+
 An enum field follows its representation. A unit-only enum
 (`enum { Bid, Ask }`) is an inline tag, part of the cell like an
 `Int`. An enum with a payload variant points at its own block (the tag
