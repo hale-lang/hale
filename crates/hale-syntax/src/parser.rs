@@ -1350,12 +1350,15 @@ impl Parser {
             {
                 self.parse_role_decl().map(TopDecl::Role)
             }
-            // GH #1417: `api NAME { rpc Locus::fn ...; }`, told from an
-            // identifier named `api` by a name and then `{`.
+            // GH #1417: `api NAME [requires: [..]] { rpc Locus::fn ...; }`,
+            // told from an identifier named `api` by a name and then `{`
+            // or the surface's `requires:`.
             TokenKind::Ident(s)
                 if s == "api"
                     && matches!(self.peek_at(1), TokenKind::Ident(_))
-                    && matches!(self.peek_at(2), TokenKind::LBrace) =>
+                    && (matches!(self.peek_at(2), TokenKind::LBrace)
+                        || (matches!(self.peek_at(2), TokenKind::Ident(r) if r == "requires")
+                            && matches!(self.peek_at(3), TokenKind::Colon))) =>
             {
                 self.parse_api_decl().map(TopDecl::Api)
             }
@@ -1506,13 +1509,22 @@ impl Parser {
         })
     }
 
-    /// GH #1417: `api NAME { rpc Locus::fn [requires: [ROLE, …]]; … }` —
-    /// a surface (spec/api.md § Surfaces and their rows). `api` and `rpc`
-    /// are contextual; the locus may be qualified (`rpc lib::Orders::cancel;`),
-    /// its last segment being the handler.
+    /// GH #1417: `api NAME [requires: [ROLE, …]] { rpc Locus::fn
+    /// [requires: [ROLE, …]]; … }` — a surface (spec/api.md § Surfaces and
+    /// their rows). `api` and `rpc` are contextual; the locus may be
+    /// qualified (`rpc lib::Orders::cancel;`), its last segment being the
+    /// handler. A `requires` on the surface is the default of its rows: a
+    /// row that writes none holds it, and one that writes its own
+    /// (`requires: []` included) holds that instead. The row is what every
+    /// later pass reads, so the default is resolved here.
     fn parse_api_decl(&mut self) -> Result<ApiDecl, Diag> {
         let kw = self.bump(); // `api`
         let name = self.expect_ident("surface name")?;
+        let default_requires = if matches!(self.peek(), TokenKind::Ident(s) if s == "requires") {
+            Some(self.parse_requires_list()?)
+        } else {
+            None
+        };
         self.expect(TokenKind::LBrace, "{")?;
         let mut rows = Vec::new();
         while !matches!(self.peek(), TokenKind::RBrace) {
@@ -1543,7 +1555,7 @@ impl Parser {
             let requires = if matches!(self.peek(), TokenKind::Ident(s) if s == "requires") {
                 self.parse_requires_list()?
             } else {
-                Vec::new()
+                default_requires.clone().unwrap_or_default()
             };
             let semi = self.expect(TokenKind::Semi, ";")?;
             rows.push(RpcRow { locus, written, method, requires, span: tok.span.merge(semi.span) });

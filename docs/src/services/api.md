@@ -94,6 +94,22 @@ subscribes a topic or returns a value. A handler can sit in several
 surfaces, each with its own `requires`, and two versions of one API
 over one set of handlers are two surfaces.
 
+When most rows of a surface require the same roles, say so once on the
+surface. Its `requires` is the default of every row that writes none,
+and a row that writes its own (`requires: []` for none) holds that
+instead:
+
+```hale,fragment
+api Admin requires: [operator] {
+    rpc Ledger::rebalance;               // operator
+    rpc Orders::cancel;                  // operator
+    rpc Orders::status requires: [];     // anyone
+}
+```
+
+The rows hold the roles, so this is the same table, and the same
+digest, as the surface written row by row.
+
 Roles are one vocabulary for the whole program, whichever seed declares
 them. A role a library declares is named through its import alias —
 `requires: [lib::reader]`, `@rpc(requires: [lib::writer])`, a hub

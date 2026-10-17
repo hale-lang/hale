@@ -103,6 +103,11 @@ fn law_4_a_required_role_is_declared() {
         with("api Public { rpc Orders::cancel requires: [tradr]; }"),
         vec!["rpc `Orders::cancel` requires `tradr`, which no `role` declares; did you mean `trader`?"]
     );
+    // A surface's default is each row's that writes none, judged per row.
+    assert_eq!(
+        with("api Public requires: [tradr] { rpc Orders::cancel; rpc Orders::place requires: [trader]; }"),
+        vec!["rpc `Orders::cancel` requires `tradr`, which no `role` declares; did you mean `trader`?"]
+    );
 }
 
 #[test]

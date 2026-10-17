@@ -65,9 +65,15 @@ api Admin {
 }
 ```
 
-`api NAME { … }` at top level declares a **surface**; each `rpc
-Locus::fn [requires: [ROLE, …]];` line in it is one **surface row**.
-A row's columns:
+`api NAME [requires: [ROLE, …]] { … }` at top level declares a
+**surface**; each `rpc Locus::fn [requires: [ROLE, …]];` line in it is
+one **surface row**. A `requires` on the surface is its rows' default: a
+row that writes none holds the surface's roles, and a row that writes its
+own (`requires: []` for none) holds those instead. The default is resolved
+into the rows where the block is read, so a surface written with it and
+the same surface written row by row are one table and one digest, and the
+admission law judges each row's roles (law 4 names the row). A row's
+columns:
 
 | column | what it is |
 |---|---|
@@ -2642,7 +2648,6 @@ values).
 - **Imported schema names**: the schema name of a type an imported seed
   declares embeds the import path, so a description is not stable across
   checkout directories for such a type.
-- **A surface-level `requires` default** that rows inherit.
 - **The wire framing of rpcs over UDP** (a correlation id field, the
   largest datagram; R6). Over WebSocket they are framed (§ Streams).
 - **Leases for a datagram subscriber** that vanishes without
