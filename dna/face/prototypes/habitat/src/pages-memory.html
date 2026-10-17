@@ -1,0 +1,85 @@
+<template id="page-memory">
+  <section class="ui-section">
+    <div class="ui-section-heading"><h2>Working state</h2><span class="ui-badge" data-tone="good">Available</span></div>
+    <div class="ui-split">
+      <dl class="ui-kv"><dt>Operational store</dt><dd>Ledger adopted</dd><dt>Graph projection</dt><dd>Through record row 284 · current</dd><dt>Isolation</dt><dd>Atlas record · private memory</dd><dt>Last observation</dt><dd>Today, 09:42</dd></dl>
+      <div class="ui-stack"><p class="ui-muted">The day's work lives in the ledger. Ratified knowledge and organization are projected from the record.</p><div class="ui-row"><button class="ui-button" data-inspect="memory-ledger">Inspect recent ledger rows</button><button class="ui-button" data-go-part="record">Open record</button></div></div>
+    </div>
+  </section>
+  <section class="ui-section">
+    <div class="ui-section-heading"><h2>Knowledge in force</h2><button class="ui-button" data-inspect="memory-binding">How scope works</button></div>
+    <div class="ui-table-wrap"><table class="ui-table"><thead><tr><th>Knowledge</th><th>Bound to</th><th>State</th><th>Origin</th><th></th></tr></thead><tbody>
+      <tr><td><strong>Keep deliveries traceable</strong><div class="ui-small ui-muted">Declared purpose</div></td><td>org</td><td><span class="ui-badge" data-tone="good">In force</span></td><td>Review k:purpose</td><td><button class="ui-button" data-inspect="memory-purpose">Inspect</button></td></tr>
+      <tr><td><strong>Retry without duplicate effects</strong><div class="ui-small ui-muted">Acceptance practice</div></td><td>org/ingest</td><td><span class="ui-badge" data-tone="good">In force</span></td><td>Review k:retry</td><td><button class="ui-button" data-inspect="memory-retry">Inspect</button></td></tr>
+      <tr><td><strong>DNA design library</strong><div class="ui-small ui-muted">Ratified family</div></td><td>system:dna</td><td><span class="ui-badge" data-tone="good">In force</span></td><td>Review k:library</td><td><button class="ui-button" data-go-part="hat">See work context</button></td></tr>
+    </tbody></table></div>
+  </section>
+  <section class="ui-section">
+    <div class="ui-section-heading"><h2>Protected evidence</h2><span class="ui-small ui-muted">Metadata visible · bodies require disclosure</span></div>
+    <div class="ui-table-wrap"><table class="ui-table"><thead><tr><th>Evidence</th><th>Class</th><th>Retention</th><th>Access</th><th></th></tr></thead><tbody>
+      <tr><td>Customer delivery trace<div class="ui-small ui-muted">sha256:8c14…2ae9</div></td><td>Customer</td><td>Held for investigation</td><td>Disclosed to Riley · incident review</td><td><button class="ui-button" data-inspect="memory-evidence">Access details</button></td></tr>
+      <tr><td>Supplier assessment<div class="ui-small ui-muted">sha256:bf72…109a</div></td><td>Confidential</td><td>Body retained</td><td>No disclosure to you</td><td><button class="ui-button" data-inspect="memory-restricted">Inspect metadata</button></td></tr>
+    </tbody></table></div>
+  </section>
+  <template data-detail="memory-ledger"><h3>Recent ledger rows</h3><p class="ui-muted">Operational events are read through the head under Atlas's memory role.</p><ul class="ui-list"><li><strong>09:41 · task.handed</strong><br>t24 · Retry delivery safely · assigned to Riley</li><li><strong>09:39 · receipt.read</strong><br>Customer delivery trace · Riley · incident review</li><li><strong>09:36 · task.created</strong><br>t24 · raised by Riley</li></ul><p class="ui-note">If the ledger cannot be reached, this view retains its last projection and command admission stops until memory answers.</p></template>
+  <template data-detail="memory-binding"><h3>Knowledge follows its target</h3><dl class="ui-kv"><dt>org/ingest</dt><dd>Applies to this locus path and its descendants.</dd><dt>system:dna</dt><dd>Applies to that exact graph node.</dd><dt>Work context</dt><dd>Combines the work's path, application languages, and performer position. Duplicate ideas arrive once.</dd></dl><button class="ui-button" data-go-part="hat">Open Hat</button></template>
+  <template data-detail="memory-purpose"><h3>Keep deliveries traceable</h3><p>Every accepted delivery has an attributable result; retries preserve one durable outcome.</p><dl class="ui-kv"><dt>Target</dt><dd>org</dd><dt>Ratified by</dt><dd>Riley · Board authority</dd><dt>Review</dt><dd>k:purpose · approved · record row 12</dd></dl><button class="ui-button" data-go-part="record">View decision history</button></template>
+  <template data-detail="memory-retry"><h3>Retry without duplicate effects</h3><p>A repeated delivery request must either return its original outcome or continue the same operation. Verification includes replay evidence.</p><dl class="ui-kv"><dt>Target</dt><dd>org/ingest</dd><dt>Ratified</dt><dd>Review k:retry · record row 278</dd><dt>Supersedes</dt><dd>Retry policy, first version</dd></dl><p class="ui-note">An amendment is proposed for review. The current practice stays in force until its replacement is ratified.</p></template>
+  <template data-detail="memory-evidence"><h3>Customer delivery trace</h3><dl class="ui-kv"><dt>Class</dt><dd>Customer · body sealed in memory</dd><dt>Disclosure</dt><dd>Riley · purpose: incident review</dd><dt>Hold</dt><dd>Active · investigation is open</dd><dt>Last read</dt><dd>Today, 09:39 · Riley · incident review</dd></dl><p class="ui-note">Reading the body requires the named purpose and records a receipt.read event before returning it. This view shows metadata only.</p></template>
+  <template data-detail="memory-restricted"><h3>Supplier assessment</h3><dl class="ui-kv"><dt>Class</dt><dd>Confidential</dd><dt>Body</dt><dd>Retained in memory</dd><dt>Your disclosure</dt><dd>None</dd></dl><p>A disclosure must name the reader and purpose before a protected body can be read. The record carries its digest and classification; synchronization does not copy the body.</p></template>
+</template>
+
+<template id="page-record">
+  <section class="ui-section">
+    <div class="ui-section-heading"><h2>Decision history</h2><span class="ui-badge" data-tone="good">Chain verified</span></div>
+    <div class="ui-row"><span class="ui-small ui-muted">Atlas · 284 record rows · local and remote aligned</span><button class="ui-button" data-inspect="record-identity">Record identity</button></div>
+    <div class="ui-table-wrap"><table class="ui-table"><thead><tr><th>Row</th><th>Event</th><th>Entity</th><th>Author</th><th></th></tr></thead><tbody>
+      <tr><td>284</td><td>Review requested</td><td>m17 · delivery retry changes</td><td>Atlas</td><td><button class="ui-button" data-inspect="record-review">Inspect</button></td></tr>
+      <tr><td>283</td><td>Mutation escalated</td><td>m17 · verification evidence attached</td><td>Atlas</td><td><button class="ui-button" data-go-part="genome">Open candidate</button></td></tr>
+      <tr><td>278</td><td>Knowledge ratified</td><td>Retry without duplicate effects</td><td>Riley</td><td><button class="ui-button" data-inspect="record-ratification">Inspect</button></td></tr>
+      <tr><td>261</td><td>Receipt disclosed</td><td>Delivery trace · incident review</td><td>Riley</td><td><button class="ui-button" data-go-part="memory">View evidence</button></td></tr>
+    </tbody></table></div>
+  </section>
+  <section class="ui-section">
+    <div class="ui-section-heading"><h2>Retained candidates</h2><button class="ui-button" data-go-part="genome">Open Genome</button></div>
+    <div class="ui-table-wrap"><table class="ui-table"><thead><tr><th>Candidate</th><th>Change</th><th>Review</th><th>Source</th><th></th></tr></thead><tbody>
+      <tr><td>m17</td><td>Preserve delivery result during retry</td><td><span class="ui-badge" data-tone="warn">Awaiting Board</span></td><td>7f0c921</td><td><button class="ui-button" data-inspect="record-candidate">Inspect provenance</button></td></tr>
+      <tr><td>m16</td><td>Clarify delivery failure messages</td><td><span class="ui-badge" data-tone="good">Approved</span></td><td>a48bc20</td><td><button class="ui-button" data-inspect="record-applied">Inspect provenance</button></td></tr>
+    </tbody></table></div>
+  </section>
+  <section class="ui-section">
+    <div class="ui-section-heading"><h2>Connections to other records</h2></div>
+    <div class="ui-row"><div><strong>Relay</strong><p class="ui-muted">Delivery reconciliation · internal evidence only · Board approved</p></div><button class="ui-button" data-inspect="record-connection">Inspect boundary</button></div>
+    <p class="ui-small ui-muted">Only explicitly handed tasks or evidence references cross a connection.</p>
+  </section>
+  <template data-detail="record-identity"><h3>Atlas record identity</h3><dl class="ui-kv"><dt>Identity</dt><dd>0182c0f… · first journal commit</dd><dt>Head</dt><dd>91ab230 · row 284</dd><dt>Trust</dt><dd>Signed · verified writers</dd><dt>Synchronization</dt><dd>Aligned with origin · observed 09:42</dd></dl><p>The identity remains the same in every clone. Decisions are appended in order; a failed read never turns into an empty history.</p></template>
+  <template data-detail="record-review"><h3>Review requested · m17</h3><dl class="ui-kv"><dt>Question</dt><dd>Apply the delivery retry candidate?</dd><dt>Required authority</dt><dd>Board</dd><dt>Why it escalated</dt><dd>The application class is outside the Leader's grant.</dd><dt>Evidence</dt><dd>Source and structural diffs · checks · tests · replay</dd></dl><button class="ui-button" data-go-part="genome">Inspect candidate</button></template>
+  <template data-detail="record-ratification"><h3>Knowledge ratified · row 278</h3><p>The Board approved “Retry without duplicate effects” for org/ingest. The preceding version retired when this version took effect.</p><dl class="ui-kv"><dt>Proposed by</dt><dd>Mara</dd><dt>Decided by</dt><dd>Riley · Board authority</dd><dt>Evidence</dt><dd>Repeated deliveries observed in task t21</dd></dl><button class="ui-button" data-go-part="memory">Read current practice</button></template>
+  <template data-detail="record-candidate"><h3>Candidate m17 · provenance</h3><dl class="ui-kv"><dt>Base revision</dt><dd>a48bc20</dd><dt>Candidate revision</dt><dd>7f0c921</dd><dt>Retained pointer</dt><dd>refs/dna/candidates/m17</dd><dt>Review</dt><dd>Pending · Board</dd></dl><p>The candidate remains readable after its working directory is gone and travels with the record.</p></template>
+  <template data-detail="record-applied"><h3>Candidate m16 · provenance</h3><dl class="ui-kv"><dt>Base revision</dt><dd>dc9e416</dd><dt>Candidate revision</dt><dd>a48bc20</dd><dt>Review</dt><dd>Approved by Riley · Board authority</dd><dt>Applied result</dt><dd>Recorded at row 247</dd></dl><p>The retained candidate preserves the source that was reviewed, alongside its evidence and decision.</p></template>
+  <template data-detail="record-connection"><h3>Relay connection</h3><dl class="ui-kv"><dt>Purpose</dt><dd>Delivery reconciliation</dd><dt>Allowed class</dt><dd>Internal</dd><dt>State</dt><dd>In force · reciprocal connection established</dd><dt>Latest handoff</dt><dd>t19 · accepted by Relay</dd></dl><p>Each handoff carries its origin, history, and purpose. Evidence crosses as digest and class, never its body. The connection does not expose either journal.</p></template>
+</template>
+
+<template id="page-genome">
+  <section class="ui-section">
+    <div class="ui-section-heading"><h2>Source of the organism</h2><span class="ui-small ui-muted">Current revision a48bc20</span></div>
+    <div class="ui-table-wrap"><table class="ui-table"><thead><tr><th>Component</th><th>Source</th><th>Change route</th><th></th></tr></thead><tbody>
+      <tr><td><strong>Application</strong><div class="ui-small ui-muted">Delivery service</div></td><td>main.hl · application seed</td><td>Reviewed application change</td><td><button class="ui-button" data-go-part="heart">Open Heart</button></td></tr>
+      <tr><td><strong>Organization</strong><div class="ui-small ui-muted">Positions, law, purpose, catalogs</div></td><td>dna/org/</td><td>Organization change · Board</td><td><button class="ui-button" data-inspect="genome-organization">Inspect structure</button></td></tr>
+      <tr><td><strong>DNA substrate</strong><div class="ui-small ui-muted">Vendored core</div></td><td>vendor/dna/ · hale.lock</td><td>Toolchain upgrade</td><td><button class="ui-button" data-inspect="genome-substrate">Inspect provenance</button></td></tr>
+    </tbody></table></div>
+  </section>
+  <section class="ui-section">
+    <div class="ui-section-heading"><h2>Candidate awaiting decision</h2><span class="ui-badge" data-tone="warn">m17 · Board review</span></div>
+    <div class="ui-split"><div class="ui-stack"><strong>Preserve delivery result during retry</strong><p class="ui-muted">Return the established outcome when a delivery request is repeated.</p><dl class="ui-kv"><dt>Class</dt><dd>Application</dd><dt>Revisions</dt><dd>a48bc20 → 7f0c921</dd><dt>Disposition</dt><dd>Escalated · outside the Leader's grant</dd></dl></div><div class="ui-stack"><strong>Evidence available</strong><ul class="ui-list"><li>Application and organization checks passed</li><li>Tests passed · replay matched</li><li>Source and structural diffs retained</li></ul><div class="ui-row"><button class="ui-button ui-button-primary" data-inspect="genome-diff">Compare candidate</button><button class="ui-button" data-inspect="genome-review">Review requirements</button></div></div></div>
+  </section>
+  <section class="ui-section">
+    <div class="ui-section-heading"><h2>Rules that shape change</h2><button class="ui-button" data-inspect="genome-change">Change pathway</button></div>
+    <div class="ui-split"><div><h3>Leader's grant</h3><dl class="ui-kv"><dt>Classes</dt><dd>docs · refactor</dd><dt>Magnitude ceiling</dt><dd>4</dd><dt>Review</dt><dd>Before application</dd></dl></div><div><h3>Constitutional boundaries</h3><ul class="ui-list"><li>Apply only through the substrate.</li><li>Editors cannot commit or apply changes.</li><li>Credentials remain sealed.</li><li>Money effects pass through the substrate.</li></ul></div></div>
+  </section>
+  <template data-detail="genome-organization"><h3>Organization source</h3><dl class="ui-kv"><dt>main.hl</dt><dd>Substrate, Leader, grant, review policy, and nerves</dd><dt>law.hl</dt><dd>Compiler-checked constitutional claims</dd><dt>purpose.hl · charter.hl</dt><dd>Declared purpose and Leader's brief</dd><dt>models.hl · work.hl</dt><dd>Model choices and performers</dd><dt>own_workflows.hl</dt><dd>Organization-owned workflow definitions</dd></dl><p>Changes to this structure are organization candidates for the Board to decide.</p></template>
+  <template data-detail="genome-substrate"><h3>Vendored DNA</h3><p>The toolchain supplies vendor/dna. hale.lock pins the toolchain and embedded substrate digest.</p><p>An upgrade refreshes the vendored core and proposes changed seeded practices and library families for ratification. The organization's owned source remains its own.</p></template>
+  <template data-detail="genome-diff"><h3>m17 · candidate comparison</h3><div class="ui-split"><div><strong>Before</strong><p>A repeated delivery could schedule a second attempt before the original result was consulted.</p></div><div><strong>Candidate</strong><p>Consult the established outcome first; continue the existing operation when it is still in progress.</p></div></div><dl class="ui-kv"><dt>Structural impact</dt><dd>No parent-facing contract, law, effects, ownership, or placement change.</dd><dt>Source scope</dt><dd>Delivery handler and replay fixtures</dd><dt>Evidence</dt><dd>Checks, tests, and replay receipts retained with the candidate.</dd></dl><p class="ui-note">The candidate awaits a decision. The verdict and application are separate recorded events.</p></template>
+  <template data-detail="genome-review"><h3>Review requirements · m17</h3><dl class="ui-kv"><dt>Required authority</dt><dd>Board · application is outside the Leader's grant</dd><dt>Decisions</dt><dd>Approve · request revision · reject · abstain</dd><dt>Decision record</dt><dd>Reviewer identity, authority, rationale, and candidate revision</dd></dl><p>A settled approval allows the substrate to apply the reviewed candidate. Evidence remains available with its decision history.</p><button class="ui-button" data-go-part="record">Open Record</button></template>
+  <template data-detail="genome-change"><h3>From request to changed organism</h3><ol class="ui-list"><li>Describe the objective and the part it concerns.</li><li>Produce a candidate with source and structural diffs.</li><li>Check its law and assemble verification evidence.</li><li>Obtain the authority required by its grant and impact.</li><li>Apply through the substrate and observe the result.</li></ol><p class="ui-note">The grant is part of organization source. Widening it requires a reviewed organization change.</p></template>
+</template>

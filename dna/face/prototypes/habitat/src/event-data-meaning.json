@@ -1,0 +1,939 @@
+{
+  "head": {
+    "events": [
+      {
+        "id": "head-session-projection",
+        "view": "authority",
+        "kind": "projection.refreshed",
+        "label": "Session authority refreshed",
+        "detail": "Derived authorized Head read: the current session and Riley’s held Board position are highlighted. This replay does not issue or renew a session.",
+        "source": "head",
+        "effect": "state",
+        "entityIds": [
+          "riley",
+          "session",
+          "board-position"
+        ],
+        "edgeIds": [
+          "riley::authenticates::session",
+          "riley::holds::board-position"
+        ],
+        "at": 0,
+        "sourceRef": "dna/api/commands.hl"
+      },
+      {
+        "id": "head-surface-projection",
+        "view": "authority",
+        "kind": "projection.refreshed",
+        "label": "Caller-visible operations refreshed",
+        "detail": "Derived authorized Head read: the session discovers its generated command description. Visibility at the boundary does not by itself satisfy the record’s review checks.",
+        "source": "head",
+        "effect": "change",
+        "entityIds": [
+          "session",
+          "head-api"
+        ],
+        "edgeIds": [
+          "session::discovers::head-api"
+        ],
+        "at": 3,
+        "sourceRef": "dna/api/commands.hl"
+      },
+      {
+        "id": "head-review-gate-projection",
+        "view": "authority",
+        "kind": "projection.refreshed",
+        "label": "Reviewer boundary gate highlighted",
+        "detail": "Derived authorized Head read: verdict is exposed under the explicit reviewer role. Candidate identity and independent review authority remain separate admission checks.",
+        "source": "head",
+        "effect": "state",
+        "entityIds": [
+          "reviewer-role",
+          "verdict-operation",
+          "head-api"
+        ],
+        "edgeIds": [
+          "reviewer-role::permits boundary entry::verdict-operation",
+          "head-api::exposes::verdict-operation"
+        ],
+        "at": 6,
+        "sourceRef": "dna/api/commands.hl"
+      },
+      {
+        "id": "head-receipt-invalidated",
+        "view": "receipts",
+        "kind": "changed",
+        "label": "Head receipt changed; reread requested",
+        "detail": "Simulated Head SSE invalidation with data head. It signals a fresh authorized read; the notification itself carries no renderable receipt state.",
+        "source": "head",
+        "effect": "change",
+        "entityIds": [
+          "request-104",
+          "receipt-104"
+        ],
+        "edgeIds": [
+          "request-104::returned::receipt-104"
+        ],
+        "at": 9,
+        "sourceRef": "dna/api/project_service/push.hl"
+      },
+      {
+        "id": "head-receipt-projection",
+        "view": "receipts",
+        "kind": "projection.refreshed",
+        "label": "Durable request receipt visible",
+        "detail": "Derived authorized Head read: request 104 has a durable receipt and recorded intent. This acknowledges recording, without asserting execution or completion.",
+        "source": "head",
+        "effect": "state",
+        "entityIds": [
+          "request-104",
+          "receipt-104",
+          "intent-104"
+        ],
+        "edgeIds": [
+          "request-104::returned::receipt-104",
+          "request-104::recorded intent::intent-104"
+        ],
+        "at": 12,
+        "sourceRef": "dna/api/project_service/push.hl"
+      },
+      {
+        "id": "head-intent-projection",
+        "view": "receipts",
+        "kind": "projection.refreshed",
+        "label": "Intent still awaits admission",
+        "detail": "Derived authorized Head read: the release checklist intent remains waiting on Spine admission in this snapshot. A receipt is not evidence that work has started.",
+        "source": "head",
+        "effect": "attention",
+        "entityIds": [
+          "intent-104",
+          "spine"
+        ],
+        "edgeIds": [
+          "intent-104::awaits admission::spine"
+        ],
+        "at": 15,
+        "sourceRef": "dna/core/topics.hl"
+      }
+    ]
+  },
+  "face": {
+    "events": [
+      {
+        "id": "face-rows-invalidated",
+        "view": "connections",
+        "kind": "changed",
+        "label": "Record notification prompts a refresh",
+        "detail": "Simulated Head SSE invalidation with data rows. Face is prompted to reread authorized data rather than treating the notification as a replacement state payload.",
+        "source": "head",
+        "effect": "change",
+        "entityIds": [
+          "head-events",
+          "face"
+        ],
+        "edgeIds": [
+          "head-events::prompts fresh read::face"
+        ],
+        "at": 0,
+        "sourceRef": "dna/api/project_service/push.hl"
+      },
+      {
+        "id": "face-api-projection",
+        "view": "connections",
+        "kind": "projection.refreshed",
+        "label": "Authorized Face projection refreshed",
+        "detail": "Derived authorized Head read: Face’s command boundary is highlighted after a refresh. No direct browser subscription to privileged DNA topics is implied.",
+        "source": "head",
+        "effect": "change",
+        "entityIds": [
+          "face",
+          "head-api"
+        ],
+        "edgeIds": [
+          "face::calls through::head-api"
+        ],
+        "at": 3,
+        "sourceRef": "dna/face/DESIGN.md"
+      },
+      {
+        "id": "face-organism-projection",
+        "view": "connections",
+        "kind": "projection.refreshed",
+        "label": "Organism view receives the projection",
+        "detail": "Derived authorized Head read: the default organism surface reflects the refreshed projection. The application-specific delivery workspace remains a sketch.",
+        "source": "head",
+        "effect": "state",
+        "entityIds": [
+          "face",
+          "organism-view"
+        ],
+        "edgeIds": [
+          "face::presents::organism-view"
+        ],
+        "at": 6,
+        "sourceRef": "dna/face/DESIGN.md"
+      },
+      {
+        "id": "face-source-projection",
+        "view": "evolution",
+        "kind": "projection.refreshed",
+        "label": "Face source ownership highlighted",
+        "detail": "Derived Head read over the source model: Face is application-owned source. This highlight does not assert a new commit or a rebuilt UI artifact.",
+        "source": "head",
+        "effect": "state",
+        "entityIds": [
+          "genome",
+          "face-source"
+        ],
+        "edgeIds": [
+          "genome::owns source::face-source"
+        ],
+        "at": 9,
+        "sourceRef": "dna/face/DESIGN.md"
+      },
+      {
+        "id": "face-review-projection",
+        "view": "evolution",
+        "kind": "projection.refreshed",
+        "label": "Interface proposal remains conceptual",
+        "detail": "Derived Head read of the wireframe’s proposed path: an interface change would require its applicable review. No submitted candidate or completed decision is claimed for this sketch.",
+        "source": "head",
+        "effect": "attention",
+        "entityIds": [
+          "face-candidate",
+          "face-review"
+        ],
+        "edgeIds": [
+          "face-candidate::requires decision::face-review"
+        ],
+        "at": 12,
+        "sourceRef": "dna/face/DESIGN.md"
+      },
+      {
+        "id": "face-artifact-projection",
+        "view": "evolution",
+        "kind": "projection.refreshed",
+        "label": "Served artifact identity remains unestablished",
+        "detail": "Derived Head read: a48bc20 is the current application revision. The mapping from that revision to the served Face artifact still needs evidence.",
+        "source": "head",
+        "effect": "attention",
+        "entityIds": [
+          "revision-current",
+          "face"
+        ],
+        "edgeIds": [
+          "revision-current::artifact mapping needed::face"
+        ],
+        "at": 15,
+        "sourceRef": "dna/face/DESIGN.md"
+      }
+    ]
+  },
+  "memory": {
+    "events": [
+      {
+        "id": "memory-ratification",
+        "view": "scope",
+        "kind": "knowledge.ratified",
+        "label": "Retry practice ratification replayed",
+        "detail": "Replay of the fixture’s historical ratification at row 278. The approved practice remains in force; playback does not create a fresh Board decision.",
+        "source": "record",
+        "effect": "state",
+        "entityIds": [
+          "review-retry",
+          "knowledge-retry"
+        ],
+        "edgeIds": [
+          "review-retry::ratified::knowledge-retry"
+        ],
+        "at": 0,
+        "sourceRef": "dna/core/knowledge_record.hl"
+      },
+      {
+        "id": "memory-binding",
+        "view": "scope",
+        "kind": "knowledge.binding.bound",
+        "label": "Retry practice binding highlighted",
+        "detail": "Replay highlights the established binding at org/ingest. Applicability to descendants follows that declared scope, not a claim about the separate migration Hat.",
+        "source": "record",
+        "effect": "change",
+        "entityIds": [
+          "knowledge-retry",
+          "org-ingest"
+        ],
+        "edgeIds": [
+          "knowledge-retry::bound to subtree::org-ingest"
+        ],
+        "at": 3,
+        "sourceRef": "dna/core/knowledge_binding.hl"
+      },
+      {
+        "id": "memory-descendant-projection",
+        "view": "scope",
+        "kind": "projection.refreshed",
+        "label": "Inherited knowledge projection refreshed",
+        "detail": "Derived authorized Head read: both declared subtree bindings apply to org/ingest/retry. No additional binding or ratification is invented by the animation.",
+        "source": "head",
+        "effect": "state",
+        "entityIds": [
+          "knowledge-purpose",
+          "knowledge-retry",
+          "org-ingest-retry"
+        ],
+        "edgeIds": [
+          "knowledge-purpose::applies to descendant::org-ingest-retry",
+          "knowledge-retry::applies to descendant::org-ingest-retry"
+        ],
+        "at": 6,
+        "sourceRef": "dna/core/knowledge_binding.hl"
+      },
+      {
+        "id": "memory-evidence-hold",
+        "view": "evidence",
+        "kind": "receipt.held",
+        "label": "Investigation hold highlighted",
+        "detail": "Replay of the fixture’s recorded hold on the delivery trace. The protected body remains sealed and cannot be redacted while this hold applies.",
+        "source": "record",
+        "effect": "state",
+        "entityIds": [
+          "evidence-hold",
+          "evidence-delivery"
+        ],
+        "edgeIds": [
+          "evidence-hold::prevents redaction::evidence-delivery"
+        ],
+        "at": 9,
+        "sourceRef": "dna/core/evidence.hl"
+      },
+      {
+        "id": "memory-disclosure",
+        "view": "evidence",
+        "kind": "receipt.disclosed",
+        "label": "Reader-and-purpose disclosure highlighted",
+        "detail": "Replay highlights the existing disclosure for Riley’s incident review. It does not make the receipt public or reveal the protected body.",
+        "source": "record",
+        "effect": "change",
+        "entityIds": [
+          "delivery-disclosure",
+          "evidence-delivery",
+          "riley"
+        ],
+        "edgeIds": [
+          "delivery-disclosure::covers receipt::evidence-delivery",
+          "delivery-disclosure::names reader::riley"
+        ],
+        "at": 12,
+        "sourceRef": "dna/core/memory_spine.hl"
+      },
+      {
+        "id": "memory-audited-read",
+        "view": "evidence",
+        "kind": "receipt.read",
+        "label": "Audited read receipt highlighted",
+        "detail": "Replay highlights the audit row naming the disclosed reader and purpose. The audit precedes returning a protected body; this wireframe displays metadata only.",
+        "source": "record",
+        "effect": "change",
+        "entityIds": [
+          "receipt-read",
+          "delivery-disclosure"
+        ],
+        "edgeIds": [
+          "receipt-read::records use of::delivery-disclosure"
+        ],
+        "at": 15,
+        "sourceRef": "dna/core/memory_spine.hl"
+      }
+    ]
+  },
+  "record": {
+    "events": [
+      {
+        "id": "record-candidate",
+        "view": "provenance",
+        "kind": "mutation.candidate",
+        "label": "Pinned candidate identity highlighted",
+        "detail": "Replay of candidate m17’s recorded identity and base. Candidate 7f0c921 remains proposed against a48bc20; it is not applied by playback.",
+        "source": "record",
+        "effect": "change",
+        "entityIds": [
+          "candidate-m17",
+          "revision-current"
+        ],
+        "edgeIds": [
+          "candidate-m17::based on::revision-current"
+        ],
+        "at": 0,
+        "sourceRef": "dna/core/workspace.hl"
+      },
+      {
+        "id": "record-review-request",
+        "view": "provenance",
+        "kind": "review.requested",
+        "label": "Board review request replayed",
+        "detail": "Replay of the fixture’s review request at row 284, with evidence retained alongside the exact candidate. No verdict has been recorded for m17.",
+        "source": "record",
+        "effect": "attention",
+        "entityIds": [
+          "candidate-m17",
+          "review-m17",
+          "board-position"
+        ],
+        "edgeIds": [
+          "candidate-m17::awaits decision::review-m17",
+          "review-m17::requires authority::board-position"
+        ],
+        "at": 3,
+        "sourceRef": "dna/core/assembly.hl"
+      },
+      {
+        "id": "record-evidence-projection",
+        "view": "provenance",
+        "kind": "projection.refreshed",
+        "label": "Candidate evidence projection refreshed",
+        "detail": "Derived authorized Head read: candidate check and replay receipts remain retained in the record. Their presence does not settle the pending Board review.",
+        "source": "head",
+        "effect": "state",
+        "entityIds": [
+          "candidate-checks",
+          "record"
+        ],
+        "edgeIds": [
+          "candidate-checks::retained with::record"
+        ],
+        "at": 6,
+        "sourceRef": "dna/core/record_rows.hl"
+      },
+      {
+        "id": "record-connection-projection",
+        "view": "connections",
+        "kind": "projection.refreshed",
+        "label": "Scoped record connection refreshed",
+        "detail": "Derived authorized Head read: the reciprocal approved connection is limited to its declared internal-evidence scope. Relay remains a separate record and trust boundary.",
+        "source": "head",
+        "effect": "state",
+        "entityIds": [
+          "record",
+          "relay-connection",
+          "relay-record"
+        ],
+        "edgeIds": [
+          "record::participates::relay-connection",
+          "relay-connection::connects within scope::relay-record"
+        ],
+        "at": 9,
+        "sourceRef": "dna/core/exchange.hl"
+      },
+      {
+        "id": "record-handoff-reference-projection",
+        "view": "connections",
+        "kind": "projection.refreshed",
+        "label": "Handoff evidence reference highlighted",
+        "detail": "Derived authorized Head read: t19 carries an evidence digest and classification. The protected body does not cross this connection.",
+        "source": "head",
+        "effect": "change",
+        "entityIds": [
+          "handoff-t19",
+          "handoff-evidence"
+        ],
+        "edgeIds": [
+          "handoff-t19::carries reference::handoff-evidence"
+        ],
+        "at": 12,
+        "sourceRef": "dna/core/exchange.hl"
+      },
+      {
+        "id": "record-handoff-accepted",
+        "view": "connections",
+        "kind": "handoff.accepted",
+        "label": "Remote handoff acceptance replayed",
+        "detail": "Replay highlights Relay’s recorded acceptance of t19 and its evidence reference. Acceptance does not reveal Relay’s private journal or establish completion of the task.",
+        "source": "record",
+        "effect": "state",
+        "entityIds": [
+          "relay-record",
+          "handoff-accepted",
+          "handoff-evidence"
+        ],
+        "edgeIds": [
+          "relay-record::records acceptance::handoff-accepted",
+          "handoff-evidence::included in accepted handoff::handoff-accepted"
+        ],
+        "at": 15,
+        "sourceRef": "dna/core/exchange.hl"
+      }
+    ]
+  },
+  "genome": {
+    "events": [
+      {
+        "id": "genome-roots-projection",
+        "view": "structure",
+        "kind": "projection.refreshed",
+        "label": "Source roots projection refreshed",
+        "detail": "Derived Head read of the source model: the application and organization are owned roots of this genome. A highlight does not indicate those sources were edited.",
+        "source": "head",
+        "effect": "state",
+        "entityIds": [
+          "genome",
+          "application-source",
+          "organization-source"
+        ],
+        "edgeIds": [
+          "genome::owns::application-source",
+          "genome::owns::organization-source"
+        ],
+        "at": 0,
+        "sourceRef": "dna/core/org_source.hl"
+      },
+      {
+        "id": "genome-law-projection",
+        "view": "structure",
+        "kind": "projection.refreshed",
+        "label": "Declared law and grant highlighted",
+        "detail": "Derived Head read of the source model: the organization declares its constitution and constructs the Leader’s docs/refactor grant. The grant is unchanged by playback.",
+        "source": "head",
+        "effect": "state",
+        "entityIds": [
+          "organization-source",
+          "constitution",
+          "leader-grant"
+        ],
+        "edgeIds": [
+          "organization-source::declares::constitution",
+          "organization-source::constructs::leader-grant"
+        ],
+        "at": 3,
+        "sourceRef": "dna/core/org_source.hl"
+      },
+      {
+        "id": "genome-pin-projection",
+        "view": "structure",
+        "kind": "projection.refreshed",
+        "label": "Pinned substrate identity refreshed",
+        "detail": "Derived Head read: the DNA substrate dependency belongs to the current a48bc20 source identity. This animation does not update the dependency pin.",
+        "source": "head",
+        "effect": "state",
+        "entityIds": [
+          "dna-substrate",
+          "revision-current"
+        ],
+        "edgeIds": [
+          "dna-substrate::pinned in revision::revision-current"
+        ],
+        "at": 6,
+        "sourceRef": "dna/core/workspace.hl"
+      },
+      {
+        "id": "genome-candidate-recorded",
+        "view": "candidate",
+        "kind": "mutation.candidate",
+        "label": "Candidate 7f0c921 recorded",
+        "detail": "Replay highlights the exact m17 candidate based on a48bc20. The current running source remains unchanged.",
+        "source": "record",
+        "effect": "change",
+        "entityIds": [
+          "revision-current",
+          "candidate-m17"
+        ],
+        "edgeIds": [
+          "revision-current::candidate based on::candidate-m17"
+        ],
+        "at": 9,
+        "sourceRef": "dna/core/workspace.hl"
+      },
+      {
+        "id": "genome-impact-projection",
+        "view": "candidate",
+        "kind": "projection.refreshed",
+        "label": "Proposed handler impact highlighted",
+        "detail": "Derived authorized Head read: the candidate proposes result-first retry as a replacement for the existing delivery handler. Proposed edges stay proposed.",
+        "source": "head",
+        "effect": "change",
+        "entityIds": [
+          "candidate-m17",
+          "delivery-handler",
+          "candidate-handler"
+        ],
+        "edgeIds": [
+          "delivery-handler::proposed replacement::candidate-handler",
+          "candidate-m17::proposes::candidate-handler"
+        ],
+        "at": 12,
+        "sourceRef": "dna/core/record_rows.hl"
+      },
+      {
+        "id": "genome-review-requested",
+        "view": "candidate",
+        "kind": "review.requested",
+        "label": "Exact candidate awaits Board review",
+        "detail": "Replay of m17’s review request highlights its pending approval gate. Passing checks does not authorize applying this candidate.",
+        "source": "record",
+        "effect": "attention",
+        "entityIds": [
+          "candidate-handler",
+          "review-m17"
+        ],
+        "edgeIds": [
+          "candidate-handler::awaits approval::review-m17"
+        ],
+        "at": 15,
+        "sourceRef": "dna/core/assembly.hl"
+      }
+    ]
+  },
+  "hat": {
+    "events": [
+      {
+        "id": "hat-objective-projection",
+        "view": "assembly",
+        "kind": "projection.refreshed",
+        "label": "Work context objective refreshed",
+        "detail": "Derived authorized Head read of the immutable Hat for this Work. Its objective is pinned with its source head and projection watermark.",
+        "source": "head",
+        "effect": "state",
+        "entityIds": [
+          "work-t142-a",
+          "hat"
+        ],
+        "edgeIds": [
+          "work-t142-a::defines objective::hat"
+        ],
+        "at": 0,
+        "sourceRef": "dna/core/hat.hl"
+      },
+      {
+        "id": "hat-knowledge-projection",
+        "view": "assembly",
+        "kind": "projection.refreshed",
+        "label": "Charter and practice contributions highlighted",
+        "detail": "Derived authorized Head read: the Agent charter and ratified reader-window practice contribute to this Hat. The snapshot does not silently adopt later knowledge changes.",
+        "source": "head",
+        "effect": "change",
+        "entityIds": [
+          "position-charter",
+          "reader-practice",
+          "hat"
+        ],
+        "edgeIds": [
+          "position-charter::informs::hat",
+          "reader-practice::applies::hat"
+        ],
+        "at": 3,
+        "sourceRef": "dna/core/hat.hl"
+      },
+      {
+        "id": "hat-evidence-projection",
+        "view": "assembly",
+        "kind": "projection.refreshed",
+        "label": "Bound evidence and lease-gated read highlighted",
+        "detail": "Derived authorized Head read: the migration fixture is a declared evidence binding. Riley may read this context only while still holding the active attempt lease.",
+        "source": "head",
+        "effect": "state",
+        "entityIds": [
+          "migration-evidence",
+          "hat",
+          "riley"
+        ],
+        "edgeIds": [
+          "migration-evidence::bound evidence::hat",
+          "riley::may read while leased::hat"
+        ],
+        "at": 6,
+        "sourceRef": "dna/operations/context.hl"
+      },
+      {
+        "id": "hat-attempt-claimed",
+        "view": "identity",
+        "kind": "attempt.claimed",
+        "label": "Attempt claim replayed",
+        "detail": "Replay highlights Riley’s claim of attempt a0 and its active lease. The token-8 fixture is not renewed or extended by playback.",
+        "source": "record",
+        "effect": "state",
+        "entityIds": [
+          "riley",
+          "attempt-a0",
+          "attempt-lease"
+        ],
+        "edgeIds": [
+          "riley::claimed::attempt-a0",
+          "riley::holds::attempt-lease"
+        ],
+        "at": 9,
+        "sourceRef": "dna/operations/attempt_command.hl"
+      },
+      {
+        "id": "hat-snapshot-projection",
+        "view": "identity",
+        "kind": "projection.refreshed",
+        "label": "Pinned Hat identity refreshed",
+        "detail": "Derived authorized Head read: attempt a0 uses the h:8ac21f snapshot under its lease. This is a pinned context identity, not a live prompt assembled on each animation frame.",
+        "source": "head",
+        "effect": "state",
+        "entityIds": [
+          "attempt-a0",
+          "attempt-lease",
+          "hat"
+        ],
+        "edgeIds": [
+          "attempt-a0::pins snapshot::hat",
+          "attempt-lease::authorizes read::hat"
+        ],
+        "at": 12,
+        "sourceRef": "dna/core/hat.hl"
+      },
+      {
+        "id": "hat-rendering-projection",
+        "view": "identity",
+        "kind": "projection.refreshed",
+        "label": "Performer rendering evidence highlighted",
+        "detail": "Derived authorized Head read: legs-render/1 turns the structured Hat into a work brief with its own rendering digest. The Hat and rendered text keep separate identities.",
+        "source": "head",
+        "effect": "change",
+        "entityIds": [
+          "hat",
+          "hat-renderer",
+          "rendered-brief"
+        ],
+        "edgeIds": [
+          "hat-renderer::renders::rendered-brief",
+          "hat::source snapshot::rendered-brief"
+        ],
+        "at": 15,
+        "sourceRef": "dna/core/hat.hl"
+      }
+    ]
+  },
+  "voice": {
+    "events": [
+      {
+        "id": "voice-catalog-projection",
+        "view": "routing",
+        "kind": "projection.refreshed",
+        "label": "Position model catalog refreshed",
+        "detail": "Derived Head read of the declared router: Agent selects this model catalog. This structural highlight does not assert that a model request is running.",
+        "source": "head",
+        "effect": "state",
+        "entityIds": [
+          "agent-position",
+          "voice"
+        ],
+        "edgeIds": [
+          "agent-position::selects catalog::voice"
+        ],
+        "at": 0,
+        "sourceRef": "dna/core/models.hl"
+      },
+      {
+        "id": "voice-quick-projection",
+        "view": "routing",
+        "kind": "projection.refreshed",
+        "label": "Quick route and credential presence highlighted",
+        "detail": "Derived Head read of the route model: Quick selects the hosted adapter and its required credential slot. Only credential presence is represented, never secret bytes.",
+        "source": "head",
+        "effect": "state",
+        "entityIds": [
+          "route-quick",
+          "hosted-backend",
+          "model-slot"
+        ],
+        "edgeIds": [
+          "route-quick::routes to::hosted-backend",
+          "hosted-backend::requires slot::model-slot"
+        ],
+        "at": 3,
+        "sourceRef": "dna/core/models.hl"
+      },
+      {
+        "id": "voice-private-projection",
+        "view": "routing",
+        "kind": "projection.refreshed",
+        "label": "Private route boundary highlighted",
+        "detail": "Derived Head read of the route model: private context is assigned to the local backend. No call or transport delivery is inferred from this declared path.",
+        "source": "head",
+        "effect": "state",
+        "entityIds": [
+          "route-private",
+          "local-backend"
+        ],
+        "edgeIds": [
+          "route-private::routes to::local-backend"
+        ],
+        "at": 6,
+        "sourceRef": "dna/core/models.hl"
+      },
+      {
+        "id": "voice-model-called",
+        "view": "accounting",
+        "kind": "model.called",
+        "label": "Recorded model call evidence replayed",
+        "detail": "Replay of the t140 call receipt: 4,800 input tokens, 720 output tokens and $0.04. This is recorded evidence, not a continuous handler-running signal.",
+        "source": "record",
+        "effect": "change",
+        "entityIds": [
+          "call-t140",
+          "call-receipt-t140",
+          "hosted-backend"
+        ],
+        "edgeIds": [
+          "call-t140::records usage::call-receipt-t140",
+          "call-t140::uses::hosted-backend"
+        ],
+        "at": 9,
+        "sourceRef": "dna/core/spending.hl"
+      },
+      {
+        "id": "voice-spend-projection",
+        "view": "accounting",
+        "kind": "projection.refreshed",
+        "label": "Recorded spend projection refreshed",
+        "detail": "Derived authorized Head read: the fixture remains at $8.42 against its $25 daily budget. Replaying the same receipt does not add its cost again.",
+        "source": "head",
+        "effect": "state",
+        "entityIds": [
+          "call-receipt-t140",
+          "budget-day",
+          "work-allowance"
+        ],
+        "edgeIds": [
+          "call-receipt-t140::accounts spend::budget-day",
+          "budget-day::bounds::work-allowance"
+        ],
+        "at": 12,
+        "sourceRef": "dna/core/spending.hl"
+      },
+      {
+        "id": "voice-capture-projection",
+        "view": "accounting",
+        "kind": "projection.refreshed",
+        "label": "Replay capture remains unestablished",
+        "detail": "Derived authorized Head read: a matching RecordedModel entry is only illustrative here. The t140 model.called receipt does not prove that complete replay capture exists.",
+        "source": "head",
+        "effect": "attention",
+        "entityIds": [
+          "call-t140",
+          "recorded-tape"
+        ],
+        "edgeIds": [
+          "call-t140::could be captured::recorded-tape"
+        ],
+        "at": 15,
+        "sourceRef": "dna/core/models.hl"
+      }
+    ]
+  },
+  "skin": {
+    "events": [
+      {
+        "id": "skin-person-projection",
+        "view": "authority",
+        "kind": "projection.refreshed",
+        "label": "Person authority boundary refreshed",
+        "detail": "Derived authorized Head read: Riley’s held Board position supplies organization authority. Boundary role gates and record-level admission checks are still evaluated separately.",
+        "source": "head",
+        "effect": "state",
+        "entityIds": [
+          "riley",
+          "board-position",
+          "head-api"
+        ],
+        "edgeIds": [
+          "riley::holds::board-position",
+          "board-position::supplies owner authority::head-api"
+        ],
+        "at": 0,
+        "sourceRef": "dna/api/commands.hl"
+      },
+      {
+        "id": "skin-service-projection",
+        "view": "authority",
+        "kind": "projection.refreshed",
+        "label": "Service read authority highlighted",
+        "detail": "Derived authorized Head read: the service identity uses a scoped read role. It does not acquire a person’s command authority.",
+        "source": "head",
+        "effect": "state",
+        "entityIds": [
+          "service-identity",
+          "head-read-role"
+        ],
+        "edgeIds": [
+          "service-identity::uses read authority::head-read-role"
+        ],
+        "at": 3,
+        "sourceRef": "dna/core/memory_spine.hl"
+      },
+      {
+        "id": "skin-memory-projection",
+        "view": "authority",
+        "kind": "projection.refreshed",
+        "label": "Record isolation boundary highlighted",
+        "detail": "Derived authorized Head read: the Head role permits only its scoped memory reads for this record. Client-side highlights do not enforce or expand access.",
+        "source": "head",
+        "effect": "state",
+        "entityIds": [
+          "head-read-role",
+          "memory"
+        ],
+        "edgeIds": [
+          "head-read-role::permits scoped reads::memory"
+        ],
+        "at": 6,
+        "sourceRef": "dna/core/memory_spine.hl"
+      },
+      {
+        "id": "skin-spine-slot-projection",
+        "view": "compartments",
+        "kind": "projection.refreshed",
+        "label": "Spine credential compartment refreshed",
+        "detail": "Derived Head metadata read: the Spine memory slot is present and grants scoped access to this record. Credential bytes remain outside the projection.",
+        "source": "head",
+        "effect": "state",
+        "entityIds": [
+          "spine",
+          "spine-memory-slot",
+          "memory"
+        ],
+        "edgeIds": [
+          "spine::uses::spine-memory-slot",
+          "spine-memory-slot::grants scoped access::memory"
+        ],
+        "at": 9,
+        "sourceRef": "dna/core/memory_spine.hl"
+      },
+      {
+        "id": "skin-publish-slot-projection",
+        "view": "compartments",
+        "kind": "projection.refreshed",
+        "label": "Application publish boundary highlighted",
+        "detail": "Derived Head metadata read: Heart uses the application account for Atlas application subjects. This declared permission does not imply DNA subscription authority or an observed delivery.",
+        "source": "head",
+        "effect": "state",
+        "entityIds": [
+          "heart",
+          "app-broker-slot",
+          "application-subjects"
+        ],
+        "edgeIds": [
+          "heart::uses::app-broker-slot",
+          "app-broker-slot::allows publish::application-subjects"
+        ],
+        "at": 12,
+        "sourceRef": "dna/core/nerves.hl"
+      },
+      {
+        "id": "skin-forge-slot-projection",
+        "view": "compartments",
+        "kind": "projection.refreshed",
+        "label": "Forge credential is still missing",
+        "detail": "Derived Head metadata read: the operator-provisioned Forge token slot remains absent in the fixture. Playback neither provisions a secret nor invents a credential-change event.",
+        "source": "head",
+        "effect": "attention",
+        "entityIds": [
+          "forge-slot"
+        ],
+        "edgeIds": [],
+        "at": 15,
+        "sourceRef": "dna/face/DESIGN.md"
+      }
+    ]
+  }
+}

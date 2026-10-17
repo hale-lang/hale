@@ -1,0 +1,68 @@
+<template id="page-head">
+  <section class="ui-section">
+    <div class="ui-section-heading"><h2>Exposed surface</h2><span class="ui-badge" data-tone="good">Serving</span></div>
+    <div class="ui-split">
+      <dl class="ui-kv"><dt>Surface</dt><dd>HeadCommands</dd><dt>Transport</dt><dd>HTTP · authenticated session</dd><dt>Contract</dt><dd><code>fnv1a64:7a9e…c214</code></dd></dl>
+      <dl class="ui-kv"><dt>You are</dt><dd>Riley</dd><dt>Positions</dt><dd>Board · Reviewer</dd><dt>Available roles</dt><dd>owner · reviewer · position</dd></dl>
+    </div>
+    <div class="ui-table-wrap"><table class="ui-table"><thead><tr><th>Operation</th><th>Required authority</th><th></th></tr></thead><tbody>
+      <tr><td><code>create_task</code><span class="ui-subtext">Record an intent</span></td><td>Authenticated person</td><td><button class="ui-button" data-inspect="head-create">Inspect</button></td></tr>
+      <tr><td><code>verdict</code><span class="ui-subtext">Answer a pinned Review</span></td><td>reviewer</td><td><button class="ui-button" data-inspect="head-verdict">Inspect</button></td></tr>
+      <tr><td><code>propose_organization</code><span class="ui-subtext">Propose a structural change</span></td><td>owner</td><td><button class="ui-button" data-inspect="head-org">Inspect</button></td></tr>
+      <tr><td><code>lookup</code><span class="ui-subtext">Retrieve a command receipt</span></td><td>Authenticated person</td><td><button class="ui-button" data-inspect="head-lookup">Inspect</button></td></tr>
+    </tbody></table></div>
+  </section>
+  <section class="ui-section">
+    <div class="ui-section-heading"><h2>Command receipts</h2><button class="ui-button" data-go-part="record">Open record</button></div>
+    <div class="ui-table-wrap"><table class="ui-table"><thead><tr><th>Command</th><th>State</th><th>What happened</th><th></th></tr></thead><tbody>
+      <tr><td>Create task<span class="ui-subtext">request-104</span></td><td><span class="ui-badge">Recorded</span></td><td>Intent accepted; work awaits admission.</td><td><button class="ui-button" data-inspect="head-receipt">Receipt</button></td></tr>
+      <tr><td>Review verdict<span class="ui-subtext">request-103</span></td><td><span class="ui-badge" data-tone="warn">Refused</span></td><td>Candidate digest does not match.</td><td><button class="ui-button" data-inspect="head-refused">Receipt</button></td></tr>
+    </tbody></table></div>
+  </section>
+  <template data-detail="head-create"><h2>Create task</h2><p>Records a person's request and returns its receipt. The spine admits and executes the work.</p><dl class="ui-kv"><dt>Authority</dt><dd>Any person the head can identify</dd><dt>Retry</dt><dd>Reuse the same request ID to find the existing receipt.</dd><dt>Completion</dt><dd>A recorded request does not mean the work is complete.</dd></dl><button class="ui-button" data-go-part="spine">See workflow execution</button></template>
+  <template data-detail="head-verdict"><h2>Review verdict</h2><p>Approve, revise, reject, or abstain on the candidate named by the Review.</p><dl class="ui-kv"><dt>Boundary role</dt><dd>reviewer</dd><dt>Record checks</dt><dd>Pinned candidate, required authority or positions, and separation from the author</dd></dl><button class="ui-button" data-go-part="genome">Inspect candidate changes</button></template>
+  <template data-detail="head-org"><h2>Propose organization change</h2><p>A holder of the Board position can submit an organization proposal. The proposal proceeds through verification and Review before it changes the organism.</p><button class="ui-button" data-go-part="genome">Open organization source</button></template>
+  <template data-detail="head-lookup"><h2>Look up a receipt</h2><p>The receipt ties a request ID to its command, caller, target, state, and reason. After an interrupted connection, recover this receipt before deciding whether to retry.</p></template>
+  <template data-detail="head-receipt"><h2>Request recorded</h2><dl class="ui-kv"><dt>Request</dt><dd>request-104</dd><dt>Operation</dt><dd>create_task</dd><dt>Principal</dt><dd>Riley · OIDC</dd><dt>State</dt><dd>Recorded</dd><dt>Intent</dt><dd>Improve the release checklist.</dd></dl><button class="ui-button" data-go-part="spine">Follow the work</button></template>
+  <template data-detail="head-refused"><h2>Verdict refused</h2><dl class="ui-kv"><dt>Request</dt><dd>request-103</dd><dt>Reason</dt><dd>The submitted digest differs from the candidate pinned by the Review.</dd><dt>Change applied</dt><dd>No</dd></dl><button class="ui-button" data-go-part="genome">Re-open the candidate</button></template>
+</template>
+
+<template id="page-face">
+  <section class="ui-section">
+    <div class="ui-section-heading"><h2>Served interface</h2><span class="ui-badge" data-tone="good">Available</span></div>
+    <div class="ui-face-preview">
+      <div class="ui-face-preview-bar"><strong>Atlas Face</strong><span class="ui-small ui-muted">Riley</span></div>
+      <div class="ui-face-preview-body"><div class="ui-face-preview-nav"><span>Organism</span><span>Application</span></div><div><h3>Atlas workspace</h3><p class="ui-muted">The application’s own interface appears here.</p></div></div>
+    </div>
+    <div class="ui-section-heading ui-after"><span class="ui-muted">Owned and served by this application.</span><button class="ui-button" data-inspect="face-current">Inspect face</button></div>
+  </section>
+  <section class="ui-section">
+    <h2>How this face connects</h2>
+    <ol class="ui-steps"><li><strong>Identify the person</strong><span>The head establishes the session and its principal.</span></li><li><strong>Discover available capabilities</strong><span>Surface descriptions expose operations allowed for that caller.</span></li><li><strong>Present the application</strong><span>The face supplies its own views and interactions.</span></li><li><strong>Follow the result</strong><span>Commands return receipts; arriving events trigger fresh reads.</span></li></ol>
+  </section>
+  <section class="ui-section"><div class="ui-section-heading"><h2>Source and evolution</h2><button class="ui-button" data-go-part="genome">Open genome</button></div><p class="ui-muted">The interface evolves with the application’s reviewed source. Its data and actions come through the head’s permitted surfaces.</p></section>
+  <template data-detail="face-current"><h2>Atlas Face</h2><dl class="ui-kv"><dt>Owner</dt><dd>Atlas application</dd><dt>Current view</dt><dd>Default organism view</dd><dt>Application view</dt><dd>Supplied by the application</dd><dt>Sign-in</dt><dd>Head session</dd><dt>Commands</dt><dd>Authorized API surface → durable receipt</dd></dl><div class="ui-row"><button class="ui-button" data-go-part="head">Inspect head</button><button class="ui-button" data-go-part="genome">Inspect source</button></div></template>
+</template>
+
+<template id="page-skin">
+  <section class="ui-section">
+    <div class="ui-section-heading"><h2>Identity boundary</h2><button class="ui-button" data-go-part="head">Open head</button></div>
+    <dl class="ui-kv"><dt>Principal source</dt><dd>OIDC</dd><dt>People</dt><dd>Verified subject → organism member → held positions</dd><dt>Services</dt><dd>Service tokens; read access without a person’s command authority</dd></dl>
+  </section>
+  <section class="ui-section">
+    <div class="ui-section-heading"><h2>Credential slots</h2><span class="ui-small ui-muted">Presence only</span></div>
+    <div class="ui-table-wrap"><table class="ui-table"><thead><tr><th>Credential</th><th>Used by</th><th>State</th><th></th></tr></thead><tbody>
+      <tr><td>Memory · spine role</td><td>Spine</td><td><span class="ui-badge" data-tone="good">Present</span></td><td><button class="ui-button" data-inspect="skin-memory">Inspect</button></td></tr>
+      <tr><td>Broker · application account</td><td>Heart</td><td><span class="ui-badge" data-tone="good">Present</span></td><td><button class="ui-button" data-inspect="skin-heart">Inspect</button></td></tr>
+      <tr><td>Forge token</td><td>Forge operations</td><td><span class="ui-badge" data-tone="warn">Missing</span></td><td><button class="ui-button" data-inspect="skin-forge">Requirements</button></td></tr>
+      <tr><td>Model credential</td><td>Voice · worker host</td><td><span class="ui-badge" data-tone="good">Present</span></td><td><button class="ui-button" data-go-part="voice">Open voice</button></td></tr>
+    </tbody></table></div>
+  </section>
+  <section class="ui-section">
+    <h2>Recorded violations</h2><div class="ui-table-wrap"><table class="ui-table"><thead><tr><th>Violation</th><th>Owner</th><th>Response</th></tr></thead><tbody><tr><td><button class="ui-text-button" data-inspect="skin-violation">lease_unsettled</button><span class="ui-subtext">Attempt 042</span></td><td>Spine</td><td>Expiry recorded; attempt asked again.</td></tr></tbody></table></div>
+  </section>
+  <template data-detail="skin-memory"><h2>Spine’s memory credential</h2><dl class="ui-kv"><dt>Source</dt><dd>Organism vault</dd><dt>Grant</dt><dd>Read and write this record’s tables</dd><dt>Other parts</dt><dd>The head receives its own narrower role; the heart receives no memory role.</dd></dl><button class="ui-button" data-go-part="memory">Inspect memory</button></template>
+  <template data-detail="skin-heart"><h2>Application broker account</h2><p>The heart publishes only on its own application subjects. Its account does not grant access to the record, DNA’s database, or other parts’ subjects.</p><button class="ui-button" data-go-part="nerves">Inspect messaging boundary</button></template>
+  <template data-detail="skin-forge"><h2>Forge token required</h2><p>An operator supplies this slot through the vault. Forge operations remain unavailable while it is missing.</p><dl class="ui-kv"><dt>Provisioning</dt><dd>Secure operator input on the host</dd><dt>Record</dt><dd>Who changed the slot and where; never its value</dd></dl></template>
+  <template data-detail="skin-violation"><h2>Attempt lease expired</h2><dl class="ui-kv"><dt>Kind</dt><dd>lease_unsettled</dd><dt>Subject</dt><dd>Attempt 042</dd><dt>Owner</dt><dd>Spine</dd><dt>Response</dt><dd>Recorded once for the expired lease, then the attempt was asked again.</dd></dl><button class="ui-button" data-go-part="legs">Inspect attempts</button></template>
+</template>
