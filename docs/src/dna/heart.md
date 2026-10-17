@@ -447,8 +447,9 @@ hale node edge-1: instance api-0 up (pid <pid>) at <rev> as <shape>
 hale node edge-1: fleet.deploy #<n> expressed (<k> instance(s) started)
 ```
 
-A deploy is a row. The revision is pushed to
-`refs/dna/revisions/<rev>` first, so every node can fetch it; the row
+A deploy is a row. The revision is published first as the branch
+`dna/revision/<rev>` on the genome's forge, and every node fetches it by
+its sha; the row
 carries the plan, the revision, the seed the change edited, the
 instances touched (every instance with a node whose seed is that
 directory) and the reason. By hand:

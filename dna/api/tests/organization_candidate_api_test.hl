@@ -108,7 +108,7 @@ locus SourceCandidateCases {
         std::test::assert_eq_int(record.git("-c\nuser.name=SourceTest\n-c\nuser.email=source@test\ncommit\n-q\n-m\nlater").code, 0, "move source checkout after candidate preparation");
         std::test::assert_eq_str(head.handle(std::http::Request { method: "GET", path: path }).body, response.body, "historical evidence independent of destination checkout and workspace");
         let object_read = reader.objects(record, journal, candidate); std::test::assert(object_read.ok && reader.unchanged(record, snapshot, object_read), "retained evidence fence");
-        let candidate_ref = record.ref_of("candidates/" + candidate.candidate_key);
+        let candidate_ref = dna::candidate_ref(candidate.candidate_key);
         std::test::assert_eq_int(record.git("update-ref\n" + candidate_ref + "\n" + basis.source_head).code, 0, "retained pointer mismatch fixture");
         std::test::assert(!reader.unchanged(record, snapshot, object_read), "retained pointer movement fails final fence");
         std::test::assert_eq_int(head.handle(std::http::Request { method: "GET", path: path }).status, 404, "wrong retained candidate is unavailable");

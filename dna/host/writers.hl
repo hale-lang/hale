@@ -1308,8 +1308,10 @@ fn touched_json(touched: String) -> String {
     return b.result();
 }
 
-// Ask the fleet to express `rev`: the revision pushed where every node
-// fetches from (`refs/dna/revisions/<rev>`), then one `fleet.deploy` row.
+// Ask the fleet to express `rev`: the revision published on the genome's
+// forge as the branch `dna/revision/<rev>`, where every node fetches it by
+// its sha (GH #1590: the genome's, not the record's), then one
+// `fleet.deploy` row naming it.
 fn fleet_deploy(root: String, fleet: String, plan_rel: String, rev_in: String, seed: String, entity: String, reason: String, memory: dna::Memory) -> Deploy {
     let rev = genome_commit(root, rev_in);
     if len(rev) == 0 { return Deploy { error: "no such revision: " + rev_in }; }
@@ -1318,10 +1320,8 @@ fn fleet_deploy(root: String, fleet: String, plan_rel: String, rev_in: String, s
     let touched = touched_by(root, plan_rel, plan, seed);
     let remote = record_remote(root);
     if len(remote) > 0 {
-        let r = rec(root);
-        if !r.point("revisions/" + rev, rev) { return Deploy { error: "the revision could not be pointed at: " + r.why() }; }
-        let t = r.share(remote, "revisions/" + rev, "force");
-        if !t.ok { return Deploy { error: if len(t.why) == 0 { "push failed" } else { t.why } }; }
+        let pushed = genome_push_branch(root, remote, rev, revision_branch(rev), true);
+        if len(pushed) > 0 { return Deploy { error: "the revision could not be published: " + pushed }; }
     }
     let b = std::json::Builder { };
     b.begin_object();

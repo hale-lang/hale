@@ -112,7 +112,7 @@ locus OrganizationCandidateWire {
         if !self.visible(journal, candidate) { return OrganizationCandidateRead { }; }
         let r = candidate.request; let commit = candidate.candidate_commit;
         let native = dna::OrganizationSourceRequestCodec { };
-        if self.ref_id(record, record.ref_of("candidates/" + candidate.candidate_key), "commit") != commit
+        if self.ref_id(record, dna::candidate_ref(candidate.candidate_key), "commit") != commit
             || self.ref_id(record, r.source_head, "commit") != r.source_head { return OrganizationCandidateRead { }; }
         let parents = record.git("rev-list\n--parents\n-n\n1\n" + commit);
         if parents.code != 0 || dna::trim_nl(parents.stdout) != commit + " " + r.source_head { return OrganizationCandidateRead { }; }
@@ -139,7 +139,7 @@ locus OrganizationCandidateWire {
         // a head that could not be read is not a Record that did not move
         let now = record.head("journal");
         return read.ok && now.ok && now.id == source.head
-            && self.ref_id(record, record.ref_of("candidates/" + c.candidate_key), "commit") == c.candidate_commit
+            && self.ref_id(record, dna::candidate_ref(c.candidate_key), "commit") == c.candidate_commit
             && self.ref_id(record, c.request.source_head, "commit") == c.request.source_head;
     }
     fn unchanged(record: dna::GitRecord, source: ops::GovernanceSnapshot, read: OrganizationCandidateRead) -> Bool {
