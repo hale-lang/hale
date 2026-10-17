@@ -1034,8 +1034,12 @@ scalar_clause     = "range" , ":" , range_expr
    concrete type expression (it may be a generic *instantiation*,
    `type Names = Vec<String>;`). GH #759. *)
 
-struct_field      = IDENTIFIER , ":" , type_expr , [ "=" , expression ] ,
-                    [ field_tag ] , ";" ;
+struct_field      = IDENTIFIER , ":" , type_expr , [ "indexed_by" , IDENTIFIER ] ,
+                    [ "=" , expression ] , [ field_tag ] , ";" ;
+(* `indexed_by` on a `bounded[T; N]` of records names the `String` field
+   of `T` that keys a wire map: the api codecs carry the list as an object
+   keyed by it (spec/api.md § Codecs), the value-level projection of the
+   `@form(hashmap)` slot clause. *)
 (* Go-style metadata tag: a backtick raw string of free-form `key:"value"`
    pairs that downstream features parse (the binary-pack layer reads a
    `wire:` key; ignored otherwise). Shares the backtick lexing with time

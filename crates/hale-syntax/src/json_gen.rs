@@ -63,6 +63,7 @@ impl ScalarTy {
     }
 }
 
+#[derive(Clone)]
 enum FieldKind {
     Scalar(ScalarTy),
     /// A field whose type is another generated JSON struct — parsed by
@@ -82,7 +83,7 @@ enum FieldKind {
     /// never a truncation. Decoded into the holder `__ApiList_<T>_<field>`
     /// (`{ b: bounded[<elem_ty>; cap] }`) as it is read, then moved into
     /// the record.
-    List { elem: Elem, elem_ty: String, cap: u64, exact: bool },
+    List { elem: Elem, elem_ty: String, cap: u64, exact: bool, key: Option<String> },
     /// An enum (the api codecs only, spec/api.md § Codecs): on the JSON wire
     /// a payload-free variant is its name and one with values an object
     /// keyed by it; in protobuf a payload-free enum is its number and one
@@ -128,6 +129,7 @@ pub fn wire_required(ty: &TypeExpr, has_default: bool) -> bool {
     }
 }
 
+#[derive(Clone)]
 struct JsonField {
     name: String,           // struct field name
     key: String,            // JSON key (tag value or field name)
@@ -302,6 +304,10 @@ pub fn scalar_convs(programs: &[&Program]) -> std::collections::BTreeMap<String,
 struct JsonType {
     name: String,
     fields: Vec<JsonField>,
+    /// A wire map's value (spec/api.md § Codecs): the record without its key
+    /// field `lifted`, which the decoder takes as `__key` (the map's key) and
+    /// the encoder leaves out. Its codecs are `..._<T>__by_<lifted>`.
+    lifted: Option<String>,
 }
 
 fn scalar_of(te: &TypeExpr) -> Option<ScalarTy> {
@@ -410,7 +416,7 @@ fn collect_json_types(items: &[TopDecl], names: &HashSet<String>, out: &mut Vec<
                         });
                     }
                     if ok && !jfields.is_empty() {
-                        out.push(JsonType { name: td.name.name.clone(), fields: jfields });
+                        out.push(JsonType { name: td.name.name.clone(), fields: jfields, lifted: None });
                     }
                 }
             }
@@ -466,10 +472,16 @@ fn generate_parser_src(t: &JsonType) -> String {
 /// handler only ever sees a payload the caller actually sent.
 fn generate_parser_src_mode(t: &JsonType, prefix: &str, strict: bool) -> String {
     let mut b = String::new();
-    b.push_str(&format!(
-        "fn {}{}(__s: String) -> {} fallible(JsonError) {{\n",
-        prefix, t.name, t.name
-    ));
+    match &t.lifted {
+        Some(k) => b.push_str(&format!(
+            "fn {prefix}{n}__by_{k}(__s: String, __key: String) -> {n} fallible(JsonError) {{\n",
+            n = t.name
+        )),
+        None => b.push_str(&format!(
+            "fn {}{}(__s: String) -> {} fallible(JsonError) {{\n",
+            prefix, t.name, t.name
+        )),
+    }
     b.push_str("    let __total = len(__s);\n");
     // Field accumulators + presence flags. Scalars hold the parsed value;
     // nested fields hold the matched object's raw text (parsed at
@@ -606,6 +618,7 @@ fn generate_parser_src_mode(t: &JsonType, prefix: &str, strict: bool) -> String 
                 FieldKind::Nested(_) => "__c0 == 123",
                 FieldKind::Enum { .. } => "__c0 == 34 || __c0 == 123",
                 FieldKind::Time => "__c0 == 34",
+                FieldKind::List { key: Some(_), .. } => "__c0 == 123",
                 FieldKind::List { .. } => "__c0 == 91",
             };
             b.push_str(&format!(
@@ -654,6 +667,7 @@ fn generate_parser_src_mode(t: &JsonType, prefix: &str, strict: bool) -> String 
                 b.push_str(&format!("                    if !std::str::ends_with(__tt, \"Z\") {{ {wrong}; }}\n"));
                 b.push_str(&format!("                    __f_{} = std::time::parse_time(__tt) or {wrong};\n", f.name));
             }
+            FieldKind::List { elem: Elem::Nested(tn), key: Some(k), .. } => b.push_str(&json_map_read(f, tn, k, prefix)),
             FieldKind::List { elem, .. } => b.push_str(&json_list_read(f, elem, prefix)),
         }
         if f.tracks() {
@@ -764,7 +778,7 @@ fn generate_optional_src(t: &JsonType, protobuf: bool) -> String {
         return b;
     }
     for f in &t.fields {
-        let FieldKind::List { elem, elem_ty, cap, exact: true } = &f.kind else { continue };
+        let FieldKind::List { elem, elem_ty, cap, exact: true, .. } = &f.kind else { continue };
         if !matches!(f.presence, Presence::Tracked(_)) {
             continue;
         }
@@ -883,10 +897,9 @@ fn construct_src(t: &JsonType, json: bool) -> String {
             b.push_str(&format!("        __ai_{n} = __ai_{n} + 1;\n    }}\n", n = f.name));
         }
     }
-    let inits: Vec<String> = t
-        .fields
-        .iter()
-        .filter_map(|f| match (&f.kind, &f.conv) {
+    let lifted = t.lifted.iter().map(|k| format!("{k}: __key"));
+    let inits: Vec<String> = lifted
+        .chain(t.fields.iter().filter_map(|f| match (&f.kind, &f.conv) {
             // on the JSON wire a presence flag is whether its field was read
             _ if json && f.is_flag() => {
                 let Presence::Flag(of) = &f.presence else { unreachable!("a flag") };
@@ -898,7 +911,7 @@ fn construct_src(t: &JsonType, json: bool) -> String {
             (FieldKind::Time, _) => Some(format!("{}: __f_{}", f.name, f.name)),
             (FieldKind::List { exact: true, .. }, _) => Some(format!("{}: __a_{}", f.name, f.name)),
             (FieldKind::List { exact: false, .. }, _) => None,
-        })
+        }))
         .collect();
     let bounded: Vec<&JsonField> =
         t.fields.iter().filter(|f| matches!(f.kind, FieldKind::List { exact: false, .. })).collect();
@@ -977,6 +990,98 @@ fn json_elem_read(elem: &Elem, src: &str, key: &str, prefix: &str, ind: &str) ->
     b
 }
 
+/// The statements that read a wire map's value span `[__vs, __ve)`: the
+/// object checked whole (a malformed one is `wrong_type`), the holder
+/// cleared, and each member read as the record whose key is the member's
+/// key (`<prefix><T>__by_<key>`, the value's own key field, if it sends
+/// one, skipped as an unknown key); a key already read is `duplicate_key`,
+/// more members than the holder holds `too_long`.
+fn json_map_read(f: &JsonField, tn: &str, k: &str, prefix: &str) -> String {
+    let ind = "                    ";
+    let wrong = format!("fail JsonError {{ kind: \"wrong_type\", field: \"{}\" }}", f.key);
+    let dup = format!("fail JsonError {{ kind: \"duplicate_key\", field: \"{}\" }}", f.key);
+    let mut b = String::new();
+    b.push_str(&format!("{ind}let __ma = __s[__vs..__ve];\n"));
+    b.push_str(&format!("{ind}if !std::json::valid(__ma) {{ {wrong}; }}\n"));
+    b.push_str(&format!("{ind}clear(__h_{}.b);\n", f.name));
+    b.push_str(&format!("{ind}let mut __mi = std::json::object_first(__ma);\n"));
+    b.push_str(&format!("{ind}while !__mi.done {{\n"));
+    b.push_str(&format!("{ind}    let __mk = std::json::unescape_string(__ma[__mi.key_start..__mi.key_end]);\n"));
+    b.push_str(&format!("{ind}    for __mx in __h_{}.b {{ if __mx.{k} == __mk {{ {dup}; }} }}\n", f.name));
+    b.push_str(&format!(
+        "{ind}    let __mv = {prefix}{tn}__by_{k}(__ma[__mi.val_start..__mi.val_end], __mk) or raise;\n"
+    ));
+    b.push_str(&format!(
+        "{ind}    push(__h_{}.b, __mv) or fail JsonError {{ kind: \"too_long\", field: \"{}\" }};\n",
+        f.name, f.key
+    ));
+    b.push_str(&format!("{ind}    __mi = std::json::object_next(__mi, __ma);\n"));
+    b.push_str(&format!("{ind}}}\n"));
+    b
+}
+
+/// The statements that read one entry of a wire map's `map<string, T>`
+/// field: the entry message's key (1) and record (2), the record decoded
+/// whole and given the entry's key (the map's key wins over the record's
+/// own); a key already read is `duplicate_key`, more entries than the
+/// holder holds `too_long`.
+fn pb_map_read(f: &JsonField, tn: &str, k: &str, bad: &str) -> String {
+    let ind = "            ";
+    let wrong = format!("fail JsonError {{ kind: \"wrong_type\", field: \"{}\" }}", f.key);
+    let dup = format!("fail JsonError {{ kind: \"duplicate_key\", field: \"{}\" }}", f.key);
+    let mut b = String::new();
+    b.push_str(&format!("{ind}if __wire != 2 {{ {wrong}; }}\n"));
+    b.push_str(&format!("{ind}let __me = __api_pb_vend(__b, __p);\n"));
+    b.push_str(&format!("{ind}if __me < 0 {{ {bad} }}\n"));
+    b.push_str(&format!("{ind}let __ml = __api_pb_vval(__b, __p, __me);\n"));
+    b.push_str(&format!("{ind}if __ml < 0 || __me + __ml > __n {{ {bad} }}\n"));
+    b.push_str(&format!("{ind}let __mv = __api_pb_entry_{tn}__by_{k}(std::bytes::slice(__b, __me, __me + __ml), \"{}\") or raise;\n", f.key));
+    b.push_str(&format!("{ind}for __mx in __h_{}.b {{ if __mx.{k} == __mv.{k} {{ {dup}; }} }}\n", f.name));
+    b.push_str(&format!(
+        "{ind}push(__h_{}.b, __mv) or fail JsonError {{ kind: \"too_long\", field: \"{}\" }};\n",
+        f.name, f.key
+    ));
+    b.push_str(&format!("{ind}__p = __me + __ml;\n"));
+    b
+}
+
+/// `__api_pb_entry_<T>__by_<k>(bytes, field)`: one entry of a
+/// `map<string, T>`, its key (field 1) and its record (field 2, decoded
+/// whole), the record given the entry's key; the last of a field sent
+/// twice wins, an unknown field is skipped.
+fn generate_pb_entry_src(tn: &str, k: &str) -> String {
+    let wrong = "fail JsonError { kind: \"wrong_type\", field: __f };";
+    let mut b = format!("fn __api_pb_entry_{tn}__by_{k}(__b: Bytes, __f: String) -> {tn} fallible(JsonError) {{\n");
+    b.push_str("    let __n = len(__b);\n    let mut __p = 0;\n    let mut __key = \"\";\n");
+    b.push_str("    let mut __raw = std::bytes::from_string(\"\");\n");
+    b.push_str("    while __p < __n {\n");
+    b.push_str("        let __te = __api_pb_vend(__b, __p);\n");
+    b.push_str(&format!("        if __te < 0 {{ {wrong} }}\n"));
+    b.push_str("        let __tag = __api_pb_vval(__b, __p, __te);\n");
+    b.push_str("        let __no = __tag >> 3;\n        let __wire = __tag & 7;\n");
+    b.push_str("        if (__no == 1 || __no == 2) && __wire == 2 {\n");
+    b.push_str("            let __e = __api_pb_vend(__b, __te);\n");
+    b.push_str("            let __l = __api_pb_vval(__b, __te, __e);\n");
+    b.push_str(&format!("            if __e < 0 || __l < 0 || __e + __l > __n {{ {wrong} }}\n"));
+    b.push_str("            if __no == 1 {\n");
+    b.push_str("                __key = std::str::from_bytes(std::bytes::slice(__b, __e, __e + __l));\n");
+    b.push_str(&format!("                if len(__key) != __l {{ {wrong} }}\n"));
+    b.push_str("            } else {\n");
+    b.push_str("                __raw = std::bytes::slice(__b, __e, __e + __l);\n");
+    b.push_str("            }\n");
+    b.push_str("            __p = __e + __l;\n");
+    b.push_str("        } else {\n");
+    b.push_str("            let __e = __api_pb_skip(__b, __te, __wire);\n");
+    b.push_str(&format!("            if __e < 0 {{ {wrong} }}\n"));
+    b.push_str("            __p = __e;\n");
+    b.push_str("        }\n");
+    b.push_str("    }\n");
+    b.push_str(&format!("    let mut __v = __api_pb_decode_{tn}(__raw) or raise;\n"));
+    b.push_str(&format!("    __v.{k} = __key;\n"));
+    b.push_str("    return __v;\n}\n");
+    b
+}
+
 /// The statements that read a list field's value span `[__vs, __ve)`: the
 /// array checked whole (a malformed one is `wrong_type`), the holder
 /// cleared (the last of a key sent twice wins, as for any field), and
@@ -1026,8 +1131,9 @@ fn generate_emit_src(t: &JsonType) -> String {
 
 fn generate_emit_src_mode(t: &JsonType, fn_prefix: &str) -> String {
     let mut b = String::new();
+    let suffix = t.lifted.as_ref().map_or(String::new(), |k| format!("__by_{k}"));
     b.push_str(&format!(
-        "fn {}{}(__v: {}) -> String {{\n",
+        "fn {}{}{suffix}(__v: {}) -> String {{\n",
         fn_prefix, t.name, t.name
     ));
     b.push_str("    let mut __b: String = \"{\";\n");
@@ -1063,6 +1169,20 @@ fn generate_emit_src_mode(t: &JsonType, fn_prefix: &str) -> String {
             FieldKind::Nested(tn) => format!("{}{}(__v.{})", fn_prefix, tn, f.name),
             FieldKind::Enum { name, .. } => format!("{fn_prefix}{name}(__v.{})", f.name),
             FieldKind::Time => format!("\"\\\"\" + std::time::iso8601(__v.{}) + \"\\\"\"", f.name),
+            // a wire map: an object keyed by each record's key, the record
+            // without it as the value, in the list's order
+            FieldKind::List { elem: Elem::Nested(tn), key: Some(k), .. } => {
+                b.push_str(&format!("    __b = __b + {} + \"{{\";\n", prefix));
+                b.push_str(&format!("    let mut __n_{} = 0;\n", f.name));
+                b.push_str(&format!("    for __x in __v.{} {{\n", f.name));
+                b.push_str(&format!("        if __n_{} > 0 {{ __b = __b + \",\"; }}\n", f.name));
+                b.push_str(&format!(
+                    "        __b = __b + \"\\\"\" + std::json::escape_string(__x.{k}) + \"\\\":\" + {fn_prefix}{tn}__by_{k}(__x);\n"
+                ));
+                b.push_str(&format!("        __n_{n} = __n_{n} + 1;\n    }}\n", n = f.name));
+                b.push_str("    __b = __b + \"}\";\n");
+                continue;
+            }
             FieldKind::List { elem, elem_ty, .. } => {
                 b.push_str(&format!("    __b = __b + {} + \"[\";\n", prefix));
                 b.push_str(&format!("    let mut __n_{} = 0;\n", f.name));
@@ -1175,6 +1295,10 @@ fn generate_pb_parser_src(t: &JsonType) -> String {
     for (i, f) in t.fields.iter().enumerate() {
         let kw = if i == 0 { "if" } else { "} else if" };
         b.push_str(&format!("        {kw} __no == {} {{\n", f.pb_no));
+        if let FieldKind::List { elem: Elem::Nested(tn), key: Some(k), .. } = &f.kind {
+            b.push_str(&pb_map_read(f, tn, k, bad));
+            continue;
+        }
         if let FieldKind::List { elem, .. } = &f.kind {
             b.push_str(&pb_list_read(f, elem, bad));
             if f.needs_seen() {
@@ -1442,6 +1566,17 @@ fn generate_pb_emit_src(t: &JsonType) -> String {
                 format!("__api_pb_put_msg({}, __api_pb_encode_{name}({v}))", f.pb_no)
             }
             FieldKind::Time => format!("__api_pb_put_int({}, std::time::nanos({v}))", f.pb_no),
+            // a wire map: `map<string, T>`, each entry an occurrence of a
+            // message of its key (1) and the whole record (2)
+            FieldKind::List { elem: Elem::Nested(tn), key: Some(k), .. } => {
+                b.push_str(&format!("    for __x in {v} {{\n"));
+                b.push_str(&format!(
+                    "        __o = std::bytes::concat(__o, __api_pb_put_msg({}, std::bytes::concat(__api_pb_put_str(1, __x.{k}), __api_pb_put_msg(2, __api_pb_encode_{tn}(__x)))));\n",
+                    f.pb_no
+                ));
+                b.push_str("    }\n");
+                continue;
+            }
             FieldKind::List { elem, elem_ty, .. } => {
                 // each element its own field occurrence, which a proto3
                 // parser reads as it reads the packed form
@@ -1843,7 +1978,7 @@ fn generate_codecs(
             })
             .collect();
         if let (Some(fields), false) = (jfields, types.iter().any(|t| &t.name == name)) {
-            types.push(JsonType { name: name.clone(), fields });
+            types.push(JsonType { name: name.clone(), fields, lifted: None });
         }
     }
     let mut src = String::new();
@@ -1915,6 +2050,35 @@ fn generate_codecs(
         }
         if !existing_fns.contains(&format!("__api_decode_{}", e.name)) {
             src.push_str(&generate_enum_json_src(e));
+        }
+    }
+    // the wire maps' value codecs: each (record, key) a map is keyed by
+    let mut lifted: Vec<(String, String)> = Vec::new();
+    for t in &types {
+        for f in &t.fields {
+            if let FieldKind::List { elem: Elem::Nested(tn), key: Some(k), .. } = &f.kind {
+                if !lifted.contains(&(tn.clone(), k.clone())) {
+                    lifted.push((tn.clone(), k.clone()));
+                }
+            }
+        }
+    }
+    for (tn, k) in &lifted {
+        let Some(t) = types.iter().find(|t| &t.name == tn) else { continue };
+        if protobuf {
+            if existing_fns.insert(format!("__api_pb_entry_{tn}__by_{k}")) {
+                src.push_str(&generate_pb_entry_src(tn, k));
+            }
+            continue;
+        }
+        let value = JsonType {
+            name: t.name.clone(),
+            fields: t.fields.iter().filter(|f| &f.name != k).cloned().collect(),
+            lifted: Some(k.clone()),
+        };
+        if existing_fns.insert(format!("__api_decode_{tn}__by_{k}")) {
+            src.push_str(&generate_parser_src_mode(&value, "__api_decode_", true));
+            src.push_str(&generate_emit_src_mode(&value, "__api_encode_"));
         }
     }
     if src.trim().is_empty() {
@@ -2309,7 +2473,7 @@ fn variant_records(e: &JsonEnum) -> Vec<(String, JsonType)> {
                 }
             })
             .collect();
-        out.push((decl, JsonType { name: rec, fields }));
+        out.push((decl, JsonType { name: rec, fields, lifted: None }));
     }
     out
 }
@@ -2398,7 +2562,10 @@ fn collect_api_types(
                     let kind = if let Some((elem, cap, exact)) = wire_list(&ty) {
                         // a list: its elements are what a field of their type is
                         let Some((elem, elem_ty)) = elem_of(elem, scalars, aliases, enums) else { continue };
-                        FieldKind::List { elem, elem_ty, cap, exact }
+                        // `indexed_by <key>`: a wire map of the records,
+                        // keyed by their `<key>` (spec/api.md § Codecs)
+                        let key = f.indexed_by.as_ref().map(|k| k.name.clone()).filter(|_| matches!(elem, Elem::Nested(_)));
+                        FieldKind::List { elem, elem_ty, cap, exact, key }
                     } else {
                         match elem_of(&ty, scalars, aliases, enums) {
                             Some((Elem::Scalar(s, c), _)) => {
@@ -2437,7 +2604,7 @@ fn collect_api_types(
                         }
                     }
                 }
-                out.push(JsonType { name: td.name.name.clone(), fields: jfields });
+                out.push(JsonType { name: td.name.name.clone(), fields: jfields, lifted: None });
             }
             TopDecl::Module(m) => collect_api_types(&m.items, wanted, scalars, aliases, enums, out),
             _ => {}

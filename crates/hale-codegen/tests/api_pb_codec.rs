@@ -690,3 +690,96 @@ fn main() {{ Desk {{ }}; }}
     let (compiled, reflected) = compiled_and_reflected(&file, "enum");
     assert_eq!(reflected, compiled, "the reflected descriptor of an enum and a oneof is the compiled text");
 }
+
+// ---- a wire map is a proto3 map ----
+
+#[derive(Clone, PartialEq, prost::Message)]
+struct PCheck {
+    #[prost(string, tag = "1")]
+    name: String,
+    #[prost(string, tag = "2")]
+    status: String,
+}
+
+#[derive(Clone, PartialEq, prost::Message)]
+struct PHealth {
+    #[prost(btree_map = "string, message", tag = "1")]
+    checks: std::collections::BTreeMap<String, PCheck>,
+}
+
+/// A wire map (`bounded[T; N] indexed_by <key>`) is a proto3
+/// `map<string, T>` (spec/api.md § Codecs): what `prost` writes the
+/// generated decoder reads (each record given its entry's key), what the
+/// generated encoder writes `prost` reads back as the same map, and the
+/// `.proto`'s descriptor (the implicit `ChecksEntry`) is the one a compiler
+/// makes of its text.
+#[test]
+fn a_wire_map_is_a_proto3_map_that_prost_reads_and_writes() {
+    use prost::Message;
+    let check = |n: &str, s: &str| PCheck { name: n.to_string(), status: s.to_string() };
+    let health = PHealth { checks: [("cache".to_string(), check("cache", "down")), ("db".to_string(), check("db", "up"))].into_iter().collect() };
+    let program = format!(
+        r#"
+type Check {{ name: String; status: String; }}
+type Health {{ checks: bounded[Check; 4] indexed_by name; }}
+api Pb {{ rpc Probe::health; }}
+locus Probe {{
+    fn health(h: Health) -> Health {{ return h; }}
+}}
+locus Tokens {{
+    fn principal(token: String) -> std::api::Principal {{ return std::api::Principal {{ mode: "bearer", name: "" }}; }}
+    fn refused() -> String {{ return "no"; }}
+}}
+main locus Desk {{
+    params {{ probe: Probe = Probe {{ }}; bearer: Tokens = Tokens {{ }}; h: api::Exposure = api::serve(Pb, grpc::Rpc {{ bind: "127.0.0.1:0", codec: json, principals: self.bearer }}, as: "pb", receivers: {{ Probe: self.probe }}, bound: 4, on_full: refuse); }}
+    run() {{
+        let h = __api_pb_decode_Health({bytes}) or {{ println("refused " + err.kind + " " + err.field); return; }};
+        println(__api_encode_Health(h));
+        let out = __api_pb_encode_Health(h);
+        let mut text = "";
+        let mut i = 0;
+        while i < len(out) {{
+            if i > 0 {{ text = text + ","; }}
+            text = text + to_string(std::bytes::read_u8(out, i) or 0);
+            i = i + 1;
+        }}
+        println(text);
+    }}
+}}
+fn main() {{ Desk {{ }}; }}
+"#,
+        bytes = bytes_expr(&health.encode_to_vec()),
+    );
+    let bin = harness::unique_bin("api_pb_codec_map");
+    build_opts::build_source(&program, &bin, &build_opts::options()).expect("build the probe");
+    let got = run(&bin);
+    let mut lines = got.lines();
+    assert_eq!(
+        lines.next(),
+        Some(r#"{"checks":{"cache":{"status":"down"},"db":{"status":"up"}}}"#),
+        "the generated decoder reads what prost wrote"
+    );
+    let written: Vec<u8> = lines.next().expect("the encoded bytes").split(',').map(|b| b.parse().expect("a byte")).collect();
+    assert_eq!(PHealth::decode(written.as_slice()).expect("prost reads it"), health, "prost reads what the generated encoder wrote");
+
+    use hale_types::surface_doc::{ClientError, ClientMember, ClientModel};
+    use hale_types::surfaces::{FieldSchema, TypeSchema};
+    let string = || FieldSchema::Scalar { json: "string", hale_type: None, unit: None };
+    let check_schema = TypeSchema { properties: vec![("name".to_string(), string()), ("status".to_string(), string())], required: Vec::new() };
+    let value = TypeSchema { properties: vec![("status".to_string(), string())], required: Vec::new() };
+    let health_schema = TypeSchema {
+        properties: vec![("checks".to_string(), FieldSchema::Map { name: "Check".to_string(), key: "name".to_string(), value, max: 4 })],
+        required: Vec::new(),
+    };
+    let file = hale_types::proto_gen::from_model(&ClientModel {
+        surface: "S".to_string(),
+        digest: "fnv1a64:0".to_string(),
+        members: vec![ClientMember { name: "R::f".to_string(), request: Some(FieldSchema::Ref("Health".to_string())), response: None, error: ClientError::None, requires: Vec::new() }],
+        types: [("Health".to_string(), health_schema), ("Check".to_string(), check_schema)].into_iter().collect(),
+        streams: Vec::new(),
+    })
+    .expect("a file");
+    assert!(file.text().contains("map<string, Check> checks = 1;"), "{}", file.text());
+    let (compiled, reflected) = compiled_and_reflected(&file, "map");
+    assert_eq!(reflected, compiled, "the reflected descriptor of a map is the compiled text");
+}

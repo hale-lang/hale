@@ -2167,6 +2167,11 @@ pub enum FieldSchema {
     /// "string", "enum": [...]}`; one with payloads a `oneOf` of that and an
     /// object per variant with values, keyed by the variant.
     Enum { name: String, variants: Vec<(String, Vec<FieldSchema>)> },
+    /// A wire map (`bounded[T; N] indexed_by <key>`, spec/api.md § Codecs):
+    /// `{"type": "object", "additionalProperties": <value>, "maxProperties":
+    /// N, "x-hale-key": "<key>"}`, the value the record `name`'s schema
+    /// without its key (lifted out of each value, the object's key).
+    Map { name: String, key: String, value: TypeSchema, max: u64 },
     /// A type the codec does not carry (law 5 refuses its row).
     Unformed,
 }
@@ -2272,6 +2277,25 @@ impl<'a> Schemas<'a> {
                             };
                             properties.push((key, schema));
                             continue;
+                        }
+                        // a wire map: the element's schema without its key
+                        if let (Some(k), Some((elem, max, false))) =
+                            (&f.indexed_by, hale_syntax::json_gen::wire_list(&self.shapes.dealias(&f.ty)))
+                        {
+                            if let (FieldSchema::Ref(elem_name), TypeClass::Struct { fields: elem_fields, .. }) =
+                                (self.type_ref(elem, out), self.shapes.classify(elem))
+                            {
+                                let lifted = elem_fields
+                                    .iter()
+                                    .find(|g| g.name.name == k.name)
+                                    .and_then(|g| g.tag.as_deref().and_then(|t| hale_syntax::desugar::tag_value(t, "json")))
+                                    .unwrap_or_else(|| k.name.clone());
+                                let mut value = out.get(&elem_name).cloned().unwrap_or(TypeSchema { properties: Vec::new(), required: Vec::new() });
+                                value.properties.retain(|(p, _)| *p != lifted);
+                                value.required.retain(|r| *r != lifted);
+                                properties.push((key, FieldSchema::Map { name: elem_name, key: k.name.clone(), value, max }));
+                                continue;
+                            }
                         }
                         properties.push((key.clone(), self.type_ref(&f.ty, out)));
                         if hale_syntax::json_gen::wire_required(&self.shapes.dealias(&f.ty), f.default.is_some()) {

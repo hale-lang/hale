@@ -9151,6 +9151,7 @@ fn check_main_and_bindings(bundle: &Bundle<'_>, inputs: &CheckInputs<'_>, diags:
                         }
     diags.extend(crate::roles::role_laws(inputs.roles));
     check_duplicate_members(&programs_vec, diags);
+    check_wire_maps(&programs_vec, diags);
     if mains.len() > 1 {
         for (name, span) in &mains {
             diags.push(Diag::ty(
@@ -9162,6 +9163,92 @@ fn check_main_and_bindings(bundle: &Bundle<'_>, inputs: &CheckInputs<'_>, diags:
                 ),
             ));
         }
+    }
+}
+
+/// GH #1530 step 0: a struct field's `indexed_by <field>` makes it a wire
+/// map (spec/api.md § Codecs), the value-level projection of
+/// `@form(hashmap)`'s slot clause, with the slot clause's rules: the field
+/// is a `bounded[T; N]`, `T` a user-declared struct, and `<field>` a
+/// `String` field of it. Any other shape is refused at the clause.
+fn check_wire_maps(programs: &[&Program], diags: &mut Vec<Diag>) {
+    let mut types: std::collections::HashMap<String, &TypeDecl> = std::collections::HashMap::new();
+    for p in programs {
+        walk_decls(&p.items, &mut |item| {
+            if let TopDecl::Type(t) = item {
+                types.insert(t.name.name.clone(), t);
+            }
+        });
+    }
+    for p in programs {
+        walk_decls(&p.items, &mut |item| {
+            let TopDecl::Type(t) = item else { return };
+            let TypeDeclBody::Struct(fields) = &t.body else { return };
+            for f in fields {
+                let Some(key) = &f.indexed_by else { continue };
+                let at = format!("`indexed_by` on `{}.{}`", t.name.name, f.name.name);
+                let TypeExpr::Bounded { elem, .. } = &f.ty else {
+                    diags.push(Diag::ty(
+                        key.span,
+                        format!(
+                            "{at}: the field is `{}`, not a `bounded[T; N]`: `indexed_by` keys a bounded list of \
+                             records by one of their fields",
+                            crate::surfaces::type_text(&f.ty)
+                        ),
+                    ));
+                    continue;
+                };
+                let elem_name = match elem.as_ref() {
+                    TypeExpr::Named { path, generic_args, .. } if path.segments.len() == 1 && generic_args.is_empty() => {
+                        path.segments[0].name.clone()
+                    }
+                    other => {
+                        diags.push(Diag::ty(
+                            key.span,
+                            format!(
+                                "{at}: the element type `{}` must be a user-declared struct (so the `indexed_by` \
+                                 field can resolve to a typed key); got a primitive, qualified path, or composite type",
+                                crate::surfaces::type_text(other)
+                            ),
+                        ));
+                        continue;
+                    }
+                };
+                let elem_fields = match types.get(&elem_name).map(|td| &td.body) {
+                    Some(TypeDeclBody::Struct(fs)) => fs,
+                    Some(_) | None => {
+                        diags.push(Diag::ty(
+                            key.span,
+                            format!(
+                                "{at}: the element type `{elem_name}` is no struct; the element must be a struct so \
+                                 `indexed_by` can resolve to a typed key field"
+                            ),
+                        ));
+                        continue;
+                    }
+                };
+                match elem_fields.iter().find(|g| g.name.name == key.name) {
+                    None => diags.push(Diag::ty(
+                        key.span,
+                        format!(
+                            "{at}: the element type `{elem_name}` has no field `{}`; the `indexed_by` field must \
+                             exist on the element struct",
+                            key.name
+                        ),
+                    )),
+                    Some(g) if !matches!(g.ty, TypeExpr::Primitive(PrimType::String, _)) => diags.push(Diag::ty(
+                        key.span,
+                        format!(
+                            "{at}: key `{elem_name}.{}` is a `{}`: a wire map's key is a `String` (it is the \
+                             object's key on the JSON wire); key the element by one",
+                            key.name,
+                            crate::surfaces::type_text(&g.ty)
+                        ),
+                    )),
+                    Some(_) => {}
+                }
+            }
+        });
     }
 }
 

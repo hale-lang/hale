@@ -389,3 +389,45 @@ locus Board {
         vec!["rpc `Board::shapes`: its response `Shapes` has a field `all: bounded[Shape; 2]`, which the JSON codec does not carry"]
     );
 }
+
+/// The `indexed_by` errors a program draws.
+fn map_errors(src: &str) -> Vec<String> {
+    let program = hale_syntax::parse_source(src).unwrap_or_else(|d| panic!("parse: {:?}", d[0].message));
+    let snap = Snapshot::from_program(program, Vec::new(), Config::check(false, false)).ok().expect("a snapshot");
+    let diags = match snap.demand_check() {
+        Ok(c) => c.diags.clone(),
+        Err(b) => b.because.clone(),
+    };
+    diags.iter().filter(|d| d.is_error() && d.message.starts_with("`indexed_by`")).map(|d| d.message.clone()).collect()
+}
+
+/// A wire map (`bounded[T; N] indexed_by <key>`, spec/api.md § Codecs) has
+/// the hashmap slot clause's rules: a bounded list, of a user-declared
+/// struct, keyed by a `String` field of it; each other shape is refused at
+/// the clause.
+#[test]
+fn indexed_by_keys_a_bounded_list_of_records_by_a_string_field() {
+    let decls = "
+type Check { name: String; n: Int; }
+type Ok1 { checks: bounded[Check; 4] indexed_by name; }
+fn main() { }
+";
+    assert!(map_errors(decls).is_empty(), "a bounded list of records keyed by a String field: {:?}", map_errors(decls));
+    let refused = |field: &str| map_errors(&format!("type Check {{ name: String; n: Int; }}\ntype Bad {{ {field} }}\nfn main() {{ }}\n"));
+    assert_eq!(
+        refused("checks: [Check; 4] indexed_by name;"),
+        vec!["`indexed_by` on `Bad.checks`: the field is `[Check; 4]`, not a `bounded[T; N]`: `indexed_by` keys a bounded list of records by one of their fields"]
+    );
+    assert_eq!(
+        refused("names: bounded[String; 4] indexed_by name;"),
+        vec!["`indexed_by` on `Bad.names`: the element type `String` must be a user-declared struct (so the `indexed_by` field can resolve to a typed key); got a primitive, qualified path, or composite type"]
+    );
+    assert_eq!(
+        refused("checks: bounded[Check; 4] indexed_by nam;"),
+        vec!["`indexed_by` on `Bad.checks`: the element type `Check` has no field `nam`; the `indexed_by` field must exist on the element struct"]
+    );
+    assert_eq!(
+        refused("checks: bounded[Check; 4] indexed_by n;"),
+        vec!["`indexed_by` on `Bad.checks`: key `Check.n` is a `Int`: a wire map's key is a `String` (it is the object's key on the JSON wire); key the element by one"]
+    );
+}

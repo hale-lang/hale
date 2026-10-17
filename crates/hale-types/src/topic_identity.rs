@@ -563,9 +563,21 @@ impl<'a> Shapes<'a> {
     /// rendered, outermost first.
     fn contract_top(&self, te: &TypeExpr, stack: &mut Vec<String>) -> String {
         if let Some(fields) = self.struct_fields(te, true) {
+            // a wire map's key is part of its shape (`<field>:<tag>@<key>`):
+            // it crosses as an object keyed by the key, not as a list
+            let keys: BTreeMap<&str, &str> = match Self::bare_name(te).and_then(|n| self.types.get(n)).map(|td| &td.body) {
+                Some(TypeDeclBody::Struct(fs)) => fs
+                    .iter()
+                    .filter_map(|f| f.indexed_by.as_ref().map(|k| (f.name.name.as_str(), k.name.as_str())))
+                    .collect(),
+                _ => BTreeMap::new(),
+            };
             return fields
                 .iter()
-                .map(|(name, ty)| format!("{name}:{}", self.contract_tag(ty, stack)))
+                .map(|(name, ty)| match keys.get(name.as_str()) {
+                    Some(k) => format!("{name}:{}@{k}", self.contract_tag(ty, stack)),
+                    None => format!("{name}:{}", self.contract_tag(ty, stack)),
+                })
                 .collect::<Vec<_>>()
                 .join(";");
         }

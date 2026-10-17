@@ -191,7 +191,10 @@ fn type_label(doc: &Value, schema: &Value) -> String {
                 _ => format!("[{item}]"),
             }
         }
-        Some("object") => "{record}".to_string(),
+        Some("object") => match schema.get("x-hale-key").and_then(Value::as_str) {
+            Some(k) => format!("{{map by {k}}}"),
+            None => "{record}".to_string(),
+        },
         _ => "JSON".to_string(),
     };
     match (schema.get("x-hale-type").and_then(Value::as_str), schema.get("x-hale-unit").and_then(Value::as_str)) {
@@ -467,6 +470,15 @@ fn check_value(doc: &Value, path: &str, schema: &Value, v: &Value) -> Result<(),
                 Some(item) => items.iter().enumerate().try_for_each(|(i, x)| check_value(doc, &format!("{path}[{i}]"), item, x)),
                 None => Ok(()),
             }
+        }
+        // a wire map: every value fits the value schema, no more than its bound
+        Some("object") if resolved.get("additionalProperties").is_some_and(Value::is_object) => {
+            let Some(obj) = v.as_object() else { return Err(misfit("not an object")) };
+            if let Some(hi) = resolved.get("maxProperties").and_then(Value::as_u64).filter(|hi| obj.len() as u64 > *hi) {
+                return Err(misfit(&format!("{} entries, more than the {hi} the map holds", obj.len())));
+            }
+            let value = &resolved["additionalProperties"];
+            obj.iter().try_for_each(|(k, x)| check_value(doc, &format!("{path}.{k}"), value, x))
         }
         Some("object") => {
             let Some(obj) = v.as_object() else { return Err(misfit("not a record")) };
