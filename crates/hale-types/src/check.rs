@@ -2624,82 +2624,39 @@ const HOT_SELF_REPLACE: &str = "hot-path store: whole-struct replace of a \
      (`self.field.x = v`), or keep the replace if \
      most fields genuinely change.";
 
-/// GH #402: does `callee` name a free fn whose return type is a locus?
+/// GH #402: does the call reach a free fn whose return type is a locus?
 /// Returns `(display spelling, locus name)`.
 ///
 /// Factories are how loci get built once construction is factored out
 /// — m90 forbids a method returning a locus, so a free fn is the only
 /// shape available — which is precisely why the literal-only lint had
 /// a hole here.
-fn hot_factory_locus(
-    callee: &crate::alloc_summary::CallSpelling,
-    top: &TopScope,
-) -> Option<(String, String)> {
-    use crate::alloc_summary::CallSpelling;
-    let (disp, sym) = match callee {
-        CallSpelling::Ident(name) => (name.clone(), top.lookup(name)?),
-        CallSpelling::Path(path) => {
-            let segs: Vec<&str> = path.split("::").collect();
-            let disp = path.clone();
-            // An imported seed's fn is merged under a MANGLED name
-            // (`__lib_<id>_<stem>_<fn>`) while the call site keeps
-            // its author spelling (`lb::make`), so neither the
-            // joined form nor the bare tail resolves. Fall back to
-            // scanning for the mangled spelling.
-            //
-            // Two seeds can export the same tail name, and this
-            // layer has no alias table to tell them apart (the same
-            // limitation `topic_tail` documents). A lint must not
-            // invent a finding from an ambiguity, so a tail that
-            // matches candidates DISAGREEING about whether they
-            // return a locus is dropped.
-            let tail = *segs.last()?;
-            let sym = top.lookup(&disp).or_else(|| top.lookup(tail));
-            match sym {
-                Some(sym) => (disp, sym),
-                None => {
-                    let mut hit: Option<&TopSymbol> = None;
-                    let (mut factories, mut others) = (0usize, 0usize);
-                    for (k, v) in &top.symbols {
-                        let matches_tail = k
-                            .strip_prefix("__lib_")
-                            .is_some_and(|r| {
-                                r.rsplit('_').next() == Some(tail)
-                            });
-                        if !matches_tail {
-                            continue;
-                        }
-                        let is_factory = matches!(v, TopSymbol::Fn(sig)
-                            if matches!(&sig.ret, Ty::Named(n)
-                                if matches!(
-                                    top.lookup(n),
-                                    Some(TopSymbol::Locus(_))
-                                )));
-                        if is_factory {
-                            hit = Some(v);
-                            factories += 1;
-                        } else {
-                            others += 1;
-                        }
-                    }
-                    // Ambiguous either way: two seeds exporting a
-                    // locus factory under this tail, or one that does
-                    // and one that doesn't. Counting BOTH kinds
-                    // rather than short-circuiting keeps the verdict
-                    // independent of `symbols` iteration order — a
-                    // non-factory seen BEFORE the factory has to
-                    // poison the tail exactly as one seen after it
-                    // does.
-                    if factories != 1 || others > 0 {
-                        return None;
-                    }
-                    (disp, hit?)
-                }
-            }
-        }
+///
+/// The callee is the declaration the summary resolved the call to
+/// (F.40: a name is bound once, by the snapshot), not a name matched
+/// against the scope. An imported seed's fn is merged under a mangled
+/// name and the summary resolves `alias::make` to it; a call it leaves
+/// unresolved (a stdlib path, a builtin) reaches no fn of the program.
+/// The lint used to match a path's last segment against the tail of
+/// every mangled name, split at `_`, so `std::env::arg` took an
+/// imported `one_arg` returning a locus for its callee and every
+/// `std::env::arg(i)` in a loop was a hot-path allocation of that
+/// locus. A call through a function value is left out, as it was.
+fn hot_factory_locus(c: &crate::alloc_summary::CallEdge, top: &TopScope) -> Option<(String, String)> {
+    use crate::alloc_summary::{CallSpelling, Callee};
+    let disp = match &c.spelling {
+        CallSpelling::Ident(name) => name.clone(),
+        CallSpelling::Path(path) => path.clone(),
         _ => return None,
     };
-    let TopSymbol::Fn(sig) = sym else { return None };
+    if c.via_value.is_some() || c.via_local.is_some() {
+        return None;
+    }
+    let Callee::Resolved(key) = &c.callee else { return None };
+    if key.locus.is_some() {
+        return None;
+    }
+    let TopSymbol::Fn(sig) = top.lookup(&key.fn_name)? else { return None };
     let Ty::Named(ret) = &sig.ret else { return None };
     match top.lookup(ret) {
         Some(TopSymbol::Locus(_)) => Some((disp, ret.clone())),
@@ -2844,7 +2801,7 @@ fn hot_path_findings<'s>(
         }
         for c in &f.calls {
             if let Some(stmt) = c.let_span.filter(|_| c.in_loop || handler) {
-                if let Some((fn_disp, locus)) = hot_factory_locus(&c.spelling, top) {
+                if let Some((fn_disp, locus)) = hot_factory_locus(c, top) {
                     found.push((stmt, hot_factory_message(&fn_disp, &locus, c.in_loop)));
                 }
             }

@@ -221,6 +221,9 @@ These are advisory warnings, not build failures:
   everywhere. Only the **`let`-bound** form warns: an unbound factory
   result is reclaimed at the statement, which is why "drop the binding
   if you're only passing the value on" is one of the suggested fixes.
+  The factory is the function the call reaches, imported seeds'
+  included (`mat::zeros` through its alias), so a function of yours
+  never stands in for a standard library call, whatever its name.
 
   A `module { … }` hides none of this. A module is a namespace, not an
   analysis boundary, so a fn or a locus method declared inside one —

@@ -1,5 +1,5 @@
-/// A locus factory. `build` here returns a locus; the same tail name
-/// in `hot-factory-ambig` does not.
+/// A locus factory. `build` here returns a locus; the same name in
+/// `hot-factory-ambig` does not.
 locus Matrix {
     params { n: Int = 0; }
 }
@@ -10,6 +10,13 @@ fn build(n: Int) -> Matrix {
 }
 
 fn zeros(n: Int) -> Matrix {
+    let m = Matrix { n: n };
+    return m;
+}
+
+/// Its name ends as a stdlib fn's does (`std::env::arg`): a call of that
+/// fn is never a call of this one.
+fn one_arg(n: Int) -> Matrix {
     let m = Matrix { n: n };
     return m;
 }
