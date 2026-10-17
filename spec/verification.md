@@ -1874,8 +1874,11 @@ assume the others in a build:
     calls into imported seeds and into the stdlib's Hale-source bodies
     are followed, so a site reached unboundedly through them (a stdlib
     loop the program starts that dispatches to its handler through an
-    interface) is reported; a stdlib loop the program never starts
-    invokes nothing. Warnings print but
+    interface) is reported; a stdlib body the program never reaches
+    runs nothing: it invokes nothing, passes nothing to a parameter
+    (a call it makes neither taints a method of the name nor any fn's
+    parameters), seeds no long-lived frame and consumes no returned
+    value. Warnings print but
     never fail the build. **`--no-warn-unbounded-alloc`** is the opt-out;
     `--warn-unbounded-alloc` is accepted-and-ignored (the former opt-in
     spelling).

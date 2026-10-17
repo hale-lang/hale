@@ -355,7 +355,10 @@ fn the_stdlib_holds_to_the_law() {
             .spawn_scoped(s, move || {
                 let snap =
                     Snapshot::load(&path, LoadMode::WholeSeed, &Disk, Config::check(false, false)).ok().expect("loads");
-                let summary = snap.demand_alloc_summary().expect("summarized");
+                // Beside the whole copy: the check's summary holds the
+                // copy's rows only where the program reaches them.
+                let views = snap.demand_owned_views().expect("viewed");
+                let summary = &hale_types::alloc_summary::derive_alloc_summary_over(&snap.bundle(), views);
                 let decls = fn_decl_rows(&[]);
                 let may = may_violate(summary, &decls);
                 let (mut refused, mut linted, mut declared) = (Vec::new(), Vec::new(), Vec::new());

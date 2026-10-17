@@ -151,7 +151,18 @@ fn over_target<T: Send>(target: &str, f: impl FnOnce(&Snapshot, &AllocSummary) -
     })
 }
 
-/// [`over_target`] with the summary as the snapshot built it.
+/// The effect rows over the summary beside the whole stdlib copy
+/// ([`over_target_as_built`]'s).
+fn whole_effects(snap: &Snapshot) -> hale_types::effect_rows::EffectRows {
+    let views = snap.demand_owned_views().expect("the owned-view column");
+    let summary = hale_types::alloc_summary::derive_alloc_summary_over(&snap.bundle(), views);
+    derive_effect_rows(&snap.bundle(), snap.demand_scope().expect("the scope"), Arc::new(summary))
+}
+
+/// [`over_target`] with the summary beside the whole stdlib copy, as the
+/// snapshot's walk and owned-view column give it: the corrections pinned
+/// here are of the copy's rows too, which the check's summary holds only
+/// where the program reaches them.
 fn over_target_as_built<T: Send>(target: &str, f: impl FnOnce(&Snapshot, &AllocSummary) -> T + Send) -> Option<T> {
     let path = root().join(target);
     std::thread::scope(|s| {
@@ -160,8 +171,10 @@ fn over_target_as_built<T: Send>(target: &str, f: impl FnOnce(&Snapshot, &AllocS
             .spawn_scoped(s, move || {
                 let config = Config::check(path.is_dir(), false);
                 let snap = Snapshot::load(&path, LoadMode::WholeSeed, &Disk, config).ok()?;
-                let summary = snap.demand_alloc_summary().ok()?;
-                Some(f(&snap, summary))
+                snap.demand_alloc_summary().ok()?;
+                let views = snap.demand_owned_views().ok()?;
+                let summary = hale_types::alloc_summary::derive_alloc_summary_over(&snap.bundle(), views);
+                Some(f(&snap, &summary))
             })
             .unwrap()
             .join()
@@ -317,7 +330,7 @@ fn own_scope_let_block_scope_test() {
         // fn's effects do.
         let bundle = snap.bundle();
         let top = snap.demand_scope().expect("the scope");
-        let rows_now = snap.demand_effects().expect("the effect rows");
+        let rows_now = &whole_effects(snap);
         let rows_old = derive_effect_rows(&bundle, top, Arc::new(old));
         let moved: Vec<String> = rows_now
             .rows
@@ -947,7 +960,7 @@ fn module_bodies_91_module_decls() {
                 "# 10 fns, 3 entry points, 1 invoked-unboundedly".to_string()
             )
         );
-        let rows_now = snap.demand_effects().expect("the effect rows");
+        let rows_now = &whole_effects(snap);
         let rows_old = derive_effect_rows(&bundle, snap.demand_scope().expect("the scope"), Arc::new(old));
         let mut moved = Vec::new();
         for (k, r) in &rows_now.rows {
