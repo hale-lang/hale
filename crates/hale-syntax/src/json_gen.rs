@@ -2195,6 +2195,9 @@ fn generate_enum_pb_src(e: &JsonEnum) -> String {
     b.push_str("    let mut __wire0 = 0;\n");
     b.push_str("    let mut __ws = 0;\n");
     b.push_str("    let mut __we = 0;\n");
+    // the payload of a message-valued member: its occurrences merged (their
+    // contents concatenated, which is the merge) while the member repeats
+    b.push_str("    let mut __acc = std::bytes::from_string(\"\");\n");
     b.push_str("    while __p < __n {\n");
     b.push_str("        let __te = __api_pb_vend(__b, __p);\n");
     b.push_str(&format!("        if __te < 0 {{ {bad} }}\n"));
@@ -2204,6 +2207,24 @@ fn generate_enum_pb_src(e: &JsonEnum) -> String {
     b.push_str("        let __e = __api_pb_skip(__b, __te, __wire);\n");
     b.push_str(&format!("        if __e < 0 {{ {bad} }}\n"));
     b.push_str(&format!("        if __no >= 1 && __no <= {} {{\n", e.variants.len()));
+    // the members whose value is a message: a record, or several values
+    let merged: Vec<String> = e
+        .variants
+        .iter()
+        .enumerate()
+        .filter(|(_, (_, values))| values.len() > 1 || matches!(values.as_slice(), [(Elem::Nested(_) | Elem::Enum { unit_only: false, .. }, _)]))
+        .map(|(i, _)| format!("__no == {}", i + 1))
+        .collect();
+    let merged = if merged.is_empty() { "false".to_string() } else { merged.join(" || ") };
+    b.push_str("            if __wire == 2 {\n");
+    b.push_str("                let __le = __api_pb_vend(__b, __te);\n");
+    b.push_str("                let __ll = __api_pb_vval(__b, __te, __le);\n");
+    b.push_str(&format!("                if __le < 0 || __ll < 0 || __le + __ll > __e {{ {bad} }}\n"));
+    b.push_str("                let __pl = std::bytes::slice(__b, __le, __le + __ll);\n");
+    b.push_str(&format!(
+        "                if __no == __which && __wire0 == 2 && ({merged}) {{ __acc = std::bytes::concat(__acc, __pl); }} else {{ __acc = __pl; }}\n"
+    ));
+    b.push_str("            }\n");
     b.push_str("            __which = __no;\n            __wire0 = __wire;\n            __ws = __te;\n            __we = __e;\n        }\n");
     b.push_str("        __p = __e;\n");
     b.push_str("    }\n");
@@ -2219,19 +2240,25 @@ fn generate_enum_pb_src(e: &JsonEnum) -> String {
             1 => {
                 let (elem, _) = &values[0];
                 b.push_str(&format!("        if __wire0 != {} {{ {wrong} }}\n", pb_elem_wire(elem)));
-                b.push_str("        __p = __ws;\n");
-                b.push_str(&pb_elem_read(elem, RUNTIME_KEY, "__we", bad, "        "));
-                b.push_str(&format!("        return {n}::{v}(__ev);\n"));
+                // a message value: its merged occurrences
+                match elem {
+                    Elem::Nested(tn) => {
+                        b.push_str(&format!("        return {n}::{v}(__api_pb_decode_{tn}(__acc) or raise);\n"));
+                    }
+                    Elem::Enum { name, unit_only: false } => {
+                        b.push_str(&format!("        return {n}::{v}(__api_pb_decode_{name}(__acc, __k) or raise);\n"));
+                    }
+                    _ => {
+                        b.push_str("        __p = __ws;\n");
+                        b.push_str(&pb_elem_read(elem, RUNTIME_KEY, "__we", bad, "        "));
+                        b.push_str(&format!("        return {n}::{v}(__ev);\n"));
+                    }
+                }
             }
             k => {
                 let rec = variant_record(n, v);
                 b.push_str(&format!("        if __wire0 != 2 {{ {wrong} }}\n"));
-                b.push_str("        let __le = __api_pb_vend(__b, __ws);\n");
-                b.push_str("        let __ll = __api_pb_vval(__b, __ws, __le);\n");
-                b.push_str(&format!("        if __le < 0 || __ll < 0 || __le + __ll > __we {{ {wrong} }}\n"));
-                b.push_str(&format!(
-                    "        let __r = __api_pb_decode_{rec}(std::bytes::slice(__b, __le, __le + __ll)) or raise;\n"
-                ));
+                b.push_str(&format!("        let __r = __api_pb_decode_{rec}(__acc) or raise;\n"));
                 let args: Vec<String> = (0..k).map(|i| format!("__r.v{i}")).collect();
                 b.push_str(&format!("        return {n}::{v}({});\n", args.join(", ")));
             }
@@ -2259,17 +2286,23 @@ fn variant_records(e: &JsonEnum) -> Vec<(String, JsonType)> {
             .iter()
             .enumerate()
             .map(|(i, (elem, _))| {
-                let (kind, conv) = match elem {
-                    Elem::Scalar(s, c) => (FieldKind::Scalar(*s), c.clone()),
-                    Elem::Time => (FieldKind::Time, None),
-                    Elem::Nested(tn) => (FieldKind::Nested(tn.clone()), None),
-                    Elem::Enum { name, unit_only } => (FieldKind::Enum { name: name.clone(), unit_only: *unit_only }, None),
+                // the `.proto` declares these plain proto3 fields (implicit
+                // presence: a client leaves a zero out), so an absent one is
+                // its proto3 zero, never `missing_field`; a record value is a
+                // message, whose presence is explicit
+                let (kind, conv, default_src) = match elem {
+                    Elem::Scalar(s, c) => (FieldKind::Scalar(*s), c.clone(), Some(s.zero().to_string())),
+                    Elem::Time => (FieldKind::Time, None, Some(EPOCH.to_string())),
+                    Elem::Nested(tn) => (FieldKind::Nested(tn.clone()), None, None),
+                    Elem::Enum { name, unit_only } => {
+                        (FieldKind::Enum { name: name.clone(), unit_only: *unit_only }, None, unit_only.then(|| "0".to_string()))
+                    }
                 };
                 JsonField {
                     name: format!("v{i}"),
                     key: format!("v{i}"),
                     kind,
-                    default_src: None,
+                    default_src,
                     conv,
                     pb_no: i as u32 + 1,
                     presence: Presence::No,

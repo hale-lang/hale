@@ -590,6 +590,12 @@ fn an_enum_is_a_proto3_enum_or_a_oneof_that_prost_reads_and_writes() {
             PHolder { s: Some(PStatus::Gone as i32), shape: Some(PShape { value: Some(PShapeValue::Rect(PRect { v0: 2, v1: -3 })) }), many: vec![1, 0, 2] },
             r#"{"s":"Gone","shape":{"Rect":[2,-3]},"many":["Down","Up","Gone"]}"#,
         ),
+        // prost leaves a zero out of the values' message (proto3's implicit
+        // presence): `Rect(0, 0)` is the member with an empty message
+        (
+            PHolder { s: Some(PStatus::Up as i32), shape: Some(PShape { value: Some(PShapeValue::Rect(PRect { v0: 0, v1: 0 })) }), many: vec![] },
+            r#"{"s":"Up","shape":{"Rect":[0,0]},"many":[]}"#,
+        ),
         (
             PHolder { s: Some(PStatus::Up as i32), shape: Some(PShape { value: Some(PShapeValue::Empty(true)) }), many: vec![] },
             r#"{"s":"Up","shape":"Empty","many":[]}"#,

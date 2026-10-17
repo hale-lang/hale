@@ -18,17 +18,23 @@ type Inner { a: Int; }
 type Status = enum { Up, Down, Gone };
 type Shape = enum { Empty, Circle(Float), Tag(String), Rect(Int, Int), Boxed(Inner), At(Time), Mood(Status), Cost(Money) };
 type Holder { s: Status; shape: Shape; many: bounded[Status; 3]; }
+// the shape of the review's bytes (#1604): a record member, and a variant of
+// several values
+type Point { x: Int = 0; y: Int = 0; }
+type Choice = enum { Empty, Rect(Int, Int), PointValue(Point) };
 
 api PbEnum {
     rpc Probe::holder;
     rpc Probe::shape;
     rpc Probe::status;
+    rpc Probe::choice;
 }
 
 locus Probe {
     fn holder(h: Holder) -> Holder { return h; }
     fn shape(s: Shape) -> Shape { return s; }
     fn status(s: Status) -> Status { return s; }
+    fn choice(c: Choice) -> Choice { return c; }
 }
 
 locus Tokens {
@@ -76,7 +82,24 @@ main locus Desk {
         std::test::assert(false, what + ": it decoded " + __api_encode_Shape(got));
     }
 
+    fn choice_reads(bytes: Bytes, json: String, what: String) {
+        let v = __api_pb_decode_Choice(bytes, "choice") or {
+            std::test::assert(false, what + ": " + err.kind + " " + err.field);
+            return;
+        };
+        std::test::assert_eq_str(__api_encode_Choice(v), json, what);
+    }
+
     run() {
+        // ---- a client's encodings (review of #1604) ----
+        // proto3 leaves a zero out: `Rect(0, 0)` is the member with an empty message
+        self.choice_reads(b"\x12\x00", "{\"Rect\":[0,0]}", "an omitted zero is the zero");
+        self.choice_reads(b"\x12\x02\x10\x05", "{\"Rect\":[0,5]}", "one omitted zero");
+        // a message member sent twice is merged, as proto3 merges a oneof member
+        self.choice_reads(b"\x1a\x02\x08\x02\x1a\x02\x10\x03", "{\"PointValue\":{\"x\":2,\"y\":3}}", "a repeated message member merges");
+        self.choice_reads(b"\x12\x02\x08\x07\x12\x02\x10\x08", "{\"Rect\":[7,8]}", "a repeated several-values member merges");
+        self.choice_reads(b"\x12\x02\x08\x07\x1a\x02\x10\x03\x12\x02\x10\x08", "{\"Rect\":[0,8]}", "a switch of member clears what came before");
+
         // ---- every variant, through a record ----
         self.round("{\"s\":\"Up\",\"shape\":\"Empty\",\"many\":[]}", "the first variants, an empty list");
         self.round("{\"s\":\"Gone\",\"shape\":{\"Circle\":-2.5},\"many\":[\"Down\",\"Up\",\"Gone\"]}", "a value, a full list");
