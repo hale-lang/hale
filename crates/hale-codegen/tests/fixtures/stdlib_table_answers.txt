@@ -664,6 +664,7 @@ std::fmt::println | lookup=- | locus=false | effects=- | sig=- | parks=false | h
 std::hex::decode | lookup=hex@2 | locus=false | effects=pure | sig=(Str) -> Bytes ! ParseError | ret_ty=? | or=(Bytes, ParseError) | parks=false | holds=false | unknown=- | suggest=decode
 std::hex::digit | lookup=hex@2 | locus=false | effects=pure | sig=(Int) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=digit
 std::hex::encode | lookup=hex@2 | locus=false | effects=pure | sig=(Bytes) -> Str | ret_ty=String | or=- | parks=false | holds=false | unknown=- | suggest=encode
+std::http::BodyWriter | lookup=http@2 | locus=true | effects=- | sig=- | parks=false | holds=false | unknown=- | suggest=-
 std::http::Client | lookup=http@2 | locus=true | effects=- | sig=- | parks=false | holds=false | unknown=- | suggest=-
 std::http::ClientRequest | lookup=http@2 | locus=true | effects=- | sig=- | parks=false | holds=false | unknown=- | suggest=-
 std::http::ClientResponse | lookup=http@2 | locus=true | effects=- | sig=- | parks=false | holds=false | unknown=- | suggest=-
@@ -680,6 +681,8 @@ std::http::RouteHandler | lookup=http@2 | locus=true | effects=- | sig=- | parks
 std::http::RouteParams | lookup=http@2 | locus=true | effects=- | sig=- | parks=false | holds=false | unknown=- | suggest=-
 std::http::Router | lookup=http@2 | locus=true | effects=- | sig=- | parks=false | holds=false | unknown=- | suggest=-
 std::http::Server | lookup=http@2 | locus=true | effects=- | sig=- | parks=false | holds=false | unknown=- | suggest=-
+std::http::SseEvent | lookup=http@2 | locus=true | effects=- | sig=- | parks=false | holds=false | unknown=- | suggest=-
+std::http::SseWriter | lookup=http@2 | locus=true | effects=- | sig=- | parks=false | holds=false | unknown=- | suggest=-
 std::http::Url | lookup=http@2 | locus=true | effects=- | sig=- | parks=false | holds=false | unknown=- | suggest=-
 std::http::build_context | lookup=http@2 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=build_context
 std::http::get | lookup=http@2 | locus=false | effects=syscall|block | sig=- | parks=true | holds=true | unknown=- | suggest=-

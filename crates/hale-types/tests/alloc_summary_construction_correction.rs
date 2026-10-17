@@ -307,11 +307,14 @@ fn own_scope_let_block_scope_test() {
             // `query_param`'s pair loop decodes through them); 446 since
             // `std::rand::Rng` came (its birth, an entry point, and four
             // methods; `next` invoked unboundedly by `next_int`'s rejection
-            // loop); 447 since `std::crypto::ed25519_keypair`'s body came
+            // loop); 447 since `std::crypto::ed25519_keypair`'s body came;
+            // 458, and one more entry point, since std::http's streamed body
+            // came (`BodyWriter`'s birth, `chunk` and `end`, `SseWriter`'s
+            // `event` and `end`, and six framing helpers)
             changed_lines(&old.render(), &now.render()),
             [
-                "- # 447 fns, 28 entry points, 119 invoked-unboundedly",
-                "+ # 447 fns, 28 entry points, 118 invoked-unboundedly",
+                "- # 458 fns, 29 entry points, 119 invoked-unboundedly",
+                "+ # 458 fns, 29 entry points, 118 invoked-unboundedly",
                 "- call  count loop_depth=0 result=local",
                 "+ call  <unresolved: count> loop_depth=0 result=local",
                 "- call  count loop_depth=0 result=local",

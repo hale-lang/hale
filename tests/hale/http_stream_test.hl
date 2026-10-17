@@ -1,0 +1,170 @@
+// tests/hale/http_stream_test.hl — a streamed response body on
+// `std::http::Server`: chunked transfer encoding through
+// `std::http::BodyWriter`, Server-Sent Events through
+// `std::http::SseWriter`, read back by the `std::http` client (which
+// de-chunks) and as raw bytes off a socket (the framing itself). A
+// handler that builds no writer still answers the Content-Length shape,
+// byte for byte; and a stream held open on an async_io Server does not
+// hold the other connections: a plain request is answered while it is
+// open.
+
+locus Streams {
+    params {
+        plain_served: Bool = false;
+    }
+    fn handle(req: std::http::Request) -> std::http::Response {
+        if req.path == "/chunks" {
+            let w = std::http::BodyWriter { conn_fd: req.conn_fd, content_type: "text/plain" };
+            w.chunk("alpha ") or discard;
+            // an empty chunk sends nothing: it would end the body
+            w.chunk("") or discard;
+            w.chunk(std::str::upper("beta ")) or discard;
+            w.chunk("0123456789abcdef!") or discard;
+            return w.end();
+        }
+        if req.path == "/events" {
+            let w = std::http::SseWriter { conn_fd: req.conn_fd, headers: "X-Stream: on" };
+            w.event(std::http::SseEvent { data: "one" }) or discard;
+            w.event(std::http::SseEvent { event: "tick", id: "7", retry: 1500ms, data: "two\r\nlines" }) or discard;
+            w.event(std::http::SseEvent { event: "bad\nname", data: "" }) or discard;
+            return w.end();
+        }
+        if req.path == "/held" {
+            // open, then wait for a plain request to be answered meanwhile
+            let w = std::http::BodyWriter { conn_fd: req.conn_fd };
+            w.chunk("open;") or discard;
+            let mut i = 0;
+            while !self.plain_served && i < 500 {
+                std::time::sleep(10ms);
+                i = i + 1;
+            }
+            if self.plain_served {
+                w.chunk("after-plain") or discard;
+            } else {
+                w.chunk("stalled") or discard;
+            }
+            return w.end();
+        }
+        if req.path == "/mark" {
+            self.plain_served = true;
+        }
+        return std::http::Response { status: 200, body: "plain" };
+    }
+}
+
+// Send `request` on a fresh connection and read until the server closes.
+fn raw_exchange(port: Int, request: String) -> String {
+    let fd = std::io::tcp::connect("127.0.0.1", port) or - 1;
+    if fd < 0 {
+        return "no connection";
+    }
+    std::io::tcp::__set_recv_timeout_ns(fd, 5000000000);
+    let s = std::io::tcp::Stream { conn_fd: fd };
+    s.send(request) or discard;
+    let mut got = "";
+    let mut i = 0;
+    while i < 1000 {
+        let chunk = s.recv(4096) or "";
+        if len(chunk) == 0 {
+            break;
+        }
+        got = got + chunk;
+        i = i + 1;
+    }
+    return got;
+}
+
+fn get(port: Int, path: String) -> String {
+    return raw_exchange(port, "GET " + path + " HTTP/1.1\r\nHost: t\r\n\r\n");
+}
+
+locus Held {
+    params {
+        s: std::io::tcp::Stream = std::io::tcp::Stream { conn_fd: -1, owns_fd: false };
+    }
+    fn open(port: Int) -> Bool {
+        let fd = std::io::tcp::connect("127.0.0.1", port) or - 1;
+        if fd < 0 {
+            return false;
+        }
+        std::io::tcp::__set_recv_timeout_ns(fd, 10000000000);
+        self.s = std::io::tcp::Stream { conn_fd: fd, owns_fd: true };
+        self.s.send("GET /held HTTP/1.1\r\nHost: t\r\n\r\n") or discard;
+        return true;
+    }
+    fn rest() -> String {
+        let mut got = "";
+        let mut i = 0;
+        while i < 1000 {
+            let chunk = self.s.recv(4096) or "";
+            if len(chunk) == 0 {
+                break;
+            }
+            got = got + chunk;
+            i = i + 1;
+        }
+        return got;
+    }
+}
+
+main locus App {
+    params {
+        srv: std::http::Server = std::http::Server { port: 0, handler: Streams { } };
+        held: Held = Held { };
+    }
+    placement { srv: cooperative(pool = io) where async_io; }
+    run() {
+        let port = std::io::tcp::__local_port(self.srv.listen_fd);
+        std::test::assert(port > 0, "the server is bound");
+        let base = "http://127.0.0.1:" + to_string(port);
+
+        // ---- chunks, through the client: de-chunked to the payload
+        let r = std::http::get(base + "/chunks") or std::http::ClientResponse { status: -1, headers: "", body: b"" };
+        std::test::assert_eq_int(r.status, 200, "the stream's status");
+        std::test::assert_eq_str(std::str::from_bytes(r.body), "alpha BETA 0123456789abcdef!", "the chunks, de-chunked");
+
+        // ---- chunks, on the wire: the head, one chunk per call, the last chunk
+        std::test::assert_eq_str(
+            get(port, "/chunks"),
+            "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n"
+                + "6\r\nalpha \r\n5\r\nBETA \r\n11\r\n0123456789abcdef!\r\n0\r\n\r\n",
+            "the chunked wire bytes");
+
+        // ---- events, through the client
+        let e = std::http::get(base + "/events") or std::http::ClientResponse { status: -1, headers: "", body: b"" };
+        std::test::assert_eq_int(e.status, 200, "the event stream's status");
+        std::test::assert_eq_str(
+            std::str::from_bytes(e.body),
+            "data: one\n\nevent: tick\nid: 7\nretry: 1500\ndata: two\ndata: lines\n\nevent: badname\ndata: \n\n",
+            "the events, de-chunked");
+
+        // ---- events, on the wire: the SSE head, one chunk per event
+        let ev = get(port, "/events");
+        std::test::assert(std::str::starts_with(ev,
+            "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n"
+                + "Cache-Control: no-cache\r\nX-Stream: on\r\n\r\n"), "the event stream's head: " + ev);
+        std::test::assert(std::str::contains(ev, "\r\nb\r\ndata: one\n\n\r\n"), "the first event is one chunk: " + ev);
+        std::test::assert(std::str::ends_with(ev, "\r\n0\r\n\r\n"), "the stream ends with the last chunk: " + ev);
+
+        // ---- a handler that builds no writer: today's bytes exactly
+        std::test::assert_eq_str(
+            get(port, "/plain"),
+            "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 5\r\nConnection: close\r\n\r\nplain",
+            "a plain response is unchanged");
+
+        // ---- a held stream does not hold the server: a plain request is
+        // answered while it is open, and the stream sees it
+        std::test::assert(self.held.open(port), "the held stream connects");
+        std::time::sleep(50ms);
+        std::test::assert_eq_str(std::str::from_bytes((std::http::get(base + "/mark") or r).body), "plain", "a plain request while a stream is open");
+        let held = self.held.rest();
+        std::test::assert(std::str::contains(held, "\r\n5\r\nopen;\r\n"), "the held stream's first chunk: " + held);
+        std::test::assert(std::str::contains(held, "\r\nb\r\nafter-plain\r\n0\r\n\r\n"), "the held stream outlived the plain request: " + held);
+
+        std::io::tcp::stop(self.srv.listener);
+    }
+}
+
+fn main() {
+    App { };
+}

@@ -24997,6 +24997,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 {
                     return self.lower_binop(*op, lv, rv, &CodegenTy::Duration);
                 }
+                // The other fixed answer: a `Duration` over a `Duration` is
+                // the dimensionless count (`d / 1ms`, the whole milliseconds
+                // in `d`), the one spelling by which a stdlib body turns a
+                // `Duration` back into an `Int` (std::http's SSE `retry:`).
+                if *op == BinOp::Div && lt == CodegenTy::Duration && rt == CodegenTy::Duration {
+                    let (q, _) = self.lower_binop(*op, lv, rv, &CodegenTy::Duration)?;
+                    return Ok((q, CodegenTy::Int));
+                }
                 if lt != rt {
                     return Err(CodegenError::Unsupported(format!(
                         "binary op operands of mixed types {:?} and {:?}",

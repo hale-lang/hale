@@ -348,6 +348,11 @@ pub const PATH_RENAMES: &[(&[&str], &str)] = &[
     (&["std", "http", "Request"], "__StdHttpRequest"),
     (&["std", "http", "Response"], "__StdHttpResponse"),
     (&["std", "http", "Server"], "__StdHttpServer"),
+    // A streamed response body (2026-10-17): chunked, and Server-Sent
+    // Events over it.
+    (&["std", "http", "BodyWriter"], "__StdHttpBodyWriter"),
+    (&["std", "http", "SseWriter"], "__StdHttpSseWriter"),
+    (&["std", "http", "SseEvent"], "__StdHttpSseEvent"),
     // Router battery (promoted from pond/router, 2026-07-17). The
     // free-fn surface (path_param / query_param) routes through
     // this table to its bare implementations in http.hl, same as

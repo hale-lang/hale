@@ -7885,6 +7885,32 @@ dynamic	Cache	on main|unresolved arguments	in the seed
 == tests/hale/http_status_phrase_test.hl
 dynamic	__StdIoTcpStream	on main	in the seed
 
+== tests/hale/http_stream_test.hl
+root	App	the entry
+domain	pool:io	async_io
+hole	App@literal1.srv.conns.handler.handler	reuse `self.handler`
+hole	App@literal1.srv.conns.handler.handler	unresolved declaration `std::http::Handler`
+row	App@literal1	App	main	default
+-- App@literal1.held	Held
+row	~	Held	main	default
+row	~.s	__StdIoTcpStream	main	inherited
+-- App@literal1.srv	__StdHttpServer
+row	~	__StdHttpServer	pool:io	entry	off owner
+row	~.conns	__StdIoTcpConnections	pool:io	inherited
+row	~.conns.flows	__StdIoTcpFlows	pool:io	inherited
+row	~.conns.handler	__StdHttpResponder	pool:io	inherited
+row	~.conns.handler.handler	<hole>	pool:io	inherited
+row	~.handler	Streams	pool:io	inherited
+row	~.relay	__StdIoTcpRelay	pool:io	inherited
+-- dynamic	sites in the seed
+dynamic	__StdHttpBodyWriter	on pool:io
+dynamic	__StdHttpResponder	on pool:io
+dynamic	__StdHttpSseWriter	on pool:io
+dynamic	__StdIoTcpConnFlow	on pool:io
+dynamic	__StdIoTcpConnInline	on pool:io
+dynamic	__StdIoTcpConnections	on pool:io
+dynamic	__StdIoTcpStream	on main|pool:io
+
 == tests/hale/identities_and_ranges_test.hl
 row	Book@main1	Book	main	default
 

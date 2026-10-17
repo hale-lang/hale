@@ -404,6 +404,74 @@ offers only the interface's methods. In `fn serve_one(h: Handler)`,
 promises a `handle` method, not whatever fields the locus behind it
 happens to have.
 
+## Streaming a response
+
+Some answers arrive a piece at a time: a model's tokens, a build's
+log, a feed of events. Instead of collecting the whole body and
+returning it, a handler can *stream* it. It builds a writer on the
+connection, sends pieces as they come, and returns the writer's
+`end()`:
+
+```hale
+locus Countdown {
+    fn handle(req: std::http::Request) -> std::http::Response {
+        let w = std::http::SseWriter { conn_fd: req.conn_fd };
+        let mut n = 3;
+        while n > 0 {
+            w.event(std::http::SseEvent { event: "tick", data: to_string(n) }) or discard;
+            std::time::sleep(1s);
+            n = n - 1;
+        }
+        w.event(std::http::SseEvent { event: "done", data: "liftoff" }) or discard;
+        return w.end();
+    }
+}
+```
+
+`SseWriter` speaks Server-Sent Events, the `text/event-stream`
+format a browser's `EventSource` reads. The moment it is built it
+sends the response's head. Each `event` then goes out as one write,
+so the client has it when the call returns. An `SseEvent` carries
+`data` plus an optional `event` name, an `id` (the client sends it
+back as `Last-Event-ID` when it reconnects) and a `retry` delay
+(`retry: 5s`). A multi-line `data` becomes one `data:` line per
+line, which is what the format requires.
+
+For a plain stream of bytes — newline-delimited JSON, a log tail —
+use `std::http::BodyWriter`. It works the same way, with `chunk`
+instead of `event` and a `content_type` you choose:
+
+```hale,fragment
+let w = std::http::BodyWriter { conn_fd: req.conn_fd, content_type: "application/x-ndjson" };
+w.chunk("{\"step\": 1}\n") or discard;
+w.chunk("{\"step\": 2}\n") or discard;
+return w.end();
+```
+
+Both use HTTP/1.1 chunked transfer encoding underneath. The client
+sees an ordinary response whose body keeps arriving until the server
+says it is finished, and `std::http::get` hands you the whole body,
+de-chunked. You never close anything yourself. When `handle`
+returns, the server ends the body and closes the connection, just as
+it does after any other response.
+
+A `chunk` or `event` fails only when the client has gone away. That
+is your cue to stop and return `w.end()`. Handlers that never build
+a writer are untouched: the server writes exactly the bytes it always
+did.
+
+**Where it runs matters.** A streaming handler holds its connection
+for as long as it streams. Placed on a `where async_io` pool (see
+[Serving many requests at once](#serving-many-requests-at-once)),
+every connection gets its own coroutine. The `sleep` between events
+then parks only this one stream, and the server goes on answering
+everyone else. Anywhere else the server serves one connection at a
+time, so a ten-second stream holds every other request for ten
+seconds. If your clients may stall without hanging up, also set
+`std::io::tcp::set_send_timeout(req.conn_fd, 10s)` before streaming,
+so a send to a client that stopped reading gives up instead of
+waiting forever.
+
 ## Taking over the connection
 
 Some protocols start as HTTP and then stop being HTTP — WebSocket
