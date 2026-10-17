@@ -214,8 +214,8 @@ fn host() {
     // its walk, which resolves no imported type, cannot rule out.
     pinned(
         "host",
-        512,
-        517,
+        519,
+        524,
         "
         GovernanceCli::review_profile  does={syscall,block,time,entropy,env,alloc,secret_use}
         Host::ack_reading  does={publish,alloc}
@@ -259,6 +259,7 @@ fn host() {
         SshTransport::probe  does={syscall,block,alloc}
         admits_here  does={syscall,block,time,env,alloc}
         alive  does={syscall,block,alloc}
+        apply_drops  does={syscall,block,alloc}
         attached_application  does={syscall,block,alloc}
         base_of  does={syscall,block,time,entropy,env,alloc,secret_use}
         body_holder  does={syscall,block,env,alloc}
@@ -268,12 +269,14 @@ fn host() {
         build_cache_touch  does={syscall,block,alloc}
         build_fingerprint  does={syscall,block,env,alloc}
         build_seed_at  does={syscall,block,env,alloc}
+        candidates_migrate_verb  does={syscall,block,alloc}
         checkpoint_here  does={syscall,block,time,entropy,env,alloc,secret_use}
         compose_key  does={alloc}
         compose_sweep  does={syscall,block,alloc}
         definitions_verb  does={syscall,block,alloc}
         descendants  does={syscall,block,alloc}
         draw_secret  does={syscall,block,alloc}
+        drop_here  does={syscall,block,alloc}
         drop_include_line  does={syscall,block,alloc}
         edge_admits_here  does={syscall,block,time,env,alloc}
         exit_code  does={syscall,block,alloc}
@@ -283,16 +286,21 @@ fn host() {
         fill_equipment  does={syscall,block,time,entropy,env,alloc,secret_use}
         genome  does={syscall,block,alloc}
         genome_branch  does={syscall,block,alloc}
+        genome_candidate  does={syscall,block,alloc}
+        genome_candidates  does={syscall,block,alloc}
+        genome_candidates_migrate  does={syscall,block,alloc}
         genome_changed  does={syscall,block,alloc}
         genome_checkout  does={syscall,block,alloc}
         genome_commit  does={syscall,block,alloc}
         genome_default_branch  does={syscall,block,alloc}
         genome_diff  does={syscall,block,alloc}
         genome_fast_forward  does={syscall,block,alloc}
+        genome_fetch_commit  does={syscall,block,alloc}
         genome_fetch_default  does={syscall,block,time,alloc}
         genome_push_branch  does={syscall,block,alloc}
         genome_reset  does={syscall,block,alloc}
         genome_show  does={syscall,block,alloc}
+        genome_uncandidate  does={syscall,block,alloc}
         held_state  does={syscall,block,time,entropy,env,alloc,secret_use}
         host_main  does={syscall,block,time,entropy,env,alloc,secret_use}
         include_names  does={syscall,block,alloc}
