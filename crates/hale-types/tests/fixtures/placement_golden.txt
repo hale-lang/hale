@@ -1573,6 +1573,9 @@ row	Agent@main1	Agent	main	default
 row	~	Sender	main	default
 row	~.l	Listener	main	inherited
 
+== crates/hale-codegen/tests/bounded_collections.rs#9b194cc5
+row	L@main1	L	main	default
+
 == crates/hale-codegen/tests/bounded_receiver_dispatch.rs#c5cdc54f
 row	Tracker@main1	Tracker	main	default
 
