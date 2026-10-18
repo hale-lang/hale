@@ -130,7 +130,7 @@ fn targets() -> Vec<String> {
     push_dir("dna", &|p| {
         p.is_dir()
             && !p.ends_with("tests")
-            && std::fs::read_dir(p).unwrap().any(|f| f.unwrap().path().extension().is_some_and(|x| x == "hl"))
+            && hale_corpus::holds_hl(p)
     });
     // the host's verb program, a seed inside the host's (GH #1490)
     out.push("dna/host/verb".to_string());

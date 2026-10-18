@@ -42,11 +42,7 @@ fn seeds() -> Vec<String> {
         .unwrap()
         .map(|e| e.unwrap().path())
         .filter(|p| p.is_dir() && !p.ends_with("tests"))
-        .filter(|p| {
-            std::fs::read_dir(p)
-                .unwrap()
-                .any(|e| e.unwrap().path().extension().is_some_and(|x| x == "hl"))
-        })
+        .filter(|p| hale_corpus::holds_hl(p))
         .map(|p| p.file_name().unwrap().to_string_lossy().to_string())
         .collect();
     // the host's verb program, a seed inside the host's (GH #1490)
