@@ -2907,3 +2907,54 @@ interface Handler { fn a(x: A) -> String; }
         );
     }
 }
+
+mod default_literal_tests {
+    //! A record literal in a default is held to the rule every record
+    //! literal is: a field with no default of its own is written. A default
+    //! is typed where it is evaluated, and that walk's errors are not the
+    //! caller's, so a literal default that left one out passed the check and
+    //! failed the build ("literal missing field").
+
+    use super::*;
+    use hale_syntax::parse_source;
+
+    fn errors(src: &str) -> Vec<String> {
+        let p = parse_source(src).unwrap_or_else(|d| panic!("parse: {:?}", d[0].message));
+        check_program(&p).into_iter().filter(|d| d.is_error()).map(|d| d.message).collect()
+    }
+
+    const BUDGET: &str = "type BudgetSet { cap: Int; spent: Int = 0; slots: bounded[Int; 4]; }\n";
+
+    #[test]
+    fn a_literal_default_missing_a_field_is_refused_at_the_literal() {
+        let missing = vec!["type `BudgetSet`: missing field `cap`".to_string()];
+        // a record type's field default
+        assert_eq!(errors(&format!("{BUDGET}type Cfg {{ budget: BudgetSet = BudgetSet {{ }}; }}\nfn main() {{ }}\n")), missing);
+        // a fn's parameter default
+        assert_eq!(errors(&format!("{BUDGET}fn f(b: BudgetSet = BudgetSet {{ }}) -> Int {{ return b.cap; }}\nfn main() {{ }}\n")), missing);
+        // a method's
+        assert_eq!(
+            errors(&format!("{BUDGET}locus L {{ fn f(b: BudgetSet = BudgetSet {{ spent: 1 }}) -> Int {{ return b.cap; }} }}\nfn main() {{ }}\n")),
+            missing
+        );
+        // nested inside another literal
+        assert_eq!(
+            errors(&format!("{BUDGET}type Inner {{ b: BudgetSet; }}\ntype Cfg {{ inner: Inner = Inner {{ b: BudgetSet {{ }} }}; }}\nfn main() {{ }}\n")),
+            missing
+        );
+        // a locus's `params` default reports it once, where it is typed
+        assert_eq!(errors(&format!("{BUDGET}locus L {{ params {{ budget: BudgetSet = BudgetSet {{ }}; }} }}\nfn main() {{ }}\n")), missing);
+    }
+
+    #[test]
+    fn a_complete_literal_default_checks() {
+        // every field without a default written; a defaulted and a bounded
+        // field left out
+        assert_eq!(
+            errors(&format!(
+                "{BUDGET}type Cfg {{ budget: BudgetSet = BudgetSet {{ cap: 3 }}; }}\nfn f(b: BudgetSet = BudgetSet {{ cap: 1 }}) -> Int {{ return b.cap; }}\nfn main() {{ }}\n"
+            )),
+            Vec::<String>::new()
+        );
+    }
+}

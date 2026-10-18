@@ -1,0 +1,24 @@
+// tests/hale/literal_default_test.hl — a record literal as a default (a
+// record type's field default, a fn's and a method's parameter default)
+// builds and runs when it writes every field that has no default of its
+// own; one that leaves such a field out is refused by the check
+// (`check_rules::default_literal_tests`), never by the build.
+
+type BudgetSet { cap: Int; spent: Int = 2; slots: bounded[Int; 4]; }
+type Cfg { name: String = "x"; budget: BudgetSet = BudgetSet { cap: 10 }; }
+
+fn cap_of(b: BudgetSet = BudgetSet { cap: 5, spent: 1 }) -> Int { return b.cap + b.spent; }
+
+locus Pool {
+    fn room(b: BudgetSet = BudgetSet { cap: 7 }) -> Int { return b.cap - b.spent; }
+}
+
+fn main() {
+    let c = Cfg { };
+    std::test::assert_eq_int(c.budget.cap, 10, "a field default's literal");
+    std::test::assert_eq_int(c.budget.spent, 2, "and its own field's default");
+    std::test::assert_eq_int(count(c.budget.slots), 0, "and a bounded field, empty");
+    std::test::assert_eq_int(cap_of(), 6, "a fn parameter's default");
+    let p = Pool { };
+    std::test::assert_eq_int(p.room(), 5, "a method parameter's default");
+}

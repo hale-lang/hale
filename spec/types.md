@@ -1520,7 +1520,11 @@ Three init shapes:
   method's or hook's param) is refused at the send, since the scope
   that evaluates it holds none of the declaration's bus ("a publish in
   a default: …; publish from a hook or a method instead"). A method
-  the default calls may publish.
+  the default calls may publish. A record literal written in a default is held to
+  every record literal's rule: it writes each field that has no
+  default of its own, and one that leaves such a field out is refused
+  at the literal ("type `T`: missing field `f`"), in any default, by
+  the check rather than the build.
 - `name: T;` — **required**. The caller MUST supply the field at
   the locus literal site; instantiation without it is a compile
   error. Use for fields where no sensible default exists (e.g.

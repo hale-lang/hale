@@ -842,6 +842,82 @@ fn bounded_return_diags(bundle: &Bundle<'_>, top: &crate::resolve::TopScope) -> 
     out
 }
 
+/// A record literal in a default that leaves out a field with no default
+/// of its own (`budget: BudgetSet = BudgetSet { }` where `BudgetSet` has a
+/// field `cap: Int;`). A default is typed where the literal or call that
+/// leaves it is, and that walk's own errors are not the caller's, so the
+/// literal's missing field reached no diagnostic and the build refused it
+/// ("literal missing field"). Refused at the literal, as anywhere else a
+/// record literal leaves a field out, for the defaults a declaration's
+/// literal does not check itself: a record type's field defaults and a
+/// fn's, method's or hook's param defaults (a locus's `params` defaults are
+/// typed where they are written, and report it there).
+fn literal_default_missing_field_diags(bundle: &Bundle<'_>, top: &crate::resolve::TopScope) -> Vec<Diag> {
+    use crate::listener_window::{visit_expr, Visited};
+    let literals = |e: &Expr, out: &mut Vec<Diag>| {
+        visit_expr(e, &mut |v| {
+            let Visited::Expr(Expr::Struct { path, inits, span, .. }) = v else { return };
+            let [seg] = path.segments.as_slice() else { return };
+            let Some(TopSymbol::Type(TypeInfo { kind: TypeKind::Struct(fields), .. })) = top.lookup(&seg.name) else {
+                return;
+            };
+            for f in fields {
+                // a `bounded` field starts empty and is never written in a literal
+                if f.has_default || matches!(f.ty, Ty::Bounded(_, _)) || inits.iter().any(|i| i.name.name == f.name) {
+                    continue;
+                }
+                out.push(Diag::ty(*span, format!("type `{}`: missing field `{}`", seg.name, f.name)));
+            }
+        });
+    };
+    let params = |ps: &[Param], out: &mut Vec<Diag>| {
+        for p in ps {
+            if let Some(d) = &p.default {
+                literals(d, out);
+            }
+        }
+    };
+    let fields = |t: &TypeDecl, out: &mut Vec<Diag>| {
+        if let TypeDeclBody::Struct(fs) = &t.body {
+            for f in fs {
+                if let Some(d) = &f.default {
+                    literals(d, out);
+                }
+            }
+        }
+    };
+    let mut out = Vec::new();
+    for p in bundle.programs.values() {
+        for d in flat_decls(&p.items) {
+            match d {
+                TopDecl::Fn(f) => params(&f.params, &mut out),
+                TopDecl::Type(t) => fields(t, &mut out),
+                TopDecl::Locus(l) => {
+                    for m in &l.members {
+                        match m {
+                            LocusMember::Fn(f) => params(&f.params, &mut out),
+                            LocusMember::Lifecycle(lc) => params(&lc.params, &mut out),
+                            LocusMember::Mode(md) => params(&md.params, &mut out),
+                            LocusMember::Failure(fd) => params(&fd.params, &mut out),
+                            LocusMember::Type(t) => fields(t, &mut out),
+                            _ => {}
+                        }
+                    }
+                }
+                TopDecl::Perspective(pd) => {
+                    for m in &pd.members {
+                        if let PerspectiveMember::Fn(f) = m {
+                            params(&f.params, &mut out);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    out
+}
+
 fn publish_in_default_diags(bundle: &Bundle<'_>) -> Vec<Diag> {
     use crate::listener_window::{visit_expr, Visited};
     fn sends(e: &Expr, out: &mut Vec<Diag>) {
@@ -1352,6 +1428,7 @@ pub fn check_bundle_rules(
     diags.extend(crate::route_params_copy::stale_route_params_diags(bundle));
     diags.extend(crate::param_place_writes::param_place_write_diags(bundle, inputs.top));
     diags.extend(bounded_return_diags(bundle, top));
+    diags.extend(literal_default_missing_field_diags(bundle, top));
     diags.extend(walk.diags.iter().cloned());
     let mut by_decl = walk.by_decl.clone();
     let raw_frame_topics = raw_frame_topics(bundle, inputs.bindings);
