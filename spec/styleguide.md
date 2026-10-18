@@ -1580,6 +1580,12 @@ start)` measures the whole String on every call, so a line-at-a-time
 scan with it is quadratic in time: 16 MB in 32 000 lines took 4.7 s,
 against under a millisecond with `find`. **[convention]**
 
+Walk code points by position too: `std::str::view_cp_at(v, i)` and
+`view_cp_size(v, i)` read a character against the view's `n`, where the
+String forms `cp_at` / `cp_size` look for the String's end before every
+read, so a walk with them is quadratic (1 MB of text: 2.4 s, against
+0.5 ms over the view). **[convention]**
+
 ---
 
 ## 5. The enforcement ladder

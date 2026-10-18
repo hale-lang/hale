@@ -5740,27 +5740,48 @@ static int lotus_text_is_word_byte(unsigned char c) {
  * Invalid UTF-8 yields -1 rather than a replacement character, so a
  * caller cannot mistake corruption for content.
  */
-int64_t lotus_str_cp_size(const char *s, int64_t byte_off) {
-    if (!s || byte_off < 0) return -1;
-    unsigned char c = (unsigned char)s[byte_off];
+/* The width of the UTF-8 sequence at `p`, a byte of a string (its
+ * terminator included), its continuation bytes checked: -1 at the
+ * terminator, at a continuation byte or an invalid lead byte, and for a
+ * sequence that a byte other than 10xxxxxx (the terminator among them)
+ * cuts short. It reads no byte past the terminator: the first byte that
+ * is not a continuation stops it. */
+static int64_t lotus_utf8_width_at(const unsigned char *p) {
+    unsigned char c = p[0];
+    int64_t n;
     if (c == 0) return -1;
     if (c < 0x80) return 1;
-    if ((c & 0xE0) == 0xC0) return 2;
-    if ((c & 0xF0) == 0xE0) return 3;
-    if ((c & 0xF8) == 0xF0) return 4;
-    return -1;                       /* continuation byte or invalid */
+    if ((c & 0xE0) == 0xC0) n = 2;
+    else if ((c & 0xF0) == 0xE0) n = 3;
+    else if ((c & 0xF8) == 0xF0) n = 4;
+    else return -1;                  /* continuation byte or invalid */
+    for (int64_t i = 1; i < n; i++) {
+        if ((p[i] & 0xC0) != 0x80) return -1;
+    }
+    return n;
+}
+
+/* Whether `byte_off` (not negative) is inside `s` (before or at its
+ * terminator): no terminator in the bytes before it. A String carries no
+ * length, so this costs the offset (one memchr over it); an offset past
+ * the end must never be read. An offset that does not fit a size_t (on a
+ * 32-bit target, or any offset past the address space) is outside: it is
+ * compared before it is narrowed, so it cannot wrap to a small bound. */
+static int lotus_str_offset_inside(const char *s, int64_t byte_off) {
+    if (byte_off == 0) return 1;
+    if ((uint64_t)byte_off >= (uint64_t)SIZE_MAX) return 0;
+    return memchr(s, '\0', (size_t)byte_off) == NULL;
+}
+
+int64_t lotus_str_cp_size(const char *s, int64_t byte_off) {
+    if (!s || byte_off < 0 || !lotus_str_offset_inside(s, byte_off)) return -1;
+    return lotus_utf8_width_at((const unsigned char *)s + byte_off);
 }
 
 int64_t lotus_str_cp_at(const char *s, int64_t byte_off) {
     int64_t n = lotus_str_cp_size(s, byte_off);
     if (n < 0) return -1;
     const unsigned char *p = (const unsigned char *)s + byte_off;
-    /* Every continuation byte must be 10xxxxxx, or the sequence is
-     * truncated / malformed and must not decode to something
-     * plausible. */
-    for (int64_t i = 1; i < n; i++) {
-        if ((p[i] & 0xC0) != 0x80) return -1;
-    }
     switch (n) {
         case 1: return p[0];
         case 2: return ((int64_t)(p[0] & 0x1F) << 6) | (p[1] & 0x3F);
@@ -5775,8 +5796,11 @@ int64_t lotus_str_cp_at(const char *s, int64_t byte_off) {
 int64_t lotus_str_cp_count(const char *s) {
     if (!s) return 0;
     int64_t n = 0;
+    /* each step lands on a sequence's first byte or the terminator, so
+     * no offset check is needed, and a truncated last sequence is -1
+     * rather than a step past the end */
     for (int64_t i = 0; s[i]; ) {
-        int64_t w = lotus_str_cp_size(s, i);
+        int64_t w = lotus_utf8_width_at((const unsigned char *)s + i);
         if (w < 0) return -1;        /* invalid UTF-8 anywhere = -1 */
         i += w;
         n++;

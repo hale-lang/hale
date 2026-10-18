@@ -362,9 +362,34 @@ std::str::cp_size("héllo", 1)   // 2 — 'é' is two bytes
 ```
 
 Invalid UTF-8 gives you `-1`, as does a byte offset that lands in the
-middle of a character. It does not quietly hand back a replacement
-character, because then you could not tell a corrupted string from one
-that genuinely contains that character.
+middle of a character, or at or past the end of the string. It does not
+quietly hand back a replacement character, because then you could not
+tell a corrupted string from one that genuinely contains that
+character.
+
+To walk a long text a character at a time, read the code points from a
+[byte view](#walking-a-big-string-a-byte-at-a-time): `std::str::view_cp_at(v,
+i)` and `view_cp_size(v, i)` answer the same, but they know where the
+text ends. The String forms have to look for the end before they read
+at an offset, so a walk over a megabyte with them takes seconds, where
+the view's takes under a millisecond:
+
+```hale
+fn count_code_points(s: String) -> Int {
+    let v = std::str::bytes_view(s);
+    let mut i = 0;
+    let mut k = 0;
+    while i < v.n {
+        let w = std::str::view_cp_size(v, i);
+        if w < 0 { return -1; }
+        i = i + w;
+        k = k + 1;
+    }
+    return k;
+}
+
+fn main() { println(count_code_points("héllo")); }   // 5
+```
 
 Normalization, case folding beyond ASCII, and grapheme clusters are
 not provided. Each is a large commitment with its own tables, and a

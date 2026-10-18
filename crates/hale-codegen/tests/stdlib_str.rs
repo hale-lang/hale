@@ -263,3 +263,30 @@ fn a_find_line_scan_scales_linearly() {
     assert!(ns16 < 1_000_000_000, "a 16 MB line scan took {ns16} ns: the quadratic shape");
     assert!(ns16 < 10 * ns4.max(100_000), "4x the text took {ns16} ns against {ns4} ns: not linear");
 }
+
+/// `cp_at` / `cp_size` at an offset past the end of a String answer -1 and
+/// read nothing past its terminator. They used to load the byte at the
+/// offset whatever it was: past the end of an arena string that is a read
+/// out of bounds, which AddressSanitizer reports (or the load faults).
+#[test]
+fn a_code_point_read_past_the_end_reads_nothing_under_asan() {
+    let src = r#"
+        fn main() {
+            let s = std::str::repeat("h", 3) + "é";
+            println(std::str::cp_at(s, 5), " ", std::str::cp_size(s, 5));
+            println(std::str::cp_at(s, 6), " ", std::str::cp_size(s, 6));
+            println(std::str::cp_at(s, 4000000), " ", std::str::cp_size(s, 4000000));
+            println(std::str::cp_at(s, 3), " ", std::str::cp_size(s, 3));
+            println(std::str::cp_at(s, 9223372036854775807), " ", std::str::cp_size(s, 1099511627776));
+        }
+    "#;
+    let bin = harness::unique_bin("cp_past_end_asan");
+    let options = hale_codegen::BuildOptions { asan: true, ..build_opts::options() };
+    build_opts::build_source(src, &bin, &options).expect("asan build");
+    let out = std::process::Command::new(&bin).output().expect("run");
+    let _ = std::fs::remove_file(&bin);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success() && !stderr.contains("AddressSanitizer"), "{:?}: {stderr}", out.status);
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "-1 -1\n-1 -1\n-1 -1\n233 2\n-1 -1\n");
+}
+
