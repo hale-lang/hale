@@ -4098,7 +4098,10 @@ protocol-level reject); else by the seam's `or end;` (the closed flow
 ends, as `run` ends; the callable seam fails with `E`, declared
 `fallible(E)`, and it fails with one type) or `or violate NAME;` (the
 closed flow violates the locus's closure `NAME`); a failure placed nowhere
-is refused, naming the hop and `E`.
+is refused, naming the hop and `E`. A refused callable seam still declares its
+method, from what the seam spells: its parameter, its result when written
+(else unknown) and, under `or end;`, a failure of unknown type. So its
+callers check, and the refusal is the seam's one error.
 
 **Lowering.** A seam is expanded before the check into the methods it
 means, which are then checked as any methods are. The chain is direct
