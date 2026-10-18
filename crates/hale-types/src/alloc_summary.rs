@@ -4174,8 +4174,11 @@ fn loci_started_from_main(
         });
         out
     };
-    let mut fn_names: BTreeMap<FnKey, BTreeSet<String>> = BTreeMap::new();
-    let mut locus_names: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    // What each fn's and each locus's declaration names is read when the
+    // walk reaches it, not up front: a program pays for the declarations
+    // it starts or calls, not for every one of the stdlib's copy.
+    let mut fn_items: BTreeMap<FnKey, &TopDecl> = BTreeMap::new();
+    let mut locus_items: BTreeMap<String, Vec<&TopDecl>> = BTreeMap::new();
     let mut pending: Vec<String> = Vec::new();
     for (p, ids) in identified {
         let copy = is_copy(ids);
@@ -4183,10 +4186,10 @@ fn loci_started_from_main(
         for item in flat_decls(&p.items) {
             match item {
                 TopDecl::Fn(f) => {
-                    fn_names.insert(FnKey::free_fn(DeclId::of(universe, f.id), f.name.name.clone()), named_in(item));
+                    fn_items.insert(FnKey::free_fn(DeclId::of(universe, f.id), f.name.name.clone()), item);
                 }
                 TopDecl::Locus(l) => {
-                    locus_names.entry(l.name.name.clone()).or_default().extend(named_in(item));
+                    locus_items.entry(l.name.name.clone()).or_default().push(item);
                     // The TCP substrate is appended to the program's own
                     // seed (`rpc_expand::inject_tcp_serve`) but is stdlib
                     // source: its loci start where the program names them
@@ -4213,13 +4216,17 @@ fn loci_started_from_main(
                 continue;
             }
             work.extend(summary.fns.values().filter(|f| f.key.locus.as_ref() == Some(&l)).map(|f| f.key.clone()));
-            pending.extend(locus_names.get(&l).into_iter().flatten().cloned());
+            for item in locus_items.get(&l).into_iter().flatten() {
+                pending.extend(named_in(item));
+            }
         }
         let Some(k) = work.pop() else { break };
         if !reached.insert(k.clone()) {
             continue;
         }
-        pending.extend(fn_names.get(&k).into_iter().flatten().cloned());
+        if let Some(item) = fn_items.get(&k) {
+            pending.extend(named_in(item));
+        }
         let Some(f) = summary.fns.get(&k) else { continue };
         for c in &f.calls {
             match &c.callee {
