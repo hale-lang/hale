@@ -17,7 +17,7 @@ one (GH #646).
 | **Record** | how the organism *changed* and was allowed to: mutations and their reviews, practices proposed and ratified, authority contracted or revoked, connections, provisioning, people | memory: Postgres, `record_rows` in the record's schema `dna_<identity>`, one signed row per event, insert-only (GH #1590) | the Board, the organism's pipeline, a head from its clone |
 | **Ledger** | what the organism *did today*: intents, tasks, assignments, decisions, bills and receipts, money reserved and settled, schedules declared and their occurrences, concerns, handoffs, effect claims, liveness, the application's readings | memory: Postgres, in the record's own schema `dna_<identity>` | every writer under its own role — the nodes as the spine's, each head as its own — through memory's insert function, the gate (GH #1026) |
 
-The routing table is `memory_of` in the core (`routing.hl`): the
+Each kind's placement is `memory_of` in the core (`routing.hl`): the
 `case`, `intent`, `task`, `decision`, `completion`, `exception`,
 `schedule`, `receipt`, `handoff`, `pressure`, `instance`, `effect`,
 `report`, `lease`, `claim`, `reading` (an application's events,
@@ -36,9 +36,9 @@ workflow execution's own facts (`workflow.admitted` / `.refused` /
 `.outcome_requested` / `.outcome_refused`, `.allowance_requested` /
 `.allowance_granted` / `.allowance_refused`, `.unresolved`,
 `.released`). Every other kind, and any
-kind a build does not know, is the record's. The table is the only
-routing there is: every record has its Ledger from its first row (GH
-#1590), and no row says so. There is no dual-write: a kind has one home, and a writer that cannot
+kind a build does not know, is the record's. The placement is fixed,
+part of the schema: it is not data in the record and is not versioned,
+since every record has its Ledger from its first row (GH #1590). There is no dual-write: a kind has one home, and a writer that cannot
 reach it fails rather than writing elsewhere.
 
 `RoutedJournal` is the `Journal` an organism and the host stand on:
@@ -78,8 +78,8 @@ calling role is who wrote it (`session_user`, kept in the row's
 `writer` column beside `lease` and `epoch`). It refuses, returning the
 reason the verb prints:
 
-1. a kind that is not the Ledger's (`ledger_kind`, the routing table
-   above as data): it is appended to the record instead;
+1. a kind that is not the Ledger's (`ledger_kind`, the placement
+   above, in the schema): it is appended to the record instead;
 2. a person the record retired (`org_retired`, below) — checked before
    the author, since a retirement also ends the person's memberships,
    and the refusal says so;
@@ -293,7 +293,7 @@ host's tick (**The spine**, below).
   GH #1123: 6 makes `org_members` a view over the graph's `holds`
   edges, where it was a table the spine rewrote from the retired owners
   map, and moves no projection either; GH #987: 7 adds the `reading`
-  family to the routing table the insert function reads, which moves
+  family to the placement the insert function reads, which moves
   none; GH #988: 8 adds the `reflex` family the same way. Each protocol move empties the
   graph once for the projectors to rebuild). A store's `open`
   selects the record's schema and refuses one at another version, or

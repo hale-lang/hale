@@ -2,7 +2,8 @@
 // lives (GH #646 stage 1, #650, #1590). Every row kind belongs to exactly
 // one memory: what changes the organism stays in the record, what the
 // organism did today goes to the Ledger. Every record has its Ledger from
-// its first row (GH #1590), so the table is the only routing there is.
+// its first row (GH #1590), so this placement is fixed: it is part of the
+// schema, not data in the record, and not versioned.
 // There is no dual-write: a kind has one home, and a writer that cannot
 // reach it fails.
 //

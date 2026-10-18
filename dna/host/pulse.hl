@@ -89,7 +89,7 @@ fn reading_landed(p: Projection, entity: String) -> Bool {
     return false;
 }
 
-// Land `r` as its row, where the routing table puts the kind, at the
+// Land `r` as its row, where the kind is placed, at the
 // revisions its absence was read at; when a memory moved under it, it is
 // read and decided again: one projection per try, fifty at most.
 @bounded_by(tries)

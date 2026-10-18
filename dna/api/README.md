@@ -619,7 +619,10 @@ resolves the original receipt even after the Task changes.
 
 `/dna/tasks` reads the record and its Ledger as one (`basis.memory` is
 `record+ledger`), and the `task.reassigned` fact is the Ledger's row, written under the head's role and keyed by the
-command, with `command_record_head` naming the Ledger row before it.
+command, with `command_record_head` naming the Ledger row before it. A history
+row's `sequence` is its position in that one read: the record's rows, then the
+Ledger's. `basis.ledger_revision` is the Ledger's rows read, so every
+`sequence` is below `record_revision` plus `ledger_revision`.
 
 This profile does not retire people, transfer responsibility across owners,
 modify source ownership, complete Tasks or control workflow execution. OIDC,

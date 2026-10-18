@@ -1,4 +1,4 @@
-// dna/tests/routing_test.hl — three memories, one routing table (GH #646
+// dna/tests/routing_test.hl — three memories, each kind placed in one (GH #646
 // stage 1, #650, #1590).
 //
 // Every kind has one home. A routed journal reads two journals as one

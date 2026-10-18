@@ -23,9 +23,10 @@ the other two:
 | record | how the organism changed and was allowed to: mutations and their Reviews, practices proposed and ratified, grants, connections, people | Postgres, `record_rows` in the record's schema |
 | ledger | what the organism did today: intents, tasks, cases, workflow executions and attempts, bills and receipts, money reserved and settled, schedules, concerns, readings, effect claims, leases | Postgres, the record's own schema |
 
-The table is `memory_of` in `dna/core/routing.hl`, and it is the only
-routing there is: every record has its ledger from its first row
-([below](#the-ledger)). `hale dna history` and the projections read
+Which memory a kind lands in is its placement, `memory_of` in
+`dna/core/routing.hl`. The placement is fixed, part of the schema: it
+is not kept in the record and is not versioned, since every record has
+its ledger from its first row ([below](#the-ledger)). `hale dna history` and the projections read
 both memories as one sequence.
 
 ## The record

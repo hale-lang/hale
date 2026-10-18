@@ -22,7 +22,7 @@
 // #1123): `org_members` is a view over the graph's `holds` edges — a
 // person holding an `organization` node is its member — where it was a
 // table the spine rewrote from the owners map.
-// 7 (GH #987): the routing table's `reading` family, an application's
+// 7 (GH #987): the `reading` family placed in the ledger, an application's
 // readings, which the insert function admits to the ledger. 8 (GH #988):
 // its `reflex` family, what a reflex made the body do. 9 (GH #1590): the
 // exchange's inbox, `exchange_rows`, kept through `exchange_keep` alone.
@@ -253,7 +253,7 @@ fn ledger_gate_ddl() -> String {
 // through `ledger_append` alone, run as the owner, and the calling role
 // is who wrote it (`session_user`; inside a definer function
 // `current_user` is the owner). It refuses, with the reason, a record kind
-// (`ledger_kind`, the routing table as data); an author the role does not
+// (`ledger_kind`, each kind's fixed placement); an author the role does not
 // hold (`memory_principals`: `*` any author and no person checks — the
 // spine's role; `@` any person — one owner's head; an owner's name — its
 // members, `org_members`; `host` — any head); a person retired
@@ -369,7 +369,7 @@ fn receipt_functions(sch: String) -> String {
 }
 
 // GH #1590: the record's insert function, the one way a row lands. It
-// refuses a kind the routing table gives the Ledger; appends exactly at the
+// refuses a kind placed in the Ledger; appends exactly at the
 // revision a decision was read at, or at the tail for -1, and only on top
 // of the head the writer signed over (`p_prev`), so a signature always
 // names the row's own digest; extends the chain as `event_digest` does;

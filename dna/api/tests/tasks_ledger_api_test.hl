@@ -25,10 +25,15 @@ locus LedgerTaskReads {
         let data = w.raw(all.body, "data"); let basis = w.raw(data, "basis");
         std::test::assert_eq_str(w.raw(w.raw(data, "page"), "total"), "2", "both, from the Ledger");
         std::test::assert_eq_str(w.text(basis, "memory"), "record+ledger", "read over both memories");
-        std::test::assert_eq_str(w.raw(basis, "routing"), "", "and names no routing: every record has its Ledger (GH #1590)");
+        std::test::assert_eq_str(w.raw(basis, "routing"), "", "and names no record-kept routing: every record has its Ledger (GH #1590)");
         std::test::assert_eq_str(w.text(basis, "record_head"), record.head("journal").id, "at the record's head");
+        // a history row's sequence is its position in the record and its
+        // Ledger read as one: the Ledger's rows come after the record's
+        std::test::assert_eq_str(w.text(basis, "ledger_revision"), "4", "the Ledger's four rows read with the record");
+        let rr = std::str::parse_int(w.text(basis, "record_revision")) or - 1;
         let one = self.request("?id=t1");
         std::test::assert(one.status == 200 && std::str::contains(one.body, "\"assignee\": \"alex\""), "one Task by its id: " + one.body);
+        std::test::assert(std::str::contains(one.body, "\"sequence\": \"" + to_string(rr + 1) + "\""), "t1's handoff sits past the record's rows, at its Ledger position: " + one.body);
         let mine = self.request("?assignee=blair");
         std::test::assert(mine.status == 200 && w.raw(w.raw(w.raw(mine.body, "data"), "page"), "total") == "1", "and by assignee: " + mine.body);
     }

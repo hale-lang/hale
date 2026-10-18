@@ -155,6 +155,8 @@
   const COMMAND_TERMINAL = new Set(["succeeded", "refused", "failed"]);
   let intervention = { scope: "", phase: "idle", draft: null, metadata: null, receipt: null, error: "", blocked: false };
   let commandGeneration = 0;
+  // the receipt whose Task was re-read after it: one re-read per receipt
+  let taskRereadFor = "";
   let commandController = null;
   const KNOWLEDGE_OPERATION = "dna.knowledge.edge.link";
   const KNOWLEDGE_UNLINK = "dna.knowledge.edge.unlink";
@@ -843,7 +845,12 @@
       if (previous) assert(result.receipt.command_id === previous.receipt.command_id && result.receipt.fingerprint === previous.receipt.fingerprint && (metadata.operation !== REVIEW_OPERATION || result.receipt.verdict.value === previous.receipt.verdict.value), "The recovered request identity changed.");
       intervention.receipt = result;
       intervention.phase = "result";
-      refreshTask = metadata.operation === TASK_OPERATION && result.receipt.task.state === "applied" && state.route.view === "tasks" && state.route.id === metadata.target_id && state.source && BigInt(state.source.record_revision) < BigInt(result.source.record_revision);
+      // a reassignment is a Ledger row and the record's revision does not
+      // move, so the Task is re-read once per receipt, unless its captured
+      // history already holds the event
+      const shown = state.detail?.id === metadata.target_id && state.detail.history.some(event => event.event_id === result.receipt.task.event_id);
+      refreshTask = metadata.operation === TASK_OPERATION && result.receipt.task.state === "applied" && state.route.view === "tasks" && state.route.id === metadata.target_id && state.source && !shown && taskRereadFor !== result.receipt.command_id;
+      if (refreshTask) taskRereadFor = result.receipt.command_id;
       refreshTask = refreshTask || metadata.operation === PERSON_OPERATION && result.receipt.person.state === "applied" && state.route.view === "tasks" && state.route.assignee === metadata.target_id && state.source && BigInt(state.source.record_revision) < BigInt(result.source.record_revision);
       ui.announcement.textContent = metadata.operation === TASK_CREATE_OPERATION ? "New task status loaded. The organism answers separately; check again to follow the ask." : metadata.operation === PERSON_OPERATION ? "Retirement status loaded. Inspect the recorded transfer and current person state." : metadata.operation === TASK_OPERATION ? "Reassignment status loaded. The Task remains responsible for its original obligation." : metadata.source_review || metadata.operation === ORGANIZATION_OPERATION ? "Request status loaded. The decision, owner quorum, source application and running result are separate facts." : "Request status loaded. Command outcome, Review settlement and adoption are separate facts.";
     } catch (error) {
@@ -2854,8 +2861,11 @@
   }
   function validTaskBasis(data, source, assignee = "") {
     const b = data.basis;
-    assert(closedObject(data, ["profile", "items", "page", "basis", ...(assignee ? ["assignee"] : [])]) && (!assignee || data.assignee === assignee && data.items.every(row => row.assignee === assignee)) && data.profile === "dna.task-administration.v1" && closedObject(b, ["projection", "memory", "record_head", "record_revision"]) && b.projection === "dna.task-administration/1" && b.memory === "record+ledger" && b.record_head === source.record_head && b.record_revision === source.record_revision, "The Task responsibilities do not match their captured Record.");
-    for (const row of data.items) assert(Array.isArray(row.history) && row.history.every(event => decimal(event.sequence) && BigInt(event.sequence) < BigInt(source.record_revision)), "Task assignment history extends beyond the captured Record.");
+    assert(closedObject(data, ["profile", "items", "page", "basis", ...(assignee ? ["assignee"] : [])]) && (!assignee || data.assignee === assignee && data.items.every(row => row.assignee === assignee)) && data.profile === "dna.task-administration.v1" && closedObject(b, ["projection", "memory", "record_head", "record_revision", "ledger_revision"]) && b.projection === "dna.task-administration/1" && b.memory === "record+ledger" && b.record_head === source.record_head && b.record_revision === source.record_revision && decimal(b.ledger_revision), "The Task responsibilities do not match their captured Record.");
+    // a history row's sequence is its position in the record and its Ledger
+    // read as one: the record's rows, then the Ledger's
+    const read = BigInt(b.record_revision) + BigInt(b.ledger_revision);
+    for (const row of data.items) assert(Array.isArray(row.history) && row.history.every(event => decimal(event.sequence) && BigInt(event.sequence) < read), "Task assignment history extends beyond the captured Record and Ledger.");
   }
   function validPerson(value, source, person) {
     assert(closedObject(value, ["profile", "person", "state", "successor", "event_id", "subject_digest", "tasks", "transferred", "authorized", "recipients", "basis"]));
