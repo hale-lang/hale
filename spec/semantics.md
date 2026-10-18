@@ -253,7 +253,7 @@ into a `Float`, F.23):
 | `Duration`, `Time`, a quantity, a point | the unit dialect's algebra (spec/units.md) |
 | `Bool` | `==` `!=`, `&&` `\|\|`, unary `!` |
 | `String` | `+` (concatenation; `String + <printable>` renders the other side), every comparison |
-| an enum | `==` `!=` |
+| an enum | `==` `!=`: the tag, then each payload by its own `==` (a nested enum's included), so only when every payload type of every variant has `==`; a generic enum's instance by its payloads with its arguments in place (`Value<P>` compares only when `P` does) |
 | `Bytes`, a struct, a tuple, an array, a `bounded`, a locus, an interface, a perspective | none |
 
 Anything else is refused at the operator, naming the operand and
@@ -261,7 +261,12 @@ what its type has: "\`<\` does not apply to \`Bool\`: a \`Bool\` has
 \`==\`, \`!=\`, \`&&\`, \`\|\|\` and \`!\`". A compound assignment
 (`x += v`) is its operator's: `b += true` on a `Bool` is refused the
 same way. A struct, tuple or array is compared or combined through its
-parts. Until 2026-10-13 the check held only that the two sides were
+parts, and so is an enum one of whose payloads is one ("\`==\` does not
+apply to \`E\`: its variant \`B\` carries \`Inner\`, whose variant
+\`X\` carries a struct (\`P\`), which has no \`==\` …"; until 2026-10-17
+the check passed it and the build refused it, "match on TypeRef not
+supported", and an enum payload of an enum was refused at the build even
+when it compared). Until 2026-10-13 the check held only that the two sides were
 one type, and the build refused `true < false`, `p == q` of two
 structs, `b"a" + b"b"` and `!n` with no file or line.
 

@@ -1,0 +1,26 @@
+// `==` on an enum with payloads compares the tag, then each payload by its
+// own `==`, a nested enum's included. An enum payload of an enum was
+// refused at the build ("match on Enum not supported") even when every
+// payload compares; an enum a payload of which has no `==` (a struct) is
+// refused at the check (crates/hale-types/tests/diag_quality.rs).
+
+type Inner = enum { X(String), Y };
+type E = enum { A(Int, String), B(Inner), C };
+type Value<T> = enum { Some(T), None };
+
+fn main() {
+    std::test::assert(E::A(1, "s") == E::A(1, "s"), "equal payloads");
+    std::test::assert(E::A(1, "s") != E::A(2, "s"), "an Int payload differs");
+    std::test::assert(E::A(1, "s") != E::A(1, "t"), "a String payload differs");
+    std::test::assert(E::B(Inner::X("q")) == E::B(Inner::X("q")), "a nested enum's payload compares");
+    std::test::assert(E::B(Inner::X("q")) != E::B(Inner::X("r")), "a nested payload differs");
+    std::test::assert(E::B(Inner::X("q")) != E::B(Inner::Y), "a nested tag differs");
+    std::test::assert(E::C == E::C, "a payload-free variant");
+    std::test::assert(E::C != E::A(0, ""), "tags differ");
+    let a: Value<Int> = Value_Int::Some(1);
+    let b: Value<Int> = Value_Int::Some(1);
+    std::test::assert(a == b, "a generic enum's monomorph compares its payload");
+    let c: Value<Inner> = Value_Inner::Some(Inner::X("q"));
+    let d: Value<Inner> = Value_Inner::None;
+    std::test::assert(c != d, "and a nested enum argument");
+}

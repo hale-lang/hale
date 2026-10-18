@@ -24105,10 +24105,45 @@ impl<'a> Checker<'a> {
                 Some(TopSymbol::Locus(_)) => OperandClass::Opaque("a locus"),
                 Some(TopSymbol::Perspective(_)) => OperandClass::Opaque("a perspective"),
                 Some(TopSymbol::Interface(_)) => OperandClass::Opaque("an interface"),
+                // a generic type's monomorph (`Value_P` for `Value<P>`): its
+                // template's kind
+                None => match self.resolve_generic_monomorph(n) {
+                    Some((GenericTemplate::Type(td), _)) => match &td.body {
+                        TypeDeclBody::Enum(_) => OperandClass::Enum,
+                        TypeDeclBody::Struct(_) => OperandClass::Opaque("a struct"),
+                        _ => return None,
+                    },
+                    _ => return None,
+                },
                 _ => return None,
             },
             _ => return None,
         })
+    }
+
+    /// The variants of the enum `n` names, each with its payload types: a
+    /// declared enum's, or a generic enum's monomorph's (`Value_P`), its
+    /// payloads substituted (`T` is `P`). `None` for any other name; an
+    /// alias is its own.
+    fn enum_payloads(&self, n: &str) -> Option<Result<Vec<(String, Vec<Ty>)>, Ty>> {
+        match self.top.symbols.get(n) {
+            Some(TopSymbol::Type(ti)) => match &ti.kind {
+                TypeKind::Alias(inner) => Some(Err(inner.clone())),
+                TypeKind::Enum(vs) => Some(Ok(vs.iter().map(|v| (v.name.clone(), v.fields.clone())).collect())),
+                _ => None,
+            },
+            None => match self.resolve_generic_monomorph(n)? {
+                (GenericTemplate::Type(td), bindings) => match &td.body {
+                    TypeDeclBody::Enum(vs) => Some(Ok(vs
+                        .iter()
+                        .map(|v| (v.name.name.clone(), v.fields.iter().map(|f| self.monomorph_field_ty(f, &bindings)).collect()))
+                        .collect())),
+                    _ => None,
+                },
+                _ => None,
+            },
+            _ => None,
+        }
     }
 
     /// Why `op` does not apply to an operand of `t`, or `None` when it
@@ -24116,6 +24151,48 @@ impl<'a> Checker<'a> {
     /// implements: before it, `hale check` accepted `true < false`,
     /// `p1 == p2` of two structs or `b"a" + b"b"`, and the build refused
     /// each with no file or line.
+    /// Why `sym` (`==`, `!=`) does not apply to the enum `t`: the first
+    /// variant whose payload holds a type with no `==`, through nested
+    /// enums. `None` when every payload compares.
+    fn enum_eq_refusal(&self, t: &Ty, sym: &str, _depth: u32) -> Option<String> {
+        let (path, what, ty) = self.enum_incomparable(t, 0)?;
+        Some(format!(
+            "`{sym}` does not apply to `{}`: {path} carries {what} (`{}`), which has no `==`; an enum compares its \
+             tag and then each payload by the payload's own `==`. Match the variant and compare its parts \
+             (spec/semantics.md § \"Operators and their operand types\")",
+            t.display(),
+            ty.display()
+        ))
+    }
+
+    /// The variant path (`its variant \`B\`, whose variant \`X\``) to the
+    /// first payload of `t` with no `==`, what it is, and its type.
+    fn enum_incomparable(&self, t: &Ty, depth: u32) -> Option<(String, &'static str, Ty)> {
+        if depth > 8 {
+            return None;
+        }
+        let Ty::Named(n) = t else { return None };
+        let variants = match self.enum_payloads(n)? {
+            Err(inner) => return self.enum_incomparable(&inner, depth + 1),
+            Ok(vs) => vs,
+        };
+        let lead = if depth == 0 { "its variant" } else { "whose variant" };
+        for (name, fields) in &variants {
+            for f in fields {
+                match self.operand_class(f, 0) {
+                    Some(OperandClass::Opaque(what)) => return Some((format!("{lead} `{name}`"), what, f.clone())),
+                    Some(OperandClass::Enum) => {
+                        if let Some((rest, what, ty)) = self.enum_incomparable(f, depth + 1) {
+                            return Some((format!("{lead} `{name}` carries `{}`, {rest}", f.display()), what, ty));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        None
+    }
+
     fn operator_refusal(&self, op: Operator, t: &Ty) -> Option<String> {
         use BinOp::*;
         let class = self.operand_class(t, 0)?;
@@ -24134,6 +24211,15 @@ impl<'a> Checker<'a> {
             (_, OperandClass::Opaque(_)) => false,
         };
         if applies {
+            // An enum's `==` compares the tag, then each payload by its
+            // own `==`: a payload type that has none (a struct, a tuple,
+            // an array, Bytes, a locus) leaves the enum without one.
+            if let (Operator::Binary(Eq | NotEq), OperandClass::Enum) = (op, class) {
+                return self.enum_eq_refusal(t, crate::unit_quantities::op_symbol(match op {
+                    Operator::Binary(b) => b,
+                    _ => Eq,
+                }), 0);
+            }
             return None;
         }
         let sym = match op {
