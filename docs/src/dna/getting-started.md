@@ -51,7 +51,7 @@ kept    …/demo/main.hl (the application is not modified; the organization over
 edited  …/demo/hale.toml ([claims] no_base, [environments.local], [environments.org])
 pinned  …/demo/hale.toml ([dna] record = 4f1c9a07d2be…, the identity of the record born here)
 memory  schema applied; the record's tables, roles and functions are in place
-born    record 4f1c9a07d2be (record.genesis; ledger.adopted, routing 2; record.key 8a3e51c0b7d4…)
+born    record 4f1c9a07d2be (record.genesis; record.key 8a3e51c0b7d4…)
 seeded  the record (6 observed event(s): application.attached, structure.observed, responsibility.proposed; then the purpose proposed and the application's graph)
 graph   2 node(s), 0 edge(s): 1 purpose, 0 axiom, 0 process, 1 seed, 0 contract, 0 noun, 0 deployment, 0 gate, 0 document, 0 witness, 0 position, 0 work, 0 organization, 0 definition; 6 proposal(s) (graph.node, graph.edge)
 seated  the head's socket knows uid 1000 as … (dna.unix.member); the record declares dna.trust = local, where they hold every position
@@ -286,7 +286,7 @@ reviews:    32 pending of 32
 mutations:  0 (none applies before a human's verdict on the exact candidate)
 profile:    local (detected)
 body:       none (no body has run this record; `hale dna run` takes the lease)
-memory:     record + ledger (routing 2, adopted at 4f1c9a07d2be; operations and leases live in memory)
+memory:     record + ledger (operations and leases live in memory)
 genome:     no node has recorded the genome it runs
 ```
 
@@ -295,9 +295,9 @@ That is the status before the first start; with `dev` up, the
 `history`, `review` and `board` need no running organism: they read the
 record from memory, where every clone reads it.
 
-The `memory:` line matters. A new organism keeps its record and its
-day's work in memory from its first rows: `init` appended
-`ledger.adopted` itself, so there is nothing to adopt.
+The `memory:` line matters. An organism keeps its record and its
+day's work in memory from its first row: the record and its Ledger are
+born together.
 [Memory and the record](./memory.md) explains the split.
 
 ## The first Review

@@ -228,9 +228,10 @@ fn a_record_admits_one_body_and_a_partitioned_body_stops() {
     let _ = Command::new("psql")
         .args([owner.as_str(), "-q", "-c", &format!("SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE application_name = '{locker_name}'")])
         .output();
-    // the fence stopped the body before its lease expired; the lease goes stale once it has
+    // the fence stopped the body before its lease expired; the lease goes stale once it has,
+    // within the lease's life (30 s) of its last renewal
     let mut stale = (false, String::new());
-    for _ in 0..40 {
+    for _ in 0..80 {
         let (ok, _, body) = hale_in(&["dna", "body"], &b);
         stale = (ok && body.contains("body: stale: ") && body.contains("its lease has expired"), body);
         if stale.0 {

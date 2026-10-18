@@ -205,7 +205,6 @@ fn ledger_ddl() -> String {
         + "CREATE UNIQUE INDEX IF NOT EXISTS ledger_rows_commit ON ledger_rows (record_commit) WHERE record_commit IS NOT NULL;"
         + "DROP INDEX IF EXISTS ledger_rows_claim;"
         + "CREATE UNIQUE INDEX IF NOT EXISTS ledger_rows_claims ON ledger_rows (kind, entity) WHERE kind IN ('effect.requested', 'spend.reserved', 'task.born');"
-        + "CREATE TABLE IF NOT EXISTS ledger_meta (key text PRIMARY KEY, value text NOT NULL);"
         + "CREATE TABLE IF NOT EXISTS ledger_requests (request_id text PRIMARY KEY, revision bigint NOT NULL, at timestamptz NOT NULL DEFAULT now());"
         + "DROP TABLE IF EXISTS ledger_mailboxes;"
         + "DO $m$ BEGIN IF to_regclass('ledger_leases') IS NOT NULL AND to_regclass('claims') IS NULL THEN ALTER TABLE ledger_leases RENAME TO claims; ALTER TABLE claims RENAME COLUMN expires TO until; END IF; END $m$;"
@@ -504,7 +503,7 @@ fn spine_grants(sch: String, role: String) -> String {
 // function (GH #1026), which decides whom it may write as.
 fn head_grants(sch: String, role: String) -> String {
     return "GRANT USAGE ON SCHEMA " + sch + " TO " + role + ";"
-        + "GRANT SELECT ON " + sch + ".memory_meta, " + sch + ".ledger_rows, " + sch + ".ledger_meta, " + sch + ".ledger_requests, " + sch + ".claims, "
+        + "GRANT SELECT ON " + sch + ".memory_meta, " + sch + ".ledger_rows, " + sch + ".ledger_requests, " + sch + ".claims, "
         + sch + ".knowledge_meta, " + sch + ".knowledge_ideas, " + sch + ".knowledge_bindings, " + sch + ".knowledge_edges, " + sch + ".knowledge_structure, " + sch + ".knowledge_signals, "
         + sch + ".graph_nodes, " + sch + ".graph_edges, " + sch + ".graph_members, "
         + sch + ".org_members, " + sch + ".org_retired TO " + role + ";"
@@ -626,17 +625,6 @@ fn migrate_on(c: pq::PgConn, record_id: String, owners: String) -> String {
             let claim = c.exec_params("INSERT INTO knowledge_meta (key, value) VALUES ('record', $1) ON CONFLICT (key) DO NOTHING", a);
             if !claim.ok { return abort(c, "scope", claim.err); }
         }
-    }
-    // GH #1590: a record born in memory has its Ledger from its first row:
-    // the cutover is at its identity, on this toolchain's routing, as its
-    // `ledger.adopted` row says. A cutover already recorded (a record adopted
-    // before) is kept.
-    if len(record_id) > 0 {
-        let a = db::Args { };
-        a.add(record_id);
-        a.add(to_string(ROUTING_VERSION));
-        let born = c.exec_params("INSERT INTO ledger_meta (key, value) VALUES ('checkpoint', $1), ('copied', '0'), ('routing', $2), ('record', $1) ON CONFLICT (key) DO NOTHING", a);
-        if !born.ok { return abort(c, "the Ledger's cutover", born.err); }
     }
     let indexes = c.exec(graph_indexes());
     if !indexes.ok { return abort(c, "graph indexes", indexes.err); }

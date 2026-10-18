@@ -64,10 +64,8 @@ hale dna handoff <n> task <id> | receipt <digest>
 hale dna memory migrate [dir]
                              apply memory's schema with the owner's DSN (HALE_DNA_MEMORY_DSN_OWNER, or dna/compose.yaml)
                              and print the record's spine and head DSNs (HALE_DNA_MEMORY_DSN_SPINE, …_HEAD)
-hale dna ledger [status | rows | adopt | abandon --why <w>]
-                             the operational memory: where the day's work lives, its rows as JSON lines, and the one-way
-                             move of it into memory — adopt and abandon are asked in the record; a node carries them out on its tick
-                             once the ledger is adopted, a head's write (a task done, a receipt filed …) goes straight into it
+hale dna ledger rows         the operational memory's rows as JSON lines: where the day's work lives;
+                             a head's write (a task done, a receipt filed …) goes straight into the Ledger
                              under the head's role: done when it lands, or refused by memory with the reason
 hale dna receipt [disclose <digest> --to <who> --purpose <p> | show <digest> --purpose <p>]
 hale dna receipt hold|release-hold <digest> --why <w> | redact <digest> --why <w> --policy <p>
@@ -229,7 +227,6 @@ hale dna report [project]    file a report from the record since the last one (r
 ```text
 hale dna task create [--to <locus>|position:<name>] [--as <who>] [--judgment] [--size quick|standard|deep] [--no-wait] <outcome…>
                              ask for an outcome (--judgment: an assessment, a leg's to perform; --to position:<name>: a change the leg holding that position makes): a row in the record, which a node relays to the organism; prints the Task born or the refusal
-                             (on an adopted ledger it prints the request's digest: see `hale dna ledger`)
 hale dna task done <id>      a person reports a handed Task done (--as <who>, --note …); `task reassign <id> --to <who>`
                              under an acceptance practice requiring evidence: --evidence <digest>, or --exception <why> --authorized-by <who>
 hale dna task authorize <id> --exception <why>   authorize an exception, in your name (not the assignee's)
@@ -333,8 +330,6 @@ kind it does not know keeps walking.
 | `model.category` | record | which model fills `<mode>.<size>`, whether it returns tool calls, and its price (`hale dna models category`) |
 | `responsibility.proposed` | record | a one-line responsibility inferred for a part, not yet ratified |
 | `candidate.dropped` | record | a kept candidate is no longer kept, here and at every clone's sync |
-| `ledger.adopting` / `ledger.adopted` | record | the move of the day's work into the ledger asked for, and done at a checkpoint |
-| `ledger.abandoning` / `ledger.abandoned` | record | its undoing asked for, and done |
 | `receipt.filed` | ledger | an internal document filed as evidence |
 | `receipt.classified` / `receipt.withheld` | ledger | a protected body memory keeps sealed, or one withheld because no memory could keep it |
 | `receipt.disclosed` | ledger | a reader authorized, for a purpose |

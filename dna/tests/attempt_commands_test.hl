@@ -605,12 +605,11 @@ locus App {
         self.wait_row("work.settled", ops::usage_work_of(a5), l + "and the Work, its attempts spent, settles: the repeats are bounded");
     }
     // ---- the ledger adopted (D5): the same, with the attempt kinds in memory
-    // GH #1590: a record is born in memory with its Ledger (`ledger.adopted`
-    // among its first rows), so there is no adoption to ask for: the second
+    // GH #1590: a record is born in memory with its Ledger, so there is no
+    // adoption to ask for: the second
     // pass runs on the same record, the organism started again
     fn adopt() {
         let moved = self.journal.refresh();
-        std::test::assert(self.has_row("ledger.adopted", "ledger"), "the record was born with its Ledger");
         self.start();
     }
     run() {

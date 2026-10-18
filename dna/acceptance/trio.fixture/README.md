@@ -222,6 +222,6 @@ evidence, each old key was reproduced from its entry's fields, and each
 new key was the one the miss named. No fresh model call was made; every
 answer, token and cost field is unchanged. `rows.jsonl` now holds the
 record's rows and its Ledger's: the record is born with
-`record.genesis`, `ledger.adopted` and `record.key` (its nonce and the
+`record.genesis` and `record.key` (its nonce and the
 identity drawn from it are normalized), and the readings' subject names
 the record's identity where it named a commit.

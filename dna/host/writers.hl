@@ -59,8 +59,7 @@ fn request_digest_id(root: String, prefix: String, request: String) -> String {
 // An event after `from` of one of `kinds` (space-separated) naming `entity`.
 // `from` is a position in THIS projection: a merged order is arrival
 // order within one `RoutedJournal`, and a fresh one lists every record
-// row before every ledger row, so under an adopted ledger a record row
-// that lands later sits BEFORE the mark in a projection opened after it.
+// row before every ledger row, so a record row that lands later sits BEFORE the mark in a projection opened after it.
 // A wait marks and polls one projection, refreshed in place (`watch`).
 fn find_after(p: Projection, from: Int, kinds: String, entity: String) -> dna::Event {
     let mut i = from;
@@ -75,25 +74,19 @@ fn find_after(p: Projection, from: Int, kinds: String, entity: String) -> dna::E
 // Eligibility belongs to the captured projection. A stale append must return
 // to the verb's complete decision, never retry a previously chosen assignee.
 interface TaskWriterAdmission {
-    fn append(expected: String, ledger_expected: Int, routing: Int, row: dna::Row) -> String;
+    fn append(expected: String, ledger_expected: Int, row: dna::Row) -> String;
 }
+// A row where its kind lives, only if that memory is where the decision
+// was read: the record at `expected`, the Ledger at `ledger_expected`.
 locus RecordTaskWriterAdmission {
     params { root: String = "."; memory: dna::Memory = dna::Memory { }; }
-    fn append(expected: String, ledger_expected: Int, routing: Int, row: dna::Row) -> String {
-        let r = rec(self.root);
-        let now = r.head(JOURNAL);
+    fn append(expected: String, ledger_expected: Int, row: dna::Row) -> String {
+        // the decision read the record too (a retirement, an enrolment): a
+        // Ledger row lands only while the record is where it was read
+        let now = rec(self.root).head(JOURNAL);
         if !now.ok { return "the record's head could not be read: " + now.why; }
         if now.id != expected { return "stale_revision"; }
-        if routing > 0 {
-            // Preserve the existing owning-Ledger path. This is not a joint
-            // Record/Ledger transaction; atomic person retirement is Record-only.
-            return append_as_at(self.root, expected, ledger_expected, row.kind, row.entity, row.body, row.author, self.memory);
-        }
-        // Do not choose a different memory after reading routing 0. Concurrent
-        // Ledger adoption moves this exact Record predecessor and loses this CAS.
-        let a = r.append(JOURNAL, expected, row, signing(self.root), "");
-        if a.ok { return ""; }
-        return if a.error == "stale" { "stale_revision" } else { "the row could not be written" };
+        return append_as_at(self.root, expected, ledger_expected, row.kind, row.entity, row.body, row.author, self.memory);
     }
 }
 
@@ -123,7 +116,7 @@ fn task_done_admit(root: String, seed: String, id: String, who_flag: String, not
         stale_pause(tries);
         let p = open_projection(root, seed, "", memory);
         let read_at = p.j.record.head();
-        let ledger_at = if p.j.routing > 0 { p.j.ledger.revision() } else { -1 };
+        let ledger_at = p.j.ledger.revision();
         let t = p.task_of(id);
         if len(t.id) == 0 { return fail("no Task `" + id + "` in the record"); }
         if t.state != "handed" { return fail("Task `" + id + "` is " + t.state + ", not handed to a person: nothing to report done"); }
@@ -155,7 +148,7 @@ fn task_done_admit(root: String, seed: String, id: String, who_flag: String, not
                 lb.string_field("by", who);
                 lb.string_field("practice", t.acceptance);
                 lb.end_object();
-                let linked = writer.append(read_at, ledger_at, p.j.routing, dna::Row { kind: "completion.linked", entity: id, body: lb.result(), author: who });
+                let linked = writer.append(read_at, ledger_at, dna::Row { kind: "completion.linked", entity: id, body: lb.result(), author: who });
                 if linked == "stale_revision" { continue; }
                 if len(linked) > 0 { return fail("the record refused the append: " + linked); }
                 stage = 1; continue;
@@ -190,14 +183,14 @@ fn task_done_admit(root: String, seed: String, id: String, who_flag: String, not
                 xb.string_field("by", who);
                 xb.string_field("practice", t.acceptance);
                 xb.end_object();
-                let excepted = writer.append(read_at, ledger_at, p.j.routing, dna::Row { kind: "completion.excepted", entity: id, body: xb.result(), author: who });
+                let excepted = writer.append(read_at, ledger_at, dna::Row { kind: "completion.excepted", entity: id, body: xb.result(), author: who });
                 if excepted == "stale_revision" { continue; }
                 if len(excepted) > 0 { return fail("the record refused the append: " + excepted); }
                 stage = 2; continue;
             }
         }
         let body = "by " + who + (if len(note) > 0 { ": " + note } else { "" });
-        let landed = writer.append(read_at, ledger_at, p.j.routing, dna::Row { kind: "task.done", entity: id, body: body, author: who });
+        let landed = writer.append(read_at, ledger_at, dna::Row { kind: "task.done", entity: id, body: body, author: who });
         if landed == "stale_revision" { continue; }
         if len(landed) > 0 { return fail("the record refused the append: " + landed); }
         let s2 = sync_record(root, memory);
@@ -235,7 +228,7 @@ fn task_authorize_admit(root: String, seed: String, id: String, exception: Strin
         stale_pause(tries);
         let p = open_projection(root, seed, "", memory);
         let read_at = p.j.record.head();
-        let ledger_at = if p.j.routing > 0 { p.j.ledger.revision() } else { -1 };
+        let ledger_at = p.j.ledger.revision();
         let t = p.task_of(id);
         if len(t.id) == 0 { return fail("no Task `" + id + "` in the record"); }
         if t.state != "handed" { return fail("Task `" + id + "` is " + t.state + ", not handed to a person: no exception to authorize"); }
@@ -259,7 +252,7 @@ fn task_authorize_admit(root: String, seed: String, id: String, exception: Strin
         b.string_field("by", who);
         b.string_field("practice", t.acceptance);
         b.end_object();
-        let landed = writer.append(read_at, ledger_at, p.j.routing, dna::Row { kind: "exception.authorized", entity: id, body: b.result(), author: who });
+        let landed = writer.append(read_at, ledger_at, dna::Row { kind: "exception.authorized", entity: id, body: b.result(), author: who });
         if landed == "stale_revision" { continue; }
         if len(landed) > 0 { return fail("the record refused the append: " + landed); }
         let s2 = sync_record(root, memory);
@@ -293,7 +286,7 @@ fn task_decide_admit(root: String, seed: String, id: String, decided_by: String,
         stale_pause(tries);
         let p = open_projection(root, seed, "", memory);
         let read_at = p.j.record.head();
-        let ledger_at = if p.j.routing > 0 { p.j.ledger.revision() } else { -1 };
+        let ledger_at = p.j.ledger.revision();
         let t = p.task_of(id);
         if len(t.id) == 0 { return fail("no Task `" + id + "` in the record"); }
         if t.state != "handed" { return fail("Task `" + id + "` is " + t.state + ", not handed to a person: no decision to report"); }
@@ -338,7 +331,7 @@ fn task_decide_admit(root: String, seed: String, id: String, decided_by: String,
         b.string_field("why", why);
         b.string_field("note", note);
         b.end_object();
-        let landed = writer.append(read_at, ledger_at, p.j.routing, dna::Row { kind: "decision.reported", entity: id, body: b.result(), author: who });
+        let landed = writer.append(read_at, ledger_at, dna::Row { kind: "decision.reported", entity: id, body: b.result(), author: who });
         if landed == "stale_revision" { continue; }
         if len(landed) > 0 { return fail("the record refused the append: " + landed); }
         let s2 = sync_record(root, memory);
@@ -413,7 +406,7 @@ fn task_reassign_admit(root: String, seed: String, id: String, to: String, by_fl
         stale_pause(tries);
         let p = open_projection(root, seed, "", memory);
         let read_at = p.j.record.head();
-        let ledger_at = if p.j.routing > 0 { p.j.ledger.revision() } else { -1 };
+        let ledger_at = p.j.ledger.revision();
         let t = p.task_of(id);
         if len(t.id) == 0 { return fail("no Task `" + id + "` in the record"); }
         if t.state != "handed" { return fail("Task `" + id + "` is " + t.state + ", not handed to a person: nothing to reassign"); }
@@ -434,7 +427,7 @@ fn task_reassign_admit(root: String, seed: String, id: String, to: String, by_fl
         b.string_field("to", to);
         b.string_field("by", by);
         b.end_object();
-        let landed = writer.append(read_at, ledger_at, p.j.routing, dna::Row { kind: "task.reassigned", entity: id, body: b.result(), author: by });
+        let landed = writer.append(read_at, ledger_at, dna::Row { kind: "task.reassigned", entity: id, body: b.result(), author: by });
         if landed == "stale_revision" { continue; }
         if len(landed) > 0 { return fail("the record refused the append: " + landed); }
         let s2 = sync_record(root, memory);
@@ -465,7 +458,7 @@ fn task_accept_admit(root: String, seed: String, id: String, who_flag: String, n
         stale_pause(tries);
         let p = open_projection(root, seed, "", memory);
         let read_at = p.j.record.head();
-        let ledger_at = if p.j.routing > 0 { p.j.ledger.revision() } else { -1 };
+        let ledger_at = p.j.ledger.revision();
         let t = p.task_of(id);
         if len(t.id) == 0 { return fail("no Task `" + id + "` in the record"); }
         if t.state != "transfer_requested" { return fail("Task `" + id + "` is " + t.state + ", not offered to another owner: nothing to accept"); }
@@ -486,7 +479,7 @@ fn task_accept_admit(root: String, seed: String, id: String, who_flag: String, n
         b.string_field("assignee", std::json::find_string_field(t.detail, "assignee"));
         b.string_field("note", note);
         b.end_object();
-        let landed = writer.append(read_at, ledger_at, p.j.routing, dna::Row { kind: "task.transfer_accepted", entity: id, body: b.result(), author: who });
+        let landed = writer.append(read_at, ledger_at, dna::Row { kind: "task.transfer_accepted", entity: id, body: b.result(), author: who });
         if landed == "stale_revision" { continue; }
         if len(landed) > 0 { return fail("the record refused the append: " + landed); }
         let s2 = sync_record(root, memory);
@@ -571,74 +564,6 @@ fn held_task_ids(tasks: String) -> String {
     return out;
 }
 
-// Trusted-local CLI attribution is its existing authority model. The HTTP
-// provider independently requires its explicit application policy grant.
-fn retire_admit(root: String, seed: String, who: String, to: String, by_flag: String, batch: ops::GovernanceBatchRecord, memory: dna::Memory) -> Answer {
-    if len(who) == 0 { return fail("retire: `hale dna retire <who> [--to <successor>] [--as <by>]`"); }
-    let synced = sync_record(root, memory);
-    let record = dna::MemoryRecord { repo: root };
-    let no_head = record_refusal(root);
-    if len(no_head) > 0 { return fail(no_head); }
-    let principal = record.setting("principal");
-    // The atomic batch below is the trusted-local Record's. A record with
-    // Ledger routing or a hosted principal retires the way it did before
-    // the batch existed: each transfer a row, then the retirement, in the
-    // named person's name (the two-heads fixture retires under both).
-    if trust_mode(root) != "local" || (principal != "" && principal != "local") || routing_here(root) != 0 {
-        return retire_rows(root, seed, who, to, by_flag, memory);
-    }
-    let by = if len(by_flag) > 0 { by_flag } else { who_am_i() };
-    let context = ops::GovernanceContext { application_id: record.identity(), principal_mode: "local", principal_name: by };
-    let common = ops::GovernanceCommandCodec { }; let codec = ops::PersonRetirementCodec { }; let retirement = ops::PersonRetirement { };
-    if !common.context_valid(context) || !common.bounded(who, 256, true, false) || !common.bounded(to, 256, false, false) || to == who { return fail("retire: name an exact person and a distinct successor, when one is supplied"); }
-    let grant = ops::GovernanceGrant { allowed: true, authority: "trusted-local-cli", basis: "dna.trusted-local-cli-retirement/1" };
-    let cli = GovernanceCli { root: root, memory: memory }; let request_id = cli.request_id("");
-    let native = ops::GovernanceCommands { record: record };
-    let mut attempts = 0;
-    while attempts < 4 {
-        attempts = attempts + 1;
-        let snapshot = native.capture();
-        if !snapshot.ok { return fail("retire: " + snapshot.code); }
-        let journal = ops::GovernanceJournal { snapshot: snapshot };
-        if !journal.valid || !native.source_supported(journal) { return fail("retire: the complete Record-only history is unavailable"); }
-        let plan = retirement.plan(journal, who, grant.basis);
-        if !plan.ok { return fail("retire: " + plan.code + "; no partial transfers were published"); }
-        if plan.state == "retired" { return fail("retire: " + who + " already retired" + (if plan.successor != "" { " to " + plan.successor } else { " without a successor" }) + "; inspect the existing retirement and Task history rather than publishing it again"); }
-        if !retirement.active(journal, by) { return fail("retire: " + by + " retired; no new admission is made in their name"); }
-        if plan.transferred > 0 && to == "" { return fail(who + " holds " + to_string(plan.transferred) + " handed task(s): " + held_task_ids(plan.tasks) + "; name a successor: `hale dna retire " + who + " --to <who>`"); }
-        let command = ops::GovernanceCommand { request_id: request_id, operation: "dna.person.retire", application_id: context.application_id, target_kind: "dna.person", target_id: who,
-            subject_digest: plan.subject_digest, new_assignee: to };
-        if !codec.valid(context, command) { return fail("retire: invalid exact retirement command"); }
-        let existing = native.find(snapshot, journal, context, request_id);
-        if existing.ok || existing.code != "command_not_found" { return fail("retire: the fresh request identity is unavailable: " + request_id); }
-        if trust_mode(root) != "local" || record.setting("principal") != principal { return fail("retire: local authority changed before admission; nothing was published"); }
-        eprintln("hale dna retirement request_id: ", request_id);
-        let published = retirement.publish_retirement(batch, snapshot, context, command, grant, plan, false);
-        if published.code == "stale" { continue; }
-        if !published.ok { return fail("retire: " + published.code + "; no partial transfers were published; request_id " + request_id); }
-        // Both a successful and an uncertain ref update are observed through
-        // the same shared namespace and native chain proof. Never republish an
-        // uncertain batch, and never infer admission from off-ref commits.
-        let after = native.capture();
-        if after.ok {
-            let current = ops::GovernanceJournal { snapshot: after };
-            if current.valid {
-                let found = native.find(after, current, context, request_id);
-                if found.ok && found.fingerprint == codec.fingerprint(context, command) {
-                    let result = native.result(after, current, found);
-                    if result.ok && result.receipt.person.state == "applied" {
-                        // Reconciliation may rewrite event IDs; it cannot run
-                        // implicitly across this exact local transfer manifest.
-                        return answer(who + " retired by " + by + "; " + to_string(result.receipt.person.transferred) + " task(s) transferred" + (if result.receipt.person.transferred > 0 { " to " + to } else { "" }) + "\nrequest_id: " + request_id + "\nretirement event: " + result.receipt.person.event_id + "\nRecorded atomically in this local Record; remote synchronization is not automatic after this transaction.\n");
-                    }
-                }
-            }
-        }
-        return fail("retire: outcome unknown; no second publication was attempted. Retain request_id " + request_id + "; inspect the native retirement and Task history before any new command");
-    }
-    return fail("retire: the Record kept changing; no retirement batch was admitted by this request. Retain request_id " + request_id);
-}
-
 // GH #604 rule 3: a person resolves an effect whose outcome the
 // organism could not establish after a restart. The last
 // `effect.result` for a key is its status, so the resolution is one
@@ -712,9 +637,8 @@ fn task_create_verb(root: String, outcome: String, to: String, no_wait: Bool, as
     if judgment { b.string_field("kind", "judgment"); }
     b.end_object();
     // `--no-wait`: the one notice, on either path, once the row is in the record
-    // where the ask's row lands: the record, or the ledger once it is adopted
-    let place = if dna::route(routing_here(root), "intent.requested") == "ledger" { "the ledger" } else { "the record" };
-    let requested = "intent " + intent_id + " requested in " + place + (if ours { "; the organism answers there" } else { " for its owner's controller (" + ownership_note(root, owner) + "); it answers there" }) + " (`hale dna sync`, then `status`)\n";
+    // the ask's row is the Ledger's (GH #1590)
+    let requested = "intent " + intent_id + " requested in the ledger" + (if ours { "; the organism answers there" } else { " for its owner's controller (" + ownership_note(root, owner) + "); it answers there" }) + " (`hale dna sync`, then `status`)\n";
     if local {
         // GH #682, #986: the row is the fact; the host beside the organism,
         // in this clone, relays it onto the nerves on its next tick, and the

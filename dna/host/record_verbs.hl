@@ -80,10 +80,9 @@ fn candidates_verb(root: String, seed: String, sub: String, id_in: String, why: 
 
 // GH #1590: the record's first rows, born in memory: `record.genesis` with
 // the body the driver composed, exactly at 0, whose digest must be the
-// identity the driver pinned in hale.toml; `ledger.adopted`, since a record
-// born in memory has its Ledger from the start (memory's migration recorded
-// the cutover at the identity); and `record.key`, the public half of the
-// record's key, which every row the organism's parts write is signed with.
+// identity the driver pinned in hale.toml; and `record.key`, the public half
+// of the record's key, which every row the organism's parts write is signed
+// with. Its Ledger is memory's from the start: no row says so.
 // Answers the identity and the key.
 fn record_genesis_verb(root: String, body: String) -> Answer {
     if len(body) == 0 { return fail("record-genesis: the genesis row's body"); }
@@ -96,23 +95,13 @@ fn record_genesis_verb(root: String, body: String) -> Answer {
     let j = dna::RecordJournal { repo: root, author: who };
     let r = j.append_as(0, "record.genesis", "record", body, who, true);
     if !r.ok { return fail("record-genesis: memory refused the record's first row (" + r.error + "): " + j.last_error()); }
-    let a = std::json::Builder { };
-    a.begin_object();
-    a.int_field("routing", dna::ROUTING_VERSION);
-    a.string_field("checkpoint", id);
-    a.int_field("rows", 0);
-    a.string_field("by", who);
-    a.end_object();
     let k = std::json::Builder { };
     k.begin_object();
     k.string_field("key", key.public());
     k.end_object();
-    let rows = dna::RowBatch { };
-    rows.push(dna::Row { kind: "ledger.adopted", entity: "ledger", body: a.result(), author: "dna" });
-    rows.push(dna::Row { kind: "record.key", entity: "record", body: k.result(), author: "dna" });
-    let kr = j.append_rows_as(1, rows, true);
-    if !kr.ok { return fail("record-genesis: memory refused the record's Ledger and key (" + kr.error + "): " + j.last_error()); }
-    return answer("record " + id + " (record.genesis; ledger.adopted, routing " + to_string(dna::ROUTING_VERSION) + "; record.key " + key.public()[0..12] + "…)\n");
+    let kr = j.append_as(1, "record.key", "record", k.result(), "dna", true);
+    if !kr.ok { return fail("record-genesis: memory refused the record's key (" + kr.error + "): " + j.last_error()); }
+    return answer("record " + id + " (record.genesis; record.key " + key.public()[0..12] + "…)\n");
 }
 
 // The record's head, or `none`: the driver asks before it seeds.
@@ -296,8 +285,7 @@ fn graph_reingest_verb(root: String, tree: String, at: String, memory: dna::Memo
     let no_head = record_refusal(root);
     if len(no_head) > 0 { return fail(no_head); }
     if len(at) < 7 { return fail("ingest: name the commit (--at <sha>)"); }
-    // the record as the organization reads it: a ratification lands in
-    // memory's ledger once the ledger is adopted
+    // the record and its Ledger, as the organization reads them
     let journal = dna::RoutedJournal { record: dna::RecordJournal { repo: root }, ledger: memory.ledger };
     if attached_somewhere(journal) { return fail("ingest: an attached application's re-ingest is not built yet; a repository's is"); }
     let g = ops::GraphIngest { root: tree, tools: true };
@@ -924,30 +912,12 @@ fn signers_verb(root: String, sub: String, who_in: String, key_in: String, who_f
 // ---- hale dna ledger --------------------------------------------------------
 //
 // The organism's operational memory is the Ledger, in memory beside the
-// record, from the record's first rows (GH #1590): there is nothing to
-// adopt and nothing to abandon.
+// record, from the record's first row (GH #1590): `hale dna ledger rows`
+// reads it.
 
-fn ledger_status(root: String) -> String {
-    let routing = routing_here(root);
-    let mut out = "routing:    " + to_string(routing) + (if routing == 0 { " (the record is not readable here)" } else { " (the day's work in the Ledger, from the record's first rows)" }) + "\n";
-    let env = dna::memory_source(root, dna::own_dsn_env());
-    // a kept DSN is never printed: it carries the head's password
-    let named = if std::str::starts_with(env, "postgres") { "kept by this clone (.hale/dna/memory.env)" } else { "named here (" + env + ")" };
-    out = out + "memory:     " + (if dna::dsn_set(env) { named } else { "none named here (HALE_DNA_MEMORY_DSN_HEAD)" }) + "\n";
-    if dna::dsn_set(env) {
-        let l = dna::MemoryLedger { repo: root, dsn_env: env };
-        let n = l.revision();
-        let c = l.checkpoint();
-        if len(l.last_error()) > 0 { out = out + "ledger:     memory did not answer (" + l.last_error() + ")\n"; }
-        else { out = out + "ledger:     " + to_string(n) + " row(s)" + (if c.adopted { "" } else { ", and memory states no cutover for it (`hale dna memory migrate` with the owner's DSN)" }) + "\n"; }
-    }
-    return out;
-}
-
-fn ledger_verb(root: String, seed: String, sub: String, why: String, who_flag: String, memory: dna::Memory) -> Answer {
+fn ledger_verb(root: String, sub: String) -> Answer {
     let no_head = record_refusal(root);
     if len(no_head) > 0 { return fail(no_head); }
-    if len(sub) == 0 || sub == "status" { return answer(ledger_status(root)); }
     // the ledger's rows, one JSON object per line, as memory holds them:
     // the supported query an export reads (GH #646 stage 4; GH #985)
     if sub == "rows" {
@@ -964,8 +934,5 @@ fn ledger_verb(root: String, seed: String, sub: String, why: String, who_flag: S
         }
         return answer(out);
     }
-    let who = if len(who_flag) > 0 { who_flag } else { who_am_i() };
-    if sub == "adopt" { return answer("ledger adopt: the record is memory's and has its Ledger from its first rows (routing " + to_string(routing_here(root)) + "); there is nothing to adopt\n"); }
-    if sub == "abandon" { return fail("ledger abandon: the record is memory's, and the Ledger is part of it; there is nothing to abandon (GH #1590)"); }
-    return fail("ledger: `hale dna ledger [status]` or `hale dna ledger rows`");
+    return fail("ledger: `hale dna ledger rows`");
 }

@@ -56,8 +56,11 @@ fn show_verb(root: String, what: String, json: Bool) -> Answer {
     // a project with no record has no graph, and no memory scoped to it
     // yet; a record this clone cannot open is said, not shown empty
     if rows == 0 {
-        if len(dna::record_scope(root)) > 0 && !record.ensure_open() {
-            return fail("hale dna show " + what + ": the record is memory's, and no memory is named that holds it (" + record.last_error() + "); `hale dna memory migrate` prints the head's DSN");
+        // a pinned record has its first row wherever it is kept: none read
+        // is a memory that is not the record's, or none at all
+        if len(dna::record_scope(root)) > 0 {
+            let why = if record.ensure_open() { "the memory reached here holds none of it" } else { record.last_error() };
+            return fail("hale dna show " + what + ": the record is memory's, and no memory is named that holds it (" + why + "); `hale dna memory migrate` prints the head's DSN");
         }
         eprintln("hale dna show: the record has no rows: `hale dna init` seeds it");
         return show_answer(what, json, show_empty(what), 0, 0, true, "\n");

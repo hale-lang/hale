@@ -219,8 +219,8 @@ fn host() {
     // its walk, which resolves no imported type, cannot rule out.
     pinned(
         "host",
-        516,
-        521,
+        512,
+        517,
         "
         GovernanceCli::review_profile  does={syscall,block,time,entropy,env,alloc,secret_use}
         Host::ack_reading  does={publish,alloc}
@@ -312,7 +312,6 @@ fn host() {
         include_names  does={syscall,block,alloc}
         input_digests  does={syscall,block,alloc}
         kill_tree  does={syscall,block,alloc}
-        ledger_status  does={syscall,block,env,alloc}
         memory_fence_for  does={syscall,block,time,entropy,env,alloc,secret_use}
         memory_migrate_verb  does={syscall,block,time,env,alloc,secret_use}
         model_key_vault  does={alloc}
@@ -356,8 +355,8 @@ fn operations() {
     // out), so the row is no longer one the correction changes.
     pinned(
         "operations",
-        524,
-        543,
+        514,
+        533,
         "
         AttemptCommandCodec::graph_position  does={alloc}
         AttemptCommandCodec::receipts_ok  does={alloc}
@@ -398,10 +397,9 @@ fn operations() {
 fn organization_runtime() {
     pinned(
         "organization_runtime",
-        24,
-        24,
+        23,
+        23,
         "
-        HostAuthority::routing  does={syscall,block,time,entropy,env,alloc,secret_use}
         OrganizationLaunchSource::file_digest  does={syscall,block,alloc}
         organization_exit_code  does={syscall,block,alloc}
         ",

@@ -369,8 +369,6 @@ main locus App {
         //      lands in the ledger, an unrelated row in the record, and a
         //      fresh reader finds them in the other order — the lease it
         //      reads is still alpha's, token 1, renewed through 150
-        let adopted = self.record.append(0, "ledger.adopted", "ledger", "{\"routing\": 1, \"checkpoint\": \"x\"}");
-        std::test::assert(adopted.ok, "routing 1 adopted");
         let live = dna::RoutedJournal { record: self.record, ledger: self.ledger };
         let t1 = dna::lease_take(live, key, "alpha", 0, 100);
         std::test::assert(t1.present && t1.token == 1, "alpha takes the lease under token 1, a row of the ledger");

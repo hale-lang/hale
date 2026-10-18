@@ -96,13 +96,12 @@ fn main() {
         else if action == "finish" { story.finish(); }
         else if action == "cancel" { story.append("workflow.settled", ROOT, dna::encode_workflow_outcome(dna::WorkflowOutcome { task_id: ROOT, disposition: "cancelled", reason: "Operator cancelled the sample execution" })); }
         else if action == "redact" { story.append("receipt.redacted", "sha256:face-evidence", "{\"why\":\"visibility changed\"}"); }
-        else if action == "adopt" { story.append("ledger.adopted", "routing", "{\"version\":1}"); }
         else if action == "invalid" { story.append("step.completed", ROOT + "/wf7/s1", dna::encode_step_outcome(dna::StepOutcome { step_id: ROOT + "/wf7/s1", task_id: ROOT, disposition: "completed", members: "publish" })); }
         else { std::test::assert(false, "unknown execution fixture action"); }
     }
-    if action != "adopt" && action != "invalid" {
+    if action != "invalid" {
         let j = dna::RoutedJournal { record: dna::RecordJournal { repo: root }, ledger: dna::MemoryLedger { repo: root } };
-        let q = api::WorkflowRead { j: j, visibility: ops::Queries { j: j, receipts: ops::NoReceipts { } } };
+        let q = api::WorkflowRead { j: j, visibility: ops::Queries { j: j, receipts: ops::NoReceipts { }, routed: true }, routed: true };
         std::test::assert(q.load(), "native projection accepts the fixture: " + q.problem);
     }
 }

@@ -122,7 +122,7 @@ covers the ledger, the roles and protected evidence.
 ### The ledger does not answer
 
 ```text
-memory:     record + ledger (routing 2, adopted at …; operations and leases live in memory; THE LEDGER IS UNREACHABLE (…): what is read here is the last projection, and nothing is admitted until it answers)
+memory:     record + ledger (operations and leases live in memory; THE LEDGER IS UNREACHABLE (…): what is read here is the last projection, and nothing is admitted until it answers)
 ```
 
 The `memory:` line of `status`, on an organism that adopted the
@@ -205,18 +205,6 @@ says why. The reasons include:
   Check which `HALE_DNA_MEMORY_DSN_HEAD` it was given.
 - `` `…` is a row of the record, not the ledger ``: a record kind was
   asked of the ledger.
-
-### There is nothing to adopt
-
-```text
-hale dna ledger adopt
-```
-
-A record born in memory has its Ledger from its first rows: `init`
-appended `ledger.adopted` (routing 2). `ledger adopt` says so, and
-`ledger abandon` is refused. If `history` shows no `ledger.adopted`,
-the record is one an earlier toolchain wrote; see [No record, or a
-toolchain that moved](#no-record-or-a-toolchain-that-moved).
 
 ### Protected evidence
 

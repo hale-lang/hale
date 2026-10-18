@@ -531,8 +531,8 @@ states factual support, not the caller's authority. Each row also carries
 `usage`: the model calls attributed to the Task — its plan, its Mutations'
 attempts and their verdicts — as the same object the executions carry.
 
-Reads require a trusted-local principal and a complete Record-only projection
-before Ledger adoption. They serve only the current captured head: an old
+Reads require a trusted-local principal and a complete projection of the record
+and its Ledger, read as one. They serve only the current captured head: an old
 `snapshot` returns 409, rather than historical Task contents. Hidden Tasks are
 omitted, including identifiers and counts; incomplete, unsupported or over-limit
 history is unavailable. An unavailable projection is not an empty Task list.
@@ -617,9 +617,8 @@ receipt grant. `recover` is independent of `reassign`, so an operator may retain
 lookup after new writes are denied. Lookup does not repeat the mutation and
 resolves the original receipt even after the Task changes.
 
-On a record that adopted its Ledger, `/dna/tasks` reads the record and its
-Ledger as one (`basis.memory` is `record+ledger`), and the `task.reassigned`
-fact is the Ledger's row, written under the head's role and keyed by the
+`/dna/tasks` reads the record and its Ledger as one (`basis.memory` is
+`record+ledger`), and the `task.reassigned` fact is the Ledger's row, written under the head's role and keyed by the
 command, with `command_record_head` naming the Ledger row before it.
 
 This profile does not retire people, transfer responsibility across owners,
@@ -908,13 +907,11 @@ loads the authenticated API data.
 
 Practice documents must match their content digest, proposal metadata and a
 supported native canonical encoding. Redacted/protected text is suppressed even
-when a stale local blob remains. After any Ledger adoption the API still serves
-Record metadata, but withholds canonical text and derived Review questions until
-a later adapter can establish current Ledger receipt visibility. Typed decision
-outcomes remain distinct from withheld display text. The legacy local CLI keeps
-its existing receipt-rendering behavior.
-Ledger abandonment does not restore visibility: it does not copy historical
-receipt restrictions back into Record. Unknown classification metadata and
+when a stale local blob remains. Receipt restrictions are the Ledger's rows, read
+beside the record: when the Ledger cannot be read, the API still serves Record
+metadata but withholds canonical text and derived Review questions. Typed
+decision outcomes remain distinct from withheld display text. The legacy local
+CLI keeps its existing receipt-rendering behavior. Unknown classification metadata and
 conflicting Review subject references likewise cannot establish readable text.
 
 See the [query layer](../operations/README.md) for projection semantics.
@@ -984,9 +981,8 @@ exact details include the immutable bound nodes, admitted attempt histories and
 native transition order. Decimal strings preserve native integer identities.
 `recursive_workflows: false` still means the head supplies no execution service.
 
-This initial adapter reads complete Record routing-0 histories only. Any past
-Ledger adoption makes it unavailable, including after abandonment; it does not
-merge memories or guess a missing Ledger. OIDC reads require an owning-service
+This adapter reads the record and its Ledger as one; a reader that cannot reach
+the Ledger is unavailable rather than guessing what it holds. OIDC reads require an owning-service
 visibility provider and are unavailable here. Reference visibility changes or
 non-public/non-internal Work classes suppress an entire affected execution.
 The response does not dereference receipt bodies, infer runtime identities, or
@@ -1019,10 +1015,7 @@ identity namespace as the record's other commands: payload
 `PersonRetirement { request_id, person, subject_digest, to }`, targeting
 `dna.person`. An empty successor is permitted only for a complete plan with no held Tasks.
 
-Publication creates ordinary Task reassignment facts and a retirement fact
-off-ref, then publishes the complete chain with one Record compare-and-swap.
-Recovery verifies that exact chain and its transfer manifest. On a record that
-adopted its Ledger the transfers are the Ledger's rows, landed first (each keyed
+The transfers are the Ledger's rows, landed first (each keyed
 by the command and the Task, so one asked again lands once), and the retirement
 is the record's row after them, its manifest naming the transfers' ids: the
 rows `hale dna retire` writes there. Two memories take no one write, so a

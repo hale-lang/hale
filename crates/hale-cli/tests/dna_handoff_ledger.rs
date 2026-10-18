@@ -158,7 +158,6 @@ fn a_handoff_crosses_from_an_adopted_firm_and_its_acceptance_settles_the_task_in
     let firm_genesis = record::identity(&firm);
     let acct_genesis = record::identity(&acct);
     let mut service = spine(&firm, &d);
-    assert!(record(&firm).iter().any(|r| r["kind"] == "ledger.adopted"), "the firm's record was born with its Ledger");
     let st = status_until(&firm, env, "t7 [handed]");
     assert!(st.contains("t7 [handed]"), "the handed task is read from the ledger:\n{st}");
 

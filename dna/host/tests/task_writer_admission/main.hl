@@ -1,32 +1,12 @@
 // Real Git predecessor races at the CLI writer's native append boundary.
-// Prior Task/retirement rows are explicit fixtures, not end-to-end Body proof.
+// Prior Task rows are explicit fixtures, not end-to-end Body proof.
 import "../.." as host;
 import "../../../core" as dna;
 import "../../../operations" as ops;
 
-locus RetirementFaultBatch {
-    params { inner: dna::MemoryRecord; fault: String = ""; builds: Int = 0; moves: Int = 0; }
-    fn identity() -> String { return self.inner.identity(); }
-    fn head(chain: String) -> dna::Head { return self.inner.head(chain); }
-    // `builds` counts the rows offered, `moves` the batches that reach the record
-    fn append_batch(chain: String, at: String, rows: dna::RowBatch, sign: Bool, note: String) -> dna::Appended {
-        self.builds = self.builds + rows.len();
-        if self.fault == "build-fails" { return dna::Appended { error: "refused: a row of the batch could not be written" }; }
-        self.moves = self.moves + 1;
-        if self.fault == "arrival" {
-            let born = self.inner.append(chain, at, dna::Row { kind: "task.born", entity: "concurrent task", body: "New responsibility", author: "concurrent" }, false, "");
-            std::test::assert(born.ok, "concurrent birth wins final batch predecessor");
-            let handed = self.inner.append(chain, born.id, dna::Row { kind: "task.handed", entity: "concurrent task", body: "{\"assignee\":\"alice\",\"by\":\"concurrent\"}", author: "concurrent" }, false, "");
-            std::test::assert(handed.ok, "concurrent arrival retained");
-        }
-        let result = self.inner.append_batch(chain, at, rows, sign, note);
-        return if self.fault == "lost-ack" && result.ok { dna::Appended { error: "io: the answer was lost" } } else { result };
-    }
-}
-
 locus RacingTaskAdmission {
     params { root: String; kind: String = ""; entity: String = ""; body: String = "{}"; at: Int = 1; calls: Int = 0; }
-    fn append(expected: String, ledger_expected: Int, routing: Int, row: dna::Row) -> String {
+    fn append(expected: String, ledger_expected: Int, row: dna::Row) -> String {
         self.calls = self.calls + 1;
         if self.calls == self.at && self.kind != "" {
             let record = dna::MemoryRecord { repo: self.root };
@@ -34,7 +14,7 @@ locus RacingTaskAdmission {
             std::test::assert(moved.ok, "the concurrent native fact wins the original predecessor");
         }
         let writer = host::RecordTaskWriterAdmission { root: self.root };
-        return writer.append(expected, ledger_expected, routing, row);
+        return writer.append(expected, ledger_expected, row);
     }
 }
 
@@ -62,34 +42,6 @@ locus TaskWriterAdmissionProof {
         self.append(j, "application.observed", "app", "{}");
         let id = "exact task / é";
         self.append(j, "task.born", id, "Keep the original obligation");
-        if std::str::starts_with(mode, "retire-") {
-            let zero = mode == "retire-zero-no-successor";
-            self.append(j, "task.handed", id, if zero { "{\"assignee\":\"bob\",\"by\":\"leader\"}" } else { "{\"assignee\":\"alice\",\"obligation\":\"approval\",\"acceptance\":\"opaque acceptance\",\"evidence_required\":true,\"by\":\"leader\"}" });
-            if !zero { self.append(j, "task.born", "second task with spaces", "Keep the second responsibility"); self.append(j, "task.handed", "second task with spaces", "{\"assignee\":\"alice\",\"by\":\"leader\"}"); }
-            let before = j.head(); let revision = j.revision();
-            let batch = RetirementFaultBatch { inner: record, fault: if mode == "retire-build-fails" { "build-fails" } else if mode == "retire-lost-ack" { "lost-ack" } else if mode == "retire-arrival-at-cas" { "arrival" } else { "" } };
-            let result = host::retire_admit(root, ".", "alice", if zero { "" } else { "bob" }, "operator", batch, dna::Memory { repo: root });
-            let refreshed = j.refresh();
-            if mode == "retire-build-fails" {
-                std::test::assert(!result.ok && j.head() == before && batch.moves == 0, "failed off-ref build publishes none of the transfers");
-            } else if mode == "retire-arrival-at-cas" {
-                std::test::assert(!result.ok && std::str::contains(result.text, "outcome unknown") && batch.moves == 1, "uncertain CAS never republishes");
-                std::test::assert(self.count(j, "person.retired", "alice") == 0 && self.count(j, "task.reassigned", id) == 0, "new arrival cannot be omitted by partial retirement");
-            } else {
-                std::test::assert(result.ok, "shared native retirement accepted/recovered: " + result.text);
-                std::test::assert(batch.moves == 1 && self.count(j, "person.retired", "alice") == 1, "one final atomic publication even after lost ack");
-                std::test::assert(j.revision() == revision + (if zero { 1 } else { 3 }), "only complete native transfer chain became visible");
-                let codec = ops::PersonRetirementCodec { }; let native = ops::GovernanceCommands { record: record }; let snapshot = native.capture(); let captured = ops::GovernanceJournal { snapshot: snapshot };
-                let fact = codec.decode_fact(captured.read(captured.revision() - 1), captured);
-                std::test::assert(fact.valid && fact.transferred == (if zero { 0 } else { 2 }), "exact command manifest validates for opaque Task IDs");
-                if !zero {
-                    let view = host::open_projection(root, ".", "", dna::Memory { repo: root }); let task = view.task_of(id);
-                    std::test::assert(task.assignee == "bob" && task.state == "handed" && task.obligation == "approval" && task.acceptance == "opaque acceptance" && task.evidence_required, "reassignment preserves obligation and acceptance");
-                    std::test::assert(view.task_of("second task with spaces").assignee == "bob", "space-bearing Task identity remains exact");
-                }
-            }
-            println("PASS Task writer exact admission: ", mode); return;
-        }
         if mode == "accept-retired-recipient" {
             // GH #1123: operator's membership of `receiving` is the graph's,
             // read from memory as the head; without a head's DSN over a

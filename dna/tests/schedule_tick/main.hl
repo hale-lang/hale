@@ -1,7 +1,9 @@
-// A deterministic cadence/claim interleaving. GitJournal.load empties its
-// cached rows before reading the Record; subprocess/helper returns can drain
-// the bus during that interval. This journal models that view transition over
-// a native MemJournal authority, without a Git wrapper or timing-dependent I/O.
+// A deterministic cadence/claim interleaving. A journal that empties its
+// cached rows before reading its memory again can be drained by the bus
+// during that interval (subprocess and helper returns yield). This journal
+// models that view transition over a native MemJournal authority, as the
+// Ledger the effect claims are rows of (GH #1590), without timing-dependent
+// I/O.
 import "../../core" as dna;
 
 type Claim { key: String = ""; }
@@ -119,7 +121,7 @@ fn check(root: String) {
     // The routed journal is written inline: a let-bound RoutedJournal handed
     // to `journal:` is reclaimed twice under the 0.21.0 ownership pass
     // (crash at `__reclaim_MemJournal` from this frame; GH #921 follow-up).
-    let owner = dna::Dna { journal: dna::RoutedJournal { record: record }, org_id: "tick-owner", planned: true };
+    let owner = dna::Dna { journal: dna::RoutedJournal { record: dna::MemJournal { }, ledger: record }, org_id: "tick-owner", planned: true };
     let observer = observer_over(owner.journal, record);
     let other = dna::Dna { journal: other_record, org_id: "tick-bystander", planned: true };
     let moved = record.authority.append(record.authority.revision(), "external", "external", "a second writer advanced the Record");

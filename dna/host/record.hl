@@ -167,30 +167,15 @@ fn journal_text_at(repo: String, commit: String) -> String {
     return rec(repo).text_at(commit);
 }
 
-// GH #646 stage 1, #1590: the routing version this record is on, from its
-// own rows: a record born in memory states it in its first rows
-// (`ledger.adopted`), 0 when the record cannot be read here.
-// (a locus handed to an interface parameter is bound to a local first:
-// passed inline as a temporary it reaches the callee unborn)
-fn routing_here(root: String) -> Int { let authority = org_runtime::HostAuthority { root: root }; return authority.routing(); }
-
-// The routing a row written here goes by: every record is born with its
-// Ledger (GH #1590), so a record this clone cannot read this moment (memory
-// busy) still sends a Ledger kind to the Ledger, never to the record that
-// refuses it.
-fn write_routing(root: String) -> Int { let r = routing_here(root); return if r > 0 { r } else { dna::ROUTING_VERSION }; }
-
 // The `memory:` line of status: which memories the organism has.
 fn routing_line(root: String, memory: dna::Memory) -> String {
-    let r = routing_here(root);
-    if r == 0 { return "the record is not readable here, and with it the routing to its Ledger: point this clone at its memory (`hale dna memory migrate`)"; }
     let sl = memory.leases;
     let probe = sl.current(store_lease_key(root));
     let reach = if sl.reachable { "" } else { "; THE LEDGER IS UNREACHABLE (" + sl.last_error + "): what is read here is the last projection, and nothing is admitted until it answers" };
-    return "record + ledger (routing " + to_string(r) + "; operations and leases live in memory" + reach + ")";
+    return "record + ledger (operations and leases live in memory" + reach + ")";
 }
 
-// An operational row of an adopted organism goes to the Ledger, never into
+// An operational row goes to the Ledger, never into
 // the record itself (#646 decision 3), written straight in by this
 // process under its own role (GH #1026).
 fn ledger_append(root: String, kind: String, entity: String, body: String, memory: dna::Memory) -> Bool {
@@ -272,7 +257,7 @@ fn signing(root: String) -> Bool { return trust_mode(root) == "signed"; }
 // host reconciling beside a busy organism lost them all and dropped the
 // row (GH #603).
 fn append_as(repo: String, kind: String, entity: String, body: String, author: String, memory: dna::Memory) -> Bool {
-    if dna::route(write_routing(repo), kind) == "ledger" { return ledger_submit(repo, kind, entity, body, author, memory); }
+    if dna::memory_of(kind) == "ledger" { return ledger_submit(repo, kind, entity, body, author, memory); }
     return len(record_append(repo, kind, entity, body, author)) > 0;
 }
 
@@ -322,7 +307,6 @@ fn record_append_batch(repo: String, rows: dna::RowBatch) -> String {
 // The count appended, -1 when the record refused (the runs before it
 // stay: each run is its own write).
 fn append_lines(repo: String, text: String, memory: dna::Memory) -> Int {
-    let routing = write_routing(repo);
     let pending = dna::RowBatch { };
     let mut n = 0;
     let mut rest = text;
@@ -334,7 +318,7 @@ fn append_lines(repo: String, text: String, memory: dna::Memory) -> Int {
         let kind = std::json::find_string_field(line, "kind");
         let entity = std::json::find_string_field(line, "entity");
         let body = std::json::find_string_field(line, "body");
-        if dna::route(routing, kind) == "ledger" {
+        if dna::memory_of(kind) == "ledger" {
             if pending.len() > 0 {
                 if len(record_append_batch(repo, pending)) == 0 { return -1; }
                 while pending.len() > 0 { let gone = pending.pop() or dna::Row { }; }
@@ -357,7 +341,7 @@ fn append_lines(repo: String, text: String, memory: dna::Memory) -> Int {
 // refused (#636: a redaction that read "no hold" must not land after a
 // hold did — on either memory).
 fn append_as_at(repo: String, expected: String, ledger_expected: Int, kind: String, entity: String, body: String, author: String, memory: dna::Memory) -> String {
-    if dna::route(write_routing(repo), kind) == "ledger" { return ledger_submit_at(repo, ledger_expected, kind, entity, body, author, memory); }
+    if dna::memory_of(kind) == "ledger" { return ledger_submit_at(repo, ledger_expected, kind, entity, body, author, memory); }
     let r = dna::MemoryRecord { repo: repo, author: if len(author) > 0 { author } else { who_am_i() } };
     let now = r.head(JOURNAL);
     if !now.ok { return "the record's head could not be read: " + now.why; }
@@ -423,7 +407,7 @@ fn record_identity_verb(root: String) -> Answer {
 // collects them.
 fn apply_drops(repo: String) -> Int {
     let mut n = 0;
-    // `candidate.dropped` is a row of the record on every routing
+    // `candidate.dropped` is a row of the record
     let j = dna::RecordJournal { repo: repo, author: "host" };
     let mut i = 0;
     while i < j.revision() {

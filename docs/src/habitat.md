@@ -22,6 +22,32 @@ It must never require incorporation, control of an employer's systems, or a new 
 
 A habitat is not a new compiler primitive, a tenant or a legal entity. The org chart is one view of it among several.
 
+## The habitat is an organism
+
+The habitat is itself a DNA organism, one the compiler ships, as it ships the foundational law and the nursery packs.
+- **What it keeps alive is other organisms' bodies.** Its heart slot is empty, and its substrate is its own body, declared in its genome rather than an attached application.
+- **Its genome is fixed.** It has fixed positions (placement, backends, identity, admission), its practices, and the standard-practices pack (GH #1591) as its law.
+- **It alone may be born without a parent.** Its verb is `hale habitat up`, with two profiles:
+  - `local`: compose on one machine;
+  - `hosted`: a Postgres, NATS, Vault and identity provider the platform already runs.
+
+**Every other organism is grafted, never born free-standing.** A new organism is the habitat's child, under a ceiling the habitat grants and a Board it seats.
+- The child's record, its memory schema, its nerves account and its vault role are the habitat's provisioning acts.
+- The `scope` on `application.attached` (GH #1445) and the per-client roles are the habitat's to decide, never the organism's to assert.
+- `hale dna new` becomes the graft verb, or is retired. Today's `hale dna new` births a free-standing organism, and that is what the tree does now, not the model.
+
+**The habitat deploys what it keeps alive** (GH #1477 is its hands).
+- A habitat-scoped heart's body is deployed by the habitat: placement is elaborated into manifests or compose, and applied with credentials the habitat holds.
+- A foreign-scoped heart's deploy stays its own.
+
+**It senses and acts like any organism.**
+- Its senses are its backends (memory, nerves, vault) and its children: their readiness and capacity (GH #1477), and their metrics, logs and events (GH #1592).
+- Its reflexes restart or rescale a child's body.
+
+**Bootstrap is the one act outside an organism.** The host provisions memory and nerves by hand; the habitat boots on them and takes them over. After that, every provisioning act is a row in the habitat's record.
+
+Once it ships, the habitat gets its own specification (`spec/habitat.md`).
+
 ## Records are the unit of isolation
 
 The unit of isolation is **a record**: its rows, signed, in the memory scoped to it (its own Postgres schema), with the other backends attached to it (nerves, secrets, the senses). The repository is the genome; its `hale.toml` pins which record it belongs to.
@@ -142,7 +168,9 @@ Models, stores, identity, communications, payments, accounting and hosting are b
 | a record per repository, never rewound | yes: [Memory and the record](./dna/memory.md) |
 | deliberate publication between records | connections and handoffs of single facts with origin, lineage and purpose (`hale dna connect`, `hale dna handoff`): [Memory and the record](./dna/memory.md) |
 | protected evidence outside the replicated record | receipts filed as `customer` or `confidential` are kept in memory alone, and every read is a row (`hale dna receipt`): [Memory and the record](./dna/memory.md) |
-| deployment profiles | `hale dna new --profile local \| remote-body`, `hale dna profile`: [Getting started](./dna/getting-started.md) |
+| deployment profiles | `hale dna new --profile local \| remote-body`, `hale dna profile`: a free-standing birth, which graft replaces: [Getting started](./dna/getting-started.md) |
+| the habitat organism: its genome, `hale habitat up` (`local`, `hosted`), its bootstrap | **not built** |
+| graft: every organism a child of the habitat, provisioned by it | **not built**; `hale dna new` births a free-standing organism |
 | a verified principal source | an OIDC-signed head (`git config dna.principal oidc`): [The head and the face](./dna/head.md), [The skin](./dna/skin.md) |
 | roles per client on each backend | memory's roles, one broker account per role and per attached application, and vault slots: [The skin](./dna/skin.md) |
 | money reserved against grants | spend reserved, settled and compensated under a grant's windows: [The spine](./dna/spine.md) |

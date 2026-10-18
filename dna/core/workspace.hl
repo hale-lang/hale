@@ -992,8 +992,8 @@ fn fixture_keep_head(repo: String, head_dsn: String) -> String {
 // (HALE_DNA_MEMORY_DSN_OWNER), keeps the head's DSN in the clone as `hale
 // dna memory migrate` does (`.hale/dna/memory.env`, mode 600, ignored:
 // every memory handle in it dials it when it is given no role's DSN), and
-// appends the record's birth (`record.genesis`,
-// `ledger.adopted`, `record.key`) as `hale dna init` does. "" when the
+// appends the record's birth (`record.genesis`, `record.key`) as `hale dna
+// init` does. "" when the
 // record is born (or was, by an earlier call), else why not.
 fn memory_fixture(repo: String) -> String {
     let owner_env = "HALE_DNA_MEMORY_DSN_OWNER";
@@ -1063,21 +1063,11 @@ fn memory_fixture(repo: String) -> String {
     let j = RecordJournal { repo: repo, author: "dna", dsn: m.spine_dsn };
     let g = j.append_as(0, "record.genesis", "record", body, "dna", true);
     if !g.ok { return "memory refused the record's first row (" + g.error + "): " + j.last_error(); }
-    let a = std::json::Builder { };
-    a.begin_object();
-    a.int_field("routing", ROUTING_VERSION);
-    a.string_field("checkpoint", id);
-    a.int_field("rows", 0);
-    a.string_field("by", "dna");
-    a.end_object();
     let k = std::json::Builder { };
     k.begin_object();
     k.string_field("key", record_key(sch).public());
     k.end_object();
-    let rows = RowBatch { };
-    rows.push(Row { kind: "ledger.adopted", entity: "ledger", body: a.result(), author: "dna" });
-    rows.push(Row { kind: "record.key", entity: "record", body: k.result(), author: "dna" });
-    let r = j.append_rows_as(1, rows, true);
+    let r = j.append_as(1, "record.key", "record", k.result(), "dna", true);
     if !r.ok { return "memory refused the record's birth (" + r.error + "): " + j.last_error(); }
     return "";
 }

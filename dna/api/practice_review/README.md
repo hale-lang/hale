@@ -14,12 +14,9 @@ path. A recorded command does not prove that the body has progressed it. Run the
 body and host separately as usual; this head does not fabricate outcomes, relay
 unsigned facts around the host, or make a multi-clone consistency promise.
 
-This initial composition requires Record-only receipt visibility. Once a Record
-has `ledger.adopted`, new commands fail closed because the owning Ledger may hold
-receipt restrictions that this reader cannot prove absent. Governance facts still
-route to Record, but that alone does not establish routing-1 command support.
-Supporting it requires an owning-service eligibility reader and a decision boundary
-that protects its captured Ledger visibility as well as the Record predecessor.
+Receipt visibility is read over the record and its Ledger, which the head reaches
+under its own role. When the Ledger cannot be read, new commands fail closed,
+because the Ledger may hold receipt restrictions this reader cannot prove absent.
 Raw local receipt blobs are never a fallback for that missing policy evidence.
 Authorized recovery of this principal's existing command receipts remains
 available through the native service's safe outcome projection.
@@ -126,8 +123,7 @@ surface's `requires: [position]` is the gate, and what the change may be is
 the organization's to propose and the Board's to decide. Each writes the rows
 its CLI verb writes, at the `record_head` it was prepared against; a batch's
 rows land together through the Record it was composed with
-(`structure_record`). Like raising work, they are `commands_unsupported` once
-the Record's ledger is adopted. See the [API README](../README.md#commands).
+(`structure_record`). See the [API README](../README.md#commands).
 
 ## The same operations from the CLI
 

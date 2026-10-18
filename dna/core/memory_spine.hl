@@ -369,9 +369,6 @@ locus MemoryLedger {
         self.store.request = "";
         return r;
     }
-    // ---- the cutover memory states for this Ledger
-    fn cutover(checkpoint: String, copied: Int, routing: Int) -> Bool { if !self.ensure_open() { return false; } return self.store.cutover(checkpoint, copied, routing); }
-    fn checkpoint() -> Cutover { if !self.ensure_open() { return Cutover { }; } return self.store.checkpoint(); }
     fn last_error() -> String { return if len(self.failure) > 0 { self.failure } else { self.store.last_error() }; }
 }
 

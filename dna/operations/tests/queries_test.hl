@@ -154,15 +154,14 @@ fn test_queries(repo: String) {
     append(j, "review.settled", "unlinked", "approve by private display text");
     let catalog = ops::Queries { j: dna::RecordJournal { repo: repo }, location: repo };
     let catalog_count = catalog.practice_count();
-    append(j, "ledger.adopted", "ledger", "{\"routing\":1}");
     // a reader of the record alone (no location to reach its Ledger) cannot
     // prove a receipt's visibility, and fails closed
     let adopted = ops::Queries { j: dna::RecordJournal { repo: repo }, receipts: dna::MemoryReceipts { repo: repo } };
     std::test::assert_eq_str(adopted.practice_of(plain).text_status, "source_unavailable", "Record cannot prove Ledger receipt visibility");
-    std::test::assert_eq_str(adopted.review_of(dna::knowledge_review_id(plain)).question, "", "adopted question also withheld");
+    std::test::assert_eq_str(adopted.review_of(dna::knowledge_review_id(plain)).question, "", "its question also withheld");
     std::test::assert_eq_int(adopted.practice_count(), catalog_count, "safe catalog remains available");
-    std::test::assert_eq_str(adopted.review_of("unlinked").settled, "", "adoption suppresses raw settlement without knowledge linkage");
-    std::test::assert_eq_str(adopted.review_of("unlinked").text_status, "source_unavailable", "unlinked subject visibility is unknown after adoption");
+    std::test::assert_eq_str(adopted.review_of("unlinked").settled, "", "a reader without the Ledger suppresses raw settlement without knowledge linkage");
+    std::test::assert_eq_str(adopted.review_of("unlinked").text_status, "source_unavailable", "unlinked subject visibility is unknown without the Ledger");
     std::test::assert_eq_str(adopted.review_of("unlinked").outcome, "approve", "safe typed decision survives suppression");
     // the record's own head: two memories read as one have no order between them
     let final_head = dna::RecordJournal { repo: repo }.head();
@@ -172,12 +171,6 @@ fn test_queries(repo: String) {
     let loaded = dna::RoutedJournal { record: dna::RecordJournal { repo: repo }, ledger: dna::MemoryLedger { repo: repo } };
     std::test::assert_eq_str(dna::RecordJournal { repo: repo }.head(), final_head, "reads append no facts");
     std::test::assert_eq_int(loaded.revision(), final_count, "reads append no disclosure events");
-    append(j, "ledger.abandoned", "ledger", "{}");
-    let abandoned = ops::Queries { j: dna::RecordJournal { repo: repo }, receipts: dna::MemoryReceipts { repo: repo }, location: repo };
-    std::test::assert(len(receipts.read(ops::raw_digest(plain))) > 0, "stale body persists after adoption and abandonment");
-    std::test::assert_eq_str(abandoned.practice_of(plain).text_status, "source_unavailable", "abandonment cannot reconstruct dropped Ledger restrictions");
-    std::test::assert_eq_str(abandoned.practice_of(plain).text, "", "abandonment never re-exposes stale body");
-    std::test::assert_eq_str(abandoned.review_of("unlinked").settled, "", "abandonment never re-exposes unlinked review display");
 
 }
 

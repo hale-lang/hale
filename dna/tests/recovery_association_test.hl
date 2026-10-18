@@ -89,8 +89,6 @@ main locus App {
         self.put("intent.offered", "i3", "format the tree");
         self.put("task.born", "t3", "i3: format the tree");
         self.put("task.done", "t3", "formatted");
-        let a = self.record.append(self.record.revision(), "ledger.adopted", "ledger", "{\"routing\":1,\"checkpoint\":\"probe\"}");
-        std::test::assert(a.ok, "routing enabled");
 
         self.one = dna::Dna { journal: self.chronological, planned: true, org_id: "assoc-one" };
         self.check("one memory", self.one);

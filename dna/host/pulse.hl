@@ -19,10 +19,7 @@
 // application chose, and the row's entity is `<app>/<event>/<id>`. A
 // second arrival of an entity already recorded — a redelivery, a replay —
 // is refused. Whether it is there is decided at the revision the row is
-// appended at, so two hosts pulling the same durable land it once. Over a
-// shared record that holds its rows in git (routing 0), each owner's clone
-// appends on its own, so only the ledger can decide an id across owners:
-// there a reading waits in the stream until the ledger is adopted.
+// appended at, so two hosts pulling the same durable land it once.
 
 const READING_KIND: String = "reading.recorded";
 // The largest event body a reading keeps; a larger one is refused.

@@ -38,7 +38,7 @@ fn the_record_is_memory_s_and_every_clone_reaches_it() {
     // the genome pins the record; nothing of the record is a ref or a file
     let id = record::identity(&app);
     assert_eq!(id.len(), 64, "hale.toml pins the record's identity: {out}");
-    assert!(out.contains("born    record ") && out.contains("record.genesis; ledger.adopted, routing 2; record.key"), "the record is born in memory: {out}");
+    assert!(out.contains("born    record ") && out.contains("record.genesis; record.key"), "the record is born in memory: {out}");
     assert_eq!(git(&["for-each-ref", "refs/dna/"], &app), "", "no ref of the record");
     assert!(!app.join(".hale/dna/journal.jsonl").exists(), "no file of the record");
     let rows: Vec<serde_json::Value> = record::text(&app).lines().filter_map(|l| serde_json::from_str(l).ok()).collect();

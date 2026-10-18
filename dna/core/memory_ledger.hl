@@ -12,33 +12,31 @@
 // a unique constraint on (kind, entity): the exclusive claim is the
 // database's, not a scan's. Every row keeps its sha256 chain as the
 // memory journal does, so a reader verifies the Ledger the same way.
-//
-// Adoption (`hale dna ledger adopt`) copies the record's operational rows
-// here keyed by their commit, so a copy interrupted anywhere is rerun,
-// never repaired; the cutover row names the record head it was taken at.
-
-// What the Ledger says about its adoption.
-type Cutover {
-    adopted: Bool = false;
-    checkpoint: String = ""; // the record head the operational rows were copied at
-    copied: Int = 0;
-    routing: Int = 0;
-}
 
 // What a reader of the ledger needs — the graph's visibility, a head's
-// status: the rows, their head and the adoption checkpoint (GH #985).
+// status: the rows and their head (GH #985).
 interface LedgerView {
     fn revision() -> Int;
     fn head() -> String;
     fn refresh() -> Bool;
     fn read(i: Int) -> Event;
     fn verify_chain() -> Bool;
-    fn checkpoint() -> Cutover;
     fn last_error() -> String;
 }
 
+// A Ledger with no rows, for a reader handed none (an in-process
+// fixture's record alone): read, it is empty, and it never dials anything.
+locus EmptyLedger {
+    fn revision() -> Int { return 0; }
+    fn head() -> String { return "genesis"; }
+    fn refresh() -> Bool { return false; }
+    fn read(i: Int) -> Event { return Event { seq: -1 }; }
+    fn verify_chain() -> Bool { return true; }
+    fn last_error() -> String { return ""; }
+}
+
 // The Ledger as memory holds it: a `Journal`, scoped to a record, opened
-// before use, with the adoption steps.
+// before use.
 interface Ledger {
     fn kind() -> String;
     fn scope(record: String);
@@ -53,10 +51,6 @@ interface Ledger {
     fn read(i: Int) -> Event;
     fn verify_chain() -> Bool;
     fn author_of(i: Int) -> String;
-    // ---- the cutover memory states for the record's Ledger (written by
-    // migration, read by the visibility checks)
-    fn cutover(checkpoint: String, copied: Int, routing: Int) -> Bool;
-    fn checkpoint() -> Cutover;
 }
 
 // The row as it is served: the event plus its author, and the role that
@@ -302,30 +296,6 @@ locus PqLedger {
         let rev = self.rows.len();
         if expected != rev { return AppendResult { error: "stale_revision", expected: expected, actual: rev }; }
         return self.gate(expected, kind, entity, body);
-    }
-    fn put_meta(key: String, value: String) -> Bool {
-        let a = db::Args { };
-        a.add(key);
-        a.add(value);
-        let r = self.run_x("INSERT INTO ledger_meta (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value", a);
-        if !r.ok { return self.fail("meta " + key, r.err); }
-        return true;
-    }
-    fn meta(key: String) -> String {
-        let a = db::Args { };
-        a.add(key);
-        let rows = self.run_q("SELECT value FROM ledger_meta WHERE key = $1", a);
-        if !rows.ok { self.error = "meta " + key + ": " + rows.err.kind + " " + rows.err.detail; return ""; }
-        if rows.n == 0 { return ""; }
-        return trim_nl(line_one(rows.csv));
-    }
-    fn cutover(checkpoint: String, copied: Int, routing: Int) -> Bool {
-        return self.put_meta("checkpoint", checkpoint) && self.put_meta("copied", to_string(copied)) && self.put_meta("routing", to_string(routing)) && self.put_meta("record", self.record_id);
-    }
-    fn checkpoint() -> Cutover {
-        let at = self.meta("checkpoint");
-        if len(at) == 0 { return Cutover { }; }
-        return Cutover { adopted: true, checkpoint: at, copied: std::str::parse_int(self.meta("copied")) or 0, routing: std::str::parse_int(self.meta("routing")) or 0 };
     }
 }
 

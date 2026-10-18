@@ -255,8 +255,6 @@ main locus App {
         let north = line_value(smigrated.stdout, "HALE_DNA_MEMORY_DSN_HEAD_NORTH");
         std::test::assert(smigrated.code == 0 && std::str::starts_with(shead, "postgres") && std::str::starts_with(acme, "postgres") && std::str::starts_with(north, "postgres"), "memory migrated for the shared record, a head role per owner: " + smigrated.stdout + smigrated.stderr);
         let spine = start_spine(shared, owner, "acme=ka north=kb");
-        // the ledger is the record's from its first rows (GH #1590): nothing to adopt
-        std::test::assert(len(record_row(shared, "ledger.adopted", "ledger", 30)) > 0, "the record is born with its ledger");
         std::test::assert(chart_holds(acme, srecord, "org_members WHERE person = 'bob' AND owner = 'north'", 300), "the nodes project the graph's memberships into memory: " + (std::io::fs::read_file(shared + "/.hale/dev.log") or ""));
         // a head's write in its owner's member's name lands, in her name, done
         std::test::assert_eq_str(write_as(acme, srecord, "task.planned", "i4", "{}", "alice", ""), "", "acme's head writes in alice's name");

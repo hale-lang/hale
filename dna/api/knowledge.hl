@@ -162,25 +162,21 @@ locus KnowledgeWire {
         return true;
     }
     fn basis(basis: String, request: KnowledgeRequest) -> Bool {
-        if !self.fields(basis, "record_id projection_record_head projection_record_revision projection_watermark store_generation routing_version visibility_record_head visibility_record_revision visibility_ledger_head visibility_ledger_revision reader_scope target coverage") { return false; }
-        if !self.texts(basis, "record_id projection_record_head projection_record_revision projection_watermark store_generation routing_version visibility_record_head visibility_record_revision reader_scope target coverage") { return false; }
-        let numbers = "projection_record_revision projection_watermark store_generation routing_version visibility_record_revision";
+        if !self.fields(basis, "record_id projection_record_head projection_record_revision projection_watermark store_generation visibility_record_head visibility_record_revision visibility_ledger_head visibility_ledger_revision reader_scope target coverage") { return false; }
+        if !self.texts(basis, "record_id projection_record_head projection_record_revision projection_watermark store_generation visibility_record_head visibility_record_revision reader_scope target coverage") { return false; }
+        let numbers = "projection_record_revision projection_watermark store_generation visibility_record_revision visibility_ledger_revision";
         let mut i = 0;
         while i < dna::word_count(numbers) {
             if !self.decimal(basis, dna::nth_word(numbers, i), false) { return false; }
             i = i + 1;
         }
-        let ledger_head = self.raw(basis, "visibility_ledger_head");
-        let ledger_revision = self.raw(basis, "visibility_ledger_revision");
-        if self.string(basis, "routing_version") == "0" {
-            if ledger_head != "null" || ledger_revision != "null" { return false; }
-        } else if !self.text(ledger_head) || !self.source_token(self.string(basis, "visibility_ledger_head")) || !self.decimal(basis, "visibility_ledger_revision", false) { return false; }
+        if !self.text(self.raw(basis, "visibility_ledger_head")) || !self.source_token(self.string(basis, "visibility_ledger_head")) { return false; }
         return self.string(basis, "record_id") == request.source.identity && self.string(basis, "projection_record_head") == request.source.head && self.string(basis, "visibility_record_head") == request.source.head && self.string(basis, "projection_record_revision") == to_string(request.source.revision) && self.string(basis, "visibility_record_revision") == to_string(request.source.revision) && self.string(basis, "projection_watermark") == to_string(request.source.revision) && self.string(basis, "reader_scope") == dna::digest_of("knowledge-reader/1\n" + request.reader) && self.string(basis, "target") == request.query.target && self.string(basis, "coverage") == "native_ideas_edges_bindings";
     }
     fn basis_snapshot(basis: String) -> String {
         // Same fixed serialization order as the private graph protocol. Raw
         // whitespace/key order or equivalent Unicode escapes cannot alter it.
-        let names = "record_id projection_record_head projection_record_revision projection_watermark store_generation routing_version visibility_record_head visibility_record_revision visibility_ledger_head visibility_ledger_revision reader_scope target coverage";
+        let names = "record_id projection_record_head projection_record_revision projection_watermark store_generation visibility_record_head visibility_record_revision visibility_ledger_head visibility_ledger_revision reader_scope target coverage";
         let b = std::json::Builder { };
         b.begin_object();
         let mut i = 0;

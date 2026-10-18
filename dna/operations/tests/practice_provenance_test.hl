@@ -45,7 +45,7 @@ locus PracticeProvenanceCases {
         if mode == "support" { self.append(j, "receipt.withheld", admission.digest, "{}"); }
         if mode == "legacy" { self.append(j, "practice.proposed", "legacy-scoped-id", "{\"digest\":\"" + request.candidate_digest + "\",\"by\":\"legacy-person\",\"because\":\"legacy reason\"}"); }
         let doc = native.document(request); let receipts = PracticeReceiptFixture { expected: ops::raw_digest(request.candidate_digest), document: if mode == "receipt" { doc + " " } else { doc } };
-        let queries = ops::Queries { j: j, receipts: receipts }; let found = queries.practice_of(request.candidate_digest);
+        let queries = ops::Queries { j: j, receipts: receipts, routed: true }; let found = queries.practice_of(request.candidate_digest);
         std::test::assert_eq_int(queries.practice_count(), 1, "named catalog membership unchanged");
         if mode == "valid" {
             std::test::assert_eq_str(found.request_id, request.request_id, "scoped native identity");

@@ -65,7 +65,7 @@ fn rows(repo: String) -> String {
         rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
         let kind = std::json::find_string_field(line, "kind");
         // the record's birth (GH #1590) is not what init seeded
-        if len(line) > 0 && !std::str::starts_with(kind, "record.") && kind != "ledger.adopted" { out = out + kind + " " + std::json::find_string_field(line, "entity") + "\n"; }
+        if len(line) > 0 && !std::str::starts_with(kind, "record.") { out = out + kind + " " + std::json::find_string_field(line, "entity") + "\n"; }
     }
     return out;
 }
@@ -88,7 +88,7 @@ fn has_record(repo: String) -> Bool {
         let line = if nl < 0 { rest } else { rest[0..nl] };
         rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
         let kind = std::json::find_string_field(line, "kind");
-        if len(kind) > 0 && !std::str::starts_with(kind, "record.") && kind != "ledger.adopted" { return true; }
+        if len(kind) > 0 && !std::str::starts_with(kind, "record.") { return true; }
     }
     return false;
 }

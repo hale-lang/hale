@@ -49,7 +49,7 @@ async function fixture(page, options = {}) {
       const selected = script.rows.filter(row => (!id || row.id === id) && (!assignee || row.assignee === assignee));
       const items = structuredClone(selected.slice(offset, offset + limit));
       if (!id && script.bad === 'item' && items[0]) { items[0].assignee = 'dev'; items[0].history[0].to = 'dev'; }
-      const data = { profile: 'dna.task-administration.v1', items, page: pageInfo(selected.length, offset, limit), basis: { projection: 'dna.task-administration/1', memory: 'record', routing: '0', record_head: source(app).record_head, record_revision: source(app).record_revision } };
+      const data = { profile: 'dna.task-administration.v1', items, page: pageInfo(selected.length, offset, limit), basis: { projection: 'dna.task-administration/1', memory: 'record+ledger', record_head: source(app).record_head, record_revision: source(app).record_revision } };
       if (assignee) data.assignee = script.bad === 'echo' ? 'dev' : assignee;
       if (!id && script.bad === 'missing') delete data.assignee;
       return send(200, wrap(data, app));

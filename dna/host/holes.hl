@@ -179,8 +179,7 @@ fn vacate_verb(root: String, seed: String, name: String, holder: String, dry_run
 fn apply_text(root: String, seed: String, text: String, dry_run: Bool, who_flag: String, pack: String, on_holes: Bool, memory: dna::Memory) -> Answer {
     let no_head = record_refusal(root);
     if len(no_head) > 0 { return fail(no_head); }
-    // the record as the organization reads it: a ratification lands in
-    // memory's ledger once the ledger is adopted
+    // the record and its Ledger, as the organization reads them
     let journal = dna::RoutedJournal { record: dna::RecordJournal { repo: root }, ledger: memory.ledger };
     let receipts = dna::MemoryReceipts { repo: root };
     let plan = dna::batch_plan_on(journal, receipts, text, if on_holes { dna::batch_init_holes(journal) } else { "" });

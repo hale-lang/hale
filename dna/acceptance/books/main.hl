@@ -333,7 +333,7 @@ fn completion_of(journal: String, task: String, state: String) -> String {
 // obligation as the record has it; totals by currency; the record's head.
 // The ledger's rows, when memory is named here (GH #646 stage 4; GH #985):
 // the export is a supported ledger query, `hale dna ledger rows`, never SQL
-// of its own; with no memory the record alone is read, as before adoption.
+// of its own; with no memory named it reads nothing.
 fn ledger_rows() -> String {
     let out = hale("dna\nledger\nrows");
     return if out.code == 0 { out.stdout } else { "" };

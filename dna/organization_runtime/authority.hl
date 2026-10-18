@@ -22,7 +22,6 @@ locus HostAuthority {
     // GH #1123: a body that names its organization (`dna.owner`) is one
     // of a shared record's bodies; which positions it owns is the graph's.
     fn shared() -> Bool { return len(self.owner()) > 0; }
-    fn routing() -> Int { let j = dna::RecordJournal { repo: self.root, author: "host" }; return dna::routing_of(j); }
     fn lease_key() -> String { if self.shared() { return "owner/" + self.owner(); } return "body"; }
     fn store_lease(sl: dna::MemoryLeases) -> BodyLeaseView {
         // GH #985: the lease table in memory, through the process's own

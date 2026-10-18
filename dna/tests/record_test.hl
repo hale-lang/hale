@@ -64,7 +64,7 @@ main locus App {
         std::test::assert_eq_str(dna::memory_fixture(dir), "", "the record is born in memory");
         let g = dna::MemoryRecord { repo: dir };
         std::test::assert_eq_str(g.kind(), "memory", "memory: its kind");
-        std::test::assert_eq_int(g.count("journal"), 3, "memory: a record is born with three rows");
+        std::test::assert_eq_int(g.count("journal"), 2, "memory: a record is born with two rows, its genesis and its key");
         let head = g.head("journal").id;
         let a = g.append("journal", head, dna::Row { kind: "note.kept", entity: "n1", body: "a fact", author: "dna" }, false, "");
         std::test::assert(a.ok && g.head("journal").id == a.id, "memory: an append at the head lands, and is the head");

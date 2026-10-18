@@ -21,7 +21,7 @@ test('Work reads the native bound recipe, nested admission, failed attempt histo
   await open(page, service);
   const payload = await (await response).json();
   await writeFile(testInfo.outputPath('native-workflow.json'), JSON.stringify(payload, null, 2));
-  expect(payload.data.basis).toEqual({ projection: 'dna.workflow-projection/1', memory: 'record', routing: '0', runtime_association: false });
+  expect(payload.data.basis).toEqual({ projection: 'dna.workflow-projection/1', memory: 'record+ledger', runtime_association: false });
   expect(payload.data.items[0].nodes.filter(n => n.kind === 'task')).toHaveLength(2);
   await expect(page.getByRole('region', { name: 'Execution register', exact: true }).locator('.record-link')).toHaveCount(3);
   await expect(steps(page).locator(':scope > li')).toHaveCount(2);
@@ -114,12 +114,8 @@ test('Split memory and invalid native facts report source failures rather than a
   await expect(steps(page)).toHaveCount(0);
 });
 
-test('A Ledger adoption and authentication loss both remove stale execution data', async ({ page, service }) => {
+test('An authentication loss removes stale execution data', async ({ page, service }) => {
   await open(page, service);
-  await service.mutate('adopt');
-  await refresh(page);
-  await expect(page.locator('#content')).toContainText('owning-service execution reader is not connected');
-  await expect(steps(page)).toHaveCount(0);
   await page.route('**/dna/workflows?*', route => route.fulfill({ status: 401, json: errorBody('unauthenticated', 'Sign in again.') }));
   await refresh(page);
   await expect(page.getByRole('region', { name: 'Working context', exact: true })).toBeHidden();

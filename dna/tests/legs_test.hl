@@ -783,8 +783,8 @@ locus App {
         let asked = heart.ask("/x", "");
         std::test::assert(!asked.ok && std::str::contains(asked.error, "#987"), "the heart refuses, naming #987");
     }
-    // GH #1590: a record is born in memory with its Ledger (`ledger.adopted`
-    // among its first rows), so there is no adoption to ask for: the second
+    // GH #1590: a record is born in memory with its Ledger, so there is no
+    // adoption to ask for: the second
     // pass runs on the same record, the organism started again
     fn adopt() {
         let moved = self.journal.refresh();

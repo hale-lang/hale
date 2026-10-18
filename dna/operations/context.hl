@@ -4,8 +4,8 @@
 // position and its grant take — is the core's (dna/core/hat.hl), since
 // the owner builds one for the edits it asks and a head builds one for
 // the leg that asks; this is the head's reader. It reads a journal the
-// caller loaded — the record alone, or the record with the ledger an
-// organism adopted (a routed journal under the head's role) — and memory
+// caller loaded — the record with its ledger (a routed journal under the
+// head's role) — and memory
 // under the head's role for the practices, as structure; keeps the hat in
 // memory by its digest when memory is there; and says how the practices
 // were read when it is not. Rendered twice at one head it is one digest;
@@ -23,8 +23,8 @@ interface KnowledgeSource {
 // The reader: a caller-owned, already loaded journal, and memory under
 // the caller's role for the practices (a head's; without memory the hat
 // says so and carries none). `ledger_ready` says the journal carries the
-// adopted ledger's rows: an adoption the journal cannot follow is a hat
-// the reader refuses.
+// Ledger's rows, where the executions are: without them the reader refuses
+// the hat.
 locus HatReader {
     params {
         j: dna::Journal;
@@ -49,11 +49,13 @@ locus HatReader {
     // organization ever ran, is no measure of what one hat needs.
     fn load(root: String) -> Bool {
         if self.loaded { return true; }
+        // the executions are the Ledger's (GH #1590): the hat reads it from
+        // memory under the head's role
+        if !self.ledger_ready { return self.fail("context_source_unavailable", "the executions are the Ledger's; the hat reads it from memory under the head's role (HALE_DNA_MEMORY_DSN_HEAD), which is not named here"); }
         let mut i = 0;
         let mut bytes = 0;
         while i < self.j.revision() {
             let e = self.j.read(i);
-            if e.kind == "ledger.adopted" && !self.ledger_ready { return self.fail("context_source_unavailable", "this application has adopted a Ledger; the hat reads it from memory under the head's role (HALE_DNA_MEMORY_DSN_HEAD), which is not named here"); }
             if self.workflow_fact(e.kind) && of_execution(e.entity, root) {
                 bytes = bytes + len(e.body);
                 if len(e.body) > 65536 || bytes > 524288 || self.p.fact_count() >= 512 { return self.fail("context_read_limit", "the context reader's fact budget was exceeded"); }
