@@ -1251,6 +1251,7 @@ pub fn check_bundle_rules(
     diags.extend(crate::capability::uses::admission_diags(inputs.uses, inputs.target, &bundle.import_renames));
     diags.extend(publish_in_default_diags(bundle));
     diags.extend(crate::route_params_copy::stale_route_params_diags(bundle));
+    diags.extend(crate::param_place_writes::param_place_write_diags(bundle, inputs.top));
     diags.extend(walk.diags.iter().cloned());
     let mut by_decl = walk.by_decl.clone();
     let raw_frame_topics = raw_frame_topics(bundle, inputs.bindings);
@@ -10891,6 +10892,10 @@ struct LocalSym {
     /// A cell has no value-level type the checker reasons about
     /// (`Unknown`); its slot is what the rules on it read.
     cell: Option<CellOrigin>,
+    /// A parameter, or a bounded local viewing a place under one: an
+    /// element `push`/`set` stores through it would be kept in this
+    /// call's arena, not where the caller's place lives.
+    param_place: bool,
 }
 
 /// F.22: where a `Cell<T>` came from: the slot of the locus whose body
@@ -14540,7 +14545,7 @@ impl<'a> Checker<'a> {
                         }
                     };
                     self.note_view_binding(&p.name, &ty, Some(&p.ty));
-                    self.locals.insert(&p.name.name, LocalSym { ty, is_mut: false, cell: None });
+                    self.locals.insert(&p.name.name, LocalSym { ty, is_mut: false, cell: None, param_place: true });
                 }
                 self.check_block(&lc.body);
                 self.locals.pop();
@@ -14552,7 +14557,7 @@ impl<'a> Checker<'a> {
                 for p in &md.params {
                     self.check_type_annotation(&p.ty);
                     let ty = self.resolve_te(&p.ty);
-                    self.locals.insert(&p.name.name, LocalSym { ty, is_mut: false, cell: None });
+                    self.locals.insert(&p.name.name, LocalSym { ty, is_mut: false, cell: None, param_place: true });
                 }
                 // A mode that declares `-> T` returns a value; one that
                 // does not returns nothing, like a hook. The value's
@@ -14616,7 +14621,7 @@ impl<'a> Checker<'a> {
                     self.check_type_annotation(&p.ty);
                     let ty = self.resolve_te(&p.ty);
                     self.note_view_binding(&p.name, &ty, Some(&p.ty));
-                    self.locals.insert(&p.name.name, LocalSym { ty, is_mut: false, cell: None });
+                    self.locals.insert(&p.name.name, LocalSym { ty, is_mut: false, cell: None, param_place: true });
                 }
                 self.check_block(&fd.body);
                 self.locals.pop();
@@ -15271,7 +15276,7 @@ impl<'a> Checker<'a> {
         for p in &decl.params {
             let ty = self.resolve_param_te(&p.ty);
             self.note_view_binding(&p.name, &ty, Some(&p.ty));
-            self.locals.insert(&p.name.name, LocalSym { ty, is_mut: false, cell: None });
+            self.locals.insert(&p.name.name, LocalSym { ty, is_mut: false, cell: None, param_place: true });
         }
         self.check_fn_body(&decl.body);
         self.locals.pop();
@@ -15711,6 +15716,49 @@ impl<'a> Checker<'a> {
     /// F.22: the slot a `Cell<T>` value came from, when `e` is one: a
     /// slot's `acquire()` / `alloc()` in this locus's body, or a binding
     /// of one.
+    /// Whether `e` is a place under a parameter of this body (`r.xs`,
+    /// `r`, or a bounded local viewing one): its storage is the caller's,
+    /// wherever the caller keeps it.
+    fn under_param_place(&self, e: &Expr) -> bool {
+        match e {
+            Expr::Ident(i) => self.locals.lookup(&i.name).is_some_and(|s| s.param_place),
+            Expr::Field { receiver, .. } | Expr::Index { receiver, .. } => self.under_param_place(receiver),
+            _ => false,
+        }
+    }
+
+    /// GH #1608 follow-up: a `push` or `set` of a pointer-shaped element
+    /// (a `String`, `Bytes` or a record) into a bounded place under a
+    /// parameter is refused. The element is kept in the arena this call
+    /// allocates in, and the place is the caller's, which may be a
+    /// locus's field (`fill(self.row)`), so the field would hold a block
+    /// the caller's frame frees. A scalar element is stored inline and is
+    /// let through.
+    fn refuse_element_through_param(&mut self, intrinsic: &str, recv: &Expr, elem: &Ty) {
+        let pointer = match elem {
+            Ty::Prim(PrimType::String) | Ty::Prim(PrimType::Bytes) => true,
+            Ty::Named(n) => matches!(self.top.lookup(n), Some(TopSymbol::Type(TypeInfo { kind: TypeKind::Struct(_), .. }))),
+            _ => false,
+        };
+        // A free fn keeps the element in its caller's arena, which is
+        // sound for a place of the caller's own frame; its calls are judged
+        // where they hand it a place (`crate::param_place_writes`). A locus
+        // member keeps it in its own scratch, which no caller outlives.
+        if !pointer || self.current_locus.is_none() || !self.under_param_place(recv) {
+            return;
+        }
+        self.diags.push(Diag::ty(
+            recv.span(),
+            format!(
+                "`{intrinsic}` of a `{}` element into a bounded place under a parameter of a locus member: \
+                 the element would be kept in this member's scratch, which its return frees, and the place is \
+                 the caller's. Return the value for the caller to `{intrinsic}`, or write through `self` in a \
+                 method of the locus that holds the place",
+                elem.display()
+            ),
+        ));
+    }
+
     fn cell_of(&self, e: &Expr) -> Option<CellOrigin> {
         match e {
             Expr::Ident(id) => self.locals.lookup(&id.name).and_then(|s| s.cell.clone()),
@@ -15897,9 +15945,10 @@ impl<'a> Checker<'a> {
                 };
                 self.note_view_binding(name, &bound, ty.as_ref());
                 let cell = self.cell_of(value);
+                let param_place = matches!(bound, Ty::Bounded(_, _)) && self.under_param_place(value);
                 self.locals.insert(
                     &name.name,
-                    LocalSym { ty: bound, is_mut: *is_mut, cell },
+                    LocalSym { ty: bound, is_mut: *is_mut, cell, param_place },
                 );
             }
             Stmt::LetTuple { is_mut, names, ty, value, .. } => {
@@ -15945,7 +15994,7 @@ impl<'a> Checker<'a> {
                     self.note_view_binding(n, t, None);
                     self.locals.insert(
                         &n.name,
-                        LocalSym { ty: t.clone(), is_mut: *is_mut, cell: None },
+                        LocalSym { ty: t.clone(), is_mut: *is_mut, cell: None, param_place: false },
                     );
                 }
             }
@@ -16128,7 +16177,7 @@ impl<'a> Checker<'a> {
                 };
                 self.locals.push();
                 self.note_view_binding(name, &elem, None);
-                self.locals.insert(&name.name, LocalSym { ty: elem, is_mut: false, cell: None });
+                self.locals.insert(&name.name, LocalSym { ty: elem, is_mut: false, cell: None, param_place: false });
                 self.check_block(body);
                 self.locals.pop();
             }
@@ -16444,7 +16493,7 @@ impl<'a> Checker<'a> {
                 self.locals.push();
                 self.locals.insert(
                     &binding.name,
-                    LocalSym { ty: Ty::Unknown, is_mut: false, cell: None },
+                    LocalSym { ty: Ty::Unknown, is_mut: false, cell: None, param_place: false },
                 );
                 for s in &body.stmts {
                     self.check_stmt(s);
@@ -16612,7 +16661,7 @@ impl<'a> Checker<'a> {
         match pat {
             Pattern::Binding(id) => self.locals.insert(
                 &id.name,
-                LocalSym { ty: Ty::Unknown, is_mut: false, cell: None },
+                LocalSym { ty: Ty::Unknown, is_mut: false, cell: None, param_place: false },
             ),
             Pattern::Constructor { args, .. } => {
                 for a in args {
@@ -16862,6 +16911,7 @@ impl<'a> Checker<'a> {
                                 ty: err_ty,
                                 is_mut: false,
                                 cell: None,
+                                param_place: false,
                             },
                         );
                         let _ = self.check_expr(rhs);
@@ -16877,6 +16927,7 @@ impl<'a> Checker<'a> {
                                 ty: err_ty,
                                 is_mut: false,
                                 cell: None,
+                                param_place: false,
                             },
                         );
                         let new_payload_ty =
@@ -18509,7 +18560,7 @@ impl<'a> Checker<'a> {
         // a set as any value of the member does
         if let Some(v) = vs.iter().find(|v| v.name == member.name) {
             if let ([Pattern::Binding(id)], Some(ty)) = (args.as_slice(), v.fields.first()) {
-                self.locals.insert(&id.name, LocalSym { ty: ty.clone(), is_mut: false, cell: None });
+                self.locals.insert(&id.name, LocalSym { ty: ty.clone(), is_mut: false, cell: None, param_place: false });
             }
             return;
         }
@@ -21626,6 +21677,7 @@ impl<'a> Checker<'a> {
                                 ));
                             }
                             if id.name == "set" {
+                                self.refuse_element_through_param("set", &args[0], &elem);
                                 if let Some(i) = args.get(1) {
                                     let it =
                                         self.check_expr(i);
@@ -21696,6 +21748,7 @@ impl<'a> Checker<'a> {
                             }
                             match id.name.as_str() {
                                 "push" => {
+                                    self.refuse_element_through_param("push", &args[0], &elem);
                                     if let Some(x) = args.get(1) {
                                         let xt =
                                             self.check_expr(x);
@@ -23190,6 +23243,7 @@ impl<'a> Checker<'a> {
                                 ty: payload.clone(),
                                 is_mut: false,
                                 cell: None,
+                                param_place: false,
                             },
                         );
                         let new_payload_ty = self.check_expr(payload_expr);
@@ -23229,6 +23283,7 @@ impl<'a> Checker<'a> {
                                 ty: payload.clone(),
                                 is_mut: false,
                                 cell: None,
+                                param_place: false,
                             },
                         );
                         self.next_handling = crate::typed_bodies::Handling::Handler(*span);

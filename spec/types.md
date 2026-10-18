@@ -1260,6 +1260,33 @@ Semantics:
   elements (String/Bytes/struct) work in-process — push/set
   arena-anchor the element into the receiver's owning arena — but
   are rejected in cross-process bus payloads (post-v1 polish).
+- A pointer-shaped element `push`ed or `set` into a bounded place under
+  a **parameter** is kept in the frame that runs the call: a free fn
+  allocates in its caller's arena (a fn that takes a record is never
+  scratch-local), a locus member in its own scratch. So a locus member
+  doing it is refused at the intrinsic ("`push` of a \`String\` element
+  into a bounded place under a parameter of a locus member …"), and a
+  free fn doing it, directly or through a fn it hands the place to, is
+  refused at a call that hands it a place the frame does not own: one
+  under `self` or a bounded local viewing one ("\`fill\` stores
+  pointer-shaped elements … this argument is a place in this locus's
+  arena …"). A call through a function value is the fn the value's
+  binding names (`let f = fill;`, a tuple `let`'s element of a tuple
+  literal); a binding the body assigns (`f = other;`), a parameter of fn
+  type or a computed callee names no one fn, and such a call is refused
+  for any argument holding such a place. Names are bindings, not
+  spellings: an inner `let f` names nothing after its block, and
+  `let r = r;` is an owned copy, not the parameter. A generic fn is
+  read as any other, its type parameters taken as any type (fail closed): a
+  field path through one (`fn fill<T>(r: T) { push(r.xs, s) }`, or a local view
+  of it, `let dst = r.xs`) may be such a place, so `fill(self.row)` is
+  refused; a type parameter is the fn's own, whatever global type shares
+  its name. A record of the
+  frame's own, a copy of one, and a scalar element are sound; the shape that works for a locus's field is to fill
+  a local and store it whole (`self.row = mine`), which anchors the
+  elements in the locus's arena. The stdlib's `std::http::is_route`
+  writes its captures into `ctx.params` this way, so a context a locus
+  holds is refused as its argument (2026-10-17: it was a use-after-free).
 - Drop-front/FIFO is the shift-left idiom: `set` live slots down,
   then `truncate`.
 - `CapacityError { cap: Int; count: Int }` and the shared

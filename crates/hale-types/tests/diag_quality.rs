@@ -547,3 +547,250 @@ fn a_generic_enums_equality_is_its_arguments() {
     );
     assert_eq!(ds.len(), 2, "`Value<Int>` and `Value<Inner>` compare: {ds:?}");
 }
+
+
+/// GH #1608 follow-up: a pointer-shaped element stored into a bounded place
+/// under a parameter is kept in the frame that calls (a free fn) or in the
+/// member's scratch (a locus member). A free fn's call that hands it a
+/// place of a locus is refused at the argument, and so is a member doing
+/// it at all; a frame-local place, a copy of a record, a scalar element and
+/// a free fn's own body are sound.
+#[test]
+fn an_element_stored_through_a_parameters_place_is_refused_where_it_cannot_last() {
+    let ds = diags(
+        r#"
+        type Row { xs: bounded[String; 4]; n: bounded[Int; 4]; }
+        fn fill(r: Row, k: Int) { push(r.xs, "x" + to_string(k)) or raise; }
+        fn relay(r: Row, k: Int) { fill(r, k); }
+        fn ints(r: Row) { push(r.n, 1) or raise; }
+        locus L {
+            params { row: Row = Row { }; }
+            fn put(k: Int) {
+                fill(self.row, k);
+                relay(self.row, k);
+                ints(self.row);
+                let mut mine = Row { };
+                fill(mine, k);
+                let copy = self.row;
+                fill(copy, k);
+                self.row = mine;
+            }
+            fn through(r: Row, k: Int) {
+                set(r.xs, 0, "m" + to_string(k)) or raise;
+            }
+        }
+        fn main() { }
+    "#,
+    );
+    let calls: Vec<&String> = ds.iter().filter(|m| m.contains("stores pointer-shaped elements")).collect();
+    assert_eq!(calls.len(), 2, "fill(self.row) and relay(self.row); got: {ds:?}");
+    assert!(calls.iter().all(|m| m.contains("this locus's arena")), "{ds:?}");
+    assert!(calls[0].starts_with("`fill`") && calls[1].starts_with("`relay`"), "{ds:?}");
+    let member: Vec<&String> = ds.iter().filter(|m| m.contains("under a parameter of a locus member")).collect();
+    assert_eq!(member.len(), 1, "the member's own set; got: {ds:?}");
+    assert!(member[0].starts_with("`set` of a `String` element"), "{ds:?}");
+    assert_eq!(ds.len(), 3, "nothing else: {ds:?}");
+}
+
+/// The stdlib's `std::http::is_route` writes its captures into
+/// `ctx.params`: a context a locus holds is refused as its argument, and a
+/// frame's own is not.
+#[test]
+fn is_route_on_a_context_a_locus_holds_is_refused() {
+    let ds = diags(
+        r#"
+        locus Api {
+            params { last: std::http::Context = std::http::build_context(std::http::Request { method: "GET", path: "/", body: "" }); }
+            fn handle(req: std::http::Request) -> std::http::Response {
+                let ctx = std::http::build_context(req);
+                if std::http::is_route(ctx, "GET", "/u/:id") {
+                    return std::http::Response { status: 200, body: std::http::path_param(ctx.params, "id") };
+                }
+                if std::http::is_route(self.last, "GET", "/v/:id") {
+                    return std::http::Response { status: 200, body: "" };
+                }
+                return std::http::Response { status: 404, body: "" };
+            }
+        }
+        fn main() { }
+    "#,
+    );
+    let hits: Vec<&String> = ds.iter().filter(|m| m.contains("stores pointer-shaped elements")).collect();
+    assert_eq!(hits.len(), 1, "{ds:?}");
+    assert!(hits[0].starts_with("`std::http::is_route`"), "{ds:?}");
+}
+
+/// Review of #1612: an alias of the element or of the bounded type is the
+/// same place (refused); a writer reached through a function value is the
+/// writer (refused), and one the check cannot name is refused when handed
+/// such a place; an owned record copy is no view (accepted).
+#[test]
+fn a_parameter_place_writer_is_found_through_aliases_and_fn_values() {
+    let refused = |src: &str, why: &str| {
+        let ds = diags(src);
+        assert!(ds.iter().any(|m| m.contains("pointer-shaped elements")), "{why}: {ds:?}");
+    };
+    refused(
+        r#"
+        type Text = String;
+        type Row { xs: bounded[Text; 4]; }
+        fn fill(r: Row) { push(r.xs, "fresh" + to_string(1)) or raise; }
+        locus L { params { row: Row = Row { }; } fn put() { fill(self.row); } }
+        fn main() { }
+    "#,
+        "an alias of the element",
+    );
+    refused(
+        r#"
+        type Items = bounded[String; 4];
+        type Row { xs: Items; }
+        fn fill(r: Row) { push(r.xs, "fresh" + to_string(1)) or raise; }
+        locus L { params { row: Row = Row { }; } fn put() { fill(self.row); } }
+        fn main() { }
+    "#,
+        "an alias of the bounded type",
+    );
+    refused(
+        r#"
+        type Row { xs: bounded[String; 4]; }
+        fn fill(r: Row) { push(r.xs, "fresh" + to_string(1)) or raise; }
+        locus L { params { row: Row = Row { }; } fn put() { let f = fill; f(self.row); } }
+        fn main() { }
+    "#,
+        "a writer through a function value",
+    );
+    refused(
+        r#"
+        type Row { xs: bounded[String; 4]; }
+        fn apply(g: fn (Row) -> (), r: Row) { g(r); }
+        locus L { params { row: Row = Row { }; } fn put() { apply(fill_one, self.row); } }
+        fn fill_one(r: Row) { push(r.xs, "x") or raise; }
+        fn main() { }
+    "#,
+        "a call through a fn the check cannot name",
+    );
+    let ds = diags(
+        r#"
+        type Row { xs: bounded[String; 4]; }
+        fn fill(r: Row) { let copy = r; push(copy.xs, "fresh" + to_string(1)) or raise; }
+        locus L { params { row: Row = Row { }; } fn put() { fill(self.row); } }
+        fn main() { }
+    "#,
+    );
+    assert!(!ds.iter().any(|m| m.contains("pointer-shaped elements")), "an owned copy is no view: {ds:?}");
+}
+
+/// `diags` over a program the snapshot minted, as the toolchain checks
+/// it: each use names its declaration (`Snapshot::binding_of`).
+fn minted_diags(src: &str) -> Vec<String> {
+    let mut program = parse_source(src).expect("parse");
+    hale_types::desugar_sequence::desugar_before_check(
+        &mut [&mut program],
+        &hale_types::desugar_sequence::Sequence { import_renames: &[], default_surface: "" },
+    );
+    let ids = hale_types::snapshot::mint([("test.hl", &mut program)], &[]);
+    let mut programs = std::collections::BTreeMap::new();
+    programs.insert("test.hl".to_string(), &program);
+    let mut bundle = Bundle::new(programs);
+    bundle.snapshot = ids;
+    let (scope, mut ds) = hale_types::resolve::build_top_scope(&bundle);
+    ds.extend(hale_types::check::check_bundle(&bundle, &scope, true));
+    ds.iter().map(|d| d.message.clone()).collect()
+}
+
+/// Fifth review of #1612: a type parameter is the fn's own binding, opaque,
+/// whatever global type shares its name (a record `T`, a locus `T`): the
+/// field path through it may be a writer's place, so the call is refused.
+#[test]
+fn a_type_parameter_is_not_a_global_type_of_its_name() {
+    for global in ["type T { other: Int; }", "type T { xs: bounded[Int; 4]; }", "locus T { }"] {
+        let ds = minted_diags(&format!(
+            r#"{global}
+            type Row {{ xs: bounded[String; 4]; }}
+            fn fill<T>(r: T) {{ push(r.xs, "fresh" + to_string(1)) or raise; }}
+            locus L {{ params {{ row: Row = Row {{ }}; }} fn put() {{ fill(self.row); }} }}
+            fn main() {{ }}"#
+        ));
+        assert!(ds.iter().any(|m| m.contains("pointer-shaped elements")), "{global}: {ds:?}");
+    }
+}
+
+/// Second review of #1612: a fn value's target follows the binding a call
+/// names. Assigned (`f = fill;`), the binding names no one fn and the call
+/// is refused for any argument holding such a place; an inner `let f`
+/// names nothing after its block, so the outer writer is still refused;
+/// a tuple `let` binds each name to its element. A shadowing owned copy
+/// (`let r = r;`) is not the parameter, so writing its places is no write
+/// through it, and a member's `let r = Row { }` shadowing its parameter is
+/// a frame-local place.
+#[test]
+fn a_parameter_place_writer_follows_bindings_not_spellings() {
+    const PRE: &str = r#"
+        type Row { xs: bounded[String; 4]; }
+        fn fill(r: Row) { push(r.xs, "fresh" + to_string(1)) or raise; }
+        fn noop(r: Row) { }
+        fn gfill<T>(r: Row, value: T) { push(r.xs, "fresh" + to_string(1)) or raise; }
+        fn gapply<T>(g: fn (T) -> (), x: T) { g(x); }
+        fn pass_on(r: Row) { gapply(fill, r); }
+        fn gid<T>(x: T) { }
+        fn tfill<T>(r: T) { push(r.xs, "fresh" + to_string(1)) or raise; }
+        fn vfill<T>(r: T) { let mut dst = r.xs; push(dst, "fresh" + to_string(1)) or raise; }
+        fn afill<T>(r: T) { let mut dst: bounded[String; 4] = r.xs; push(dst, "fresh" + to_string(1)) or raise; }
+    "#;
+    let refused = |body: &str, why: &str| {
+        let src = format!("{PRE} locus L {{ params {{ row: Row = Row {{ }}; }} fn put() {{ {body} }} }}\nfn main() {{ }}");
+        let ds = minted_diags(&src);
+        assert!(ds.iter().any(|m| m.contains("pointer-shaped elements")), "{why}: {ds:?}");
+    };
+    let accepted = |src: &str, why: &str| {
+        let ds = minted_diags(&format!("{PRE}{src}\nfn main() {{ }}"));
+        assert!(!ds.iter().any(|m| m.contains("pointer-shaped elements")), "{why}: {ds:?}");
+    };
+    refused("let mut f = noop; f = fill; f(self.row);", "a binding assigned a writer");
+    refused("let mut f = fill; f(self.row); f = noop;", "a binding assigned after the call");
+    refused(
+        "let f = fill; if true { let f = noop; f(self.row); } f(self.row);",
+        "the outer writer after an inner binding's block",
+    );
+    refused("let (f, n) = (fill, 0); f(self.row);", "a tuple binder");
+    accepted(
+        "locus L { params { row: Row = Row { }; } fn put() { let (f, n) = (noop, 0); f(self.row); } }",
+        "a tuple binder of a non-writer",
+    );
+    accepted(
+        "locus L { params { row: Row = Row { }; } fn put() { let f = fill; if true { let f = noop; f(self.row); } } }",
+        "the inner non-writer",
+    );
+    accepted(
+        r#"fn copy_fill(r: Row) { let r = r; push(r.xs, "fresh" + to_string(1)) or raise; }
+        locus L { params { row: Row = Row { }; } fn put() { copy_fill(self.row); } }"#,
+        "a shadowing owned copy",
+    );
+    accepted(
+        "locus L { fn put(r: Row) { let r = Row { }; fill(r); } }",
+        "a member's fresh local shadowing its parameter",
+    );
+    // a generic writer is a writer (third review): its parameter of a
+    // concrete record type is written through, and one of a type
+    // parameter may be such a record
+    refused("gfill(self.row, 1);", "a generic writer");
+    // a field path through a type parameter, which the template cannot
+    // resolve, may be a bounded place (fourth review)
+    refused("tfill(self.row);", "a field path through a type parameter");
+    // fifth review: a view bound through a type parameter, and a type
+    // parameter named as a global type is
+    refused("vfill(self.row);", "a view of a field path through a type parameter");
+    refused("afill(self.row);", "an annotated view through a type parameter");
+    refused("pass_on(self.row);", "a generic fn handing a type parameter to a fn value");
+    accepted(
+        "locus L { params { row: Row = Row { }; } fn put() { gid(self.row); } }",
+        "a generic fn that writes nothing",
+    );
+    let ds = minted_diags(&format!(
+        "{PRE} locus L {{ fn put(r: Row) {{ fill(r); }} }}\nfn main() {{ }}"
+    ));
+    assert!(
+        ds.iter().any(|m| m.contains("pointer-shaped elements") && m.contains("not this member's")),
+        "the member's parameter itself is still refused: {ds:?}"
+    );
+}

@@ -60,6 +60,7 @@ mod placement_claim;
 pub mod route_loss;
 pub mod api_names;
 mod route_params_copy;
+mod param_place_writes;
 pub mod topic_identity;
 pub mod topology;
 pub mod topology_diff;

@@ -1587,6 +1587,12 @@ row	~	Store	main	default
 row	~.slots.0	Slot	main	inherited
 row	~.slots.1	Slot	main	inherited
 
+== crates/hale-codegen/tests/bounded_collections.rs#7ee3aaf1
+row	L@main1	L	main	default
+
+== crates/hale-codegen/tests/bounded_collections.rs#36eac4b1
+row	L@main1	L	main	default
+
 == crates/hale-codegen/tests/bounded_receiver_dispatch.rs#c5cdc54f
 row	Tracker@main1	Tracker	main	default
 

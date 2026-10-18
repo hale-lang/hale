@@ -805,6 +805,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         ));
                     }
                     scope.locals.insert(p.name.name.clone(), (alloca, lt));
+                    // A member's parameter: the caller's place, whatever it
+                    // is (`Cx::param_place_key`).
+                    scope.locals.insert(Self::param_place_key(&p.name.name), (alloca, CodegenTy::Bytes));
                 }
 
                 // m42: gate subscribed bus-handler bodies on the
@@ -1121,6 +1124,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         ));
                     }
                     scope.locals.insert(p.name.name.clone(), (alloca, lt));
+                    // A member's parameter: the caller's place, whatever it
+                    // is (`Cx::param_place_key`).
+                    scope.locals.insert(Self::param_place_key(&p.name.name), (alloca, CodegenTy::Bytes));
                 }
 
                 // Downstream handoff: implicit block-tail return —
