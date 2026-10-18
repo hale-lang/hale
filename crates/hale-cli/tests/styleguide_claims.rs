@@ -715,14 +715,13 @@ fn main() {
     );
 }
 
-/// §7 sharp edges: a closed seam holds every frame's values until its
-/// locus dissolves (its chain is inlined into the one activation of
-/// `run`), while the same chain as a callable seam, called once per
-/// frame from a method, holds flat. When the closed form reclaims per
-/// frame, the first assertion fails: delete the §7 entry and the 2.10
-/// sentence that points at it.
+/// 2.10: a closed seam's frame is a turn, a method of its own that `run`
+/// calls, so 20 000 frames hold flat, as the same chain does as a
+/// callable seam called once per frame from a method. (Before the turn,
+/// the chain was inlined into the one activation of `run` and kept about
+/// 1.7 KB a frame, 34 MB over these frames, until the locus dissolved.)
 #[test]
-fn claim_a_closed_seam_holds_its_frames() {
+fn a_closed_seam_holds_flat_over_its_frames() {
     if asan_build() {
         eprintln!("skipped under LOTUS_ASAN: a resident-set budget says nothing past ASan's quarantine");
         return;
@@ -790,19 +789,16 @@ fn main() {
     eprintln!("resident growth per phase (bytes): {:?}", g);
     assert!(
         g["stepped"] < MIB,
-        "spec/styleguide.md §7 gives a callable seam called per frame \
-         from a method as the shape that holds flat; 20 000 frames grew \
+        "a callable seam called once per frame from a method holds \
+         flat; 20 000 frames grew \
          {} bytes:\n{}",
         g["stepped"],
         out
     );
     assert!(
-        g["closed"] > 8 * MIB,
-        "spec/styleguide.md §7 says a closed seam holds every frame's \
-         values until its locus dissolves (about 1.7 KB a frame here, \
-         34 MB over 20 000). It grew {} bytes: if the closed form now \
-         reclaims per frame, delete that entry and the 2.10 sentence \
-         that points at it:\n{}",
+        g["closed"] < MIB,
+        "spec/styleguide.md 2.10 says a closed seam frees each frame at \
+         the end of its turn; 20 000 frames grew {} bytes:\n{}",
         g["closed"],
         out
     );

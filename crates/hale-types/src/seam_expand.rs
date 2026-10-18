@@ -9,8 +9,10 @@
 //! writes the seam as the method it means (spec/semantics.md § Seams):
 //!
 //! - the closed flow (a source, and a last hop that returns nothing) is the
-//!   locus's `run`: `while !self.draining { let v = <source> or { break; };
-//!   <chain> }`;
+//!   locus's `run`, `while !self.draining { if !self.__seam_turn() { return; }
+//!   }`, and one frame is the method `fn __seam_turn() -> Bool { let v =
+//!   <source> or { return false; }; <chain> return true; }`, so what a frame
+//!   allocates goes with the turn's scratch;
 //! - the callable form, `seam name(x: T) [-> R] { x -> … ; }`, is `fn
 //!   name(x: T) -> R`, which returns the last hop's value.
 //!
@@ -49,6 +51,9 @@ const SEAM_WINDOW: u32 = 0x0001_0000;
 pub fn is_seam_pos(pos: u32) -> bool {
     (SEAM_BASE..SEAM_BASE + 0x0100_0000).contains(&pos)
 }
+
+/// The method a closed seam's frame runs in: one turn of its `run`.
+pub const TURN: &str = "__seam_turn";
 
 /// The placeholder the generated closed flow calls where its source goes.
 const SOURCE_PLACEHOLDER: &str = "__seam_source";
@@ -629,7 +634,8 @@ impl Gen<'_, '_> {
                 let mut s = String::new();
                 self.chain(j, "err", e, &format!("the failure of `{label}`"), &mut s);
                 if self.closed {
-                    s.push_str("continue;\n");
+                    // the turn ends; the flow goes on
+                    s.push_str("return true;\n");
                     return s;
                 }
                 // a callable seam's route is a method of its own, whose
@@ -641,12 +647,12 @@ impl Gen<'_, '_> {
             }
         }
         match &self.seam.on_failure {
-            Some(SeamFailure::End(_)) if self.closed => "break;\n".to_string(),
+            Some(SeamFailure::End(_)) if self.closed => "return false;\n".to_string(),
             Some(SeamFailure::End(_)) => {
                 self.fails.insert(e.to_string());
                 "fail err;\n".to_string()
             }
-            Some(SeamFailure::Violate(c)) if self.closed => format!("violate {};\ncontinue;\n", c.name),
+            Some(SeamFailure::Violate(c)) if self.closed => format!("violate {};\nreturn true;\n", c.name),
             Some(SeamFailure::Violate(c)) => {
                 self.refuse(
                     c.span,
@@ -768,9 +774,15 @@ fn plan(index: &Index<'_>, owner: &LocusDecl, sd: &SeamDecl) -> Result<Plan, Vec
         let Some(entry) = src.ret.as_ref().map(|t| index.key(t)) else {
             return Err(vec![Diag::ty(sd.head.span(), format!("the seam's source `{}` returns nothing", src.name.name))]);
         };
-        let or = if src.fallible.is_some() { " or {\nbreak;\n}" } else { "" };
+        let or = if src.fallible.is_some() { " or {\nreturn false;\n}" } else { "" };
         g.chain(0, "__seam_v0", &entry, &format!("the source `{}`", src.name.name), &mut body);
-        format!("run() {{\nwhile !self.draining {{\nlet __seam_v0 = {SOURCE_PLACEHOLDER}(){or};\n{body}}}\n}}\n")
+        // one frame is a turn, a method of its own, so what the frame
+        // allocated goes with the turn's scratch; `run` calls it until the
+        // source ends (false) or the locus drains
+        format!(
+            "fn {TURN}() -> Bool {{\nlet __seam_v0 = {SOURCE_PLACEHOLDER}(){or};\n{body}return true;\n}}\n\
+             run() {{\nwhile !self.draining {{\nif !self.{TURN}() {{\nreturn;\n}}\n}}\n}}\n"
+        )
     } else {
         let p = sd.param.as_ref().expect("a callable seam's parameter");
         // the callable form's chain begins at its parameter, as written
