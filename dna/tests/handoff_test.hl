@@ -10,8 +10,9 @@
 // only under its own connection back, under the key that connection
 // pinned, and accepts it; the firm's Task settles only when that
 // acceptance arrives. An envelope signed with another key is not
-// admitted, a delivery repeated is kept once, and an inbox that is full
-// refuses. Neither record reads the other's record. Disconnecting leaves
+// admitted, nor kept in place of the sender's own under the same id; a
+// delivery repeated is kept once; and an inbox refuses only a backlog its
+// receiver has not drained. Neither record reads the other's record. Disconnecting leaves
 // history in both records and admits nothing further.
 
 import "../core" as dna;
@@ -180,7 +181,7 @@ main locus App {
         self.firm_head = line_value(fm.stdout, "HALE_DNA_MEMORY_DSN_HEAD");
         self.acct_head = line_value(am.stdout, "HALE_DNA_MEMORY_DSN_HEAD");
         std::test::assert(len(self.firm_head) > 0 && len(self.acct_head) > 0, "each record's memory: " + fm.stdout + fm.stderr + am.stdout + am.stderr);
-        // the accountant's inbox holds seven envelopes from one sender: its bound
+        // the accountant's inbox holds seven waiting envelopes from one sender: its bound
         let fnv = dna::run_tool("sh\n-c\ncd \"$1\" && export HALE_DNA_DISCOVER=off HALE_DNA_NATS_URL_OWNER=\"$2\" && exec \"$3\" dna nerves migrate\nsh\n" + firm + "\n" + nats_owner + "\n" + toolchain());
         let anv = dna::run_tool("sh\n-c\ncd \"$1\" && export HALE_DNA_DISCOVER=off HALE_DNA_NATS_URL_OWNER=\"$2\" HALE_DNA_EXCHANGE_PER_SENDER=7 && exec \"$3\" dna nerves migrate\nsh\n" + acct + "\n" + nats_owner + "\n" + toolchain());
         std::test::assert(fnv.code == 0 && anv.code == 0, "each record's nerves, its exchange and its card: " + fnv.stdout + fnv.stderr + anv.stdout + anv.stderr);
@@ -195,7 +196,7 @@ main locus App {
         // the firm's facts: people's jobs, a customer receipt, an internal one
         self.j = dna::GitJournal { repo: firm };
         let mut t = 7;
-        while t <= 11 {
+        while t <= 17 {
             self.row("task.born", "t" + to_string(t), "i-t" + to_string(t) + ": job " + to_string(t) + " for the accountant");
             self.row("task.handed", "t" + to_string(t), "{\"work\": \"t" + to_string(t) + "/w\", \"assignee\": \"mara\", \"by\": \"leader\", \"narrative\": \"handed: not a software change\"}");
             t = t + 1;
@@ -229,6 +230,20 @@ main locus App {
         let listed = self.cli(firm, "connect");
         std::test::assert(std::str::contains(listed, "connections: 1\n  acct → record ") && std::str::contains(listed, "in force (approved by ana)"), "in force: " + listed);
         std::test::assert_eq_int(record_lines_with(firm, "\"kind\": \"review.settled\"\t\"entity\": \"review:" + rid + "\"\t\"author\": \"ana\""), 1, "its Review settled once, in ana's name");
+
+        // ---- an envelope claiming the firm under another key takes the real
+        // t7's id first: it is kept beside the firm's own, never in its place
+        let hid7_ahead = dna::handoff_id(firm_genesis, acct_genesis, "task", "t7");
+        let squatter = dna::ExchangeKey { vault: "dna-exchange-test-two" };
+        let squat = squatter.seal(dna::Envelope { id: hid7_ahead + ".received", sender: firm_genesis, recipient: acct_genesis, kind: "received", entity: "handoff:" + hid7_ahead, body: "{\"kind\": \"task\", \"subject\": \"t7\", \"class\": \"internal\", \"purpose\": \"year-end books\", \"fact\": \"SQUATTED\"}", author: "mallory" });
+        let sc = nats::NatsClient { url: self.nerves, name: "handoff-test-squatter", timeout: 3s };
+        std::test::assert(sc.open(), "the squatter reaches the nerves: " + sc.last_error);
+        let sack = nats::js_publish_id(sc, dna::exchange_inbox_subject(acct_org, firm_org, "received"), "squat-" + hid7_ahead, std::bytes::from_string(squat)) or nats::PubAck { };
+        let swhy = sc.last_error;
+        sc.close();
+        std::test::assert(sack.seq > 0, "the squatting envelope is in the inbox first: " + swhy);
+        let squatted = self.cli(acct, "handoff");
+        std::test::assert(std::str::contains(squatted, hid7_ahead + " ← task t7") && std::str::contains(squatted, "SQUATTED"), "and drained into the accountant's memory: " + squatted);
 
         // ---- a Task handed across, into the accountant's inbox
         let handed = self.cli(firm, "handoff\nacct\ntask\nt7\n--as\nriley\n--note\nclose by March");
@@ -288,6 +303,17 @@ main locus App {
         let admitted = self.cli(acct, "handoff");
         std::test::assert(std::str::contains(admitted, hid7 + " ← task t7") && std::str::contains(admitted, "admitted under `firm`"), "admitted: " + admitted);
         std::test::assert(std::str::contains(admitted, "hforged ← task t99") && std::str::contains(admitted, "not admitted: it is not signed with the key connection `firm` pinned"), "the forged one is not: " + admitted);
+        std::test::assert(std::str::contains(admitted, hid7 + " ← task t7") && std::str::contains(admitted, "SQUATTED") && text_lines_with(admitted, hid7 + " ← \tadmitted under `firm`") == 1, "the firm's own t7 is admitted beside the squatter's, which is not: " + admitted);
+        // once the connection pins the firm's key, an envelope claiming it
+        // under another is dropped at the drain and never kept
+        let late_forged = squatter.seal(dna::Envelope { id: "hlate.received", sender: firm_genesis, recipient: acct_genesis, kind: "received", entity: "handoff:hlate", body: "{\"kind\": \"task\", \"subject\": \"t98\", \"class\": \"internal\", \"purpose\": \"year-end books\", \"fact\": \"LATE\"}", author: "mallory" });
+        let lc = nats::NatsClient { url: self.nerves, name: "handoff-test-late", timeout: 3s };
+        std::test::assert(lc.open(), "the late forger reaches the nerves: " + lc.last_error);
+        let lack = nats::js_publish_id(lc, dna::exchange_inbox_subject(acct_org, firm_org, "received"), "hlate.received", std::bytes::from_string(late_forged)) or nats::PubAck { };
+        lc.close();
+        std::test::assert(lack.seq > 0, "the late forgery is in the inbox");
+        let after_late = self.cli(acct, "handoff");
+        std::test::assert(!std::str::contains(after_late, "hlate ← ") && std::str::contains(after_late, "not signed with the key its connection pinned; it was dropped"), "dropped, never kept: " + after_late);
         std::test::assert(std::str::contains(self.cli(acct, "handoff\naccept\nhforged\n--as\nnoor"), "is not admitted"), "and cannot be accepted");
         std::test::assert(std::str::contains(self.cli(acct, "handoff\naccept\n" + rhid7 + "\n--as\nnoor"), "`customer` does not cross connection `firm`"), "its own classes decide too");
         let accepted = self.cli(acct, "handoff\naccept\n" + hid7 + "\n--as\nnoor\n--note\ntaken on");
@@ -312,26 +338,40 @@ main locus App {
         // ---- nothing of the accountant's private history reached the firm
         std::test::assert_eq_str(objects_with(firm, "UNRELATED_PRIVATE_FACT"), "0", "no object in the firm's repository holds it");
 
-        // ---- a full inbox refuses: the accountant holds seven of the firm's
-        // envelopes (t7, t9, two receipts, the forged one, t8, t10)
+        // ---- what the accountant drained left its inbox: it has taken eight
+        // of the firm's envelopes by now (the squatter's, t7, t9, two
+        // receipts, the forged ones) and takes more past its bound of seven
         let t8 = self.cli(firm, "handoff\nacct\ntask\nt8\n--as\nriley");
         let hid8 = word_after(t8, "handoff ");
         let t10 = self.cli(firm, "handoff\nacct\ntask\nt10\n--as\nriley");
-        std::test::assert(std::str::contains(t8, "delivered to record") && std::str::contains(t10, "delivered to record"), "the sixth and seventh: " + t8 + t10);
         let t11 = self.cli(firm, "handoff\nacct\ntask\nt11\n--as\nriley");
-        std::test::assert(std::str::contains(t11, "inbox is full") && std::str::contains(t11, "nothing was recorded here"), "the eighth is refused: " + t11);
-        std::test::assert(std::str::contains(self.cli(firm, "status"), "t11 [handed]"), "and its Task stays here");
+        std::test::assert(std::str::contains(t8, "delivered to record") && std::str::contains(t10, "delivered to record") && std::str::contains(t11, "delivered to record"), "a receiver that drains keeps taking: " + t8 + t10 + t11);
+        // ---- an undrained backlog refuses: seven wait (t8, t10, t11, t12 to t15)
+        let mut w = 12;
+        while w <= 15 {
+            let more = self.cli(firm, "handoff\nacct\ntask\nt" + to_string(w) + "\n--as\nriley");
+            std::test::assert(std::str::contains(more, "delivered to record"), "t" + to_string(w) + " waits in the inbox: " + more);
+            w = w + 1;
+        }
+        let t16 = self.cli(firm, "handoff\nacct\ntask\nt16\n--as\nriley");
+        std::test::assert(std::str::contains(t16, "inbox is full") && std::str::contains(t16, "nothing was recorded here"), "the eighth waiting one is refused: " + t16);
+        std::test::assert(std::str::contains(self.cli(firm, "status"), "t16 [handed]"), "and its Task stays here");
+        // the accountant reads its inbox, and there is room again
+        let drained = self.cli(acct, "handoff");
+        std::test::assert(std::str::contains(drained, " ← task t15"), "the backlog drained: " + drained);
+        let t16_again = self.cli(firm, "handoff\nacct\ntask\nt16\n--as\nriley");
+        std::test::assert(std::str::contains(t16_again, "delivered to record"), "taken once drained: " + t16_again);
 
         // ---- disconnecting leaves history and admits nothing further
         let closed = self.cli(firm, "disconnect\nacct\n--why\nthe engagement ended\n--by\nana");
         std::test::assert(std::str::contains(closed, "connection acct closed by ana"), "closed: " + closed);
-        std::test::assert(std::str::contains(self.cli(firm, "handoff\nacct\ntask\nt11\n--as\nriley"), "is closed (the engagement ended)"), "nothing further crosses");
+        std::test::assert(std::str::contains(self.cli(firm, "handoff\nacct\ntask\nt17\n--as\nriley"), "is closed (the engagement ended)"), "nothing further crosses");
         let late = self.cli(acct, "handoff\naccept\n" + hid8[0..(len(hid8) - 1)] + "\n--as\nnoor");
         std::test::assert(std::str::contains(late, "accepted by noor"), "the accountant still accepts in its own record: " + late);
         let after_close = self.cli(firm, "handoff\nsync");
         std::test::assert(std::str::contains(after_close, "0 acceptance(s) admitted") && std::str::contains(after_close, "acct: closed — nothing admitted from it"), "nothing admitted after closing: " + after_close);
         std::test::assert(std::str::contains(self.cli(firm, "status"), "t8 [transfer_requested]"), "t8 is not settled by it");
-        std::test::assert_eq_int(record_lines_with(firm, "\"kind\": \"handoff.published\""), 6, "history stays here");
+        std::test::assert_eq_int(record_lines_with(firm, "\"kind\": \"handoff.published\""), 12, "history stays here: t7 to t16, and two receipts");
 
         // ---- the nerves and memory the two records used, gone
         let d1 = dna::run_tool("sh\n-c\ncd \"$1\" && HALE_DNA_NATS_URL_OWNER=\"$2\" exec \"$3\" dna nerves drop\nsh\n" + firm + "\n" + nats_owner + "\n" + toolchain());

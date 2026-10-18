@@ -296,10 +296,13 @@ fn nerves_stream_config(org: String) -> String {
 // card is `exchange.<org>.card`, read by a direct get, so a peer reads it
 // with no process of this record running; each envelope is
 // `exchange.<org>.in.<sender's org>.<kind>`, read through the durable
-// `exchange`. The stream is bounded, and a full one refuses at publish
-// (discard new): every sender's subject holds at most
-// `EXCHANGE_PER_SENDER` envelopes of a kind, and the stream at most
-// `EXCHANGE_MAX_BYTES`, so a connected record cannot flood this one's disk.
+// `exchange`. It is a work queue: what the drain acknowledges leaves the
+// stream (the card is read by direct get, never consumed, and stays). The
+// stream is bounded, and a full one refuses at publish (discard new):
+// every sender's subject holds at most
+// `EXCHANGE_PER_SENDER` envelopes of a kind waiting to be drained, and the
+// stream at most `EXCHANGE_MAX_BYTES`, so a connected record cannot flood
+// this one's disk while it is not reading.
 
 const EXCHANGE_DURABLE: String = "exchange";
 const EXCHANGE_PER_SENDER: Int = 10000;
@@ -326,7 +329,10 @@ fn exchange_stream_config(org: String, per_sender: Int) -> String {
     b.string_value("exchange." + org + ".>");
     b.end_array();
     b.string_field("storage", "file");
-    b.string_field("retention", "limits");
+    // an envelope leaves the stream once the inbox's one consumer has
+    // acknowledged it (kept in memory, or refused): the bound is on what
+    // waits undrained, never on what a record ever received
+    b.string_field("retention", "workqueue");
     b.string_field("discard", "new");
     b.bool_field("discard_new_per_subject", true);
     b.int_field("max_msgs_per_subject", per_sender);

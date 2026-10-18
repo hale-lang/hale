@@ -77,8 +77,13 @@ locus NatsExchange {
         root: String = ".";
         mine: String = ""; // this record's identity
         memory: dna::MemoryExchange = dna::MemoryExchange { };
+        // the key each live connection pinned, `<record> <key>` per line
+        // (`connection_pins`): a drain never keeps an envelope from a
+        // connected record signed with any other
+        pins: String = "";
         drained: Int = 0;
         refused: Int = 0; // envelopes the drain refused: not this record's, or their signature did not hold
+        forged: Int = 0; // envelopes claiming a connected record under a key it did not pin
         note: String = ""; // why the inbox was not read from the nerves, when it was not
     }
     birth() {
@@ -140,7 +145,17 @@ locus NatsExchange {
             let dot = std::str::index_of(rest, ".");
             let sender_org = if dot < 0 { "" } else { rest[0..dot] };
             let ours = e.recipient == self.mine && len(e.sender) > 0 && dna::schema_for(e.sender) == sender_org && dna::signed_line_holds(line) && len(e.id) > 0;
-            if ours {
+            // a sender this record is connected to signs with the key its
+            // connection pinned: an envelope claiming it under another key is
+            // acknowledged and dropped, never kept, so it cannot stand in for
+            // the sender's own envelope of the same id
+            let pinned = pin_of(self.pins, e.sender);
+            let forged = ours && len(pinned) > 0 && std::json::find_string_field(line, "key") != pinned;
+            if forged {
+                self.forged = self.forged + 1;
+                eprintln("hale dna: an envelope claiming record " + short(e.sender) + " (" + e.id + ") is not signed with the key its connection pinned; it was dropped");
+            }
+            if ours && !forged {
                 let seq = std::str::parse_int(nats_header(m.headers, "Nats-Sequence")) or 0;
                 if !self.memory.keep(dna::ExchangeRow { id: e.id, sender: e.sender, kind: e.kind, entity: e.entity, line: line }, if seq > 0 { seq } else { n }) {
                     // not acknowledged: it is offered again at the next read
@@ -248,6 +263,30 @@ fn connection_to(p: Projection, peer: String) -> Connection {
         if connection_live(c) && c.peer == peer { return c; }
     }
     return Connection { };
+}
+
+// The key each live connection pinned, `<record> <key>` per line.
+fn connection_pins(p: Projection) -> String {
+    let mut out = "";
+    let mut rest = connection_names(p);
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let name = if nl < 0 { rest } else { rest[0..nl] };
+        rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
+        if len(name) == 0 { continue; }
+        let c = connection_of(p, name);
+        if connection_live(c) && len(c.peer) > 0 && len(c.peer_key) > 0 { out = out + c.peer + " " + c.peer_key + "\n"; }
+    }
+    return out;
+}
+
+// The key `pins` holds for `record` ("" when none).
+fn pin_of(pins: String, record: String) -> String {
+    let at = std::str::index_of("\n" + pins, "\n" + record + " ");
+    if at < 0 { return ""; }
+    let rest = pins[(at + len(record) + 1)..len(pins)];
+    let nl = std::str::index_of(rest, "\n");
+    return if nl < 0 { rest } else { rest[0..nl] };
 }
 
 // ---- hale dna connect | disconnect ------------------------------------
@@ -499,7 +538,9 @@ fn admission_refusal(p: Projection, line: String) -> String {
 
 // A received envelope of `kind` about `entity` ("" for any), as kept in
 // this record's inbox: its signed line ("" when none).
-fn received_line(lines: String, kind: String, entity: String) -> String {
+fn received_line(p: Projection, lines: String, kind: String, entity: String) -> String {
+    // the sender's own envelope when one is kept beside another claiming it
+    let mut first = "";
     let mut rest = lines;
     while len(rest) > 0 {
         let nl = std::str::index_of(rest, "\n");
@@ -509,9 +550,10 @@ fn received_line(lines: String, kind: String, entity: String) -> String {
         let e = dna::envelope_of(std::json::find_string_field(line, "envelope"));
         if e.kind != kind { continue; }
         if len(entity) > 0 && e.entity != entity { continue; }
-        return line;
+        if len(admission_refusal(p, line)) == 0 { return line; }
+        if len(first) == 0 { first = line; }
     }
-    return "";
+    return first;
 }
 
 fn handoff_list_verb(root: String, seed: String, memory: dna::Memory) -> Answer {
@@ -529,7 +571,7 @@ fn handoff_list_verb(root: String, seed: String, memory: dna::Memory) -> Answer 
         }
         i = i + 1;
     }
-    let x = NatsExchange { root: root, mine: record_identity(root) };
+    let x = NatsExchange { root: root, mine: record_identity(root), pins: connection_pins(p) };
     let lines = x.received();
     let mut got = "";
     let mut rest = lines;
@@ -557,8 +599,8 @@ fn handoff_accept_verb(root: String, seed: String, hid: String, note: String, wh
     let p = open_projection(root, seed, "", memory);
     let ent = "handoff:" + hid;
     let mine = record_identity(root);
-    let x = NatsExchange { root: root, mine: mine };
-    let line = received_line(x.received(), "received", ent);
+    let x = NatsExchange { root: root, mine: mine, pins: connection_pins(p) };
+    let line = received_line(p, x.received(), "received", ent);
     if len(line) == 0 { return fail("handoff accept: no handoff `" + hid + "` received in this record's inbox" + (if len(x.note) > 0 { " (" + x.note + ")" } else { "" })); }
     let why = admission_refusal(p, line);
     if len(why) > 0 { return fail("handoff accept: " + hid + " is not admitted — " + why); }
@@ -613,7 +655,7 @@ fn handoff_sync_verb(root: String, seed: String, memory: dna::Memory) -> Answer 
     if len(no_head) > 0 { return fail(no_head); }
     let p = open_projection(root, seed, "", memory);
     let mine = record_identity(root);
-    let x = NatsExchange { root: root, mine: mine };
+    let x = NatsExchange { root: root, mine: mine, pins: connection_pins(p) };
     let lines = x.received();
     let mut out = "";
     let mut n = 0;

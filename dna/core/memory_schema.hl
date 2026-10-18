@@ -214,7 +214,10 @@ fn ledger_ddl() -> String {
         + "CREATE TABLE IF NOT EXISTS hats (digest text PRIMARY KEY, head text NOT NULL, watermark bigint NOT NULL, body text NOT NULL, kept_at timestamptz NOT NULL DEFAULT now());"
     // GH #1590: the envelopes other records sent this one, each once by id,
     // as they arrived (the signed line whole), never changed
-        + "CREATE TABLE IF NOT EXISTS exchange_rows (id text PRIMARY KEY, sender text NOT NULL, kind text NOT NULL, entity text NOT NULL, line text NOT NULL, stream_seq bigint NOT NULL, received_at timestamptz NOT NULL DEFAULT now());"
+        + "CREATE TABLE IF NOT EXISTS exchange_rows (id text NOT NULL, sender text NOT NULL, signer text NOT NULL DEFAULT '', kind text NOT NULL, entity text NOT NULL, line text NOT NULL, stream_seq bigint NOT NULL, received_at timestamptz NOT NULL DEFAULT now(), PRIMARY KEY (sender, id, signer));"
+    // an envelope's id is its sender's namespace, and the key that signed it
+    // is part of its identity: an envelope signed with another key never
+    // takes the place of the sender's own
         + ledger_gate_ddl();
 }
 
@@ -333,11 +336,12 @@ fn receipt_functions(sch: String) -> String {
         + "INSERT INTO protected_redactions (digest, erased_at) VALUES (p_digest, p_at) ON CONFLICT (digest) DO NOTHING; "
         + "RETURN true; END $f$;"
         + "REVOKE ALL ON FUNCTION " + sch + ".receipt_file(text, text, text, bigint), " + sch + ".receipt_read(text), " + sch + ".receipt_erase(text, bigint) FROM PUBLIC;"
-    // GH #1590: an envelope is kept once by its id and never changed: the
-    // writers insert through this function alone
-        + "CREATE OR REPLACE FUNCTION " + sch + ".exchange_keep(p_id text, p_sender text, p_kind text, p_entity text, p_line text, p_seq bigint) RETURNS boolean LANGUAGE plpgsql SECURITY DEFINER SET search_path = " + sch + ", public AS $x$ BEGIN "
-        + "INSERT INTO exchange_rows (id, sender, kind, entity, line, stream_seq) VALUES (p_id, p_sender, p_kind, p_entity, p_line, p_seq) ON CONFLICT (id) DO NOTHING; RETURN true; END $x$;"
-        + "REVOKE ALL ON FUNCTION " + sch + ".exchange_keep(text, text, text, text, text, bigint) FROM PUBLIC";
+    // GH #1590: an envelope is kept once by its sender, its id and the key
+    // that signed it, and never changed: the writers insert through this
+    // function alone
+        + "CREATE OR REPLACE FUNCTION " + sch + ".exchange_keep(p_id text, p_sender text, p_signer text, p_kind text, p_entity text, p_line text, p_seq bigint) RETURNS boolean LANGUAGE plpgsql SECURITY DEFINER SET search_path = " + sch + ", public AS $x$ BEGIN "
+        + "INSERT INTO exchange_rows (id, sender, signer, kind, entity, line, stream_seq) VALUES (p_id, p_sender, p_signer, p_kind, p_entity, p_line, p_seq) ON CONFLICT (sender, id, signer) DO NOTHING; RETURN true; END $x$;"
+        + "REVOKE ALL ON FUNCTION " + sch + ".exchange_keep(text, text, text, text, text, text, bigint) FROM PUBLIC";
 }
 
 // Match the public bytewise tuple order with database indexes, so
@@ -424,7 +428,7 @@ fn head_grants(sch: String, role: String) -> String {
         + "GRANT SELECT ON " + sch + ".exchange_rows TO " + role + ";"
         + "GRANT EXECUTE ON FUNCTION " + sch + ".receipt_file(text, text, text, bigint), " + sch + ".receipt_read(text), "
         + sch + ".ledger_append(bigint, text, text, text, text, text, bigint, text), "
-        + sch + ".exchange_keep(text, text, text, text, text, bigint) TO " + role;
+        + sch + ".exchange_keep(text, text, text, text, text, text, bigint) TO " + role;
 }
 
 // The receipt key memory seals protected evidence under, from the owner's

@@ -2,8 +2,9 @@
 //
 // What other records sent this one arrives on the nerves, in the record's
 // exchange stream; a drain (dna/host/connections.hl) checks each envelope
-// and keeps it here, once by its id, through memory's `exchange_keep`: the
-// writers insert and read, and nothing changes or removes a row. What the
+// and keeps it here, once by its sender, its id and the key that signed it,
+// through memory's `exchange_keep`: the writers insert and read, and
+// nothing changes or removes a row. What the
 // record admits from its inbox is decided when it reads it, under its own
 // connections.
 
@@ -46,7 +47,8 @@ locus MemoryExchange {
         self.opened = true;
         return true;
     }
-    // Keep one envelope; one already kept under its id stays as it was.
+    // Keep one envelope; one already kept from its sender under its id and
+    // its signer's key stays as it was.
     // `self.error` holds only the last failure, replaced whole.
     @bounded_by(self.error)
     fn keep(r: ExchangeRow, seq: Int) -> Bool {
@@ -54,11 +56,12 @@ locus MemoryExchange {
         let a = db::Args { };
         a.add(r.id);
         a.add(r.sender);
+        a.add(std::json::find_string_field(r.line, "key"));
         a.add(r.kind);
         a.add(r.entity);
         a.add(r.line);
         a.add(to_string(seq));
-        let x = self.conn.exec_params("SELECT exchange_keep($1, $2, $3, $4, $5, $6::bigint)", a);
+        let x = self.conn.exec_params("SELECT exchange_keep($1, $2, $3, $4, $5, $6, $7::bigint)", a);
         if !x.ok { self.error = "keep: " + x.err.kind + " " + x.err.detail; return false; }
         return true;
     }
@@ -68,7 +71,7 @@ locus MemoryExchange {
     @bounded_by(self.error)
     fn lines() -> String {
         if !self.open() { return ""; }
-        let rows = self.conn.query_all("SELECT line FROM exchange_rows ORDER BY stream_seq, id");
+        let rows = self.conn.query_all("SELECT line FROM exchange_rows ORDER BY stream_seq, sender, id, signer");
         if !rows.ok { self.error = "read: " + rows.err.kind + " " + rows.err.detail; return ""; }
         return rows.csv;
     }

@@ -792,19 +792,30 @@ repository:
     class; its body never leaves this record. A fact whose class the
     connection does not carry is refused at the edge as
     `handoff.refused`, with nothing published.
-  - **The bounded inbox.** The exchange stream refuses what overflows it
-    rather than dropping what it holds (`discard: new`): each sender's
-    subject holds at most 10 000 envelopes of a kind
-    (`max_msgs_per_subject`, `discard_new_per_subject`) and the stream
-    256 MiB, so a connected record cannot flood another's disk. A
-    handoff refused as full records nothing here and says so.
+  - **The bounded inbox.** The exchange stream is a work queue
+    (`retention: workqueue`): an envelope leaves it once the receiver's
+    drain has acknowledged it, kept in memory or refused, and the card
+    (read by direct get, never consumed) stays. What waits undrained is
+    bounded, and the stream refuses what overflows it rather than
+    dropping what it holds (`discard: new`): each sender's subject holds
+    at most 10 000 waiting envelopes of a kind (`max_msgs_per_subject`,
+    `discard_new_per_subject`) and the stream 256 MiB, so a connected
+    record cannot flood another's disk while it is not reading, and a
+    receiver that drains takes any number. A handoff refused as full
+    records nothing here and says so.
   - **Receiving.** The receiving record's verbs (`hale dna handoff`,
     `handoff accept`, `handoff sync`) first drain its inbox into memory:
     each envelope addressed to this record, from the sender its subject
     names, whose signature holds under the key it carries, is kept once
-    by its id in `exchange_rows` through `exchange_keep` (insert-only;
-    memory schema 9), and acknowledged; anything else is acknowledged and
-    refused. The drain reaches its own nerves as the spine
+    by its sender, its id and the key that signed it in `exchange_rows`
+    through `exchange_keep` (insert-only; memory schema 9), and
+    acknowledged; anything else is acknowledged and refused. An envelope
+    claiming a record this one has a live connection to, signed with any
+    key but the one that connection pinned, is acknowledged and dropped
+    unkept, and the drain says so on stderr; one from a record not yet
+    connected is kept beside any other claiming the same id, so a
+    forgery never takes the place of the sender's own envelope, and only
+    the one under the key a connection pins is admitted. The drain reaches its own nerves as the spine
     (`HALE_DNA_NATS_URL_SPINE`, else the owner's server, else compose's
     `nerves` if it is up) and says so when it reached none. `hale dna
     handoff` lists a received handoff as admitted only under a

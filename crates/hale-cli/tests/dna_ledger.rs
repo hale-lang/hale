@@ -196,9 +196,17 @@ fn an_organism_adopts_the_ledger_and_its_operations_leave_the_record() {
     assert!(rows.contains("second.txt"), "the ledger took it:\n{rows}");
     assert!(!record(&app).iter().any(|r| r["kind"] == "receipt.filed" && r["body"].as_str().unwrap_or("").contains("second.txt")), "the record holds none of it");
     // a head with no memory named writes nothing: the row's home is the
-    // ledger, and it says so, naming the checkpoint — never into git instead
+    // ledger, and it says so, naming the checkpoint — never into git instead.
+    // (The clone keeps the head's DSN its migration answered, GH #1590: set
+    // aside here, it is a clone with none.)
     std::fs::write(app.join("third.txt"), "the third invoice").unwrap();
+    let kept = app.join(".hale/dna/memory.env");
+    let aside = app.join(".hale/dna/memory.env.aside");
+    let had = std::fs::rename(&kept, &aside).is_ok();
     let (ok, out) = hale(&["dna", "receipt", "file", "third.txt", "--as", "sam"], &app, &[]);
+    if had {
+        std::fs::rename(&aside, &kept).unwrap();
+    }
     assert!(!ok && out.contains("no memory is named here") && out.contains("live in the ledger since"), "{out}");
     let rows = ledger_until(&app, head, |r| r.contains("second.txt"));
     assert!(!rows.contains("third.txt"), "and nothing landed for it:\n{rows}");

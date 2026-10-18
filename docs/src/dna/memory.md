@@ -526,10 +526,14 @@ hale dna handoff acme task t7
   fact, where it came from, its history here and its purpose. Only a
   handed task crosses. A receipt crosses as its digest and class, never
   its body, and only if the connection carries its class. A retried
-  handoff is one envelope. An inbox is bounded per sender; a full one
-  refuses the handoff, and nothing is recorded here.
+  handoff is one envelope. An inbox bounds what waits in it undrained,
+  per sender; a full one refuses the handoff, and nothing is recorded
+  here. What the other side has drained leaves its inbox, so a record
+  that reads its inbox takes any number.
 - The other side admits it only through a connection of its own back
-  to you, under the key that connection pinned, and accepts it with
+  to you, under the key that connection pinned (an envelope claiming you
+  under another key is dropped, or kept beside yours and never
+  admitted), and accepts it with
   `hale dna handoff accept <id>`. Your `hale dna handoff sync` reads the
   acceptance back, and only then does your task settle.
 - `hale dna disconnect acme --why "the engagement ended"` stops
