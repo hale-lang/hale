@@ -10,29 +10,47 @@ locus TaskApiPlanner {
             assignee: "alex", obligation: "review", narrative: "A person's open responsibility", by: "task-api-planner", parsed: true };
     }
 }
+// One organization over its own record, as a single-organization node runs:
+// the body names no owner, so the record is not shared and it admits every
+// position. A named body over a shared record admits only what the graph
+// says it owns, and the graph is the projection a node runs beside it
+// (GH #1123), which this seed does not.
 locus TaskApiWork {
     params { body: dna::Dna = dna::Dna { planned: true, org_id: "task-api", initiative: false }; planner: TaskApiPlanner = TaskApiPlanner { }; }
-    fn bind(j: dna::Journal, receipts: dna::Receipts) { self.body.journal = j; self.body.review_journal.bind(j); self.body.verification.receipts = receipts; self.body.ownership.me = "task-api"; }
     fn ask(id: String, outcome: String) -> String { return self.body.ask(dna::Intent { id: id, from: "requester", to: "org", outcome: outcome }); }
 }
 locus TaskApiSeed {
     params { }
-    fn handed(j: dna::Journal, id: String) -> dna::Event {
+    // The handoff an ask became: the body answers "planning", the
+    // leader's word admits a workflow under the intent's identity, and its
+    // person case is handed. Any other answer names why it was not.
+    fn handed(j: dna::Journal, intent: String, answer: String) -> dna::Event {
+        std::test::assert_eq_str(answer, "planning", "the ask goes to its planner");
+        let mut task = "";
         let mut tries = 0;
-        while tries < 100 { let refreshed = j.refresh(); let mut i = 0;
-            while i < j.revision() { let e = j.read(i); if e.kind == "task.handed" && e.entity == id { return e; } i = i + 1; }
+        while tries < 250 { let refreshed = j.refresh(); let mut i = 0;
+            while i < j.revision() { let e = j.read(i);
+                if len(task) == 0 && e.kind == "workflow.admitted" && std::json::find_string_field(e.body, "request") == intent { task = e.entity; }
+                if len(task) > 0 && e.kind == "task.handed" && std::str::starts_with(e.entity, task + ".") { return e; }
+                i = i + 1; }
             std::time::sleep(20ms); tries = tries + 1;
         }
-        std::test::assert(false, "actual native handoff"); return dna::Event { };
+        std::test::assert(false, "actual native handoff of " + intent + " (admitted as `" + task + "`)"); return dna::Event { };
     }
     fn seed(root: String, evidence: String, browser: Bool) {
+        // the record is memory's (GH #1590): born there first, and the Ledger
+        // written as its owner, as the harness runs this seed
+        std::test::assert_eq_str(dna::memory_fixture(root), "", "the record is born in memory");
         let record = dna::MemoryRecord { repo: root };
         std::test::assert(record.append("journal", record.head("journal").id, dna::Row { kind: "application.observed", entity: "org", body: "{}", author: "test" }, false, "").ok, "fresh application identity");
         // Eligibility input only, not proof of the person retirement command.
         if browser { std::test::assert(record.append("journal", record.head("journal").id, dna::Row { kind: "person.retired", entity: "retired", body: "{\"by\":\"fixture\",\"to\":\"\",\"transferred\":0}", author: "fixture" }, false, "").ok, "explicit recipient-retirement eligibility fixture"); }
-        let journal = dna::RoutedJournal { record: dna::RecordJournal { repo: root }, ledger: dna::MemoryLedger { repo: root } }; let receipts = dna::MemoryReceipts { repo: root }; let work = TaskApiWork { }; work.bind(journal, receipts);
-        let first_id = work.ask("task-api-first", "Human review\r\nΔ <literal & markup>"); let first = self.handed(journal, first_id);
-        let second_id = work.ask("task-api-second", "Another person's responsibility"); let second = self.handed(journal, second_id);
+        let journal = dna::RoutedJournal { record: dna::RecordJournal { repo: root }, ledger: dna::MemoryLedger { repo: root, dsn_env: "HALE_DNA_MEMORY_DSN_OWNER" } }; let receipts = dna::MemoryReceipts { repo: root };
+        // born over its record: birth hands the journal to the body's engine
+        // and its parts, so one set after birth reaches none of them
+        let work = TaskApiWork { body: dna::Dna { planned: true, org_id: "task-api", initiative: false, journal: journal, verification: dna::HaleVerification { receipts: receipts, repo: root } } };
+        let first = self.handed(journal, "task-api-first", work.ask("task-api-first", "Human review\r\nΔ <literal & markup>")); let first_id = first.entity;
+        let second = self.handed(journal, "task-api-second", work.ask("task-api-second", "Another person's responsibility")); let second_id = second.entity;
         let b = std::json::Builder { }; b.begin_object(); b.string_field("application_id", record.identity()); b.string_field("first_id", first_id); b.string_field("second_id", second_id); b.string_field("first_handoff", first.digest); b.string_field("second_handoff", second.digest); b.end_object();
         std::io::fs::write_file(evidence + "/task-fixture.json", b.result()) or raise; println("READY actual native Task handoffs");
     }

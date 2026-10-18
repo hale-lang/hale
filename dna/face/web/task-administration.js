@@ -3,20 +3,28 @@
 "use strict";
 (() => {
   const encoder = new TextEncoder();
-  const FIELDS = ["id", "outcome", "state", "assignee", "obligation", "acceptance_digest", "acceptance_bound", "evidence_required", "evidence_ref", "waiting", "assignment_digest", "reassignment_supported", "history"];
+  const FIELDS = ["id", "outcome", "state", "assignee", "obligation", "acceptance_digest", "acceptance_bound", "evidence_required", "evidence_ref", "waiting", "assignment_digest", "reassignment_supported", "history", "usage"];
   const HISTORY = ["event_id", "sequence", "kind", "from", "to", "by"];
+  // What model calls cost under the Task (GH #946): decimal counters, and
+  // the same counters by position and by backend.
+  const COUNTERS = ["calls", "input_tokens", "output_tokens", "cost_micros"];
+  const USAGE = [...COUNTERS, "by_position", "by_backend"];
   const closed = (value, fields) => value && typeof value === "object" && !Array.isArray(value) && Object.keys(value).length === fields.length && fields.every(key => Object.hasOwn(value, key));
   const text = (value, max) => typeof value === "string" && encoder.encode(value).length <= max && !value.includes("\u0000") && !/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/u.test(value);
   const person = value => text(value, 256) && value.length > 0 && !/[\u0000-\u001f\u007f]/.test(value);
   const sha = value => typeof value === "string" && /^sha256:[a-f0-9]{64}$/.test(value);
   const eventId = value => typeof value === "string" && /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(value);
   const decimal = value => typeof value === "string" && /^(0|[1-9][0-9]{0,18})$/.test(value) && BigInt(value) <= 9223372036854775807n;
+  const counted = value => COUNTERS.every(key => decimal(value[key]));
+  const usageLines = (lines, name) => Array.isArray(lines) && lines.length <= 256 && lines.every(line => closed(line, [name, ...COUNTERS]) && person(line[name]) && counted(line));
+  const usage = value => closed(value, USAGE) && counted(value) && usageLines(value.by_position, "position") && usageLines(value.by_backend, "backend");
   function validate(row) {
     const check = condition => { if (!condition) throw new Error("The handed Task and its assignment history could not be verified."); };
     check(closed(row, FIELDS) && person(row.id) && text(row.outcome, 8192) && text(row.waiting, 2048) && text(row.obligation, 256));
     check(["handed", "done", "failed", "cancelled", "refused", "decided", "declined", "timeout", "escalated", "transfer_requested", "transfer_accepted"].includes(row.state) && (row.assignee === "" || person(row.assignee)));
     check(typeof row.acceptance_bound === "boolean" && typeof row.evidence_required === "boolean" && typeof row.reassignment_supported === "boolean" && text(row.acceptance_digest, 256) && text(row.evidence_ref, 256) && sha(row.assignment_digest));
     check(row.acceptance_bound || row.acceptance_digest === "");
+    check(usage(row.usage));
     check(Array.isArray(row.history) && row.history.length > 0 && row.history.length <= 128);
     const ids = new Set(); let sequence = -1n, assignee = "";
     for (const [index, entry] of row.history.entries()) {
@@ -26,7 +34,7 @@
       ids.add(entry.event_id); sequence = BigInt(entry.sequence); assignee = entry.to;
     }
     check(assignee === row.assignee && (!row.reassignment_supported || row.state === "handed"));
-    return { ...row, history: row.history.map(entry => ({ ...entry })) };
+    return { ...row, history: row.history.map(entry => ({ ...entry })), usage: { ...row.usage, by_position: row.usage.by_position.map(line => ({ ...line })), by_backend: row.usage.by_backend.map(line => ({ ...line })) } };
   }
   const el = (tag, className = "", value) => { const node = document.createElement(tag); node.className = className; if (value !== undefined) node.textContent = value; return node; };
   const append = (node, ...children) => { node.append(...children); return node; };

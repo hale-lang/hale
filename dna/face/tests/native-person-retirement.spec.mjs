@@ -37,8 +37,12 @@ test('native retirement lost response survives API restart and revoked write gra
     let delivered;
     await page.route('**/commands',async route=>{if(route.request().method()!=='POST'||isDescribe(route.request()))return route.continue();const response=await route.fetch();expect(response.status()).toBe(200);delivered=await response.json();await route.abort('failed');});
     await open(page,s);await expect(page.locator('.read-only')).toContainText('People & Task actions enabled');await prepare(page);await panel(page).getByRole('button',{name:'Confirm retirement',exact:true}).click();await expect(recovery(page)).toContainText('could not be verified');expect(posts).toHaveLength(1);const admitted=s.journal();expect(admitted.rows.filter(r=>r.kind==='person.retired'&&r.entity==='alex')).toHaveLength(1);
-    const service=JSON.parse(fs.readFileSync(s.evidence+'/service.json'));const updated=policy(s.application,s.principal.name);updated.grants[0].retire=false;updated.grants[0].reassign=false;fs.writeFileSync(service.policy,JSON.stringify(updated));s.unseat();await s.restart();
-    await page.reload();await expect(recovery(page)).toHaveAttribute('data-observation','observed');await expect(page.locator('.read-only')).toHaveText('New tasks enabled');expect(posts).toHaveLength(1);expect(s.journal().head).toBe(admitted.head);expect(s.requests.filter(r=>r.method==='POST'&&r.path.endsWith('/commands'))).toHaveLength(0);
+    const service=JSON.parse(fs.readFileSync(s.evidence+'/service.json'));const updated=policy(s.application,s.principal.name);updated.grants[0].retire=false;updated.grants[0].reassign=false;fs.writeFileSync(service.policy,JSON.stringify(updated));await page.unroute('**/commands');await s.restart();
+    // The grant revoked is the policy's: the record is under local trust, where
+    // the peer's person holds every position (dna/core/roles.hl), so the
+    // head's slice stands and the provider refuses the write. The lost reply
+    // was the POST's; the recovery's lookup line reaches the head.
+    await page.reload();await expect(recovery(page)).toHaveAttribute('data-observation','observed');await expect(page.locator('.read-only')).toHaveText('New tasks & People & Task actions enabled');expect(posts).toHaveLength(1);expect(s.journal().head).toBe(admitted.head);expect(s.requests.filter(r=>r.method==='POST'&&r.path.endsWith('/commands'))).toHaveLength(0);
     fs.writeFileSync(s.evidence+'/person-command-response.json',JSON.stringify(delivered,null,2));expect(errors).toEqual([]);
   }finally{await s.stop();}
 });

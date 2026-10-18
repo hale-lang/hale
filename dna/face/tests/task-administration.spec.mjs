@@ -11,7 +11,8 @@ const row = () => ({
   history: [
     { event_id: '1'.repeat(40), sequence: '9007199254740993', kind: 'task.handed', from: '', to: 'mara', by: 'leader' },
     { event_id: '2'.repeat(40), sequence: '9007199254740995', kind: 'task.reassigned', from: 'mara', to: 'noor', by: 'riley' }
-  ]
+  ],
+  usage: { calls: '2', input_tokens: '120', output_tokens: '40', cost_micros: '55', by_position: [{ position: 'position:support', calls: '2', input_tokens: '120', output_tokens: '40', cost_micros: '55' }], by_backend: [{ backend: 'quick/quick-1', calls: '2', input_tokens: '120', output_tokens: '40', cost_micros: '55' }] }
 });
 const region = page => page.getByRole('region', { name: 'Handed Task administration', exact: true });
 const inspector = page => page.getByRole('group', { name: 'Selected assignment', exact: true });
@@ -67,11 +68,12 @@ test('Task administration: malformed assignment chains, identity and unsupported
       value => { value.history[0].from = 'unknown'; }, value => { value.history[0].kind = 'task.reassigned'; }, value => { value.history[1].kind = 'task.done'; },
       value => { value.history[1].event_id = value.history[0].event_id; }, value => { value.history[1].sequence = value.history[0].sequence; },
       value => { value.history[1].sequence = '01'; }, value => { value.history[1].sequence = '9223372036854775808'; }, value => { value.history[1].sequence = 6; },
-      value => { value.history[1].from = 'unrelated'; }, value => { value.history[1].to = ''; }, value => { value.history[1].by = ''; }, value => { value.assignee = 'different'; }
+      value => { value.history[1].from = 'unrelated'; }, value => { value.history[1].to = ''; }, value => { value.history[1].by = ''; }, value => { value.assignee = 'different'; },
+      value => { delete value.usage; }, value => { value.usage.extra = '0'; }, value => { value.usage.calls = 2; }, value => { value.usage.by_backend[0].backend = ''; }, value => { value.usage.by_position = {}; }
     ];
     return mutations.map(mutate => { const value = structuredClone(input); mutate(value); try { window.FaceTaskAdministration.validate(value); return false; } catch { return true; } });
   }, row());
-  expect(rejected).toHaveLength(26); expect(rejected.every(Boolean)).toBe(true);
+  expect(rejected).toHaveLength(31); expect(rejected.every(Boolean)).toBe(true);
 });
 
 test('Task administration: inspect exact assignment trail and requirements with keyboard and narrow layout', async ({ page, host }, info) => {

@@ -848,10 +848,15 @@ handoffs explicitly bind no practice in force; nonempty bound acceptance is
 covered separately by the focused native Task fixtures.
 
 `native-task-browser.spec.mjs` uses `native-task-harness.mjs` and two explicit,
-matching source-built binaries. It creates a fresh Git Record, invokes native
-`Dna.ask` handoffs, installs the closed application-bound Task policy and starts
-the real composed API. It seats the actor at the board — reassignment and
-retirement are the owner's gated commands — and grants retirement so the
+matching source-built binaries: the composed API (`dna/api/practice_review`;
+the plain `dna/api` head serves no person reads) and the Task seed
+(`dna/api/tests/tasks_seed.hl`). The seed births a fresh record in memory,
+owned by `HALE_DNA_MEMORY_DSN_OWNER`, and a body born over that record asks
+twice; the planner's word admits each ask and its person case is handed. It
+then installs the closed application-bound Task policy and starts the real
+composed API. The record is under local trust, so the actor's person holds
+every position and the head's slice offers every command; the policy is what
+grants or refuses reassignment and retirement, and it grants retirement so the
 assignee's person read carries the eligible recipients the picker offers. There
 is no Body, Host or graph service, and successful command responses and
 assignment outcomes are not mocked. Its three cases cover
@@ -860,14 +865,15 @@ response is discarded followed by API restart and GET-only recovery; and stale
 assignment, retired-person and outside-policy refusals.
 
 ```sh
-HALE_NATIVE_TASK_API=/absolute/path/command-api \
-HALE_NATIVE_TASK_SEED=/absolute/path/task-seed \
+HALE_NATIVE_TASK_API=/absolute/path/to/target/seeds/practice_review/practice_review \
+HALE_NATIVE_TASK_SEED=/absolute/path/to/target/seeds/tasks_seed/tasks_seed \
 HALE_NATIVE_TASK_EVIDENCE=/absolute/path/task-evidence \
   node node_modules/@playwright/test/cli.js test \
   --config tests/playwright.config.mjs native-task-browser.spec.mjs
 ```
 
-Without both binary paths, native cases skip visibly. The harness isolates the
+Without both binary paths, native cases skip visibly; no CI job supplies them
+yet, so the lane runs by hand. The harness isolates the
 environment, applies the existing native process bounds and stops every owned
 process group. Retained evidence includes native Record facts, requests, binary
 hashes and process exits. This gate does not cover person retirement commands,
