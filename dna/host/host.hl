@@ -556,6 +556,12 @@ locus NodeRelay {
     // again. The rows this view held when the node started are its past,
     // never told; at most ANNOUNCE_AT_ONCE a pass, the rest the next.
     // How many were told.
+    // The rows the view holds when the node starts: its past, never told.
+    // Taken when the view is opened, not at the end of the first tick,
+    // which on a loaded machine can end after a row a head waits on lands.
+    fn mark_past(p: Projection) {
+        if self.live && self.announced < 0 { self.announced = p.rows(); }
+    }
     fn announce(p: Projection) -> Int {
         if !self.live { return 0; }
         let rows = p.rows();
@@ -2072,6 +2078,7 @@ main locus Host {
         self.relay.live = self.nerves_on;
         self.view = Projection { root: self.root, seed: self.seed, toolchain: self.toolchain, j: dna::RoutedJournal { record: dna::RecordJournal { repo: self.root, author: "host" }, ledger: self.memory.ledger } };
         let viewed = self.view.j.refresh();
+        self.relay.mark_past(self.view);
         if !self.nerves_on { self.say("no nerves: " + dna::NATS_SPINE_URL_ENV + " and " + dna::NATS_ORG_ENV + " are not set (`hale dna dev` creates the stream from HALE_DNA_NATS_URL_OWNER or dna/compose.yaml and hands the host the spine's); the organization hears nothing the record asks"); }
         // A pending prepared handoff uses its claimed attempt even at host
         // startup. An unknown old attempt never falls through to a second start.
