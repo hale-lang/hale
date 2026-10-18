@@ -51,7 +51,9 @@ fn segment_model_hash_env(bin: &Path, envs: &[(&str, String)]) -> u64 {
     for _ in 0..60 {
         std::thread::sleep(Duration::from_millis(25));
         if let Ok(b) = std::fs::read(&shm) {
-            if b.len() > 0x88 {
+            // The header is published by `flags`'s alive bit (0x70),
+            // stored after the rest: a sized segment before it is zeros.
+            if b.len() > 0x88 && b[0x70] & 1 != 0 {
                 bytes = Some(b);
                 break;
             }
