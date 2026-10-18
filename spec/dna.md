@@ -615,12 +615,8 @@ repository:
   its own when it reads the row. A candidate is code, and travels as any
   branch does: a person who pushes one to a forge deletes it there as
   any branch is deleted. The commits stay in each object store until git
-  collects them. A candidate a toolchain before the branches kept as
-  `refs/dna/candidates/<mutation>` becomes its branch at `hale dna
-  upgrade`, once (the `candidates-migrate` host verb): a branch already
-  at the same commit is kept, one at another commit stops the upgrade
-  with both commits named and moves nothing about that candidate. The
-  readers know branches alone.
+  collects them. The readers know branches alone; nothing reads or
+  moves a candidate an earlier toolchain kept under the record's refs.
 - **An apply expresses the candidate, tree and all.** An approval
   applies exactly the reviewed candidate, or nothing: the candidate's
   worktree head is the pinned digest, the genome's head is the base the

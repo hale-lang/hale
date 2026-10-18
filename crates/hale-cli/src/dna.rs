@@ -1722,15 +1722,6 @@ fn upgrade(dir: &Path) -> Result<Vec<String>, String> {
     if let Some(line) = pin_identity(&root)? {
         out.push(line);
     }
-    // GH #1590: a candidate an earlier toolchain kept under the record's
-    // refs becomes its branch, once; the readers know branches alone
-    let moved = host_run("candidates-migrate", &root, &[])?;
-    let counts: Vec<&str> = moved.split_whitespace().collect();
-    if let ["moved", m, "kept", k] = counts.as_slice() {
-        if *m != "0" || *k != "0" {
-            out.push(format!("candidates  {m} moved to their branches (dna/candidate/<mutation>), {k} already there"));
-        }
-    }
     // GH #596: an organization from before the charter gets one, and
     // the toolchain's design is proposed again where it changed — each
     // changed practice superseding the one it replaces, for the Board
