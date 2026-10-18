@@ -1277,7 +1277,9 @@ Semantics:
   for any argument holding such a place. Names are bindings, not
   spellings: an inner `let f` names nothing after its block, and
   `let r = r;` is an owned copy, not the parameter. A generic fn is
-  read as any other, its type parameters taken as any type (fail closed). A record of the
+  read as any other, its type parameters taken as any type (fail closed): a
+  field path through one (`fn fill<T>(r: T) { push(r.xs, s) }`) may be such
+  a place, so `fill(self.row)` is refused. A record of the
   frame's own, a copy of one, and a scalar element are sound; the shape that works for a locus's field is to fill
   a local and store it whole (`self.row = mine`), which anchors the
   elements in the locus's arena. The stdlib's `std::http::is_route`

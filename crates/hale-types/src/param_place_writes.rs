@@ -38,7 +38,8 @@
 //! assigns, `f = other;`) is taken as a writer of every argument whose
 //! type holds such a place: refused rather than guessed. A generic fn is
 //! summarized as any other, a type parameter taken as any type (a
-//! pointer-shaped element, a record holding such a place).
+//! pointer-shaped element, a record holding such a place, a field path
+//! through it the template cannot resolve).
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -283,6 +284,44 @@ impl<'a, 't, 's> World<'a, 't, 's> {
         Some(self.dealias(&t))
     }
 
+    /// Whether the path below a value of type `t` passes through a type the
+    /// walk cannot see into: a generic fn's type parameter (`fn fill<T>(r:
+    /// T) { push(r.xs, s) }` reads `r.xs` of a `T`), whose instance may be a
+    /// record holding a bounded place there.
+    fn opaque_on(&self, t: &Ty, path: &[Step]) -> bool {
+        let mut t = self.dealias(t);
+        for s in path {
+            if self.unseen(&t) {
+                return true;
+            }
+            match self.step(&t, s) {
+                Some(next) => t = self.dealias(&next),
+                None => return false,
+            }
+        }
+        self.unseen(&t)
+    }
+
+    /// A type no declaration of the program names: a type parameter.
+    fn unseen(&self, t: &Ty) -> bool {
+        match t {
+            Ty::Named(n) => self.top.lookup(n).is_none(),
+            Ty::Unknown => true,
+            _ => false,
+        }
+    }
+
+    /// Whether a place of type `t` at `path` may be a bounded place of
+    /// pointer-shaped elements (`holds`: or hold one, at any depth): known
+    /// by its type, or unknown through a type parameter (fail closed).
+    fn may_write(&self, t: &Ty, path: &[Step], holds: bool) -> bool {
+        match self.type_at(t, path) {
+            Some(at) if holds => self.holds_pointer_bounded(&at, 0),
+            Some(at) => self.pointer_bounded(&at),
+            None => self.opaque_on(t, path),
+        }
+    }
+
     /// Whether `t` names a record or a locus: an element held by pointer.
     fn pointer_elem(&self, t: &Ty) -> bool {
         match self.dealias(t) {
@@ -449,7 +488,7 @@ impl<'a, 't, 's> World<'a, 't, 's> {
                 match self.callee(callee, &b) {
                     Some(c) if (c == "push" && args.len() == 2) || (c == "set" && args.len() == 3) => {
                         if let Some((i, path)) = root_of(&args[0]) {
-                            if self.type_at(&f.params[i].1, &path).is_some_and(|t| self.pointer_bounded(&t)) {
+                            if self.may_write(&f.params[i].1, &path, false) {
                                 out.insert(i);
                             }
                         }
@@ -468,7 +507,7 @@ impl<'a, 't, 's> World<'a, 't, 's> {
                     None => {
                         for a in args {
                             if let Some((i, path)) = root_of(a) {
-                                if self.type_at(&f.params[i].1, &path).is_some_and(|t| self.holds_pointer_bounded(&t, 0)) {
+                                if self.may_write(&f.params[i].1, &path, true) {
                                     out.insert(i);
                                 }
                             }
