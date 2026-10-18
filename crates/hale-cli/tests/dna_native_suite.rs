@@ -1143,7 +1143,7 @@ fn nothing_reads_the_git_record() {
             for e in std::fs::read_dir(&d).into_iter().flatten().flatten() {
                 let p = e.path();
                 if p.is_dir() {
-                    if p.file_name().map_or(false, |n| n != "pond" && n != "node_modules" && n != "parked") {
+                    if p.file_name().map_or(false, |n| n != "pond" && n != "node_modules") {
                         stack.push(p);
                     }
                     continue;
