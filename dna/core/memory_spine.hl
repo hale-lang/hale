@@ -17,7 +17,68 @@ const HEAD_DSN_ENV: String = "HALE_DNA_MEMORY_DSN_HEAD";
 // with one, otherwise the head's. A process never holds both.
 fn own_dsn_env() -> String { if dsn_set(SPINE_DSN_ENV) { return SPINE_DSN_ENV; } return HEAD_DSN_ENV; }
 
-fn dsn_set(env_name: String) -> Bool { return len(env_name) > 0 && std::env::var_exists(env_name) && len(std::env::var(env_name)) > 0; }
+fn dsn_set(env_name: String) -> Bool {
+    if std::str::starts_with(env_name, "postgres") { return true; }
+    return len(env_name) > 0 && std::env::var_exists(env_name) && len(std::env::var(env_name)) > 0;
+}
+
+// GH #1590: the head's DSN a clone keeps for whatever in it is given no
+// role's (`.hale/dna/memory.env`, written mode 600 by memory's migration):
+// "" when there is none, and when the file is readable by anyone but its
+// owner (`kept_dsn_refusal` says why). Only the head's line is read.
+fn kept_dsn(repo: String, env_name: String) -> String {
+    let path = repo + "/.hale/dna/memory.env";
+    if !std::io::fs::file_exists(path) { return ""; }
+    if len(kept_dsn_refusal(repo)) > 0 { return ""; }
+    let text = std::io::fs::read_file(path) or "";
+    let mut rest = text;
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let line = if nl < 0 { rest } else { rest[0..nl] };
+        rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
+        let eq = std::str::index_of(line, "=");
+        if eq <= 0 { continue; }
+        let value = line[(eq + 1)..len(line)];
+        if line[0..eq] == HEAD_DSN_ENV && std::str::starts_with(value, "postgres") { return value; }
+    }
+    return "";
+}
+
+// Why the clone's kept DSN is not used: "" when it may be, else what is
+// wrong with the file and the fix.
+fn kept_dsn_refusal(repo: String) -> String {
+    let path = repo + "/.hale/dna/memory.env";
+    let mode = file_mode(path);
+    if len(mode) == 0 { return ""; }
+    if !std::str::ends_with(mode, "00") { return path + " holds the head's DSN and is readable by others (mode " + mode + "): `chmod 600 " + path + "`, or remove it and run `hale dna memory migrate` again"; }
+    return "";
+}
+
+// The spine's DSN this clone reaches with what it keeps (GH #1590): the
+// head's DSN it keeps, with the spine's role and the vault entry the
+// bootstrap drew for it; "" when it keeps no head DSN or the vault holds no
+// spine password. A body run here (`hale dna run`) dials it when no spine
+// DSN is named.
+fn kept_spine_dsn(repo: String) -> String {
+    let head = kept_dsn(repo, HEAD_DSN_ENV);
+    if len(head) == 0 { return ""; }
+    let id = record_scope(repo);
+    let d = parse_dsn(head);
+    if len(id) == 0 || !d.ok { return ""; }
+    let role = spine_role(id);
+    if !std::secret::Credential { vault: role_vault_name(role) }.ready() { return ""; }
+    return dsn_text(role_dsn(d, role));
+}
+
+// Where a memory handle at `repo` dials: its environment variable when it
+// is set, else the DSN the clone keeps (a DSN in place of the name: the
+// stores dial either), else the name, which then says it is not set. No
+// name is a handle given its connection: it dials nothing.
+fn memory_source(repo: String, env_name: String) -> String {
+    if len(env_name) == 0 || dsn_set(env_name) { return env_name; }
+    let kept = kept_dsn(repo, env_name);
+    return if len(kept) > 0 { kept } else { env_name };
+}
 
 // ---- the record's identity (GH #1590) ---------------------------------------
 //
@@ -25,12 +86,11 @@ fn dsn_set(env_name: String) -> Bool { return len(env_name) > 0 && std::env::var
 // nerves' organization token, the roles. It is pinned in the genome, as
 // `[dna] record = "<identity>"` in the repository's `hale.toml`, written by
 // `hale dna init` and `upgrade`, so a clone knows which record it belongs
-// to before it holds a row of it. While the record is on git the identity
-// is the root commit of `refs/dna/journal`, and the pin must agree with
-// it: a `hale.toml` copied from another project names another record, and
-// a clone whose record is not the one its genome names is refused rather
-// than read into the other record's memory. A genome with no pin is the
-// record's root commit, as before the pin.
+// to before it holds a row of it. The identity is the digest of the
+// record's first row, `record.genesis`, composed by init before the pin is
+// written; a `hale.toml` copied from another project names a record whose
+// genesis names a genome this clone's history does not hold, and is
+// refused rather than read into the other record's memory.
 
 // The identity, or why there is none to use: `id` "" with `why` "" is a
 // record that has no rows yet and no pin.
@@ -193,10 +253,11 @@ fn record_identity_at(repo: String) -> RecordIdentity {
     let pin = manifest_dna_value(repo, "record");
     if len(pin.why) > 0 { return RecordIdentity { why: "hale.toml's [dna] record is present but not readable here (" + pin.why + "); write it as `record = \"<identity>\"`" }; }
     let pinned = pin.value;
-    let held = GitRecord { repo: repo }.identity();
-    if !pin.present { return RecordIdentity { id: held }; }
-    if !hex_text(pinned) || (len(pinned) != 40 && len(pinned) != 64) { return RecordIdentity { why: "hale.toml's [dna] record is `" + pinned + "`, which is not a record's identity (40 or 64 lowercase hex digits)" }; }
-    if len(held) > 0 && held != pinned { return RecordIdentity { why: "hale.toml's [dna] record names record " + pinned + ", but this clone's record is " + held + ": the genome was copied from another project, or the record from another genome, and neither is read into the other's memory" }; }
+    // GH #1590: the record is memory's, and the pin is the only way a clone
+    // names it; a genome with no pin names no record yet
+    if !pin.present { return RecordIdentity { }; }
+    if hex_text(pinned) && len(pinned) == 40 { return RecordIdentity { why: "hale.toml's [dna] record is `" + pinned + "`, the root commit of a record an earlier toolchain kept on git, and records are not carried forward: re-init a fresh record (remove the `[dna] record` line and run `hale dna init`)" }; }
+    if !hex_text(pinned) || len(pinned) != 64 { return RecordIdentity { why: "hale.toml's [dna] record is `" + pinned + "`, which is not a record's identity (64 lowercase hex digits)" }; }
     return RecordIdentity { id: pinned };
 }
 
@@ -232,16 +293,18 @@ locus MemoryLedger {
         token_env: String = "HALE_DNA_LEASE_TOKEN";
     }
     birth() {
+        self.dsn_env = memory_source(self.repo, self.dsn_env);
         if len(self.lease) == 0 && len(self.lease_env) > 0 && std::env::var_exists(self.lease_env) {
             self.lease = std::env::var(self.lease_env);
             if len(self.token_env) > 0 && std::env::var_exists(self.token_env) { self.token = std::str::parse_int(std::env::var(self.token_env)) or 0; }
         }
     }
-    fn ready() -> Bool { return dsn_set(self.dsn_env); }
+    fn ready() -> Bool { return dsn_set(memory_source(self.repo, self.dsn_env)); }
     // Opened on first use, not at birth: an organism on routing 0 holds a
     // ledger and never asks it anything.
     fn ensure_open() -> Bool {
         if self.opened { return true; }
+        self.dsn_env = memory_source(self.repo, self.dsn_env);
         if !self.ready() { self.failure = self.dsn_env + " is not set: no ledger"; return false; }
         let who = record_identity_at(self.repo);
         if len(who.why) > 0 { self.failure = who.why; return false; }
@@ -306,18 +369,9 @@ locus MemoryLedger {
         self.store.request = "";
         return r;
     }
-    // ---- what adoption does beside appending
-    fn adopt_row(kind: String, entity: String, body: String, author: String, record_seq: Int, commit: String) -> Bool { if !self.ensure_open() { return false; } return self.store.adopt_row(kind, entity, body, author, record_seq, commit); }
+    // ---- the cutover memory states for this Ledger
     fn cutover(checkpoint: String, copied: Int, routing: Int) -> Bool { if !self.ensure_open() { return false; } return self.store.cutover(checkpoint, copied, routing); }
     fn checkpoint() -> Cutover { if !self.ensure_open() { return Cutover { }; } return self.store.checkpoint(); }
-    fn abandon() -> Bool { if !self.ensure_open() { return false; } return self.store.abandon(); }
-    // A lease the record held, put into memory as it stands, token and all,
-    // unless memory already holds one under `key`.
-    fn carry_lease(key: String, holder: String, token: Int, expires: Int) -> Bool {
-        if !self.ensure_open() { return false; }
-        if self.leases.current(key).known { return true; }
-        return self.leases.put(key, holder, token, expires, true, 0);
-    }
     fn last_error() -> String { return if len(self.failure) > 0 { self.failure } else { self.store.last_error() }; }
 }
 
@@ -339,12 +393,13 @@ locus Memory {
     birth() { self.point(self.repo, self.dsn_env); }
     // For a holder that knows its record only after it is built (the host).
     fn point(repo: String, dsn_env: String) {
+        let source = memory_source(repo, dsn_env);
         self.repo = repo;
-        self.dsn_env = dsn_env;
+        self.dsn_env = source;
         self.ledger.repo = repo;
-        self.ledger.dsn_env = dsn_env;
+        self.ledger.dsn_env = source;
         self.leases.repo = repo;
-        self.leases.dsn_env = dsn_env;
+        self.leases.dsn_env = source;
     }
 }
 
@@ -364,9 +419,10 @@ locus MemoryLeases {
         reachable: Bool = true; // false after the last call could not reach memory
         races: Int = 0;
     }
-    fn ready() -> Bool { return dsn_set(self.dsn_env); }
+    fn ready() -> Bool { return dsn_set(memory_source(self.repo, self.dsn_env)); }
     fn ensure_open() -> Bool {
         if self.opened { return true; }
+        self.dsn_env = memory_source(self.repo, self.dsn_env);
         if !self.ready() { self.last_error = self.dsn_env + " is not set: no leases"; return false; }
         let who = record_identity_at(self.repo);
         if len(who.why) > 0 { self.last_error = who.why; return false; }
@@ -398,7 +454,7 @@ locus MemoryLeases {
         if self.reachable { self.races = self.races + 1; } else { self.last_error = self.store.last_error(); }
         return false;
     }
-    // ---- Coordination, as MemLeases and GitLeases have it
+    // ---- Coordination, as MemLeases and MemoryLeases have it
     fn acquire(key: String, holder: String, now: Int, ttl: Int) -> Lease {
         let cur = self.current(key);
         if !self.reachable { return Lease { key: key, holder: cur.holder, token: 0, expires: cur.expires, present: false }; }
@@ -484,7 +540,7 @@ const PACKAGE_WAIT_SECS: Int = 20;
 // an idea ratified or retired, a binding made or undone (the tail applies
 // the rest, but no package reads it); -1 when there is none.
 fn last_knowledge_row(repo: String) -> Int {
-    let j = GitJournal { repo: repo };
+    let j = RecordJournal { repo: repo };
     let mut i = j.revision() - 1;
     while i >= 0 {
         let e = j.read(i);
@@ -513,7 +569,7 @@ locus MemoryKnowledge {
         knowledge_rev: Int = -1;
         record_reads: Int = 0;
     }
-    fn ready() -> Bool { return dsn_set(self.dsn_env); }
+    fn ready() -> Bool { return dsn_set(memory_source(self.repo, self.dsn_env)); }
     // The record's identity, read once it has one: a record with no rows
     // has none yet, and is asked again until it does.
     fn record_identity() -> String {
@@ -528,6 +584,7 @@ locus MemoryKnowledge {
     // rows when the store opened, and has some now, moves to its own
     // schema), and a connection that still answers.
     fn ensure_open() -> Bool {
+        self.dsn_env = memory_source(self.repo, self.dsn_env);
         let scope = self.record_identity();
         if len(scope) == 0 {
             let who = record_identity_at(self.repo);
@@ -656,6 +713,13 @@ locus MemoryKnowledge {
         self.store.forget_error();
         return self.store.graph_perspective("routing");
     }
+    // The record's rows the graph does not hold yet (0 when it is current),
+    // -1 when memory is not there or does not answer.
+    fn projection_lag() -> Int {
+        if !self.ready() || !self.ensure_open() { return -1; }
+        self.store.forget_error();
+        return self.store.projection_lag();
+    }
     // The graph's ownership (GH #1123): JSON `[node, holder]` pairs of
     // the `holds` edges an organization is in, "" when memory is not there
     // or does not answer.
@@ -674,26 +738,36 @@ locus MemoryKnowledge {
 // ---- protected evidence (GH #606) ------------------------------------------
 
 // Protected bodies as the spine holds them: a customer or confidential
-// body is kept in memory alone, sealed under the receipt key, and the
-// record gets its digest and class. A read names a reader and a purpose,
-// is refused unless a `receipt.disclosed` row names both, and is a row
-// either way. A redaction is recorded in the record before a byte is
-// erased.
+// body is kept in memory alone, sealed under the receipt key, and its
+// digest and class are a row. A read names a reader and a purpose, is
+// refused unless a `receipt.disclosed` row names both, and is a row either
+// way. A redaction is a row before a byte is erased. The rows are the
+// Ledger's (`receipt.*`), read with the record's as one journal (GH #1590).
 locus MemoryVault {
     params {
         repo: String = ".";
         dsn_env: String = SPINE_DSN_ENV;
         store: PqProtected = PqProtected { };
-        j: GitJournal = GitJournal { repo: ".", author: "vault" };
+        j: RoutedJournal = RoutedJournal { };
         erased: String = "\n"; // digests erased by this process, one per line
         opened: Bool = false;
         last_error: String = "";
     }
-    birth() { self.j.repo = self.repo; self.j.record.repo = self.repo; }
-    fn ready() -> Bool { return dsn_set(self.dsn_env) && self.store.ready(); }
+    birth() {
+        self.dsn_env = memory_source(self.repo, self.dsn_env);
+        self.over(self.repo);
+    }
+    // The vault over the record at `repo` (a host learns its root after
+    // the vault is built).
+    fn over(repo: String) {
+        self.repo = repo;
+        let dsn = self.dsn_env;
+        self.j = RoutedJournal { record: RecordJournal { repo: repo, author: "vault" }, ledger: MemoryLedger { repo: repo, dsn_env: dsn } };
+    }
+    fn ready() -> Bool { return dsn_set(memory_source(self.repo, self.dsn_env)) && self.store.ready(); }
     fn ensure_open() -> Bool {
         let moved = self.j.refresh();
-        let scope = self.j.genesis();
+        let scope = record_scope(self.repo);
         if self.opened && scope == self.store.record() { return true; }
         self.store.use_dsn_env(self.dsn_env);
         self.store.scope(scope);
@@ -851,105 +925,5 @@ locus MemoryVault {
         let x = self.j.append(self.j.revision(), "receipt.read", digest, rb.result());
         if !x.ok { return VaultRead { refused: "the read of " + digest + " could not be recorded (" + x.error + "); nothing was disclosed" }; }
         return VaultRead { present: true, class: p.class, text: p.text };
-    }
-}
-
-// ---- the ledger's adoption and abandonment (GH #646 stage 1, #650) -----------
-//
-// The record asks (`ledger.adopting`, `ledger.abandoning`) and any node
-// carries it out on its tick, claimed by the asking row's digest (GH
-// #1026), so of the nodes that see the ask one copies the rows and the
-// rest find it taken; a node that dies mid-copy leaves its claim to
-// expire, and the copy is keyed by commit, so the next node reruns it.
-locus LedgerAdoption {
-    params {
-        root: String = ".";
-        ledger: MemoryLedger = MemoryLedger { };
-        j: GitJournal = GitJournal { repo: ".", author: "spine" };
-        // The record's cell for this body's own lease and its key in
-        // memory: adoption carries it across, so the body that adopts does
-        // not find its lease gone once leases are read from memory.
-        carry_cell: String = "";
-        carry_key: String = "";
-        holder: String = "";
-        last_error: String = "";
-    }
-    birth() {
-        self.j.repo = self.root;
-        self.j.record.repo = self.root;
-        self.ledger.repo = self.root;
-    }
-    // Adopt the ledger when the record asks and has not had it: every
-    // operational row of the record, in order, keyed by its commit (rerun
-    // after any interruption, nothing copied twice), the cutover, and
-    // `ledger.adopted` naming the checkpoint (GH #646 stage 1, #650).
-    // `self.last_error` holds only the last failure, replaced whole (the old text is
-    // retired); the survey cannot prove the new text independent of it.
-    @bounded_by(self.last_error)
-    fn adopt(intent: Event) -> Bool {
-        let head = intent.digest;
-        let mut copied = 0;
-        let mut i = 0;
-        while i < self.j.revision() {
-            let e = self.j.read(i);
-            if e.seq > intent.seq { break; }
-            if memory_of(e.kind) == "ledger" {
-                if !self.ledger.adopt_row(e.kind, e.entity, e.body, self.j.author_of(i), e.seq, e.digest) { self.last_error = "the ledger could not take row " + to_string(e.seq) + ": " + self.ledger.last_error(); return false; }
-                copied = copied + 1;
-            }
-            i = i + 1;
-        }
-        if !self.ledger.cutover(head, copied, ROUTING_VERSION) { self.last_error = "the ledger could not record the cutover: " + self.ledger.last_error(); return false; }
-        // before `ledger.adopted` moves leases to memory: the body lease
-        // this node holds goes with them, at its token
-        if len(self.carry_cell) > 0 && len(self.carry_key) > 0 {
-            let cell = GitRecord { repo: self.root }.cell(self.carry_cell);
-            let held = GitLeases { repo: self.root }.parse(self.carry_key, if cell.present { cell.text } else { "" });
-            if held.present && !self.ledger.carry_lease(self.carry_key, held.holder, held.token, held.expires) { self.last_error = "the ledger could not take the body lease across: " + self.ledger.last_error(); return false; }
-        }
-        let c = std::json::Builder { };
-        c.begin_object();
-        c.int_field("routing", ROUTING_VERSION);
-        c.string_field("checkpoint", head);
-        c.int_field("rows", copied);
-        c.string_field("by", std::json::find_string_field(intent.body, "by"));
-        c.end_object();
-        let x = self.j.append(self.j.revision(), "ledger.adopted", "ledger", c.result());
-        if !x.ok { self.last_error = "the rows are copied, but the record refused `ledger.adopted` (" + x.error + "); the next tick records it"; return false; }
-        return true;
-    }
-    fn abandon(intent: Event) -> Bool {
-        if !self.ledger.abandon() { self.last_error = "the ledger could not be abandoned: " + self.ledger.last_error(); return false; }
-        let b = std::json::Builder { };
-        b.begin_object();
-        b.string_field("by", std::json::find_string_field(intent.body, "by"));
-        b.string_field("why", std::json::find_string_field(intent.body, "why"));
-        b.end_object();
-        let x = self.j.append(self.j.revision(), "ledger.abandoned", "ledger", b.result());
-        if !x.ok { self.last_error = "the ledger is emptied, but the record refused `ledger.abandoned` (" + x.error + ")"; return false; }
-        return true;
-    }
-    // One pass: an adoption or abandonment the record asks for and has not
-    // had, carried out under a claim on the asking row. 1 when this node
-    // carried one out, 0 when there was none (or another node holds it), -1
-    // with `last_error` when memory could not be reached.
-    fn tick(leases: MemoryLeases) -> Int {
-        if !self.ledger.ready() { return 0; }
-        let moved = self.j.refresh();
-        let mut pending = Event { seq: -1 };
-        let mut i = 0;
-        while i < self.j.revision() {
-            let e = self.j.read(i);
-            if e.kind == "ledger.adopting" || e.kind == "ledger.abandoning" { pending = e; }
-            if (e.kind == "ledger.adopted" || e.kind == "ledger.abandoned") && pending.seq >= 0 { pending = Event { seq: -1 }; }
-            i = i + 1;
-        }
-        if pending.seq < 0 { return 0; }
-        let key = "ledger/" + pending.digest;
-        let l = leases.claim(key, self.holder, 60);
-        if !l.present || l.holder != self.holder { return if leases.reachable { 0 } else { -1 }; }
-        let done = if pending.kind == "ledger.adopting" { self.adopt(pending) } else { self.abandon(pending) };
-        let given = leases.release_claim(key, self.holder);
-        return if done { 1 } else { -1 };
     }
 }

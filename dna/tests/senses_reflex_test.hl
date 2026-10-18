@@ -53,7 +53,7 @@ fn get(url: String) -> String {
 // `entity`, each `entity body` on a line. The record is read whole.
 @bounded_by(repo)
 fn rows(repo: String, kind: String, entity: String) -> String {
-    let j = dna::GitJournal { repo: repo };
+    let j = dna::RoutedJournal { record: dna::RecordJournal { repo: repo }, ledger: dna::MemoryLedger { repo: repo } };
     let mut out = "";
     let mut i = 0;
     while i < j.revision() {
@@ -148,10 +148,14 @@ main locus App {
         std::io::fs::write_file(self.app + "/hale.toml", manifest) or discard;
         let bare = scratch + "/origin.git";
         let edge = scratch + "/edge-1";
-        let c0 = in_dir(self.app, "sh\n-c\ngit init -q --bare -b main \"$0\" && git config user.name riley && git config user.email riley@dna && git add -A && git commit -q -m 'the app and its fleet' && git remote add origin \"$0\" && git push -q origin main 'refs/dna/*:refs/dna/*'\n" + bare);
+        let c0 = in_dir(self.app, "sh\n-c\ngit init -q --bare -b main \"$0\" && git config user.name riley && git config user.email riley@dna && git add -A && git commit -q -m 'the app and its fleet' && git remote add origin \"$0\" && git push -q origin main\n" + bare);
         std::test::assert_eq_int(c0.code, 0, "the application and its origin: " + c0.stderr);
         let c1 = dna::clone_repo(bare, edge);
         std::test::assert_eq_int(c1.code, 0, "the node's clone: " + c1.stderr);
+        // the clone reaches the record's memory: the head's DSN the
+        // application's clone keeps (GH #1590), kept here too
+        let reached = dna::run_tool("sh\n-c\nmkdir -p \"$2/.hale/dna\" && cp \"$1/.hale/dna/memory.env\" \"$2/.hale/dna/memory.env\"\nsh\n" + self.app + "\n" + edge);
+        std::test::assert_eq_int(reached.code, 0, "the node's clone reaches the record's memory: " + reached.stderr);
 
         // ---- the nerves and the store, from the seed's compose
         let nerves = in_dir(self.app, toolchain() + "\ndna\nnerves\nmigrate\n.");
@@ -216,6 +220,10 @@ main locus App {
         // the scratch root go, which take the fence's mandate with them. One
         // still up is killed here, so nothing outlives the fixture, and the
         // fixture fails.
+        // the record is memory's, and memory is the compose's (GH #1590): what
+        // the assertions below quote is read before compose goes
+        let concern_asked = rows(self.app, "concern.requested", "reflexes/");
+        let forged_rows = rows(self.app, "reading.recorded", "reflexes/reflex.fired/forged");
         let org_pid = dna::trim_nl(text_of(self.app + "/.hale/dna/org.pid"));
         let stop = dna::run_tool("sh\n-c\nfor t in \"$1\" \"$2\" \"$3\"; do [ -n \"$t\" ] || continue; kill \"$t\" 2>/dev/null; done; n=0; while [ $n -lt \"$4\" ]; do kill -0 \"$1\" 2>/dev/null || kill -0 \"$2\" 2>/dev/null || kill -0 \"$3\" 2>/dev/null || break; sleep 0.1; n=$((n + 1)); done; o=$5; [ -n \"$o\" ] || exit 0; org() { ps -o comm= -p \"$o\" 2>/dev/null | grep -Eq '(^|/)org$'; }; n=0; while org && [ $n -lt \"$4\" ]; do sleep 0.1; n=$((n + 1)); done; org || exit 0; kill -9 \"$o\" 2>/dev/null; echo \"the organization (pid $o) outlived its host\"\nsh\n" + reflexes + "\n" + node + "\n" + host + "\n" + to_string(dna::wait_secs(30) * 10) + "\n" + org_pid);
         let down = in_dir(self.app, "docker\ncompose\n-f\ndna/compose.yaml\ndown\n-v");
@@ -233,9 +241,9 @@ main locus App {
         std::test::assert(std::str::contains(acted, "\\\"outcome\\\": \\\"restarted\\\"") || std::str::contains(acted, "\"outcome\": \"restarted\""), "the node restarted api-0 and landed reflex.acted: " + acted + self.logs());
         std::test::assert(count_lines(second_up) >= 2, "api-0 is up again: " + second_up);
         std::test::assert(count_lines(fired_twice) >= 2, "a second exit fired again: " + fired_twice + self.logs());
-        std::test::assert(len(concern) > 0, "the second firing inside the window became a concern the organization raised: " + rows(self.app, "concern.requested", "reflexes/") + self.logs());
+        std::test::assert(len(concern) > 0, "the second firing inside the window became a concern the organization raised: " + concern_asked + self.logs());
         std::test::assert_eq_int(forged.seq, -1, "the application's user may not publish a firing (the stream took it at seq " + to_string(forged.seq) + ")");
-        std::test::assert_eq_str(rows(self.app, "reading.recorded", "reflexes/reflex.fired/forged"), "", "and no forged firing was recorded");
+        std::test::assert_eq_str(forged_rows, "", "and no forged firing was recorded");
         std::test::assert(len(org_pid) > 0, "the host named its organization's pid: " + self.logs());
         std::test::assert_eq_str(stop.stdout, "", "the organization went with its host: " + self.logs());
         std::test::assert_eq_int(down.code, 0, "compose's services and volumes go: " + down.stderr);

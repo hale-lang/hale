@@ -7,8 +7,8 @@ import "../../../../core/pond/realtime/nats" as nats;
 main locus Body {
     params {
         core: dna::Dna = dna::Dna {
-            journal: dna::GitJournal { repo: "." },
-            verification: dna::HaleVerification { receipts: dna::GitReceipts { repo: "." }, repo: "." },
+            journal: dna::RoutedJournal { record: dna::RecordJournal { repo: "." }, ledger: dna::MemoryLedger { repo: "." } }, // the spine's, as the host hands it
+            verification: dna::HaleVerification { receipts: dna::MemoryReceipts { repo: "." }, repo: "." },
             board: dna::Board { who: "board" },
             knowledge_record: dna::KnowledgeRecord { binding_policy_syntax: ops::OrganizationJson { }, edge_facts: ops::StrictKnowledgeDirectEdgeFacts { } }
         };

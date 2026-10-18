@@ -26,7 +26,7 @@ locus MemoryExchange {
         error: String = "";
     }
     dissolve() { self.conn.close(); }
-    fn ready() -> Bool { return dsn_set(self.dsn_env); }
+    fn ready() -> Bool { return dsn_set(memory_source(self.repo, self.dsn_env)); }
     fn last_error() -> String { return self.error; }
     // `self.error` holds only the last failure, replaced whole.
     @bounded_by(self.error)
@@ -35,7 +35,7 @@ locus MemoryExchange {
         if !self.ready() { self.error = self.dsn_env + " is not set: no memory to keep the inbox in"; return false; }
         let scope = record_scope(self.repo);
         if len(scope) == 0 { self.error = "the record has no identity yet"; return false; }
-        let dialled = dial_from_env(self.conn, self.dsn_env);
+        let dialled = dial_from_env(self.conn, memory_source(self.repo, self.dsn_env));
         if len(dialled) > 0 { self.error = dialled; return false; }
         let st = self.conn.open();
         if !st.ok { self.error = "open: " + st.err.kind + " " + st.err.detail; return false; }

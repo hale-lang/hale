@@ -53,7 +53,7 @@ locus RecordRoles {
         services: String = ""; // `<subject>=<service>` per line: the record's `git config --local dna.oidc.service`, re-read when the record moves
         memory: Bool = false; // a fixture's record: the rows `remember` was given, never git
         rows: EventRows = EventRows { };
-        git: GitJournal = GitJournal { };
+        git: RecordJournal = RecordJournal { };
         opened: Bool = false;
         given: Bool = false; // the mapping was handed in, not read from the record
         oidc_given: Bool = false;
@@ -69,7 +69,7 @@ locus RecordRoles {
         self.given = len(self.mapping) > 0;
         self.oidc_given = len(self.oidc) > 0;
         if len(self.root) == 0 { self.root = "."; }
-        if !self.memory { self.git = GitJournal { repo: self.root }; }
+        if !self.memory { self.git = RecordJournal { repo: self.root }; }
     }
     fn revision() -> Int { return if self.memory { self.rows.len() } else { self.git.revision() }; }
     fn row(i: Int) -> Event { return if self.memory { self.rows.get(i) or Event { } } else { self.git.read(i) }; }
@@ -95,16 +95,16 @@ locus RecordRoles {
             return;
         }
         if !self.given {
-            let r = self.git.record.git("config\n--local\n--get-all\ndna.unix.member");
+            let r = MemoryRecord { repo: self.git.repo }.git("config\n--local\n--get-all\ndna.unix.member");
             self.mapping = if r.code == 0 { r.stdout } else { "" };
         }
         if !self.oidc_given {
-            let o = self.git.record.git("config\n--local\n--get-all\ndna.oidc.member");
+            let o = MemoryRecord { repo: self.git.repo }.git("config\n--local\n--get-all\ndna.oidc.member");
             self.oidc = if o.code == 0 { o.stdout } else { "" };
         }
-        let sv = self.git.record.git("config\n--local\n--get-all\ndna.oidc.service");
+        let sv = MemoryRecord { repo: self.git.repo }.git("config\n--local\n--get-all\ndna.oidc.service");
         self.services = if sv.code == 0 { sv.stdout } else { "" };
-        let t = self.git.record.git("config\n--get\ndna.trust");
+        let t = MemoryRecord { repo: self.git.repo }.git("config\n--get\ndna.trust");
         self.local_trust = trim_nl(if t.code == 0 { t.stdout } else { "" }) == "local";
     }
     // The live holds edges and the retired people, as of the record now.
@@ -228,7 +228,7 @@ locus HoldsReader {
         if e.kind == "knowledge.proposed" && std::json::find_string_field(e.body, "kind") == "graph" { self.proposed = self.proposed + e.entity + "\n"; return; }
         if e.kind == "knowledge.ratified" && std::str::contains(self.proposed, "\n" + e.entity + "\n") && len(self.location) > 0 {
             let raw = if std::str::starts_with(e.entity, "sha256:") { e.entity[7..len(e.entity)] } else { e.entity };
-            let mut rest = proposal_rows(GitRecord { repo: self.location }.body(raw).text);
+            let mut rest = proposal_rows(MemoryRecord { repo: self.location }.body(raw).text);
             while len(rest) > 0 {
                 let nl = std::str::index_of(rest, "\n");
                 let row = if nl < 0 { rest } else { rest[0..nl] };
@@ -344,7 +344,7 @@ locus HoldsReader {
 // holding every position (unset is not local).
 fn record_trust_local(repo: String) -> Bool {
     if len(repo) == 0 { return false; }
-    let t = GitRecord { repo: repo }.git("config\n--get\ndna.trust");
+    let t = MemoryRecord { repo: repo }.git("config\n--get\ndna.trust");
     return t.code == 0 && trim_nl(t.stdout) == "local";
 }
 

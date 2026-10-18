@@ -89,7 +89,8 @@ main locus App {
     // What the record holds now, read fresh (each organism's journal is
     // its own view of the ref).
     fn rows(repo: String, kind: String, entity: String) -> Int {
-        let j = dna::GitJournal { repo: repo };
+        std::test::assert_eq_str(dna::memory_fixture(repo), "", "the record is born in memory (GH #1590)");
+        let j = dna::RoutedJournal { record: dna::RecordJournal { repo: repo }, ledger: dna::MemoryLedger { repo: repo } };
         let mut n = 0;
         let mut i = 0;
         while i < j.revision() {
@@ -100,7 +101,8 @@ main locus App {
         return n;
     }
     fn last(repo: String, kind: String) -> String {
-        let j = dna::GitJournal { repo: repo };
+        std::test::assert_eq_str(dna::memory_fixture(repo), "", "the record is born in memory (GH #1590)");
+        let j = dna::RoutedJournal { record: dna::RecordJournal { repo: repo }, ledger: dna::MemoryLedger { repo: repo } };
         let mut out = "";
         let mut i = 0;
         while i < j.revision() {
@@ -111,7 +113,8 @@ main locus App {
         return out;
     }
     fn last_of(repo: String, kind: String, entity: String) -> String {
-        let j = dna::GitJournal { repo: repo };
+        std::test::assert_eq_str(dna::memory_fixture(repo), "", "the record is born in memory (GH #1590)");
+        let j = dna::RoutedJournal { record: dna::RecordJournal { repo: repo }, ledger: dna::MemoryLedger { repo: repo } };
         let mut out = "";
         let mut i = 0;
         while i < j.revision() {
@@ -146,14 +149,15 @@ main locus App {
         let c0 = sh("git\n-C\n" + repo + "\n-c\nuser.name=t\n-c\nuser.email=t@local\ncommit\n-q\n--allow-empty\n-m\nbase");
         std::test::assert_eq_int(c0.code, 0, "base commit: " + c0.stderr);
         // one window for the record's lifetime, so no test straddles midnight
+        std::test::assert_eq_str(dna::memory_fixture(repo), "", "the record is born in memory (GH #1590)");
         self.app = dna::Dna {
-            journal: dna::GitJournal { repo: repo },
+            journal: dna::RoutedJournal { record: dna::RecordJournal { repo: repo }, ledger: dna::MemoryLedger { repo: repo, dsn_env: dna::fixture_spine(repo) } },
             boundary: dna::AutonomyBoundary { child: "app", grant: dna::Grant { child: "app", classes: "docs", max_magnitude: 8, review: "post", amounts: "USD 500", window_amounts: "USD 1000", window: "none", counterparties: "acme", routes: "bank" } },
             ceiling: dna::AutonomyBoundary { child: "org", grant: dna::Grant { child: "org", classes: "docs", max_magnitude: 10, review: "post", amounts: "USD 500", window_amounts: "USD 1000", window: "none", counterparties: "acme", routes: "bank" } },
             org_id: "app"
         };
         self.billing = dna::Dna {
-            journal: dna::GitJournal { repo: repo },
+            journal: dna::RoutedJournal { record: dna::RecordJournal { repo: repo }, ledger: dna::MemoryLedger { repo: repo, dsn_env: dna::fixture_spine(repo) } },
             boundary: dna::AutonomyBoundary { child: "billing", grant: dna::Grant { child: "billing", classes: "docs", max_magnitude: 8, review: "post", amounts: "USD 500", window_amounts: "USD 1000", window: "none", counterparties: "acme", routes: "bank" } },
             ceiling: dna::AutonomyBoundary { child: "org", grant: dna::Grant { child: "org", classes: "docs", max_magnitude: 10, review: "post", amounts: "USD 500", window_amounts: "USD 1000", window: "none", counterparties: "acme", routes: "bank" } },
             org_id: "billing"
@@ -213,7 +217,7 @@ main locus App {
 
         // GH #668: who pays is on the grant, and a child pays from its ceiling's funder or none other
         self.funded = dna::Dna {
-            journal: dna::GitJournal { repo: repo },
+            journal: dna::RoutedJournal { record: dna::RecordJournal { repo: repo }, ledger: dna::MemoryLedger { repo: repo, dsn_env: dna::fixture_spine(repo) } },
             boundary: dna::AutonomyBoundary { child: "funded", grant: dna::Grant { child: "funded", classes: "docs", max_magnitude: 8, review: "post", amounts: "USD 500", counterparties: "acme", routes: "bank" } },
             ceiling: dna::AutonomyBoundary { child: "org", grant: dna::Grant { child: "org", classes: "docs", max_magnitude: 10, review: "post", amounts: "USD 500", counterparties: "acme", routes: "bank", funder: "acme/ops" } },
             org_id: "funded"
@@ -223,7 +227,7 @@ main locus App {
         let frow = self.last_of(repo, "spend.reserved", "f1");
         std::test::assert(std::str::contains(frow, "\"funder\": \"acme\"") && std::str::contains(frow, "\"account\": \"ops\""), "the reservation names who pays, inherited from the ceiling: " + frow);
         self.misfunded = dna::Dna {
-            journal: dna::GitJournal { repo: repo },
+            journal: dna::RoutedJournal { record: dna::RecordJournal { repo: repo }, ledger: dna::MemoryLedger { repo: repo, dsn_env: dna::fixture_spine(repo) } },
             boundary: dna::AutonomyBoundary { child: "misfunded", grant: dna::Grant { child: "misfunded", classes: "docs", max_magnitude: 8, review: "post", amounts: "USD 500", counterparties: "acme", routes: "bank", funder: "north/x" } },
             ceiling: dna::AutonomyBoundary { child: "org", grant: dna::Grant { child: "org", classes: "docs", max_magnitude: 10, review: "post", amounts: "USD 500", counterparties: "acme", routes: "bank", funder: "acme/ops" } },
             org_id: "misfunded"
@@ -242,7 +246,7 @@ main locus App {
         // the same authored grants, the ceiling is still contracted and the
         // admission made before it is still fenced
         self.billing_restarted = dna::Dna {
-            journal: dna::GitJournal { repo: repo },
+            journal: dna::RoutedJournal { record: dna::RecordJournal { repo: repo }, ledger: dna::MemoryLedger { repo: repo, dsn_env: dna::fixture_spine(repo) } },
             boundary: dna::AutonomyBoundary { child: "billing", grant: dna::Grant { child: "billing", classes: "docs", max_magnitude: 8, review: "post", amounts: "USD 500", window_amounts: "USD 1000", window: "none", counterparties: "acme", routes: "bank" } },
             ceiling: dna::AutonomyBoundary { child: "org", grant: dna::Grant { child: "org", classes: "docs", max_magnitude: 10, review: "post", amounts: "USD 500", window_amounts: "USD 1000", window: "none", counterparties: "acme", routes: "bank" } },
             org_id: "billing-restarted"
@@ -253,14 +257,14 @@ main locus App {
         // or below it: the recorded epoch and review hold, the stricter
         // magnitude binds
         self.billing_equal = dna::Dna {
-            journal: dna::GitJournal { repo: repo },
+            journal: dna::RoutedJournal { record: dna::RecordJournal { repo: repo }, ledger: dna::MemoryLedger { repo: repo, dsn_env: dna::fixture_spine(repo) } },
             boundary: dna::AutonomyBoundary { child: "billing", grant: dna::Grant { child: "billing", classes: "docs", max_magnitude: 4, review: "post", amounts: "USD 500", window_amounts: "USD 1000", window: "none", counterparties: "acme", routes: "bank" } },
             ceiling: dna::AutonomyBoundary { child: "org", grant: dna::Grant { child: "org", classes: "docs", max_magnitude: 5, review: "post", amounts: "USD 500", window_amounts: "USD 1000", window: "none", counterparties: "acme", routes: "bank" } },
             org_id: "billing-equal"
         };
         std::test::assert(std::str::starts_with(self.billing_equal.admits(b1), "fenced: the grant changed after `b1` was admitted (epoch 0 -> 1)") && self.billing_equal.ceiling.current_grant().review == "pre", "an authored ceiling at the contracted limit keeps the recorded epoch and review: " + self.billing_equal.admits(b1) + " " + self.billing_equal.ceiling.current_grant().review);
         self.billing_lower = dna::Dna {
-            journal: dna::GitJournal { repo: repo },
+            journal: dna::RoutedJournal { record: dna::RecordJournal { repo: repo }, ledger: dna::MemoryLedger { repo: repo, dsn_env: dna::fixture_spine(repo) } },
             boundary: dna::AutonomyBoundary { child: "billing", grant: dna::Grant { child: "billing", classes: "docs", max_magnitude: 4, review: "post", amounts: "USD 500", window_amounts: "USD 1000", window: "none", counterparties: "acme", routes: "bank" } },
             ceiling: dna::AutonomyBoundary { child: "org", grant: dna::Grant { child: "org", classes: "docs", max_magnitude: 4, review: "post", amounts: "USD 500", window_amounts: "USD 1000", window: "none", counterparties: "acme", routes: "bank" } },
             org_id: "billing-lower"
@@ -301,7 +305,7 @@ main locus App {
         // a revocation survives a restart: an organism born over the same
         // record, with the same authored grant, is still revoked
         self.restarted = dna::Dna {
-            journal: dna::GitJournal { repo: repo },
+            journal: dna::RoutedJournal { record: dna::RecordJournal { repo: repo }, ledger: dna::MemoryLedger { repo: repo, dsn_env: dna::fixture_spine(repo) } },
             boundary: dna::AutonomyBoundary { child: "app", grant: dna::Grant { child: "app", classes: "docs", max_magnitude: 8, review: "post", amounts: "USD 500", window_amounts: "USD 1000", window: "none", counterparties: "acme", routes: "bank" } },
             ceiling: dna::AutonomyBoundary { child: "org", grant: dna::Grant { child: "org", classes: "docs", max_magnitude: 10, review: "post", amounts: "USD 500", window_amounts: "USD 1000", window: "none", counterparties: "acme", routes: "bank" } },
             org_id: "app-restarted"

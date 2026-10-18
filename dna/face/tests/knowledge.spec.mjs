@@ -270,15 +270,17 @@ test('Knowledge protected and missing identities share 404, and new restrictions
 });
 
 // There is no Knowledge service to stop (GH #985): the API reads memory under
-// the head's role. Memory that stops answering the running API is the outage.
+// the head's role. Memory that stops answering the running API is the outage,
+// and memory holds the record as well as Knowledge (GH #1590): the first read
+// the refresh makes is refused 503, retryable, whichever it is.
 test('Unreachable memory reports unavailable, clears prior data, and recovers on retry', async ({ page, service }) => {
   await page.goto(service.url('knowledge', { id: service.knowledge }));
   await expect(detail(page)).toContainText(service.text);
   await expect(relationshipMap(page)).toBeVisible();
   await service.memoryUnreachable();
-  const unavailable = responseFor(page, 'nodes', () => true, 503);
+  const unavailable = page.waitForResponse(response => new URL(response.url()).pathname.includes('/api/hale/v1/') && response.status() === 503);
   await page.getByRole('button', { name: 'Refresh', exact: true }).click();
-  expect((await (await unavailable).json()).error).toMatchObject({ code: 'knowledge_unavailable', retryable: true });
+  expect((await (await unavailable).json()).error).toMatchObject({ retryable: true });
   await expect(page.getByRole('heading', { name: 'Knowledge unavailable', exact: true })).toBeVisible();
   await expect(relationshipMap(page)).toHaveCount(0);
   await expect(page.locator('#content')).not.toContainText(service.text);
@@ -325,14 +327,5 @@ test('Knowledge mobile detail, context and browser history retain focus without 
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
 });
 
-// No head DSN: the API does not read Knowledge at all (`knowledge_unsupported`).
-test.describe('Knowledge without configured memory', () => {
-  test.use({ knowledge: false });
-  test('disables unsupported navigation and reports unavailable on a direct link', async ({ page, service }) => {
-    await page.goto(service.url('knowledge'));
-    await expect(page.getByRole('heading', { name: 'Knowledge unavailable', exact: true })).toBeVisible();
-    await expect(page.locator('#nav-knowledge')).toHaveAttribute('aria-disabled', 'true');
-    await expect(page.locator('#nav-knowledge')).not.toHaveAttribute('href');
-    await expect(page.locator('#content')).not.toContainText('No knowledge items');
-  });
-});
+// No "Knowledge without configured memory" case: the record and Knowledge are one
+// memory (GH #1590), so an API that reads the record reads Knowledge too.

@@ -280,14 +280,15 @@ main locus App {
         // the assembly that owns the editor, reached by the engine's edit
         // performer under the scope that is this organism's id; the two
         // read and write one record through two instances of its journal
+        std::test::assert_eq_str(dna::memory_fixture(repo), "", "the record is born in memory (GH #1590)");
         self.org = dna::Dna {
             runs_engine: false, // the engine of this scope is assembled here
-            journal: dna::GitJournal { repo: repo },
+            journal: dna::RoutedJournal { record: dna::RecordJournal { repo: repo }, ledger: dna::MemoryLedger { repo: repo, dsn_env: dna::fixture_spine(repo) } },
             gateway: dna::MutationGateway {
                 workspaces: dna::IsolatedWorktrees { repo: repo, root: repo + "/.hale/dna/worktrees" },
                 repo: dna::LocalGit { repo: repo }
             },
-            verification: dna::HaleVerification { hale_bin: toolchain(), receipts: dna::GitReceipts { repo: repo }, scratch: repo + "/.hale/dna/scratch", repo: repo },
+            verification: dna::HaleVerification { hale_bin: toolchain(), receipts: dna::MemoryReceipts { repo: repo }, scratch: repo + "/.hale/dna/scratch", repo: repo },
             editor: dna::SourceEditor {
                 models: dna::ModelRouter {
                     quick: dna::FakeModel { name: "quick", rules: RULES },
@@ -301,7 +302,7 @@ main locus App {
         };
         self.boot = Boot {
             rt: dna::WorkflowRuntime {
-                scope: "edits", journal: dna::GitJournal { repo: repo },
+                scope: "edits", journal: dna::RoutedJournal { record: dna::RecordJournal { repo: repo }, ledger: dna::MemoryLedger { repo: repo, dsn_env: dna::fixture_spine(repo) } },
                 work: dna::WorkSystem { agent: Delayed { }, edit: dna::EditRelay { scope: "edits", name: "editor" }, agent_reconciler: dna::IdempotentReplay { } }
             },
             owner: dna::Executions { scope: "edits" }
@@ -485,7 +486,7 @@ main locus App {
         //      `redrive` has nothing more to put
         self.boot = Boot {
             rt: dna::WorkflowRuntime {
-                scope: "edits", journal: Refusing { inner: dna::GitJournal { repo: repo }, refuse_kind: "attempt.outcome" },
+                scope: "edits", journal: Refusing { inner: dna::RoutedJournal { record: dna::RecordJournal { repo: repo }, ledger: dna::MemoryLedger { repo: repo, dsn_env: dna::fixture_spine(repo) } }, refuse_kind: "attempt.outcome" },
                 work: dna::WorkSystem { agent: Delayed { }, edit: dna::EditRelay { scope: "edits", name: "editor" }, agent_reconciler: dna::IdempotentReplay { } }
             },
             owner: dna::Executions { scope: "edits" }
@@ -569,12 +570,12 @@ main locus App {
         // refused: its in-memory waiters — the pair's second — are let go)
         self.org = dna::Dna {
             runs_engine: false, // the engine of this scope is assembled here
-            journal: dna::GitJournal { repo: repo },
+            journal: dna::RoutedJournal { record: dna::RecordJournal { repo: repo }, ledger: dna::MemoryLedger { repo: repo, dsn_env: dna::fixture_spine(repo) } },
             gateway: dna::MutationGateway {
                 workspaces: dna::IsolatedWorktrees { repo: repo, root: repo + "/.hale/dna/worktrees" },
                 repo: dna::LocalGit { repo: repo }
             },
-            verification: dna::HaleVerification { hale_bin: toolchain(), receipts: dna::GitReceipts { repo: repo }, scratch: repo + "/.hale/dna/scratch", repo: repo },
+            verification: dna::HaleVerification { hale_bin: toolchain(), receipts: dna::MemoryReceipts { repo: repo }, scratch: repo + "/.hale/dna/scratch", repo: repo },
             editor: dna::SourceEditor {
                 models: dna::ModelRouter {
                     quick: Flaky { },
@@ -615,12 +616,12 @@ main locus App {
         //      verdict answers it
         self.org = dna::Dna {
             runs_engine: false, // the engine of this scope is assembled here
-            journal: dna::GitJournal { repo: repo },
+            journal: dna::RoutedJournal { record: dna::RecordJournal { repo: repo }, ledger: dna::MemoryLedger { repo: repo, dsn_env: dna::fixture_spine(repo) } },
             gateway: dna::MutationGateway {
                 workspaces: dna::IsolatedWorktrees { repo: repo, root: repo + "/.hale/dna/worktrees" },
                 repo: dna::LocalGit { repo: repo }
             },
-            verification: dna::HaleVerification { hale_bin: toolchain(), receipts: dna::GitReceipts { repo: repo }, scratch: repo + "/.hale/dna/scratch", repo: repo },
+            verification: dna::HaleVerification { hale_bin: toolchain(), receipts: dna::MemoryReceipts { repo: repo }, scratch: repo + "/.hale/dna/scratch", repo: repo },
             editor: dna::SourceEditor {
                 models: dna::ModelRouter {
                     quick: Flaky { },
@@ -647,7 +648,7 @@ main locus App {
         std::test::assert_eq_int(self.held_waiters(), waiting12 + 1, "it waits");
         self.boot = Boot {
             rt: dna::WorkflowRuntime {
-                scope: "edits", journal: dna::GitJournal { repo: repo },
+                scope: "edits", journal: dna::RoutedJournal { record: dna::RecordJournal { repo: repo }, ledger: dna::MemoryLedger { repo: repo, dsn_env: dna::fixture_spine(repo) } },
                 work: dna::WorkSystem { agent: Delayed { }, edit: dna::EditRelay { scope: "edits", name: "editor" }, agent_reconciler: dna::IdempotentReplay { } }
             },
             owner: dna::Executions { scope: "edits" }
@@ -675,7 +676,7 @@ main locus App {
         //      the waiter is done without anyone asking again
         self.boot = Boot {
             rt: dna::WorkflowRuntime {
-                scope: "edits", journal: Refusing { inner: dna::GitJournal { repo: repo }, refuse_kind: "work.settled" },
+                scope: "edits", journal: Refusing { inner: dna::RoutedJournal { record: dna::RecordJournal { repo: repo }, ledger: dna::MemoryLedger { repo: repo, dsn_env: dna::fixture_spine(repo) } }, refuse_kind: "work.settled" },
                 work: dna::WorkSystem { agent: Delayed { }, edit: dna::EditRelay { scope: "edits", name: "editor" }, agent_reconciler: dna::IdempotentReplay { } }
             },
             owner: dna::Executions { scope: "edits" }

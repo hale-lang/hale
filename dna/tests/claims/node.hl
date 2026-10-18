@@ -69,6 +69,7 @@ fn main() {
     let lead = std::env::arg_or(3, "no") == "yes";
     let ttl = std::str::parse_int(std::env::arg_or(4, "300")) or 300;
     let deadline = std::str::parse_int(std::env::arg_or(5, "60")) or 60;
+    std::test::assert_eq_str(dna::memory_fixture(repo), "", "the record is born in memory (GH #1590)");
     let plan = "kind: person\nclass: process-policy\ntarget: (none)\ncount: 1\nassignee: riley\nobligation: expense-approval\nA person's job.";
     Node {
         repo: repo,
@@ -76,7 +77,7 @@ fn main() {
         lead: lead,
         deadline: deadline,
         core: dna::Dna {
-            journal: dna::GitJournal { repo: repo },
+            journal: dna::RoutedJournal { record: dna::RecordJournal { repo: repo }, ledger: dna::MemoryLedger { repo: repo, dsn_env: dna::fixture_spine(repo) } },
             claims: dna::MemoryLeases { repo: repo },
             claim_ttl: ttl,
             planned: true,

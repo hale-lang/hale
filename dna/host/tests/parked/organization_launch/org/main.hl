@@ -9,11 +9,11 @@ main locus Org {
         // and the host this program, the spine's URL and the token)
         nerves: nats::NatsConn = nats::NatsConn { url: dna::nerves_spine_url(), user: "spine", credential: std::secret::Credential { vault: dna::nerves_role_vault("spine") }, name: "organization", subject_prefix: dna::nerves_subject_prefix(), stream: dna::nerves_stream_here(), consumer: nats::ConsumerSpec { durable: dna::nerves_durable(), filter: dna::nerves_filter() }, jetstream: true };
         core: dna::Dna = dna::Dna {
-            journal: dna::GitJournal { repo: "." },
-            verification: dna::HaleVerification { receipts: dna::GitReceipts { repo: "." }, repo: "." },
+            journal: dna::RoutedJournal { record: dna::RecordJournal { repo: "." }, ledger: dna::MemoryLedger { repo: ".", dsn_env: dna::fixture_spine(".") } },
+            verification: dna::HaleVerification { receipts: dna::MemoryReceipts { repo: "." }, repo: "." },
             board: dna::Board { },
             gateway: dna::MutationGateway {
-                leases: dna::GitLeases { repo: "." },
+                leases: dna::MemoryLeases { repo: "." },
                 workspaces: dna::IsolatedWorktrees { repo: ".", root: ".hale/dna/worktrees" },
                 repo: dna::LocalGit { repo: "." }
             }

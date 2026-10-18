@@ -1,19 +1,19 @@
 // dna/tests/record_identity_test.hl — two projects created alike are two
 // records (GH #1068).
 //
-// A record's identity is the sha of its journal's first commit, and
-// memory's schema and roles and the nerves' subjects, stream and consumer
-// all derive from it. The first commit's content comes from the project,
-// which a scaffold makes the same: created by one author, from one
-// scaffold, in one second, two projects had one identity, and each
-// organization heard and answered the other's facts. The dates are
-// pinned here so the collision would be certain; the first commit's
-// nonce is what keeps the two apart.
+// A record's identity is the digest of its first row, `record.genesis`,
+// and memory's schema and roles and the nerves' subjects, stream and
+// consumer all derive from it. That row names the genome (the project's
+// root commit), which a scaffold makes the same: created by one author,
+// from one scaffold, in one second, two projects have one genome. The
+// dates are pinned here so the collision would be certain; the row's
+// nonce is what keeps the two records apart.
 //
-// GH #1590: the genome pins the identity (`[dna] record` in hale.toml),
-// and a pin that names another record than the clone's is refused, by
-// memory and by `init` and `upgrade`, rather than read into the other
-// record's memory.
+// GH #1590: the genome pins the identity (`[dna] record` in hale.toml).
+// A pin that does not read is refused, never taken for no pin; a pin of
+// a record whose genome this clone's history does not hold is refused by
+// memory and by `init`; and a pin an earlier toolchain wrote (a git
+// record's root commit) is refused with the way out, a fresh record.
 
 import "../core" as dna;
 
@@ -48,24 +48,23 @@ main locus App {
         let a = new_app(scratch + "/a");
         let b = new_app(scratch + "/b");
         std::test::assert(a.code == 0 && b.code == 0, "two projects, created alike: " + a.stderr + b.stderr);
-        let ja = dna::GitJournal { repo: scratch + "/a/app" };
-        let jb = dna::GitJournal { repo: scratch + "/b/app" };
+        std::test::assert_eq_str(dna::memory_fixture(scratch + "/a/app"), "", "the record is born in memory (GH #1590)");
+        let ja = dna::RecordJournal { repo: scratch + "/a/app" };
+        std::test::assert_eq_str(dna::memory_fixture(scratch + "/b/app"), "", "the record is born in memory (GH #1590)");
+        let jb = dna::RecordJournal { repo: scratch + "/b/app" };
         let ia = ja.genesis();
         let ib = jb.genesis();
-        std::test::assert(len(ia) == 40 && len(ib) == 40, "each has a record: " + ia + " " + ib);
+        std::test::assert(len(ia) == 64 && len(ib) == 64, "each has a record: " + ia + " " + ib);
         std::test::assert(ia != ib, "two records, two identities: " + ia);
         std::test::assert(dna::schema_for(ia) != dna::schema_for(ib), "so two schemas and two organizations on the nerves");
-        // what makes them two: the first commit's nonce, and nothing else
-        let msg = dna::run_tool("git\n-C\n" + scratch + "/a/app\nlog\n-1\n--format=%B\n" + ia).stdout;
-        std::test::assert(std::str::contains(msg, "Record-Nonce: "), "the first commit carries a nonce: " + msg);
-        let ta = dna::run_tool("git\n-C\n" + scratch + "/a/app\nrev-parse\n" + ia + "^{tree}").stdout;
-        let tb = dna::run_tool("git\n-C\n" + scratch + "/b/app\nrev-parse\n" + ib + "^{tree}").stdout;
-        std::test::assert_eq_str(ta, tb, "the first rows are the same: the nonce alone tells them apart");
-        // only the first: a later row carries none
-        let later = ja.append(ja.revision(), "note.kept", "n1", "");
-        std::test::assert(later.ok, "a second row lands: " + later.error);
-        let head = dna::run_tool("git\n-C\n" + scratch + "/a/app\nlog\n-1\n--format=%B\nrefs/dna/journal").stdout;
-        std::test::assert(!std::str::contains(head, "Record-Nonce"), "and carries no nonce: " + head);
+        // what makes them two: the first row's nonce, and nothing else
+        let ga = ja.read(0);
+        let gb = jb.read(0);
+        std::test::assert(ga.kind == "record.genesis" && gb.kind == "record.genesis", "each record's first row is its genesis: " + ga.kind + " " + gb.kind);
+        std::test::assert_eq_str(dna::event_digest("genesis", ga.kind, ga.entity, ga.body), ia, "a's identity is its genesis row's digest");
+        std::test::assert_eq_str(std::json::find_string_field(ga.body, "genome"), std::json::find_string_field(gb.body, "genome"), "one genome: " + ga.body + " / " + gb.body);
+        let na = std::json::find_string_field(ga.body, "nonce");
+        std::test::assert(len(na) > 0 && na != std::json::find_string_field(gb.body, "nonce"), "the nonce alone tells them apart: " + ga.body + " / " + gb.body);
         // GH #1590: init pinned each identity in its genome
         let a_app = scratch + "/a/app";
         let b_app = scratch + "/b/app";
@@ -76,7 +75,7 @@ main locus App {
         // is present but unreadable here is refused, never taken for no pin
         let original = std::io::fs::read_file(b_app + "/hale.toml") or "";
         std::test::assert(std::str::contains(original, ib), "b's manifest holds its pin");
-        std::test::assert(self.reads(b_app, "[dna]\nrecord = '" + ia + "'\n", "", ib), "a literal string naming another record is refused, not read as no pin");
+        std::test::assert(self.reads(b_app, "[dna]\nrecord = '" + ia + "'\n", ia, ""), "a literal string is the pin it names, never read as no pin");
         std::test::assert(self.reads(b_app, "[dna] # the record\nrecord = \"" + ib + "\"\n", ib, ""), "a commented header");
         std::test::assert(self.reads(b_app, "[\"dna\"]\nrecord = '" + ib + "'\n", ib, ""), "a quoted header and a literal string");
         std::test::assert(self.reads(b_app, "dna.record = \"" + ib + "\"\n[deps]\n", ib, ""), "a dotted key");
@@ -87,30 +86,37 @@ main locus App {
         std::test::assert(self.reads(b_app, "[\"\\u0064na\"]\nrecord = '" + ia + "'\n", "", "not readable"), "an escaped quoted header");
         std::test::assert(self.reads(b_app, "[dna]\nrecord = \"\"\"" + ib + "\"\"\"\n", "", "not readable"), "a multi-line string");
         std::io::fs::write_file(b_app + "/hale.toml", original) or discard;
-        // the codex case through the CLI: a literal-string pin of another record
-        std::test::assert(repin(b_app, "record = '" + ia + "'"), "b's pin rewritten to a's, as a literal string");
-        let lit_up = dna::run_tool("sh\n-c\ncd \"$1\" && exec \"$2\" dna upgrade\nsh\n" + b_app + "\n" + toolchain());
-        std::test::assert(lit_up.code != 0 && std::str::contains(lit_up.stderr, ia) && std::str::contains(lit_up.stderr, ib), "upgrade refuses it, naming both: " + lit_up.stdout + lit_up.stderr);
-        // a pin naming another record: no scope, and the reason
-        std::test::assert(repin(b_app, "record = \"" + ia + "\""), "b's pin rewritten to a's");
-        let crossed = dna::record_identity_at(b_app);
-        std::test::assert(len(crossed.id) == 0 && std::str::contains(crossed.why, ib), "a pin naming another record has no scope: " + crossed.id + " / " + crossed.why);
-        let up = dna::run_tool("sh\n-c\ncd \"$1\" && exec \"$2\" dna upgrade\nsh\n" + b_app + "\n" + toolchain());
-        std::test::assert(up.code != 0 && std::str::contains(up.stderr, "[dna] record"), "upgrade refuses the crossed pin: " + up.stdout + up.stderr);
-        // with no pin, the record's root commit, as before the pin
+        // a pin an earlier toolchain wrote, a git record's root commit:
+        // refused, with the way out
+        std::test::assert(repin(b_app, "record = \"" + ia[0..40] + "\""), "b's pin rewritten to forty hex digits");
+        let old_pin = dna::record_identity_at(b_app);
+        std::test::assert(len(old_pin.id) == 0 && std::str::contains(old_pin.why, "re-init a fresh record"), "a git record's root commit is no identity: " + old_pin.why);
+        let old_up = dna::run_tool("sh\n-c\ncd \"$1\" && exec \"$2\" dna upgrade\nsh\n" + b_app + "\n" + toolchain());
+        std::test::assert(old_up.code != 0 && std::str::contains(old_up.stdout + old_up.stderr, "re-init"), "and upgrade refuses it: " + old_up.stdout + old_up.stderr);
+        // with no pin, no record: upgrade says so and births none
         std::test::assert(repin(b_app, ""), "b's pin removed");
-        std::test::assert_eq_str(dna::record_scope(b_app), ib, "an unpinned genome is its record's root commit");
-        let again = dna::run_tool("sh\n-c\ncd \"$1\" && exec \"$2\" dna upgrade\nsh\n" + b_app + "\n" + toolchain());
-        std::test::assert(again.code == 0 && std::str::contains(again.stdout, "pinned"), "upgrade pins a record from before the pin: " + again.stdout + again.stderr);
-        std::test::assert_eq_str(dna::manifest_dna_value(b_app, "record").value, ib, "and the pin is b's own");
-        // a genome copied with its pin, into a clone holding no record: init
-        // refuses to start a second record under the first one's name
+        std::test::assert_eq_str(dna::record_scope(b_app), "", "an unpinned genome names no record");
+        let unpinned = dna::run_tool("sh\n-c\ncd \"$1\" && exec \"$2\" dna upgrade\nsh\n" + b_app + "\n" + toolchain());
+        std::test::assert(unpinned.code == 0 && std::str::contains(unpinned.stdout, "pins no record"), "upgrade says so: " + unpinned.stdout + unpinned.stderr);
+        std::io::fs::write_file(b_app + "/hale.toml", original) or discard;
+        std::test::assert_eq_str(dna::record_scope(b_app), ib, "b's own pin, restored");
+        // a genome copied with its pin, into a clone whose history does not
+        // hold the genome the record was born on: memory refuses to read it
+        // as this clone's, and init refuses to start a second record under
+        // the first one's name. (A record born before the genome's first
+        // commit, as `hale dna new` births one, names no genome to check.)
+        let d_app = scratch + "/d";
+        let born = dna::run_tool_timeout(900, "sh\n-c\nmkdir -p \"$1\" && cd \"$1\" && git init -q -b main && echo d > README.md && git -c user.name=d -c user.email=d@dna add -A && git -c user.name=d -c user.email=d@dna commit -qm d && HALE_DNA_DISCOVER=off exec \"$2\" dna init . --no-library\nsh\n" + d_app + "\n" + toolchain());
+        std::test::assert_eq_int(born.code, 0, "a record born on a genome with history: " + born.stdout + born.stderr);
+        let id_d = dna::record_scope(d_app);
+        std::test::assert(len(std::json::find_string_field(dna::RecordJournal { repo: d_app }.read(0).body, "genome")) == 40, "its genesis names the genome's root commit");
         let c_app = scratch + "/c";
-        let copied = dna::run_tool("sh\n-c\ncp -r \"$1\" \"$2\" && rm -rf \"$2/.git\" && git init -q \"$2\"\nsh\n" + a_app + "\n" + c_app);
-        std::test::assert(copied.code == 0, "a copy of a's genome, with no record: " + copied.stderr);
+        let copied = dna::run_tool("sh\n-c\ncp -r \"$1\" \"$2\" && rm -rf \"$2/.git\" \"$2/.hale\" && cd \"$2\" && git init -q && git -c user.name=other -c user.email=o@dna add -A && git -c user.name=other -c user.email=o@dna commit -qm copied\nsh\n" + d_app + "\n" + c_app);
+        std::test::assert(copied.code == 0, "a copy of d's genome, with a history of its own: " + copied.stderr);
+        let opened = dna::RecordJournal { repo: c_app, dsn_env: "HALE_DNA_MEMORY_DSN_OWNER" };
+        std::test::assert(opened.revision() == 0 && std::str::contains(opened.last_error(), "the hale.toml naming it was copied from another project"), "memory refuses it as the copy's record: " + opened.last_error());
         let init = dna::run_tool("sh\n-c\ncd \"$1\" && HALE_DNA_DISCOVER=off exec \"$2\" dna init\nsh\n" + c_app + "\n" + toolchain());
-        std::test::assert(init.code != 0 && std::str::contains(init.stderr, ia), "init refuses a pin of another record: " + init.stdout + init.stderr);
-        std::test::assert(len(dna::GitRecord { repo: c_app }.identity()) == 0, "and starts no record");
+        std::test::assert(init.code != 0 && std::str::contains(init.stderr, id_d), "init refuses a pin of another record: " + init.stdout + init.stderr);
         dna::scratch_done(scratch);
     }
 }

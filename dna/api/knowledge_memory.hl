@@ -220,7 +220,7 @@ locus GraphItems {
     fn result() -> String { return "[" + std::str::clone(self.bytes.text_view()) + "]"; }
 }
 
-fn graph_read(r: GraphRequest, store: dna::KnowledgeStore, graph: dna::GraphStore, record: dna::GitJournal, ledger: dna::LedgerView) -> std::http::Response {
+fn graph_read(r: GraphRequest, store: dna::KnowledgeStore, graph: dna::GraphStore, record: dna::RecordJournal, ledger: dna::LedgerView) -> std::http::Response {
     let http = GraphHttp { };
     if record.genesis() != r.record_id || store.record() != r.record_id { return http.error(503, "knowledge_scope_mismatch"); }
     if record.head() != r.record_head || to_string(record.revision()) != r.record_revision { return http.error(409, "snapshot_changed"); }
@@ -272,7 +272,7 @@ fn knowledge_policy(root: String) -> ops::KnowledgePolicy {
     if size < 1 || size > 65536 {
         eprintln("hale dna api: Knowledge commands require an explicit bounded authority policy (HALE_DNA_KNOWLEDGE_COMMAND_POLICY)"); std::process::exit(2);
     }
-    let record = dna::GitRecord { repo: root };
+    let record = dna::MemoryRecord { repo: root };
     let configured = record.git("config\n--get\ndna.trust");
     if configured.code != 0 && configured.code != 1 { eprintln("hale dna api: cannot read Record trust policy"); std::process::exit(2); }
     let declared = dna::trim_nl(configured.stdout);
@@ -293,6 +293,7 @@ locus LocalKnowledge {
         memory: dna::Memory = dna::Memory { };
     }
     birth() {
+        self.dsn_env = dna::memory_source(self.root, self.dsn_env);
         self.store.dsn_env = self.dsn_env;
         self.memory.point(self.root, self.dsn_env);
     }
@@ -304,7 +305,7 @@ locus LocalKnowledge {
         if len(body) > 16384 { return KnowledgeUpstream { }; }
         let q = http.request(body);
         if !q.ok { let e = http.error(400, "invalid_query"); return KnowledgeUpstream { transport_ok: true, status: e.status, body: e.body }; }
-        let j = dna::GitJournal { repo: self.root, author: "api" };
+        let j = dna::RecordJournal { repo: self.root, author: "api" };
         let moved = j.refresh();
         // the store follows the record's identity, and a session that no
         // longer answers is dialled again; otherwise the one it holds serves
@@ -321,7 +322,7 @@ locus LocalKnowledge {
     }
     fn ownership() -> String {
         if !self.supported() { return ""; }
-        let j = dna::GitJournal { repo: self.root, author: "api" };
+        let j = dna::RecordJournal { repo: self.root, author: "api" };
         let moved = j.refresh();
         self.store.scope(j.genesis());
         if !self.store.healthy() && !self.store.reopen() { return ""; }
@@ -346,7 +347,7 @@ locus LocalKnowledgeCommands {
     fn admit(context: CommandContext, command: ops::KnowledgeCommand, recovery: Bool) -> ops::KnowledgeResult {
         if !self.supported() { return ops::KnowledgeResult { code: "commands_unsupported" }; }
         let authority = ops::FixedKnowledgeAuthority { policy: self.policy };
-        let record = dna::GitRecord { repo: self.root };
+        let record = dna::MemoryRecord { repo: self.root };
         let commands = ops::KnowledgeCommands { record: record, authority: authority, sign: self.policy.sign };
         let native = ops::GovernanceContext { application_id: context.source.identity, principal_mode: context.principal_mode, principal_name: context.principal_name };
         if recovery { return commands.lookup(native, command.request_id); }

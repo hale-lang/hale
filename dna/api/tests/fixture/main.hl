@@ -81,8 +81,8 @@ locus Fixture {
         web_requested: Bool = false;
         webroot: String = "";
         api: std::process::Child = std::process::Child { };
-        journal: dna::GitJournal = dna::GitJournal { repo: "/nonexistent/hale-api-fixture" };
-        receipts: dna::GitReceipts = dna::GitReceipts { repo: "/nonexistent/hale-api-fixture" };
+        journal: dna::RecordJournal = dna::RecordJournal { repo: "/nonexistent/hale-api-fixture" };
+        receipts: dna::MemoryReceipts = dna::MemoryReceipts { repo: "/nonexistent/hale-api-fixture" };
         json: Json = Json { };
     }
     birth() {
@@ -93,10 +93,13 @@ locus Fixture {
         self.git("config\nuser.email\napi-fixture@example.invalid");
         self.git("config\ncommit.gpgsign\nfalse");
         self.git("config\ngc.auto\n0");
-        self.journal = dna::GitJournal { repo: self.root };
-        self.receipts = dna::GitReceipts { repo: self.root };
+        // GH #1590: the record is memory's, born there
+        let born = dna::memory_fixture(self.root);
+        std::test::assert_eq_str(born, "", "the fixture's record is born in memory");
+        self.journal = dna::RecordJournal { repo: self.root };
+        self.receipts = dna::MemoryReceipts { repo: self.root };
         self.append("org.born", "org", "read-only API fixture " + self.root);
-        let record = dna::GitRecord { repo: self.root };
+        let record = dna::MemoryRecord { repo: self.root };
         self.identity = record.identity();
         self.prefix = APPLICATIONS + "/" + self.identity;
         if self.port == 0 { self.port = dna::free_port(37); }
@@ -111,12 +114,43 @@ locus Fixture {
         std::test::assert_eq_int(result.code, 0, "git " + argv + ": " + result.stderr);
         return dna::trim_nl(result.stdout);
     }
+    // SQL in the record's own schema as the owner, for a fixture that
+    // damages what memory keeps (GH #1590: the record and its bodies are
+    // memory's, so a missing or tampered one is made there).
+    fn owner_sql(sql: String) {
+        let owner = std::env::var("HALE_DNA_MEMORY_DSN_OWNER");
+        let r = dna::run_tool("psql\n" + owner + "\n-q\n-v\nON_ERROR_STOP=1\n-c\nSET search_path TO " + dna::schema_for(dna::record_scope(self.root)) + ", public\n-c\n" + sql);
+        std::test::assert_eq_int(r.code, 0, "owner sql " + sql + ": " + r.stderr);
+    }
+    // The last row of `kind`, the record and its Ledger read as one, as
+    // the organism reads them (GH #1590).
+    fn last_of(kind: String) -> dna::Event {
+        let at = self.root;
+        let j = dna::RoutedJournal { record: dna::RecordJournal { repo: at }, ledger: dna::MemoryLedger { repo: at, dsn_env: "HALE_DNA_MEMORY_DSN_OWNER" } };
+        let mut found = dna::Event { };
+        let mut i = 0;
+        while i < j.revision() { let e = j.read(i); if e.kind == kind { found = e; } i = i + 1; }
+        return found;
+    }
+    // A row where its kind lives (GH #1590): the record's in the record, a
+    // Ledger kind in the Ledger, as the organism routes it.
     fn append(kind: String, entity: String, body: String) {
+        if dna::memory_of(kind) == "ledger" {
+            let ledger = dna::MemoryLedger { repo: self.root, dsn_env: "HALE_DNA_MEMORY_DSN_OWNER" };
+            let landed = ledger.append(ledger.revision(), kind, entity, body);
+            std::test::assert(landed.ok, "fixture append " + kind + " to the Ledger: " + landed.error + " " + ledger.last_error());
+            return;
+        }
         let refreshed = self.journal.refresh();
         let result = self.journal.append(self.journal.revision(), kind, entity, body);
         std::test::assert(result.ok, "fixture append " + kind + ": " + result.error);
     }
-    fn refs() -> String { return self.git("show-ref"); }
+    // What a reader must leave as it found it: the record (memory's, by
+    // its revision and head) and the genome's refs.
+    fn refs() -> String {
+        let moved = self.journal.refresh();
+        return "record " + to_string(self.journal.revision()) + " " + self.journal.head() + "\n" + self.git("for-each-ref");
+    }
     fn url() -> String { return "http://127.0.0.1:" + to_string(self.port); }
     fn log() -> String { return std::io::fs::read_file(self.root + "/api.log") or ""; }
     // Whether the API announced its commands transport on this fixture's
@@ -140,6 +174,9 @@ locus Fixture {
         std::io::fs::write_file(self.webroot + "/styles.css", SHELL_CSS) or discard;
     }
     fn spawn() {
+        // the API's vault is its own: it reaches the record's memory with
+        // the entries this fixture drew (GH #1590)
+        std::test::assert_eq_str(dna::fixture_share_vault(self.root, self.root + "/vault"), "", "the API's vault holds the record's roles");
         let binary = std::env::var("HALE_API_BIN");
         std::test::assert(len(binary) > 0 && std::io::fs::file_exists(binary), "build dna/api and set absolute HALE_API_BIN");
         let argv = "sh\n-c\ncd \"$1\" && unset HALE_DNA_MEMORY_DSN_OWNER HALE_DNA_MEMORY_DSN_SPINE HALE_DNA_MEMORY_DSN_HEAD HALE_DNA_KNOWLEDGE_COMMAND_POLICY HALE_DNA_EVIDENCE_KEY && export HALE_DNA_DISCOVER=off GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_TERMINAL_PROMPT=0 HALE_VAULT_DIR=\"$1/vault\" HALE_DNA_TRUSTED_LOCAL=1 HALE_DNA_COMMANDS_PORT=" + to_string(self.commands_port) + " && unset HALE_VAULT_ADDR && if [ \"$4\" = web ]; then exec \"$2\" \"$1\" \"$3\" \"${5#webroot=}\" >\"$1/api.log\" 2>&1; else exec \"$2\" \"$1\" \"$3\" >\"$1/api.log\" 2>&1; fi\nsh\n" + self.root + "\n" + binary + "\n" + to_string(self.port) + "\n" + (if self.web_requested { "web" } else { "api" }) + "\nwebroot=" + self.webroot;
@@ -242,7 +279,7 @@ locus Fixture {
         self.append(if ratified { "knowledge.ratified" } else { "knowledge.proposed" }, digest, b.result());
         return digest;
     }
-    fn blob(digest: String) -> String { return self.git("cat-file\n-p\nrefs/dna/receipts/" + digest[7..len(digest)]); }
+    fn blob(digest: String) -> String { return self.receipts.read(digest[7..len(digest)]); }
     fn practice(name: String, text: String, target: String, review: String, design: Bool) -> Practice {
         let b = std::json::Builder { };
         let idea = dna::Idea { kind: "practice", name: name, text: text, author: "org", provenance: "proposed" };

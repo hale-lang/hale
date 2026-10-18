@@ -35,9 +35,12 @@ fn git(args: &[&str], cwd: &Path) -> String {
     String::from_utf8_lossy(&out.stdout).trim().to_string()
 }
 
+// The record's rows, then its Ledger's (GH #1590: the day's work is the
+// Ledger's). Each keeps its own memory's seq: there is no order across
+// the two.
 fn journal(app: &Path) -> Vec<Row> {
     let _s = trace::Span::new("hale", "dna record-rows");
-    record::text(app)
+    (record::text(app) + "\n" + &record::ledger_text(app))
         .lines()
         .filter(|l| !l.trim().is_empty())
         .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
@@ -88,7 +91,7 @@ fn dump(app: &Path) -> String {
 // entities, saying the same things. The fixture's children run as one
 // person (`USER=riley`) on every machine. Two things vary from run to run
 // and are normalized away: values a run draws (commit and build hashes,
-// digests over them, times, pids, the scratch root and the machine's
+// digests over them, the record's nonce and the identity drawn from it, times, pids, the scratch root and the machine's
 // name, the toolchain's version, ids minted from the clock, row numbers
 // and the heads read at them, and the size of the model diff, which
 // carries the core's own shape), and the order rows of
@@ -139,7 +142,11 @@ fn token_class(t: &str) -> Option<String> {
     if hex(t) {
         return match t.len() {
             64 => Some("<digest>".into()),
+            // a record's organization token, its identity cut to fit (GH #1590)
+            56 => Some("<id>".into()),
             40 => Some("<sha>".into()),
+            // the nonce a record is born with (GH #1590)
+            32 => Some("<nonce>".into()),
             16 => Some("<hex16>".into()),
             12 => Some("<hex12>".into()),
             _ => None,
@@ -396,7 +403,12 @@ impl Fixture {
     fn spawn(&mut self, args: &[&str], cwd: &Path) {
         let _s = trace::Span::new("spawn", args.join(" "));
         let log = std::fs::File::create(self.d.join(format!("{}.stderr", args.iter().take(2).map(|a| a.replace('/', "_")).collect::<Vec<_>>().join("-")))).unwrap();
-        let c = self.cmd(args, cwd).stdout(Stdio::null()).stderr(log).spawn().expect("spawn");
+        let mut cmd = self.cmd(args, cwd);
+        // GH #1590: `hale dna run` takes the spine's DSN from its environment
+        if args.starts_with(&["dna", "run"]) {
+            cmd.env("HALE_DNA_MEMORY_DSN_SPINE", record::spine(vault::hale(), cwd));
+        }
+        let c = cmd.stdout(Stdio::null()).stderr(log).spawn().expect("spawn");
         self.procs.push(c);
     }
     fn logs(&self) -> String {
@@ -475,7 +487,7 @@ fn bring_up() -> Fixture {
     git(&["commit", "-q", "-m", "the organization"], &app);
     git(&["init", "-q", "--bare", "-b", "main", &f.bare.to_string_lossy()], &d);
     git(&["remote", "add", "origin", &f.bare.to_string_lossy()], &app);
-    git(&["push", "-q", "origin", "main", "refs/dna/*:refs/dna/*"], &app);
+    git(&["push", "-q", "origin", "main"], &app);
     for e in &f.edges {
         git(&["clone", "-q", &f.bare.to_string_lossy(), &e.to_string_lossy()], &d);
     }
@@ -626,7 +638,9 @@ fn three_services_two_nodes_and_a_grown_organization_replay_from_the_tape() {
     // a node expresses the whole revision it checks out, so every
     // instance comes up at the candidate; the two the change touched
     // are the ones the window is judged over, one per node
-    let ups: Vec<&Row> = rows.iter().filter(|(q, k, e, b)| *q > deploy.0 && k == "instance.up" && e.starts_with("gateway-") && b.contains(&cand1)).collect();
+    // (an instance's row is the Ledger's and the deploy the record's: no
+    // seq orders them, the candidate names the rows after it)
+    let ups: Vec<&Row> = rows.iter().filter(|(_, k, e, b)| k == "instance.up" && e.starts_with("gateway-") && b.contains(&cand1)).collect();
     assert_eq!(ups.len(), 2, "both gateway instances came up at the candidate:\n{}", dump(&app));
     let node_of = |b: &str| serde_json::from_str::<serde_json::Value>(b).unwrap()["node"].as_str().unwrap().to_string();
     assert!(ups.iter().any(|r| node_of(&r.3) == "edge-1") && ups.iter().any(|r| node_of(&r.3) == "edge-2"), "one per node");

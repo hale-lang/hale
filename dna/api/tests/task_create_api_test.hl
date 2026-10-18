@@ -1,5 +1,6 @@
-// The composed head raises work: the real GovernanceCommands over a fresh Git
-// Record, the practice_review adapter and the head's command handlers
+// The composed head raises work: the real GovernanceCommands over a fresh
+// record kept in memory, whose asks are its Ledger's rows (GH #1590), the
+// practice_review adapter and the head's command handlers
 // (api::CommandAdmission), called in-process. The organism's answers
 // below are explicit fixture rows; no body or host is started, and no
 // HALE_API_BIN process is spawned.
@@ -21,8 +22,9 @@ locus CreateApiCases {
         return found;
     }
     fn run_cases() {
-        let record = dna::GitRecord { repo: self.root }; std::test::assert(record.git("init\n--quiet").code == 0, "isolated Git");
-        std::test::assert(record.append("journal", "", dna::Row { kind: "application.observed", entity: "org", body: "{}", author: "test" }, false, "").ok, "fresh application identity");
+        let record = dna::MemoryRecord { repo: self.root }; std::test::assert(record.git("init\n--quiet").code == 0, "isolated Git");
+        std::test::assert_eq_str(dna::memory_fixture(self.root), "", "the record is born in memory (GH #1590)");
+        std::test::assert(record.append("journal", record.head("journal").id, dna::Row { kind: "application.observed", entity: "org", body: "{}", author: "test" }, false, "").ok, "fresh application identity");
         self.identity = record.identity();
         let codec = ops::AuthorityPolicyCodec { };
         let policy = codec.decode("{\"format\":\"dna.practice-review-authority/1\",\"application_id\":\"" + self.identity + "\",\"grants\":[{\"mode\":\"local\",\"name\":\"riley\",\"authority\":\"board\",\"practice_propose\":false,\"review_verdict\":false,\"recover\":true}]}", self.identity, "local");
@@ -34,21 +36,25 @@ locus CreateApiCases {
         let admitted = commands.create_task(self.ask("create-1", before, outcome, "org"), self.caller());
         std::test::assert(admitted.ok, "any authenticated principal may raise work: " + admitted.code);
         let create = admitted.receipt.task_create; let intent = create.intent_id;
-        std::test::assert_eq_str(create.intent_state, "requested", "admitted once its row is in the Record");
-        std::test::assert_eq_str(create.event_id, record.head("journal").id, "the row is the new head");
-        std::test::assert_eq_str(admitted.head, create.event_id, "the reply carries the Record evidence it was admitted at");
+        std::test::assert_eq_str(create.intent_state, "requested", "admitted once its row is in the Ledger");
+        // the ask is the Ledger's row (GH #1590): the record does not move
+        std::test::assert_eq_str(record.head("journal").id, before, "the record is unmoved");
+        std::test::assert_eq_str(admitted.head, before, "the reply carries the record head it was admitted at");
         std::test::assert_eq_str(admitted.receipt.subject_digest, before, "the subject is the head the request was prepared against");
         std::test::assert(admitted.receipt.target_kind == "dna.record" && admitted.receipt.target_id == self.identity, "the target is this Record");
-        let journal = dna::GitJournal { repo: self.root }; let row = self.last(journal, "intent.requested");
-        std::test::assert(row.entity == intent && row.digest == create.event_id && row.prev == before, "one intent.requested row, entity = intent id, at the captured head");
+        let journal = dna::RoutedJournal { record: dna::RecordJournal { repo: self.root }, ledger: dna::MemoryLedger { repo: self.root } }; let row = self.last(journal, "intent.requested");
+        std::test::assert(row.entity == intent && row.digest == create.event_id, "one intent.requested row, entity = intent id, in the Ledger");
         let cli = self.cli_row(outcome, "riley", "org");
         std::test::assert(std::str::starts_with(row.body, cli[0..(len(cli) - 1)] + ", \"command_format\": \"dna.task-create-command/1\""), "the row begins with the bytes hale dna ask writes for the same outcome/from/to");
         std::test::assert(!std::str::contains(row.body, "\"via\"") && !std::str::contains(row.body, "\"intent_id\""), "no via and no intent_id");
-        std::test::assert_eq_str(std::json::find_string_field(dna::line_at(record.text_at(record.head("journal").id), row.seq), "author"), "riley", "the mapped person is the row's author");
+        let ledger = dna::MemoryLedger { repo: self.root, dsn_env: "HALE_DNA_MEMORY_DSN_OWNER" };
+        let mut at = ledger.revision() - 1;
+        while at >= 0 && ledger.read(at).digest != row.digest { at = at - 1; }
+        std::test::assert_eq_str(ledger.author_of(at), "riley", "the mapped person is the row's author");
         std::test::assert_eq_str(std::json::find_string_field(row.body, "command_id"), admitted.receipt.command_id, "the row carries the command id");
         let recovered = commands.lookup(api::Lookup { request_id: "create-1" }, self.caller());
         std::test::assert(recovered.ok && recovered.receipt.command_id == admitted.receipt.command_id && recovered.receipt.task_create.intent_id == intent, "lookup recovers the same ask");
-        std::test::assert_eq_str(commands.create_task(self.ask("create-2", before, "Another", "org"), self.caller()).code, "stale_subject", "a moved head is a stale subject");
+        std::test::assert_eq_str(commands.create_task(self.ask("create-2", "0000000000000000000000000000000000000000000000000000000000000000", "Another", "org"), self.caller()).code, "stale_subject", "a head the record is not at is a stale subject");
         std::test::assert_eq_str(commands.create_task(self.ask("create-1", before, outcome, "org"), self.caller()).receipt.task_create.intent_id, intent, "identical retry is lookup");
         std::test::assert_eq_str(commands.create_task(self.ask("create-1", before, outcome + "!", "org"), self.caller()).code, "request_conflict", "one request identity, one content");
         // the organism answers in the Record; the caller sees it through lookup

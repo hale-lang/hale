@@ -275,7 +275,9 @@ test('verdict browser contract: dismissing a completed request refreshes candida
   await service.mutate('redact-pending');
   await page.getByRole('button', { name: 'Dismiss completed request', exact: true }).click();
   await expect(recovery(page)).toHaveCount(0);
-  await expect.poll(() => script.source.record_head).not.toBe(originalSource);
+  // a redaction is the Ledger's row: the record's head stays (GH #1590)
+  expect(service.ledger().filter(row => row.kind === 'receipt.redacted' && row.entity === service.pending_practice)).toHaveLength(1);
+  expect(script.source.record_head).toBe(originalSource);
   await expect(page.getByRole('button', { name: 'Prepare decision', exact: true })).toBeDisabled();
   await expect(page.locator('body')).not.toContainText(service.pending_text);
   expect(await recoveryMetadata(page)).toHaveLength(0);

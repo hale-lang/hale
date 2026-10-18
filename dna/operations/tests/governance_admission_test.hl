@@ -10,8 +10,8 @@ locus Authority {
     }
 }
 locus FaultRecord {
-    params { inner: dna::GitRecord = dna::GitRecord { }; fault: String = ""; subject: String = ""; appends: Int = 0; }
-    fn location() -> String { return ""; }
+    params { inner: dna::MemoryRecord = dna::MemoryRecord { }; fault: String = ""; subject: String = ""; appends: Int = 0; }
+    fn location() -> String { return self.inner.location(); }
     fn identity() -> String { return self.inner.identity(); }
     fn head(chain: String) -> dna::Head { return self.inner.head(chain); }
     fn count(chain: String) -> Int { return self.inner.count(chain); }
@@ -37,28 +37,31 @@ fn append(j: dna::Journal, kind: String, entity: String, body: String) {
     std::test::assert(result.ok, "fixture " + kind);
 }
 fn subject(repo: String, ratified: Bool) -> String {
-    let r = dna::GitRecord { repo: repo };
+    let r = dna::MemoryRecord { repo: repo };
     let initialized = r.git("init\n--quiet"); std::test::assert_eq_int(initialized.code, 0, "initialize isolated Git Record");
-    let j = dna::GitJournal { repo: repo }; let receipts = dna::GitReceipts { repo: repo };
+    std::test::assert_eq_str(dna::memory_fixture(repo), "", "the record is born in memory (GH #1590)");
+    let j = dna::RoutedJournal { record: dna::RecordJournal { repo: repo }, ledger: dna::MemoryLedger { repo: repo } }; let receipts = dna::MemoryReceipts { repo: repo };
     let document = dna::knowledge_document(dna::Idea { kind: "practice", name: "evidence", text: "Keep evidence.", author: "org", provenance: "fixture" }, "org");
     let digest = "sha256:" + receipts.store(document); let review = dna::knowledge_review_id(digest);
     append(j, "knowledge.proposed", digest, "{\"kind\":\"practice\",\"name\":\"evidence\",\"author\":\"org\",\"target\":\"org\",\"class\":\"initiative\",\"review_id\":\"" + review + "\",\"supersedes\":\"\"}");
     append(j, "review.requested", "review:" + review, "{\"subject_digest\":\"" + digest + "\",\"knowledge_digest\":\"" + digest + "\",\"required_authority\":\"board\",\"author\":\"org\",\"target\":\"org\",\"class\":\"initiative\"}");
     if ratified { append(j, "knowledge.ratified", digest, "{}"); }
+    std::test::assert_eq_str(dna::memory_fixture(repo), "", "the record is born in memory (GH #1590)");
     return digest;
 }
-fn who(repo: String) -> ops::GovernanceContext { let record = dna::GitRecord { repo: repo }; return ops::GovernanceContext { application_id: record.identity(), principal_mode: "local", principal_name: "alice" }; }
+fn who(repo: String) -> ops::GovernanceContext { let record = dna::MemoryRecord { repo: repo }; return ops::GovernanceContext { application_id: record.identity(), principal_mode: "local", principal_name: "alice" }; }
 fn proposal(context: ops::GovernanceContext, digest: String, key: String) -> ops::GovernanceCommand {
     return ops::GovernanceCommand { request_id: key, operation: "dna.practice.propose", application_id: context.application_id, target_kind: "dna.practice", target_id: digest, subject_digest: digest, text: "Keep exact é 🧭\r\nevidence.", rationale: "Preserve the review evidence." };
 }
 fn test_recovery(repo: String) {
     let digest = subject(repo, true); let context = who(repo); let command = proposal(context, digest, "request/équipe/1");
-    let provider = ops::GovernanceCommands { record: dna::GitRecord { repo: repo }, authority: Authority { } };
+    std::test::assert_eq_str(dna::memory_fixture(repo), "", "the record is born in memory (GH #1590)");
+    let provider = ops::GovernanceCommands { record: dna::MemoryRecord { repo: repo }, authority: Authority { } };
     let first = provider.submit(context, command);
     std::test::assert(first.ok && first.receipt.state == "recorded", "admission is recorded, never fabricated completion");
     let codec = ops::GovernanceCommandCodec { };
     std::test::assert_eq_str(first.receipt.command_id, codec.identity(context, command.request_id), "public command identity is scoped");
-    let fresh = ops::GovernanceCommands { record: dna::GitRecord { repo: repo }, authority: Authority { } };
+    let fresh = ops::GovernanceCommands { record: dna::MemoryRecord { repo: repo }, authority: Authority { } };
     let restored = fresh.lookup(context, command.request_id);
     std::test::assert(restored.ok, "fresh provider reads durable receipt");
     std::test::assert_eq_str(restored.receipt.fingerprint, first.receipt.fingerprint, "restart retains exact content");
@@ -68,7 +71,7 @@ fn test_recovery(repo: String) {
     std::test::assert_eq_str(fresh.submit(context, changed).code, "request_conflict", "changed content conflicts");
     changed = ops::GovernanceCommand { request_id: command.request_id, operation: "dna.review.verdict", application_id: context.application_id, target_kind: "dna.review", target_id: dna::knowledge_review_id(digest), subject_digest: digest, expected_review_state: "pending", verdict: "approve" };
     std::test::assert_eq_str(fresh.submit(context, changed).code, "request_conflict", "cross-operation reuse conflicts before new eligibility");
-    let j = dna::GitJournal { repo: repo }; append(j, "knowledge.retired", digest, "{\"by\":\"newer\"}");
+    let j = dna::RoutedJournal { record: dna::RecordJournal { repo: repo }, ledger: dna::MemoryLedger { repo: repo } }; append(j, "knowledge.retired", digest, "{\"by\":\"newer\"}");
     let after_move = fresh.submit(context, command);
     std::test::assert(after_move.ok, "existing identity recovers after subject moved: " + after_move.code);
     std::test::assert_eq_str(fresh.submit(context, proposal(context, digest, "new-request")).code, "stale_subject", "new request requires active predecessor");
@@ -80,12 +83,13 @@ fn test_recovery(repo: String) {
     std::test::assert_eq_str(fresh.lookup(other, command.request_id).code, "command_context_changed", "another application cannot read receipt");
     other = who(repo); other.principal_name = "outsider";
     std::test::assert_eq_str(fresh.lookup(other, command.request_id).code, "forbidden", "receipt access requires current grant");
-    let deny = ops::GovernanceCommands { record: dna::GitRecord { repo: repo } };
+    let deny = ops::GovernanceCommands { record: dna::MemoryRecord { repo: repo } };
     std::test::assert_eq_str(deny.submit(context, command).code, "forbidden", "default authority denies even existing receipts");
 }
 fn test_races(repo: String) {
     let digest = subject(repo, true); let context = who(repo);
-    let record = FaultRecord { inner: dna::GitRecord { repo: repo }, subject: digest };
+    std::test::assert_eq_str(dna::memory_fixture(repo), "", "the record is born in memory (GH #1590)");
+    let record = FaultRecord { inner: dna::MemoryRecord { repo: repo }, subject: digest };
     let provider = ops::GovernanceCommands { record: record, authority: Authority { } };
     record.fault = "lost";
     let lost = provider.submit(context, proposal(context, digest, "lost"));
@@ -103,7 +107,8 @@ fn test_races(repo: String) {
 }
 fn test_verdict(repo: String) {
     let digest = subject(repo, false); let context = who(repo);
-    let provider = ops::GovernanceCommands { record: dna::GitRecord { repo: repo }, authority: Authority { } };
+    std::test::assert_eq_str(dna::memory_fixture(repo), "", "the record is born in memory (GH #1590)");
+    let provider = ops::GovernanceCommands { record: dna::MemoryRecord { repo: repo }, authority: Authority { } };
     let command = ops::GovernanceCommand { request_id: "review-1", operation: "dna.review.verdict", application_id: context.application_id, target_kind: "dna.review", target_id: dna::knowledge_review_id(digest), subject_digest: digest, expected_review_state: "pending", verdict: "approve", comment: "Exact é\r\ncomment" };
     let first = provider.submit(context, command);
     std::test::assert(first.ok && first.receipt.verdict_state == "pending", "native verdict trigger is not a decision");
@@ -114,7 +119,7 @@ fn test_verdict(repo: String) {
     std::test::assert_eq_str(codec.string(last.body, "comment"), command.comment, "native comment remains exact");
     let wrong = ops::GovernanceCommand { request_id: "review-2", operation: "dna.review.verdict", application_id: context.application_id, target_kind: "dna.review", target_id: dna::knowledge_review_id(digest), subject_digest: "different", expected_review_state: "pending", verdict: "approve" };
     std::test::assert_eq_str(provider.submit(context, wrong).code, "stale_subject", "exact review subject checked");
-    let denied = ops::GovernanceCommands { record: dna::GitRecord { repo: repo }, authority: Authority { writes: false } };
+    let denied = ops::GovernanceCommands { record: dna::MemoryRecord { repo: repo }, authority: Authority { writes: false } };
     let unauthorised = ops::GovernanceCommand { request_id: "review-3", operation: "dna.review.verdict", application_id: context.application_id, target_kind: "dna.review", target_id: dna::knowledge_review_id(digest), subject_digest: digest, expected_review_state: "pending", verdict: "approve" };
     std::test::assert_eq_str(denied.submit(context, unauthorised).code, "forbidden", "admission checks authority independently of capabilities");
     std::test::assert(denied.lookup(context, command.request_id).ok, "receipt grant may survive loss of write grant");
@@ -122,29 +127,34 @@ fn test_verdict(repo: String) {
 // GH #1089: a routed Review's typed verdict from someone who holds none of
 // its positions is refused, and the refusal names the positions
 fn test_routed_verdict(repo: String) {
+    std::test::assert_eq_str(dna::memory_fixture(repo), "", "the record is born in memory (GH #1590)");
     let digest = subject(repo, false); let context = who(repo); let review = dna::knowledge_review_id(digest);
-    append(dna::GitJournal { repo: repo }, "review.routed", review, "{\"definition\": \"practice-ratify\", \"signers\": \"position:board=ada\", \"gates\": \"\", \"fallback\": false}");
-    let provider = ops::GovernanceCommands { record: dna::GitRecord { repo: repo }, authority: Authority { } };
+    append(dna::RecordJournal { repo: repo }, "review.routed", review, "{\"definition\": \"practice-ratify\", \"signers\": \"position:board=ada\", \"gates\": \"\", \"fallback\": false}");
+    let provider = ops::GovernanceCommands { record: dna::MemoryRecord { repo: repo }, authority: Authority { } };
     let command = ops::GovernanceCommand { request_id: "routed-1", operation: "dna.review.verdict", application_id: context.application_id, target_kind: "dna.review", target_id: review, subject_digest: digest, expected_review_state: "pending", verdict: "approve" };
     let refused = provider.submit(context, command);
     std::test::assert_eq_str(refused.code, "forbidden", "alice holds the board's authority and not its position");
     std::test::assert_eq_str(refused.why, "reviewer alice holds no position this Review requires (position:board)", "the refusal names what the Review requires");
 }
 fn test_exact_head(repo: String) {
-    let digest = subject(repo, true); let r = dna::GitRecord { repo: repo }; let j = dna::GitJournal { repo: repo };
-    let head = r.head("journal").id; let parent = dna::line_at(r.ids("journal"), 1);
-    let replacement = r.build(parent, dna::Row { kind: "knowledge.refused", entity: digest, body: "replacement", author: "fixture" }, false, "");
-    std::test::assert(r.move_chain("journal", replacement, head), "same-count chain replacement installed");
-    let result = j.append_exact(j.revision(), "test.decision", "decision", "based on old head");
-    std::test::assert(!result.ok && result.error == "stale_revision", "same-count replacement invalidates Journal decision basis: ok=" + to_string(result.ok) + " error=" + result.error);
-    std::test::assert_eq_str(r.head("journal").id, replacement, "stale decision did not mutate replacement");
+    std::test::assert_eq_str(dna::memory_fixture(repo), "", "the record is born in memory (GH #1590)");
+    let digest = subject(repo, true); let r = dna::MemoryRecord { repo: repo }; let j = dna::RoutedJournal { record: dna::RecordJournal { repo: repo }, ledger: dna::MemoryLedger { repo: repo } };
+    let basis = j.revision();
+    // the record only grows (GH #1590): a decision read at a revision is
+    // stale once another writer appends
+    let moved = r.append("journal", r.head("journal").id, dna::Row { kind: "knowledge.refused", entity: digest, body: "another writer", author: "fixture" }, false, "");
+    std::test::assert(moved.ok, "another writer appends: " + moved.error);
+    let result = j.append_exact(basis, "test.decision", "decision", "based on old head");
+    std::test::assert(!result.ok && result.error == "stale_revision", "a moved record invalidates the Journal decision basis: ok=" + to_string(result.ok) + " error=" + result.error);
+    std::test::assert_eq_str(r.head("journal").id, moved.id, "the stale decision did not land");
 }
 fn test_payload_bound(repo: String, byte: Int) {
     let digest = subject(repo, true); let context = who(repo);
     let text = std::bytes::BytesBuilder { }; let rationale = std::bytes::BytesBuilder { }; let mut i = 0;
     while i < 8192 { text.append_u8(byte); if i < 2048 { rationale.append_u8(114); } i = i + 1; }
     let command = ops::GovernanceCommand { request_id: "maximum", operation: "dna.practice.propose", application_id: context.application_id, target_kind: "dna.practice", target_id: digest, subject_digest: digest, text: std::str::from_bytes(text.snapshot() or raise), rationale: std::str::from_bytes(rationale.snapshot() or raise) };
-    let service = ops::GovernanceCommands { record: dna::GitRecord { repo: repo }, authority: Authority { } };
+    std::test::assert_eq_str(dna::memory_fixture(repo), "", "the record is born in memory (GH #1590)");
+    let service = ops::GovernanceCommands { record: dna::MemoryRecord { repo: repo }, authority: Authority { } };
     let result = service.submit(context, command);
     std::test::assert(result.ok, "advertised maximum payload persists: " + result.code);
     let found = service.lookup(context, command.request_id);

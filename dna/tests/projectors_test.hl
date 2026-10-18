@@ -71,10 +71,11 @@ main locus App {
         std::test::assert_eq_int(mk.code, 0, "the organism's repository: " + mk.stderr);
 
         // ---- a record of knowledge: proposals, ratifications and a
-        // declined one, the code's structure, and signals raised again
-        let j = dna::GitJournal { repo: self.repo };
-        let receipts = dna::GitReceipts { repo: self.repo };
-        std::test::assert(j.append(0, "application.observed", "org", "{}").ok, "the record's first row");
+        // declined one, and the code's structure
+        std::test::assert_eq_str(dna::memory_fixture(self.repo), "", "the record is born in memory (GH #1590)");
+        let j = dna::RoutedJournal { record: dna::RecordJournal { repo: self.repo }, ledger: dna::MemoryLedger { repo: self.repo } };
+        let receipts = dna::MemoryReceipts { repo: self.repo };
+        std::test::assert(j.append(j.revision(), "application.observed", "org", "{}").ok, "the record's first row");
         let mut k = 0;
         while k < 12 {
             let doc = dna::knowledge_document(dna::Idea { kind: "practice", text: "practice " + to_string(k), author: "org" }, if k % 3 == 0 { "org" } else { "org/app" });
@@ -83,11 +84,12 @@ main locus App {
             let settled = if k % 4 == 3 { "knowledge.declined" } else { "knowledge.ratified" };
             std::test::assert(j.append(j.revision(), settled, id, "{\"class\":\"goal\"}").ok, "decision " + to_string(k));
             std::test::assert(j.append(j.revision(), "structure.observed", "locus:L" + to_string(k % 5), "{\"kind\":\"locus\",\"name\":\"L" + to_string(k % 5) + "\",\"seq\":" + to_string(k) + "}").ok, "structure " + to_string(k));
-            std::test::assert(j.append(j.revision(), "pressure.raised", "org/app/w" + to_string(k % 2), "mail backlog x" + to_string(k)).ok, "pressure " + to_string(k));
             k = k + 1;
         }
-        let length = j.revision();
-        let identity = dna::GitRecord { repo: self.repo }.identity();
+        // the projection is the record's alone (GH #1590); pressure and
+        // concerns are the Ledger's, so no signal is raised here
+        let length = dna::RecordJournal { repo: self.repo }.revision();
+        let identity = dna::MemoryRecord { repo: self.repo }.identity();
         // the record's roles into the vault first, as its bootstrap does (GH #989)
         let provisioned = dna::provision_record_roles(identity, "");
         let m = dna::migrate(dna::parse_dsn(owner), identity);
@@ -102,7 +104,6 @@ main locus App {
         std::test::assert_eq_int(self.applied(alone), length, "and applies every row: " + alone);
         let single = store.conn.query_one(SNAPSHOT);
         std::test::assert(single.ok && len(single.data) > 0, "the single projection reads: " + single.err.detail);
-        std::test::assert(std::str::contains(single.data, "mail backlog|6|"), "a signal raised six times is counted six times: " + single.data);
 
         // ---- three projectors at once over the same record
         let basis = store.projection_basis();

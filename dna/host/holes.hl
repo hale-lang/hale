@@ -73,7 +73,7 @@ fn hole_row(kind: String, entity: String, body: String) -> String {
 // the head's `Commands::fill` and `Commands::open_position` read the same
 // way): every position stated or proposed, every hold, the persons it knows
 // and those it retired.
-fn held_state(root: String) -> ops::HeldState { return ops::held_state_of(dna::GitJournal { repo: root }, dna::GitReceipts { repo: root }); }
+fn held_state(root: String) -> ops::HeldState { return ops::held_state_of(dna::RecordJournal { repo: root }, dna::MemoryReceipts { repo: root }); }
 
 // Why `holder` may not hold `position` over what the record holds ("" when
 // they may); a warning when it is only one (ops::fill_check_of).
@@ -98,7 +98,7 @@ fn fill_equipment(root: String, position: String) -> String {
 // answered.
 // The node `--under <part>` names: a node id as given, or a bare name as the
 // graph states it (ops::under_node_of).
-fn under_node(root: String, under: String) -> String { return ops::under_node_of(dna::GitJournal { repo: root }, dna::GitReceipts { repo: root }, held_state(root).positions, under); }
+fn under_node(root: String, under: String) -> String { return ops::under_node_of(dna::RecordJournal { repo: root }, dna::MemoryReceipts { repo: root }, held_state(root).positions, under); }
 
 fn position_open_verb(root: String, seed: String, name: String, mandate: String, text: String, under: String, who_flag: String, memory: dna::Memory) -> Answer {
     if len(name) == 0 || len(std::str::trim(mandate)) == 0 { return fail("usage: hale dna position open <name> --mandate \"<what it decides, may not do, cites and escalates>\" [--text <what it is>] [--under <part>] [--as <who>]"); }
@@ -134,7 +134,6 @@ fn position_open_verb(root: String, seed: String, name: String, mandate: String,
         }
         return fail("requested the position, but the organization journaled no answer for " + request_id + " in time");
     }
-    if len(record_remote(root)) == 0 { return fail(no_organism(root)); }
     if !append_as(root, "position.requested", request_id, b.result(), who, memory) { return fail("the record refused the append"); }
     let s = sync_record(root, memory);
     if !s.ok { return fail(s.summary); }
@@ -156,10 +155,10 @@ fn apply_verb(root: String, seed: String, file: String, steps: String, dry_run: 
     if len(steps) > 0 { return apply_text(root, seed, steps, dry_run, who_flag, pack, on_holes, memory); }
     // `hale dna pack retire <name>`: the latest ratified adoption, undone
     if len(retire_pack) > 0 {
-        let journal = dna::RoutedJournal { record: dna::GitJournal { repo: root }, ledger: memory.ledger };
+        let journal = dna::RoutedJournal { record: dna::RecordJournal { repo: root }, ledger: memory.ledger };
         let adopted = dna::pack_adopted_steps(journal, retire_pack);
         if len(adopted) == 0 { return fail("pack retire: no adoption of the pack `" + retire_pack + "` the Board ratified"); }
-        let inverse = dna::batch_inverse(journal, dna::GitReceipts { repo: root }, adopted);
+        let inverse = dna::batch_inverse(journal, dna::MemoryReceipts { repo: root }, adopted);
         if len(inverse) == 0 { return fail("pack retire: nothing the pack `" + retire_pack + "` brought is left"); }
         return apply_text(root, seed, inverse, dry_run, who_flag, retire_pack + "/retired", false, memory);
     }
@@ -182,8 +181,8 @@ fn apply_text(root: String, seed: String, text: String, dry_run: Bool, who_flag:
     if len(no_head) > 0 { return fail(no_head); }
     // the record as the organization reads it: a ratification lands in
     // memory's ledger once the ledger is adopted
-    let journal = dna::RoutedJournal { record: dna::GitJournal { repo: root }, ledger: memory.ledger };
-    let receipts = dna::GitReceipts { repo: root };
+    let journal = dna::RoutedJournal { record: dna::RecordJournal { repo: root }, ledger: memory.ledger };
+    let receipts = dna::MemoryReceipts { repo: root };
     let plan = dna::batch_plan_on(journal, receipts, text, if on_holes { dna::batch_init_holes(journal) } else { "" });
     if !plan.ok { return fail("apply: refused: " + plan.why); }
     let chart = dna::batch_render(plan);
@@ -224,11 +223,6 @@ fn apply_text(root: String, seed: String, text: String, dry_run: Bool, who_flag:
         }
         return fail("proposed the batch as " + filing.review_id + ", but the organization journaled no answer for " + request_id + " in time");
     }
-    if len(record_remote(root)) == 0 {
-        let seeded = seed_rows(root, filing.rows, "apply", memory);
-        if !seeded.ok { return seeded; }
-        return answer(chart + "proposed the batch as " + filing.review_id + "; the organization opens its Review when it starts (`hale dna run`)\n");
-    }
     let seeded = seed_rows(root, filing.rows, "apply", memory);
     if !seeded.ok { return seeded; }
     let s = sync_record(root, memory);
@@ -238,9 +232,9 @@ fn apply_text(root: String, seed: String, text: String, dry_run: Bool, who_flag:
 
 // `hale dna nursery list`: the nurseries the Board trusts, one a line.
 fn nursery_sources_verb(root: String, memory: dna::Memory) -> Answer {
-    let journal = dna::RoutedJournal { record: dna::GitJournal { repo: root }, ledger: memory.ledger };
+    let journal = dna::RoutedJournal { record: dna::RecordJournal { repo: root }, ledger: memory.ledger };
     let mut out = "";
-    let mut rest = dna::org_chart(journal, dna::GitReceipts { repo: root });
+    let mut rest = dna::org_chart(journal, dna::MemoryReceipts { repo: root });
     while len(rest) > 0 {
         let nl = std::str::index_of(rest, "\n");
         let line = rest[0..nl];
@@ -288,7 +282,6 @@ fn fill_verb(root: String, seed: String, name: String, holder: String, who_flag:
         }
         return fail("requested the hold, but the organization journaled no answer for " + request_id + " in time");
     }
-    if len(record_remote(root)) == 0 { return fail(no_organism(root)); }
     if !append_as(root, "hold.requested", request_id, b.result(), who, memory) { return fail("the record refused the append"); }
     let s = sync_record(root, memory);
     if !s.ok { return fail(s.summary); }

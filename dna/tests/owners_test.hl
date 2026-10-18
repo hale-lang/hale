@@ -34,7 +34,9 @@ main locus App {
         return dna::run_tool_timeout(dna::wait_secs(120), "sh\n-c\ncd \"$1\" && export HALE_DNA_MEMORY_DSN_HEAD=\"$2\" && shift 2 && unset HALE_DNA_MEMORY_DSN_SPINE HALE_DNA_MEMORY_DSN_OWNER && export HALE_DNA_DISCOVER=off && exec \"$@\"\nsh\n" + dir + "\n" + self.head + "\n" + argv);
     }
     fn last(repo: String, kind: String) -> String {
-        let j = dna::GitJournal { repo: repo };
+        std::test::assert_eq_str(dna::memory_fixture(repo), "", "the record is born in memory (GH #1590)");
+        // the record and its Ledger as one (GH #1590): an ask is the Ledger's
+        let j = dna::RoutedJournal { record: dna::RecordJournal { repo: repo, dsn_env: "HALE_DNA_MEMORY_DSN_OWNER" }, ledger: dna::MemoryLedger { repo: repo, dsn_env: dna::fixture_spine(repo) } };
         let mut out = "";
         let mut i = 0;
         while i < j.revision() {
@@ -51,7 +53,8 @@ main locus App {
         dna::reap_on_exit(scratch);
         let bare = scratch + "/origin.git";
         let b0 = self.in_dir(scratch, "git\ninit\n-q\n--bare\n-b\nmain\n" + bare);
-        let made = self.in_dir(scratch, toolchain() + "\ndna\nnew\nteam");
+        // the record is born in memory (GH #1590): `new` keeps the owner's DSN
+        let made = dna::run_tool_timeout(dna::wait_secs(300), "sh\n-c\ncd \"$1\" && shift && export HALE_DNA_DISCOVER=off && exec \"$@\"\nsh\n" + scratch + "\n" + toolchain() + "\ndna\nnew\nteam");
         std::test::assert_eq_int(made.code, 0, "hale dna new: " + made.stdout + made.stderr);
         let app = scratch + "/team";
         // ---- born with one owner: no owners file, and no map in main.hl
@@ -63,11 +66,12 @@ main locus App {
         let a0 = self.in_dir(app, "git\nadd\n-A");
         let a1 = self.in_dir(app, "git\ncommit\n-q\n-m\nthe team");
         let r0 = self.in_dir(app, "git\nremote\nadd\norigin\n" + bare);
-        let p0 = self.in_dir(app, "git\npush\n-q\norigin\nmain\nrefs/dna/*:refs/dna/*");
+        let p0 = self.in_dir(app, "git\npush\n-q\norigin\nmain");
         std::test::assert_eq_int(p0.code, 0, "pushed: " + p0.stderr);
         // ---- the record is shared: two organizations, a position each,
         // stated in the graph and projected into memory
-        let j = dna::GitJournal { repo: app };
+        std::test::assert_eq_str(dna::memory_fixture(app), "", "the record is born in memory (GH #1590)");
+        let j = dna::RecordJournal { repo: app };
         let seats = "position:org organization:acme\nposition:org/collections organization:north\norganization:acme alice\norganization:north bob\n";
         let mut rest = seats;
         while len(rest) > 0 {
@@ -77,8 +81,7 @@ main locus App {
             let sp = std::str::index_of(line, " ");
             std::test::assert_eq_str(ops::graph_seat(j, line[0..sp], line[(sp + 1)..len(line)]), "", "seated " + line);
         }
-        let p1 = self.in_dir(app, "git\npush\n-q\norigin\nrefs/dna/*:refs/dna/*");
-        let identity = dna::GitRecord { repo: app }.identity();
+        let identity = dna::MemoryRecord { repo: app }.identity();
         // the record's roles into the vault first, as its bootstrap does (GH #989)
         let provisioned = dna::provision_record_roles(identity, "");
         let m = dna::migrate(dna::parse_dsn(owner), identity);
@@ -87,15 +90,15 @@ main locus App {
         let spine = dna::migrated(owner, identity);
         let store = dna::Pq { conn: dna::pq_conn(spine), record_id: identity };
         std::test::assert(store.open(), "memory opens: " + store.last_error());
-        let r = ops::apply_record_to(store, j, dna::GitReceipts { repo: app }, j.revision(), "", "local", j);
+        let r = ops::apply_record_to(store, j, dna::MemoryReceipts { repo: app }, j.revision(), "", "local", j);
         std::test::assert_eq_str(r.error, "", "the record projects clean");
         std::test::assert(std::str::contains(store.graph_ownership(), "[\"organization:north\", \"bob\"]"), "memory holds the ownership: " + store.graph_ownership());
         std::test::assert(store.org_member("bob") && store.org_member("alice") && !store.org_member("eve"), "and org_members is its projection");
         // a person belongs to one organization: a second membership is refused
         std::test::assert_eq_str(ops::graph_seat(j, "organization:acme", "bob"), "", "bob seated in acme too, by hand");
-        let again = ops::apply_record_to(store, j, dna::GitReceipts { repo: app }, j.revision(), "", "local", j);
+        let again = ops::apply_record_to(store, j, dna::MemoryReceipts { repo: app }, j.revision(), "", "local", j);
         std::test::assert_eq_str(again.error, "", "the record projects again");
-        let refused = dna::GitJournal { repo: app };
+        let refused = dna::RecordJournal { repo: app };
         let mut why = "";
         let mut k = 0;
         while k < refused.revision() {
@@ -107,7 +110,7 @@ main locus App {
         std::test::assert(!std::str::contains(store.graph_ownership(), "[\"organization:acme\", \"bob\"]"), "and memory does not hold it");
         // and a position has one owning organization: a second is refused
         std::test::assert_eq_str(ops::graph_seat(j, "position:org", "organization:north"), "", "north seated as org's owner too, by hand");
-        let twice = ops::apply_record_to(store, j, dna::GitReceipts { repo: app }, j.revision(), "", "local", j);
+        let twice = ops::apply_record_to(store, j, dna::MemoryReceipts { repo: app }, j.revision(), "", "local", j);
         std::test::assert_eq_str(twice.error, "", "the record projects again");
         let mut owned_why = "";
         let moved = refused.refresh();
@@ -126,24 +129,29 @@ main locus App {
         let unknown = self.in_dir(app, toolchain() + "\ndna\nrun\n.\n--no-iris");
         std::test::assert(unknown.code != 0 && std::str::contains(unknown.stderr, "which no organization in the record is"), "a body naming an organization the record lacks does not run: " + unknown.stderr);
         let c3 = self.in_dir(app, "git\nconfig\ndna.owner\nacme");
-        // GH #665: the owners' controllers coordinate through the ledger
-        let unadopted = self.in_dir(app, toolchain() + "\ndna\nrun\n.\n--no-iris");
-        std::test::assert(unadopted.code != 0 && std::str::contains(unadopted.stderr, "coordinate through the ledger, which it has not adopted"), "a shared record runs no body until the ledger is adopted: " + unadopted.stderr);
+        // GH #665: the owners' controllers coordinate through the ledger,
+        // which the record has from its first rows (GH #1590): a body named
+        // for its organization runs once it is told where memory is
+        // (the head's DSN the clone keeps, set aside: a clone with none)
+        let aside = dna::run_tool("mv\n" + app + "/.hale/dna/memory.env\n" + app + "/.hale/dna/memory.env.aside");
+        let unnamed_memory = self.in_dir(app, toolchain() + "\ndna\nrun\n.\n--no-iris");
+        let back = dna::run_tool("mv\n" + app + "/.hale/dna/memory.env.aside\n" + app + "/.hale/dna/memory.env");
+        std::test::assert(aside.code == 0 && back.code == 0, "the kept DSN set aside and back");
+        std::test::assert(unnamed_memory.code != 0 && std::str::contains(unnamed_memory.stderr, "no memory is named here"), "a body with no memory named does not run: " + unnamed_memory.stderr);
         // ---- with a body here, an ask for north's position is north's.
         // "The organism runs from this clone" is this clone's body holding
-        // the record's lease, live (GH #986); a lease is planted for it
-        // the way a host takes it — in the record, shared with the remote,
-        // held by this clone — so no process has to run
+        // its owner's lease, live (GH #986); a lease is planted for it the
+        // way a host takes it — in memory, held by this clone — so no
+        // process has to run
         let holder = dna::trim_nl(dna::run_tool("sh\n-c\ncd \"$1\" && h=$(hostname 2>/dev/null || echo localhost) && echo \"${USER:-body}@$h:$(pwd -P)\"\nsh\n" + app).stdout);
-        let lease = dna::GitRecord { repo: app };
-        let planted = lease.swap("lease/body", holder + "\n1\n" + to_string(std::time::now() + 600) + "\n1", "");
-        let shared = lease.share(lease.remote(), "lease/body", "new");
-        std::test::assert(planted && shared.ok, "a live lease held by this clone is in the record");
+        let lease = dna::MemoryLeases { repo: app, dsn_env: "HALE_DNA_MEMORY_DSN_OWNER" };
+        let planted = lease.put("owner/acme", dna::Lease { key: "owner/acme", holder: holder, token: 1, expires: std::time::now() + 600, present: true }, 0);
+        std::test::assert(planted, "a live lease held by this clone is in memory: " + lease.last_error);
         let here = self.in_dir(app, toolchain() + "\ndna\nstatus");
         std::test::assert(std::str::contains(here.stdout, "running (this clone's body holds the lease)"), "status here reads the organism as running from this clone: " + here.stdout + here.stderr);
         let asked = self.in_dir(app, toolchain() + "\ndna\ntask\ncreate\n--no-wait\n--to\norg/collections\n--as\nalice\ncall the agency about the late invoice");
         std::test::assert_eq_int(asked.code, 0, "the ask is taken: " + asked.stdout + asked.stderr);
-        std::test::assert(std::str::contains(asked.stdout, "requested in the record for its owner's controller") && std::str::contains(asked.stdout, "owned by north, not acme"), "…into the record, naming whose it is: " + asked.stdout);
+        std::test::assert(std::str::contains(asked.stdout, "requested in the ledger for its owner's controller") && std::str::contains(asked.stdout, "owned by north, not acme"), "…into the ledger, naming whose it is: " + asked.stdout);
         let row = self.last(app, "intent.requested");
         std::test::assert(std::str::contains(row, "\"to\": \"org/collections\"") && std::str::contains(row, "\"from\": \"alice\""), "the row names the position and the asker: " + row);
         // ---- visible as unadmitted here; nothing waiting for north
@@ -151,7 +159,7 @@ main locus App {
         std::test::assert(std::str::contains(st.stdout, "[unadmitted] call the agency about the late invoice — `org/collections` is owned by north, not acme"), "status shows it waiting for its owner: " + st.stdout);
         let other = scratch + "/north";
         let cl = dna::clone_repo(bare, other);
-        let f0 = self.in_dir(other, "git\nfetch\n-q\norigin\nrefs/dna/*:refs/dna/*");
+        std::test::assert_eq_str(dna::memory_fixture(other), "", "north's clone reaches the record's memory (GH #1590)");
         let c4 = self.in_dir(other, "git\nconfig\ndna.owner\nnorth");
         let st2 = self.in_dir(other, toolchain() + "\ndna\nstatus");
         std::test::assert_eq_int(st2.code, 0, "status in north's clone: " + st2.stderr);

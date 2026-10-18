@@ -31,13 +31,13 @@ fn answer(text: String) -> Answer {
 // Ledger as it is now (GH #986: no head publishes beside the body any
 // more, so this read is the only way a head's row reaches the organism).
 fn open_projection(root: String, seed: String, toolchain: String, memory: dna::Memory) -> Projection {
-    let p = Projection { root: root, seed: seed, toolchain: toolchain, j: dna::RoutedJournal { record: dna::GitJournal { repo: root, author: "host" }, ledger: memory.ledger } };
+    let p = Projection { root: root, seed: seed, toolchain: toolchain, j: dna::RoutedJournal { record: dna::RecordJournal { repo: root, author: "host" }, ledger: memory.ledger } };
     let moved = p.j.refresh();
     return p;
 }
 
 fn no_record(root: String) -> String {
-    return "no record at " + RECORD_REF + " in " + root + " (run `hale dna init`)";
+    return "no record in memory for " + root + " (run `hale dna init`)";
 }
 
 // "" when the record has a head; otherwise why a verb cannot go on: no
@@ -45,7 +45,7 @@ fn no_record(root: String) -> String {
 // (GH #961).
 fn record_refusal(root: String) -> String {
     let h = record_head(root);
-    if !h.ok { return "the record at " + RECORD_REF + " in " + root + " could not be read: " + h.why; }
+    if !h.ok { return "the record of " + root + " could not be read from memory: " + h.why; }
     if h.absent { return no_record(root); }
     return "";
 }
@@ -136,11 +136,10 @@ fn holder_host(holder: String) -> String {
 }
 
 fn profile_name(root: String, memory: dna::Memory) -> String {
-    let remote = record_remote(root);
     let l = body_lease_read(root, memory);
     let live = l.ok && body_live(l, std::time::now());
     let here = live && holder_host(l.holder) == this_host();
-    let mut name = if len(remote) == 0 { "local" } else if live && !here { "remote body" } else if live { "local body, shared record" } else { "shared record, no body" };
+    let mut name = if live && !here { "remote body" } else if live { "local body" } else { "no body" };
     if len(fleet_name(root)) > 0 { name = name + " + fleet"; }
     if forge_kind(root) != "none" { name = name + " + " + forge_kind(root); }
     return name + " (detected)";
@@ -150,10 +149,11 @@ fn profile_verb(root: String, memory: dna::Memory) -> Answer {
     let no_head = record_refusal(root);
     if len(no_head) > 0 { return fail(no_head); }
     let now = std::time::now();
-    let remote = record_remote(root);
+    let remote = genome_remote(root);
     let url = if len(remote) > 0 { rec(root).remote_url(remote) } else { "" };
     let mut out = "profile:     " + profile_name(root, memory) + "\n";
-    out = out + "record:      " + (if len(remote) == 0 { "this clone only (no remote; `git remote add origin …` shares it)" } else { "shared over " + remote + " (" + url + ")" }) + "\n";
+    out = out + "record:      " + record_identity(root) + ", in memory (every clone and body reads and writes it there)\n";
+    out = out + "genome:      " + (if len(remote) == 0 { "this clone only (no remote; `git remote add origin …` shares it)" } else { "shared over " + remote + " (" + url + ")" }) + "\n";
     out = out + "body:        " + body_line(root, now, memory) + "\n";
     out = out + "head:        this clone (" + root + "); hosted head: none\n";
     let fleet = fleet_name(root);
@@ -191,7 +191,7 @@ fn body_verb(root: String, sub: String, force: Bool, who_flag: String, memory: d
     let who = if len(who_flag) > 0 { who_flag } else { who_am_i() };
     if len(sub) == 0 { return answer("body: " + body_line(root, now, memory) + "\n"); }
     let cur = body_lease_read(root, memory);
-    if !cur.ok { return fail("body: the record's remote cannot be reached"); }
+    if !cur.ok { return fail("body: memory cannot be reached, and the body lease is memory's"); }
     if sub == "claim" {
         // nothing to take: no body ever ran this record, or the last one
         // released its lease; `hale dna run` takes it
@@ -296,7 +296,7 @@ fn history_verb(root: String, entity: String, memory: dna::Memory) -> Answer {
             }
         }
     }
-    let mut out = "record " + RECORD_REF + " — " + to_string(n) + " event(s), " + p.chain_line() + "\n";
+    let mut out = "record " + short(record_identity(root)) + " — " + to_string(n) + " event(s), " + p.chain_line() + "\n";
     let mut lines = "";
     let mut selected = 0;
     let mut i = 0;
@@ -341,8 +341,8 @@ fn body_block(root: String, what: String, digest: String, bodies: String) -> Str
     let redacted = redaction_line(root, digest);
     if !r.present && len(redacted) > 0 { return pad + what + " " + digest + " " + redacted + "\n"; }
     if !r.present {
-        let why = if len(bodies) == 0 { " (the call was recorded before prompts were receipts)" } else { " (`hale dna sync` fetches receipts)" };
-        return pad + what + " " + digest + " is not among this clone's receipts" + why + "\n";
+        let why = if len(bodies) == 0 { " (the call was recorded before prompts were receipts)" } else { "" };
+        return pad + what + " " + digest + " is not among the record's receipts" + why + "\n";
     }
     return pad + what + " " + digest + " (" + to_string(len(r.text)) + " bytes)\n" + r.text + "\n" + pad + "end of " + what + "\n";
 }
@@ -592,7 +592,7 @@ fn render_review(p: Projection, id: String, iris: Bool) -> Answer {
         }
         i = i + 1;
     }
-    out = out + "  receipts: refs/dna/receipts/<digest> (git cat-file -p)\n\n";
+    out = out + "  receipts: in memory, by digest (`hale dna receipt show <digest> --purpose <p>` for a protected one)\n\n";
     out = out + "decide: hale dna review " + id + " approve|revise|reject|abstain [--as <you>] [--comment <c>] [--digest " + short(r.candidate_commit) + "]\n";
     if iris {
         if len(r.diff_json) == 0 { return fail("--iris: this review has no semantic diff document"); }
@@ -1062,10 +1062,10 @@ fn body_provision_verb(root: String, target: String, dsn: String, dir_flag: Stri
     let no_head = record_refusal(root);
     if len(no_head) > 0 { return fail(no_head); }
     if len(target) == 0 { return fail("body provision: `hale dna body provision <user@host> [--dsn <postgres://…>] [--dir <path on the body>] [--dry-run]`"); }
-    let remote = record_remote(root);
-    if len(remote) == 0 { return fail("body provision: this record has no remote; the body clones the record from one (`git remote add origin <url>`, `hale dna sync`) — nothing was written"); }
+    let remote = genome_remote(root);
+    if len(remote) == 0 { return fail("body provision: the genome has no remote; the body clones the genome from one (`git remote add origin <url>`) — nothing was written"); }
     let url = rec(root).remote_url(remote);
-    if !(std::str::contains(url, "://") || (std::str::contains(url, "@") && std::str::contains(url, ":"))) { return fail("body provision: the record's remote is local to this machine (" + url + "); the body must reach it — `git remote set-url " + remote + " <ssh or https url>` first. Nothing was written"); }
+    if !(std::str::contains(url, "://") || (std::str::contains(url, "@") && std::str::contains(url, ":"))) { return fail("body provision: the genome's remote is local to this machine (" + url + "); the body must reach it — `git remote set-url " + remote + " <ssh or https url>` first. Nothing was written"); }
     let pin = lock_toolchain(root);
     if len(pin) == 0 { return fail("body provision: hale.lock pins no toolchain (`hale dna upgrade` writes it); the body installs exactly what the lock pins — nothing was written"); }
     let name = project_name(root);
@@ -1333,7 +1333,6 @@ fn schedule_declare(root: String, seed: String, id: String, who: String, every: 
         }
         return fail("asked for the schedule, but the organization journaled no answer for " + request_id + " in time");
     }
-    if len(record_remote(root)) == 0 { return fail(no_organism(root)); }
     if !append_as(root, "schedule.requested", request_id, b.result(), who, memory) { return fail("the record refused the append"); }
     let s = sync_record(root, memory);
     if !s.ok { return fail(s.summary); }
@@ -1440,19 +1439,18 @@ fn receipt_verb(root: String, sub: String, digest: String, to: String, purpose: 
             b.string_field("class", class);
             b.string_field("store", "memory");
             b.end_object();
-            let r = rec(root);
-            let a = r.append(JOURNAL, read_at, dna::Row { kind: "receipt.redacted", entity: digest, body: b.result(), author: who }, signing(root), "");
-            // a swap that failed with the head where it was read is a record
-            // that could not be written, not one that moved
-            if !a.ok && a.error == "stale" && r.head(JOURNAL).id != read_at { return fail("receipt redact: the record moved while redacting " + digest + " (a hold may have arrived); nothing was recorded — redact again"); }
-            if !a.ok { return fail("receipt redact: the record refused the redaction of " + digest + " (" + a.error + ")"); }
+            // the redaction is a row of the Ledger once the record routes
+            // the receipt family there (GH #1590), at the point the hold was read
+            let landed = append_as_at(root, read_at, ledger_at, "receipt.redacted", digest, b.result(), who, memory);
+            if landed == "stale_revision" { return fail("receipt redact: the record moved while redacting " + digest + " (a hold may have arrived); nothing was recorded — redact again"); }
+            if len(landed) > 0 { return fail("receipt redact: the record refused the redaction of " + digest + " (" + landed + ")"); }
             let s2 = sync_record(root, memory);
             return answer("receipt " + digest + " redacted (" + class + "; receipt.redacted, by " + who + " under " + policy + "); the body erases it from memory on its next tick\n");
         }
         let hexd = if std::str::starts_with(digest, "sha256:") { digest[7..len(digest)] } else { digest };
         let had = receipt_read(root, hexd).present;
-        if !withheld && !had { return fail("receipt redact: no receipt " + digest + " in this clone or the record"); }
-        // the decision is in the record before the ref goes; a redaction the
+        if !withheld && !had { return fail("receipt redact: no receipt " + digest + " in memory"); }
+        // the decision is in the record before the body goes; a redaction the
         // record refuses removes nothing (one recorded before a failed removal
         // is completed here)
         if !redacted {
@@ -1462,15 +1460,17 @@ fn receipt_verb(root: String, sub: String, digest: String, to: String, purpose: 
             b.string_field("why", why);
             b.string_field("policy", policy);
             b.string_field("class", class);
-            b.string_field("store", if withheld { "none (withheld)" } else { "git" });
+            b.string_field("store", if withheld { "none (withheld)" } else { "memory" });
             b.end_object();
             let landed = append_as_at(root, read_at, ledger_at, "receipt.redacted", digest, b.result(), who, memory);
             if landed == "stale_revision" { return fail("receipt redact: the record moved while redacting " + digest + " (a hold may have arrived); nothing was erased — redact again"); }
             if len(landed) > 0 { return fail("receipt redact: the record refused the redaction of " + digest + " (" + landed + "); nothing was erased"); }
         }
-        if had { let d = rec(root).forget(hexd); }
-        let s2 = sync_record(root, memory);
-        return answer("receipt " + digest + " redacted (" + (if withheld { "withheld, so no body was kept" } else { "its ref removed here and from the remote" }) + "; receipt.redacted, by " + who + " under " + policy + "). The blob stays in each object store until git collects it.\n");
+        // a head may not erase (memory's erase is the spine's): the redaction
+        // is recorded, and the body erases it on its next tick, as a
+        // classified one
+        if had && !rec(root).forget(hexd) { return answer("receipt " + digest + " redacted (receipt.redacted, by " + who + " under " + policy + "); the body erases it from memory on its next tick\n"); }
+        return answer("receipt " + digest + " redacted (" + (if withheld { "withheld, so no body was kept" } else { "its body erased from memory" }) + "; receipt.redacted, by " + who + " under " + policy + ").\n");
     }
     if sub == "show" {
         if len(digest) == 0 || len(purpose) == 0 { return fail("receipt show: `hale dna receipt show <digest> --purpose <purpose> [--as <who>]`"); }
@@ -1551,7 +1551,7 @@ fn application_remove_verb(root: String, who_flag: String) -> Answer {
     if len(no_head) > 0 { return fail(no_head); }
     let app = attached_application(root);
     if len(app) == 0 { return fail("application remove: the record attaches no application (or it was removed)"); }
-    let j = dna::GitJournal { repo: root };
+    let j = dna::RecordJournal { repo: root };
     let mut entity = "";
     let mut i = 0;
     while i < j.revision() {

@@ -13,7 +13,7 @@ const PREPARED: String = "// Exact équipe 🧭 <literal>\r\nmain locus Org {\n 
 
 locus SourceApplyJournal {
     params {
-        inner: dna::GitJournal = dna::GitJournal { };
+        inner: dna::RecordJournal = dna::RecordJournal { };
         stage: String = "";
         entity_prefix: String = "";
         blocked: Bool = false;
@@ -53,13 +53,14 @@ fn source_count(j: dna::Journal, kind: String, id: String) -> Int {
     return count;
 }
 fn source_body(repo: String, j: SourceApplyJournal, request_id: String, owner: String, owners: String) {
+    std::test::assert_eq_str(dna::memory_fixture(repo), "", "the record is born in memory (GH #1590)");
     let body = dna::Dna {
         journal: j, org_source: dna::OrganizationSourceRecord { facts: ops::StrictOrganizationSourceFacts { },
             inputs: source::OrganizationPublicationInputs { root: repo, source_owner: owner },
             apply_inputs: source::OrganizationPublicationInputs { root: repo, source_owner: owner } },
         ownership: dna::Ownership { graph: dna::graph_ownership_of(owners), me: owner, me_env: "" },
-        gateway: dna::MutationGateway { leases: dna::GitLeases { repo: repo }, workspaces: dna::IsolatedWorktrees { repo: repo, root: repo + "/.hale/dna/worktrees" }, repo: dna::LocalGit { repo: repo } },
-        verification: dna::HaleVerification { receipts: dna::GitReceipts { repo: repo }, repo: repo, scratch: repo + "/.hale/dna/verification", seed: "dna/org" },
+        gateway: dna::MutationGateway { leases: dna::MemoryLeases { repo: repo }, workspaces: dna::IsolatedWorktrees { repo: repo, root: repo + "/.hale/dna/worktrees" }, repo: dna::LocalGit { repo: repo } },
+        verification: dna::HaleVerification { receipts: dna::MemoryReceipts { repo: repo }, repo: repo, scratch: repo + "/.hale/dna/verification", seed: "dna/org" },
         review_policy: dna::OrgPolicy { }, board: dna::Board { }
     };
     if len(request_id) > 0 { body.on_organization_source_requested(dna::OrganizationSourceTrigger { request_id: request_id }); }
@@ -75,7 +76,7 @@ main locus App {
         let init = dna::run_tool("git\n-C\n" + repo + "\ninit\n-q\n-b\nmain");
         let added = dna::run_tool("git\n-C\n" + repo + "\nadd\n-A");
         let committed = dna::run_tool("git\n-C\n" + repo + "\n-c\nuser.name=SourceTest\n-c\nuser.email=source@test\ncommit\n-q\n-m\nbase");
-        std::test::assert_eq_int(committed.code, 0, "native source base committed"); return repo;
+        std::test::assert_eq_int(committed.code, 0, "native source base committed"); std::test::assert_eq_str(dna::memory_fixture(repo), "", "the record is born in memory (GH #1590)"); return repo;
     }
     fn request(repo: String, j: SourceApplyJournal, label: String, owner: String) -> dna::OrganizationSourceRequest {
         let genesis = j.append_exact(j.revision(), "application.observed", "org", "{}"); std::test::assert(genesis.ok, "application identity");
@@ -151,15 +152,15 @@ main locus App {
         std::test::assert_eq_int(source_count(j, "expression.observed", id), 0, "source application is not fabricated host health");
     }
     fn apply_recovery(stage: String) {
-        let repo = self.repo(if stage == "" { "apply" } else { stage }, ""); let j = SourceApplyJournal { inner: dna::GitJournal { repo: repo } };
+        let repo = self.repo(if stage == "" { "apply" } else { stage }, ""); let j = SourceApplyJournal { inner: dna::RecordJournal { repo: repo } };
         let r = self.request(repo, j, "prepared-apply", ""); source_body(repo, j, r.request_id, "", ""); let candidate = self.check_proposal(repo, j, r);
         let v = self.decide(j, r, "approval", "bob", "approve", "", true);
         if stage == "" {
             let unconfigured = dna::Dna {
                 journal: j, org_source: dna::OrganizationSourceRecord { facts: ops::StrictOrganizationSourceFacts { },
                     inputs: source::OrganizationPublicationInputs { root: repo } },
-                gateway: dna::MutationGateway { leases: dna::GitLeases { repo: repo }, workspaces: dna::IsolatedWorktrees { repo: repo, root: repo + "/.hale/dna/worktrees" }, repo: dna::LocalGit { repo: repo } },
-                verification: dna::HaleVerification { receipts: dna::GitReceipts { repo: repo }, repo: repo, scratch: repo + "/.hale/dna/verification", seed: "dna/org" },
+                gateway: dna::MutationGateway { leases: dna::MemoryLeases { repo: repo }, workspaces: dna::IsolatedWorktrees { repo: repo, root: repo + "/.hale/dna/worktrees" }, repo: dna::LocalGit { repo: repo } },
+                verification: dna::HaleVerification { receipts: dna::MemoryReceipts { repo: repo }, repo: repo, scratch: repo + "/.hale/dna/verification", seed: "dna/org" },
                 review_policy: dna::OrgPolicy { }, board: dna::Board { }
             };
             std::test::assert_eq_int(source_count(j, "effect.requested", dna::effect_key("", "apply", candidate)), 0, "missing post-apply proof composition blocks fresh source effect");
@@ -168,12 +169,12 @@ main locus App {
         j.stage = stage; j.blocked = len(stage) > 0;
         source_body(repo, j, "", "", "");
         if len(stage) > 0 { std::test::assert(j.faults > 0, "named apply continuation interruption reached"); }
-        let fresh = SourceApplyJournal { inner: dna::GitJournal { repo: repo } }; source_body(repo, fresh, "", "", "");
+        let fresh = SourceApplyJournal { inner: dna::RecordJournal { repo: repo } }; source_body(repo, fresh, "", "", "");
         self.check_applied(repo, fresh, r, v); source_body(repo, fresh, "", "", ""); self.check_applied(repo, fresh, r, v);
         let clean = dna::run_tool("rm\n-rf\n" + repo);
     }
     fn decision_recovery_gate() {
-        let repo = self.repo("decision-read-gap", ""); let j = SourceApplyJournal { inner: dna::GitJournal { repo: repo } };
+        let repo = self.repo("decision-read-gap", ""); let j = SourceApplyJournal { inner: dna::RecordJournal { repo: repo } };
         let r = self.request(repo, j, "decision-read-gap", ""); source_body(repo, j, r.request_id, "", ""); let candidate = self.check_proposal(repo, j, r);
         // Named read/reply fault only: actual accepted decision persists, then
         // the Journal view temporarily cannot supply its incoming command.
@@ -182,17 +183,17 @@ main locus App {
         std::test::assert_eq_int(j.faults, 1, "decision reply fault reached");
         let codec = dna::OrganizationSourceRequestCodec { }; let id = codec.mutation_id(r);
         std::test::assert_eq_int(source_count(j, "review.settled", id), 0, "unverified recovered decision cannot publish settlement");
-        let fresh = SourceApplyJournal { inner: dna::GitJournal { repo: repo } }; source_body(repo, fresh, "", "", "");
+        let fresh = SourceApplyJournal { inner: dna::RecordJournal { repo: repo } }; source_body(repo, fresh, "", "", "");
         self.check_applied(repo, fresh, r, v);
         let clean = dna::run_tool("rm\n-rf\n" + repo);
     }
     fn unknown_apply() {
-        let repo = self.repo("unknown-apply", ""); let j = SourceApplyJournal { inner: dna::GitJournal { repo: repo } };
+        let repo = self.repo("unknown-apply", ""); let j = SourceApplyJournal { inner: dna::RecordJournal { repo: repo } };
         let r = self.request(repo, j, "unknown-apply", ""); source_body(repo, j, r.request_id, "", ""); let candidate = self.check_proposal(repo, j, r);
         let v = self.decide(j, r, "approval", "bob", "approve", "", true);
         j.stage = "effect.requested"; j.entity_prefix = "apply:"; j.lost_reply = true;
         source_body(repo, j, "", "", ""); std::test::assert_eq_int(j.faults, 1, "native apply claim reply lost before external dispatch");
-        let fresh = SourceApplyJournal { inner: dna::GitJournal { repo: repo } }; source_body(repo, fresh, "", "", "");
+        let fresh = SourceApplyJournal { inner: dna::RecordJournal { repo: repo } }; source_body(repo, fresh, "", "", "");
         let codec = dna::OrganizationSourceRequestCodec { }; let id = codec.mutation_id(r); let key = dna::effect_key("", "apply", candidate);
         std::test::assert(dna::effect_status(fresh, key).unknown, "claimed but unproved apply remains unknown after restart");
         std::test::assert_eq_int(source_count(fresh, "effect.requested", key), 1, "unknown apply is never redispatched");
@@ -203,7 +204,7 @@ main locus App {
         let clean = dna::run_tool("rm\n-rf\n" + repo);
     }
     fn competing_destination() {
-        let repo = self.repo("competing", ""); let j = SourceApplyJournal { inner: dna::GitJournal { repo: repo } };
+        let repo = self.repo("competing", ""); let j = SourceApplyJournal { inner: dna::RecordJournal { repo: repo } };
         let r = self.request(repo, j, "competing", ""); source_body(repo, j, r.request_id, "", ""); let candidate = self.check_proposal(repo, j, r);
         let v = self.decide(j, r, "approval", "bob", "approve", "", true);
         std::io::fs::write_file(repo + "/README", "another source commit\n") or discard;
@@ -214,12 +215,12 @@ main locus App {
         std::test::assert_eq_str(source_event(j, "review.settled", id).body, "approve by bob", "Review approval remains separate from apply refusal");
         std::test::assert_eq_str(source_event(j, "mutation.refused", id).body, codec.apply_refused(r, v.command_id, candidate, "stale_subject"), "apply refusal exactly pins source and decision");
         std::test::assert_eq_int(source_count(j, "effect.requested", dna::effect_key("", "apply", candidate)), 0, "competing destination refused before apply claim");
-        let fresh = SourceApplyJournal { inner: dna::GitJournal { repo: repo } }; source_body(repo, fresh, "", "", "");
+        let fresh = SourceApplyJournal { inner: dna::RecordJournal { repo: repo } }; source_body(repo, fresh, "", "", "");
         std::test::assert_eq_int(source_count(fresh, "mutation.refused", id), 1, "refusal remains stable after restart");
         let clean = dna::run_tool("rm\n-rf\n" + repo);
     }
     fn quorum() {
-        let repo = self.repo("quorum-unit", ""); let j = SourceApplyJournal { inner: dna::GitJournal { repo: repo } };
+        let repo = self.repo("quorum-unit", ""); let j = SourceApplyJournal { inner: dna::RecordJournal { repo: repo } };
         let r = self.request(repo, j, "quorum-unit", ""); source_body(repo, j, r.request_id, "", ""); let candidate = self.check_proposal(repo, j, r);
         // This explicit Review unit composition requires two positions of
         // the actual candidate, each held by one reviewer.
@@ -229,7 +230,7 @@ main locus App {
         let codec = dna::OrganizationSourceRequestCodec { }; let id = codec.mutation_id(r);
         std::test::assert_eq_int(source_count(j, "review.settled", id), 0, "a partial approval cannot become Review settlement");
         std::test::assert_eq_int(source_count(j, "mutation.applied", id), 0, "a partial approval cannot apply");
-        let fresh = SourceApplyJournal { inner: dna::GitJournal { repo: repo } }; source_body(repo, fresh, "", "", "");
+        let fresh = SourceApplyJournal { inner: dna::RecordJournal { repo: repo } }; source_body(repo, fresh, "", "", "");
         let last_vote = self.decide(fresh, r, "south-approval", "carol", "approve", "position:org/collections=bob position:board=carol", true);
         std::test::assert(std::json::find_bool_field(dna::review_command_decision(fresh, last_vote.command_id), "settled"), "a fresh native Review restores the prior position's approval");
         source_body(repo, fresh, "", "", ""); self.check_applied(repo, fresh, r, last_vote);
@@ -239,7 +240,7 @@ main locus App {
         let clean = dna::run_tool("rm\n-rf\n" + repo);
     }
     fn declined(verdict: String, tagged: Bool) {
-        let repo = self.repo(if tagged { verdict } else { "untagged" }, ""); let j = SourceApplyJournal { inner: dna::GitJournal { repo: repo } };
+        let repo = self.repo(if tagged { verdict } else { "untagged" }, ""); let j = SourceApplyJournal { inner: dna::RecordJournal { repo: repo } };
         let r = self.request(repo, j, "declined", ""); source_body(repo, j, r.request_id, "", ""); let candidate = self.check_proposal(repo, j, r);
         let v = self.decide(j, r, "decision", "bob", verdict, "", tagged); source_body(repo, j, "", "", "");
         let codec = dna::OrganizationSourceRequestCodec { }; let id = codec.mutation_id(r);

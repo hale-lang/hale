@@ -22,7 +22,7 @@ locus DraftCatalogHost {
         self.calls = self.calls + 1;
         if self.calls == self.change_basis_at { self.source_revision = "loaded-B"; }
         if self.calls == self.change_record_at {
-            let record = dna::GitJournal { repo: self.root };
+            let record = dna::RoutedJournal { record: dna::RecordJournal { repo: self.root }, ledger: dna::MemoryLedger { repo: self.root } };
             let result = record.append(record.revision(), "fixture.concurrent", "org", "other writer");
             std::test::assert(result.ok, "concurrent Record test writer");
         }

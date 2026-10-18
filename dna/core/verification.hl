@@ -5,8 +5,8 @@
 // verify --json`, `hale test`, `hale model diff <base> <candidate>`
 // and, where the project has a recording, `hale replay --feed` — and
 // keeps each result as a CONTENT-ADDRESSED receipt (`Receipts`: a file
-// per digest, or a blob under `refs/dna/receipts/<sha256>` in the
-// repository) and an `evidence.<step>` event on the candidate commit
+// per digest, or a body memory keeps under its sha256) and an
+// `evidence.<step>` event on the candidate commit
 // carrying the exit code and the digest. The Evidence a Review reads
 // is therefore a set of facts with receipts, never a self-report.
 //

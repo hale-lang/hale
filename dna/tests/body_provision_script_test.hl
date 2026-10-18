@@ -63,7 +63,7 @@ main locus App {
         std::test::assert(std::io::fs::file_exists(home + "/dna/prov/.git"), "cloned into the body's home: " + provisioned.stdout);
         std::test::assert(!std::io::fs::file_exists(home + "/$HOME") && !std::io::fs::file_exists(app + "/$HOME"), "not into a directory named `$HOME`");
         // the unit and the env file carry the record's identity (#635)
-        let key = "prov-" + dna::trim_nl(in_dir(app, fake, "git\nrev-list\n--max-parents=0\nrefs/dna/journal").stdout)[0..12];
+        let key = "prov-" + dna::record_scope(app)[0..12];
         let unit = std::io::fs::read_file(home + "/.config/systemd/user/hale-dna-" + key + ".service") or "";
         std::test::assert(std::str::contains(unit, "WorkingDirectory=%h/dna/prov\n"), "the unit runs where the clone is: " + unit);
         std::test::assert(std::str::contains(std::io::fs::read_file(home + "/.config/hale-dna/" + key + ".env") or "", "HALE_DNA_MEMORY_DSN_OWNER=postgres://books:s3cret@db.invalid/books"), "the DSN landed in the body's env file");

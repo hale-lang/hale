@@ -27,7 +27,8 @@ async function prepare(page, service, to = 'blair') {
   await task(page).getByRole('button', { name: 'Review reassignment', exact: true }).click();
   await expect(confirmation(page)).toContainText('alex → ' + to);
 }
-const reassignments = service => service.journal().rows.filter(row => row.kind === 'task.reassigned' && row.entity === service.task);
+// a Task's moves are the Ledger's rows (GH #1590)
+const reassignments = service => service.ledger().filter(row => row.kind === 'task.reassigned' && row.entity === service.task);
 const stored = page => page.evaluate(() => Object.entries(localStorage).filter(([key]) => key.startsWith('face.practice-recovery.v1:')).map(([key, value]) => ({ key, value: JSON.parse(value) })));
 
 test('native reassignment preserves the same open Task and joins exact assignment history', async ({ page, service }, info) => {
@@ -58,7 +59,7 @@ test('native reassignment preserves the same open Task and joins exact assignmen
   expect(current.assignment_digest).not.toBe(service.initial.assignment_digest); expect(current.history).toHaveLength(2);
   expect(current.history[0]).toEqual(service.initial.history[0]); expect(current.history[1]).toMatchObject({ kind: 'task.reassigned', from: 'alex', to: 'blair', by: 'riley' });
   expect(posts).toHaveLength(1); expect(reassignments(service)).toHaveLength(1);
-  expect(service.journal().rows.some(row => row.kind === 'task.done' && row.entity === service.task)).toBe(false);
+  expect(service.ledger().some(row => row.kind === 'task.done' && row.entity === service.task)).toBe(false);
   await task(page).getByRole('button', { name: /^Handoff to alex/ }).click();
   await expect(task(page).getByRole('group', { name: 'Selected assignment' })).toContainText('Handed to alex');
   await page.screenshot({ path: info.outputPath('actual-native-task-reassignment.png') });

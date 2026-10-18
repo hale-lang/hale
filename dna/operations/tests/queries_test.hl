@@ -1,4 +1,4 @@
-// Real Git Record fixtures: identity/version truth, separate proposal/decision/
+// Records kept in memory as fixtures: identity/version truth, separate proposal/decision/
 // activation states, and receipt suppression without a running body or Ledger.
 import "../../core" as dna;
 import ".." as ops;
@@ -51,15 +51,16 @@ fn document_fixture(j: dna::Journal, receipts: dna::Receipts, doc: String) -> St
 }
 
 fn test_queries(repo: String) {
-    let j = dna::GitJournal { repo: repo };
-    let receipts = dna::GitReceipts { repo: repo };
+    std::test::assert_eq_str(dna::memory_fixture(repo), "", "the record is born in memory (GH #1590)");
+    let j = dna::RoutedJournal { record: dna::RecordJournal { repo: repo }, ledger: dna::MemoryLedger { repo: repo } };
+    let receipts = dna::MemoryReceipts { repo: repo };
     let text = "Collect the receipt.\nEvidence: required — café \\ paths --as nobody";
     let digest = propose(j, receipts, "org/finance/receipt — é", text, "");
     let review = dna::knowledge_review_id(digest);
     append(j, "review.settled", review, "approve by riley");
     append(j, "review.reasoned", review, "approved " + text);
     append(j, "review.refused", review, "old verdict mentioned " + text);
-    let q = ops::Queries { j: dna::GitJournal { repo: repo }, receipts: dna::GitReceipts { repo: repo } };
+    let q = ops::Queries { j: dna::RecordJournal { repo: repo }, receipts: dna::MemoryReceipts { repo: repo }, location: repo };
     let pinned = q.head();
     let revision = q.revision();
     let before = q.practice_of(digest);
@@ -83,7 +84,7 @@ fn test_queries(repo: String) {
     std::test::assert_eq_str(q.head(), pinned, "query keeps loaded head");
     std::test::assert_eq_int(q.revision(), revision, "query keeps loaded rows");
     std::test::assert_eq_str(q.practice_of(digest).state, "pending", "later facts never leak into pinned view");
-    let current = ops::Queries { j: dna::GitJournal { repo: repo }, receipts: dna::GitReceipts { repo: repo } };
+    let current = ops::Queries { j: dna::RecordJournal { repo: repo }, receipts: dna::MemoryReceipts { repo: repo }, location: repo };
     std::test::assert_eq_str(current.practice_of(digest).state, "ratified", "later decline does not erase prior ratification");
     append(j, "knowledge.retired", digest, "{}");
     let replacement = propose(j, receipts, "org/finance/receipt — é", "new policy", digest);
@@ -91,7 +92,7 @@ fn test_queries(repo: String) {
     append(j, "knowledge.refused", replacement, "the predecessor was already retired");
     let pending_seq = j.revision();
     append(j, "practice.requested", "p-unheard", "{\"name\":\"still a request\",\"by\":\"mara\"}");
-    let states = ops::Queries { j: dna::GitJournal { repo: repo }, receipts: dna::GitReceipts { repo: repo } };
+    let states = ops::Queries { j: dna::RecordJournal { repo: repo }, receipts: dna::MemoryReceipts { repo: repo }, location: repo };
     std::test::assert_eq_int(states.practice_count(), 2, "requests are not fabricated practices");
     std::test::assert_eq_int(states.review_count(), 2, "exact review catalog");
     std::test::assert_eq_str(states.practice_at(0).state, "retired", "retired history remains");
@@ -104,7 +105,7 @@ fn test_queries(repo: String) {
     append(j, "receipt.redacted", replacement, "{}");
     // Blobs deliberately remain: row policy, not local blob existence, wins.
     std::test::assert(len(receipts.read(ops::raw_digest(digest))) > 0, "stale protected blob exists");
-    let hidden = ops::Queries { j: dna::GitJournal { repo: repo }, receipts: dna::GitReceipts { repo: repo } };
+    let hidden = ops::Queries { j: dna::RecordJournal { repo: repo }, receipts: dna::MemoryReceipts { repo: repo }, location: repo };
     std::test::assert_eq_str(hidden.practice_of(digest).text_status, "protected", "classified body blocked");
     std::test::assert_eq_str(hidden.practice_of(replacement).text_status, "redacted", "redacted body blocked");
     std::test::assert_eq_str(hidden.practice_of(digest).text, "", "no body leak");
@@ -121,7 +122,7 @@ fn test_queries(repo: String) {
     // A legacy knowledge Review may identify its subject without the newer
     // knowledge_digest link. It must still obey subject receipt policy.
     append(j, "review.requested", "review:legacy", "{\"subject_digest\":\"" + digest + "\",\"question\":\"secret copied into question\",\"required_authority\":\"board\"}");
-    let documents = ops::Queries { j: dna::GitJournal { repo: repo }, receipts: dna::GitReceipts { repo: repo } };
+    let documents = ops::Queries { j: dna::RecordJournal { repo: repo }, receipts: dna::MemoryReceipts { repo: repo }, location: repo };
     std::test::assert_eq_str(documents.practice_of(missing).text_status, "invalid_document", "missing text is not an available empty body");
     std::test::assert_eq_str(documents.practice_of(malformed).text_status, "invalid_document", "valid hash does not bless malformed JSON");
     std::test::assert_eq_str(documents.practice_of(wrong_type).text_status, "invalid_document", "text must be a string");
@@ -130,7 +131,7 @@ fn test_queries(repo: String) {
     std::test::assert_eq_str(documents.review_of("legacy").text_status, "protected", "legacy status is explicit");
     append(j, "review.requested", "review:inconsistent", "{\"subject_digest\":\"" + replacement + "\",\"knowledge_digest\":\"" + design + "\",\"question\":\"redacted subject described by visible knowledge\"}");
     append(j, "review.settled", "inconsistent", "approve by private detail");
-    let inconsistent = ops::Queries { j: dna::GitJournal { repo: repo }, receipts: dna::GitReceipts { repo: repo } };
+    let inconsistent = ops::Queries { j: dna::RecordJournal { repo: repo }, receipts: dna::MemoryReceipts { repo: repo }, location: repo };
     std::test::assert_eq_str(inconsistent.review_of("inconsistent").text_status, "invalid_document", "mismatched knowledge and subject do not authorize text");
     std::test::assert_eq_str(inconsistent.review_of("inconsistent").question, "", "visible knowledge cannot disclose a different subject");
     std::test::assert_eq_str(inconsistent.review_of("inconsistent").settled, "", "inconsistent linkage also suppresses raw settlement");
@@ -142,7 +143,7 @@ fn test_queries(repo: String) {
     append(j, "receipt.classified", wrong_class, "{\"class\":42}");
     append(j, "receipt.filed", unknown_class, "{\"class\":\"unknown\"}");
     append(j, "receipt.withheld", withheld, "{\"class\":\"internal\"}");
-    let uncertain = ops::Queries { j: dna::GitJournal { repo: repo }, receipts: dna::GitReceipts { repo: repo } };
+    let uncertain = ops::Queries { j: dna::RecordJournal { repo: repo }, receipts: dna::MemoryReceipts { repo: repo }, location: repo };
     std::test::assert_eq_str(uncertain.practice_of(no_class).text_status, "source_unavailable", "missing classification cannot authorize body");
     std::test::assert_eq_str(uncertain.practice_of(wrong_class).text_status, "source_unavailable", "nonstring classification cannot authorize body");
     std::test::assert_eq_str(uncertain.practice_of(unknown_class).text_status, "source_unavailable", "unknown filed class cannot authorize body");
@@ -151,25 +152,28 @@ fn test_queries(repo: String) {
     let plain = propose(j, receipts, "policy/plain", "unchanged local body", "");
     append(j, "review.requested", "review:unlinked", "{\"subject_digest\":\"unlinked-subject\",\"question\":\"unlinked private display\"}");
     append(j, "review.settled", "unlinked", "approve by private display text");
-    let catalog = ops::Queries { j: dna::GitJournal { repo: repo } };
+    let catalog = ops::Queries { j: dna::RecordJournal { repo: repo }, location: repo };
     let catalog_count = catalog.practice_count();
     append(j, "ledger.adopted", "ledger", "{\"routing\":1}");
-    let adopted = ops::Queries { j: dna::GitJournal { repo: repo }, receipts: dna::GitReceipts { repo: repo } };
+    // a reader of the record alone (no location to reach its Ledger) cannot
+    // prove a receipt's visibility, and fails closed
+    let adopted = ops::Queries { j: dna::RecordJournal { repo: repo }, receipts: dna::MemoryReceipts { repo: repo } };
     std::test::assert_eq_str(adopted.practice_of(plain).text_status, "source_unavailable", "Record cannot prove Ledger receipt visibility");
     std::test::assert_eq_str(adopted.review_of(dna::knowledge_review_id(plain)).question, "", "adopted question also withheld");
     std::test::assert_eq_int(adopted.practice_count(), catalog_count, "safe catalog remains available");
     std::test::assert_eq_str(adopted.review_of("unlinked").settled, "", "adoption suppresses raw settlement without knowledge linkage");
     std::test::assert_eq_str(adopted.review_of("unlinked").text_status, "source_unavailable", "unlinked subject visibility is unknown after adoption");
     std::test::assert_eq_str(adopted.review_of("unlinked").outcome, "approve", "safe typed decision survives suppression");
-    let final_head = j.head();
+    // the record's own head: two memories read as one have no order between them
+    let final_head = dna::RecordJournal { repo: repo }.head();
     let final_count = j.revision();
     let unused = adopted.practice_at(0);
     let unused_review = adopted.review_at(1);
-    let loaded = dna::GitJournal { repo: repo };
-    std::test::assert_eq_str(loaded.head(), final_head, "reads append no facts");
+    let loaded = dna::RoutedJournal { record: dna::RecordJournal { repo: repo }, ledger: dna::MemoryLedger { repo: repo } };
+    std::test::assert_eq_str(dna::RecordJournal { repo: repo }.head(), final_head, "reads append no facts");
     std::test::assert_eq_int(loaded.revision(), final_count, "reads append no disclosure events");
     append(j, "ledger.abandoned", "ledger", "{}");
-    let abandoned = ops::Queries { j: dna::GitJournal { repo: repo }, receipts: dna::GitReceipts { repo: repo } };
+    let abandoned = ops::Queries { j: dna::RecordJournal { repo: repo }, receipts: dna::MemoryReceipts { repo: repo }, location: repo };
     std::test::assert(len(receipts.read(ops::raw_digest(plain))) > 0, "stale body persists after adoption and abandonment");
     std::test::assert_eq_str(abandoned.practice_of(plain).text_status, "source_unavailable", "abandonment cannot reconstruct dropped Ledger restrictions");
     std::test::assert_eq_str(abandoned.practice_of(plain).text, "", "abandonment never re-exposes stale body");

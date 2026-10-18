@@ -8,7 +8,7 @@ import "../../operations" as ops;
 locus TaskApiCases {
     params { }
     fn request(root: String, query: String) -> std::http::Response {
-        let record = dna::GitRecord { repo: root }; let head = api::Api { root: root, local_name: "riley" };
+        let record = dna::MemoryRecord { repo: root }; let head = api::Api { root: root, local_name: "riley" };
         return head.handle(std::http::Request { method: "GET", path: api::API_PREFIX + "/" + record.identity() + "/dna/tasks" + query });
     }
     fn event(j: dna::Journal, kind: String, id: String) -> dna::Event {
@@ -25,9 +25,10 @@ locus TaskApiCases {
         let w = api::CommandWire { }; return std::json::array_first(w.raw(w.raw(response.body, "data"), "items")).element;
     }
     fn run_cases(root: String, evidence: String) {
-        let record = dna::GitRecord { repo: root }; let w = api::CommandWire { };
+        std::test::assert_eq_str(dna::memory_fixture(root), "", "the record is born in memory (GH #1590)");
+        let record = dna::MemoryRecord { repo: root }; let w = api::CommandWire { };
         let fixture = std::io::fs::read_file(evidence + "/task-fixture.json") or raise;
-        let journal = dna::GitJournal { repo: root };
+        let journal = dna::RoutedJournal { record: dna::RecordJournal { repo: root }, ledger: dna::MemoryLedger { repo: root } };
         let first_id = w.text(fixture, "first_id"); let handoff = self.event(journal, "task.handed", first_id);
         let second_id = w.text(fixture, "second_id"); let second_handoff = self.event(journal, "task.handed", second_id);
         std::test::assert(handoff.digest == w.text(fixture, "first_handoff") && second_handoff.digest == w.text(fixture, "second_handoff"), "real seed handoff identity retained");

@@ -14,8 +14,9 @@ export const SURFACE_DIGEST = "fnv1a64:67bff1470a7912dc";
 //
 // Depends on `fetch` and `WebSocket` and nothing else. An endpoint is
 // `http://host:port` for a member's call and `ws://host:port` (a hub) for a
-// stream; a socket is not spoken (`fetch` has none). A call sends the
-// surface's digest in `Hale-Surface-Digest` and answers one of four outcomes;
+// stream; a socket is not spoken (`fetch` has none). A call sends its
+// member's digest in `Hale-Surface-Digest` (which a surface that has since
+// gained members still admits) and answers one of four outcomes;
 // the fifth, a connection that never answered, is thrown as a TransportError,
 // because a request that may have been accepted is not a refusal.
 
@@ -87,13 +88,14 @@ function apiRefusal(body: unknown): Refusal {
 async function apiCall<T, E>(
   opts: ClientOptions,
   member: string,
+  digest: string,
   payload: string,
   decodeValue: (json: unknown) => T,
   decodeError: (json: unknown) => E,
 ): __Promise<Outcome<T, E>> {
   const headers: __Record<string, string> = {
     "Content-Type": "application/json",
-    "Hale-Surface-Digest": SURFACE_DIGEST,
+    "Hale-Surface-Digest": digest,
   };
   if (opts.bearer) headers["Authorization"] = "Bearer " + opts.bearer;
   let res: __Response;
@@ -112,6 +114,8 @@ async function apiCall<T, E>(
   }
   if (res.status === 200) return { kind: "result", value: decodeValue(body) };
   if (res.status === 422) return { kind: "handler_error", error: decodeError(body) };
+  // a classed handler error names its class (spec/api.md § Error classes)
+  if (res.headers.get("Hale-Error-Class") !== null) return { kind: "handler_error", error: decodeError(body) };
   const refusal = apiRefusal(body);
   if ((body as { refusal?: unknown } | null)?.refusal === undefined) {
     throw new TransportError("the endpoint answered " + res.status + " with no outcome: " + text);
@@ -384,35 +388,35 @@ export function decode_TodoRef(json: unknown): TodoRef {
 export type TodosAddOutcome = Outcome<TodoItem, TodoError>;
 
 export function todosAdd(opts: ClientOptions, request: AddTodo): __Promise<TodosAddOutcome> {
-  return apiCall(opts, "Todos::add", JSON.stringify(encode_AddTodo(request)), (json) => decode_TodoItem(json), (json) => decode_TodoError(json));
+  return apiCall(opts, "Todos::add", "fnv1a64:515ccc57c5a93bef", JSON.stringify(encode_AddTodo(request)), (json) => decode_TodoItem(json), (json) => decode_TodoError(json));
 }
 
 /** Todos::complete, requires editor */
 export type TodosCompleteOutcome = Outcome<TodoItem, TodoError>;
 
 export function todosComplete(opts: ClientOptions, request: TodoRef): __Promise<TodosCompleteOutcome> {
-  return apiCall(opts, "Todos::complete", JSON.stringify(encode_TodoRef(request)), (json) => decode_TodoItem(json), (json) => decode_TodoError(json));
+  return apiCall(opts, "Todos::complete", "fnv1a64:854dd8235089bd2e", JSON.stringify(encode_TodoRef(request)), (json) => decode_TodoItem(json), (json) => decode_TodoError(json));
 }
 
 /** Todos::list, requires reader */
 export type TodosListOutcome = Outcome<TodoList, never>;
 
 export function todosList(opts: ClientOptions, request: ListQuery): __Promise<TodosListOutcome> {
-  return apiCall(opts, "Todos::list", JSON.stringify(encode_ListQuery(request)), (json) => decode_TodoList(json), () => { throw new TransportError("the member has no handler error, and one came"); });
+  return apiCall(opts, "Todos::list", "fnv1a64:82c6716ad0feb4b3", JSON.stringify(encode_ListQuery(request)), (json) => decode_TodoList(json), () => { throw new TransportError("the member has no handler error, and one came"); });
 }
 
 /** Todos::overdue, requires reader */
 export type TodosOverdueOutcome = Outcome<TodoList, never>;
 
 export function todosOverdue(opts: ClientOptions, request: Nothing): __Promise<TodosOverdueOutcome> {
-  return apiCall(opts, "Todos::overdue", JSON.stringify(encode_Nothing(request)), (json) => decode_TodoList(json), () => { throw new TransportError("the member has no handler error, and one came"); });
+  return apiCall(opts, "Todos::overdue", "fnv1a64:2b90d1bb52053786", JSON.stringify(encode_Nothing(request)), (json) => decode_TodoList(json), () => { throw new TransportError("the member has no handler error, and one came"); });
 }
 
 /** Todos::remove, requires editor */
 export type TodosRemoveOutcome = Outcome<TodoItem, TodoError>;
 
 export function todosRemove(opts: ClientOptions, request: TodoRef): __Promise<TodosRemoveOutcome> {
-  return apiCall(opts, "Todos::remove", JSON.stringify(encode_TodoRef(request)), (json) => decode_TodoItem(json), (json) => decode_TodoError(json));
+  return apiCall(opts, "Todos::remove", "fnv1a64:b9f1c9530ae462bb", JSON.stringify(encode_TodoRef(request)), (json) => decode_TodoItem(json), (json) => decode_TodoError(json));
 }
 
 /** The stream TodoChanged of the hub stream (stream digest fnv1a64:1768fa8b8fd4c428), requires reader: `subscribed`, then

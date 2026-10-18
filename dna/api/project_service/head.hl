@@ -222,10 +222,11 @@ fn canonical_dir(path: String) -> String {
 fn attach_project(cfg: HeadConfig, root_in: String, command_id: String) -> AttachResult {
     let root = canonical_dir(root_in);
     if len(root) == 0 { return AttachResult { refused: "path_invalid", reason: "root must be an existing absolute directory" }; }
-    let record = dna::GitRecord { repo: root };
+    let record = dna::MemoryRecord { repo: root };
     let top = record.root();
     if len(top) == 0 || canonical_dir(top) != root { return AttachResult { refused: "not_a_toplevel", reason: "root must be the top level of a Git worktree, not a subdirectory" }; }
-    if !record.git_ok("rev-parse\n--verify\nrefs/dna/journal^{commit}") { return AttachResult { refused: "no_record", reason: "the project has no DNA Record; create or initialize it first" }; }
+    // GH #1590: the record is memory's; the genome names it by its pin
+    if len(dna::record_scope(root)) == 0 { return AttachResult { refused: "no_record", reason: "the project has no DNA Record (its hale.toml pins none); create or initialize it first" }; }
     if dna::run_tool("test\n-d\n" + root + "/dna").code != 0 { return AttachResult { refused: "no_seed", reason: "the project has no dna/ seed" }; }
     let principal = record.setting("principal");
     if cfg.principal_mode == "local" && len(principal) > 0 && principal != "local" { return AttachResult { refused: "principal_unsupported", reason: "this head runs a fixture's trusted-local session; dna.principal is " + principal }; }
@@ -440,7 +441,7 @@ fn receipts_json(cfg: HeadConfig, application_id: String, n: Int, full: Bool) ->
 
 // One `GET /head/projects` item; `detail` adds the `?id=` fields.
 fn project_json(cfg: HeadConfig, ctx: HeadContext, r: Registered, detail: Bool) -> String {
-    let record = dna::GitRecord { repo: r.root };
+    let record = dna::MemoryRecord { repo: r.root };
     // `record` is null for a head there is none of to show, absent or
     // unreadable alike: the face reads null as "record unread", and
     // nothing is decided on this listing
@@ -764,7 +765,7 @@ locus Head {
         if len(ctx.active_root) > 0 {
             // a head that could not be read would stand as "no record
             // before" and every row would read as this command's evidence
-            let record = dna::GitRecord { repo: ctx.active_root };
+            let record = dna::MemoryRecord { repo: ctx.active_root };
             let read = record.head("journal");
             if !read.ok { return self.command_error("record_unavailable"); }
             head_before = read.id;
@@ -904,7 +905,7 @@ locus Head {
                 // a service, and only a service: a subject the record maps
                 // as a person signs in, so a token that can't be told from
                 // an ID token never acts as that person without a session
-                let record = dna::GitRecord { repo: ctx.active_root };
+                let record = dna::MemoryRecord { repo: ctx.active_root };
                 let members = record.git("config\n--local\n--get-all\ndna.oidc.member");
                 if len(dna::member_of(if members.code == 0 { members.stdout } else { "" }, subject)) > 0 { return self.error(403, "forbidden", "subject `" + subject + "` is a person's (`dna.oidc.member`): a person signs in at /auth/login, and a bearer is a service's", false); }
                 let services = record.git("config\n--local\n--get-all\ndna.oidc.service");

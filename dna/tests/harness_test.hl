@@ -135,13 +135,14 @@ main locus App {
         let masked = bwrap.available();
 
         // ---- 1. a Mutation through the harness
+        std::test::assert_eq_str(dna::memory_fixture(repo), "", "the record is born in memory (GH #1590)");
         self.dna = dna::Dna {
-            journal: dna::GitJournal { repo: repo },
+            journal: dna::RoutedJournal { record: dna::RecordJournal { repo: repo }, ledger: dna::MemoryLedger { repo: repo, dsn_env: dna::fixture_spine(repo) } },
             gateway: dna::MutationGateway {
                 workspaces: dna::IsolatedWorktrees { repo: repo, root: repo + "/.hale/dna/worktrees", base_exec_digest: "exec:base" },
                 repo: dna::LocalGit { repo: repo }
             },
-            verification: dna::HaleVerification { hale_bin: toolchain(), receipts: dna::GitReceipts { repo: repo }, scratch: repo + "/.hale/dna/scratch", repo: repo, seed: "app" },
+            verification: dna::HaleVerification { hale_bin: toolchain(), receipts: dna::MemoryReceipts { repo: repo }, scratch: repo + "/.hale/dna/scratch", repo: repo, seed: "app" },
             editor: dna::SourceEditor {
                 name: "editor",
                 models: dna::ModelRouter {
@@ -185,12 +186,12 @@ main locus App {
 
         // ---- 2. a harness that moves the genome fails the attempt by the record
         self.again = dna::Dna {
-            journal: dna::GitJournal { repo: repo },
+            journal: dna::RoutedJournal { record: dna::RecordJournal { repo: repo }, ledger: dna::MemoryLedger { repo: repo, dsn_env: dna::fixture_spine(repo) } },
             gateway: dna::MutationGateway {
                 workspaces: dna::IsolatedWorktrees { repo: repo, root: repo + "/.hale/dna/worktrees", base_exec_digest: "exec:base" },
                 repo: dna::LocalGit { repo: repo }
             },
-            verification: dna::HaleVerification { hale_bin: toolchain(), receipts: dna::GitReceipts { repo: repo }, scratch: repo + "/.hale/dna/scratch", repo: repo, seed: "app" },
+            verification: dna::HaleVerification { hale_bin: toolchain(), receipts: dna::MemoryReceipts { repo: repo }, scratch: repo + "/.hale/dna/scratch", repo: repo, seed: "app" },
             editor: dna::SourceEditor {
                 name: "editor",
                 models: dna::ModelRouter {
@@ -274,12 +275,12 @@ main locus App {
         std::io::fs::write_file(scratch + "/builder", builder_script()) or discard;
         let cb = sh("chmod\n+x\n" + scratch + "/builder");
         self.builder = dna::Dna {
-            journal: dna::GitJournal { repo: repo },
+            journal: dna::RoutedJournal { record: dna::RecordJournal { repo: repo }, ledger: dna::MemoryLedger { repo: repo, dsn_env: dna::fixture_spine(repo) } },
             gateway: dna::MutationGateway {
                 workspaces: dna::IsolatedWorktrees { repo: repo, root: repo + "/.hale/dna/worktrees", base_exec_digest: "exec:base" },
                 repo: dna::LocalGit { repo: repo }
             },
-            verification: dna::HaleVerification { hale_bin: toolchain(), receipts: dna::GitReceipts { repo: repo }, scratch: repo + "/.hale/dna/scratch", repo: repo, seed: "app" },
+            verification: dna::HaleVerification { hale_bin: toolchain(), receipts: dna::MemoryReceipts { repo: repo }, scratch: repo + "/.hale/dna/scratch", repo: repo, seed: "app" },
             editor: dna::SourceEditor {
                 name: "editor",
                 models: dna::ModelRouter {

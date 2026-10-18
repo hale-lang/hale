@@ -23,9 +23,12 @@ fn git(args: &[&str], cwd: &Path) -> String {
     String::from_utf8_lossy(&out.stdout).trim().to_string()
 }
 
+/// The record's rows, then its Ledger's (GH #1590: an instance's rows are
+/// the Ledger's), read with this test's vault. Each row's `seq` is its
+/// own memory's: a record row and a Ledger row have no order between them.
 fn journal(app: &Path) -> Vec<(u64, String, String, String)> {
     let _s = trace::Span::new("hale", "dna record-rows");
-    record::text(app)
+    (record::text_in(vault::hale(), app) + &record::ledger_in(vault::hale(), app))
         .lines()
         .filter(|l| !l.trim().is_empty())
         .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
@@ -72,13 +75,14 @@ const DRIVER: &str = r#"import "vendor/dna" as dna;
 fn main() {
     let cur = std::io::fs::read_file("main.hl") or "";
     let core = dna::Dna {
-        journal: dna::GitJournal { repo: "." },
+        // the record and its Ledger as the owner writes them (GH #1590)
+        journal: dna::RoutedJournal { record: dna::RecordJournal { repo: ".", dsn_env: "HALE_DNA_MEMORY_DSN_OWNER" }, ledger: dna::MemoryLedger { repo: ".", dsn_env: "HALE_DNA_MEMORY_DSN_OWNER" } },
         gateway: dna::MutationGateway {
-            leases: dna::GitLeases { repo: "." },
+            leases: dna::MemoryLeases { repo: ".", dsn_env: "HALE_DNA_MEMORY_DSN_OWNER" },
             workspaces: dna::IsolatedWorktrees { repo: ".", root: ".hale/dna/worktrees" },
             repo: dna::LocalGit { repo: "." }
         },
-        verification: dna::HaleVerification { receipts: dna::GitReceipts { repo: "." }, scratch: ".hale/dna/scratch", repo: ".", seed: "." },
+        verification: dna::HaleVerification { receipts: dna::MemoryReceipts { repo: ".", dsn_env: "HALE_DNA_MEMORY_DSN_OWNER" }, scratch: ".hale/dna/scratch", repo: ".", seed: "." },
         editor: dna::SourceEditor {
             name: "editor",
             models: dna::ModelRouter {
@@ -132,6 +136,10 @@ impl Fleet {
             .env("XDG_CACHE_HOME", std::env::temp_dir().join("hale-tests-iris-cache"))
             .stdout(Stdio::null())
             .stderr(log);
+        // GH #1590: `hale dna run` takes the spine's DSN from its environment
+        if args.starts_with(&["dna", "run"]) {
+            c.env("HALE_DNA_MEMORY_DSN_SPINE", record::spine(vault::hale(), cwd));
+        }
         for (k, v) in env {
             c.env(k, v);
         }
@@ -229,10 +237,14 @@ fn bring_up(tag: &str) -> Fleet {
     git(&["add", "-A"], &app);
     git(&["commit", "-q", "-m", "the app and its fleet"], &app);
     git(&["remote", "add", "origin", &f.bare.to_string_lossy()], &app);
-    git(&["push", "-q", "origin", "main", "refs/dna/*:refs/dna/*"], &app);
+    git(&["push", "-q", "origin", "main"], &app);
     f.base = git(&["rev-parse", "HEAD"], &app);
     for e in &f.edges {
         git(&["clone", "-q", &f.bare.to_string_lossy(), &e.to_string_lossy()], &d);
+        // the node reaches the record in memory as the app's clone does, by
+        // the head's DSN the clone keeps (GH #1590)
+        std::fs::create_dir_all(e.join(".hale/dna")).unwrap();
+        std::fs::copy(app.join(".hale/dna/memory.env"), e.join(".hale/dna/memory.env")).expect("the app keeps the head's DSN");
     }
     // one Mutation up to its Review, offline
     std::fs::create_dir_all(app.join("mutate")).unwrap();
@@ -293,7 +305,8 @@ fn an_approval_redeploys_both_instances_and_the_window_retains() {
     let deploy = rows.iter().find(|(_, k, e, b)| k == "fleet.deploy" && e == "m1" && reason_of(b) == "apply").expect("the apply's deploy row");
     let db: serde_json::Value = serde_json::from_str(&deploy.3).unwrap();
     assert!(db["revision"] == cand.as_str() && db["touched"] == serde_json::json!(["api-0", "api-1"]), "{}", deploy.3);
-    let ups: Vec<&(u64, String, String, String)> = rows.iter().filter(|(q, k, _, b)| *q > deploy.0 && k == "instance.up" && b.contains(&cand)).collect();
+    // an instance is up at the candidate only after the candidate's deploy
+    let ups: Vec<&(u64, String, String, String)> = rows.iter().filter(|(_, k, _, b)| k == "instance.up" && b.contains(&cand)).collect();
     assert_eq!(ups.len(), 2, "both instances came up at the candidate:\n{dump}");
     let hash = |b: &str| serde_json::from_str::<serde_json::Value>(b).unwrap()["model_hash"].as_str().unwrap().to_string();
     assert_eq!(hash(&ups[0].3), hash(&ups[1].3), "both report the same model hash");
@@ -317,6 +330,9 @@ fn an_instance_killed_inside_the_window_rolls_the_fleet_back_by_name() {
     let app = f.app.clone();
     let cand = f.cand.clone();
     let base = f.base.clone();
+    // the base's ups so far (one per instance): the rollback's come after
+    let base_ups = |rows: &[(u64, String, String, String)], who: &str| rows.iter().filter(|(_, k, e, b)| k == "instance.up" && (who.is_empty() || e == who) && b.contains(&base)).count();
+    let before = base_ups(&journal(&app), "");
     let (ok, out) = f.hale(&["dna", "review", "m1", "approve", "--as", "riley"], &app);
     if !ok {
         f.stop();
@@ -335,11 +351,10 @@ fn an_instance_killed_inside_the_window_rolls_the_fleet_back_by_name() {
     // the rollback deploy brings both back to the base, after the row
     let is_rollback = |b: &str| serde_json::from_str::<serde_json::Value>(b).ok().map(|v| v["reason"] == "rollback").unwrap_or(false);
     let rolled = rolled && wait_row(&app, "fleet.deploy m1 rollback", 60, |(_, k, e, b)| k == "fleet.deploy" && e == "m1" && is_rollback(b));
-    let rb_seq = journal(&app).iter().find(|(_, k, e, b)| k == "fleet.deploy" && e == "m1" && is_rollback(b)).map(|r| r.0).unwrap_or(u64::MAX);
-    let b = base.clone();
+    // each instance's second up at the base is the rollback's
     let back = rolled
-        && wait_row(&app, "instance.up api-0 back at the base", 120, |(q, k, e, body)| *q > rb_seq && k == "instance.up" && e == "api-0" && body.contains(&b))
-        && wait_row(&app, "instance.up api-1 back at the base", 120, |(q, k, e, body)| *q > rb_seq && k == "instance.up" && e == "api-1" && body.contains(&b));
+        && trace::wait_until("instance.up api-0 back at the base", Duration::from_secs(120), Duration::from_millis(300), || base_ups(&journal(&app), "api-0") >= 2)
+        && trace::wait_until("instance.up api-1 back at the base", Duration::from_secs(120), Duration::from_millis(300), || base_ups(&journal(&app), "api-1") >= 2);
     let rows = journal(&app);
     let dump = dump(&app);
     f.stop();
@@ -351,8 +366,8 @@ fn an_instance_killed_inside_the_window_rolls_the_fleet_back_by_name() {
     let rb = rows.iter().find(|(_, k, e, b)| k == "fleet.deploy" && e == "m1" && is_rollback(b)).expect("the rollback's deploy row");
     let rbb: serde_json::Value = serde_json::from_str(&rb.3).unwrap();
     assert!(rbb["revision"] == base.as_str() && rbb["touched"] == serde_json::json!(["api-0", "api-1"]), "{}", rb.3);
-    let ups_base_after: Vec<_> = rows.iter().filter(|(q, k, _, b)| *q > rb.0 && k == "instance.up" && b.contains(&base)).collect();
-    assert!(back && ups_base_after.len() == 2, "both instances came back at the base after the rollback:\n{dump}");
+    let ups_base_after = base_ups(&rows, "") - before;
+    assert!(back && ups_base_after == 2, "both instances came back at the base after the rollback:\n{dump}");
     assert_eq!(git(&["rev-parse", "HEAD"], &f.edges[1]), base, "edge-2 is back at the base");
     assert!(rows.iter().any(|(_, k, e, _)| k == "mutation.retained" && e == "m1") == false, "nothing was retained:\n{dump}");
     let _ = std::fs::remove_dir_all(&f.d);

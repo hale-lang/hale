@@ -29,7 +29,9 @@ fn dna_cli(app: String, args: String) -> String {
 
 // The record's lines that carry every one of `needles` (tab-separated).
 fn record_lines_with(app: String, needles: String) -> Int {
-    let text = in_dir(app, toolchain() + "\ndna\nrecord-rows").stdout + "\n";
+    // the record's rows and its Ledger's (GH #1590: a receipt's row is
+    // the Ledger's)
+    let text = in_dir(app, toolchain() + "\ndna\nrecord-rows").stdout + "\n" + in_dir(app, toolchain() + "\ndna\nledger\nrows").stdout + "\n";
     let tabbed = needles + "\t";
     let mut n = 0;
     let mut rest = text;
@@ -53,8 +55,8 @@ fn record_lines_with(app: String, needles: String) -> Int {
 main locus App {
     params {
         // pointed at the project in run(); never at the working directory
-        j: dna::GitJournal = dna::GitJournal { repo: "/nonexistent/dna-decide" };
-        r: dna::GitReceipts = dna::GitReceipts { repo: "/nonexistent/dna-decide" };
+        j: dna::RoutedJournal = dna::RoutedJournal { };
+        r: dna::MemoryReceipts = dna::MemoryReceipts { repo: "/nonexistent/dna-decide" };
     }
     // A practice proposed and ratified, as the record keeps one.
     fn practice(name: String, text: String) -> String {
@@ -103,8 +105,11 @@ main locus App {
         let app = scratch + "/books";
         let u1 = in_dir(app, "git\nconfig\nuser.name\nriley");
         let u2 = in_dir(app, "git\nconfig\nuser.email\nriley@local");
-        self.j = dna::GitJournal { repo: app };
-        self.r = dna::GitReceipts { repo: app };
+        std::test::assert_eq_str(dna::memory_fixture(app), "", "the record is born in memory (GH #1590)");
+        // the record and its Ledger as one (GH #1590): a Task's rows are
+        // the Ledger's
+        self.j = dna::RoutedJournal { record: dna::RecordJournal { repo: app }, ledger: dna::MemoryLedger { repo: app, dsn_env: dna::fixture_spine(app) } };
+        self.r = dna::MemoryReceipts { repo: app };
 
         let allow = self.practice("acceptance/expense-approval", "A client's approval of an expense may be reported by the Task's assignee, with the mail as evidence.\nreported decisions: allowed");
         let native = self.practice("acceptance/contract-signature", "A contract is signed by the person who holds it, in their own name.\nreported decisions: native decision required");
@@ -120,7 +125,7 @@ main locus App {
         let digest = filed[at..(at + 71)];
         std::test::assert(dna::digest_well_formed(digest), "a digest: " + digest);
         std::test::assert_eq_int(record_lines_with(app, "\"kind\": \"receipt.filed\"\t\"entity\": \"" + digest + "\"\t\"author\": \"mara\""), 1, "one receipt.filed row, in mara's name");
-        std::test::assert_eq_int(in_dir(app, "git\nrev-parse\n-q\n--verify\nrefs/dna/receipts/" + digest[7..71]).code, 0, "the body under the record's receipts");
+        std::test::assert(len(dna::MemoryReceipts { repo: app }.read(digest[7..71])) > 0, "the body among the record's receipts, in memory");
         let empty = dna_cli(app, "receipt\nfile\n" + scratch + "/no-such-mail.txt");
         std::test::assert(std::str::contains(empty, "nothing to file at"), "a missing file is refused: " + empty);
 

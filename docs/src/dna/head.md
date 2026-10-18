@@ -38,12 +38,13 @@ later one starts them at once, until the toolchain changes. It prints the
 face's loopback URL. With no project it starts detached, and the
 browser's Projects workspace creates, initializes or attaches one.
 
-With a project, the head reads Knowledge from memory under the record's
-head role. `hale dna head` derives that DSN as `hale dna memory migrate`
-derives it and hands it to the head alone; it is never printed. When the
-project's memory is not up it says so and starts anyway, with Knowledge
-unsupported: `hale dna dev` brings the project's memory and nerves up.
-An operator's own `HALE_DNA_MEMORY_DSN_HEAD` wins.
+With a project, the head reads the record and Knowledge from memory under
+the record's head role. `hale dna head` derives that DSN as `hale dna
+memory migrate` derives it and hands it to the head alone; it is never
+printed. The record is memory's (GH #1590), so a head with no memory
+reads no record: when the project's memory is not up it says so, and
+`hale dna dev` brings the project's memory and nerves up. An operator's
+own `HALE_DNA_MEMORY_DSN_HEAD` wins.
 
 From a checkout of hale, the launcher starts the same head, building it
 from the checkout into temporary storage on every start:

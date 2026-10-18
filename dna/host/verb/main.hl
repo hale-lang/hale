@@ -115,6 +115,18 @@ fn main() {
     } else if verb == "senses-up" {
         // GH #988: the senses' store, compose's `senses` service brought up
         ans = host::senses_up_verb(root);
+    } else if verb == "signers" {
+        // GH #1590: the people the record admits signed rows from
+        ans = host::signers_verb(root, host::word(a, 0), host::word(a, 1), host::flag(a, "--key"), host::flag(a, "--as"));
+    } else if verb == "record-genesis" {
+        // GH #1590: init's new record, born in memory
+        ans = host::record_genesis_verb(root, host::word(a, 0));
+    } else if verb == "record-body" {
+        // GH #1590: a kept receipt's body, for tests and scripts
+        ans = host::record_body_verb(root, host::word(a, 0));
+    } else if verb == "spine-dsn" {
+        // GH #1590: the spine's DSN a body run here dials when none is named
+        ans = host::answer(dna::kept_spine_dsn(root) + "\n");
     } else if verb == "record-head" {
         ans = host::record_head_verb(root);
     } else if verb == "record-rows" {

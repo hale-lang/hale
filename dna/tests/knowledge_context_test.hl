@@ -105,9 +105,10 @@ main locus App {
         let cut = sh(toolchain() + "\ncheck\n" + repo + "\n--dump-topology=" + repo + "/.hale/dna/baseline.topology");
         std::test::assert_eq_int(cut.code, 0, "baseline: " + cut.stderr);
         // the record's first row gives it its identity, and memory its schema
-        let born = dna::GitJournal { repo: repo };
-        std::test::assert(born.append(0, "application.observed", "org", "{}").ok, "the record's first row");
-        let record = dna::GitRecord { repo: repo };
+        std::test::assert_eq_str(dna::memory_fixture(repo), "", "the record is born in memory (GH #1590)");
+        let born = dna::RoutedJournal { record: dna::RecordJournal { repo: repo }, ledger: dna::MemoryLedger { repo: repo } };
+        std::test::assert(born.append(born.revision(), "application.observed", "org", "{}").ok, "the record's first row");
+        let record = dna::MemoryRecord { repo: repo };
         let identity = record.identity();
         std::test::assert(len(identity) > 0, "the record has an identity");
         let spine = dna::migrated(owner, identity);
@@ -139,7 +140,9 @@ main locus App {
         let unasked = client.package_for("org/app/main", "");
         std::test::assert_eq_str(unasked.included, DESIGN, "no query is ratification order: the budget keeps the first ratified, not the practice the work is about");
         std::test::assert(none.included_n == 0 && dna::objective_with("x", none) == "x" && dna::bindings_of(none) == "", "nothing for a target no practice is bound to or above, the objective untouched");
-        let blind = dna::MemoryKnowledge { repo: repo, dsn_env: "HALE_DNA_KNOWLEDGE_CONTEXT_TEST_NO_MEMORY" };
+        // a clone that kept no head DSN (GH #1590): the repository here
+        // keeps one, which any unnamed role would fall back to
+        let blind = dna::MemoryKnowledge { repo: repo + "/no-clone", dsn_env: "HALE_DNA_KNOWLEDGE_CONTEXT_TEST_NO_MEMORY" };
         let off = blind.package_for("org/app", "x");
         std::test::assert(!blind.ready() && off.included_n == 0 && off.error == "no memory (HALE_DNA_KNOWLEDGE_CONTEXT_TEST_NO_MEMORY is not set)", "no memory: an empty package that says so: " + off.error);
 
@@ -193,12 +196,12 @@ main locus App {
 
         // ---- the organization, reading memory
         self.dna = dna::Dna {
-            journal: dna::GitJournal { repo: repo },
+            journal: dna::RoutedJournal { record: dna::RecordJournal { repo: repo }, ledger: dna::MemoryLedger { repo: repo, dsn_env: dna::fixture_spine(repo) } },
             gateway: dna::MutationGateway {
                 workspaces: dna::IsolatedWorktrees { repo: repo, root: repo + "/.hale/dna/worktrees", base_exec_digest: "exec:base" },
                 repo: dna::LocalGit { repo: repo }
             },
-            verification: dna::HaleVerification { hale_bin: toolchain(), receipts: dna::GitReceipts { repo: repo }, scratch: repo + "/.hale/dna/scratch", repo: repo },
+            verification: dna::HaleVerification { hale_bin: toolchain(), receipts: dna::MemoryReceipts { repo: repo }, scratch: repo + "/.hale/dna/scratch", repo: repo },
             editor: dna::SourceEditor {
                 name: "editor",
                 models: dna::ModelRouter {

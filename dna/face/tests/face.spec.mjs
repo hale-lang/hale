@@ -157,13 +157,16 @@ test.describe('mobile paged navigation', () => {
     await page.goto(service.url());
     await page.getByRole('button', { name: 'Next page', exact: true }).click();
     const register = page.getByRole('region', { name: 'Practice register', exact: true });
+    // the register's entries: a record in memory reads Knowledge, so the
+    // register also offers "Create practice" (GH #1590)
+    const entries = register.getByRole('link').filter({ hasNotText: 'Create practice' });
     await expect(page.getByRole('button', { name: 'Previous page', exact: true })).toBeEnabled();
-    await expect(register.getByRole('link')).toHaveCount(25);
+    await expect(entries).toHaveCount(25);
     const query = () => new URLSearchParams(new URL(page.url()).hash.split('?')[1]);
     const snapshot = query().get('snapshot');
     expect(query().get('offset')).toBe('25');
     expect(snapshot).toBeTruthy();
-    const first = register.getByRole('link').first();
+    const first = entries.first();
     const name = await first.getAttribute('aria-label');
     await first.click();
     const detail = page.getByRole('region', { name: 'Practice detail', exact: true });
@@ -173,7 +176,7 @@ test.describe('mobile paged navigation', () => {
     await page.getByRole('link', { name: 'Back to practices', exact: true }).click();
     await expect(register).toBeFocused();
     await expect(register.getByRole('heading', { name: 'Practice register', exact: true })).toBeInViewport();
-    await expect(register.getByRole('link').first()).toHaveAttribute('aria-label', name);
+    await expect(entries.first()).toHaveAttribute('aria-label', name);
     expect(query().get('offset')).toBe('25');
     expect(query().get('snapshot')).toBe(snapshot);
     expect(query().get('id')).toBeNull();

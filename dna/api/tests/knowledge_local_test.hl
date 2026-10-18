@@ -88,9 +88,10 @@ locus LocalCommandCases {
     }
     fn edges(scratch: String) {
         let root = scratch + "/edges"; self.record(root);
-        let journal = dna::GitJournal { repo: root }; let receipts = dna::GitReceipts { repo: root };
+        std::test::assert_eq_str(dna::memory_fixture(root), "", "the record is born in memory (GH #1590)");
+        let journal = dna::RoutedJournal { record: dna::RecordJournal { repo: root }, ledger: dna::MemoryLedger { repo: root } }; let receipts = dna::MemoryReceipts { repo: root };
         let from = self.native_node(journal, receipts, "Exact source 🧭."); let to = self.native_node(journal, receipts, "Exact destination 🧭.");
-        let record = dna::GitRecord { repo: root }; let before = record.count("journal"); let application_id = record.identity();
+        let record = dna::MemoryRecord { repo: root }; let before = record.count("journal"); let application_id = record.identity();
         let context = self.context(application_id, "local", "alice/équipe");
         let codec = ops::KnowledgePolicyCodec { }; let document = self.policy(application_id, MEMBER);
         let path = root + "/authority.json"; std::io::fs::write_file(path, document) or discard;
@@ -143,8 +144,9 @@ locus LocalCommandCases {
     }
     fn bindings(scratch: String) {
         let root = scratch + "/bindings"; self.record(root);
-        let journal = dna::GitJournal { repo: root }; let receipts = dna::GitReceipts { repo: root };
-        let idea = self.native_node(journal, receipts, "Keep this exact idea."); let record = dna::GitRecord { repo: root };
+        std::test::assert_eq_str(dna::memory_fixture(root), "", "the record is born in memory (GH #1590)");
+        let journal = dna::RoutedJournal { record: dna::RecordJournal { repo: root }, ledger: dna::MemoryLedger { repo: root } }; let receipts = dna::MemoryReceipts { repo: root };
+        let idea = self.native_node(journal, receipts, "Keep this exact idea."); let record = dna::MemoryRecord { repo: root };
         let context = self.context(record.identity(), "local", "alice/équipe");
         let member = std::str::replace(MEMBER, "\"edge_link\":\"direct\"", "\"edge_link\":\"deny\",\"binding_bind\":\"review\",\"binding_unbind\":\"review\",\"binding_scopes\":[{\"author\":\"org\",\"target\":\"org/support\"}]");
         let policy = ops::KnowledgePolicyCodec { }; let authority = ops::FixedKnowledgeAuthority { policy: policy.decode(self.policy(context.application_id, member), context.application_id, "local") };
@@ -167,9 +169,10 @@ locus LocalCommandCases {
     // file, the way the head finds it.
     fn composed(scratch: String) {
         let root = scratch + "/composed"; self.record(root);
-        let journal = dna::GitJournal { repo: root }; let receipts = dna::GitReceipts { repo: root };
+        std::test::assert_eq_str(dna::memory_fixture(root), "", "the record is born in memory (GH #1590)");
+        let journal = dna::RoutedJournal { record: dna::RecordJournal { repo: root }, ledger: dna::MemoryLedger { repo: root } }; let receipts = dna::MemoryReceipts { repo: root };
         let from = self.native_node(journal, receipts, "Composed source."); let to = self.native_node(journal, receipts, "Composed destination.");
-        let record = dna::GitRecord { repo: root };
+        let record = dna::MemoryRecord { repo: root };
         let path = scratch + "/composed-authority.json";
         std::io::fs::write_file(path, self.policy(record.identity(), MEMBER)) or discard;
         let absent = api::LocalKnowledgeCommands { root: root };
@@ -183,7 +186,8 @@ locus LocalCommandCases {
 
 // The child half of `composed`: HALE_DNA_KNOWLEDGE_COMMAND_POLICY is set.
 fn composed_child(root: String, from: String, to: String) {
-    let record = dna::GitRecord { repo: root }; let before = record.count("journal");
+    std::test::assert_eq_str(dna::memory_fixture(root), "", "the record is born in memory (GH #1590)");
+    let record = dna::MemoryRecord { repo: root }; let before = record.count("journal");
     let provider = api::LocalKnowledgeCommands { root: root };
     std::test::assert(provider.supported(), "a named policy file makes Knowledge commands supported");
     let admission = api::KnowledgeAdmission { root: root, roles: dna::RecordRoles { memory: true, mapping: "uid:1000=alice/équipe\n" }, provider: provider };
@@ -215,7 +219,7 @@ fn main() {
     // Git plumbing and a policy in the caller's environment must not reach
     // the fixture's Records.
     if std::env::var("HALE_KNOWLEDGE_LOCAL_TEST_CLEAN") != "1" {
-        let clean = dna::run_tool("env\n-u\nGIT_DIR\n-u\nGIT_COMMON_DIR\n-u\nGIT_CONFIG\n-u\nGIT_NAMESPACE\n-u\nGIT_WORK_TREE\n-u\nGIT_INDEX_FILE\n-u\nGIT_OBJECT_DIRECTORY\n-u\nGIT_ALTERNATE_OBJECT_DIRECTORIES\n-u\nGIT_CONFIG_COUNT\n-u\nGIT_CONFIG_PARAMETERS\n-u\nHALE_DNA_KNOWLEDGE_COMMAND_POLICY\n-u\nHALE_DNA_MEMORY_DSN_OWNER\n-u\nHALE_DNA_MEMORY_DSN_SPINE\n-u\nHALE_DNA_MEMORY_DSN_HEAD\nGIT_CONFIG_NOSYSTEM=1\nGIT_CONFIG_GLOBAL=/dev/null\nGIT_TERMINAL_PROMPT=0\nHALE_DNA_DISCOVER=off\nHALE_KNOWLEDGE_LOCAL_TEST_CLEAN=1\n" + std::env::arg_or(0, ""));
+        let clean = dna::run_tool("env\n-u\nGIT_DIR\n-u\nGIT_COMMON_DIR\n-u\nGIT_CONFIG\n-u\nGIT_NAMESPACE\n-u\nGIT_WORK_TREE\n-u\nGIT_INDEX_FILE\n-u\nGIT_OBJECT_DIRECTORY\n-u\nGIT_ALTERNATE_OBJECT_DIRECTORIES\n-u\nGIT_CONFIG_COUNT\n-u\nGIT_CONFIG_PARAMETERS\n-u\nHALE_DNA_KNOWLEDGE_COMMAND_POLICY\n-u\nHALE_DNA_MEMORY_DSN_SPINE\n-u\nHALE_DNA_MEMORY_DSN_HEAD\nGIT_CONFIG_NOSYSTEM=1\nGIT_CONFIG_GLOBAL=/dev/null\nGIT_TERMINAL_PROMPT=0\nHALE_DNA_DISCOVER=off\nHALE_KNOWLEDGE_LOCAL_TEST_CLEAN=1\n" + std::env::arg_or(0, ""));
         print(clean.stdout);
         if len(clean.stderr) > 0 { eprintln(clean.stderr); }
         std::process::exit(if clean.code < 0 { 1 } else { clean.code });

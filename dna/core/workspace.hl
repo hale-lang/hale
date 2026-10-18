@@ -967,3 +967,157 @@ locus MutationGateway {
         return out;
     }
 }
+
+// A fixture clone's kept head DSN: `.hale/dna/memory.env`, the head's DSN
+// alone, mode 600, where git ignores it (the clone's own exclude, so the
+// fixture's tree is untouched). "" when written, else why not.
+fn fixture_keep_head(repo: String, head_dsn: String) -> String {
+    std::io::fs::mkdir(repo + "/.hale") or discard;
+    std::io::fs::mkdir(repo + "/.hale/dna") or discard;
+    // (a directory that is no repository has nothing to exclude it from)
+    let excluded = run_tool("sh\n-c\ncd \"$1\" && { git rev-parse --git-dir >/dev/null 2>&1 || exit 0; } && { git check-ignore -q .hale/dna/memory.env || { mkdir -p \"$(git rev-parse --git-path info)\" && echo /.hale/ >> \"$(git rev-parse --git-path info/exclude)\"; }; }\nsh\n" + repo);
+    if excluded.code != 0 { return "the clone could not ignore .hale/: " + excluded.stderr; }
+    let kept = run_tool("sh\n-c\numask 077 && printf '%s=%s\\n' \"$2\" \"$3\" > \"$1/.hale/dna/memory.env\" && chmod 600 \"$1/.hale/dna/memory.env\"\nsh\n" + repo + "\n" + HEAD_DSN_ENV + "\n" + head_dsn);
+    if kept.code != 0 { return "the clone's memory.env could not be written: " + kept.stderr; }
+    return "";
+}
+
+// ---- a fixture's record in memory (GH #1590) -------------------------------
+//
+// The record is memory's, so a fixture that builds a repository and reads
+// or writes a record there gives it one first: `memory_fixture(repo)` pins
+// a new identity in the repository's hale.toml, draws the roles' passwords
+// and the record's key into the vault (`hale test`'s, one per file),
+// applies memory's schema with the owner's DSN the suite hands the fixture
+// (HALE_DNA_MEMORY_DSN_OWNER), keeps the head's DSN in the clone as `hale
+// dna memory migrate` does (`.hale/dna/memory.env`, mode 600, ignored:
+// every memory handle in it dials it when it is given no role's DSN), and
+// appends the record's birth (`record.genesis`,
+// `ledger.adopted`, `record.key`) as `hale dna init` does. "" when the
+// record is born (or was, by an earlier call), else why not.
+fn memory_fixture(repo: String) -> String {
+    let owner_env = "HALE_DNA_MEMORY_DSN_OWNER";
+    let owner = if std::env::var_exists(owner_env) { std::env::var(owner_env) } else { "" };
+    let unnamed = owner_env + " is not set: a fixture's record is memory's, and there is no memory to keep it in";
+    // a record already born is this one: born once, whoever asks again (a
+    // process that reaches it needs no owner); a clone of its genome that
+    // does not reach it yet keeps the head's DSN, as `hale dna memory
+    // migrate` keeps it
+    let pinned = record_scope(repo);
+    if len(pinned) > 0 {
+        if !std::io::fs::file_exists(repo + "/.hale/dna/memory.env") {
+            if !std::str::starts_with(owner, "postgres") { return unnamed; }
+            // a clone of a record memory holds: the head's DSN kept, and
+            // memory left as it is (a migration rewrites the principals, and
+            // one that names no owners drops a shared record's heads)
+            let born = RecordJournal { repo: repo, dsn: owner, author: "dna" };
+            let head = if born.revision() > 0 { dsn_text(role_dsn(parse_dsn(owner), head_role(pinned))) } else { "" };
+            let again = if len(head) > 0 { Migrated { ok: true, head_dsn: head } } else { migrate(parse_dsn(owner), pinned) };
+            if !again.ok { return "memory's schema: " + again.why; }
+            let kept_here = fixture_keep_head(repo, again.head_dsn);
+            if len(kept_here) > 0 { return kept_here; }
+        }
+        let held = RecordJournal { repo: repo, author: "dna" };
+        if held.revision() > 0 { return ""; }
+        return repo + "/hale.toml pins record " + pinned + ", and memory holds none of it: " + held.last_error();
+    }
+    if !std::str::starts_with(owner, "postgres") { return unnamed; }
+    // the genome is not named: a fixture's last commit is amended with the
+    // pin below, which would move a root commit the row named
+    let has_head = run_tool("git\n-C\n" + repo + "\nrev-parse\n-q\n--verify\nHEAD").code == 0;
+    let genome = "";
+    let nonce = digest_of(repo + "\n" + to_string(std::process::pid()) + "\n" + to_string(std::time::nanos(std::time::current())))[7..39];
+    let b = std::json::Builder { };
+    b.begin_object();
+    b.string_field("genome", genome);
+    b.string_field("nonce", nonce);
+    b.end_object();
+    let body = b.result();
+    let id = event_digest("genesis", "record.genesis", "record", body);
+    // the pin, in the manifest's `dna` table
+    let manifest = repo + "/hale.toml";
+    let text = std::io::fs::read_file(manifest) or "";
+    let pinned = if std::str::starts_with(text, "[dna]\n") { "[dna]\nrecord = \"" + id + "\"\n" + text[6..len(text)] }
+    else if std::str::contains(text, "\n[dna]\n") { std::str::replace(text, "\n[dna]\n", "\n[dna]\nrecord = \"" + id + "\"\n") }
+    else { text + (if len(text) > 0 && !std::str::ends_with(text, "\n") { "\n" } else { "" }) + "\n[dna]\nrecord = \"" + id + "\"\n" };
+    let made = run_tool("mkdir\n-p\n" + repo);
+    std::io::fs::write_file(manifest, pinned) or { return "the pin could not be written to " + manifest; };
+    if record_scope(repo) != id { return "the pin in " + manifest + " does not read back as " + id; }
+    // a genome with commits keeps the pin in its last commit, amended, as a
+    // person commits what `init` wrote: the tree stays clean and the count
+    // of commits the fixture sees is its own
+    if has_head {
+        let c = run_tool("sh\n-c\ncd \"$1\" && git add hale.toml && git -c user.name=dna -c user.email=dna@local -c commit.gpgsign=false commit -q --amend --no-edit\nsh\n" + repo);
+        if c.code != 0 { return "the pin could not be committed: " + trim_nl(c.stderr) + trim_nl(c.stdout); }
+    }
+    // the vault's: the roles' passwords and the record's key
+    let sch = schema_for(id);
+    if len(provision_role(spine_role(id))) == 0 || len(provision_role(head_role(id))) == 0 { return "the vault could not hold the roles' passwords"; }
+    let key_vault = exchange_key_vault(sch);
+    if !std::secret::Credential { vault: key_vault }.ready() && len(vault_provision_local(key_vault)) == 0 { return "the vault could not hold the record's key"; }
+    let m = migrate(parse_dsn(owner), id);
+    if !m.ok { return "memory's schema: " + m.why; }
+    let kept_here = fixture_keep_head(repo, m.head_dsn);
+    if len(kept_here) > 0 { return kept_here; }
+    // the birth, as init writes it
+    let j = RecordJournal { repo: repo, author: "dna", dsn: m.spine_dsn };
+    let g = j.append_as(0, "record.genesis", "record", body, "dna", true);
+    if !g.ok { return "memory refused the record's first row (" + g.error + "): " + j.last_error(); }
+    let a = std::json::Builder { };
+    a.begin_object();
+    a.int_field("routing", ROUTING_VERSION);
+    a.string_field("checkpoint", id);
+    a.int_field("rows", 0);
+    a.string_field("by", "dna");
+    a.end_object();
+    let k = std::json::Builder { };
+    k.begin_object();
+    k.string_field("key", record_key(sch).public());
+    k.end_object();
+    let rows = RowBatch { };
+    rows.push(Row { kind: "ledger.adopted", entity: "ledger", body: a.result(), author: "dna" });
+    rows.push(Row { kind: "record.key", entity: "record", body: k.result(), author: "dna" });
+    let r = j.append_rows_as(1, rows, true);
+    if !r.ok { return "memory refused the record's birth (" + r.error + "): " + j.last_error(); }
+    return "";
+}
+
+// The spine's DSN for a fixture's record, from the owner's DSN the suite
+// hands it: what a fixture's in-process organism writes its own Ledger rows
+// with (`MemoryLedger { dsn_env: fixture_spine(repo) }`, a DSN in place of
+// the name). Never kept on disk; "" when the record or the owner is missing.
+fn fixture_spine(repo: String) -> String {
+    let owner = if std::env::var_exists("HALE_DNA_MEMORY_DSN_OWNER") { std::env::var("HALE_DNA_MEMORY_DSN_OWNER") } else { "" };
+    let id = record_scope(repo);
+    if !std::str::starts_with(owner, "postgres") || len(id) == 0 { return ""; }
+    return dsn_text(role_dsn(parse_dsn(owner), spine_role(id)));
+}
+
+// A fixture's process with a vault of its own (`HALE_VAULT_DIR=<dir>`)
+// reaches the record's memory with the entries the fixture drew (GH
+// #1590): the roles' passwords and the record's key, copied into `dir`,
+// mode 600. "" when copied, else why not.
+fn fixture_share_vault(repo: String, dir: String) -> String {
+    let id = record_scope(repo);
+    if len(id) == 0 { return repo + " pins no record"; }
+    let names = role_vault_name(spine_role(id)) + " " + role_vault_name(head_role(id)) + " " + exchange_key_vault(schema_for(id));
+    let r = run_tool("sh\n-c\numask 077 && mkdir -p \"$2\" && chmod 700 \"$2\" && for n in $3; do [ -f \"$1/$n\" ] && cp \"$1/$n\" \"$2/$n\" && chmod 600 \"$2/$n\"; done; true\nsh\n" + std::secret::vault_local_dir() + "\n" + dir + "\n" + names);
+    return if r.code == 0 { "" } else { trim_nl(r.stderr) };
+}
+
+// A fixture's memory refusing every append for a while, to the record and
+// to the Ledger through their insert functions (GH #1590): the owner
+// revokes its roles' right to call them, and grants it back. "" when done,
+// else why not.
+fn fixture_record_refuses(repo: String, refusing: Bool) -> String {
+    let owner = if std::env::var_exists("HALE_DNA_MEMORY_DSN_OWNER") { std::env::var("HALE_DNA_MEMORY_DSN_OWNER") } else { "" };
+    let id = record_scope(repo);
+    if !std::str::starts_with(owner, "postgres") || len(id) == 0 { return "no owner's DSN or no record to refuse"; }
+    let sch = schema_for(id);
+    let verb = if refusing { "REVOKE" } else { "GRANT" };
+    let dir = if refusing { "FROM" } else { "TO" };
+    let fns = sch + ".record_append(bigint, text, text, text, text, text, text, text), " + sch + ".record_append_rows(bigint, text, text), " + sch + ".ledger_append(bigint, text, text, text, text, text, bigint, text)";
+    let sql = verb + " EXECUTE ON FUNCTION " + fns + " " + dir + " " + spine_role(id) + ", " + head_role(id);
+    let r = run_tool("psql\n" + owner + "\n-q\n-v\nON_ERROR_STOP=1\n-c\n" + sql);
+    return if r.code == 0 { "" } else { trim_nl(r.stderr) };
+}

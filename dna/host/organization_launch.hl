@@ -14,9 +14,9 @@ type OrganizationLaunchWrite { ok: Bool = false; fresh: Bool = false; }
 fn organization_launch_write(root: String, kind: String, id: String, body: String, memory: dna::Memory) -> OrganizationLaunchWrite {
     let codec = dna::OrganizationSourceRequestCodec { }; let mut tries = 0;
     while tries < 20 {
-        let j = dna::GitJournal { repo: root }; let existing = codec.fact(j, kind, id);
+        let j = dna::RecordJournal { repo: root }; let existing = codec.fact(j, kind, id);
         if len(existing.kind) > 0 {
-            let author = dna::native_json_string(dna::line_at(j.text, existing.seq), "author");
+            let author = j.author_of(existing.seq);
             return OrganizationLaunchWrite { ok: existing.kind == kind && existing.body == body && author == "host"
                     && (trust_mode(root) != "signed" || row_verified(root, existing.digest)) };
         }

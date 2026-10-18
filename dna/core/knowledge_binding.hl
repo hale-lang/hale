@@ -14,12 +14,13 @@ type KnowledgeBindingEffect {
 }
 locus KnowledgeBindingCodec {
     params { }
+    // `j` reads both memories (the organism's routed journal): the receipt
+    // rows that restrict a digest are the Ledger's (GH #1590).
     fn visible(j: Journal, syntax: KnowledgeBindingPolicySyntax, digest: String, end: Int) -> Bool {
         if !digest_well_formed(digest) || end < 1 || end > j.revision() { return false; }
         let raw = digest[7..len(digest)]; let mut i = 0;
         while i < end {
             let e = j.read(i);
-            if e.kind == "ledger.adopted" || e.kind == "ledger.abandoned" { return false; }
             if e.entity == digest || e.entity == raw {
                 if e.kind == "receipt.withheld" || e.kind == "receipt.redacted" { return false; }
                 if e.kind == "receipt.classified" || e.kind == "receipt.filed" {

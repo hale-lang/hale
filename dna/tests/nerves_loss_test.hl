@@ -57,7 +57,8 @@ fn word_after(text: String, marker: String) -> String {
 // read of the record per call, as often as the script polls it.
 @bounded_by(script)
 fn rows(repo: String, kind: String, needle: String) -> Int {
-    let j = dna::GitJournal { repo: repo };
+    std::test::assert_eq_str(dna::memory_fixture(repo), "", "the record is born in memory (GH #1590)");
+    let j = dna::RoutedJournal { record: dna::RecordJournal { repo: repo }, ledger: dna::MemoryLedger { repo: repo } };
     let mut n = 0;
     let mut i = 0;
     while i < j.revision() {

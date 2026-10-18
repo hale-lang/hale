@@ -1,6 +1,6 @@
 // dna/tests/effect_outcomes_test.hl — GH #604 rule 3. The claim on an
 // effect key is exclusive: a second writer whose request lands after a
-// lost race does not dispatch. An effect requested and never resulted
+// lost race does not dispatch (in memory it does not land either). An effect requested and never resulted
 // when the organism stopped is reconciled at restart by evidence — an
 // apply whose genome is at the candidate is ok, an open with no
 // worktree failed — or marked unknown; and the gate refuses an unknown
@@ -17,8 +17,8 @@ fn sh(argv: String) -> dna::RunResult { return dna::run_tool(argv); }
 
 main locus App {
     params {
-        j1: dna::GitJournal = dna::GitJournal { };
-        j2: dna::GitJournal = dna::GitJournal { };
+        j1: dna::RoutedJournal = dna::RoutedJournal { };
+        j2: dna::RoutedJournal = dna::RoutedJournal { };
         one: dna::Dna = dna::Dna { };
     }
     fn result_of(key: String) -> String {
@@ -31,7 +31,7 @@ main locus App {
         }
         return out;
     }
-    fn requests(j: dna::GitJournal, key: String) -> Int {
+    fn requests(j: dna::RoutedJournal, key: String) -> Int {
         let mut n = 0;
         let mut i = 0;
         while i < j.revision() {
@@ -53,19 +53,23 @@ main locus App {
         let add = sh("git\n-C\n" + repo + "\nadd\n-A");
         let c0 = sh("git\n-C\n" + repo + "\n-c\nuser.name=t\n-c\nuser.email=t@local\ncommit\n-q\n-m\nbase");
         std::test::assert_eq_int(c0.code, 0, "base commit: " + c0.stderr);
+        std::test::assert_eq_str(dna::memory_fixture(repo), "", "the record is born in memory");
         let head = dna::trim_nl(sh("git\n-C\n" + repo + "\nrev-parse\nHEAD").stdout);
 
         // ---- the claim is exclusive: two journals over one record, the second stale
-        self.j1 = dna::GitJournal { repo: repo, author: "one" };
-        self.j2 = dna::GitJournal { repo: repo, author: "two" };
+        // GH #1590: the record is memory's, and an effect's rows the Ledger's
+        self.j1 = dna::RoutedJournal { record: dna::RecordJournal { repo: repo, author: "one" }, ledger: dna::MemoryLedger { repo: repo, dsn_env: dna::fixture_spine(repo) } };
+        self.j2 = dna::RoutedJournal { record: dna::RecordJournal { repo: repo, author: "two" }, ledger: dna::MemoryLedger { repo: repo, dsn_env: dna::fixture_spine(repo) } };
         let seed = self.j1.append(self.j1.revision(), "seed", "s", "row");
-        self.j2.load();
+        let moved2 = self.j2.refresh();
         let first = dna::effect_request(self.j1, "apply:" + head, "m1");
         std::test::assert(first, "the first writer holds the claim");
         let second = dna::effect_request(self.j2, "apply:" + head, "m1");
         std::test::assert(!second, "the second writer's request landed after a lost race and does not dispatch");
-        self.j1.load();
-        std::test::assert_eq_int(self.requests(self.j1, "apply:" + head), 2, "both requests are in the record; only the first is the claim");
+        let moved1 = self.j1.refresh();
+        // the Ledger takes an append only at the revision its writer read
+        // (GH #1590), so the stale second request never landed at all
+        std::test::assert_eq_int(self.requests(self.j1, "apply:" + head), 1, "only the first request is in the Ledger, and it is the claim");
         std::test::assert(!dna::effect_request(self.j1, "apply:" + head, "m1"), "a retry finds the claim");
 
         // ---- requested and never resulted: reconciled at restart
@@ -74,12 +78,12 @@ main locus App {
         let r1 = self.j1.append(self.j1.revision(), "effect.requested", "apply:0000000000000000000000000000000000000000", "m2");
         let r2 = self.j1.append(self.j1.revision(), "effect.requested", "worktree.open:m7", head);
         self.one = dna::Dna {
-            journal: dna::GitJournal { repo: repo },
+            journal: dna::RoutedJournal { record: dna::RecordJournal { repo: repo }, ledger: dna::MemoryLedger { repo: repo, dsn_env: dna::fixture_spine(repo) } },
             gateway: dna::MutationGateway {
                 workspaces: dna::IsolatedWorktrees { repo: repo, root: repo + "/.hale/dna/worktrees" },
                 repo: dna::LocalGit { repo: repo }
             },
-            verification: dna::HaleVerification { hale_bin: toolchain(), receipts: dna::GitReceipts { repo: repo }, scratch: repo + "/.hale/dna/scratch", repo: repo },
+            verification: dna::HaleVerification { hale_bin: toolchain(), receipts: dna::MemoryReceipts { repo: repo }, scratch: repo + "/.hale/dna/scratch", repo: repo },
             genome_seed: "app", org_seed: "org", org_id: "eff"
         };
         std::time::sleep(500ms);

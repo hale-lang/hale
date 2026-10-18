@@ -42,16 +42,16 @@ type OrganizationLaunchStatus {
 }
 locus OrganizationStatusWire {
     params { }
-    fn trust(record: dna::GitRecord) -> String {
+    fn trust(record: dna::MemoryRecord) -> String {
         let read = record.git("config\n--get\ndna.trust");
         if read.code != 0 && read.code != 1 { return "unavailable"; }
         let mode = dna::trim_nl(read.stdout); return if mode == "" { "local" } else { mode };
     }
-    fn signed(record: dna::GitRecord, mode: String, event: dna::Event) -> Bool {
+    fn signed(record: dna::MemoryRecord, mode: String, event: dna::Event) -> Bool {
         return mode == "local" || (mode == "signed" && record.signer(event.digest).verified);
     }
-    fn fact(record: dna::GitRecord, journal: ops::GovernanceJournal, kind: String, id: String, mode: String) -> OrganizationStatusFact {
-        let mut found = OrganizationStatusFact { }; let q = ops::Queries { j: journal }; let mut i = 0;
+    fn fact(record: dna::MemoryRecord, journal: ops::GovernanceJournal, kind: String, id: String, mode: String) -> OrganizationStatusFact {
+        let mut found = OrganizationStatusFact { }; let q = ops::Queries { j: journal, location: record.location() }; let mut i = 0;
         while i < journal.revision() {
             let e = journal.read(i);
             if e.kind == kind && e.entity == id {
@@ -66,8 +66,8 @@ locus OrganizationStatusWire {
     }
     // Stage summaries still disclose their supporting facts. A protected
     // Review decision, quorum vote or application result hides this resource.
-    fn stages(record: dna::GitRecord, journal: ops::GovernanceJournal, c: ops::OrganizationCandidateEvidence, mode: String) -> OrganizationStatusFact {
-        let q = ops::Queries { j: journal }; let text = ops::GovernanceCommandCodec { };
+    fn stages(record: dna::MemoryRecord, journal: ops::GovernanceJournal, c: ops::OrganizationCandidateEvidence, mode: String) -> OrganizationStatusFact {
+        let q = ops::Queries { j: journal, location: record.location() }; let text = ops::GovernanceCommandCodec { };
         let key = dna::effect_key(c.request.source_owner, "apply", c.candidate_commit); let mut i = 0;
         while i < journal.revision() {
             let e = journal.read(i);
@@ -91,7 +91,7 @@ locus OrganizationStatusWire {
             && a.candidate_commit == c.candidate_commit && a.source_digest == r.source_digest
             && a.applied_event_id == applied.digest && a.restart_event_id == handoff.digest;
     }
-    fn project(record: dna::GitRecord, journal: ops::GovernanceJournal, candidate: ops::OrganizationCandidateEvidence, application: ops::OrganizationApplyEvidence, mode: String) -> OrganizationLaunchStatus {
+    fn project(record: dna::MemoryRecord, journal: ops::GovernanceJournal, candidate: ops::OrganizationCandidateEvidence, application: ops::OrganizationApplyEvidence, mode: String) -> OrganizationLaunchStatus {
         let mut out = OrganizationLaunchStatus { }; let codec = dna::OrganizationLaunchCodec { };
         if application.state != "applied" || application.handoff_state != "requested" || application.applied_sequence < 0 || application.handoff_sequence < 0 { return out; }
         let applied = journal.read(application.applied_sequence); let handoff = journal.read(application.handoff_sequence);
@@ -110,7 +110,7 @@ locus OrganizationStatusWire {
         if !claim.valid || (claim.found && (claim.event.seq <= handoff.seq || !self.matches(a, candidate, applied, handoff)))
             || (!claim.found && (launched.found || observed.found || exited.found || rollback.found || rolled_back.found || base_claim.found || base_launch.found)) { return OrganizationLaunchStatus { launch_state: "unknown", observation_state: "unknown", exit_state: "unknown", rollback_state: "unknown", rollback_launch_state: "unknown" }; }
         if !claim.found { return out; }
-        let q = ops::Queries { j: journal };
+        let q = ops::Queries { j: journal, location: record.location() };
         if q.receipt_status(a.binary_digest) != "available" || q.receipt_status(a.topology_digest) != "available" { return OrganizationLaunchStatus { hidden: true }; }
         out.attempt = a; out.request_event = claim.event.digest; out.launch_state = "requested";
         let l = codec.decode_launch(launched.event, a);
@@ -178,11 +178,11 @@ locus OrganizationStatusWire {
             let key = http.decode(pair[0..eq]); if !key.ok || (key.text != "id" && key.text != "snapshot") { return http.error(400, "invalid_query", "source status accepts only id and snapshot", false); }
             rest = if cut < 0 { "" } else { rest[(cut + 1)..len(rest)] };
         }
-        let record = dna::GitRecord { repo: context.root }; let service = ops::GovernanceCommands { record: record }; let source = service.capture();
+        let record = dna::MemoryRecord { repo: context.root }; let service = ops::GovernanceCommands { record: record }; let source = service.capture();
         if !source.ok { return http.error(if source.code == "snapshot_changed" { 409 } else { 503 }, if source.code == "snapshot_changed" { "snapshot_changed" } else { "source_status_unavailable" }, "the source status history is unavailable", true); }
         if source.application_id != context.source.identity || source.head != context.source.head || source.revision != context.source.revision { return http.error(409, "snapshot_changed", "the Record changed while capturing source status", true); }
         let journal = ops::GovernanceJournal { snapshot: source };
-        if !journal.valid || !service.source_supported(journal) { return http.error(503, "source_status_unavailable", "source status requires complete Record evidence", false); }
+        if !journal.valid { return http.error(503, "source_status_unavailable", "source status requires complete Record evidence", false); }
         if !candidates.allowed(context, journal) { return http.error(403, "forbidden", "source evidence read/recovery permission is required", false); }
         let view = ops::OrganizationProjection { }; let candidate = view.candidate(journal, query.id, source.text); let captured = candidates.source_objects(record, journal, candidate);
         if !captured.ok { return http.error(if captured.code == "candidate_unavailable" { 503 } else { 404 }, if captured.code == "candidate_unavailable" { "source_status_unavailable" } else { "source_status_not_found" }, "no visible canonical source status was found", captured.code == "candidate_unavailable"); }
@@ -191,7 +191,7 @@ locus OrganizationStatusWire {
         if stages.hidden { return http.error(404, "source_status_not_found", "no visible canonical source status was found", false); }
         if !stages.valid { return http.error(503, "source_status_unavailable", "source status trust evidence is unavailable", false); }
         let review = view.review_evidence(journal, candidate, source.text); let effects = ops::OrganizationApplication { }; let mut application = effects.read(journal, candidate, review);
-        let visibility = ops::Queries { j: journal };
+        let visibility = ops::Queries { j: journal, location: record.location() };
         if visibility.receipt_status(candidate.mutation_id) != "available" { return http.error(404, "source_status_not_found", "no visible canonical source status was found", false); }
         if application.applied_sequence >= 0 {
             let applied = journal.read(application.applied_sequence);

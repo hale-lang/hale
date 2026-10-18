@@ -80,6 +80,7 @@ pub const FILES: &[EmbeddedFile] = core![
     "memory_exchange",
     "memory_ledger",
     "memory_protected",
+    "memory_record",
     "memory_schema",
     "memory_spine",
     "memory_store",

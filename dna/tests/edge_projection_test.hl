@@ -17,6 +17,7 @@ locus NoEdgeReceipts {
     fn store(text: String) -> String { return ""; }
     fn read(digest: String) -> String { self.reads = self.reads + 1; return ""; }
     fn erase(digest: String) -> Bool { return false; }
+    fn redacted(digest: String) -> Bool { return false; }
 }
 
 @form(vec)
@@ -94,7 +95,8 @@ locus EdgeProjectionCases {
         std::io::fs::mkdir(root) or discard;
         let init = dna::run_tool("git\n-C\n" + root + "\ninit\n-q\n-b\nmain");
         std::test::assert_eq_int(init.code, 0, "temporary native Git Record");
-        let j = dna::GitJournal { repo: root };
+        std::test::assert_eq_str(dna::memory_fixture(root), "", "the record is born in memory (GH #1590)");
+        let j = dna::RoutedJournal { record: dna::RecordJournal { repo: root }, ledger: dna::MemoryLedger { repo: root } };
         self.append(j, "application.started", "org", "{}");
         self.link(j, "edge/forward", LEFT, RIGHT, LABEL);
         self.link(j, "edge/reverse", RIGHT, LEFT, LABEL);
@@ -127,7 +129,7 @@ locus EdgeProjectionCases {
         self.assert_graph(store);
 
         // Reopen the actual durable Record and build entirely new memory.
-        let restarted = dna::GitJournal { repo: root };
+        let restarted = dna::RoutedJournal { record: dna::RecordJournal { repo: root }, ledger: dna::MemoryLedger { repo: root } };
         let rebuilt_id = id + "rebuilt";
         let rebuilt_dsn = dna::migrated(owner, rebuilt_id); std::test::assert(rebuilt_dsn.ok, "fresh memory migrates: " + rebuilt_dsn.why);
         let rebuilt = dna::Pq { conn: dna::pq_conn(rebuilt_dsn), record_id: rebuilt_id };

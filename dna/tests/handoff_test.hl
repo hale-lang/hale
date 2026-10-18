@@ -50,12 +50,15 @@ fn text_lines_with(text: String, needles: String) -> Int {
     return n;
 }
 
-// The rows of the record a clone holds that carry every one of `needles`,
-// read through the toolchain (`hale dna record-rows`).
+// The rows of the record and its Ledger that carry every one of `needles`,
+// read through the toolchain (`hale dna record-rows`, `ledger rows`).
 fn record_lines_with(repo: String, needles: String) -> Int {
     let r = in_dir(repo, toolchain() + "\ndna\nrecord-rows");
     std::test::assert_eq_int(r.code, 0, "the record at " + repo + " reads: " + r.stderr);
-    return text_lines_with(r.stdout + "\n", needles);
+    // and its Ledger's (GH #1590: the handoff rows are the Ledger's)
+    let l = in_dir(repo, toolchain() + "\ndna\nledger\nrows");
+    std::test::assert_eq_int(l.code, 0, "the Ledger at " + repo + " reads: " + l.stderr);
+    return text_lines_with(r.stdout + "\n" + l.stdout + "\n", needles);
 }
 
 // How many of a repository's git objects contain `needle`.
@@ -63,9 +66,7 @@ fn objects_with(repo: String, needle: String) -> String {
     return dna::trim_nl(in_dir(repo, "sh\n-c\ngit cat-file --batch-all-objects --batch 2>/dev/null | grep -c -F \"$1\" || true\nsh\n" + needle).stdout);
 }
 
-// A project, its genome committed and its record pushed to a bare remote
-// beside it (a verdict from a clone with no organism running reaches one
-// through it).
+// A project, its genome committed and pushed to a bare remote beside it.
 fn project(scratch: String, name: String, user: String) -> String {
     let made = in_dir(scratch, toolchain() + "\ndna\nnew\n" + name);
     std::test::assert_eq_int(made.code, 0, "hale dna new " + name + ": " + made.stdout + made.stderr);
@@ -105,8 +106,8 @@ fn vault_put(name: String, value: String) {
 main locus App {
     params {
         // pointed at the projects in run(); never at the working directory
-        j: dna::GitJournal = dna::GitJournal { repo: "/nonexistent/dna-handoff" };
-        k: dna::GitJournal = dna::GitJournal { repo: "/nonexistent/dna-handoff" };
+        j: dna::RoutedJournal = dna::RoutedJournal { };
+        k: dna::RoutedJournal = dna::RoutedJournal { };
         firm: String = "";
         acct: String = "";
         firm_head: String = "";
@@ -173,9 +174,11 @@ main locus App {
         self.acct = project(scratch, "acct", "noor");
         let firm = self.firm;
         let acct = self.acct;
-        let firm_genesis = dna::GitJournal { repo: firm }.genesis();
-        let acct_genesis = dna::GitJournal { repo: acct }.genesis();
-        std::test::assert(len(firm_genesis) == 40 && firm_genesis != acct_genesis, "two records: " + firm_genesis + " " + acct_genesis);
+        std::test::assert_eq_str(dna::memory_fixture(firm), "", "the record is born in memory (GH #1590)");
+        let firm_genesis = dna::RecordJournal { repo: firm }.genesis();
+        std::test::assert_eq_str(dna::memory_fixture(acct), "", "the record is born in memory (GH #1590)");
+        let acct_genesis = dna::RecordJournal { repo: acct }.genesis();
+        std::test::assert(len(firm_genesis) == 64 && firm_genesis != acct_genesis, "two records: " + firm_genesis + " " + acct_genesis);
         let fm = dna::run_tool("sh\n-c\ncd \"$1\" && export HALE_DNA_DISCOVER=off HALE_DNA_MEMORY_DSN_OWNER=\"$2\" HALE_DNA_RECEIPT_KEY=handoff-test-receipt-key && exec \"$3\" dna memory migrate\nsh\n" + firm + "\n" + owner + "\n" + toolchain());
         let am = dna::run_tool("sh\n-c\ncd \"$1\" && export HALE_DNA_DISCOVER=off HALE_DNA_MEMORY_DSN_OWNER=\"$2\" HALE_DNA_RECEIPT_KEY=handoff-test-receipt-key && exec \"$3\" dna memory migrate\nsh\n" + acct + "\n" + owner + "\n" + toolchain());
         self.firm_head = line_value(fm.stdout, "HALE_DNA_MEMORY_DSN_HEAD");
@@ -189,12 +192,12 @@ main locus App {
         let firm_org = line_value(fnv.stdout, "HALE_DNA_NATS_ORG");
 
         // the accountant's private history: another client's affairs
-        self.k = dna::GitJournal { repo: acct };
+        self.k = dna::RoutedJournal { record: dna::RecordJournal { repo: acct }, ledger: dna::MemoryLedger { repo: acct, dsn_env: dna::fixture_spine(acct) } };
         self.k.refresh();
         let private = self.k.append(self.k.revision(), "task.born", "t90", "i90: UNRELATED_PRIVATE_FACT about another client's payroll");
 
         // the firm's facts: people's jobs, a customer receipt, an internal one
-        self.j = dna::GitJournal { repo: firm };
+        self.j = dna::RoutedJournal { record: dna::RecordJournal { repo: firm }, ledger: dna::MemoryLedger { repo: firm, dsn_env: dna::fixture_spine(firm) } };
         let mut t = 7;
         while t <= 17 {
             self.row("task.born", "t" + to_string(t), "i-t" + to_string(t) + ": job " + to_string(t) + " for the accountant");
@@ -261,9 +264,9 @@ main locus App {
         // ---- a crash after the envelope landed and before the firm's own
         // row: handing it again lands it once (#637)
         let hid9 = dna::handoff_id(firm_genesis, acct_genesis, "task", "t9");
-        std::io::fs::write_file(firm + "/.git/refs/dna/journal.lock", "held by the test") or discard;
+        std::test::assert_eq_str(dna::fixture_record_refuses(firm, true), "", "memory refuses appends for a while");
         let interrupted = self.cli(firm, "handoff\nacct\ntask\nt9\n--as\nriley");
-        std::io::fs::unlink(firm + "/.git/refs/dna/journal.lock") or discard;
+        std::test::assert_eq_str(dna::fixture_record_refuses(firm, false), "", "and takes them again");
         std::test::assert(std::str::contains(interrupted, "but this record refused the append"), "the envelope landed, the firm's row did not: " + interrupted);
         let resumed = self.cli(firm, "handoff\nacct\ntask\nt9\n--as\nriley");
         std::test::assert(std::str::contains(resumed, "handoff " + hid9 + ": task t9 [internal] delivered to record"), "handed again, it completes: " + resumed);
@@ -276,8 +279,9 @@ main locus App {
         let rhid7 = rhid[0..(len(rhid) - 1)];
         let notes_handed = self.cli(firm, "handoff\nacct\nreceipt\n" + internal + "\n--as\nriley");
         std::test::assert(std::str::contains(notes_handed, "[internal] delivered to record"), "an internal reference: " + notes_handed);
-        std::test::assert(in_dir(acct, "git\nrev-parse\n-q\n--verify\nrefs/dna/receipts/" + internal[7..71]).code != 0, "no receipt body crossed, internal or not");
-        std::test::assert(in_dir(acct, "git\nrev-parse\n-q\n--verify\nrefs/dna/receipts/" + customer[7..71]).code != 0, "the customer body is nowhere there");
+        let acct_receipts = dna::MemoryReceipts { repo: acct, dsn: self.acct_head };
+        std::test::assert(len(acct_receipts.read(internal[7..71])) == 0, "no receipt body crossed, internal or not");
+        std::test::assert(len(acct_receipts.read(customer[7..71])) == 0, "the customer body is nowhere there");
 
         // ---- a connection that does not carry `customer` refuses it at the edge
         let narrow = self.cli(firm, "connect\n" + self.nerves + "\n--record\n" + acct_genesis + "\n--name\nnarrow\n--as\nauditor\n--purpose\naudit\n--classes\ninternal\n--by\nriley");

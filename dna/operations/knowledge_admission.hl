@@ -24,27 +24,31 @@ locus KnowledgeCommands {
     fn capture() -> GovernanceSnapshot {
         // A holder reclaims the record in its field when it dies (GH #967):
         // the reader opens a record of its own over the same repository.
-        let reader = if len(self.record.location()) > 0 { GovernanceCommands { record: dna::GitRecord { repo: self.record.location() }, limits: self.limits } } else { reader_over(self.record, self.limits) };
+        let reader = if len(self.record.location()) > 0 { GovernanceCommands { record: dna::MemoryRecord { repo: self.record.location() }, limits: self.limits } } else { reader_over(self.record, self.limits) };
         return reader.capture();
     }
     // A head that could not be read is never a Record that did not move (GH #961).
     fn unchanged(s: GovernanceSnapshot) -> Bool { let now = self.record.head("journal"); return self.record.identity() == s.application_id && now.ok && now.id == s.head; }
-    fn source_supported(j: dna::Journal) -> Bool {
-        let mut i = 0;
-        while i < j.revision() {
-            let kind = j.read(i).kind;
-            if kind == "ledger.adopted" || kind == "ledger.abandoned" { return false; }
-            i = i + 1;
-        }
-        return true;
-    }
     fn active_person(j: dna::Journal, name: String) -> Bool {
         let mut i = 0;
         while i < j.revision() { let e = j.read(i); if e.kind == "person.retired" && e.entity == name { return false; } i = i + 1; }
         return true;
     }
+    // A digest is visible when neither memory restricts it: the receipt
+    // rows (`receipt.*`) are the Ledger's (GH #1590), read beside the
+    // record's; a record kept in memory whose Ledger cannot be read here
+    // shows nothing.
     fn visible(j: dna::Journal, digest: String) -> Bool {
-        if !self.source_supported(j) { return false; }
+        if !self.visible_in(j, digest) { return false; }
+        let location = self.record.location();
+        if len(location) == 0 { return true; }
+        let ledger = attempt_ledger_for(location);
+        if !ledger.ready() { return false; }
+        let moved = ledger.refresh();
+        if len(ledger.last_error()) > 0 { return false; }
+        return self.visible_in(ledger, digest);
+    }
+    fn visible_in(j: dna::Journal, digest: String) -> Bool {
         let syntax = OrganizationJson { };
         let mut i = 0;
         while i < j.revision() {
@@ -101,7 +105,7 @@ locus KnowledgeCommands {
         let s = self.capture();
         if !s.ok || s.application_id != context.application_id { return KnowledgeCapability { reason: "The Record is unavailable." }; }
         let j = GovernanceJournal { snapshot: s };
-        if !j.valid || !self.source_supported(j) { return KnowledgeCapability { reason: "Knowledge commands require complete Record authority; routed Ledger commands are not configured." }; }
+        if !j.valid { return KnowledgeCapability { reason: "The Record is invalid." }; }
         let grant = self.authority.authorize(context, operation, false, j);
         if !self.unchanged(s) { return KnowledgeCapability { reason: "The Record changed; refresh capabilities." }; }
         let node = KnowledgeNodeCommandCodec { }; let policy = KnowledgePolicyCodec { };
@@ -194,7 +198,7 @@ locus KnowledgeCommands {
             let node = KnowledgeNodeCommandCodec { }; let is_node = node.known(command.operation);
             let binding = KnowledgeBindingCommandCodec { }; let is_binding = binding.known(command.operation);
             let edge = KnowledgeEdgeCommandCodec { }; let is_edge_review = edge.known(command.operation) && grant.mode == "review";
-            if !self.source_supported(j) || ((is_node || is_binding) && grant.mode != "review") { return KnowledgeResult { code: "commands_unsupported" }; }
+            if (is_node || is_binding) && grant.mode != "review" { return KnowledgeResult { code: "commands_unsupported" }; }
             // A changed head NEVER rebases the user's checked command. A CAS
             // race returns here only after checking for its original receipt.
             if s.head != command.record_head { return KnowledgeResult { code: "stale_subject" }; }

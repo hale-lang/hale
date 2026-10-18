@@ -118,14 +118,15 @@ main locus App {
         let add = sh("git\n-C\n" + repo + "\nadd\n-A");
         let c0 = sh("git\n-C\n" + repo + "\n-c\nuser.name=t\n-c\nuser.email=t@local\ncommit\n-q\n-m\nbase");
         std::test::assert_eq_int(c0.code, 0, "base commit: " + c0.stderr);
+        std::test::assert_eq_str(dna::memory_fixture(repo), "", "the record is born in memory (GH #1590)");
         let base = self.head();
         self.dna = dna::Dna {
-            journal: dna::GitJournal { repo: repo },
+            journal: dna::RoutedJournal { record: dna::RecordJournal { repo: repo }, ledger: dna::MemoryLedger { repo: repo, dsn_env: dna::fixture_spine(repo) } },
             gateway: dna::MutationGateway {
                 workspaces: dna::IsolatedWorktrees { repo: repo, root: repo + "/.hale/dna/worktrees" },
                 repo: dna::LocalGit { repo: repo }
             },
-            verification: dna::HaleVerification { hale_bin: toolchain(), receipts: dna::GitReceipts { repo: repo }, scratch: repo + "/.hale/dna/scratch", repo: repo },
+            verification: dna::HaleVerification { hale_bin: toolchain(), receipts: dna::MemoryReceipts { repo: repo }, scratch: repo + "/.hale/dna/scratch", repo: repo },
             editor: dna::SourceEditor {
                 models: dna::ModelRouter {
                     quick: dna::FakeModel { name: "quick", answer: CANDIDATE },
@@ -399,14 +400,15 @@ main locus App {
         // refuses the apply, by name
         std::io::fs::unlink(repo2 + "/app/helper space.hl") or discard;
         std::io::fs::unlink(repo2 + "/app/ignored.hl") or discard;
+        std::test::assert_eq_str(dna::memory_fixture(repo2), "", "the record is born in memory (GH #1590)");
         self.imp = dna::Dna {
-            journal: dna::GitJournal { repo: repo2 },
+            journal: dna::RoutedJournal { record: dna::RecordJournal { repo: repo2 }, ledger: dna::MemoryLedger { repo: repo2, dsn_env: dna::fixture_spine(repo2) } },
             gateway: dna::MutationGateway {
                 workspaces: dna::IsolatedWorktrees { repo: repo2, root: repo2 + "/.hale/dna/worktrees" },
                 repo: dna::LocalGit { repo: repo2 }
             },
             mutations_minted: 10,
-            verification: dna::HaleVerification { hale_bin: toolchain(), receipts: dna::GitReceipts { repo: repo2 }, scratch: repo2 + "/.hale/dna/scratch", repo: repo2, seed: "app" },
+            verification: dna::HaleVerification { hale_bin: toolchain(), receipts: dna::MemoryReceipts { repo: repo2 }, scratch: repo2 + "/.hale/dna/scratch", repo: repo2, seed: "app" },
             editor: dna::SourceEditor {
                 models: dna::ModelRouter {
                     quick: dna::FakeModel { name: "quick", answer: "// counts with the library\nimport \"../lib\" as lib;\nfn main() { println(lib::one()); }\n" },
@@ -446,15 +448,16 @@ main locus App {
         let i3 = sh("git\n-C\n" + repo3 + "\ninit\n-q\n-b\nmain");
         let a3 = sh("git\n-C\n" + repo3 + "\nadd\n-A");
         let c3 = sh("git\n-C\n" + repo3 + "\n-c\nuser.name=t\n-c\nuser.email=t@local\ncommit\n-q\n-m\nbase");
+        std::test::assert_eq_str(dna::memory_fixture(repo3), "", "the record is born in memory (GH #1590)");
         std::test::assert_eq_int(c3.code, 0, "base commit: " + c3.stderr);
         self.imp3 = dna::Dna {
-            journal: dna::GitJournal { repo: repo3 },
+            journal: dna::RoutedJournal { record: dna::RecordJournal { repo: repo3 }, ledger: dna::MemoryLedger { repo: repo3, dsn_env: dna::fixture_spine(repo3) } },
             gateway: dna::MutationGateway {
                 workspaces: dna::IsolatedWorktrees { repo: repo3, root: repo3 + "/.hale/dna/worktrees" },
                 repo: dna::LocalGit { repo: repo3 }
             },
             mutations_minted: 20,
-            verification: dna::HaleVerification { hale_bin: toolchain(), receipts: dna::GitReceipts { repo: repo3 }, scratch: repo3 + "/.hale/dna/scratch", repo: repo3, seed: "app" },
+            verification: dna::HaleVerification { hale_bin: toolchain(), receipts: dna::MemoryReceipts { repo: repo3 }, scratch: repo3 + "/.hale/dna/scratch", repo: repo3, seed: "app" },
             editor: dna::SourceEditor {
                 models: dna::ModelRouter {
                     quick: dna::FakeModel { name: "quick", answer: "import \"../lib\" as library;\nfn main() { println(library::value()); }\n" },
@@ -485,13 +488,13 @@ main locus App {
         // back settled, and admits the same approval again.
         std::io::fs::unlink(repo2 + "/lib/helper.hl") or discard;
         self.imp = dna::Dna {
-            journal: dna::GitJournal { repo: repo2 },
+            journal: dna::RoutedJournal { record: dna::RecordJournal { repo: repo2 }, ledger: dna::MemoryLedger { repo: repo2, dsn_env: dna::fixture_spine(repo2) } },
             gateway: dna::MutationGateway {
                 workspaces: dna::IsolatedWorktrees { repo: repo2, root: repo2 + "/.hale/dna/worktrees" },
                 repo: dna::LocalGit { repo: repo2 }
             },
             mutations_minted: 10,
-            verification: dna::HaleVerification { hale_bin: toolchain(), receipts: dna::GitReceipts { repo: repo2 }, scratch: repo2 + "/.hale/dna/scratch", repo: repo2, seed: "app" },
+            verification: dna::HaleVerification { hale_bin: toolchain(), receipts: dna::MemoryReceipts { repo: repo2 }, scratch: repo2 + "/.hale/dna/scratch", repo: repo2, seed: "app" },
             editor: dna::SourceEditor {
                 models: dna::ModelRouter {
                     quick: dna::FakeModel { name: "quick", answer: "// counts with the library\nimport \"../lib\" as lib;\nfn main() { println(lib::one()); }\n" },

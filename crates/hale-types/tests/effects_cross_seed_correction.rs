@@ -187,12 +187,12 @@ fn api() {
     // sees through the checker's types.
     pinned(
         "api",
-        369,
-        371,
+        370,
+        372,
         "
         Api::definition_draft_handle  does={syscall,block,env,alloc}
         Api::definitions_read  does={syscall,block,env,alloc}
-        Api::handle  does={syscall,block,time,entropy,env,alloc,secret_use,journal_io}
+        Api::handle  does={syscall,block,time,entropy,env,alloc,secret_use}
         CommandAdmission::preview_batch  does={syscall,block,time,entropy,env,alloc,secret_use}
         Commands::__rpc_row_1_12  does={syscall,block,time,entropy,env,alloc,secret_use}
         Commands::__rpc_row_2_12  does={syscall,block,time,entropy,env,alloc,secret_use}
@@ -200,8 +200,6 @@ fn api() {
         ContextWire::read  does={syscall,block,time,entropy,env,alloc,secret_use}
         KnowledgeWire::texts  does={alloc}
         LocalKnowledge::supported  does={env}
-        TaskWire::read  does={syscall,block,time,entropy,env,alloc,secret_use}
-        head_socket  does={syscall,block,time,env,alloc}
         launch_token  does={syscall,block,alloc}
         ",
     );
@@ -221,13 +219,12 @@ fn host() {
     // its walk, which resolves no imported type, cannot rule out.
     pinned(
         "host",
-        522,
-        527,
+        516,
+        521,
         "
         GovernanceCli::review_profile  does={syscall,block,time,entropy,env,alloc,secret_use}
         Host::ack_reading  does={publish,alloc}
-        Host::birth  does={env,alloc}
-        Host::bring_up  does={syscall,block,publish,time,entropy,env,alloc,secret_use,journal_io}
+        Host::bring_up  does={syscall,block,publish,time,entropy,env,alloc,secret_use}
         Host::build_genome  does={syscall,block,env,alloc}
         Host::build_seed  does={syscall,block,env,alloc}
         Host::cut_artifact  does={syscall,block,alloc}
@@ -243,7 +240,6 @@ fn host() {
         LocalTransport::probe  does={syscall,block,alloc}
         NatsExchange::birth  does={env,alloc}
         NatsExchange::deliver  does={syscall,block,time,entropy,env,alloc,secret_use}
-        Node::birth  does={env,alloc}
         Node::build  does={syscall,block,env,alloc}
         Projection::build_digest  does={syscall,block,alloc}
         Projection::review_of  does={syscall,block,time,entropy,env,alloc,secret_use}
@@ -267,19 +263,18 @@ fn host() {
         RepositoryCompose::up  does={syscall,block,time,alloc}
         SshTransport::execute  does={syscall,block,alloc}
         SshTransport::probe  does={syscall,block,alloc}
-        admits_here  does={syscall,block,time,env,alloc}
+        admits_here  does={syscall,env,alloc}
         alive  does={syscall,block,alloc}
         apply_drops  does={syscall,block,alloc}
         attached_application  does={syscall,block,alloc}
         base_of  does={syscall,block,time,entropy,env,alloc,secret_use}
         body_holder  does={syscall,block,env,alloc}
-        body_key  does={syscall,block,time,env,alloc}
+        body_key  does={syscall,block,alloc}
         build_cache_dir  does={syscall,block,env,alloc}
         build_cache_keep  does={syscall,block,alloc}
         build_cache_touch  does={syscall,block,alloc}
         build_fingerprint  does={syscall,block,env,alloc}
         build_seed_at  does={syscall,block,env,alloc}
-        checkpoint_here  does={syscall,block,time,entropy,env,alloc,secret_use}
         compose_key  does={alloc}
         compose_sweep  does={syscall,block,alloc}
         definitions_verb  does={syscall,block,alloc}
@@ -287,8 +282,8 @@ fn host() {
         draw_secret  does={syscall,block,alloc}
         drop_here  does={syscall,block,alloc}
         drop_include_line  does={syscall,block,alloc}
-        edge_admits_here  does={syscall,block,time,env,alloc}
-        exchange_key  does={syscall,block,time,env,alloc}
+        edge_admits_here  does={syscall,env,alloc}
+        exchange_key  does={syscall,alloc}
         exchange_migrate  does={syscall,block,time,entropy,env,alloc}
         exit_code  does={syscall,block,alloc}
         fence_compose_down  does={syscall,block,alloc}
@@ -313,14 +308,13 @@ fn host() {
         genome_show  does={syscall,block,alloc}
         genome_uncandidate  does={syscall,block,alloc}
         held_state  does={syscall,block,time,entropy,env,alloc,secret_use}
-        host_main  does={syscall,block,time,entropy,env,alloc,secret_use}
+        host_main  does={syscall,env,alloc}
         include_names  does={syscall,block,alloc}
         input_digests  does={syscall,block,alloc}
         kill_tree  does={syscall,block,alloc}
-        ledger_status  does={syscall,block,time,entropy,env,alloc,secret_use}
+        ledger_status  does={syscall,block,env,alloc}
         memory_fence_for  does={syscall,block,time,entropy,env,alloc,secret_use}
         memory_migrate_verb  does={syscall,block,time,env,alloc,secret_use}
-        missing_drawn  does={syscall,block,time,env,alloc}
         model_key_vault  does={alloc}
         models_verb  does={syscall,block,alloc}
         nerves_drop_verb  does={syscall,block,time,entropy,env,alloc}
@@ -330,24 +324,23 @@ fn host() {
         node_main  does={syscall,env,alloc}
         nursery_sources_verb  does={syscall,block,time,entropy,env,alloc,secret_use}
         organism_here  does={syscall,block,time,env,alloc}
-        organism_secrets  does={syscall,block,time,env,alloc}
+        organism_secrets  does={syscall,block,alloc}
         own_nerves  does={syscall,block,env,alloc}
-        owner_of_person_here  does={syscall,block,time,env,alloc}
-        owners_here  does={syscall,block,time,env,alloc}
-        ownership_graph_here  does={syscall,block,time,env,alloc}
-        ownership_note  does={syscall,block,time,env,alloc}
+        owner_of_person_here  does={syscall,env,alloc}
+        owners_here  does={syscall,env,alloc}
+        ownership_graph_here  does={syscall,env,alloc}
+        ownership_note  does={syscall,env,alloc}
         plan_rel_of  does={syscall,block,env,alloc}
         project_dir_name  does={syscall,block,alloc}
         project_name  does={syscall,block,alloc}
-        provision_secrets  does={syscall,block,time,env,alloc,secret_use}
-        record_identity  does={syscall,block,time,env,alloc}
-        route_verb  does={syscall,block,time,env,alloc}
-        secrets_board  does={syscall,block,time,env,alloc}
-        secrets_provision_verb  does={syscall,block,time,env,alloc,secret_use}
-        secrets_status_verb  does={syscall,block,time,env,alloc}
+        record_genesis_verb  does={syscall,block,env,alloc,secret_use}
+        record_identity  does={syscall,alloc}
+        record_identity_verb  does={syscall,alloc}
+        route_verb  does={syscall,block,time,entropy,env,alloc,secret_use}
         seeded_listing  does={syscall,block,time,entropy,env,alloc,secret_use}
         senses_up_verb  does={syscall,block,alloc}
-        show_verb  does={syscall,block,time,env,alloc}
+        signers_verb  does={syscall,block,time,entropy,env,alloc,secret_use}
+        sync_record  does={syscall,block,alloc}
         this_host  does={syscall,block,alloc}
         under_node  does={syscall,block,time,entropy,env,alloc,secret_use}
         work_verb  does={syscall,block,alloc}
@@ -363,8 +356,8 @@ fn operations() {
     // out), so the row is no longer one the correction changes.
     pinned(
         "operations",
-        523,
-        542,
+        524,
+        543,
         "
         AttemptCommandCodec::graph_position  does={alloc}
         AttemptCommandCodec::receipts_ok  does={alloc}
@@ -375,6 +368,7 @@ fn operations() {
         Definitions::load  does={syscall,block,env,alloc}
         GraphIngest::ingest  does={syscall,block,alloc}
         GraphIngest::list_files  does={syscall,block,alloc}
+        MemoryProjection::birth  does={syscall,block,env,alloc}
         MemoryProjection::ready  does={env}
         OrganizationImpact::relevant  does={alloc}
         OrganizationImpact::restriction  does={alloc}
@@ -404,12 +398,11 @@ fn operations() {
 fn organization_runtime() {
     pinned(
         "organization_runtime",
-        25,
-        25,
+        24,
+        24,
         "
         HostAuthority::routing  does={syscall,block,time,entropy,env,alloc,secret_use}
         OrganizationLaunchSource::file_digest  does={syscall,block,alloc}
-        OrganizationRuntime::birth  does={env,alloc}
         organization_exit_code  does={syscall,block,alloc}
         ",
     );

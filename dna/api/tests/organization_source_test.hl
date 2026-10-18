@@ -29,13 +29,13 @@ locus SnapshotCases {
         self.write(self.repo + "/vendor/support/main.hl", SUPPORT);
         self.commit();
         let source = orgsource::OrganizationSource { root: self.repo, compiler: self.compiler };
-        let before_refs = self.git("show-ref");
+        let before_refs = self.git("for-each-ref");
         let before_status = self.git("status\n--porcelain");
         let first = source.read();
         std::test::assert(first.ok, "ignored local dependency source reads: " + first.code + ": " + first.error);
         std::test::assert_eq_str(first.dependency_source, "local_vendor_snapshot", "actual ignored dependency bytes identified");
         std::test::assert(source.unchanged(first), "fresh dependency snapshot remains current");
-        std::test::assert_eq_str(self.git("show-ref"), before_refs, "loader moves no refs");
+        std::test::assert_eq_str(self.git("for-each-ref"), before_refs, "loader moves no refs");
         std::test::assert_eq_str(self.git("status\n--porcelain"), before_status, "loader changes no project files");
         self.write(self.repo + "/vendor/support/main.hl", SUPPORT + "// changed dependency bytes\n");
         std::test::assert(!source.unchanged(first), "dependency edits invalidate an unchanged source HEAD");

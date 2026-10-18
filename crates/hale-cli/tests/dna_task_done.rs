@@ -28,7 +28,8 @@ fn hale(args: &[&str], cwd: &Path) -> (bool, String) {
 }
 
 fn journal(app: &Path) -> Vec<(String, String, String, String)> {
-    record::text(app)
+    // the record's rows and its Ledger's (GH #1590: a Task's are the Ledger's)
+    (record::text(app) + "\n" + &record::ledger_text(app))
         .lines()
         .filter(|l| !l.trim().is_empty())
         .map(|l| {
@@ -91,6 +92,7 @@ fn a_persons_job_is_handed_and_reported_done_in_their_name() {
     let mut host = vault::hale()
         .args(["dna", "run", ".", "--no-iris"])
         .current_dir(&app)
+        .env("HALE_DNA_MEMORY_DSN_SPINE", record::spine(vault::hale(), &app))
         .env("HALE_BIN", env!("CARGO_BIN_EXE_hale"))
         .env("HALE_DNA_DISCOVER", "off")
         .env("XDG_CACHE_HOME", std::env::temp_dir().join("hale-tests-iris-cache"))

@@ -627,6 +627,15 @@ fn run_fixture_slice(slice: usize) {
         Some(db) => Some(db.dsn.clone()),
         None => std::env::var("HALE_DNA_MEMORY_DSN_OWNER").ok(),
     };
+    // GH #1590: the record is memory's, so a fixture without a Postgres has
+    // no record at all; the suite says so rather than letting each one fail
+    // on its own way
+    assert!(
+        dsn.as_deref().is_some_and(|d| d.starts_with("postgres")),
+        "the DNA fixtures need memory: set HALE_DNA_MEMORY_DSN_OWNER to a Postgres 16 with pgvector \
+         (`docker run -d -p 5480:5432 -e POSTGRES_USER=dna -e POSTGRES_PASSWORD=dna -e POSTGRES_DB=dna pgvector/pgvector:pg16`, \
+         then postgres://dna:dna@127.0.0.1:5480/dna?sslmode=disable)"
+    );
 
     let mut timings: Vec<FixtureTiming> = Vec::with_capacity(mine.len());
     let mut failure = None;
@@ -1028,9 +1037,9 @@ fn dna_fixture_set_is_complete() {
             "reap_test.hl",
             "receipt_retention_test.hl",
             "receipt_vault_test.hl",
-            "record_batch_stream_test.hl",
             "record_batch_test.hl",
             "record_identity_test.hl",
+            "record_memory_test.hl",
             "record_roles_test.hl",
             "record_test.hl",
             "recorded_model_test.hl",
@@ -1051,7 +1060,6 @@ fn dna_fixture_set_is_complete() {
             "structure_test.hl",
             "supersession_test.hl",
             "support_test.hl",
-            "sync_head_read_test.hl",
             "task_decide_test.hl",
             "task_evidence_test.hl",
             "tool_loop_test.hl",
@@ -1094,7 +1102,7 @@ fn dna_fixture_set_is_complete() {
 #[test]
 fn only_the_record_and_the_genome_spell_git() {
     let root = repo_root();
-    let allowed = ["dna/core/record.hl", "dna/core/workspace.hl", "dna/core/verification.hl", "dna/core/org.hl", "dna/host/genome.hl"];
+    let allowed = ["dna/core/record.hl", "dna/core/memory_record.hl", "dna/core/workspace.hl", "dna/core/verification.hl", "dna/core/org.hl", "dna/host/genome.hl"];
     let mut offenders = Vec::new();
     for dir in ["dna/core", "dna/host"] {
         for e in std::fs::read_dir(root.join(dir)).expect("dna dir").flatten() {
@@ -1116,6 +1124,52 @@ fn only_the_record_and_the_genome_spell_git() {
         }
     }
     assert!(offenders.is_empty(), "git is spelled outside the record's implementation and the genome's files:\n{}", offenders.join("\n"));
+}
+
+/// GH #1590: the record is memory's, and nothing reads or writes the git
+/// record an earlier toolchain kept: a clone that still holds one is
+/// refused, and re-inits a fresh record. A `refs/dna/` ref or a git record
+/// type anywhere in the organism's code, its fixtures, its acceptance
+/// programs or the face's harnesses is a reader, and fails the build,
+/// without exception (the driver's refusal of such a clone is Rust, outside
+/// these trees).
+#[test]
+fn nothing_reads_the_git_record() {
+    let root = repo_root();
+    let mut offenders = Vec::new();
+    for dir in ["dna/core", "dna/host", "dna/operations", "dna/organization_runtime", "dna/api", "dna/tests", "dna/acceptance", "dna/face/tests"] {
+        let mut stack = vec![root.join(dir)];
+        while let Some(d) = stack.pop() {
+            for e in std::fs::read_dir(&d).into_iter().flatten().flatten() {
+                let p = e.path();
+                if p.is_dir() {
+                    if p.file_name().map_or(false, |n| n != "pond" && n != "node_modules" && n != "parked") {
+                        stack.push(p);
+                    }
+                    continue;
+                }
+                if p.extension().map(|x| x != "hl" && x != "mjs").unwrap_or(true) {
+                    continue;
+                }
+                let rel = p.strip_prefix(&root).unwrap().to_string_lossy().to_string();
+                let text = std::fs::read_to_string(&p).unwrap();
+                for (i, l) in text.lines().enumerate() {
+                    let t = l.trim_start();
+                    if t.starts_with("//") {
+                        continue;
+                    }
+                    let code = t.split(" // ").next().unwrap_or(t);
+                    let reads = ["GitRecord", "GitJournal", "GitReceipts", "GitLeases"].iter().any(|n| code.contains(&format!("{n} {{")) || code.contains(&format!("::{n}")));
+                    // code may not spell the old refs or the journal's file
+                    let spells = code.contains("refs/dna/") || code.contains("journal.jsonl");
+                    if reads || spells {
+                        offenders.push(format!("{rel}:{}: {}", i + 1, t));
+                    }
+                }
+            }
+        }
+    }
+    assert!(offenders.is_empty(), "the git record is read:\n{}", offenders.join("\n"));
 }
 
 /// C3, the assembly's split: each family carved out of `dna/core/assembly.hl`

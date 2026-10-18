@@ -13,19 +13,21 @@ locus SourceCandidateCases {
         std::test::assert_eq_int(dna::run_tool("mkdir\n-p\n" + root + "/dna/org").code, 0, "isolated source directory");
         std::io::fs::write_file(root + "/dna/org/main.hl", ORIGINAL) or raise;
         std::io::fs::write_file(root + "/.gitignore", "/.hale/\n/vendor/\n") or raise;
-        let record = dna::GitRecord { repo: root };
+        let record = dna::MemoryRecord { repo: root };
         std::test::assert_eq_int(record.git("init\n-q\n-b\nmain").code, 0, "initialize source Git");
+        std::test::assert_eq_str(dna::memory_fixture(root), "", "the record is born in memory (GH #1590)");
         std::test::assert_eq_int(record.git("add\n-A").code, 0, "track original source");
         std::test::assert_eq_int(record.git("-c\nuser.name=SourceTest\n-c\nuser.email=source@test\ncommit\n-q\n-m\nbase").code, 0, "commit original source");
-        let j = dna::GitJournal { repo: root }; std::test::assert(j.append_exact(0, "application.observed", "org", "{}").ok, "Record genesis");
+        let j = dna::RoutedJournal { record: dna::RecordJournal { repo: root }, ledger: dna::MemoryLedger { repo: root } }; std::test::assert(j.append_exact(j.revision(), "application.observed", "org", "{}").ok, "Record genesis");
     }
     fn body(root: String, id: String) {
-        let inputs = orgsource::OrganizationPublicationInputs { root: root, source_owner: "" }; let journal = dna::GitJournal { repo: root };
+        std::test::assert_eq_str(dna::memory_fixture(root), "", "the record is born in memory (GH #1590)");
+        let inputs = orgsource::OrganizationPublicationInputs { root: root, source_owner: "" }; let journal = dna::RoutedJournal { record: dna::RecordJournal { repo: root }, ledger: dna::MemoryLedger { repo: root } };
         let body = dna::Dna {
             journal: journal, org_source: dna::OrganizationSourceRecord { facts: ops::StrictOrganizationSourceFacts { }, inputs: inputs },
             ownership: dna::Ownership { me_env: "" },
-            gateway: dna::MutationGateway { leases: dna::GitLeases { repo: root }, workspaces: dna::IsolatedWorktrees { repo: root, root: root + "/.hale/dna/worktrees" }, repo: dna::LocalGit { repo: root } },
-            verification: dna::HaleVerification { receipts: dna::GitReceipts { repo: root }, repo: root, scratch: root + "/.hale/dna/verification", seed: "dna/org" },
+            gateway: dna::MutationGateway { leases: dna::MemoryLeases { repo: root }, workspaces: dna::IsolatedWorktrees { repo: root, root: root + "/.hale/dna/worktrees" }, repo: dna::LocalGit { repo: root } },
+            verification: dna::HaleVerification { receipts: dna::MemoryReceipts { repo: root }, repo: root, scratch: root + "/.hale/dna/verification", seed: "dna/org" },
             review_policy: dna::OrgPolicy { }, board: dna::Board { }
         }; body.on_organization_source_requested(dna::OrganizationSourceTrigger { request_id: id });
     }
@@ -46,8 +48,9 @@ locus SourceCandidateCases {
     fn run_cases(root: String) {
         let original = ORIGINAL;
         let prepared = PREPARED;
+        std::test::assert_eq_str(dna::memory_fixture(root), "", "the record is born in memory (GH #1590)");
         let module_path = "dna/org/main.hl";
-        self.setup(root); let record = dna::GitRecord { repo: root }; let app = record.identity();
+        self.setup(root); let record = dna::MemoryRecord { repo: root }; let app = record.identity();
         let policy_wire = ops::OrganizationAuthorityPolicyCodec { };
         let policy = policy_wire.decode("{\"format\":\"dna.organization-authority/1\",\"application_id\":\"" + app + "\",\"grants\":[{\"mode\":\"local\",\"name\":\"alice\",\"authority\":\"board\",\"organization_propose\":true,\"organization_review\":false,\"recover\":true},{\"mode\":\"local\",\"name\":\"bob\",\"authority\":\"board\",\"organization_propose\":false,\"organization_review\":true,\"recover\":true}]}", app, "local");
         std::test::assert(policy.valid, "separate explicit source policy");
@@ -113,14 +116,13 @@ locus SourceCandidateCases {
         std::test::assert(!reader.unchanged(record, snapshot, object_read), "retained pointer movement fails final fence");
         std::test::assert_eq_int(head.handle(std::http::Request { method: "GET", path: path }).status, 404, "wrong retained candidate is unavailable");
         std::test::assert_eq_int(record.git("update-ref\n" + candidate_ref + "\n" + candidate.candidate_commit).code, 0, "restore exact retained pointer");
-        let diff_ref = record.ref_of("receipts/" + ops::raw_digest(w.text(semantic, "receipt_digest")));
-        std::test::assert_eq_int(record.git("update-ref\n-d\n" + diff_ref).code, 0, "remove retained diff fixture");
-        std::test::assert(!reader.unchanged(record, snapshot, object_read), "diff pointer loss fails final fence");
-        std::test::assert_eq_int(head.handle(std::http::Request { method: "GET", path: path }).status, 404, "missing native diff is not invented");
-        std::test::assert_eq_int(record.git("update-ref\n" + diff_ref + "\n" + object_read.diff_json.object).code, 0, "restore exact native diff");
-        std::test::assert(record.append("journal", record.head("journal").id, dna::Row { kind: "receipt.withheld", entity: candidate.request.source_digest, author: "privacy", body: "{}" }, false, "").ok, "real source visibility input");
+        // a receipt row is the Ledger's (GH #1590)
+        let privacy = dna::MemoryLedger { repo: root, dsn_env: "HALE_DNA_MEMORY_DSN_OWNER" };
+        std::test::assert(privacy.append(privacy.revision(), "receipt.withheld", candidate.request.source_digest, "{}").ok, "real source visibility input: " + privacy.last_error());
         std::test::assert(!reader.unchanged(record, snapshot, object_read), "new restriction changes Record fence");
-        std::test::assert_eq_int(head.handle(std::http::Request { method: "GET", path: path }).status, 409, "old snapshot invalidated");
+        // the record did not move (the restriction is the Ledger's row): the
+        // read at its head now hides the restricted candidate
+        std::test::assert_eq_int(head.handle(std::http::Request { method: "GET", path: path }).status, 404, "the restricted candidate is hidden");
         let latest = record.head("journal").id; let hidden_suffix = "?id=" + dna::url_encode(candidate.mutation_id) + "&snapshot=" + latest;
         let protected_read = head.handle(std::http::Request { method: "GET", path: prefix + "/dna/reviews/candidate" + hidden_suffix });
         let missing = head.handle(std::http::Request { method: "GET", path: prefix + "/dna/reviews/candidate?id=missing&snapshot=" + latest });

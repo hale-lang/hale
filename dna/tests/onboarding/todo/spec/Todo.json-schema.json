@@ -7,6 +7,7 @@
   "x-hale-members": {
     "Todos::add": {
       "name": "Todos::add",
+      "digest": "fnv1a64:515ccc57c5a93bef",
       "request": {
         "$ref": "#/$defs/AddTodo"
       },
@@ -22,6 +23,7 @@
     },
     "Todos::complete": {
       "name": "Todos::complete",
+      "digest": "fnv1a64:854dd8235089bd2e",
       "request": {
         "$ref": "#/$defs/TodoRef"
       },
@@ -37,6 +39,7 @@
     },
     "Todos::list": {
       "name": "Todos::list",
+      "digest": "fnv1a64:82c6716ad0feb4b3",
       "request": {
         "$ref": "#/$defs/ListQuery"
       },
@@ -50,6 +53,7 @@
     },
     "Todos::overdue": {
       "name": "Todos::overdue",
+      "digest": "fnv1a64:2b90d1bb52053786",
       "request": {
         "$ref": "#/$defs/Nothing"
       },
@@ -63,6 +67,7 @@
     },
     "Todos::remove": {
       "name": "Todos::remove",
+      "digest": "fnv1a64:b9f1c9530ae462bb",
       "request": {
         "$ref": "#/$defs/TodoRef"
       },

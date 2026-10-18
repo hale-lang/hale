@@ -91,7 +91,10 @@ locus HatCases {
         self.json.eq(hat, "tool_grant", "record_status record_history org_chart");
         self.json.eq(hat, "validators", "");
         self.json.eq(hat, "knowledge_bindings", "package:sha256:none");
-        self.json.eq(hat, "head", self.json.string(self.json.raw(first, "source"), "record_head"));
+        // the head the hat was drawn at is the record's and its Ledger's,
+        // read as one (GH #1590: the work rows above are the Ledger's)
+        let both = dna::RoutedJournal { record: dna::RecordJournal { repo: self.f.root }, ledger: dna::MemoryLedger { repo: self.f.root, dsn_env: "HALE_DNA_MEMORY_DSN_OWNER" } };
+        self.json.eq(hat, "head", both.head());
         // the targets the package is drawn for (seed/pull): the Work's path, the
         // codebase's language, the performer's position — and the digest covers them
         self.json.eq(hat, "targets", "org language:hale position:agent");

@@ -326,7 +326,7 @@ locus Api {
         let practices = path == prefix + "/dna/practices";
         let reviews = path == prefix + "/dna/reviews";
         if !practices && !reviews { return http.error(404, "not_found", "no such read endpoint", false); }
-        let q = ops::Queries { j: dna::GitJournal { repo: self.root }, receipts: dna::GitReceipts { repo: self.root } };
+        let q = ops::Queries { j: dna::RecordJournal { repo: self.root }, receipts: dna::MemoryReceipts { repo: self.root }, location: self.root };
         if q.head() != source.head || q.revision() != source.revision { return http.error(409, "snapshot_changed", "the Record changed while loading the query", true); }
         let total = if len(query.id) > 0 { 1 } else if practices { q.practice_count() } else { q.review_count() };
         let b = std::json::Builder { };
@@ -351,7 +351,7 @@ locus Api {
         b.end_object();
         // A redaction appended while receipt text was read invalidates the
         // entire response. The next request loads its suppression marker.
-        let record = dna::GitRecord { repo: self.root };
+        let record = dna::MemoryRecord { repo: self.root };
         let record_now = record.head("journal");
         if !record_now.ok { return http.unreadable(record_now); }
         if record_now.id != source.head { return http.error(409, "snapshot_changed", "the Record changed while the response was being built", true); }
@@ -382,7 +382,7 @@ locus Api {
         let drafts = definition_drafts_over(self.definitions);
         let result = drafts.validate(request.base_id, request.basis, request.candidate);
         let data = if result.status == 200 { wire.data(request, context.principal_mode, context.principal_name, result) } else { "" };
-        let record = dna::GitRecord { repo: self.root };
+        let record = dna::MemoryRecord { repo: self.root };
         let record_now = record.head("journal");
         if !record_now.ok { return http.unreadable(record_now); }
         if record_now.id != context.source.head { return http.error(409, "snapshot_changed", "the Record changed during definition draft validation", true); }
@@ -401,16 +401,16 @@ locus Api {
             count = count + 1; rest = if cut < 0 { "" } else { rest[(cut + 1)..len(rest)] };
         }
         if count != 2 { return http.error(400, "invalid_query", "candidate read requires exact id and snapshot", false); }
-        let record = dna::GitRecord { repo: self.root }; let capture = ops::GovernanceCommands { record: record }; let source = capture.capture();
+        let record = dna::MemoryRecord { repo: self.root }; let capture = ops::GovernanceCommands { record: record }; let source = capture.capture();
         if !source.ok { return http.error(503, "record_unavailable", "the canonical candidate source is unavailable", true); }
         if source.application_id != context.source.identity || source.head != context.source.head || source.revision != context.source.revision { return http.error(409, "snapshot_changed", "the Record changed while capturing the candidate", true); }
-        let journal = ops::GovernanceJournal { snapshot: source }; let receipts = ops::GovernanceReceipts { record: dna::GitRecord { repo: self.root } };
+        let journal = ops::GovernanceJournal { snapshot: source }; let receipts = ops::GovernanceReceipts { record: dna::MemoryRecord { repo: self.root } };
         if !journal.valid { return http.error(503, "record_malformed", "the candidate source is invalid", false); }
         let row = ops::review_row(journal, query.id);
         if self.organization_candidates.source_review(row) { return self.organization_candidates.read(context, source, journal, query.id); }
         let commands = ops::KnowledgeCommands { };
         if !commands.active_person(journal, context.principal_name) { return http.error(403, "forbidden", "this principal cannot read the Knowledge candidate", false); }
-        let queries = ops::Queries { j: journal, receipts: receipts };
+        let queries = ops::Queries { j: journal, receipts: receipts, location: self.root };
         let wire = ops::GovernanceCommandCodec { };
         let mut kind = "knowledge_binding_change"; let mut document = ""; let mut digest = ""; let mut proposer = ""; let mut sequence = -1; let mut valid = false;
         if row.knowledge_edge_digest != "" || row.edge_request_id != "" {
@@ -437,7 +437,7 @@ locus Api {
         if !self.knowledge.supported() { return http.error(503, "knowledge_unsupported", "this application does not configure Knowledge reads", false); }
         let request = KnowledgeRequest { source: source, reader: actor, kind: kind, query: query };
         let response = wire.response(request, self.knowledge.read(request));
-        let record = dna::GitRecord { repo: self.root };
+        let record = dna::MemoryRecord { repo: self.root };
         let record_now = record.head("journal");
         if !record_now.ok { return http.unreadable(record_now); }
         if record_now.id != source.head { return http.error(409, "snapshot_changed", "the Record changed during the Knowledge read", true); }
@@ -467,7 +467,7 @@ locus Api {
         b.end_array();
         b.field("page", http.page(query.limit, query.offset, total, snapshot));
         b.field("basis", q.basis_json()); b.end_object();
-        let record = dna::GitRecord { repo: self.root };
+        let record = dna::MemoryRecord { repo: self.root };
         let record_now = record.head("journal");
         if !record_now.ok { return http.unreadable(record_now); }
         if record_now.id != source.head {
@@ -506,7 +506,7 @@ locus Api {
         b.field("basis", q.basis_json());
         b.field("ownership", q.ownership_json());
         b.end_object();
-        let record = dna::GitRecord { repo: self.root };
+        let record = dna::MemoryRecord { repo: self.root };
         let record_now = record.head("journal");
         if !record_now.ok { return http.unreadable(record_now); }
         if !self.organization.unchanged(artifact) || record_now.id != source.head {
@@ -546,7 +546,7 @@ fn local_person(root: String) -> String {
 // each subject is (`dna.oidc.member`). The discovery document and the
 // issuer's signing keys are read now, once: a head that cannot read them
 // does not start, and never falls back to anything.
-fn oidc_ui(record: dna::GitRecord, port: Int, label: String) -> ui::Ui {
+fn oidc_ui(record: dna::MemoryRecord, port: Int, label: String) -> ui::Ui {
     let issuer = record.setting("oidc.issuer");
     let client = record.setting("oidc.client");
     let named = record.setting("oidc.redirect");
@@ -741,7 +741,7 @@ fn serve_with_people(root: String, port: Int, web: WebAssets, definitions: ops::
         eprintln("hale dna api: expected a project root and port 1..65535");
         std::process::exit(2);
     }
-    let record = dna::GitRecord { repo: root };
+    let record = dna::MemoryRecord { repo: root };
     let configured = record.git("config\n--get\ndna.principal");
     if configured.code != 0 && configured.code != 1 {
         eprintln("hale dna api: cannot read project authentication configuration");

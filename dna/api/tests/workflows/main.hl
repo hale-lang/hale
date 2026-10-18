@@ -85,12 +85,13 @@ fn main() {
     std::test::assert(std::str::starts_with(root, "/tmp/hale-face-browser."), "owned execution fixture scratch");
     if action == "seed" {
         let f = fixtures::Fixture { root: root, port: 1 };
-        let j = dna::GitJournal { repo: root }; let story = Story { j: j }; story.seed();
+        std::test::assert_eq_str(dna::memory_fixture(root), "", "the record is born in memory (GH #1590)");
+        let j = dna::RoutedJournal { record: dna::RecordJournal { repo: root }, ledger: dna::MemoryLedger { repo: root } }; let story = Story { j: j }; story.seed();
         let b = std::json::Builder { }; b.begin_object(); b.string_field("application", f.identity); b.string_field("execution", ROOT); b.string_field("child", CHILD); b.string_field("bank", BANK); b.string_field("human", HUMAN); b.end_object();
         std::io::fs::write_file(root + "/fixture.json", b.result()) or discard;
         f.root = "";
     } else {
-        let story = Story { j: dna::GitJournal { repo: root } };
+        let story = Story { j: dna::RecordJournal { repo: root } };
         if action == "members" { story.finish_members(); }
         else if action == "finish" { story.finish(); }
         else if action == "cancel" { story.append("workflow.settled", ROOT, dna::encode_workflow_outcome(dna::WorkflowOutcome { task_id: ROOT, disposition: "cancelled", reason: "Operator cancelled the sample execution" })); }
@@ -100,7 +101,7 @@ fn main() {
         else { std::test::assert(false, "unknown execution fixture action"); }
     }
     if action != "adopt" && action != "invalid" {
-        let j = dna::GitJournal { repo: root };
+        let j = dna::RoutedJournal { record: dna::RecordJournal { repo: root }, ledger: dna::MemoryLedger { repo: root } };
         let q = api::WorkflowRead { j: j, visibility: ops::Queries { j: j, receipts: ops::NoReceipts { } } };
         std::test::assert(q.load(), "native projection accepts the fixture: " + q.problem);
     }

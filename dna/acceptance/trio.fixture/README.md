@@ -206,3 +206,22 @@ re-keyed for the changed context alone. Each old context digest was
 checked by reproducing it from the new context, stored as the miss's
 evidence, with the one line taken back out. No fresh model call was
 made; every answer is unchanged.
+
+The record moved into memory (GH #1590), which changed the generated
+organization's `main.hl` in five places: the comment over its journal
+says both memories are in memory, and `dna::GitJournal`,
+`dna::GitLeases` and the two `dna::GitReceipts` became
+`dna::RecordJournal`, `dna::MemoryLeases` and `dna::MemoryReceipts`. The
+organization-growth edit (`de69ea6f2bcd…`, was `abc3822558b3…`) is
+re-keyed, and its recorded output carries the same five changes and,
+in the position it grows, the same `dna::MemoryReceipts` its Leader's
+copy now names, and nothing else. The growth assessment
+(`2897c2dd9fe1…`, was `9792e47cd54c…`) is re-keyed for the changed
+context alone. The new context's digest was checked against the miss's
+evidence, each old key was reproduced from its entry's fields, and each
+new key was the one the miss named. No fresh model call was made; every
+answer, token and cost field is unchanged. `rows.jsonl` now holds the
+record's rows and its Ledger's: the record is born with
+`record.genesis`, `ledger.adopted` and `record.key` (its nonce and the
+identity drawn from it are normalized), and the readings' subject names
+the record's identity where it named a commit.

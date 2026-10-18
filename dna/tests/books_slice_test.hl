@@ -46,8 +46,19 @@ fn dna_cli(app: String, args: String) -> String {
 }
 
 // The record's rows, one per line, as the chain holds them.
+// The record's rows and its Ledger's (GH #1590: the day's work is the
+// Ledger's), one JSON object per line.
 fn journal(app: String) -> String {
-    return in_dir(app, toolchain() + "\ndna\nrecord-rows").stdout;
+    return in_dir(app, toolchain() + "\ndna\nrecord-rows").stdout + in_dir(app, toolchain() + "\ndna\nledger\nrows").stdout;
+}
+
+// Whether `digest` is a row of the record (GH #1590: the record's rows are
+// memory's, read here as the owner).
+fn record_holds(app: String, digest: String) -> Bool {
+    let j = dna::RecordJournal { repo: app, dsn_env: "HALE_DNA_MEMORY_DSN_OWNER" };
+    let mut i = j.revision() - 1;
+    while i >= 0 { if j.read(i).digest == digest { return true; } i = i - 1; }
+    return false;
 }
 
 // The end of the line that starts at `from` in `v`: the index of its
@@ -299,6 +310,12 @@ main locus App {
         let copied_offline = dna::run_tool("cp\n-r\n" + app + "\n" + offline);
         let bare_offline = in_dir(scratch, "git\ninit\n-q\n--bare\n-b\nmain\n" + scratch + "/offline.git");
         let remote_offline = in_dir(offline, "git\nremote\nadd\norigin\n" + scratch + "/offline.git");
+        // a copy of the genome reaches the same record in memory (GH #1590):
+        // the offline copy is another organism, so it is born with a record
+        // of its own, as the first was
+        let unpinned = in_dir(offline, "sh\n-c\nsed -i '/^record = /d' hale.toml && rm -f .hale/dna/memory.env && git commit -qam unpinned");
+        let reborn = in_dir(offline, toolchain() + "\ndna\ninit\n.");
+        std::test::assert(unpinned.code == 0 && reborn.code == 0, "the offline copy has a record of its own: " + unpinned.stderr + reborn.stdout + reborn.stderr);
         let deliver = "sh\n-c\nmkdir -p inbox && cp \"$1\" inbox/b1001.bill && BOOKS_MODE=once HALE_BIN=\"$2\" exec \"$2\" run .\nsh\n" + fixture + "/bills/b1001.bill\n" + toolchain();
         // the first time, its concern cannot be raised: the bill stays, to be tried again
         let no_concern = scratch + "/no-concern-hale";
@@ -442,11 +459,10 @@ main locus App {
         // ---- 7. a week, from the record alone
         let export_argv = "sh\n-c\nBOOKS_MODE=export BOOKS_FROM=2026-09-07 BOOKS_TO=2026-09-13 exec \"$1\" run .\nsh\n" + toolchain();
         let week = in_dir(app, export_argv).stdout;
-        // the organism is live: the export names the head it read, which is
-        // the record's (the ref may have moved on since)
+        // the organism is live: the export names the head it read, a row of
+        // the record and its Ledger (both may have moved on since)
         let head = word_after(week, "from the record at ");
-        let at_record = in_dir(app, "git\nmerge-base\n--is-ancestor\n" + head + "\nrefs/dna/journal");
-        std::test::assert(len(head) == 40 && at_record.code == 0, "the export names a head of the record: " + head);
+        std::test::assert(len(head) == 64 && record_holds(app, head), "the export names a head of the record: " + head);
         std::test::assert(std::str::starts_with(week, "bill,supplier,payer,purpose,date,amount,currency,treatment,evidence,task,assignee,state,completion,practice\n"), "an open CSV: " + week);
         std::test::assert(!std::str::contains(week, "B-0999"), "last month's bill is outside the week");
         std::test::assert(std::str::contains(week, "B-1001,Northwind Rail,mara,travel to the client,2026-09-07,120.00,CU,pending," + bill1 + "," + c1001 + ",mara,done,evidence " + r1001 + "," + v1), "B-1001 with its evidence: " + week);

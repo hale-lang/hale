@@ -61,13 +61,14 @@ main locus App {
         let cut = sh(toolchain() + "\ncheck\n" + repo + "\n--dump-topology=" + repo + "/.hale/dna/baseline.topology");
         std::test::assert_eq_int(cut.code, 0, "baseline: " + cut.stderr);
 
+        std::test::assert_eq_str(dna::memory_fixture(repo), "", "the record is born in memory (GH #1590)");
         self.dna = dna::Dna {
-            journal: dna::GitJournal { repo: repo },
+            journal: dna::RoutedJournal { record: dna::RecordJournal { repo: repo }, ledger: dna::MemoryLedger { repo: repo, dsn_env: dna::fixture_spine(repo) } },
             gateway: dna::MutationGateway {
                 workspaces: dna::IsolatedWorktrees { repo: repo, root: repo + "/.hale/dna/worktrees", base_exec_digest: "exec:base" },
                 repo: dna::LocalGit { repo: repo }
             },
-            verification: dna::HaleVerification { hale_bin: toolchain(), receipts: dna::GitReceipts { repo: repo }, scratch: repo + "/.hale/dna/scratch", repo: repo },
+            verification: dna::HaleVerification { hale_bin: toolchain(), receipts: dna::MemoryReceipts { repo: repo }, scratch: repo + "/.hale/dna/scratch", repo: repo },
             editor: dna::SourceEditor {
                 name: "editor",
                 models: dna::ModelRouter {
@@ -140,7 +141,7 @@ main locus App {
         // one fails it in the record rather than showing it located forever
         let p3 = self.dna.journal.append(self.dna.journal.revision(), "mutation.proposed", "m3", "task t3 feature: never finished (main.hl) at base");
         let w3 = self.dna.journal.append(self.dna.journal.revision(), "mutation.located", "m3", "main.hl under read edit fmt check");
-        let second = dna::Dna { journal: dna::GitJournal { repo: repo } };
+        let second = dna::Dna { journal: dna::RoutedJournal { record: dna::RecordJournal { repo: repo }, ledger: dna::MemoryLedger { repo: repo, dsn_env: dna::fixture_spine(repo) } } };
         std::test::assert_eq_int(second.rehydrated, 1, "only the pending Review is re-born (m1 settled)");
         let mut failed3 = "";
         let mut q = 0;

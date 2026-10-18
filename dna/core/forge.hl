@@ -26,7 +26,7 @@ type ForgeVerdict {
 
 interface Forge {
     fn kind() -> String;
-    // Whether the record's remote has a forge, and what it is called.
+    // Whether the genome's remote has a forge, and what it is called.
     fn present() -> Bool;
     fn name() -> String;
     fn open_review(candidate: String, title: String, body: String) -> ReviewRef;

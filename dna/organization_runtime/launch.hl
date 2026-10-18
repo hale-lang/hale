@@ -16,9 +16,9 @@ locus OrganizationLaunchSource {
     params { root: String = ""; }
     fn basis(id: String) -> OrganizationLaunchBasis {
         let authority = HostAuthority { root: self.root };
-        let j = dna::GitJournal { repo: self.root }; let view = ops::OrganizationProjection { }; let application = ops::OrganizationApplication { };
-        let candidate = view.candidate(j, id, j.text); if !candidate.ok { return OrganizationLaunchBasis { }; }
-        let reviewed = view.review_evidence(j, candidate, j.text); let applied = application.read(j, candidate, reviewed);
+        let j = dna::RecordJournal { repo: self.root }; let view = ops::OrganizationProjection { }; let application = ops::OrganizationApplication { };
+        let candidate = view.candidate(j, id, j.text()); if !candidate.ok { return OrganizationLaunchBasis { }; }
+        let reviewed = view.review_evidence(j, candidate, j.text()); let applied = application.read(j, candidate, reviewed);
         if applied.state != "applied" || applied.handoff_state != "requested" || applied.applied_sequence < 0 || applied.handoff_sequence < 0 { return OrganizationLaunchBasis { }; }
         let request = candidate.request; let effect = j.read(applied.applied_sequence); let handoff = j.read(applied.handoff_sequence);
         let at = authority.record_head();
@@ -44,8 +44,8 @@ locus OrganizationLaunchSource {
     }
     fn fact(kind: String, id: String) -> dna::Event {
         let authority = HostAuthority { root: self.root };
-        let j = dna::GitJournal { repo: self.root }; let codec = dna::OrganizationSourceRequestCodec { }; let e = codec.fact(j, kind, id);
-        if e.kind != kind || dna::native_json_string(dna::line_at(j.text, e.seq), "author") != "host"
+        let j = dna::RecordJournal { repo: self.root }; let codec = dna::OrganizationSourceRequestCodec { }; let e = codec.fact(j, kind, id);
+        if e.kind != kind || j.author_of(e.seq) != "host"
             || (authority.trust() == "signed" && !authority.row_verified(e.digest)) { return dna::Event { }; }
         return e;
     }

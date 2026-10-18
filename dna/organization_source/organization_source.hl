@@ -28,7 +28,7 @@ locus OrganizationSource {
     }
     birth() {
         if len(self.compiler) == 0 { self.compiler = dna::resolve_toolchain(""); }
-        let r = dna::GitRecord { repo: self.root };
+        let r = dna::MemoryRecord { repo: self.root };
         let absolute = r.git_out("rev-parse\n--show-toplevel");
         if len(absolute) > 0 { self.root = absolute; }
         if !std::str::contains(self.compiler, "\n") && !std::str::contains(self.compiler, "\r") {
@@ -37,13 +37,13 @@ locus OrganizationSource {
         }
     }
     fn head() -> String {
-        let r = dna::GitRecord { repo: self.root };
+        let r = dna::MemoryRecord { repo: self.root };
         return r.git_out("rev-parse\n--verify\nHEAD^{commit}");
     }
     fn declared() -> Bool {
         let h = self.head();
         if len(h) == 0 { return false; }
-        let r = dna::GitRecord { repo: self.root };
+        let r = dna::MemoryRecord { repo: self.root };
         return r.git_out("cat-file\n-t\n" + h + ":dna/org") == "tree";
     }
     fn remove_scratch(path: String) {
@@ -77,7 +77,7 @@ locus OrganizationSource {
     fn read() -> OrganizationArtifact {
         let h = self.head();
         if len(h) == 0 { return OrganizationArtifact { }; }
-        let r = dna::GitRecord { repo: self.root };
+        let r = dna::MemoryRecord { repo: self.root };
         if r.git_out("cat-file\n-t\n" + h + ":dna/org") != "tree" { return OrganizationArtifact { source_head: h }; }
         let scratch = self.scratch();
         if len(scratch) == 0 {
@@ -99,16 +99,16 @@ locus OrganizationSource {
         let scratch = self.scratch();
         if len(scratch) == 0 { return OrganizationArtifact { error: "temporary inspection storage is unavailable" }; }
         let inspection = OrganizationInspection { scratch: scratch, seconds: self.inspection_seconds };
-        let r = dna::GitRecord { repo: self.root };
+        let r = dna::MemoryRecord { repo: self.root };
         let result = self.inspect_version(r, base.source_head, scratch, inspection, true, candidate, base);
         self.remove_scratch(scratch);
         if !self.unchanged(base) { return OrganizationArtifact { code: "snapshot_changed", error: "organization source or dependencies changed; reload before validating" }; }
         return result;
     }
-    fn inspect(r: dna::GitRecord, h: String, scratch: String, inspection: OrganizationInspection) -> OrganizationArtifact {
+    fn inspect(r: dna::MemoryRecord, h: String, scratch: String, inspection: OrganizationInspection) -> OrganizationArtifact {
         return self.inspect_version(r, h, scratch, inspection, false, "", OrganizationArtifact { });
     }
-    fn inspect_version(r: dna::GitRecord, h: String, scratch: String, inspection: OrganizationInspection, drafting: Bool, candidate: String, base: OrganizationArtifact) -> OrganizationArtifact {
+    fn inspect_version(r: dna::MemoryRecord, h: String, scratch: String, inspection: OrganizationInspection, drafting: Bool, candidate: String, base: OrganizationArtifact) -> OrganizationArtifact {
         if !inspection.plain_path(self.root) || !inspection.plain_path(self.compiler) {
             return OrganizationArtifact { available: true, source_head: h, error: "the configured project or Hale compiler path is invalid" };
         }

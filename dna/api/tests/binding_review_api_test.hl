@@ -25,8 +25,9 @@ locus BindingReviewReadCases {
         return ops::GovernanceCommand { request_id: key, operation: "dna.review.verdict", application_id: app, target_kind: "dna.review", target_id: review_id, subject_digest: digest, expected_review_state: "pending", verdict: "approve", comment: "Exact binding decision." };
     }
     fn run_cases(root: String) {
-        let record = dna::GitRecord { repo: root }; std::test::assert_eq_int(record.git("init\n-q").code, 0, "initialize isolated Record");
-        let journal = dna::GitJournal { repo: root }; let receipts = dna::GitReceipts { repo: root };
+        let record = dna::MemoryRecord { repo: root }; std::test::assert_eq_int(record.git("init\n-q").code, 0, "initialize isolated Record");
+        std::test::assert_eq_str(dna::memory_fixture(root), "", "the record is born in memory (GH #1590)");
+        let journal = dna::RoutedJournal { record: dna::RecordJournal { repo: root }, ledger: dna::MemoryLedger { repo: root } }; let receipts = dna::MemoryReceipts { repo: root };
         self.append(journal, "application.observed", "org", "{}");
         let idea = "sha256:" + receipts.store(dna::knowledge_document(dna::Idea { kind: "concept", text: "Original item unchanged.", author: "org" }, "org"));
         self.append(journal, "knowledge.ratified", idea, "{\"class\":\"initiative\"}");
@@ -37,7 +38,7 @@ locus BindingReviewReadCases {
         let admitted = commands.submit(alice, command); std::test::assert(admitted.ok, "native admission: " + admitted.code);
         let captured = ops::GovernanceJournal { snapshot: commands.capture() }; let codec = ops::KnowledgeCommandCodec { }; let fact = codec.decode_fact(captured.read(admitted.receipt.sequence));
         std::test::assert(fact.valid, "original request retains exact command and grant");
-        let body_journal = dna::GitJournal { repo: root }; let body = dna::Dna { journal: body_journal, verification: dna::HaleVerification { receipts: receipts, repo: root }, board: dna::Board { who: "board" } };
+        let body_journal = dna::RoutedJournal { record: dna::RecordJournal { repo: root }, ledger: dna::MemoryLedger { repo: root } }; let body = dna::Dna { journal: body_journal, verification: dna::HaleVerification { receipts: receipts, repo: root }, board: dna::Board { who: "board" } };
         body.on_knowledge_binding_requested(fact.binding);
         let created = commands.lookup(alice, command.request_id); std::test::assert(created.ok && created.receipt.binding.proposal_state == "created", "actual Body creates exact binding candidate");
         let request = fact.binding; let native = dna::KnowledgeBindingCodec { }; let review_id = native.review_id(request.candidate_digest);

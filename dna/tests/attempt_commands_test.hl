@@ -72,11 +72,12 @@ locus App {
     // The organism, built (or built again: a restart) over the record —
     // with the ledger, once adopted.
     fn start() {
-        self.journal = dna::RoutedJournal { record: dna::GitJournal { repo: self.app }, ledger: dna::MemoryLedger { repo: self.app, dsn_env: dna::SPINE_DSN_ENV } };
+        std::test::assert_eq_str(dna::memory_fixture(self.app), "", "the record is born in memory (GH #1590)");
+        self.journal = dna::RoutedJournal { record: dna::RecordJournal { repo: self.app }, ledger: dna::MemoryLedger { repo: self.app, dsn_env: dna::SPINE_DSN_ENV } };
         self.core = dna::Dna {
             journal: self.journal,
             work: dna::WorkSystem { agent: dna::LegRelay { name: "legs" }, agent_reconciler: dna::RelayReplay { } },
-            verification: dna::HaleVerification { hale_bin: toolchain(), receipts: dna::GitReceipts { repo: self.app }, scratch: self.app + "/.hale/dna/scratch", repo: self.app },
+            verification: dna::HaleVerification { hale_bin: toolchain(), receipts: dna::MemoryReceipts { repo: self.app }, scratch: self.app + "/.hale/dna/scratch", repo: self.app },
             // the owner's memory handles, scoped to this record (the host scopes them so)
             claims: dna::MemoryLeases { repo: self.app }, knowledge_client: dna::MemoryKnowledge { repo: self.app },
             org_id: "legs"
@@ -191,8 +192,9 @@ locus App {
     }
     // The hat a leg reads at the head, over the journal the facts live in.
     fn hat_of(attempt: String) -> dna::Hat {
-        let head_journal = dna::RoutedJournal { record: dna::GitJournal { repo: self.app }, ledger: dna::MemoryLedger { repo: self.app, dsn_env: dna::HEAD_DSN_ENV } };
-        let reader = ops::HatReader { j: head_journal, receipts: dna::GitReceipts { repo: self.app }, knowledge: dna::MemoryKnowledge { repo: self.app, dsn_env: dna::HEAD_DSN_ENV }, ledger_ready: self.with_memory };
+        std::test::assert_eq_str(dna::memory_fixture(self.app), "", "the record is born in memory (GH #1590)");
+        let head_journal = dna::RoutedJournal { record: dna::RecordJournal { repo: self.app }, ledger: dna::MemoryLedger { repo: self.app, dsn_env: dna::HEAD_DSN_ENV } };
+        let reader = ops::HatReader { j: head_journal, receipts: dna::MemoryReceipts { repo: self.app }, knowledge: dna::MemoryKnowledge { repo: self.app, dsn_env: dna::HEAD_DSN_ENV }, ledger_ready: self.with_memory };
         let hat = reader.read(ops::usage_work_of(attempt));
         std::test::assert(hat.ok, "the hat reads: " + hat.code + " " + hat.why);
         std::test::assert_eq_str(hat.attempt_id, attempt, "for the attempt admitted last");
@@ -215,7 +217,7 @@ locus App {
             while k < 2100 { let pad = long.append(long.revision(), "note.filed", "n" + to_string(k), "{}"); k = k + 1; }
             k = 0;
             while k < head_journal.revision() { let e = head_journal.read(k); let copied = long.append(long.revision(), e.kind, e.entity, e.body); k = k + 1; }
-            let aged = ops::HatReader { j: long, receipts: dna::GitReceipts { repo: self.app }, knowledge: dna::MemoryKnowledge { repo: self.app, dsn_env: dna::HEAD_DSN_ENV }, ledger_ready: false };
+            let aged = ops::HatReader { j: long, receipts: dna::MemoryReceipts { repo: self.app }, knowledge: dna::MemoryKnowledge { repo: self.app, dsn_env: dna::HEAD_DSN_ENV }, ledger_ready: false };
             let again = aged.read(ops::usage_work_of(attempt));
             std::test::assert(again.ok && again.attempt_id == attempt, "the hat reads past 2048 rows: " + again.code + " " + again.why);
         }
@@ -223,9 +225,10 @@ locus App {
     }
     // ---- the whole of it, over the journal as it stands (routing 0, or adopted)
     fn exercise(label: String) {
-        let record = dna::GitRecord { repo: self.app };
+        std::test::assert_eq_str(dna::memory_fixture(self.app), "", "the record is born in memory (GH #1590)");
+        let record = dna::MemoryRecord { repo: self.app };
         let identity = record.identity();
-        let commands = ops::GovernanceCommands { record: dna::GitRecord { repo: self.app } };
+        let commands = ops::GovernanceCommands { record: dna::MemoryRecord { repo: self.app } };
         let alice = ops::GovernanceContext { application_id: identity, principal_mode: "local", principal_name: "alice" };
         let bob = ops::GovernanceContext { application_id: identity, principal_mode: "local", principal_name: "bob" };
         let l = label + ": ";
@@ -242,10 +245,10 @@ locus App {
         // the check's, not a real proposal's, which memory would refuse to
         // project, so the case runs where the record is all there is
         if label == "record" && !self.with_memory {
-            let receipts = dna::GitReceipts { repo: self.app };
+            let receipts = dna::MemoryReceipts { repo: self.app };
             let work = "sha256:" + receipts.store("{\"rows\": [{\"kind\": \"graph.node\", \"entity\": \"work:api\", \"body\": \"{}\"}]}");
             let seat = "sha256:" + receipts.store("{\"rows\": [{\"kind\": \"graph.node\", \"entity\": \"position:api/dev\", \"body\": \"{}\"}]}");
-            let hj = dna::GitJournal { repo: self.app };
+            let hj = dna::RoutedJournal { record: dna::RecordJournal { repo: self.app }, ledger: dna::MemoryLedger { repo: self.app } };
             std::test::assert(hj.append(hj.revision(), "knowledge.proposed", work, "{\"kind\": \"graph\", \"name\": \"api\", \"target\": \"process:api\"}").ok, "a work hole proposed");
             std::test::assert(hj.append(hj.revision(), "knowledge.ratified", work, "{\"decided_by\": \"ada\"}").ok, "and ratified");
             std::test::assert(hj.append(hj.revision(), "knowledge.proposed", seat, "{\"kind\": \"graph\", \"name\": \"api/dev\", \"target\": \"process:api\"}").ok, "a position hole proposed");
@@ -271,7 +274,7 @@ locus App {
             let seat = ops::GraphEdge { kind: "holds" };
             seat.member("position", "position:agent");
             seat.member("holder", "dave");
-            let gj = dna::GitJournal { repo: self.app };
+            let gj = dna::RoutedJournal { record: dna::RecordJournal { repo: self.app }, ledger: dna::MemoryLedger { repo: self.app } };
             std::test::assert(gj.append(gj.revision(), "graph.edge", seat.id(), seat.body()).ok, l + "dave holds position:agent");
             let head_s = record.head("journal").id;
             let as_leader = commands.submit(dave, self.claim_of(label + "s1", identity, head_s, "agent", "position:leader#9", "internal public"));
@@ -298,7 +301,7 @@ locus App {
                 edge.member("position", "position:agent");
                 edge.member("holder", "frank");
                 let doc = "{\"kind\": \"graph\", \"rows\": [{\"kind\": \"graph.edge\", \"entity\": " + dna::record_json_quote(edge.id()) + ", \"body\": " + dna::record_json_quote(edge.body()) + "}]}";
-                let filled = "sha256:" + dna::GitReceipts { repo: self.app }.store(doc);
+                let filled = "sha256:" + dna::MemoryReceipts { repo: self.app }.store(doc);
                 std::test::assert(gj.append(gj.revision(), "knowledge.proposed", filled, "{\"kind\": \"graph\", \"name\": \"agent held by frank\", \"target\": \"position:agent\"}").ok, l + "frank proposed for position:agent");
                 std::test::assert(gj.append(gj.revision(), "knowledge.ratified", filled, "{\"decided_by\": \"ada\"}").ok, l + "and ratified");
                 let frank = ops::GovernanceContext { application_id: identity, principal_mode: "local", principal_name: "frank" };
@@ -602,17 +605,12 @@ locus App {
         self.wait_row("work.settled", ops::usage_work_of(a5), l + "and the Work, its attempts spent, settles: the repeats are bounded");
     }
     // ---- the ledger adopted (D5): the same, with the attempt kinds in memory
+    // GH #1590: a record is born in memory with its Ledger (`ledger.adopted`
+    // among its first rows), so there is no adoption to ask for: the second
+    // pass runs on the same record, the organism started again
     fn adopt() {
         let moved = self.journal.refresh();
-        let b = std::json::Builder { };
-        b.begin_object(); b.int_field("routing", dna::ROUTING_VERSION); b.string_field("by", "test"); b.end_object();
-        let asked = self.journal.append(self.journal.revision(), "ledger.adopting", "ledger", b.result());
-        std::test::assert(asked.ok, "adoption asked: " + asked.error);
-        let adoption = dna::LedgerAdoption { root: self.app, ledger: dna::MemoryLedger { repo: self.app, dsn_env: dna::SPINE_DSN_ENV }, holder: "test" };
-        let leases = dna::MemoryLeases { repo: self.app, dsn_env: dna::SPINE_DSN_ENV };
-        std::test::assert_eq_int(adoption.tick(leases), 1, "the ledger adopted: " + adoption.last_error);
-        std::test::assert(self.has_row("ledger.adopted", "ledger"), "and the record says so");
-        // the organism runs on the record with the ledger from here
+        std::test::assert(self.has_row("ledger.adopted", "ledger"), "the record was born with its Ledger");
         self.start();
     }
     run() {
@@ -625,7 +623,8 @@ locus App {
             return;
         }
         self.adopt();
-        let git = dna::GitJournal { repo: self.app };
+        std::test::assert_eq_str(dna::memory_fixture(self.app), "", "the record is born in memory (GH #1590)");
+        let git = dna::RecordJournal { repo: self.app };
         let git_rows = git.revision();
         self.exercise("adopted");
         // the attempt kinds landed in the ledger, under the head's role for the leg's rows
@@ -639,7 +638,7 @@ locus App {
             i = i + 1;
         }
         std::test::assert(claimed >= 4 && requested >= 2 && outcomes >= 1, "the leg's rows are in the ledger: " + to_string(claimed) + " claimed, " + to_string(requested) + " requested, " + to_string(outcomes) + " outcomes");
-        let git_after = dna::GitJournal { repo: self.app };
+        let git_after = dna::RecordJournal { repo: self.app };
         let mut j = git_rows; let mut in_git = 0;
         while j < git_after.revision() { let e = git_after.read(j); if std::str::starts_with(e.kind, "attempt.") { in_git = in_git + 1; } j = j + 1; }
         std::test::assert_eq_int(in_git, 0, "and none of them in the record");
@@ -661,7 +660,8 @@ fn main() {
     let u1 = in_dir(app, "git\nconfig\nuser.name\nriley");
     let u2 = in_dir(app, "git\nconfig\nuser.email\nriley@local");
     let owner = if std::env::var_exists("HALE_DNA_MEMORY_DSN_OWNER") { std::env::var("HALE_DNA_MEMORY_DSN_OWNER") } else { "" };
-    let identity = dna::GitRecord { repo: app }.identity();
+    std::test::assert_eq_str(dna::memory_fixture(app), "", "the record is born in memory (GH #1590)");
+    let identity = dna::MemoryRecord { repo: app }.identity();
     let mut env = "HALE_DNA_ATTEMPT_PHASE=2\nHALE_DNA_ATTEMPT_APP=" + app + "\nGIT_CONFIG_NOSYSTEM=1\nGIT_CONFIG_GLOBAL=/dev/null\nHALE_DNA_DISCOVER=off\n";
     if len(owner) > 0 {
         let spine = dna::migrated(owner, identity);

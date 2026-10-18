@@ -13,13 +13,13 @@ locus ContextWire {
     fn read(root: String, mode: String, actor: String, source: Source, query: Query) -> std::http::Response {
         let http = Http { };
         if len(query.id) == 0 { return http.error(400, "invalid_query", "the context read names one Work by id", false); }
-        let record = dna::GitJournal { repo: root };
+        let record = dna::RecordJournal { repo: root };
         if record.head() != source.head || record.revision() != source.revision { return http.error(409, "snapshot_changed", "the Record changed while loading the context", true); }
         // GH #946 hardening (D5): once the organism has adopted the ledger the
         // execution facts live there; the hat reads them under the head's role
         let ledger = dna::MemoryLedger { repo: root, dsn_env: dna::HEAD_DSN_ENV };
         let j = dna::RoutedJournal { record: record, ledger: ledger };
-        let reader = ops::HatReader { j: j, receipts: dna::GitReceipts { repo: root }, knowledge: dna::MemoryKnowledge { repo: root, dsn_env: dna::HEAD_DSN_ENV }, ledger_ready: ledger.ready() };
+        let reader = ops::HatReader { j: j, receipts: dna::MemoryReceipts { repo: root }, knowledge: dna::MemoryKnowledge { repo: root, dsn_env: dna::HEAD_DSN_ENV }, ledger_ready: ledger.ready() };
         let hat = reader.read(query.id);
         if mode != "local" {
             // the lease is the visibility; a Work that does not exist is refused the same way
@@ -32,7 +32,7 @@ locus ContextWire {
             if hat.code == "work_not_found" { return http.error(404, hat.code, hat.why, false); }
             return http.error(503, hat.code, hat.why, hat.code == "context_source_unavailable");
         }
-        let git = dna::GitRecord { repo: root };
+        let git = dna::MemoryRecord { repo: root };
         let record_now = git.head("journal");
         if !record_now.ok { return http.unreadable(record_now); }
         if record_now.id != source.head { return http.error(409, "snapshot_changed", "the Record changed while the context was read", true); }

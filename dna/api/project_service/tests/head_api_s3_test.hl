@@ -61,8 +61,10 @@ fn curl_slow(method: String, url: String, headers: String, body: String, max_tim
 }
 
 // The rows of `kind` in a record's journal.
+// The rows of `kind` in the record and its Ledger (GH #1590: a body's lease
+// rows are the Ledger's).
 fn count_rows(repo: String, kind: String) -> Int {
-    let text = in_dir(repo, toolchain() + "\ndna\nrecord-rows").stdout + "\n";
+    let text = in_dir(repo, toolchain() + "\ndna\nrecord-rows").stdout + "\n" + in_dir(repo, toolchain() + "\ndna\nledger\nrows").stdout + "\n";
     let mut n = 0;
     let mut rest = text;
     while len(rest) > 0 {
@@ -166,13 +168,13 @@ locus S3HeadCases {
     // published to (a peer's connection reads it there).
     fn setup() {
         self.alpha = project(self.f.home + "/dna", "alpha");
-        let a = dna::GitRecord { repo: self.alpha };
+        let a = dna::MemoryRecord { repo: self.alpha };
         self.alpha_id = a.identity();
-        std::test::assert_eq_int(len(self.alpha_id), 40, "alpha's identity: " + self.alpha_id);
+        std::test::assert_eq_int(len(self.alpha_id), 64, "alpha's identity: " + self.alpha_id);
         self.beta = project(self.f.root, "beta");
-        let b = dna::GitRecord { repo: self.beta };
+        let b = dna::MemoryRecord { repo: self.beta };
         self.beta_id = b.identity();
-        std::test::assert(len(self.beta_id) == 40 && self.beta_id != self.alpha_id, "two records");
+        std::test::assert(len(self.beta_id) == 64 && self.beta_id != self.alpha_id, "two records");
         let alpha_url = bare_remote(self.f.root, self.alpha, "alpha");
         self.beta_url = bare_remote(self.f.root, self.beta, "beta");
         // GH #1590: a connection reads the peer's card on its nerves, and a
@@ -250,7 +252,7 @@ locus S3HeadCases {
         self.f.json.eq(outcome, "where", "local");
         self.f.json.is_bool(outcome, "source_consumed", true);
         let record = self.f.json.raw(outcome, "record");
-        std::test::assert(len(self.f.json.string(record, "head_before")) == 40 && self.f.json.string(record, "head_before") != self.f.json.string(record, "head_after"), "the record moved: " + record);
+        std::test::assert(len(self.f.json.string(record, "head_before")) == 64 && self.f.json.string(record, "head_before") != self.f.json.string(record, "head_after"), "the record moved: " + record);
         let rows = self.f.json.raw(record, "rows");
         std::test::assert_eq_int(self.f.json.count(rows), 1, "exactly the verb's row: " + rows);
         let row = std::json::array_first(rows).element;
@@ -360,7 +362,9 @@ locus S3HeadCases {
         std::test::assert(pid > 0 && pid == self.f.child_pid("body") && self.f.child_alive("body"), "the outcome's pid is the live child: " + outcome);
         self.f.json.eq(outcome, "mode", "run");
         std::test::assert(self.f.json.integer(outcome, "organism_alive_at") > 0, "organism_alive_at: " + outcome);
-        std::test::assert(std::str::contains(self.f.json.raw(self.f.json.raw(outcome, "record"), "rows"), "\"kind\": \"body.claimed\""), "the host's claim as evidence: " + outcome);
+        // the host's claim is the Ledger's row (GH #1590), beside the record
+        let ledger = dna::run_tool("sh\n-c\ncd \"$1\" && exec \"$2\" dna ledger rows\nsh\n" + self.alpha + "\n" + std::env::var("HALE_BIN"));
+        std::test::assert(std::str::contains(ledger.stdout, "\"kind\": \"body.claimed\""), "the host's claim, in the Ledger: " + ledger.stdout + ledger.stderr + " (body log: " + (std::io::fs::read_file(self.f.state + "/children/body.log") or "") + ")");
         std::test::assert(std::io::fs::file_exists(self.alpha + "/.hale/dna/org.pid"), "the organization runs under the head's child");
         let state = self.f.head_state();
         let body = self.f.json.raw(self.f.json.raw(state, "children"), "body");
@@ -398,9 +402,18 @@ locus S3HeadCases {
         self.f.json.eq(self.f.json.raw(receipt, "run"), "kind", "inline");
         let outcome = self.f.json.raw(receipt, "outcome");
         self.f.json.eq(outcome, "released_by", "host");
-        // a node drains on SIGTERM and ends cleanly (GH #986)
+        // a node drains on SIGTERM and ends cleanly (GH #986); when it does
+        // not, its own log says why
+        let code = std::json::find_int_field(outcome, "exit_code");
+        if code != 0 {
+            let body_log = std::io::fs::read_file(self.f.state + "/children/body.log") or "(no body log)";
+            let org_log = std::io::fs::read_file(self.alpha + "/.hale/dna/org.log") or "(no organization log)";
+            std::test::assert(false, "the body exited " + to_string(code) + ", not 0: " + outcome + "\n--- body.log\n" + body_log + "\n--- org.log\n" + org_log);
+        }
         self.f.json.is_int(outcome, "exit_code", 0);
-        std::test::assert(std::str::contains(self.f.json.raw(self.f.json.raw(outcome, "record"), "rows"), "\"kind\": \"body.released\""), "the host's release as evidence: " + outcome);
+        // the host's release is the Ledger's row (GH #1590), beside the record
+        let released = dna::run_tool("sh\n-c\ncd \"$1\" && exec \"$2\" dna ledger rows\nsh\n" + self.alpha + "\n" + std::env::var("HALE_BIN"));
+        std::test::assert(std::str::contains(released.stdout, "\"kind\": \"body.released\""), "the host's release, in the Ledger: " + released.stdout + released.stderr);
         std::test::assert(!self.f.child_alive("body") && !std::io::fs::file_exists(self.alpha + "/.hale/dna/org.pid"), "the host and its organization are gone");
         std::test::assert_eq_str(dna::trim_nl(std::io::fs::read_file(self.f.state + "/children/body.exit") or ""), "0", "the exit is recorded");
         std::test::assert_eq_int(count_rows(self.alpha, "body.released"), 1, "the host appended body.released");
@@ -450,7 +463,7 @@ fn main() {
         std::io::fs::mkdir(home + "/.config") or discard;
         std::io::fs::mkdir(home + "/dna") or discard;
         let cache = if std::env::var_exists("XDG_CACHE_HOME") { std::env::var("XDG_CACHE_HOME") } else { std::env::var("HOME") + "/.cache" };
-        let clean = dna::run_tool("env\n-u\nGIT_DIR\n-u\nGIT_COMMON_DIR\n-u\nGIT_CONFIG\n-u\nGIT_NAMESPACE\n-u\nGIT_WORK_TREE\n-u\nGIT_INDEX_FILE\n-u\nGIT_OBJECT_DIRECTORY\n-u\nGIT_ALTERNATE_OBJECT_DIRECTORIES\n-u\nGIT_CONFIG_COUNT\n-u\nGIT_CONFIG_PARAMETERS\n-u\nHALE_DNA_HEAD_STATE\n-u\nHALE_DNA_ONESHOT\n-u\nHALE_DNA_MEMORY_DSN_OWNER\n-u\nHALE_DNA_MEMORY_DSN_SPINE\n-u\nHALE_DNA_MEMORY_DSN_HEAD\n-u\nHALE_DNA_KNOWLEDGE_COMMAND_POLICY\n-u\nHALE_DNA_COMMAND_POLICY\n-u\nHALE_DNA_TASK_POLICY\n-u\nLOTUS_OBS\n"
+        let clean = dna::run_tool("env\n-u\nGIT_DIR\n-u\nGIT_COMMON_DIR\n-u\nGIT_CONFIG\n-u\nGIT_NAMESPACE\n-u\nGIT_WORK_TREE\n-u\nGIT_INDEX_FILE\n-u\nGIT_OBJECT_DIRECTORY\n-u\nGIT_ALTERNATE_OBJECT_DIRECTORIES\n-u\nGIT_CONFIG_COUNT\n-u\nGIT_CONFIG_PARAMETERS\n-u\nHALE_DNA_HEAD_STATE\n-u\nHALE_DNA_ONESHOT\n-u\nHALE_DNA_MEMORY_DSN_SPINE\n-u\nHALE_DNA_MEMORY_DSN_HEAD\n-u\nHALE_DNA_KNOWLEDGE_COMMAND_POLICY\n-u\nHALE_DNA_COMMAND_POLICY\n-u\nHALE_DNA_TASK_POLICY\n-u\nLOTUS_OBS\n"
                 + "HOME=" + home + "\nXDG_CONFIG_HOME=" + home + "/.config\nXDG_CACHE_HOME=" + cache + "\nHALE_VAULT_DIR=" + home + "/vault\nUSER=tester\nLOGNAME=tester"
                 + "\nGIT_CONFIG_NOSYSTEM=1\nGIT_CONFIG_GLOBAL=/dev/null\nGIT_TERMINAL_PROMPT=0\nHALE_DNA_DISCOVER=off\nHALE_DNA_TRANSPORT=local\nHALE_DNA_TRANSPORT_HOME=" + home
                 + "\nHALE_HEAD_S3_TEST_CLEAN=1\nHALE_HEAD_S3_TEST_ROOT=" + root + "\n" + std::env::arg_or(0, ""));

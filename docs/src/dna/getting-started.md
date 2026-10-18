@@ -49,7 +49,10 @@ memory  dna/compose.yaml: `hale dna dev` brings its Postgres and NATS up, applie
 created …/demo/dna/senses.yml
 kept    …/demo/main.hl (the application is not modified; the organization oversees it from dna/org)
 edited  …/demo/hale.toml ([claims] no_base, [environments.local], [environments.org])
-seeded  refs/dna/journal (6 observed event(s): application.attached, structure.observed, responsibility.proposed; then the purpose proposed and the application's graph)
+pinned  …/demo/hale.toml ([dna] record = 4f1c9a07d2be…, the identity of the record born here)
+memory  schema applied; the record's tables, roles and functions are in place
+born    record 4f1c9a07d2be (record.genesis; ledger.adopted, routing 2; record.key 8a3e51c0b7d4…)
+seeded  the record (6 observed event(s): application.attached, structure.observed, responsibility.proposed; then the purpose proposed and the application's graph)
 graph   2 node(s), 0 edge(s): 1 purpose, 0 axiom, 0 process, 1 seed, 0 contract, 0 noun, 0 deployment, 0 gate, 0 document, 0 witness, 0 position, 0 work, 0 organization, 0 definition; 6 proposal(s) (graph.node, graph.edge)
 seated  the head's socket knows uid 1000 as … (dna.unix.member); the record declares dna.trust = local, where they hold every position
 seeded  purpose (proposed for the Board: `hale dna review` lists it under `purpose`)
@@ -132,7 +135,7 @@ grant authority.
 | The two files that carry passwords to the compose servers, written from the vault. Mode 600, ignored by git. | `dna/postgres.secrets`, `dna/nats.secrets.conf` | never commit |
 | The core, as the `hale` you ran carries it. Ignored by git; `hale dna upgrade` refreshes it. | `vendor/dna` | no |
 | Scratch: the baseline artifact, sockets, worktrees, logs. Ignored by git; deleting it loses nothing. | `.hale/dna/` | no |
-| The record: every row as a commit, plus receipts. Refs in your repository, not files. | `refs/dna/*` | no, but it is git |
+| The record: one signed row per event, and the receipts. Rows in memory (Postgres), not files; the clone keeps only the head's DSN in `.hale/dna/memory.env`. | `record_rows` in `dna_<identity>` | no |
 
 `hale.toml` gained two environments, one for the application and one
 for the organization, and `[claims] no_base = true`, because the two
@@ -283,19 +286,19 @@ reviews:    32 pending of 32
 mutations:  0 (none applies before a human's verdict on the exact candidate)
 profile:    local (detected)
 body:       none (no body has run this record; `hale dna run` takes the lease)
-memory:     the record alone (routing 0); `hale dna ledger adopt` moves the day's work to the ledger
+memory:     record + ledger (routing 2, adopted at 4f1c9a07d2be; operations and leases live in memory)
 genome:     no node has recorded the genome it runs
 ```
 
 That is the status before the first start; with `dev` up, the
-`organism:` and `body:` lines name the running body. `status` works
-offline, from the record alone, as do `history`, `review` and `board`.
+`organism:` and `body:` lines name the running body. `status`,
+`history`, `review` and `board` need no running organism: they read the
+record from memory, where every clone reads it.
 
-The `memory:` line matters. A new organism keeps every row in the
-record, one git commit each. With `dev` up, `hale dna ledger adopt`
-moves the day's work into memory, where the same rows land in a
-fraction of the time; [Memory and the record](./memory.md) explains the
-move.
+The `memory:` line matters. A new organism keeps its record and its
+day's work in memory from its first rows: `init` appended
+`ledger.adopted` itself, so there is nothing to adopt.
+[Memory and the record](./memory.md) explains the split.
 
 ## The first Review
 
@@ -341,8 +344,9 @@ hale dna review purpose approve --as alice
 The command writes your verdict as a row and waits for the Review's
 answer, `review k:… settled: approve by alice`. `--as` is your name on
 the record; a verdict from the terminal carries the Board's authority.
-Without an organism running here, and no remote to reach one through,
-the verdict is refused and nothing is written.
+With no organism running anywhere (no body holds the record's lease),
+the verdict is refused and nothing is written; `--no-wait` leaves it in
+the record for when one starts.
 
 The other twenty-two are the toolchain's practices: `design`, how an
 organization like this one is shaped, `operating`, how the organism

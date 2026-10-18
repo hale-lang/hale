@@ -15,6 +15,9 @@ type OrganizationCandidateRead {
     semantic_diff: String = "";
     diff_text: OrganizationCandidateBlob = OrganizationCandidateBlob { };
     diff_json: OrganizationCandidateBlob = OrganizationCandidateBlob { };
+    // the Ledger's head the read was made at: its receipt rows restrict
+    // what the read may show (GH #1590)
+    ledger_head: String = "";
 }
 
 locus OrganizationCandidateWire {
@@ -28,26 +31,26 @@ locus OrganizationCandidateWire {
         let grant = self.authority.authorize(who, "dna.organization.propose", true, journal);
         let service = ops::GovernanceCommands { }; return service.grant_valid(grant);
     }
-    fn ref_id(record: dna::GitRecord, ref: String, kind: String) -> String {
+    fn ref_id(record: dna::MemoryRecord, ref: String, kind: String) -> String {
         let codec = ops::OrganizationCommandCodec { };
         let object = record.git_out("rev-parse\n--verify\n" + ref);
         if !codec.commit_id(object) || record.git_out("cat-file\n-t\n" + object) != kind { return ""; }
         return object;
     }
-    fn receipt(record: dna::GitRecord, digest: String) -> OrganizationCandidateBlob {
+    // A receipt the record keeps, read whole and checked against its digest
+    // (GH #1590: memory keeps it by that digest, which is its identity).
+    fn receipt(record: dna::MemoryRecord, digest: String) -> OrganizationCandidateBlob {
         let raw = ops::raw_digest(digest);
         if !dna::digest_well_formed("sha256:" + raw) { return OrganizationCandidateBlob { }; }
-        let ref = record.ref_of("receipts/" + raw); let object = self.ref_id(record, ref, "blob");
-        if object == "" { return OrganizationCandidateBlob { }; }
-        let size = std::str::parse_int(record.git_out("cat-file\n-s\n" + object)) or - 1;
-        if size < 1 || size > 131072 { return OrganizationCandidateBlob { }; }
-        let body = record.git("cat-file\n-p\n" + object);
-        if body.code != 0 || len(body.stdout) != size || dna::digest_of(body.stdout) != "sha256:" + raw { return OrganizationCandidateBlob { }; }
+        let kept = record.body(raw);
+        if !kept.present { return OrganizationCandidateBlob { }; }
+        let size = len(kept.text);
+        if size < 1 || size > 131072 || dna::digest_of(kept.text) != "sha256:" + raw { return OrganizationCandidateBlob { }; }
         let text = ops::GovernanceCommandCodec { };
-        if !text.bounded(body.stdout, 131072, true, true) { return OrganizationCandidateBlob { }; }
-        return OrganizationCandidateBlob { ok: true, text: body.stdout, object: object };
+        if !text.bounded(kept.text, 131072, true, true) { return OrganizationCandidateBlob { }; }
+        return OrganizationCandidateBlob { ok: true, text: kept.text, object: "sha256:" + raw };
     }
-    fn module_blob(record: dna::GitRecord, commit: String) -> OrganizationCandidateBlob {
+    fn module_blob(record: dna::MemoryRecord, commit: String) -> OrganizationCandidateBlob {
         let listed = record.git("ls-tree\n" + commit + "\n--\ndna/org/main.hl");
         if listed.code != 0 || (!std::str::starts_with(listed.stdout, "100644 blob ") && !std::str::starts_with(listed.stdout, "100755 blob ")) { return OrganizationCandidateBlob { }; }
         let object = self.ref_id(record, commit + ":dna/org/main.hl", "blob");
@@ -58,9 +61,9 @@ locus OrganizationCandidateWire {
         if body.code != 0 || len(body.stdout) != size || !text.bounded(body.stdout, 16384, true, true) { return OrganizationCandidateBlob { }; }
         return OrganizationCandidateBlob { ok: true, text: body.stdout, object: object };
     }
-    fn visible(journal: ops::GovernanceJournal, candidate: ops::OrganizationCandidateEvidence) -> Bool {
+    fn visible(record: dna::MemoryRecord, journal: ops::GovernanceJournal, candidate: ops::OrganizationCandidateEvidence) -> Bool {
         if !candidate.ok { return false; }
-        let q = ops::Queries { j: journal }; let text = ops::GovernanceCommandCodec { }; let r = candidate.request;
+        let q = ops::Queries { j: journal, location: record.location() }; let text = ops::GovernanceCommandCodec { }; let r = candidate.request;
         return q.receipt_status(r.module_digest) == "available" && q.receipt_status(r.source_digest) == "available"
             && q.receipt_status(r.source_head) == "available" && q.receipt_status(candidate.candidate_commit) == "available"
             && q.receipt_status(text.string(candidate.review_body, "diff_text")) == "available"
@@ -108,8 +111,8 @@ locus OrganizationCandidateWire {
     }
     // Immutable source proof shared by status reads, which return no semantic
     // diff. The candidate renderer adds its existing bounded receipt parsing.
-    fn source_objects(record: dna::GitRecord, journal: ops::GovernanceJournal, candidate: ops::OrganizationCandidateEvidence) -> OrganizationCandidateRead {
-        if !self.visible(journal, candidate) { return OrganizationCandidateRead { }; }
+    fn source_objects(record: dna::MemoryRecord, journal: ops::GovernanceJournal, candidate: ops::OrganizationCandidateEvidence) -> OrganizationCandidateRead {
+        if !self.visible(record, journal, candidate) { return OrganizationCandidateRead { }; }
         let r = candidate.request; let commit = candidate.candidate_commit;
         let native = dna::OrganizationSourceRequestCodec { };
         if self.ref_id(record, dna::candidate_ref(candidate.candidate_key), "commit") != commit
@@ -122,9 +125,9 @@ locus OrganizationCandidateWire {
         if changed != "" && changed != native.module_for(r) { return OrganizationCandidateRead { }; }
         let base = self.module_blob(record, r.source_head); let prepared = self.module_blob(record, commit);
         if !base.ok || !prepared.ok || dna::digest_of(base.text) != r.module_digest || dna::digest_of(prepared.text) != r.source_digest || prepared.text != r.source_text { return OrganizationCandidateRead { }; }
-        return OrganizationCandidateRead { ok: true, candidate: candidate, base_text: base.text, candidate_text: prepared.text, changed: changed != "" };
+        return OrganizationCandidateRead { ok: true, candidate: candidate, base_text: base.text, candidate_text: prepared.text, changed: changed != "", ledger_head: self.ledger_head(record) };
     }
-    fn objects(record: dna::GitRecord, journal: ops::GovernanceJournal, candidate: ops::OrganizationCandidateEvidence) -> OrganizationCandidateRead {
+    fn objects(record: dna::MemoryRecord, journal: ops::GovernanceJournal, candidate: ops::OrganizationCandidateEvidence) -> OrganizationCandidateRead {
         let source = self.source_objects(record, journal, candidate);
         if !source.ok { return source; }
         let text = ops::GovernanceCommandCodec { }; let plain = self.receipt(record, text.string(candidate.review_body, "diff_text")); let structured = self.receipt(record, text.string(candidate.review_body, "diff_json"));
@@ -132,21 +135,28 @@ locus OrganizationCandidateWire {
         if !plain.ok || !structured.ok || !syntax.valid(structured.text) { return OrganizationCandidateRead { }; }
         let semantic = self.semantic(structured.text);
         if semantic == "" { return OrganizationCandidateRead { code: "candidate_unavailable" }; }
-        return OrganizationCandidateRead { ok: true, semantic_diff: semantic, candidate: candidate, base_text: source.base_text, candidate_text: source.candidate_text, changed: source.changed, diff_text: plain, diff_json: structured };
+        return OrganizationCandidateRead { ok: true, semantic_diff: semantic, candidate: candidate, base_text: source.base_text, candidate_text: source.candidate_text, changed: source.changed, ledger_head: source.ledger_head, diff_text: plain, diff_json: structured };
     }
-    fn source_unchanged(record: dna::GitRecord, source: ops::GovernanceSnapshot, read: OrganizationCandidateRead) -> Bool {
+    // The Ledger's head beside the record ("" when it cannot be read).
+    fn ledger_head(record: dna::MemoryRecord) -> String {
+        let l = dna::MemoryLedger { repo: record.location(), dsn_env: dna::HEAD_DSN_ENV };
+        if !l.ready() { return ""; }
+        let moved = l.refresh();
+        return l.head();
+    }
+    fn source_unchanged(record: dna::MemoryRecord, source: ops::GovernanceSnapshot, read: OrganizationCandidateRead) -> Bool {
         let c = read.candidate;
         // a head that could not be read is not a Record that did not move
         let now = record.head("journal");
-        return read.ok && now.ok && now.id == source.head
+        return read.ok && now.ok && now.id == source.head && self.ledger_head(record) == read.ledger_head
             && self.ref_id(record, dna::candidate_ref(c.candidate_key), "commit") == c.candidate_commit
             && self.ref_id(record, c.request.source_head, "commit") == c.request.source_head;
     }
-    fn unchanged(record: dna::GitRecord, source: ops::GovernanceSnapshot, read: OrganizationCandidateRead) -> Bool {
+    fn unchanged(record: dna::MemoryRecord, source: ops::GovernanceSnapshot, read: OrganizationCandidateRead) -> Bool {
         let text = ops::GovernanceCommandCodec { }; let c = read.candidate;
         return self.source_unchanged(record, source, read)
-            && self.ref_id(record, record.ref_of("receipts/" + ops::raw_digest(text.string(c.review_body, "diff_text"))), "blob") == read.diff_text.object
-            && self.ref_id(record, record.ref_of("receipts/" + ops::raw_digest(text.string(c.review_body, "diff_json"))), "blob") == read.diff_json.object;
+            && self.receipt(record, text.string(c.review_body, "diff_text")).object == read.diff_text.object
+            && self.receipt(record, text.string(c.review_body, "diff_json")).object == read.diff_json.object;
     }
     fn document(read: OrganizationCandidateRead, journal: ops::GovernanceJournal, rows: String) -> String {
         let c = read.candidate; let r = c.request; let text = ops::GovernanceCommandCodec { }; let view = ops::OrganizationProjection { };
@@ -170,7 +180,7 @@ locus OrganizationCandidateWire {
         if !source.ok || !journal.valid || source.application_id != context.source.identity || source.head != context.source.head || source.revision != context.source.revision { return http.error(409, "snapshot_changed", "the Record changed while capturing the candidate", true); }
         if !self.allowed(context, journal) { return http.error(403, "forbidden", "source evidence read/recovery permission is required", false); }
         let view = ops::OrganizationProjection { }; let candidate = view.candidate(journal, id, source.text);
-        let record = dna::GitRecord { repo: context.root }; let read = self.objects(record, journal, candidate);
+        let record = dna::MemoryRecord { repo: context.root }; let read = self.objects(record, journal, candidate);
         if !read.ok { return http.error(if read.code == "candidate_unavailable" { 503 } else { 404 }, read.code, "no visible canonical candidate was found", read.code == "candidate_unavailable"); }
         let document = self.document(read, journal, source.text);
         let b = std::json::Builder { }; b.begin_object(); b.string_field("kind", "organization_source_change"); b.string_field("review_id", id); b.string_field("candidate_commit", candidate.candidate_commit); b.field("document", dna::record_json_quote(document)); b.end_object();
@@ -183,7 +193,7 @@ locus OrganizationCandidateWire {
     }
     fn review_row(context: CommandContext, row: ops::ReviewRow) -> ops::ReviewRow {
         if !self.source_review(row) { return row; }
-        let record = dna::GitRecord { repo: context.root }; let capture = ops::GovernanceCommands { record: record }; let source = capture.capture();
+        let record = dna::MemoryRecord { repo: context.root }; let capture = ops::GovernanceCommands { record: record }; let source = capture.capture();
         if !source.ok || source.application_id != context.source.identity || source.head != context.source.head || source.revision != context.source.revision { return self.mask(row); }
         let journal = ops::GovernanceJournal { snapshot: source };
         if !journal.valid || !self.allowed(context, journal) { return self.mask(row); }

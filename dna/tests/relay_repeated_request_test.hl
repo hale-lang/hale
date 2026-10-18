@@ -97,7 +97,8 @@ fn carries(taken: String, text: String) -> Bool { return std::str::contains(take
 // read of the record per call, as often as the script polls it.
 @bounded_by(script)
 fn answers(repo: String, request: String) -> Int {
-    let j = dna::GitJournal { repo: repo };
+    std::test::assert_eq_str(dna::memory_fixture(repo), "", "the record is born in memory (GH #1590)");
+    let j = dna::RoutedJournal { record: dna::RecordJournal { repo: repo }, ledger: dna::MemoryLedger { repo: repo, dsn_env: dna::fixture_spine(repo) } };
     let mut n = 0;
     let mut i = 0;
     while i < j.revision() {
@@ -109,7 +110,8 @@ fn answers(repo: String, request: String) -> Int {
 }
 
 fn rows(repo: String, kind: String, needle: String) -> Int {
-    let j = dna::GitJournal { repo: repo };
+    std::test::assert_eq_str(dna::memory_fixture(repo), "", "the record is born in memory (GH #1590)");
+    let j = dna::RoutedJournal { record: dna::RecordJournal { repo: repo }, ledger: dna::MemoryLedger { repo: repo, dsn_env: dna::fixture_spine(repo) } };
     let mut n = 0;
     let mut i = 0;
     while i < j.revision() {
@@ -121,11 +123,12 @@ fn rows(repo: String, kind: String, needle: String) -> Int {
 }
 
 fn record(app: String) -> String {
-    let j = dna::GitJournal { repo: app };
+    std::test::assert_eq_str(dna::memory_fixture(app), "", "the record is born in memory (GH #1590)");
+    let j = dna::RoutedJournal { record: dna::RecordJournal { repo: app }, ledger: dna::MemoryLedger { repo: app, dsn_env: dna::fixture_spine(app) } };
     return journal_text(j);
 }
 
-fn journal_text(j: dna::GitJournal) -> String {
+fn journal_text(j: dna::Journal) -> String {
     let mut out = "";
     let mut i = 0;
     while i < j.revision() {
@@ -182,7 +185,10 @@ main locus App {
         // of the first fix): matching the id by searching the body for it
         // lets c10's answer pass for c1's, and c1 — whose delivery was lost
         // — is then never relayed again.
-        let j = dna::GitJournal { repo: a, author: "edge" };
+        std::test::assert_eq_str(dna::memory_fixture(a), "", "the record is born in memory (GH #1590)");
+        // the concerns are the Ledger's rows (GH #1590): the record and its
+        // Ledger, read and written as one
+        let j = dna::RoutedJournal { record: dna::RecordJournal { repo: a, author: "edge" }, ledger: dna::MemoryLedger { repo: a, dsn_env: dna::fixture_spine(a) } };
         let first = "{\"request\": \"c1\", \"source\": \"org/repeated/worker\", \"what\": \"mail backlog behind fulfilment\", \"severity\": 2}";
         let second = "{\"request\": \"c10\", \"source\": \"org/repeated/worker\", \"what\": \"the printer is out of paper\", \"severity\": 1}";
 

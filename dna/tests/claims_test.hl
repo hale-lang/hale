@@ -29,7 +29,7 @@ main locus App {
     params { repo: String = ""; bin: String = ""; spine: String = ""; }
     // The rows of `kind` under `entity`, their `holder` fields in order.
     fn holders(kind: String, entity: String) -> String {
-        let j = dna::GitJournal { repo: self.repo };
+        let j = dna::RoutedJournal { record: dna::RecordJournal { repo: self.repo }, ledger: dna::MemoryLedger { repo: self.repo } };
         let mut out = "";
         let mut i = 0;
         while i < j.revision() {
@@ -40,7 +40,7 @@ main locus App {
         return out;
     }
     fn rows(kind: String, entity: String) -> Int {
-        let j = dna::GitJournal { repo: self.repo };
+        let j = dna::RoutedJournal { record: dna::RecordJournal { repo: self.repo }, ledger: dna::MemoryLedger { repo: self.repo } };
         let mut n = 0;
         let mut i = 0;
         while i < j.revision() {
@@ -92,9 +92,10 @@ main locus App {
         self.repo = scratch + "/repo";
         let mk = sh("sh\n-c\nmkdir -p \"$1/.hale/dna\" && cd \"$1\" && git init -q -b main && git config user.name t && git config user.email t@dna && printf '/.hale/\\n' > .gitignore && echo base > base && git add -A && git commit -q -m base\nsh\n" + self.repo);
         std::test::assert_eq_int(mk.code, 0, "the organism's repository: " + mk.stderr);
-        let born = dna::GitJournal { repo: self.repo };
-        std::test::assert(born.append(0, "application.observed", "org", "{}").ok, "the record's first row gives it its identity");
-        let identity = dna::GitRecord { repo: self.repo }.identity();
+        std::test::assert_eq_str(dna::memory_fixture(self.repo), "", "the record is born in memory (GH #1590)");
+        let born = dna::RecordJournal { repo: self.repo };
+        std::test::assert(born.append(born.revision(), "application.observed", "org", "{}").ok, "the record takes the application: " + born.last_error());
+        let identity = dna::MemoryRecord { repo: self.repo }.identity();
         // the record's roles into the vault first, as its bootstrap does (GH #989)
         let provisioned = dna::provision_record_roles(identity, "");
         let m = dna::migrate(dna::parse_dsn(owner), identity);

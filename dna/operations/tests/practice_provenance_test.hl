@@ -9,6 +9,7 @@ locus PracticeReceiptFixture {
     fn read(digest: String) -> String { return if digest == self.expected { self.document } else { "" }; }
     fn store(text: String) -> String { self.expected = dna::hex_digest(text); self.document = text; return self.expected; }
     fn erase(digest: String) -> Bool { self.document = ""; return true; }
+    fn redacted(digest: String) -> Bool { return false; }
 }
 locus PracticeProvenanceCases {
     params { }

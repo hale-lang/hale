@@ -5,7 +5,7 @@ import "../operations" as ops;
 
 locus BindingStageJournal {
     params {
-        inner: dna::GitJournal = dna::GitJournal { };
+        inner: dna::RoutedJournal = dna::RoutedJournal { };
         stage: String = "";
         blocked: Bool = false;
         lost_reply: Bool = false;
@@ -37,12 +37,14 @@ fn count(j: dna::Journal, kind: String, id: String) -> Int {
     let mut i = 0; let mut n = 0; while i < j.revision() { let e = j.read(i); if e.kind == kind && e.entity == id { n = n + 1; } i = i + 1; } return n;
 }
 fn body_once(repo: String, j: BindingStageJournal, r: dna::KnowledgeBindingRequest) {
-    let body = dna::Dna { journal: j, verification: dna::HaleVerification { receipts: dna::GitReceipts { repo: repo }, repo: repo }, board: dna::Board { who: "board" } };
+    std::test::assert_eq_str(dna::memory_fixture(repo), "", "the record is born in memory (GH #1590)");
+    let body = dna::Dna { journal: j, verification: dna::HaleVerification { receipts: dna::MemoryReceipts { repo: repo }, repo: repo }, board: dna::Board { who: "board" } };
     if len(r.request_id) > 0 { body.on_knowledge_binding_requested(r); }
     body.reconcile_governance();
 }
 fn configured_body_once(repo: String, j: BindingStageJournal) {
-    let body = dna::Dna { journal: j, verification: dna::HaleVerification { receipts: dna::GitReceipts { repo: repo }, repo: repo }, board: dna::Board { who: "board" }, knowledge_record: dna::KnowledgeRecord { binding_policy_syntax: ops::OrganizationJson { } } };
+    std::test::assert_eq_str(dna::memory_fixture(repo), "", "the record is born in memory (GH #1590)");
+    let body = dna::Dna { journal: j, verification: dna::HaleVerification { receipts: dna::MemoryReceipts { repo: repo }, repo: repo }, board: dna::Board { who: "board" }, knowledge_record: dna::KnowledgeRecord { binding_policy_syntax: ops::OrganizationJson { } } };
     body.reconcile_governance();
 }
 fn capture_request(req: dna::WorkRequest) -> String { let b = std::json::Builder { }; b.begin_object(); dna::request_json(b, req); b.end_object(); return b.result(); }
@@ -52,7 +54,7 @@ main locus App {
     fn repo(label: String) -> String {
         let root = "/tmp/dna-binding-recovery-" + to_string(std::process::pid()) + "-" + label;
         let clean = dna::run_tool("rm\n-rf\n" + root); std::io::fs::mkdir(root) or discard;
-        let init = dna::run_tool("git\n-C\n" + root + "\ninit\n-q\n-b\nmain"); std::test::assert_eq_int(init.code, 0, "temporary binding Record"); return root;
+        let init = dna::run_tool("git\n-C\n" + root + "\ninit\n-q\n-b\nmain"); std::test::assert_eq_int(init.code, 0, "temporary binding Record"); std::test::assert_eq_str(dna::memory_fixture(root), "", "the record is born in memory (GH #1590)"); return root;
     }
     fn wait(j: dna::Journal, kind: String, id: String) {
         let mut n = 0; while len(event(j, kind, id).kind) == 0 && n < 200 { std::time::sleep(20ms); n = n + 1; }
@@ -64,7 +66,8 @@ main locus App {
     }
     fn bootstrap(repo: String, j: BindingStageJournal) -> String {
         let genesis = j.append_exact(j.revision(), "application.observed", "org", "{}"); std::test::assert(genesis.ok, "application identity exists");
-        let body = dna::Dna { journal: j, verification: dna::HaleVerification { receipts: dna::GitReceipts { repo: repo }, repo: repo }, board: dna::Board { who: "board" } };
+        std::test::assert_eq_str(dna::memory_fixture(repo), "", "the record is born in memory (GH #1590)");
+        let body = dna::Dna { journal: j, verification: dna::HaleVerification { receipts: dna::MemoryReceipts { repo: repo }, repo: repo }, board: dna::Board { who: "board" } };
         let digest = body.propose_knowledge(dna::Idea { kind: "concept", name: "concept/binding", text: "Actual native knowledge.", author: "org" }, "org/source");
         dna::ReviewVerdict <- dna::Verdict { command_id: "baseline/decision", review_id: dna::knowledge_review_id(digest), subject_digest: digest, verdict: "approve", reviewer: "board-member", authority: "board" };
         self.wait(j, "knowledge.ratified", digest); return digest;
@@ -73,24 +76,25 @@ main locus App {
         let native = dna::KnowledgeBindingCodec { }; let common = ops::KnowledgeCommandCodec { }; let codec = ops::KnowledgeBindingCommandCodec { };
         let context = ops::GovernanceContext { application_id: j.read(0).digest, principal_mode: "local", principal_name: "alice" };
         let c = ops::KnowledgeCommand { application_id: context.application_id, request_id: id, operation: "dna.knowledge.binding." + operation, operation_version: "1", position_id: "org", target_id: idea,
-            record_head: std::str::clone(j.head()), idea_id: idea, binding_id: if operation == "unbind" { native.identity(idea, target, "org") } else { "" }, author: "org", target: target, rationale: "Exact équipe 🧭 \"binding\"\r\n<literal>" };
+            record_head: std::str::clone(j.inner.record.head()), idea_id: idea, binding_id: if operation == "unbind" { native.identity(idea, target, "org") } else { "" }, author: "org", target: target, rationale: "Exact équipe 🧭 \"binding\"\r\n<literal>" };
         let grant = ops::KnowledgeGrant { allowed: true, mode: "review", authority: "knowledge-editor", basis: "binding-test-policy" };
         let mut r = dna::KnowledgeBindingRequest { application_id: context.application_id, request_id: common.identity(context, id), command_fingerprint: common.fingerprint(context, c), authority: grant.authority, authority_basis: grant.basis,
             operation: c.operation, idea_id: idea, binding_id: native.identity(idea, target, "org"), author: "org", target: target, by: "alice", because: c.rationale };
-        let receipts = dna::GitReceipts { repo: repo }; let basis = native.basis(j, receipts, r, j.revision()); std::test::assert(basis.ok, "exact native tuple basis");
+        std::test::assert_eq_str(dna::memory_fixture(repo), "", "the record is born in memory (GH #1590)");
+        let receipts = dna::MemoryReceipts { repo: repo }; let basis = native.basis(j, receipts, r, j.revision()); std::test::assert(basis.ok, "exact native tuple basis");
         r.binding_basis = basis.event_id; r.candidate_digest = dna::digest_of(native.document(r));
         let fact = codec.fact(context, c, grant, r); std::test::assert(len(fact) > 0, "canonical native binding command");
         let recorded = j.append_exact(j.revision(), "knowledge.binding.requested", r.request_id, fact); std::test::assert(recorded.ok, "incoming binding request recorded"); return r;
     }
     fn proposal(stage: String, lose: Bool) {
-        let repo = self.repo(stage + if lose { "-lost" } else { "-blocked" }); let j = BindingStageJournal { inner: dna::GitJournal { repo: repo } };
+        let repo = self.repo(stage + if lose { "-lost" } else { "-blocked" }); let j = BindingStageJournal { inner: dna::RoutedJournal { record: dna::RecordJournal { repo: repo }, ledger: dna::MemoryLedger { repo: repo, dsn_env: dna::fixture_spine(repo) } } };
         let idea = self.bootstrap(repo, j); let r = self.request(repo, j, "proposal", "bind", idea, "org/support");
         j.stage = stage; j.blocked = !lose; j.lost_reply = lose;
         body_once(repo, j, dna::KnowledgeBindingRequest { });
         std::test::assert_eq_int(count(j, "knowledge.binding.started", r.request_id), 0, "raw request cannot bypass trusted delivery");
         body_once(repo, j, r); std::test::assert(j.faults > 0, "exact proposal stage interrupted");
         std::test::assert_eq_int(count(j, "knowledge.binding.refused", r.request_id), 0, "storage failure stays pending");
-        let fresh = BindingStageJournal { inner: dna::GitJournal { repo: repo } }; body_once(repo, fresh, dna::KnowledgeBindingRequest { });
+        let fresh = BindingStageJournal { inner: dna::RoutedJournal { record: dna::RecordJournal { repo: repo }, ledger: dna::MemoryLedger { repo: repo, dsn_env: dna::fixture_spine(repo) } } }; body_once(repo, fresh, dna::KnowledgeBindingRequest { });
         if stage == "knowledge.binding.started" && !lose {
             std::test::assert_eq_int(count(fresh, "knowledge.binding.started", r.request_id), 0, "no started proof means redelivery required"); body_once(repo, fresh, r);
         }
@@ -102,15 +106,16 @@ main locus App {
         let clean = dna::run_tool("rm\n-rf\n" + repo);
     }
     fn interrupted_effect(repo: String, j: BindingStageJournal, r: dna::KnowledgeBindingRequest) {
-        let body = dna::Dna { journal: j, verification: dna::HaleVerification { receipts: dna::GitReceipts { repo: repo }, repo: repo }, board: dna::Board { who: "board" } };
+        std::test::assert_eq_str(dna::memory_fixture(repo), "", "the record is born in memory (GH #1590)");
+        let body = dna::Dna { journal: j, verification: dna::HaleVerification { receipts: dna::MemoryReceipts { repo: repo }, repo: repo }, board: dna::Board { who: "board" } };
         body.on_knowledge_binding_requested(r); self.verdict(r, "effect/decision", "approve"); self.wait(j, "review.command_decided", "effect/decision");
         let mut n = 0; while j.faults == 0 && n < 200 { std::time::sleep(20ms); n = n + 1; } std::test::assert(j.faults > 0, "exact consequence stage interrupted");
     }
     fn recovery(stage: String, lose: Bool) {
-        let repo = self.repo("effect-" + stage + if lose { "-lost" } else { "-blocked" }); let j = BindingStageJournal { inner: dna::GitJournal { repo: repo } };
+        let repo = self.repo("effect-" + stage + if lose { "-lost" } else { "-blocked" }); let j = BindingStageJournal { inner: dna::RoutedJournal { record: dna::RecordJournal { repo: repo }, ledger: dna::MemoryLedger { repo: repo, dsn_env: dna::fixture_spine(repo) } } };
         let idea = self.bootstrap(repo, j); let r = self.request(repo, j, "effect", "bind", idea, "org/support"); j.stage = stage; j.blocked = !lose; j.lost_reply = lose;
         self.interrupted_effect(repo, j, r);
-        let fresh = BindingStageJournal { inner: dna::GitJournal { repo: repo } }; body_once(repo, fresh, dna::KnowledgeBindingRequest { });
+        let fresh = BindingStageJournal { inner: dna::RoutedJournal { record: dna::RecordJournal { repo: repo }, ledger: dna::MemoryLedger { repo: repo, dsn_env: dna::fixture_spine(repo) } } }; body_once(repo, fresh, dna::KnowledgeBindingRequest { });
         let e = event(fresh, "knowledge.binding.bound", r.request_id); let codec = dna::KnowledgeBindingCodec { };
         std::test::assert(codec.effect_of(fresh, e).ok, "fresh Body resumes exact approved effect");
         std::test::assert_eq_int(count(fresh, "knowledge.binding.bound", r.request_id), 1, "lost reply cannot duplicate effect");
@@ -118,7 +123,7 @@ main locus App {
         let clean = dna::run_tool("rm\n-rf\n" + repo);
     }
     fn protection(mode: String) {
-        let repo = self.repo("protection-" + mode); let j = BindingStageJournal { inner: dna::GitJournal { repo: repo } };
+        let repo = self.repo("protection-" + mode); let j = BindingStageJournal { inner: dna::RoutedJournal { record: dna::RecordJournal { repo: repo }, ledger: dna::MemoryLedger { repo: repo, dsn_env: dna::fixture_spine(repo) } } };
         let idea = self.bootstrap(repo, j); let r = self.request(repo, j, "protection", "bind", idea, "org/support");
         j.stage = "knowledge.binding.bound"; j.blocked = true; self.interrupted_effect(repo, j, r);
         let kind = if mode == "withheld" || mode == "candidate" { "receipt.withheld" } else { "receipt.classified" };
@@ -143,53 +148,56 @@ main locus App {
     }
     // Memory is Postgres (GH #985): each store is a migrated record of its own.
     fn flow(owner: String) {
-        let repo = self.repo("flow"); let j = BindingStageJournal { inner: dna::GitJournal { repo: repo } }; let idea = self.bootstrap(repo, j);
+        let repo = self.repo("flow"); let j = BindingStageJournal { inner: dna::RoutedJournal { record: dna::RecordJournal { repo: repo }, ledger: dna::MemoryLedger { repo: repo, dsn_env: dna::fixture_spine(repo) } } }; let idea = self.bootstrap(repo, j);
         let id = "bindingrecovery" + to_string(std::process::pid());
         let dsn = dna::migrated(owner, id); std::test::assert(dsn.ok, "memory migrates: " + dsn.why);
-        let receipts = dna::GitReceipts { repo: repo }; let codec = dna::KnowledgeBindingCodec { }; let store = dna::Pq { conn: dna::pq_conn(dsn), record_id: id };
+        let receipts = dna::MemoryReceipts { repo: repo }; let codec = dna::KnowledgeBindingCodec { }; let store = dna::Pq { conn: dna::pq_conn(dsn), record_id: id };
         std::test::assert(store.open(), "the store opens: " + store.last_error());
-        let before = ops::apply_record(store, j, receipts); std::test::assert_eq_str(before.error, "", "native baseline projects");
+        let before = ops::apply_record(store, dna::RecordJournal { repo: repo }, receipts); std::test::assert_eq_str(before.error, "", "native baseline projects");
         std::test::assert_eq_str(store.context_ids("org/support/urgent", 10), "", "original org/source binding does not cover support");
         let body = dna::Dna { journal: j, verification: dna::HaleVerification { receipts: receipts, repo: repo }, board: dna::Board { who: "board" } };
         let add = self.request(repo, j, "add", "bind", idea, "org/support"); body.on_knowledge_binding_requested(add);
         let delayed = self.request(repo, j, "delayed", "bind", idea, "org/support"); body.on_knowledge_binding_requested(delayed);
         self.verdict(add, "add/decision", "approve"); self.wait(j, "knowledge.binding.bound", add.request_id);
-        let added = ops::apply_record(store, j, receipts); std::test::assert_eq_str(added.error, "", "real approved add projects");
+        let added = ops::apply_record(store, dna::RecordJournal { repo: repo }, receipts); std::test::assert_eq_str(added.error, "", "real approved add projects");
         std::test::assert_eq_str(store.context_ids("org/support/urgent", 10), idea, "binding changes future descendant context membership");
         let package = dna::ContextPackage { target: "org/support/urgent", digest: dna::digest_of(store.context_ids("org/support/urgent", 10)), included: idea, included_n: 1 };
         let work = dna::WorkRequest { work_id: "historical/work", task_id: "historical/task", context_digest: package.digest, knowledge_bindings: dna::bindings_of(package) };
         let historical = capture_request(work);
         let remove = self.request(repo, j, "remove", "unbind", idea, "org/support"); body.on_knowledge_binding_requested(remove); self.verdict(remove, "remove/decision", "approve"); self.wait(j, "knowledge.binding.unbound", remove.request_id);
-        let removed = ops::apply_record(store, j, receipts); std::test::assert_eq_str(removed.error, "", "real approved removal projects");
+        let removed = ops::apply_record(store, dna::RecordJournal { repo: repo }, receipts); std::test::assert_eq_str(removed.error, "", "real approved removal projects");
         std::test::assert_eq_str(store.context_ids("org/support/urgent", 10), "", "removed tuple leaves future package");
         std::test::assert_eq_str(store.context_ids("org/source", 10), idea, "original tuple is retained");
         let partial_id = id + "partial";
         let partial_dsn = dna::migrated(owner, partial_id); std::test::assert(partial_dsn.ok, "the partial store's memory migrates: " + partial_dsn.why);
         let partial = dna::Pq { conn: dna::pq_conn(partial_dsn), record_id: partial_id };
         std::test::assert(partial.open(), "the partial store opens: " + partial.last_error());
-        let first_pass = ops::apply_record(partial, j, receipts);
+        let first_pass = ops::apply_record(partial, dna::RecordJournal { repo: repo }, receipts);
         std::test::assert_eq_str(first_pass.error, "", "a second store projects through the exact removal");
         // GH #1026: a row and its stamp land in one transaction, so a lost
         // watermark write cannot happen; a stamp set back by hand to just
         // before the removal replays that one row, and the replay is exact.
-        let lost = event(j, "knowledge.binding.unbound", remove.request_id).seq;
-        std::test::assert(partial.conn.exec("UPDATE knowledge_meta SET value = '" + to_string(lost) + "' WHERE key = 'watermark'; UPDATE knowledge_meta SET value = '" + j.read(lost - 1).digest + "' WHERE key = 'graph_projection_head'").ok && partial.watermark() == lost, "the stamp set back one row");
-        let resumed = ops::apply_record(partial, j, receipts);
+        // the projection is the record's alone (GH #1590): its rows, not the
+        // Ledger's, are what the stamp counts
+        let rj = dna::RecordJournal { repo: repo };
+        let lost = event(rj, "knowledge.binding.unbound", remove.request_id).seq;
+        std::test::assert(partial.conn.exec("UPDATE knowledge_meta SET value = '" + to_string(lost) + "' WHERE key = 'watermark'; UPDATE knowledge_meta SET value = '" + rj.read(lost - 1).digest + "' WHERE key = 'graph_projection_head'").ok && partial.watermark() == lost, "the stamp set back one row");
+        let resumed = ops::apply_record(partial, dna::RecordJournal { repo: repo }, receipts);
         std::test::assert_eq_str(resumed.error, "", "exact removal replays");
         std::test::assert_eq_str(partial.context_ids("org/support/urgent", 10), "", "replaying the removal cannot resurrect the earlier add");
-        std::test::assert_eq_int(partial.watermark(), j.revision(), "and the stamp reaches the record's end");
+        std::test::assert_eq_int(partial.watermark(), dna::RecordJournal { repo: repo }.revision(), "and the stamp reaches the record's end");
         std::test::assert_eq_str(capture_request(work), historical, "captured historical Work/package evidence is unchanged");
         std::test::assert_eq_str(dna::request_for_attempt(work, 2).knowledge_bindings, work.knowledge_bindings, "later attempt retains its original Work evidence");
         self.verdict(delayed, "delayed/decision", "approve"); self.wait(j, "knowledge.binding.apply_refused", delayed.request_id);
         std::test::assert(std::json::find_bool_field(dna::review_command_decision(j, "delayed/decision"), "accepted"), "stale candidate still has its real accepted Review");
         std::test::assert_eq_str(dna::native_json_string(event(j, "knowledge.binding.apply_refused", delayed.request_id).body, "reason_code"), "binding_changed", "ABA is refused despite absent original and current tuples");
         let again = self.request(repo, j, "again", "bind", idea, "org/support"); body.on_knowledge_binding_requested(again); self.verdict(again, "again/decision", "approve"); self.wait(j, "knowledge.binding.bound", again.request_id);
-        let replay = ops::apply_record(store, j, receipts); std::test::assert_eq_str(replay.error, "", "fresh-basis rebind projects");
+        let replay = ops::apply_record(store, dna::RecordJournal { repo: repo }, receipts); std::test::assert_eq_str(replay.error, "", "fresh-basis rebind projects");
         let rebuilt_id = id + "rebuilt";
         let rebuilt_dsn = dna::migrated(owner, rebuilt_id); std::test::assert(rebuilt_dsn.ok, "the rebuilt store's memory migrates: " + rebuilt_dsn.why);
         let rebuilt = dna::Pq { conn: dna::pq_conn(rebuilt_dsn), record_id: rebuilt_id };
         std::test::assert(rebuilt.open(), "the rebuilt store opens: " + rebuilt.last_error());
-        let rebuilt_result = ops::apply_record(rebuilt, j, receipts); std::test::assert_eq_str(rebuilt_result.error, "", "an empty store rebuilds from actual Record outcomes");
+        let rebuilt_result = ops::apply_record(rebuilt, dna::RecordJournal { repo: repo }, receipts); std::test::assert_eq_str(rebuilt_result.error, "", "an empty store rebuilds from actual Record outcomes");
         std::test::assert_eq_str(rebuilt.context_ids("org/support/urgent", 10), idea, "rebuild preserves ordered add/remove/rebind");
         std::test::assert_eq_int(rebuilt.count("bindings"), 2, "only original and current exact tuple exist");
         let no = self.request(repo, j, "decline", "unbind", idea, "org/support"); body.on_knowledge_binding_requested(no); self.verdict(no, "no/decision", "abstain"); self.wait(j, "review.command_decided", "no/decision");
@@ -204,13 +212,13 @@ main locus App {
         self.wait(j, "knowledge.retired", idea); self.verdict(retiring, "retiring-binding/decision", "approve"); self.wait(j, "knowledge.binding.apply_refused", retiring.request_id);
         std::test::assert_eq_str(dna::native_json_string(event(j, "knowledge.binding.apply_refused", retiring.request_id).body, "reason_code"), "subject_inactive", "approved binding cannot reactivate a retired item");
         let cleanup = self.request(repo, j, "retired-remove", "unbind", idea, "org/support"); body.on_knowledge_binding_requested(cleanup); self.verdict(cleanup, "retired-remove/decision", "approve"); self.wait(j, "knowledge.binding.unbound", cleanup.request_id);
-        let cleaned = ops::apply_record(store, j, receipts); std::test::assert_eq_str(cleaned.error, "", "visible retired item permits exact historical binding removal");
+        let cleaned = ops::apply_record(store, dna::RecordJournal { repo: repo }, receipts); std::test::assert_eq_str(cleaned.error, "", "visible retired item permits exact historical binding removal");
         std::test::assert_eq_int(store.count("bindings"), 1, "retired removal preserves original historical tuple");
         std::test::assert(store.idea(idea).present && !store.idea(idea).idea.accepted, "retired receipt and readable historical node remain");
         std::test::assert_eq_str(capture_request(work), historical, "retirement and unbind retain original task package evidence");
         // Explicit corrupted-input fixture: no native writer emits this row.
-        let invalid_seq = j.revision(); let bad = j.append_exact(j.revision(), "knowledge.binding.unbound", "malformed", "{\"binding_id\":\"wrong\"}"); std::test::assert(bad.ok, "malformed projection fixture");
-        let invalid = ops::apply_record(store, j, receipts); std::test::assert(len(invalid.error) > 0 && store.watermark() == invalid_seq, "invalid binding fact stops before offending watermark");
+        let invalid_seq = dna::RecordJournal { repo: repo }.revision(); let bad = j.append_exact(j.revision(), "knowledge.binding.unbound", "malformed", "{\"binding_id\":\"wrong\"}"); std::test::assert(bad.ok, "malformed projection fixture");
+        let invalid = ops::apply_record(store, dna::RecordJournal { repo: repo }, receipts); std::test::assert(len(invalid.error) > 0 && store.watermark() == invalid_seq, "invalid binding fact stops before offending watermark");
         std::test::assert_eq_int(store.count("bindings"), 1, "malformed removal cannot remove remaining historical binding");
         store.close(); partial.close(); rebuilt.close();
         std::test::assert_eq_str(dna::unmigrate(owner, id), "", "record's schema and roles dropped");

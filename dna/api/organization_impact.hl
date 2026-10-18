@@ -5,8 +5,8 @@ import "../operations" as ops;
 
 locus OrganizationImpactWire {
     params { }
-    fn candidate_visible(journal: ops::GovernanceJournal, candidate: ops::OrganizationCandidateEvidence) -> Bool {
-        let q = ops::Queries { j: journal }; let mut i = 0;
+    fn candidate_visible(record: dna::MemoryRecord, journal: ops::GovernanceJournal, candidate: ops::OrganizationCandidateEvidence) -> Bool {
+        let q = ops::Queries { j: journal, location: record.location() }; let mut i = 0;
         while i < journal.revision() {
             let e = journal.read(i);
             if e.entity == candidate.request.request_id || e.entity == candidate.mutation_id || e.entity == "review:" + candidate.mutation_id || e.entity == candidate.candidate_commit {
@@ -50,7 +50,7 @@ locus OrganizationImpactWire {
             if !key.ok || (key.text != "id" && key.text != "snapshot") { return http.error(400, "invalid_query", "source impact accepts only id and snapshot", false); }
             rest = if cut < 0 { "" } else { rest[(cut + 1)..len(rest)] };
         }
-        let record = dna::GitRecord { repo: context.root }; let capture = ops::GovernanceCommands { record: record }; let source = capture.capture();
+        let record = dna::MemoryRecord { repo: context.root }; let capture = ops::GovernanceCommands { record: record }; let source = capture.capture();
         if !source.ok { return http.error(if source.code == "snapshot_changed" { 409 } else { 503 }, if source.code == "snapshot_changed" { "snapshot_changed" } else { "source_impact_unavailable" }, "the responsibility history could not be captured", true); }
         if source.application_id != context.source.identity || source.head != context.source.head || source.revision != context.source.revision { return http.error(409, "snapshot_changed", "the Record changed while capturing source impact", true); }
         let journal = ops::GovernanceJournal { snapshot: source };
@@ -63,13 +63,17 @@ locus OrganizationImpactWire {
         let view = ops::OrganizationProjection { }; let candidate = view.candidate(journal, query.id, source.text);
         let retained = candidates.source_objects(record, journal, candidate);
         if !retained.ok { return http.error(if retained.code == "candidate_unavailable" { 503 } else { 404 }, if retained.code == "candidate_unavailable" { "source_impact_unavailable" } else { "source_impact_not_found" }, "no visible canonical source impact was found", retained.code == "candidate_unavailable"); }
-        let stages = status.stages(record, journal, candidate, mode); let visibility = ops::Queries { j: journal };
-        if stages.hidden || !self.candidate_visible(journal, candidate) {
+        // the operational history is the Ledger's (GH #1590): the record and
+        // its Ledger, read as one
+        let both = dna::RoutedJournal { record: journal, ledger: dna::MemoryLedger { repo: record.location(), dsn_env: dna::HEAD_DSN_ENV } };
+        let stages = status.stages(record, journal, candidate, mode); let visibility = ops::Queries { j: both, routed: true };
+        if stages.hidden || !self.candidate_visible(record, journal, candidate) {
             return http.error(404, "source_impact_not_found", "no visible canonical source impact was found", false);
         }
         if !stages.valid { return http.error(503, "source_impact_unavailable", "the responsibility evidence is unavailable", false); }
-        let reader = ops::OrganizationImpact { j: journal, visibility: visibility }; let assessment = reader.assess();
-        if assessment.code == "impact_source_changed" || assessment.record_head != source.head || assessment.revision != source.revision { return http.error(409, "snapshot_changed", "the responsibility assessment changed its captured Record", true); }
+        let read_head = both.head(); let read_revision = both.revision();
+        let reader = ops::OrganizationImpact { j: both, visibility: visibility, routed: true }; let assessment = reader.assess();
+        if assessment.code == "impact_source_changed" || assessment.record_head != read_head || assessment.revision != read_revision { return http.error(409, "snapshot_changed", "the responsibility assessment changed its captured Record", true); }
         let response = http.success(context.source, self.document(candidate, source, assessment));
         if !candidates.source_unchanged(record, source, retained) || status.trust(record) != mode { return http.error(409, "snapshot_changed", "the Record or retained source changed while reading impact", true); }
         return response;

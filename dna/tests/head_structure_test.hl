@@ -169,9 +169,9 @@ const MANDATE: String = "Decides: what the web client shows. May not: change the
 
 locus App {
     params { repo: String = ""; sock: String = ""; }
-    fn head() -> String { return dna::GitRecord { repo: self.repo }.head("journal").id; }
-    fn rows() -> Int { return dna::GitJournal { repo: self.repo }.revision(); }
-    fn append(j: dna::GitJournal, kind: String, entity: String, body: String) {
+    fn head() -> String { return dna::MemoryRecord { repo: self.repo }.head("journal").id; }
+    fn rows() -> Int { return dna::RecordJournal { repo: self.repo }.revision(); }
+    fn append(j: dna::RecordJournal, kind: String, entity: String, body: String) {
         std::test::assert(j.append(j.revision(), kind, entity, body).ok, "the record takes " + kind + " " + entity);
     }
     fn apply(id: String, at: String, steps: String) -> hc::CommandReply {
@@ -212,9 +212,10 @@ locus App {
         std::test::assert_eq_int(init.code, 0, "hale dna init: " + init.stdout + init.stderr);
         let configured = dna::run_tool("sh\n-c\ncd \"$1\" && mkdir -p .hale/dna && (git config --unset-all dna.trust || true) && git config --replace-all dna.unix.member \"uid:$2=ada\"\nsh\n" + self.repo + "\n" + me);
         std::test::assert_eq_int(configured.code, 0, "ada is this uid, and the graph decides who holds what: " + configured.stderr);
-        let j = dna::GitJournal { repo: self.repo };
+        std::test::assert_eq_str(dna::memory_fixture(self.repo), "", "the record is born in memory (GH #1590)");
+        let j = dna::RecordJournal { repo: self.repo };
         self.append(j, "graph.node", ops::graph_node_id("position", "agent"), ops::graph_node_body("position", "agent", "", ""));
-        let record = dna::GitRecord { repo: self.repo };
+        let record = dna::MemoryRecord { repo: self.repo };
         let policy = "{\"format\":\"dna.practice-review-authority/1\",\"application_id\":\"" + record.identity() + "\",\"grants\":[{\"mode\":\"local\",\"name\":\"ada\",\"authority\":\"board\",\"practice_propose\":false,\"review_verdict\":false,\"recover\":true}]}";
         std::io::fs::write_file(self.repo + "/.hale/dna/authority.json", policy) or discard;
 
@@ -271,7 +272,7 @@ locus App {
 
         // ---- the batch: the rows `hale dna apply` writes for it
         // what the CLI files for these steps, by ada, at this head
-        let plan = dna::batch_plan(dna::GitJournal { repo: self.repo }, dna::GitReceipts { repo: self.repo }, TEAM);
+        let plan = dna::batch_plan(dna::RecordJournal { repo: self.repo }, dna::MemoryReceipts { repo: self.repo }, TEAM);
         let rid = "b" + dna::digest_of(at1 + "\n" + plan.steps + "ada")[7..19];
         let filing = dna::batch_filing(plan, "ada", rid, 0, "");
         std::test::assert(plan.ok && filing.ok, "the CLI's filing: " + plan.why + filing.why);
@@ -279,7 +280,7 @@ locus App {
         std::test::assert(applied.ok && applied.code == "" && applied.receipt.state == "succeeded", "the batch is proposed: " + applied.code + " " + applied.receipt.reason);
         let st = applied.receipt.structure;
         std::test::assert(st.state == "requested" && st.request_id == rid && st.review_id == filing.review_id && applied.receipt.review_id == filing.review_id, "as the Review the CLI's filing names: " + st.state + " " + st.request_id + " " + st.review_id);
-        let after = dna::GitJournal { repo: self.repo };
+        let after = dna::RecordJournal { repo: self.repo };
         let mut expected = filing.rows;
         let mut i = rows1;
         while len(expected) > 0 {
@@ -299,7 +300,7 @@ locus App {
             i = i + 1;
         }
         std::test::assert_eq_int(after.revision(), i, "and nothing else");
-        let receipts = dna::GitReceipts { repo: self.repo };
+        let receipts = dna::MemoryReceipts { repo: self.repo };
         std::test::assert(len(receipts.read(filing.digest[7..len(filing.digest)])) > 0, "the family's receipt is kept");
         let mut rest = filing.docs;
         while len(rest) > 0 {
@@ -324,7 +325,7 @@ locus App {
         let at3 = self.head();
         let opened = self.open("p-1", at3, "web/dev", MANDATE);
         std::test::assert(opened.ok && opened.receipt.state == "succeeded" && opened.receipt.structure.state == "requested" && opened.receipt.target_id == "position:web/dev", "the opening is asked: " + opened.code + " " + opened.receipt.reason);
-        let opening = dna::GitJournal { repo: self.repo }.read(rows2);
+        let opening = dna::RecordJournal { repo: self.repo }.read(rows2);
         let pid = "p" + dna::digest_of(at3 + "\nposition:web/dev\n" + MANDATE + "\nada")[7..19];
         let ob = std::json::Builder { };
         ob.begin_object();
@@ -351,7 +352,7 @@ locus App {
         std::test::assert_eq_str(self.fill("h-stale", at3, "api/dev", "ada").code, "stale_subject", "a fill prepared against an old head is stale");
         let filled = self.fill("h-1", at4, "api/dev", "ada");
         std::test::assert(filled.ok && filled.receipt.state == "succeeded" && filled.receipt.structure.state == "requested", "the fill is asked: " + filled.code + " " + filled.receipt.reason);
-        let hold = dna::GitJournal { repo: self.repo }.read(rows4);
+        let hold = dna::RecordJournal { repo: self.repo }.read(rows4);
         let hid = "h" + dna::digest_of(at4 + "\nposition:api/dev\nada\nada")[7..19];
         let hb = std::json::Builder { };
         hb.begin_object();

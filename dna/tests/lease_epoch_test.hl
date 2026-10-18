@@ -65,7 +65,7 @@ fn stop_spine(app: String, pid: String) {
 fn record_row(app: String, kind: String, entity: String, secs: Int) -> String {
     let deadline = std::time::now() + dna::wait_secs(secs);
     while std::time::now() <= deadline {
-        let j = dna::GitJournal { repo: app };
+        let j = dna::RoutedJournal { record: dna::RecordJournal { repo: app }, ledger: dna::MemoryLedger { repo: app } };
         let mut i = 0;
         while i < j.revision() {
             let e = j.read(i);
@@ -79,7 +79,8 @@ fn record_row(app: String, kind: String, entity: String, secs: Int) -> String {
 
 // How many of the record's rows are `kind` about `entity`.
 fn record_count(app: String, kind: String, entity: String) -> Int {
-    let j = dna::GitJournal { repo: app };
+    std::test::assert_eq_str(dna::memory_fixture(app), "", "the record is born in memory (GH #1590)");
+    let j = dna::RoutedJournal { record: dna::RecordJournal { repo: app }, ledger: dna::MemoryLedger { repo: app } };
     let mut n = 0;
     let mut i = 0;
     while i < j.revision() {
@@ -173,7 +174,8 @@ main locus App {
         let made = in_dir(scratch, toolchain() + "\ndna\nnew\nepoch");
         std::test::assert_eq_int(made.code, 0, "hale dna new: " + made.stdout + made.stderr);
         let app = scratch + "/epoch";
-        let record = dna::GitJournal { repo: app }.genesis();
+        std::test::assert_eq_str(dna::memory_fixture(app), "", "the record is born in memory (GH #1590)");
+        let record = dna::RecordJournal { repo: app }.genesis();
         let migrated = migrate(app, owner, "");
         let head_dsn = line_value(migrated.stdout, "HALE_DNA_MEMORY_DSN_HEAD");
         std::test::assert(migrated.code == 0 && std::str::starts_with(head_dsn, "postgres"), "memory migrated for the record: " + migrated.stdout + migrated.stderr);
@@ -227,7 +229,8 @@ main locus App {
         std::test::assert_eq_int(made2.code, 0, "hale dna new: " + made2.stdout + made2.stderr);
         let shared = scratch + "/shared";
         // GH #1123: the owners are the graph's, rows in the record
-        let seats = dna::GitJournal { repo: shared };
+        std::test::assert_eq_str(dna::memory_fixture(shared), "", "the record is born in memory (GH #1590)");
+        let seats = dna::RoutedJournal { record: dna::RecordJournal { repo: shared }, ledger: dna::MemoryLedger { repo: shared } };
         let pairs = "position:org organization:acme\nposition:org/collections organization:north\norganization:acme alice\norganization:north bob\n";
         let mut rest = pairs;
         while len(rest) > 0 {
@@ -243,18 +246,17 @@ main locus App {
         let g5 = in_dir(shared, "git\nadd\n-A");
         let g6 = in_dir(shared, "git\ncommit\n-q\n-m\nthe shared organization");
         let g7 = in_dir(shared, "git\nremote\nadd\norigin\n" + bare);
-        let g8 = in_dir(shared, "git\npush\n-q\norigin\nmain\nrefs/dna/*:refs/dna/*");
+        let g8 = in_dir(shared, "git\npush\n-q\norigin\nmain");
         std::test::assert_eq_int(g8.code, 0, "pushed: " + g8.stderr);
-        let srecord = dna::GitJournal { repo: shared }.genesis();
+        let srecord = dna::RecordJournal { repo: shared }.genesis();
         let smigrated = migrate(shared, owner, "acme=ka north=kb");
         let shead = line_value(smigrated.stdout, "HALE_DNA_MEMORY_DSN_HEAD");
         let acme = line_value(smigrated.stdout, "HALE_DNA_MEMORY_DSN_HEAD_ACME");
         let north = line_value(smigrated.stdout, "HALE_DNA_MEMORY_DSN_HEAD_NORTH");
         std::test::assert(smigrated.code == 0 && std::str::starts_with(shead, "postgres") && std::str::starts_with(acme, "postgres") && std::str::starts_with(north, "postgres"), "memory migrated for the shared record, a head role per owner: " + smigrated.stdout + smigrated.stderr);
         let spine = start_spine(shared, owner, "acme=ka north=kb");
-        let adopted = as_head(shared, acme, toolchain() + "\ndna\nledger\nadopt\n--as\nalice");
-        std::test::assert(adopted.code == 0 && std::str::contains(adopted.stdout, "ledger adoption asked for as"), "adoption asked for: " + adopted.stdout + adopted.stderr);
-        std::test::assert(len(record_row(shared, "ledger.adopted", "ledger", 300)) > 0, "a node adopts the ledger on its tick: " + (std::io::fs::read_file(shared + "/.hale/dev.log") or ""));
+        // the ledger is the record's from its first rows (GH #1590): nothing to adopt
+        std::test::assert(len(record_row(shared, "ledger.adopted", "ledger", 30)) > 0, "the record is born with its ledger");
         std::test::assert(chart_holds(acme, srecord, "org_members WHERE person = 'bob' AND owner = 'north'", 300), "the nodes project the graph's memberships into memory: " + (std::io::fs::read_file(shared + "/.hale/dev.log") or ""));
         // a head's write in its owner's member's name lands, in her name, done
         std::test::assert_eq_str(write_as(acme, srecord, "task.planned", "i4", "{}", "alice", ""), "", "acme's head writes in alice's name");
@@ -281,7 +283,7 @@ main locus App {
         let by_head = row_with(hosted, "\"entity\": \"h1\"");
         std::test::assert(std::str::contains(by_head, "\"author\": \"host\"") && std::str::contains(by_head, "\"writer\": \"" + dna::owner_role(srecord, "acme") + "\""), "a head's row as host names acme's role as its writer: " + by_head);
         // a person the record retires writes nothing more in memory
-        let retired = dna::GitJournal { repo: shared, author: "bob" }.append(dna::GitJournal { repo: shared }.revision(), "person.retired", "bob", "{\"successor\": \"\"}");
+        let retired = dna::RecordJournal { repo: shared, author: "bob" }.append(dna::RecordJournal { repo: shared }.revision(), "person.retired", "bob", "{\"successor\": \"\"}");
         std::test::assert(retired.ok, "bob's retirement is a row of the record: " + retired.error);
         std::test::assert(chart_holds(north, srecord, "org_retired WHERE person = 'bob'", 300), "the nodes project the retirement: " + (std::io::fs::read_file(shared + "/.hale/dev.log") or ""));
         std::test::assert(std::str::contains(write_as(north, srecord, "task.planned", "i9", "{}", "bob", ""), "bob retired from this organism"), "north's head writes nothing in a retired member's name");

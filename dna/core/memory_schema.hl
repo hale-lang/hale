@@ -26,7 +26,12 @@
 // readings, which the insert function admits to the ledger. 8 (GH #988):
 // its `reflex` family, what a reflex made the body do. 9 (GH #1590): the
 // exchange's inbox, `exchange_rows`, kept through `exchange_keep` alone.
-const MEMORY_SCHEMA_VERSION: Int = 9;
+// 10 (GH #1590): the record itself, `record_rows`, appended through
+// `record_append` alone (the prev-digest chain, a signature per row), and
+// a receipt kept unsealed beside the protected ones (`receipt_keep`); the
+// writers insert, and nothing they hold updates or deletes a row of either
+// chain.
+const MEMORY_SCHEMA_VERSION: Int = 10;
 
 type Migrated {
     ok: Bool = false;
@@ -218,6 +223,12 @@ fn ledger_ddl() -> String {
     // an envelope's id is its sender's namespace, and the key that signed it
     // is part of its identity: an envelope signed with another key never
     // takes the place of the sender's own
+    // GH #1590: the record's rows: each one's digest extends the chain from
+    // the row before (`prev`), and carries its writer's signature over that
+    // digest ("" where the record's trust admits an unsigned row)
+        + "CREATE TABLE IF NOT EXISTS record_rows (seq bigint PRIMARY KEY, kind text NOT NULL, entity text NOT NULL, body text NOT NULL, author text NOT NULL, writer text NOT NULL, prev text NOT NULL, digest text NOT NULL UNIQUE, sig text NOT NULL DEFAULT '', at timestamptz NOT NULL DEFAULT now());"
+        + "CREATE TABLE IF NOT EXISTS record_requests (request_id text PRIMARY KEY, revision bigint NOT NULL, at timestamptz NOT NULL DEFAULT now());"
+        + "ALTER TABLE protected_receipts ADD COLUMN IF NOT EXISTS sealed boolean NOT NULL DEFAULT true;"
         + ledger_gate_ddl();
 }
 
@@ -328,20 +339,88 @@ fn receipt_functions(sch: String) -> String {
         + "RETURN true; END $f$;"
         + "CREATE OR REPLACE FUNCTION " + sch + ".receipt_read(p_digest text) RETURNS json LANGUAGE plpgsql SECURITY DEFINER SET search_path = " + sch + ", public AS $f$ DECLARE k text; r json; BEGIN "
         + "SELECT value INTO k FROM memory_keys WHERE name = 'receipt'; "
-        + "IF k IS NULL THEN RAISE EXCEPTION 'no receipt key: memory keeps no protected evidence until " + fix + "'; END IF; "
-        + "SELECT row_to_json(t) INTO r FROM (SELECT class, pgp_sym_decrypt(dearmor(body), k) AS text, stored_at FROM protected_receipts WHERE digest = p_digest) t; "
+    // GH #1590: an unsealed body (public or internal) is read as it is kept
+        + "IF k IS NULL AND EXISTS (SELECT 1 FROM protected_receipts WHERE digest = p_digest AND sealed) THEN RAISE EXCEPTION 'no receipt key: memory keeps no protected evidence until " + fix + "'; END IF; "
+        + "SELECT row_to_json(t) INTO r FROM (SELECT class, CASE WHEN sealed THEN pgp_sym_decrypt(dearmor(body), k) ELSE body END AS text, stored_at FROM protected_receipts WHERE digest = p_digest) t; "
         + "RETURN r; END $f$;"
+    // GH #1590: a public or internal body, kept unsealed beside the
+    // protected ones, under the digest of its content, once
+        + "CREATE OR REPLACE FUNCTION " + sch + ".receipt_keep(p_digest text, p_class text, p_body text, p_at bigint) RETURNS boolean LANGUAGE plpgsql SECURITY DEFINER SET search_path = " + sch + ", public AS $f$ BEGIN "
+        + "IF p_class NOT IN ('public', 'internal') THEN RAISE EXCEPTION 'class % is kept sealed (receipt_file)', p_class; END IF; "
+        + "IF p_digest <> 'sha256:' || encode(digest(p_body, 'sha256'), 'hex') THEN RAISE EXCEPTION 'the digest is not the body''s'; END IF; "
+        + "IF EXISTS (SELECT 1 FROM protected_redactions WHERE digest = p_digest) THEN RAISE EXCEPTION '% was redacted; a redacted body is not kept again', p_digest; END IF; "
+        + "INSERT INTO protected_receipts (digest, class, body, stored_at, sealed) VALUES (p_digest, p_class, p_body, p_at, false) ON CONFLICT (digest) DO NOTHING; "
+        + "RETURN true; END $f$;"
+        + "REVOKE ALL ON FUNCTION " + sch + ".receipt_keep(text, text, text, bigint) FROM PUBLIC;"
         + "CREATE OR REPLACE FUNCTION " + sch + ".receipt_erase(p_digest text, p_at bigint) RETURNS boolean LANGUAGE plpgsql SECURITY DEFINER SET search_path = " + sch + ", public AS $f$ BEGIN "
         + "DELETE FROM protected_receipts WHERE digest = p_digest; "
         + "INSERT INTO protected_redactions (digest, erased_at) VALUES (p_digest, p_at) ON CONFLICT (digest) DO NOTHING; "
         + "RETURN true; END $f$;"
-        + "REVOKE ALL ON FUNCTION " + sch + ".receipt_file(text, text, text, bigint), " + sch + ".receipt_read(text), " + sch + ".receipt_erase(text, bigint) FROM PUBLIC;"
+    // whether a redaction erased a body: the tombstone, read through
+    // this function alone (GH #1590: the row naming it is the Ledger's)
+        + "CREATE OR REPLACE FUNCTION " + sch + ".receipt_redacted(p_digest text) RETURNS boolean LANGUAGE sql STABLE SECURITY DEFINER SET search_path = " + sch + ", public AS $f$ SELECT EXISTS (SELECT 1 FROM protected_redactions WHERE digest = p_digest) $f$;"
+        + "REVOKE ALL ON FUNCTION " + sch + ".receipt_file(text, text, text, bigint), " + sch + ".receipt_read(text), " + sch + ".receipt_erase(text, bigint), " + sch + ".receipt_redacted(text) FROM PUBLIC;"
     // GH #1590: an envelope is kept once by its sender, its id and the key
     // that signed it, and never changed: the writers insert through this
     // function alone
         + "CREATE OR REPLACE FUNCTION " + sch + ".exchange_keep(p_id text, p_sender text, p_signer text, p_kind text, p_entity text, p_line text, p_seq bigint) RETURNS boolean LANGUAGE plpgsql SECURITY DEFINER SET search_path = " + sch + ", public AS $x$ BEGIN "
         + "INSERT INTO exchange_rows (id, sender, signer, kind, entity, line, stream_seq) VALUES (p_id, p_sender, p_signer, p_kind, p_entity, p_line, p_seq) ON CONFLICT (sender, id, signer) DO NOTHING; RETURN true; END $x$;"
-        + "REVOKE ALL ON FUNCTION " + sch + ".exchange_keep(text, text, text, text, text, text, bigint) FROM PUBLIC";
+        + "REVOKE ALL ON FUNCTION " + sch + ".exchange_keep(text, text, text, text, text, text, bigint) FROM PUBLIC;"
+        + record_functions(sch);
+}
+
+// GH #1590: the record's insert function, the one way a row lands. It
+// refuses a kind the routing table gives the Ledger; appends exactly at the
+// revision a decision was read at, or at the tail for -1, and only on top
+// of the head the writer signed over (`p_prev`), so a signature always
+// names the row's own digest; extends the chain as `event_digest` does;
+// and answers a request id it has seen as it landed. Appends are
+// serialized on the schema.
+fn record_functions(sch: String) -> String {
+    let refuse = "RETURN json_build_object('error', 'refused', 'why', ";
+    return "CREATE OR REPLACE FUNCTION " + sch + ".record_append(p_expected bigint, p_prev text, p_kind text, p_entity text, p_body text, p_author text, p_sig text, p_request text) RETURNS text LANGUAGE plpgsql SECURITY DEFINER SET search_path = " + sch + ", public AS $r$ "
+        + "DECLARE n bigint; v_prev text; d text; "
+        + "BEGIN "
+        + "IF ledger_kind(p_kind) THEN " + refuse + "'`' || p_kind || '` is a row of the Ledger, not the record')::text; END IF; "
+        + "IF p_request <> '' THEN SELECT revision INTO n FROM record_requests WHERE request_id = p_request; IF FOUND THEN RETURN json_build_object('error', '', 'seq', n - 1, 'again', true)::text; END IF; END IF; "
+        + "PERFORM pg_advisory_xact_lock(hashtext('hale.record:' || current_schema())); "
+        + "SELECT coalesce(max(seq) + 1, 0) INTO n FROM record_rows; "
+        + "IF p_expected >= 0 AND p_expected <> n THEN RETURN json_build_object('error', 'stale_revision', 'actual', n)::text; END IF; "
+        + "SELECT digest INTO v_prev FROM record_rows WHERE seq = n - 1; "
+        + "v_prev := coalesce(v_prev, 'genesis'); "
+        + "IF p_prev <> v_prev THEN RETURN json_build_object('error', 'stale_revision', 'actual', n)::text; END IF; "
+        + "d := encode(digest(v_prev || '|' || p_kind || '|' || p_entity || '|' || p_body, 'sha256'), 'hex'); "
+        + "INSERT INTO record_rows (seq, kind, entity, body, author, writer, prev, digest, sig) VALUES (n, p_kind, p_entity, p_body, p_author, session_user, v_prev, d, p_sig); "
+        + "IF p_request <> '' THEN INSERT INTO record_requests (request_id, revision) VALUES (p_request, n + 1) ON CONFLICT DO NOTHING; END IF; "
+        + "RETURN json_build_object('error', '', 'seq', n, 'prev', v_prev, 'digest', d)::text; "
+        + "END $r$;"
+        + "REVOKE ALL ON FUNCTION " + sch + ".record_append(bigint, text, text, text, text, text, text, text) FROM PUBLIC;"
+    // many rows made visible together: every row checked before any is
+    // inserted, the chain continued from `p_prev` under the same lock
+    // (`p_rows`: a JSON array of {kind, entity, body, author, sig})
+        + "CREATE OR REPLACE FUNCTION " + sch + ".record_append_rows(p_expected bigint, p_prev text, p_rows text) RETURNS text LANGUAGE plpgsql SECURITY DEFINER SET search_path = " + sch + ", public AS $r$ "
+        + "DECLARE n bigint; first bigint; v_prev text; d text; e jsonb; "
+        + "BEGIN "
+        + "IF jsonb_typeof(p_rows::jsonb) <> 'array' OR jsonb_array_length(p_rows::jsonb) = 0 THEN " + refuse + "'a batch is a non-empty array of rows')::text; END IF; "
+        + "FOR e IN SELECT * FROM jsonb_array_elements(p_rows::jsonb) LOOP "
+        + "IF ledger_kind(e->>'kind') THEN " + refuse + "'`' || (e->>'kind') || '` is a row of the Ledger, not the record')::text; END IF; "
+        + "IF coalesce(e->>'kind', '') = '' THEN " + refuse + "'a row of the batch has no kind')::text; END IF; "
+        + "END LOOP; "
+        + "PERFORM pg_advisory_xact_lock(hashtext('hale.record:' || current_schema())); "
+        + "SELECT coalesce(max(seq) + 1, 0) INTO n FROM record_rows; "
+        + "IF p_expected >= 0 AND p_expected <> n THEN RETURN json_build_object('error', 'stale_revision', 'actual', n)::text; END IF; "
+        + "SELECT digest INTO v_prev FROM record_rows WHERE seq = n - 1; "
+        + "v_prev := coalesce(v_prev, 'genesis'); "
+        + "IF p_prev <> v_prev THEN RETURN json_build_object('error', 'stale_revision', 'actual', n)::text; END IF; "
+        + "first := n; "
+        + "FOR e IN SELECT * FROM jsonb_array_elements(p_rows::jsonb) LOOP "
+        + "d := encode(digest(v_prev || '|' || (e->>'kind') || '|' || coalesce(e->>'entity', '') || '|' || coalesce(e->>'body', ''), 'sha256'), 'hex'); "
+        + "INSERT INTO record_rows (seq, kind, entity, body, author, writer, prev, digest, sig) VALUES (n, e->>'kind', coalesce(e->>'entity', ''), coalesce(e->>'body', ''), coalesce(e->>'author', ''), session_user, v_prev, d, coalesce(e->>'sig', '')); "
+        + "v_prev := d; n := n + 1; "
+        + "END LOOP; "
+        + "RETURN json_build_object('error', '', 'seq', n - 1, 'first', first, 'digest', v_prev)::text; "
+        + "END $r$;"
+        + "REVOKE ALL ON FUNCTION " + sch + ".record_append_rows(bigint, text, text) FROM PUBLIC";
 }
 
 // Match the public bytewise tuple order with database indexes, so
@@ -409,6 +488,12 @@ fn spine_grants(sch: String, role: String) -> String {
         + "REVOKE ALL ON " + sch + ".protected_receipts, " + sch + ".protected_redactions FROM " + role + ";"
         + "REVOKE ALL ON " + sch + ".exchange_rows FROM " + role + ";"
         + "GRANT SELECT ON " + sch + ".exchange_rows TO " + role + ";"
+    // GH #1590: the two chains are insert-only for every writer, each
+    // through its own function alone: never a plain insert, an update or a
+    // delete
+        + "REVOKE ALL ON " + sch + ".record_rows, " + sch + ".record_requests FROM " + role + ";"
+        + "GRANT SELECT ON " + sch + ".record_rows TO " + role + ";"
+        + "REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON " + sch + ".ledger_rows, " + sch + ".ledger_requests FROM " + role + ";"
         + "GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA " + sch + " TO " + role + ";"
         + "GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA " + sch + " TO " + role;
 }
@@ -425,9 +510,10 @@ fn head_grants(sch: String, role: String) -> String {
         + sch + ".org_members, " + sch + ".org_retired TO " + role + ";"
         + "GRANT INSERT, UPDATE ON " + sch + ".claims TO " + role + ";"
         + "GRANT SELECT, INSERT ON " + sch + ".hats TO " + role + ";"
-        + "GRANT SELECT ON " + sch + ".exchange_rows TO " + role + ";"
+        + "GRANT SELECT ON " + sch + ".exchange_rows, " + sch + ".record_rows TO " + role + ";"
         + "GRANT EXECUTE ON FUNCTION " + sch + ".receipt_file(text, text, text, bigint), " + sch + ".receipt_read(text), "
-        + sch + ".ledger_append(bigint, text, text, text, text, text, bigint, text), "
+        + sch + ".receipt_keep(text, text, text, bigint), " + sch + ".receipt_redacted(text), " + sch + ".record_append(bigint, text, text, text, text, text, text, text), "
+        + sch + ".record_append_rows(bigint, text, text), " + sch + ".ledger_append(bigint, text, text, text, text, text, bigint, text), "
         + sch + ".exchange_keep(text, text, text, text, text, text, bigint) TO " + role;
 }
 
@@ -541,6 +627,17 @@ fn migrate_on(c: pq::PgConn, record_id: String, owners: String) -> String {
             if !claim.ok { return abort(c, "scope", claim.err); }
         }
     }
+    // GH #1590: a record born in memory has its Ledger from its first row:
+    // the cutover is at its identity, on this toolchain's routing, as its
+    // `ledger.adopted` row says. A cutover already recorded (a record adopted
+    // before) is kept.
+    if len(record_id) > 0 {
+        let a = db::Args { };
+        a.add(record_id);
+        a.add(to_string(ROUTING_VERSION));
+        let born = c.exec_params("INSERT INTO ledger_meta (key, value) VALUES ('checkpoint', $1), ('copied', '0'), ('routing', $2), ('record', $1) ON CONFLICT (key) DO NOTHING", a);
+        if !born.ok { return abort(c, "the Ledger's cutover", born.err); }
+    }
     let indexes = c.exec(graph_indexes());
     if !indexes.ok { return abort(c, "graph indexes", indexes.err); }
     let protocol = c.exec(projection_protocol());
@@ -631,6 +728,8 @@ fn migrated(owner: String, record_id: String) -> Dsn {
 // (no variable named) or it was filled; otherwise why it could not be.
 fn dial_from_env(c: pq::PgConn, env_name: String) -> String {
     if len(env_name) == 0 { return ""; }
+    // a DSN in place of the name (`memory_source`)
+    if std::str::starts_with(env_name, "postgres") { return dial_from_text(c, env_name); }
     if !std::env::var_exists(env_name) || len(std::env::var(env_name)) == 0 { return env_name + " is not set: no memory to open"; }
     let d = parse_dsn(std::env::var(env_name));
     if !d.ok { return env_name + ": " + d.why; }

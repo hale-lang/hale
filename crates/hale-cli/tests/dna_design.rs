@@ -43,14 +43,15 @@ fn hale_env(args: &[&str], cwd: &Path, env: &[(&str, &str)]) -> (bool, String) {
 /// The `supersedes` a proposal's receipt names ("" when none).
 fn supersedes_of(app: &Path, digest: &str) -> String {
     let raw = digest.strip_prefix("sha256:").unwrap_or(digest);
-    let out = Command::new("git").args(["cat-file", "-p", &format!("refs/dna/receipts/{raw}")]).current_dir(app).output().unwrap();
-    let v: serde_json::Value = serde_json::from_str(&String::from_utf8_lossy(&out.stdout)).unwrap_or(serde_json::Value::Null);
+    let v: serde_json::Value = serde_json::from_str(&record::body_in(vault::hale(), app, raw)).unwrap_or(serde_json::Value::Null);
     v["supersedes"].as_str().unwrap_or("").to_string()
 }
 
 fn journal(app: &Path) -> Vec<(String, String, String)> {
     let _s = trace::Span::new("hale", "dna record-rows");
-    record::text(app)
+    // the record's rows and its Ledger's, read with this test's vault
+    // (GH #1590)
+    (record::text_in(vault::hale(), app) + &record::ledger_in(vault::hale(), app))
         .lines()
         .filter(|l| !l.trim().is_empty())
         .map(|l| {
@@ -79,6 +80,7 @@ fn start_org(app: &Path) -> std::process::Child {
     let host = vault::hale()
         .args(["dna", "run", ".", "--no-iris"])
         .current_dir(app)
+        .env("HALE_DNA_MEMORY_DSN_SPINE", record::spine(vault::hale(), &app))
         .env("HALE_BIN", env!("CARGO_BIN_EXE_hale"))
         .env("HALE_DNA_DISCOVER", "off")
         .env("XDG_CACHE_HOME", std::env::temp_dir().join("hale-tests-iris-cache"))
@@ -155,7 +157,9 @@ const PACKAGE: &str = r#"import "vendor/dna" as dna;
 fn main() {
     let k = dna::MemoryKnowledge { repo: ".", dsn_env: "HALE_DNA_MEMORY_DSN_HEAD", budget: 32 };
     let p = k.package_for("org", "");
-    let j = dna::GitJournal { repo: "." };
+    // the spine projects the record alone: its rows are the watermark's
+    // measure, not the Ledger's (GH #1590)
+    let j = dna::RecordJournal { repo: "." };
     let moved = j.refresh();
     println(p.error + "\t" + to_string(p.revision) + "\t" + to_string(j.revision()) + "\t" + p.included);
 }
@@ -210,11 +214,7 @@ fn family_ids(list: &str, family: &str) -> Vec<String> {
 
 /// This record's schema, roles and stream, gone again.
 fn unmigrate(app: &Path, owner: &str) {
-    let out = Command::new("git").args(["rev-list", "--max-parents=0", "refs/dna/journal"]).current_dir(app).output().unwrap();
-    let id = String::from_utf8_lossy(&out.stdout).trim().to_lowercase();
-    let sch = format!("dna_{id}");
-    let sql = format!("DROP SCHEMA IF EXISTS {sch} CASCADE; DROP ROLE IF EXISTS {sch}_spine; DROP ROLE IF EXISTS {sch}_head");
-    let _ = Command::new("psql").args([owner, "-q", "-c", &sql]).output();
+    record::unmigrate(app, owner);
     // and its stream on the nerves (GH #986), with the owner's URL
     let _ = vault::hale().args(["dna", "nerves", "drop", "."]).current_dir(app).env("HALE_DNA_DISCOVER", "off").output();
 }
@@ -226,8 +226,9 @@ const OLDER: &str = r#"import "vendor/dna" as dna;
 main locus App {
     params {
         core: dna::Dna = dna::Dna {
-            journal: dna::GitJournal { repo: "." },
-            verification: dna::HaleVerification { receipts: dna::GitReceipts { repo: "." }, repo: "." },
+            // the record and its Ledger as the owner writes them (GH #1590)
+            journal: dna::RoutedJournal { record: dna::RecordJournal { repo: ".", dsn_env: "HALE_DNA_MEMORY_DSN_OWNER" }, ledger: dna::MemoryLedger { repo: ".", dsn_env: "HALE_DNA_MEMORY_DSN_OWNER" } },
+            verification: dna::HaleVerification { receipts: dna::MemoryReceipts { repo: ".", dsn_env: "HALE_DNA_MEMORY_DSN_OWNER" }, repo: "." },
             board: dna::Board { who: "board" }
         };
     }
@@ -539,8 +540,7 @@ fn the_operating_practices_are_seeded_decided_and_superseded_like_the_design() {
 /// The receipt document a proposal's digest names, as JSON.
 fn receipt(app: &Path, digest: &str) -> serde_json::Value {
     let raw = digest.strip_prefix("sha256:").unwrap_or(digest);
-    let out = Command::new("git").args(["cat-file", "-p", &format!("refs/dna/receipts/{raw}")]).current_dir(app).output().unwrap();
-    serde_json::from_str(&String::from_utf8_lossy(&out.stdout)).unwrap_or(serde_json::Value::Null)
+    serde_json::from_str(&record::body_in(vault::hale(), app, raw)).unwrap_or(serde_json::Value::Null)
 }
 
 /// The proposals of the library, as (digest, body).

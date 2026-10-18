@@ -34,6 +34,7 @@ locus NoEdgeReceipts {
     fn store(text: String) -> String { return ""; }
     fn read(digest: String) -> String { return ""; }
     fn erase(digest: String) -> Bool { return false; }
+    fn redacted(digest: String) -> Bool { return false; }
 }
 
 locus UnlinkCases {
@@ -148,7 +149,8 @@ locus UnlinkCases {
         let init = dna::run_tool("git\n-C\n" + root + "\ninit\n-q\n-b\nmain"); std::test::assert_eq_int(init.code, 0, "isolated native unlink Record");
         let id = "edgeunlinkreplay" + to_string(std::process::pid());
         let dsn = dna::migrated(owner, id); std::test::assert(dsn.ok, "memory migrates: " + dsn.why);
-        let j = dna::GitJournal { repo: root }; let receipts = NoEdgeReceipts { }; let store = dna::Pq { conn: dna::pq_conn(dsn), record_id: id };
+        std::test::assert_eq_str(dna::memory_fixture(root), "", "the record is born in memory (GH #1590)");
+        let j = dna::RoutedJournal { record: dna::RecordJournal { repo: root }, ledger: dna::MemoryLedger { repo: root } }; let receipts = NoEdgeReceipts { }; let store = dna::Pq { conn: dna::pq_conn(dsn), record_id: id };
         std::test::assert(store.open(), "replay store opens: " + store.last_error());
         self.append(j, "application.started", "org", "{}");
         self.fact(j, "initial-forward", self.forward(), false); self.fact(j, "reverse", self.reverse(), false);
@@ -160,7 +162,7 @@ locus UnlinkCases {
         // Fault injection: effect ran, then process stopped before its watermark
         // advanced. Resume from the retained checkpoint, never from old links.
         std::test::assert(store.unlink(self.forward()), "simulate effect before interrupted watermark");
-        let generation = store.graph_generation(); let reopened = dna::GitJournal { repo: root };
+        let generation = store.graph_generation(); let reopened = dna::RoutedJournal { record: dna::RecordJournal { repo: root }, ledger: dna::MemoryLedger { repo: root } };
         let resumed = ops::apply_record(store, reopened, receipts);
         std::test::assert_eq_str(resumed.error, "", "interrupted unlink resumes from durable Record");
         std::test::assert_eq_int(resumed.rows, 1, "resume never reapplies older linked prefix");
@@ -177,7 +179,7 @@ locus UnlinkCases {
         let final = ops::apply_record(store, j, receipts); std::test::assert_eq_str(final.error, "", "later unlink wins in Record order"); self.remaining(store);
         let fresh_id = id + "fresh";
         let fresh_dsn = dna::migrated(owner, fresh_id); std::test::assert(fresh_dsn.ok, "fresh memory migrates: " + fresh_dsn.why);
-        let fresh_record = dna::GitJournal { repo: root }; let fresh = dna::Pq { conn: dna::pq_conn(fresh_dsn), record_id: fresh_id };
+        let fresh_record = dna::RoutedJournal { record: dna::RecordJournal { repo: root }, ledger: dna::MemoryLedger { repo: root } }; let fresh = dna::Pq { conn: dna::pq_conn(fresh_dsn), record_id: fresh_id };
         std::test::assert(fresh.open(), "fresh store opens: " + fresh.last_error());
         let rebuilt = ops::apply_record(fresh, fresh_record, receipts);
         std::test::assert_eq_str(rebuilt.error, "", "empty memory rebuilds link-unlink-relink-unlink history");

@@ -14,8 +14,9 @@ fn append(j: dna::Journal, kind: String, entity: String, body: String) {
     std::test::assert(j.append(j.revision(), kind, entity, body).ok, "append projection fixture " + kind);
 }
 fn candidate(repo: String, kind: String, author: String, target: String, text: String) -> String {
-    let record = dna::GitRecord { repo: repo }; std::test::assert_eq_int(record.git("init\n--quiet").code, 0, "initialize isolated Record");
-    let j = dna::GitJournal { repo: repo }; let receipts = dna::GitReceipts { repo: repo };
+    let record = dna::MemoryRecord { repo: repo }; std::test::assert_eq_int(record.git("init\n--quiet").code, 0, "initialize isolated Record");
+    std::test::assert_eq_str(dna::memory_fixture(repo), "", "the record is born in memory (GH #1590)");
+    let j = dna::RoutedJournal { record: dna::RecordJournal { repo: repo }, ledger: dna::MemoryLedger { repo: repo } }; let receipts = dna::MemoryReceipts { repo: repo };
     let doc = dna::knowledge_document(dna::Idea { kind: kind, text: text, author: author, provenance: "proposed", supersedes: if kind == "retirement" { OLD } else { "" } }, target);
     let digest = "sha256:" + receipts.store(doc); let review = dna::knowledge_review_id(digest);
     let b = std::json::Builder { }; b.begin_object(); b.string_field("digest", digest); b.string_field("review_id", review); b.string_field("kind", kind); b.string_field("author", author); b.string_field("target", target);
@@ -30,7 +31,8 @@ fn generic(repo: String, kind: String) {
     let bytes = std::bytes::BytesBuilder { }; bytes.append_str("Exact é 🧭\r\n"); bytes.append_u8(1);
     let text = if kind == "retirement" { "" } else { std::str::from_bytes(bytes.snapshot() or raise) };
     let digest = candidate(repo, kind, "org/support", "org/support/intake", text);
-    let record = dna::GitRecord { repo: repo }; let receipts = dna::GitReceipts { repo: repo }; let j = dna::GitJournal { repo: repo }; let queries = ops::Queries { j: j, receipts: receipts };
+    std::test::assert_eq_str(dna::memory_fixture(repo), "", "the record is born in memory (GH #1590)");
+    let record = dna::MemoryRecord { repo: repo }; let receipts = dna::MemoryReceipts { repo: repo }; let j = dna::RoutedJournal { record: dna::RecordJournal { repo: repo }, ledger: dna::MemoryLedger { repo: repo } }; let queries = ops::Queries { j: j, receipts: receipts, routed: true };
     std::test::assert_eq_int(queries.practice_count(), 0, "unnamed candidates do not enter the named catalog");
     let exact = queries.practice_of(digest); std::test::assert(exact.text_available && exact.kind == kind && exact.name == "", "exact lookup returns an unnamed canonical candidate");
     std::test::assert_eq_str(exact.text, text, "canonical candidate text remains byte exact");
@@ -54,13 +56,15 @@ fn generic(repo: String, kind: String) {
     }
 }
 fn denial(repo: String, kind: String, author: String, target: String, role: String, expected: String) {
-    let digest = candidate(repo, kind, author, target, "Candidate"); let record = dna::GitRecord { repo: repo }; let authority = NodeReviewAuthority { role: role }; let service = ops::GovernanceCommands { record: record, authority: authority };
+    std::test::assert_eq_str(dna::memory_fixture(repo), "", "the record is born in memory (GH #1590)");
+    let digest = candidate(repo, kind, author, target, "Candidate"); let record = dna::MemoryRecord { repo: repo }; let authority = NodeReviewAuthority { role: role }; let service = ops::GovernanceCommands { record: record, authority: authority };
     let context = ops::GovernanceContext { application_id: record.identity(), principal_mode: "local", principal_name: "alice" };
     std::test::assert_eq_str(service.submit(context, command(context.application_id, digest, "denied")).code, expected, "generic Review retains kind, scope, authority and independence rules");
 }
 fn changed_review(repo: String) {
     let digest = candidate(repo, "idea", "org", "org", "Exact candidate");
-    let record = dna::GitRecord { repo: repo }; let j = dna::GitJournal { repo: repo }; let authority = NodeReviewAuthority { }; let service = ops::GovernanceCommands { record: record, authority: authority };
+    std::test::assert_eq_str(dna::memory_fixture(repo), "", "the record is born in memory (GH #1590)");
+    let record = dna::MemoryRecord { repo: repo }; let j = dna::RoutedJournal { record: dna::RecordJournal { repo: repo }, ledger: dna::MemoryLedger { repo: repo } }; let authority = NodeReviewAuthority { }; let service = ops::GovernanceCommands { record: record, authority: authority };
     let context = ops::GovernanceContext { application_id: record.identity(), principal_mode: "local", principal_name: "alice" }; let review = dna::knowledge_review_id(digest);
     let b = std::json::Builder { }; b.begin_object(); b.string_field("subject_digest", digest); b.string_field("knowledge_digest", digest); b.string_field("author", "org"); b.string_field("target", "org"); b.string_field("required_authority", "board"); b.string_field("kind", "retirement"); b.end_object();
     append(j, "review.requested", "review:" + review, b.result());

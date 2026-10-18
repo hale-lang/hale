@@ -34,7 +34,9 @@ locus Node {
         node_dir: String = "";
         author: String = "";
         instances: Instances = Instances { };
-        expressed_seq: Int = -1;
+        // the deploy expressed last, by its row's digest: a row's place in
+        // the record and its Ledger read as one is not stable (GH #1590)
+        expressed: String = "";
         started_total: Int = 0;
         memory: dna::Memory = dna::Memory { }; // this process's one handle (GH #985)
         // GH #988: this node's readings — its pulse, and each instance up
@@ -88,7 +90,7 @@ locus Node {
     fn express(deploy: dna::Event, only: String) -> Bool {
         let rev = std::json::find_string_field(deploy.body, "revision");
         if len(rev) == 0 { self.say("fleet.deploy #" + to_string(deploy.seq) + ": a deploy with no revision"); return true; }
-        let remote = record_remote(self.root);
+        let remote = genome_remote(self.root);
         // the revision by its sha, from the genome's forge (GH #1590); a
         // fetch that failed is said, and the deploy is tried next tick
         let mut unread = "";
@@ -166,7 +168,7 @@ locus Node {
             }
             it = std::json::array_next(it);
         }
-        if len(only) == 0 { self.expressed_seq = deploy.seq; }
+        if len(only) == 0 { self.expressed = deploy.digest; }
         self.started_total = self.started_total + started;
         self.say("fleet.deploy #" + to_string(deploy.seq) + (if len(only) > 0 { " restarted " + only + " (" } else { " expressed (" }) + to_string(started) + " instance(s) started)");
         let s = sync_record(self.root, self.memory);
@@ -216,7 +218,7 @@ locus Node {
             if e.kind == "fleet.deploy" && (len(self.fleet) == 0 || std::json::find_string_field(e.body, "plan") == self.fleet) { deploy = e; }
             i = i - 1;
         }
-        if deploy.seq >= 0 && deploy.seq != self.expressed_seq {
+        if deploy.seq >= 0 && deploy.digest != self.expressed {
             let done = self.express(deploy, "");
         }
         if deploy.seq >= 0 { self.act_on_reflexes(p, deploy); }
@@ -277,8 +279,8 @@ locus Node {
         std::io::fs::mkdir(self.root + "/.hale/node") or discard;
         std::io::fs::mkdir(self.node_dir) or discard;
         self.author = "node/" + self.name;
-        let remote = record_remote(self.root);
-        self.say("expressing from " + self.root + " (record via " + (if len(remote) == 0 { "no remote" } else { remote }) + ")");
+        let remote = genome_remote(self.root);
+        self.say("expressing from " + self.root + " (the record in memory; the genome via " + (if len(remote) == 0 { "no remote" } else { remote }) + ")");
     }
 }
 
@@ -288,7 +290,7 @@ fn node_main(name: String, root: String, fleet: String, tick_ms: Int) {
         eprintln("usage: hale node <name> [--repo <clone>] [--fleet <name>] [--tick <ms>]");
         std::process::exit(2);
     }
-    let record = dna::GitRecord { repo: root };
+    let record = dna::MemoryRecord { repo: root };
     if !record.is_repository() {
         eprintln("hale node ", name, ": ", root, " is not a git clone of the governed repository");
         std::process::exit(2);

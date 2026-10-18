@@ -7,6 +7,7 @@ locus KnowledgeBindingReceipts {
     fn kind() -> String { return "knowledge-command-read"; }
     fn store(text: String) -> String { return ""; }
     fn erase(digest: String) -> Bool { return false; }
+    fn redacted(digest: String) -> Bool { return false; }
     fn read(digest: String) -> String {
         let kept = self.record.body(raw_digest(digest));
         if !kept.present || len(kept.text) > 98304 || dna::digest_of(kept.text) != "sha256:" + raw_digest(digest) { return ""; }
@@ -22,9 +23,9 @@ locus KnowledgeBindingAdmission {
         if !codec.valid(context, c) { return KnowledgeBindingPreparation { code: "invalid_command" }; }
         let scope = KnowledgeNodeAdmission { };
         if !scope.scope(grant, c.author, c.target) { return KnowledgeBindingPreparation { code: "forbidden" }; }
-        let commands = if len(record.location()) > 0 { KnowledgeCommands { record: dna::GitRecord { repo: record.location() } } } else { KnowledgeCommands { record: record } };
+        let commands = if len(record.location()) > 0 { KnowledgeCommands { record: dna::MemoryRecord { repo: record.location() } } } else { KnowledgeCommands { record: record } };
         if !commands.endpoint(j, c.idea_id, c.operation == "dna.knowledge.binding.bind") { return KnowledgeBindingPreparation { }; }
-        let receipts = if len(record.location()) > 0 { KnowledgeBindingReceipts { record: dna::GitRecord { repo: record.location() } } } else { KnowledgeBindingReceipts { record: record } };
+        let receipts = if len(record.location()) > 0 { KnowledgeBindingReceipts { record: dna::MemoryRecord { repo: record.location() } } } else { KnowledgeBindingReceipts { record: record } };
         let subject = native.subject(j, receipts, c.idea_id);
         if !subject.ok || !subject.ratified || (c.operation == "dna.knowledge.binding.bind" && !subject.active) { return KnowledgeBindingPreparation { }; }
         let mut request = dna::KnowledgeBindingRequest {

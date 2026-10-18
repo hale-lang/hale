@@ -29,9 +29,10 @@ fn die_now() {
 
 fn attempt_of(req: dna::WorkRequest) -> String { return req.work_id + "/a" + to_string(req.attempt_no); }
 
-// A record that ends the process the moment the named row is in it.
+// A record (and its Ledger, GH #1590) that ends the process the moment the
+// named row is in it.
 locus Dying {
-    params { inner: dna::GitJournal = dna::GitJournal { }; on_kind: String = ""; on_entity: String = ""; }
+    params { inner: dna::RoutedJournal = dna::RoutedJournal { }; on_kind: String = ""; on_entity: String = ""; }
     fn refresh() -> Bool { return self.inner.refresh(); }
     fn revision() -> Int { return self.inner.revision(); }
     fn head() -> String { return self.inner.head(); }
@@ -131,8 +132,9 @@ main locus App {
         if std::str::starts_with(die, "effect:") { effect = die[7..len(die)]; }
         // the assembly: born, it resumes every admitted root the record
         // holds unsettled
+        std::test::assert_eq_str(dna::memory_fixture(repo), "", "the record is born in memory (GH #1590)");
         self.one = dna::Dna {
-            journal: Dying { inner: dna::GitJournal { repo: repo, author: "runner" }, on_kind: on_kind, on_entity: on_entity },
+            journal: Dying { inner: dna::RoutedJournal { record: dna::RecordJournal { repo: repo, author: "runner" }, ledger: dna::MemoryLedger { repo: repo, dsn_env: dna::fixture_spine(repo) } }, on_kind: on_kind, on_entity: on_entity },
             work: dna::WorkSystem { service: FileStore { path: store, die_on: effect }, service_reconciler: FileStore { path: store } },
             genome_seed: "."
         };

@@ -1,9 +1,10 @@
 // dna/core/routing.hl — three memories, one routing table (GH #646 stage
 // 1, #650). Every row kind belongs to exactly one memory. Version 0 is
-// every kind in the record (git); version 1 is the split: what changes
-// the organism stays in the record, what the organism did today goes to
-// the Ledger. An organism's version is a fact in its record
-// (`ledger.adopted`), never a build's opinion. There is no dual-write:
+// every kind in one journal (an in-process fixture's); the split is what
+// changes the organism stays in the record, what the organism did today
+// goes to the Ledger. An organism's version is a fact in its record
+// (`ledger.adopted`, among a record's first rows in memory, GH #1590),
+// never a build's opinion. There is no dual-write:
 // a kind has one home, and a writer that cannot reach it fails.
 //
 // `RoutedJournal` is the `Journal` an assembly and the host stand on: two
@@ -13,7 +14,10 @@
 // spine role; a head writes it directly under its own role, and memory's
 // insert function is the gate (GH #985, #1026).
 
-const ROUTING_VERSION: Int = 1;
+// 2 (GH #1590): the record itself is memory's too; the table is version
+// 1's, read over two chains in memory, and a record is born on it
+// (`record.genesis`, then `ledger.adopted` naming this version).
+const ROUTING_VERSION: Int = 2;
 
 // The routing table of version 1, as data: the families that are the
 // Ledger's whole, and the kinds of other families that are. `memory_of`
@@ -114,12 +118,10 @@ locus RoutedJournal {
         self.routing = routing_of(self.record);
         self.take_new();
     }
-    // Append every row a memory has that the order does not. Under
-    // routing 1 a record row of a Ledger kind is not read: the rows from
-    // before the checkpoint were copied to the Ledger at adoption and are
-    // read there, and one written into the record after it was refused
-    // admission (#646 decision 3) — the Ledger is the authority for those
-    // kinds, and the record's copies stay as history git keeps.
+    // Append every row a memory has that the order does not. Under a
+    // routing a record row of a Ledger kind is not read: the Ledger is the
+    // authority for those kinds (#646 decision 3), and memory's insert
+    // function refuses one in a record it keeps (GH #1590).
     // The order grows by the rows of the record and the ledger, one placement each.
     @bounded_by(self.record)
     fn take_new() {
@@ -187,9 +189,8 @@ locus RoutedJournal {
         return AppendResult { ok: true, revision: self.order.len() };
     }
     // Many rows at the tail in one write when they all belong to the
-    // record (the record's `append_batch`: one commit per row, the chain
-    // moved once); a batch with a Ledger row in it goes row by row, each to
-    // its own memory.
+    // record (the record's `append_batch`: every row or none); a batch with
+    // a Ledger row in it goes row by row, each to its own memory.
     fn append_batch(expected: Int, rows: RowBatch) -> AppendResult {
         let rev = self.order.len();
         if expected != rev { return AppendResult { error: "stale_revision", expected: expected, actual: rev }; }
@@ -226,7 +227,7 @@ locus RoutedJournal {
 // token is the one expected (0 for an absent lease). Mutation leases
 // (`Coordination`) and the body lease both stand on those two calls,
 // so a partitioned host or a stale token is refused by the store
-// itself, with no git transport in the path.
+// itself.
 
 // The routing an organism's record is on, read from the record's own
 // text (for a caller that holds a `Record` and no journal).

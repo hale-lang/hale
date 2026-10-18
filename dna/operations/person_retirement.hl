@@ -1,21 +1,21 @@
 // Local Record retirement: ordinary reassignment facts and the final native
-// retirement fact become visible together through one Record ref CAS. On a
-// record with a Ledger the transfers are the Ledger's rows, landed first,
-// and the retirement follows them (`publish_routed`).
+// retirement fact become visible together, one batch on the head they were
+// decided at (GH #1590: one transaction in memory).
+// On a record with a Ledger the transfers are the Ledger's rows, landed
+// first, and the retirement follows them (`publish_routed`).
 import "../core" as dna;
 
 interface GovernanceBatchRecord {
     fn identity() -> String;
     fn head(chain: String) -> dna::Head;
-    fn build(at: String, row: dna::Row, sign: Bool, note: String) -> String;
-    fn move_chain(chain: String, id: String, expected: String) -> Bool;
+    // The rows on top of `at`, made visible together, or none of them.
+    fn append_batch(chain: String, at: String, rows: dna::RowBatch, sign: Bool, note: String) -> dna::Appended;
 }
 locus NoGovernanceBatchRecord {
     params { }
     fn identity() -> String { return ""; }
     fn head(chain: String) -> dna::Head { return dna::Head { ok: true, absent: true }; }
-    fn build(at: String, row: dna::Row, sign: Bool, note: String) -> String { return ""; }
-    fn move_chain(chain: String, id: String, expected: String) -> Bool { return false; }
+    fn append_batch(chain: String, at: String, rows: dna::RowBatch, sign: Bool, note: String) -> dna::Appended { return dna::Appended { error: "io: no record" }; }
 }
 type PersonRetirementOutcome { state: String = ""; from: String = ""; to: String = ""; event_id: String = ""; transferred: Int = -1; }
 type RetirementPlan {
@@ -220,27 +220,29 @@ locus PersonRetirement {
         if !plan.ok || actual.state != "active" || actual.subject_digest != c.subject_digest || actual.subject_digest != plan.subject_digest || actual.tasks != plan.tasks || actual.transferred != plan.transferred { return PersonRetirementPublication { code: "stale_subject" }; }
         let q = Queries { j: j };
         if (actual.transferred > 0 && c.new_assignee == "") || !self.active(j, c.new_assignee) || (c.new_assignee != "" && q.receipt_status(c.new_assignee) != "available") { return PersonRetirementPublication { code: "forbidden" }; }
-        let manifest = std::bytes::BytesBuilder { }; manifest.append_str("["); let mut parent = std::str::clone(snapshot.head); let mut it = std::json::array_first(actual.tasks); let mut index = 0; let mut record_bytes = len(snapshot.text);
+        let rows = dna::RowBatch { }; let manifest = std::bytes::BytesBuilder { }; manifest.append_str("["); let mut parent = std::str::clone(snapshot.head); let mut it = std::json::array_first(actual.tasks); let mut index = 0; let mut record_bytes = len(snapshot.text);
         while !it.done {
             let task = it.element; let id = common.string(task, "id"); let body = codec.move_body(c.target_id, c.new_assignee, context.principal_name);
             let row = dna::Row { kind: "task.reassigned", entity: id, body: body, author: context.principal_name };
             record_bytes = record_bytes + len(dna::row_line(snapshot.revision + index, row, context.principal_name));
             if record_bytes > 16777216 { return PersonRetirementPublication { code: "person_read_limit" }; }
-            let moved = batch.build(parent, row, sign, "");
-            if moved == "" { return PersonRetirementPublication { code: "record_unavailable" }; }
+            // a row's id is its digest over the one before it
+            let moved = dna::event_digest(parent, row.kind, row.entity, row.body);
+            rows.push(row);
             if index > 0 { manifest.append_str(","); } manifest.append_str(codec.transfer(id, common.string(task, "assignment_digest"), c.target_id, c.new_assignee, moved));
             parent = moved; index = index + 1; it = std::json::array_next(it);
         } manifest.append_str("]"); let body = codec.fact(context, c, grant, snapshot.head, std::str::from_bytes(manifest.snapshot() or raise), actual.transferred);
         if len(body) > 131072 { return PersonRetirementPublication { code: "person_read_limit" }; }
         let final_row = dna::Row { kind: "person.retired", entity: c.target_id, body: body, author: context.principal_name };
         if record_bytes + len(dna::row_line(snapshot.revision + index, final_row, context.principal_name)) > 16777216 { return PersonRetirementPublication { code: "person_read_limit" }; }
-        let event_id = batch.build(parent, final_row, sign, "");
-        if event_id == "" { return PersonRetirementPublication { code: "record_unavailable" }; }
-        let now = batch.head("journal");
-        if !now.ok { return PersonRetirementPublication { code: "record_unavailable" }; }
-        if now.id != snapshot.head || batch.identity() != snapshot.application_id { return PersonRetirementPublication { code: "stale" }; }
-        if !batch.move_chain("journal", event_id, snapshot.head) { return PersonRetirementPublication { ok: true, code: "", unknown: true }; }
-        return PersonRetirementPublication { ok: true, code: "", event_id: event_id, body: body, transferred: actual.transferred };
+        rows.push(final_row);
+        if batch.identity() != snapshot.application_id { return PersonRetirementPublication { code: "stale" }; }
+        let landed = batch.append_batch("journal", snapshot.head, rows, sign, "");
+        if !landed.ok && landed.error == "stale" { return PersonRetirementPublication { code: "stale" }; }
+        if !landed.ok && std::str::starts_with(landed.error, "refused") { return PersonRetirementPublication { code: "record_unavailable" }; }
+        // a batch whose answer was lost may have landed: the outcome is unknown
+        if !landed.ok { return PersonRetirementPublication { ok: true, code: "", unknown: true }; }
+        return PersonRetirementPublication { ok: true, code: "", event_id: landed.id, body: body, transferred: actual.transferred };
     }
     // A retirement on a record with a Ledger (`decode_routed_fact`): each
     // transfer lands in the Ledger keyed by the command and the Task, so one

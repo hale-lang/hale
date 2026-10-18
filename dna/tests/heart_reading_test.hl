@@ -53,7 +53,8 @@ fn logged(app: String, text: String, secs: Int) -> Bool {
 
 // The record's `reading.recorded` rows for `entity`, and the last one's body.
 fn readings(repo: String, entity: String) -> Int {
-    let j = dna::GitJournal { repo: repo };
+    std::test::assert_eq_str(dna::memory_fixture(repo), "", "the record is born in memory (GH #1590)");
+    let j = dna::RoutedJournal { record: dna::RecordJournal { repo: repo }, ledger: dna::MemoryLedger { repo: repo } };
     let mut n = 0;
     let mut i = 0;
     while i < j.revision() {
@@ -65,7 +66,8 @@ fn readings(repo: String, entity: String) -> Int {
 }
 
 fn reading_body(repo: String, entity: String) -> String {
-    let j = dna::GitJournal { repo: repo };
+    std::test::assert_eq_str(dna::memory_fixture(repo), "", "the record is born in memory (GH #1590)");
+    let j = dna::RoutedJournal { record: dna::RecordJournal { repo: repo }, ledger: dna::MemoryLedger { repo: repo } };
     let mut body = "";
     let mut i = 0;
     while i < j.revision() {
@@ -78,7 +80,8 @@ fn reading_body(repo: String, entity: String) -> String {
 
 // Rows of `kind` whose body's `request` is `request`.
 fn concerns(repo: String, kind: String, request: String) -> Int {
-    let j = dna::GitJournal { repo: repo };
+    std::test::assert_eq_str(dna::memory_fixture(repo), "", "the record is born in memory (GH #1590)");
+    let j = dna::RoutedJournal { record: dna::RecordJournal { repo: repo }, ledger: dna::MemoryLedger { repo: repo } };
     let mut n = 0;
     let mut i = 0;
     while i < j.revision() {
@@ -91,7 +94,8 @@ fn concerns(repo: String, kind: String, request: String) -> Int {
 
 // Rows of `kind` whose entity is `entity`.
 fn count_kind(repo: String, kind: String, entity: String) -> Int {
-    let j = dna::GitJournal { repo: repo };
+    std::test::assert_eq_str(dna::memory_fixture(repo), "", "the record is born in memory (GH #1590)");
+    let j = dna::RoutedJournal { record: dna::RecordJournal { repo: repo }, ledger: dna::MemoryLedger { repo: repo } };
     let mut n = 0;
     let mut i = 0;
     while i < j.revision() {

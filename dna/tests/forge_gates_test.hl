@@ -14,7 +14,8 @@ import "../host" as host;
 const CANDIDATE: String = "c0ffee0000000000000000000000000000000001";
 
 fn observed(repo: String) -> String {
-    let j = dna::GitJournal { repo: repo };
+    std::test::assert_eq_str(dna::memory_fixture(repo), "", "the record is born in memory (GH #1590)");
+    let j = dna::RoutedJournal { record: dna::RecordJournal { repo: repo }, ledger: dna::MemoryLedger { repo: repo } };
     let mut out = "";
     let mut i = 0;
     while i < j.revision() {
@@ -32,7 +33,8 @@ main locus App {
         let made = dna::run_tool("sh\n-c\nmkdir -p \"$1/.hale/dna/forge\" && cd \"$1\" && git init -q -b main && printf 'fn main() {}\\n' > main.hl && git add -A && git -c user.name=t -c user.email=t@dna commit -q -m base\nsh\n" + repo);
         std::test::assert_eq_int(made.code, 0, "a record: " + made.stderr);
         let forge = repo + "/.hale/dna/forge";
-        let j = dna::GitJournal { repo: repo, author: "dna" };
+        std::test::assert_eq_str(dna::memory_fixture(repo), "", "the record is born in memory (GH #1590)");
+        let j = dna::RecordJournal { repo: repo, author: "dna" };
         std::test::assert(j.append(j.revision(), "review.requested", "review:m1", "{\"question\": \"apply m1?\", \"subject_digest\": \"" + CANDIDATE + "\", \"required_authority\": \"board\", \"author\": \"dev1\", \"mutation_id\": \"m1\", \"candidate_commit\": \"" + CANDIDATE + "\"}").ok, "a mutation Review");
         std::test::assert(j.append(j.revision(), "review.routed", "m1", "{\"definition\": \"change-deliver\", \"signers\": \"position:api/reviewer=grace\", \"gates\": \"gate:ci/api gate:ci/web\", \"fallback\": false}").ok, "its route requires two gates");
         std::test::assert(j.append(j.revision(), "github.pr", "m1", "{\"number\": 1, \"url\": \"" + forge + "/1\", \"head\": \"dna/m1\", \"candidate\": \"" + CANDIDATE + "\", \"forge\": \"file\"}").ok, "opened at the forge");

@@ -104,7 +104,8 @@ main locus App {
         // the record grown to an organization's day: Reviews asked,
         // verdicts given (requests the relay weighs) and settled, and rows
         // of work around them
-        let j = dna::GitJournal { repo: a, author: "fixture" };
+        std::test::assert_eq_str(dna::memory_fixture(a), "", "the record is born in memory (GH #1590)");
+        let j = dna::RecordJournal { repo: a, author: "fixture" };
         let rows = dna::RowBatch { };
         let mut k = 0;
         while k < REVIEWS {

@@ -31,7 +31,7 @@ main locus App {
     params { node: String = ""; }
     // The `sha` of each of the record's rows of `kind`, in order, one per line.
     fn shas(kind: String) -> String {
-        let j = dna::GitJournal { repo: self.node };
+        let j = dna::RoutedJournal { record: dna::RecordJournal { repo: self.node }, ledger: dna::MemoryLedger { repo: self.node } };
         let mut out = "";
         let mut i = 0;
         while i < j.revision() {
@@ -141,7 +141,7 @@ main locus App {
         let c0 = in_dir(self.node, "sh\n-c\ngit config user.name node && git config user.email node@local && git add -A && git commit -q -m 'the organization'");
         std::test::assert_eq_int(c0.code, 0, "the scaffold committed: " + c0.stdout + c0.stderr);
         let a1 = in_dir(self.node, "git\nremote\nadd\norigin\n" + bare);
-        let a2 = in_dir(self.node, "git\npush\n-q\norigin\nmain\nrefs/dna/*:refs/dna/*");
+        let a2 = in_dir(self.node, "git\npush\n-q\norigin\nmain");
         std::test::assert_eq_int(a2.code, 0, "the genome and the record at the forge: " + a2.stderr);
         let dev = scratch + "/dev";
         let cl = dna::clone_repo(bare, dev);

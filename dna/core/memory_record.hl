@@ -1,0 +1,783 @@
+// dna/core/memory_record.hl — the record in memory (GH #1590).
+//
+// The record's rows live in memory, in the record's own schema beside the
+// Ledger: `record_rows`, appended through memory's `record_append` alone.
+// Git gave the record two properties for free; memory builds them on
+// purpose:
+// - tamper evidence: each row carries the digest of the row before it
+//   (`prev`), its own digest extends the chain as `event_digest` does, and
+//   no writer role may update or delete a row;
+// - authorship: each row carries its writer's signature over its digest.
+//   The organism's own rows (the spine, a node, the host) are signed with
+//   the record's key, which the vault holds; a person's rows with the
+//   person's own key, through git's signing configuration and `ssh-keygen
+//   -Y sign` (gpg is not supported yet). An unsigned row is admitted only
+//   where the record's trust is `local`.
+// `RecordJournal` is the `Journal` over it, `MemoryReceipts` the
+// `Receipts` (unsealed bodies beside the protected ones), and the leases
+// are `MemoryLeases`. Nothing above these interfaces learns which store
+// answers.
+
+// ---- signing ---------------------------------------------------------------
+
+// The namespace every row signature is made in: a signature over a digest
+// for another use is not a row's.
+const RECORD_SIG_NAMESPACE: String = "hale-dna-record";
+
+// Whether `author` is a person, whose rows are signed with the person's own
+// key; the organism's parts sign with the record's.
+fn person_author(author: String) -> Bool {
+    if len(author) == 0 || author == "dna" || author == "spine" || author == "host" || author == "ledger" || author == "body" || author == "probe" { return false; }
+    return !std::str::starts_with(author, "node/") && !std::str::starts_with(author, "leg/");
+}
+
+// The record's own key: the one its card names (dna/core/exchange.hl).
+fn record_key(org: String) -> ExchangeKey { return ExchangeKey { vault: exchange_key_vault(org) }; }
+
+// The key a person signs with in this clone: git's `user.signingkey` when
+// `gpg.format` is `ssh` and it names a key file ("" otherwise).
+fn person_signing_key(repo: String) -> String {
+    let format = trim_nl(run_tool("git\n-C\n" + repo + "\nconfig\n--get\ngpg.format").stdout);
+    if format != "ssh" { return ""; }
+    let key = trim_nl(run_tool("git\n-C\n" + repo + "\nconfig\n--get\nuser.signingkey").stdout);
+    if len(key) == 0 || std::str::starts_with(key, "key::") { return ""; }
+    return key;
+}
+
+// `digest` signed with the ssh key at `key`: "ssh:<base64 of the armored
+// signature>", "" when it could not be signed.
+fn ssh_sign(key: String, digest: String) -> String {
+    let r = run_tool("sh\n-c\nt=$(mktemp) && printf '%s' \"$2\" > \"$t\" && ssh-keygen -Y sign -q -f \"$1\" -n " + RECORD_SIG_NAMESPACE + " \"$t\" >/dev/null 2>&1 && base64 -w0 \"$t.sig\"; s=$?; rm -f \"$t\" \"$t.sig\"; exit $s\nsh\n" + key + "\n" + digest);
+    if r.code != 0 || len(trim_nl(r.stdout)) == 0 { return ""; }
+    return "ssh:" + trim_nl(r.stdout);
+}
+
+// Whether `sig` (ssh) is `who`'s over `digest`, against the keys the
+// record enrolled (`allowed`: `<who> <key>` lines).
+fn ssh_verify(allowed: String, who: String, digest: String, sig: String) -> Bool {
+    if !std::str::starts_with(sig, "ssh:") || len(allowed) == 0 { return false; }
+    // the lines travel as one argument, tab-joined: an argv is split at
+    // its newlines, so a newline in `allowed` would shift every argument;
+    // and a blank line among them is skipped without failing the loop
+    let r = run_tool("sh\n-c\nd=$(mktemp -d) && printf '%s\\n' \"$1\" | tr '\\t' '\\n' | while read -r w k; do [ -z \"$w\" ] || printf '%s namespaces=\"" + RECORD_SIG_NAMESPACE + "\" %s\\n' \"$w\" \"$k\"; done > \"$d/allowed\" && printf '%s' \"$4\" | base64 -d > \"$d/sig\" && printf '%s' \"$3\" | ssh-keygen -Y verify -f \"$d/allowed\" -I \"$2\" -n " + RECORD_SIG_NAMESPACE + " -s \"$d/sig\" >/dev/null 2>&1; s=$?; rm -rf \"$d\"; exit $s\nsh\n" + std::str::replace(allowed, "\n", "\t") + "\n" + who + "\n" + digest + "\n" + sig[4..len(sig)]);
+    return r.code == 0;
+}
+
+// How a row's writer signs it: the organism's parts with the record's key,
+// a person with their own (unsigned when they have none configured).
+locus RecordSigner {
+    params {
+        repo: String = ".";
+        org: String = "";
+        // the clone's signing key, read once: a batch signs many rows
+        person_key: String = "";
+        person_key_read: Bool = false;
+    }
+    fn sign(author: String, digest: String) -> String {
+        if person_author(author) {
+            if !self.person_key_read { self.person_key = person_signing_key(self.repo); self.person_key_read = true; }
+            if len(self.person_key) == 0 { return ""; }
+            return ssh_sign(self.person_key, digest);
+        }
+        if len(self.org) == 0 { return ""; }
+        return record_key(self.org).sign(SIG_TAG_ROW, digest);
+    }
+}
+
+// ---- the store ---------------------------------------------------------------
+
+// A connection filled from a DSN in hand (a fixture's, a migration's): ""
+// when filled, else why not.
+fn dial_from_text(c: pq::PgConn, dsn: String) -> String {
+    let d = parse_dsn(dsn);
+    if !d.ok { return "the DSN: " + d.why; }
+    c.host = d.host;
+    c.port = d.port;
+    c.user = d.user;
+    c.password = d.password;
+    c.vault = d.vault;
+    c.database = d.database;
+    c.sslmode = d.sslmode;
+    return "";
+}
+
+locus PqRecord {
+    params {
+        conn: pq::PgConn = pq::PgConn { sslmode: "prefer" };
+        dsn_env: String = "";
+        record_id: String = "";
+        opened: Bool = false;
+        error: String = "";
+        rows: EventRows = EventRows { };
+        authors: Authors = Authors { };
+        sigs: Authors = Authors { };
+        dialling: Bool = false;
+    }
+    dissolve() { self.conn.close(); }
+    fn scope(record: String) {
+        if record == self.record_id { return; }
+        self.record_id = record;
+        self.opened = false;
+    }
+    fn last_error() -> String { return self.error; }
+    // `self.error` holds only the last failure, replaced whole.
+    @bounded_by(self.error)
+    fn open() -> Bool {
+        if self.opened { return true; }
+        if len(self.record_id) == 0 { self.error = "the record has no identity yet"; return false; }
+        let dialled = dial_from_env(self.conn, self.dsn_env);
+        if len(dialled) > 0 { self.error = dialled; return false; }
+        let st = self.conn.open();
+        if !st.ok { self.error = "open: " + st.err.kind + " " + st.err.detail; return false; }
+        let sch = schema_for(self.record_id);
+        let ns = self.conn.exec("SET search_path TO " + sch + ", public");
+        if !ns.ok { self.error = "scope (schema " + sch + "): " + ns.err.kind + " " + ns.err.detail; return false; }
+        let fence = memory_fence(self.conn, sch);
+        if len(fence) > 0 { self.error = fence; self.conn.close(); return false; }
+        self.opened = true;
+        self.load();
+        return true;
+    }
+    fn redial() -> Bool {
+        if self.dialling { return false; }
+        self.dialling = true;
+        self.conn.close();
+        self.opened = false;
+        let ok = self.open();
+        self.dialling = false;
+        return ok;
+    }
+    fn run_q(sql: String, a: db::Args) -> db::Rows {
+        let r = self.conn.query_params(sql, a);
+        if r.ok || !self.redial() { return r; }
+        return self.conn.query_params(sql, a);
+    }
+    fn run_one(sql: String) -> db::Row {
+        let r = self.conn.query_one(sql);
+        if r.ok || !self.redial() { return r; }
+        return self.conn.query_one(sql);
+    }
+    // Every row from the one after the last held, in order: the record is
+    // mirrored here row for row.
+    @bounded_by(record_rows)
+    fn load() {
+        let a = db::Args { };
+        a.add(to_string(self.rows.len()));
+        let rows = self.run_q("SELECT row_to_json(t) FROM (SELECT seq, kind, entity, body, author, prev, digest, sig FROM record_rows WHERE seq >= $1::bigint ORDER BY seq) t", a);
+        if !rows.ok { self.error = "load: " + rows.err.kind + " " + rows.err.detail; return; }
+        // scanned by offset: a tail re-sliced per row copies the rest of the
+        // answer each time, and a record of thousands of rows held gigabytes
+        let v = std::str::bytes_view(rows.csv);
+        let mut at = 0;
+        while at < v.n {
+            let end = line_end(v, at);
+            let line = std::str::slice(v, at, end);
+            at = end + 1;
+            if len(trim_nl(line)) == 0 { continue; }
+            let seq = std::json::find_int_field(line, "seq");
+            if seq != self.rows.len() { self.error = "load: the record's sequence is not contiguous"; return; }
+            self.rows.push(Event {
+                seq: seq,
+                kind: std::json::find_string_field(line, "kind"),
+                entity: std::json::find_string_field(line, "entity"),
+                body: std::json::find_string_field(line, "body"),
+                prev: std::json::find_string_field(line, "prev"),
+                digest: std::json::find_string_field(line, "digest")
+            });
+            self.authors.push(std::json::find_string_field(line, "author"));
+            self.sigs.push(std::json::find_string_field(line, "sig"));
+        }
+    }
+    fn revision() -> Int { return self.rows.len(); }
+    fn head() -> String {
+        if self.rows.len() == 0 { return "genesis"; }
+        let e = self.rows.get(self.rows.len() - 1) or Event { };
+        return e.digest;
+    }
+    // True when the record moved past what is held, and the new rows are
+    // here now. A count that went backwards, a hole, or a history changed at
+    // the same revision is said in `last_error` and changes nothing here.
+    // `self.error` holds only the last failure, replaced whole.
+    @bounded_by(self.error)
+    fn refresh() -> Bool {
+        self.error = "";
+        if !self.opened { self.error = "refresh: the record is not open"; return false; }
+        let n = self.run_one("SELECT count(*)::text || E'\\t' || coalesce(min(seq),0)::text || E'\\t' || coalesce(max(seq),-1)::text || E'\\t' || coalesce((SELECT digest FROM record_rows ORDER BY seq DESC LIMIT 1),'genesis') FROM record_rows");
+        if !n.ok { self.error = "refresh: " + n.err.kind + " " + n.err.detail; return false; }
+        let row = trim_nl(n.data);
+        let count = std::str::parse_int(tab_field(row, 0)) or - 1;
+        let first = std::str::parse_int(tab_field(row, 1)) or - 1;
+        let last = std::str::parse_int(tab_field(row, 2)) or - 2;
+        let head = tab_field(row, 3);
+        if count < 0 || first != 0 || last != count - 1 { self.error = "refresh: the record's sequence is not contiguous"; return false; }
+        if count < self.rows.len() { self.error = "refresh: the record's row count moved backwards"; return false; }
+        if count == self.rows.len() {
+            if head != self.head() { self.error = "refresh: the record's history changed at the same revision"; }
+            return false;
+        }
+        self.load();
+        if len(self.error) > 0 { return false; }
+        return self.rows.len() == count && self.head() == head;
+    }
+    fn read(i: Int) -> Event { return self.rows.get(i) or Event { }; }
+    fn author_of(i: Int) -> String { return self.authors.get(i) or ""; }
+    fn sig_of(i: Int) -> String { return self.sigs.get(i) or ""; }
+    fn verify_chain() -> Bool { return chain_ok(self.rows); }
+    // One row through `record_append`, on top of `prev` (what the writer
+    // signed over), at `expected` (-1: the tail). The rows since the last
+    // read are loaded either way.
+    // `self.error` holds only the last failure, replaced whole.
+    @bounded_by(self.error)
+    fn insert(expected: Int, prev: String, kind: String, entity: String, body: String, author: String, sig: String, request: String) -> AppendResult {
+        let a = db::Args { };
+        a.add(to_string(expected));
+        a.add(prev);
+        a.add(kind);
+        a.add(entity);
+        a.add(body);
+        a.add(author);
+        a.add(sig);
+        a.add(request);
+        let r = self.run_q("SELECT record_append($1::bigint, $2, $3, $4, $5, $6, $7, $8)", a);
+        if !r.ok { self.error = "append: " + r.err.kind + " " + r.err.detail; return AppendResult { error: "io", expected: expected, actual: self.rows.len() }; }
+        let out = trim_nl(line_one(r.csv));
+        let err = std::json::find_string_field(out, "error");
+        self.load();
+        if len(err) == 0 { return AppendResult { ok: true, revision: std::json::find_int_field(out, "seq") + 1 }; }
+        if err == "stale_revision" { return AppendResult { error: "stale_revision", expected: expected, actual: std::json::find_int_field(out, "actual") }; }
+        self.error = std::json::find_string_field(out, "why");
+        return AppendResult { error: "refused", expected: expected, actual: self.rows.len() };
+    }
+    // Many rows made visible together at `expected` (-1: the tail), on top
+    // of `prev`: `rows`, a JSON array of {kind, entity, body, author, sig}.
+    @bounded_by(self.error)
+    fn insert_rows(expected: Int, prev: String, rows: String) -> AppendResult {
+        let a = db::Args { };
+        a.add(to_string(expected));
+        a.add(prev);
+        a.add(rows);
+        let r = self.run_q("SELECT record_append_rows($1::bigint, $2, $3)", a);
+        if !r.ok { self.error = "append: " + r.err.kind + " " + r.err.detail; return AppendResult { error: "io", expected: expected, actual: self.rows.len() }; }
+        let out = trim_nl(line_one(r.csv));
+        let err = std::json::find_string_field(out, "error");
+        self.load();
+        if len(err) == 0 { return AppendResult { ok: true, revision: std::json::find_int_field(out, "seq") + 1 }; }
+        if err == "stale_revision" { return AppendResult { error: "stale_revision", expected: expected, actual: std::json::find_int_field(out, "actual") }; }
+        self.error = std::json::find_string_field(out, "why");
+        return AppendResult { error: "refused", expected: expected, actual: self.rows.len() };
+    }
+}
+
+// ---- the record as the core's Journal ----------------------------------------
+
+// The `Journal` over the record in memory, scoped to the record's identity
+// (the genome's pin, `record_identity_at`) and opened as the process's role
+// on first use. An append at the tail goes round a lost race at the new
+// tail, within a bound only a wedged memory reaches; an exact append is one
+// attempt. Every row is signed as its writer signs (`RecordSigner`).
+locus RecordJournal {
+    params {
+        repo: String = ".";
+        dsn_env: String = "";
+        dsn: String = ""; // a DSN in hand, in place of `dsn_env` (a fixture's)
+        author: String = "dna"; // the writer of the rows this handle appends
+        store: PqRecord = PqRecord { };
+        signer: RecordSigner = RecordSigner { };
+        opened: Bool = false;
+        failure: String = "";
+        retries: Int = 0;
+    }
+    birth() {
+        if len(self.dsn_env) == 0 { self.dsn_env = own_dsn_env(); }
+        self.signer.repo = self.repo;
+    }
+    fn ensure_open() -> Bool {
+        if self.opened { return true; }
+        let who = record_identity_at(self.repo);
+        if len(who.why) > 0 { self.failure = who.why; return false; }
+        if len(who.id) == 0 { self.failure = "the record has no identity yet"; return false; }
+        if len(self.dsn) > 0 {
+            let dialled = dial_from_text(self.store.conn, self.dsn);
+            if len(dialled) > 0 { self.failure = dialled; return false; }
+            self.store.dsn_env = "";
+        } else {
+            self.dsn_env = memory_source(self.repo, self.dsn_env);
+            if !dsn_set(self.dsn_env) {
+                let refused = kept_dsn_refusal(self.repo);
+                self.failure = if len(refused) > 0 { refused } else { self.dsn_env + " is not set: the record is memory's, and there is none" };
+                return false;
+            }
+            self.store.dsn_env = self.dsn_env;
+        }
+        self.store.scope(who.id);
+        self.signer.org = schema_for(who.id);
+        if !self.store.open() { self.failure = "the record is not open: " + self.store.last_error(); return false; }
+        // the pairing: a record born on a genome is this clone's only when
+        // this clone's history holds that genome (a hale.toml copied into
+        // another project names a record that is not its own)
+        let born = self.store.read(0);
+        if self.store.revision() > 0 && born.kind == "record.genesis" {
+            let genome = std::json::find_string_field(born.body, "genome");
+            let has_head = run_tool("git\n-C\n" + self.repo + "\nrev-parse\n-q\n--verify\nHEAD").code == 0;
+            if len(genome) > 0 && (!has_head || run_tool("git\n-C\n" + self.repo + "\nmerge-base\n--is-ancestor\n" + genome + "\nHEAD").code != 0) {
+                self.failure = "record " + who.id + " was born on genome " + genome + ", which this clone's history does not hold: the hale.toml naming it was copied from another project";
+                return false;
+            }
+        }
+        self.opened = true;
+        return true;
+    }
+    fn last_error() -> String { return if len(self.failure) > 0 { self.failure } else { self.store.last_error() }; }
+    fn revision() -> Int { if !self.ensure_open() { return 0; } return self.store.revision(); }
+    fn head() -> String { if !self.ensure_open() { return "genesis"; } return self.store.head(); }
+    fn refresh() -> Bool { if !self.ensure_open() { return false; } return self.store.refresh(); }
+    fn read(i: Int) -> Event { if !self.ensure_open() { return Event { }; } return self.store.read(i); }
+    fn author_of(i: Int) -> String { if !self.ensure_open() { return ""; } return self.store.author_of(i); }
+    fn sig_of(i: Int) -> String { if !self.ensure_open() { return ""; } return self.store.sig_of(i); }
+    fn verify_chain() -> Bool { if !self.ensure_open() { return false; } return self.store.verify_chain(); }
+    // The record's identity: what its genome pins (GH #1590).
+    fn genesis() -> String { return record_scope(self.repo); }
+    // Every row in the record's own line format, oldest first.
+    @bounded_by(self.store)
+    fn text() -> String {
+        if !self.ensure_open() { return ""; }
+        let b = std::bytes::BytesBuilder { };
+        let mut i = 0;
+        while i < self.store.revision() {
+            let e = self.store.read(i);
+            b.append_str(row_line(i, Row { kind: e.kind, entity: e.entity, body: e.body }, self.store.author_of(i)));
+            i = i + 1;
+        }
+        return std::str::from_bytes(b.snapshot() or b"");
+    }
+    fn append(expected: Int, kind: String, entity: String, body: String) -> AppendResult { return self.append_as(expected, kind, entity, body, self.author, false); }
+    fn append_exact(expected: Int, kind: String, entity: String, body: String) -> AppendResult { return self.append_as(expected, kind, entity, body, self.author, true); }
+    fn append_batch(expected: Int, rows: RowBatch) -> AppendResult { return self.append_rows_as(expected, rows, false); }
+    // One row in `author`'s name, signed as `author` signs: exactly at
+    // `expected` when `exact`, else at the tail once `expected` is the
+    // revision held.
+    @bounded_by(self.failure)
+    fn append_as(expected: Int, kind: String, entity: String, body: String, author: String, exact: Bool) -> AppendResult {
+        if !self.ensure_open() { return AppendResult { error: "io", expected: expected, actual: 0 }; }
+        self.failure = "";
+        if exact { let moved = self.store.refresh(); }
+        let rev = self.store.revision();
+        if expected != rev { return AppendResult { error: "stale_revision", expected: expected, actual: rev }; }
+        let mut attempt = 0;
+        while attempt < 200 {
+            let prev = self.store.head();
+            let digest = event_digest(prev, kind, entity, body);
+            let sig = self.signer.sign(author, digest);
+            let r = self.store.insert(if exact { rev } else { -1 }, prev, kind, entity, body, author, sig, "");
+            if r.ok || r.error != "stale_revision" || exact {
+                if r.error == "refused" { self.failure = self.store.last_error(); }
+                return AppendResult { ok: r.ok, revision: r.revision, error: r.error, expected: expected, actual: r.actual };
+            }
+            self.retries = self.retries + 1;
+            let moved = self.store.refresh();
+            attempt = attempt + 1;
+        }
+        self.failure = "the append lost the race at the record's tail two hundred times";
+        return AppendResult { error: "io", expected: expected, actual: self.store.revision() };
+    }
+    // Many rows made visible together, each in its row's author's name (the
+    // handle's where it names none) and signed as that author signs: exactly
+    // at `expected` when `exact`, else at the tail once `expected` is the
+    // revision held. Nothing of a refused batch lands.
+    @bounded_by(self.failure)
+    fn append_rows_as(expected: Int, rows: RowBatch, exact: Bool) -> AppendResult {
+        if !self.ensure_open() { return AppendResult { error: "io", expected: expected, actual: 0 }; }
+        self.failure = "";
+        if rows.len() == 0 { return AppendResult { ok: true, revision: self.store.revision() }; }
+        if exact { let moved = self.store.refresh(); }
+        let rev = self.store.revision();
+        if expected != rev { return AppendResult { error: "stale_revision", expected: expected, actual: rev }; }
+        let mut attempt = 0;
+        while attempt < 200 {
+            let start = self.store.head();
+            let mut prev = start;
+            let b = std::json::Builder { };
+            b.begin_array();
+            let mut i = 0;
+            while i < rows.len() {
+                let row = rows.get(i) or Row { };
+                let author = if len(row.author) > 0 { row.author } else { self.author };
+                let digest = event_digest(prev, row.kind, row.entity, row.body);
+                b.begin_object();
+                b.string_field("kind", row.kind);
+                b.string_field("entity", row.entity);
+                b.string_field("body", row.body);
+                b.string_field("author", author);
+                b.string_field("sig", self.signer.sign(author, digest));
+                b.end_object();
+                prev = digest;
+                i = i + 1;
+            }
+            b.end_array();
+            let r = self.store.insert_rows(if exact { rev } else { -1 }, start, b.result());
+            if r.ok || r.error != "stale_revision" || exact {
+                if r.error == "refused" { self.failure = self.store.last_error(); }
+                return AppendResult { ok: r.ok, revision: r.revision, error: r.error, expected: expected, actual: r.actual };
+            }
+            self.retries = self.retries + 1;
+            let moved = self.store.refresh();
+            attempt = attempt + 1;
+        }
+        self.failure = "the batch lost the race at the record's tail two hundred times";
+        return AppendResult { error: "io", expected: expected, actual: self.store.revision() };
+    }
+}
+
+// ---- receipts ------------------------------------------------------------------
+
+// `Receipts` in memory: a public or internal body kept unsealed beside the
+// protected ones, under the sha256 of its content (the digest the record
+// names, as bare hex); a redaction erases it through the same function
+// that erases a protected body.
+locus MemoryReceipts {
+    params {
+        repo: String = ".";
+        dsn_env: String = "";
+        dsn: String = ""; // a DSN in hand, in place of `dsn_env` (a fixture's)
+        conn: pq::PgConn = pq::PgConn { sslmode: "prefer" };
+        opened: Bool = false;
+        error: String = "";
+        stored: Int = 0;
+    }
+    birth() { if len(self.dsn_env) == 0 { self.dsn_env = own_dsn_env(); } }
+    dissolve() { self.conn.close(); }
+    fn kind() -> String { return "memory"; }
+    fn last_error() -> String { return self.error; }
+    @bounded_by(self.error)
+    fn open() -> Bool {
+        if self.opened { return true; }
+        let scope = record_scope(self.repo);
+        if len(scope) == 0 { self.error = "the record has no identity yet"; return false; }
+        let dialled = if len(self.dsn) > 0 { dial_from_text(self.conn, self.dsn) } else { dial_from_env(self.conn, memory_source(self.repo, self.dsn_env)) };
+        if len(dialled) > 0 { self.error = dialled; return false; }
+        let st = self.conn.open();
+        if !st.ok { self.error = "open: " + st.err.kind + " " + st.err.detail; return false; }
+        let sch = schema_for(scope);
+        let ns = self.conn.exec("SET search_path TO " + sch + ", public");
+        if !ns.ok { self.error = "scope (schema " + sch + "): " + ns.err.kind + " " + ns.err.detail; return false; }
+        let fence = memory_fence(self.conn, sch);
+        if len(fence) > 0 { self.error = fence; self.conn.close(); return false; }
+        self.opened = true;
+        return true;
+    }
+    // The text kept; its digest (sha256, hex), "" when it could not be kept.
+    @bounded_by(self.error)
+    fn store(text: String) -> String {
+        if !self.open() { return ""; }
+        let digest = hex(std::crypto::sha256(std::bytes::from_string(text)));
+        let a = db::Args { };
+        a.add("sha256:" + digest);
+        a.add("internal");
+        a.add(text);
+        a.add(to_string(std::time::now()));
+        let x = self.conn.exec_params("SELECT receipt_keep($1, $2, $3, $4::bigint)", a);
+        if !x.ok { self.error = "store: " + x.err.kind + " " + x.err.detail; return ""; }
+        self.stored = self.stored + 1;
+        return digest;
+    }
+    // The body filed under a digest (hex, or `sha256:<hex>`); "" when absent.
+    @bounded_by(self.error)
+    fn read(digest: String) -> String {
+        if !self.open() { return ""; }
+        let a = db::Args { };
+        a.add(if std::str::starts_with(digest, "sha256:") { digest } else { "sha256:" + digest });
+        let r = self.conn.query_params("SELECT coalesce(receipt_read($1)::text, '')", a);
+        if !r.ok { self.error = "read: " + r.err.kind + " " + r.err.detail; return ""; }
+        let row = trim_nl(line_one(r.csv));
+        if len(row) == 0 { return ""; }
+        // a protected body is read through the vault, behind its
+        // disclosure, never as an ordinary receipt (GH #606)
+        let class = std::json::find_string_field(row, "class");
+        if class != "public" && class != "internal" { return ""; }
+        return std::json::find_string_field(row, "text");
+    }
+    // Whether a redaction erased the body (memory's tombstone).
+    @bounded_by(self.error)
+    fn redacted(digest: String) -> Bool {
+        if !self.open() { return false; }
+        let a = db::Args { };
+        a.add(if std::str::starts_with(digest, "sha256:") { digest } else { "sha256:" + digest });
+        let r = self.conn.query_params("SELECT receipt_redacted($1)::text", a);
+        if !r.ok { self.error = "redacted: " + r.err.kind + " " + r.err.detail; return false; }
+        return trim_nl(line_one(r.csv)) == "true";
+    }
+    @bounded_by(self.error)
+    fn erase(digest: String) -> Bool {
+        if !self.open() { return false; }
+        let a = db::Args { };
+        a.add(if std::str::starts_with(digest, "sha256:") { digest } else { "sha256:" + digest });
+        a.add(to_string(std::time::now()));
+        let x = self.conn.exec_params("SELECT receipt_erase($1, $2::bigint)", a);
+        if !x.ok { self.error = "erase: " + x.err.kind + " " + x.err.detail; return false; }
+        return len(self.read(digest)) == 0;
+    }
+}
+
+// ---- the record's own key and the people it admits -------------------------
+
+// The record's public key, as its rows state it: the `key` of the last
+// `record.genesis` or `record.key` row (`init` writes one); "" when the
+// record names none.
+@bounded_by(j)
+fn record_public_key(j: RecordJournal) -> String {
+    let mut key = "";
+    let mut i = 0;
+    while i < j.revision() {
+        let e = j.read(i);
+        if e.kind == "record.genesis" || e.kind == "record.key" {
+            let k = std::json::find_string_field(e.body, "key");
+            if len(k) > 0 { key = k; }
+        }
+        i = i + 1;
+    }
+    return key;
+}
+
+// The people the record admits signed rows from: `<who> <ssh key>` per line,
+// from `signer.enrolled {who, key}` rows less `signer.revoked {who}` (GH
+// #1590: these replace git's allowed-signers file). A row of either kind
+// counts only when it is signed by someone the record already admits (a
+// person enrolled before it, or the record's own key); the first
+// enrollment of a record that admits nobody yet is the bootstrap, and
+// counts as it stands.
+@bounded_by(j)
+fn enrolled_keys(j: RecordJournal) -> String {
+    let record = record_public_key(j);
+    let mut out = "\n";
+    let mut i = 0;
+    while i < j.revision() {
+        let e = j.read(i);
+        i = i + 1;
+        if e.kind != "signer.enrolled" && e.kind != "signer.revoked" { continue; }
+        let who = std::json::find_string_field(e.body, "who");
+        if len(who) == 0 || std::str::contains(who, " ") { continue; }
+        let sig = j.sig_of(e.seq);
+        let author = j.author_of(e.seq);
+        let by_record = std::str::starts_with(sig, "ed25519:") && !person_author(author) && len(record) > 0 && signature_holds(record, SIG_TAG_ROW, e.digest, sig);
+        let by_person = std::str::starts_with(sig, "ssh:") && out != "\n" && ssh_verify(out[1..len(out)], author, e.digest, sig);
+        let bootstrap = out == "\n" && e.kind == "signer.enrolled";
+        if !(by_record || by_person || bootstrap) { continue; }
+        if e.kind == "signer.enrolled" {
+            out = out + who + " " + std::json::find_string_field(e.body, "key") + "\n";
+        } else {
+            let mut kept = "\n";
+            let mut rest = out;
+            while len(rest) > 0 {
+                let nl = std::str::index_of(rest, "\n");
+                let line = if nl < 0 { rest } else { rest[0..nl] };
+                rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
+                if len(line) > 0 && !std::str::starts_with(line, who + " ") { kept = kept + line + "\n"; }
+            }
+            out = kept;
+        }
+    }
+    return out[1..len(out)];
+}
+
+// Who signed row `i` and whether the record's trust accepts it: the
+// organism's parts under the record's key, a person under the key the
+// record enrolled for them.
+fn row_signer(j: RecordJournal, i: Int) -> Signer {
+    let sig = j.sig_of(i);
+    if len(sig) == 0 { return Signer { }; }
+    let e = j.read(i);
+    let author = j.author_of(i);
+    if std::str::starts_with(sig, "ed25519:") {
+        let key = record_public_key(j);
+        let ok = len(key) > 0 && !person_author(author) && signature_holds(key, SIG_TAG_ROW, e.digest, sig);
+        return Signer { signed: true, verified: ok, key: if ok { "record " + key[0..12] } else { "" } };
+    }
+    if std::str::starts_with(sig, "ssh:") {
+        let ok = ssh_verify(enrolled_keys(j), author, e.digest, sig);
+        return Signer { signed: true, verified: ok, key: if ok { author } else { "" } };
+    }
+    return Signer { signed: true };
+}
+
+// ---- the record's API over memory (GH #1590) ----------------------------------
+//
+// `Record` as the record in memory answers it, so every reader and writer
+// that stood on the git record stands on memory instead, through the same
+// calls: one chain (`journal`), bodies (receipts), the signer of a row, and
+// the clone's `dna.*` settings (git config: the clone's own, not the
+// record).
+locus MemoryRecord {
+    params {
+        repo: String = ".";
+        author: String = "dna";
+        dsn: String = "";
+        journal: RecordJournal = RecordJournal { };
+        receipts: MemoryReceipts = MemoryReceipts { };
+        last_error: String = "";
+    }
+    birth() {
+        self.journal.repo = self.repo;
+        self.journal.author = self.author;
+        self.journal.dsn = self.dsn;
+        self.journal.signer.repo = self.repo;
+        self.receipts.repo = self.repo;
+        self.receipts.dsn = self.dsn;
+    }
+    fn kind() -> String { return "memory"; }
+    fn why() -> String { return if len(self.last_error) > 0 { self.last_error } else { self.journal.last_error() }; }
+    // ---- the genome's git, for what the clone keeps in it (its settings, its remote)
+    fn git(args: String) -> RunResult { return run_tool("git\n-C\n" + self.repo + "\n" + args); }
+    fn git_ok(args: String) -> Bool { return self.git(args).code == 0; }
+    fn git_out(args: String) -> String {
+        let r = self.git(args);
+        if r.code != 0 { return ""; }
+        return trim_nl(r.stdout);
+    }
+    fn is_repository() -> Bool { return self.git_ok("rev-parse\n--git-dir"); }
+    fn root() -> String { return self.git_out("rev-parse\n--show-toplevel"); }
+    fn location() -> String { return self.repo; }
+    fn identity() -> String { return record_scope(self.repo); }
+    // ---- the chain
+    fn head(chain: String) -> Head {
+        if chain != "journal" { return Head { ok: true, absent: true }; }
+        if !self.journal.ensure_open() { return Head { why: self.journal.last_error() }; }
+        let moved = self.journal.refresh();
+        let err = self.journal.store.last_error();
+        if len(err) > 0 && std::str::starts_with(err, "refresh:") && !std::str::contains(err, "not open") { return Head { why: err }; }
+        if self.journal.revision() == 0 { return Head { ok: true, absent: true }; }
+        return Head { ok: true, id: self.journal.head() };
+    }
+    // The rows memory holds now, read again as `head` is
+    fn count(chain: String) -> Int {
+        if chain != "journal" { return 0; }
+        let moved = self.journal.refresh();
+        return self.journal.revision();
+    }
+    // The index of the row whose digest is `id`, -1 for none.
+    @bounded_by(self.journal)
+    fn index_of(id: String) -> Int {
+        let mut i = self.journal.revision() - 1;
+        while i >= 0 {
+            if self.journal.read(i).digest == id { return i; }
+            i = i - 1;
+        }
+        return -1;
+    }
+    // The rows up to and including `id`, in the record's line format.
+    @bounded_by(self.journal)
+    fn text_at(id: String) -> String {
+        let at = self.index_of(id);
+        if at < 0 { return ""; }
+        let b = std::bytes::BytesBuilder { };
+        let mut i = 0;
+        while i <= at {
+            let e = self.journal.read(i);
+            b.append_str(row_line(i, Row { kind: e.kind, entity: e.entity, body: e.body }, self.journal.author_of(i)));
+            i = i + 1;
+        }
+        return std::str::from_bytes(b.snapshot() or b"");
+    }
+    @bounded_by(self.journal)
+    fn ids(chain: String) -> String {
+        if chain != "journal" { return ""; }
+        let mut out = "";
+        let mut i = 0;
+        while i < self.journal.revision() {
+            out = out + self.journal.read(i).digest + "\n";
+            i = i + 1;
+        }
+        return out;
+    }
+    fn row_of(id: String) -> Row {
+        let at = self.index_of(id);
+        if at < 0 { return Row { }; }
+        let e = self.journal.read(at);
+        return Row { seq: at, kind: e.kind, entity: e.entity, body: e.body, author: self.journal.author_of(at), id: e.digest };
+    }
+    @bounded_by(self.journal)
+    fn between(from: String, to: String) -> String {
+        let a = if len(from) == 0 { -1 } else { self.index_of(from) };
+        let b = self.index_of(to);
+        if b < 0 || (len(from) > 0 && a < 0) { return ""; }
+        let mut out = "";
+        let mut i = a + 1;
+        while i <= b {
+            out = out + self.journal.read(i).digest + "\n";
+            i = i + 1;
+        }
+        return out;
+    }
+    fn precedes(a: String, b: String) -> Bool {
+        let ia = self.index_of(a);
+        let ib = self.index_of(b);
+        return ia >= 0 && ib >= 0 && ia <= ib;
+    }
+    // One row on top of `at` ("" = an empty record): stale when the record
+    // moved past it. `sign` is the record's trust's to decide, not the
+    // caller's: every row is signed as its writer signs.
+    fn append(chain: String, at: String, row: Row, sign: Bool, note: String) -> Appended {
+        if chain != "journal" { return Appended { error: "io: the record in memory has one chain, not `" + chain + "`" }; }
+        if !self.journal.ensure_open() { return Appended { error: "io: " + self.journal.last_error() }; }
+        let moved = self.journal.refresh();
+        let head = self.journal.head();
+        if (if len(at) == 0 { "genesis" } else { at }) != head { return Appended { error: "stale" }; }
+        let author = if len(row.author) > 0 { row.author } else { self.author };
+        let r = self.journal.append_as(self.journal.revision(), row.kind, row.entity, row.body, author, true);
+        if r.ok { return Appended { ok: true, id: self.journal.head() }; }
+        if r.error == "stale_revision" { return Appended { error: "stale" }; }
+        return Appended { error: "io: " + self.journal.last_error() };
+    }
+    // Many rows on top of `at`, made visible together; the id of the last.
+    // Stale when the record moved past `at`; nothing of a refused batch lands.
+    fn append_batch(chain: String, at: String, rows: RowBatch, sign: Bool, note: String) -> Appended {
+        if chain != "journal" { return Appended { error: "io: the record in memory has one chain, not `" + chain + "`" }; }
+        if !self.journal.ensure_open() { return Appended { error: "io: " + self.journal.last_error() }; }
+        let moved = self.journal.refresh();
+        if (if len(at) == 0 { "genesis" } else { at }) != self.journal.head() { return Appended { error: "stale" }; }
+        let r = self.journal.append_rows_as(self.journal.revision(), rows, true);
+        if r.ok { return Appended { ok: true, id: self.journal.head() }; }
+        if r.error == "stale_revision" { return Appended { error: "stale" }; }
+        // memory refused it, so none of it landed; an io error may have
+        // lost the answer to a batch that did
+        if r.error == "refused" { return Appended { error: "refused: " + self.journal.last_error() }; }
+        return Appended { error: "io: " + self.journal.last_error() };
+    }
+    fn keep(text: String) -> String {
+        let d = self.receipts.store(text);
+        if len(d) == 0 { self.last_error = self.receipts.last_error(); }
+        return d;
+    }
+    @bounded_by(texts)
+    fn keep_batch(texts: Texts) -> Bool {
+        let mut i = 0;
+        while i < texts.len() {
+            if len(self.receipts.store(texts.get(i) or "")) == 0 { return false; }
+            i = i + 1;
+        }
+        return true;
+    }
+    fn body(digest: String) -> Kept {
+        let t = self.receipts.read(digest);
+        return if len(t) > 0 { Kept { present: true, text: t } } else { Kept { } };
+    }
+    fn forget(digest: String) -> Bool { return self.receipts.erase(digest); }
+    // The genome's remote (the clone's `dna.remote`, else `origin`): the
+    // forge a deploy publishes its revision to. The record has none.
+    fn remote() -> String {
+        let named = self.setting("remote");
+        if len(named) > 0 { return named; }
+        return if self.git_ok("remote\nget-url\norigin") { "origin" } else { "" };
+    }
+    fn remote_url(name: String) -> String { return self.git_out("remote\nget-url\n" + name); }
+    // ---- provenance
+    fn signer(id: String) -> Signer {
+        let at = self.index_of(id);
+        if at < 0 { return Signer { }; }
+        return row_signer(self.journal, at);
+    }
+    fn own_key() -> String { return record_public_key(self.journal); }
+    // ---- the clone's settings (`dna.*` in git config)
+    fn setting(name: String) -> String { return trim_nl(self.git_out("config\ndna." + name)); }
+    fn set_setting(name: String, value: String) -> Bool { return self.git_ok("config\ndna." + name + "\n" + value); }
+    fn unset_setting(name: String) -> Bool { return self.git_ok("config\n--unset\ndna." + name); }
+}

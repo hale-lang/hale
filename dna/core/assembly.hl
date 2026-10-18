@@ -2292,7 +2292,14 @@ locus Dna {
         self.bind_owner();
         // GH #664: over a shared record, only the owner of the position the
         // intent is for admits it; an offer that reached the wrong body is
-        // refused by name, so the asker takes it to the record instead
+        // refused by name, so the asker takes it to the record instead. Only
+        // the graph as of the record's end refuses: the view is read again,
+        // and while the projection has rows of the record still to apply
+        // the intent waits, unanswered, for the relay to offer it again
+        if !self.ownership.admits(i.to) && self.knowledge_client.ready() {
+            self.refresh_ownership();
+            if !self.ownership.admits(i.to) && self.knowledge_client.projection_lag() != 0 { return "waiting: the graph is not projected up to the record's end"; }
+        }
         if !self.ownership.admits(i.to) {
             let why = "refused: not this organization's to admit — " + self.ownership.why_not(i.to);
             let x = self.journal.append(self.journal.revision(), "intent.refused", i.id, why);

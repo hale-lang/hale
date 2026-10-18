@@ -26,15 +26,20 @@ fn postgres(owner: String) {
     std::test::assert(second.ok && restricted.ok, "fixture history is contiguous before fault");
     let fresh = dna::PqLedger { conn: dna::pq_conn(spine), record_id: record };
     std::test::assert(fresh.open(), "second reader opens before injected gap");
-    let remove = pg.conn.exec("DELETE FROM ledger_rows WHERE seq = 1");
+    // the Ledger is insert-only for every role but the owner (GH #1590):
+    // the faults go in as the owner
+    let fault = dna::pq_conn(dna::parse_dsn(owner));
+    std::test::assert(fault.open().ok, "the owner opens to inject faults");
+    let rows = dna::schema_for(record) + ".ledger_rows";
+    let remove = fault.exec("DELETE FROM " + rows + " WHERE seq = 1");
     std::test::assert(remove.ok, "inject missing sequence in this run's private schema");
     let changed = fresh.refresh();
     std::test::assert(len(fresh.last_error()) > 0, "existing reader detects loss of a row");
-    let replace = pg.conn.exec("INSERT INTO ledger_rows (seq,kind,entity,body,author,prev,digest) SELECT 3,kind,entity,body,author,prev,digest FROM ledger_rows WHERE seq=2");
+    let replace = fault.exec("INSERT INTO " + rows + " (seq,kind,entity,body,author,prev,digest) SELECT 3,kind,entity,body,author,prev,digest FROM " + rows + " WHERE seq=2");
     std::test::assert(replace.ok, "fixture restores count without restoring sequence");
     let same_count = fresh.refresh();
     std::test::assert(len(fresh.last_error()) > 0, "matching count cannot conceal missing restriction history");
-    let remove_extra = pg.conn.exec("DELETE FROM ledger_rows WHERE seq=3");
+    let remove_extra = fault.exec("DELETE FROM " + rows + " WHERE seq=3");
     std::test::assert(remove_extra.ok, "remove temporary count-preserving fault");
     let incomplete = dna::PqLedger { conn: dna::pq_conn(spine), record_id: record };
     let opened = incomplete.open();
@@ -46,15 +51,16 @@ fn postgres(owner: String) {
     let e = pg.read(1);
     let args = db::Args { };
     args.add(to_string(e.seq)); args.add(e.kind); args.add(e.entity); args.add(e.body); args.add(e.prev); args.add(e.digest);
-    let restore = pg.conn.exec_params("INSERT INTO ledger_rows (seq,kind,entity,body,author,prev,digest) VALUES ($1::bigint,$2,$3,$4,'ledger',$5,$6)", args);
+    let restore = fault.exec_params("INSERT INTO " + rows + " (seq,kind,entity,body,author,prev,digest) VALUES ($1::bigint,$2,$3,$4,'ledger',$5,$6)", args);
     std::test::assert(restore.ok, "restore fixture row");
     let recovered = incomplete.refresh();
     std::test::assert(incomplete.last_error() == "" && incomplete.revision() == 3 && incomplete.verify_chain(), "healthy full read recovers after transient failure");
-    let rewrite = pg.conn.exec("UPDATE ledger_rows SET digest='changed-tail' WHERE seq=2");
+    let rewrite = fault.exec("UPDATE " + rows + " SET digest='changed-tail' WHERE seq=2");
     std::test::assert(rewrite.ok, "fixture changes tail without changing count");
     let stale_tail = incomplete.refresh();
     std::test::assert(len(incomplete.last_error()) > 0, "same count with changed head is not a stable read");
     pg.conn.close();
+    fault.close();
     fresh.conn.close();
     incomplete.conn.close();
     std::test::assert_eq_str(dna::unmigrate(owner, record), "", "remove only this fixture's schema and roles");

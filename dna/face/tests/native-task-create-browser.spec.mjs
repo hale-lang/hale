@@ -22,7 +22,8 @@ test.setTimeout(45_000);
 const region = page => page.getByRole('region', { name: 'New task', exact: true });
 const recovery = page => page.getByRole('region', { name: 'New task request', exact: true });
 const confirmation = page => page.getByRole('group', { name: 'Confirm new task', exact: true });
-const asks = service => service.journal().rows.filter(row => row.kind === 'intent.requested');
+// an ask is the Ledger's row (GH #1590)
+const asks = service => service.ledger().filter(row => row.kind === 'intent.requested');
 const stored = page => page.evaluate(() => Object.entries(localStorage).filter(([key]) => key.startsWith('face.practice-recovery.v1:')).map(([key, value]) => ({ key, value: JSON.parse(value) })));
 async function prepare(page, service) {
   await page.goto(service.origin + '/#/tasks?' + new URLSearchParams({ app: service.application }));
@@ -55,7 +56,8 @@ test('native ask lands as the CLI row: one POST, a real receipt, one intent.requ
   expect(body).toMatchObject({ outcome: OUTCOME, from: 'riley', to: 'org', command_format: 'dna.task-create-command/1', command_id: receipt.command_id, command_record_head: before, command_authority: 'riley' });
   expect(body).not.toHaveProperty('via'); expect(body).not.toHaveProperty('intent_id');
   expect(row.body.startsWith(JSON.stringify({ outcome: OUTCOME, from: 'riley', to: 'org' }).replace(/":"/g, '": "').replace(/","/g, '", "').slice(0, -1))).toBe(true);
-  expect(service.journal().head).toBe(receipt.task_create.event_id);
+  // the ask is the Ledger's row: the record does not move (GH #1590)
+  expect(asks(service).at(-1).digest).toBe(receipt.task_create.event_id); expect(service.journal().head).toBe(before);
   const lookup = await service.lookup(posts[0].payload.request_id);
   expect(lookup.status).toBe(200); expect(lookup.receipt.command_id).toBe(receipt.command_id); expect(lookup.receipt.task_create).toEqual(receipt.task_create);
   await recovery(page).getByRole('button', { name: 'Check request status', exact: true }).click();

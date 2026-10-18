@@ -35,7 +35,7 @@ locus TaskWire {
     }
     fn read(context: CommandContext, query: Query) -> std::http::Response {
         let http = Http { }; let status = OrganizationStatusWire { };
-        let record = dna::GitRecord { repo: context.root };
+        let record = dna::MemoryRecord { repo: context.root };
         if context.principal_mode != "local" || status.trust(record) != "local" { return self.unavailable("task_source_unavailable"); }
         let capture = ops::GovernanceCommands { record: record }; let source = capture.capture();
         if !source.ok { return if source.code == "snapshot_changed" { http.error(409, "snapshot_changed", "the Record changed while capturing Tasks", true) } else { self.unavailable("task_source_unavailable") }; }
@@ -53,7 +53,7 @@ locus TaskWire {
     }
     // The Tasks over `j`: the record's, or (`routed`) the record and its
     // Ledger read as one.
-    fn respond(context: CommandContext, query: Query, source: ops::GovernanceSnapshot, record: dna::GitRecord, j: dna::Journal, routed: Bool) -> std::http::Response {
+    fn respond(context: CommandContext, query: Query, source: ops::GovernanceSnapshot, record: dna::MemoryRecord, j: dna::Journal, routed: Bool) -> std::http::Response {
         let http = Http { }; let status = OrganizationStatusWire { };
         let visible = ops::Queries { j: j, routed: routed }; let p = ops::TaskProjection { j: j, visibility: visible, routed: routed };
         if !p.load() { return self.unavailable(p.code); }

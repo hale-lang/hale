@@ -97,9 +97,6 @@ fn reading_landed(p: Projection, entity: String) -> Bool {
 // read and decided again: one projection per try, fifty at most.
 @bounded_by(tries)
 fn record_reading(root: String, subject: String, r: Reading, memory: dna::Memory) -> Landing {
-    if shared_here(root) && dna::route(routing_here(root), READING_KIND) == "record" {
-        return Landing { outcome: "waiting", why: "this record is shared and keeps its rows in git, where each owner's clone appends on its own; only the ledger decides an id across owners (`hale dna ledger adopt`)" };
-    }
     let entity = reading_entity(r);
     let b = std::json::Builder { };
     b.begin_object();

@@ -31,11 +31,13 @@ fn make_record(dir: String, seed: Bool) -> String {
     git(dir, "config\nuser.email\nops-fixture@example.invalid");
     git(dir, "config\ncommit.gpgsign\nfalse");
     if seed { std::io::fs::mkdir(dir + "/dna") or discard; }
-    let journal = dna::GitJournal { repo: dir };
+    // the record is born in memory (GH #1590)
+    std::test::assert_eq_str(dna::memory_fixture(dir), "", "the record is born in memory");
+    let journal = dna::RecordJournal { repo: dir };
     let refreshed = journal.refresh();
     let result = journal.append(journal.revision(), "org.born", "org", "ops fixture " + dir);
     std::test::assert(result.ok, "fixture append: " + result.error);
-    let record = dna::GitRecord { repo: dir };
+    let record = dna::MemoryRecord { repo: dir };
     return record.identity();
 }
 
@@ -119,7 +121,7 @@ locus OperationCases {
         std::test::assert_eq_str(head::attach_project(self.cfg, bare + "/sub", "command-a3").refused, "not_a_toplevel", "a subdirectory of a worktree");
         let seedless = self.root + "/seedless";
         let id = make_record(seedless, false);
-        std::test::assert(len(id) == 40, "the seedless Record has a genesis");
+        std::test::assert(len(id) == 64, "the seedless Record has a genesis");
         std::test::assert_eq_str(head::attach_project(self.cfg, seedless, "command-a4").refused, "no_seed", "a Record without dna/");
         let hosted = self.root + "/hosted";
         let hosted_id = make_record(hosted, true);
@@ -192,18 +194,18 @@ locus OperationCases {
 
     fn outcomes_and_evidence() {
         let ctx = self.ctx();
-        let sync_log = "hale dna: something first\nrecord refs/dna/journal: no remote: the record is local; 23 event(s)\n";
+        let sync_log = "hale dna: something first\nrecord: the record is memory's: nothing to sync; 23 event(s)\n";
         let sync = head::own_outcome(self.cfg, head::Receipt { operation: "dna.project.sync" }, 0, sync_log);
-        std::test::assert_eq_str(std::json::find_string_field(sync, "summary"), "record refs/dna/journal: no remote: the record is local; 23 event(s)", "the sync summary is the verb's line");
-        let publish_log = "head: committed\nhead: pushed refs/heads/main\nrecord refs/dna/journal: up to date; 23 event(s)\n";
+        std::test::assert_eq_str(std::json::find_string_field(sync, "summary"), "record: the record is memory's: nothing to sync; 23 event(s)", "the sync summary is the verb's line");
+        let publish_log = "head: committed\nhead: pushed refs/heads/main\nrecord: the record is memory's: nothing to sync; 23 event(s)\n";
         let published = head::own_outcome(self.cfg, head::Receipt { operation: "dna.project.publish" }, 0, publish_log);
-        std::test::assert(std::json::find_bool_field(published, "committed") && std::json::find_string_field(published, "pushed_ref") == "refs/heads/main" && std::str::starts_with(std::json::find_string_field(published, "sync_summary"), "record refs/dna/journal: up to date"), "the publish outcome: " + published);
+        std::test::assert(std::json::find_bool_field(published, "committed") && std::json::find_string_field(published, "pushed_ref") == "refs/heads/main" && std::str::starts_with(std::json::find_string_field(published, "sync_summary"), "record: the record is memory's"), "the publish outcome: " + published);
         let nothing = head::own_outcome(self.cfg, head::Receipt { operation: "dna.project.publish" }, 0, "head: nothing to commit\nhead: pushed refs/heads/main\n");
         std::test::assert(!std::json::find_bool_field(nothing, "committed"), "nothing committed");
         // the record evidence: rows beyond head_before
-        let record = dna::GitRecord { repo: self.project };
+        let record = dna::MemoryRecord { repo: self.project };
         let before = record.head("journal").id;
-        let journal = dna::GitJournal { repo: self.project };
+        let journal = dna::RoutedJournal { record: dna::RecordJournal { repo: self.project }, ledger: dna::MemoryLedger { repo: self.project } };
         let refreshed = journal.refresh();
         let appended = journal.append(journal.revision(), "secret.rotated", "OPENAI_API_KEY", "{\"where\":\"local\",\"by\":\"tester\"}");
         std::test::assert(appended.ok, "append a row: " + appended.error);
@@ -240,15 +242,17 @@ fn main() {
     std::io::fs::mkdir(cfg.state_dir + "/runs") or discard;
     let parent = root + "/projects";
     std::io::fs::mkdir(parent) or discard;
-    // the project the CLI makes (600 s budget for a cold host build)
-    let made = dna::run_tool("env\nGIT_CONFIG_NOSYSTEM=1\nGIT_CONFIG_GLOBAL=/dev/null\nGIT_TERMINAL_PROMPT=0\nHALE_DNA_DISCOVER=off\nHALE_VAULT_DIR=" + parent + "/vault\ntimeout\n600\n" + std::env::var("HALE_BIN") + "\ndna\nnew\n" + parent + "/alpha");
+    // the project the CLI makes (600 s budget for a cold host build), under
+    // this test's vault: the head reaches its record with the roles the
+    // bootstrap drew there (GH #1590)
+    let made = dna::run_tool("env\nGIT_CONFIG_NOSYSTEM=1\nGIT_CONFIG_GLOBAL=/dev/null\nGIT_TERMINAL_PROMPT=0\nHALE_DNA_DISCOVER=off\ntimeout\n600\n" + std::env::var("HALE_BIN") + "\ndna\nnew\n" + parent + "/alpha");
     std::test::assert_eq_int(made.code, 0, "hale dna new: " + made.stderr);
     git(parent + "/alpha", "config\nuser.name\nops-fixture");
     git(parent + "/alpha", "config\nuser.email\nops-fixture@example.invalid");
     git(parent + "/alpha", "config\ncommit.gpgsign\nfalse");
-    let record = dna::GitRecord { repo: parent + "/alpha" };
+    let record = dna::MemoryRecord { repo: parent + "/alpha" };
     let cases = OperationCases { root: root, cfg: cfg, project: parent + "/alpha", identity: record.identity() };
-    std::test::assert(len(cases.identity) == 40, "the made project has a Record");
+    std::test::assert(len(cases.identity) == 64, "the made project has a Record");
     cases.shape();
     cases.create_and_init();
     cases.attach_refusals();

@@ -17,7 +17,7 @@ locus PublicationGuardCases {
         return dna::trim_nl(result.stdout);
     }
     fn git(args: String) -> String { return self.tool("git\n-C\n" + self.repo + "\n" + args); }
-    fn command(base: orgsource::OrganizationArtifact, record: dna::GitRecord, text: String, key: String) -> dna::OrganizationSourceRequest {
+    fn command(base: orgsource::OrganizationArtifact, record: dna::MemoryRecord, text: String, key: String) -> dna::OrganizationSourceRequest {
         return dna::OrganizationSourceRequest {
             application_id: record.identity(), request_id: key, command_fingerprint: dna::digest_of("guard-" + key),
             principal_mode: "local", by: "alice", authority: "board", authority_basis: "source grant",
@@ -36,7 +36,8 @@ locus PublicationGuardCases {
         std::io::fs::write_bytes(self.repo + "/vendor/binary.dat", b"a\x00b\xff") or self.io_failed(err);
         self.git("add\n-A");
         self.git("-c\nuser.name=Guard fixture\n-c\nuser.email=guard@example.invalid\ncommit\n--quiet\n-m\nCaptured source");
-        let record = dna::GitRecord { repo: self.repo };
+        std::test::assert_eq_str(dna::memory_fixture(self.repo), "", "the record is born in memory (GH #1590)");
+        let record = dna::MemoryRecord { repo: self.repo };
         let genesis = record.append("journal", "", dna::Row { kind: "fixture.started", entity: "guard", body: "{}", author: "fixture" }, false, "");
         std::test::assert(genesis.id != "", "real Record identity");
         let source = orgsource::OrganizationSource { root: self.repo, compiler: self.compiler, allow_drafts: true };

@@ -4,6 +4,8 @@
 
 #[path = "support/vault.rs"]
 mod vault;
+#[path = "support/record.rs"]
+mod record;
 #[path = "support/reap.rs"]
 mod reap;
 use std::path::{Path, PathBuf};
@@ -67,6 +69,7 @@ fn status_ask_review_and_history_read_the_organism_through_the_journal() {
     let mut host = vault::hale()
         .args(["dna", "run", ".", "--no-iris"])
         .current_dir(&app)
+        .env("HALE_DNA_MEMORY_DSN_SPINE", record::spine(vault::hale(), &app))
         .env("XDG_CACHE_HOME", &cache)
         .env("HALE_DNA_NATS_URL_SPINE", &nats_spine)
         .env("HALE_DNA_NATS_ORG", &nats_org)

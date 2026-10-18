@@ -612,7 +612,8 @@ main locus App {
         } }, owner: dna::Executions { scope: "main" } };
     }
     fn boot_git(repo: String) {
-        self.boot = Boot { rt: dna::WorkflowRuntime { scope: "main", journal: dna::GitJournal { repo: repo, author: "dna" }, work: dna::WorkSystem {
+        std::test::assert_eq_str(dna::memory_fixture(repo), "", "the record is born in memory (GH #1590)");
+        self.boot = Boot { rt: dna::WorkflowRuntime { scope: "main", journal: dna::RoutedJournal { record: dna::RecordJournal { repo: repo, author: "dna" }, ledger: dna::MemoryLedger { repo: repo, dsn_env: dna::fixture_spine(repo) } }, work: dna::WorkSystem {
             service: Recording { store: self.store }, agent: Later { store: self.store },
             software: Flaky { store: self.store }, human: Refusing { store: self.store },
             service_reconciler: Recording { store: self.store }, agent_reconciler: Later { store: self.store },
@@ -844,7 +845,10 @@ main locus App {
         let store = scratch + "/invocations";
         let root = "t1";
         let c1 = self.c1_of(root) + "/a0";
-        let reader = dna::GitJournal { repo: repo, author: "reader" };
+        std::test::assert_eq_str(dna::memory_fixture(repo), "", "the record is born in memory (GH #1590)");
+        // the record and its Ledger as one (GH #1590): the attempt's rows are
+        // the Ledger's
+        let reader = dna::RoutedJournal { record: dna::RecordJournal { repo: repo, author: "reader" }, ledger: dna::MemoryLedger { repo: repo, dsn_env: dna::fixture_spine(repo) } };
 
         // cut 1: the process dies the moment C1's attempt is admitted —
         // before it is claimed
@@ -894,7 +898,7 @@ main locus App {
         // and the record is asked for its root once more — an incarnation
         // over a completed record runs nothing
         self.load_store(store);
-        self.boot = Boot { rt: dna::WorkflowRuntime { scope: "main", journal: dna::GitJournal { repo: repo, author: "oracle" }, work: dna::WorkSystem { service: Recording { store: self.store }, service_reconciler: Recording { store: self.store } } }, owner: dna::Executions { scope: "main" } };
+        self.boot = Boot { rt: dna::WorkflowRuntime { scope: "main", journal: dna::RoutedJournal { record: dna::RecordJournal { repo: repo, author: "oracle" }, ledger: dna::MemoryLedger { repo: repo, dsn_env: dna::fixture_spine(repo) } }, work: dna::WorkSystem { service: Recording { store: self.store }, service_reconciler: Recording { store: self.store } } }, owner: dna::Executions { scope: "main" } };
         self.settle();
         std::test::assert_eq_int(self.boot.rt.journal.revision(), full, "the oracle reads the whole record");
         let invoked = self.store.revision();

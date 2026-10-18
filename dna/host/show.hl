@@ -22,7 +22,7 @@ fn show_empty(what: String) -> String { return if what == "org" { "[]" } else { 
 // The positions whose mandate the record proposes and the Board has not
 // decided, `\n`-wrapped: a proposal of kind `mandate` is pending until a
 // ratification, a refusal or a retirement names its digest.
-fn mandates_pending(record: dna::GitJournal) -> String {
+fn mandates_pending(record: dna::RecordJournal) -> String {
     let mut asked = ""; // `<digest>\t<target>` per proposal
     let mut decided = "\n";
     let mut i = 0;
@@ -51,14 +51,18 @@ fn show_answer(what: String, json: Bool, data: String, rows: Int, projected: Int
 
 fn show_verb(root: String, what: String, json: Bool) -> Answer {
     if what != "org" && what != "processes" { return fail("usage: hale dna show org | processes [--json] [project]"); }
-    let record = dna::GitJournal { repo: root };
+    let record = dna::RecordJournal { repo: root, dsn_env: dna::HEAD_DSN_ENV };
     let rows = record.revision();
-    // a record with no rows has no graph, and no memory scoped to it yet
+    // a project with no record has no graph, and no memory scoped to it
+    // yet; a record this clone cannot open is said, not shown empty
     if rows == 0 {
-        eprintln("hale dna show: the record has no rows: `hale dna init` seeds it, and `hale dna sync` fetches one another clone holds");
+        if len(dna::record_scope(root)) > 0 && !record.ensure_open() {
+            return fail("hale dna show " + what + ": the record is memory's, and no memory is named that holds it (" + record.last_error() + "); `hale dna memory migrate` prints the head's DSN");
+        }
+        eprintln("hale dna show: the record has no rows: `hale dna init` seeds it");
         return show_answer(what, json, show_empty(what), 0, 0, true, "\n");
     }
-    let env = dna::HEAD_DSN_ENV;
+    let env = dna::memory_source(root, dna::HEAD_DSN_ENV);
     if !dna::dsn_set(env) {
         return fail("hale dna show " + what + ": the graph is memory's, and no memory is named (" + env + "); `hale dna memory migrate` prints it, and a running spine (`hale dna dev`) projects the record into it");
     }
@@ -144,7 +148,7 @@ fn route_verb(root: String, args: Args) -> Answer {
     let mut i = 0;
     while len(word(args, i)) > 0 { paths = paths + word(args, i) + "\n"; i = i + 1; }
     if len(dna::trim_nl(paths)) == 0 { return fail("usage: hale dna route [--json] (<path>… | --diff <range>)"); }
-    let env = dna::HEAD_DSN_ENV;
+    let env = dna::memory_source(root, dna::HEAD_DSN_ENV);
     if !dna::dsn_set(env) { return fail("route: the graph is memory's, and no memory is named (" + env + "); `hale dna memory migrate` prints it"); }
     let store = dna::Pq { dsn_env: env };
     store.scope(dna::record_scope(root));
@@ -152,9 +156,9 @@ fn route_verb(root: String, args: Args) -> Answer {
     let basis = store.projection_basis();
     let data = store.graph_perspective("routing");
     if len(data) == 0 { return fail("route: memory did not answer: " + store.last_error()); }
-    let rows = dna::GitJournal { repo: root }.revision();
+    let rows = dna::RecordJournal { repo: root, dsn_env: dna::HEAD_DSN_ENV }.revision();
     if basis.ok && basis.watermark < rows { eprintln("hale dna route: memory has projected ", to_string(basis.watermark), " of the record's ", to_string(rows), " rows; this is the route as of row ", to_string(basis.watermark)); }
-    let r = dna::graph_route(data, paths, dna::route_law(dna::route_bound(data), dna::GitReceipts { repo: root }));
+    let r = dna::graph_route(data, paths, dna::route_law(dna::route_bound(data), dna::MemoryReceipts { repo: root }));
     // each signer with who holds it
     let mut signers = "";
     let mut rest = r.signers;
