@@ -62,7 +62,11 @@ pub(crate) fn param_place_write_diags(bundle: &Bundle<'_>, top: &TopScope) -> Ve
         programs.push((std_prog, Ids(crate::stdlib_bodies::identities())));
     }
     let world = World::gather(&programs, &bundle.import_renames, top);
-    let writers = world.writers();
+    // The writers' summaries are the program's and the stdlib's bodies to a
+    // fixpoint: read the first time a call hands a callee a place the frame
+    // does not own, so a program that hands none pays for none of them.
+    let writers_cell: std::cell::OnceCell<BTreeMap<String, BTreeSet<usize>>> = std::cell::OnceCell::new();
+    let writers = || writers_cell.get_or_init(|| world.writers());
     let mut out = Vec::new();
     for (p, ids) in &programs[..user] {
         for d in flat_decls(&p.items) {
@@ -537,13 +541,13 @@ impl<'a, 't, 's> World<'a, 't, 's> {
     /// own. `params` are the body's parameters; `locus` is set for a locus
     /// member, whose own parameters' places are not the frame's to write
     /// through either (its arena is its scratch).
-    fn calls(
+    fn calls<'w>(
         &self,
         body: &Block,
         ids: &Ids<'_>,
         params: &BTreeMap<Key, Ty>,
         locus: Option<&str>,
-        writers: &BTreeMap<String, BTreeSet<usize>>,
+        writers: &dyn Fn() -> &'w BTreeMap<String, BTreeSet<usize>>,
         out: &mut Vec<Diag>,
     ) {
         let member = locus.is_some();
@@ -559,9 +563,17 @@ impl<'a, 't, 's> World<'a, 't, 's> {
         visit_block(body, &mut |v| match v {
             Visited::Stmt(s @ (Stmt::Let { .. } | Stmt::LetTuple { .. })) => self.bind_stmt(&mut b, s, &root_ty),
             Visited::Expr(Expr::Call { callee, args, .. }) => {
+                // a call that hands no argument a place the frame does not
+                // own refuses nothing, whoever it calls
+                let hands_foreign = args.iter().any(|arg| {
+                    b.place(arg).is_some_and(|(base, _)| base == Key::SelfKw || (member && params.contains_key(&base)))
+                });
+                if !hands_foreign {
+                    return;
+                }
                 let reached = self.callee(callee, &b);
                 let ks: Vec<usize> = match &reached {
-                    Some(c) => match writers.get(c) {
+                    Some(c) => match writers().get(c) {
                         Some(ks) => ks.iter().copied().collect(),
                         None => return,
                     },
