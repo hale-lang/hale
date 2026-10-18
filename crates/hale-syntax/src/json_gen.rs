@@ -308,6 +308,9 @@ struct JsonType {
     /// field `lifted`, which the decoder takes as `__key` (the map's key) and
     /// the encoder leaves out. Its codecs are `..._<T>__by_<lifted>`.
     lifted: Option<String>,
+    /// The lifted key's presence flag, when the key field is optional: the
+    /// map supplied the key, so the value decoder sets it.
+    lifted_flag: Option<String>,
 }
 
 fn scalar_of(te: &TypeExpr) -> Option<ScalarTy> {
@@ -416,7 +419,7 @@ fn collect_json_types(items: &[TopDecl], names: &HashSet<String>, out: &mut Vec<
                         });
                     }
                     if ok && !jfields.is_empty() {
-                        out.push(JsonType { name: td.name.name.clone(), fields: jfields, lifted: None });
+                        out.push(JsonType { name: td.name.name.clone(), fields: jfields, lifted: None, lifted_flag: None });
                     }
                 }
             }
@@ -897,7 +900,11 @@ fn construct_src(t: &JsonType, json: bool) -> String {
             b.push_str(&format!("        __ai_{n} = __ai_{n} + 1;\n    }}\n", n = f.name));
         }
     }
-    let lifted = t.lifted.iter().map(|k| format!("{k}: __key"));
+    let lifted = t
+        .lifted
+        .iter()
+        .map(|k| format!("{k}: __key"))
+        .chain(t.lifted_flag.iter().map(|flag| format!("{flag}: true")));
     let inits: Vec<String> = lifted
         .chain(t.fields.iter().filter_map(|f| match (&f.kind, &f.conv) {
             // on the JSON wire a presence flag is whether its field was read
@@ -1047,9 +1054,14 @@ fn pb_map_read(f: &JsonField, tn: &str, k: &str, bad: &str) -> String {
 
 /// `__api_pb_entry_<T>__by_<k>(bytes, field)`: one entry of a
 /// `map<string, T>`, its key (field 1) and its record (field 2, decoded
-/// whole), the record given the entry's key; the last of a field sent
-/// twice wins, an unknown field is skipped.
-fn generate_pb_entry_src(tn: &str, k: &str) -> String {
+/// whole), the record given the entry's key; the last key sent twice
+/// wins, a value message sent twice merges (its occurrences' payloads
+/// concatenated, as proto3 merges a singular message), and an unknown
+/// field is skipped. The key is put before the value's own fields as its
+/// field `key_no`, so a value that leaves its key out is no
+/// `missing_field`, then the entry's key replaces the value's (and sets
+/// its presence `flag`, when the key field is optional).
+fn generate_pb_entry_src(tn: &str, k: &str, key_no: u32, flag: Option<&str>) -> String {
     let wrong = "fail JsonError { kind: \"wrong_type\", field: __f };";
     let mut b = format!("fn __api_pb_entry_{tn}__by_{k}(__b: Bytes, __f: String) -> {tn} fallible(JsonError) {{\n");
     b.push_str("    let __n = len(__b);\n    let mut __p = 0;\n    let mut __key = \"\";\n");
@@ -1067,7 +1079,7 @@ fn generate_pb_entry_src(tn: &str, k: &str) -> String {
     b.push_str("                __key = std::str::from_bytes(std::bytes::slice(__b, __e, __e + __l));\n");
     b.push_str(&format!("                if len(__key) != __l {{ {wrong} }}\n"));
     b.push_str("            } else {\n");
-    b.push_str("                __raw = std::bytes::slice(__b, __e, __e + __l);\n");
+    b.push_str("                __raw = std::bytes::concat(__raw, std::bytes::slice(__b, __e, __e + __l));\n");
     b.push_str("            }\n");
     b.push_str("            __p = __e + __l;\n");
     b.push_str("        } else {\n");
@@ -1076,8 +1088,13 @@ fn generate_pb_entry_src(tn: &str, k: &str) -> String {
     b.push_str("            __p = __e;\n");
     b.push_str("        }\n");
     b.push_str("    }\n");
-    b.push_str(&format!("    let mut __v = __api_pb_decode_{tn}(__raw) or raise;\n"));
+    b.push_str(&format!(
+        "    let mut __v = __api_pb_decode_{tn}(std::bytes::concat(__api_pb_put_str({key_no}, __key), __raw)) or raise;\n"
+    ));
     b.push_str(&format!("    __v.{k} = __key;\n"));
+    if let Some(flag) = flag {
+        b.push_str(&format!("    __v.{flag} = true;\n"));
+    }
     b.push_str("    return __v;\n}\n");
     b
 }
@@ -1984,7 +2001,7 @@ fn generate_codecs(
             })
             .collect();
         if let (Some(fields), false) = (jfields, types.iter().any(|t| &t.name == name)) {
-            types.push(JsonType { name: name.clone(), fields, lifted: None });
+            types.push(JsonType { name: name.clone(), fields, lifted: None, lifted_flag: None });
         }
     }
     let mut src = String::new();
@@ -2073,14 +2090,27 @@ fn generate_codecs(
         let Some(t) = types.iter().find(|t| &t.name == tn) else { continue };
         if protobuf {
             if existing_fns.insert(format!("__api_pb_entry_{tn}__by_{k}")) {
-                src.push_str(&generate_pb_entry_src(tn, k));
+                let key_no = t.fields.iter().find(|f| &f.name == k).map_or(1, |f| f.pb_no);
+                let flag = t
+                    .fields
+                    .iter()
+                    .find(|f| matches!(&f.presence, Presence::Flag(of) if of == k))
+                    .map(|f| f.name.clone());
+                src.push_str(&generate_pb_entry_src(tn, k, key_no, flag.as_deref()));
             }
             continue;
         }
+        // the key and its presence flag, if it has one, are the map's
+        let flag = t
+            .fields
+            .iter()
+            .find(|f| matches!(&f.presence, Presence::Flag(of) if of == k))
+            .map(|f| f.name.clone());
         let value = JsonType {
             name: t.name.clone(),
-            fields: t.fields.iter().filter(|f| &f.name != k).cloned().collect(),
+            fields: t.fields.iter().filter(|f| &f.name != k && Some(&f.name) != flag.as_ref()).cloned().collect(),
             lifted: Some(k.clone()),
+            lifted_flag: flag,
         };
         if existing_fns.insert(format!("__api_decode_{tn}__by_{k}")) {
             src.push_str(&generate_parser_src_mode(&value, "__api_decode_", true));
@@ -2479,7 +2509,7 @@ fn variant_records(e: &JsonEnum) -> Vec<(String, JsonType)> {
                 }
             })
             .collect();
-        out.push((decl, JsonType { name: rec, fields, lifted: None }));
+        out.push((decl, JsonType { name: rec, fields, lifted: None, lifted_flag: None }));
     }
     out
 }
@@ -2610,7 +2640,7 @@ fn collect_api_types(
                         }
                     }
                 }
-                out.push(JsonType { name: td.name.name.clone(), fields: jfields, lifted: None });
+                out.push(JsonType { name: td.name.name.clone(), fields: jfields, lifted: None, lifted_flag: None });
             }
             TopDecl::Module(m) => collect_api_types(&m.items, wanted, scalars, aliases, enums, out),
             _ => {}

@@ -286,7 +286,7 @@ const CALL_LINES_ONLY: [(&str, usize); 24] = [
 ];
 
 /// The targets whose verdicts move, each pinned in `verdict_changes`.
-const VERDICT_TARGETS: [&str; 14] = [
+const VERDICT_TARGETS: [&str; 15] = [
     "crates/hale-codegen/tests/fixtures/examples/69-http-router",
     "crates/hale-codegen/tests/fixtures/examples/92-build-an-api",
     "dna/api",
