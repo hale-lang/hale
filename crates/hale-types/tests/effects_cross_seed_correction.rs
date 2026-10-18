@@ -177,19 +177,25 @@ fn the_replay_gate_refuses_what_it_refused() {
 /// the six cross-seed rows listed is among them.
 #[test]
 fn api() {
+    // GH #1530 step 3: the two exposures' eaters of `preview_batch`
+    // (`__rpc_row_<n>_12`, generated per row of the served surface) call it,
+    // so they carry what it does; every row's eater, decoder and encoder
+    // is a manifest row of its own (56 more on each side).
     // GH #1554: two more rows on both sides, `{alloc}` from the stores
     // into a child locus's field from outside its methods (`self.reader.root
     // = self.root`), which lowering copies (GH #1561) and the survey now
     // sees through the checker's types.
     pinned(
         "api",
-        312,
-        314,
+        368,
+        370,
         "
         Api::definition_draft_handle  does={syscall,block,env,alloc}
         Api::definitions_read  does={syscall,block,env,alloc}
         Api::handle  does={syscall,block,time,entropy,env,alloc,secret_use,journal_io}
         CommandAdmission::preview_batch  does={syscall,block,time,entropy,env,alloc,secret_use}
+        Commands::__rpc_row_1_12  does={syscall,block,time,entropy,env,alloc,secret_use}
+        Commands::__rpc_row_2_12  does={syscall,block,time,entropy,env,alloc,secret_use}
         Commands::preview_batch  does={syscall,block,time,entropy,env,alloc,secret_use}
         ContextWire::read  does={syscall,block,time,entropy,env,alloc,secret_use}
         KnowledgeWire::texts  does={alloc}

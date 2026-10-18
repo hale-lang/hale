@@ -1216,6 +1216,27 @@ through this one path.
 | **transport** | listener lifecycle, framing, correlation and the wire encoding of the five outcomes; an ordinary connection failure (EOF, malformed input, a failed reply write) is local to that connection and never dissolves the shared listener; failure to bind at birth stays structural |
 | **shutdown** | admission closes, queued work is refused `shutting_down`, executing work completes and replies if the connection lives, the listener is released, repeated `stop()` is safe, and the serve handle's dissolution or its owner's teardown drives the same shutdown, so cleanup never depends on a caller's explicit `stop()` |
 
+**The receiver's side is a seam** (GH #1530, 2026-10-18; spec/semantics.md
+§ Seams). A call reaches its receiver's pool as a bus delivery keyed by the
+exposure, whose stamp is checked first (a call from before the receiver's
+generation is `unavailable`); what runs then is a seam the compiler writes
+on the receiver, `c -> decode -> self -> encode`. The decoder is one hop: it
+reads the body as JSON, or as protobuf when the exposure is gRPC and the body
+says `pb:`, and makes the row's **mirror** member, a record of the request,
+the context and the call's identity (its exposure and request id, and its
+wire). The mirror is generated, one member per row and never per request
+type, so two rows that take one request type stay two members; its names
+are the compiler's own (`__RpcIn_…`, `__RpcOut_…`) and no description,
+digest, export or client names them. The locus hop on `self` is the
+dispatch: each member goes to its row's eater, a generated method that
+unpacks it into the handler's arguments, the context last, and calls the
+handler on the receiver's pool, in its arena. The encoder takes the set of
+every row's response and every row's error, and the server error a
+violating handler answers (`ClosureViolation`), and writes each as the
+outcome it is, on the call's wire. Coverage is the surface's rows: every
+member has its eater, and the receiver's other methods are methods. A
+body neither codec reads ends the seam, and the call is `malformed`.
+
 **A lost connection.** A reply for a request whose connection was lost
 before the request completed is dropped: completion (`finish`) sees the
 lost mark, delivers nothing, and tells the transport the connection is
