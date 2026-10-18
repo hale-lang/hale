@@ -638,7 +638,7 @@ row	App@literal1	App	main	default
 row	~	Grow	main	default
 row	~.acc	Acc	main	inherited
 
-== crates/hale-stdlib/hl/api_rpc.hl#779a43b0
+== crates/hale-stdlib/hl/api_rpc.hl#cb91cfa8
 
 == crates/hale-stdlib/hl/crypto.hl#79bd629e
 dynamic	<hole>	on unknown (no caller)|unresolved declaration `CryptoError`	in the seed
@@ -686,6 +686,15 @@ dynamic	__StdIoTcpConnFlow	on pool:io
 dynamic	__StdIoTcpConnInline	on pool:io
 dynamic	__StdIoTcpConnections	on pool:io|unknown (no instance)
 dynamic	__StdIoTcpStream	on pool:io|unknown (no instance)
+
+== crates/hale-cli/tests/api_drive.rs#1470e6e0
+root	App	the entry
+domain	pool:__api_http	async_io
+row	App@literal1	App	main	default
+row	App@literal1.bearer	Tokens	main	default
+row	App@literal1.orders	Orders	main	default
+shared	App@literal1.__rpc_h_1	__StdApiHttpListener #6e12d80d
+shared	dynamic	sites in the seed #042a0a8b
 
 == crates/hale-cli/tests/check_arg_parsing.rs#a354ed05
 root	App	the entry
@@ -1341,6 +1350,30 @@ row	Rec@main1	Rec	main	default
 
 == crates/hale-codegen/tests/alloc_model_rss.rs#84467e50
 row	Rec@main1	Rec	main	default
+
+== crates/hale-codegen/tests/api_error_classes.rs#6d5f562f
+root	Shop	the entry
+domain	pool:__api_http	async_io
+domain	pool:__api_grpc	async_io
+domain	pool:__api_unix	async_io
+row	Shop@literal1	Shop	main	default
+row	Shop@literal1.bearer	Tokens	main	default
+row	Shop@literal1.orders	Orders	main	default
+shared	Shop@literal1.__rpc_g_2	__StdIoH2Listener #b0c4764c
+shared	Shop@literal1.__rpc_h_1	__StdApiHttpListener #6e12d80d
+shared	Shop@literal1.__rpc_u_3	__StdApiUnixListener #e8cfe0e1
+-- dynamic	sites in the seed
+dynamic	__StdApiHttpConns	on pool:__api_http
+dynamic	__StdApiHttpPeer	on pool:__api_http
+dynamic	__StdApiUnixConns	on pool:__api_unix
+dynamic	__StdApiUnixPeer	on pool:__api_unix
+dynamic	__StdBytesBytesBuilder	on pool:__api_http
+dynamic	__StdIoH2Conn	on pool:__api_grpc
+dynamic	__StdIoH2Conns	on pool:__api_grpc
+dynamic	__StdIoTcpConnFlow	on pool:__api_grpc|pool:__api_http|pool:__api_unix
+dynamic	__StdIoTcpConnInline	on pool:__api_grpc|pool:__api_http|pool:__api_unix
+dynamic	__StdIoTcpConnections	on pool:__api_grpc|pool:__api_http|pool:__api_unix
+dynamic	__StdIoTcpStream	on pool:__api_grpc|pool:__api_http|pool:__api_unix
 
 == crates/hale-codegen/tests/api_exposure_param.rs#6dac29a7
 root	App	the entry
