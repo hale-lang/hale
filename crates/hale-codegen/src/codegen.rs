@@ -18032,8 +18032,22 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 // of the innermost reclaim scope, or `Owner::Caller`
                 // when this frame hands the binding back) and the
                 // join names nothing.
-                let lower_result =
-                    self.lower_expr_into(value_to_lower, scope, hint_ty.as_ref());
+                // A bounded local bound from a place: the place evaluated
+                // once, its owner kept for the view's arena below.
+                let mut bounded_owner: Option<Option<LvalueOwner<'ctx>>> = None;
+                let bounded_place = Self::expr_place_lvalue(value_to_lower)
+                    .is_some_and(|lv| matches!(self.place_declared_ty(&lv, scope), Some(CodegenTy::Bounded(_, _))));
+                let lower_result = if bounded_place {
+                    let ty = self
+                        .place_declared_ty(&Self::expr_place_lvalue(value_to_lower).expect("a place"), scope)
+                        .expect("a bounded place");
+                    self.bounded_place(value_to_lower, scope).map(|(storage, owner)| {
+                        bounded_owner = owner;
+                        (storage.into(), ty)
+                    })
+                } else {
+                    self.lower_expr_into(value_to_lower, scope, hint_ty.as_ref())
+                };
                 self.current_arena_override = saved_override_for_returned;
                 self.next_array_repeat_is_stack_local = false;
                 let (mut val, mut ty) = lower_result?;
@@ -18211,6 +18225,22 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 if let Some(fields) = self.owned_views.cow_bind(*id, &name.name) {
                     let fields = fields.to_vec();
                     self.set_cell_part_flags(alloca, &fields, bound_copy)?;
+                }
+                // A bounded local views the place it was bound from: its
+                // owner's arena, for the elements an intrinsic writes
+                // through it (`Cx::bounded_owner_arena`). A program with
+                // no bounded local emits nothing here.
+                let view_key = Self::bounded_view_key(&name.name);
+                if matches!(ty, CodegenTy::Bounded(_, _)) {
+                    let arena = self.bounded_owner_arena(value_to_lower, bounded_owner, scope)?;
+                    let slot = self.alloca_in_entry(
+                        self.context.ptr_type(AddressSpace::default()).into(),
+                        &format!("{}.view.arena", name.name),
+                    )?;
+                    self.builder.build_store(slot, arena).map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                    scope.locals.insert(view_key, (slot, CodegenTy::Bytes));
+                } else {
+                    scope.locals.remove(&view_key);
                 }
                 scope.locals.insert(name.name.clone(), (alloca, ty));
                 Ok(BlockEnd::Open)
@@ -34060,6 +34090,116 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         self.builder.build_memmove(dest, 8, src.into_pointer_value(), 8, size).map_err(e)?;
         self.anchor_bounded_elems_in_place(dest, elem, cap, arena, "bounded.assign")?;
         Ok(BlockEnd::Open)
+    }
+
+    /// The scope key that holds the owning arena of the bounded place a
+    /// bounded local `name` views (`let mut dest = self.xs`): not an
+    /// identifier, so no program name meets it, and a block's end drops
+    /// it with the local.
+    pub(crate) fn bounded_view_key(name: &str) -> String {
+        format!("#bounded-view-arena:{name}")
+    }
+
+    /// A place written as an expression, `self.a[i].b`, as the lvalue the
+    /// walker addresses; `None` for a bare name or anything else.
+    pub(crate) fn expr_place_lvalue(recv: &Expr) -> Option<LValue> {
+        fn place(e: &Expr, tail: &mut Vec<LValueSeg>) -> Option<Ident> {
+            match e {
+                Expr::Ident(i) => Some(i.clone()),
+                Expr::KwSelf(span) => Some(Ident::new("self", *span)),
+                Expr::Field { receiver, name, .. } => {
+                    let head = place(receiver, tail)?;
+                    tail.push(LValueSeg::Field(name.clone()));
+                    Some(head)
+                }
+                Expr::Index { receiver, index, .. } => {
+                    let head = place(receiver, tail)?;
+                    tail.push(LValueSeg::Index((**index).clone()));
+                    Some(head)
+                }
+                _ => None,
+            }
+        }
+        let mut tail = Vec::new();
+        let head = place(recv, &mut tail)?;
+        (!tail.is_empty()).then(|| LValue { head, tail, span: recv.span() })
+    }
+
+    /// A bounded place, evaluated once: its storage, and for a place under
+    /// a head (`self.xs`, `self.slots[self.next()].xs`) the owner the
+    /// lvalue walk reached, so the arena its elements anchor in comes from
+    /// the same evaluation (an index is lowered once; GH #1608 review). A
+    /// bare name or any other value is lowered as it was, and has no
+    /// owner (`None`).
+    pub(crate) fn bounded_place(
+        &mut self,
+        recv: &Expr,
+        scope: &Scope<'ctx>,
+    ) -> Result<(PointerValue<'ctx>, Option<Option<LvalueOwner<'ctx>>>), CodegenError> {
+        let target = Self::expr_place_lvalue(recv);
+        // A place with an index evaluates it once, through the walk, which
+        // also addresses the storage.
+        if let Some(t) = target.as_ref().filter(|t| t.tail.iter().any(|s| matches!(s, LValueSeg::Index(_)))) {
+            let (slot, ty, _, owner) = self.resolve_lvalue_chain(t, scope)?;
+            if !matches!(ty, CodegenTy::Bounded(_, _)) {
+                return Err(CodegenError::Unsupported(format!("a bounded place lowered to {ty:?}")));
+            }
+            return Ok((slot, Some(owner)));
+        }
+        let (v, ty) = self.lower_expr(recv, scope)?;
+        if !matches!(ty, CodegenTy::Bounded(_, _)) {
+            return Err(CodegenError::Unsupported(format!(
+                "bounded intrinsic receiver lowered to {ty:?}, expected bounded[T; N]"
+            )));
+        }
+        // A place of fields alone has no side effect to repeat: its owner
+        // is a second walk of GEPs and loads. A shape the walk does not
+        // address keeps the current arena.
+        let owner = match target {
+            Some(t) => match self.resolve_lvalue_chain(&t, scope) {
+                Ok((_, _, _, owner)) => Some(owner),
+                Err(_) => Some(None),
+            },
+            None => None,
+        };
+        Ok((v.into_pointer_value(), owner))
+    }
+
+    /// The arena the elements of the bounded place `recv` anchor in, from
+    /// [`Cx::bounded_place`]'s owner: a place a locus holds is in that
+    /// locus's arena; a bounded local is the place it was bound from,
+    /// whose arena its `let` recorded; anything else (a record local's
+    /// field) is in the current arena, where the local lives. A bounded
+    /// local's element used to go to the current arena whatever it viewed,
+    /// so `let mut dest = self.xs; push(dest, s)` left `self.xs` holding a
+    /// block the method's scratch freed at its return.
+    pub(crate) fn bounded_owner_arena(
+        &mut self,
+        recv: &Expr,
+        owner: Option<Option<LvalueOwner<'ctx>>>,
+        scope: &Scope<'ctx>,
+    ) -> Result<PointerValue<'ctx>, CodegenError> {
+        let e = |err: inkwell::builder::BuilderError| CodegenError::LlvmEmit(err.to_string());
+        let ptr_t = self.context.ptr_type(AddressSpace::default());
+        match owner {
+            Some(Some(o)) => {
+                let info = self.user_loci.get(&o.locus).cloned().expect("an lvalue's owner is a declared locus");
+                let slot = self
+                    .builder
+                    .build_struct_gep(info.struct_ty, o.ptr, info.arena_field_idx, "bounded.owner.arena.ptr")
+                    .map_err(e)?;
+                Ok(self.builder.build_load(ptr_t, slot, "bounded.owner.arena").map_err(e)?.into_pointer_value())
+            }
+            Some(None) => self.current_arena_ptr(),
+            None => {
+                if let Expr::Ident(i) = recv {
+                    if let Some((slot, _)) = scope.locals.get(&Self::bounded_view_key(&i.name)).cloned() {
+                        return Ok(self.builder.build_load(ptr_t, slot, "bounded.view.arena").map_err(e)?.into_pointer_value());
+                    }
+                }
+                self.current_arena_ptr()
+            }
+        }
     }
 
     /// Generic lvalue walker for assignment targets that the
