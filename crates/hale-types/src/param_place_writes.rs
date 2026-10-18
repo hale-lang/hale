@@ -229,7 +229,15 @@ impl<'a, 't, 's> World<'a, 't, 's> {
             for d in flat_decls(&p.items) {
                 if let TopDecl::Fn(f) = d {
                     if f.ffi.is_none() {
-                        let params = f.params.iter().map(|p| (ids.decl(&p.name), w.ty(&p.ty))).collect();
+                        // a type parameter is its own binding, opaque, never a
+                        // global type that happens to share its name
+                        let generics: BTreeMap<String, Ty> =
+                            f.generics.iter().map(|g| (g.name.name.clone(), Ty::Unknown)).collect();
+                        let params = f
+                            .params
+                            .iter()
+                            .map(|p| (ids.decl(&p.name), crate::resolve::resolve_type_expr_with(&p.ty, &w.top.names, &generics)))
+                            .collect();
                         w.fns.insert(f.name.name.clone(), FreeFn { params, body: &f.body, ids: *ids });
                     }
                 }
@@ -417,7 +425,12 @@ impl<'a, 't, 's> World<'a, 't, 's> {
             }
         }
         let Some((root, path)) = b.place(value) else { return };
-        let bounded = root_ty(&root).and_then(|t| self.type_at(&t, &path)).is_some_and(|t| matches!(t, Ty::Bounded(..)));
+        // a view of a bounded place, or of a place behind a type parameter
+        // that may be one (fail closed: the write through it still counts)
+        let bounded = root_ty(&root).is_some_and(|t| match self.type_at(&t, &path) {
+            Some(at) => matches!(at, Ty::Bounded(..)),
+            None => self.opaque_on(&t, &path),
+        });
         if bounded {
             b.views.insert(k, (root, path));
         }

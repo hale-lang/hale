@@ -698,6 +698,23 @@ fn minted_diags(src: &str) -> Vec<String> {
     ds.iter().map(|d| d.message.clone()).collect()
 }
 
+/// Fifth review of #1612: a type parameter is the fn's own binding, opaque,
+/// whatever global type shares its name (a record `T`, a locus `T`): the
+/// field path through it may be a writer's place, so the call is refused.
+#[test]
+fn a_type_parameter_is_not_a_global_type_of_its_name() {
+    for global in ["type T { other: Int; }", "type T { xs: bounded[Int; 4]; }", "locus T { }"] {
+        let ds = minted_diags(&format!(
+            r#"{global}
+            type Row {{ xs: bounded[String; 4]; }}
+            fn fill<T>(r: T) {{ push(r.xs, "fresh" + to_string(1)) or raise; }}
+            locus L {{ params {{ row: Row = Row {{ }}; }} fn put() {{ fill(self.row); }} }}
+            fn main() {{ }}"#
+        ));
+        assert!(ds.iter().any(|m| m.contains("pointer-shaped elements")), "{global}: {ds:?}");
+    }
+}
+
 /// Second review of #1612: a fn value's target follows the binding a call
 /// names. Assigned (`f = fill;`), the binding names no one fn and the call
 /// is refused for any argument holding such a place; an inner `let f`
@@ -717,6 +734,8 @@ fn a_parameter_place_writer_follows_bindings_not_spellings() {
         fn pass_on(r: Row) { gapply(fill, r); }
         fn gid<T>(x: T) { }
         fn tfill<T>(r: T) { push(r.xs, "fresh" + to_string(1)) or raise; }
+        fn vfill<T>(r: T) { let mut dst = r.xs; push(dst, "fresh" + to_string(1)) or raise; }
+        fn afill<T>(r: T) { let mut dst: bounded[String; 4] = r.xs; push(dst, "fresh" + to_string(1)) or raise; }
     "#;
     let refused = |body: &str, why: &str| {
         let src = format!("{PRE} locus L {{ params {{ row: Row = Row {{ }}; }} fn put() {{ {body} }} }}\nfn main() {{ }}");
@@ -758,6 +777,10 @@ fn a_parameter_place_writer_follows_bindings_not_spellings() {
     // a field path through a type parameter, which the template cannot
     // resolve, may be a bounded place (fourth review)
     refused("tfill(self.row);", "a field path through a type parameter");
+    // fifth review: a view bound through a type parameter, and a type
+    // parameter named as a global type is
+    refused("vfill(self.row);", "a view of a field path through a type parameter");
+    refused("afill(self.row);", "an annotated view through a type parameter");
     refused("pass_on(self.row);", "a generic fn handing a type parameter to a fn value");
     accepted(
         "locus L { params { row: Row = Row { }; } fn put() { gid(self.row); } }",
