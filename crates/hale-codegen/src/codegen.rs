@@ -28049,6 +28049,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             Id::StrIndexOfFrom => {
                 self.lower_std_str_index_of_from(args, scope)
             }
+            Id::StrFloatTextRaw => self.lower_std_str_float_text(args, scope),
             Id::StrRangeIndexOf => {
                 self.lower_std_str_range_index_of(args, scope)
             }
@@ -29402,6 +29403,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             | Id::StrFromBytes
             | Id::StrIndexOf
             | Id::StrIndexOfFrom
+            | Id::StrFloatTextRaw
             | Id::StrRangeIndexOf
             | Id::StrJoin
             | Id::StrLower

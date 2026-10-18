@@ -1364,6 +1364,9 @@ fn generate_emit_src_mode(t: &JsonType, fn_prefix: &str) -> String {
                 "\"\\\"\" + std::json::escape_string(__v.{}) + \"\\\"\"",
                 f.name
             ),
+            // a Float as the shortest text that reads back as the same
+            // double (spec/api.md § Codecs)
+            FieldKind::Scalar(ScalarTy::Float) if f.conv.is_none() => format!("{FLOAT_TEXT}(__v.{})", f.name),
             FieldKind::Scalar(_) => match &f.conv {
                 Some(c) => format!("to_string({})", c.to_int(&format!("__v.{}", f.name))),
                 None => format!("to_string(__v.{})", f.name),
@@ -1443,11 +1446,16 @@ fn elem_bind(elem: &Elem, elem_ty: &str, ind: &str) -> String {
     }
 }
 
+/// What a JSON codec writes a Float with: the shortest text that reads
+/// back, through `std::str::parse_float`, as the identical double.
+const FLOAT_TEXT: &str = "std::str::__float_text";
+
 /// The JSON text of the list element `v`.
 fn json_elem_write(elem: &Elem, v: &str, fn_prefix: &str) -> String {
     match elem {
         Elem::Scalar(ScalarTy::Str, _) => format!("\"\\\"\" + std::json::escape_string({v}) + \"\\\"\""),
         Elem::Scalar(_, Some(c)) => format!("to_string({})", c.to_int(v)),
+        Elem::Scalar(ScalarTy::Float, None) => format!("{FLOAT_TEXT}({v})"),
         Elem::Scalar(_, None) => format!("to_string({v})"),
         Elem::Time => format!("\"\\\"\" + std::time::iso8601({v}) + \"\\\"\""),
         Elem::Nested(tn) | Elem::Enum { name: tn, .. } => format!("{fn_prefix}{tn}({v})"),

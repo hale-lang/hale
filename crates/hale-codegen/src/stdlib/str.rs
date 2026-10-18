@@ -76,6 +76,11 @@ pub(crate) trait StrStdlib<'ctx> {
         args: &[Expr],
         scope: &Scope<'ctx>,
     ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError>;
+    fn lower_std_str_float_text(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError>;
     fn lower_std_str_range_index_of(
         &mut self,
         args: &[Expr],
@@ -1128,6 +1133,42 @@ impl<'ctx, 'p> StrStdlib<'ctx> for Cx<'ctx, 'p> {
             .left()
             .expect("returns i64");
         Ok((v, CodegenTy::Int))
+    }
+
+    /// Lower `std::str::__float_text(x: Float) -> String`: the shortest
+    /// text that reads back as `x` (`lotus_str_float_text`), what the api
+    /// codec writes a Float as.
+    fn lower_std_str_float_text(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
+        if args.len() != 1 {
+            return Err(CodegenError::Unsupported(format!(
+                "std::str::__float_text takes 1 arg, got {}",
+                args.len()
+            )));
+        }
+        let (v, ty) = self.lower_expr(&args[0], scope)?;
+        let v = match ty {
+            CodegenTy::Float => v.into_float_value(),
+            CodegenTy::Int => self.coerce_to_float(v, &ty, "std::str::__float_text")?,
+            other => {
+                return Err(CodegenError::Unsupported(format!(
+                    "std::str::__float_text: expected Float, got {other:?}"
+                )))
+            }
+        };
+        let arena_ptr = self.current_arena_ptr()?;
+        let f = self.module.get_function("lotus_str_float_text").expect("lotus_str_float_text declared");
+        let res = self
+            .builder
+            .build_call(f, &[arena_ptr.into(), v.into()], "float_text")
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .try_as_basic_value()
+            .left()
+            .expect("lotus_str_float_text returns ptr");
+        Ok((res, CodegenTy::String))
     }
 
     /// Lower `std::str::can_parse_int(s: String) -> Bool`.

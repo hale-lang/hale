@@ -19719,6 +19719,212 @@ char *lotus_str_from_int(lotus_arena_t *a, int64_t n) {
     return out;
 }
 
+/*
+ * A Float's text: the fewest significant digits that read back as the
+ * identical double (Burger & Dybvig's free-format algorithm, exact over a
+ * small bignum, ties to the even digit), so a value crossing a text codec
+ * comes back the same number. Self-contained: it reads no libc printf
+ * precision, so the native and the wasm runtimes print the same bytes.
+ * `lotus_fmt_float_shortest` lays the digits out (below); the bignum holds
+ * the scaled value and its neighbours' midpoints, at most ~1130 bits (a
+ * subnormal's 2^1076 denominator, or 10^323 times a 55-bit numerator).
+ */
+#define LOTUS_BN_WORDS 40
+typedef struct { uint32_t w[LOTUS_BN_WORDS]; int n; } lotus_bn_t;
+
+static void lotus_bn_set_u64(lotus_bn_t *a, uint64_t v) {
+    a->n = 0;
+    while (v) { a->w[a->n++] = (uint32_t)v; v >>= 32; }
+}
+static void lotus_bn_mul_small(lotus_bn_t *a, uint32_t m) {
+    uint64_t carry = 0;
+    for (int i = 0; i < a->n; i++) {
+        uint64_t t = (uint64_t)a->w[i] * m + carry;
+        a->w[i] = (uint32_t)t;
+        carry = t >> 32;
+    }
+    if (carry && a->n < LOTUS_BN_WORDS) a->w[a->n++] = (uint32_t)carry;
+}
+static void lotus_bn_shl(lotus_bn_t *a, int bits) {
+    if (a->n == 0 || bits == 0) return;
+    int words = bits / 32, b = bits % 32;
+    int n = a->n + words + 1;
+    if (n > LOTUS_BN_WORDS) n = LOTUS_BN_WORDS;
+    for (int i = n - 1; i >= 0; i--) {
+        uint64_t hi = (i - words >= 0 && i - words < a->n) ? a->w[i - words] : 0;
+        uint64_t lo = (b && i - words - 1 >= 0 && i - words - 1 < a->n) ? a->w[i - words - 1] : 0;
+        a->w[i] = (uint32_t)((hi << b) | (b ? lo >> (32 - b) : 0));
+    }
+    a->n = n;
+    while (a->n > 0 && a->w[a->n - 1] == 0) a->n--;
+}
+static int lotus_bn_cmp(const lotus_bn_t *a, const lotus_bn_t *b) {
+    if (a->n != b->n) return a->n < b->n ? -1 : 1;
+    for (int i = a->n - 1; i >= 0; i--)
+        if (a->w[i] != b->w[i]) return a->w[i] < b->w[i] ? -1 : 1;
+    return 0;
+}
+static void lotus_bn_add(lotus_bn_t *r, const lotus_bn_t *a, const lotus_bn_t *b) {
+    int n = a->n > b->n ? a->n : b->n;
+    uint64_t carry = 0;
+    for (int i = 0; i < n; i++) {
+        uint64_t t = (uint64_t)(i < a->n ? a->w[i] : 0) + (i < b->n ? b->w[i] : 0) + carry;
+        r->w[i] = (uint32_t)t;
+        carry = t >> 32;
+    }
+    r->n = n;
+    if (carry && n < LOTUS_BN_WORDS) r->w[r->n++] = (uint32_t)carry;
+}
+/* a -= b, a >= b */
+static void lotus_bn_sub(lotus_bn_t *a, const lotus_bn_t *b) {
+    int64_t borrow = 0;
+    for (int i = 0; i < a->n; i++) {
+        int64_t t = (int64_t)a->w[i] - (i < b->n ? b->w[i] : 0) - borrow;
+        borrow = t < 0;
+        a->w[i] = (uint32_t)(t + (borrow ? ((int64_t)1 << 32) : 0));
+    }
+    while (a->n > 0 && a->w[a->n - 1] == 0) a->n--;
+}
+/* q = floor(a / b) for a quotient below 10 (a < 10b), a -= q*b */
+static int lotus_bn_divmod_small(lotus_bn_t *a, const lotus_bn_t *b) {
+    int q = 0;
+    while (lotus_bn_cmp(a, b) >= 0) { lotus_bn_sub(a, b); q++; }
+    return q;
+}
+
+/* The shortest decimal digits of the positive finite double `v` that read
+ * back as `v`, into `digits` (no terminator); returns how many, and sets
+ * `*k` so that v = 0.<digits> x 10^k. */
+static int lotus_float_digits(double v, char *digits, int *k) {
+    uint64_t bits;
+    memcpy(&bits, &v, sizeof bits);
+    int be = (int)((bits >> 52) & 0x7FF);
+    uint64_t f = bits & ((1ull << 52) - 1);
+    int e;
+    if (be == 0) { e = -1074; } else { f |= 1ull << 52; e = be - 1075; }
+    int even = (f & 1) == 0;
+    lotus_bn_t r, s, mp, mm;
+    int unequal = (be > 1 && f == (1ull << 52));
+    if (e >= 0) {
+        lotus_bn_set_u64(&r, f); lotus_bn_shl(&r, e + (unequal ? 2 : 1));
+        lotus_bn_set_u64(&s, unequal ? 4 : 2);
+        lotus_bn_set_u64(&mp, 1); lotus_bn_shl(&mp, e + (unequal ? 1 : 0));
+        lotus_bn_set_u64(&mm, 1); lotus_bn_shl(&mm, e);
+    } else {
+        lotus_bn_set_u64(&r, f); lotus_bn_shl(&r, unequal ? 2 : 1);
+        lotus_bn_set_u64(&s, 1); lotus_bn_shl(&s, -e + (unequal ? 2 : 1));
+        lotus_bn_set_u64(&mp, unequal ? 2 : 1);
+        lotus_bn_set_u64(&mm, 1);
+    }
+    /* estimate k = ceil(log10 v), possibly one too small */
+    int bitlen = 0;
+    for (uint64_t t = f; t; t >>= 1) bitlen++;
+    double est = (double)(e + bitlen - 1) * 0.30102999566398114 - 1e-10;
+    int kk = (int)est;
+    if (est > 0 && (double)kk < est) kk++;
+    if (kk >= 0) {
+        for (int i = 0; i < kk; i++) lotus_bn_mul_small(&s, 10);
+    } else {
+        for (int i = 0; i < -kk; i++) { lotus_bn_mul_small(&r, 10); lotus_bn_mul_small(&mp, 10); lotus_bn_mul_small(&mm, 10); }
+    }
+    /* fixup: r + m+ reaching s means the estimate was one too small */
+    lotus_bn_t t;
+    lotus_bn_add(&t, &r, &mp);
+    int c = lotus_bn_cmp(&t, &s);
+    if (even ? c >= 0 : c > 0) {
+        kk++;
+        lotus_bn_mul_small(&s, 10);
+    }
+    int n = 0;
+    for (;;) {
+        lotus_bn_mul_small(&r, 10);
+        lotus_bn_mul_small(&mp, 10);
+        lotus_bn_mul_small(&mm, 10);
+        int d = lotus_bn_divmod_small(&r, &s);
+        int c1 = lotus_bn_cmp(&r, &mm);
+        int tc1 = even ? c1 <= 0 : c1 < 0;
+        lotus_bn_add(&t, &r, &mp);
+        int c2 = lotus_bn_cmp(&t, &s);
+        int tc2 = even ? c2 >= 0 : c2 > 0;
+        if (!tc1 && !tc2) { digits[n++] = (char)('0' + d); continue; }
+        if (tc1 && tc2) {
+            /* the nearer of d and d+1 (2r against s), a tie to the even one */
+            lotus_bn_t r2 = r;
+            lotus_bn_shl(&r2, 1);
+            int c3 = lotus_bn_cmp(&r2, &s);
+            if (c3 > 0 || (c3 == 0 && (d & 1))) d++;
+        } else if (tc2) {
+            d++;
+        }
+        digits[n++] = (char)('0' + d);
+        break;
+    }
+    *k = kk;
+    return n;
+}
+
+/* A Float's text, the shortest that reads back as the same double, laid
+ * out as `%.17g` lays out its digits: fixed point for a decimal exponent
+ * from -4 to 16 (`0.1`, `100`, `1234567`, `0.0001`), else `d.ddde±XX`
+ * with at least two exponent digits (`1e+17`, `1e-05`, `1e-300`); `-0`,
+ * `nan`, `inf`, `-inf`. */
+void lotus_fmt_float_shortest(double v, char *buf, size_t cap) {
+    char out[48];
+    int p = 0;
+    if (v != v) { memcpy(out, "nan", 4); goto done; }
+    uint64_t bits;
+    memcpy(&bits, &v, sizeof bits);
+    if (bits >> 63) { out[p++] = '-'; v = -v; }
+    if (v - v != 0.0) { memcpy(out + p, "inf", 4); goto done; }
+    if (v == 0.0) { out[p++] = '0'; out[p] = 0; goto done; }
+    {
+        char d[24];
+        int k;
+        int n = lotus_float_digits(v, d, &k);
+        int x = k - 1; /* the decimal exponent of the first digit */
+        if (x >= -4 && x < 17) {
+            if (x < 0) {
+                out[p++] = '0'; out[p++] = '.';
+                for (int i = 0; i < -x - 1; i++) out[p++] = '0';
+                for (int i = 0; i < n; i++) out[p++] = d[i];
+            } else {
+                for (int i = 0; i <= x; i++) out[p++] = i < n ? d[i] : '0';
+                if (n > x + 1) {
+                    out[p++] = '.';
+                    for (int i = x + 1; i < n; i++) out[p++] = d[i];
+                }
+            }
+        } else {
+            out[p++] = d[0];
+            if (n > 1) { out[p++] = '.'; for (int i = 1; i < n; i++) out[p++] = d[i]; }
+            out[p++] = 'e';
+            out[p++] = x < 0 ? '-' : '+';
+            int ax = x < 0 ? -x : x;
+            if (ax >= 100) out[p++] = (char)('0' + ax / 100);
+            out[p++] = (char)('0' + (ax / 10) % 10);
+            out[p++] = (char)('0' + ax % 10);
+        }
+        out[p] = 0;
+    }
+done:
+    if (cap == 0) return;
+    {
+        size_t l = strlen(out);
+        if (l >= cap) l = cap - 1;
+        memcpy(buf, out, l);
+        buf[l] = 0;
+    }
+}
+
+/* `std::str::__float_text(x)`: the shortest text that reads back as `x`,
+ * in a fresh buffer of `a` (the api codec writes a Float with it). */
+char *lotus_str_float_text(lotus_arena_t *a, double f) {
+    char *out = (char *)lotus_arena_alloc(a, 32, 1);
+    if (!out) return NULL;
+    lotus_fmt_float_shortest(f, out, 32);
+    return out;
+}
+
 char *lotus_str_from_float(lotus_arena_t *a, double f) {
     char *out = (char *)lotus_arena_alloc(a, 32, 1);
     if (!out) return NULL;
@@ -25044,26 +25250,30 @@ int lotus_str_can_parse_int(const char *s) {
  * parseability and the parser returns 0 on failure for surface
  * code that wants a defaulting shape.
  */
-double lotus_str_parse_float(const char *s) {
-    if (!s || !*s) return 0.0;
-    char *end = NULL;
-    errno = 0;
-    double v = strtod(s, &end);
-    if (errno != 0 || !end || *end != '\0') {
-        return 0.0;
-    }
-    return v;
-}
-
-int lotus_str_can_parse_float(const char *s) {
+/* strtod's whole-string reading of `s`: 1 when it read a Float. A range
+ * error is a refusal (a magnitude past the largest double, or one that
+ * rounds to zero), but a subnormal is a double like any other: strtod
+ * flags it ERANGE, and it reads as itself, so every Float's text reads
+ * back (`lotus_fmt_float_shortest`). */
+static int lotus_str_read_float(const char *s, double *out) {
     if (!s || !*s) return 0;
     char *end = NULL;
     errno = 0;
-    (void)strtod(s, &end);
-    if (errno != 0 || !end || *end != '\0') {
-        return 0;
-    }
+    double v = strtod(s, &end);
+    if (!end || *end != '\0') return 0;
+    if (errno != 0 && !(errno == ERANGE && v != 0.0 && v - v == 0.0)) return 0;
+    *out = v;
     return 1;
+}
+
+double lotus_str_parse_float(const char *s) {
+    double v = 0.0;
+    return lotus_str_read_float(s, &v) ? v : 0.0;
+}
+
+int lotus_str_can_parse_float(const char *s) {
+    double v;
+    return lotus_str_read_float(s, &v);
 }
 
 /*
