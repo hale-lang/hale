@@ -299,9 +299,13 @@ host's tick (**The spine**, below).
   host without the owner's DSN. A head — the CLI, `hale dna ui`, the API — opens memory with
   `HALE_DNA_MEMORY_DSN_HEAD`; a process given the spine's DSN uses that
   instead, and none holds both. The head's DSN a migration answers is
-  kept in the clone, `.hale/dna/memory.env` (a vault reference, no
-  password; untracked with the rest of `.hale/`), and every `hale dna`
-  verb in that clone given neither role's DSN runs with it.
+  kept in the clone, `.hale/dna/memory.env`, and every `hale dna` verb
+  in that clone given neither role's DSN runs with it. The file holds
+  the head role's DSN alone (never the owner's or the spine's), is
+  written mode 600 and never printed, and is written only where git
+  ignores it (`init` and `upgrade` keep `/.hale/` in `.gitignore`); a
+  verb refuses it when it is readable by group or others, naming
+  `chmod 600`.
 - **The migration** runs in one transaction under an advisory lock on
   the schema: the `vector` and `pgcrypto` extensions, the schema and
   every store's tables, the record's claim on the schema

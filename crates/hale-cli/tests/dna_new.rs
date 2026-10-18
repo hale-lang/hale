@@ -32,6 +32,10 @@ fn new_makes_a_governed_application_that_checks_builds_runs_and_tests() {
     for f in ["main.hl", "tests/main_test.hl", "hale.toml", "hale.lock", ".gitignore", "dna/org/main.hl", "dna/org/law.hl", "dna/org/purpose.hl", "vendor/dna/topics.hl", ".hale/dna/baseline.topology"] {
         assert!(app.join(f).exists(), "{f}: {out}");
     }
+    // GH #1590: the clone's own state — the head's DSN memory migrate keeps
+    // among it — is ignored, so it is never committed
+    let ignored = Command::new("git").arg("-C").arg(&app).args(["check-ignore", "-q", ".hale/dna/memory.env"]).status().unwrap();
+    assert!(ignored.success(), "init ignores .hale/: {}", std::fs::read_to_string(app.join(".gitignore")).unwrap_or_default());
     let main = std::fs::read_to_string(app.join("main.hl")).unwrap();
     assert!(main.contains("main locus DemoApp"), "{main}");
     // the application carries no DNA (GH #566 F2); the organization's law is its own

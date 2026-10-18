@@ -110,7 +110,7 @@ fn host_command(verb: &str, dir: &Path) -> Result<(Command, PathBuf), String> {
     // migrated
     let named = |k: &str| std::env::var(k).map(|v| !v.is_empty()).unwrap_or(false);
     if !named("HALE_DNA_MEMORY_DSN_SPINE") && !named("HALE_DNA_MEMORY_DSN_HEAD") {
-        if let Some(head) = kept_head_dsn(&root) {
+        if let Some(head) = kept_head_dsn(&root)? {
             cmd.env("HALE_DNA_MEMORY_DSN_HEAD", head);
         }
     }
@@ -236,26 +236,75 @@ fn memory_migrate(dir: &Path) -> Result<MemoryPlan, String> {
     Ok(MemoryPlan::NoDatabase(line.strip_prefix("none: ").unwrap_or(line).to_string()))
 }
 
-/// GH #1590: the head's DSN a migration answered (a vault reference, no
-/// password) is kept beside the clone's other local state,
-/// `.hale/dna/memory.env`, and handed to every host verb that is not given
-/// one.
+/// GH #1590: the head's DSN a migration answered is kept beside the
+/// clone's other local state, `.hale/dna/memory.env`, and handed to every
+/// host verb that is not given one. It is the head role's alone (never the
+/// owner's or the spine's), written mode 600 into a directory git ignores,
+/// and refused when anyone but its owner may read it. Its value is never
+/// printed.
 fn memory_env_file(root: &Path) -> PathBuf {
     root.join(".hale/dna/memory.env")
 }
 
+/// The DSN's user, as `postgres://<user>[:<password>]@…` names it.
+fn dsn_user(dsn: &str) -> Option<&str> {
+    let rest = dsn.split_once("://")?.1;
+    let auth = rest.split_once('@')?.0;
+    Some(auth.split_once(':').map(|(u, _)| u).unwrap_or(auth))
+}
+
+/// Why `head` may not be kept as the clone's head DSN, or `None`: it must
+/// name a head role (`dna_<record>_head`), and never be the owner's.
+fn kept_dsn_refusal(head: &str, owner: Option<&str>) -> Option<String> {
+    let user = dsn_user(head).unwrap_or("");
+    if !(user.starts_with("dna_") && user.ends_with("_head")) {
+        return Some("the DSN to keep does not name a head role (dna_<record>_head); only the head's is kept in the clone".to_string());
+    }
+    if owner.is_some_and(|o| !o.is_empty() && (o == head || dsn_user(o) == Some(user))) {
+        return Some("the DSN to keep is the owner's; only the head's is kept in the clone".to_string());
+    }
+    None
+}
+
 fn write_memory_env(root: &Path, head: &str) -> Result<(), String> {
+    if let Some(why) = kept_dsn_refusal(head, std::env::var(OWNER_DSN_ENV).ok().as_deref()) {
+        return Err(why);
+    }
     let path = memory_env_file(root);
+    // a file git would track is never written: the clone's .gitignore keeps
+    // `/.hale/` (`init`, `upgrade`)
+    let tracked = Command::new("git").arg("-C").arg(root).args(["check-ignore", "-q"]).arg(&path).status().map(|s| !s.success()).unwrap_or(false);
+    if tracked && root.join(".git").exists() {
+        return Err(format!("{} is not ignored by git, and it would hold the head's DSN: add `/.hale/` to {} (`hale dna upgrade` does)", path.display(), root.join(".gitignore").display()));
+    }
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|e| format!("create {}: {e}", parent.display()))?;
     }
-    fs::write(&path, format!("HALE_DNA_MEMORY_DSN_HEAD={head}\n")).map_err(|e| format!("write {}: {e}", path.display()))
+    use std::io::Write;
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+    let mut f = fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&path).map_err(|e| format!("write {}: {e}", path.display()))?;
+    // a file that existed keeps its mode through open: set it again
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).map_err(|e| format!("chmod {}: {e}", path.display()))?;
+    f.write_all(format!("HALE_DNA_MEMORY_DSN_HEAD={head}\n").as_bytes()).map_err(|e| format!("write {}: {e}", path.display()))
 }
 
-/// The head's DSN this clone keeps, when it keeps one.
-fn kept_head_dsn(root: &Path) -> Option<String> {
-    let text = fs::read_to_string(memory_env_file(root)).ok()?;
-    text.lines().find_map(|l| l.strip_prefix("HALE_DNA_MEMORY_DSN_HEAD=")).map(str::to_string).filter(|d| !d.is_empty())
+/// The head's DSN this clone keeps, when it keeps one; refused when the
+/// file may be read by anyone but its owner, or holds anything but a head
+/// role's DSN.
+fn kept_head_dsn(root: &Path) -> Result<Option<String>, String> {
+    use std::os::unix::fs::PermissionsExt;
+    let path = memory_env_file(root);
+    let Ok(meta) = fs::metadata(&path) else { return Ok(None) };
+    let mode = meta.permissions().mode() & 0o777;
+    if mode & 0o077 != 0 {
+        return Err(format!("{} holds the head's DSN and is readable by others (mode {mode:o}): `chmod 600 {}`, or remove it and run `hale dna memory migrate` again", path.display(), path.display()));
+    }
+    let text = fs::read_to_string(&path).map_err(|e| format!("read {}: {e}", path.display()))?;
+    let Some(head) = text.lines().find_map(|l| l.strip_prefix("HALE_DNA_MEMORY_DSN_HEAD=")).map(str::to_string).filter(|d| !d.is_empty()) else { return Ok(None) };
+    if let Some(why) = kept_dsn_refusal(&head, None) {
+        return Err(format!("{}: {why}; remove it and run `hale dna memory migrate` again", path.display()));
+    }
+    Ok(Some(head))
 }
 
 /// What `nerves-migrate` found (GH #986): the organization's token and
@@ -1616,7 +1665,7 @@ fn init(app_dir: &Path, library: bool) -> Result<Vec<String>, String> {
     let gi = root.join(".gitignore");
     let mut gtext = fs::read_to_string(&gi).unwrap_or_default();
     let mut added = Vec::new();
-    for line in ["/vendor/", "/.hale/", SECRETS_IGNORES[0], SECRETS_IGNORES[1]] {
+    for line in ["/vendor/", LOCAL_STATE_IGNORE, SECRETS_IGNORES[0], SECRETS_IGNORES[1]] {
         if !gtext.lines().any(|l| l.trim() == line) {
             if !gtext.is_empty() && !gtext.ends_with('\n') {
                 gtext.push('\n');
@@ -1829,7 +1878,9 @@ fn upgrade(dir: &Path) -> Result<Vec<String>, String> {
         let gi = root.join(".gitignore");
         let mut gtext = fs::read_to_string(&gi).unwrap_or_default();
         let mut added = Vec::new();
-        for line in SECRETS_IGNORES {
+        // `/.hale/` too: it holds the clone's own state, the head's DSN
+        // among it (GH #1590)
+        for line in [LOCAL_STATE_IGNORE, SECRETS_IGNORES[0], SECRETS_IGNORES[1]] {
             if !gtext.lines().any(|l| l.trim() == line) {
                 if !gtext.is_empty() && !gtext.ends_with('\n') {
                     gtext.push('\n');
@@ -2147,6 +2198,9 @@ fn compose_containers_elsewhere(compose: &Path, project: &str) -> Vec<String> {
 /// The lines the project's .gitignore carries for the servers' secrets
 /// (GH #989): the only files with a password are never tracked.
 const SECRETS_IGNORES: [&str; 2] = ["/dna/nats.secrets.conf", "/dna/postgres.secrets"];
+/// The clone's own state (sockets, worktrees, scratch, the head's DSN):
+/// never tracked.
+const LOCAL_STATE_IGNORE: &str = "/.hale/";
 
 /// GH #989: the organism's secrets, provisioned by its bootstrap through
 /// the host (`secrets-provision`, dna/host/secrets.hl, the skin's one
@@ -3809,6 +3863,67 @@ fn design_text(p: &SeededPractice) -> String {
     match std::env::var("HALE_DNA_DESIGN_SUFFIX") {
         Ok(s) if !s.is_empty() => format!("{}{s}", p.text),
         _ => p.text.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod memory_env_tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    const HEAD: &str = "postgres://dna_4f1c0de4f1c0de4f1c0de4f1c0de4f1c0de4f1c0_head@127.0.0.1:5480/dna?sslmode=prefer&vault=postgres-dna_4f1c0de4f1c0de4f1c0de4f1c0de4f1c0de4f1c0_head";
+
+    fn clone_dir(tag: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("hale_memory_env_{}_{tag}", std::process::id()));
+        let _ = fs::remove_dir_all(&d);
+        fs::create_dir_all(&d).unwrap();
+        let ok = Command::new("git").arg("-C").arg(&d).args(["init", "-q"]).status().unwrap().success();
+        assert!(ok);
+        fs::write(d.join(".gitignore"), "/.hale/\n").unwrap();
+        d
+    }
+
+    /// GH #1590: the kept DSN is the head's alone, mode 600, and read back.
+    #[test]
+    fn the_head_dsn_is_kept_mode_600_and_read_back() {
+        let d = clone_dir("kept");
+        write_memory_env(&d, HEAD).unwrap();
+        let mode = fs::metadata(memory_env_file(&d)).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+        assert_eq!(kept_head_dsn(&d).unwrap().as_deref(), Some(HEAD));
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    /// A file anyone else may read is refused, naming the fix.
+    #[test]
+    fn a_readable_kept_dsn_is_refused() {
+        let d = clone_dir("readable");
+        write_memory_env(&d, HEAD).unwrap();
+        fs::set_permissions(memory_env_file(&d), fs::Permissions::from_mode(0o644)).unwrap();
+        let err = kept_head_dsn(&d).unwrap_err();
+        assert!(err.contains("readable by others (mode 644)") && err.contains("chmod 600"), "{err}");
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    /// Only a head role's DSN is kept: never the owner's, never the spine's.
+    #[test]
+    fn only_the_head_role_is_kept() {
+        let d = clone_dir("roles");
+        assert!(write_memory_env(&d, "postgres://dna:dna@127.0.0.1:5480/dna").unwrap_err().contains("does not name a head role"));
+        assert!(write_memory_env(&d, &HEAD.replace("_head", "_spine")).unwrap_err().contains("does not name a head role"));
+        assert!(kept_dsn_refusal(HEAD, Some(HEAD)).unwrap().contains("the owner's"));
+        assert!(!memory_env_file(&d).exists(), "nothing was written");
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    /// A clone whose git would track `.hale/` is never handed the file.
+    #[test]
+    fn a_tracked_location_is_refused() {
+        let d = clone_dir("tracked");
+        fs::write(d.join(".gitignore"), "").unwrap();
+        let err = write_memory_env(&d, HEAD).unwrap_err();
+        assert!(err.contains("is not ignored by git") && err.contains("/.hale/"), "{err}");
+        let _ = fs::remove_dir_all(&d);
     }
 }
 

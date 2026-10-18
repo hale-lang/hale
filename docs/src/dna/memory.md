@@ -285,7 +285,9 @@ HALE_DNA_MEMORY_DSN_HEAD=postgres://dna_…_head@…/dna?sslmode=…&vault=postg
 
 The clone keeps the head's line in `.hale/dna/memory.env`, so the
 `hale dna` verbs you run there afterwards read and write memory as the
-head without being told; a DSN in the environment still wins.
+head without being told; a DSN in the environment still wins. The file
+is the head's alone, mode 600, under `.hale/`, which git ignores; a verb
+refuses it if its mode lets anyone else read it.
 
 With no `HALE_DNA_MEMORY_DSN_OWNER` it brings up the `knowledge-db`
 service of `dna/compose.yaml` (it needs `docker compose` on `PATH`)
