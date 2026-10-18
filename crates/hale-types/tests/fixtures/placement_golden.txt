@@ -2088,6 +2088,15 @@ row	App@literal1.h	Host	pinned:App@literal1.h	entry	off owner
 row	App@literal1.p	Pub	pinned:App@literal1.p	entry	off owner
 dynamic	Peer	on pinned:App@literal1.h	in the seed
 
+== crates/hale-codegen/tests/bus_scope_local_subscriber.rs#4ddb27f4
+root	App	the entry
+domain	pool:pa
+domain	pool:pb	async_io
+row	App@literal1	App	main	default
+row	App@literal1.c	Churn	pool:pb	entry	off owner
+row	App@literal1.p	Pub	pool:pa	entry	off owner
+dynamic	Conn	on pool:pb	in the seed
+
 == crates/hale-codegen/tests/bus_static_reservation.rs#4c3ac167
 root	Root	the entry
 row	Root@literal1	Root	main	default
@@ -3021,6 +3030,18 @@ root	App	the entry
 domain	pool:io
 row	App@literal1	App	main	default
 shared	App@literal1.host	PoolHost #63b77edf
+
+== crates/hale-codegen/tests/form_hashmap_lockfree_tsan.rs#20851f89
+root	App	the entry
+domain	pool:pa
+domain	pool:pb	async_io
+row	App@literal1	App	main	default
+row	App@literal1.c	Churn	pool:pb	entry	off owner
+row	App@literal1.e	Ear	main	default
+row	App@literal1.p	Pub	pool:pa	entry	off owner
+-- dynamic	sites in the seed
+dynamic	Conn	on pool:pb
+dynamic	Ear	on pool:pb
 
 == crates/hale-codegen/tests/form_hashmap_nested_retire.rs#aa60fd1f
 shared	H@main1	H #95920e24

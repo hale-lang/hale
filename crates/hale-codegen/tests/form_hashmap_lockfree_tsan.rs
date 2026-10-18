@@ -374,3 +374,77 @@ fn lockfree_string_rows_replaced_from_two_pools_tsan_clean() {
 fn striped_string_rows_replaced_from_two_pools_tsan_clean() {
     string_rows_replaced_from_two_pools("striped");
 }
+
+/// The bus registry hands a dissolved subscriber's entry to the next
+/// registration into its bucket, rewriting it under a sequence lock while
+/// another pool's publishes walk the table and the bucket. A pool churns
+/// scope-local subscribers (Int-keyed, String-keyed and unkeyed) while a
+/// second pool publishes to all of them, with cells queued for each
+/// subscriber as it dissolves: the walks must read each entry whole or
+/// skip it.
+#[test]
+#[ignore]
+fn bus_register_dissolve_churn_under_publishes_tsan_clean() {
+    if std::env::var("LOTUS_TSAN").ok().as_deref() != Some("1") {
+        panic!("requires LOTUS_TSAN=1 in the environment; otherwise the binary is built without ThreadSanitizer");
+    }
+    let src = r#"
+        type Ev { lane: Int; n: Int; }
+        type Memo { who: String; n: Int; }
+        topic Lanes { payload: Ev; subject: "churn.lanes"; keyed_by lane; }
+        topic Memos { payload: Memo; subject: "churn.memos"; keyed_by who; }
+        locus Conn {
+            params { lane: Int = 0; who: String = ""; got: Int = 0; }
+            bus {
+                subscribe Lanes as on_ev where key == self.lane;
+                subscribe Memos as on_memo where key == self.who;
+            }
+            fn on_ev(e: Ev) { self.got = self.got + 1; }
+            fn on_memo(m: Memo) { self.got = self.got + 1; }
+        }
+        locus Ear {
+            params { got: Int = 0; }
+            bus { subscribe Lanes as on_ev; }
+            fn on_ev(e: Ev) { self.got = self.got + 1; }
+        }
+        locus Pub {
+            params { x: Int = 0; }
+            bus { publish Lanes; publish Memos; }
+            run() {
+                let mut i = 0;
+                while i < 40000 {
+                    Lanes <- Ev { lane: i % 4, n: i };
+                    Memos <- Memo { who: "c" + to_string(i % 4), n: i };
+                    i = i + 1;
+                }
+                println("published");
+            }
+        }
+        locus Churn {
+            params { x: Int = 0; }
+            bus { publish Lanes; }
+            fn once(i: Int) {
+                let c = Conn { lane: i % 4, who: "c" + to_string(i % 4) };
+                let a = Ear { };
+                Lanes <- Ev { lane: i % 4, n: i };
+            }
+            run() {
+                let mut i = 0;
+                while i < 10000 {
+                    self.once(i);
+                    i = i + 1;
+                }
+                println("churned");
+            }
+        }
+        main locus App {
+            params { p: Pub = Pub { }; c: Churn = Churn { }; e: Ear = Ear { }; }
+            placement { p: cooperative(pool = pa); c: cooperative(pool = pb) where async_io; }
+        }
+        fn main() { App { }; }
+    "#;
+    let (stdout, stderr, status) = build_and_run("bus_churn", src);
+    assert!(status.success(), "exit={status:?}. stdout: {stdout}\n--- TSAN stderr ---\n{stderr}");
+    assert!(stdout.contains("published") && stdout.contains("churned"), "{stdout}");
+    assert!(!stderr.contains("WARNING: ThreadSanitizer"), "ThreadSanitizer surfaced a race:\n{stderr}");
+}

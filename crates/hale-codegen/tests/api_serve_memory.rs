@@ -85,10 +85,10 @@ fn a_unix_connection_stays_flat_under_sustained_calls() {
 }
 
 /// One call per connection over HTTP: a connection's peer subscribes to its
-/// outcomes, and the bus registry keeps a dissolved subscriber's entries,
-/// about 0.3 KB a connection. Open until the registry reuses them.
+/// outcomes and dissolves when the connection closes. The bus registry hands
+/// the dissolved subscriber's entries to the next connection's, so the server
+/// stays flat (it grew about 0.3 KB a connection before entries were reused).
 #[test]
-#[ignore = "open: the bus registry keeps a dissolved subscriber's entries (about 0.3 KB a connection)"]
 fn http_connections_stay_flat() {
     let mut srv = serve("http::Rpc { bind: \"127.0.0.1:0\", codec: json, principals: Tokens { }, roles: Open { } }", "api_memory_http");
     let port = child::tcp_port(&mut srv);
