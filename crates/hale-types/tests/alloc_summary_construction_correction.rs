@@ -313,8 +313,8 @@ fn own_scope_let_block_scope_test() {
             // `event` and `end`, and six framing helpers)
             changed_lines(&old.render(), &now.render()),
             [
-                "- # 460 fns, 29 entry points, 119 invoked-unboundedly",
-                "+ # 460 fns, 29 entry points, 118 invoked-unboundedly",
+                "- # 461 fns, 29 entry points, 119 invoked-unboundedly",
+                "+ # 461 fns, 29 entry points, 118 invoked-unboundedly",
                 "- call  count loop_depth=0 result=local",
                 "+ call  <unresolved: count> loop_depth=0 result=local",
                 "- call  count loop_depth=0 result=local",

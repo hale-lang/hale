@@ -1330,6 +1330,12 @@ pub const SURFACES: &[NsSurface] = &[
             // scanner's next search without slicing the tail (downstream
             // handoff).
             row!("index_of_from", PURE, [Str, Str, Int] -> Int, Intrinsic(StrIndexOfFrom)),
+            // `index_of_from` for a caller holding the length (a view's
+            // `n`): no strlen per call, so a scan with it is linear. The
+            // range family's contract, the caller owns the bound; `find`
+            // is the view's safe form.
+            row!("range_index_of", PURE, [Str, Int, Str, Int] -> Int, Intrinsic(StrRangeIndexOf)),
+            row!("find", PURE, [Named("__StrByteView"), Str, Int] -> Int, Renamed),
             row!("contains", PURE, [Str, Str] -> Bool, Intrinsic(StrContains)),
             // #353: the everyday predicates. The runtime carried
             // `lotus_str_contains` / `_starts_with` all along; `ends_with` is
@@ -1802,6 +1808,7 @@ pub enum IntrinsicId {
     StrRangeCopy,
     StrIndexOf,
     StrIndexOfFrom,
+    StrRangeIndexOf,
     StrContains,
     StrSplitInto,
     StrJoin,

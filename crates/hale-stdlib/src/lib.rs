@@ -561,6 +561,7 @@ pub const PATH_RENAMES: &[(&[&str], &str)] = &[
     (&["std", "str", "byte_at"], "__str_byte_at"),
     (&["std", "str", "bytes_view"], "__str_bytes_view"),
     (&["std", "str", "slice"], "__str_slice"),
+    (&["std", "str", "find"], "__str_find"),
     (&["std", "tagged", "Accumulator"], "__StdTaggedAccumulator"),
     (&["std", "text", "Sink"], "__StdTextSink"),
     (&["std", "text", "StdoutSink"], "__StdTextStdoutSink"),
