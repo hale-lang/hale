@@ -282,9 +282,10 @@ fn member_fn(m: &ClientMember) -> Result<String, String> {
     Ok(format!(
         "/** {name}{requires} */\nexport type {outcome} = Outcome<{value}, {error}>;\n\n\
          export function {fn_name}(opts: ClientOptions{param}): __Promise<{outcome}> {{\n  \
-         return apiCall(opts, {member}, {payload}, {dec_value}, {dec_error});\n}}\n\n",
+         return apiCall(opts, {member}, {digest}, {payload}, {dec_value}, {dec_error});\n}}\n\n",
         name = m.name,
         member = json_quote(&m.name),
+        digest = json_quote(&m.digest),
     ))
 }
 

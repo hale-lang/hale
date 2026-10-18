@@ -740,3 +740,101 @@ fn the_short_forms_are_the_api_verbs_with_two_conveniences() {
     let o = same(&["describe", "grpc://127.0.0.1:1"], &["api", "describe", "grpc://127.0.0.1:1"]);
     assert_eq!(o.code, 5, "{}", o.stderr);
 }
+
+/// spec/api.md § The contract digest, additive compatibility: a member's
+/// digest is its row's alone, so adding a member to a surface moves the
+/// surface's digest and leaves the old member's; a generated client names
+/// its member's digest on each call; and the exposure admits a request
+/// naming the member's digest or the surface's, and refuses the old
+/// surface's (`digest_mismatch`), which no longer describes what it serves.
+#[test]
+fn a_client_of_a_member_is_admitted_after_the_surface_gains_one() {
+    let dir = unique_dir("additive");
+    let source = |extra: bool| {
+        format!(
+            r#"type Ask {{ id: Int; }}
+api Shop {{ rpc Orders::get;{} }}
+locus Tokens {{
+    fn principal(token: String) -> std::api::Principal {{ return std::api::Principal {{ mode: "bearer", name: token }}; }}
+    fn refused() -> String {{ return "no such token"; }}
+}}
+locus Orders {{
+    fn get(a: Ask) -> Int {{ return a.id; }}
+    fn count(a: Ask) -> Int {{ return 1; }}
+}}
+main locus App {{
+    params {{
+        bearer: Tokens = Tokens {{ }};
+        orders: Orders = Orders {{ }};
+        web: api::Exposure = api::serve(Shop, http::Rpc {{ bind: std::env::var("BIND"), codec: json, principals: self.bearer }}, as: "web", receivers: {{ Orders: self.orders }}, bound: 8, on_full: refuse);
+    }}
+    run() {{
+        let trigger = std::env::var("TRIGGER");
+        while !self.draining && (std::io::fs::read_file(trigger) or "") == "" {{ std::time::sleep(10ms); }}
+        self.web.stop();
+    }}
+}}
+fn main() {{ App {{ }}; }}
+"#,
+            if extra { " rpc Orders::count;" } else { "" }
+        )
+    };
+    let (v1, v2) = (dir.join("v1.hl"), dir.join("v2.hl"));
+    std::fs::write(&v1, source(false)).unwrap();
+    std::fs::write(&v2, source(true)).unwrap();
+    let inventory = |file: &Path| {
+        let out = hale().args(["check", "--api"]).arg(file).output().expect("hale check");
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        let inv = json_of(&String::from_utf8_lossy(&out.stdout));
+        let s = inv["surfaces"][0].clone();
+        let get = s["members"].as_array().unwrap().iter().find(|m| m["name"] == "Orders::get").unwrap()["digest"].as_str().unwrap().to_string();
+        (s["digest"].as_str().unwrap().to_string(), get)
+    };
+    let (old_surface, old_get) = inventory(&v1);
+    let (new_surface, new_get) = inventory(&v2);
+    assert_ne!(old_surface, new_surface, "a member added moves the surface's digest");
+    assert_eq!(old_get, new_get, "and leaves the other member's");
+
+    // the old surface's client names its member's digest on the call
+    let client = hale().args(["api", "client", "--surface", "Shop", "--lang", "ts"]).arg(&v1).output().expect("hale api client");
+    assert!(client.status.success(), "{}", String::from_utf8_lossy(&client.stderr));
+    let ts = String::from_utf8_lossy(&client.stdout);
+    assert!(ts.contains(&format!("apiCall(opts, \"Orders::get\", \"{old_get}\"")), "{ts}");
+
+    let bin = dir.join("shop");
+    let out = hale().arg("build").arg(&v2).arg("-o").arg(&bin).output().expect("hale build");
+    assert!(out.status.success(), "build: {}", String::from_utf8_lossy(&out.stderr));
+    struct Running(Child);
+    impl Drop for Running {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+    let mut child = Running(
+        Command::new(&bin)
+            .env("BIND", format!("{BIND_HOST}:0"))
+            .env("TRIGGER", dir.join("stop"))
+            .stdout(Stdio::null())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .expect("run the program"),
+    );
+    let port = child::tcp_port_on(&mut child.0, BIND_HOST);
+    let endpoint = format!("http://{BIND_HOST}:{port}");
+    let call = |digest: &str| run(&["api", "call", &endpoint, "Orders::get", "--bearer", "x", "--json", "{\"id\":7}", "--digest", digest]);
+    let member = call(&old_get);
+    assert_eq!((member.code, member.stdout.trim()), (0, "7"), "the member's digest is admitted: {}", member.stderr);
+    let current = call(&new_surface);
+    assert_eq!(current.code, 0, "the surface's digest is admitted: {}", current.stderr);
+    let stale = call(&old_surface);
+    assert_eq!(stale.code, 2, "the old surface's digest is refused: {} {}", stale.stdout, stale.stderr);
+    assert!(stale.stderr.contains("digest_mismatch"), "{}", stale.stderr);
+    let served = run(&["api", "describe", &endpoint, "--json", "--bearer", "x"]);
+    let doc = json_of(&served.stdout);
+    let listed = doc["members"].as_array().unwrap().iter().find(|m| m["name"] == "Orders::get").unwrap()["digest"].clone();
+    assert_eq!(listed, serde_json::json!(old_get), "the served description lists the member's digest");
+
+    drop(child);
+    let _ = std::fs::remove_dir_all(&dir);
+}

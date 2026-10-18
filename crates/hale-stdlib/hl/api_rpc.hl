@@ -159,6 +159,9 @@ interface __StdApiSurface {
     fn member(name: String) -> Int;
     fn name_of(i: Int) -> String;
     fn requires(i: Int) -> String;
+    // the member's own digest (additive compatibility): a request naming it
+    // is admitted whatever else the surface has gained
+    fn member_digest(i: Int) -> String;
     fn receiver(i: Int) -> Int;
     fn check(i: Int, body: String) -> String;
     fn grants(role: String) -> String;
@@ -416,6 +419,7 @@ locus __StdApiNoSurface {
     fn member(name: String) -> Int { return -1; }
     fn name_of(i: Int) -> String { return ""; }
     fn requires(i: Int) -> String { return ""; }
+    fn member_digest(i: Int) -> String { return ""; }
     fn receiver(i: Int) -> Int { return 0; }
     fn check(i: Int, body: String) -> String { return ""; }
     fn grants(role: String) -> String { return role; }
@@ -666,10 +670,6 @@ locus __StdApiExposure {
             self.transport.reply(i.correlation, rid, who, __StdApiOutcome::Result(self.describe_full(who)));
             return;
         }
-        if len(r.digest) > 0 && r.digest != self.digest {
-            self.refuse(i.correlation, rid, who, "digest_mismatch", "the request was generated against " + r.digest, self.digest);
-            return;
-        }
         let mut m = self.rows.member(r.member);
         if self.via == "mcp" {
             // the transport frames the tool name it was called by; the
@@ -680,6 +680,13 @@ locus __StdApiExposure {
             // a gRPC method is the member written as an MCP tool is
             // (`Orders__place`, the rpc of the `.proto`)
             m = self.tool_row(r.member);
+        }
+        // the digest a request names is the surface's, or the member's own
+        // (additive compatibility: a client built against a member is
+        // admitted whatever else the surface has gained since)
+        if len(r.digest) > 0 && r.digest != self.digest && (m < 0 || r.digest != self.rows.member_digest(m)) {
+            self.refuse(i.correlation, rid, who, "digest_mismatch", "the request was generated against " + r.digest, self.digest);
+            return;
         }
         if m < 0 {
             self.refuse(i.correlation, rid, who, "malformed", "unknown_member: " + r.member, "");

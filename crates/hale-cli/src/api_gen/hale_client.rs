@@ -266,7 +266,7 @@ fn member_fn(m: &ClientMember) -> Result<String, String> {
         None => (String::new(), "\"{}\"".to_string()),
     };
     out.push_str(&format!("fn {fn_name}(endpoint: String, bearer: String{params}) -> {outcome} {{\n"));
-    out.push_str(&format!("    let raw = api_call(endpoint, bearer, {}, {payload});\n", hale_lit(&m.name)));
+    out.push_str(&format!("    let raw = api_call(endpoint, bearer, {}, {}, {payload});\n", hale_lit(&m.name), hale_lit(&m.digest)));
     // a reply the codec refuses is a lost answer, named
     let lost = |part: &str| {
         format!("return {outcome}::Lost(\"the {part} did not decode: \" + err.kind + \": \" + err.field);")

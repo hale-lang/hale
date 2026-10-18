@@ -478,6 +478,7 @@ fn member(row: &Row, book: &mut Book<'_, '_>, base: &str) -> J {
     let error = if h.server_error { s("ClosureViolation") } else { ty(h.error.as_ref()) };
     o(vec![
         ("name", s(&row.member)),
+        ("digest", s(&digest_text(row.member_digest()))),
         ("request", request),
         ("response", response),
         ("error", error),
@@ -1154,6 +1155,10 @@ pub enum ClientError {
 #[derive(Debug, Clone)]
 pub struct ClientMember {
     pub name: String,
+    /// The member's digest (`fnv1a64:…`), which a call names so that the
+    /// surface may gain members without refusing it; "" where no call is
+    /// made (a gRPC descriptor's model).
+    pub digest: String,
     pub request: Option<FieldSchema>,
     pub response: Option<FieldSchema>,
     pub error: ClientError,
@@ -1201,6 +1206,7 @@ pub fn client_model(rows: &SurfaceRows, schemas: &Schemas<'_>, surface: &str) ->
         };
         out.push(ClientMember {
             name: row.member.clone(),
+            digest: digest_text(row.member_digest()),
             request,
             response,
             error,

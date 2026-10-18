@@ -137,6 +137,33 @@ Orders::cancel→deb8489f34994e5a→e1506381a35c8ced→db0311924c0e7333→operat
 role: the same handler under another surface's `requires` is another
 contract.
 
+## A member's digest
+
+Each member has a digest of its own (additive compatibility, spec/api.md §
+The contract digest): the header line `hale-api-member 1`, then that
+member's line of the surface's input, as it is above. It reads the row
+alone, so a member added to the surface, or another one changed, leaves
+it where it is. A description lists it beside the member's name, and a
+generated client names it on each call; the exposure admits a request
+naming its member's digest as it admits one naming the surface's.
+`Public`'s `Orders::place`:
+
+```text
+hale-api-member 1
+Orders::place→cb5775974312c858→bb4f99639cf069af→36c7f0561125943e→-
+```
+
+<!-- input: member Public Orders::place -->
+```text
+68616c652d6170692d6d656d62657220310a4f72646572733a3a706c61636509
+6362353737353937343331326338353809626234663939363339636630363961
+660933366337663035363131323539343365092d0a
+```
+
+85 bytes, folding to `fnv1a64:03c08c25c690f01f`. `Orders::cancel` is
+`fnv1a64:1302f7fd82f17e98` in `Public` and `fnv1a64:7afdd54c76ae5a54` in
+`Admin`, its required role being part of its line.
+
 ## The hub `fills`: its stream digest
 
 The hub serves no surface, so its exposure is its stream rows alone:

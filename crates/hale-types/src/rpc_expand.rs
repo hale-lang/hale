@@ -204,6 +204,23 @@ pub fn selection(
     (rows.iter().map(|r| r.member.clone()).collect(), digest_of(&shapes, &rows))
 }
 
+/// Each row's member digest (spec/api.md § The contract digest), as
+/// `fnv1a64:…`: what a client built against that member alone names.
+fn member_digests(shapes: &Shapes<'_>, rows: &[Row]) -> Vec<String> {
+    let hash = |te: &TypeExpr| shape_hash(&shapes.shape(te, ShapeForm::Contract).unwrap_or_default());
+    rows.iter()
+        .map(|r| {
+            hale_model::surface::digest_text(hale_model::surface::member_digest(&hale_model::surface::DigestLine {
+                member: &r.member,
+                request: r.request.as_ref().map(hash),
+                response: r.response.as_ref().map(hash),
+                error: r.error.as_ref().map(hash),
+                requires: &r.requires,
+            }))
+        })
+        .collect()
+}
+
 fn digest_of(shapes: &Shapes<'_>, rows: &[Row]) -> u64 {
     let hash = |te: &TypeExpr| shape_hash(&shapes.shape(te, ShapeForm::Contract).unwrap_or_default());
     let reqs: Vec<&Vec<String>> = rows.iter().map(|r| &r.requires).collect();
@@ -501,6 +518,7 @@ fn grpc_files(rows: &[Row], schemas: &crate::surfaces::Schemas<'_>, surface: &st
         .iter()
         .map(|r| ClientMember {
             name: r.member.clone(),
+            digest: String::new(),
             request: r.request.as_ref().map(|te| schemas.type_ref(te, &mut types)),
             response: r.response.as_ref().map(|te| schemas.type_ref(te, &mut types)),
             error: match (&r.error, r.server_error) {
@@ -2085,6 +2103,12 @@ fn surface_src(
     for (i, r) in rows.iter().enumerate() {
         s.push_str(&format!("        if i == {i} {{ return {}; }}\n", q(&r.member)));
     }
+    // a member's digest, which admission accepts beside the surface's
+    let digests = member_digests(codec.shapes, rows);
+    s.push_str("        return \"\";\n    }\n    fn member_digest(i: Int) -> String {\n");
+    for (i, d) in digests.iter().enumerate() {
+        s.push_str(&format!("        if i == {i} {{ return {}; }}\n", q(d)));
+    }
     s.push_str("        return \"\";\n    }\n    fn requires(i: Int) -> String {\n");
     for (i, r) in rows.iter().enumerate() {
         if !r.requires.is_empty() {
@@ -2128,7 +2152,7 @@ fn surface_src(
         }
     }
     s.push_str("        return role;\n    }\n");
-    s.push_str(&description_src(rows, schemas));
+    s.push_str(&description_src(rows, schemas, &digests));
     s.push_str("}\n");
     s
 }
@@ -2222,11 +2246,11 @@ fn type_json(t: &crate::surfaces::TypeSchema) -> String {
 /// `refs`, `schema_*` and `roles`): each member as a JSON object, the
 /// schemas it reaches by name, the schemas of the surface in name order and
 /// the roles its rows require. The runtime filters these by caller.
-fn description_src(rows: &[Row], schemas: &crate::surfaces::Schemas<'_>) -> String {
+fn description_src(rows: &[Row], schemas: &crate::surfaces::Schemas<'_>, digests: &[String]) -> String {
     let mut all: BTreeMap<String, crate::surfaces::TypeSchema> = BTreeMap::new();
     let mut docs: Vec<String> = Vec::new();
     let mut refs: Vec<String> = Vec::new();
-    for r in rows {
+    for (r, digest) in rows.iter().zip(digests) {
         let mut mine: BTreeMap<String, crate::surfaces::TypeSchema> = BTreeMap::new();
         let mut ty = |t: &Option<TypeExpr>| match t {
             Some(te) => field_json(&schemas.type_ref(te, &mut mine)),
@@ -2237,8 +2261,9 @@ fn description_src(rows: &[Row], schemas: &crate::surfaces::Schemas<'_>) -> Stri
         let error = if r.server_error { jstr("ClosureViolation") } else { ty(&r.error) };
         let req: Vec<String> = r.requires.iter().map(|x| jstr(x)).collect();
         docs.push(format!(
-            "{{\"name\":{},\"request\":{request},\"response\":{response},\"error\":{error},\"requires\":[{}]}}",
+            "{{\"name\":{},\"digest\":{},\"request\":{request},\"response\":{response},\"error\":{error},\"requires\":[{}]}}",
             jstr(&r.member),
+            jstr(digest),
             req.join(",")
         ));
         refs.push(mine.keys().cloned().collect::<Vec<_>>().join(","));

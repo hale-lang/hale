@@ -2,8 +2,9 @@
 //
 // Depends on `fetch` and `WebSocket` and nothing else. An endpoint is
 // `http://host:port` for a member's call and `ws://host:port` (a hub) for a
-// stream; a socket is not spoken (`fetch` has none). A call sends the
-// surface's digest in `Hale-Surface-Digest` and answers one of four outcomes;
+// stream; a socket is not spoken (`fetch` has none). A call sends its
+// member's digest in `Hale-Surface-Digest` (which a surface that has since
+// gained members still admits) and answers one of four outcomes;
 // the fifth, a connection that never answered, is thrown as a TransportError,
 // because a request that may have been accepted is not a refusal.
 
@@ -75,13 +76,14 @@ function apiRefusal(body: unknown): Refusal {
 async function apiCall<T, E>(
   opts: ClientOptions,
   member: string,
+  digest: string,
   payload: string,
   decodeValue: (json: unknown) => T,
   decodeError: (json: unknown) => E,
 ): __Promise<Outcome<T, E>> {
   const headers: __Record<string, string> = {
     "Content-Type": "application/json",
-    "Hale-Surface-Digest": SURFACE_DIGEST,
+    "Hale-Surface-Digest": digest,
   };
   if (opts.bearer) headers["Authorization"] = "Bearer " + opts.bearer;
   let res: __Response;

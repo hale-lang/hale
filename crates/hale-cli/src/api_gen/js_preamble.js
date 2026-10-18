@@ -2,8 +2,9 @@
 //
 // Depends on `fetch` and `WebSocket` and nothing else. An endpoint is
 // `http://host:port` for a member's call and `ws://host:port` (a hub) for a
-// stream; a socket is not spoken (`fetch` has none). A call sends the
-// surface's digest in `Hale-Surface-Digest` and answers one of four outcomes;
+// stream; a socket is not spoken (`fetch` has none). A call sends its
+// member's digest in `Hale-Surface-Digest` (which a surface that has since
+// gained members still admits) and answers one of four outcomes;
 // the fifth, a connection that never answered, is thrown as a TransportError,
 // because a request that may have been accepted is not a refusal.
 //
@@ -69,16 +70,17 @@ function apiRefusal(body) {
  * @template T, E
  * @param {ClientOptions} opts
  * @param {string} member
+ * @param {string} digest the member's own digest, which the server admits beside the surface's
  * @param {string} payload
  * @param {(json: unknown) => T} decodeValue
  * @param {(json: unknown) => E} decodeError
  * @returns {globalThis.Promise<Outcome<T, E>>}
  */
-async function apiCall(opts, member, payload, decodeValue, decodeError) {
+async function apiCall(opts, member, digest, payload, decodeValue, decodeError) {
   /** @type {globalThis.Record<string, string>} */
   const headers = {
     "Content-Type": "application/json",
-    "Hale-Surface-Digest": SURFACE_DIGEST,
+    "Hale-Surface-Digest": digest,
   };
   if (opts.bearer) headers["Authorization"] = "Bearer " + opts.bearer;
   /** @type {globalThis.Response} */
