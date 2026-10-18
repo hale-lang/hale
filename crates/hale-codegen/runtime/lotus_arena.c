@@ -15142,6 +15142,12 @@ typedef struct lotus_bus_entry {
      * stored uniformly as two u64 halves; narrower scalar types
      * zero-extend at register time. */
     uint8_t               key_filter_kind;
+    uint32_t              version;     /* the reuse's sequence lock, below */
+    /* `self_ptr` when a same-thread direct call may take this entry (no
+     * key filter, no mailbox, no pool, not a reservation's placeholder),
+     * else NULL: fixed at registration, so the baked publish path reads
+     * one field beside `subject` instead of five. */
+    void                 *direct_self;
     uint64_t              key_lo;
     uint64_t              key_hi;
     /* Gap B (2026-07-17): String routing keys. NULL for scalar-keyed
@@ -15182,6 +15188,19 @@ typedef struct lotus_bus_entry {
     /* GH #703: the subscriber incarnation this registration belongs to
      * (`bus_incarnation_register`); every cell built for it carries it. */
     uint64_t              gen;
+    /* A dissolved subscriber's entry is reused by a later registration
+     * into the same bucket (`lotus_bus_take_free_locked`), so a server
+     * whose connections each subscribe keeps a bounded table. A reuse
+     * rewrites the entry under a sequence lock: `version` is odd while
+     * it does, and every walk reads an entry through
+     * `lotus_bus_entry_read`, which skips one that is odd or changed
+     * while it was read. A cell built from the old registration is
+     * dropped at materialization by its incarnation (`gen`). `version`
+     * sits beside `key_filter_kind`, in the line a walk reads anyway. */
+    uint32_t              static_id;   /* its bucket; UINT32_MAX for none */
+    uint8_t               no_reuse;    /* a reservation's placeholder or claimant */
+    uint8_t               in_free;     /* on the free list */
+    struct lotus_bus_entry *next_free;
 } lotus_bus_entry_t;
 
 /* ---- The registration table (F.40 phase 3, L5 4 of 4; inventory R50)
@@ -15308,6 +15327,150 @@ static inline lotus_bus_view_t lotus_bus_view(void) {
     return v;
 }
 
+/* One registration as a walk reads it: the fields a walk reads, copied
+ * between two reads of its version into `snap`. NULL when a reuse was
+ * rewriting it meanwhile (an odd or a changed version): the walk skips
+ * it, as it would an entry appended after its view was taken. The
+ * registry's own bookkeeping (`stopped_subject`, `ctr_dropped_full`,
+ * the free list's fields, `direct_self`) is not copied: a snapshot is
+ * read, never written or freed; those are the entry's own. */
+static inline lotus_bus_entry_t *lotus_bus_entry_read(lotus_bus_entry_t *src,
+                                                      lotus_bus_entry_t *snap) {
+    uint32_t v = __atomic_load_n(&src->version, __ATOMIC_ACQUIRE);
+    if (v & 1u) return NULL;
+#define LOTUS_BUS_LD(f) snap->f = __atomic_load_n(&src->f, __ATOMIC_RELAXED)
+    LOTUS_BUS_LD(subject);
+    LOTUS_BUS_LD(self_ptr);
+    LOTUS_BUS_LD(handler);
+    LOTUS_BUS_LD(mailbox);
+    LOTUS_BUS_LD(deserialize);
+    LOTUS_BUS_LD(coop_pool);
+    LOTUS_BUS_LD(key_filter_kind);
+    LOTUS_BUS_LD(key_lo);
+    LOTUS_BUS_LD(key_hi);
+    LOTUS_BUS_LD(key_str);
+    LOTUS_BUS_LD(shed_bound);
+    LOTUS_BUS_LD(shed_policy);
+    LOTUS_BUS_LD(refuse_bound);
+    LOTUS_BUS_LD(in_flight);
+    LOTUS_BUS_LD(gen);
+#undef LOTUS_BUS_LD
+    snap->version = v;
+    __atomic_thread_fence(__ATOMIC_ACQUIRE);
+    if (__atomic_load_n(&src->version, __ATOMIC_RELAXED) != v) return NULL;
+    return snap;
+}
+
+/* What a bucket walk's fast branches read of a registration (a direct
+ * call, or a cell on the publisher's own queue), between the same two
+ * version reads: these walks are the publish hot path, and copying the
+ * whole entry there cost a publish about a nanosecond. `with_gen` also
+ * reads the incarnation and the decoder. 0 when a reuse was rewriting
+ * it meanwhile. It is also what a post reads (`lotus_bus_post_target`),
+ * so a walk's slow branch posts from it too. */
+typedef struct {
+    const char        *subject;
+    void              *self_ptr;
+    void              *handler;
+    lotus_mailbox_t   *mailbox;
+    lotus_coop_pool_t *coop_pool;
+    lotus_deserialize_fn deserialize;
+    uint64_t           gen;
+    uint64_t           key_lo;
+    uint64_t           key_hi;
+    const char        *key_str;
+    uint32_t           version;
+    uint8_t            key_filter_kind;
+} lotus_bus_target_t;
+
+#define LOTUS_BUS_WANT_GEN  1   /* the incarnation and the decoder */
+#define LOTUS_BUS_WANT_KEYS 2   /* the key filter's key */
+static inline int lotus_bus_entry_read_direct(lotus_bus_entry_t *src,
+                                              lotus_bus_target_t *d,
+                                              int want) {
+    uint32_t v = __atomic_load_n(&src->version, __ATOMIC_ACQUIRE);
+    if (v & 1u) return 0;
+    d->subject = __atomic_load_n(&src->subject, __ATOMIC_RELAXED);
+    d->key_filter_kind = __atomic_load_n(&src->key_filter_kind, __ATOMIC_RELAXED);
+    d->self_ptr = __atomic_load_n(&src->self_ptr, __ATOMIC_RELAXED);
+    d->handler = __atomic_load_n(&src->handler, __ATOMIC_RELAXED);
+    d->mailbox = __atomic_load_n(&src->mailbox, __ATOMIC_RELAXED);
+    d->coop_pool = __atomic_load_n(&src->coop_pool, __ATOMIC_RELAXED);
+    d->gen = (want & LOTUS_BUS_WANT_GEN) ? __atomic_load_n(&src->gen, __ATOMIC_RELAXED) : 0;
+    d->deserialize = (want & LOTUS_BUS_WANT_GEN)
+        ? __atomic_load_n(&src->deserialize, __ATOMIC_RELAXED) : NULL;
+    if (want & LOTUS_BUS_WANT_KEYS) {   /* else left unread: no reader */
+        d->key_lo = __atomic_load_n(&src->key_lo, __ATOMIC_RELAXED);
+        d->key_hi = __atomic_load_n(&src->key_hi, __ATOMIC_RELAXED);
+        d->key_str = __atomic_load_n(&src->key_str, __ATOMIC_RELAXED);
+    }
+    d->version = v;
+    __atomic_thread_fence(__ATOMIC_ACQUIRE);
+    return __atomic_load_n(&src->version, __ATOMIC_RELAXED) == v;
+}
+
+/* A keyed walk's first look at `src`: 1 when it holds a specific key
+ * other than `key_lo` (scalar keys and a String key's hash both compare
+ * there), so the walk passes it without reading it whole. 0 for any
+ * other entry, or one a reuse is rewriting (the read that follows skips
+ * that one). */
+static inline int lotus_bus_entry_other_key(lotus_bus_entry_t *src, uint64_t key_lo) {
+    uint32_t v = __atomic_load_n(&src->version, __ATOMIC_ACQUIRE);
+    if (v & 1u) return 0;
+    return __atomic_load_n(&src->key_filter_kind, __ATOMIC_RELAXED) == 1
+        && __atomic_load_n(&src->key_lo, __ATOMIC_RELAXED) != key_lo;
+}
+
+/* The unmatched log's count of a specific-key entry the walk passed. */
+static inline size_t lotus_bus_counts_for(lotus_bus_entry_t *src, const char *subject) {
+    const char *s = __atomic_load_n(&src->subject, __ATOMIC_ACQUIRE);
+    return s && lotus_subject_match(s, subject) ? 1 : 0;
+}
+
+/* A table walk for `subject`: the entry's subject read first, so the walk
+ * copies only an entry it may deliver to; NULL to skip it. */
+static inline const lotus_bus_target_t *lotus_bus_entry_read_for(lotus_bus_entry_t *src,
+                                                                 const char *subject,
+                                                                 lotus_bus_target_t *d) {
+    const char *s = __atomic_load_n(&src->subject, __ATOMIC_ACQUIRE);
+    if (!s || !lotus_subject_match(s, subject)) return NULL;
+    return lotus_bus_entry_read_direct(src, d, LOTUS_BUS_WANT_GEN | LOTUS_BUS_WANT_KEYS)
+        ? d : NULL;
+}
+
+/* The entries dissolved subscribers left, each reusable by a later
+ * registration into the same bucket. Under g_bus_reg_lock. */
+static lotus_bus_entry_t *g_bus_free = NULL;
+/* Open reservations (#1534): while one is, a registration appends, so
+ * the table index a claim compares to a publish's view stays a
+ * registration order. */
+static int64_t g_bus_resv_open = 0;
+
+/* Under g_bus_reg_lock: a free entry of the bucket `static_id`, or NULL. */
+static lotus_bus_entry_t *lotus_bus_take_free_locked(uint32_t static_id) {
+    if (__atomic_load_n(&g_bus_resv_open, __ATOMIC_ACQUIRE) > 0) return NULL;
+    lotus_bus_entry_t **pp = &g_bus_free;
+    for (int scanned = 0; *pp && scanned < 64; scanned++, pp = &(*pp)->next_free) {
+        if ((*pp)->static_id == static_id) {
+            lotus_bus_entry_t *e = *pp;
+            *pp = e->next_free;
+            e->next_free = NULL;
+            e->in_free = 0;
+            return e;
+        }
+    }
+    return NULL;
+}
+
+/* Under g_bus_reg_lock: `e`'s registration is over for good (a
+ * quarantine, a reclaim, a retired route); its entry is free. */
+static void lotus_bus_free_entry_locked(lotus_bus_entry_t *e) {
+    if (e->no_reuse || e->in_free) return;
+    e->in_free = 1;
+    e->next_free = g_bus_free;
+    g_bus_free = e;
+}
+
 /* GH #255 phase 2: find the registration a queued cell belongs
  * to. Linear scan — dispatch already walks this array, and the
  * scan only runs for programs that declared bounds (guarded by
@@ -15319,10 +15482,14 @@ static lotus_bus_entry_t *lotus_bus_bound_entry_for(void *handler,
     if (!g_bus_any_bounds) return NULL;
     lotus_bus_view_t bv = lotus_bus_view();
     for (size_t i = 0; i < bv.n; i++) {
-        lotus_bus_entry_t *e = bv.at[i];
+        /* read whole only an entry that may be the one */
+        if (__atomic_load_n(&bv.at[i]->self_ptr, __ATOMIC_RELAXED) != self_ptr) continue;
+        lotus_bus_entry_t e_snap_;
+        lotus_bus_entry_t *e = lotus_bus_entry_read(bv.at[i], &e_snap_);
+        if (!e) continue;
         if (e->handler == handler && e->self_ptr == self_ptr &&
             (e->shed_bound > 0 || e->refuse_bound > 0)) {
-            return e;
+            return bv.at[i];
         }
     }
     return NULL;
@@ -15395,12 +15562,16 @@ void lotus_bus_set_sub_bound(const char *subject,
                              int64_t refuse_bound) {
     lotus_bus_view_t bv = lotus_bus_view();
     for (size_t i = 0; i < bv.n; i++) {
-        lotus_bus_entry_t *e = bv.at[i];
+        if (__atomic_load_n(&bv.at[i]->self_ptr, __ATOMIC_RELAXED) != self_ptr) continue;
+        lotus_bus_entry_t e_snap_;
+        lotus_bus_entry_t *e = lotus_bus_entry_read(bv.at[i], &e_snap_);
+        if (!e) continue;
         if (!e->subject || e->self_ptr != self_ptr) continue;
         if (strcmp(e->subject, subject) != 0) continue;
-        e->shed_bound   = shed_bound;
-        e->shed_policy  = (uint8_t)shed_policy;
-        e->refuse_bound = refuse_bound;
+        /* its own subscriber's, alive, so no reuse rewrites it meanwhile */
+        __atomic_store_n(&bv.at[i]->shed_bound, shed_bound, __ATOMIC_RELAXED);
+        __atomic_store_n(&bv.at[i]->shed_policy, (uint8_t)shed_policy, __ATOMIC_RELAXED);
+        __atomic_store_n(&bv.at[i]->refuse_bound, refuse_bound, __ATOMIC_RELAXED);
         g_bus_any_bounds = 1;
     }
 }
@@ -15423,7 +15594,10 @@ int64_t lotus_bus_subject_would_refuse(const char *subject) {
     if (!g_bus_any_bounds || !subject) return 0;
     lotus_bus_view_t bv = lotus_bus_view();
     for (size_t i = 0; i < bv.n; i++) {
-        lotus_bus_entry_t *e = bv.at[i];
+        if (__atomic_load_n(&bv.at[i]->refuse_bound, __ATOMIC_RELAXED) <= 0) continue;
+        lotus_bus_entry_t e_snap_;
+        lotus_bus_entry_t *e = lotus_bus_entry_read(bv.at[i], &e_snap_);
+        if (!e) continue;
         if (!e->subject || e->refuse_bound <= 0) continue;
         if (!lotus_subject_match(e->subject, subject)) continue;
         if (__atomic_load_n(&e->in_flight, __ATOMIC_RELAXED) >=
@@ -15653,6 +15827,18 @@ static int lotus_bus_register_entry(const char *subject, void *self_ptr,
                                         key_str, static_id, gen) != NULL;
 }
 
+static void lotus_bus_resv_stub(void *self, void *payload);
+
+/* An entry's `direct_self`: who a same-thread direct call reaches. */
+static inline void *lotus_bus_direct_self(void *self_ptr, void *handler,
+                                          lotus_mailbox_t *mailbox,
+                                          lotus_coop_pool_t *coop_pool,
+                                          uint8_t key_filter_kind) {
+    if (key_filter_kind != 0 || mailbox || coop_pool) return NULL;
+    if (handler == (void *)lotus_bus_resv_stub) return NULL;
+    return self_ptr;
+}
+
 /* The registration proper, with its incarnation given: the entry it
  * published, or NULL on OOM. A reservation's placeholder (#1534) is
  * no subscriber's incarnation and passes 0. */
@@ -15662,11 +15848,50 @@ static lotus_bus_entry_t *lotus_bus_register_entry_gen(
     lotus_coop_pool_t *coop_pool, uint8_t key_filter_kind, uint64_t key_lo,
     uint64_t key_hi, const char *key_str, uint32_t static_id, uint64_t gen) {
     pthread_mutex_lock(&g_bus_reg_lock);
+    int placeholder = handler == (void *)lotus_bus_resv_stub;
+    lotus_bus_entry_t *r = placeholder ? NULL : lotus_bus_take_free_locked(static_id);
+    if (r) {
+        /* A dissolved subscriber's entry, rewritten under its sequence
+         * lock: it is in the table, and in this bucket, already. The
+         * old String key may still be read by a walk, so it is kept to
+         * teardown rather than freed. */
+        uint32_t v = r->version;
+        __atomic_store_n(&r->version, v + 1u, __ATOMIC_RELAXED);
+        __atomic_thread_fence(__ATOMIC_RELEASE);
+        if (r->key_str) (void)lotus_bus_keep_locked(&g_bus_retired, (void *)r->key_str);
+        __atomic_store_n(&r->self_ptr, self_ptr, __ATOMIC_RELAXED);
+        __atomic_store_n(&r->handler, handler, __ATOMIC_RELAXED);
+        __atomic_store_n(&r->mailbox, mailbox, __ATOMIC_RELAXED);
+        __atomic_store_n(&r->deserialize, deserialize, __ATOMIC_RELAXED);
+        __atomic_store_n(&r->coop_pool, coop_pool, __ATOMIC_RELAXED);
+        __atomic_store_n(&r->key_filter_kind, key_filter_kind, __ATOMIC_RELAXED);
+        __atomic_store_n(&r->direct_self,
+                         lotus_bus_direct_self(self_ptr, handler, mailbox, coop_pool,
+                                               key_filter_kind),
+                         __ATOMIC_RELAXED);
+        __atomic_store_n(&r->key_lo, key_lo, __ATOMIC_RELAXED);
+        __atomic_store_n(&r->key_hi, key_hi, __ATOMIC_RELAXED);
+        __atomic_store_n(&r->key_str, key_str, __ATOMIC_RELAXED);
+        __atomic_store_n(&r->stopped_subject, (const char *)NULL, __ATOMIC_RELAXED);
+        __atomic_store_n(&r->shed_bound, (int64_t)0, __ATOMIC_RELAXED);
+        __atomic_store_n(&r->shed_policy, (uint8_t)0, __ATOMIC_RELAXED);
+        __atomic_store_n(&r->refuse_bound, (int64_t)0, __ATOMIC_RELAXED);
+        __atomic_store_n(&r->in_flight, (int64_t)0, __ATOMIC_RELAXED);
+        __atomic_store_n(&r->ctr_dropped_full, (uint64_t)0, __ATOMIC_RELAXED);
+        __atomic_store_n(&r->gen, gen, __ATOMIC_RELAXED);
+        __atomic_store_n(&r->subject, subject, __ATOMIC_RELAXED);
+        __atomic_store_n(&r->version, v + 2u, __ATOMIC_RELEASE);
+        pthread_mutex_unlock(&g_bus_reg_lock);
+        lotus_bus_early_flush_for_subject(subject);
+        return r;
+    }
     lotus_bus_entry_t *e = lotus_bus_entry_new_locked();
     if (!e) {
         pthread_mutex_unlock(&g_bus_reg_lock);
         return NULL;
     }
+    e->static_id   = static_id;
+    e->no_reuse    = (uint8_t)placeholder;
     e->subject     = subject;
     e->self_ptr    = self_ptr;
     e->handler     = handler;
@@ -15674,6 +15899,8 @@ static lotus_bus_entry_t *lotus_bus_register_entry_gen(
     e->deserialize = deserialize;
     e->coop_pool   = coop_pool;
     e->key_filter_kind = key_filter_kind;
+    e->direct_self = lotus_bus_direct_self(self_ptr, handler, mailbox, coop_pool,
+                                           key_filter_kind);
     e->key_lo      = key_lo;
     e->key_hi      = key_hi;
     e->key_str     = key_str;
@@ -15944,7 +16171,7 @@ void lotus_bus_register_keyed_str(const char *subject,
  * full strcmp against the publish-side pointer carried in key_hi.
  * Typecheck fixes ONE key type per topic, so entries and publishes
  * on a subject never mix scalar and String key encodings. */
-static int lotus_bus_key_matches(const lotus_bus_entry_t *e,
+static int lotus_bus_key_matches(const lotus_bus_target_t *e,
                                  uint64_t key_lo, uint64_t key_hi) {
     if (e->key_str) {
         if (e->key_lo != key_lo) return 0;
@@ -15993,7 +16220,7 @@ static int lotus_bus_log_drop_enabled(void);
  * and its checks. `lotus_bus_hold_delivery` opens the window, before
  * the first registration.
  *
- * The gate sits where a cell is posted (`lotus_bus_post_entry`, the
+ * The gate sits where a cell is posted (`lotus_bus_post_target`, the
  * no-pinned `_st` sites, the direct flavor), not where it is drained:
  * every cell for a held subscriber is parked, so the ones posted at
  * ready go out in the order they were published, ahead of any
@@ -16629,6 +16856,7 @@ static void lotus_bus_resv_close_locked(lotus_bus_resv_t *r,
                                         lotus_bus_parked_t **freeme) {
     if (!r->open) return;
     r->open = 0;
+    __atomic_fetch_sub(&g_bus_resv_open, 1, __ATOMIC_RELEASE);
     if (lotus_bus_log_reserve_enabled()) {
         fprintf(stderr,
                 "[bus] reservation `%s` closed: parked %llu copied %llu "
@@ -16639,7 +16867,7 @@ static void lotus_bus_resv_close_locked(lotus_bus_resv_t *r,
                 (unsigned long long)r->dropped, r->nclaim,
                 (long long)r->remaining, r->nkeys);
     }
-    if (r->entry) r->entry->subject = NULL;
+    if (r->entry) __atomic_store_n(&r->entry->subject, (const char *)NULL, __ATOMIC_RELEASE);
     *freeme = r->head;
     r->head = r->tail = NULL;
     r->nretained = 0;
@@ -16911,6 +17139,7 @@ void lotus_bus_reserve(void *scope_v, const char *subject, int64_t count,
     r->note = (uint8_t)note;
     r->key_is_str = key_is_str != 0;
     r->open = 1;
+    __atomic_fetch_add(&g_bus_resv_open, 1, __ATOMIC_RELEASE);
     r->ctor = pthread_self();
     /* Open before the placeholder is visible: a baked direct publish
      * that sees no window open walks no reservation. */
@@ -16963,7 +17192,11 @@ void lotus_bus_reserve_claim(void *scope_v, const char *subject,
     lotus_bus_entry_t *e = NULL;
     size_t ti = 0;
     for (size_t i = bv.n; i-- > 0;) {
-        lotus_bus_entry_t *x = bv.at[i];
+        if (__atomic_load_n(&bv.at[i]->self_ptr, __ATOMIC_RELAXED) != self_ptr) continue;
+        lotus_bus_entry_t x_snap_;
+        lotus_bus_entry_t *x = lotus_bus_entry_read(bv.at[i], &x_snap_);
+        if (!x) continue;
+        x = x->self_ptr == self_ptr ? bv.at[i] : x;
         if (x->self_ptr != self_ptr || !x->subject
             || x->handler == (void *)lotus_bus_resv_stub) continue;
         if (x->subject != subject && strcmp(x->subject, subject) != 0) continue;
@@ -16971,6 +17204,8 @@ void lotus_bus_reserve_claim(void *scope_v, const char *subject,
         for (size_t k = 0; k < r->nclaim; k++)
             if (r->claimants[k].e == x) { claimed = 1; break; }
         if (claimed) continue;
+        /* a claimant's entry is named by its claim: never reused */
+        __atomic_store_n(&x->no_reuse, (uint8_t)1, __ATOMIC_RELAXED);
         e = x;
         ti = i;
         break;
@@ -17121,7 +17356,7 @@ static void lotus_bus_resv_destroy_all(void) {
  * a drop worth logging). The static-devirt _st enqueue variant
  * (build #3 no-pinned fast path) is the one deliberate exception —
  * it stays open-coded at its single site with a pointer here. */
-static inline int lotus_bus_post_entry_gen(lotus_bus_entry_t *e,
+static inline __attribute__((always_inline)) int lotus_bus_post_target_gen(const lotus_bus_target_t *e,
                                            lotus_bus_queue_t *queue,
                                            const void *payload,
                                            size_t size,
@@ -17162,15 +17397,15 @@ static inline int lotus_bus_post_entry_gen(lotus_bus_entry_t *e,
 /* GH #703: every cell the post builds, or parks, carries the entry's
  * incarnation (`g_bus_pending_gen`), restored after: a post can drain
  * inline, and a handler then publish. */
-static inline int lotus_bus_post_entry(lotus_bus_entry_t *e,
-                                       lotus_bus_queue_t *queue,
-                                       const void *payload,
-                                       size_t size,
-                                       uint64_t rec_pub, uint64_t seen,
-                                       const lotus_bus_pubkey_t *key) {
+static inline __attribute__((always_inline)) int lotus_bus_post_target(const lotus_bus_target_t *e,
+                                        lotus_bus_queue_t *queue,
+                                        const void *payload,
+                                        size_t size,
+                                        uint64_t rec_pub, uint64_t seen,
+                                        const lotus_bus_pubkey_t *key) {
     uint64_t prev_gen = g_bus_pending_gen;
     g_bus_pending_gen = e->gen;
-    int posted = lotus_bus_post_entry_gen(e, queue, payload, size, rec_pub, seen, key);
+    int posted = lotus_bus_post_target_gen(e, queue, payload, size, rec_pub, seen, key);
     g_bus_pending_gen = prev_gen;
     return posted;
 }
@@ -17199,8 +17434,9 @@ void lotus_bus_local_dispatch(lotus_bus_queue_t *queue,
     lotus_bus_view_t bv = lotus_bus_view();
     const uint64_t seen = LOTUS_BUS_SEEN_TABLE(bv.n);
     for (size_t i = 0; i < bv.n; i++) {
-        lotus_bus_entry_t *e = bv.at[i];
-        if (!e->subject) continue;          /* deregistered */
+        lotus_bus_target_t e_snap_;
+        const lotus_bus_target_t *e = lotus_bus_entry_read_for(bv.at[i], subject, &e_snap_);
+        if (!e) continue;          /* deregistered, another subject, or being reused */
         /* m94: pattern-match in case the subscriber registered a
          * wildcard subject (e.g. "log.**"). The fast path —
          * pattern with no '**' — costs one strcmp. */
@@ -17212,7 +17448,7 @@ void lotus_bus_local_dispatch(lotus_bus_queue_t *queue,
          * would deliver to filtered subscribers regardless of the
          * filter — bypassing the routing-key contract. */
         if (e->key_filter_kind != 0) continue;
-        delivered += (size_t)lotus_bus_post_entry(
+        delivered += (size_t)lotus_bus_post_target(
             e, queue, payload, payload_size, rec_pub, seen, NULL);
         if (lotus_obs_bus_deliver && lotus_obs_live && e->handler != (void *)lotus_bus_resv_stub) {
             lotus_obs_bus_deliver(subject, e->self_ptr,
@@ -17328,10 +17564,16 @@ void lotus_bus_local_dispatch_keyed(lotus_bus_queue_t *queue,
     lotus_bus_view_t bv = lotus_bus_view();
     const uint64_t seen = LOTUS_BUS_SEEN_TABLE(bv.n);
     const lotus_bus_pubkey_t pkey = { key_lo, key_hi };
+    const int count_unmatched = lotus_bus_log_unmatched_enabled();
     for (size_t i = 0; i < bv.n; i++) {
-        lotus_bus_entry_t *e = bv.at[i];
-        if (!e->subject) continue;
-        if (!lotus_subject_match(e->subject, subject)) continue;
+        if (lotus_bus_entry_other_key(bv.at[i], key_lo)) {
+            if (count_unmatched)
+                specific_subs_on_subject += lotus_bus_counts_for(bv.at[i], subject);
+            continue;
+        }
+        lotus_bus_target_t e_snap_;
+        const lotus_bus_target_t *e = lotus_bus_entry_read_for(bv.at[i], subject, &e_snap_);
+        if (!e) continue;
         if (e->key_filter_kind == 1) {
             specific_subs_on_subject++;
             if (!lotus_bus_key_matches(e, key_lo, key_hi)) continue;
@@ -17346,7 +17588,7 @@ void lotus_bus_local_dispatch_keyed(lotus_bus_queue_t *queue,
              * pass; the fallback pass below would dispatch it. */
             continue;
         }
-        (void)lotus_bus_post_entry(e, queue,
+        (void)lotus_bus_post_target(e, queue,
             payload, payload_size, rec_pub, seen, &pkey);
         /* iris handoff-4 P15: BUS_DELIVER per matched keyed target
          * (sibling of the non-keyed local_dispatch probe — the keyed
@@ -17363,11 +17605,11 @@ void lotus_bus_local_dispatch_keyed(lotus_bus_queue_t *queue,
      * dispatch shape is here for the v0.2 wiring. */
     if (!matched_specific) {
         for (size_t i = 0; i < bv.n; i++) {
-            lotus_bus_entry_t *e = bv.at[i];
-            if (!e->subject) continue;
-            if (!lotus_subject_match(e->subject, subject)) continue;
+            lotus_bus_target_t e_snap_;
+            const lotus_bus_target_t *e = lotus_bus_entry_read_for(bv.at[i], subject, &e_snap_);
+            if (!e) continue;
             if (e->key_filter_kind != 2) continue;
-            (void)lotus_bus_post_entry(e, queue, payload, payload_size,
+            (void)lotus_bus_post_target(e, queue, payload, payload_size,
                                        rec_pub, seen, &pkey);
             if (lotus_obs_bus_deliver && lotus_obs_live && e->handler != (void *)lotus_bus_resv_stub) {
                 lotus_obs_bus_deliver(subject, e->self_ptr,
@@ -17759,17 +18001,17 @@ static int lotus_bus_cell_materialize(lotus_bus_cell_t *c) {
  * a payload with owned fields stayed in the subscriber's arena for
  * good (a served exposure's ingress grew it ~240 B a call). Every
  * wire delivery takes this path now, on any thread. The cell carries
- * the entry's incarnation like any post (lotus_bus_post_entry sets
+ * the entry's incarnation like any post (lotus_bus_post_target sets
  * `g_bus_pending_gen`), so a wire cell for an incarnation that ended
  * or was replaced is dropped at materialization before anything is
  * deserialized. */
-static inline int lotus_bus_post_wire(lotus_bus_entry_t *e,
-                                      lotus_bus_queue_t *q,
-                                      const void *wire, size_t wire_size,
-                                      uint64_t rec_pub, uint64_t seen,
-                                      const lotus_bus_pubkey_t *key) {
+static inline __attribute__((always_inline)) int lotus_bus_post_wire_target(const lotus_bus_target_t *e,
+                                             lotus_bus_queue_t *q,
+                                             const void *wire, size_t wire_size,
+                                             uint64_t rec_pub, uint64_t seen,
+                                             const lotus_bus_pubkey_t *key) {
     g_bus_pending_wire_deser = (void *)e->deserialize;
-    int posted = lotus_bus_post_entry(e, q, wire, wire_size, rec_pub, seen, key);
+    int posted = lotus_bus_post_target(e, q, wire, wire_size, rec_pub, seen, key);
     g_bus_pending_wire_deser = NULL;
     return posted;
 }
@@ -17853,9 +18095,10 @@ int lotus_bus_dispatch_keyed_fallible(lotus_bus_queue_t *queue,
     int matched = 0;
     lotus_bus_view_t bv = lotus_bus_view();
     for (size_t i = 0; i < bv.n; i++) {
-        lotus_bus_entry_t *e = bv.at[i];
-        if (!e->subject) continue;
-        if (!lotus_subject_match(e->subject, subject)) continue;
+        if (lotus_bus_entry_other_key(bv.at[i], key_lo)) continue;
+        lotus_bus_target_t e_snap_;
+        const lotus_bus_target_t *e = lotus_bus_entry_read_for(bv.at[i], subject, &e_snap_);
+        if (!e) continue;
         if (e->key_filter_kind == 1
             && e->key_lo == key_lo
             && e->key_hi == key_hi) {
@@ -18029,9 +18272,10 @@ int lotus_bus_dispatch_keyed_fallible_flat(lotus_bus_queue_t *queue,
     int matched = 0;
     lotus_bus_view_t bv = lotus_bus_view();
     for (size_t i = 0; i < bv.n; i++) {
-        lotus_bus_entry_t *e = bv.at[i];
-        if (!e->subject) continue;
-        if (!lotus_subject_match(e->subject, subject)) continue;
+        if (lotus_bus_entry_other_key(bv.at[i], key_lo)) continue;
+        lotus_bus_target_t e_snap_;
+        const lotus_bus_target_t *e = lotus_bus_entry_read_for(bv.at[i], subject, &e_snap_);
+        if (!e) continue;
         if (e->key_filter_kind == 1
             && e->key_lo == key_lo
             && e->key_hi == key_hi) {
@@ -18150,12 +18394,15 @@ void lotus_bus_dispatch_fused(lotus_bus_queue_t *queue,
     lotus_bus_view_t bv = lotus_bus_view();
     const uint64_t seen = LOTUS_BUS_SEEN_TABLE(bv.n);
     for (size_t i = 0; i < bv.n; i++) {
-        lotus_bus_entry_t *e = bv.at[i];
+        if (__atomic_load_n(&bv.at[i]->self_ptr, __ATOMIC_RELAXED) != receiver) continue;
+        lotus_bus_target_t e_snap_;
+        const lotus_bus_target_t *e = &e_snap_;
+        if (!lotus_bus_entry_read_direct(bv.at[i], &e_snap_, LOTUS_BUS_WANT_GEN)) continue;
         if (e->self_ptr != receiver || !e->subject || e->key_filter_kind != 0
             || !lotus_subject_match(e->subject, subject)) continue;
         if (!flat && !e->deserialize) continue;
         g_bus_pending_wire_deser = flat ? NULL : (void *)e->deserialize;
-        int posted = lotus_bus_post_entry(e, queue, payload, (size_t)size, rec_pub, seen, NULL);
+        int posted = lotus_bus_post_target(e, queue, payload, (size_t)size, rec_pub, seen, NULL);
         g_bus_pending_wire_deser = NULL;
         if (posted && lotus_obs_bus_deliver && lotus_obs_live)
             lotus_obs_bus_deliver(subject, e->self_ptr, size, obs_tok);
@@ -18218,16 +18465,23 @@ void lotus_bus_dispatch_flat(lotus_bus_queue_t *queue,
  * reclaim). */
 static void lotus_bus_retire_self(void *self_ptr, int keep) {
     int subscribed = 0;
+    /* Under the registration lock: a reuse rewrites a free entry under
+     * it, so the self an entry names is the one it names here. A final
+     * retire frees the entry for a later registration. */
+    pthread_mutex_lock(&g_bus_reg_lock);
     lotus_bus_view_t bv = lotus_bus_view();
     for (size_t i = 0; i < bv.n; i++) {
         lotus_bus_entry_t *e = bv.at[i];
+        if (e->in_free) continue;
         if (e->self_ptr == self_ptr) {
-            if (keep && e->subject) e->stopped_subject = e->subject;
-            if (!keep) e->stopped_subject = NULL;
-            e->subject = NULL;
+            if (keep && e->subject) __atomic_store_n(&e->stopped_subject, e->subject, __ATOMIC_RELAXED);
+            if (!keep) __atomic_store_n(&e->stopped_subject, (const char *)NULL, __ATOMIC_RELAXED);
+            __atomic_store_n(&e->subject, (const char *)NULL, __ATOMIC_RELEASE);
+            if (!keep) lotus_bus_free_entry_locked(e);
             subscribed = 1;
         }
     }
+    pthread_mutex_unlock(&g_bus_reg_lock);
     /* GH #703: cells already queued for this self are dropped at
      * materialization, on their consumer's thread — see
      * `bus_cell_stale`. Only a self that ever subscribed can have one. */
@@ -18264,22 +18518,27 @@ void lotus_bus_stop_failed_self(void *self_ptr) {
  * child, as it would have been had the stop not come between. */
 void lotus_bus_restart_self(void *self_ptr) {
     int stopped = 0;
+    pthread_mutex_lock(&g_bus_reg_lock);
     lotus_bus_view_t bv = lotus_bus_view();
     for (size_t i = 0; i < bv.n; i++) {
-        if (bv.at[i]->self_ptr == self_ptr && bv.at[i]->stopped_subject) {
+        if (!bv.at[i]->in_free && bv.at[i]->self_ptr == self_ptr && bv.at[i]->stopped_subject) {
             stopped = 1;
             break;
         }
     }
+    pthread_mutex_unlock(&g_bus_reg_lock);
     if (!stopped) return;
     bus_incarnation_revive(self_ptr);
+    pthread_mutex_lock(&g_bus_reg_lock);
+    bv = lotus_bus_view();
     for (size_t i = 0; i < bv.n; i++) {
         lotus_bus_entry_t *e = bv.at[i];
-        if (e->self_ptr == self_ptr && e->stopped_subject) {
-            e->subject = e->stopped_subject;
-            e->stopped_subject = NULL;
+        if (!e->in_free && e->self_ptr == self_ptr && e->stopped_subject) {
+            __atomic_store_n(&e->subject, e->stopped_subject, __ATOMIC_RELEASE);
+            __atomic_store_n(&e->stopped_subject, (const char *)NULL, __ATOMIC_RELAXED);
         }
     }
+    pthread_mutex_unlock(&g_bus_reg_lock);
 }
 
 /* U-1 (F.40 phase 3, P1): the process's main thread, captured by a
@@ -18309,14 +18568,29 @@ int lotus_on_main_thread(void) {
  * cell already taken for it is dropped. */
 void lotus_bus_retire_mailbox(void *mb) {
     if (!mb) return;
+    pthread_mutex_lock(&g_bus_reg_lock);
     lotus_bus_view_t bv = lotus_bus_view();
+    size_t nself = 0, capself = 0;
+    void **selves = NULL;
     for (size_t i = 0; i < bv.n; i++) {
         lotus_bus_entry_t *e = bv.at[i];
-        if (e->mailbox == mb && e->subject) {
-            e->subject = NULL;
-            bus_incarnation_end(e->self_ptr, 0);
+        if (!e->in_free && e->mailbox == mb && e->subject) {
+            __atomic_store_n(&e->subject, (const char *)NULL, __ATOMIC_RELEASE);
+            lotus_bus_free_entry_locked(e);
+            if (nself == capself) {
+                size_t nc = capself ? capself * 2 : 8;
+                void **g = (void **)realloc(selves, nc * sizeof *g);
+                if (!g) break;
+                selves = g;
+                capself = nc;
+            }
+            selves[nself++] = e->self_ptr;
         }
     }
+    pthread_mutex_unlock(&g_bus_reg_lock);
+    /* each retired self is marked dead outside the lock */
+    for (size_t i = 0; i < nself; i++) bus_incarnation_end(selves[i], 0);
+    free(selves);
 }
 
 void lotus_bus_router_destroy(void) {
@@ -18324,6 +18598,18 @@ void lotus_bus_router_destroy(void) {
      * here, and nowhere earlier, since a walk may still hold any array
      * the table ever published. */
     pthread_mutex_lock(&g_bus_reg_lock);
+    {
+        /* LOTUS_BUS_TABLE_STATS=1: the table's size at teardown, and how
+         * many of its entries were free for reuse. */
+        const char *st = getenv("LOTUS_BUS_TABLE_STATS");
+        if (st && st[0] && st[0] != '0') {
+            size_t nfree = 0;
+            for (lotus_bus_entry_t *f = g_bus_free; f; f = f->next_free) nfree++;
+            fprintf(stderr, "[bus_table] entries=%zu free=%zu\n",
+                    g_bus_table.count, nfree);
+            fflush(stderr);
+        }
+    }
     /* Gap B: release String-key copies (the only safe point; see the
      * key_str field comment). */
     for (size_t i = 0; i < g_bus_table.count; i++) {
@@ -24520,9 +24806,9 @@ static lotus_deserialize_fn lotus_bus_find_deserializer(
 {
     lotus_bus_view_t bv = lotus_bus_view();
     for (size_t i = 0; i < bv.n; i++) {
-        lotus_bus_entry_t *e = bv.at[i];
-        if (!e->subject) continue;
-        if (!lotus_subject_match(e->subject, bound_subject)) continue;
+        lotus_bus_target_t e_snap_;
+        const lotus_bus_target_t *e = lotus_bus_entry_read_for(bv.at[i], bound_subject, &e_snap_);
+        if (!e) continue;
         return e->deserialize;
     }
     return NULL;
@@ -25572,7 +25858,9 @@ void lotus_replay_start_ingress(void) {
         return;
     }
     for (size_t e = 0; e < bv.n; e++) {
-        lotus_bus_entry_t *be = bv.at[e];
+        lotus_bus_entry_t be_snap_;
+        lotus_bus_entry_t *be = lotus_bus_entry_read(bv.at[e], &be_snap_);
+        if (!be) continue;
         if (!be->subject || !be->deserialize) continue;
         g_rp_snap[g_rp_snap_len].subject = be->subject;
         g_rp_snap[g_rp_snap_len].deserialize = be->deserialize;
@@ -25665,7 +25953,9 @@ void lotus_replay_injector_join(void) {
             if (!subj) continue;
             lotus_bus_view_t bv = lotus_bus_view();
             for (size_t e = 0; e < bv.n; e++) {
-                lotus_bus_entry_t *be = bv.at[e];
+                lotus_bus_entry_t be_snap_;
+                lotus_bus_entry_t *be = lotus_bus_entry_read(bv.at[e], &be_snap_);
+                if (!be) continue;
                 if (!be->subject || !be->deserialize) continue;
                 if (lotus_subject_match(be->subject, subj)) {
                     late++;
@@ -26840,10 +27130,16 @@ void lotus_bus_dispatch_wire_keyed(const char *subject,
     lotus_bus_view_t bv = lotus_bus_view();
     const uint64_t seen = LOTUS_BUS_SEEN_TABLE(bv.n);
     const lotus_bus_pubkey_t pkey = { key_lo, key_hi };
+    const int count_unmatched = lotus_bus_log_unmatched_enabled();
     for (size_t i = 0; i < bv.n; i++) {
-        lotus_bus_entry_t *e = bv.at[i];
-        if (!e->subject) continue;
-        if (!lotus_subject_match(e->subject, subject)) continue;
+        if (lotus_bus_entry_other_key(bv.at[i], key_lo)) {
+            if (count_unmatched)
+                specific_subs_on_subject += lotus_bus_counts_for(bv.at[i], subject);
+            continue;
+        }
+        lotus_bus_target_t e_snap_;
+        const lotus_bus_target_t *e = lotus_bus_entry_read_for(bv.at[i], subject, &e_snap_);
+        if (!e) continue;
         if (!e->deserialize) continue;
         if (e->key_filter_kind == 1) {
             specific_subs_on_subject++;
@@ -26859,7 +27155,7 @@ void lotus_bus_dispatch_wire_keyed(const char *subject,
          * worker, a pinned one's mailbox, the cooperative queue
          * (F.31 Phase 4), and readiness's gate (decision line 6) —
          * the wire bytes, materialized by the owner at drain. */
-        (void)lotus_bus_post_wire(e, g_bus_queue_for_remote,
+        (void)lotus_bus_post_wire_target(e, g_bus_queue_for_remote,
                                   wire_bytes, wire_size, rec_pub, seen, &pkey);
         /* iris handoff-4 P15: BUS_DELIVER per matched keyed target. */
         if (lotus_obs_bus_deliver && lotus_obs_live && e->handler != (void *)lotus_bus_resv_stub) {
@@ -26869,12 +27165,12 @@ void lotus_bus_dispatch_wire_keyed(const char *subject,
     }
     if (!matched_specific) {
         for (size_t i = 0; i < bv.n; i++) {
-            lotus_bus_entry_t *e = bv.at[i];
-            if (!e->subject) continue;
-            if (!lotus_subject_match(e->subject, subject)) continue;
+            lotus_bus_target_t e_snap_;
+            const lotus_bus_target_t *e = lotus_bus_entry_read_for(bv.at[i], subject, &e_snap_);
+            if (!e) continue;
             if (!e->deserialize) continue;
             if (e->key_filter_kind != 2) continue;
-            (void)lotus_bus_post_wire(e, g_bus_queue_for_remote,
+            (void)lotus_bus_post_wire_target(e, g_bus_queue_for_remote,
                                       wire_bytes, wire_size, rec_pub, seen, &pkey);
             if (lotus_obs_bus_deliver && lotus_obs_live && e->handler != (void *)lotus_bus_resv_stub) {
                 lotus_obs_bus_deliver(subject, e->self_ptr,
@@ -26926,9 +27222,9 @@ void lotus_bus_dispatch_wire(const char *subject,
     lotus_bus_view_t bv = lotus_bus_view();
     const uint64_t seen = LOTUS_BUS_SEEN_TABLE(bv.n);
     for (size_t i = 0; i < bv.n; i++) {
-        lotus_bus_entry_t *e = bv.at[i];
-        if (!e->subject) continue;
-        if (!lotus_subject_match(e->subject, subject)) continue;
+        lotus_bus_target_t e_snap_;
+        const lotus_bus_target_t *e = lotus_bus_entry_read_for(bv.at[i], subject, &e_snap_);
+        if (!e) continue;
         if (!e->deserialize) {
             if (lotus_bus_log_drop_enabled()) {
                 fprintf(stderr,
@@ -26949,7 +27245,7 @@ void lotus_bus_dispatch_wire(const char *subject,
         matched++;
         /* The wire bytes + deserialize fn; the owner materializes at
          * drain (lotus_bus_post_wire). */
-        if (lotus_bus_post_wire(e, g_bus_queue_for_remote,
+        if (lotus_bus_post_wire_target(e, g_bus_queue_for_remote,
                                 wire_bytes, wire_size, rec_pub, seen, NULL)) {
             /* handoff-8 P21: BUS_DELIVER per matched target — the
              * plain wire flavor was the one fanout without it (its
@@ -27036,7 +27332,9 @@ void lotus_bus_dispatch_static(lotus_bus_queue_t *queue,
             size_t bn = lotus_bus_bucket_view(b, &at);
             const uint64_t seen = LOTUS_BUS_SEEN_BUCKET(bn);
             for (size_t k = 0; k < bn; k++) {
-                lotus_bus_entry_t *e = at[k];
+                lotus_bus_target_t d;
+                const lotus_bus_target_t *e = &d;
+                if (!lotus_bus_entry_read_direct(at[k], &d, LOTUS_BUS_WANT_GEN)) continue;
                 if (!e->subject) continue;           /* quarantined */
                 if (e->key_filter_kind != 0) continue;
                 if (lotus_obs_bus_deliver && lotus_obs_live && e->handler != (void *)lotus_bus_resv_stub) {
@@ -27045,7 +27343,7 @@ void lotus_bus_dispatch_static(lotus_bus_queue_t *queue,
                 }
                 /* R4 exception: the build #3 no-pinned fast path
                  * takes the no-acquire-load _st enqueue; everything
-                 * else routes through lotus_bus_post_entry. */
+                 * else routes through lotus_bus_post_target. */
                 /* GH #703: the cell, parked or queued, carries the
                  * entry's incarnation. */
                 uint64_t prev_gen = g_bus_pending_gen;
@@ -27066,7 +27364,7 @@ void lotus_bus_dispatch_static(lotus_bus_queue_t *queue,
                     }
                     delivered++;
                 } else {
-                    delivered += (size_t)lotus_bus_post_entry(
+                    delivered += (size_t)lotus_bus_post_target(
                         e, queue, struct_payload, (size_t)struct_size,
                         rec_pub, seen, NULL);
                 }
@@ -27137,12 +27435,14 @@ void lotus_bus_dispatch_static(lotus_bus_queue_t *queue,
             size_t bn = lotus_bus_bucket_view(b, &at);
             const uint64_t seen = LOTUS_BUS_SEEN_BUCKET(bn);
             for (size_t k = 0; k < bn; k++) {
-                lotus_bus_entry_t *e = at[k];
+                lotus_bus_target_t d;
+                const lotus_bus_target_t *e = &d;
+                if (!lotus_bus_entry_read_direct(at[k], &d, LOTUS_BUS_WANT_GEN)) continue;
                 if (!e->subject) continue;
                 if (e->key_filter_kind != 0) continue;
                 /* R4 exception: the build #3 no-pinned fast path
                  * takes the no-acquire-load _st enqueue; everything
-                 * else routes through lotus_bus_post_entry. */
+                 * else routes through lotus_bus_post_target. */
                 /* GH #703: the cell, parked or queued, carries the
                  * entry's incarnation. */
                 uint64_t prev_gen = g_bus_pending_gen;
@@ -27163,7 +27463,7 @@ void lotus_bus_dispatch_static(lotus_bus_queue_t *queue,
                     }
                     delivered++;
                 } else {
-                    delivered += (size_t)lotus_bus_post_entry(
+                    delivered += (size_t)lotus_bus_post_target(
                         e, queue, struct_payload, (size_t)struct_size,
                         rec_pub, seen, NULL);
                 }
@@ -27201,7 +27501,9 @@ void lotus_bus_dispatch_static(lotus_bus_queue_t *queue,
         size_t bn = lotus_bus_bucket_view(b, &at);
         const uint64_t seen = LOTUS_BUS_SEEN_BUCKET(bn);
         for (size_t k = 0; k < bn; k++) {
-            lotus_bus_entry_t *e = at[k];
+            lotus_bus_target_t d;
+            const lotus_bus_target_t *e = &d;
+            if (!lotus_bus_entry_read_direct(at[k], &d, LOTUS_BUS_WANT_GEN)) continue;
             if (!e->subject) continue;             /* quarantined */
             if (e->key_filter_kind != 0) continue;
             if (!e->deserialize) continue;
@@ -27242,7 +27544,7 @@ void lotus_bus_dispatch_static(lotus_bus_queue_t *queue,
                 }
                 g_bus_pending_wire_deser = NULL;
             } else {
-                delivered += (size_t)lotus_bus_post_wire(
+                delivered += (size_t)lotus_bus_post_wire_target(
                     e, g_bus_queue_for_remote, wire_buf, (size_t)wire_size,
                     rec_pub, seen, NULL);
             }
@@ -27328,10 +27630,12 @@ void lotus_bus_dispatch_static_direct(uint32_t id,
         size_t bn = lotus_bus_bucket_view(b, &at);
         const uint64_t seen = LOTUS_BUS_SEEN_BUCKET(bn);
         for (size_t k = 0; k < bn; k++) {
-            lotus_bus_entry_t *e = at[k];
+            lotus_bus_target_t d;
+            const lotus_bus_target_t *e = &d;
+            if (!lotus_bus_entry_read_direct(at[k], &d, LOTUS_BUS_WANT_GEN)) continue;
             if (!e->subject) continue;           /* quarantined */
             if (e->key_filter_kind != 0) continue;
-            /* R4 note: deliberately NOT lotus_bus_post_entry — the
+            /* R4 note: deliberately NOT lotus_bus_post_target — the
              * direct flavor's identity is the same-thread handler
              * CALL in the else branch (no queue). Off-thread targets
              * (defensive; the gate excludes them) still enqueue. */
@@ -27422,22 +27726,22 @@ void *lotus_bus_static_direct_selfptr(uint32_t id, size_t k) {
     lotus_bus_entry_t *const *at;
     if (k >= lotus_bus_bucket_view(b, &at)) return NULL;
     lotus_bus_entry_t *e = at[k];
-    if (!e->subject) return NULL;            /* quarantined → skip */
-    if (e->key_filter_kind != 0) return NULL;/* keyed → skip */
-    /* Defensive (mirrors lotus_bus_dispatch_static_direct's same-thread
-     * gate): an off-thread entry (mailbox / coop_pool) must NEVER be
-     * direct-called on the publisher's thread. The BusGraph direct gate
-     * guarantees every baked subject's subscribers are same-thread, so
-     * this never fires for a baked subject — but returning NULL (codegen
-     * skips) degrades a hypothetical gate bug to a dropped delivery
-     * rather than a cross-thread call. */
-    if (e->mailbox || e->coop_pool) return NULL;
-    /* #1534: a reservation's placeholder is never a handler's self. The
-     * baked path runs only while no window is open, and a reservation
-     * holds one open while its placeholder is live, so this is the
-     * belt for a publish that read the count just before it opened. */
-    if (e->handler == (void *)lotus_bus_resv_stub) return NULL;
-    return e->self_ptr;
+    /* The entry's version brackets the reads (see lotus_bus_entry_read).
+     * `direct_self` is NULL for a keyed entry, an off-thread one
+     * (mailbox / coop_pool: the BusGraph direct gate guarantees every
+     * baked subject's subscribers are same-thread, so this degrades a
+     * hypothetical gate bug to a dropped delivery rather than a
+     * cross-thread call) and a reservation's placeholder (#1534: the
+     * baked path runs only while no window is open; this is the belt
+     * for a publish that read the count just before it opened). */
+    uint32_t v = __atomic_load_n(&e->version, __ATOMIC_ACQUIRE);
+    if (v & 1u) return NULL;                 /* being reused → skip */
+    if (!__atomic_load_n(&e->subject, __ATOMIC_RELAXED))
+        return NULL;                         /* quarantined → skip */
+    void *self = __atomic_load_n(&e->direct_self, __ATOMIC_RELAXED);
+    __atomic_thread_fence(__ATOMIC_ACQUIRE);
+    if (__atomic_load_n(&e->version, __ATOMIC_RELAXED) != v) return NULL;
+    return self;
 }
 
 /* m70: lazy global "payload arena" for String byte storage in
