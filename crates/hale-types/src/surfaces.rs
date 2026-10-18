@@ -2166,8 +2166,9 @@ pub enum FieldSchema {
     Nullable { inner: Box<FieldSchema>, flag: String },
     /// The presence flag of the optional field `of`: no JSON key (a JSON
     /// document leaves it out of a record's properties), a `bool` field as
-    /// protobuf carries it.
-    Presence { of: String },
+    /// protobuf carries it. `flag` is the flag's own declared name, which an
+    /// optional field's `Nullable::flag` names (its JSON key may differ).
+    Presence { of: String, flag: String },
     /// An enum (spec/api.md § Codecs), inline where it is used: `name` its
     /// declared name, and each variant with the schemas of its values (none
     /// for a payload-free variant). A payload-free enum is `{"type":
@@ -2274,7 +2275,7 @@ impl<'a> Schemas<'a> {
                             .unwrap_or_else(|| f.name.name.clone());
                         let name = f.name.name.as_str();
                         if let Some((of, _)) = pairs.iter().find(|(_, flag)| *flag == name) {
-                            properties.push((key, FieldSchema::Presence { of: of.to_string() }));
+                            properties.push((key, FieldSchema::Presence { of: of.to_string(), flag: name.to_string() }));
                             continue;
                         }
                         // a wire map: the element's schema without its key

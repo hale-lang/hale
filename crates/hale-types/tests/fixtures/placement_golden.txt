@@ -7776,6 +7776,9 @@ shared	Api@main2	Api #a23e2495
 shared	Proc@main1	Proc #b18b3dc0
 shared	dynamic	sites in the seed #8c882889
 
+== tests/hale/api_codec_call_test.hl
+row	Shelf@main1	Shelf	main	default
+
 == tests/hale/api_context_test.hl
 shared	Api@main2	Api #a23e2495
 shared	Proc@main1	Proc #b18b3dc0

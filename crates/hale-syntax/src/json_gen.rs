@@ -1722,16 +1722,58 @@ fn mark_synthetic(mut items: Vec<TopDecl>) -> Vec<TopDecl> {
 
 // ---- `T::from_json(s)` -> `__json_parse_T(s)` rewrite (full expr walk) ----
 
+/// Every expression a program evaluates: the bodies, and the initializers
+/// (a `params` field's, a parameter's default, a struct field's default, a
+/// `const`'s), where a call is as much a call as in a body.
 fn rewrite_items(items: &mut [TopDecl], visit: &mut dyn FnMut(&mut Expr)) {
+    fn defaults(ps: &mut [crate::ast::Param], visit: &mut dyn FnMut(&mut Expr)) {
+        for p in ps {
+            if let Some(d) = &mut p.default {
+                rewrite_expr(d, visit);
+            }
+        }
+    }
+    fn type_defaults(t: &mut crate::ast::TypeDecl, visit: &mut dyn FnMut(&mut Expr)) {
+        if let crate::ast::TypeDeclBody::Struct(fields) = &mut t.body {
+            for f in fields {
+                if let Some(d) = &mut f.default {
+                    rewrite_expr(d, visit);
+                }
+            }
+        }
+    }
     for item in items {
         match item {
-            TopDecl::Fn(f) => rewrite_block(&mut f.body, visit),
+            TopDecl::Fn(f) => {
+                defaults(&mut f.params, visit);
+                rewrite_block(&mut f.body, visit);
+            }
+            TopDecl::Type(t) => type_defaults(t, visit),
+            TopDecl::Const(c) => rewrite_expr(&mut c.value, visit),
             TopDecl::Locus(l) => {
                 for m in &mut l.members {
                     match m {
-                        LocusMember::Lifecycle(lc) => rewrite_block(&mut lc.body, visit),
-                        LocusMember::Mode(md) => rewrite_block(&mut md.body, visit),
-                        LocusMember::Fn(fd) => rewrite_block(&mut fd.body, visit),
+                        LocusMember::Lifecycle(lc) => {
+                            defaults(&mut lc.params, visit);
+                            rewrite_block(&mut lc.body, visit);
+                        }
+                        LocusMember::Mode(md) => {
+                            defaults(&mut md.params, visit);
+                            rewrite_block(&mut md.body, visit);
+                        }
+                        LocusMember::Fn(fd) => {
+                            defaults(&mut fd.params, visit);
+                            rewrite_block(&mut fd.body, visit);
+                        }
+                        LocusMember::Params(pb) => {
+                            for p in &mut pb.params {
+                                if let crate::ast::ParamInit::Value(e) = &mut p.init {
+                                    rewrite_expr(e, visit);
+                                }
+                            }
+                        }
+                        LocusMember::Const(c) => rewrite_expr(&mut c.value, visit),
+                        LocusMember::Type(t) => type_defaults(t, visit),
                         _ => {}
                     }
                 }

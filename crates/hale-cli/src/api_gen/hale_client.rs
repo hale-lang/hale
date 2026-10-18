@@ -91,34 +91,47 @@ fn decode_into(f: &FieldSchema, json: &str, var: &str, fail: &str, what: &str) -
 
 /// The field identifier of each JSON key of a struct, in key order. `field_ident` alone is not
 /// injective (`a-b` and `a_b` are both `a_b`), so the first key to want an identifier keeps it and a
-/// later one gets `_2`, `_3`, ...; an optional field's flag is `has_` and its field's identifier. A
-/// field whose identifier is not its key carries the key as its `json:` tag.
+/// later one gets `_2`, `_3`, ...; an optional field's flag is `has_` and its field's identifier,
+/// which the codec pairs by name. Every identifier comes out of one allocator: an optional field and
+/// its flag are placed first, as a pair (a field's identifier is bumped until its flag's is free too),
+/// then the ordinary fields around them. A field whose identifier is not its key carries the key as
+/// its `json:` tag.
 fn field_idents(t: &TypeSchema) -> Vec<String> {
     let mut used = BTreeSet::new();
-    let mut idents: Vec<String> = t
-        .properties
-        .iter()
-        .map(|(key, _)| {
-            let natural = field_ident(key);
-            let mut ident = natural.clone();
-            let mut n = 2;
-            while !used.insert(ident.clone()) {
-                ident = format!("{natural}_{n}");
-                n += 1;
-            }
-            ident
-        })
-        .collect();
-    // a flag is its optional field's partner by name, which the codec pairs
-    for i in 0..t.properties.len() {
-        if let FieldSchema::Presence { .. } = &t.properties[i].1 {
-            let flag_key = &t.properties[i].0;
-            if let Some(j) = t.properties.iter().position(|(_, f)| matches!(f, FieldSchema::Nullable { flag, .. } if flag == flag_key)) {
-                idents[i] = format!("has_{}", idents[j]);
-            }
+    let mut idents: Vec<Option<String>> = vec![None; t.properties.len()];
+    // the flag of each optional field, by its declaration (its JSON key may be another)
+    let partner = |j: usize| -> Option<usize> {
+        let FieldSchema::Nullable { flag, .. } = &t.properties[j].1 else { return None };
+        t.properties.iter().position(|(_, f)| matches!(f, FieldSchema::Presence { flag: name, .. } if name == flag))
+    };
+    for j in 0..t.properties.len() {
+        let Some(i) = partner(j) else { continue };
+        let natural = field_ident(&t.properties[j].0);
+        let mut ident = natural.clone();
+        let mut n = 2;
+        while used.contains(&ident) || used.contains(&format!("has_{ident}")) {
+            ident = format!("{natural}_{n}");
+            n += 1;
         }
+        used.insert(ident.clone());
+        used.insert(format!("has_{ident}"));
+        idents[i] = Some(format!("has_{ident}"));
+        idents[j] = Some(ident);
     }
-    idents
+    for (k, (key, _)) in t.properties.iter().enumerate() {
+        if idents[k].is_some() {
+            continue;
+        }
+        let natural = field_ident(key);
+        let mut ident = natural.clone();
+        let mut n = 2;
+        while !used.insert(ident.clone()) {
+            ident = format!("{natural}_{n}");
+            n += 1;
+        }
+        idents[k] = Some(ident);
+    }
+    idents.into_iter().map(|i| i.expect("every field named")).collect()
 }
 
 /// Whether a record of the model can be built from no fields, `T { }`:

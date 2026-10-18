@@ -27,7 +27,17 @@ type Desk {
     has_spare: Bool;
 }
 
+// the codec called where a value is initialized, as in a body: a params
+// field and a parameter's default
+locus Shelf {
+    params { text: String = Line::api_encode(Line { sku: "p", qty: 1 }); }
+    fn stamp(l: String = Line::api_encode(Line { sku: "d", qty: 2 })) -> String { return l; }
+}
+
 fn main() {
+    let shelf = Shelf { };
+    std::test::assert_eq_str(shelf.text, "{\"sku\":\"p\",\"qty\":1}", "a params field's initializer");
+    std::test::assert_eq_str(shelf.stamp(), "{\"sku\":\"d\",\"qty\":2}", "a parameter's default");
     let text = "{\"id\":7,\"lines\":[{\"sku\":\"a\",\"qty\":2},{\"sku\":\"b\",\"qty\":1}],\"total\":1250,\"at\":\"2026-10-17T09:00:00Z\"}";
     let o = Order::api_decode(text) or {
         std::test::assert(false, "a valid order: " + err.kind + " " + err.field);

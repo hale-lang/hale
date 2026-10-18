@@ -348,3 +348,46 @@ fn the_javascript_client_carries_a_list_and_an_instant() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// The Hale client pairs a presence flag with its field by declaration and
+/// names both through one allocator: a flag renamed on the wire (`json:
+/// "present"`) still pairs, so an empty value encodes as `{}`; and a flag's
+/// derived name (`has_type_` for the key `type`) is reserved before an
+/// ordinary field that would take it, which is renamed and tagged instead.
+#[test]
+fn the_hale_client_pairs_a_flag_by_its_declaration() {
+    let dir = unique_dir("flags");
+    let src = dir.join("flags.hl");
+    std::fs::write(
+        &src,
+        "type Tagged { data: String `json:\"type\"`; has_data: Bool; has_type_: Int; }\n\
+         type Renamed { data: String; has_data: Bool `json:\"present\"`; }\n\
+         locus L {\n    fn tagged(t: Tagged) -> Tagged { return t; }\n    fn renamed(r: Renamed) -> Renamed { return r; }\n}\n\
+         api Flags { rpc L::tagged; rpc L::renamed; }\n\
+         locus Nobody { fn holds(p: std::api::Principal, r: String) -> Bool { return false; } }\n\
+         main locus App {\n    params {\n        l: L = L { };\n        h: api::Exposure = api::serve(Flags, unix::Rpc { path: \"/tmp/hale-flags.sock\", roles: Nobody { } }, as: \"flags\", receivers: { L: self.l }, bound: 4, on_full: refuse);\n    }\n    run() { }\n}\n\
+         fn main() { App { }; }\n",
+    )
+    .unwrap();
+    let hl = dir.join("client.hl");
+    let o = hale().args(["api", "client", "--surface", "Flags", "--lang", "hale", "--out"]).arg(&hl).arg(&src).output().expect("hale client");
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let text = std::fs::read_to_string(&hl).unwrap();
+    assert!(text.contains("type Renamed {\n    data: String = \"\";\n    has_data: Bool = false;\n}"), "the renamed flag pairs: {text}");
+    assert!(text.contains("type_: String = \"\" `json:\"type\"`;") && text.contains("has_type_: Bool = false;"), "the tagged field and its flag: {text}");
+    assert!(text.contains("has_type__2: Int `json:\"has_type_\"`;"), "the ordinary field gives way: {text}");
+    let caller = dir.join("caller.hl");
+    std::fs::write(
+        &caller,
+        text + "\nfn main() {\n    println(Renamed::api_encode(Renamed { }));\n    println(Renamed::api_encode(Renamed { data: \"x\", has_data: true }));\n    println(Tagged::api_encode(Tagged { type_: \"y\", has_type_: true, has_type__2: 3 }));\n}\n",
+    )
+    .unwrap();
+    let r = hale().arg("run").arg(&caller).output().expect("run the caller");
+    assert_eq!(
+        String::from_utf8_lossy(&r.stdout),
+        "{}\n{\"data\":\"x\"}\n{\"type\":\"y\",\"has_type_\":3}\n",
+        "{}",
+        String::from_utf8_lossy(&r.stderr)
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
