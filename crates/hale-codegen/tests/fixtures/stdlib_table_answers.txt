@@ -445,6 +445,8 @@ ns std::str open_prefixes=[]
   bytes_view pure
   range_copy pure
   slice pure
+  view_cp_at pure
+  view_cp_size pure
   index_of pure
   index_of_from pure
   range_index_of pure
@@ -1080,6 +1082,8 @@ std::str::substring | lookup=str@2 | locus=false | effects=pure | sig=(Str, Int,
 std::str::to_string | lookup=str@2 | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=`std::str::to_string` is not a stdlib function; rendering a value as a String is the builtin `to_string(x)` | suggest=-
 std::str::trim | lookup=str@2 | locus=false | effects=pure | sig=(Str) -> Str | ret_ty=String | or=- | parks=false | holds=false | unknown=- | suggest=trim
 std::str::upper | lookup=str@2 | locus=false | effects=pure | sig=(Str) -> Str | ret_ty=String | or=- | parks=false | holds=false | unknown=- | suggest=upper
+std::str::view_cp_at | lookup=str@2 | locus=false | effects=pure | sig=(Named(__StrByteView), Int) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=view_cp_at
+std::str::view_cp_size | lookup=str@2 | locus=false | effects=pure | sig=(Named(__StrByteView), Int) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=view_cp_size
 std::string::len | lookup=- | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=`std::string::len` is not a stdlib function; the length of a String is the builtin `len(s)`
 std::string::length | lookup=- | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=`std::string::length` is not a stdlib function; the length of a String is the builtin `len(s)`
 std::tagged::Accumulator | lookup=- | locus=true | effects=- | sig=- | parks=false | holds=false | unknown=-

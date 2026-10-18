@@ -137,3 +137,45 @@ fn __str_slice(v: std::str::ByteView, start: Int, end_exclusive: Int)
 fn __str_find(v: std::str::ByteView, sub: String, start: Int) -> Int {
     return std::str::range_index_of(v.text, v.n, sub, start);
 }
+
+// The code-point readers over a view. `std::str::cp_at` / `cp_size` on a
+// String must find the String's end before they read at an offset (a
+// String carries no length), which costs the offset; over a view the end
+// is `n`, so a walk by code point stays linear.
+/// The width in bytes of the UTF-8 sequence starting at byte `i` of the
+/// view: 1 to 4, or **-1** when `i` is outside `[0, n)`, lands on a
+/// continuation byte or an invalid lead byte, or the sequence is cut
+/// short (by the end of the view or a byte that is not a continuation).
+/// O(1).
+fn __str_view_cp_size(v: std::str::ByteView, i: Int) -> Int {
+    let b = std::str::byte_at(v, i);
+    if b < 0 { return -1; }
+    if b < 128 { return 1; }
+    let mut w = -1;
+    if b >= 192 && b < 224 { w = 2; }
+    if b >= 224 && b < 240 { w = 3; }
+    if b >= 240 && b < 248 { w = 4; }
+    if w < 0 { return -1; }
+    let mut k = 1;
+    while k < w {
+        let c = std::str::byte_at(v, i + k);
+        if c < 128 || c >= 192 { return -1; }
+        k = k + 1;
+    }
+    return w;
+}
+
+/// The code point starting at byte `i` of the view, or **-1** wherever
+/// `view_cp_size` is. O(1).
+fn __str_view_cp_at(v: std::str::ByteView, i: Int) -> Int {
+    let w = __str_view_cp_size(v, i);
+    if w < 0 { return -1; }
+    let b0 = std::str::byte_at(v, i);
+    if w == 1 { return b0; }
+    let b1 = std::str::byte_at(v, i + 1) - 128;
+    if w == 2 { return (b0 - 192) * 64 + b1; }
+    let b2 = std::str::byte_at(v, i + 2) - 128;
+    if w == 3 { return (b0 - 224) * 4096 + b1 * 64 + b2; }
+    let b3 = std::str::byte_at(v, i + 3) - 128;
+    return (b0 - 240) * 262144 + b1 * 4096 + b2 * 64 + b3;
+}

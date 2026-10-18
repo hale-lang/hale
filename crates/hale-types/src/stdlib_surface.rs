@@ -1325,6 +1325,10 @@ pub const SURFACES: &[NsSurface] = &[
             row!("bytes_view", PURE, [Str] -> Named("__StrByteView"), Renamed),
             row!("range_copy", PURE, [Str, Int, Int, Int] -> Str, Intrinsic(StrRangeCopy)),
             row!("slice", PURE, [Named("__StrByteView"), Int, Int] -> Str, Renamed),
+            // the code-point readers over a view, bounded by its `n`: the
+            // String forms pay the offset to find the String's end
+            row!("view_cp_at", PURE, [Named("__StrByteView"), Int] -> Int, Renamed),
+            row!("view_cp_size", PURE, [Named("__StrByteView"), Int] -> Int, Renamed),
             row!("index_of", PURE, [Str, Str] -> Int, Intrinsic(StrIndexOf)),
             // `index_of` from a byte offset on, the index into `s`: a
             // scanner's next search without slicing the tail (downstream
