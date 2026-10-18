@@ -214,8 +214,8 @@ fn host() {
     // its walk, which resolves no imported type, cannot rule out.
     pinned(
         "host",
-        517,
         522,
+        527,
         "
         GovernanceCli::review_profile  does={syscall,block,time,entropy,env,alloc,secret_use}
         Host::ack_reading  does={publish,alloc}
@@ -234,6 +234,8 @@ fn host() {
         Host::wait_nerves  does={syscall,block,time,entropy,env,alloc}
         LocalTransport::execute  does={syscall,block,alloc}
         LocalTransport::probe  does={syscall,block,alloc}
+        NatsExchange::birth  does={env,alloc}
+        NatsExchange::deliver  does={syscall,block,time,entropy,env,alloc,secret_use}
         Node::birth  does={env,alloc}
         Node::build  does={syscall,block,env,alloc}
         Projection::build_digest  does={syscall,block,alloc}
@@ -241,6 +243,7 @@ fn host() {
         ReferenceInfrastructure::credential  does={syscall,block,env,alloc}
         ReferenceInfrastructure::install_unit  does={syscall,block,env,alloc}
         ReferenceInfrastructure::logs  does={syscall,block,env,alloc}
+        ReferenceInfrastructure::nerves_if_up  does={syscall,block,alloc}
         ReferenceInfrastructure::nerves_server  does={syscall,block,alloc}
         ReferenceInfrastructure::probe  does={syscall,block,env,alloc}
         ReferenceInfrastructure::put_credential  does={syscall,block,env,alloc}
@@ -278,6 +281,8 @@ fn host() {
         drop_here  does={syscall,block,alloc}
         drop_include_line  does={syscall,block,alloc}
         edge_admits_here  does={syscall,block,time,env,alloc}
+        exchange_key  does={syscall,block,time,env,alloc}
+        exchange_migrate  does={syscall,block,time,entropy,env,alloc}
         exit_code  does={syscall,block,alloc}
         fence_compose_down  does={syscall,block,alloc}
         fence_stop  does={syscall,block,alloc}
@@ -297,6 +302,7 @@ fn host() {
         genome_fetch_default  does={syscall,block,time,alloc}
         genome_push_branch  does={syscall,block,alloc}
         genome_reset  does={syscall,block,alloc}
+        genome_root  does={syscall,block,alloc}
         genome_show  does={syscall,block,alloc}
         genome_uncandidate  does={syscall,block,alloc}
         held_state  does={syscall,block,time,entropy,env,alloc,secret_use}
@@ -318,6 +324,7 @@ fn host() {
         nursery_sources_verb  does={syscall,block,time,entropy,env,alloc,secret_use}
         organism_here  does={syscall,block,time,env,alloc}
         organism_secrets  does={syscall,block,time,env,alloc}
+        own_nerves  does={syscall,block,env,alloc}
         owner_of_person_here  does={syscall,block,time,env,alloc}
         owners_here  does={syscall,block,time,env,alloc}
         ownership_graph_here  does={syscall,block,time,env,alloc}
