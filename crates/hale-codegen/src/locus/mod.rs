@@ -11,4 +11,5 @@ pub(crate) mod method;
 pub(crate) mod reservation;
 pub(crate) mod restart;
 pub(crate) mod return_path;
+pub(crate) mod seam_fusion;
 pub(crate) mod unwind;

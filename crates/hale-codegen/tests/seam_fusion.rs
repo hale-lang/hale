@@ -2,10 +2,14 @@
 //! static (one tower, direct calls), and lowering marks each hop call
 //! `alwaysinline` at its site, and nothing else: after optimization the
 //! seam calls none of its hops, and a program with no seam carries no
-//! such mark. The dispatch on a set still reads the tag the producer
-//! wrote (its return deep-copies the value into the caller's arena behind
-//! runtime calls the optimizer cannot see through); folding it is the
-//! follow-up. The pins read the IR after the pipeline
+//! such mark.
+//!
+//! The follow-up, fusion: a seam that splits the set a hop returns calls
+//! the hop's fused clone, which returns the set in the seam's frame, a
+//! member deep-copied as itself beside a constant tag. Once inlined, each
+//! of the producer's return sites goes straight to its arm: the seam
+//! reads no tag back and switches on none. A program with no seam has no
+//! clone. The pins read the IR after the pipeline
 //! (`BuildOptions::dump_ir_optimized`) and before it (`dump_ir`).
 
 #[path = "support/harness.rs"]
@@ -79,6 +83,46 @@ fn a_program_with_no_seam_marks_nothing_inline() {
 fn a_grpc_exposure_decodes_each_call_in_one_hop() {
     let (pre, _) = ir_of(&fixture("api/pb_codec_test.hl"), "seam_fusion_grpc");
     let seam = body(&pre, "Probe.__rpc_seam_1");
-    assert_eq!(seam.matches("@Probe.__rpc_decode_1(").count(), 1, "one decoder hop:\n{seam}");
+    // the decoder's set is split at once, so the hop is its fused clone
+    let calls = seam.matches("@Probe.__rpc_decode_1(").count() + seam.matches("@Probe.__rpc_decode_1.fused(").count();
+    assert_eq!(calls, 1, "one decoder hop:\n{seam}");
     assert!(!pre.contains("@Probe.__rpc_decode_pb"), "no second decoder");
+}
+
+
+/// A producer whose returns are members, split into a locus hop whose
+/// eaters return no set: once fused, the seam's every dispatch is gone.
+const SPLIT: &str = "type A { n: Int; }\ntype B { s: String; }\ntype In = A | B;\n\
+    locus P { fn parse(x: Int) -> In { if x > 0 { return A { n: x }; } return B { s: \"neg\" }; } }\n\
+    locus H { fn a(v: A) -> Int { return v.n * 2; } fn b(v: B) -> Int { return len(v.s); } }\n\
+    locus S { params { p: P = P { }; h: H = H { }; } seam go(x: Int) -> Int { x -> self.p.parse -> self.h; } }\n\
+    fn main() { let s = S { }; println(to_string(s.go(3) + s.go(-1))); }\n";
+
+#[test]
+fn a_fused_seam_reads_no_tag_and_switches_on_none() {
+    let (pre, post) = ir_of(SPLIT, "seam_fusion_split");
+    assert!(pre.contains("@P.parse.fused("), "the seam calls the producer's fused clone:\n{}", body(&pre, "S.go"));
+    let b = body(&post, "S.go");
+    assert!(!b.contains("switch "), "the fused seam still switches:\n{b}");
+    assert!(!b.contains("load i32"), "the fused seam still reads a tag back:\n{b}");
+    assert!(!b.contains("@P.parse"), "the clone is inlined:\n{b}");
+}
+
+/// A fallible producer (its failure placed by the seam) fuses the same
+/// way: the decoder's dispatch in the pair fixture reads no tag.
+#[test]
+fn a_fallible_producer_fuses_too() {
+    let (pre, post) = ir_of(&fixture("seam_decoder_handler_test.hl"), "seam_fusion_fallible");
+    assert!(pre.contains("@Wire.decode.fused("), "the seam calls the decoder's fused clone");
+    let b = body(&post, "Counter.answer");
+    assert!(!b.contains("seam.fused.set"), "the set's storage in the seam's frame is folded away:\n{b}");
+}
+
+#[test]
+fn a_program_with_no_seam_has_no_fused_clone() {
+    let src = "type A { n: Int; }\ntype B { s: String; }\ntype In = A | B;\n\
+               locus P { fn parse(x: Int) -> In { if x > 0 { return A { n: x }; } return B { s: \"neg\" }; } }\n\
+               fn main() { let p = P { }; let n = match p.parse(3) { A(a) -> a.n, B(b) -> len(b.s), }; println(to_string(n)); }\n";
+    let (pre, _) = ir_of(src, "seam_fusion_unfused");
+    assert!(!pre.contains(".fused("), "a program with no seam declares a fused clone");
 }

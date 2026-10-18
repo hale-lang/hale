@@ -1652,6 +1652,11 @@ fn build_resolved_lowered(
         current_user_fn_exit_bb: None,
         current_user_fn_ret_alloca: None,
         current_user_fn_fallible: None,
+        fused_dest: None,
+        suppress_inject: None,
+        fused_call: false,
+        fused_clones: HashMap::new(),
+        fused_pending: Vec::new(),
         accumulator_ctx: None,
         serializers: BTreeMap::new(),
         ser_bound: None,
@@ -4113,6 +4118,26 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// branches to the unified exit block which sret-copies the
     /// right slot and emits `ret i1 path`.
     pub(crate) current_user_fn_fallible: Option<FallibleCtx<'ctx>>,
+    /// GH #1530 (seam fusion): while a method's fused clone is lowered,
+    /// the set storage its caller handed it (the clone's last parameter).
+    /// Every `return` of the set fills it, a member's value deep-copied as
+    /// that member and its tag a constant, and returns it: the seam's
+    /// dispatch then reads a tag its own frame holds, which optimization
+    /// folds once the clone is inlined.
+    pub(crate) fused_dest: Option<PointerValue<'ctx>>,
+    /// GH #1530: the return expression of a fused clone whose member
+    /// value `inject_member` leaves as it is (the clone stores the tag).
+    pub(crate) suppress_inject: Option<hale_syntax::Span>,
+    /// GH #1530: the seam binding being lowered splits the set its call
+    /// returns at once (`let __seam_sN = hop(..); match __seam_sN {..}`),
+    /// so the call may hand the set back in this frame's storage: the
+    /// first locus method call that returns a set takes it.
+    pub(crate) fused_call: bool,
+    /// GH #1530: each method's fused clone, by (locus, method), declared
+    /// at the first seam call that takes one.
+    pub(crate) fused_clones: HashMap<(String, String), FunctionValue<'ctx>>,
+    /// GH #1530: the clones declared whose bodies are still to lower.
+    pub(crate) fused_pending: Vec<(String, String)>,
     /// m46: closure-accumulator substitution context. Set by
     /// `lower_closure_check` right before lowering the assertion
     /// expressions; cleared after. When set, `lower_expr`'s Call
@@ -9710,6 +9735,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         for l in &locus_decls {
             self.lower_locus_method_bodies(l)?;
         }
+        // GH #1530: the fused clones the seams called
+        self.emit_fused_clones(&locus_decls)?;
         // GH #1066: restart / resume bodies, now user fns are declared
         // (a param default `restart_in_place` re-stores may call one).
         self.define_restart_fns()?;
@@ -16318,6 +16345,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // callee's scratch is destroyed. Mirrors the non-
         // fallible heap-returning method call discipline.
         self.emit_set_caller_arena()?;
+        // GH #1530: as a non-fallible call, a seam splitting the result
+        let func = match self.take_fused_call(locus_name, method_name, func, success_ty.as_ref())? {
+            Some((clone, dest)) => {
+                llvm_args.push(dest.into());
+                clone
+            }
+            None => func,
+        };
         let call = self
             .builder
             .build_call(
@@ -18069,7 +18104,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         (storage.into(), ty)
                     })
                 } else {
-                    self.lower_expr_into(value_to_lower, scope, hint_ty.as_ref())
+                    // GH #1530: a seam binding split at once takes its
+                    // set in this frame's storage (`locus::seam_fusion`)
+                    self.fused_call = crate::locus::seam_fusion::is_fused_binding(&name.name, span.start.0);
+                    let r = self.lower_expr_into(value_to_lower, scope, hint_ty.as_ref());
+                    self.fused_call = false;
+                    r
                 };
                 self.current_arena_override = saved_override_for_returned;
                 self.next_array_repeat_is_stack_local = false;
@@ -23545,6 +23585,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 }
             }
             (Some(e), Some(declared_ty)) => {
+                // GH #1530: a fused clone returns the set in its caller's
+                // storage
+                if let (Some(dest), CodegenTy::Enum(set)) = (self.fused_dest, &declared_ty) {
+                    return self.lower_fused_return(e, scope, set, dest);
+                }
                 // m67: a literal spelled with a generic template's name
                 // in return position takes the fn's declared return type's
                 // arguments (`rewrite_generic_literal`).
@@ -24298,14 +24343,23 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// its set (an argument, a binding, a return, a field), as that set:
     /// the variant named for the member, its one payload the value. Every
     /// other expression is its value.
+    /// The member the checker flowed `e` into its set as, if one.
+    pub(crate) fn injection_at(&self, e: &Expr) -> Option<hale_types::typed_bodies::Injection> {
+        let body = self.current_body?;
+        let site = self.site(hale_types::typed_bodies::SiteKind::value(e.span()));
+        self.typed.injection_in(body, &site).cloned()
+    }
+
     fn inject_member(
         &mut self,
         e: &Expr,
         lowered: (BasicValueEnum<'ctx>, CodegenTy),
     ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
-        let Some(body) = self.current_body else { return Ok(lowered) };
-        let site = self.site(hale_types::typed_bodies::SiteKind::value(e.span()));
-        let Some(inj) = self.typed.injection_in(body, &site).cloned() else { return Ok(lowered) };
+        if self.suppress_inject == Some(e.span()) {
+            self.suppress_inject = None;
+            return Ok(lowered);
+        }
+        let Some(inj) = self.injection_at(e) else { return Ok(lowered) };
         let info = self.user_enums.get(&inj.set).cloned().ok_or_else(|| {
             CodegenError::UnsupportedAt(format!("the set `{}` has no declaration lowering knows", inj.set), e.span())
         })?;
@@ -30460,6 +30514,16 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // (which may itself nest method calls and clobber TLS)
         // gives the callee the freshest caller view.
         self.emit_set_caller_arena()?;
+        // GH #1530: as an external call, a seam splitting the result
+        let ret_ty = sig.ret.as_ref().map(|t| self.type_expr_to_codegen_ty(t)).transpose()?;
+        let self_locus = self.current_self.as_ref().map(|s| s.locus_name.clone()).unwrap_or_default();
+        let func = match self.take_fused_call(&self_locus, method_name, func, ret_ty.as_ref())? {
+            Some((clone, dest)) => {
+                llvm_args.push(dest.into());
+                clone
+            }
+            None => func,
+        };
         let call = self
             .builder
             .build_call(
@@ -30966,6 +31030,16 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // caller's arena. Same shape as the self-method-call
         // counterpart above.
         self.emit_set_caller_arena()?;
+        // GH #1530: a seam splitting the set this returns calls the
+        // method's fused clone, handing it the set's storage
+        let ret_ty = sig.ret.as_ref().map(|t| self.type_expr_to_codegen_ty(t)).transpose()?;
+        let func = match self.take_fused_call(&locus_name, method_name, func, ret_ty.as_ref())? {
+            Some((clone, dest)) => {
+                llvm_args.push(dest.into());
+                clone
+            }
+            None => func,
+        };
         let call = self
             .builder
             .build_call(
@@ -36893,7 +36967,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// GH #1036: `violate` used to `ret` without it, leaking the
     /// method scratch of every handler that violated.
     /// No-op when the method has no scratch (elided, or a free fn).
-    fn emit_method_exit_epilogue(&mut self) -> Result<(), CodegenError> {
+    pub(crate) fn emit_method_exit_epilogue(&mut self) -> Result<(), CodegenError> {
         if self.current_method_scratch.is_none() {
             return Ok(());
         }
