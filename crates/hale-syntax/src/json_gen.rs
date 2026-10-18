@@ -172,6 +172,21 @@ pub fn global_value_names(items: &[TopDecl], out: &mut HashSet<String>) {
     }
 }
 
+/// Each record a module declares, by name, with its declared fields.
+pub fn record_fields<'a>(items: &'a [TopDecl], out: &mut std::collections::BTreeMap<String, &'a [crate::ast::StructField]>) {
+    for item in items {
+        match item {
+            TopDecl::Type(t) => {
+                if let TypeDeclBody::Struct(fs) = &t.body {
+                    out.insert(t.name.name.clone(), fs.as_slice());
+                }
+            }
+            TopDecl::Module(m) => record_fields(&m.items, out),
+            _ => {}
+        }
+    }
+}
+
 /// Whether a field's default can be evaluated on its own, where a codec
 /// builds it (spec/api.md § Codecs): it names nothing of the scope a
 /// record literal evaluates it in. Literals, constants and fns
@@ -180,8 +195,26 @@ pub fn global_value_names(items: &[TopDecl], out: &mut HashSet<String>) {
 /// know (a caller's local, as a field default may read), `self`, and any
 /// form that binds names of its own (a block, a `match`) are not closed,
 /// and such a field is required on the wire.
-pub fn default_is_closed(e: &Expr, global: &dyn Fn(&str) -> bool) -> bool {
-    let all = |es: &[Expr]| es.iter().all(|x| default_is_closed(x, global));
+pub fn default_is_closed<'a>(
+    e: &Expr,
+    global: &dyn Fn(&str) -> bool,
+    fields: &dyn Fn(&str) -> Option<&'a [crate::ast::StructField]>,
+) -> bool {
+    closed_in(e, global, fields, &mut Vec::new())
+}
+
+/// [`default_is_closed`], with the record fields whose defaults are being
+/// followed: a literal is closed only if each field it leaves out has a
+/// closed default too (that default is evaluated where the literal is, so
+/// a copy of the literal carries it), followed through nested literals; a
+/// default that reaches itself is not closed.
+fn closed_in<'a>(
+    e: &Expr,
+    global: &dyn Fn(&str) -> bool,
+    fields: &dyn Fn(&str) -> Option<&'a [crate::ast::StructField]>,
+    following: &mut Vec<(String, String)>,
+) -> bool {
+    let closed = |x: &Expr, following: &mut Vec<(String, String)>| closed_in(x, global, fields, following);
     match e {
         Expr::Literal(..) | Expr::Path(_) => true,
         Expr::Ident(i) => global(&i.name),
@@ -189,18 +222,50 @@ pub fn default_is_closed(e: &Expr, global: &dyn Fn(&str) -> bool) -> bool {
             let callee_ok = match callee.as_ref() {
                 // a called name is a fn: the module's or the language's
                 Expr::Ident(_) | Expr::Path(_) => true,
-                other => default_is_closed(other, global),
+                other => closed(other, following),
             };
-            callee_ok && all(args)
+            callee_ok && args.iter().all(|a| closed(a, following))
         }
-        Expr::Binary { left, right, .. } => default_is_closed(left, global) && default_is_closed(right, global),
-        Expr::Unary { operand, .. } => default_is_closed(operand, global),
-        Expr::Field { receiver, .. } | Expr::Path2 { receiver, .. } => default_is_closed(receiver, global),
-        Expr::Index { receiver, index, .. } => default_is_closed(receiver, global) && default_is_closed(index, global),
-        Expr::Tuple(es, _) | Expr::Array(es, _) => all(es),
-        Expr::Struct { inits, .. } => inits.iter().all(|i| default_is_closed(&i.value, global)),
-        Expr::Range { lo, hi, .. } => default_is_closed(lo, global) && default_is_closed(hi, global),
-        Expr::ArrayRepeat { val, .. } => default_is_closed(val, global),
+        Expr::Binary { left, right, .. } => closed(left, following) && closed(right, following),
+        Expr::Unary { operand, .. } => closed(operand, following),
+        Expr::Field { receiver, .. } | Expr::Path2 { receiver, .. } => closed(receiver, following),
+        Expr::Index { receiver, index, .. } => closed(receiver, following) && closed(index, following),
+        Expr::Tuple(es, _) | Expr::Array(es, _) => es.iter().all(|x| closed(x, following)),
+        Expr::Struct { path, inits, .. } => {
+            if !inits.iter().all(|i| closed(&i.value, following)) {
+                return false;
+            }
+            // the fields the literal leaves out take their defaults where
+            // it is evaluated
+            let [seg] = path.segments.as_slice() else { return true };
+            let Some(declared) = fields(&seg.name) else { return true };
+            for f in declared {
+                if inits.iter().any(|i| i.name.name == f.name.name) {
+                    continue;
+                }
+                let Some(d) = &f.default else {
+                    // a `bounded` field starts empty; any other left out
+                    // is a literal the check refuses
+                    if wire_list(&f.ty).is_some_and(|(_, _, exact)| !exact) {
+                        continue;
+                    }
+                    return false;
+                };
+                let key = (seg.name.clone(), f.name.name.clone());
+                if following.contains(&key) {
+                    return false;
+                }
+                following.push(key);
+                let ok = closed(d, following);
+                following.pop();
+                if !ok {
+                    return false;
+                }
+            }
+            true
+        }
+        Expr::Range { lo, hi, .. } => closed(lo, following) && closed(hi, following),
+        Expr::ArrayRepeat { val, .. } => closed(val, following),
         _ => false,
     }
 }
@@ -2226,9 +2291,15 @@ fn generate_codecs(
     for p in programs.iter() {
         global_value_names(&p.items, &mut globals);
     }
+    // each record's declared fields, for the defaults a literal leaves
+    let ro: Vec<&Program> = programs.iter().map(|p| &**p).collect();
+    let mut records: std::collections::BTreeMap<String, &[crate::ast::StructField]> = std::collections::BTreeMap::new();
+    for p in &ro {
+        record_fields(&p.items, &mut records);
+    }
     let mut enums: Vec<JsonEnum> = Vec::new();
     for p in programs.iter() {
-        collect_api_types(&p.items, &wanted, &scalars, &aliases, &enum_kinds, &globals, &mut types);
+        collect_api_types(&p.items, &wanted, &scalars, &aliases, &enum_kinds, &globals, &records, &mut types);
         collect_api_enums(&p.items, &wanted, &scalars, &aliases, &enum_kinds, &mut enums);
         walk_fns(&p.items, &mut |name| {
             existing_fns.insert(name.to_string());
@@ -2870,6 +2941,7 @@ fn collect_api_types(
     aliases: &std::collections::BTreeMap<String, TypeExpr>,
     enums: &std::collections::BTreeMap<String, bool>,
     globals: &HashSet<String>,
+    records: &std::collections::BTreeMap<String, &[crate::ast::StructField]>,
     out: &mut Vec<JsonType>,
 ) {
     for item in items {
@@ -2923,7 +2995,7 @@ fn collect_api_types(
                     let default_expr = match &kind {
                         FieldKind::List { .. } => None,
                         _ if default_src.is_some() => None,
-                        _ => f.default.clone().filter(|d| default_is_closed(d, &|n| globals.contains(n))),
+                        _ => f.default.clone().filter(|d| default_is_closed(d, &|n| globals.contains(n), &|t| records.get(t).copied())),
                     };
                     jfields.push(JsonField {
                         name: f.name.name.clone(),
@@ -2948,7 +3020,7 @@ fn collect_api_types(
                 }
                 out.push(JsonType { name: td.name.name.clone(), fields: jfields, lifted: None, lifted_flag: None });
             }
-            TopDecl::Module(m) => collect_api_types(&m.items, wanted, scalars, aliases, enums, globals, out),
+            TopDecl::Module(m) => collect_api_types(&m.items, wanted, scalars, aliases, enums, globals, records, out),
             _ => {}
         }
     }

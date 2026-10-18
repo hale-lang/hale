@@ -2242,7 +2242,10 @@ writes for it (a literal, an enum's variant, a record, a value computed
 from others) is what the absent field decodes to, through either codec,
 as the record's own literal would build it, when the codec can evaluate
 it on its own: a default built of literals, constants, fns, qualified
-paths (an enum's variant) and record literals of those. A record field
+paths (an enum's variant) and record literals of those, a record
+literal closed only when every field it leaves out has such a default
+too (followed through nested literals; a chain of defaults that reaches
+itself is not closed). A record field
 default is evaluated in the scope of the literal that leaves it, so one
 that reads anything else of that scope (`b: Int = a + 1`, `a` a local
 where the literal is written) is no default a codec can build, and its

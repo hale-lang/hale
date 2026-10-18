@@ -427,7 +427,12 @@ impl<'a> Shapes<'a> {
     /// Whether a field's declared default is one a codec can build where
     /// the field is absent (`hale_syntax::json_gen::default_is_closed`).
     pub fn default_is_closed(&self, d: &hale_syntax::ast::Expr) -> bool {
-        hale_syntax::json_gen::default_is_closed(d, &|n| self.globals.contains(n))
+        hale_syntax::json_gen::default_is_closed(d, &|n| self.globals.contains(n), &|t| {
+            self.types.get(t).and_then(|decl| match &decl.body {
+                TypeDeclBody::Struct(fs) => Some(fs.as_slice()),
+                _ => None,
+            })
+        })
     }
 
     /// The name a document gives the declared type `name` (GH #1417, R8a;

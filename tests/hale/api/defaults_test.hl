@@ -39,18 +39,26 @@ type Rec {
 }
 const LIMIT: Int = 5;
 type Scoped { local: Int = k + 1; closed: Int = LIMIT * 2; }
+// a literal default carries the defaults of the fields it leaves out: one
+// that leaves out an open default is open (`Holds.inner`), one that leaves
+// out only closed defaults is closed (`Holds.ok`)
+type NeedsK { b: Int = k + 1; }
+type Inner2 { c: Int = 3; }
+type Holds { inner: NeedsK = NeedsK { }; ok: Inner2 = Inner2 { }; }
 type AllDefault { scope: Scope = Scope::org; inner: Inner = Inner { a: 9, b: "x" }; n: Int = 4 * 4; }
 
 api Defaults {
     rpc Probe::rec;
     rpc Probe::all;
     rpc Probe::scoped;
+    rpc Probe::holds;
 }
 
 locus Probe {
     fn rec(r: Rec) -> Rec { return r; }
     fn all(a: AllDefault) -> AllDefault { return a; }
     fn scoped(s: Scoped) -> Scoped { return s; }
+    fn holds(h: Holds) -> Holds { return h; }
 }
 
 locus Tokens {
@@ -137,6 +145,13 @@ main locus Desk {
             Scoped { local: -1 }
         };
         std::test::assert_eq_int(pb.local, -1, "the protobuf decoder refused the absent field");
+        let h = __api_decode_Holds("{\"inner\":{\"b\":1}}") or {
+            std::test::assert(false, "Holds with `inner` sent: " + err.kind + " " + err.field);
+            return;
+        };
+        std::test::assert_eq_int(h.ok.c, 3, "a closed nested literal default is built");
+        let h_absent = __api_decode_Holds("{}") or Holds { inner: NeedsK { b: -1 } };
+        std::test::assert_eq_int(h_absent.inner.b, -1, "an open nested literal default leaves its field required");
         for v in [a, b] {
             let org = match v.scope { Scope::key -> false, Scope::team -> false, Scope::org -> true, };
             std::test::assert(org, "an absent enum is its default");

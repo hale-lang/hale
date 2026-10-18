@@ -412,5 +412,7 @@ fn a_field_with_a_default_is_described_optional() {
     // a default the codec cannot build on its own (it reads a literal's
     // scope) leaves its field required; one of constants does not
     assert_eq!(doc["schemas"]["Scoped"]["required"], json!(["local"]));
+    // a literal default that leaves out an open default is open itself
+    assert_eq!(doc["schemas"]["Holds"]["required"], json!(["inner"]));
     let _ = std::fs::remove_dir_all(&dir);
 }
