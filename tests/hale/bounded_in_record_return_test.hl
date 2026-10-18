@@ -1,0 +1,21 @@
+// A `bounded` is returned inside a record (a fn cannot return one by
+// value: the check refuses it, crates/hale-types/tests/diag_quality.rs),
+// and the caller reads and grows it after the call.
+
+type Names { items: bounded[String; 4]; }
+
+fn names(k: Int) -> Names {
+    let mut n = Names { };
+    push(n.items, "a" + to_string(k)) or discard;
+    push(n.items, std::str::upper("b") + to_string(k)) or discard;
+    return n;
+}
+
+fn main() {
+    let mut n = names(7);
+    std::test::assert(count(n.items) == 2, "two elements came back");
+    std::test::assert((at(n.items, 0) or "") == "a7", "the first is whole");
+    std::test::assert((at(n.items, 1) or "") == "B7", "the second is whole");
+    push(n.items, "c") or discard;
+    std::test::assert(count(n.items) == 3, "the caller grows it");
+}

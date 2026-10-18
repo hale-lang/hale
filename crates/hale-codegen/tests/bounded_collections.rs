@@ -551,3 +551,39 @@ fn a_local_shadowing_a_member_parameter_is_its_own_binding() {
     "#;
     assert_eq!(build_and_run("bounded_member_param_shadow", src), "1\n");
 }
+
+/// A `bounded` returned inside a record (a fn cannot return one by value,
+/// the check refuses that): the String elements the callee pushed are read
+/// whole, and grown, after it returned, under AddressSanitizer (chunk
+/// recycling off, as an ASan build defaults).
+#[test]
+fn a_bounded_returned_in_a_record_outlives_its_fn_under_asan() {
+    let src = r#"
+        type Names { items: bounded[String; 4]; }
+        fn names(k: Int) -> Names {
+            let mut n = Names { };
+            push(n.items, "a" + to_string(k)) or discard;
+            push(n.items, std::str::upper("b") + to_string(k)) or discard;
+            return n;
+        }
+        fn main() {
+            let mut k = 0;
+            let mut last = "";
+            while k < 50 {
+                let mut n = names(k);
+                push(n.items, "c" + to_string(k)) or discard;
+                last = (at(n.items, 0) or "") + "|" + (at(n.items, 1) or "") + "|" + (at(n.items, 2) or "") + "|" + to_string(count(n.items));
+                k = k + 1;
+            }
+            println(last);
+        }
+    "#;
+    let bin = harness::unique_bin("bounded_record_return_asan");
+    let options = hale_codegen::BuildOptions { asan: true, ..build_opts::options() };
+    build_opts::build_source(src, &bin, &options).expect("asan build");
+    let out = Command::new(&bin).output().expect("run");
+    let _ = std::fs::remove_file(&bin);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success() && !stderr.contains("AddressSanitizer"), "{:?}: {stderr}", out.status);
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "a49|B49|c49|3\n");
+}

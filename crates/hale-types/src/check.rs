@@ -768,6 +768,80 @@ fn unfresh_fn_value_message(shown: &str, l: &str) -> String {
     )
 }
 
+/// A fn, a method or an interface's method declared to return a `bounded`
+/// (written, or through an alias): the build cannot return one by value
+/// (it lives inline in its containing type, so it has no value of its own
+/// to hand back), and the check says so where the build would refuse it,
+/// with no file or line. A record holding the `bounded` returns it.
+fn bounded_return_diags(bundle: &Bundle<'_>, top: &crate::resolve::TopScope) -> Vec<Diag> {
+    // a declaration's type parameters are its own, opaque, whatever global
+    // type shares a name with one (`fn identity<T>(x: T) -> T` beside a
+    // `type T = bounded[...]` returns a T, not a bounded)
+    let returns_bounded = |te: &TypeExpr, generics: &[&GenericParam]| {
+        let opaque: BTreeMap<String, Ty> = generics.iter().map(|g| (g.name.name.clone(), Ty::Unknown)).collect();
+        let mut t = crate::resolve::resolve_type_expr_with(te, &top.names, &opaque);
+        for _ in 0..16 {
+            match t {
+                Ty::Named(ref n) => match top.lookup(n) {
+                    Some(TopSymbol::Type(info)) => match &info.kind {
+                        TypeKind::Alias(a) => t = a.clone(),
+                        _ => return None,
+                    },
+                    _ => return None,
+                },
+                Ty::Bounded(..) => return Some(t),
+                _ => return None,
+            }
+        }
+        None
+    };
+    let mut out = Vec::new();
+    let mut refuse = |what: String, te: &TypeExpr, generics: &[&GenericParam]| {
+        if let Some(t) = returns_bounded(te, generics) {
+            out.push(Diag::ty(
+                te.span(),
+                format!(
+                    "{what} returns a `{}`, and bounded[T; N] cannot be returned by value — it lives inline in its \
+                     containing type; return a record holding it (`type Names {{ items: {}; }}`), or fill a place \
+                     the caller passes",
+                    t.display(),
+                    t.display()
+                ),
+            ));
+        }
+    };
+    for program in bundle.programs.values() {
+        for item in flat_decls(&program.items) {
+            match item {
+                TopDecl::Fn(f) => {
+                    if let Some(te) = &f.ret {
+                        refuse(format!("`{}`", f.name.name), te, &f.generics.iter().collect::<Vec<_>>());
+                    }
+                }
+                TopDecl::Locus(l) => {
+                    for m in &l.members {
+                        if let LocusMember::Fn(f) = m {
+                            if let Some(te) = &f.ret {
+                                let generics: Vec<&GenericParam> = l.generics.iter().chain(&f.generics).collect();
+                                refuse(format!("`{}::{}`", l.name.name, f.name.name), te, &generics);
+                            }
+                        }
+                    }
+                }
+                TopDecl::Interface(i) => {
+                    for m in &i.methods {
+                        if let Some(te) = &m.ret {
+                            refuse(format!("`{}::{}`", i.name.name, m.name.name), te, &[]);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    out
+}
+
 fn publish_in_default_diags(bundle: &Bundle<'_>) -> Vec<Diag> {
     use crate::listener_window::{visit_expr, Visited};
     fn sends(e: &Expr, out: &mut Vec<Diag>) {
@@ -1252,6 +1326,7 @@ pub fn check_bundle_rules(
     diags.extend(publish_in_default_diags(bundle));
     diags.extend(crate::route_params_copy::stale_route_params_diags(bundle));
     diags.extend(crate::param_place_writes::param_place_write_diags(bundle, inputs.top));
+    diags.extend(bounded_return_diags(bundle, top));
     diags.extend(walk.diags.iter().cloned());
     let mut by_decl = walk.by_decl.clone();
     let raw_frame_topics = raw_frame_topics(bundle, inputs.bindings);
