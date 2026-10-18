@@ -115,9 +115,6 @@ fn main() {
     } else if verb == "senses-up" {
         // GH #988: the senses' store, compose's `senses` service brought up
         ans = host::senses_up_verb(root);
-    } else if verb == "candidates-migrate" {
-        // GH #1590: upgrade moves old-format candidates to their branches
-        ans = host::candidates_migrate_verb(root);
     } else if verb == "record-head" {
         ans = host::record_head_verb(root);
     } else if verb == "record-rows" {

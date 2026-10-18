@@ -76,14 +76,6 @@ fn candidates_verb(root: String, seed: String, sub: String, id_in: String, why: 
     return answer(out);
 }
 
-// `hale dna upgrade` moves the candidates an earlier toolchain kept under
-// the record's refs to their branches (GH #1590): `moved <n> kept <n>`.
-fn candidates_migrate_verb(root: String) -> Answer {
-    let m = genome_candidates_migrate(root);
-    if len(m.why) > 0 { return fail("candidates migrate: " + m.why + (if m.moved > 0 { " (" + to_string(m.moved) + " moved before it)" } else { "" })); }
-    return answer("moved " + to_string(m.moved) + " kept " + to_string(m.kept) + "\n");
-}
-
 // ---- the driver's seeding, through the record ------------------------
 
 // The record's head, or `none`: the driver asks before it seeds.
