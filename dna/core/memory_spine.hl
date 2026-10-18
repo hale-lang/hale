@@ -713,6 +713,13 @@ locus MemoryKnowledge {
         self.store.forget_error();
         return self.store.graph_perspective("routing");
     }
+    // The record's rows the graph does not hold yet (0 when it is current),
+    // -1 when memory is not there or does not answer.
+    fn projection_lag() -> Int {
+        if !self.ready() || !self.ensure_open() { return -1; }
+        self.store.forget_error();
+        return self.store.projection_lag();
+    }
     // The graph's ownership (GH #1123): JSON `[node, holder]` pairs of
     // the `holds` edges an organization is in, "" when memory is not there
     // or does not answer.

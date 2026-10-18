@@ -711,6 +711,13 @@ locus Pq {
         if !r.ok { self.note("rebuild", r.err); self.abort_row(); return false; }
         return self.commit_row();
     }
+    // The record's rows the projection has not applied yet: the record's
+    // count less the watermark, one statement; -1 when memory did not answer.
+    fn projection_lag() -> Int {
+        let row = self.conn.query_one("SELECT ((SELECT count(*) FROM record_rows) - coalesce((SELECT value::bigint FROM knowledge_meta WHERE key = 'watermark'), 0))::text");
+        if !row.ok { self.note("projection lag", row.err); return -1; }
+        return std::str::parse_int(trim_nl(row.data)) or - 1;
+    }
     fn watermark() -> Int {
         let row = self.conn.query_one("SELECT value FROM knowledge_meta WHERE key = 'watermark'");
         // no row yet is the normal state of a store nothing has been

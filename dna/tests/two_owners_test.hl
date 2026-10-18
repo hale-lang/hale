@@ -15,13 +15,6 @@
 // job acme's body plans for north's member is a transfer inside the
 // ledger (GH #667): offered, refused to acme's member, accepted by
 // north's, handed by north's body, and closed by the assignee.
-//
-// Known flake (GH #1590): a body loads its ownership view (`Ownership`,
-// from memory's projection of the graph) once and refreshes it on its own
-// cadence; an ask that reaches acme's body before that view holds the
-// positions' owners is refused (`org/books` has no owner), though the
-// memberships the fixture waits for are already projected. Seen once in
-// three local runs.
 
 import "../core" as dna;
 import "../operations" as ops;
