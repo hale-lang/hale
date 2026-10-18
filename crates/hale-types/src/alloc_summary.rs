@@ -2536,6 +2536,29 @@ pub fn summarize_within(
     // #345: what each `@effects(is: {…})` declares, through the bundle's
     // one class table.
     let classes = crate::effect_classes::EffectClassTable::of(programs);
+    // The copy's declarations outside the reach, whose rows lack the
+    // column's copies. A body's declaration is its fn's, or for a locus
+    // member its locus's; each is in one top-level item of the copy.
+    let mut beyond_items: BTreeMap<u32, usize> = BTreeMap::new();
+    let mut beyond_loci: BTreeMap<String, usize> = BTreeMap::new();
+    if let Some(reach) = reach {
+        for (program, ids) in identified.iter().filter(|(_, ids)| is_stdlib_copy(ids)) {
+            for (top, outer) in program.items.iter().enumerate().filter(|(top, _)| !reach.contains(*top)) {
+                for item in flat_decls(std::slice::from_ref(outer)).filter(|item| !shadowed(ids, item)) {
+                    match item {
+                        TopDecl::Fn(f) => {
+                            beyond_items.insert(f.id.0, top);
+                        }
+                        TopDecl::Locus(l) => {
+                            beyond_items.insert(l.id.0, top);
+                            beyond_loci.insert(l.name.name.clone(), top);
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+    }
     // Phase 1 — collect every body with its key + entry classification.
     // For loci we first gather the set of bus-handler method names so a
     // method referenced by `subscribe ... -> handler` is tagged BusHandler.
@@ -2828,6 +2851,17 @@ pub fn summarize_within(
         }
     }
 
+    // A body outside the reach is never walked (phase 2 keys it and moves
+    // on), so what only its walk reads — its parameters' types — is not
+    // gathered for it.
+    let outside = |ids: &crate::snapshot::Snapshot, decl: NodeId| is_stdlib_copy(ids) && beyond_items.contains_key(&decl.0);
+    fn unless_beyond<T: Default>(beyond: bool, f: impl FnOnce() -> T) -> T {
+        if beyond {
+            T::default()
+        } else {
+            f()
+        }
+    }
     for (program, ids) in identified {
         let ids: &crate::snapshot::Snapshot = ids;
         let universe = universe_of(ids);
@@ -2839,6 +2873,7 @@ pub fn summarize_within(
         for item in flat_decls(&program.items).filter(|item| !shadowed(ids, item)) {
             match item {
                 TopDecl::Fn(decl) => {
+                    let beyond = outside(ids, decl.id);
                     if in_runtime(&decl.name) {
                         runtime_ids.insert(decl.id);
                     }
@@ -2856,7 +2891,7 @@ pub fn summarize_within(
                         string_rets.insert(key.clone());
                     }
                     note_params(&key, &decl.params, &mut param_info);
-                    bodies.push((key, &decl.body, entry, None, param_var_types(&decl.params), fn_typed_params(&decl.params), param_var_elem_types(&decl.params), ids, (decl.hot, false), decl.id, param_names(&decl.params), param_str_types(&decl.params)));
+                    bodies.push((key, &decl.body, entry, None, unless_beyond(beyond, || param_var_types(&decl.params)), unless_beyond(beyond, || fn_typed_params(&decl.params)), unless_beyond(beyond, || param_var_elem_types(&decl.params)), ids, (decl.hot, false), decl.id, param_names(&decl.params), unless_beyond(beyond, || param_str_types(&decl.params))));
                 }
                 TopDecl::Type(td) => {
                     if let TypeDeclBody::Struct(fields) = &td.body {
@@ -2888,6 +2923,7 @@ pub fn summarize_within(
                     }
                 }
                 TopDecl::Locus(l) => {
+                    let beyond = outside(ids, l.id);
                     let locus = l.name.name.clone();
                     if is_stdlib_copy(ids) {
                         analysis_copy_loci.insert(locus.clone());
@@ -2952,14 +2988,14 @@ pub fn summarize_within(
                                     &md.body,
                                     None,
                                     Some(locus.clone()),
-                                    param_var_types(&md.params),
-                                    fn_typed_params(&md.params),
-                                    param_var_elem_types(&md.params),
+                                    unless_beyond(beyond, || param_var_types(&md.params)),
+                                    unless_beyond(beyond, || fn_typed_params(&md.params)),
+                                    unless_beyond(beyond, || param_var_elem_types(&md.params)),
                                     ids,
                                     (false, true),
                                     l.id,
                                     param_names(&md.params),
-                                    param_str_types(&md.params),
+                                    unless_beyond(beyond, || param_str_types(&md.params)),
                                 ));
                             }
                             LocusMember::Fn(decl) => {
@@ -2985,14 +3021,14 @@ pub fn summarize_within(
                                     &decl.body,
                                     entry,
                                     Some(locus.clone()),
-                                    param_var_types(&decl.params),
-                                    fn_typed_params(&decl.params),
-                                    param_var_elem_types(&decl.params),
+                                    unless_beyond(beyond, || param_var_types(&decl.params)),
+                                    unless_beyond(beyond, || fn_typed_params(&decl.params)),
+                                    unless_beyond(beyond, || param_var_elem_types(&decl.params)),
                                     ids,
                                     (decl.hot, false),
                                     l.id,
                                     param_names(&decl.params),
-                                    param_str_types(&decl.params),
+                                    unless_beyond(beyond, || param_str_types(&decl.params)),
                                 ));
                             }
                             // The empty `run` a locus that declares none
@@ -3009,14 +3045,14 @@ pub fn summarize_within(
                                     &lc.body,
                                     Some(entry),
                                     Some(locus.clone()),
-                                    param_var_types(&lc.params),
-                                    fn_typed_params(&lc.params),
-                                    param_var_elem_types(&lc.params),
+                                    unless_beyond(beyond, || param_var_types(&lc.params)),
+                                    unless_beyond(beyond, || fn_typed_params(&lc.params)),
+                                    unless_beyond(beyond, || param_var_elem_types(&lc.params)),
                                     ids,
                                     (false, false),
                                     l.id,
                                     param_names(&lc.params),
-                                    param_str_types(&lc.params),
+                                    unless_beyond(beyond, || param_str_types(&lc.params)),
                                 ));
                             }
                             _ => {}
@@ -3251,29 +3287,6 @@ pub fn summarize_within(
         })
         .collect();
 
-    // The copy's declarations outside the reach, whose rows lack the
-    // column's copies. A body's declaration is its fn's, or for a locus
-    // member its locus's; each is in one top-level item of the copy.
-    let mut beyond_items: BTreeMap<u32, usize> = BTreeMap::new();
-    let mut beyond_loci: BTreeMap<String, usize> = BTreeMap::new();
-    if let Some(reach) = reach {
-        for (program, ids) in identified.iter().filter(|(_, ids)| is_stdlib_copy(ids)) {
-            for (top, outer) in program.items.iter().enumerate().filter(|(top, _)| !reach.contains(*top)) {
-                for item in flat_decls(std::slice::from_ref(outer)).filter(|item| !shadowed(ids, item)) {
-                    match item {
-                        TopDecl::Fn(f) => {
-                            beyond_items.insert(f.id.0, top);
-                        }
-                        TopDecl::Locus(l) => {
-                            beyond_items.insert(l.id.0, top);
-                            beyond_loci.insert(l.name.name.clone(), top);
-                        }
-                        _ => {}
-                    }
-                }
-            }
-        }
-    }
     let beyond_body = |ids: &crate::snapshot::Snapshot, decl: NodeId| -> Option<usize> {
         is_stdlib_copy(ids).then(|| beyond_items.get(&decl.0).copied()).flatten()
     };
