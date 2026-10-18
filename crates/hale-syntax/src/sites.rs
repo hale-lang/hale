@@ -309,6 +309,9 @@ macro_rules! walk {
                         expr(& $($m)? bc.cond, f);
                         opt_expr(& $($m)? bc.payload, f);
                     }
+                    // A seam left in place is one its expansion refused:
+                    // nothing lowers it, and only its head is an expression.
+                    LocusMember::Seam(sd) => expr(& $($m)? sd.head, f),
                     // No identity and no expression inside.
                     LocusMember::Topology(_) | LocusMember::Claims(_) => {}
                 }

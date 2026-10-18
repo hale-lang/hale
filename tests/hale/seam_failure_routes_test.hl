@@ -1,0 +1,93 @@
+// tests/hale/seam_failure_routes_test.hl — a seam's failure routes (GH
+// #1530 step 2). A failure that is a set enters the chain at the first
+// later hop that takes every member of it: a locus whose methods cover
+// its members (each member to its own eater), or a method whose
+// parameter's set holds them all, even when the route branches by
+// member. A sink spelled `-> ()` returns nothing, as everywhere.
+
+type A { n: Int; }
+type B { s: String; }
+type Errors = A | B;
+type Fine { v: Int; }
+type Output = Fine | A | B;
+
+locus Decode {
+    fn decode(x: Int) -> String fallible(Errors) {
+        if x < 0 { fail A { n: x }; }
+        if x == 0 { fail B { s: "zero" }; }
+        return "ok " + to_string(x);
+    }
+    fn parse(x: Int) -> Fine fallible(Errors) {
+        if x < 0 { fail A { n: x }; }
+        if x == 0 { fail B { s: "zero" }; }
+        return Fine { v: x };
+    }
+}
+
+// a locus whose methods cover the failure's members
+locus Handle {
+    fn ok(s: String) -> String { return s; }
+    fn a(a: A) -> String { return "a " + to_string(a.n); }
+    fn b(b: B) -> String { return "b " + b.s; }
+}
+
+// one method whose parameter's set holds the failure's members
+locus All {
+    fn all(o: Output) -> String {
+        return match o {
+            Fine(f) -> "fine " + to_string(f.v),
+            A(a) -> "all a " + to_string(a.n),
+            B(b) -> "all b " + b.s,
+        };
+    }
+}
+
+locus Box {
+    params { total: Int = 0; }
+    fn put(x: Int) -> () { self.total = self.total + x; }
+    fn take(x: Int) -> Int fallible(A) {
+        if x < 0 { fail A { n: x }; }
+        return x;
+    }
+}
+
+// a value or its failure, each to its own method, neither returning one
+locus Tally {
+    params { total: Int = 0; errors: Int = 0; }
+    fn keep(x: Int) -> () { self.total = self.total + x; }
+    fn count(a: A) -> () { self.errors = self.errors + 1; }
+}
+
+locus App {
+    params { d: Decode = Decode { }; h: Handle = Handle { }; all: All = All { }; box: Box = Box { }; t: Tally = Tally { }; }
+    seam go(x: Int) -> String {
+        x -> self.d.decode -> self.h;
+    }
+    seam wide(x: Int) -> String {
+        x -> self.d.parse -> self.all.all;
+    }
+    seam store(x: Int) {
+        x -> self.box.put;
+    }
+    // declared `-> ()`, with a failure routed to a later hop: nothing returns
+    seam tally(x: Int) -> () {
+        x -> self.box.take -> self.t;
+    }
+}
+
+fn main() {
+    let app = App { };
+    std::test::assert_eq_str(app.go(3), "ok 3", "the success path");
+    std::test::assert_eq_str(app.go(-2), "a -2", "a failure member to its eater");
+    std::test::assert_eq_str(app.go(0), "b zero", "the other member to its eater");
+    std::test::assert_eq_str(app.wide(5), "fine 5", "a set into a wider set");
+    std::test::assert_eq_str(app.wide(-1), "all a -1", "a failure member into the wider set");
+    std::test::assert_eq_str(app.wide(0), "all b zero", "and the other");
+    app.store(4);
+    app.store(5);
+    std::test::assert_eq_int(app.box.total, 9, "a sink spelled `-> ()`");
+    app.tally(1);
+    app.tally(-3);
+    std::test::assert_eq_int(app.t.total, 1, "a `-> ()` seam's success path");
+    std::test::assert_eq_int(app.t.errors, 1, "and its failure route");
+}

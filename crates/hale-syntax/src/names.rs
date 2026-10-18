@@ -474,6 +474,24 @@ fn locus_member<'a>(m: &'a LocusMember, f: &mut Visit<'_, 'a>) {
             name(closure_name, f);
             opt_expr(payload, f);
         }
+        LocusMember::Seam(sd) => {
+            let SeamDecl { name: n, param, ret, head, hops, on_failure, span: _ } = sd;
+            if let Some(n) = n {
+                name(n, f);
+            }
+            params(param.as_slice(), f);
+            opt_ty(ret, f);
+            expr(head, f);
+            for h in hops {
+                let SeamHop { path, span: _ } = h;
+                for seg in path {
+                    name(seg, f);
+                }
+            }
+            if let Some(SeamFailure::Violate(c)) = on_failure {
+                name(c, f);
+            }
+        }
     }
 }
 

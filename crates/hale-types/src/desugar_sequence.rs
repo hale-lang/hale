@@ -14,6 +14,9 @@
 //! 2. serve sites: `rpc_expand` turns an `api::serve` into an exposure,
 //!    its surface's rows into an adapter and its receivers' plumbing
 //!    (bundle-wide).
+//!    2b. seams: `seam_expand` turns a `seam` into the methods it means,
+//!    a closed flow the locus's `run` (bundle-wide: a hop's locus may be
+//!    another file's).
 //! 3. unit returns: `-> ()` is "no return type" on every fn-shaped
 //!    declaration.
 //! 4. construction aliases: a struct literal, variant path or
@@ -41,7 +44,7 @@
 //!    value (`{ f }(x)`, [`crate::shadowed_callees`]), so no pass that
 //!    resolves a bare callee by name reaches the fn instead.
 //!
-//! The first two generate declarations; everything after them sees the
+//! The first two (and 2b) generate declarations; everything after them sees the
 //! generated ones too. The bundled stdlib goes through the passes that
 //! shape a declaration (3 onward, [`bundled_stdlib`]) before the
 //! resolved program appends it; it spells no `from_json` and no serve.
@@ -78,6 +81,8 @@ pub fn desugar_before_check(programs: &mut [&mut Program], seq: &Sequence<'_>) {
     // not parse is reported where it is appended (`resolve_rewritten`);
     // here the passes run without it.
     let stdlib = bundled_stdlib().ok();
+    // GH #1530 step 2: a seam becomes the methods it means.
+    crate::seam_expand::expand(programs, stdlib.as_slice());
     shape(programs, seq, stdlib.as_slice());
 }
 

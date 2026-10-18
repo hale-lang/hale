@@ -4165,11 +4165,93 @@ impl Parser {
             TokenKind::Ident(s) if s == "birth_check" => {
                 self.parse_birth_check_decl().map(LocusMember::BirthCheck)
             }
+            // GH #1530 step 2 contextual keyword — `seam { … }` or
+            // `seam name(x: T) { … }`.
+            TokenKind::Ident(s)
+                if s == crate::ast::seam_words::SEAM
+                    && matches!(self.peek_at(1), TokenKind::LBrace | TokenKind::Ident(_)) =>
+            {
+                self.parse_seam_decl().map(LocusMember::Seam)
+            }
             other => Err(Diag::parse(
                 self.peek_token().span,
                 format!("expected locus member, got {:?}", other),
             )),
         }
+    }
+
+    /// GH #1530 step 2: a seam. The closed flow, `seam { SOURCE -> HOP ->
+    /// … ; [or end; | or violate NAME;] }`, and the callable one, `seam
+    /// NAME(x: T) [-> R] { x -> HOP -> … ; [or end;] }`. A hop is `self`
+    /// or a `self.` path; the chain ends at its `;`.
+    fn parse_seam_decl(&mut self) -> Result<SeamDecl, Diag> {
+        use crate::ast::seam_words;
+        let kw = self.bump(); // `seam`
+        let (name, param, ret) = if let TokenKind::Ident(_) = self.peek() {
+            let name = self.expect_ident("seam name")?;
+            self.expect(TokenKind::LParen, "(")?;
+            let pname = self.expect_ident("the seam's entry parameter")?;
+            self.expect(TokenKind::Colon, ":")?;
+            let ty = self.parse_type_expr()?;
+            let close = self.expect(TokenKind::RParen, ")")?;
+            let param = Param { span: pname.span.merge(close.span), name: pname, ty, default: None, secret: false };
+            let ret = if self.eat(&TokenKind::Arrow) { Some(self.parse_type_expr()?) } else { None };
+            (Some(name), Some(param), ret)
+        } else {
+            (None, None, None)
+        };
+        self.expect(TokenKind::LBrace, "{")?;
+        let head = self.parse_expr()?;
+        let mut hops = Vec::new();
+        while self.eat(&TokenKind::Arrow) {
+            let start = self.peek_token().span;
+            if !matches!(self.peek(), TokenKind::KwSelf) {
+                return Err(Diag::parse(
+                    start,
+                    "a seam's hop is `self` or a `self.` path (`self.desk`, `self.wire.decode`): the chain is \
+                     static, so each hop is a method or a child of the locus",
+                ));
+            }
+            self.bump();
+            let mut path = Vec::new();
+            let mut end = start;
+            while self.eat(&TokenKind::Dot) {
+                let seg = self.expect_member_name("a hop's name")?;
+                end = seg.span;
+                path.push(seg);
+            }
+            hops.push(SeamHop { path, span: start.merge(end) });
+        }
+        self.expect(TokenKind::Semi, ";")?;
+        if hops.is_empty() {
+            return Err(Diag::parse(head.span(), "a seam has at least one hop: `source -> self.hop;`"));
+        }
+        let on_failure = if matches!(self.peek(), TokenKind::Ident(s) if s == seam_words::OR) {
+            self.bump();
+            let word = self.peek_token().clone();
+            let f = match &word.kind {
+                TokenKind::Ident(s) if s == seam_words::END => {
+                    self.bump();
+                    SeamFailure::End(word.span)
+                }
+                TokenKind::Ident(s) if s == seam_words::VIOLATE => {
+                    self.bump();
+                    SeamFailure::Violate(self.expect_ident("closure name")?)
+                }
+                _ => {
+                    return Err(Diag::parse(
+                        word.span,
+                        "a seam's failure clause is `or end;` or `or violate <closure>;`",
+                    ))
+                }
+            };
+            self.expect(TokenKind::Semi, ";")?;
+            Some(f)
+        } else {
+            None
+        };
+        let close = self.expect(TokenKind::RBrace, "}")?;
+        Ok(SeamDecl { name, param, ret, head, hops, on_failure, span: kw.span.merge(close.span) })
     }
 
     /// F.27 v2: `birth_check { COND_EXPR } -> violate NAME[(PAYLOAD)];`.

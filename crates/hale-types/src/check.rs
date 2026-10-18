@@ -9156,6 +9156,11 @@ fn check_main_and_bindings(bundle: &Bundle<'_>, inputs: &CheckInputs<'_>, diags:
     diags.extend(crate::roles::role_laws(inputs.roles));
     check_duplicate_members(&programs_vec, diags);
     check_wire_maps(&programs_vec, diags);
+    // GH #1530 step 2: a seam its expansion refused, reported
+    diags.extend(crate::seam_expand::refusals(
+        &programs_vec,
+        crate::desugar_sequence::bundled_stdlib().ok().as_slice(),
+    ));
     if mains.len() > 1 {
         for (name, span) in &mains {
             diags.push(Diag::ty(
@@ -14512,6 +14517,9 @@ impl<'a> Checker<'a> {
                 // `pinned(node =)` / `pinned(l3 =)` references
                 // that resolve against it. Nothing member-local.
             }
+            // GH #1530 step 2: a seam still here is one its expansion
+            // refused; `check_seams` reports it.
+            LocusMember::Seam(_) => {}
             LocusMember::Claims(_) => {
                 // GH #382: claims are evaluated by the dedicated
                 // bundle-level law judgment — they
@@ -16324,7 +16332,12 @@ impl<'a> Checker<'a> {
                             .to_string(),
                     )),
                     Some((_, expected_payload)) => {
-                        if !expected_payload.assignable_from(&payload_ty) {
+                        // a member fails as its set (GH #1530): it flows
+                        // into the payload as into any place of the set
+                        let expected_payload = expected_payload.clone();
+                        let injected = self.set_injection(&expected_payload, &payload_ty).is_some()
+                            && self.flows_into(&expected_payload, &payload_ty, value);
+                        if !injected && !expected_payload.assignable_from(&payload_ty) {
                             self.diags.push(Diag::ty(
                                 value.span(),
                                 format!(

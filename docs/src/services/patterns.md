@@ -262,3 +262,43 @@ Poll-scanner sleeps accumulate tail-latency debt that looks like a
 runtime problem but is the sleep schedule. Blocking I/O that can't
 park (a TLS handshake, say) goes on `pinned` instead — see
 [Concurrency & placement](./concurrency.md).
+
+## 9. Decoder, handler, seam
+
+When a message is one of several types, write the three pieces and let
+the compiler write the glue. The decoder makes a member of a set, the
+handler has one method per member, and a `seam` stitches them:
+
+```hale,fragment
+type Inbound  = NewOrder | Cancel;
+type Outbound = Ack | Reject | WireError;
+
+locus Wire {                       // knows the bytes, not the desk
+    fn decode(b: String) -> Inbound fallible(WireError) { … }
+    fn encode(o: Outbound) -> String { … }
+}
+
+locus Desk {                       // knows its own types, not the wire
+    fn new_order(n: NewOrder) -> Outbound { … }
+    fn cancel(c: Cancel) -> Outbound { … }
+}
+
+locus Gateway {
+    params { feed: Feed = Feed { }; wire: Wire = Wire { }; desk: Desk = Desk { }; log: Log = Log { }; }
+    seam {
+        self.feed.next() -> self.wire.decode -> self.desk -> self.wire.encode -> self.log.write;
+        or end;
+    }
+}
+```
+
+`self.desk` is a locus hop: each member of `Inbound` goes to the `Desk`
+method whose parameter is that member, and a member no method takes (or
+two take) fails the build there, by name, instead of falling through a
+default arm at runtime. The decoder's `WireError` is a member of
+`Outbound`, so it enters the chain at `encode` and becomes an answer;
+a failure no later hop takes needs `or end;` (the flow ends) or `or
+violate <closure>;`. With a source and a sink the seam is the locus's
+`run`; without a source it is a method you call, `seam answer(frame:
+String) -> String { frame -> … ; }`. Everything in a seam is one tower:
+its hops are the locus's own methods and children, called directly.

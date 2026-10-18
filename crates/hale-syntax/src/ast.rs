@@ -1440,6 +1440,62 @@ pub enum LocusMember {
     /// locus are evaluated in declaration order; the first to
     /// fire short-circuits the rest.
     BirthCheck(BirthCheckDecl),
+    /// GH #1530 step 2: `seam { source -> hop -> … -> sink; or end; }`, or
+    /// the callable `seam name(x: T) -> R { x -> hop -> …; }`. The desugar
+    /// sequence expands a seam into ordinary methods (`seam_expand`); one
+    /// that stays is one the expansion refused, which the checker reports.
+    Seam(SeamDecl),
+}
+
+/// The spelling of a seam, in one place (GH #1530 step 2; the RFC leaves
+/// it open). The words are contextual.
+pub mod seam_words {
+    /// The member's introducer: `seam { … }`.
+    pub const SEAM: &str = "seam";
+    /// The failure clause's introducer: `or end;`.
+    pub const OR: &str = "or";
+    /// Uncovered failures end the flow, as `run` ends.
+    pub const END: &str = "end";
+    /// Uncovered failures violate the named closure of the locus.
+    pub const VIOLATE: &str = "violate";
+}
+
+/// GH #1530 step 2: a seam, a chain of hops the compiler stitches into
+/// direct calls, with a dispatch wherever a set meets a locus.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SeamDecl {
+    /// The callable form's name (`seam route(b: Bytes) { … }`); `None` for
+    /// the closed flow, which is the locus's `run`.
+    pub name: Option<Ident>,
+    /// The callable form's entry parameter.
+    pub param: Option<Param>,
+    /// The callable form's declared result, if written.
+    pub ret: Option<TypeExpr>,
+    /// The chain's head: the closed flow's source (a call making the entry
+    /// value), or the callable form's parameter, by name.
+    pub head: Expr,
+    /// Each `-> hop`, as written: `self`, `self.child`, `self.method`,
+    /// `self.child.method`.
+    pub hops: Vec<SeamHop>,
+    /// Where a failure no later hop takes goes.
+    pub on_failure: Option<SeamFailure>,
+    pub span: Span,
+}
+
+/// One hop of a seam: the path after `self`, empty for `self` itself.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SeamHop {
+    pub path: Vec<Ident>,
+    pub span: Span,
+}
+
+/// A seam's failure clause.
+#[derive(Debug, Clone, PartialEq)]
+pub enum SeamFailure {
+    /// `or end;`: the flow ends as `run` ends (a callable seam fails).
+    End(Span),
+    /// `or violate NAME;`: the locus's closure `NAME` is violated.
+    Violate(Ident),
 }
 
 /// F.27 v2: declarative birth-time invariant check. The locus

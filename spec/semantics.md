@@ -4038,6 +4038,79 @@ spawns one OS worker thread per inferred pool name beyond
 named purely by use site, and the runtime materializes them
 on demand at startup.
 
+## Seams
+
+A seam (GH #1530, 2026-10-17) stitches a producer whose output is a set to
+a consumer whose methods cover it, inside one locus tower. It is a member
+of a locus, beside `bus`, in one of two shapes:
+
+```hale
+locus Gateway {
+    params { feed: Feed = Feed { }; wire: Wire = Wire { }; desk: Desk = Desk { }; log: Log = Log { }; }
+    seam {
+        self.feed.next() -> self.wire.decode -> self.desk -> self.wire.encode -> self.log.write;
+        or end;
+    }
+}
+
+locus Counter {
+    params { wire: Wire = Wire { }; desk: Desk = Desk { }; }
+    seam answer(frame: String) -> String {
+        frame -> self.wire.decode -> self.desk -> self.wire.encode;
+    }
+}
+```
+
+The **closed flow** (no name) has a source, a call of a method of the
+locus or of a child that makes the entry value, and ends at a sink, a
+method that takes the last value and returns nothing. It is the locus's
+`run`: while the locus is not draining, it pulls a value from the source
+and runs the chain on it; a failing source ends the flow (the source has
+ended). A locus with a closed seam declares no `run` of its own. The
+**callable** form, `seam name(x: T) [-> R] { x -> … ; }`, is the method
+`name`, which runs the chain on its parameter and returns the last hop's
+value: of `R` when written (each path's value flows into it), else of the
+one type every path ends in, which is refused when the paths end in more
+than one ("declare what it returns, a set holding them all").
+
+A **hop** is `self.m` or `self.child.m`, one method, or `self` or
+`self.child`, a locus, where the compiler writes the dispatch: each member
+of the incoming set goes to the locus's method whose one parameter takes
+it. A child is a `params` field holding a locus; a hop on an interface is
+refused (its method is not known statically), and so is a hop on a child
+that `placement` puts on another pool than the seam's (a seam is one
+tower; the bus crosses pools).
+
+**Coverage** is one check applied at every boundary, both ways. At a locus
+hop, every member of the incoming set (a type that is no set is a set of
+one) has exactly one eater: a method whose parameter is the member or a set
+holding it. A member with none is refused, naming the member, what
+produced it and the locus; one with two names both methods. Methods no
+member reaches are ordinary methods. At a method hop and at the sink,
+every incoming member is in the parameter's set (or is its type), and one
+that is not is refused by name. A locus hop's output is the union of the
+dispatched methods' results; a method returning nothing ends the chain.
+
+**Failures.** A hop declared `fallible(E)` has its failure placed: entering
+the chain at the first later hop whose parameter set holds `E` (so an
+`Outbound` that includes `WireError` lets `encode` answer it as a
+protocol-level reject); else by the seam's `or end;` (the closed flow
+ends, as `run` ends; the callable seam fails with `E`, declared
+`fallible(E)`, and it fails with one type) or `or violate NAME;` (the
+closed flow violates the locus's closure `NAME`); a failure placed nowhere
+is refused, naming the hop and `E`.
+
+**Lowering.** A seam is expanded before the check into the methods it
+means, which are then checked as any methods are. The chain is direct
+calls, written a path per member: where a set meets a locus hop the
+expansion writes a `match` whose arm for each member runs the rest of the
+chain on that member, so a member keeps its static type from the
+producer's return to the sink and no union is built that the program did
+not declare. Each hop call is inlined into the seam. The dispatch on a
+set still reads the tag its producer wrote: a method's result is copied
+into its caller's arena at the method's one exit, behind runtime calls
+the optimizer cannot see through, so the branch is not folded yet.
+
 ## Element chains
 
 `xs.filter(<expr>).count()` and `xs.filter(<expr>).into(target)` are
