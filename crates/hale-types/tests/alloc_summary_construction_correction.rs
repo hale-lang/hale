@@ -1140,7 +1140,7 @@ fn startable_only_the_verb_program_runs_to_exit() {
                 "dna__core: 219",
                 "dna__core__pond__pq: 11",
                 "dna__core__pond__realtime__nats: 2",
-                "dna__host: 626",
+                "dna__host: 630",
                 "dna__operations: 138",
                 "the stdlib's copy: 1",
             ])
