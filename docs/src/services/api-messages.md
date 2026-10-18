@@ -46,7 +46,10 @@ Each field's shape is a decision about what a caller can say:
 
 - **`verbose: Bool = false` is a default.** A caller that leaves it out
   has said `false`, and nothing needs to tell "not sent" from "sent
-  `false`". Most optional inputs are this.
+  `false`". Most optional inputs are this. A default may be of any
+  type, an enum's (`scope: Scope = Scope::key`) or a record's as much as
+  a literal: the field is left out of the description's `required`, and
+  a payload without it gets the default.
 - **`since` with `has_since` is a presence pair.** Here "not sent" means
   something different from any time: give me everything. The caller may
   leave `since` out or send `null`, and the handler reads `has_since`.

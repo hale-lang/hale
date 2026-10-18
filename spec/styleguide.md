@@ -687,8 +687,10 @@ fn main() {
 
 - **A default, when "not sent" means a value.** A caller that leaves
   out `verbose: Bool = false` has said `false`. Use a defaulted field
-  wherever "not sent" and one value mean the same thing. It costs
-  neither side anything.
+  wherever "not sent" and one value mean the same thing, of any type: an
+  enum's (`scope: Scope = Scope::key`), a record's or a computed one is
+  read as a literal's is, and the description lists none of them as
+  required. It costs neither side anything.
 - **A presence pair, when "not sent" means not sent.** With `since`
   and `has_since: Bool`, the caller may leave the key out or send
   `null`, and the handler reads the flag. The encoder writes `note`
@@ -708,8 +710,8 @@ fn main() {
 - **An enum, for a closed set of states.** `Status` crosses as `"Up"` or
   `{"Degraded": "cold"}`, and the description lists the variants. A
   `String` status crosses as any string, and every client re-invents
-  the list. The codec reads no default for an enum field, so an absent
-  one is `missing_field` unless the field is a presence pair.
+  the list. An absent enum field is its default when it declares one,
+  and `missing_field` otherwise, unless the field is a presence pair.
 - **An error type that says which thing went wrong.** With
   `fallible(Problem)`, where `Problem` is an enum or a set of error
   records, a caller branches on the variant. A record of `code: String`

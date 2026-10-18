@@ -2155,9 +2155,10 @@ strict, and every refusal is `wrong_type` for the field the enum is read
 for (`payload` for a row's whole value): an unknown variant, a payload
 variant sent as a bare name, a payload-free one sent as an object, an
 object of other than one key, a value of the wrong kind, or the wrong
-number of values. An enum field has no default the codec reads, so an
-absent one is `missing_field`, unless it is optional (above): its zero is
-its first variant, with its values' zeros. A description gives a payload-free enum
+number of values. An absent enum field is its default when it declares
+one (`scope: Scope = Scope::key`), and otherwise `missing_field`, unless
+it is optional (above): its zero is its first variant, with its values'
+zeros. A description gives a payload-free enum
 `{"type": "string", "enum": [<variants>], "x-hale-type": "<Enum>"}` and
 one with payloads, inline, `{"oneOf": [<that, for its payload-free
 variants>, {"type": "object", "properties": {"<Variant>": <value
@@ -2234,8 +2235,14 @@ or `false` for a `Bool`, one quoted and correctly escaped string for a
 `String`, a number for a `Float`, a number with no fraction or exponent for
 an `Int` and for the integer a unit scalar counts; anything else is
 refused before the request is queued), a
-missing field without a literal default is `missing_field`, and a
-handler only ever sees a decoded value. A row whose shape has a field
+missing field without a default is `missing_field`, and a handler only
+ever sees a decoded value. A field with a default may be left out, and
+the description lists it under no `required`: whatever the declaration
+writes for it (a literal, an enum's variant, a record, a value computed
+from others) is what the absent field decodes to, through either codec,
+as the record's own literal would build it. A list is the one exception,
+by its shape: a `bounded` list left out is empty and a fixed array is
+always sent, a default of either unread (above). A row whose shape has a field
 the codec does not carry is refused by the admission law (law 5),
 never left out.
 

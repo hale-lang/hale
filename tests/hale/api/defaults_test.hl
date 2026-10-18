@@ -1,0 +1,123 @@
+// A field with a default is optional on the wire (spec/api.md § Codecs): the
+// description lists it under no `required`, and a payload that leaves it out
+// decodes to the default, whatever the field's type. A literal default and
+// any other (an enum's, a record's, a scalar computed from others) alike,
+// through the JSON codec and through protobuf. A `bounded` list and a wire
+// map are left out as empty. This program names no port: the serve site is
+// in a method nothing calls, which is all the compiler needs to write the
+// codecs (`api_shapes::a_field_with_a_default_is_described_optional` reads
+// the same surface's description).
+
+unit cent;
+type Money = quantity Int in cent;
+type Scope = enum { key, team, org };
+type Shape = enum { Empty, Circle(Float), Tag(String) };
+type Inner { a: Int; b: String = "in"; }
+type Item { name: String; qty: Int = 1; }
+type Rec {
+    name: String;
+    n: Int = 3;
+    sum: Int = 1 + 2;
+    label: String = "dflt";
+    on: Bool = true;
+    ratio: Float = 0.5;
+    wait: Duration = 5s;
+    longer: Duration = 2 * 5s;
+    price: Money = 7cent;
+    at: Time = `2026-01-01T00:00:00Z`;
+    scope: Scope = Scope::key;
+    shape: Shape = Shape::Circle(1.5);
+    inner: Inner = Inner { a: 7 };
+    tags: bounded[String; 3];
+    items: bounded[Item; 4] indexed_by name;
+}
+type AllDefault { scope: Scope = Scope::org; inner: Inner = Inner { a: 9, b: "x" }; n: Int = 4 * 4; }
+
+api Defaults {
+    rpc Probe::rec;
+    rpc Probe::all;
+}
+
+locus Probe {
+    fn rec(r: Rec) -> Rec { return r; }
+    fn all(a: AllDefault) -> AllDefault { return a; }
+}
+
+locus Tokens {
+    fn principal(token: String) -> std::api::Principal {
+        return std::api::Principal { mode: "bearer", name: "" };
+    }
+    fn refused() -> String { return "no such token"; }
+}
+
+main locus Desk {
+    params {
+        probe: Probe = Probe { };
+        bearer: Tokens = Tokens { };
+        // Served only so the compiler writes the codecs; nothing calls it.
+        h: api::Exposure = api::serve(Defaults, grpc::Rpc { bind: "127.0.0.1:0", codec: json, principals: self.bearer }, as: "d", receivers: { Probe: self.probe }, bound: 4, on_full: refuse);
+    }
+
+    fn check(r: Rec, what: String) {
+        std::test::assert_eq_str(r.name, "x", what + ": the field sent");
+        std::test::assert_eq_int(r.n, 3, what + ": a literal Int default");
+        std::test::assert_eq_int(r.sum, 3, what + ": a computed Int default");
+        std::test::assert_eq_str(r.label, "dflt", what + ": a String default");
+        std::test::assert(r.on, what + ": a Bool default");
+        std::test::assert(r.ratio == 0.5, what + ": a Float default");
+        std::test::assert_eq_int(r.wait / 1ms, 5000, what + ": a Duration default");
+        std::test::assert_eq_int(r.longer / 1ms, 10000, what + ": a computed Duration default");
+        std::test::assert_eq_int(r.price / 1cent, 7, what + ": a quantity default");
+        std::test::assert_eq_str(std::time::iso8601(r.at), "2026-01-01T00:00:00Z", what + ": a Time default");
+        let scope_ok = match r.scope { Scope::key -> true, Scope::team -> false, Scope::org -> false, };
+        std::test::assert(scope_ok, what + ": an enum default");
+        let shape_ok = match r.shape { Shape::Empty -> false, Shape::Circle(f) -> f == 1.5, Shape::Tag(t) -> false, };
+        std::test::assert(shape_ok, what + ": an enum default with a payload");
+        std::test::assert_eq_int(r.inner.a, 7, what + ": a record default");
+        std::test::assert_eq_str(r.inner.b, "in", what + ": the record default's own default");
+        std::test::assert_eq_int(count(r.tags), 0, what + ": a bounded list left out is empty");
+        std::test::assert_eq_int(count(r.items), 0, what + ": a wire map left out is empty");
+    }
+
+    run() {
+        // JSON: only the required field
+        let r = __api_decode_Rec("{\"name\":\"x\"}") or {
+            std::test::assert(false, "the JSON decoder: " + err.kind + " " + err.field);
+            return;
+        };
+        self.check(r, "json");
+        // a field sent is the value sent, not its default
+        let s = __api_decode_Rec("{\"name\":\"x\",\"scope\":\"org\",\"inner\":{\"a\":1},\"sum\":8}") or {
+            std::test::assert(false, "the JSON decoder, fields sent: " + err.kind + " " + err.field);
+            return;
+        };
+        let sent_ok = match s.scope { Scope::key -> false, Scope::team -> false, Scope::org -> true, };
+        std::test::assert(sent_ok, "an enum sent");
+        std::test::assert_eq_int(s.inner.a, 1, "a record sent");
+        std::test::assert_eq_int(s.sum, 8, "a scalar sent");
+        // protobuf, through the encoder: the same record
+        let back = __api_pb_decode_Rec(__api_pb_encode_Rec(r)) or {
+            std::test::assert(false, "the protobuf decoder: " + err.kind + " " + err.field);
+            return;
+        };
+        self.check(back, "protobuf");
+        // a record of defaults alone: `{}` in JSON, an empty message in protobuf
+        let a = __api_decode_AllDefault("{}") or {
+            std::test::assert(false, "{} for all defaults: " + err.kind + " " + err.field);
+            return;
+        };
+        let b = __api_pb_decode_AllDefault(std::bytes::from_string("")) or {
+            std::test::assert(false, "an empty message for all defaults: " + err.kind + " " + err.field);
+            return;
+        };
+        for v in [a, b] {
+            let org = match v.scope { Scope::key -> false, Scope::team -> false, Scope::org -> true, };
+            std::test::assert(org, "an absent enum is its default");
+            std::test::assert_eq_int(v.inner.a, 9, "an absent record is its default");
+            std::test::assert_eq_str(v.inner.b, "x", "the default as written");
+            std::test::assert_eq_int(v.n, 16, "an absent computed Int is its default");
+        }
+    }
+}
+
+fn main() { Desk { }; }
