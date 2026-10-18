@@ -43,7 +43,7 @@
 //! its contract form is what a surface row's types are, for the
 //! contract digest (GH #1417), and agrees with it on every flat struct.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use hale_syntax::ast::*;
 use hale_syntax::Span;
@@ -270,6 +270,8 @@ pub enum ShapeForm {
 /// the `Int` it is) and the quantities and points (each its `q(…)` tag).
 pub struct Shapes<'a> {
     types: BTreeMap<&'a str, &'a TypeDecl>,
+    /// The name a document gives each imported type ([`Shapes::display_name`]).
+    imported_names: BTreeMap<&'a str, String>,
     ints: std::collections::BTreeSet<&'a str>,
     quantities: BTreeMap<&'a str, String>,
 }
@@ -291,6 +293,55 @@ pub enum TypeClass<'a> {
     /// Anything else: an array, a tuple, a generic, a name the program
     /// does not declare.
     Other,
+}
+
+/// The document name of every imported type of `types` (by its mangled
+/// name): the name it is declared with, when no other type of the program
+/// is declared with that name and no generated form declares it
+/// (`crate::api_names::reserved_for`), and otherwise its importer's path joined with `.`
+/// (`lib.Orders`), the program's own type keeping the bare name.
+/// Two imported types whose importers write one path (two seeds, each
+/// importing its own `lib`) are told apart by a count after it
+/// (`lib.Orders.2`), in the order of their mangled names.
+fn imported_names<'a>(
+    types: &BTreeMap<&'a str, &'a TypeDecl>,
+    reserved: &BTreeSet<String>,
+    derived: &BTreeMap<&'a str, BTreeSet<String>>,
+) -> BTreeMap<&'a str, String> {
+    // what another type's schema generates (`crate::api_names::schema_names`)
+    let taken_by_other = |me: &str, n: &str| reserved.contains(n) || derived.iter().any(|(k, s)| *k != me && s.contains(n));
+    let declared = |name: &'a str, t: &'a TypeDecl| -> &'a str {
+        t.display.as_deref().map_or(name, |d| d.rsplit("::").next().unwrap_or(d))
+    };
+    let mut count: BTreeMap<&str, usize> = BTreeMap::new();
+    for (name, t) in types {
+        *count.entry(declared(name, t)).or_default() += 1;
+    }
+    let mut out = BTreeMap::new();
+    let mut taken: BTreeMap<String, usize> = BTreeMap::new();
+    for (name, t) in types {
+        let Some(path) = t.display.as_deref() else { continue };
+        let bare = declared(name, t);
+        let doc = if count[bare] == 1 && !taken_by_other(name, bare) {
+            bare.to_string()
+        } else {
+            // the generated code spells a qualified name with `_`
+            // (`lib_Item`): one another type is declared as, or a form
+            // generates, takes the next count too
+            let qualified = path.replace("::", ".");
+            let n = taken.entry(qualified.clone()).or_default();
+            loop {
+                *n += 1;
+                let doc = if *n == 1 { qualified.clone() } else { format!("{qualified}.{n}") };
+                let ident = crate::api_names::type_ident(&doc);
+                if !count.contains_key(ident.as_str()) && !taken_by_other(name, &ident) {
+                    break doc;
+                }
+            }
+        };
+        out.insert(*name, doc);
+    }
+    out
 }
 
 /// The FNV-1a/64 fold of a shape string: a type's shape hash, in either
@@ -337,18 +388,45 @@ impl<'a> Shapes<'a> {
         // different denominations disagree in the shape hash; a program
         // with neither renders exactly what it did.
         let quantities = crate::units::quantity_tags(&scalars);
-        Shapes { types, ints, quantities }
+        // The names a form generates after a schema depend on the name the
+        // schema finally has (`a.Shape`'s `.proto` variant `a_Shape_Pair`),
+        // so they are reserved to a fixpoint: name, reserve what the names
+        // generate, and name again until nothing new is reserved. A name
+        // reserved only qualifies more imported types, so it ends.
+        // A type's own generated names never move it, only another's.
+        let reserved = crate::api_names::reserved_for(slices);
+        let mut derived: BTreeMap<&str, BTreeSet<String>> = BTreeMap::new();
+        let mut imported = imported_names(&types, &reserved, &derived);
+        for _ in 0..16 {
+            let mut grew = false;
+            for (name, t) in &types {
+                let doc = imported.get(name).cloned().unwrap_or_else(|| name.to_string());
+                let mut more = BTreeSet::new();
+                crate::api_names::schema_names(&doc, t, &mut more);
+                let have = derived.entry(*name).or_default();
+                for m in more {
+                    grew |= have.insert(m);
+                }
+            }
+            if !grew {
+                break;
+            }
+            imported = imported_names(&types, &reserved, &derived);
+        }
+        Shapes { types, imported_names: imported, ints, quantities }
     }
 
-    /// The name a document gives the declared type `name` (GH #1417, R8a):
-    /// the author's spelling of an imported type (`lib::Orders`, its
-    /// declared path under the import alias) where the cross-seed rename
-    /// recorded one, and the name itself otherwise. A mangled name embeds
-    /// the library's path, which is the checkout's, so a document that
-    /// named it would differ between two checkouts of one program.
+    /// The name a document gives the declared type `name` (GH #1417, R8a;
+    /// `spec/api.md` § Schema names): the name a program's own type is
+    /// declared with, and an imported type's too (`Orders`, declared in
+    /// the library), unless another type of the program is declared with
+    /// that name; then the imported one is named by the path its importer
+    /// writes, joined with `.` (`lib.Orders`). A mangled name embeds the
+    /// library's path, which is the checkout's, and `::` is not a schema
+    /// key OpenAPI admits, so a document names neither.
     pub fn display_name(&self, name: &str) -> String {
-        match self.types.get(name).and_then(|t| t.display.as_deref()) {
-            Some(d) => d.to_string(),
+        match self.imported_names.get(name) {
+            Some(d) => d.clone(),
             None => name.to_string(),
         }
     }

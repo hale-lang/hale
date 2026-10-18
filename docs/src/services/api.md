@@ -968,8 +968,11 @@ roles, the exposures that serve it, the hubs, the schemas),
 see Serving over gRPC) and `DIGEST` (the digest and the compiler's version).
 Every file is a function
 of the rows alone, so two runs and two checkouts write the same bytes, and
-an imported type is named by its path under the import alias (`lib::Item`),
-never by a path of the machine. `--check DIR` writes nothing and exits 1,
+an imported type is named as the library declares it (`Item`), never by a
+path of the machine; only when the program declares an `Item` of its own,
+or a generated form declares the name for itself (a client's `FillsEvent` for
+the stream `Fills`, its `OrdersPlaceOutcome` for `Orders::place`), is the
+imported one `lib.Item`, after the alias you import it by. `--check DIR` writes nothing and exits 1,
 naming the digest that moved and the files that differ, so a committed
 bundle cannot go stale unnoticed.
 

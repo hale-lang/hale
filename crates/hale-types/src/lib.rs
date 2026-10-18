@@ -58,6 +58,7 @@ pub mod route_coverage;
 pub mod model_query;
 mod placement_claim;
 pub mod route_loss;
+pub mod api_names;
 mod route_params_copy;
 pub mod topic_identity;
 pub mod topology;

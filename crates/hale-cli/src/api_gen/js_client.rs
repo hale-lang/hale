@@ -13,7 +13,7 @@ use hale_types::surface_doc::{ClientError, ClientMember, ClientModel, ClientStre
 use hale_types::surfaces::{FieldSchema, TypeSchema};
 
 use super::ts_client::{access, decode_in, encode, enum_decl, lower_camel, prop, type_in};
-use super::{camel, json_quote, type_ident};
+use super::{json_quote, type_ident};
 
 const PREAMBLE: &str = include_str!("js_preamble.js");
 
@@ -50,7 +50,7 @@ fn struct_decl(name: &str, t: &TypeSchema) -> Result<String, String> {
 
 fn member_fn(m: &ClientMember) -> Result<String, String> {
     let fn_name = lower_camel(&m.name);
-    let outcome = format!("{}Outcome", camel(&m.name));
+    let outcome = hale_types::api_names::outcome(&m.name);
     let what = &m.name;
     let value = match &m.response {
         Some(r) => type_in(r, &format!("{what} response"), true)?,
@@ -88,19 +88,20 @@ fn member_fn(m: &ClientMember) -> Result<String, String> {
 }
 
 fn stream_decl(s: &ClientStream) -> Result<String, String> {
-    let base = camel(&s.topic);
+    let event = hale_types::api_names::event(&s.topic);
+    let subscribe = hale_types::api_names::subscribe_fn(&s.topic);
     let what = format!("stream {}", s.topic);
     let Some(p) = &s.payload else { return Err(format!("the {what} has no payload type, which a stream row always has")) };
     let payload = type_in(p, &format!("{what} payload"), true)?;
     let decoder = decode_in(p, "json", &format!("{what} payload"), true)?;
     let roles = if s.requires.is_empty() { "none".to_string() } else { s.requires.join(", ") };
     Ok(format!(
-        "/** @typedef {{StreamEvent<{payload}>}} {base}Event */\n\n\
+        "/** @typedef {{StreamEvent<{payload}>}} {event} */\n\n\
          /**\n * The stream {topic} of the hub {hub} (stream digest {digest}), requires {roles}: `subscribed`, then\n \
          * each `event` with its `seq` (a gap is the frames shed) until `expired`, `revoked` or `closed`; a\n \
          * connection that ends with no closed frame throws a TransportError from the iterator.\n \
          * @param {{StreamOptions}} opts\n * @returns {{Subscription<{payload}>}}\n */\n\
-         export function subscribe{base}(opts) {{\n  \
+         export function {subscribe}(opts) {{\n  \
          return apiSubscribe(opts, {topic_lit}, (json) => {decoder});\n}}\n\n",
         topic = s.topic,
         hub = s.hub,
@@ -118,10 +119,7 @@ pub fn generate(model: &ClientModel) -> Result<String, String> {
             Err(format!("two things of the client are named `{name}`: rename one of the surface's types or members"))
         }
     };
-    for name in [
-        "SURFACE", "SURFACE_DIGEST", "ClientOptions", "StreamOptions", "Refusal", "TransportError", "Outcome", "describe",
-        "StreamEvent", "Subscription", "apiCall", "apiRefusal", "apiSubscribe", "apiMapEncode", "apiMapDecode",
-    ] {
+    for name in hale_types::api_names::JS_CLIENT_NAMES {
         claim(name.to_string())?;
     }
     let mut out = format!(
@@ -162,7 +160,7 @@ pub fn generate(model: &ClientModel) -> Result<String, String> {
     }
     for m in &model.members {
         claim(lower_camel(&m.name))?;
-        claim(format!("{}Outcome", camel(&m.name)))?;
+        claim(hale_types::api_names::outcome(&m.name))?;
         out.push_str(&member_fn(m)?);
     }
     let mut topics = BTreeSet::new();
@@ -170,8 +168,8 @@ pub fn generate(model: &ClientModel) -> Result<String, String> {
         if !topics.insert(s.topic.clone()) {
             return Err(format!("the topic `{}` is a stream of two hubs; a client names a stream by its topic", s.topic));
         }
-        claim(format!("{}Event", camel(&s.topic)))?;
-        claim(format!("subscribe{}", camel(&s.topic)))?;
+        claim(hale_types::api_names::event(&s.topic))?;
+        claim(hale_types::api_names::subscribe_fn(&s.topic))?;
         out.push_str(&stream_decl(s)?);
     }
     Ok(out.trim_end().to_string() + "\n")
