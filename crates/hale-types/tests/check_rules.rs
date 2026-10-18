@@ -2654,6 +2654,9 @@ mod set_type_tests {
             errors(&format!("{MEMBERS}type In = Book | Trade | Book;\nfn main() {{ }}\n")),
             vec!["set `In`: `Book` is its member twice; a member is named once"]
         );
+        // a generic record's alias is a record (`type P = Box<Int>;`)
+        let generic = format!("{MEMBERS}type Box<T> {{ value: T; }}\ntype P = Box<Int>;\ntype In = P | Book;\nfn main() {{ }}\n");
+        assert_eq!(errors(&generic), Vec::<String>::new());
         assert_eq!(
             errors(&format!("{MEMBERS}type In = Book | Trade;\ntype Out = In | Side;\nfn main() {{ }}\n")),
             vec!["set `Out`: its member `In` is a set itself; a set's members are the types it holds, so name `In`'s \

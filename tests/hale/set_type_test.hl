@@ -17,6 +17,31 @@ type Reject { id: Int; why: String; }
 type Outbound = Ack | Reject;
 
 type Slot { last: Outbound; seen: Int; }
+// a field default that is a member, flowing into the field's set
+type Holder { item: Outbound = Ack { id: 7 }; }
+
+// a generic record's alias is a member like any record
+type Box<T> { value: T; }
+type Boxed = Box<Int>;
+type Packed = Boxed | Ack;
+
+fn unpack(p: Packed) -> Int {
+    return match p {
+        Boxed(b) -> b.value,
+        Ack(a) -> a.id,
+    };
+}
+
+// a matched member's value flows back into its set, as any value of the
+// member does: returned, and passed
+fn forward(m: Outbound) -> Outbound {
+    match m {
+        Ack(a) -> { return a; },
+        Reject(r) -> { return encode_again(r); },
+    }
+    return Ack { id: 0 };
+}
+fn encode_again(o: Outbound) -> Outbound { return o; }
 
 fn decode(n: Int) -> Inbound {
     if n == 0 { return Book { id: 7, title: "Kim" }; }
@@ -89,6 +114,16 @@ fn main() {
     s.last = Reject { id: 4, why: "no" };
     std::test::assert_eq_str(encode(s.last), "reject 4 no", "a field assigned a member");
     std::test::assert_eq_str(encode(Outbound::Ack(Ack { id: 9 })), "ack 9", "the explicit spelling");
+
+    // a matched member flows back; a default's member is its set's; a
+    // generic record's alias is a member
+    std::test::assert_eq_str(encode(forward(Reject { id: 5, why: "late" })), "reject 5 late", "a matched member, passed and returned");
+    std::test::assert_eq_str(encode(forward(Ack { id: 6 })), "ack 6", "a matched member, returned");
+    let h = Holder { };
+    std::test::assert_eq_str(encode(h.item), "ack 7", "a field default's member");
+    let b: Boxed = Box { value: 41 };
+    std::test::assert_eq_int(unpack(b), 41, "a generic record's alias as a member");
+    std::test::assert_eq_int(unpack(Ack { id: 2 }), 2, "the other member");
 
     // in a loop: each value its own
     let mut out = "";

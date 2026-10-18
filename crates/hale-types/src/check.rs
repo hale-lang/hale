@@ -18465,12 +18465,28 @@ impl<'a> Checker<'a> {
     /// GH #1530 step 1: a pattern naming a member by its type's name alone
     /// names one of the scrutinee's set.
     fn check_set_pattern(&mut self, pat: &Pattern, scrut: &Ty) {
-        let Pattern::Constructor { path, span, .. } = pat else { return };
-        let ([member], Ty::Named(set)) = (path.segments.as_slice(), scrut) else { return };
+        let Pattern::Constructor { path, span, args } = pat else { return };
+        let Ty::Named(set) = scrut else { return };
         let Some(TopSymbol::Type(TypeInfo { kind: TypeKind::Enum(vs), .. })) = self.top.symbols.get(set) else {
             return;
         };
-        if vs.is_empty() || !vs.iter().all(|v| v.member) || vs.iter().any(|v| v.name == member.name) {
+        if vs.is_empty() || !vs.iter().all(|v| v.member) {
+            return;
+        }
+        let member = match path.segments.as_slice() {
+            [m] => m,
+            [s, m] if s.name == *set => m,
+            _ => return,
+        };
+        // the member's value is bound as its type, so it flows back into
+        // a set as any value of the member does
+        if let Some(v) = vs.iter().find(|v| v.name == member.name) {
+            if let ([Pattern::Binding(id)], Some(ty)) = (args.as_slice(), v.fields.first()) {
+                self.locals.insert(&id.name, LocalSym { ty: ty.clone(), is_mut: false, cell: None });
+            }
+            return;
+        }
+        if path.segments.len() != 1 {
             return;
         }
         let members: Vec<&str> = vs.iter().map(|v| v.name.as_str()).collect();
@@ -18493,7 +18509,16 @@ impl<'a> Checker<'a> {
             let kind = match &ty {
                 Ty::Named(n) => match self.top.symbols.get(n) {
                     Some(TopSymbol::Type(TypeInfo { kind, .. })) => Some(kind),
-                    _ => None,
+                    // a generic record's monomorph (`type P = Box<Int>;` is
+                    // `Box_Int`): its template's kind
+                    _ => self.top.symbols.iter().find_map(|(name, sym)| match sym {
+                        TopSymbol::Type(TypeInfo { kind, .. })
+                            if n.starts_with(&format!("{name}_")) && self.generic_types.contains_key(name.as_str()) =>
+                        {
+                            Some(kind)
+                        }
+                        _ => None,
+                    }),
                 },
                 _ => None,
             };
@@ -19390,6 +19415,11 @@ impl<'a> Checker<'a> {
             // are the constructing declaration's.
             for (site, row) in self.typed.close_walk() {
                 self.typed.conversion(self.body, site, row);
+            }
+            // and its injections (GH #1530 step 1): a default's member
+            // flows into its set where the default is evaluated
+            for (_, site, injection) in self.typed.take_walk_injections() {
+                self.typed.injection(self.body, site, injection);
             }
             self.locals.closed = closed;
             if let (Some(seen), Some(at)) = (&mut self.expr_types, seen) {

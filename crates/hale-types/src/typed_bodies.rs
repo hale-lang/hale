@@ -1273,6 +1273,9 @@ pub struct TypingRecord {
     /// What a discarded walk changed, while one is open
     /// ([`Self::open_walk`]).
     walk: Option<WalkUndo>,
+    /// The injections the last closed walk recorded (GH #1530 step 1), for
+    /// the walk's owner to keep ([`Self::take_walk_injections`]).
+    walk_injections: Vec<(NodeId, ConversionSite, Injection)>,
 }
 
 /// The record as an open walk found it, kept for what the walk writes
@@ -1304,6 +1307,19 @@ impl TypingRecord {
     /// walk left it.
     pub fn close_walk(&mut self) -> Vec<(ConversionSite, ConversionRow)> {
         let Some(undo) = self.walk.take() else { return Vec::new() };
+        // the injections the walk recorded, which the owner keeps as it
+        // keeps the conversions (a default's member flowing into a set)
+        self.walk_injections = undo
+            .bodies
+            .iter()
+            .filter_map(|(decl, before)| Some((decl, before, self.bodies.get(decl)?)))
+            .flat_map(|(decl, before, now)| {
+                now.injections
+                    .iter()
+                    .filter(move |(site, _)| before.as_ref().map_or(true, |b| !b.injections.contains_key(*site)))
+                    .map(move |(site, inj)| (NodeId(*decl), site.clone(), inj.clone()))
+            })
+            .collect();
         let converted: Vec<_> = undo
             .conversion_sites
             .iter()
@@ -1328,6 +1344,11 @@ impl TypingRecord {
         put_back(&mut self.conversion_sites, undo.conversion_sites);
         self.monomorphs.truncate(undo.monomorphs);
         converted
+    }
+
+    /// The injections the last closed walk recorded, taken.
+    pub fn take_walk_injections(&mut self) -> Vec<(NodeId, ConversionSite, Injection)> {
+        std::mem::take(&mut self.walk_injections)
     }
 
     fn touch_body(&mut self, decl: u32) {
