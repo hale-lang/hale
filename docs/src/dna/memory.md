@@ -283,6 +283,10 @@ HALE_DNA_MEMORY_DSN_SPINE=postgres://dna_…_spine@…/dna?sslmode=…&vault=pos
 HALE_DNA_MEMORY_DSN_HEAD=postgres://dna_…_head@…/dna?sslmode=…&vault=postgres-dna_…_head
 ```
 
+The clone keeps the head's line in `.hale/dna/memory.env`, so the
+`hale dna` verbs you run there afterwards read and write memory as the
+head without being told; a DSN in the environment still wins.
+
 With no `HALE_DNA_MEMORY_DSN_OWNER` it brings up the `knowledge-db`
 service of `dna/compose.yaml` (it needs `docker compose` on `PATH`)
 and migrates that. The migration is one transaction and can be run

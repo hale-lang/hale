@@ -140,6 +140,7 @@ locus S3HeadCases {
         beta: String = "";
         beta_id: String = "";
         beta_url: String = "";
+        nerves: String = "";
         body_id: String = "";
     }
 
@@ -174,6 +175,14 @@ locus S3HeadCases {
         std::test::assert(len(self.beta_id) == 40 && self.beta_id != self.alpha_id, "two records");
         let alpha_url = bare_remote(self.f.root, self.alpha, "alpha");
         self.beta_url = bare_remote(self.f.root, self.beta, "beta");
+        // GH #1590: a connection reads the peer's card on its nerves, and a
+        // handoff lands in the peer's inbox there: both records' nerves
+        let nats_owner = std::env::var("HALE_DNA_NATS_URL_OWNER");
+        std::test::assert(len(nats_owner) > 0, "the nerves to exchange on (HALE_DNA_NATS_URL_OWNER)");
+        self.nerves = dna::nerves_server_url(nats_owner);
+        let an = dna_cli(self.alpha, "nerves\nmigrate");
+        let bn = dna_cli(self.beta, "nerves\nmigrate");
+        std::test::assert(an.code == 0 && bn.code == 0, "each record's nerves, its exchange and its card: " + an.stdout + an.stderr + bn.stdout + bn.stderr);
     }
 
     fn attach() {
@@ -281,8 +290,8 @@ locus S3HeadCases {
     // A connection to the peer, put in force by the Board, and a receipt
     // handed across it — each visible on the detail read.
     fn connection() {
-        let arguments = "{\"record_url\":\"" + self.beta_url + "\",\"name\":\"beta\",\"position\":\"client\",\"purpose\":\"the books\",\"classes\":[\"internal\"]}";
-        let bad = self.submit("s3-connect-bad", "dna.connection.propose", "{\"record_url\":\"" + self.beta_url + "\",\"name\":\"Beta\",\"position\":\"client\",\"purpose\":\"the books\",\"classes\":[\"internal\"]}", 200);
+        let arguments = "{\"nerves_url\":\"" + self.nerves + "\",\"record\":\"" + self.beta_id + "\",\"name\":\"beta\",\"position\":\"client\",\"purpose\":\"the books\",\"classes\":[\"internal\"]}";
+        let bad = self.submit("s3-connect-bad", "dna.connection.propose", "{\"nerves_url\":\"" + self.nerves + "\",\"record\":\"" + self.beta_id + "\",\"name\":\"Beta\",\"position\":\"client\",\"purpose\":\"the books\",\"classes\":[\"internal\"]}", 200);
         self.f.json.eq(bad, "state", "refused");
         self.f.json.eq(bad, "reason_code", "name_invalid");
         let submitted = self.submit("s3-connect", "dna.connection.propose", arguments, 202);
@@ -299,7 +308,7 @@ locus S3HeadCases {
         let d1 = self.detail();
         let conn = item_where(self.f.json.raw(d1, "connections"), "name", "beta");
         std::test::assert(len(conn) > 0, "the connection is projected: " + d1);
-        self.f.json.eq(conn, "url", self.beta_url);
+        self.f.json.eq(conn, "url", self.nerves);
         self.f.json.eq(conn, "position", "client");
         self.f.json.eq(conn, "purpose", "the books");
         std::test::assert_eq_str(self.f.json.raw(conn, "classes"), "[\"internal\"]", "classes as an array");
@@ -323,7 +332,7 @@ locus S3HeadCases {
         let settled = self.f.settled("s3-handoff", dna::wait_secs(120));
         self.f.json.eq(settled, "state", "succeeded");
         let handed_text = self.f.json.string(self.f.json.raw(settled, "outcome"), "text");
-        std::test::assert(std::str::contains(handed_text, "written into record " + self.beta_id[0..12]), "handed across: " + handed_text);
+        std::test::assert(std::str::contains(handed_text, "delivered to record " + self.beta_id[0..12]), "handed across: " + handed_text);
         let hid = dna::handoff_id(self.alpha_id, self.beta_id, "receipt", digest);
         let d2 = self.detail();
         let sent = item_where(self.f.json.raw(d2, "handoffs"), "id", hid);

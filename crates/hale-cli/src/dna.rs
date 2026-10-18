@@ -105,6 +105,15 @@ fn host_command(verb: &str, dir: &Path) -> Result<(Command, PathBuf), String> {
         // outside `run`/`dev` (the review's second round, finding 2).
         .env("HALE_DNA_GENOME", &root)
         .env("HALE_DNA_TOOLCHAIN", TOOLCHAIN);
+    // GH #1590: a verb given no role's DSN reads and writes memory (what
+    // other records sent, kept in the exchange) as the head this clone
+    // migrated
+    let named = |k: &str| std::env::var(k).map(|v| !v.is_empty()).unwrap_or(false);
+    if !named("HALE_DNA_MEMORY_DSN_SPINE") && !named("HALE_DNA_MEMORY_DSN_HEAD") {
+        if let Some(head) = kept_head_dsn(&root) {
+            cmd.env("HALE_DNA_MEMORY_DSN_HEAD", head);
+        }
+    }
     Ok((cmd, root))
 }
 
@@ -219,10 +228,34 @@ fn memory_migrate(dir: &Path) -> Result<MemoryPlan, String> {
     let head = out.lines().find_map(|l| l.strip_prefix("HALE_DNA_MEMORY_DSN_HEAD="));
     if let (Some(spine), Some(head)) = (spine, head) {
         let owners = out.lines().filter(|l| l.starts_with("HALE_DNA_MEMORY_DSN_HEAD_")).map(str::to_string).collect();
+        let (root, _) = project(dir)?;
+        write_memory_env(&root, head)?;
         return Ok(MemoryPlan::Roles { spine: spine.to_string(), head: head.to_string(), owners });
     }
     let line = out.trim();
     Ok(MemoryPlan::NoDatabase(line.strip_prefix("none: ").unwrap_or(line).to_string()))
+}
+
+/// GH #1590: the head's DSN a migration answered (a vault reference, no
+/// password) is kept beside the clone's other local state,
+/// `.hale/dna/memory.env`, and handed to every host verb that is not given
+/// one.
+fn memory_env_file(root: &Path) -> PathBuf {
+    root.join(".hale/dna/memory.env")
+}
+
+fn write_memory_env(root: &Path, head: &str) -> Result<(), String> {
+    let path = memory_env_file(root);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|e| format!("create {}: {e}", parent.display()))?;
+    }
+    fs::write(&path, format!("HALE_DNA_MEMORY_DSN_HEAD={head}\n")).map_err(|e| format!("write {}: {e}", path.display()))
+}
+
+/// The head's DSN this clone keeps, when it keeps one.
+fn kept_head_dsn(root: &Path) -> Option<String> {
+    let text = fs::read_to_string(memory_env_file(root)).ok()?;
+    text.lines().find_map(|l| l.strip_prefix("HALE_DNA_MEMORY_DSN_HEAD=")).map(str::to_string).filter(|d| !d.is_empty())
 }
 
 /// What `nerves-migrate` found (GH #986): the organization's token and

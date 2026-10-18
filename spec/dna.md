@@ -298,7 +298,10 @@ host's tick (**The spine**, below).
   host's. With no database to migrate, `dev` says why and starts the
   host without the owner's DSN. A head — the CLI, `hale dna ui`, the API — opens memory with
   `HALE_DNA_MEMORY_DSN_HEAD`; a process given the spine's DSN uses that
-  instead, and none holds both.
+  instead, and none holds both. The head's DSN a migration answers is
+  kept in the clone, `.hale/dna/memory.env` (a vault reference, no
+  password; untracked with the rest of `.hale/`), and every `hale dna`
+  verb in that clone given neither role's DSN runs with it.
 - **The migration** runs in one transaction under an advisory lock on
   the schema: the `vector` and `pgcrypto` extensions, the schema and
   every store's tables, the record's claim on the schema
