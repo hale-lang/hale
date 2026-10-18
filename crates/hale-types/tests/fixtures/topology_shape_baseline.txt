@@ -386,6 +386,8 @@ crates/hale-codegen/tests/bus_publish_stack_alloca.rs#0 b8c03d7f90cdf93a
 crates/hale-codegen/tests/bus_publish_stack_alloca.rs#1 b8c03d7f90cdf93a
 crates/hale-codegen/tests/bus_publisher_order.rs#0 189dc443c06de706
 crates/hale-codegen/tests/bus_publisher_order.rs#1 9e044ba200861032
+crates/hale-codegen/tests/bus_registry_reuse_races.rs#0 eb68bc14dc33b185
+crates/hale-codegen/tests/bus_registry_reuse_races.rs#1 391abb4393ae2364
 crates/hale-codegen/tests/bus_routing_keys.rs#0 f7961145d5f2c3bc
 crates/hale-codegen/tests/bus_routing_keys.rs#1 7ac3ef43c51ac198
 crates/hale-codegen/tests/bus_routing_keys.rs#12 4192a4141ec1146a
@@ -402,6 +404,7 @@ crates/hale-codegen/tests/bus_routing_keys.rs#9 65e63d144fb21a26
 crates/hale-codegen/tests/bus_scope_local_subscriber.rs#1 e277e169916ed40d
 crates/hale-codegen/tests/bus_scope_local_subscriber.rs#2 2dc6c7b1cab6e556
 crates/hale-codegen/tests/bus_scope_local_subscriber.rs#5 6c9de33d63047673
+crates/hale-codegen/tests/bus_scope_local_subscriber.rs#6 2da3199a46d579d4
 crates/hale-codegen/tests/bus_static_reservation.rs#0 6e0ac9820e11691b
 crates/hale-codegen/tests/bus_static_reservation.rs#1 27c8f7ed63b08eb4
 crates/hale-codegen/tests/bus_static_reservation.rs#10 7477f0424bb76975
@@ -762,6 +765,7 @@ crates/hale-codegen/tests/form_hashmap_lockfree.rs#9 86c077b755e73a4a
 crates/hale-codegen/tests/form_hashmap_lockfree_tsan.rs#0 2b16ebb436826b0b
 crates/hale-codegen/tests/form_hashmap_lockfree_tsan.rs#1 2b16ebb436826b0b
 crates/hale-codegen/tests/form_hashmap_lockfree_tsan.rs#2 2b16ebb436826b0b
+crates/hale-codegen/tests/form_hashmap_lockfree_tsan.rs#4 68905bb93b3a22fa
 crates/hale-codegen/tests/form_hashmap_nested_retire.rs#3 3bfb761139b92c4a
 crates/hale-codegen/tests/form_hashmap_nested_retire.rs#4 0434dc50afdb3fc4
 crates/hale-codegen/tests/form_hashmap_nested_retire.rs#5 72b8beb47e983ac8

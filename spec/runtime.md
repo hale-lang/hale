@@ -1499,6 +1499,32 @@ and modes; specific transports come from stdlib (`std::bus::*`).
   atomic delivery via SOCK_SEQPACKET) and doesn't go through
   the Adapter interface.
 
+**The registration table holds what is live.** Every subscription a
+locus declares is one registration in the runtime's table, from the
+locus's birth to its dissolve. A dissolved subscriber's registrations
+go to later registrations: on the same subject when the compiler
+dispatches that subject statically (its per-subject list stays the
+subject's), any other when it does not. So a server whose connections
+each subscribe keeps a table the size of its most connections at once,
+not of every connection it served. A
+dispatch walk reads a registration, its subject match included, between
+two reads of its version and skips one that is being rewritten, as it
+skips one registered after the walk began; a cell queued for the
+dissolved subscriber is dropped by its incarnation (§ "Lifecycle
+obligations") and never reaches the registration's next owner, and a
+bounded subscriber's cells in flight are counted for the incarnation
+each cell belongs to, so the next owner is never charged for them.
+`LOTUS_BUS_TEST_WALK_STALL_US` and `LOTUS_BUS_TEST_ACCT_STALL_US` hold a
+walk inside its window, and an enqueue between finding a bounded
+registration and charging it, for the race tests
+(`bus_registry_reuse_races.rs`); never set them in production. While a reservation is open (#1534) a
+registration appends instead, so the claims it compares keep their
+registration order, and a reservation's placeholder or claimant is never
+reused. What is not reclaimed: a String-keyed registration's copy of its
+key, which a walk may still be comparing, is kept until the process
+tears down, one key string per such subscriber. `LOTUS_BUS_TABLE_STATS=1`
+prints the table's size at teardown.
+
 **One publisher's order (2026-10-12).** Each thread delivers in-process
 cells through one queue of its own: `main` through the program-wide
 cooperative queue, a pool's worker through its pool's queue, a pinned
@@ -4437,6 +4463,9 @@ its behavior as described in this document.
 | `LOTUS_GLIBC_ARENA_MAX=<N>` | unset (glibc's own) | Calls `mallopt(M_ARENA_MAX, <N>)` at startup. Caps glibc's per-thread malloc arena count. `1` forces a single arena (max contention, min virtual-address fragmentation); higher `<N>` trades contention for parallelism. Useful belt-and-suspenders against the per-thread arena heap-segment proliferation glibc default tuning can produce on long-running daemons. Unset keeps glibc's default. |
 | `LOTUS_BUS_PAYLOAD_ARENA_CAP=<N>` | 64 MiB | Overrides the lazy-global bus payload arena's byte cap (default 64 MiB). When the cap fires, `lotus_arena_alloc` returns NULL and the existing alloc-fail paths (`empty_global` / `alloc_failed` violation) surface degraded service rather than OOM-killing the process. |
 | `LOTUS_DRAIN_GRACE_MS=<ms>` | 5000 | How long a SIGINT / SIGTERM drain may take before the runtime re-raises the signal with its default action, ending the process by it (default 5000). Only in a program that reads `self.draining`; see `semantics.md` § "Drain cascade (whole-process)" (GH #1039). |
+| `LOTUS_BUS_TABLE_STATS=1` | off | At teardown, prints `[bus_table] entries=N free=F` to stderr: the registration table's size and how many of its entries a dissolved subscriber left free for a later registration (§ "Bus message router"). A server whose connections each subscribe holds `entries` near its most connections at once. |
+| `LOTUS_BUS_TEST_WALK_STALL_US=N` | off | Test hook: a bus table walk pauses N µs inside an entry's version window, so a test can reuse that entry under it (`bus_registry_reuse_races`). Never set it in production. |
+| `LOTUS_BUS_TEST_ACCT_STALL_US=N` | off | Test hook: an enqueue pauses N µs between reading a subscriber's incarnation and charging its in-flight count, so a test can reuse the entry under it (`bus_registry_reuse_races`). Never set it in production. |
 | `LOTUS_BUS_CALL_ARENA_STATS=1` | off | At exit, prints `[bus call arenas] opened=N live_bytes=L peak_bytes=P` to stderr: how many per-call arenas adapter `send`s and keyed adapter deliveries opened, the chunk bytes still held (0 unless a call is in flight), and the most held at once. The call arenas are not residency targets, so this is how a test sees them (GH #1038). |
 | `LOTUS_ARENA_RESIDENCY=1` | off | Registers every top-level arena (locus `__arena`s, `g_bus_payload_arena`, the program-wide global) into a side-table at creation time with a 24-frame construction backtrace. `std::process::dump_arena_residency()` walks the live set and emits one line per arena to stderr — bytes / chunks / parent / label, sorted by bytes desc — with the construction backtrace. Subregions (method scratch) are skipped; they destroy at method exit and don't accumulate residency. Atexit also dumps, but post-dissolve fires after all loci tear down — useful only for the global arena's final state. Long-running daemons should call `dump_arena_residency` from a heartbeat / checkpoint tick so locus arenas are sampled while still alive. |
 | `LOTUS_CHUNK_POOL_PREFILL=<N>` | 32 | Per-thread chunk-pool pre-fill on first touch. Default 32 (= 2 MiB resident per scheduler thread). Set 0 to disable. Bumps the pool's steady-state floor so brief bursts don't drain to zero and miss into malloc; the trade-off is per-thread resident memory. |

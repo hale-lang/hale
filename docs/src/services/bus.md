@@ -92,6 +92,15 @@ Subscribing is declarative — there's no `subscribe()` call at
 runtime. Registration happens when the locus is constructed, and
 unsubscribe happens automatically at dissolve.
 
+So a subscriber can be as short-lived as you like. A server that builds
+one per connection — the connection's peer subscribing to its own
+replies, `where key == self.id` — keeps a registry the size of the
+connections open at once, not of every connection it has served: a
+later subscription takes over a dissolved subscriber's slot, and a
+message still queued for the old one is dropped rather than delivered
+to the new. One thing does accumulate: a
+String-keyed subscription's key text is kept until the process exits.
+
 ### Choosing the subject at runtime
 
 Usually the subject is fixed. When it isn't — a logger that sends

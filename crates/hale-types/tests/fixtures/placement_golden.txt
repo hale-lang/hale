@@ -2018,6 +2018,20 @@ row	App@literal1	App	main	default
 row	App@literal1.t1	Tally	main	default
 row	App@literal1.t2	Tally	main	default
 
+== crates/hale-codegen/tests/bus_registry_reuse_races.rs#ea328f3a
+root	App	the entry
+domain	pool:pa
+row	App@literal1	App	main	default
+row	App@literal1.p	Pub	pool:pa	entry	off owner
+shared	dynamic	sites in the seed #fd8cbf5a
+
+== crates/hale-codegen/tests/bus_registry_reuse_races.rs#fe30282a
+root	App	the entry
+domain	pool:pa
+row	App@literal1	App	main	default
+row	App@literal1.p	Pub	pool:pa	entry	off owner
+dynamic	Ear	on main	in the seed
+
 == crates/hale-codegen/tests/bus_routing_keys.rs#3d1a84d5
 root	App	the entry
 row	App@literal1	App	main	default
@@ -2120,6 +2134,15 @@ row	App@literal1	App	main	default
 row	App@literal1.h	Host	pinned:App@literal1.h	entry	off owner
 row	App@literal1.p	Pub	pinned:App@literal1.p	entry	off owner
 dynamic	Peer	on pinned:App@literal1.h	in the seed
+
+== crates/hale-codegen/tests/bus_scope_local_subscriber.rs#4ddb27f4
+root	App	the entry
+domain	pool:pa
+domain	pool:pb	async_io
+row	App@literal1	App	main	default
+row	App@literal1.c	Churn	pool:pb	entry	off owner
+row	App@literal1.p	Pub	pool:pa	entry	off owner
+dynamic	Conn	on pool:pb	in the seed
 
 == crates/hale-codegen/tests/bus_static_reservation.rs#4c3ac167
 root	Root	the entry
@@ -3054,6 +3077,18 @@ root	App	the entry
 domain	pool:io
 row	App@literal1	App	main	default
 shared	App@literal1.host	PoolHost #63b77edf
+
+== crates/hale-codegen/tests/form_hashmap_lockfree_tsan.rs#20851f89
+root	App	the entry
+domain	pool:pa
+domain	pool:pb	async_io
+row	App@literal1	App	main	default
+row	App@literal1.c	Churn	pool:pb	entry	off owner
+row	App@literal1.e	Ear	main	default
+row	App@literal1.p	Pub	pool:pa	entry	off owner
+-- dynamic	sites in the seed
+dynamic	Conn	on pool:pb
+dynamic	Ear	on pool:pb
 
 == crates/hale-codegen/tests/form_hashmap_nested_retire.rs#aa60fd1f
 shared	H@main1	H #95920e24
@@ -4632,9 +4667,7 @@ row	Reader@main1	Reader	main	default
 == crates/hale-codegen/tests/release_generic_owner.rs#e7383174
 row	Pool_Alpha@main1	Pool_Alpha	main	default
 row	Pool_Beta@main2	Pool_Beta	main	default
--- dynamic	sites in the seed
-dynamic	Alpha	on main
-dynamic	Beta	on main
+shared	dynamic	sites in the seed #fd8cbf5a
 
 == crates/hale-codegen/tests/release_generic_owner.rs#52aebe0c
 row	Manager_Cell_Int@main1	Manager_Cell_Int	main	default
@@ -18080,6 +18113,10 @@ dynamic	__StdIoTcpConnFlow	on pool:__api_http|pool:__api_unix|pool:__api_ws
 dynamic	__StdIoTcpConnInline	on pool:__api_http|pool:__api_unix|pool:__api_ws
 dynamic	__StdIoTcpConnections	on pool:__api_http|pool:__api_unix|pool:__api_ws
 dynamic	__StdIoTcpStream	on pool:__api_http|pool:__api_unix|pool:__api_ws
+
+== shared sites in the seed #fd8cbf5a
+dynamic	Alpha	on main
+dynamic	Beta	on main
 
 == shared sites in the stdlib #919aadb4
 dynamic	__StdBytesBytesBuilder	on main|unknown (no caller)

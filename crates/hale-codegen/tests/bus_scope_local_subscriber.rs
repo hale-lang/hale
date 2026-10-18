@@ -643,3 +643,80 @@ fn pinned_mailbox_case(tag: &str, src: &str) {
     assert!(at("pub dissolve") < at("main got bye"), "{seen:?}");
     assert!(at("main got bye") < at("host dissolve"), "{seen:?}");
 }
+
+// A pool churns scope-local subscribers, each with an Int-keyed, a
+// String-keyed and an unkeyed subscription, while another pool publishes
+// to them all: every connection-shaped subscriber of a server.
+const CHURN: &str = r#"
+    type Ev { lane: Int; n: Int; }
+    type Memo { who: String; n: Int; }
+    topic Lanes { payload: Ev; subject: "churn.lanes"; keyed_by lane; }
+    topic Memos { payload: Memo; subject: "churn.memos"; keyed_by who; }
+    locus Conn {
+        params { lane: Int = 0; who: String = ""; }
+        bus {
+            subscribe Lanes as on_ev where key == self.lane;
+            subscribe Memos as on_memo where key == self.who;
+            subscribe Lanes as on_any;
+        }
+        fn on_ev(e: Ev) { }
+        fn on_memo(m: Memo) { }
+        fn on_any(e: Ev) { }
+    }
+    locus Pub {
+        params { x: Int = 0; }
+        bus { publish Lanes; publish Memos; }
+        run() {
+            let mut i = 0;
+            while i < 20000 {
+                Lanes <- Ev { lane: i % 4, n: i };
+                Memos <- Memo { who: "c" + to_string(i % 4), n: i };
+                i = i + 1;
+            }
+        }
+    }
+    locus Churn {
+        params { x: Int = 0; }
+        bus { publish Lanes; }
+        fn once(i: Int) {
+            let c = Conn { lane: i % 4, who: "c" + to_string(i % 4) };
+            Lanes <- Ev { lane: i % 4, n: i };
+        }
+        run() {
+            let mut i = 0;
+            while i < 10000 {
+                self.once(i);
+                i = i + 1;
+            }
+            println("churned");
+        }
+    }
+    main locus App {
+        params { p: Pub = Pub { }; c: Churn = Churn { }; }
+        placement { p: cooperative(pool = pa); c: cooperative(pool = pb) where async_io; }
+    }
+    fn main() { App { }; }
+"#;
+
+/// Ten thousand subscribers born and dissolved one after another leave
+/// the bus registry the size of a few: a dissolved subscriber's entries go
+/// to the next registration into the same bucket. The table grew by three
+/// entries a subscriber before (about 0.3 KB a connection of a server).
+#[test]
+fn churned_subscribers_keep_the_registry_bounded() {
+    let bin = harness::unique_bin("scope_local_churn");
+    build_opts::build_source(CHURN, &bin, &build_opts::options()).expect("build");
+    let out = Command::new(&bin).env("LOTUS_BUS_TABLE_STATS", "1").output().expect("run");
+    let _ = std::fs::remove_file(&bin);
+    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+    assert!(out.status.success(), "{:?}\n{stdout}\n{stderr}", out.status);
+    assert!(stdout.contains("churned"), "{stdout}");
+    let entries: usize = stderr
+        .lines()
+        .find_map(|l| l.strip_prefix("[bus_table] entries="))
+        .and_then(|r| r.split_whitespace().next())
+        .and_then(|n| n.parse().ok())
+        .unwrap_or_else(|| panic!("no table line in {stderr}"));
+    assert!(entries <= 16, "the registry holds {entries} entries after 10000 subscribers:\n{stderr}");
+}
