@@ -473,6 +473,29 @@ type KnowledgeBind {
     rationale: String = "";
 }
 
+type KnowledgeBindingOutcome {
+    binding_id: String = "";
+    proposal_state: String = "";
+    candidate_digest: String = "";
+    review_id: String = "";
+    review_state: String = "";
+    review_outcome: String = "";
+    effect_state: String = "";
+    effect_reason: String = "";
+    reason: String = "";
+}
+
+type KnowledgeEdgeOutcome {
+    proposal_state: String = "";
+    candidate_digest: String = "";
+    review_id: String = "";
+    review_state: String = "";
+    review_outcome: String = "";
+    effect_state: String = "";
+    effect_reason: String = "";
+    reason: String = "";
+}
+
 type KnowledgeLink {
     request_id: String = "";
     record_head: String = "";
@@ -481,6 +504,17 @@ type KnowledgeLink {
     to_id: String = "";
     rel: String = "";
     rationale: String = "";
+}
+
+type KnowledgeNodeOutcome {
+    proposal_state: String = "";
+    candidate_digest: String = "";
+    review_id: String = "";
+    review_state: String = "";
+    review_outcome: String = "";
+    activation_state: String = "";
+    activation_reason: String = "";
+    reason: String = "";
 }
 
 type KnowledgeNodeProposal {
@@ -513,6 +547,31 @@ type KnowledgeNodeRevision {
     rationale: String = "";
 }
 
+type KnowledgeReceipt {
+    command_id: String = "";
+    request_id: String = "";
+    application_id: String = "";
+    principal_mode: String = "";
+    principal_name: String = "";
+    operation: String = "";
+    operation_version: String = "";
+    position_id: String = "";
+    target_id: String = "";
+    fingerprint: String = "";
+    state: String = "";
+    edge_id: String = "";
+    event_id: String = "";
+    admission_head: String = "";
+    sequence: Int = 0;
+    authority: String = "";
+    authority_basis: String = "";
+    details_visible: Bool = false;
+    node: KnowledgeNodeOutcome = KnowledgeNodeOutcome { };
+    binding: KnowledgeBindingOutcome = KnowledgeBindingOutcome { };
+    reviewed: Bool = false;
+    relationship: KnowledgeEdgeOutcome = KnowledgeEdgeOutcome { };
+}
+
 type KnowledgeRecovery {
     request_id: String = "";
 }
@@ -523,7 +582,7 @@ type KnowledgeReply {
     application_id: String = "";
     head: String = "";
     revision: Int = 0;
-    receipt: ops_KnowledgeReceipt = ops_KnowledgeReceipt { };
+    receipt: KnowledgeReceipt = KnowledgeReceipt { };
 }
 
 type KnowledgeUnbind {
@@ -685,65 +744,6 @@ type TaskReassignment {
     assignment_digest: String = "";
     assignee: String = "";
     to: String = "";
-}
-
-type ops_KnowledgeBindingOutcome {
-    binding_id: String = "";
-    proposal_state: String = "";
-    candidate_digest: String = "";
-    review_id: String = "";
-    review_state: String = "";
-    review_outcome: String = "";
-    effect_state: String = "";
-    effect_reason: String = "";
-    reason: String = "";
-}
-
-type ops_KnowledgeEdgeOutcome {
-    proposal_state: String = "";
-    candidate_digest: String = "";
-    review_id: String = "";
-    review_state: String = "";
-    review_outcome: String = "";
-    effect_state: String = "";
-    effect_reason: String = "";
-    reason: String = "";
-}
-
-type ops_KnowledgeNodeOutcome {
-    proposal_state: String = "";
-    candidate_digest: String = "";
-    review_id: String = "";
-    review_state: String = "";
-    review_outcome: String = "";
-    activation_state: String = "";
-    activation_reason: String = "";
-    reason: String = "";
-}
-
-type ops_KnowledgeReceipt {
-    command_id: String = "";
-    request_id: String = "";
-    application_id: String = "";
-    principal_mode: String = "";
-    principal_name: String = "";
-    operation: String = "";
-    operation_version: String = "";
-    position_id: String = "";
-    target_id: String = "";
-    fingerprint: String = "";
-    state: String = "";
-    edge_id: String = "";
-    event_id: String = "";
-    admission_head: String = "";
-    sequence: Int = 0;
-    authority: String = "";
-    authority_basis: String = "";
-    details_visible: Bool = false;
-    node: ops_KnowledgeNodeOutcome = ops_KnowledgeNodeOutcome { };
-    binding: ops_KnowledgeBindingOutcome = ops_KnowledgeBindingOutcome { };
-    reviewed: Bool = false;
-    relationship: ops_KnowledgeEdgeOutcome = ops_KnowledgeEdgeOutcome { };
 }
 
 // Commands::apply_batch, requires position

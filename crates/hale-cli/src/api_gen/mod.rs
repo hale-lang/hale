@@ -87,7 +87,7 @@ fn is_plain_ident(name: &str) -> bool {
 
 /// A document type name as a Hale type name: `lib::Item` is `lib_Item`.
 pub(crate) fn type_ident(name: &str) -> String {
-    name.replace("::", "_")
+    hale_types::api_names::type_ident(name)
 }
 
 /// A JSON key as a Hale field name: anything an identifier cannot hold
@@ -105,45 +105,7 @@ pub(crate) fn field_ident(key: &str) -> String {
 
 /// `Orders::place` as `orders_place`; `LedgerBook::do_it` as `ledger_book_do_it`.
 pub(crate) fn snake(member: &str) -> String {
-    let mut out = String::new();
-    let mut prev_lower = false;
-    for c in member.chars() {
-        match c {
-            ':' => {
-                if !out.ends_with('_') {
-                    out.push('_');
-                }
-                prev_lower = false;
-            }
-            c if c.is_ascii_uppercase() => {
-                if prev_lower {
-                    out.push('_');
-                }
-                out.push(c.to_ascii_lowercase());
-                prev_lower = false;
-            }
-            c => {
-                out.push(c);
-                prev_lower = c.is_ascii_lowercase() || c.is_ascii_digit();
-            }
-        }
-    }
-    out
-}
-
-/// `Orders::place` as `OrdersPlace`; `Fills` as `Fills`; `lib::Fills` as `LibFills`.
-pub(crate) fn camel(member: &str) -> String {
-    member
-        .split(|c: char| c == ':' || c == '_')
-        .filter(|p| !p.is_empty())
-        .map(|p| {
-            let mut cs = p.chars();
-            match cs.next() {
-                Some(f) => f.to_ascii_uppercase().to_string() + cs.as_str(),
-                None => String::new(),
-            }
-        })
-        .collect()
+    hale_types::api_names::snake(member)
 }
 
 /// A string as a JSON token: quoted, escaped as `serde_json` escapes.

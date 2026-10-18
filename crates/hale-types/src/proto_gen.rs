@@ -164,11 +164,11 @@ fn message(name: &str, fields: Vec<PField>) -> PMessage {
 }
 
 /// The message a record has in the file of `surface`: its document name with
-/// the `::` of an imported type spelled `_`, and `Message` after it when that
+/// the `.` of an imported type's qualified name spelled `_`, and `Message` after it when that
 /// is the surface's own name, which the service holds (a service and a
 /// message share proto3's scope, and the service's name is the gRPC path).
 pub fn message_name(display: &str, surface: &str) -> String {
-    let name = display.replace("::", "_");
+    let name = display.replace("::", "_").replace('.', "_");
     if name == surface {
         format!("{name}Message")
     } else {
@@ -469,7 +469,7 @@ fn enum_ty(display: &str, variants: &[(String, Vec<FieldSchema>)], surface: &str
     let comment = if display != name { vec![format!("Hale: {display}")] } else { Vec::new() };
     if variants.iter().all(|(_, v)| v.is_empty()) {
         if !extra.enums.iter().any(|e| e.name == name) {
-            let values = variants.iter().enumerate().map(|(i, (v, _))| (format!("{name}_{v}"), i as u32)).collect();
+            let values = variants.iter().enumerate().map(|(i, (v, _))| (crate::api_names::proto_variant(&name, v), i as u32)).collect();
             extra.enums.push(PEnum { name: name.clone(), comment, values });
         }
         return Ok(Ty::Enum(name));
@@ -490,7 +490,7 @@ fn enum_ty(display: &str, variants: &[(String, Vec<FieldSchema>)], surface: &str
             [] => Ty::Scalar(Scalar::Bool),
             [one] => value_ty(one, surface, &format!("{display}::{v}"), extra)?,
             many => {
-                let rec = format!("{name}_{v}");
+                let rec = crate::api_names::proto_variant(&name, v);
                 let mut vf = Vec::new();
                 for (k, value) in many.iter().enumerate() {
                     let t = value_ty(value, surface, &format!("{display}::{v}"), extra)?;

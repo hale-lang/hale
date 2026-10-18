@@ -1112,7 +1112,7 @@ closes the listener while the connections it accepted are served on.
   --surface NAME --proto` prints it. `syntax = "proto3"`, no package, one
   `service NAME` (the surface) with a unary rpc per member, named as above; a
   message per record the rows reach, named as the schema document names the
-  type with the `::` of an imported type as `_`, and `Message` after it when
+  type with the `.` of a qualified imported type as `_` (`lib_Item`), and `Message` after it when
   that is the surface's own name (a service and a message share proto3's
   scope, and the service keeps the surface's name because it is the gRPC
   path: `api Todo` over `type Todo` is `service Todo` and `message
@@ -2361,10 +2361,37 @@ release wrote that still reads the same is current.
 **The determinism rule.** A generator is a pure function of the rows and the
 schemas they name: it reads no path, no clock and no environment, so the same
 surface yields the same bytes on any run and any checkout. Two consequences
-bind the documents. An imported type is named by the path its declaration has
-under the import alias (`lib::Item`, in a schema's name, a `$ref` and an
-`x-hale-type`), never by the cross-seed mangled name, which embeds the
-library's location. And a tool, a path or a schema is named by what the
+bind the documents. **A schema's name** (in a schema's key, a `$ref` and an
+`x-hale-type`) is the name the type is declared with, an imported type's
+included (`Item`, declared in the library the program imports as `lib`).
+Only when another type of the program is declared with the same name, or a
+generated form declares it for itself, is the imported one qualified, by the
+path its importer writes with `.` for `::` (`lib.Item`). The names the forms
+declare for themselves are one list, which every generator names its
+declarations from: the `.proto`'s `HaleRefusal` and `HaleEmpty`, each client
+preamble's names such as `ApiRefusal` or `Refusal`, a builtin record such as
+`ClosureViolation`; for each member of the program's surfaces, the `.proto`'s
+rpc `Orders__place` and one-field wrappers `Orders__placeRequest`,
+`…Response` and `…Error`, and a client's `OrdersPlaceOutcome` and member fn;
+for each topic, a client's `FillsEvent`, `FillsSubscription` and
+`subscribeFills`; and for each surface, the `.proto`'s service. What the
+forms generate after a schema is reserved by the schema's final name, since
+it is spelled from it: the spelling of a qualified name (`lib_Item`), the
+TypeScript and JavaScript clients' codecs (`encode_lib_Item`,
+`decode_lib_Item`; the Hale client's are the type's own `api_encode` and
+`api_decode`) and an enum's
+`.proto` variant names (`a_Shape_Pair` for the variant `Pair` of an imported
+`a.Shape`); the naming reserves them to a fixpoint, so a third library's
+record `a_Shape_Pair` is `c.a_Shape_Pair`. A form declares nothing else but a
+schema's name, which a test holds every generator to. The program's own type keeps the bare name, and two imported
+types whose importers write one path (two seeds, each importing a `lib` of
+its own) are told apart by a count after it (`lib.Item.2`), in the order of
+their mangled names. So an imported type is never named by the cross-seed
+mangled name, which embeds the library's location, and no name holds `::`,
+which OpenAPI refuses in a component's key. The digest does not move with a
+name: it is over the contract's shapes. (Until 2026-10-17 an imported type
+was named by its importer's path, `lib::Item`, downstream handoff: an
+exported OpenAPI form did not lint.) And a tool, a path or a schema is named by what the
 program declares, in an order the rows fix (members by name as bytes, schemas
 by name).
 
@@ -2706,9 +2733,6 @@ values).
 - **A description over `hale call` for a hub that also serves a
   surface**: the hub's live document lists streams only (above), so `hale
   call ws://…` does not check the member against it.
-- **Imported schema names**: the schema name of a type an imported seed
-  declares embeds the import path, so a description is not stable across
-  checkout directories for such a type.
 - **The wire framing of rpcs over UDP** (a correlation id field, the
   largest datagram; R6). Over WebSocket they are framed (§ Streams).
 - **Leases for a datagram subscriber** that vanishes without

@@ -12,7 +12,7 @@ use std::collections::BTreeSet;
 use hale_types::surface_doc::{ClientError, ClientMember, ClientModel, ClientStream};
 use hale_types::surfaces::{FieldSchema, TypeSchema};
 
-use super::{camel, json_quote, type_ident, unformed};
+use super::{json_quote, type_ident, unformed};
 
 const PREAMBLE: &str = include_str!("ts_preamble.ts");
 
@@ -21,12 +21,7 @@ const PREAMBLE: &str = include_str!("ts_preamble.ts");
 const MAP_HELPERS: &str = include_str!("ts_map.ts");
 
 pub(super) fn lower_camel(name: &str) -> String {
-    let c = camel(name);
-    let mut cs = c.chars();
-    match cs.next() {
-        Some(f) => f.to_ascii_lowercase().to_string() + cs.as_str(),
-        None => String::new(),
-    }
+    hale_types::api_names::lower_camel(name)
 }
 
 fn is_ts_ident(key: &str) -> bool {
@@ -258,7 +253,7 @@ export function encode_{ident}(v: {ident}): unknown {{
 
 fn member_fn(m: &ClientMember) -> Result<String, String> {
     let fn_name = lower_camel(&m.name);
-    let outcome = format!("{}Outcome", camel(&m.name));
+    let outcome = hale_types::api_names::outcome(&m.name);
     let what = &m.name;
     let value = match &m.response {
         Some(r) => ts_type(r, &format!("{what} response"))?,
@@ -294,7 +289,8 @@ fn member_fn(m: &ClientMember) -> Result<String, String> {
 }
 
 fn stream_decl(s: &ClientStream) -> Result<String, String> {
-    let base = camel(&s.topic);
+    let event = hale_types::api_names::event(&s.topic);
+    let subscribe = hale_types::api_names::subscribe_fn(&s.topic);
     let what = format!("stream {}", s.topic);
     let Some(p) = &s.payload else { return Err(format!("the {what} has no payload type, which a stream row always has")) };
     let payload = ts_type(p, &format!("{what} payload"))?;
@@ -304,8 +300,8 @@ fn stream_decl(s: &ClientStream) -> Result<String, String> {
         "/** The stream {topic} of the hub {hub} (stream digest {digest}), requires {roles}: `subscribed`, then\n \
          * each `event` with its `seq` (a gap is the frames shed) until `expired`, `revoked` or `closed`; a\n \
          * connection that ends with no closed frame throws a TransportError from the iterator. */\n\
-         export type {base}Event = StreamEvent<{payload}>;\n\n\
-         export function subscribe{base}(opts: StreamOptions): Subscription<{payload}> {{\n  \
+         export type {event} = StreamEvent<{payload}>;\n\n\
+         export function {subscribe}(opts: StreamOptions): Subscription<{payload}> {{\n  \
          return apiSubscribe(opts, {topic_lit}, (json) => {decoder});\n}}\n\n",
         topic = s.topic,
         hub = s.hub,
@@ -323,11 +319,7 @@ pub fn generate(model: &ClientModel) -> Result<String, String> {
             Err(format!("two things of the client are named `{name}`: rename one of the surface's types or members"))
         }
     };
-    for name in [
-        "SURFACE", "SURFACE_DIGEST", "ClientOptions", "StreamOptions", "Refusal", "TransportError", "Outcome", "describe",
-        "StreamEvent", "Subscription", "apiCall", "apiRefusal", "apiSubscribe", "apiMapEncode", "apiMapDecode", "__Record", "__Promise", "__Array", "__AsyncIterable",
-        "__AsyncGenerator", "__Response", "__MessageEvent",
-    ] {
+    for name in hale_types::api_names::TS_CLIENT_NAMES {
         claim(name.to_string())?;
     }
     let mut out = format!(
@@ -366,7 +358,7 @@ pub fn generate(model: &ClientModel) -> Result<String, String> {
     }
     for m in &model.members {
         claim(lower_camel(&m.name))?;
-        claim(format!("{}Outcome", camel(&m.name)))?;
+        claim(hale_types::api_names::outcome(&m.name))?;
         out.push_str(&member_fn(m)?);
     }
     let mut topics = BTreeSet::new();
@@ -374,8 +366,8 @@ pub fn generate(model: &ClientModel) -> Result<String, String> {
         if !topics.insert(s.topic.clone()) {
             return Err(format!("the topic `{}` is a stream of two hubs; a client names a stream by its topic", s.topic));
         }
-        claim(format!("{}Event", camel(&s.topic)))?;
-        claim(format!("subscribe{}", camel(&s.topic)))?;
+        claim(hale_types::api_names::event(&s.topic))?;
+        claim(hale_types::api_names::subscribe_fn(&s.topic))?;
         out.push_str(&stream_decl(s)?);
     }
     Ok(out.trim_end().to_string() + "\n")

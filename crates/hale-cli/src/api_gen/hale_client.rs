@@ -11,7 +11,7 @@ use std::collections::BTreeSet;
 use hale_types::surface_doc::{ClientError, ClientMember, ClientModel, ClientStream};
 use hale_types::surfaces::{FieldSchema, TypeSchema};
 
-use super::{camel, field_ident, hale_lit, json_quote, snake, type_ident, unformed};
+use super::{field_ident, hale_lit, json_quote, snake, type_ident, unformed};
 
 const PREAMBLE: &str = include_str!("hale_preamble.hl");
 
@@ -239,7 +239,7 @@ fn enum_decl(name: &str, variants: &super::ClientEnum) -> Result<String, String>
 
 fn member_fn(m: &ClientMember) -> Result<String, String> {
     let fn_name = snake(&m.name);
-    let outcome = format!("{}Outcome", camel(&m.name));
+    let outcome = hale_types::api_names::outcome(&m.name);
     let what = &m.name;
     let mut variants = Vec::new();
     variants.push(match &m.response {
@@ -296,9 +296,8 @@ fn member_fn(m: &ClientMember) -> Result<String, String> {
 }
 
 fn stream_decl(s: &ClientStream) -> Result<String, String> {
-    let base = camel(&s.topic);
-    let event = format!("{base}Event");
-    let sub = format!("{base}Subscription");
+    let event = hale_types::api_names::event(&s.topic);
+    let sub = hale_types::api_names::subscription(&s.topic);
     let what = format!("stream {}", s.topic);
     let payload = match &s.payload {
         Some(p) => hale_type(p, &format!("{what} payload"))?,
@@ -418,16 +417,10 @@ pub fn generate(model: &ClientModel) -> Result<String, String> {
         surface_lit = hale_lit(&model.surface),
         digest_lit = hale_lit(&model.digest),
     ));
-    for name in ["SURFACE", "SURFACE_DIGEST"] {
-        claim(name.to_string())?;
-    }
     out.push_str(PREAMBLE);
     out.push('\n');
-    for name in [
-        "ApiRefusal", "ApiRaw", "ApiWs", "api_lost", "api_refusal", "api_str", "api_scalar_str", "api_scalar_int",
-        "api_scalar_bool", "api_scalar_float", "api_roles", "api_refused", "api_http_send", "api_http",
-        "api_unix_exchange", "api_unix", "api_call", "api_get", "api_describe", "api_lists", "API_WAIT_NS", "API_ID", "API_WS_KEY", "API_MASK",
-    ] {
+    // the preamble's own names, and the two constants above
+    for name in hale_types::api_names::HALE_CLIENT_NAMES {
         claim(name.to_string())?;
     }
     for (name, variants) in &super::model_enums(model) {
@@ -440,7 +433,7 @@ pub fn generate(model: &ClientModel) -> Result<String, String> {
     }
     for m in &model.members {
         claim(snake(&m.name))?;
-        claim(format!("{}Outcome", camel(&m.name)))?;
+        claim(hale_types::api_names::outcome(&m.name))?;
         out.push_str(&member_fn(m)?);
     }
     let mut topics = BTreeSet::new();
@@ -448,8 +441,8 @@ pub fn generate(model: &ClientModel) -> Result<String, String> {
         if !topics.insert(s.topic.clone()) {
             return Err(format!("the topic `{}` is a stream of two hubs; a client names a stream by its topic", s.topic));
         }
-        claim(format!("{}Event", camel(&s.topic)))?;
-        claim(format!("{}Subscription", camel(&s.topic)))?;
+        claim(hale_types::api_names::event(&s.topic))?;
+        claim(hale_types::api_names::subscription(&s.topic))?;
         out.push_str(&stream_decl(s)?);
     }
     let formatted = hale_syntax::fmt::format_source(&out).map_err(|e| match e {
