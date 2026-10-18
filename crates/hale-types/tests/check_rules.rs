@@ -2758,6 +2758,36 @@ interface Handler { fn a(x: A) -> String; }
         );
     }
 
+    /// A closed seam's `or violate NAME;` checks: its frame is a turn that
+    /// returns a value, so the violation is `run`'s, where a value-returning
+    /// method's would be refused (F.42). Both the locus's own hops and a
+    /// chain through child loci.
+    #[test]
+    fn a_closed_seams_or_violate_checks() {
+        let own = "type Bad { why: String; }\n\
+            locus G {\n\
+                params { k: Int = 0; }\n\
+                closure fuse { captures: k; epoch inline; }\n\
+                fn next() -> Int { return 1; }\n\
+                fn decode(x: Int) -> String fallible(Bad) { fail Bad { why: \"bad\" }; }\n\
+                fn put(s: String) { println(s); }\n\
+                seam { self.next() -> self.decode -> self.put; or violate fuse; }\n\
+            }\n\
+            fn main() { G {}; }\n";
+        assert_eq!(errors(own), Vec::<String>::new());
+        let children = "type Bad { why: String; }\n\
+            locus Src { fn next() -> Int { return 1; } }\n\
+            locus Dec { fn decode(x: Int) -> String fallible(Bad) { fail Bad { why: \"bad\" }; } }\n\
+            locus Sink { fn put(s: String) { println(s); } }\n\
+            locus G {\n\
+                params { k: Int = 0; src: Src = Src { }; dec: Dec = Dec { }; sink: Sink = Sink { }; }\n\
+                closure fuse { captures: k; epoch inline; }\n\
+                seam { self.src.next() -> self.dec.decode -> self.sink.put; or violate fuse; }\n\
+            }\n\
+            fn main() { G {}; }\n";
+        assert_eq!(errors(children), Vec::<String>::new());
+    }
+
     #[test]
     fn every_member_has_one_eater() {
         assert_eq!(

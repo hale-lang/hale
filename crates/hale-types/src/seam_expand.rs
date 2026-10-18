@@ -9,9 +9,10 @@
 //! writes the seam as the method it means (spec/semantics.md § Seams):
 //!
 //! - the closed flow (a source, and a last hop that returns nothing) is the
-//!   locus's `run`, `while !self.draining { if !self.__seam_turn() { return; }
-//!   }`, and one frame is the method `fn __seam_turn() -> Bool { let v =
-//!   <source> or { return false; }; <chain> return true; }`, so what a frame
+//!   locus's `run`, which calls `fn __seam_turn() -> Int` (one frame: the
+//!   source pulled, the chain run) while the locus is not draining, returns
+//!   when the turn says the flow has ended, and violates the seam's closure
+//!   when the turn says a failure was routed to `or violate`; so what a frame
 //!   allocates goes with the turn's scratch;
 //! - the callable form, `seam name(x: T) [-> R] { x -> … ; }`, is `fn
 //!   name(x: T) -> R`, which returns the last hop's value.
@@ -54,6 +55,13 @@ pub fn is_seam_pos(pos: u32) -> bool {
 
 /// The method a closed seam's frame runs in: one turn of its `run`.
 pub const TURN: &str = "__seam_turn";
+
+/// What a turn returns: the flow goes on, the flow has ended (the source
+/// ended, or `or end;`), or a failure routed to `or violate NAME;`, which
+/// `run` violates (a method that returns a value may not).
+const TURN_ON: i64 = 0;
+const TURN_END: i64 = 1;
+const TURN_VIOLATED: i64 = 2;
 
 /// The placeholder the generated closed flow calls where its source goes.
 const SOURCE_PLACEHOLDER: &str = "__seam_source";
@@ -635,7 +643,7 @@ impl Gen<'_, '_> {
                 self.chain(j, "err", e, &format!("the failure of `{label}`"), &mut s);
                 if self.closed {
                     // the turn ends; the flow goes on
-                    s.push_str("return true;\n");
+                    s.push_str(&format!("return {TURN_ON};\n"));
                     return s;
                 }
                 // a callable seam's route is a method of its own, whose
@@ -647,12 +655,14 @@ impl Gen<'_, '_> {
             }
         }
         match &self.seam.on_failure {
-            Some(SeamFailure::End(_)) if self.closed => "return false;\n".to_string(),
+            Some(SeamFailure::End(_)) if self.closed => format!("return {TURN_END};\n"),
             Some(SeamFailure::End(_)) => {
                 self.fails.insert(e.to_string());
                 "fail err;\n".to_string()
             }
-            Some(SeamFailure::Violate(c)) if self.closed => format!("violate {};\nreturn true;\n", c.name),
+            // the turn returns a value, so the violation is `run`'s, where
+            // the closed flow's statements have always been
+            Some(SeamFailure::Violate(_)) if self.closed => format!("return {TURN_VIOLATED};\n"),
             Some(SeamFailure::Violate(c)) => {
                 self.refuse(
                     c.span,
@@ -774,14 +784,19 @@ fn plan(index: &Index<'_>, owner: &LocusDecl, sd: &SeamDecl) -> Result<Plan, Vec
         let Some(entry) = src.ret.as_ref().map(|t| index.key(t)) else {
             return Err(vec![Diag::ty(sd.head.span(), format!("the seam's source `{}` returns nothing", src.name.name))]);
         };
-        let or = if src.fallible.is_some() { " or {\nreturn false;\n}" } else { "" };
+        let or = if src.fallible.is_some() { format!(" or {{\nreturn {TURN_END};\n}}") } else { String::new() };
         g.chain(0, "__seam_v0", &entry, &format!("the source `{}`", src.name.name), &mut body);
         // one frame is a turn, a method of its own, so what the frame
         // allocated goes with the turn's scratch; `run` calls it until the
-        // source ends (false) or the locus drains
+        // source ends or the locus drains, and violates the seam's closure
+        // when a turn says so (a method returning a value may not violate)
+        let violated = match &sd.on_failure {
+            Some(SeamFailure::Violate(c)) => format!("if t == {TURN_VIOLATED} {{\nviolate {};\n}}\n", c.name),
+            _ => String::new(),
+        };
         format!(
-            "fn {TURN}() -> Bool {{\nlet __seam_v0 = {SOURCE_PLACEHOLDER}(){or};\n{body}return true;\n}}\n\
-             run() {{\nwhile !self.draining {{\nif !self.{TURN}() {{\nreturn;\n}}\n}}\n}}\n"
+            "fn {TURN}() -> Int {{\nlet __seam_v0 = {SOURCE_PLACEHOLDER}(){or};\n{body}return {TURN_ON};\n}}\n\
+             run() {{\nwhile !self.draining {{\nlet t = self.{TURN}();\nif t == {TURN_END} {{\nreturn;\n}}\n{violated}}}\n}}\n"
         )
     } else {
         let p = sd.param.as_ref().expect("a callable seam's parameter");

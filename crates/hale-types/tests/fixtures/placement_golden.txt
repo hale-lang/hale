@@ -8361,6 +8361,11 @@ row	Hello@main3	Hello	main	default
 row	Stamp@main2	Stamp	main	default
 shared	__StdHttpRouter@main1	__StdHttpRouter #a16e8e74
 
+== tests/hale/seam_closed_violate_test.hl
+root	App	the entry
+row	App@literal1	App	main	default
+row	App@literal1.g	Gate	main	default
+
 == tests/hale/seam_decoder_handler_test.hl
 -- Counter@main2	Counter
 row	~	Counter	main	default
