@@ -1,56 +1,79 @@
-// dna/core/exchange.hl — one record's mailbox in another, behind a
-// transport-independent contract (GH #646 stage 5, #662).
+// dna/core/exchange.hl — one record's envelopes into another's inbox,
+// behind a transport-independent contract (GH #646 stage 5, #662; over
+// the nerves since GH #1590).
 //
-// A handoff crosses between records as an envelope: a row of the
-// sender's, written into the receiver's mailbox for the sender, never
-// into the receiver's journal (the receiver admits it by its own
-// connection, in its own name). The contract is the one #646 set:
-// - a stable identity — the envelope's `entity` is `handoff:<id>` and
-//   `id` is the handoff's (origin, peer, kind, subject), so a delivery
-//   repeated after an interruption is one envelope;
-// - durable delivery — `delivered` says whether the peer already holds
-//   the envelope, and a sender whose envelope is not acknowledged
-//   delivers again until it is;
-// - an explicit disclosure scope — the connection's classes, checked
+// A handoff crosses between records as an envelope: a fact of the
+// sender's, delivered into the receiver's inbox, never into the
+// receiver's record (the receiver admits it by its own connection, in its
+// own name). The contract:
+// - a stable identity: the envelope's `id` is the handoff's (origin, peer,
+//   kind, subject) and its kind, so a delivery repeated after an
+//   interruption is one envelope;
+// - durable delivery: `deliver` is idempotent by that id, and a sender
+//   delivers again until the receiver's acceptance comes back;
+// - authorship: every envelope is signed with the sending record's own
+//   key (a record-to-record act; the person is named inside it), and a
+//   receiver admits one only under a connection that pinned that key;
+// - an explicit disclosure scope: the connection's classes, checked
 //   before anything is delivered and again before anything is admitted;
-// - settlement only on the receiver's acceptance — the origin's task
-//   settles when the receiver's `handoff.accepted` envelope reaches it
-//   through the same exchange, never when a delivery call returned.
-// `GitExchange` (mailboxes as refs in a private peer cache) lives in the
-// host; `MemExchange` is the fixtures'.
+// - settlement only on the receiver's acceptance, never when a delivery
+//   returned.
+// A record publishes its card — its identity, its genome and the key its
+// envelopes are signed with, signed by that key — so another record can
+// name it without reaching anything else of it. `NatsExchange` (the
+// nerves, dna/host/connections.hl) is the transport; `MemExchange` is the
+// fixtures'.
 
 type Envelope {
-    kind: String = ""; // "handoff.received" | "handoff.accepted"
+    id: String = ""; // `<handoff id>.<kind>`
+    sender: String = ""; // the sending record's identity
+    recipient: String = ""; // the receiving record's identity
+    kind: String = ""; // "received" | "accepted"
     entity: String = ""; // "handoff:<id>"
     body: String = "";
-    author: String = "";
+    author: String = ""; // the person who acted, in the sending record
+}
+
+// What a record publishes so another can connect to it.
+type Card {
+    ok: Bool = false;
+    identity: String = "";
+    genome: String = "";
+    key: String = ""; // ed25519 public key, hex
+    why: String = "";
+    unreachable: Bool = false; // the read did not happen: try again later
 }
 
 type Delivered {
     ok: Bool = false;
-    ref: String = ""; // where the envelope sits at the peer (a commit, a row)
+    ref: String = ""; // where the envelope sits at the peer (`<stream>#<seq>`)
     why: String = "";
     unreachable: Bool = false; // the peer could not be reached at all: deliver again later
+    full: Bool = false; // the peer's inbox refused it as full: nothing was stored
 }
 
 interface Exchange {
     fn kind() -> String;
-    // The identity the record at `peer_url` publishes ("" when none).
-    fn peer_identity(name: String, peer_url: String) -> String;
-    // This record's envelope into the peer's mailbox for it. Idempotent
-    // by (kind, entity): an envelope already there is not written twice.
-    fn deliver(name: String, peer_url: String, mine: String, e: Envelope) -> Delivered;
-    // Where an envelope of (kind, entity) already sits at the peer ("" when nowhere).
-    fn delivered(name: String, peer_url: String, mine: String, kind: String, entity: String) -> String;
-    // Every mailbox of this record, as lines `sender\tkind\tentity\tbody\tauthor`
-    // — what every peer has put here, the sender's identity first.
+    // The card the record `record` publishes at `url`; `ok` false with
+    // `why` when it publishes none, it is not that record's, or its
+    // signature does not hold.
+    fn card(url: String, record: String) -> Card;
+    // A signed envelope (`line`, from `ExchangeKey.seal`) into the inbox
+    // of the record `peer` at `url`. Idempotent by the envelope's id.
+    fn deliver(url: String, peer: String, id: String, line: String) -> Delivered;
+    // Every envelope this record's inbox holds, one signed line each.
     fn received() -> String;
 }
 
-fn envelope_line(sender: String, e: Envelope) -> String {
+// ---- the envelope on the wire ---------------------------------------------
+
+fn envelope_json(e: Envelope) -> String {
     let b = std::json::Builder { };
     b.begin_object();
-    b.string_field("sender", sender);
+    b.int_field("v", 1);
+    b.string_field("id", e.id);
+    b.string_field("sender", e.sender);
+    b.string_field("recipient", e.recipient);
     b.string_field("kind", e.kind);
     b.string_field("entity", e.entity);
     b.string_field("body", e.body);
@@ -59,49 +82,189 @@ fn envelope_line(sender: String, e: Envelope) -> String {
     return b.result();
 }
 
-type MemEnvelope { key: String = ""; sender: String = ""; e: Envelope = Envelope { }; }
+fn envelope_of(json: String) -> Envelope {
+    return Envelope {
+        id: std::json::find_string_field(json, "id"),
+        sender: std::json::find_string_field(json, "sender"),
+        recipient: std::json::find_string_field(json, "recipient"),
+        kind: std::json::find_string_field(json, "kind"),
+        entity: std::json::find_string_field(json, "entity"),
+        body: std::json::find_string_field(json, "body"),
+        author: std::json::find_string_field(json, "author")
+    };
+}
+
+// The line that travels: the envelope's exact text, the key it is signed
+// with, and the signature over that text.
+fn signed_line(text: String, key: String, sig: String) -> String {
+    let b = std::json::Builder { };
+    b.begin_object();
+    b.string_field("envelope", text);
+    b.string_field("key", key);
+    b.string_field("sig", sig);
+    b.end_object();
+    return b.result();
+}
+
+// Whether a signed line's signature holds over its envelope under the key
+// it names and the domain `tag` (integrity; whether that key is the
+// sender's is the connection's to say).
+fn signed_line_holds_as(line: String, tag: String) -> Bool {
+    let text = std::json::find_string_field(line, "envelope");
+    let key = std::json::find_string_field(line, "key");
+    return len(text) > 0 && signature_holds(key, tag, text, std::json::find_string_field(line, "sig"));
+}
+
+// An envelope's signed line.
+fn signed_line_holds(line: String) -> Bool { return signed_line_holds_as(line, SIG_TAG_ENVELOPE); }
+
+// ---- signing: the record's own key -----------------------------------------
+//
+// A record signs what it sends with an ed25519 key whose seed is the
+// sha256 of a secret the vault holds (`exchange_key_vault`), drawn by the
+// organism's bootstrap like its other secrets; `std::secret::Credential`
+// signs, and neither the secret nor the seed leaves it. The record is the writer: a
+// non-person writer's key is the vault's (GH #1590); the person who acted
+// is named in the envelope.
+
+fn exchange_key_vault(org: String) -> String { return "dna-exchange-" + identifier_part(org, 60); }
+
+fn hex_bytes(s: String) -> Bytes {
+    let b = std::bytes::BytesBuilder { };
+    let digits = "0123456789abcdef";
+    let mut i = 0;
+    while i + 1 < len(s) {
+        let hi = std::str::index_of(digits, s[i..(i + 1)]);
+        let lo = std::str::index_of(digits, s[(i + 1)..(i + 2)]);
+        if hi < 0 || lo < 0 { return b""; }
+        b.append_u8(hi * 16 + lo);
+        i = i + 2;
+    }
+    return b.snapshot() or b"";
+}
+
+// One key signs several kinds of message — envelopes, the card, and (once
+// the record is memory's) its rows — so each kind is signed under a tag of
+// its own: the bytes signed are the tag, a NUL, then the text. A signature
+// made for one kind never verifies as another's.
+const SIG_TAG_ENVELOPE: String = "hale-dna-envelope";
+const SIG_TAG_CARD: String = "hale-dna-card";
+const SIG_TAG_ROW: String = "hale-dna-row";
+
+fn tagged_bytes(tag: String, text: String) -> Bytes {
+    let b = std::bytes::BytesBuilder { };
+    b.append_str(tag);
+    b.append_u8(0);
+    b.append_str(text);
+    return b.snapshot() or b"";
+}
+
+// Whether `sig` is `key`'s over `text` under `tag`.
+fn signature_holds(key: String, tag: String, text: String, sig: String) -> Bool {
+    if !std::str::starts_with(sig, "ed25519:") { return false; }
+    return std::crypto::ed25519_verify(hex_bytes(key), tagged_bytes(tag, text), hex_bytes(sig[8..len(sig)]));
+}
+
+// The record's key, held where the vault holds it: the secret is revealed
+// into the one call that uses it, never kept.
+locus ExchangeKey {
+    params { vault: String = ""; }
+    fn ready() -> Bool { return std::secret::Credential { vault: self.vault }.ready(); }
+    fn public() -> String { return hex(std::secret::Credential { vault: self.vault }.ed25519_public()); }
+    // `text` signed under `tag` (`SIG_TAG_*`): "ed25519:<hex>", "" when the key is missing.
+    fn sign(tag: String, text: String) -> String {
+        let sig = std::secret::Credential { vault: self.vault }.sign_ed25519(tagged_bytes(tag, text));
+        if len(sig) == 0 { return ""; }
+        return "ed25519:" + hex(sig);
+    }
+    // An envelope as it travels, signed ("" when the key is missing).
+    fn seal(e: Envelope) -> String {
+        let text = envelope_json(e);
+        let sig = self.sign(SIG_TAG_ENVELOPE, text);
+        if len(sig) == 0 { return ""; }
+        return signed_line(text, self.public(), sig);
+    }
+    // This record's card, signed by its key ("" when the key is missing).
+    fn card(identity: String, genome: String) -> String {
+        let key = self.public();
+        if len(key) == 0 { return ""; }
+        let text = card_text(identity, genome, key);
+        return signed_line(text, key, self.sign(SIG_TAG_CARD, text));
+    }
+}
+
+fn card_text(identity: String, genome: String, key: String) -> String {
+    let b = std::json::Builder { };
+    b.begin_object();
+    b.int_field("v", 1);
+    b.string_field("identity", identity);
+    b.string_field("genome", genome);
+    b.string_field("key", key);
+    b.end_object();
+    return b.result();
+}
+
+// A card as read: its signature must hold under the key it names, and it
+// must be `record`'s.
+fn card_of(line: String, record: String) -> Card {
+    if !signed_line_holds_as(line, SIG_TAG_CARD) { return Card { why: "the card's signature does not hold" }; }
+    let text = std::json::find_string_field(line, "envelope");
+    let c = Card { ok: true, identity: std::json::find_string_field(text, "identity"), genome: std::json::find_string_field(text, "genome"), key: std::json::find_string_field(text, "key") };
+    if c.key != std::json::find_string_field(line, "key") { return Card { why: "the card names another key than it is signed with" }; }
+    if len(record) > 0 && c.identity != record { return Card { why: "the card is record " + c.identity + "'s, not " + record + "'s" }; }
+    return c;
+}
+
+// ---- in memory --------------------------------------------------------------
+
+type MemEnvelope { at: String = ""; id: String = ""; line: String = ""; }
 
 @form(vec)
 locus MemEnvelopes { capacity { heap rows of MemEnvelope; } }
 
-// The exchange in memory: one process, every record's mailbox in one
-// place, keyed by peer url — a fixture stands two records up and hands
+type MemCard { identity: String = ""; line: String = ""; }
+
+@form(vec)
+locus MemCards { capacity { heap rows of MemCard; } }
+
+// The exchange in memory: one process, every record's inbox in one place,
+// a url `mem://<identity>` — a fixture stands two records up and hands
 // between them.
 locus MemExchange {
-    params { identity: String = "mem"; boxes: MemEnvelopes = MemEnvelopes { }; peers: String = "\n"; }
+    params { identity: String = "mem"; boxes: MemEnvelopes = MemEnvelopes { }; cards: MemCards = MemCards { }; full_at: Int = 0; }
     fn kind() -> String { return "memory"; }
-    // a peer url is `mem://<identity>`
-    fn peer_identity(name: String, peer_url: String) -> String {
-        if std::str::starts_with(peer_url, "mem://") { return peer_url[6..len(peer_url)]; }
-        return "";
-    }
-    fn find(at: String, from: String, kind: String, entity: String) -> Int {
+    fn publish_card(identity: String, line: String) { self.cards.push(MemCard { identity: identity, line: line }); }
+    fn card(url: String, record: String) -> Card {
+        if !std::str::starts_with(url, "mem://") { return Card { why: "no record at " + url, unreachable: true }; }
+        let at = url[6..len(url)];
         let mut i = 0;
-        while i < self.boxes.len() {
-            let m = self.boxes.get(i) or MemEnvelope { };
-            if m.key == at + "|" + from && m.e.kind == kind && m.e.entity == entity { return i; }
+        while i < self.cards.len() {
+            let c = self.cards.get(i) or MemCard { };
+            if c.identity == at { return card_of(c.line, record); }
             i = i + 1;
         }
-        return -1;
+        return Card { why: "record " + at + " publishes no card" };
     }
-    fn deliver(name: String, peer_url: String, mine: String, e: Envelope) -> Delivered {
-        let at = self.peer_identity(name, peer_url);
-        if len(at) == 0 { return Delivered { why: "no record at " + peer_url, unreachable: true }; }
-        let have = self.find(at, mine, e.kind, e.entity);
-        if have >= 0 { return Delivered { ok: true, ref: "mem" + to_string(have) }; }
-        self.boxes.push(MemEnvelope { key: at + "|" + mine, sender: mine, e: e });
-        return Delivered { ok: true, ref: "mem" + to_string(self.boxes.len() - 1) };
-    }
-    fn delivered(name: String, peer_url: String, mine: String, kind: String, entity: String) -> String {
-        let have = self.find(self.peer_identity(name, peer_url), mine, kind, entity);
-        return if have < 0 { "" } else { "mem" + to_string(have) };
+    fn deliver(url: String, peer: String, id: String, line: String) -> Delivered {
+        if url != "mem://" + peer { return Delivered { why: "no record " + peer + " at " + url, unreachable: true }; }
+        let mut i = 0;
+        let mut held = 0;
+        while i < self.boxes.len() {
+            let m = self.boxes.get(i) or MemEnvelope { };
+            if m.at == peer && m.id == id { return Delivered { ok: true, ref: "mem#" + to_string(i) }; }
+            if m.at == peer { held = held + 1; }
+            i = i + 1;
+        }
+        if self.full_at > 0 && held >= self.full_at { return Delivered { why: "record " + peer + "'s inbox is full", full: true }; }
+        self.boxes.push(MemEnvelope { at: peer, id: id, line: line });
+        return Delivered { ok: true, ref: "mem#" + to_string(self.boxes.len() - 1) };
     }
     fn received() -> String {
         let mut out = "";
         let mut i = 0;
         while i < self.boxes.len() {
             let m = self.boxes.get(i) or MemEnvelope { };
-            if std::str::starts_with(m.key, self.identity + "|") { out = out + envelope_line(m.sender, m.e) + "\n"; }
+            if m.at == self.identity { out = out + m.line + "\n"; }
             i = i + 1;
         }
         return out;

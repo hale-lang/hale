@@ -148,7 +148,8 @@
     { operation: "dna.models.probe", title: "Probe models", submit: "Probe models", project: true, fields: [
       { key: "confirm_spend", label: "I confirm this probe may spend model credits", kind: "checkbox", gate: true }] },
     { operation: "dna.connection.propose", title: "Propose connection", submit: "Propose connection", project: true, fields: [
-      { key: "record_url", label: "Peer Record URL", kind: "text", valid: word },
+      { key: "nerves_url", label: "Peer's nerves (nats://host:port)", kind: "text", valid: word },
+      { key: "record", label: "Peer record identity", kind: "text", valid: word },
       { key: "name", label: "Connection name", kind: "text", valid: word },
       { key: "position", label: "Position (our side)", kind: "text", valid: word },
       { key: "purpose", label: "Purpose", kind: "text", valid: value => safe(value, 4096) && value.length > 0 },

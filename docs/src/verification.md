@@ -501,7 +501,9 @@ The key is read during `birth`, so it exists only inside a sealed locus
 from the moment it enters the program — there is no line anywhere in
 your code where you hold it. `self.s.key` is a compile error naming the
 methods you can call instead. `std::secret::Credential` is the same for
-a token or password, plus a `fingerprint()` for logs, and `reveal()` /
+a token or password, plus a `fingerprint()` for logs, `sign_ed25519(m)`
+and `ed25519_public()` for signing with a key derived from it (the
+signature leaves, the key never does), and `reveal()` /
 `reveal_text()` for when a plain credential has to leave as text to be
 usable at all. `Signer`'s key never does. A reveal is held to the one
 use it exists for: it is called in a locus method, and its value is

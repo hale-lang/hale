@@ -48,7 +48,7 @@ hale dna record-rows [project]  the record's rows, one JSON object per line
 hale dna sync [project]      fetch, reconcile and push the record (refs/dna/*) with origin
 hale dna candidates [<mutation> | drop <mutation> --why <w>]
                              the candidates the record keeps, whatever the review decided; one as a diff; stop keeping one
-hale dna connect <record-url> --name <n> --as <position> --purpose <p> --classes <internal,customer,…>
+hale dna connect <nerves-url> --record <identity> --name <n> --as <position> --purpose <p> --classes <internal,customer,…>
                              propose a connection to another record (a Board Review); `hale dna connect` lists them;
                              `hale dna disconnect <n> --why <w>` closes one
 hale dna handoff <n> task <id> | receipt <digest>
@@ -344,7 +344,7 @@ kind it does not know keeps walking.
 | `receipt.redacted` | ledger | the body removed, the digest kept |
 | `connection.proposed` / `connection.closed` | record | a connection to another record, for the Board; and its closing |
 | `handoff.published` / `handoff.refused` | ledger | a fact written into a connected record, or why not |
-| `handoff.received` | ledger | an envelope in the receiving record's mailbox |
+| `handoff.received` | ledger | an envelope in the receiving record's inbox (a kind of the exchange's envelopes since GH #1590, never a row) |
 | `handoff.accepted` / `handoff.accepted_by_peer` | ledger | an acceptance in the receiving record, and its admission back in the origin |
 | `task.transfer_requested` / `task.transfer_accepted` | ledger | a Task offered across a connection or to another owner, and accepted |
 
@@ -589,7 +589,6 @@ around an application you already have.
 | `refs/dna/identity` | the record's identity; a sync publishes it to the remote |
 | `refs/dna/lease/<key>` | leases with fencing tokens; `refs/dna/lease/body` is the body lease |
 | `refs/heads/dna/candidate/<mutation>` | a Mutation's candidate, a branch of the genome kept whatever its Review decided |
-| `refs/dna/exchange/<identity>` | a connected record's mailbox in this one |
 | `refs/dna/remote/…` | what the last fetch brought from the remote (`journal`, `lease/body`) |
 | `refs/hale/remote/genome` | the forge's default branch as the node's last pull fetched it |
 | `.git/config` | the record's settings (`dna.trust`, `dna.unix.member`, … above) |

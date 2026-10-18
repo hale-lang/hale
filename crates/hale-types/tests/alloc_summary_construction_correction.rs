@@ -313,8 +313,8 @@ fn own_scope_let_block_scope_test() {
             // `event` and `end`, and six framing helpers)
             changed_lines(&old.render(), &now.render()),
             [
-                "- # 458 fns, 29 entry points, 119 invoked-unboundedly",
-                "+ # 458 fns, 29 entry points, 118 invoked-unboundedly",
+                "- # 460 fns, 29 entry points, 119 invoked-unboundedly",
+                "+ # 460 fns, 29 entry points, 118 invoked-unboundedly",
                 "- call  count loop_depth=0 result=local",
                 "+ call  <unresolved: count> loop_depth=0 result=local",
                 "- call  count loop_depth=0 result=local",
@@ -1137,10 +1137,10 @@ fn startable_only_the_verb_program_runs_to_exit() {
         vec![(
             "dna/host/verb".to_string(),
             strs(&[
-                "dna__core: 216",
+                "dna__core: 219",
                 "dna__core__pond__pq: 11",
                 "dna__core__pond__realtime__nats: 2",
-                "dna__host: 654",
+                "dna__host: 630",
                 "dna__operations: 138",
                 "the stdlib's copy: 1",
             ])

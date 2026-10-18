@@ -1,0 +1,78 @@
+// dna/core/memory_exchange.hl — the exchange's inbox in memory (GH #1590).
+//
+// What other records sent this one arrives on the nerves, in the record's
+// exchange stream; a drain (dna/host/connections.hl) checks each envelope
+// and keeps it here, once by its sender, its id and the key that signed it,
+// through memory's `exchange_keep`: the writers insert and read, and
+// nothing changes or removes a row. What the
+// record admits from its inbox is decided when it reads it, under its own
+// connections.
+
+// One envelope as kept: its id, its sender, and the signed line whole.
+type ExchangeRow {
+    id: String = "";
+    sender: String = "";
+    kind: String = "";
+    entity: String = "";
+    line: String = "";
+}
+
+locus MemoryExchange {
+    params {
+        repo: String = ".";
+        dsn_env: String = HEAD_DSN_ENV;
+        conn: pq::PgConn = pq::PgConn { sslmode: "prefer" };
+        opened: Bool = false;
+        error: String = "";
+    }
+    dissolve() { self.conn.close(); }
+    fn ready() -> Bool { return dsn_set(self.dsn_env); }
+    fn last_error() -> String { return self.error; }
+    // `self.error` holds only the last failure, replaced whole.
+    @bounded_by(self.error)
+    fn open() -> Bool {
+        if self.opened { return true; }
+        if !self.ready() { self.error = self.dsn_env + " is not set: no memory to keep the inbox in"; return false; }
+        let scope = record_scope(self.repo);
+        if len(scope) == 0 { self.error = "the record has no identity yet"; return false; }
+        let dialled = dial_from_env(self.conn, self.dsn_env);
+        if len(dialled) > 0 { self.error = dialled; return false; }
+        let st = self.conn.open();
+        if !st.ok { self.error = "open: " + st.err.kind + " " + st.err.detail; return false; }
+        let sch = schema_for(scope);
+        let ns = self.conn.exec("SET search_path TO " + sch + ", public");
+        if !ns.ok { self.error = "scope (schema " + sch + "): " + ns.err.kind + " " + ns.err.detail; return false; }
+        let fence = memory_fence(self.conn, sch);
+        if len(fence) > 0 { self.error = fence; self.conn.close(); return false; }
+        self.opened = true;
+        return true;
+    }
+    // Keep one envelope; one already kept from its sender under its id and
+    // its signer's key stays as it was.
+    // `self.error` holds only the last failure, replaced whole.
+    @bounded_by(self.error)
+    fn keep(r: ExchangeRow, seq: Int) -> Bool {
+        if !self.open() { return false; }
+        let a = db::Args { };
+        a.add(r.id);
+        a.add(r.sender);
+        a.add(std::json::find_string_field(r.line, "key"));
+        a.add(r.kind);
+        a.add(r.entity);
+        a.add(r.line);
+        a.add(to_string(seq));
+        let x = self.conn.exec_params("SELECT exchange_keep($1, $2, $3, $4, $5, $6, $7::bigint)", a);
+        if !x.ok { self.error = "keep: " + x.err.kind + " " + x.err.detail; return false; }
+        return true;
+    }
+    // Every kept envelope's signed line, oldest first, one per line; "" with
+    // `last_error` when memory could not be read.
+    // `self.error` holds only the last failure, replaced whole.
+    @bounded_by(self.error)
+    fn lines() -> String {
+        if !self.open() { return ""; }
+        let rows = self.conn.query_all("SELECT line FROM exchange_rows ORDER BY stream_seq, sender, id, signer");
+        if !rows.ok { self.error = "read: " + rows.err.kind + " " + rows.err.detail; return ""; }
+        return rows.csv;
+    }
+}

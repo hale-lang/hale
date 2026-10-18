@@ -114,7 +114,7 @@ fn nerves_stream(org: String) -> String { return std::str::upper(org); }
 
 // The users of the organization's NATS server, one per family of
 // subjects (dna/nats.conf).
-const NERVES_ROLES: String = "owner spine head reflexes";
+const NERVES_ROLES: String = "owner spine head reflexes exchange";
 
 // GH #989: a role's password lives in the vault, per seed, under
 // `nats-<org>-<role>`. It is never a String anywhere in the organism: a
@@ -202,6 +202,11 @@ fn nerves_conf_text(app: String) -> String {
         + "    # read nothing\n"
         + "    { user: reflexes, password: $NATS_REFLEXES_PASSWORD,\n"
         + "      permissions: { publish: [\"*.app.reflexes.>\"], subscribe: [\"_INBOX.>\"] } }\n"
+        + "    # the exchange (GH #1590): the inbox key this record hands the records\n"
+        + "    # connected to it, which may put an envelope in its inbox and read its\n"
+        + "    # card, and nothing else; an envelope's signature says who sent it\n"
+        + "    { user: exchange, password: $NATS_EXCHANGE_PASSWORD,\n"
+        + "      permissions: { publish: [\"exchange.*.in.>\", \"$JS.API.DIRECT.GET.*.exchange.*.card\"], subscribe: [\"_INBOX.>\"] } }\n"
         + "    # the head: subscribes, publishes nothing\n"
         + "    { user: head, password: $NATS_HEAD_PASSWORD,\n"
         + "      permissions: { publish: { deny: [\">\"] }, subscribe: [\"*.>\"] } }\n"
@@ -278,6 +283,63 @@ fn nerves_stream_config(org: String) -> String {
     b.string_field("storage", "file");
     b.string_field("retention", "limits");
     b.int_field("max_age", NERVES_MAX_AGE_SECS * 1000000000);
+    b.end_object();
+    return b.result();
+}
+
+// ---- the exchange (GH #1590) -------------------------------------------------
+//
+// Another record's envelopes reach this one through a stream of its own,
+// beside the organization's: `<STREAM>_EXCHANGE` over `exchange.<org>.>`,
+// outside `<org>.>` (two streams may not share a subject, and the
+// organization's stream forgets in a week where an inbox must not). Its
+// card is `exchange.<org>.card`, read by a direct get, so a peer reads it
+// with no process of this record running; each envelope is
+// `exchange.<org>.in.<sender's org>.<kind>`, read through the durable
+// `exchange`. It is a work queue: what the drain acknowledges leaves the
+// stream (the card is read by direct get, never consumed, and stays). The
+// stream is bounded, and a full one refuses at publish (discard new):
+// every sender's subject holds at most
+// `EXCHANGE_PER_SENDER` envelopes of a kind waiting to be drained, and the
+// stream at most `EXCHANGE_MAX_BYTES`, so a connected record cannot flood
+// this one's disk while it is not reading.
+
+const EXCHANGE_DURABLE: String = "exchange";
+const EXCHANGE_PER_SENDER: Int = 10000;
+const EXCHANGE_MAX_BYTES: Int = 268435456;
+// A fixture's override of the per-sender bound, read by `nerves migrate`.
+const EXCHANGE_PER_SENDER_ENV: String = "HALE_DNA_EXCHANGE_PER_SENDER";
+
+fn exchange_stream(org: String) -> String { return nerves_stream(org) + "_EXCHANGE"; }
+fn exchange_card_subject(org: String) -> String { return "exchange." + org + ".card"; }
+fn exchange_inbox_filter(org: String) -> String { return "exchange." + org + ".in.>"; }
+fn exchange_inbox_subject(org: String, sender_org: String, kind: String) -> String { return "exchange." + org + ".in." + sender_org + "." + kind; }
+
+fn exchange_per_sender() -> Int {
+    let given = env_or_empty(EXCHANGE_PER_SENDER_ENV);
+    let n = std::str::parse_int(given) or 0;
+    return if n > 0 { n } else { EXCHANGE_PER_SENDER };
+}
+
+fn exchange_stream_config(org: String, per_sender: Int) -> String {
+    let b = std::json::Builder { };
+    b.begin_object();
+    b.string_field("name", exchange_stream(org));
+    b.begin_array_field("subjects");
+    b.string_value("exchange." + org + ".>");
+    b.end_array();
+    b.string_field("storage", "file");
+    // an envelope leaves the stream once the inbox's one consumer has
+    // acknowledged it (kept in memory, or refused): the bound is on what
+    // waits undrained, never on what a record ever received
+    b.string_field("retention", "workqueue");
+    b.string_field("discard", "new");
+    b.bool_field("discard_new_per_subject", true);
+    b.int_field("max_msgs_per_subject", per_sender);
+    b.int_field("max_bytes", EXCHANGE_MAX_BYTES);
+    b.bool_field("allow_direct", true);
+    // an envelope delivered again by its id within a week is stored once
+    b.int_field("duplicate_window", NERVES_MAX_AGE_SECS * 1000000000);
     b.end_object();
     return b.result();
 }

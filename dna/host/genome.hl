@@ -82,6 +82,14 @@ fn genome_fetch_commit(root: String, remote: String, sha: String) -> String {
     return if len(e) == 0 { "the fetch of " + sha + " failed" } else { e };
 }
 
+// The genome's root commit, the one its card names (GH #1590); "" when the
+// genome has no commit yet.
+fn genome_root(root: String) -> String {
+    let r = genome(root, "rev-list\n--max-parents=0\nHEAD");
+    if r.code != 0 { return ""; }
+    return dna::trim_nl(dna::line_at(r.stdout, 0));
+}
+
 // Push `src` to the remote's branch `branch`; the error text, "" when it landed.
 fn genome_push_branch(root: String, remote: String, src: String, branch: String, force: Bool) -> String {
     let r = genome(root, "push\n-q\n" + (if force { "-f\n" } else { "" }) + remote + "\n" + src + ":refs/heads/" + branch);
