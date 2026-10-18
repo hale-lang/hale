@@ -1,0 +1,7 @@
+// The library of tests/hale/api_codec_import_test.hl: a record and the
+// library's own call of its codec.
+type Item { id: Int; name: String; }
+
+fn make(n: Int) -> Item { return Item { id: n, name: "x" }; }
+
+fn show(i: Item) -> String { return Item::api_encode(i); }

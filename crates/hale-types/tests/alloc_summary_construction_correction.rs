@@ -706,8 +706,10 @@ fn own_entries_run_to_exit_programs() {
     // record per element of a JSON array; 6:
     // `tests/hale/bounded_whole_assign_test.hl`, whose `fill` builds a
     // String per pushed element; 7: `tests/hale/api_codec_call_test.hl`,
-    // whose codec, called by the program itself, decodes the same way.
-    assert_eq!(moved, 7, "the run-to-exit programs among the targets that lose a site");
+    // whose codec, called by the program itself, decodes the same way; 8:
+    // `tests/hale/api_codec_import_test.hl`, the same codec of an imported
+    // type.
+    assert_eq!(moved, 8, "the run-to-exit programs among the targets that lose a site");
     assert_eq!(more, [], "the copy's leak sites");
     assert_eq!(
         own,
@@ -749,6 +751,8 @@ fn own_entries_run_to_exit_programs() {
             "tests/hale/api_codec_call_test.hl: __api_encode_Line StringConcat @5937..5946 InvokedUnboundedly",
             "tests/hale/api_codec_call_test.hl: __api_encode_Order StringConcat @13675..13684 InUnboundedLoop",
             "tests/hale/api_codec_call_test.hl: __api_encode_Order StringConcat @13702..13731 InUnboundedLoop",
+            // `tests/hale/api_codec_import_test.hl`: the codec of an imported type
+            "tests/hale/api_codec_import_test.hl: __api_decode___lib_tests__hale__api_codec_import_lib___main__Item StructLit(\"JsonError\") @3439..3484 InUnboundedLoop",
             "tests/hale/api_context_test.hl: main StringConcat @12887..12978 InUnboundedLoop",
             "tests/hale/api_context_test.hl: main StringConcat @12887..12970 InUnboundedLoop",
             // GH #1490 (step 3): `self.buf = self.buf + chunk`, an

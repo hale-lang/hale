@@ -1924,6 +1924,35 @@ fn rewrite_expr(e: &mut Expr, visit: &mut dyn FnMut(&mut Expr)) {
 // ---- GH #1530 step 0: the api codec, called by a program ----
 
 /// The types a program asks the api codec of (spec/api.md § Codecs):
+/// An imported type's codec call, `alias::T::api_encode(v)`, spelled by the
+/// name its declaration was merged under (`__lib_…_T::api_encode(v)`), the
+/// way a construction through an import is: `renames` is the build's
+/// cross-seed table (`alias::Name` → merged). A path the table does not
+/// know is left as written, for the checker to refuse.
+pub fn canonicalize_api_codec_paths(programs: &mut [&mut Program], renames: &[(Vec<String>, String)]) {
+    if renames.is_empty() {
+        return;
+    }
+    for p in programs.iter_mut() {
+        rewrite_items(&mut p.items, &mut |e: &mut Expr| {
+            let Expr::Call { callee, args, .. } = e else { return };
+            if args.len() != 1 {
+                return;
+            }
+            let Expr::Path(qn) = callee.as_mut() else { return };
+            let n = qn.segments.len();
+            if n < 3 || !matches!(qn.segments[n - 1].name.as_str(), "api_decode" | "api_encode") {
+                return;
+            }
+            let head: Vec<String> = qn.segments[..n - 1].iter().map(|s| s.name.clone()).collect();
+            let Some((_, merged)) = renames.iter().find(|(k, _)| *k == head) else { return };
+            let span = qn.segments[n - 2].span;
+            let m = qn.segments[n - 1].clone();
+            qn.segments = vec![Ident::new(merged.clone(), span), m];
+        });
+    }
+}
+
 /// `T::api_decode(text)` and `T::api_encode(value)`, each type once, with the
 /// index of the first program that asks.
 pub fn api_codec_targets(programs: &mut [&mut Program]) -> Vec<(usize, String)> {

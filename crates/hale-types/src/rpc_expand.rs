@@ -812,7 +812,8 @@ pub fn item_names_tcp_serve(item: &TopDecl) -> bool {
 /// whole request), the codecs of `T` and what it reaches, into the first program
 /// that asks, and the calls rewritten to them. A call of a type the codec
 /// does not carry is left as written; the checker refuses it.
-fn expose_api_codecs(programs: &mut [&mut Program]) {
+fn expose_api_codecs(programs: &mut [&mut Program], renames: &[(Vec<String>, String)]) {
+    hale_syntax::json_gen::canonicalize_api_codec_paths(programs, renames);
     let targets = hale_syntax::json_gen::api_codec_targets(programs);
     if targets.is_empty() {
         return;
@@ -1077,7 +1078,7 @@ pub fn expand(
 ) -> Vec<Expansion> {
     resolve_imported_surfaces(programs, renames);
     type_exposure_params(programs);
-    expose_api_codecs(programs);
+    expose_api_codecs(programs, renames);
     if mentions_tcp_serve(programs) {
         inject_tcp_serve(programs);
     }
