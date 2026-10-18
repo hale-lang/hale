@@ -232,13 +232,16 @@ main locus App {
         std::test::assert_eq_int(record_lines_with(firm, "\"kind\": \"review.settled\"\t\"entity\": \"review:" + rid + "\"\t\"author\": \"ana\""), 1, "its Review settled once, in ana's name");
 
         // ---- an envelope claiming the firm under another key takes the real
-        // t7's id first: it is kept beside the firm's own, never in its place
+        // t7's id first, and the transport id it would have had: it is kept
+        // beside the firm's own, never in its place, and does not stop it
         let hid7_ahead = dna::handoff_id(firm_genesis, acct_genesis, "task", "t7");
         let squatter = dna::ExchangeKey { vault: "dna-exchange-test-two" };
         let squat = squatter.seal(dna::Envelope { id: hid7_ahead + ".received", sender: firm_genesis, recipient: acct_genesis, kind: "received", entity: "handoff:" + hid7_ahead, body: "{\"kind\": \"task\", \"subject\": \"t7\", \"class\": \"internal\", \"purpose\": \"year-end books\", \"fact\": \"SQUATTED\"}", author: "mallory" });
         let sc = nats::NatsClient { url: self.nerves, name: "handoff-test-squatter", timeout: 3s };
         std::test::assert(sc.open(), "the squatter reaches the nerves: " + sc.last_error);
-        let sack = nats::js_publish_id(sc, dna::exchange_inbox_subject(acct_org, firm_org, "received"), "squat-" + hid7_ahead, std::bytes::from_string(squat)) or nats::PubAck { };
+        // under the very transport id the firm's envelope once used, which
+        // anyone could predict: the firm's own is delivered all the same
+        let sack = nats::js_publish_id(sc, dna::exchange_inbox_subject(acct_org, firm_org, "received"), hid7_ahead + ".received", std::bytes::from_string(squat)) or nats::PubAck { };
         let swhy = sc.last_error;
         sc.close();
         std::test::assert(sack.seq > 0, "the squatting envelope is in the inbox first: " + swhy);

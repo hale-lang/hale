@@ -111,7 +111,12 @@ locus NatsExchange {
         let kind = if dot < 0 { "received" } else { id[(dot + 1)..len(id)] };
         let c = exchange_client(url, "exchange", dna::nerves_vault_name(org, "exchange"), "dna-exchange");
         if !c.open() { return dna::Delivered { why: "the nerves at " + url + " could not be reached: " + c.last_error, unreachable: true }; }
-        let ack = nats::js_publish_id(c, dna::exchange_inbox_subject(org, dna::schema_for(self.mine), kind), id, std::bytes::from_string(line)) or nats::PubAck { };
+        // the transport's id is the envelope's own, signature and all: a
+        // retry of the same signed envelope is stored once, and no other
+        // publisher (the inbox key is shared) can take its place by
+        // publishing first under an id it can predict (GH #1590)
+        let msg_id = id + "." + dna::digest_of(std::json::find_string_field(line, "sig"))[7..39];
+        let ack = nats::js_publish_id(c, dna::exchange_inbox_subject(org, dna::schema_for(self.mine), kind), msg_id, std::bytes::from_string(line)) or nats::PubAck { };
         let why = c.last_error;
         c.close();
         if ack.seq > 0 { return dna::Delivered { ok: true, ref: ack.stream + "#" + to_string(ack.seq) }; }

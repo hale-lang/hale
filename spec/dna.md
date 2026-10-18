@@ -778,7 +778,10 @@ repository:
     <digest> [--note …] [--as <who>]` signs one envelope (`kind:
     received`) and publishes it to
     `exchange.<peer org>.in.<this org>.received` with `Nats-Msg-Id` its
-    id; once the other record's stream has stored it, this record
+    id and the first 32 hex digits of the sha256 of its signature (so a
+    retry of the same signed envelope is stored once, and no other
+    holder of the inbox key can take its place by publishing first
+    under an id it could predict); once the other record's stream has stored it, this record
     appends `handoff.published` (with `peer_row`, `<stream>#<seq>`, and
     the signed envelope) and, for a Task, `task.transfer_requested`. The
     envelope's body carries `handoff` (`h` and twelve hex digits of the
