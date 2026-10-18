@@ -140,7 +140,7 @@ fn walk_copy(
     let target = crate::capability::target_row(&bundle);
     let inputs =
         crate::check::WalkInputs { top: &top, handlers: &handlers, bindings: &bindings, units: &units, target: &target };
-    let walk = crate::check::walk_bundle_by_declaration(&bundle, &inputs, false, false, reuse);
+    let walk = crate::check::walk_bundle_for_record(&bundle, &inputs, reuse);
     let mut views = walk.record.views;
     let monos = (*walk.record.mono_shapes).clone();
     views.remove(crate::snapshot::STDLIB_SEED).map(|v| (v, monos))
