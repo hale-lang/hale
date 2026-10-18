@@ -41,10 +41,49 @@ pub(crate) fn value_names(items: &[TopDecl], out: &mut Vec<ValueName>) {
 
 /// The same, each with where it is read.
 pub(crate) fn value_name_sites(items: &[TopDecl], out: &mut Vec<(ValueName, hale_syntax::Span)>) {
+    // The stdlib's analysis copy is the same in every check, and every
+    // analysis reading it asks for its items' value names: each item's are
+    // read once per process.
+    if let Some(cached) = stdlib_item_sites(items) {
+        for sites in cached {
+            out.extend(sites.iter().cloned());
+        }
+        return;
+    }
+    walk_sites(items, out);
+}
+
+fn walk_sites(items: &[TopDecl], out: &mut Vec<(ValueName, hale_syntax::Span)>) {
     let mut w = Walk { out, scopes: Vec::new() };
     for item in items {
         w.top_decl(item);
     }
+}
+
+type ItemSites = Vec<(ValueName, hale_syntax::Span)>;
+
+/// The value names of each of `items`, when they are top-level items of
+/// the stdlib's analysis copy ([`crate::stdlib_bodies::program`]): each
+/// item's walked the first time any analysis asks.
+fn stdlib_item_sites(items: &[TopDecl]) -> Option<impl Iterator<Item = &'static ItemSites>> {
+    use std::sync::OnceLock;
+    let copy = crate::stdlib_bodies::program()?;
+    let all = copy.items.as_slice();
+    let size = std::mem::size_of::<TopDecl>();
+    let start = (items.as_ptr() as usize).checked_sub(all.as_ptr() as usize)?;
+    if items.is_empty() || start % size != 0 || start / size + items.len() > all.len() {
+        return None;
+    }
+    let first = start / size;
+    static SITES: OnceLock<Vec<OnceLock<ItemSites>>> = OnceLock::new();
+    let sites = SITES.get_or_init(|| (0..all.len()).map(|_| OnceLock::new()).collect());
+    Some((first..first + items.len()).map(move |i| {
+        sites[i].get_or_init(|| {
+            let mut out = Vec::new();
+            walk_sites(std::slice::from_ref(&all[i]), &mut out);
+            out
+        })
+    }))
 }
 
 struct Walk<'o> {
