@@ -1022,6 +1022,29 @@ pub fn walk_bundle_by_declaration(
     strict_idents: bool,
     reuse: &dyn Fn(&str, usize) -> Option<DeclChecked>,
 ) -> TypingWalk {
+    walk_bundle(bundle, inputs, strict_callees, strict_idents, reuse, true)
+}
+
+/// The walk for its record alone (the stdlib's analysis copy's views and
+/// monomorph shapes, `stdlib_bodies::walk_copy`): the same typing, without
+/// the refusals only a diagnostic reads (the fresh-factory rows behind a
+/// fn value's, over the whole copy).
+pub(crate) fn walk_bundle_for_record(
+    bundle: &Bundle<'_>,
+    inputs: &WalkInputs<'_>,
+    reuse: &dyn Fn(&str, usize) -> Option<DeclChecked>,
+) -> TypingWalk {
+    walk_bundle(bundle, inputs, false, false, reuse, false)
+}
+
+fn walk_bundle(
+    bundle: &Bundle<'_>,
+    inputs: &WalkInputs<'_>,
+    strict_callees: bool,
+    strict_idents: bool,
+    reuse: &dyn Fn(&str, usize) -> Option<DeclChecked>,
+    diagnostics: bool,
+) -> TypingWalk {
     let top = inputs.top;
     let mut diags = Vec::new();
     let reused: BTreeMap<&str, Vec<Option<DeclChecked>>> = bundle
@@ -1144,7 +1167,9 @@ pub fn walk_bundle_by_declaration(
     // build every instance they return (the fresh-factory rows over the
     // bundle's files, as lowering reads them).
     let mut unfresh_builders: BTreeMap<String, String> = BTreeMap::new();
-    {
+    // what only a diagnostic reads (a fn value's refusal): a walk kept for
+    // its record skips it
+    if diagnostics {
         let programs: Vec<&Program> = bundle.programs.values().copied().collect();
         let rows = crate::ownership::extended_factory_rows(&programs, &bundle.snapshot, &bundle.import_renames);
         let fns: BTreeMap<&str, &FnDecl> = programs
