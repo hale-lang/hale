@@ -134,6 +134,20 @@ let b = nan == nan;          // false
 let c = min(1.0, nan);       // NaN, and so is min(nan, 1.0)
 ```
 
+Printing a Float gives the shortest text that reads back as the
+same number, so nothing is lost on the way out and back in:
+
+```hale,fragment
+println(0.1 + 0.2);      // 0.30000000000000004
+println(1.0 / 3.0);      // 0.3333333333333333
+println(100.0);          // 100
+println(1e-300);         // 1e-300
+let back = std::str::parse_float(to_string(0.1 + 0.2)) or 0.0;   // the same double
+```
+
+When a display wants fewer digits, say so: `f"{x:.2}"` rounds to two
+places.
+
 The standard library covers the rest: `std::math::sqrt`,
 `exp`, `log`, `pow`, `floor`, `ceil`, the trig functions, and
 so on.

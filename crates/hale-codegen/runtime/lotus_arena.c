@@ -19702,9 +19702,10 @@ char *lotus_str_slice(lotus_arena_t *a, const char *s,
 
 /*
  * to_string helpers (m37). Each renders one primitive into a
- * fresh NUL-terminated arena buffer using the same printf-style
- * format that `println` uses, so a value written via to_string
- * + concat reads identical to the same value passed to println.
+ * fresh NUL-terminated arena buffer, the text `println` prints for
+ * it, so a value written via to_string + concat reads identical to
+ * the same value passed to println (a Float's is the shortest text
+ * that reads back as it, `lotus_fmt_float_shortest`).
  *
  * Buffer sizes:
  *   - i64  → max 20 digits + sign + NUL = 22 bytes; round up.
@@ -19925,11 +19926,11 @@ char *lotus_str_float_text(lotus_arena_t *a, double f) {
     return out;
 }
 
+/* `to_string(Float)`, and with it a Float's interpolation and `println`:
+ * the shortest text that reads back as the same double, as the api codec
+ * writes it, so `parse_float(to_string(x)) == x`. */
 char *lotus_str_from_float(lotus_arena_t *a, double f) {
-    char *out = (char *)lotus_arena_alloc(a, 32, 1);
-    if (!out) return NULL;
-    snprintf(out, 32, "%g", f);
-    return out;
+    return lotus_str_float_text(a, f);
 }
 
 /*
@@ -25261,7 +25262,11 @@ static int lotus_str_read_float(const char *s, double *out) {
     errno = 0;
     double v = strtod(s, &end);
     if (!end || *end != '\0') return 0;
+#ifdef ERANGE
     if (errno != 0 && !(errno == ERANGE && v != 0.0 && v - v == 0.0)) return 0;
+#else
+    if (errno != 0) return 0; /* the wasm shim's strtod sets no range error */
+#endif
     *out = v;
     return 1;
 }

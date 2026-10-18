@@ -173,3 +173,34 @@ fn a_float_text_reads_back_as_the_same_double() {
     let texts = run(PRINT, "float_text", &input);
     check(&texts, &input, "std::str::__float_text");
 }
+
+const PRINTED: &str = r#"
+fn main() {
+    let b = std::io::fs::read_bytes(std::env::arg(1)) or std::bytes::from_string("");
+    let n = len(b) / 8;
+    let mut i = 0;
+    while i < n {
+        let x = std::bytes::read_f64_le(b, i * 8) or 0.0;
+        println(to_string(x));
+        println(x);
+        println(f"{x}");
+        let back = std::str::parse_float(to_string(x)) or 0.0;
+        println(std::str::__float_text(back));
+        i = i + 1;
+    }
+}
+"#;
+
+/// `to_string(Float)`, `println` of a Float and its interpolation are the
+/// same text, and `parse_float(to_string(x))` is `x` again.
+#[test]
+fn to_string_println_and_interpolation_read_back() {
+    let mut input: Vec<f64> = values().into_iter().take(20_000).collect();
+    input.extend([f64::INFINITY, f64::NEG_INFINITY]);
+    let lines = run(PRINTED, "float_printed", &input);
+    assert_eq!(lines.len(), input.len() * 4, "four lines a value");
+    for (k, what) in ["to_string", "println", "interpolation", "parse_float(to_string(x))"].iter().enumerate() {
+        let texts: Vec<String> = lines.iter().skip(k).step_by(4).cloned().collect();
+        check(&texts, &input, what);
+    }
+}

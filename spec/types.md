@@ -65,6 +65,24 @@ result NaN, and `-0.0` orders below `0.0` (`min(0.0, -0.0)` is
 `llvm.fabs`, inline on every target (`f64.min` / `f64.max` /
 `f64.abs` on `wasm32`), so none needs a libm symbol or host import.
 
+### Float text
+
+A `Float`'s text (`to_string(x)`, `println(x)`, `f"{x}"`, and what the
+api codec writes) is the shortest that reads back as the identical
+double, so `parse_float(to_string(x)) == x` for every finite `x`, a
+subnormal included: `0.1 + 0.2` is `0.30000000000000004`, `99.999995`
+is `99.999995`, `1.0 / 3.0` is `0.3333333333333333`. Of two shortest
+texts equally near the double, it is the one ending in the even digit.
+The digits are laid out as C's `%.17g` lays them: fixed point when the
+first digit's decimal exponent is from -4 to 16, so an integral value
+has no point (`100.0` is `100`, `1234567.0` is `1234567`), and
+otherwise one digit, the rest after a point, and a signed exponent of
+at least two digits (`1e+17`, `1e-05`, `2.5e-300`). Negative zero is
+`-0`, and NaN and the infinities are `nan`, `inf` and `-inf`. The text
+is the runtime's own (`lotus_fmt_float_shortest`), not the C library's,
+so a native and a `wasm32` build print the same bytes. A format spec
+(`f"{x:.2}"`) still rounds to its places.
+
 ## Decimal<S> — the scale is part of the type
 
 A `Decimal<S>` is a fixed-point number: an i128 mantissa `m` read as

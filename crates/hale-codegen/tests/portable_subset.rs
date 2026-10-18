@@ -105,6 +105,26 @@ const PROGRAMS: &[(&str, Entry, &str)] = &[
         "#,
     ),
     (
+        // a Float's text is the runtime's own formatter, not the libc's:
+        // the shortest that reads back, the same bytes on both targets
+        "float_text",
+        Entry::Main,
+        r#"
+        fn main() {
+            println(0.1 + 0.2);
+            println(99.999995);
+            println(100.0 / 3.0);
+            println(100.0);
+            println(1234567.0);
+            println(1e-300);
+            println(1.7976931348623157e308);
+            println(5e-324);
+            println(-0.0);
+            println("t=" + to_string(2.0 / 3.0) + " i=" + f"{1e21}");
+        }
+        "#,
+    ),
+    (
         "decimal",
         Entry::Main,
         r#"

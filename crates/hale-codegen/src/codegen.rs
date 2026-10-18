@@ -26931,9 +26931,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     }
                 }
                 CodegenTy::Float => {
-                    format.push_str("%g");
-                    printf_args
-                        .push(BasicMetadataValueEnum::FloatValue(val.into_float_value()));
+                    // the text `to_string` gives, the shortest that reads
+                    // back as the same double (`lotus_fmt_float_shortest`)
+                    let rendered = self.value_to_string(val, &ty)?;
+                    format.push_str("%s");
+                    printf_args.push(BasicMetadataValueEnum::PointerValue(rendered.into_pointer_value()));
                 }
                 CodegenTy::Decimal(_) => {
                     // m48: render the i128 mantissa via the
