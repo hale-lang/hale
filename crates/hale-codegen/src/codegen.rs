@@ -18251,6 +18251,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 } else {
                     scope.locals.remove(&view_key);
                 }
+                // A `let` of a member parameter's name binds a local of its
+                // own: the parameter's mark goes with the shadowed binding
+                // (and comes back with it when the block ends).
+                scope.locals.remove(&Self::param_place_key(&name.name));
                 scope.locals.insert(name.name.clone(), (alloca, ty));
                 Ok(BlockEnd::Open)
             }

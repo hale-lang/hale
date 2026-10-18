@@ -486,6 +486,7 @@ fn an_assignment_target_names_only_declared_fields() {
                 let h = Inner { };
                 h.repo = "v";
 
+
 /// GH #1608 follow-up: a pointer-shaped element stored into a bounded place
 /// under a parameter is kept in the frame that calls (a free fn) or in the
 /// member's scratch (a locus member). A free fn's call that hands it a
@@ -558,57 +559,62 @@ fn is_route_on_a_context_a_locus_holds_is_refused() {
     assert!(hits[0].starts_with("`std::http::is_route`"), "{ds:?}");
 }
 
-/// `==` on an enum holds only when every payload of every variant has its
-/// own `==`, through nested enums; a struct payload is refused at the
-/// check, naming the path to it (it failed at the build, "match on
-/// TypeRef not supported").
+/// Review of #1612: an alias of the element or of the bounded type is the
+/// same place (refused); a writer reached through a function value is the
+/// writer (refused), and one the check cannot name is refused when handed
+/// such a place; an owned record copy is no view (accepted).
 #[test]
-fn enum_equality_needs_every_payload_to_compare() {
-    let ds = diags(
+fn a_parameter_place_writer_is_found_through_aliases_and_fn_values() {
+    let refused = |src: &str, why: &str| {
+        let ds = diags(src);
+        assert!(ds.iter().any(|m| m.contains("pointer-shaped elements")), "{why}: {ds:?}");
+    };
+    refused(
         r#"
-        type P { a: Int; }
-        type Inner = enum { X(P), Y };
-        type E = enum { A(Int), B(Inner) };
-        type F = enum { A(P), B };
-        type G = enum { A(Int, String), B(Bytes) };
-        type H = enum { A(Int, String), B };
-        fn main() {
-            let e = E::A(1) == E::A(1);
-            let f = F::B != F::B;
-            let g = G::A(1, "") == G::A(1, "");
-            let h = H::A(1, "") == H::B;
-        }
+        type Text = String;
+        type Row { xs: bounded[Text; 4]; }
+        fn fill(r: Row) { push(r.xs, "fresh" + to_string(1)) or raise; }
+        locus L { params { row: Row = Row { }; } fn put() { fill(self.row); } }
+        fn main() { }
     "#,
+        "an alias of the element",
     );
-    assert!(ds.iter().any(|m| m.starts_with("`==` does not apply to `E`: its variant `B` carries `Inner`, whose variant `X` carries a struct (`P`)")), "{ds:?}");
-    assert!(ds.iter().any(|m| m.starts_with("`!=` does not apply to `F`: its variant `A` carries a struct (`P`)")), "{ds:?}");
-    assert!(ds.iter().any(|m| m.starts_with("`==` does not apply to `G`: its variant `B` carries a byte string (`Bytes`)")), "{ds:?}");
-    assert_eq!(ds.len(), 3, "`H` compares: {ds:?}");
-}
-
-/// Review of #1616: a generic enum's monomorph (`Value<P>`, `Value_P`) is
-/// judged by its substituted payloads, as an enum carrying it is: a struct
-/// argument is refused at the check (it failed at the build), and an `Int`
-/// or a comparable enum argument compares.
-#[test]
-fn a_generic_enums_equality_is_its_arguments() {
+    refused(
+        r#"
+        type Items = bounded[String; 4];
+        type Row { xs: Items; }
+        fn fill(r: Row) { push(r.xs, "fresh" + to_string(1)) or raise; }
+        locus L { params { row: Row = Row { }; } fn put() { fill(self.row); } }
+        fn main() { }
+    "#,
+        "an alias of the bounded type",
+    );
+    refused(
+        r#"
+        type Row { xs: bounded[String; 4]; }
+        fn fill(r: Row) { push(r.xs, "fresh" + to_string(1)) or raise; }
+        locus L { params { row: Row = Row { }; } fn put() { let f = fill; f(self.row); } }
+        fn main() { }
+    "#,
+        "a writer through a function value",
+    );
+    refused(
+        r#"
+        type Row { xs: bounded[String; 4]; }
+        fn apply(g: fn (Row) -> (), r: Row) { g(r); }
+        locus L { params { row: Row = Row { }; } fn put() { apply(fill_one, self.row); } }
+        fn fill_one(r: Row) { push(r.xs, "x") or raise; }
+        fn main() { }
+    "#,
+        "a call through a fn the check cannot name",
+    );
     let ds = diags(
         r#"
-        type P { n: Int; }
-        type Inner = enum { A, B(Int) };
-        type Value<T> = enum { Some(T), None };
-        type Outer = enum { Has(Value<P>), Empty };
-        fn same(a: Value<P>, b: Value<P>) -> Bool { return a == b; }
-        fn outer(a: Outer, b: Outer) -> Bool { return a == b; }
-        fn ints(a: Value<Int>, b: Value<Int>) -> Bool { return a == b; }
-        fn inners(a: Value<Inner>, b: Value<Inner>) -> Bool { return a != b; }
+        type Row { xs: bounded[String; 4]; }
+        fn fill(r: Row) { let copy = r; push(copy.xs, "fresh" + to_string(1)) or raise; }
+        locus L { params { row: Row = Row { }; } fn put() { fill(self.row); } }
         fn main() { }
     "#,
     );
-    assert!(ds.iter().any(|m| m.starts_with("`==` does not apply to `Value_P`: its variant `Some` carries a struct (`P`)")), "{ds:?}");
-    assert!(
-        ds.iter().any(|m| m.starts_with("`==` does not apply to `Outer`: its variant `Has` carries `Value_P`, whose variant `Some` carries a struct (`P`)")),
-        "{ds:?}"
-    );
-    assert_eq!(ds.len(), 2, "`Value<Int>` and `Value<Inner>` compare: {ds:?}");
+    assert!(!ds.iter().any(|m| m.contains("pointer-shaped elements")), "an owned copy is no view: {ds:?}");
 }

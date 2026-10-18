@@ -1251,7 +1251,7 @@ pub fn check_bundle_rules(
     diags.extend(crate::capability::uses::admission_diags(inputs.uses, inputs.target, &bundle.import_renames));
     diags.extend(publish_in_default_diags(bundle));
     diags.extend(crate::route_params_copy::stale_route_params_diags(bundle));
-    diags.extend(crate::param_place_writes::param_place_write_diags(bundle));
+    diags.extend(crate::param_place_writes::param_place_write_diags(bundle, inputs.top));
     diags.extend(walk.diags.iter().cloned());
     let mut by_decl = walk.by_decl.clone();
     let raw_frame_topics = raw_frame_topics(bundle, inputs.bindings);

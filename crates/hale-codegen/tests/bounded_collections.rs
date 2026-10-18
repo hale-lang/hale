@@ -532,3 +532,22 @@ fn a_record_filled_by_a_free_fn_and_stored_whole_outlives_its_method_under_asan(
     let _ = std::fs::remove_file(&bin);
     assert!(format!("{err:?}").contains("under the member parameter `r`"), "{err:?}");
 }
+
+/// Review of #1612: the member-parameter backstop follows the binding, so a
+/// `let` that shadows the parameter's name binds a fresh record of the
+/// method's own, which builds and runs.
+#[test]
+fn a_local_shadowing_a_member_parameter_is_its_own_binding() {
+    let src = r#"
+        type Row { xs: bounded[String; 4]; }
+        locus L {
+            fn put(r: Row) -> Int {
+                let r = Row { };
+                push(r.xs, "fresh" + to_string(1)) or raise;
+                return count(r.xs);
+            }
+        }
+        fn main() { let l = L { }; println(l.put(Row { })); }
+    "#;
+    assert_eq!(build_and_run("bounded_member_param_shadow", src), "1\n");
+}
