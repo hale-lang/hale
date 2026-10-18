@@ -17046,6 +17046,29 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// An assignment target's field that its owner does not declare, as
+    /// the read path refuses one ("no field `x` on `T`"): a record's
+    /// fields and a locus's params are the whole of what a place may name.
+    /// The check used to type such a target `Unknown` and pass it, and
+    /// only the build refused it ("no field `x` on `self.j`"). An owner the
+    /// check knows no field set of (an unresolved name, a generic
+    /// parameter, a cell) is left to the rules that type it.
+    fn refuse_missing_lvalue_field(&mut self, owner: &Ty, f: &Ident) {
+        let Ty::Named(tn) = owner else { return };
+        let candidates: Vec<String> = match self.top.symbols.get(tn) {
+            Some(TopSymbol::Locus(li)) => li.params.iter().map(|p| p.name.clone()).collect(),
+            Some(TopSymbol::Type(ti)) => match &ti.kind {
+                TypeKind::Struct(fields) => fields.iter().map(|x| x.name.clone()).collect(),
+                _ => return,
+            },
+            _ => return,
+        };
+        let hint = crate::stdlib_surface::nearest_name(&f.name, candidates.iter().map(|s| s.as_str()))
+            .map(|s| format!(" — did you mean `{}`?", s))
+            .unwrap_or_default();
+        self.diags.push(Diag::ty(f.span, format!("no field `{}` on `{}`{}", f.name, owner.display(), hint)));
+    }
+
     fn lvalue_ty(&mut self, lv: &LValue) -> Ty {
         let mut ty = if lv.head.name == "self" {
             self.self_ty()
@@ -17095,7 +17118,11 @@ impl<'a> Checker<'a> {
                     }
                     self.record_param_access(&ty, f, f.span, crate::typed_bodies::AccessKind::Write);
                     let owner = ty.clone();
-                    ty = self.field_ty(&ty, &f.name).unwrap_or(Ty::Unknown);
+                    let found = self.field_ty(&ty, &f.name);
+                    if found.is_none() {
+                        self.refuse_missing_lvalue_field(&owner, f);
+                    }
+                    ty = found.unwrap_or(Ty::Unknown);
                     if records {
                         let view = match &ty {
                             Ty::Unknown => self.interface_field(&owner, &f.name).map(Ty::Named).unwrap_or(Ty::Unknown),

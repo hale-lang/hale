@@ -6150,6 +6150,8 @@ row	~.s	__StdIoTcpStream	main	inherited
 row	~	L	main	default
 row	~.p	V1	main	inherited
 
+== crates/hale-types/tests/diag_quality.rs#5dae0d32
+
 == crates/hale-types/tests/dispatch_plan.rs#9e6280fe
 root	App	the entry
 row	App@literal1	App	main	default
