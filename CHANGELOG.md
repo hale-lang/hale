@@ -8,6 +8,112 @@ behavior.
 
 ## Unreleased
 
+## v0.25.0 — surfaces carry real shapes, and responses stream (2026-10-18)
+
+A surface now carries the shapes real contracts are made of, and a served program can stream. This release is the codec half of the surface work (#1530 step 0) and the first new type from it, plus the fixes an outside gateway written in Hale ran into.
+
+**Surfaces carry real shapes.** An api row's request and response may now hold:
+- **optional fields:** a field `x` with a `has_x: Bool` beside it (#1600);
+- **enums**, with or without payloads (#1604);
+- **maps**, `bounded[S; N] indexed_by <field>`, the value-level form of `@form(hashmap)` (#1607).
+
+JSON, protobuf, the description, OpenAPI, JSON Schema and MCP carry all three, and so do the generated Hale, TypeScript and JavaScript clients (#1613). A program can call the codec itself, `T::api_encode(value)` and `T::api_decode(text)`, so a handwritten router speaks a surface's exact wire. An imported type is named in exported documents by its own name, `Item`, instead of `lib::Item`, which OpenAPI refused as a component key (#1605). A surface can give its rows a default `requires` (#1611).
+
+**Set types.** `type Inbound = Book | Trade | Unknown;` is an untagged union whose member type is its tag. A member value becomes the set wherever the set is expected, and `match` names each member by its type. It is an enum underneath, at an enum's cost (#1615). Seams build on it next.
+
+**Streamed responses.** `std::http::Server` handlers can send a chunked body (`BodyWriter`) or Server-Sent Events (`SseWriter`). A handler that builds no writer sends exactly the bytes it did before (#1596). The server's request-body cap is configurable (`max_request_bytes`, #1601).
+
+**Memory and correctness.** Several memory fixes land:
+- a locus returned from a function is reclaimed with its instance, where it leaked about 200 bytes per call (#1598);
+- replaced hashmap rows no longer grow the map's arena (#1602);
+- an element stored through a bounded view no longer dangles (#1608);
+- two data races in the runtime are fixed (#1602).
+
+The checker now refuses what the build used to refuse late:
+- an assignment to a field that does not exist (#1614);
+- `==` on an enum whose payload has no `==` (#1616).
+
+`hale check` reaches only the stdlib code a program can reach (#1587, #1588, #1589): a trivial seed checks about a third faster than on v0.24.0, and a 226-seed workspace takes 4.6 s against v0.24.0's 6.4 s.
+
+**DNA records move off git (in progress).** A record's identity is pinned in `hale.toml` (#1595). Candidates and deployed revisions are ordinary genome branches (#1599). Records connect and hand off over their nerves as signed envelopes (#1609). Moving the record itself into memory is the next release.
+
+**Downstream smoke.** A downstream smoke test of the result found no regression and asks for no migration:
+- Every check output (226 seeds, the matrix and the effects gate) is byte-identical to the v0.24.0 release binary's.
+- All 76 check-clean apps build, none slower than on v0.24.0.
+- All 19 probes run with output identical to v0.24.0's.
+
+**Known issues.**
+- `hale check` still costs about 1.5 times what it did on v0.23.0 (a trivial seed 124M instructions then, 201M now). The remaining cost is in the allocation summary, placement and the new name passes.
+- A program serving a surface over a Unix socket grows about 9 KB per call (0.3 KB over HTTP), a leak in the serve path that v0.24.0 has too. The fix is next.
+
+The item-level notes for this release follow this page, one entry per change with every PR reference. The CHANGELOG as it stood at the tag is `git show v0.25.0:CHANGELOG.md`.
+
+### Breaking changes
+
+- **DNA records from v0.24.0 are not carried forward.** A record's candidates were kept under `refs/dna/candidates/` and are now genome branches, read only there (#1599, #1618). Connections proposed over git are no longer in force, and git mailboxes are gone. Propose connections again with `hale dna connect <nerves-url> --record <identity> …` (#1609). A record initialized by v0.24.0 is re-initialized.
+- **`dna.connection.propose`** takes `nerves_url` and `record` in place of `record_url` (#1609).
+- **Exported documents name imported types by their declared name** (`Item`, or `lib.Item` on a collision) instead of `lib::Item`. Digests do not move (#1605).
+
+- `hale check` runs its owned-view and allocation analyses only over the stdlib code a program can reach (with #1587): a small program checks in about 18 ms instead of 32 (v0.24.0's known issue), and large seeds are unchanged. Stdlib code a program never reaches no longer contributes findings: a method of yours named like an unreached stdlib method (`set`) is no longer marked by that stdlib code's calls.
+- A finding inside the stdlib's appended runtime sources (the TCP substrate, the api runtime) names its stdlib file and line in `hale check --json` too, as the text renderer does.
+
+- `hale dna init` pins the record's identity in the genome as `[dna] record = "<identity>"` in `hale.toml`, and `hale dna upgrade` pins it for a project initialized before. A pin that names a different record than the clone holds (a `hale.toml` copied from another project) is refused by memory, `memory migrate`, `upgrade` and `init`, with both records named (#1590).
+
+### Streamed HTTP responses
+
+- `std::http::Server` handlers can stream a response body. `std::http::BodyWriter { conn_fd: req.conn_fd, … }` sends a chunked body (`chunk(data)`, one write each) and `std::http::SseWriter` sends Server-Sent Events over it (`event(std::http::SseEvent { event, id, retry, data })`). The handler returns the writer's `end()`, and the Server ends the body and closes the connection. A handler that builds no writer writes exactly the bytes it did before. On a `where async_io` pool a stream parks only its own connection.
+
+- `hale dna record-rows [project]` prints the record's rows in its line format (one JSON object per line, oldest first); the DNA's tests and scripts read the record through it instead of through its storage (#1590).
+
+- A locus a function hands back no longer leaves its struct in memory until the program exits. The struct is released when the instance is reclaimed, so a loop that calls a factory (a discarded `mkw(i);`, a `let w = mkw(i);` or a call through a function value) keeps memory flat. It used to grow by about 200 bytes a call.
+
+- A Mutation's candidate is kept as the genome branch `dna/candidate/<mutation>` instead of `refs/dna/candidates/<mutation>`, and travels as any branch does (sync no longer carries candidates). A fleet deploy publishes its revision as the branch `dna/revision/<rev>` on the genome's forge, and nodes fetch it by its sha; the node's genome pull lands in `refs/hale/remote/genome` (#1590).
+
+- An api surface carries an optional field. A field `x` beside a `has_x: Bool` of the same record is a presence pair: on the JSON wire `x` may be left out or sent as `null`, and `has_x` says whether it was sent; `has_x` itself is never a key. Protobuf carries both fields as declared. The description marks the field as nullable and not required. The generated clients refuse such a surface for now.
+
+- A `bounded[T; N]` field can be assigned whole from another bounded value of the same type: `row.models = req.models` copies the count and the elements, where it used to be refused and copying took a `push` loop. Any other value is still refused.
+- `hale check` warns when a `std::http::path_param` reads a copy of a context's params taken before `std::http::is_route` matched on that context: the match writes its captures into the context's own params, so such a copy read `""` for every route, silently. It names the spelling that works, `std::http::path_param(ctx.params, …)`.
+- `std::time::parse_time` and `parse_iso8601` refuse a day past its month's length, leap years counted, as a time literal now does at check time: `2099-02-30` used to roll over to `2099-03-02`.
+- `std::http::Server` takes `max_request_bytes` (default 1 MiB, at most 1 GiB) and `too_large`, the response it gives a request whose declared body is over the cap (default today's plain-text `413`). A server that sets neither answers as before.
+
+- A `@form(hashmap)` row replaced with Strings of varying length is reclaimed whole: the map's arena used to grow by about 2.3 KB per 10,000 replaces, without end, because a replaced String's block lost its slack once a shorter value reused it. A map that is only inserted into is unchanged.
+
+- `hale check` and `hale verify` no longer take a standard library call for an imported seed's function whose name ends the same way: a seed exporting `fn one_arg(...)` returning a locus made every `std::env::arg(i)` in a loop a hot-path allocation of that locus. The hot-path lint now goes by the declaration a call reaches, so two seeds exporting one name are told apart by the alias instead of being dropped.
+
+- An api surface carries an enum: a payload-free variant crosses JSON as its name (`"Up"`), a variant with values as an object keyed by it (`{"Moved": [3, 7]}`). An enum may be a field, a list element when payload-free, a row's whole request or response, or its error type. Protobuf carries a payload-free enum as a proto3 `enum` and one with payloads as a message with a `oneof`. The description lists the variants. The generated clients still refuse an enum.
+
+- A type another seed declares is named in a surface's documents (its descriptions, OpenAPI, JSON Schema, MCP, `.proto` and generated clients) by the name it is declared with, `Item`, where it was `lib::Item`, which OpenAPI refuses as a component key. Only when the program declares a type of the same name, or a generated form declares the name for itself (a client's `FillsEvent` for a stream `Fills`, the `.proto`'s `Orders__placeRequest`, a preamble's `ApiRefusal`), is the imported one qualified, `lib.Item`. Digests do not move.
+
+- The placement analysis no longer takes a parameter or local that shares a function's name for that function passed as a value: such a name made every locus the function builds run on "unknown" domains (and its budgets unbounded), across a program. A function really passed as a value still is.
+
+- An api surface carries a map: `checks: bounded[Check; 16] indexed_by name;` crosses JSON as an object keyed by each record's `name` (`{"db": {"status": "up"}}`), the key lifted out of each value. A repeated key is refused `duplicate_key`. Protobuf carries it as `map<string, Check>`. In the program it is still the bounded list it was. `indexed_by` follows the `@form(hashmap)` slot clause's rules: the key is a `String` field of a struct.
+
+- A String, Bytes or record element that `push` or `set` stores through a bounded local viewing a locus's field (`let mut dest = self.xs; push(dest, s)`) is kept where the field lives: it used to be kept in the method's scratch, which the method's return freed under the field (a use-after-free).
+
+### Breaking: records connect and hand off over their nerves (#1590)
+
+- `hale dna connect` takes the other record's nerves and identity, `hale dna connect <nerves-url> --record <identity> …`, and reads its card there (identity, genome, the key it signs with); a connection proposed before (over git) is not in force and is proposed again. The head's `dna.connection.propose` command takes `nerves_url` and `record` in place of `record_url`.
+- A handoff is an envelope signed with the record's own key, delivered into the other record's inbox on its nerves and kept once by its id; the receiver admits it only under a connection that pinned that key. Git mailboxes (`refs/dna/exchange/*`) are gone.
+- An inbox is a work queue: what its record drained leaves it, and it bounds only what waits undrained, per sender (10 000 envelopes of a kind) and in size (256 MiB); a full one refuses the handoff, which records nothing.
+- An envelope claiming a connected record under a key its connection did not pin is dropped at the drain; one from a record not yet connected is kept beside the sender's own under the same id, never in its place.
+- `hale dna nerves migrate` creates each record's exchange stream and card; `init` and `upgrade` provision the new `exchange` nerves user and the record's signing secret. Memory moves to schema 9 (`exchange_rows`).
+- `std::secret::Credential` gains `sign_ed25519(message)` and `ed25519_public()`: an Ed25519 signature under a key derived from the credential, which never leaves it.
+- `hale dna memory migrate` keeps the head's DSN it answers in `.hale/dna/memory.env` (mode 600, the head role's alone, refused when others may read it), and every `hale dna` verb run in that clone without a role's DSN uses it. `hale dna upgrade` adds `/.hale/` to `.gitignore` where it is missing.
+- An envelope's transport id carries a digest of its signature, so a publisher holding the shared inbox key cannot occupy a handoff's id ahead of it.
+
+- `api NAME requires: [ROLE, …] { … }` gives a surface's rows a default: a row that writes no `requires` holds the surface's roles, and one that writes its own (`requires: []` for none) holds those. The same surface written row by row is the same table and digest.
+
+- A program calls the api codec itself: `T::api_decode(text)` reads the JSON a row of the record or enum `T` would cross, as strictly and with the same refusals, and `T::api_encode(value)` writes it, with no surface needed. A handwritten router decodes a request body into a row's request type this way.
+- The generated clients carry optional fields, enums and maps. The Hale client declares each type as the server does and reads and writes through the api codec. The TypeScript and JavaScript clients make an optional field an optional property, an enum the union of its wire forms (`"Empty" | { Circle: number }`), and a map its records, keyed into the wire's object and back.
+
+- `hale check` refuses an assignment target whose path names a field its owner does not declare (`self.j.missing = "x"`, `self.j.record.repo = "x"`), with the read path's "no field" diagnostic; it used to check clean and fail only at the build.
+
+- A set type: `type Inbound = Book | Trade | Unknown;` is an untagged union of declared structs and enums, each member its own discriminant. A `Book` becomes an `Inbound` wherever an `Inbound` is expected (returned, passed, bound, assigned, stored), and `match` names each member by its type alone (`Book(b) -> ...`), exhaustively. Underneath it is an enum, at an enum's cost.
+
+- `==` and `!=` on an enum compare the tag and then each payload by its own `==`, a nested enum's included; an enum a payload of which has no `==` (a record, Bytes, a tuple) is refused at the check, naming the path to it, where it used to fail at the build.
+
+- **Breaking:** `hale dna upgrade` no longer moves a candidate kept under `refs/dna/candidates/<mutation>` by a toolchain before #1599; a record from an earlier toolchain is re-initialised, and candidate branches are the only place a candidate is read (#1590).
+
 ## v0.24.0 — served surfaces, one substrate (2026-10-16)
 
 A Hale program can now state its API and serve it. Two kinds of declaration define a surface:

@@ -98,7 +98,7 @@ checksum = "00b0228411908ca8685dba7fc2cdd70ec9990a6e753e89b6ac91a84c40fbaf4b"
 
 [[package]]
 name = "hale-cli"
-version = "0.24.0"
+version = "0.25.0"
 dependencies = [
  "hale-codegen",
  "hale-corpus",
@@ -120,7 +120,7 @@ dependencies = [
 
 [[package]]
 name = "hale-codegen"
-version = "0.24.0"
+version = "0.25.0"
 dependencies = [
  "hale-corpus",
  "hale-frontend",
@@ -140,18 +140,18 @@ dependencies = [
 
 [[package]]
 name = "hale-corpus"
-version = "0.24.0"
+version = "0.25.0"
 
 [[package]]
 name = "hale-dna"
-version = "0.24.0"
+version = "0.25.0"
 dependencies = [
  "hale-graph",
 ]
 
 [[package]]
 name = "hale-frontend"
-version = "0.24.0"
+version = "0.25.0"
 dependencies = [
  "hale-graph",
  "hale-model",
@@ -161,11 +161,11 @@ dependencies = [
 
 [[package]]
 name = "hale-graph"
-version = "0.24.0"
+version = "0.25.0"
 
 [[package]]
 name = "hale-iris"
-version = "0.24.0"
+version = "0.25.0"
 dependencies = [
  "hale-dna",
  "hale-graph",
@@ -174,7 +174,7 @@ dependencies = [
 
 [[package]]
 name = "hale-lsp"
-version = "0.24.0"
+version = "0.25.0"
 dependencies = [
  "hale-frontend",
  "hale-stdlib",
@@ -185,25 +185,25 @@ dependencies = [
 
 [[package]]
 name = "hale-model"
-version = "0.24.0"
+version = "0.25.0"
 dependencies = [
  "hale-graph",
 ]
 
 [[package]]
 name = "hale-stdlib"
-version = "0.24.0"
+version = "0.25.0"
 
 [[package]]
 name = "hale-syntax"
-version = "0.24.0"
+version = "0.25.0"
 dependencies = [
  "hale-corpus",
 ]
 
 [[package]]
 name = "hale-ts-shim"
-version = "0.24.0"
+version = "0.25.0"
 dependencies = [
  "tree-sitter",
  "tree-sitter-go",
@@ -211,7 +211,7 @@ dependencies = [
 
 [[package]]
 name = "hale-types"
-version = "0.24.0"
+version = "0.25.0"
 dependencies = [
  "hale-corpus",
  "hale-frontend",
