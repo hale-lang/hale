@@ -18,6 +18,8 @@
 
 #[path = "support/vault.rs"]
 mod vault;
+#[path = "support/scratch.rs"]
+mod scratch;
 #[path = "support/record.rs"]
 mod record;
 #[path = "support/trace.rs"]
@@ -372,6 +374,8 @@ struct Fixture {
     nats_app: String,   // an application's server, which a node hands its instances (GH #986)
     nats_app_user: String, // the application's own user (GH #989)
     nats_app_vault: String, // the vault name of the application's credential (GH #989; never the password)
+    // its directory, and every compose project run from under it, goes last
+    _scratch: scratch::Scratch,
 }
 
 impl Fixture {
@@ -467,14 +471,15 @@ fn bring_up() -> Fixture {
         let _ = std::fs::remove_dir_all(&tape);
     }
     std::fs::create_dir_all(&tape).unwrap();
-    let d = std::env::temp_dir().join(format!("hale_dna_trio_{}", std::process::id()));
+    let scratch = scratch::Scratch::new(format!("hale_dna_trio_{}", std::process::id()));
+    let d = scratch.to_path_buf();
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(&d).unwrap();
     // the workspace name is part of what the organization is generated
     // from (its project's name), so it is fixed: the tape depends on it
     let app = d.join("trio");
     copy_dir(&repo.join("dna/acceptance/trio"), &app);
-    let mut f = Fixture { d: d.clone(), app: app.clone(), bare: d.join("origin.git"), edges: vec![d.join("edge-1"), d.join("edge-2")], procs: vec![], tape, mode, spine: String::new(), nats_spine: String::new(), nats_org: String::new(), nats_app: String::new(), nats_app_user: String::new(), nats_app_vault: String::new() };
+    let mut f = Fixture { d: d.clone(), app: app.clone(), bare: d.join("origin.git"), edges: vec![d.join("edge-1"), d.join("edge-2")], procs: vec![], tape, mode, spine: String::new(), nats_spine: String::new(), nats_org: String::new(), nats_app: String::new(), nats_app_user: String::new(), nats_app_vault: String::new(), _scratch: scratch };
     git(&["init", "-q", "-b", "main"], &app);
     git(&["add", "-A"], &app);
     git(&["commit", "-q", "-m", "the trio and its fleet"], &app);

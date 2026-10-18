@@ -7,6 +7,8 @@
 
 #[path = "support/vault.rs"]
 mod vault;
+#[path = "support/scratch.rs"]
+mod scratch;
 #[path = "support/record.rs"]
 mod record;
 #[path = "support/reap.rs"]
@@ -51,8 +53,8 @@ fn a_signed_row_is_relayed_and_an_unverified_one_is_refused() {
         eprintln!("dna_record_trust: no HALE_DNA_NATS_URL_OWNER or HALE_DNA_MEMORY_DSN_OWNER; a relay cannot reach the organism, so nothing was exercised");
         return;
     };
-    let d = std::env::temp_dir().join(format!("hale_dna_trust_{}", std::process::id()));
-    let _reap = reap::ReapOnDrop(d.clone());
+    let d = scratch::Scratch::new(format!("hale_dna_trust_{}", std::process::id()));
+    let _reap = reap::ReapOnDrop(d.to_path_buf());
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(&d).unwrap();
     let bare = d.join("origin.git");

@@ -63,8 +63,14 @@ Both take the same flags; `hale dna head --help` and
 | 8794 | the stub OpenID provider (`dna/oidc`) | `--oidc-port` |
 | 8795 | the API child's commands: its surface's HTTP exposure | `--commands-port` |
 
-The API child says when each part is listening. Its commands port is
-given to it (`HALE_DNA_COMMANDS_PORT`), never derived from the reads'
+The launcher pins those four ports. The head program
+(`dna/api/project_service`) pins its child's only when it is given
+them: handed an API port of 0 and no `HALE_DNA_COMMANDS_PORT` (as a
+fixture starts it), it hands the API child port 0 for each, the child
+binds whatever the system gives it, and it reports both ports back to
+the head (`HALE_DNA_API_PORTS`), so no port is drawn free and then lost
+to a neighbour before the child binds it. The API child says when each
+part is listening. Its commands port is never derived from the reads'
 port, and once its binding holds that port it prints:
 
 ```text

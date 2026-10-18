@@ -1070,8 +1070,10 @@ sync.
   (`bearer_refusal`). A command reaches the head's surface (`HeadCommands`) over its
   `http::Rpc` exposure (GH #1135, #1417; `spec/api.md` § The HTTP
   transport), `POST /call/<member>`, on the port the head's launcher gives it
-  (`HALE_DNA_COMMANDS_PORT`, never derived from the reads' port; none
-  given, none served, and a relayed command is `commands_unavailable`),
+  (`HALE_DNA_COMMANDS_PORT`, never derived from the reads' port) or, none
+  given, the port the system picks, which the API child reports to the head
+  that started it (`HALE_DNA_API_PORTS`); until it has, a relayed command is
+  `commands_unavailable`,
   as a POSTed line of
   the wire under the caller's bearer; no program forwards a line. The
   head's bearer source (`dna/api/bearer.hl`, `OidcBearer`) verifies the
@@ -5738,7 +5740,8 @@ otherwise.
 | `HALE_DNA_NATS_SECRET_APP=<path>` | unset | Handed by a repository body to its compose services alone: the path of the local vault's entry holding the application's nerves password, for the compose file to mount as a secret (ruling 11). |
 | `HALE_DNA_COMPOSE=off` | on | A repository body leaves its compose services to the operator: it neither brings them up nor down, and says `a repository: its compose services are left to the operator (HALE_DNA_COMPOSE=off)` (ruling 11). The DNA suite sets it for every fixture; a fixture about compose opts in with `on`. |
 | `HALE_DNA_NATS_VAULT_REFLEXES=<name>` | unset | The same for the reflexes user; `dna/reflexes` refuses to start without it. |
-| `HALE_DNA_COMMANDS_PORT=<port>` | unset | The loopback port of the API child's HTTP commands transport, given by `dna/face/start.sh` to the head and by the head to its API child; without it the head answers `commands_unavailable` (503). |
+| `HALE_DNA_COMMANDS_PORT=<port>` | unset | The loopback port of the API child's HTTP commands transport, pinned by `dna/face/start.sh` (8795 by default) for the head and by the head for its API child; unset, the child's transport listens where the system puts it and the child reports the port it got (`HALE_DNA_API_PORTS`). |
+| `HALE_DNA_API_PORTS=<file>` | unset | Where an API child writes the ports it serves on once they are bound (`api=<port>` and `commands=<port>` lines, renamed into place): set by the head for its child, which it starts with port 0 for whatever it does not pin, and reads the ports back from there. |
 | `HALE_DNA_NATS_ORG=<token>` | unset | The organization's token, the prefix of its subjects; `dev` hands it to the host and the host to the parts. |
 | `HALE_DNA_SENSES_URL=<url>` | unset | The senses store's read URL, for the reflexes. |
 | `HALE_DNA_SENSES_PORT=<n>` | the seed's per-part port | The port a part serves its scrape endpoint on; `0` serves nothing. |
@@ -5777,7 +5780,7 @@ otherwise.
 | `HALE_DNA_OIDC_SERVICES=<clients>` | unset | The service clients the stub issuer accepts. |
 | `HALE_DNA_CHILD_PROOF=<proof>` | unset | The proof a face gave its child; the child answers an unauthenticated request with `X-Hale-Child: <digest of the proof>`, so the face knows its own child answered before it forwards a token. |
 | `HALE_DNA_TRUSTED_LOCAL=1` | off | The trusted-local session, a fixture's mode alone (`1` only). A project serves its heads under OIDC. |
-| `HALE_DNA_KEEP_SCRATCH` | off | Fixtures and the suite's sweep keep their scratch roots, for looking at what a fixture built. |
+| `HALE_DNA_KEEP_SCRATCH` | off | Fixtures and the suite's sweep keep their scratch roots, for looking at what a fixture built, and the compose projects run from under them. Without it, `dna::scratch_done` and the sweep take every compose project whose working directory is under a root they remove down with it (`docker compose -p <project> down -v`, found by the `com.docker.compose.project.working_dir` label on containers, or by name in the root's `.dna-compose-projects`), and confirm it by the project's label on containers and volumes. A teardown that fails or leaves anything fails the fixture (or the slice), and keeps the root, its registry entry, the slice's ledger and the projects it names for another attempt. |
 | `HALE_DNA_SUITE_TAG=<tag>` | unset | The stamp a DNA suite slice puts on the processes and scratch roots it starts, so its sweep collects only its own. |
 | `HALE_DNA_WAIT_SCALE=<n>` | 1 | A whole number of at least 1 that widens every fixture wait. |
 | `HALE_API_BIN=<path>` | built from the checkout | `dna/face/start.sh`: a prebuilt api binary to launch, as `--api` does. A binary handed in is checked before anything is built. |

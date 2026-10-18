@@ -10,22 +10,15 @@
 //! tree that holds nothing the toolchain did not carry. A seed that
 //! imports a directory no list embeds fails here.
 
-use std::path::{Path, PathBuf};
+#[path = "support/scratch.rs"]
+mod scratch;
+use std::path::Path;
 use std::process::Command;
 
-struct Scratch(PathBuf);
-
-impl Drop for Scratch {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
-}
-
-fn scratch(tag: &str) -> Scratch {
-    let d = std::env::temp_dir().join(format!("hale_dna_head_{tag}_{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&d);
+fn scratch(tag: &str) -> scratch::Scratch {
+    let d = scratch::Scratch::new(format!("hale_dna_head_{tag}_{}", std::process::id()));
     std::fs::create_dir_all(&d).unwrap();
-    Scratch(d)
+    d
 }
 
 fn check(dir: &Path) -> (bool, String) {
@@ -36,15 +29,15 @@ fn check(dir: &Path) -> (bool, String) {
 #[test]
 fn the_materialized_head_checks_without_a_checkout() {
     let root = scratch("tree");
-    hale_iris::materialize_into(&root.0).expect("materialize the toolchain's tree");
-    let launcher = root.0.join(hale_dna::HEAD_LAUNCHER);
+    hale_iris::materialize_into(&root).expect("materialize the toolchain's tree");
+    let launcher = root.join(hale_dna::HEAD_LAUNCHER);
     assert!(launcher.is_file(), "the launcher is materialized at {}", launcher.display());
     for f in hale_dna::HEAD_FILES.iter().filter(|f| f.path.starts_with("dna/face/web/")) {
-        assert!(root.0.join(f.path).is_file(), "{} is served from the materialized tree", f.path);
+        assert!(root.join(f.path).is_file(), "{} is served from the materialized tree", f.path);
     }
     let mut failed = Vec::new();
     for s in [&hale_dna::HEAD_API, &hale_dna::HEAD_SERVICE, &hale_dna::HEAD_OIDC, &hale_dna::HEAD_REFLEXES] {
-        let (ok, out) = check(&root.0.join(s.seed));
+        let (ok, out) = check(&root.join(s.seed));
         if !ok {
             failed.push(format!("--- {}\n{out}", s.seed));
         }
@@ -52,8 +45,8 @@ fn the_materialized_head_checks_without_a_checkout() {
     assert!(failed.is_empty(), "the head's seeds do not check in the toolchain's materialized tree (an import the embedded lists do not carry?):\n{}", failed.join("\n"));
     // and the check is a proof of the closure: a materialized tree missing
     // one directory a seed imports fails it
-    std::fs::remove_file(root.0.join("dna/oidc/stub.hl")).unwrap();
-    let (ok, out) = check(&root.0.join(hale_dna::HEAD_OIDC.seed));
+    std::fs::remove_file(root.join("dna/oidc/stub.hl")).unwrap();
+    let (ok, out) = check(&root.join(hale_dna::HEAD_OIDC.seed));
     assert!(!ok, "a seed whose import is not materialized must not check:\n{out}");
 }
 

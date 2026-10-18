@@ -13,6 +13,8 @@
 
 #[path = "support/vault.rs"]
 mod vault;
+#[path = "support/scratch.rs"]
+mod scratch;
 #[path = "support/record.rs"]
 mod record;
 use std::path::PathBuf;
@@ -35,11 +37,8 @@ fn an_intent_reaches_the_organization_from_a_long_project_path() {
         eprintln!("dna_long_path: no HALE_DNA_NATS_URL_OWNER; an ask cannot reach the organization, so nothing was exercised");
         return;
     };
-    let d = std::env::temp_dir()
-        .join(format!("hale_dna_len_{}", std::process::id()))
-        .join("a-fairly-ordinary-checkout-directory")
-        .join("nested-inside-another-one");
-    let _ = std::fs::remove_dir_all(std::env::temp_dir().join(format!("hale_dna_len_{}", std::process::id())));
+    let scratch = scratch::Scratch::new(format!("hale_dna_len_{}", std::process::id()));
+    let d = scratch.join("a-fairly-ordinary-checkout-directory").join("nested-inside-another-one");
     std::fs::create_dir_all(&d).unwrap();
     let (ok, out) = hale(&["dna", "new", "orglong"], &d);
     assert!(ok, "{out}");
@@ -104,5 +103,5 @@ fn an_intent_reaches_the_organization_from_a_long_project_path() {
     finish(&mut host);
     assert!(ok, "the ask reached the organization over the nerves: {ask}");
     assert!(born, "the organization heard it and bore a Task: {ask}");
-    let _ = std::fs::remove_dir_all(std::env::temp_dir().join(format!("hale_dna_len_{}", std::process::id())));
+    let _ = std::fs::remove_dir_all(&*scratch);
 }

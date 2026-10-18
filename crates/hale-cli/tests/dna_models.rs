@@ -10,7 +10,9 @@
 
 #[path = "support/vault.rs"]
 mod vault;
-use std::path::{Path, PathBuf};
+#[path = "support/scratch.rs"]
+mod scratch;
+use std::path::Path;
 
 fn hale_env(args: &[&str], cwd: &Path, env: &[(&str, &str)], unset: &[&str]) -> (bool, String) {
     let mut c = vault::hale();
@@ -47,8 +49,8 @@ fn bare_path() -> String {
     "/usr/bin:/bin".to_string()
 }
 
-fn workdir(tag: &str) -> PathBuf {
-    let d = std::env::temp_dir().join(format!("hale_dna_models_{}_{}", std::process::id(), tag));
+fn workdir(tag: &str) -> scratch::Scratch {
+    let d = scratch::Scratch::new(format!("hale_dna_models_{}_{}", std::process::id(), tag));
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(&d).unwrap();
     d
@@ -148,8 +150,8 @@ fn init_writes_the_catalog_from_what_the_machine_has_and_the_org_takes_its_route
 
 /// A stand-in `claude` on PATH: prints the result object `claude -p
 /// --output-format json` prints, with a cost.
-fn fake_claude_dir(tag: &str) -> PathBuf {
-    let bin = workdir(tag).join("bin");
+fn fake_claude_dir(tag: &str) -> scratch::Scratch {
+    let bin = workdir(tag).nested("bin");
     std::fs::create_dir_all(&bin).unwrap();
     let script = "#!/bin/sh\nprintf '{\"type\": \"result\", \"subtype\": \"success\", \"is_error\": false, \"result\": \"ready\", \"total_cost_usd\": 0.002, \"usage\": {\"input_tokens\": 4, \"output_tokens\": 1}}\\n'\n";
     std::fs::write(bin.join("claude"), script).unwrap();
@@ -233,7 +235,7 @@ fn a_harness_on_path_becomes_the_editors_quick_tier_and_the_probe_runs_it() {
 /// the genome out of reach, and says so in the generated comment.
 #[test]
 fn the_generated_codex_entry_can_write_in_the_export_it_is_given() {
-    let bin = workdir("codex-bin").join("bin");
+    let bin = workdir("codex-bin").nested("bin");
     std::fs::create_dir_all(&bin).unwrap();
     std::fs::write(bin.join("codex"), "#!/bin/sh\nprintf 'ready\\n'\n").unwrap();
     use std::os::unix::fs::PermissionsExt;

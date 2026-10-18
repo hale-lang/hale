@@ -62,6 +62,10 @@ name = "dna_fixture_ports_are_free"
 path = "tests/dna_fixture_ports_are_free.rs"
 
 [[test]]
+name = "dna_fixture_roots_are_scratch"
+path = "tests/dna_fixture_roots_are_scratch.rs"
+
+[[test]]
 name = "dna_native_suite"
 path = "tests/dna_native_suite.rs"
 

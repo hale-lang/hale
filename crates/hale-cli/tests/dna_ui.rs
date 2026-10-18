@@ -6,6 +6,8 @@
 
 #[path = "support/vault.rs"]
 mod vault;
+#[path = "support/scratch.rs"]
+mod scratch;
 #[path = "support/record.rs"]
 mod record;
 #[path = "support/reap.rs"]
@@ -64,8 +66,8 @@ fn main() {
 
 #[test]
 fn the_surface_serves_the_record_and_takes_no_command() {
-    let d = std::env::temp_dir().join(format!("hale_dna_ui_{}", std::process::id()));
-    let _reap = reap::ReapOnDrop(d.clone());
+    let d = scratch::Scratch::new(format!("hale_dna_ui_{}", std::process::id()));
+    let _reap = reap::ReapOnDrop(d.to_path_buf());
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(&d).unwrap();
     let cache = std::env::temp_dir().join("hale-tests-iris-cache");

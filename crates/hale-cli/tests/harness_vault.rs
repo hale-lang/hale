@@ -19,6 +19,8 @@
 //! Node allow-listed environment to carrying the override, and every test
 //! source to never clearing it (nor the whole environment).
 
+#[path = "support/scratch.rs"]
+mod scratch;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -59,7 +61,7 @@ fn listing(dir: &Path) -> Vec<String> {
 
 #[test]
 fn hale_test_runs_each_file_under_a_vault_of_its_own() {
-    let d = std::env::temp_dir().join(format!("hale_vault_probe_{}", std::process::id()));
+    let d = scratch::Scratch::new(format!("hale_vault_probe_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&d);
     let home = d.join("home");
     let work = d.join("work");
