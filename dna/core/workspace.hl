@@ -442,6 +442,11 @@ fn scratch_done(dir: String) {
         eprintln("kept (HALE_DNA_KEEP_SCRATCH): ", dir);
         return;
     }
+    // what compose runs from under the root goes with it, or it outlives
+    // the root (a host with no owner's DSN brings its knowledge database
+    // up from the fixture's dna/compose.yaml); none may survive
+    let left = scratch_compose_down(dir);
+    std::test::assert(len(left) == 0, "compose projects rooted in " + dir + " survived their teardown: " + left);
     let gone = run_tool("rm\n-rf\n" + dir);
     let reg = scratch_registry();
     if len(reg) == 0 { return; }
@@ -453,6 +458,46 @@ fn scratch_done(dir: String) {
     // it. Dropping the record here regardless is what let one through.
     if (std::io::fs::list_dir_count(dir) or - 1) >= 0 { return; }
     std::io::fs::unlink(reg + "/" + scratch_name(dir)) or discard;
+}
+
+// The compose projects whose working directory is `dir` or under it,
+// one per line, read off every container compose labelled (running or
+// not), so a project a killed fixture left is found as well. "" where
+// docker is not there to ask.
+@bounded_by(dir)
+fn scratch_compose_projects(dir: String) -> String {
+    let ps = run_tool("docker\nps\n-a\n--filter\nlabel=com.docker.compose.project\n--format\n{{.Label \"com.docker.compose.project\"}}|{{.Label \"com.docker.compose.project.working_dir\"}}");
+    if ps.code != 0 { return ""; }
+    let mut out = "";
+    let mut rest = ps.stdout;
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let line = if nl < 0 { rest } else { rest[0..nl] };
+        rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
+        let bar = std::str::index_of(line, "|");
+        if bar <= 0 { continue; }
+        let project = line[0..bar];
+        let wd = line[(bar + 1)..len(line)];
+        if (wd == dir || std::str::starts_with(wd, dir + "/")) && !std::str::contains("\n" + out, "\n" + project + "\n") { out = out + project + "\n"; }
+    }
+    return out;
+}
+
+// Take down every compose project rooted in `dir`, its containers,
+// networks and volumes (`docker compose -p <project> down -v`, which needs
+// no compose file); the projects still there afterwards, "" for none.
+@bounded_by(dir)
+fn scratch_compose_down(dir: String) -> String {
+    let mut rest = scratch_compose_projects(dir);
+    if len(rest) == 0 { return ""; }
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let project = rest[0..nl];
+        rest = rest[(nl + 1)..len(rest)];
+        let down = run_tool("docker\ncompose\n-p\n" + project + "\ndown\n-v\n--remove-orphans");
+        if down.code != 0 { eprintln("dna: compose project ", project, " under ", dir, " did not come down: ", trim_nl(down.stderr)); }
+    }
+    return scratch_compose_projects(dir);
 }
 
 // Whether a scratch root is kept for inspection instead of removed.

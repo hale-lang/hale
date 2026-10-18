@@ -292,6 +292,9 @@ fn sweep_scratch_roots(tag: &str, keep: bool) -> Vec<String> {
     if keep {
         return Vec::new();
     }
+    // what compose runs from under any root the slice made goes first: a
+    // fixture killed before `dna::scratch_done` left its compose project up
+    compose_down_under(&ledger_roots(tag));
     let reg = scratch_registry(tag);
     let Ok(entries) = std::fs::read_dir(&reg) else { return Vec::new() };
     let mut swept = Vec::new();
@@ -309,6 +312,58 @@ fn sweep_scratch_roots(tag: &str, keep: bool) -> Vec<String> {
     let _ = std::fs::remove_dir_all(roots_ledger(tag));
     swept.sort();
     swept
+}
+
+/// The compose projects whose working directory is one of `roots` or
+/// under it, read off every container compose labelled, running or not,
+/// as `dna::scratch_compose_projects` reads them. Empty where docker is
+/// not there to ask.
+fn compose_projects_under(roots: &[String]) -> Vec<String> {
+    if roots.is_empty() {
+        return Vec::new();
+    }
+    let Ok(out) = std::process::Command::new("docker")
+        .args([
+            "ps",
+            "-a",
+            "--filter",
+            "label=com.docker.compose.project",
+            "--format",
+            "{{.Label \"com.docker.compose.project\"}}|{{.Label \"com.docker.compose.project.working_dir\"}}",
+        ])
+        .output()
+    else {
+        return Vec::new();
+    };
+    if !out.status.success() {
+        return Vec::new();
+    }
+    let rooted = |wd: &str| roots.iter().any(|r| wd == r || wd.starts_with(&format!("{r}/")));
+    let mut projects: Vec<String> = String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter_map(|l| l.split_once('|'))
+        .filter(|(p, wd)| !p.is_empty() && rooted(wd))
+        .map(|(p, _)| p.to_string())
+        .collect();
+    projects.sort();
+    projects.dedup();
+    projects
+}
+
+/// Take down every compose project rooted in one of `roots` — its
+/// containers, networks and volumes; `down` by project name needs no
+/// compose file. A fixture with no owner's DSN brings its knowledge
+/// database up from its root's `dna/compose.yaml`, and nothing else takes
+/// it down.
+fn compose_down_under(roots: &[String]) {
+    for project in compose_projects_under(roots) {
+        let down = std::process::Command::new("docker")
+            .args(["compose", "-p", &project, "down", "-v", "--remove-orphans"])
+            .output();
+        if !down.as_ref().is_ok_and(|o| o.status.success()) {
+            eprintln!("dna slice: compose project {project} under a scratch root did not come down");
+        }
+    }
 }
 
 /// The slice's scratch roots, swept when the slice ends however it

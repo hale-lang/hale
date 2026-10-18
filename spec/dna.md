@@ -5777,7 +5777,7 @@ otherwise.
 | `HALE_DNA_OIDC_SERVICES=<clients>` | unset | The service clients the stub issuer accepts. |
 | `HALE_DNA_CHILD_PROOF=<proof>` | unset | The proof a face gave its child; the child answers an unauthenticated request with `X-Hale-Child: <digest of the proof>`, so the face knows its own child answered before it forwards a token. |
 | `HALE_DNA_TRUSTED_LOCAL=1` | off | The trusted-local session, a fixture's mode alone (`1` only). A project serves its heads under OIDC. |
-| `HALE_DNA_KEEP_SCRATCH` | off | Fixtures and the suite's sweep keep their scratch roots, for looking at what a fixture built. |
+| `HALE_DNA_KEEP_SCRATCH` | off | Fixtures and the suite's sweep keep their scratch roots, for looking at what a fixture built, and the compose projects run from under them. Without it, `dna::scratch_done` and the sweep take every compose project whose working directory is under a root they remove down with it (`docker compose -p <project> down -v`, found by the `com.docker.compose.project.working_dir` label), and `scratch_done` fails the fixture if one survives. |
 | `HALE_DNA_SUITE_TAG=<tag>` | unset | The stamp a DNA suite slice puts on the processes and scratch roots it starts, so its sweep collects only its own. |
 | `HALE_DNA_WAIT_SCALE=<n>` | 1 | A whole number of at least 1 that widens every fixture wait. |
 | `HALE_API_BIN=<path>` | built from the checkout | `dna/face/start.sh`: a prebuilt api binary to launch, as `--api` does. A binary handed in is checked before anything is built. |
