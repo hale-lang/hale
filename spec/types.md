@@ -1234,6 +1234,12 @@ Semantics:
 - Fields auto-initialize EMPTY. Literal init is rejected — the
   intrinsics build a bounded value. Whole-STRUCT copies carry
   elements + count by construction (the storage is inline).
+- A fn, a locus method or an interface method does not return a
+  `bounded` (written, or through an alias): the check refuses the
+  declaration ("\`names\` returns a \`bounded[String; 4]\`, and
+  bounded[T; N] cannot be returned by value — it lives inline in its
+  containing type …"), where the build refused it with no file or line
+  until 2026-10-18. A record holding the `bounded` returns it.
 - A bounded place (a field, a locus param) is
   assigned whole only from a value of its own type, `bounded[T; N]`
   with the same `T` and `N`: `row.models = req.models` copies the

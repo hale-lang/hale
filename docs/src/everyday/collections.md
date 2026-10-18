@@ -239,6 +239,12 @@ neither does a struct containing one. Iterate it, or print
 `count`. (The compiler names the field when it refuses, so you
 won't have to work out which one it meant.)
 
+A `bounded` lives inside the value that holds it, so a function cannot
+return one on its own: `fn names() -> bounded[String; 4]` is refused at
+the check. Return the record that holds it instead
+(`fn names() -> Names` with `type Names { items: bounded[String; 4]; }`);
+its elements come back whole, and the caller can keep pushing.
+
 Use `bounded` when the maximum is known and the list is a *field of
 a value* — per-message tags, route parameters, a chat window. The
 old workaround (a tab-separated string you re-parse on every read)

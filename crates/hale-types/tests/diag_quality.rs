@@ -794,3 +794,48 @@ fn a_parameter_place_writer_follows_bindings_not_spellings() {
         "the member's parameter itself is still refused: {ds:?}"
     );
 }
+
+/// A fn, a method or an interface's method declared to return a `bounded`
+/// (written or through an alias) is refused at the check with the build's
+/// reason: the build cannot return one by value, and the check passed it
+/// (a downstream handoff hit the build's refusal with no file or line). A
+/// record holding the `bounded` returns it.
+#[test]
+fn a_bounded_return_is_refused_at_the_check() {
+    let ds = diags(
+        r#"
+        type E { code: Int; }
+        type Items = bounded[Int; 4];
+        type Row { names: bounded[String; 4]; }
+        type Names { items: bounded[String; 4]; }
+        fn names() -> bounded[String; 4] { let mut r = Row { }; push(r.names, "a") or discard; return r.names; }
+        fn ints() -> bounded[Int; 4] fallible(E) { let r = Row { }; return [1]; }
+        locus L { params { xs: bounded[Int; 4]; } fn get() -> Items { return self.xs; } }
+        interface I { fn get() -> bounded[Int; 4]; }
+        fn wrapped() -> Names { let mut n = Names { }; push(n.items, "a") or discard; return n; }
+        fn main() { }
+    "#,
+    );
+    let hits: Vec<&String> = ds.iter().filter(|m| m.contains("cannot be returned by value")).collect();
+    assert_eq!(hits.len(), 4, "{ds:?}");
+    for (who, ty) in [("`names`", "bounded[String; 4]"), ("`ints`", "bounded[Int; 4]"), ("`L::get`", "bounded[Int; 4]"), ("`I::get`", "bounded[Int; 4]")] {
+        assert!(hits.iter().any(|m| m.starts_with(&format!("{who} returns a `{ty}`"))), "{who}: {hits:?}");
+    }
+    assert!(!ds.iter().any(|m| m.contains("`wrapped`")), "a record holding it returns: {ds:?}");
+
+    // Review of #1625: a type parameter is the declaration's own, whatever
+    // global type shares its name; the global alias itself is a bounded
+    let ds = diags(
+        r#"
+        type T = bounded[String; 4];
+        fn identity<T>(x: T) -> T { return x; }
+        locus Box<T> { fn get(x: T) -> T { return x; } }
+        fn aliased() -> T { let r = Row { }; return r.names; }
+        type Row { names: bounded[String; 4]; }
+        fn main() { }
+    "#,
+    );
+    let hits: Vec<&String> = ds.iter().filter(|m| m.contains("cannot be returned by value")).collect();
+    assert_eq!(hits.len(), 1, "{ds:?}");
+    assert!(hits[0].starts_with("`aliased` returns a `bounded[String; 4]`"), "{hits:?}");
+}
