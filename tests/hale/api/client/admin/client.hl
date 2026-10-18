@@ -123,6 +123,8 @@ fn api_http(endpoint: String, bearer: String, member: String, digest: String, pa
     if r.status == 0 { return api_lost("the endpoint " + endpoint + " cannot be reached: " + text); }
     if r.status == 200 { return ApiRaw { outcome: 0, body: text }; }
     if r.status == 422 { return ApiRaw { outcome: 1, body: text }; }
+    // a classed handler error names its class (spec/api.md § Error classes)
+    if std::str::contains(std::str::lower(r.headers), "hale-error-class:") { return ApiRaw { outcome: 1, body: text }; }
     let refusal = std::json::find_field_raw(text, "refusal");
     if len(refusal) == 0 { return api_lost("the endpoint answered " + to_string(r.status) + " with no refusal: " + text); }
     return api_refused(refusal, r.status);

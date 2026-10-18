@@ -497,7 +497,7 @@ impl PbCodec<'_> {
         let mut scratch = BTreeMap::new();
         match self.schemas.type_ref(te, &mut scratch) {
             crate::surfaces::FieldSchema::Ref(n) => crate::proto_gen::message_name(&n, self.surface),
-            crate::surfaces::FieldSchema::Enum { name, variants } if variants.iter().any(|(_, v)| !v.is_empty()) => {
+            crate::surfaces::FieldSchema::Enum { name, variants, .. } if variants.iter().any(|(_, v)| !v.is_empty()) => {
                 crate::proto_gen::message_name(&name, self.surface)
             }
             _ => crate::proto_gen::wrapper_name(member, what),
@@ -554,6 +554,7 @@ const RUNTIME_NAMES: &[&str] = &[
     "ExpiringBearerSource",
     "Request",
     "Outcome",
+    "ErrorClass",
     "Rpc",
     "Handle",
     "Surface",
@@ -2207,11 +2208,18 @@ fn field_json(f: &crate::surfaces::FieldSchema) -> String {
         FieldSchema::Nullable { inner, .. } => format!("{{\"anyOf\":[{},{{\"type\":\"null\"}}]}}", field_json(inner)),
         // no key of its own: `type_json` leaves it out
         FieldSchema::Presence { .. } | FieldSchema::Unformed => "{}".to_string(),
-        FieldSchema::Enum { name, variants } => {
+        FieldSchema::Enum { name, variants, classes } => {
+            // the declared error classes, as `surface_doc` renders them
+            let classed = if classes.is_empty() {
+                String::new()
+            } else {
+                let cs: Vec<String> = classes.iter().map(|(v, c)| format!("{}:{}", jstr(v), jstr(c))).collect();
+                format!(",\"x-hale-error-classes\":{{{}}}", cs.join(","))
+            };
             let units: Vec<String> = variants.iter().filter(|(_, v)| v.is_empty()).map(|(n, _)| jstr(n)).collect();
             let unit = format!("{{\"type\":\"string\",\"enum\":[{}]", units.join(","));
             if units.len() == variants.len() {
-                return format!("{unit},\"x-hale-type\":{}}}", jstr(name));
+                return format!("{unit},\"x-hale-type\":{}{classed}}}", jstr(name));
             }
             let mut one: Vec<String> = Vec::new();
             if !units.is_empty() {
@@ -2232,7 +2240,7 @@ fn field_json(f: &crate::surfaces::FieldSchema) -> String {
                     jstr(v)
                 ));
             }
-            format!("{{\"oneOf\":[{}],\"x-hale-type\":{}}}", one.join(","), jstr(name))
+            format!("{{\"oneOf\":[{}],\"x-hale-type\":{}{classed}}}", one.join(","), jstr(name))
         }
         FieldSchema::Map { key, value, max, .. } => format!(
             "{{\"type\":\"object\",\"additionalProperties\":{},\"maxProperties\":{max},\"x-hale-key\":{}}}",
@@ -2354,6 +2362,16 @@ fn extend_receiver(l: &mut LocusDecl, bs: &[Binding], codec: &Codec<'_>, pb: &Pb
         fns.push_str(&format!(
             "fn __rpc_call_{n}(c: std::api::RpcCall) {{\n    if c.stamp != self.__rpc_stamp {{\n        self.__rpc_ev(c.exposure, c.rid, {slot}, 3, \"\");\n        return;\n    }}\n    self.__rpc_ev(c.exposure, c.rid, {slot}, 4, \"\");\n    self.__rpc_seam_{n}(c) or {{ self.__rpc_ev(c.exposure, c.rid, {slot}, 3, \"\"); }};\n}}\n"
         ));
+    }
+    // a handler error of a classed error type carries its class
+    // (spec/api.md § Error classes); a receiver with none has no such fn
+    let classed = bs.iter().flat_map(|b| b.members.iter()).any(|(_, row)| {
+        !row.server_error && row.error.as_ref().is_some_and(|e| Wire::Json(codec).class_steps(e).is_some())
+    });
+    if classed {
+        fns.push_str(
+            "fn __rpc_err(exposure: Int, rid: Int, slot: Int, class: Int, body: String) {\n    __ApiRpcEventT <- std::api::RpcEvent { exposure: exposure, rid: rid, slot: slot, kind: 1, stamp: self.__rpc_stamp, body: body, class: class };\n}\n",
+        );
     }
     let src = format!(
         "locus __Tmp {{\n params {{ {params} }}\n bus {{ {bus} }}\n {fns}\n birth() {{ {birth} }}\n dissolve() {{ {dissolve} }}\n}}\n"
@@ -2536,9 +2554,17 @@ fn mirror_seam(n: i64, receiver: &str, slot: usize, b: &Binding, codec: &Codec<'
             both(publish(0, ok_body(Wire::Json(codec))), publish(0, ok_body(Wire::Pb(&pbc))))
         ));
         if let (Some(e), false) = (&row.error, row.server_error) {
+            // a classed error type's handler error carries the class its
+            // variant declares (spec/api.md § Error classes): the encoder
+            // numbers it from the `__RpcErr` member's error and publishes
+            // through `__rpc_err`; any other publishes as it always has
+            let err_event = |w: Wire<'_>| match Wire::Json(codec).class_steps(e) {
+                Some(steps) => format!("{steps}self.__rpc_err(r.at.exposure, r.at.rid, {slot}, __class, {});", w.err(row, e)),
+                None => publish(1, w.err(row, e)),
+            };
             encode.push_str(&format!(
                 "        __RpcErr_{t}_{k}(r) -> {{ let err = r.e; {} }},\n",
-                both(publish(1, Wire::Json(codec).err(row, e)), publish(1, Wire::Pb(&pbc).err(row, e)))
+                both(err_event(Wire::Json(codec)), err_event(Wire::Pb(&pbc)))
             ));
         }
     }
@@ -2595,6 +2621,37 @@ impl Wire<'_> {
             Wire::Json(_) => "\"null\"",
             Wire::Pb(_) => "\"pb::\"",
         }
+    }
+    fn shapes(&self) -> &Shapes<'_> {
+        match self {
+            Wire::Json(c) => c.shapes,
+            Wire::Pb(p) => p.shapes,
+        }
+    }
+    /// For an error type whose variants declare error classes (spec/api.md
+    /// § Error classes), the statements that number `err`'s class into
+    /// `__class` (`crate::surfaces::ERROR_CLASSES`' order from 1, 0 for a
+    /// variant declaring none); `None` for any other error type, whose
+    /// handler error is unclassed.
+    fn class_steps(&self, te: &TypeExpr) -> Option<String> {
+        let shapes = self.shapes();
+        let te = shapes.dealias(te);
+        let TypeClass::Enum { name, variants } = shapes.classify(&te) else { return None };
+        if variants.iter().all(|v| v.class.is_none()) {
+            return None;
+        }
+        let mut arms = String::new();
+        for v in variants {
+            let Some(c) = &v.class else { continue };
+            let n = crate::surfaces::ERROR_CLASSES.iter().position(|r| r.word == c.name)? + 1;
+            let pat = if v.fields.is_empty() {
+                format!("{name}::{}", v.name.name)
+            } else {
+                format!("{name}::{}({})", v.name.name, vec!["_"; v.fields.len()].join(", "))
+            };
+            arms.push_str(&format!("{pat} -> {{ __class = {n}; }}, "));
+        }
+        Some(format!("let mut __class = 0; match err {{ {arms}_ -> {{ }}, }} "))
     }
     /// The text of a handler error's body: a protobuf one names its message.
     fn err(&self, row: &Row, te: &TypeExpr) -> String {

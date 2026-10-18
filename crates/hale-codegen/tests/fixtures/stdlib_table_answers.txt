@@ -522,6 +522,7 @@ println | lookup=- | locus=false | effects=syscall | sig=- | parks=false | holds
 std | lookup=- | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=-
 std::api::BearerSource | lookup=api@2 | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib function `std::api::BearerSource` | suggest=-
 std::api::Context | lookup=api@2 | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib function `std::api::Context` | suggest=-
+std::api::ErrorClass | lookup=api@2 | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib function `std::api::ErrorClass` | suggest=-
 std::api::ExpiringBearerSource | lookup=api@2 | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib function `std::api::ExpiringBearerSource` | suggest=-
 std::api::Exposure | lookup=api@2 | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib function `std::api::Exposure` | suggest=-
 std::api::Grants | lookup=api@2 | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib function `std::api::Grants` | suggest=-

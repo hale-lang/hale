@@ -244,7 +244,7 @@ fn carried(
         FieldSchema::Ref(name) => Ok(message_name(name, surface)),
         // an enum with payloads is its message; a payload-free one is the
         // one-field message of a scalar row, its `value` the enum
-        FieldSchema::Enum { name, variants } => match enum_ty(name, variants, surface, extra)? {
+        FieldSchema::Enum { name, variants, .. } => match enum_ty(name, variants, surface, extra)? {
             Ty::Message(m) => Ok(m),
             ty => {
                 let wrapper = wrapper_name(member, what);
@@ -450,7 +450,7 @@ fn value_ty(f: &FieldSchema, surface: &str, what: &str, extra: &mut Extra) -> Re
         FieldSchema::Scalar { json, .. } => scalar_of(json).map(Ty::Scalar).ok_or_else(|| format!("{what}: `{json}` has no proto3 scalar")),
         FieldSchema::Time => Ok(Ty::Scalar(Scalar::Int64)),
         FieldSchema::Ref(n) => Ok(Ty::Message(message_name(n, surface))),
-        FieldSchema::Enum { name, variants } => enum_ty(name, variants, surface, extra),
+        FieldSchema::Enum { name, variants, .. } => enum_ty(name, variants, surface, extra),
         _ => Err(format!("{what}: a shape an enum's value cannot be has no proto3 encoding; no approximation is made")),
     }
 }
@@ -566,7 +566,7 @@ fn record(display: &str, schema: &TypeSchema, surface: &str, extra: &mut Extra) 
             FieldSchema::Ref(n) => field(key, number, Ty::Message(message_name(n, surface)), Label::Plain),
             // a payload-free enum has presence as a scalar does; one with
             // payloads is a message
-            FieldSchema::Enum { name, variants } => match enum_ty(name, variants, surface, extra)? {
+            FieldSchema::Enum { name, variants, .. } => match enum_ty(name, variants, surface, extra)? {
                 ty @ Ty::Enum(_) => field(key, number, ty, Label::Optional),
                 ty => field(key, number, ty, Label::Plain),
             },
@@ -598,7 +598,7 @@ fn record(display: &str, schema: &TypeSchema, surface: &str, extra: &mut Extra) 
                         p
                     }
                     FieldSchema::Ref(n) => field(key, number, Ty::Message(message_name(n, surface)), Label::Repeated),
-                    FieldSchema::Enum { name, variants } => {
+                    FieldSchema::Enum { name, variants, .. } => {
                         field(key, number, enum_ty(name, variants, surface, extra)?, Label::Repeated)
                     }
                     FieldSchema::Time => {

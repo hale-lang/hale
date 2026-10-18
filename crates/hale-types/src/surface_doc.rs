@@ -404,14 +404,25 @@ fn field_schema(f: &FieldSchema, base: &str) -> J {
         }
         // no key of its own: `type_schema` leaves it out
         FieldSchema::Presence { .. } | FieldSchema::Unformed => J::Obj(Vec::new()),
-        FieldSchema::Enum { name, variants } => {
+        FieldSchema::Enum { name, variants, classes } => {
+            // the declared error classes, by variant (spec/api.md § Error
+            // classes): a key only an enum declaring one has
+            let classed = |mut pairs: Vec<(String, J)>| {
+                if !classes.is_empty() {
+                    pairs.push((
+                        "x-hale-error-classes".to_string(),
+                        J::Obj(classes.iter().map(|(v, c)| (v.clone(), s(c))).collect()),
+                    ));
+                }
+                J::Obj(pairs)
+            };
             let units: Vec<J> = variants.iter().filter(|(_, v)| v.is_empty()).map(|(n, _)| s(n)).collect();
             let unit_count = units.len();
             let unit = |units: Vec<J>| vec![("type".to_string(), s("string")), ("enum".to_string(), J::Arr(units))];
             if unit_count == variants.len() {
                 let mut pairs = unit(units);
                 pairs.push(("x-hale-type".to_string(), s(name)));
-                return J::Obj(pairs);
+                return classed(pairs);
             }
             let mut one = Vec::new();
             if unit_count > 0 {
@@ -434,7 +445,7 @@ fn field_schema(f: &FieldSchema, base: &str) -> J {
                     ("additionalProperties", J::Bool(false)),
                 ]));
             }
-            o(vec![("oneOf", J::Arr(one)), ("x-hale-type", s(name))])
+            classed(vec![("oneOf".to_string(), J::Arr(one)), ("x-hale-type".to_string(), s(name))])
         }
         FieldSchema::Map { key, value, max, .. } => o(vec![
             ("type", s("object")),
@@ -950,18 +961,52 @@ pub fn openapi(rows: &SurfaceRows, schemas: &Schemas<'_>, surface: &str) -> Resu
         ] {
             responses.push((status.to_string(), refusal(what)));
         }
+        let mut classed: Vec<(u16, String, J)> = Vec::new();
         if let (Some(e), false) = (&h.error, h.server_error) {
-            let schema = field_schema(&book.type_ref(&e.te), REFS);
+            let fs = book.type_ref(&e.te);
+            let schema = field_schema(&fs, REFS);
             responses.push((
                 "422".to_string(),
-                J::Obj(vec![("description".to_string(), s(&format!("handler error: {}", schemas.show(e)))), content(schema)]),
+                J::Obj(vec![("description".to_string(), s(&format!("handler error: {}", schemas.show(e)))), content(schema.clone())]),
             ));
+            // a variant's error class answers with its class's status
+            // (spec/api.md § Error classes)
+            if let FieldSchema::Enum { classes, .. } = &fs {
+                for c in crate::surfaces::ERROR_CLASSES.iter().filter(|c| c.http != 422) {
+                    let vs: Vec<&str> = classes.iter().filter(|(_, w)| w == c.word).map(|(v, _)| v.as_str()).collect();
+                    if !vs.is_empty() {
+                        let what = format!("handler error: {} ({}, @{})", schemas.show(e), vs.join(", "), c.word);
+                        classed.push((c.http, what, schema.clone()));
+                    }
+                }
+            }
         }
         responses.push(("429".to_string(), refusal("refusal: full")));
         if h.server_error {
             responses.push(("500".to_string(), refusal("server error: the handler violated (ClosureViolation)")));
         }
         responses.push(("503".to_string(), refusal("refusal: shutting_down, unavailable")));
+        for (status, what, schema) in classed {
+            let key = status.to_string();
+            match responses.iter_mut().find(|(k, _)| *k == key) {
+                // a refusal answers with the status too: either body
+                Some((_, J::Obj(have))) => {
+                    let said = match have.iter().find(|(k, _)| k == "description") {
+                        Some((_, J::Str(d))) => d.clone(),
+                        _ => String::new(),
+                    };
+                    *have = vec![
+                        ("description".to_string(), s(&format!("{said}; or {what}"))),
+                        // `anyOf`: a handler error's body may also match the
+                        // refusal's schema (a variant `refusal`), and the
+                        // `Hale-Error-Class` header tells them apart, not the body
+                        content(o(vec![("anyOf", J::Arr(vec![o(vec![("$ref", s(&format!("{REFS}{REFUSAL}")))]), schema]))])),
+                    ];
+                }
+                _ => responses.push((key, J::Obj(vec![("description".to_string(), s(&what)), content(schema)]))),
+            }
+        }
+        responses.sort_by_key(|(k, _)| k.parse::<u16>().unwrap_or(u16::MAX));
         op.push(("responses".to_string(), J::Obj(responses)));
         op.push(("security".to_string(), J::Arr(vec![o(vec![("bearer", J::Arr(Vec::new()))])])));
         op.push(("x-hale-requires".to_string(), strs(row.requires.iter().map(|(r, _)| r.as_str()))));

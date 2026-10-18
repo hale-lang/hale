@@ -102,6 +102,8 @@ async function apiCall(opts, member, digest, payload, decodeValue, decodeError) 
   }
   if (res.status === 200) return { kind: "result", value: decodeValue(body) };
   if (res.status === 422) return { kind: "handler_error", error: decodeError(body) };
+  // a classed handler error names its class (spec/api.md § Error classes)
+  if (res.headers.get("Hale-Error-Class") !== null) return { kind: "handler_error", error: decodeError(body) };
   const refusal = apiRefusal(body);
   if (/** @type {{ refusal?: unknown } | null} */ (body)?.refusal === undefined) {
     throw new TransportError("the endpoint answered " + res.status + " with no outcome: " + text);

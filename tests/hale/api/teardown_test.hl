@@ -56,7 +56,7 @@ locus Probe {
         let mut kind = "other";
         match outcome {
             std::api::Outcome::Result(b) -> { kind = "result"; },
-            std::api::Outcome::HandlerError(b) -> { kind = "handler_error"; },
+            std::api::Outcome::HandlerError(b, c) -> { kind = "handler_error"; },
             std::api::Outcome::Refusal(k, r, x) -> { kind = "refusal:" + k; },
             std::api::Outcome::ServerError -> { kind = "server_error"; },
             _ -> { kind = "other"; },

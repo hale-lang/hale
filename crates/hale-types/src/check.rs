@@ -9387,6 +9387,23 @@ fn check_duplicate_members(programs: &[&Program], diags: &mut Vec<Diag>) {
                         variants.iter().map(|v| (v.name.name.clone(), v.name.span)),
                         diags,
                     );
+                    for v in variants {
+                        let Some(c) = &v.class else { continue };
+                        if crate::surfaces::error_class(&c.name).is_none() {
+                            let words: Vec<String> =
+                                crate::surfaces::ERROR_CLASSES.iter().map(|r| format!("`@{}`", r.word)).collect();
+                            diags.push(Diag::ty(
+                                c.span,
+                                format!(
+                                    "`@{}` on the variant `{}` of `{}` is no error class; a variant declares one of {}",
+                                    c.name,
+                                    v.name.name,
+                                    t.name.name,
+                                    words.join(", ")
+                                ),
+                            ));
+                        }
+                    }
                 }
                 TypeDeclBody::Alias(_) | TypeDeclBody::Scalar(_) => {}
             },

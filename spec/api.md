@@ -255,7 +255,8 @@ A type's **shape hash** is the hash of its **contract shape**
 struct's fields in declaration order as `<field>:<tag>` joined by `;`
 (`order:i;notional:q(cent)`, the tags of `spec/units.md` § Layout and
 the wire), a nested struct or enum tagged by its own contract shape
-hash (`#<hash>`), an enum `=enum(<variants>)`, and any other type `=`
+hash (`#<hash>`), an enum `=enum(<variants>)` (a variant's declared
+error class after it, `Missing@not_found`, § Error classes), and any other type `=`
 and its tag. The form is deep, so a field changed inside a nested type,
 or a variant added to an enum error type, moves every digest built on
 it. A flat struct's contract shape is its payload contract's shape, so
@@ -1078,7 +1079,7 @@ closes the listener while the connections it accepted are served on.
   `HEADERS` frame closing the stream, `:status 200`, `content-type`,
   `grpc-status`, `grpc-message`, `grpc-status-details-bin`), the status the
   table of § Outcomes gives: `FAILED_PRECONDITION` (9) for a handler error,
-  with the message `handler_error`; `INVALID_ARGUMENT` (3),
+  or its class's code (§ Error classes), with the message `handler_error`; `INVALID_ARGUMENT` (3),
   `FAILED_PRECONDITION` (9, a digest mismatch), `UNAUTHENTICATED` (16),
   `PERMISSION_DENIED` (7), `RESOURCE_EXHAUSTED` (8) and `UNAVAILABLE` (14, for
   `shutting_down` and for `unavailable`) for a refusal, its reason the
@@ -1279,12 +1280,17 @@ type std::api::Request {
 // the absence of a reply, so it has no variant.
 type std::api::Outcome = enum {
     Result(String),             // the response by the codec
-    HandlerError(String),       // the handler's E by the codec
+    HandlerError(String, std::api::ErrorClass),  // the handler's E by the
+                                // codec, and the class its variant declares
     Refusal(String, String, String),  // kind, reason, the extra: `served` on
                                 // digest_mismatch, `requires` (comma-joined)
                                 // on unauthorized, else ""
     ServerError,                // the handler violated; says nothing of it
 };
+
+// A handler error's class (§ Error classes): `Unclassed` for a variant
+// that declares none and for an error type that is a record.
+type std::api::ErrorClass = enum { Unclassed, NotFound, Conflict, Invalid, Forbidden, Unavailable };
 
 // What a caller is handed to hold; stop() is idempotent. wait() returns
 // when stop() or the drain has ended the exposure (§ Parking).
@@ -1470,13 +1476,15 @@ it (the compiler wires `expiry` and `grants` from the source's type).
 
 A caller sees one of five outcomes, and every transport encodes each,
 by a mapping fixed in v1 and part of this contract: no transport
-chooses another, no row carries a status, and the digest has nothing
-to hash for one.
+chooses another, and no row carries a status. A handler error's status
+is the error class its variant declares, if it declares one (§ Error
+classes); the class is part of the error type's shape, which the digest
+holds.
 
 | outcome | meaning | HTTP | Unix JSON | gRPC | MCP |
 |---|---|---|---|---|---|
 | result | the handler returned | 200, body = the response by codec | `{"ok": true, "value": …}` | OK | result |
-| handler error | the handler failed with its declared `E` | 422, body = `E` by codec | `{"ok": false, "error": E}` | FAILED_PRECONDITION, `E` in details | error object with `E` |
+| handler error | the handler failed with its declared `E` | 422, or its class's status and `Hale-Error-Class` (§ Error classes), body = `E` by codec | `{"ok": false, "error": E}`, and `"class"` for a classed one | FAILED_PRECONDITION, or its class's code, `E` in details | error object with `E` |
 | refusal | the request was not accepted, or was accepted and did not run (the kinds below) | 400 / 409 / 401 / 403 / 429 / 503, body = `{"refusal": …}` | `{"ok": false, "refusal": {"kind": …, "reason": …}}` | INVALID_ARGUMENT / FAILED_PRECONDITION / UNAUTHENTICATED / PERMISSION_DENIED / RESOURCE_EXHAUSTED / UNAVAILABLE | error object |
 | server error | the handler failed with `ClosureViolation`, its row's error type (§ Structural failure in a handler) | 500, body = `{"refusal": {"kind": "server"}}` | `{"ok": false, "refusal": {"kind": "server"}}` | INTERNAL | error object |
 | transport failure | the connection or the protocol broke | the transport's own | EOF | the transport's own | the transport's own |
@@ -1498,6 +1506,71 @@ on `digest_mismatch` and `"requires"` on `unauthorized`. The server
 error's object is `{"kind": "server"}` and says nothing of the
 violation, which is the program's to report (§ Structural failure in a
 handler).
+
+### Error classes
+
+A variant of an enum may declare an **error class** before its name
+(2026-10-17):
+
+```text
+type OrderError = enum { @not_found Missing, @conflict Taken(String), Closed };
+```
+
+A class is transport-neutral: it says what kind of failure the variant
+is, and each transport answers a handler error of that variant with its
+own status for the class. A variant that declares none, and an error type
+that is a record, keep the handler error's 422 and `FAILED_PRECONDITION`.
+The checker refuses any other word (`` `@missing` on the variant `A` of
+`E` is no error class ``).
+
+| class | the handler says | HTTP | gRPC |
+|---|---|---|---|
+| `@not_found` | what the request names does not exist | 404 | NOT_FOUND (5) |
+| `@conflict` | the request conflicts with the current state (it exists already, it changed, it is closed) | 409 | ABORTED (10) |
+| `@invalid` | the request is well formed and the handler judged it invalid | 422 | INVALID_ARGUMENT (3) |
+| `@forbidden` | the caller may call the member and may not do this | 403 | PERMISSION_DENIED (7) |
+| `@unavailable` | what the handler needs is unavailable; a later call may succeed | 503 | UNAVAILABLE (14) |
+
+The body is the handler error's whatever its class: `E` by codec. Three
+of the statuses are a refusal's too (403, 409, 503), so over HTTP a classed
+handler error names its class in the header `Hale-Error-Class:
+not_found`, which no refusal carries, and a client tells the two apart by
+it, never by the body (an enum's variant may be named `refusal`); under
+CORS the response exposes it (`Access-Control-Expose-Headers`). An
+unclassed handler error's 422 carries no such header, as before.
+`@invalid` keeps HTTP's 422, which an unclassed error has too, because 400
+is `malformed`'s, the transport's own judgment that a request does not
+decode; gRPC tells the two apart (INVALID_ARGUMENT, FAILED_PRECONDITION).
+`@conflict` is ABORTED and not ALREADY_EXISTS: the class covers every
+conflict with the state (a duplicate, a version that moved, an order
+already closed), and ALREADY_EXISTS asserts one cause the class does not
+carry; the variant in the details names which. Over gRPC the message stays
+`handler_error` and the details' `Any` stays `E`, under the class's code.
+The Unix reply line names the class after the error, `{"ok": false,
+"error": "Missing", "class": "not_found"}`, and a line for an unclassed
+variant has no `class`. The MCP transport's error object has no member
+for it: its `code` (-32001) and `data` (`E`) are unchanged, and the class
+is the description's to say.
+
+The class is contract: the description and the schema documents carry it
+on the enum, `"x-hale-error-classes": {"Missing": "not_found", "Taken":
+"conflict"}` (only on an enum that declares one), the OpenAPI form lists
+each class's status as a response of the member (where a refusal has that
+status too, its schema is either body, `anyOf` the refusal and `E`, since a body may match both and the header, not the body, tells them apart), and
+the enum's contract shape renders a class after its variant
+(`=enum(Missing@not_found|Taken(s)@conflict|Closed)`), so a class declared,
+changed or removed moves every digest built on the type, and an enum that
+declares none hashes as it always has. A served description (`GET
+/.description`, `Describe`) carries the classes as the compiler's does.
+The generated clients and `hale call` read a response carrying
+`Hale-Error-Class` as the handler error, and `hale call` names the class
+(`handler error (not_found): "Missing"`).
+
+The runtime interface carries the class: `std::api::Outcome`'s
+`HandlerError(String, std::api::ErrorClass)` (§ The runtime boundaries),
+`Unclassed` for a variant that declares none. This is a breaking change
+for a transport the program writes, whose `match` on an outcome spells
+`HandlerError(b, c)` where it spelled `HandlerError(b)` (2026-10-17).
 
 **The Unix JSON transport** (`unix::Rpc`, R2b; the R2a fixture transport
 encodes its outcomes as these lines) is a Unix domain stream
@@ -2735,8 +2808,6 @@ values).
   surface's**: it is not filtered by the roles a caller holds, as a description
   is. A surface whose member names are themselves confidential to a role needs
   a filtered descriptor, which the `.proto` the digest names cannot be.
-- **A per-variant status mapping** declared on a handler's error type,
-  which would join the rows, the description and the digest.
 - **A receiver binding naming a `@form` collection's element** (a
   surface over many instances of one type, keyed by the request), or
   only a single instance.

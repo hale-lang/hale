@@ -636,7 +636,8 @@ impl<'a> Shapes<'a> {
     }
 
     /// The contract shape of a type a row names: a struct's fields as
-    /// `<field>:<tag>` joined by `;`, an enum as `=enum(<variants>)`, any
+    /// `<field>:<tag>` joined by `;`, an enum as `=enum(<variants>)` (a
+    /// variant's declared error class after it, `Missing@not_found`), any
     /// other type as `=` and its tag. `stack` holds the named types being
     /// rendered, outermost first.
     fn contract_top(&self, te: &TypeExpr, stack: &mut Vec<String>) -> String {
@@ -663,12 +664,20 @@ impl<'a> Shapes<'a> {
             let vs = variants
                 .iter()
                 .map(|v| {
-                    if v.fields.is_empty() {
+                    let mut out = if v.fields.is_empty() {
                         v.name.name.clone()
                     } else {
                         let fs: Vec<String> = v.fields.iter().map(|f| self.contract_tag(f, stack)).collect();
                         format!("{}({})", v.name.name, fs.join(","))
+                    };
+                    // a declared error class is contract (spec/api.md §
+                    // Error classes): `Missing@not_found`; a variant with
+                    // none renders as it always has
+                    if let Some(c) = &v.class {
+                        out.push('@');
+                        out.push_str(&c.name);
                     }
+                    out
                 })
                 .collect::<Vec<_>>();
             return format!("=enum({})", vs.join("|"));
@@ -995,6 +1004,17 @@ mod tests {
         assert_eq!(forms(src, "Order").1, format!("side:#{h}"));
         let (_, _, added) = forms("type Side = enum { Buy, Sell(Int, String), Hold };", "Side");
         assert_ne!(added, h, "a variant added moves the hash");
+    }
+
+    /// A variant's declared error class is in the shape after it, and a
+    /// class added moves the hash; an enum declaring none is unchanged.
+    #[test]
+    fn an_error_class_is_in_the_shape() {
+        let (_, contract, h) = forms("type E = enum { @not_found Missing, Taken(String) };", "E");
+        assert_eq!(contract, "=enum(Missing@not_found|Taken(s))");
+        let (_, plain, unclassed) = forms("type E = enum { Missing, Taken(String) };", "E");
+        assert_eq!(plain, "=enum(Missing|Taken(s))");
+        assert_ne!(h, unclassed);
     }
 
     /// Arrays, bounded arrays and tuples are their element tags, and an

@@ -61,6 +61,21 @@ fn __api_grpc_media(ctype: String) -> String {
 }
 
 /// The gRPC status of a refusal kind (spec/api.md § Outcomes).
+/// A handler error's gRPC status code: its class's (spec/api.md § Error
+/// classes), `FAILED_PRECONDITION` for none.
+fn __api_grpc_error_code(c: __StdApiErrorClass) -> Int {
+    let mut code = 9;
+    match c {
+        __StdApiErrorClass::Unclassed -> { },
+        __StdApiErrorClass::NotFound -> { code = 5; },
+        __StdApiErrorClass::Conflict -> { code = 10; },
+        __StdApiErrorClass::Invalid -> { code = 3; },
+        __StdApiErrorClass::Forbidden -> { code = 7; },
+        __StdApiErrorClass::Unavailable -> { code = 14; },
+    }
+    return code;
+}
+
 fn __api_grpc_code(kind: String) -> Int {
     if kind == "malformed" { return 3; }
     if kind == "digest_mismatch" { return 9; }
@@ -748,12 +763,13 @@ locus __StdApiGrpcRpc {
                 }
                 trailers = "grpc-status: 0\n";
             },
-            __StdApiOutcome::HandlerError(b) -> {
-                let mut details = __api_grpc_details(9, "handler_error", "type.hale.dev/hale.api.HandlerError", b);
+            __StdApiOutcome::HandlerError(b, c) -> {
+                let code = __api_grpc_error_code(c);
+                let mut details = __api_grpc_details(code, "handler_error", "type.hale.dev/hale.api.HandlerError", b);
                 if proto && std::str::starts_with(b, "pb:") {
-                    details = __api_grpc_details_bytes(9, "handler_error", "type.hale.dev/" + __api_pb_text_name(b), __api_pb_text_bytes(b));
+                    details = __api_grpc_details_bytes(code, "handler_error", "type.hale.dev/" + __api_pb_text_name(b), __api_pb_text_bytes(b));
                 }
-                headers = head + "grpc-status: 9\ngrpc-message: handler_error\ngrpc-status-details-bin: " + details + "\n";
+                headers = head + "grpc-status: " + to_string(code) + "\ngrpc-message: handler_error\ngrpc-status-details-bin: " + details + "\n";
             },
             __StdApiOutcome::Refusal(kind, reason, extra) -> {
                 let code = __api_grpc_code(kind);
