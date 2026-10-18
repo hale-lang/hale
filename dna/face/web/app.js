@@ -848,8 +848,8 @@
       // a reassignment is a Ledger row and the record's revision does not
       // move, so the Task is re-read once per receipt, unless its captured
       // history already holds the event
-      const shown = state.detail?.id === metadata.target_id && state.detail.history.some(event => event.event_id === result.receipt.task.event_id);
-      refreshTask = metadata.operation === TASK_OPERATION && result.receipt.task.state === "applied" && state.route.view === "tasks" && state.route.id === metadata.target_id && state.source && !shown && taskRereadFor !== result.receipt.command_id;
+      refreshTask = metadata.operation === TASK_OPERATION && result.receipt.task.state === "applied" && state.route.view === "tasks" && state.route.id === metadata.target_id && state.source && taskRereadFor !== result.receipt.command_id
+        && !(state.detail?.id === metadata.target_id && state.detail.history.some(event => event.event_id === result.receipt.task.event_id));
       if (refreshTask) taskRereadFor = result.receipt.command_id;
       refreshTask = refreshTask || metadata.operation === PERSON_OPERATION && result.receipt.person.state === "applied" && state.route.view === "tasks" && state.route.assignee === metadata.target_id && state.source && BigInt(state.source.record_revision) < BigInt(result.source.record_revision);
       ui.announcement.textContent = metadata.operation === TASK_CREATE_OPERATION ? "New task status loaded. The organism answers separately; check again to follow the ask." : metadata.operation === PERSON_OPERATION ? "Retirement status loaded. Inspect the recorded transfer and current person state." : metadata.operation === TASK_OPERATION ? "Reassignment status loaded. The Task remains responsible for its original obligation." : metadata.source_review || metadata.operation === ORGANIZATION_OPERATION ? "Request status loaded. The decision, owner quorum, source application and running result are separate facts." : "Request status loaded. Command outcome, Review settlement and adoption are separate facts.";
