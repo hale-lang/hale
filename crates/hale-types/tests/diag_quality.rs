@@ -412,3 +412,83 @@ fn a_route_params_copy_taken_before_the_match_is_warned_at_its_capture_read() {
     );
     assert!(!clean.iter().any(|m| m.contains("is a copy of")), "got: {clean:?}");
 }
+
+/// An assignment target's field path is resolved as a read's is: a field
+/// the owner does not declare is refused with the read path's diagnostic,
+/// one level down a child or several. It used to check clean and fail
+/// only at the build ("no field `record` on `self.j`").
+#[test]
+fn an_assignment_target_names_only_declared_fields() {
+    let refused = |body: &str, field: &str, owner: &str| {
+        let src = format!(
+            r#"
+            type Pair {{ a: String = ""; b: Int = 0; }}
+            type Rec {{ p: Pair = Pair {{ }}; ps: [Pair; 2] = [Pair {{ }}, Pair {{ }}]; }}
+            locus Inner {{ params {{ repo: String = "."; rec: Rec = Rec {{ }}; }} }}
+            locus Outer {{
+                params {{ j: Inner = Inner {{ }}; rec: Rec = Rec {{ }}; }}
+                birth() {{ {body} }}
+            }}
+            fn main() {{ let o = Outer {{ }}; println(o.j.repo); }}
+        "#
+        );
+        let ds = diags(&src);
+        let want = format!("no field `{field}` on `{owner}`");
+        assert!(ds.iter().any(|m| m.starts_with(&want)), "`{body}`: want {want}; got {ds:?}");
+    };
+    // the issue's two forms
+    refused(r#"self.j.missing = "x";"#, "missing", "Inner");
+    refused(r#"self.j.record.repo = "x";"#, "record", "Inner");
+    // each shape of a place
+    refused(r#"self.nope = 1;"#, "nope", "Outer");
+    refused(r#"self.rec.p.c = 1;"#, "c", "Pair");
+    refused(r#"self.rec.ps[0].c = 1;"#, "c", "Pair");
+    refused(r#"let mut r = Rec { }; r.q = 1;"#, "q", "Rec");
+    refused(r#"let h = Inner { }; h.repoo = "x";"#, "repoo", "Inner");
+    // a near name is offered
+    let ds = diags(
+        r#"
+        locus Inner { params { repo: String = "."; } }
+        locus Outer { params { j: Inner = Inner { }; } birth() { self.j.rpeo = "x"; } }
+        fn main() { }
+    "#,
+    );
+    assert!(ds.iter().any(|m| m.contains("no field `rpeo` on `Inner` — did you mean `repo`?")), "{ds:?}");
+
+    // the value is held to the field's type down the path
+    let ds = diags(
+        r#"
+        type Pair { a: String = ""; b: Int = 0; }
+        locus Inner { params { repo: String = "."; p: Pair = Pair { }; } }
+        locus Outer { params { j: Inner = Inner { }; } birth() { self.j.p.a = 5; } }
+        fn main() { }
+    "#,
+    );
+    assert!(ds.iter().any(|m| m.contains("target type `String` not assignable from `Int`")), "{ds:?}");
+
+    // every shape, declared, checks clean
+    let ds = diags(
+        r#"
+        type Pair { a: String = ""; b: Int = 0; }
+        type Rec { p: Pair = Pair { }; ps: [Pair; 2] = [Pair { }, Pair { }]; }
+        locus Inner { params { repo: String = "."; rec: Rec = Rec { }; } }
+        locus Outer {
+            params { j: Inner = Inner { }; rec: Rec = Rec { }; n: Int = 0; }
+            birth() {
+                self.n = 1;
+                self.j.repo = "x";
+                self.j.rec.p.a = "y";
+                self.rec.p.b = 2;
+                self.rec.ps[1].a = "z";
+                let mut r = Rec { };
+                r.p.a = "w";
+                r.ps[0].b = 3;
+                let h = Inner { };
+                h.repo = "v";
+            }
+        }
+        fn main() { }
+    "#,
+    );
+    assert!(ds.is_empty(), "{ds:?}");
+}

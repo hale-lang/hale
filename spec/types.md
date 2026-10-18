@@ -1078,6 +1078,15 @@ For `params` / locus state, the implicit rule is that fields
 are mutable through `self.x = ...` (per F.3). The locus's
 state is the locus's mutable bundle.
 
+**An assignment target names declared fields only.** Each field of a
+place's path (`self.x`, `self.j.rec.p.a`, `r.ps[0].b`, `h.repo` through a
+handle) is resolved as a read of it is: a field the record or the
+locus's `params` does not declare is refused at the field with the read
+path's diagnostic ("no field \`record\` on \`Inner\`", with a near name
+when there is one), and the value is held to the field's type. Until
+2026-10-17 such a target checked clean and only the build refused it
+("no field \`record\` on \`self.j\`").
+
 **Reassigning a locus-typed field is a lifecycle transition.**
 A field that holds a child locus (`params { conn: WsClient =
 WsClient { … }; }`) can be whole-value reassigned from a member
