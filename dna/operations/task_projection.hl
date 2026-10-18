@@ -14,7 +14,7 @@ type TaskHistoryEntry { task: String = ""; row: TaskAssignmentRow = TaskAssignme
 @form(vec) locus TaskHistories { capacity { heap rows of TaskHistoryEntry; } }
 
 locus TaskProjection {
-    params { j: dna::Journal; visibility: Queries; entries: TaskEntries = TaskEntries { }; histories: TaskHistories = TaskHistories { }; code: String = "task_source_unavailable"; loaded: Bool = false; }
+    params { j: dna::Journal; visibility: Queries; entries: TaskEntries = TaskEntries { }; histories: TaskHistories = TaskHistories { }; code: String = "task_source_unavailable"; loaded: Bool = false; routed: Bool = false; }
     fn text(body: String, key: String) -> String { let wire = GovernanceCommandCodec { }; return wire.string(body, key); }
     fn visible(id: String) -> Bool { return id == "" || self.visibility.receipt_status(id) == "available"; }
     fn relevant(kind: String) -> Bool { return std::str::starts_with(kind, "task.") || dna::word_in(kind, "decision.reported completion.linked completion.excepted exception.authorized"); }
@@ -113,7 +113,9 @@ locus TaskProjection {
             let e = self.j.read(i); bytes = bytes + len(e.body);
             if bytes > 16777216 || len(e.body) > 262144 { self.code = "task_read_limit"; return false; }
             if e.seq != i || e.digest == "" { self.code = "task_source_invalid"; return false; }
-            if e.kind == "ledger.adopted" { self.code = "task_source_unavailable"; return false; }
+            // a Task's rows are the Ledger's once adopted: a reader of the
+            // record alone cannot see them; one over both (`routed`) can
+            if e.kind == "ledger.adopted" && !self.routed { self.code = "task_source_unavailable"; return false; }
             if self.relevant(e.kind) {
                 relevant = relevant + 1; if relevant > 2048 || len(e.body) > 65536 { self.code = "task_read_limit"; return false; }
                 let error = self.apply(e); if error != "" { self.code = error; return false; }

@@ -3,14 +3,15 @@
 import "../core" as dna;
 interface TaskAuthority {
     fn authorize(context: GovernanceContext, operation: String, recovery: Bool, journal: dna::Journal) -> GovernanceGrant;
-    fn eligible(context: GovernanceContext, name: String, journal: dna::Journal) -> Bool;
-    fn recipients(context: GovernanceContext, journal: dna::Journal) -> String;
+    // `routed`: the journal reads the record and its Ledger as one
+    fn eligible(context: GovernanceContext, name: String, journal: dna::Journal, routed: Bool) -> Bool;
+    fn recipients(context: GovernanceContext, journal: dna::Journal, routed: Bool) -> String;
 }
 locus NoTaskAuthority {
     params { }
     fn authorize(context: GovernanceContext, operation: String, recovery: Bool, journal: dna::Journal) -> GovernanceGrant { return GovernanceGrant { }; }
-    fn eligible(context: GovernanceContext, name: String, journal: dna::Journal) -> Bool { return false; }
-    fn recipients(context: GovernanceContext, journal: dna::Journal) -> String { return "[]"; }
+    fn eligible(context: GovernanceContext, name: String, journal: dna::Journal, routed: Bool) -> Bool { return false; }
+    fn recipients(context: GovernanceContext, journal: dna::Journal, routed: Bool) -> String { return "[]"; }
 }
 type TaskAuthorityPolicy { valid: Bool = false; application_id: String = ""; owner: String = ""; document: String = ""; basis: String = ""; sign: Bool = false; retirement_enabled: Bool = false; }
 locus TaskAuthorityPolicyCodec {
@@ -59,21 +60,21 @@ locus TaskAuthorityPolicyCodec {
         }
         return GovernanceGrant { };
     }
-    fn eligible(context: GovernanceContext, name: String, journal: dna::Journal) -> Bool {
+    fn eligible(context: GovernanceContext, name: String, journal: dna::Journal, routed: Bool) -> Bool {
         let common = GovernanceCommandCodec { }; let syntax = OrganizationJson { };
         if !self.policy.valid || context.application_id != self.policy.application_id || !common.bounded(name, 256, true, false) { return false; }
         let mut found = false; let mut it = std::json::array_first(std::json::find_field_raw(self.policy.document, "members"));
         while !it.done { if syntax.decode(it.element) == name { found = true; } it = std::json::array_next(it); }
-        let visible = Queries { j: journal };
+        let visible = Queries { j: journal, routed: routed };
         if !found || visible.receipt_status(name) != "available" { return false; }
         let mut i = 0; while i < journal.revision() { let e = journal.read(i); if e.kind == "person.retired" && e.entity == name { return false; } i = i + 1; }
         return true;
     }
-    fn recipients(context: GovernanceContext, journal: dna::Journal) -> String {
+    fn recipients(context: GovernanceContext, journal: dna::Journal, routed: Bool) -> String {
         if !self.authorize(context, "dna.task.reassign", false, journal).allowed && !self.authorize(context, "dna.person.retire", false, journal).allowed { return "[]"; }
         let common = GovernanceCommandCodec { }; let syntax = OrganizationJson { }; let b = std::bytes::BytesBuilder { }; b.append_str("["); let mut first = true;
         let mut it = std::json::array_first(std::json::find_field_raw(self.policy.document, "members"));
-        while !it.done { let name = syntax.decode(it.element); if self.eligible(context, name, journal) { if !first { b.append_str(","); } b.append_str(common.quote(name)); first = false; } it = std::json::array_next(it); }
+        while !it.done { let name = syntax.decode(it.element); if self.eligible(context, name, journal, routed) { if !first { b.append_str(","); } b.append_str(common.quote(name)); first = false; } it = std::json::array_next(it); }
         b.append_str("]"); return std::str::from_bytes(b.snapshot() or raise);
     }
 }

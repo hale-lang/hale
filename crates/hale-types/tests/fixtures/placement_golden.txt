@@ -9714,6 +9714,20 @@ dynamic	__lib_dna__operations___task_create_command__TaskCreateCommandCodec	on m
 dynamic	__lib_dna__operations___task_projection__TaskProjection	on main
 shared	dynamic	sites in the stdlib #919aadb4
 
+== dna/api/tests/tasks_ledger_api_test.hl
+row	LedgerTaskReads@main1	LedgerTaskReads	main	default
+row	__lib_dna__core___record__GitRecord@main2	__lib_dna__core___record__GitRecord	main	default
+shared	dynamic	sites in api #ea696d87
+-- dynamic	sites in api/tests
+dynamic	__StdJsonBuilder	on main
+dynamic	__lib_dna__api___commands__CommandWire	on main
+dynamic	__lib_dna__api___main__Api	on main
+dynamic	__lib_dna__core___memory_spine__MemoryLedger	on main
+dynamic	__lib_dna__core___record__GitRecord	on main
+shared	dynamic	sites in core #469fd5e3
+shared	dynamic	sites in operations #4444350e
+shared	dynamic	sites in the stdlib #919aadb4
+
 == dna/api/tests/usage_api_test.hl
 hole	UsageCases@main2.f	reuse `f`
 -- UsageCases@main2	UsageCases
@@ -10236,6 +10250,26 @@ dynamic	__lib_dna__operations___governance_policy__AuthorityPolicyCodec	on main
 dynamic	__lib_dna__operations___governance_policy__FixedAuthority	on main
 dynamic	__lib_dna__operations___task_command__TaskCommandCodec	on main
 dynamic	__lib_dna__operations___task_create_command__TaskCreateCommandCodec	on main
+shared	dynamic	sites in the stdlib #919aadb4
+
+== dna/operations/tests/task_ledger_test.hl
+row	LedgerTaskCases@main1	LedgerTaskCases	main	default
+row	__lib_dna__core___record__GitRecord@main2	__lib_dna__core___record__GitRecord	main	default
+shared	dynamic	sites in core #85471e67
+shared	dynamic	sites in operations #344ad859
+-- dynamic	sites in operations/tests
+dynamic	__StdJsonBuilder	on main
+dynamic	__lib_dna__core___memory_spine__MemoryLedger	on main
+dynamic	__lib_dna__core___record__GitJournal	on main
+dynamic	__lib_dna__core___record__GitRecord	on main
+dynamic	__lib_dna__core___routing__RoutedJournal	on main
+dynamic	__lib_dna__operations___governance_admission__GovernanceCommands	on main
+dynamic	__lib_dna__operations___governance_command__GovernanceCommandCodec	on main
+dynamic	__lib_dna__operations___person_retirement__PersonRetirementCodec	on main
+dynamic	__lib_dna__operations___queries__Queries	on main
+dynamic	__lib_dna__operations___task_policy__FixedTaskAuthority	on main
+dynamic	__lib_dna__operations___task_policy__TaskAuthorityPolicyCodec	on main
+dynamic	__lib_dna__operations___task_projection__TaskProjection	on main
 shared	dynamic	sites in the stdlib #919aadb4
 
 == dna/organization_source/tests/publication_guard_test.hl

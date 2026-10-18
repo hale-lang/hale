@@ -262,11 +262,13 @@ locus GovernanceCommands {
         if !s.ok || s.application_id != context.application_id { return GovernanceCapability { reason: "The Record is unavailable." }; }
         let j = GovernanceJournal { snapshot: s };
         if !j.valid { return GovernanceCapability { reason: "The Record is invalid." }; }
-        if !self.source_supported(j) && !(self.attempt_operation(operation) && attempt_ledger_for(self.record.location()).ready()) { return GovernanceCapability { reason: if self.attempt_operation(operation) { "This application has adopted a Ledger; a leg's commands write it under the head's role (HALE_DNA_MEMORY_DSN_HEAD), which is not named here." } else { "This command head requires Record receipt authority; Ledger adoption needs an owning-service command provider." } }; }
+        let adopted = !self.source_supported(j); let ledger = attempt_ledger_for(self.record.location());
+        if adopted && self.ledger_operation(operation) && !ledger.ready() { return GovernanceCapability { reason: "This application has adopted a Ledger; its commands write it under the head's role (HALE_DNA_MEMORY_DSN_HEAD), which is not named here." }; }
+        if adopted && !self.ledger_operation(operation) { return GovernanceCapability { reason: "This command head requires Record receipt authority; Ledger adoption needs an owning-service command provider." }; }
         let grant = self.authorize(context, operation, false, j);
         if !self.unchanged(s) { return GovernanceCapability { reason: "The Record changed; refresh its capabilities." }; }
         let allowed = self.grant_valid(grant);
-        let recipients = if allowed && (operation == "dna.task.reassign" || operation == "dna.person.retire") { self.task_authority.recipients(context, j) } else { "[]" };
+        let recipients = if allowed && (operation == "dna.task.reassign" || operation == "dna.person.retire") { self.recipients_over(context, j, adopted, ledger) } else { "[]" };
         return GovernanceCapability { available: true, authorized: allowed, recipients: recipients, reason: if allowed { "" } else { "This principal has no explicit application grant for this operation." } };
     }
     fn retirement_read(context: GovernanceContext, person: String) -> PersonAdministrationRead {
@@ -277,14 +279,22 @@ locus GovernanceCommands {
         if !source.ok { return PersonAdministrationRead { code: source.code }; }
         if source.application_id != context.application_id { return PersonAdministrationRead { code: "command_context_changed" }; }
         let journal = GovernanceJournal { snapshot: source };
-        if !journal.valid || !self.source_supported(journal) { return PersonAdministrationRead { code: "commands_unsupported" }; }
+        if !journal.valid { return PersonAdministrationRead { code: "commands_unsupported" }; }
+        if self.source_supported(journal) { return self.retirement_read_over(context, person, source, journal, journal, false); }
+        // adopted: the Tasks are the Ledger's, read with the record's
+        let ledger = attempt_ledger_for(self.record.location());
+        if !ledger.ready() { return PersonAdministrationRead { code: "commands_unsupported" }; }
+        let rj = dna::RoutedJournal { record: journal, ledger: ledger };
+        return self.retirement_read_over(context, person, source, journal, rj, true);
+    }
+    fn retirement_read_over(context: GovernanceContext, person: String, source: GovernanceSnapshot, journal: GovernanceJournal, view: dna::Journal, routed: Bool) -> PersonAdministrationRead {
         let write = self.authorize(context, "dna.person.retire", false, journal);
         let grant = if self.grant_valid(write) { write } else { self.authorize(context, "dna.person.retire", true, journal) };
         if !self.grant_valid(grant) { return PersonAdministrationRead { code: "forbidden" }; }
-        let service = PersonRetirement { }; let plan = service.plan(journal, person, grant.basis);
+        let service = PersonRetirement { }; let plan = service.plan_over(view, person, grant.basis, routed);
         if !plan.ok { return PersonAdministrationRead { code: plan.code }; }
-        let authorized = self.grant_valid(write) && plan.state == "active" && self.task_authority.eligible(context, person, journal);
-        let recipients = if authorized { self.task_authority.recipients(context, journal) } else { "[]" };
+        let authorized = self.grant_valid(write) && plan.state == "active" && self.task_authority.eligible(context, person, view, routed);
+        let recipients = if authorized { self.task_authority.recipients(context, view, routed) } else { "[]" };
         if !self.unchanged(source) { return PersonAdministrationRead { code: "snapshot_changed" }; }
         return PersonAdministrationRead { ok: true, code: "", application_id: source.application_id, head: source.head, revision: source.revision,
             plan: plan, recipients: recipients, authorized: authorized };
@@ -340,24 +350,58 @@ locus GovernanceCommands {
         return person + " does not hold " + seat + ": a leg works only as a position its person holds (the graph's `holds` edges; the record declares no local trust)";
     }
     fn attempt_operation(operation: String) -> Bool { return std::str::starts_with(operation, "dna.attempt.") || operation == "dna.friction.file"; }
+    // A Task command: its rows are the Ledger's once the record adopted one,
+    // and the head writes them there under its role, as a leg's.
+    fn task_operation(operation: String) -> Bool { return operation == "dna.task.create" || operation == "dna.task.reassign" || operation == "dna.person.retire"; }
+    fn ledger_operation(operation: String) -> Bool { return self.attempt_operation(operation) || self.task_operation(operation); }
+    // The merged position of the row whose id is `digest`, -1 for none.
+    fn seq_of(rj: dna::RoutedJournal, digest: String) -> Int {
+        let mut i = rj.revision() - 1;
+        while i >= 0 { if rj.read(i).digest == digest { return i; } i = i - 1; }
+        return -1;
+    }
+    // Who a Task command may name, over the record alone or with its Ledger.
+    fn recipients_over(context: GovernanceContext, j: GovernanceJournal, adopted: Bool, ledger: dna::MemoryLedger) -> String {
+        if !adopted { return self.task_authority.recipients(context, j, false); }
+        let rj = dna::RoutedJournal { record: j, ledger: ledger };
+        return self.task_authority.recipients(context, rj, true);
+    }
     // A leg's command found in the journal the attempt kinds live in — the
     // record, or the record with the adopted ledger (rows the record holds
     // of those kinds are read there, so a row is found once). A record
     // row's author is the record's line; a ledger row's is the ledger's.
     fn find_attempt(s: GovernanceSnapshot, rj: dna::RoutedJournal, ledger: dna::MemoryLedger, context: GovernanceContext, request_id: String) -> GovernanceAdmission {
         let codec = GovernanceCommandCodec { }; let syntax = OrganizationJson { }; let attempts = AttemptCommandCodec { };
+        let create = TaskCreateCommandCodec { }; let task = TaskCommandCodec { }; let person = PersonRetirementCodec { };
         let id = codec.identity(context, request_id); let mut found = GovernanceAdmission { };
         let mut i = 0;
         while i < rj.revision() {
             let e = rj.read(i);
-            if e.kind == "attempt.claimed" || e.kind == "attempt.outcome_requested" || e.kind == "attempt.unresolved" || e.kind == "attempt.released" || e.kind == "attempt.allowance_requested" || e.kind == "friction.filed" {
+            // a Task command's row (GH #1590 prep): the ask, the move or the
+            // retirement, where the adopted record keeps it
+            let mine = std::str::starts_with(e.body, "{") && len(e.body) <= 262144 && syntax.valid(e.body) && codec.string(e.body, "command_id") == id;
+            if mine && e.kind == "intent.requested" {
+                let fact = create.decode_fact(e); let c = fact.command;
+                if found.ok || !fact.valid || c.request_id != request_id || fact.context.application_id != context.application_id || fact.context.principal_mode != context.principal_mode
+                    || fact.context.principal_name != context.principal_name || self.author_at(s, rj, ledger, i) != context.principal_name { return GovernanceAdmission { code: "command_history_invalid" }; }
+                found = GovernanceAdmission { ok: true, code: "", command_id: id, fingerprint: create.fingerprint(context, c), context: context, command: c, sequence: i, event_id: e.digest, native_body: e.body, entity: e.entity, recovered: true };
+            } else if mine && e.kind == "task.reassigned" {
+                let fact = task.decode_fact(e); let c = fact.command;
+                if found.ok || !fact.valid || c.request_id != request_id || fact.context.application_id != context.application_id || fact.context.principal_mode != context.principal_mode
+                    || fact.context.principal_name != context.principal_name || self.author_at(s, rj, ledger, i) != context.principal_name { return GovernanceAdmission { code: "command_history_invalid" }; }
+                found = GovernanceAdmission { ok: true, code: "", command_id: id, fingerprint: task.fingerprint(context, c), context: context, command: c, sequence: i, event_id: e.digest, native_body: e.body, recovered: true };
+            } else if mine && e.kind == "person.retired" {
+                let fact = person.decode_routed_fact(e, rj); let c = fact.command;
+                if found.ok || !fact.valid || c.request_id != request_id || fact.context.application_id != context.application_id || fact.context.principal_mode != context.principal_mode
+                    || fact.context.principal_name != context.principal_name || self.author_at(s, rj, ledger, i) != context.principal_name { return GovernanceAdmission { code: "command_history_invalid" }; }
+                found = GovernanceAdmission { ok: true, code: "", command_id: id, fingerprint: person.fingerprint(context, c), context: context, command: c, sequence: i, event_id: e.digest, native_body: e.body, recovered: true };
+            } else if e.kind == "attempt.claimed" || e.kind == "attempt.outcome_requested" || e.kind == "attempt.unresolved" || e.kind == "attempt.released" || e.kind == "attempt.allowance_requested" || e.kind == "friction.filed" {
                 if len(e.body) > 262144 || !syntax.valid(e.body) { return GovernanceAdmission { code: "command_history_invalid" }; }
                 if codec.string(e.body, "command_id") == id {
                     let fact = attempts.decode_fact(e); let c = fact.command;
-                    let author = if rj.from_ledger(i) { ledger.author_of(rj.index_of(i)) } else { codec.string(dna::line_at(s.text, rj.index_of(i)), "author") };
                     if found.ok || !fact.valid || c.request_id != request_id || fact.context.application_id != context.application_id
                         || fact.context.principal_mode != context.principal_mode || fact.context.principal_name != context.principal_name
-                        || author != context.principal_name { return GovernanceAdmission { code: "command_history_invalid" }; }
+                        || self.author_at(s, rj, ledger, i) != context.principal_name { return GovernanceAdmission { code: "command_history_invalid" }; }
                     found = GovernanceAdmission { ok: true, code: "", command_id: id, fingerprint: attempts.fingerprint(context, c), context: context, command: c, sequence: i, event_id: e.digest, native_body: e.body, entity: e.entity, recovered: true };
                 }
             }
@@ -365,10 +409,38 @@ locus GovernanceCommands {
         }
         return found;
     }
+    // The author of a merged row: the record's line, or the Ledger's.
+    fn author_at(s: GovernanceSnapshot, rj: dna::RoutedJournal, ledger: dna::MemoryLedger, i: Int) -> String {
+        let codec = GovernanceCommandCodec { };
+        return if rj.from_ledger(i) { ledger.author_of(rj.index_of(i)) } else { codec.string(dna::line_at(s.text, rj.index_of(i)), "author") };
+    }
     // What a leg's command reads back, over the journal its rows live in.
     fn result_attempt(s: GovernanceSnapshot, rj: dna::RoutedJournal, admission: GovernanceAdmission) -> GovernanceResult {
         let attempts = AttemptCommandCodec { };
         return GovernanceResult { ok: true, code: "", application_id: s.application_id, head: s.head, revision: s.revision, receipt: attempts.project(rj, admission) };
+    }
+    // What a Task command reads back on an adopted record: over the record
+    // and its Ledger read as one.
+    fn result_routed(s: GovernanceSnapshot, rj: dna::RoutedJournal, admission: GovernanceAdmission) -> GovernanceResult {
+        if admission.command.operation == "dna.task.create" {
+            let create = TaskCreateCommandCodec { };
+            return GovernanceResult { ok: true, code: "", application_id: s.application_id, head: s.head, revision: s.revision, receipt: create.project(rj, admission) };
+        }
+        if admission.command.operation == "dna.person.retire" {
+            let person = PersonRetirementCodec { };
+            if !admission.unknown {
+                let fact = person.decode_routed_fact(rj.read(admission.sequence), rj);
+                if !fact.valid { return GovernanceResult { code: "command_history_invalid" }; }
+                if !person.visible_over(rj, fact, true) { return GovernanceResult { code: "forbidden" }; }
+            }
+            return GovernanceResult { ok: true, code: "", application_id: s.application_id, head: s.head, revision: s.revision, receipt: person.project(admission) };
+        }
+        let receipts = if len(self.record.location()) > 0 { GovernanceReceipts { record: dna::GitRecord { repo: self.record.location() } } } else { receipts_over(self.record) }; let queries = Queries { j: rj, receipts: receipts, routed: true };
+        let view = TaskProjection { j: rj, visibility: queries, routed: true };
+        if !view.load() { return GovernanceResult { code: "command_history_invalid" }; }
+        if view.task_of(admission.command.target_id).id == "" || (admission.event_id != "" && queries.receipt_status(admission.event_id) != "available") { return GovernanceResult { code: "forbidden" }; }
+        let task = TaskCommandCodec { };
+        return GovernanceResult { ok: true, code: "", application_id: s.application_id, head: s.head, revision: s.revision, receipt: task.project(admission) };
     }
     // The head a leg's row is fenced on: the record's for an organism on the
     // record, the ledger's tail once adopted (read now, for the exact
@@ -668,8 +740,11 @@ locus GovernanceCommands {
             // Recovery precedes fresh eligibility: a successful command can
             // still be looked up after its subject moves or a Review settles.
             // A leg's command is found in the journal its kinds live in.
-            let mut found = if attempt_memory && self.attempt_operation(command.operation) { self.find_attempt(s, rj, ledger, context, command.request_id) } else { self.find(s, j, context, command.request_id) };
-            if attempt_memory && !found.ok && found.code == "command_not_found" && !self.attempt_operation(command.operation) { found = self.find_attempt(s, rj, ledger, context, command.request_id); }
+            // A lookup names no operation: on an adopted record the journal
+            // the Ledger's commands live in is asked first, then the record.
+            let ledger_first = attempt_memory && (self.ledger_operation(command.operation) || recovery);
+            let mut found = if ledger_first { self.find_attempt(s, rj, ledger, context, command.request_id) } else { self.find(s, j, context, command.request_id) };
+            if attempt_memory && !found.ok && found.code == "command_not_found" && !self.ledger_operation(command.operation) { found = if ledger_first { self.find(s, j, context, command.request_id) } else { self.find_attempt(s, rj, ledger, context, command.request_id) }; }
             if attempt_memory && found.ok && self.attempt_operation(found.command.operation) && !rj.from_ledger(found.sequence) { found = self.find_attempt(s, rj, ledger, context, command.request_id); }
             let operation = if found.ok { found.command.operation } else if recovery { "" } else { command.operation };
             let source_review = OrganizationReviewCommandCodec { };
@@ -681,6 +756,7 @@ locus GovernanceCommands {
             if found.ok {
                 if !recovery && found.fingerprint != self.fingerprint(context, command) { return GovernanceResult { code: "request_conflict" }; }
                 if self.attempt_operation(found.command.operation) { return self.result_attempt(s, rj, found); }
+                if attempt_memory && self.task_operation(found.command.operation) { return self.result_routed(s, rj, found); }
                 return self.result(s, j, found);
             }
             if found.code != "command_not_found" || recovery { return GovernanceResult { code: found.code }; }
@@ -983,10 +1059,26 @@ locus GovernanceCommands {
                 if appended.error != "stale" { uncertain = true; }
                 continue;
             }
+            if command.operation == "dna.person.retire" && adopted {
+                // the transfers are the Ledger's rows, landed first; the
+                // retirement follows them in the record (`publish_routed`)
+                if !attempt_memory || self.record.identity() != s.application_id { return GovernanceResult { code: "commands_unsupported" }; }
+                if !self.task_authority.eligible(context, command.target_id, rj, true)
+                    || (command.new_assignee != "" && !self.task_authority.eligible(context, command.new_assignee, rj, true)) { return GovernanceResult { code: "forbidden" }; }
+                let service = PersonRetirement { }; let plan = service.plan_over(rj, command.target_id, grant.basis, true);
+                if !plan.ok { return GovernanceResult { code: plan.code }; }
+                if plan.state != "active" || plan.subject_digest != command.subject_digest { return GovernanceResult { code: "stale_subject" }; }
+                if !self.unchanged(s) { continue; }
+                let published = service.publish_routed(self.record, ledger, rj, s, context, command, grant, plan, self.sign);
+                if !published.ok && !published.unknown { return GovernanceResult { code: published.code }; }
+                // once a row may have landed, the exact final fact is recovered
+                uncertain = true;
+                continue;
+            }
             if command.operation == "dna.person.retire" {
                 if !self.source_supported(j) || self.retirement_record.identity() != s.application_id { return GovernanceResult { code: "commands_unsupported" }; }
-                if !self.task_authority.eligible(context, command.target_id, j)
-                    || (command.new_assignee != "" && !self.task_authority.eligible(context, command.new_assignee, j)) { return GovernanceResult { code: "forbidden" }; }
+                if !self.task_authority.eligible(context, command.target_id, j, false)
+                    || (command.new_assignee != "" && !self.task_authority.eligible(context, command.new_assignee, j, false)) { return GovernanceResult { code: "forbidden" }; }
                 let service = PersonRetirement { }; let plan = service.plan(j, command.target_id, grant.basis);
                 if !plan.ok { return GovernanceResult { code: plan.code }; }
                 if plan.state != "active" || plan.subject_digest != command.subject_digest { return GovernanceResult { code: "stale_subject" }; }
@@ -996,6 +1088,26 @@ locus GovernanceCommands {
                 if !published.ok && !published.unknown { return GovernanceResult { code: published.code }; }
                 // Once publication was attempted, recover the exact final fact.
                 // Neither a lost acknowledgment nor a later read failure resubmits.
+                uncertain = true;
+                continue;
+            }
+            if command.operation == "dna.task.create" && adopted {
+                // On an adopted record the ask is the Ledger's: conditioned on
+                // the record head it was prepared against, landed at the
+                // Ledger's tail under the head's role, keyed by the command
+                if !attempt_memory { return GovernanceResult { code: "commands_unsupported" }; }
+                if command.record_head != s.head { return GovernanceResult { code: "stale_subject" }; }
+                let create = TaskCreateCommandCodec { }; let head = self.attempt_row_head(s, ledger, true);
+                let fact = create.fact(context, command, grant, head);
+                let intent = create.intent_id(rj, std::time::monotonic_ns() / 1000000);
+                if fact == "" || intent == "" { return GovernanceResult { code: "invalid_command" }; }
+                if !self.unchanged(s) { continue; }
+                let landed = self.land_attempt_row(s, ledger, true, dna::Row { kind: "intent.requested", entity: intent, author: context.principal_name, body: fact }, id);
+                if landed.ok {
+                    let moved = rj.refresh();
+                    return self.result_routed(s, rj, GovernanceAdmission { ok: true, command_id: id, fingerprint: create.fingerprint(context, command), context: context, command: command, sequence: self.seq_of(rj, landed.id), event_id: landed.id, native_body: fact, entity: intent });
+                }
+                if landed.error == "stale" { continue; }
                 uncertain = true;
                 continue;
             }
@@ -1019,6 +1131,27 @@ locus GovernanceCommands {
                 if appended.error != "stale" { uncertain = true; }
                 continue;
             }
+            if command.operation == "dna.task.reassign" && adopted {
+                // the move is the Ledger's row, as the Task's history is
+                if !attempt_memory { return GovernanceResult { code: "commands_unsupported" }; }
+                let receipts = if len(self.record.location()) > 0 { GovernanceReceipts { record: dna::GitRecord { repo: self.record.location() } } } else { receipts_over(self.record) }; let queries = Queries { j: rj, receipts: receipts, routed: true };
+                let view = TaskProjection { j: rj, visibility: queries, routed: true };
+                if !view.load() { return GovernanceResult { code: "command_history_invalid" }; }
+                let subject = view.task_of(command.target_id);
+                if subject.id == "" || subject.state != "handed" || subject.assignment_digest != command.subject_digest || subject.assignee != command.expected_assignee { return GovernanceResult { code: "stale_subject" }; }
+                if !subject.reassignment_supported { return GovernanceResult { code: "commands_unsupported" }; }
+                if !self.task_authority.eligible(context, subject.assignee, rj, true) || !self.task_authority.eligible(context, command.new_assignee, rj, true) { return GovernanceResult { code: "forbidden" }; }
+                if !self.unchanged(s) { continue; }
+                let task = TaskCommandCodec { }; let head = self.attempt_row_head(s, ledger, true); let fact = task.fact(context, command, grant, head);
+                let landed = self.land_attempt_row(s, ledger, true, dna::Row { kind: "task.reassigned", entity: command.target_id, author: context.principal_name, body: fact }, id);
+                if landed.ok {
+                    let moved = rj.refresh();
+                    return self.result_routed(s, rj, GovernanceAdmission { ok: true, command_id: id, fingerprint: task.fingerprint(context, command), context: context, command: command, sequence: self.seq_of(rj, landed.id), event_id: landed.id, native_body: fact });
+                }
+                if landed.error == "stale" { continue; }
+                uncertain = true;
+                continue;
+            }
             if command.operation == "dna.task.reassign" {
                 if !self.source_supported(j) { return GovernanceResult { code: "commands_unsupported" }; }
                 let receipts = if len(self.record.location()) > 0 { GovernanceReceipts { record: dna::GitRecord { repo: self.record.location() } } } else { receipts_over(self.record) }; let queries = Queries { j: j, receipts: receipts };
@@ -1027,7 +1160,7 @@ locus GovernanceCommands {
                 let subject = view.task_of(command.target_id);
                 if subject.id == "" || subject.state != "handed" || subject.assignment_digest != command.subject_digest || subject.assignee != command.expected_assignee { return GovernanceResult { code: "stale_subject" }; }
                 if !subject.reassignment_supported { return GovernanceResult { code: "commands_unsupported" }; }
-                if !self.task_authority.eligible(context, subject.assignee, j) || !self.task_authority.eligible(context, command.new_assignee, j) { return GovernanceResult { code: "forbidden" }; }
+                if !self.task_authority.eligible(context, subject.assignee, j, false) || !self.task_authority.eligible(context, command.new_assignee, j, false) { return GovernanceResult { code: "forbidden" }; }
                 if !self.unchanged(s) { continue; }
                 let task = TaskCommandCodec { }; let fact = task.fact(context, command, grant, s.head);
                 let row = dna::Row { kind: "task.reassigned", entity: command.target_id, author: context.principal_name, body: fact };
