@@ -1070,8 +1070,10 @@ sync.
   (`bearer_refusal`). A command reaches the head's surface (`HeadCommands`) over its
   `http::Rpc` exposure (GH #1135, #1417; `spec/api.md` § The HTTP
   transport), `POST /call/<member>`, on the port the head's launcher gives it
-  (`HALE_DNA_COMMANDS_PORT`, never derived from the reads' port; none
-  given, none served, and a relayed command is `commands_unavailable`),
+  (`HALE_DNA_COMMANDS_PORT`, never derived from the reads' port) or, none
+  given, the port the system picks, which the API child reports to the head
+  that started it (`HALE_DNA_API_PORTS`); until it has, a relayed command is
+  `commands_unavailable`,
   as a POSTed line of
   the wire under the caller's bearer; no program forwards a line. The
   head's bearer source (`dna/api/bearer.hl`, `OidcBearer`) verifies the
@@ -5738,7 +5740,8 @@ otherwise.
 | `HALE_DNA_NATS_SECRET_APP=<path>` | unset | Handed by a repository body to its compose services alone: the path of the local vault's entry holding the application's nerves password, for the compose file to mount as a secret (ruling 11). |
 | `HALE_DNA_COMPOSE=off` | on | A repository body leaves its compose services to the operator: it neither brings them up nor down, and says `a repository: its compose services are left to the operator (HALE_DNA_COMPOSE=off)` (ruling 11). The DNA suite sets it for every fixture; a fixture about compose opts in with `on`. |
 | `HALE_DNA_NATS_VAULT_REFLEXES=<name>` | unset | The same for the reflexes user; `dna/reflexes` refuses to start without it. |
-| `HALE_DNA_COMMANDS_PORT=<port>` | unset | The loopback port of the API child's HTTP commands transport, given by `dna/face/start.sh` to the head and by the head to its API child; without it the head answers `commands_unavailable` (503). |
+| `HALE_DNA_COMMANDS_PORT=<port>` | unset | The loopback port of the API child's HTTP commands transport, pinned by `dna/face/start.sh` (8795 by default) for the head and by the head for its API child; unset, the child's transport listens where the system puts it and the child reports the port it got (`HALE_DNA_API_PORTS`). |
+| `HALE_DNA_API_PORTS=<file>` | unset | Where an API child writes the ports it serves on once they are bound (`api=<port>` and `commands=<port>` lines, renamed into place): set by the head for its child, which it starts with port 0 for whatever it does not pin, and reads the ports back from there. |
 | `HALE_DNA_NATS_ORG=<token>` | unset | The organization's token, the prefix of its subjects; `dev` hands it to the host and the host to the parts. |
 | `HALE_DNA_SENSES_URL=<url>` | unset | The senses store's read URL, for the reflexes. |
 | `HALE_DNA_SENSES_PORT=<n>` | the seed's per-part port | The port a part serves its scrape endpoint on; `0` serves nothing. |

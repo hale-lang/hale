@@ -5,7 +5,11 @@
 under a state directory — a project registry, a receipt journal, one
 directory per run, the pid files of its children — and reverse-proxies
 every `/api/hale/v1/applications…` request to the attached project's
-API child (`dna/api/practice_review <root> <api-port>`) on the loopback.
+API child (`dna/api/practice_review <root> <api-port>`) on the loopback. An
+`<api-port>` of 0 (the default) is whatever port the child is given: the child
+binds port 0, reports the reads' and commands' ports it got in the head's
+`children/api.ports`, and the head reads them back, so a port is never drawn
+free and lost to a neighbour before the child binds it.
 Every operation is the CLI verb (`$HALE_BIN dna …`) run **detached**
 under `timeout -k 10 <secs> sh -e`; the head re-implements nothing and
 appends nothing to any Record itself.

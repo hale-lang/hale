@@ -6,7 +6,7 @@
 // verb, detached; children outlive the head by design and are
 // re-adopted by the next one over the same state directory.
 //
-//   project_service <port 1..65535> <webroot> <api-binary> [<api-port> = 8793] [<project-root>]
+//   project_service <port 1..65535> <webroot> <api-binary> [<api-port>, 0 = whatever the API child is given] [<project-root>]
 //
 // Build: hale build dna/api/project_service -o <path>
 // Run:   HALE_BIN=/abs/hale <this binary> 8792 dna/face/web <the practice_review binary>
@@ -185,11 +185,12 @@ fn main() {
     let port = http.integer(std::env::arg_or(1, ""), 65535);
     let webroot = std::env::arg_or(2, "");
     let api_binary = std::env::arg_or(3, "");
-    let api_port = if count > 4 { http.integer(std::env::arg_or(4, ""), 65535) } else { 8793 };
+    // 0, or absent: the API child binds port 0 and reports the port it got
+    let api_port = if count > 4 { http.integer(std::env::arg_or(4, ""), 65535) } else { 0 };
     let project_root = std::env::arg_or(5, "");
     let hale = std::env::var("HALE_BIN");
     let executable = dna::run_tool("test\n-x\n" + api_binary).code == 0 && dna::run_tool("test\n-f\n" + api_binary).code == 0;
-    if count < 4 || count > 6 || port < 1 || api_port < 1 || !path_ok(webroot) || !path_ok(api_binary) || (count > 5 && !path_ok(project_root)) || !executable || !std::str::starts_with(hale, "/") {
+    if count < 4 || count > 6 || port < 1 || api_port < 0 || !path_ok(webroot) || !path_ok(api_binary) || (count > 5 && !path_ok(project_root)) || !executable || !std::str::starts_with(hale, "/") {
         eprintln(USAGE);
         std::process::exit(2);
     }

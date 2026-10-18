@@ -32,10 +32,13 @@ const API_READY_STEPS: Int = 150;
 // a copy.
 type HeadConfig {
     port: Int = 8792;
-    api_port: Int = 8793;
+    // the API child's reads port when an operator pins one; 0 = whatever
+    // the child is given: it binds port 0 and reports the port it got
+    // (`api_port_of`), so no port is drawn free and lost before the bind
+    api_port: Int = 0;
     // GH #1135: the API child's api binding serves its HTTP transport
-    // here, as the launcher gives it (`HALE_DNA_COMMANDS_PORT`); 0 =
-    // none, and a command through the head is unavailable
+    // here when the launcher pins it (`HALE_DNA_COMMANDS_PORT`); 0 = the
+    // port the child reports, as for the reads (`commands_port_of`)
     commands_port: Int = 0;
     api_binary: String = "";
     hale: String = "";
@@ -73,6 +76,19 @@ type DetachResult {
 
 fn head_origin(cfg: HeadConfig) -> String { return "http://127.0.0.1:" + to_string(cfg.port); }
 fn children_dir(cfg: HeadConfig) -> String { return cfg.state_dir + "/children"; }
+// Where the API child reports the ports it got (`HALE_DNA_API_PORTS`).
+fn child_ports_file(cfg: HeadConfig) -> String { return children_dir(cfg) + "/api.ports"; }
+// The API child's reads port: the pinned one, else the one the child
+// reported once it listened; 0 before it has.
+fn api_port_of(cfg: HeadConfig) -> Int {
+    if cfg.api_port > 0 { return cfg.api_port; }
+    return api::port_in(child_ports_file(cfg), "api");
+}
+// The API child's commands port, the same way.
+fn commands_port_of(cfg: HeadConfig) -> Int {
+    if cfg.commands_port > 0 { return cfg.commands_port; }
+    return api::port_in(child_ports_file(cfg), "commands");
+}
 
 // What every operation sees: the principal, the active project, the
 // directories — read from the registry now.
@@ -101,10 +117,17 @@ fn common_env(cfg: HeadConfig, root: String, kind: String) -> String {
     // before its assignments)
     let mut out = "-u\nLOTUS_OBS\n" + (if cfg.principal_mode == "local" { "" } else { "-u\nHALE_DNA_TRUSTED_LOCAL\n" });
     if kind != "body" { out = out + "-u\nHALE_DNA_MEMORY_DSN_OWNER\n-u\nHALE_DNA_MEMORY_DSN_SPINE\n"; }
+    // a commands port the head does not pin is the child's to report: an
+    // inherited one would pin it behind the head's back
+    if kind == "api" && cfg.commands_port <= 0 { out = out + "-u\nHALE_DNA_COMMANDS_PORT\n"; }
     out = out + "USER=" + p + "\nLOGNAME=" + p + "\nHALE_BIN=" + cfg.hale + "\nGIT_TERMINAL_PROMPT=0\nGIT_SSH_COMMAND=ssh -o BatchMode=yes -o ConnectTimeout=15\nHALE_DNA_GIT_TIMEOUT=60\nHALE_DNA_DISCOVER=off\n";
     if cfg.principal_mode == "local" { out = out + "HALE_DNA_TRUSTED_LOCAL=1\n"; }
-    // the API child's commands port is the head's to give, never inherited
-    if kind == "api" && cfg.commands_port > 0 { out = out + "HALE_DNA_COMMANDS_PORT=" + to_string(cfg.commands_port) + "\n"; }
+    // the API child's commands port is the head's to give, never inherited;
+    // what the head does not pin, the child reports where the head reads
+    if kind == "api" {
+        out = out + "HALE_DNA_API_PORTS=" + child_ports_file(cfg) + "\n";
+        if cfg.commands_port > 0 { out = out + "HALE_DNA_COMMANDS_PORT=" + to_string(cfg.commands_port) + "\n"; }
+    }
     return out + policy_env(root);
 }
 
@@ -178,11 +201,14 @@ fn child_proof(cfg: HeadConfig) -> String {
 }
 
 // Starts `<api-binary> <root> <api-port>` as `children/api` and waits
-// for its readiness (§2.1): 200 on `/applications` naming `identity`,
-// within 15 s; the child exiting first is a failure with its log tail.
+// for its readiness (§2.1): the port it reports (unless one is pinned),
+// then 200 on `/applications` naming `identity`, within 15 s; the child
+// exiting first is a failure with its log tail.
 fn start_api(cfg: HeadConfig, root: String, identity: String) -> AttachResult {
     let dir = children_dir(cfg);
     std::io::fs::mkdir(dir) or discard;
+    // a report a previous child left names that child's ports
+    std::io::fs::unlink(child_ports_file(cfg)) or discard;
     let argv = cfg.api_binary + "\n" + root + "\n" + to_string(cfg.api_port);
     write_cmd(dir, "api", argv);
     let mut envs = common_env(cfg, root, "api");
@@ -195,7 +221,8 @@ fn start_api(cfg: HeadConfig, root: String, identity: String) -> AttachResult {
     if p.pid <= 0 { return AttachResult { reason: "the API child could not be started" }; }
     let mut step = 0;
     while step < API_READY_STEPS {
-        if api_ready(cfg.api_port, identity, child_proof(cfg)) { return AttachResult { ok: true }; }
+        let port = api_port_of(cfg);
+        if port > 0 && api_ready(port, identity, child_proof(cfg)) { return AttachResult { ok: true }; }
         if !alive(p) {
             let tail = log_tail(dir + "/api.log");
             std::io::fs::unlink(pid_file(cfg, "api")) or discard;
@@ -256,7 +283,7 @@ fn attach_project(cfg: HeadConfig, root_in: String, command_id: String) -> Attac
     let authority_written = write_policies(root, identity, cfg.principal_mode, cfg.principal_name);
     let api = child_view(cfg, "api");
     let mut attached = AttachResult { ok: true };
-    if repinned || !(same && api.alive && api_ready(cfg.api_port, identity, child_proof(cfg))) {
+    if repinned || !(same && api.alive && api_ready(api_port_of(cfg), identity, child_proof(cfg))) {
         stop_child(cfg, "api");
         attached = start_api(cfg, root, identity);
         if !attached.ok { return attached; }
@@ -268,7 +295,7 @@ fn attach_project(cfg: HeadConfig, root_in: String, command_id: String) -> Attac
     b.string_field("application_id", identity);
     b.string_field("root", root);
     b.string_field("name", basename(root));
-    b.int_field("api_port", cfg.api_port);
+    b.int_field("api_port", api_port_of(cfg));
     b.bool_field("authority_written", authority_written);
     b.end_object();
     return AttachResult { ok: true, application_id: identity, root: root, name: basename(root), authority_written: authority_written, outcome: b.result() };
@@ -562,7 +589,7 @@ locus Head {
         if pid <= 0 { return "down"; }
         if pid == self.api_ready_pid { return "ready"; }
         if pid == self.api_failed_pid { return "down"; }
-        if api_ready(self.cfg.api_port, identity, child_proof(self.cfg)) { self.api_ready_pid = pid; return "ready"; }
+        if api_ready(api_port_of(self.cfg), identity, child_proof(self.cfg)) { self.api_ready_pid = pid; return "ready"; }
         return "starting";
     }
 
@@ -580,7 +607,7 @@ locus Head {
             b.string_field("root", ctx.active_root);
             b.string_field("name", ctx.active_name);
             b.begin_object_field("api");
-            b.int_field("port", self.cfg.api_port);
+            b.int_field("port", api_port_of(self.cfg));
             b.string_field("state", if api.alive { self.api_state(api.pid, ctx.active_id) } else { "down" });
             b.int_field("pid", api.pid);
             b.end_object();
@@ -837,12 +864,13 @@ locus Head {
                 if len(guard) > 0 { return self.command_error(guard); }
             }
             // the exposure waits 30 s for a handler; the relay outlasts it
-            if self.cfg.commands_port <= 0 { return self.error(503, "commands_unavailable", "this head gives its API child no commands port (HALE_DNA_COMMANDS_PORT)", false); }
-            let up = api::relay_upstream(req.body, self.cfg.commands_port, if self.cfg.principal_mode == "local" { child_token } else { bearer });
+            let commands = commands_port_of(self.cfg);
+            if commands <= 0 { return self.error(503, "commands_unavailable", "the API child has not reported a commands port", true); }
+            let up = api::relay_upstream(req.body, commands, if self.cfg.principal_mode == "local" { child_token } else { bearer });
             if up.ok { self.api_ready_pid = child.pid; }
             return proxied_response(up);
         }
-        let up = proxy_exchange(req, self.cfg.api_port, head_origin(self.cfg), child_token, bearer);
+        let up = proxy_exchange(req, api_port_of(self.cfg), head_origin(self.cfg), child_token, bearer);
         if up.ok { self.api_ready_pid = child.pid; }
         else if up.code == "connect_failed" || up.code == "no_response" { self.api_failed_pid = child.pid; }
         return proxied_response(up);

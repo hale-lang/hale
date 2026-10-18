@@ -53,12 +53,11 @@ locus LaunchBearer {
     fn refused() -> String { return "not this head's launch token"; }
 }
 
-// The port the head's api binding serves its HTTP transport on, as the
-// launcher gives it (`HALE_DNA_COMMANDS_PORT`) — never derived from the
-// reads' port: a port is chosen where every other port is, by the
-// launcher or a fixture's free-port helper. 0 when it is not given (or
-// is not a port): the head then serves no HTTP transport, and a relayed
-// command is refused as unavailable.
+// The port the head's api binding serves its HTTP transport on, when the
+// launcher pins one (`HALE_DNA_COMMANDS_PORT`) — never derived from the
+// reads' port. 0 when it is not given (or is not a port): the transport
+// then listens where the system puts it, and the process reports the port
+// it got (`reported_port`).
 fn commands_port() -> Int {
     let n = std::str::parse_int(std::env::var("HALE_DNA_COMMANDS_PORT")) or 0;
     if n < 1 || n > 65535 { return 0; }
@@ -190,4 +189,43 @@ fn socket_live(socket: String) -> Bool {
     let ours = std::io::unix::peer_pid(fd) == std::process::pid();
     std::io::tcp::__close_fd(fd);
     return ours;
+}
+
+// Where the launcher wants told the ports this process serves on once
+// they are bound (`HALE_DNA_API_PORTS`): a file of `api=<port>` and
+// `commands=<port>` lines, written whole. A launcher that pins neither
+// port hands the process 0 for both and reads them back here, so no port
+// is drawn free and then lost to a neighbour before the bind. "" when
+// nobody asked.
+fn ports_file() -> String { return std::env::var("HALE_DNA_API_PORTS"); }
+
+// The port `key` (`api`, `commands`) names in the ports file at `file`, 0
+// when it names none (not written yet, or no file).
+fn port_in(file: String, key: String) -> Int {
+    if len(file) == 0 { return 0; }
+    let text = std::io::fs::read_file(file) or "";
+    let mut rest = text;
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let line = if nl < 0 { rest } else { rest[0..nl] };
+        rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
+        if std::str::starts_with(line, key + "=") {
+            let n = std::str::parse_int(line[(len(key) + 1)..len(line)]) or 0;
+            return if n > 0 && n <= 65535 { n } else { 0 };
+        }
+    }
+    return 0;
+}
+
+// The port this process reported serving `key` on, 0 before it has.
+fn reported_port(key: String) -> Int { return port_in(ports_file(), key); }
+
+// Tell the launcher the ports this process got: the file written beside
+// itself and renamed into place, so a reader sees all of it or none.
+fn report_ports(api_port: Int, commands: Int) {
+    let file = ports_file();
+    if len(file) == 0 { return; }
+    let staged = file + ".partial";
+    std::io::fs::write_file(staged, "api=" + to_string(api_port) + "\ncommands=" + to_string(commands) + "\n") or discard;
+    std::io::fs::rename(staged, file) or discard;
 }

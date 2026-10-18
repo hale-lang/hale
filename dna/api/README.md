@@ -422,11 +422,16 @@ only the members it may call.
 **HTTP is the surface's own exposure** (GH #1135, #1417; `bearer.hl`). The
 head serves `http::Rpc` on the port its launcher gives it in
 `HALE_DNA_COMMANDS_PORT` (never derived from the reads' port; unset, the
-exposure listens on a port the system picks and nothing is told, `api.http`
-is `""` and a relayed command answers 503 `commands_unavailable`) and no
-program forwards a call unauthenticated. The project head gives its API child
-the port `start.sh --commands-port` names (8795 by default); a fixture takes
-one from its free-port helper. `POST /call/Commands::claim` takes the payload
+exposure listens on a port the system picks) and no program forwards a call
+unauthenticated. Once the server and the exposure listen, the process prints
+both ports and, when its launcher names a file in `HALE_DNA_API_PORTS`,
+writes them there (`api=<port>`, `commands=<port>`, renamed into place). The
+project head gives its API child the ports `start.sh --api-port` and
+`--commands-port` name (8793 and 8795 by default); a head started without
+them hands the child 0 for both and reads back the ports it got, so no port
+is drawn free and lost to a neighbour before the bind. Until the child has
+reported a commands port, a relayed command answers 503
+`commands_unavailable`. `POST /call/Commands::claim` takes the payload
 as its body under `Authorization: Bearer <token>`, and answers per
 `spec/api.md` § Outcomes: 200 with the `CommandReply`, or a `{"refusal": …}`
 body with the status the kind earns (`unauthenticated` 401, `unauthorized` 403,
@@ -637,7 +642,9 @@ browser talks to. It serves the shell, owns the operator-machine state — a
 project registry, a receipt journal, run and child files under
 `${HALE_DNA_HEAD_STATE:-${XDG_STATE_HOME:-$HOME/.local/state}/hale/dna/head}` —
 and reverse-proxies every `/api/hale/v1/applications…` request to the attached
-project's API child (`practice_review <root> <api-port>`) on the loopback, so
+project's API child (`practice_review <root> <api-port>`; 0, the head's
+default, is whatever port the child is given, which it reports back) on the
+loopback, so
 the browser has one origin and the child's exact-`Origin` guard holds untouched.
 Switching a project replaces the child. The head re-implements no verb: each
 operation runs `$HALE_BIN dna …` (or `git config` for the two forge keys) as a

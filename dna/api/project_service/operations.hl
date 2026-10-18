@@ -387,7 +387,7 @@ fn own_outcome(cfg: HeadConfig, receipt: Receipt, exit_code: Int, log_tail: Stri
             b.string_field("application_id", "");
             b.bool_field("attached", false);
         }
-        b.int_field("api_port", cfg.api_port);
+        b.int_field("api_port", api_port_of(cfg));
     } else if operation == "dna.project.sync" {
         b.string_field("summary", sync_summary(log_tail));
     } else if operation == "dna.project.publish" {
