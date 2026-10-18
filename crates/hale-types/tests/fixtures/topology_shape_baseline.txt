@@ -37,7 +37,7 @@ crates/hale-cli/tests/env_matrix.rs#2 db15bd17f8200c1b
 crates/hale-cli/tests/ffi_export_reentry.rs#2 367067d4491c583a
 crates/hale-cli/tests/fixtures/api_clients/main.hl 9ca59518f8bdb683
 crates/hale-cli/tests/fixtures/api_description/main.hl 2fbe1e2c74394794
-crates/hale-cli/tests/fixtures/api_shapes/main.hl 21dcb177bc45c2c2
+crates/hale-cli/tests/fixtures/api_shapes/main.hl f0535b8f750aaa08
 crates/hale-cli/tests/fixtures/bounded-annotation/app.hl c1c2e181fb34f20c
 crates/hale-cli/tests/fixtures/bounded-annotation/bounded-by.hl 8f5063eb4b200eb0
 crates/hale-cli/tests/fixtures/bounded-annotation/plain.hl c90bc96e9e961826

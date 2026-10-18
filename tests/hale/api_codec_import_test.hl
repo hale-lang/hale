@@ -1,0 +1,19 @@
+// tests/hale/api_codec_import_test.hl — the api codec of an imported type
+// (spec/api.md § Codecs, a program's own use of the codec), called
+// through the import alias: `lib::Item::api_encode(v)` and
+// `lib::Item::api_decode(text)` name the library's declaration, as a
+// construction through an import does, and the library's own
+// `Item::api_encode` is the same codec. A generated client, vendored into
+// a project and imported, is read and written this way.
+import "./api_codec_import_lib" as lib;
+
+fn main() {
+    let i = lib::make(3);
+    std::test::assert_eq_str(lib::Item::api_encode(i), "{\"id\":3,\"name\":\"x\"}", "encoded through the alias");
+    std::test::assert_eq_str(lib::show(i), "{\"id\":3,\"name\":\"x\"}", "the library's own call");
+    let back = lib::Item::api_decode("{\"id\":4,\"name\":\"y\"}") or {
+        std::test::assert(false, "decoded through the alias: " + err.kind + " " + err.field);
+        return;
+    };
+    std::test::assert_eq_int(back.id, 4, "the decoded value");
+}

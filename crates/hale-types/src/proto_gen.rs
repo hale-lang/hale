@@ -547,7 +547,7 @@ fn record(display: &str, schema: &TypeSchema, surface: &str, extra: &mut Extra) 
             f => (f, None),
         };
         let mut p = match f {
-            FieldSchema::Presence { of } => {
+            FieldSchema::Presence { of, .. } => {
                 let mut p = field(key, number, Ty::Scalar(Scalar::Bool), Label::Optional);
                 p.comment = Some(format!("Hale: whether `{of}` is present"));
                 p

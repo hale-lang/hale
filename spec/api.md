@@ -2099,6 +2099,21 @@ keep the last; the codec is as strict as the JSON one). The digest
 folds the key in (`checks:bounded[...]@name`), since the field crosses
 as an object and not a list.
 
+**A program's own use of the codec** (2026-10-17). `T::api_decode(text) -> T
+fallible(JsonError)` and `T::api_encode(value) -> String` call the api
+codec of a record or an enum `T` from any program, served or not: the same
+codec a row of `T` crosses, as strict, with the same refusals
+(`wrong_type`, `missing_field`, `too_long`, ...), a program needing no
+surface to read or write the wire a surface speaks. A program that
+handwrites a REST router over a surface decodes a request body into a
+row's request type and encodes the result with them. An enum decoded whole
+names `payload` as the field it refuses, as a row's whole enum does. `T`
+is a record or an enum the codec carries whole (law 5's classification of
+a row's request); any other type is refused at the call (`` `Blob::api_decode`:
+the api codec carries `Blob` only if it is a record or an enum all of which
+the JSON codec carries ... ``). The codecs are generated once per program,
+shared with its served rows.
+
 Decoding is strict: a value of the wrong JSON kind is `wrong_type`, an
 element of a list and an array that is not well-formed JSON included
 (a payload that is one scalar is that scalar's complete JSON token: `true`
@@ -2362,10 +2377,15 @@ client:
   `Duration` among them; a `Time` is a `Time` in Hale and its RFC 3339 text,
   a `string`, in TypeScript, since a `Date` holds milliseconds; a list is
   the client language's: `bounded[T; N]` or `[T; N]` in Hale, an array in
-  TypeScript, whose bound the server holds; an enum or any shape the JSON codec
-  does not carry is refused, never approximated, and so, for now, is an
-  optional field: a surface whose records hold a presence pair gets no
-  generated client yet), and
+  TypeScript, whose bound the server holds; an optional field is the
+  presence pair in Hale and an optional property (`text?: string`), left
+  out of the object when absent, in TypeScript; an enum is the server's
+  enum in Hale and in TypeScript the union of its variants as the wire
+  writes them (`"Empty" | { Circle: number } | { Rect: [number, number] }`);
+  a wire map is its records in either, `bounded[T; N] indexed_by <key>` in
+  Hale and an array in TypeScript, keyed into the wire's object and back
+  by the client; any shape the JSON codec does not carry is refused, never
+  approximated), and
   one function per member taking the endpoint, the bearer and the request;
 - sends the surface's digest on every call (`digest` in the line over a socket,
   `Hale-Surface-Digest` over HTTP) and names it in a constant, so a program
@@ -2380,7 +2400,18 @@ client:
   was not admitted, and a lost connection when the hub ended it with no closed
   frame.
 
-The **Hale client** is one module (a function `<locus>_<fn>` per member whose
+The **Hale client** declares each record as the server does, so that the
+compiler's api codec (§ Codecs, a program's own use of it) reads and writes it:
+a field named for its JSON key (and tagged `json:"<key>"` where the key is no
+identifier), an optional field and its `has_` flag, each enum the rows
+reach with its variants, a map with its `indexed_by` clause, and a field a
+payload may leave out given its type's zero as its default (an empty record
+where one can be built, an enum's first variant with its values' zeros), so
+a value is built naming only what it means (`T { code: "x" }`). It encodes a
+request with `T::api_encode` and decodes a reply with `T::api_decode`, an
+enum's as a record's, as strictly as the server reads a request: a reply that does
+not decode is `Lost` with the codec's kind and field ("the result did not
+decode: wrong_type: id"). It is one module (a function `<locus>_<fn>` per member whose
 answer is the enum `<Member>Outcome` = `Result(T) | HandlerError(E) |
 Refusal(ApiRefusal) | ServerError | Lost(why)`, and a locus `<Topic>Subscription`
 per stream with `start`, `next`, `next_for`) speaking `unix:PATH`, `http://` and
@@ -2390,7 +2421,11 @@ dependency beyond `fetch` and `WebSocket` (`http://` and `ws://`; a socket is no
 spoken, `fetch` has none): an async function per member answering
 `{kind: "result" | "handler_error" | "refusal" | "server_error"}` and throwing
 `TransportError` for the fifth, and `subscribe<Topic>(opts)`, an async iterable
-of events; the credential rides a hub upgrade as `?access_token=`. The
+of events; the credential rides a hub upgrade as `?access_token=`. Its
+`encode_<T>` and `decode_<T>` per record and enum convert between its types and
+the wire; a map's key is lifted out of each record on the way out and put
+back on the way in (`apiMapEncode`, `apiMapDecode`, which only a client of a
+surface that names a map carries). The
 **JavaScript client** (`--lang js`) is the TypeScript client as one ES module a
 page or `node` loads with no compile step: the same exports by the same names,
 the same wire and outcomes, its types JSDoc (`@typedef` per record and outcome,

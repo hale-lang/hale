@@ -768,7 +768,7 @@ fn main() {{ Desk {{ }}; }}
     let check_schema = TypeSchema { properties: vec![("name".to_string(), string()), ("status".to_string(), string())], required: Vec::new() };
     let value = TypeSchema { properties: vec![("status".to_string(), string())], required: Vec::new() };
     let health_schema = TypeSchema {
-        properties: vec![("checks".to_string(), FieldSchema::Map { name: "Check".to_string(), key: "name".to_string(), value, max: 4 })],
+        properties: vec![("checks".to_string(), FieldSchema::Map { name: "Check".to_string(), key: "name".to_string(), lifted: "name".to_string(), value, max: 4 })],
         required: Vec::new(),
     };
     let file = hale_types::proto_gen::from_model(&ClientModel {

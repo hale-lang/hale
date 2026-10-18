@@ -53,7 +53,7 @@ fn command_reply(value: hc::CommandReply) -> Reply {
     if !value.ok && len(value.receipt.state) == 0 {
         return Reply { status: 400, error: value.code };
     }
-    let body = "{\"data\":" + hc::api_enc_CommandReceipt(value.receipt) + ",\"source\":{\"record_head\":" + hc::api_str(value.head) + ",\"record_id\":" + hc::api_str(value.application_id) + ",\"record_revision\":" + hc::api_str(to_string(value.revision)) + "}}";
+    let body = "{\"data\":" + hc::CommandReceipt::api_encode(value.receipt) + ",\"source\":{\"record_head\":" + hc::api_str(value.head) + ",\"record_id\":" + hc::api_str(value.application_id) + ",\"record_revision\":" + hc::api_str(to_string(value.revision)) + "}}";
     return Reply { ok: true, status: 200, body: body };
 }
 

@@ -12,9 +12,13 @@ use std::collections::BTreeSet;
 use hale_types::surface_doc::{ClientError, ClientMember, ClientModel, ClientStream};
 use hale_types::surfaces::{FieldSchema, TypeSchema};
 
-use super::{camel, json_quote, optional_unsupported, type_ident, unformed};
+use super::{camel, json_quote, type_ident, unformed};
 
 const PREAMBLE: &str = include_str!("ts_preamble.ts");
+
+/// The helpers that lift a wire map's keys out and put them back, carried
+/// only by a client whose surface names a map.
+const MAP_HELPERS: &str = include_str!("ts_map.ts");
 
 pub(super) fn lower_camel(name: &str) -> String {
     let c = camel(name);
@@ -69,8 +73,15 @@ pub(super) fn type_in(f: &FieldSchema, what: &str, jsdoc: bool) -> Result<String
         FieldSchema::Time => Ok("string".to_string()),
         FieldSchema::List { items, .. } if jsdoc => Ok(format!("globalThis.Array<{}>", type_in(items, what, true)?)),
         FieldSchema::List { items, .. } => Ok(format!("__Array<{}>", ts_type(items, what)?)),
-        FieldSchema::Nullable { .. } | FieldSchema::Presence { .. } => Err(optional_unsupported(what)),
-        FieldSchema::Enum { .. } | FieldSchema::Map { .. } | FieldSchema::Unformed => Err(unformed(what)),
+        FieldSchema::Enum { name, .. } => Ok(type_ident(name)),
+        // a map is its records, as the server's declaration holds them (the
+        // object keyed by their key field is the wire's)
+        FieldSchema::Map { name, .. } if jsdoc => Ok(format!("globalThis.Array<{}>", type_ident(name))),
+        FieldSchema::Map { name, .. } => Ok(format!("__Array<{}>", type_ident(name))),
+        // an optional field is its value's type, the property optional
+        FieldSchema::Nullable { inner, .. } => type_in(inner, what, jsdoc),
+        FieldSchema::Presence { .. } => Err(unformed(what)),
+        FieldSchema::Unformed => Err(unformed(what)),
     }
 }
 
@@ -78,14 +89,20 @@ pub(super) fn type_in(f: &FieldSchema, what: &str, jsdoc: bool) -> Result<String
 pub(super) fn encode(f: &FieldSchema, value: &str, what: &str) -> Result<String, String> {
     match f {
         FieldSchema::Scalar { .. } | FieldSchema::Time => Ok(value.to_string()),
-        FieldSchema::Ref(name) => Ok(format!("encode_{}({value})", type_ident(name))),
+        FieldSchema::Ref(name) | FieldSchema::Enum { name, .. } => Ok(format!("encode_{}({value})", type_ident(name))),
+        FieldSchema::Map { name, lifted, .. } => {
+            Ok(format!("apiMapEncode({value}, {}, encode_{})", json_quote(lifted), type_ident(name)))
+        }
         // a list of scalars is itself; a list of records each record's form
         FieldSchema::List { items, .. } => match items.as_ref() {
             FieldSchema::Scalar { .. } | FieldSchema::Time => Ok(value.to_string()),
             i => Ok(format!("({value}).map((e) => {})", encode(i, "e", what)?)),
         },
-        FieldSchema::Nullable { .. } | FieldSchema::Presence { .. } => Err(optional_unsupported(what)),
-        FieldSchema::Enum { .. } | FieldSchema::Map { .. } | FieldSchema::Unformed => Err(unformed(what)),
+        // left out of the object when absent (`JSON.stringify` drops an
+        // `undefined` property), so the server reads it as absent
+        FieldSchema::Nullable { inner, .. } => Ok(format!("({value} == null ? undefined : {})", encode(inner, value, what)?)),
+        FieldSchema::Presence { .. } => Err(unformed(what)),
+        FieldSchema::Unformed => Err(unformed(what)),
     }
 }
 
@@ -102,7 +119,10 @@ pub(super) fn decode_in(f: &FieldSchema, json: &str, what: &str, js: bool) -> Re
             "boolean" => format!("({json} ?? false) === true"),
             _ => format!("String({json} ?? \"\")"),
         }),
-        FieldSchema::Ref(name) => Ok(format!("decode_{}({json})", type_ident(name))),
+        FieldSchema::Ref(name) | FieldSchema::Enum { name, .. } => Ok(format!("decode_{}({json})", type_ident(name))),
+        FieldSchema::Map { name, lifted, .. } => {
+            Ok(format!("apiMapDecode({json}, {}, decode_{})", json_quote(lifted), type_ident(name)))
+        }
         FieldSchema::Time => Ok(format!("String({json} ?? \"\")")),
         FieldSchema::List { items, .. } if js => Ok(format!(
             "(globalThis.Array.isArray({json}) ? /** @type {{unknown[]}} */ ({json}).map((e) => {}) : [])",
@@ -112,29 +132,127 @@ pub(super) fn decode_in(f: &FieldSchema, json: &str, what: &str, js: bool) -> Re
             "(globalThis.Array.isArray({json}) ? ({json} as unknown[]).map((e) => {}) : [])",
             decode(items, "e", what)?
         )),
-        FieldSchema::Nullable { .. } | FieldSchema::Presence { .. } => Err(optional_unsupported(what)),
-        FieldSchema::Enum { .. } | FieldSchema::Map { .. } | FieldSchema::Unformed => Err(unformed(what)),
+        FieldSchema::Nullable { inner, .. } => Ok(format!("({json} == null ? undefined : {})", decode_in(inner, json, what, js)?)),
+        FieldSchema::Presence { .. } => Err(unformed(what)),
+        FieldSchema::Unformed => Err(unformed(what)),
     }
 }
 
 fn struct_decl(name: &str, t: &TypeSchema) -> Result<String, String> {
     let ident = type_ident(name);
     let mut out = format!("export interface {ident} {{\n");
-    for (key, f) in &t.properties {
-        out.push_str(&format!("  {}: {};\n", prop(key), ts_type(f, &format!("{name}.{key}"))?));
+    // an optional field is an optional property; its flag is the property's presence
+    for (key, f) in t.properties.iter().filter(|(_, f)| !matches!(f, FieldSchema::Presence { .. })) {
+        let q = if matches!(f, FieldSchema::Nullable { .. }) { "?" } else { "" };
+        out.push_str(&format!("  {}{q}: {};\n", prop(key), ts_type(f, &format!("{name}.{key}"))?));
     }
     out.push_str("}\n\n");
     out.push_str(&format!("export function encode_{ident}(v: {ident}): unknown {{\n  return {{\n"));
-    for (key, f) in &t.properties {
+    for (key, f) in t.properties.iter().filter(|(_, f)| !matches!(f, FieldSchema::Presence { .. })) {
         out.push_str(&format!("    {}: {},\n", prop(key), encode(f, &access("v", key), &format!("{name}.{key}"))?));
     }
     out.push_str("  };\n}\n\n");
     out.push_str(&format!("export function decode_{ident}(json: unknown): {ident} {{\n"));
     out.push_str("  const o = (json ?? {}) as __Record<string, unknown>;\n  return {\n");
-    for (key, f) in &t.properties {
+    for (key, f) in t.properties.iter().filter(|(_, f)| !matches!(f, FieldSchema::Presence { .. })) {
         out.push_str(&format!("    {}: {},\n", prop(key), decode(f, &format!("o[{}]", json_quote(key)), &format!("{name}.{key}"))?));
     }
     out.push_str("  };\n}\n\n");
+    Ok(out)
+}
+
+/// An enum's type, and its codec's two functions: a payload-free variant is
+/// its name, one with values an object keyed by the variant (one value
+/// itself, several a tuple), as the wire is (spec/api.md § Codecs). In
+/// JavaScript (`js`) the type is a JSDoc typedef and the casts JSDoc ones.
+pub(super) fn enum_decl(name: &str, variants: &super::ClientEnum, js: bool) -> Result<String, String> {
+    let ident = type_ident(name);
+    let mut arms = Vec::new();
+    for (v, values) in variants {
+        let what = format!("{name}::{v}");
+        arms.push(match values.as_slice() {
+            [] => json_quote(v),
+            [one] => format!("{{ {}: {} }}", prop(v), type_in(one, &what, js)?),
+            many => format!(
+                "{{ {}: [{}] }}",
+                prop(v),
+                many.iter().map(|f| type_in(f, &what, js)).collect::<Result<Vec<_>, _>>()?.join(", ")
+            ),
+        });
+    }
+    let union = arms.join(" | ");
+    let cast = |ty: &str, e: &str| {
+        let simple = e.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
+        match (js, simple) {
+            (true, _) => format!("/** @type {{{ty}}} */ ({e})"),
+            (false, true) => format!("({e} as {ty})"),
+            (false, false) => format!("(({e}) as {ty})"),
+        }
+    };
+    let mut out = if js {
+        format!("/** @typedef {{{union}}} {ident} */
+
+/**
+ * @param {{{ident}}} v
+ * @returns {{unknown}}
+ */
+export function encode_{ident}(v) {{
+")
+    } else {
+        format!("export type {ident} = {union};
+
+export function encode_{ident}(v: {ident}): unknown {{
+")
+    };
+    let payloads = variants.iter().any(|(_, values)| !values.is_empty());
+    if payloads {
+        out.push_str("  if (typeof v === \"string\") return v;\n");
+    }
+    for (v, values) in variants.iter().filter(|(_, values)| !values.is_empty()) {
+        let what = format!("{name}::{v}");
+        let at = access("v", v);
+        let value = match values.as_slice() {
+            [one] => encode(one, &at, &what)?,
+            many => format!(
+                "[{}]",
+                many.iter().enumerate().map(|(i, f)| encode(f, &format!("{at}[{i}]"), &what)).collect::<Result<Vec<_>, _>>()?.join(", ")
+            ),
+        };
+        out.push_str(&format!("  if ({} in v) return {{ {}: {value} }};\n", json_quote(v), prop(v)));
+    }
+    out.push_str("  return v;\n}\n\n");
+    out.push_str(&if js {
+        format!("/**\n * @param {{unknown}} json\n * @returns {{{ident}}}\n */\nexport function decode_{ident}(json) {{\n")
+    } else {
+        format!("export function decode_{ident}(json: unknown): {ident} {{\n")
+    });
+    if payloads {
+        out.push_str(&format!("  if (typeof json === \"string\") return {};\n", cast(&ident, "json")));
+        out.push_str(&format!(
+            "  const o = {};\n",
+            cast(if js { "globalThis.Record<string, unknown>" } else { "__Record<string, unknown>" }, "json ?? {}")
+        ));
+    }
+    for (v, values) in variants.iter().filter(|(_, values)| !values.is_empty()) {
+        let what = format!("{name}::{v}");
+        let at = format!("o[{}]", json_quote(v));
+        let value = match values.as_slice() {
+            [one] => decode_in(one, &at, &what, js)?,
+            many => {
+                let a = format!("(globalThis.Array.isArray({at}) ? {} : [])", cast("unknown[]", &at));
+                format!(
+                    "[{}]",
+                    many.iter()
+                        .enumerate()
+                        .map(|(i, f)| decode_in(f, &format!("{a}[{i}]"), &what, js))
+                        .collect::<Result<Vec<_>, _>>()?
+                        .join(", ")
+                )
+            }
+        };
+        out.push_str(&format!("  if ({} in o) return {{ {}: {value} }};\n", json_quote(v), prop(v)));
+    }
+    out.push_str(&format!("  return {};\n}}\n\n", cast(&ident, "json")));
     Ok(out)
 }
 
@@ -207,7 +325,7 @@ pub fn generate(model: &ClientModel) -> Result<String, String> {
     };
     for name in [
         "SURFACE", "SURFACE_DIGEST", "ClientOptions", "StreamOptions", "Refusal", "TransportError", "Outcome", "describe",
-        "StreamEvent", "Subscription", "apiCall", "apiRefusal", "apiSubscribe", "__Record", "__Promise", "__Array", "__AsyncIterable",
+        "StreamEvent", "Subscription", "apiCall", "apiRefusal", "apiSubscribe", "apiMapEncode", "apiMapDecode", "__Record", "__Promise", "__Array", "__AsyncIterable",
         "__AsyncGenerator", "__Response", "__MessageEvent",
     ] {
         claim(name.to_string())?;
@@ -230,6 +348,16 @@ pub fn generate(model: &ClientModel) -> Result<String, String> {
     );
     out.push_str(PREAMBLE);
     out.push('\n');
+    if super::model_has_map(model) {
+        out.push_str(MAP_HELPERS);
+        out.push('\n');
+    }
+    for (name, variants) in &super::model_enums(model) {
+        claim(type_ident(name))?;
+        claim(format!("encode_{}", type_ident(name)))?;
+        claim(format!("decode_{}", type_ident(name)))?;
+        out.push_str(&enum_decl(name, variants, false)?);
+    }
     for (name, t) in &model.types {
         claim(type_ident(name))?;
         claim(format!("encode_{}", type_ident(name)))?;

@@ -491,7 +491,7 @@ row	Shop@literal1.staff	__StdApiStaticRoles	main	default
 shared	Shop@literal1.__rpc_u_1	__StdApiUnixListener #e8cfe0e1
 shared	dynamic	sites in the seed #09510ed0
 
-== crates/hale-cli/tests/fixtures/api_shapes/main.hl#c4706c77
+== crates/hale-cli/tests/fixtures/api_shapes/main.hl#70438654
 root	Desk	the entry
 domain	pool:__api_http	async_io
 row	Desk@literal1	Desk	main	default
@@ -7777,6 +7777,9 @@ dynamic	__StdIoTcpStream	on main|pool:__api_http|pool:__api_unix
 shared	Api@main2	Api #a23e2495
 shared	Proc@main1	Proc #b18b3dc0
 shared	dynamic	sites in the seed #8c882889
+
+== tests/hale/api_codec_call_test.hl
+row	Shelf@main1	Shelf	main	default
 
 == tests/hale/api_context_test.hl
 shared	Api@main2	Api #a23e2495

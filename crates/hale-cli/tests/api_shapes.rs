@@ -4,7 +4,7 @@
 //!
 //! The fixture under `fixtures/api_shapes/` serves `Shelves`, whose records
 //! hold lists (`bounded[Book; 3]`, `bounded[Int; 4]`, `[Int; 2]`), an instant
-//! and a `Duration`. It is built
+//! and a `Duration`, optional fields, enums and wire maps. It is built
 //! once per process and run by each test that drives it; its listener binds
 //! port 0 and the test reads back the port it was given.
 
@@ -108,6 +108,10 @@ fn a_list_is_described_as_an_array_with_its_bound() {
     let proto = std::fs::read_to_string(dir.join("Shelves.proto")).unwrap();
     assert!(proto.contains("repeated Book books = 1; // Hale: at most 3"), "{proto}");
     assert!(proto.contains("repeated int64 at = 1; // Hale: exactly 2"), "{proto}");
+    // an optional map: the map's schema or null; its flag a field of its own
+    let map = json!({"type": "object", "additionalProperties": {"type": "object", "properties": {"status": {"type": "string"}}, "required": ["status"]}, "maxProperties": 2, "x-hale-key": "name"});
+    assert_eq!(doc["schemas"]["Board"]["properties"]["extra"], json!({"anyOf": [map, {"type": "null"}]}));
+    assert!(proto.contains("map<string, Check> extra = 5;") && proto.contains("optional bool has_extra = 6;"), "{proto}");
     let _ = std::fs::remove_dir_all(&dir);
     let r = run(&["api", "describe", &s.endpoint]);
     assert_eq!(r.code, 0, "{}", r.stderr);
@@ -169,30 +173,59 @@ fn main() {
     push(s.books, Book { id: 7, title: "Kim" }) or discard;
     push(s.books, Book { id: 8, title: "Emma" }) or discard;
     match library_put(ep, "t-reader", s) {
-        LibraryPutOutcome::Result(v) -> { println(api_enc_Shelf(v)); },
+        LibraryPutOutcome::Result(v) -> { println(Shelf::api_encode(v)); },
         _ -> { println("put: another outcome"); },
     }
     let mut f = Find { };
     push(f.ids, 8) or discard;
     match library_find(ep, "t-reader", f) {
-        LibraryFindOutcome::Result(v) -> { println(to_string(count(v.books)) + " " + api_enc_Shelf(v)); },
+        LibraryFindOutcome::Result(v) -> { println(to_string(count(v.books)) + " " + Shelf::api_encode(v)); },
         _ -> { println("find: another outcome"); },
     }
     match library_corner(ep, "t-reader", Corner { at: [5, -6] }) {
-        LibraryCornerOutcome::Result(v) -> { println(api_enc_Corner(v)); },
+        LibraryCornerOutcome::Result(v) -> { println(Corner::api_encode(v)); },
         _ -> { println("corner: another outcome"); },
     }
     match library_stamp(ep, "t-reader", Stamp { at: `2026-10-12T03:04:05.5Z`, every: 250 }) {
         LibraryStampOutcome::Result(v) -> { println(std::time::iso8601(v.at) + " " + to_string(v.every)); },
         _ -> { println("stamp: another outcome"); },
     }
+    let mut n = Note { };
+    push(n.tags, "a") or discard;
+    n.has_tags = true;
+    match library_note(ep, "t-reader", n) {
+        LibraryNoteOutcome::Result(v) -> { println(Note::api_encode(v)); },
+        _ -> { println("note: another outcome"); },
+    }
+    match library_note(ep, "t-reader", Note { text: "kept", has_text: true }) {
+        LibraryNoteOutcome::Result(v) -> { println(Note::api_encode(v) + " " + (if v.has_tags { "tags" } else { "no tags" })); },
+        _ -> { println("note: another outcome"); },
+    }
+    let mut b = Board { mood: Mood::Busy, shape: Shape::Rect(4, 5) };
+    push(b.moods, Mood::Calm) or discard;
+    push(b.checks, Check { name: "db", status: "up" }) or discard;
+    push(b.checks, Check { name: "cache", status: "down" }) or discard;
+    match library_board(ep, "t-reader", b) {
+        LibraryBoardOutcome::Result(v) -> { println(Board::api_encode(v) + " " + to_string(count(v.checks))); },
+        _ -> { println("board: another outcome"); },
+    }
+    let mut spare = Board { mood: Mood::Calm, shape: Shape::Boxed(Book { id: 3, title: "Kim" }), has_extra: true };
+    push(spare.extra, Check { name: "x", status: "ok" }) or discard;
+    match library_board(ep, "t-reader", spare) {
+        LibraryBoardOutcome::Result(v) -> { println(Board::api_encode(v)); },
+        _ -> { println("board: another outcome"); },
+    }
+    match library_flip(ep, "t-reader", Mood::Busy) {
+        LibraryFlipOutcome::Result(v) -> { println(Shape::api_encode(v)); },
+        _ -> { println("flip: another outcome"); },
+    }
 }
 "#;
 
-/// The generated clients type a list and an instant: the Hale client checks
-/// (`hale api client` refuses one that does not) and carries both, both ways,
-/// against the served fixture, and the TypeScript one compiles under `tsc
-/// --strict` where a compiler is installed.
+/// The generated clients type a list, an instant, an optional field, an enum
+/// and a wire map: the Hale client checks (`hale api client` refuses one that
+/// does not) and carries each, both ways, against the served fixture, and the
+/// TypeScript one compiles under `tsc --strict` where a compiler is installed.
 #[test]
 fn the_generated_clients_carry_a_list_and_an_instant() {
     let dir = unique_dir("clients");
@@ -213,7 +246,12 @@ fn the_generated_clients_carry_a_list_and_an_instant() {
         "{\"books\":[{\"id\":7,\"title\":\"Kim\"},{\"id\":8,\"title\":\"Emma\"}],\"label\":\"back\"}\n\
          1 {\"books\":[{\"id\":8,\"title\":\"Emma\"}],\"label\":\"found\"}\n\
          {\"at\":[5,-6]}\n\
-         2026-10-12T03:04:05.50000025Z 500\n",
+         2026-10-12T03:04:05.50000025Z 500\n\
+         {\"text\":\"none\",\"tags\":[\"a\"]}\n\
+         {\"text\":\"kept\"} no tags\n\
+         {\"mood\":\"Busy\",\"shape\":{\"Rect\":[4,5]},\"moods\":[\"Calm\"],\"checks\":{\"db\":{\"status\":\"up\"},\"cache\":{\"status\":\"down\"}},\"extra\":{}} 2\n\
+         {\"mood\":\"Calm\",\"shape\":{\"Boxed\":{\"id\":3,\"title\":\"Kim\"}},\"moods\":[],\"checks\":{},\"extra\":{\"x\":{\"status\":\"ok\"}}}\n\
+         {\"Rect\":[2,-3]}\n",
         "{}",
         String::from_utf8_lossy(&r.stderr)
     );
@@ -223,6 +261,13 @@ fn the_generated_clients_carry_a_list_and_an_instant() {
     let text = std::fs::read_to_string(&ts).unwrap();
     assert!(text.contains("books: __Array<Book>;") && text.contains("at: __Array<number>;"), "{text}");
     assert!(text.contains("export interface Stamp {\n  at: string;\n  every: number;\n}"), "an instant is its text: {text}");
+    assert!(text.contains("export interface Note {\n  text?: string;\n  tags?: __Array<string>;\n}"), "an optional field is an optional property: {text}");
+    assert!(
+        text.contains("export type Shape = \"Empty\" | { Circle: number } | { Rect: [number, number] } | { Boxed: Book } | { Feel: Mood };"),
+        "an enum is the union of its variants: {text}"
+    );
+    assert!(text.contains("export type Mood = \"Calm\" | \"Busy\";"), "{text}");
+    assert!(text.contains("  checks: __Array<Check>;\n  extra?: __Array<Check>;\n"), "a map is its records: {text}");
     let tsc = std::env::var("TSC").unwrap_or_else(|_| "tsc".to_string());
     if Command::new(&tsc).arg("--version").output().is_ok_and(|o| o.status.success()) {
         let c = Command::new(&tsc).args(["--strict", "--target", "es2022", "--lib", "es2022,dom", "--noEmit"]).arg(&ts).output().expect("tsc");
@@ -240,11 +285,18 @@ out.push(await c.libraryFind(opts, { ids: [8] }));
 out.push(await c.libraryCorner(opts, { at: [5, -6] }));
 out.push(await c.libraryStamp(opts, { at: "2026-10-12T03:04:05.5Z", every: 250 }));
 out.push(await c.libraryFind(opts, { ids: [1, 2, 3, 4, 5] }));
+out.push(await c.libraryNote(opts, {}));
+out.push(await c.libraryNote(opts, { text: "kept", tags: [] }));
+out.push(await c.libraryBoard(opts, { mood: "Busy", shape: { Rect: [4, 5] }, moods: ["Calm"], checks: [{ name: "db", status: "up" }, { name: "cache", status: "down" }], extra: [{ name: "x", status: "ok" }] }));
+out.push(await c.libraryBoard(opts, { mood: "Calm", shape: "Empty", moods: [], checks: [] }));
+out.push(await c.libraryFlip(opts, "Calm"));
+out.push(await c.libraryFlip(opts, "Busy"));
 for (const o of out) console.log(JSON.stringify(o));
 "#;
 
 /// The JavaScript client (`--lang js`) checks under `tsc --checkJs --strict`
-/// where a compiler is installed, carries a list and an instant against the
+/// where a compiler is installed, carries a list, an instant, an enum and a
+/// wire map (its records, keyed on the wire) against the
 /// served fixture on node's `fetch`, and a list over its bound comes back the
 /// server's refusal. It needs `node`; without it the test says so and
 /// passes, unless `HALE_REQUIRE_TS_CLIENT=1` (the face-browser job's
@@ -282,21 +334,60 @@ fn the_javascript_client_carries_a_list_and_an_instant() {
             json!({"kind": "result", "value": {"at": [5, -6]}}),
             json!({"kind": "result", "value": {"at": "2026-10-12T03:04:05.50000025Z", "every": 500}}),
             json!({"kind": "refusal", "refusal": {"kind": "malformed", "reason": "too_long: ids", "requires": []}}),
+            json!({"kind": "result", "value": {"text": "none"}}),
+            json!({"kind": "result", "value": {"text": "kept", "tags": []}}),
+            json!({"kind": "result", "value": {
+                "mood": "Busy", "shape": {"Rect": [4, 5]}, "moods": ["Calm"],
+                "checks": [{"name": "db", "status": "up"}, {"name": "cache", "status": "down"}],
+                "extra": [{"name": "x", "status": "ok"}]
+            }}),
+            json!({"kind": "result", "value": {"mood": "Calm", "shape": "Empty", "moods": [], "checks": [], "extra": []}}),
+            json!({"kind": "result", "value": "Empty"}),
+            json!({"kind": "result", "value": {"Rect": [2, -3]}}),
         ]
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// An optional field (a presence pair, spec/api.md § Codecs) is carried by
-/// the served codecs and the description, and the generated clients refuse
-/// it by name rather than approximate it, in every language.
+/// The Hale client pairs a presence flag with its field by declaration and
+/// names both through one allocator: a flag renamed on the wire (`json:
+/// "present"`) still pairs, so an empty value encodes as `{}`; and a flag's
+/// derived name (`has_type_` for the key `type`) is reserved before an
+/// ordinary field that would take it, which is renamed and tagged instead.
 #[test]
-fn the_generated_clients_refuse_an_optional_field_by_name() {
-    let program = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/hale/api/pb_optional_test.hl");
-    let program = program.to_str().expect("utf-8 path");
-    for lang in ["hale", "ts", "js"] {
-        let o = run(&["api", "client", "--surface", "PbOptional", "--lang", lang, program]);
-        assert_ne!(o.code, 0, "{lang}: a client was generated:\n{}", o.stdout);
-        assert!(o.stderr.contains("an optional field") && o.stderr.contains("presence pair"), "{lang}: {}", o.stderr);
-    }
+fn the_hale_client_pairs_a_flag_by_its_declaration() {
+    let dir = unique_dir("flags");
+    let src = dir.join("flags.hl");
+    std::fs::write(
+        &src,
+        "type Tagged { data: String `json:\"type\"`; has_data: Bool; has_type_: Int; }\n\
+         type Renamed { data: String; has_data: Bool `json:\"present\"`; }\n\
+         locus L {\n    fn tagged(t: Tagged) -> Tagged { return t; }\n    fn renamed(r: Renamed) -> Renamed { return r; }\n}\n\
+         api Flags { rpc L::tagged; rpc L::renamed; }\n\
+         locus Nobody { fn holds(p: std::api::Principal, r: String) -> Bool { return false; } }\n\
+         main locus App {\n    params {\n        l: L = L { };\n        h: api::Exposure = api::serve(Flags, unix::Rpc { path: \"/tmp/hale-flags.sock\", roles: Nobody { } }, as: \"flags\", receivers: { L: self.l }, bound: 4, on_full: refuse);\n    }\n    run() { }\n}\n\
+         fn main() { App { }; }\n",
+    )
+    .unwrap();
+    let hl = dir.join("client.hl");
+    let o = hale().args(["api", "client", "--surface", "Flags", "--lang", "hale", "--out"]).arg(&hl).arg(&src).output().expect("hale client");
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let text = std::fs::read_to_string(&hl).unwrap();
+    assert!(text.contains("type Renamed {\n    data: String = \"\";\n    has_data: Bool = false;\n}"), "the renamed flag pairs: {text}");
+    assert!(text.contains("type_: String = \"\" `json:\"type\"`;") && text.contains("has_type_: Bool = false;"), "the tagged field and its flag: {text}");
+    assert!(text.contains("has_type__2: Int `json:\"has_type_\"`;"), "the ordinary field gives way: {text}");
+    let caller = dir.join("caller.hl");
+    std::fs::write(
+        &caller,
+        text + "\nfn main() {\n    println(Renamed::api_encode(Renamed { }));\n    println(Renamed::api_encode(Renamed { data: \"x\", has_data: true }));\n    println(Tagged::api_encode(Tagged { type_: \"y\", has_type_: true, has_type__2: 3 }));\n}\n",
+    )
+    .unwrap();
+    let r = hale().arg("run").arg(&caller).output().expect("run the caller");
+    assert_eq!(
+        String::from_utf8_lossy(&r.stdout),
+        "{}\n{\"data\":\"x\"}\n{\"type\":\"y\",\"has_type_\":3}\n",
+        "{}",
+        String::from_utf8_lossy(&r.stderr)
+    );
+    let _ = std::fs::remove_dir_all(&dir);
 }

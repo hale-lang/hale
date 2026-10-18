@@ -806,6 +806,53 @@ pub fn item_names_tcp_serve(item: &TopDecl) -> bool {
     item_spells(item, &names_tcp_serve)
 }
 
+/// The api codec a program calls itself (spec/api.md § Codecs): for each
+/// `T::api_decode(text)` / `T::api_encode(value)` whose `T` is a record or
+/// an enum the JSON codec carries (law 5's classification, as for a row's
+/// whole request), the codecs of `T` and what it reaches, into the first program
+/// that asks, and the calls rewritten to them. A call of a type the codec
+/// does not carry is left as written; the checker refuses it.
+fn expose_api_codecs(programs: &mut [&mut Program], renames: &[(Vec<String>, String)]) {
+    hale_syntax::json_gen::canonicalize_api_codec_paths(programs, renames);
+    let targets = hale_syntax::json_gen::api_codec_targets(programs);
+    if targets.is_empty() {
+        return;
+    }
+    let mut names = BTreeSet::new();
+    let mut builtins = BTreeMap::new();
+    let mut carried: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut enums: std::collections::HashSet<String> = std::collections::HashSet::new();
+    {
+        let ro: Vec<&Program> = programs.iter().map(|p| &**p).collect();
+        let slices: Vec<&[TopDecl]> = ro.iter().map(|p| p.items.as_slice()).collect();
+        let shapes = Shapes::of_all(&slices);
+        for (_, t) in &targets {
+            let te = TypeExpr::Named {
+                path: hale_syntax::ast::QualifiedName { segments: vec![Ident::new(t.clone(), Span::new(0, 0))], span: Span::new(0, 0) },
+                generic_args: Vec::new(),
+                span: Span::new(0, 0),
+            };
+            let class = shapes.classify(&te);
+            let enum_ = matches!(class, TypeClass::Enum { .. });
+            let record = enum_ || matches!(class, TypeClass::Struct { .. } | TypeClass::Builtin(_));
+            if record && crate::surfaces::codec_refusal(&shapes, &te).is_none() {
+                struct_closure(&shapes, &te, &mut names, &mut builtins);
+                carried.insert(t.clone());
+                if enum_ {
+                    enums.insert(t.clone());
+                }
+            }
+        }
+    }
+    if carried.is_empty() {
+        return;
+    }
+    let names: Vec<String> = names.into_iter().collect();
+    let builtins: Vec<(String, Vec<(String, hale_syntax::ast::PrimType)>)> = builtins.into_iter().collect();
+    hale_syntax::json_gen::generate_rpc_codecs(programs, targets[0].0, &names, &builtins);
+    hale_syntax::json_gen::rewrite_api_codec_calls(programs, &carried, &enums);
+}
+
 /// Where the substrate parses: the last window of the runtime's space.
 pub const TCP_SERVE_BASE: u32 = RUNTIME_BASE + 0x00F0_0000;
 
@@ -1031,6 +1078,7 @@ pub fn expand(
 ) -> Vec<Expansion> {
     resolve_imported_surfaces(programs, renames);
     type_exposure_params(programs);
+    expose_api_codecs(programs, renames);
     if mentions_tcp_serve(programs) {
         inject_tcp_serve(programs);
     }

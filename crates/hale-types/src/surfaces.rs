@@ -1115,6 +1115,13 @@ fn did_you_mean<'a>(name: &str, candidates: impl IntoIterator<Item = &'a str>) -
 /// field, `bounded[T; N]` or `[T; N]` of any of those): the
 /// field path from the row's type to what the codec does not carry,
 /// and that type as written. `None` when every field has a form.
+/// Where `te` keeps the JSON codec from carrying it (law 5's
+/// classification): the path to the field it cannot and that field's type,
+/// or `None` when the codec carries all of it.
+pub fn codec_refusal(shapes: &Shapes<'_>, te: &TypeExpr) -> Option<(Vec<String>, String)> {
+    json_refusal(shapes, te, &mut Vec::new(), &mut BTreeSet::new())
+}
+
 fn json_refusal(
     shapes: &Shapes<'_>,
     te: &TypeExpr,
@@ -2159,8 +2166,9 @@ pub enum FieldSchema {
     Nullable { inner: Box<FieldSchema>, flag: String },
     /// The presence flag of the optional field `of`: no JSON key (a JSON
     /// document leaves it out of a record's properties), a `bool` field as
-    /// protobuf carries it.
-    Presence { of: String },
+    /// protobuf carries it. `flag` is the flag's own declared name, which an
+    /// optional field's `Nullable::flag` names (its JSON key may differ).
+    Presence { of: String, flag: String },
     /// An enum (spec/api.md § Codecs), inline where it is used: `name` its
     /// declared name, and each variant with the schemas of its values (none
     /// for a payload-free variant). A payload-free enum is `{"type":
@@ -2170,8 +2178,9 @@ pub enum FieldSchema {
     /// A wire map (`bounded[T; N] indexed_by <key>`, spec/api.md § Codecs):
     /// `{"type": "object", "additionalProperties": <value>, "maxProperties":
     /// N, "x-hale-key": "<key>"}`, the value the record `name`'s schema
-    /// without its key (lifted out of each value, the object's key).
-    Map { name: String, key: String, value: TypeSchema, max: u64 },
+    /// without its key (lifted out of each value, the object's key): `key`
+    /// the record's field, `lifted` its JSON key (its `json:` tag, or its name).
+    Map { name: String, key: String, lifted: String, value: TypeSchema, max: u64 },
     /// A type the codec does not carry (law 5 refuses its row).
     Unformed,
 }
@@ -2266,7 +2275,7 @@ impl<'a> Schemas<'a> {
                             .unwrap_or_else(|| f.name.name.clone());
                         let name = f.name.name.as_str();
                         if let Some((of, _)) = pairs.iter().find(|(_, flag)| *flag == name) {
-                            properties.push((key, FieldSchema::Presence { of: of.to_string() }));
+                            properties.push((key, FieldSchema::Presence { of: of.to_string(), flag: name.to_string() }));
                             continue;
                         }
                         // a wire map: the element's schema without its key
@@ -2285,7 +2294,7 @@ impl<'a> Schemas<'a> {
                                 let mut value = out.get(&elem_name).cloned().unwrap_or(TypeSchema { properties: Vec::new(), required: Vec::new() });
                                 value.properties.retain(|(p, _)| *p != lifted);
                                 value.required.retain(|r| *r != lifted);
-                                map = Some(FieldSchema::Map { name: elem_name, key: k.name.clone(), value, max });
+                                map = Some(FieldSchema::Map { name: elem_name, key: k.name.clone(), lifted, value, max });
                             }
                         }
                         // an optional field (a map among them) is its value's

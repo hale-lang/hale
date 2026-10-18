@@ -242,6 +242,24 @@ values is refused `malformed` with `wrong_type`, naming the field. The
 description lists the variants; the `.proto` makes an enum with no
 values a proto3 `enum` and one with values a message with a `oneof`.
 
+### Calling the codec yourself
+
+The codec a surface speaks is yours to call, served or not. A program that
+reads a request body itself, a hand-written router over a surface say,
+decodes it into the row's request type and encodes the answer the same way:
+
+```hale,fragment
+let order = PlaceOrder::api_decode(body) or {
+    return std::http::Response { status: 400, body: err.kind + ": " + err.field };
+};
+let reply = PlaceReply::api_encode(desk.place(order));
+```
+
+`T::api_decode` is as strict as a served row: the same `wrong_type`,
+`missing_field` and `too_long` refusals, with the field named (`payload`
+for an enum read whole). `T` is a record or an enum the codec carries
+whole; anything else is refused where you call it.
+
 ### The digest
 
 Each surface folds into a **contract digest**: its rows in member
@@ -972,6 +990,20 @@ against the rows. Every client sends the surface's digest on every call, so a
 program that changed under it refuses it `digest_mismatch`; each names the
 digest in a constant, and `--check` refuses a committed copy made against
 another one.
+
+Every shape the codec carries reaches the clients. An optional field is
+its `has_` flag in Hale and an optional property in TypeScript. An enum is
+the server's enum in Hale, and in TypeScript the union of what the wire
+writes for it:
+
+```text
+export type Shape = "Empty" | { Circle: number } | { Rect: [number, number] };
+```
+
+A wire map stays a list of records on both sides (`bounded[Check; 16]
+indexed_by name` in Hale, `Check[]` in TypeScript); the client keys it
+into the wire's object on the way out and back into records on the way in.
+
 A client speaks `unix:PATH` and `http://` (the Hale client) and `http://` and
 `ws://` (both); TLS is not spoken, and neither is gRPC: a gRPC caller takes the
 `.proto` to its own language's stub generator, or finds the surface through

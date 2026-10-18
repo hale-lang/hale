@@ -11,14 +11,16 @@ use std::collections::BTreeSet;
 use hale_types::surface_doc::{ClientError, ClientMember, ClientModel, ClientStream};
 use hale_types::surfaces::{FieldSchema, TypeSchema};
 
-use super::{camel, field_ident, hale_lit, json_quote, optional_unsupported, snake, type_ident, unformed};
+use super::{camel, field_ident, hale_lit, json_quote, snake, type_ident, unformed};
 
 const PREAMBLE: &str = include_str!("hale_preamble.hl");
 
 /// The instant a client reads where a reply holds none it can parse.
 const EPOCH: &str = "`1970-01-01T00:00:00Z`";
 
-/// A Hale type as the client declares it.
+/// A Hale type as the client declares it: what the server's declaration
+/// says, so the compiler's api codec (`T::api_encode` / `T::api_decode`,
+/// spec/api.md § Codecs) reads and writes it exactly as the server does.
 fn hale_type(f: &FieldSchema, what: &str) -> Result<String, String> {
     match f {
         FieldSchema::Scalar { json, .. } => Ok(match *json {
@@ -32,25 +34,13 @@ fn hale_type(f: &FieldSchema, what: &str) -> Result<String, String> {
         FieldSchema::Time => Ok("Time".to_string()),
         FieldSchema::List { items, max, exact: false } => Ok(format!("bounded[{}; {max}]", hale_type(items, what)?)),
         FieldSchema::List { items, max, exact: true } => Ok(format!("[{}; {max}]", hale_type(items, what)?)),
-        FieldSchema::Nullable { .. } | FieldSchema::Presence { .. } => Err(optional_unsupported(what)),
-        FieldSchema::Enum { .. } | FieldSchema::Map { .. } | FieldSchema::Unformed => Err(unformed(what)),
-    }
-}
-
-/// The value a fixed array's slots hold before the payload's elements are
-/// read into them: the zero of a scalar, a record read from `{}`.
-fn zero(f: &FieldSchema, what: &str) -> Result<String, String> {
-    match f {
-        FieldSchema::Scalar { json, .. } => Ok(match *json {
-            "integer" => "0",
-            "number" => "0.0",
-            "boolean" => "false",
-            _ => "\"\"",
-        }
-        .to_string()),
-        FieldSchema::Ref(name) => Ok(format!("api_dec_{}(\"{{}}\")", type_ident(name))),
-        FieldSchema::Time => Ok(EPOCH.to_string()),
-        _ => Err(unformed(what)),
+        FieldSchema::Enum { name, .. } => Ok(type_ident(name)),
+        // a map is its list (`struct_decl` writes the `indexed_by` clause)
+        FieldSchema::Map { name, max, .. } => Ok(format!("bounded[{}; {max}]", type_ident(name))),
+        // an optional field is its value's type, its flag a `Bool` beside it
+        FieldSchema::Nullable { inner, .. } => hale_type(inner, what),
+        FieldSchema::Presence { .. } => Ok("Bool".to_string()),
+        FieldSchema::Unformed => Err(unformed(what)),
     }
 }
 
@@ -62,187 +52,189 @@ fn encode(f: &FieldSchema, value: &str, what: &str) -> Result<String, String> {
             "boolean" => format!("(if {value} {{ \"true\" }} else {{ \"false\" }})"),
             _ => format!("api_str({value})"),
         }),
-        FieldSchema::Ref(name) => Ok(format!("api_enc_{}({value})", type_ident(name))),
+        FieldSchema::Ref(name) | FieldSchema::Enum { name, .. } => Ok(format!("{}::api_encode({value})", type_ident(name))),
         FieldSchema::Time => Ok(format!("api_str(std::time::iso8601({value}))")),
-        // a list is written by its record's helper (`list_enc`), never inline
-        FieldSchema::Nullable { .. } | FieldSchema::Presence { .. } => Err(optional_unsupported(what)),
-        FieldSchema::List { .. } | FieldSchema::Enum { .. } | FieldSchema::Map { .. } | FieldSchema::Unformed => Err(unformed(what)),
+        // a list, a map or an optional field is a record's, never a whole payload
+        FieldSchema::List { .. }
+        | FieldSchema::Map { .. }
+        | FieldSchema::Nullable { .. }
+        | FieldSchema::Presence { .. }
+        | FieldSchema::Unformed => Err(unformed(what)),
     }
 }
 
-/// The Hale value of the JSON document `json`, a Hale expression of text.
-fn decode_whole(f: &FieldSchema, json: &str, what: &str) -> Result<String, String> {
-    match f {
-        FieldSchema::Scalar { json: kind, .. } => Ok(match *kind {
-            "integer" => format!("api_scalar_int({json})"),
-            "number" => format!("api_scalar_float({json})"),
-            "boolean" => format!("api_scalar_bool({json})"),
-            _ => format!("api_scalar_str({json})"),
-        }),
-        FieldSchema::Ref(name) => Ok(format!("api_dec_{}({json})", type_ident(name))),
-        FieldSchema::Time => Ok(format!("(std::time::parse_time(api_scalar_str({json})) or {EPOCH})")),
-        // a list is read by its record's decoder (`list_dec`), never whole
-        FieldSchema::Nullable { .. } | FieldSchema::Presence { .. } => Err(optional_unsupported(what)),
-        FieldSchema::List { .. } | FieldSchema::Enum { .. } | FieldSchema::Map { .. } | FieldSchema::Unformed => Err(unformed(what)),
-    }
-}
-
-/// The Hale value of the field `key` of the object `json`.
-fn decode_field(f: &FieldSchema, json: &str, key: &str, what: &str) -> Result<String, String> {
-    let q = hale_lit(key);
-    match f {
-        FieldSchema::Scalar { json: kind, .. } => Ok(match *kind {
-            "integer" => format!("std::json::find_int_field({json}, {q})"),
-            "number" => format!("api_scalar_float(std::json::find_field_raw({json}, {q}))"),
-            "boolean" => format!("std::json::find_bool_field({json}, {q})"),
-            _ => format!("std::json::find_string_field({json}, {q})"),
-        }),
-        FieldSchema::Ref(name) => Ok(format!("api_dec_{}(std::json::find_field_raw({json}, {q}))", type_ident(name))),
-        FieldSchema::Time => Ok(format!("(std::time::parse_time(std::json::find_string_field({json}, {q})) or {EPOCH})")),
-        FieldSchema::Nullable { .. } | FieldSchema::Presence { .. } => Err(optional_unsupported(what)),
-        FieldSchema::List { .. } | FieldSchema::Enum { .. } | FieldSchema::Map { .. } | FieldSchema::Unformed => Err(unformed(what)),
-    }
-}
-
-/// The helper that writes the list field `field` of a `record` as a JSON array.
-fn list_enc_name(record: &str, field: &str) -> String {
-    format!("api_enc_{record}__{field}")
-}
-
-/// `api_enc_<T>__<field>(v: T) -> String`: the list `v.<field>` as a JSON array.
-fn list_enc(record: &str, field: &str, items: &FieldSchema, what: &str) -> Result<String, String> {
-    Ok(format!(
-        "@bounded_by(v)\nfn {name}(v: {record}) -> String {{\n    let mut out = \"[\";\n    let mut n = 0;\n    for x in v.{field} {{\n        \
-         if n > 0 {{ out = out + \",\"; }}\n        out = out + {elem};\n        n = n + 1;\n    }}\n    return out + \"]\";\n}}\n\n",
-        name = list_enc_name(record, field),
-        elem = encode(items, "x", what)?,
-    ))
-}
-
-/// The statements of a record's decoder that read the list at the key `key` of
-/// `json` into `target`: a bounded field by `push` (`target` the record's field),
-/// a fixed array by its slots (`target` a local, `[zero; N]` until then), the
-/// elements past what it holds left unread.
-fn list_dec(target: &str, local: &str, key: &str, items: &FieldSchema, max: u64, exact: bool, what: &str) -> Result<String, String> {
-    let text = format!("{local}_text");
-    let it = format!("{local}_at");
-    let elem = decode_whole(items, &format!("{text}[{it}.cur_start..{it}.cur_end]"), what)?;
-    let mut out = format!("    let {text} = std::json::find_field_raw(json, {});\n", hale_lit(key));
-    out.push_str(&format!("    let mut {it} = std::json::array_first_span({text});\n"));
-    if exact {
-        out.push_str(&format!("    let mut {local}_n = 0;\n"));
-        out.push_str(&format!("    while !{it}.done && {local}_n < {max} {{\n"));
-        out.push_str(&format!("        {target}[{local}_n] = {elem};\n"));
-        out.push_str(&format!("        {local}_n = {local}_n + 1;\n"));
-    } else {
-        out.push_str(&format!("    while !{it}.done {{\n"));
-        out.push_str(&format!("        push({target}, {elem}) or discard;\n"));
-    }
-    out.push_str(&format!("        {it} = std::json::array_next_span({it}, {text});\n    }}\n"));
-    Ok(out)
+/// The statements that bind `var` to the value of the JSON document `json`
+/// (a Hale expression of text), running `fail` (statements that end in a
+/// `return`) when a record's codec refuses it.
+fn decode_into(f: &FieldSchema, json: &str, var: &str, fail: &str, what: &str) -> Result<String, String> {
+    Ok(match f {
+        FieldSchema::Scalar { json: kind, .. } => format!(
+            "let {var} = {};\n",
+            match *kind {
+                "integer" => format!("api_scalar_int({json})"),
+                "number" => format!("api_scalar_float({json})"),
+                "boolean" => format!("api_scalar_bool({json})"),
+                _ => format!("api_scalar_str({json})"),
+            }
+        ),
+        FieldSchema::Ref(name) | FieldSchema::Enum { name, .. } => {
+            format!("let {var} = {}::api_decode({json}) or {{ {fail} }};\n", type_ident(name))
+        }
+        FieldSchema::Time => format!("let {var} = std::time::parse_time(api_scalar_str({json})) or {EPOCH};\n"),
+        FieldSchema::List { .. }
+        | FieldSchema::Map { .. }
+        | FieldSchema::Nullable { .. }
+        | FieldSchema::Presence { .. }
+        | FieldSchema::Unformed => return Err(unformed(what)),
+    })
 }
 
 /// The field identifier of each JSON key of a struct, in key order. `field_ident` alone is not
 /// injective (`a-b` and `a_b` are both `a_b`), so the first key to want an identifier keeps it and a
-/// later one gets `_2`, `_3`, ...; the declaration, the encoder and the decoder all read this one
-/// mapping, and each wire key stays the one the row names.
+/// later one gets `_2`, `_3`, ...; an optional field's flag is `has_` and its field's identifier,
+/// which the codec pairs by name. Every identifier comes out of one allocator: an optional field and
+/// its flag are placed first, as a pair (a field's identifier is bumped until its flag's is free too),
+/// then the ordinary fields around them. A field whose identifier is not its key carries the key as
+/// its `json:` tag.
 fn field_idents(t: &TypeSchema) -> Vec<String> {
     let mut used = BTreeSet::new();
-    t.properties
-        .iter()
-        .map(|(key, _)| {
-            let natural = field_ident(key);
-            let mut ident = natural.clone();
-            let mut n = 2;
-            while !used.insert(ident.clone()) {
-                ident = format!("{natural}_{n}");
-                n += 1;
-            }
-            ident
-        })
-        .collect()
+    let mut idents: Vec<Option<String>> = vec![None; t.properties.len()];
+    // the flag of each optional field, by its declaration (its JSON key may be another)
+    let partner = |j: usize| -> Option<usize> {
+        let FieldSchema::Nullable { flag, .. } = &t.properties[j].1 else { return None };
+        t.properties.iter().position(|(_, f)| matches!(f, FieldSchema::Presence { flag: name, .. } if name == flag))
+    };
+    for j in 0..t.properties.len() {
+        let Some(i) = partner(j) else { continue };
+        let natural = field_ident(&t.properties[j].0);
+        let mut ident = natural.clone();
+        let mut n = 2;
+        while used.contains(&ident) || used.contains(&format!("has_{ident}")) {
+            ident = format!("{natural}_{n}");
+            n += 1;
+        }
+        used.insert(ident.clone());
+        used.insert(format!("has_{ident}"));
+        idents[i] = Some(format!("has_{ident}"));
+        idents[j] = Some(ident);
+    }
+    for (k, (key, _)) in t.properties.iter().enumerate() {
+        if idents[k].is_some() {
+            continue;
+        }
+        let natural = field_ident(key);
+        let mut ident = natural.clone();
+        let mut n = 2;
+        while !used.insert(ident.clone()) {
+            ident = format!("{natural}_{n}");
+            n += 1;
+        }
+        idents[k] = Some(ident);
+    }
+    idents.into_iter().map(|i| i.expect("every field named")).collect()
 }
 
-fn struct_decl(name: &str, t: &TypeSchema) -> Result<String, String> {
+/// Whether a record of the model can be built from no fields, `T { }`:
+/// every field of it is one a payload may leave out, and each such record
+/// field's own type can.
+fn buildable_empty(model: &ClientModel, name: &str, seen: &mut BTreeSet<String>) -> bool {
+    let Some(t) = model.types.get(name) else { return false };
+    if !seen.insert(name.to_string()) {
+        return false;
+    }
+    t.required.is_empty()
+        && t.properties.iter().all(|(_, f)| match f {
+            FieldSchema::Ref(r) => buildable_empty(model, r, seen),
+            FieldSchema::List { exact: true, .. } => false,
+            _ => true,
+        })
+}
+
+/// The default a field the server lets a payload leave out takes in the
+/// client's declaration, so a value can be built naming only what it means
+/// (`T { code: "x" }`): its type's zero, a record's empty literal where one
+/// can be built; `None` where the field is required or has none.
+fn default_of(model: &ClientModel, f: &FieldSchema) -> Option<String> {
+    match f {
+        FieldSchema::Scalar { json, .. } => Some(
+            match *json {
+                "integer" => "0",
+                "number" => "0.0",
+                "boolean" => "false",
+                _ => "\"\"",
+            }
+            .to_string(),
+        ),
+        FieldSchema::Time => Some(EPOCH.to_string()),
+        FieldSchema::Presence { .. } => Some("false".to_string()),
+        FieldSchema::Ref(r) if buildable_empty(model, r, &mut BTreeSet::new()) => Some(format!("{} {{ }}", type_ident(r))),
+        FieldSchema::Nullable { inner, .. } => default_of(model, inner),
+        // an enum's zero is its first variant with its values' zeros, as the
+        // codec's is (spec/api.md § Codecs)
+        FieldSchema::Enum { name, variants } => {
+            let (v, values) = variants.first()?;
+            if values.is_empty() {
+                return Some(format!("{}::{v}", type_ident(name)));
+            }
+            let zeros = values.iter().map(|f| default_of(model, f)).collect::<Option<Vec<_>>>()?;
+            Some(format!("{}::{v}({})", type_ident(name), zeros.join(", ")))
+        }
+        _ => None,
+    }
+}
+
+/// A record as the client declares it: its fields, each named for its key
+/// (and tagged with the key where the name differs), so the compiler's api
+/// codec carries it as the server's does, and a field a payload may leave
+/// out given its zero.
+fn struct_decl(model: &ClientModel, name: &str, t: &TypeSchema) -> Result<String, String> {
     let ident = type_ident(name);
     let idents = field_idents(t);
     let mut out = format!("type {ident} {{\n");
     for ((key, f), field) in t.properties.iter().zip(&idents) {
-        out.push_str(&format!("    {field}: {};\n", hale_type(f, &format!("{name}.{key}"))?));
+        let tag = if field != key && !matches!(f, FieldSchema::Presence { .. }) {
+            format!(" `json:\"{}\"`", key.replace('\\', "\\\\").replace('"', "\\\""))
+        } else {
+            String::new()
+        };
+        let value = match f {
+            FieldSchema::Nullable { inner, .. } => inner.as_ref(),
+            f => f,
+        };
+        let default = if t.required.contains(key) || matches!(value, FieldSchema::List { .. } | FieldSchema::Map { .. }) {
+            String::new()
+        } else {
+            default_of(model, f).map_or(String::new(), |d| format!(" = {d}"))
+        };
+        // a map keys its records by the client's name of the lifted field
+        let keyed = match value {
+            FieldSchema::Map { name: record, lifted, .. } => {
+                let rt = model.types.get(record).ok_or_else(|| unformed(&format!("{name}.{key}")))?;
+                let at = rt.properties.iter().position(|(k, _)| k == lifted).ok_or_else(|| unformed(&format!("{name}.{key}")))?;
+                format!(" indexed_by {}", field_idents(rt)[at])
+            }
+            _ => String::new(),
+        };
+        out.push_str(&format!("    {field}: {}{keyed}{default}{tag};\n", hale_type(f, &format!("{name}.{key}"))?));
     }
     out.push_str("}\n\n");
-    if t.properties.iter().any(|(_, f)| matches!(f, FieldSchema::List { .. })) {
-        return list_struct_fns(name, t, &ident, &idents, out);
-    }
-    // the encoder: one compact object, the fields in declaration order
-    out.push_str(&format!("fn api_enc_{ident}(v: {ident}) -> String {{\n"));
-    if t.properties.is_empty() {
-        out.push_str("    return \"{}\";\n");
-    } else {
-        let mut parts = Vec::new();
-        for (i, ((key, f), field)) in t.properties.iter().zip(&idents).enumerate() {
-            let sep = if i == 0 { "{" } else { "," };
-            let value = encode(f, &format!("v.{field}"), &format!("{name}.{key}"))?;
-            parts.push(format!("{} + {value}", hale_lit(&format!("{sep}{}:", json_quote(key)))));
-        }
-        out.push_str(&format!("    return {} + \"}}\";\n", parts.join(" + ")));
-    }
-    out.push_str("}\n\n");
-    // the decoder: every field read by its key, absent ones as the type's zero
-    out.push_str(&format!("fn api_dec_{ident}(json: String) -> {ident} {{\n"));
-    out.push_str(&format!("    return {ident} {{\n"));
-    for ((key, f), field) in t.properties.iter().zip(&idents) {
-        out.push_str(&format!("        {field}: {},\n", decode_field(f, "json", key, &format!("{name}.{key}"))?));
-    }
-    out.push_str("    };\n}\n\n");
     Ok(out)
 }
 
-/// The encoder and decoder of a record with a list field: as
-/// `struct_decl`'s, with each list written by its helper and read by a loop.
-fn list_struct_fns(name: &str, t: &TypeSchema, ident: &str, idents: &[String], mut out: String) -> Result<String, String> {
-    let mut parts = Vec::new();
-    for (i, ((key, f), field)) in t.properties.iter().zip(idents).enumerate() {
-        let sep = if i == 0 { "{" } else { "," };
-        let what = format!("{name}.{key}");
-        let value = match f {
-            FieldSchema::List { items, .. } => {
-                out.push_str(&list_enc(ident, field, items, &what)?);
-                format!("{}(v)", list_enc_name(ident, field))
+/// An enum as the client declares it: the server's variants, each with its
+/// values' types, so the api codec carries it as the server's does.
+fn enum_decl(name: &str, variants: &super::ClientEnum) -> Result<String, String> {
+    let vs = variants
+        .iter()
+        .map(|(v, values)| {
+            if values.is_empty() {
+                return Ok(v.clone());
             }
-            f => encode(f, &format!("v.{field}"), &what)?,
-        };
-        parts.push(format!("{} + {value}", hale_lit(&format!("{sep}{}:", json_quote(key)))));
-    }
-    out.push_str(&format!("fn api_enc_{ident}(v: {ident}) -> String {{\n"));
-    out.push_str(&format!("    return {} + \"}}\";\n}}\n\n", parts.join(" + ")));
-    // the decoder: the fixed arrays read first, the record made, the bounded lists pushed into it
-    out.push_str(&format!("@bounded_by(json)\nfn api_dec_{ident}(json: String) -> {ident} {{\n"));
-    for ((key, f), field) in t.properties.iter().zip(idents) {
-        if let FieldSchema::List { items, max, exact: true } = f {
-            let what = format!("{name}.{key}");
-            let local = format!("l_{field}");
-            out.push_str(&format!("    let mut {local} = [{}; {max}];\n", zero(items, &what)?));
-            out.push_str(&list_dec(&local, &local, key, items, *max, true, &what)?);
-        }
-    }
-    let bounded = t.properties.iter().any(|(_, f)| matches!(f, FieldSchema::List { exact: false, .. }));
-    out.push_str(&format!("    let {}r = {ident} {{\n", if bounded { "mut " } else { "" }));
-    for ((key, f), field) in t.properties.iter().zip(idents) {
-        match f {
-            FieldSchema::List { exact: true, .. } => out.push_str(&format!("        {field}: l_{field},\n")),
-            FieldSchema::List { exact: false, .. } => {}
-            f => out.push_str(&format!("        {field}: {},\n", decode_field(f, "json", key, &format!("{name}.{key}"))?)),
-        }
-    }
-    out.push_str("    };\n");
-    for ((key, f), field) in t.properties.iter().zip(idents) {
-        if let FieldSchema::List { items, max, exact: false } = f {
-            out.push_str(&list_dec(&format!("r.{field}"), &format!("l_{field}"), key, items, *max, false, &format!("{name}.{key}"))?);
-        }
-    }
-    out.push_str("    return r;\n}\n\n");
-    Ok(out)
+            let tys = values.iter().map(|f| hale_type(f, &format!("{name}::{v}"))).collect::<Result<Vec<_>, _>>()?;
+            Ok(format!("{v}({})", tys.join(", ")))
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    Ok(format!("type {} = enum {{ {} }};\n\n", type_ident(name), vs.join(", ")))
 }
 
 fn member_fn(m: &ClientMember) -> Result<String, String> {
@@ -275,16 +267,22 @@ fn member_fn(m: &ClientMember) -> Result<String, String> {
     };
     out.push_str(&format!("fn {fn_name}(endpoint: String, bearer: String{params}) -> {outcome} {{\n"));
     out.push_str(&format!("    let raw = api_call(endpoint, bearer, {}, {payload});\n", hale_lit(&m.name)));
-    let result = match &m.response {
-        Some(r) => format!("{outcome}::Result({})", decode_whole(r, "raw.body", &format!("{what} response"))?),
-        None => format!("{outcome}::Result"),
+    // a reply the codec refuses is a lost answer, named
+    let lost = |part: &str| {
+        format!("return {outcome}::Lost(\"the {part} did not decode: \" + err.kind + \": \" + err.field);")
     };
-    out.push_str(&format!("    if raw.outcome == 0 {{ return {result}; }}\n"));
+    match &m.response {
+        Some(r) => {
+            out.push_str("    if raw.outcome == 0 {\n");
+            out.push_str(&format!("        {}", decode_into(r, "raw.body", "value", &lost("result"), &format!("{what} response"))?));
+            out.push_str(&format!("        return {outcome}::Result(value);\n    }}\n"));
+        }
+        None => out.push_str(&format!("    if raw.outcome == 0 {{ return {outcome}::Result; }}\n")),
+    }
     if let ClientError::Type(e) = &m.error {
-        out.push_str(&format!(
-            "    if raw.outcome == 1 {{ return {outcome}::HandlerError({}); }}\n",
-            decode_whole(e, "raw.body", &format!("{what} error"))?
-        ));
+        out.push_str("    if raw.outcome == 1 {\n");
+        out.push_str(&format!("        {}", decode_into(e, "raw.body", "error", &lost("handler error"), &format!("{what} error"))?));
+        out.push_str(&format!("        return {outcome}::HandlerError(error);\n    }}\n"));
     }
     out.push_str(&format!("    if raw.outcome == 2 {{ return {outcome}::Refusal(api_refusal(raw)); }}\n"));
     out.push_str(&format!("    if raw.outcome == 3 {{ return {outcome}::ServerError; }}\n"));
@@ -306,7 +304,15 @@ fn stream_decl(s: &ClientStream) -> Result<String, String> {
         Some(p) => hale_type(p, &format!("{what} payload"))?,
         None => return Err(format!("the {what} has no payload type, which a stream row always has")),
     };
-    let decode = decode_whole(s.payload.as_ref().unwrap_or(&FieldSchema::Unformed), "payload", &format!("{what} payload"))?;
+    let decode = decode_into(
+        s.payload.as_ref().unwrap_or(&FieldSchema::Unformed),
+        "payload",
+        "value",
+        &format!(
+            "self.ended = \"a payload did not decode: \" + err.kind + \": \" + err.field; return {event}::Lost(self.ended);"
+        ),
+        &format!("{what} payload"),
+    )?;
     let roles = if s.requires.is_empty() { "none".to_string() } else { s.requires.join(", ") };
     Ok(format!(
         "// The stream {topic} of the hub {hub} (stream digest {digest}), requires {roles}.\n\
@@ -357,7 +363,8 @@ fn stream_decl(s: &ClientStream) -> Result<String, String> {
          \x20       if kind == \"subscribed\" {{ return {event}::Subscribed; }}\n\
          \x20       if kind == \"event\" {{\n\
          \x20           let payload = std::json::find_field_raw(text, \"payload\");\n\
-         \x20           return {event}::Event(std::json::find_int_field(text, \"seq\"), {decode});\n\
+         \x20           {decode}\
+         \x20           return {event}::Event(std::json::find_int_field(text, \"seq\"), value);\n\
          \x20       }}\n\
          \x20       if kind == \"refusal\" {{\n\
          \x20           self.ended = \"the subscription was refused\";\n\
@@ -423,16 +430,13 @@ pub fn generate(model: &ClientModel) -> Result<String, String> {
     ] {
         claim(name.to_string())?;
     }
+    for (name, variants) in &super::model_enums(model) {
+        claim(type_ident(name))?;
+        out.push_str(&enum_decl(name, variants)?);
+    }
     for (name, t) in &model.types {
         claim(type_ident(name))?;
-        claim(format!("api_enc_{}", type_ident(name)))?;
-        claim(format!("api_dec_{}", type_ident(name)))?;
-        for ((_, f), field) in t.properties.iter().zip(field_idents(t)) {
-            if matches!(f, FieldSchema::List { .. }) {
-                claim(list_enc_name(&type_ident(name), &field))?;
-            }
-        }
-        out.push_str(&struct_decl(name, t)?);
+        out.push_str(&struct_decl(model, name, t)?);
     }
     for m in &model.members {
         claim(snake(&m.name))?;

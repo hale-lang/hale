@@ -111,14 +111,15 @@ fn keys_that_spell_one_identifier_are_two_fields_with_both_wire_keys() {
     let made = hale(&["api", "client", "--surface", "Public", "--lang", "hale", "--out", c, p]);
     assert!(made.status.success(), "{}", String::from_utf8_lossy(&made.stderr));
     let text = std::fs::read_to_string(&client).unwrap();
-    assert!(text.contains("a_b: Int;") && text.contains("a_b_2: Int;"), "{text}");
+    // each field carries its wire key where its name is not it, so the api codec reads both
+    assert!(text.contains("a_b: Int `json:\"a-b\"`;") && text.contains("a_b_2: Int `json:\"a_b\"`;"), "{text}");
     let checked = hale(&["check", c]);
     assert!(checked.status.success(), "{}{}", String::from_utf8_lossy(&checked.stdout), String::from_utf8_lossy(&checked.stderr));
     let current = hale(&["api", "client", "--surface", "Public", "--lang", "hale", "--check", c, p]);
     assert!(current.status.success(), "{}", String::from_utf8_lossy(&current.stderr));
     // both keys cross the wire: the encoder writes them, the decoder reads them
     let probe = dir.join("probe.hl");
-    let main = "\nfn main() {\n    println(api_enc_Payload(Payload { a_b: 1, a_b_2: 2 }));\n    let d = api_dec_Payload(\"{\\\"a-b\\\":5,\\\"a_b\\\":7}\");\n    println(to_string(d.a_b) + \" \" + to_string(d.a_b_2));\n}\n";
+    let main = "\nfn main() {\n    println(Payload::api_encode(Payload { a_b: 1, a_b_2: 2 }));\n    let d = Payload::api_decode(\"{\\\"a-b\\\":5,\\\"a_b\\\":7}\") or { return; };\n    println(to_string(d.a_b) + \" \" + to_string(d.a_b_2));\n}\n";
     std::fs::write(&probe, format!("{text}{main}")).unwrap();
     let ran = hale(&["run", probe.to_str().unwrap()]);
     assert!(ran.status.success(), "{}{}", String::from_utf8_lossy(&ran.stdout), String::from_utf8_lossy(&ran.stderr));

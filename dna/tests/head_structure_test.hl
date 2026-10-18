@@ -103,11 +103,7 @@ fn refused(f: hc::ApiRefusal) -> String {
 
 // A reply that is not the handler's: its code says what came instead.
 fn not_a_result(what: String) -> hc::CommandReply {
-    let b = std::json::Builder { };
-    b.begin_object();
-    b.string_field("code", what);
-    b.end_object();
-    return hc::api_dec_CommandReply(b.result());
+    return hc::CommandReply { code: what };
 }
 
 fn apply_reply(o: hc::CommandsApplyBatchOutcome) -> hc::CommandReply {
@@ -149,9 +145,9 @@ fn lookup_reply(o: hc::CommandsLookupOutcome) -> hc::CommandReply {
 fn preview(sock: String, steps: String) -> hc::BatchPreview {
     return match hc::commands_preview_batch(sock, "", hc::BatchDraft { steps: steps }) {
         hc::CommandsPreviewBatchOutcome::Result(r) -> r,
-        hc::CommandsPreviewBatchOutcome::Refusal(f) -> hc::api_dec_BatchPreview("{\"code\":\"refusal:" + f.kind + "\"}"),
-        hc::CommandsPreviewBatchOutcome::ServerError -> hc::api_dec_BatchPreview("{\"code\":\"server_error\"}"),
-        hc::CommandsPreviewBatchOutcome::Lost(why) -> hc::api_dec_BatchPreview("{\"code\":\"lost\"}"),
+        hc::CommandsPreviewBatchOutcome::Refusal(f) -> hc::BatchPreview { code: "refusal:" + f.kind },
+        hc::CommandsPreviewBatchOutcome::ServerError -> hc::BatchPreview { code: "server_error" },
+        hc::CommandsPreviewBatchOutcome::Lost(why) -> hc::BatchPreview { code: "lost" },
     };
 }
 

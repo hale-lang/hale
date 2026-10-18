@@ -705,12 +705,54 @@ fn own_entries_run_to_exit_programs() {
     // `tests/hale/enum_return_copy_loops_test.hl`, whose decoder builds a
     // record per element of a JSON array; 6:
     // `tests/hale/bounded_whole_assign_test.hl`, whose `fill` builds a
-    // String per pushed element.
-    assert_eq!(moved, 6, "the run-to-exit programs among the targets that lose a site");
+    // String per pushed element; 7: `tests/hale/api_codec_call_test.hl`,
+    // whose codec, called by the program itself, decodes the same way; 8:
+    // `tests/hale/api_codec_import_test.hl`, the same codec of an imported
+    // type.
+    assert_eq!(moved, 8, "the run-to-exit programs among the targets that lose a site");
     assert_eq!(more, [], "the copy's leak sites");
     assert_eq!(
         own,
         [
+            // `tests/hale/api_codec_call_test.hl`: the api codec the program calls
+            // itself, its decoders' refusals and encoders' appends (a record's,
+            // a wire map's keyed record's, and those of a record holding an
+            // enum and an optional map)
+            "tests/hale/api_codec_call_test.hl: __api_decode_Check__by_name StructLit(\"JsonError\") @33693..33738 InvokedUnboundedly",
+            "tests/hale/api_codec_call_test.hl: __api_decode_Check__by_name StructLit(\"JsonError\") @33913..33958 InvokedUnboundedly",
+            "tests/hale/api_codec_call_test.hl: __api_decode_Check__by_name StructLit(\"JsonError\") @34100..34148 InvokedUnboundedly",
+            "tests/hale/api_codec_call_test.hl: __api_decode_Check__by_name StructLit(\"Check\") @34163..34196 InvokedUnboundedly",
+            "tests/hale/api_codec_call_test.hl: __api_decode_Desk StructLit(\"JsonError\") @23134..23181 InUnboundedLoop",
+            "tests/hale/api_codec_call_test.hl: __api_decode_Desk StructLit(\"JsonError\") @24385..24431 InUnboundedLoop",
+            "tests/hale/api_codec_call_test.hl: __api_decode_Line StructLit(\"JsonError\") @4718..4764 InvokedUnboundedly",
+            "tests/hale/api_codec_call_test.hl: __api_decode_Line StructLit(\"JsonError\") @5223..5269 InvokedUnboundedly",
+            "tests/hale/api_codec_call_test.hl: __api_decode_Line StructLit(\"JsonError\") @5354..5400 InUnboundedLoop",
+            "tests/hale/api_codec_call_test.hl: __api_decode_Line StructLit(\"JsonError\") @5542..5591 InvokedUnboundedly",
+            "tests/hale/api_codec_call_test.hl: __api_decode_Line StructLit(\"JsonError\") @5621..5670 InvokedUnboundedly",
+            "tests/hale/api_codec_call_test.hl: __api_decode_Line StructLit(\"Line\") @5685..5720 InvokedUnboundedly",
+            "tests/hale/api_codec_call_test.hl: __api_decode_Order StructLit(\"JsonError\") @9526..9571 InUnboundedLoop",
+            "tests/hale/api_codec_call_test.hl: __api_decode_Order StructLit(\"JsonError\") @10898..10944 InUnboundedLoop",
+            "tests/hale/api_codec_call_test.hl: __api_decode_Order StructLit(\"JsonError\") @11444..11492 InUnboundedLoop",
+            "tests/hale/api_codec_call_test.hl: __api_decode_Order StructLit(\"JsonError\") @12135..12180 InUnboundedLoop",
+            "tests/hale/api_codec_call_test.hl: __api_encode_Check__by_name StringConcat @34296..34331 InvokedUnboundedly",
+            "tests/hale/api_codec_call_test.hl: __api_encode_Check__by_name StringConcat @34343..34352 InvokedUnboundedly",
+            "tests/hale/api_codec_call_test.hl: __api_encode_Desk StringConcat @25368..25377 InUnboundedLoop",
+            "tests/hale/api_codec_call_test.hl: __api_encode_Desk StringConcat @25395..25485 InUnboundedLoop",
+            "tests/hale/api_codec_call_test.hl: __api_encode_Desk StringConcat @25395..25450 InUnboundedLoop",
+            "tests/hale/api_codec_call_test.hl: __api_encode_Desk StringConcat @25395..25442 InUnboundedLoop",
+            "tests/hale/api_codec_call_test.hl: __api_encode_Desk StringConcat @25395..25405 InUnboundedLoop",
+            "tests/hale/api_codec_call_test.hl: __api_encode_Desk StringConcat @25722..25731 InUnboundedLoop",
+            "tests/hale/api_codec_call_test.hl: __api_encode_Desk StringConcat @25749..25839 InUnboundedLoop",
+            "tests/hale/api_codec_call_test.hl: __api_encode_Desk StringConcat @25749..25804 InUnboundedLoop",
+            "tests/hale/api_codec_call_test.hl: __api_encode_Desk StringConcat @25749..25796 InUnboundedLoop",
+            "tests/hale/api_codec_call_test.hl: __api_encode_Desk StringConcat @25749..25759 InUnboundedLoop",
+            "tests/hale/api_codec_call_test.hl: __api_encode_Line StringConcat @5809..5875 InvokedUnboundedly",
+            "tests/hale/api_codec_call_test.hl: __api_encode_Line StringConcat @5887..5925 InvokedUnboundedly",
+            "tests/hale/api_codec_call_test.hl: __api_encode_Line StringConcat @5937..5946 InvokedUnboundedly",
+            "tests/hale/api_codec_call_test.hl: __api_encode_Order StringConcat @13675..13684 InUnboundedLoop",
+            "tests/hale/api_codec_call_test.hl: __api_encode_Order StringConcat @13702..13731 InUnboundedLoop",
+            // `tests/hale/api_codec_import_test.hl`: the codec of an imported type
+            "tests/hale/api_codec_import_test.hl: __api_decode___lib_tests__hale__api_codec_import_lib___main__Item StructLit(\"JsonError\") @3439..3484 InUnboundedLoop",
             "tests/hale/api_context_test.hl: main StringConcat @12887..12978 InUnboundedLoop",
             "tests/hale/api_context_test.hl: main StringConcat @12887..12970 InUnboundedLoop",
             // GH #1490 (step 3): `self.buf = self.buf + chunk`, an

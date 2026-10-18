@@ -346,1047 +346,415 @@ locus ApiWs {
 }
 
 type Allowance {
-    request_id: String;
-    attempt_id: String;
-    holder: String;
-    token: Int;
-}
-
-fn api_enc_Allowance(v: Allowance) -> String {
-    return "{\"request_id\":" + api_str(v.request_id) + ",\"attempt_id\":" + api_str(v.attempt_id) + ",\"holder\":" + api_str(v.holder) + ",\"token\":" + to_string(v.token) + "}";
-}
-
-fn api_dec_Allowance(json: String) -> Allowance {
-    return Allowance {
-        request_id: std::json::find_string_field(json, "request_id"),
-        attempt_id: std::json::find_string_field(json, "attempt_id"),
-        holder: std::json::find_string_field(json, "holder"),
-        token: std::json::find_int_field(json, "token"),
-    };
+    request_id: String = "";
+    attempt_id: String = "";
+    holder: String = "";
+    token: Int = 0;
 }
 
 type AttemptCommandOutcome {
-    state: String;
-    attempt_id: String;
-    work_id: String;
-    task_id: String;
-    performer_kind: String;
-    holder: String;
-    token: Int;
-    until: Int;
-    disposition: String;
-    reason: String;
-    event_id: String;
-    allowance_micros: Int;
-}
-
-fn api_enc_AttemptCommandOutcome(v: AttemptCommandOutcome) -> String {
-    return "{\"state\":" + api_str(v.state) + ",\"attempt_id\":" + api_str(v.attempt_id) + ",\"work_id\":" + api_str(v.work_id) + ",\"task_id\":" + api_str(v.task_id) + ",\"performer_kind\":" + api_str(v.performer_kind) + ",\"holder\":" + api_str(v.holder) + ",\"token\":" + to_string(v.token) + ",\"until\":" + to_string(v.until) + ",\"disposition\":" + api_str(v.disposition) + ",\"reason\":" + api_str(v.reason) + ",\"event_id\":" + api_str(v.event_id) + ",\"allowance_micros\":" + to_string(v.allowance_micros) + "}";
-}
-
-fn api_dec_AttemptCommandOutcome(json: String) -> AttemptCommandOutcome {
-    return AttemptCommandOutcome {
-        state: std::json::find_string_field(json, "state"),
-        attempt_id: std::json::find_string_field(json, "attempt_id"),
-        work_id: std::json::find_string_field(json, "work_id"),
-        task_id: std::json::find_string_field(json, "task_id"),
-        performer_kind: std::json::find_string_field(json, "performer_kind"),
-        holder: std::json::find_string_field(json, "holder"),
-        token: std::json::find_int_field(json, "token"),
-        until: std::json::find_int_field(json, "until"),
-        disposition: std::json::find_string_field(json, "disposition"),
-        reason: std::json::find_string_field(json, "reason"),
-        event_id: std::json::find_string_field(json, "event_id"),
-        allowance_micros: std::json::find_int_field(json, "allowance_micros"),
-    };
+    state: String = "";
+    attempt_id: String = "";
+    work_id: String = "";
+    task_id: String = "";
+    performer_kind: String = "";
+    holder: String = "";
+    token: Int = 0;
+    until: Int = 0;
+    disposition: String = "";
+    reason: String = "";
+    event_id: String = "";
+    allowance_micros: Int = 0;
 }
 
 type BatchApplication {
-    request_id: String;
-    record_head: String;
-    steps: String;
-    pack: String;
-}
-
-fn api_enc_BatchApplication(v: BatchApplication) -> String {
-    return "{\"request_id\":" + api_str(v.request_id) + ",\"record_head\":" + api_str(v.record_head) + ",\"steps\":" + api_str(v.steps) + ",\"pack\":" + api_str(v.pack) + "}";
-}
-
-fn api_dec_BatchApplication(json: String) -> BatchApplication {
-    return BatchApplication {
-        request_id: std::json::find_string_field(json, "request_id"),
-        record_head: std::json::find_string_field(json, "record_head"),
-        steps: std::json::find_string_field(json, "steps"),
-        pack: std::json::find_string_field(json, "pack"),
-    };
+    request_id: String = "";
+    record_head: String = "";
+    steps: String = "";
+    pack: String = "";
 }
 
 type BatchDraft {
-    steps: String;
-}
-
-fn api_enc_BatchDraft(v: BatchDraft) -> String {
-    return "{\"steps\":" + api_str(v.steps) + "}";
-}
-
-fn api_dec_BatchDraft(json: String) -> BatchDraft {
-    return BatchDraft {
-        steps: std::json::find_string_field(json, "steps"),
-    };
+    steps: String = "";
 }
 
 type BatchPreview {
-    ok: Bool;
-    code: String;
-    why: String;
-    application_id: String;
-    head: String;
-    revision: Int;
-    steps: String;
-    before: String;
-    after: String;
-    added: String;
-    removed: String;
-    unchanged: String;
-    pending: String;
-}
-
-fn api_enc_BatchPreview(v: BatchPreview) -> String {
-    return "{\"ok\":" + (if v.ok { "true" } else { "false" }) + ",\"code\":" + api_str(v.code) + ",\"why\":" + api_str(v.why) + ",\"application_id\":" + api_str(v.application_id) + ",\"head\":" + api_str(v.head) + ",\"revision\":" + to_string(v.revision) + ",\"steps\":" + api_str(v.steps) + ",\"before\":" + api_str(v.before) + ",\"after\":" + api_str(v.after) + ",\"added\":" + api_str(v.added) + ",\"removed\":" + api_str(v.removed) + ",\"unchanged\":" + api_str(v.unchanged) + ",\"pending\":" + api_str(v.pending) + "}";
-}
-
-fn api_dec_BatchPreview(json: String) -> BatchPreview {
-    return BatchPreview {
-        ok: std::json::find_bool_field(json, "ok"),
-        code: std::json::find_string_field(json, "code"),
-        why: std::json::find_string_field(json, "why"),
-        application_id: std::json::find_string_field(json, "application_id"),
-        head: std::json::find_string_field(json, "head"),
-        revision: std::json::find_int_field(json, "revision"),
-        steps: std::json::find_string_field(json, "steps"),
-        before: std::json::find_string_field(json, "before"),
-        after: std::json::find_string_field(json, "after"),
-        added: std::json::find_string_field(json, "added"),
-        removed: std::json::find_string_field(json, "removed"),
-        unchanged: std::json::find_string_field(json, "unchanged"),
-        pending: std::json::find_string_field(json, "pending"),
-    };
+    ok: Bool = false;
+    code: String = "";
+    why: String = "";
+    application_id: String = "";
+    head: String = "";
+    revision: Int = 0;
+    steps: String = "";
+    before: String = "";
+    after: String = "";
+    added: String = "";
+    removed: String = "";
+    unchanged: String = "";
+    pending: String = "";
 }
 
 type Claim {
-    request_id: String;
-    record_head: String;
-    performer_kind: String;
-    performer: String;
-    effect_class: String;
-    capabilities: String;
-    data_classes: String;
-    organizations: String;
-    ttl: Int;
-}
-
-fn api_enc_Claim(v: Claim) -> String {
-    return "{\"request_id\":" + api_str(v.request_id) + ",\"record_head\":" + api_str(v.record_head) + ",\"performer_kind\":" + api_str(v.performer_kind) + ",\"performer\":" + api_str(v.performer) + ",\"effect_class\":" + api_str(v.effect_class) + ",\"capabilities\":" + api_str(v.capabilities) + ",\"data_classes\":" + api_str(v.data_classes) + ",\"organizations\":" + api_str(v.organizations) + ",\"ttl\":" + to_string(v.ttl) + "}";
-}
-
-fn api_dec_Claim(json: String) -> Claim {
-    return Claim {
-        request_id: std::json::find_string_field(json, "request_id"),
-        record_head: std::json::find_string_field(json, "record_head"),
-        performer_kind: std::json::find_string_field(json, "performer_kind"),
-        performer: std::json::find_string_field(json, "performer"),
-        effect_class: std::json::find_string_field(json, "effect_class"),
-        capabilities: std::json::find_string_field(json, "capabilities"),
-        data_classes: std::json::find_string_field(json, "data_classes"),
-        organizations: std::json::find_string_field(json, "organizations"),
-        ttl: std::json::find_int_field(json, "ttl"),
-    };
+    request_id: String = "";
+    record_head: String = "";
+    performer_kind: String = "";
+    performer: String = "";
+    effect_class: String = "";
+    capabilities: String = "";
+    data_classes: String = "";
+    organizations: String = "";
+    ttl: Int = 0;
 }
 
 type CommandReceipt {
-    command_id: String;
-    request_id: String;
-    application_id: String;
-    operation: String;
-    operation_version: String;
-    principal_mode: String;
-    principal_name: String;
-    principal_positions: String;
-    position_id: String;
-    target_kind: String;
-    target_id: String;
-    subject_digest: String;
-    fingerprint: String;
-    state: String;
-    reason: String;
-    proposal_state: String;
-    verdict_value: String;
-    verdict_state: String;
-    candidate_digest: String;
-    review_id: String;
-    review_state: String;
-    review_outcome: String;
-    review_subject_digest: String;
-    activation_state: String;
-    activation_reason: String;
-    organization: OrganizationCommandOutcome;
-    task: TaskCommandOutcome;
-    person: PersonRetirementOutcome;
-    task_create: TaskCreateOutcome;
-    attempt: AttemptCommandOutcome;
-    structure: StructureCommandOutcome;
-}
-
-fn api_enc_CommandReceipt(v: CommandReceipt) -> String {
-    return "{\"command_id\":" + api_str(v.command_id) + ",\"request_id\":" + api_str(v.request_id) + ",\"application_id\":" + api_str(v.application_id) + ",\"operation\":" + api_str(v.operation) + ",\"operation_version\":" + api_str(v.operation_version) + ",\"principal_mode\":" + api_str(v.principal_mode) + ",\"principal_name\":" + api_str(v.principal_name) + ",\"principal_positions\":" + api_str(v.principal_positions) + ",\"position_id\":" + api_str(v.position_id) + ",\"target_kind\":" + api_str(v.target_kind) + ",\"target_id\":" + api_str(v.target_id) + ",\"subject_digest\":" + api_str(v.subject_digest) + ",\"fingerprint\":" + api_str(v.fingerprint) + ",\"state\":" + api_str(v.state) + ",\"reason\":" + api_str(v.reason) + ",\"proposal_state\":" + api_str(v.proposal_state) + ",\"verdict_value\":" + api_str(v.verdict_value) + ",\"verdict_state\":" + api_str(v.verdict_state) + ",\"candidate_digest\":" + api_str(v.candidate_digest) + ",\"review_id\":" + api_str(v.review_id) + ",\"review_state\":" + api_str(v.review_state) + ",\"review_outcome\":" + api_str(v.review_outcome) + ",\"review_subject_digest\":" + api_str(v.review_subject_digest) + ",\"activation_state\":" + api_str(v.activation_state) + ",\"activation_reason\":" + api_str(v.activation_reason) + ",\"organization\":" + api_enc_OrganizationCommandOutcome(v.organization) + ",\"task\":" + api_enc_TaskCommandOutcome(v.task) + ",\"person\":" + api_enc_PersonRetirementOutcome(v.person) + ",\"task_create\":" + api_enc_TaskCreateOutcome(v.task_create) + ",\"attempt\":" + api_enc_AttemptCommandOutcome(v.attempt) + ",\"structure\":" + api_enc_StructureCommandOutcome(v.structure) + "}";
-}
-
-fn api_dec_CommandReceipt(json: String) -> CommandReceipt {
-    return CommandReceipt {
-        command_id: std::json::find_string_field(json, "command_id"),
-        request_id: std::json::find_string_field(json, "request_id"),
-        application_id: std::json::find_string_field(json, "application_id"),
-        operation: std::json::find_string_field(json, "operation"),
-        operation_version: std::json::find_string_field(json, "operation_version"),
-        principal_mode: std::json::find_string_field(json, "principal_mode"),
-        principal_name: std::json::find_string_field(json, "principal_name"),
-        principal_positions: std::json::find_string_field(json, "principal_positions"),
-        position_id: std::json::find_string_field(json, "position_id"),
-        target_kind: std::json::find_string_field(json, "target_kind"),
-        target_id: std::json::find_string_field(json, "target_id"),
-        subject_digest: std::json::find_string_field(json, "subject_digest"),
-        fingerprint: std::json::find_string_field(json, "fingerprint"),
-        state: std::json::find_string_field(json, "state"),
-        reason: std::json::find_string_field(json, "reason"),
-        proposal_state: std::json::find_string_field(json, "proposal_state"),
-        verdict_value: std::json::find_string_field(json, "verdict_value"),
-        verdict_state: std::json::find_string_field(json, "verdict_state"),
-        candidate_digest: std::json::find_string_field(json, "candidate_digest"),
-        review_id: std::json::find_string_field(json, "review_id"),
-        review_state: std::json::find_string_field(json, "review_state"),
-        review_outcome: std::json::find_string_field(json, "review_outcome"),
-        review_subject_digest: std::json::find_string_field(json, "review_subject_digest"),
-        activation_state: std::json::find_string_field(json, "activation_state"),
-        activation_reason: std::json::find_string_field(json, "activation_reason"),
-        organization: api_dec_OrganizationCommandOutcome(std::json::find_field_raw(json, "organization")),
-        task: api_dec_TaskCommandOutcome(std::json::find_field_raw(json, "task")),
-        person: api_dec_PersonRetirementOutcome(std::json::find_field_raw(json, "person")),
-        task_create: api_dec_TaskCreateOutcome(std::json::find_field_raw(json, "task_create")),
-        attempt: api_dec_AttemptCommandOutcome(std::json::find_field_raw(json, "attempt")),
-        structure: api_dec_StructureCommandOutcome(std::json::find_field_raw(json, "structure")),
-    };
+    command_id: String = "";
+    request_id: String = "";
+    application_id: String = "";
+    operation: String = "";
+    operation_version: String = "";
+    principal_mode: String = "";
+    principal_name: String = "";
+    principal_positions: String = "";
+    position_id: String = "";
+    target_kind: String = "";
+    target_id: String = "";
+    subject_digest: String = "";
+    fingerprint: String = "";
+    state: String = "";
+    reason: String = "";
+    proposal_state: String = "";
+    verdict_value: String = "";
+    verdict_state: String = "";
+    candidate_digest: String = "";
+    review_id: String = "";
+    review_state: String = "";
+    review_outcome: String = "";
+    review_subject_digest: String = "";
+    activation_state: String = "";
+    activation_reason: String = "";
+    organization: OrganizationCommandOutcome = OrganizationCommandOutcome { };
+    task: TaskCommandOutcome = TaskCommandOutcome { };
+    person: PersonRetirementOutcome = PersonRetirementOutcome { };
+    task_create: TaskCreateOutcome = TaskCreateOutcome { };
+    attempt: AttemptCommandOutcome = AttemptCommandOutcome { };
+    structure: StructureCommandOutcome = StructureCommandOutcome { };
 }
 
 type CommandReply {
-    ok: Bool;
-    code: String;
-    application_id: String;
-    head: String;
-    revision: Int;
-    receipt: CommandReceipt;
-}
-
-fn api_enc_CommandReply(v: CommandReply) -> String {
-    return "{\"ok\":" + (if v.ok { "true" } else { "false" }) + ",\"code\":" + api_str(v.code) + ",\"application_id\":" + api_str(v.application_id) + ",\"head\":" + api_str(v.head) + ",\"revision\":" + to_string(v.revision) + ",\"receipt\":" + api_enc_CommandReceipt(v.receipt) + "}";
-}
-
-fn api_dec_CommandReply(json: String) -> CommandReply {
-    return CommandReply {
-        ok: std::json::find_bool_field(json, "ok"),
-        code: std::json::find_string_field(json, "code"),
-        application_id: std::json::find_string_field(json, "application_id"),
-        head: std::json::find_string_field(json, "head"),
-        revision: std::json::find_int_field(json, "revision"),
-        receipt: api_dec_CommandReceipt(std::json::find_field_raw(json, "receipt")),
-    };
+    ok: Bool = false;
+    code: String = "";
+    application_id: String = "";
+    head: String = "";
+    revision: Int = 0;
+    receipt: CommandReceipt = CommandReceipt { };
 }
 
 type Friction {
-    request_id: String;
-    record_head: String;
-    position: String;
-    attempt_id: String;
-    text: String;
-}
-
-fn api_enc_Friction(v: Friction) -> String {
-    return "{\"request_id\":" + api_str(v.request_id) + ",\"record_head\":" + api_str(v.record_head) + ",\"position\":" + api_str(v.position) + ",\"attempt_id\":" + api_str(v.attempt_id) + ",\"text\":" + api_str(v.text) + "}";
-}
-
-fn api_dec_Friction(json: String) -> Friction {
-    return Friction {
-        request_id: std::json::find_string_field(json, "request_id"),
-        record_head: std::json::find_string_field(json, "record_head"),
-        position: std::json::find_string_field(json, "position"),
-        attempt_id: std::json::find_string_field(json, "attempt_id"),
-        text: std::json::find_string_field(json, "text"),
-    };
+    request_id: String = "";
+    record_head: String = "";
+    position: String = "";
+    attempt_id: String = "";
+    text: String = "";
 }
 
 type HoldFill {
-    request_id: String;
-    record_head: String;
-    position: String;
-    holder: String;
-}
-
-fn api_enc_HoldFill(v: HoldFill) -> String {
-    return "{\"request_id\":" + api_str(v.request_id) + ",\"record_head\":" + api_str(v.record_head) + ",\"position\":" + api_str(v.position) + ",\"holder\":" + api_str(v.holder) + "}";
-}
-
-fn api_dec_HoldFill(json: String) -> HoldFill {
-    return HoldFill {
-        request_id: std::json::find_string_field(json, "request_id"),
-        record_head: std::json::find_string_field(json, "record_head"),
-        position: std::json::find_string_field(json, "position"),
-        holder: std::json::find_string_field(json, "holder"),
-    };
+    request_id: String = "";
+    record_head: String = "";
+    position: String = "";
+    holder: String = "";
 }
 
 type KnowledgeBind {
-    request_id: String;
-    record_head: String;
-    idea_id: String;
-    author: String;
-    target: String;
-    rationale: String;
-}
-
-fn api_enc_KnowledgeBind(v: KnowledgeBind) -> String {
-    return "{\"request_id\":" + api_str(v.request_id) + ",\"record_head\":" + api_str(v.record_head) + ",\"idea_id\":" + api_str(v.idea_id) + ",\"author\":" + api_str(v.author) + ",\"target\":" + api_str(v.target) + ",\"rationale\":" + api_str(v.rationale) + "}";
-}
-
-fn api_dec_KnowledgeBind(json: String) -> KnowledgeBind {
-    return KnowledgeBind {
-        request_id: std::json::find_string_field(json, "request_id"),
-        record_head: std::json::find_string_field(json, "record_head"),
-        idea_id: std::json::find_string_field(json, "idea_id"),
-        author: std::json::find_string_field(json, "author"),
-        target: std::json::find_string_field(json, "target"),
-        rationale: std::json::find_string_field(json, "rationale"),
-    };
+    request_id: String = "";
+    record_head: String = "";
+    idea_id: String = "";
+    author: String = "";
+    target: String = "";
+    rationale: String = "";
 }
 
 type KnowledgeLink {
-    request_id: String;
-    record_head: String;
-    target_id: String;
-    from_id: String;
-    to_id: String;
-    rel: String;
-    rationale: String;
-}
-
-fn api_enc_KnowledgeLink(v: KnowledgeLink) -> String {
-    return "{\"request_id\":" + api_str(v.request_id) + ",\"record_head\":" + api_str(v.record_head) + ",\"target_id\":" + api_str(v.target_id) + ",\"from_id\":" + api_str(v.from_id) + ",\"to_id\":" + api_str(v.to_id) + ",\"rel\":" + api_str(v.rel) + ",\"rationale\":" + api_str(v.rationale) + "}";
-}
-
-fn api_dec_KnowledgeLink(json: String) -> KnowledgeLink {
-    return KnowledgeLink {
-        request_id: std::json::find_string_field(json, "request_id"),
-        record_head: std::json::find_string_field(json, "record_head"),
-        target_id: std::json::find_string_field(json, "target_id"),
-        from_id: std::json::find_string_field(json, "from_id"),
-        to_id: std::json::find_string_field(json, "to_id"),
-        rel: std::json::find_string_field(json, "rel"),
-        rationale: std::json::find_string_field(json, "rationale"),
-    };
+    request_id: String = "";
+    record_head: String = "";
+    target_id: String = "";
+    from_id: String = "";
+    to_id: String = "";
+    rel: String = "";
+    rationale: String = "";
 }
 
 type KnowledgeNodeProposal {
-    request_id: String;
-    record_head: String;
-    kind: String;
-    name: String;
-    text: String;
-    author: String;
-    target: String;
-    rationale: String;
-}
-
-fn api_enc_KnowledgeNodeProposal(v: KnowledgeNodeProposal) -> String {
-    return "{\"request_id\":" + api_str(v.request_id) + ",\"record_head\":" + api_str(v.record_head) + ",\"kind\":" + api_str(v.kind) + ",\"name\":" + api_str(v.name) + ",\"text\":" + api_str(v.text) + ",\"author\":" + api_str(v.author) + ",\"target\":" + api_str(v.target) + ",\"rationale\":" + api_str(v.rationale) + "}";
-}
-
-fn api_dec_KnowledgeNodeProposal(json: String) -> KnowledgeNodeProposal {
-    return KnowledgeNodeProposal {
-        request_id: std::json::find_string_field(json, "request_id"),
-        record_head: std::json::find_string_field(json, "record_head"),
-        kind: std::json::find_string_field(json, "kind"),
-        name: std::json::find_string_field(json, "name"),
-        text: std::json::find_string_field(json, "text"),
-        author: std::json::find_string_field(json, "author"),
-        target: std::json::find_string_field(json, "target"),
-        rationale: std::json::find_string_field(json, "rationale"),
-    };
+    request_id: String = "";
+    record_head: String = "";
+    kind: String = "";
+    name: String = "";
+    text: String = "";
+    author: String = "";
+    target: String = "";
+    rationale: String = "";
 }
 
 type KnowledgeNodeRetirement {
-    request_id: String;
-    record_head: String;
-    id: String;
-    rationale: String;
-}
-
-fn api_enc_KnowledgeNodeRetirement(v: KnowledgeNodeRetirement) -> String {
-    return "{\"request_id\":" + api_str(v.request_id) + ",\"record_head\":" + api_str(v.record_head) + ",\"id\":" + api_str(v.id) + ",\"rationale\":" + api_str(v.rationale) + "}";
-}
-
-fn api_dec_KnowledgeNodeRetirement(json: String) -> KnowledgeNodeRetirement {
-    return KnowledgeNodeRetirement {
-        request_id: std::json::find_string_field(json, "request_id"),
-        record_head: std::json::find_string_field(json, "record_head"),
-        id: std::json::find_string_field(json, "id"),
-        rationale: std::json::find_string_field(json, "rationale"),
-    };
+    request_id: String = "";
+    record_head: String = "";
+    id: String = "";
+    rationale: String = "";
 }
 
 type KnowledgeNodeRevision {
-    request_id: String;
-    record_head: String;
-    supersedes: String;
-    kind: String;
-    name: String;
-    text: String;
-    author: String;
-    target: String;
-    rationale: String;
-}
-
-fn api_enc_KnowledgeNodeRevision(v: KnowledgeNodeRevision) -> String {
-    return "{\"request_id\":" + api_str(v.request_id) + ",\"record_head\":" + api_str(v.record_head) + ",\"supersedes\":" + api_str(v.supersedes) + ",\"kind\":" + api_str(v.kind) + ",\"name\":" + api_str(v.name) + ",\"text\":" + api_str(v.text) + ",\"author\":" + api_str(v.author) + ",\"target\":" + api_str(v.target) + ",\"rationale\":" + api_str(v.rationale) + "}";
-}
-
-fn api_dec_KnowledgeNodeRevision(json: String) -> KnowledgeNodeRevision {
-    return KnowledgeNodeRevision {
-        request_id: std::json::find_string_field(json, "request_id"),
-        record_head: std::json::find_string_field(json, "record_head"),
-        supersedes: std::json::find_string_field(json, "supersedes"),
-        kind: std::json::find_string_field(json, "kind"),
-        name: std::json::find_string_field(json, "name"),
-        text: std::json::find_string_field(json, "text"),
-        author: std::json::find_string_field(json, "author"),
-        target: std::json::find_string_field(json, "target"),
-        rationale: std::json::find_string_field(json, "rationale"),
-    };
+    request_id: String = "";
+    record_head: String = "";
+    supersedes: String = "";
+    kind: String = "";
+    name: String = "";
+    text: String = "";
+    author: String = "";
+    target: String = "";
+    rationale: String = "";
 }
 
 type KnowledgeRecovery {
-    request_id: String;
-}
-
-fn api_enc_KnowledgeRecovery(v: KnowledgeRecovery) -> String {
-    return "{\"request_id\":" + api_str(v.request_id) + "}";
-}
-
-fn api_dec_KnowledgeRecovery(json: String) -> KnowledgeRecovery {
-    return KnowledgeRecovery {
-        request_id: std::json::find_string_field(json, "request_id"),
-    };
+    request_id: String = "";
 }
 
 type KnowledgeReply {
-    ok: Bool;
-    code: String;
-    application_id: String;
-    head: String;
-    revision: Int;
-    receipt: ops_KnowledgeReceipt;
-}
-
-fn api_enc_KnowledgeReply(v: KnowledgeReply) -> String {
-    return "{\"ok\":" + (if v.ok { "true" } else { "false" }) + ",\"code\":" + api_str(v.code) + ",\"application_id\":" + api_str(v.application_id) + ",\"head\":" + api_str(v.head) + ",\"revision\":" + to_string(v.revision) + ",\"receipt\":" + api_enc_ops_KnowledgeReceipt(v.receipt) + "}";
-}
-
-fn api_dec_KnowledgeReply(json: String) -> KnowledgeReply {
-    return KnowledgeReply {
-        ok: std::json::find_bool_field(json, "ok"),
-        code: std::json::find_string_field(json, "code"),
-        application_id: std::json::find_string_field(json, "application_id"),
-        head: std::json::find_string_field(json, "head"),
-        revision: std::json::find_int_field(json, "revision"),
-        receipt: api_dec_ops_KnowledgeReceipt(std::json::find_field_raw(json, "receipt")),
-    };
+    ok: Bool = false;
+    code: String = "";
+    application_id: String = "";
+    head: String = "";
+    revision: Int = 0;
+    receipt: ops_KnowledgeReceipt = ops_KnowledgeReceipt { };
 }
 
 type KnowledgeUnbind {
-    request_id: String;
-    record_head: String;
-    binding_id: String;
-    idea_id: String;
-    author: String;
-    target: String;
-    rationale: String;
-}
-
-fn api_enc_KnowledgeUnbind(v: KnowledgeUnbind) -> String {
-    return "{\"request_id\":" + api_str(v.request_id) + ",\"record_head\":" + api_str(v.record_head) + ",\"binding_id\":" + api_str(v.binding_id) + ",\"idea_id\":" + api_str(v.idea_id) + ",\"author\":" + api_str(v.author) + ",\"target\":" + api_str(v.target) + ",\"rationale\":" + api_str(v.rationale) + "}";
-}
-
-fn api_dec_KnowledgeUnbind(json: String) -> KnowledgeUnbind {
-    return KnowledgeUnbind {
-        request_id: std::json::find_string_field(json, "request_id"),
-        record_head: std::json::find_string_field(json, "record_head"),
-        binding_id: std::json::find_string_field(json, "binding_id"),
-        idea_id: std::json::find_string_field(json, "idea_id"),
-        author: std::json::find_string_field(json, "author"),
-        target: std::json::find_string_field(json, "target"),
-        rationale: std::json::find_string_field(json, "rationale"),
-    };
+    request_id: String = "";
+    record_head: String = "";
+    binding_id: String = "";
+    idea_id: String = "";
+    author: String = "";
+    target: String = "";
+    rationale: String = "";
 }
 
 type KnowledgeUnlink {
-    request_id: String;
-    record_head: String;
-    target_id: String;
-    edge_id: String;
-    from_id: String;
-    to_id: String;
-    rel: String;
-    rationale: String;
-}
-
-fn api_enc_KnowledgeUnlink(v: KnowledgeUnlink) -> String {
-    return "{\"request_id\":" + api_str(v.request_id) + ",\"record_head\":" + api_str(v.record_head) + ",\"target_id\":" + api_str(v.target_id) + ",\"edge_id\":" + api_str(v.edge_id) + ",\"from_id\":" + api_str(v.from_id) + ",\"to_id\":" + api_str(v.to_id) + ",\"rel\":" + api_str(v.rel) + ",\"rationale\":" + api_str(v.rationale) + "}";
-}
-
-fn api_dec_KnowledgeUnlink(json: String) -> KnowledgeUnlink {
-    return KnowledgeUnlink {
-        request_id: std::json::find_string_field(json, "request_id"),
-        record_head: std::json::find_string_field(json, "record_head"),
-        target_id: std::json::find_string_field(json, "target_id"),
-        edge_id: std::json::find_string_field(json, "edge_id"),
-        from_id: std::json::find_string_field(json, "from_id"),
-        to_id: std::json::find_string_field(json, "to_id"),
-        rel: std::json::find_string_field(json, "rel"),
-        rationale: std::json::find_string_field(json, "rationale"),
-    };
+    request_id: String = "";
+    record_head: String = "";
+    target_id: String = "";
+    edge_id: String = "";
+    from_id: String = "";
+    to_id: String = "";
+    rel: String = "";
+    rationale: String = "";
 }
 
 type Lookup {
-    request_id: String;
-}
-
-fn api_enc_Lookup(v: Lookup) -> String {
-    return "{\"request_id\":" + api_str(v.request_id) + "}";
-}
-
-fn api_dec_Lookup(json: String) -> Lookup {
-    return Lookup {
-        request_id: std::json::find_string_field(json, "request_id"),
-    };
+    request_id: String = "";
 }
 
 type OrganizationCommandOutcome {
-    proposal_state: String;
-    source_head: String;
-    source_digest: String;
-    mutation_id: String;
-    candidate_commit: String;
-    application_state: String;
-    application_reason_code: String;
-    restart_handoff_state: String;
-}
-
-fn api_enc_OrganizationCommandOutcome(v: OrganizationCommandOutcome) -> String {
-    return "{\"proposal_state\":" + api_str(v.proposal_state) + ",\"source_head\":" + api_str(v.source_head) + ",\"source_digest\":" + api_str(v.source_digest) + ",\"mutation_id\":" + api_str(v.mutation_id) + ",\"candidate_commit\":" + api_str(v.candidate_commit) + ",\"application_state\":" + api_str(v.application_state) + ",\"application_reason_code\":" + api_str(v.application_reason_code) + ",\"restart_handoff_state\":" + api_str(v.restart_handoff_state) + "}";
-}
-
-fn api_dec_OrganizationCommandOutcome(json: String) -> OrganizationCommandOutcome {
-    return OrganizationCommandOutcome {
-        proposal_state: std::json::find_string_field(json, "proposal_state"),
-        source_head: std::json::find_string_field(json, "source_head"),
-        source_digest: std::json::find_string_field(json, "source_digest"),
-        mutation_id: std::json::find_string_field(json, "mutation_id"),
-        candidate_commit: std::json::find_string_field(json, "candidate_commit"),
-        application_state: std::json::find_string_field(json, "application_state"),
-        application_reason_code: std::json::find_string_field(json, "application_reason_code"),
-        restart_handoff_state: std::json::find_string_field(json, "restart_handoff_state"),
-    };
+    proposal_state: String = "";
+    source_head: String = "";
+    source_digest: String = "";
+    mutation_id: String = "";
+    candidate_commit: String = "";
+    application_state: String = "";
+    application_reason_code: String = "";
+    restart_handoff_state: String = "";
 }
 
 type OrganizationProposal {
-    request_id: String;
-    source_head: String;
-    module_digest: String;
-    dependency_source: String;
-    dependency_digest: String;
-    record_head: String;
-    source_text: String;
-    rationale: String;
-}
-
-fn api_enc_OrganizationProposal(v: OrganizationProposal) -> String {
-    return "{\"request_id\":" + api_str(v.request_id) + ",\"source_head\":" + api_str(v.source_head) + ",\"module_digest\":" + api_str(v.module_digest) + ",\"dependency_source\":" + api_str(v.dependency_source) + ",\"dependency_digest\":" + api_str(v.dependency_digest) + ",\"record_head\":" + api_str(v.record_head) + ",\"source_text\":" + api_str(v.source_text) + ",\"rationale\":" + api_str(v.rationale) + "}";
-}
-
-fn api_dec_OrganizationProposal(json: String) -> OrganizationProposal {
-    return OrganizationProposal {
-        request_id: std::json::find_string_field(json, "request_id"),
-        source_head: std::json::find_string_field(json, "source_head"),
-        module_digest: std::json::find_string_field(json, "module_digest"),
-        dependency_source: std::json::find_string_field(json, "dependency_source"),
-        dependency_digest: std::json::find_string_field(json, "dependency_digest"),
-        record_head: std::json::find_string_field(json, "record_head"),
-        source_text: std::json::find_string_field(json, "source_text"),
-        rationale: std::json::find_string_field(json, "rationale"),
-    };
+    request_id: String = "";
+    source_head: String = "";
+    module_digest: String = "";
+    dependency_source: String = "";
+    dependency_digest: String = "";
+    record_head: String = "";
+    source_text: String = "";
+    rationale: String = "";
 }
 
 type Outcome {
-    request_id: String;
-    attempt_id: String;
-    holder: String;
-    token: Int;
-    effect_class: String;
-    disposition: String;
-    result: String;
-    result_ref: String;
-    narrative: String;
-    evidence: String;
-    receipts: String;
-    hat_digest: String;
-    hat_head: String;
-    hat_watermark: Int;
-    prompt_digest: String;
-    renderer: String;
-}
-
-fn api_enc_Outcome(v: Outcome) -> String {
-    return "{\"request_id\":" + api_str(v.request_id) + ",\"attempt_id\":" + api_str(v.attempt_id) + ",\"holder\":" + api_str(v.holder) + ",\"token\":" + to_string(v.token) + ",\"effect_class\":" + api_str(v.effect_class) + ",\"disposition\":" + api_str(v.disposition) + ",\"result\":" + api_str(v.result) + ",\"result_ref\":" + api_str(v.result_ref) + ",\"narrative\":" + api_str(v.narrative) + ",\"evidence\":" + api_str(v.evidence) + ",\"receipts\":" + api_str(v.receipts) + ",\"hat_digest\":" + api_str(v.hat_digest) + ",\"hat_head\":" + api_str(v.hat_head) + ",\"hat_watermark\":" + to_string(v.hat_watermark) + ",\"prompt_digest\":" + api_str(v.prompt_digest) + ",\"renderer\":" + api_str(v.renderer) + "}";
-}
-
-fn api_dec_Outcome(json: String) -> Outcome {
-    return Outcome {
-        request_id: std::json::find_string_field(json, "request_id"),
-        attempt_id: std::json::find_string_field(json, "attempt_id"),
-        holder: std::json::find_string_field(json, "holder"),
-        token: std::json::find_int_field(json, "token"),
-        effect_class: std::json::find_string_field(json, "effect_class"),
-        disposition: std::json::find_string_field(json, "disposition"),
-        result: std::json::find_string_field(json, "result"),
-        result_ref: std::json::find_string_field(json, "result_ref"),
-        narrative: std::json::find_string_field(json, "narrative"),
-        evidence: std::json::find_string_field(json, "evidence"),
-        receipts: std::json::find_string_field(json, "receipts"),
-        hat_digest: std::json::find_string_field(json, "hat_digest"),
-        hat_head: std::json::find_string_field(json, "hat_head"),
-        hat_watermark: std::json::find_int_field(json, "hat_watermark"),
-        prompt_digest: std::json::find_string_field(json, "prompt_digest"),
-        renderer: std::json::find_string_field(json, "renderer"),
-    };
+    request_id: String = "";
+    attempt_id: String = "";
+    holder: String = "";
+    token: Int = 0;
+    effect_class: String = "";
+    disposition: String = "";
+    result: String = "";
+    result_ref: String = "";
+    narrative: String = "";
+    evidence: String = "";
+    receipts: String = "";
+    hat_digest: String = "";
+    hat_head: String = "";
+    hat_watermark: Int = 0;
+    prompt_digest: String = "";
+    renderer: String = "";
 }
 
 type PersonRetirement {
-    request_id: String;
-    person: String;
-    subject_digest: String;
-    to: String;
-}
-
-fn api_enc_PersonRetirement(v: PersonRetirement) -> String {
-    return "{\"request_id\":" + api_str(v.request_id) + ",\"person\":" + api_str(v.person) + ",\"subject_digest\":" + api_str(v.subject_digest) + ",\"to\":" + api_str(v.to) + "}";
-}
-
-fn api_dec_PersonRetirement(json: String) -> PersonRetirement {
-    return PersonRetirement {
-        request_id: std::json::find_string_field(json, "request_id"),
-        person: std::json::find_string_field(json, "person"),
-        subject_digest: std::json::find_string_field(json, "subject_digest"),
-        to: std::json::find_string_field(json, "to"),
-    };
+    request_id: String = "";
+    person: String = "";
+    subject_digest: String = "";
+    to: String = "";
 }
 
 type PersonRetirementOutcome {
-    state: String;
-    from: String;
-    to: String;
-    event_id: String;
-    transferred: Int;
-}
-
-fn api_enc_PersonRetirementOutcome(v: PersonRetirementOutcome) -> String {
-    return "{\"state\":" + api_str(v.state) + ",\"from\":" + api_str(v.from) + ",\"to\":" + api_str(v.to) + ",\"event_id\":" + api_str(v.event_id) + ",\"transferred\":" + to_string(v.transferred) + "}";
-}
-
-fn api_dec_PersonRetirementOutcome(json: String) -> PersonRetirementOutcome {
-    return PersonRetirementOutcome {
-        state: std::json::find_string_field(json, "state"),
-        from: std::json::find_string_field(json, "from"),
-        to: std::json::find_string_field(json, "to"),
-        event_id: std::json::find_string_field(json, "event_id"),
-        transferred: std::json::find_int_field(json, "transferred"),
-    };
+    state: String = "";
+    from: String = "";
+    to: String = "";
+    event_id: String = "";
+    transferred: Int = 0;
 }
 
 type PositionOpening {
-    request_id: String;
-    record_head: String;
-    position: String;
-    text: String;
-    mandate: String;
-    under: String;
-}
-
-fn api_enc_PositionOpening(v: PositionOpening) -> String {
-    return "{\"request_id\":" + api_str(v.request_id) + ",\"record_head\":" + api_str(v.record_head) + ",\"position\":" + api_str(v.position) + ",\"text\":" + api_str(v.text) + ",\"mandate\":" + api_str(v.mandate) + ",\"under\":" + api_str(v.under) + "}";
-}
-
-fn api_dec_PositionOpening(json: String) -> PositionOpening {
-    return PositionOpening {
-        request_id: std::json::find_string_field(json, "request_id"),
-        record_head: std::json::find_string_field(json, "record_head"),
-        position: std::json::find_string_field(json, "position"),
-        text: std::json::find_string_field(json, "text"),
-        mandate: std::json::find_string_field(json, "mandate"),
-        under: std::json::find_string_field(json, "under"),
-    };
+    request_id: String = "";
+    record_head: String = "";
+    position: String = "";
+    text: String = "";
+    mandate: String = "";
+    under: String = "";
 }
 
 type PracticeProposal {
-    request_id: String;
-    subject_digest: String;
-    text: String;
-    rationale: String;
-}
-
-fn api_enc_PracticeProposal(v: PracticeProposal) -> String {
-    return "{\"request_id\":" + api_str(v.request_id) + ",\"subject_digest\":" + api_str(v.subject_digest) + ",\"text\":" + api_str(v.text) + ",\"rationale\":" + api_str(v.rationale) + "}";
-}
-
-fn api_dec_PracticeProposal(json: String) -> PracticeProposal {
-    return PracticeProposal {
-        request_id: std::json::find_string_field(json, "request_id"),
-        subject_digest: std::json::find_string_field(json, "subject_digest"),
-        text: std::json::find_string_field(json, "text"),
-        rationale: std::json::find_string_field(json, "rationale"),
-    };
+    request_id: String = "";
+    subject_digest: String = "";
+    text: String = "";
+    rationale: String = "";
 }
 
 type Release {
-    request_id: String;
-    attempt_id: String;
-    holder: String;
-    token: Int;
-    why: String;
-}
-
-fn api_enc_Release(v: Release) -> String {
-    return "{\"request_id\":" + api_str(v.request_id) + ",\"attempt_id\":" + api_str(v.attempt_id) + ",\"holder\":" + api_str(v.holder) + ",\"token\":" + to_string(v.token) + ",\"why\":" + api_str(v.why) + "}";
-}
-
-fn api_dec_Release(json: String) -> Release {
-    return Release {
-        request_id: std::json::find_string_field(json, "request_id"),
-        attempt_id: std::json::find_string_field(json, "attempt_id"),
-        holder: std::json::find_string_field(json, "holder"),
-        token: std::json::find_int_field(json, "token"),
-        why: std::json::find_string_field(json, "why"),
-    };
+    request_id: String = "";
+    attempt_id: String = "";
+    holder: String = "";
+    token: Int = 0;
+    why: String = "";
 }
 
 type Renewal {
-    request_id: String;
-    attempt_id: String;
-    holder: String;
-    token: Int;
-    ttl: Int;
-}
-
-fn api_enc_Renewal(v: Renewal) -> String {
-    return "{\"request_id\":" + api_str(v.request_id) + ",\"attempt_id\":" + api_str(v.attempt_id) + ",\"holder\":" + api_str(v.holder) + ",\"token\":" + to_string(v.token) + ",\"ttl\":" + to_string(v.ttl) + "}";
-}
-
-fn api_dec_Renewal(json: String) -> Renewal {
-    return Renewal {
-        request_id: std::json::find_string_field(json, "request_id"),
-        attempt_id: std::json::find_string_field(json, "attempt_id"),
-        holder: std::json::find_string_field(json, "holder"),
-        token: std::json::find_int_field(json, "token"),
-        ttl: std::json::find_int_field(json, "ttl"),
-    };
+    request_id: String = "";
+    attempt_id: String = "";
+    holder: String = "";
+    token: Int = 0;
+    ttl: Int = 0;
 }
 
 type ReviewDecision {
-    request_id: String;
-    review_id: String;
-    subject_digest: String;
-    verdict: String;
-    comment: String;
-}
-
-fn api_enc_ReviewDecision(v: ReviewDecision) -> String {
-    return "{\"request_id\":" + api_str(v.request_id) + ",\"review_id\":" + api_str(v.review_id) + ",\"subject_digest\":" + api_str(v.subject_digest) + ",\"verdict\":" + api_str(v.verdict) + ",\"comment\":" + api_str(v.comment) + "}";
-}
-
-fn api_dec_ReviewDecision(json: String) -> ReviewDecision {
-    return ReviewDecision {
-        request_id: std::json::find_string_field(json, "request_id"),
-        review_id: std::json::find_string_field(json, "review_id"),
-        subject_digest: std::json::find_string_field(json, "subject_digest"),
-        verdict: std::json::find_string_field(json, "verdict"),
-        comment: std::json::find_string_field(json, "comment"),
-    };
+    request_id: String = "";
+    review_id: String = "";
+    subject_digest: String = "";
+    verdict: String = "";
+    comment: String = "";
 }
 
 type StructureCommandOutcome {
-    state: String;
-    request_id: String;
-    review_id: String;
-    event_id: String;
-    why: String;
-    warning: String;
-}
-
-fn api_enc_StructureCommandOutcome(v: StructureCommandOutcome) -> String {
-    return "{\"state\":" + api_str(v.state) + ",\"request_id\":" + api_str(v.request_id) + ",\"review_id\":" + api_str(v.review_id) + ",\"event_id\":" + api_str(v.event_id) + ",\"why\":" + api_str(v.why) + ",\"warning\":" + api_str(v.warning) + "}";
-}
-
-fn api_dec_StructureCommandOutcome(json: String) -> StructureCommandOutcome {
-    return StructureCommandOutcome {
-        state: std::json::find_string_field(json, "state"),
-        request_id: std::json::find_string_field(json, "request_id"),
-        review_id: std::json::find_string_field(json, "review_id"),
-        event_id: std::json::find_string_field(json, "event_id"),
-        why: std::json::find_string_field(json, "why"),
-        warning: std::json::find_string_field(json, "warning"),
-    };
+    state: String = "";
+    request_id: String = "";
+    review_id: String = "";
+    event_id: String = "";
+    why: String = "";
+    warning: String = "";
 }
 
 type TaskCommandOutcome {
-    state: String;
-    from: String;
-    to: String;
-    event_id: String;
-}
-
-fn api_enc_TaskCommandOutcome(v: TaskCommandOutcome) -> String {
-    return "{\"state\":" + api_str(v.state) + ",\"from\":" + api_str(v.from) + ",\"to\":" + api_str(v.to) + ",\"event_id\":" + api_str(v.event_id) + "}";
-}
-
-fn api_dec_TaskCommandOutcome(json: String) -> TaskCommandOutcome {
-    return TaskCommandOutcome {
-        state: std::json::find_string_field(json, "state"),
-        from: std::json::find_string_field(json, "from"),
-        to: std::json::find_string_field(json, "to"),
-        event_id: std::json::find_string_field(json, "event_id"),
-    };
+    state: String = "";
+    from: String = "";
+    to: String = "";
+    event_id: String = "";
 }
 
 type TaskCreateOutcome {
-    intent_id: String;
-    intent_state: String;
-    task_id: String;
-    event_id: String;
-    kind: String;
-}
-
-fn api_enc_TaskCreateOutcome(v: TaskCreateOutcome) -> String {
-    return "{\"intent_id\":" + api_str(v.intent_id) + ",\"intent_state\":" + api_str(v.intent_state) + ",\"task_id\":" + api_str(v.task_id) + ",\"event_id\":" + api_str(v.event_id) + ",\"kind\":" + api_str(v.kind) + "}";
-}
-
-fn api_dec_TaskCreateOutcome(json: String) -> TaskCreateOutcome {
-    return TaskCreateOutcome {
-        intent_id: std::json::find_string_field(json, "intent_id"),
-        intent_state: std::json::find_string_field(json, "intent_state"),
-        task_id: std::json::find_string_field(json, "task_id"),
-        event_id: std::json::find_string_field(json, "event_id"),
-        kind: std::json::find_string_field(json, "kind"),
-    };
+    intent_id: String = "";
+    intent_state: String = "";
+    task_id: String = "";
+    event_id: String = "";
+    kind: String = "";
 }
 
 type TaskCreation {
-    request_id: String;
-    record_head: String;
-    outcome: String;
-    to: String;
-    kind: String;
-}
-
-fn api_enc_TaskCreation(v: TaskCreation) -> String {
-    return "{\"request_id\":" + api_str(v.request_id) + ",\"record_head\":" + api_str(v.record_head) + ",\"outcome\":" + api_str(v.outcome) + ",\"to\":" + api_str(v.to) + ",\"kind\":" + api_str(v.kind) + "}";
-}
-
-fn api_dec_TaskCreation(json: String) -> TaskCreation {
-    return TaskCreation {
-        request_id: std::json::find_string_field(json, "request_id"),
-        record_head: std::json::find_string_field(json, "record_head"),
-        outcome: std::json::find_string_field(json, "outcome"),
-        to: std::json::find_string_field(json, "to"),
-        kind: std::json::find_string_field(json, "kind"),
-    };
+    request_id: String = "";
+    record_head: String = "";
+    outcome: String = "";
+    to: String = "";
+    kind: String = "";
 }
 
 type TaskReassignment {
-    request_id: String;
-    task_id: String;
-    assignment_digest: String;
-    assignee: String;
-    to: String;
-}
-
-fn api_enc_TaskReassignment(v: TaskReassignment) -> String {
-    return "{\"request_id\":" + api_str(v.request_id) + ",\"task_id\":" + api_str(v.task_id) + ",\"assignment_digest\":" + api_str(v.assignment_digest) + ",\"assignee\":" + api_str(v.assignee) + ",\"to\":" + api_str(v.to) + "}";
-}
-
-fn api_dec_TaskReassignment(json: String) -> TaskReassignment {
-    return TaskReassignment {
-        request_id: std::json::find_string_field(json, "request_id"),
-        task_id: std::json::find_string_field(json, "task_id"),
-        assignment_digest: std::json::find_string_field(json, "assignment_digest"),
-        assignee: std::json::find_string_field(json, "assignee"),
-        to: std::json::find_string_field(json, "to"),
-    };
+    request_id: String = "";
+    task_id: String = "";
+    assignment_digest: String = "";
+    assignee: String = "";
+    to: String = "";
 }
 
 type ops_KnowledgeBindingOutcome {
-    binding_id: String;
-    proposal_state: String;
-    candidate_digest: String;
-    review_id: String;
-    review_state: String;
-    review_outcome: String;
-    effect_state: String;
-    effect_reason: String;
-    reason: String;
-}
-
-fn api_enc_ops_KnowledgeBindingOutcome(v: ops_KnowledgeBindingOutcome) -> String {
-    return "{\"binding_id\":" + api_str(v.binding_id) + ",\"proposal_state\":" + api_str(v.proposal_state) + ",\"candidate_digest\":" + api_str(v.candidate_digest) + ",\"review_id\":" + api_str(v.review_id) + ",\"review_state\":" + api_str(v.review_state) + ",\"review_outcome\":" + api_str(v.review_outcome) + ",\"effect_state\":" + api_str(v.effect_state) + ",\"effect_reason\":" + api_str(v.effect_reason) + ",\"reason\":" + api_str(v.reason) + "}";
-}
-
-fn api_dec_ops_KnowledgeBindingOutcome(json: String) -> ops_KnowledgeBindingOutcome {
-    return ops_KnowledgeBindingOutcome {
-        binding_id: std::json::find_string_field(json, "binding_id"),
-        proposal_state: std::json::find_string_field(json, "proposal_state"),
-        candidate_digest: std::json::find_string_field(json, "candidate_digest"),
-        review_id: std::json::find_string_field(json, "review_id"),
-        review_state: std::json::find_string_field(json, "review_state"),
-        review_outcome: std::json::find_string_field(json, "review_outcome"),
-        effect_state: std::json::find_string_field(json, "effect_state"),
-        effect_reason: std::json::find_string_field(json, "effect_reason"),
-        reason: std::json::find_string_field(json, "reason"),
-    };
+    binding_id: String = "";
+    proposal_state: String = "";
+    candidate_digest: String = "";
+    review_id: String = "";
+    review_state: String = "";
+    review_outcome: String = "";
+    effect_state: String = "";
+    effect_reason: String = "";
+    reason: String = "";
 }
 
 type ops_KnowledgeEdgeOutcome {
-    proposal_state: String;
-    candidate_digest: String;
-    review_id: String;
-    review_state: String;
-    review_outcome: String;
-    effect_state: String;
-    effect_reason: String;
-    reason: String;
-}
-
-fn api_enc_ops_KnowledgeEdgeOutcome(v: ops_KnowledgeEdgeOutcome) -> String {
-    return "{\"proposal_state\":" + api_str(v.proposal_state) + ",\"candidate_digest\":" + api_str(v.candidate_digest) + ",\"review_id\":" + api_str(v.review_id) + ",\"review_state\":" + api_str(v.review_state) + ",\"review_outcome\":" + api_str(v.review_outcome) + ",\"effect_state\":" + api_str(v.effect_state) + ",\"effect_reason\":" + api_str(v.effect_reason) + ",\"reason\":" + api_str(v.reason) + "}";
-}
-
-fn api_dec_ops_KnowledgeEdgeOutcome(json: String) -> ops_KnowledgeEdgeOutcome {
-    return ops_KnowledgeEdgeOutcome {
-        proposal_state: std::json::find_string_field(json, "proposal_state"),
-        candidate_digest: std::json::find_string_field(json, "candidate_digest"),
-        review_id: std::json::find_string_field(json, "review_id"),
-        review_state: std::json::find_string_field(json, "review_state"),
-        review_outcome: std::json::find_string_field(json, "review_outcome"),
-        effect_state: std::json::find_string_field(json, "effect_state"),
-        effect_reason: std::json::find_string_field(json, "effect_reason"),
-        reason: std::json::find_string_field(json, "reason"),
-    };
+    proposal_state: String = "";
+    candidate_digest: String = "";
+    review_id: String = "";
+    review_state: String = "";
+    review_outcome: String = "";
+    effect_state: String = "";
+    effect_reason: String = "";
+    reason: String = "";
 }
 
 type ops_KnowledgeNodeOutcome {
-    proposal_state: String;
-    candidate_digest: String;
-    review_id: String;
-    review_state: String;
-    review_outcome: String;
-    activation_state: String;
-    activation_reason: String;
-    reason: String;
-}
-
-fn api_enc_ops_KnowledgeNodeOutcome(v: ops_KnowledgeNodeOutcome) -> String {
-    return "{\"proposal_state\":" + api_str(v.proposal_state) + ",\"candidate_digest\":" + api_str(v.candidate_digest) + ",\"review_id\":" + api_str(v.review_id) + ",\"review_state\":" + api_str(v.review_state) + ",\"review_outcome\":" + api_str(v.review_outcome) + ",\"activation_state\":" + api_str(v.activation_state) + ",\"activation_reason\":" + api_str(v.activation_reason) + ",\"reason\":" + api_str(v.reason) + "}";
-}
-
-fn api_dec_ops_KnowledgeNodeOutcome(json: String) -> ops_KnowledgeNodeOutcome {
-    return ops_KnowledgeNodeOutcome {
-        proposal_state: std::json::find_string_field(json, "proposal_state"),
-        candidate_digest: std::json::find_string_field(json, "candidate_digest"),
-        review_id: std::json::find_string_field(json, "review_id"),
-        review_state: std::json::find_string_field(json, "review_state"),
-        review_outcome: std::json::find_string_field(json, "review_outcome"),
-        activation_state: std::json::find_string_field(json, "activation_state"),
-        activation_reason: std::json::find_string_field(json, "activation_reason"),
-        reason: std::json::find_string_field(json, "reason"),
-    };
+    proposal_state: String = "";
+    candidate_digest: String = "";
+    review_id: String = "";
+    review_state: String = "";
+    review_outcome: String = "";
+    activation_state: String = "";
+    activation_reason: String = "";
+    reason: String = "";
 }
 
 type ops_KnowledgeReceipt {
-    command_id: String;
-    request_id: String;
-    application_id: String;
-    principal_mode: String;
-    principal_name: String;
-    operation: String;
-    operation_version: String;
-    position_id: String;
-    target_id: String;
-    fingerprint: String;
-    state: String;
-    edge_id: String;
-    event_id: String;
-    admission_head: String;
-    sequence: Int;
-    authority: String;
-    authority_basis: String;
-    details_visible: Bool;
-    node: ops_KnowledgeNodeOutcome;
-    binding: ops_KnowledgeBindingOutcome;
-    reviewed: Bool;
-    relationship: ops_KnowledgeEdgeOutcome;
-}
-
-fn api_enc_ops_KnowledgeReceipt(v: ops_KnowledgeReceipt) -> String {
-    return "{\"command_id\":" + api_str(v.command_id) + ",\"request_id\":" + api_str(v.request_id) + ",\"application_id\":" + api_str(v.application_id) + ",\"principal_mode\":" + api_str(v.principal_mode) + ",\"principal_name\":" + api_str(v.principal_name) + ",\"operation\":" + api_str(v.operation) + ",\"operation_version\":" + api_str(v.operation_version) + ",\"position_id\":" + api_str(v.position_id) + ",\"target_id\":" + api_str(v.target_id) + ",\"fingerprint\":" + api_str(v.fingerprint) + ",\"state\":" + api_str(v.state) + ",\"edge_id\":" + api_str(v.edge_id) + ",\"event_id\":" + api_str(v.event_id) + ",\"admission_head\":" + api_str(v.admission_head) + ",\"sequence\":" + to_string(v.sequence) + ",\"authority\":" + api_str(v.authority) + ",\"authority_basis\":" + api_str(v.authority_basis) + ",\"details_visible\":" + (if v.details_visible { "true" } else { "false" }) + ",\"node\":" + api_enc_ops_KnowledgeNodeOutcome(v.node) + ",\"binding\":" + api_enc_ops_KnowledgeBindingOutcome(v.binding) + ",\"reviewed\":" + (if v.reviewed { "true" } else { "false" }) + ",\"relationship\":" + api_enc_ops_KnowledgeEdgeOutcome(v.relationship) + "}";
-}
-
-fn api_dec_ops_KnowledgeReceipt(json: String) -> ops_KnowledgeReceipt {
-    return ops_KnowledgeReceipt {
-        command_id: std::json::find_string_field(json, "command_id"),
-        request_id: std::json::find_string_field(json, "request_id"),
-        application_id: std::json::find_string_field(json, "application_id"),
-        principal_mode: std::json::find_string_field(json, "principal_mode"),
-        principal_name: std::json::find_string_field(json, "principal_name"),
-        operation: std::json::find_string_field(json, "operation"),
-        operation_version: std::json::find_string_field(json, "operation_version"),
-        position_id: std::json::find_string_field(json, "position_id"),
-        target_id: std::json::find_string_field(json, "target_id"),
-        fingerprint: std::json::find_string_field(json, "fingerprint"),
-        state: std::json::find_string_field(json, "state"),
-        edge_id: std::json::find_string_field(json, "edge_id"),
-        event_id: std::json::find_string_field(json, "event_id"),
-        admission_head: std::json::find_string_field(json, "admission_head"),
-        sequence: std::json::find_int_field(json, "sequence"),
-        authority: std::json::find_string_field(json, "authority"),
-        authority_basis: std::json::find_string_field(json, "authority_basis"),
-        details_visible: std::json::find_bool_field(json, "details_visible"),
-        node: api_dec_ops_KnowledgeNodeOutcome(std::json::find_field_raw(json, "node")),
-        binding: api_dec_ops_KnowledgeBindingOutcome(std::json::find_field_raw(json, "binding")),
-        reviewed: std::json::find_bool_field(json, "reviewed"),
-        relationship: api_dec_ops_KnowledgeEdgeOutcome(std::json::find_field_raw(json, "relationship")),
-    };
+    command_id: String = "";
+    request_id: String = "";
+    application_id: String = "";
+    principal_mode: String = "";
+    principal_name: String = "";
+    operation: String = "";
+    operation_version: String = "";
+    position_id: String = "";
+    target_id: String = "";
+    fingerprint: String = "";
+    state: String = "";
+    edge_id: String = "";
+    event_id: String = "";
+    admission_head: String = "";
+    sequence: Int = 0;
+    authority: String = "";
+    authority_basis: String = "";
+    details_visible: Bool = false;
+    node: ops_KnowledgeNodeOutcome = ops_KnowledgeNodeOutcome { };
+    binding: ops_KnowledgeBindingOutcome = ops_KnowledgeBindingOutcome { };
+    reviewed: Bool = false;
+    relationship: ops_KnowledgeEdgeOutcome = ops_KnowledgeEdgeOutcome { };
 }
 
 // Commands::apply_batch, requires position
 type CommandsApplyBatchOutcome = enum { Result(CommandReply), Refusal(ApiRefusal), ServerError, Lost(String) };
 
 fn commands_apply_batch(endpoint: String, bearer: String, request: BatchApplication) -> CommandsApplyBatchOutcome {
-    let raw = api_call(endpoint, bearer, "Commands::apply_batch", api_enc_BatchApplication(request));
-    if raw.outcome == 0 { return CommandsApplyBatchOutcome::Result(api_dec_CommandReply(raw.body)); }
+    let raw = api_call(endpoint, bearer, "Commands::apply_batch", BatchApplication::api_encode(request));
+    if raw.outcome == 0 {
+        let value = CommandReply::api_decode(raw.body) or { return CommandsApplyBatchOutcome::Lost("the result did not decode: " + err.kind + ": " + err.field); };
+        return CommandsApplyBatchOutcome::Result(value);
+    }
     if raw.outcome == 2 { return CommandsApplyBatchOutcome::Refusal(api_refusal(raw)); }
     if raw.outcome == 3 { return CommandsApplyBatchOutcome::ServerError; }
     if raw.outcome == 1 { return CommandsApplyBatchOutcome::Lost("the member has no handler error, and one came: " + raw.body); }
@@ -1397,8 +765,11 @@ fn commands_apply_batch(endpoint: String, bearer: String, request: BatchApplicat
 type CommandsAskAllowanceOutcome = enum { Result(CommandReply), Refusal(ApiRefusal), ServerError, Lost(String) };
 
 fn commands_ask_allowance(endpoint: String, bearer: String, request: Allowance) -> CommandsAskAllowanceOutcome {
-    let raw = api_call(endpoint, bearer, "Commands::ask_allowance", api_enc_Allowance(request));
-    if raw.outcome == 0 { return CommandsAskAllowanceOutcome::Result(api_dec_CommandReply(raw.body)); }
+    let raw = api_call(endpoint, bearer, "Commands::ask_allowance", Allowance::api_encode(request));
+    if raw.outcome == 0 {
+        let value = CommandReply::api_decode(raw.body) or { return CommandsAskAllowanceOutcome::Lost("the result did not decode: " + err.kind + ": " + err.field); };
+        return CommandsAskAllowanceOutcome::Result(value);
+    }
     if raw.outcome == 2 { return CommandsAskAllowanceOutcome::Refusal(api_refusal(raw)); }
     if raw.outcome == 3 { return CommandsAskAllowanceOutcome::ServerError; }
     if raw.outcome == 1 { return CommandsAskAllowanceOutcome::Lost("the member has no handler error, and one came: " + raw.body); }
@@ -1409,8 +780,11 @@ fn commands_ask_allowance(endpoint: String, bearer: String, request: Allowance) 
 type CommandsBindKnowledgeOutcome = enum { Result(KnowledgeReply), Refusal(ApiRefusal), ServerError, Lost(String) };
 
 fn commands_bind_knowledge(endpoint: String, bearer: String, request: KnowledgeBind) -> CommandsBindKnowledgeOutcome {
-    let raw = api_call(endpoint, bearer, "Commands::bind_knowledge", api_enc_KnowledgeBind(request));
-    if raw.outcome == 0 { return CommandsBindKnowledgeOutcome::Result(api_dec_KnowledgeReply(raw.body)); }
+    let raw = api_call(endpoint, bearer, "Commands::bind_knowledge", KnowledgeBind::api_encode(request));
+    if raw.outcome == 0 {
+        let value = KnowledgeReply::api_decode(raw.body) or { return CommandsBindKnowledgeOutcome::Lost("the result did not decode: " + err.kind + ": " + err.field); };
+        return CommandsBindKnowledgeOutcome::Result(value);
+    }
     if raw.outcome == 2 { return CommandsBindKnowledgeOutcome::Refusal(api_refusal(raw)); }
     if raw.outcome == 3 { return CommandsBindKnowledgeOutcome::ServerError; }
     if raw.outcome == 1 { return CommandsBindKnowledgeOutcome::Lost("the member has no handler error, and one came: " + raw.body); }
@@ -1421,8 +795,11 @@ fn commands_bind_knowledge(endpoint: String, bearer: String, request: KnowledgeB
 type CommandsClaimOutcome = enum { Result(CommandReply), Refusal(ApiRefusal), ServerError, Lost(String) };
 
 fn commands_claim(endpoint: String, bearer: String, request: Claim) -> CommandsClaimOutcome {
-    let raw = api_call(endpoint, bearer, "Commands::claim", api_enc_Claim(request));
-    if raw.outcome == 0 { return CommandsClaimOutcome::Result(api_dec_CommandReply(raw.body)); }
+    let raw = api_call(endpoint, bearer, "Commands::claim", Claim::api_encode(request));
+    if raw.outcome == 0 {
+        let value = CommandReply::api_decode(raw.body) or { return CommandsClaimOutcome::Lost("the result did not decode: " + err.kind + ": " + err.field); };
+        return CommandsClaimOutcome::Result(value);
+    }
     if raw.outcome == 2 { return CommandsClaimOutcome::Refusal(api_refusal(raw)); }
     if raw.outcome == 3 { return CommandsClaimOutcome::ServerError; }
     if raw.outcome == 1 { return CommandsClaimOutcome::Lost("the member has no handler error, and one came: " + raw.body); }
@@ -1433,8 +810,11 @@ fn commands_claim(endpoint: String, bearer: String, request: Claim) -> CommandsC
 type CommandsCreateTaskOutcome = enum { Result(CommandReply), Refusal(ApiRefusal), ServerError, Lost(String) };
 
 fn commands_create_task(endpoint: String, bearer: String, request: TaskCreation) -> CommandsCreateTaskOutcome {
-    let raw = api_call(endpoint, bearer, "Commands::create_task", api_enc_TaskCreation(request));
-    if raw.outcome == 0 { return CommandsCreateTaskOutcome::Result(api_dec_CommandReply(raw.body)); }
+    let raw = api_call(endpoint, bearer, "Commands::create_task", TaskCreation::api_encode(request));
+    if raw.outcome == 0 {
+        let value = CommandReply::api_decode(raw.body) or { return CommandsCreateTaskOutcome::Lost("the result did not decode: " + err.kind + ": " + err.field); };
+        return CommandsCreateTaskOutcome::Result(value);
+    }
     if raw.outcome == 2 { return CommandsCreateTaskOutcome::Refusal(api_refusal(raw)); }
     if raw.outcome == 3 { return CommandsCreateTaskOutcome::ServerError; }
     if raw.outcome == 1 { return CommandsCreateTaskOutcome::Lost("the member has no handler error, and one came: " + raw.body); }
@@ -1445,8 +825,11 @@ fn commands_create_task(endpoint: String, bearer: String, request: TaskCreation)
 type CommandsFileFrictionOutcome = enum { Result(CommandReply), Refusal(ApiRefusal), ServerError, Lost(String) };
 
 fn commands_file_friction(endpoint: String, bearer: String, request: Friction) -> CommandsFileFrictionOutcome {
-    let raw = api_call(endpoint, bearer, "Commands::file_friction", api_enc_Friction(request));
-    if raw.outcome == 0 { return CommandsFileFrictionOutcome::Result(api_dec_CommandReply(raw.body)); }
+    let raw = api_call(endpoint, bearer, "Commands::file_friction", Friction::api_encode(request));
+    if raw.outcome == 0 {
+        let value = CommandReply::api_decode(raw.body) or { return CommandsFileFrictionOutcome::Lost("the result did not decode: " + err.kind + ": " + err.field); };
+        return CommandsFileFrictionOutcome::Result(value);
+    }
     if raw.outcome == 2 { return CommandsFileFrictionOutcome::Refusal(api_refusal(raw)); }
     if raw.outcome == 3 { return CommandsFileFrictionOutcome::ServerError; }
     if raw.outcome == 1 { return CommandsFileFrictionOutcome::Lost("the member has no handler error, and one came: " + raw.body); }
@@ -1457,8 +840,11 @@ fn commands_file_friction(endpoint: String, bearer: String, request: Friction) -
 type CommandsFillOutcome = enum { Result(CommandReply), Refusal(ApiRefusal), ServerError, Lost(String) };
 
 fn commands_fill(endpoint: String, bearer: String, request: HoldFill) -> CommandsFillOutcome {
-    let raw = api_call(endpoint, bearer, "Commands::fill", api_enc_HoldFill(request));
-    if raw.outcome == 0 { return CommandsFillOutcome::Result(api_dec_CommandReply(raw.body)); }
+    let raw = api_call(endpoint, bearer, "Commands::fill", HoldFill::api_encode(request));
+    if raw.outcome == 0 {
+        let value = CommandReply::api_decode(raw.body) or { return CommandsFillOutcome::Lost("the result did not decode: " + err.kind + ": " + err.field); };
+        return CommandsFillOutcome::Result(value);
+    }
     if raw.outcome == 2 { return CommandsFillOutcome::Refusal(api_refusal(raw)); }
     if raw.outcome == 3 { return CommandsFillOutcome::ServerError; }
     if raw.outcome == 1 { return CommandsFillOutcome::Lost("the member has no handler error, and one came: " + raw.body); }
@@ -1469,8 +855,11 @@ fn commands_fill(endpoint: String, bearer: String, request: HoldFill) -> Command
 type CommandsLinkKnowledgeOutcome = enum { Result(KnowledgeReply), Refusal(ApiRefusal), ServerError, Lost(String) };
 
 fn commands_link_knowledge(endpoint: String, bearer: String, request: KnowledgeLink) -> CommandsLinkKnowledgeOutcome {
-    let raw = api_call(endpoint, bearer, "Commands::link_knowledge", api_enc_KnowledgeLink(request));
-    if raw.outcome == 0 { return CommandsLinkKnowledgeOutcome::Result(api_dec_KnowledgeReply(raw.body)); }
+    let raw = api_call(endpoint, bearer, "Commands::link_knowledge", KnowledgeLink::api_encode(request));
+    if raw.outcome == 0 {
+        let value = KnowledgeReply::api_decode(raw.body) or { return CommandsLinkKnowledgeOutcome::Lost("the result did not decode: " + err.kind + ": " + err.field); };
+        return CommandsLinkKnowledgeOutcome::Result(value);
+    }
     if raw.outcome == 2 { return CommandsLinkKnowledgeOutcome::Refusal(api_refusal(raw)); }
     if raw.outcome == 3 { return CommandsLinkKnowledgeOutcome::ServerError; }
     if raw.outcome == 1 { return CommandsLinkKnowledgeOutcome::Lost("the member has no handler error, and one came: " + raw.body); }
@@ -1481,8 +870,11 @@ fn commands_link_knowledge(endpoint: String, bearer: String, request: KnowledgeL
 type CommandsLookupOutcome = enum { Result(CommandReply), Refusal(ApiRefusal), ServerError, Lost(String) };
 
 fn commands_lookup(endpoint: String, bearer: String, request: Lookup) -> CommandsLookupOutcome {
-    let raw = api_call(endpoint, bearer, "Commands::lookup", api_enc_Lookup(request));
-    if raw.outcome == 0 { return CommandsLookupOutcome::Result(api_dec_CommandReply(raw.body)); }
+    let raw = api_call(endpoint, bearer, "Commands::lookup", Lookup::api_encode(request));
+    if raw.outcome == 0 {
+        let value = CommandReply::api_decode(raw.body) or { return CommandsLookupOutcome::Lost("the result did not decode: " + err.kind + ": " + err.field); };
+        return CommandsLookupOutcome::Result(value);
+    }
     if raw.outcome == 2 { return CommandsLookupOutcome::Refusal(api_refusal(raw)); }
     if raw.outcome == 3 { return CommandsLookupOutcome::ServerError; }
     if raw.outcome == 1 { return CommandsLookupOutcome::Lost("the member has no handler error, and one came: " + raw.body); }
@@ -1493,8 +885,11 @@ fn commands_lookup(endpoint: String, bearer: String, request: Lookup) -> Command
 type CommandsLookupKnowledgeOutcome = enum { Result(KnowledgeReply), Refusal(ApiRefusal), ServerError, Lost(String) };
 
 fn commands_lookup_knowledge(endpoint: String, bearer: String, request: KnowledgeRecovery) -> CommandsLookupKnowledgeOutcome {
-    let raw = api_call(endpoint, bearer, "Commands::lookup_knowledge", api_enc_KnowledgeRecovery(request));
-    if raw.outcome == 0 { return CommandsLookupKnowledgeOutcome::Result(api_dec_KnowledgeReply(raw.body)); }
+    let raw = api_call(endpoint, bearer, "Commands::lookup_knowledge", KnowledgeRecovery::api_encode(request));
+    if raw.outcome == 0 {
+        let value = KnowledgeReply::api_decode(raw.body) or { return CommandsLookupKnowledgeOutcome::Lost("the result did not decode: " + err.kind + ": " + err.field); };
+        return CommandsLookupKnowledgeOutcome::Result(value);
+    }
     if raw.outcome == 2 { return CommandsLookupKnowledgeOutcome::Refusal(api_refusal(raw)); }
     if raw.outcome == 3 { return CommandsLookupKnowledgeOutcome::ServerError; }
     if raw.outcome == 1 { return CommandsLookupKnowledgeOutcome::Lost("the member has no handler error, and one came: " + raw.body); }
@@ -1505,8 +900,11 @@ fn commands_lookup_knowledge(endpoint: String, bearer: String, request: Knowledg
 type CommandsOpenPositionOutcome = enum { Result(CommandReply), Refusal(ApiRefusal), ServerError, Lost(String) };
 
 fn commands_open_position(endpoint: String, bearer: String, request: PositionOpening) -> CommandsOpenPositionOutcome {
-    let raw = api_call(endpoint, bearer, "Commands::open_position", api_enc_PositionOpening(request));
-    if raw.outcome == 0 { return CommandsOpenPositionOutcome::Result(api_dec_CommandReply(raw.body)); }
+    let raw = api_call(endpoint, bearer, "Commands::open_position", PositionOpening::api_encode(request));
+    if raw.outcome == 0 {
+        let value = CommandReply::api_decode(raw.body) or { return CommandsOpenPositionOutcome::Lost("the result did not decode: " + err.kind + ": " + err.field); };
+        return CommandsOpenPositionOutcome::Result(value);
+    }
     if raw.outcome == 2 { return CommandsOpenPositionOutcome::Refusal(api_refusal(raw)); }
     if raw.outcome == 3 { return CommandsOpenPositionOutcome::ServerError; }
     if raw.outcome == 1 { return CommandsOpenPositionOutcome::Lost("the member has no handler error, and one came: " + raw.body); }
@@ -1517,8 +915,11 @@ fn commands_open_position(endpoint: String, bearer: String, request: PositionOpe
 type CommandsOutcomeOutcome = enum { Result(CommandReply), Refusal(ApiRefusal), ServerError, Lost(String) };
 
 fn commands_outcome(endpoint: String, bearer: String, request: Outcome) -> CommandsOutcomeOutcome {
-    let raw = api_call(endpoint, bearer, "Commands::outcome", api_enc_Outcome(request));
-    if raw.outcome == 0 { return CommandsOutcomeOutcome::Result(api_dec_CommandReply(raw.body)); }
+    let raw = api_call(endpoint, bearer, "Commands::outcome", Outcome::api_encode(request));
+    if raw.outcome == 0 {
+        let value = CommandReply::api_decode(raw.body) or { return CommandsOutcomeOutcome::Lost("the result did not decode: " + err.kind + ": " + err.field); };
+        return CommandsOutcomeOutcome::Result(value);
+    }
     if raw.outcome == 2 { return CommandsOutcomeOutcome::Refusal(api_refusal(raw)); }
     if raw.outcome == 3 { return CommandsOutcomeOutcome::ServerError; }
     if raw.outcome == 1 { return CommandsOutcomeOutcome::Lost("the member has no handler error, and one came: " + raw.body); }
@@ -1529,8 +930,11 @@ fn commands_outcome(endpoint: String, bearer: String, request: Outcome) -> Comma
 type CommandsPreviewBatchOutcome = enum { Result(BatchPreview), Refusal(ApiRefusal), ServerError, Lost(String) };
 
 fn commands_preview_batch(endpoint: String, bearer: String, request: BatchDraft) -> CommandsPreviewBatchOutcome {
-    let raw = api_call(endpoint, bearer, "Commands::preview_batch", api_enc_BatchDraft(request));
-    if raw.outcome == 0 { return CommandsPreviewBatchOutcome::Result(api_dec_BatchPreview(raw.body)); }
+    let raw = api_call(endpoint, bearer, "Commands::preview_batch", BatchDraft::api_encode(request));
+    if raw.outcome == 0 {
+        let value = BatchPreview::api_decode(raw.body) or { return CommandsPreviewBatchOutcome::Lost("the result did not decode: " + err.kind + ": " + err.field); };
+        return CommandsPreviewBatchOutcome::Result(value);
+    }
     if raw.outcome == 2 { return CommandsPreviewBatchOutcome::Refusal(api_refusal(raw)); }
     if raw.outcome == 3 { return CommandsPreviewBatchOutcome::ServerError; }
     if raw.outcome == 1 { return CommandsPreviewBatchOutcome::Lost("the member has no handler error, and one came: " + raw.body); }
@@ -1541,8 +945,11 @@ fn commands_preview_batch(endpoint: String, bearer: String, request: BatchDraft)
 type CommandsProposeOutcome = enum { Result(CommandReply), Refusal(ApiRefusal), ServerError, Lost(String) };
 
 fn commands_propose(endpoint: String, bearer: String, request: PracticeProposal) -> CommandsProposeOutcome {
-    let raw = api_call(endpoint, bearer, "Commands::propose", api_enc_PracticeProposal(request));
-    if raw.outcome == 0 { return CommandsProposeOutcome::Result(api_dec_CommandReply(raw.body)); }
+    let raw = api_call(endpoint, bearer, "Commands::propose", PracticeProposal::api_encode(request));
+    if raw.outcome == 0 {
+        let value = CommandReply::api_decode(raw.body) or { return CommandsProposeOutcome::Lost("the result did not decode: " + err.kind + ": " + err.field); };
+        return CommandsProposeOutcome::Result(value);
+    }
     if raw.outcome == 2 { return CommandsProposeOutcome::Refusal(api_refusal(raw)); }
     if raw.outcome == 3 { return CommandsProposeOutcome::ServerError; }
     if raw.outcome == 1 { return CommandsProposeOutcome::Lost("the member has no handler error, and one came: " + raw.body); }
@@ -1553,8 +960,11 @@ fn commands_propose(endpoint: String, bearer: String, request: PracticeProposal)
 type CommandsProposeKnowledgeOutcome = enum { Result(KnowledgeReply), Refusal(ApiRefusal), ServerError, Lost(String) };
 
 fn commands_propose_knowledge(endpoint: String, bearer: String, request: KnowledgeNodeProposal) -> CommandsProposeKnowledgeOutcome {
-    let raw = api_call(endpoint, bearer, "Commands::propose_knowledge", api_enc_KnowledgeNodeProposal(request));
-    if raw.outcome == 0 { return CommandsProposeKnowledgeOutcome::Result(api_dec_KnowledgeReply(raw.body)); }
+    let raw = api_call(endpoint, bearer, "Commands::propose_knowledge", KnowledgeNodeProposal::api_encode(request));
+    if raw.outcome == 0 {
+        let value = KnowledgeReply::api_decode(raw.body) or { return CommandsProposeKnowledgeOutcome::Lost("the result did not decode: " + err.kind + ": " + err.field); };
+        return CommandsProposeKnowledgeOutcome::Result(value);
+    }
     if raw.outcome == 2 { return CommandsProposeKnowledgeOutcome::Refusal(api_refusal(raw)); }
     if raw.outcome == 3 { return CommandsProposeKnowledgeOutcome::ServerError; }
     if raw.outcome == 1 { return CommandsProposeKnowledgeOutcome::Lost("the member has no handler error, and one came: " + raw.body); }
@@ -1565,8 +975,11 @@ fn commands_propose_knowledge(endpoint: String, bearer: String, request: Knowled
 type CommandsProposeOrganizationOutcome = enum { Result(CommandReply), Refusal(ApiRefusal), ServerError, Lost(String) };
 
 fn commands_propose_organization(endpoint: String, bearer: String, request: OrganizationProposal) -> CommandsProposeOrganizationOutcome {
-    let raw = api_call(endpoint, bearer, "Commands::propose_organization", api_enc_OrganizationProposal(request));
-    if raw.outcome == 0 { return CommandsProposeOrganizationOutcome::Result(api_dec_CommandReply(raw.body)); }
+    let raw = api_call(endpoint, bearer, "Commands::propose_organization", OrganizationProposal::api_encode(request));
+    if raw.outcome == 0 {
+        let value = CommandReply::api_decode(raw.body) or { return CommandsProposeOrganizationOutcome::Lost("the result did not decode: " + err.kind + ": " + err.field); };
+        return CommandsProposeOrganizationOutcome::Result(value);
+    }
     if raw.outcome == 2 { return CommandsProposeOrganizationOutcome::Refusal(api_refusal(raw)); }
     if raw.outcome == 3 { return CommandsProposeOrganizationOutcome::ServerError; }
     if raw.outcome == 1 { return CommandsProposeOrganizationOutcome::Lost("the member has no handler error, and one came: " + raw.body); }
@@ -1577,8 +990,11 @@ fn commands_propose_organization(endpoint: String, bearer: String, request: Orga
 type CommandsReassignTaskOutcome = enum { Result(CommandReply), Refusal(ApiRefusal), ServerError, Lost(String) };
 
 fn commands_reassign_task(endpoint: String, bearer: String, request: TaskReassignment) -> CommandsReassignTaskOutcome {
-    let raw = api_call(endpoint, bearer, "Commands::reassign_task", api_enc_TaskReassignment(request));
-    if raw.outcome == 0 { return CommandsReassignTaskOutcome::Result(api_dec_CommandReply(raw.body)); }
+    let raw = api_call(endpoint, bearer, "Commands::reassign_task", TaskReassignment::api_encode(request));
+    if raw.outcome == 0 {
+        let value = CommandReply::api_decode(raw.body) or { return CommandsReassignTaskOutcome::Lost("the result did not decode: " + err.kind + ": " + err.field); };
+        return CommandsReassignTaskOutcome::Result(value);
+    }
     if raw.outcome == 2 { return CommandsReassignTaskOutcome::Refusal(api_refusal(raw)); }
     if raw.outcome == 3 { return CommandsReassignTaskOutcome::ServerError; }
     if raw.outcome == 1 { return CommandsReassignTaskOutcome::Lost("the member has no handler error, and one came: " + raw.body); }
@@ -1589,8 +1005,11 @@ fn commands_reassign_task(endpoint: String, bearer: String, request: TaskReassig
 type CommandsReleaseAttemptOutcome = enum { Result(CommandReply), Refusal(ApiRefusal), ServerError, Lost(String) };
 
 fn commands_release_attempt(endpoint: String, bearer: String, request: Release) -> CommandsReleaseAttemptOutcome {
-    let raw = api_call(endpoint, bearer, "Commands::release_attempt", api_enc_Release(request));
-    if raw.outcome == 0 { return CommandsReleaseAttemptOutcome::Result(api_dec_CommandReply(raw.body)); }
+    let raw = api_call(endpoint, bearer, "Commands::release_attempt", Release::api_encode(request));
+    if raw.outcome == 0 {
+        let value = CommandReply::api_decode(raw.body) or { return CommandsReleaseAttemptOutcome::Lost("the result did not decode: " + err.kind + ": " + err.field); };
+        return CommandsReleaseAttemptOutcome::Result(value);
+    }
     if raw.outcome == 2 { return CommandsReleaseAttemptOutcome::Refusal(api_refusal(raw)); }
     if raw.outcome == 3 { return CommandsReleaseAttemptOutcome::ServerError; }
     if raw.outcome == 1 { return CommandsReleaseAttemptOutcome::Lost("the member has no handler error, and one came: " + raw.body); }
@@ -1601,8 +1020,11 @@ fn commands_release_attempt(endpoint: String, bearer: String, request: Release) 
 type CommandsRenewOutcome = enum { Result(CommandReply), Refusal(ApiRefusal), ServerError, Lost(String) };
 
 fn commands_renew(endpoint: String, bearer: String, request: Renewal) -> CommandsRenewOutcome {
-    let raw = api_call(endpoint, bearer, "Commands::renew", api_enc_Renewal(request));
-    if raw.outcome == 0 { return CommandsRenewOutcome::Result(api_dec_CommandReply(raw.body)); }
+    let raw = api_call(endpoint, bearer, "Commands::renew", Renewal::api_encode(request));
+    if raw.outcome == 0 {
+        let value = CommandReply::api_decode(raw.body) or { return CommandsRenewOutcome::Lost("the result did not decode: " + err.kind + ": " + err.field); };
+        return CommandsRenewOutcome::Result(value);
+    }
     if raw.outcome == 2 { return CommandsRenewOutcome::Refusal(api_refusal(raw)); }
     if raw.outcome == 3 { return CommandsRenewOutcome::ServerError; }
     if raw.outcome == 1 { return CommandsRenewOutcome::Lost("the member has no handler error, and one came: " + raw.body); }
@@ -1613,8 +1035,11 @@ fn commands_renew(endpoint: String, bearer: String, request: Renewal) -> Command
 type CommandsRetireKnowledgeOutcome = enum { Result(KnowledgeReply), Refusal(ApiRefusal), ServerError, Lost(String) };
 
 fn commands_retire_knowledge(endpoint: String, bearer: String, request: KnowledgeNodeRetirement) -> CommandsRetireKnowledgeOutcome {
-    let raw = api_call(endpoint, bearer, "Commands::retire_knowledge", api_enc_KnowledgeNodeRetirement(request));
-    if raw.outcome == 0 { return CommandsRetireKnowledgeOutcome::Result(api_dec_KnowledgeReply(raw.body)); }
+    let raw = api_call(endpoint, bearer, "Commands::retire_knowledge", KnowledgeNodeRetirement::api_encode(request));
+    if raw.outcome == 0 {
+        let value = KnowledgeReply::api_decode(raw.body) or { return CommandsRetireKnowledgeOutcome::Lost("the result did not decode: " + err.kind + ": " + err.field); };
+        return CommandsRetireKnowledgeOutcome::Result(value);
+    }
     if raw.outcome == 2 { return CommandsRetireKnowledgeOutcome::Refusal(api_refusal(raw)); }
     if raw.outcome == 3 { return CommandsRetireKnowledgeOutcome::ServerError; }
     if raw.outcome == 1 { return CommandsRetireKnowledgeOutcome::Lost("the member has no handler error, and one came: " + raw.body); }
@@ -1625,8 +1050,11 @@ fn commands_retire_knowledge(endpoint: String, bearer: String, request: Knowledg
 type CommandsRetirePersonOutcome = enum { Result(CommandReply), Refusal(ApiRefusal), ServerError, Lost(String) };
 
 fn commands_retire_person(endpoint: String, bearer: String, request: PersonRetirement) -> CommandsRetirePersonOutcome {
-    let raw = api_call(endpoint, bearer, "Commands::retire_person", api_enc_PersonRetirement(request));
-    if raw.outcome == 0 { return CommandsRetirePersonOutcome::Result(api_dec_CommandReply(raw.body)); }
+    let raw = api_call(endpoint, bearer, "Commands::retire_person", PersonRetirement::api_encode(request));
+    if raw.outcome == 0 {
+        let value = CommandReply::api_decode(raw.body) or { return CommandsRetirePersonOutcome::Lost("the result did not decode: " + err.kind + ": " + err.field); };
+        return CommandsRetirePersonOutcome::Result(value);
+    }
     if raw.outcome == 2 { return CommandsRetirePersonOutcome::Refusal(api_refusal(raw)); }
     if raw.outcome == 3 { return CommandsRetirePersonOutcome::ServerError; }
     if raw.outcome == 1 { return CommandsRetirePersonOutcome::Lost("the member has no handler error, and one came: " + raw.body); }
@@ -1637,8 +1065,11 @@ fn commands_retire_person(endpoint: String, bearer: String, request: PersonRetir
 type CommandsReviseKnowledgeOutcome = enum { Result(KnowledgeReply), Refusal(ApiRefusal), ServerError, Lost(String) };
 
 fn commands_revise_knowledge(endpoint: String, bearer: String, request: KnowledgeNodeRevision) -> CommandsReviseKnowledgeOutcome {
-    let raw = api_call(endpoint, bearer, "Commands::revise_knowledge", api_enc_KnowledgeNodeRevision(request));
-    if raw.outcome == 0 { return CommandsReviseKnowledgeOutcome::Result(api_dec_KnowledgeReply(raw.body)); }
+    let raw = api_call(endpoint, bearer, "Commands::revise_knowledge", KnowledgeNodeRevision::api_encode(request));
+    if raw.outcome == 0 {
+        let value = KnowledgeReply::api_decode(raw.body) or { return CommandsReviseKnowledgeOutcome::Lost("the result did not decode: " + err.kind + ": " + err.field); };
+        return CommandsReviseKnowledgeOutcome::Result(value);
+    }
     if raw.outcome == 2 { return CommandsReviseKnowledgeOutcome::Refusal(api_refusal(raw)); }
     if raw.outcome == 3 { return CommandsReviseKnowledgeOutcome::ServerError; }
     if raw.outcome == 1 { return CommandsReviseKnowledgeOutcome::Lost("the member has no handler error, and one came: " + raw.body); }
@@ -1649,8 +1080,11 @@ fn commands_revise_knowledge(endpoint: String, bearer: String, request: Knowledg
 type CommandsUnbindKnowledgeOutcome = enum { Result(KnowledgeReply), Refusal(ApiRefusal), ServerError, Lost(String) };
 
 fn commands_unbind_knowledge(endpoint: String, bearer: String, request: KnowledgeUnbind) -> CommandsUnbindKnowledgeOutcome {
-    let raw = api_call(endpoint, bearer, "Commands::unbind_knowledge", api_enc_KnowledgeUnbind(request));
-    if raw.outcome == 0 { return CommandsUnbindKnowledgeOutcome::Result(api_dec_KnowledgeReply(raw.body)); }
+    let raw = api_call(endpoint, bearer, "Commands::unbind_knowledge", KnowledgeUnbind::api_encode(request));
+    if raw.outcome == 0 {
+        let value = KnowledgeReply::api_decode(raw.body) or { return CommandsUnbindKnowledgeOutcome::Lost("the result did not decode: " + err.kind + ": " + err.field); };
+        return CommandsUnbindKnowledgeOutcome::Result(value);
+    }
     if raw.outcome == 2 { return CommandsUnbindKnowledgeOutcome::Refusal(api_refusal(raw)); }
     if raw.outcome == 3 { return CommandsUnbindKnowledgeOutcome::ServerError; }
     if raw.outcome == 1 { return CommandsUnbindKnowledgeOutcome::Lost("the member has no handler error, and one came: " + raw.body); }
@@ -1661,8 +1095,11 @@ fn commands_unbind_knowledge(endpoint: String, bearer: String, request: Knowledg
 type CommandsUnlinkKnowledgeOutcome = enum { Result(KnowledgeReply), Refusal(ApiRefusal), ServerError, Lost(String) };
 
 fn commands_unlink_knowledge(endpoint: String, bearer: String, request: KnowledgeUnlink) -> CommandsUnlinkKnowledgeOutcome {
-    let raw = api_call(endpoint, bearer, "Commands::unlink_knowledge", api_enc_KnowledgeUnlink(request));
-    if raw.outcome == 0 { return CommandsUnlinkKnowledgeOutcome::Result(api_dec_KnowledgeReply(raw.body)); }
+    let raw = api_call(endpoint, bearer, "Commands::unlink_knowledge", KnowledgeUnlink::api_encode(request));
+    if raw.outcome == 0 {
+        let value = KnowledgeReply::api_decode(raw.body) or { return CommandsUnlinkKnowledgeOutcome::Lost("the result did not decode: " + err.kind + ": " + err.field); };
+        return CommandsUnlinkKnowledgeOutcome::Result(value);
+    }
     if raw.outcome == 2 { return CommandsUnlinkKnowledgeOutcome::Refusal(api_refusal(raw)); }
     if raw.outcome == 3 { return CommandsUnlinkKnowledgeOutcome::ServerError; }
     if raw.outcome == 1 { return CommandsUnlinkKnowledgeOutcome::Lost("the member has no handler error, and one came: " + raw.body); }
@@ -1673,8 +1110,11 @@ fn commands_unlink_knowledge(endpoint: String, bearer: String, request: Knowledg
 type CommandsVerdictOutcome = enum { Result(CommandReply), Refusal(ApiRefusal), ServerError, Lost(String) };
 
 fn commands_verdict(endpoint: String, bearer: String, request: ReviewDecision) -> CommandsVerdictOutcome {
-    let raw = api_call(endpoint, bearer, "Commands::verdict", api_enc_ReviewDecision(request));
-    if raw.outcome == 0 { return CommandsVerdictOutcome::Result(api_dec_CommandReply(raw.body)); }
+    let raw = api_call(endpoint, bearer, "Commands::verdict", ReviewDecision::api_encode(request));
+    if raw.outcome == 0 {
+        let value = CommandReply::api_decode(raw.body) or { return CommandsVerdictOutcome::Lost("the result did not decode: " + err.kind + ": " + err.field); };
+        return CommandsVerdictOutcome::Result(value);
+    }
     if raw.outcome == 2 { return CommandsVerdictOutcome::Refusal(api_refusal(raw)); }
     if raw.outcome == 3 { return CommandsVerdictOutcome::ServerError; }
     if raw.outcome == 1 { return CommandsVerdictOutcome::Lost("the member has no handler error, and one came: " + raw.body); }

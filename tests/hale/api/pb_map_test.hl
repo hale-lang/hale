@@ -6,7 +6,8 @@
 // message). The decoder gives each record the entry's key, so the map's key
 // wins over a key the record carries; a key already read is
 // `duplicate_key`. JSON in, protobuf through, JSON out gives back the same
-// text. This program names no port: the serve site is in a method nothing
+// text; an optional map's flag is a field of its own, so an absent map, a
+// present empty one and one with entries each come back as they went. This program names no port: the serve site is in a method nothing
 // calls, which is all the compiler needs to write the codecs.
 
 type Check { name: String; status: String; detail: String = ""; }
@@ -16,14 +17,18 @@ type Health { checks: bounded[Check; 3] indexed_by name; ok: Bool = true; }
 type Keyed { name: String; has_name: Bool = false; status: String; }
 type Board { keyed: bounded[Keyed; 2] indexed_by name; }
 
+type Spare { extra: bounded[Check; 2] indexed_by name; has_extra: Bool; }
+
 api PbMap {
     rpc Probe::health;
     rpc Probe::board;
+    rpc Probe::spare;
 }
 
 locus Probe {
     fn health(h: Health) -> Health { return h; }
     fn board(b: Board) -> Board { return b; }
+    fn spare(s: Spare) -> Spare { return s; }
 }
 
 locus Tokens {
@@ -54,6 +59,19 @@ main locus Desk {
         std::test::assert_eq_str(__api_encode_Health(back), json, what);
     }
 
+    fn round_spare(json: String, what: String) {
+        let v = __api_decode_Spare(json) or {
+            std::test::assert(false, what + ": the JSON decoder: " + err.kind + " " + err.field);
+            return;
+        };
+        let back = __api_pb_decode_Spare(__api_pb_encode_Spare(v)) or {
+            std::test::assert(false, what + ": the protobuf decoder: " + err.kind + " " + err.field);
+            return;
+        };
+        std::test::assert(back.has_extra == v.has_extra, what + ": the flag");
+        std::test::assert_eq_str(__api_encode_Spare(back), json, what);
+    }
+
     // One entry of field 1: its key and the record's message.
     fn entry(key: String, name: String, status: String) -> Bytes {
         let check = std::bytes::concat(__api_pb_put_str(1, name), __api_pb_put_str(2, status));
@@ -62,6 +80,9 @@ main locus Desk {
 
     run() {
         self.round("{\"checks\":{},\"ok\":true}", "an empty map");
+        self.round_spare("{}", "an absent optional map");
+        self.round_spare("{\"extra\":{}}", "a present empty optional map");
+        self.round_spare("{\"extra\":{\"db\":{\"status\":\"up\",\"detail\":\"\"}}}", "an optional map with an entry");
         self.round("{\"checks\":{\"db\":{\"status\":\"up\",\"detail\":\"\"},\"cache\":{\"status\":\"down\",\"detail\":\"evicted\"}},\"ok\":false}", "two entries, in order");
 
         // a key field with a presence flag: the map supplied the key, on
