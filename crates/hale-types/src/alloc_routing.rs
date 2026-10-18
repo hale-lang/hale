@@ -617,17 +617,20 @@ impl<'a> ScratchPaths<'a> {
     /// the call is in the class whatever the class holds (`Ok(None)` for
     /// a runtime primitive of a pure namespace, `Err` for anything else).
     fn call_needs(&self, q: &hale_syntax::ast::QualifiedName) -> Result<Option<&'a str>, ()> {
-        let segs: Vec<String> = q.segments.iter().map(|s| s.name.clone()).collect();
-        if let Some(target) = self.imports.get(&segs) {
-            return Ok(Some(target.as_str()));
+        let segs = &q.segments;
+        if !self.imports.is_empty() {
+            let spelled: Vec<String> = segs.iter().map(|s| s.name.clone()).collect();
+            if let Some(target) = self.imports.get(&spelled) {
+                return Ok(Some(target.as_str()));
+            }
         }
         if let Some((_, target)) = hale_stdlib::PATH_RENAMES
             .iter()
-            .find(|(p, _)| p.len() == segs.len() && p.iter().zip(&segs).all(|(a, b)| a == b))
+            .find(|(p, _)| p.len() == segs.len() && p.iter().zip(segs).all(|(a, b)| *a == b.name))
         {
             return Ok(Some(target));
         }
-        if segs.len() >= 3 && segs[0] == "std" && SCRATCH_LOCAL_STD_NAMESPACES.contains(&segs[1].as_str()) {
+        if segs.len() >= 3 && segs[0].name == "std" && SCRATCH_LOCAL_STD_NAMESPACES.contains(&segs[1].name.as_str()) {
             Ok(None)
         } else {
             Err(())
