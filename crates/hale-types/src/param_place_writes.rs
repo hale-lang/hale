@@ -27,41 +27,47 @@
 //! captures into `ctx.params`.
 //!
 //! Over the checker's types (`TopScope`, aliases resolved), once per
-//! check: nothing at run time. A bounded local is a view only when its
-//! type is a `bounded` (a `let` of a record copies it), and a call through
-//! a function value names the fn the value is bound to (`let f = fill;`);
-//! one whose fn the walk cannot name (a parameter of fn type, a computed
-//! callee) is taken as a writer of every argument whose type holds such a
-//! place: refused rather than guessed.
+//! check: nothing at run time. Names are bindings, by the snapshot's
+//! identity of each use (`Snapshot::binding_of`): `let r = r;` is a binding
+//! of its own, not the parameter, and an inner `let f` names nothing after
+//! its block. A bounded local is a view only when its type is a `bounded`
+//! (a `let` of a record copies it), and a call through a function value
+//! names the fn the value is bound to (`let f = fill;`, a tuple `let`'s
+//! element of a tuple literal); one whose fn the walk cannot name (a
+//! parameter of fn type, a computed callee, a binding some statement
+//! assigns, `f = other;`) is taken as a writer of every argument whose
+//! type holds such a place: refused rather than guessed.
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use hale_syntax::ast::{flat_decls, Block, Expr, LocusMember, PrimType, Program, Stmt, TopDecl, TypeExpr};
+use hale_syntax::ast::{flat_decls, Block, Expr, Ident, LocusMember, NodeId, Param, PrimType, Program, Stmt, TopDecl, TypeExpr};
 use hale_syntax::error::Diag;
 
 use crate::listener_window::{visit_block, Visited};
 use crate::resolve::TopScope;
+use crate::snapshot::Snapshot;
 use crate::symbol::{Bundle, TopSymbol, TypeKind};
 use crate::ty::Ty;
 
 /// Every call in the program's bodies that hands a free fn writing
 /// through a parameter a place the frame does not own.
 pub(crate) fn param_place_write_diags(bundle: &Bundle<'_>, top: &TopScope) -> Vec<Diag> {
-    let mut programs: Vec<&Program> = bundle.programs.values().copied().collect();
+    let mut programs: Vec<(&Program, Ids<'_>)> =
+        bundle.programs.values().map(|p| (*p, Ids(Some(&bundle.snapshot)))).collect();
     let user = programs.len();
     if let Some(std_prog) = crate::stdlib_bodies::program() {
-        programs.push(std_prog);
+        programs.push((std_prog, Ids(crate::stdlib_bodies::identities())));
     }
     let world = World::gather(&programs, &bundle.import_renames, top);
     let writers = world.writers();
     let mut out = Vec::new();
-    for p in &programs[..user] {
+    for (p, ids) in &programs[..user] {
         for d in flat_decls(&p.items) {
-            let params = |ps: &[hale_syntax::ast::Param]| -> BTreeMap<String, Ty> {
-                ps.iter().map(|p| (p.name.name.clone(), world.ty(&p.ty))).collect()
+            let params = |ps: &[Param]| -> BTreeMap<Key, Ty> {
+                ps.iter().map(|p| (ids.decl(&p.name), world.ty(&p.ty))).collect()
             };
             match d {
-                TopDecl::Fn(f) => world.calls(&f.body, &params(&f.params), None, &writers, &mut out),
+                TopDecl::Fn(f) => world.calls(&f.body, ids, &params(&f.params), None, &writers, &mut out),
                 TopDecl::Locus(l) => {
                     for m in &l.members {
                         let (body, ps) = match m {
@@ -71,7 +77,7 @@ pub(crate) fn param_place_write_diags(bundle: &Bundle<'_>, top: &TopScope) -> Ve
                             LocusMember::Failure(fd) => (&fd.body, params(&fd.params)),
                             _ => continue,
                         };
-                        world.calls(body, &ps, Some(&l.name.name), &writers, &mut out);
+                        world.calls(body, ids, &ps, Some(&l.name.name), &writers, &mut out);
                     }
                 }
                 _ => {}
@@ -81,36 +87,59 @@ pub(crate) fn param_place_write_diags(bundle: &Bundle<'_>, top: &TopScope) -> Ve
     out
 }
 
-struct FreeFn<'a> {
-    params: Vec<(String, Ty)>,
-    body: &'a Block,
+/// A body's binding, by identity: the declaration a snapshot minted (a
+/// parameter, a `let`, a tuple `let`'s name, a `for` or pattern binder),
+/// so an inner `let f` or a `let r = r;` is its own binding and a use
+/// after its block names the outer one again; `self`; or, in a program no
+/// snapshot minted, the spelling.
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Debug)]
+enum Key {
+    SelfKw,
+    Decl(u32),
+    Name(String),
 }
 
-struct World<'a, 't> {
-    top: &'t TopScope,
-    fns: BTreeMap<String, FreeFn<'a>>,
-    renames: BTreeMap<String, String>,
-}
+/// The identities of one program's bodies.
+#[derive(Clone, Copy)]
+struct Ids<'s>(Option<&'s Snapshot>);
 
-/// The root of a place expression and its field path: `self.a.b` is
-/// (`self`, [a, b]); `x[i].y` is (`x`, [y]), an index stepping into an
-/// element (`Index` in the path).
-fn place(e: &Expr) -> Option<(String, Vec<Step>)> {
-    match e {
-        Expr::Ident(i) => Some((i.name.clone(), Vec::new())),
-        Expr::KwSelf(_) => Some(("self".to_string(), Vec::new())),
-        Expr::Field { receiver, name, .. } => {
-            let (root, mut path) = place(receiver)?;
-            path.push(Step::Field(name.name.clone()));
-            Some((root, path))
-        }
-        Expr::Index { receiver, .. } => {
-            let (root, mut path) = place(receiver)?;
-            path.push(Step::Index);
-            Some((root, path))
-        }
-        _ => None,
+impl Ids<'_> {
+    /// The binding a declaration's name (a parameter, a tuple `let`'s
+    /// name: a binder, whose id is its `Ident`'s) introduces.
+    fn decl(&self, name: &Ident) -> Key {
+        self.decl_at(&name.name, name.id)
     }
+
+    /// The binding a declaration with the site `id` introduces.
+    fn decl_at(&self, name: &str, id: NodeId) -> Key {
+        if id.is_none() || self.0.is_none() {
+            Key::Name(name.to_string())
+        } else {
+            Key::Decl(id.0)
+        }
+    }
+
+    /// The binding the use `at` of `name` (an identifier expression, or an
+    /// assignment's head by its statement's id) names; a minted use naming
+    /// no local is its spelling, which no local's key is.
+    fn use_at(&self, name: &str, at: NodeId) -> Key {
+        match self.0.and_then(|s| s.declaration_of(at)) {
+            Some(d) => Key::Decl(d.index),
+            None => Key::Name(name.to_string()),
+        }
+    }
+}
+
+struct FreeFn<'a, 's> {
+    params: Vec<(Key, Ty)>,
+    body: &'a Block,
+    ids: Ids<'s>,
+}
+
+struct World<'a, 't, 's> {
+    top: &'t TopScope,
+    fns: BTreeMap<String, FreeFn<'a, 's>>,
+    renames: BTreeMap<String, String>,
 }
 
 #[derive(Clone)]
@@ -119,17 +148,73 @@ enum Step {
     Index,
 }
 
-/// How a body reaches the bounded places of its roots.
-#[derive(Default)]
-struct Bindings {
+/// How a body reaches the bounded places of its roots, and which of its
+/// bindings it can name a fn for.
+struct Bindings<'s> {
+    ids: Ids<'s>,
+    /// Every binding the body declares (`Key::Name` ones; a minted use
+    /// that names a declaration is a local whatever it is).
+    locals: BTreeSet<Key>,
     /// A bounded local bound from a place: its root and the place's path.
-    views: BTreeMap<String, (String, Vec<Step>)>,
+    views: BTreeMap<Key, (Key, Vec<Step>)>,
     /// A local bound to a free fn's name.
-    fn_values: BTreeMap<String, String>,
+    fn_values: BTreeMap<Key, String>,
+    /// The bindings some statement of the body assigns whole
+    /// (`f = other;`): which fn such a binding holds at a call depends on
+    /// the path taken, so the walk names none for it.
+    assigned: BTreeSet<Key>,
 }
 
-impl<'a, 't> World<'a, 't> {
-    fn gather(programs: &[&'a Program], import_renames: &[(Vec<String>, String)], top: &'t TopScope) -> World<'a, 't> {
+impl<'s> Bindings<'s> {
+    fn new(ids: Ids<'s>, body: &Block, params: impl IntoIterator<Item = Key>) -> Bindings<'s> {
+        let mut assigned = BTreeSet::new();
+        visit_block(body, &mut |v| {
+            if let Visited::Stmt(Stmt::Assign { target, id, .. }) = v {
+                if target.tail.is_empty() {
+                    assigned.insert(ids.use_at(&target.head.name, *id));
+                }
+            }
+        });
+        Bindings { ids, locals: params.into_iter().collect(), views: BTreeMap::new(), fn_values: BTreeMap::new(), assigned }
+    }
+
+    fn is_local(&self, k: &Key) -> bool {
+        matches!(k, Key::Decl(_)) || self.locals.contains(k)
+    }
+
+    /// The root of a place expression and its field path: `self.a.b` is
+    /// (`self`, [a, b]); `x[i].y` is (`x`, [y]), an index stepping into an
+    /// element (`Index` in the path); a bounded local viewing a place is
+    /// that place's root, its path before the rest.
+    fn place(&self, e: &Expr) -> Option<(Key, Vec<Step>)> {
+        let (root, path) = self.place_written(e)?;
+        Some(match self.views.get(&root) {
+            Some((r, p0)) => (r.clone(), p0.iter().cloned().chain(path).collect()),
+            None => (root, path),
+        })
+    }
+
+    fn place_written(&self, e: &Expr) -> Option<(Key, Vec<Step>)> {
+        match e {
+            Expr::Ident(i) => Some((self.ids.use_at(&i.name, i.id), Vec::new())),
+            Expr::KwSelf(_) => Some((Key::SelfKw, Vec::new())),
+            Expr::Field { receiver, name, .. } => {
+                let (root, mut path) = self.place_written(receiver)?;
+                path.push(Step::Field(name.name.clone()));
+                Some((root, path))
+            }
+            Expr::Index { receiver, .. } => {
+                let (root, mut path) = self.place_written(receiver)?;
+                path.push(Step::Index);
+                Some((root, path))
+            }
+            _ => None,
+        }
+    }
+}
+
+impl<'a, 't, 's> World<'a, 't, 's> {
+    fn gather(programs: &[(&'a Program, Ids<'s>)], import_renames: &[(Vec<String>, String)], top: &'t TopScope) -> World<'a, 't, 's> {
         let mut w = World { top, fns: BTreeMap::new(), renames: BTreeMap::new() };
         for (path, name) in hale_stdlib::PATH_RENAMES {
             w.renames.insert(path.join("::"), name.to_string());
@@ -137,12 +222,12 @@ impl<'a, 't> World<'a, 't> {
         for (path, mangled) in import_renames {
             w.renames.insert(path.join("::"), mangled.clone());
         }
-        for p in programs {
+        for (p, ids) in programs {
             for d in flat_decls(&p.items) {
                 if let TopDecl::Fn(f) = d {
                     if f.generics.is_empty() && f.ffi.is_none() {
-                        let params = f.params.iter().map(|p| (p.name.name.clone(), w.ty(&p.ty))).collect();
-                        w.fns.insert(f.name.name.clone(), FreeFn { params, body: &f.body });
+                        let params = f.params.iter().map(|p| (ids.decl(&p.name), w.ty(&p.ty))).collect();
+                        w.fns.insert(f.name.name.clone(), FreeFn { params, body: &f.body, ids: *ids });
                     }
                 }
             }
@@ -245,13 +330,14 @@ impl<'a, 't> World<'a, 't> {
     /// local bound to one, `None` for a call through a value the walk
     /// cannot name; the intrinsics and anything that is not a call of the
     /// program's free fns are `Some` of their own name.
-    fn callee(&self, e: &Expr, b: &Bindings, locals: &BTreeSet<String>) -> Option<String> {
+    fn callee(&self, e: &Expr, b: &Bindings<'_>) -> Option<String> {
         match e {
             Expr::Ident(i) => {
-                if let Some(f) = b.fn_values.get(&i.name) {
+                let k = b.ids.use_at(&i.name, i.id);
+                if let Some(f) = b.fn_values.get(&k) {
                     return Some(f.clone());
                 }
-                if locals.contains(&i.name) {
+                if b.is_local(&k) {
                     return None;
                 }
                 Some(i.name.clone())
@@ -263,29 +349,61 @@ impl<'a, 't> World<'a, 't> {
         }
     }
 
-    /// Record a `let` into `b`: a bounded view (by the place's type), or a
-    /// local bound to a free fn's name. `root_ty` types a place's root.
-    fn bind(&self, b: &mut Bindings, name: &str, value: &Expr, locals: &BTreeSet<String>, root_ty: &dyn Fn(&str) -> Option<Ty>) {
-        b.views.remove(name);
-        b.fn_values.remove(name);
+    /// Record a binding of `name` (key `k`) to `value` into `b`: a bounded
+    /// view (by the place's type), or a local bound to a free fn's name
+    /// (unless the body assigns it). `root_ty` types a place's root.
+    fn bind(&self, b: &mut Bindings<'_>, k: Key, value: &Expr, root_ty: &dyn Fn(&Key) -> Option<Ty>) {
+        b.views.remove(&k);
+        b.fn_values.remove(&k);
+        b.locals.insert(k.clone());
         if let Expr::Ident(i) = value {
-            if let Some(f) = b.fn_values.get(&i.name).cloned() {
-                b.fn_values.insert(name.to_string(), f);
-                return;
-            }
-            if !locals.contains(&i.name) && self.fns.contains_key(&i.name) {
-                b.fn_values.insert(name.to_string(), i.name.clone());
+            let from = b.ids.use_at(&i.name, i.id);
+            let named = match b.fn_values.get(&from) {
+                Some(f) => Some(f.clone()),
+                None if !b.is_local(&from) && self.fns.contains_key(&i.name) => Some(i.name.clone()),
+                None => None,
+            };
+            if let Some(f) = named {
+                if !b.assigned.contains(&k) {
+                    b.fn_values.insert(k, f);
+                }
                 return;
             }
         }
-        let Some((root, path)) = place(value) else { return };
-        let (root, path) = match b.views.get(&root).cloned() {
-            Some((r, p0)) => (r, p0.into_iter().chain(path).collect::<Vec<_>>()),
-            None => (root, path),
-        };
+        let Some((root, path)) = b.place(value) else { return };
         let bounded = root_ty(&root).and_then(|t| self.type_at(&t, &path)).is_some_and(|t| matches!(t, Ty::Bounded(..)));
         if bounded {
-            b.views.insert(name.to_string(), (root, path));
+            b.views.insert(k, (root, path));
+        }
+    }
+
+    /// The bindings a statement introduces: a `let`'s name, and a tuple
+    /// `let`'s names, each bound to its element of a tuple literal (any
+    /// other value binds them to nothing the walk names).
+    fn bind_stmt(&self, b: &mut Bindings<'_>, s: &Stmt, root_ty: &dyn Fn(&Key) -> Option<Ty>) {
+        match s {
+            Stmt::Let { name, value, id, .. } => {
+                let k = b.ids.decl_at(&name.name, *id);
+                self.bind(b, k, value, root_ty);
+            }
+            Stmt::LetTuple { names, value, .. } => {
+                let parts = match value {
+                    Expr::Tuple(es, _) if es.len() == names.len() => Some(es),
+                    _ => None,
+                };
+                for (j, n) in names.iter().enumerate() {
+                    let k = b.ids.decl(n);
+                    match parts {
+                        Some(es) => self.bind(b, k, &es[j], root_ty),
+                        None => {
+                            b.views.remove(&k);
+                            b.fn_values.remove(&k);
+                            b.locals.insert(k);
+                        }
+                    }
+                }
+            }
+            _ => {}
         }
     }
 
@@ -308,28 +426,20 @@ impl<'a, 't> World<'a, 't> {
 
     /// The parameters `f`'s body writes through, given what is known of
     /// the fns it calls.
-    fn writes_of(&self, f: &FreeFn<'a>, known: &BTreeMap<String, BTreeSet<usize>>) -> BTreeSet<usize> {
-        let index: BTreeMap<&str, usize> = f.params.iter().enumerate().map(|(i, (n, _))| (n.as_str(), i)).collect();
-        let types: BTreeMap<String, Ty> = f.params.iter().cloned().collect();
-        let root_ty = |r: &str| types.get(r).cloned();
-        let mut b = Bindings::default();
-        let mut locals: BTreeSet<String> = f.params.iter().map(|(n, _)| n.clone()).collect();
+    fn writes_of(&self, f: &FreeFn<'a, 's>, known: &BTreeMap<String, BTreeSet<usize>>) -> BTreeSet<usize> {
+        let index: BTreeMap<&Key, usize> = f.params.iter().enumerate().map(|(i, (k, _))| (k, i)).collect();
+        let types: BTreeMap<Key, Ty> = f.params.iter().cloned().collect();
+        let root_ty = |r: &Key| types.get(r).cloned();
+        let mut b = Bindings::new(f.ids, f.body, f.params.iter().map(|(k, _)| k.clone()));
         let mut out = BTreeSet::new();
         visit_block(f.body, &mut |v| match v {
-            Visited::Stmt(Stmt::Let { name, value, .. }) => {
-                self.bind(&mut b, &name.name, value, &locals, &root_ty);
-                locals.insert(name.name.clone());
-            }
+            Visited::Stmt(s @ (Stmt::Let { .. } | Stmt::LetTuple { .. })) => self.bind_stmt(&mut b, s, &root_ty),
             Visited::Expr(Expr::Call { callee, args, .. }) => {
                 let root_of = |e: &Expr| -> Option<(usize, Vec<Step>)> {
-                    let (root, path) = place(e)?;
-                    let (root, path) = match b.views.get(&root) {
-                        Some((r, p0)) => (r.clone(), p0.iter().cloned().chain(path).collect()),
-                        None => (root, path),
-                    };
-                    Some((*index.get(root.as_str())?, path))
+                    let (root, path) = b.place(e)?;
+                    Some((*index.get(&root)?, path))
                 };
-                match self.callee(callee, &b, &locals) {
+                match self.callee(callee, &b) {
                     Some(c) if (c == "push" && args.len() == 2) || (c == "set" && args.len() == 3) => {
                         if let Some((i, path)) = root_of(&args[0]) {
                             if self.type_at(&f.params[i].1, &path).is_some_and(|t| self.pointer_bounded(&t)) {
@@ -371,29 +481,26 @@ impl<'a, 't> World<'a, 't> {
     fn calls(
         &self,
         body: &Block,
-        params: &BTreeMap<String, Ty>,
+        ids: &Ids<'_>,
+        params: &BTreeMap<Key, Ty>,
         locus: Option<&str>,
         writers: &BTreeMap<String, BTreeSet<usize>>,
         out: &mut Vec<Diag>,
     ) {
         let member = locus.is_some();
         let self_ty = locus.map(|l| Ty::Named(l.to_string()));
-        let root_ty = |r: &str| -> Option<Ty> {
-            if r == "self" {
+        let root_ty = |r: &Key| -> Option<Ty> {
+            if *r == Key::SelfKw {
                 return self_ty.clone();
             }
             params.get(r).cloned()
         };
-        let mut b = Bindings::default();
-        let mut locals: BTreeSet<String> = params.keys().cloned().collect();
+        let mut b = Bindings::new(*ids, body, params.keys().cloned());
         let mut found: Vec<Diag> = Vec::new();
         visit_block(body, &mut |v| match v {
-            Visited::Stmt(Stmt::Let { name, value, .. }) => {
-                self.bind(&mut b, &name.name, value, &locals, &root_ty);
-                locals.insert(name.name.clone());
-            }
+            Visited::Stmt(s @ (Stmt::Let { .. } | Stmt::LetTuple { .. })) => self.bind_stmt(&mut b, s, &root_ty),
             Visited::Expr(Expr::Call { callee, args, .. }) => {
-                let reached = self.callee(callee, &b, &locals);
+                let reached = self.callee(callee, &b);
                 let ks: Vec<usize> = match &reached {
                     Some(c) => match writers.get(c) {
                         Some(ks) => ks.iter().copied().collect(),
@@ -403,12 +510,8 @@ impl<'a, 't> World<'a, 't> {
                 };
                 for k in ks {
                     let Some(arg) = args.get(k) else { continue };
-                    let Some((root, path)) = place(arg) else { continue };
-                    let (base, full) = match b.views.get(&root) {
-                        Some((r, p0)) => (r.clone(), p0.iter().cloned().chain(path).collect::<Vec<_>>()),
-                        None => (root, path),
-                    };
-                    let foreign = base == "self" || (member && params.contains_key(&base));
+                    let Some((base, full)) = b.place(arg) else { continue };
+                    let foreign = base == Key::SelfKw || (member && params.contains_key(&base));
                     if !foreign {
                         continue;
                     }
@@ -427,7 +530,7 @@ impl<'a, 't> World<'a, 't> {
                     } else {
                         format!("`{shown}` is a call through a function value whose fn this check cannot name, and may store pointer-shaped elements (a String, Bytes or a record) into a bounded place under its parameter")
                     };
-                    let whose = if base == "self" { "this locus's arena" } else { "its caller's frame, not this member's" };
+                    let whose = if base == Key::SelfKw { "this locus's arena" } else { "its caller's frame, not this member's" };
                     found.push(Diag::ty(
                         arg.span(),
                         format!(

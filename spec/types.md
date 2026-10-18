@@ -1270,8 +1270,14 @@ Semantics:
   refused at a call that hands it a place the frame does not own: one
   under `self` or a bounded local viewing one ("\`fill\` stores
   pointer-shaped elements … this argument is a place in this locus's
-  arena …"). A record of the frame's own, a copy of one, and a scalar
-  element are sound; the shape that works for a locus's field is to fill
+  arena …"). A call through a function value is the fn the value's
+  binding names (`let f = fill;`, a tuple `let`'s element of a tuple
+  literal); a binding the body assigns (`f = other;`), a parameter of fn
+  type or a computed callee names no one fn, and such a call is refused
+  for any argument holding such a place. Names are bindings, not
+  spellings: an inner `let f` names nothing after its block, and
+  `let r = r;` is an owned copy, not the parameter. A record of the
+  frame's own, a copy of one, and a scalar element are sound; the shape that works for a locus's field is to fill
   a local and store it whole (`self.row = mine`), which anchors the
   elements in the locus's arena. The stdlib's `std::http::is_route`
   writes its captures into `ctx.params` this way, so a context a locus

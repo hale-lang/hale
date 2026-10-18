@@ -618,3 +618,78 @@ fn a_parameter_place_writer_is_found_through_aliases_and_fn_values() {
     );
     assert!(!ds.iter().any(|m| m.contains("pointer-shaped elements")), "an owned copy is no view: {ds:?}");
 }
+
+/// `diags` over a program the snapshot minted, as the toolchain checks
+/// it: each use names its declaration (`Snapshot::binding_of`).
+fn minted_diags(src: &str) -> Vec<String> {
+    let mut program = parse_source(src).expect("parse");
+    hale_types::desugar_sequence::desugar_before_check(
+        &mut [&mut program],
+        &hale_types::desugar_sequence::Sequence { import_renames: &[], default_surface: "" },
+    );
+    let ids = hale_types::snapshot::mint([("test.hl", &mut program)], &[]);
+    let mut programs = std::collections::BTreeMap::new();
+    programs.insert("test.hl".to_string(), &program);
+    let mut bundle = Bundle::new(programs);
+    bundle.snapshot = ids;
+    let (scope, mut ds) = hale_types::resolve::build_top_scope(&bundle);
+    ds.extend(hale_types::check::check_bundle(&bundle, &scope, true));
+    ds.iter().map(|d| d.message.clone()).collect()
+}
+
+/// Second review of #1612: a fn value's target follows the binding a call
+/// names. Assigned (`f = fill;`), the binding names no one fn and the call
+/// is refused for any argument holding such a place; an inner `let f`
+/// names nothing after its block, so the outer writer is still refused;
+/// a tuple `let` binds each name to its element. A shadowing owned copy
+/// (`let r = r;`) is not the parameter, so writing its places is no write
+/// through it, and a member's `let r = Row { }` shadowing its parameter is
+/// a frame-local place.
+#[test]
+fn a_parameter_place_writer_follows_bindings_not_spellings() {
+    const PRE: &str = r#"
+        type Row { xs: bounded[String; 4]; }
+        fn fill(r: Row) { push(r.xs, "fresh" + to_string(1)) or raise; }
+        fn noop(r: Row) { }
+    "#;
+    let refused = |body: &str, why: &str| {
+        let src = format!("{PRE} locus L {{ params {{ row: Row = Row {{ }}; }} fn put() {{ {body} }} }}\nfn main() {{ }}");
+        let ds = minted_diags(&src);
+        assert!(ds.iter().any(|m| m.contains("pointer-shaped elements")), "{why}: {ds:?}");
+    };
+    let accepted = |src: &str, why: &str| {
+        let ds = minted_diags(&format!("{PRE}{src}\nfn main() {{ }}"));
+        assert!(!ds.iter().any(|m| m.contains("pointer-shaped elements")), "{why}: {ds:?}");
+    };
+    refused("let mut f = noop; f = fill; f(self.row);", "a binding assigned a writer");
+    refused("let mut f = fill; f(self.row); f = noop;", "a binding assigned after the call");
+    refused(
+        "let f = fill; if true { let f = noop; f(self.row); } f(self.row);",
+        "the outer writer after an inner binding's block",
+    );
+    refused("let (f, n) = (fill, 0); f(self.row);", "a tuple binder");
+    accepted(
+        "locus L { params { row: Row = Row { }; } fn put() { let (f, n) = (noop, 0); f(self.row); } }",
+        "a tuple binder of a non-writer",
+    );
+    accepted(
+        "locus L { params { row: Row = Row { }; } fn put() { let f = fill; if true { let f = noop; f(self.row); } } }",
+        "the inner non-writer",
+    );
+    accepted(
+        r#"fn copy_fill(r: Row) { let r = r; push(r.xs, "fresh" + to_string(1)) or raise; }
+        locus L { params { row: Row = Row { }; } fn put() { copy_fill(self.row); } }"#,
+        "a shadowing owned copy",
+    );
+    accepted(
+        "locus L { fn put(r: Row) { let r = Row { }; fill(r); } }",
+        "a member's fresh local shadowing its parameter",
+    );
+    let ds = minted_diags(&format!(
+        "{PRE} locus L {{ fn put(r: Row) {{ fill(r); }} }}\nfn main() {{ }}"
+    ));
+    assert!(
+        ds.iter().any(|m| m.contains("pointer-shaped elements") && m.contains("not this member's")),
+        "the member's parameter itself is still refused: {ds:?}"
+    );
+}
