@@ -1822,7 +1822,7 @@ crates/hale-types/tests/diag_quality.rs#20 995fe52341dde502
 crates/hale-types/tests/diag_quality.rs#21 995fe52341dde502
 crates/hale-types/tests/diag_quality.rs#3 f2c1228edb650960
 crates/hale-types/tests/diag_quality.rs#32 8010c72d712438ac
-crates/hale-types/tests/diag_quality.rs#39 74c5ee9386adb91c
+crates/hale-types/tests/diag_quality.rs#41 74c5ee9386adb91c
 crates/hale-types/tests/diag_quality.rs#5 865d341109268295
 crates/hale-types/tests/diag_quality.rs#8 d6325a0b5e9d93db
 crates/hale-types/tests/diag_quality.rs#9 9340303665f67845

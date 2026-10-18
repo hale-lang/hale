@@ -493,6 +493,60 @@ fn an_assignment_target_names_only_declared_fields() {
     assert!(ds.is_empty(), "{ds:?}");
 }
 
+/// `==` on an enum holds only when every payload of every variant has its
+/// own `==`, through nested enums; a struct payload is refused at the
+/// check, naming the path to it (it failed at the build, "match on
+/// TypeRef not supported").
+#[test]
+fn enum_equality_needs_every_payload_to_compare() {
+    let ds = diags(
+        r#"
+        type P { a: Int; }
+        type Inner = enum { X(P), Y };
+        type E = enum { A(Int), B(Inner) };
+        type F = enum { A(P), B };
+        type G = enum { A(Int, String), B(Bytes) };
+        type H = enum { A(Int, String), B };
+        fn main() {
+            let e = E::A(1) == E::A(1);
+            let f = F::B != F::B;
+            let g = G::A(1, "") == G::A(1, "");
+            let h = H::A(1, "") == H::B;
+        }
+    "#,
+    );
+    assert!(ds.iter().any(|m| m.starts_with("`==` does not apply to `E`: its variant `B` carries `Inner`, whose variant `X` carries a struct (`P`)")), "{ds:?}");
+    assert!(ds.iter().any(|m| m.starts_with("`!=` does not apply to `F`: its variant `A` carries a struct (`P`)")), "{ds:?}");
+    assert!(ds.iter().any(|m| m.starts_with("`==` does not apply to `G`: its variant `B` carries a byte string (`Bytes`)")), "{ds:?}");
+    assert_eq!(ds.len(), 3, "`H` compares: {ds:?}");
+}
+
+/// Review of #1616: a generic enum's monomorph (`Value<P>`, `Value_P`) is
+/// judged by its substituted payloads, as an enum carrying it is: a struct
+/// argument is refused at the check (it failed at the build), and an `Int`
+/// or a comparable enum argument compares.
+#[test]
+fn a_generic_enums_equality_is_its_arguments() {
+    let ds = diags(
+        r#"
+        type P { n: Int; }
+        type Inner = enum { A, B(Int) };
+        type Value<T> = enum { Some(T), None };
+        type Outer = enum { Has(Value<P>), Empty };
+        fn same(a: Value<P>, b: Value<P>) -> Bool { return a == b; }
+        fn outer(a: Outer, b: Outer) -> Bool { return a == b; }
+        fn ints(a: Value<Int>, b: Value<Int>) -> Bool { return a == b; }
+        fn inners(a: Value<Inner>, b: Value<Inner>) -> Bool { return a != b; }
+        fn main() { }
+    "#,
+    );
+    assert!(ds.iter().any(|m| m.starts_with("`==` does not apply to `Value_P`: its variant `Some` carries a struct (`P`)")), "{ds:?}");
+    assert!(
+        ds.iter().any(|m| m.starts_with("`==` does not apply to `Outer`: its variant `Has` carries `Value_P`, whose variant `Some` carries a struct (`P`)")),
+        "{ds:?}"
+    );
+    assert_eq!(ds.len(), 2, "`Value<Int>` and `Value<Inner>` compare: {ds:?}");
+}
 
 
 /// GH #1608 follow-up: a pointer-shaped element stored into a bounded place
