@@ -28,8 +28,6 @@ main locus App {
     }
     fn routed(kind: String, label: String) {
         std::test::assert_eq_str(dna::memory_of(kind), "ledger", label + " is the day's work");
-        std::test::assert_eq_str(dna::route(1, kind), "ledger", label + " is the ledger's under split routing");
-        std::test::assert_eq_str(dna::route(0, kind), "record", label + " is the record's on routing 0");
     }
     // One attempt admission, written by hand, so a document whose outer
     // and inner identities disagree can be read back at all.

@@ -14,10 +14,10 @@ one (GH #646).
 | Memory | Holds | Lives in | Written by |
 |---|---|---|---|
 | **Structure** | what the organism *is*: positions, routes, workflow definitions and grants as authored, the law, the app, the models catalog | the codebase | the editor, under review |
-| **Record** | how the organism *changed* and was allowed to: mutations and their reviews, practices proposed and ratified, authority contracted or revoked, connections, provisioning, people, the adoption of the ledger | memory: Postgres, `record_rows` in the record's schema `dna_<identity>`, one signed row per event, insert-only (GH #1590) | the Board, the organism's pipeline, a head from its clone |
+| **Record** | how the organism *changed* and was allowed to: mutations and their reviews, practices proposed and ratified, authority contracted or revoked, connections, provisioning, people | memory: Postgres, `record_rows` in the record's schema `dna_<identity>`, one signed row per event, insert-only (GH #1590) | the Board, the organism's pipeline, a head from its clone |
 | **Ledger** | what the organism *did today*: intents, tasks, assignments, decisions, bills and receipts, money reserved and settled, schedules declared and their occurrences, concerns, handoffs, effect claims, liveness, the application's readings | memory: Postgres, in the record's own schema `dna_<identity>` | every writer under its own role — the nodes as the spine's, each head as its own — through memory's insert function, the gate (GH #1026) |
 
-The routing table is `memory_of` in the core (`routing.hl`): the
+Each kind's placement is `memory_of` in the core (`routing.hl`): the
 `case`, `intent`, `task`, `decision`, `completion`, `exception`,
 `schedule`, `receipt`, `handoff`, `pressure`, `instance`, `effect`,
 `report`, `lease`, `claim`, `reading` (an application's events,
@@ -36,18 +36,15 @@ workflow execution's own facts (`workflow.admitted` / `.refused` /
 `.outcome_requested` / `.outcome_refused`, `.allowance_requested` /
 `.allowance_granted` / `.allowance_refused`, `.unresolved`,
 `.released`). Every other kind, and any
-kind a build does not know, is the record's. **Routing is versioned and
-is a fact of the record**: version 0 is every kind in the record;
-version 1 and 2 are the table (2: the record is memory's too, GH
-#1590); an organism is on the version its last `ledger.adopted` row
-names; a record born in memory names 2 among its first rows.
-There is no dual-write: a kind has one home, and a writer that cannot
+kind a build does not know, is the record's. The placement is fixed,
+part of the schema: it is not data in the record and is not versioned,
+since every record has its Ledger from its first row (GH #1590). There is no dual-write: a kind has one home, and a writer that cannot
 reach it fails rather than writing elsewhere.
 
 `RoutedJournal` is the `Journal` an organism and the host stand on:
 the record's journal and the Ledger's read as one merged sequence (a
 row's `seq` as read is its merged position; rows name each other by
-id), appended to by kind under the record's routing. The Ledger is
+id), appended to by kind, as the table routes it. The Ledger is
 `MemoryLedger` (`dna/core/memory_spine.hl`) over `PqLedger` (Postgres,
 the record's `dna_<identity>` schema, one insert conditioned on the
 tail, the claim kinds `effect.requested`, `spend.reserved` and
@@ -60,19 +57,13 @@ host handed it (`HALE_DNA_LEASE`, `HALE_DNA_LEASE_TOKEN`): an append
 under a lease that is not held, is held at another token, or has
 expired lands nothing (`fenced: …`).
 
-**Adoption** is where the record is born (GH #1590): a record born in
-memory has its Ledger from its first rows, with the cutover at its
-identity (memory's migration records it, and `ledger.adopted
-{routing, checkpoint, rows, by}` is among the record's first rows), so
-there is nothing to adopt (`hale dna ledger adopt` says so) and nothing
-to abandon (`hale dna ledger abandon` is refused). Readers of history
-(`history`, the projections, the export) read both memories as one. `hale dna run`
-refuses to start without `HALE_DNA_MEMORY_DSN_SPINE` (#646 decision
-3: a body without its memory admits nothing); `dev` applies memory's
-schema and hands the host the spine's DSN. `hale dna ledger [status]`
-says the routing, whether memory is named here, and the Ledger's row
-count and cutover;
-`hale dna ledger rows` prints the Ledger's rows as JSON lines (`seq`,
+**The Ledger is born with the record** (GH #1590): memory's migration
+makes both, and nothing adopts or abandons a Ledger. Readers of history
+(`history`, the projections, the export) read both memories as one.
+`hale dna run` refuses to start without `HALE_DNA_MEMORY_DSN_SPINE`
+(#646 decision 3: a body without its memory admits nothing); `dev`
+applies memory's schema and hands the host the spine's DSN. `hale dna
+ledger rows` prints the Ledger's rows as JSON lines (`seq`,
 `kind`, `entity`, `body`, `author`, `writer` — the role that wrote it, so a head writing as `host` is told apart from the body — `prev`, `digest`), read under the
 head's role or the spine's.
 
@@ -87,8 +78,8 @@ calling role is who wrote it (`session_user`, kept in the row's
 `writer` column beside `lease` and `epoch`). It refuses, returning the
 reason the verb prints:
 
-1. a kind that is not the Ledger's (`ledger_kind`, the routing table
-   above as data): it is appended to the record instead;
+1. a kind that is not the Ledger's (`ledger_kind`, the placement
+   above, in the schema): it is appended to the record instead;
 2. a person the record retired (`org_retired`, below) — checked before
    the author, since a retirement also ends the person's memberships,
    and the refusal says so;
@@ -172,12 +163,11 @@ and `review.reasoned` are the record's; `receipt.*` — a bill filed, its
 class, its disclosure, its reads, its holds, its redaction — are the
 Ledger's, whatever the class, and the body itself is where it always
 was (a git blob for an internal body, memory's sealed store for a
-protected one; only the digest is ever a row). A redaction of a git
-receipt after adoption is therefore a Ledger row, and the body it names
-may be a blob filed before adoption (a head's redaction of a protected
-body is a row of the record, which the spine reads to erase it): sync applies redactions and candidate drops
-over both memories read as one, so the treatment holds across the
-split. The books export is a supported ledger query: it reads `hale
+protected one; only the digest is ever a row). A redaction is a
+Ledger row (a head's redaction of a protected body is a row of the
+record, which the spine reads to erase it): sync applies redactions and
+candidate drops over both memories read as one, so the treatment holds
+across the split. The books export is a supported ledger query: it reads `hale
 dna ledger rows` beside the record's rows and never SQL of its own.
 Recovery between the two memories needs no transaction spanning them:
 every step that touches both writes its intent in the memory that owns
@@ -236,7 +226,7 @@ core's — `dna/core/memory_store.hl` (the graph, `Pq`),
 (`PqProtected`), `memory_embed.hl`, `memory_schema.hl` (the schema,
 the roles, the grants and the functions) and `memory_spine.hl`
 (`Memory`, `MemoryLedger`, `MemoryLeases`, `MemoryKnowledge`,
-`MemoryVault`, `LedgerAdoption`) — and they open Postgres through
+`MemoryVault`) — and they open Postgres through
 pond's driver, pinned under `dna/core/pond` and vendored beside the
 core at `vendor/dna/pond`. The projection tail, `MemoryProjection`, is
 not in the core: it lives in `dna/operations/memory_tail.hl`, beside
@@ -303,7 +293,7 @@ host's tick (**The spine**, below).
   GH #1123: 6 makes `org_members` a view over the graph's `holds`
   edges, where it was a table the spine rewrote from the retired owners
   map, and moves no projection either; GH #987: 7 adds the `reading`
-  family to the routing table the insert function reads, which moves
+  family to the placement the insert function reads, which moves
   none; GH #988: 8 adds the `reflex` family the same way. Each protocol move empties the
   graph once for the projectors to rebuild). A store's `open`
   selects the record's schema and refuses one at another version, or
@@ -322,7 +312,7 @@ host's tick (**The spine**, below).
   `DELETE`, `TRUNCATE`) except the owner-only `memory_keys`,
   `memory_principals`, `protected_receipts` and `protected_redactions`,
   and has `EXECUTE` on every function; it has no DDL. Every Ledger row
-  but an adoption's copy goes through `ledger_append`.
+  goes through `ledger_append`.
 - **Connections are bounded.** Each process holds one memory handle
   (`Memory`: the Ledger and the leases), opened on first use and
   closed when the process ends; everything in a process that reads the
@@ -334,13 +324,11 @@ host's tick (**The spine**, below).
 any number of identical nodes run, and a node holds nothing — its state
 is the stores, its code is the genome. On each tick (`HOST_TICK`, 1 s)
 every host that runs a body applies the record into the graph and the
-org chart (`MemoryProjection`), carries out an adoption or abandonment
-the record asks for (`LedgerAdoption`, under a claim on the asking row),
-and erases the protected bodies the record redacted
-(`MemoryVault.complete_redactions`). Nothing coordinates the nodes; the
-stores serialize them — the projection a row at a time by
-compare-and-swap, an adoption by its claim, an erasure by digest (it
-is idempotent). There is no spine lease and nothing is admitted: a
+org chart (`MemoryProjection`) and erases the protected bodies the
+record redacted (`MemoryVault.complete_redactions`). Nothing
+coordinates the nodes; the stores serialize them — the projection a
+row at a time by compare-and-swap, an erasure by digest (it is
+idempotent). There is no spine lease and nothing is admitted: a
 writer writes, and memory's insert function is the gate (**Writers
 write directly**, above). Every row a node projects is shared already: the record is memory's,
 read by every clone and body alike (GH #1590). A host with no
@@ -422,10 +410,9 @@ sync.
 - **The identity is the first row's digest.** `hale dna init` composes
   `record.genesis {genome, nonce}` (the genome's root commit, and a
   nonce so two projects made alike are two records), pins its digest in
-  `hale.toml` (`[dna] record`), provisions memory, and appends it at 0,
-  then `ledger.adopted` (routing 2, checkpoint the identity: a record
-  born in memory has its Ledger from the start) and `record.key {key}`
-  (the public half of the record's key). A clone whose history does not
+  `hale.toml` (`[dna] record`), provisions memory (the record's Ledger
+  with it), and appends it at 0, then `record.key {key}` (the public
+  half of the record's key). A clone whose history does not
   hold the genome a record was born on does not open it (the
   `hale.toml` naming it was copied from another project).
 - **The rows are read through the toolchain.** `hale dna record-rows
@@ -1569,7 +1556,6 @@ record's.
 | `instance.up` / `instance.exited` | ledger | a node's report on one instance of the plan |
 | `github.pr` / `github.commented` | record | the pull request a Review opened, and the settlement commented back |
 | `gate.observed` | record | a gate's check run at the candidate as the forge reported it: `gate`, `sha`, `conclusion`, `url`, `forge`, `run`; written only by the host's forge sync, once per run (GH #1161) |
-| `ledger.adopting` / `ledger.adopted` / `ledger.abandoned` | record | the move of the day's work into the ledger, its checkpoint, and its undoing |
 
 Their bodies are documented in the guide's reference chapter; the set
 grows by ordinary change, and a reader that meets an unknown kind must
@@ -3249,14 +3235,16 @@ organization's (`[claims] no_base = true`; each adopts its own law).
   organizations exist straight from the record's `graph.node` rows of
   kind `organization` (the record is the membership's source): over a record that
   states organizations, a body that names none does not run, nor one
-  that names an organization the record does not state; and `run` of a
-  body that names its organization needs the ledger adopted. The
+  that names an organization the record does not state. The
   host's admission helpers read memory as a head does
   (`HALE_DNA_MEMORY_DSN_HEAD`, else the spine's DSN). A body admits an
   intent (`Intent.to`, the position it is for; "" is `org`) only for a
   position its organization owns, refusing one offered to it for
   another's by name (`intent.refused`: "not this organization's to
-  admit"). A head never offers such an intent to the body beside it:
+  admit"). It refuses only on the graph as of the record's end: it reads
+  the ownership again, and while memory's projection has record rows
+  still to apply the intent stays unanswered, for the relay to offer it
+  again. A head never offers such an intent to the body beside it:
   `hale dna task create --to` writes it to the record for the owner's
   controller, the host relays only `intent.requested` rows for
   positions its owner holds, and `status` lists the rest as
@@ -3322,8 +3310,7 @@ organization's (`[claims] no_base = true`; each adopts its own law).
   lease is a row of memory's `claims` table per owner, `owner/<owner>`,
   taken like the single body's `body` row, so two
   firms' controllers run side by side over one record and a firm's
-  second host waits on its own firm's lease alone; a shared record
-  runs no body until its ledger is adopted. The lease's token is an
+  second host waits on its own firm's lease alone. The lease's token is an
   epoch: it rises when the lease is taken (a takeover, a forced
   claim, an expiry) and holds through renewals, and the host hands
   the body it starts its lease and epoch (`HALE_DNA_LEASE`,
@@ -4847,8 +4834,7 @@ The live half is memory's, projected from the record by the spine
   whole; a refusal is a receipt (`state: refused`, `structure.why`) and no
   row, and the same steps still pending are answered `already_proposed`
   with the Review they await. A command is conditioned on `record_head`
-  (`stale_subject` once the Record moved) and is `commands_unsupported`
-  once the Record's ledger is adopted. The receipt's `structure` branch
+  (`stale_subject` once the Record moved). The receipt's `structure` branch
   (`state`, `request_id`, `review_id`, `event_id`, `why`, `warning`)
   reads `requested` until the organization answers the request row, then
   `proposed` with its Review or `refused` with why; the Board decides

@@ -199,6 +199,9 @@ locus OrganizationImpact {
     fn assess() -> OrganizationImpactAssessment {
         let head = self.j.head(); let revision = self.j.revision();
         if revision < 0 || revision > 2048 { return self.failure("impact_read_limit", head, revision, true); }
+        // the operational history is the Ledger's (GH #1590): the record alone
+        // does not hold it
+        if !self.routed { return self.failure("impact_source_unavailable", head, revision, true); }
         if !self.j.verify_chain() || self.visibility.j.head() != head || self.visibility.j.revision() != revision { return self.failure("impact_source_invalid", head, revision, true); }
         let p = dna::WorkflowProjection { }; let rows = OrganizationImpactEntries { }; let mut out = OrganizationImpactAssessment { details_visible: true, record_head: head, revision: revision };
         let mut i = 0; let mut bytes = 0; let mut operational_bytes = 0; let mut facts = 0;
@@ -206,7 +209,6 @@ locus OrganizationImpact {
             let e = self.j.read(i); bytes = bytes + len(e.body);
             if e.seq != i || len(e.kind) == 0 || len(e.digest) == 0 { return self.failure("impact_source_invalid", head, revision, out.details_visible); }
             if len(e.body) > 65536 || bytes > 2097152 { return self.failure("impact_read_limit", head, revision, out.details_visible); }
-            if e.kind == "ledger.adopted" && !self.routed { return self.failure("impact_source_unavailable", head, revision, out.details_visible); }
             if self.relevant(e.kind) && !self.restriction(e.kind) {
                 if len(e.entity) == 0 { return self.failure("impact_source_invalid", head, revision, out.details_visible); }
                 facts = facts + 1; operational_bytes = operational_bytes + len(e.body);

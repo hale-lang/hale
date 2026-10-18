@@ -466,8 +466,6 @@ type KnowledgeVisibilityBasis {
     record_revision: Int = 0;
     ledger_head: String = "";
     ledger_revision: Int = 0;
-    checkpoint: String = "";
-    routing: Int = 0;
     error: String = "knowledge_visibility_unavailable";
 }
 
@@ -496,7 +494,8 @@ fn knowledge_receipt_id(id: String) -> String {
 locus KnowledgeVisibility {
     params {
         record: dna::Journal = dna::MemJournal { };
-        ledger: dna::LedgerView = dna::PqLedger { };
+        // the record's Ledger: a reader handed none reads an empty one
+        ledger: dna::LedgerView = dna::EmptyLedger { };
         syntax: KnowledgePolicySyntax = NoKnowledgePolicySyntax { };
         restrictions: KnowledgeRestrictions = KnowledgeRestrictions { };
         basis: KnowledgeVisibilityBasis = KnowledgeVisibilityBasis { };
@@ -544,40 +543,25 @@ locus KnowledgeVisibility {
             self.basis.error = "knowledge_read_limit";
             if e.seq != i { return self.refuse("knowledge_visibility_unavailable"); }
             if !self.inspect(e) { return self.refuse(self.basis.error); }
-            if e.kind == "ledger.abandoned" {
-                // Abandonment destroys old dna::Ledger restrictions; switching back
-                // to Record does not establish their absence.
-                return self.refuse("knowledge_visibility_unavailable");
-            }
-            if e.kind == "ledger.adopted" {
-                if !self.syntax.valid(e.body) || !std::str::starts_with(std::str::trim(e.body), "{") || std::json::find_field_raw(e.body, "routing") != to_string(dna::ROUTING_VERSION) { return self.refuse("knowledge_visibility_unavailable"); }
-                let raw_checkpoint = std::json::find_field_raw(e.body, "checkpoint");
-                if len(raw_checkpoint) < 2 || !std::str::starts_with(raw_checkpoint, "\"") { return self.refuse("knowledge_visibility_unavailable"); }
-                self.basis.routing = std::json::find_int_field(e.body, "routing");
-                self.basis.checkpoint = std::json::find_string_field(e.body, "checkpoint");
-                if self.basis.routing != dna::ROUTING_VERSION || len(self.basis.checkpoint) == 0 { return self.refuse("knowledge_visibility_unavailable"); }
-            }
             i = i + 1;
         }
         if !self.record.verify_chain() { return self.refuse("knowledge_visibility_unavailable"); }
-        if self.basis.routing > 0 {
-            let refreshed = self.ledger.refresh();
-            let cut = self.ledger.checkpoint();
-            if len(self.ledger.last_error()) > 0 || !cut.adopted || cut.routing != self.basis.routing || cut.checkpoint != self.basis.checkpoint { return self.refuse("knowledge_visibility_unavailable"); }
-            self.basis.ledger_head = self.ledger.head();
-            self.basis.ledger_revision = self.ledger.revision();
-            if self.basis.ledger_revision < 0 || self.basis.ledger_revision > self.max_rows - self.basis.record_revision { return self.refuse("knowledge_read_limit"); }
-            if cut.copied < 0 || cut.copied > self.basis.ledger_revision { return self.refuse("knowledge_visibility_unavailable"); }
-            i = 0;
-            while i < self.basis.ledger_revision {
-                let e = self.ledger.read(i);
-                self.basis.error = "knowledge_read_limit";
-                if e.seq != i { return self.refuse("knowledge_visibility_unavailable"); }
-                if !self.inspect(e) { return self.refuse(self.basis.error); }
-                i = i + 1;
-            }
-            if !self.ledger.verify_chain() { return self.refuse("knowledge_visibility_unavailable"); }
+        // the record's Ledger, from its first row (GH #1590): its receipt
+        // rows restrict what the graph shows
+        let refreshed = self.ledger.refresh();
+        if len(self.ledger.last_error()) > 0 { return self.refuse("knowledge_visibility_unavailable"); }
+        self.basis.ledger_head = self.ledger.head();
+        self.basis.ledger_revision = self.ledger.revision();
+        if self.basis.ledger_revision < 0 || self.basis.ledger_revision > self.max_rows - self.basis.record_revision { return self.refuse("knowledge_read_limit"); }
+        i = 0;
+        while i < self.basis.ledger_revision {
+            let e = self.ledger.read(i);
+            self.basis.error = "knowledge_read_limit";
+            if e.seq != i { return self.refuse("knowledge_visibility_unavailable"); }
+            if !self.inspect(e) { return self.refuse(self.basis.error); }
+            i = i + 1;
         }
+        if !self.ledger.verify_chain() { return self.refuse("knowledge_visibility_unavailable"); }
         self.basis.available = true;
         self.basis.error = "";
         if !self.unchanged() { return self.basis; }
@@ -597,17 +581,14 @@ locus KnowledgeVisibility {
             let refused = self.refuse("snapshot_changed");
             return false;
         }
-        if self.basis.routing > 0 {
-            let refreshed = self.ledger.refresh();
-            let cut = self.ledger.checkpoint();
-            if len(self.ledger.last_error()) > 0 {
-                let refused = self.refuse("knowledge_visibility_unavailable");
-                return false;
-            }
-            if !cut.adopted || cut.routing != self.basis.routing || cut.checkpoint != self.basis.checkpoint || self.ledger.head() != self.basis.ledger_head || self.ledger.revision() != self.basis.ledger_revision {
-                let refused = self.refuse("snapshot_changed");
-                return false;
-            }
+        let refreshed = self.ledger.refresh();
+        if len(self.ledger.last_error()) > 0 {
+            let refused = self.refuse("knowledge_visibility_unavailable");
+            return false;
+        }
+        if self.ledger.head() != self.basis.ledger_head || self.ledger.revision() != self.basis.ledger_revision {
+            let refused = self.refuse("snapshot_changed");
+            return false;
         }
         return true;
     }

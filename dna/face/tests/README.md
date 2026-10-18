@@ -744,8 +744,8 @@ inherited from the caller. Every owned process group is stopped in cleanup,
 and the host's children reaped after it. The retained run directory contains
 the Git project, journal, canonical candidate blobs, native logs, request
 transcript, receipts, binary hashes and `result.json`; a failed case exits
-nonzero. This is local Record/host/organization acceptance, not routing-1
-Ledger or multi-clone evidence.
+nonzero. This is local Record/host/organization acceptance, not multi-clone
+evidence.
 
 ### Browser operating flow against the native provider
 

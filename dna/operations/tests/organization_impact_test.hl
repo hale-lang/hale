@@ -7,7 +7,12 @@ locus ImpactCases {
     params { }
     fn append(j: dna::Journal, kind: String, id: String, body: String) { std::test::assert(j.append_exact(j.revision(), kind, id, body).ok, "append " + kind); }
     fn read(j: dna::Journal) -> ops::OrganizationImpactAssessment {
-        let q = ops::Queries { j: j }; let r = ops::OrganizationImpact { j: j, visibility: q }; return r.assess();
+        let q = ops::Queries { j: j, routed: true }; let r = ops::OrganizationImpact { j: j, visibility: q, routed: true }; return r.assess();
+    }
+    // A reader of the record alone: the operational history is the Ledger's
+    // (GH #1590), so it has none to assess.
+    fn read_record_only(j: dna::Journal) -> ops::OrganizationImpactAssessment {
+        let q = ops::Queries { j: j, routed: true }; let r = ops::OrganizationImpact { j: j, visibility: q }; return r.assess();
     }
     fn legacy(mode: String) {
         let j = dna::MemJournal { }; self.append(j, "application.observed", "app", "{}");
@@ -43,14 +48,13 @@ locus ImpactCases {
     fn future(mode: String) {
         let j = dna::MemJournal { }; self.append(j, "application.observed", "app", "{}");
         if mode == "schedule" { self.append(j, "schedule.declared", "s1", dna::schedule_json(dna::Schedule { id: "s1", every_ms: 1000, definition: "ask-person", args: "{\"objective\": \"later\"}", convener: "position:leader" })); self.append(j, "schedule.paused", "s1", "by operator"); }
-        else if mode == "split" { self.append(j, "ledger.adopted", "app", "{\"routing\":1}"); self.append(j, "ledger.abandoned", "app", "{}"); }
         else if mode == "unknown" { self.append(j, "spend.reserved", "spend", "{}"); }
         else {
             self.append(j, "effect.requested", "effect1", "exact effect");
             if mode == "uncertain" { self.append(j, "effect.result", "effect1", "unknown after restart"); }
             if mode == "effectdone" { self.append(j, "effect.result", "effect1", "ok"); }
         }
-        let r = self.read(j);
+        let r = if mode == "split" { self.read_record_only(j) } else { self.read(j) };
         if mode == "split" || mode == "unknown" { std::test::assert(!r.available && r.record_head == j.head(), "unavailable keeps basis"); std::test::assert_eq_str(r.code, if mode == "split" { "impact_source_unavailable" } else { "impact_unsupported_history" }, "coverage reason"); }
         else { std::test::assert(r.available && r.details_visible, "future read available");
             if mode == "schedule" { std::test::assert_eq_int(r.schedules, 1, "paused schedule remains future responsibility"); }

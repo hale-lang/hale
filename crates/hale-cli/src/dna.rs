@@ -1185,9 +1185,7 @@ fn usage(code: u8) -> ExitCode {
     eprintln!("       hale dna sync [project]      apply what the record says of this clone (a dropped candidate's branch deleted); the record is memory's");
     eprintln!("       hale dna signers [list | enroll <who> --key <ssh key or file> | revoke <who>]");
     eprintln!("                                    who the record admits signed rows from under dna.trust = signed (rows of the record)");
-    eprintln!("       hale dna ledger [status | rows | adopt]");
-    eprintln!("                                    the operational memory: where the day's work lives and its rows as JSON lines;");
-    eprintln!("                                    adopt imports a record an earlier toolchain kept on git into memory, once, as the spine;");
+    eprintln!("       hale dna ledger rows         the operational memory's rows as JSON lines: where the day's work lives;");
     eprintln!("                                    a head's write (a task done, a receipt filed …) goes straight into the Ledger");
     eprintln!("                                    under the head's role: done when it lands, or refused by memory with the reason");
     eprintln!("       hale dna candidates [<mutation> | drop <mutation> --why <w>]");
@@ -1224,7 +1222,6 @@ fn usage(code: u8) -> ExitCode {
     eprintln!("       hale dna board [project]     the Board's queue: what needs its verdict, escalations, proposals, reports");
     eprintln!("       hale dna task create [--to <locus>|position:<name>] [--as <who>] [--judgment] [--size quick|standard|deep] [--no-wait] <outcome…>");
     eprintln!("                                    ask for an outcome (--judgment: an assessment, a leg's to perform; --to position:<name>: a change the leg holding that position makes): a row in the record, which a node relays to the organism; prints the Task born or the refusal");
-    eprintln!("                                    (on an adopted ledger it prints the request's digest: see `hale dna ledger`)");
     eprintln!("       hale dna task done <id>      a person reports a handed Task done (--as <who>, --note …); `task reassign <id> --to <who>`");
     eprintln!("                                    under an acceptance practice requiring evidence: --evidence <digest>, or --exception <why> --authorized-by <who>");
     eprintln!("       hale dna task authorize <id> --exception <why>   authorize an exception, in your name (not the assignee's)");
@@ -3516,12 +3513,12 @@ fn record_exists(root: &Path) -> Result<bool, String> {
 }
 
 /// GH #1590: whether the record holds more than its birth (`record.genesis`,
-/// `ledger.adopted`, `record.key`): init seeds a record once.
+/// `record.key`): init seeds a record once.
 fn record_seeded(root: &Path) -> Result<bool, String> {
     let rows = host_run("record-rows", root, &[])?;
     Ok(rows.lines().filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok()).any(|v| {
         let kind = v["kind"].as_str().unwrap_or("");
-        !kind.starts_with("record.") && kind != "ledger.adopted"
+        !kind.starts_with("record.")
     }))
 }
 

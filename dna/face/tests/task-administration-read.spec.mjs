@@ -6,10 +6,10 @@ import { httpFixture } from './http-fixture.mjs';
 import { UNGATED, commandReceipt, commandReply, describeLine, receiptLine, refusedReply, routeError } from './command-wire.mjs';
 
 const API = '/api/hale/v1/applications', APP = 'a'.repeat(40), PRINCIPAL = { mode: 'local', name: 'riley' };
-const HEAD = 'b'.repeat(40), NEXT = 'c'.repeat(40), EVENT = 'd'.repeat(40), DIGEST = 'sha256:' + 'e'.repeat(64);
+const HEAD = 'b'.repeat(40), EVENT = 'd'.repeat(40), DIGEST = 'sha256:' + 'e'.repeat(64);
 const STORAGE = 'face.practice-recovery.v1:';
 const KEY = STORAGE + encodeURIComponent(JSON.stringify([APP, PRINCIPAL.mode, PRINCIPAL.name]));
-const task = () => ({ id: 'support:t-41', outcome: 'Confirm the supplier handover — équipe', state: 'handed', assignee: 'mara', obligation: 'supplier-handover', acceptance_digest: 'acceptance:original/v1', acceptance_bound: true, evidence_required: true, evidence_ref: '', waiting: '', assignment_digest: DIGEST, reassignment_supported: true, history: [{ event_id: '1'.repeat(40), sequence: '3', kind: 'task.handed', from: '', to: 'mara', by: 'leader' }] });
+const task = () => ({ id: 'support:t-41', outcome: 'Confirm the supplier handover — équipe', state: 'handed', assignee: 'mara', obligation: 'supplier-handover', acceptance_digest: 'acceptance:original/v1', acceptance_bound: true, evidence_required: true, evidence_ref: '', waiting: '', assignment_digest: DIGEST, reassignment_supported: true, history: [{ event_id: '1'.repeat(40), sequence: '11', kind: 'task.handed', from: '', to: 'mara', by: 'leader' }] });
 const region = page => page.getByRole('region', { name: 'Handed Task administration', exact: true });
 const recovery = page => page.getByRole('region', { name: 'Task reassignment request', exact: true });
 const error = (code, message) => ({ api_version: 'hale.v1', error: { code, message, retryable: false } });
@@ -28,7 +28,11 @@ const test = base.extend({
 async function saved(page) { return page.evaluate(prefix => Object.entries(localStorage).filter(([key]) => key.startsWith(prefix)).map(([key, value]) => ({ key, value: JSON.parse(value) })), STORAGE); }
 async function fixture(page, options = {}) {
   const script = { authorized: true, available: true, profile: true, inconsistent: false, recipients: ['mara', 'dev'], row: task(), applied: false, postMode: 'receipt', getMode: 'receipt', readMode: 'ok', badReceipt: '', posts: [], gets: [], reads: [], savedBefore: [], ...options };
-  const source = () => ({ record_id: APP, record_head: script.applied ? NEXT : HEAD, record_revision: script.applied ? '11' : '10' });
+  // A Task's rows are the Ledger's (GH #1590): the record's ten rows stay put,
+  // and a history sequence is a position past them, in the Ledger read after
+  // the record (task.born at 10, task.handed at 11, a reassignment at 12).
+  const source = () => ({ record_id: APP, record_head: HEAD, record_revision: '10' });
+  const ledger = () => script.ledgerRevision ?? (script.applied ? '3' : '2');
   const wrap = data => ({ api_version: 'hale.v1', source: source(), data });
   const pageInfo = (items, limit = 25, offset = 0) => ({ limit, offset, total: items.length, next_offset: -1, snapshot: source().record_head });
   const receipt = ({ payload: command }) => {
@@ -39,7 +43,7 @@ async function fixture(page, options = {}) {
     return receiptLine(commandReply(commandReceipt(data), source()));
   };
   // The eligible recipients arrive with the assignee's person read.
-  const person = id => ({ profile: 'dna.person-administration.v1', person: id, state: 'active', successor: '', event_id: '', subject_digest: 'sha256:' + '8'.repeat(64), tasks: [], transferred: '0', authorized: script.available && script.authorized, recipients: script.available && script.authorized ? script.recipients : [], basis: { memory: 'record', routing: '0', record_head: source().record_head, record_revision: source().record_revision } });
+  const person = id => ({ profile: 'dna.person-administration.v1', person: id, state: 'active', successor: '', event_id: '', subject_digest: 'sha256:' + '8'.repeat(64), tasks: [], transferred: '0', authorized: script.available && script.authorized, recipients: script.available && script.authorized ? script.recipients : [], basis: { memory: 'record+ledger', record_head: source().record_head, record_revision: source().record_revision } });
   await page.route('**/api/hale/v1{,/**}', async route => {
     const request = route.request(), url = new URL(request.url());
     const send = (status, data) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(data) });
@@ -50,13 +54,13 @@ async function fixture(page, options = {}) {
     }
     if (url.pathname.endsWith('/dna/people')) return send(200, wrap(person(url.searchParams.get('id'))));
     if (url.pathname.endsWith('/dna/tasks')) {
-      script.reads.push({ query: [...url.searchParams], source: source() });
+      script.reads.push({ query: [...url.searchParams], source: source(), ledger: ledger() });
       if (script.readMode === 'protected') return send(403, error('forbidden', 'Task details withheld.'));
       if (script.readMode === 'unauthenticated') return send(401, error('unauthenticated', 'Sign in required.'));
       if (url.searchParams.has('snapshot') && url.searchParams.get('snapshot') !== source().record_head) return send(409, error('snapshot_changed', 'Captured Record changed.'));
       const row = structuredClone(script.row); if (script.readMode === 'malformed') row.assignee = 'mismatched';
       const items = [row];
-      return send(200, wrap({ profile: 'dna.task-administration.v1', items, page: pageInfo(items, Number(url.searchParams.get('limit') || 25), Number(url.searchParams.get('offset') || 0)), basis: { projection: 'dna.task-administration/1', memory: 'record', routing: '0', record_head: source().record_head, record_revision: source().record_revision } }));
+      return send(200, wrap({ profile: 'dna.task-administration.v1', items, page: pageInfo(items, Number(url.searchParams.get('limit') || 25), Number(url.searchParams.get('offset') || 0)), basis: { projection: 'dna.task-administration/1', memory: 'record+ledger', record_head: source().record_head, record_revision: source().record_revision, ledger_revision: ledger() } }));
     }
     if (url.pathname.endsWith('/commands')) {
       if (request.method() === 'POST') {
@@ -72,7 +76,7 @@ async function fixture(page, options = {}) {
         }
         script.posts.push({ body: command, headers: request.headers() }); script.savedBefore = await saved(page);
         script.applied = true; script.row.assignee = command.payload.to; script.row.assignment_digest = 'sha256:' + '9'.repeat(64);
-        script.row.history.push({ event_id: EVENT, sequence: '10', kind: 'task.reassigned', from: command.payload.assignee, to: command.payload.to, by: PRINCIPAL.name });
+        script.row.history.push({ event_id: EVENT, sequence: '12', kind: 'task.reassigned', from: command.payload.assignee, to: command.payload.to, by: PRINCIPAL.name });
         if (script.postMode === 'lost') return route.abort('failed');
         return send(200, receipt(command));
       }
@@ -94,7 +98,7 @@ test('Task app contract: exact confirmation stores identity before POST and foll
   expect(post.body).toEqual({ call: 'TaskReassign', payload: { request_id: expect.any(String), task_id: task().id, assignment_digest: DIGEST, assignee: 'mara', to: 'dev' } });
   expect(post.headers['x-hale-command']).toBe('1'); expect(post.headers['content-type']).toContain('application/json');
   expect(script.savedBefore).toEqual([{ key: KEY, value: { version: 5, application_id: APP, principal: PRINCIPAL, request_id: post.body.payload.request_id, operation: 'dna.task.reassign', operation_version: '1', position_id: 'org', target_kind: 'dna.task', target_id: task().id, subject_digest: DIGEST } }]);
-  expect(script.gets).toContain(post.body.payload.request_id); expect(script.reads.some(read => read.source.record_head === NEXT)).toBe(true);
+  expect(script.gets).toContain(post.body.payload.request_id); expect(script.reads.some(read => read.ledger === '3')).toBe(true);
   await expect(region(page).locator('.task-current-assignment strong')).toHaveText('dev'); await expect(region(page)).toContainText('acceptance:original/v1'); await expect(region(page)).toContainText('Handed · completion not recorded');
   await recovery(page).getByRole('button', { name: 'Current Task', exact: true }).click(); await expect(recovery(page)).toContainText('Open · dev');
   await recovery(page).screenshot({ path: info.outputPath('task-readback-desktop.png') });
@@ -117,6 +121,16 @@ test('Task app contract: inaccessible, signed-out or malformed Task evidence cle
     script.readMode = mode; await page.reload(); await expect(region(page)).toHaveCount(0); await expect(page.getByRole('heading', { name: title, exact: true })).toBeVisible();
     await expect(page.getByText(task().outcome, { exact: true })).toHaveCount(0);
   }
+  expect(script.posts).toEqual([]);
+});
+
+test('Task app contract: history is bounded by the record and its Ledger read as one', async ({ page, host }) => {
+  // the Task's rows sit past the record's ten: accepted, as a routed read emits them
+  const script = await fixture(page); await open(page, host); await expect(region(page)).toBeVisible();
+  await expect(region(page).locator('.task-current-assignment strong')).toHaveText('mara');
+  // a position at or past the record's rows plus the Ledger's is outside what was read
+  script.ledgerRevision = '1'; await page.reload(); await expect(region(page)).toHaveCount(0);
+  await expect(page.getByRole('heading', { name: 'Response could not be verified', exact: true })).toBeVisible();
   expect(script.posts).toEqual([]);
 });
 

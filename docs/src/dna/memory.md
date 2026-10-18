@@ -20,13 +20,13 @@ the other two:
 
 | memory | holds | lives in |
 |---|---|---|
-| record | how the organism changed and was allowed to: mutations and their Reviews, practices proposed and ratified, grants, connections, people, the ledger's adoption | Postgres, `record_rows` in the record's schema |
+| record | how the organism changed and was allowed to: mutations and their Reviews, practices proposed and ratified, grants, connections, people | Postgres, `record_rows` in the record's schema |
 | ledger | what the organism did today: intents, tasks, cases, workflow executions and attempts, bills and receipts, money reserved and settled, schedules, concerns, readings, effect claims, leases | Postgres, the record's own schema |
 
-The table is `memory_of` in `dna/core/routing.hl`. Which one applies
-is a fact of the record, never a build's opinion: a record born in
-memory is on **routing 2** from its first rows, with the day's work in
-the ledger ([below](#the-ledger)). `hale dna history` and the projections read
+Which memory a kind lands in is its placement, `memory_of` in
+`dna/core/routing.hl`. The placement is fixed, part of the schema: it
+is not kept in the record and is not versioned, since every record has
+its ledger from its first row ([below](#the-ledger)). `hale dna history` and the projections read
 both memories as one sequence.
 
 ## The record
@@ -73,9 +73,9 @@ DSN there. A pin whose genome is not the one this clone's history
 holds — a `hale.toml` copied from another project — is refused.
 Remove the line from a copied manifest and run `init` again.
 
-`hale dna init` appends three rows to the record it provisions:
-`record.genesis`, then `ledger.adopted` (routing 2, the checkpoint the
-identity) and `record.key {key}`, the public half of the record's key.
+`hale dna init` appends two rows to the record it provisions:
+`record.genesis`, then `record.key {key}`, the public half of the
+record's key.
 
 A clone that still holds a record an earlier toolchain kept on git
 (`refs/dna/journal`) is refused by `init` and `upgrade`. Nothing reads
@@ -276,23 +276,11 @@ in its own members' names, and who is a member is the graph's
 
 ## The ledger
 
-The ledger is the day's work, and a record born in memory has it from
-its first rows: `hale dna init` appends `ledger.adopted` (routing 2,
-checkpoint the identity) right after `record.genesis`. There is
-nothing to adopt and nothing to abandon:
+The ledger is the day's work. Memory's migration makes it with the
+record, so every record has it from its first row and no row says so:
 
 ```sh
-hale dna ledger                          # the routing, the memory named here, the checkpoint
 hale dna ledger rows                     # the ledger, one JSON object per line
-```
-
-`hale dna ledger adopt` says the ledger is already adopted, and
-`hale dna ledger abandon` is refused. A clone with a head's DSN shows:
-
-```text
-$ hale dna ledger status
-routing:    2 (the day's work in the ledger, adopted at 4f1c9a07d2be)
-memory:     named here (HALE_DNA_MEMORY_DSN_HEAD)
 ```
 
 ### Every writer writes, memory is the gate
@@ -324,7 +312,7 @@ once. A head with no memory named writes nothing: the verb says so.
 `hale dna status` carries a `memory:` line on every organism:
 
 ```text
-memory:     record + ledger (routing 2, adopted at 4f1c9a07d2be; operations and leases live in memory)
+memory:     record + ledger (operations and leases live in memory)
 ```
 
 When memory stops answering the same line says `THE LEDGER IS

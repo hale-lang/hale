@@ -347,14 +347,8 @@ locus GraphCases {
 
         // The Ledger has an independently moving visibility head.
         let refreshed = self.f.journal.refresh();
-        let checkpoint = self.f.journal.head();
-        std::test::assert(ledger.cutover(checkpoint, 0, dna::ROUTING_VERSION), "adopt scoped Ledger");
-        let adoption = std::json::Builder { }; adoption.begin_object(); adoption.int_field("routing", dna::ROUTING_VERSION); adoption.string_field("checkpoint", checkpoint); adoption.end_object();
-        self.f.append("ledger.adopted", "org", adoption.result());
         q = self.query(); q.id = a;
         let adopted = self.read(service, q, 200);
-        let adopted_basis = self.json.raw(self.json.data(adopted), "basis");
-        self.json.eq(adopted_basis, "routing_version", to_string(dna::ROUTING_VERSION));
         let hidden_row = ledger.append(ledger.revision(), "receipt.withheld", a, "{\"class\":\"customer\"}");
         std::test::assert(hidden_row.ok, "Ledger restriction");
         q.snapshot = self.json.string(self.json.page(adopted), "snapshot");

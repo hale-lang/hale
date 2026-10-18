@@ -1,11 +1,11 @@
-// dna/core/routing.hl — three memories, one routing table (GH #646 stage
-// 1, #650). Every row kind belongs to exactly one memory. Version 0 is
-// every kind in one journal (an in-process fixture's); the split is what
-// changes the organism stays in the record, what the organism did today
-// goes to the Ledger. An organism's version is a fact in its record
-// (`ledger.adopted`, among a record's first rows in memory, GH #1590),
-// never a build's opinion. There is no dual-write:
-// a kind has one home, and a writer that cannot reach it fails.
+// dna/core/routing.hl — three memories, one table of where each kind
+// lives (GH #646 stage 1, #650, #1590). Every row kind belongs to exactly
+// one memory: what changes the organism stays in the record, what the
+// organism did today goes to the Ledger. Every record has its Ledger from
+// its first row (GH #1590), so this placement is fixed: it is part of the
+// schema, not data in the record, and not versioned.
+// There is no dual-write: a kind has one home, and a writer that cannot
+// reach it fails.
 //
 // `RoutedJournal` is the `Journal` an assembly and the host stand on: two
 // journals underneath — the record's and the Ledger's — read as one
@@ -14,16 +14,10 @@
 // spine role; a head writes it directly under its own role, and memory's
 // insert function is the gate (GH #985, #1026).
 
-// 2 (GH #1590): the record itself is memory's too; the table is version
-// 1's, read over two chains in memory, and a record is born on it
-// (`record.genesis`, then `ledger.adopted` naming this version).
-const ROUTING_VERSION: Int = 2;
-
-// The routing table of version 1, as data: the families that are the
-// Ledger's whole, and the kinds of other families that are. `memory_of`
-// reads it, and so does memory's insert function (`ledger_kind`, GH
-// #1026), which refuses a record kind asked of the Ledger — one table,
-// read in two languages.
+// The table, as data: the families that are the Ledger's whole, and the
+// kinds of other families that are. `memory_of` reads it, and so do
+// memory's insert functions (`ledger_kind`, GH #1026, #1590), which refuse
+// a kind asked of the wrong memory — one table, read in two languages.
 //
 // The whole family is operational: cases, intents, tasks, decisions,
 // completions, exceptions, schedules, receipts, handoffs, pressure,
@@ -36,53 +30,15 @@ const LEDGER_FAMILIES: String = "case intent task decision completion exception 
 // day's work, named here rather than left to the default.
 const LEDGER_KINDS: String = "concern.requested concern.raised concern.refused grant.reserved grant.released grant.fenced grant.reservation_refused spend.reserved spend.settled spend.compensated body.claimed body.released body.credential_missing body.credential_present model.called knowledge.consulted optimize.refused budget.exhausted workflow.admitted workflow.refused workflow.ask_refused workflow.settled step.registered step.activated step.completed step.failed work.settled attempt.admitted attempt.outcome attempt.claimed attempt.outcome_requested attempt.outcome_refused attempt.allowance_requested attempt.allowance_granted attempt.allowance_refused attempt.unresolved attempt.released";
 
-// Where a kind lives under routing version 1. Everything the table does
-// not name — mutations, reviews, knowledge, practices, grants as
-// authority, connections, provisioning, secrets, expression, the fleet's
-// deploys, people, the structure observed at init, and the adoption rows
-// themselves — is the record's.
+// Where a kind lives. Everything the table does not name — mutations,
+// reviews, knowledge, practices, grants as authority, connections,
+// provisioning, secrets, expression, the fleet's deploys, people and the
+// structure observed at init — is the record's.
 fn memory_of(kind: String) -> String {
     let dot = std::str::index_of(kind, ".");
     let family = if dot < 0 { kind } else { kind[0..dot] };
     if word_in(family, LEDGER_FAMILIES) || word_in(kind, LEDGER_KINDS) { return "ledger"; }
     return "record";
-}
-
-// Where a kind lives under a routing version.
-fn route(routing: Int, kind: String) -> String {
-    if routing <= 0 { return "record"; }
-    return memory_of(kind);
-}
-
-// The routing an organism's record says it is on: the last
-// `ledger.adopted` row sets it, a later `ledger.abandoned` returns it
-// to 0. Rows are read from a journal of the record's rows.
-fn routing_of(record: Journal) -> Int {
-    let mut routing = 0;
-    let mut i = 0;
-    let n = record.revision();
-    while i < n {
-        let e = record.read(i);
-        if e.kind == "ledger.adopted" { routing = std::json::find_int_field(e.body, "routing"); }
-        if e.kind == "ledger.abandoned" { routing = 0; }
-        i = i + 1;
-    }
-    return routing;
-}
-
-// The checkpoint an adopted record names: the record's head at
-// adoption ("" when not adopted).
-fn checkpoint_of(record: Journal) -> String {
-    let mut at = "";
-    let mut i = 0;
-    let n = record.revision();
-    while i < n {
-        let e = record.read(i);
-        if e.kind == "ledger.adopted" { at = std::json::find_string_field(e.body, "checkpoint"); }
-        if e.kind == "ledger.abandoned" { at = ""; }
-        i = i + 1;
-    }
-    return at;
 }
 
 // ---- the routed journal ------------------------------------------------
@@ -108,32 +64,24 @@ locus RoutedJournal {
     params {
         record: Journal = MemJournal { };
         ledger: Journal = MemoryLedger { };
-        routing: Int = 0; // learned from the record at birth and on refresh
         order: PlacedRows = PlacedRows { };
         seen_record: Int = 0;
         seen_ledger: Int = 0;
         last_error: String = "";
     }
-    birth() {
-        self.routing = routing_of(self.record);
-        self.take_new();
-    }
-    // Append every row a memory has that the order does not. Under a
-    // routing a record row of a Ledger kind is not read: the Ledger is the
-    // authority for those kinds (#646 decision 3), and memory's insert
-    // function refuses one in a record it keeps (GH #1590).
+    birth() { self.take_new(); }
+    // Append every row a memory has that the order does not. A record row
+    // of a Ledger kind is not read: the Ledger is the authority for those
+    // kinds (#646 decision 3), and memory's insert function refuses one in
+    // a record it keeps (GH #1590).
     // The order grows by the rows of the record and the ledger, one placement each.
     @bounded_by(self.record)
     fn take_new() {
         while self.seen_record < self.record.revision() {
             let e = self.record.read(self.seen_record);
-            if route(self.routing, e.kind) != "ledger" { self.order.push(Placed { ledger: false, index: self.seen_record }); }
+            if memory_of(e.kind) != "ledger" { self.order.push(Placed { ledger: false, index: self.seen_record }); }
             self.seen_record = self.seen_record + 1;
         }
-        // on routing 0 the ledger is not a memory of this organism: it is
-        // neither read nor asked (a service ledger's refresh is a round
-        // trip, and an organism on the record alone makes none)
-        if self.routing <= 0 { return; }
         while self.seen_ledger < self.ledger.revision() {
             self.order.push(Placed { ledger: true, index: self.seen_ledger });
             self.seen_ledger = self.seen_ledger + 1;
@@ -146,20 +94,9 @@ locus RoutedJournal {
     }
     fn refresh() -> Bool {
         let a = self.record.refresh();
-        let b = if self.routing > 0 { self.ledger.refresh() } else { false };
+        let b = self.ledger.refresh();
         let before = self.order.len();
         let seen = self.seen_record;
-        // new record rows may carry an adoption (or its abandonment): the
-        // order is rebuilt under the routing they name
-        if self.seen_record < self.record.revision() {
-            let now = routing_of(self.record);
-            if now != self.routing {
-                self.routing = now;
-                while self.order.len() > 0 { let gone = self.order.pop() or Placed { }; }
-                self.seen_record = 0;
-                self.seen_ledger = 0;
-            }
-        }
         self.take_new();
         return self.order.len() != before || a || b || self.seen_record != seen;
     }
@@ -173,8 +110,8 @@ locus RoutedJournal {
     // the record's index, and a ledger row's author is the ledger's.
     fn from_ledger(i: Int) -> Bool { let p = self.order.get(i) or Placed { }; return p.ledger; }
     fn index_of(i: Int) -> Int { let p = self.order.get(i) or Placed { index: -1 }; return p.index; }
-    fn verify_chain() -> Bool { return self.record.verify_chain() && (self.routing <= 0 || self.ledger.verify_chain()); }
-    fn to_ledger(kind: String) -> Bool { return route(self.routing, kind) == "ledger"; }
+    fn verify_chain() -> Bool { return self.record.verify_chain() && self.ledger.verify_chain(); }
+    fn to_ledger(kind: String) -> Bool { return memory_of(kind) == "ledger"; }
     // Compare-and-append against the merged revision, then the memory's
     // own tail: the memory retries a lost race at its tail as it always
     // did, and the row's merged position is where it lands here. (Each
@@ -218,29 +155,4 @@ locus RoutedJournal {
         self.take_new();
         return AppendResult { ok: true, revision: self.order.len() };
     }
-}
-
-// ---- coordination in the store (GH #646 stage 2, #651) ---------------------
-//
-// A lease is a cell the store swaps by its token: `current(key)` reads
-// it, `put(key, lease, expected_token)` lands only when the store's
-// token is the one expected (0 for an absent lease). Mutation leases
-// (`Coordination`) and the body lease both stand on those two calls,
-// so a partitioned host or a stale token is refused by the store
-// itself.
-
-// The routing an organism's record is on, read from the record's own
-// text (for a caller that holds a `Record` and no journal).
-fn routing_of_text(text: String) -> Int {
-    let mut routing = 0;
-    let mut rest = text;
-    while len(rest) > 0 {
-        let nl = std::str::index_of(rest, "\n");
-        let line = if nl < 0 { rest } else { rest[0..nl] };
-        rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
-        let kind = std::json::find_string_field(line, "kind");
-        if kind == "ledger.adopted" { routing = std::json::find_int_field(std::json::find_string_field(line, "body"), "routing"); }
-        if kind == "ledger.abandoned" { routing = 0; }
-    }
-    return routing;
 }

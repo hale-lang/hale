@@ -108,14 +108,14 @@ locus TaskProjection {
         let n = self.j.revision(); let head = self.j.head();
         if n < 1 || !self.j.verify_chain() { self.code = "task_source_invalid"; return false; }
         if n > 10000 { self.code = "task_read_limit"; return false; }
+        // a Task's rows are the Ledger's (GH #1590): a reader of the record
+        // alone cannot see them; one over both (`routed`) can
+        if !self.routed { self.code = "task_source_unavailable"; return false; }
         let mut bytes = 0; let mut relevant = 0; let mut i = 0;
         while i < n {
             let e = self.j.read(i); bytes = bytes + len(e.body);
             if bytes > 16777216 || len(e.body) > 262144 { self.code = "task_read_limit"; return false; }
             if e.seq != i || e.digest == "" { self.code = "task_source_invalid"; return false; }
-            // a Task's rows are the Ledger's once adopted: a reader of the
-            // record alone cannot see them; one over both (`routed`) can
-            if e.kind == "ledger.adopted" && !self.routed { self.code = "task_source_unavailable"; return false; }
             if self.relevant(e.kind) {
                 relevant = relevant + 1; if relevant > 2048 || len(e.body) > 65536 { self.code = "task_read_limit"; return false; }
                 let error = self.apply(e); if error != "" { self.code = error; return false; }

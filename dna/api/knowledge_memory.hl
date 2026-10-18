@@ -150,9 +150,8 @@ locus GraphHttp {
         let b = std::json::Builder { };
         b.begin_object(); b.string_field("record_id", r.record_id); b.string_field("projection_record_head", r.record_head);
         b.string_field("projection_record_revision", r.record_revision); b.string_field("projection_watermark", to_string(page.watermark)); b.string_field("store_generation", to_string(page.generation));
-        b.string_field("routing_version", to_string(policy.routing)); b.string_field("visibility_record_head", policy.record_head); b.string_field("visibility_record_revision", to_string(policy.record_revision));
-        if policy.routing > 0 { b.string_field("visibility_ledger_head", policy.ledger_head); b.string_field("visibility_ledger_revision", to_string(policy.ledger_revision)); }
-        else { b.field("visibility_ledger_head", "null"); b.field("visibility_ledger_revision", "null"); }
+        b.string_field("visibility_record_head", policy.record_head); b.string_field("visibility_record_revision", to_string(policy.record_revision));
+        b.string_field("visibility_ledger_head", policy.ledger_head); b.string_field("visibility_ledger_revision", to_string(policy.ledger_revision));
         b.string_field("reader_scope", dna::digest_of("knowledge-reader/1\n" + r.reader)); b.string_field("target", r.target); b.string_field("coverage", "native_ideas_edges_bindings"); b.end_object();
         return b.result();
     }

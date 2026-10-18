@@ -86,7 +86,7 @@ main locus App {
         std::test::assert_eq_str(born, "", "the record is born in memory");
         let g1 = dna::RecordJournal { repo: repo };
         let at = g1.revision();
-        std::test::assert_eq_int(at, 3, "a record is born with its genesis, its Ledger and its key");
+        std::test::assert_eq_int(at, 2, "a record is born with its genesis and its key");
         let r1 = g1.append(at, "note.kept", "t1", "durable");
         let r2 = g1.append(at + 1, "note.done", "t1", "");
         std::test::assert(r1.ok && r2.ok, "two durable appends: " + g1.last_error());

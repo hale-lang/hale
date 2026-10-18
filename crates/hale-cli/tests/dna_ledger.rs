@@ -1,9 +1,8 @@
 //! GH #646, #1590 — the Ledger. A record is born in memory with its
-//! Ledger (routing 2, the cutover at its identity): an operational kind is
-//! written straight into the Ledger under the writer's role, never into
-//! the record, and a head that names no memory writes nothing. Readers of
-//! history see one history across both memories. There is nothing to
-//! adopt and nothing to abandon.
+//! Ledger: an operational kind is written straight into the Ledger under
+//! the writer's role, never into the record, and a head that names no
+//! memory writes nothing. Readers of history see one history across both
+//! memories. `hale dna ledger` is `rows` alone.
 
 #[path = "support/vault.rs"]
 mod vault;
@@ -112,7 +111,7 @@ fn unmigrate(app: &Path, owner: &str) {
 }
 
 #[test]
-fn an_organism_adopts_the_ledger_and_its_operations_leave_the_record() {
+fn an_organism_s_operations_go_to_its_ledger_and_leave_the_record() {
     let _t = trace::test("dna_ledger::adopts");
     let (Some(owner), Some(_)) = (owner_dsn(), nats_owner()) else {
         eprintln!("dna_ledger: no HALE_DNA_MEMORY_DSN_OWNER or HALE_DNA_NATS_URL_OWNER; the ledger is memory's, so nothing was exercised");
@@ -135,14 +134,12 @@ fn an_organism_adopts_the_ledger_and_its_operations_leave_the_record() {
     let spine_dsn = memory_dsn(&app, "HALE_DNA_MEMORY_DSN_SPINE=");
     let head_dsn = memory_dsn(&app, "HALE_DNA_MEMORY_DSN_HEAD=");
     let head: &[(&str, &str)] = &[("HALE_DNA_MEMORY_DSN_HEAD", head_dsn.as_str())];
-    // born with its Ledger: routing 2, its cutover stated in memory
-    let (ok, st) = hale(&["dna", "ledger"], &app, head);
-    assert!(ok && st.contains("routing:    2") && st.contains("row(s)") && !st.contains("states no cutover"), "{st}");
-    assert!(record(&app).iter().any(|r| r["kind"] == "ledger.adopted"), "the record names its Ledger among its first rows");
-    let (ok, again) = hale(&["dna", "ledger", "adopt"], &app, head);
-    assert!(ok && again.contains("there is nothing to adopt"), "{again}");
-    let (ok, ab) = hale(&["dna", "ledger", "abandon", "--why", "no", "--as", "riley"], &app, head);
-    assert!(!ok && ab.contains("nothing to abandon"), "{ab}");
+    // born with its Ledger: no row says so, and nothing adopts one
+    assert!(!record(&app).iter().any(|r| r["kind"].as_str().unwrap_or("").starts_with("ledger.")), "no row of the record names its Ledger");
+    for sub in ["status", "adopt", "abandon"] {
+        let (ok, out) = hale(&["dna", "ledger", sub], &app, head);
+        assert!(!ok && out.contains("hale dna ledger rows"), "`ledger {sub}` is not a verb: {out}");
+    }
 
     // an operational row goes straight into the ledger, under the head's
     // role (GH #1026)

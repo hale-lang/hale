@@ -210,8 +210,8 @@ locus Queries {
         // the receipt rows a Ledger holds are in it
         routed: Bool = false;
         // the record's repository, where its Ledger is reached (GH #1590):
-        // "" for a reader that has none, which then cannot see receipts on
-        // a record with a Ledger
+        // "" for a reader that has none, which then cannot see receipts
+        // unless `j` is routed
         location: String = "";
         ledger: dna::MemoryLedger = dna::MemoryLedger { };
         ledger_state: Int = 0; // 0 unread, 1 read, -1 not readable here
@@ -282,26 +282,18 @@ locus Queries {
         }
         return PracticeRow { };
     }
-    // Receipt rows are the Ledger's on a record with one (every record kept
-    // in memory, GH #1590): they are read there too, and a reader that
-    // cannot read the Ledger cannot prove a receipt's current visibility,
-    // so it fails closed even if a stale body remains. No protected-service
-    // read or disclosure write is performed.
+    // Receipt rows are the Ledger's (GH #1590): a reader of the record alone
+    // (`routed` false) reads them there too, beside the record at
+    // `location`, and a reader that cannot read the Ledger cannot prove a
+    // receipt's current visibility, so it fails closed even if a stale body
+    // remains. No protected-service read or disclosure write is performed.
     fn receipt_status(digest: String) -> String {
-        let mut adopted = false;
         let mut redacted = false;
         let mut protected = false;
         let mut uncertain = false;
         let mut i = 0;
         while i < self.j.revision() {
             let e = self.j.read(i);
-            if e.kind == "ledger.adopted" { adopted = true; }
-            // a record that says it left its Ledger (a row no toolchain
-            // writes since GH #1590) proves nothing about its receipts
-            if e.kind == "ledger.abandoned" { uncertain = true; }
-            // Abandonment empties Ledger; it does not restore every prior
-            // receipt restriction into Record. Once adopted, this projection
-            // alone cannot establish completeness again.
             if raw_digest(e.entity) == raw_digest(digest) {
                 if e.kind == "receipt.redacted" { redacted = true; }
                 if e.kind == "receipt.classified" || e.kind == "receipt.withheld" || e.kind == "receipt.filed" {
@@ -312,7 +304,7 @@ locus Queries {
             }
             i = i + 1;
         }
-        if adopted && !self.routed {
+        if !self.routed {
             if !self.ledger_read() { return "source_unavailable"; }
             i = 0;
             while i < self.ledger.revision() {

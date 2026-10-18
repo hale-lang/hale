@@ -81,8 +81,8 @@ fn edge_line(body: String) -> String {
     return out;
 }
 
-// The kinds of `repo`'s record rows past its birth (`record.*`,
-// `ledger.adopted`), one per line, read through `hale dna record-rows`.
+// The kinds of `repo`'s record rows past its birth (`record.*`), one per
+// line, read through `hale dna record-rows`.
 fn seeded(repo: String) -> String {
     let r = dna::run_tool(toolchain() + "\ndna\nrecord-rows\n" + repo);
     let mut out = "";
@@ -92,7 +92,7 @@ fn seeded(repo: String) -> String {
         let line = if nl < 0 { rest } else { rest[0..nl] };
         rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
         let kind = std::json::find_string_field(line, "kind");
-        if len(kind) > 0 && !std::str::starts_with(kind, "record.") && kind != "ledger.adopted" { out = out + kind + "\n"; }
+        if len(kind) > 0 && !std::str::starts_with(kind, "record.") { out = out + kind + "\n"; }
     }
     return out;
 }

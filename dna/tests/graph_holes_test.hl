@@ -283,12 +283,8 @@ locus App {
         let body = dna::trim_nl(started.stdout);
         std::test::assert(self.organization_up(600), "the organization runs on a repository record: " + (std::io::fs::read_file(self.repo + "/.hale/body.log") or ""));
         std::test::assert(self.logged("a repository: its compose services are left to the operator (HALE_DNA_COMPOSE=off)", 240), "its compose services left alone: " + (std::io::fs::read_file(self.repo + "/.hale/body.log") or ""));
-        // ---- the ledger: a record born in memory has it from its first rows
-        // (GH #1590), so there is nothing to adopt and nothing to restart;
-        // each decision's execution rows land in the ledger, fenced
-        std::test::assert(self.count_rows("ledger.adopted") > 0, "the record is born with its ledger");
-        let adopted = self.dna("ledger\nadopt\n--as\nada");
-        std::test::assert(adopted.code == 0 && std::str::contains(adopted.stdout, "there is nothing to adopt"), "and adoption has nothing to do: " + adopted.stdout + adopted.stderr);
+        // ---- the ledger: a record has it from its first row (GH #1590);
+        // each decision's execution rows land in it, fenced
         let ledger = dna::MemoryLedger { repo: self.repo, dsn_env: "HALE_DNA_MEMORY_DSN_OWNER" };
         std::test::assert(ledger.ensure_open(), "the record's ledger opens for the fixture: " + ledger.failure);
 

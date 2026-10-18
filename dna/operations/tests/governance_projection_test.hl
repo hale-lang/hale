@@ -146,8 +146,7 @@ fn test_refusal_beside_approval() {
     let refused = receipt(j, a);
     std::test::assert(refused.state == "refused" && refused.verdict_state == "refused" && refused.review_outcome == "approve" && refused.activation_state == "unknown", "refused command cannot borrow another approval or adoption");
     event(j, "receipt.classified", CANDIDATE, "{\"class\":\"customer\"}"); event(j, "receipt.redacted", BASE, "{}");
-    event(j, "ledger.adopted", "ledger", "{}"); event(j, "ledger.abandoned", "ledger", "{}");
-    std::test::assert_eq_str(receipt(j, a).reason, refused.reason, "protection and abandonment expose only safe static refusal explanation");
+    std::test::assert_eq_str(receipt(j, a).reason, refused.reason, "protection exposes only the safe static refusal explanation");
 }
 fn test_other_verdict(verdict: String) {
     let j = dna::MemJournal { }; candidate(j); requested(j, CANDIDATE); let a = admission(j, "dna.review.verdict", verdict);

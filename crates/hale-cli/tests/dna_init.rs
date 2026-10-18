@@ -141,10 +141,10 @@ fn the_journal_is_seeded_from_the_model_with_provenance_kept_distinct() {
     assert!(ok, "{out}");
     let rows = journal_rows(&app);
     let kinds: Vec<&str> = rows.iter().map(|r| r["kind"].as_str().unwrap()).collect();
-    // the record is born before init writes (GH #1590): its genesis, its
-    // Ledger and its key, then the application
-    assert_eq!(&kinds[..3], ["record.genesis", "ledger.adopted", "record.key"], "the record's birth: {kinds:?}");
-    assert_eq!(kinds[3], "application.attached");
+    // the record is born before init writes (GH #1590): its genesis and
+    // its key, then the application
+    assert_eq!(&kinds[..2], ["record.genesis", "record.key"], "the record's birth: {kinds:?}");
+    assert_eq!(kinds[2], "application.attached");
     assert_eq!(kinds.last().copied(), Some("review.requested"), "the baseline review is requested last: {kinds:?}");
     let body = |r: &serde_json::Value| -> serde_json::Value { serde_json::from_str(r["body"].as_str().unwrap()).unwrap() };
     // observed structure: every locus, topic and claim of the fixture

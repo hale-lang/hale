@@ -27,12 +27,12 @@ On every tick, once a second, each node:
 2. relays onto the nerves every request row the record has not
    answered yet ([The nerves](./nerves.md#relaying-after-the-row-lands)),
    first, so an answer never waits behind the rest;
-3. syncs the record with its remote;
-4. projects the record into memory's graph, carries out a ledger
-   adoption or abandonment the record asks for, and erases the
-   protected bodies the record says were redacted;
+3. reads the record and its ledger again, and deletes the branch of
+   every candidate the record says was dropped;
+4. projects the record into memory's graph, and erases the protected
+   bodies the record says were redacted;
 5. checks the forge for a new genome ([below](#the-genome-pull));
-6. asserts the lease again, since the sync may have outlasted it;
+6. asserts the lease again, since the steps before may have outlasted it;
 7. tells the heads every row it landed, and answers the restart
    requests the record holds.
 
@@ -40,11 +40,8 @@ A record admits one body per owner at a time ([below](#the-body-lease-and-the-fe
 and over a shared record every owner's body is a node of the same
 spine. Nothing coordinates them; the stores keep them from doing
 anything twice: the projection moves a row at a time by
-compare-and-swap, an adoption is claimed by the row that asked for it,
-and an erasure is by digest.
-When the record has a remote, a node projects only what the remote
-holds after that tick's sync, so a stamped row is always one every
-clone can receive.
+compare-and-swap, and an erasure is by digest. The record is memory's,
+so every row a node projects is one every clone already reads.
 
 ### Claims by id
 
@@ -357,8 +354,8 @@ voice](./legs.md). Money a grant delegates is a separate budget
 
 A record admits one body at a time, one per owner over a shared
 record. Before the host builds or runs anything it takes the body
-lease, at the record's remote when there is one, so a host on another
-clone is refused by the remote itself and exits 3. The holder is
+lease in memory, so a host on another clone is refused by memory
+itself and exits 3. The holder is
 `user@host:<clone>`, so the same clone restarting takes its lease
 straight back.
 
@@ -366,13 +363,13 @@ The lease lives 30 seconds. The host asserts it at the top of every
 tick, before it relays, restarts or applies anything, and again the
 moment before it starts a process. Beside the host runs the **body
 fence**, a small process that renews the lease every ten seconds with
-every git call bounded, and never waits on the host. When the lease is
+every call bounded, and never waits on the host. When the lease is
 someone else's, when the fence cannot prove it within five seconds of
 its expiry, or when the host is gone, the fence kills the organization
 and the expression with every process they started. A body that cannot
-reach its remote executes nothing past the lease.
+reach memory executes nothing past the lease.
 
-On an adopted ledger the lease is a row of memory's `claims` table
+The lease is a row of memory's `claims` table
 (`body`, or `owner/<owner>` over a shared record). Its token is an
 epoch the host hands its organization, and memory refuses an append
 under a lease that was taken over, released or expired: `fenced`,

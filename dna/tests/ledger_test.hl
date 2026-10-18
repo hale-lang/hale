@@ -5,9 +5,7 @@
 // A Ledger is a Journal: compare-and-append at the tail, an exact append
 // refused when the tail moved, a sha256 chain that verifies. A claim
 // kind is unique by (kind, entity): the second `task.born` for one id is
-// refused by the store, not by a scan. Adoption copies a record's rows
-// keyed by their commit, so the same row offered twice lands once; the
-// cutover names the checkpoint; abandon empties it.
+// refused by the store, not by a scan.
 
 import "../core" as dna;
 import "./ledger_read_health" as read_health_cases;
@@ -32,10 +30,6 @@ fn ledger_contract(l: dna::Ledger, label: String) {
     let e = l.read(1);
     std::test::assert(e.kind == "task.planned" && e.seq == 1 && e.prev == l.read(0).digest, label + ": rows read back in order, chained");
     std::test::assert_eq_str(l.author_of(0), "ledger", label + ": the organism's rows are the ledger's");
-    // the cutover memory states for the Ledger
-    std::test::assert(l.cutover("deadbeef", 1, 1), label + ": the cutover is recorded");
-    let cut = l.checkpoint();
-    std::test::assert(cut.adopted && cut.checkpoint == "deadbeef" && cut.copied == 1 && cut.routing == 1, label + ": and read back");
 }
 
 // A lease store swaps by token: a put lands only against the token the
@@ -94,11 +88,11 @@ main locus App {
             let again = self.pg.append(base + 2, "grant.reserved", "op1", "10");
             std::test::assert(again.ok, "pq: an ordinary append retries at the tail");
             // GH #987: an application's reading is the ledger's — memory's
-            // insert function reads the routing table — and lands at the
+            // insert function reads the kind's placement — and lands at the
             // revision it was decided at, as the host appends it
             let reading = self.pg.append_exact(self.pg.revision(), "reading.recorded", "voice/usage.recorded/r1", "{\"app\": \"voice\"}");
             std::test::assert(reading.ok, "pq: a reading lands in the ledger: " + self.pg.last_error());
-            std::test::assert_eq_str(dna::memory_of("reading.recorded"), "ledger", "and the routing table says it is the ledger's");
+            std::test::assert_eq_str(dna::memory_of("reading.recorded"), "ledger", "and its placement is the ledger");
             self.pgl = dna::PqLeaseStore { conn: dna::pq_conn(spine), record_id: record };
             lease_contract(self.pgl, "pq leases");
             // the database drops a store's connection (a restart, a failover,

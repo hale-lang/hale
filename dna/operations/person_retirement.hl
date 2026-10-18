@@ -1,8 +1,7 @@
-// Local Record retirement: ordinary reassignment facts and the final native
-// retirement fact become visible together, one batch on the head they were
-// decided at (GH #1590: one transaction in memory).
-// On a record with a Ledger the transfers are the Ledger's rows, landed
-// first, and the retirement follows them (`publish_routed`).
+// A person's retirement (GH #604 rule 5): the transfers are the Ledger's
+// rows, landed first, and the retirement follows them in the record
+// (`publish_routed`, GH #1590). `GovernanceBatchRecord` is a record that
+// lands a batch of rows together (a structure command's).
 import "../core" as dna;
 
 interface GovernanceBatchRecord {
@@ -26,27 +25,6 @@ type PersonRetirementPublication { ok: Bool = false; code: String = "commands_un
 type PersonRetirementFact {
     valid: Bool = false; context: GovernanceContext = GovernanceContext { }; command: GovernanceCommand = GovernanceCommand { };
     grant: GovernanceGrant = GovernanceGrant { }; head: String = ""; manifest: String = "[]"; transferred: Int = -1; event_id: String = "";
-}
-// Read-only prefix used for historical batch verification. It copies Event
-// identities from an already verified Journal; it never reads a moving ref.
-locus RetirementPrefix {
-    params { rows: dna::EventRows = dna::EventRows { }; valid: Bool = false; }
-    // The first `end` rows of the journal, at most its revision.
-    @bounded_by(end)
-    fn capture(j: dna::Journal, end: Int) -> Bool {
-        if end < 1 || end > j.revision() || !j.verify_chain() { return false; }
-        let mut i = 0; let mut previous = "genesis";
-        while i < end { let e = j.read(i); if e.seq != i || e.digest == "" || e.prev != previous { return false; } self.rows.push(e); previous = e.digest; i = i + 1; }
-        self.valid = true; return true;
-    }
-    fn revision() -> Int { return self.rows.len(); }
-    fn head() -> String { return (self.rows.get(self.rows.len() - 1) or dna::Event { }).digest; }
-    fn refresh() -> Bool { return false; }
-    fn read(i: Int) -> dna::Event { return self.rows.get(i) or dna::Event { }; }
-    fn verify_chain() -> Bool { return self.valid; }
-    fn append(expected: Int, kind: String, entity: String, body: String) -> dna::AppendResult { return dna::AppendResult { error: "read_only" }; }
-    fn append_batch(expected: Int, rows: dna::RowBatch) -> dna::AppendResult { return dna::AppendResult { error: "read_only" }; }
-    fn append_exact(expected: Int, kind: String, entity: String, body: String) -> dna::AppendResult { return dna::AppendResult { error: "read_only" }; }
 }
 locus PersonRetirementCodec {
     params { }
@@ -93,31 +71,8 @@ locus PersonRetirementCodec {
         self.field(b, "by", context.principal_name); self.field(b, "to", c.new_assignee); b.append_str(",\"transferred\":"); b.append_str(to_string(transferred)); self.field(b, "plan_digest", c.subject_digest);
         b.append_str(",\"manifest\":"); b.append_str(manifest); b.append_str("}"); return std::str::from_bytes(b.snapshot() or raise);
     }
-    fn decode_fact(e: dna::Event, j: dna::Journal) -> PersonRetirementFact {
-        let syntax = OrganizationJson { }; let common = GovernanceCommandCodec { }; let fields = AuthorityPolicyCodec { };
-        if e.kind != "person.retired" || len(e.body) > 131072 || !syntax.valid(e.body) || !fields.fields(e.body, "command_format command_id command_payload command_fingerprint command_authority command_authority_basis command_record_head by to transferred plan_digest manifest", 12)
-            || common.string(e.body, "command_format") != "dna.person-retirement/1" { return PersonRetirementFact { }; }
-        let payload = common.string(e.body, "command_payload"); if len(payload) > 8192 || !syntax.valid(payload) { return PersonRetirementFact { }; }
-        let context = GovernanceContext { application_id: common.string(payload, "application_id"), principal_mode: common.string(payload, "principal_mode"), principal_name: common.string(payload, "principal_name") };
-        let c = self.decode(context, payload); let grant = GovernanceGrant { allowed: true, authority: common.string(e.body, "command_authority"), basis: common.string(e.body, "command_authority_basis") };
-        let manifest = std::json::find_field_raw(e.body, "manifest"); let raw_count = std::json::find_field_raw(e.body, "transferred"); let count = std::str::parse_int(raw_count) or - 1; let head = common.string(e.body, "command_record_head");
-        if !self.valid(context, c) || e.entity != c.target_id || context.application_id != j.read(0).digest || !common.bounded(grant.authority, 256, true, false) || !common.bounded(grant.basis, 2048, true, false)
-            || count < 0 || count > 32 || raw_count != to_string(count) || e.seq < count + 1 || !std::str::starts_with(manifest, "[") || e.body != self.fact(context, c, grant, head, manifest, count)
-            || j.read(e.seq).digest != e.digest || j.read(e.seq).body != e.body { return PersonRetirementFact { }; }
-        let prefix = RetirementPrefix { }; if !prefix.capture(j, e.seq - count) || prefix.head() != head { return PersonRetirementFact { }; }
-        let retirement = PersonRetirement { }; let plan = retirement.plan(prefix, c.target_id, grant.basis);
-        if !plan.ok || plan.state != "active" || plan.subject_digest != c.subject_digest || plan.transferred != count || (count > 0 && c.new_assignee == "") || !retirement.active(prefix, c.new_assignee) { return PersonRetirementFact { }; }
-        let b = std::bytes::BytesBuilder { }; b.append_str("["); let mut it = std::json::array_first(plan.tasks); let mut index = 0; let mut previous = head;
-        while !it.done {
-            let task = it.element; let moved = j.read(e.seq - count + index); let id = common.string(task, "id");
-            if moved.seq != e.seq - count + index || moved.prev != previous || moved.kind != "task.reassigned" || moved.entity != id || moved.body != self.move_body(c.target_id, c.new_assignee, context.principal_name) { return PersonRetirementFact { }; }
-            if index > 0 { b.append_str(","); } b.append_str(self.transfer(id, common.string(task, "assignment_digest"), c.target_id, c.new_assignee, moved.digest)); previous = moved.digest; index = index + 1; it = std::json::array_next(it);
-        }
-        b.append_str("]"); if index != count || e.prev != previous || manifest != std::str::from_bytes(b.snapshot() or raise) { return PersonRetirementFact { }; }
-        return PersonRetirementFact { valid: true, context: context, command: c, grant: grant, head: head, manifest: manifest, transferred: count, event_id: e.digest };
-    }
-    // The same fact on a record with a Ledger, written rows first as `hale
-    // dna retire` writes them there: each transfer a Ledger row landed before
+    // The retirement fact, written rows first as `hale dna retire` writes
+    // it: each transfer a Ledger row landed before
     // the retirement, the manifest naming their ids, the retirement the
     // record's row after them. Not one write across two memories: a
     // retirement stopped between its transfers and its row keeps the
@@ -150,7 +105,6 @@ locus PersonRetirementCodec {
         b.append_str("]"); if index != count || manifest != std::str::from_bytes(b.snapshot() or raise) { return PersonRetirementFact { }; }
         return PersonRetirementFact { valid: true, context: context, command: c, grant: grant, head: head, manifest: manifest, transferred: count, event_id: e.digest };
     }
-    fn visible(j: dna::Journal, fact: PersonRetirementFact) -> Bool { return self.visible_over(j, fact, false); }
     // `routed`: `j` reads the record and its Ledger as one
     fn visible_over(j: dna::Journal, fact: PersonRetirementFact, routed: Bool) -> Bool {
         if !fact.valid { return false; } let q = Queries { j: j, routed: routed }; let view = TaskProjection { j: j, visibility: q, routed: routed }; let c = fact.command; let common = GovernanceCommandCodec { };
@@ -173,7 +127,6 @@ locus PersonRetirement {
     fn active(j: dna::Journal, person: String) -> Bool {
         if person == "" { return true; } let mut i = 0; while i < j.revision() { let e = j.read(i); if e.kind == "person.retired" && e.entity == person { return false; } i = i + 1; } return true;
     }
-    fn plan(j: dna::Journal, person: String, authority_basis: String) -> RetirementPlan { return self.plan_over(j, person, authority_basis, false); }
     // `routed`: `j` reads the record and its Ledger as one
     fn plan_over(j: dna::Journal, person: String, authority_basis: String, routed: Bool) -> RetirementPlan {
         let common = GovernanceCommandCodec { }; let codec = PersonRetirementCodec { }; let syntax = OrganizationJson { }; let q = Queries { j: j, routed: routed }; let view = TaskProjection { j: j, visibility: q, routed: routed };
@@ -206,45 +159,7 @@ locus PersonRetirement {
         codec.field(b, "state", state); codec.field(b, "successor", successor); b.append_str(",\"retirement_events\":"); b.append_str(std::str::from_bytes(retired.snapshot() or raise)); b.append_str(",\"tasks\":"); b.append_str(task_rows); b.append_str("}");
         return RetirementPlan { ok: true, code: "", person: person, state: state, successor: successor, subject_digest: dna::digest_of(std::str::from_bytes(b.snapshot() or raise)), tasks: task_rows, transferred: count, event_id: event_id };
     }
-    fn publish_retirement(batch: GovernanceBatchRecord, snapshot: GovernanceSnapshot, context: GovernanceContext, c: GovernanceCommand, grant: GovernanceGrant, plan: RetirementPlan, sign: Bool) -> PersonRetirementPublication {
-        let codec = PersonRetirementCodec { }; let common = GovernanceCommandCodec { };
-        if !codec.valid(context, c) || !snapshot.ok || context.application_id != snapshot.application_id || batch.identity() != snapshot.application_id
-            || !grant.allowed || !common.bounded(grant.authority, 256, true, false) || !common.bounded(grant.basis, 2048, true, false) { return PersonRetirementPublication { code: "forbidden" }; }
-        // a head that could not be read is refused as unavailable, never read as unmoved
-        let before = batch.head("journal");
-        if !before.ok { return PersonRetirementPublication { code: "record_unavailable" }; }
-        if before.id != snapshot.head { return PersonRetirementPublication { code: "stale" }; }
-        let j = GovernanceJournal { snapshot: snapshot }; if !j.valid { return PersonRetirementPublication { code: "command_history_invalid" }; }
-        let actual = self.plan(j, c.target_id, grant.basis);
-        if !actual.ok { return PersonRetirementPublication { code: actual.code }; }
-        if !plan.ok || actual.state != "active" || actual.subject_digest != c.subject_digest || actual.subject_digest != plan.subject_digest || actual.tasks != plan.tasks || actual.transferred != plan.transferred { return PersonRetirementPublication { code: "stale_subject" }; }
-        let q = Queries { j: j };
-        if (actual.transferred > 0 && c.new_assignee == "") || !self.active(j, c.new_assignee) || (c.new_assignee != "" && q.receipt_status(c.new_assignee) != "available") { return PersonRetirementPublication { code: "forbidden" }; }
-        let rows = dna::RowBatch { }; let manifest = std::bytes::BytesBuilder { }; manifest.append_str("["); let mut parent = std::str::clone(snapshot.head); let mut it = std::json::array_first(actual.tasks); let mut index = 0; let mut record_bytes = len(snapshot.text);
-        while !it.done {
-            let task = it.element; let id = common.string(task, "id"); let body = codec.move_body(c.target_id, c.new_assignee, context.principal_name);
-            let row = dna::Row { kind: "task.reassigned", entity: id, body: body, author: context.principal_name };
-            record_bytes = record_bytes + len(dna::row_line(snapshot.revision + index, row, context.principal_name));
-            if record_bytes > 16777216 { return PersonRetirementPublication { code: "person_read_limit" }; }
-            // a row's id is its digest over the one before it
-            let moved = dna::event_digest(parent, row.kind, row.entity, row.body);
-            rows.push(row);
-            if index > 0 { manifest.append_str(","); } manifest.append_str(codec.transfer(id, common.string(task, "assignment_digest"), c.target_id, c.new_assignee, moved));
-            parent = moved; index = index + 1; it = std::json::array_next(it);
-        } manifest.append_str("]"); let body = codec.fact(context, c, grant, snapshot.head, std::str::from_bytes(manifest.snapshot() or raise), actual.transferred);
-        if len(body) > 131072 { return PersonRetirementPublication { code: "person_read_limit" }; }
-        let final_row = dna::Row { kind: "person.retired", entity: c.target_id, body: body, author: context.principal_name };
-        if record_bytes + len(dna::row_line(snapshot.revision + index, final_row, context.principal_name)) > 16777216 { return PersonRetirementPublication { code: "person_read_limit" }; }
-        rows.push(final_row);
-        if batch.identity() != snapshot.application_id { return PersonRetirementPublication { code: "stale" }; }
-        let landed = batch.append_batch("journal", snapshot.head, rows, sign, "");
-        if !landed.ok && landed.error == "stale" { return PersonRetirementPublication { code: "stale" }; }
-        if !landed.ok && std::str::starts_with(landed.error, "refused") { return PersonRetirementPublication { code: "record_unavailable" }; }
-        // a batch whose answer was lost may have landed: the outcome is unknown
-        if !landed.ok { return PersonRetirementPublication { ok: true, code: "", unknown: true }; }
-        return PersonRetirementPublication { ok: true, code: "", event_id: landed.id, body: body, transferred: actual.transferred };
-    }
-    // A retirement on a record with a Ledger (`decode_routed_fact`): each
+    // A retirement (`decode_routed_fact`): each
     // transfer lands in the Ledger keyed by the command and the Task, so one
     // asked again lands once; then the retirement lands at the record's
     // tail. `plan` was made over `j`, the record and its Ledger read as one.

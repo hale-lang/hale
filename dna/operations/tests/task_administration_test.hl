@@ -16,7 +16,7 @@ locus TaskCases {
         return ops::GovernanceCommand { request_id: key, operation: "dna.task.reassign", application_id: context.application_id, target_kind: "dna.task", target_id: subject.id,
             subject_digest: subject.assignment_digest, expected_assignee: subject.assignee, new_assignee: to };
     }
-    fn row(j: dna::Journal, id: String) -> ops::TaskRow { let visible = ops::Queries { j: j }; let view = ops::TaskProjection { j: j, visibility: visible }; std::test::assert(view.load(), "complete projection " + view.code); return view.task_of(id); }
+    fn row(j: dna::Journal, id: String) -> ops::TaskRow { let visible = ops::Queries { j: j, routed: true }; let view = ops::TaskProjection { j: j, visibility: visible, routed: true }; std::test::assert(view.load(), "complete projection " + view.code); return view.task_of(id); }
     fn hand(j: dna::Journal) { self.append(j, "task.born", "opaque task / é", "Keep exact\r\né 🧭 evidence"); self.append(j, "task.handed", "opaque task / é", "{\"assignee\":\"alice\",\"obligation\":\"approval\",\"acceptance\":\"opaque acceptance\",\"evidence_required\":true,\"by\":\"leader\"}"); }
     fn read_case(mode: String) {
         let j = dna::MemJournal { }; self.append(j, "application.observed", "app", "{}"); self.hand(j); let before = self.row(j, "opaque task / é");
@@ -32,7 +32,7 @@ locus TaskCases {
             self.append(j, "task.transfer_accepted", before.id, "{\"owner\":\"b\",\"from\":\"a\",\"by\":\"receiver\",\"assignee\":\"bob\",\"note\":\"\"}");
             self.append(j, "task.handed", before.id, "{\"assignee\":\"bob\",\"by\":\"b\",\"transferred_from\":\"a\"}");
         }
-        let q = ops::Queries { j: j }; let view = ops::TaskProjection { j: j, visibility: q }; let okay = view.load();
+        let q = ops::Queries { j: j, routed: true }; let view = ops::TaskProjection { j: j, visibility: q, routed: true }; let okay = view.load();
         if mode == "bad-from" || mode == "unsupported" { std::test::assert(!okay, "invalid/unknown history unavailable"); return; }
         std::test::assert(okay, "read complete " + mode);
         if mode == "hidden" || mode == "reference" { std::test::assert(view.count() == 0 && view.task_of(before.id).id == "" && view.history_count(before.id) == 0, "hidden supporting evidence suppresses entire row"); return; }
@@ -52,7 +52,7 @@ locus TaskCases {
         std::test::assert(!common.valid(context, old), "old variant rejects stray Task fields");
         let policy = self.policy("app"); let pc = ops::TaskAuthorityPolicyCodec { }; std::test::assert(!pc.decode(policy.document, "app", "signed").valid, "new profile has local trust boundary");
         let q = dna::MemJournal { }; self.append(q, "application.observed", "app", "{}"); self.append(q, "receipt.withheld", "bob", "{}");
-        let authority = ops::FixedTaskAuthority { policy: policy }; std::test::assert(!authority.eligible(context, "bob", q, false) && authority.recipients(context, q, false) == "[\"alice\",\"charlie\"]", "protected member hidden from eligibility/list");
+        let authority = ops::FixedTaskAuthority { policy: policy }; std::test::assert(!authority.eligible(context, "bob", q, true) && authority.recipients(context, q, true) == "[\"alice\",\"charlie\"]", "protected member hidden from eligibility/list");
         let nobody = ops::GovernanceContext { application_id: "app", principal_mode: "local", principal_name: "alice" }; std::test::assert(!authority.authorize(nobody, "dna.task.reassign", false, q).allowed, "membership is not authority");
     }
 }

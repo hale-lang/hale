@@ -272,12 +272,6 @@ locus Cases {
         f.start(); f.hidden(q, "protected"); f.source(f.read("practices", "", ""));
         std::test::assert(std::str::contains(f.read("practices", "", ""), "LEDGER-VISIBILITY-CANARY"), "a practice the Ledger leaves unrestricted is read");
     }
-    fn abandoned() {
-        let f = fixture::Fixture { root: self.root + "/14" }; let p = f.practice("abandoned", "ABANDONED-LEDGER-CANARY", "org", "", false);
-        f.append("review.settled", p.review_id, "approve by VISIBILITY-DECIDER-CANARY"); f.append("ledger.adopted", "ledger", "{\"routing\":1}");
-        f.append("ledger.abandoned", "ledger", "{\"why\":\"keeper unavailable\",\"by\":\"alice\"}");
-        std::test::assert(std::str::contains(f.blob(p.digest), p.text), "unmarked stale blob present"); f.start(); f.uncertain(p);
-    }
     fn malformed_classification() {
         let bodies = "{}\n{\"class\":null}\n{\"class\":42}\n{\"class\":{\"name\":\"confidential\"}}\n{\"class\":\"unknown-class\"}\n{}";
         let mut i = 0;
@@ -569,7 +563,6 @@ locus Cases {
         self.redacted();
         self.protected_receipts();
         self.adopted();
-        self.abandoned();
         self.malformed_classification();
         self.ordinary_review();
         self.unlinked_review();

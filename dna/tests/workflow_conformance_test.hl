@@ -726,12 +726,10 @@ main locus App {
         // ---- mode 3: two memories — the tree's facts are the ledger's, so
         //      a reconstruction of the routed record keeps their order; a
         //      restart over the reconstructed pair continues exactly
-        let adopted = self.record.append(0, "ledger.adopted", "ledger", "{\"routing\": 1, \"checkpoint\": \"conformance\"}");
-        std::test::assert(adopted.ok, "the record adopted a ledger");
         self.boot_routed();
-        std::test::assert_eq_int(self.boot.rt.journal.revision(), 1, "the routed record reads the adoption");
+        std::test::assert_eq_int(self.boot.rt.journal.revision(), 0, "the routed record starts empty");
         self.immediate("r1");
-        std::test::assert_eq_int(self.record.revision(), 1, "r1: the record holds only the adoption: every fact of the tree is the ledger's");
+        std::test::assert_eq_int(self.record.revision(), 0, "r1: the record holds nothing: every fact of the tree is the ledger's");
         let mut i = 0;
         while i < self.ledger.revision() {
             std::test::assert_eq_str(dna::memory_of(self.ledger.read(i).kind), "ledger", "r1: " + self.ledger.read(i).kind + " is routed to the ledger");

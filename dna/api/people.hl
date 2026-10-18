@@ -32,7 +32,7 @@ locus PersonWire {
         b.string_field("event_id", plan.event_id); b.string_field("subject_digest", plan.subject_digest);
         b.field("tasks", plan.tasks); b.string_field("transferred", to_string(plan.transferred));
         b.bool_field("authorized", result.authorized); b.field("recipients", result.recipients);
-        b.begin_object_field("basis"); b.string_field("memory", "record"); b.string_field("routing", "0");
+        b.begin_object_field("basis"); b.string_field("memory", "record+ledger");
         b.string_field("record_head", result.head); b.string_field("record_revision", to_string(result.revision)); b.end_object(); b.end_object();
         return http.success(context.source, b.result());
     }

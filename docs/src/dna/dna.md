@@ -310,8 +310,7 @@ Outside the files, `init` also:
 - makes the directory a git repository if it is not one: the genome
   is code in git;
 - composes the record: pins its identity in `hale.toml`, provisions
-  memory, and appends `record.genesis`, `ledger.adopted` and
-  `record.key`, then seeds it with the rows above, receipts kept in
+  memory, and appends `record.genesis` and `record.key`, then seeds it with the rows above, receipts kept in
   memory by digest ([Memory and the record](./memory.md));
 - refuses a clone that still holds a record an earlier toolchain kept
   on git (`refs/dna/journal`): delete the old refs and re-run;

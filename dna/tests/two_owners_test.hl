@@ -312,8 +312,7 @@ main locus App {
         self.leases = dna::PqLeaseStore { conn: dna::pq_conn(dna::parse_dsn(head_dsn)), record_id: record };
         std::test::assert(self.leases.open(), "a head reads the leases: " + self.leases.last_error());
         // ---- the ledger: a shared record's controllers coordinate through
-        // it, and the record has it from its first rows (GH #1590)
-        std::test::assert(len(wait_record(app, "ledger.adopted", "checkpoint", POLLS)) > 0, "the record is born with its ledger");
+        // it, and the record has it from its first row (GH #1590)
         // ---- acme's body beside clone A, north's beside clone B
         let pid_a = self.start_body(app, spine_dsn, nats_spine, nats_org);
         std::test::assert(self.body_up(app, BOOT), "acme's body came up: " + (std::io::fs::read_file(app + "/.hale/body.log") or ""));
