@@ -2435,7 +2435,45 @@ impl<'a> Scopes<'a> {
             s.collect(&program.items, &bundle.snapshot, SiteUniverse::User, decls, true);
         }
         if let Some((program, ids)) = stdlib {
-            s.collect(&program.items, ids, SiteUniverse::StdlibAnalysis, decls, true);
+            // The stdlib's bodies the programs can reach (`stdlib_reach`):
+            // a body outside the reach is no callee of theirs and builds
+            // none of their instances. The reach's rules are where it
+            // starts, not what it rests on: a reached body that calls or
+            // names a stdlib fn outside it widens it, and the copy's scopes
+            // are collected again.
+            let programs: Vec<&Program> = bundle.programs.values().copied().collect();
+            let mut reach = crate::stdlib_reach::StdlibReach::of(&programs);
+            let item_of: BTreeMap<&str, usize> = program
+                .items
+                .iter()
+                .enumerate()
+                .flat_map(|(i, item)| {
+                    hale_syntax::ast::flat_decls(std::slice::from_ref(item)).filter_map(move |d| match d {
+                        TopDecl::Fn(f) => Some((f.name.name.as_str(), i)),
+                        _ => None,
+                    })
+                })
+                .collect();
+            let user_scopes = s.scopes.len();
+            let user_elsewhere = s.elsewhere.len();
+            loop {
+                for i in reach.items() {
+                    s.collect(std::slice::from_ref(&program.items[i]), ids, SiteUniverse::StdlibAnalysis, decls, true);
+                }
+                let beyond: BTreeSet<usize> = s.scopes[user_scopes..]
+                    .iter()
+                    .flat_map(|sc| sc.calls.iter().map(|(c, _)| c).chain(sc.escapes.iter()))
+                    .filter_map(|c| item_of.get(c.as_str()).copied())
+                    .filter(|i| !reach.contains(*i))
+                    .collect();
+                if beyond.is_empty() || !reach.widen(beyond) {
+                    break;
+                }
+                s.scopes.truncate(user_scopes);
+                s.elsewhere.truncate(user_elsewhere);
+                s.fns.retain(|(u, _), _| *u == SiteUniverse::User);
+                s.loci.retain(|site, _| site.universe == SiteUniverse::User);
+            }
         }
         let mut callers: BTreeMap<(SiteUniverse, &str), Vec<(usize, bool)>> = BTreeMap::new();
         for (j, caller) in s.scopes.iter().enumerate() {
