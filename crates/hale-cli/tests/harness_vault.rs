@@ -68,7 +68,14 @@ fn hale_test_runs_each_file_under_a_vault_of_its_own() {
     std::fs::create_dir_all(&home).unwrap();
     std::fs::create_dir_all(&work).unwrap();
     std::fs::create_dir_all(d.join("probes")).unwrap();
-    for org in ["probea", "probeb"] {
+    // The organizations are this run's own: `hale dna new` with no owner's
+    // DSN brings memory up as the compose project `hale-dna-<name>`, whose
+    // containers and volume are named after the seed machine-wide, so a
+    // fixed name collided with the same test running anywhere else on the
+    // box ("the container name /hale-dna-probea-knowledge-db-1 is already
+    // in use") and failed one of the two runs.
+    let orgs = [format!("probea{}", std::process::id()), format!("probeb{}", std::process::id())];
+    for org in &orgs {
         std::fs::write(d.join(format!("probes/{org}_test.hl")), PROBE.replace("ORG", org)).unwrap();
     }
     // the toolchain cache the DNA tests share, warm, so the organism's
@@ -92,7 +99,7 @@ fn hale_test_runs_each_file_under_a_vault_of_its_own() {
         .expect("hale test");
     let said = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
     assert!(out.status.success() && said.contains("2 passed"), "both probes pass under hale test: {said}");
-    let ran: Vec<String> = ["probea", "probeb"].iter().map(|o| std::fs::read_to_string(work.join(format!("{o}.vault"))).unwrap_or_default()).collect();
+    let ran: Vec<String> = orgs.iter().map(|o| std::fs::read_to_string(work.join(format!("{o}.vault"))).unwrap_or_default()).collect();
     assert!(!ran[0].is_empty() && ran[0] != ran[1], "two files side by side, two vaults: {ran:?}");
     assert!(ran.iter().all(|v| !Path::new(v).exists()), "and each is gone once its file has run: {ran:?}");
     assert!(!caller_vault.exists(), "the caller's vault was never written: {said}");
