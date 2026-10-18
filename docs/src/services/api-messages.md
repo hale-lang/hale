@@ -4,7 +4,8 @@
 a served surface with roles. This page is about the part a caller
 actually touches: the records a surface carries. It builds one small
 status service whose messages use each shape the codec offers (a
-default, an optional field, a map, an enum and a typed error), serves
+default, an optional field, a map, an enum and a typed error with
+error classes), serves
 it over HTTP, adds a member without breaking anyone, and streams the
 same records as Server-Sent Events. Every output below is what the
 commands printed.
@@ -33,7 +34,7 @@ type Health {
 }
 
 type Restart { name: String; }
-type Problem = enum { NotFound(String), Busy };
+type Problem = enum { @not_found NotFound(String), @unavailable Busy };
 
 api Ops requires: [operator] {
     rpc Probe::health requires: [];
@@ -59,7 +60,13 @@ Each field's shape is a decision about what a caller can say:
   every state there is. A `String` status would let any text through.
 - **`Problem` is the error.** `restart` fails with `NotFound(name)` or
   `Busy`, and a caller branches on which one, instead of parsing a
-  message.
+  message. Each variant also declares its **error class**, which tells
+  every transport what kind of failure it is: `@not_found` is a `404`
+  over HTTP and `NOT_FOUND` over gRPC, `@unavailable` a `503` and
+  `UNAVAILABLE`. The others are `@conflict` (409, `ABORTED`), `@invalid`
+  (422, `INVALID_ARGUMENT`) and `@forbidden` (403, `PERMISSION_DENIED`).
+  A variant with no class is the handler error's plain `422` and
+  `FAILED_PRECONDITION`.
 - **`requires: [operator]` on the surface** is every row's default.
   `health` overrides it with `requires: []`, so anyone the transport
   authenticates may ask. It is the same table, with the same digest, as
@@ -123,13 +130,14 @@ hale check --api status.hl --surface Ops --json-schema
     { "type": "string", "enum": [ "Busy" ] },
     { "type": "object", "properties": { "NotFound": { "type": "string" } }, "required": [ "NotFound" ], "additionalProperties": false }
   ],
-  "x-hale-type": "Problem"
+  "x-hale-type": "Problem",
+  "x-hale-error-classes": { "NotFound": "not_found", "Busy": "unavailable" }
 }
 ```
 
 The map is an object with at most 16 entries keyed by `name`; `note`
 may be a string or `null` and is not required; the error is one of the
-enum's variants.
+enum's variants, with the class each declares.
 
 ## Serving it
 
@@ -168,7 +176,7 @@ each request, the optional field marked as one:
 
 ```text
 $ hale describe http://127.0.0.1:8794 --bearer t-ops
-Ops@fnv1a64:69b4abd561989e25/web  [http 127.0.0.1:8794]
+Ops@fnv1a64:95d08b7e7dd9f4de/web  [http 127.0.0.1:8794]
 caller: bearer ops; roles: operator
   Probe::health(since?: String (Time) or null, verbose?: Bool) -> Health  requires: -
   Probe::restart(name: String) -> Health, error Problem  requires: operator
@@ -187,15 +195,34 @@ these went to `Probe::health` with `Authorization: Bearer t-ops`:
 Leaving `since` out and sending `null` are the same absence, so there is
 no `note`. A time with an offset is refused at the edge rather than
 guessed at: the handler only ever sees a value that decoded. The error
-type answers with its variant and a `422`:
+answers with its variant as the body and its class as the status:
 
 ```text
-$ curl -s -X POST localhost:8794/call/Probe::restart -H 'Authorization: Bearer t-ops' -d '{"name": "queue"}'
+$ curl -si -X POST localhost:8794/call/Probe::restart -H 'Authorization: Bearer t-ops' -d '{"name": "queue"}'
+HTTP/1.1 404 Not Found
+Content-Type: application/json
+Cache-Control: no-store
+Hale-Error-Class: not_found
+Content-Length: 20
+Connection: close
+
 {"NotFound":"queue"}
 ```
 
-(`hale call http://127.0.0.1:8794 Probe::restart --name queue --bearer
-t-ops` prints the same and exits 1, a handler error.)
+A refusal can share a status with a class (403, 409 and 503 are both),
+so the class is also named in `Hale-Error-Class`, which no refusal
+carries. That is how a client tells "the handler said no" from "the
+exposure refused the call", and the generated clients and `hale call`
+read it for you:
+
+```text
+$ hale call http://127.0.0.1:8794 Probe::restart --name queue --bearer t-ops
+handler error (not_found): {"NotFound":"queue"}
+```
+
+(It exits 1, a handler error. Over a Unix socket the reply line carries
+`"class": "not_found"` beside the error; over gRPC the call ends with
+`NOT_FOUND` and the error in its details.)
 
 ## Growing without breaking anyone
 
@@ -205,21 +232,22 @@ member's row alone, and the clients send it on every call. Add a member
 and only the surface's digest moves:
 
 ```text
-before:  Ops                fnv1a64:69b4abd561989e25
+before:  Ops                fnv1a64:95d08b7e7dd9f4de
          Probe::health      fnv1a64:38d1eff02ba6e98c
-         Probe::restart     fnv1a64:50b516b85e610796
+         Probe::restart     fnv1a64:36f121c52d2c64b9
 
 after adding rpc Probe::uptime requires: [];
-         Ops                fnv1a64:903f521f2b893a2f
+         Ops                fnv1a64:1ccf03bbfaa228b8
          Probe::health      fnv1a64:38d1eff02ba6e98c
-         Probe::restart     fnv1a64:50b516b85e610796
+         Probe::restart     fnv1a64:36f121c52d2c64b9
          Probe::uptime      fnv1a64:f233238323e2aec6
 ```
 
 A client of `Probe::health` built before `uptime` existed keeps being
-admitted. Change `Health` itself (a field renamed or retyped) and every
-client naming the old digest is refused `digest_mismatch` instead of
-being handed a shape it cannot read. So grow a surface by adding
+admitted. Change `Health` itself (a field renamed or retyped), or the
+class a `Problem` variant declares, and every client naming the old
+digest is refused `digest_mismatch` instead of being handed a contract
+it was not built for. So grow a surface by adding
 members, and make an incompatible change a new member (`health_v2`)
 served beside the old one until its callers have moved.
 
@@ -299,6 +327,7 @@ on one codec: when `Health` gains a field, both carry it.
 
 - The codec's shapes (optional fields, enums, maps, sets) and its
   refusals: `spec/api.md` § Codecs. The digests: § The contract digest.
+  Error classes and each transport's status for them: § Error classes.
 - Streamed responses and the Server's request cap: `spec/stdlib.md`,
   `std::http`. The chapter: [HTTP](../everyday/http.md#streaming-a-response).
 - The style guide's rules for choosing between these shapes:

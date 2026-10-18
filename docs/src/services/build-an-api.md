@@ -434,7 +434,8 @@ hale api call: refused: {"refusal":{"kind":"unauthenticated","reason":"no such t
 
 (`--bearer` names the caller; `HALE_API_BEARER` sets it for a session.
 The exit code for the last is 2. Over HTTP the status is the contract's:
-200 for a result, 422 for the handler's error, and 400, 401, 403, 409,
+200 for a result, 422 for the handler's error (or its error class's
+status, [The API surface](./api.md#error-classes)), and 400, 401, 403, 409,
 429 or 503 for a refusal with its kind and reason in the body; `--raw`
 prints the body.) The handler saw the caller as `front-desk`, `via:
 "http"`, and the program printed `order 1: 1 lamp for front-desk via http`.

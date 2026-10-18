@@ -531,3 +531,24 @@ fn claim_quadratic_text_loops_are_not_flagged() {
         ds
     );
 }
+
+/// 2.11: a variant's error class is one of five words, and any other
+/// is refused.
+#[test]
+fn claim_an_error_class_is_one_of_five() {
+    let ok = build_errs(
+        "type E = enum { @not_found A, @conflict B(String), @invalid C, @forbidden D, @unavailable F, G };\n\
+         fn main() { }",
+    );
+    assert!(
+        ok.is_empty(),
+        "spec/styleguide.md 2.11 names five error classes: {:?}",
+        ok
+    );
+    let other = build_errs("type E = enum { @missing A, B };\nfn main() { }");
+    assert!(
+        other.iter().any(|m| m.contains("is no error class")),
+        "2.11 says a word that is not a class is refused: {:?}",
+        other
+    );
+}

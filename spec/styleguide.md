@@ -649,7 +649,7 @@ type Health {
     has_note: Bool = false;
 }
 
-type Problem = enum { NotFound(String), Busy };
+type Problem = enum { @not_found NotFound(String), @unavailable Busy };
 type Restart { name: String; }
 
 api Ops requires: [operator] {
@@ -714,6 +714,18 @@ fn main() {
   `fallible(Problem)`, where `Problem` is an enum or a set of error
   records, a caller branches on the variant. A record of `code: String`
   makes it parse prose.
+- **A class on every error variant that has one.** `@not_found`,
+  `@conflict`, `@invalid`, `@forbidden` and `@unavailable` say what kind
+  of failure a variant is, and each transport answers with its own
+  status for it: HTTP 404, 409, 422, 403 and 503 (with a
+  `Hale-Error-Class` header, since a refusal can share the status), gRPC
+  `NOT_FOUND`, `ABORTED`, `INVALID_ARGUMENT`, `PERMISSION_DENIED` and
+  `UNAVAILABLE`, a Unix reply its `"class"`. MCP's error object has no
+  place for one, so there the description says it. A variant with no
+  class is the plain handler error (422, `FAILED_PRECONDITION`), so
+  leave a variant unclassed only when none of the five fits. A class is
+  contract: declaring, changing or removing one moves the digest.
+  **[error for a word that is not a class]**
 - **Roles once, on the surface.** `api Ops requires: [operator]` is the
   default of every row, and a row that differs says so (`requires: []`
   for anyone). It is the same table, with the same digest, as writing

@@ -244,7 +244,10 @@ An enum can be a field, the element of a list (when no variant has
 values), a whole request or response, or a handler's error type, which
 is how a handler says which of several things went wrong:
 `fallible(Problem)` with `type Problem = enum { NotFound(String),
-Conflict };` answers `"Conflict"` or `{"NotFound": "order 7"}`. An
+Conflict };` answers `"Conflict"` or `{"NotFound": "order 7"}`. Such a
+variant may also declare an error class (`@not_found NotFound(String)`),
+which picks each transport's status for it ([Error
+classes](#error-classes)). An
 unknown variant, the wrong shape for a variant or the wrong number of
 values is refused `malformed` with `wrong_type`, naming the field. An
 enum field has no default the codec reads, so leaving one out is
@@ -637,7 +640,9 @@ Content-Type: application/json
 {"order":41,"notional":125000}
 ```
 
-A handler's own error is `422` with the error as the body; a refusal is
+A handler's own error is `422` with the error as the body (or, when its
+variant declares an error class, that class's status and a
+`Hale-Error-Class` header: see *Error classes* below); a refusal is
 `400`, `401`, `403`, `409`, `429` or `503` with `{"refusal": {"kind": …,
 "reason": …}}` (a digest mismatch also carries the `served` digest and an
 unauthorized call the roles it `requires`); a handler that violated is
@@ -818,7 +823,8 @@ is answered as it arrives, and the call stays open until the tool ends its
 side. Reflection is for a caller the bearer source
 names, so pass the `authorization` metadata to the tool as to a call.
 
-A handler's own error is `FAILED_PRECONDITION` with the error in
+A handler's own error is `FAILED_PRECONDITION` (or the code of the error
+class its variant declares, *Error classes* above) with the error in
 `grpc-status-details-bin` (a `google.rpc.Status` whose detail is the error's
 message, `OrderError` for `Orders::cancel`, or the error's JSON for a caller
 that asked in JSON); a refusal is `INVALID_ARGUMENT`, `FAILED_PRECONDITION` (a
