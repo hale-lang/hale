@@ -8,6 +8,20 @@ behavior.
 
 ## Unreleased
 
+## v0.25.1 — a request body is read in linear memory (2026-10-18)
+
+A security fix for v0.25.0, and nothing else.
+
+**`std::http::Server` reads a request in memory linear in its size.** On v0.25.0 and earlier, the server assembled a request by appending each 8 KiB read to a growing string, and kept every intermediate copy until the connection was served. That made memory quadratic in the body: a 4 MiB body cost about 1 GB and a 12 MiB body about 9.5 GB. It happened before any handler or authentication ran, so any client could trigger it. The old 1 MiB default hid it; v0.25.0's `max_request_bytes` exposed it. The api runtime's HTTP transport did the same within its 1 MiB cap. Both now assemble into a `BytesBuilder`: a 12 MiB request peaks at about 50 MB (#1628).
+
+**Who should upgrade:** anyone serving HTTP with `std::http::Server` or an api surface, and especially anyone who raised `max_request_bytes`.
+
+No other change is in this release; main's work since v0.25.0 ships in the next minor release.
+
+### Security
+
+- **`std::http::Server` no longer holds memory quadratic in a request's size** (a pre-auth denial of service, downstream handoff). Each 8 KiB read was appended to a String, and every prefix stayed alive until the connection was served, before any handler or authentication ran: a 12 MiB body held about 9.5 GB. A request is now assembled in a `BytesBuilder`, linear in its size; a 12 MiB request costs the server about 50 MB. The api runtime's HTTP transport reads a request body the same way.
+
 ## v0.25.0 — surfaces carry real shapes, and responses stream (2026-10-18)
 
 A surface now carries the shapes real contracts are made of, and a served program can stream. This release is the codec half of the surface work (#1530 step 0) and the first new type from it, plus the fixes an outside gateway written in Hale ran into.
