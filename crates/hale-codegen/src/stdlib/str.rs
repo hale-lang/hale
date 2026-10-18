@@ -76,6 +76,11 @@ pub(crate) trait StrStdlib<'ctx> {
         args: &[Expr],
         scope: &Scope<'ctx>,
     ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError>;
+    fn lower_std_str_range_index_of(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError>;
     fn lower_std_str_can_parse_int(
         &mut self,
         args: &[Expr],
@@ -1071,6 +1076,53 @@ impl<'ctx, 'p> StrStdlib<'ctx> for Cx<'ctx, 'p> {
                 &[strs[0].into(), strs[1].into(), start.into()],
                 "str.index_of_from.ret",
             )
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            .try_as_basic_value()
+            .left()
+            .expect("returns i64");
+        Ok((v, CodegenTy::Int))
+    }
+
+    /// Lower `std::str::range_index_of(s: String, n: Int, sub: String,
+    /// start: Int) -> Int`: `index_of_from` with the length of `s`
+    /// given (`lotus_str_range_index_of`), so no strlen per call.
+    fn lower_std_str_range_index_of(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
+        if args.len() != 4 {
+            return Err(CodegenError::Unsupported(format!(
+                "std::str::range_index_of takes 4 args (s, n, sub, start), got {}",
+                args.len()
+            )));
+        }
+        let mut vals: Vec<inkwell::values::BasicMetadataValueEnum<'ctx>> = Vec::with_capacity(4);
+        for (i, (what, want_str)) in [("s", true), ("n", false), ("sub", true), ("start", false)].iter().enumerate() {
+            let (v, ty) = self.lower_expr(&args[i], scope)?;
+            if *want_str {
+                if !matches!(ty, CodegenTy::String | CodegenTy::StringView) {
+                    return Err(CodegenError::Unsupported(format!(
+                        "std::str::range_index_of: {what} must be String, got {ty:?}"
+                    )));
+                }
+                vals.push(self.unpack_view_if_needed(v, &ty)?.into());
+            } else {
+                if !matches!(ty, CodegenTy::Int) {
+                    return Err(CodegenError::Unsupported(format!(
+                        "std::str::range_index_of: {what} must be Int, got {ty:?}"
+                    )));
+                }
+                vals.push(v.into());
+            }
+        }
+        let f = self
+            .module
+            .get_function("lotus_str_range_index_of")
+            .expect("lotus_str_range_index_of declared");
+        let v = self
+            .builder
+            .build_call(f, &vals, "str.range_index_of.ret")
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
             .try_as_basic_value()
             .left()

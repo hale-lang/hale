@@ -447,6 +447,8 @@ ns std::str open_prefixes=[]
   slice pure
   index_of pure
   index_of_from pure
+  range_index_of pure
+  find pure
   contains pure
   split_into pure
   join pure
@@ -1048,6 +1050,7 @@ std::str::cp_at | lookup=str@2 | locus=false | effects=pure | sig=(Str, Int) -> 
 std::str::cp_count | lookup=str@2 | locus=false | effects=pure | sig=(Str) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=cp_count
 std::str::cp_size | lookup=str@2 | locus=false | effects=pure | sig=(Str, Int) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=cp_size
 std::str::ends_with | lookup=str@2 | locus=false | effects=pure | sig=(Str, Str) -> Bool | ret_ty=Bool | or=- | parks=false | holds=false | unknown=- | suggest=ends_with
+std::str::find | lookup=str@2 | locus=false | effects=pure | sig=(Named(__StrByteView), Str, Int) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=find
 std::str::from_bytes | lookup=str@2 | locus=false | effects=pure | sig=(Bytes) -> Str | ret_ty=String | or=- | parks=false | holds=false | unknown=- | suggest=from_bytes
 std::str::from_int | lookup=str@2 | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=`std::str::from_int` is not a stdlib function; rendering a value as a String is the builtin `to_string(x)` | suggest=-
 std::str::index_of | lookup=str@2 | locus=false | effects=pure | sig=(Str, Str) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=index_of
@@ -1065,6 +1068,7 @@ std::str::parse_in | lookup=str@2 | locus=false | effects=- | sig=- | parks=fals
 std::str::parse_int | lookup=str@2 | locus=false | effects=pure | sig=(Str) -> Int ! ParseError | ret_ty=? | or=(Int, ParseError) | parks=false | holds=false | unknown=- | suggest=parse_int
 std::str::range_copy | lookup=str@2 | locus=false | effects=pure | sig=(Str, Int, Int, Int) -> Str | ret_ty=String | or=- | parks=false | holds=false | unknown=- | suggest=range_copy
 std::str::range_eq | lookup=str@2 | locus=false | effects=pure | sig=(Str, Int, Int, Str) -> Bool | ret_ty=Bool | or=- | parks=false | holds=false | unknown=- | suggest=range_eq
+std::str::range_index_of | lookup=str@2 | locus=false | effects=pure | sig=(Str, Int, Str, Int) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=range_index_of
 std::str::range_parse_decimal | lookup=str@2 | locus=false | effects=pure | sig=(Str, Int, Int) -> Decimal ! ParseError | ret_ty=? | or=(Decimal, ParseError) | parks=false | holds=false | unknown=- | suggest=range_parse_decimal
 std::str::range_parse_int | lookup=str@2 | locus=false | effects=pure | sig=(Str, Int, Int) -> Int ! ParseError | ret_ty=? | or=(Int, ParseError) | parks=false | holds=false | unknown=- | suggest=range_parse_int
 std::str::repeat | lookup=str@2 | locus=false | effects=pure | sig=(Str, Int) -> Str | ret_ty=String | or=- | parks=false | holds=false | unknown=- | suggest=repeat

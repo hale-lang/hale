@@ -1573,10 +1573,12 @@ fn main() { println(count_rows("a\nb\n\nc")); }
 
 Measured over 1 MB in 2 000 lines: slicing off the rest grew the peak
 by 984 MB, and reading by position by under 1 MB, in under a
-millisecond. `std::str::index_of_from(s, "\n", start)` also keeps the
-memory linear, but it measures the whole String on every call, so a
-line-at-a-time scan with it is quadratic in time: 16 MB in 32 000 lines
-took 4.7 s, against 15 ms by position. **[convention]**
+millisecond. To find the next line, or any separator, search the view:
+`std::str::find(v, "\n", start)` answers the index into the text, at the
+cost of the distance to the hit. `std::str::index_of_from(s, "\n",
+start)` measures the whole String on every call, so a line-at-a-time
+scan with it is quadratic in time: 16 MB in 32 000 lines took 4.7 s,
+against under a millisecond with `find`. **[convention]**
 
 ---
 

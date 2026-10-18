@@ -127,3 +127,13 @@ fn __str_slice(v: std::str::ByteView, start: Int, end_exclusive: Int)
     if lo >= hi { return ""; }
     return std::str::range_copy(v.text, v.n, lo, hi);
 }
+
+/// The byte index of the first `sub` in the view at or after `start`,
+/// the index into the text (a scanner passes `hit + len(sub)` straight
+/// back as its next start), or **-1**. A negative start is 0, a start
+/// past `n` finds nothing, and an empty `sub` is found at `start`.
+/// Costs the distance to the hit: the length is the view's `n`, where
+/// `std::str::index_of_from` measures the whole String on every call.
+fn __str_find(v: std::str::ByteView, sub: String, start: Int) -> Int {
+    return std::str::range_index_of(v.text, v.n, sub, start);
+}

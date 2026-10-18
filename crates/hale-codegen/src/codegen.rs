@@ -28028,6 +28028,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             Id::StrIndexOfFrom => {
                 self.lower_std_str_index_of_from(args, scope)
             }
+            Id::StrRangeIndexOf => {
+                self.lower_std_str_range_index_of(args, scope)
+            }
             Id::StrJoin => self.lower_std_str_join(args, scope),
             // #353: UTF-8 code-point decoding. Byte-oriented String
             // stays byte-oriented; these let a caller walk code points
@@ -29371,6 +29374,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             | Id::StrFromBytes
             | Id::StrIndexOf
             | Id::StrIndexOfFrom
+            | Id::StrRangeIndexOf
             | Id::StrJoin
             | Id::StrLower
             | Id::StrPadLeft

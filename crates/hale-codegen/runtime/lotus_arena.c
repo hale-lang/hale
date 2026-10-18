@@ -20219,6 +20219,33 @@ int64_t lotus_str_index_of_from(const char *s, const char *sub, int64_t start) {
     return (int64_t)(hit - s);
 }
 
+/* `std::str::range_index_of(s, n, sub, start)`: `index_of_from` for a
+ * caller that holds the length of `s` (`n`, the real byte length, as
+ * std::str::bytes_view measures it once). No strlen of `s`: the search
+ * costs the distance to the hit, so a line-at-a-time scan over a view is
+ * linear where `index_of_from`, which measures `s` on every call, is
+ * quadratic. A negative start is 0, a start past `n` finds nothing (-1),
+ * and an empty needle is found at `start`. The lotus_str_range_* family's
+ * contract: the caller owns the bound. */
+int64_t lotus_str_range_index_of(const char *s, int64_t n, const char *sub, int64_t start) {
+    if (!s || !sub || n < 0) return -1;
+    if (start < 0) start = 0;
+    if (start > n) return -1;
+    size_t m = strlen(sub);
+    if (m == 0) return start;
+    if ((uint64_t)(n - start) < m) return -1;
+    const char *p = s + start;
+    const char *last = s + (n - (int64_t)m);
+    unsigned char first = (unsigned char)sub[0];
+    while (p <= last) {
+        const char *hit = (const char *)memchr(p, first, (size_t)(last - p) + 1);
+        if (!hit) return -1;
+        if (memcmp(hit, sub, m) == 0) return (int64_t)(hit - s);
+        p = hit + 1;
+    }
+    return -1;
+}
+
 /*
  * m48 / Decimal<S>: render a Decimal value (an i128 mantissa at the
  * scale `scale`, i.e. mantissa × 10^-scale, 0 <= scale <= 18) into a
