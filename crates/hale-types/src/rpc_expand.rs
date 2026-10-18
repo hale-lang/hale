@@ -1641,7 +1641,18 @@ pub fn expand(
     for (ty, bs) in &bindings {
         for p in programs.iter_mut() {
             if let Some(l) = find_locus_mut(&mut p.items, ty) {
-                extend_receiver(l, bs, &codec, &pb);
+                let types = extend_receiver(l, bs, &codec, &pb);
+                // the mirror's declarations, beside the receiver
+                if !types.is_empty() {
+                    match parse_source_at(&types, MIRROR_BASE) {
+                        Ok(g) => p.items.extend(g.items),
+                        Err(ds) => eprintln!(
+                            "rpc_expand: the generated mirror did not parse: {}\n{}",
+                            ds.iter().map(|d| d.message.clone()).collect::<Vec<_>>().join("; "),
+                            types
+                        ),
+                    }
+                }
                 break;
             }
         }
@@ -2299,13 +2310,14 @@ fn description_src(rows: &[Row], schemas: &crate::surfaces::Schemas<'_>, digests
 
 /// Add the plumbing of spec/api.md § Receiver failure and generations to a
 /// receiver type, for each exposure that binds it.
-fn extend_receiver(l: &mut LocusDecl, bs: &[Binding], codec: &Codec<'_>, pb: &PbCodec<'_>) {
+fn extend_receiver(l: &mut LocusDecl, bs: &[Binding], codec: &Codec<'_>, pb: &PbCodec<'_>) -> String {
     let span = l.name.span;
     if l.members.iter().any(|m| {
         matches!(m, LocusMember::Fn(f) if f.name.name == "__rpc_ev")
     }) {
-        return;
+        return String::new();
     }
+    let mut types = String::new();
     let mut params = String::from("__rpc_stamp: Int = 0;\n");
     let mut bus = String::from("publish __ApiRpcEventT;\n");
     let mut fns = String::from(
@@ -2329,21 +2341,19 @@ fn extend_receiver(l: &mut LocusDecl, bs: &[Binding], codec: &Codec<'_>, pb: &Pb
         fns.push_str(&format!(
             "fn __rpc_hello_{n}(h: std::api::RpcHello) {{ self.__rpc_ev(h.exposure, 0, h.slot, 5, \"\"); }}\n"
         ));
+        // GH #1530 step 3: the call is a seam on the receiver. The decoder
+        // makes the row's mirror member (its request and context, the
+        // user never writes them), the receiver's per-row eater unpacks
+        // it into the handler's arguments, and the encoder answers each
+        // outcome: a seam through `self`, whose dispatch is the
+        // generator's. A body neither codec reads ends the seam, and the
+        // call is `malformed`.
+        let (src, ty) = mirror_seam(n, &l.name.name, slot, b, codec, pb);
+        fns.push_str(&src);
+        types.push_str(&ty);
         fns.push_str(&format!(
-            "fn __rpc_call_{n}(c: std::api::RpcCall) {{\n    if c.stamp != self.__rpc_stamp {{\n        self.__rpc_ev(c.exposure, c.rid, {slot}, 3, \"\");\n        return;\n    }}\n    self.__rpc_ev(c.exposure, c.rid, {slot}, 4, \"\");\n"
+            "fn __rpc_call_{n}(c: std::api::RpcCall) {{\n    if c.stamp != self.__rpc_stamp {{\n        self.__rpc_ev(c.exposure, c.rid, {slot}, 3, \"\");\n        return;\n    }}\n    self.__rpc_ev(c.exposure, c.rid, {slot}, 4, \"\");\n    self.__rpc_seam_{n}(c) or {{ self.__rpc_ev(c.exposure, c.rid, {slot}, 3, \"\"); }};\n}}\n"
         ));
-        for (m, row) in &b.members {
-            fns.push_str(&format!("    if c.member == {m} {{\n"));
-            if b.grpc {
-                // the call arrived as protobuf: the same steps, the other codec
-                fns.push_str("        if std::str::starts_with(c.body, \"pb:\") {\n");
-                fns.push_str(&thunk_body_pb(row, slot, &PbCodec { surface: &b.surface, ..*pb }));
-                fns.push_str("        return;\n        }\n");
-            }
-            fns.push_str(&thunk_body(row, slot, codec));
-            fns.push_str("        return;\n    }\n");
-        }
-        fns.push_str("}\n");
     }
     let src = format!(
         "locus __Tmp {{\n params {{ {params} }}\n bus {{ {bus} }}\n {fns}\n birth() {{ {birth} }}\n dissolve() {{ {dissolve} }}\n}}\n"
@@ -2391,17 +2401,166 @@ fn extend_receiver(l: &mut LocusDecl, bs: &[Binding], codec: &Codec<'_>, pb: &Pb
         }
     }
     let _ = span;
+    types
 }
 
-/// The statements that run one call of `row` on its receiver: decode the
-/// request, call the handler through the fallible ABI, publish the outcome.
-fn thunk_body(row: &Row, slot: usize, codec: &Codec<'_>) -> String {
-    thunk_steps(row, slot, Wire::Json(codec))
-}
+/// Where the generated mirrors parse (GH #1530 step 3).
+const MIRROR_BASE: u32 = API_SYNTH_BASE + 0x0D00_0000;
 
-/// The same steps for a call that arrived as protobuf.
-fn thunk_body_pb(row: &Row, slot: usize, pb: &PbCodec<'_>) -> String {
-    thunk_steps(row, slot, Wire::Pb(pb))
+/// GH #1530 step 3: one exposure's calls as a seam on its receiver, and the
+/// declarations it reads. For the binding `n`:
+///
+/// - the mirror: per row `k`, `__RpcIn_<n>_<k> { at; req; ctx; }`, its
+///   request and context as the decoder read them, and the set of them,
+///   `__RpcIn_<n>` (the row itself when there is one); `__RpcAt_<n>`, the
+///   call's identity carried beside the value (its exposure, its request
+///   id, and whether it arrived as protobuf);
+/// - the outcomes: per row `__RpcOk_<n>_<k>` and, for a declared error,
+///   `__RpcErr_<n>_<k>`, and `__RpcServerError_<n>` (a handler that
+///   violated), the set `__RpcOut_<n>`;
+/// - on the receiver, `__rpc_decode_<n>` (one decoder hop: JSON, or
+///   protobuf for a body that says `pb:`), an eater per row,
+///   `__rpc_row_<n>_<k>`, which unpacks its member into the handler's
+///   arguments (the context last), and `__rpc_encode_<n>`, which publishes
+///   each outcome;
+/// - the seam, `__rpc_seam_<n>(c) { c -> self.__rpc_decode_<n> -> self ->
+///   self.__rpc_encode_<n>; or end; }`, which `seam_expand` stitches: the
+///   locus hop on `self` is the dispatch, one row to one eater.
+///
+/// These are the generator's own forms: no description, digest, export or
+/// client names them.
+fn mirror_seam(n: i64, receiver: &str, slot: usize, b: &Binding, codec: &Codec<'_>, pb: &PbCodec<'_>) -> (String, String) {
+    // the types are the program's, so they name the receiver as well as the exposure
+    let t = format!("{n}_{receiver}");
+    let pbc = PbCodec { surface: &b.surface, ..*pb };
+    let mut types = format!("type __RpcAt_{t} {{ exposure: Int; rid: Int; pb: Bool; }}\ntype __RpcBad_{t} {{ }}\n");
+    let mut ins: Vec<String> = Vec::new();
+    let mut outs: Vec<String> = Vec::new();
+    let mut fns = String::new();
+    let mut decode = format!(
+        "fn __rpc_decode_{n}(c: std::api::RpcCall) -> __RpcIn_{t} fallible(__RpcBad_{t}) {{\n    let __at = __RpcAt_{t} {{ exposure: c.exposure, rid: c.rid, pb: {} }};\n",
+        if b.grpc { "std::str::starts_with(c.body, \"pb:\")" } else { "false" }
+    );
+    let mut encode = format!("fn __rpc_encode_{n}(o: __RpcOut_{t}) {{\n    match o {{\n");
+    let bail = format!("fail __RpcBad_{t} {{ }};");
+    let ctx_ty = |row: &Row| if row.served_ctx { "std::api::ServedContext" } else { "std::api::Context" };
+    for (k, row) in &b.members {
+        let inn = format!("__RpcIn_{t}_{k}");
+        ins.push(inn.clone());
+        let mut fields = format!("at: __RpcAt_{t};");
+        if let Some(te) = &row.request {
+            fields.push_str(&format!(" req: {};", crate::surfaces::type_text(te)));
+        }
+        if row.takes_ctx {
+            fields.push_str(&format!(" ctx: {};", ctx_ty(row)));
+        }
+        types.push_str(&format!("type {inn} {{ {fields} }}\n"));
+        // the decoder's arm for the row
+        decode.push_str(&format!("    if c.member == {k} {{\n"));
+        if row.served_ctx {
+            decode.push_str("        let __ctx = std::api::ServedContext { caller: c.caller, role: c.role, request_id: c.rid, via: c.via, exposure: c.exposure_name, generation: c.generation };\n");
+        } else if row.takes_ctx {
+            decode.push_str("        let __ctx = std::api::Context { caller: c.caller, role: c.role, request_id: c.rid, via: c.via };\n");
+        }
+        let build = {
+            let mut inits = vec!["at: __at".to_string()];
+            if row.request.is_some() {
+                inits.push("req: __req".to_string());
+            }
+            if row.takes_ctx {
+                inits.push("ctx: __ctx".to_string());
+            }
+            format!("return {inn} {{ {} }};\n", inits.join(", "))
+        };
+        if let Some(te) = &row.request {
+            if b.grpc {
+                decode.push_str("        if __at.pb {\n");
+                decode.push_str(&Wire::Pb(&pbc).decode(row, te, &bail));
+                decode.push_str(&format!("        {build}        }}\n"));
+            }
+            decode.push_str(&Wire::Json(codec).decode(row, te, &bail));
+        }
+        decode.push_str(&format!("        {build}    }}\n"));
+        // the row's eater: the member unpacked into the handler's arguments
+        let mut args: Vec<&str> = Vec::new();
+        if row.request.is_some() {
+            args.push("x.req");
+        }
+        if row.takes_ctx {
+            args.push("x.ctx");
+        }
+        let call = format!("self.{}({})", row.method, args.join(", "));
+        let ok = format!("__RpcOk_{t}_{k}");
+        outs.push(ok.clone());
+        types.push_str(&format!(
+            "type {ok} {{ at: __RpcAt_{t};{} }}\n",
+            row.response.as_ref().map_or(String::new(), |r| format!(" v: {};", crate::surfaces::type_text(r)))
+        ));
+        let on_fail = match (&row.error, row.server_error) {
+            (None, _) => None,
+            (Some(_), true) => Some(format!("return __RpcServerError_{t} {{ at: x.at }};")),
+            (Some(e), false) => {
+                let er = format!("__RpcErr_{t}_{k}");
+                outs.push(er.clone());
+                types.push_str(&format!("type {er} {{ at: __RpcAt_{t}; e: {}; }}\n", crate::surfaces::type_text(e)));
+                Some(format!("return {er} {{ at: x.at, e: err }};"))
+            }
+        };
+        let or = on_fail.map(|f| format!(" or {{ {f} }}")).unwrap_or_default();
+        fns.push_str(&format!("fn __rpc_row_{n}_{k}(x: {inn}) -> __RpcOut_{t} {{\n"));
+        match &row.response {
+            Some(_) => {
+                fns.push_str(&format!("    let __v = {call}{or};\n"));
+                fns.push_str(&format!("    return {ok} {{ at: x.at, v: __v }};\n}}\n"));
+            }
+            None => {
+                fns.push_str(&format!("    {call}{or};\n"));
+                fns.push_str(&format!("    return {ok} {{ at: x.at }};\n}}\n"));
+            }
+        }
+        // the encoder's arms for the row's outcomes
+        let publish = |kind: u8, body: String| format!("self.__rpc_ev(r.at.exposure, r.at.rid, {slot}, {kind}, {body});");
+        let ok_body = |w: Wire<'_>| match &row.response {
+            Some(r) => w.ok(r, "r.v"),
+            None => w.null().to_string(),
+        };
+        let both = |json: String, pbs: String| {
+            if b.grpc {
+                format!("if r.at.pb {{ {pbs} }} else {{ {json} }}")
+            } else {
+                json
+            }
+        };
+        encode.push_str(&format!(
+            "        {ok}(r) -> {{ {} }},\n",
+            both(publish(0, ok_body(Wire::Json(codec))), publish(0, ok_body(Wire::Pb(&pbc))))
+        ));
+        if let (Some(e), false) = (&row.error, row.server_error) {
+            encode.push_str(&format!(
+                "        __RpcErr_{t}_{k}(r) -> {{ let err = r.e; {} }},\n",
+                both(publish(1, Wire::Json(codec).err(row, e)), publish(1, Wire::Pb(&pbc).err(row, e)))
+            ));
+        }
+    }
+    decode.push_str(&format!("    {bail}\n}}\n"));
+    outs.push(format!("__RpcServerError_{t}"));
+    types.push_str(&format!("type __RpcServerError_{t} {{ at: __RpcAt_{t}; }}\n"));
+    encode.push_str(&format!(
+        "        __RpcServerError_{t}(r) -> {{ self.__rpc_ev(r.at.exposure, r.at.rid, {slot}, 2, \"\"); }},\n    }}\n}}\n"
+    ));
+    // a set of one is its member
+    let set = |name: String, members: &[String]| match members {
+        [one] => format!("type {name} = {one};\n"),
+        many => format!("type {name} = {};\n", many.join(" | ")),
+    };
+    types.push_str(&set(format!("__RpcIn_{t}"), &ins));
+    types.push_str(&set(format!("__RpcOut_{t}"), &outs));
+    fns.push_str(&decode);
+    fns.push_str(&encode);
+    fns.push_str(&format!(
+        "seam __rpc_seam_{n}(c: std::api::RpcCall) {{\n    c -> self.__rpc_decode_{n} -> self -> self.__rpc_encode_{n};\n    or end;\n}}\n"
+    ));
+    (fns, types)
 }
 
 /// Which codec a call crosses by: the row's JSON, or its protobuf.
@@ -2449,65 +2608,6 @@ impl Wire<'_> {
         }
     }
 }
-
-fn thunk_steps(row: &Row, slot: usize, wire: Wire<'_>) -> String {
-    let mut s = String::new();
-    let bail = format!("self.__rpc_ev(c.exposure, c.rid, {slot}, 3, \"\"); return;");
-    let mut args = String::new();
-    if let Some(te) = &row.request {
-        s.push_str(&wire.decode(row, te, &bail));
-        args.push_str("__req");
-    }
-    if row.served_ctx {
-        s.push_str("let __ctx = std::api::ServedContext { caller: c.caller, role: c.role, request_id: c.rid, via: c.via, exposure: c.exposure_name, generation: c.generation };\n");
-    } else if row.takes_ctx {
-        s.push_str("let __ctx = std::api::Context { caller: c.caller, role: c.role, request_id: c.rid, via: c.via };\n");
-    }
-    if row.takes_ctx {
-        if !args.is_empty() {
-            args.push_str(", ");
-        }
-        args.push_str("__ctx");
-    }
-    let call = format!("self.{}({})", row.method, args);
-    let fail_branch = if row.error.is_none() {
-        None
-    } else if row.server_error {
-        Some(format!("self.__rpc_ev(c.exposure, c.rid, {slot}, 2, \"\"); return;"))
-    } else {
-        let e = row.error.as_ref().expect("an error type");
-        Some(format!(
-            "self.__rpc_ev(c.exposure, c.rid, {slot}, 1, {}); return;",
-            wire.err(row, e)
-        ))
-    };
-    match (&row.response, fail_branch) {
-        (Some(resp), Some(fb)) => {
-            s.push_str(&format!("let __v = {call} or {{ {fb} }};\n"));
-            s.push_str(&format!(
-                "self.__rpc_ev(c.exposure, c.rid, {slot}, 0, {});\n",
-                wire.ok(resp, "__v")
-            ));
-        }
-        (Some(resp), None) => {
-            s.push_str(&format!("let __v = {call};\n"));
-            s.push_str(&format!(
-                "self.__rpc_ev(c.exposure, c.rid, {slot}, 0, {});\n",
-                wire.ok(resp, "__v")
-            ));
-        }
-        (None, Some(fb)) => {
-            s.push_str(&format!("{call} or {{ {fb} }};\n"));
-            s.push_str(&format!("self.__rpc_ev(c.exposure, c.rid, {slot}, 0, {});\n", wire.null()));
-        }
-        (None, None) => {
-            s.push_str(&format!("{call};\n"));
-            s.push_str(&format!("self.__rpc_ev(c.exposure, c.rid, {slot}, 0, {});\n", wire.null()));
-        }
-    }
-    s
-}
-
 
 // ---- the holder of an exposure, and the main locus that places its listener (GH #1565) ----
 

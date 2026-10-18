@@ -358,6 +358,14 @@ transport's literal, `principals:` for who a bearer token is and
 site names, never to a role's name, so one program can serve a surface
 twice under two sources.
 
+Inside the receiver, a call is a [seam](./patterns.md#9-decoder-handler-seam)
+the compiler writes for you: one decoder turns the body into the row's
+request (JSON, or protobuf on gRPC), the receiver's dispatch hands it to
+your method with its context last, and one encoder writes the answer,
+your error, or the server error a violating handler gets. Each row is its
+own path even when two rows take the same request type, and none of the
+plumbing shows up in the description or the generated clients.
+
 ### Serving over a Unix socket
 
 `unix::Rpc` takes a `path:` and a `roles:`. Who is calling is the peer's

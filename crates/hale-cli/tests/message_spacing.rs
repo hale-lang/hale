@@ -74,6 +74,12 @@ const ALIGNED: &[(&str, &str, &str)] = &[
          codec is readable in a dump",
     ),
     (
+        "crates/hale-types/src/rpc_expand.rs",
+        "mirror_seam",
+        "generated Hale source keeps its indentation so the expanded \
+         adapter is readable in a dump",
+    ),
+    (
         "crates/hale-syntax/src/json_gen.rs",
         "json_map_read",
         "generated Hale source keeps its indentation so the expanded \

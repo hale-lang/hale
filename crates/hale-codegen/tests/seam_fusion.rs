@@ -15,8 +15,18 @@ mod build_opts;
 
 /// The body of the function `name` in the module text `ir`.
 fn body<'a>(ir: &'a str, name: &str) -> &'a str {
-    let head = ir.find(&format!("@{name}(")).unwrap_or_else(|| panic!("no `{name}` in the IR"));
-    let start = ir[..head].rfind("define ").expect("a definition");
+    let needle = format!("@{name}(");
+    let mut at = 0;
+    let start = loop {
+        let line_start = at;
+        let line_end = ir[at..].find('\n').map_or(ir.len(), |e| at + e);
+        let line = &ir[line_start..line_end];
+        if line.starts_with("define ") && line.contains(&needle) {
+            break line_start;
+        }
+        assert!(line_end < ir.len(), "no definition of `{name}` in the IR");
+        at = line_end + 1;
+    };
     let end = ir[start..].find("\n}\n").map_or(ir.len(), |e| start + e);
     &ir[start..end]
 }
@@ -59,4 +69,16 @@ fn a_program_with_no_seam_marks_nothing_inline() {
                fn main() { App { }; }\n";
     let (pre, _) = ir_of(src, "seam_fusion_none");
     assert!(!pre.contains("alwaysinline"), "a program with no seam carries an `alwaysinline` mark");
+}
+
+/// GH #1530 step 3: an exposure's calls are a seam on the receiver, and a
+/// gRPC exposure's call is still one decoder hop: the seam calls
+/// `__rpc_decode_<n>` once, which reads the body as protobuf or as JSON
+/// inside, never one decoder per wire.
+#[test]
+fn a_grpc_exposure_decodes_each_call_in_one_hop() {
+    let (pre, _) = ir_of(&fixture("api/pb_codec_test.hl"), "seam_fusion_grpc");
+    let seam = body(&pre, "Probe.__rpc_seam_1");
+    assert_eq!(seam.matches("@Probe.__rpc_decode_1(").count(), 1, "one decoder hop:\n{seam}");
+    assert!(!pre.contains("@Probe.__rpc_decode_pb"), "no second decoder");
 }
