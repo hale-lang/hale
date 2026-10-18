@@ -221,7 +221,7 @@ stdlib, which keep their own representation class (the table above).
 | Slice / array | `[T]` or `[T; N]` | Dynamic or fixed-size |
 | Bounded collection | `bounded[T; N]` | Fixed-capacity counted list, INLINE in its containing type/params (`{ i64 len, [N x T] }`). See § "bounded[T; N]" below. |
 | Tuple | `(A, B, C)` | Fixed-size heterogeneous |
-| Struct | `type Foo { x: Int; y: Int = 0; }` | Named record, a **value**: `let b = a;` copies (see § "A struct binding is a copy").  Each field can declare a default value (`= expr`); literals omitting a defaulted field fill it from the default at instantiation time. |
+| Struct | `type Foo { x: Int; y: Int = 0; }` | Named record, a **value**: `let b = a;` copies (see § "A struct binding is a copy").  Each field can declare a default value (`= expr`); literals omitting a defaulted field fill it from the default at instantiation time, the default evaluated in the scope of the literal that leaves it (as a locus param's is, § Locus params), so it may read that scope's names. |
 | Enum | `type Foo = enum { A, B(int) };` | Tagged union (sum type). A constructor call carries the variant's declared values: `Foo::B(x)` is checked for the count and each value's type, a Decimal literal taking the field's scale ("\`Foo::B\` value 0: expected \`Int\`, got \`String\`"). A payload-free enum is stored as its tag. |
 | Set | `type Inbound = Book \| Trade;` | Untagged union: each member is a declared struct or enum and is its own discriminant. A member's value is the set's where a set is expected; `match` names a member by its type. See § "Set types". |
 | Alias | `type Thing = Int;` | A second SPELLING of a type, not a new type. See § "Type aliases". |
