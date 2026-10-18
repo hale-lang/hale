@@ -582,8 +582,24 @@ impl Gen<'_, '_> {
         let disposition = failure.map(|f| format!(" or {{\n{f}}}")).unwrap_or_default();
         match ret {
             Some(ret) => {
+                let mut rest = String::new();
+                self.chain(k + 1, &v, &ret, &format!("`{label}`"), &mut rest);
+                // a set split at once, and used nowhere else, is a fused
+                // binding (`__seam_sN`): lowering hands it back in the
+                // seam's frame (`hale-codegen`'s seam fusion)
+                let head = format!("match {v} {{\n");
+                let uses = rest.match_indices(v.as_str()).filter(|(i, _)| {
+                    !rest[i + v.len()..].starts_with(|c: char| c.is_ascii_alphanumeric() || c == '_')
+                });
+                let (v, rest) = if rest.starts_with(&head) && uses.count() == 1 {
+                    let s = v.replacen("__seam_v", "__seam_s", 1);
+                    let rest = format!("match {s} {{\n{}", &rest[head.len()..]);
+                    (s, rest)
+                } else {
+                    (v, rest)
+                };
                 out.push_str(&format!("let {v} = {call}{disposition};\n"));
-                self.chain(k + 1, &v, &ret, &format!("`{label}`"), out);
+                out.push_str(&rest);
             }
             None => {
                 out.push_str(&format!("{call}{disposition};\n"));

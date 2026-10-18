@@ -4106,10 +4106,17 @@ calls, written a path per member: where a set meets a locus hop the
 expansion writes a `match` whose arm for each member runs the rest of the
 chain on that member, so a member keeps its static type from the
 producer's return to the sink and no union is built that the program did
-not declare. Each hop call is inlined into the seam. The dispatch on a
-set still reads the tag its producer wrote: a method's result is copied
-into its caller's arena at the method's one exit, behind runtime calls
-the optimizer cannot see through, so the branch is not folded yet.
+not declare. Each hop call is inlined into the seam. Where the seam
+splits the set a hop returns, and the split is the result's one use, the
+seam calls the hop's **fused clone**: the method lowered a second time
+with one more parameter, storage for the set in the seam's frame. Each
+`return` of the clone deep-copies a member into the caller's arena as
+the member it is, writes it there beside its tag as a constant, and
+returns that storage (a value of the whole set is copied out as the set,
+then into the storage). Inlined, each return site goes straight to its
+arm: the dispatch reads no tag back and switches on none. A program with
+no seam has no clone, and a hop whose set the seam hands on whole is
+called as written.
 
 ## Element chains
 

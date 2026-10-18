@@ -746,317 +746,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .user_methods
                     .get(&fd.name.name)
                     .expect("locus fn declared in pass A2");
-                let entry = self.context.append_basic_block(func, "entry");
-                self.builder.position_at_end(entry);
-                self.di_begin_function();
-                let self_ptr = func
-                    .get_nth_param(0)
-                    .expect("self_ptr param")
-                    .into_pointer_value();
-                self.current_fn = Some(func);
-                let ret_ty = match &fd.ret {
-                    None => None,
-                    Some(t) => Some(self.type_expr_to_codegen_ty(t)?),
-                };
-                self.current_user_fn_ret = Some(ret_ty.clone());
-                self.current_self = Some(SelfCx {
-                    locus_name: l.name.name.clone(),
-                    struct_ty: info.struct_ty,
-                    self_ptr,
-                    fields: info.fields.clone(),
-                });
-                self.loops.clear();
-                self.push_dissolve_frame();
-                // Stage-1 scratch elision: skip the per-call subregion
-                // malloc when the body provably allocates nothing and the
-                // return is a by-value scalar (no return deep-copy). Leaving
-                // `current_method_scratch` None routes the (absent)
-                // allocations to `self.__arena` and no-ops destroy/close.
-                // The verdict is the method's elision row.
-                let elide_scratch = self.member_scratch_elided(&l.name.name, member_idx)?;
-                if !elide_scratch {
-                    self.open_method_scratch()?;
-                }
-                // Fn-call protocol shave (2026-07-02): elidable bodies
-                // can't publish, so their empty-frame exit flush skips
-                // the bus drain. (Counter.inc-class methods and
-                // scalar getters drop to the C call shape.)
-                let prev_skip_drain = self.current_fn_skip_exit_drain;
-                self.current_fn_skip_exit_drain = elide_scratch;
-
-                let mut scope = Scope::default();
-                self.di_pending_params.clear();
-                for (i, p) in fd.params.iter().enumerate() {
-                    let lt = self.type_expr_to_codegen_ty(&p.ty)?;
-                    let alloca = self.alloca_for(&lt, &p.name.name)?;
-                    let v = func
-                        .get_nth_param((i + 1) as u32)
-                        .expect("locus method arg index in range");
-                    self.builder
-                        .build_store(alloca, v)
-                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                    if self.di.is_some() {
-                        // Stage-3 DWARF: declared as formal params by
-                        // the body's first di_enter_stmt.
-                        self.di_pending_params.push((
-                            alloca,
-                            p.name.name.clone(),
-                            lt.clone(),
-                        ));
-                    }
-                    scope.locals.insert(p.name.name.clone(), (alloca, lt));
-                    // A member's parameter: the caller's place, whatever it
-                    // is (`Cx::param_place_key`).
-                    scope.locals.insert(Self::param_place_key(&p.name.name), (alloca, CodegenTy::Bytes));
-                }
-
-                // m42: gate subscribed bus-handler bodies on the
-                // __quarantined flag at entry. m41b (m45-followup-2
-                // form) nulls subjects in the C-runtime entries
-                // vec so future publishes skip a quarantined
-                // subscriber, but cells enqueued before quarantine
-                // remain in the queue and would otherwise still
-                // fire. This entry gate matches the interpreter's
-                // `delivery.subscription.locus.quarantined`
-                // check in dispatch_bus, so already-queued
-                // deliveries observe the stop-trying signal.
-                let is_subscribed_handler = info
-                    .subscriptions
-                    .iter()
-                    .any(|(_, h, _, _)| h == &fd.name.name);
-                if is_subscribed_handler {
-                    let i64_t = self.context.i64_type();
-                    let q_slot = self
-                        .builder
-                        .build_struct_gep(
-                            info.struct_ty,
-                            self_ptr,
-                            info.quarantined_field_idx,
-                            "handler.quarantined.ptr",
-                        )
-                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                    let q_val = self
-                        .builder
-                        .build_load(i64_t, q_slot, "handler.quarantined")
-                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
-                        .into_int_value();
-                    let is_q = self
-                        .builder
-                        .build_int_compare(
-                            inkwell::IntPredicate::NE,
-                            q_val,
-                            i64_t.const_int(0, false),
-                            "handler.is_quarantined",
-                        )
-                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                    let skip_bb = self
-                        .context
-                        .append_basic_block(func, "handler.skip");
-                    let body_bb = self
-                        .context
-                        .append_basic_block(func, "handler.body");
-                    self.builder
-                        .build_conditional_branch(is_q, skip_bb, body_bb)
-                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                    self.builder.position_at_end(skip_bb);
-                    // The entry (open_method_scratch) created this
-                    // handler's scratch subregion before the
-                    // quarantine gate; bailing out here without
-                    // destroying it leaks one subregion per delivery
-                    // to an already-quarantined subscriber. Destroy
-                    // it (state stays live for the body path, which
-                    // is mutually exclusive at run time and closes
-                    // it normally at its own exit).
-                    self.emit_method_scratch_destroy()?;
-                    // GH #1106: a subscribed handler may declare a
-                    // return type (its value is the reply through an
-                    // api binding). The skip path of such a handler
-                    // returns the zero of its declared type; the bus
-                    // thunk ignores it as it ignores every return,
-                    // and a direct caller of a quarantined locus's
-                    // handler gets the same nothing it got before.
-                    match func.get_type().get_return_type() {
-                        None => {
-                            self.builder
-                                .build_return(None)
-                                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                        }
-                        Some(rt) => {
-                            let zero = rt.const_zero();
-                            self.builder
-                                .build_return(Some(&zero))
-                                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                        }
-                    }
-                    self.builder.position_at_end(body_bb);
-                }
-
-                // Downstream handoff: an implicit block-tail return
-                // typechecks as a real return — lower it as one
-                // (same treatment as free-fn bodies in codegen.rs).
-                let end = self.in_body(fd.id, |cx| {
-                    Ok(if ret_ty.is_some() && fd.body.tail.is_some() {
-                        let mut stmts_end = BlockEnd::Open;
-                        for stmt in &fd.body.stmts {
-                            match cx.lower_stmt(stmt, &mut scope)? {
-                                BlockEnd::Open => continue,
-                                BlockEnd::Terminated => {
-                                    stmts_end = BlockEnd::Terminated;
-                                    break;
-                                }
-                            }
-                        }
-                        match stmts_end {
-                            BlockEnd::Open => cx.lower_return(fd.body.tail.as_deref(), &scope)?,
-                            BlockEnd::Terminated => BlockEnd::Terminated,
-                        }
-                    } else {
-                        cx.lower_block(&fd.body, &mut scope)?
-                    })
-                })?;
-                if end == BlockEnd::Open {
-                    // m42: if this user fn is a registered bus
-                    // handler AND the locus has tick closures,
-                    // fire __tick_closures HERE — after the
-                    // body's effects but BEFORE the tail
-                    // bus_queue_drain. The tail drain (m26)
-                    // would otherwise recursively process the
-                    // next queued cell first, and tick would
-                    // see the next cell's state instead of
-                    // this handler's. Tick is the natural
-                    // "between substrate cells" point and
-                    // belongs inline with the cell's body
-                    // termination, ahead of any cooperative
-                    // yield.
-                    let is_subscribed_handler = info
-                        .subscriptions
-                        .iter()
-                        .any(|(_, h, _, _)| h == &fd.name.name);
-                    if is_subscribed_handler {
-                        // Load parent_self and parent_handler
-                        // once; both tick and duration fns
-                        // need them and the loads are pure
-                        // GEP+load.
-                        let parent_self_slot = self
-                            .builder
-                            .build_struct_gep(
-                                info.struct_ty,
-                                self_ptr,
-                                info.parent_self_field_idx,
-                                "epoch.parent_self.ptr",
-                            )
-                            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                        let parent_self_v = self
-                            .builder
-                            .build_load(
-                                self.context.ptr_type(AddressSpace::default()),
-                                parent_self_slot,
-                                "epoch.parent_self",
-                            )
-                            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
-                            .into_pointer_value();
-                        let parent_handler_slot = self
-                            .builder
-                            .build_struct_gep(
-                                info.struct_ty,
-                                self_ptr,
-                                info.parent_on_failure_field_idx,
-                                "epoch.parent_handler.ptr",
-                            )
-                            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                        let parent_handler_v = self
-                            .builder
-                            .build_load(
-                                self.context.ptr_type(AddressSpace::default()),
-                                parent_handler_slot,
-                                "epoch.parent_handler",
-                            )
-                            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
-                            .into_pointer_value();
-                        if let Some(tick_fn) = info.tick_closures_fn {
-                            self.builder
-                                .build_call(
-                                    tick_fn,
-                                    &[
-                                        self_ptr.into(),
-                                        parent_self_v.into(),
-                                        parent_handler_v.into(),
-                                    ],
-                                    &format!(
-                                        "{}.{}.tick.post_handler.call",
-                                        l.name.name, fd.name.name
-                                    ),
-                                )
-                                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                        }
-                        // m43: duration shares the cell-boundary
-                        // cadence with tick — same call site,
-                        // each closure self-gates on elapsed
-                        // time inside the synthesized fn.
-                        if let Some(duration_fn) =
-                            info.duration_closures_fn
-                        {
-                            self.builder
-                                .build_call(
-                                    duration_fn,
-                                    &[
-                                        self_ptr.into(),
-                                        parent_self_v.into(),
-                                        parent_handler_v.into(),
-                                    ],
-                                    &format!(
-                                        "{}.{}.duration.post_handler.call",
-                                        l.name.name, fd.name.name
-                                    ),
-                                )
-                                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                        }
-                    }
-                    // Subscribed bus handlers run synchronously
-                    // inside a substrate cell — the outer
-                    // `lotus_bus_queue_drain` loop in C is what
-                    // popped this cell and called us. Emitting
-                    // another drain at the handler's tail
-                    // recursively re-enters that loop on the
-                    // C stack, one frame per pending cell.
-                    // 50k queued ticks → 50k frames → SIGSEGV
-                    // (bench `bus_dispatch.hl` cliffs between
-                    // 20k and 25k under the default 8 MB stack).
-                    // The outer drain's for-loop already pumps
-                    // the queue to empty; the tail drain is
-                    // redundant for cooperative handlers.
-                    // Same rationale as on_failure bodies
-                    // (which already pass `drain_queue=false`).
-                    if is_subscribed_handler {
-                        self.flush_dissolve_frame_kind(false)?;
-                    } else {
-                        self.flush_dissolve_frame()?;
-                    }
-                    match ret_ty {
-                        None => {
-                            self.close_method_scratch()?;
-                            self.builder
-                                .build_return(None)
-                                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                        }
-                        Some(_) => {
-                            return Err(CodegenError::Unsupported(format!(
-                                "locus `{}` method `{}` falls through without \
-                                 returning a value",
-                                l.name.name, fd.name.name
-                            )));
-                        }
-                    }
-                } else {
-                    let _ = self.deferred_dissolves.pop();
-                    self.current_method_scratch = None;
-                    self.current_method_caller_arena = None;
-                }
-                self.current_fn_skip_exit_drain = prev_skip_drain;
-
-                self.current_fn = None;
-                self.current_user_fn_ret = None;
-                self.current_self = None;
+                self.lower_user_fn_member_body(l, &info, member_idx, fd, func)?;
             }
         }
 
@@ -1183,4 +873,327 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         Ok(())
     }
 
+    /// A user `fn` member's body (not a fallible one), into `func`: the
+    /// method itself, or its fused clone (GH #1530, `fused_dest`).
+    pub(crate) fn lower_user_fn_member_body(
+        &mut self,
+        l: &LocusDecl,
+        info: &crate::codegen::LocusInfo<'ctx>,
+        member_idx: usize,
+        fd: &hale_syntax::ast::FnDecl,
+        func: FunctionValue<'ctx>,
+    ) -> Result<(), CodegenError> {
+        let entry = self.context.append_basic_block(func, "entry");
+        self.builder.position_at_end(entry);
+        self.di_begin_function();
+        let self_ptr = func
+            .get_nth_param(0)
+            .expect("self_ptr param")
+            .into_pointer_value();
+        self.current_fn = Some(func);
+        let ret_ty = match &fd.ret {
+            None => None,
+            Some(t) => Some(self.type_expr_to_codegen_ty(t)?),
+        };
+        self.current_user_fn_ret = Some(ret_ty.clone());
+        self.current_self = Some(SelfCx {
+            locus_name: l.name.name.clone(),
+            struct_ty: info.struct_ty,
+            self_ptr,
+            fields: info.fields.clone(),
+        });
+        self.loops.clear();
+        self.push_dissolve_frame();
+        // Stage-1 scratch elision: skip the per-call subregion
+        // malloc when the body provably allocates nothing and the
+        // return is a by-value scalar (no return deep-copy). Leaving
+        // `current_method_scratch` None routes the (absent)
+        // allocations to `self.__arena` and no-ops destroy/close.
+        // The verdict is the method's elision row.
+        let elide_scratch = self.member_scratch_elided(&l.name.name, member_idx)?;
+        if !elide_scratch {
+            self.open_method_scratch()?;
+        }
+        // Fn-call protocol shave (2026-07-02): elidable bodies
+        // can't publish, so their empty-frame exit flush skips
+        // the bus drain. (Counter.inc-class methods and
+        // scalar getters drop to the C call shape.)
+        let prev_skip_drain = self.current_fn_skip_exit_drain;
+        self.current_fn_skip_exit_drain = elide_scratch;
+
+        let mut scope = Scope::default();
+        self.di_pending_params.clear();
+        for (i, p) in fd.params.iter().enumerate() {
+            let lt = self.type_expr_to_codegen_ty(&p.ty)?;
+            let alloca = self.alloca_for(&lt, &p.name.name)?;
+            let v = func
+                .get_nth_param((i + 1) as u32)
+                .expect("locus method arg index in range");
+            self.builder
+                .build_store(alloca, v)
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            if self.di.is_some() {
+                // Stage-3 DWARF: declared as formal params by
+                // the body's first di_enter_stmt.
+                self.di_pending_params.push((
+                    alloca,
+                    p.name.name.clone(),
+                    lt.clone(),
+                ));
+            }
+            scope.locals.insert(p.name.name.clone(), (alloca, lt));
+            // A member's parameter: the caller's place, whatever it
+            // is (`Cx::param_place_key`).
+            scope.locals.insert(Self::param_place_key(&p.name.name), (alloca, CodegenTy::Bytes));
+        }
+
+        // m42: gate subscribed bus-handler bodies on the
+        // __quarantined flag at entry. m41b (m45-followup-2
+        // form) nulls subjects in the C-runtime entries
+        // vec so future publishes skip a quarantined
+        // subscriber, but cells enqueued before quarantine
+        // remain in the queue and would otherwise still
+        // fire. This entry gate matches the interpreter's
+        // `delivery.subscription.locus.quarantined`
+        // check in dispatch_bus, so already-queued
+        // deliveries observe the stop-trying signal.
+        let is_subscribed_handler = info
+            .subscriptions
+            .iter()
+            .any(|(_, h, _, _)| h == &fd.name.name);
+        if is_subscribed_handler {
+            let i64_t = self.context.i64_type();
+            let q_slot = self
+                .builder
+                .build_struct_gep(
+                    info.struct_ty,
+                    self_ptr,
+                    info.quarantined_field_idx,
+                    "handler.quarantined.ptr",
+                )
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            let q_val = self
+                .builder
+                .build_load(i64_t, q_slot, "handler.quarantined")
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                .into_int_value();
+            let is_q = self
+                .builder
+                .build_int_compare(
+                    inkwell::IntPredicate::NE,
+                    q_val,
+                    i64_t.const_int(0, false),
+                    "handler.is_quarantined",
+                )
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            let skip_bb = self
+                .context
+                .append_basic_block(func, "handler.skip");
+            let body_bb = self
+                .context
+                .append_basic_block(func, "handler.body");
+            self.builder
+                .build_conditional_branch(is_q, skip_bb, body_bb)
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            self.builder.position_at_end(skip_bb);
+            // The entry (open_method_scratch) created this
+            // handler's scratch subregion before the
+            // quarantine gate; bailing out here without
+            // destroying it leaks one subregion per delivery
+            // to an already-quarantined subscriber. Destroy
+            // it (state stays live for the body path, which
+            // is mutually exclusive at run time and closes
+            // it normally at its own exit).
+            self.emit_method_scratch_destroy()?;
+            // GH #1106: a subscribed handler may declare a
+            // return type (its value is the reply through an
+            // api binding). The skip path of such a handler
+            // returns the zero of its declared type; the bus
+            // thunk ignores it as it ignores every return,
+            // and a direct caller of a quarantined locus's
+            // handler gets the same nothing it got before.
+            match func.get_type().get_return_type() {
+                None => {
+                    self.builder
+                        .build_return(None)
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                }
+                Some(rt) => {
+                    let zero = rt.const_zero();
+                    self.builder
+                        .build_return(Some(&zero))
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                }
+            }
+            self.builder.position_at_end(body_bb);
+        }
+
+        // Downstream handoff: an implicit block-tail return
+        // typechecks as a real return — lower it as one
+        // (same treatment as free-fn bodies in codegen.rs).
+        let end = self.in_body(fd.id, |cx| {
+            Ok(if ret_ty.is_some() && fd.body.tail.is_some() {
+                let mut stmts_end = BlockEnd::Open;
+                for stmt in &fd.body.stmts {
+                    match cx.lower_stmt(stmt, &mut scope)? {
+                        BlockEnd::Open => continue,
+                        BlockEnd::Terminated => {
+                            stmts_end = BlockEnd::Terminated;
+                            break;
+                        }
+                    }
+                }
+                match stmts_end {
+                    BlockEnd::Open => cx.lower_return(fd.body.tail.as_deref(), &scope)?,
+                    BlockEnd::Terminated => BlockEnd::Terminated,
+                }
+            } else {
+                cx.lower_block(&fd.body, &mut scope)?
+            })
+        })?;
+        if end == BlockEnd::Open {
+            // m42: if this user fn is a registered bus
+            // handler AND the locus has tick closures,
+            // fire __tick_closures HERE — after the
+            // body's effects but BEFORE the tail
+            // bus_queue_drain. The tail drain (m26)
+            // would otherwise recursively process the
+            // next queued cell first, and tick would
+            // see the next cell's state instead of
+            // this handler's. Tick is the natural
+            // "between substrate cells" point and
+            // belongs inline with the cell's body
+            // termination, ahead of any cooperative
+            // yield.
+            let is_subscribed_handler = info
+                .subscriptions
+                .iter()
+                .any(|(_, h, _, _)| h == &fd.name.name);
+            if is_subscribed_handler {
+                // Load parent_self and parent_handler
+                // once; both tick and duration fns
+                // need them and the loads are pure
+                // GEP+load.
+                let parent_self_slot = self
+                    .builder
+                    .build_struct_gep(
+                        info.struct_ty,
+                        self_ptr,
+                        info.parent_self_field_idx,
+                        "epoch.parent_self.ptr",
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                let parent_self_v = self
+                    .builder
+                    .build_load(
+                        self.context.ptr_type(AddressSpace::default()),
+                        parent_self_slot,
+                        "epoch.parent_self",
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                    .into_pointer_value();
+                let parent_handler_slot = self
+                    .builder
+                    .build_struct_gep(
+                        info.struct_ty,
+                        self_ptr,
+                        info.parent_on_failure_field_idx,
+                        "epoch.parent_handler.ptr",
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                let parent_handler_v = self
+                    .builder
+                    .build_load(
+                        self.context.ptr_type(AddressSpace::default()),
+                        parent_handler_slot,
+                        "epoch.parent_handler",
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                    .into_pointer_value();
+                if let Some(tick_fn) = info.tick_closures_fn {
+                    self.builder
+                        .build_call(
+                            tick_fn,
+                            &[
+                                self_ptr.into(),
+                                parent_self_v.into(),
+                                parent_handler_v.into(),
+                            ],
+                            &format!(
+                                "{}.{}.tick.post_handler.call",
+                                l.name.name, fd.name.name
+                            ),
+                        )
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                }
+                // m43: duration shares the cell-boundary
+                // cadence with tick — same call site,
+                // each closure self-gates on elapsed
+                // time inside the synthesized fn.
+                if let Some(duration_fn) =
+                    info.duration_closures_fn
+                {
+                    self.builder
+                        .build_call(
+                            duration_fn,
+                            &[
+                                self_ptr.into(),
+                                parent_self_v.into(),
+                                parent_handler_v.into(),
+                            ],
+                            &format!(
+                                "{}.{}.duration.post_handler.call",
+                                l.name.name, fd.name.name
+                            ),
+                        )
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                }
+            }
+            // Subscribed bus handlers run synchronously
+            // inside a substrate cell — the outer
+            // `lotus_bus_queue_drain` loop in C is what
+            // popped this cell and called us. Emitting
+            // another drain at the handler's tail
+            // recursively re-enters that loop on the
+            // C stack, one frame per pending cell.
+            // 50k queued ticks → 50k frames → SIGSEGV
+            // (bench `bus_dispatch.hl` cliffs between
+            // 20k and 25k under the default 8 MB stack).
+            // The outer drain's for-loop already pumps
+            // the queue to empty; the tail drain is
+            // redundant for cooperative handlers.
+            // Same rationale as on_failure bodies
+            // (which already pass `drain_queue=false`).
+            if is_subscribed_handler {
+                self.flush_dissolve_frame_kind(false)?;
+            } else {
+                self.flush_dissolve_frame()?;
+            }
+            match ret_ty {
+                None => {
+                    self.close_method_scratch()?;
+                    self.builder
+                        .build_return(None)
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                }
+                Some(_) => {
+                    return Err(CodegenError::Unsupported(format!(
+                        "locus `{}` method `{}` falls through without \
+                         returning a value",
+                        l.name.name, fd.name.name
+                    )));
+                }
+            }
+        } else {
+            let _ = self.deferred_dissolves.pop();
+            self.current_method_scratch = None;
+            self.current_method_caller_arena = None;
+        }
+        self.current_fn_skip_exit_drain = prev_skip_drain;
+
+        self.current_fn = None;
+        self.current_user_fn_ret = None;
+        self.current_self = None;
+        Ok(())
+    }
 }

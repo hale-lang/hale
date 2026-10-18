@@ -1059,6 +1059,39 @@ Positional selection (`take(n)` / `skip(n)`) and the element's
 ordinal (`enumerate()`, binding `idx`) DO fuse — they are counters
 on the one loop, not materializations.
 
+### S14. Let a seam split a producer's set
+
+```hale
+type A { n: Int; }
+type B { s: String; }
+type In = A | B;
+locus Parse { fn parse(x: Int) -> In { if x > 0 { return A { n: x }; } return B { s: "neg" }; } }
+locus Handle {
+    fn a(v: A) -> Int { return v.n * 2; }
+    fn b(v: B) -> Int { return len(v.s); }
+}
+locus Front {
+    params { p: Parse = Parse { }; h: Handle = Handle { }; }
+    // idiomatic: the seam writes the dispatch
+    seam go(x: Int) -> Int { x -> self.p.parse -> self.h; }
+    // not this: the same chain written by hand
+    fn go_by_hand(x: Int) -> Int {
+        return match self.p.parse(x) { A(v) -> self.h.a(v), B(v) -> self.h.b(v), };
+    }
+}
+```
+
+The two compute the same thing, and only the seam is free of the set. A
+method's set result is built in its scratch and copied whole into its
+caller's arena, and the caller's `match` reads the tag back from that
+copy. A seam that splits what a hop returns calls a clone of the hop
+that hands the set back in the seam's own frame, the member copied out
+as itself beside its tag; inlined into the seam, each of the producer's
+`return`s goes straight to its arm, with no tag read and no switch
+(`seam_fusion.rs` pins the optimized IR). A hop that hands the whole set
+on to a method taking the set (an encoder of the outbound set, say) is
+not split and is built as any set is.
+
 ---
 
 ## 5. The enforcement ladder

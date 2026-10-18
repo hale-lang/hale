@@ -288,6 +288,18 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .user_methods
             .get(&fd.name.name)
             .expect("fallible locus fn declared in pass A2");
+        self.lower_fallible_locus_method_body_into(l, info, fd, func)
+    }
+
+    /// `lower_fallible_locus_method_body` into `func`: the method itself,
+    /// or its fused clone (GH #1530, `fused_dest`).
+    pub(crate) fn lower_fallible_locus_method_body_into(
+        &mut self,
+        l: &LocusDecl,
+        info: &LocusInfo<'ctx>,
+        fd: &FnDecl,
+        func: FunctionValue<'ctx>,
+    ) -> Result<(), CodegenError> {
         let entry = self.context.append_basic_block(func, "entry");
         self.builder.position_at_end(entry);
         self.di_begin_function();
@@ -490,7 +502,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 .builder
                 .build_load(llvm_ret_ty, ret_slot, "fn.ret.load")
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-            let copied = self.emit_method_return_deep_copy(raw, rt)?;
+            // a fused clone's return filled the caller's storage, its
+            // payload already in the caller's arena (GH #1530)
+            let copied = if self.fused_dest.is_some() {
+                raw
+            } else {
+                self.emit_method_return_deep_copy(raw, rt)?
+            };
             self.builder
                 .build_store(out_val, copied)
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
