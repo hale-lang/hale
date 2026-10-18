@@ -953,6 +953,7 @@ crates/hale-codegen/tests/http_server_concurrent.rs#0 c41eb280a380f11e
 crates/hale-codegen/tests/http_server_concurrent.rs#1 c41eb280a380f11e
 crates/hale-codegen/tests/http_server_memory.rs#0 9c7cf108e0b07943
 crates/hale-codegen/tests/http_server_memory.rs#1 07f079e6559ef21b
+crates/hale-codegen/tests/http_server_memory.rs#2 7b7b897078d03c1d
 crates/hale-codegen/tests/http_split_write.rs#0 54b120dd12a8ee79
 crates/hale-codegen/tests/http_upgrade.rs#0 c89d93375e7da3e0
 crates/hale-codegen/tests/http_upgrade.rs#1 6e7e6f3ffef78596

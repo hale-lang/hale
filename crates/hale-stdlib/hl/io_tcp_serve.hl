@@ -390,7 +390,16 @@ fn __http_handle_one_conn(
     let _ = std::io::tcp::__set_recv_timeout_ns(conn_fd, 5000000000);
     let s = std::io::tcp::Stream { conn_fd: conn_fd };
     let max_request = min(max_request_bytes, 1073741824);
-    let mut raw = "";
+    // The request's bytes go to a builder, which grows by doubling: what
+    // a connection holds is linear in what it sent. (Appending each chunk
+    // to a String kept every prefix alive until the connection was served,
+    // quadratic in the body, before any handler or auth ran: a 12 MiB
+    // body held about 9.5 GB.)
+    let buf = std::bytes::BytesBuilder { initial_cap: 8192 };
+    let mut total = 0;
+    // the header terminator may straddle two reads: the last three bytes
+    // of what came before are searched with each new chunk
+    let mut carry = "";
     let mut header_end = 0 - 1;
     let mut need = 0;
     let mut too_large = false;
@@ -406,15 +415,15 @@ fn __http_handle_one_conn(
         // The cap first: a request whose bytes or declared body are over
         // it is refused however its bytes were segmented, a complete one
         // read in one recv included.
-        if len(raw) > max_request || (header_end >= 0 && need > max_request) {
+        if total > max_request || (header_end >= 0 && need > max_request) {
             too_large = true;
             break;
         }
-        if header_end >= 0 && len(raw) - (header_end + 4) >= need {
+        if header_end >= 0 && total - (header_end + 4) >= need {
             break;
         }
         // At the cap and not complete: the rest would be over it.
-        if len(raw) >= max_request {
+        if total >= max_request {
             too_large = true;
             break;
         }
@@ -426,15 +435,23 @@ fn __http_handle_one_conn(
             // EOF or recv timeout: serve what we have.
             break;
         }
-        raw = raw + chunk;
+        buf.append_str(chunk);
         if header_end < 0 {
-            header_end = std::str::index_of(raw, "\r\n\r\n");
-            if header_end >= 0 {
-                let partial = std::http::parse_request(raw);
+            let probe = carry + chunk;
+            let at = std::str::index_of(probe, "\r\n\r\n");
+            if at >= 0 {
+                header_end = total - len(carry) + at;
+                // what has come so far, once: the header block and the
+                // body's first bytes
+                let partial = std::http::parse_request(std::str::from_bytes(buf.snapshot() or std::bytes::from_string("")));
                 need = std::str::parse_int(
                     std::http::header(partial, "Content-Length")) or 0;
+            } else {
+                let n = len(probe);
+                carry = if n > 3 { probe[(n - 3)..n] } else { probe };
             }
         }
+        total = total + len(chunk);
         reads = reads + 1;
     }
     if header_end < 0 {
@@ -446,6 +463,7 @@ fn __http_handle_one_conn(
         std::http::write_response(s, too_large_resp);
         return;
     }
+    let raw = std::str::from_bytes(buf.finish() or std::bytes::from_string(""));
     let mut req = std::http::parse_request(raw);
     req.conn_fd = conn_fd;
     let resp = h.handle(req);

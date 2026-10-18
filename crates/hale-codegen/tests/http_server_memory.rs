@@ -173,3 +173,76 @@ fn memory_stays_flat(source: &str, name: &str, parallel: usize) {
         after.saturating_sub(warm)
     );
 }
+
+// A server that takes requests of up to 16 MiB and answers each with the
+// length of the body it got.
+const LARGE_REQUEST_SERVER: &str = r#"
+    locus Count {
+        fn handle(req: std::http::Request) -> std::http::Response {
+            return std::http::Response { status: 200, body: to_string(len(req.body)) };
+        }
+    }
+    fn main() {
+        let port = std::str::parse_int(std::env::arg(1)) or 0;
+        std::http::Server {
+            host: "127.0.0.1",
+            port: port,
+            handler: Count { },
+            max_request_bytes: 16777216,
+            ready_signal: "ready"
+        };
+    }
+"#;
+
+fn peak_kb(pid: u32) -> u64 {
+    let status = std::fs::read_to_string(format!("/proc/{pid}/status")).unwrap_or_default();
+    status
+        .lines()
+        .find_map(|l| l.strip_prefix("VmHWM:"))
+        .and_then(|v| v.split_whitespace().next())
+        .and_then(|n| n.parse().ok())
+        .unwrap_or(0)
+}
+
+/// A request's bytes were assembled by appending each 8 KiB read to a
+/// String, which kept every prefix alive until the connection was served:
+/// memory quadratic in the body before any handler or auth ran (a 12 MiB
+/// body held about 9.5 GB; a downstream handoff measured it). Assembled
+/// in a builder, a 12 MiB request leaves the server's peak resident set
+/// within a small multiple of the body, and the handler gets all of it.
+#[test]
+fn a_large_request_costs_memory_linear_in_its_size() {
+    let bin = harness::unique_bin("http_large_request");
+    build_opts::build_source(LARGE_REQUEST_SERVER, &bin, &build_opts::options()).expect("build");
+    let mut child = Command::new(&bin)
+        .arg("0")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn the server");
+    let stdout = child.stdout.take().unwrap();
+    let mut child = Stopped(child);
+    let mut ready = String::new();
+    let _ = BufReader::new(stdout).read_line(&mut ready);
+    assert_eq!(ready.trim(), "ready", "the server did not start");
+    let port = child::tcp_port(&mut child.0);
+    let pid = child.0.id();
+    let before = peak_kb(pid);
+
+    let body = vec![b'x'; 12 * 1024 * 1024];
+    let mut s = TcpStream::connect(("127.0.0.1", port)).expect("connect");
+    s.set_read_timeout(Some(Duration::from_secs(60))).unwrap();
+    s.write_all(format!("POST / HTTP/1.0\r\nHost: x\r\nContent-Length: {}\r\n\r\n", body.len()).as_bytes()).unwrap();
+    s.write_all(&body).unwrap();
+    let mut reply = Vec::new();
+    let _ = s.read_to_end(&mut reply);
+    let reply = String::from_utf8_lossy(&reply);
+    let peak = peak_kb(pid);
+    drop(child);
+    let _ = std::fs::remove_file(&bin);
+    assert!(reply.starts_with("HTTP/1.1 200") && reply.trim_end().ends_with(&body.len().to_string()), "{reply}");
+    eprintln!("peak RSS grew {} KB for a 12 MiB request", peak.saturating_sub(before));
+    // a linear assembly holds a few copies of 12 MiB; the quadratic one
+    // held about 9.5 GB
+    assert!(peak.saturating_sub(before) < 64 * 1024, "peak RSS grew {} KB for a 12 MiB request ({before} KB to {peak} KB)", peak.saturating_sub(before));
+}
