@@ -1507,11 +1507,17 @@ dispatches that subject statically (its per-subject list stays the
 subject's), any other when it does not. So a server whose connections
 each subscribe keeps a table the size of its most connections at once,
 not of every connection it served. A
-dispatch walk reads a registration between two reads of its version and
-skips one that is being rewritten, as it skips one registered after the
-walk began; a cell queued for the dissolved subscriber is dropped by its
-incarnation (§ "Lifecycle obligations") and never reaches the
-registration's next owner. While a reservation is open (#1534) a
+dispatch walk reads a registration, its subject match included, between
+two reads of its version and skips one that is being rewritten, as it
+skips one registered after the walk began; a cell queued for the
+dissolved subscriber is dropped by its incarnation (§ "Lifecycle
+obligations") and never reaches the registration's next owner, and a
+bounded subscriber's cells in flight are counted for the incarnation
+each cell belongs to, so the next owner is never charged for them.
+`LOTUS_BUS_TEST_WALK_STALL_US` and `LOTUS_BUS_TEST_ACCT_STALL_US` hold a
+walk inside its window, and an enqueue between finding a bounded
+registration and charging it, for the race tests
+(`bus_registry_reuse_races.rs`); never set them in production. While a reservation is open (#1534) a
 registration appends instead, so the claims it compares keep their
 registration order, and a reservation's placeholder or claimant is never
 reused. What is not reclaimed: a String-keyed registration's copy of its

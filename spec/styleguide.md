@@ -705,6 +705,27 @@ bounded batch stay silent. **[warn]**
   re-keying means dissolve + re-instantiate. `on_unmatched:`
   picks the no-match policy (swallow / fail / fallback).
   **[convention; the routing itself is checked]**
+- **A subscriber per connection is fine; key it by an `Int`.** A
+  connection's peer that subscribes to its own replies, built when the
+  connection opens and dissolved when it closes, costs the registry
+  nothing that outlives it: a dissolved subscriber's entry goes to the
+  next registration, so the registry holds what is live
+  (`bus_scope_local_subscriber.rs` churns 10,000 and counts the
+  table). Key it by the connection's `Int` id rather than a `String`:
+  a String key's copy is kept until the process exits, one per
+  subscriber.
+
+```hale
+type Reply { conn: Int; body: String; }
+topic Replies { payload: Reply; subject: "app.replies"; keyed_by conn; }
+locus Conn {
+    params { id: Int = 0; }
+    bus { subscribe Replies as on_reply where key == self.id; }
+    fn on_reply(r: Reply) { println(r.body); }
+}
+```
+
+  **[convention]**
 - Inline the payload at the `<-` send site (`T <- Msg { ... }`
   publishes from a stack slot). Routing a payload through a free
   fn first anchors it in the caller's region — a per-publish leak

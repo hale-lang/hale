@@ -8788,11 +8788,31 @@ static int lotus_obs_wire_enabled(void) {
 int lotus_subject_match(const char *pattern, const char *subject);
 struct lotus_bus_entry;
 static struct lotus_bus_entry *lotus_bus_bound_entry_for(void *handler,
-                                                         void *self_ptr);
-static int lotus_bus_shed_check(struct lotus_bus_entry *reg,
+                                                         void *self_ptr,
+                                                         uint64_t gen);
+static int lotus_bus_shed_check(struct lotus_bus_entry *reg, uint64_t gen,
                                 lotus_bus_queue_t *q);
-static void lotus_bus_note_enqueued(struct lotus_bus_entry *reg);
-static void lotus_bus_note_dispatched(void *handler, void *self_ptr);
+static void lotus_bus_note_enqueued(struct lotus_bus_entry *reg, uint64_t gen);
+static void lotus_bus_note_dispatched(void *handler, void *self_ptr, uint64_t gen);
+
+/* Test hook: LOTUS_BUS_TEST_ACCT_STALL_US=N holds an enqueue N
+ * microseconds between finding a bounded registration and charging its
+ * cell to it, so a reuse lands in between (the accounting race test's
+ * lever; read once). */
+static void lotus_bus_test_acct_stall(void) {
+    static long cached = -1;
+    long c = __atomic_load_n(&cached, __ATOMIC_RELAXED);
+    if (c < 0) {
+        const char *e = getenv("LOTUS_BUS_TEST_ACCT_STALL_US");
+        long v = (e && *e) ? strtol(e, NULL, 10) : 0;
+        c = v > 0 ? v : 0;
+        __atomic_store_n(&cached, c, __ATOMIC_RELAXED);
+    }
+    if (c) {
+        struct timespec ts = { c / 1000000L, (c % 1000000L) * 1000L };
+        nanosleep(&ts, NULL);
+    }
+}
 
 /* How long a producer at main's bound waits with no drain by the owner
  * before it takes the owner for blocked and goes on. */
@@ -8911,13 +8931,14 @@ static void bus_queue_enqueue_inner(lotus_bus_queue_t *q,
      * lock (drop_old tombstones in-queue cells). */
     {
         struct lotus_bus_entry *reg =
-            lotus_bus_bound_entry_for(handler, self_ptr);
-        if (reg && !lotus_bus_shed_check(reg, q)) {
+            lotus_bus_bound_entry_for(handler, self_ptr, sub_gen);
+        if (reg) lotus_bus_test_acct_stall();
+        if (reg && !lotus_bus_shed_check(reg, sub_gen, q)) {
             if (locked) pthread_mutex_unlock(&q->lock);
             if (heap_buf) free(heap_buf);
             return; /* shed the newcomer */
         }
-        if (reg) lotus_bus_note_enqueued(reg);
+        if (reg) lotus_bus_note_enqueued(reg, sub_gen);
     }
     /* Multithreaded, a foreign producer at the bound waits while the
      * owner drains (`bus_queue_bound_wait`). */
@@ -9103,7 +9124,7 @@ typedef void (*lotus_handler_fn)(void *self, void *payload);
 static void bus_inline_drain_one(lotus_bus_queue_t *q) {
     lotus_bus_cell_t *cell = &q->cells[q->head++];
     if (!cell->handler) return; /* GH #255: tombstoned (drop_old) */
-    lotus_bus_note_dispatched(cell->handler, cell->self_ptr);
+    lotus_bus_note_dispatched(cell->handler, cell->self_ptr, cell->sub_gen);
     if (!lotus_bus_cell_materialize(cell)) return;
     void  *handler_fn   = cell->handler;
     void  *handler_self = cell->self_ptr;
@@ -9599,7 +9620,8 @@ void lotus_bus_queue_drain(lotus_bus_queue_t *q) {
                     if (lotus_replay_gate_idle(&held)) {
                         if (held.handler) {
                             lotus_bus_note_dispatched(held.handler,
-                                                      held.self_ptr);
+                                                      held.self_ptr,
+                                                      held.sub_gen);
                         }
                         if (held.handler &&
                             lotus_bus_cell_materialize(&held)) {
@@ -9675,7 +9697,8 @@ void lotus_bus_queue_drain(lotus_bus_queue_t *q) {
                 continue; /* held; released in recorded order */
             }
             lotus_bus_note_dispatched(cell_copy.handler,
-                                      cell_copy.self_ptr);
+                                      cell_copy.self_ptr,
+                                      cell_copy.sub_gen);
             if (!lotus_bus_cell_materialize(&cell_copy)) continue;
             void *payload_ptr = NULL;
             if (cell_copy.payload_size > 0) {
@@ -9712,7 +9735,7 @@ void lotus_bus_queue_drain(lotus_bus_queue_t *q) {
             }
             lotus_bus_cell_t *cell = &q->cells[q->head++];
             if (!cell->handler) continue; /* GH #255 tombstone */
-            lotus_bus_note_dispatched(cell->handler, cell->self_ptr);
+            lotus_bus_note_dispatched(cell->handler, cell->self_ptr, cell->sub_gen);
             /* Single-threaded programs never build wire cells, but
              * keep the drain paths uniform (one NULL check). */
             if (!lotus_bus_cell_materialize(cell)) continue;
@@ -15183,6 +15206,11 @@ typedef struct lotus_bus_entry {
     int64_t               shed_bound;
     uint8_t               shed_policy;
     int64_t               refuse_bound;
+    /* The cells queued for this registration and not yet dispatched, in
+     * the low 32 bits, and the low 32 bits of its incarnation (`gen`) in
+     * the high ones: every change compares the incarnation the caller's
+     * cell belongs to (`lotus_bus_in_flight_add`), so a reused entry is
+     * never charged for its previous subscriber's cells. */
     volatile int64_t      in_flight;
     uint64_t              ctr_dropped_full;
     /* GH #703: the subscriber incarnation this registration belongs to
@@ -15385,12 +15413,11 @@ typedef struct {
 
 #define LOTUS_BUS_WANT_GEN  1   /* the incarnation and the decoder */
 #define LOTUS_BUS_WANT_KEYS 2   /* the key filter's key */
-static inline int lotus_bus_entry_read_direct(lotus_bus_entry_t *src,
-                                              lotus_bus_target_t *d,
-                                              int want) {
-    uint32_t v = __atomic_load_n(&src->version, __ATOMIC_ACQUIRE);
-    if (v & 1u) return 0;
-    d->subject = __atomic_load_n(&src->subject, __ATOMIC_RELAXED);
+/* The fields of `src` after its subject, read inside a version window the
+ * caller opened (`v`, even) and closed by the recheck here: 1 when no
+ * reuse rewrote the entry meanwhile. */
+static inline int lotus_bus_entry_read_rest(lotus_bus_entry_t *src, lotus_bus_target_t *d,
+                                            int want, uint32_t v) {
     d->key_filter_kind = __atomic_load_n(&src->key_filter_kind, __ATOMIC_RELAXED);
     d->self_ptr = __atomic_load_n(&src->self_ptr, __ATOMIC_RELAXED);
     d->handler = __atomic_load_n(&src->handler, __ATOMIC_RELAXED);
@@ -15407,6 +15434,15 @@ static inline int lotus_bus_entry_read_direct(lotus_bus_entry_t *src,
     d->version = v;
     __atomic_thread_fence(__ATOMIC_ACQUIRE);
     return __atomic_load_n(&src->version, __ATOMIC_RELAXED) == v;
+}
+
+static inline int lotus_bus_entry_read_direct(lotus_bus_entry_t *src,
+                                              lotus_bus_target_t *d,
+                                              int want) {
+    uint32_t v = __atomic_load_n(&src->version, __ATOMIC_ACQUIRE);
+    if (v & 1u) return 0;
+    d->subject = __atomic_load_n(&src->subject, __ATOMIC_RELAXED);
+    return lotus_bus_entry_read_rest(src, d, want, v);
 }
 
 /* A keyed walk's first look at `src`: 1 when it holds a specific key
@@ -15427,15 +15463,41 @@ static inline size_t lotus_bus_counts_for(lotus_bus_entry_t *src, const char *su
     return s && lotus_subject_match(s, subject) ? 1 : 0;
 }
 
-/* A table walk for `subject`: the entry's subject read first, so the walk
- * copies only an entry it may deliver to; NULL to skip it. */
+/* Test hook: LOTUS_BUS_TEST_WALK_STALL_US=N holds a table walk N
+ * microseconds between matching an entry's subject and the version recheck
+ * that validates the match, so a reuse lands inside the window (the
+ * reuse race test's lever; read once). */
+static long lotus_bus_test_walk_stall_us(void) {
+    static long cached = -1;
+    long c = __atomic_load_n(&cached, __ATOMIC_RELAXED);
+    if (c < 0) {
+        const char *e = getenv("LOTUS_BUS_TEST_WALK_STALL_US");
+        long v = (e && *e) ? strtol(e, NULL, 10) : 0;
+        c = v > 0 ? v : 0;
+        __atomic_store_n(&cached, c, __ATOMIC_RELAXED);
+    }
+    return c;
+}
+
+/* A table walk for `subject`: NULL to skip the entry. Its subject is read
+ * and matched inside the entry's version window, so the match and the
+ * fields delivered to are one registration's: an entry reused meanwhile,
+ * by a subscriber on another subject, fails the recheck rather than taking
+ * a message its old subject matched. A walk copies only what matched. */
 static inline const lotus_bus_target_t *lotus_bus_entry_read_for(lotus_bus_entry_t *src,
                                                                  const char *subject,
                                                                  lotus_bus_target_t *d) {
-    const char *s = __atomic_load_n(&src->subject, __ATOMIC_ACQUIRE);
+    uint32_t v = __atomic_load_n(&src->version, __ATOMIC_ACQUIRE);
+    if (v & 1u) return NULL;
+    const char *s = __atomic_load_n(&src->subject, __ATOMIC_RELAXED);
     if (!s || !lotus_subject_match(s, subject)) return NULL;
-    return lotus_bus_entry_read_direct(src, d, LOTUS_BUS_WANT_GEN | LOTUS_BUS_WANT_KEYS)
-        ? d : NULL;
+    long stall = lotus_bus_test_walk_stall_us();
+    if (stall) {
+        struct timespec ts = { stall / 1000000L, (stall % 1000000L) * 1000L };
+        nanosleep(&ts, NULL);
+    }
+    d->subject = s;
+    return lotus_bus_entry_read_rest(src, d, LOTUS_BUS_WANT_GEN | LOTUS_BUS_WANT_KEYS, v) ? d : NULL;
 }
 
 /* The entries dissolved subscribers left, each reusable by a later
@@ -15471,6 +15533,40 @@ static void lotus_bus_free_entry_locked(lotus_bus_entry_t *e) {
     g_bus_free = e;
 }
 
+/* An incarnation's `in_flight` word with no cell in flight. */
+static inline int64_t lotus_bus_in_flight_zero(uint64_t gen) {
+    return (int64_t)((uint64_t)(uint32_t)gen << 32);
+}
+
+/* The cells in flight for `e`, whichever incarnation holds it. */
+static inline int64_t lotus_bus_in_flight_count(int64_t word) {
+    return (int64_t)(uint32_t)(uint64_t)word;
+}
+
+/* Add `delta` to `e`'s cells in flight when `e` still holds the
+ * incarnation `gen`: 0 (and nothing changed) when another incarnation
+ * holds it now, or a decrement finds none. */
+static inline int lotus_bus_in_flight_add(lotus_bus_entry_t *e, uint64_t gen, int delta) {
+    int64_t old = __atomic_load_n(&e->in_flight, __ATOMIC_RELAXED);
+    for (;;) {
+        if ((uint32_t)((uint64_t)old >> 32) != (uint32_t)gen) return 0;
+        uint32_t c = (uint32_t)(uint64_t)old;
+        if (delta < 0 && c == 0) return 0;
+        int64_t nw = (int64_t)(((uint64_t)old & 0xffffffff00000000ull) | (uint32_t)(c + (uint32_t)delta));
+        if (__atomic_compare_exchange_n(&e->in_flight, &old, nw, 1, __ATOMIC_RELAXED, __ATOMIC_RELAXED))
+            return 1;
+    }
+}
+
+/* A shed or a lost cell of the incarnation `gen`, counted on `e` while it
+ * still holds that incarnation (a statistic: a reuse in between may drop
+ * one count). */
+static inline void lotus_bus_count_dropped(lotus_bus_entry_t *e, uint64_t gen, uint64_t n) {
+    int64_t w = __atomic_load_n(&e->in_flight, __ATOMIC_RELAXED);
+    if ((uint32_t)((uint64_t)w >> 32) == (uint32_t)gen)
+        __atomic_fetch_add(&e->ctr_dropped_full, n, __ATOMIC_RELAXED);
+}
+
 /* GH #255 phase 2: find the registration a queued cell belongs
  * to. Linear scan — dispatch already walks this array, and the
  * scan only runs for programs that declared bounds (guarded by
@@ -15478,7 +15574,8 @@ static void lotus_bus_free_entry_locked(lotus_bus_entry_t *e) {
 static int g_bus_any_bounds = 0;
 
 static lotus_bus_entry_t *lotus_bus_bound_entry_for(void *handler,
-                                                    void *self_ptr) {
+                                                    void *self_ptr,
+                                                    uint64_t gen) {
     if (!g_bus_any_bounds) return NULL;
     lotus_bus_view_t bv = lotus_bus_view();
     for (size_t i = 0; i < bv.n; i++) {
@@ -15487,7 +15584,8 @@ static lotus_bus_entry_t *lotus_bus_bound_entry_for(void *handler,
         lotus_bus_entry_t e_snap_;
         lotus_bus_entry_t *e = lotus_bus_entry_read(bv.at[i], &e_snap_);
         if (!e) continue;
-        if (e->handler == handler && e->self_ptr == self_ptr &&
+        /* the incarnation the cell belongs to: a reused entry is another */
+        if (e->handler == handler && e->self_ptr == self_ptr && e->gen == gen &&
             (e->shed_bound > 0 || e->refuse_bound > 0)) {
             return bv.at[i];
         }
@@ -15501,11 +15599,14 @@ static lotus_bus_entry_t *lotus_bus_bound_entry_for(void *handler,
  * found nothing to tombstone in-queue). drop_old tombstones the
  * registration's oldest queued cell (handler = NULL; drain
  * paths skip) and frees its payload storage in place. */
-static int lotus_bus_shed_check(lotus_bus_entry_t *reg,
+static int lotus_bus_shed_check(lotus_bus_entry_t *reg, uint64_t gen,
                                 lotus_bus_queue_t *q) {
     if (!reg) return 1;
-    int64_t inflight =
-        __atomic_load_n(&reg->in_flight, __ATOMIC_RELAXED);
+    int64_t word = __atomic_load_n(&reg->in_flight, __ATOMIC_RELAXED);
+    /* reused since the lookup: the cell's subscriber is gone, and its
+     * cell is dropped at materialization; no bound of another's applies */
+    if ((uint32_t)((uint64_t)word >> 32) != (uint32_t)gen) return 1;
+    int64_t inflight = lotus_bus_in_flight_count(word);
     /* Refuse bound doubles as the hard enqueue cap: the publish-
      * site pre-check is the synchronous signal, this is the
      * backstop that also gives `or discard` its semantics (the
@@ -15513,7 +15614,7 @@ static int lotus_bus_shed_check(lotus_bus_entry_t *reg,
      * newcomer, counted). */
     if (reg->refuse_bound > 0 && inflight >= reg->refuse_bound &&
         (reg->shed_bound <= 0 || reg->refuse_bound <= reg->shed_bound)) {
-        __atomic_fetch_add(&reg->ctr_dropped_full, 1, __ATOMIC_RELAXED);
+        lotus_bus_count_dropped(reg, gen, 1);
         return 0;
     }
     if (reg->shed_bound <= 0 || inflight < reg->shed_bound) return 1;
@@ -15521,7 +15622,7 @@ static int lotus_bus_shed_check(lotus_bus_entry_t *reg,
         for (size_t i = q->head; i < q->tail; i++) {
             lotus_bus_cell_t *c = &q->cells[i];
             if (c->handler == reg->handler &&
-                c->self_ptr == reg->self_ptr) {
+                c->self_ptr == reg->self_ptr && c->sub_gen == gen) {
                 if (c->payload_heap) {
                     free(c->payload_heap);
                     c->payload_heap = NULL;
@@ -15532,23 +15633,19 @@ static int lotus_bus_shed_check(lotus_bus_entry_t *reg,
                     c->payload_region = NULL;
                 }
                 c->handler = NULL; /* tombstone */
-                __atomic_fetch_sub(&reg->in_flight, 1,
-                                   __ATOMIC_RELAXED);
-                __atomic_fetch_add(&reg->ctr_dropped_full, 1,
-                                   __ATOMIC_RELAXED);
+                (void)lotus_bus_in_flight_add(reg, gen, -1);
+                lotus_bus_count_dropped(reg, gen, 1);
                 return 1; /* room made — enqueue the newcomer */
             }
         }
         /* Nothing tombstonable (cells mid-dispatch): shed new. */
     }
-    __atomic_fetch_add(&reg->ctr_dropped_full, 1, __ATOMIC_RELAXED);
+    lotus_bus_count_dropped(reg, gen, 1);
     return 0;
 }
 
-static void lotus_bus_note_enqueued(lotus_bus_entry_t *reg) {
-    if (reg) {
-        __atomic_fetch_add(&reg->in_flight, 1, __ATOMIC_RELAXED);
-    }
+static void lotus_bus_note_enqueued(lotus_bus_entry_t *reg, uint64_t gen) {
+    if (reg) (void)lotus_bus_in_flight_add(reg, gen, 1);
 }
 
 /* Called by codegen right after lotus_bus_register for a bounded
@@ -15578,11 +15675,9 @@ void lotus_bus_set_sub_bound(const char *subject,
 
 /* Post-dispatch accounting: a main-queue cell for this
  * registration completed (or was tombstoned/discarded). */
-static void lotus_bus_note_dispatched(void *handler, void *self_ptr) {
-    lotus_bus_entry_t *e = lotus_bus_bound_entry_for(handler, self_ptr);
-    if (e) {
-        __atomic_fetch_sub(&e->in_flight, 1, __ATOMIC_RELAXED);
-    }
+static void lotus_bus_note_dispatched(void *handler, void *self_ptr, uint64_t gen) {
+    lotus_bus_entry_t *e = lotus_bus_bound_entry_for(handler, self_ptr, gen);
+    if (e) (void)lotus_bus_in_flight_add(e, gen, -1);
 }
 
 /* Publish-site refusal pre-check for `on_full: fail` topics:
@@ -15600,8 +15695,7 @@ int64_t lotus_bus_subject_would_refuse(const char *subject) {
         if (!e) continue;
         if (!e->subject || e->refuse_bound <= 0) continue;
         if (!lotus_subject_match(e->subject, subject)) continue;
-        if (__atomic_load_n(&e->in_flight, __ATOMIC_RELAXED) >=
-            e->refuse_bound) {
+        if (lotus_bus_in_flight_count(e->in_flight) >= e->refuse_bound) {
             return 1;
         }
     }
@@ -15876,7 +15970,7 @@ static lotus_bus_entry_t *lotus_bus_register_entry_gen(
         __atomic_store_n(&r->shed_bound, (int64_t)0, __ATOMIC_RELAXED);
         __atomic_store_n(&r->shed_policy, (uint8_t)0, __ATOMIC_RELAXED);
         __atomic_store_n(&r->refuse_bound, (int64_t)0, __ATOMIC_RELAXED);
-        __atomic_store_n(&r->in_flight, (int64_t)0, __ATOMIC_RELAXED);
+        __atomic_store_n(&r->in_flight, lotus_bus_in_flight_zero(gen), __ATOMIC_RELAXED);
         __atomic_store_n(&r->ctr_dropped_full, (uint64_t)0, __ATOMIC_RELAXED);
         __atomic_store_n(&r->gen, gen, __ATOMIC_RELAXED);
         __atomic_store_n(&r->subject, subject, __ATOMIC_RELAXED);
@@ -15905,6 +15999,7 @@ static lotus_bus_entry_t *lotus_bus_register_entry_gen(
     e->key_hi      = key_hi;
     e->key_str     = key_str;
     e->gen         = gen;
+    e->in_flight   = lotus_bus_in_flight_zero(gen);
     if (!lotus_pub_append_locked(&g_bus_table, e)) {
         /* The chunk slot stays unused; nothing points at it. */
         memset(e, 0, sizeof *e);
