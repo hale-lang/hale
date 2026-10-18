@@ -21213,6 +21213,28 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     )
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))
             }
+            // An enum payload of an enum's `==`: its tag alone when it
+            // carries none, else its own deep comparison (the check
+            // refuses an enum a payload of which has no `==`).
+            CodegenTy::Enum(en) => {
+                let info = self
+                    .user_enums
+                    .get(en)
+                    .cloned()
+                    .ok_or_else(|| CodegenError::Unsupported(format!("enum eq on unknown type `{en}`")))?;
+                if info.has_payload {
+                    self.lower_enum_deep_eq(&info, scrut_val.into_pointer_value(), lit_val.into_pointer_value())
+                } else {
+                    self.builder
+                        .build_int_compare(
+                            inkwell::IntPredicate::EQ,
+                            scrut_val.into_int_value(),
+                            lit_val.into_int_value(),
+                            name,
+                        )
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))
+                }
+            }
             other => Err(CodegenError::Unsupported(format!(
                 "match on {:?} not supported in v0",
                 other
