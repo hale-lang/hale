@@ -8,6 +8,8 @@
 
 #[path = "support/vault.rs"]
 mod vault;
+#[path = "support/scratch.rs"]
+mod scratch;
 #[path = "support/reap.rs"]
 mod reap;
 #[path = "support/record.rs"]
@@ -45,8 +47,8 @@ fn a_person_in_another_clone_asks_and_decides_through_the_record() {
         eprintln!("dna_record_sync: no HALE_DNA_NATS_URL_OWNER or HALE_DNA_MEMORY_DSN_OWNER; an ask cannot reach the organism, so nothing was exercised");
         return;
     };
-    let d = std::env::temp_dir().join(format!("hale_dna_sync_{}", std::process::id()));
-    let _reap = reap::ReapOnDrop(d.clone());
+    let d = scratch::Scratch::new(format!("hale_dna_sync_{}", std::process::id()));
+    let _reap = reap::ReapOnDrop(d.to_path_buf());
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(&d).unwrap();
     let bare = d.join("origin.git");

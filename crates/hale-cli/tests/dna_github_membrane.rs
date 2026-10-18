@@ -8,6 +8,8 @@
 
 #[path = "support/vault.rs"]
 mod vault;
+#[path = "support/scratch.rs"]
+mod scratch;
 #[path = "support/record.rs"]
 mod record;
 #[path = "support/reap.rs"]
@@ -92,8 +94,8 @@ fn a_pending_review_becomes_a_pull_request_and_its_review_becomes_the_verdict() 
         eprintln!("dna_github_membrane: no HALE_DNA_NATS_URL_OWNER; a verdict cannot reach the organism, so nothing was exercised");
         return;
     };
-    let d = std::env::temp_dir().join(format!("hale_dna_gh_{}", std::process::id()));
-    let _reap = reap::ReapOnDrop(d.clone());
+    let d = scratch::Scratch::new(format!("hale_dna_gh_{}", std::process::id()));
+    let _reap = reap::ReapOnDrop(d.to_path_buf());
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(&d).unwrap();
     // the fake gh on PATH
@@ -223,8 +225,8 @@ fn the_same_rows_come_from_the_file_forge_and_the_profile_names_it() {
         eprintln!("dna_github_membrane: no HALE_DNA_NATS_URL_OWNER; a verdict cannot reach the organism, so nothing was exercised");
         return;
     };
-    let d = std::env::temp_dir().join(format!("hale_dna_forge_{}", std::process::id()));
-    let _reap = reap::ReapOnDrop(d.clone());
+    let d = scratch::Scratch::new(format!("hale_dna_forge_{}", std::process::id()));
+    let _reap = reap::ReapOnDrop(d.to_path_buf());
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(&d).unwrap();
     let hale = |args: &[&str], cwd: &Path| -> (bool, String) {

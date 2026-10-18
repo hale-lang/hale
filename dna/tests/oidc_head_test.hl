@@ -42,7 +42,7 @@ fn head_binary() -> String {
 // body goes by file: it may hold a line break, which argv cannot)
 fn post(commands: String, member: String, payload: String, bearer: String) -> dna::RunResult {
     let auth = if len(bearer) > 0 { "-H\nAuthorization: Bearer " + bearer + "\n" } else { "" };
-    let body = "/tmp/dna-oidc-head-" + to_string(std::process::pid()) + ".body";
+    let body = dna::scratch_dir("oidc-head") + "/call.body";
     std::io::fs::write_file(body, payload) or discard;
     let r = dna::run_tool("curl\n-s\n-w\n\\n%{http_code}\n-X\nPOST\n" + auth + "--data-binary\n@" + body + "\n" + commands + "call/" + member);
     std::io::fs::unlink(body) or discard;
@@ -57,7 +57,7 @@ fn describe(commands: String, bearer: String) -> dna::RunResult {
 // bearer.
 fn relay_post(relay: String, line: String, bearer: String) -> dna::RunResult {
     let auth = if len(bearer) > 0 { "-H\nAuthorization: Bearer " + bearer + "\n" } else { "" };
-    let body = "/tmp/dna-oidc-relay-" + to_string(std::process::pid()) + ".body";
+    let body = dna::scratch_dir("oidc-head") + "/relay.body";
     std::io::fs::write_file(body, line) or discard;
     let r = dna::run_tool("curl\n-s\n-w\n\\n%{http_code}\n-X\nPOST\n" + auth + "--data-binary\n@" + body + "\n" + relay);
     std::io::fs::unlink(body) or discard;

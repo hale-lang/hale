@@ -10,6 +10,8 @@
 
 #[path = "support/reap.rs"]
 mod reap;
+#[path = "support/scratch.rs"]
+mod scratch;
 #[path = "support/record.rs"]
 mod record;
 #[path = "support/trace.rs"]
@@ -118,8 +120,8 @@ fn stop_host(app: &Path, host: &mut std::process::Child) {
 #[test]
 fn a_body_is_provisioned_only_where_it_can_be_and_secrets_never_reach_the_record() {
     let _t = trace::test("dna_body_provision");
-    let d = std::env::temp_dir().join(format!("hale_dna_prov_{}", std::process::id()));
-    let _reap = reap::ReapOnDrop(d.clone());
+    let d = scratch::Scratch::new(format!("hale_dna_prov_{}", std::process::id()));
+    let _reap = reap::ReapOnDrop(d.to_path_buf());
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(&d).unwrap();
     let home = d.join("home");

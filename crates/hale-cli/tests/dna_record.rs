@@ -7,6 +7,8 @@
 
 #[path = "support/vault.rs"]
 mod vault;
+#[path = "support/scratch.rs"]
+mod scratch;
 #[path = "support/record.rs"]
 mod record;
 use std::path::{Path, PathBuf};
@@ -29,7 +31,7 @@ fn the_record_is_memory_s_and_every_clone_reaches_it() {
         eprintln!("dna_record: no HALE_DNA_MEMORY_DSN_OWNER; a record is memory's, so nothing was exercised");
         return;
     };
-    let d = std::env::temp_dir().join(format!("hale_dna_record_{}", std::process::id()));
+    let d = scratch::Scratch::new(format!("hale_dna_record_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(&d).unwrap();
     let (ok, out) = hale(&["dna", "new", "orgrec", "--no-library"], &d);

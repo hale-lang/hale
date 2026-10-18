@@ -7,6 +7,8 @@
 
 #[path = "support/vault.rs"]
 mod vault;
+#[path = "support/scratch.rs"]
+mod scratch;
 #[path = "support/record.rs"]
 mod record;
 #[path = "support/reap.rs"]
@@ -89,8 +91,8 @@ fn the_twelve_steps_run_on_the_acceptance_application() {
         return;
     };
     let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..").canonicalize().unwrap();
-    let d = std::env::temp_dir().join(format!("hale_dna_twelve_{}", std::process::id()));
-    let _reap = reap::ReapOnDrop(d.clone());
+    let d = scratch::Scratch::new(format!("hale_dna_twelve_{}", std::process::id()));
+    let _reap = reap::ReapOnDrop(d.to_path_buf());
     let _ = std::fs::remove_dir_all(&d);
     let app = d.join("orgtwelve");
     copy_dir(&repo.join("dna/acceptance/chat-server"), &app);

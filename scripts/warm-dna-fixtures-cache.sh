@@ -43,6 +43,7 @@ tmp=$(mktemp -d "${TMPDIR:-/tmp}/hale-warm-fixtures.XXXXXX")
 pid=
 cleanup() {
     if [[ -n "$pid" ]]; then kill "$pid" 2>/dev/null || true; wait "$pid" 2>/dev/null || true; fi
+    "$(dirname -- "${BASH_SOURCE[0]}")/compose-down-under.sh" "$tmp"
     rm -rf -- "$tmp"
 }
 trap cleanup EXIT

@@ -8,6 +8,8 @@
 
 #[path = "support/vault.rs"]
 mod vault;
+#[path = "support/scratch.rs"]
+mod scratch;
 #[path = "support/record.rs"]
 mod record;
 #[path = "support/trace.rs"]
@@ -106,6 +108,8 @@ struct Fleet {
     procs: Vec<std::process::Child>,
     base: String,
     cand: String,
+    // its directory, and every compose project run from under it, goes last
+    _scratch: scratch::Scratch,
 }
 
 impl Fleet {
@@ -194,10 +198,11 @@ impl Fleet {
 /// nodes, an origin, two node clones, and one Mutation waiting for its
 /// Review; then the organization, the two nodes, and the base deployed.
 fn bring_up(tag: &str) -> Fleet {
-    let d = std::env::temp_dir().join(format!("hale_dna_fleet_{tag}_{}", std::process::id()));
+    let scratch = scratch::Scratch::new(format!("hale_dna_fleet_{tag}_{}", std::process::id()));
+    let d = scratch.to_path_buf();
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(&d).unwrap();
-    let mut f = Fleet { d: d.clone(), app: d.join("fleetapp"), bare: d.join("origin.git"), edges: vec![d.join("edge-1"), d.join("edge-2")], procs: vec![], base: String::new(), cand: String::new() };
+    let mut f = Fleet { d: d.clone(), app: d.join("fleetapp"), bare: d.join("origin.git"), edges: vec![d.join("edge-1"), d.join("edge-2")], procs: vec![], base: String::new(), cand: String::new(), _scratch: scratch };
     // Each test's record is its own: the two tests make the same project
     // at the same moment, and a record's identity is its first commit, so
     // an identical one would name the same organization — its memory's

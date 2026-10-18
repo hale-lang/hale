@@ -8,6 +8,8 @@
 
 #[path = "support/vault.rs"]
 mod vault;
+#[path = "support/scratch.rs"]
+mod scratch;
 #[path = "support/record.rs"]
 mod record;
 #[path = "support/trace.rs"]
@@ -259,7 +261,7 @@ fn the_design_is_decided_practice_by_practice_and_superseded_by_the_board() {
         eprintln!("dna_design: no HALE_DNA_NATS_URL_OWNER; a verdict cannot reach the organization, so nothing was exercised");
         return;
     };
-    let d = std::env::temp_dir().join(format!("hale_dna_design_{}", std::process::id()));
+    let d = scratch::Scratch::new(format!("hale_dna_design_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(&d).unwrap();
     let (ok, out) = hale(&["dna", "new", "designed", "--no-library"], &d);
@@ -482,7 +484,7 @@ fn the_operating_practices_are_seeded_decided_and_superseded_like_the_design() {
         eprintln!("dna_design: no HALE_DNA_NATS_URL_OWNER; a verdict cannot reach the organization, so nothing was exercised");
         return;
     };
-    let d = std::env::temp_dir().join(format!("hale_dna_operating_{}", std::process::id()));
+    let d = scratch::Scratch::new(format!("hale_dna_operating_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(&d).unwrap();
     let (ok, out) = hale(&["dna", "new", "operated"], &d);
@@ -570,7 +572,7 @@ fn library_families(rows: &Rows) -> Vec<(String, serde_json::Value)> {
 #[test]
 fn init_seeds_the_language_and_system_nodes_and_the_library() {
     let _t = trace::test("dna_design::library_seed");
-    let d = std::env::temp_dir().join(format!("hale_dna_library_{}", std::process::id()));
+    let d = scratch::Scratch::new(format!("hale_dna_library_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(&d).unwrap();
     let started = std::time::Instant::now();
@@ -691,7 +693,7 @@ fn approving_the_library_ratifies_and_binds_every_idea() {
         eprintln!("dna_design: no HALE_DNA_NATS_URL_OWNER; a verdict cannot reach the organization, so nothing was exercised");
         return;
     };
-    let d = std::env::temp_dir().join(format!("hale_dna_libapprove_{}", std::process::id()));
+    let d = scratch::Scratch::new(format!("hale_dna_libapprove_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(&d).unwrap();
     let (ok, out) = hale(&["dna", "new", "libapp"], &d);
@@ -759,7 +761,7 @@ fn rejecting_the_library_declines_every_idea() {
         eprintln!("dna_design: no HALE_DNA_NATS_URL_OWNER; a verdict cannot reach the organization, so nothing was exercised");
         return;
     };
-    let d = std::env::temp_dir().join(format!("hale_dna_libreject_{}", std::process::id()));
+    let d = scratch::Scratch::new(format!("hale_dna_libreject_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(&d).unwrap();
     let (ok, out) = hale(&["dna", "new", "librej"], &d);
@@ -797,7 +799,7 @@ fn the_using_practices_are_seeded_listed_and_decided_like_the_design() {
         eprintln!("dna_design: no HALE_DNA_NATS_URL_OWNER; a verdict cannot reach the organization, so nothing was exercised");
         return;
     };
-    let d = std::env::temp_dir().join(format!("hale_dna_using_{}", std::process::id()));
+    let d = scratch::Scratch::new(format!("hale_dna_using_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(&d).unwrap();
     // --no-library keeps the family
@@ -863,7 +865,7 @@ fn an_upgrade_proposes_the_new_versions_library_and_supersedes_the_old_on_approv
         eprintln!("dna_design: no HALE_DNA_NATS_URL_OWNER; a verdict cannot reach the organization, so nothing was exercised");
         return;
     };
-    let d = std::env::temp_dir().join(format!("hale_dna_libupgrade_{}", std::process::id()));
+    let d = scratch::Scratch::new(format!("hale_dna_libupgrade_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(&d).unwrap();
     let (ok, out) = hale_env(&["dna", "new", "upg"], &d, &[("HALE_DNA_LIBRARY_VERSION", "1.0.0-a")]);
@@ -939,7 +941,7 @@ fn an_upgrade_finds_a_moved_chapter_under_its_earlier_name() {
         eprintln!("dna_design: no HALE_DNA_NATS_URL_OWNER; a verdict cannot reach the organization, so nothing was exercised");
         return;
     };
-    let d = std::env::temp_dir().join(format!("hale_dna_libearlier_{}", std::process::id()));
+    let d = scratch::Scratch::new(format!("hale_dna_libearlier_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(&d).unwrap();
     let earlier = [("HALE_DNA_LIBRARY_VERSION", "1.0.0-a"), ("HALE_DNA_LIBRARY_EARLIER_NAMES", "1")];

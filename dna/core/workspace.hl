@@ -396,11 +396,17 @@ fn free_port(index: Int) -> Int {
 // leaked process to the root in its command line, GH #872), and the
 // sweep below.
 fn scratch_root(what: String) -> String {
-    let dir = "/tmp/dna-" + what + "-" + to_string(std::process::pid());
+    let dir = scratch_dir(what);
     let gone = run_tool("rm\n-rf\n" + dir);
     std::io::fs::mkdir(dir) or discard;
     scratch_register(dir);
     return dir;
+}
+
+// The path `scratch_root(what)` makes, for a file a fixture keeps under
+// its root from a fn that is not handed the root.
+fn scratch_dir(what: String) -> String {
+    return "/tmp/dna-" + what + "-" + to_string(std::process::pid());
 }
 
 // Where the slice that started this fixture records the roots it is

@@ -5,7 +5,8 @@
 
 #[path = "support/vault.rs"]
 mod vault;
-use std::path::PathBuf;
+#[path = "support/scratch.rs"]
+mod scratch;
 use std::process::Command;
 
 fn hale(args: &[&str], cwd: &std::path::Path) -> (bool, String) {
@@ -16,8 +17,8 @@ fn hale(args: &[&str], cwd: &std::path::Path) -> (bool, String) {
     )
 }
 
-fn workdir(tag: &str) -> PathBuf {
-    let d = std::env::temp_dir().join(format!("hale_dna_new_{}_{}", std::process::id(), tag));
+fn workdir(tag: &str) -> scratch::Scratch {
+    let d = scratch::Scratch::new(format!("hale_dna_new_{}_{}", std::process::id(), tag));
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(&d).unwrap();
     d
