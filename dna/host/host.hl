@@ -731,9 +731,9 @@ locus NodeRelay {
     // The same over a view the caller keeps (the host's, for its life),
     // read again here: only what the record gained since is read.
     fn relay_over(p: Projection, memory: dna::Memory) -> Int {
-        let now = record_head(self.root);
-        if !now.ok || now.absent { return 0; }
         let moved = p.j.refresh();
+        let now = view_record_head(p);
+        if !now.ok || now.absent { return 0; }
         return self.relay_rows(p, memory);
     }
     // The pass itself, over the rows of `p`.
@@ -880,6 +880,7 @@ main locus Host {
         // what status.json was last projected from (the record's head and
         // the rows read with it) and when, in seconds
         status_head: String = "";
+        synced_rows: Int = 0; // the view's rows the sync has looked at
         status_rows: Int = -1;
         status_at: Int = 0;
         hale: String = "hale";
@@ -1956,8 +1957,8 @@ main locus Host {
         if len(self.relay.error) > 0 { self.say("relay onto the nerves failed: " + self.relay.error); }
         if n > 0 { self.say("relayed " + to_string(n) + " fact(s) from the record onto the nerves"); }
         // the view read again and dropped candidates' branches cleared
-        let s = sync_record_over(self.root, self.view.j);
-        if !s.ok { self.say("sync: " + s.summary); }
+        let s = sync_record_over(self.root, self.view.j, self.synced_rows);
+        if !s.ok { self.say("sync: " + s.summary); } else { self.synced_rows = s.seen; }
         self.memory_tick();
         self.poll_genome();
         // the view for the rest of the pass, read again (only what the
@@ -1978,9 +1979,11 @@ main locus Host {
         self.read_model_calls();
         std::metrics::gauge(self.senses.registry, "pulse_seconds", dna::part_labels("spine")).set(dna::senses_now());
         // no record, or one that could not be read: nothing to do this pass
-        let now = record_head(self.root);
-        if !now.ok || now.absent { return; }
+        // (the head is the view's: a fresh handle per tick is a connection
+        // and its authentication, an idle body's largest cost)
         let read = watch(self.view);
+        let now = view_record_head(self.view);
+        if !now.ok || now.absent { return; }
         // status.json when the record moved, or has not been projected for
         // a while; the projection reads its Reviews, Tasks and Mutations a
         // whole record each, an idle body's largest cost when it ran every tick

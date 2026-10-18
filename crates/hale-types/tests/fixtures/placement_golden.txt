@@ -14749,33 +14749,6 @@ shared	dynamic	sites in operations #06fa1b7e
 shared	dynamic	sites in organization_source #f59342ac
 shared	dynamic	sites in the stdlib #d1d49800
 
-== dna/face/test-results/organization-drafts-Organi-538df-orts-exact-preserved-source
-root	Org	the entry
-row	Org@literal1	Org	main	default
-row	Org@literal1.metrics	Metrics	main	default
-row	Org@literal1.reviewer	Reviewer	main	default
-shared	Org@literal1.assurance	Support #2066d0f8
-shared	Org@literal1.billing	Support #2066d0f8
-shared	Org@literal1.support	Support #2066d0f8
-
-== dna/face/test-results/organization-structure-Mov-8ae9b-ts-the-native-checked-chart
-root	Org	the entry
-row	Org@literal1	Org	main	default
-row	Org@literal1.assurance	Support	main	default
-row	Org@literal1.audit	Reviewer	main	default
-row	Org@literal1.metrics	Metrics	main	default
-row	Org@literal1.reviewer	Reviewer	main	default
-row	Org@literal1.support	Support	main	default
-
-== dna/face/test-results/organization-structure-Str-9d93e--and-exports-preserved-Hale
-root	Org	the entry
-row	Org@literal1	Org	main	default
-row	Org@literal1.billing	Reviewer	main	default
-row	Org@literal1.metrics	Metrics	main	default
-row	Org@literal1.reviewer	Reviewer	main	default
-shared	Org@literal1.assurance	Support #2066d0f8
-shared	Org@literal1.support	Support #2066d0f8
-
 == dna/face/tests/organization
 root	Org	the entry
 row	Org@literal1	Org	main	default

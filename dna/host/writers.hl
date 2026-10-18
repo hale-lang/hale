@@ -1492,6 +1492,13 @@ fn index_value(index: String, id: String) -> String {
 // only grows, so a row that lands after the mark is after it (GH #1182).
 fn watch(p: Projection) -> Bool { return p.j.refresh(); }
 
+// The record's head as the view last read it: absent while it holds no row
+// (or could not be read), never a fresh read of memory.
+fn view_record_head(p: Projection) -> dna::Head {
+    if p.j.record.revision() == 0 { return dna::Head { ok: true, absent: true }; }
+    return dna::Head { ok: true, id: p.j.record.head() };
+}
+
 // The gate among `gates` (`gate:<workflow>/<job>`) a check run `name`d
 // for its job is the run of, "" when none: a gate is a workflow's job,
 // and the forge names a job's run by the job — a matrix leg as `job

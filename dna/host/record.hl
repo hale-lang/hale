@@ -371,6 +371,7 @@ fn append_as_at(repo: String, expected: String, ledger_expected: Int, kind: Stri
 type SyncResult {
     ok: Bool = true;
     summary: String = "";
+    seen: Int = 0; // the view's rows looked at, for the next pass to start after
 }
 
 fn sync_failed(why: String) -> SyncResult {
@@ -387,11 +388,18 @@ fn sync_record(repo: String, memory: dna::Memory) -> SyncResult {
 }
 
 // The same, for a body that keeps its view of the record for its life: the
-// view read again, so what other writers appended is in it.
-fn sync_record_over(repo: String, j: dna::RoutedJournal) -> SyncResult {
+// view read again, so what other writers appended is in it, and only the
+// rows past `from` (what the last pass saw) looked at — an idle body asks
+// memory only whether the record moved.
+fn sync_record_over(repo: String, j: dna::RoutedJournal, from: Int) -> SyncResult {
     let moved = j.refresh();
-    let dropped = apply_drops(repo);
-    return SyncResult { ok: true, summary: "the record is memory's: nothing to sync" };
+    let mut i = from;
+    while i < j.revision() {
+        let e = j.read(i);
+        i = i + 1;
+        if e.kind == "candidate.dropped" { let gone = drop_here(repo, e.entity); }
+    }
+    return SyncResult { ok: true, summary: "the record is memory's: nothing to sync", seen: j.revision() };
 }
 
 // A record's identity names its memory: the digest of its first row
