@@ -159,7 +159,9 @@ fn main() {
     std::test::assert(std::str::contains(cookies, "dna_session"), "the person signs in through the head: " + signin.stdout + " " + cookies);
     let propose = "{\"call\":\"PracticePropose\",\"payload\":{\"request_id\":\"both-1\",\"subject_digest\":\"" + digest + "\",\"text\":\"requests_per_minute: 90\",\"rationale\":\"more\"}}";
     let person = dna::run_tool("curl\n-s\n-D\n-\n-w\n\\n%{http_code}\n-b\n" + jar + "\n-X\nPOST\n-H\nContent-Type: application/json\n-H\nX-Hale-Command: 1\n-H\nOrigin: " + f.url() + "\n--data-binary\n" + propose + "\n" + commands);
-    std::test::assert(status_of(person) == "200" && std::str::contains(person.stdout, "\"code\":\"commands_unsupported\""), "the person's session reaches PracticePropose's handler through its row: " + person.stdout);
+    // the head's child is the composed one (`hale_dna::HEAD_API`), whose
+    // provider admits the proposal: the handler's own receipt, not a refusal
+    std::test::assert(status_of(person) == "200" && std::str::contains(person.stdout, "\"ok\":true") && std::str::contains(person.stdout, "both-1") && !std::str::contains(person.stdout, "\"refusal\""), "the person's session reaches PracticePropose's handler through its row: " + person.stdout);
     let service = call("POST", commands, token, f.url(), propose);
     std::test::assert(status_of(service) == "403" && std::str::contains(service.stdout, "\"kind\":\"unauthorized\"") && std::str::contains(service.stdout, "\"requires\":[\"position\"]"), "the service's token reaches the same row, which refuses it: " + service.stdout);
 

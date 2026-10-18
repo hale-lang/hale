@@ -719,7 +719,8 @@ and it proxies no `/auth/*`. Restarting a head over the same state directory
 answers every earlier `request_id` with the same terminal receipt and
 re-attaches the last activated project. `tests/journal_test.hl`,
 `tests/operations_test.hl` and `tests/head_api_test.hl` run under
-`HALE_HEAD_BIN` and `HALE_API_BIN`; each makes its own scratch root.
+`HALE_HEAD_BIN` and `HALE_HEAD_API_BIN` (a build of `dna/api/practice_review`,
+the child a head is configured to run); each makes its own scratch root.
 ## Raising work
 
 `dna.task.create@1` is the face's `hale dna ask`: it records the same
@@ -936,7 +937,7 @@ hale build dna/api -o target/seeds/api/api
 HALE_BIN="$(command -v hale)" HALE_API_BIN="$PWD/target/seeds/api/api" hale test dna/api/tests
 hale check dna/api/practice_review && hale build dna/api/practice_review -o target/seeds/practice_review/practice_review
 hale check dna/api/project_service && hale build dna/api/project_service -o target/seeds/project_service/project_service
-HALE_BIN="$(command -v hale)" HALE_HEAD_BIN="$PWD/target/seeds/project_service/project_service" HALE_API_BIN="$PWD/target/seeds/api/api" hale test dna/api/project_service/tests
+HALE_BIN="$(command -v hale)" HALE_HEAD_BIN="$PWD/target/seeds/project_service/project_service" HALE_HEAD_API_BIN="$PWD/target/seeds/practice_review/practice_review" hale test dna/api/project_service/tests
 hale test dna/operations/tests
 cargo test -p hale-dna -p hale-iris
 ```

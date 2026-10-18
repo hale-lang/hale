@@ -14,7 +14,7 @@ import "../../../core" as dna;
 import "../../../operations" as ops;
 
 fn config(root: String, api_port: Int) -> head::HeadConfig {
-    return head::HeadConfig { port: 1, api_port: api_port, api_binary: std::env::var("HALE_API_BIN"), hale: std::env::var("HALE_BIN"), state_dir: root + "/state", sources_dir: root + "/sources", principal_mode: "local", principal_name: "tester" };
+    return head::HeadConfig { port: 1, api_port: api_port, api_binary: std::env::var("HALE_HEAD_API_BIN"), hale: std::env::var("HALE_BIN"), state_dir: root + "/state", sources_dir: root + "/sources", principal_mode: "local", principal_name: "tester" };
 }
 
 fn git(repo: String, argv: String) -> String {
@@ -234,7 +234,8 @@ locus OperationCases {
 
 fn main() {
     std::test::assert(std::str::starts_with(std::env::var("HALE_BIN"), "/"), "HALE_BIN must be absolute");
-    std::test::assert(std::io::fs::file_exists(std::env::var("HALE_API_BIN")), "build dna/api and set absolute HALE_API_BIN");
+    // the head's configured API child, the composed one (`hale_dna::HEAD_API`)
+    std::test::assert(std::io::fs::file_exists(std::env::var("HALE_HEAD_API_BIN")) && std::str::ends_with(std::env::var("HALE_HEAD_API_BIN"), "/practice_review"), "build dna/api/practice_review and set absolute HALE_HEAD_API_BIN");
     let root = dna::scratch_root("head-operations");
     // the API child binds port 0 and reports the port it got
     let cfg = config(root, 0);

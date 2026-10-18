@@ -172,6 +172,18 @@ locus Api {
         let p = reported_port("api");
         return if p > 0 { "http://127.0.0.1:" + to_string(p) } else { "" };
     }
+    // Whether a sign-in can begin or end: the issuer sends the browser
+    // back to the configured `dna.oidc.redirect`, else to this process's
+    // own /auth/callback, which for a launcher's port 0 is known once the
+    // server reported the port it got. Both the sign-in redirect and the
+    // token exchange name it, so it is settled before either runs.
+    fn sign_in_ready() -> Bool {
+        if len(self.auth.redirect_uri) > 0 { return true; }
+        let origin = self.origin();
+        if len(origin) == 0 { return false; }
+        self.auth.redirect_uri = origin + "/auth/callback";
+        return true;
+    }
     // The binding's HTTP transport a session's command is relayed to: the
     // pinned port, else the one this process reported; 0 for none.
     fn relay_port() -> Int {
@@ -238,6 +250,7 @@ locus Api {
                 b.begin_object(); b.string_field("principal", "oidc"); b.string_field("issuer", self.auth.issuer); b.string_field("client", self.auth.client); b.string_field("login", "/auth/login"); b.end_object();
                 return std::http::Response { status: 200, content_type: "application/json", body: b.result() };
             }
+            if (path == "/auth/login" || path == "/auth/callback") && !self.sign_in_ready() { return http.error(503, "starting", "this head has not reported the port it listens on yet; sign in again in a moment", true); }
             if path == "/auth/login" { return self.auth.begin_sign_in(); }
             if path == "/auth/callback" {
                 let ctx = std::http::build_context(req);
@@ -557,7 +570,9 @@ fn local_person(root: String) -> String {
 // local" meant all along — any local process is not.
 // The head's OIDC principal source (GH #989), from the record's config:
 // the issuer, this head's client id, where the issuer sends a browser
-// back (`dna.oidc.redirect`, else this head's /auth/callback), and who
+// back (`dna.oidc.redirect`, else this head's /auth/callback — for port 0
+// "" here, and the port the server got once it reports it,
+// `Api.sign_in_ready`), and who
 // each subject is (`dna.oidc.member`). The discovery document and the
 // issuer's signing keys are read now, once: a head that cannot read them
 // does not start, and never falls back to anything.
@@ -565,7 +580,7 @@ fn oidc_ui(record: dna::MemoryRecord, port: Int, label: String) -> ui::Ui {
     let issuer = record.setting("oidc.issuer");
     let client = record.setting("oidc.client");
     let named = record.setting("oidc.redirect");
-    let redirect_uri = if len(named) > 0 { named } else { "http://127.0.0.1:" + to_string(port) + "/auth/callback" };
+    let redirect_uri = if len(named) > 0 { named } else if port > 0 { origin_of(port) + "/auth/callback" } else { "" };
     if len(issuer) == 0 || len(client) == 0 || !dna::issuer_allowed(issuer) {
         eprintln(label, ": configured OIDC requires an allowed issuer and client; refusing any fallback");
         std::process::exit(2);
@@ -680,22 +695,40 @@ main locus Head {
         // (`HALE_DNA_API_PORTS`) and printed, and the commands line is the
         // process's own word that its commands port answers, which a
         // launcher waits for rather than guessing.
-        let reads = std::io::tcp::__local_port(self.srv.listen_fd);
-        let mut commands = self.http_port;
-        let mut waited = 0;
-        while commands <= 0 && waited < 250 {
-            let colon = std::str::index_of(self.remote.address, ":"); // `127.0.0.1:<port>`
-            if colon > 0 { commands = std::str::parse_int(self.remote.address[(colon + 1)..len(self.remote.address)]) or 0; }
-            if commands <= 0 { std::time::sleep(20ms); waited = waited + 1; }
-        }
-        report_ports(reads, commands);
-        println(self.banner_head, reads, self.banner_tail);
-        if commands > 0 { println("hale dna api: commands http://127.0.0.1:", commands, "/"); }
+        announce_ports(self.srv.listen_fd, self.http_port, self.remote, self.banner_head, self.banner_tail);
         std::api::run_until_stopped(self.local);
         self.local.stop();
         self.remote.stop();
     }
 }
+
+// A head program's ports, once its server and its commands exposure listen
+// (both are born, and listening, before its run()): the reads' off the
+// server's socket, the commands' as pinned or as the exposure was told the
+// address it was bound to (`127.0.0.1:<port>`). They are reported to the
+// launcher (`report_ports`) and announced: the reads' line between
+// `banner_head` and `banner_tail`, and the commands line, which a launcher
+// waits for as the process's own word that its commands port answers. One
+// implementation for every head program (this one and
+// dna/api/practice_review).
+fn announce_ports(listen_fd: Int, pinned_commands: Int, remote: std::api::Exposure, banner_head: String, banner_tail: String) {
+    let reads = std::io::tcp::__local_port(listen_fd);
+    let mut commands = pinned_commands;
+    let mut waited = 0;
+    while commands <= 0 && waited < 250 {
+        let colon = std::str::index_of(remote.address, ":");
+        if colon > 0 { commands = std::str::parse_int(remote.address[(colon + 1)..len(remote.address)]) or 0; }
+        if commands <= 0 { std::time::sleep(20ms); waited = waited + 1; }
+    }
+    report_ports(reads, commands);
+    println(banner_head, reads, banner_tail);
+    if commands > 0 { println("hale dna api: commands http://127.0.0.1:", commands, "/"); }
+}
+
+// The origin a head program is given for its browser commands: its own
+// reads' port, or "" for port 0, which `Api.origin` learns once the server
+// reports the port it got.
+fn origin_of(port: Int) -> String { return if port > 0 { "http://127.0.0.1:" + to_string(port) } else { "" }; }
 
 // The socket the exposure listens on: `socket`, unless another live process
 // holds it (a second API for the same record), in which case "" is what the
@@ -779,9 +812,7 @@ fn serve_with_people(root: String, port: Int, web: WebAssets, definitions: ops::
         std::process::exit(2);
     }
     let mode = dna::trim_nl(configured.stdout);
-    // port 0: the origin is the port the server gets, reported once it
-    // listens (`Api.origin`)
-    let command_origin = if port > 0 { "http://127.0.0.1:" + to_string(port) } else { "" };
+    let command_origin = origin_of(port);
     // GH #985: the graph read from memory under the head's role, and
     // Knowledge commands admitted into the record here
     let knowledge = LocalKnowledge { root: root };

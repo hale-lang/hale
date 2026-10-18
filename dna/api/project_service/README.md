@@ -58,7 +58,7 @@ ${XDG_CONFIG_HOME:-$HOME/.config}/hale-dna/sources/<NAME>  operator-written secr
 
 ```sh
 export HALE_BIN=/abs/hale
-HALE_HEAD_BIN=$PWD/target/seeds/project_service/project_service HALE_API_BIN=$PWD/target/seeds/api/api \
+HALE_HEAD_BIN=$PWD/target/seeds/project_service/project_service HALE_HEAD_API_BIN=$PWD/target/seeds/practice_review/practice_review \
   hale test dna/api/project_service/tests
 ```
 

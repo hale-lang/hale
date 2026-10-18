@@ -1054,10 +1054,11 @@ jobs:
             ./target/release/hale test dna/api/tests
           # The practice-review adapter over a stub provider: no service.
           ./target/release/hale test dna/api/practice_review/tests
-          # The head (GH #965): its fixtures spawn the built head over
-          # the plain API and exec this compiler's `hale dna` verbs detached.
+          # The head (GH #965): its fixtures spawn the built head over its
+          # configured API child (the composed practice_review,
+          # hale_dna::HEAD_API) and exec this compiler's `hale dna` verbs detached.
           HALE_HEAD_BIN="$PWD/target/seeds/project_service/project_service" \
-            HALE_API_BIN="$PWD/target/seeds/api/api" \
+            HALE_HEAD_API_BIN="$PWD/target/seeds/practice_review/practice_review" \
             ./target/release/hale test dna/api/project_service/tests
           # Domain fixtures own temporary Git roots and do not need a database.
           (cd "$RUNNER_TEMP" && "$GITHUB_WORKSPACE/target/release/hale" test "$GITHUB_WORKSPACE/dna/operations/tests")
