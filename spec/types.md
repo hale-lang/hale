@@ -223,6 +223,7 @@ stdlib, which keep their own representation class (the table above).
 | Tuple | `(A, B, C)` | Fixed-size heterogeneous |
 | Struct | `type Foo { x: Int; y: Int = 0; }` | Named record, a **value**: `let b = a;` copies (see § "A struct binding is a copy").  Each field can declare a default value (`= expr`); literals omitting a defaulted field fill it from the default at instantiation time. |
 | Enum | `type Foo = enum { A, B(int) };` | Tagged union (sum type). A constructor call carries the variant's declared values: `Foo::B(x)` is checked for the count and each value's type, a Decimal literal taking the field's scale ("\`Foo::B\` value 0: expected \`Int\`, got \`String\`"). A payload-free enum is stored as its tag. |
+| Set | `type Inbound = Book \| Trade;` | Untagged union: each member is a declared struct or enum and is its own discriminant. A member's value is the set's where a set is expected; `match` names a member by its type. See § "Set types". |
 | Alias | `type Thing = Int;` | A second SPELLING of a type, not a new type. See § "Type aliases". |
 | Function | `fn(A, B) -> C` | First-class function values |
 | Generic | `Foo<T>` | Parametric over type T |
@@ -433,6 +434,49 @@ it went to the current arena, so a method's view of `self.xs` left the
 field holding Strings its scratch freed at return.
 Before this rule the write landed in the place's block: `let mut a =
 self.r.names; a[0] = x;` changed the field.
+
+## Set types
+
+A set type (GH #1530, 2026-10-17) is an untagged union: `type Inbound =
+Book | Trade | Unknown;`. Each member is a struct or an enum the program
+declares, and the member's type is the discriminant, so nothing is named
+twice: no variant names a type that is already a name. A primitive, a
+list, a tuple or a function type is no member (a parse error: declare a
+struct that holds the value), nor is an alias of one; a set is no member
+of a set (name its members instead); a member is named once, and two
+members may not share the last segment of their names (`a::Book` and
+`b::Book`), since a pattern names a member by that alone.
+
+A member's value is the set's wherever a set is expected: a return from
+a fn returning the set, an argument to a parameter of it, a `let` of its
+type, an assignment to a place of it and a field of it. Two sets may
+share a member; the place's type says which set the value becomes. The
+arms of an `if` or a `match` whose values are different members are not
+joined into a set: give each arm the set's type (a fn returning it).
+
+`match` names each member by its type alone, binding the member's value:
+
+```hale
+fn handle(m: Inbound) -> Outbound {
+    return match m {
+        Book(b) -> answer(b),
+        Trade(t) -> fill(t),
+        Unknown(u) -> reject(u.raw),
+    };
+}
+```
+
+A name that is no member of the scrutinee's set is refused ("`Side` is
+not a member of the set `Inbound`, whose members are Book, Trade,
+Unknown"), and the match is exhaustive as an enum's is: every member, or
+a `_` arm. `Name(_)` matches a member without binding it; a bare `Name`
+is a binding, as everywhere.
+
+Underneath, a set is an enum whose variants are its members, each named
+for its type and holding one value of it, and it costs what that enum
+costs: `Inbound::Book(b)` is the same value as `b` flowing into an
+`Inbound`, and both spellings are accepted. It prints as that enum does
+(`Inbound::Book(Book { id: 7 })`).
 
 ## Type aliases
 

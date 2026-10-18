@@ -6288,6 +6288,46 @@ impl Parser {
                 self.bump();
             }
             let ty = self.parse_type_expr()?;
+            // GH #1530 step 1: a set type, `type S = A | B | C;`. Untagged:
+            // each member is a named type and is its own discriminant, so
+            // the set is an enum whose variants are named for their
+            // members (`A(A)`), marked as members.
+            if kind.is_none() && self.at(&TokenKind::Pipe) {
+                let mut members = vec![ty];
+                while self.eat(&TokenKind::Pipe) {
+                    members.push(self.parse_type_expr()?);
+                }
+                let end = self.expect(TokenKind::Semi, ";")?.span;
+                let mut variants = Vec::new();
+                for m in members {
+                    let TypeExpr::Named { path, generic_args, span } = &m else {
+                        return Err(Diag::parse(
+                            m.span(),
+                            "a set's member is a named type the program declares (`type S = A | B;`): it is its \
+                             own discriminant, so a primitive, a list, a tuple or a function type cannot be one; \
+                             declare a struct that holds the value",
+                        ));
+                    };
+                    if !generic_args.is_empty() {
+                        return Err(Diag::parse(
+                            *span,
+                            "a set's member is a named type without type arguments: declare `type A = Pair<Int>;` \
+                             and name `A`",
+                        ));
+                    }
+                    let last = path.segments.last().expect("a path has a segment").clone();
+                    variants.push(EnumVariant { name: last, fields: vec![m.clone()], span: *span, member: true });
+                }
+                return Ok(TypeDecl {
+                    display: None,
+                    name,
+                    generics,
+                    body: TypeDeclBody::Enum(variants),
+                    span: kw.span.merge(end),
+                    id: NodeId::NONE,
+                    synthetic: false,
+                });
+            }
             // The denomination, `in UNIT` / `in 100ms` / `in 100 ms`.
             let denom = if self.at(&TokenKind::In) {
                 let in_tok = self.bump();
@@ -6515,7 +6555,7 @@ impl Parser {
             self.expect(TokenKind::RParen, ")")?;
         }
         let span = name.span;
-        Ok(EnumVariant { name, fields, span })
+        Ok(EnumVariant { name, fields, span, member: false })
     }
 
     fn parse_generic_params_opt(&mut self) -> Result<Vec<GenericParam>, Diag> {

@@ -4814,6 +4814,9 @@ pub(crate) struct EnumInfo {
     /// `[N x i8]` body (max over all variants). Zero when
     /// has_payload is false (no body field at all).
     pub(crate) payload_bytes: u64,
+    /// A set type (GH #1530 step 1): each variant is named for its one
+    /// field's type, and a pattern names it by that type alone.
+    pub(crate) set: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -12449,11 +12452,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     name: mk_ident("Ok"),
                     fields: vec![mk_t("T")],
                     span,
+                    member: false,
                 },
                 EnumVariant {
                     name: mk_ident("Err"),
                     fields: vec![mk_t("E")],
                     span,
+                    member: false,
                 },
             ]),
             span,
@@ -12469,11 +12474,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     name: mk_ident("Some"),
                     fields: vec![mk_t("T")],
                     span,
+                    member: false,
                 },
                 EnumVariant {
                     name: mk_ident("None"),
                     fields: Vec::new(),
                     span,
+                    member: false,
                 },
             ]),
             span,
@@ -13645,6 +13652,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                             })
                             .collect(),
                         span: v.span.clone(),
+                        member: v.member,
                     })
                     .collect();
                 TypeDeclBody::Enum(new_variants)
@@ -21480,7 +21488,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     } else {
                         None
                     };
-                    if path.segments.len() != 2 && aliased.is_none() {
+                    // GH #1530 step 1: a set's member is matched by its
+                    // type's name alone, against the set it is a member of.
+                    let set_member: Option<String> = match (&scrutinee_ty, path.segments.len()) {
+                        (CodegenTy::Enum(n), 1) if self.user_enums.get(n).is_some_and(|i| i.set) => Some(n.clone()),
+                        _ => None,
+                    };
+                    if path.segments.len() != 2 && aliased.is_none() && set_member.is_none() {
                         return Err(CodegenError::Unsupported(format!(
                             "constructor pattern path must be \
                              `Enum::Variant` (got {} segments)",
@@ -21489,6 +21503,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     }
                     let enum_name = aliased
                         .clone()
+                        .or_else(|| set_member.clone())
                         .unwrap_or_else(|| path.segments[0].name.clone());
                     let variant_name = &path.segments[path.segments.len() - 1].name;
                     let info = self
@@ -24161,16 +24176,51 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // owned copy.
         match self.owned_views.operand(e) {
             // A value position: copied whole.
-            Some(false) => return Ok((self.own_viewed_value(v, &ty)?, ty)),
+            Some(false) => {
+                let v = self.own_viewed_value(v, &ty)?;
+                return self.inject_member(e, (v, ty));
+            }
             // A call's argument is passed by reference: a callee may
             // write a record through its parameter, and the caller sees
             // it, so only an immutable leaf goes as a copy.
             Some(true) if matches!(ty, CodegenTy::String | CodegenTy::Bytes) => {
-                return Ok((self.own_viewed_value(v, &ty)?, ty));
+                let v = self.own_viewed_value(v, &ty)?;
+                return self.inject_member(e, (v, ty));
             }
             _ => {}
         }
-        Ok((v, ty))
+        self.inject_member(e, (v, ty))
+    }
+
+    /// GH #1530 step 1: a member's value where the checker flowed it into
+    /// its set (an argument, a binding, a return, a field), as that set:
+    /// the variant named for the member, its one payload the value. Every
+    /// other expression is its value.
+    fn inject_member(
+        &mut self,
+        e: &Expr,
+        lowered: (BasicValueEnum<'ctx>, CodegenTy),
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
+        let Some(body) = self.current_body else { return Ok(lowered) };
+        let site = self.site(hale_types::typed_bodies::SiteKind::value(e.span()));
+        let Some(inj) = self.typed.injection_in(body, &site).cloned() else { return Ok(lowered) };
+        let info = self.user_enums.get(&inj.set).cloned().ok_or_else(|| {
+            CodegenError::UnsupportedAt(format!("the set `{}` has no declaration lowering knows", inj.set), e.span())
+        })?;
+        let idx = info.variants.iter().position(|v| v.name == inj.member).ok_or_else(|| {
+            CodegenError::UnsupportedAt(format!("the set `{}` has no member `{}`", inj.set, inj.member), e.span())
+        })?;
+        if info.variants[idx].field_tys.first() != Some(&lowered.1) {
+            return Err(CodegenError::UnsupportedAt(
+                format!(
+                    "a value of {:?} flowed into the set `{}` as its member `{}`, which holds {:?}",
+                    lowered.1, inj.set, inj.member, info.variants[idx].field_tys
+                ),
+                e.span(),
+            ));
+        }
+        let ptr = self.lower_enum_variant_alloc(&info, idx as u32, &[lowered])?;
+        Ok((ptr.into(), CodegenTy::Enum(inj.set)))
     }
 
     fn lower_expr_at(

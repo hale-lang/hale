@@ -689,6 +689,18 @@ pub struct TypedBody {
     pub conversions: BTreeMap<ConversionSite, ConversionRow>,
     /// In walk order: the template walk's, then each walk per monomorph's.
     pub recoveries: Vec<RecoveryRow>,
+    /// GH #1530 step 1: by site, every value of a set's member that flows
+    /// into the set (an argument, a binding, a return, a field), which
+    /// lowering builds as the set's variant for it.
+    pub injections: BTreeMap<ConversionSite, Injection>,
+}
+
+/// A member's value made its set's (GH #1530 step 1): the set, by its
+/// declared (merged) name, and the member's variant, named for its type.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Injection {
+    pub set: String,
+    pub member: String,
 }
 
 /// What a monomorph's template is.
@@ -1340,6 +1352,15 @@ impl TypingRecord {
 
     /// Record a conversion; a site already recorded keeps its row (a
     /// generic body is walked again per specialization).
+    /// GH #1530 step 1: the value at `site` of the body `body` is a set's
+    /// member flowing into its set.
+    pub fn injection(&mut self, body: NodeId, site: ConversionSite, injection: Injection) {
+        if site.path.iter().any(|at| NodeId(*at).is_none()) {
+            return;
+        }
+        self.body(body).injections.entry(site).or_insert(injection);
+    }
+
     pub fn conversion(&mut self, body: NodeId, site: ConversionSite, row: ConversionRow) {
         let unminted = match &site.kind {
             SiteKind::Cast(id) => NodeId(*id).is_none(),
@@ -1525,6 +1546,9 @@ pub struct TypedBodies {
     /// an operator's result (U4): a program with none has no value row
     /// for lowering to look up.
     scaled: bool,
+    /// Whether a value flows into a set (GH #1530 step 1): a program with
+    /// none has no injection for lowering to look up.
+    injected: bool,
 }
 
 impl TypedBodies {
@@ -1532,6 +1556,16 @@ impl TypedBodies {
     /// quantity's or a point's conversion, or a printed unit.
     pub fn has_quantity_rows(&self) -> bool {
         self.scaled
+    }
+
+    /// The injection at `site` in the body declared at `body` (GH #1530
+    /// step 1): a set's member flowing into the set there. `None` in a
+    /// program that flows none.
+    pub fn injection_in(&self, body: NodeId, site: &ConversionSite) -> Option<&Injection> {
+        if !self.injected {
+            return None;
+        }
+        self.bodies.get(&body.0)?.injections.get(site)
     }
 
     /// The `conversions` column's row at `site`: lowering reads a cast's
@@ -1798,6 +1832,7 @@ pub fn typed_bodies(bundle: &crate::Bundle<'_>, top: &crate::resolve::TopScope, 
         ident_reads: record.ident_reads.clone(),
         literal_paths: record.literal_paths.clone(),
         views: record.views.clone(),
+        injected: record.bodies.values().any(|b| !b.injections.is_empty()),
         scaled: record.bodies.values().any(|b| {
             b.conversions.iter().any(|(site, r)| {
                 r.scale.is_some() || r.printed.is_some() || matches!(site.kind, SiteKind::Operator { .. })

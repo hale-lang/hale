@@ -1,0 +1,101 @@
+// tests/hale/set_type_test.hl — a set type (GH #1530 step 1): an untagged
+// union whose member type is the discriminant. A member's value flows into
+// its set wherever a set is expected (a return, an argument, a binding, an
+// assignment, a field), and a `match` names each member by its type alone,
+// exhaustively. Members may be records or enums; two sets may share a
+// member; the explicit `Set::Member(v)` spelling is the same value.
+
+type Book { id: Int; title: String; }
+type Trade { qty: Int; px: Float; }
+type Unknown { raw: String; }
+type Side = enum { Buy, Sell };
+type Inbound = Book | Trade | Unknown;
+type Order = Side | Trade;
+
+type Ack { id: Int; }
+type Reject { id: Int; why: String; }
+type Outbound = Ack | Reject;
+
+type Slot { last: Outbound; seen: Int; }
+
+fn decode(n: Int) -> Inbound {
+    if n == 0 { return Book { id: 7, title: "Kim" }; }
+    if n == 1 { return Trade { qty: 2, px: 1.5 }; }
+    return Unknown { raw: "x" + to_string(n) };
+}
+
+fn handle(m: Inbound) -> Outbound {
+    return match m {
+        Book(b) -> answer_book(b),
+        Trade(t) -> answer_trade(t),
+        Unknown(u) -> answer_unknown(u),
+    };
+}
+
+fn answer_book(b: Book) -> Outbound { return Ack { id: b.id }; }
+fn answer_trade(t: Trade) -> Outbound {
+    if t.qty > 1 { return Reject { id: t.qty, why: "too many" }; }
+    return Ack { id: 0 };
+}
+fn answer_unknown(u: Unknown) -> Outbound { return Reject { id: -1, why: u.raw }; }
+
+fn encode(o: Outbound) -> String {
+    return match o {
+        Ack(a) -> "ack " + to_string(a.id),
+        Reject(r) -> "reject " + to_string(r.id) + " " + r.why,
+    };
+}
+
+fn side_of(o: Order) -> String {
+    return match o {
+        Side(s) -> match s {
+            Side::Buy -> "buy",
+            Side::Sell -> "sell",
+        },
+        Trade(t) -> "trade " + to_string(t.qty),
+    };
+}
+
+// a statement `match` with a catch-all arm
+fn is_book(m: Inbound) -> Bool {
+    match m {
+        Book(_) -> { return true; },
+        _ -> { return false; },
+    }
+    return false;
+}
+
+fn main() {
+    std::test::assert_eq_str(encode(handle(decode(0))), "ack 7", "a book, decoded and handled");
+    std::test::assert_eq_str(encode(handle(decode(1))), "reject 2 too many", "a trade");
+    std::test::assert_eq_str(encode(handle(decode(5))), "reject -1 x5", "the fallthrough member");
+
+    // a binding, an argument, an assignment
+    let mut x: Inbound = Book { id: 1, title: "Emma" };
+    std::test::assert(is_book(x), "a binding of a member");
+    x = Unknown { raw: "later" };
+    std::test::assert(!is_book(x), "an assignment of another member");
+    std::test::assert(is_book(Book { id: 2, title: "Dune" }), "an argument");
+    let t = Trade { qty: 1, px: 2.0 };
+    std::test::assert_eq_str(encode(handle(t)), "ack 0", "a local of a member, passed");
+
+    // two sets share a member; an enum is a member
+    std::test::assert_eq_str(side_of(t), "trade 1", "the shared member into the other set");
+    std::test::assert_eq_str(side_of(Side::Sell), "sell", "an enum member");
+
+    // a field of a set type, and the explicit spelling
+    let mut s = Slot { last: Ack { id: 3 }, seen: 0 };
+    std::test::assert_eq_str(encode(s.last), "ack 3", "a field initialized with a member");
+    s.last = Reject { id: 4, why: "no" };
+    std::test::assert_eq_str(encode(s.last), "reject 4 no", "a field assigned a member");
+    std::test::assert_eq_str(encode(Outbound::Ack(Ack { id: 9 })), "ack 9", "the explicit spelling");
+
+    // in a loop: each value its own
+    let mut out = "";
+    let mut i = 0;
+    while i < 3 {
+        out = out + encode(handle(decode(i))) + ";";
+        i = i + 1;
+    }
+    std::test::assert_eq_str(out, "ack 7;reject 2 too many;reject -1 x2;", "decoded in a loop");
+}
