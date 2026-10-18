@@ -7,6 +7,8 @@
 
 #[path = "api_exposure_param.rs"]
 mod api_exposure_param;
+#[path = "api_serve_memory.rs"]
+mod api_serve_memory;
 #[path = "api_grpc.rs"]
 mod api_grpc;
 #[path = "api_grpc_proto.rs"]
