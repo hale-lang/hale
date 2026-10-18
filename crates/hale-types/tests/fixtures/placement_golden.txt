@@ -1121,6 +1121,19 @@ row	App@literal1.p	Plain	main	default
 row	App@literal1.se	Ser	main	default
 row	App@literal1.st	Str	main	default
 
+== crates/hale-cli/tests/styleguide_claims.rs#41eea4c5
+dynamic	__StdBytesBytesBuilder	on main	in the seed
+
+== crates/hale-cli/tests/styleguide_claims.rs#201ef3ec
+-- Closed@main3	Closed
+row	~	Closed	main	default
+row	~.desk	Desk	main	inherited
+row	~.feed	Feed	main	inherited
+row	~.log	Log	main	inherited
+row	~.wire	Wire	main	inherited
+shared	Stepped@main1	Stepped #7bbe4aac
+shared	Stepped@main2	Stepped #7bbe4aac
+
 == crates/hale-cli/tests/target_model.rs#e644e39b
 root	App	the entry
 domain	pool:io	async_io
@@ -16016,6 +16029,13 @@ row	~.s	SessionSigner	main	inherited
 == shared Router #f7d48509
 row	~	Router	main	default
 row	~.quick	Quick	main	inherited
+
+== shared Stepped #7bbe4aac
+row	~	Stepped	main	default
+row	~.desk	Desk	main	inherited
+row	~.feed	Feed	main	inherited
+row	~.log	Log	main	inherited
+row	~.wire	Wire	main	inherited
 
 == shared Sup #20139bc1
 row	~	Sup	main	default

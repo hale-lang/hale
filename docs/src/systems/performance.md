@@ -39,10 +39,23 @@ fn render(rows: Int) -> String {
 }
 ```
 
-Each `out + ...` allocates a new string; scratch demand peaks at
-the total size of every intermediate. For large inputs that
-crosses a chunk boundary. The fix is an accumulator that grows
-*one* buffer in place:
+Each `out + ...` allocates a new string and copies the whole of
+`out` into it, and nothing frees the old one until `render` returns:
+scratch holds every intermediate at once. That is memory quadratic in
+the result, not merely more of it. Measured with 500-byte rows, as the
+growth of the process's peak resident set:
+
+| result | rows | `out = out + row` | `BytesBuilder` |
+|---|---|---|---|
+| 500 KB | 1 000 | +250 MB | +2 MB |
+| 1 MB | 2 000 | +990 MB | +4 MB |
+| 2 MB | 4 000 | +3.9 GB | +8 MB |
+
+Because the cost is memory rather than time, this one is not only a
+hot-path concern: a single large response or query result is enough.
+(`std::http::Server` itself assembled request bodies this way until
+2026-10-18, when a 12 MiB request held about 9.5 GB before any handler
+ran.) The fix is an accumulator that grows *one* buffer in place:
 
 ```hale
 fn render_row(i: Int) -> String {
@@ -53,7 +66,7 @@ fn render(rows: Int) -> String {
     let b = std::bytes::BytesBuilder { };
     let mut i = 0;
     while i < rows {
-        b.append(std::bytes::from_string(render_row(i)));
+        b.append_str(render_row(i));
         i = i + 1;
     }
     return std::str::from_bytes(b.finish() or raise);
@@ -64,6 +77,14 @@ fn render(rows: Int) -> String {
 buffer instead of N throwaway strings. Use it (or
 `std::json::Builder` for JSON output) anywhere you build a result
 incrementally.
+
+Reading has the mirror image. A loop that consumes a text by slicing
+off the rest after each line (`rest = rest[(nl + 1)..len(rest)]`)
+copies the remainder every time and holds every copy: 1 MB in 2 000
+lines grew the peak by 984 MB. Walk it by position over one
+`std::str::bytes_view` and slice out only the line, and the same
+input costs under 1 MB ([Strings & text](../basics/strings.md#reading-line-by-line)
+shows the loop). The style guide states both as rules, S15 and S16.
 
 The same goes for a locus built in such a loop. A locus with no
 `birth()` that writes its own arena gets no arena at all and borrows

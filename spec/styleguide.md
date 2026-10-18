@@ -129,7 +129,7 @@ in this guide runs its body through a method.)
 
 ## 2. The shape catalog
 
-Eight idiomatic shapes. Every locus, type or free fn in a
+Eleven idiomatic shapes. Every locus, type or free fn in a
 well-written program matches one; code that doesn't should be
 reconsidered against the catalog before shipping.
 
@@ -476,6 +476,261 @@ fn main() {
 Narrowing is C8. The contract is `spec/units.md`, the walk-through
 the book's "Units, end to end".
 
+### 2.9 Message union — a set type
+
+When a message is one of several kinds and each kind is a record of its
+own, the union is a **set** of those types. The member's type is the
+tag, so nothing is named twice:
+
+```hale
+type NewOrder { id: Int; qty: Int; }
+type Cancel { id: Int; }
+type Inbound = NewOrder | Cancel;
+
+fn parse(line: String) -> Inbound {
+    if line == "cancel" { return Cancel { id: 1 }; }
+    return NewOrder { id: 2, qty: 5 };
+}
+
+fn describe(m: Inbound) -> String {
+    return match m {
+        NewOrder(n) -> "new " + to_string(n.qty),
+        Cancel(c) -> "cancel " + to_string(c.id),
+    };
+}
+
+fn main() { println(describe(parse("cancel"))); }
+```
+
+- **A set or an enum.** A set when the kinds are records with a life
+  of their own: a handler method takes each one, a surface row names
+  it, another set reuses it. An enum when the kinds are tags, or small
+  payloads that mean nothing outside the union (`type Status = enum {
+  Up, Degraded(String), Down };`).
+- **Match without `_`.** `match` names each member by its type and is
+  exhaustive. Leave the `_` arm out, so a member added to the set fails
+  the build at every match that does not handle it. **[error for a
+  non-exhaustive match]**
+- **The place gives the set its type.** A member becomes the set where
+  a set is expected: a return, an argument, a typed `let`, a field. An
+  `if` or a `match` whose arms are different members is not joined into
+  a set ("if-expression arms have mismatched types"). Give the branch a
+  fn that returns the set, as `parse` does. **[error]**
+- **Members are structs or enums.** To put an `Int` in a set, give it a
+  type of its own (`type Count { n: Int; }`). A set is not a member of
+  another set: list its members instead. **[error]**
+- Underneath, a set is the enum whose variants are its members, at an
+  enum's cost. On an API surface it crosses as that enum, with the
+  member's type name as the tag (`{"Cancel": {"id": 1}}`).
+
+When another locus consumes the union, a seam (2.10) writes the dispatch
+for you. Don't write it by hand.
+
+### 2.10 Seam — decoder, handler, encoder in one tower
+
+A protocol edge is three pieces that should not know each other: a
+decoder that knows the bytes, a handler that knows its domain, and an
+encoder that writes the answer. Write each as a locus and let a `seam`
+stitch them. The compiler writes the dispatch and checks it.
+
+```hale
+type NewOrder { id: Int; qty: Int; }
+type Cancel { id: Int; }
+type Ack { id: Int; }
+type Reject { id: Int; why: String; }
+type WireError { at: Int; }
+type Inbound = NewOrder | Cancel;
+type Outbound = Ack | Reject | WireError;
+
+locus Wire {
+    fn decode(b: String) -> Inbound fallible(WireError) {
+        if b == "cancel" { return Cancel { id: 1 }; }
+        if std::str::starts_with(b, "new ") {
+            let qty = std::str::parse_int(b[4..len(b)]) or { fail WireError { at: 4 }; };
+            return NewOrder { id: qty * 10, qty: qty };
+        }
+        fail WireError { at: 0 };
+    }
+    fn encode(o: Outbound) -> String {
+        return match o {
+            Ack(a) -> "ack " + to_string(a.id),
+            Reject(r) -> "reject " + r.why,
+            WireError(e) -> "bad frame at " + to_string(e.at),
+        };
+    }
+}
+
+locus Desk {
+    params { open: Int = 0; }
+    fn new_order(n: NewOrder) -> Outbound {
+        if n.qty > 10 { return Reject { id: n.id, why: "too big" }; }
+        self.open = self.open + 1;
+        return Ack { id: n.id };
+    }
+    fn cancel(c: Cancel) -> Outbound {
+        self.open = self.open - 1;
+        return Ack { id: c.id };
+    }
+}
+
+locus Gateway {
+    params { wire: Wire = Wire { }; desk: Desk = Desk { }; }
+    seam answer(frame: String) -> String {
+        frame -> self.wire.decode -> self.desk -> self.wire.encode;
+    }
+}
+
+fn main() {
+    let g = Gateway { };
+    println(g.answer("new 3"), "; ", g.answer("cancel"), "; ", g.answer("??"));
+}
+```
+
+- **A locus hop is the dispatch.** `self.desk` sends each member of
+  `Inbound` to the `Desk` method whose parameter takes it. Coverage is
+  checked at every boundary, in both directions. A member that no method
+  takes, or that two methods take, is refused by name: "`self.desk` has
+  no method taking `Cancel`, which reaches it from `self.wire.decode`:
+  every member has one eater". So is a member that a method hop's
+  parameter does not hold. This replaces a hand-written `match` that
+  forwards each member to a method, whose `_` arm is where a new member
+  goes missing at run time. The seam is also the cheaper of the two: it
+  hands a split set back in its own frame, with no tag read and no
+  switch (S14). **[error]**
+- **A protocol failure is an answer.** Make the decoder's error a member
+  of the output set, as `WireError` is of `Outbound`. It enters the
+  chain at the first later hop that takes it, and the encoder writes the
+  reject. A failure that no later hop takes needs the seam's `or end;`
+  (the flow ends; a callable seam fails with it) or `or violate
+  <closure>;`. Without one it is refused, naming the hop and the type.
+  **[error]**
+- **Closed or callable.** With a source and a sink, `seam {
+  self.feed.next() -> … -> self.log.write; }` is the locus's `run`: it
+  pulls from the source until the source fails, and the locus
+  declares no `run` of its own. Without them, `seam name(x: T) -> R { x
+  -> …; }` is a method. Today a closed seam holds every frame's values
+  until its locus dissolves (§7, sharp edges), so a source that runs for
+  long drives a callable seam from a method per frame instead. **[error
+  for a closed seam beside a `run`]**
+- **One tower.** Hops are the locus's own methods and children, called
+  directly and inlined. Nothing is queued, and no union is built that
+  the program did not declare. A hop on an interface is refused, because
+  the method it calls is not known statically. So is a hop on a child
+  that `placement` puts on another pool: across pools, use the bus.
+  **[error]**
+- **An API receiver is this shape, written for you.** Each row of a
+  served surface is a seam on its receiver. One decoder turns the body
+  into the row's request type, the dispatch hands it to your method,
+  and one encoder writes the answer, your error, or the server error. A
+  handler is an ordinary method over its own types. It never sees
+  bytes, and there is nothing to hand-write.
+
+### 2.11 Wire record — what a surface carries
+
+The records that a surface's rows name are its contract. The codec, the
+description, the generated clients and the digest all read them, so
+choose each field's shape for what the caller must be able to say:
+
+```hale
+role operator;
+
+type Status = enum { Up, Degraded(String), Down };
+type Check { name: String; status: Status; }
+
+type HealthQuery {
+    verbose: Bool = false;
+    since: Time = `1970-01-01T00:00:00Z`;
+    has_since: Bool = false;
+}
+
+type Health {
+    checks: bounded[Check; 16] indexed_by name;
+    note: String = "";
+    has_note: Bool = false;
+}
+
+type Problem = enum { NotFound(String), Busy };
+type Restart { name: String; }
+
+api Ops requires: [operator] {
+    rpc Probe::health requires: [];
+    rpc Probe::restart;
+}
+
+locus Probe {
+    fn health(q: HealthQuery) -> Health {
+        let mut h = Health { };
+        push(h.checks, Check { name: "db", status: Status::Up }) or discard;
+        push(h.checks, Check { name: "cache", status: Status::Degraded("cold") }) or discard;
+        if q.has_since {
+            h.note = "since " + std::time::iso8601(q.since);
+            h.has_note = true;
+        }
+        return h;
+    }
+    fn restart(r: Restart) -> Health fallible(Problem) {
+        if r.name != "db" { fail Problem::NotFound(r.name); }
+        return Health { };
+    }
+}
+
+fn main() {
+    let p = Probe { };
+    let q = HealthQuery::api_decode("{\"since\":\"2026-10-18T00:00:00Z\"}") or HealthQuery { };
+    println(Health::api_encode(p.health(q)));
+}
+```
+
+```text
+{"checks":{"db":{"status":"Up"},"cache":{"status":{"Degraded":"cold"}}},"note":"since 2026-10-18T00:00:00Z"}
+```
+
+- **A default, when "not sent" means a value.** A caller that leaves
+  out `verbose: Bool = false` has said `false`. Use a defaulted field
+  wherever "not sent" and one value mean the same thing. It costs
+  neither side anything.
+- **A presence pair, when "not sent" means not sent.** With `since`
+  and `has_since: Bool`, the caller may leave the key out or send
+  `null`, and the handler reads the flag. The encoder writes `note`
+  only when `has_note` is set, and it never writes a flag. Declare
+  both fields with defaults, so that a literal with nothing to say
+  names neither. Never encode absence as a value the field's type can
+  hold (`""`, `-1`, the epoch): the description cannot say so, and a
+  client cannot tell it from a real value.
+- **A map, when callers look entries up by name.** `bounded[Check; 16]
+  indexed_by name` crosses as `{"db": {…}, "cache": {…}}`, and in the
+  program it stays the bounded list it was, in order. A repeated key is
+  refused `duplicate_key`. Keep a plain `bounded` list when the order is
+  the meaning, when an entry has no `String` name, or when two entries
+  may share one. Either way the bound is part of the contract: size it
+  for the largest legitimate answer, and page past it (`type Page {
+  items: bounded[Item; 50]; more: Bool; }`).
+- **An enum, for a closed set of states.** `Status` crosses as `"Up"` or
+  `{"Degraded": "cold"}`, and the description lists the variants. A
+  `String` status crosses as any string, and every client re-invents
+  the list. The codec reads no default for an enum field, so an absent
+  one is `missing_field` unless the field is a presence pair.
+- **An error type that says which thing went wrong.** With
+  `fallible(Problem)`, where `Problem` is an enum or a set of error
+  records, a caller branches on the variant. A record of `code: String`
+  makes it parse prose.
+- **Roles once, on the surface.** `api Ops requires: [operator]` is the
+  default of every row, and a row that differs says so (`requires: []`
+  for anyone). It is the same table, with the same digest, as writing
+  the roles on each row.
+- **Evolve by adding members.** Each member has a digest of its own,
+  which moves only when that member's request, response, error or roles
+  change. A client built against a member keeps working while the
+  surface gains others. Changing the shape of a member refuses every
+  client that names its old digest (`digest_mismatch`). So a new
+  capability is a new row, and an incompatible change is a new member
+  (`place_v2`) or a new surface, served beside the old one.
+- **Speak the codec; don't hand-roll JSON.** Where a program writes the
+  wire itself (a streamed event, a hand-written router, a test),
+  `T::api_encode(v)` and `T::api_decode(text)` are the surface's own
+  codec, as strict as a served row. JSON built with `+` is a second
+  encoder, and it drifts.
+
 ### Naming conventions
 
 | Construct | Convention | Example |
@@ -519,9 +774,11 @@ Two gates now run in the normal suite:
   tell "incomplete" from "wrong on purpose".
   (`hale-types/tests/styleguide_snippets.rs`)
 - **Claims.** §7's assertions about what the language does *not* do
-  are pinned as tests. Absence is the thing nobody re-tests, so when a
-  gap closes the prose keeps saying it is open. If one of these
-  changes, the test fails and names the entry to update.
+  are pinned as tests, and so are the refusals and measurements the
+  shapes and rules elsewhere rest on (2.9, 2.10, 2.11, C9, S15,
+  S16). Absence is the thing nobody re-tests, so when a gap closes
+  the prose keeps saying it is open. If one of these changes, the
+  test fails and names the entry to update.
   (same file, plus `hale-cli/tests/styleguide_claims.rs` for the
   claims that are codegen limits rather than typecheck limits — a
   split worth knowing, because those are invisible to `hale check` —
@@ -805,6 +1062,98 @@ as `Int`'s `/` does, and a runtime divisor (`d / n`) is the same
 integer division. When the count must round another way, narrow
 first, as `count` above does. **[error for an unnamed narrowing]**
 
+### C9. A `bounded` lives in its holder: count it, copy it whole, return its record
+
+A `bounded[T; N]` is laid out inline in the value that holds it. Its
+operations are the intrinsics, and its lifetime is its holder's. Four
+edges follow from that, and the check refuses the wrong side of each:
+
+```hale
+type Row { names: bounded[String; 4]; }
+type Names { items: bounded[String; 4]; }
+
+fn fill(r: Row) {
+    push(r.names, "a") or discard;
+    push(r.names, "b") or discard;
+}
+
+fn first_two() -> Names {
+    let mut n = Names { };
+    push(n.items, "x") or discard;
+    push(n.items, "y") or discard;
+    return n;
+}
+
+locus Roster {
+    params { row: Row = Row { }; spare: Names = Names { }; }
+    fn refill() {
+        let mut mine = Row { };
+        fill(mine);
+        self.row = mine;
+        self.spare.items = first_two().items;
+        println(count(self.row.names), " ", count(self.spare.items));
+    }
+}
+
+fn main() { let r = Roster { }; r.refill(); }
+```
+
+- **`count(x)`, not `len(x)`.** `len` of a `bounded` is refused, and the
+  diagnostic points at `count`. **[error]**
+- **Return the record, not the list.** A fn returning `bounded[T; N]` is
+  refused. Return a record that holds it, as `first_two` does; its
+  elements come back whole, and the caller can keep pushing.
+  **[error]**
+- **Fill a local, then store it whole.** A fn that pushes a `String`,
+  `Bytes` or record into a `bounded` under its parameter allocates the
+  element in the frame that runs the call. Handed a place under `self`
+  (`fill(self.row)`), it would leave the locus holding elements that
+  frame frees, so that argument is refused. Fill a local the frame owns
+  and store it whole (`self.row = mine`), which anchors the elements in
+  the locus's arena. Or write the elements through `self`, in a method
+  of the locus that holds the place. **[error]**
+- **Whole assignment is a copy.** Assigning one `bounded` place to
+  another of the same element type and capacity (`self.spare.items =
+  first_two().items`) copies the elements and the count. A later `push`
+  on either side does not reach the other. Anything else on the right,
+  such as an array literal or another capacity, is refused: build the
+  list with `push`. **[error for a mismatched type]**
+
+### C10. A served HTTP edge: cap it in your own shape, and stream from a pool that parks
+
+```hale,fragment
+std::http::Server {
+    port: 8080,
+    handler: Feed { },
+    max_request_bytes: 65536,
+    too_large: std::http::Response { status: 413, content_type: "application/json", body: "{\"error\":\"too large\"}" },
+};
+
+fn handle(req: std::http::Request) -> std::http::Response {
+    let w = std::http::SseWriter { conn_fd: req.conn_fd };
+    for t in self.ticks {
+        w.event(std::http::SseEvent { event: "tick", data: Tick::api_encode(t) }) or { break; };
+    }
+    return w.end();
+}
+```
+
+- **Set the request cap to what the API takes.** `std::http::Server`'s
+  `max_request_bytes` (1 MiB by default, at most 1 GiB) counts the whole
+  request, its head included. A declared body over the cap is answered
+  with `too_large` before any of it is read. Size the cap for the
+  largest legitimate request, and give `too_large` the API's own error
+  shape, so that a caller over the cap gets an answer it can parse.
+  **[convention]**
+- **Stream from an `async_io` pool.** A `BodyWriter` or `SseWriter`
+  holds its connection for as long as it streams. On a `where async_io`
+  pool each connection is a coroutine of its own, and a stream parks
+  only itself. Anywhere else the Server serves one connection at a
+  time, so a ten-second stream holds every other request for ten
+  seconds. A failed `chunk` or `event` means the client has gone: stop,
+  and return `w.end()`. Encode each event's data with `T::api_encode`
+  (2.11). **[convention]**
+
 ---
 
 ## 4. Speed rules
@@ -819,6 +1168,10 @@ buys nothing and costs shape.
 For genuinely hot paths, the idioms below are the difference
 between flat RSS at 100k msg/s and a daemon that dies nightly.
 Each is production-derived. Certify the path when done — S10.
+
+Two rules are the exception, and they apply to **every** path: S15 and
+S16. Their cost is memory that grows with the square of a text's size,
+so a cold path that handles one large body is enough to exhaust a host.
 
 ### S1. Reuse buffers via params fields
 
@@ -1061,6 +1414,8 @@ on the one loop, not materializations.
 
 ### S14. Let a seam split a producer's set
 
+The shape is 2.10's; this is what it costs on a hot path.
+
 ```hale
 type A { n: Int; }
 type B { s: String; }
@@ -1092,6 +1447,104 @@ as itself beside its tag; inlined into the seam, each of the producer's
 on to a method taking the set (an encoder of the outbound set, say) is
 not split and is built as any set is.
 
+### S15. Build a long text in one buffer, never with `s = s + chunk` in a loop
+
+This rule applies on every path, hot or not. `s + chunk` makes a new
+String as long as both and copies `s` into it. Inside a loop the old `s`
+is not freed: it lives in the method's scratch until the method returns,
+so every prefix the loop made is still held at the end. Building `n`
+bytes in `k` appends holds about `n·k/2` bytes. Measured on v0.25.0,
+with 500-byte rows, as the growth of the process's peak resident set:
+
+| text | appends | `out = out + row` | `BytesBuilder` |
+|---|---|---|---|
+| 500 KB | 1 000 | +250 MB | +2 MB |
+| 1 MB | 2 000 | +990 MB | +4 MB |
+| 2 MB | 4 000 | +3.9 GB | +8 MB |
+
+Append into one `std::bytes::BytesBuilder` instead. It grows by
+doubling, so it holds the text once, plus slack. A list body is the
+common case:
+
+```hale
+locus JsonList {
+    params {
+        buf: std::bytes::BytesBuilder = std::bytes::BytesBuilder { initial_cap: 4096 };
+        n: Int = 0;
+    }
+    fn add(entry: String) {
+        if self.n > 0 { self.buf.append_str(", "); }
+        self.buf.append_str(entry);
+        self.n = self.n + 1;
+    }
+    fn text() -> String {
+        let b = self.buf.snapshot() or b"";
+        return std::str::from_bytes(b);
+    }
+}
+
+fn page(n: Int) -> String {
+    let rows = JsonList { };
+    let mut i = 0;
+    while i < n {
+        rows.add("{\"id\": " + to_string(i) + "}");
+        i = i + 1;
+    }
+    return "[" + rows.text() + "]";
+}
+
+fn main() { println(page(3)); }
+```
+
+A `+` that joins a fixed handful of pieces, such as one record rendered
+as one line, is fine. The rule is about a loop whose trip count grows
+with the input. `std::str::join` joins a `@form(vec)` of Strings in one
+allocation. `std::http::Server` assembled requests with `+` until
+2026-10-18: a 12 MiB body held about 9.5 GB before any handler ran.
+`hale check` does not flag the loop. **[convention]**
+
+### S16. Read a long text by position, never by slicing off the rest
+
+This rule also applies on every path. `rest = rest[(nl + 1)..len(rest)]`
+copies the remainder for each line, and each copy stays in scratch until
+the method returns: the same square as S15. Walk the text by position
+instead. `std::str::bytes_view` measures it once, `byte_at` reads a byte
+against that length, and `std::str::slice(v, start, end)` copies only
+the line:
+
+```hale
+fn line_end(v: std::str::ByteView, start: Int) -> Int {
+    let mut i = start;
+    while i < v.n {
+        if std::str::byte_at(v, i) == 10 { return i; }
+        i = i + 1;
+    }
+    return v.n;
+}
+
+fn count_rows(all: String) -> Int {
+    let v = std::str::bytes_view(all);
+    let mut rows = 0;
+    let mut start = 0;
+    while start < v.n {
+        let nl = line_end(v, start);
+        let line = std::str::slice(v, start, nl);
+        start = nl + 1;
+        if len(line) > 0 { rows = rows + 1; }
+    }
+    return rows;
+}
+
+fn main() { println(count_rows("a\nb\n\nc")); }
+```
+
+Measured over 1 MB in 2 000 lines: slicing off the rest grew the peak
+by 984 MB, and reading by position by under 1 MB, in under a
+millisecond. `std::str::index_of_from(s, "\n", start)` also keeps the
+memory linear, but it measures the whole String on every call, so a
+line-at-a-time scan with it is quadratic in time: 16 MB in 32 000 lines
+took 4.7 s, against 15 ms by position. **[convention]**
+
 ---
 
 ## 5. The enforcement ladder
@@ -1103,7 +1556,7 @@ certify a path — plus one tier you get for free because your
 
 | Tier | Check | Status |
 |---|---|---|
-| **error** (default) | blocking `run()` on a cooperative *subscriber* (dead receiver); unowned subscriber in a handler; non-exhaustive / type-mismatched match; `@form` cell constraints; the unit laws, and a narrowing with no policy (C8) | build fails |
+| **error** (default) | blocking `run()` on a cooperative *subscriber* (dead receiver); unowned subscriber in a handler; non-exhaustive / type-mismatched match, a set's included (2.9); a seam's coverage, failure placement and one-tower rules (2.10); `@form` cell constraints; the unit laws, and a narrowing with no policy (C8); a `bounded`'s `len`, its return by value and an element stored through a parameter's place (C9) | build fails |
 | **warn** (default) | unbounded-alloc survey (self-escaping allocs in unbounded contexts; retirement-aware since v0.11.3); subscription nothing publishes to; locus/builder in a loop **or bus handler**; allocating recv in a loop; blocking call on a cooperative pool (interprocedural); accept-without-release on a daemon | advisory |
 | **@hot** (opt-in) | all of the above as errors within the fn; `snapshot()`/`finish()` in a loop; whole-struct self-field replace | errors in certified fns |
 | **@budget** (opt-in) | `alloc_per_call = N` counted transitively; `N=0` zero-alloc certificate | build fails on violation |
@@ -1186,6 +1639,14 @@ thread / pool / subject / fd counts in CI — see
   first-class; String-match the command routers.
 - **Floating state** — every named piece of state has one locus
   owner. State that "lives between loci" is a modeling error.
+- **Growing a String with `+` in a loop, or slicing off the rest of
+  one** — memory quadratic in the text, on every path (S15, S16).
+- **A hand-written `match` forwarding a set's members to another
+  locus's methods** — a seam checks the coverage both ways (2.10).
+- **A sentinel for "absent" on the wire** (`""`, `-1`) — declare a
+  presence pair (2.11).
+- **JSON built by hand for a type the codec carries** — call
+  `T::api_encode` (2.11).
 
 ---
 
@@ -1197,7 +1658,7 @@ you should stop wanting (the design says no, and names the shape
 to use instead), gaps you can expect to close (write the
 workaround knowing it's temporary), and sharp edges you step
 around (current limitations, no promise either way). Current as
-of v0.22.0 (2026-10-07); shipped-and-gone entries are removed on
+of v0.25.0 (2026-10-18); shipped-and-gone entries are removed on
 shipping — keyed String routing, match-as-expression, whole-struct
 replace reclamation and its nested-compound fields, `err` in an `or
 fail` payload, `Duration`
@@ -1234,6 +1695,10 @@ absent thing means fighting the design, not waiting on it.
   it is the same generic-instantiation gap behind
   `Vec<User>`. So `Option<T>` is not merely unblessed; it is
   not currently expressible.
+
+  At an API boundary, absence is a **presence pair**: a field `x`
+  beside a `has_x: Bool`, which the codec reads as an optional key
+  (2.11).
 - **Fn-pointer callbacks don't capture state.** Loci are the
   language's closures — state lives in a locus with its own
   `self`, or routes through bus subjects. A capturing lambda
@@ -1283,6 +1748,26 @@ those cold.
   qualified `let` annotation builds, but the binding is not the
   quantity (`d / 1ms` is refused as "`Duration` is not an `Int`"), so
   write it bare there too.
+
+- **A closed seam holds every frame's values until its locus
+  dissolves.** The closed form is the locus's `run`, which is one
+  never-ending activation (§1), and its hops are inlined into it. So
+  what each frame's decoder, handler and encoder make accumulates:
+  about 1.7 KB a frame for 200-byte frames, measured on v0.25.0. `hale
+  check` warns, naming each hop's values in the unbounded-allocation
+  survey. For a source that does not end soon, write the step as a
+  method that pulls one frame and calls a callable seam. Its scratch
+  reclaims at every return, and the same gateway holds flat:
+
+```hale,fragment
+  seam answer(frame: String) { frame -> self.wire.decode -> self.desk -> self.wire.encode -> self.log.write; }
+  fn step() -> Bool {
+      let f = self.feed.next() or { return false; };
+      self.answer(f);
+      return true;
+  }
+  run() { while !self.draining { if !self.step() { return; } } }
+  ```
 
 If the catalog seems to be missing a pattern, log a friction
 entry with the smallest reproducible example — the catalog grows

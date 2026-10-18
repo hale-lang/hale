@@ -2181,7 +2181,10 @@ zero, so a value it does not carry is its zero (`0`, `""`, the epoch, the
 first variant), never `missing_field`. A row whose whole request or response is a payload-free enum
 crosses gRPC in the one-field message a scalar row has, its `value` the
 enum. The digest is the enum's shape, which holds its variants and their
-values.
+values. A set (`spec/types.md` § Set types) crosses as the enum it is,
+each member a variant of one value named for its type: `type Inbound =
+NewOrder | Cancel;` is `{"Cancel": {"id": 1}}`, and its description the
+`oneof` above.
 
 **A map** is a list keyed by one of its records' fields (2026-10-17):
 `checks: bounded[Check; 16] indexed_by name;`, the `@form(hashmap)` model

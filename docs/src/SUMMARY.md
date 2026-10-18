@@ -41,7 +41,9 @@
 - [Across binaries](./services/multi-binary.md)
 - [Build an API](./services/build-an-api.md)
 - [The API surface](./services/api.md)
+- [Designing an API's messages](./services/api-messages.md)
 - [Composition patterns](./services/patterns.md)
+- [Seams](./services/seams.md)
 - [The model](./the-model.md)
 
 # Saying what must hold

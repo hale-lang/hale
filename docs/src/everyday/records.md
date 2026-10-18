@@ -312,6 +312,24 @@ Members are structs or enums you declare; to put an `Int` in a set,
 give it a type of its own (`type Count { n: Int; }`). Underneath a set
 is an enum, with an enum's cost.
 
+The place a member flows into is what makes it the set, so an `if` or
+`match` whose branches are *different* members is not joined into one:
+
+```hale,fragment
+let m = if n == 0 { Book { id: 7, title: "Kim" } } else { Trade { qty: 2, px: 1.5 } };
+// type error: if-expression arms have mismatched types: then=`Book`, else=`Trade`
+```
+
+Give the choice a function that returns the set, as `decode` does above.
+
+Which to reach for: a set when each kind is a record with a life of its
+own (a method takes it, an API row names it, another set reuses it); an
+enum when the kinds are tags or small payloads that mean nothing apart.
+A set crosses an API as the enum it is, each member's type name its tag
+(`{"Trade": {"qty": 2, "px": 1.5}}`). When one locus decodes a set and
+another handles each member, a [seam](../services/seams.md) writes the
+dispatch between them and checks that every member has a handler.
+
 ## Records with a type parameter
 
 A record can leave one of its field types open:
