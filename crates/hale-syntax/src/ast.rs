@@ -2540,6 +2540,11 @@ pub struct StructField {
 pub struct EnumVariant {
     pub name: Ident,
     pub fields: Vec<TypeExpr>,
+    /// GH #1417 (spec/api.md § Error classes): `@not_found Missing`, the
+    /// transport-neutral class a handler error of this variant is, which
+    /// each transport maps to its status. The word as written; the checker
+    /// refuses one that is not a class.
+    pub class: Option<Ident>,
     pub span: Span,
     /// A member of a set type (`type Inbound = Book | Trade;`, GH #1530
     /// step 1): the variant is named for its one field's type, which is

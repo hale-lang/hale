@@ -619,7 +619,7 @@ fn type_decl<'a>(t: &'a TypeDecl, f: &mut Visit<'_, 'a>) {
         }
         TypeDeclBody::Enum(variants) => {
             for v in variants {
-                let EnumVariant { name: n, fields, span: _, member: _ } = v;
+                let EnumVariant { name: n, fields, class: _, span: _, member: _ } = v;
                 name(n, f);
                 for t in fields {
                     ty(t, f);

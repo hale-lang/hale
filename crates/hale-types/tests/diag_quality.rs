@@ -493,6 +493,24 @@ fn an_assignment_target_names_only_declared_fields() {
     assert!(ds.is_empty(), "{ds:?}");
 }
 
+/// spec/api.md § Error classes: a variant's class is one of the five words,
+/// and any other is refused at it, naming the classes.
+#[test]
+fn an_error_class_is_one_of_the_classes() {
+    let ds = diags(
+        r#"
+        type E = enum { @not_found A, @conflict B(String), @invalid C, @forbidden D, @unavailable F, G };
+        type Bad = enum { @missing A, B };
+        fn main() { }
+    "#,
+    );
+    let hits: Vec<&String> = ds.iter().filter(|m| m.contains("is no error class")).collect();
+    assert_eq!(hits.len(), 1, "{ds:?}");
+    assert!(hits[0].starts_with("`@missing` on the variant `A` of `Bad`"), "{ds:?}");
+    assert!(hits[0].contains("`@not_found`, `@conflict`, `@invalid`, `@forbidden`, `@unavailable`"), "{ds:?}");
+    assert_eq!(ds.len(), 1, "nothing else: {ds:?}");
+}
+
 /// `==` on an enum holds only when every payload of every variant has its
 /// own `==`, through nested enums; a struct payload is refused at the
 /// check, naming the path to it (it failed at the build, "match on

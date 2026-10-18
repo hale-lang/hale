@@ -689,7 +689,12 @@ pub(crate) fn run_call(rest: &[String]) -> ExitCode {
         }
         k => {
             if !raw {
-                eprintln!("{}", reply.raw.trim());
+                // a classed handler error names its class (spec/api.md §
+                // Error classes)
+                match (&reply.class, k) {
+                    (Some(c), Kind::HandlerError) => eprintln!("handler error ({c}): {}", reply.raw.trim()),
+                    _ => eprintln!("{}", reply.raw.trim()),
+                }
             }
             ExitCode::from(match k {
                 Kind::HandlerError => EXIT_HANDLER,

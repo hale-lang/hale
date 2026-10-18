@@ -6398,7 +6398,7 @@ impl Parser {
                         ));
                     }
                     let last = path.segments.last().expect("a path has a segment").clone();
-                    variants.push(EnumVariant { name: last, fields: vec![m.clone()], span: *span, member: true });
+                    variants.push(EnumVariant { name: last, fields: vec![m.clone()], class: None, span: *span, member: true });
                 }
                 return Ok(TypeDecl {
                     display: None,
@@ -6625,6 +6625,16 @@ impl Parser {
     }
 
     fn parse_enum_variant(&mut self) -> Result<EnumVariant, Diag> {
+        // `@not_found Missing`: the variant's error class (spec/api.md §
+        // Error classes), any word here; the checker names the classes.
+        let class = if self.at(&TokenKind::At) {
+            let at = self.bump();
+            let mut word = self.expect_ident("error class")?;
+            word.span = at.span.merge(word.span);
+            Some(word)
+        } else {
+            None
+        };
         let name = self.expect_ident("variant name")?;
         let mut fields = Vec::new();
         if self.eat(&TokenKind::LParen) {
@@ -6637,7 +6647,7 @@ impl Parser {
             self.expect(TokenKind::RParen, ")")?;
         }
         let span = name.span;
-        Ok(EnumVariant { name, fields, span, member: false })
+        Ok(EnumVariant { name, fields, class, span, member: false })
     }
 
     fn parse_generic_params_opt(&mut self) -> Result<Vec<GenericParam>, Diag> {

@@ -5,6 +5,8 @@
 //! A new test file joins an area by a line here (and is refused by
 //! `every_test_file_is_built` until it does).
 
+#[path = "api_error_classes.rs"]
+mod api_error_classes;
 #[path = "api_exposure_param.rs"]
 mod api_exposure_param;
 #[path = "api_serve_memory.rs"]

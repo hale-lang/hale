@@ -171,7 +171,7 @@ fn default_of(model: &ClientModel, f: &FieldSchema) -> Option<String> {
         FieldSchema::Nullable { inner, .. } => default_of(model, inner),
         // an enum's zero is its first variant with its values' zeros, as the
         // codec's is (spec/api.md § Codecs)
-        FieldSchema::Enum { name, variants } => {
+        FieldSchema::Enum { name, variants, .. } => {
             let (v, values) = variants.first()?;
             if values.is_empty() {
                 return Some(format!("{}::{v}", type_ident(name)));

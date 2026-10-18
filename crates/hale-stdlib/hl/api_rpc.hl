@@ -123,13 +123,65 @@ type __StdApiRequest {
     reason: String = "";
 }
 
-/// The outcome the runtime hands a transport to encode.
+/// The outcome the runtime hands a transport to encode: a handler error
+/// with the class its variant declares (spec/api.md § Error classes).
 type __StdApiOutcome = enum {
     Result(String),
-    HandlerError(String),
+    HandlerError(String, __StdApiErrorClass),
     Refusal(String, String, String),
     ServerError,
 };
+
+/// The class a handler error's variant declares (`@not_found Missing`),
+/// which a transport maps to its status; `Unclassed` for a variant that
+/// declares none and for an error type that is no enum.
+type __StdApiErrorClass = enum {
+    Unclassed,
+    NotFound,
+    Conflict,
+    Invalid,
+    Forbidden,
+    Unavailable,
+};
+
+/// The class a receiver's event numbers (`RpcEvent.class`, the expansion's
+/// numbering: 0 for none, then the classes in declaration order).
+fn __api_error_class(n: Int) -> __StdApiErrorClass {
+    if n == 1 { return __StdApiErrorClass::NotFound; }
+    if n == 2 { return __StdApiErrorClass::Conflict; }
+    if n == 3 { return __StdApiErrorClass::Invalid; }
+    if n == 4 { return __StdApiErrorClass::Forbidden; }
+    if n == 5 { return __StdApiErrorClass::Unavailable; }
+    return __StdApiErrorClass::Unclassed;
+}
+
+/// The class as a variant declares it (`not_found`), "" for none.
+fn __api_error_class_word(c: __StdApiErrorClass) -> String {
+    let mut w = "";
+    match c {
+        __StdApiErrorClass::Unclassed -> { },
+        __StdApiErrorClass::NotFound -> { w = "not_found"; },
+        __StdApiErrorClass::Conflict -> { w = "conflict"; },
+        __StdApiErrorClass::Invalid -> { w = "invalid"; },
+        __StdApiErrorClass::Forbidden -> { w = "forbidden"; },
+        __StdApiErrorClass::Unavailable -> { w = "unavailable"; },
+    }
+    return w;
+}
+
+/// A handler error's HTTP status: its class's, 422 for none.
+fn __api_http_error_status(c: __StdApiErrorClass) -> Int {
+    let mut s = 422;
+    match c {
+        __StdApiErrorClass::Unclassed -> { },
+        __StdApiErrorClass::NotFound -> { s = 404; },
+        __StdApiErrorClass::Conflict -> { s = 409; },
+        __StdApiErrorClass::Invalid -> { },
+        __StdApiErrorClass::Forbidden -> { s = 403; },
+        __StdApiErrorClass::Unavailable -> { s = 503; },
+    }
+    return s;
+}
 
 /// What a transport implements (spec/api.md § The `Rpc` interface).
 interface __StdApiRpc {
@@ -236,6 +288,8 @@ type __StdApiRpcEvent {
     kind: Int;
     stamp: Int;
     body: String;
+    // a handler error's class (`__api_error_class`), 0 for none
+    class: Int = 0;
 }
 
 // ---- the exposure ----
@@ -927,7 +981,7 @@ locus __StdApiExposure {
         let e = self.entries.get(k) or __StdApiRpcEntry { };
         let slot = e.slot;
         if ev.kind == 0 { self.finish(k, __StdApiOutcome::Result(ev.body)); }
-        if ev.kind == 1 { self.finish(k, __StdApiOutcome::HandlerError(ev.body)); }
+        if ev.kind == 1 { self.finish(k, __StdApiOutcome::HandlerError(ev.body, __api_error_class(ev.class))); }
         if ev.kind == 2 { self.finish(k, __StdApiOutcome::ServerError); }
         if ev.kind == 3 { self.unavailable(k); }
         self.pump(slot);
@@ -1010,7 +1064,7 @@ fn __api_outcome_kind(outcome: std::api::Outcome) -> String {
     let mut kind = "";
     match outcome {
         __StdApiOutcome::Result(b) -> { kind = "result"; },
-        __StdApiOutcome::HandlerError(b) -> { kind = "handler_error"; },
+        __StdApiOutcome::HandlerError(b, c) -> { kind = "handler_error"; },
         __StdApiOutcome::Refusal(k, r, x) -> { kind = "refusal:" + k; },
         __StdApiOutcome::ServerError -> { kind = "server_error"; },
     }
@@ -1075,8 +1129,10 @@ fn __api_outcome_answer(outcome: std::api::Outcome) -> String {
         __StdApiOutcome::Result(b) -> {
             answer = "\"ok\":true,\"value\":" + b;
         },
-        __StdApiOutcome::HandlerError(b) -> {
+        __StdApiOutcome::HandlerError(b, c) -> {
             answer = "\"ok\":false,\"error\":" + b;
+            let w = __api_error_class_word(c);
+            if len(w) > 0 { answer = answer + ",\"class\":\"" + w + "\""; }
         },
         __StdApiOutcome::Refusal(k, r, x) -> {
             answer = "\"ok\":false,\"refusal\":" + __api_refusal_object(k, r, x);
@@ -2093,9 +2149,10 @@ locus __StdApiHttpRpc {
     fn reply(correlation: Int, request_id: Int, caller: std::api::Principal, outcome: std::api::Outcome) {
         let mut status = 500;
         let mut body = "{\"refusal\":{\"kind\":\"server\"}}";
+        let mut class = "";
         match outcome {
             __StdApiOutcome::Result(b) -> { status = 200; body = b; },
-            __StdApiOutcome::HandlerError(b) -> { status = 422; body = b; },
+            __StdApiOutcome::HandlerError(b, c) -> { status = __api_http_error_status(c); body = b; class = __api_error_class_word(c); },
             __StdApiOutcome::Refusal(k, r, x) -> {
                 status = __api_http_refusal_status(k);
                 body = "{\"refusal\":" + __api_refusal_object(k, r, x) + "}";
@@ -2118,7 +2175,10 @@ locus __StdApiHttpRpc {
                 }
             }
             headers = __api_cors_headers(p.origin, p.preflight);
+            if len(class) > 0 { headers = headers + "Access-Control-Expose-Headers: Hale-Error-Class\r\n"; }
         }
+        // a classed handler error says so: its status may be a refusal's too
+        if len(class) > 0 { headers = headers + "Hale-Error-Class: " + class + "\r\n"; }
         __ApiHttpOutT <- __StdApiHttpOut { key: self.tid * 4294967296 + correlation, kind: 0, status: status, body: body, headers: headers };
     }
     // The request's connection is gone and its work has completed: nothing
@@ -2438,7 +2498,7 @@ locus __StdApiMcpRpc {
                     body = "{\"jsonrpc\":\"2.0\",\"id\":" + p.id + ",\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"" + std::json::escape_string(b) + "\"}]" + structured + ",\"isError\":false}}";
                 }
             },
-            __StdApiOutcome::HandlerError(b) -> {
+            __StdApiOutcome::HandlerError(b, c) -> {
                 body = __api_mcp_error(p.id, -32001, "handler_error", b);
             },
             __StdApiOutcome::Refusal(k, r, x) -> {

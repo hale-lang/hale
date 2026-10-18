@@ -31,7 +31,7 @@ fn model_shapes(model: &hale_types::surface_doc::ClientModel) -> (std::collectio
     type Out = (std::collections::BTreeMap<String, ClientEnum>, bool);
     fn walk(f: &FieldSchema, out: &mut Out) {
         match f {
-            FieldSchema::Enum { name, variants } => {
+            FieldSchema::Enum { name, variants, .. } => {
                 if !out.0.contains_key(name) {
                     out.0.insert(name.clone(), variants.clone());
                     for (_, values) in variants {

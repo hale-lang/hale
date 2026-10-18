@@ -228,6 +228,12 @@ stdlib, which keep their own representation class (the table above).
 | Function | `fn(A, B) -> C` | First-class function values |
 | Generic | `Foo<T>` | Parametric over type T |
 
+A variant may declare an error class before its name, `@not_found
+Missing`, one of `@not_found`, `@conflict`, `@invalid`, `@forbidden` and
+`@unavailable`; it is what a served member's handler error of that variant
+is answered with (spec/api.md § Error classes), and any other word is a
+type error.
+
 ### One name, one field (GH #1141)
 
 A struct declares each field once, and an enum declares each variant

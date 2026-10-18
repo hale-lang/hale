@@ -622,6 +622,27 @@ connection alone, and the listener and the other connections go on.
 `public.stop()` refuses what is queued, answers what is executing and
 closes the listener after the replies.
 
+#### Error classes
+
+A variant of the error type can say what kind of failure it is, and each
+transport answers it with its own status for that kind:
+
+```text
+type OrderError = enum { @not_found Missing, @conflict Taken(String), Closed };
+```
+
+`fail OrderError::Missing` is now `404` with `"Missing"` as the body,
+`Taken` is `409`, and `Closed`, which declares no class, stays `422`. The
+classes are `@not_found` (404, gRPC `NOT_FOUND`), `@conflict` (409,
+`ABORTED`), `@invalid` (422, `INVALID_ARGUMENT`), `@forbidden` (403,
+`PERMISSION_DENIED`) and `@unavailable` (503, `UNAVAILABLE`). A refusal
+can share a status with one of them, so a classed error also names its
+class in the header `Hale-Error-Class`, which no refusal carries; the
+generated clients and `hale call` read it for you. The class is part of the contract: the description shows it on the
+type (`x-hale-error-classes`), and adding one moves the surface's digest.
+A transport you write yourself sees it as the second value of
+`std::api::Outcome::HandlerError(body, class)`.
+
 #### Calls from a web page: `cors`
 
 A page served from another origin can call the exposure only if the

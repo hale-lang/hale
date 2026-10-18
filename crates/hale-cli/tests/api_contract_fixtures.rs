@@ -1156,6 +1156,67 @@ fn main() { }
     assert_eq!(r(&op["responses"]["503"]), json!("#/components/schemas/hale.Refusal"));
 }
 
+/// spec/api.md § Error classes: an enum error type whose variants declare
+/// classes carries them in its schema (`x-hale-error-classes`, only there),
+/// the OpenAPI form answers each class with its status (beside a refusal's
+/// where they share one), and the digest holds the classes: the same
+/// surface without them has another digest, and one whose enum declares
+/// none has the digest it always had.
+#[test]
+fn a_classed_error_type_carries_its_classes() {
+    let src = |classes: bool| {
+        let (nf, cf) = if classes { ("@not_found ", "@conflict ") } else { ("", "") };
+        format!(
+            "type OrderError = enum {{ {nf}Missing, {cf}Taken(String), Closed }};\n\
+             locus S {{ fn get(id: Int) -> Int fallible(OrderError) {{ return id; }} fn other(id: Int) -> Int {{ return id; }} }}\n\
+             api Public {{ rpc S::get; rpc S::other; }}\nfn main() {{ }}\n"
+        )
+    };
+    let doc = hale_over("classes_openapi", &src(true), &["--api", "--surface", "Public", "--openapi"]);
+    let get = &doc["paths"]["/call/S::get"]["post"]["responses"];
+    let keys: Vec<&str> = get.as_object().unwrap().keys().map(String::as_str).collect();
+    assert_eq!(keys, ["200", "400", "401", "403", "404", "409", "422", "429", "503"], "{get}");
+    let error = &get["422"]["content"]["application/json"]["schema"];
+    assert_eq!(error["x-hale-error-classes"], json!({"Missing": "not_found", "Taken": "conflict"}), "{error}");
+    assert_eq!(get["404"]["content"]["application/json"]["schema"], *error, "404 is the error alone");
+    assert_eq!(
+        get["409"]["content"]["application/json"]["schema"]["anyOf"],
+        json!([{"$ref": "#/components/schemas/hale.Refusal"}, error.clone()]),
+        "409 is a digest mismatch's or the conflict's"
+    );
+    let other = &doc["paths"]["/call/S::other"]["post"]["responses"];
+    assert!(other.get("404").is_none(), "a member with no error answers no class: {other}");
+    let digest = |src: &str| hale_over("classes_digest", src, &["--api", "--surface", "Public", "--openapi"])["info"]["x-hale-digest"].clone();
+    let (classed, plain) = (digest(&src(true)), digest(&src(false)));
+    assert_ne!(classed, plain, "the classes are in the digest");
+    let unclassed = hale_over("classes_none", &src(false), &["--api", "--surface", "Public", "--openapi"]);
+    let none = &unclassed["paths"]["/call/S::get"]["post"]["responses"];
+    assert!(none.get("404").is_none() && none["422"]["content"]["application/json"]["schema"].get("x-hale-error-classes").is_none(), "{none}");
+}
+
+/// Review of #1619: a classed handler error's body may also match the
+/// refusal's schema (a variant `refusal` carrying `{"kind": "server"}`), so
+/// the response a status shares with a refusal admits either body
+/// (`anyOf`); `Hale-Error-Class` tells them apart on the wire. The body the
+/// server sends for it validates against the exported 409 schema.
+#[test]
+fn a_shared_status_admits_a_body_both_schemas_match() {
+    let src = r#"
+type Reason { kind: String; }
+type E = enum { @conflict refusal(Reason) };
+locus S { fn go(id: Int) -> Int fallible(E) { fail E::refusal(Reason { kind: "server" }); } }
+api Public { rpc S::go; }
+fn main() { }
+"#;
+    let doc = hale_over("classes_overlap", src, &["--api", "--surface", "Public", "--openapi"]);
+    let schema = &doc["paths"]["/call/S::go"]["post"]["responses"]["409"]["content"]["application/json"]["schema"];
+    for body in [json!({"refusal": {"kind": "server"}}), json!({"refusal": {"kind": "digest_mismatch", "reason": "r", "served": "fnv1a64:0"}})] {
+        let mut errs = Vec::new();
+        validate(&doc, schema, &body, "409", &mut errs);
+        assert!(errs.is_empty(), "{body}: {errs:?}\n{schema}");
+    }
+}
+
 #[test]
 fn an_mcp_input_is_an_object() {
     let src = r#"

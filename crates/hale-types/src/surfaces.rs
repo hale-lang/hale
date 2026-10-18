@@ -36,6 +36,36 @@ use crate::placement::{DomainKind, PlacementTable};
 use crate::symbol::Bundle;
 use crate::topic_identity::{ShapeForm, Shapes, TopicRows};
 
+/// The error classes a variant of a handler's error type may declare
+/// (`@not_found Missing`, spec/api.md § Error classes), in the order of
+/// `std::api::ErrorClass` after its `Unclassed`, each with the HTTP status
+/// and the gRPC code a transport answers it with. A handler error of an
+/// unclassed variant (or of a record) keeps HTTP 422 and gRPC
+/// `FAILED_PRECONDITION` (9).
+pub const ERROR_CLASSES: &[ErrorClassRow] = &[
+    ErrorClassRow { word: "not_found", variant: "NotFound", http: 404, grpc: 5 },
+    ErrorClassRow { word: "conflict", variant: "Conflict", http: 409, grpc: 10 },
+    ErrorClassRow { word: "invalid", variant: "Invalid", http: 422, grpc: 3 },
+    ErrorClassRow { word: "forbidden", variant: "Forbidden", http: 403, grpc: 7 },
+    ErrorClassRow { word: "unavailable", variant: "Unavailable", http: 503, grpc: 14 },
+];
+
+/// One row of [`ERROR_CLASSES`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ErrorClassRow {
+    /// The class as a variant declares it, and as a description names it.
+    pub word: &'static str,
+    /// Its `std::api::ErrorClass` variant.
+    pub variant: &'static str,
+    pub http: u16,
+    pub grpc: u8,
+}
+
+/// The class `word` names, if it is one.
+pub fn error_class(word: &str) -> Option<&'static ErrorClassRow> {
+    ERROR_CLASSES.iter().find(|c| c.word == word)
+}
+
 /// The `surface` family of one bundle.
 #[derive(Debug, Clone, Default)]
 pub struct SurfaceRows {
@@ -2192,8 +2222,10 @@ pub enum FieldSchema {
     /// declared name, and each variant with the schemas of its values (none
     /// for a payload-free variant). A payload-free enum is `{"type":
     /// "string", "enum": [...]}`; one with payloads a `oneOf` of that and an
-    /// object per variant with values, keyed by the variant.
-    Enum { name: String, variants: Vec<(String, Vec<FieldSchema>)> },
+    /// object per variant with values, keyed by the variant. `classes` are
+    /// the variants that declare an error class, with it (`("Missing",
+    /// "not_found")`), in declaration order: none for most enums.
+    Enum { name: String, variants: Vec<(String, Vec<FieldSchema>)>, classes: Vec<(String, String)> },
     /// A wire map (`bounded[T; N] indexed_by <key>`, spec/api.md § Codecs):
     /// `{"type": "object", "additionalProperties": <value>, "maxProperties":
     /// N, "x-hale-key": "<key>"}`, the value the record `name`'s schema
@@ -2357,6 +2389,8 @@ impl<'a> Schemas<'a> {
             }
             TypeClass::Enum { name, variants } => {
                 let mut out_variants = Vec::new();
+                let classes: Vec<(String, String)> =
+                    variants.iter().filter_map(|v| Some((v.name.name.clone(), v.class.as_ref()?.name.clone()))).collect();
                 for v in variants {
                     let mut values = Vec::new();
                     for value in &v.fields {
@@ -2367,7 +2401,7 @@ impl<'a> Schemas<'a> {
                     }
                     out_variants.push((v.name.name.clone(), values));
                 }
-                FieldSchema::Enum { name: self.shapes.display_name(name), variants: out_variants }
+                FieldSchema::Enum { name: self.shapes.display_name(name), variants: out_variants, classes }
             }
             TypeClass::Other => FieldSchema::Unformed,
         }

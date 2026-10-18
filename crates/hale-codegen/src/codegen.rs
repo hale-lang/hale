@@ -12459,12 +12459,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 EnumVariant {
                     name: mk_ident("Ok"),
                     fields: vec![mk_t("T")],
+                    class: None,
                     span,
                     member: false,
                 },
                 EnumVariant {
                     name: mk_ident("Err"),
                     fields: vec![mk_t("E")],
+                    class: None,
                     span,
                     member: false,
                 },
@@ -12481,12 +12483,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 EnumVariant {
                     name: mk_ident("Some"),
                     fields: vec![mk_t("T")],
+                    class: None,
                     span,
                     member: false,
                 },
                 EnumVariant {
                     name: mk_ident("None"),
                     fields: Vec::new(),
+                    class: None,
                     span,
                     member: false,
                 },
@@ -13660,6 +13664,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                                 Self::substitute_type_expr(f, &subst)
                             })
                             .collect(),
+                        class: v.class.clone(),
                         span: v.span.clone(),
                         member: v.member,
                     })
