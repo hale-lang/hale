@@ -9,7 +9,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { boundedNative, isolatedEnvironment, launchToken, memoryOwner } from './environment.mjs';
-import { seatRecord, unseatRecord } from './record-seats.mjs';
+import { seatRecord } from './record-seats.mjs';
 import { recordState, ledgerRows } from './record-memory.mjs';
 import { freePorts, commandsAnnounced, settle, wireLine } from './command-wire.mjs';
 
@@ -113,7 +113,6 @@ export async function startTaskService({ evidenceParent = process.env.HALE_NATIV
       // its call), settled to the receipt or the refusal it earned.
       post: async command => { const result = await send('POST', prefix + '/commands', command.call ? command : wireLine(command)); return { ...result, ...settle(result.status, result.json) }; },
       lookup: async request_id => { const result = await send('POST', prefix + '/commands', { call: 'CommandLookup', payload: { request_id } }); return { ...result, ...settle(result.status, result.json) }; },
-      unseat: () => unseatRecord(root, env, actor, ['board']),
       command: (row, to, request_id) => ({ request_id, operation: 'dna.task.reassign', operation_version: '1', context: { application_id: application, position_id: 'org' }, target: { application_id: application, kind: 'dna.task', id: row.id }, preconditions: { subject_digest: row.assignment_digest, principal: { mode: 'local', name: actor }, assignee: row.assignee }, arguments: { to } }),
       current: async (id = first.id) => { const response = await read(prefix + '/dna/tasks?id=' + encodeURIComponent(id)); assert.equal(response.status, 200, JSON.stringify(response)); return response.json.data.items[0]; },
       url: () => origin + '/#/tasks?' + new URLSearchParams({ app: application, id: first.id }),

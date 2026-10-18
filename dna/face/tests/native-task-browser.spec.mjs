@@ -99,7 +99,7 @@ test('native current-assignment conflict and retired/outside-policy recipients c
   const response = page.waitForResponse(r => isWrite(r.request()) && new URL(r.url()).pathname === service.prefix + '/commands');
   await confirmation(page).getByRole('button', { name: 'Confirm reassignment', exact: true }).click();
   // The binding answered; the provider refused the stale subject.
-  const stale = await response; expect(stale.status()).toBe(200); expect((await stale.json()).value).toMatchObject({ ok: false, code: 'stale_subject' });
+  const stale = await response; expect(stale.status()).toBe(200); expect(await stale.json()).toMatchObject({ ok: false, code: 'stale_subject' });
   await expect(recovery(page).getByRole('alert')).toBeVisible(); expect(reassignments(service)).toHaveLength(1);
   const current = await service.current(); expect(current.assignee).toBe('casey');
   const plan = await service.read(service.prefix + '/dna/people?id=' + encodeURIComponent(current.assignee)); expect(plan.status).toBe(200);

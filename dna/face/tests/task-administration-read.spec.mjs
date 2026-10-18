@@ -9,7 +9,7 @@ const API = '/api/hale/v1/applications', APP = 'a'.repeat(40), PRINCIPAL = { mod
 const HEAD = 'b'.repeat(40), EVENT = 'd'.repeat(40), DIGEST = 'sha256:' + 'e'.repeat(64);
 const STORAGE = 'face.practice-recovery.v1:';
 const KEY = STORAGE + encodeURIComponent(JSON.stringify([APP, PRINCIPAL.mode, PRINCIPAL.name]));
-const task = () => ({ id: 'support:t-41', outcome: 'Confirm the supplier handover — équipe', state: 'handed', assignee: 'mara', obligation: 'supplier-handover', acceptance_digest: 'acceptance:original/v1', acceptance_bound: true, evidence_required: true, evidence_ref: '', waiting: '', assignment_digest: DIGEST, reassignment_supported: true, history: [{ event_id: '1'.repeat(40), sequence: '11', kind: 'task.handed', from: '', to: 'mara', by: 'leader' }] });
+const task = () => ({ id: 'support:t-41', outcome: 'Confirm the supplier handover — équipe', state: 'handed', assignee: 'mara', obligation: 'supplier-handover', acceptance_digest: 'acceptance:original/v1', acceptance_bound: true, evidence_required: true, evidence_ref: '', waiting: '', assignment_digest: DIGEST, reassignment_supported: true, history: [{ event_id: '1'.repeat(40), sequence: '11', kind: 'task.handed', from: '', to: 'mara', by: 'leader' }], usage: { calls: '0', input_tokens: '0', output_tokens: '0', cost_micros: '0', by_position: [], by_backend: [] } });
 const region = page => page.getByRole('region', { name: 'Handed Task administration', exact: true });
 const recovery = page => page.getByRole('region', { name: 'Task reassignment request', exact: true });
 const error = (code, message) => ({ api_version: 'hale.v1', error: { code, message, retryable: false } });

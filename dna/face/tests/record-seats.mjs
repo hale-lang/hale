@@ -49,12 +49,6 @@ export function seatRecord(root, env, person, positions) {
     appendRow(root, env, 'graph.edge', holds(position, person), body);
   }
 }
-// A governed decision takes the seats out again; the head re-reads the
-// record within a second of it moving.
-export function unseatRecord(root, env, person, positions) {
-  for (const position of positions) appendRow(root, env, 'graph.retired', holds(position, person), '{}');
-}
-
 // GH #1123: who owns what is the graph's — `<node> <holder>` lines, a
 // firm holding a position (`position:org organization:acme`) or a person
 // holding a firm (`organization:acme alice`). Each node an edge names is
