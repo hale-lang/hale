@@ -56,7 +56,7 @@ pub struct StdlibReach {
 impl StdlibReach {
     /// Every item of the copy.
     pub fn whole() -> StdlibReach {
-        StdlibReach { items: vec![true; index().refs.len()] }
+        StdlibReach { items: vec![true; index().items.len()] }
     }
 
     /// Whether `item` (an index into the copy's items) is reached.
@@ -84,7 +84,7 @@ impl StdlibReach {
     /// appended to them.
     pub fn of(programs: &[&Program]) -> StdlibReach {
         let index = index();
-        let mut reach = StdlibReach { items: vec![false; index.refs.len()] };
+        let mut reach = StdlibReach { items: vec![false; index.items.len()] };
         let mut closure = Closure::new(index, &mut reach);
         for &i in &index.always {
             closure.add(i);
@@ -128,7 +128,7 @@ impl StdlibReach {
         // what they name the first time, and a handle reached now is
         // tried against the stdlib's.
         for i in reached {
-            for &n in &index.names[i] {
+            for &n in &index.item(i).names {
                 closure.name(n);
             }
             if let Some(ns) = &index.handle_ns[i] {
@@ -143,8 +143,21 @@ impl StdlibReach {
     }
 }
 
+/// What one item of the copy names: the items it refers to (a
+/// declaration's name, a path, the methods of its interfaces' and
+/// perspectives' method names) and the names it spells (for the handle
+/// rule). Read the first time a closure reaches the item, so a program
+/// pays for the items it reaches, not for every one of the copy's.
+#[derive(Default)]
+struct ItemRefs {
+    refs: Vec<usize>,
+    names: Vec<&'static str>,
+}
+
 /// The copy's items and what they declare and name, once per process.
 struct Index {
+    /// The copy's items.
+    items: &'static [TopDecl],
     /// A declaration's name → the items declaring it (a module's
     /// declarations are its item's).
     declares: HashMap<&'static str, Vec<usize>>,
@@ -153,11 +166,8 @@ struct Index {
     methods: HashMap<&'static str, Vec<usize>>,
     /// A public path → the mangled name it is the spelling of.
     renames: HashMap<&'static [&'static str], &'static str>,
-    /// Per item, the items it names: a declaration's name, a path, the
-    /// methods of its interfaces' and perspectives' method names.
-    refs: Vec<Vec<usize>>,
-    /// Per item, the names it spells (for the handle rule).
-    names: Vec<Vec<&'static str>>,
+    /// Per item, what it names ([`ItemRefs`]), once read.
+    item_refs: Vec<OnceLock<ItemRefs>>,
     /// Per item that is a locus with a public path, its namespace: the
     /// path without its last segment, whose fns its methods are sugar
     /// for.
@@ -210,36 +220,8 @@ fn index() -> &'static Index {
             hale_stdlib::PATH_RENAMES.iter().map(|(path, mangled)| (*path, *mangled)).collect();
         let public: HashMap<&'static str, &'static [&'static str]> =
             hale_stdlib::PATH_RENAMES.iter().map(|(path, mangled)| (*mangled, *path)).collect();
-        let mut refs = Vec::with_capacity(items.len());
-        let mut names = Vec::with_capacity(items.len());
         let mut handle_ns = Vec::with_capacity(items.len());
         for item in items {
-            let mut to: BTreeSet<usize> = BTreeSet::new();
-            let mut spelled: BTreeSet<&'static str> = BTreeSet::new();
-            for_each_spelled_in_item(item, &mut |s| match s {
-                Spelled::Name(n) => {
-                    to.extend(declares.get(n).into_iter().flatten());
-                    spelled.insert(n);
-                }
-                Spelled::Text(_) => {}
-                Spelled::Path(segs) => {
-                    for m in path_renames(segs, &renames) {
-                        to.extend(declares.get(m).into_iter().flatten());
-                    }
-                }
-            });
-            for d in hale_syntax::ast::flat_decls(std::slice::from_ref(item)) {
-                let dispatched: Vec<&str> = match d {
-                    TopDecl::Interface(it) => it.methods.iter().map(|m| m.name.name.as_str()).collect(),
-                    TopDecl::Perspective(p) => perspective_fns(p).collect(),
-                    _ => Vec::new(),
-                };
-                for m in dispatched {
-                    to.extend(methods.get(m).into_iter().flatten());
-                }
-            }
-            refs.push(to.into_iter().collect());
-            names.push(spelled.into_iter().collect());
             handle_ns.push(match item {
                 TopDecl::Locus(l) => {
                     public.get(l.name.name.as_str()).and_then(|p| p.split_last()).map(|(_, ns)| ns.to_vec())
@@ -273,8 +255,43 @@ fn index() -> &'static Index {
                 }
             }
         }
-        Index { declares, methods, renames, refs, names, handle_ns, ns_members, always: always.into_iter().collect() }
+        let item_refs = (0..items.len()).map(|_| OnceLock::new()).collect();
+        Index { items, declares, methods, renames, item_refs, handle_ns, ns_members, always: always.into_iter().collect() }
     })
+}
+
+impl Index {
+    /// What item `i` names, read the first time it is asked for.
+    fn item(&self, i: usize) -> &ItemRefs {
+        self.item_refs[i].get_or_init(|| {
+            let item = &self.items[i];
+            let mut to: BTreeSet<usize> = BTreeSet::new();
+            let mut spelled: BTreeSet<&'static str> = BTreeSet::new();
+            for_each_spelled_in_item(item, &mut |s| match s {
+                Spelled::Name(n) => {
+                    to.extend(self.declares.get(n).into_iter().flatten());
+                    spelled.insert(n);
+                }
+                Spelled::Text(_) => {}
+                Spelled::Path(segs) => {
+                    for m in path_renames(segs, &self.renames) {
+                        to.extend(self.declares.get(m).into_iter().flatten());
+                    }
+                }
+            });
+            for d in hale_syntax::ast::flat_decls(std::slice::from_ref(item)) {
+                let dispatched: Vec<&str> = match d {
+                    TopDecl::Interface(it) => it.methods.iter().map(|m| m.name.name.as_str()).collect(),
+                    TopDecl::Perspective(p) => perspective_fns(p).collect(),
+                    _ => Vec::new(),
+                };
+                for m in dispatched {
+                    to.extend(self.methods.get(m).into_iter().flatten());
+                }
+            }
+            ItemRefs { refs: to.into_iter().collect(), names: spelled.into_iter().collect() }
+        })
+    }
 }
 
 /// The mangled name each prefix of a path is the public spelling of.
@@ -393,10 +410,11 @@ impl<'i, 'r> Closure<'i, 'r> {
     fn run(&mut self) {
         let index = self.index;
         while let Some(i) = self.work.pop() {
-            for &j in &index.refs[i] {
+            let item = index.item(i);
+            for &j in &item.refs {
                 self.add(j);
             }
-            for &n in &index.names[i] {
+            for &n in &item.names {
                 self.name(n);
             }
             if let Some(ns) = &index.handle_ns[i] {
