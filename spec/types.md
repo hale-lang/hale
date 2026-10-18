@@ -1240,6 +1240,11 @@ Semantics:
   bounded[T; N] cannot be returned by value — it lives inline in its
   containing type …"), where the build refused it with no file or line
   until 2026-10-18. A record holding the `bounded` returns it.
+- Its live count is `count(x)`; `len` does not apply to a `bounded`
+  (written or through an alias), and the check refuses it, pointing at
+  `count` ("\`len\` does not apply to a \`bounded[String; 4]\`: a
+  \`bounded\`'s live count is \`count(x)\`"), where the build refused it
+  with no file or line until 2026-10-18.
 - A bounded place (a field, a locus param) is
   assigned whole only from a value of its own type, `bounded[T; N]`
   with the same `T` and `N`: `row.models = req.models` copies the

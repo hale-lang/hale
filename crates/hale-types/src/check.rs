@@ -22662,6 +22662,27 @@ impl<'a> Checker<'a> {
                         } else {
                             arg_tys.clone()
                         };
+                        // `len` of a `bounded`: the build has no length of one
+                        // (its live count is the `count` intrinsic), and the
+                        // check passed it
+                        if id.name == "len" && arg_tys.len() == 1 {
+                            let mut t = arg_tys[0].clone();
+                            for _ in 0..16 {
+                                let Ty::Named(n) = &t else { break };
+                                let Some(TopSymbol::Type(info)) = self.top.lookup(n) else { break };
+                                let TypeKind::Alias(a) = &info.kind else { break };
+                                t = a.clone();
+                            }
+                            if let Ty::Bounded(..) = t {
+                                self.diags.push(Diag::ty(
+                                    expr.span(),
+                                    format!(
+                                        "`len` does not apply to a `{}`: a `bounded`'s live count is `count(x)` (spec/types.md § bounded[T; N])",
+                                        t.display()
+                                    ),
+                                ));
+                            }
+                        }
                         crate::builtin_sigs::bare_builtin_sig(&id.name)
                             .and_then(|sig| sig.result(&arg_tys, |t| self.ty_is_printable(t)))
                             .unwrap_or(Ty::Unknown)
