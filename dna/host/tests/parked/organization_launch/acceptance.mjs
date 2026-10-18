@@ -1,3 +1,5 @@
+// Parked (GH #1590): its faults are git command replies on the record's ref,
+// and the record is memory's now, so none of them can happen; nothing runs it.
 // Actual Host.run lifecycle, actual native source/Review/apply setup, and actual
 // observer process join. The only faults are named git command replies in the
 // disposable repository; no source, Review, application, or launch fact is seeded.

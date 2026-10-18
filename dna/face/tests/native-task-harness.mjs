@@ -8,8 +8,9 @@ import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { boundedNative, isolatedEnvironment, launchToken } from './environment.mjs';
+import { boundedNative, isolatedEnvironment, launchToken, memoryOwner } from './environment.mjs';
 import { seatRecord, unseatRecord } from './record-seats.mjs';
+import { recordState, ledgerRows } from './record-memory.mjs';
 import { freePorts, commandsAnnounced, settle, wireLine } from './command-wire.mjs';
 
 export const nativeTaskEnvironmentPresent = () => Boolean(process.env.HALE_NATIVE_TASK_API && process.env.HALE_NATIVE_TASK_SEED);
@@ -38,7 +39,8 @@ export async function startTaskService({ evidenceParent = process.env.HALE_NATIV
   git('init', '--quiet'); git('config', 'user.name', 'Native Task acceptance'); git('config', 'user.email', 'native-task@example.invalid');
   git('config', 'dna.principal', 'local'); git('config', 'dna.trust', 'local');
   const seed = boundedNative(binaries.seed, [root, evidence, 'seed']);
-  const seedOutput = run(seed.command, seed.args); fs.writeFileSync(path.join(evidence, 'seed.log'), seedOutput);
+  // the seed births the record in memory (GH #1590), with the owner's DSN
+  const seedOutput = run(seed.command, seed.args, { env: { ...env, HALE_DNA_MEMORY_DSN_OWNER: memoryOwner() } }); fs.writeFileSync(path.join(evidence, 'seed.log'), seedOutput);
   assert(seedOutput.includes('READY actual native Task handoffs'));
   // The actor holds the board: reassignment and retirement are the owner's
   // gated commands on the head's socket, which the face reaches forwarded.
@@ -68,7 +70,10 @@ export async function startTaskService({ evidenceParent = process.env.HALE_NATIV
     request.on('error', reject); request.setTimeout(5000, () => request.destroy(new Error('Native Task request timeout'))); if (data !== null) request.write(data); request.end();
   });
   const read = suffix => send('GET', suffix);
-  function journal() { const head = git('rev-parse', 'refs/dna/journal').trim(), text = git('show', `${head}:journal.jsonl`); return { head, text, rows: text.trim().split('\n').map(JSON.parse) }; }
+  // The record and its Ledger, as memory keeps them (GH #1590): a Task's
+  // rows are the Ledger's.
+  function journal() { return recordState(root); }
+  function ledger() { return ledgerRows(root); }
   const signal = (item, name) => { if (!item?.child.pid) return; try { process.kill(-item.child.pid, name); } catch (error) { if (error.code !== 'ESRCH') throw error; } };
   const killOnExit = () => signal(api, 'SIGKILL'); process.on('exit', killOnExit);
   async function stopAPI() {
@@ -91,12 +96,14 @@ export async function startTaskService({ evidenceParent = process.env.HALE_NATIV
     throw new Error('Native Task API startup timed out: ' + item.output);
   }
   function exportEvidence() {
-    const state = journal(); fs.writeFileSync(path.join(evidence, 'journal.jsonl'), state.text);
+    const state = journal(); fs.writeFileSync(path.join(evidence, 'record.jsonl'), state.text);
     fs.writeFileSync(path.join(evidence, 'processes.json'), JSON.stringify({ processes, remaining: api ? [api.child.pid] : [] }, null, 2));
     fs.writeFileSync(path.join(evidence, 'requests.json'), JSON.stringify(requests, null, 2));
     fs.writeFileSync(path.join(evidence, 'service.json'), JSON.stringify({ application, origin, root, task: first?.id || fixture.first_id, policy: taskFile, binaries: Object.fromEntries(Object.entries(binaries).map(([name, binary]) => [name, { path: binary, sha256: digest(binary) }])) }, null, 2));
   }
-  async function stop() { if (stopped) return; try { await stopAPI(); exportEvidence(); } finally { stopped = true; process.removeListener('exit', killOnExit); } }
+  // the record's memory dropped at the end, as every fixture's (GH #1590)
+  const dropMemory = () => { const drop = process.env.HALE_FACE_MEMORY_BIN; if (drop) run(drop, [root, 'drop'], { env: { ...env, HALE_DNA_MEMORY_DSN_OWNER: memoryOwner() } }); };
+  async function stop() { if (stopped) return; try { await stopAPI(); exportEvidence(); dropMemory(); } finally { stopped = true; process.removeListener('exit', killOnExit); } }
   try {
     const capabilities = await startAPI();
     const initial = await read(prefix + "/dna/tasks?id=" + encodeURIComponent(fixture.first_id)); assert.equal(initial.status, 200, JSON.stringify(initial)); first = initial.json.data.items[0]; assert(first?.state === "handed");
@@ -112,7 +119,7 @@ export async function startTaskService({ evidenceParent = process.env.HALE_NATIV
       url: () => origin + '/#/tasks?' + new URLSearchParams({ app: application, id: first.id }),
       // A page this lane drives: the session cookie now and after every restart.
       attach: async page => { pages.add(page); await authorize(page); },
-      restart: async () => { await stopAPI(); return startAPI(); }, stop, exportEvidence, journal, requests,
+      restart: async () => { await stopAPI(); return startAPI(); }, stop, exportEvidence, journal, ledger, requests,
     };
   } catch (error) { await stop().catch(() => {}); throw error; }
 }

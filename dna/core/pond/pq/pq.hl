@@ -377,9 +377,11 @@ locus PgConn {
         }
         if outcome == "plaintext" {
             // prefer: opportunistic — fall back to plaintext. F2(a): make
-            // the TLS-stripping observable instead of silent.
+            // the TLS-stripping observable instead of silent — on stderr, so
+            // a verb's answer on stdout stays its own (GH #1590: every verb
+            // reads the record from memory)
             self.tls = false;
-            println("[pq] tls: sslmode=", self.sslmode,
+            eprintln("[pq] tls: sslmode=", self.sslmode,
                 " negotiated PLAINTEXT (server does not support TLS) host=",
                 self.host, " port=", to_string(self.port));
             return db::Status { ok: true };
@@ -627,6 +629,10 @@ locus PgConn {
     fn __pump() -> __PgResult {
         let mut res = __PgResult { ok: true };
         let mut done = false;
+        // DataRows land in one growing buffer: building `csv` by string
+        // concatenation copied every row so far once per row, so a
+        // result of n rows cost O(n^2) bytes of arena.
+        let rows = std::bytes::BytesBuilder { initial_cap: 4096 };
 
         while !done {
             let m = self.__read_one_msg();
@@ -635,12 +641,18 @@ locus PgConn {
                 res.err_detail = m.err;
                 return res;
             }
-            __handle_msg(m.mtype, m.body, m.total, res);
+            if m.mtype == 68 { // 'D' DataRow
+                __append_data_row(rows, m.body, res.n > 0);
+                res.n = res.n + 1;
+            } else {
+                __handle_msg(m.mtype, m.body, m.total, res);
+            }
             if m.mtype == 90 { // 'Z' ReadyForQuery
                 done = true;
                 self.txn_state = __zstatus(byte_at(m.body, 5));
             }
         }
+        if res.n > 0 { res.csv = std::str::clone(rows.text_view()); }
         return res;
     }
 }
@@ -729,37 +741,34 @@ fn build_extended(sql: String, args: db::Args) -> Bytes {
     return out.finish() or raise;
 }
 
-// __handle_msg — dispatch one complete backend message. Mutates
+// __append_data_row — one DataRow ('D') onto the result buffer: its
+// cells tab-separated, a NULL as the empty cell, and a newline before
+// every row but the first.
+fn __append_data_row(rows: std::bytes::BytesBuilder, msg: Bytes, after: Bool) {
+    if after { rows.append_u8(10); }
+    let ncols = read_be16(msg, 5);
+    let mut off = 7;
+    let mut c = 0;
+    while c < ncols {
+        let collen = read_be32(msg, off);
+        off = off + 4;
+        if c > 0 { rows.append_u8(9); }
+        if collen != 4294967295 {
+            rows.append_slice(msg, off, off + collen);
+            off = off + collen;
+        }
+        c = c + 1;
+    }
+}
+
+// __handle_msg — dispatch one complete backend message (a DataRow
+// goes to __append_data_row instead). Mutates
 // `res` (passed by locus-ref — __PgResult is a type, but Hale
 // passes records by value; so we RETURN-via-fields won't work).
 // Instead this is structured to mutate through the res handle.
 // NOTE: __PgResult is threaded by reference here via the
 // type-as-mutable-record convention used elsewhere in pond.
 fn __handle_msg(mtype: Int, msg: Bytes, total: Int, res: __PgResult) {
-    // 'D' (68) DataRow
-    if mtype == 68 {
-        let ncols = read_be16(msg, 5);
-        let mut off = 7;
-        let mut row = "";
-        let mut c = 0;
-        while c < ncols {
-            let collen = read_be32(msg, off);
-            off = off + 4;
-            if c > 0 { row = row + "\t"; }
-            if collen == 4294967295 {
-                row = row + ""; // NULL
-            } else {
-                let cell = std::bytes::slice(msg, off, off + collen);
-                row = row + std::str::from_bytes(cell);
-                off = off + collen;
-            }
-            c = c + 1;
-        }
-        if res.n > 0 { res.csv = res.csv + "\n"; }
-        res.csv = res.csv + row;
-        res.n = res.n + 1;
-        return;
-    }
     // 'C' (67) CommandComplete — tag is a cstr at offset 5
     if mtype == 67 {
         res.cmd_tag = __cstr_at(msg, 5);

@@ -393,13 +393,14 @@ main locus App {
             rest = rest[(nl + 1)..len(rest)];
             if len(self.row_body("knowledge.ratified", d)) == 0 { return false; }
         }
+        std::test::assert_eq_str(dna::memory_fixture(self.repo), "", "the record is born in memory (GH #1590)");
         return true;
     }
 
     // ---- the organization, read from the record (the core's reader, the
     // one a batch is planned against): `position <id>`, `mandate <id>` and
     // `holds <id> <holder>` lines
-    fn org() -> String { return dna::org_chart(self.body.journal, dna::GitReceipts { repo: self.repo }); }
+    fn org() -> String { return dna::org_chart(self.body.journal, dna::MemoryReceipts { repo: self.repo }); }
     fn settled_all(digests: String) -> Bool {
         let mut rest = digests;
         while len(rest) > 0 {
@@ -417,7 +418,8 @@ main locus App {
     // The batch planned on `pending` (`<review id> <digest>` a line) as
     // though each were ratified.
     fn apply_on(text: String, pending: String) -> String {
-        let receipts = dna::GitReceipts { repo: self.repo };
+        std::test::assert_eq_str(dna::memory_fixture(self.repo), "", "the record is born in memory (GH #1590)");
+        let receipts = dna::MemoryReceipts { repo: self.repo };
         let plan = dna::batch_plan_on(self.body.journal, receipts, text, pending);
         if !plan.ok { return "refused: " + plan.why; }
         self.asks = self.asks + 1;
@@ -502,7 +504,7 @@ main locus App {
         if line == "retire-pack" {
             // the last batch adopted, undone as one batch, as `hale dna pack
             // retire` undoes a pack
-            let inverse = dna::batch_inverse(self.body.journal, dna::GitReceipts { repo: self.repo }, self.last_steps);
+            let inverse = dna::batch_inverse(self.body.journal, dna::MemoryReceipts { repo: self.repo }, self.last_steps);
             if len(inverse) == 0 { return "nothing to retire"; }
             return self.apply(inverse);
         }
@@ -651,9 +653,10 @@ main locus App {
         std::io::fs::mkdir(self.repo + "/.hale") or discard;
         std::io::fs::mkdir(self.repo + "/.hale/dna") or discard;
         let init = dna::run_tool("git\n-C\n" + self.repo + "\ninit\n-q\n-b\nmain");
+        std::test::assert_eq_str(dna::memory_fixture(self.repo), "", "the record is born in memory (GH #1590)");
         self.body = dna::Dna {
-            journal: dna::GitJournal { repo: self.repo },
-            verification: dna::HaleVerification { receipts: dna::GitReceipts { repo: self.repo }, repo: self.repo },
+            journal: dna::RoutedJournal { record: dna::RecordJournal { repo: self.repo }, ledger: dna::MemoryLedger { repo: self.repo, dsn_env: dna::fixture_spine(self.repo) } },
+            verification: dna::HaleVerification { receipts: dna::MemoryReceipts { repo: self.repo }, repo: self.repo },
             board: dna::Board { who: "board" }
         };
         self.last = "";
@@ -682,7 +685,7 @@ main locus App {
                 }
                 let applied = self.apply_on(block, pending);
                 if len(applied) > 0 { return line + " " + block + ": " + applied; }
-                let fdoc = dna::GitReceipts { repo: self.repo }.read(self.last_batch[7..len(self.last_batch)]);
+                let fdoc = dna::MemoryReceipts { repo: self.repo }.read(self.last_batch[7..len(self.last_batch)]);
                 if dna::native_json_string(fdoc, "planned_on") != pending { return line + ": the batch does not name its ground: " + fdoc; }
                 let broken_p = self.broken(self.org());
                 if len(broken_p) > 0 { return "after the batch:\n" + block + broken_p; }

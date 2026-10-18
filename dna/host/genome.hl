@@ -135,10 +135,8 @@ fn genome_default_branch(root: String, remote: String) -> String {
 }
 
 // Where the pull fetches the forge's default branch: a ref of its own,
-// never FETCH_HEAD, which every fetch in the clone rewrites — the record's
-// fetches of its own refs among them, so a read of FETCH_HEAD after this
-// fetch could name a row of the journal (GH #1072). It is the genome's,
-// so it lives outside the record's `refs/dna/` (GH #1590).
+// never FETCH_HEAD, which every fetch in the clone rewrites, so a read of
+// it after this fetch could name what another fetch brought (GH #1072).
 const GENOME_REMOTE_REF: String = "refs/hale/remote/genome";
 
 // Fetch the forge's default branch; the commit it is at, "" when it could

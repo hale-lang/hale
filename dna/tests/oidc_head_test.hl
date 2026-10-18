@@ -105,21 +105,22 @@ main locus App {
         let made = dna::run_tool("sh\n-c\ncd \"$1\" && export GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null HALE_DNA_DISCOVER=off && exec \"$2\" dna new app\nsh\n" + scratch + "\n" + toolchain());
         std::test::assert_eq_int(made.code, 0, "hale dna new: " + made.stdout + made.stderr);
         let repo = scratch + "/app";
-        let git = dna::GitRecord { repo: repo };
+        std::test::assert_eq_str(dna::memory_fixture(repo), "", "the record is born in memory (GH #1590)");
+        let git = dna::MemoryRecord { repo: repo };
         let identity = git.identity();
         // the graph says who holds what: no local trust, alice at agent, bob nowhere
         let cfg = "sh\n-c\ncd \"$1\" && git config --local --unset-all dna.trust; git config --local dna.principal oidc && git config --local dna.oidc.issuer \"$2\" && git config --local dna.oidc.client dna-local && git config --local --add dna.oidc.member alice-sub=alice && git config --local --add dna.oidc.member bob-sub=bob && git config --local --add dna.oidc.member carol-sub=carol && git config --local --add dna.oidc.member alice2-sub=alice && git config --local --add dna.oidc.service alice2-sub=robot && git config --local dna.oidc.key \"$3\"\nsh\n" + repo + "\n" + self.issuer + "\n" + oidc::STUB_SPKI;
         std::test::assert_eq_int(dna::run_tool(cfg).code, 0, "the record's OIDC configuration");
-        let as_alice = dna::GitJournal { repo: repo, author: "alice" };
-        std::test::assert(as_alice.append(as_alice.revision(), "intent.offered", "i-alice", "alice was here").ok, "alice is a person the record knows");
-        let as_carol = dna::GitJournal { repo: repo, author: "carol" };
-        std::test::assert(as_carol.append(as_carol.revision(), "intent.offered", "i-carol", "carol was here").ok, "carol, who will retire");
-        let as_bob = dna::GitJournal { repo: repo, author: "bob" };
-        std::test::assert(as_bob.append(as_bob.revision(), "intent.offered", "i-bob", "bob was here").ok, "and so is bob");
+        let as_alice = dna::RecordJournal { repo: repo, author: "alice" };
+        std::test::assert(as_alice.append(as_alice.revision(), "note.kept", "n-alice", "alice was here").ok, "alice is a person the record knows");
+        let as_carol = dna::RecordJournal { repo: repo, author: "carol" };
+        std::test::assert(as_carol.append(as_carol.revision(), "note.kept", "n-carol", "carol was here").ok, "carol, who will retire");
+        let as_bob = dna::RecordJournal { repo: repo, author: "bob" };
+        std::test::assert(as_bob.append(as_bob.revision(), "note.kept", "n-bob", "bob was here").ok, "and so is bob");
         let seat = ops::GraphEdge { kind: "holds" };
         seat.member("position", "position:agent");
         seat.member("holder", "alice");
-        let j = dna::GitJournal { repo: repo };
+        let j = dna::RoutedJournal { record: dna::RecordJournal { repo: repo }, ledger: dna::MemoryLedger { repo: repo } };
         std::test::assert(j.append(j.revision(), "graph.edge", seat.id(), seat.body()).ok, "alice holds position:agent");
         std::io::fs::write_file(repo + "/.hale/dna/authority.json", "{\"format\":\"dna.practice-review-authority/1\",\"application_id\":\"" + identity + "\",\"grants\":[{\"mode\":\"oidc\",\"name\":\"alice\",\"authority\":\"board\",\"practice_propose\":false,\"review_verdict\":false,\"recover\":true}]}") or discard;
 

@@ -1,9 +1,9 @@
 // GH #1017 — `hale dna status` verifies the chain at the head it loaded.
-// It used to count the LIVE ref and compare that with the rows loaded a
+// It used to count the LIVE tail and compare that with the rows loaded a
 // moment earlier, so a writer that appended in between made a healthy
 // record read `chain: BROKEN` (66 of 135 polls, measured). A second
-// writer appends rows here in a loop, as git plumbing, the way
-// `GitRecord` does, while status is polled; every poll says verified
+// writer appends rows here in a loop, through memory's own append
+// function (GH #1590), while status is polled; every poll says verified
 // and names the head it verified.
 
 import "../core" as dna;
@@ -17,18 +17,11 @@ fn in_dir(dir: String, argv: String) -> dna::RunResult {
     return dna::run_tool("sh\n-c\ncd \"$1\" && shift && export HALE_DNA_DISCOVER=off && exec \"$@\"\nsh\n" + dir + "\n" + argv);
 }
 
-// Appends one row after another to refs/dna/journal until `<stop>`
-// exists, then leaves `<stop>.done`.
-const WRITER: String = "cd \"$1\" || exit 1; stop=$2; tick=$3; i=0\n"
+// Appends one row after another to the record, through memory's append
+// function as the owner, until `<stop>` exists, then leaves `<stop>.done`.
+const WRITER: String = "dsn=\"$1\"; sch=\"$2\"; stop=\"$3\"; i=0\n"
     + "while [ ! -e \"$stop\" ] && [ $i -lt 5000 ]; do\n"
-    + "  h=$(git rev-parse -q --verify refs/dna/journal) || break\n"
-    + "  n=$(git rev-list --count \"$h\")\n"
-    + "  git show \"$h:journal.jsonl\" > \"$tick\"\n"
-    + "  printf '{\"seq\": %s, \"kind\": \"fixture.tick\", \"entity\": \"tick:%s\", \"body\": \"\", \"author\": \"writer\"}\\n' \"$n\" \"$i\" >> \"$tick\"\n"
-    + "  blob=$(git hash-object -w \"$tick\")\n"
-    + "  tree=$(printf '100644 blob %s\\tjournal.jsonl\\n' \"$blob\" | git mktree)\n"
-    + "  c=$(git commit-tree \"$tree\" -p \"$h\" -m \"fixture.tick tick:$i\")\n"
-    + "  git update-ref refs/dna/journal \"$c\" \"$h\"\n"
+    + "  psql \"$dsn\" -tAq -c \"SET search_path TO $sch, public\" -c \"SELECT record_append(-1, coalesce((SELECT digest FROM record_rows ORDER BY seq DESC LIMIT 1), 'genesis'), 'fixture.tick', 'tick:$i', '', 'writer', '', '')\" >/dev/null 2>&1\n"
     + "  i=$((i+1))\n"
     + "done\n"
     + ": > \"$stop.done\"\n";
@@ -45,13 +38,15 @@ main locus App {
         let app = scratch + "/raced";
         let c1 = in_dir(app, "git\nconfig\nuser.name\nmara");
         let c2 = in_dir(app, "git\nconfig\nuser.email\nmara@local");
-        let r = dna::GitRecord { repo: app };
+        std::test::assert_eq_str(dna::memory_fixture(app), "", "the record is born in memory (GH #1590)");
+        let r = dna::MemoryRecord { repo: app };
         let before = r.count("journal");
         std::test::assert(before > 0, "the new record has rows");
 
         std::io::fs::write_file(scratch + "/writer.sh", WRITER) or discard;
         let stop = scratch + "/stop";
-        let started = dna::run_tool("sh\n-c\nsh \"$1\" \"$2\" \"$3\" \"$4\" >/dev/null 2>&1 &\nsh\n" + scratch + "/writer.sh\n" + app + "\n" + stop + "\n" + scratch + "/tick");
+        let owner = std::env::var("HALE_DNA_MEMORY_DSN_OWNER");
+        let started = dna::run_tool("sh\n-c\nsh \"$1\" \"$2\" \"$3\" \"$4\" >/dev/null 2>&1 &\nsh\n" + scratch + "/writer.sh\n" + owner + "\n" + dna::schema_for(dna::record_scope(app)) + "\n" + stop);
         std::test::assert_eq_int(started.code, 0, "the second writer starts");
 
         let mut i = 0;
@@ -60,7 +55,7 @@ main locus App {
             std::test::assert_eq_int(st.code, 0, "status answers: " + st.stderr);
             let journal = std::json::find_field_raw(st.stdout, "journal");
             std::test::assert_eq_str(std::json::find_string_field(journal, "chain"), "verified", "poll " + to_string(i) + ": a record that grew is not broken: " + journal);
-            std::test::assert(len(std::json::find_string_field(journal, "chain_head")) == 40, "poll " + to_string(i) + ": and names the head it verified: " + journal);
+            std::test::assert(len(std::json::find_string_field(journal, "chain_head")) == 64, "poll " + to_string(i) + ": and names the head it verified: " + journal);
             i = i + 1;
         }
         let stopped = dna::run_tool("sh\n-c\n: > \"$1\"; n=0; while [ ! -e \"$1.done\" ] && [ $n -lt 300 ]; do sleep 0.1; n=$((n+1)); done; [ -e \"$1.done\" ]\nsh\n" + stop);

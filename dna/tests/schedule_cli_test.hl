@@ -26,7 +26,9 @@ fn dna_cli(app: String, args: String) -> String {
 
 // The record's lines that carry every one of `needles` (tab-separated).
 fn record_lines_with(app: String, needles: String) -> Int {
-    let text = in_dir(app, toolchain() + "\ndna\nrecord-rows").stdout + "\n";
+    // the record's rows and its Ledger's (GH #1590: a schedule's rows are
+    // the Ledger's)
+    let text = in_dir(app, toolchain() + "\ndna\nrecord-rows").stdout + "\n" + in_dir(app, toolchain() + "\ndna\nledger\nrows").stdout + "\n";
     let tabbed = needles + "\t";
     let mut n = 0;
     let mut rest = text;
@@ -88,7 +90,8 @@ main locus App {
         std::test::assert(std::str::contains(unknown, "no schedule `nightly` is declared in the record"), "an unknown schedule is refused: " + unknown);
 
         // the organization declares them over the project's record
-        self.core = dna::Dna { journal: dna::GitJournal { repo: app }, org_id: "cli", planned: true };
+        std::test::assert_eq_str(dna::memory_fixture(app), "", "the record is born in memory (GH #1590)");
+        self.core = dna::Dna { journal: dna::RoutedJournal { record: dna::RecordJournal { repo: app }, ledger: dna::MemoryLedger { repo: app, dsn_env: dna::fixture_spine(app) } }, org_id: "cli", planned: true };
         std::test::assert_eq_str(self.core.scheduler.declare(dna::Schedule { id: "nightly", cron: "0 2 * * *", definition: "ask-person", args: "{\"objective\": \"reconcile the day's records\"}", convener: "position:leader" }, self.core.catalog, self.core.knowledge_client), "", "a nightly cron is declared");
         std::test::assert_eq_str(self.core.scheduler.declare(dna::Schedule { id: "weekly", every_ms: 1000, definition: "ask-person", args: "{\"objective\": \"export last week's ledger\"}", convener: "position:leader" }, self.core.catalog, self.core.knowledge_client), "", "an interval is declared");
         let broken = self.core.scheduler.declare(dna::Schedule { id: "broken", cron: "0 25 * * *", definition: "ask-person", args: "{\"objective\": \"never\"}", convener: "position:leader" }, self.core.catalog, self.core.knowledge_client);

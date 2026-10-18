@@ -1,6 +1,7 @@
 // dna/face/tests/memory/main.hl — memory for a native lane's record (GH
-// #1029). `hale dna dev` migrates the record's memory when it starts; a
-// browser fixture that made the record drops it again when it stops, the
+// #1029, every browser fixture's record since GH #1590). `hale dna dev`, or
+// the fixture program, migrates the record's memory; a browser fixture
+// that made the record drops it again when it stops, the
 // way the `.hl` fixtures do (`dna::unmigrate`), so a CI Postgres does not
 // keep a schema per test. The owner's DSN reaches this program alone.
 //
@@ -15,9 +16,10 @@ fn main() {
     let action = std::env::arg_or(2, "");
     let owner = if std::env::var_exists("HALE_DNA_MEMORY_DSN_OWNER") { std::env::var("HALE_DNA_MEMORY_DSN_OWNER") } else { "" };
     std::test::assert(len(root) > 0 && len(owner) > 0, "a project root and HALE_DNA_MEMORY_DSN_OWNER");
-    let j = dna::GitJournal { repo: root };
-    let id = j.genesis();
-    std::test::assert(len(id) > 0, "a record to act on");
+    // the record the project's genome pins (GH #1590): a project that
+    // never got one has nothing to drop
+    let id = dna::record_scope(root);
+    if len(id) == 0 { println("no record pinned in " + root); return; }
     if action == "drop" {
         std::test::assert_eq_str(dna::unmigrate(owner, id), "", "the record's memory is dropped");
         println("dropped " + id);

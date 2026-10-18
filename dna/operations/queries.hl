@@ -101,6 +101,7 @@ locus NoReceipts {
     fn store(text: String) -> String { return ""; }
     fn read(digest: String) -> String { return ""; }
     fn erase(digest: String) -> Bool { return false; }
+    fn redacted(digest: String) -> Bool { return false; }
     fn kind() -> String { return "unavailable"; }
 }
 
@@ -208,6 +209,28 @@ locus Queries {
         // `j` reads the record and its Ledger as one (a routed journal):
         // the receipt rows a Ledger holds are in it
         routed: Bool = false;
+        // the record's repository, where its Ledger is reached (GH #1590):
+        // "" for a reader that has none, which then cannot see receipts on
+        // a record with a Ledger
+        location: String = "";
+        ledger: dna::MemoryLedger = dna::MemoryLedger { };
+        ledger_state: Int = 0; // 0 unread, 1 read, -1 not readable here
+    }
+    // The Ledger beside the record, read once: whether it could be.
+    @bounded_by(self.location)
+    fn ledger_read() -> Bool {
+        if self.ledger_state == 0 {
+            self.ledger_state = -1;
+            if len(self.location) > 0 {
+                let at = self.location;
+                self.ledger = dna::MemoryLedger { repo: at, dsn_env: dna::HEAD_DSN_ENV };
+                if self.ledger.ready() {
+                    let moved = self.ledger.refresh();
+                    if len(self.ledger.last_error()) == 0 { self.ledger_state = 1; }
+                }
+            }
+        }
+        return self.ledger_state == 1;
     }
     fn revision() -> Int { return self.j.revision(); }
     fn head() -> String { return self.j.head(); }
@@ -259,11 +282,11 @@ locus Queries {
         }
         return PracticeRow { };
     }
-    // Receipt families move to Ledger after adoption. A Record-only reader
-    // cannot prove their current visibility; fail closed even if a stale local
-    // blob remains. A reader over the record and its Ledger (`routed`) sees
-    // them where they are. No protected-service read or disclosure write is
-    // performed.
+    // Receipt rows are the Ledger's on a record with one (every record kept
+    // in memory, GH #1590): they are read there too, and a reader that
+    // cannot read the Ledger cannot prove a receipt's current visibility,
+    // so it fails closed even if a stale body remains. No protected-service
+    // read or disclosure write is performed.
     fn receipt_status(digest: String) -> String {
         let mut adopted = false;
         let mut redacted = false;
@@ -273,6 +296,8 @@ locus Queries {
         while i < self.j.revision() {
             let e = self.j.read(i);
             if e.kind == "ledger.adopted" { adopted = true; }
+            // a record that says it left its Ledger (a row no toolchain
+            // writes since GH #1590) proves nothing about its receipts
             if e.kind == "ledger.abandoned" { uncertain = true; }
             // Abandonment empties Ledger; it does not restore every prior
             // receipt restriction into Record. Once adopted, this projection
@@ -287,9 +312,25 @@ locus Queries {
             }
             i = i + 1;
         }
+        if adopted && !self.routed {
+            if !self.ledger_read() { return "source_unavailable"; }
+            i = 0;
+            while i < self.ledger.revision() {
+                let e = self.ledger.read(i);
+                if raw_digest(e.entity) == raw_digest(digest) {
+                    if e.kind == "receipt.redacted" { redacted = true; }
+                    if e.kind == "receipt.classified" || e.kind == "receipt.withheld" || e.kind == "receipt.filed" {
+                        let class = std::json::find_string_field(e.body, "class");
+                        if dna::protected_class(class) { protected = true; }
+                        else if e.kind == "receipt.withheld" || (class != "public" && class != "internal") { uncertain = true; }
+                    }
+                }
+                i = i + 1;
+            }
+        }
         if redacted { return "redacted"; }
         if protected { return "protected"; }
-        if (adopted && !self.routed) || uncertain { return "source_unavailable"; }
+        if uncertain { return "source_unavailable"; }
         return "available";
     }
     // Recorded provenance from an exact admitted generic node request, not a

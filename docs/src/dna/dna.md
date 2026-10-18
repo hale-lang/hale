@@ -97,7 +97,7 @@ main locus Org {
         core: dna::Dna = dna::Dna {
             // …
             journal: dna::RoutedJournal {
-                record: dna::GitJournal { repo: "." }
+                record: dna::RecordJournal { repo: "." }
             },
             // …
             work: dna::WorkSystem {
@@ -114,11 +114,11 @@ main locus Org {
             review_policy: dna::OrgPolicy { },
             board: dna::Board { who: "board" },
             gateway: dna::MutationGateway {
-                leases: dna::GitLeases { repo: "." },
+                leases: dna::MemoryLeases { repo: "." },
                 workspaces: dna::IsolatedWorktrees { repo: ".", root: ".hale/dna/worktrees" },
                 repo: dna::LocalGit { repo: "." }
             },
-            verification: dna::HaleVerification { receipts: dna::GitReceipts { repo: "." }, scratch: ".hale/dna/scratch", repo: ".", seed: "." },
+            verification: dna::HaleVerification { receipts: dna::MemoryReceipts { repo: "." }, scratch: ".hale/dna/scratch", repo: ".", seed: "." },
             // …
             editor: dna::SourceEditor { name: "editor", models: editor_models() },
             genome_seed: ".",
@@ -135,7 +135,7 @@ behind one of the core's interfaces:
 
 | field | as generated | what it is |
 |---|---|---|
-| `journal` | `dna::RoutedJournal` over `dna::GitJournal` | the record (`refs/dna/journal`) and, once adopted, the ledger in memory, read as one ([Memory and the record](./memory.md)) |
+| `journal` | `dna::RoutedJournal` over `dna::RecordJournal` | the record (`record_rows` in memory) and the ledger, read as one ([Memory and the record](./memory.md)) |
 | `work` | `dna::WorkSystem` with `dna::LegRelay` | who performs work: agent work is relayed to a leg ([Legs, hands and voice](./legs.md)) |
 | `budget` | `dna::Budget { policy: org_budget() }` | the one spend policy, from `dna/org/models.hl` ([The spine](./spine.md)) |
 | `boundary` | `dna::AutonomyBoundary` holding a `dna::Grant` | what the Leader may decide on its own ([the grant](./shaping.md#grant-and-autonomy)) |
@@ -164,7 +164,7 @@ The same file wires the Leader and the nerves:
         leader: dna::Leader = dna::Leader {
             name: "leader",
             models: leader_models(),
-            receipts: dna::GitReceipts { repo: "." },
+            receipts: dna::MemoryReceipts { repo: "." },
             source: dna::SourceReader { repo: "." },
             // …
             charter: charter(),
@@ -212,7 +212,7 @@ The core's other loci each live in a file of their own: the Leader and
 the source reader in `dna/core/org.hl`, the editor in
 `dna/core/editing.hl`, the gateway, worktrees and `LocalGit` in
 `dna/core/workspace.hl`, verification in `dna/core/verification.hl`,
-`GitJournal` and `GitReceipts` in `dna/core/record.hl`, the grant's
+`RecordJournal` and `MemoryReceipts` in `dna/core/memory_record.hl`, the grant's
 boundary in `dna/core/review.hl`, the budget in `dna/core/budget.hl`,
 the work system and the leg relay in `dna/core/work_system.hl`, the
 catalog in `dna/core/workflow_definition.hl`. The Board, the review
@@ -307,10 +307,14 @@ run with `--no-library` (`new` takes the flag too):
 
 Outside the files, `init` also:
 
-- makes the directory a git repository if it is not one: the record is
-  a branch;
-- seeds the record, `refs/dna/journal`, with receipts under
-  `refs/dna/receipts/` ([Memory and the record](./memory.md));
+- makes the directory a git repository if it is not one: the genome
+  is code in git;
+- composes the record: pins its identity in `hale.toml`, provisions
+  memory, and appends `record.genesis`, `ledger.adopted` and
+  `record.key`, then seeds it with the rows above, receipts kept in
+  memory by digest ([Memory and the record](./memory.md));
+- refuses a clone that still holds a record an earlier toolchain kept
+  on git (`refs/dna/journal`): delete the old refs and re-run;
 - sets `dna.unix.member` in the clone's git config, so the head's socket
   knows your uid, and `dna.trust = local` when the record declares no
   trust;
@@ -352,7 +356,7 @@ checks both.
 ```text
 # the build artifact
 /refproj
-# toolchain-managed (vendor is re-materialized; .hale holds sockets, worktrees, scratch; the record is refs/dna/*)
+# toolchain-managed (vendor is re-materialized; .hale holds sockets, worktrees, scratch; the record is memory's)
 /vendor/
 /.hale/
 /dna/nats.secrets.conf

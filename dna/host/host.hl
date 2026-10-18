@@ -502,7 +502,7 @@ type RelayState { relayed: String = "\n"; count: Int = 0; error: String = ""; }
 fn edge_admits_here(root: String, r: dna::KnowledgeEdgeRequest) -> Bool {
     let codec = dna::KnowledgeEdgeCodec { };
     if !codec.valid(r) { return false; }
-    let journal = dna::GitJournal { repo: root }; let receipts = dna::GitReceipts { repo: root };
+    let journal = dna::RecordJournal { repo: root }; let receipts = dna::MemoryReceipts { repo: root };
     if journal.revision() == 0 || journal.read(0).digest != r.application_id { return false; }
     let e = codec.endpoints(journal, receipts, r, journal.revision());
     return e.ok && admits_here(root, e.from_author) && admits_here(root, e.from_target)
@@ -762,14 +762,17 @@ locus NodeRelay {
             } else { true };
             let requested = node_ours && (r.kind == "intent.requested" || r.kind == "review.verdict" || r.kind == "concern.requested" || r.kind == "pressure.requested" || r.kind == "observation.requested" || r.kind == "practice.requested" || r.kind == "hold.requested" || r.kind == "position.requested" || r.kind == "graph.requested" || r.kind == "schedule.requested" || r.kind == "knowledge.node.requested" || r.kind == "knowledge.binding.requested" || r.kind == "knowledge.edge.requested" || r.kind == "attempt.outcome_requested" || r.kind == "attempt.allowance_requested");
             let answers = if r.kind == "intent.requested" { " intent.offered intent.refused " } else if r.kind == "concern.requested" { " concern.raised concern.refused " } else if r.kind == "pressure.requested" { " pressure.raised pressure.refused " } else if r.kind == "observation.requested" { " expression.observed observation.refused " } else if r.kind == "practice.requested" { " practice.proposed practice.refused " } else if r.kind == "hold.requested" { " hold.proposed hold.refused " } else if r.kind == "position.requested" { " position.proposed position.refused " } else if r.kind == "graph.requested" { " graph.proposed graph.refused " } else if r.kind == "knowledge.node.requested" { " knowledge.node.proposed knowledge.node.refused " } else if r.kind == "schedule.requested" { " schedule.answered " } else if r.kind == "knowledge.binding.requested" { " knowledge.binding.proposed knowledge.binding.refused " } else if r.kind == "knowledge.edge.requested" { " knowledge.edge.proposed knowledge.edge.refused " } else if r.kind == "attempt.outcome_requested" { " attempt.outcome attempt.outcome_refused " } else if r.kind == "attempt.allowance_requested" { " attempt.allowance_granted attempt.allowance_refused " } else { " review.settled review.refused review.signed " };
-            if requested && trust == "signed" && !row_verified(self.root, r.digest) {
+            // a Ledger row was admitted by memory's gate under its writer's
+            // role before it landed (GH #1026, #1590); a record row by its
+            // signature
+            if requested && trust == "signed" && dna::memory_of(r.kind) != "ledger" && !row_verified(self.root, r.digest) {
                 // Verification gates EVERY attempt. Even when writing the refusal
                 // failed, an expired retry marker must never admit an unsigned row.
                 let answered = request_answered(p, i, answers);
                 if answered && len(settled) > 0 { learned = learned + settled + "\n"; }
                 let last = relayed_at(state.relayed, fact_key(p, i));
                 if !answered && (last < 0 || std::time::now() - last >= RELAY_AGAIN_AFTER) {
-                    let why = "unverified writer: commit " + r.digest + " carries no signature git accepts (dna.trust = signed); not relayed";
+                    let why = "unverified writer: row " + r.digest + " carries no signature by a key the record admits (dna.trust = signed; `hale dna signers`); not relayed";
                     let command_id = dna::native_json_string(r.body, "command_id");
                     if r.kind == "review.verdict" && len(command_id) > 0 {
                         let v = dna::review_command_verdict(command_id, r.body);
@@ -891,7 +894,6 @@ main locus Host {
         // carried out, redactions completed — on this node's tick, under
         // the record's spine role, beside any number of other nodes
         graph_projection: ops::MemoryProjection = ops::MemoryProjection { };
-        adoption: dna::LedgerAdoption = dna::LedgerAdoption { };
         vault: dna::MemoryVault = dna::MemoryVault { };
         // this process's one handle on the ledger and the leases (GH #985):
         // opened on first use, held for the host's life, closed with it
@@ -1133,11 +1135,11 @@ main locus Host {
             self.say("the body lease is no longer mine: " + (if len(who) > 0 && who != self.holder { "held by " + who } else { "released" }) + "; a record admits one body — stopping");
             return false;
         } else if len(st) > 0 {
-            self.say("the body lease could not be renewed and has expired (the remote cannot be reached); a body that cannot prove its lease executes nothing");
+            self.say("the body lease could not be renewed and has expired (memory cannot be reached); a body that cannot prove its lease executes nothing");
             return false;
         }
         if now >= self.lease.expires - FENCE_MARGIN {
-            self.say("the body lease could not be renewed and has expired (the remote cannot be reached); a body that cannot prove its lease executes nothing");
+            self.say("the body lease could not be renewed and has expired (memory cannot be reached); a body that cannot prove its lease executes nothing");
             return false;
         }
         return true;
@@ -1271,7 +1273,7 @@ main locus Host {
         // GH #665: the lease the body holds and its epoch; every ledger
         // write the organism makes carries them, and the service refuses
         // one under a lease it no longer holds
-        if len(self.holder) > 0 && body_in_store(self.root) { e = e + "\nHALE_DNA_LEASE=" + store_lease_key(self.root) + "\nHALE_DNA_LEASE_TOKEN=" + to_string(self.lease.token); }
+        if len(self.holder) > 0 { e = e + "\nHALE_DNA_LEASE=" + store_lease_key(self.root) + "\nHALE_DNA_LEASE_TOKEN=" + to_string(self.lease.token); }
         return e;
     }
     // ---- memory, as the spine (GH #985) ----------------------------------
@@ -1289,49 +1291,30 @@ main locus Host {
         if len(fence) > 0 { self.say("memory: " + fence); self.quit(2); }
         self.graph_projection.root = self.root;
         self.graph_projection.j.repo = self.root;
-        self.graph_projection.j.record.repo = self.root;
+        self.graph_projection.j.signer.repo = self.root;
         self.graph_projection.receipts.repo = self.root;
-        self.adoption.root = self.root;
-        self.adoption.j.repo = self.root;
-        self.adoption.j.record.repo = self.root;
-        self.adoption.ledger.repo = self.root;
-        self.adoption.carry_cell = BODY_LEASE;
-        self.adoption.carry_key = store_lease_key(self.root);
-        self.adoption.holder = self.holder;
-        self.vault.repo = self.root;
-        self.vault.j.repo = self.root;
-        self.vault.j.record.repo = self.root;
+        // its rows are the Ledger's, read with the record's (GH #1590)
+        self.vault.over(self.root);
         self.memory_on = true;
         self.say("memory: the graph, the ledger and protected evidence under the record's spine role");
     }
     // One pass of the spine's memory work (GH #985, #1026), which every
     // node does and none coordinates: the record applied into the graph
-    // and the org chart, an adoption or abandonment the record asks for
-    // carried out under a claim, the redactions the record holds erased.
-    // The stores serialize them — the projection a row at a time, the
-    // adoption by its claim, the erasure by digest. The projection goes
-    // only as far as the record the remote holds after this tick's sync,
-    // so a stamped row is always a shared one: a node that projected a row
-    // it never shared and then died would leave every other node waiting
-    // on a commit none of them can receive. With no remote there is one
-    // clone, and nothing to wait on. What failed is said once, when it
-    // changes, and tried again next tick. The text said is kept in one
-    // field, `memory_said`: replaced in place, the old text retired at
-    // this method's return (spec/memory.md, in-place String reassignment),
-    // which the survey models only for a concatenation stored whole, not
-    // for one built in a local first, as this one is.
+    // and the org chart, and the redactions memory holds erased. The
+    // stores serialize them — the projection a row at a time, the erasure
+    // by digest. What failed is said once, when it changes, and tried
+    // again next tick. The text said is kept in one field, `memory_said`:
+    // replaced in place, the old text retired at this method's return
+    // (spec/memory.md, in-place String reassignment), which the survey
+    // models only for a concatenation stored whole, not for one built in a
+    // local first, as this one is.
     @bounded_by(self.memory_said)
-    fn memory_tick(synced: Bool) {
+    fn memory_tick() {
         if !self.memory_on { return; }
-        let remote = len(record_remote(self.root)) > 0;
-        let shared = if remote { rec(self.root).head(REMOTE_JOURNAL) } else { dna::Head { } };
-        let applied = if !synced { ops::ProjectionApplied { } } else if remote { self.graph_projection.apply_to(if shared.ok && !shared.absent { shared.id } else { "" }) } else { self.graph_projection.apply() };
-        let adopted = self.adoption.tick(self.memory.leases);
+        let applied = self.graph_projection.apply();
         let erased = self.vault.complete_redactions();
         let mut why = "";
-        if !synced { why = "projection waits for the record to be shared (the sync did not complete)"; }
         if len(applied.error) > 0 { why = "projection: " + applied.error; }
-        if adopted < 0 { why = why + (if len(why) > 0 { "; " } else { "" }) + "adoption: " + self.adoption.last_error; }
         if erased < 0 { why = why + (if len(why) > 0 { "; " } else { "" }) + "redaction: " + self.vault.last_error; }
         if why != self.memory_said {
             if len(why) > 0 { self.say("memory: " + why); } else if len(self.memory_said) > 0 { self.say("memory: answering again"); }
@@ -1351,7 +1334,7 @@ main locus Host {
     fn prepare_genome() -> Bool {
         let knob = if std::env::var_exists("HALE_DNA_GENOME_POLL") { std::env::var("HALE_DNA_GENOME_POLL") } else { "" };
         self.genome_poll = if len(knob) > 0 { std::str::parse_int(knob) or 300 } else { 300 };
-        let remote = record_remote(self.root);
+        let remote = genome_remote(self.root);
         if len(remote) > 0 && self.genome_poll > 0 {
             let target = genome_fetch_default(self.root, remote);
             if len(target) == 0 { self.say("genome: the forge's default branch could not be fetched; running the genome here"); }
@@ -1431,7 +1414,7 @@ main locus Host {
         let now = std::time::now();
         if now - self.genome_polled < self.genome_poll { return; }
         self.genome_polled = now;
-        let remote = record_remote(self.root);
+        let remote = genome_remote(self.root);
         if len(remote) == 0 { return; }
         let target = genome_fetch_default(self.root, remote);
         self.genome_polls = self.genome_polls + 1;
@@ -1592,7 +1575,7 @@ main locus Host {
         let source = org_runtime::OrganizationLaunchSource { root: self.root }; let basis = source.basis(id);
         if !basis.ok || !self.body_assert("the prepared organization") { return OrganizationLaunchPreparation { }; }
         let codec = dna::OrganizationLaunchCodec { }; let attempt_id = codec.attempt_id(basis.handoff.digest);
-        let record = dna::GitJournal { repo: self.root }; let facts = dna::OrganizationSourceRequestCodec { };
+        let record = dna::RecordJournal { repo: self.root }; let facts = dna::OrganizationSourceRequestCodec { };
         let previous = facts.fact(record, "organization.source.launch_requested", attempt_id);
         if len(previous.kind) > 0 {
             let a = source.attempt(basis); return OrganizationLaunchPreparation { valid: codec.valid(a), attempt: a };
@@ -1610,7 +1593,7 @@ main locus Host {
         let permission = dna::run_tool("chmod\n0555\n" + dir + "/program"); if permission.code != 0 { return OrganizationLaunchPreparation { }; }
         let binary = source.file_digest(dir + "/program"); let topology = source.file_digest(artifact);
         if binary != source.file_digest(built) || !guard.applied(basis.request, basis.worktree, basis.candidate).ok || !self.body_assert("the exact prepared organization") { return OrganizationLaunchPreparation { }; }
-        let receipts = dna::GitReceipts { repo: self.root }; let artifact_text = std::io::fs::read_file(artifact) or "";
+        let receipts = dna::MemoryReceipts { repo: self.root }; let artifact_text = std::io::fs::read_file(artifact) or "";
         let kept = receipts.store(artifact_text); if "sha256:" + kept != topology { return OrganizationLaunchPreparation { }; }
         let identity = identity::Identity { };
         let a = dna::OrganizationLaunchAttempt { attempt_id: attempt_id, application_id: basis.request.application_id,
@@ -1966,16 +1949,16 @@ main locus Host {
         }
         // the record's requests onto the nerves first (GH #986): the relay
         // is what a person waiting on an answer waits for, so it never
-        // waits behind the sync, memory's work or the forge. A row another
-        // clone wrote arrives with the sync below and is relayed on the
-        // next tick; the sync below shares what this relay answers.
+        // waits behind memory's work or the forge. A row another clone
+        // wrote is in memory already, and is relayed on the next tick.
         if self.nerves_on && !self.nerves_read_said && self.nerves_read_now() { self.say_nerves_read(); }
         let n = self.relay.relay_over(self.view, self.memory);
         if len(self.relay.error) > 0 { self.say("relay onto the nerves failed: " + self.relay.error); }
         if n > 0 { self.say("relayed " + to_string(n) + " fact(s) from the record onto the nerves"); }
+        // the view read again and dropped candidates' branches cleared
         let s = sync_record_over(self.root, self.view.j);
         if !s.ok { self.say("sync: " + s.summary); }
-        self.memory_tick(s.ok);
+        self.memory_tick();
         self.poll_genome();
         // the view for the rest of the pass, read again (only what the
         // record gained) after a step that may have written
@@ -2061,7 +2044,7 @@ main locus Host {
         self.holder = body_holder(self.root);
         let now0 = std::time::now();
         let l = body_acquire(self.root, self.holder, now0, false, self.memory);
-        if !l.ok { self.say("the record's remote cannot be reached, so the body lease cannot be taken; a body runs only under a lease it can prove"); std::process::exit(3); }
+        if !l.ok { self.say("memory cannot be reached, so the body lease cannot be taken; a body runs only under a lease it can prove"); std::process::exit(3); }
         if !l.present || l.holder != self.holder {
             self.say("a body for this record is live on " + l.holder + " (ticked " + ago(now0 - (l.expires - BODY_TTL)) + ", lease expires in " + to_string(l.expires - now0) + "s); a record admits one body — `hale dna body claim --force` takes it over when that body is gone");
             std::process::exit(3);
@@ -2084,7 +2067,7 @@ main locus Host {
         self.relay.toolchain = self.toolchain;
         self.relay.verb = self.verb;
         self.relay.live = self.nerves_on;
-        self.view = Projection { root: self.root, seed: self.seed, toolchain: self.toolchain, j: dna::RoutedJournal { record: dna::GitJournal { repo: self.root, author: "host" }, ledger: self.memory.ledger } };
+        self.view = Projection { root: self.root, seed: self.seed, toolchain: self.toolchain, j: dna::RoutedJournal { record: dna::RecordJournal { repo: self.root, author: "host" }, ledger: self.memory.ledger } };
         let viewed = self.view.j.refresh();
         if !self.nerves_on { self.say("no nerves: " + dna::NATS_SPINE_URL_ENV + " and " + dna::NATS_ORG_ENV + " are not set (`hale dna dev` creates the stream from HALE_DNA_NATS_URL_OWNER or dna/compose.yaml and hands the host the spine's); the organization hears nothing the record asks"); }
         // A pending prepared handoff uses its claimed attempt even at host
@@ -2133,7 +2116,7 @@ main locus Host {
         if self.verb == "run" && len(self.fleet) > 0 { self.say("the fleet `" + self.fleet + "` (" + self.root + "/" + self.plan + ") is the expression; `hale node <name>` runs its nodes"); }
         // the node is up on its genome: a row naming the sha it runs
         self.genome_row("node.started", "");
-        self.say("genome " + short(self.genome_sha) + (if self.genome_poll > 0 && len(record_remote(self.root)) > 0 { ", pulled from the forge every " + to_string(self.genome_poll) + "s" } else { "" }));
+        self.say("genome " + short(self.genome_sha) + (if self.genome_poll > 0 && len(genome_remote(self.root)) > 0 { ", pulled from the forge every " + to_string(self.genome_poll) + "s" } else { "" }));
         // 5. iris
         self.write_status();
         if self.iris && bound {
@@ -2219,7 +2202,7 @@ main locus Host {
             let released = append_as(self.root, "body.released", self.holder, "{\"token\": " + to_string(self.lease.token) + ", \"by\": \"host\"" + owner_json(self.root) + "}", "host", self.memory);
             let s3 = sync_record(self.root, self.memory);
         }
-        self.say("organization exited (" + to_string(code) + "); " + RECORD_REF + " in " + self.root + " is the record");
+        self.say("organization exited (" + to_string(code) + "); the record, in memory, is as it left it");
         // drained: return, and the runtime ends the process by its signal
         if self.draining { return; }
         if self.exit_code != 0 { self.quit(self.exit_code); }
@@ -2289,7 +2272,7 @@ locus BodyFence {
     fn pass() -> Bool {
         if !fence_mandate(self.dir, self.host_pid) { return false; }
         let now = std::time::now();
-        // every git call a renewal makes stops at this deadline
+        // the deadline the renewal must prove the lease by
         let d = write_text(self.dir + "/body.deadline", to_string(self.expires - FENCE_MARGIN)) or false;
         if dna::run_tool("kill\n-0\n" + to_string(self.host_pid)).code != 0 { fence_stop(self.dir, self.host_pid, self.mark, "orphaned: the host is gone"); return false; }
         if now - self.renewed >= BODY_TTL / 3 {
@@ -2330,17 +2313,10 @@ fn fence_stop(dir: String, host_pid: Int, mark: String, why: String) {
 }
 
 fn host_main(verb: String, root: String, seed: String, fleet: String, plan: String, toolchain: String, a: Args) {
-    // GH #646 decision 3: an adopted organism starts active work only
-    // when its store is reachable — `dev` brings the service up itself;
-    // `run` needs to be told where it is
-    if verb == "run" && routing_here(root) > 0 && !dna::dsn_set(dna::SPINE_DSN_ENV) {
-        eprintln("hale dna run: this record's operations live in the ledger (adopted at ", short(checkpoint_here(root)), "), and no memory is named here (", dna::SPINE_DSN_ENV, "); a body without its memory admits nothing — set it, or run under `hale dna dev`");
-        std::process::exit(2);
-    }
     // GH #664, #1123: a body over a shared record says which organization
     // it is, and it must be one the record states — a body that names none
-    // admits nothing. Read from the record, the membership's source, so
-    // it holds before memory answers or with none named.
+    // admits nothing. Read from the record, the membership's source,
+    // before the body's own memory is asked for.
     if verb == "run" || verb == "dev" {
         let me = owner_here(root);
         let owners = organizations_in_record(root);
@@ -2352,12 +2328,13 @@ fn host_main(verb: String, root: String, seed: String, fleet: String, plan: Stri
             eprintln("hale dna ", verb, ": dna.owner is `", me, "`, which no organization in the record is (organizations: ", owners, ")");
             std::process::exit(2);
         }
-        // GH #665: the owners' controllers coordinate through the ledger —
-        // a lease per owner in the store, an epoch on every write
-        if len(me) > 0 && verb == "run" && routing_here(root) == 0 {
-            eprintln("hale dna run: this record is shared (this body is `", me, "`), and its controllers coordinate through the ledger, which it has not adopted; `hale dna ledger adopt` first (under `hale dna dev`)");
-            std::process::exit(2);
-        }
+    }
+    // GH #646 decision 3, #1590: an organism starts active work only when
+    // its memory is reachable — `dev` brings the service up itself; `run`
+    // needs to be told where it is
+    if verb == "run" && !dna::dsn_set(dna::SPINE_DSN_ENV) {
+        eprintln("hale dna run: the record and its Ledger are memory's, and no memory is named here (", dna::SPINE_DSN_ENV, "); a body without its memory admits nothing — set it, or run under `hale dna dev`");
+        std::process::exit(2);
     }
     let port_flag = flag(a, "--port");
     let observe_flag = flag(a, "--observe");

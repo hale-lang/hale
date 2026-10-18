@@ -26,11 +26,11 @@ locus TaskApiSeed {
         std::test::assert(false, "actual native handoff"); return dna::Event { };
     }
     fn seed(root: String, evidence: String, browser: Bool) {
-        let record = dna::GitRecord { repo: root };
-        std::test::assert(record.append("journal", "", dna::Row { kind: "application.observed", entity: "org", body: "{}", author: "test" }, false, "").ok, "fresh application identity");
+        let record = dna::MemoryRecord { repo: root };
+        std::test::assert(record.append("journal", record.head("journal").id, dna::Row { kind: "application.observed", entity: "org", body: "{}", author: "test" }, false, "").ok, "fresh application identity");
         // Eligibility input only, not proof of the person retirement command.
         if browser { std::test::assert(record.append("journal", record.head("journal").id, dna::Row { kind: "person.retired", entity: "retired", body: "{\"by\":\"fixture\",\"to\":\"\",\"transferred\":0}", author: "fixture" }, false, "").ok, "explicit recipient-retirement eligibility fixture"); }
-        let journal = dna::GitJournal { repo: root }; let receipts = dna::GitReceipts { repo: root }; let work = TaskApiWork { }; work.bind(journal, receipts);
+        let journal = dna::RoutedJournal { record: dna::RecordJournal { repo: root }, ledger: dna::MemoryLedger { repo: root } }; let receipts = dna::MemoryReceipts { repo: root }; let work = TaskApiWork { }; work.bind(journal, receipts);
         let first_id = work.ask("task-api-first", "Human review\r\nΔ <literal & markup>"); let first = self.handed(journal, first_id);
         let second_id = work.ask("task-api-second", "Another person's responsibility"); let second = self.handed(journal, second_id);
         let b = std::json::Builder { }; b.begin_object(); b.string_field("application_id", record.identity()); b.string_field("first_id", first_id); b.string_field("second_id", second_id); b.string_field("first_handoff", first.digest); b.string_field("second_handoff", second.digest); b.end_object();

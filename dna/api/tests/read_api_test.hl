@@ -262,9 +262,15 @@ locus Cases {
         f.append("receipt.withheld", q.digest, "{\"class\":\"confidential\",\"store\":\"knowledge\"}");
         f.start(); f.hidden(p, "protected"); f.hidden(q, "protected");
     }
+    // A record kept in memory has its Ledger from its first rows (GH #1590):
+    // its receipt rows are read there, and one the Ledger leaves
+    // unrestricted is visible, as one it classifies is not.
     fn adopted() {
         let f = fixture::Fixture { root: self.root + "/13" }; let p = f.practice("adopted", "LEDGER-VISIBILITY-CANARY", "org", "", false);
-        f.append("ledger.adopted", "ledger", "{\"routing\":1}"); f.start(); f.hidden(p, "source_unavailable"); f.source(f.read("practices", "", ""));
+        let q = f.practice("adopted/1", "LEDGER-CLASSIFIED-CANARY", "org", "", false);
+        f.append("receipt.classified", q.digest, "{\"class\":\"confidential\",\"store\":\"knowledge\"}");
+        f.start(); f.hidden(q, "protected"); f.source(f.read("practices", "", ""));
+        std::test::assert(std::str::contains(f.read("practices", "", ""), "LEDGER-VISIBILITY-CANARY"), "a practice the Ledger leaves unrestricted is read");
     }
     fn abandoned() {
         let f = fixture::Fixture { root: self.root + "/14" }; let p = f.practice("abandoned", "ABANDONED-LEDGER-CANARY", "org", "", false);
@@ -296,7 +302,9 @@ locus Cases {
     fn unlinked_review() {
         let f = fixture::Fixture { root: self.root + "/17" }; let digest = f.receipt("UNLINKED-RECEIPT-CANARY"); let id = "operations/review-without-knowledge-link";
         f.review(id, "UNLINKED-QUESTION-CANARY", digest, ""); f.append("review.settled", id, "approve by VISIBILITY-DECIDER-CANARY");
-        f.append("ledger.adopted", "ledger", "{\"routing\":1}"); f.start();
+        // the record's Ledger is read with it (GH #1590): a subject it
+        // restricts suppresses the review's display
+        f.append("receipt.withheld", digest, "{\"class\":\"confidential\"}"); f.start();
         let review = f.uncertain_item("reviews", id, "UNLINKED-QUESTION-CANARY", false);
         if len(review) > 0 { self.json.eq(review, "question", ""); self.json.eq(review, "settled", ""); self.json.eq(review, "outcome", "approve"); }
     }
@@ -313,11 +321,11 @@ locus Cases {
     }
     fn missing_and_mismatched_receipts() {
         let f = fixture::Fixture { root: self.root + "/19" };
-        let missing = f.practice("missing", "MISSING-CANARY", "org", "", false); f.git("update-ref\n-d\nrefs/dna/receipts/" + missing.digest[7..len(missing.digest)]);
+        // a body memory lost, and one changed behind its digest (GH #1590:
+        // the bodies are memory's)
+        let missing = f.practice("missing", "MISSING-CANARY", "org", "", false); f.owner_sql("DELETE FROM protected_receipts WHERE digest = '" + missing.digest + "'");
         let wrong = f.practice("wrong", "ORIGINAL-CANARY", "org", "", false);
-        let replacement = f.receipt("{\"text\":\"TAMPERED-CANARY\"}");
-        let blob = f.git("rev-parse\nrefs/dna/receipts/" + replacement[7..len(replacement)]);
-        f.git("update-ref\nrefs/dna/receipts/" + wrong.digest[7..len(wrong.digest)] + "\n" + blob);
+        f.owner_sql("UPDATE protected_receipts SET body = '{\"text\":\"TAMPERED-CANARY\"}' WHERE digest = '" + wrong.digest + "'");
         f.start(); f.hidden(missing, "missing"); f.hidden(wrong, "digest_mismatch");
         std::test::assert(!std::str::contains(f.read("practices", "", ""), "TAMPERED-CANARY"), "tampered text absent");
     }
@@ -329,17 +337,14 @@ locus Cases {
         f.hidden(fixture::Practice { digest: digest, review_id: id, text: "INVALID-DOCUMENT-CANARY" }, "invalid_document"); f.source(f.read("practices", "", ""));
     }
     fn missing_record() {
-        let f = fixture::Fixture { root: self.root + "/21" }; f.start(); f.git("update-ref\n-d\nrefs/dna/journal"); f.error("GET", fixture::APPLICATIONS, 503, "", "");
+        // memory holds no row of the record the genome pins
+        let f = fixture::Fixture { root: self.root + "/21" }; f.start(); f.owner_sql("TRUNCATE record_rows"); f.error("GET", fixture::APPLICATIONS, 503, "", "");
     }
     fn malformed_record() {
+        // a row written behind memory's insert function, its chain broken
         let f = fixture::Fixture { root: self.root + "/22" }; let p = f.standard(); f.start();
-        std::io::fs::write_file(f.root + "/broken.jsonl", "not a JSON journal\n") or discard;
-        let blob = f.git("hash-object\n-w\n" + f.root + "/broken.jsonl");
-        let index = f.root + "/malformed.index";
-        let u = dna::run_tool("env\nGIT_INDEX_FILE=" + index + "\ngit\n-C\n" + f.root + "\nupdate-index\n--add\n--cacheinfo\n100644," + blob + ",journal.jsonl"); std::test::assert_eq_int(u.code, 0, u.stderr);
-        let t = dna::run_tool("env\nGIT_INDEX_FILE=" + index + "\ngit\n-C\n" + f.root + "\nwrite-tree"); std::test::assert_eq_int(t.code, 0, t.stderr);
-        let commit = f.git("commit-tree\n" + dna::trim_nl(t.stdout) + "\n-p\n" + f.journal.head() + "\n-m\nmalformed fixture");
-        f.git("update-ref\nrefs/dna/journal\n" + commit); f.error("GET", fixture::APPLICATIONS, 503, "", "");
+        f.owner_sql("INSERT INTO record_rows (seq, kind, entity, body, author, writer, prev, digest, sig) SELECT max(seq) + 1, 'fixture.malformed', 'x', 'not a row', 'fixture', 'fixture', 'not-the-head', 'not-a-digest', '' FROM record_rows");
+        f.error("GET", fixture::APPLICATIONS, 503, "", "");
     }
     fn oidc_refusals() {
         let f = fixture::Fixture { root: self.root + "/23" }; let p = f.standard(); let before = f.refs(); f.configure_oidc(self.issuer_url);
@@ -603,16 +608,17 @@ main locus App {
 }
 
 fn main() {
-    // Native GitJournal/GitReceipts invoke Git in this process's environment.
-    // Re-exec before constructing any fixture so inherited plumbing cannot
-    // redirect a temporary Record into another checkout or object directory.
+    // The genome's git runs in this process's environment. Re-exec before
+    // constructing any fixture so inherited plumbing cannot redirect a
+    // temporary project into another checkout or object directory; the
+    // owner's DSN stays, since the record is memory's (GH #1590).
     if std::env::var("HALE_API_TEST_CLEAN") != "1" {
-        let clean = dna::run_tool("env\n-u\nGIT_DIR\n-u\nGIT_COMMON_DIR\n-u\nGIT_CONFIG\n-u\nGIT_NAMESPACE\n-u\nGIT_WORK_TREE\n-u\nGIT_INDEX_FILE\n-u\nGIT_OBJECT_DIRECTORY\n-u\nGIT_ALTERNATE_OBJECT_DIRECTORIES\n-u\nGIT_CONFIG_COUNT\n-u\nGIT_CONFIG_PARAMETERS\n-u\nHALE_DNA_MEMORY_DSN_OWNER\n-u\nHALE_DNA_MEMORY_DSN_SPINE\n-u\nHALE_DNA_MEMORY_DSN_HEAD\n-u\nHALE_DNA_KNOWLEDGE_COMMAND_POLICY\n-u\nHALE_DNA_EVIDENCE_KEY\n-u\nHALE_VAULT_ADDR\nGIT_CONFIG_NOSYSTEM=1\nGIT_CONFIG_GLOBAL=/dev/null\nGIT_TERMINAL_PROMPT=0\nHALE_DNA_DISCOVER=off\nHALE_API_TEST_CLEAN=1\n" + std::env::arg_or(0, ""));
+        let clean = dna::run_tool("env\n-u\nGIT_DIR\n-u\nGIT_COMMON_DIR\n-u\nGIT_CONFIG\n-u\nGIT_NAMESPACE\n-u\nGIT_WORK_TREE\n-u\nGIT_INDEX_FILE\n-u\nGIT_OBJECT_DIRECTORY\n-u\nGIT_ALTERNATE_OBJECT_DIRECTORIES\n-u\nGIT_CONFIG_COUNT\n-u\nGIT_CONFIG_PARAMETERS\n-u\nHALE_DNA_MEMORY_DSN_SPINE\n-u\nHALE_DNA_MEMORY_DSN_HEAD\n-u\nHALE_DNA_KNOWLEDGE_COMMAND_POLICY\n-u\nHALE_DNA_EVIDENCE_KEY\n-u\nHALE_VAULT_ADDR\nGIT_CONFIG_NOSYSTEM=1\nGIT_CONFIG_GLOBAL=/dev/null\nGIT_TERMINAL_PROMPT=0\nHALE_DNA_DISCOVER=off\nHALE_API_TEST_CLEAN=1\n" + std::env::arg_or(0, ""));
         print(clean.stdout);
         if len(clean.stderr) > 0 { eprintln(clean.stderr); }
         std::process::exit(if clean.code < 0 { 1 } else { clean.code });
     }
-    let forbidden = "GIT_DIR\nGIT_COMMON_DIR\nGIT_CONFIG\nGIT_NAMESPACE\nGIT_WORK_TREE\nGIT_INDEX_FILE\nGIT_OBJECT_DIRECTORY\nGIT_ALTERNATE_OBJECT_DIRECTORIES\nGIT_CONFIG_COUNT\nGIT_CONFIG_PARAMETERS\nHALE_DNA_MEMORY_DSN_OWNER\nHALE_DNA_MEMORY_DSN_SPINE\nHALE_DNA_MEMORY_DSN_HEAD\nHALE_DNA_KNOWLEDGE_COMMAND_POLICY\nHALE_DNA_EVIDENCE_KEY";
+    let forbidden = "GIT_DIR\nGIT_COMMON_DIR\nGIT_CONFIG\nGIT_NAMESPACE\nGIT_WORK_TREE\nGIT_INDEX_FILE\nGIT_OBJECT_DIRECTORY\nGIT_ALTERNATE_OBJECT_DIRECTORIES\nGIT_CONFIG_COUNT\nGIT_CONFIG_PARAMETERS\nHALE_DNA_MEMORY_DSN_SPINE\nHALE_DNA_MEMORY_DSN_HEAD\nHALE_DNA_KNOWLEDGE_COMMAND_POLICY\nHALE_DNA_EVIDENCE_KEY";
     let mut i = 0;
     while i < dna::count_lines(forbidden) {
         let key = dna::line_at(forbidden, i);

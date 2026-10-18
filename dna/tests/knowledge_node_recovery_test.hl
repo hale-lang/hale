@@ -4,7 +4,7 @@ import "../core" as dna;
 
 locus NodeStageJournal {
     params {
-        inner: dna::GitJournal = dna::GitJournal { };
+        inner: dna::RoutedJournal = dna::RoutedJournal { };
         stage: String = "";
         blocked: Bool = false;
         lost_reply: Bool = false;
@@ -64,9 +64,10 @@ fn record_request(j: dna::Journal, r: dna::KnowledgeNodeRequest) {
     std::test::assert(result.ok, "native incoming request was recorded");
 }
 fn body_once(repo: String, j: NodeStageJournal, delivered: dna::KnowledgeNodeRequest) {
+    std::test::assert_eq_str(dna::memory_fixture(repo), "", "the record is born in memory (GH #1590)");
     let body = dna::Dna {
         journal: j,
-        verification: dna::HaleVerification { receipts: dna::GitReceipts { repo: repo }, repo: repo },
+        verification: dna::HaleVerification { receipts: dna::MemoryReceipts { repo: repo }, repo: repo },
         board: dna::Board { who: "board" }
     };
     if len(delivered.request_id) > 0 { body.on_knowledge_node_requested(delivered); }
@@ -95,7 +96,8 @@ main locus App {
     }
     fn proposal(stage: String, lose: Bool) {
         let repo = self.repo(stage + if lose { "-lost" } else { "-blocked" });
-        let j = NodeStageJournal { inner: dna::GitJournal { repo: repo }, stage: stage, blocked: !lose, lost_reply: lose };
+        std::test::assert_eq_str(dna::memory_fixture(repo), "", "the record is born in memory (GH #1590)");
+        let j = NodeStageJournal { inner: dna::RoutedJournal { record: dna::RecordJournal { repo: repo }, ledger: dna::MemoryLedger { repo: repo, dsn_env: dna::fixture_spine(repo) } }, stage: stage, blocked: !lose, lost_reply: lose };
         let r = request("command/node", "propose", "concept", exact_text(), "");
         let codec = dna::KnowledgeNodeRequestCodec { };
         record_request(j, r);
@@ -106,7 +108,7 @@ main locus App {
         std::test::assert(j.faults > 0, "interrupted the exact native stage");
         std::test::assert_eq_int(count(j, "knowledge.node.refused", r.request_id), 0, "storage failure never becomes domain refusal");
         if !lose { std::test::assert_eq_int(count(j, "knowledge.node.proposed", r.request_id), 0, "an incomplete proposal is not acknowledged"); }
-        let fresh = NodeStageJournal { inner: dna::GitJournal { repo: repo } };
+        let fresh = NodeStageJournal { inner: dna::RoutedJournal { record: dna::RecordJournal { repo: repo }, ledger: dna::MemoryLedger { repo: repo, dsn_env: dna::fixture_spine(repo) } } };
         body_once(repo, fresh, dna::KnowledgeNodeRequest { });
         if stage == "knowledge.node.started" && !lose {
             std::test::assert_eq_int(count(fresh, "knowledge.node.started", r.request_id), 0, "missing delivery proof requires host redelivery");
@@ -119,14 +121,15 @@ main locus App {
         std::test::assert_eq_int(count(fresh, "knowledge.proposed", r.candidate_digest), 1, "one generic candidate after recovery");
         std::test::assert_eq_int(count(fresh, "review.requested", "review:" + dna::knowledge_review_id(r.candidate_digest)), 1, "one exact-candidate Review after recovery");
         std::test::assert_eq_int(count(fresh, "knowledge.node.proposed", r.request_id), 1, "one acknowledgment after duplicate delivery");
-        let receipt = dna::GitReceipts { repo: repo };
+        let receipt = dna::MemoryReceipts { repo: repo };
         std::test::assert_eq_str(receipt.read(r.candidate_digest[7..len(r.candidate_digest)]), codec.document(r), "receipt retains Unicode, CRLF and every non-NUL control byte");
         let removed = dna::run_tool("rm\n-rf\n" + repo);
     }
     fn interrupt_revision(repo: String, j: NodeStageJournal) -> String {
+        std::test::assert_eq_str(dna::memory_fixture(repo), "", "the record is born in memory (GH #1590)");
         let body = dna::Dna {
             journal: j,
-            verification: dna::HaleVerification { receipts: dna::GitReceipts { repo: repo }, repo: repo },
+            verification: dna::HaleVerification { receipts: dna::MemoryReceipts { repo: repo }, repo: repo },
             board: dna::Board { who: "board" }
         };
         let initial = request("node/initial", "propose", "idea", "An actual generic idea.", "");
@@ -152,12 +155,13 @@ main locus App {
     }
     fn revision_and_retirement() {
         let repo = self.repo("revision");
-        let j = NodeStageJournal { inner: dna::GitJournal { repo: repo }, stage: "knowledge.retired" };
+        std::test::assert_eq_str(dna::memory_fixture(repo), "", "the record is born in memory (GH #1590)");
+        let j = NodeStageJournal { inner: dna::RoutedJournal { record: dna::RecordJournal { repo: repo }, ledger: dna::MemoryLedger { repo: repo, dsn_env: dna::fixture_spine(repo) } }, stage: "knowledge.retired" };
         let next = self.interrupt_revision(repo, j);
-        let fresh = NodeStageJournal { inner: dna::GitJournal { repo: repo } };
+        let fresh = NodeStageJournal { inner: dna::RoutedJournal { record: dna::RecordJournal { repo: repo }, ledger: dna::MemoryLedger { repo: repo, dsn_env: dna::fixture_spine(repo) } } };
         let body = dna::Dna {
             journal: fresh,
-            verification: dna::HaleVerification { receipts: dna::GitReceipts { repo: repo }, repo: repo },
+            verification: dna::HaleVerification { receipts: dna::MemoryReceipts { repo: repo }, repo: repo },
             board: dna::Board { who: "board" }
         };
         body.reconcile_governance();
@@ -175,11 +179,12 @@ main locus App {
     }
     fn guards() {
         let repo = self.repo("guards");
-        let j = NodeStageJournal { inner: dna::GitJournal { repo: repo } };
+        std::test::assert_eq_str(dna::memory_fixture(repo), "", "the record is born in memory (GH #1590)");
+        let j = NodeStageJournal { inner: dna::RoutedJournal { record: dna::RecordJournal { repo: repo }, ledger: dna::MemoryLedger { repo: repo, dsn_env: dna::fixture_spine(repo) } } };
         let codec = dna::KnowledgeNodeRequestCodec { };
         let body = dna::Dna {
             journal: j,
-            verification: dna::HaleVerification { receipts: dna::GitReceipts { repo: repo }, repo: repo },
+            verification: dna::HaleVerification { receipts: dna::MemoryReceipts { repo: repo }, repo: repo },
             board: dna::Board { who: "board" }
         };
         let mut wrong = request("node/wrong-digest", "propose", "idea", "Exact candidate.", "");
@@ -207,7 +212,7 @@ main locus App {
         std::test::assert_eq_int(count(j, "knowledge.proposed", second.candidate_digest), 0, "conflicting candidate is never proposed");
         let owned = dna::Dna {
             journal: j,
-            verification: dna::HaleVerification { receipts: dna::GitReceipts { repo: repo }, repo: repo },
+            verification: dna::HaleVerification { receipts: dna::MemoryReceipts { repo: repo }, repo: repo },
             board: dna::Board { who: "board" },
             ownership: dna::Ownership { graph: dna::graph_ownership_of("position:org organization:north\nposition:org/team organization:south\n"), me: "south", me_env: "" }
         };

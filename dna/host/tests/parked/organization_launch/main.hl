@@ -7,18 +7,20 @@ import "../.." as host;
 import "../../../organization_runtime" as org_runtime;
 
 fn body(repo: String, request_id: String) {
+    std::test::assert_eq_str(dna::memory_fixture(repo), "", "the record is born in memory (GH #1590)");
     let app = dna::Dna {
-        journal: dna::GitJournal { repo: repo }, org_source: dna::OrganizationSourceRecord { facts: ops::StrictOrganizationSourceFacts { },
+        journal: dna::RoutedJournal { record: dna::RecordJournal { repo: repo }, ledger: dna::MemoryLedger { repo: repo, dsn_env: dna::fixture_spine(repo) } }, org_source: dna::OrganizationSourceRecord { facts: ops::StrictOrganizationSourceFacts { },
             inputs: source::OrganizationPublicationInputs { root: repo },
             apply_inputs: source::OrganizationPublicationInputs { root: repo } },
-        gateway: dna::MutationGateway { leases: dna::GitLeases { repo: repo }, workspaces: dna::IsolatedWorktrees { repo: repo, root: repo + "/.hale/dna/worktrees" }, repo: dna::LocalGit { repo: repo } },
-        verification: dna::HaleVerification { receipts: dna::GitReceipts { repo: repo }, repo: repo, scratch: repo + "/.hale/dna/verification", seed: "dna/org" },
+        gateway: dna::MutationGateway { leases: dna::MemoryLeases { repo: repo }, workspaces: dna::IsolatedWorktrees { repo: repo, root: repo + "/.hale/dna/worktrees" }, repo: dna::LocalGit { repo: repo } },
+        verification: dna::HaleVerification { receipts: dna::MemoryReceipts { repo: repo }, repo: repo, scratch: repo + "/.hale/dna/verification", seed: "dna/org" },
         review_policy: dna::OrgPolicy { }, board: dna::Board { }
     };
     if len(request_id) > 0 { app.on_organization_source_requested(dna::OrganizationSourceTrigger { request_id: request_id }); }
 }
 fn prepare(repo: String) {
-    let j = dna::GitJournal { repo: repo };
+    std::test::assert_eq_str(dna::memory_fixture(repo), "", "the record is born in memory (GH #1590)");
+    let j = dna::RecordJournal { repo: repo };
     let genesis = j.append_exact(j.revision(), "application.observed", "org", "{}"); std::test::assert(genesis.ok, "actual application genesis");
     let input = source::OrganizationSource { root: repo, allow_drafts: true }; let basis = input.read(); std::test::assert(basis.ok, "captured native base: " + basis.code);
     let context = ops::GovernanceContext { application_id: j.read(0).digest, principal_mode: "local", principal_name: "alice" };

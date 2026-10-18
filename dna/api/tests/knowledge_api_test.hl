@@ -143,8 +143,14 @@ locus KnowledgeCases {
         self.get(service, "/dna/knowledge/bindings?id=" + NODE + "&target=unrelated", 503);
         let absent = api::Api { root: self.f.root };
         self.get(absent, "/dna/knowledge/nodes", 503);
+        // the clone's kept head DSN set aside: it is the memory DSN here too
+        let kept = self.f.root + "/.hale/dna/memory.env";
+        let aside = dna::run_tool("mv\n" + kept + "\n" + kept + ".aside");
         let local = api::LocalKnowledge { root: self.f.root };
-        std::test::assert(!local.supported(), "without the head's memory DSN Knowledge reads are unsupported");
+        let unsupported = !local.supported();
+        let back = dna::run_tool("mv\n" + kept + ".aside\n" + kept);
+        std::test::assert(aside.code == 0 && back.code == 0, "the kept DSN set aside and back");
+        std::test::assert(unsupported, "without the head's memory DSN Knowledge reads are unsupported");
         let unconfigured = api::Api { root: self.f.root, local_name: "alice", knowledge: local };
         let refused = self.get(unconfigured, "/dna/knowledge/nodes", 503);
         std::test::assert_eq_str(wire.string(wire.raw(refused, "error"), "code"), "knowledge_unsupported", "no memory is unsupported, not unavailable");
@@ -159,7 +165,7 @@ locus MemoryCases {
     fn project(spine: dna::Dsn, id: String) -> String {
         // The tail's journal is handed in whole: `MemoryProjection.birth` points
         // `j.repo` at the root but leaves `j.record` on the cwd.
-        let tail = ops::MemoryProjection { root: self.f.root, dsn_env: "", store: dna::Pq { conn: dna::pq_conn(spine), record_id: id }, j: dna::GitJournal { repo: self.f.root, author: "spine" }, receipts: dna::GitReceipts { repo: self.f.root } };
+        let tail = ops::MemoryProjection { root: self.f.root, dsn_env: "", store: dna::Pq { conn: dna::pq_conn(spine), record_id: id }, j: dna::RecordJournal { repo: self.f.root, author: "spine" }, receipts: dna::MemoryReceipts { repo: self.f.root } };
         let applied = tail.apply();
         tail.store.close();
         return applied.error;
@@ -173,7 +179,8 @@ locus MemoryCases {
         let proposed = self.f.knowledge("Proposed knowledge", "Still proposed, not accepted", "org/finance", "", false);
         let hidden = self.f.knowledge("Protected knowledge title", "Protected knowledge body", "org/support", "", true);
         self.f.append("receipt.classified", hidden, "{\"class\":\"confidential\"}");
-        let j = dna::GitJournal { repo: self.f.root };
+        std::test::assert_eq_str(dna::memory_fixture(self.f.root), "", "the record is born in memory (GH #1590)");
+        let j = dna::RecordJournal { repo: self.f.root };
         let id = j.genesis();
         let spine = dna::migrated(owner, id);
         let head = dna::migrated_head(owner, id);
@@ -215,7 +222,8 @@ fn memory_get(service: api::Api, prefix: String, suffix: String, status: Int) ->
 // The child half of `MemoryCases`: only HALE_DNA_MEMORY_DSN_HEAD is set.
 fn memory_read(root: String, phase: String, current: String, earlier: String, hidden: String) {
     let wire = api::KnowledgeWire { };
-    let record = dna::GitRecord { repo: root };
+    std::test::assert_eq_str(dna::memory_fixture(root), "", "the record is born in memory (GH #1590)");
+    let record = dna::MemoryRecord { repo: root };
     let prefix = "/api/hale/v1/applications/" + record.identity();
     let service = api::Api { root: root, local_name: "alice", knowledge: api::LocalKnowledge { root: root } };
     let caps = memory_get(service, prefix, "/capabilities", 200);

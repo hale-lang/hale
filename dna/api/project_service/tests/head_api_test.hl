@@ -158,13 +158,13 @@ locus HeadCases {
         self.f.json.eq(receipt, "state", "succeeded");
         self.f.json.is_int(self.f.json.raw(receipt, "run"), "exit_code", 0);
         let outcome = self.f.json.raw(receipt, "outcome");
-        std::test::assert(std::str::contains(self.f.json.string(outcome, "summary"), "no remote: the record is local"), "sync summary: " + outcome);
+        std::test::assert(std::str::contains(self.f.json.string(outcome, "summary"), "the record is memory's: nothing to sync"), "sync summary: " + outcome);
         let record = self.f.json.raw(outcome, "record");
-        std::test::assert(len(self.f.json.string(record, "head_before")) == 40 && self.f.json.string(record, "head_before") == self.f.json.string(record, "head_after"), "a local sync moves nothing: " + record);
+        std::test::assert(len(self.f.json.string(record, "head_before")) == 64 && self.f.json.string(record, "head_before") == self.f.json.string(record, "head_after"), "a local sync moves nothing: " + record);
         std::test::assert_eq_int(self.f.json.count(self.f.json.raw(record, "rows")), 0, "no new rows");
         std::test::assert_eq_int(entries(self.f.state + "/runs"), runs_before + 1, "one run directory");
         let log = self.f.json.data(self.f.validate(self.f.http("GET", HEAD + "/logs?run=" + id, "", ""), "HeadLogResponse", 200));
-        std::test::assert(std::str::contains(self.f.json.string(log, "text"), "record refs/dna/journal:"), "the run log page: " + log);
+        std::test::assert(std::str::contains(self.f.json.string(log, "text"), "record: the record is memory's"), "the run log page: " + log);
         self.f.json.is_bool(log, "complete", true);
         let page = self.f.json.data(self.f.validate(self.f.http("GET", HEAD + "/logs?run=" + id + "&offset=7", "", ""), "HeadLogResponse", 200));
         self.f.json.is_int(page, "offset", 7);
@@ -198,11 +198,11 @@ locus HeadCases {
         self.f.json.eq(replay, "state", "running");
         std::test::assert_eq_int(self.f.json.integer(self.f.json.raw(replay, "run"), "pid"), std::process::pid(), "the replay is the planted receipt");
         std::io::fs::mkdir(j.run_dir(id)) or discard;
-        std::io::fs::write_file(j.run_dir(id) + "/run.log", "record refs/dna/journal: up to date; 1 event(s)\n") or discard;
+        std::io::fs::write_file(j.run_dir(id) + "/run.log", "record: the record is memory's: nothing to sync; 1 event(s)\n") or discard;
         std::io::fs::write_file(j.run_dir(id) + "/run.exit", "0\n") or discard;
         let settled = self.f.settled("head-busy-1", 10);
         self.f.json.eq(settled, "state", "succeeded");
-        self.f.json.eq(self.f.json.raw(settled, "outcome"), "summary", "record refs/dna/journal: up to date; 1 event(s)");
+        self.f.json.eq(self.f.json.raw(settled, "outcome"), "summary", "record: the record is memory's: nothing to sync; 1 event(s)");
         self.f.json.eq(self.f.head_state(), "busy", "");
     }
 
@@ -239,7 +239,7 @@ locus HeadCases {
         let outcome = self.f.json.raw(receipt, "outcome");
         self.f.json.is_bool(outcome, "committed", true);
         self.f.json.eq(outcome, "pushed_ref", "refs/heads/main");
-        std::test::assert(std::str::contains(self.f.json.string(outcome, "sync_summary"), "record refs/dna/journal:"), "publish ends in a sync: " + outcome);
+        std::test::assert(std::str::contains(self.f.json.string(outcome, "sync_summary"), "record: the record is memory's"), "publish ends in a sync: " + outcome);
         std::test::assert(len(self.f.json.raw(outcome, "record")) > 0, "record evidence on publish");
         let pushed = dna::run_tool("git\n-C\n" + remote + "\nlog\n--oneline\nrefs/heads/main");
         std::test::assert(pushed.code == 0 && std::str::contains(pushed.stdout, "first commit from the head"), "the remote has the commit: " + pushed.stderr);

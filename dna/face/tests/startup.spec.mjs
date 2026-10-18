@@ -5,8 +5,9 @@ import { promisify } from 'node:util';
 import net from 'node:net';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
-import { isolatedEnvironment, boundedNative } from './environment.mjs';
+import { isolatedEnvironment, boundedNative, memoryOwner } from './environment.mjs';
 import { freePort } from './command-wire.mjs';
+import { recordIdentity } from './record-memory.mjs';
 
 const execute = promisify(execFile), face = fileURLToPath(new URL('../', import.meta.url));
 const launcher = path.join(face, 'start.sh');
@@ -65,6 +66,11 @@ const test = base.extend({
     const scratch = await mkdtemp('/tmp/hale-face-startup.'), root = path.join(scratch, 'fresh project $literal');
     const env = isolatedEnvironment(); env.HALE_BIN = process.env.HALE_BIN;
     if (!env.HALE_BIN || !process.env.HALE_API_BIN) throw new Error('Run through the native browser test launcher or provide HALE_BIN and HALE_API_BIN.');
+    // The record is born in memory (GH #1590): in the runner's, as the
+    // owner, never in a compose database of the project's own, and dropped
+    // at the end. Only `hale dna new` holds the owner's DSN.
+    const owner = memoryOwner(), drop = process.env.HALE_FACE_MEMORY_BIN;
+    if (!owner || !drop) throw new Error('The record is memory\'s: run through the native browser test launcher with HALE_DNA_MEMORY_DSN_OWNER set.');
     const generated = boundedNative(env.HALE_BIN, ['dna', 'new', root], { build: true });
     const children = [], stateDirs = [], launches = [];
     const stopRecordedChildren = async () => {
@@ -92,7 +98,7 @@ const test = base.extend({
       while (Date.now() < until && !signalled.every(gone)) await sleep(50);
     };
     try {
-      await execute(generated.command, generated.args, { env, timeout: 300000, maxBuffer: 2097152 });
+      await execute(generated.command, generated.args, { env: { ...env, HALE_DNA_MEMORY_DSN_OWNER: owner }, timeout: 300000, maxBuffer: 2097152 });
       const git = args => execute('git', ['-C', root, ...args], { env, timeout: 5000 }).then(r => r.stdout.trim());
       // Organization inspection is explicitly committed-source inspection.
       await git(['add', '--', '.gitignore', 'hale.toml', 'hale.lock', 'main.hl', 'tests', 'dna']);
@@ -135,7 +141,8 @@ const test = base.extend({
           try {
             const response = await fetch(origin + '/api/hale/v1/applications', { signal: AbortSignal.timeout(1000) });
             const body = await response.json();
-            if (response.ok && body.source.record_id === await git(['rev-list', '--max-parents=0', 'refs/dna/journal'])) {
+            // The record's identity is the pin in hale.toml (GH #1590).
+            if (response.ok && body.source.record_id === recordIdentity(root)) {
               // The launch token the head minted into its state directory
               // (GH #989), and the URL it printed with it.
               const token = (await readFile(path.join(childEnv.HALE_DNA_HEAD_STATE, 'head.token'), 'utf8')).trim();
@@ -161,6 +168,7 @@ const test = base.extend({
       // A process that outlived the stops above may still be writing in
       // the tree (ENOTEMPTY on a .git/objects directory, seen in CI): the
       // removal retries rather than failing the case on a racing writer.
+      try { await execute(drop, [root, 'drop'], { env: { ...env, HALE_DNA_MEMORY_DSN_OWNER: owner }, timeout: 15000 }); } catch { }
       await rm(scratch, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
       // A head whose drain outlasted the runtime's grace was ended by the
       // runtime, not by its own stop; the line it printed then says which

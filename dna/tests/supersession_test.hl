@@ -44,9 +44,10 @@ main locus App {
         std::io::fs::mkdir(repo + "/.hale") or discard;
         std::io::fs::mkdir(repo + "/.hale/dna") or discard;
         let init = dna::run_tool("git\n-C\n" + repo + "\ninit\n-q\n-b\nmain");
+        std::test::assert_eq_str(dna::memory_fixture(repo), "", "the record is born in memory (GH #1590)");
         self.dna = dna::Dna {
-            journal: dna::GitJournal { repo: repo },
-            verification: dna::HaleVerification { receipts: dna::GitReceipts { repo: repo }, repo: repo },
+            journal: dna::RoutedJournal { record: dna::RecordJournal { repo: repo }, ledger: dna::MemoryLedger { repo: repo, dsn_env: dna::fixture_spine(repo) } },
+            verification: dna::HaleVerification { receipts: dna::MemoryReceipts { repo: repo }, repo: repo },
             board: dna::Board { who: "board" }
         };
         // C is active

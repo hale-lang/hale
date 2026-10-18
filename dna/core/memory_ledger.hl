@@ -53,13 +53,10 @@ interface Ledger {
     fn read(i: Int) -> Event;
     fn verify_chain() -> Bool;
     fn author_of(i: Int) -> String;
-    // ---- adoption
-    // One record row copied in, keyed by its commit: true when it is
-    // here (already or now).
-    fn adopt_row(kind: String, entity: String, body: String, author: String, record_seq: Int, commit: String) -> Bool;
+    // ---- the cutover memory states for the record's Ledger (written by
+    // migration, read by the visibility checks)
     fn cutover(checkpoint: String, copied: Int, routing: Int) -> Bool;
     fn checkpoint() -> Cutover;
-    fn abandon() -> Bool;
 }
 
 // The row as it is served: the event plus its author, and the role that
@@ -199,11 +196,14 @@ locus PqLedger {
         a.add(to_string(self.rows.len()));
         let rows = self.run_q("SELECT row_to_json(t) FROM (SELECT seq, kind, entity, body, author, prev, digest, writer FROM ledger_rows WHERE seq >= $1::bigint ORDER BY seq) t", a);
         if !rows.ok { self.error = "load: " + rows.err.kind + " " + rows.err.detail; return; }
-        let mut rest = rows.csv;
-        while len(rest) > 0 {
-            let nl = std::str::index_of(rest, "\n");
-            let line = if nl < 0 { rest } else { rest[0..nl] };
-            rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
+        // scanned by offset: a tail re-sliced per row copies the rest of the
+        // answer each time, and a record of thousands of rows held gigabytes
+        let v = std::str::bytes_view(rows.csv);
+        let mut at = 0;
+        while at < v.n {
+            let end = line_end(v, at);
+            let line = std::str::slice(v, at, end);
+            at = end + 1;
             if len(trim_nl(line)) == 0 { continue; }
             let seq = std::json::find_int_field(line, "seq");
             if seq != self.rows.len() { self.error = "load: Ledger sequence is not contiguous"; return; }
@@ -256,36 +256,6 @@ locus PqLedger {
     fn author_of(i: Int) -> String { return self.authors.get(i) or ""; }
     fn writer_of(i: Int) -> String { return self.writers.get(i) or ""; }
     fn verify_chain() -> Bool { return chain_ok(self.rows); }
-    // One insert conditioned on the tail: zero rows means another writer
-    // got there first (or a claim is taken: a unique violation). The row
-    // joins the mirror of the Ledger.
-    @bounded_by(ledger_rows)
-    fn insert(seq: Int, kind: String, entity: String, body: String, author: String, record_seq: Int, commit: String) -> String {
-        let prev = self.head();
-        let digest = event_digest(prev, kind, entity, body);
-        let a = db::Args { };
-        a.add(to_string(seq));
-        a.add(kind);
-        a.add(entity);
-        a.add(body);
-        a.add(author);
-        a.add(prev);
-        a.add(digest);
-        a.add(if record_seq < 0 { "" } else { to_string(record_seq) });
-        a.add(commit);
-        let r = self.run_q("INSERT INTO ledger_rows (seq, kind, entity, body, author, prev, digest, record_seq, record_commit, writer) SELECT $1::bigint, $2, $3, $4, $5, $6, $7, NULLIF($8, '')::bigint, NULLIF($9, ''), session_user WHERE (SELECT coalesce(max(seq) + 1, 0) FROM ledger_rows) = $1::bigint RETURNING writer", a);
-        if !r.ok {
-            if std::str::contains(r.err.detail, "ledger_rows_claim") { self.error = "claimed"; return "claimed"; } // ledger_rows_claims
-            if std::str::contains(r.err.detail, "ledger_rows_commit") { return "duplicate"; }
-            self.error = "append: " + r.err.kind + " " + r.err.detail;
-            return "io";
-        }
-        if r.n == 0 { return "stale"; }
-        self.rows.push(Event { seq: seq, kind: kind, entity: entity, body: body, prev: prev, digest: digest });
-        self.authors.push(author);
-        self.writers.push(trim_nl(line_one(r.csv)));
-        return "";
-    }
     // One row through memory's insert function (GH #1026), which is the
     // Ledger's gate: `expected` the revision a decision was read at, -1 for
     // the tail. The rows since the last read are loaded either way.
@@ -333,17 +303,6 @@ locus PqLedger {
         if expected != rev { return AppendResult { error: "stale_revision", expected: expected, actual: rev }; }
         return self.gate(expected, kind, entity, body);
     }
-    fn adopt_row(kind: String, entity: String, body: String, author: String, record_seq: Int, commit: String) -> Bool {
-        let mut attempt = 0;
-        while attempt < 200 {
-            let out = self.insert(self.rows.len(), kind, entity, body, author, record_seq, commit);
-            if len(out) == 0 || out == "duplicate" { return true; }
-            if out != "stale" { return false; }
-            self.load();
-            attempt = attempt + 1;
-        }
-        return false;
-    }
     fn put_meta(key: String, value: String) -> Bool {
         let a = db::Args { };
         a.add(key);
@@ -367,14 +326,6 @@ locus PqLedger {
         let at = self.meta("checkpoint");
         if len(at) == 0 { return Cutover { }; }
         return Cutover { adopted: true, checkpoint: at, copied: std::str::parse_int(self.meta("copied")) or 0, routing: std::str::parse_int(self.meta("routing")) or 0 };
-    }
-    fn abandon() -> Bool {
-        let r = self.run_sql("DELETE FROM ledger_rows; DELETE FROM ledger_meta; DELETE FROM ledger_requests");
-        if !r.ok { return self.fail("abandon", r.err); }
-        while self.rows.len() > 0 { let gone = self.rows.pop() or Event { }; }
-        while self.authors.len() > 0 { let gone = self.authors.pop() or ""; }
-        while self.writers.len() > 0 { let gone = self.writers.pop() or ""; }
-        return true;
     }
 }
 
@@ -450,7 +401,11 @@ locus PqLeaseStore {
         if !st.ok { return self.fail("open", st.err); }
         // the schema is the owner's to create (GH #985): checked here
         let sch = schema_for(self.record_id);
-        let ns = self.conn.exec("SET search_path TO " + sch + ", public");
+        // GH #1590: a lease read or swap is bounded, so a call memory holds
+        // up (a locked row, a partition) can never outlast the lease the
+        // body fence renews: it fails, and is tried again once, within the
+        // fence's margin
+        let ns = self.conn.exec("SET search_path TO " + sch + ", public; SET statement_timeout = '4s'; SET lock_timeout = '4s'");
         if !ns.ok { return self.fail("scope (schema " + sch + ")", ns.err); }
         let fence = memory_fence(self.conn, sch);
         if len(fence) > 0 { self.error = fence; self.conn.close(); return false; }

@@ -90,8 +90,11 @@ fn main() {
     // ("failed to copy file to ../elsewhere/.git/objects/…"): the seed
     // runs none, and the clone reads through git's object store
     // (`--no-local`), which finds an object loose or packed.
-    let committed = in_dir(root_a, vault, "sh\n-c\ngit config user.name riley && git config user.email riley@dna && git config maintenance.auto false && git config gc.auto 0 && git add -A && git commit -q -m seed && git clone -q --no-local . ../elsewhere && git -C ../elsewhere fetch -q origin 'refs/dna/*:refs/dna/*'");
+    let committed = in_dir(root_a, vault, "sh\n-c\ngit config user.name riley && git config user.email riley@dna && git config maintenance.auto false && git config gc.auto 0 && git add -A && git commit -q -m seed && git clone -q --no-local . ../elsewhere");
     std::test::assert_eq_int(committed.code, 0, "the seed committed and cloned: " + committed.stderr);
+    // the clone reaches the record's memory as a person's does (GH #1590)
+    let reached = in_dir(scratch + "/elsewhere", vault, toolchain() + "\ndna\nmemory\nmigrate");
+    std::test::assert_eq_int(reached.code, 0, "the clone reaches the record's memory: " + reached.stdout + reached.stderr);
     let cloned = in_dir(scratch + "/elsewhere", vault, toolchain() + "\ndna\nupgrade\n.");
     let drift = in_dir(scratch + "/elsewhere", vault, "git\nstatus\n--porcelain\ndna/compose.yaml");
     std::test::assert(cloned.code == 0 && len(dna::trim_nl(drift.stdout)) == 0 && text_of(scratch + "/elsewhere/dna/compose.yaml") == compose_a, "the clone's compose is the seed's, unchanged: " + cloned.stdout + cloned.stderr + drift.stdout);

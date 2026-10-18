@@ -9,8 +9,8 @@
 // fingerprint order, the request-shape check every operation passes
 // through before it is recorded (a shape error is an HTTP 400, never
 // a receipt), the fixed list of operations that write Record rows,
-// and the `record` evidence — the rows `refs/dna/journal` gained
-// between the receipt's `head_before` and the moment it settled.
+// and the `record` evidence — the rows the record gained between the
+// receipt's `head_before` and the moment it settled.
 
 import ".." as api;
 import "../../core" as dna;
@@ -276,7 +276,7 @@ fn plan_publish(cfg: HeadConfig, ctx: HeadContext, arguments: String) -> Plan {
     let remote = argument(arguments, "remote");
     let message = argument(arguments, "message");
     if len(message) == 0 { return Plan { refused: "invalid_command", reason: "message must not be empty" }; }
-    let record = dna::GitRecord { repo: ctx.active_root };
+    let record = dna::MemoryRecord { repo: ctx.active_root };
     let existing = record.remote_url("origin");
     if len(remote) == 0 && len(existing) == 0 { return Plan { refused: "no_remote", reason: "the project has no origin remote; pass remote" }; }
     if len(remote) > 0 && len(existing) > 0 && existing != remote { return Plan { refused: "remote_mismatch", reason: "origin is " + existing + ", not " + remote }; }
@@ -302,7 +302,7 @@ fn plan_forge_configure(ctx: HeadContext, arguments: String) -> Plan {
     if len(github) > 0 && !github_ok(github) { return Plan { refused: "name_invalid", reason: "github must be owner/repo", kind: "inline", deadline_secs: 10 }; }
     let board = board_setting(arguments);
     if board == "!" { return Plan { refused: "name_invalid", reason: "every board login must match ^[A-Za-z0-9-]{1,39}$", kind: "inline", deadline_secs: 10 }; }
-    let record = dna::GitRecord { repo: ctx.active_root };
+    let record = dna::MemoryRecord { repo: ctx.active_root };
     let mut ok = true;
     if len(github) > 0 { ok = record.set_setting("github", github); } else if len(record.setting("github")) > 0 { ok = record.unset_setting("github"); }
     if len(board) > 0 { ok = ok && record.set_setting("github.board", board); } else if len(record.setting("github.board")) > 0 { ok = ok && record.unset_setting("github.board"); }
@@ -354,9 +354,9 @@ fn first_line(text: String) -> String {
     return if nl < 0 { text } else { text[0..nl] };
 }
 
-// The sync verb's answer: the `record refs/dna/journal: …` line.
+// The sync verb's answer: the `record: …` line.
 fn sync_summary(log_tail: String) -> String {
-    let line = line_starting(log_tail, "record refs/dna/journal:");
+    let line = line_starting(log_tail, "record:");
     if len(line) > 0 { return line; }
     let local = line_starting(log_tail, "no remote:");
     if len(local) > 0 { return local; }
@@ -428,10 +428,10 @@ fn record_unread(head_before: String, why: String) -> String {
 }
 
 // `{"head_before","head_after","rows":[{seq,kind,entity,author}]}`:
-// the rows of `refs/dna/journal` at its head now beyond the count at
-// `head_before` (the reads the API's SourceReader does).
+// the record's rows at its head now beyond the count at `head_before`
+// (the reads the API's SourceReader does).
 fn record_evidence(root: String, head_before: String) -> String {
-    let record = dna::GitRecord { repo: root };
+    let record = dna::MemoryRecord { repo: root };
     let read = record.head("journal");
     if !read.ok { return record_unread(head_before, read.why); }
     let head_after = read.id;

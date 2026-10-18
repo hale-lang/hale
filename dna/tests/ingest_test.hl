@@ -39,7 +39,8 @@ fn commit(repo: String, what: String) -> String {
 // The rows of the record's latest `review.requested` in group `ingest`'s
 // receipt, as the Board would ratify them.
 fn proposed_rows(repo: String) -> String {
-    let j = dna::GitJournal { repo: repo };
+    std::test::assert_eq_str(dna::memory_fixture(repo), "", "the record is born in memory (GH #1590)");
+    let j = dna::RoutedJournal { record: dna::RecordJournal { repo: repo }, ledger: dna::MemoryLedger { repo: repo } };
     let mut digest = "";
     let mut i = 0;
     while i < j.revision() {
@@ -48,14 +49,15 @@ fn proposed_rows(repo: String) -> String {
         i = i + 1;
     }
     if len(digest) == 0 { return ""; }
-    return dna::proposal_rows(dna::GitReceipts { repo: repo }.read(digest[7..len(digest)]));
+    return dna::proposal_rows(dna::MemoryReceipts { repo: repo }.read(digest[7..len(digest)]));
 }
 
 // The rows of the record at `repo` of `kind` that mention `needle`: one
 // pass over the record, read whole.
 @bounded_by(repo)
 fn count_rows(repo: String, kind: String, needle: String) -> Int {
-    let j = dna::GitJournal { repo: repo };
+    std::test::assert_eq_str(dna::memory_fixture(repo), "", "the record is born in memory (GH #1590)");
+    let j = dna::RoutedJournal { record: dna::RecordJournal { repo: repo }, ledger: dna::MemoryLedger { repo: repo } };
     let mut n = 0;
     let mut i = 0;
     while i < j.revision() {
@@ -109,7 +111,8 @@ fn check() {
     // 3. once the Board ratifies it, the record's graph is the repository's:
     // the new operation stated, the retired axiom gone, and an ingest at the
     // same commit finds nothing to review
-    let j = dna::GitJournal { repo: repo };
+    std::test::assert_eq_str(dna::memory_fixture(repo), "", "the record is born in memory (GH #1590)");
+    let j = dna::RoutedJournal { record: dna::RecordJournal { repo: repo }, ledger: dna::MemoryLedger { repo: repo } };
     let mut digest = "";
     let mut i = 0;
     while i < j.revision() {
@@ -119,10 +122,10 @@ fn check() {
     }
     let ratified = j.append(j.revision(), "knowledge.ratified", digest, "{\"digest\": \"" + digest + "\", \"outcome\": \"approve\", \"kind\": \"graph\", \"decided_by\": \"ada\"}");
     std::test::assert(ratified.ok, "the Board's ratification, as its row: " + ratified.error);
-    let graph = dna::record_graph(dna::GitJournal { repo: repo }, dna::GitReceipts { repo: repo });
+    let graph = dna::record_graph(dna::RecordJournal { repo: repo }, dna::MemoryReceipts { repo: repo });
     std::test::assert(dna::record_graph_has(graph.nodes, "tool:Todos::rename") && dna::record_graph_has(graph.nodes, "tool:Todos::add"), "the operations are stated: " + graph.nodes);
     std::test::assert(!dna::record_graph_has(graph.nodes, "axiom:One api") && dna::record_graph_has(graph.nodes, "axiom:The browser only reads"), "the retired axiom is gone, the others stay: " + graph.nodes);
-    let bodies = dna::record_graph_bodies(dna::GitJournal { repo: repo }, dna::GitReceipts { repo: repo });
+    let bodies = dna::record_graph_bodies(dna::RecordJournal { repo: repo }, dna::MemoryReceipts { repo: repo });
     std::test::assert(std::str::contains(dna::graph_body_of(bodies, "tool:Todos::add"), "\"requires\": [\"editor\"]"), "a tool's body is one line, its roles as strings: " + dna::graph_body_of(bodies, "tool:Todos::add"));
     let settled = dna_cli(repo, "ingest");
     std::test::assert(settled.code == 0 && std::str::contains(settled.stdout, "nothing to review"), "the same commit, read again, is the record's graph: " + settled.stdout + settled.stderr);

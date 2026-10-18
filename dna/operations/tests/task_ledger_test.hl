@@ -1,5 +1,6 @@
-// The head's Task commands on a record that adopted its Ledger: a Task's
-// rows are the Ledger's, and the head writes them there under its role, as
+// The head's Task commands on a record with a Ledger (every record kept in
+// memory has one from its first rows, GH #1590): a Task's rows are the
+// Ledger's, and the head writes them there under its role, as
 // a leg's (`dna.task.create`, `dna.task.reassign`); a retirement lands its
 // transfers in the Ledger first and its own row in the record after them,
 // the rows `hale dna retire` writes there. Each is recovered by its
@@ -19,24 +20,19 @@ locus LedgerTaskCases {
     }
     // The rows of `kind` under `entity` in the Ledger.
     fn ledger_rows(kind: String, entity: String) -> Int {
-        let l = dna::MemoryLedger { repo: self.repo, dsn_env: dna::SPINE_DSN_ENV };
+        let l = dna::MemoryLedger { repo: self.repo, dsn_env: "HALE_DNA_MEMORY_DSN_OWNER" };
         let mut n = 0; let mut i = 0;
         while i < l.revision() { let e = l.read(i); if e.kind == kind && e.entity == entity { n = n + 1; } i = i + 1; }
         return n;
     }
     fn hand(id: String, who: String) {
-        let l = dna::MemoryLedger { repo: self.repo, dsn_env: dna::SPINE_DSN_ENV };
+        let l = dna::MemoryLedger { repo: self.repo, dsn_env: "HALE_DNA_MEMORY_DSN_OWNER" };
         std::test::assert(l.append(l.revision(), "task.born", id, "Keep exact\r\né 🧭 evidence").ok, "born " + id + ": " + l.last_error());
         std::test::assert(l.append(l.revision(), "task.handed", id, "{\"assignee\":\"" + who + "\",\"obligation\":\"approval\",\"acceptance\":\"opaque acceptance\",\"evidence_required\":true,\"by\":\"leader\"}").ok, "handed " + id);
     }
     fn run_cases() {
-        let record = dna::GitRecord { repo: self.repo };
+        let record = dna::MemoryRecord { repo: self.repo };
         let app = record.identity();
-        // ---- adoption: memory states the cutover, the record names it
-        let cut = dna::MemoryLedger { repo: self.repo, dsn_env: dna::SPINE_DSN_ENV };
-        std::test::assert(cut.cutover(record.head("journal").id, 0, dna::ROUTING_VERSION), "the cutover: " + cut.last_error());
-        let b = std::json::Builder { }; b.begin_object(); b.int_field("routing", dna::ROUTING_VERSION); b.string_field("checkpoint", record.head("journal").id); b.end_object();
-        std::test::assert(record.append("journal", record.head("journal").id, dna::Row { kind: "ledger.adopted", entity: "ledger", body: b.result(), author: "test" }, false, "").ok, "the record adopts its Ledger");
         self.hand("t1", "alice"); self.hand("t2", "alice");
         let policy = self.policy(app);
         let provider = ops::GovernanceCommands { record: record, tasks_enabled: true, task_authority: ops::FixedTaskAuthority { policy: policy }, retirement_enabled: true };
@@ -57,16 +53,18 @@ locus LedgerTaskCases {
         std::test::assert_eq_int(self.ledger_rows("intent.requested", t.intent_id), 1, "still one row");
         let looked = provider.lookup(riley, "ask-1");
         std::test::assert(looked.ok && looked.receipt.task_create.intent_id == t.intent_id, "the ask is recovered by its request: " + looked.code);
-        let l = dna::MemoryLedger { repo: self.repo, dsn_env: dna::SPINE_DSN_ENV };
+        let l = dna::MemoryLedger { repo: self.repo, dsn_env: "HALE_DNA_MEMORY_DSN_OWNER" };
         std::test::assert(l.append(l.revision(), "intent.offered", t.intent_id, OUTCOME + " (from riley)").ok, "offered");
         std::test::assert_eq_str(provider.lookup(riley, "ask-1").receipt.task_create.intent_state, "offered", "the organism's answer, read in the Ledger");
         let changed = ops::GovernanceCommand { request_id: "ask-1", operation: "dna.task.create", application_id: app, target_kind: "dna.record", target_id: app, subject_digest: head, record_head: head, outcome: OUTCOME + "!", to: "org" };
         std::test::assert_eq_str(provider.submit(riley, changed).code, "request_conflict", "one request identity, one content");
+        let moved_head = ops::GovernanceCommand { request_id: "ask-2", operation: "dna.task.create", application_id: app, target_kind: "dna.record", target_id: app, subject_digest: "stale", record_head: "stale", outcome: OUTCOME, to: "org" };
+        std::test::assert_eq_str(provider.submit(riley, moved_head).code, "stale_subject", "an ask prepared at a head the record left is a stale subject");
 
         // ---- reassign: the move is the Ledger's row
         let capability = provider.capability(operator, "dna.task.reassign", "1");
         std::test::assert(capability.available && capability.authorized && std::str::contains(capability.recipients, "bob"), "the operator may move Tasks: " + capability.reason + " " + capability.recipients);
-        let both = dna::RoutedJournal { record: dna::GitJournal { repo: self.repo }, ledger: dna::MemoryLedger { repo: self.repo, dsn_env: dna::SPINE_DSN_ENV } };
+        let both = dna::RoutedJournal { record: dna::RecordJournal { repo: self.repo }, ledger: dna::MemoryLedger { repo: self.repo, dsn_env: "HALE_DNA_MEMORY_DSN_OWNER" } };
         let view = ops::TaskProjection { j: both, visibility: ops::Queries { j: both, routed: true }, routed: true };
         std::test::assert(view.load(), "the Tasks read over both memories: " + view.code);
         let subject = view.task_of("t1");
@@ -78,14 +76,16 @@ locus LedgerTaskCases {
         std::test::assert(provider.lookup(operator, "move-1").ok && provider.submit(operator, move).ok, "recovered, and a retry is its lookup");
         std::test::assert_eq_int(self.ledger_rows("task.reassigned", "t1"), 1, "still one row");
         std::test::assert_eq_str(provider.submit(operator, move).receipt.task.event_id, moved.receipt.task.event_id, "the same row");
+        let aba = ops::GovernanceCommand { request_id: "move-2", operation: "dna.task.reassign", application_id: app, target_kind: "dna.task", target_id: "t1", subject_digest: subject.assignment_digest, expected_assignee: "alice", new_assignee: "charlie" };
+        std::test::assert_eq_str(provider.submit(operator, aba).code, "stale_subject", "a move prepared against the old assignment is a stale subject");
 
         // ---- a race: two moves of t3 validated over the same Ledger. The
         // fence is the Ledger revision a move was validated over: one that
         // landed since makes the other's append stale, and the next attempt
         // validates it again, against where the Task is now
         self.hand("t3", "alice");
-        let racing = dna::MemoryLedger { repo: self.repo, dsn_env: dna::SPINE_DSN_ENV };
-        let snapshot = dna::RoutedJournal { record: dna::GitJournal { repo: self.repo }, ledger: racing };
+        let racing = dna::MemoryLedger { repo: self.repo, dsn_env: "HALE_DNA_MEMORY_DSN_OWNER" };
+        let snapshot = dna::RoutedJournal { record: dna::RecordJournal { repo: self.repo }, ledger: racing };
         let fence = provider.ledger_fence(snapshot, racing);
         let seen = ops::TaskProjection { j: snapshot, visibility: ops::Queries { j: snapshot, routed: true }, routed: true };
         std::test::assert(seen.load() && seen.task_of("t3").assignee == "alice", "t3 is alice's, as both moves read it");
@@ -107,7 +107,7 @@ locus LedgerTaskCases {
         let p = retired.receipt.person;
         std::test::assert(retired.ok && retired.receipt.state == "succeeded" && p.state == "applied" && p.transferred == 1 && p.to == "charlie" && p.event_id != "", "the retirement is admitted: " + retired.code + " " + p.state);
         std::test::assert_eq_int(self.ledger_rows("task.reassigned", "t2"), 1, "its transfer is the Ledger's row");
-        let gj = dna::GitJournal { repo: self.repo };
+        let gj = dna::RecordJournal { repo: self.repo };
         let last = gj.read(gj.revision() - 1);
         std::test::assert(last.kind == "person.retired" && last.entity == "alice" && last.digest == p.event_id, "and the retirement is the record's, after it");
         let refreshed = both.refresh();
@@ -127,24 +127,13 @@ locus LedgerTaskCases {
 }
 
 fn main() {
-    let owner = if std::env::var_exists("HALE_DNA_MEMORY_DSN_OWNER") { std::env::var("HALE_DNA_MEMORY_DSN_OWNER") } else { "" };
-    if std::env::var("HALE_TASK_LEDGER_CHILD") == "1" {
-        let cases = LedgerTaskCases { repo: std::env::arg(1) }; cases.run_cases();
-        return;
-    }
-    if len(owner) == 0 { eprintln("task_ledger_test: not exercised (HALE_DNA_MEMORY_DSN_OWNER is not set)"); return; }
+    if !std::env::var_exists("HALE_DNA_MEMORY_DSN_OWNER") { eprintln("task_ledger_test: not exercised (HALE_DNA_MEMORY_DSN_OWNER is not set)"); return; }
     let root = dna::scratch_root("ops-task-ledger");
-    let record = dna::GitRecord { repo: root };
+    let record = dna::MemoryRecord { repo: root };
     std::test::assert(record.git("init\n--quiet").code == 0, "isolated Git");
-    std::test::assert(record.append("journal", "", dna::Row { kind: "application.observed", entity: "org", body: "{}", author: "test" }, false, "").ok, "a record");
-    let identity = record.identity();
-    std::test::assert_eq_str(dna::provision_record_roles(identity, ""), "", "the record's roles");
-    let m = dna::migrate(dna::parse_dsn(owner), identity);
-    std::test::assert(m.ok, "memory migrates for the record: " + m.why);
-    // the head writes under its role, the fixture's rows under the spine's
-    let child = dna::run_tool("env\nHALE_TASK_LEDGER_CHILD=1\nHALE_DNA_MEMORY_DSN_SPINE=" + m.spine_dsn + "\nHALE_DNA_MEMORY_DSN_HEAD=" + m.head_dsn + "\n" + std::env::arg_or(0, "") + "\n" + root);
-    print(child.stdout); if len(child.stderr) > 0 { eprintln(child.stderr); }
-    std::test::assert_eq_str(dna::unmigrate(owner, identity), "", "this run's schema and roles dropped");
-    std::test::assert_eq_int(child.code, 0, "the adopted record's Task commands");
+    // the record is born in memory with its Ledger; the head reaches both
+    // with the DSN the clone keeps
+    std::test::assert_eq_str(dna::memory_fixture(root), "", "the record is born in memory");
+    let cases = LedgerTaskCases { repo: root }; cases.run_cases();
     dna::scratch_done(root);
 }

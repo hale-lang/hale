@@ -42,7 +42,9 @@ fn git(args: &[&str], cwd: &Path) -> String {
 }
 
 fn journal(app: &Path) -> Vec<(String, String, String)> {
-    let text = record::text(app);
+    // the record's rows and its Ledger's: the day's work (asks, Tasks,
+    // workflows) is the Ledger's (GH #1590)
+    let text = record::text(app) + &record::ledger_text(app);
     text.lines()
         .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
         .map(|v| {

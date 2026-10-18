@@ -57,16 +57,18 @@ main locus App {
         let g2 = in_dir(a, cache, "git\nconfig\nuser.email\nhost@dna");
         let g3 = in_dir(a, cache, "git\nadd\n-A");
         let g4 = in_dir(a, cache, "git\ncommit\n-q\n-m\nthe app");
-        let g5 = in_dir(a, cache, "git\npush\n-q\norigin\nmain\nrefs/dna/*:refs/dna/*");
+        let g5 = in_dir(a, cache, "git\npush\n-q\norigin\nmain");
         std::test::assert_eq_int(g5.code, 0, "pushed: " + g5.stderr);
-        // a head elsewhere, with the record
+        // a head elsewhere: the genome cloned, the record reached through
+        // memory (`memory migrate` with the owner's DSN keeps the head's DSN
+        // in the clone, GH #1590)
         let head = scratch + "/head";
         let c1 = dna::clone_repo_with("-b\nmain\n", bare, head);
         let c2 = in_dir(head, cache, "git\nconfig\nuser.name\nriley");
         let c3 = in_dir(head, cache, "git\nconfig\nuser.email\nriley@l");
-        let c4 = in_dir(head, cache, toolchain() + "\ndna\nupgrade\n.");
-        let c5 = in_dir(head, cache, toolchain() + "\ndna\nsync");
-        std::test::assert(std::str::contains(c5.stdout, "pulled the record"), "the head has the record: " + c5.stdout + c5.stderr);
+        let c4 = in_dir(head, cache, toolchain() + "\ndna\nmemory\nmigrate");
+        let c5 = in_dir(head, cache, toolchain() + "\ndna\nstatus");
+        std::test::assert(c5.code == 0 && std::str::contains(c5.stdout, "event(s), chain verified"), "the head has the record: " + c4.stdout + c4.stderr + c5.stdout + c5.stderr);
 
         // the host binary, built into this fixture's cache
         let built = in_dir(a, cache, toolchain() + "\ndna\nprofile\n.");
@@ -82,7 +84,7 @@ main locus App {
         let x = dna::run_tool("chmod\n+x\n" + slow);
 
         // host A takes the lease and builds
-        let started = in_dir(a, cache, "sh\n-c\nHALE_BIN=\"$1\" HALE_DNA_TOOLCHAIN=\"$2\" HALE_DNA_GENOME=\"$3\" nohup sh -c 'timeout 240 \"$0\" run \"$1\" . \"\" \"\" --no-iris; echo $? > a.exit' \"$4\" \"$3\" >a.log 2>&1 </dev/null & echo $!\nsh\n" + slow + "\n" + version + "\n" + a + "\n" + host);
+        let started = in_dir(a, cache, "sh\n-c\nHALE_BIN=\"$1\" HALE_DNA_TOOLCHAIN=\"$2\" HALE_DNA_GENOME=\"$3\" HALE_DNA_MEMORY_DSN_SPINE=\"$5\" nohup sh -c 'timeout 240 \"$0\" run \"$1\" . \"\" \"\" --no-iris; echo $? > a.exit' \"$4\" \"$3\" >a.log 2>&1 </dev/null & echo $!\nsh\n" + slow + "\n" + version + "\n" + a + "\n" + host + "\n" + dna::fixture_spine(a));
         let mut taken = false;
         let mut tries = 0;
         while !taken && tries < 120 {

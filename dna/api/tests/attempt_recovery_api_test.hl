@@ -1,5 +1,5 @@
 // A leg's commands through the real provider (GH #946 hardening): the
-// real GovernanceCommands over a fresh Git Record, the practice_review
+// real GovernanceCommands over a fresh record kept in memory, the practice_review
 // adapter and the head's command handlers (api::Commands), in-process — no
 // scripted receipts. The owner's answers are explicit fixture rows.
 // A refused outcome reads back as `refused` with the row that refused it
@@ -64,7 +64,8 @@ locus RecoveryCases {
     }
     fn run_cases() {
         self.seed();
-        let record = dna::GitRecord { repo: self.f.root };
+        std::test::assert_eq_str(dna::memory_fixture(self.f.root), "", "the record is born in memory (GH #1590)");
+        let record = dna::MemoryRecord { repo: self.f.root };
         let codec = ops::AuthorityPolicyCodec { };
         let policy = codec.decode("{\"format\":\"dna.practice-review-authority/1\",\"application_id\":\"" + self.f.identity + "\",\"grants\":[{\"mode\":\"local\",\"name\":\"riley\",\"authority\":\"board\",\"practice_propose\":false,\"review_verdict\":false,\"recover\":true}]}", self.f.identity, "local");
         std::test::assert(policy.valid, "recover-only authority policy");
@@ -121,7 +122,7 @@ locus RecoveryCases {
         std::test::assert_eq_str(refused.receipt.state, "refused", "the refusal reads back: " + refused.code);
         std::test::assert_eq_str(refused.receipt.attempt.state, "refused", "the attempt is refused");
         std::test::assert_eq_str(refused.receipt.attempt.reason, "the lease moved under it", "with the owner's reason");
-        std::test::assert(len(refused.receipt.attempt.event_id) == 40, "the refusal reads back with the row it answers");
+        std::test::assert(len(refused.receipt.attempt.event_id) == 64, "the refusal reads back with the row it answers");
         // a settlement naming the request reads back `settled` with its disposition
         self.f.append("attempt.outcome", attempt, dna::encode_attempt_outcome(dna::AttemptOutcome { attempt_id: attempt, work_id: WORK, disposition: "done", performer: "legs", result: "assessment: ship it", result_ref: "receipt:assessment-1", request: command_id, hat_digest: hat_digest, renderer: "legs-render/1" }));
         let settled = commands.lookup(api::Lookup { request_id: "outcome-1" }, self.caller());
@@ -129,16 +130,12 @@ locus RecoveryCases {
         std::test::assert_eq_str(settled.receipt.attempt.disposition, "done", "with its disposition");
         eprintln("PASS a leg's commands through the real provider");
     }
-    fn last(kind: String) -> dna::Event {
-        let refreshed = self.f.journal.refresh(); let mut found = dna::Event { }; let mut i = 0;
-        while i < self.f.journal.revision() { let e = self.f.journal.read(i); if e.kind == kind { found = e; } i = i + 1; }
-        return found;
-    }
+    fn last(kind: String) -> dna::Event { return self.f.last_of(kind); }
 }
 
 fn main() {
     if std::env::var("HALE_COMMAND_API_TEST_CLEAN") != "1" {
-        let clean = dna::run_tool("env\n-u\nHALE_DNA_MEMORY_DSN_OWNER\n-u\nHALE_DNA_MEMORY_DSN_SPINE\n-u\nHALE_DNA_MEMORY_DSN_HEAD\nGIT_CONFIG_NOSYSTEM=1\nGIT_CONFIG_GLOBAL=/dev/null\nGIT_TERMINAL_PROMPT=0\nHALE_DNA_DISCOVER=off\nHALE_COMMAND_API_TEST_CLEAN=1\n" + std::env::arg_or(0, ""));
+        let clean = dna::run_tool("env\n-u\nHALE_DNA_MEMORY_DSN_SPINE\n-u\nHALE_DNA_MEMORY_DSN_HEAD\nGIT_CONFIG_NOSYSTEM=1\nGIT_CONFIG_GLOBAL=/dev/null\nGIT_TERMINAL_PROMPT=0\nHALE_DNA_DISCOVER=off\nHALE_COMMAND_API_TEST_CLEAN=1\n" + std::env::arg_or(0, ""));
         print(clean.stdout); if len(clean.stderr) > 0 { eprintln(clean.stderr); }
         std::process::exit(if clean.code < 0 { 1 } else { clean.code });
     }

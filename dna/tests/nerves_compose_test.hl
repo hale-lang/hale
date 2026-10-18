@@ -133,7 +133,9 @@ main locus App {
         let secrets = std::io::fs::read_file(self.app + "/dna/nats.secrets.conf") or "";
         let at = std::str::index_of(secrets, "NATS_SPINE_PASSWORD: \"");
         let spine_pw = if at < 0 { "" } else { secrets[(at + 22)..(at + 54)] };
-        let org = dna::schema_for(dna::GitRecord { repo: self.app }.identity());
+        // the record init bore is read under the vault init drew its roles
+        // into (the scratch's), through the toolchain
+        let org = dna::schema_for(dna::record_scope(self.app));
         let vault_env = "HALE_VAULT_DIR=" + scratch + "/vault";
         let matched = dna::run_tool("env\n" + vault_env + "\n" + toolchain() + "\ndna\nsecrets\n" + self.app);
         std::test::assert(len(spine_pw) == 32 && std::str::contains(matched.stdout, "present  " + dna::nerves_vault_name(org, "spine")) && !std::str::contains(matched.stdout, "MISSING  " + dna::nerves_vault_name(org, "spine")), "the bootstrap drew the spine's password into the vault and the secrets file: " + matched.stdout + matched.stderr);
@@ -147,10 +149,16 @@ main locus App {
         let app_name = dna::nerves_app_name(name);
         std::test::assert(std::str::contains(conf, "user: app-" + app_name + ", password: $NATS_APP_" + std::str::upper(app_name) + "_PASSWORD") && std::str::contains(conf, "publish: [\"*.app." + app_name + ".>\"]") && !std::str::contains(conf, "user: app,"), "the application's own user may publish on its own subjects alone: " + conf);
         std::test::assert(std::str::contains(secrets, "NATS_APP_" + std::str::upper(app_name) + "_PASSWORD: \"") && std::str::contains(matched.stdout, "present  " + dna::nerves_app_vault(org, app_name)), "its password is drawn into the include and the vault: " + matched.stdout);
-        let attached = dna::GitJournal { repo: self.app };
+        let rows = in_dir(self.app, toolchain() + "\ndna\nrecord-rows\n.");
+        std::test::assert_eq_int(rows.code, 0, "the record reads: " + rows.stderr);
         let mut named = "";
-        let mut k = 0;
-        while k < attached.revision() { let e = attached.read(k); if e.kind == "application.attached" { named = std::json::find_string_field(e.body, "name"); } k = k + 1; }
+        let mut rest = rows.stdout;
+        while len(rest) > 0 {
+            let nl = std::str::index_of(rest, "\n");
+            let line = if nl < 0 { rest } else { rest[0..nl] };
+            rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
+            if std::json::find_string_field(line, "kind") == "application.attached" { named = std::json::find_string_field(std::json::find_string_field(line, "body"), "name"); }
+        }
         std::test::assert_eq_str(named, app_name, "the record attaches the application by its project's name");
         let c0 = in_dir(self.app, "sh\n-c\ngit config user.name riley && git config user.email riley@dna && git add -A && git commit -q -m 'the organization'");
         std::test::assert_eq_int(c0.code, 0, "the scaffold committed: " + c0.stderr);
@@ -215,7 +223,9 @@ main locus App {
         std::test::assert_eq_int(other, -1, "and not under another application's");
         std::test::assert(removed.code == 0 && std::str::contains(removed.stdout, "`" + app_name + "` detached"), "hale dna application remove detaches it: " + removed.stdout + removed.stderr);
         let mut detached = 0;
-        let rec = dna::GitJournal { repo: self.app };
+        // read as the owner: the head's kept DSN names entries in the
+        // organism's vault, not this process's
+        let rec = dna::RoutedJournal { record: dna::RecordJournal { repo: self.app, dsn_env: "HALE_DNA_MEMORY_DSN_OWNER" }, ledger: dna::MemoryLedger { repo: self.app, dsn_env: "HALE_DNA_MEMORY_DSN_OWNER" } };
         let mut r = 0;
         while r < rec.revision() { let e = rec.read(r); if e.kind == "application.detached" && std::json::find_string_field(e.body, "name") == app_name && std::json::find_string_field(e.body, "by") == "riley" { detached = detached + 1; } r = r + 1; }
         std::test::assert_eq_int(detached, 1, "one application.detached row in the record, naming it and who");

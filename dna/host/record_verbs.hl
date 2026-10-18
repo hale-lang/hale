@@ -78,11 +78,48 @@ fn candidates_verb(root: String, seed: String, sub: String, id_in: String, why: 
 
 // ---- the driver's seeding, through the record ------------------------
 
+// GH #1590: the record's first rows, born in memory: `record.genesis` with
+// the body the driver composed, exactly at 0, whose digest must be the
+// identity the driver pinned in hale.toml; `ledger.adopted`, since a record
+// born in memory has its Ledger from the start (memory's migration recorded
+// the cutover at the identity); and `record.key`, the public half of the
+// record's key, which every row the organism's parts write is signed with.
+// Answers the identity and the key.
+fn record_genesis_verb(root: String, body: String) -> Answer {
+    if len(body) == 0 { return fail("record-genesis: the genesis row's body"); }
+    let id = record_identity(root);
+    if len(id) == 0 { return fail("record-genesis: hale.toml pins no record; `hale dna init` pins it first"); }
+    if dna::event_digest("genesis", "record.genesis", "record", body) != id { return fail("record-genesis: the row's digest is not the identity hale.toml pins (" + id + ")"); }
+    let key = dna::record_key(dna::schema_for(id));
+    if !key.ready() { return fail("record-genesis: the record's key is not in the vault (" + dna::exchange_key_vault(dna::schema_for(id)) + "); `hale dna secrets` draws it"); }
+    let who = who_am_i();
+    let j = dna::RecordJournal { repo: root, author: who };
+    let r = j.append_as(0, "record.genesis", "record", body, who, true);
+    if !r.ok { return fail("record-genesis: memory refused the record's first row (" + r.error + "): " + j.last_error()); }
+    let a = std::json::Builder { };
+    a.begin_object();
+    a.int_field("routing", dna::ROUTING_VERSION);
+    a.string_field("checkpoint", id);
+    a.int_field("rows", 0);
+    a.string_field("by", who);
+    a.end_object();
+    let k = std::json::Builder { };
+    k.begin_object();
+    k.string_field("key", key.public());
+    k.end_object();
+    let rows = dna::RowBatch { };
+    rows.push(dna::Row { kind: "ledger.adopted", entity: "ledger", body: a.result(), author: "dna" });
+    rows.push(dna::Row { kind: "record.key", entity: "record", body: k.result(), author: "dna" });
+    let kr = j.append_rows_as(1, rows, true);
+    if !kr.ok { return fail("record-genesis: memory refused the record's Ledger and key (" + kr.error + "): " + j.last_error()); }
+    return answer("record " + id + " (record.genesis; ledger.adopted, routing " + to_string(dna::ROUTING_VERSION) + "; record.key " + key.public()[0..12] + "…)\n");
+}
+
 // The record's head, or `none`: the driver asks before it seeds.
 fn record_head_verb(root: String) -> Answer {
     // `none` only for a record known absent: the driver seeds on it
     let h = record_head(root);
-    if !h.ok { return fail("the record at " + RECORD_REF + " in " + root + " could not be read: " + h.why); }
+    if !h.ok { return fail("the record of " + root + " could not be read from memory: " + h.why); }
     return answer((if h.absent { "none" } else { h.id }) + "\n");
 }
 
@@ -97,6 +134,19 @@ fn record_rows_verb(root: String) -> Answer {
     if h.absent { return answer(""); }
     let text = journal_text_at(root, h.id);
     if len(text) == 0 { return fail("record-rows: the record's rows at " + h.id + " could not be read"); }
+    return answer(text);
+}
+
+// GH #1590: a public or internal receipt's body as memory keeps it, by its
+// digest (`sha256:` optional), for tests and scripts, so none of them reads
+// memory's tables. A protected body is the vault's (`hale dna receipt show
+// … --purpose`), never this verb's.
+fn record_body_verb(root: String, digest: String) -> Answer {
+    let hexd = if std::str::starts_with(digest, "sha256:") { digest[7..len(digest)] } else { digest };
+    if len(hexd) != 64 { return fail("record-body: a receipt's digest"); }
+    let r = dna::MemoryReceipts { repo: root };
+    let text = r.read(hexd);
+    if len(text) == 0 { return fail("record-body: no body " + digest + " is kept unsealed in memory" + (if len(r.last_error()) > 0 { " (" + r.last_error() + ")" } else { "" })); }
     return answer(text);
 }
 
@@ -248,12 +298,12 @@ fn graph_reingest_verb(root: String, tree: String, at: String, memory: dna::Memo
     if len(at) < 7 { return fail("ingest: name the commit (--at <sha>)"); }
     // the record as the organization reads it: a ratification lands in
     // memory's ledger once the ledger is adopted
-    let journal = dna::RoutedJournal { record: dna::GitJournal { repo: root }, ledger: memory.ledger };
+    let journal = dna::RoutedJournal { record: dna::RecordJournal { repo: root }, ledger: memory.ledger };
     if attached_somewhere(journal) { return fail("ingest: an attached application's re-ingest is not built yet; a repository's is"); }
     let g = ops::GraphIngest { root: tree, tools: true };
     let r = g.ingest();
     if len(r.error) > 0 { return fail("ingest: " + r.error); }
-    let current = dna::record_graph_bodies(journal, dna::GitReceipts { repo: root });
+    let current = dna::record_graph_bodies(journal, dna::MemoryReceipts { repo: root });
     let mut ids = "\n";
     let mut nodes = "";
     let mut edges = "";
@@ -815,28 +865,81 @@ fn design_upgrade_verb(root: String, path: String, toolchain: String, memory: dn
     return answer("proposed=" + to_string(proposed) + " superseding=" + to_string(superseding) + " waiting=" + to_string(waiting) + "\n");
 }
 
+// ---- hale dna signers (GH #1590) -------------------------------------------
+//
+// Under `dna.trust = signed` a person's row is admitted when it carries an
+// ssh signature by a key the record enrolled for them; the enrolment is a
+// row of the record (`signer.enrolled {who, key}`, `signer.revoked {who}`),
+// itself signed by someone the record already admits, so nobody enrols
+// themselves into a record that admits others. The first enrolment is the
+// bootstrap.
+
+fn signers_verb(root: String, sub: String, who_in: String, key_in: String, who_flag: String) -> Answer {
+    let no_head = record_refusal(root);
+    if len(no_head) > 0 { return fail(no_head); }
+    let j = dna::RecordJournal { repo: root, author: "host" };
+    if len(sub) == 0 || sub == "list" {
+        let keys = dna::enrolled_keys(j);
+        let mut out = "signers: " + (if len(keys) == 0 { "none enrolled (`hale dna signers enroll <who> --key <ssh public key or file>`)" } else { to_string(dna::count_lines(keys)) }) + "\n";
+        out = out + indent_lines(dna::trim_nl(keys), "  ") + (if len(keys) > 0 { "\n" } else { "" });
+        out = out + "trust:   " + trust_mode(root) + (if trust_mode(root) == "signed" { " (a person's row is admitted when an enrolled key signed it)" } else { " (every writer to the record is trusted; `git config dna.trust signed` admits signed rows alone)" }) + "\n";
+        return answer(out);
+    }
+    let by = if len(who_flag) > 0 { who_flag } else { who_am_i() };
+    if sub == "enroll" {
+        if len(who_in) == 0 || len(key_in) == 0 { return fail("signers enroll: `hale dna signers enroll <who> --key <ssh public key or a .pub file> [--as <who>]`"); }
+        let from_file = std::io::fs::read_file(key_in) or "";
+        let key = dna::trim_nl(if len(from_file) > 0 { from_file } else { key_in });
+        if !std::str::starts_with(key, "ssh-") && !std::str::starts_with(key, "ecdsa-") && !std::str::starts_with(key, "sk-") { return fail("signers enroll: `" + key_in + "` is not an ssh public key or a file holding one"); }
+        let b = std::json::Builder { };
+        b.begin_object();
+        b.string_field("who", who_in);
+        b.string_field("key", key);
+        b.string_field("by", by);
+        b.end_object();
+        let w = dna::RecordJournal { repo: root, author: by };
+        let r = w.append_as(w.revision(), "signer.enrolled", who_in, b.result(), by, false);
+        if !r.ok { return fail("signers enroll: the record refused the enrolment (" + r.error + "): " + w.last_error()); }
+        let now = dna::enrolled_keys(dna::RecordJournal { repo: root, author: "host" });
+        if !std::str::contains("\n" + now, "\n" + who_in + " " + key + "\n") { return fail("signers enroll: the enrolment of " + who_in + " is in the record, but it does not count: it is not signed by anyone the record admits (" + by + " signs with " + (if len(dna::person_signing_key(root)) > 0 { "a key the record has not enrolled" } else { "no key: `git config user.signingkey` and `gpg.format ssh` name one" }) + ")"); }
+        return answer("enrolled " + who_in + " (" + key[0..std::str::index_of(key + " ", " ")] + ") as a signer of the record, by " + by + "\n");
+    }
+    if sub == "revoke" {
+        if len(who_in) == 0 { return fail("signers revoke: `hale dna signers revoke <who> [--as <who>]`"); }
+        let b = std::json::Builder { };
+        b.begin_object();
+        b.string_field("who", who_in);
+        b.string_field("by", by);
+        b.end_object();
+        let w = dna::RecordJournal { repo: root, author: by };
+        let r = w.append_as(w.revision(), "signer.revoked", who_in, b.result(), by, false);
+        if !r.ok { return fail("signers revoke: the record refused the revocation (" + r.error + "): " + w.last_error()); }
+        let now = dna::enrolled_keys(dna::RecordJournal { repo: root, author: "host" });
+        if std::str::contains("\n" + now, "\n" + who_in + " ") { return fail("signers revoke: the revocation of " + who_in + " is in the record, but it does not count: it is not signed by anyone the record admits"); }
+        return answer("revoked " + who_in + " as a signer of the record, by " + by + "\n");
+    }
+    return fail("signers: `hale dna signers [list]`, `hale dna signers enroll <who> --key <ssh public key or file>`, or `hale dna signers revoke <who>`");
+}
+
 // ---- hale dna ledger --------------------------------------------------------
 //
-// The organism's operational memory moves to the Ledger by an explicit,
-// one-way adoption (GH #646 stage 1, #650). A head asks for it and the
-// spine carries it out (GH #985): `ledger.adopting` in the record is the
-// request; the body, on its tick and as the ledger's one writer, copies
-// every operational row keyed by its commit, records the cutover, and
-// appends `ledger.adopted` naming the checkpoint. From that commit on,
-// operational kinds are requested of the spine, never written into the
-// record. It needs a running spine to carry it out.
+// The organism's operational memory is the Ledger, in memory beside the
+// record, from the record's first rows (GH #1590): there is nothing to
+// adopt and nothing to abandon.
 
 fn ledger_status(root: String) -> String {
     let routing = routing_here(root);
-    let mut out = "routing:    " + to_string(routing) + (if routing == 0 { " (every row in the record)" } else { " (the day's work in the ledger, adopted at " + short(checkpoint_here(root)) + ")" }) + "\n";
-    let env = dna::own_dsn_env();
-    out = out + "memory:     " + (if dna::dsn_set(env) { "named here (" + env + ")" } else { "none named here (HALE_DNA_MEMORY_DSN_HEAD)" }) + "\n";
+    let mut out = "routing:    " + to_string(routing) + (if routing == 0 { " (the record is not readable here)" } else { " (the day's work in the Ledger, from the record's first rows)" }) + "\n";
+    let env = dna::memory_source(root, dna::own_dsn_env());
+    // a kept DSN is never printed: it carries the head's password
+    let named = if std::str::starts_with(env, "postgres") { "kept by this clone (.hale/dna/memory.env)" } else { "named here (" + env + ")" };
+    out = out + "memory:     " + (if dna::dsn_set(env) { named } else { "none named here (HALE_DNA_MEMORY_DSN_HEAD)" }) + "\n";
     if dna::dsn_set(env) {
         let l = dna::MemoryLedger { repo: root, dsn_env: env };
         let n = l.revision();
         let c = l.checkpoint();
         if len(l.last_error()) > 0 { out = out + "ledger:     memory did not answer (" + l.last_error() + ")\n"; }
-        else { out = out + "ledger:     " + to_string(n) + " row(s)" + (if c.adopted { ", cutover at " + short(c.checkpoint) } else { ", not adopted" }) + "\n"; }
+        else { out = out + "ledger:     " + to_string(n) + " row(s)" + (if c.adopted { "" } else { ", and memory states no cutover for it (`hale dna memory migrate` with the owner's DSN)" }) + "\n"; }
     }
     return out;
 }
@@ -848,7 +951,7 @@ fn ledger_verb(root: String, seed: String, sub: String, why: String, who_flag: S
     // the ledger's rows, one JSON object per line, as memory holds them:
     // the supported query an export reads (GH #646 stage 4; GH #985)
     if sub == "rows" {
-        let env = dna::own_dsn_env();
+        let env = dna::memory_source(root, dna::own_dsn_env());
         if !dna::dsn_set(env) { return fail("ledger rows: no memory named here (HALE_DNA_MEMORY_DSN_HEAD)"); }
         let l = dna::MemoryLedger { repo: root, dsn_env: env };
         let n = l.revision();
@@ -862,31 +965,7 @@ fn ledger_verb(root: String, seed: String, sub: String, why: String, who_flag: S
         return answer(out);
     }
     let who = if len(who_flag) > 0 { who_flag } else { who_am_i() };
-    if sub == "adopt" {
-        if routing_here(root) > 0 { return fail("ledger adopt: this record is already on routing " + to_string(routing_here(root)) + " (adopted at " + short(checkpoint_here(root)) + ")"); }
-        let s = sync_record(root, memory);
-        if !s.ok { return fail("ledger adopt: " + s.summary + "; nothing was requested"); }
-        let b = std::json::Builder { };
-        b.begin_object();
-        b.int_field("routing", dna::ROUTING_VERSION);
-        b.string_field("by", who);
-        b.end_object();
-        let digest = record_append(root, "ledger.adopting", "ledger", b.result(), who);
-        if len(digest) == 0 { return fail("ledger adopt: the record refused `ledger.adopting`; nothing was asked"); }
-        let s2 = sync_record(root, memory);
-        return answer("ledger adoption asked for as " + short(digest) + ": a node copies the record's operational rows into the ledger on its next tick and records `ledger.adopted` (routing " + to_string(dna::ROUTING_VERSION) + "); `hale dna ledger status` shows it\n");
-    }
-    if sub == "abandon" {
-        if len(why) == 0 { return fail("ledger abandon: `hale dna ledger abandon --why <why> [--as <who>]`"); }
-        let b = std::json::Builder { };
-        b.begin_object();
-        b.string_field("by", who);
-        b.string_field("why", why);
-        b.end_object();
-        let digest = record_append(root, "ledger.abandoning", "ledger", b.result(), who);
-        if len(digest) == 0 { return fail("ledger abandon: the record refused `ledger.abandoning`; nothing was asked"); }
-        let s2 = sync_record(root, memory);
-        return answer("ledger abandonment asked for as " + short(digest) + " by " + who + ": " + why + "; a node empties the ledger on its next tick and records `ledger.abandoned`, and the record is the only memory again (its operational rows were never removed)\n");
-    }
-    return fail("ledger: `hale dna ledger [status]`, `hale dna ledger rows`, `hale dna ledger adopt [--as <who>]`, `hale dna ledger abandon --why <why> [--as <who>]`");
+    if sub == "adopt" { return answer("ledger adopt: the record is memory's and has its Ledger from its first rows (routing " + to_string(routing_here(root)) + "); there is nothing to adopt\n"); }
+    if sub == "abandon" { return fail("ledger abandon: the record is memory's, and the Ledger is part of it; there is nothing to abandon (GH #1590)"); }
+    return fail("ledger: `hale dna ledger [status]` or `hale dna ledger rows`");
 }

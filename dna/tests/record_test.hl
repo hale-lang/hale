@@ -1,18 +1,12 @@
 // dna/tests/record_test.hl — the record's own API (GH #646 stage 0, #649).
 //
-// `Record` is the boundary the core's git-backed storage and the host
-// both stand on: chains of rows appended under compare-and-swap, bodies
-// kept by digest, cells swapped by version, pointers, settings. The
-// memory implementation is the fixtures'; the git implementation, over
-// a real repository, keeps the same contract — one row per commit, the
-// chain's ids oldest first, a build that moves no chain until it is
-// swapped in, a signer that reads what the commit carries.
+// `Record` is the boundary the organism's readers and writers stand on:
+// chains of rows appended at their head, bodies kept by digest, settings.
+// `MemRecord`, the fixtures', keeps it in process; `MemoryRecord`, the
+// record in memory (GH #1590), keeps one chain appended at its head, bodies
+// by digest, every row signed.
 
 import "../core" as dna;
-
-fn in_dir(dir: String, argv: String) -> dna::RunResult {
-    return dna::run_tool("sh\n-c\ncd \"$1\" && shift && exec \"$@\"\nsh\n" + dir + "\n" + argv);
-}
 
 fn record_contract(r: dna::Record, label: String) {
     // ---- chains: append under compare-and-swap
@@ -37,20 +31,11 @@ fn record_contract(r: dna::Record, label: String) {
     std::test::assert_eq_int(dna::count_lines(r.text_at(a.id)), 1, label + ": the text at the first row holds one");
     std::test::assert_eq_str(r.between(a.id, b.id), b.id + "\n", label + ": between two ids");
     std::test::assert(r.precedes(a.id, b.id) && !r.precedes(b.id, a.id), label + ": precedence");
-    // ---- a chain built beside the live one moves nothing until it is swapped in
-    let built = r.build(a.id, dna::Row { kind: "task.failed", entity: "t1", author: "riley" }, false, "Rebuilt-From: " + b.id);
-    std::test::assert(len(built) > 0 && built != b.id, label + ": a build on the first row is a new id");
-    std::test::assert_eq_str(r.head("journal").id, b.id, label + ": and moved no chain");
-    std::test::assert(!r.move_chain("journal", built, a.id), label + ": a swap expecting an old head is refused");
-    std::test::assert(r.move_chain("journal", built, b.id), label + ": a swap expecting the head lands");
-    std::test::assert_eq_str(r.head("journal").id, built, label + ": the chain is where it was swapped to");
     // ---- another chain is its own
     let m = r.append("exchange/peer", "", dna::Row { kind: "handoff.received", entity: "h1", author: "peer" }, false, "");
     std::test::assert(m.ok, label + ": a mailbox chain appends from empty");
     std::test::assert_eq_int(r.count("journal"), 2, label + ": without touching the journal");
-    std::test::assert(r.drop_chain("exchange/peer"), label + ": and can be dropped");
-    let dropped = r.head("exchange/peer");
-    std::test::assert(dropped.ok && dropped.absent, label + ": leaving no head");
+    std::test::assert_eq_str(r.head("exchange/peer").id, m.id, label + ": and has its own head");
     // ---- bodies by digest
     let digest = r.keep("a receipt");
     std::test::assert_eq_int(len(digest), 64, label + ": a body is kept under its sha256");
@@ -58,22 +43,6 @@ fn record_contract(r: dna::Record, label: String) {
     std::test::assert(r.body(digest).present && r.body(digest).text == "a receipt", label + ": and read back");
     std::test::assert(r.forget(digest), label + ": forgotten");
     std::test::assert(!r.body(digest).present, label + ": is gone");
-    // ---- cells by version
-    let c0 = r.cell("lease/body");
-    std::test::assert(!c0.present && c0.version == "", label + ": an absent cell has no version");
-    std::test::assert(!r.swap("lease/body", "one", "v-not-there"), label + ": a swap expecting a version the cell lacks is refused");
-    std::test::assert(r.swap("lease/body", "one", ""), label + ": a swap expecting absence lands");
-    let c1 = r.cell("lease/body");
-    std::test::assert(c1.present && c1.text == "one" && len(c1.version) > 0, label + ": the cell has a version now");
-    std::test::assert(!r.swap("lease/body", "two", ""), label + ": a swap expecting absence is refused once it exists");
-    std::test::assert(r.swap("lease/body", "two", c1.version), label + ": a swap at its version lands");
-    std::test::assert(r.swap("lease/body", "three", "*"), label + ": a swap expecting anything lands");
-    std::test::assert_eq_str(r.cell("lease/body").text, "three", label + ": the last value");
-    std::test::assert(r.drop_cell("lease/body") && !r.cell("lease/body").present, label + ": dropped");
-    // ---- pointers
-    std::test::assert(r.point("candidates/m1", built), label + ": a pointer is set");
-    std::test::assert_eq_str(r.pointer("candidates/m1"), built, label + ": and read");
-    std::test::assert(r.unpoint("candidates/m1") && r.pointer("candidates/m1") == "", label + ": and removed");
     // ---- settings
     std::test::assert_eq_str(r.setting("trust"), "", label + ": an unset setting is empty");
     std::test::assert(r.set_setting("trust", "signed"), label + ": a setting is set");
@@ -84,38 +53,6 @@ fn record_contract(r: dna::Record, label: String) {
     std::test::assert(!s.signed && !s.verified, label + ": an unsigned row has no signer");
 }
 
-// Two fetches of one ref at once — the body's tick and a verb beside it
-// (GH #1072): the one that loses git's ref lock is tried again, and a
-// fetch that still fails is a failed read, never an empty remote
-// (GH #961). The lock another fetch would hold is held here by its file.
-fn receive_contract(src: dna::GitRecord) {
-    let root = dna::scratch_root("record-fetch");
-    let setup = dna::run_tool("sh\n-c\ncd \"$1\" && git init -q --bare remote.git && git init -q --bare empty.git && git -C \"$2\" push -q \"$1/remote.git\" refs/dna/journal:refs/dna/journal && git init -q -b main here && mkdir -p here/.git/refs/dna/remote\nsh\n" + root + "\n" + src.repo);
-    std::test::assert_eq_int(setup.code, 0, "fetch: a remote holding the record, and a clone: " + setup.stderr);
-    let here = dna::GitRecord { repo: root + "/here" };
-    let remote = root + "/remote.git";
-    let lock = root + "/here/.git/refs/dna/remote/journal.lock";
-
-    // the lock held throughout: the fetch fails and says why — not absent
-    std::io::fs::write_file(lock, "") or discard;
-    let held = here.receive(remote, "journal");
-    std::test::assert(!held.ok && !held.absent && std::str::contains(held.why, "cannot lock ref"), "fetch: one that cannot take the ref's lock is a failed read, not an empty remote: " + held.why);
-    let untouched = here.head("remote/journal");
-    std::test::assert(untouched.ok && untouched.absent, "fetch: and moved nothing");
-
-    // the lock let go while the fetch waits, as the other fetch ends: tried
-    // again, and received
-    let let_go = dna::run_tool("sh\n-c\n(sleep 0.3; rm -f \"$1\") >/dev/null 2>&1 &\nsh\n" + lock);
-    let later = here.receive(remote, "journal");
-    std::test::assert(later.ok, "fetch: a fetch that lost the lock to another is tried again: " + later.why);
-    std::test::assert_eq_str(here.head("remote/journal").id, src.head("journal").id, "fetch: and brings the remote's record");
-
-    // a remote with no record: the one answer that is empty
-    let none = here.receive(root + "/empty.git", "journal");
-    std::test::assert(!none.ok && none.absent, "fetch: a remote without the family is absent: " + none.why);
-    dna::scratch_done(root);
-}
-
 main locus App {
     run() {
         let mem = dna::MemRecord { };
@@ -123,45 +60,34 @@ main locus App {
 
         let dir = dna::scratch_root("record-test");
         let mk = dna::run_tool("sh\n-c\nrm -rf \"$1\" && mkdir -p \"$1\" && cd \"$1\" && git init -q -b main && git config user.name t && git config user.email t@dna\nsh\n" + dir);
-        std::test::assert(mk.code == 0, "a repository for the git record");
-        let g = dna::GitRecord { repo: dir };
-        std::test::assert(g.is_repository(), "git: it is a repository");
-        std::test::assert_eq_str(g.kind(), "git", "git: its kind");
-        record_contract(g, "git");
-        // git specifics: one row per commit, the chain's ref is the record's
-        let n = in_dir(dir, "git\nrev-list\n--count\nrefs/dna/journal");
-        std::test::assert_eq_str(dna::trim_nl(n.stdout), "2", "git: two commits on the chain");
-        let subject = in_dir(dir, "git\nlog\n-1\n--format=%s%n%b\nrefs/dna/journal");
-        std::test::assert(std::str::starts_with(subject.stdout, "task.failed t1\n"), "git: the subject is the row: " + subject.stdout);
-        std::test::assert(std::str::contains(subject.stdout, "Rebuilt-From: "), "git: the note is the message's body: " + subject.stdout);
-        std::test::assert_eq_int(g.count("candidates"), 0, "git: a pointer family is not a chain");
-        std::test::assert_eq_str(g.pointers("candidates"), "", "git: no pointers under a prefix");
-        std::test::assert(g.point("candidates/m1", g.head("journal").id) && g.point("candidates/m2", g.head("journal").id), "git: two pointers");
-        std::test::assert_eq_str(g.pointers("candidates"), "candidates/m1\ncandidates/m2\n", "git: listed under their prefix, by name");
-        std::test::assert_eq_str(g.remote(), "", "git: no remote");
-        let t = g.receive("nowhere", "journal");
-        std::test::assert(!t.ok, "git: a receive from nowhere fails");
-        // a head that could not be read is never an absent chain (GH #961)
-        let gone = dna::GitRecord { repo: dir + "/missing" };
+        std::test::assert(mk.code == 0, "a repository for the genome");
+        std::test::assert_eq_str(dna::memory_fixture(dir), "", "the record is born in memory");
+        let g = dna::MemoryRecord { repo: dir };
+        std::test::assert_eq_str(g.kind(), "memory", "memory: its kind");
+        std::test::assert_eq_int(g.count("journal"), 3, "memory: a record is born with three rows");
+        let head = g.head("journal").id;
+        let a = g.append("journal", head, dna::Row { kind: "note.kept", entity: "n1", body: "a fact", author: "dna" }, false, "");
+        std::test::assert(a.ok && g.head("journal").id == a.id, "memory: an append at the head lands, and is the head");
+        let stale = g.append("journal", head, dna::Row { kind: "note.kept", entity: "n2", author: "dna" }, false, "");
+        std::test::assert(!stale.ok && stale.error == "stale", "memory: an append at a head the chain left is stale");
+        std::test::assert_eq_str(g.row_of(a.id).kind, "note.kept", "memory: a row is read back by its id");
+        std::test::assert(g.precedes(head, a.id) && !g.precedes(a.id, head), "memory: precedence");
+        let s = g.signer(a.id);
+        std::test::assert(s.signed && s.verified, "memory: the organism's row is signed with the record's key, and verifies");
+        let digest = g.keep("a receipt");
+        std::test::assert(len(digest) == 64 && g.body(digest).present && g.body(digest).text == "a receipt", "memory: a body is kept by its digest and read back");
+        let other_chain = g.append("exchange/peer", "", dna::Row { kind: "note.kept", entity: "n3" }, false, "");
+        std::test::assert(!other_chain.ok, "memory: the record in memory is one chain");
+        std::test::assert_eq_str(g.remote(), "", "memory: the genome has no remote here");
+        // a clone whose pin memory holds no record of is a failed read
+        let other = dna::scratch_root("record-test-missing");
+        let mk2 = dna::run_tool("sh\n-c\ncd \"$1\" && git init -q -b main && printf '[dna]\\nrecord = \"%s\"\\n' 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef > hale.toml\nsh\n" + other);
+        let gone = dna::MemoryRecord { repo: other };
         let h = gone.head("journal");
-        std::test::assert(!h.ok && !h.absent && len(h.why) > 0, "git: a head that could not be read is a failed read: " + h.why);
-        let lost = gone.append("journal", "", dna::Row { kind: "task.born", entity: "t9" }, false, "");
-        std::test::assert(!lost.ok && std::str::starts_with(lost.error, "io: "), "git: an append on it is an i/o failure, never stale: " + lost.error);
-        // the record's three storage loci stand on it
-        let j = dna::GitJournal { repo: dir };
-        std::test::assert_eq_int(j.revision(), 2, "GitJournal: loads the chain's rows");
-        std::test::assert_eq_str(j.read(1).kind, "task.failed", "GitJournal: the swapped-in row");
-        std::test::assert(j.verify_chain(), "GitJournal: the chain verifies");
-        let ap = j.append(2, "task.born", "t2", "");
-        std::test::assert(ap.ok && j.revision() == 3, "GitJournal: appends through the record");
-        std::test::assert_eq_str(g.row_of(g.head("journal").id).kind, "task.born", "and the record sees it");
-        let rc = dna::GitReceipts { repo: dir };
-        let d2 = rc.store("evidence");
-        std::test::assert(g.body(d2).present, "GitReceipts: stores a body of the record");
-        let ls = dna::GitLeases { repo: dir };
-        let l = ls.acquire("work:w1", "a", 100, 50);
-        std::test::assert(l.present && g.cell("lease/work/w1").present, "GitLeases: a lease is a cell of the record");
-        receive_contract(g);
+        std::test::assert(!h.ok && !h.absent && len(h.why) > 0, "memory: a head that could not be read is a failed read: " + h.why);
+        let lost = gone.append("journal", "", dna::Row { kind: "note.kept", entity: "n9" }, false, "");
+        std::test::assert(!lost.ok && std::str::starts_with(lost.error, "io: "), "memory: an append on it is an i/o failure, never stale: " + lost.error);
+        dna::scratch_done(other);
         dna::scratch_done(dir);
     }
 }

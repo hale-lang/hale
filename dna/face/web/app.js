@@ -1278,7 +1278,9 @@
     replaceRoute(route);
   }
   async function observeKnowledgeRemoval(loaded, receipt, token, scope, signal) {
-    if (!loaded.relationships || loaded.detailError || loaded.collection.basis.routing_version !== "0") {
+    // Every record has its Ledger (GH #1590): the basis names the Ledger's
+    // head too, so one snapshot pins both memories' visibility.
+    if (!loaded.relationships || loaded.detailError) {
       const confirmed = await knowledgeCommandRequest("GET", knowledgeCommand.metadata, null, signal);
       if (!knowledgeCommandCurrent(token, scope, signal)) throw new DOMException("Superseded graph observation", "AbortError");
       sameKnowledgeAdmission(confirmed.receipt, receipt); knowledgeCommand.result = confirmed;
@@ -1338,7 +1340,7 @@
         validSource(response.source, receipt.application_id); validKnowledge(response.data, response.source, { ...scanRoute, snapshot }, "edges", cursor);
         if (!source) { source = response.source; basis = response.data.basis; snapshot = response.data.page.snapshot; }
         assert(source.record_head === response.source.record_head && source.record_revision === response.source.record_revision && sameKnowledgeBasis(basis, response.data.basis), "The relationship sequence changed during observation."); pages++;
-        if (basis.routing_version !== "0" || source.record_head !== loaded.source.record_head || source.record_revision !== loaded.source.record_revision) { projection = "changed"; break; }
+        if (source.record_head !== loaded.source.record_head || source.record_revision !== loaded.source.record_revision) { projection = "changed"; break; }
         let match = null;
         for (const row of response.data.items) { assert(!ids.has(row.id), "The relationship sequence repeated an identity."); ids.add(row.id); if (row.id === receipt.edge_id) match = row; }
         if (match) { projection = removing ? "still_present" : match.from_id === e.from_id && match.to_id === e.to_id && match.rel === e.rel ? "observed" : "unavailable"; break; }
@@ -1471,7 +1473,7 @@
         if (!source) { source = response.source; basis = response.data.basis; snapshot = response.data.page.snapshot; }
         assert(source.record_head === response.source.record_head && source.record_revision === response.source.record_revision && sameKnowledgeBasis(basis, response.data.basis), "The binding sequence changed during observation.");
         pages++;
-        if (basis.routing_version !== "0" || source.record_head !== loaded.source.record_head || source.record_revision !== loaded.source.record_revision) { projection = "changed"; break; }
+        if (source.record_head !== loaded.source.record_head || source.record_revision !== loaded.source.record_revision) { projection = "changed"; break; }
         let match = null;
         for (const row of response.data.items) {
           assert(!ids.has(row.id), "The binding sequence repeated an identity."); ids.add(row.id);

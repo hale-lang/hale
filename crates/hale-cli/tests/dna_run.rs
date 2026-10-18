@@ -86,6 +86,7 @@ fn run_hosts_the_organism_with_plain_iris_and_holds_no_state() {
     let mut host = vault::hale()
         .args(["dna", "run", ".", "--port", "0"])
         .current_dir(&app)
+        .env("HALE_DNA_MEMORY_DSN_SPINE", record::spine(vault::hale(), &app))
         .env("XDG_CACHE_HOME", &cache)
         .env("HALE_DNA_NATS_URL_SPINE", &nats_spine)
         .env("HALE_DNA_NATS_ORG", &nats_org)
@@ -160,7 +161,9 @@ fn run_hosts_the_organism_with_plain_iris_and_holds_no_state() {
     assert!(!types.iter().any(|t| t.starts_with("__lib_")), "no mangled locus type names in the observation: {types:?}");
     // an intent over the nerves (`hale dna task create`) lands in the
     // organism's Journal
-    let record = |app: &Path| -> String { record::text(app) };
+    // the record's rows and its Ledger's: an ask and its Task are the
+    // Ledger's (GH #1590)
+    let record = |app: &Path| -> String { record::text(app) + &record::ledger_text(app) };
     let before = record(&app).lines().count();
     let ask = vault::hale()
         .args(["dna", "task", "create", "write", "the", "changelog"])

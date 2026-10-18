@@ -7,7 +7,7 @@
 //! its own role. K2: an ask makes the organization consult memory and
 //! fold the practice into the editor's objective (`knowledge.consulted`);
 //! three concerns from one path become a proposal bound to its parent,
-//! the Board's to ratify. K3: structure, signals and ranking, from memory.
+//! the Board's to ratify. K3: structure and ranking, from memory.
 
 #[path = "support/vault.rs"]
 mod vault;
@@ -35,7 +35,9 @@ fn hale(args: &[&str], cwd: &Path, env: &[(&str, &str)]) -> (bool, String) {
 
 fn journal(app: &Path) -> Vec<(String, String, String)> {
     let _s = trace::Span::new("hale", "dna record-rows");
-    record::text(app)
+    // the record's rows and its Ledger's (GH #1590: a consultation and a
+    // concern are the Ledger's)
+    (record::text(app) + "\n" + &record::ledger_text(app))
         .lines()
         .filter(|l| !l.trim().is_empty())
         .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
@@ -55,8 +57,8 @@ import "vendor/dna" as dna;
 
 fn main() {
     let core = dna::Dna {
-        journal: dna::GitJournal { repo: "." },
-        verification: dna::HaleVerification { receipts: dna::GitReceipts { repo: "." }, repo: "." },
+        journal: dna::RoutedJournal { record: dna::RecordJournal { repo: "." } },
+        verification: dna::HaleVerification { receipts: dna::MemoryReceipts { repo: "." }, repo: "." },
         board: dna::Board { who: "board" }
     };
     // the Board's practice for the application: `org` is the root, the
@@ -79,9 +81,8 @@ fn main() {
     let k = dna::MemoryKnowledge { repo: ".", dsn_env: "HALE_DNA_MEMORY_DSN_HEAD", budget: budget };
     let p = k.package_for(env("KT"), env("KQ"));
     println("pkg\t" + p.error + "\t" + to_string(p.included_n) + "\t" + p.included + "\t" + p.digest + "\t" + to_string(p.revision));
-    let j = dna::GitJournal { repo: "." };
     let store = dna::Pq { dsn_env: "HALE_DNA_MEMORY_DSN_HEAD" };
-    store.scope(j.genesis());
+    store.scope(dna::record_scope("."));
     if !store.open() { println("store\t" + store.last_error()); return; }
     let s = store.idea(env("KI"));
     println("idea\t" + (if s.present { "present" } else { "absent" }) + "\t" + (if s.idea.accepted { "accepted" } else { "not accepted" }) + "\t" + s.idea.provenance + "\t" + s.idea.author);
@@ -214,13 +215,10 @@ fn init_writes_compose_and_dev_projects_the_record_into_memory() {
         trace::sleep("between concerns", Duration::from_millis(300));
     }
     let proposed = wait_row(&app, 60, "concern.proposed", "org/knowing/echo");
-    // ---- K3: the projections and ranking, from memory; wait for the third
-    // concern to be projected rather than for a fixed half second
-    let mut k3 = String::new();
-    trace::wait_until("the spine counted three concerns", Duration::from_secs(60), Duration::from_millis(300), || {
-        k3 = read_memory(&app, &head, "org/knowing/mailer", "1", "retry the mail send", "");
-        field(&k3, "signals").contains("\"count\":3")
-    });
+    // ---- K3: the projections and ranking, from memory (the signals are
+    // not among them: a concern is the Ledger's, GH #1590, and the spine
+    // projects the record alone)
+    let k3 = read_memory(&app, &head, "org/knowing/mailer", "1", "retry the mail send", "");
     let rows = journal(&app);
     let (ok, reviews) = hale(&["dna", "review"], &app, &[]);
     let log = std::fs::read_to_string(d.join("dev.stderr")).unwrap_or_default();
@@ -235,8 +233,6 @@ fn init_writes_compose_and_dev_projects_the_record_into_memory() {
     // the code's structure as init observed it, projected by kind and name
     let structure = field(&k3, "structure");
     assert!(structure.contains("Echo") && structure.contains("Pings"), "the application's loci and topics: {structure}");
-    // the concerns, counted per source
-    assert!(field(&k3, "signals").contains("{\"kind\":\"concern\",\"source\":\"org/knowing/echo\",\"what\":\"pings arrive twice under load\",\"count\":3,"), "three concerns counted: {k3}");
     // ranked inside the bound, by what the work is about
     let ranked = field(&k3, "pkg");
     assert!(ranked.split('\t').nth(1) == Some("1") && ranked.contains(&digest), "ranked: {ranked}");

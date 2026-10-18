@@ -14,8 +14,8 @@ locus Authority {
     }
 }
 locus UnknownRecord {
-    params { inner: dna::GitRecord = dna::GitRecord { }; review: String = ""; fault: Bool = false; attempts: Int = 0; }
-    fn location() -> String { return ""; }
+    params { inner: dna::MemoryRecord = dna::MemoryRecord { }; review: String = ""; fault: Bool = false; attempts: Int = 0; }
+    fn location() -> String { return self.inner.location(); }
     fn identity() -> String { return self.inner.identity(); }
     fn head(chain: String) -> dna::Head { return self.inner.head(chain); }
     fn count(chain: String) -> Int { return self.inner.count(chain); }
@@ -34,7 +34,7 @@ locus UnknownRecord {
     }
 }
 locus ApplicationJournal {
-    params { inner: dna::GitJournal = dna::GitJournal { }; stage: String = ""; }
+    params { inner: dna::RecordJournal = dna::RecordJournal { }; stage: String = ""; }
     fn refresh() -> Bool { return self.inner.refresh(); }
     fn revision() -> Int { return self.inner.revision(); }
     fn head() -> String { return self.inner.head(); }
@@ -54,35 +54,39 @@ fn setup(repo: String) {
     let dirs = dna::run_tool("mkdir\n-p\n" + repo + "/dna/org"); std::test::assert_eq_int(dirs.code, 0, "isolated source directory");
     std::io::fs::write_file(repo + "/dna/org/main.hl", ORIGINAL) or discard;
     std::io::fs::write_file(repo + "/.gitignore", "/.hale/\n/vendor/\n") or discard;
-    let record = dna::GitRecord { repo: repo };
+    let record = dna::MemoryRecord { repo: repo };
     std::test::assert_eq_int(record.git("init\n-q\n-b\nmain").code, 0, "initialize source Git");
+    std::test::assert_eq_str(dna::memory_fixture(repo), "", "the record is born in memory (GH #1590)");
     std::test::assert_eq_int(record.git("add\n-A").code, 0, "track original source");
     std::test::assert_eq_int(record.git("-c\nuser.name=SourceTest\n-c\nuser.email=source@test\ncommit\n-q\n-m\nbase").code, 0, "commit original source");
-    let j = dna::GitJournal { repo: repo };
-    std::test::assert(j.append_exact(0, "application.observed", "org", "{}").ok, "initialize Record identity");
+    let j = dna::RoutedJournal { record: dna::RecordJournal { repo: repo }, ledger: dna::MemoryLedger { repo: repo } };
+    std::test::assert(j.append_exact(j.revision(), "application.observed", "org", "{}").ok, "initialize Record identity");
 }
 fn who(repo: String, name: String) -> ops::GovernanceContext {
-    let record = dna::GitRecord { repo: repo };
+    std::test::assert_eq_str(dna::memory_fixture(repo), "", "the record is born in memory (GH #1590)");
+    let record = dna::MemoryRecord { repo: repo };
     return ops::GovernanceContext { application_id: record.identity(), principal_mode: "local", principal_name: name };
 }
 fn run_body(repo: String, id: String) {
-    let inputs = source::OrganizationPublicationInputs { root: repo }; let j = dna::GitJournal { repo: repo };
+    std::test::assert_eq_str(dna::memory_fixture(repo), "", "the record is born in memory (GH #1590)");
+    let inputs = source::OrganizationPublicationInputs { root: repo }; let j = dna::RoutedJournal { record: dna::RecordJournal { repo: repo }, ledger: dna::MemoryLedger { repo: repo } };
     let body = dna::Dna {
         journal: j, org_source: dna::OrganizationSourceRecord { facts: ops::StrictOrganizationSourceFacts { }, inputs: inputs },
         ownership: dna::Ownership { me_env: "" },
-        gateway: dna::MutationGateway { leases: dna::GitLeases { repo: repo }, workspaces: dna::IsolatedWorktrees { repo: repo, root: repo + "/.hale/dna/worktrees" }, repo: dna::LocalGit { repo: repo } },
-        verification: dna::HaleVerification { receipts: dna::GitReceipts { repo: repo }, repo: repo, scratch: repo + "/.hale/dna/verification", seed: "dna/org" },
+        gateway: dna::MutationGateway { leases: dna::MemoryLeases { repo: repo }, workspaces: dna::IsolatedWorktrees { repo: repo, root: repo + "/.hale/dna/worktrees" }, repo: dna::LocalGit { repo: repo } },
+        verification: dna::HaleVerification { receipts: dna::MemoryReceipts { repo: repo }, repo: repo, scratch: repo + "/.hale/dna/verification", seed: "dna/org" },
         review_policy: dna::OrgPolicy { }, board: dna::Board { }
     };
     body.on_organization_source_requested(dna::OrganizationSourceTrigger { request_id: id });
 }
 fn continue_application(repo: String, command_id: String, stage: String) {
-    let inputs = source::OrganizationPublicationInputs { root: repo }; let j = ApplicationJournal { inner: dna::GitJournal { repo: repo }, stage: stage };
+    std::test::assert_eq_str(dna::memory_fixture(repo), "", "the record is born in memory (GH #1590)");
+    let inputs = source::OrganizationPublicationInputs { root: repo }; let j = ApplicationJournal { inner: dna::RecordJournal { repo: repo }, stage: stage };
     let body = dna::Dna {
         journal: j, org_source: dna::OrganizationSourceRecord { facts: ops::StrictOrganizationSourceFacts { }, inputs: inputs, apply_inputs: inputs },
         ownership: dna::Ownership { me_env: "" },
-        gateway: dna::MutationGateway { leases: dna::GitLeases { repo: repo }, workspaces: dna::IsolatedWorktrees { repo: repo, root: repo + "/.hale/dna/worktrees" }, repo: dna::LocalGit { repo: repo } },
-        verification: dna::HaleVerification { receipts: dna::GitReceipts { repo: repo }, repo: repo, scratch: repo + "/.hale/dna/verification", seed: "dna/org" },
+        gateway: dna::MutationGateway { leases: dna::MemoryLeases { repo: repo }, workspaces: dna::IsolatedWorktrees { repo: repo, root: repo + "/.hale/dna/worktrees" }, repo: dna::LocalGit { repo: repo } },
+        verification: dna::HaleVerification { receipts: dna::MemoryReceipts { repo: repo }, repo: repo, scratch: repo + "/.hale/dna/verification", seed: "dna/org" },
         review_policy: dna::OrgPolicy { }, board: dna::Board { }
     };
     body.resume_review_command(command_id);
@@ -92,7 +96,7 @@ fn verdict(context: ops::GovernanceContext, candidate: ops::OrganizationCandidat
         subject_digest: candidate.candidate_commit, expected_review_state: "pending", verdict: "approve", comment: "Exact candidate reviewed." };
 }
 fn exercise(repo: String, mode: String) {
-    setup(repo); let alice = who(repo, "alice"); let bob = who(repo, "bob"); let record = dna::GitRecord { repo: repo };
+    setup(repo); let alice = who(repo, "alice"); let bob = who(repo, "bob"); let record = dna::MemoryRecord { repo: repo };
     let guard = source::OrganizationPublicationInputs { root: repo }; let authority = Authority { };
     let service = ops::GovernanceCommands { record: record, authority: authority, organization_authority: authority, organization_enabled: true, organization_reviews_enabled: true, organization_inputs: guard };
     let source_capability = service.organization_capability(alice, "dna.organization.propose", "1");
@@ -137,7 +141,8 @@ fn exercise(repo: String, mode: String) {
     let disabled = fresh.organization_capability(bob, "dna.review.verdict", "1");
     std::test::assert(!disabled.available && disabled.authorized, "disabled source write profile keeps grant and availability separate");
     std::test::assert(fresh.lookup(bob, "review").ok, "source lookup works with new writes disabled");
-    let live = dna::GitJournal { repo: repo };
+    std::test::assert_eq_str(dna::memory_fixture(repo), "", "the record is born in memory (GH #1590)");
+    let live = dna::RoutedJournal { record: dna::RecordJournal { repo: repo }, ledger: dna::MemoryLedger { repo: repo } };
     let review = dna::Review { journal: live, organization_source_request: candidate.request, organization_source_facts: ops::StrictOrganizationSourceFacts { }, review_id: candidate.mutation_id, question: common.string(candidate.review_body, "question"), subject_digest: candidate.candidate_commit,
         required_authority: common.string(candidate.review_body, "required_authority"), author: "alice" };
     let accepted = review.command_decide(fact.verdict);

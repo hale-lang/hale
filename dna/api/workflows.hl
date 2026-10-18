@@ -1,6 +1,7 @@
 // The face's read adapter over the native wf1 recipe and pure projection. It never
-// dispatches work or decides a transition. Initial source: trusted-local Record
-// routing 0; a split Ledger or hosted identity needs an owning-service reader.
+// dispatches work or decides a transition. Source: trusted-local, the record
+// and its Ledger read as one (GH #1590: the executions are the Ledger's); a
+// hosted identity needs an owning-service reader.
 import "../core" as dna;
 import "../operations" as ops;
 
@@ -20,6 +21,7 @@ locus WorkflowRead {
         roots: ExecutionIdentities = ExecutionIdentities { };
         problem: String = "";
         code: String = "workflow_source_invalid";
+        routed: Bool = false; // `j` reads the Ledger beside the record
     }
     fn string(text: String, key: String) -> String {
         let syntax = ops::OrganizationJson { };
@@ -36,7 +38,7 @@ locus WorkflowRead {
         while i < self.j.revision() {
             let e = self.j.read(i);
             // Abandoning a Ledger cannot restore a complete operational history.
-            if e.kind == "ledger.adopted" { return self.fail("workflow_source_unavailable", "this application has adopted a Ledger; its owning-service execution reader is not connected"); }
+            if e.kind == "ledger.adopted" && !self.routed { return self.fail("workflow_source_unavailable", "this application has a Ledger, and this reader reads the record alone"); }
             if workflow_fact(e.kind) {
                 bytes = bytes + len(e.body);
                 if len(e.body) > 65536 || bytes > 524288 || self.p.fact_count() >= 512 { return self.fail("workflow_read_limit", "the execution reader's fact budget was exceeded"); }
@@ -173,9 +175,12 @@ locus WorkflowWire {
     fn read(root: String, mode: String, source: Source, query: Query) -> std::http::Response {
         let http = Http { };
         if mode != "local" { return http.error(403, "workflow_source_unavailable", "hosted workflow reads require an owning-service visibility provider", false); }
-        let j = dna::GitJournal { repo: root };
-        if j.head() != source.head || j.revision() != source.revision { return http.error(409, "snapshot_changed", "the Record changed while loading executions", true); }
-        let q = WorkflowRead { j: j, visibility: ops::Queries { j: j, receipts: ops::NoReceipts { } } };
+        let rec = dna::RecordJournal { repo: root };
+        if rec.head() != source.head || rec.revision() != source.revision { return http.error(409, "snapshot_changed", "the Record changed while loading executions", true); }
+        let ledger = dna::MemoryLedger { repo: root, dsn_env: dna::HEAD_DSN_ENV };
+        if !ledger.ready() { return http.error(503, "workflow_source_unavailable", "the executions are the Ledger's, in memory, and no memory is named here (HALE_DNA_MEMORY_DSN_HEAD)", true); }
+        let j = dna::RoutedJournal { record: rec, ledger: ledger };
+        let q = WorkflowRead { j: j, visibility: ops::Queries { j: j, receipts: ops::NoReceipts { }, location: root }, routed: true };
         if !q.load() { return http.error(503, q.code, q.problem, q.code == "workflow_source_unavailable"); }
         if len(query.id) > 0 && !q.has(query.id) { return http.error(404, "workflow_not_found", "no such visible execution", false); }
         let total = if len(query.id) > 0 { 1 } else { q.count() };
@@ -184,8 +189,8 @@ locus WorkflowWire {
         let mut i = query.offset;
         while i < end { b.value(q.row(if len(query.id) > 0 { query.id } else { q.at(i) }, len(query.id) > 0)); i = i + 1; }
         b.end_array(); b.field("page", http.page(query.limit, query.offset, total, source.head));
-        b.begin_object_field("basis"); b.string_field("projection", "dna.workflow-projection/1"); b.string_field("memory", "record"); b.string_field("routing", "0"); b.bool_field("runtime_association", false); b.end_object(); b.end_object();
-        let record = dna::GitRecord { repo: root };
+        b.begin_object_field("basis"); b.string_field("projection", "dna.workflow-projection/1"); b.string_field("memory", "record+ledger"); b.string_field("routing", to_string(dna::ROUTING_VERSION)); b.bool_field("runtime_association", false); b.end_object(); b.end_object();
+        let record = dna::MemoryRecord { repo: root };
         let record_now = record.head("journal");
         if !record_now.ok { return http.unreadable(record_now); }
         if record_now.id != source.head { return http.error(409, "snapshot_changed", "the Record changed while executions were read", true); }

@@ -142,12 +142,12 @@ locus EvidenceStore {
     fn call_bodies(ev: ModelEvidence) -> String {
         if len(ev.prompt) == 0 && len(ev.context) == 0 { return "none"; }
         if protected_class(ev.data_class) { return "withheld (data class " + ev.data_class + ")"; }
-        // The history reads the record's receipts (`refs/dna/receipts`),
+        // The history reads the record's receipts (memory's, GH #1590),
         // and a body belongs where the record is. An organism whose
         // receipts are a local file store — a fixture, an embedded use
         // with no record — keeps the digests only, and never writes a
         // prompt into whatever directory it happens to run in.
-        if self.receipts.kind() != "git" { return "none (receipts are not the record's: " + self.receipts.kind() + ")"; }
+        if self.receipts.kind() != "memory" { return "none (receipts are not the record's: " + self.receipts.kind() + ")"; }
         let mut filed = 0;
         let mut wanted = 0;
         if len(ev.prompt) > 0 && digest_of(ev.prompt) == ev.prompt_digest {

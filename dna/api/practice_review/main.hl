@@ -53,7 +53,7 @@ main locus PracticeReviewHead {
 // session a sign-in set — and its person; trusted-local is a fixture's
 // mode (HALE_DNA_TRUSTED_LOCAL=1) alone.
 fn head_up(root: String, port: Int, web: api::WebAssets, definitions: ops::WorkflowCatalogProvider, commands: PracticeReviewCommands, people: PracticeReviewCommands, authority: ops::GovernanceAuthority, runtime: api::OrganizationRuntimeProvider) {
-    let record = dna::GitRecord { repo: root };
+    let record = dna::MemoryRecord { repo: root };
     let configured = record.git("config\n--get\ndna.principal");
     let mode = dna::trim_nl(configured.stdout);
     let socket = api::head_socket(root);
@@ -115,7 +115,7 @@ fn serve(root: String, port: Int, policy_path: String, webroot: String) {
         eprintln("hale dna practice-review api: ", source.error, "; refusing to start");
         std::process::exit(2);
     }
-    let record = dna::GitRecord { repo: root };
+    let record = dna::MemoryRecord { repo: root };
     let configured = record.git("config\n--get\ndna.trust");
     if configured.code != 0 && configured.code != 1 {
         eprintln("hale dna practice-review api: cannot read Record trust policy; refusing to start");
@@ -186,7 +186,7 @@ fn serve(root: String, port: Int, policy_path: String, webroot: String) {
         tasks_enabled: task_policy.valid, task_authority: task_authority, retirement_enabled: task_policy.valid && task_policy.retirement_enabled, retirement_record: record,
         structure_record: record };
     let commands = PracticeReviewCommands { root: root, application_id: source.identity, service: native, people: native, organization_configured: source_policy.valid };
-    let people_record = dna::GitRecord { repo: root };
+    let people_record = dna::MemoryRecord { repo: root };
     let people_authority = ops::FixedAuthority { policy: policy };
     let people_source_authority = ops::FixedOrganizationAuthority { policy: source_policy };
     let people_task_authority = ops::FixedTaskAuthority { policy: task_policy };

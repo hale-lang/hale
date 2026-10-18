@@ -51,8 +51,8 @@ fn init(repo: String) -> dna::RunResult {
     return dna::run_tool_timeout(900, "sh\n-c\ncd \"$1\" && unset ANTHROPIC_API_KEY OPENAI_API_KEY && export HALE_DNA_DISCOVER=off && exec \"$2\" dna init . --no-library\nsh\n" + repo + "\n" + toolchain());
 }
 
-// The record's rows, `<kind> <entity>` per line; "" when there is none.
-// The record is read whole.
+// The record's rows past its birth, `<kind> <entity>` per line; "" when
+// there is none. The record is read whole.
 @bounded_by(repo)
 fn rows(repo: String) -> String {
     let r = dna::run_tool(toolchain() + "\ndna\nrecord-rows\n" + repo);
@@ -63,21 +63,34 @@ fn rows(repo: String) -> String {
         let nl = std::str::index_of(rest, "\n");
         let line = if nl < 0 { rest } else { rest[0..nl] };
         rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
-        if len(line) > 0 { out = out + std::json::find_string_field(line, "kind") + " " + std::json::find_string_field(line, "entity") + "\n"; }
+        let kind = std::json::find_string_field(line, "kind");
+        // the record's birth (GH #1590) is not what init seeded
+        if len(line) > 0 && !std::str::starts_with(kind, "record.") && kind != "ledger.adopted" { out = out + kind + " " + std::json::find_string_field(line, "entity") + "\n"; }
     }
     return out;
 }
 
-// Whether `repo` holds a record with a row: read through the toolchain
-// (`hale dna record-rows`). A repository the refused init left no DNA in
-// holds none; any other failure to read is the test's.
+// Whether `repo`'s record holds a seeded row: read through the toolchain
+// (`hale dna record-rows`). The record is born before the graph is read
+// (its genesis, adoption and key rows, which a refused ingest keeps, so
+// init runs again on the same record); a seed is every other row. A
+// repository the refused init left no DNA in holds none; any other failure
+// to read is the test's.
 fn has_record(repo: String) -> Bool {
     let r = dna::run_tool(toolchain() + "\ndna\nrecord-rows\n" + repo);
     if r.code != 0 {
         std::test::assert(std::str::contains(r.stderr, "has no DNA"), "the record reads, or there is no DNA to read it with: " + r.stderr);
         return false;
     }
-    return len(r.stdout) > 0;
+    let mut rest = r.stdout;
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let line = if nl < 0 { rest } else { rest[0..nl] };
+        rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
+        let kind = std::json::find_string_field(line, "kind");
+        if len(kind) > 0 && !std::str::starts_with(kind, "record.") && kind != "ledger.adopted" { return true; }
+    }
+    return false;
 }
 
 locus App {
@@ -98,13 +111,13 @@ locus App {
         std::test::assert(std::str::index_of(tr, "graph.node noun:Item\n") < std::str::index_of(tr, "graph.edge refers:noun:Order|noun:Item\n"), "a noun is written before an edge names it");
         std::test::assert(std::str::contains(tr, "graph.node gate:ci/web\n") && std::str::contains(tr, "graph.edge gates:gate:ci/test\n") && !std::str::contains(tr, "gates:gate:ci/web"), "a job's own name names its gate and guards nothing: " + tr);
 
-        // ---- refused: an axiom with no name leaves no record, and init runs again
+        // ---- refused: an axiom with no name leaves no seed (the record is born), and init runs again on it
         let refused = repository(scratch + "/refused", "README.md\n# refused\n\nA repository whose decision has no name.\n<<eof>>DIRECTION.md\n# Direction\n\n- `axiom` only words here, and no bold sentence to name it.\n<<eof>>");
         let r1 = init(refused);
         std::test::assert(r1.code != 0, "init refuses: " + r1.stdout);
         std::test::assert(std::str::contains(r1.stderr, "DIRECTION.md: an `axiom` item names nothing"), "and says why: " + r1.stderr);
         std::test::assert(!std::str::contains(r1.stderr, "hale dna: hale dna:"), "once: " + r1.stderr);
-        std::test::assert(!has_record(refused), "no record is left behind");
+        std::test::assert(!has_record(refused), "no seed is left behind");
         std::io::fs::write_file(refused + "/DIRECTION.md", "# Direction\n\n- `axiom` **Now it has a name.** And words after it.\n") or discard;
         let fixed = dna::run_tool("sh\n-c\ncd \"$1\" && git commit -qam named\nsh\n" + refused);
         std::test::assert_eq_int(fixed.code, 0, "committed: " + fixed.stderr);
@@ -121,7 +134,7 @@ locus App {
         let badname = repository(scratch + "/badname", "README.md\n# badname\n\nA repository with an odd entry.\n<<eof>>FRICTION.md\n# Friction\n\n## pipes | break ids\n\nAn entry.\n<<eof>>");
         let b = init(badname);
         std::test::assert(b.code != 0 && std::str::contains(b.stderr, "FRICTION.md: a witness named `pipes | break ids` cannot be a node"), "refused, with the reason: " + b.stderr);
-        std::test::assert(!has_record(badname), "and no record");
+        std::test::assert(!has_record(badname), "and no seed");
 
         // ---- empty: nothing tracked, nothing read
         let empty = repository(scratch + "/empty", "");

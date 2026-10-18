@@ -37,9 +37,11 @@ fn git(args: &[&str], cwd: &Path) -> String {
     String::from_utf8_lossy(&out.stdout).trim().to_string()
 }
 
+/// The record's rows, then its Ledger's (GH #1590: pressure is the
+/// Ledger's), read with this test's vault.
 fn journal(app: &Path) -> Vec<(String, String, String)> {
     let _s = trace::Span::new("hale", "dna record-rows");
-    record::text(app)
+    (record::text_in(vault::hale(), app) + &record::ledger_in(vault::hale(), app))
         .lines()
         .filter(|l| !l.trim().is_empty())
         .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
@@ -81,7 +83,7 @@ fn persistent_pressure_grows_the_organization_through_the_board() {
     org = format!("{}{}{}", &org[..start], scripted_editor, &org[end..]);
     let ls = org.find("leader: dna::Leader = dna::Leader {").expect("the Leader");
     let le = org[ls..].find("};").expect("the Leader's end") + ls + 2;
-    let scripted_leader = "leader: dna::Leader = dna::Leader {\n            name: \"leader\",\n            models: dna::ModelRouter { quick: dna::FakeModel { name: \"quick\", answer: \"Abstain\" }, deep: dna::FakeModel { name: \"deep\", answer: \"Abstain\" } },\n            receipts: dna::GitReceipts { repo: \".\" },\n            source: dna::SourceReader { repo: \".\" }\n        };";
+    let scripted_leader = "leader: dna::Leader = dna::Leader {\n            name: \"leader\",\n            models: dna::ModelRouter { quick: dna::FakeModel { name: \"quick\", answer: \"Abstain\" }, deep: dna::FakeModel { name: \"deep\", answer: \"Abstain\" } },\n            receipts: dna::MemoryReceipts { repo: \".\" },\n            source: dna::SourceReader { repo: \".\" }\n        };";
     org = format!("{}{}{}", &org[..ls], scripted_leader, &org[le..]);
     std::fs::write(&org_path, &org).unwrap();
     let (ok, out) = hale(&["check", "--matrix", "."], &app);
@@ -92,7 +94,7 @@ fn persistent_pressure_grows_the_organization_through_the_board() {
     // what the growth proposes: a new position for the pressured part
     let grown = org.replace(
         "    }\n    claims { adopt Org; }",
-        "        // grown under pressure from billing: a supervisor for that wing\n        billing: dna::Leader = dna::Leader { name: \"billing-supervisor\", receipts: dna::GitReceipts { repo: \".\" }, source: dna::SourceReader { repo: \".\" } };\n    }\n    claims { adopt Org; }",
+        "        // grown under pressure from billing: a supervisor for that wing\n        billing: dna::Leader = dna::Leader { name: \"billing-supervisor\", receipts: dna::MemoryReceipts { repo: \".\" }, source: dna::SourceReader { repo: \".\" } };\n    }\n    claims { adopt Org; }",
     );
     assert_ne!(grown, org);
     std::fs::write(app.join(".hale/dna/scripted-org.hl"), &grown).unwrap();
@@ -106,6 +108,7 @@ fn persistent_pressure_grows_the_organization_through_the_board() {
     let mut host = vault::hale()
         .args(["dna", "run", ".", "--no-iris", "--observe", "2"])
         .current_dir(&app)
+        .env("HALE_DNA_MEMORY_DSN_SPINE", record::spine(vault::hale(), &app))
         .env("XDG_CACHE_HOME", &cache)
         .env("HALE_BIN", env!("CARGO_BIN_EXE_hale"))
         .env("HALE_DNA_DISCOVER", "off")

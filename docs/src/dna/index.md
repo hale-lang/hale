@@ -33,7 +33,7 @@ one chapter that covers it.
 | part | its one job | where it lives | chapter |
 | --- | --- | --- | --- |
 | **genome** | what the organism is made of: the application's source, the org chart and catalogs under `dna/org`, and the vendored core in `vendor/dna`; a node pulls it from the forge's default branch | your repository; the host's git for it is `dna/host/genome.hl` | [Shaping](./shaping.md) |
-| **record** | long-term memory: every decision, in order, never rewound, as one commit per row under `refs/dna/*` | `dna/core/record.hl`, `dna/host/record.hl` | [Memory and the record](./memory.md) |
+| **record** | long-term memory: every decision, in order, never rewound, as one signed row per event in memory | `dna/core/record.hl`, `dna/host/record.hl` | [Memory and the record](./memory.md) |
 | **memory** | working memory: the ledger of the day's work, claims, the graph, protected evidence; Postgres, a role per client | `dna/core/memory_spine.hl`, `dna/host/memory.hl` | [Memory and the record](./memory.md) |
 | **nerves** | carry facts between parts after their row has landed: NATS JetStream, one stream per organization, one user per part | `dna/core/nerves.hl`, `dna/host/nerves.hl`, `dna/nats.conf` | [The nerves](./nerves.md) |
 | **face** | where the organism shows itself to people and takes their intent: a browser surface the head serves | `dna/face/` | [The head and the face](./head.md) |
@@ -126,8 +126,8 @@ Plainly, so you can decide whether it fits.
 - Hand a person's job to that person as a Task, and wait for them.
 - Run work as workflow definitions written in code, and resume every
   execution after a restart under the same ids.
-- Record all of it in order: in git under `refs/dna/*`, and, once you
-  adopt the ledger, the day's work in memory.
+- Record all of it in order: the record and the day's work both in
+  memory, one signed row per event.
 
 ### It won't
 

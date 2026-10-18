@@ -15,7 +15,7 @@ fn exact_text() -> String {
 
 locus PracticeStageJournal {
     params {
-        inner: dna::GitJournal = dna::GitJournal { };
+        inner: dna::RoutedJournal = dna::RoutedJournal { };
         blocked_kind: String = "";
         blocked: Bool = false;
         blocks: Int = 0;
@@ -75,9 +75,10 @@ fn request(j: dna::Journal, id: String, text: String, old: String) -> dna::Pract
 }
 
 fn body_once(repo: String, j: PracticeStageJournal, delivered: dna::PracticeRequest) {
+    std::test::assert_eq_str(dna::memory_fixture(repo), "", "the record is born in memory (GH #1590)");
     let body = dna::Dna {
         journal: j,
-        verification: dna::HaleVerification { receipts: dna::GitReceipts { repo: repo }, repo: repo },
+        verification: dna::HaleVerification { receipts: dna::MemoryReceipts { repo: repo }, repo: repo },
         board: dna::Board { who: "board" }
     };
     if len(delivered.request_id) > 0 { body.on_practice_requested(delivered); }
@@ -95,7 +96,8 @@ main locus App {
     }
     fn proposal(stage: String) {
         let repo = self.repo(stage);
-        let j = PracticeStageJournal { inner: dna::GitJournal { repo: repo }, blocked_kind: stage, blocked: true };
+        std::test::assert_eq_str(dna::memory_fixture(repo), "", "the record is born in memory (GH #1590)");
+        let j = PracticeStageJournal { inner: dna::RoutedJournal { record: dna::RecordJournal { repo: repo }, ledger: dna::MemoryLedger { repo: repo, dsn_env: dna::fixture_spine(repo) } }, blocked_kind: stage, blocked: true };
         let delivered = request(j, "command/proposal", exact_text(), "");
         body_once(repo, j, dna::PracticeRequest { });
         std::test::assert_eq_int(count(j, "practice.started", "command/proposal"), 0, "unverified incoming rows are not treated as delivered");
@@ -104,7 +106,7 @@ main locus App {
         std::test::assert(j.blocks > 0, "interrupted the actual " + stage + " append");
         std::test::assert_eq_int(count(j, "practice.proposed", "command/proposal"), 0, "incomplete proposal is not reported created");
         std::test::assert_eq_int(count(j, "practice.refused", "command/proposal"), 0, "storage failure is not a domain refusal");
-        let fresh = PracticeStageJournal { inner: dna::GitJournal { repo: repo } };
+        let fresh = PracticeStageJournal { inner: dna::RoutedJournal { record: dna::RecordJournal { repo: repo }, ledger: dna::MemoryLedger { repo: repo, dsn_env: dna::fixture_spine(repo) } } };
         body_once(repo, fresh, dna::PracticeRequest { });
         body_once(repo, fresh, dna::PracticeRequest { });
         let proposed = event(fresh, "practice.proposed", "command/proposal");
@@ -114,7 +116,7 @@ main locus App {
         std::test::assert_eq_int(count(fresh, "knowledge.proposed", digest), 1, "one knowledge proposal across restart");
         std::test::assert_eq_int(count(fresh, "review.requested", "review:" + review), 1, "one durable Review request across restart");
         std::test::assert_eq_int(count(fresh, "practice.proposed", "command/proposal"), 1, "one correlated proposal outcome across restart");
-        let receipts = dna::GitReceipts { repo: repo };
+        let receipts = dna::MemoryReceipts { repo: repo };
         let document = receipts.read(digest[7..len(digest)]);
         std::test::assert_eq_str(dna::native_json_string(document, "text"), exact_text(), "all non-NUL controls and Unicode survive interrupted native proposal");
         std::test::assert_eq_str(dna::native_json_string(proposed.body, "because"), exact_text(), "proposal rationale survives restart exactly");
@@ -135,9 +137,10 @@ main locus App {
         std::test::assert(len(event(j, kind, entity).kind) > 0, "native " + kind + " arrived for " + entity);
     }
     fn interrupt_settlement(repo: String, j: PracticeStageJournal) -> String {
+        std::test::assert_eq_str(dna::memory_fixture(repo), "", "the record is born in memory (GH #1590)");
         let body = dna::Dna {
             journal: j,
-            verification: dna::HaleVerification { receipts: dna::GitReceipts { repo: repo }, repo: repo },
+            verification: dna::HaleVerification { receipts: dna::MemoryReceipts { repo: repo }, repo: repo },
             board: dna::Board { who: "board" }
         };
         body.on_practice_requested(request(j, "command/seed", "Collect a receipt.", ""));
@@ -164,10 +167,11 @@ main locus App {
     }
     fn settlement(stage: String) {
         let repo = self.repo(stage);
-        let j = PracticeStageJournal { inner: dna::GitJournal { repo: repo }, blocked_kind: stage };
+        std::test::assert_eq_str(dna::memory_fixture(repo), "", "the record is born in memory (GH #1590)");
+        let j = PracticeStageJournal { inner: dna::RoutedJournal { record: dna::RecordJournal { repo: repo }, ledger: dna::MemoryLedger { repo: repo, dsn_env: dna::fixture_spine(repo) } }, blocked_kind: stage };
         let candidate = self.interrupt_settlement(repo, j);
         let old = std::json::find_string_field(event(j, "practice.proposed", "command/seed").body, "digest");
-        let fresh = PracticeStageJournal { inner: dna::GitJournal { repo: repo } };
+        let fresh = PracticeStageJournal { inner: dna::RoutedJournal { record: dna::RecordJournal { repo: repo }, ledger: dna::MemoryLedger { repo: repo, dsn_env: dna::fixture_spine(repo) } } };
         body_once(repo, fresh, dna::PracticeRequest { });
         body_once(repo, fresh, dna::PracticeRequest { });
         let review = dna::knowledge_review_id(candidate);
@@ -190,9 +194,10 @@ main locus App {
         std::test::assert(input.ok, "pending native verdict input");
     }
     fn settled_before_restart(repo: String, j: PracticeStageJournal) -> String {
+        std::test::assert_eq_str(dna::memory_fixture(repo), "", "the record is born in memory (GH #1590)");
         let body = dna::Dna {
             journal: j,
-            verification: dna::HaleVerification { receipts: dna::GitReceipts { repo: repo }, repo: repo },
+            verification: dna::HaleVerification { receipts: dna::MemoryReceipts { repo: repo }, repo: repo },
             board: dna::Board { who: "board" }
         };
         body.on_practice_requested(request(j, "command/late-seed", "One exact pending Practice.", ""));
@@ -206,12 +211,13 @@ main locus App {
     }
     fn late_verdict() {
         let repo = self.repo("late-verdict");
-        let j = PracticeStageJournal { inner: dna::GitJournal { repo: repo } };
+        std::test::assert_eq_str(dna::memory_fixture(repo), "", "the record is born in memory (GH #1590)");
+        let j = PracticeStageJournal { inner: dna::RoutedJournal { record: dna::RecordJournal { repo: repo }, ledger: dna::MemoryLedger { repo: repo, dsn_env: dna::fixture_spine(repo) } } };
         let digest = self.settled_before_restart(repo, j);
-        let fresh = PracticeStageJournal { inner: dna::GitJournal { repo: repo } };
+        let fresh = PracticeStageJournal { inner: dna::RoutedJournal { record: dna::RecordJournal { repo: repo }, ledger: dna::MemoryLedger { repo: repo, dsn_env: dna::fixture_spine(repo) } } };
         let body = dna::Dna {
             journal: fresh,
-            verification: dna::HaleVerification { receipts: dna::GitReceipts { repo: repo }, repo: repo },
+            verification: dna::HaleVerification { receipts: dna::MemoryReceipts { repo: repo }, repo: repo },
             board: dna::Board { who: "board" }
         };
         std::test::assert_eq_int(count(fresh, "review.command_decided", "command/late"), 0, "restoration does not bypass trusted delivery of pending verdict");

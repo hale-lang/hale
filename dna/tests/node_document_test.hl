@@ -31,8 +31,9 @@ main locus App {
         std::io::fs::mkdir(repo) or discard;
         let init = dna::run_tool("git\n-C\n" + repo + "\ninit\n-q\n-b\nmain");
         std::test::assert_eq_int(init.code, 0, "temporary native Record");
-        let j = dna::GitJournal { repo: repo };
-        let receipts = dna::GitReceipts { repo: repo };
+        std::test::assert_eq_str(dna::memory_fixture(repo), "", "the record is born in memory (GH #1590)");
+        let j = dna::RoutedJournal { record: dna::RecordJournal { repo: repo }, ledger: dna::MemoryLedger { repo: repo } };
+        let receipts = dna::MemoryReceipts { repo: repo };
         let body = dna::Dna { journal: j, verification: dna::HaleVerification { receipts: receipts, repo: repo }, board: dna::Board { who: "board" } };
         let text = exact_text(); std::test::assert_eq_int(len(text), 8192, "advertised maximum text byte bound");
         let codec = dna::KnowledgeNodeRequestCodec { };
@@ -65,7 +66,7 @@ main locus App {
         let document = receipts.read(digest[7..len(digest)]);
         std::test::assert_eq_str(dna::digest_of(document), digest, "graph projection never rewrites receipt identity");
         std::test::assert_eq_str(dna::native_json_string(document, "text"), text, "retained receipt and graph agree byte-for-byte");
-        let fresh_record = dna::GitJournal { repo: repo };
+        let fresh_record = dna::RoutedJournal { record: dna::RecordJournal { repo: repo }, ledger: dna::MemoryLedger { repo: repo } };
         let rebuilt_id = id + "rebuilt";
         let rebuilt_dsn = dna::migrated(owner, rebuilt_id); std::test::assert(rebuilt_dsn.ok, "fresh memory migrates: " + rebuilt_dsn.why);
         let rebuilt = dna::Pq { conn: dna::pq_conn(rebuilt_dsn), record_id: rebuilt_id };

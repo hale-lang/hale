@@ -43,12 +43,14 @@ fn line_value(text: String, name: String) -> String {
 // The record as the organization writes it, read through the owner's DSN
 // once a ledger is adopted.
 fn journal_of(repo: String) -> dna::RoutedJournal {
-    return dna::RoutedJournal { record: dna::GitJournal { repo: repo }, ledger: dna::MemoryLedger { repo: repo, dsn_env: "HALE_DNA_MEMORY_DSN_OWNER" } };
+    std::test::assert_eq_str(dna::memory_fixture(repo), "", "the record is born in memory (GH #1590)");
+    return dna::RoutedJournal { record: dna::RecordJournal { repo: repo }, ledger: dna::MemoryLedger { repo: repo, dsn_env: "HALE_DNA_MEMORY_DSN_OWNER" } };
 }
 
 // The body of the record's last `kind` row, "" when there is none.
 fn last_body(repo: String, kind: String) -> String {
-    let j = dna::GitJournal { repo: repo };
+    std::test::assert_eq_str(dna::memory_fixture(repo), "", "the record is born in memory (GH #1590)");
+    let j = dna::RoutedJournal { record: dna::RecordJournal { repo: repo }, ledger: dna::MemoryLedger { repo: repo } };
     let mut out = "";
     let mut i = 0;
     while i < j.revision() {
@@ -150,7 +152,7 @@ locus App {
         let mut n = 0;
         let mut chart = "";
         while n < tries {
-            chart = dna::org_chart(journal_of(self.repo), dna::GitReceipts { repo: self.repo });
+            chart = dna::org_chart(journal_of(self.repo), dna::MemoryReceipts { repo: self.repo });
             let mut all = true;
             let mut rest = seats;
             while len(rest) > 0 {
@@ -183,10 +185,11 @@ locus App {
         std::test::assert(std::str::starts_with(dna::native_json_string(adopted, "pack"), "founder@1 sha256:"), "the pack is recorded: " + adopted);
         std::test::assert(std::str::contains(dna::native_json_string(adopted, "steps"), "fill\tposition:board\triley\n") && !std::str::contains(dna::native_json_string(adopted, "steps"), "*"), "`fill *` is proposed as the fills it stands for: " + adopted);
         let family = dna::native_json_string(adopted, "digest");
-        let fdoc = dna::GitReceipts { repo: self.repo }.read(family[7..len(family)]);
+        std::test::assert_eq_str(dna::memory_fixture(self.repo), "", "the record is born in memory (GH #1590)");
+        let fdoc = dna::MemoryReceipts { repo: self.repo }.read(family[7..len(family)]);
         std::test::assert_eq_int(dna::batch_count(dna::native_json_string(fdoc, "planned_on")), 10, "the family names the ten Reviews it stands on: " + fdoc);
         // init's eleven holes are pending; the work hole is no ground of a fill
-        let holes = dna::batch_init_holes(dna::GitJournal { repo: self.repo });
+        let holes = dna::batch_init_holes(dna::RecordJournal { repo: self.repo });
         std::test::assert_eq_int(dna::batch_count(holes), 11, "init's holes, still pending: " + holes);
         let mut ground = dna::native_json_string(fdoc, "planned_on");
         while len(ground) > 0 {
@@ -229,7 +232,7 @@ locus App {
 
         let killed = dna::run_tool("kill\n" + body);
         std::test::assert(self.gone(body, 600), "the organism stops");
-        std::test::assert_eq_str(dna::unmigrate(owner, dna::GitRecord { repo: self.repo }.identity()), "", "this run's schema and roles dropped");
+        std::test::assert_eq_str(dna::unmigrate(owner, dna::MemoryRecord { repo: self.repo }.identity()), "", "this run's schema and roles dropped");
         dna::scratch_done(scratch);
     }
 }

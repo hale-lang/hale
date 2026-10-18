@@ -65,7 +65,7 @@ locus OrganizationDraftWire {
         if len(original.module_digest) == 0 { return http.error(503, "organization_source_unsupported", "the committed dna/org/main.hl module must be present and at most 16 KiB", false); }
         if drafting && !self.same_base(base, original, context.source) { return http.error(409, "snapshot_changed", "organization source, dependencies or Record changed; reload before validating", false); }
         let result = if drafting { organization.draft(original, candidate) } else { original };
-        let record = dna::GitRecord { repo: context.root };
+        let record = dna::MemoryRecord { repo: context.root };
         let record_now = record.head("journal");
         if !record_now.ok { return http.unreadable(record_now); }
         if !organization.unchanged(original) || record_now.id != context.source.head { return http.error(409, "snapshot_changed", "organization source, dependencies or Record changed during validation", false); }

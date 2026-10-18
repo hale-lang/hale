@@ -47,7 +47,8 @@ fn main() {
         // No API child was started by this native fixture.
         f.root = "";
     } else {
-        let journal = dna::GitJournal { repo: root };
+        std::test::assert_eq_str(dna::memory_fixture(root), "", "the record is born in memory (GH #1590)");
+        let journal = dna::RoutedJournal { record: dna::RecordJournal { repo: root }, ledger: dna::MemoryLedger { repo: root } };
         let manifest = std::io::fs::read_file(root + "/fixture.json") or "";
         let digest = std::json::find_string_field(manifest, if action == "redact-pending" { "pending_practice" } else { "practice" });
         let result = if action == "redact" || action == "redact-pending" {

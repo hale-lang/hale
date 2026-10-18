@@ -107,8 +107,9 @@ fn main() {
     let made = dna::run_tool("mktemp\n-d\n/tmp/hale-org-mapping.XXXXXX");
     std::test::assert_eq_int(made.code, 0, made.stderr);
     let root = dna::trim_nl(made.stdout);
-    let record = dna::GitRecord { repo: root }; std::test::assert(record.git("init\n--quiet").code == 0, "isolated Git");
-    std::test::assert(record.append("journal", "", dna::Row { kind: "application.observed", entity: "org", body: "{}", author: "test" }, false, "").ok, "fresh application identity");
+    let record = dna::MemoryRecord { repo: root }; std::test::assert(record.git("init\n--quiet").code == 0, "isolated Git");
+    std::test::assert_eq_str(dna::memory_fixture(root), "", "the record is born in memory (GH #1590)");
+    std::test::assert(record.append("journal", record.head("journal").id, dna::Row { kind: "application.observed", entity: "org", body: "{}", author: "test" }, false, "").ok, "fresh application identity");
     let probe = MappingProbe { };
     let commands = api::CommandAdmission { root: root, roles: dna::RecordRoles { memory: true, mapping: "uid:1000=alice\n" }, provider: probe };
     let cases = OrganizationMappingCases { root: root, identity: record.identity(), probe: probe, commands: commands };

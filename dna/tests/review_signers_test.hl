@@ -47,8 +47,9 @@ main locus App {
     bus { publish dna::ReviewVerdict; }
     // the organism over the record in `self.repo`, born again where a restart belongs
     fn born() {
+        std::test::assert_eq_str(dna::memory_fixture(self.repo), "", "the record is born in memory (GH #1590)");
         self.org = dna::Dna {
-            journal: dna::GitJournal { repo: self.repo, author: "dna" },
+            journal: dna::RoutedJournal { record: dna::RecordJournal { repo: self.repo, author: "dna" }, ledger: dna::MemoryLedger { repo: self.repo, dsn_env: dna::fixture_spine(self.repo) } },
             verification: dna::HaleVerification { receipts: dna::FileReceipts { dir: self.repo + "/.hale/dna/evidence" }, scratch: self.repo + "/.hale/dna/scratch", repo: self.repo },
             deployment: dna::NoDeployment { },
             org_id: "rs"
@@ -59,7 +60,7 @@ main locus App {
     fn answer_within(from: Int, kind: String, entity: String, secs: Int) -> String {
         let deadline = std::time::now() + secs;
         while std::time::now() <= deadline {
-            let j = dna::GitJournal { repo: self.repo };
+            let j = dna::RoutedJournal { record: dna::RecordJournal { repo: self.repo }, ledger: dna::MemoryLedger { repo: self.repo } };
             let mut i = from;
             while i < j.revision() {
                 let e = j.read(i);
@@ -209,11 +210,12 @@ main locus App {
         std::test::assert(len(proposed) > 0, "the practice is proposed");
         let digest = std::json::find_string_field(proposed, "digest");
         let rid = dna::knowledge_review_id(digest);
-        let j = dna::GitJournal { repo: self.repo, author: "dna" };
+        std::test::assert_eq_str(dna::memory_fixture(self.repo), "", "the record is born in memory (GH #1590)");
+        let j = dna::RecordJournal { repo: self.repo, author: "dna" };
         let routed = j.append(j.revision(), "review.routed", rid, "{\"definition\": \"practice-ratify\", \"signers\": \"position:board=ada\", \"gates\": \"\", \"fallback\": false}");
         std::test::assert(routed.ok, "the Review's routing is in the record: " + routed.error);
         self.born();
-        let before = dna::GitJournal { repo: self.repo }.revision();
+        let before = dna::RecordJournal { repo: self.repo }.revision();
         dna::ReviewVerdict <- dna::Verdict { review_id: rid, subject_digest: digest, verdict: "approve", reviewer: "bob", authority: "board" };
         let refused = self.answer_after(before, "review.refused", rid);
         std::test::assert(std::str::contains(refused, "reviewer bob holds no position this Review requires (position:board)"), "rebuilt, it refuses bob whatever he claims: " + refused);
@@ -230,7 +232,7 @@ main locus App {
         let rid2 = dna::knowledge_review_id(digest2);
         std::test::assert(j.append(j.revision(), "review.routed", rid2, "{\"definition\": \"practice-ratify\", \"signers\": \"position:board=ada\", \"gates\": \"gate:ci/api\", \"fallback\": false}").ok, "a gated routing");
         self.born();
-        let before2 = dna::GitJournal { repo: self.repo }.revision();
+        let before2 = dna::RecordJournal { repo: self.repo }.revision();
         dna::ReviewVerdict <- dna::Verdict { review_id: rid2, subject_digest: digest2, verdict: "approve", reviewer: "ada", authority: "board" };
         std::test::assert_eq_str(self.answer_within(before2, "review.settled", rid2, 3), "", "ada's approval waits for the gate's run");
         std::test::assert(j.append(j.revision(), "github.pr", rid2, "{\"number\": 1, \"url\": \"#1\", \"forge\": \"memory\"}").ok, "opened at the forge");

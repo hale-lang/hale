@@ -37,7 +37,8 @@ fn dna_cli(repo: String, args: String) -> dna::RunResult { return in_dir(repo, t
 // pass over the record, read whole.
 @bounded_by(repo)
 fn count_rows(repo: String, kind: String, needle: String) -> Int {
-    let j = dna::GitJournal { repo: repo };
+    std::test::assert_eq_str(dna::memory_fixture(repo), "", "the record is born in memory (GH #1590)");
+    let j = dna::RoutedJournal { record: dna::RecordJournal { repo: repo }, ledger: dna::MemoryLedger { repo: repo } };
     let mut n = 0;
     let mut i = 0;
     while i < j.revision() {
@@ -50,7 +51,8 @@ fn count_rows(repo: String, kind: String, needle: String) -> Int {
 
 // The body of the record's last `kind` row, "" when there is none.
 fn last_body(repo: String, kind: String) -> String {
-    let j = dna::GitJournal { repo: repo };
+    std::test::assert_eq_str(dna::memory_fixture(repo), "", "the record is born in memory (GH #1590)");
+    let j = dna::RoutedJournal { record: dna::RecordJournal { repo: repo }, ledger: dna::MemoryLedger { repo: repo } };
     let mut out = "";
     let mut i = 0;
     while i < j.revision() {
@@ -76,12 +78,13 @@ fn check() {
     let init = dna_cli(repo, "init\n.\n--no-library");
     std::test::assert_eq_int(init.code, 0, "hale dna init: " + init.stdout + init.stderr);
     std::io::fs::write_file(scratch + "/team.batch", TEAM) or discard;
-    let rows_before = dna::GitJournal { repo: repo }.revision();
+    std::test::assert_eq_str(dna::memory_fixture(repo), "", "the record is born in memory (GH #1590)");
+    let rows_before = dna::RecordJournal { repo: repo }.revision();
 
     // 1. --dry-run: the org chart before and after, nothing proposed
     let dry = dna_cli(repo, "apply\n" + scratch + "/team.batch\n--dry-run");
     std::test::assert(dry.code == 0 && std::str::contains(dry.stdout, "+ position position:api/reviewer\n+ mandate position:api/reviewer\n") && std::str::contains(dry.stdout, "+ holds position:api/dev ada\n") && std::str::contains(dry.stdout, "nothing proposed (--dry-run)"), "the dry run prints what the batch adds: " + dry.stdout + dry.stderr);
-    std::test::assert_eq_int(dna::GitJournal { repo: repo }.revision(), rows_before, "and writes nothing");
+    std::test::assert_eq_int(dna::RecordJournal { repo: repo }.revision(), rows_before, "and writes nothing");
 
     // 2. a batch wrong anywhere is refused whole, before anything is written
     std::io::fs::write_file(scratch + "/bad.batch", "open web/dev | Decides: the web client.\nfill web/dev ada\nfill nowhere ada\n") or discard;
@@ -90,7 +93,7 @@ fn check() {
     std::io::fs::write_file(scratch + "/typo.batch", "open web/dev | Decides: the web client.\nhire web/dev ada\n") or discard;
     let typo = dna_cli(repo, "apply\n" + scratch + "/typo.batch");
     std::test::assert(typo.code != 0 && std::str::contains(typo.stderr, "line 2 (`hire web/dev ada`): `hire` is no step a batch takes"), "a line that is no step is named: " + typo.stderr);
-    std::test::assert_eq_int(dna::GitJournal { repo: repo }.revision(), rows_before, "nothing of a refused batch is written");
+    std::test::assert_eq_int(dna::RecordJournal { repo: repo }.revision(), rows_before, "nothing of a refused batch is written");
 
     // 3. proposed: one family Review in `changes`, its members the graph
     // proposal and one mandate per opened position
@@ -102,7 +105,7 @@ fn check() {
     std::test::assert_eq_int(count_rows(repo, "batch.proposed", "fill\\tposition:api/reviewer\\tbo"), 1, "what was asked is a row");
     let family = dna::native_json_string(req, "knowledge_digest");
     std::test::assert_eq_int(count_rows(repo, "graph.requested", dna::knowledge_review_id(family)), 1, "and the organization is asked to open the Review");
-    let receipts = dna::GitReceipts { repo: repo };
+    let receipts = dna::MemoryReceipts { repo: repo };
     let fdoc = receipts.read(family[7..len(family)]);
     std::test::assert(std::str::contains(dna::native_json_string(fdoc, "batch"), "open\tposition:api/dev\t\t"), "the family carries its steps, for the check at ratification: " + fdoc);
     let ideas = dna::native_json_string(fdoc, "ideas");
@@ -131,7 +134,7 @@ fn check() {
     // 5. ratified (its members' rows, as the organization writes them), the
     // team is the organization; `vacate` takes a holder out, a one-step
     // batch of its own
-    let j = dna::GitJournal { repo: repo };
+    let j = dna::RoutedJournal { record: dna::RecordJournal { repo: repo }, ledger: dna::MemoryLedger { repo: repo } };
     let mut each_member = ideas;
     while len(each_member) > 0 {
         let nl = std::str::index_of(each_member, "\n");
@@ -140,7 +143,7 @@ fn check() {
         let d = line[(std::str::index_of(line, " ") + 1)..len(line)];
         std::test::assert(j.append(j.revision(), "knowledge.ratified", d, "{\"digest\": \"" + d + "\", \"outcome\": \"approve\", \"decided_by\": \"board\"}").ok, "a member ratified: " + line);
     }
-    let chart = dna::org_chart(dna::GitJournal { repo: repo }, receipts);
+    let chart = dna::org_chart(dna::RecordJournal { repo: repo }, receipts);
     std::test::assert(std::str::contains(chart, "holds position:api/dev ada\n") && std::str::contains(chart, "mandate position:api/reviewer\n"), "the team is the organization: " + chart);
     let leave = dna_cli(repo, "vacate\napi/dev\nada\n--dry-run");
     std::test::assert(leave.code == 0 && std::str::contains(leave.stdout, "- holds position:api/dev ada\n") && std::str::contains(leave.stdout, "1 taken out"), "vacate shows the hold it takes out: " + leave.stdout + leave.stderr);

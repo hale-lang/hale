@@ -94,7 +94,8 @@ main locus App {
         return false;
     }
     fn last(repo: String, kind: String, entity: String) -> String {
-        let j = dna::GitJournal { repo: repo };
+        std::test::assert_eq_str(dna::memory_fixture(repo), "", "the record is born in memory (GH #1590)");
+        let j = dna::RoutedJournal { record: dna::RecordJournal { repo: repo }, ledger: dna::MemoryLedger { repo: repo } };
         let mut out = "";
         let mut i = 0;
         while i < j.revision() {
@@ -105,7 +106,8 @@ main locus App {
         return out;
     }
     fn rows_of(repo: String, kind: String, entity: String) -> Int {
-        let j = dna::GitJournal { repo: repo };
+        std::test::assert_eq_str(dna::memory_fixture(repo), "", "the record is born in memory (GH #1590)");
+        let j = dna::RoutedJournal { record: dna::RecordJournal { repo: repo }, ledger: dna::MemoryLedger { repo: repo } };
         let mut n = 0;
         let mut i = 0;
         while i < j.revision() {
@@ -137,27 +139,29 @@ main locus App {
         let c4 = in_dir(app, "git\ncommit\n-q\n-m\nthe app");
         let c5 = in_dir(app, "git\nremote\nadd\norigin\n" + bare);
 
+        std::test::assert_eq_str(dna::memory_fixture(app), "", "the record is born in memory (GH #1590)");
         self.core = dna::Dna {
-            journal: dna::GitJournal { repo: app, author: "mara" },
-            verification: dna::HaleVerification { receipts: dna::GitReceipts { repo: app }, repo: app },
+            journal: dna::RoutedJournal { record: dna::RecordJournal { repo: app, author: "mara" }, ledger: dna::MemoryLedger { repo: app, dsn_env: dna::fixture_spine(app) } },
+            // the core is the body, memory's one eraser: its receipts open
+            // as the spine (a head files and reads, and never erases)
+            verification: dna::HaleVerification { receipts: dna::MemoryReceipts { repo: app, dsn: dna::fixture_spine(app) }, repo: app },
             evidence: dna::EvidenceStore { vault: dna::MemoryVault { repo: app, dsn_env: "" } },
             planned: true, org_id: "retention"
         };
         let note = "a supplier note the retention policy covers";
         let d = self.core.evidence.file(note, "internal", "mara");
-        let receipts = dna::GitReceipts { repo: app };
+        let receipts = dna::MemoryReceipts { repo: app };
         std::test::assert_eq_str(receipts.read(hex_of(d)), note, "an internal receipt");
 
-        // a second clone that has fetched it
-        let pushed = in_dir(app, "git\npush\n-q\norigin\nmain\nrefs/dna/*:refs/dna/*");
+        // a second clone of the genome reads the same record in memory
+        let pushed = in_dir(app, "git\npush\n-q\norigin\nmain");
         std::test::assert_eq_int(pushed.code, 0, "pushed: " + pushed.stderr);
         let other = scratch + "/other";
         let cloned = dna::clone_repo(bare, other);
         let o1 = in_dir(other, "git\nconfig\nuser.name\ntomasz");
         let o2 = in_dir(other, "git\nconfig\nuser.email\ntomasz@local");
-        let synced = in_dir(other, toolchain() + "\ndna\nsync");
-        std::test::assert_eq_int(synced.code, 0, "the other clone syncs: " + synced.stdout + synced.stderr);
-        let other_receipts = dna::GitReceipts { repo: other };
+        std::test::assert_eq_str(dna::memory_fixture(other), "", "the other clone reaches the record's memory (GH #1590)");
+        let other_receipts = dna::MemoryReceipts { repo: other };
         std::test::assert_eq_str(other_receipts.read(hex_of(d)), note, "and holds the receipt");
 
         // ---- a hold refuses redaction until it is released
@@ -173,7 +177,7 @@ main locus App {
         std::test::assert_eq_str(self.core.evidence.redact(d, "mara", "no longer needed", "retention:30d"), "", "redacted under the policy");
         std::test::assert_eq_str(receipts.read(hex_of(d)), "", "the ref is gone from this clone");
         let row = self.last(app, "receipt.redacted", d);
-        std::test::assert(std::str::contains(row, "\"by\": \"mara\"") && std::str::contains(row, "\"why\": \"no longer needed\"") && std::str::contains(row, "\"policy\": \"retention:30d\"") && std::str::contains(row, "\"store\": \"git\""), "the record keeps who, why and the policy: " + row);
+        std::test::assert(std::str::contains(row, "\"by\": \"mara\"") && std::str::contains(row, "\"why\": \"no longer needed\"") && std::str::contains(row, "\"policy\": \"retention:30d\"") && std::str::contains(row, "\"store\": \"memory\""), "the record keeps who, why and the policy: " + row);
         std::test::assert(std::str::contains(self.core.evidence.redact(d, "mara", "again", "retention:30d"), "already redacted"), "a redaction is once");
         // filed again, a redacted receipt keeps no body (#636)
         std::test::assert_eq_str(self.core.evidence.file(note, "internal", "mara"), d, "the same document files as the same digest");
@@ -186,43 +190,28 @@ main locus App {
         // ---- a redaction the record cannot hold erases nothing
         let second = "a second supplier note under the same policy";
         let d2 = self.core.evidence.file(second, "internal", "mara");
-        std::io::fs::write_file(app + "/.git/refs/dna/journal.lock", "held by the test") or discard;
+        std::test::assert_eq_str(dna::fixture_record_refuses(app, true), "", "memory refuses appends for a while");
         let unrecorded = self.core.evidence.redact(d2, "mara", "no longer needed", "retention:30d");
         let cli_unrecorded = in_dir(app, toolchain() + "\ndna\nreceipt\nredact\n" + d2 + "\n--why\nno longer needed\n--policy\nretention:30d\n--as\nmara");
-        std::io::fs::unlink(app + "/.git/refs/dna/journal.lock") or discard;
+        std::test::assert_eq_str(dna::fixture_record_refuses(app, false), "", "and takes them again");
         std::test::assert(std::str::contains(unrecorded, "nothing was erased"), "the organism refuses it: " + unrecorded);
         std::test::assert(cli_unrecorded.code != 0 && std::str::contains(cli_unrecorded.stdout + cli_unrecorded.stderr, "nothing was erased"), "and so does the CLI: " + cli_unrecorded.stdout + cli_unrecorded.stderr);
         std::test::assert_eq_str(receipts.read(hex_of(d2)), second, "the body is intact");
         std::test::assert_eq_str(self.last(app, "receipt.redacted", d2), "", "and no redaction is in the record");
 
-        // ---- a hold that arrives while the CLI redacts wins (#636): a git on
-        // the CLI's PATH places a hold the moment the redaction reads the body
+        // ---- a hold placed through the CLI refuses the CLI's redaction (#636)
         let third = "a third supplier note, about to be held";
         let d3 = self.core.evidence.file(third, "internal", "mara");
-        let bin = scratch + "/bin";
-        std::io::fs::mkdir(bin) or discard;
-        let real_git = dna::trim_nl(dna::run_tool("sh\n-c\ncommand -v git").stdout);
-        let flag = scratch + "/hold-now";
-        std::io::fs::write_file(flag, "once") or discard;
-        std::io::fs::write_file(bin + "/git", "#!/bin/sh\ncase \"$*\" in *cat-file*refs/dna/receipts/" + hex_of(d3) + "*) if [ -f \"" + flag + "\" ]; then rm -f \"" + flag + "\"; (cd \"" + app + "\" && \"" + toolchain() + "\" dna receipt hold " + d3 + " --why \"a hold that arrived mid-redaction\" --as counsel) >/dev/null 2>&1; fi ;; esac\nexec \"" + real_git + "\" \"$@\"\n") or discard;
-        let gx = dna::run_tool("chmod\n+x\n" + bin + "/git");
-        let raced = in_dir(app, "sh\n-c\nPATH=\"$1:$PATH\" exec \"$2\" dna receipt redact \"$3\" --why \"no longer needed\" --policy retention:30d --as mara\nsh\n" + bin + "\n" + toolchain() + "\n" + d3);
-        std::test::assert(!std::io::fs::file_exists(flag), "the hold was placed during the redaction");
-        std::test::assert(std::str::contains(self.last(app, "receipt.held", d3), "a hold that arrived mid-redaction"), "the hold is in the record");
-        std::test::assert(raced.code != 0 && std::str::contains(raced.stdout + raced.stderr, "the record moved while redacting"), "the redaction that read no hold does not land: " + raced.stdout + raced.stderr);
-        std::test::assert_eq_str(self.last(app, "receipt.redacted", d3), "", "no redaction is in the record");
-        std::test::assert_eq_str(receipts.read(hex_of(d3)), third, "and the held body is intact");
+        let held = in_dir(app, toolchain() + "\ndna\nreceipt\nhold\n" + d3 + "\n--why\na hold placed before the redaction\n--as\ncounsel");
+        std::test::assert_eq_int(held.code, 0, "counsel holds it: " + held.stdout + held.stderr);
+        std::test::assert(std::str::contains(self.last(app, "receipt.held", d3), "a hold placed before the redaction"), "the hold is a row");
         let after_hold = in_dir(app, toolchain() + "\ndna\nreceipt\nredact\n" + d3 + "\n--why\nno longer needed\n--policy\nretention:30d\n--as\nmara");
-        std::test::assert(after_hold.code != 0 && std::str::contains(after_hold.stdout + after_hold.stderr, "held: counsel: a hold that arrived mid-redaction"), "redacting again meets the hold: " + after_hold.stdout + after_hold.stderr);
+        std::test::assert(after_hold.code != 0 && std::str::contains(after_hold.stdout + after_hold.stderr, "held: counsel: a hold placed before the redaction"), "redacting meets the hold: " + after_hold.stdout + after_hold.stderr);
+        std::test::assert_eq_str(self.last(app, "receipt.redacted", d3), "", "no redaction is a row");
+        std::test::assert_eq_str(receipts.read(hex_of(d3)), third, "and the held body is intact");
 
-        // ---- sync forgets it everywhere
-        let s1 = in_dir(app, toolchain() + "\ndna\nsync");
-        std::test::assert_eq_int(s1.code, 0, "this clone syncs: " + s1.stdout + s1.stderr);
-        let remote_ref = in_dir(app, "git\nls-remote\norigin\nrefs/dna/receipts/" + hex_of(d));
-        std::test::assert_eq_str(dna::trim_nl(remote_ref.stdout), "", "the remote no longer has the ref");
-        let s2 = in_dir(other, toolchain() + "\ndna\nsync");
-        std::test::assert_eq_int(s2.code, 0, "the other clone syncs again: " + s2.stdout + s2.stderr);
-        std::test::assert_eq_str(other_receipts.read(hex_of(d)), "", "and drops the ref it had fetched");
+        // ---- the redaction is memory's, so every clone has it at once
+        std::test::assert_eq_str(other_receipts.read(hex_of(d)), "", "the other clone reads no body");
         let listed = in_dir(other, toolchain() + "\ndna\nreceipt\nredact\n" + d + "\n--why\nx\n--policy\ny");
         std::test::assert(listed.code != 0 && std::str::contains(listed.stdout + listed.stderr, "already redacted"), "the other clone knows it was redacted: " + listed.stdout + listed.stderr);
 
@@ -234,7 +223,7 @@ main locus App {
             dna::scratch_done(scratch);
             return;
         }
-        let record = dna::GitJournal { repo: app }.genesis();
+        let record = dna::RecordJournal { repo: app }.genesis();
         let migrated = migrate_with(app, owner, "a receipt key of forty characters, test");
         let head_dsn = line_value(migrated.stdout, "HALE_DNA_MEMORY_DSN_HEAD");
         let spine_dsn = line_value(migrated.stdout, "HALE_DNA_MEMORY_DSN_SPINE");
@@ -298,9 +287,9 @@ main locus App {
         let p2 = dna::digest_of(secret2);
         let d22 = as_head(app, head_dsn, toolchain() + "\ndna\nreceipt\ndisclose\n" + p2 + "\n--to\ntomasz\n--purpose\naudit\n--as\nmara");
         std::test::assert_eq_int(d22.code, 0, "disclosed: " + d22.stderr);
-        std::io::fs::write_file(app + "/.git/refs/dna/journal.lock", "held by the test") or discard;
+        std::test::assert_eq_str(dna::fixture_record_refuses(app, true), "", "memory refuses appends for a while");
         let unerased = as_head(app, head_dsn, toolchain() + "\ndna\nreceipt\nredact\n" + p2 + "\n--why\nleft the company\n--policy\ngdpr-erasure\n--as\nmara");
-        std::io::fs::unlink(app + "/.git/refs/dna/journal.lock") or discard;
+        std::test::assert_eq_str(dna::fixture_record_refuses(app, false), "", "and takes them again");
         std::test::assert(unerased.code != 0 && std::str::contains(unerased.stdout + unerased.stderr, "the record refused the redaction"), "a redaction the record cannot hold is refused: " + unerased.stdout + unerased.stderr);
         std::test::assert_eq_str(self.last(app, "receipt.redacted", p2), "", "no redaction is in the record");
         let still = as_head(app, head_dsn, toolchain() + "\ndna\nreceipt\nshow\n" + p2 + "\n--purpose\naudit\n--as\ntomasz");
@@ -323,9 +312,11 @@ main locus App {
         std::test::assert_eq_int(filed3.code, 0, "filed: " + filed3.stdout + filed3.stderr);
         let p3 = dna::digest_of(secret3);
         self.core = dna::Dna {
-            journal: dna::GitJournal { repo: app, author: "mara" },
-            verification: dna::HaleVerification { receipts: dna::GitReceipts { repo: app }, repo: app },
-            evidence: dna::EvidenceStore { vault: dna::MemoryVault { repo: app, dsn_env: "", store: dna::PqProtected { conn: dna::pq_conn(dna::parse_dsn(spine_dsn)) } } },
+            journal: dna::RoutedJournal { record: dna::RecordJournal { repo: app, author: "mara" }, ledger: dna::MemoryLedger { repo: app, dsn_env: dna::fixture_spine(app) } },
+            verification: dna::HaleVerification { receipts: dna::MemoryReceipts { repo: app, dsn: dna::fixture_spine(app) }, repo: app },
+            // the vault reads the redaction rows where they are, the Ledger,
+            // as the spine (GH #1590)
+            evidence: dna::EvidenceStore { vault: dna::MemoryVault { repo: app, dsn_env: dna::fixture_spine(app), store: dna::PqProtected { conn: dna::pq_conn(dna::parse_dsn(spine_dsn)) } } },
             planned: true, org_id: "retention"
         };
         let rec3 = self.core.journal.append(self.core.journal.revision(), "receipt.redacted", p3, "{\"by\": \"mara\", \"why\": \"left the company\", \"policy\": \"gdpr-erasure\", \"class\": \"confidential\", \"store\": \"memory\"}");
@@ -344,7 +335,7 @@ main locus App {
         let proposed = self.core.propose_knowledge(dna::Idea { id: "k1", kind: "practice", text: "keep supplier notes a month", author: "org" }, "org");
         std::test::assert(std::str::starts_with(proposed, "sha256:"), "a knowledge proposal: " + proposed);
         std::test::assert_eq_str(self.core.evidence.redact(proposed, "mara", "superseded", "retention:30d"), "", "its receipt redacted");
-        let at = dna::GitJournal { repo: app }.revision();
+        let at = dna::RecordJournal { repo: app }.revision();
         let projected = self.projected_to(record, at, 300);
         std::test::assert(projected >= at, "the spine still projects the record past the redaction: at " + to_string(projected) + " of " + to_string(at) + "; " + (std::io::fs::read_file(app + "/.hale/dev.log") or ""));
 

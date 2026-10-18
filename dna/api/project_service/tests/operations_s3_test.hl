@@ -48,8 +48,10 @@ fn in_dir(dir: String, argv: String) -> dna::RunResult {
 fn dna_cli(root: String, args: String) -> dna::RunResult { return in_dir(root, toolchain() + "\ndna\n" + args); }
 
 // The rows of `kind` in a record's journal.
+// The rows of `kind` in the record and its Ledger (GH #1590: a body's claim
+// is the Ledger's).
 fn count_rows(repo: String, kind: String) -> Int {
-    let text = in_dir(repo, toolchain() + "\ndna\nrecord-rows").stdout + "\n";
+    let text = in_dir(repo, toolchain() + "\ndna\nrecord-rows").stdout + "\n" + in_dir(repo, toolchain() + "\ndna\nledger\nrows").stdout + "\n";
     let mut n = 0;
     let mut rest = text;
     while len(rest) > 0 {
@@ -256,13 +258,13 @@ locus S3Cases {
         // the active project under $HOME/dna, where the local transport's
         // `body logs` looks; the peer record elsewhere
         self.alpha = project(self.home + "/dna", "alpha", "riley");
-        let a = dna::GitRecord { repo: self.alpha };
+        let a = dna::MemoryRecord { repo: self.alpha };
         self.alpha_id = a.identity();
-        std::test::assert_eq_int(len(self.alpha_id), 40, "alpha's identity: " + self.alpha_id);
+        std::test::assert_eq_int(len(self.alpha_id), 64, "alpha's identity: " + self.alpha_id);
         self.beta = project(self.root, "beta", "noor");
-        let b = dna::GitRecord { repo: self.beta };
+        let b = dna::MemoryRecord { repo: self.beta };
         self.beta_id = b.identity();
-        std::test::assert(len(self.beta_id) == 40 && self.beta_id != self.alpha_id, "two records");
+        std::test::assert(len(self.beta_id) == 64 && self.beta_id != self.alpha_id, "two records");
     }
 
     // The table itself.
@@ -592,7 +594,7 @@ fn main() {
         std::io::fs::mkdir(home) or discard;
         std::io::fs::mkdir(home + "/dna") or discard;
         let cache = if std::env::var_exists("XDG_CACHE_HOME") { std::env::var("XDG_CACHE_HOME") } else { std::env::var("HOME") + "/.cache" };
-        let clean = dna::run_tool("env\n-u\nGIT_DIR\n-u\nGIT_COMMON_DIR\n-u\nGIT_CONFIG\n-u\nGIT_NAMESPACE\n-u\nGIT_WORK_TREE\n-u\nGIT_INDEX_FILE\n-u\nGIT_OBJECT_DIRECTORY\n-u\nGIT_ALTERNATE_OBJECT_DIRECTORIES\n-u\nGIT_CONFIG_COUNT\n-u\nGIT_CONFIG_PARAMETERS\n-u\nHALE_DNA_ONESHOT\n-u\nHALE_DNA_MEMORY_DSN_OWNER\n-u\nHALE_DNA_MEMORY_DSN_SPINE\n-u\nHALE_DNA_MEMORY_DSN_HEAD\n-u\nHALE_DNA_KNOWLEDGE_COMMAND_POLICY\n-u\nHALE_DNA_COMMAND_POLICY\n-u\nHALE_DNA_TASK_POLICY\n-u\nLOTUS_OBS\n"
+        let clean = dna::run_tool("env\n-u\nGIT_DIR\n-u\nGIT_COMMON_DIR\n-u\nGIT_CONFIG\n-u\nGIT_NAMESPACE\n-u\nGIT_WORK_TREE\n-u\nGIT_INDEX_FILE\n-u\nGIT_OBJECT_DIRECTORY\n-u\nGIT_ALTERNATE_OBJECT_DIRECTORIES\n-u\nGIT_CONFIG_COUNT\n-u\nGIT_CONFIG_PARAMETERS\n-u\nHALE_DNA_ONESHOT\n-u\nHALE_DNA_MEMORY_DSN_SPINE\n-u\nHALE_DNA_MEMORY_DSN_HEAD\n-u\nHALE_DNA_KNOWLEDGE_COMMAND_POLICY\n-u\nHALE_DNA_COMMAND_POLICY\n-u\nHALE_DNA_TASK_POLICY\n-u\nLOTUS_OBS\n"
                 + "HOME=" + home + "\nXDG_CONFIG_HOME=" + home + "/.config\nXDG_CACHE_HOME=" + cache + "\nHALE_VAULT_DIR=" + home + "/vault\nUSER=" + PRINCIPAL + "\nLOGNAME=" + PRINCIPAL
                 + "\nGIT_CONFIG_NOSYSTEM=1\nGIT_CONFIG_GLOBAL=/dev/null\nGIT_TERMINAL_PROMPT=0\nHALE_DNA_DISCOVER=off\nHALE_DNA_TRANSPORT=local\nHALE_DNA_TRANSPORT_HOME=" + home
                 + "\nOPENAI_API_KEY=" + ENV_SECRET + "\nHALE_S3_TEST_CLEAN=1\nHALE_S3_TEST_ROOT=" + root

@@ -48,7 +48,8 @@ fn line_value(text: String, name: String) -> String {
 // ledger's once the ledger is adopted (GH #1150), read here through the
 // owner's DSN, scoped to this record.
 fn journal_of(repo: String) -> dna::RoutedJournal {
-    return dna::RoutedJournal { record: dna::GitJournal { repo: repo }, ledger: dna::MemoryLedger { repo: repo, dsn_env: "HALE_DNA_MEMORY_DSN_OWNER" } };
+    std::test::assert_eq_str(dna::memory_fixture(repo), "", "the record is born in memory (GH #1590)");
+    return dna::RoutedJournal { record: dna::RecordJournal { repo: repo }, ledger: dna::MemoryLedger { repo: repo, dsn_env: "HALE_DNA_MEMORY_DSN_OWNER" } };
 }
 
 fn toolchain() -> String {
@@ -97,7 +98,8 @@ fn kind_count(proposals: String, kind: String) -> Int {
 // a graph row's entity, a proposal's name. The record is read whole.
 @bounded_by(repo)
 fn record_names(repo: String, kind: String) -> String {
-    let j = dna::GitJournal { repo: repo };
+    std::test::assert_eq_str(dna::memory_fixture(repo), "", "the record is born in memory (GH #1590)");
+    let j = dna::RoutedJournal { record: dna::RecordJournal { repo: repo }, ledger: dna::MemoryLedger { repo: repo } };
     let mut out = "";
     let mut i = 0;
     while i < j.revision() {
@@ -410,7 +412,8 @@ locus App {
 
         // ---- the hat of an `edit` Work on the part carries the editor's mandate
         let j = journal_of(self.repo);
-        let targets = dna::hat_knowledge_targets(j, dna::GitReceipts { repo: self.repo }, "org/api", false, dna::hat_position_of("edit"));
+        std::test::assert_eq_str(dna::memory_fixture(self.repo), "", "the record is born in memory (GH #1590)");
+        let targets = dna::hat_knowledge_targets(j, dna::MemoryReceipts { repo: self.repo }, "org/api", false, dna::hat_position_of("edit"));
         std::test::assert_eq_str(targets, "org/api position:editor", "the hat's targets for an edit Work on api");
         let k = dna::MemoryKnowledge { repo: self.repo, dsn_env: "HALE_DNA_MEMORY_DSN_OWNER", budget: 64 };
         let pkg = k.package_for(targets, "");
@@ -426,7 +429,7 @@ locus App {
 
         let killed = dna::run_tool("kill\n" + body);
         std::test::assert(self.gone(body, 600), "the organism stops");
-        std::test::assert_eq_str(dna::unmigrate(owner, dna::GitRecord { repo: self.repo }.identity()), "", "this run's schema and roles dropped");
+        std::test::assert_eq_str(dna::unmigrate(owner, dna::MemoryRecord { repo: self.repo }.identity()), "", "this run's schema and roles dropped");
 
         // ---- the application's holes, ratified: the org chart lists its dev and reviewer with their equipment
         self.repo = appdir;
@@ -453,7 +456,7 @@ locus App {
         std::test::assert_eq_int(self.bound_mandates("HALE_DNA_MEMORY_DSN_OWNER", "position:api/reviewer"), 1, "and the reviewer's");
         let appkilled = dna::run_tool("kill\n" + appbody);
         std::test::assert(self.gone(appbody, 600), "the organism stops");
-        std::test::assert_eq_str(dna::unmigrate(owner, dna::GitRecord { repo: self.repo }.identity()), "", "this run's schema and roles dropped");
+        std::test::assert_eq_str(dna::unmigrate(owner, dna::MemoryRecord { repo: self.repo }.identity()), "", "this run's schema and roles dropped");
         dna::scratch_done(scratch);
     }
 }

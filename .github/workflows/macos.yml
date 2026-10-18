@@ -289,6 +289,32 @@ jobs:
           grep -q 'ELF 64-bit LSB.*ARM aarch64' /tmp/hlci/cross-file.out
           test ! -e /tmp/hlci/coop_bus.o
 
+      - name: Postgres 16 with pgvector for memory (GH #1590)
+        # The record is memory's, so every DNA fixture needs a Postgres
+        # with pgvector and pgcrypto, as the Linux jobs have from their
+        # service container. Homebrew's postgresql@16, with no `brew
+        # update` (an update rebuilds half the tap from source); pgvector
+        # from its tagged source against that server's pg_config, since
+        # the bottle may target another major version.
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: "1"
+          HOMEBREW_NO_INSTALL_CLEANUP: "1"
+        run: |
+          set -eux
+          brew install postgresql@16
+          PG="$(brew --prefix postgresql@16)"
+          if [ ! -f "$PG/share/postgresql@16/extension/vector.control" ]; then
+            git clone -q --depth 1 --branch v0.8.0 https://github.com/pgvector/pgvector.git /tmp/pgvector
+            make -C /tmp/pgvector PG_CONFIG="$PG/bin/pg_config"
+            make -C /tmp/pgvector install PG_CONFIG="$PG/bin/pg_config"
+          fi
+          "$PG/bin/initdb" -D /tmp/hale-pg -U dna --auth=trust
+          "$PG/bin/pg_ctl" -D /tmp/hale-pg -o "-p 5480 -k /tmp" -l /tmp/hale-pg.log -w start
+          "$PG/bin/createdb" -h 127.0.0.1 -p 5480 -U dna dna
+          "$PG/bin/psql" -h 127.0.0.1 -p 5480 -U dna -d dna -v ON_ERROR_STOP=1 -c "ALTER ROLE dna PASSWORD 'dna'" -c "CREATE EXTENSION IF NOT EXISTS vector" -c "CREATE EXTENSION IF NOT EXISTS pgcrypto"
+          echo "$PG/bin" >> "$GITHUB_PATH"
+          echo "HALE_DNA_MEMORY_DSN_OWNER=postgres://dna:dna@127.0.0.1:5480/dna?sslmode=disable" >> "$GITHUB_ENV"
+
       - name: (h) GH #970 — the whole DNA suite on macOS
         # The DNA fixtures on a Mac: until this ran here, every macOS gap
         # DNA had — a refused connect that spent its socket, `timeout` and

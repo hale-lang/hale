@@ -34,7 +34,7 @@ locus NoGraphStore {
 // The head reads through `reader`; the concurrent change is written as the
 // spine (`writer`, `ledger`) or into the Record.
 locus RacingGraph {
-    params { reader: dna::Pq; writer: dna::Pq; record: dna::GitJournal; ledger: dna::PqLedger; mode: String; }
+    params { reader: dna::Pq; writer: dna::Pq; record: dna::RecordJournal; ledger: dna::PqLedger; mode: String; }
     fn projection_basis() -> dna::GraphProjection { return self.reader.projection_basis(); }
     fn graph_generation() -> Int { return self.reader.graph_generation(); }
     fn read_graph(q: dna::GraphQuery, policy: dna::KnowledgeReadPolicy, sink: dna::GraphSink) -> dna::GraphPage {
@@ -61,10 +61,11 @@ locus GraphService {
         projector: ops::MemoryProjection = ops::MemoryProjection { dsn_env: "" };
         reader: dna::Pq = dna::Pq { };
         ledger: dna::PqLedger = dna::PqLedger { };
-        j: dna::GitJournal = dna::GitJournal { repo: "/nonexistent/graph-service", author: "api" };
+        j: dna::RecordJournal = dna::RecordJournal { repo: "/nonexistent/graph-service", author: "api" };
     }
     fn open_reader() -> Bool {
-        self.j = dna::GitJournal { repo: self.root, author: "api" };
+        std::test::assert_eq_str(dna::memory_fixture(self.root), "", "the record is born in memory (GH #1590)");
+        self.j = dna::RecordJournal { repo: self.root, author: "api" };
         let moved = self.j.refresh();
         self.reader.scope(self.j.genesis());
         self.ledger.scope(self.j.genesis());
@@ -101,9 +102,10 @@ fn rebuild_at_stamp(store: dna::Pq) -> Bool {
 // GitJournal or GitReceipts reads the repository it was born with, and
 // `root` alone reaches only their `repo` fields, after that birth.
 fn graph_service(root: String, spine: dna::Dsn, head: dna::Dsn) -> GraphService {
+    std::test::assert_eq_str(dna::memory_fixture(root), "", "the record is born in memory (GH #1590)");
     return GraphService {
         root: root,
-        projector: ops::MemoryProjection { root: root, dsn_env: "", store: dna::Pq { conn: dna::pq_conn(spine) }, j: dna::GitJournal { repo: root, author: "spine" }, receipts: dna::GitReceipts { repo: root } },
+        projector: ops::MemoryProjection { root: root, dsn_env: "", store: dna::Pq { conn: dna::pq_conn(spine) }, j: dna::RecordJournal { repo: root, author: "spine" }, receipts: dna::MemoryReceipts { repo: root } },
         reader: dna::Pq { conn: dna::pq_conn(head) },
         ledger: dna::PqLedger { conn: dna::pq_conn(head) }
     };
@@ -117,7 +119,9 @@ locus GraphCases {
         // a fence the Record no longer shows. A journal that already holds
         // rows refuses a shorter read (GH #748) and keeps the longer head,
         // so the request names what a reader opened now would see.
-        let fresh = dna::GitJournal { repo: self.f.root };
+        // the record's own head and revision, as the API's source names
+        // them (GH #1590): the Ledger moves the basis, never the source
+        let fresh = dna::RecordJournal { repo: self.f.root };
         return api::GraphRequest { ok: true, record_id: self.f.identity, record_head: fresh.head(), record_revision: to_string(fresh.revision()), reader: "alice" };
     }
     // The fixture record's memory: its schema applied by the owner, the
@@ -177,7 +181,7 @@ locus GraphCases {
         std::test::assert_eq_int(len(decoded), 600000, "large node retains every byte");
         std::test::assert_eq_str(decoded, text, "large node text round trips");
         std::test::assert_eq_int(self.json.integer(self.json.page(response.body), "returned"), 1, "large cached page count");
-        let policy = ops::KnowledgeVisibility { record: self.f.journal, syntax: self.http.syntax };
+        let policy = ops::KnowledgeVisibility { record: self.f.journal, ledger: service.ledger, syntax: self.http.syntax };
         let captured = policy.load();
         std::test::assert(captured.available, "quote regression visibility");
         let items = api::GraphItems { policy: policy };
@@ -216,46 +220,6 @@ locus GraphCases {
         std::test::assert(!std::str::contains(recovered, "partial uncommitted projection"), "the partial row never reaches a reader");
         std::test::assert_eq_str(store.projection_basis().head, target.record_head, "the next projector stamps the row's head");
         store.close(); service.close(); restarted.close(); self.unmigrate();
-    }
-    // A reconcile re-appends the local rows on top of the remote's head:
-    // same rows, new digests, one remote row among them (GH #603). The
-    // projection stamped before it must not refuse forever; it rebuilds.
-    fn chain_rebuilt() {
-        let spine = self.spine(); let head = self.head();
-        let store = dna::Pq { conn: dna::pq_conn(spine), record_id: self.f.identity };
-        std::test::assert(store.open(), "the fixture's own store opens: " + store.last_error());
-        let service = graph_service(self.f.root, spine, head);
-        let earlier = self.seed("an earlier practice", "org", "knowledge.ratified", "");
-        let id = self.seed("a practice the reconcile keeps", "org", "knowledge.ratified", "");
-        let first = self.read(service, self.query(), 200);
-        self.json.eq(self.json.first(first), "text", "a practice the reconcile keeps");
-        let stamped = store.projection_basis();
-        std::test::assert(stamped.watermark > 1, "the projection is stamped past genesis");
-        // rebuild the chain: keep everything before the last two rows, insert a
-        // remote row, re-append the last two with their bodies unchanged
-        let moved = self.f.journal.refresh();
-        let n = self.f.journal.revision();
-        std::test::assert(n >= 3, "genesis, then rows to rebuild: " + to_string(n));
-        let r = self.f.journal.record;
-        let mut chain = self.f.journal.read(n - 3).digest;
-        chain = r.build(chain, dna::Row { kind: "instance.up", entity: "remote-0", body: "{}", author: "node" }, false, "");
-        std::test::assert(len(chain) > 0, "the remote row builds");
-        let mut i = n - 2;
-        while i < n {
-            let e = self.f.journal.read(i);
-            chain = r.build(chain, dna::Row { kind: e.kind, entity: e.entity, body: e.body, author: self.f.journal.author_of(i) }, false, "Rebuilt-From: " + e.digest);
-            std::test::assert(len(chain) > 0, "row " + to_string(i) + " re-appends");
-            i = i + 1;
-        }
-        std::test::assert(r.move_chain("journal", chain, stamped.head), "the rebuilt chain is swapped in");
-        let after = self.query();
-        std::test::assert_eq_str(after.record_head, chain, "the record's head is the rebuilt chain's");
-        let recovered = self.read(service, after, 200);
-        self.json.eq(self.json.first(recovered), "text", "a practice the reconcile keeps");
-        let rebuilt = store.projection_basis();
-        std::test::assert_eq_str(rebuilt.head, chain, "the projection is stamped at the rebuilt head");
-        std::test::assert_eq_int(rebuilt.watermark, n + 1, "and past every row of the rebuilt chain");
-        store.close(); service.close(); self.unmigrate();
     }
     fn syntax() {
         // The head reads memory in-process (GH #985): no bearer to check. An
@@ -316,25 +280,6 @@ locus GraphCases {
         std::test::assert_eq_int(self.json.count(last), 1, "visible continuation contains the remaining node");
         self.json.is_bool(self.json.page(last), "has_more", false);
         std::test::assert(!std::str::contains(first, self.json.string(self.json.first(last), "id")), "continuation never repeats a visible row");
-        // Reconciliation may replace a chain without changing its length or
-        // genesis. A stale cached graph must not acquire the replacement head:
-        // the projection is rebuilt from the replaced chain, and what it
-        // serves is the replacement's, never the stale rows under a new head.
-        let original = self.f.journal.head();
-        let parent = self.f.git("rev-parse\n" + original + "^");
-        let mut row = self.f.journal.record.row_of(original);
-        row.body = "{\"class\":\"public\"}";
-        let replacement = self.f.journal.record.build(parent, row, false, "replace classification for lineage regression");
-        std::test::assert(len(replacement) > 0 && replacement != original, "same-length replacement built");
-        std::test::assert(self.f.journal.record.move_chain("journal", replacement, original), "replace only owned fixture chain");
-        let changed = self.query();
-        std::test::assert_eq_str(changed.record_revision, q.record_revision, "replacement preserves revision count");
-        let lineage = self.read(service, changed, 200);
-        std::test::assert_eq_str(store.projection_basis().head, replacement, "the projection was rebuilt onto the replacement chain");
-        std::test::assert(std::str::contains(lineage, "\"record_head\": \"" + replacement + "\""), "the read names the replacement head");
-        std::test::assert(self.f.journal.record.move_chain("journal", original, replacement), "restore fixture chain");
-        self.read(service, self.query(), 200);
-        std::test::assert_eq_str(store.projection_basis().head, original, "and rebuilt again onto the restored chain");
         q.target = "org/finance"; self.read(service, q, 400);
         q = self.query(); q.id = secret;
         let hidden = self.read(service, q, 404);
@@ -409,7 +354,7 @@ locus GraphCases {
         q = self.query(); q.id = a;
         let adopted = self.read(service, q, 200);
         let adopted_basis = self.json.raw(self.json.data(adopted), "basis");
-        self.json.eq(adopted_basis, "routing_version", "1");
+        self.json.eq(adopted_basis, "routing_version", to_string(dna::ROUTING_VERSION));
         let hidden_row = ledger.append(ledger.revision(), "receipt.withheld", a, "{\"class\":\"customer\"}");
         std::test::assert(hidden_row.ok, "Ledger restriction");
         q.snapshot = self.json.string(self.json.page(adopted), "snapshot");
@@ -447,12 +392,9 @@ locus GraphCases {
         let record_limit = dna::MemJournal { };
         record_limit.rows.push(dna::Event { body: large_body });
         std::test::assert(!self.http.record_budget(record_limit), "Record byte guard precedes projection work");
-        let blob = self.f.git("rev-parse\nrefs/dna/receipts/" + oversized[7..len(oversized)]);
-        self.f.git("tag\n-a\ngraph-size-trap\n" + blob + "\n-m\nA small tag must not stand in for its large receipt blob");
-        let tag = self.f.git("rev-parse\nrefs/tags/graph-size-trap");
-        self.f.git("update-ref\nrefs/dna/receipts/" + oversized[7..len(oversized)] + "\n" + tag);
-        let tagged = ops::GraphReceipts { source: self.f.receipts, remaining: 4096 };
-        std::test::assert(tagged.read(oversized[7..len(oversized)]) == "" && tagged.error == "knowledge_projection_unavailable", "receipt must be a direct blob, never a size-checked tag over another object");
+        // GH #1590: a body is memory's, read whole and refused by its size
+        let sized = ops::GraphReceipts { source: self.f.receipts, remaining: 4096 };
+        std::test::assert(sized.read(oversized[7..len(oversized)]) == "" && sized.error == "knowledge_read_limit", "a receipt past the budget is refused by its size");
 
         let refs = self.f.refs();
         let limited = ops::GraphReceipts { source: self.f.receipts, remaining: 1 };
@@ -479,9 +421,6 @@ fn run_cases(owner: String) {
     let interrupted = fixture::Fixture { root: root + "/interrupted-projection", port: 1 };
     let interrupted_cases = GraphCases { f: interrupted, owner: owner };
     interrupted_cases.interrupted_projection();
-    let rebuilt = fixture::Fixture { root: root + "/chain-rebuilt", port: 1 };
-    let rebuilt_cases = GraphCases { f: rebuilt, owner: owner };
-    rebuilt_cases.chain_rebuilt();
 }
 
 // The child keeps the owner's DSN (it migrates its fixture records) and loses

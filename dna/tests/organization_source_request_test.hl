@@ -22,7 +22,7 @@ const PREPARED: String = "// Exact équipe 🧭 <literal>\r\nmain locus Org {\n 
 // in a file under the repository, read by `faults_of`.
 locus SourceStageJournal {
     params {
-        inner: dna::GitJournal = dna::GitJournal { };
+        inner: dna::RoutedJournal = dna::RoutedJournal { };
         stage: String = "";
         entity_prefix: String = "";
         blocked: Bool = false;
@@ -66,17 +66,21 @@ type Stage { stage: String = ""; entity_prefix: String = ""; blocked: Bool = fal
 fn faults_path(repo: String) -> String { return repo + "/.hale/dna/stage-faults"; }
 fn faults_of(repo: String) -> Int { return std::str::parse_int(dna::trim_nl(std::io::fs::read_file(faults_path(repo)) or "0")) or 0; }
 // A fresh reader over the repository's record, for one statement.
-fn reader(repo: String) -> dna::GitJournal { return dna::GitJournal { repo: repo }; }
+fn reader(repo: String) -> dna::RecordJournal { return dna::RecordJournal { repo: repo }; }
+// The record and its Ledger read as one, as a body reads them (GH #1590):
+// an effect's claim is the Ledger's.
+fn routed(repo: String) -> dna::RoutedJournal { return dna::RoutedJournal { record: dna::RecordJournal { repo: repo }, ledger: dna::MemoryLedger { repo: repo, dsn_env: dna::fixture_spine(repo) } }; }
 
 fn source_body(repo: String, st: Stage, request_id: String, owner: String, owners: String) {
     let made = dna::run_tool("mkdir\n-p\n" + repo + "/.hale/dna");
+    std::test::assert_eq_str(dna::memory_fixture(repo), "", "the record is born in memory (GH #1590)");
     let body = dna::Dna {
-        journal: SourceStageJournal { inner: dna::GitJournal { repo: repo }, stage: st.stage, entity_prefix: st.entity_prefix, blocked: st.blocked, lost_reply: st.lost_reply, faults: faults_of(repo), faults_path: faults_path(repo) },
+        journal: SourceStageJournal { inner: routed(repo), stage: st.stage, entity_prefix: st.entity_prefix, blocked: st.blocked, lost_reply: st.lost_reply, faults: faults_of(repo), faults_path: faults_path(repo) },
         org_source: dna::OrganizationSourceRecord { facts: ops::StrictOrganizationSourceFacts { },
             inputs: source::OrganizationPublicationInputs { inspection_seconds: INSPECTION, root: repo, source_owner: owner, ownership: dna::graph_ownership_of(owners) } },
         ownership: dna::Ownership { graph: dna::graph_ownership_of(owners), me: owner, me_env: "" },
-        gateway: dna::MutationGateway { leases: dna::GitLeases { repo: repo }, workspaces: dna::IsolatedWorktrees { repo: repo, root: repo + "/.hale/dna/worktrees" }, repo: dna::LocalGit { repo: repo } },
-        verification: dna::HaleVerification { receipts: dna::GitReceipts { repo: repo }, repo: repo, scratch: repo + "/.hale/dna/verification", seed: "dna/org" },
+        gateway: dna::MutationGateway { leases: dna::MemoryLeases { repo: repo }, workspaces: dna::IsolatedWorktrees { repo: repo, root: repo + "/.hale/dna/worktrees" }, repo: dna::LocalGit { repo: repo } },
+        verification: dna::HaleVerification { receipts: dna::MemoryReceipts { repo: repo }, repo: repo, scratch: repo + "/.hale/dna/verification", seed: "dna/org" },
         review_policy: dna::OrgPolicy { }, board: dna::Board { }
     };
     if len(request_id) > 0 { body.on_organization_source_requested(dna::OrganizationSourceTrigger { request_id: request_id }); }
@@ -94,7 +98,7 @@ main locus App {
         let init = dna::run_tool("git\n-C\n" + repo + "\ninit\n-q\n-b\nmain");
         let added = dna::run_tool("git\n-C\n" + repo + "\nadd\n-A");
         let committed = dna::run_tool("git\n-C\n" + repo + "\n-c\nuser.name=SourceTest\n-c\nuser.email=source@test\ncommit\n-q\n-m\nbase");
-        std::test::assert_eq_int(committed.code, 0, "native source base committed"); return repo;
+        std::test::assert_eq_int(committed.code, 0, "native source base committed"); std::test::assert_eq_str(dna::memory_fixture(repo), "", "the record is born in memory (GH #1590)"); return repo;
     }
     fn request(repo: String, j: dna::Journal, label: String, owner: String) -> dna::OrganizationSourceRequest {
         let genesis = j.append_exact(j.revision(), "application.observed", "org", "{}"); std::test::assert(genesis.ok, "application identity");
@@ -124,7 +128,7 @@ main locus App {
         let pointer = dna::run_tool("git\n-C\n" + repo + "\nrev-parse\n" + dna::candidate_ref(codec.candidate_key(r)));
         std::test::assert_eq_str(dna::trim_nl(pointer.stdout), candidate, "exact candidate remains reachable under Git-safe native key");
         std::test::assert_eq_int(source_count(reader(repo), "review.requested", "review:" + id), 1, "one exact Review");
-        std::test::assert_eq_int(source_count(reader(repo), "model.called", ""), 0, "prepared source never goes through a model rewrite");
+        std::test::assert_eq_int(source_count(routed(repo), "model.called", ""), 0, "prepared source never goes through a model rewrite");
         std::test::assert_eq_int(source_count(reader(repo), "mutation.applied", id), 0, "proposal is not application");
         std::test::assert(len(source_event(reader(repo), "organization.source.started", r.request_id).body) < 1024, "started pins identity instead of duplicating source");
         return candidate;
@@ -150,7 +154,7 @@ main locus App {
         let r = self.request(repo, reader(repo), "unknown-commit", ""); st.stage = "effect.requested"; st.entity_prefix = "commit:"; st.lost_reply = true;
         source_body(repo, st, r.request_id, "", ""); std::test::assert_eq_int(faults_of(repo), 1, "commit claim reply was lost before dispatch");
         source_body(repo, Stage { }, "", "", "");
-        let codec = dna::OrganizationSourceRequestCodec { }; let id = codec.mutation_id(r); let effect = dna::effect_status(reader(repo), "commit:" + id + ":prepared-source");
+        let codec = dna::OrganizationSourceRequestCodec { }; let id = codec.mutation_id(r); let effect = dna::effect_status(routed(repo), "commit:" + id + ":prepared-source");
         std::test::assert(effect.unknown, "no external commit proof remains unknown");
         std::test::assert_eq_int(source_count(reader(repo), "mutation.candidate", id), 0, "unknown claim is never blindly dispatched");
         std::test::assert_eq_int(source_count(reader(repo), "organization.source.failed", r.request_id), 0, "unknown effect is not a domain failure");
@@ -175,7 +179,8 @@ main locus App {
         source_body(repo, st, r.request_id, "south", owners);
         std::test::assert_eq_int(source_count(reader(repo), "organization.source.started", r.request_id), 0, "another owner cannot start whole-module source work");
         std::test::assert_eq_int(source_count(reader(repo), "organization.source.refused", r.request_id), 0, "another owner cannot falsely finish it");
-        let closed = dna::Dna { journal: dna::GitJournal { repo: repo }, ownership: dna::Ownership { graph: dna::graph_ownership_of(owners), me: "north", me_env: "" } };
+        std::test::assert_eq_str(dna::memory_fixture(repo), "", "the record is born in memory (GH #1590)");
+        let closed = dna::Dna { journal: dna::RoutedJournal { record: dna::RecordJournal { repo: repo }, ledger: dna::MemoryLedger { repo: repo, dsn_env: dna::fixture_spine(repo) } }, ownership: dna::Ownership { graph: dna::graph_ownership_of(owners), me: "north", me_env: "" } };
         closed.on_organization_source_requested(dna::OrganizationSourceTrigger { request_id: r.request_id });
         std::test::assert_eq_int(source_count(reader(repo), "organization.source.started", r.request_id), 0, "default fact adapter is unavailable");
         let codec = dna::OrganizationSourceRequestCodec { };

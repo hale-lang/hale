@@ -29,16 +29,17 @@ organism:   not running — reading the Journal
 `status` says this when no body in this clone holds the record's
 lease. It is not an error: `status`, `history`, `board`, `review <id>`
 and `ui` read the record. Asking for work needs an organism to answer.
-With a remote, the ask goes into the record and a body elsewhere
-answers it. Without one, start a body here with `hale dna run` (or
-`hale dna dev`) in another terminal.
+The record is memory's, so an ask from this clone reaches a body
+wherever one runs. When no body anywhere holds the record's lease, an
+ask that waits for its answer is refused before anything is written:
 
 ```text
-the organism is not running here (no body in this clone holds the record's lease) and the repository has no remote to reach one through; start it with `hale dna run`
+the organism is not running (no body holds the record's lease); start it with `hale dna run`, or ask with --no-wait to leave the ask in the record
 ```
 
-Same cause, and nowhere to send the ask. Start a body, or add a remote
-with a body behind it.
+Nothing would answer it. Start a body here with `hale dna run` (or
+`hale dna dev`) in another terminal, or ask with `--no-wait`: the ask
+stays in the record and the body answers it when it starts.
 
 ```text
 requested intent …, but the organism journaled no answer in time (record revision …)
@@ -53,10 +54,33 @@ nothing.
 ### No record, or a toolchain that moved
 
 ```text
-no record at refs/dna/journal in … (run `hale dna init`)
+no record in memory for … (run `hale dna init`)
 ```
 
-The directory has DNA files but no record. Run `hale dna init` in it.
+The directory has DNA files but no record in memory. Run `hale dna
+init` in it. In a second clone of a project whose record exists, the
+pin in `hale.toml` names it; run `hale dna memory migrate` (or `hale
+dna upgrade` with the owner's DSN) so the clone keeps the head's DSN.
+
+```text
+this clone holds a record an earlier toolchain kept on git (refs/dna/journal), and records are not carried forward: re-init a fresh record — delete the old refs (…), remove the `[dna] record` line from hale.toml if it has one, and run `hale dna init`
+```
+
+`init` and `upgrade` refuse a clone that still has the record an
+earlier toolchain kept under `refs/dna/`. There is no migration: delete
+the old refs, remove the `[dna] record` line from `hale.toml` if it has
+one, and run `hale dna init` for a fresh record:
+
+```sh
+git for-each-ref --format='%(refname)' refs/dna/ | xargs -n1 git update-ref -d
+```
+
+```text
+… holds the head's DSN and is readable by others (mode …): `chmod 600 …`, or remove it and run `hale dna memory migrate` again
+```
+
+`.hale/dna/memory.env` keeps the head's DSN and a verb refuses it while
+group or others can read it. Run the `chmod 600` the line names.
 
 ```text
 embedded dna: … (hale …); vendor/dna was materialized from … — run `hale dna upgrade`
@@ -73,44 +97,22 @@ different DNA source from the one `vendor/dna` was copied from. Run
 journal:    … event(s), chain BROKEN at …
 ```
 
-`refs/dna/journal` is one commit per row. At the head `status` loaded,
-the number of commits differs from the number of rows: the ref's
-history was rewritten. `git reflog refs/dna/journal` lists the heads
-the ref had before; a clone that still holds the old head has the
-rows. See [Memory and the record](./memory.md).
-
-### A fetch loses a ref lock
-
-```text
-fetch origin: … cannot lock ref …
-```
-
-From `sync`, `ledger adopt` or a body. Another git process held a ref
-the fetch was updating. The record tries such a fetch five times
-before it gives up, and nothing changed. Run the command again. If it
-keeps failing, look for a stuck `git` in that clone, or a stale
-`.lock` file under `.git/refs/dna/` left by one that was killed.
-
-### A sync refuses to re-sign someone else's row
-
-```text
-the record diverged, and local event … (… …, by …) was signed with …, not this clone's; a reconcile would re-sign it as this clone's, so the record was not changed and every local row is kept at refs/dna/journal. Have that row's writer sync first — a writer rebuilds its own rows — then sync again to fast-forward; or fetch and fast-forward once the remote holds it
-```
-
-Under `dna.trust = signed`, `hale dna sync` would have to rebuild a row
-this clone did not sign. It refuses before any ref moves; nothing is
-lost. Do what the message says.
+A row's digest is `sha256(prev|kind|entity|body)` of the row before
+it, and a reader checks the chain it loads. `status` found a row whose
+`prev` or digest does not match: `record_rows` was changed by something
+other than `record_append`, which no role is granted to do. Compare the
+rows with a backup of the schema, and see [Memory and the
+record](./memory.md).
 
 ### A connection that cannot be made
 
 ```text
 connect: … could not be read (…); nothing was changed
-connect: no record identity at … (`refs/dna/identity`; a record publishes it when it syncs — `hale dna sync` there)
 ```
 
-The first: the URL is wrong or unreachable from here. The second: the
-other record exists but has never synced, so it has not published its
-identity. Run `hale dna sync` in the other record, then connect again.
+The URL is wrong or unreachable from here, or the other record has
+published no card on its nerves (`hale dna nerves migrate` there
+publishes it).
 
 ## Memory
 
@@ -120,7 +122,7 @@ covers the ledger, the roles and protected evidence.
 ### The ledger does not answer
 
 ```text
-memory:     record + ledger (routing 1, adopted at …; operations and leases live in memory; THE LEDGER IS UNREACHABLE (…): what is read here is the last projection, and nothing is admitted until it answers)
+memory:     record + ledger (routing 2, adopted at …; operations and leases live in memory; THE LEDGER IS UNREACHABLE (…): what is read here is the last projection, and nothing is admitted until it answers)
 ```
 
 The `memory:` line of `status`, on an organism that adopted the
@@ -144,7 +146,7 @@ hale dna dev: dna/compose.yaml is here but `docker compose` is not on PATH; set 
 hale dna dev: no dna/compose.yaml and no HALE_DNA_MEMORY_DSN_OWNER: there is no memory to run on (`hale dna upgrade` writes the compose file)
 ```
 
-Once the ledger is adopted, a body without memory does not start:
+A body without memory does not start:
 
 ```text
 hale dna run: this record's operations live in the ledger (adopted at …), and no memory is named here (HALE_DNA_MEMORY_DSN_SPINE); a body without its memory admits nothing — set it, or run under `hale dna dev`
@@ -204,13 +206,17 @@ says why. The reasons include:
 - `` `…` is a row of the record, not the ledger ``: a record kind was
   asked of the ledger.
 
-### An adoption that has not happened yet
+### There is nothing to adopt
 
-`history` shows `ledger.adopting` and no `ledger.adopted`. The
-adoption was asked for and no node has carried it out: none has run
-since, or memory went away mid-copy. A node picks it up on its next
-tick. To leave the organism on the record alone instead,
-`hale dna ledger abandon --why <why>` asks a node to empty the ledger.
+```text
+hale dna ledger adopt
+```
+
+A record born in memory has its Ledger from its first rows: `init`
+appended `ledger.adopted` (routing 2). `ledger adopt` says so, and
+`ledger abandon` is refused. If `history` shows no `ledger.adopted`,
+the record is one an earlier toolchain wrote; see [No record, or a
+toolchain that moved](#no-record-or-a-toolchain-that-moved).
 
 ### Protected evidence
 
@@ -387,11 +393,11 @@ Releasing another clone's lease also needs `--force`:
 hale dna: body: the lease is held by …, not this clone (…); `hale dna body release --force` releases another's
 ```
 
-A body that cannot reach the record's remote does not start, because
-it cannot prove a lease:
+A body that cannot reach memory does not start, because it cannot prove
+a lease (the lease is memory's):
 
 ```text
-hale dna run: the record's remote cannot be reached, so the body lease cannot be taken; a body runs only under a lease it can prove
+hale dna run: memory cannot be reached, so the body lease cannot be taken; a body runs only under a lease it can prove
 ```
 
 ### A change that did not survive
@@ -695,14 +701,20 @@ lists the tasks waiting.
 
 ## Starting over
 
-Deleting the record's refs deletes the record; `git log` still holds
-every change it applied. `hale dna init` then seeds a fresh record from
-the program as it is now, and keeps the files already there:
+A record is memory's, and `git log` still holds every change it
+applied to the genome. To begin a fresh record from the program as it
+is now, remove the `[dna] record` line from `hale.toml` and run `init`,
+which keeps the files already there and composes a new record with a
+new identity, in a schema of its own. The old record's schema stays in
+Postgres until you drop it:
 
 ```sh
-git for-each-ref --format='%(refname)' refs/dna | xargs -n1 git update-ref -d
 hale dna init .
 ```
+
+A clone that still holds a record an earlier toolchain kept on git
+needs its old refs deleted first ([No record, or a toolchain that
+moved](#no-record-or-a-toolchain-that-moved)).
 
 Where each piece of state lives is in the
 [Reference](./reference.md#where-things-live).

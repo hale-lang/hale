@@ -194,7 +194,7 @@ $ hale dna review
 ```
 
 ```text
-$ git cat-file -p refs/dna/receipts/fffbc971da28fafdbd6f3aa6ca5bcd4eb3e2e3626ed8140ef687f896d3540e50
+# the receipt body in memory under sha256:fffbc971da28…
 {"author":"org","kind":"practice","name":"operating/optimize-cadence","provenance":"design","schedule":"{\"id\": \"optimize\", \"every_ms\": 86400000, \"definition\": \"optimize-walk\", \"args\": \"{}\", \"convener\": \"position:leader\"}","target":"org","text":"walk the machinery on a cadence: the optimize pass is an execution of optimize-walk, convened by the leader once a day, which proposes one small change or records that the state is clean. The cadence is this practice's; a different one is an amendment the Board ratifies.","toolchain":"0.21.0"}
 ```
 

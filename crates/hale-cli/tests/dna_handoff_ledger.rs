@@ -1,7 +1,6 @@
 //! GH #646, Riley's condition for stage 5: the handoff keeps working over
-//! the ledger. The firm has adopted the ledger (its `handoff.*` and
-//! `task.*` rows live in the store behind the service); the accountant's
-//! rows are its record's alone. A task crosses from the firm into the
+//! the ledger. The firm's `handoff.*` and `task.*` rows are its Ledger's,
+//! as every record's are from its birth (GH #1590). A task crosses from the firm into the
 //! accountant's inbox on its nerves (GH #1590: a signed envelope, kept in
 //! the accountant's memory when it reads its inbox), the accountant
 //! accepts it in its record, and the firm's `handoff sync` reads the
@@ -37,27 +36,22 @@ fn record(app: &Path) -> Vec<serde_json::Value> {
     record::text(app).lines().filter(|l| !l.trim().is_empty()).filter_map(|l| serde_json::from_str(l).ok()).collect()
 }
 
-/// One row on the record by plumbing, the shape `GitRecord` writes.
+/// One row of the firm's own work in its Ledger, written as the spine
+/// writes the organism's rows: through memory's append function, under the
+/// spine's role (its password the vault's), in `author`'s name.
 fn plumb(app: &Path, kind: &str, entity: &str, body: &str, author: &str) {
-    let head = git(&["rev-parse", "refs/dna/journal"], app);
-    let text = git(&["show", "refs/dna/journal:journal.jsonl"], app);
-    let seq = text.lines().filter(|l| !l.trim().is_empty()).count();
-    let line = serde_json::json!({"seq": seq, "kind": kind, "entity": entity, "body": body, "author": author}).to_string();
-    let tmp = app.join(".hale/dna/plumb.jsonl");
-    std::fs::create_dir_all(tmp.parent().unwrap()).unwrap();
-    std::fs::write(&tmp, format!("{text}\n{line}\n")).unwrap();
-    let blob = git(&["hash-object", "-w", &tmp.to_string_lossy()], app);
-    let idx = app.join(".hale/dna/plumb.index");
-    let with_index = |args: &[&str]| {
-        let out = Command::new("git").args(args).current_dir(app).env("GIT_INDEX_FILE", &idx).output().unwrap();
-        assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
-        String::from_utf8_lossy(&out.stdout).trim().to_string()
-    };
-    with_index(&["read-tree", &head]);
-    with_index(&["update-index", "--add", "--cacheinfo", &format!("100644,{blob},journal.jsonl")]);
-    let tree = with_index(&["write-tree"]);
-    let commit = git(&["-c", "user.name=t", "-c", "user.email=t@l", "commit-tree", &tree, "-p", &head, "-m", &format!("{kind} {entity}")], app);
-    git(&["update-ref", "refs/dna/journal", &commit, &head], app);
+    let spine = record::spine(vault::hale(), app);
+    assert!(!spine.is_empty(), "the spine's DSN for {}", app.display());
+    let (dsn, query) = spine.split_once('?').unwrap_or((spine.as_str(), ""));
+    let vault_name = query.split('&').find_map(|kv| kv.strip_prefix("vault=")).expect("the spine's vault entry");
+    let password = std::fs::read_to_string(vault::dir().join(vault_name)).expect("the spine's password in the vault");
+    let (scheme, rest) = dsn.split_once("://").unwrap();
+    let (user, hostdb) = rest.split_once('@').unwrap();
+    let url = format!("{scheme}://{user}:{}@{hostdb}?sslmode=disable", password.trim());
+    let q = |v: &str| v.replace('\'', "''");
+    let sql = format!("SELECT {}.ledger_append(-1, '{}', '{}', '{}', '{}', '', 0, '')", record::schema(app), q(kind), q(entity), q(body), q(author));
+    let out = Command::new("psql").args([url.as_str(), "-q", "-t", "-A", "-v", "ON_ERROR_STOP=1", "-c", &sql]).output().expect("psql");
+    assert!(out.status.success() && !String::from_utf8_lossy(&out.stdout).contains("\"error\": \"refused"), "the spine appends {kind} {entity}: {}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
 }
 
 fn project(scratch: &Path, name: &str, user: &str) -> (PathBuf, PathBuf) {
@@ -72,8 +66,6 @@ fn project(scratch: &Path, name: &str, user: &str) -> (PathBuf, PathBuf) {
     git(&["commit", "-q", "-m", "the app"], &app);
     git(&["remote", "add", "origin", &bare.to_string_lossy()], &app);
     git(&["push", "-q", "origin", "main"], &app);
-    let (ok, out) = hale(&["dna", "sync"], &app, &[]);
-    assert!(ok, "{out}");
     (app, bare)
 }
 
@@ -142,7 +134,7 @@ fn word_after(text: &str, marker: &str) -> String {
 
 #[test]
 fn a_handoff_crosses_from_an_adopted_firm_and_its_acceptance_settles_the_task_in_the_ledger() {
-    let (Some(_owner), Some(nerves)) = (owner_dsn(), nerves_url()) else {
+    let (Some(owner), Some(nerves)) = (owner_dsn(), nerves_url()) else {
         eprintln!("dna_handoff_ledger: no HALE_DNA_MEMORY_DSN_OWNER or HALE_DNA_NATS_URL_OWNER; the ledger is memory's and the exchange the nerves', so nothing was exercised");
         return;
     };
@@ -152,13 +144,10 @@ fn a_handoff_crosses_from_an_adopted_firm_and_its_acceptance_settles_the_task_in
     std::fs::create_dir_all(&d).unwrap();
     let (firm, _firm_bare) = project(&d, "firm", "riley");
     let (acct, _acct_bare) = project(&d, "acct", "noor");
-    // the firm's job, handed to a person, before adoption
+    // the firm's job, handed to a person, in its Ledger
     plumb(&firm, "task.born", "t7", "i-t7: prepare the year-end ledger", "dna");
     plumb(&firm, "task.handed", "t7", "{\"work\": \"t7/w\", \"assignee\": \"mara\", \"by\": \"leader\", \"narrative\": \"handed: not a software change\"}", "dna");
-    let (ok, out) = hale(&["dna", "sync"], &firm, &[]);
-    assert!(ok, "{out}");
 
-    // the firm adopts the ledger: a head asks, the spine carries it out
     let head = head_dsn(&firm);
     let env: &[(&str, &str)] = &[("HALE_DNA_MEMORY_DSN_HEAD", head.as_str()), ("HALE_DNA_NATS_URL_SPINE", nerves.as_str())];
     // each record's exchange and card on the nerves (GH #1590)
@@ -166,17 +155,10 @@ fn a_handoff_crosses_from_an_adopted_firm_and_its_acceptance_settles_the_task_in
         let (ok, out) = hale(&["dna", "nerves", "migrate"], app, &[]);
         assert!(ok, "nerves migrate: {out}");
     }
-    let firm_genesis = git(&["rev-list", "--max-parents=0", "refs/dna/journal"], &firm);
-    let acct_genesis = git(&["rev-list", "--max-parents=0", "refs/dna/journal"], &acct);
+    let firm_genesis = record::identity(&firm);
+    let acct_genesis = record::identity(&acct);
     let mut service = spine(&firm, &d);
-    let (ok, adopted) = hale(&["dna", "ledger", "adopt", "--as", "riley"], &firm, env);
-    assert!(ok && adopted.contains("ledger adoption asked for"), "{adopted}");
-    let dl = Instant::now() + Duration::from_secs(300);
-    while Instant::now() < dl && !record(&firm).iter().any(|r| r["kind"] == "ledger.adopted") {
-        let _ = hale(&["dna", "sync"], &firm, &[]);
-        std::thread::sleep(Duration::from_millis(500));
-    }
-    assert!(record(&firm).iter().any(|r| r["kind"] == "ledger.adopted"), "the spine adopted the ledger: {}", std::fs::read_to_string(d.join("spine.stderr")).unwrap_or_default());
+    assert!(record(&firm).iter().any(|r| r["kind"] == "ledger.adopted"), "the firm's record was born with its Ledger");
     let st = status_until(&firm, env, "t7 [handed]");
     assert!(st.contains("t7 [handed]"), "the handed task is read from the ledger:\n{st}");
 
@@ -224,5 +206,7 @@ fn a_handoff_crosses_from_an_adopted_firm_and_its_acceptance_settles_the_task_in
     assert!(ok && again.contains("0 acceptance(s) admitted"), "admitted once: {again}");
     let _ = service.kill();
     let _ = service.wait();
+    record::unmigrate(&firm, &owner);
+    record::unmigrate(&acct, &owner);
     let _ = std::fs::remove_dir_all(&d);
 }

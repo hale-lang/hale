@@ -553,17 +553,15 @@ locus CommandAdmission {
     // Record's head, as data. A read — it writes nothing, and asks nothing of
     // the provider — so any authenticated caller may ask, and a head that
     // composes no provider answers it too. The plan is the one `apply_batch`
-    // makes (`dna::batch_plan` over the captured Record), and a Record whose
-    // ledger is adopted is refused as `apply_batch` refuses it.
+    // makes (`dna::batch_plan` over the captured Record).
     fn preview_batch(d: BatchDraft, ctx: std::api::Context) -> BatchPreview {
         if len(d.steps) == 0 || len(d.steps) > 65536 { return BatchPreview { code: "invalid_command" }; }
-        let capture = ops::GovernanceCommands { record: dna::GitRecord { repo: self.root } };
+        let capture = ops::GovernanceCommands { record: dna::MemoryRecord { repo: self.root } };
         let s = capture.capture();
         if !s.ok { return BatchPreview { code: s.code }; }
         let j = ops::GovernanceJournal { snapshot: s };
         if !j.valid { return BatchPreview { code: "command_history_invalid" }; }
-        if !capture.source_supported(j) { return BatchPreview { code: "commands_unsupported", application_id: s.application_id, head: s.head, revision: s.revision }; }
-        let receipts = ops::GovernanceReceipts { record: dna::GitRecord { repo: self.root } };
+        let receipts = ops::GovernanceReceipts { record: dna::MemoryRecord { repo: self.root } };
         let plan = dna::batch_plan(j, receipts, d.steps);
         let diff = dna::batch_diff(plan);
         return BatchPreview { ok: plan.ok, code: "", why: plan.why, application_id: s.application_id, head: s.head, revision: s.revision, steps: plan.steps,

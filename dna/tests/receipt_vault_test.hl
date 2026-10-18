@@ -57,7 +57,8 @@ main locus App {
         owner_conn: dna::Pq = dna::Pq { };
     }
     fn rows(repo: String, kind: String, entity: String) -> Int {
-        let j = dna::GitJournal { repo: repo };
+        std::test::assert_eq_str(dna::memory_fixture(repo), "", "the record is born in memory (GH #1590)");
+        let j = dna::RoutedJournal { record: dna::RecordJournal { repo: repo }, ledger: dna::MemoryLedger { repo: repo } };
         let mut n = 0;
         let mut i = 0;
         while i < j.revision() {
@@ -68,7 +69,8 @@ main locus App {
         return n;
     }
     fn last(repo: String, kind: String) -> String {
-        let j = dna::GitJournal { repo: repo };
+        std::test::assert_eq_str(dna::memory_fixture(repo), "", "the record is born in memory (GH #1590)");
+        let j = dna::RoutedJournal { record: dna::RecordJournal { repo: repo }, ledger: dna::MemoryLedger { repo: repo } };
         let mut out = "";
         let mut i = 0;
         while i < j.revision() {
@@ -94,9 +96,10 @@ main locus App {
         let ledger = "the March ledger for account 4411: 1200.00 owed since 2026-03-02";
 
         // ---- no memory: withheld, the digest and class kept, no ref
+        std::test::assert_eq_str(dna::memory_fixture(app), "", "the record is born in memory (GH #1590)");
         self.bare = dna::Dna {
-            journal: dna::GitJournal { repo: app },
-            verification: dna::HaleVerification { receipts: dna::GitReceipts { repo: app }, repo: app },
+            journal: dna::RoutedJournal { record: dna::RecordJournal { repo: app }, ledger: dna::MemoryLedger { repo: app, dsn_env: dna::fixture_spine(app) } },
+            verification: dna::HaleVerification { receipts: dna::MemoryReceipts { repo: app }, repo: app },
             evidence: dna::EvidenceStore { vault: dna::MemoryVault { repo: app, dsn_env: "" } },
             org_id: "bare"
         };
@@ -104,13 +107,13 @@ main locus App {
         std::test::assert_eq_str(d0, dna::digest_of(ledger), "the digest is the body's");
         std::test::assert_eq_int(self.rows(app, "receipt.withheld", d0), 1, "the record says the body was not kept");
         std::test::assert(std::str::contains(self.last(app, "receipt.withheld"), "\"class\": \"customer\""), "and its class: " + self.last(app, "receipt.withheld"));
-        let git_receipts = dna::GitReceipts { repo: app };
-        std::test::assert_eq_str(git_receipts.read(hex_of(d0)), "", "no git receipt holds it");
+        let git_receipts = dna::MemoryReceipts { repo: app };
+        std::test::assert_eq_str(git_receipts.read(hex_of(d0)), "", "no ordinary receipt holds it");
         std::test::assert_eq_str(self.bare.evidence.class_of(d0), "customer", "the class is readable from the record");
         let refused = self.hosted.complete(dna::ModelRequest { attempt_id: "vault/a0", role: "review", prompt: "summarise the evidence", context: "(protected)", data_class: self.bare.evidence.class_of(d0) });
         std::test::assert(!refused.ok && std::str::contains(refused.refused, "data class customer"), "a hosted model refuses a request carrying the evidence's class: " + refused.refused);
         let internal = self.bare.evidence.file("a note anyone in the record may read", "internal", "mara");
-        std::test::assert(len(git_receipts.read(hex_of(internal))) > 0, "an internal body is an ordinary git receipt");
+        std::test::assert(len(git_receipts.read(hex_of(internal))) > 0, "an internal body is an ordinary receipt");
 
         // ---- memory keeps it, and only there
         let owner = if std::env::var_exists("HALE_DNA_MEMORY_DSN_OWNER") { std::env::var("HALE_DNA_MEMORY_DSN_OWNER") } else { "" };
@@ -119,7 +122,7 @@ main locus App {
             dna::scratch_done(scratch);
             return;
         }
-        let record = dna::GitJournal { repo: app }.genesis();
+        let record = dna::RecordJournal { repo: app }.genesis();
         let key = "a receipt key of forty characters, test";
         let short = migrate_with(app, owner, "short");
         std::test::assert(short.code != 0 && std::str::contains(short.stdout + short.stderr, "a short key is no key"), "a short receipt key is refused at migration: " + short.stdout + short.stderr);
@@ -140,7 +143,7 @@ main locus App {
         std::test::assert_eq_int(self.rows(app, "receipt.classified", d1), 1, "the record keeps the digest and the class");
         std::test::assert(std::str::contains(self.last(app, "receipt.classified"), "\"class\": \"confidential\"") && std::str::contains(self.last(app, "receipt.classified"), "\"by\": \"mara\""), self.last(app, "receipt.classified"));
         std::test::assert_eq_int(self.rows(app, "receipt.withheld", d1), 0, "kept, so not withheld");
-        std::test::assert_eq_str(git_receipts.read(hex_of(d1)), "", "no git receipt holds the body");
+        std::test::assert_eq_str(git_receipts.read(hex_of(d1)), "", "the body is no ordinary receipt");
         std::test::assert_eq_str(objects_with(app, "bank account ending 3321"), "0", "no git object anywhere in the repository contains it");
         std::test::assert_eq_str(objects_with(app, "account 4411"), "0", "nor the withheld one");
 
@@ -161,11 +164,11 @@ main locus App {
         let listing = as_head(app, head_dsn, toolchain() + "\ndna\nreceipt");
         std::test::assert(std::str::contains(listing.stdout, d1) && std::str::contains(listing.stdout, "confidential") && std::str::contains(listing.stdout, "disclosed to tomasz for audit") && std::str::contains(listing.stdout, "withheld"), "the list: " + listing.stdout);
         std::test::assert_eq_str(objects_with(app, "bank account ending 3321"), "0", "after every read, still no git object holds it");
-        // a read the record cannot hold is not answered: with the journal's
-        // ref locked, memory is not asked and nothing is disclosed
-        std::io::fs::write_file(app + "/.git/refs/dna/journal.lock", "held by the test") or discard;
+        // a read the record cannot hold is not answered: with memory refusing
+        // appends, the body is not opened and nothing is disclosed
+        std::test::assert_eq_str(dna::fixture_record_refuses(app, true), "", "memory refuses appends for a while");
         let unrecorded = as_head(app, head_dsn, toolchain() + "\ndna\nreceipt\nshow\n" + d1 + "\n--purpose\naudit\n--as\ntomasz");
-        std::io::fs::unlink(app + "/.git/refs/dna/journal.lock") or discard;
+        std::test::assert_eq_str(dna::fixture_record_refuses(app, false), "", "and takes them again");
         std::test::assert(unrecorded.code != 0 && !std::str::contains(unrecorded.stdout, "3321"), "no plaintext without its read row: " + unrecorded.stdout + unrecorded.stderr);
         std::test::assert_eq_int(self.rows(app, "receipt.read", d1), 1, "and no read row either");
 

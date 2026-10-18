@@ -98,6 +98,7 @@ locus GovernanceReceipts {
     fn read(digest: String) -> String { return self.record.body(digest).text; }
     fn store(text: String) -> String { return ""; }
     fn erase(digest: String) -> Bool { return false; }
+    fn redacted(digest: String) -> Bool { return false; }
 }
 type GovernanceAdmission {
     ok: Bool = false;
@@ -136,8 +137,8 @@ type GovernanceReceipt {
 }
 // Where a batch's rows landed (`publish_batch`): the `batch.proposed`
 // row's id and index among them, the new head and how many rows, or why
-// not (`stale` when the record moved first; `unknown` once the ref move was
-// attempted).
+// not (`stale` when the record moved first; `unknown` when the batch's
+// answer was lost, so it may have landed).
 type StructureLanded { ok: Bool = false; code: String = ""; unknown: Bool = false; id: String = ""; head: String = ""; index: Int = -1; count: Int = 0; body: String = ""; }
 type GovernanceResult {
     ok: Bool = false; code: String = "commands_unavailable"; why: String = "";
@@ -266,7 +267,6 @@ locus GovernanceCommands {
         if !j.valid { return GovernanceCapability { reason: "The Record is invalid." }; }
         let adopted = !self.source_supported(j); let ledger = attempt_ledger_for(self.record.location());
         if adopted && self.ledger_operation(operation) && !ledger.ready() { return GovernanceCapability { reason: "This application has adopted a Ledger; its commands write it under the head's role (HALE_DNA_MEMORY_DSN_HEAD), which is not named here." }; }
-        if adopted && !self.ledger_operation(operation) { return GovernanceCapability { reason: "This command head requires Record receipt authority; Ledger adoption needs an owning-service command provider." }; }
         let grant = self.authorize(context, operation, false, j);
         if !self.unchanged(s) { return GovernanceCapability { reason: "The Record changed; refresh its capabilities." }; }
         let allowed = self.grant_valid(grant);
@@ -307,7 +307,7 @@ locus GovernanceCommands {
         let source = self.capture();
         if !source.ok || source.application_id != context.application_id { return GovernanceCapability { reason: "The Record is unavailable." }; }
         let journal = GovernanceJournal { snapshot: source };
-        if !journal.valid || !self.source_supported(journal) { return GovernanceCapability { reason: "Source commands require complete Record authority." }; }
+        if !journal.valid { return GovernanceCapability { reason: "The Record is invalid." }; }
         let grant = self.organization_authority.authorize(context, operation, false, journal);
         if !self.unchanged(source) { return GovernanceCapability { reason: "The Record changed; refresh its capabilities." }; }
         let enabled = if operation == "dna.organization.propose" { self.organization_enabled } else { self.organization_reviews_enabled };
@@ -437,7 +437,7 @@ locus GovernanceCommands {
             }
             return GovernanceResult { ok: true, code: "", application_id: s.application_id, head: s.head, revision: s.revision, receipt: person.project(admission) };
         }
-        let receipts = if len(self.record.location()) > 0 { GovernanceReceipts { record: dna::GitRecord { repo: self.record.location() } } } else { receipts_over(self.record) }; let queries = Queries { j: rj, receipts: receipts, routed: true };
+        let receipts = if len(self.record.location()) > 0 { GovernanceReceipts { record: dna::MemoryRecord { repo: self.record.location() } } } else { receipts_over(self.record) }; let queries = Queries { j: rj, receipts: receipts, routed: true };
         let view = TaskProjection { j: rj, visibility: queries, routed: true };
         if !view.load() { return GovernanceResult { code: "command_history_invalid" }; }
         if view.task_of(admission.command.target_id).id == "" || (admission.event_id != "" && queries.receipt_status(admission.event_id) != "available") { return GovernanceResult { code: "forbidden" }; }
@@ -604,14 +604,16 @@ locus GovernanceCommands {
         }
         return found;
     }
+    // Whether the record has no Ledger (no `ledger.adopted` row): its Task
+    // rows are then the record's. A record born in memory has one from its
+    // first rows (GH #1590), and the head writes its Task rows there.
     fn source_supported(j: GovernanceJournal) -> Bool {
         let mut i = 0;
         while i < j.revision() { if j.read(i).kind == "ledger.adopted" { return false; } i = i + 1; }
         return true;
     }
     fn eligibility(j: GovernanceJournal, command: GovernanceCommand, context: GovernanceContext, grant: GovernanceGrant) -> String {
-        if !self.source_supported(j) { return "commands_unsupported"; }
-        let receipts = if len(self.record.location()) > 0 { GovernanceReceipts { record: dna::GitRecord { repo: self.record.location() } } } else { receipts_over(self.record) }; let queries = Queries { j: j, receipts: receipts };
+        let receipts = if len(self.record.location()) > 0 { GovernanceReceipts { record: dna::MemoryRecord { repo: self.record.location() } } } else { receipts_over(self.record) }; let queries = Queries { j: j, receipts: receipts, location: self.record.location() };
         if command.operation == "dna.review.verdict" {
             if self.source_review(j, command.target_id) {
                 if !self.organization_reviews_enabled { return "commands_unsupported"; }
@@ -712,7 +714,7 @@ locus GovernanceCommands {
             return GovernanceResult { ok: true, code: "", application_id: s.application_id, head: s.head, revision: s.revision, receipt: attempts.project(j, admission) };
         }
         if admission.command.operation == "dna.task.reassign" {
-            let receipts = if len(self.record.location()) > 0 { GovernanceReceipts { record: dna::GitRecord { repo: self.record.location() } } } else { receipts_over(self.record) }; let queries = Queries { j: j, receipts: receipts };
+            let receipts = if len(self.record.location()) > 0 { GovernanceReceipts { record: dna::MemoryRecord { repo: self.record.location() } } } else { receipts_over(self.record) }; let queries = Queries { j: j, receipts: receipts, location: self.record.location() };
             let view = TaskProjection { j: j, visibility: queries };
             if !view.load() { return GovernanceResult { code: "command_history_invalid" }; }
             if view.task_of(admission.command.target_id).id == "" || (admission.event_id != "" && queries.receipt_status(admission.event_id) != "available") { return GovernanceResult { code: "forbidden" }; }
@@ -1011,9 +1013,9 @@ locus GovernanceCommands {
                 // writes, landing at exactly the head the command was
                 // prepared against or not at all.
                 let location = self.record.location();
-                if !self.source_supported(j) || len(location) == 0 { return GovernanceResult { code: "commands_unsupported" }; }
+                if len(location) == 0 { return GovernanceResult { code: "commands_unsupported" }; }
                 if command.record_head != s.head { return GovernanceResult { code: "stale_subject" }; }
-                let receipts = GovernanceReceipts { record: dna::GitRecord { repo: location } };
+                let receipts = GovernanceReceipts { record: dna::MemoryRecord { repo: location } };
                 let who = context.principal_name;
                 let row_id = structure.request_id_of(command, s.head, who);
                 if command.operation == "dna.batch.apply" {
@@ -1034,7 +1036,7 @@ locus GovernanceCommands {
                         keeps.push(docs[0..nl]);
                         docs = docs[(nl + 1)..len(docs)];
                     }
-                    let keeper = dna::GitRecord { repo: location };
+                    let keeper = dna::MemoryRecord { repo: location };
                     if !keeper.keep_batch(keeps) { return GovernanceResult { code: "record_unavailable" }; }
                     if !self.unchanged(s) { continue; }
                     let landed = self.publish_batch(s, context, command, grant, filing.rows);
@@ -1044,7 +1046,7 @@ locus GovernanceCommands {
                     }
                     if landed.code == "stale" { continue; }
                     if !landed.unknown { return GovernanceResult { code: landed.code }; }
-                    // the ref move was attempted: recover the exact rows, never resubmit
+                    // the batch may have landed: recover the exact rows, never resubmit
                     uncertain = true;
                     continue;
                 }
@@ -1152,7 +1154,7 @@ locus GovernanceCommands {
             if command.operation == "dna.task.reassign" && adopted {
                 // the move is the Ledger's row, as the Task's history is
                 if !attempt_memory { return GovernanceResult { code: "commands_unsupported" }; }
-                let receipts = if len(self.record.location()) > 0 { GovernanceReceipts { record: dna::GitRecord { repo: self.record.location() } } } else { receipts_over(self.record) }; let queries = Queries { j: rj, receipts: receipts, routed: true };
+                let receipts = if len(self.record.location()) > 0 { GovernanceReceipts { record: dna::MemoryRecord { repo: self.record.location() } } } else { receipts_over(self.record) }; let queries = Queries { j: rj, receipts: receipts, routed: true };
                 let view = TaskProjection { j: rj, visibility: queries, routed: true };
                 if !view.load() { return GovernanceResult { code: "command_history_invalid" }; }
                 let subject = view.task_of(command.target_id);
@@ -1175,7 +1177,7 @@ locus GovernanceCommands {
             }
             if command.operation == "dna.task.reassign" {
                 if !self.source_supported(j) { return GovernanceResult { code: "commands_unsupported" }; }
-                let receipts = if len(self.record.location()) > 0 { GovernanceReceipts { record: dna::GitRecord { repo: self.record.location() } } } else { receipts_over(self.record) }; let queries = Queries { j: j, receipts: receipts };
+                let receipts = if len(self.record.location()) > 0 { GovernanceReceipts { record: dna::MemoryRecord { repo: self.record.location() } } } else { receipts_over(self.record) }; let queries = Queries { j: j, receipts: receipts, location: self.record.location() };
                 let view = TaskProjection { j: j, visibility: queries };
                 if !view.load() { return GovernanceResult { code: "command_history_invalid" }; }
                 let subject = view.task_of(command.target_id);
@@ -1194,7 +1196,6 @@ locus GovernanceCommands {
                 continue;
             }
             if command.operation == "dna.organization.propose" {
-                if !self.source_supported(j) { return GovernanceResult { code: "commands_unsupported" }; }
                 if command.record_head != s.head { return GovernanceResult { code: "stale_subject" }; }
                 let org = OrganizationCommandCodec { }; let admission = OrganizationAdmission { };
                 let request = org.request(context, command, grant, self.organization_owner);
@@ -1223,7 +1224,7 @@ locus GovernanceCommands {
                 if colon < 0 { return GovernanceResult { code: eligible }; }
                 return GovernanceResult { code: eligible[0..colon], why: eligible[(colon + 2)..len(eligible)] };
             }
-            let receipts = if len(self.record.location()) > 0 { GovernanceReceipts { record: dna::GitRecord { repo: self.record.location() } } } else { receipts_over(self.record) }; let queries = Queries { j: j, receipts: receipts };
+            let receipts = if len(self.record.location()) > 0 { GovernanceReceipts { record: dna::MemoryRecord { repo: self.record.location() } } } else { receipts_over(self.record) }; let queries = Queries { j: j, receipts: receipts, location: self.record.location() };
             let name = if command.operation == "dna.practice.propose" { queries.practice_metadata(command.subject_digest).name } else { "" };
             let fact = if profile == source_review.profile() { source_review.fact(context, command, grant, s.head) } else { self.fact(context, command, name, grant, s.head) };
             let kind = if command.operation == "dna.practice.propose" { "practice.requested" } else { "review.verdict" };
@@ -1244,14 +1245,14 @@ locus GovernanceCommands {
     fn submit(context: GovernanceContext, command: GovernanceCommand) -> GovernanceResult { return self.execute(context, command, false); }
     // A batch's rows as `hale dna apply` writes them, in its order and in
     // the proposer's name — `batch.proposed` carrying the command — built on
-    // the captured head and made visible together through one ref move, as
-    // a retirement's are.
+    // the captured head and made visible together, as a retirement's are.
     fn publish_batch(s: GovernanceSnapshot, context: GovernanceContext, c: GovernanceCommand, grant: GovernanceGrant, rows: String) -> StructureLanded {
         let structure = StructureCommandCodec { };
         let before = self.structure_record.head("journal");
         if !before.ok { return StructureLanded { code: "record_unavailable" }; }
         if before.id != s.head { return StructureLanded { code: "stale" }; }
         let mut parent = std::str::clone(s.head);
+        let batch = dna::RowBatch { };
         let mut index = 0;
         let mut at = -1;
         let mut event = "";
@@ -1268,18 +1269,22 @@ locus GovernanceCommands {
                 if text == "" { return StructureLanded { code: "invalid_command" }; }
                 body = text;
             }
-            let built = self.structure_record.build(parent, dna::Row { kind: kind, entity: std::json::find_string_field(line, "entity"), body: text, author: context.principal_name }, self.sign, "");
-            if built == "" { return StructureLanded { code: "record_unavailable" }; }
+            let row = dna::Row { kind: kind, entity: std::json::find_string_field(line, "entity"), body: text, author: context.principal_name };
+            // a row's id is its digest over the one before it
+            let built = dna::event_digest(parent, row.kind, row.entity, row.body);
+            batch.push(row);
             if kind == "batch.proposed" { at = index; event = built; }
             parent = built;
             index = index + 1;
         }
         if at < 0 { return StructureLanded { code: "invalid_command" }; }
-        let now = self.structure_record.head("journal");
-        if !now.ok { return StructureLanded { code: "record_unavailable" }; }
-        if now.id != s.head || self.structure_record.identity() != s.application_id { return StructureLanded { code: "stale" }; }
-        if !self.structure_record.move_chain("journal", parent, s.head) { return StructureLanded { unknown: true }; }
-        return StructureLanded { ok: true, id: event, head: parent, index: at, count: index, body: body };
+        if self.structure_record.identity() != s.application_id { return StructureLanded { code: "stale" }; }
+        let landed = self.structure_record.append_batch("journal", s.head, batch, self.sign, "");
+        if !landed.ok && landed.error == "stale" { return StructureLanded { code: "stale" }; }
+        if !landed.ok && std::str::starts_with(landed.error, "refused") { return StructureLanded { code: "record_unavailable" }; }
+        // a batch whose answer was lost may have landed: the outcome is unknown
+        if !landed.ok { return StructureLanded { unknown: true }; }
+        return StructureLanded { ok: true, id: event, head: landed.id, index: at, count: index, body: body };
     }
     // GH #946: a refusal at the head is a receipt with its reason, over
     // the snapshot it was decided on, and no row.
@@ -1305,7 +1310,7 @@ locus GovernanceCommands {
                 out = out + (if len(out) > 0 { " " } else { "" }) + digest;
             } else {
                 if len(location) == 0 { return "!a " + class + " receipt needs a record on disk to file it in"; }
-                let receipts = dna::GitReceipts { repo: location };
+                let receipts = dna::MemoryReceipts { repo: location };
                 let hex = receipts.store(body.text);
                 if len(hex) == 0 { return "!a " + class + " receipt could not be stored in the record"; }
                 out = out + (if len(out) > 0 { " " } else { "" }) + "sha256:" + hex;

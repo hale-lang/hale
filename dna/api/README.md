@@ -384,9 +384,7 @@ position the record states or proposes and a person it knows (the CLI's
 (`dna::batch_plan`). A refusal there is a receipt (`state: "refused"`,
 `receipt.structure.why`) and no row; the same batch still pending is
 answered `already_proposed` with the Review it awaits. A command is
-conditioned on `record_head` (`stale_subject` once the Record moved) and
-refused `commands_unsupported` once the Record's ledger is adopted, as
-raising work is. The receipt's `structure` branch reads back `{ state,
+conditioned on `record_head` (`stale_subject` once the Record moved). The receipt's `structure` branch reads back `{ state,
 request_id, review_id, event_id, why, warning }`: `requested` until the
 organization answers the request row, then `proposed` (with the Review) or
 `refused` (with why). `vacate` has no command of its own: it is a one-step
@@ -758,7 +756,8 @@ against. Its `task_create` object names the minted `intent_id`, the row's
 `refused`, or `born` with `task_id` filled from the `task.born` row whose body
 starts with `<intent_id>: `. A born-but-unhanded Task is absent from
 `/dna/tasks`, so `CommandLookup { request_id }` is how the face follows the
-ask; nothing else is re-read. On a record that adopted its Ledger the ask is
+ask; nothing else is re-read. On a record with a Ledger — every record born in memory has one from its
+first rows (GH #1590) — the ask is
 the Ledger's row: the head writes it there under its role
 (`HALE_DNA_MEMORY_DSN_HEAD`), keyed by the command so a retry lands once, with
 `command_record_head` naming the Ledger row before it; the record is
@@ -858,7 +857,7 @@ settles every reply (`attempt.outcome`, naming the request and carrying
 `result_ref` and the hat) or refuses it with
 `attempt.outcome_refused` naming why and the request; `CommandLookup { request_id }`
 re-derives `settled` with the disposition, or `refused` with the reason and the
-refusing row's id. Once the organism has adopted the ledger, both calls and
+refusing row's id. On a record with a Ledger, both calls and
 the hat read and write it under the head's role (`HALE_DNA_MEMORY_DSN_HEAD`);
 without it they answer `commands_unsupported` / `context_source_unavailable`.
 

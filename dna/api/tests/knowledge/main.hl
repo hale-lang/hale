@@ -51,8 +51,9 @@ fn spine_file(root: String) -> String { return root + "/memory.spine"; }
 
 // One tick of the spine's projection over the record as it stands.
 fn tick(root: String, spine: dna::Dsn) {
-    let j = dna::GitJournal { repo: root, author: "spine" };
-    let tail = ops::MemoryProjection { root: root, dsn_env: "", store: dna::Pq { conn: dna::pq_conn(spine), record_id: j.genesis() }, j: j, receipts: dna::GitReceipts { repo: root } };
+    std::test::assert_eq_str(dna::memory_fixture(root), "", "the record is born in memory (GH #1590)");
+    let j = dna::RecordJournal { repo: root, author: "spine" };
+    let tail = ops::MemoryProjection { root: root, dsn_env: "", store: dna::Pq { conn: dna::pq_conn(spine), record_id: j.genesis() }, j: j, receipts: dna::MemoryReceipts { repo: root } };
     let applied = tail.apply();
     tail.store.close();
     std::test::assert(len(applied.error) == 0, "native knowledge fixture projection: " + applied.error);
@@ -65,7 +66,10 @@ fn owner() -> String {
 }
 
 fn mutate(root: String, action: String) {
-    let j = dna::GitJournal { repo: root };
+    std::test::assert_eq_str(dna::memory_fixture(root), "", "the record is born in memory (GH #1590)");
+    // a classification and a redaction are the Ledger's rows (GH #1590):
+    // the record and its Ledger, read and written as one
+    let j = dna::RoutedJournal { record: dna::RecordJournal { repo: root }, ledger: dna::MemoryLedger { repo: root, dsn_env: dna::fixture_spine(root) } };
     let document = std::io::fs::read_file(root + "/fixture.json") or "";
     let id = std::json::find_string_field(document, if action == "protect-predecessor" { "predecessor" } else { "knowledge" });
     let result = if action == "protect" || action == "protect-predecessor" {
@@ -81,7 +85,8 @@ fn mutate(root: String, action: String) {
 }
 
 fn project(root: String) {
-    let j = dna::GitJournal { repo: root };
+    std::test::assert_eq_str(dna::memory_fixture(root), "", "the record is born in memory (GH #1590)");
+    let j = dna::RecordJournal { repo: root };
     let id = j.genesis();
     std::test::assert(len(id) > 0, "a seeded record to project");
     let spine = dna::migrated(owner(), id);
@@ -113,7 +118,8 @@ fn project(root: String) {
 
 // The record's schema and both of its roles, gone again.
 fn drop(root: String) {
-    let j = dna::GitJournal { repo: root };
+    std::test::assert_eq_str(dna::memory_fixture(root), "", "the record is born in memory (GH #1590)");
+    let j = dna::RecordJournal { repo: root };
     let id = j.genesis();
     std::test::assert(len(id) > 0, "a seeded record to drop");
     std::test::assert_eq_str(dna::unmigrate(owner(), id), "", "the record's memory is dropped");

@@ -129,10 +129,9 @@ The rules the host applies:
   stream only once its row has landed, or it was refused for good. A
   host that stops in between loses nothing: the event comes again,
   within the stream's week.
-- **Shared records.** Over a shared record that keeps its rows in git,
-  only the ledger can decide an id across owners, so readings wait in
-  the stream until `hale dna ledger adopt` ([Memory and the
-  record](./memory.md)); the host says so once.
+- **Shared records.** Over a shared record, only the ledger can decide
+  an id across owners, and every record has its ledger in memory from
+  its first rows ([Memory and the record](./memory.md)).
 
 ### Its broker account
 
@@ -263,7 +262,7 @@ hale dna body start|stop|logs [--body <user@host>]
 `body provision` makes a body over ssh, in order: the toolchain
 `hale.lock` pins, the record's remote cloned (into `$HOME/dna/<project>`
 unless `--dir` names another place), `vendor/dna` and the record brought
-up with `hale dna upgrade` and `hale dna sync`, memory from
+up with `hale dna upgrade`, memory from
 `dna/compose.yaml` or the DSN you give, and a systemd user unit,
 `hale-dna-<project>-<record>`, that runs `hale dna dev . --no-iris` with
 `Restart=always`. On one server the body is the organization and the
@@ -477,7 +476,6 @@ row touching the same instances. An instance that never came up is
 | `the organism's secrets are not all in the vault: …` | a drawn secret is missing | `hale dna upgrade` |
 | `no expression is under this host` | `run` with no fleet and no gateway | use `dev`, set `[dna] fleet`, or wire a `ShellDeployment` |
 | `the heart's … is not a reading: …` | the event is not one JSON object with a string `id` | fix the application's codec |
-| `readings wait in the stream: …` | a shared record not yet on the ledger | `hale dna ledger adopt` |
 | `body provision: … nothing was written` | no reachable remote, no pinned toolchain, or a missing tool on the host | what the line names |
 
 [Troubleshooting](./troubleshooting.md) has the rest, part by part.

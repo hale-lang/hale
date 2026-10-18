@@ -89,6 +89,11 @@ locus App {
     fn dna(args: String) -> dna::RunResult {
         return dna::run_tool_timeout(900, "sh\n-c\ncd \"$1\" && unset ANTHROPIC_API_KEY OPENAI_API_KEY HALE_DNA_MEMORY_DSN_SPINE HALE_DNA_MEMORY_DSN_OWNER && export HALE_DNA_DISCOVER=off GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null HALE_DNA_MEMORY_DSN_HEAD=\"$2\" && shift 2 && exec \"$@\"\nsh\n" + self.repo + "\n" + self.head_dsn + "\n" + toolchain() + "\ndna\n" + args);
     }
+    // `hale dna init` in the project: the record is born in memory (GH
+    // #1590), the owner's, so it keeps the owner's DSN
+    fn init() -> dna::RunResult {
+        return dna::run_tool_timeout(900, "sh\n-c\ncd \"$1\" && unset ANTHROPIC_API_KEY OPENAI_API_KEY HALE_DNA_MEMORY_DSN_SPINE HALE_DNA_MEMORY_DSN_HEAD && export HALE_DNA_DISCOVER=off GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null HALE_DNA_MEMORY_DSN_OWNER=\"$2\" && shift 2 && exec \"$@\"\nsh\n" + self.repo + "\n" + self.owner + "\n" + toolchain() + "\ndna\ninit\n.");
+    }
     // `hale dna work <args>` in the project, against the head; its exit code checked.
     fn work_argv(args: String) -> String {
         return "sh\n-c\ncd \"$1\" && export HALE_DNA_DISCOVER=off GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null HALE_DNA_API=\"$2\" && shift 2 && exec \"$@\"\nsh\n" + self.repo + "\n" + self.api + "\n" + toolchain() + "\ndna\nwork\n" + args;
@@ -110,7 +115,8 @@ locus App {
     }
     // Ratify every proposal `author` made, as the review path writes it.
     fn ratify(author: String) {
-        let j = dna::GitJournal { repo: self.repo };
+        std::test::assert_eq_str(dna::memory_fixture(self.repo), "", "the record is born in memory (GH #1590)");
+        let j = dna::RecordJournal { repo: self.repo };
         let mut rows = "";
         let mut i = 0;
         while i < j.revision() {
@@ -148,8 +154,9 @@ locus App {
         std::test::assert(spine.ok, "memory migrates: " + spine.why);
         let store = dna::Pq { conn: dna::pq_conn(spine), record_id: self.identity };
         std::test::assert(store.open(), "memory opens: " + store.last_error());
-        let j = dna::GitJournal { repo: self.repo };
-        let r = ops::apply_record_to(store, j, dna::GitReceipts { repo: self.repo }, j.revision(), "", "local", j);
+        std::test::assert_eq_str(dna::memory_fixture(self.repo), "", "the record is born in memory (GH #1590)");
+        let j = dna::RecordJournal { repo: self.repo };
+        let r = ops::apply_record_to(store, j, dna::MemoryReceipts { repo: self.repo }, j.revision(), "", "local", j);
         std::test::assert_eq_str(r.error, "", "the record projects clean");
         store.close();
     }
@@ -209,13 +216,14 @@ locus App {
     dissolve() { self.stop_head(); }
     // ---- the owner, in this process: software work goes to legs
     fn start_owner() {
-        self.journal = dna::RoutedJournal { record: dna::GitJournal { repo: self.repo }, ledger: dna::MemoryLedger { repo: self.repo, dsn_env: dna::SPINE_DSN_ENV } };
+        std::test::assert_eq_str(dna::memory_fixture(self.repo), "", "the record is born in memory (GH #1590)");
+        self.journal = dna::RoutedJournal { record: dna::RecordJournal { repo: self.repo }, ledger: dna::MemoryLedger { repo: self.repo, dsn_env: dna::SPINE_DSN_ENV } };
         self.core = dna::Dna {
             journal: self.journal,
             work: dna::WorkSystem { software: dna::LegRelay { name: "legs", performer_kind: "software" }, software_reconciler: dna::RelayReplay { } },
             // the gateway the leg's candidate is made a Mutation in: voice's
             gateway: dna::MutationGateway { workspaces: dna::IsolatedWorktrees { repo: self.repo, root: self.repo + "/.hale/dna/worktrees" }, repo: dna::LocalGit { repo: self.repo } },
-            verification: dna::HaleVerification { hale_bin: toolchain(), receipts: dna::GitReceipts { repo: self.repo }, scratch: self.repo + "/.hale/dna/scratch", repo: self.repo },
+            verification: dna::HaleVerification { hale_bin: toolchain(), receipts: dna::MemoryReceipts { repo: self.repo }, scratch: self.repo + "/.hale/dna/scratch", repo: self.repo },
             claims: dna::MemoryLeases { repo: self.repo }, knowledge_client: dna::MemoryKnowledge { repo: self.repo },
             org_id: "voice"
         };
@@ -245,14 +253,15 @@ locus App {
         // ---- voice, a repository of its own, read into its graph, holes ratified
         let made = dna::run_tool("sh\n-c\nmkdir -p \"$1\" && cp -r \"$2/dna/tests/onboarding/voice/.\" \"$1/\" && cd \"$1\" && git init -q -b main && git config user.name riley && git config user.email riley@dna && git add -A && git commit -q -m voice\nsh\n" + self.repo + "\n" + source());
         std::test::assert_eq_int(made.code, 0, "the fixture, a repository of its own: " + made.stderr);
-        let init = self.dna("init\n.");
+        let init = self.init();
         std::test::assert_eq_int(init.code, 0, "hale dna init: " + init.stdout + init.stderr);
         // what init wrote is committed, as a person commits it: the ignores
         // (vendor/, .hale/) are the genome's, so a candidate carries none of it
         let kept = dna::run_tool("sh\n-c\ncd \"$1\" && git add -A && git -c user.name=riley -c user.email=riley@dna commit -q -m 'hale dna init'\nsh\n" + self.repo);
         std::test::assert_eq_int(kept.code, 0, "init's output committed: " + kept.stderr);
         self.ratify("hale dna init");
-        self.identity = dna::GitRecord { repo: self.repo }.identity();
+        std::test::assert_eq_str(dna::memory_fixture(self.repo), "", "the record is born in memory (GH #1590)");
+        self.identity = dna::MemoryRecord { repo: self.repo }.identity();
         if len(self.owner) > 0 {
             // the record's roles into the vault first, as its bootstrap does (GH #989)
             let provisioned = dna::provision_record_roles(self.identity, "");
@@ -263,8 +272,8 @@ locus App {
 
         // ---- riley is a person the record knows (a row in her name), the peer
         // is mapped to riley, and the record declares no trust
-        let as_riley = dna::GitJournal { repo: self.repo, author: "riley" };
-        std::test::assert(as_riley.append(as_riley.revision(), "intent.offered", "i-riley", "riley was here").ok, "a row in riley's name");
+        let as_riley = dna::RecordJournal { repo: self.repo, author: "riley" };
+        std::test::assert(as_riley.append(as_riley.revision(), "note.kept", "riley", "riley was here").ok, "a row in riley's name: " + as_riley.last_error());
         // `hale dna init` seats its maker (the uid mapped to $USER, and local
         // trust declared): this run is about the graph deciding, so the seat
         // is taken back and the peer mapped to riley alone
@@ -287,7 +296,7 @@ locus App {
         let hold = ops::GraphEdge { kind: "holds" };
         hold.member("position", "position:api/dev");
         hold.member("holder", "riley");
-        let j = dna::GitJournal { repo: self.repo };
+        let j = dna::RecordJournal { repo: self.repo };
         std::test::assert(j.append(j.revision(), "graph.edge", hold.id(), hold.body()).ok, "riley holds api/dev");
         let mut listed = self.claim_listed();
         let mut tries = 0;
@@ -320,7 +329,7 @@ locus App {
         std::test::assert(dna::run_tool("git\n-C\n" + self.repo + "\ncat-file\n-e\n" + sha).code != 0, "the leg's commit is nowhere in the record's own repository");
         let evidence = std::json::find_string_field(requested, "evidence_ref");
         std::test::assert(std::str::starts_with(evidence, "sha256:"), "its patch is filed as a receipt: " + requested);
-        let filed = dna::GitReceipts { repo: self.repo }.read(evidence[7..len(evidence)]);
+        let filed = dna::MemoryReceipts { repo: self.repo }.read(evidence[7..len(evidence)]);
         std::test::assert(std::str::starts_with(filed, "From " + sha + " ") && std::str::contains(filed, "+++ b/api/notes/" + name + ".md"), "and the receipt is the commit's own patch, one note under api/: " + filed);
 
         // ---- (5) the candidate becomes a Mutation and its Review (GH #1156):
@@ -341,7 +350,7 @@ locus App {
         std::test::assert(std::json::find_string_field(review, "disposition") != "release" && std::str::starts_with(std::json::find_string_field(review, "question"), "apply "), "reviewed before anything applies: " + review);
         let touched = dna::trim_nl(dna::run_tool("git\n-C\n" + self.repo + "\ndiff\n--name-only\n" + base + "\n" + candidate).stdout);
         std::test::assert_eq_str(touched, "api/notes/" + name + ".md", "the candidate changes the one file the leg did: " + touched);
-        std::test::assert(std::str::contains(self.row_body("review.routed", m), "\"why\": \"no memory is named\""), "its routing is recorded, the owner here having no memory: " + self.row_body("review.routed", m));
+        std::test::assert(std::str::contains(self.row_body("review.routed", m), "\"why\": \"no position the route names is held\""), "its routing is recorded, read from memory (the clone keeps its head DSN), and no holder the route names: " + self.row_body("review.routed", m));
 
         // ---- (6) who must sign it, from the graph: api's reviewer for a change
         // under api/; a path the graph holds nobody for falls back, today, to the

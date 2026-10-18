@@ -154,7 +154,10 @@ main locus App {
         let app = scratch + "/app";
         let u1 = in_dir(app, "git\nconfig\nuser.name\nriley");
         let u2 = in_dir(app, "git\nconfig\nuser.email\nriley@local");
-        let git = dna::GitJournal { repo: app, author: "test" };
+        std::test::assert_eq_str(dna::memory_fixture(app), "", "the record is born in memory (GH #1590)");
+        // the record and its Ledger as one (GH #1590): a call's row is the
+        // Ledger's
+        let git = dna::RoutedJournal { record: dna::RecordJournal { repo: app, author: "test" }, ledger: dna::MemoryLedger { repo: app, dsn_env: dna::fixture_spine(app) } };
         if git.revision() == 0 { append(git, "org.born", "org", "usage fixture"); }
         seed(git);
         let h = in_dir(app, toolchain() + "\ndna\nhistory\nt1");

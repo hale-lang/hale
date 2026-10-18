@@ -27,7 +27,7 @@ main locus App {
             }
         };
         // pointed at the project in run(); never at the working directory
-        j: dna::GitJournal = dna::GitJournal { repo: "/nonexistent/dna-retired" };
+        j: dna::RoutedJournal = dna::RoutedJournal { record: dna::RecordJournal { repo: "/nonexistent/dna-retired" } };
     }
     // card 18: an ask is admitted once the leader's word lands; the
     // execution admitted under the intent's identity, "" when none yet.
@@ -92,7 +92,9 @@ main locus App {
         let made = in_dir(scratch, toolchain() + "\ndna\nnew\nret");
         std::test::assert_eq_int(made.code, 0, "hale dna new: " + made.stdout + made.stderr);
         let app = scratch + "/ret";
-        self.j = dna::GitJournal { repo: app };
+        std::test::assert_eq_str(dna::memory_fixture(app), "", "the record is born in memory (GH #1590)");
+        // the task's rows are the Ledger's (GH #1590)
+        self.j = dna::RoutedJournal { record: dna::RecordJournal { repo: app }, ledger: dna::MemoryLedger { repo: app, dsn_env: dna::fixture_spine(app) } };
         self.j.refresh();
         let a1 = self.j.append(self.j.revision(), "task.born", "t9", "i9: file the invoice");
         let a2 = self.j.append(self.j.revision(), "task.handed", "t9", "{\"work\": \"t9/w\", \"assignee\": \"mara\", \"by\": \"leader\"}");

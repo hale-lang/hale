@@ -99,28 +99,29 @@ main locus App {
         std::io::fs::mkdir(self.vault) or discard;
         // the stub's client secret, as the vault holds it (the leg reads it there)
         std::io::fs::write_file(self.vault + "/oidc-client-dna-local", "hosted-hat-test-secret") or discard;
-        let git = dna::GitRecord { repo: self.app };
+        std::test::assert_eq_str(dna::memory_fixture(self.app), "", "the record is born in memory (GH #1590)");
+        let git = dna::MemoryRecord { repo: self.app };
         let identity = git.identity();
         let me = std::str::trim(dna::run_tool("id\n-u").stdout);
         let cfg = "sh\n-c\ncd \"$1\" && git config --local --unset-all dna.trust; git config --local dna.principal oidc && git config --local dna.oidc.issuer \"$2\" && git config --local dna.oidc.client dna-local && git config --local --add dna.oidc.member alice-sub=alice && git config --local --add dna.oidc.member bob-sub=bob && git config --local dna.oidc.key \"$3\" && git config --local --replace-all dna.unix.member \"uid:$4=alice\"\nsh\n" + self.app + "\n" + self.issuer + "\n" + oidc::STUB_SPKI + "\n" + me;
         std::test::assert_eq_int(dna::run_tool(cfg).code, 0, "the record's OIDC configuration");
-        let as_alice = dna::GitJournal { repo: self.app, author: "alice" };
-        std::test::assert(as_alice.append(as_alice.revision(), "intent.offered", "i-alice", "alice was here").ok, "alice is a person the record knows");
-        let as_bob = dna::GitJournal { repo: self.app, author: "bob" };
-        std::test::assert(as_bob.append(as_bob.revision(), "intent.offered", "i-bob", "bob was here").ok, "and so is bob");
+        let as_alice = dna::RecordJournal { repo: self.app, author: "alice" };
+        std::test::assert(as_alice.append(as_alice.revision(), "note.kept", "n-alice", "alice was here").ok, "alice is a person the record knows");
+        let as_bob = dna::RecordJournal { repo: self.app, author: "bob" };
+        std::test::assert(as_bob.append(as_bob.revision(), "note.kept", "n-bob", "bob was here").ok, "and so is bob");
         let seat = ops::GraphEdge { kind: "holds" };
         seat.member("position", "position:agent");
         seat.member("holder", "alice");
-        let j = dna::GitJournal { repo: self.app };
+        let j = dna::RoutedJournal { record: dna::RecordJournal { repo: self.app }, ledger: dna::MemoryLedger { repo: self.app } };
         std::test::assert(j.append(j.revision(), "graph.edge", seat.id(), seat.body()).ok, "alice holds position:agent");
         std::io::fs::write_file(self.app + "/.hale/dna/authority.json", "{\"format\":\"dna.practice-review-authority/1\",\"application_id\":\"" + identity + "\",\"grants\":[{\"mode\":\"oidc\",\"name\":\"alice\",\"authority\":\"board\",\"practice_propose\":false,\"review_verdict\":false,\"recover\":true}]}") or discard;
 
         // ---- the owner asks a judgment of a leg relay
-        self.journal = dna::RoutedJournal { record: dna::GitJournal { repo: self.app }, ledger: dna::MemoryLedger { repo: self.app, dsn_env: dna::SPINE_DSN_ENV } };
+        self.journal = dna::RoutedJournal { record: dna::RecordJournal { repo: self.app }, ledger: dna::MemoryLedger { repo: self.app, dsn_env: dna::SPINE_DSN_ENV } };
         self.core = dna::Dna {
             journal: self.journal,
             work: dna::WorkSystem { agent: dna::LegRelay { name: "legs" }, agent_reconciler: dna::RelayReplay { } },
-            verification: dna::HaleVerification { hale_bin: toolchain(), receipts: dna::GitReceipts { repo: self.app }, scratch: self.app + "/.hale/dna/scratch", repo: self.app },
+            verification: dna::HaleVerification { hale_bin: toolchain(), receipts: dna::MemoryReceipts { repo: self.app }, scratch: self.app + "/.hale/dna/scratch", repo: self.app },
             claims: dna::MemoryLeases { repo: self.app }, knowledge_client: dna::MemoryKnowledge { repo: self.app },
             org_id: "legs"
         };

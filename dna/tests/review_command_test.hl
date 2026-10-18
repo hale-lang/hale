@@ -69,7 +69,8 @@ main locus App {
         std::io::fs::mkdir(repo) or discard;
         let init = dna::run_tool("git\n-C\n" + repo + "\ninit\n-q\n-b\nmain");
         std::test::assert_eq_int(init.code, 0, "temporary Git repository: " + init.stderr);
-        let record = dna::GitJournal { repo: repo };
+        std::test::assert_eq_str(dna::memory_fixture(repo), "", "the record is born in memory (GH #1590)");
+        let record = dna::RoutedJournal { record: dna::RecordJournal { repo: repo }, ledger: dna::MemoryLedger { repo: repo } };
         self.observe(record);
 
         let review = dna::Review { journal: record, review_id: "review/one", subject_digest: "sha256:exact-candidate", required_authority: "board", author: "org" };
@@ -98,13 +99,13 @@ main locus App {
 
         // A fresh native Review over a fresh reader of the same Git Record
         // recovers acceptance even when no generic review.settled was written.
-        let fresh_record = dna::GitJournal { repo: repo };
+        let fresh_record = dna::RoutedJournal { record: dna::RecordJournal { repo: repo }, ledger: dna::MemoryLedger { repo: repo } };
         let fresh = dna::Review { journal: fresh_record, review_id: "review/one", subject_digest: "sha256:exact-candidate", required_authority: "board", author: "org" };
         std::test::assert(fresh.settled, "durable decision restores settled state");
         std::test::assert_eq_str(fresh.command_decide(approve), approved, "restart recovers the same exact decision");
         std::test::assert_eq_str(fresh.command_decide(second), refused, "restart preserves the other command's refusal");
 
-        let failed_record = dna::GitJournal { repo: repo };
+        let failed_record = dna::RoutedJournal { record: dna::RecordJournal { repo: repo }, ledger: dna::MemoryLedger { repo: repo } };
         let before = CommandFaultJournal { inner: failed_record, fault: "before" };
         let retryable = dna::Review { journal: before, review_id: "review/retry", subject_digest: "sha256:exact-candidate", required_authority: "board", author: "org" };
         let retry = verdict("command/retry", "review/retry", "approve", "riley");
@@ -114,14 +115,14 @@ main locus App {
         std::test::assert(std::json::find_bool_field(retryable.command_decide(retry), "accepted"), "redelivery after failed persistence still admits the original verdict");
         std::test::assert_eq_int(decisions(before, retry.command_id), 1, "one decision after retry");
 
-        let ambiguous_record = dna::GitJournal { repo: repo };
+        let ambiguous_record = dna::RoutedJournal { record: dna::RecordJournal { repo: repo }, ledger: dna::MemoryLedger { repo: repo } };
         let after = CommandFaultJournal { inner: ambiguous_record, fault: "after" };
         let uncertain = dna::Review { journal: after, review_id: "review/ambiguous", subject_digest: "sha256:exact-candidate", required_authority: "board", author: "org" };
         let ambiguous = verdict("command/ambiguous", "review/ambiguous", "approve", "riley");
         std::test::assert(std::json::find_bool_field(uncertain.command_decide(ambiguous), "accepted") && uncertain.settled, "an append that landed despite an error is recovered by its exact identity");
         std::test::assert_eq_int(decisions(after, ambiguous.command_id), 1, "ambiguous persistence is not appended twice");
 
-        let owners_record = dna::GitJournal { repo: repo };
+        let owners_record = dna::RoutedJournal { record: dna::RecordJournal { repo: repo }, ledger: dna::MemoryLedger { repo: repo } };
         let owners = dna::Review { journal: owners_record, review_id: "review/owners", subject_digest: "sha256:exact-candidate", required_authority: "board", author: "org", signers: "position:a=alice position:b=bob" };
         let first_owner = owners.command_decide(verdict("command/owner-a", "review/owners", "approve", "alice"));
         std::test::assert(std::json::find_bool_field(first_owner, "accepted") && !std::json::find_bool_field(first_owner, "settled"), "one required position's approval is accepted without settlement");

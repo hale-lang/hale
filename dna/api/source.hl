@@ -1,5 +1,6 @@
 // Validate the Record before its deliberately permissive native projection is
-// used. This reads plumbing through GitRecord; it never invokes CLI rendering.
+// used. This reads the record through `dna::MemoryRecord` (GH #1590); it never
+// invokes CLI rendering.
 
 import "../core" as dna;
 
@@ -157,20 +158,22 @@ locus JsonShape {
 locus SourceReader {
     params { root: String = "."; }
     fn read() -> Source {
-        let r = dna::GitRecord { repo: self.root };
-        if !r.is_repository() { return Source { error: "the configured project is not an accessible Git repository" }; }
+        let r = dna::MemoryRecord { repo: self.root };
+        if !r.is_repository() { return Source { error: "the configured project is not an accessible Git repository (its genome)" }; }
         let read = r.head("journal");
         if !read.ok { return Source { error: "the Record's head could not be read: " + read.why }; }
         if read.absent { return Source { error: "the project has no readable DNA Record" }; }
         let head = read.id;
-        let rows = r.git("show\n" + head + ":journal.jsonl");
-        let ids = r.git("rev-list\n--reverse\n" + head);
-        if rows.code != 0 || ids.code != 0 { return Source { error: "the Record snapshot could not be read" }; }
-        let count = dna::count_lines(ids.stdout);
-        if count == 0 || len(rows.stdout) == 0 { return Source { code: "record_malformed", error: "the Record contains no readable rows" }; }
-        if count > 10000 || len(rows.stdout) > 16777216 { return Source { code: "record_limit_exceeded", error: "the Record exceeds this read surface's snapshot bound" }; }
+        // the record is memory's (GH #1590): its rows at the head read, and
+        // their ids
+        let rows = r.text_at(head);
+        let ids = r.ids("journal");
+        if len(rows) == 0 || len(ids) == 0 { return Source { error: "the Record snapshot could not be read" }; }
+        let count = dna::count_lines(rows);
+        if count == 0 { return Source { code: "record_malformed", error: "the Record contains no readable rows" }; }
+        if count > 10000 || len(rows) > 16777216 { return Source { code: "record_limit_exceeded", error: "the Record exceeds this read surface's snapshot bound" }; }
         let check = JsonShape { };
-        let mut rest = rows.stdout;
+        let mut rest = rows;
         let mut seq = 0;
         while len(rest) > 0 {
             let nl = std::str::index_of(rest, "\n");
@@ -179,7 +182,10 @@ locus SourceReader {
             seq = seq + 1;
             if nl < 0 { rest = ""; } else { rest = rest[(nl + 1)..len(rest)]; }
         }
-        if seq != count { return Source { code: "record_malformed", error: "Record rows and commits disagree" }; }
+        if seq != count { return Source { code: "record_malformed", error: "Record rows disagree with their count" }; }
+        // each row names the digest of the one before it (GH #1590): a row
+        // written behind memory's insert function breaks the chain
+        if !dna::RecordJournal { repo: self.root }.verify_chain() { return Source { code: "record_malformed", error: "the Record's chain does not verify" }; }
         let now = r.head("journal");
         if !now.ok { return Source { error: "the Record's head could not be read: " + now.why }; }
         if now.id != head { return Source { code: "snapshot_changed", error: "the Record changed while it was being read" }; }
@@ -190,6 +196,6 @@ locus SourceReader {
             if root[i..(i + 1)] == "/" { name = root[(i + 1)..len(root)]; }
             i = i + 1;
         }
-        return Source { ok: true, identity: dna::line_at(ids.stdout, 0), head: head, revision: seq, name: name, code: "", error: "" };
+        return Source { ok: true, identity: r.identity(), head: head, revision: seq, name: name, code: "", error: "" };
     }
 }

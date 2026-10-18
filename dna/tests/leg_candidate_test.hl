@@ -35,17 +35,19 @@ locus App {
         repo: String = "";
         scratch: String = "";
         core: dna::Dna = dna::Dna { verification: dna::HaleVerification { receipts: dna::FileReceipts { dir: "/tmp/dna-leg-candidate-placeholder" } } };
-        journal: dna::GitJournal = dna::GitJournal { };
+        journal: dna::RoutedJournal = dna::RoutedJournal { };
         asks: Int = 0;
         clones: Int = 0;
     }
     fn start() {
-        self.journal = dna::GitJournal { repo: self.repo };
+        std::test::assert_eq_str(dna::memory_fixture(self.repo), "", "the record is born in memory (GH #1590)");
+        // the organism's journal: the record and its Ledger, each kind where it lives
+        self.journal = dna::RoutedJournal { record: dna::RecordJournal { repo: self.repo }, ledger: dna::MemoryLedger { repo: self.repo, dsn_env: "HALE_DNA_MEMORY_DSN_OWNER" } };
         self.core = dna::Dna {
             journal: self.journal,
             work: dna::WorkSystem { software: dna::LegRelay { name: "legs", performer_kind: "software" }, software_reconciler: dna::RelayReplay { } },
             gateway: dna::MutationGateway { workspaces: dna::IsolatedWorktrees { repo: self.repo, root: self.repo + "/.hale/dna/worktrees" }, repo: dna::LocalGit { repo: self.repo } },
-            verification: dna::HaleVerification { hale_bin: toolchain(), receipts: dna::GitReceipts { repo: self.repo }, scratch: self.repo + "/.hale/dna/scratch", repo: self.repo },
+            verification: dna::HaleVerification { hale_bin: toolchain(), receipts: dna::MemoryReceipts { repo: self.repo }, scratch: self.repo + "/.hale/dna/scratch", repo: self.repo },
             org_id: "legs"
         };
         std::test::assert_eq_str(self.core.catalog.define("change", 1, "record", "a change a leg makes"), "", "change");
@@ -95,7 +97,8 @@ locus App {
     // The outcome handed to the owner, as the relay hands it: the attempt's
     // `attempt.outcome` after it, or its refusal.
     fn hand(attempt: String, request: String, result_ref: String, patch: String) -> String {
-        let digest = if len(patch) > 0 { "sha256:" + dna::GitReceipts { repo: self.repo }.store(patch) } else { "" };
+        std::test::assert_eq_str(dna::memory_fixture(self.repo), "", "the record is born in memory (GH #1590)");
+        let digest = if len(patch) > 0 { "sha256:" + dna::MemoryReceipts { repo: self.repo }.store(patch) } else { "" };
         self.core.on_work_submit(dna::WorkSubmission {
             attempt_id: attempt, holder: LEG, token: 1, disposition: "done", result: "a change", result_ref: result_ref,
             narrative: "the leg's change", evidence_ref: digest, request: request
@@ -115,8 +118,10 @@ locus App {
         std::io::fs::write_file(self.repo + "/.gitignore", "/.hale/\n") or discard;
         let init = sh(self.repo, "git init -q -b main && git add -A && git -c user.name=t -c user.email=t@dna commit -q -m base");
         std::test::assert_eq_int(init.code, 0, "a genome: " + init.stderr);
-        let base = dna::trim_nl(sh(self.repo, "git rev-parse HEAD").stdout);
+        // the record's pin is amended into the base commit as the record is
+        // born (GH #1590): the base is the commit after it
         self.start();
+        let base = dna::trim_nl(sh(self.repo, "git rev-parse HEAD").stdout);
 
         // ---- the rules, as values: the tree says whether a seed has Hale
         // source; a candidate without any is reviewed whatever the grant;

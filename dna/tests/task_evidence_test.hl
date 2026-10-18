@@ -26,7 +26,8 @@ fn dna_cli(app: String, args: String) -> String {
 
 // The record's lines that carry every one of `needles` (tab-separated).
 fn record_lines_with(app: String, needles: String) -> Int {
-    let text = in_dir(app, toolchain() + "\ndna\nrecord-rows").stdout + "\n";
+    // the record's rows and its Ledger's (GH #1590)
+    let text = in_dir(app, toolchain() + "\ndna\nrecord-rows").stdout + "\n" + in_dir(app, toolchain() + "\ndna\nledger\nrows").stdout + "\n";
     let tabbed = needles + "\t";
     let mut n = 0;
     let mut rest = text;
@@ -50,8 +51,8 @@ fn record_lines_with(app: String, needles: String) -> Int {
 main locus App {
     params {
         // pointed at the project in run(); never at the working directory
-        j: dna::GitJournal = dna::GitJournal { repo: "/nonexistent/dna-evidence" };
-        r: dna::GitReceipts = dna::GitReceipts { repo: "/nonexistent/dna-evidence" };
+        j: dna::RoutedJournal = dna::RoutedJournal { };
+        r: dna::MemoryReceipts = dna::MemoryReceipts { repo: "/nonexistent/dna-evidence" };
     }
     // A practice proposed and ratified, as the record keeps one.
     fn practice(name: String, text: String) -> String {
@@ -98,8 +99,11 @@ main locus App {
         let app = scratch + "/bills";
         let u1 = in_dir(app, "git\nconfig\nuser.name\nriley");
         let u2 = in_dir(app, "git\nconfig\nuser.email\nriley@local");
-        self.j = dna::GitJournal { repo: app };
-        self.r = dna::GitReceipts { repo: app };
+        std::test::assert_eq_str(dna::memory_fixture(app), "", "the record is born in memory (GH #1590)");
+        // the record and its Ledger as one (GH #1590): a Task's rows are
+        // the Ledger's
+        self.j = dna::RoutedJournal { record: dna::RecordJournal { repo: app }, ledger: dna::MemoryLedger { repo: app, dsn_env: dna::fixture_spine(app) } };
+        self.r = dna::MemoryReceipts { repo: app };
 
         let strict = self.practice("acceptance/expense-receipt", "An expense closes with its receipt.\nevidence: required\nexceptions by: dana");
         self.handed("t51", "file the March taxi receipt", "expense-receipt", strict, true);
@@ -156,8 +160,9 @@ main locus App {
         // practice that names no one
         let lost = self.practice("acceptance/courier-receipt", "A courier job closes with its receipt.\nevidence: required\nexceptions by: dana");
         self.handed("t55", "send the contract by courier", "courier-receipt", lost, true);
-        let gone = in_dir(app, "git\nupdate-ref\n-d\nrefs/dna/receipts/" + lost[7..len(lost)]);
-        std::test::assert_eq_int(gone.code, 0, "the practice's body is gone from this clone: " + gone.stderr);
+        // the body lost from memory, behind its functions (GH #1590)
+        let gone = dna::run_tool("psql\n" + std::env::var("HALE_DNA_MEMORY_DSN_OWNER") + "\n-q\n-v\nON_ERROR_STOP=1\n-c\nDELETE FROM " + dna::schema_for(dna::record_scope(app)) + ".protected_receipts WHERE digest = '" + lost + "'");
+        std::test::assert_eq_int(gone.code, 0, "the practice's body is gone from memory: " + gone.stderr);
         let unreadable = dna_cli(app, "task\nauthorize\nt55\n--exception\nthe courier lost the slip\n--as\nlee");
         std::test::assert(std::str::contains(unreadable, "cannot be read here"), "a practice that cannot be read authorizes nobody: " + unreadable);
         std::test::assert_eq_int(record_lines_with(app, "\"kind\": \"exception.authorized\"\t\"entity\": \"t55\""), 0, "and nothing was authorized");

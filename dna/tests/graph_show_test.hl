@@ -56,17 +56,17 @@ scaled-out runs { api, brain, postgres, nats, node }
 
 locus App {
     params { repo: String = ""; head: String = ""; }
-    fn append(j: dna::GitJournal, kind: String, entity: String, body: String) {
+    fn append(j: dna::RecordJournal, kind: String, entity: String, body: String) {
         std::test::assert(j.append(j.revision(), kind, entity, body).ok, "the record takes " + kind + " " + entity);
     }
-    fn position(j: dna::GitJournal, parent: String, name: String) {
+    fn position(j: dna::RecordJournal, parent: String, name: String) {
         self.append(j, "graph.node", ops::graph_node_id("position", name), ops::graph_node_body("position", name, "", ""));
         let u = ops::GraphEdge { kind: "unfold" };
         u.member("parent", parent);
         u.member("child", ops::graph_node_id("position", name));
         self.append(j, "graph.edge", u.id(), u.body());
     }
-    fn reviews(j: dna::GitJournal, position: String, subject: String) {
+    fn reviews(j: dna::RecordJournal, position: String, subject: String) {
         let r = ops::GraphEdge { kind: "reviews" };
         r.member("position", ops::graph_node_id("position", position));
         r.member("subject", subject);
@@ -83,9 +83,10 @@ locus App {
         std::test::assert(spine.ok, "memory migrates for the record: " + spine.why);
         let store = dna::Pq { conn: dna::pq_conn(spine), record_id: identity };
         std::test::assert(store.open(), "memory opens as the spine: " + store.last_error());
-        let j = dna::GitJournal { repo: self.repo };
+        std::test::assert_eq_str(dna::memory_fixture(self.repo), "", "the record is born in memory (GH #1590)");
+        let j = dna::RecordJournal { repo: self.repo };
         // the record's own authors: a holder is a person the record knows
-        let r = ops::apply_record_to(store, j, dna::GitReceipts { repo: self.repo }, j.revision(), "", "local", j);
+        let r = ops::apply_record_to(store, j, dna::MemoryReceipts { repo: self.repo }, j.revision(), "", "local", j);
         std::test::assert_eq_str(r.error, "", "the record projects clean");
         std::test::assert_eq_int(r.watermark, j.revision(), "to its end");
         store.close();
@@ -118,7 +119,8 @@ locus App {
         let init = dna::run_tool_timeout(900, "sh\n-c\ncd \"$1\" && unset ANTHROPIC_API_KEY OPENAI_API_KEY && export HALE_DNA_DISCOVER=off && exec \"$2\" dna init .\nsh\n" + self.repo + "\n" + toolchain());
         std::test::assert_eq_int(init.code, 0, "hale dna init reads the repository: " + init.stdout + init.stderr);
 
-        let identity = dna::GitRecord { repo: self.repo }.identity();
+        std::test::assert_eq_str(dna::memory_fixture(self.repo), "", "the record is born in memory (GH #1590)");
+        let identity = dna::MemoryRecord { repo: self.repo }.identity();
         // the record's roles into the vault first, as its bootstrap does (GH #989)
         let provisioned = dna::provision_record_roles(identity, "");
         let m = dna::migrate(dna::parse_dsn(owner), identity);
@@ -126,7 +128,8 @@ locus App {
         self.head = m.head_dsn;
 
         // ---- no memory named: said, not guessed
-        let none = dna::run_tool_timeout(300, "sh\n-c\ncd \"$1\" && unset HALE_DNA_MEMORY_DSN_SPINE HALE_DNA_MEMORY_DSN_HEAD HALE_DNA_MEMORY_DSN_OWNER && exec \"$2\" dna show org\nsh\n" + self.repo + "\n" + toolchain());
+        // (the clone's kept head DSN set aside for the call: init keeps one)
+        let none = dna::run_tool_timeout(300, "sh\n-c\ncd \"$1\" && unset HALE_DNA_MEMORY_DSN_SPINE HALE_DNA_MEMORY_DSN_HEAD HALE_DNA_MEMORY_DSN_OWNER && mv .hale/dna/memory.env .hale/dna/memory.env.aside && { \"$2\" dna show org; c=$?; mv .hale/dna/memory.env.aside .hale/dna/memory.env; exit $c; }\nsh\n" + self.repo + "\n" + toolchain());
         std::test::assert(none.code != 0 && std::str::contains(none.stderr, "no memory is named"), "without memory, show says so: " + none.stdout + none.stderr);
 
         // ---- the ingest alone: the process model, and no chart without positions
@@ -136,7 +139,7 @@ locus App {
         std::test::assert_eq_str(self.show("processes").stdout, PROCESSES, "the process model needs no holes filled");
 
         // ---- the holes, filled as GRAPH.md renders its org chart
-        let j = dna::GitJournal { repo: self.repo };
+        let j = dna::RecordJournal { repo: self.repo };
         self.position(j, "purpose:voice", "board");
         let procs = "postgres api brain node";
         let mut k = 0;
@@ -198,7 +201,7 @@ locus App {
         holds.member("position", "position:board");
         holds.member("holder", "ada");
         // ada is a person the record knows: a row in her name
-        self.append(dna::GitJournal { repo: self.repo, author: "ada" }, "intent.offered", "i-ada", "ada was here");
+        self.append(dna::RecordJournal { repo: self.repo, author: "ada" }, "note.kept", "n-ada", "ada was here");
         self.append(j, "graph.edge", holds.id(), holds.body());
         self.append(j, "graph.node", "position:lone", ops::graph_node_body("position", "lone", "", ""));
         self.project(owner, identity);

@@ -13,15 +13,13 @@ another.
 
 Every step below writes rows. Each row kind has one home:
 
-- **the record**: `refs/dna/journal` in your repository, one commit per
-  row. Mutations, evidence, Reviews and expressions live here, synced
-  to every clone.
+- **the record**: `record_rows` in memory, one signed row per event.
+  Mutations, evidence, Reviews and expressions live here, read and
+  written by every clone.
 - **the ledger**: the day's work (intents, tasks, the workflow
   engine's steps and attempts, effects, model calls) in memory.
 
-Until you run `hale dna ledger adopt`, the record takes every row,
-ledger kinds included. The tables below name each row's home once the
-ledger is adopted. `hale dna history` reads both as one sequence, so
+The tables below name each row's home. `hale dna history` reads both as one sequence, so
 nothing below depends on which one you are on.
 [Memory and the record](./memory.md) has the two memories.
 
@@ -45,16 +43,17 @@ The verb waits for that answer and prints the Task it made:
 shows the answer later:
 
 ```text
-intent i… requested in the record; the organism answers there (`hale dna sync`, then `status`)
+intent i… requested in the record; the organism answers there (`hale dna status`)
 ```
 
-With no organism running in
-this clone and no remote to reach one through, the ask is refused
-before anything is written:
+With no body anywhere holding the
+record's lease, an ask that waits for its answer is refused before
+anything is written (with `--no-wait` it stays in the record until a
+body starts and answers it):
 
 ```text
-$ hale dna task create --as alice --no-wait "document the Echo locus in main.hl"
-hale dna: the organism is not running here (no body in this clone holds the record's lease) and the repository has no remote to reach one through; start it with `hale dna run`
+$ hale dna task create --as alice "document the Echo locus in main.hl"
+hale dna: the organism is not running (no body holds the record's lease); start it with `hale dna run`, or ask with --no-wait to leave the ask in the record
 ```
 
 ## 2. Planned, and admitted as a workflow
@@ -118,7 +117,7 @@ diagnostics in the prompt, each try under its own attempt id.
 ## 5. Evidence
 
 The candidate is proven before anyone is asked. Each step's output is
-a receipt under `refs/dna/receipts/`, named by its hash; the row
+a receipt kept in memory, named by its hash; the row
 carries the exit code and the digest.
 
 | row | home | what it is |

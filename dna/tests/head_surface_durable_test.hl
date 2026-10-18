@@ -108,7 +108,8 @@ fn friction(id: String, request: String, text: String) -> String {
 
 // The `friction.filed` rows of the record whose body names `text`.
 fn filed_rows(repo: String, text: String) -> Int {
-    let j = dna::GitJournal { repo: repo };
+    std::test::assert_eq_str(dna::memory_fixture(repo), "", "the record is born in memory (GH #1590)");
+    let j = dna::RecordJournal { repo: repo };
     let moved = j.refresh();
     let mut n = 0;
     let mut i = 0;
@@ -152,7 +153,7 @@ locus Proc {
 
 locus App {
     params { repo: String = ""; }
-    fn append(j: dna::GitJournal, kind: String, entity: String, body: String) {
+    fn append(j: dna::RecordJournal, kind: String, entity: String, body: String) {
         std::test::assert(j.append(j.revision(), kind, entity, body).ok, "the record takes " + kind + " " + entity);
     }
     run() {
@@ -168,10 +169,11 @@ locus App {
         self.repo = scratch + "/rec";
         let made = dna::run_tool("sh\n-c\nmkdir -p \"$1/dna\" \"$1/.hale/dna\" && cd \"$1\" && git init -q -b main && git config user.name t && git config user.email t@dna && git config --add dna.unix.member \"uid:$2=ada\"\nsh\n" + self.repo + "\n" + me);
         std::test::assert_eq_int(made.code, 0, "a record of its own: " + made.stderr);
-        let j = dna::GitJournal { repo: self.repo };
+        std::test::assert_eq_str(dna::memory_fixture(self.repo), "", "the record is born in memory (GH #1590)");
+        let j = dna::RecordJournal { repo: self.repo };
         self.append(j, "graph.node", ops::graph_node_id("position", "agent"), ops::graph_node_body("position", "agent", "", ""));
         self.append(j, "graph.node", ops::graph_node_id("position", "board"), ops::graph_node_body("position", "board", "", ""));
-        let record = dna::GitRecord { repo: self.repo };
+        let record = dna::MemoryRecord { repo: self.repo };
         let policy = "{\"format\":\"dna.practice-review-authority/1\",\"application_id\":\"" + record.identity() + "\",\"grants\":[{\"mode\":\"local\",\"name\":\"ada\",\"authority\":\"board\",\"practice_propose\":false,\"review_verdict\":false,\"recover\":true}]}";
         std::io::fs::write_file(self.repo + "/.hale/dna/authority.json", policy) or discard;
 

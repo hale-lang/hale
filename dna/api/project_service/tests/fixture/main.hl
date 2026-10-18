@@ -96,7 +96,7 @@ locus HeadFixture {
         // fixture's trusted-local session; "" = trusted-local
         oidc_env: String = "";
         head: std::process::Child = std::process::Child { };
-        journal: dna::GitJournal = dna::GitJournal { repo: "/nonexistent/hale-head-fixture" };
+        journal: dna::RecordJournal = dna::RecordJournal { repo: "/nonexistent/hale-head-fixture" };
         json: Json = Json { };
     }
     birth() {
@@ -149,17 +149,23 @@ locus HeadFixture {
         std::io::fs::write_file(self.project + "/dna/org/models.hl", "// fixture catalog\n// HostedCredential { key: \"FIXTURE_MODEL_KEY\" }\n") or discard;
         std::io::fs::write_file(self.project + "/.gitignore", ".hale/\n") or discard;
         std::io::fs::write_file(self.project + "/README.md", "# head fixture\n") or discard;
-        self.journal = dna::GitJournal { repo: self.project };
+        // the record is born in memory (GH #1590), and the project keeps
+        // its head's DSN, as `hale dna init` leaves a clone
+        std::test::assert_eq_str(dna::memory_fixture(self.project), "", "the record is born in memory");
+        self.journal = dna::RecordJournal { repo: self.project };
         let refreshed = self.journal.refresh();
         let result = self.journal.append(self.journal.revision(), "org.born", "org", "head fixture " + self.project);
         std::test::assert(result.ok, "fixture append org.born: " + result.error);
-        let record = dna::GitRecord { repo: self.project };
+        let record = dna::MemoryRecord { repo: self.project };
         self.identity = record.identity();
-        std::test::assert(len(self.identity) == 40, "the fixture Record has a genesis");
+        std::test::assert(len(self.identity) == 64, "the fixture Record has a genesis");
     }
     fn url() -> String { return "http://127.0.0.1:" + to_string(self.port); }
     fn log() -> String { return std::io::fs::read_file(self.root + "/head.log") or ""; }
     fn spawn(project_arg: String) {
+        // the head's vault is its own: it reaches the fixture's record with
+        // the entries this fixture drew (GH #1590)
+        if len(dna::record_scope(self.project)) > 0 { std::test::assert_eq_str(dna::fixture_share_vault(self.project, self.root + "/home/vault"), "", "the head's vault holds the record's roles"); }
         let head_bin = std::env::var("HALE_HEAD_BIN");
         let api_bin = std::env::var("HALE_API_BIN");
         std::test::assert(len(head_bin) > 0 && std::io::fs::file_exists(head_bin), "build dna/api/project_service and set absolute HALE_HEAD_BIN");

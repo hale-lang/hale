@@ -47,13 +47,13 @@ const DRIVER: &str = r#"import "vendor/dna" as dna;
 fn main() {
     let cur = std::io::fs::read_file("main.hl") or "";
     let core = dna::Dna {
-        journal: dna::GitJournal { repo: "." },
+        journal: dna::RoutedJournal { record: dna::RecordJournal { repo: "." } },
         gateway: dna::MutationGateway {
-            leases: dna::GitLeases { repo: "." },
+            leases: dna::MemoryLeases { repo: "." },
             workspaces: dna::IsolatedWorktrees { repo: ".", root: ".hale/dna/worktrees" },
             repo: dna::LocalGit { repo: "." }
         },
-        verification: dna::HaleVerification { receipts: dna::GitReceipts { repo: "." }, scratch: ".hale/dna/scratch", repo: ".", seed: "." },
+        verification: dna::HaleVerification { receipts: dna::MemoryReceipts { repo: "." }, scratch: ".hale/dna/scratch", repo: ".", seed: "." },
         editor: dna::SourceEditor {
             name: "editor",
             models: dna::ModelRouter {
@@ -133,7 +133,7 @@ fn a_pending_review_becomes_a_pull_request_and_its_review_becomes_the_verdict() 
     git(&["add", "-A"], &app);
     git(&["commit", "-q", "-m", "the app"], &app);
     git(&["remote", "add", "origin", &bare.to_string_lossy()], &app);
-    git(&["push", "-q", "origin", "main", "refs/dna/*:refs/dna/*"], &app);
+    git(&["push", "-q", "origin", "main"], &app);
     let base = git(&["rev-parse", "HEAD"], &app);
     // one Mutation up to its Review, offline
     std::fs::create_dir_all(app.join("mutate")).unwrap();
@@ -151,6 +151,7 @@ fn a_pending_review_becomes_a_pull_request_and_its_review_becomes_the_verdict() 
     let mut host = vault::hale()
         .args(["dna", "run", ".", "--no-iris"])
         .current_dir(&app)
+        .env("HALE_DNA_MEMORY_DSN_SPINE", record::spine(vault::hale(), &app))
         .env("PATH", &path)
         .env("XDG_CACHE_HOME", std::env::temp_dir().join("hale-tests-iris-cache"))
         .env("HALE_BIN", env!("CARGO_BIN_EXE_hale"))
@@ -250,7 +251,7 @@ fn the_same_rows_come_from_the_file_forge_and_the_profile_names_it() {
     git(&["add", "-A"], &app);
     git(&["commit", "-q", "-m", "the app"], &app);
     git(&["remote", "add", "origin", &bare.to_string_lossy()], &app);
-    git(&["push", "-q", "origin", "main", "refs/dna/*:refs/dna/*"], &app);
+    git(&["push", "-q", "origin", "main"], &app);
     let (ok, prof) = hale(&["dna", "profile", "."], &app);
     assert!(ok && prof.contains("github:      file forge at .hale/dna/forge"), "the profile names the forge found:\n{prof}");
     std::fs::create_dir_all(app.join("mutate")).unwrap();
@@ -265,6 +266,7 @@ fn the_same_rows_come_from_the_file_forge_and_the_profile_names_it() {
     let mut host = vault::hale()
         .args(["dna", "run", ".", "--no-iris"])
         .current_dir(&app)
+        .env("HALE_DNA_MEMORY_DSN_SPINE", record::spine(vault::hale(), &app))
         .env("XDG_CACHE_HOME", std::env::temp_dir().join("hale-tests-iris-cache"))
         .env("HALE_BIN", env!("CARGO_BIN_EXE_hale"))
         .env("HALE_DNA_DISCOVER", "off")

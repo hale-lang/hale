@@ -56,10 +56,6 @@ fn request_digest_id(root: String, prefix: String, request: String) -> String {
     return prefix + dna::digest_of(record_head(root).id + "\n" + request)[7..19];
 }
 
-fn no_organism(root: String) -> String {
-    return "the organism is not running here (no body in this clone holds the record's lease) and the repository has no remote to reach one through; start it with `hale dna run`";
-}
-
 // An event after `from` of one of `kinds` (space-separated) naming `entity`.
 // `from` is a position in THIS projection: a merged order is arrival
 // order within one `RoutedJournal`, and a fresh one lists every record
@@ -211,8 +207,8 @@ fn task_done_admit(root: String, seed: String, id: String, who_flag: String, not
     return fail("task done: the Record kept changing; no further admission was made, inspect the Task before retrying");
 }
 
-// Evidence the record holds: a receipt under refs/dna/receipts, or a
-// protected one the record classified or withheld.
+// Evidence the record holds: a receipt memory keeps, or a protected one
+// classified or withheld.
 fn evidence_held(root: String, p: Projection, evidence: String) -> Bool {
     return receipt_read(root, evidence[7..len(evidence)]).present || p.has_row("receipt.classified", evidence) || p.has_row("receipt.withheld", evidence);
 }
@@ -390,11 +386,11 @@ fn receipt_file_verb(root: String, path: String, class_flag: String, who_flag: S
     b.string_field("name", if slash < 0 { path } else { path[(slash + 1)..len(path)] });
     b.int_field("bytes", len(text));
     b.string_field("class", "internal");
-    b.string_field("store", "git");
+    b.string_field("store", "memory");
     b.end_object();
     if !append_as(root, "receipt.filed", digest, b.result(), who, memory) { return fail("the record refused the append"); }
     let s3 = sync_record(root, memory);
-    return answer("receipt " + digest + " filed (internal, " + to_string(len(text)) + " bytes, under refs/dna/receipts; receipt.filed, by " + who + ")\n");
+    return answer("receipt " + digest + " filed (internal, " + to_string(len(text)) + " bytes, kept in memory; receipt.filed, by " + who + ")\n");
 }
 
 // GH #604 rule 5: a handed Task moves to another person as a row that
@@ -580,7 +576,7 @@ fn held_task_ids(tasks: String) -> String {
 fn retire_admit(root: String, seed: String, who: String, to: String, by_flag: String, batch: ops::GovernanceBatchRecord, memory: dna::Memory) -> Answer {
     if len(who) == 0 { return fail("retire: `hale dna retire <who> [--to <successor>] [--as <by>]`"); }
     let synced = sync_record(root, memory);
-    let record = dna::GitRecord { repo: root };
+    let record = dna::MemoryRecord { repo: root };
     let no_head = record_refusal(root);
     if len(no_head) > 0 { return fail(no_head); }
     let principal = record.setting("principal");
@@ -698,6 +694,14 @@ fn task_create_verb(root: String, outcome: String, to: String, no_wait: Bool, as
     if len(routed) > 0 && judgment { return fail("task create: --judgment asks for an assessment; --to position:<name> routes a change"); }
     let ours = admits_here(root, owner);
     let local = ours && organism_here(root, memory);
+    // an ask that waits for its answer, with no body anywhere holding the
+    // record's lease, would wait for nobody (GH #1590: the lease is
+    // memory's, so every clone knows); `--no-wait` leaves it in the record
+    // for when one starts
+    if ours && !local && !no_wait {
+        let l = body_lease_read(root, memory);
+        if l.ok && !body_live(l, std::time::now()) { return fail("the organism is not running (no body holds the record's lease); start it with `hale dna run`, or ask with --no-wait to leave the ask in the record"); }
+    }
     let b = std::json::Builder { };
     b.begin_object();
     b.string_field("outcome", outcome);
@@ -718,14 +722,13 @@ fn task_create_verb(root: String, outcome: String, to: String, no_wait: Bool, as
         // the model mapping's override for this ask (dna/core/model_map.hl): a
         // rule on the ask, admitted only inside the sizes its position permits
         if len(size) > 0 && !append_as(root, "model.rule", "task:" + intent_id, "{\"size\": " + quote(size) + ", \"by\": " + quote(who) + "}", if len(as_flag) > 0 { as_flag } else { "" }, memory) { return fail("task create: the size was not written (the reason is above)"); }
-        if !append_as(root, "intent.requested", intent_id, b.result(), if len(as_flag) > 0 { as_flag } else { "" }, memory) { return fail("task create: the intent was not written (the reason is above)"); }
+        if !append_as(root, "intent.requested", intent_id, b.result(), who, memory) { return fail("task create: the intent was not written (the reason is above)"); }
         if no_wait { return answer(requested); }
     } else {
         // no organism here: the intent goes into the record, and the host
         // beside the organism relays it (GH #566 F1)
-        if len(record_remote(root)) == 0 { return fail(if ours { no_organism(root) } else { "task create: " + ownership_note(root, owner) + "; their controller reads the record at its remote, and this clone has none" }); }
         if len(size) > 0 && !append_as(root, "model.rule", "task:" + intent_id, "{\"size\": " + quote(size) + ", \"by\": " + quote(who) + "}", if len(as_flag) > 0 { as_flag } else { "" }, memory) { return fail("task create: the size was not written (the reason is above)"); }
-        if !append_as(root, "intent.requested", intent_id, b.result(), if len(as_flag) > 0 { as_flag } else { "" }, memory) { return fail("task create: the intent was not written (the reason is above)"); }
+        if !append_as(root, "intent.requested", intent_id, b.result(), who, memory) { return fail("task create: the intent was not written (the reason is above)"); }
         let s = sync_record(root, memory);
         if !s.ok { return fail(s.summary); }
         if no_wait { return answer(requested); }
@@ -780,7 +783,7 @@ locus GovernanceCli {
         if len(actor) == 0 || (len(who_flag) > 0 && who_flag != actor) { return GovernanceCliSettings { error: "command_context_changed: --as must match the trusted local USER identity" }; }
         let path = std::env::var("HALE_DNA_COMMAND_POLICY");
         if len(path) == 0 { return GovernanceCliSettings { error: "HALE_DNA_COMMAND_POLICY must name an explicit authority policy for native commands" }; }
-        let record = dna::GitRecord { repo: self.root };
+        let record = dna::MemoryRecord { repo: self.root };
         let identity = record.identity();
         let context = ops::GovernanceContext { application_id: identity, principal_mode: "local", principal_name: actor };
         let command_codec = ops::GovernanceCommandCodec { };
@@ -853,14 +856,14 @@ locus GovernanceCli {
     fn practice(name: String, text: String, because: String, supersedes: String, who_flag: String, supplied_id: String, no_wait: Bool) -> Answer {
         let settings = self.settings(who_flag);
         if !settings.ok { return fail(settings.error); }
-        let record = dna::GitRecord { repo: self.root };
+        let record = dna::MemoryRecord { repo: self.root };
         let authority = ops::FixedAuthority { policy: settings.policy };
         let native = ops::GovernanceCommands { record: record, authority: authority, sign: settings.policy.sign };
         let snapshot = native.capture();
         if !snapshot.ok { return fail("cannot read Practice predecessor: " + snapshot.code); }
         let journal = ops::GovernanceJournal { snapshot: snapshot };
         if !journal.valid { return fail("cannot read Practice predecessor: invalid Record"); }
-        let queries = ops::Queries { j: journal };
+        let queries = ops::Queries { j: journal, location: self.root };
         let selected = queries.practice_metadata(supersedes);
         if len(name) == 0 || selected.name != name { return fail("stale_subject: the supplied name must match the selected native Practice predecessor"); }
         let command = ops::GovernanceCommand {
@@ -870,14 +873,14 @@ locus GovernanceCli {
         return self.submit(native, authority, settings.context, command, "", no_wait);
     }
     fn review_profile(id: String) -> GovernanceCliReview {
-        let record = dna::GitRecord { repo: self.root };
+        let record = dna::MemoryRecord { repo: self.root };
         let native = ops::GovernanceCommands { record: record };
         let snapshot = native.capture();
         if !snapshot.ok { return GovernanceCliReview { error: snapshot.code }; }
         let journal = ops::GovernanceJournal { snapshot: snapshot };
         if !journal.valid { return GovernanceCliReview { error: "command_history_invalid" }; }
         let review = ops::review_row(journal, id);
-        let queries = ops::Queries { j: journal };
+        let queries = ops::Queries { j: journal, location: self.root };
         let practice = queries.practice_metadata(review.knowledge_digest);
         if len(review.id) == 0 { return GovernanceCliReview { error: "review_not_found" }; }
         // Missing Practice metadata cannot prove this is an unrelated legacy
@@ -889,7 +892,7 @@ locus GovernanceCli {
     fn verdict(id: String, verdict: String, who_flag: String, authority_flag: String, comment: String, digest: String, supplied_id: String, no_wait: Bool) -> Answer {
         let settings = self.settings(who_flag);
         if !settings.ok { return fail(settings.error); }
-        let record = dna::GitRecord { repo: self.root };
+        let record = dna::MemoryRecord { repo: self.root };
         let authority = ops::FixedAuthority { policy: settings.policy };
         let native = ops::GovernanceCommands { record: record, authority: authority, sign: settings.policy.sign };
         let command = ops::GovernanceCommand {
@@ -903,7 +906,7 @@ locus GovernanceCli {
         if !settings.ok { return fail(settings.error); }
         let codec = ops::GovernanceCommandCodec { };
         if len(codec.identity(settings.context, request_id)) == 0 { return fail("lookup requires one valid --request-id"); }
-        let record = dna::GitRecord { repo: self.root };
+        let record = dna::MemoryRecord { repo: self.root };
         let authority = ops::FixedAuthority { policy: settings.policy };
         let native = ops::GovernanceCommands { record: record, authority: authority, sign: settings.policy.sign };
         return self.render(native.lookup(settings.context, request_id), request_id);
@@ -957,6 +960,13 @@ fn verdict_verb(root: String, seed: String, id: String, verdict: String, reviewe
     if !local { let s = sync_record(root, memory); }
     let no_head = record_refusal(root);
     if len(no_head) > 0 { return fail(no_head); }
+    // a verdict that waits for its answer, with no body anywhere holding
+    // the record's lease, would wait for nobody (as an ask: the lease is
+    // memory's, so every clone knows); `--no-wait` leaves it in the record
+    if !local && !no_wait {
+        let l = body_lease_read(root, memory);
+        if l.ok && !body_live(l, std::time::now()) { return fail("the organism is not running (no body holds the record's lease); start it with `hale dna run`, or decide with --no-wait to leave the verdict in the record"); }
+    }
     let p = open_projection(root, seed, "", memory);
     // `all`: every pending group, in the order a new organization is
     // ratified — what it is for, the practices it ships with, its library,
@@ -1044,7 +1054,6 @@ fn verdict_verb(root: String, seed: String, id: String, verdict: String, reviewe
     }
     let r = p.review_of(id);
     if len(r.id) == 0 { return fail("no `review.requested` for `" + id + "` in the Journal (pending: " + pending_ids(p) + ")"); }
-    if !local && len(record_remote(root)) == 0 { return fail("the organism is not running here (no body holds this record's lease) and the repository has no remote to reach one through; start it with `hale dna run`"); }
     let reviewer = if len(reviewer_flag) > 0 { reviewer_flag } else { who_am_i() };
     let authority = if len(authority_flag) > 0 { authority_flag } else { "board" };
     // the verdict names the candidate the reviewer LOOKED AT
@@ -1109,7 +1118,6 @@ fn pressure_raise(root: String, source: String, what: String, memory: dna::Memor
         if !append_as(root, "pressure.requested", source, b.result(), "", memory) { return fail("the record refused the append"); }
         return answer("pressure raised on " + source + ": " + what + "\n");
     }
-    if len(record_remote(root)) == 0 { return fail(no_organism(root)); }
     if !append_as(root, "pressure.requested", source, b.result(), "", memory) { return fail("the record refused the append"); }
     let s = sync_record(root, memory);
     if !s.ok { return fail(s.summary); }
@@ -1136,7 +1144,6 @@ fn concern_raise(root: String, source: String, what: String, severity: Int, memo
     }
     // no organization here: into the record, and the host beside the
     // organization relays it (GH #583 K4)
-    if len(record_remote(root)) == 0 { return fail(no_organism(root)); }
     if !append_as(root, "concern.requested", source, b.result(), "", memory) { return fail("the record refused the append"); }
     let s = sync_record(root, memory);
     if !s.ok { return fail(s.summary); }
@@ -1189,7 +1196,6 @@ fn practice_verb(root: String, seed: String, sub: String, name: String, text: St
             return fail("requested the proposal, but the organization journaled no answer for " + request_id + " in time");
         }
         b.end_object();
-        if len(record_remote(root)) == 0 { return fail(no_organism(root)); }
         if !append_as(root, "practice.requested", request_id, b.result(), who, memory) { return fail("the record refused the append"); }
         let s = sync_record(root, memory);
         if !s.ok { return fail(s.summary); }
@@ -1200,7 +1206,7 @@ fn practice_verb(root: String, seed: String, sub: String, name: String, text: St
     // Governance reads need only Record. The shared projection supplies native
     // identities/state; this legacy CLI retains its existing receipt renderer.
     // Hosted readers use Queries.practice_of's fail-closed visibility instead.
-    let q = ops::Queries { j: dna::GitJournal { repo: root } };
+    let q = ops::Queries { j: dna::RecordJournal { repo: root }, location: root };
     let mut out = "";
     let mut n = 0;
     let mut i = 0;
@@ -1232,9 +1238,9 @@ fn sync_verb(root: String, memory: dna::Memory) -> Answer {
     let s = sync_record(root, memory);
     if !s.ok { return fail(s.summary); }
     let h = record_head(root);
-    if !h.ok { return fail("record " + RECORD_REF + ": " + s.summary + "; its head could not be read after: " + h.why); }
+    if !h.ok { return fail("record: " + s.summary + "; its head could not be read after: " + h.why); }
     let n = if h.absent { 0 } else { open_projection(root, ".", "", memory).rows() };
-    return answer("record " + RECORD_REF + ": " + s.summary + "; " + to_string(n) + " event(s)\n");
+    return answer("record: " + s.summary + "; " + to_string(n) + " event(s)\n");
 }
 
 // ---- the fleet's deploy row ----------------------------------------
@@ -1318,7 +1324,7 @@ fn fleet_deploy(root: String, fleet: String, plan_rel: String, rev_in: String, s
     let plan = genome_show(root, rev, plan_rel);
     if len(plan) == 0 { return Deploy { error: "no plan " + plan_rel + " at " + short(rev) }; }
     let touched = touched_by(root, plan_rel, plan, seed);
-    let remote = record_remote(root);
+    let remote = genome_remote(root);
     if len(remote) > 0 {
         let pushed = genome_push_branch(root, remote, rev, revision_branch(rev), true);
         if len(pushed) > 0 { return Deploy { error: "the revision could not be published: " + pushed }; }
@@ -1517,7 +1523,7 @@ fn forge_sync(root: String, seed: String, forge: dna::Forge, memory: dna::Memory
 fn forge_sync_on(p: Projection, root: String, seed: String, forge: dna::Forge, memory: dna::Memory) -> Answer {
     if !forge.present() { return fail("no forge: " + forge.name()); }
     let board = "," + std::str::replace(rec(root).setting("github.board"), " ", "") + ",";
-    let remote_named = record_remote(root);
+    let remote_named = genome_remote(root);
     let remote = if len(remote_named) == 0 { "origin" } else { remote_named };
     let branch_named = genome_branch(root);
     let branch = if len(branch_named) == 0 { "main" } else { branch_named };

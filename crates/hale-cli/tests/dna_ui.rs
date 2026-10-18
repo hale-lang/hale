@@ -40,13 +40,13 @@ const DRIVER: &str = r#"import "vendor/dna" as dna;
 fn main() {
     let cur = std::io::fs::read_file("main.hl") or "";
     let core = dna::Dna {
-        journal: dna::GitJournal { repo: "." },
+        journal: dna::RoutedJournal { record: dna::RecordJournal { repo: "." } },
         gateway: dna::MutationGateway {
-            leases: dna::GitLeases { repo: "." },
+            leases: dna::MemoryLeases { repo: "." },
             workspaces: dna::IsolatedWorktrees { repo: ".", root: ".hale/dna/worktrees" },
             repo: dna::LocalGit { repo: "." }
         },
-        verification: dna::HaleVerification { receipts: dna::GitReceipts { repo: "." }, scratch: ".hale/dna/scratch", repo: ".", seed: "." },
+        verification: dna::HaleVerification { receipts: dna::MemoryReceipts { repo: "." }, scratch: ".hale/dna/scratch", repo: ".", seed: "." },
         editor: dna::SourceEditor {
             name: "editor",
             models: dna::ModelRouter {
@@ -84,7 +84,7 @@ fn the_surface_serves_the_record_and_takes_no_command() {
     git(&["add", "-A"], &app);
     git(&["commit", "-q", "-m", "the app"], &app);
     git(&["remote", "add", "origin", &bare.to_string_lossy()], &app);
-    git(&["push", "-q", "origin", "main", "refs/dna/*:refs/dna/*"], &app);
+    git(&["push", "-q", "origin", "main"], &app);
     std::fs::create_dir_all(app.join("mutate")).unwrap();
     std::fs::write(app.join("mutate/main.hl"), DRIVER).unwrap();
     let (ok, out) = hale(&["run", "mutate"], &app);

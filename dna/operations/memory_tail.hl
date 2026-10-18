@@ -52,8 +52,8 @@ fn apply_record(store: dna::KnowledgeStore, j: dna::Journal, receipts: dna::Rece
 }
 
 // Who wrote each row of the record (GH #1087 review, G4): the persons the
-// record knows, for the store to judge a holder by. A git record answers
-// (`GitJournal.author_of`); a projector given none knows only the owners
+// record knows, for the store to judge a holder by. The record answers
+// (`RecordJournal.author_of`); a projector given none knows only the owners
 // map's members.
 interface RowAuthors { fn author_of(i: Int) -> String; }
 locus NoAuthors { fn author_of(i: Int) -> String { return ""; } }
@@ -154,7 +154,7 @@ fn apply_row(store: dna::KnowledgeStore, j: dna::Journal, receipts: dna::Receipt
         let digest = e.entity;
         let raw = if std::str::starts_with(digest, "sha256:") { digest[7..len(digest)] } else { digest };
         let doc = receipts.read(raw);
-        if len(doc) == 0 && redacted_in(j, digest) {
+        if len(doc) == 0 && (redacted_in(j, digest) || receipts.redacted(digest)) {
             // GH #606: a redacted receipt is an idea with no body left —
             // retired, never an error that stops the whole projection
             if !store.retire(digest, i) { out.error = store.last_error(); return out; }
@@ -534,8 +534,8 @@ locus KnowledgeVisibility {
         let moved = self.record.refresh();
         self.basis.record_head = self.record.head();
         self.basis.record_revision = self.record.revision();
-        // GitJournal's legacy refresh has no error channel and may represent a
-        // failed read as empty genesis. That cannot authorize cached graph rows.
+        // A refresh that failed may read as an empty genesis. That cannot
+        // authorize cached graph rows.
         if self.basis.record_revision == 0 || self.basis.record_head == "genesis" || len(self.basis.record_head) == 0 { return self.refuse("knowledge_visibility_unavailable"); }
         if self.basis.record_revision < 0 || self.basis.record_revision > self.max_rows { return self.refuse("knowledge_read_limit"); }
         let mut i = 0;
@@ -625,19 +625,17 @@ locus MemoryProjection {
         root: String = ".";
         dsn_env: String = dna::SPINE_DSN_ENV;
         store: dna::Pq = dna::Pq { };
-        j: dna::GitJournal = dna::GitJournal { repo: ".", author: "spine" };
-        receipts: dna::GitReceipts = dna::GitReceipts { repo: "." };
+        j: dna::RecordJournal = dna::RecordJournal { repo: ".", author: "spine" };
+        receipts: dna::MemoryReceipts = dna::MemoryReceipts { repo: "." };
         applied: Int = 0;
         last_error: String = "";
         opened: Bool = false;
-        // GH #1026: the commit the projection stops at ("" = the record's
-        // end): the host projects only what the remote holds
-        until: String = "";
     }
     birth() {
         self.j.repo = self.root;
-        self.j.record.repo = self.root;
+        self.j.signer.repo = self.root;
         self.receipts.repo = self.root;
+        self.dsn_env = dna::memory_source(self.root, self.dsn_env);
         self.store.dsn_env = self.dsn_env;
     }
     fn ready() -> Bool { return dna::dsn_set(self.dsn_env); }
@@ -655,9 +653,9 @@ locus MemoryProjection {
         // the service by hand (the review's second round, finding 4).
         // The connection is asked on each request, and a dead one is
         // re-established here rather than reported as knowledge.
-        // The store is scoped by the record's identity, its first
-        // commit (GH #613): a record that had no rows when the store
-        // opened, and has some now, moves to its own schema here.
+        // The store is scoped by the record's identity (GH #613, #1590):
+        // a record that had no rows when the store opened, and has some
+        // now, moves to its own schema here.
         let scope = self.j.genesis();
         if self.opened && scope != self.store.record() {
             eprintln("hale dna: memory: the record has its first row; the store is scoped to record ", scope);
@@ -675,28 +673,15 @@ locus MemoryProjection {
         self.last_error = "the store is not open: " + self.store.last_error();
         return false;
     }
-    // Tail the record: fetch is the host's job; this reads what the
-    // repository has now (another process — the organization, a CLI —
-    // may have moved the ref since the last read). Any number of
-    // projectors may tail one record at once.
+    // Tail the record: read what memory holds now (another process — the
+    // organization, a CLI — may have appended since the last read). Any
+    // number of projectors may tail one record at once.
     fn apply() -> ProjectionApplied {
         // read the record before opening the store: the scope is the
         // record's identity as loaded, and what is applied is the same
         // loaded record
         let moved = self.j.refresh();
-        self.until = "";
         return self.project(false);
-    }
-    // As `apply`, up to and including the row `head` alone — the head the
-    // record's remote holds, so a node stamps only rows it has shared (GH
-    // #1026). A head this clone does not hold projects nothing.
-    fn apply_to(head: String) -> ProjectionApplied {
-        let moved = self.j.refresh();
-        self.until = head;
-        if len(head) == 0 { return ProjectionApplied { yielded: true }; }
-        let r = self.project(false);
-        self.until = "";
-        return r;
     }
     fn projection_refused(why: String) -> ProjectionApplied {
         self.last_error = "the Knowledge projection cannot proceed over this Record: " + why;
@@ -705,39 +690,34 @@ locus MemoryProjection {
         eprintln("hale dna: memory: projection refused: ", why, " (record ", to_string(self.j.revision()), " head ", self.j.head(), ")");
         return ProjectionApplied { error: "knowledge_projection_unavailable" };
     }
-    // Where this clone's record stands to memory's stamp, by ancestry
-    // (GH #1026). The record's rows are its commits, so a stamp is a
-    // commit and every clone can place it:
-    //   `descends` — nothing is stamped, or the stamped head is this
-    //     clone's row at the stamp: the rows after it are the delta;
-    //   `behind`   — this clone's head is an ancestor of the stamped head,
-    //     or the stamped head is a commit this clone has not received:
-    //     another projector is ahead, and there is nothing here to project
-    //     until the record is received (the host receives it every tick). A
-    //     head it cannot place is never taken for a replaced chain: two
-    //     nodes that append rows before they share them would otherwise
-    //     each rebuild the other's projection until they synced;
-    //   `replaced` — neither: the chain was rebuilt beneath the projection
-    //     (a reconcile re-appends local rows, each with a new digest, GH
-    //     #603), so the graph is rebuilt from row 0. The graph is derived.
+    // Where this projector's view of the record stands to memory's stamp
+    // (GH #1026, #1590). The record is one chain in memory that only
+    // grows, and a stamp is a row of it:
+    //   `descends` — nothing is stamped, or the stamped head is this view's
+    //     row at the stamp: the rows after it are the delta;
+    //   `behind`   — the stamp is past this view (another projector read the
+    //     record later): nothing to project until this view is read again;
+    //   `replaced` — the stamped head is not the record's row at the stamp:
+    //     a projection of another record's chain, or of rows rewritten
+    //     behind memory's function. The graph is derived, and is rebuilt
+    //     from row 0.
     fn fence(basis: dna::GraphProjection, revision: Int) -> String {
         if basis.watermark == 0 { return "descends"; }
         if basis.watermark <= revision && self.j.read(basis.watermark - 1).digest == basis.head { return "descends"; }
-        let r = self.j.record;
-        if !r.holds(basis.head) { return "behind"; }
-        if revision == 0 || r.precedes(self.j.read(revision - 1).digest, basis.head) { return "behind"; }
+        if basis.watermark > revision { return "behind"; }
         return "replaced";
     }
     // The rows from `from` to `to` a reader refuses (GH #1026): their
     // digests, one per line, each said once on stderr.
     fn refused(from: Int, to: Int) -> String {
-        let trust = self.j.record.setting("trust");
+        let rec = dna::MemoryRecord { repo: self.j.repo };
+        let trust = rec.setting("trust");
         if trust != "signed" { return ""; }
         let mut out = "";
         let mut i = if from < 0 { 0 } else { from };
         while i < to {
             let e = self.j.read(i);
-            let why = dna::row_admissible(self.j.record, e, trust);
+            let why = dna::row_admissible(rec, e, trust);
             if len(why) > 0 {
                 out = out + e.digest + "\n";
                 eprintln("hale dna: memory: not projected: ", why);
@@ -745,16 +725,6 @@ locus MemoryProjection {
             i = i + 1;
         }
         return out;
-    }
-    // The rows this pass projects: the record's, or up to `until`.
-    fn extent() -> Int {
-        if len(self.until) == 0 { return self.j.revision(); }
-        let mut i = self.j.revision();
-        while i > 0 {
-            if self.j.read(i - 1).digest == self.until { return i; }
-            i = i - 1;
-        }
-        return -1;
     }
     fn project(bounded: Bool) -> ProjectionApplied { return self.project_once(bounded, false); }
     fn project_once(bounded: Bool, rebuilt: Bool) -> ProjectionApplied {
@@ -764,15 +734,13 @@ locus MemoryProjection {
         let whole = self.j.revision();
         let last = if whole > 0 { self.j.read(whole - 1).digest } else { "" };
         if whole > 0 && last != self.j.head() { return self.projection_refused("the record head `" + self.j.head() + "` is not its last row `" + last + "`"); }
-        // a shared head this clone has not taken in yet: nothing to project
-        let revision = self.extent();
-        if revision < 0 { return ProjectionApplied { watermark: basis.watermark, yielded: true }; }
+        let revision = whole;
         let place = self.fence(basis, revision);
         if place == "behind" { return ProjectionApplied { watermark: basis.watermark, yielded: true }; }
         if place == "replaced" {
-            eprintln("hale dna: memory: the stamped head `", basis.head, "` at row ", to_string(basis.watermark), " is neither this clone's row there nor ahead of it (record ", to_string(revision), " head ", self.j.head(), "): the chain was rebuilt beneath the projection (a reconcile); rebuilding the projection from row 0");
-            // once per pass: a second projector over another chain moves
-            // it back on its own pass, until the reconcile ends the race
+            eprintln("hale dna: memory: the stamped head `", basis.head, "` at row ", to_string(basis.watermark), " is not the record's row there (record ", to_string(revision), " head ", self.j.head(), "); rebuilding the projection from row 0");
+            // once per pass: a projection that moves again under this one
+            // is left to the next pass
             if rebuilt { return ProjectionApplied { watermark: basis.watermark, yielded: true }; }
             if !self.store.rebuild(basis.watermark, basis.head) {
                 if len(self.store.last_error()) == 0 { return ProjectionApplied { watermark: basis.watermark, yielded: true }; }
@@ -783,7 +751,8 @@ locus MemoryProjection {
         self.store.forget_error();
         let receipts = GraphReceipts { source: self.receipts };
         let refused = self.refused(basis.watermark, revision);
-        let trust = if len(self.j.record.setting("trust")) > 0 { self.j.record.setting("trust") } else { "local" };
+        let set = dna::MemoryRecord { repo: self.j.repo }.setting("trust");
+        let trust = if len(set) > 0 { set } else { "local" };
         let mut r = if bounded { apply_record_to(self.store, self.j, receipts, revision, refused, trust, self.j) } else { apply_record_to(self.store, self.j, self.receipts, revision, refused, trust, self.j) };
         if len(receipts.error) > 0 { r.error = receipts.error; }
         self.applied = self.applied + r.ratified + r.proposed + r.declined;
@@ -792,31 +761,24 @@ locus MemoryProjection {
     }
 }
 
-// Projection reads pin each receipt ref to a blob and inspect its size before
-// transporting its body. A read must not trigger unlimited catch-up work before
-// the graph query's own row/byte bounds can run. This adapter never writes.
+// Projection reads are bounded before the graph query's own row/byte bounds
+// can run: each body read is counted against what the pass may read, and one
+// that is not its digest's is refused. This adapter never writes.
 locus GraphReceipts {
-    params { source: dna::GitReceipts; remaining: Int = 8388608; error: String = ""; }
-    fn kind() -> String { return "git"; }
+    params { source: dna::MemoryReceipts; remaining: Int = 8388608; error: String = ""; }
+    fn kind() -> String { return "memory"; }
     fn store(text: String) -> String { self.error = "knowledge_projection_unavailable"; return ""; }
     fn erase(digest: String) -> Bool { self.error = "knowledge_projection_unavailable"; return false; }
+    fn redacted(digest: String) -> Bool { return self.source.redacted(digest); }
     fn read(digest: String) -> String {
         if len(self.error) > 0 { return ""; }
         if len(digest) != 64 || !dna::digest_well_formed("sha256:" + digest) { self.error = "knowledge_projection_unavailable"; return ""; }
-        let record = self.source.record;
-        let object = record.git_out("rev-parse\n-q\n--verify\n" + record.ref_of("receipts/" + digest));
-        if len(object) == 0 { return ""; }
-        // cat-file with an expected type can peel a tag. Size and body must
-        // refer to the exact same blob, never a small tag over a large body.
-        let kind = record.git("cat-file\n-t\n" + object);
-        if kind.code != 0 || dna::trim_nl(kind.stdout) != "blob" { self.error = "knowledge_projection_unavailable"; return ""; }
-        let sized = record.git("cat-file\n-s\n" + object);
-        let size = std::str::parse_int(dna::trim_nl(sized.stdout)) or - 1;
-        if sized.code != 0 || size < 0 { self.error = "knowledge_projection_unavailable"; return ""; }
+        let body = self.source.read(digest);
+        if len(body) == 0 { return ""; }
+        let size = len(body);
         if size > self.remaining { self.error = "knowledge_read_limit"; return ""; }
-        let body = record.git("cat-file\nblob\n" + object);
-        if body.code != 0 || len(body.stdout) != size || dna::digest_of(body.stdout) != "sha256:" + digest { self.error = "knowledge_projection_unavailable"; return ""; }
+        if dna::digest_of(body) != "sha256:" + digest { self.error = "knowledge_projection_unavailable"; return ""; }
         self.remaining = self.remaining - size;
-        return body.stdout;
+        return body;
     }
 }

@@ -162,13 +162,14 @@ main locus App {
     // documented program; a `pre` review gate keeps the candidate in
     // review; a delayed service performer for the authored definitions.
     fn boot(repo: String, planned: Bool) {
+        std::test::assert_eq_str(dna::memory_fixture(repo), "", "the record is born in memory (GH #1590)");
         self.dna = dna::Dna {
-            journal: dna::GitJournal { repo: repo },
+            journal: dna::RoutedJournal { record: dna::RecordJournal { repo: repo }, ledger: dna::MemoryLedger { repo: repo, dsn_env: dna::fixture_spine(repo) } },
             gateway: dna::MutationGateway {
                 workspaces: dna::IsolatedWorktrees { repo: repo, root: repo + "/.hale/dna/worktrees" },
                 repo: dna::LocalGit { repo: repo }
             },
-            verification: dna::HaleVerification { hale_bin: toolchain(), receipts: dna::GitReceipts { repo: repo }, scratch: repo + "/.hale/dna/scratch", repo: repo },
+            verification: dna::HaleVerification { hale_bin: toolchain(), receipts: dna::MemoryReceipts { repo: repo }, scratch: repo + "/.hale/dna/scratch", repo: repo },
             editor: dna::SourceEditor {
                 models: dna::ModelRouter {
                     quick: dna::FakeModel { name: "quick", answer: COMMENTED, answer_role: "edit" },
@@ -198,8 +199,9 @@ main locus App {
         std::test::assert_eq_str(self.dna.catalog.child("nest", 1, 0, "k", "one", 1), "", "nest k");
     }
     fn boot_holding(repo: String, hold: Bool, kinds: String, entity: String) {
+        std::test::assert_eq_str(dna::memory_fixture(repo), "", "the record is born in memory (GH #1590)");
         self.dna = dna::Dna {
-            journal: Held { inner: dna::GitJournal { repo: repo }, hold: hold, kinds: kinds, entity: entity },
+            journal: Held { inner: dna::RoutedJournal { record: dna::RecordJournal { repo: repo }, ledger: dna::MemoryLedger { repo: repo, dsn_env: dna::fixture_spine(repo) } }, hold: hold, kinds: kinds, entity: entity },
             work: dna::WorkSystem { service: Delayed { } },
             genome_seed: "."
         };

@@ -72,14 +72,15 @@ main locus Org {
         let add = sh("git\n-C\n" + repo + "\nadd\n-A");
         let c0 = sh("git\n-C\n" + repo + "\n-c\nuser.name=t\n-c\nuser.email=t@local\ncommit\n-q\n-m\nbase");
         std::test::assert_eq_int(c0.code, 0, "base commit: " + c0.stderr);
+        std::test::assert_eq_str(dna::memory_fixture(repo), "", "the record is born in memory (GH #1590)");
         self.core = dna::Dna {
-            journal: dna::GitJournal { repo: repo },
+            journal: dna::RoutedJournal { record: dna::RecordJournal { repo: repo }, ledger: dna::MemoryLedger { repo: repo, dsn_env: dna::fixture_spine(repo) } },
             gateway: dna::MutationGateway {
-                leases: dna::GitLeases { repo: repo },
+                leases: dna::MemoryLeases { repo: repo },
                 workspaces: dna::IsolatedWorktrees { repo: repo, root: repo + "/.hale/dna/worktrees" },
                 repo: dna::LocalGit { repo: repo }
             },
-            verification: dna::HaleVerification { hale_bin: toolchain(), receipts: dna::GitReceipts { repo: repo }, scratch: repo + "/.hale/dna/scratch", repo: repo },
+            verification: dna::HaleVerification { hale_bin: toolchain(), receipts: dna::MemoryReceipts { repo: repo }, scratch: repo + "/.hale/dna/scratch", repo: repo },
             editor: dna::SourceEditor {
                 models: dna::ModelRouter {
                     quick: dna::FakeModel { name: "quick", answer: DOCUMENTED, answer_role: "edit" },
@@ -101,7 +102,7 @@ main locus Org {
                 quick: dna::FakeModel { name: "quick", answer: "Approve: documented, checks clean." },
                 deep: dna::FakeModel { name: "deep", answer: "Approve: documented, checks clean." }
             },
-            receipts: dna::GitReceipts { repo: repo },
+            receipts: dna::MemoryReceipts { repo: repo },
             source: dna::SourceReader { repo: repo },
             charter: "You are the architect of this organization: you propose, the Board decides.",
             purpose: "keep the pings counted"

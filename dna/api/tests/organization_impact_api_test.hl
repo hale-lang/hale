@@ -24,7 +24,7 @@ locus ImpactWork {
 locus OrganizationImpactApiCases {
     params { }
     fn request(root: String, id: String, authority: ops::FixedOrganizationAuthority, name: String, suffix: String) -> std::http::Response {
-        let record = dna::GitRecord { repo: root }; let reader = api::OrganizationCandidateWire { authority: authority };
+        let record = dna::MemoryRecord { repo: root }; let reader = api::OrganizationCandidateWire { authority: authority };
         let head = api::Api { root: root, local_name: name, organization_candidates: reader };
         return head.handle(std::http::Request { method: "GET", path: api::API_PREFIX + "/" + record.identity() + "/dna/organization/source-impact?id=" + dna::url_encode(id) + suffix });
     }
@@ -35,7 +35,8 @@ locus OrganizationImpactApiCases {
     }
     fn run_cases(root: String, metadata: String, evidence: String) {
         let w = api::CommandWire { }; let meta = std::io::fs::read_file(metadata) or raise; let id = w.text(meta, "mutation_id");
-        let record = dna::GitRecord { repo: root }; let app = record.identity();
+        std::test::assert_eq_str(dna::memory_fixture(root), "", "the record is born in memory (GH #1590)");
+        let record = dna::MemoryRecord { repo: root }; let app = record.identity();
         std::test::assert(id != "" && app == w.text(meta, "application_id"), "actual retained source fixture identity");
         let codec = ops::OrganizationAuthorityPolicyCodec { };
         let policy = codec.decode("{\"format\":\"dna.organization-authority/1\",\"application_id\":\"" + app + "\",\"grants\":[{\"mode\":\"local\",\"name\":\"reviewer\",\"authority\":\"board\",\"organization_propose\":false,\"organization_review\":false,\"recover\":true}]}", app, "local");
@@ -67,7 +68,7 @@ locus OrganizationImpactApiCases {
         std::test::assert_eq_int(self.request(root, id, absent, "reviewer", "").status, 403, "default denied");
         std::test::assert_eq_int(self.request(root, "missing", authority, "outsider", "").status, 403, "authority precedes existence");
         std::test::assert_eq_int(self.request(root, "missing", authority, "reviewer", "").status, 404, "missing canonical source");
-        let journal = dna::GitJournal { repo: root }; let receipts = dna::GitReceipts { repo: root }; let work = ImpactWork { };
+        let journal = dna::RoutedJournal { record: dna::RecordJournal { repo: root }, ledger: dna::MemoryLedger { repo: root } }; let receipts = dna::MemoryReceipts { repo: root }; let work = ImpactWork { };
         work.bind(journal, receipts); let task = work.ask(); let mut tries = 0;
         while self.event(journal, "task.handed", task).kind == "" && tries < 100 { std::time::sleep(20ms); tries = tries + 1; }
         let born = self.event(journal, "task.born", task); let handed = self.event(journal, "task.handed", task);

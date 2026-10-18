@@ -115,7 +115,7 @@
     { operation: "dna.project.init", title: "Initialize project", submit: "Initialize project", fields: [
       { key: "root", label: "Project root", kind: "text", valid: path, hint: "absolute path of an existing checkout without a Record" }] },
     { operation: "dna.project.attach", title: "Attach project", submit: "Attach project", fields: [
-      { key: "root", label: "Project root", kind: "text", valid: path, hint: "absolute path of a Git toplevel holding refs/dna/journal" }] },
+      { key: "root", label: "Project root", kind: "text", valid: path, hint: "absolute path of a project whose hale.toml pins its record" }] },
     { operation: "dna.project.detach", title: "Detach project", submit: "Detach project", project: true, fields: [] },
     { operation: "dna.project.sync", title: "Sync record", submit: "Sync record", project: true, fields: [] },
     { operation: "dna.project.publish", title: "Publish genome", submit: "Publish genome", project: true, fields: [

@@ -50,13 +50,13 @@ const DRIVER: &str = r#"import "vendor/dna" as dna;
 fn main() {
     let cur = std::io::fs::read_file("main.hl") or "";
     let core = dna::Dna {
-        journal: dna::GitJournal { repo: "." },
+        journal: dna::RoutedJournal { record: dna::RecordJournal { repo: "." } },
         gateway: dna::MutationGateway {
-            leases: dna::GitLeases { repo: "." },
+            leases: dna::MemoryLeases { repo: "." },
             workspaces: dna::IsolatedWorktrees { repo: ".", root: ".hale/dna/worktrees" },
             repo: dna::LocalGit { repo: "." }
         },
-        verification: dna::HaleVerification { receipts: dna::GitReceipts { repo: "." }, scratch: ".hale/dna/scratch", repo: ".", seed: "." },
+        verification: dna::HaleVerification { receipts: dna::MemoryReceipts { repo: "." }, scratch: ".hale/dna/scratch", repo: ".", seed: "." },
         editor: dna::SourceEditor {
             name: "editor",
             models: dna::ModelRouter {
@@ -80,7 +80,9 @@ fn main() {
 /// the file is parsed, never string-matched.
 fn journal(app: &Path) -> Vec<(String, String, String)> {
     let _s = trace::Span::new("hale", "dna record-rows");
-    let text = record::text(app);
+    // the record's rows and its Ledger's: the day's work (asks, Tasks,
+    // workflows) is the Ledger's (GH #1590)
+    let text = record::text(app) + &record::ledger_text(app);
     text.lines()
         .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
         .map(|v| {

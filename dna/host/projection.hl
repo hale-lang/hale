@@ -401,7 +401,7 @@ locus Projection {
         b.begin_object();
         b.string_field("organism", self.organism_line());
         b.begin_object_field("journal");
-        b.string_field("ref", RECORD_REF);
+        b.string_field("identity", record_identity(self.root));
         b.int_field("revision", self.rows());
         b.string_field("chain", if self.chain_ok() { "verified" } else { "BROKEN" });
         let head = self.chain_head();

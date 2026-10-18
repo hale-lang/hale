@@ -32,8 +32,9 @@ main locus App {
         let repo = "/tmp/dna-practice-lifecycle-" + to_string(std::process::pid());
         std::io::fs::mkdir(repo) or discard;
         std::test::assert_eq_int(dna::run_tool("git\n-C\n" + repo + "\ninit\n-q\n-b\nmain").code, 0, "isolated actual Record");
-        let j = dna::GitJournal { repo: repo };
-        let body = dna::Dna { journal: j, verification: dna::HaleVerification { receipts: dna::GitReceipts { repo: repo }, repo: repo }, board: dna::Board { who: "board" } };
+        std::test::assert_eq_str(dna::memory_fixture(repo), "", "the record is born in memory (GH #1590)");
+        let j = dna::RoutedJournal { record: dna::RecordJournal { repo: repo }, ledger: dna::MemoryLedger { repo: repo } };
+        let body = dna::Dna { journal: j, verification: dna::HaleVerification { receipts: dna::MemoryReceipts { repo: repo }, repo: repo }, board: dna::Board { who: "board" } };
         let first = lifecycle_request("practice/create", "propose", "practice", "A Practice — exact café evidence.", "");
         body.on_knowledge_node_requested(first);
         std::test::assert_eq_str(body.knowledge_record.practice_in_force(first.name), "", "pending Practice is not in force");
@@ -51,7 +52,7 @@ main locus App {
         self.approve("decision/retire", retired.candidate_digest); self.wait_event(j, "knowledge.retired", revised.candidate_digest);
         std::test::assert(len(lifecycle_event(j, "knowledge.ratified", retired.candidate_digest).kind) > 0, "actual retirement candidate itself has native ratification");
         std::test::assert_eq_str(body.knowledge_record.practice_in_force(first.name), "", "ratified retirement candidate is never an active Practice");
-        let receipts = dna::GitReceipts { repo: repo }; let codec = dna::KnowledgeNodeRequestCodec { };
+        let receipts = dna::MemoryReceipts { repo: repo }; let codec = dna::KnowledgeNodeRequestCodec { };
         std::test::assert_eq_str(receipts.read(first.candidate_digest[7..len(first.candidate_digest)]), codec.document(first), "original immutable Practice remains readable");
         std::test::assert_eq_str(receipts.read(revised.candidate_digest[7..len(revised.candidate_digest)]), codec.document(revised), "retired successor remains readable");
         eprintln("PASS actual Practice creation, nonpractice same-name exclusion, revision and reviewed retirement");

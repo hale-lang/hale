@@ -341,7 +341,7 @@ fn s3_plan_body_start(ctx: HeadContext, arguments: String) -> Plan {
     let owner = json_text(arguments, "owner");
     if len(owner) > 0 && !s3_chars_ok(owner, S3_WORD_CHARS) { return s3_invalid("`owner` is letters, digits, `.`, `_` and `-`"); }
     if len(owner) > 0 {
-        let r = dna::GitRecord { repo: ctx.active_root };
+        let r = dna::MemoryRecord { repo: ctx.active_root };
         if !r.set_setting("owner", owner) { return s3_invalid("git config dna.owner could not be written: " + r.why()); }
     }
     // the knowledge store's DSN reaches the body by inheritance from the
@@ -381,7 +381,7 @@ fn s3_stop_local_body(ctx: HeadContext) -> Plan {
     let org = s3_org_pid(root);
     let org_alive = s3_pid_alive(org);
     if !body_alive && !org_alive { return s3_refuse("body_not_running", s3_reason("body_not_running")); }
-    let record = dna::GitRecord { repo: root };
+    let record = dna::MemoryRecord { repo: root };
     let before = record.head("journal");
     // the host's pid: the first line of the fence mandate it wrote
     let mandate = std::io::fs::read_file(d + "/body.fence") or "";
@@ -444,7 +444,7 @@ fn s3_plan_provision(ctx: HeadContext, arguments: String) -> Plan {
     if len(dir) > 0 && !std::str::starts_with(dir, "/") && !std::str::starts_with(dir, "$HOME/") { return s3_refuse("path_invalid", "`dir` is absolute, or under the body's `$HOME/`"); }
     let dry = s3_bool_of(arguments, "dry_run");
     if dry < 0 { return s3_invalid("`dry_run` is a boolean"); }
-    let r = dna::GitRecord { repo: ctx.active_root };
+    let r = dna::MemoryRecord { repo: ctx.active_root };
     if len(r.remote()) == 0 { return s3_refuse("no_remote", "the record has no remote; the body clones the record from one (`hale dna publish` with a remote first)"); }
     let dsn = json_text(arguments, "dsn");
     let script = "\"$HALE_BIN\" dna body provision " + s3_sq(target)
@@ -849,11 +849,10 @@ fn s3_handoff_item(entity: String, connection: String, kind: String, subject: St
 // handed across (`handoff.published`, body: connection, kind, subject;
 // `accepted_by_peer` once that row follows), admitted here
 // (`handoff.accepted`, same fields), refused at the edge
-// (`handoff.refused`), and received but not yet accepted — the
-// `handoff.received` envelopes in this clone's mailboxes
-// (`refs/dna/exchange/<sender>`, body: origin_record, kind, subject),
-// which its sync fetched. A service mailbox needs the network and is
-// not read.
+// (`handoff.refused`), and received but not yet accepted — the envelopes
+// this record's memory keeps from other records (body: origin_record,
+// kind, subject). The handoff rows are the Ledger's (GH #1590), read
+// with the record's.
 fn s3_handoffs_json(root: String, journal: String) -> String {
     let mut items = "";
     let mut seen = "\n";
@@ -911,17 +910,29 @@ fn s3_secrets_json(journal: String) -> String {
     return b.result();
 }
 
+// The Ledger's rows, a JSON line each (`dna::row_json`); "" when memory
+// cannot be read here.
+fn s3_ledger_text(root: String) -> String {
+    let l = dna::MemoryLedger { repo: root, dsn_env: dna::own_dsn_env() };
+    if !l.ready() { return ""; }
+    let n = l.revision();
+    let mut out = "";
+    let mut i = 0;
+    while i < n { out = out + dna::row_json(l.read(i), l.author_of(i), "") + "\n"; i = i + 1; }
+    return out;
+}
+
 // {"connections":[…],"handoffs":[…],"secrets":[…]} projected from the
-// project's journal rows (`git show refs/dna/journal:journal.jsonl`
-// through the core's GitRecord); nothing here touches the network.
+// project's record rows (memory's, read through `dna::MemoryRecord`, GH
+// #1590); nothing here touches the nerves.
 fn s3_project_detail_json(ctx: HeadContext, root: String) -> String {
-    let r = dna::GitRecord { repo: root };
+    let r = dna::MemoryRecord { repo: root };
     // display only, beside the project's `record` (null when unread)
     let journal = r.text_at(r.head("journal").id);
     let b = std::json::Builder { };
     b.begin_object();
     b.field("connections", s3_connections_json(journal));
-    b.field("handoffs", s3_handoffs_json(root, journal));
+    b.field("handoffs", s3_handoffs_json(root, journal + s3_ledger_text(root)));
     b.field("secrets", s3_secrets_json(journal));
     b.end_object();
     return b.result();

@@ -34,7 +34,9 @@ type OrganizationImpactEntry {
 locus OrganizationImpactEntries { capacity { heap rows of OrganizationImpactEntry; } }
 
 locus OrganizationImpact {
-    params { j: dna::Journal; visibility: Queries; }
+    // `routed`: `j` reads the record and its Ledger as one (GH #1590), where
+    // the operational history is the Ledger's
+    params { j: dna::Journal; visibility: Queries; routed: Bool = false; }
     fn string(body: String, key: String) -> String { let syntax = OrganizationJson { }; return syntax.decode(std::json::find_field_raw(body, key)); }
     fn wf(kind: String) -> Bool {
         return dna::word_in(kind, "workflow.admitted workflow.refused workflow.settled step.registered step.activated step.completed step.failed attempt.admitted attempt.outcome work.settled");
@@ -204,7 +206,7 @@ locus OrganizationImpact {
             let e = self.j.read(i); bytes = bytes + len(e.body);
             if e.seq != i || len(e.kind) == 0 || len(e.digest) == 0 { return self.failure("impact_source_invalid", head, revision, out.details_visible); }
             if len(e.body) > 65536 || bytes > 2097152 { return self.failure("impact_read_limit", head, revision, out.details_visible); }
-            if e.kind == "ledger.adopted" { return self.failure("impact_source_unavailable", head, revision, out.details_visible); }
+            if e.kind == "ledger.adopted" && !self.routed { return self.failure("impact_source_unavailable", head, revision, out.details_visible); }
             if self.relevant(e.kind) && !self.restriction(e.kind) {
                 if len(e.entity) == 0 { return self.failure("impact_source_invalid", head, revision, out.details_visible); }
                 facts = facts + 1; operational_bytes = operational_bytes + len(e.body);

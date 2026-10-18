@@ -5,9 +5,9 @@
 // assembled by semantic capability: `Journal` (ordered append with an
 // expected revision, idempotency, durable identity), `Coordination`
 // (leases with fencing tokens), and a rebuildable `RetrievalIndex`.
-// Two implementations of each: in-memory (tests), and the record's git
-// chain `refs/dna/journal` (GH #566 F1; record.hl) — one commit per
-// event, git's DAG as the chain — using only stdlib and subprocesses.
+// Two implementations of each: in-process (tests), and the record in
+// memory (GH #1590; memory_record.hl) — one chain of rows, each naming
+// the digest of the one before it.
 
 type Event {
     seq: Int = 0;
@@ -128,8 +128,8 @@ fn chain_ok(rows: EventRows) -> Bool {
     return true;
 }
 
-// The git-backed `GitJournal`, `GitReceipts` and `GitLeases` live in
-// record.hl, over the `Record` interface (GH #646 stage 0).
+// The record kept in memory (`RecordJournal`, `MemoryReceipts`, the leases in
+// `MemoryLeases`) lives in memory_record.hl and memory_spine.hl (GH #1590).
 
 fn ref_safe(key: String) -> String {
     let mut out = "";
@@ -149,6 +149,9 @@ interface Receipts {
     fn read(digest: String) -> String; // "" when absent
     // Remove a body (GH #606 redaction); true when it is gone.
     fn erase(digest: String) -> Bool;
+    // Whether a redaction erased the body under `digest` (a store that
+    // keeps no tombstone answers false).
+    fn redacted(digest: String) -> Bool;
     fn kind() -> String;
 }
 
@@ -156,6 +159,7 @@ interface Receipts {
 locus FileReceipts {
     params { dir: String = ".hale/dna/evidence"; stored: Int = 0; }
     fn kind() -> String { return "file"; }
+    fn redacted(digest: String) -> Bool { return false; }
     fn store(text: String) -> String {
         let digest = hex(std::crypto::sha256(std::bytes::from_string(text)));
         std::io::fs::mkdir(self.dir) or discard;
@@ -260,8 +264,8 @@ fn lease_fences(c: Coordination, key: String, token: Int, now: Int) -> Bool {
 // it is the ownership as of that revision, and an exact append at that
 // revision validates ownership atomically with the write: a takeover is
 // a row, it moves the revision, and a stale holder's exact append fails
-// and is decided again. The cell leases above (`MemLeases`,
-// `GitLeases`) stay for what they hold; a committer whose every write
+// and is decided again. The cell leases above (`MemLeases`, and
+// memory's `MemoryLeases`) stay for what they hold; a committer whose every write
 // must be fenced holds its lease here.
 
 fn lease_row(token: Int, holder: String, expires: Int) -> String {

@@ -45,7 +45,7 @@ hale dna status [project] [--json]
                              the organism's status projection, from the Journal
 hale dna history [<entity>]  walk the Journal by causal links (works offline)
 hale dna record-rows [project]  the record's rows, one JSON object per line
-hale dna sync [project]      fetch, reconcile and push the record (refs/dna/*) with origin
+hale dna sync [project]      apply what the record says of this clone (the record itself is memory's: nothing to sync)
 hale dna candidates [<mutation> | drop <mutation> --why <w>]
                              the candidates the record keeps, whatever the review decided; one as a diff; stop keeping one
 hale dna connect <nerves-url> --record <identity> --name <n> --as <position> --purpose <p> --classes <internal,customer,…>
@@ -204,7 +204,7 @@ hale dna ui [project] [--port N]
                              under `git config dna.principal oidc` a hosted head: sign-in through dna.oidc.issuer,
                              subjects mapped by dna.oidc.member, the secret the vault's oidc-client-<client>;
                              with no principal source it refuses to start (trusted-local is a test fixture's mode)
-                             the DNA surface in a browser, from the record alone: the Board's queue, the Reviews
+                             the DNA surface in a browser, from the record in memory: the Board's queue, the Reviews
                              with their three views, the fleet, the history; verdicts, intent and pressure from forms
 hale dna board [project]     the Board's queue: what needs its verdict, escalations, proposals, reports
 hale dna review              the pending Reviews
@@ -315,10 +315,9 @@ The record's settings live in the clone's git config:
 ## The record's vocabulary
 
 Every row has a kind, an entity, a body and an author. The **memory**
-column is where the row lives once the ledger is adopted: `record` is
-git (`refs/dna/journal`), `ledger` is memory (Postgres). Before
-adoption every row is the record's, and the two are read as one
-sequence either way ([Memory and the record](./memory.md)). The table
+column is where the row lives: `record` is `record_rows` and `ledger`
+is `ledger_rows`, both in the record's schema in memory (Postgres).
+The two are read as one sequence ([Memory and the record](./memory.md)). The table
 in `dna/core/routing.hl` (`memory_of`) decides. A reader that meets a
 kind it does not know keeps walking.
 
@@ -487,7 +486,7 @@ $ hale dna status --json
 {
   "organism": "not running — reading the Journal",
   "journal": {
-    "ref": "refs/dna/journal",
+    "identity": "4f1c9a07d2be…",
     "revision": 38,
     "chain": "verified",
     "chain_head": "77bc90bc6b4a31e4fb45b98d4da500309d6e6100"
@@ -584,12 +583,12 @@ around an application you already have.
 
 | where | what |
 |---|---|
-| `refs/dna/journal` | the record: one commit per row |
-| `refs/dna/receipts/<sha256>` | receipts, by the digest of their content |
-| `refs/dna/identity` | the record's identity; a sync publishes it to the remote |
-| `refs/dna/lease/<key>` | leases with fencing tokens; `refs/dna/lease/body` is the body lease |
+| memory, `record_rows` | the record: one signed row per event, insert-only |
+| memory, receipts | receipts, by the digest of their content (protected classes sealed) |
+| memory, leases | leases with fencing tokens, swapped by token; the body lease is one |
+| `hale.toml` `[dna] record` | the record's identity: the digest of its first row |
+| `.hale/dna/memory.env` | the head's DSN, kept by `hale dna memory migrate`; mode 600, head role only, git-ignored |
 | `refs/heads/dna/candidate/<mutation>` | a Mutation's candidate, a branch of the genome kept whatever its Review decided |
-| `refs/dna/remote/…` | what the last fetch brought from the remote (`journal`, `lease/body`) |
 | `refs/hale/remote/genome` | the forge's default branch as the node's last pull fetched it |
 | `.git/config` | the record's settings (`dna.trust`, `dna.unix.member`, … above) |
 | `.hale/dna/` | this clone's scratch: `status.json`, the organization's log `org.log`, the topology artifacts, `embedded.digest`, the seed build cache `build/`, sandboxes `worktrees/`, `scratch/`, the built leg `legs/`, a person's kept worktrees `work/<attempt>`, an ingest's checkout `ingest/<sha>/` (removed after) |
@@ -599,6 +598,6 @@ around an application you already have.
 | the vault | `HALE_VAULT_DIR`, else `$XDG_CACHE_HOME/hale/vault`, else `~/.cache/hale/vault`; one file per secret, mode 600. `HALE_VAULT_ADDR` names a vault's HTTP API instead |
 | `HALE_DNA_HEAD_STATE` | the project head's state (`${XDG_STATE_HOME:-$HOME/.local/state}/hale/dna/head` when unset) |
 
-Once the ledger is adopted, the day's work is in memory, not in
-`refs/dna/journal`; `hale dna ledger status` says where things stand.
+The record and the day's work are both in memory; `hale dna ledger
+status` says where things stand.
 `hale dna secrets` lists every vault entry the organism needs.

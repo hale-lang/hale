@@ -72,12 +72,6 @@ fn hale(args: String) -> std::process::ProcessOutput {
     return std::process::run(hale_bin() + "\n" + args) or not_run(err);
 }
 
-// `git <args>`'s output, "" when it failed.
-fn git(args: String) -> String {
-    let out = std::process::run("git\n" + args) or not_run(err);
-    return if out.code == 0 { out.stdout } else { "" };
-}
-
 fn hex_of(b: Bytes) -> String {
     let digits = "0123456789abcdef";
     let mut out = "";
@@ -147,7 +141,8 @@ fn capture(path: String) -> String {
     let text = std::io::fs::read_file(path) or "";
     let b = parse_bill(text);
     if !readable(b) { return "rejected: books: " + path + " is not a bill this intake reads (bill, supplier, payer, date, amount, currency)"; }
-    let journal = git("show\nrefs/dna/journal:journal.jsonl");
+    // the record and its Ledger (GH #1590: a receipt's rows are the Ledger's)
+    let journal = record_rows() + "\n" + ledger_rows();
     let mut evidence = digest_of(text);
     if !journal_has(journal, "receipt.filed", evidence) {
         let filed = hale("dna\nreceipt\nfile\n" + path + "\n--as\nintake");
@@ -344,12 +339,20 @@ fn ledger_rows() -> String {
     return if out.code == 0 { out.stdout } else { "" };
 }
 
+// The record's rows, in its line format (GH #1590: the record is memory's,
+// read with the clone's kept head DSN).
+fn record_rows() -> String {
+    let out = hale("dna\nrecord-rows");
+    return if out.code == 0 { out.stdout } else { "" };
+}
+
 fn export_week(from: String, to: String) -> String {
-    // the journal at the head the export names, read once: a live organism
-    // moving the ref in between cannot make the rows and the head disagree;
-    // the day's work that lives in the ledger is read beside it
-    let head = std::str::trim(git("rev-parse\nrefs/dna/journal"));
-    let journal = git("show\n" + head + ":journal.jsonl") + "\n" + ledger_rows();
+    // the rows of the record and its Ledger, and the head the export names
+    // (the merged head `status` verified); a live organism may append
+    // after it, which the export does not read
+    let status = hale("dna\nstatus\n--json");
+    let head = std::json::find_string_field(std::json::find_field_raw(status.stdout, "journal"), "chain_head");
+    let journal = record_rows() + "\n" + ledger_rows();
     let lo = day_number(from);
     let hi = day_number(to);
     let mut out = "bill,supplier,payer,purpose,date,amount,currency,treatment,evidence,task,assignee,state,completion,practice\n";
@@ -368,7 +371,7 @@ fn export_week(from: String, to: String) -> String {
         // a document filed twice is one bill
         if std::str::contains(seen, "\n" + evidence + "\n") { continue; }
         seen = seen + evidence + "\n";
-        let b = parse_bill(git("cat-file\n-p\nrefs/dna/receipts/" + evidence[7..len(evidence)]));
+        let b = parse_bill(hale("dna\nrecord-body\n" + evidence).stdout);
         let day = day_number(b.date);
         if day < lo || day > hi { continue; }
         bills = bills + 1;

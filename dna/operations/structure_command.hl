@@ -193,7 +193,7 @@ fn structure_request_id(prefix: String, head: String, request: String) -> String
 // The trust a record declares (`dna.trust`), `local` when it declares none.
 fn record_trust_of(location: String) -> String {
     if len(location) == 0 { return "local"; }
-    let t = dna::GitRecord { repo: location }.setting("trust");
+    let t = dna::MemoryRecord { repo: location }.setting("trust");
     return if len(t) == 0 { "local" } else { t };
 }
 

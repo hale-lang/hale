@@ -59,6 +59,7 @@ fn an_intent_reaches_the_organization_from_a_long_project_path() {
     let mut host = vault::hale()
         .args(["dna", "run", ".", "--no-iris"])
         .current_dir(&app)
+        .env("HALE_DNA_MEMORY_DSN_SPINE", record::spine(vault::hale(), &app))
         .env("XDG_CACHE_HOME", &cache)
         .env("HALE_DNA_NATS_URL_SPINE", &nats_spine)
         .env("HALE_DNA_NATS_ORG", &nats_org)
@@ -86,7 +87,8 @@ fn an_intent_reaches_the_organization_from_a_long_project_path() {
         panic!("the organization never read its facts from the nerves at this path:\n{}", std::fs::read_to_string(&log).unwrap_or_default());
     }
     let (ok, ask) = hale(&["dna", "task", "create", "write", "the", "changelog"], &app);
-    let record = || -> String { record::text(&app) };
+    // a Task is the Ledger's (GH #1590)
+    let record = || -> String { record::text(&app) + &record::ledger_text(&app) };
     let born = {
         let dl = Instant::now() + Duration::from_secs(20);
         loop {

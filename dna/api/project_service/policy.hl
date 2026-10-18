@@ -36,7 +36,7 @@ fn organization_policy_path(root: String) -> String { return policy_dir(root) + 
 
 // `git config dna.trust`, "local" when unset.
 fn trust_of(root: String) -> String {
-    let record = dna::GitRecord { repo: root };
+    let record = dna::MemoryRecord { repo: root };
     let declared = record.setting("trust");
     return if len(declared) == 0 { "local" } else { declared };
 }

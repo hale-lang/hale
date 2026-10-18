@@ -1,10 +1,10 @@
 # Memory and the record
 
 The organism remembers in two places. The **record** is its long-term
-memory: every decision, in order, never rewound. It is git, under
-`refs/dna/*` in your repository, and anyone with a clone writes to it
-in their own name. **Memory** is its working memory: the day's work
-(the ledger), the graph the org chart is read from, and protected
+memory: every decision, in order, never rewound. It is rows in
+Postgres, one signed row per event, and anyone with a clone writes to
+it in their own name. **Memory** is also its working memory: the day's
+work (the ledger), the graph the org chart is read from, and protected
 evidence. It is Postgres, on the private tier, and every client opens
 it under a role of its own. A record write that loses a race goes
 round again until it lands; memory that stops answering stops the
@@ -20,26 +20,25 @@ the other two:
 
 | memory | holds | lives in |
 |---|---|---|
-| record | how the organism changed and was allowed to: mutations and their Reviews, practices proposed and ratified, grants, connections, people, the ledger's adoption | git, `refs/dna/journal` |
+| record | how the organism changed and was allowed to: mutations and their Reviews, practices proposed and ratified, grants, connections, people, the ledger's adoption | Postgres, `record_rows` in the record's schema |
 | ledger | what the organism did today: intents, tasks, cases, workflow executions and attempts, bills and receipts, money reserved and settled, schedules, concerns, readings, effect claims, leases | Postgres, the record's own schema |
 
 The table is `memory_of` in `dna/core/routing.hl`. Which one applies
-is a fact of the record, never a build's opinion: a new organism is
-on **routing 0**, every row in the record, until you adopt the ledger
-([below](#the-ledger)). `hale dna history` and the projections read
+is a fact of the record, never a build's opinion: a record born in
+memory is on **routing 2** from its first rows, with the day's work in
+the ledger ([below](#the-ledger)). `hale dna history` and the projections read
 both memories as one sequence.
 
 ## The record
 
-### What is under refs/dna
+### Where the record lives
 
-| ref | what it holds |
-|---|---|
-| `refs/dna/journal` | the chain of rows, one commit per row |
-| `refs/dna/receipts/<sha256>` | evidence bodies, by the digest of their content |
-| `refs/dna/identity` | the record's identity, published so another record can connect to it |
-| `refs/dna/lease/<key>` | a lease on routing 0 (the body's, a Mutation's) |
-| `refs/dna/remote/journal` | what the remote held at the last fetch |
+The record is the table `record_rows` in the record's schema,
+`dna_<identity>`. Every clone and every body reads and writes it
+there, so nothing of it travels by git and there is nothing to sync.
+Each row has a `seq`, a `kind`, an `entity`, a `body`, an `author`,
+the `writer` (the role of the session that wrote it), the `prev` row's
+digest, its own `digest` and its `sig`.
 
 Candidates and deployed revisions are the genome's, not the record's:
 a candidate is the branch `dna/candidate/<mutation>`, a revision a
@@ -47,106 +46,89 @@ deploy published is the branch `dna/revision/<rev>` on the forge, and
 the pull of the forge's default branch lands in
 `refs/hale/remote/genome`.
 
-A fresh project has the first three:
+A row's digest is `sha256(prev|kind|entity|body)`, and the first row's
+`prev` is `genesis`, so the rows are a chain. `hale dna status` says
+`chain verified at <head>` when every digest checks. `hale dna
+record-rows` prints the rows, oldest first, one JSON object per line:
+`seq`, `kind`, `entity`, `body`, `author`.
 
-```text
-$ git log --oneline refs/dna/journal | head -3
-77bc90b review.requested review:k:fffbc971da28
-85c2c83 knowledge.proposed sha256:fffbc971da28fafdbd6f3aa6ca5bcd4eb3e2e3626ed8140ef687f896d3540e50
-0182c0f review.requested review:k:52ccd337cd20
-```
+The record's identity is the digest of its first row,
+`record.genesis {genome, nonce}`: the genome's root commit and a nonce,
+so two projects made alike are two records. It is the same in every
+clone and different for every record. Memory's schema and the nerves'
+token are both named after it (`dna_<identity>`).
 
-Each commit's tree holds `journal.jsonl`, every row so far, one JSON
-object per line: `seq`, `kind`, `entity`, `body`, `author`. Its
-subject is `<kind> <entity>`. A row's digest is its commit and its
-predecessor is the parent, so the commit graph is the chain.
-`hale dna status` says `chain verified at <head>` when the commit
-count is the row count.
-
-The record's identity is its first commit, the same in every clone
-and different for every record. Memory's schema and the nerves' token
-are both named after it (`dna_<identity>`).
-
-The genome pins it. `hale dna init` writes it into `hale.toml`, and
-`hale dna upgrade` adds it to a project initialized before the pin:
+The genome pins it. `hale dna init` writes it into `hale.toml` as it
+composes the record:
 
 ```toml
 [dna]
 record = "4f1c…"   # the record's identity, written by init
 ```
 
-A clone knows its record from the genome, before it holds a row of it.
-A pin that names a different record than the one the clone holds — a
-`hale.toml` copied from another project — is refused: memory will not
-open, and `upgrade` and `init` say which two records disagree. Remove
-the line from a copied manifest and run `init` again.
+A clone knows its record from the genome. A second clone reaches the
+record through memory: its pin names the schema, and `hale dna memory
+migrate` (or `hale dna upgrade` with the owner's DSN) keeps the head's
+DSN there. A pin whose genome is not the one this clone's history
+holds — a `hale.toml` copied from another project — is refused.
+Remove the line from a copied manifest and run `init` again.
+
+`hale dna init` appends three rows to the record it provisions:
+`record.genesis`, then `ledger.adopted` (routing 2, the checkpoint the
+identity) and `record.key {key}`, the public half of the record's key.
+
+A clone that still holds a record an earlier toolchain kept on git
+(`refs/dna/journal`) is refused by `init` and `upgrade`. Nothing reads
+it and nothing carries it forward; see
+[Troubleshooting](./troubleshooting.md).
 
 `.hale/dna/` is not the record. It holds the status projection,
 worktrees and the toolchain's scratch; delete it and nothing the
 record holds is lost.
 
-### Append is compare-and-swap, through the Record interface
+### Append is insert-only
 
-A writer builds the next commit on the head it read and moves the ref
-only if the ref is still there. One that lost the race reads the new
-tail and appends again; `seq` is the row's position once it lands,
-never a promise made before. Two people answering at once both land.
-
-Everything that touches the record stands on one interface, `Record`
-in `dna/core/record.hl`, whose vocabulary never names git: chains of
-rows, bodies kept by digest, cells swapped by version (a lease, the
-published identity), pointers (a candidate, a revision), families
-shared with a remote, the signer of a row, and the `dna.*` settings.
-`GitRecord` is the implementation over git plumbing, the only file in
-the core and the host that spells `git` for the record; the core's
-`GitJournal`, `GitReceipts` and `GitLeases`, and the host's sync and
-body lease are built on it (the exchange between records is the nerves'). `MemRecord`,
-the implementation fixtures use, shows the race:
-
-```hale
-import "vendor/dna" as dna;
-
-fn main() {
-    let r = dna::MemRecord { };
-    // alice and bob both read the chain while it was empty
-    let seen = r.head("journal").id;
-    let a = r.append("journal", seen, dna::Row { kind: "note.written", entity: "n1", body: "{}", author: "alice" }, false, "");
-    let b = r.append("journal", seen, dna::Row { kind: "note.written", entity: "n2", body: "{}", author: "bob" }, false, "");
-    println("alice: ", a.ok, " bob: ", b.error);
-    // bob reads the new tail and appends again: nothing is lost
-    let again = r.append("journal", r.head("journal").id, dna::Row { kind: "note.written", entity: "n2", body: "{}", author: "bob" }, false, "");
-    println("bob again: ", again.ok, ", rows: ", r.count("journal"));
-}
-```
-
-```text
-alice: true bob: stale
-bob again: true, rows: 2
-```
+Every writer appends through a memory function: `record_append` for
+one row, `record_append_rows` for a batch made visible together. The
+function takes the schema's advisory lock and lands the row only on
+the `prev` the writer read. No role may update, delete or truncate a
+row of the record. A writer that lost the race reads the new tail and
+appends again; `seq` is the row's position once it lands, never a
+promise made before. Two people answering at once both land.
 
 A read of the record either happened or failed. A read that failed
-(git unable to run on a loaded machine, a remote out of reach for a
-moment) is never taken for an empty or a shorter record: the reader
+(memory out of reach for a moment) is never taken for an empty or a shorter record: the reader
 keeps what it had and tries again, and a verb refuses with the reason
 rather than act on a record that is not there.
 
 ### Who wrote a row, and whether it counts
 
-Authorship is git's. The organism's own rows carry its configured
-author; a person's rows (a verdict, an ask, a node's report) carry the
-identity of whoever ran the command, and `--as <who>` names the person
-on the verbs that take it.
+Every row is signed by its writer. The organism's parts (`dna`,
+`spine`, `host`, a node, a leg) sign with the record's Ed25519 key,
+which lives in the vault as `dna-exchange-<schema>`. A person signs
+with their own ssh key (`ssh-keygen -Y sign -n hale-dna-record`), the
+key git's `user.signingkey` names under `gpg.format ssh`; a person with
+none configured writes an unsigned row. The organism's own rows carry
+its configured author; a person's rows (a verdict, an ask, a node's
+report) carry the identity of whoever ran the command, and `--as <who>`
+names the person on the verbs that take it.
 
 Whether a row counts is a check every reader makes,
 `dna::row_admissible`, under the clone's `dna.trust`:
 
 - `local`, the default and what `hale dna new` declares: every writer
   to the record is trusted.
-- `signed`: a row counts only when its commit carries a signature
-  git verifies against its keyring or allowed-signers file. A node
-  answers an unverified request with a refusal naming the commit
-  (`unverified writer`) and never relays it; the projection into
-  memory moves past it without applying anything of it.
+- `signed`: a person's row counts only when a key enrolled for them
+  verifies its signature. A node answers an unverified request with a
+  refusal (`unverified writer`) and never relays it; the projection
+  into memory moves past it without applying anything of it.
+
+Enrol a person's key with `hale dna signers enroll <who> --key <ssh
+key or .pub file>`, revoke with `hale dna signers revoke <who>`, and
+list with `hale dna signers`. Enrolment and revocation are rows
+(`signer.enrolled {who, key}`, `signer.revoked {who}`), and each counts
+only when signed by someone the record already admits; the first
+enrolment is the bootstrap.
 
 ### Sync
 
@@ -154,34 +136,14 @@ Whether a row counts is a check every reader makes,
 hale dna sync
 ```
 
-`sync` fetches the remote's record into `refs/dna/remote/journal`,
-reconciles, and pushes. Local ahead: push. Remote ahead:
-fast-forward. Diverged: the local-only rows are re-appended on top of
-the remote's head, bodies and authors unchanged, and pushed. The
-reconciled chain is built beside the ref and swapped in with one
-compare-and-swap, so a reader's view only grows and a clone that
-appended meanwhile is not overwritten: the swap fails and the
-reconcile goes round. Receipts travel both ways;
-mailboxes are received. The remote is `dna.remote` in git config, or
-`origin`. A running node syncs on every tick, and a plain clone has no
-record until it syncs. With no remote there is nothing to do:
+The record needs no sync. `hale dna sync` applies what the record says
+of this clone, which today is deleting the branch of a dropped
+candidate, and says so:
 
 ```text
 $ hale dna sync
-record refs/dna/journal: no remote: the record is local; 38 event(s)
+record: the record is memory's: nothing to sync; 38 event(s)
 ```
-
-Under `dna.trust = signed` a reconcile rebuilds only what this clone
-may sign. A row it signed is re-signed, its commit naming the
-original (`Rebuilt-From: <commit>`); a row never signed stays
-unsigned; a row signed with another key refuses the whole sync before
-anything moves:
-
-```text
-hale dna: the record diverged, and local event … (…, by …) was signed with …, not this clone's; a reconcile would re-sign it as this clone's, so the record was not changed and every local row is kept at refs/dna/journal. Have that row's writer sync first — a writer rebuilds its own rows — then sync again to fast-forward; or fetch and fast-forward once the remote holds it
-```
-
-A fast-forward is never refused.
 
 ### Candidates
 
@@ -197,7 +159,7 @@ hale dna candidates drop m7 --why "superseded by m9"
 ```
 
 `drop` is a row, `candidate.dropped`; the branch goes here, and every
-other clone deletes its own when it reads the row. A candidate branch
+other clone deletes its own at its next `hale dna sync`. A candidate branch
 someone pushed to a forge is deleted there like any other branch. The
 commits stay in each object store until git collects them.
 
@@ -207,13 +169,12 @@ A receipt is evidence kept by the digest of its content: a
 verification step's output, a diff document, a bill you filed. Rows
 name receipts by digest. Every receipt has a class:
 
-- `public` and `internal` bodies are blobs under
-  `refs/dna/receipts/<sha256>` and travel with `sync`.
+- `public` and `internal` bodies are
+  kept in memory by digest, unsealed.
 - `customer` and `confidential` bodies are **protected**. They are
   kept in memory alone, sealed there, and the record gets only the
   digest and the class (`receipt.classified`). With no memory to keep
   it, the body is withheld (`receipt.withheld`) and nothing holds it.
-  Nothing protected travels with `sync`.
 
 Memory seals a protected body under the **receipt key**, which you
 give at migration as `HALE_DNA_RECEIPT_KEY` in the owner's environment
@@ -247,11 +208,9 @@ alice)`. A read is refused unless a `receipt.disclosed` row names both
 the reader and the purpose, and an answer is given only once its
 `receipt.read` row is in the record: every read of a protected body
 is a row in the reader's name. A redaction is in the record before a
-byte is erased. A git receipt's ref goes at once, here and at the
-remote, and every other clone drops it at its next sync; a protected
-body is erased by a node on its next tick. The blob stays in each
-object store until git collects it, and a copy made outside the
-record cannot be recalled.
+byte is erased. An unsealed body is erased from memory at once; a
+protected body is erased by a node on its next tick. A copy made
+outside the record cannot be recalled.
 
 ## Working memory
 
@@ -317,41 +276,28 @@ in its own members' names, and who is a member is the graph's
 
 ## The ledger
 
-Moving the day's work into memory is an explicit, one-way step that a
-node carries out:
+The ledger is the day's work, and a record born in memory has it from
+its first rows: `hale dna init` appends `ledger.adopted` (routing 2,
+checkpoint the identity) right after `record.genesis`. There is
+nothing to adopt and nothing to abandon:
 
 ```sh
-hale dna ledger                          # the routing, the memory named here, the cutover
+hale dna ledger                          # the routing, the memory named here, the checkpoint
 hale dna ledger rows                     # the ledger, one JSON object per line
-hale dna ledger adopt
-hale dna ledger abandon --why "back to one memory"
 ```
 
-On a new organism:
+`hale dna ledger adopt` says the ledger is already adopted, and
+`hale dna ledger abandon` is refused. A clone with a head's DSN shows:
 
 ```text
 $ hale dna ledger status
-routing:    0 (every row in the record)
-memory:     none named here (HALE_DNA_MEMORY_DSN_HEAD)
+routing:    2 (the day's work in the ledger, adopted at 4f1c9a07d2be)
+memory:     named here (HALE_DNA_MEMORY_DSN_HEAD)
 ```
-
-`adopt` syncs the record and appends `ledger.adopting`. On its next
-tick a node claims the ask, copies every operational row of the
-record into the ledger keyed by its commit (interrupted, it is run
-again, never repaired by hand), carries its body lease into memory,
-and appends `ledger.adopted` naming the checkpoint. From that commit
-on, an operational row never goes into git. `abandon` appends
-`ledger.abandoning`; a node empties the ledger and appends
-`ledger.abandoned`, and the organism is on the record alone again. The
-record's own rows are never removed, so nothing is lost either way.
-
-Run an organization with its ledger adopted. On a git-backed record
-every row of the day's work is a commit, and an execution costs tens
-of them.
 
 ### Every writer writes, memory is the gate
 
-Once adopted, a verb that writes the day's work in your name writes it
+A verb that writes the day's work in your name writes it
 straight into the ledger as your head's role, through memory's insert
 function, `ledger_append`. The row lands, or it is refused with the
 reason, there and then; there is nothing to wait on:
@@ -373,13 +319,12 @@ The gate refuses a row when:
   (`stale_revision`), or claims an entity already claimed.
 
 A write carries a request id, so one retried after a lost answer lands
-once. A head with no memory named writes nothing once the ledger is
-adopted: the verb says so and never falls back to git.
+once. A head with no memory named writes nothing: the verb says so.
 
 `hale dna status` carries a `memory:` line on every organism:
 
 ```text
-memory:     the record alone (routing 0); `hale dna ledger adopt` moves the day's work to the ledger
+memory:     record + ledger (routing 2, adopted at 4f1c9a07d2be; operations and leases live in memory)
 ```
 
 When memory stops answering the same line says `THE LEDGER IS
@@ -500,7 +445,7 @@ naming it.
 
 ## Between records
 
-Sync copies your whole record to people inside it. Work that leaves
+Memory gives your whole record to people inside it. Work that leaves
 the organization goes to another record through a **connection**,
 which says what may cross. Records meet on their nerves:
 

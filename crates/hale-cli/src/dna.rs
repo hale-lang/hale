@@ -26,7 +26,8 @@
 //!   dna/assembly.hl            project-owned: the Genome constructor (editable)
 //!   <app>/dna_constitution.hl  project-owned: groups + `constitution Project` (in the app's seed)
 //!   dna/purpose.hl             project-owned: the declared purpose (ratified by the first Review)
-//!   refs/dna/journal           the record, seeded from the topology artifact
+//!   [dna] record in hale.toml  the record's identity; the record itself is memory's,
+//!                              born there and seeded from the topology artifact
 //!   .hale/dna/baseline.topology the artifact it was seeded from
 //!   hale.toml                  gains [claims] base = "Project" + [environments.local]
 //!   <app>/main.hl              gains the imports, the `genome` param, `adopt Project`,
@@ -48,9 +49,24 @@ use serde_json::Value;
 mod head;
 mod pack;
 
-/// The record (GH #566 F1): one commit per event on this ref, the events as
-/// `journal.jsonl` in its tree, receipts as blobs under `refs/dna/receipts/`.
+/// Where a toolchain before GH #1590 kept the record. Nothing reads it: a
+/// clone that still holds one is refused by `init` and `upgrade`, and its
+/// owner re-inits a fresh record (`git_era_refusal`).
 const RECORD_REF: &str = "refs/dna/journal";
+
+/// GH #1590: a record an earlier toolchain kept on git is not carried
+/// forward. Only its ref's presence is asked (`git show-ref`), never what
+/// it holds; `None` when the clone holds none.
+fn git_era_refusal(root: &Path) -> Option<String> {
+    let held = Command::new("git").arg("-C").arg(root).args(["show-ref", "--verify", "--quiet", RECORD_REF]).status().map(|s| s.success()).unwrap_or(false);
+    held.then(|| {
+        format!(
+            "this clone holds a record an earlier toolchain kept on git ({RECORD_REF}), and records are not carried forward: re-init a fresh record — delete the old refs (`git -C {} for-each-ref --format='%(refname)' refs/dna/ | xargs -n1 git -C {} update-ref -d`), remove the `[dna] record` line from hale.toml if it has one, and run `hale dna init`",
+            root.display(),
+            root.display()
+        )
+    })
+}
 /// The organization's seed (GH #566 F2): a program `init` generates and
 /// `hale dna run` runs; the application is never grafted.
 const ORG_SEED: &str = "dna/org";
@@ -105,9 +121,8 @@ fn host_command(verb: &str, dir: &Path) -> Result<(Command, PathBuf), String> {
         // outside `run`/`dev` (the review's second round, finding 2).
         .env("HALE_DNA_GENOME", &root)
         .env("HALE_DNA_TOOLCHAIN", TOOLCHAIN);
-    // GH #1590: a verb given no role's DSN reads and writes memory (what
-    // other records sent, kept in the exchange) as the head this clone
-    // migrated
+    // GH #1590: the record is memory's; a verb given no role's DSN reads
+    // and writes it as the head this clone migrated
     let named = |k: &str| std::env::var(k).map(|v| !v.is_empty()).unwrap_or(false);
     if !named("HALE_DNA_MEMORY_DSN_SPINE") && !named("HALE_DNA_MEMORY_DSN_HEAD") {
         if let Some(head) = kept_head_dsn(&root)? {
@@ -642,8 +657,12 @@ pub fn run(args: &[String]) -> ExitCode {
             }
             // GH #985, #986: the host runs on the spine's DSN and the
             // spine's NATS URL alone; an owner's or a head's in this
-            // environment does not reach it
-            host_exec_env("run", &dir, &rest, &[], &NOT_THE_HOSTS)
+            // environment does not reach it. GH #1590: with none named,
+            // the spine's DSN this clone reaches with what it keeps
+            let named = std::env::var("HALE_DNA_MEMORY_DSN_SPINE").map(|v| !v.is_empty()).unwrap_or(false);
+            let kept = if named { None } else { host_run("spine-dsn", &dir, &[]).ok().map(|s| s.trim().to_string()).filter(|s| s.starts_with("postgres")) };
+            let env: Vec<(&str, &OsStr)> = kept.as_ref().map(|s| vec![("HALE_DNA_MEMORY_DSN_SPINE", OsStr::new(s.as_str()))]).unwrap_or_default();
+            host_exec_env("run", &dir, &rest, &env, &NOT_THE_HOSTS)
         }
         Some("dev") => {
             let (dir, rest) = project_arg(&args[1..], true);
@@ -906,6 +925,8 @@ pub fn run(args: &[String]) -> ExitCode {
             let dir = args.get(1).map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."));
             host_exec("record-rows", &dir, &[])
         }
+        // GH #1590: a kept receipt's body, likewise
+        Some("record-body") => host_exec("record-body", Path::new("."), &args[1..]),
         Some("body") => host_exec("body", Path::new("."), &args[1..]),
         Some("secret") => host_exec("secret", Path::new("."), &args[1..]),
         // GH #989: every secret the organism requires, and whether the vault holds it
@@ -936,8 +957,9 @@ pub fn run(args: &[String]) -> ExitCode {
         }
         // #649: the candidates the record keeps, whatever the review decided
         Some("candidates") => host_exec("candidates", Path::new("."), &args[1..]),
-        // #650: the operational memory, adopted by an explicit step
         Some("ledger") => host_exec("ledger", Path::new("."), &args[1..]),
+        // GH #1590: the people the record admits signed rows from
+        Some("signers") => host_exec("signers", Path::new("."), &args[1..]),
         // #652: requests kept while the service cannot be reached
         Some("board") => {
             let (dir, rest) = project_arg(&args[1..], true);
@@ -1160,11 +1182,13 @@ fn usage(code: u8) -> ExitCode {
     eprintln!("                                    who must sign a change set, and the gates it is judged against");
     eprintln!("       hale dna show org|processes [--json] [project]");
     eprintln!("                                    the org chart and the process model, as queries over memory");
-    eprintln!("       hale dna sync [project]      fetch, reconcile and push the record (refs/dna/*) with origin");
-    eprintln!("       hale dna ledger [status | rows | adopt | abandon --why <w>]");
-    eprintln!("                                    the operational memory: where the day's work lives, its rows as JSON lines, and the one-way");
-    eprintln!("                                    move of it into memory — adopt and abandon are asked in the record; a node carries them out on its tick");
-    eprintln!("                                    once the ledger is adopted, a head's write (a task done, a receipt filed …) goes straight into it");
+    eprintln!("       hale dna sync [project]      apply what the record says of this clone (a dropped candidate's branch deleted); the record is memory's");
+    eprintln!("       hale dna signers [list | enroll <who> --key <ssh key or file> | revoke <who>]");
+    eprintln!("                                    who the record admits signed rows from under dna.trust = signed (rows of the record)");
+    eprintln!("       hale dna ledger [status | rows | adopt]");
+    eprintln!("                                    the operational memory: where the day's work lives and its rows as JSON lines;");
+    eprintln!("                                    adopt imports a record an earlier toolchain kept on git into memory, once, as the spine;");
+    eprintln!("                                    a head's write (a task done, a receipt filed …) goes straight into the Ledger");
     eprintln!("                                    under the head's role: done when it lands, or refused by memory with the reason");
     eprintln!("       hale dna candidates [<mutation> | drop <mutation> --why <w>]");
     eprintln!("                                    the candidates the record keeps, whatever the review decided; one as a diff; stop keeping one");
@@ -1476,10 +1500,15 @@ fn init(app_dir: &Path, library: bool) -> Result<Vec<String>, String> {
         Some(a) => a.project.clone(),
         None => root.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "project".to_string()),
     };
+    // GH #1590: a record an earlier toolchain kept on git is not carried
+    // forward; nothing is written before that is said
+    if let Some(why) = git_era_refusal(&root) {
+        return Err(why);
+    }
     let mut out: Vec<String> = Vec::new();
-    // 0. the record is a branch, so the project is a repository
+    // 0. the genome is a repository
     if ensure_repo(&root)? {
-        out.push(format!("git init {} (the record lives on {RECORD_REF})", root.display()));
+        out.push(format!("git init {} (the genome is a repository; the record is memory's)", root.display()));
     }
     let created = |out: &mut Vec<String>, p: &Path, content: &str| -> Result<bool, String> {
         if p.exists() {
@@ -1509,17 +1538,6 @@ fn init(app_dir: &Path, library: bool) -> Result<Vec<String>, String> {
         TOOLCHAIN,
         hale_dna::embedded_short()
     ));
-    // 2b. GH #1590: a manifest that pins a record this clone holds none
-    //     of belongs to another organism's genome: init would start a
-    //     second record beside it
-    if let Some(pinned) = manifest_pin(&manifest)? {
-        if record_held(&root)?.is_none() {
-            return Err(format!(
-                "{}'s [dna] record pins record {pinned}, and this clone holds none of it: a clone of an existing organism syncs its record (`hale dna sync`) rather than starting another; a manifest copied from another project loses its `[dna] record` line first",
-                manifest.display()
-            ));
-        }
-    }
     // 3. the artifact, cut by the toolchain as a subprocess — an
     //    application's; a repository's structure is read at step 7
     let me = std::env::current_exe().map_err(|e| e.to_string())?;
@@ -1613,15 +1631,78 @@ fn init(app_dir: &Path, library: bool) -> Result<Vec<String>, String> {
     } else {
         out.push(format!("kept    {} (declares environments already)", manifest.display()));
     }
+    // 6b. GH #1590: the record is memory's, and a new one is born there. Its
+    //     first row is composed here, so its identity (that row's digest)
+    //     is pinned in the genome before anything is named after it; the
+    //     secrets, memory's schema and the row follow
+    let fresh = manifest_pin(&manifest)?.is_none();
+    let genesis_body = if fresh {
+        let (body, id) = genesis_row(&root)?;
+        pin_record_in_manifest(&manifest, &id)?;
+        out.push(format!("pinned  {} ([dna] record = {}…, the identity of the record born here)", manifest.display(), short_id(&id)));
+        Some(body)
+    } else {
+        None
+    };
+    // 6c. .gitignore hygiene
+    let gi = root.join(".gitignore");
+    let mut gtext = fs::read_to_string(&gi).unwrap_or_default();
+    let mut added = Vec::new();
+    for line in ["/vendor/", LOCAL_STATE_IGNORE, SECRETS_IGNORES[0], SECRETS_IGNORES[1]] {
+        if !gtext.lines().any(|l| l.trim() == line) {
+            if !gtext.is_empty() && !gtext.ends_with('\n') {
+                gtext.push('\n');
+            }
+            gtext.push_str(line);
+            gtext.push('\n');
+            added.push(line);
+        }
+    }
+    if !added.is_empty() {
+        fs::write(&gi, gtext).map_err(|e| e.to_string())?;
+        out.push(format!("edited  {} ({})", gi.display(), added.join(", ")));
+    }
+    // 6d. GH #989: the organism's secrets, provisioned in one place (the
+    // skin's list, dna/host/secrets.hl): drawn into the vault, the nerves'
+    // dna/nats.conf (tracked, no secret) written, and the servers'
+    // dna/nats.secrets.conf and dna/postgres.secrets (the only files with a
+    // password: mode 600, ignored) from the same draw. After the pin (the
+    // vault names are its record's) and after .gitignore (the writer
+    // refuses a file git would track); before memory, whose roles they are.
+    out.push(organism_secrets(&root, true));
+    // 6e. GH #1590: memory, then the record's first row in it
+    match memory_migrate(&root)? {
+        MemoryPlan::Roles { .. } => out.push("memory  schema applied; this clone reads and writes the record as its head (.hale/dna/memory.env)".to_string()),
+        MemoryPlan::NoDatabase(why) => {
+            return Err(format!("the record is memory's, and there is no memory to keep it in: {why} (set {OWNER_DSN_ENV}, or let dna/compose.yaml bring one up)"));
+        }
+    }
+    match &genesis_body {
+        Some(body) => {
+            let born = host_run("record-genesis", &root, &[body.clone()])?;
+            out.push(format!("born    {}", born.trim()));
+        }
+        // a manifest that pins a record memory holds none of belongs to
+        // another organism's genome, or to a memory this clone does not
+        // reach: init would start a second record beside it
+        None if !record_exists(&root)? => {
+            let pinned = manifest_pin(&manifest)?.unwrap_or_default();
+            return Err(format!(
+                "{}'s [dna] record pins record {pinned}, and the memory this clone reaches holds none of it: a clone of an existing organism is pointed at its memory ({OWNER_DSN_ENV}, or HALE_DNA_MEMORY_DSN_HEAD) rather than starting another record; a manifest copied from another project loses its `[dna] record` line first",
+                manifest.display()
+            ));
+        }
+        None => {}
+    }
     // 7. the record, seeded from the artifact — or, for a repository, with
     //    the purpose's Review and what the repository holds, as the graph
-    if record_exists(&root)? {
-        out.push(format!("kept    {RECORD_REF} (a record exists; not reseeded)"));
+    if record_seeded(&root)? {
+        out.push("kept    the record (memory holds it; not reseeded)".to_string());
     } else {
         match (&app, &cut) {
             (Some(app), Some((art, _))) => {
                 let (n, graph) = seed_journal(&app.root, app, art, &purpose_text)?;
-                out.push(format!("seeded  {RECORD_REF} ({n} observed event(s): application.attached, structure.observed, responsibility.proposed; then the purpose proposed and the application's graph)"));
+                out.push(format!("seeded  the record ({n} observed event(s): application.attached, structure.observed, responsibility.proposed; then the purpose proposed and the application's graph)"));
                 push_graph_lines(&mut out, &graph);
                 out.push(seat_initializer(&app.root, true)?);
             }
@@ -1631,7 +1712,7 @@ fn init(app_dir: &Path, library: bool) -> Result<Vec<String>, String> {
                 // record behind, and one with nothing to ingest still has one
                 let graph = seed_repository(&root, &project, &purpose_text)?;
                 out.push(format!(
-                    "seeded  {RECORD_REF} (application.attached `{}`: the repository's compose services are its expression; the purpose, proposed; then the graph)",
+                    "seeded  the record (application.attached `{}`: the repository's compose services are its expression; the purpose, proposed; then the graph)",
                     app_account_name(&project)
                 ));
                 push_graph_lines(&mut out, &graph);
@@ -1657,36 +1738,13 @@ fn init(app_dir: &Path, library: bool) -> Result<Vec<String>, String> {
         // has a key for
         out.extend(seed_model_map(&root, &found)?);
     }
-    // 7b. GH #1590: the record's identity, pinned in the genome
-    if let Some(line) = pin_identity(&root)? {
-        out.push(line);
+    // 8. GH #1590: the secrets the seeded record names (the attached
+    //    application's nerves account), drawn now it names them; nothing
+    //    drawn before is drawn again
+    let late = organism_secrets(&root, false);
+    if late.lines().any(|l| l.contains("drawn")) {
+        out.push(late);
     }
-    // 8. .gitignore hygiene
-    let gi = root.join(".gitignore");
-    let mut gtext = fs::read_to_string(&gi).unwrap_or_default();
-    let mut added = Vec::new();
-    for line in ["/vendor/", LOCAL_STATE_IGNORE, SECRETS_IGNORES[0], SECRETS_IGNORES[1]] {
-        if !gtext.lines().any(|l| l.trim() == line) {
-            if !gtext.is_empty() && !gtext.ends_with('\n') {
-                gtext.push('\n');
-            }
-            gtext.push_str(line);
-            gtext.push('\n');
-            added.push(line);
-        }
-    }
-    if !added.is_empty() {
-        fs::write(&gi, gtext).map_err(|e| e.to_string())?;
-        out.push(format!("edited  {} ({})", gi.display(), added.join(", ")));
-    }
-    // 8b. GH #989: the organism's secrets, provisioned in one place (the
-    // skin's list, dna/host/secrets.hl): drawn into the vault, the nerves'
-    // dna/nats.conf (tracked, no secret) written, and the servers'
-    // dna/nats.secrets.conf and dna/postgres.secrets (the only files with a
-    // password: mode 600, ignored) from the same draw. After the record (the
-    // vault names are its organization's) and after .gitignore (the writer
-    // refuses a file git would track).
-    out.push(organism_secrets(&root, true));
     // 9. format what we generated and touched
     let mut fmt = Command::new(&me);
     fmt.arg("fmt").arg(root.join("dna"));
@@ -1707,6 +1765,10 @@ fn upgrade(dir: &Path) -> Result<Vec<String>, String> {
     let root = crate::shared::workspace::find_workspace_root_pub(&start).unwrap_or(start);
     if !root.join("vendor/dna").is_dir() && !root.join("dna").is_dir() {
         return Err(format!("{} has no DNA (no vendor/dna or dna/); run `hale dna init` first", root.display()));
+    }
+    // GH #1590: nothing an earlier toolchain kept on git is converted
+    if let Some(why) = git_era_refusal(&root) {
+        return Err(why);
     }
     let (w, same) = materialize_vendor(&root)?;
     let mut out = vec![format!(
@@ -1793,16 +1855,32 @@ fn upgrade(dir: &Path) -> Result<Vec<String>, String> {
             out.push(format!("note    {}/main.hl: point the substrate at the catalog, `catalog: workflows()` on dna::Dna, to admit the project's own definitions beside the baseline", ORG_SEED));
         }
     }
+    // GH #1590: what follows needs the record, which is memory's, named by
+    // the genome's pin: a pin that does not read is refused, never taken
+    // for no record, and one memory holds nothing of is said
+    let in_memory = match manifest_pin(&root.join("hale.toml"))? {
+        None => {
+            out.push("note    hale.toml pins no record: `hale dna init` births one".to_string());
+            false
+        }
+        Some(pinned) => {
+            // a clone that keeps no head's DSN yet reaches the record through
+            // the owner's migration, which keeps it
+            let owner = std::env::var(OWNER_DSN_ENV).unwrap_or_default();
+            if owner.starts_with("postgres") && !memory_env_file(&root).is_file() && std::env::var_os("HALE_DNA_MEMORY_DSN_HEAD").is_none() {
+                memory_migrate(&root)?;
+            }
+            if !record_exists(&root)? {
+                return Err(format!("hale.toml's [dna] record pins record {pinned}, and the memory this clone reaches holds none of it: point the clone at its memory ({OWNER_DSN_ENV}, or HALE_DNA_MEMORY_DSN_HEAD)"));
+            }
+            true
+        }
+    };
     // GH #946, #1104 piece 5: a record from before the seat: this uid
     // mapped to its user, so the head's socket knows the peer; the trust
     // an existing record declares, or does not, is its own
-    if record_exists(&root)? {
+    if in_memory {
         out.push(seat_initializer(&root, false)?);
-    }
-    // GH #1590: a record from before the pin gets its identity pinned in the
-    // genome; a pin naming another record is refused here
-    if let Some(line) = pin_identity(&root)? {
-        out.push(line);
     }
     // GH #596: an organization from before the charter gets one, and
     // the toolchain's design is proposed again where it changed — each
@@ -1948,9 +2026,9 @@ fn upgrade(dir: &Path) -> Result<Vec<String>, String> {
             ORG_SEED
         ));
     }
-    if main_text.contains("journal: dna::GitJournal {") {
+    if main_text.contains("dna::GitJournal") || main_text.contains("dna::GitReceipts") || main_text.contains("dna::GitLeases") {
         out.push(format!(
-            "note    {}/main.hl wires the record alone as its journal; the day's work can move to the ledger (GH #646) once it reads both: `journal: dna::RoutedJournal {{ record: dna::GitJournal {{ repo: \".\" }} }}` (the ledger is memory's, GH #985)",
+            "note    {}/main.hl wires the record over git; the record is memory's now (GH #1590): `dna::GitJournal` becomes `dna::RecordJournal`, `dna::GitReceipts` `dna::MemoryReceipts`, `dna::GitLeases` `dna::MemoryLeases` (the same fields)",
             ORG_SEED
         ));
     }
@@ -1972,7 +2050,7 @@ fn upgrade(dir: &Path) -> Result<Vec<String>, String> {
     if law_text.contains("dna::KnowledgeClient") {
         out.push(format!("note    {}/law.hl groups dna::KnowledgeClient; it is dna::MemoryKnowledge now", ORG_SEED));
     }
-    if record_exists(&root)? {
+    if in_memory {
         for (family, practices) in SEEDED {
             let (proposed, superseded, waiting) = design_upgrade(&root, practices)?;
             if proposed > 0 {
@@ -1995,9 +2073,10 @@ fn upgrade(dir: &Path) -> Result<Vec<String>, String> {
         }
     }
     // GH #985: with the owner's DSN given, memory's schema moves to this
-    // toolchain's version here; without one, `dev` applies it at start
+    // toolchain's version here; without one, `dev` applies it at start.
+    // A genome that pins no record names no schema to move (GH #1590).
     let owner = std::env::var(OWNER_DSN_ENV).unwrap_or_default();
-    if owner.starts_with("postgres") && record_exists(&root)? {
+    if in_memory && owner.starts_with("postgres") {
         if let MemoryPlan::Roles { .. } = memory_migrate(&root)? {
             out.push("memory  schema applied with the owner's DSN; `hale dna memory migrate` prints the spine's".to_string());
         }
@@ -2018,8 +2097,8 @@ fn compose_yaml(project: &str, ports: &ComposePorts) -> String {
         r#"# dna/compose.yaml — the organism's environment for `hale dna dev`
 # (project-owned; generated by `hale dna init`). Memory: the organism
 # keeps its working memory in this Postgres — the ledger, the graph,
-# protected evidence — and the record (refs/dna/*) holds the decided
-# half. Nerves (GH #986): facts travel between the organism's parts over
+# protected evidence — and the record, the decided half, beside them
+# (GH #1590). Nerves (GH #986): facts travel between the organism's parts over
 # this NATS JetStream server, one stream per organization, each part
 # with its own user (dna/nats.conf). `hale dna dev` runs `docker compose
 # -f dna/compose.yaml up -d`, applies memory's schema and creates the
@@ -2815,7 +2894,7 @@ fn main() {{
 }}
 "#
     );
-    let gitignore = format!("# the build artifact\n/{name}\n# toolchain-managed (vendor is re-materialized; .hale holds sockets, worktrees, scratch; the record is refs/dna/*)\n/vendor/\n/.hale/\n");
+    let gitignore = format!("# the build artifact\n/{name}\n# toolchain-managed (vendor is re-materialized; .hale holds sockets, worktrees, scratch; the record is memory's)\n/vendor/\n/.hale/\n");
     let mut out = Vec::new();
     for (f, c) in [("hale.toml", "[deps]\n".to_string()), ("main.hl", main_hl), ("tests/main_test.hl", test_hl), (".gitignore", gitignore)] {
         let p = dir.join(f);
@@ -2829,7 +2908,7 @@ fn main() {{
     out.append(&mut rest);
     if let Some(url) = remote {
         git(dir, &["remote", "add", "origin", url])?;
-        out.push(format!("remote origin = {url} (the record is shared over it: `hale dna sync`, and a body on a server takes the lease there)"));
+        out.push(format!("remote origin = {url} (the genome is shared over it; the record is memory's)"));
     }
     if let Some(host) = body {
         git(dir, &["config", "dna.body", host])?;
@@ -2918,14 +2997,13 @@ import "vendor/dna/pond/realtime/nats" as nats;
 main locus Org {{
     params {{
         core: dna::Dna = dna::Dna {{
-            // Two memories read as one (GH #646): the record — one commit per
-            // event on refs/dna/journal, what changes this organization,
-            // synced to every clone — and the ledger, the day's work, in
-            // memory (Postgres, opened as this record's spine role) once
-            // `hale dna ledger adopt` has moved it there. Until then every
-            // row is the record's.
+            // Two memories read as one (GH #646): the record — what changes
+            // this organization, one chain of signed rows — and the ledger,
+            // the day's work, both in memory (Postgres, opened as this
+            // record's spine role), which every clone and body reads and
+            // writes alike (GH #1590).
             journal: dna::RoutedJournal {{
-                record: dna::GitJournal {{ repo: "." }}
+                record: dna::RecordJournal {{ repo: "." }}
             }},
             // Models: every position's router comes from the catalog in
             // models.hl (a backend is a constructor function there; a
@@ -2952,11 +3030,11 @@ main locus Org {{
             review_policy: dna::OrgPolicy {{ }},
             board: dna::Board {{ who: "board" }},
             gateway: dna::MutationGateway {{
-                leases: dna::GitLeases {{ repo: "." }},
+                leases: dna::MemoryLeases {{ repo: "." }},
                 workspaces: dna::IsolatedWorktrees {{ repo: ".", root: ".hale/dna/worktrees" }},
                 repo: dna::LocalGit {{ repo: "." }}
             }},
-            verification: dna::HaleVerification {{ receipts: dna::GitReceipts {{ repo: "." }}, scratch: ".hale/dna/scratch", repo: ".", seed: "{seed}" }},
+            verification: dna::HaleVerification {{ receipts: dna::MemoryReceipts {{ repo: "." }}, scratch: ".hale/dna/scratch", repo: ".", seed: "{seed}" }},
             // The editing position: read, edit, fmt and check inside one
             // worktree — the law says so.
             editor: dna::SourceEditor {{ name: "editor", models: editor_models() }},
@@ -2975,7 +3053,7 @@ main locus Org {{
         leader: dna::Leader = dna::Leader {{
             name: "leader",
             models: leader_models(),
-            receipts: dna::GitReceipts {{ repo: "." }},
+            receipts: dna::MemoryReceipts {{ repo: "." }},
             source: dna::SourceReader {{ repo: "." }},
             // GH #596 L: what the leader reads before it thinks — its
             // charter and the purpose from this program, the law from the
@@ -3437,11 +3515,14 @@ fn record_exists(root: &Path) -> Result<bool, String> {
     Ok(host_run("record-head", root, &[])?.trim() != "none")
 }
 
-/// GH #1590: the record's identity as this clone's record holds it
-/// (`None` before its first row), from the host's `record-identity`.
-fn record_held(root: &Path) -> Result<Option<String>, String> {
-    let out = host_run("record-identity", root, &[])?;
-    Ok(out.lines().map(str::trim).next().filter(|l| !l.is_empty() && *l != "none").map(str::to_string))
+/// GH #1590: whether the record holds more than its birth (`record.genesis`,
+/// `ledger.adopted`, `record.key`): init seeds a record once.
+fn record_seeded(root: &Path) -> Result<bool, String> {
+    let rows = host_run("record-rows", root, &[])?;
+    Ok(rows.lines().filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok()).any(|v| {
+        let kind = v["kind"].as_str().unwrap_or("");
+        !kind.starts_with("record.") && kind != "ledger.adopted"
+    }))
 }
 
 /// GH #1590: the identity `hale.toml` pins, as a TOML parser reads it:
@@ -3496,26 +3577,19 @@ fn pinned_manifest(text: &str, identity: &str) -> Result<String, String> {
     Ok(new)
 }
 
-/// GH #1590: pin the record's identity in the genome, so a clone knows
-/// which record (and which memory) it belongs to before it holds a row of
-/// it. A pin naming another record is refused: the manifest was copied
-/// from another project, or the record from another genome. `None` when
-/// the record has no rows yet.
-fn pin_identity(root: &Path) -> Result<Option<String>, String> {
-    let manifest = root.join("hale.toml");
-    let pinned = manifest_pin(&manifest)?;
-    match (record_held(root)?, pinned) {
-        (None, _) => Ok(None),
-        (Some(held), Some(pinned)) if held == pinned => Ok(Some(format!("kept    {} ([dna] record pins this record, {})", manifest.display(), short_id(&held)))),
-        (Some(held), Some(pinned)) => Err(format!(
-            "{}'s [dna] record names record {pinned}, but this clone's record is {held}; remove the line if the manifest was copied from another project",
-            manifest.display()
-        )),
-        (Some(held), None) => {
-            pin_record_in_manifest(&manifest, &held)?;
-            Ok(Some(format!("pinned  {} ([dna] record = {}…, the record's identity)", manifest.display(), short_id(&held))))
-        }
-    }
+/// GH #1590: a new record's first row, `record.genesis`, and its digest —
+/// the record's identity, as `dna::event_digest` makes it over no row
+/// before (`genesis`): the genome it is born on (the root commit, "" for a
+/// genome with none yet) and a nonce, so two projects made alike are two
+/// records.
+fn genesis_row(root: &Path) -> Result<(String, String), String> {
+    let genome = Command::new("git").args(["-C", &root.to_string_lossy(), "rev-list", "--max-parents=0", "HEAD"]).output().ok().filter(|o| o.status.success()).map(|o| String::from_utf8_lossy(&o.stdout).lines().next().unwrap_or("").to_string()).unwrap_or_default();
+    let mut nonce = [0u8; 16];
+    openssl::rand::rand_bytes(&mut nonce).map_err(|e| format!("a nonce for the record: {e}"))?;
+    let nonce: String = nonce.iter().map(|b| format!("{b:02x}")).collect();
+    let body = serde_json::json!({ "genome": genome, "nonce": nonce }).to_string();
+    let digest = openssl::sha::sha256(format!("genesis|record.genesis|record|{body}").as_bytes());
+    Ok((body, digest.iter().map(|b| format!("{b:02x}")).collect()))
 }
 
 fn short_id(id: &str) -> &str {

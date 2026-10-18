@@ -66,7 +66,7 @@ main locus App {
         limits: dna::AdmissionLimits = dna::AdmissionLimits { };
         boot: Boot = Boot { };
         org: dna::Dna = dna::Dna { };
-        receipts: dna::GitReceipts = dna::GitReceipts { repo: "/nonexistent/dna-completion" };
+        receipts: dna::MemoryReceipts = dna::MemoryReceipts { repo: "/nonexistent/dna-completion" };
         lead: dna::Leader = dna::Leader {
             name: "leader", org: "cases", charter: "You are the architect.",
             models: dna::ModelRouter {
@@ -214,37 +214,40 @@ main locus App {
         std::test::assert(x.ok, "done");
     }
     fn boot_org(repo: String) {
+        std::test::assert_eq_str(dna::memory_fixture(repo), "", "the record is born in memory (GH #1590)");
         self.org = dna::Dna {
             runs_engine: false, // the engine of this scope is assembled here
-            journal: dna::GitJournal { repo: repo },
+            journal: dna::RoutedJournal { record: dna::RecordJournal { repo: repo }, ledger: dna::MemoryLedger { repo: repo, dsn_env: dna::fixture_spine(repo) } },
             gateway: dna::MutationGateway {
                 workspaces: dna::IsolatedWorktrees { repo: repo, root: repo + "/.hale/dna/worktrees" },
                 repo: dna::LocalGit { repo: repo }
             },
-            verification: dna::HaleVerification { hale_bin: toolchain(), receipts: dna::GitReceipts { repo: repo }, scratch: repo + "/.hale/dna/scratch", repo: repo },
+            verification: dna::HaleVerification { hale_bin: toolchain(), receipts: dna::MemoryReceipts { repo: repo }, scratch: repo + "/.hale/dna/scratch", repo: repo },
             boundary: dna::AutonomyBoundary { child: "app", grant: dna::Grant { child: "app", classes: "docs refactor", max_magnitude: 8, review: "pre" } },
             genome_seed: "app", org_seed: "org", planned: true, org_id: "cases"
         };
     }
     // An owner's assembly over the shared ledger (acme: alice; north: bob).
     fn boot_owner_org(repo: String, me: String) {
+        std::test::assert_eq_str(dna::memory_fixture(repo), "", "the record is born in memory (GH #1590)");
         self.org = dna::Dna {
             runs_engine: false, // the engine of this scope is assembled here
-            journal: dna::GitJournal { repo: repo },
+            journal: dna::RoutedJournal { record: dna::RecordJournal { repo: repo }, ledger: dna::MemoryLedger { repo: repo, dsn_env: dna::fixture_spine(repo) } },
             ownership: dna::Ownership { me: me, me_env: "", graph: dna::graph_ownership_of(OWNERS) },
             gateway: dna::MutationGateway {
                 workspaces: dna::IsolatedWorktrees { repo: repo, root: repo + "/.hale/dna/worktrees" },
                 repo: dna::LocalGit { repo: repo }
             },
-            verification: dna::HaleVerification { hale_bin: toolchain(), receipts: dna::GitReceipts { repo: repo }, scratch: repo + "/.hale/dna/scratch", repo: repo },
+            verification: dna::HaleVerification { hale_bin: toolchain(), receipts: dna::MemoryReceipts { repo: repo }, scratch: repo + "/.hale/dna/scratch", repo: repo },
             boundary: dna::AutonomyBoundary { child: "app", grant: dna::Grant { child: "app", classes: "docs refactor", max_magnitude: 8, review: "pre" } },
             genome_seed: "app", org_seed: "org", planned: true, org_id: "cases"
         };
     }
     fn boot_runtime(repo: String) {
+        std::test::assert_eq_str(dna::memory_fixture(repo), "", "the record is born in memory (GH #1590)");
         self.boot = Boot {
             rt: dna::WorkflowRuntime {
-                scope: "cases", journal: dna::GitJournal { repo: repo },
+                scope: "cases", journal: dna::RoutedJournal { record: dna::RecordJournal { repo: repo }, ledger: dna::MemoryLedger { repo: repo, dsn_env: dna::fixture_spine(repo) } },
                 work: dna::WorkSystem { human: dna::HumanRelay { scope: "cases", name: "cases" }, human_reconciler: dna::IdempotentReplay { } }
             },
             owner: dna::Executions { scope: "cases" }
@@ -265,7 +268,8 @@ main locus App {
         let c = sh("sh\n-c\ncd \"$1\" && git add -A && git commit -q -m genome\nsh\n" + repo);
         std::test::assert(c.code == 0, "the genome: " + c.stderr);
         self.define();
-        self.receipts = dna::GitReceipts { repo: repo };
+        std::test::assert_eq_str(dna::memory_fixture(repo), "", "the record is born in memory (GH #1590)");
+        self.receipts = dna::MemoryReceipts { repo: repo };
         self.boot_runtime(repo);
         let strict = self.practice("acceptance/expense-approval", "An expense closes with its receipt.\nevidence: required\nexceptions by: dana");
         self.boot_org(repo);

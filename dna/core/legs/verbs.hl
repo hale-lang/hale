@@ -276,7 +276,7 @@ locus Leg {
             println(b.result());
             return 1;
         }
-        let mapping = dna::GitRecord { repo: "." }.git("config\n--local\n--get-all\ndna.oidc.member");
+        let mapping = dna::MemoryRecord { repo: "." }.git("config\n--local\n--get-all\ndna.oidc.member");
         let known = if mapping.code == 0 { mapping.stdout } else { "" };
         let mut person = flag(self.a, "--as");
         if len(person) == 0 {

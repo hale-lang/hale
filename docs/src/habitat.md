@@ -24,16 +24,16 @@ A habitat is not a new compiler primitive, a tenant or a legal entity. The org c
 
 ## Records are the unit of isolation
 
-The unit of isolation is **a repository and its record**, with the backends attached to it (memory, nerves, secrets, the senses), scoped to that record.
+The unit of isolation is **a record**: its rows, signed, in the memory scoped to it (its own Postgres schema), with the other backends attached to it (nerves, secrets, the senses). The repository is the genome; its `hale.toml` pins which record it belongs to.
 - One person can take part in several records, and several people can share one.
-- A clone is a replica of a record, not a new access domain.
-- Moving or cloning a record keeps its identity and provenance.
+- A clone of the genome reaches the record through memory under its own role; it is not a replica and not a new access domain.
+- A record keeps its identity and provenance wherever its rows are read: every row names the digest before it and is signed by its writer, so an exported row carries both.
 
-**Sharing is deliberate publication.** Two firms keep their private records and agree on a third, shared one. Into it they publish selected facts, each carrying its origin, lineage and purpose. Syncing a whole record cannot export part of its private history, so a shared record never receives one. Sharing participants, owners or grants does not merge private context, administration or books.
+**Sharing is deliberate publication.** Two firms keep their private records and agree on a third, shared one. Into it they publish selected facts, each carrying its origin, lineage and purpose, as signed envelopes over the nerves. Nothing reads another record's rows, so a shared record never receives a private history. Sharing participants, owners or grants does not merge private context, administration or books.
 
-**Visibility is enforced, not labelled.** Whoever holds a full replica can read its plaintext, and a projection that filters rows cannot hide them. Sensitive material therefore lives outside the replicated record, as protected evidence in the record's own memory, read only through a principal-checked boundary. This covers the derivatives of sensitive material too: summaries, embeddings, prompts and the context a worker is given.
+**Visibility is enforced, not labelled.** Whoever can read the record's rows can read their plaintext, and a projection that filters rows cannot hide them. Sensitive material therefore lives outside the rows, as protected evidence sealed in the record's own memory, read only through a principal-checked boundary. This covers the derivatives of sensitive material too: summaries, embeddings, prompts and the context a worker is given.
 
-**Identity is bound at every entry**: the face, the API, the command line, a synced decision, a callback, resumed work. Each checks the actor, the record, the current membership or assignment, and the policy. A git author, a `--as` flag or a position in a view is attribution, not proof.
+**Identity is bound at every entry**: the face, the API, the command line, a synced decision, a callback, resumed work. Each checks the actor, the record, the current membership or assignment, and the policy. A `--as` flag or a position in a view is attribution, not proof; a row's signature by a key the record enrolled is.
 
 ## Three independent choices
 

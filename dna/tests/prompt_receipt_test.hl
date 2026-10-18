@@ -76,15 +76,16 @@ main locus App {
         let app = scratch + "/receipts";
         let u1 = in_dir(app, "git\nconfig\nuser.name\nriley");
         let u2 = in_dir(app, "git\nconfig\nuser.email\nriley@local");
-        let receipts = dna::GitReceipts { repo: app };
+        std::test::assert_eq_str(dna::memory_fixture(app), "", "the record is born in memory (GH #1590)");
+        let receipts = dna::MemoryReceipts { repo: app };
 
         self.core = dna::Dna {
-            journal: dna::GitJournal { repo: app },
+            journal: dna::RoutedJournal { record: dna::RecordJournal { repo: app }, ledger: dna::MemoryLedger { repo: app, dsn_env: dna::fixture_spine(app) } },
             gateway: dna::MutationGateway {
                 workspaces: dna::IsolatedWorktrees { repo: app, root: app + "/.hale/dna/worktrees" },
                 repo: dna::LocalGit { repo: app }
             },
-            verification: dna::HaleVerification { hale_bin: toolchain(), receipts: dna::GitReceipts { repo: app }, scratch: app + "/.hale/dna/scratch", repo: app },
+            verification: dna::HaleVerification { hale_bin: toolchain(), receipts: dna::MemoryReceipts { repo: app }, scratch: app + "/.hale/dna/scratch", repo: app },
             planned: true, org_id: "pr"
         };
 
@@ -145,8 +146,9 @@ main locus App {
         std::test::assert(!std::str::contains(wide.stdout, "end of prompt"), "and shows no body");
         let own = in_dir(app, toolchain() + "\ndna\nhistory\nprobe/a0");
         std::test::assert_eq_str(block_body(own.stdout, "prompt", dna::digest_of("check the probe's arithmetic")), "check the probe's arithmetic", "the attempt's own history does");
-        let grep = in_dir(app, "sh\n-c\ngit for-each-ref --format='%(refname)' refs/dna/receipts/ | while read r; do git cat-file -p \"$r\"; done | grep -c 'account 4411' || true");
-        std::test::assert_eq_str(dna::trim_nl(grep.stdout), "0", "no receipt anywhere in the record carries the customer text");
+        // the bodies are memory's (GH #1590): none of them carries it
+        let grep = dna::run_tool("psql\n" + std::env::var("HALE_DNA_MEMORY_DSN_OWNER") + "\n-tAq\n-c\nSELECT count(*) FROM " + dna::schema_for(dna::record_scope(app)) + ".protected_receipts WHERE body LIKE '%account 4411%'");
+        std::test::assert_eq_str(dna::trim_nl(grep.stdout), "0", "no receipt anywhere in the record carries the customer text: " + grep.stderr);
 
         dna::scratch_done(scratch);
         dna::scratch_done("/tmp/dna-prompt-placeholder-" + to_string(std::process::pid()));

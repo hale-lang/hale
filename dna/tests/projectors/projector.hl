@@ -46,7 +46,8 @@ main locus Projector {
 
 fn main() {
     let repo = std::env::arg_or(1, ".");
+    std::test::assert_eq_str(dna::memory_fixture(repo), "", "the record is born in memory (GH #1590)");
     let deadline = std::str::parse_int(std::env::arg_or(2, "60")) or 60;
     // the journal and the receipts read the repository they are born with
-    Projector { repo: repo, deadline: deadline, tail: ops::MemoryProjection { root: repo, j: dna::GitJournal { repo: repo, author: "spine" }, receipts: dna::GitReceipts { repo: repo } } };
+    Projector { repo: repo, deadline: deadline, tail: ops::MemoryProjection { root: repo, j: dna::RecordJournal { repo: repo, author: "spine" }, receipts: dna::MemoryReceipts { repo: repo } } };
 }
