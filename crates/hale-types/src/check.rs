@@ -18560,7 +18560,7 @@ impl<'a> Checker<'a> {
         // a set as any value of the member does
         if let Some(v) = vs.iter().find(|v| v.name == member.name) {
             if let ([Pattern::Binding(id)], Some(ty)) = (args.as_slice(), v.fields.first()) {
-                self.locals.insert(&id.name, LocalSym { ty: ty.clone(), is_mut: false, cell: None });
+                self.locals.insert(&id.name, LocalSym { ty: ty.clone(), is_mut: false, cell: None, param_place: false });
             }
             return;
         }

@@ -485,6 +485,14 @@ fn an_assignment_target_names_only_declared_fields() {
                 r.ps[0].b = 3;
                 let h = Inner { };
                 h.repo = "v";
+            }
+        }
+        fn main() { }
+    "#,
+    );
+    assert!(ds.is_empty(), "{ds:?}");
+}
+
 
 
 /// GH #1608 follow-up: a pointer-shaped element stored into a bounded place
@@ -520,7 +528,6 @@ fn an_element_stored_through_a_parameters_place_is_refused_where_it_cannot_last(
         fn main() { }
     "#,
     );
-    assert!(ds.is_empty(), "{ds:?}");
     let calls: Vec<&String> = ds.iter().filter(|m| m.contains("stores pointer-shaped elements")).collect();
     assert_eq!(calls.len(), 2, "fill(self.row) and relay(self.row); got: {ds:?}");
     assert!(calls.iter().all(|m| m.contains("this locus's arena")), "{ds:?}");
