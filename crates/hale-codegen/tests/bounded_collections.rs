@@ -339,6 +339,28 @@ fn a_whole_assigned_bounded_field_outlives_its_method_under_asan() {
             }
             fn read() -> String {
                 return (at(self.xs, 0) or "") + "|" + (at(self.xs, 1) or "") + "|" + (at(self.row.xs, 1) or "");
+            }
+        }
+        fn main() {
+            let l = L { };
+            let mut k = 0;
+            while k < 50 {
+                l.put(k);
+                k = k + 1;
+            }
+            println(l.read());
+        }
+    "#;
+    let bin = harness::unique_bin("bounded_whole_assign_asan");
+    let options = hale_codegen::BuildOptions { asan: true, ..build_opts::options() };
+    build_opts::build_source(src, &bin, &options).expect("asan build");
+    let out = Command::new(&bin).output().expect("run");
+    let _ = std::fs::remove_file(&bin);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success() && !stderr.contains("AddressSanitizer"), "{:?}: {stderr}", out.status);
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "first 49|SECOND 49|SECOND 49\n");
+}
+
 /// A bounded local is a view of the place it was bound from, and the
 /// elements a `push` or a `set` stores through it are anchored where that
 /// place lives: a locus's own field (`let mut dest = self.xs`), a child's
@@ -390,7 +412,6 @@ fn an_element_stored_through_a_bounded_view_outlives_its_method_under_asan() {
             println(l.read());
         }
     "#;
-    let bin = harness::unique_bin("bounded_whole_assign_asan");
     let bin = harness::unique_bin("bounded_view_anchor_asan");
     let options = hale_codegen::BuildOptions { asan: true, ..build_opts::options() };
     build_opts::build_source(src, &bin, &options).expect("asan build");
@@ -398,7 +419,6 @@ fn an_element_stored_through_a_bounded_view_outlives_its_method_under_asan() {
     let _ = std::fs::remove_file(&bin);
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(out.status.success() && !stderr.contains("AddressSanitizer"), "{:?}: {stderr}", out.status);
-    assert_eq!(String::from_utf8_lossy(&out.stdout), "first 49|SECOND 49|SECOND 49\n");
     assert_eq!(String::from_utf8_lossy(&out.stdout), "set 49|SECOND 49|alias 49|outer 49\n");
 }
 

@@ -18228,7 +18228,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 }
                 // A bounded local views the place it was bound from: its
                 // owner's arena, for the elements an intrinsic writes
-                // through it (`Cx::bounded_place_arena`). A program with
+                // through it (`Cx::bounded_owner_arena`). A program with
                 // no bounded local emits nothing here.
                 let view_key = Self::bounded_view_key(&name.name);
                 if matches!(ty, CodegenTy::Bounded(_, _)) {
@@ -34090,6 +34090,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         self.builder.build_memmove(dest, 8, src.into_pointer_value(), 8, size).map_err(e)?;
         self.anchor_bounded_elems_in_place(dest, elem, cap, arena, "bounded.assign")?;
         Ok(BlockEnd::Open)
+    }
+
     /// The scope key that holds the owning arena of the bounded place a
     /// bounded local `name` views (`let mut dest = self.xs`): not an
     /// identifier, so no program name meets it, and a block's end drops
@@ -34134,10 +34136,15 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         recv: &Expr,
         scope: &Scope<'ctx>,
     ) -> Result<(PointerValue<'ctx>, Option<Option<LvalueOwner<'ctx>>>), CodegenError> {
-        if let Some(target) = Self::expr_place_lvalue(recv) {
-            if let Ok((slot, CodegenTy::Bounded(_, _), _, owner)) = self.resolve_lvalue_chain(&target, scope) {
-                return Ok((slot, Some(owner)));
+        let target = Self::expr_place_lvalue(recv);
+        // A place with an index evaluates it once, through the walk, which
+        // also addresses the storage.
+        if let Some(t) = target.as_ref().filter(|t| t.tail.iter().any(|s| matches!(s, LValueSeg::Index(_)))) {
+            let (slot, ty, _, owner) = self.resolve_lvalue_chain(t, scope)?;
+            if !matches!(ty, CodegenTy::Bounded(_, _)) {
+                return Err(CodegenError::Unsupported(format!("a bounded place lowered to {ty:?}")));
             }
+            return Ok((slot, Some(owner)));
         }
         let (v, ty) = self.lower_expr(recv, scope)?;
         if !matches!(ty, CodegenTy::Bounded(_, _)) {
@@ -34145,7 +34152,17 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 "bounded intrinsic receiver lowered to {ty:?}, expected bounded[T; N]"
             )));
         }
-        Ok((v.into_pointer_value(), None))
+        // A place of fields alone has no side effect to repeat: its owner
+        // is a second walk of GEPs and loads. A shape the walk does not
+        // address keeps the current arena.
+        let owner = match target {
+            Some(t) => match self.resolve_lvalue_chain(&t, scope) {
+                Ok((_, _, _, owner)) => Some(owner),
+                Err(_) => Some(None),
+            },
+            None => None,
+        };
+        Ok((v.into_pointer_value(), owner))
     }
 
     /// The arena the elements of the bounded place `recv` anchor in, from
