@@ -8264,6 +8264,14 @@ row	~.feed	Feed	main	inherited
 row	~.log	Log	main	inherited
 row	~.wire	Wire	main	inherited
 
+== tests/hale/seam_failure_routes_test.hl
+-- App@main1	App
+row	~	App	main	default
+row	~.all	All	main	inherited
+row	~.box	Box	main	inherited
+row	~.d	Decode	main	inherited
+row	~.h	Handle	main	inherited
+
 == tests/hale/seam_frame_classifier_test.hl
 -- Link@main1	Link
 row	~	Link	main	default

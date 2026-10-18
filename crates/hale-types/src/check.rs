@@ -16283,7 +16283,12 @@ impl<'a> Checker<'a> {
                             .to_string(),
                     )),
                     Some((_, expected_payload)) => {
-                        if !expected_payload.assignable_from(&payload_ty) {
+                        // a member fails as its set (GH #1530): it flows
+                        // into the payload as into any place of the set
+                        let expected_payload = expected_payload.clone();
+                        let injected = self.set_injection(&expected_payload, &payload_ty).is_some()
+                            && self.flows_into(&expected_payload, &payload_ty, value);
+                        if !injected && !expected_payload.assignable_from(&payload_ty) {
                             self.diags.push(Diag::ty(
                                 value.span(),
                                 format!(

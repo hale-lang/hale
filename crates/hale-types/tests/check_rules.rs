@@ -2813,6 +2813,29 @@ interface Handler { fn a(x: A) -> String; }
     }
 
     #[test]
+    fn a_callable_seam_begins_at_its_parameter() {
+        assert_eq!(
+            seam(H, "fn side(s: String) -> String { return s; }\n    seam f(s: String) { self.side(s) -> self.dec.decode -> self.h; }"),
+            vec!["a callable seam's chain begins at its parameter (`s -> …`); a call there is a source, which only the closed seam (`seam { … }`) has"]
+        );
+        assert_eq!(
+            seam(H, "seam f(s: String) { missing -> self.dec.decode -> self.h; }"),
+            vec!["a callable seam's chain begins at its parameter (`s -> …`); a call there is a source, which only the closed seam (`seam { … }`) has"]
+        );
+    }
+
+    #[test]
+    fn a_sink_spelled_unit_returns_nothing() {
+        let feed = "locus Feed { fn next() -> String fallible(Oops) { return \"x\"; } }\nlocus Unit { fn put(s: String) -> () { } }";
+        assert_eq!(
+            errors(&format!(
+                "{PARTS}{H}\n{feed}\nlocus G {{\n    params {{ feed: Feed = Feed {{ }}; dec: Dec = Dec {{ }}; enc: Enc = Enc {{ }}; u: Unit = Unit {{ }}; }}\n    seam {{ self.feed.next() -> self.dec.decode -> self.enc.encode -> self.u.put; }}\n}}\nfn main() {{ }}\n"
+            )),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
     fn a_callable_seam_returns_one_type_and_fails_with_one() {
         assert_eq!(
             seam(

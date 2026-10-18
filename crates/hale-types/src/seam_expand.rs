@@ -442,7 +442,14 @@ struct Gen<'p, 'a> {
     ends: BTreeSet<String>,
     /// The failures the callable form fails with (`or end;`).
     fails: BTreeSet<String>,
+    /// A callable seam's failure routes: each the failure's type and the
+    /// statements that run the rest of the chain on it, a method of its own.
+    helpers: Vec<(String, String)>,
 }
+
+/// Where a callable seam's failure route calls its method, patched once the
+/// seam's result and failure types are known.
+const HELPER_CALL: &str = "@@seam_helper:";
 
 impl Gen<'_, '_> {
     fn var(&mut self) -> String {
@@ -561,7 +568,9 @@ impl Gen<'_, '_> {
     fn call(&mut self, k: usize, m: &Method, arg: &str, out: &mut String) {
         let label = m.label();
         let call = format!("{}.{}({arg})", m.recv, m.decl.name.name);
-        let ret = m.decl.ret.as_ref().map(|t| self.index.key(t));
+        // `-> ()` is no result, as it is everywhere (the desugar sequence
+        // normalizes it after this pass)
+        let ret = m.decl.ret.as_ref().filter(|t| !matches!(t, TypeExpr::Tuple(ts, _) if ts.is_empty())).map(|t| self.index.key(t));
         let v = self.var();
         let failure = match &m.decl.fallible {
             Some(e) => {
@@ -594,17 +603,25 @@ impl Gen<'_, '_> {
         for j in k + 1..self.hops.len() {
             let takes = match &self.hops[j] {
                 Hop::Method(m) => m.decl.params.len() == 1 && self.index.covers(&self.index.key(&m.decl.params[0].ty), e),
-                Hop::Locus { methods, .. } => methods
-                    .iter()
-                    .any(|m| self.index.members(&self.index.key(&m.decl.params[0].ty)).contains(&e.to_string())),
+                // every member of the failure (a set's, or itself) has an
+                // eater there
+                Hop::Locus { methods, .. } => self.index.members(e).iter().all(|got| {
+                    methods.iter().any(|m| self.index.members(&self.index.key(&m.decl.params[0].ty)).contains(got))
+                }),
             };
             if takes {
                 let mut s = String::new();
                 self.chain(j, "err", e, &format!("the failure of `{label}`"), &mut s);
                 if self.closed {
                     s.push_str("continue;\n");
+                    return s;
                 }
-                return s;
+                // a callable seam's route is a method of its own, whose
+                // every path returns, so the `or` that calls it diverges
+                // however the route branches
+                let i = self.helpers.len();
+                self.helpers.push((e.to_string(), s));
+                return format!("{HELPER_CALL}{i}@@\n");
             }
         }
         match &self.seam.on_failure {
@@ -715,6 +732,7 @@ fn plan(index: &Index<'_>, owner: &LocusDecl, sd: &SeamDecl) -> Result<Plan, Vec
         fresh: 0,
         ends: BTreeSet::new(),
         fails: BTreeSet::new(),
+        helpers: Vec::new(),
     };
     let mut body = String::new();
     let text = if closed {
@@ -733,6 +751,17 @@ fn plan(index: &Index<'_>, owner: &LocusDecl, sd: &SeamDecl) -> Result<Plan, Vec
         format!("run() {{\nwhile !self.draining {{\nlet __seam_v0 = {SOURCE_PLACEHOLDER}(){or};\n{body}}}\n}}\n")
     } else {
         let p = sd.param.as_ref().expect("a callable seam's parameter");
+        // the callable form's chain begins at its parameter, as written
+        if !matches!(&sd.head, Expr::Ident(i) if i.name == p.name.name) {
+            return Err(vec![Diag::ty(
+                sd.head.span(),
+                format!(
+                    "a callable seam's chain begins at its parameter (`{} -> …`); a call there is a source, which \
+                     only the closed seam (`seam {{ … }}`) has",
+                    p.name.name
+                ),
+            )]);
+        }
         let entry = index.key(&p.ty);
         g.chain(0, "__seam_v0", &entry, &format!("the parameter `{}`", p.name.name), &mut body);
         let ret = match &sd.ret {
@@ -776,12 +805,34 @@ fn plan(index: &Index<'_>, owner: &LocusDecl, sd: &SeamDecl) -> Result<Plan, Vec
             }
         };
         let name = sd.name.as_ref().map_or("seam", |n| n.name.as_str());
-        format!(
-            "fn {name}({}: {}){ret}{fallible} {{\nlet __seam_v0 = {};\n{body}}}\n",
+        // each failure route, a method of its own; the `or` that takes the
+        // failure returns what the route returns
+        let or_raise = if fallible.is_empty() { "" } else { " or raise" };
+        let route_call = |i: usize| {
+            if ret.is_empty() {
+                format!("self.__seam_{name}_f{i}(err){or_raise};\nreturn;")
+            } else {
+                format!("return self.__seam_{name}_f{i}(err){or_raise};")
+            }
+        };
+        let patch = |text: &str| {
+            let mut out = text.to_string();
+            for i in 0..g.helpers.len() {
+                out = out.replace(&format!("{HELPER_CALL}{i}@@"), &route_call(i));
+            }
+            out
+        };
+        let mut text = format!(
+            "fn {name}({}: {}){ret}{fallible} {{\nlet __seam_v0 = {};\n{}}}\n",
             p.name.name,
             index.key(&p.ty),
-            p.name.name
-        )
+            p.name.name,
+            patch(&body)
+        );
+        for (i, (e, route)) in g.helpers.iter().enumerate() {
+            text.push_str(&format!("fn __seam_{name}_f{i}(err: {e}){ret}{fallible} {{\n{}}}\n", patch(route)));
+        }
+        text
     };
     if !g.errors.is_empty() {
         return Err(g.errors);
