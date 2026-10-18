@@ -69,7 +69,9 @@ fn header_identity(bin: &Path) -> (u64, u64) {
     for _ in 0..80 {
         std::thread::sleep(Duration::from_millis(25));
         let Ok(b) = std::fs::read(&shm) else { continue };
-        if b.len() < 0x90 {
+        // The header is published by `flags`'s alive bit (0x70), stored
+        // after the rest: a sized segment before it is zeros.
+        if b.len() < 0x90 || b[0x70] & 1 == 0 {
             continue;
         }
         let u64at = |o: usize| {
@@ -98,7 +100,7 @@ fn manifest_rows(bin: &Path) -> Vec<Row> {
     for _ in 0..80 {
         std::thread::sleep(Duration::from_millis(25));
         let Ok(b) = std::fs::read(&shm) else { continue };
-        if b.len() < 0x100 {
+        if b.len() < 0x100 || b[0x70] & 1 == 0 {
             continue;
         }
         let u64at = |o: usize| {

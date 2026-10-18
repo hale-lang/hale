@@ -73,9 +73,11 @@ fn header_offsets_agree() {
         ("proto_minor", obs::OFF_PROTO_MINOR),
         ("ring_count", obs::OFF_RING_COUNT),
         ("ring_slots", obs::OFF_RING_SLOTS),
+        ("control_off", obs::OFF_CONTROL_OFF),
         ("manifest_off", obs::OFF_MANIFEST_OFF),
         ("counters_off", obs::OFF_COUNTERS_OFF),
         ("rings_off", obs::OFF_RINGS_OFF),
+        ("flags", obs::OFF_FLAGS),
         ("model_hash", obs::OFF_MODEL_HASH),
         ("entity_id_digest", obs::OFF_ENTITY_ID_DIGEST),
     ] {

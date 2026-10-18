@@ -71,30 +71,20 @@ fn emits_protocol_segment_with_matching_counters() {
     let pid = child.id();
     let shm_path = format!("/dev/shm/hale-obs-{}", pid);
 
-    // Wait for the segment (lazy init on first probe), then act
-    // like an attached observer: bump observer_count so ring
-    // emission turns on before the publish burst (which starts
+    // Wait for the segment (lazy init on first probe) to publish its
+    // header, then act like an attached observer: bump observer_count
+    // so ring emission turns on before the publish burst (which starts
     // at t+400ms).
-    let mut seg_file = None;
-    for _ in 0..40 {
-        std::thread::sleep(std::time::Duration::from_millis(50));
-        if let Ok(f) = std::fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .open(&shm_path)
-        {
-            seg_file = Some(f);
+    for _ in 0..200 {
+        if std::path::Path::new(&shm_path).exists() {
             break;
         }
+        std::thread::sleep(std::time::Duration::from_millis(10));
     }
-    let seg_file = seg_file.unwrap_or_else(|| {
+    let (map, seg_len) = obs::map_published(pid).unwrap_or_else(|| {
         let _ = child.kill();
         panic!("segment {} never appeared", shm_path)
     });
-    let seg_len = seg_file.metadata().expect("meta").len() as usize;
-    let map = unsafe {
-        libc_mmap(&seg_file, seg_len)
-    };
     let seg = unsafe { std::slice::from_raw_parts(map, seg_len) };
 
     assert_eq!(read_u64(seg, 0x00), 0x4F42534948414C45, "magic");
@@ -192,24 +182,16 @@ fn births_carry_parentage_and_publishes_attribute_locus() {
         .expect("spawn");
     let pid = child.id();
     let shm_path = format!("/dev/shm/hale-obs-{}", pid);
-    let mut seg_file = None;
-    for _ in 0..40 {
-        std::thread::sleep(std::time::Duration::from_millis(50));
-        if let Ok(f) = std::fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .open(&shm_path)
-        {
-            seg_file = Some(f);
+    for _ in 0..200 {
+        if std::path::Path::new(&shm_path).exists() {
             break;
         }
+        std::thread::sleep(std::time::Duration::from_millis(10));
     }
-    let seg_file = seg_file.unwrap_or_else(|| {
+    let (map, seg_len) = obs::map_published(pid).unwrap_or_else(|| {
         let _ = child.kill();
         panic!("segment never appeared")
     });
-    let seg_len = seg_file.metadata().expect("meta").len() as usize;
-    let map = unsafe { libc_mmap(&seg_file, seg_len) };
     let seg = unsafe { std::slice::from_raw_parts(map, seg_len) };
     let control_off = read_u64(seg, 0x38) as usize;
     let rings_off = read_u64(seg, 0x68) as usize;
@@ -410,28 +392,4 @@ fn plain_loop_body_loci_report_their_dissolve_at_volume() {
         dissolves * 10 >= births * 9,
         "{births} births, {dissolves} dissolves"
     );
-}
-
-unsafe fn libc_mmap(f: &std::fs::File, len: usize) -> *mut u8 {
-    use std::os::unix::io::AsRawFd;
-    extern "C" {
-        fn mmap(
-            addr: *mut core::ffi::c_void,
-            len: usize,
-            prot: i32,
-            flags: i32,
-            fd: i32,
-            off: i64,
-        ) -> *mut core::ffi::c_void;
-    }
-    let p = mmap(
-        core::ptr::null_mut(),
-        len,
-        0x1 | 0x2, /* PROT_READ|WRITE */
-        0x1,       /* MAP_SHARED */
-        f.as_raw_fd(),
-        0,
-    );
-    assert!(p as isize != -1, "mmap failed");
-    p as *mut u8
 }

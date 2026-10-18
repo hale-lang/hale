@@ -51,7 +51,9 @@ fn a_harness_build_leaves_manifest_entity_ids_zero() {
     for _ in 0..80 {
         std::thread::sleep(Duration::from_millis(25));
         let Ok(b) = std::fs::read(&shm) else { continue };
-        if b.len() < 0x100 {
+        // The header is published by `flags`'s alive bit (0x70), stored
+        // after the rest: a sized segment before it is zeros.
+        if b.len() < 0x100 || b[0x70] & 1 == 0 {
             continue;
         }
         let u64at =
