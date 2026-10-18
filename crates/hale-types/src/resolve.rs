@@ -524,8 +524,12 @@ pub fn build_top_scope(bundle: &Bundle<'_>) -> (TopScope, Vec<Diag>) {
     // Per-type usage gating avoids false-positives for users
     // who happen to name a type `ParseError` in a program
     // that never calls `std::str::parse_*`.
-    let stdlib_usage = scan_stdlib_error_usage(bundle, &scope);
-    check_stdlib_error_shadowing(&scope, &stdlib_usage, &mut diags);
+    // The usage scan (the program's bodies, and the stdlib's once per
+    // process) is read only for a type that would be refused: the stdlib's
+    // own copies, merged into every program, match their shape and are
+    // never asked about.
+    let stdlib_usage = std::cell::OnceCell::new();
+    check_stdlib_error_shadowing(&scope, &|| stdlib_usage.get_or_init(|| scan_stdlib_error_usage(bundle, &scope)), &mut diags);
 
     scope.topics = topics;
     scope.names = scope.name_table(&bundle.import_renames);
@@ -2765,9 +2769,9 @@ fn mark_stdlib_error_from_path(
     }
 }
 
-fn check_stdlib_error_shadowing(
+fn check_stdlib_error_shadowing<'u, 's: 'u>(
     scope: &TopScope,
-    usage: &StdlibErrorUsage,
+    usage: &dyn Fn() -> &'u StdlibErrorUsage<'s>,
     diags: &mut Vec<Diag>,
 ) {
     // (stdlib type name, qualified-path suggestion to surface in the
@@ -2789,9 +2793,9 @@ fn check_stdlib_error_shadowing(
         let expected_fields = crate::builtin_types::builtin_type(name)
             .expect("a shadowable stdlib error type is a builtin type")
             .fields;
-        if !usage.reached.contains(*name) {
-            continue;
-        }
+        // (whether the program reaches it is asked only of a type the
+        // shape check below would refuse)
+        let unreached = || !usage().reached.contains(*name);
         let Some(TopSymbol::Type(ti)) = scope.symbols.get(*name)
         else {
             continue;
@@ -2807,6 +2811,9 @@ fn check_stdlib_error_shadowing(
             None => String::new(),
         };
         let TypeKind::Struct(actual) = &ti.kind else {
+            if unreached() {
+                continue;
+            }
             diags.push(Diag::ty(
                 ti.span,
                 format!(
@@ -2826,6 +2833,9 @@ fn check_stdlib_error_shadowing(
             });
             if matches {
                 continue;
+            }
+            if unreached() {
+                break;
             }
             diags.push(Diag::ty(
                 ti.span,
