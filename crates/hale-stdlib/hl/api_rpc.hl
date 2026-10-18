@@ -1368,7 +1368,6 @@ locus __StdApiUnixPeer {
         // a reader that never reads cannot hold this connection's writer for long
         std::io::tcp::set_send_timeout(self.fd, 5s) or discard;
     }
-    @unbounded
     run() {
         // each read is a method of its own, so what it allocates (the
         // chunk, the lines, the requests) is its scratch, freed when it

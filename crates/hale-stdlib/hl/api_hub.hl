@@ -385,7 +385,6 @@ locus __StdApiWsPeer {
         self.http(self.doc_status, "application/json", self.doc);
     }
     // ---- the WebSocket ----
-    @unbounded
     fn upgrade(key: String, cred: String) {
         let answer = std::text::base64::encode(std::crypto::sha1(std::bytes::from_string(key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11")));
         self.live = true;
