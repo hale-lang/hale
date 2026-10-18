@@ -2734,6 +2734,30 @@ interface Handler { fn a(x: A) -> String; }
         assert_eq!(seam(H, "seam f(s: String) { s -> self.dec.decode -> self.h; }"), Vec::<String>::new());
     }
 
+    /// A refused seam is the one error: its method is still declared from
+    /// what the seam spells, so its callers check (the refusal used to
+    /// cascade as "no field `f` on `G`" at every call).
+    #[test]
+    fn a_refused_seam_is_its_callers_one_error() {
+        let refusal = "`self.h` has no method taking `B`, which reaches it from `self.dec.decode`: every member has one eater";
+        let h = "locus H { fn a(x: A) -> String { return \"a\"; } }";
+        // a declared result: its callers use it as one
+        assert_eq!(
+            seam(h, "seam f(s: String) -> String { s -> self.dec.decode -> self.h; }\n    fn use_it() -> Int { return len(self.f(\"x\")); }"),
+            vec![refusal]
+        );
+        // no result written: unknown, which any use accepts
+        assert_eq!(
+            seam(h, "seam f(s: String) { s -> self.dec.decode -> self.h; }\n    fn use_it() { let r = self.f(\"x\"); println(r); }"),
+            vec![refusal]
+        );
+        // `or end;` passes a failure on: its callers address it
+        assert_eq!(
+            seam(h, "seam f(s: String) -> String { s -> self.dec.risky -> self.h; or end; }\n    fn use_it() -> String { return self.f(\"x\") or \"none\"; }"),
+            vec![refusal.replace("decode", "risky")]
+        );
+    }
+
     #[test]
     fn every_member_has_one_eater() {
         assert_eq!(

@@ -1239,6 +1239,30 @@ fn register_locus(
                     fallible: None,
                 });
             }
+            // GH #1530: a callable seam still here is one its expansion
+            // refused (`seam_expand::refusals` reports why). Its method is
+            // still declared, from what the seam spells: so a call of it
+            // checks, and the refusal is the one error. What the seam does
+            // not spell (an undeclared result, the failure an `or end;`
+            // passes on) is unknown, which every use accepts.
+            LocusMember::Seam(sd) => {
+                if let (Some(name), Some(p)) = (&sd.name, &sd.param) {
+                    let ret = match &sd.ret {
+                        Some(TypeExpr::Tuple(ts, _)) if ts.is_empty() => Ty::Unit,
+                        Some(te) => resolve_type_expr(te, known),
+                        None => Ty::Unknown,
+                    };
+                    let fallible = matches!(sd.on_failure, Some(hale_syntax::ast::SeamFailure::End(_)))
+                        .then_some(Ty::Unknown);
+                    methods.push(MethodInfo {
+                        name: name.name.clone(),
+                        params: vec![resolve_type_expr(&p.ty, known)],
+                        min_params: None,
+                        ret,
+                        fallible,
+                    });
+                }
+            }
             LocusMember::Fn(f) => {
                 let scoped = known.with_parameters(&f.generics);
                 let known = scoped.as_ref();
