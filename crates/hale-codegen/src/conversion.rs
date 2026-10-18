@@ -211,7 +211,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// The key of the conversion of `kind` here: inside a default, on the
     /// evaluation path being lowered (`default_evaluation`), the
     /// checker's key for the same evaluation (`site` in `hale-types`).
-    fn site(&self, kind: SiteKind) -> ConversionSite {
+    pub(crate) fn site(&self, kind: SiteKind) -> ConversionSite {
         ConversionSite::new(kind, self.default_evaluation.clone())
     }
 

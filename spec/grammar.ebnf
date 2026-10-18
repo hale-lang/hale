@@ -993,7 +993,15 @@ type_decl         = "type" , IDENTIFIER , "=" , type_expr , ";"
                   | "type" , IDENTIFIER , [ generic_params ] , "=" ,
                     "enum" , "{" , enum_variant , { "," , enum_variant } , "}" , ";"
                   | "type" , IDENTIFIER , "=" , scalar_body     (* #1076 *)
+                  | "type" , IDENTIFIER , "=" , qualified_name ,
+                    "|" , qualified_name , { "|" , qualified_name } , ";"
+                                                                (* #1530 set *)
                   ;
+
+(* GH #1530 step 1 — a set type: two or more members, each a named type
+   with no type arguments (a struct or an enum the program declares;
+   spec/types.md § Set types). A member is its own discriminant: a
+   `match` names it by its type's last segment, `Book(b)`. *)
 
 (* GH #1076 — the scalar form of the unit dialect (spec/units.md
    § Declarations). It is a scalar when it has a kind word, an `in`

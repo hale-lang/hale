@@ -278,6 +278,40 @@ imported it as.
 > [`fallible`](../basics/fallible.md) channel — it's the
 > purpose-built tool and the compiler enforces handling.
 
+## Sets — one of several types
+
+When the kinds already have types of their own, a *set* says "one of
+these" without inventing a variant name for each:
+
+```hale
+type Book  { id: Int; title: String; }
+type Trade { qty: Int; px: Float; }
+type Unknown { raw: String; }
+type Inbound = Book | Trade | Unknown;
+
+fn decode(n: Int) -> Inbound {
+    if n == 0 { return Book { id: 7, title: "Kim" }; }
+    if n == 1 { return Trade { qty: 2, px: 1.5 }; }
+    return Unknown { raw: "?" };
+}
+
+fn describe(m: Inbound) -> String {
+    return match m {
+        Book(b)    -> "book " + b.title,
+        Trade(t)   -> "trade of " + to_string(t.qty),
+        Unknown(u) -> "unknown " + u.raw,
+    };
+}
+```
+
+The member's type *is* the tag. A `Book` becomes an `Inbound` wherever
+an `Inbound` is expected (returned, passed, bound, stored), and `match`
+names each member by its type alone, exhaustively, so adding a member
+to the set fails the build at every match that does not cover it.
+Members are structs or enums you declare; to put an `Int` in a set,
+give it a type of its own (`type Count { n: Int; }`). Underneath a set
+is an enum, with an enum's cost.
+
 ## Records with a type parameter
 
 A record can leave one of its field types open:

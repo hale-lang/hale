@@ -489,6 +489,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         variants: variant_infos,
                         has_payload,
                         payload_bytes: max_bytes,
+                        set: t.is_set(),
                     },
                 );
                 return Ok(());

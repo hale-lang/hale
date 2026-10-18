@@ -191,7 +191,10 @@ fn match_is_exhaustive(
                 if let Pattern::Constructor { path, .. } = &arm.pattern {
                     let segs: Vec<&str> =
                         path.segments.iter().map(|s| s.name.as_str()).collect();
+                    let set = !variants.is_empty() && variants.iter().all(|v| v.member);
                     let (enum_seg, variant_seg) = match segs.as_slice() {
+                        // GH #1530 step 1: a set's member, by its type's name
+                        [v] if set => (name.as_str(), *v),
                         [e, v] => (*e, *v),
                         [a, e, v] => match known.import_target(&format!("{a}::{e}")) {
                             Some(target) => (target, *v),
@@ -9294,6 +9297,8 @@ fn check_duplicate_members(programs: &[&Program], diags: &mut Vec<Diag>) {
                         diags,
                     );
                 }
+                // a set's members are judged by `check_set_members`
+                TypeDeclBody::Enum(_) if t.is_set() => {}
                 TypeDeclBody::Enum(variants) => {
                     once(
                         "variant",
@@ -11078,6 +11083,9 @@ impl<'a> Checker<'a> {
                                     te,
                                 );
                             }
+                        }
+                        if t.is_set() {
+                            self.check_set_members(&t.name.name, variants);
                         }
                     }
                     TypeDeclBody::Alias(te) => {
@@ -16645,6 +16653,7 @@ impl<'a> Checker<'a> {
             self.locals.push();
             self.bind_pattern(&arm.pattern);
             self.note_view_pattern(&arm.pattern, &scrut_ty);
+            self.check_set_pattern(&arm.pattern, &scrut_ty);
             self.check_pattern_literals(&arm.pattern, &scrut_ty);
             // `Decimal<S>`: a Decimal literal pattern is a value of the
             // scrutinee's scale, judged at it.
@@ -18453,7 +18462,133 @@ impl<'a> Checker<'a> {
     /// distinct identities) is refused here with their message, and is
     /// `true` so the caller adds no second error; `false` is the caller's
     /// own mismatch to report.
+    /// GH #1530 step 1: a pattern naming a member by its type's name alone
+    /// names one of the scrutinee's set.
+    fn check_set_pattern(&mut self, pat: &Pattern, scrut: &Ty) {
+        let Pattern::Constructor { path, span, args } = pat else { return };
+        let Ty::Named(set) = scrut else { return };
+        let Some(TopSymbol::Type(TypeInfo { kind: TypeKind::Enum(vs), .. })) = self.top.symbols.get(set) else {
+            return;
+        };
+        if vs.is_empty() || !vs.iter().all(|v| v.member) {
+            return;
+        }
+        let member = match path.segments.as_slice() {
+            [m] => m,
+            [s, m] if s.name == *set => m,
+            _ => return,
+        };
+        // the member's value is bound as its type, so it flows back into
+        // a set as any value of the member does
+        if let Some(v) = vs.iter().find(|v| v.name == member.name) {
+            if let ([Pattern::Binding(id)], Some(ty)) = (args.as_slice(), v.fields.first()) {
+                self.locals.insert(&id.name, LocalSym { ty: ty.clone(), is_mut: false, cell: None });
+            }
+            return;
+        }
+        if path.segments.len() != 1 {
+            return;
+        }
+        let members: Vec<&str> = vs.iter().map(|v| v.name.as_str()).collect();
+        self.diags.push(Diag::ty(
+            *span,
+            format!("`{}` is not a member of the set `{set}`, whose members are {}", member.name, members.join(", ")),
+        ));
+    }
+
+    /// GH #1530 step 1: a set's members are distinct structs or enums the
+    /// program declares, none a set itself, and no two of one name: a
+    /// member is its own discriminant, and a pattern names it by its
+    /// type's name alone.
+    fn check_set_members(&mut self, set: &str, variants: &[EnumVariant]) {
+        let mut seen: std::collections::HashMap<String, (Span, String)> = std::collections::HashMap::new();
+        for v in variants {
+            let Some(te) = v.fields.first() else { continue };
+            let written = type_expr_text(te);
+            let ty = resolve_type_expr(te, self.known);
+            let kind = match &ty {
+                Ty::Named(n) => match self.top.symbols.get(n) {
+                    Some(TopSymbol::Type(TypeInfo { kind, .. })) => Some(kind),
+                    // a generic record's monomorph (`type P = Box<Int>;` is
+                    // `Box_Int`): its template's kind
+                    _ => self.top.symbols.iter().find_map(|(name, sym)| match sym {
+                        TopSymbol::Type(TypeInfo { kind, .. })
+                            if n.starts_with(&format!("{name}_")) && self.generic_types.contains_key(name.as_str()) =>
+                        {
+                            Some(kind)
+                        }
+                        _ => None,
+                    }),
+                },
+                _ => None,
+            };
+            match kind {
+                Some(TypeKind::Struct(_)) => {}
+                Some(TypeKind::Enum(vs)) if !(!vs.is_empty() && vs.iter().all(|x| x.member)) => {}
+                Some(TypeKind::Enum(_)) => {
+                    self.diags.push(Diag::ty(
+                        v.span,
+                        format!(
+                            "set `{set}`: its member `{written}` is a set itself; a set's members are the types \
+                             it holds, so name `{written}`'s members in `{set}` instead"
+                        ),
+                    ));
+                    continue;
+                }
+                _ if matches!(ty, Ty::Unknown) => continue,
+                _ => {
+                    self.diags.push(Diag::ty(
+                        v.span,
+                        format!(
+                            "set `{set}`: its member `{written}` is not a struct or an enum the program declares; a \
+                             member is its own discriminant, so it is a type of its own: declare a struct that holds \
+                             the value"
+                        ),
+                    ));
+                    continue;
+                }
+            }
+            if let Some((first, other)) = seen.get(&v.name.name) {
+                let what = if *other == written {
+                    format!("set `{set}`: `{written}` is its member twice; a member is named once")
+                } else {
+                    format!(
+                        "set `{set}`: its members `{other}` and `{written}` are both named `{}`; a pattern names a \
+                         member by its type's name, so two of one name cannot be told apart",
+                        v.name.name
+                    )
+                };
+                self.diags.push(Diag::ty(v.span, what).with_related(*first, "the first member of that name"));
+                continue;
+            }
+            seen.insert(v.name.name.clone(), (v.span, written));
+        }
+    }
+
+    /// GH #1530 step 1: the set `want` and the member `got` is of it, when
+    /// `got` is a member type of the set `want`.
+    fn set_injection(&self, want: &Ty, got: &Ty) -> Option<crate::typed_bodies::Injection> {
+        let (Ty::Named(set), Ty::Named(_)) = (want, got) else { return None };
+        let Some(TopSymbol::Type(TypeInfo { kind: TypeKind::Enum(vs), .. })) = self.top.symbols.get(set) else {
+            return None;
+        };
+        if vs.is_empty() || !vs.iter().all(|v| v.member) {
+            return None;
+        }
+        let v = vs.iter().find(|v| v.fields.first() == Some(got))?;
+        Some(crate::typed_bodies::Injection { set: set.clone(), member: v.name.clone() })
+    }
+
     fn flows_into(&mut self, want: &Ty, got: &Ty, value: &Expr) -> bool {
+        // GH #1530 step 1: a member's value flows into its set, as the
+        // set's variant for it (built where it stands).
+        if let Some(injection) = self.set_injection(want, got) {
+            if self.specializing.is_none() {
+                let site = self.site(SiteKind::value(value.span()));
+                self.typed.injection(self.body, site, injection);
+            }
+            return true;
+        }
         // `Decimal<S>`: a scale-less Decimal takes the place's scale; two
         // scales never mix.
         if let Some(handled) = self.decimal_flow(want, got, value) {
@@ -19280,6 +19415,11 @@ impl<'a> Checker<'a> {
             // are the constructing declaration's.
             for (site, row) in self.typed.close_walk() {
                 self.typed.conversion(self.body, site, row);
+            }
+            // and its injections (GH #1530 step 1): a default's member
+            // flows into its set where the default is evaluated
+            for (_, site, injection) in self.typed.take_walk_injections() {
+                self.typed.injection(self.body, site, injection);
             }
             self.locals.closed = closed;
             if let (Some(seen), Some(at)) = (&mut self.expr_types, seen) {

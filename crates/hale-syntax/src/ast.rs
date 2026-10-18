@@ -2485,6 +2485,18 @@ pub struct EnumVariant {
     pub name: Ident,
     pub fields: Vec<TypeExpr>,
     pub span: Span,
+    /// A member of a set type (`type Inbound = Book | Trade;`, GH #1530
+    /// step 1): the variant is named for its one field's type, which is
+    /// the discriminant. A set is an enum whose every variant is one.
+    pub member: bool,
+}
+
+impl TypeDecl {
+    /// A set type (`type S = A | B;`): an enum whose variants are its
+    /// member types, each named for its type.
+    pub fn is_set(&self) -> bool {
+        matches!(&self.body, TypeDeclBody::Enum(vs) if !vs.is_empty() && vs.iter().all(|v| v.member))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]

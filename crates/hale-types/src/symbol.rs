@@ -358,6 +358,9 @@ pub struct VariantInfo {
     pub name: String,
     pub fields: Vec<Ty>,
     pub span: Span,
+    /// A set type's member (GH #1530 step 1): named for its one field's
+    /// type, which is the discriminant.
+    pub member: bool,
 }
 
 #[derive(Debug, Clone)]

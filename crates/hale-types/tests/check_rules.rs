@@ -2616,3 +2616,77 @@ mod unowned_subscriber_tests {
         assert!(!flagged(src, false));
     }
 }
+
+mod set_type_tests {
+    //! GH #1530 step 1: a set type, `type S = A | B;`. Its members are
+    //! distinct structs or enums, none a set; a member's value flows into
+    //! its set; a pattern names a member by its type alone, exhaustively.
+
+    use super::*;
+    use hale_syntax::parse_source;
+
+    fn errors(src: &str) -> Vec<String> {
+        let p = parse_source(src).unwrap_or_else(|d| panic!("parse: {:?}", d[0].message));
+        check_program(&p).into_iter().filter(|d| d.is_error()).map(|d| d.message).collect()
+    }
+
+    const MEMBERS: &str = "type Book { id: Int; }\ntype Trade { qty: Int; }\ntype Side = enum { Buy, Sell };\n";
+
+    #[test]
+    fn members_flow_into_their_set_and_match_by_type() {
+        let src = format!(
+            "{MEMBERS}type In = Book | Trade | Side;\n\
+             fn make(n: Int) -> In {{ if n == 0 {{ return Book {{ id: 1 }}; }} return Side::Buy; }}\n\
+             fn name(m: In) -> String {{ return match m {{ Book(b) -> \"book\", Trade(_) -> \"trade\", Side(_) -> \"side\" }}; }}\n\
+             fn main() {{ let t: In = Trade {{ qty: 2 }}; println(name(t)); println(name(make(0))); }}\n"
+        );
+        assert_eq!(errors(&src), Vec::<String>::new());
+    }
+
+    #[test]
+    fn a_member_is_a_declared_struct_or_enum_and_named_once() {
+        assert_eq!(
+            errors(&format!("{MEMBERS}type Count = Int;\ntype In = Book | Count;\nfn main() {{ }}\n")),
+            vec!["set `In`: its member `Count` is not a struct or an enum the program declares; a member is its own \
+                  discriminant, so it is a type of its own: declare a struct that holds the value"]
+        );
+        assert_eq!(
+            errors(&format!("{MEMBERS}type In = Book | Trade | Book;\nfn main() {{ }}\n")),
+            vec!["set `In`: `Book` is its member twice; a member is named once"]
+        );
+        // a generic record's alias is a record (`type P = Box<Int>;`)
+        let generic = format!("{MEMBERS}type Box<T> {{ value: T; }}\ntype P = Box<Int>;\ntype In = P | Book;\nfn main() {{ }}\n");
+        assert_eq!(errors(&generic), Vec::<String>::new());
+        assert_eq!(
+            errors(&format!("{MEMBERS}type In = Book | Trade;\ntype Out = In | Side;\nfn main() {{ }}\n")),
+            vec!["set `Out`: its member `In` is a set itself; a set's members are the types it holds, so name `In`'s \
+                  members in `Out` instead"]
+        );
+    }
+
+    #[test]
+    fn a_set_member_is_a_named_type() {
+        for member in ["[Int; 2]", "Int", "(Int, Int)"] {
+            let e = parse_source(&format!("type Book {{ id: Int; }}\ntype In = Book | {member};\n")).err().expect("refused");
+            assert!(e[0].message.starts_with("a set's member is a named type the program declares"), "{member}: {}", e[0].message);
+        }
+    }
+
+    #[test]
+    fn a_match_names_members_of_its_set_and_covers_them() {
+        let set = format!("{MEMBERS}type In = Book | Trade;\n");
+        assert_eq!(
+            errors(&format!("{set}fn f(m: In) -> Int {{ return match m {{ Book(_) -> 1, Side(_) -> 2, _ -> 3 }}; }}\nfn main() {{ }}\n")),
+            vec!["`Side` is not a member of the set `In`, whose members are Book, Trade"]
+        );
+        assert_eq!(
+            errors(&format!("{set}fn f(m: In) -> Int {{ return match m {{ Book(_) -> 1 }}; }}\nfn main() {{ }}\n")),
+            vec!["match is not exhaustive; add a `_` arm or cover all cases of `In`"]
+        );
+        // a value of no member's type is no set's
+        assert_eq!(
+            errors(&format!("{set}fn f(m: In) {{ }}\nfn main() {{ f(Side::Buy); }}\n")),
+            vec!["argument 0 type mismatch: expected `In`, got `Side`"]
+        );
+    }
+}
