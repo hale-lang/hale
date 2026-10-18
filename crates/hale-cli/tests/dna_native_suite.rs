@@ -4,6 +4,10 @@
 //! a friction log. `dna/core` is a library seed (imported by the
 //! tests); every fixture is an ordinary Hale program that exits 0.
 
+#[path = "support/reap.rs"]
+#[allow(dead_code)]
+mod reap;
+
 use std::path::PathBuf;
 use std::process::Command;
 
@@ -288,15 +292,19 @@ fn keep_scratch() -> bool {
 /// `keep` is passed rather than read here so the regression below can
 /// exercise both answers without mutating this process's environment
 /// (GH #843).
-fn sweep_scratch_roots(tag: &str, keep: bool) -> Vec<String> {
+fn sweep_scratch_roots(tag: &str, keep: bool) -> Result<Vec<String>, String> {
     if keep {
-        return Vec::new();
+        return Ok(Vec::new());
     }
     // what compose runs from under any root the slice made goes first: a
-    // fixture killed before `dna::scratch_done` left its compose project up
-    compose_down_under(&ledger_roots(tag));
+    // fixture killed before `dna::scratch_done` left its compose project up.
+    // A teardown that did not finish removes nothing — not a root, not the
+    // registry, not the ledger — so the projects stay found for another
+    // attempt, and the slice fails saying so
+    let roots: Vec<PathBuf> = ledger_roots(tag).into_iter().map(PathBuf::from).collect();
+    reap::compose_down_all(&roots)?;
     let reg = scratch_registry(tag);
-    let Ok(entries) = std::fs::read_dir(&reg) else { return Vec::new() };
+    let Ok(entries) = std::fs::read_dir(&reg) else { return Ok(Vec::new()) };
     let mut swept = Vec::new();
     for e in entries.flatten() {
         let Ok(root) = std::fs::read_to_string(e.path()) else { continue };
@@ -311,59 +319,7 @@ fn sweep_scratch_roots(tag: &str, keep: bool) -> Vec<String> {
     let _ = std::fs::remove_dir_all(&reg);
     let _ = std::fs::remove_dir_all(roots_ledger(tag));
     swept.sort();
-    swept
-}
-
-/// The compose projects whose working directory is one of `roots` or
-/// under it, read off every container compose labelled, running or not,
-/// as `dna::scratch_compose_projects` reads them. Empty where docker is
-/// not there to ask.
-fn compose_projects_under(roots: &[String]) -> Vec<String> {
-    if roots.is_empty() {
-        return Vec::new();
-    }
-    let Ok(out) = std::process::Command::new("docker")
-        .args([
-            "ps",
-            "-a",
-            "--filter",
-            "label=com.docker.compose.project",
-            "--format",
-            "{{.Label \"com.docker.compose.project\"}}|{{.Label \"com.docker.compose.project.working_dir\"}}",
-        ])
-        .output()
-    else {
-        return Vec::new();
-    };
-    if !out.status.success() {
-        return Vec::new();
-    }
-    let rooted = |wd: &str| roots.iter().any(|r| wd == r || wd.starts_with(&format!("{r}/")));
-    let mut projects: Vec<String> = String::from_utf8_lossy(&out.stdout)
-        .lines()
-        .filter_map(|l| l.split_once('|'))
-        .filter(|(p, wd)| !p.is_empty() && rooted(wd))
-        .map(|(p, _)| p.to_string())
-        .collect();
-    projects.sort();
-    projects.dedup();
-    projects
-}
-
-/// Take down every compose project rooted in one of `roots` — its
-/// containers, networks and volumes; `down` by project name needs no
-/// compose file. A fixture with no owner's DSN brings its knowledge
-/// database up from its root's `dna/compose.yaml`, and nothing else takes
-/// it down.
-fn compose_down_under(roots: &[String]) {
-    for project in compose_projects_under(roots) {
-        let down = std::process::Command::new("docker")
-            .args(["compose", "-p", &project, "down", "-v", "--remove-orphans"])
-            .output();
-        if !down.as_ref().is_ok_and(|o| o.status.success()) {
-            eprintln!("dna slice: compose project {project} under a scratch root did not come down");
-        }
-    }
+    Ok(swept)
 }
 
 /// The slice's scratch roots, swept when the slice ends however it
@@ -382,7 +338,18 @@ struct SliceScratch {
 
 impl Drop for SliceScratch {
     fn drop(&mut self) {
-        let swept = sweep_scratch_roots(&self.tag, keep_scratch());
+        let swept = match sweep_scratch_roots(&self.tag, keep_scratch()) {
+            Ok(swept) => swept,
+            Err(why) => {
+                let said = format!("dna slice: the compose projects under its scratch roots did not come down; the roots, the registry and the ledger are kept for another attempt:\n{why}");
+                if std::thread::panicking() {
+                    eprintln!("{said}");
+                } else {
+                    panic!("{said}");
+                }
+                return;
+            }
+        };
         if !swept.is_empty() {
             eprintln!(
                 "dna slice: swept {} scratch root(s) no fixture reclaimed (HALE_DNA_KEEP_SCRATCH=1 keeps them):\n  {}",
@@ -904,7 +871,7 @@ fn the_slice_sweeps_only_the_scratch_roots_its_own_fixtures_stamped() {
     stamp(&mine, "not-a-scratch-root", &decoy);
     stamp(&mine, "traversal", &format!("{}/../e1-909-decoy-{pid}", root_of(&mine)));
 
-    let swept = sweep_scratch_roots(&mine, false);
+    let swept = sweep_scratch_roots(&mine, false).expect("the sweep");
 
     assert_eq!(swept, vec![root_of(&mine)], "the slice sweeps its own root, and only its own");
     assert!(!PathBuf::from(root_of(&mine)).exists(), "this slice's root is gone");
@@ -914,14 +881,14 @@ fn the_slice_sweeps_only_the_scratch_roots_its_own_fixtures_stamped() {
 
     // The keep knob, on the same registry shape: nothing removed, and
     // the registry left for the next sweep that is allowed to.
-    assert!(sweep_scratch_roots(&kept, true).is_empty(), "HALE_DNA_KEEP_SCRATCH sweeps nothing");
+    assert!(sweep_scratch_roots(&kept, true).expect("the sweep").is_empty(), "HALE_DNA_KEEP_SCRATCH sweeps nothing");
     assert!(PathBuf::from(root_of(&kept)).exists(), "the kept root is still there to look at");
     assert!(scratch_registry(&kept).exists(), "with its registry entry");
 
     // The stranger's own slice does sweep it — which is also this
     // test's cleanup.
-    assert_eq!(sweep_scratch_roots(&stranger, false), vec![root_of(&stranger)], "the slice that stamped it is the one that sweeps it");
-    assert_eq!(sweep_scratch_roots(&kept, false), vec![root_of(&kept)]);
+    assert_eq!(sweep_scratch_roots(&stranger, false).expect("the sweep"), vec![root_of(&stranger)], "the slice that stamped it is the one that sweeps it");
+    assert_eq!(sweep_scratch_roots(&kept, false).expect("the sweep"), vec![root_of(&kept)]);
     let _ = std::fs::remove_dir_all(&decoy);
 }
 

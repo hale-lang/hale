@@ -3,7 +3,8 @@
 //! and when the value drops — the test passing, or unwinding from a
 //! failed assertion — every process named under it stops, every compose
 //! project run from under it comes down ([`reap::compose_down`]), and the
-//! directory goes. `HALE_DNA_KEEP_SCRATCH=1` keeps the directory and its
+//! directory goes. A teardown that does not finish keeps the directory
+//! and fails the test. `HALE_DNA_KEEP_SCRATCH=1` keeps the directory and its
 //! compose projects, for looking at what the test built.
 //!
 //! A test that runs a `hale dna` verb able to start a body or bring up
@@ -69,7 +70,13 @@ impl AsRef<OsStr> for Scratch {
 
 impl Drop for Scratch {
     fn drop(&mut self) {
-        reap::reap(&self.root);
+        // a teardown that did not finish keeps the directory, and the
+        // projects named in it, for the next attempt, and fails the test
+        reap::kill_under(&self.root);
+        if let Err(why) = reap::compose_down(&self.root) {
+            reap::failed_teardown(&self.root, &why);
+            return;
+        }
         if !std::env::var("HALE_DNA_KEEP_SCRATCH").is_ok_and(|v| !v.is_empty() && v != "0") {
             let _ = std::fs::remove_dir_all(&self.root);
         }

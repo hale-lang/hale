@@ -450,8 +450,11 @@ fn scratch_done(dir: String) {
     }
     // what compose runs from under the root goes with it, or it outlives
     // the root (a host with no owner's DSN brings its knowledge database
-    // up from the fixture's dna/compose.yaml); none may survive
+    // up from the fixture's dna/compose.yaml). A teardown that failed, or
+    // left anything, fails the fixture and keeps the root, its registry
+    // entry and the projects it names, for the sweep or a run by hand
     let left = scratch_compose_down(dir);
+    if len(left) > 0 { eprintln("dna: the compose projects rooted in ", dir, " did not come down; the root and its record are kept for another attempt:\n", left); }
     std::test::assert(len(left) == 0, "compose projects rooted in " + dir + " survived their teardown: " + left);
     let gone = run_tool("rm\n-rf\n" + dir);
     let reg = scratch_registry();
@@ -466,44 +469,85 @@ fn scratch_done(dir: String) {
     std::io::fs::unlink(reg + "/" + scratch_name(dir)) or discard;
 }
 
-// The compose projects whose working directory is `dir` or under it,
-// one per line, read off every container compose labelled (running or
-// not), so a project a killed fixture left is found as well. "" where
-// docker is not there to ask.
+// The file under a scratch root naming the compose projects found rooted
+// in it, one per line, kept until their teardown is confirmed. A volume
+// carries its project's name but not the directory the project ran from,
+// so a project whose containers went and whose volumes did not is found
+// again by the name kept here.
+const SCRATCH_COMPOSE_FILE: String = ".dna-compose-projects";
+
+// What docker answered: `ok` with its output, `absent` when there is no
+// docker to ask (no CLI, or no daemon: nothing compose started can be
+// running there), else `why` it failed.
+type DockerAnswer { ok: Bool = false; absent: Bool = false; out: String = ""; why: String = ""; }
+
+fn docker_ask(argv: String) -> DockerAnswer {
+    let r = run_tool("docker\n" + argv);
+    if r.code == 0 { return DockerAnswer { ok: true, out: r.stdout }; }
+    if r.code == -1 || std::str::contains(r.stderr, "Cannot connect to the Docker daemon") || std::str::contains(r.stderr, "Is the docker daemon running") { return DockerAnswer { absent: true }; }
+    return DockerAnswer { why: "docker " + std::str::replace(argv, "\n", " ") + ": " + trim_nl(r.stderr) };
+}
+
+// `line` added to the line set `set` ("\n"-terminated lines), once.
+fn line_set_add(set: String, line: String) -> String {
+    if len(line) == 0 || std::str::contains("\n" + set, "\n" + line + "\n") { return set; }
+    return set + line + "\n";
+}
+
+// The compose projects rooted in `dir`: every container compose labelled
+// (running or not) whose working directory is `dir` or under it, and the
+// projects an earlier teardown of `dir` named and did not finish. The
+// answer's `out` is one project per line.
 @bounded_by(dir)
-fn scratch_compose_projects(dir: String) -> String {
-    let ps = run_tool("docker\nps\n-a\n--filter\nlabel=com.docker.compose.project\n--format\n{{.Label \"com.docker.compose.project\"}}|{{.Label \"com.docker.compose.project.working_dir\"}}");
-    if ps.code != 0 { return ""; }
+fn scratch_compose_projects(dir: String) -> DockerAnswer {
+    let ps = docker_ask("ps\n-a\n--filter\nlabel=com.docker.compose.project\n--format\n{{.Label \"com.docker.compose.project\"}}|{{.Label \"com.docker.compose.project.working_dir\"}}");
+    if !ps.ok { return ps; }
     let mut out = "";
-    let mut rest = ps.stdout;
+    let mut rest = ps.out + (std::io::fs::read_file(dir + "/" + SCRATCH_COMPOSE_FILE) or "");
+    let mut from_file = false;
     while len(rest) > 0 {
         let nl = std::str::index_of(rest, "\n");
         let line = if nl < 0 { rest } else { rest[0..nl] };
         rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
         let bar = std::str::index_of(line, "|");
-        if bar <= 0 { continue; }
-        let project = line[0..bar];
+        if bar < 0 { out = line_set_add(out, line); continue; }
+        if bar == 0 { continue; }
         let wd = line[(bar + 1)..len(line)];
-        if (wd == dir || std::str::starts_with(wd, dir + "/")) && !std::str::contains("\n" + out, "\n" + project + "\n") { out = out + project + "\n"; }
+        if wd == dir || std::str::starts_with(wd, dir + "/") { out = line_set_add(out, line[0..bar]); }
     }
-    return out;
+    return DockerAnswer { ok: true, out: out };
 }
 
-// Take down every compose project rooted in `dir`, its containers,
+// Take down every compose project rooted in `dir` — its containers,
 // networks and volumes (`docker compose -p <project> down -v`, which needs
-// no compose file); the projects still there afterwards, "" for none.
+// no compose file) — and confirm none of it is left, by the project's
+// label on containers and on volumes. "" when nothing is left (or there
+// is no docker to ask); else what failed or survived, and the projects
+// stay named under `dir` (SCRATCH_COMPOSE_FILE) for the next attempt.
 @bounded_by(dir)
 fn scratch_compose_down(dir: String) -> String {
-    let mut rest = scratch_compose_projects(dir);
-    if len(rest) == 0 { return ""; }
+    let found = scratch_compose_projects(dir);
+    if found.absent { return ""; }
+    if !found.ok { return found.why; }
+    if len(found.out) == 0 { return ""; }
+    std::io::fs::mkdir(dir) or discard;
+    std::io::fs::write_file(dir + "/" + SCRATCH_COMPOSE_FILE, found.out) or discard;
+    let mut failed = "";
+    let mut rest = found.out;
     while len(rest) > 0 {
         let nl = std::str::index_of(rest, "\n");
         let project = rest[0..nl];
         rest = rest[(nl + 1)..len(rest)];
-        let down = run_tool("docker\ncompose\n-p\n" + project + "\ndown\n-v\n--remove-orphans");
-        if down.code != 0 { eprintln("dna: compose project ", project, " under ", dir, " did not come down: ", trim_nl(down.stderr)); }
+        let down = docker_ask("compose\n-p\n" + project + "\ndown\n-v\n--remove-orphans");
+        if !down.ok && !down.absent { failed = failed + down.why + "\n"; }
+        let containers = docker_ask("ps\n-a\n-q\n--filter\nlabel=com.docker.compose.project=" + project);
+        let volumes = docker_ask("volume\nls\n-q\n--filter\nlabel=com.docker.compose.project=" + project);
+        if !containers.ok && !containers.absent { failed = failed + containers.why + "\n"; }
+        if !volumes.ok && !volumes.absent { failed = failed + volumes.why + "\n"; }
+        if len(trim_nl(containers.out)) > 0 || len(trim_nl(volumes.out)) > 0 { failed = failed + "compose project " + project + " still has " + (if len(trim_nl(containers.out)) > 0 { "containers " } else { "" }) + (if len(trim_nl(volumes.out)) > 0 { "volumes " } else { "" }) + "after its teardown\n"; }
     }
-    return scratch_compose_projects(dir);
+    if len(failed) == 0 { std::io::fs::unlink(dir + "/" + SCRATCH_COMPOSE_FILE) or discard; }
+    return failed;
 }
 
 // Whether a scratch root is kept for inspection instead of removed.
