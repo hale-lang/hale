@@ -839,3 +839,29 @@ fn a_bounded_return_is_refused_at_the_check() {
     assert_eq!(hits.len(), 1, "{ds:?}");
     assert!(hits[0].starts_with("`aliased` returns a `bounded[String; 4]`"), "{hits:?}");
 }
+
+/// `len` of a `bounded` (written or through an alias) is refused at the
+/// check, pointing at `count`: the build has no `len` of one, and the
+/// check passed it. `count` on it, and `len` of a String or an array, pass.
+#[test]
+fn len_of_a_bounded_is_refused_for_count() {
+    let ds = diags(
+        r#"
+        type Items = bounded[Int; 4];
+        type Row { xs: bounded[String; 4]; ys: Items; }
+        fn main() {
+            let r = Row { };
+            let a = len(r.xs);
+            let b = len(r.ys);
+            let c = count(r.xs);
+            let d = len("abc");
+            let e = len([1, 2, 3]);
+        }
+    "#,
+    );
+    let hits: Vec<&String> = ds.iter().filter(|m| m.starts_with("`len` does not apply")).collect();
+    assert_eq!(hits.len(), 2, "{ds:?}");
+    assert!(hits[0].contains("`bounded[String; 4]`") && hits[0].contains("`count(x)`"), "{hits:?}");
+    assert!(hits[1].contains("`bounded[Int; 4]`"), "{hits:?}");
+    assert_eq!(ds.len(), 2, "nothing else: {ds:?}");
+}
