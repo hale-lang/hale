@@ -385,7 +385,6 @@ locus __StdApiWsPeer {
         self.http(self.doc_status, "application/json", self.doc);
     }
     // ---- the WebSocket ----
-    @unbounded
     fn upgrade(key: String, cred: String) {
         let answer = std::text::base64::encode(std::crypto::sha1(std::bytes::from_string(key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11")));
         self.live = true;
@@ -399,27 +398,32 @@ locus __StdApiWsPeer {
         }
         self.stream.send("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: " + answer + "\r\n\r\n") or { self.hangup(); };
         self.parse_frames();
+        // each read is a method of its own, so what it allocates is freed
+        // when it returns: this loop is the connection's whole life
         while self.open && !self.draining {
-            self.check_expiry();
-            // the credential's instant is a wake of its own
-            if self.expiry != 0 && !self.expired {
-                let rem = self.expiry - std::time::nanos(std::time::current());
-                if rem > 1000000 {
-                    std::io::tcp::set_recv_timeout(self.fd, rem * 1ns) or discard;
-                } else {
-                    std::io::tcp::set_recv_timeout(self.fd, 1ms) or discard;
-                }
-            }
-            let chunk = self.stream.recv_bytes(65536) or std::bytes::from_string("");
-            if len(chunk) == 0 {
-                let waiting = self.expiry != 0 && !self.expired && self.expiry - std::time::nanos(std::time::current()) < 50000000;
-                if !waiting { self.open = false; }
-            } else {
-                self.inbuf = std::bytes::concat(self.inbuf, chunk);
-                self.parse_frames();
-            }
+            self.read_frames_once();
         }
         self.drained();
+    }
+    fn read_frames_once() {
+        self.check_expiry();
+        // the credential's instant is a wake of its own
+        if self.expiry != 0 && !self.expired {
+            let rem = self.expiry - std::time::nanos(std::time::current());
+            if rem > 1000000 {
+                std::io::tcp::set_recv_timeout(self.fd, rem * 1ns) or discard;
+            } else {
+                std::io::tcp::set_recv_timeout(self.fd, 1ms) or discard;
+            }
+        }
+        let chunk = self.stream.recv_bytes(65536) or std::bytes::from_string("");
+        if len(chunk) == 0 {
+            let waiting = self.expiry != 0 && !self.expired && self.expiry - std::time::nanos(std::time::current()) < 50000000;
+            if !waiting { self.open = false; }
+        } else {
+            self.inbuf = std::bytes::concat(self.inbuf, chunk);
+            self.parse_frames();
+        }
     }
     // The drain reached this connection while it was still open (a signal,
     // or its program's teardown, which drains the tree before the hub's own

@@ -1368,26 +1368,32 @@ locus __StdApiUnixPeer {
         // a reader that never reads cannot hold this connection's writer for long
         std::io::tcp::set_send_timeout(self.fd, 5s) or discard;
     }
-    @unbounded
     run() {
+        // each read is a method of its own, so what it allocates (the
+        // chunk, the lines, the requests) is its scratch, freed when it
+        // returns: run() lasts as long as the connection, and its own
+        // scratch would hold every request the connection ever carried
         while self.open && !self.draining {
-            let chunk = self.stream.recv(65536) or "";
-            if len(chunk) == 0 {
-                self.open = false;
-            } else {
-                self.buf = self.buf + chunk;
-                if len(self.buf) > 60000 && std::str::index_of(self.buf, "\n") < 0 {
-                    self.write_line("{\"request_id\":0,\"id\":null,\"ok\":false,\"refusal\":{\"kind\":\"malformed\",\"reason\":\"a request is one line of at most 60000 bytes\"},\"caller\":" + self.caller + "}");
-                    self.open = false;
-                } else {
-                    self.drain_lines();
-                }
-            }
+            self.read_once();
         }
         // the connection is over: the requests it still has with the
         // exposure are lost, and the descriptor is released
         self.lose_all();
         self.release_fd();
+    }
+    fn read_once() {
+        let chunk = self.stream.recv(65536) or "";
+        if len(chunk) == 0 {
+            self.open = false;
+            return;
+        }
+        self.buf = self.buf + chunk;
+        if len(self.buf) > 60000 && std::str::index_of(self.buf, "\n") < 0 {
+            self.write_line("{\"request_id\":0,\"id\":null,\"ok\":false,\"refusal\":{\"kind\":\"malformed\",\"reason\":\"a request is one line of at most 60000 bytes\"},\"caller\":" + self.caller + "}");
+            self.open = false;
+            return;
+        }
+        self.drain_lines();
     }
     fn drain_lines() {
         let mut nl = std::str::index_of(self.buf, "\n");
