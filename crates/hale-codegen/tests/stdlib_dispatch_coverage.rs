@@ -744,7 +744,9 @@ impl CallWalk {
                 self.expr(&bc.cond);
                 self.opt_expr(&bc.payload);
             }
-            LocusMember::Placement(_) | LocusMember::Topology(_) | LocusMember::Claims(_) => {}
+            // A seam is expanded into ordinary methods before this walk sees
+            // the stdlib, and the stdlib declares none.
+            LocusMember::Placement(_) | LocusMember::Topology(_) | LocusMember::Claims(_) | LocusMember::Seam(_) => {}
         }
     }
 
