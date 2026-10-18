@@ -393,7 +393,9 @@ fn the_hale_client_pairs_a_flag_by_its_declaration() {
 }
 
 /// A field with a default is optional on the wire, whatever its type, and
-/// the description lists it under no `required` (spec/api.md § Codecs).
+/// the description lists it under no `required` (spec/api.md § Codecs),
+/// unless the default reads the scope of the literal that leaves it, which
+/// no codec can evaluate: that field is required.
 /// `tests/hale/api/defaults_test.hl` holds the same surface's codecs to it:
 /// a payload that leaves each such field out decodes to its default.
 #[test]
@@ -407,5 +409,8 @@ fn a_field_with_a_default_is_described_optional() {
     assert_eq!(doc["schemas"]["Rec"]["required"], json!(["name"]));
     assert_eq!(doc["schemas"]["AllDefault"]["required"], json!([]));
     assert_eq!(doc["schemas"]["Inner"]["required"], json!(["a"]));
+    // a default the codec cannot build on its own (it reads a literal's
+    // scope) leaves its field required; one of constants does not
+    assert_eq!(doc["schemas"]["Scoped"]["required"], json!(["local"]));
     let _ = std::fs::remove_dir_all(&dir);
 }

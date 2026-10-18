@@ -2240,7 +2240,14 @@ ever sees a decoded value. A field with a default may be left out, and
 the description lists it under no `required`: whatever the declaration
 writes for it (a literal, an enum's variant, a record, a value computed
 from others) is what the absent field decodes to, through either codec,
-as the record's own literal would build it. A list is the one exception,
+as the record's own literal would build it, when the codec can evaluate
+it on its own: a default built of literals, constants, fns, qualified
+paths (an enum's variant) and record literals of those. A record field
+default is evaluated in the scope of the literal that leaves it, so one
+that reads anything else of that scope (`b: Int = a + 1`, `a` a local
+where the literal is written) is no default a codec can build, and its
+field is required on the wire: the description lists it under
+`required`, and the decoders refuse its absence `missing_field`. A list is the one exception,
 by its shape: a `bounded` list left out is empty and a fixed array is
 always sent, a default of either unread (above). A row whose shape has a field
 the codec does not carry is refused by the admission law (law 5),

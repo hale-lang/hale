@@ -7,6 +7,12 @@
 // in a method nothing calls, which is all the compiler needs to write the
 // codecs (`api_shapes::a_field_with_a_default_is_described_optional` reads
 // the same surface's description).
+//
+// A codec builds a default only when it can evaluate it on its own: one
+// that reads the scope a record literal evaluates it in (`Scoped.local`,
+// `k + 1`, `k` being whatever the literal's scope binds) makes the field
+// required on the wire, in the description and the decoder alike, while one
+// built of constants (`Scoped.closed`) is still filled in.
 
 unit cent;
 type Money = quantity Int in cent;
@@ -31,16 +37,20 @@ type Rec {
     tags: bounded[String; 3];
     items: bounded[Item; 4] indexed_by name;
 }
+const LIMIT: Int = 5;
+type Scoped { local: Int = k + 1; closed: Int = LIMIT * 2; }
 type AllDefault { scope: Scope = Scope::org; inner: Inner = Inner { a: 9, b: "x" }; n: Int = 4 * 4; }
 
 api Defaults {
     rpc Probe::rec;
     rpc Probe::all;
+    rpc Probe::scoped;
 }
 
 locus Probe {
     fn rec(r: Rec) -> Rec { return r; }
     fn all(a: AllDefault) -> AllDefault { return a; }
+    fn scoped(s: Scoped) -> Scoped { return s; }
 }
 
 locus Tokens {
@@ -110,6 +120,23 @@ main locus Desk {
             std::test::assert(false, "an empty message for all defaults: " + err.kind + " " + err.field);
             return;
         };
+        // a default the codec cannot build: the field is required
+        let missing = __api_decode_Scoped("{}") or {
+            std::test::assert_eq_str(err.kind + " " + err.field, "missing_field local", "a caller-scope default is required");
+            Scoped { local: -1 }
+        };
+        std::test::assert_eq_int(missing.local, -1, "the JSON decoder refused the absent field");
+        let sent = __api_decode_Scoped("{\"local\":4}") or {
+            std::test::assert(false, "a caller-scope default's field sent: " + err.kind + " " + err.field);
+            return;
+        };
+        std::test::assert_eq_int(sent.local, 4, "the value sent");
+        std::test::assert_eq_int(sent.closed, 10, "a default of constants is still built");
+        let pb = __api_pb_decode_Scoped(std::bytes::from_string("")) or {
+            std::test::assert_eq_str(err.kind + " " + err.field, "missing_field local", "and required in protobuf");
+            Scoped { local: -1 }
+        };
+        std::test::assert_eq_int(pb.local, -1, "the protobuf decoder refused the absent field");
         for v in [a, b] {
             let org = match v.scope { Scope::key -> false, Scope::team -> false, Scope::org -> true, };
             std::test::assert(org, "an absent enum is its default");

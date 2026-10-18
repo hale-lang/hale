@@ -2364,7 +2364,10 @@ impl<'a> Schemas<'a> {
                             continue;
                         }
                         properties.push((key.clone(), self.type_ref(&f.ty, out)));
-                        if hale_syntax::json_gen::wire_required(&self.shapes.dealias(&f.ty), f.default.is_some()) {
+                        // a default the codec cannot build on its own (one that
+                        // reads a literal's scope) leaves the field required
+                        let builds = f.default.as_ref().is_some_and(|d| self.shapes.default_is_closed(d));
+                        if hale_syntax::json_gen::wire_required(&self.shapes.dealias(&f.ty), builds) {
                             required.push(key);
                         }
                     }

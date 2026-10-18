@@ -155,6 +155,56 @@ struct JsonField {
     default_expr: Option<Expr>,
 }
 
+/// The names a module declares that an expression may read wherever it is
+/// evaluated: its constants and its fns, a module's included.
+pub fn global_value_names(items: &[TopDecl], out: &mut HashSet<String>) {
+    for item in items {
+        match item {
+            TopDecl::Const(c) => {
+                out.insert(c.name.name.clone());
+            }
+            TopDecl::Fn(f) => {
+                out.insert(f.name.name.clone());
+            }
+            TopDecl::Module(m) => global_value_names(&m.items, out),
+            _ => {}
+        }
+    }
+}
+
+/// Whether a field's default can be evaluated on its own, where a codec
+/// builds it (spec/api.md § Codecs): it names nothing of the scope a
+/// record literal evaluates it in. Literals, constants and fns
+/// (`global`), qualified paths (an enum's variant, a module's name), and
+/// literals, operators and calls built of those. A name `global` does not
+/// know (a caller's local, as a field default may read), `self`, and any
+/// form that binds names of its own (a block, a `match`) are not closed,
+/// and such a field is required on the wire.
+pub fn default_is_closed(e: &Expr, global: &dyn Fn(&str) -> bool) -> bool {
+    let all = |es: &[Expr]| es.iter().all(|x| default_is_closed(x, global));
+    match e {
+        Expr::Literal(..) | Expr::Path(_) => true,
+        Expr::Ident(i) => global(&i.name),
+        Expr::Call { callee, args, .. } => {
+            let callee_ok = match callee.as_ref() {
+                // a called name is a fn: the module's or the language's
+                Expr::Ident(_) | Expr::Path(_) => true,
+                other => default_is_closed(other, global),
+            };
+            callee_ok && all(args)
+        }
+        Expr::Binary { left, right, .. } => default_is_closed(left, global) && default_is_closed(right, global),
+        Expr::Unary { operand, .. } => default_is_closed(operand, global),
+        Expr::Field { receiver, .. } | Expr::Path2 { receiver, .. } => default_is_closed(receiver, global),
+        Expr::Index { receiver, index, .. } => default_is_closed(receiver, global) && default_is_closed(index, global),
+        Expr::Tuple(es, _) | Expr::Array(es, _) => all(es),
+        Expr::Struct { inits, .. } => inits.iter().all(|i| default_is_closed(&i.value, global)),
+        Expr::Range { lo, hi, .. } => default_is_closed(lo, global) && default_is_closed(hi, global),
+        Expr::ArrayRepeat { val, .. } => default_is_closed(val, global),
+        _ => false,
+    }
+}
+
 /// The call a generated codec makes where field `field` of `record` takes
 /// its declared default: replaced by a copy of the default expression once
 /// the generated source parses ([`splice_defaults`]).
@@ -2172,9 +2222,13 @@ fn generate_codecs(
     for p in programs.iter() {
         collect_enum_kinds(&p.items, &mut enum_kinds);
     }
+    let mut globals = HashSet::new();
+    for p in programs.iter() {
+        global_value_names(&p.items, &mut globals);
+    }
     let mut enums: Vec<JsonEnum> = Vec::new();
     for p in programs.iter() {
-        collect_api_types(&p.items, &wanted, &scalars, &aliases, &enum_kinds, &mut types);
+        collect_api_types(&p.items, &wanted, &scalars, &aliases, &enum_kinds, &globals, &mut types);
         collect_api_enums(&p.items, &wanted, &scalars, &aliases, &enum_kinds, &mut enums);
         walk_fns(&p.items, &mut |name| {
             existing_fns.insert(name.to_string());
@@ -2815,6 +2869,7 @@ fn collect_api_types(
     scalars: &std::collections::BTreeMap<String, Conv>,
     aliases: &std::collections::BTreeMap<String, TypeExpr>,
     enums: &std::collections::BTreeMap<String, bool>,
+    globals: &HashSet<String>,
     out: &mut Vec<JsonType>,
 ) {
     for item in items {
@@ -2862,10 +2917,13 @@ fn collect_api_types(
                     // as the description's `required` promises; a list's is
                     // not read (a `bounded` absent is empty, a fixed array is
                     // always sent: spec/api.md § Codecs)
+                    // ... when the codec can evaluate it on its own: one that
+                    // reads the scope a literal evaluates it in leaves the
+                    // field required (`default_is_closed`)
                     let default_expr = match &kind {
                         FieldKind::List { .. } => None,
                         _ if default_src.is_some() => None,
-                        _ => f.default.clone(),
+                        _ => f.default.clone().filter(|d| default_is_closed(d, &|n| globals.contains(n))),
                     };
                     jfields.push(JsonField {
                         name: f.name.name.clone(),
@@ -2890,7 +2948,7 @@ fn collect_api_types(
                 }
                 out.push(JsonType { name: td.name.name.clone(), fields: jfields, lifted: None, lifted_flag: None });
             }
-            TopDecl::Module(m) => collect_api_types(&m.items, wanted, scalars, aliases, enums, out),
+            TopDecl::Module(m) => collect_api_types(&m.items, wanted, scalars, aliases, enums, globals, out),
             _ => {}
         }
     }

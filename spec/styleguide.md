@@ -690,7 +690,10 @@ fn main() {
   wherever "not sent" and one value mean the same thing, of any type: an
   enum's (`scope: Scope = Scope::key`), a record's or a computed one is
   read as a literal's is, and the description lists none of them as
-  required. It costs neither side anything.
+  required. Build it of literals, constants and fns: a default that
+  reads a name of the scope its literal is written in is one no codec
+  can evaluate, so that field is required on the wire. It costs
+  neither side anything.
 - **A presence pair, when "not sent" means not sent.** With `since`
   and `has_since: Bool`, the caller may leave the key out or send
   `null`, and the handler reads the flag. The encoder writes `note`
