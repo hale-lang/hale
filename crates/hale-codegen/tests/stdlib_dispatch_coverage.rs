@@ -746,7 +746,10 @@ impl CallWalk {
             }
             // A seam is expanded into ordinary methods before this walk sees
             // the stdlib, and the stdlib declares none.
-            LocusMember::Placement(_) | LocusMember::Topology(_) | LocusMember::Claims(_) | LocusMember::Seam(_) => {}
+            // a seam's one expression, its head (`hale_syntax::sites` walks
+            // the same): its hops are `self.` paths, no calls
+            LocusMember::Seam(sd) => self.expr(&sd.head),
+            LocusMember::Placement(_) | LocusMember::Topology(_) | LocusMember::Claims(_) => {}
         }
     }
 
