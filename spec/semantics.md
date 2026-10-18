@@ -4120,10 +4120,15 @@ then into the storage). Inlined, each return site goes straight to its
 arm: the dispatch reads no tag back and switches on none. A program with
 no seam has no clone, and a hop whose set the seam hands on whole is
 called as written.
-A closed flow's chain is expanded into the locus's `run`, one activation
-for the locus's whole life, so what each frame's hops make is reclaimed
-only when the locus dissolves (`spec/memory.md`); a callable seam called
-once per frame from a method reclaims at that method's return.
+A closed flow's frame is a method of its own, `__seam_turn() -> Int` (the
+source pulled, the chain run), which answers whether the flow goes on,
+has ended (the source ended, or `or end;`) or met a failure routed to
+`or violate NAME;`. The locus's `run` calls it while the locus is not
+draining, returns when the flow has ended, and violates `NAME` itself
+when the turn says so (a method that returns a value may not violate),
+so the violation is the lifecycle's, as before. What a frame's hops make
+is reclaimed when the turn returns (`spec/memory.md`), as a callable
+seam's is at its return.
 
 ## Element chains
 

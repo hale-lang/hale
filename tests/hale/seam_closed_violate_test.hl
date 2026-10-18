@@ -1,0 +1,41 @@
+// tests/hale/seam_closed_violate_test.hl — a closed seam's `or violate
+// NAME;` (GH #1530). One frame is a turn of `run`, a method that returns
+// whether the flow goes on, ends or violated; `run` violates the seam's
+// closure when a turn says a failure was routed there, so the violation is
+// the lifecycle's, as it was before frames were turns, and the parent's
+// `on_failure` hears it.
+
+type Bad { why: String; }
+type Done { why: String; }
+
+locus Gate {
+    params { at: Int = 0; k: Int = 0; lines: String = ""; }
+    closure fuse { captures: k; epoch inline; }
+    fn next() -> Int fallible(Done) {
+        self.at = self.at + 1;
+        if self.at > 3 { fail Done { why: "end" }; }
+        return self.at;
+    }
+    fn decode(x: Int) -> String fallible(Bad) {
+        if x == 2 { fail Bad { why: "two" }; }
+        return "f" + to_string(x);
+    }
+    fn put(s: String) { self.lines = self.lines + s + ";"; }
+    seam { self.next() -> self.decode -> self.put; or violate fuse; }
+}
+
+main locus App {
+    params { g: Gate = Gate { }; seen: Int = 0; named: String = ""; }
+    on_failure(c: Gate, err: ClosureViolation) {
+        self.seen = self.seen + 1;
+        self.named = err.closure;
+    }
+    run() {
+        std::time::sleep(50ms);
+        std::test::assert_eq_int(self.seen, 1, "the frame whose decode failed violated the seam's closure");
+        std::test::assert_eq_str(self.named, "fuse", "the closure the seam names");
+        std::test::assert_eq_str(self.g.lines, "f1;", "the frame before the violation ran to the sink");
+    }
+}
+
+fn main() { App { }; }

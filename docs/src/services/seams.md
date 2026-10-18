@@ -198,26 +198,10 @@ draining, it pulls a frame and runs the chain, and a failing source
 failures of the hops after it. A locus with a closed seam declares no
 `run` of its own; writing both is refused.
 
-One caution. A `run` is a single activation that lasts as long as the
-locus, and the seam's hops are inlined into it, so everything each
-frame makes is kept until the locus dissolves (about 1.7 KB a frame in
-a measured gateway; `hale check` warns about each hop's values). That
-is fine for a feed that ends, like the one above. For a source that
-runs for hours, make the step a method, and its memory is reclaimed
-every time it returns:
-
-```hale,fragment
-locus Gateway {
-    params { feed: Feed = Feed { }; wire: Wire = Wire { }; desk: Desk = Desk { }; log: Log = Log { }; }
-    seam answer(frame: String) { frame -> self.wire.decode -> self.desk -> self.wire.encode -> self.log.write; }
-    fn step() -> Bool {
-        let f = self.feed.next() or { return false; };
-        self.answer(f);
-        return true;
-    }
-    run() { while !self.draining { if !self.step() { return; } } }
-}
-```
+Each frame is one turn of that `run`: the compiler writes the frame
+(pull, decode, dispatch, encode, write) as a method of its own, which
+`run` calls until the source ends. So what a frame makes is freed when
+the frame is done, and a gateway that runs for hours holds flat.
 
 ## One tower
 

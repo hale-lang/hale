@@ -608,9 +608,9 @@ fn main() {
   self.feed.next() -> … -> self.log.write; }` is the locus's `run`: it
   pulls from the source until the source fails, and the locus
   declares no `run` of its own. Without them, `seam name(x: T) -> R { x
-  -> …; }` is a method. Today a closed seam holds every frame's values
-  until its locus dissolves (§7, sharp edges), so a source that runs for
-  long drives a callable seam from a method per frame instead. **[error
+  -> …; }` is a method. One frame of a closed seam is a turn, a method
+  of its own that `run` calls, so what a frame's hops make is freed when
+  the frame ends and a gateway that runs for hours holds flat. **[error
   for a closed seam beside a `run`]**
 - **One tower.** Hops are the locus's own methods and children, called
   directly and inlined. Nothing is queued, and no union is built that
@@ -1783,26 +1783,6 @@ those cold.
   qualified `let` annotation builds, but the binding is not the
   quantity (`d / 1ms` is refused as "`Duration` is not an `Int`"), so
   write it bare there too.
-
-- **A closed seam holds every frame's values until its locus
-  dissolves.** The closed form is the locus's `run`, which is one
-  never-ending activation (§1), and its hops are inlined into it. So
-  what each frame's decoder, handler and encoder make accumulates:
-  about 1.7 KB a frame for 200-byte frames, measured on v0.25.0. `hale
-  check` warns, naming each hop's values in the unbounded-allocation
-  survey. For a source that does not end soon, write the step as a
-  method that pulls one frame and calls a callable seam. Its scratch
-  reclaims at every return, and the same gateway holds flat:
-
-```hale,fragment
-  seam answer(frame: String) { frame -> self.wire.decode -> self.desk -> self.wire.encode -> self.log.write; }
-  fn step() -> Bool {
-      let f = self.feed.next() or { return false; };
-      self.answer(f);
-      return true;
-  }
-  run() { while !self.draining { if !self.step() { return; } } }
-  ```
 
 If the catalog seems to be missing a pattern, log a friction
 entry with the smallest reproducible example — the catalog grows
