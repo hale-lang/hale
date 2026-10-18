@@ -45,10 +45,21 @@ locus All {
 locus Box {
     params { total: Int = 0; }
     fn put(x: Int) -> () { self.total = self.total + x; }
+    fn take(x: Int) -> Int fallible(A) {
+        if x < 0 { fail A { n: x }; }
+        return x;
+    }
+}
+
+// a value or its failure, each to its own method, neither returning one
+locus Tally {
+    params { total: Int = 0; errors: Int = 0; }
+    fn keep(x: Int) -> () { self.total = self.total + x; }
+    fn count(a: A) -> () { self.errors = self.errors + 1; }
 }
 
 locus App {
-    params { d: Decode = Decode { }; h: Handle = Handle { }; all: All = All { }; box: Box = Box { }; }
+    params { d: Decode = Decode { }; h: Handle = Handle { }; all: All = All { }; box: Box = Box { }; t: Tally = Tally { }; }
     seam go(x: Int) -> String {
         x -> self.d.decode -> self.h;
     }
@@ -57,6 +68,10 @@ locus App {
     }
     seam store(x: Int) {
         x -> self.box.put;
+    }
+    // declared `-> ()`, with a failure routed to a later hop: nothing returns
+    seam tally(x: Int) -> () {
+        x -> self.box.take -> self.t;
     }
 }
 
@@ -71,4 +86,8 @@ fn main() {
     app.store(4);
     app.store(5);
     std::test::assert_eq_int(app.box.total, 9, "a sink spelled `-> ()`");
+    app.tally(1);
+    app.tally(-3);
+    std::test::assert_eq_int(app.t.total, 1, "a `-> ()` seam's success path");
+    std::test::assert_eq_int(app.t.errors, 1, "and its failure route");
 }

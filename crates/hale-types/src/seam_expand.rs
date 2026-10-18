@@ -668,7 +668,7 @@ impl Gen<'_, '_> {
             );
             return;
         }
-        if let Some(r) = &self.seam.ret {
+        if let Some(r) = declared_result(self.seam) {
             let r = self.index.key(r);
             if !self.index.covers(&r, ty) {
                 let span = *self.spans.last().expect("a hop");
@@ -678,6 +678,12 @@ impl Gen<'_, '_> {
         self.ends.insert(ty.to_string());
         out.push_str(&format!("return {var};\n"));
     }
+}
+
+/// A callable seam's declared result, `-> ()` being none, as everywhere
+/// (the unit-return normalization runs after this pass).
+fn declared_result(sd: &SeamDecl) -> Option<&TypeExpr> {
+    sd.ret.as_ref().filter(|t| !matches!(t, TypeExpr::Tuple(ts, _) if ts.is_empty()))
 }
 
 fn unit() -> TypeExpr {
@@ -764,7 +770,7 @@ fn plan(index: &Index<'_>, owner: &LocusDecl, sd: &SeamDecl) -> Result<Plan, Vec
         }
         let entry = index.key(&p.ty);
         g.chain(0, "__seam_v0", &entry, &format!("the parameter `{}`", p.name.name), &mut body);
-        let ret = match &sd.ret {
+        let ret = match declared_result(sd) {
             Some(r) => format!(" -> {}", index.key(r)),
             None => {
                 let ends: Vec<&String> = g.ends.iter().collect();

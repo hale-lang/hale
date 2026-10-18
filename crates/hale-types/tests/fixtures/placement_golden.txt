@@ -8271,6 +8271,7 @@ row	~.all	All	main	inherited
 row	~.box	Box	main	inherited
 row	~.d	Decode	main	inherited
 row	~.h	Handle	main	inherited
+row	~.t	Tally	main	inherited
 
 == tests/hale/seam_frame_classifier_test.hl
 -- Link@main1	Link
