@@ -36,7 +36,9 @@
 //! element of a tuple literal); one whose fn the walk cannot name (a
 //! parameter of fn type, a computed callee, a binding some statement
 //! assigns, `f = other;`) is taken as a writer of every argument whose
-//! type holds such a place: refused rather than guessed.
+//! type holds such a place: refused rather than guessed. A generic fn is
+//! summarized as any other, a type parameter taken as any type (a
+//! pointer-shaped element, a record holding such a place).
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -225,7 +227,7 @@ impl<'a, 't, 's> World<'a, 't, 's> {
         for (p, ids) in programs {
             for d in flat_decls(&p.items) {
                 if let TopDecl::Fn(f) = d {
-                    if f.generics.is_empty() && f.ffi.is_none() {
+                    if f.ffi.is_none() {
                         let params = f.params.iter().map(|p| (ids.decl(&p.name), w.ty(&p.ty))).collect();
                         w.fns.insert(f.name.name.clone(), FreeFn { params, body: &f.body, ids: *ids });
                     }
@@ -287,8 +289,10 @@ impl<'a, 't, 's> World<'a, 't, 's> {
             Ty::Prim(PrimType::String | PrimType::Bytes) => true,
             Ty::Named(n) => matches!(
                 self.top.lookup(&n),
-                Some(TopSymbol::Locus(_)) | Some(TopSymbol::Type(crate::symbol::TypeInfo { kind: TypeKind::Struct(_), .. }))
+                Some(TopSymbol::Locus(_)) | Some(TopSymbol::Type(crate::symbol::TypeInfo { kind: TypeKind::Struct(_), .. })) | None
             ),
+            // a generic fn's type parameter may be any of them: fail closed
+            Ty::Unknown => true,
             _ => false,
         }
     }
@@ -314,8 +318,11 @@ impl<'a, 't, 's> World<'a, 't, 's> {
                     TypeKind::Struct(fields) => fields.iter().any(|f| self.holds_pointer_bounded(&f.ty, depth + 1)),
                     _ => false,
                 },
+                // a generic fn's type parameter may be such a record
+                None => true,
                 _ => false,
             },
+            Ty::Unknown => true,
             Ty::Array(e, _) => self.holds_pointer_bounded(e, depth + 1),
             _ => false,
         }

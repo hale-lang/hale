@@ -651,6 +651,10 @@ fn a_parameter_place_writer_follows_bindings_not_spellings() {
         type Row { xs: bounded[String; 4]; }
         fn fill(r: Row) { push(r.xs, "fresh" + to_string(1)) or raise; }
         fn noop(r: Row) { }
+        fn gfill<T>(r: Row, value: T) { push(r.xs, "fresh" + to_string(1)) or raise; }
+        fn gapply<T>(g: fn (T) -> (), x: T) { g(x); }
+        fn pass_on(r: Row) { gapply(fill, r); }
+        fn gid<T>(x: T) { }
     "#;
     let refused = |body: &str, why: &str| {
         let src = format!("{PRE} locus L {{ params {{ row: Row = Row {{ }}; }} fn put() {{ {body} }} }}\nfn main() {{ }}");
@@ -684,6 +688,15 @@ fn a_parameter_place_writer_follows_bindings_not_spellings() {
     accepted(
         "locus L { fn put(r: Row) { let r = Row { }; fill(r); } }",
         "a member's fresh local shadowing its parameter",
+    );
+    // a generic writer is a writer (third review): its parameter of a
+    // concrete record type is written through, and one of a type
+    // parameter may be such a record
+    refused("gfill(self.row, 1);", "a generic writer");
+    refused("pass_on(self.row);", "a generic fn handing a type parameter to a fn value");
+    accepted(
+        "locus L { params { row: Row = Row { }; } fn put() { gid(self.row); } }",
+        "a generic fn that writes nothing",
     );
     let ds = minted_diags(&format!(
         "{PRE} locus L {{ fn put(r: Row) {{ fill(r); }} }}\nfn main() {{ }}"
