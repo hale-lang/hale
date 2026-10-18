@@ -233,7 +233,7 @@ impl Walk<'_> {
                     self.expr(p);
                 }
             }
-            LocusMember::Placement(_) | LocusMember::Topology(_) | LocusMember::Claims(_) => {}
+            LocusMember::Placement(_) | LocusMember::Topology(_) | LocusMember::Claims(_) | LocusMember::Seam(_) => {}
         }
     }
 

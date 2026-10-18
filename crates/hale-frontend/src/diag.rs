@@ -58,6 +58,14 @@ pub fn render_located(
     // binding, so no file of the bundle owns it; say that, rather than a
     // position in whichever file happens to be listed first.
     if off >= hale_syntax::api_names::API_SYNTH_BASE {
+        // GH #1530 step 2: the methods a `seam` expanded to
+        if hale_types::seam_expand::is_seam_pos(off) {
+            return format!(
+                "{}: {} (in the methods a `seam` generated: a seam is checked as the chain of calls it writes)",
+                d.kind_str(),
+                d.message
+            );
+        }
         if let Some(note) = appended_source_note(off) {
             return format!("{}: {} ({note})", d.kind_str(), d.message);
         }

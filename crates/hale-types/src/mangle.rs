@@ -1169,6 +1169,15 @@ impl<'a> QualifiedRenameApplier<'a> {
                     }
                 }
             }
+            // GH #1530 step 2: a seam's entry and result types
+            LocusMember::Seam(sd) => {
+                if let Some(p) = &mut sd.param {
+                    self.rewrite_type_expr(&mut p.ty);
+                }
+                if let Some(r) = &mut sd.ret {
+                    self.rewrite_type_expr(r);
+                }
+            }
             LocusMember::Contract(_)
             | LocusMember::Closure(_)
             | LocusMember::Placement(_)
@@ -1988,6 +1997,17 @@ impl<'a> Mangler<'a> {
                     self.walk_expr(payload);
                 }
                 self.rewrite_ident(&mut bc.closure_name.name);
+            }
+            // GH #1530 step 2: a seam's head and its entry and result
+            // types; its hops are `self.` paths, which name no declaration.
+            LocusMember::Seam(sd) => {
+                self.walk_expr(&mut sd.head);
+                if let Some(p) = &mut sd.param {
+                    self.walk_type_expr(&mut p.ty);
+                }
+                if let Some(r) = &mut sd.ret {
+                    self.walk_type_expr(r);
+                }
             }
             LocusMember::Claims(cb) => {
                 // GH #733: a main locus's inline claims name the

@@ -2689,7 +2689,7 @@ fn walk_match_mut(m: &mut hale_syntax::ast::MatchStmt, f: &mut dyn FnMut(&mut Ex
     }
 }
 
-fn walk_block_mut(b: &mut Block, f: &mut dyn FnMut(&mut Expr)) {
+pub(crate) fn walk_block_mut(b: &mut Block, f: &mut dyn FnMut(&mut Expr)) {
     for s in &mut b.stmts {
         match s {
             Stmt::Let { value, .. } | Stmt::LetTuple { value, .. } | Stmt::Assign { value, .. } => walk_expr_mut(value, f),

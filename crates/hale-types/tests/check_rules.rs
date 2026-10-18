@@ -2690,3 +2690,143 @@ mod set_type_tests {
         );
     }
 }
+
+mod seam_tests {
+    //! GH #1530 step 2: a seam's refusals. Coverage both ways (every member
+    //! has one eater; every member a hop meets is in its parameter's set),
+    //! every failure placed, one tower, and the closed flow is the locus's
+    //! `run`.
+
+    use super::*;
+    use hale_syntax::parse_source;
+
+    fn errors(src: &str) -> Vec<String> {
+        let p = parse_source(src).unwrap_or_else(|d| panic!("parse: {:?}", d[0].message));
+        check_program(&p).into_iter().filter(|d| d.is_error()).map(|d| d.message).collect()
+    }
+
+    const PARTS: &str = "\
+type A { n: Int; }
+type B { n: Int; }
+type C { n: Int; }
+type In = A | B;
+type Out = A | B;
+type Oops { why: String; }
+locus Dec {
+    fn decode(s: String) -> In { return A { n: len(s) }; }
+    fn risky(s: String) -> In fallible(Oops) { return A { n: len(s) }; }
+}
+locus Enc { fn encode(o: Out) -> String { return \"x\"; } }
+locus Sink { fn put(s: String) { } }
+interface Handler { fn a(x: A) -> String; }
+";
+
+    fn seam(handler: &str, chain: &str) -> Vec<String> {
+        errors(&format!(
+            "{PARTS}{handler}\nlocus G {{\n    params {{ dec: Dec = Dec {{ }}; h: H = H {{ }}; enc: Enc = Enc {{ }}; sink: Sink = Sink {{ }}; }}\n    {chain}\n}}\nfn main() {{ }}\n"
+        ))
+    }
+
+    const H: &str = "locus H { fn a(x: A) -> String { return \"a\"; } fn b(x: B) -> String { return \"b\"; } }";
+
+    #[test]
+    fn a_covered_seam_checks() {
+        assert_eq!(seam(H, "seam f(s: String) { s -> self.dec.decode -> self.h; }"), Vec::<String>::new());
+    }
+
+    #[test]
+    fn every_member_has_one_eater() {
+        assert_eq!(
+            seam("locus H { fn a(x: A) -> String { return \"a\"; } }", "seam f(s: String) { s -> self.dec.decode -> self.h; }"),
+            vec!["`self.h` has no method taking `B`, which reaches it from `self.dec.decode`: every member has one eater"]
+        );
+        assert_eq!(
+            seam(
+                "locus H { fn a(x: A) -> String { return \"a\"; } fn b(x: B) -> String { return \"b\"; } fn any(x: In) -> String { return \"i\"; } }",
+                "seam f(s: String) { s -> self.dec.decode -> self.h; }"
+            ),
+            vec![
+                "`self.h.a` and `self.h.any` both take `A`: a member has one eater",
+                "`self.h.b` and `self.h.any` both take `B`: a member has one eater"
+            ]
+        );
+    }
+
+    #[test]
+    fn every_member_a_method_hop_meets_is_its_parameters() {
+        assert_eq!(
+            seam("locus H { fn a(x: A) -> C { return C { n: 1 }; } fn b(x: B) -> A { return A { n: 2 }; } }", "seam f(s: String) { s -> self.dec.decode -> self.h -> self.enc.encode; }"),
+            vec!["`self.enc.encode` takes `Out`, and `C` reaching it from `self.h.a` is not one of its members"]
+        );
+    }
+
+    #[test]
+    fn every_failure_is_placed() {
+        assert_eq!(
+            seam(H, "seam f(s: String) { s -> self.dec.risky -> self.h; }"),
+            vec!["`self.dec.risky` fails with `Oops`, and no later hop takes it: add `Oops` to a later hop's set, or route it with `or end;` or `or violate <closure>;`"]
+        );
+        assert_eq!(seam(H, "seam f(s: String) { s -> self.dec.risky -> self.h; or end; }"), Vec::<String>::new());
+        assert_eq!(
+            seam(H, "seam f(s: String) { s -> self.dec.risky -> self.h; or violate broken; }"),
+            vec!["a callable seam's uncovered failure fails the call: write `or end;` (a closure is violated by the flow `run` is, the closed seam)"]
+        );
+    }
+
+    #[test]
+    fn a_seam_is_one_tower_with_a_static_chain() {
+        assert_eq!(
+            errors(&format!(
+                "{PARTS}{H}\nlocus G {{ params {{ h: Handler; }} seam f(x: A) {{ x -> self.h; }} }}\nfn main() {{ }}\n"
+            )),
+            vec!["`self.h` is the interface `Handler`, so the method a hop on it calls is not known here: a seam's chain is static"]
+        );
+        assert_eq!(
+            errors(&format!(
+                "{PARTS}{H}\nmain locus G {{\n    params {{ dec: Dec = Dec {{ }}; h: H = H {{ }}; }}\n    placement {{ h: cooperative(pool = work); }}\n    seam f(s: String) {{ s -> self.dec.decode -> self.h; }}\n}}\nfn main() {{ G {{ }}; }}\n"
+            )),
+            vec!["`self.h` runs on pool `work`, another tower than the seam's: a seam is one tower; across pools, use the bus"]
+        );
+        assert_eq!(
+            seam(H, "seam f(s: String) { s -> self.nope; }"),
+            vec!["`self.nope` is neither a method of `G` nor a child locus of it"]
+        );
+    }
+
+    #[test]
+    fn a_closed_seam_is_the_run_and_ends_at_a_sink() {
+        let feed = "locus Feed { fn next() -> String fallible(Oops) { return \"x\"; } }";
+        let g = |chain: &str, extra: &str| {
+            errors(&format!(
+                "{PARTS}{H}\n{feed}\nlocus G {{\n    params {{ feed: Feed = Feed {{ }}; dec: Dec = Dec {{ }}; enc: Enc = Enc {{ }}; sink: Sink = Sink {{ }}; }}\n    {extra}\n    {chain}\n}}\nfn main() {{ }}\n"
+            ))
+        };
+        assert_eq!(g("seam { self.feed.next() -> self.dec.decode -> self.enc.encode -> self.sink.put; }", ""), Vec::<String>::new());
+        assert_eq!(
+            g("seam { self.feed.next() -> self.dec.decode -> self.enc.encode; }", ""),
+            vec!["the seam's last hop ends with `String` from `self.enc.encode`; a closed flow ends at a sink, a method that takes the value and returns nothing"]
+        );
+        assert_eq!(
+            g("seam { self.feed.next() -> self.dec.decode -> self.enc.encode -> self.sink.put; }", "run() { }"),
+            vec!["`G` has its own `run`: a closed seam is the locus's `run`, so the locus has one or the other"]
+        );
+    }
+
+    #[test]
+    fn a_callable_seam_returns_one_type_and_fails_with_one() {
+        assert_eq!(
+            seam(
+                "locus H { fn a(x: A) -> String { return \"a\"; } fn b(x: B) -> Int { return 1; } }",
+                "seam f(s: String) { s -> self.dec.decode -> self.h; }"
+            ),
+            vec!["the seam's paths end in `Int`, `String`; declare what it returns (`seam f(…) -> R`), a set holding them all"]
+        );
+        assert_eq!(
+            seam(
+                "type E2 { why: String; }\nlocus H { fn a(x: A) -> String fallible(E2) { return \"a\"; } fn b(x: B) -> String { return \"b\"; } }",
+                "seam f(s: String) { s -> self.dec.risky -> self.h; or end; }"
+            ),
+            vec!["the seam fails with `E2`, `Oops`, and a callable seam fails with one type: route the others to a later hop"]
+        );
+    }
+}

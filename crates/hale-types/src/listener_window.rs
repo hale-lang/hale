@@ -320,7 +320,8 @@ pub(crate) fn for_each_expression_root<'a>(items: &'a [hale_syntax::ast::TopDecl
                         | LocusMember::Bindings(_)
                         | LocusMember::Placement(_)
                         | LocusMember::Topology(_)
-                        | LocusMember::Claims(_) => {}
+                        | LocusMember::Claims(_)
+                        | LocusMember::Seam(_) => {}
                     }
                 }
             }

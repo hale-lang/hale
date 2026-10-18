@@ -4801,7 +4801,8 @@ impl Resolver<'_> {
                 | LocusMember::Capacity(_)
                 | LocusMember::Placement(_)
                 | LocusMember::Topology(_)
-                | LocusMember::Claims(_) => {}
+                | LocusMember::Claims(_)
+                | LocusMember::Seam(_) => {}
             }
         }
         self.accepting = saved_accepting;

@@ -719,6 +719,10 @@ pub struct BuildOptions {
     /// Write it to `output_path.with_extension("ll")` when `dump_ir`
     /// names no path (`LOTUS_DUMP_IR` set, the CLI/shell spelling).
     pub dump_ir_beside_output: bool,
+    /// Write the IR AFTER the optimization pipeline to this path: what a
+    /// test of what optimization made of the code reads (GH #1530 step 2,
+    /// a seam's folded dispatch). The CLI does not set it.
+    pub dump_ir_optimized: Option<std::path::PathBuf>,
     /// Force the all-dynamic bus lowering: the devirtualization plans
     /// come out empty. The differential harness's control arm
     /// (`LOTUS_NO_BUS_DEVIRT`).
@@ -818,6 +822,7 @@ impl BuildOptions {
             obs_entity_ids: Default::default(),
             dump_ir: Default::default(),
             dump_ir_beside_output: Default::default(),
+            dump_ir_optimized: Default::default(),
             no_bus_devirt: Default::default(),
             no_ownership_bubble: Default::default(),
             no_xpool_backstop: Default::default(),
@@ -2139,6 +2144,9 @@ fn build_resolved_lowered(
         cx.module
             .run_passes(pass_pipeline, &machine, pb_opts)
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+    }
+    if let Some(p) = &options.dump_ir_optimized {
+        let _ = cx.module.print_to_file(p);
     }
     phase("llvm-passes", &mut t_last);
 
@@ -13463,7 +13471,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             | LocusMember::Topology(_)
             // GH #382: claims carry no type-bearing positions.
             | LocusMember::Claims(_)
-            | LocusMember::BirthCheck(_) => {}
+            | LocusMember::BirthCheck(_)
+            | LocusMember::Seam(_) => {}
             LocusMember::Capacity(_) => {
                 // F.22 slot cell types are concrete in v1; no
                 // generic-template use sites. Future generic Pool/
@@ -24131,7 +24140,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         if let Some(call) = Self::invocation_id(e) {
             self.current_call = Some(call);
         }
+        // GH #1530 step 2: a seam's hop call is inlined into the seam
+        let hop = matches!(e, Expr::Call { .. } | Expr::Or { .. }) && hale_types::seam_expand::is_seam_pos(e.span().start.0);
+        let before = if hop { self.call_sites_here() } else { Vec::new() };
         let result = self.lower_expr_at(e, scope);
+        if hop {
+            self.inline_new_hop_calls(&before);
+        }
         self.current_call = previous;
         // GH #1566 follow-up: a factory call that keeps an argument it was
         // handed in the instance it returns: that field's child, its
@@ -24190,6 +24205,62 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             _ => {}
         }
         self.inject_member(e, (v, ty))
+    }
+
+    /// GH #1530 step 2: the call instructions of the function being
+    /// emitted, by identity.
+    fn call_sites_here(&self) -> Vec<usize> {
+        let Some(f) = self.builder.get_insert_block().and_then(|b| b.get_parent()) else { return Vec::new() };
+        let mut out = Vec::new();
+        for bb in f.get_basic_blocks() {
+            let mut i = bb.get_first_instruction();
+            while let Some(inst) = i {
+                if inst.get_opcode() == inkwell::values::InstructionOpcode::Call {
+                    out.push(inkwell::values::AsValueRef::as_value_ref(&inst) as usize);
+                }
+                i = inst.get_next_instruction();
+            }
+        }
+        out
+    }
+
+    /// GH #1530 step 2: every call a seam's hop lowered to, emitted since
+    /// `before`, is marked `alwaysinline` at its site: the chain is static
+    /// (one tower, direct calls), so inlining each hop into the seam puts a
+    /// producer's return site, and the tag it writes, beside the dispatch
+    /// that reads it, and optimization folds the branch. Only a program's
+    /// methods (`Locus.method`) are marked, never the runtime's.
+    fn inline_new_hop_calls(&mut self, before: &[usize]) {
+        let Some(f) = self.builder.get_insert_block().and_then(|b| b.get_parent()) else { return };
+        let kind = inkwell::attributes::Attribute::get_named_enum_kind_id("alwaysinline");
+        let attr = self.context.create_enum_attribute(kind, 0);
+        for bb in f.get_basic_blocks() {
+            let mut i = bb.get_first_instruction();
+            while let Some(inst) = i {
+                i = inst.get_next_instruction();
+                if inst.get_opcode() != inkwell::values::InstructionOpcode::Call
+                    || before.contains(&(inkwell::values::AsValueRef::as_value_ref(&inst) as usize))
+                {
+                    continue;
+                }
+                let Ok(site) = inkwell::values::CallSiteValue::try_from(inst) else { continue };
+                // the callee is the call's last operand: a function, by
+                // name, for a direct call
+                let n = inst.get_num_operands();
+                let Some(inkwell::values::BasicValueEnum::PointerValue(callee)) =
+                    n.checked_sub(1).and_then(|last| inst.get_operand(last)).and_then(|o| o.left())
+                else {
+                    continue;
+                };
+                if self.module.get_function(&callee.get_name().to_string_lossy()).is_none() {
+                    continue;
+                }
+                let name = callee.get_name().to_string_lossy().into_owned();
+                if name.contains('.') && !name.starts_with("lotus_") && !name.starts_with("__") {
+                    site.add_attribute(inkwell::attributes::AttributeLoc::Function, attr);
+                }
+            }
+        }
     }
 
     /// GH #1530 step 1: a member's value where the checker flowed it into

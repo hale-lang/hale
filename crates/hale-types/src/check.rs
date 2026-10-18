@@ -9155,6 +9155,11 @@ fn check_main_and_bindings(bundle: &Bundle<'_>, inputs: &CheckInputs<'_>, diags:
     diags.extend(crate::roles::role_laws(inputs.roles));
     check_duplicate_members(&programs_vec, diags);
     check_wire_maps(&programs_vec, diags);
+    // GH #1530 step 2: a seam its expansion refused, reported
+    diags.extend(crate::seam_expand::refusals(
+        &programs_vec,
+        crate::desugar_sequence::bundled_stdlib().ok().as_slice(),
+    ));
     if mains.len() > 1 {
         for (name, span) in &mains {
             diags.push(Diag::ty(
@@ -14507,6 +14512,9 @@ impl<'a> Checker<'a> {
                 // `pinned(node =)` / `pinned(l3 =)` references
                 // that resolve against it. Nothing member-local.
             }
+            // GH #1530 step 2: a seam still here is one its expansion
+            // refused; `check_seams` reports it.
+            LocusMember::Seam(_) => {}
             LocusMember::Claims(_) => {
                 // GH #382: claims are evaluated by the dedicated
                 // bundle-level law judgment — they

@@ -381,6 +381,19 @@ impl Shift for LocusMember {
             LocusMember::Topology(x) => x.shift(d),
             LocusMember::Claims(x) => x.shift(d),
             LocusMember::BirthCheck(x) => x.shift(d),
+            LocusMember::Seam(x) => x.shift(d),
+        }
+    }
+}
+
+shift_struct!(SeamDecl { name, param, ret, head, hops, on_failure, span });
+shift_struct!(SeamHop { path, span });
+
+impl Shift for SeamFailure {
+    fn shift(&mut self, d: Move) {
+        match self {
+            SeamFailure::End(s) => s.shift(d),
+            SeamFailure::Violate(c) => c.shift(d),
         }
     }
 }

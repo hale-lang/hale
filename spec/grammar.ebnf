@@ -375,7 +375,18 @@ locus_member      = params_block
                   | topology_block
                   | claims_block
                   | birth_check_decl
+                  | seam_decl                                   (* #1530 *)
                   ;
+
+(* GH #1530 step 2 — a seam (spec/semantics.md § Seams). `seam`, `end`
+   and `violate` are contextual words here. The closed flow (no name)
+   begins at a source call and is the locus's `run`; the callable form
+   begins at its parameter and is a method. *)
+seam_decl         = "seam" , [ IDENTIFIER , "(" , IDENTIFIER , ":" , type_expr , ")" ,
+                    [ "->" , type_expr ] ] ,
+                    "{" , expression , "->" , seam_hop , { "->" , seam_hop } , ";" ,
+                    [ "or" , ( "end" | "violate" , IDENTIFIER ) , ";" ] , "}" ;
+seam_hop          = "self" , { "." , IDENTIFIER } ;
 
 (* GH #756 — `type_decl` is NOT a locus member: a type is a
    top-level declaration (see `top_decl`), in scope everywhere in

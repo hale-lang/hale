@@ -1,0 +1,102 @@
+// tests/hale/seam_decoder_handler_test.hl — a seam (GH #1530 step 2): a
+// decoder and a handler, stitched. `Wire` decodes a frame into a member of
+// `Inbound` and encodes a member of `Outbound`; `Desk` takes each `Inbound`
+// member by its type and answers an `Outbound`. Neither names the other.
+// The seam is the gateway's `run`: pull a frame from the source, decode,
+// dispatch to the desk method whose parameter is the member, encode, and
+// push to the sink, until the source ends. The decoder's failure,
+// `WireError`, is a member of `Outbound`, so it enters the chain at
+// `encode` and becomes a protocol-level reject. A callable seam over the
+// same parts takes a frame and returns the encoded answer.
+
+type NewOrder { id: Int; qty: Int; }
+type Cancel { id: Int; }
+type Ack { id: Int; }
+type Reject { id: Int; why: String; }
+type WireError { at: Int; }
+type Inbound = NewOrder | Cancel;
+type Outbound = Ack | Reject | WireError;
+
+locus Wire {
+    fn decode(b: String) -> Inbound fallible(WireError) {
+        if std::str::starts_with(b, "new ") {
+            let qty = std::str::parse_int(b[4..len(b)]) or { fail WireError { at: 4 }; };
+            return NewOrder { id: qty * 10, qty: qty };
+        }
+        if b == "cancel" { return Cancel { id: 1 }; }
+        fail WireError { at: len(b) };
+    }
+    fn encode(o: Outbound) -> String {
+        return match o {
+            Ack(a) -> "ack " + to_string(a.id),
+            Reject(r) -> "reject " + to_string(r.id) + " " + r.why,
+            WireError(e) -> "bad frame at " + to_string(e.at),
+        };
+    }
+}
+
+locus Desk {
+    params { open: Int = 0; }
+    fn new_order(n: NewOrder) -> Outbound {
+        if n.qty > 10 { return Reject { id: n.id, why: "too big" }; }
+        self.open = self.open + 1;
+        return Ack { id: n.id };
+    }
+    fn cancel(c: Cancel) -> Outbound {
+        self.open = self.open - 1;
+        return Ack { id: c.id };
+    }
+}
+
+type Done { why: String; }
+
+// the source: the frames, then the end
+locus Feed {
+    params { at: Int = 0; }
+    fn next() -> String fallible(Done) {
+        self.at = self.at + 1;
+        if self.at == 1 { return "new 2"; }
+        if self.at == 2 { return "cancel"; }
+        if self.at == 3 { return "junk!"; }
+        if self.at == 4 { return "new 50"; }
+        fail Done { why: "end" };
+    }
+}
+
+// the sink
+locus Log {
+    params { lines: String = ""; }
+    fn write(s: String) { self.lines = self.lines + s + ";"; }
+}
+
+locus Gateway {
+    params {
+        feed: Feed = Feed { };
+        wire: Wire = Wire { };
+        desk: Desk = Desk { };
+        log: Log = Log { };
+    }
+    seam {
+        self.feed.next() -> self.wire.decode -> self.desk -> self.wire.encode -> self.log.write;
+        or end;
+    }
+}
+
+locus Counter {
+    params { wire: Wire = Wire { }; desk: Desk = Desk { }; }
+    seam answer(frame: String) -> String {
+        frame -> self.wire.decode -> self.desk -> self.wire.encode;
+    }
+}
+
+fn main() {
+    // the closed flow ran to its source's end
+    let g = Gateway { };
+    std::test::assert_eq_str(g.log.lines, "ack 20;ack 1;bad frame at 5;reject 500 too big;", "the closed flow, frame by frame");
+    let c = Counter { };
+    std::test::assert_eq_str(c.answer("new 3"), "ack 30", "a new order, answered");
+    std::test::assert_eq_str(c.answer("new 11"), "reject 110 too big", "the desk's reject");
+    std::test::assert_eq_str(c.answer("cancel"), "ack 1", "a cancel");
+    std::test::assert_eq_str(c.answer("??"), "bad frame at 2", "the decoder's failure, encoded");
+    std::test::assert_eq_int(c.desk.open, 0, "the desk's state: one opened, one cancelled");
+}

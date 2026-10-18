@@ -1485,7 +1485,8 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
                 // `hale-types::claims`, zero code emitted (the
                 // same lowering story as `placement`).
                 | LocusMember::Claims(_)
-                | LocusMember::BirthCheck(_) => {
+                | LocusMember::BirthCheck(_)
+                | LocusMember::Seam(_) => {
                     // Bindings + placement + topology emitted by
                     // main-locus prelude pass; birth_check clauses
                     // are emitted inline at instantiation (see
