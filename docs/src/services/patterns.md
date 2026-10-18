@@ -302,3 +302,5 @@ violate <closure>;`. With a source and a sink the seam is the locus's
 `run`; without a source it is a method you call, `seam answer(frame:
 String) -> String { frame -> … ; }`. Everything in a seam is one tower:
 its hops are the locus's own methods and children, called directly.
+[Seams](./seams.md) walks through a complete one, with its refusals and
+the one caution about a closed seam on a long-running source.

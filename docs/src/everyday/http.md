@@ -55,7 +55,8 @@ them — because the `Api` locus is alive for the whole run.
   until stopped. POST bodies are reassembled per `Content-Length`,
   so clients that write headers and body in separate segments
   (python's urllib, for one) work. A request is capped at
-  `max_request_bytes` (1 MiB unless you set it, at most 1 GiB), and
+  `max_request_bytes` (1 MiB unless you set it, at most 1 GiB; the
+  request line and headers count toward it), and
   one whose declared body is over the cap is answered with the
   Server's `too_large` response without its body being read: a
   plain-text `413 payload too large` unless you set your own, such as

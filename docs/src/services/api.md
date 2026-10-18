@@ -15,7 +15,9 @@ code of its own: a served exposure describes itself, and `hale api call`,
 `hale watch`, `hale admin` and `hale mcp --app` read only that
 description. To see the pieces combined into one program, built step by
 step from an empty file to an API with roles, read
-[Build an API](./build-an-api.md).
+[Build an API](./build-an-api.md); for choosing the shapes of its
+messages, and streaming them, [Designing an API's
+messages](./api-messages.md).
 
 ## Surfaces
 
@@ -216,6 +218,12 @@ list" (`[]`) from "left it out". The description marks the field as one
 that may be `null` and does not require it; the `.proto` carries both
 fields as they are declared.
 
+Give both fields defaults (`text: String = ""; has_text: Bool = false;`)
+and a literal that has nothing to say names neither. Reach for a pair
+only when "not sent" must stay distinguishable: when leaving a field out
+means the same as one value, a plain default (`limit: Int = 50`) says so
+with one field.
+
 ### Enums
 
 An enum crosses as the variant it holds. A variant with no values is its
@@ -236,11 +244,20 @@ An enum can be a field, the element of a list (when no variant has
 values), a whole request or response, or a handler's error type, which
 is how a handler says which of several things went wrong:
 `fallible(Problem)` with `type Problem = enum { NotFound(String),
-Conflict };` answers `"Conflict"` or `{"NotFound": "order 7"}`. An
+Conflict };` answers `"Conflict"` or `{"NotFound": "order 7"}`. Such a
+variant may also declare an error class (`@not_found NotFound(String)`),
+which picks each transport's status for it ([Error
+classes](#error-classes)). An
 unknown variant, the wrong shape for a variant or the wrong number of
-values is refused `malformed` with `wrong_type`, naming the field. The
+values is refused `malformed` with `wrong_type`, naming the field. An
+enum field has no default the codec reads, so leaving one out is
+`missing_field`, unless the field is optional. The
 description lists the variants; the `.proto` makes an enum with no
 values a proto3 `enum` and one with values a message with a `oneof`.
+
+A [set](../everyday/records.md#sets--one-of-several-types) crosses as the
+enum it is underneath, each member's type name its variant:
+`type Inbound = NewOrder | Cancel;` is `{"Cancel": {"id": 1}}`.
 
 ### Calling the codec yourself
 
@@ -270,6 +287,19 @@ not where it is served, not the build. A shape hash is deep, so a field
 changed inside a nested type moves it too (`spec/model.md` § The shape
 of a type). `hale check --dump-model` prints the surfaces with their
 digests and rows.
+
+Each member has a digest of its own as well, folded from that member's
+row alone: its name, its request, response and error shapes, and its
+roles. It moves when that member's contract moves, and for nothing
+else, so a client built against `Orders::place` keeps being admitted
+after the surface gains `Orders::amend`. The description lists each
+member's digest beside its name, the generated clients send their
+member's digest on every call, and a request naming either the
+surface's current digest or that member's own is admitted. Changing a
+member's shape refuses the clients that name its old digest
+(`digest_mismatch`), which is why a surface grows by adding members: a
+new capability is a new row, and an incompatible change is a new member
+served beside the old one.
 
 ### What a caller can learn
 
@@ -358,7 +388,7 @@ transport's literal, `principals:` for who a bearer token is and
 site names, never to a role's name, so one program can serve a surface
 twice under two sources.
 
-Inside the receiver, a call is a [seam](./patterns.md#9-decoder-handler-seam)
+Inside the receiver, a call is a [seam](./seams.md)
 the compiler writes for you: one decoder turns the body into the row's
 request (JSON, or protobuf on gRPC), the receiver's dispatch hands it to
 your method with its context last, and one encoder writes the answer,
@@ -610,7 +640,9 @@ Content-Type: application/json
 {"order":41,"notional":125000}
 ```
 
-A handler's own error is `422` with the error as the body; a refusal is
+A handler's own error is `422` with the error as the body (or, when its
+variant declares an error class, that class's status and a
+`Hale-Error-Class` header: see *Error classes* below); a refusal is
 `400`, `401`, `403`, `409`, `429` or `503` with `{"refusal": {"kind": …,
 "reason": …}}` (a digest mismatch also carries the `served` digest and an
 unauthorized call the roles it `requires`); a handler that violated is
@@ -791,7 +823,8 @@ is answered as it arrives, and the call stays open until the tool ends its
 side. Reflection is for a caller the bearer source
 names, so pass the `authorization` metadata to the tool as to a call.
 
-A handler's own error is `FAILED_PRECONDITION` with the error in
+A handler's own error is `FAILED_PRECONDITION` (or the code of the error
+class its variant declares, *Error classes* above) with the error in
 `grpc-status-details-bin` (a `google.rpc.Status` whose detail is the error's
 message, `OrderError` for `Orders::cancel`, or the error's JSON for a caller
 that asked in JSON); a refusal is `INVALID_ARGUMENT`, `FAILED_PRECONDITION` (a

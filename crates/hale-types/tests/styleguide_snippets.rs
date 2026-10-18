@@ -327,3 +327,228 @@ fn claim_zero_copy_takes_inline_scalar_arrays_only() {
         );
     }
 }
+
+/// 2.9: a set's type comes from the place a member flows into. A match
+/// that leaves a member out is refused, arms of different members are
+/// not joined, a set is no member of a set, and a primitive is no
+/// member at all.
+#[test]
+fn claim_a_set_is_typed_by_its_place() {
+    let decls = "type A { n: Int; }\ntype B { s: String; }\ntype S = A | B;\n";
+    let ok = build_errs(&format!(
+        "{decls}fn pick(n: Int) -> S {{ if n == 0 {{ return A {{ n: 1 }}; }} return B {{ s: \"b\" }}; }}\n\
+         fn main() {{ let s = pick(0); println(match s {{ A(a) -> a.n, B(b) -> len(b.s) }}); }}"
+    ));
+    assert!(
+        ok.is_empty(),
+        "spec/styleguide.md 2.9: a fn returning the set gives each \
+         member the set's type: {:?}",
+        ok
+    );
+    let partial = build_errs(&format!(
+        "{decls}fn f(s: S) -> Int {{ return match s {{ A(a) -> a.n }}; }}\nfn main() {{ }}"
+    ));
+    assert!(
+        partial.iter().any(|m| m.contains("match is not exhaustive")),
+        "2.9 says a match that leaves a member out fails the build, \
+         which is why it says to leave `_` out: {:?}",
+        partial
+    );
+    let joined = build_errs(&format!(
+        "{decls}fn f(n: Int) -> S {{ let m = if n == 0 {{ A {{ n: 1 }} }} else {{ B {{ s: \"b\" }} }}; return m; }}\n\
+         fn main() {{ }}"
+    ));
+    assert!(
+        joined
+            .iter()
+            .any(|m| m.contains("if-expression arms have mismatched types")),
+        "2.9 quotes this refusal for arms of different members. If the \
+         arms are joined into a set now, the bullet is wrong: {:?}",
+        joined
+    );
+    let nested = build_errs(&format!(
+        "{decls}type C {{ n: Int; }}\ntype T = S | C;\nfn main() {{ }}"
+    ));
+    assert!(
+        nested.iter().any(|m| m.contains("is a set itself")),
+        "2.9 says a set is not a member of another set: {:?}",
+        nested
+    );
+    let primitive = build_errs("type A { n: Int; }\ntype S = A | Int;\nfn main() { }");
+    assert!(
+        primitive
+            .iter()
+            .any(|m| m.contains("a primitive, a list, a tuple or a function type cannot be one")),
+        "2.9 says a primitive is no member of a set: {:?}",
+        primitive
+    );
+}
+
+/// 2.10: a seam's coverage is checked at the locus hop, a failure no
+/// later hop takes needs `or end;` / `or violate`, a closed seam is
+/// the locus's `run`, and a hop on an interface is refused.
+#[test]
+fn claim_a_seam_checks_coverage_and_failures() {
+    let parts = "type A { n: Int; }\ntype B { s: String; }\ntype In = A | B;\ntype Bad { at: Int; }\n\
+                 locus Dec { fn decode(x: Int) -> In fallible(Bad) { if x < 0 { fail Bad { at: x }; } return A { n: x }; } }\n\
+                 locus Both { fn a(v: A) -> String { return \"a\"; } fn b(v: B) -> String { return \"b\"; } }\n\
+                 locus OnlyA { fn a(v: A) -> String { return \"a\"; } }\n\
+                 locus Src { fn next() -> Int fallible(Bad) { fail Bad { at: 0 }; } }\n\
+                 locus Out { fn put(s: String) { println(s); } }\n";
+    let ok = build_errs(&format!(
+        "{parts}locus G {{ params {{ d: Dec = Dec {{ }}; h: Both = Both {{ }}; }}\n\
+             seam go(x: Int) -> String {{ x -> self.d.decode -> self.h; or end; }} }}\n\
+         fn main() {{ let g = G {{ }}; println(g.go(1) or \"failed\"); }}"
+    ));
+    assert!(ok.is_empty(), "2.10: a covered seam with `or end;` checks: {:?}", ok);
+    let uncovered = build_errs(&format!(
+        "{parts}locus G {{ params {{ d: Dec = Dec {{ }}; h: OnlyA = OnlyA {{ }}; }}\n\
+             seam go(x: Int) -> String {{ x -> self.d.decode -> self.h; or end; }} }}\n\
+         fn main() {{ }}"
+    ));
+    assert!(
+        uncovered.iter().any(|m| m.contains(
+            "`self.h` has no method taking `B`, which reaches it from `self.d.decode`: every member has one eater"
+        )),
+        "spec/styleguide.md 2.10 quotes the coverage refusal: {:?}",
+        uncovered
+    );
+    let unplaced = build_errs(&format!(
+        "{parts}locus G {{ params {{ d: Dec = Dec {{ }}; h: Both = Both {{ }}; }}\n\
+             seam go(x: Int) -> String {{ x -> self.d.decode -> self.h; }} }}\n\
+         fn main() {{ }}"
+    ));
+    assert!(
+        unplaced
+            .iter()
+            .any(|m| m.contains("fails with `Bad`, and no later hop takes it")),
+        "2.10 says a failure placed nowhere is refused, naming the hop \
+         and the type: {:?}",
+        unplaced
+    );
+    let with_run = build_errs(&format!(
+        "{parts}locus G {{ params {{ s: Src = Src {{ }}; d: Dec = Dec {{ }}; h: Both = Both {{ }}; o: Out = Out {{ }}; }}\n\
+             seam {{ self.s.next() -> self.d.decode -> self.h -> self.o.put; or end; }}\n\
+             run() {{ }} }}\n\
+         fn main() {{ }}"
+    ));
+    assert!(
+        with_run
+            .iter()
+            .any(|m| m.contains("a closed seam is the locus's `run`")),
+        "2.10 says a locus with a closed seam declares no `run`: {:?}",
+        with_run
+    );
+    let interface = build_errs(&format!(
+        "{parts}interface Eats {{ fn a(v: A) -> String; }}\n\
+         locus G {{ params {{ d: Dec = Dec {{ }}; h: Eats = Both {{ }}; }}\n\
+             seam go(x: Int) -> String {{ x -> self.d.decode -> self.h; or end; }} }}\n\
+         fn main() {{ }}"
+    ));
+    assert!(
+        interface
+            .iter()
+            .any(|m| m.contains("a seam's chain is static")),
+        "2.10 says a hop on an interface is refused: {:?}",
+        interface
+    );
+}
+
+/// C9: the four edges of a `bounded` — `len` refused for `count`, a
+/// return by value refused, an element stored through a parameter's
+/// place refused, and whole assignment of another capacity refused —
+/// with the working shapes beside them passing (the C9 snippet).
+#[test]
+fn claim_a_bounded_lives_in_its_holder() {
+    let row = "type Row { names: bounded[String; 4]; }\n";
+    let len = build_errs(&format!(
+        "{row}fn main() {{ let r = Row {{ }}; println(len(r.names)); }}"
+    ));
+    assert!(
+        len.iter()
+            .any(|m| m.contains("a `bounded`'s live count is `count(x)`")),
+        "spec/styleguide.md C9 says `len` of a bounded is refused for \
+         `count`: {:?}",
+        len
+    );
+    let ret = build_errs(&format!(
+        "{row}fn names() -> bounded[String; 4] {{ let mut r = Row {{ }}; return r.names; }}\n\
+         fn main() {{ }}"
+    ));
+    assert!(
+        ret.iter().any(|m| m.contains("cannot be returned by value")),
+        "C9 says a fn returning a bounded is refused: {:?}",
+        ret
+    );
+    let through = build_errs(&format!(
+        "{row}fn fill(r: Row) {{ push(r.names, \"a\") or discard; }}\n\
+         locus L {{ params {{ row: Row = Row {{ }}; }} fn go() {{ fill(self.row); }} }}\n\
+         fn main() {{ let l = L {{ }}; l.go(); }}"
+    ));
+    assert!(
+        through
+            .iter()
+            .any(|m| m.contains("into a bounded place under its parameter")),
+        "C9 says `fill(self.row)` is refused at the argument: {:?}",
+        through
+    );
+    let wider = build_errs(&format!(
+        "{row}type Wide {{ names: bounded[String; 8]; }}\n\
+         fn main() {{ let a = Row {{ }}; let b = Wide {{ }}; a.names = b.names; }}"
+    ));
+    assert!(
+        wider.iter().any(|m| m.contains("not assignable from")),
+        "C9 says whole assignment from another capacity is refused: {:?}",
+        wider
+    );
+}
+
+/// S15, S16: `hale check` says nothing about a String grown with `+`
+/// in a loop or a text read by slicing off the rest, which is why both
+/// rules are tagged [convention]. When a lint lands, retag them.
+#[test]
+fn claim_quadratic_text_loops_are_not_flagged() {
+    let ds = build_errs(
+        "fn grow(n: Int) -> String {\n\
+             let mut out = \"\";\n\
+             let mut i = 0;\n\
+             while i < n { out = out + \"row\\n\"; i = i + 1; }\n\
+             return out;\n\
+         }\n\
+         fn lines(all: String) -> Int {\n\
+             let mut rest = all;\n\
+             let mut k = 0;\n\
+             let mut nl = std::str::index_of(rest, \"\\n\");\n\
+             while nl >= 0 { k = k + 1; rest = rest[(nl + 1)..len(rest)]; nl = std::str::index_of(rest, \"\\n\"); }\n\
+             return k;\n\
+         }\n\
+         fn main() { println(lines(grow(3))); }",
+    );
+    assert!(
+        ds.is_empty(),
+        "spec/styleguide.md S15 and S16 say the check does not flag \
+         these loops. It reports something now — retag the rules: {:?}",
+        ds
+    );
+}
+
+/// 2.11: a variant's error class is one of five words, and any other
+/// is refused.
+#[test]
+fn claim_an_error_class_is_one_of_five() {
+    let ok = build_errs(
+        "type E = enum { @not_found A, @conflict B(String), @invalid C, @forbidden D, @unavailable F, G };\n\
+         fn main() { }",
+    );
+    assert!(
+        ok.is_empty(),
+        "spec/styleguide.md 2.11 names five error classes: {:?}",
+        ok
+    );
+    let other = build_errs("type E = enum { @missing A, B };\nfn main() { }");
+    assert!(
+        other.iter().any(|m| m.contains("is no error class")),
+        "2.11 says a word that is not a class is refused: {:?}",
+        other
+    );
+}

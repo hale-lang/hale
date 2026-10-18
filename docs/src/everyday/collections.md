@@ -245,6 +245,27 @@ the check. Return the record that holds it instead
 (`fn names() -> Names` with `type Names { items: bounded[String; 4]; }`);
 its elements come back whole, and the caller can keep pushing.
 
+Its live count is `count`, never `len`: `len(msg.tags)` is refused at
+the check, and the message points at `count(msg.tags)`.
+
+Filling one through a function needs one more thought. A function that
+pushes a `String`, `Bytes` or a record into a `bounded` under its
+parameter makes that element in the frame that runs the call. Handed a
+locus's own field (`fill(self.row)`), it would leave the locus holding
+an element that frame frees when it returns, so the check refuses that
+argument. Fill a local and store it whole instead; the store copies the
+elements into the locus's own memory:
+
+```hale,fragment
+let mut mine = Row { };
+fill(mine);           // a value this frame owns
+self.row = mine;      // stored whole: the elements now live with the locus
+```
+
+(Writing the elements through `self`, in a method of the locus that
+holds the field, is fine too. Scalar elements, such as a
+`bounded[Int; 8]`, have nothing to free and pass either way.)
+
 Use `bounded` when the maximum is known and the list is a *field of
 a value* — per-message tags, route parameters, a chat window. The
 old workaround (a tab-separated string you re-parse on every read)
@@ -263,6 +284,11 @@ println(count(row.tags)); // still 2: a copy, not a view
 
 Anything else on the right — an array literal, a `bounded` of another
 element type or capacity — is refused; build the list with `push`.
+
+A `bounded` of records that each carry a `String` name can cross an API
+as an object keyed by that name, `bounded[Check; 16] indexed_by name`:
+in the program it is still this list
+([The API surface](../services/api.md#maps) has the wire form).
 
 ## Why a form instead of a generic type
 

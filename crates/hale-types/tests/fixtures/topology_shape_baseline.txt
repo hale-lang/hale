@@ -169,6 +169,9 @@ crates/hale-cli/tests/source_map.rs#1 049ab7929fcc5890
 crates/hale-cli/tests/source_map.rs#2 049ab7929fcc5890
 crates/hale-cli/tests/styleguide_claims.rs#0 d0854c53c52a7e44
 crates/hale-cli/tests/styleguide_claims.rs#1 27db0f7c6650bf78
+crates/hale-cli/tests/styleguide_claims.rs#2 2d1ad03eec883b2e
+crates/hale-cli/tests/styleguide_claims.rs#3 8e245495eb518512
+crates/hale-cli/tests/styleguide_claims.rs#4 8148f0f1d528e97f
 crates/hale-cli/tests/target_model.rs#0 1b82a6f33db2d2aa
 crates/hale-cli/tests/test_ffi_pickup.rs#1 865d341109268295
 crates/hale-cli/tests/topology_artifact_contract.rs#0 ceb97d5adb719c07

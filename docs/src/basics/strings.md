@@ -24,6 +24,37 @@ let n = 42;
 let label = "n=" + to_string(n);
 ```
 
+### Building a long string
+
+`+` is right for joining a handful of pieces. It is the wrong tool for
+growing a result in a loop. `out + row` makes a new string as long as
+both and copies `out` into it, and the old `out` is not freed until the
+function returns, so every prefix the loop made is still held at the
+end. The memory that costs grows with the *square* of the text: 1 MB
+built from 2 000 rows this way held almost 1 GB.
+
+Append into one `std::bytes::BytesBuilder` instead. It grows a single
+buffer, so it holds the text once (the same 1 MB took 4 MB):
+
+```hale
+fn page(n: Int) -> String {
+    let b = std::bytes::BytesBuilder { initial_cap: 4096 };
+    let mut i = 0;
+    while i < n {
+        if i > 0 { b.append_str(", "); }
+        b.append_str("{\"id\": " + to_string(i) + "}");
+        i = i + 1;
+    }
+    return "[" + std::str::from_bytes(b.snapshot() or b"") + "]";
+}
+
+fn main() { println(page(3)); }   // [{"id": 0}, {"id": 1}, {"id": 2}]
+```
+
+This matters on every path, not just a hot one: one large request or
+one long query result is enough. (`std::str::join` does the same for a
+list of strings you already hold.)
+
 ## f-strings
 
 An `f` before the quote turns `{...}` into interpolation. What
@@ -190,6 +221,51 @@ digits and punctuation that is exactly right — in UTF-8 no
 multi-byte character can contain a byte that looks like an ASCII
 one. When you care about characters, see [Text that isn't
 ASCII](#text-that-isnt-ascii) below.
+
+### Reading line by line
+
+The same trap has a second form. Walking a text a line at a time by
+cutting off what you have read,
+
+```hale,fragment
+// DON'T: copies the rest of the text for every line
+rest = rest[(nl + 1)..len(rest)];
+```
+
+copies the remainder for each line, and every copy is held until the
+function returns: 1 MB in 2 000 lines held almost 1 GB. Read by
+position over one view instead, and copy out only the line:
+
+```hale
+fn line_end(v: std::str::ByteView, start: Int) -> Int {
+    let mut i = start;
+    while i < v.n {
+        if std::str::byte_at(v, i) == 10 { return i; }   // 10 is '\n'
+        i = i + 1;
+    }
+    return v.n;
+}
+
+fn count_rows(all: String) -> Int {
+    let v = std::str::bytes_view(all);
+    let mut rows = 0;
+    let mut start = 0;
+    while start < v.n {
+        let nl = line_end(v, start);
+        let line = std::str::slice(v, start, nl);
+        start = nl + 1;
+        if len(line) > 0 { rows = rows + 1; }
+    }
+    return rows;
+}
+
+fn main() { println(count_rows("a\nb\n\nc")); }   // 3
+```
+
+The same 1 MB now costs a few hundred kilobytes and well under a
+millisecond. `std::str::index_of_from(s, "\n", start)` finds the next
+line without copying too, but it measures the whole string on every
+call, so on a large text the byte loop above is much faster.
 
 ## Parsing numbers
 
