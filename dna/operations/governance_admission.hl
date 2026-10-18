@@ -45,6 +45,8 @@ fn attempt_ledger_for(location: String) -> dna::MemoryLedger { return dna::Memor
 // Where a leg's row landed (GH #946 hardening): its id, or `stale` when the
 // memory it goes to moved under the append, else why it was refused.
 type Landed { ok: Bool = false; id: String = ""; error: String = ""; }
+// The Ledger revision and head a command was validated over.
+type LedgerFence { revision: Int = 0; head: String = ""; }
 // A pinned, read-only Journal. Queries and authority see the same rows used by
 // admission. No refresh can silently replace their decision basis.
 locus GovernanceJournal {
@@ -450,6 +452,19 @@ locus GovernanceCommands {
         let moved = ledger.refresh();
         return ledger.head();
     }
+    // The Ledger as `rj` read it: its revision and head, the fence a row
+    // validated over that journal lands on (a row another writer landed
+    // since makes the append stale, and the command is validated again).
+    fn ledger_fence(rj: dna::RoutedJournal, ledger: dna::MemoryLedger) -> LedgerFence {
+        let at = rj.seen_ledger;
+        return LedgerFence { revision: at, head: if at > 0 { ledger.read(at - 1).digest } else { "genesis" } };
+    }
+    // A Ledger row at exactly the fence: `stale` when the Ledger moved.
+    fn land_ledger_row_at(fence: LedgerFence, ledger: dna::MemoryLedger, row: dna::Row, request_id: String) -> Landed {
+        let w = ledger.write(fence.revision, row.kind, row.entity, row.body, row.author, request_id);
+        if w.ok { return Landed { ok: true, id: ledger.read(w.revision - 1).digest }; }
+        return Landed { error: if w.error == "stale_revision" { "stale" } else if len(ledger.last_error()) > 0 { ledger.last_error() } else { w.error } };
+    }
     // A leg's row, where it goes: the record at the head captured, or the
     // ledger at the tail read for the fact, under the head's role and keyed
     // by the request (memory's insert function is the gate; a request it
@@ -736,6 +751,9 @@ locus GovernanceCommands {
             if !j.valid { return GovernanceResult { code: "command_history_invalid" }; }
             let adopted = !self.source_supported(j);
             let attempt_memory = adopted && ledger.ready();
+            // the Ledger as of this attempt: a command validated over it is
+            // fenced on exactly what it read (a retry reads it again)
+            if attempt_memory { let read = ledger.refresh(); }
             let rj = dna::RoutedJournal { record: j, ledger: ledger };
             // Recovery precedes fresh eligibility: a successful command can
             // still be looked up after its subject moves or a Review settles.
@@ -1142,8 +1160,11 @@ locus GovernanceCommands {
                 if !subject.reassignment_supported { return GovernanceResult { code: "commands_unsupported" }; }
                 if !self.task_authority.eligible(context, subject.assignee, rj, true) || !self.task_authority.eligible(context, command.new_assignee, rj, true) { return GovernanceResult { code: "forbidden" }; }
                 if !self.unchanged(s) { continue; }
-                let task = TaskCommandCodec { }; let head = self.attempt_row_head(s, ledger, true); let fact = task.fact(context, command, grant, head);
-                let landed = self.land_attempt_row(s, ledger, true, dna::Row { kind: "task.reassigned", entity: command.target_id, author: context.principal_name, body: fact }, id);
+                // fenced on the Ledger this reassignment was validated over: a
+                // move another writer landed since is seen by the next attempt
+                let fence = self.ledger_fence(rj, ledger);
+                let task = TaskCommandCodec { }; let fact = task.fact(context, command, grant, fence.head);
+                let landed = self.land_ledger_row_at(fence, ledger, dna::Row { kind: "task.reassigned", entity: command.target_id, author: context.principal_name, body: fact }, id);
                 if landed.ok {
                     let moved = rj.refresh();
                     return self.result_routed(s, rj, GovernanceAdmission { ok: true, command_id: id, fingerprint: task.fingerprint(context, command), context: context, command: command, sequence: self.seq_of(rj, landed.id), event_id: landed.id, native_body: fact });

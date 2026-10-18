@@ -79,6 +79,26 @@ locus LedgerTaskCases {
         std::test::assert_eq_int(self.ledger_rows("task.reassigned", "t1"), 1, "still one row");
         std::test::assert_eq_str(provider.submit(operator, move).receipt.task.event_id, moved.receipt.task.event_id, "the same row");
 
+        // ---- a race: two moves of t3 validated over the same Ledger. The
+        // fence is the Ledger revision a move was validated over: one that
+        // landed since makes the other's append stale, and the next attempt
+        // validates it again, against where the Task is now
+        self.hand("t3", "alice");
+        let racing = dna::MemoryLedger { repo: self.repo, dsn_env: dna::SPINE_DSN_ENV };
+        let snapshot = dna::RoutedJournal { record: dna::GitJournal { repo: self.repo }, ledger: racing };
+        let fence = provider.ledger_fence(snapshot, racing);
+        let seen = ops::TaskProjection { j: snapshot, visibility: ops::Queries { j: snapshot, routed: true }, routed: true };
+        std::test::assert(seen.load() && seen.task_of("t3").assignee == "alice", "t3 is alice's, as both moves read it");
+        let held = seen.task_of("t3");
+        let to_bob = ops::GovernanceCommand { request_id: "race-bob", operation: "dna.task.reassign", application_id: app, target_kind: "dna.task", target_id: "t3", subject_digest: held.assignment_digest, expected_assignee: "alice", new_assignee: "bob" };
+        let to_charlie = ops::GovernanceCommand { request_id: "race-charlie", operation: "dna.task.reassign", application_id: app, target_kind: "dna.task", target_id: "t3", subject_digest: held.assignment_digest, expected_assignee: "alice", new_assignee: "charlie" };
+        std::test::assert(provider.submit(operator, to_bob).ok, "alice to bob lands first");
+        let late = provider.land_ledger_row_at(fence, racing, dna::Row { kind: "task.reassigned", entity: "t3", author: "operator", body: "{}" }, "race-charlie-raw");
+        std::test::assert(!late.ok && late.error == "stale", "a row fenced on the Ledger before it is stale: " + late.error);
+        let refused = provider.submit(operator, to_charlie);
+        std::test::assert(!refused.ok && refused.code == "stale_subject", "validated again, alice to charlie names a move that is no longer there: " + refused.code);
+        std::test::assert_eq_int(self.ledger_rows("task.reassigned", "t3"), 1, "exactly one move of t3 landed");
+
         // ---- retire: alice still holds t2; the transfer first, then the retirement
         let read = provider.retirement_read(operator, "alice");
         std::test::assert(read.ok && read.authorized && read.plan.state == "active" && read.plan.transferred == 1, "alice's retirement is planned over both memories: " + read.code);

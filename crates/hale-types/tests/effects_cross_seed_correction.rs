@@ -187,8 +187,8 @@ fn api() {
     // sees through the checker's types.
     pinned(
         "api",
-        368,
-        370,
+        369,
+        371,
         "
         Api::definition_draft_handle  does={syscall,block,env,alloc}
         Api::definitions_read  does={syscall,block,env,alloc}
@@ -200,6 +200,7 @@ fn api() {
         ContextWire::read  does={syscall,block,time,entropy,env,alloc,secret_use}
         KnowledgeWire::texts  does={alloc}
         LocalKnowledge::supported  does={env}
+        TaskWire::read  does={syscall,block,time,entropy,env,alloc,secret_use}
         head_socket  does={syscall,block,time,env,alloc}
         launch_token  does={syscall,block,alloc}
         ",
@@ -362,8 +363,8 @@ fn operations() {
     // out), so the row is no longer one the correction changes.
     pinned(
         "operations",
-        512,
-        531,
+        523,
+        542,
         "
         AttemptCommandCodec::graph_position  does={alloc}
         AttemptCommandCodec::receipts_ok  does={alloc}
