@@ -286,7 +286,7 @@ const CALL_LINES_ONLY: [(&str, usize); 24] = [
 ];
 
 /// The targets whose verdicts move, each pinned in `verdict_changes`.
-const VERDICT_TARGETS: [&str; 14] = [
+const VERDICT_TARGETS: [&str; 15] = [
     "crates/hale-codegen/tests/fixtures/examples/69-http-router",
     "crates/hale-codegen/tests/fixtures/examples/92-build-an-api",
     "dna/api",
@@ -297,6 +297,7 @@ const VERDICT_TARGETS: [&str; 14] = [
     "dna/ui",
     "tests/hale/api_binding_run_test.hl",
     "tests/hale/api_enum_field_test.hl",
+    "tests/hale/api_map_field_test.hl",
     "tests/hale/api_optional_field_test.hl",
     "tests/hale/http_request_cap_test.hl",
     "tests/hale/http_stream_test.hl",
@@ -1899,6 +1900,19 @@ fn verdict_changes() {
     );
     // the streamed body's handler: its writers' stdlib bodies only the
     // renames name, and the Server calls the handler per connection
+    // a wire map served over a Unix exposure: its role source is called
+    // per request, and no site verdict moves
+    pinned(
+        "tests/hale/api_map_field_test.hl",
+        2,
+        &[
+            "Table::holds",
+        ],
+        &[
+        ],
+        &[
+        ],
+    );
     pinned(
         "tests/hale/http_stream_test.hl",
         17,

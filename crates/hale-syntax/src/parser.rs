@@ -6467,6 +6467,13 @@ impl Parser {
         let name = self.expect_member_name("field name")?;
         self.expect(TokenKind::Colon, ":")?;
         let ty = self.parse_type_expr()?;
+        // `indexed_by <field>`: the field is a wire map keyed by its
+        // elements' `<field>` (the slot clause's spelling and rules)
+        let indexed_by = if self.eat_word("indexed_by") {
+            Some(self.expect_ident("field name after `indexed_by`")?)
+        } else {
+            None
+        };
         let default = if self.eat(&TokenKind::Eq) {
             Some(self.parse_expr()?)
         } else {
@@ -6491,6 +6498,7 @@ impl Parser {
             ty,
             default,
             tag,
+            indexed_by,
         })
     }
 

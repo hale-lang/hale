@@ -1215,6 +1215,18 @@ Semantics:
   construction. `@form(vec)` remains the unbounded, locus-owned
   collection: unbounded data lives on a locus; bounded data can
   live in a type.
+- **A wire map** (2026-10-17): `checks: bounded[Check; 16] indexed_by
+  name;` keys the list by its elements' `name`. It is the same bounded
+  list in the program (iterated, pushed, read by index); only the api
+  codecs read the clause, which carry it as an object keyed by `name`
+  (spec/api.md § Codecs). The clause has the `@form(hashmap)` slot
+  clause's spelling and rules: the field is a `bounded[T; N]`, `T` a
+  user-declared struct, and the named field a `String` field of it; any
+  other shape is refused at the clause (`` `indexed_by` on
+  `Health.checks`: key `Check.n` is a `Int`: a wire map's key is a
+  `String` ... ``). Nothing keeps the keys distinct in the program; a
+  duplicate key is refused when a payload is decoded, and an encoder
+  writes what the list holds.
 
 ## Generics
 

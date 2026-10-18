@@ -1,0 +1,121 @@
+// A wire map crosses the protobuf codec as `map<string, T>` (spec/api.md §
+// Codecs, § gRPC).
+//
+// Each entry is an occurrence of a message of the key (field 1) and the
+// whole record (field 2, its key field carried too: the record's own
+// message). The decoder gives each record the entry's key, so the map's key
+// wins over a key the record carries; a key already read is
+// `duplicate_key`. JSON in, protobuf through, JSON out gives back the same
+// text. This program names no port: the serve site is in a method nothing
+// calls, which is all the compiler needs to write the codecs.
+
+type Check { name: String; status: String; detail: String = ""; }
+type Health { checks: bounded[Check; 3] indexed_by name; ok: Bool = true; }
+// a record whose key field is optional: the map supplies the key, so its
+// flag is set
+type Keyed { name: String; has_name: Bool = false; status: String; }
+type Board { keyed: bounded[Keyed; 2] indexed_by name; }
+
+api PbMap {
+    rpc Probe::health;
+    rpc Probe::board;
+}
+
+locus Probe {
+    fn health(h: Health) -> Health { return h; }
+    fn board(b: Board) -> Board { return b; }
+}
+
+locus Tokens {
+    fn principal(token: String) -> std::api::Principal {
+        return std::api::Principal { mode: "bearer", name: "" };
+    }
+    fn refused() -> String { return "no such token"; }
+}
+
+main locus Desk {
+    params {
+        probe: Probe = Probe { };
+        bearer: Tokens = Tokens { };
+        // Served only so the compiler writes the codecs; nothing calls it.
+        h: api::Exposure = api::serve(PbMap, grpc::Rpc { bind: "127.0.0.1:0", codec: json, principals: self.bearer }, as: "pb", receivers: { Probe: self.probe }, bound: 4, on_full: refuse);
+    }
+
+    // JSON in, protobuf through, JSON out: the same text.
+    fn round(json: String, what: String) {
+        let v = __api_decode_Health(json) or {
+            std::test::assert(false, what + ": the JSON decoder: " + err.kind + " " + err.field);
+            return;
+        };
+        let back = __api_pb_decode_Health(__api_pb_encode_Health(v)) or {
+            std::test::assert(false, what + ": the protobuf decoder: " + err.kind + " " + err.field);
+            return;
+        };
+        std::test::assert_eq_str(__api_encode_Health(back), json, what);
+    }
+
+    // One entry of field 1: its key and the record's message.
+    fn entry(key: String, name: String, status: String) -> Bytes {
+        let check = std::bytes::concat(__api_pb_put_str(1, name), __api_pb_put_str(2, status));
+        return __api_pb_put_msg(1, std::bytes::concat(__api_pb_put_str(1, key), __api_pb_put_msg(2, check)));
+    }
+
+    run() {
+        self.round("{\"checks\":{},\"ok\":true}", "an empty map");
+        self.round("{\"checks\":{\"db\":{\"status\":\"up\",\"detail\":\"\"},\"cache\":{\"status\":\"down\",\"detail\":\"evicted\"}},\"ok\":false}", "two entries, in order");
+
+        // a key field with a presence flag: the map supplied the key, on
+        // the JSON wire and in protobuf
+        let board = __api_decode_Board("{\"keyed\":{\"db\":{\"status\":\"up\"}}}") or {
+            std::test::assert(false, "a map of records with an optional key: " + err.kind + " " + err.field);
+            return;
+        };
+        for k in board.keyed {
+            std::test::assert(k.has_name, "the JSON map's key is present");
+            std::test::assert_eq_str(k.name, "db", "the JSON map's key");
+        }
+        let pb_board = __api_pb_decode_Board(__api_pb_encode_Board(board)) or {
+            std::test::assert(false, "the optional-key map through protobuf: " + err.kind + " " + err.field);
+            return;
+        };
+        for k in pb_board.keyed {
+            std::test::assert(k.has_name, "the protobuf entry's key is present");
+        }
+
+        // a value message sent twice in one entry merges, as proto3 merges
+        // a singular message; a value that leaves its key out takes the
+        // entry's
+        let first = std::bytes::concat(__api_pb_put_str(1, "db"), __api_pb_put_str(2, "up"));
+        let second = __api_pb_put_str(3, "ok");
+        let merged = __api_pb_put_msg(1, std::bytes::concat(__api_pb_put_str(1, "db"), std::bytes::concat(__api_pb_put_msg(2, first), __api_pb_put_msg(2, second))));
+        let m = __api_pb_decode_Health(merged) or {
+            std::test::assert(false, "an entry whose value is sent twice: " + err.kind + " " + err.field);
+            return;
+        };
+        std::test::assert_eq_str(__api_encode_Health(m), "{\"checks\":{\"db\":{\"status\":\"up\",\"detail\":\"ok\"}},\"ok\":true}", "the value's occurrences merged");
+        let keyless = __api_pb_put_msg(1, std::bytes::concat(__api_pb_put_str(1, "cache"), __api_pb_put_msg(2, __api_pb_put_str(2, "down"))));
+        let kl = __api_pb_decode_Health(keyless) or {
+            std::test::assert(false, "a value that leaves its key out: " + err.kind + " " + err.field);
+            return;
+        };
+        std::test::assert_eq_str(__api_encode_Health(kl), "{\"checks\":{\"cache\":{\"status\":\"down\",\"detail\":\"\"}},\"ok\":true}", "the entry's key");
+
+        // the entry's key wins over the record's own
+        let wins = __api_pb_decode_Health(self.entry("db", "other", "up")) or {
+            std::test::assert(false, "an entry whose record names another key: " + err.kind + " " + err.field);
+            return;
+        };
+        std::test::assert_eq_str(__api_encode_Health(wins), "{\"checks\":{\"db\":{\"status\":\"up\",\"detail\":\"\"}},\"ok\":true}", "the map's key wins");
+
+        // a key already read
+        let twice = std::bytes::concat(self.entry("db", "db", "up"), self.entry("db", "db", "down"));
+        let dup = __api_pb_decode_Health(twice) or {
+            std::test::assert_eq_str(err.kind, "duplicate_key", "a duplicate key: the kind");
+            std::test::assert_eq_str(err.field, "checks", "a duplicate key: the field");
+            return;
+        };
+        std::test::assert(false, "a duplicate key decoded " + __api_encode_Health(dup));
+    }
+}
+
+fn main() { Desk { }; }

@@ -166,6 +166,25 @@ unbounded collection belongs to a locus (`@form(vec)`), not to a value
 that crosses a boundary; neither is a list of lists, nor a request or
 response that is a bare list.
 
+### Maps
+
+A list of records that each carry a name can cross as an object keyed by
+that name. Say which field is the key with `indexed_by`:
+
+```hale,fragment
+type Check { name: String; status: String; }
+type Health { checks: bounded[Check; 16] indexed_by name; }
+```
+
+On the wire `checks` is `{"db": {"status": "up"}, "cache": {"status":
+"down"}}`: each record's `name` becomes its key and is left out of its
+value, and comes back when the request is read. In the program it is
+still the bounded list it was, in the order the request listed it. A
+request that repeats a key is refused `malformed` with `duplicate_key`,
+and one with more entries than the list holds with `too_long`. The key
+must be a `String` field of a struct, as a `@form(hashmap)` cell's key
+is named; the `.proto` makes the field a `map<string, Check>`.
+
 ### Instants and durations
 
 A `Time` crosses as its RFC 3339 text in UTC, to the nanosecond:

@@ -135,7 +135,9 @@ in slot-clause position inside a capacity block: `pool P of T
 as_parent_for ChildL;` (v1.x-4 — share the slot's allocator with
 a child locus's same-named slot at accept time) and `pool P of T
 indexed_by field;` (v1.x-FORM-4 — names the hashmap key field on
-a `@form(hashmap)` cell type).
+a `@form(hashmap)` cell type), and after a struct field's type,
+`checks: bounded[Check; 16] indexed_by name;` (a wire map, spec/api.md §
+Codecs).
 The slot-kind words `pool` and `heap` are **contextual idents** —
 they lex as ordinary Idents and the parser recognizes them only
 in slot-decl head position inside a capacity block. So

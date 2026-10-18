@@ -436,6 +436,12 @@ fn field_schema(f: &FieldSchema, base: &str) -> J {
             }
             o(vec![("oneOf", J::Arr(one)), ("x-hale-type", s(name))])
         }
+        FieldSchema::Map { key, value, max, .. } => o(vec![
+            ("type", s("object")),
+            ("additionalProperties", type_schema(value, base)),
+            ("maxProperties", J::Int(*max as i64)),
+            ("x-hale-key", s(key)),
+        ]),
     }
 }
 

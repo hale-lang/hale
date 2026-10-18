@@ -82,6 +82,10 @@ pub enum Ty {
     Message(String),
     /// An `enum` of the file (a payload-free Hale enum), by its name.
     Enum(String),
+    /// `map<string, value>`: a wire map (spec/api.md § Codecs), its value the
+    /// record's message; `entry` the implicit entry message protoc names
+    /// after the field (`checks` -> `ChecksEntry`).
+    Map { value: String, entry: String },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -271,7 +275,7 @@ fn carried(
             wrappers.push(m);
             Ok(name)
         }
-        FieldSchema::List { .. } => Err(format!(
+        FieldSchema::List { .. } | FieldSchema::Map { .. } => Err(format!(
             "{member}: the {what} is a list, which crosses as a field of a record (law 5 refuses the row)"
         )),
         // a presence pair is two fields of a record, never a row's whole shape
@@ -428,6 +432,7 @@ fn refs_of<'a>(f: &'a FieldSchema, out: &mut Vec<&'a str>) {
         FieldSchema::Ref(r) => out.push(r),
         FieldSchema::List { items, .. } => refs_of(items, out),
         FieldSchema::Nullable { inner, .. } => refs_of(inner, out),
+        FieldSchema::Map { name, .. } => out.push(name),
         FieldSchema::Enum { variants, .. } => {
             for (_, values) in variants {
                 for v in values {
@@ -565,6 +570,14 @@ fn record(display: &str, schema: &TypeSchema, surface: &str, extra: &mut Extra) 
                 ty @ Ty::Enum(_) => field(key, number, ty, Label::Optional),
                 ty => field(key, number, ty, Label::Plain),
             },
+            // a wire map: `map<string, T>`, its value the whole record (the
+            // key carried in it too: the record's own message, shared with
+            // every other use of the type)
+            FieldSchema::Map { name, key: k, max, .. } => {
+                let mut p = field(key, number, Ty::Map { value: message_name(name, surface), entry: map_entry_name(key) }, Label::Repeated);
+                p.comment = Some(format!("Hale: keyed by `{k}`; at most {max}"));
+                p
+            }
             FieldSchema::Time => {
                 let mut p = field(key, number, Ty::Scalar(Scalar::Int64), Label::Optional);
                 p.comment = Some(TIME.to_string());
@@ -752,10 +765,33 @@ impl ProtoFile {
     }
 }
 
+/// The entry message protoc makes of a map field: the field's name in
+/// CamelCase (`_` dropped, the letter after it upper case) and `Entry`.
+fn map_entry_name(field: &str) -> String {
+    let mut o = String::new();
+    let mut up = true;
+    for c in field.chars() {
+        if c == '_' {
+            up = true;
+        } else if up {
+            o.push(c.to_ascii_uppercase());
+            up = false;
+        } else {
+            o.push(c);
+        }
+    }
+    o.push_str("Entry");
+    o
+}
+
 fn field_text(f: &PField) -> String {
     let ty = match &f.ty {
         Ty::Scalar(s) => s.keyword().to_string(),
         Ty::Message(m) | Ty::Enum(m) => m.clone(),
+        Ty::Map { value, .. } => {
+            let tail = f.comment.as_ref().map_or(String::new(), |c| format!(" // {c}"));
+            return format!("map<string, {value}> {} = {};{tail}", f.name, f.number);
+        }
     };
     let label = match f.label {
         Label::Plain => "",
@@ -849,6 +885,10 @@ impl ProtoFile {
                         put_varint(5, 14, &mut fd);
                         put_str(6, &q(n), &mut fd);
                     }
+                    Ty::Map { entry, .. } => {
+                        put_varint(5, 11, &mut fd);
+                        put_str(6, &q(&format!("{}.{entry}", m.name)), &mut fd);
+                    }
                 }
                 let index = match (f.oneof, f.label) {
                     (Some(k), _) => Some(k),
@@ -871,6 +911,32 @@ impl ProtoFile {
                     put_varint(17, 1, &mut fd);
                 }
                 put_bytes(2, &fd, &mut msg);
+            }
+            // a map field's entry message, nested in its message as protoc
+            // nests it: `key` (1) and `value` (2), `map_entry` set
+            for f in &m.fields {
+                let Ty::Map { value, entry } = &f.ty else { continue };
+                let mut nd = Vec::new();
+                put_str(1, entry, &mut nd);
+                let mut kd = Vec::new();
+                put_str(1, "key", &mut kd);
+                put_varint(3, 1, &mut kd);
+                put_varint(4, 1, &mut kd);
+                put_varint(5, Scalar::String.descriptor_type(), &mut kd);
+                put_str(10, "key", &mut kd);
+                put_bytes(2, &kd, &mut nd);
+                let mut vd = Vec::new();
+                put_str(1, "value", &mut vd);
+                put_varint(3, 2, &mut vd);
+                put_varint(4, 1, &mut vd);
+                put_varint(5, 11, &mut vd);
+                put_str(6, &q(value), &mut vd);
+                put_str(10, "value", &mut vd);
+                put_bytes(2, &vd, &mut nd);
+                let mut opts = Vec::new();
+                put_varint(7, 1, &mut opts);
+                put_bytes(7, &opts, &mut nd);
+                put_bytes(3, &nd, &mut msg);
             }
             for o in m.oneofs.iter().chain(synthetic.iter()) {
                 let mut od = Vec::new();

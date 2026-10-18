@@ -2472,6 +2472,11 @@ pub struct StructField {
     /// only occur in expression position; in field-declaration position
     /// it's a tag.
     pub tag: Option<String>,
+    /// `checks: bounded[Check; 16] indexed_by name;` — a wire map (the
+    /// api codecs carry the list as an object keyed by the element's
+    /// `name`), the value-level projection of `@form(hashmap)`'s
+    /// `indexed_by` (spec/api.md § Codecs, spec/forms.md).
+    pub indexed_by: Option<Ident>,
     pub span: Span,
 }
 

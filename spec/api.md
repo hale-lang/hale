@@ -2073,6 +2073,32 @@ crosses gRPC in the one-field message a scalar row has, its `value` the
 enum. The digest is the enum's shape, which holds its variants and their
 values.
 
+**A map** is a list keyed by one of its records' fields (2026-10-17):
+`checks: bounded[Check; 16] indexed_by name;`, the `@form(hashmap)` model
+projected onto a value (spec/forms.md), no new type. The clause's rules
+are the checker's (spec/types.md § bounded[T; N]): a `bounded` list of a
+user-declared struct, keyed by a `String` field of it. On the JSON wire
+it is an object keyed by each record's `name`, the record without its
+key as the value (`{"db": {"status": "up"}, "cache": {"status":
+"down"}}`): the key lifted out on encode, in the list's order, and
+restored on decode, where a value's own key field, if a payload sends
+one, is not read. A key the object repeats is refused `malformed`,
+`duplicate_key`; more entries than the list holds is `too_long`; an
+absent map is empty, as an absent `bounded` list is. A map may be
+optional (a presence pair, above): an absent key and `null` are its
+absence, `{}` a present empty map, and its schema is the map's or `null`;
+in protobuf its flag is a field of its own, as any optional field's is. The description
+gives it `{"type": "object", "additionalProperties": <the record's schema
+without its key>, "maxProperties": N, "x-hale-key": "<key>"}`. In
+protobuf it is a proto3 `map<string, T>`, each entry its key and the
+whole record, the key field carried in it too: the value is the record's
+own message, the one every other use of the type names, rather than a
+second message per map. On decode the entry's key wins over the record's,
+and a key repeated is `duplicate_key` here as well (proto3 lets a parser
+keep the last; the codec is as strict as the JSON one). The digest
+folds the key in (`checks:bounded[...]@name`), since the field crosses
+as an object and not a list.
+
 Decoding is strict: a value of the wrong JSON kind is `wrong_type`, an
 element of a list and an array that is not well-formed JSON included
 (a payload that is one scalar is that scalar's complete JSON token: `true`
@@ -2099,10 +2125,9 @@ the epoch (which is all of `Time`; the field's comment says so), not
 `google.protobuf.Timestamp`, which would make the well-known type a
 dependency of every file and of the descriptor reflection serves; a
 `Duration` is an `int64`, its nanoseconds. An optional field is its two
-fields, and an enum a proto3 `enum` or a `oneof` message (above). The set
-of shapes is the JSON codec's, so there is no shape without a proto3
-encoding: a map is a shape the codec does not carry, and law 5 refuses the
-row before a `.proto` could be asked of it. The `.proto`
+fields, an enum a proto3 `enum` or a `oneof` message, and a map a
+`map<string, T>` (above). The set of shapes is the JSON codec's, so
+there is no shape without a proto3 encoding. The `.proto`
 generator refuses all the same, by row, so that were the codec to carry one it
 would not be approximated.
 
@@ -2142,7 +2167,8 @@ caller's `Context` under that exposure's role source:
   and nothing else, a quantity's field carrying `x-hale-unit` (its
   `q(…)` tag), a `Time`'s `"format": "date-time"`, a list's `maxItems`,
   an optional field's `anyOf` with `null`, and no property for its
-  presence flag, an enum inline with its variants (§ Codecs);
+  presence flag, an enum inline with its variants, a map's
+  `additionalProperties` and `x-hale-key` (§ Codecs);
 - the notes, in the document's own text: authorization is a boundary
   check at the serve site, never a proof over the program's internal
   call paths; a request accepted runs to completion whatever becomes of

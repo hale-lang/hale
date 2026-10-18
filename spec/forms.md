@@ -164,6 +164,11 @@ any other field type is refused at the `indexed_by` name ("@form(hashmap)
 key \`Row.k\` is a \`Bool\`: a hashmap's key is an \`Int\` or a
 \`String\`"). Until 2026-10-13 the check admitted it and the build
 refused the synthesized `get` / `set`.
+The same clause on a struct field, `checks: bounded[Check; 16] indexed_by
+name;`, is the hashmap model's value-level projection (2026-10-17): no
+form and no storage of its own, a bounded list whose elements carry their
+key, which the api codecs carry as a map keyed by it (spec/api.md §
+Codecs, spec/types.md § bounded[T; N]). Its key is a `String` field.
 `@form(heap)`'s `ordered_by min <field>` / `ordered_by max <field>`
 is one for the same reason: the order decides where every cell sits.
 `ordered_by` on a slot of any other locus is a type error.

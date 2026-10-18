@@ -70,7 +70,7 @@ pub(super) fn type_in(f: &FieldSchema, what: &str, jsdoc: bool) -> Result<String
         FieldSchema::List { items, .. } if jsdoc => Ok(format!("globalThis.Array<{}>", type_in(items, what, true)?)),
         FieldSchema::List { items, .. } => Ok(format!("__Array<{}>", ts_type(items, what)?)),
         FieldSchema::Nullable { .. } | FieldSchema::Presence { .. } => Err(optional_unsupported(what)),
-        FieldSchema::Enum { .. } | FieldSchema::Unformed => Err(unformed(what)),
+        FieldSchema::Enum { .. } | FieldSchema::Map { .. } | FieldSchema::Unformed => Err(unformed(what)),
     }
 }
 
@@ -85,7 +85,7 @@ pub(super) fn encode(f: &FieldSchema, value: &str, what: &str) -> Result<String,
             i => Ok(format!("({value}).map((e) => {})", encode(i, "e", what)?)),
         },
         FieldSchema::Nullable { .. } | FieldSchema::Presence { .. } => Err(optional_unsupported(what)),
-        FieldSchema::Enum { .. } | FieldSchema::Unformed => Err(unformed(what)),
+        FieldSchema::Enum { .. } | FieldSchema::Map { .. } | FieldSchema::Unformed => Err(unformed(what)),
     }
 }
 
@@ -113,7 +113,7 @@ pub(super) fn decode_in(f: &FieldSchema, json: &str, what: &str, js: bool) -> Re
             decode(items, "e", what)?
         )),
         FieldSchema::Nullable { .. } | FieldSchema::Presence { .. } => Err(optional_unsupported(what)),
-        FieldSchema::Enum { .. } | FieldSchema::Unformed => Err(unformed(what)),
+        FieldSchema::Enum { .. } | FieldSchema::Map { .. } | FieldSchema::Unformed => Err(unformed(what)),
     }
 }
 

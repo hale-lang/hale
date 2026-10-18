@@ -13605,6 +13605,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         ty: Self::substitute_type_expr(&f.ty, &subst),
                         default: f.default.clone(),
                         tag: f.tag.clone(),
+                        indexed_by: f.indexed_by.clone(),
                         span: f.span.clone(),
                     })
                     .collect();
