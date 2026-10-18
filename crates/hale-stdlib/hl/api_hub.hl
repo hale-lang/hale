@@ -98,6 +98,7 @@ locus __StdApiNoHubRows {
     fn count() -> Int { return 0; }
     fn topic(i: Int) -> String { return ""; }
     fn requires(i: Int) -> String { return ""; }
+    fn member_digest(i: Int) -> String { return ""; }
     fn bound(i: Int) -> Int { return 0; }
     fn on_full(i: Int) -> String { return ""; }
     fn find(topic: String) -> Int { return -1; }

@@ -124,16 +124,35 @@ pub fn surface_digest_input(lines: &[DigestLine<'_>]) -> String {
     sorted.sort_by(|a, b| a.member.as_bytes().cmp(b.member.as_bytes()));
     let mut out = String::from("hale-api-surface 1\n");
     for l in sorted {
-        out.push_str(&format!(
-            "{}\t{}\t{}\t{}\t{}\n",
-            l.member,
-            hash_field(l.request),
-            hash_field(l.response),
-            hash_field(l.error),
-            roles_field(l.requires)
-        ));
+        out.push_str(&line_text(l));
     }
     out
+}
+
+/// One row's line of a digest input: five TAB-separated fields and an LF.
+fn line_text(l: &DigestLine<'_>) -> String {
+    format!(
+        "{}\t{}\t{}\t{}\t{}\n",
+        l.member,
+        hash_field(l.request),
+        hash_field(l.response),
+        hash_field(l.error),
+        roles_field(l.requires)
+    )
+}
+
+/// The hash input of a member's digest (spec/api.md § The contract
+/// digest, additive compatibility): the header line `hale-api-member 1`
+/// and the row's line of [`surface_digest_input`]. It reads that row
+/// alone, so a member added to the surface, or another member changed,
+/// leaves it where it is.
+pub fn member_digest_input(line: &DigestLine<'_>) -> String {
+    format!("hale-api-member 1\n{}", line_text(line))
+}
+
+/// A member's digest: the FNV-1a/64 fold of [`member_digest_input`].
+pub fn member_digest(line: &DigestLine<'_>) -> u64 {
+    hale_graph::identity::fnv64(member_digest_input(line).as_bytes())
 }
 
 /// A surface's contract digest: the FNV-1a/64 fold of

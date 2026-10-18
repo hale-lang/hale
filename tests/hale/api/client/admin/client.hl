@@ -13,8 +13,9 @@ const SURFACE_DIGEST: String = "fnv1a64:40381db6685c9f75";
 // ---- the wire, as every client of a surface speaks it (spec/api.md § The clients) ----
 //
 // An endpoint is `unix:PATH` (or a path), `http://host:port` for a member's
-// call, and `ws://host:port` for a stream. A call sends the surface's digest
-// (`digest` in the line over a socket, `Hale-Surface-Digest` over HTTP) and
+// call, and `ws://host:port` for a stream. A call sends its member's digest
+// (`digest` in the line over a socket, `Hale-Surface-Digest` over HTTP), which
+// a surface that has since gained members still admits, and
 // is one of five outcomes; TLS is not spoken here.
 
 const API_WAIT_NS: Int = 30000000000;
@@ -107,17 +108,17 @@ fn api_refused(refusal: String, status: Int) -> ApiRaw {
 
 // ---- over HTTP: POST <endpoint>/call/<member>, the body the request's JSON ----
 
-fn api_http_send(endpoint: String, bearer: String, member: String, payload: String) -> std::http::ClientResponse fallible(std::http::HttpError) {
+fn api_http_send(endpoint: String, bearer: String, member: String, digest: String, payload: String) -> std::http::ClientResponse fallible(std::http::HttpError) {
     let u = std::http::parse_url(endpoint + "/call/" + member) or raise;
     let auth = if len(bearer) > 0 { "Authorization: Bearer " + bearer + "\r\n" } else { "" };
-    let headers = auth + "Content-Type: application/json\r\nHale-Surface-Digest: " + SURFACE_DIGEST;
+    let headers = auth + "Content-Type: application/json\r\nHale-Surface-Digest: " + digest;
     let req = std::http::ClientRequest { method: "POST", url: u, headers: headers, body: std::bytes::from_string(payload) };
     return std::http::request(req) or raise;
 }
 
-fn api_http(endpoint: String, bearer: String, member: String, payload: String) -> ApiRaw {
+fn api_http(endpoint: String, bearer: String, member: String, digest: String, payload: String) -> ApiRaw {
     let lost = std::http::ClientResponse { status: 0, body: std::bytes::from_string("") };
-    let r = api_http_send(endpoint, bearer, member, payload) or std::http::ClientResponse { status: 0, body: std::bytes::from_string(err.kind + " " + err.detail) };
+    let r = api_http_send(endpoint, bearer, member, digest, payload) or std::http::ClientResponse { status: 0, body: std::bytes::from_string(err.kind + " " + err.detail) };
     let text = std::str::from_bytes(r.body);
     if r.status == 0 { return api_lost("the endpoint " + endpoint + " cannot be reached: " + text); }
     if r.status == 200 { return ApiRaw { outcome: 0, body: text }; }
@@ -148,8 +149,8 @@ fn api_unix_exchange(path: String, line: String) -> String {
     return "";
 }
 
-fn api_unix(path: String, member: String, payload: String) -> ApiRaw {
-    let line = "{\"call\":" + api_str(member) + ",\"payload\":" + payload + ",\"id\":" + api_str(API_ID) + ",\"digest\":" + api_str(SURFACE_DIGEST) + "}";
+fn api_unix(path: String, member: String, digest: String, payload: String) -> ApiRaw {
+    let line = "{\"call\":" + api_str(member) + ",\"payload\":" + payload + ",\"id\":" + api_str(API_ID) + ",\"digest\":" + api_str(digest) + "}";
     let reply = api_unix_exchange(path, line);
     if len(reply) == 0 { return api_lost("the socket " + path + " gave no answer"); }
     if std::json::find_bool_field(reply, "ok") {
@@ -162,14 +163,15 @@ fn api_unix(path: String, member: String, payload: String) -> ApiRaw {
     return api_refused(refusal, 0);
 }
 
-// One call of a member: its request as JSON in, its outcome out. A bearer is
-// named for HTTP (and a hub); a socket's caller is its peer.
-fn api_call(endpoint: String, bearer: String, member: String, payload: String) -> ApiRaw {
-    if std::str::starts_with(endpoint, "http://") { return api_http(endpoint, bearer, member, payload); }
+// One call of a member: its request as JSON in, its outcome out, under the
+// member's own digest (which a surface that gained members still admits). A
+// bearer is named for HTTP (and a hub); a socket's caller is its peer.
+fn api_call(endpoint: String, bearer: String, member: String, digest: String, payload: String) -> ApiRaw {
+    if std::str::starts_with(endpoint, "http://") { return api_http(endpoint, bearer, member, digest, payload); }
     if std::str::starts_with(endpoint, "https://") { return api_lost("TLS is not spoken by this client"); }
     if std::str::starts_with(endpoint, "ws://") { return api_lost("a hub endpoint carries streams: subscribe to one"); }
-    if std::str::starts_with(endpoint, "unix:") { return api_unix(endpoint[5..len(endpoint)], member, payload); }
-    return api_unix(endpoint, member, payload);
+    if std::str::starts_with(endpoint, "unix:") { return api_unix(endpoint[5..len(endpoint)], member, digest, payload); }
+    return api_unix(endpoint, member, digest, payload);
 }
 
 // ---- the description the exposure serves the caller ----
@@ -377,7 +379,7 @@ type Rebalanced {
 type LedgerRebalanceOutcome = enum { Result(Rebalanced), Refusal(ApiRefusal), ServerError, Lost(String) };
 
 fn ledger_rebalance(endpoint: String, bearer: String, request: Rebalance) -> LedgerRebalanceOutcome {
-    let raw = api_call(endpoint, bearer, "Ledger::rebalance", Rebalance::api_encode(request));
+    let raw = api_call(endpoint, bearer, "Ledger::rebalance", "fnv1a64:9ff4eb32deb78542", Rebalance::api_encode(request));
     if raw.outcome == 0 {
         let value = Rebalanced::api_decode(raw.body) or { return LedgerRebalanceOutcome::Lost("the result did not decode: " + err.kind + ": " + err.field); };
         return LedgerRebalanceOutcome::Result(value);
@@ -392,7 +394,7 @@ fn ledger_rebalance(endpoint: String, bearer: String, request: Rebalance) -> Led
 type OrdersCancelOutcome = enum { Result(Cancelled), HandlerError(OrderError), Refusal(ApiRefusal), ServerError, Lost(String) };
 
 fn orders_cancel(endpoint: String, bearer: String, request: CancelOrder) -> OrdersCancelOutcome {
-    let raw = api_call(endpoint, bearer, "Orders::cancel", CancelOrder::api_encode(request));
+    let raw = api_call(endpoint, bearer, "Orders::cancel", "fnv1a64:7afdd54c76ae5a54", CancelOrder::api_encode(request));
     if raw.outcome == 0 {
         let value = Cancelled::api_decode(raw.body) or { return OrdersCancelOutcome::Lost("the result did not decode: " + err.kind + ": " + err.field); };
         return OrdersCancelOutcome::Result(value);

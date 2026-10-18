@@ -21,6 +21,7 @@
   "members": [
     {
       "name": "Orders::cancel",
+      "digest": "fnv1a64:1302f7fd82f17e98",
       "request": {
         "$ref": "#/schemas/CancelOrder"
       },
@@ -36,6 +37,7 @@
     },
     {
       "name": "Orders::place",
+      "digest": "fnv1a64:03c08c25c690f01f",
       "request": {
         "$ref": "#/schemas/PlaceOrder"
       },

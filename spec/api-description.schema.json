@@ -143,11 +143,13 @@
       }
     },
     "member": {
+      "$comment": "digest is the member's own (spec/api.md § The contract digest, additive compatibility): the fold of its row's line alone, which a request may name beside the surface's digest.",
       "type": "object",
       "additionalProperties": false,
-      "required": ["name", "request", "response", "error", "requires"],
+      "required": ["name", "digest", "request", "response", "error", "requires"],
       "properties": {
         "name": { "$ref": "#/$defs/member_name" },
+        "digest": { "$ref": "#/$defs/digest" },
         "request": { "$ref": "#/$defs/type_ref" },
         "response": { "$ref": "#/$defs/type_ref" },
         "error": { "$ref": "#/$defs/error" },

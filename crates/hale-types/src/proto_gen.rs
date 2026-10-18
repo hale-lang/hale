@@ -1091,6 +1091,7 @@ mod tests {
             digest: "fnv1a64:0".to_string(),
             members: vec![ClientMember {
                 name: "R::f".to_string(),
+                digest: String::new(),
                 request: Some(request),
                 response: None,
                 error: ClientError::None,

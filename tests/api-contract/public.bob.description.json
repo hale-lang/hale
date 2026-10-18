@@ -19,6 +19,7 @@
   "members": [
     {
       "name": "Orders::place",
+      "digest": "fnv1a64:03c08c25c690f01f",
       "request": {
         "$ref": "#/schemas/PlaceOrder"
       },

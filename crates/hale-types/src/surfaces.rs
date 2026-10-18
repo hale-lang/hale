@@ -220,6 +220,25 @@ pub struct Stream {
     pub span: Span,
 }
 
+impl Row {
+    /// The member's digest (spec/api.md § The contract digest): its row's
+    /// line alone, so adding a member leaves every other member's as it is.
+    pub fn member_digest(&self) -> u64 {
+        let h = match &self.handler {
+            Handled::Fn(h) => Some(h),
+            _ => None,
+        };
+        let requires: Vec<String> = self.requires.iter().map(|(n, _)| n.clone()).collect();
+        hale_model::surface::member_digest(&hale_model::surface::DigestLine {
+            member: &self.member,
+            request: h.and_then(|h| h.request.as_ref()).map(|t| t.hash),
+            response: h.and_then(|h| h.response.as_ref()).map(|t| t.hash),
+            error: h.and_then(|h| h.error.as_ref()).map(|t| t.hash),
+            requires: &requires,
+        })
+    }
+}
+
 impl SurfaceRows {
     /// The rows of `surface`, by member.
     pub fn rows_of<'s>(&'s self, surface: &'s str) -> impl Iterator<Item = &'s Row> + 's {

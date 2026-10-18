@@ -81,9 +81,10 @@ fn member_fn(m: &ClientMember) -> Result<String, String> {
         "/** @typedef {{Outcome<{value}, {error}>}} {outcome} */\n\n\
          /**\n * {name}{requires}\n * @param {{ClientOptions}} opts\n{param_doc} * @returns {{globalThis.Promise<{outcome}>}}\n */\n\
          export function {fn_name}(opts{param}) {{\n  \
-         return apiCall(opts, {member}, {payload}, {dec_value}, {dec_error});\n}}\n\n",
+         return apiCall(opts, {member}, {digest}, {payload}, {dec_value}, {dec_error});\n}}\n\n",
         name = m.name,
         member = json_quote(&m.name),
+        digest = json_quote(&m.digest),
     ))
 }
 

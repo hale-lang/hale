@@ -582,8 +582,9 @@ reads `/.description` sees `127.0.0.1:<that port>`, not `:0`. Both are the
 same listener `std::http::Server` is built from (see
 [HTTP](../everyday/http.md)): it accepts, hands each connection over the
 bus, and a connection nothing takes is closed. A call is
-`POST /call/<member>` whose body is the payload, with the surface digest
-you generated against in `Hale-Surface-Digest` (it is optional); the
+`POST /call/<member>` whose body is the payload, with the digest you
+generated against in `Hale-Surface-Digest` (it is optional: the surface's,
+or the member's own, which stays valid while the surface gains members); the
 outcome is the status and the body of the contract, one request to a
 connection:
 
@@ -989,10 +990,11 @@ member answering a tagged union (`result`, `handler_error`, `refusal`,
 per stream. The JavaScript one is that same client as an ES module a page
 loads as it is, with no compile step: the same functions by the same names,
 typed in JSDoc, so an editor (or `tsc --checkJs`) still checks a caller
-against the rows. Every client sends the surface's digest on every call, so a
-program that changed under it refuses it `digest_mismatch`; each names the
-digest in a constant, and `--check` refuses a committed copy made against
-another one.
+against the rows. Every client sends its member's digest on every call, so a
+program that changed that member under it refuses it `digest_mismatch`, while
+one that only gained other members keeps answering it; each names the
+surface's digest in a constant, and `--check` refuses a committed copy made
+against another one.
 
 Every shape the codec carries reaches the clients. An optional field is
 its `has_` flag in Hale and an optional property in TypeScript. An enum is

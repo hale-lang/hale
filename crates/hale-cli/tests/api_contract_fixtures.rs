@@ -651,9 +651,20 @@ fn the_digests_are_the_ones_digest_md_folds() {
             let expect = if req.is_empty() { "-".to_string() } else { req.join(",") };
             assert_eq!(requires, expect, "{name} {member}: the requires slot");
         }
+        // each member's own digest: the header `hale-api-member 1` and its
+        // line of the surface's input, alone
+        for (row, m) in rows.iter().zip(members) {
+            let input = format!("hale-api-member 1\n{row}\n");
+            let digest = format!("fnv1a64:{:016x}", hale_graph::identity::fnv64(input.as_bytes()));
+            assert_eq!(m["digest"], json!(digest), "{name} {}: the member's digest is the fold of its line alone", m["name"]);
+        }
         folded += 1;
     }
     assert_eq!(folded, 2, "both surfaces are folded");
+    let bytes = hex_bytes(&block_after(&md, "input: member Public Orders::place"));
+    let digest = format!("fnv1a64:{:016x}", hale_graph::identity::fnv64(&bytes));
+    assert_eq!(digest, "fnv1a64:03c08c25c690f01f", "digest.md's member input folds to the digest it states");
+    assert!(md.contains(&digest));
 
     // The stream digest of each hub (spec/api.md § Streams).
     for h in inv["hubs"].as_array().unwrap() {

@@ -21,6 +21,7 @@
   "members": [
     {
       "name": "Billing::on_audit",
+      "digest": "fnv1a64:1e3889643ea965c5",
       "request": {
         "$ref": "#/schemas/Audit"
       },
@@ -32,6 +33,7 @@
     },
     {
       "name": "Billing::on_count",
+      "digest": "fnv1a64:d6b1c0451de93b29",
       "request": {
         "$ref": "#/schemas/Count"
       },
@@ -43,6 +45,7 @@
     },
     {
       "name": "Billing::on_refund",
+      "digest": "fnv1a64:8ee1a3aac93f4074",
       "request": {
         "$ref": "#/schemas/Refund"
       },
@@ -54,6 +57,7 @@
     },
     {
       "name": "Billing::read_ledger",
+      "digest": "fnv1a64:022ff57778325133",
       "request": {
         "$ref": "#/schemas/Query"
       },

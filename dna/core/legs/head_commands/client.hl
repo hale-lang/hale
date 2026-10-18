@@ -13,8 +13,9 @@ const SURFACE_DIGEST: String = "fnv1a64:4c913504737bf24a";
 // ---- the wire, as every client of a surface speaks it (spec/api.md § The clients) ----
 //
 // An endpoint is `unix:PATH` (or a path), `http://host:port` for a member's
-// call, and `ws://host:port` for a stream. A call sends the surface's digest
-// (`digest` in the line over a socket, `Hale-Surface-Digest` over HTTP) and
+// call, and `ws://host:port` for a stream. A call sends its member's digest
+// (`digest` in the line over a socket, `Hale-Surface-Digest` over HTTP), which
+// a surface that has since gained members still admits, and
 // is one of five outcomes; TLS is not spoken here.
 
 const API_WAIT_NS: Int = 30000000000;
@@ -107,17 +108,17 @@ fn api_refused(refusal: String, status: Int) -> ApiRaw {
 
 // ---- over HTTP: POST <endpoint>/call/<member>, the body the request's JSON ----
 
-fn api_http_send(endpoint: String, bearer: String, member: String, payload: String) -> std::http::ClientResponse fallible(std::http::HttpError) {
+fn api_http_send(endpoint: String, bearer: String, member: String, digest: String, payload: String) -> std::http::ClientResponse fallible(std::http::HttpError) {
     let u = std::http::parse_url(endpoint + "/call/" + member) or raise;
     let auth = if len(bearer) > 0 { "Authorization: Bearer " + bearer + "\r\n" } else { "" };
-    let headers = auth + "Content-Type: application/json\r\nHale-Surface-Digest: " + SURFACE_DIGEST;
+    let headers = auth + "Content-Type: application/json\r\nHale-Surface-Digest: " + digest;
     let req = std::http::ClientRequest { method: "POST", url: u, headers: headers, body: std::bytes::from_string(payload) };
     return std::http::request(req) or raise;
 }
 
-fn api_http(endpoint: String, bearer: String, member: String, payload: String) -> ApiRaw {
+fn api_http(endpoint: String, bearer: String, member: String, digest: String, payload: String) -> ApiRaw {
     let lost = std::http::ClientResponse { status: 0, body: std::bytes::from_string("") };
-    let r = api_http_send(endpoint, bearer, member, payload) or std::http::ClientResponse { status: 0, body: std::bytes::from_string(err.kind + " " + err.detail) };
+    let r = api_http_send(endpoint, bearer, member, digest, payload) or std::http::ClientResponse { status: 0, body: std::bytes::from_string(err.kind + " " + err.detail) };
     let text = std::str::from_bytes(r.body);
     if r.status == 0 { return api_lost("the endpoint " + endpoint + " cannot be reached: " + text); }
     if r.status == 200 { return ApiRaw { outcome: 0, body: text }; }
@@ -148,8 +149,8 @@ fn api_unix_exchange(path: String, line: String) -> String {
     return "";
 }
 
-fn api_unix(path: String, member: String, payload: String) -> ApiRaw {
-    let line = "{\"call\":" + api_str(member) + ",\"payload\":" + payload + ",\"id\":" + api_str(API_ID) + ",\"digest\":" + api_str(SURFACE_DIGEST) + "}";
+fn api_unix(path: String, member: String, digest: String, payload: String) -> ApiRaw {
+    let line = "{\"call\":" + api_str(member) + ",\"payload\":" + payload + ",\"id\":" + api_str(API_ID) + ",\"digest\":" + api_str(digest) + "}";
     let reply = api_unix_exchange(path, line);
     if len(reply) == 0 { return api_lost("the socket " + path + " gave no answer"); }
     if std::json::find_bool_field(reply, "ok") {
@@ -162,14 +163,15 @@ fn api_unix(path: String, member: String, payload: String) -> ApiRaw {
     return api_refused(refusal, 0);
 }
 
-// One call of a member: its request as JSON in, its outcome out. A bearer is
-// named for HTTP (and a hub); a socket's caller is its peer.
-fn api_call(endpoint: String, bearer: String, member: String, payload: String) -> ApiRaw {
-    if std::str::starts_with(endpoint, "http://") { return api_http(endpoint, bearer, member, payload); }
+// One call of a member: its request as JSON in, its outcome out, under the
+// member's own digest (which a surface that gained members still admits). A
+// bearer is named for HTTP (and a hub); a socket's caller is its peer.
+fn api_call(endpoint: String, bearer: String, member: String, digest: String, payload: String) -> ApiRaw {
+    if std::str::starts_with(endpoint, "http://") { return api_http(endpoint, bearer, member, digest, payload); }
     if std::str::starts_with(endpoint, "https://") { return api_lost("TLS is not spoken by this client"); }
     if std::str::starts_with(endpoint, "ws://") { return api_lost("a hub endpoint carries streams: subscribe to one"); }
-    if std::str::starts_with(endpoint, "unix:") { return api_unix(endpoint[5..len(endpoint)], member, payload); }
-    return api_unix(endpoint, member, payload);
+    if std::str::starts_with(endpoint, "unix:") { return api_unix(endpoint[5..len(endpoint)], member, digest, payload); }
+    return api_unix(endpoint, member, digest, payload);
 }
 
 // ---- the description the exposure serves the caller ----
@@ -750,7 +752,7 @@ type TaskReassignment {
 type CommandsApplyBatchOutcome = enum { Result(CommandReply), Refusal(ApiRefusal), ServerError, Lost(String) };
 
 fn commands_apply_batch(endpoint: String, bearer: String, request: BatchApplication) -> CommandsApplyBatchOutcome {
-    let raw = api_call(endpoint, bearer, "Commands::apply_batch", BatchApplication::api_encode(request));
+    let raw = api_call(endpoint, bearer, "Commands::apply_batch", "fnv1a64:e38ecf1ff4684bc7", BatchApplication::api_encode(request));
     if raw.outcome == 0 {
         let value = CommandReply::api_decode(raw.body) or { return CommandsApplyBatchOutcome::Lost("the result did not decode: " + err.kind + ": " + err.field); };
         return CommandsApplyBatchOutcome::Result(value);
@@ -765,7 +767,7 @@ fn commands_apply_batch(endpoint: String, bearer: String, request: BatchApplicat
 type CommandsAskAllowanceOutcome = enum { Result(CommandReply), Refusal(ApiRefusal), ServerError, Lost(String) };
 
 fn commands_ask_allowance(endpoint: String, bearer: String, request: Allowance) -> CommandsAskAllowanceOutcome {
-    let raw = api_call(endpoint, bearer, "Commands::ask_allowance", Allowance::api_encode(request));
+    let raw = api_call(endpoint, bearer, "Commands::ask_allowance", "fnv1a64:7c2e9d7cc5c109eb", Allowance::api_encode(request));
     if raw.outcome == 0 {
         let value = CommandReply::api_decode(raw.body) or { return CommandsAskAllowanceOutcome::Lost("the result did not decode: " + err.kind + ": " + err.field); };
         return CommandsAskAllowanceOutcome::Result(value);
@@ -780,7 +782,7 @@ fn commands_ask_allowance(endpoint: String, bearer: String, request: Allowance) 
 type CommandsBindKnowledgeOutcome = enum { Result(KnowledgeReply), Refusal(ApiRefusal), ServerError, Lost(String) };
 
 fn commands_bind_knowledge(endpoint: String, bearer: String, request: KnowledgeBind) -> CommandsBindKnowledgeOutcome {
-    let raw = api_call(endpoint, bearer, "Commands::bind_knowledge", KnowledgeBind::api_encode(request));
+    let raw = api_call(endpoint, bearer, "Commands::bind_knowledge", "fnv1a64:e4ca579d2edc59d3", KnowledgeBind::api_encode(request));
     if raw.outcome == 0 {
         let value = KnowledgeReply::api_decode(raw.body) or { return CommandsBindKnowledgeOutcome::Lost("the result did not decode: " + err.kind + ": " + err.field); };
         return CommandsBindKnowledgeOutcome::Result(value);
@@ -795,7 +797,7 @@ fn commands_bind_knowledge(endpoint: String, bearer: String, request: KnowledgeB
 type CommandsClaimOutcome = enum { Result(CommandReply), Refusal(ApiRefusal), ServerError, Lost(String) };
 
 fn commands_claim(endpoint: String, bearer: String, request: Claim) -> CommandsClaimOutcome {
-    let raw = api_call(endpoint, bearer, "Commands::claim", Claim::api_encode(request));
+    let raw = api_call(endpoint, bearer, "Commands::claim", "fnv1a64:9f844c5339bfac9e", Claim::api_encode(request));
     if raw.outcome == 0 {
         let value = CommandReply::api_decode(raw.body) or { return CommandsClaimOutcome::Lost("the result did not decode: " + err.kind + ": " + err.field); };
         return CommandsClaimOutcome::Result(value);
@@ -810,7 +812,7 @@ fn commands_claim(endpoint: String, bearer: String, request: Claim) -> CommandsC
 type CommandsCreateTaskOutcome = enum { Result(CommandReply), Refusal(ApiRefusal), ServerError, Lost(String) };
 
 fn commands_create_task(endpoint: String, bearer: String, request: TaskCreation) -> CommandsCreateTaskOutcome {
-    let raw = api_call(endpoint, bearer, "Commands::create_task", TaskCreation::api_encode(request));
+    let raw = api_call(endpoint, bearer, "Commands::create_task", "fnv1a64:95df90b1c53a887c", TaskCreation::api_encode(request));
     if raw.outcome == 0 {
         let value = CommandReply::api_decode(raw.body) or { return CommandsCreateTaskOutcome::Lost("the result did not decode: " + err.kind + ": " + err.field); };
         return CommandsCreateTaskOutcome::Result(value);
@@ -825,7 +827,7 @@ fn commands_create_task(endpoint: String, bearer: String, request: TaskCreation)
 type CommandsFileFrictionOutcome = enum { Result(CommandReply), Refusal(ApiRefusal), ServerError, Lost(String) };
 
 fn commands_file_friction(endpoint: String, bearer: String, request: Friction) -> CommandsFileFrictionOutcome {
-    let raw = api_call(endpoint, bearer, "Commands::file_friction", Friction::api_encode(request));
+    let raw = api_call(endpoint, bearer, "Commands::file_friction", "fnv1a64:a02a85bc9b5f959d", Friction::api_encode(request));
     if raw.outcome == 0 {
         let value = CommandReply::api_decode(raw.body) or { return CommandsFileFrictionOutcome::Lost("the result did not decode: " + err.kind + ": " + err.field); };
         return CommandsFileFrictionOutcome::Result(value);
@@ -840,7 +842,7 @@ fn commands_file_friction(endpoint: String, bearer: String, request: Friction) -
 type CommandsFillOutcome = enum { Result(CommandReply), Refusal(ApiRefusal), ServerError, Lost(String) };
 
 fn commands_fill(endpoint: String, bearer: String, request: HoldFill) -> CommandsFillOutcome {
-    let raw = api_call(endpoint, bearer, "Commands::fill", HoldFill::api_encode(request));
+    let raw = api_call(endpoint, bearer, "Commands::fill", "fnv1a64:679952e14b20e6b0", HoldFill::api_encode(request));
     if raw.outcome == 0 {
         let value = CommandReply::api_decode(raw.body) or { return CommandsFillOutcome::Lost("the result did not decode: " + err.kind + ": " + err.field); };
         return CommandsFillOutcome::Result(value);
@@ -855,7 +857,7 @@ fn commands_fill(endpoint: String, bearer: String, request: HoldFill) -> Command
 type CommandsLinkKnowledgeOutcome = enum { Result(KnowledgeReply), Refusal(ApiRefusal), ServerError, Lost(String) };
 
 fn commands_link_knowledge(endpoint: String, bearer: String, request: KnowledgeLink) -> CommandsLinkKnowledgeOutcome {
-    let raw = api_call(endpoint, bearer, "Commands::link_knowledge", KnowledgeLink::api_encode(request));
+    let raw = api_call(endpoint, bearer, "Commands::link_knowledge", "fnv1a64:75b5f6fa42977eca", KnowledgeLink::api_encode(request));
     if raw.outcome == 0 {
         let value = KnowledgeReply::api_decode(raw.body) or { return CommandsLinkKnowledgeOutcome::Lost("the result did not decode: " + err.kind + ": " + err.field); };
         return CommandsLinkKnowledgeOutcome::Result(value);
@@ -870,7 +872,7 @@ fn commands_link_knowledge(endpoint: String, bearer: String, request: KnowledgeL
 type CommandsLookupOutcome = enum { Result(CommandReply), Refusal(ApiRefusal), ServerError, Lost(String) };
 
 fn commands_lookup(endpoint: String, bearer: String, request: Lookup) -> CommandsLookupOutcome {
-    let raw = api_call(endpoint, bearer, "Commands::lookup", Lookup::api_encode(request));
+    let raw = api_call(endpoint, bearer, "Commands::lookup", "fnv1a64:82a0c63c28df3c88", Lookup::api_encode(request));
     if raw.outcome == 0 {
         let value = CommandReply::api_decode(raw.body) or { return CommandsLookupOutcome::Lost("the result did not decode: " + err.kind + ": " + err.field); };
         return CommandsLookupOutcome::Result(value);
@@ -885,7 +887,7 @@ fn commands_lookup(endpoint: String, bearer: String, request: Lookup) -> Command
 type CommandsLookupKnowledgeOutcome = enum { Result(KnowledgeReply), Refusal(ApiRefusal), ServerError, Lost(String) };
 
 fn commands_lookup_knowledge(endpoint: String, bearer: String, request: KnowledgeRecovery) -> CommandsLookupKnowledgeOutcome {
-    let raw = api_call(endpoint, bearer, "Commands::lookup_knowledge", KnowledgeRecovery::api_encode(request));
+    let raw = api_call(endpoint, bearer, "Commands::lookup_knowledge", "fnv1a64:cb21d81344ec6a95", KnowledgeRecovery::api_encode(request));
     if raw.outcome == 0 {
         let value = KnowledgeReply::api_decode(raw.body) or { return CommandsLookupKnowledgeOutcome::Lost("the result did not decode: " + err.kind + ": " + err.field); };
         return CommandsLookupKnowledgeOutcome::Result(value);
@@ -900,7 +902,7 @@ fn commands_lookup_knowledge(endpoint: String, bearer: String, request: Knowledg
 type CommandsOpenPositionOutcome = enum { Result(CommandReply), Refusal(ApiRefusal), ServerError, Lost(String) };
 
 fn commands_open_position(endpoint: String, bearer: String, request: PositionOpening) -> CommandsOpenPositionOutcome {
-    let raw = api_call(endpoint, bearer, "Commands::open_position", PositionOpening::api_encode(request));
+    let raw = api_call(endpoint, bearer, "Commands::open_position", "fnv1a64:2c7f3161b00ad886", PositionOpening::api_encode(request));
     if raw.outcome == 0 {
         let value = CommandReply::api_decode(raw.body) or { return CommandsOpenPositionOutcome::Lost("the result did not decode: " + err.kind + ": " + err.field); };
         return CommandsOpenPositionOutcome::Result(value);
@@ -915,7 +917,7 @@ fn commands_open_position(endpoint: String, bearer: String, request: PositionOpe
 type CommandsOutcomeOutcome = enum { Result(CommandReply), Refusal(ApiRefusal), ServerError, Lost(String) };
 
 fn commands_outcome(endpoint: String, bearer: String, request: Outcome) -> CommandsOutcomeOutcome {
-    let raw = api_call(endpoint, bearer, "Commands::outcome", Outcome::api_encode(request));
+    let raw = api_call(endpoint, bearer, "Commands::outcome", "fnv1a64:ecf3369e3cd75137", Outcome::api_encode(request));
     if raw.outcome == 0 {
         let value = CommandReply::api_decode(raw.body) or { return CommandsOutcomeOutcome::Lost("the result did not decode: " + err.kind + ": " + err.field); };
         return CommandsOutcomeOutcome::Result(value);
@@ -930,7 +932,7 @@ fn commands_outcome(endpoint: String, bearer: String, request: Outcome) -> Comma
 type CommandsPreviewBatchOutcome = enum { Result(BatchPreview), Refusal(ApiRefusal), ServerError, Lost(String) };
 
 fn commands_preview_batch(endpoint: String, bearer: String, request: BatchDraft) -> CommandsPreviewBatchOutcome {
-    let raw = api_call(endpoint, bearer, "Commands::preview_batch", BatchDraft::api_encode(request));
+    let raw = api_call(endpoint, bearer, "Commands::preview_batch", "fnv1a64:ce76b0d262ba415a", BatchDraft::api_encode(request));
     if raw.outcome == 0 {
         let value = BatchPreview::api_decode(raw.body) or { return CommandsPreviewBatchOutcome::Lost("the result did not decode: " + err.kind + ": " + err.field); };
         return CommandsPreviewBatchOutcome::Result(value);
@@ -945,7 +947,7 @@ fn commands_preview_batch(endpoint: String, bearer: String, request: BatchDraft)
 type CommandsProposeOutcome = enum { Result(CommandReply), Refusal(ApiRefusal), ServerError, Lost(String) };
 
 fn commands_propose(endpoint: String, bearer: String, request: PracticeProposal) -> CommandsProposeOutcome {
-    let raw = api_call(endpoint, bearer, "Commands::propose", PracticeProposal::api_encode(request));
+    let raw = api_call(endpoint, bearer, "Commands::propose", "fnv1a64:37956bc7db5b0166", PracticeProposal::api_encode(request));
     if raw.outcome == 0 {
         let value = CommandReply::api_decode(raw.body) or { return CommandsProposeOutcome::Lost("the result did not decode: " + err.kind + ": " + err.field); };
         return CommandsProposeOutcome::Result(value);
@@ -960,7 +962,7 @@ fn commands_propose(endpoint: String, bearer: String, request: PracticeProposal)
 type CommandsProposeKnowledgeOutcome = enum { Result(KnowledgeReply), Refusal(ApiRefusal), ServerError, Lost(String) };
 
 fn commands_propose_knowledge(endpoint: String, bearer: String, request: KnowledgeNodeProposal) -> CommandsProposeKnowledgeOutcome {
-    let raw = api_call(endpoint, bearer, "Commands::propose_knowledge", KnowledgeNodeProposal::api_encode(request));
+    let raw = api_call(endpoint, bearer, "Commands::propose_knowledge", "fnv1a64:b2275242f34a6c40", KnowledgeNodeProposal::api_encode(request));
     if raw.outcome == 0 {
         let value = KnowledgeReply::api_decode(raw.body) or { return CommandsProposeKnowledgeOutcome::Lost("the result did not decode: " + err.kind + ": " + err.field); };
         return CommandsProposeKnowledgeOutcome::Result(value);
@@ -975,7 +977,7 @@ fn commands_propose_knowledge(endpoint: String, bearer: String, request: Knowled
 type CommandsProposeOrganizationOutcome = enum { Result(CommandReply), Refusal(ApiRefusal), ServerError, Lost(String) };
 
 fn commands_propose_organization(endpoint: String, bearer: String, request: OrganizationProposal) -> CommandsProposeOrganizationOutcome {
-    let raw = api_call(endpoint, bearer, "Commands::propose_organization", OrganizationProposal::api_encode(request));
+    let raw = api_call(endpoint, bearer, "Commands::propose_organization", "fnv1a64:3a14724a68e8d70a", OrganizationProposal::api_encode(request));
     if raw.outcome == 0 {
         let value = CommandReply::api_decode(raw.body) or { return CommandsProposeOrganizationOutcome::Lost("the result did not decode: " + err.kind + ": " + err.field); };
         return CommandsProposeOrganizationOutcome::Result(value);
@@ -990,7 +992,7 @@ fn commands_propose_organization(endpoint: String, bearer: String, request: Orga
 type CommandsReassignTaskOutcome = enum { Result(CommandReply), Refusal(ApiRefusal), ServerError, Lost(String) };
 
 fn commands_reassign_task(endpoint: String, bearer: String, request: TaskReassignment) -> CommandsReassignTaskOutcome {
-    let raw = api_call(endpoint, bearer, "Commands::reassign_task", TaskReassignment::api_encode(request));
+    let raw = api_call(endpoint, bearer, "Commands::reassign_task", "fnv1a64:2a776a6c9ff833f9", TaskReassignment::api_encode(request));
     if raw.outcome == 0 {
         let value = CommandReply::api_decode(raw.body) or { return CommandsReassignTaskOutcome::Lost("the result did not decode: " + err.kind + ": " + err.field); };
         return CommandsReassignTaskOutcome::Result(value);
@@ -1005,7 +1007,7 @@ fn commands_reassign_task(endpoint: String, bearer: String, request: TaskReassig
 type CommandsReleaseAttemptOutcome = enum { Result(CommandReply), Refusal(ApiRefusal), ServerError, Lost(String) };
 
 fn commands_release_attempt(endpoint: String, bearer: String, request: Release) -> CommandsReleaseAttemptOutcome {
-    let raw = api_call(endpoint, bearer, "Commands::release_attempt", Release::api_encode(request));
+    let raw = api_call(endpoint, bearer, "Commands::release_attempt", "fnv1a64:a0716ac88babda63", Release::api_encode(request));
     if raw.outcome == 0 {
         let value = CommandReply::api_decode(raw.body) or { return CommandsReleaseAttemptOutcome::Lost("the result did not decode: " + err.kind + ": " + err.field); };
         return CommandsReleaseAttemptOutcome::Result(value);
@@ -1020,7 +1022,7 @@ fn commands_release_attempt(endpoint: String, bearer: String, request: Release) 
 type CommandsRenewOutcome = enum { Result(CommandReply), Refusal(ApiRefusal), ServerError, Lost(String) };
 
 fn commands_renew(endpoint: String, bearer: String, request: Renewal) -> CommandsRenewOutcome {
-    let raw = api_call(endpoint, bearer, "Commands::renew", Renewal::api_encode(request));
+    let raw = api_call(endpoint, bearer, "Commands::renew", "fnv1a64:7eaeae02ef9e06ea", Renewal::api_encode(request));
     if raw.outcome == 0 {
         let value = CommandReply::api_decode(raw.body) or { return CommandsRenewOutcome::Lost("the result did not decode: " + err.kind + ": " + err.field); };
         return CommandsRenewOutcome::Result(value);
@@ -1035,7 +1037,7 @@ fn commands_renew(endpoint: String, bearer: String, request: Renewal) -> Command
 type CommandsRetireKnowledgeOutcome = enum { Result(KnowledgeReply), Refusal(ApiRefusal), ServerError, Lost(String) };
 
 fn commands_retire_knowledge(endpoint: String, bearer: String, request: KnowledgeNodeRetirement) -> CommandsRetireKnowledgeOutcome {
-    let raw = api_call(endpoint, bearer, "Commands::retire_knowledge", KnowledgeNodeRetirement::api_encode(request));
+    let raw = api_call(endpoint, bearer, "Commands::retire_knowledge", "fnv1a64:d7882589e9ebde21", KnowledgeNodeRetirement::api_encode(request));
     if raw.outcome == 0 {
         let value = KnowledgeReply::api_decode(raw.body) or { return CommandsRetireKnowledgeOutcome::Lost("the result did not decode: " + err.kind + ": " + err.field); };
         return CommandsRetireKnowledgeOutcome::Result(value);
@@ -1050,7 +1052,7 @@ fn commands_retire_knowledge(endpoint: String, bearer: String, request: Knowledg
 type CommandsRetirePersonOutcome = enum { Result(CommandReply), Refusal(ApiRefusal), ServerError, Lost(String) };
 
 fn commands_retire_person(endpoint: String, bearer: String, request: PersonRetirement) -> CommandsRetirePersonOutcome {
-    let raw = api_call(endpoint, bearer, "Commands::retire_person", PersonRetirement::api_encode(request));
+    let raw = api_call(endpoint, bearer, "Commands::retire_person", "fnv1a64:ded629987dd5b96f", PersonRetirement::api_encode(request));
     if raw.outcome == 0 {
         let value = CommandReply::api_decode(raw.body) or { return CommandsRetirePersonOutcome::Lost("the result did not decode: " + err.kind + ": " + err.field); };
         return CommandsRetirePersonOutcome::Result(value);
@@ -1065,7 +1067,7 @@ fn commands_retire_person(endpoint: String, bearer: String, request: PersonRetir
 type CommandsReviseKnowledgeOutcome = enum { Result(KnowledgeReply), Refusal(ApiRefusal), ServerError, Lost(String) };
 
 fn commands_revise_knowledge(endpoint: String, bearer: String, request: KnowledgeNodeRevision) -> CommandsReviseKnowledgeOutcome {
-    let raw = api_call(endpoint, bearer, "Commands::revise_knowledge", KnowledgeNodeRevision::api_encode(request));
+    let raw = api_call(endpoint, bearer, "Commands::revise_knowledge", "fnv1a64:a16ef8e0111c4a5b", KnowledgeNodeRevision::api_encode(request));
     if raw.outcome == 0 {
         let value = KnowledgeReply::api_decode(raw.body) or { return CommandsReviseKnowledgeOutcome::Lost("the result did not decode: " + err.kind + ": " + err.field); };
         return CommandsReviseKnowledgeOutcome::Result(value);
@@ -1080,7 +1082,7 @@ fn commands_revise_knowledge(endpoint: String, bearer: String, request: Knowledg
 type CommandsUnbindKnowledgeOutcome = enum { Result(KnowledgeReply), Refusal(ApiRefusal), ServerError, Lost(String) };
 
 fn commands_unbind_knowledge(endpoint: String, bearer: String, request: KnowledgeUnbind) -> CommandsUnbindKnowledgeOutcome {
-    let raw = api_call(endpoint, bearer, "Commands::unbind_knowledge", KnowledgeUnbind::api_encode(request));
+    let raw = api_call(endpoint, bearer, "Commands::unbind_knowledge", "fnv1a64:dc546f9fa7245e33", KnowledgeUnbind::api_encode(request));
     if raw.outcome == 0 {
         let value = KnowledgeReply::api_decode(raw.body) or { return CommandsUnbindKnowledgeOutcome::Lost("the result did not decode: " + err.kind + ": " + err.field); };
         return CommandsUnbindKnowledgeOutcome::Result(value);
@@ -1095,7 +1097,7 @@ fn commands_unbind_knowledge(endpoint: String, bearer: String, request: Knowledg
 type CommandsUnlinkKnowledgeOutcome = enum { Result(KnowledgeReply), Refusal(ApiRefusal), ServerError, Lost(String) };
 
 fn commands_unlink_knowledge(endpoint: String, bearer: String, request: KnowledgeUnlink) -> CommandsUnlinkKnowledgeOutcome {
-    let raw = api_call(endpoint, bearer, "Commands::unlink_knowledge", KnowledgeUnlink::api_encode(request));
+    let raw = api_call(endpoint, bearer, "Commands::unlink_knowledge", "fnv1a64:25a8cd1734d4cbba", KnowledgeUnlink::api_encode(request));
     if raw.outcome == 0 {
         let value = KnowledgeReply::api_decode(raw.body) or { return CommandsUnlinkKnowledgeOutcome::Lost("the result did not decode: " + err.kind + ": " + err.field); };
         return CommandsUnlinkKnowledgeOutcome::Result(value);
@@ -1110,7 +1112,7 @@ fn commands_unlink_knowledge(endpoint: String, bearer: String, request: Knowledg
 type CommandsVerdictOutcome = enum { Result(CommandReply), Refusal(ApiRefusal), ServerError, Lost(String) };
 
 fn commands_verdict(endpoint: String, bearer: String, request: ReviewDecision) -> CommandsVerdictOutcome {
-    let raw = api_call(endpoint, bearer, "Commands::verdict", ReviewDecision::api_encode(request));
+    let raw = api_call(endpoint, bearer, "Commands::verdict", "fnv1a64:10a50293d4e7d4d3", ReviewDecision::api_encode(request));
     if raw.outcome == 0 {
         let value = CommandReply::api_decode(raw.body) or { return CommandsVerdictOutcome::Lost("the result did not decode: " + err.kind + ": " + err.field); };
         return CommandsVerdictOutcome::Result(value);

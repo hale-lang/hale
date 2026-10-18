@@ -266,15 +266,31 @@ and keeps doing so, since it is a wire identity of its own.
 `locus:s;closure:s;diff:i`, folded like a flat struct (its payload
 contract stays `opaque:ClosureViolation`).
 
-**Compatibility is equality (v1).** A description carries its
-surface's name and digest, and a generated client carries the digest
-it was generated against. A request may carry that digest; a request
-whose digest is not the served one is refused as `digest_mismatch`
-before its payload is decoded or anything is queued, and the refusal
-names the digest the exposure serves (`"served"`), so the client can
-fetch the description again. A request that carries no digest is not
-checked. Whether a client built against a subset of a surface's
-members may call a surface that added others is an open point.
+**A member's digest** is the same fold over that member's line alone,
+under its own header: the text `hale-api-member 1`, LF, and the row's
+line as above (`tests/api-contract/digest.md` folds one by hand,
+`fnv1a64:03c08c25c690f01f` for `Public`'s `Orders::place`). It moves when
+that member's shapes, error type or required roles change, and for
+nothing else: a member added to the surface, or removed from it, or
+another member changed, leaves it where it is. A description lists each
+member's digest beside its name (`"digest"`, § The description).
+
+**Compatibility is additive (2026-10-18).** A description carries its
+surface's name and digest, and a generated client carries the surface
+digest it was generated against (`SURFACE_DIGEST`) and, on each call,
+names its member's digest (`Hale-Surface-Digest` over HTTP and gRPC,
+`"digest"` in a Unix line). A request may carry a digest; one that is
+neither the served surface's nor its member's served digest is refused as
+`digest_mismatch` before its payload is decoded or anything is queued,
+and the refusal names the digest the exposure serves (`"served"`), so
+the client can fetch the description again. So a client built against a
+surface keeps calling it after the surface gains members, or loses ones
+the client does not call, and is refused only for a member whose own
+contract moved; a request naming the old surface's digest, which no
+longer describes what is served, is refused as before. A request that
+carries no digest is not checked. The admission runs in the exposure,
+before the request reaches the receiver's dispatch. (Until 2026-10-18
+compatibility was equality: only the surface's digest was admitted.)
 
 ## Serving
 
@@ -2169,8 +2185,8 @@ caller's `Context` under that exposure's role source:
   it; a Unix listener's path; a UDP hub's `host:<bound port>`;
 - the caller: the principal the exposure established, and the roles it
   holds among those the exposure's rows and streams require;
-- the **members** the caller may call: name, request, response and
-  error schemas, and `requires`; a member whose error type is
+- the **members** the caller may call: name, the member's digest (§ The
+  contract digest), request, response and error schemas, and `requires`; a member whose error type is
   `ClosureViolation` carries the string `"ClosureViolation"` in place
   of an error schema (§ Surfaces and their rows);
 - the **streams** of the hubs at that listener the caller may subscribe
@@ -2698,8 +2714,6 @@ values).
   surface's**: it is not filtered by the roles a caller holds, as a description
   is. A surface whose member names are themselves confidential to a role needs
   a filtered descriptor, which the `.proto` the digest names cannot be.
-- **Additive compatibility**: a client built against a subset of a
-  surface's members, after v1's equality.
 - **A per-variant status mapping** declared on a handler's error type,
   which would join the rows, the description and the digest.
 - **A receiver binding naming a `@form` collection's element** (a
