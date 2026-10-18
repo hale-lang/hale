@@ -54,8 +54,8 @@ done
 # Moving one on purpose is an edit here, with the reason in the commit
 # (the same three numbers for three corpus programs are pinned in
 # crates/hale-codegen/tests/ir_size_band.rs).
-host_ir_pinned="lines=1815511 defines=6438 calls=249481"
-verb_ir_pinned="lines=1814759 defines=6400 calls=249230"
+host_ir_pinned="lines=1999283 defines=6708 calls=265782"
+verb_ir_pinned="lines=1998546 defines=6670 calls=265512"
 measured_all=
 for which in body verb; do
     if [[ $which == body ]]; then bin=$host_bin pinned=$host_ir_pinned seed=dna/host; else bin=$verb_bin pinned=$verb_ir_pinned seed=dna/host/verb; fi

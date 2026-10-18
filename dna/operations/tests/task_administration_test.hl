@@ -99,7 +99,7 @@ locus TaskCases {
         std::test::assert(!common.valid(context, old), "old variant rejects stray Task fields");
         let policy = self.policy("app"); let pc = ops::TaskAuthorityPolicyCodec { }; std::test::assert(!pc.decode(policy.document, "app", "signed").valid, "new profile has local trust boundary");
         let q = dna::MemJournal { }; self.append(q, "application.observed", "app", "{}"); self.append(q, "receipt.withheld", "bob", "{}");
-        let authority = ops::FixedTaskAuthority { policy: policy }; std::test::assert(!authority.eligible(context, "bob", q) && authority.recipients(context, q) == "[\"alice\",\"charlie\"]", "protected member hidden from eligibility/list");
+        let authority = ops::FixedTaskAuthority { policy: policy }; std::test::assert(!authority.eligible(context, "bob", q, false) && authority.recipients(context, q, false) == "[\"alice\",\"charlie\"]", "protected member hidden from eligibility/list");
         let nobody = ops::GovernanceContext { application_id: "app", principal_mode: "local", principal_name: "alice" }; std::test::assert(!authority.authorize(nobody, "dna.task.reassign", false, q).allowed, "membership is not authority");
     }
 }

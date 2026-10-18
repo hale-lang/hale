@@ -205,6 +205,9 @@ locus Queries {
     params {
         j: dna::Journal = dna::MemJournal { };
         receipts: dna::Receipts = NoReceipts { };
+        // `j` reads the record and its Ledger as one (a routed journal):
+        // the receipt rows a Ledger holds are in it
+        routed: Bool = false;
     }
     fn revision() -> Int { return self.j.revision(); }
     fn head() -> String { return self.j.head(); }
@@ -258,7 +261,9 @@ locus Queries {
     }
     // Receipt families move to Ledger after adoption. A Record-only reader
     // cannot prove their current visibility; fail closed even if a stale local
-    // blob remains. No protected-service read or disclosure write is performed.
+    // blob remains. A reader over the record and its Ledger (`routed`) sees
+    // them where they are. No protected-service read or disclosure write is
+    // performed.
     fn receipt_status(digest: String) -> String {
         let mut adopted = false;
         let mut redacted = false;
@@ -268,6 +273,7 @@ locus Queries {
         while i < self.j.revision() {
             let e = self.j.read(i);
             if e.kind == "ledger.adopted" { adopted = true; }
+            if e.kind == "ledger.abandoned" { uncertain = true; }
             // Abandonment empties Ledger; it does not restore every prior
             // receipt restriction into Record. Once adopted, this projection
             // alone cannot establish completeness again.
@@ -283,7 +289,7 @@ locus Queries {
         }
         if redacted { return "redacted"; }
         if protected { return "protected"; }
-        if adopted || uncertain { return "source_unavailable"; }
+        if (adopted && !self.routed) || uncertain { return "source_unavailable"; }
         return "available";
     }
     // Recorded provenance from an exact admitted generic node request, not a

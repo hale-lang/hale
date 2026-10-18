@@ -619,9 +619,14 @@ receipt grant. `recover` is independent of `reassign`, so an operator may retain
 lookup after new writes are denied. Lookup does not repeat the mutation and
 resolves the original receipt even after the Task changes.
 
+On a record that adopted its Ledger, `/dna/tasks` reads the record and its
+Ledger as one (`basis.memory` is `record+ledger`), and the `task.reassigned`
+fact is the Ledger's row, written under the head's role and keyed by the
+command, with `command_record_head` naming the Ledger row before it.
+
 This profile does not retire people, transfer responsibility across owners,
 modify source ownership, complete Tasks or control workflow execution. OIDC,
-signed trust, Ledger-backed administration and source-to-live ownership joins
+signed trust and source-to-live ownership joins
 need their own supported service contract. Existing CLI Task commands are not
 made part of this provider by this call.
 
@@ -753,9 +758,12 @@ against. Its `task_create` object names the minted `intent_id`, the row's
 `refused`, or `born` with `task_id` filled from the `task.born` row whose body
 starts with `<intent_id>: `. A born-but-unhanded Task is absent from
 `/dna/tasks`, so `CommandLookup { request_id }` is how the face follows the
-ask; nothing else is re-read. After `ledger.adopted` new asks are refused
-(`commands_unsupported`) like every other operation here; recorded asks stay
-recoverable.
+ask; nothing else is re-read. On a record that adopted its Ledger the ask is
+the Ledger's row: the head writes it there under its role
+(`HALE_DNA_MEMORY_DSN_HEAD`), keyed by the command so a retry lands once, with
+`command_record_head` naming the Ledger row before it; the record is
+unmoved, and the answer is re-derived over the record and its Ledger read as
+one. Without the head's memory DSN the ask is `commands_unsupported`.
 
 Two asks minted in the same millisecond on one host would share an id and the
 organism admits one Task per id; this head steps an id its Record already holds
@@ -1014,12 +1022,17 @@ identity namespace as the record's other commands: payload
 
 Publication creates ordinary Task reassignment facts and a retirement fact
 off-ref, then publishes the complete chain with one Record compare-and-swap.
-Recovery verifies that exact chain and its transfer manifest. The browser retains
+Recovery verifies that exact chain and its transfer manifest. On a record that
+adopted its Ledger the transfers are the Ledger's rows, landed first (each keyed
+by the command and the Task, so one asked again lands once), and the retirement
+is the record's row after them, its manifest naming the transfers' ids: the
+rows `hale dna retire` writes there. Two memories take no one write, so a
+retirement stopped between its transfers and its row keeps the transfers and
+is asked again against the plan they changed (`stale_subject`). The browser retains
 only request identity across reloads and never resubmits an uncertain request.
 
 This profile requires the updated Body and CLI writers from the same deployment;
 their exact admission checks prevent concurrent handoffs to retired people.
-It supports local Record authority, at most 32 transferred Tasks, and no prior
-Ledger adoption. Source memberships and declared positions are separate. Mixed
+It supports local Record authority and at most 32 transferred Tasks. Source memberships and declared positions are separate. Mixed
 old writers, cross-owner transfer and distributed Record reconciliation are not
 covered by this local atomic publication profile.

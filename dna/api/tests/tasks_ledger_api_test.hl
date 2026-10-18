@@ -1,0 +1,61 @@
+// The head's Task read on a record that adopted its Ledger: a Task's rows
+// are the Ledger's, and `/dna/tasks` reads the record and its Ledger as one
+// (the basis says so). Memory is Postgres: without the owner's DSN nothing
+// here is exercised.
+import ".." as api;
+import "../../core" as dna;
+
+locus LedgerTaskReads {
+    params { repo: String = ""; }
+    fn request(query: String) -> std::http::Response {
+        let record = dna::GitRecord { repo: self.repo }; let head = api::Api { root: self.repo, local_name: "riley" };
+        return head.handle(std::http::Request { method: "GET", path: api::API_PREFIX + "/" + record.identity() + "/dna/tasks" + query });
+    }
+    fn hand(id: String, who: String) {
+        let l = dna::MemoryLedger { repo: self.repo, dsn_env: dna::SPINE_DSN_ENV };
+        std::test::assert(l.append(l.revision(), "task.born", id, "Keep exact\r\né 🧭 evidence").ok, "born " + id + ": " + l.last_error());
+        std::test::assert(l.append(l.revision(), "task.handed", id, "{\"assignee\":\"" + who + "\",\"obligation\":\"review\",\"by\":\"leader\"}").ok, "handed " + id);
+    }
+    fn run_cases() {
+        let record = dna::GitRecord { repo: self.repo }; let w = api::CommandWire { };
+        let cut = dna::MemoryLedger { repo: self.repo, dsn_env: dna::SPINE_DSN_ENV };
+        std::test::assert(cut.cutover(record.head("journal").id, 0, dna::ROUTING_VERSION), "the cutover: " + cut.last_error());
+        let b = std::json::Builder { }; b.begin_object(); b.int_field("routing", dna::ROUTING_VERSION); b.string_field("checkpoint", record.head("journal").id); b.end_object();
+        std::test::assert(record.append("journal", record.head("journal").id, dna::Row { kind: "ledger.adopted", entity: "ledger", body: b.result(), author: "test" }, false, "").ok, "the record adopts its Ledger");
+        self.hand("t1", "alex"); self.hand("t2", "blair");
+        let all = self.request("");
+        std::test::assert_eq_int(all.status, 200, "the Tasks read on an adopted record: " + all.body);
+        let data = w.raw(all.body, "data"); let basis = w.raw(data, "basis");
+        std::test::assert_eq_str(w.raw(w.raw(data, "page"), "total"), "2", "both, from the Ledger");
+        std::test::assert_eq_str(w.text(basis, "memory"), "record+ledger", "read over both memories");
+        std::test::assert_eq_str(w.text(basis, "routing"), to_string(dna::ROUTING_VERSION), "at the record's routing");
+        std::test::assert_eq_str(w.text(basis, "record_head"), record.head("journal").id, "at the record's head");
+        let one = self.request("?id=t1");
+        std::test::assert(one.status == 200 && std::str::contains(one.body, "\"assignee\": \"alex\""), "one Task by its id: " + one.body);
+        let mine = self.request("?assignee=blair");
+        std::test::assert(mine.status == 200 && w.raw(w.raw(w.raw(mine.body, "data"), "page"), "total") == "1", "and by assignee: " + mine.body);
+    }
+}
+
+fn main() {
+    let owner = if std::env::var_exists("HALE_DNA_MEMORY_DSN_OWNER") { std::env::var("HALE_DNA_MEMORY_DSN_OWNER") } else { "" };
+    if std::env::var("HALE_TASK_LEDGER_READ_CHILD") == "1" {
+        let cases = LedgerTaskReads { repo: std::env::arg(1) }; cases.run_cases();
+        return;
+    }
+    if len(owner) == 0 { eprintln("tasks_ledger_api_test: not exercised (HALE_DNA_MEMORY_DSN_OWNER is not set)"); return; }
+    let root = dna::scratch_root("api-task-ledger");
+    let record = dna::GitRecord { repo: root };
+    std::test::assert(record.git("init\n--quiet").code == 0, "isolated Git");
+    std::test::assert(record.git("config\ndna.trust\nlocal").code == 0, "trusted-local");
+    std::test::assert(record.append("journal", "", dna::Row { kind: "application.observed", entity: "org", body: "{}", author: "test" }, false, "").ok, "a record");
+    let identity = record.identity();
+    std::test::assert_eq_str(dna::provision_record_roles(identity, ""), "", "the record's roles");
+    let m = dna::migrate(dna::parse_dsn(owner), identity);
+    std::test::assert(m.ok, "memory migrates for the record: " + m.why);
+    let child = dna::run_tool("env\nHALE_TASK_LEDGER_READ_CHILD=1\nHALE_DNA_MEMORY_DSN_SPINE=" + m.spine_dsn + "\nHALE_DNA_MEMORY_DSN_HEAD=" + m.head_dsn + "\n" + std::env::arg_or(0, "") + "\n" + root);
+    print(child.stdout); if len(child.stderr) > 0 { eprintln(child.stderr); }
+    std::test::assert_eq_str(dna::unmigrate(owner, identity), "", "this run's schema and roles dropped");
+    std::test::assert_eq_int(child.code, 0, "the adopted record's Task reads");
+    dna::scratch_done(root);
+}
