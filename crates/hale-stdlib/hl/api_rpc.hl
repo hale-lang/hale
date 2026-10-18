@@ -1744,14 +1744,19 @@ locus __StdApiHttpPeer {
                 self.respond(400, "{\"refusal\":" + __api_refusal_object("malformed", "a request body is at most 1048576 bytes", "") + "}", "");
                 self.open = false;
             } else {
+                // the body goes to a builder: what a connection holds is
+                // linear in what it sent (appending each read to a String
+                // kept every prefix alive until the request was answered)
+                let body = std::bytes::BytesBuilder { initial_cap: head_end + 4 + want + 1 };
+                body.append_str(buf);
                 let mut have = len(buf) - (head_end + 4);
                 while self.open && have < want && std::time::monotonic_ns() < deadline && !self.draining {
                     let chunk = self.stream.recv(65536) or "";
                     if len(chunk) == 0 {
                         self.open = false;
                     } else {
-                        buf = buf + chunk;
-                        have = len(buf) - (head_end + 4);
+                        body.append_str(chunk);
+                        have = body.len() - (head_end + 4);
                     }
                 }
                 if self.open && have >= want {
@@ -1759,7 +1764,8 @@ locus __StdApiHttpPeer {
                     // wait for the answer is not on the clock of a read
                     let _ = std::io::tcp::__set_recv_timeout_ns(self.fd, 0);
                     self.published = true;
-                    __ApiRpcIngressT <- __StdApiRpcIngress { exposure: self.tid, correlation: self.conn, raw: std::bytes::from_string(buf[0..(head_end + 4 + want)]) };
+                    let whole = body.finish() or std::bytes::from_string("");
+                    __ApiRpcIngressT <- __StdApiRpcIngress { exposure: self.tid, correlation: self.conn, raw: std::bytes::slice(whole, 0, head_end + 4 + want) };
                     // what the client sends meanwhile is not read as a request;
                     // its end of the stream is the connection lost
                     while self.open && !self.draining {
