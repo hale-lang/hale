@@ -442,12 +442,16 @@ fn build_cache_touch(entry: String, hit: String) -> Bool {
 // entry pruned between a hit and its start fails that start, and a
 // failed start rebuilds — the behaviour without a cache at all.
 fn build_cache_keep(entry: String, work: String, cache: String) {
-    let after = to_string(BUILD_CACHE_KEEP + 1);
+    let after = to_string(BUILD_CACHE_KEEP);
     // POSIX only (macOS's mv has no -T): an entry that is already there wins and the
     // private copy goes; otherwise the directory is renamed onto the missing name. A
     // second host racing between the test and the rename would nest its copy inside
-    // the entry, so the nested copy is removed too.
-    let r = dna::run_tool("sh\n-c\nif [ -e \"$2\" ]; then rm -rf -- \"$1\"; else mv -- \"$1\" \"$2\" 2>/dev/null || rm -rf -- \"$1\"; fi; rm -rf -- \"$2/$(basename \"$1\")\"; cd -- \"$3\" && ls -1t 2>/dev/null | tail -n +" + after + " | while IFS= read -r x; do rm -rf -- \"./$x\"; done\nsh\n" + work + "\n" + entry + "\n" + cache);
+    // the entry, so the nested copy is removed too. The entry just kept is
+    // never a candidate: modification times are whole seconds here, so a
+    // newer entry can tie with older ones. The others are kept newest first
+    // by modification time, and equal times by name, an explicit order: a
+    // tie never rests on how `ls` happens to break it.
+    let r = dna::run_tool("sh\n-c\nif [ -e \"$2\" ]; then rm -rf -- \"$1\"; else mv -- \"$1\" \"$2\" 2>/dev/null || rm -rf -- \"$1\"; fi; rm -rf -- \"$2/$(basename \"$1\")\"; k=$(basename \"$2\"); cd -- \"$3\" && for x in *; do [ -e \"$x\" ] || continue; [ \"$x\" = \"$k\" ] && continue; printf '%s %s\\n' \"$(stat -c %Y -- \"$x\" 2>/dev/null || stat -f %m -- \"$x\")\" \"$x\"; done | sort -k1,1nr -k2 | tail -n +" + after + " | cut -d' ' -f2- | while IFS= read -r x; do rm -rf -- \"./$x\"; done\nsh\n" + work + "\n" + entry + "\n" + cache);
 }
 
 // The outcome of a seed build: the binary's path, or "" and why not.

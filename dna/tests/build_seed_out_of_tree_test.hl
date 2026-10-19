@@ -91,13 +91,29 @@ fn main() {
     let f = dna::scratch_root("build-seed-prune-root");
     let pcache = dna::scratch_root("build-seed-prune-cache");
     write_seed(f, ok_src);
-    dna::run_tool("sh\n-c\ncd -- \"$1\" && i=0 && while [ $i -lt 40 ]; do mkdir -p \"old$i/app\"; touch -t 200101010000 \"old$i\"; i=$((i+1)); done; echo stale > oldfile; touch -t 200101010000 oldfile\nsh\n" + pcache);
+    // strictly ordered times: each stale entry a minute after the one before,
+    // and the old-layout file the oldest of all, so which ten go never rests
+    // on a tie
+    dna::run_tool("sh\n-c\ncd -- \"$1\" && i=0 && while [ $i -lt 40 ]; do mkdir -p \"old$i/app\"; touch -t \"$(printf '2001010100%02d' $i)\" \"old$i\"; i=$((i+1)); done; echo stale > oldfile; touch -t 200001010000 oldfile\nsh\n" + pcache);
     let fresh = host::build_seed_at(hale, f, f + "/app", pcache);
     std::test::assert_eq_str(fresh.why, "", "the build beside a full cache succeeds");
     std::test::assert(std::io::fs::file_exists(fresh.bin), "the fresh binary survives the pruning");
     let kept = dna::run_tool("sh\n-c\nls -1 -- \"$1\" | wc -l | tr -d ' '\nsh\n" + pcache);
     std::test::assert_eq_str(dna::trim_nl(kept.stdout), "32", "the cache is held to 32 entries");
     std::test::assert(!std::io::fs::file_exists(pcache + "/oldfile"), "an old-layout file entry is pruned too");
+
+    // The entry just built is never pruned, even when every other entry
+    // looks newer (the times here are whole seconds, so a fresh entry can
+    // tie with, or trail, entries written in the same second).
+    let g = dna::scratch_root("build-seed-prune-newer-root");
+    let ncache = dna::scratch_root("build-seed-prune-newer-cache");
+    write_seed(g, "fn main() { println(\"newer\"); }\n");
+    dna::run_tool("sh\n-c\ncd -- \"$1\" && i=0 && while [ $i -lt 40 ]; do mkdir -p \"zz$i/app\"; touch -t 209901010000 \"zz$i\"; i=$((i+1)); done\nsh\n" + ncache);
+    let newer = host::build_seed_at(hale, g, g + "/app", ncache);
+    std::test::assert_eq_str(newer.why, "", "a build beside a cache of newer-looking entries succeeds");
+    std::test::assert(std::io::fs::file_exists(newer.bin), "the entry just built survives its own prune");
+    let nkept = dna::run_tool("sh\n-c\nls -1 -- \"$1\" | wc -l | tr -d ' '\nsh\n" + ncache);
+    std::test::assert_eq_str(dna::trim_nl(nkept.stdout), "32", "that cache is held to 32 entries too");
 
     // The default project's own app IS its root.
     let e = dna::scratch_root("build-seed-root-app");
@@ -110,6 +126,8 @@ fn main() {
 
     dna::scratch_done(a);
     dna::scratch_done(b);
+    dna::scratch_done(g);
+    dna::scratch_done(ncache);
     dna::scratch_done(c);
     dna::scratch_done(d);
     dna::scratch_done(e);
