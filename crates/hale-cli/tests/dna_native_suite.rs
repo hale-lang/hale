@@ -1058,6 +1058,7 @@ fn dna_fixture_set_is_complete() {
             "effect_outcomes_test.hl",
             "embedded_provenance_test.hl",
             "extensions_test.hl",
+            "first_run_test.hl",
             "forge_gates_test.hl",
             "genome_pull_test.hl",
             "grant_layering_test.hl",
