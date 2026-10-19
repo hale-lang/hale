@@ -700,7 +700,10 @@ fn main() {
 - **A map, when callers look entries up by name.** `bounded[Check; 16]
   indexed_by name` crosses as `{"db": {…}, "cache": {…}}`, and in the
   program it stays the bounded list it was, in order. A repeated key is
-  refused `duplicate_key`. Keep a plain `bounded` list when the order is
+  refused `duplicate_key`. When each entry is one value (a status, a
+  count), say so: `indexed_by name -> status` on a record of just the
+  two crosses as `{"db": "ok"}`. Without the arrow it stays a map of
+  records. Keep a plain `bounded` list when the order is
   the meaning, when an entry has no `String` name, or when two entries
   may share one. Either way the bound is part of the contract: size it
   for the largest legitimate answer, and page past it (`type Page {

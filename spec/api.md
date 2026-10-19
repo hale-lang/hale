@@ -2212,6 +2212,38 @@ keep the last; the codec is as strict as the JSON one). The digest
 folds the key in (`checks:bounded[...]@name`), since the field crosses
 as an object and not a list.
 
+**A map of values** (2026-10-19) names the value too: `checks:
+bounded[Check; 16] indexed_by name -> status;`, where `Check` is `{ name:
+String; status: String; }`. Each element crosses as its `status` alone,
+keyed by its `name` (`{"db": "ok", "nats": "unavailable"}`), and is built
+back of the member's key and value on decode. It is still the hashmap
+model projected onto a value, the list's elements carrying their key, so
+the program holds the same bounded list of records. The clause names
+which field is the value rather than guessing it from the record's shape:
+a record of one field besides its key keeps crossing as a map of records
+(`{"db": {"status": "up"}}`), and spelling a map of values never moves a
+wire that exists.
+
+The element has no fields but the key and the value, so the decoder
+builds every record whole, and the check refuses any other field at the
+clause. The value is a scalar (a unit-dialect one by its count), a `Time`
+or a payload-free enum; a record, a list, or an enum with payloads is
+refused at the clause, because a map of records already carries one. A
+member's value is read as a list element of its type is, and one of the
+wrong kind is `wrong_type`. A key the object repeats is `duplicate_key`,
+more entries than the list holds `too_long`, and an absent map is empty,
+as for a map of records.
+
+The description gives it `{"type": "object", "additionalProperties":
+<the value's schema>, "maxProperties": N, "x-hale-key": "<key>",
+"x-hale-value": "<value>"}`. In protobuf it is a proto3 `map<string, V>`
+of the value's scalar or enum, each entry its key (1) and value (2) as
+plain proto3 fields. So an entry that leaves its value out (a proto3
+writer drops a zero) is the value's zero, and one that leaves its key out
+is the empty key. The digest folds the value in beside the key
+(`checks:bounded[...]@name->status`). The generated clients keep the
+records and put each one's value alone on the wire.
+
 **A program's own use of the codec** (2026-10-17). `T::api_decode(text) -> T
 fallible(JsonError)` and `T::api_encode(value) -> String` call the api
 codec of a record or an enum `T` from any program, served or not: the same

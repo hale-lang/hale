@@ -2533,6 +2533,11 @@ pub struct StructField {
     /// `name`), the value-level projection of `@form(hashmap)`'s
     /// `indexed_by` (spec/api.md § Codecs, spec/forms.md).
     pub indexed_by: Option<Ident>,
+    /// `checks: bounded[Check; 16] indexed_by name -> status;` — a wire map
+    /// of scalars: each element crosses as its `status` alone, keyed by its
+    /// `name` (`{"db": "ok"}`), the element a record of the key and that
+    /// one value (spec/api.md § Codecs).
+    pub map_value: Option<Ident>,
     pub span: Span,
 }
 

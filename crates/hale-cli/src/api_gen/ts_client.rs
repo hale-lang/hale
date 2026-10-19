@@ -85,9 +85,15 @@ pub(super) fn encode(f: &FieldSchema, value: &str, what: &str) -> Result<String,
     match f {
         FieldSchema::Scalar { .. } | FieldSchema::Time => Ok(value.to_string()),
         FieldSchema::Ref(name) | FieldSchema::Enum { name, .. } => Ok(format!("encode_{}({value})", type_ident(name))),
-        FieldSchema::Map { name, lifted, .. } => {
+        FieldSchema::Map { name, lifted, of: None, .. } => {
             Ok(format!("apiMapEncode({value}, {}, encode_{})", json_quote(lifted), type_ident(name)))
         }
+        FieldSchema::Map { name, lifted, of: Some((v, _)), .. } => Ok(format!(
+            "apiMapEncode({value}, {}, encode_{}, {})",
+            json_quote(lifted),
+            type_ident(name),
+            json_quote(v)
+        )),
         // a list of scalars is itself; a list of records each record's form
         FieldSchema::List { items, .. } => match items.as_ref() {
             FieldSchema::Scalar { .. } | FieldSchema::Time => Ok(value.to_string()),
@@ -115,9 +121,15 @@ pub(super) fn decode_in(f: &FieldSchema, json: &str, what: &str, js: bool) -> Re
             _ => format!("String({json} ?? \"\")"),
         }),
         FieldSchema::Ref(name) | FieldSchema::Enum { name, .. } => Ok(format!("decode_{}({json})", type_ident(name))),
-        FieldSchema::Map { name, lifted, .. } => {
+        FieldSchema::Map { name, lifted, of: None, .. } => {
             Ok(format!("apiMapDecode({json}, {}, decode_{})", json_quote(lifted), type_ident(name)))
         }
+        FieldSchema::Map { name, lifted, of: Some((v, _)), .. } => Ok(format!(
+            "apiMapDecode({json}, {}, decode_{}, {})",
+            json_quote(lifted),
+            type_ident(name),
+            json_quote(v)
+        )),
         FieldSchema::Time => Ok(format!("String({json} ?? \"\")")),
         FieldSchema::List { items, .. } if js => Ok(format!(
             "(globalThis.Array.isArray({json}) ? /** @type {{unknown[]}} */ ({json}).map((e) => {}) : [])",

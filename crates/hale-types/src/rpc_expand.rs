@@ -2242,10 +2242,16 @@ fn field_json(f: &crate::surfaces::FieldSchema) -> String {
             }
             format!("{{\"oneOf\":[{}],\"x-hale-type\":{}{classed}}}", one.join(","), jstr(name))
         }
-        FieldSchema::Map { key, value, max, .. } => format!(
+        FieldSchema::Map { key, value, max, of: None, .. } => format!(
             "{{\"type\":\"object\",\"additionalProperties\":{},\"maxProperties\":{max},\"x-hale-key\":{}}}",
             type_json(value),
             jstr(key)
+        ),
+        FieldSchema::Map { key, max, of: Some((field, schema)), .. } => format!(
+            "{{\"type\":\"object\",\"additionalProperties\":{},\"maxProperties\":{max},\"x-hale-key\":{},\"x-hale-value\":{}}}",
+            field_json(schema),
+            jstr(key),
+            jstr(field)
         ),
     }
 }

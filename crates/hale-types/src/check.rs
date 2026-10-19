@@ -9356,6 +9356,64 @@ fn check_wire_maps(programs: &[&Program], diags: &mut Vec<Diag>) {
                     )),
                     Some(_) => {}
                 }
+                // `-> <value>`: a map of scalars, each element crossing as
+                // that field alone, so the element is the key and it
+                if let Some(value) = &f.map_value {
+                    let at = format!("`indexed_by` on `{}.{}`, its value `-> {}`", t.name.name, f.name.name, value.name);
+                    match elem_fields.iter().find(|g| g.name.name == value.name) {
+                        None => diags.push(Diag::ty(
+                            value.span,
+                            format!("{at}: the element type `{elem_name}` has no field `{}`", value.name),
+                        )),
+                        Some(_) if value.name == key.name => diags.push(Diag::ty(
+                            value.span,
+                            format!("{at}: the value is the key; a map's value is the element's other field"),
+                        )),
+                        Some(g) => {
+                            let others: Vec<&str> = elem_fields
+                                .iter()
+                                .map(|h| h.name.name.as_str())
+                                .filter(|n| *n != key.name && *n != value.name)
+                                .collect();
+                            // a record, a list, or an enum with payloads is no
+                            // value a map of values carries (a map's entry
+                            // value is a scalar or a payload-free enum)
+                            let record = match &g.ty {
+                                TypeExpr::Named { path, .. } if path.segments.len() == 1 => {
+                                    match types.get(&path.segments[0].name).map(|td| &td.body) {
+                                        Some(TypeDeclBody::Struct(_)) => true,
+                                        Some(TypeDeclBody::Enum(vs)) => vs.iter().any(|v| !v.fields.is_empty()),
+                                        _ => false,
+                                    }
+                                }
+                                TypeExpr::Bounded { .. } | TypeExpr::Array { .. } | TypeExpr::Tuple(..) => true,
+                                _ => false,
+                            };
+                            if !others.is_empty() {
+                                diags.push(Diag::ty(
+                                    value.span,
+                                    format!(
+                                        "{at}: `{elem_name}` has other fields ({}), which a map of values would \
+                                         drop: its element is the key and the value alone",
+                                        others.join(", ")
+                                    ),
+                                ));
+                            } else if record {
+                                diags.push(Diag::ty(
+                                    value.span,
+                                    format!(
+                                        "{at}: `{elem_name}.{}` is a `{}`: a map's value is a scalar, a `Time` or a \
+                                         payload-free enum; a map of records is `indexed_by {}` alone, each element \
+                                         crossing as the record without its key",
+                                        value.name,
+                                        crate::surfaces::type_text(&g.ty),
+                                        key.name
+                                    ),
+                                ));
+                            }
+                        }
+                    }
+                }
             }
         });
     }
