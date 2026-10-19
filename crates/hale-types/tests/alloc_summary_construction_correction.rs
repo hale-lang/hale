@@ -1235,7 +1235,7 @@ fn startable_only_the_verb_program_runs_to_exit() {
             "dna/host/verb".to_string(),
             strs(&[
                 "dna__core: 183",
-                "dna__core__pond__pq: 11",
+                "dna__core__pond__pq: 16",
                 "dna__core__pond__realtime__nats: 2",
                 "dna__host: 615",
                 "dna__operations: 135",

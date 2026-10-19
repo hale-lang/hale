@@ -14,6 +14,7 @@
 // nothing here is exercised.
 
 import "../core" as dna;
+import "../core/pond/db" as db;
 
 fn toolchain() -> String {
     if std::env::var_exists("HALE_BIN") { return std::env::var("HALE_BIN"); }
@@ -132,6 +133,25 @@ fn main() {
     std::io::fs::write_file(scratch + "/attached/hale.toml", "[dna]\nneeds = [\"memory\", \"nerves\"]\n") or discard;
     let attached = in_dir(scratch, toolchain() + "\nhabitat\ngraft\nattached\n--attach\n--no-library");
     std::test::assert(attached.code == 0 && std::str::contains(attached.stdout, "needs memory, nerves)") && !std::str::contains(attached.stdout, "senses  allocated"), "an attached repository gets the roles it declares: " + attached.stdout + attached.stderr);
+    // a Hale heart declaring the `database` heart role: a tenant database
+    // of its memory server, its DSN naming its vault slot, working
+    std::io::fs::mkdir(scratch + "/keeper") or discard;
+    std::io::fs::write_file(scratch + "/keeper/README.md", "# keeper\n\nA repository whose heart keeps a store.\n") or discard;
+    std::io::fs::write_file(scratch + "/keeper/hale.toml", "[dna]\nneeds = [\"memory\", \"nerves\", \"database\"]\n") or discard;
+    let keeper = in_dir(scratch, toolchain() + "\nhabitat\ngraft\nkeeper\n--attach\n--no-library");
+    std::test::assert(keeper.code == 0 && std::str::contains(keeper.stdout, "needs memory, nerves, database)") && std::str::contains(keeper.stdout, "database a tenant database of the organism's memory server"), "the database the heart declares is provisioned at graft: " + keeper.stdout + keeper.stderr);
+    let kkey = dna::allocation_key(scratch + "/keeper");
+    std::test::assert(std::str::contains(rows_of(genome, "habitat.allocated"), "\"entity\": \"" + kkey + "/database\""), "and recorded as its allocation");
+    let hp = dna::trim_nl(dna::run_tool(dna::allocation_compose(scratch + "/keeper") + "\nport\nmemory-" + kkey + "\n5432").stdout);
+    let role = dna::heart_role(kkey);
+    let c = dna::pq_conn(dna::parse_dsn("postgres://" + role + "@" + hp + "/" + role + "?sslmode=disable&vault=" + dna::role_vault_name(role)));
+    let opened = c.open();
+    let wrote = if opened.ok { c.exec("CREATE TABLE IF NOT EXISTS kept (n int); INSERT INTO kept VALUES (7)") } else { db::ExecResult { } };
+    let read = if opened.ok { c.query_one("SELECT n FROM kept") } else { db::Row { } };
+    if opened.ok { c.close(); }
+    std::test::assert(opened.ok && wrote.ok && read.ok && std::str::contains(read.data, "7"), "the DSN reaches the heart's own database through its slot: " + opened.err.detail + wrote.err.detail + read.err.detail);
+    let undeclared = in_dir(scratch, toolchain() + "\nhabitat\nstatus").stdout;
+    std::test::assert(!std::str::contains(undeclared, "database-" + tkey) && !std::str::contains(rows_of(genome, "habitat.allocated"), "\"entity\": \"" + tkey + "/database\""), "an undeclared genome gets no database: " + undeclared);
     let refused = in_dir(scratch, toolchain() + "\nhabitat\ngraft\nattached\n--attach");
     std::test::assert(refused.code != 0 && std::str::contains(refused.stderr, "is born already"), "an organism is grafted once: " + refused.stderr);
     let with_tenant = in_dir(scratch, toolchain() + "\nhabitat\nstatus").stdout;

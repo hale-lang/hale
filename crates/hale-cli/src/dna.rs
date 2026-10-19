@@ -856,7 +856,24 @@ pub fn run(args: &[String]) -> ExitCode {
                     Err(e) => eprintln!("hale dna dev: senses: {e}"),
                 }
             }
+            // GH #1653: a heart whose genome declares the `database` role is
+            // handed its DSN (which names its vault slot), derived: nothing
+            // is provisioned here
+            let database = if habitat::needs_at(&dir).iter().any(|r| r == "database") {
+                match host_run("database-provision", &dir, &["--derive".to_string()]) {
+                    Ok(o) => o.lines().find_map(|l| l.strip_prefix("HALE_DNA_DATABASE_DSN=")).map(str::to_string),
+                    Err(e) => {
+                        eprintln!("hale dna dev: database: {e}");
+                        None
+                    }
+                }
+            } else {
+                None
+            };
             let mut env: Vec<(&str, &OsStr)> = Vec::new();
+            if let Some(d) = &database {
+                env.push(("HALE_DNA_DATABASE_DSN", OsStr::new(d.as_str())));
+            }
             if let Some(spine) = &spine {
                 env.push(("HALE_DNA_MEMORY_DSN_SPINE", OsStr::new(spine.as_str())));
             }

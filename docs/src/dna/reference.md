@@ -76,7 +76,9 @@ graft <dir>          birth an organism as the habitat's child, the one way an
                      roles its genome needs (`[dna] needs` in its hale.toml:
                      memory and nerves always, senses unless left out;
                      undeclared, as a foreign heart is, it is exactly the
-                     organism's own, never a heart's database or broker) are
+                     organism's own, never a heart's; a Hale heart may
+                     declare `database`, a tenant database of its memory
+                     server handed to it as HALE_DNA_DATABASE_DSN) are
                      allocated to it and recorded in the habitat's record,
                      and the `standard` pack is proposed to its Board.
                      <dir> is a new application's directory, or with

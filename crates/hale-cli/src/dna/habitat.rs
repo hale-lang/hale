@@ -55,7 +55,9 @@ graft <dir>          birth an organism as the habitat's child, the one way an
                      roles its genome needs (`[dna] needs` in its hale.toml:
                      memory and nerves always, senses unless left out;
                      undeclared, as a foreign heart is, it is exactly the
-                     organism's own, never a heart's database or broker) are
+                     organism's own, never a heart's; a Hale heart may
+                     declare `database`, a tenant database of its memory
+                     server handed to it as HALE_DNA_DATABASE_DSN) are
                      allocated to it and recorded in the habitat's record,
                      and the `standard` pack is proposed to its Board.
                      <dir> is a new application's directory, or with
@@ -152,6 +154,10 @@ fn migrate_lines(root: &Path) -> Result<Vec<String>, String> {
         Ok(NervesPlan::Roles(_)) => out.push("nerves  migrated; the organization's stream is in place".to_string()),
         Ok(NervesPlan::NoServer(why)) => return Err(format!("nerves: {why}")),
         Err(e) => return Err(format!("nerves: {e}")),
+    }
+    // the heart's database, when the genome declares it
+    if needs_at(root).iter().any(|r| r == "database") {
+        out.push(provision_database(root, if own_servers() { "operator" } else { "own" })?);
     }
     // the senses' store is the habitat's when memory and the nerves are:
     // an environment that names servers of its own names its own store.
@@ -832,8 +838,12 @@ fn status() -> ExitCode {
     let versions = rows.iter().find_map(|(_, r)| r["root"].as_str().map(PathBuf::from).filter(|p| p.join("hale.toml").is_file())).map(|r| toolchain_versions(&r)).unwrap_or_default();
     for (key, row) in rows {
         println!("allocation {key} ({})", row["root"].as_str().unwrap_or("no organism recorded"));
-        for role in ["memory", "nerves", "senses"] {
-            let service = format!("{role}-{key}");
+        for role in ["memory", "nerves", "senses", "database"] {
+            if role == "database" && !row["roles"]["database"].is_object() {
+                continue;
+            }
+            // the heart's database is a tenant of the memory server
+            let service = if role == "database" { format!("memory-{key}") } else { format!("{role}-{key}") };
             let on_operator = row["roles"][role]["service"].as_str() == Some("operator");
             let state = if on_operator { "on the operator's server" } else if running.iter().any(|s| s == &service) { "running" } else { "stopped" };
             let recorded = row["roles"][role]["schema_version"].as_u64();
@@ -1063,9 +1073,12 @@ const ROLES: [&str; 3] = ["memory", "nerves", "senses"];
 const ALWAYS: [&str; 2] = ["memory", "nerves"];
 /// The roles a heart may need of its own: never given by default (a
 /// foreign heart's infrastructure is its own, and none of it is the
-/// habitat's to touch), only when a Hale heart's genome declares one, and
-/// not provisioned by this habitat yet.
+/// habitat's to touch), only when a Hale heart's genome declares one. The
+/// local profile provisions `database` (a tenant database of the
+/// organism's memory server); the rest are refused until a heart needs
+/// them.
 const HEART_ROLES: [&str; 4] = ["database", "broker", "cache", "object-store"];
+const PROVISIONED_HEART_ROLES: [&str; 1] = ["database"];
 
 /// GH #1653: the roles the genome at `dir` needs from the habitat, as its
 /// manifest declares them (`[dna] needs = ["memory", "nerves", …]`): the
@@ -1089,10 +1102,10 @@ pub(super) fn needs_of(manifest_text: Option<&str>) -> Result<Vec<String>, Strin
         }
     };
     let Some(mut needs) = declared else { return Ok(ROLES.iter().map(|r| r.to_string()).collect()) };
-    if let Some(r) = needs.iter().find(|r| HEART_ROLES.contains(&r.as_str())) {
-        return Err(format!("[dna] needs names the heart role `{r}`, which this habitat does not provision yet (it provisions the organism's own: {})", ROLES.join(", ")));
+    if let Some(r) = needs.iter().find(|r| HEART_ROLES.contains(&r.as_str()) && !PROVISIONED_HEART_ROLES.contains(&r.as_str())) {
+        return Err(format!("[dna] needs names the heart role `{r}`, which this habitat does not provision yet (it provisions the organism's own, {}, and the heart roles {})", ROLES.join(", "), PROVISIONED_HEART_ROLES.join(", ")));
     }
-    if let Some(r) = needs.iter().find(|r| !ROLES.contains(&r.as_str())) {
+    if let Some(r) = needs.iter().find(|r| !ROLES.contains(&r.as_str()) && !PROVISIONED_HEART_ROLES.contains(&r.as_str())) {
         return Err(format!("[dna] needs names `{r}`, which the habitat does not provision (it provisions the organism's own roles, {}, and knows the heart roles {})", ROLES.join(", "), HEART_ROLES.join(", ")));
     }
     for must in ALWAYS {
@@ -1100,7 +1113,7 @@ pub(super) fn needs_of(manifest_text: Option<&str>) -> Result<Vec<String>, Strin
             return Err(format!("[dna] needs leaves out `{must}`, which every organism needs: its record is memory's and its organization reads the nerves"));
         }
     }
-    needs.sort_by_key(|r| ROLES.iter().position(|x| x == r));
+    needs.sort_by_key(|r| ROLES.iter().chain(PROVISIONED_HEART_ROLES.iter()).position(|x| x == r));
     needs.dedup();
     Ok(needs)
 }
@@ -1183,6 +1196,9 @@ fn graft_lines(dir: &Path, attach: bool, library: bool) -> Result<Vec<String>, S
             Err(e) => out.push(format!("note    senses not up: {e}")),
         }
     }
+    if needs.iter().any(|r| r == "database") {
+        out.push(provision_database(&root, &backends)?);
+    }
     let row = serde_json::json!({ "kind": "habitat.grafted", "entity": &child[..12], "body": serde_json::json!({ "child": child, "parent": parent, "needs": needs, "backends": backends }).to_string() });
     let file = PathBuf::from(local_habitat_dir()).join(".graft-row.jsonl");
     std::fs::write(&file, format!("{row}\n")).map_err(|e| format!("write {}: {e}", file.display()))?;
@@ -1196,6 +1212,25 @@ fn graft_lines(dir: &Path, attach: bool, library: bool) -> Result<Vec<String>, S
     let ok = Command::new(&me).args(["dna", "pack", "apply", "standard"]).arg(&root).status().is_ok_and(|s| s.success());
     out.push(if ok { "proposed the `standard` pack to the child's Board".to_string() } else { format!("note    the `standard` pack was not proposed: `hale dna pack apply standard {}` proposes it", root.display()) });
     Ok(out)
+}
+
+/// GH #1653: the `database` heart role provisioned for the organism at
+/// `root`, a tenant database of its memory server, and recorded as its
+/// allocation; the heart is handed `HALE_DNA_DATABASE_DSN`, which names
+/// its vault slot.
+pub(super) fn provision_database(root: &Path, backends: &str) -> Result<String, String> {
+    let o = host_run("database-provision", root, &[])?;
+    if let Some(why) = o.trim().strip_prefix("none: ") {
+        return Err(format!("database: {why}"));
+    }
+    let slots = o.lines().find_map(|l| l.strip_prefix("allocation.vault_slots=")).unwrap_or("");
+    record_allocation(root, "database", 0, slots, backends == "operator")?;
+    Ok(format!("database a tenant database of the organism's memory server, for its heart (HALE_DNA_DATABASE_DSN, its password in the vault slot {slots})"))
+}
+
+/// The roles the organism at `root` needs, as its manifest declares them.
+pub(super) fn needs_at(root: &Path) -> Vec<String> {
+    needs_of(std::fs::read_to_string(root.join("hale.toml")).ok().as_deref()).unwrap_or_else(|_| ROLES.iter().map(|r| r.to_string()).collect())
 }
 
 fn manifest_pin_in_text(text: &str) -> Option<String> {
@@ -1218,7 +1253,8 @@ mod tests {
             assert_eq!(got, ROLES, "an undeclared genome gets the organism's own roles");
             assert!(got.iter().all(|r| !HEART_ROLES.contains(&r.as_str())), "and no heart role: {got:?}");
         }
-        assert!(needs_of(Some("[dna]\nneeds = [\"memory\", \"nerves\", \"database\"]\n")).unwrap_err().contains("the heart role `database`, which this habitat does not provision yet"), "a heart role is declared, never given");
+        assert_eq!(needs_of(Some("[dna]\nneeds = [\"database\", \"memory\", \"nerves\"]\n")).unwrap(), ["memory", "nerves", "database"], "a Hale heart declares the database it needs");
+        assert!(needs_of(Some("[dna]\nneeds = [\"memory\", \"nerves\", \"broker\"]\n")).unwrap_err().contains("the heart role `broker`, which this habitat does not provision yet"), "the other heart roles are refused by name");
         assert_eq!(needs_of(Some("[dna]\nneeds = [\"nerves\", \"memory\"]\n")).unwrap(), ["memory", "nerves"], "senses left out");
         assert!(needs_of(Some("[dna]\nneeds = [\"memory\", \"redis\"]\n")).unwrap_err().contains("`redis`, which the habitat does not provision"));
         assert!(needs_of(Some("[dna]\nneeds = [\"memory\"]\n")).unwrap_err().contains("leaves out `nerves`"));

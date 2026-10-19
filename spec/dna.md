@@ -4416,9 +4416,19 @@ The live half is memory's, projected from the record by the spine
   roles — memory, the nerves and the senses' store — and never a heart
   role (`database`, `broker`, `cache`, `object-store`): a heart's
   infrastructure is its own, and the habitat provides nothing for a
-  heart that did not ask. A Hale heart that needs one declares it; this
-  habitat provisions no heart role yet, so a declared one is refused by
-  name at graft, as is a role it does not know. **Then birth satisfies them**: the record's
+  heart that did not ask. A Hale heart that needs one declares it. The
+  local profile provisions **`database`**: a tenant database of the
+  organism's own memory server (its memory allocation's Postgres, or the
+  operator's on `operator` backends), `heart_<id>`, owned by a role of
+  the same name that it alone reaches (`PUBLIC` revoked), its password
+  drawn into the vault slot `postgres-heart_<id>`; it is recorded as the
+  organism's `database` allocation (`habitat.allocated <id>/database`),
+  provisioned again by `hale habitat migrate`, and handed to the heart as
+  `HALE_DNA_DATABASE_DSN`, a DSN that names its vault slot and carries
+  no password (the attach contract's name for it; `hale dna dev` derives
+  it, provisioning nothing). `broker`, `cache` and `object-store` are
+  refused by name at graft until a heart needs one, as is a role the
+  habitat does not know. **Then birth satisfies them**: the record's
   genesis names its parent (`parent`, the habitat's record identity, in
   the first row's body, and so in the child's identity), each role it
   needs is allocated to it and recorded in the habitat's record
@@ -5917,6 +5927,7 @@ otherwise.
 | `HALE_DNA_MEMORY_DSN_OWNER=<dsn>` | the memory allocation | A Postgres of your own instead of the organism's memory allocation in the local habitat: the owner role that migrates memory and creates the record's roles. Migrated by `hale habitat migrate`, `memory migrate` and `upgrade`; read, never migrated, by `dev`, `head` and `show`; and by the fixtures that migrate or drop a record. |
 | `HALE_DNA_MEMORY_DSN_SPINE=<dsn>` | unset | The spine role's DSN, printed by `memory migrate` and handed to the process that is the spine. |
 | `HALE_DNA_MEMORY_DSN_HEAD=<dsn>` | unset | The head role's DSN, handed to the head and to nothing else. |
+| `HALE_DNA_DATABASE_DSN=<dsn>` | set for a heart whose genome declares `database` | The heart's own database, a tenant of the organism's memory server provisioned at graft (GH #1653): a DSN naming the role `heart_<id>` and its vault slot `postgres-heart_<id>`, never a password. `hale dna dev` hands it to the host, and the heart inherits it. |
 | `HALE_DNA_MEMORY_FROM=owner\|habitat <project>/memory-<id>` | written by every migration | Not set by hand: the line beside the head's DSN in a clone's `.hale/dna/memory.env` that says where the DSN was derived, an operator's own Postgres (`owner`) or the organism's memory allocation in the local habitat. A kept DSN whose origin is anything else (another habitat's allocation, an older toolchain's database, or no origin) is removed and refused, naming `hale habitat migrate` (GH #1653). |
 | `HALE_DNA_OWNER_KEYS=<keys>` | one owner | `<owner>=<key> …`, space-separated: the owners `memory migrate` writes for a shared record. The keys stay the record's; memory never holds signature bytes. |
 | `HALE_DNA_RECEIPT_KEY=<key>` | unset | Sixteen characters or more: the key evidence bodies are sealed under. The first key given is written; a different one later is refused, because bodies sealed under the first would no longer open. |
