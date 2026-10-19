@@ -654,6 +654,8 @@ dynamic	<hole>	on unknown (no caller)|unresolved declaration `ParseError`	in the
 
 == crates/hale-stdlib/hl/lang.hl#69f221b9
 
+== crates/hale-stdlib/hl/log.hl#6a34a769
+
 == crates/hale-stdlib/hl/metrics.hl#19f66cf4
 
 == crates/hale-stdlib/hl/process.hl#e44be954
@@ -2781,6 +2783,7 @@ dynamic	Empty	on main	in the seed
 == crates/hale-codegen/tests/drain_elision.rs#730d9417
 row	__StdLogLogger@main2	__StdLogLogger	main	default
 row	__StdLogStdoutSink@main1	__StdLogStdoutSink	main	default
+dynamic	__StdBytesBytesBuilder	on main	in the stdlib
 
 == crates/hale-codegen/tests/drain_grace_names_the_wait.rs#4020130d
 root	Root	the entry
@@ -4053,10 +4056,12 @@ row	L@main1	L	main	default
 == crates/hale-codegen/tests/log_routing.rs#f3b1e436
 row	__StdLogLogger@main2	__StdLogLogger	main	default
 row	__StdLogStdoutSink@main1	__StdLogStdoutSink	main	default
+dynamic	__StdBytesBytesBuilder	on main	in the stdlib
 
 == crates/hale-codegen/tests/log_routing.rs#69c49ce8
 row	__StdLogLogger@main2	__StdLogLogger	main	default
 row	__StdLogStdoutSink@main1	__StdLogStdoutSink	main	default
+dynamic	__StdBytesBytesBuilder	on main	in the stdlib
 
 == crates/hale-codegen/tests/main_locus_deferred_pool_join.rs#ff751d39
 root	App	the entry
@@ -5098,16 +5103,19 @@ shared	dynamic	sites in the seed #a76c74f1
 == crates/hale-codegen/tests/stdlib_log.rs#b043be5b
 row	__StdLogLogger@main2	__StdLogLogger	main	default
 row	__StdLogStdoutSink@main1	__StdLogStdoutSink	main	default
+dynamic	__StdBytesBytesBuilder	on main	in the stdlib
 
 == crates/hale-codegen/tests/stdlib_log.rs#4100860b
 row	__StdLogLogger@main2	__StdLogLogger	main	default
 row	__StdLogLogger@main3	__StdLogLogger	main	default
 row	__StdLogLogger@main4	__StdLogLogger	main	default
 row	__StdLogStdoutSink@main1	__StdLogStdoutSink	main	default
+dynamic	__StdBytesBytesBuilder	on main	in the stdlib
 
 == crates/hale-codegen/tests/stdlib_log.rs#88928a8f
 row	__StdLogLogger@main2	__StdLogLogger	main	default
 row	__StdLogStdoutSink@main1	__StdLogStdoutSink	main	default
+dynamic	__StdBytesBytesBuilder	on main	in the stdlib
 
 == crates/hale-codegen/tests/stdlib_log.rs#88e40eac
 row	DbOnlySinkL@main1	DbOnlySinkL	main	default
@@ -5119,6 +5127,7 @@ row	__StdLogLogger@main4	__StdLogLogger	main	default
 row	__StdLogLogger@main2	__StdLogLogger	main	default
 row	__StdLogLogger@main3	__StdLogLogger	main	default
 row	__StdLogStdoutSink@main1	__StdLogStdoutSink	main	default
+dynamic	__StdBytesBytesBuilder	on main	in the stdlib
 
 == crates/hale-codegen/tests/stdlib_metrics.rs#7c488f97
 dynamic	__StdBytesBytesBuilder	on main	in the stdlib
@@ -15800,6 +15809,7 @@ root	App	the entry
 domain	pinned:App@literal1.s
 row	App@literal1	App	main	default
 row	App@literal1.s	__StdLogStdoutSink	pinned:App@literal1.s	entry	off owner
+dynamic	__StdBytesBytesBuilder	on pinned:App@literal1.s	in the stdlib
 
 == crates/hale-types/tests/fixtures/placement/qualified.hl
 root	App	the entry

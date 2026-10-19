@@ -78,7 +78,8 @@ log.warn_kv(
 
 `std::log::kv(key, value)` renders one `key=value` pair in
 [logfmt](https://brandur.org/logfmt), quoting the value when it
-contains a space, a quote or an `=`. Join pairs with a space.
+contains a space, a quote, an `=`, a backslash or a control
+character. Join pairs with a space.
 
 Fields ride on the event as text rather than as a map, because a
 map in Hale is a *locus* and a locus cannot be a payload. The
@@ -115,8 +116,10 @@ HALE_LOG_FORMAT=text ./myapp   # [WARN app.db] retrying attempt=2 after=2s  (war
 yourself (`ConsoleSink` is the colored one). A sink's own `format:`
 param (`"logfmt"`, `"json"`, `"text"`) pins it in code. An unknown
 name is logfmt, so a typo never turns records back into free text. A
-line break in a message or a value is written `\n`, so a record is
-always one line. (Before October 2026 the default was `text`.)
+message or a value that holds a space, a quote, an `=`, a
+backslash or a control character is quoted, its line breaks, tabs and
+other control characters escaped (`\n`, `\t`, `\u0001`), so a record
+is always one line that every logfmt reader splits the same way. (Before October 2026 the default was `text`.)
 
 ## Per-component loggers, one sink
 

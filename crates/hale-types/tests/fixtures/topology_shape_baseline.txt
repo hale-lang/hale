@@ -1674,7 +1674,7 @@ crates/hale-stdlib/hl/io_tcp.hl 6be8920a3d36060a
 crates/hale-stdlib/hl/iter.hl 907139175ae346a1
 crates/hale-stdlib/hl/json.hl 2d2ace32481d2bb5
 crates/hale-stdlib/hl/lang.hl cec111863280b6a7
-crates/hale-stdlib/hl/log.hl 801c94d369a40cb6
+crates/hale-stdlib/hl/log.hl 6fe4a57697b2d70b
 crates/hale-stdlib/hl/metrics.hl f89fe6d80b752d5d
 crates/hale-stdlib/hl/mirror_ring.hl 67d1b5dd2519f196
 crates/hale-stdlib/hl/name.hl a0cb9c4bfee2b3ec

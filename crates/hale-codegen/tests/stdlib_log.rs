@@ -219,3 +219,50 @@ fn hale_log_format_text_keeps_the_format_before_records() {
     assert!(stderr.contains(r#"[WARN app.db] retrying attempt=2 why="conn \"reset\" by=peer""#), "{stderr:?}");
     assert!(stderr.contains("[ERROR app] gave up"), "{stderr:?}");
 }
+
+/// One value per character class a logfmt reader splits on, or a line
+/// break that would end the record: (the value as Hale source spells
+/// it, its logfmt token, its JSON string). Each renders as one
+/// well-formed token and one valid JSON string, in the message and in a
+/// field. The runtime's renderer (`lotus_diag`) is held to this table
+/// too (`runtime_records`).
+pub const ESCAPES: &[(&str, &str, &str)] = &[
+    ("left\\tright", r#""left\tright""#, r#""left\tright""#),
+    ("cr\\rhere", r#""cr\rhere""#, r#""cr\rhere""#),
+    ("back\\\\slash", r#""back\\slash""#, r#""back\\slash""#),
+    ("say \\\"hi\\\"", r#""say \"hi\"""#, r#""say \"hi\"""#),
+    ("ctl\\x01x", r#""ctl\u0001x""#, r#""ctl\u0001x""#),
+    ("del\\x7fx", r#""del\u007fx""#, "\"del\u{7f}x\""),
+    ("", "", r#""""#),
+    ("plain", "plain", r#""plain""#),
+];
+
+#[test]
+fn every_control_character_is_escaped_in_a_record() {
+    let mut body = String::new();
+    for (src, _, _) in ESCAPES {
+        body.push_str(&format!("        log.info_kv(\"{src}\", std::log::kv(\"v\", \"{src}\"));\n"));
+    }
+    let program = format!(
+        "fn main() {{\n        std::log::StdoutSink {{ }};\n        let log = std::log::Logger {{ name: \"app\" }};\n{body}    }}\n"
+    );
+    for format in ["logfmt", "json"] {
+        let bin = build_hale(&format!("escapes_{format}"), &program);
+        let out = Command::new(&bin).env("HALE_LOG_FORMAT", format).output().expect("run");
+        let _ = std::fs::remove_file(&bin);
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+        let lines: Vec<&str> = stdout.lines().collect();
+        assert_eq!(lines.len(), ESCAPES.len(), "{format}: one line per record: {stdout:?}");
+        for (line, (src, token, json)) in lines.iter().zip(ESCAPES) {
+            assert!(!line.contains('\t') && !line.contains('\r') && !line.contains('\u{1}'), "{format} {src}: no raw control byte: {line:?}");
+            if format == "logfmt" {
+                let want = format!(" level=info logger=app msg={token} v={token}");
+                assert!(line.ends_with(&want), "{src}: {line:?} ends with {want:?}");
+            } else {
+                let want = format!(",\"level\":\"info\",\"logger\":\"app\",\"msg\":{json},\"v\":{json}}}");
+                assert!(line.ends_with(&want), "{src}: {line:?} ends with {want:?}");
+            }
+        }
+    }
+}

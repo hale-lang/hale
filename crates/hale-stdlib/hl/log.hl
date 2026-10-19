@@ -82,21 +82,55 @@ type __StdLogEvent {
 // logfmt convention every parser in that family already
 // implements.
 /// Render one `key=value` pair for a log event's `fields`, quoting
-/// the value when it contains a space, a quote or an `=`. Join
-/// several with a space.
+/// the value when it contains a space, a quote, an `=`, a
+/// backslash or a control character (escaped inside the quotes as
+/// `\\`, `\"`, `\n`, `\r`, `\t` or `\u00XX`). Join several with a
+/// space.
 fn __std_log_kv(key: String, value: String) -> String {
-    let mut needs_quote = false;
-    if std::str::contains(value, " ") { needs_quote = true; }
-    if std::str::contains(value, "\"") { needs_quote = true; }
-    if std::str::contains(value, "=") { needs_quote = true; }
-    // a record is one line: a line break in a value is written `\n`
-    if std::str::contains(value, "\n") { needs_quote = true; }
-    if !needs_quote {
+    let n = len(value);
+    let mut i = 0;
+    while i < n && __log_plain_byte(std::str::byte_at_unchecked(value, i)) {
+        i = i + 1;
+    }
+    // an empty value is bare, `key=`, which logfmt reads as empty
+    if i == n {
         return key + "=" + value;
     }
-    let escaped = std::str::replace(std::str::replace(
-        std::str::replace(value, "\\", "\\\\"), "\"", "\\\""), "\n", "\\n");
-    return key + "=\"" + escaped + "\"";
+    // quoted: `\` and `"` escaped, a line break, a carriage return and
+    // a tab written `\n`, `\r` and `\t`, and any other control byte
+    // `\u00XX`, so a record is one line and every logfmt reader splits
+    // it where the writer did
+    let out = std::bytes::BytesBuilder { initial_cap: n + 8 };
+    out.append_str(key + "=\"");
+    let src = std::bytes::from_string(value);
+    let mut mark = 0;
+    i = 0;
+    while i < n {
+        let c = std::str::byte_at_unchecked(value, i);
+        if c >= 32 && c != 34 && c != 92 && c != 127 { i = i + 1; continue; }
+        if i > mark { out.append_slice(src, mark, i); }
+        if c == 92 { out.append_str("\\\\"); }
+        else if c == 34 { out.append_str("\\\""); }
+        else if c == 10 { out.append_str("\\n"); }
+        else if c == 13 { out.append_str("\\r"); }
+        else if c == 9 { out.append_str("\\t"); }
+        else {
+            out.append_str("\\u00");
+            out.append_u8(std::str::byte_at_unchecked("0123456789abcdef", c / 16));
+            out.append_u8(std::str::byte_at_unchecked("0123456789abcdef", c % 16));
+        }
+        i = i + 1;
+        mark = i;
+    }
+    if n > mark { out.append_slice(src, mark, n); }
+    out.append_str("\"");
+    return std::str::clone(out.text_view());
+}
+
+// A byte a logfmt value carries bare: not a space, a quote, an `=`, a
+// backslash or a control byte (U+0000 to U+001F, and U+007F).
+fn __log_plain_byte(c: Int) -> Bool {
+    return c > 32 && c != 34 && c != 61 && c != 92 && c != 127;
 }
 
 // Severity ORDER, which the level constants deliberately are not.
@@ -351,23 +385,32 @@ fn __log_fields_json(fields: String) -> String {
         if i < n && (std::bytes::at(b, i) or 0) == 61 {
             i = i + 1;
             if i < n && (std::bytes::at(b, i) or 0) == 34 {
-                // quoted: until the closing quote, `\` escapes undone
+                // quoted: until the closing quote, `std::log::kv`'s
+                // escapes undone (`\\`, `\"`, `\n`, `\r`, `\t`, `\u00XX`)
                 i = i + 1;
-                let v = std::str::builder_new();
+                let v = std::bytes::BytesBuilder { initial_cap: 16 };
                 while i < n && (std::bytes::at(b, i) or 0) != 34 {
-                    if (std::bytes::at(b, i) or 0) == 92 && i + 1 < n {
-                        i = i + 1;
-                        if (std::bytes::at(b, i) or 0) == 110 {
-                            std::str::builder_append(v, "\n");
-                            i = i + 1;
+                    let c = std::bytes::at(b, i) or 0;
+                    if c == 92 && i + 1 < n {
+                        let e = std::bytes::at(b, i + 1) or 0;
+                        if e == 110 { v.append_u8(10); i = i + 2; continue; }
+                        if e == 114 { v.append_u8(13); i = i + 2; continue; }
+                        if e == 116 { v.append_u8(9); i = i + 2; continue; }
+                        if e == 117 && i + 5 < n {
+                            let code = __log_hex(std::bytes::at(b, i + 4) or 0) * 16 + __log_hex(std::bytes::at(b, i + 5) or 0);
+                            if code > 0 { v.append_u8(code); }
+                            i = i + 6;
                             continue;
                         }
+                        v.append_u8(e);
+                        i = i + 2;
+                        continue;
                     }
-                    std::str::builder_append(v, std::str::from_bytes(std::bytes::slice(b, i, i + 1)));
+                    v.append_u8(c);
                     i = i + 1;
                 }
                 i = i + 1;
-                value = std::str::builder_finish(v);
+                value = std::str::clone(v.text_view());
             } else {
                 let value_start = i;
                 while i < n && (std::bytes::at(b, i) or 0) != 32 { i = i + 1; }
@@ -377,6 +420,14 @@ fn __log_fields_json(fields: String) -> String {
         out = out + ",\"" + std::json::escape_string(key) + "\":\"" + std::json::escape_string(value) + "\"";
     }
     return out;
+}
+
+// A hex digit's value (0 for anything else).
+fn __log_hex(c: Int) -> Int {
+    if c >= 48 && c <= 57 { return c - 48; }
+    if c >= 97 && c <= 102 { return c - 87; }
+    if c >= 65 && c <= 70 { return c - 55; }
+    return 0;
 }
 
 // Fields render AFTER the message, space-separated, and vanish
