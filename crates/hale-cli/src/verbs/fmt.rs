@@ -13,8 +13,6 @@ use std::fs;
 ///             files that would change
 ///   --stdin   read source on stdin, write formatted to stdout
 ///             (editor integration)
-///   --wrap    also break every line wider than 100 columns
-///             (spec/testing.md); opt-in until the tree is reflowed
 ///
 /// A file that doesn't lex is reported and skipped (exit 1): the
 /// formatter never touches a file it can't fully tokenize. The
@@ -25,14 +23,12 @@ pub(crate) fn run_fmt(rest: &[String]) -> ExitCode {
     let mut check = false;
     let mut diff = false;
     let mut stdin_mode = false;
-    let mut wrap = false;
     let mut targets: Vec<PathBuf> = Vec::new();
     for a in rest {
         match a.as_str() {
             "--check" => check = true,
             "--diff" => diff = true,
             "--stdin" => stdin_mode = true,
-            "--wrap" => wrap = true,
             other if other.starts_with('-') => {
                 eprintln!("hale fmt: unknown flag {}", other);
                 return ExitCode::from(2);
@@ -41,14 +37,6 @@ pub(crate) fn run_fmt(rest: &[String]) -> ExitCode {
         }
     }
 
-    let format = |src: &str| {
-        if wrap {
-            hale_syntax::fmt::format_source_wrapped(src)
-        } else {
-            hale_syntax::fmt::format_source(src)
-        }
-    };
-
     if stdin_mode {
         use std::io::Read;
         let mut src = String::new();
@@ -56,7 +44,7 @@ pub(crate) fn run_fmt(rest: &[String]) -> ExitCode {
             eprintln!("hale fmt: reading stdin: {}", e);
             return ExitCode::from(1);
         }
-        return match format(&src) {
+        return match hale_syntax::fmt::format_source(&src) {
             Ok(out) => {
                 print!("{}", out);
                 ExitCode::SUCCESS
@@ -100,7 +88,7 @@ pub(crate) fn run_fmt(rest: &[String]) -> ExitCode {
                 continue;
             }
         };
-        let out = match format(&src) {
+        let out = match hale_syntax::fmt::format_source(&src) {
             Ok(o) => o,
             Err(hale_syntax::fmt::FmtError::Parse(_)) => {
                 eprintln!(

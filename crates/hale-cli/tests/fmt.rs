@@ -113,14 +113,12 @@ fn fmt_stdin(args: &[&str], src: &str) -> String {
     String::from_utf8_lossy(&out.stdout).into_owned()
 }
 
-/// `--wrap` breaks a line wider than 100 columns by its shape (a call:
-/// one argument per line, a trailing comma); without it the line
-/// structure is the author's.
+/// A line wider than 100 columns is broken by its shape (a call: one
+/// argument per line, a trailing comma); one that fits is the author's.
 #[test]
-fn wrap_flag_breaks_a_wide_line() {
+fn a_wide_line_is_broken() {
     let wide = "fn main() {\n    let r = build_the_record(alpha_argument_value, beta_argument_value, gamma_argument_value, delta);\n}\n";
     let wrapped = "fn main() {\n    let r = build_the_record(\n        alpha_argument_value,\n        beta_argument_value,\n        gamma_argument_value,\n        delta,\n    );\n}\n";
-    assert_eq!(fmt_stdin(&["fmt", "--stdin"], wide), wide);
-    assert_eq!(fmt_stdin(&["fmt", "--stdin", "--wrap"], wide), wrapped);
-    assert_eq!(fmt_stdin(&["fmt", "--stdin", "--wrap"], wrapped), wrapped);
+    assert_eq!(fmt_stdin(&["fmt", "--stdin"], wide), wrapped);
+    assert_eq!(fmt_stdin(&["fmt", "--stdin"], wrapped), wrapped);
 }

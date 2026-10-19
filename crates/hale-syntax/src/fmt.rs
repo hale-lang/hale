@@ -2,9 +2,10 @@
 //! zero config).
 //!
 //! Design: a TOKEN-STREAM formatter, not an AST pretty-printer. The
-//! author's line-break structure is preserved (gofmt's philosophy —
-//! no max-line-length enforcement); the formatter normalizes what
-//! can be normalized without judgment calls:
+//! author's line-break structure is preserved wherever a line fits
+//! (gofmt's philosophy), and a line wider than [`WRAP_WIDTH`] is broken
+//! by its shape (Width, below); the formatter normalizes what can be
+//! normalized without judgment calls:
 //!
 //!   * indentation — 4 spaces per bracket depth, computed by a
 //!     bracket stack that records the indent of each opener's LINE
@@ -22,7 +23,7 @@
 //!     indent with the code, trailing comments sit one space after
 //!     the code
 //!
-//! Width ([`format_source_wrapped`], `hale fmt --wrap`): one more rule
+//! Width: one more rule
 //! on the same stream. A source line that renders wider than
 //! [`WRAP_WIDTH`] is broken by adding line breaks (and, for a call or a
 //! record literal, a trailing comma) inside it, by its shape, outermost
@@ -88,23 +89,18 @@ struct Item {
     nobreak: bool,
 }
 
-/// The width a wrapped line is held to (spec/testing.md § `hale fmt`).
+/// The width a line is held to (spec/testing.md § `hale fmt`).
 pub const WRAP_WIDTH: usize = 100;
 
-/// Format Hale source into its canonical form, keeping the author's
-/// line breaks.
+/// Format Hale source into its canonical form: every line wider than
+/// [`WRAP_WIDTH`] columns broken by its shape, every other line break
+/// the author's (spec/testing.md § `hale fmt`).
 pub fn format_source(source: &str) -> Result<String, FmtError> {
-    format_at(source, None)
-}
-
-/// Format Hale source into its canonical form and break every line
-/// wider than [`WRAP_WIDTH`] columns (spec/testing.md § `hale fmt`).
-pub fn format_source_wrapped(source: &str) -> Result<String, FmtError> {
     format_at(source, Some(WRAP_WIDTH))
 }
 
-/// [`format_source_wrapped`] at another width: the tests' lever for
-/// reaching every wrapping shape the corpus holds.
+/// [`format_source`] at another width: the tests' lever for reaching
+/// every wrapping shape the corpus holds.
 #[doc(hidden)]
 pub fn format_source_at_width(source: &str, width: usize) -> Result<String, FmtError> {
     format_at(source, Some(width))
@@ -1567,10 +1563,10 @@ mod tests {
         assert!(token_streams_equal(a, &ta, c, &tc));
     }
 
-    /// `hale fmt --wrap`, held to its own fixed point.
+    /// `hale fmt`, held to its own fixed point.
     fn wrap(s: &str) -> String {
-        let once = format_source_wrapped(s).expect("wraps");
-        assert_eq!(format_source_wrapped(&once).expect("wraps again"), once, "not a fixed point");
+        let once = format_source(s).expect("wraps");
+        assert_eq!(format_source(&once).expect("wraps again"), once, "not a fixed point");
         once
     }
 

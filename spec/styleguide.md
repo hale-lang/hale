@@ -919,7 +919,7 @@ this list — run the tool:
   columns, they churn every diff); exactly one trailing newline.
 - Comments stay where you put them: own-line comments indent with
   the code, trailing comments sit one space after it.
-- Lines are 100 columns (`hale fmt --wrap`). A wider line is broken
+- Lines are 100 columns. A wider line is broken
   by its shape: an `&&`/`||` chain one term per line with the
   operator leading and the block's `{` on its own line after it, a
   `+` chain at the operator, a call or a record literal one argument
@@ -927,7 +927,7 @@ this list — run the tool:
   line one statement per line.
 
 **Line structure.** fmt shapes long statements. Write a statement
-on one line and let `hale fmt --wrap` break it when it is too wide:
+on one line and let `hale fmt` break it when it is too wide:
 it breaks every shape one way, so don't hand-wrap, and a line that
 fits it leaves alone (it never joins lines, so where a line that
 fits breaks is still yours). What fmt cannot do is name things, and

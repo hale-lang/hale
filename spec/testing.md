@@ -475,11 +475,11 @@ Zero config, Go-style: there are no options that change the output.
 current directory tree; `vendor/` and dot-directories are skipped);
 `--check` lists files that would change and exits 1 (the CI gate);
 `--diff` previews without writing; `--stdin` filters stdin→stdout
-for editor integration; `--wrap` adds the width rule below.
+for editor integration.
 
 What canonical form means (a token-stream formatter — the author's
-line-break structure is PRESERVED, gofmt-style; without `--wrap`
-there is no max-line-length enforcement):
+line breaks are PRESERVED, gofmt-style, wherever a line fits; a line
+wider than 100 columns is broken by the width rule below):
 
 - **Indentation** — 4 spaces per bracket depth. A closing bracket
   returns to its opener's line indent; brackets opened together on
@@ -506,7 +506,7 @@ there is no max-line-length enforcement):
   and every line of the text keeps its distance from it; lines of
   whitespace alone are emptied. The value never moves.
 
-**Width** (`--wrap`). A line wider than 100 columns is broken, and
+**Width.** A line wider than 100 columns is broken, and
 a line that fits is left as written: fmt never joins lines. The width
 counts the code: a trailing `//` comment does not count, nor do the
 lines of a block string's text. A line is broken canonically for its
@@ -542,7 +542,7 @@ is a no-op.
 Safety: the formatter re-lexes its own output and refuses to write
 unless the semantic token stream is byte-identical to the input's
 (a block string, re-indented, is held to its value instead, and the
-trailing commas `--wrap` adds are the one new token, each at the
+trailing commas the width rule adds are the one new token, each at the
 offset the formatter recorded) — a formatter bug can mangle
 whitespace, never what the compiler sees. A trailing comma goes only
 where the grammar takes one; should one land where the output no
@@ -550,8 +550,8 @@ longer parses, fmt wraps the file again without them. Files that don't lex are r
 Formatting is idempotent; the corpus test
 (`hale-syntax/tests/fmt_corpus.rs`) holds every fixture example and
 stdlib source to both properties, and every `.hl` file in the
-repository and every program embedded in a Rust test to them under
-`--wrap`, at 100 columns and at 40.
+repository and every program embedded in a Rust test to them at 100
+columns and at 40.
 
 ## Test assertion library
 

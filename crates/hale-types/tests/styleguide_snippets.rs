@@ -84,14 +84,14 @@ fn extract(path: &Path) -> Vec<Snippet> {
 }
 
 /// The guide shows canonical form: every checked snippet is a fixed
-/// point of `hale fmt --wrap`, so what it teaches is what the formatter
+/// point of `hale fmt`, so what it teaches is what the formatter
 /// writes, line breaks included (§ Canonical form).
 #[test]
 fn every_styleguide_snippet_is_in_wrapped_canonical_form() {
     let path = styleguide();
     let mut failures = Vec::new();
     for s in extract(&path) {
-        match hale_syntax::fmt::format_source_wrapped(&s.body) {
+        match hale_syntax::fmt::format_source(&s.body) {
             Ok(out) if out != s.body => {
                 let first = s
                     .body
@@ -100,7 +100,7 @@ fn every_styleguide_snippet_is_in_wrapped_canonical_form() {
                     .position(|(a, b)| a != b)
                     .unwrap_or(0);
                 failures.push(format!(
-                    "spec/styleguide.md:{}: hale fmt --wrap rewrites it\n  was: {}\n  fmt: {}",
+                    "spec/styleguide.md:{}: hale fmt rewrites it\n  was: {}\n  fmt: {}",
                     s.line + 1 + first,
                     s.body.lines().nth(first).unwrap_or(""),
                     out.lines().nth(first).unwrap_or("")
