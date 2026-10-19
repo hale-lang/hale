@@ -204,3 +204,94 @@ fn to_string_println_and_interpolation_read_back() {
         check(&texts, &input, what);
     }
 }
+
+const READ: &str = r#"
+fn main() {
+    let text = std::io::fs::read_file(std::env::arg(1)) or "";
+    let n = len(text);
+    let mut at = 0;
+    while at < n {
+        let mut end = std::str::index_of_from(text, "\n", at);
+        if end < 0 {
+            end = n;
+        }
+        let line = text[at..end];
+        if std::str::can_parse_float(line) {
+            let v = std::str::parse_float(line) or 0.0;
+            println(std::str::__float_text(v));
+        } else {
+            println("refused");
+        }
+        at = end + 1;
+    }
+}
+"#;
+
+/// Decimal texts no formatter wrote: random digits (1 to 40 of them, so
+/// past the 17 a double needs and past the fast path's 15), a random point
+/// and exponent across the whole range and past it, the exact ties a
+/// shorter text can't hit (2^53 + 1 and its kin), and the edges. Each with
+/// what Rust's correctly rounded `parse::<f64>` makes of it.
+fn decimal_texts() -> Vec<String> {
+    let mut v: Vec<String> = [
+        "5e-324", "4.9406564584124654e-324", "2.4703282292062328e-324", "2.4703282292062327e-324",
+        "2.2250738585072014e-308", "2.2250738585072011e-308", "2.2250738585072009e-308", "1.7976931348623157e308",
+        "1.7976931348623158e308", "1.7976931348623159e308", "1.5e-310", "9007199254740993", "9007199254740995",
+        "18014398509481987", "1e23", "8.98846567431158e307", "0.1", "0.30000000000000004", "1e-400", "1e400", "0e-999",
+        "0.0000", "000123.4500", ".5", "5.", "-2.5e-3", "+7", "1e-7", "123456789012345678901234567890e-30",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect();
+    let mut s: u64 = 0x9E37_79B9_7F4A_7C15;
+    let mut next = || {
+        s ^= s >> 12;
+        s ^= s << 25;
+        s ^= s >> 27;
+        s.wrapping_mul(0x2545_F491_4F6C_DD1D)
+    };
+    for _ in 0..100_000 {
+        let n = 1 + (next() % 40) as usize;
+        let mut d: String = (0..n).map(|_| char::from(b'0' + (next() % 10) as u8)).collect();
+        if next() % 3 == 0 {
+            let at = (next() % (n as u64 + 1)) as usize;
+            d.insert(at, '.');
+            if d == "." {
+                d = "0.5".into();
+            }
+        }
+        let e = (next() % 700) as i64 - 360;
+        v.push(format!("{d}e{e}"));
+    }
+    v
+}
+
+/// `parse_float` reads a decimal as the nearest double, ties to even, on
+/// every target: the runtime's own exact reader, not libc's strtod (the
+/// wasm shim's built 10^n by multiplication, so `5e-324` read as 0). A text
+/// past the largest double, or a nonzero one that rounds to zero, is
+/// refused.
+#[test]
+fn parse_float_reads_a_decimal_as_the_nearest_double() {
+    let texts = decimal_texts();
+    let bin = harness::unique_bin("float_read");
+    build_opts::build_source(READ, &bin, &build_opts::options()).expect("build");
+    let data = bin.with_extension("txt");
+    std::fs::write(&data, texts.join("\n")).expect("write the texts");
+    let out = Command::new(&bin).arg(&data).output().expect("run");
+    let _ = std::fs::remove_file(&bin);
+    let _ = std::fs::remove_file(&data);
+    assert!(out.status.success(), "{:?}: {}", out.status, String::from_utf8_lossy(&out.stderr));
+    let lines: Vec<String> = String::from_utf8_lossy(&out.stdout).lines().map(str::to_string).collect();
+    assert_eq!(lines.len(), texts.len(), "one line a text");
+    let mut bad = Vec::new();
+    for (t, got) in texts.iter().zip(&lines) {
+        let r: f64 = t.parse().expect("Rust reads every text here");
+        let nonzero = t.split(['e', 'E']).next().unwrap().chars().any(|c| c.is_ascii_digit() && c != '0');
+        let want = if r.is_infinite() || (r == 0.0 && nonzero) { "refused".to_string() } else { expected(r) };
+        if *got != want {
+            bad.push(format!("{t}: got {got}, want {want}"));
+        }
+    }
+    assert!(bad.is_empty(), "{} of {} differ, first: {:?}", bad.len(), texts.len(), &bad[..bad.len().min(10)]);
+}

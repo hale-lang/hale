@@ -725,6 +725,7 @@ crates/hale-codegen/tests/fixtures/examples/multi-file-seed/greet.hl 7be704260b6
 crates/hale-codegen/tests/fixtures/examples/secrets-sealed-handler.hl eb9e9d20ee149284
 crates/hale-codegen/tests/float_text.rs#0 90900b8058a0b246
 crates/hale-codegen/tests/float_text.rs#1 2e55e671c01349f5
+crates/hale-codegen/tests/float_text.rs#2 90900b8058a0b246
 crates/hale-codegen/tests/float_to_int_cast.rs#0 865d341109268295
 crates/hale-codegen/tests/float_to_int_cast.rs#1 865d341109268295
 crates/hale-codegen/tests/float_to_int_cast.rs#2 865d341109268295
@@ -1267,11 +1268,12 @@ crates/hale-codegen/tests/placement_where_async_io.rs#6 2e92114802c2bdbb
 crates/hale-codegen/tests/pool_affinity.rs#0 35643ce677393024
 crates/hale-codegen/tests/portable_subset.rs#0 cee899a36c15eda8
 crates/hale-codegen/tests/portable_subset.rs#1 d3700f11332caa2b
+crates/hale-codegen/tests/portable_subset.rs#10 f2c1228edb650960
 crates/hale-codegen/tests/portable_subset.rs#2 865d341109268295
 crates/hale-codegen/tests/portable_subset.rs#3 f2c1228edb650960
 crates/hale-codegen/tests/portable_subset.rs#4 f2c1228edb650960
-crates/hale-codegen/tests/portable_subset.rs#5 f2c1228edb650960
-crates/hale-codegen/tests/portable_subset.rs#7 f2c1228edb650960
+crates/hale-codegen/tests/portable_subset.rs#5 95a12c8670cec75b
+crates/hale-codegen/tests/portable_subset.rs#6 f2c1228edb650960
 crates/hale-codegen/tests/portable_subset.rs#8 f2c1228edb650960
 crates/hale-codegen/tests/portable_subset.rs#9 f2c1228edb650960
 crates/hale-codegen/tests/printable_rule.rs#0 f2c1228edb650960

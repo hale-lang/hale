@@ -125,6 +125,43 @@ const PROGRAMS: &[(&str, Entry, &str)] = &[
         "#,
     ),
     (
+        // reading a Float back is the runtime's own exact reader, not the
+        // libc's strtod (the wasm shim's read 5e-324 as 0): each edge's
+        // text, and the text of what it reads as, the same on both targets,
+        // so the same bits
+        "float_read_back",
+        Entry::Main,
+        r#"
+        fn show(t: String) {
+            if std::str::can_parse_float(t) {
+                let v = std::str::parse_float(t) or 0.0;
+                println(t + " -> " + to_string(v) + " " + to_string(std::str::parse_float(to_string(v)) or 0.0));
+            } else {
+                println(t + " -> refused");
+            }
+        }
+        fn main() {
+            show("5e-324");
+            show("4.9406564584124654e-324");
+            show("2.4703282292062328e-324");
+            show("2.4703282292062327e-324");
+            show("2.2250738585072014e-308");
+            show("2.2250738585072011e-308");
+            show("1.7976931348623157e308");
+            show("1.7976931348623158e308");
+            show("1.5e-310");
+            show("9007199254740993");
+            show("9007199254740995");
+            show("1e23");
+            show("0.30000000000000004");
+            show("1e-400");
+            show("1e400");
+            show(to_string(5e-324));
+            show(to_string(1.7976931348623157e308));
+        }
+        "#,
+    ),
+    (
         "decimal",
         Entry::Main,
         r#"

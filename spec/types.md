@@ -83,6 +83,14 @@ is the runtime's own (`lotus_fmt_float_shortest`), not the C library's,
 so a native and a `wasm32` build print the same bytes. A format spec
 (`f"{x:.2}"`) still rounds to its places.
 
+Reading a decimal back (`parse_float`, and every Float a codec reads) is
+the runtime's own exact reader too (`lotus_read_decimal_exact`): the
+nearest double to the decimal written, ties to the even one, from any
+number of digits, the same bits on every target. A text past the
+largest double (`1e400`), or a nonzero one that rounds to zero
+(`1e-400`), is refused; a subnormal (`5e-324`) reads as itself. A text
+that is no plain decimal (`inf`, `nan`) is read as before.
+
 ## Decimal<S> — the scale is part of the type
 
 A `Decimal<S>` is a fixed-point number: an i128 mantissa `m` read as

@@ -19728,9 +19728,11 @@ char *lotus_str_from_int(lotus_arena_t *a, int64_t n) {
  * precision, so the native and the wasm runtimes print the same bytes.
  * `lotus_fmt_float_shortest` lays the digits out (below); the bignum holds
  * the scaled value and its neighbours' midpoints, at most ~1130 bits (a
- * subnormal's 2^1076 denominator, or 10^323 times a 55-bit numerator).
+ * subnormal's 2^1076 denominator, or 10^323 times a 55-bit numerator), and
+ * the exact reader's (`lotus_read_decimal_exact`) rational, at most ~3700
+ * bits (768 digits over 10^1092, scaled by 2^1076).
  */
-#define LOTUS_BN_WORDS 40
+#define LOTUS_BN_WORDS 128
 typedef struct { uint32_t w[LOTUS_BN_WORDS]; int n; } lotus_bn_t;
 
 static void lotus_bn_set_u64(lotus_bn_t *a, uint64_t v) {
@@ -19791,6 +19793,174 @@ static int lotus_bn_divmod_small(lotus_bn_t *a, const lotus_bn_t *b) {
     int q = 0;
     while (lotus_bn_cmp(a, b) >= 0) { lotus_bn_sub(a, b); q++; }
     return q;
+}
+
+/*
+ * The exact decimal reader: a decimal Float's text to the nearest double,
+ * ties to even, the one reader native and wasm share (the wasm shim's
+ * strtod builds 10^n by repeated multiplication, so 5e-324 read as 0 and a
+ * value near the top overflowed). Plain decimal syntax only:
+ * [space][sign]digits[.digits][(e|E)[sign]digits]; anything else (inf, nan,
+ * a hex float) is no decimal and the caller reads it as before.
+ *
+ * Returns 1 with *out set, 0 when `s` is not decimal syntax, and -1 when it
+ * is but names no finite nonzero double it could round to (a magnitude past
+ * the largest double, or a nonzero value that rounds to zero), which
+ * parse_float refuses as it always has.
+ *
+ * Exact: up to 768 significant digits are kept (a double's midpoint has at
+ * most 767, so a sticky bit for the rest decides every tie), the value is
+ * the rational num/den over the bignum, and its quotient is taken at the
+ * precision the result needs: 53 bits plus a guard and a round bit for a
+ * normal double, the bits down to 2^-1074 for a subnormal. Short inputs
+ * (15 digits, a power of ten up to 10^22) take Clinger's fast path: both
+ * operands exact, one correctly rounded operation.
+ */
+#define LOTUS_READ_DIGITS 768
+
+static int lotus_bn_bitlen(const lotus_bn_t *a) {
+    if (a->n == 0) return 0;
+    uint32_t top = a->w[a->n - 1];
+    int b = 0;
+    while (top) { b++; top >>= 1; }
+    return (a->n - 1) * 32 + b;
+}
+static void lotus_bn_shr1(lotus_bn_t *a) {
+    for (int i = 0; i < a->n; i++) {
+        uint32_t hi = (i + 1 < a->n) ? a->w[i + 1] : 0;
+        a->w[i] = (a->w[i] >> 1) | (hi << 31);
+    }
+    while (a->n > 0 && a->w[a->n - 1] == 0) a->n--;
+}
+static void lotus_bn_add_small(lotus_bn_t *a, uint32_t v) {
+    uint64_t carry = v;
+    for (int i = 0; i < a->n && carry; i++) {
+        uint64_t t = (uint64_t)a->w[i] + carry;
+        a->w[i] = (uint32_t)t;
+        carry = t >> 32;
+    }
+    if (carry && a->n < LOTUS_BN_WORDS) a->w[a->n++] = (uint32_t)carry;
+}
+static void lotus_bn_mul_pow10(lotus_bn_t *a, int e) {
+    while (e >= 9) { lotus_bn_mul_small(a, 1000000000u); e -= 9; }
+    static const uint32_t p[9] = {1u, 10u, 100u, 1000u, 10000u, 100000u, 1000000u, 10000000u, 100000000u};
+    if (e > 0) lotus_bn_mul_small(a, p[e]);
+}
+/* floor(num * 2^k / den) for a quotient below 2^63, and whether a
+ * remainder is left. num and den are copied. */
+static uint64_t lotus_bn_scaled_quotient(const lotus_bn_t *num, const lotus_bn_t *den, int k, int *inexact) {
+    lotus_bn_t a = *num, b = *den;
+    if (k > 0) lotus_bn_shl(&a, k);
+    else if (k < 0) lotus_bn_shl(&b, -k);
+    int s = lotus_bn_bitlen(&a) - lotus_bn_bitlen(&b);
+    uint64_t q = 0;
+    if (s >= 0) {
+        lotus_bn_shl(&b, s);
+        for (int i = s; i >= 0; i--) {
+            q <<= 1;
+            if (lotus_bn_cmp(&a, &b) >= 0) { lotus_bn_sub(&a, &b); q |= 1; }
+            lotus_bn_shr1(&b);
+        }
+    }
+    *inexact = a.n != 0;
+    return q;
+}
+
+static int lotus_read_decimal_exact(const char *s, double *out) {
+    const char *p = s;
+    while (*p == ' ' || (*p >= '\t' && *p <= '\r')) p++;
+    int neg = 0;
+    if (*p == '+' || *p == '-') { neg = *p == '-'; p++; }
+    char digits[LOTUS_READ_DIGITS];
+    int n = 0, sticky = 0, any = 0, dropped_int = 0, frac_kept = 0, seen_point = 0;
+    for (;; p++) {
+        if (*p == '.' && !seen_point) { seen_point = 1; continue; }
+        if (*p < '0' || *p > '9') break;
+        any = 1;
+        int d = *p - '0';
+        if (n == 0 && d == 0) {
+            /* a leading zero: past the point it lowers the scale */
+            if (seen_point) frac_kept++;
+            continue;
+        }
+        if (n < LOTUS_READ_DIGITS) {
+            digits[n++] = (char)d;
+            if (seen_point) frac_kept++;
+        } else {
+            if (d) sticky = 1;
+            if (!seen_point) dropped_int++;
+        }
+    }
+    if (!any) return 0;
+    long exp10 = 0;
+    if (*p == 'e' || *p == 'E') {
+        p++;
+        int eneg = 0;
+        if (*p == '+' || *p == '-') { eneg = *p == '-'; p++; }
+        if (*p < '0' || *p > '9') return 0;
+        while (*p >= '0' && *p <= '9') {
+            if (exp10 < 100000) exp10 = exp10 * 10 + (*p - '0');
+            p++;
+        }
+        if (eneg) exp10 = -exp10;
+    }
+    if (*p != '\0') return 0;
+    if (n == 0) { *out = neg ? -0.0 : 0.0; return 1; }
+    /* value = D x 10^E, D the n kept digits */
+    long E = exp10 + dropped_int - frac_kept;
+    long top = E + n; /* value in [10^(top-1), 10^top) */
+    if (top > 310) return -1;
+    if (top < -324) return -1;
+    if (n <= 15 && !sticky && E >= -22 && E <= 22) {
+        static const double p10[23] = {1e0, 1e1, 1e2, 1e3, 1e4, 1e5, 1e6, 1e7, 1e8, 1e9, 1e10, 1e11,
+                                       1e12, 1e13, 1e14, 1e15, 1e16, 1e17, 1e18, 1e19, 1e20, 1e21, 1e22};
+        double d = 0.0;
+        for (int i = 0; i < n; i++) d = d * 10.0 + digits[i];
+        double v = E >= 0 ? d * p10[E] : d / p10[-E];
+        *out = neg ? -v : v;
+        return 1;
+    }
+    lotus_bn_t num, den;
+    num.n = 0;
+    for (int i = 0; i < n; i += 9) {
+        uint32_t chunk = 0, scale = 1;
+        for (int j = i; j < n && j < i + 9; j++) { chunk = chunk * 10 + (uint32_t)digits[j]; scale *= 10; }
+        if (num.n == 0) lotus_bn_set_u64(&num, chunk);
+        else { lotus_bn_mul_small(&num, scale); lotus_bn_add_small(&num, chunk); }
+    }
+    lotus_bn_set_u64(&den, 1);
+    if (E >= 0) lotus_bn_mul_pow10(&num, (int)E);
+    else lotus_bn_mul_pow10(&den, (int)-E);
+    /* the value's leading bit: a quotient of 58 to 59 bits */
+    int k1 = 58 + lotus_bn_bitlen(&den) - lotus_bn_bitlen(&num);
+    int inexact = 0;
+    uint64_t q1 = lotus_bn_scaled_quotient(&num, &den, k1, &inexact);
+    int qb = 0;
+    for (uint64_t t = q1; t; t >>= 1) qb++;
+    int e_top = qb - 1 - k1; /* 2^e_top <= value < 2^(e_top+1) */
+    if (e_top > 1023) return -1;
+    int e_lsb = e_top - 52;
+    if (e_lsb < -1074) e_lsb = -1074;
+    /* the bits down to 2^e_lsb, and two more: guard and round */
+    uint64_t q2 = lotus_bn_scaled_quotient(&num, &den, 2 - e_lsb, &inexact);
+    if (sticky) inexact = 1;
+    uint64_t mant = q2 >> 2;
+    unsigned g = (unsigned)(q2 & 3);
+    if (g > 2 || (g == 2 && (inexact || (mant & 1)))) mant++;
+    if (mant == ((uint64_t)1 << 53)) { mant >>= 1; e_lsb++; }
+    if (mant == 0) return -1;
+    uint64_t bits;
+    if (mant >= ((uint64_t)1 << 52)) {
+        long field = (long)e_lsb + 52 + 1023;
+        if (field >= 2047) return -1;
+        bits = ((uint64_t)field << 52) | (mant & (((uint64_t)1 << 52) - 1));
+    } else {
+        bits = mant; /* a subnormal: e_lsb is -1074 */
+    }
+    double v;
+    __builtin_memcpy(&v, &bits, sizeof v);
+    *out = neg ? -v : v;
+    return 1;
 }
 
 /* The shortest decimal digits of the positive finite double `v` that read
@@ -25258,6 +25428,9 @@ int lotus_str_can_parse_int(const char *s) {
  * back (`lotus_fmt_float_shortest`). */
 static int lotus_str_read_float(const char *s, double *out) {
     if (!s || !*s) return 0;
+    /* a decimal is read exactly, the same on every target */
+    int exact = lotus_read_decimal_exact(s, out);
+    if (exact != 0) return exact > 0;
     char *end = NULL;
     errno = 0;
     double v = strtod(s, &end);
