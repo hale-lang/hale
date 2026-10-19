@@ -55,7 +55,7 @@ permissions:
 jobs:
   scope:
     name: scope (macos)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     outputs:
       dna: ${{ steps.classify.outputs.dna }}
     steps:
@@ -369,7 +369,7 @@ jobs:
   # required by its expanded names.
   required-macos:
     name: required (macos)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: [scope, macos]
     if: always()
     steps:
