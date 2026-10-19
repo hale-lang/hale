@@ -179,7 +179,10 @@ Roles are authorities, not identities: the person who proposed a
 practice may ratify it with the Board's authority, and the record keeps
 who proposed and who decided. `--supersedes <digest>` names the
 version it replaces: ratifying the new one retires the old, declining
-it leaves the old in force. What an acceptance practice such as this
+it leaves the old in force. The digest may be the short form the list
+shows (`sha256:3122d`): it is resolved to the full digest when you
+propose, and one that names no practice, several practices, or a
+version not in force is refused then, not at ratification. What an acceptance practice such as this
 one does to a person's job is on [One task, end to end](./workflow.md).
 
 `hale dna practice` lists every practice with its state (`awaiting
@@ -722,10 +725,15 @@ is generated, or missing:
 - It rewrites `dna/org/workflows.hl` to the current shape. Any
   definitions an older one held are named, for you to move into
   `dna/org/own_workflows.hl`.
-- It rewrites `dna/compose.yaml` and `dna/nats.conf`, and draws the
-  nerves' passwords anew into the vault and `dna/nats.secrets.conf`.
+- It removes the `dna/compose.yaml`, `dna/nats.conf`,
+  `dna/nats.secrets.conf`, `dna/postgres.secrets` and `dna/senses.yml`
+  an older toolchain wrote: the organism's memory, nerves and senses'
+  store are allocations of the local habitat, whose files live outside
+  the checkout ([Memory and the record](./memory.md#the-local-habitat)).
+  It draws the nerves' passwords anew into the vault and the nerves
+  allocation's `nats.secrets.conf`.
 - It creates what an older organization lacks: `models.hl`,
-  `work.hl`, `charter.hl`, `own_workflows.hl`, `dna/senses.yml`.
+  `work.hl`, `charter.hl`, `own_workflows.hl`.
 - In `dna/org/main.hl` it rewrites only lines an older generator wrote
   exactly (the loop's tick, the Board's field, the retired owners
   field). Everything else it names as a `note`, with the line to

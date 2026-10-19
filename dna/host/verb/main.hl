@@ -97,10 +97,10 @@ fn main() {
         ans = host::ledger_verb(root, host::word(a, 0));
     } else if verb == "memory-migrate" {
         // GH #985: memory's schema, applied with the owner's DSN
-        ans = host::memory_migrate_verb(root);
+        ans = host::memory_migrate_verb(root, host::has_flag(a, "--derive"));
     } else if verb == "nerves-migrate" {
         // GH #986: the nerves' stream, created with the owner's URL
-        ans = host::nerves_migrate_verb(root);
+        ans = host::nerves_migrate_verb(root, host::has_flag(a, "--derive"));
     } else if verb == "nerves-drop" {
         ans = host::nerves_drop_verb(root);
     } else if verb == "secrets-provision" {
@@ -114,7 +114,7 @@ fn main() {
         ans = host::secrets_status_verb(root);
     } else if verb == "senses-up" {
         // GH #988: the senses' store, compose's `senses` service brought up
-        ans = host::senses_up_verb(root);
+        ans = host::senses_up_verb(root, host::has_flag(a, "--derive"));
     } else if verb == "signers" {
         // GH #1590: the people the record admits signed rows from
         ans = host::signers_verb(root, host::word(a, 0), host::word(a, 1), host::flag(a, "--key"), host::flag(a, "--as"));

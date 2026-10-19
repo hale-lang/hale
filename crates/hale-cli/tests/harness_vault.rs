@@ -36,10 +36,15 @@ const PROBE: &str = r#"fn main() {
     std::test::assert(!std::env::var_exists("HALE_VAULT_ADDR"), "no real vault reaches a test");
     std::test::assert(std::env::var_exists("HALE_VAULT_DIR") && dir == std::env::var("HALE_VAULT_DIR"), "the vault is the run's own: " + dir);
     std::test::assert(dir != std::env::var("CALLER_VAULT") && dir != std::env::var("XDG_CACHE_HOME") + "/hale/vault", "never the caller's, never the developer's: " + dir);
+    std::test::assert(std::env::var("XDG_DATA_HOME") == dir + "/data", "and so is the local habitat, beside the vault (GH #1653): " + std::env::var("XDG_DATA_HOME"));
     std::io::fs::write_file(std::env::var("PROBE_ROOT") + "/ORG.vault", dir) or raise;
     let made = std::process::run("sh\n-c\ncd \"$1\" && HALE_DNA_DISCOVER=off exec \"$2\" dna new ORG\nsh\n" + std::env::var("PROBE_ROOT") + "\n" + std::env::var("HALE_BIN")) or raise;
     std::test::assert_eq_int(made.code, 0, "hale dna new: " + made.stdout + made.stderr);
-    std::test::assert(std::secret::Credential { vault: "postgres-owner-ORG" }.ready(), "and the organism's secrets went into it");
+    // the memory allocation's owner entry, named for the record's identity
+    let manifest = std::io::fs::read_file(std::env::var("PROBE_ROOT") + "/ORG/hale.toml") or "";
+    let at = std::str::index_of(manifest, "record = \"");
+    let key = if at < 0 { "" } else { manifest[(at + 10)..(at + 22)] };
+    std::test::assert(len(key) == 12 && std::secret::Credential { vault: "postgres-owner-" + key }.ready(), "and the organism's secrets went into it: " + key);
 }
 "#;
 
@@ -68,13 +73,11 @@ fn hale_test_runs_each_file_under_a_vault_of_its_own() {
     std::fs::create_dir_all(&home).unwrap();
     std::fs::create_dir_all(&work).unwrap();
     std::fs::create_dir_all(d.join("probes")).unwrap();
-    // The organizations are this run's own: `hale dna new` with no owner's
-    // DSN brings memory up as the compose project `hale-dna-<name>`, whose
-    // containers and volume are named after the seed machine-wide, so a
-    // fixed name collided with the same test running anywhere else on the
-    // box ("the container name /hale-dna-probea-knowledge-db-1 is already
-    // in use") and failed one of the two runs.
-    let orgs = [format!("probea{}", std::process::id()), format!("probeb{}", std::process::id())];
+    // Two runs of this test on one machine are two organisms: each `new`
+    // births a fresh record identity, and an organism's allocations in the
+    // local habitat are named for its identity (GH #1653), never for its
+    // name, so the organizations' names need not be the run's own.
+    let orgs = ["probea", "probeb"];
     for org in &orgs {
         std::fs::write(d.join(format!("probes/{org}_test.hl")), PROBE.replace("ORG", org)).unwrap();
     }

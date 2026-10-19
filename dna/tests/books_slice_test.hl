@@ -213,6 +213,15 @@ fn digest_in(text: String) -> String {
     return if at < 0 || len(text) < at + 71 { "" } else { text[at..(at + 71)] };
 }
 
+// The rest of the line after `marker`, "" when there is none.
+fn line_after(text: String, marker: String) -> String {
+    let at = std::str::index_of(text, marker);
+    if at < 0 { return ""; }
+    let rest = text[(at + len(marker))..len(text)];
+    let nl = std::str::index_of(rest, "\n");
+    return if nl < 0 { rest } else { rest[0..nl] };
+}
+
 fn word_after(text: String, marker: String) -> String {
     let at = std::str::index_of(text, marker);
     if at < 0 { return ""; }
@@ -433,10 +442,25 @@ main locus App {
         let v2_out = dna_cli(app, "practice\npropose\nacceptance/expense-receipt\n--text\nA bill closes with its receipt; the copy a supplier sends when asked at capture is the receipt. evidence: required\n--supersedes\n" + v1 + "\n--because\nthree bills arrived without receipts (concern.raised org/books/intake)\n--as\nriley");
         let v2 = digest_in(v2_out);
         std::test::assert(len(v2) == 71 && v2 != v1, "a new version proposed: " + v2_out);
+        // a native replacement of v1 (the replacement profile, a request id
+        // of its own), submitted while v1 is in force; replayed once v1 has
+        // retired below, it recovers its answer rather than being refused
+        let identity = dna::record_scope(app);
+        std::io::fs::write_file(app + "/.hale/dna/authority.json", "{\"format\":\"dna.practice-review-authority/1\",\"application_id\":\"" + identity + "\",\"grants\":[{\"mode\":\"local\",\"name\":\"ada\",\"authority\":\"board\",\"practice_propose\":true,\"review_verdict\":true,\"recover\":true}]}") or discard;
+        let native_argv = "sh\n-c\ncd \"$1\" && export USER=ada HALE_DNA_TRUSTED_LOCAL=1 HALE_DNA_COMMAND_POLICY=\"$1/.hale/dna/authority.json\" HALE_DNA_DISCOVER=off && exec \"$2\" dna practice propose acceptance/expense-receipt --text \"A bill closes with its receipt, asked for at capture.\" --because \"a replay\" --supersedes \"$3\" --as ada --request-id books-replay --no-wait\nsh\n" + app + "\n" + toolchain() + "\n";
+        let first_native = in_dir(app, native_argv + v1);
+        let first_command = line_after(first_native.stdout, "command_id: ");
+        std::test::assert(len(first_command) > 0, "the native replacement is answered: " + first_native.stdout + first_native.stderr);
         let v2_ok = dna_cli(app, "review\n" + word_after(v2_out, "hale dna review ") + "\napprove\n--as\ndana\n--authority\nboard\n--no-wait");
         std::test::assert(wait_rows(app, "knowledge.ratified", v2, "", 1, PHASE) && wait_rows(app, "knowledge.retired", v1, "", 1, PHASE), "ratified, and the first version retired: " + v2_ok);
         let in_force = wait_cli(app, "practice", "[in force] A bill closes with its receipt; the copy a supplier sends", PHASE);
         std::test::assert(std::str::contains(in_force, "[in force] A bill closes with its receipt; the copy a supplier sends"), "the adopted version is the one in force: " + in_force);
+        // v1 has retired: the identical request recovers its answer, and so
+        // does the same request spelled with the short digest the list shows
+        let replayed = in_dir(app, native_argv + v1);
+        std::test::assert(line_after(replayed.stdout, "command_id: ") == first_command, "the replay recovers the original answer after its predecessor retired: " + replayed.stdout + replayed.stderr);
+        let short_replay = in_dir(app, native_argv + v1[0..12]);
+        std::test::assert(line_after(short_replay.stdout, "command_id: ") == first_command, "and so does its short spelling: " + short_replay.stdout + short_replay.stderr);
 
         // ---- 5. the next bill uses both
         drop_bill(fixture, app, "b1005.bill");

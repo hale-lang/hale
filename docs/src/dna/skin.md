@@ -38,7 +38,7 @@ $ hale dna secrets
 the organism's secrets (the local vault, …):
   present  postgres-dna_35bf…_spine  memory: the spine's role
   present  postgres-dna_35bf…_head  memory: the head's role
-  present  postgres-owner-refproj  memory: the compose database's superuser (dna/postgres.secrets)
+  present  postgres-owner-35bf…  memory: its allocation's superuser in the local habitat
   present  nats-dna_35bf…-owner  the nerves: the owner's account
   present  nats-dna_35bf…-spine  the nerves: the spine's account
   present  nats-dna_35bf…-head  the nerves: the head's account
@@ -51,12 +51,13 @@ the organism's secrets (the local vault, …):
 ```
 
 Each name is one of these (`<identity>` is the record's, `<org>` its
-`dna_<identity>` token, `<seed>` the compose project's name):
+`dna_<identity>` token, `<id>` the first twelve hex digits of the
+identity):
 
 | vault name | kind | whose |
 | --- | --- | --- |
 | `postgres-dna_<identity>_spine`, `…_head` | drawn | memory's two roles |
-| `postgres-owner-<seed>` | drawn | the compose database's superuser, when the seed has `dna/compose.yaml` |
+| `postgres-owner-<id>` | drawn | the memory allocation's superuser in the local habitat, when the organism has a memory allocation |
 | `nats-<org>-<role>`, for `owner`, `spine`, `head`, `reflexes` | drawn | the nerves' accounts |
 | `nats-<org>-app-<name>` | drawn | the attached application's broker account, while the record attaches it |
 | `oidc-client-<client>` (`dna-local` when `dna.oidc.client` is unset) | drawn for an issuer on the loopback, else a slot | the head's OIDC client |
@@ -67,11 +68,12 @@ Each name is one of these (`<identity>` is the record's, `<org>` its
 **Drawn** means the organism owns the value: `hale dna init` and `hale
 dna upgrade` draw it from urandom (32 hex characters) into the vault
 when the vault lacks it. The nerves' passwords are drawn anew on every
-`init` and `upgrade`. The servers compose runs read theirs from files
-written from the same draw, `dna/nats.secrets.conf` and
-`dna/postgres.secrets`: mode 600, ignored by git, and refused when git
-tracks the file or would. `dna/nats.conf` is tracked and holds no
-password; it includes the secrets file.
+`init` and `upgrade`. The habitat's allocations read theirs from files
+written from the same draw, `nats.secrets.conf` and `postgres.secrets`,
+which live beside the allocation in the local habitat
+(`allocations/<id>/`, mode 600), never in your checkout. The nerves'
+`nats.conf` sits there too, holds no password, and includes the
+secrets file.
 
 **A slot** is an empty entry a person fills. There are three kinds:
 the forge's token, each model key the catalog or the legs'
@@ -268,6 +270,5 @@ violations: <n> recorded, each absorbed by its owner (the latest last)
 | `… nothing starts without them` | a drawn secret is missing from the vault | `hale dna upgrade` |
 | `secret set: … is no slot of the organism's …` | the name is not a slot | `hale dna secrets` lists the slots |
 | `secret rotate: <NAME> was never set` | rotate before set | `hale dna secret set <NAME>` |
-| `refused: dna/nats.secrets.conf is tracked by git …` | a secrets file is tracked | `git rm --cached` it; `hale dna upgrade` adds it to `.gitignore` |
 | `no forge token: the vault holds none …` | the forge's slot is empty | `hale dna secret set FORGE_TOKEN` |
 | a head that will not start | no principal source, or a loopback issuer without its pinned key | configure OIDC as above ([The head](./head.md)) |

@@ -35,7 +35,7 @@ purpose and are re-adopted by the next head.
 
 Existing service configuration is inherited:
   HALE_DNA_MEMORY_DSN_HEAD     Memory under the record's head role, as
-                               `hale dna memory migrate` prints it. The API
+                               `hale habitat migrate` keeps it. The API
                                reads Knowledge with it; without it Knowledge
                                is unsupported.
   HALE_DNA_MEMORY_DSN_OWNER, HALE_DNA_MEMORY_DSN_SPINE
@@ -43,10 +43,10 @@ Existing service configuration is inherited:
   HALE_DNA_NATS_URL_OWNER      The nerves' server a body the head starts runs
                                on. The head subscribes there, as the head's
                                user, to the rows the organism lands and tells
-                               the browser; without it, on the project's
-                               compose `nerves` while `hale dna dev` has it up.
+                               the browser; without it, on the organism's
+                               nerves in the local habitat while they are up.
   HALE_DNA_NATS_URL_HEAD       The head's own URL (subscribe only), as
-                               `hale dna nerves migrate` prints it; wins over both.
+                               `hale dna nerves urls` prints it; wins over both.
   HALE_DNA_HEAD_STATE          The head's state directory
                                (default: ${XDG_STATE_HOME:-~/.local/state}/hale/dna/head).
 The head serves under OIDC (GH #989): this starts the stub OpenID provider
@@ -275,13 +275,13 @@ fi
 # GH #988: the reflexes, on the private-services tier beside the project's
 # store: they hold the store's read URL and a publish-only credential on
 # the project's nerves (the `reflexes` user), nothing else, and go with
-# the launcher. A store or nerves that cannot come up leaves the face
-# running without them.
+# the launcher. A store or nerves that are not up leave the face running
+# without them: the launcher brings nothing up (GH #1653).
 if ((oidc_local)) && [[ -n "$project" ]]; then
-  # either verb fails when its service cannot come up; under `set -e`
+  # either verb fails when its service is not up; under `set -e`
   # that must not end the launch, so each falls back to nothing
-  senses_url=$("$hale" dna senses up "$project" 2>/dev/null | sed -n 's/^HALE_DNA_SENSES_URL=//p') || senses_url=
-  roles=$("$hale" dna nerves migrate "$project" 2>/dev/null) || roles=
+  senses_url=$("$hale" dna senses url "$project" 2>/dev/null | sed -n 's/^HALE_DNA_SENSES_URL=//p') || senses_url=
+  roles=$("$hale" dna nerves urls "$project" 2>/dev/null) || roles=
   reflexes_url=$(printf '%s\n' "$roles" | sed -n 's/^HALE_DNA_NATS_URL_REFLEXES=//p')
   reflexes_vault=$(printf '%s\n' "$roles" | sed -n 's/^HALE_DNA_NATS_VAULT_REFLEXES=//p')
   org=$(printf '%s\n' "$roles" | sed -n 's/^HALE_DNA_NATS_ORG=//p')
@@ -290,7 +290,7 @@ if ((oidc_local)) && [[ -n "$project" ]]; then
     reflexes=$!
     printf 'face: reflexes reading %s\n' "$senses_url"
   else
-    printf 'face: no reflexes: the project'\''s senses or nerves did not come up (`hale dna senses up`, `hale dna nerves migrate`)\n'
+    printf 'face: no reflexes: the project'\''s senses or nerves are not up (`hale habitat migrate %s` brings them up)\n' "$project"
   fi
 fi
 

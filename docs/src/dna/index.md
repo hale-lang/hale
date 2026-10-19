@@ -35,7 +35,7 @@ one chapter that covers it.
 | **genome** | what the organism is made of: the application's source, the org chart and catalogs under `dna/org`, and the vendored core in `vendor/dna`; a node pulls it from the forge's default branch | your repository; the host's git for it is `dna/host/genome.hl` | [Shaping](./shaping.md) |
 | **record** | long-term memory: every decision, in order, never rewound, as one signed row per event in memory | `dna/core/record.hl`, `dna/host/record.hl` | [Memory and the record](./memory.md) |
 | **memory** | working memory: the ledger of the day's work, claims, the graph, protected evidence; Postgres, a role per client | `dna/core/memory_spine.hl`, `dna/host/memory.hl` | [Memory and the record](./memory.md) |
-| **nerves** | carry facts between parts after their row has landed: NATS JetStream, one stream per organization, one user per part | `dna/core/nerves.hl`, `dna/host/nerves.hl`, `dna/nats.conf` | [The nerves](./nerves.md) |
+| **nerves** | carry facts between parts after their row has landed: NATS JetStream, one stream per organization, one user per part | `dna/core/nerves.hl`, `dna/host/nerves.hl`; the server is the organism's `nerves-<id>` allocation in the local habitat | [The nerves](./nerves.md) |
 | **face** | where the organism shows itself to people and takes their intent: a browser surface the head serves | `dna/face/` | [The head and the face](./head.md) |
 | **head** | the edge API: sessions, principals, commands answered with a receipt; it never performs work | `dna/api/` | [The head and the face](./head.md) |
 | **body** | the hosts the organism runs on, and the lease that says which body runs the record | `dna/core/infrastructure.hl`, `dna/host/infra.hl` | [The heart and the body](./heart.md) |
@@ -45,7 +45,7 @@ one chapter that covers it.
 | **hands** | the tools a Work's output contract gives a performer, and what runs them: git, the forge, the toolchain, the record's reads | `dna/core/contracts.hl`, `dna/core/tools.hl`, `dna/core/legs/hands.hl` | [Legs, hands and voice](./legs.md) |
 | **voice** | the one seam to any model: the catalog, the model mapping, the adapters, the tape | `dna/core/models.hl`, `dna/core/model_map.hl`, `dna/core/tape.hl`, the catalog in `dna/org/models.hl` | [Legs, hands and voice](./legs.md) |
 | **heart** | the application itself; its pulse is the events it publishes on its own subjects, each landed as a reading row | your application's seed; the host lands its events in `dna/host/pulse.hl` | [The heart and the body](./heart.md) |
-| **senses** | the readings every long-running part serves, kept in one store | `dna/core/senses.hl`, the store's config in `dna/senses.yml` | [Senses and reflexes](./senses.md) |
+| **senses** | the readings every long-running part serves, kept in one store | `dna/core/senses.hl`; the store is the organism's `senses-<id>` allocation in the local habitat | [Senses and reflexes](./senses.md) |
 | **reflexes** | reactions that need no plan: an instance that is down is restarted | `dna/reflexes/main.hl`; the node acts in `dna/host/reflex.hl` | [Senses and reflexes](./senses.md) |
 | **skin** | the trust boundary: the vault, roles and accounts, OIDC, sealed credentials, closures recorded as violations | `dna/host/secrets.hl`, `dna/core/principal.hl`, `dna/oidc/stub.hl` | [The skin](./skin.md) |
 

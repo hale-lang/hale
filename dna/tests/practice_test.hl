@@ -103,6 +103,27 @@ main locus App {
         let listed = dna_cli(app, "practice");
         std::test::assert(std::str::contains(listed, "acceptance/expense-receipt [requested by riley, not yet heard by the organization]"), "listed as not yet heard: " + listed);
         std::test::assert(std::str::contains(listed, "design/principles ") && std::str::contains(listed, "[awaiting the Board (k:"), "the seeded design practices, awaiting the Board: " + listed);
+        // `--supersedes` takes the digest as the list abbreviates it, and is
+        // resolved when the proposal is made: a version not in force, an
+        // unknown prefix and an ambiguous one are refused here, never
+        // accepted and then refused at ratification
+        let at = std::str::index_of(listed, "design/principles sha256:");
+        let short = if at < 0 { "" } else { listed[(at + 18)..(at + 30)] };
+        std::test::assert(std::str::starts_with(short, "sha256:"), "the list abbreviates the digest: " + listed);
+        let pending = dna_cli(app, "practice\npropose\ndesign/principles\n--text\nPrinciples, again.\n--supersedes\n" + short + "\n--as\nriley");
+        std::test::assert(std::str::contains(pending, "is the practice `design/principles` (sha256:") && std::str::contains(pending, "which is not in force (pending)"), "a version awaiting the Board is not superseded: " + pending);
+        let unknown = dna_cli(app, "practice\npropose\ndesign/principles\n--text\nPrinciples, again.\n--supersedes\nsha256:zz\n--as\nriley");
+        std::test::assert(std::str::contains(unknown, "names no practice the record holds"), "an unknown digest is refused: " + unknown);
+        let rows = in_dir(app, toolchain() + "\ndna\nrecord-rows").stdout;
+        std::test::assert(!std::str::contains(rows, "Principles, again."), "and nothing was requested: " + rows);
+        let cands = "3122dabc in-force acceptance/a\n3122ffff pending acceptance/b\n9a00 in-force acceptance/c\n";
+        std::test::assert_eq_str(dna::superseded_digest(cands, "sha256:9a").digest, "sha256:9a00", "a unique prefix resolves to the full digest");
+        std::test::assert_eq_str(dna::superseded_digest(cands, "3122da").digest, "sha256:3122dabc", "with or without its `sha256:`");
+        std::test::assert(std::str::contains(dna::superseded_digest(cands, "sha256:3122").why, "is ambiguous: it begins 2 practices' digests"), "an ambiguous prefix is refused");
+        std::test::assert(std::str::contains(dna::superseded_digest(cands, "sha256:").why, "names no digest"), "an empty one too");
+        // a replay resolves whatever the predecessor's state now, the short
+        // spelling to the same digest as the full one
+        std::test::assert(dna::superseded_digest_for(cands, "sha256:3122ff", false).digest == "sha256:3122ffff" && dna::superseded_digest_for(cands, "3122ffff", false).digest == "sha256:3122ffff", "a replay of a request against a version no longer in force resolves it");
 
         dna::scratch_done(scratch);
         dna::scratch_done("/tmp/dna-practice-receipts-" + to_string(std::process::pid()));

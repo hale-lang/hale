@@ -159,8 +159,8 @@ fn profile_verb(root: String, memory: dna::Memory) -> Answer {
     let fleet = fleet_name(root);
     out = out + "fleet:       " + (if len(fleet) == 0 { "none (`[dna] fleet = \"<name>\"` in hale.toml names one)" } else { fleet }) + "\n";
     let owner = std::env::var_exists("HALE_DNA_MEMORY_DSN_OWNER");
-    let compose = std::io::fs::file_exists(root + "/dna/compose.yaml");
-    out = out + "memory:      " + (if owner { "a Postgres of your own (HALE_DNA_MEMORY_DSN_OWNER)" } else if compose { "compose (dna/compose.yaml, under `hale dna dev`)" } else { "none" }) + (if dna::dsn_set(dna::HEAD_DSN_ENV) { "; this head reads it (HALE_DNA_MEMORY_DSN_HEAD)" } else { "" }) + "\n";
+    let compose = len(dna::allocation_key(root)) > 0;
+    out = out + "memory:      " + (if owner { "a Postgres of your own (HALE_DNA_MEMORY_DSN_OWNER)" } else if compose { "the local habitat's allocation " + dna::allocation_service(root, "memory") + " (compose project " + dna::local_habitat_project() + "; `hale habitat migrate` brings it up)" } else { "none" }) + (if dna::dsn_set(dna::HEAD_DSN_ENV) { "; this head reads it (HALE_DNA_MEMORY_DSN_HEAD)" } else { "" }) + "\n";
     out = out + "trust:       " + trust_mode(root) + (if trust_mode(root) == "signed" { " (rows from the record are admitted only with a signature git verifies)" } else { " (every writer to the record is trusted)" }) + "\n";
     // GH #648: the forge the host found, whichever it is
     out = out + "github:      " + forge_name(root) + "\n";
@@ -1544,7 +1544,7 @@ fn redaction_line(root: String, digest: String) -> String {
 // attached application removed from the organization — an
 // `application.detached` row naming it, in the record (the membership's
 // source) — and its broker account revoked: its user gone from
-// dna/nats.conf, its password from the include and the vault, and the
+// the nerves allocation's configuration, its password from the include and the vault, and the
 // nerves restarted to drop what it holds.
 fn application_remove_verb(root: String, who_flag: String) -> Answer {
     let no_head = record_refusal(root);

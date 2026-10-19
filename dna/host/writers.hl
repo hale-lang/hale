@@ -825,6 +825,18 @@ locus GovernanceCli {
         };
         return self.submit(native, authority, settings.context, command, authority_flag, no_wait);
     }
+    // Whether the record already holds an answer for `request_id` under this
+    // local identity and policy: a replay, which recovers that answer.
+    fn answered(request_id: String, who_flag: String) -> Bool {
+        let settings = self.settings(who_flag);
+        if !settings.ok { return false; }
+        let codec = ops::GovernanceCommandCodec { };
+        if len(codec.identity(settings.context, request_id)) == 0 { return false; }
+        let record = dna::MemoryRecord { repo: self.root };
+        let authority = ops::FixedAuthority { policy: settings.policy };
+        let native = ops::GovernanceCommands { record: record, authority: authority, sign: settings.policy.sign };
+        return native.lookup(settings.context, request_id).ok;
+    }
     fn lookup(request_id: String, who_flag: String) -> Answer {
         let settings = self.settings(who_flag);
         if !settings.ok { return fail(settings.error); }
@@ -837,8 +849,22 @@ locus GovernanceCli {
     }
 }
 
-fn practice_command_verb(root: String, seed: String, sub: String, name: String, text: String, because: String, supersedes: String, who_flag: String, request_id: String, no_wait: Bool, memory: dna::Memory) -> Answer {
+fn practice_command_verb(root: String, seed: String, sub: String, name: String, text: String, because: String, given_supersedes: String, who_flag: String, request_id: String, no_wait: Bool, memory: dna::Memory) -> Answer {
     let cli = GovernanceCli { root: root, memory: memory };
+    // the practice superseded, as listed (`sha256:3122d`) or in full,
+    // resolved to the full digest of the version in force before anything
+    // is proposed: a proposal the Board would refuse is refused here
+    let mut supersedes = given_supersedes;
+    if sub == "propose" && len(given_supersedes) > 0 {
+        // a request the record already holds an answer for is a replay: its
+        // identity is recovered first, and only a fresh request's
+        // predecessor must still be in force
+        let native = len(std::env::var("HALE_DNA_COMMAND_POLICY")) > 0;
+        let replay = native && len(request_id) > 0 && cli.answered(request_id, who_flag);
+        let pick = dna::superseded_digest_for(practice_candidates(root), given_supersedes, !replay);
+        if len(pick.why) > 0 { return fail("practice " + name + ": " + pick.why); }
+        supersedes = pick.digest;
+    }
     if sub == "lookup" {
         if len(name) > 0 || len(text) > 0 || len(because) > 0 || len(supersedes) > 0 { return fail("practice lookup accepts --request-id and optional matching --as only"); }
         return cli.lookup(request_id, who_flag);
@@ -1081,6 +1107,25 @@ fn concern_raise(root: String, source: String, what: String, severity: Int, memo
 // it and why, and opens the Board's Review. Nothing is in force until the
 // Board approves it. `hale dna practice` lists practices as the record has
 // them.
+// Every practice the record holds, one a line, as `dna::superseded_digest`
+// reads them: `<hex> <state> <name>`.
+@bounded_by(root)
+fn practice_candidates(root: String) -> String {
+    let q = ops::Queries { j: dna::RecordJournal { repo: root }, location: root };
+    let mut out = "";
+    let mut i = 0;
+    while i < q.revision() {
+        let e = q.event_at(i);
+        if q.practice_event(e) {
+            let p = q.practice_metadata(e.entity);
+            let state = if p.retired { "retired" } else if p.ratified { "in-force" } else if p.declined { "declined" } else { "pending" };
+            out = out + ops::raw_digest(p.digest) + " " + state + " " + p.name + "\n";
+        }
+        i = i + 1;
+    }
+    return out;
+}
+
 fn practice_verb(root: String, seed: String, sub: String, name: String, text: String, because: String, supersedes: String, who_flag: String, memory: dna::Memory) -> Answer {
     let usage = "practice: `hale dna practice propose <name> --text <text> [--because <what prompted it>] [--supersedes <digest>] [--as <who>]`, or `hale dna practice` to list";
     let no_head = record_refusal(root);

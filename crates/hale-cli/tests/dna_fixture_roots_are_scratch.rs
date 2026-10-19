@@ -2,10 +2,10 @@
 //! temporary root: it takes the one whose end takes everything under it
 //! down.
 //!
-//! A `hale dna` verb that applies memory's schema (`new`, `init`,
-//! `upgrade`, `dev`, `run`, `memory migrate`) with no
-//! `HALE_DNA_MEMORY_DSN_OWNER` brings the knowledge database up from the
-//! project's `dna/compose.yaml`, and `dev` and `run` start bodies. Under a
+//! A verb that applies memory's schema (`hale dna new`, `init`,
+//! `upgrade`, `memory migrate`, `hale habitat migrate`) with no
+//! `HALE_DNA_MEMORY_DSN_OWNER` brings the organism's memory up in the
+//! local habitat, and `dev` and `run` start bodies. Under a
 //! root a test made by hand, nothing took the compose project down when
 //! the root went: seven `knowledge-db` containers outlived their tests on
 //! one box in a day. So, as `dna_fixture_ports_are_free` refuses a drawn
@@ -23,6 +23,17 @@
 //!   `scripts/compose-down-under.sh` before removing it.
 //!
 //! There is no allowlist.
+//!
+//! GH #1653: the organism's memory, nerves and senses' store are the local
+//! habitat's allocations, and the developer's habitat is long-lived: a
+//! teardown never takes it down. A test's `hale` runs under a habitat of
+//! its own (`hale test` gives each file one beside its vault,
+//! `support/vault.rs` each test process; a script keeps `XDG_DATA_HOME`
+//! under its root). `hale test`, `support/reap.rs` and
+//! `scripts/compose-down-under.sh` tear a habitat down through one
+//! teardown, `hale habitat sweep` (its behavior is that module's unit
+//! tests'), and `dna::scratch_done` keeps the same refusal of the
+//! developer's habitat's project whatever a root's file names.
 
 use std::path::{Path, PathBuf};
 
@@ -56,7 +67,7 @@ fn runs_a_verb(kind: Kind, line: &str) -> bool {
             !after.is_some_and(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
         })
     };
-    let spelled = |sep: &str| VERBS.iter().any(|v| word(&format!("dna{sep}{v}"))) || word(&format!("memory{sep}migrate"));
+    let spelled = |sep: &str| VERBS.iter().any(|v| word(&format!("dna{sep}{v}"))) || word(&format!("memory{sep}migrate")) || word(&format!("habitat{sep}migrate"));
     match kind {
         // an argv line `dna\nnew`, or a shell string `dna new`
         Kind::Fixture => spelled("\\n") || spelled(" "),
@@ -64,6 +75,7 @@ fn runs_a_verb(kind: Kind, line: &str) -> bool {
             let squashed: String = line.split_whitespace().collect::<Vec<_>>().join("");
             VERBS.iter().any(|v| squashed.contains(&format!("\"dna\",\"{v}\"")))
                 || squashed.contains("\"dna\",\"memory\"")
+                || squashed.contains("\"habitat\",\"migrate\"")
                 || spelled(" ")
         }
         Kind::Script => spelled(" "),
@@ -196,4 +208,19 @@ fn the_matchers_see_what_they_name() {
     // a script that hands its root to the teardown passes
     assert!(violations(Kind::Script, "tmp=$(mktemp -d)\ntrap '\"$here/compose-down-under.sh\" \"$tmp\"' EXIT\n\"$hale\" dna new \"$tmp/w\"\n").is_empty());
     assert_eq!(violations(Kind::Script, "tmp=$(mktemp -d)\ntrap 'rm -rf \"$tmp\"' EXIT\n\"$hale\" dna new \"$tmp/w\"\n").len(), 1);
+}
+
+/// GH #1653: the three Rust and shell teardowns are one, `hale habitat
+/// sweep`, so they cannot drift apart; the fixtures' carries the same
+/// refusal of the developer's habitat.
+#[test]
+fn a_teardown_never_takes_the_developers_habitat() {
+    let repo = repo_root();
+    let read = |p: &str| std::fs::read_to_string(repo.join(p)).unwrap();
+    assert!(read("scripts/compose-down-under.sh").contains("habitat sweep \"$root\""), "compose-down-under.sh sweeps through the toolchain");
+    assert!(read("crates/hale-cli/tests/support/reap.rs").contains(".args([\"habitat\", \"sweep\"])"), "the CLI tests' reap sweeps through the toolchain");
+    assert!(read("crates/hale-cli/src/verbs/test.rs").contains("crate::dna::habitat::down_under(dir)"), "hale test's teardown is the sweep's");
+    let habitat = read("crates/hale-cli/src/dna/habitat.rs");
+    assert!(habitat.contains("*p != mine && Some(p) != current.as_ref()"), "the sweep refuses the developer's habitat");
+    assert!(read("dna/core/workspace.hl").contains("project == mine"), "dna::scratch_projects_in refuses the developer's habitat");
 }

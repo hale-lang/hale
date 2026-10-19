@@ -11,6 +11,10 @@
 use std::path::PathBuf;
 use std::process::Command;
 
+#[allow(dead_code)]
+#[path = "reap.rs"]
+mod reap;
+
 /// The root every test vault sits under, this user's alone:
 /// `<tmp>/hale-test-vaults-<uid>`, made mode 700 and refused (loudly)
 /// when it is not a directory this user owns, so another user's root or
@@ -45,7 +49,10 @@ pub fn dir() -> PathBuf {
                 let gone = pid > 0
                     && unsafe { libc::kill(pid, 0) } != 0
                     && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH);
-                if gone {
+                // and its habitat with it (GH #1653), the dir kept when
+                // that does not come down
+                let keep = std::env::var("HALE_DNA_KEEP_SCRATCH").is_ok_and(|v| !v.is_empty() && v != "0");
+                if gone && !keep && reap::compose_down_all(&[e.path()]).is_ok() {
                     let _ = std::fs::remove_dir_all(e.path());
                 }
             }
@@ -62,9 +69,12 @@ pub fn dir() -> PathBuf {
     .clone()
 }
 
-/// `hale`, under this test process's vault.
+/// `hale`, under this test process's vault, and its local habitat (GH
+/// #1653): `XDG_DATA_HOME` inside the vault directory, so an organism a test
+/// births or migrates is never a tenant of the developer's habitat. The
+/// habitat comes down when the vault is swept, after the process is gone.
 pub fn hale() -> Command {
     let mut c = Command::new(env!("CARGO_BIN_EXE_hale"));
-    c.env("HALE_VAULT_DIR", dir()).env_remove("HALE_VAULT_ADDR");
+    c.env("HALE_VAULT_DIR", dir()).env_remove("HALE_VAULT_ADDR").env("XDG_DATA_HOME", dir().join("data"));
     c
 }
