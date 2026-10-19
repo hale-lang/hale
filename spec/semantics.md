@@ -4098,6 +4098,66 @@ each queue's depth and its consumer's heartbeat (the count every drain
 and every cell taken bumps), and a queue is stalled while it holds work
 and that count stands still. A pool worker running one long cell with
 nothing waiting is not stalled.
+## Observe backends (GH #1592)
+
+A program is observed through a backend it holds as a param of its main
+locus, beside the others, and places with `placement { }` as any other
+(§ Placement block). Nothing is observed unless the
+program holds one.
+
+```hale
+main locus App {
+    params {
+        reg: std::metrics::Registry = std::metrics::Registry { namespace: "app" };
+        metrics: std::observe::Scrape = std::observe::Scrape { port: 9100 };
+    }
+    placement { metrics: pinned; }
+}
+
+fn main() { App { }; }
+```
+
+**Recognized by its type.** The compiler recognizes a backend param by
+its type, `std::observe::Scrape`, as it recognizes a hub
+(`observe_expand`, beside `hub_expand`):
+
+- it numbers it: the default literal carries the param's number
+  (`oid`), which marks it as the program's backend;
+- a construction that supplies the param is refused at the field:
+  its default is the backend;
+- a main locus holds one `std::observe::Scrape`; a second is refused at
+  its param;
+- the backends' source (`observe.hl`) is appended only to a program
+  that holds one.
+
+Its literal is checked as any param's default: it may read an earlier
+param (`port: self.metrics_port`) or the environment.
+
+**How it runs.** `Scrape` is an ordinary locus whose `run()` serves a
+`std::http::Server` on its `host` and `port`, answering its `path`.
+It runs wherever `placement` puts it: `pinned` gives it a thread of its
+own; left unplaced it serves on main's pool, as an unplaced server
+does. It is born, drained and torn down as any param of the main locus:
+a signal's drain stops its listener, and `main`'s `run()` returning does
+not (§ "Drain cascade (whole-process)").
+
+**What holding one turns on.** Three things, and only in a program that
+holds one (a program without it lowers none of them and pays nothing):
+every `std::metrics::Registry` registers in the process-wide series
+table the scrape renders, and every handle mirrors its updates there;
+restarts and delivered failures are counted; and the runtime counts in
+counters-only mode (`spec/runtime.md` § "Observe backends").
+
+**One port.** `Scrape`'s `port` is required, and it is a listener of
+its own. GH #1477's probes will make the port optional and serve
+`/metrics` on the probes listener, so a deployment annotates one port.
+
+**In the topology artifact.** Schema 1.21's `observe` section lists
+each backend param with its endpoint (`param`, `kind`, `backend`,
+`host`, `port`, `path`; a field the literal does not write is its
+declared default, a value the source computes is `null`), so a
+deployment elaborator renders the scrape annotations without parsing
+the source.
 
 ## Seams
 

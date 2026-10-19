@@ -323,11 +323,17 @@ fn own_scope_let_block_scope_test() {
             // (`parse` and `null`); 481, and one more entry point, since
             // `std::observe::Probes` came (its birth); 483, and one more
             // invoked unboundedly, since the stdlib's own terminal lines
-            // are written by `log.hl` (`__std_log_diag`, `__std_log_out`)
+            // are written by `log.hl` (`__std_log_diag`, `__std_log_out`);
+            // 484, and one more invoked unboundedly, since
+            // `Registry.render()` renders a series at a time
+            // (`__metrics_render_series`); 486, and two more entry points,
+            // since a `std::metrics::Registry` registers at birth and leaves
+            // at dissolve (the observe backends themselves join only a
+            // program that holds one)
             changed_lines(&old.render(), &now.render()),
             [
-                "- # 483 fns, 30 entry points, 131 invoked-unboundedly",
-                "+ # 483 fns, 30 entry points, 130 invoked-unboundedly",
+                "- # 486 fns, 32 entry points, 132 invoked-unboundedly",
+                "+ # 486 fns, 32 entry points, 131 invoked-unboundedly",
                 "- call  count loop_depth=0 result=local",
                 "+ call  <unresolved: count> loop_depth=0 result=local",
                 "- call  count loop_depth=0 result=local",
@@ -510,7 +516,7 @@ fn reached_perspective_examples() {
         "crates/hale-codegen/tests/fixtures/examples/65-perspective-ctor-override",
         "tests/hale/perspective_ctor_override_test.hl",
     ] {
-        pinned_unreached(t, (132, 0), &["Gateway::handle", "RouterV1::route"], &[], &lines);
+        pinned_unreached(t, (133, 0), &["Gateway::handle", "RouterV1::route"], &[], &lines);
     }
 }
 
@@ -520,7 +526,7 @@ fn reached_perspective_examples() {
 fn reached_unowned_literal_positions() {
     pinned_unreached(
         "crates/hale-codegen/tests/fixtures/examples/90-unowned-literal-positions",
-        (132, 0),
+        (133, 0),
         &["Provider::submit", "Server::handle"],
         &["Provider::submit CollectionInsert(\"vec\") @1292..1320 InvokedUnboundedly"],
         &[
@@ -540,7 +546,7 @@ fn reached_unowned_literal_positions() {
 fn reached_oidc() {
     pinned_unreached(
         "dna/oidc",
-        (154, 13),
+        (155, 13),
         &[
             "b64",
             "decode",
@@ -607,7 +613,7 @@ fn reached_oidc() {
 fn reached_is_route_test() {
     pinned_unreached(
         "tests/hale/is_route_test.hl",
-        (134, 6),
+        (135, 6),
         &["Api::handle", "Api::list", "Api::rename", "Api::show"],
         &["Api::handle StructLit(\"std::http::Response\") @1449..1496 InvokedUnboundedly"],
         &[
