@@ -1837,15 +1837,20 @@ fn init(app_dir: &Path, library: bool) -> Result<Vec<String>, String> {
     }
     // 7. the record, seeded from the artifact — or, for a repository, with
     //    the purpose's Review and what the repository holds, as the graph
-    if record_seeded(&root)? {
-        out.push("kept    the record (memory holds it; not reseeded)".to_string());
+    // each seed step checks its own completion against the record and
+    // runs when it is missing, so an init that stopped part way (a held
+    // `.git/config.lock`, a failed append) is finished by the next, a step
+    // at a time, never skipped whole because an earlier step ran (GH #1653)
+    let held = record_kinds(&root)?;
+    let has = |kind: &str, entity: Option<&str>| held.iter().any(|(k, e)| k == kind && entity.is_none_or(|x| x == e));
+    if has("application.attached", None) {
+        out.push("kept    the record's seed (memory holds it; not reseeded)".to_string());
     } else {
         match (&app, &cut) {
             (Some(app), Some((art, _))) => {
                 let (n, graph) = seed_journal(&app.root, app, art, &purpose_text)?;
                 out.push(format!("seeded  the record ({n} observed event(s): application.attached, structure.observed, responsibility.proposed; then the purpose proposed and the application's graph)"));
                 push_graph_lines(&mut out, &graph);
-                out.push(seat_initializer(&app.root, true)?);
             }
             _ => {
                 // the declared purpose's proposal and the graph in one
@@ -1857,26 +1862,34 @@ fn init(app_dir: &Path, library: bool) -> Result<Vec<String>, String> {
                     app_account_name(&project)
                 ));
                 push_graph_lines(&mut out, &graph);
-                out.push(seat_initializer(&root, true)?);
             }
         }
         // GH #995: the declared purpose was proposed in that seed, a
         // proposal the Board ratifies like every other
         out.push("seeded  purpose (proposed for the Board: `hale dna review` lists it under `purpose`)".to_string());
-        // GH #596 C, #994: the design and the operating practices, as
-        // proposals — one Review per practice, listed by family
-        for (family, practices) in SEEDED {
-            let (d, _, _) = design_upgrade(&root, practices)?;
-            out.push(format!("seeded  {family} ({d} practice(s) proposed, one Board Review each: `hale dna review` lists them under `{family}`)"));
-        }
-        // seed/pull: the nodes knowledge is about, and the smallest library bound to them
-        if library {
-            out.extend(seed_library(&root, app.as_ref())?);
-        } else {
-            out.push("skipped library (--no-library: no language or system node, no library idea)".to_string());
-        }
-        // the starting model mapping, from the hosted models this machine
-        // has a key for
+    }
+    // the seat: git config, done when its keys are (it keeps what is there)
+    out.push(seat_initializer(app.as_ref().map(|a| a.root.as_path()).unwrap_or(&root), true)?);
+    // GH #596 C, #994: the design and the operating practices, as
+    // proposals — one Review per practice, listed by family; each family
+    // proposes only what the record does not hold already
+    for (family, practices) in SEEDED {
+        let (d, _, _) = design_upgrade(&root, practices)?;
+        out.push(format!("seeded  {family} ({d} practice(s) proposed, one Board Review each: `hale dna review` lists them under `{family}`)"));
+    }
+    // seed/pull: the nodes knowledge is about, and the smallest library bound to them
+    if !library {
+        out.push("skipped library (--no-library: no language or system node, no library idea)".to_string());
+    } else if has("graph.node", Some("language:hale")) {
+        out.push("kept    the library (memory holds it)".to_string());
+    } else {
+        out.extend(seed_library(&root, app.as_ref())?);
+    }
+    // the starting model mapping, from the hosted models this machine
+    // has a key for
+    if has("model.rule", Some("default")) {
+        out.push("kept    the models map (memory holds it)".to_string());
+    } else {
         out.extend(seed_model_map(&root, &found)?);
     }
     // 8. GH #1590: the secrets the seeded record names (the attached
@@ -3467,17 +3480,13 @@ fn record_exists(root: &Path) -> Result<bool, String> {
     Ok(host_run("record-head", root, &[])?.trim() != "none")
 }
 
-/// GH #1590: whether the record holds more than its birth (`record.genesis`,
-/// `record.key`): init seeds a record once.
-fn record_seeded(root: &Path) -> Result<bool, String> {
+/// The record's rows as `(kind, entity)`, each seed step's evidence of
+/// itself (GH #1653).
+fn record_kinds(root: &Path) -> Result<Vec<(String, String)>, String> {
     let rows = host_run("record-rows", root, &[])?;
-    Ok(rows.lines().filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok()).any(|v| {
-        let kind = v["kind"].as_str().unwrap_or("");
-        // the habitat's own provisioning rows land beside its genesis
-        // before it is seeded (GH #1653), and are no seeding
-        !kind.starts_with("record.") && !kind.starts_with("habitat.")
-    }))
+    Ok(rows.lines().filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok()).map(|v| (v["kind"].as_str().unwrap_or("").to_string(), v["entity"].as_str().unwrap_or("").to_string())).collect())
 }
+
 
 /// GH #1590: the identity `hale.toml` pins, as a TOML parser reads it:
 /// `None` when the file, the `dna` table or its `record` key is absent;

@@ -4389,7 +4389,12 @@ The live half is memory's, projected from the record by the spine
   (and which of its profile and packs are done), but whether its record
   was born is memory's to say, never the file's. A pinned identity whose
   `record.genesis` memory holds is resumed: the rest of `init`, each step
-  of which keeps what is done, against that record. Only when memory
+  of which keeps what is done, against that record — every seed step
+  checks its own completion and runs when it is missing (the seed when
+  the record holds no `application.attached`, the seat when its git
+  config keys are absent, each family for what the record does not hold,
+  the library and the models map when their rows are absent), so a plain
+  `hale dna init` that stopped part way is finished the same way. Only when memory
   answers that it holds no genesis for the pin, or the identity's memory
   allocation was never made (docker answers it has no such volume), is
   the identity drawn again and what was made for it taken down. Memory

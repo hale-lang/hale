@@ -274,3 +274,39 @@ fn init_refuses_a_seed_without_a_main_locus() {
     assert!(out.contains("declares no `main locus`"), "{out}");
     let _ = std::fs::remove_dir_all(&d);
 }
+
+/// GH #1653: an init that stopped part way is finished by the next, each
+/// seed step checking its own completion rather than one gate for the
+/// whole: with `.git/config.lock` held, seating the person fails after the
+/// record is seeded; the retry keeps the seed, seats the person, and
+/// proposes each family once, and a third run proposes nothing again.
+#[test]
+fn an_interrupted_init_is_finished_step_by_step() {
+    let app = pipeline_app("resume");
+    let git = |args: &[&str]| Command::new("git").arg("-C").arg(&*app).args(args).output().unwrap();
+    assert!(git(&["init", "-q"]).status.success());
+    let lock = app.join(".git/config.lock");
+    std::fs::write(&lock, "").unwrap();
+    let (ok, out) = hale(&["dna", "init", "."], &app);
+    assert!(!ok, "a held config lock stops the init: {out}");
+    std::fs::remove_file(&lock).unwrap();
+    let (ok, out) = hale(&["dna", "init", "."], &app);
+    assert!(ok && out.contains("kept    the record's seed"), "the retry keeps the seed the first run wrote and finishes it: {out}");
+    let member = String::from_utf8_lossy(&git(&["config", "--local", "--get-all", "dna.unix.member"]).stdout).to_string();
+    let trust = String::from_utf8_lossy(&git(&["config", "--local", "--get", "dna.trust"]).stdout).trim().to_string();
+    assert!(member.starts_with("uid:") && trust == "local", "the person is seated: {member} {trust}\n{out}");
+    let proposed = |rows: &[serde_json::Value], family: &str| {
+        rows.iter()
+            .filter(|r| r["kind"] == "knowledge.proposed")
+            .filter(|r| r["body"].as_str().is_some_and(|b| b.contains(&format!("\"name\": \"{family}/"))))
+            .count()
+    };
+    let rows = journal_rows(&app);
+    let counts: Vec<usize> = ["design", "operating", "using"].iter().map(|f| proposed(&rows, f)).collect();
+    assert!(counts.iter().all(|n| *n > 0), "every family proposed: {counts:?}");
+    let (ok, again) = hale(&["dna", "init", "."], &app);
+    assert!(ok && again.contains("seeded  design (0 practice(s) proposed"), "a finished init proposes nothing again: {again}");
+    let rows = journal_rows(&app);
+    let after: Vec<usize> = ["design", "operating", "using"].iter().map(|f| proposed(&rows, f)).collect();
+    assert_eq!(after, counts, "each family once");
+}
