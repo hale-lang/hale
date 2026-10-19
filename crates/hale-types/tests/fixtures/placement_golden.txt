@@ -11978,9 +11978,10 @@ shared	dynamic	sites in the stdlib #919aadb4
 == dna/tests/nerves_compose_test.hl
 root	App	the entry
 row	App@literal1	App	main	default
-shared	dynamic	sites in core #de2fb49b
 shared	dynamic	sites in core/pond/realtime/nats #164fddea
-shared	dynamic	sites in tests #8373b75a
+-- dynamic	sites in tests
+dynamic	__StdSecretCredential	on main
+dynamic	__lib_dna__core__pond__realtime__nats___client__NatsClient	on main
 shared	dynamic	sites in the stdlib #c3a51769
 
 == dna/tests/nerves_fake_test.hl
