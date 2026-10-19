@@ -1,4 +1,4 @@
-//! The `http` integration-test binary: 14 test files of this area, kept
+//! The `http` integration-test binary: 15 test files of this area, kept
 //! where they are (their paths, names and history unchanged) and built as
 //! modules of one binary, so the crate links once for the area instead of
 //! once per file. Each file is a module; a test's name is `<file>::<fn>`.
@@ -17,6 +17,8 @@ mod http_hello;
 mod http_request_headers;
 #[path = "http_response_headers.rs"]
 mod http_response_headers;
+#[path = "probes.rs"]
+mod probes;
 #[path = "http_route_matching.rs"]
 mod http_route_matching;
 #[path = "http_router.rs"]

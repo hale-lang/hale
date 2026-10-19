@@ -3715,6 +3715,12 @@ pub fn unscoped_alias(head: &str) -> &str {
     }
 }
 
+/// GH #1477: the main locus's method a `probes { http(PORT); }` block
+/// reads as, its body the port. `$` cannot occur in an identifier, so no
+/// program declares or calls it; codegen calls it once the main locus's
+/// births are done and serves the probes on the port it returns.
+pub const PROBES_HTTP_FN: &str = "__probes$http";
+
 /// GH #774: the spelling an imported seed's claim group reference is
 /// bound to when NO declaration in that seed answers it.
 ///

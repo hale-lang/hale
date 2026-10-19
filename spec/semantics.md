@@ -4054,6 +4054,39 @@ spawns one OS worker thread per inferred pool name beyond
 named purely by use site, and the runtime materializes them
 on demand at startup.
 
+
+## Probes
+
+`probes { http(PORT); }` in the `main locus` (GH #1477, 2026-10-19) asks
+the runtime to serve the process's health over HTTP on `PORT`, every
+interface. Nothing is served, and nothing is sampled, in a program that
+does not declare it. `PORT` is an `Int` expression of the main locus
+(`http(9100)`, `http(self.probe_port)`), read once, when the main
+locus's births are done: its params' children born (a placed child's
+readiness awaited), its bindings open, its boot subscriptions in place,
+and its `run()` not yet entered. The probes start there, on a thread of
+the runtime's own, so a wedged pool or a main thread busy in its `run()`
+cannot keep them from answering; a port that cannot be bound fails the
+start. `wasm32` has no threads or sockets and serves none.
+
+| path | answers |
+|---|---|
+| `GET /healthz` | liveness: `200 ok`, unless a queue holds work its consumer has not touched for the stall window (main's queue, each cooperative pool's; 10 s, `LOTUS_PROBES_STALL_MS`), then `503` and `stalled: <queue> …` (`main`, `pool:<name>`) |
+| `GET /readyz` | readiness: `200 ready` from the boot/run boundary on, `503 draining` once the process drains (a signal's drain or the main locus's tree drain, `self.draining`) |
+| `GET /capacity` | `application/json`: `{"ready", "draining", "queues": [{"name", "pending", "capacity", "stalled_ms"}]}`, a queue's cells waiting, the cells it holds before it grows or spills, and how long it has stalled (0 while it moves) |
+
+Any other path is `404`, and any method but `GET` and `HEAD` is `405`;
+each connection gets one response and closes. The readings cost the
+program nothing on its own paths: once a second the probe thread reads
+each queue's depth and its consumer's heartbeat (the count every drain
+and every cell taken bumps), and a queue is stalled while it holds work
+and that count stands still. A pool worker running one long cell with
+nothing waiting is not stalled.
+
+The block reads as the main locus's method `__probes$http` (an
+unspeakable name), whose body is the port, so the port is checked and
+lowered as a method's expression is.
+
 ## Seams
 
 A seam (GH #1530, 2026-10-17) stitches a producer whose output is a set to

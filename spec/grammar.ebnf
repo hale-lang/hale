@@ -373,6 +373,7 @@ locus_member      = params_block
                   | bindings_block
                   | placement_block
                   | topology_block
+                  | probes_block                                (* #1477 *)
                   | claims_block
                   | birth_check_decl
                   | seam_decl                                   (* #1530 *)
@@ -721,6 +722,13 @@ topology_block    = "topology" , "{" ,
 reserve_decl      = "reserve" , "cores" , core_set , ";" ;
 node_decl         = "node" , INT_LIT , "{" , { l3_decl } , "}" ;
 l3_decl           = "l3" , IDENTIFIER , "{" , "cores" , core_set , ";" , "}" ;
+
+(* GH #1477 — `probes { http(PORT); }`: the runtime serves the process's
+   health, readiness and capacity over HTTP on PORT (spec/semantics.md §
+   Probes). Valid only inside `main locus`, at most once; `probes` and
+   `http` are contextual. PORT is an `Int` expression of the main locus,
+   `self` in scope. *)
+probes_block      = "probes" , "{" , "http" , "(" , expression , ")" , ";" , "}" ;
 
 (* F.35 (2026-05-28): operational constraints on a placement
    entry. v0.1 ships one keyword (`async_io`); the typechecker
