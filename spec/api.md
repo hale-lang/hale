@@ -2230,7 +2230,11 @@ second message per map. On decode the entry's key wins over the record's,
 and a key repeated is `duplicate_key` here as well (proto3 lets a parser
 keep the last; the codec is as strict as the JSON one). The digest
 folds the key in (`checks:bounded[...]@name`), since the field crosses
-as an object and not a list.
+as an object and not a list. A key field with a presence pair or triple
+(`name` beside `has_name`, and `clear_name`) is supplied by the map: a
+record read from it, through JSON or protobuf, has `has_name` set and
+`clear_name` unset, whatever the record sent, and neither flag crosses
+in the value.
 
 **A map of values** (2026-10-19) names the value too: `checks:
 bounded[Check; 16] indexed_by name -> status;`, where `Check` is `{ name:
@@ -2246,7 +2250,8 @@ wire that exists.
 
 The element has no fields but the key and the value, so the decoder
 builds every record whole, and the check refuses any other field at the
-clause. The value is a scalar (a unit-dialect one by its count), a `Time`
+clause; the key's own presence flags are the key's (the decoder sets the
+key present and not cleared, as for a map of records). The value is a scalar (a unit-dialect one by its count), a `Time`
 or a payload-free enum, read through its aliases as the codec reads every
 field; a record, a list (an alias of one included), or an enum with
 payloads is refused at the clause, because a map of records already

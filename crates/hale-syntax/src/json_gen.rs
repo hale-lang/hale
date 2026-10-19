@@ -101,6 +101,10 @@ struct MapValue {
     field: String,
     elem: Elem,
     elem_ty: String,
+    /// The record literal's key presence, when the key field is optional
+    /// (`, has_name: true`, and `, clear_name: false` for a triple): the
+    /// map supplied the key.
+    key_inits: String,
 }
 
 /// What the value `field` of the records `record` of a map of values
@@ -127,7 +131,7 @@ fn map_value(
     if matches!(elem, Elem::Enum { unit_only: false, .. }) {
         return Err("its value is an enum with payloads");
     }
-    Ok(MapValue { field: field.to_string(), elem, elem_ty })
+    Ok(MapValue { field: field.to_string(), elem, elem_ty, key_inits: String::new() })
 }
 
 /// The maps of values whose value the codec cannot carry, read as the
@@ -437,6 +441,9 @@ struct JsonType {
     /// The lifted key's presence flag, when the key field is optional: the
     /// map supplied the key, so the value decoder sets it.
     lifted_flag: Option<String>,
+    /// The lifted key's clear flag, when the key has a presence triple: the
+    /// map supplied the key, so it is not cleared.
+    lifted_clear: Option<String>,
 }
 
 fn scalar_of(te: &TypeExpr) -> Option<ScalarTy> {
@@ -546,7 +553,7 @@ fn collect_json_types(items: &[TopDecl], names: &HashSet<String>, out: &mut Vec<
                         });
                     }
                     if ok && !jfields.is_empty() {
-                        out.push(JsonType { name: td.name.name.clone(), fields: jfields, lifted: None, lifted_flag: None });
+                        out.push(JsonType { name: td.name.name.clone(), fields: jfields, lifted: None, lifted_flag: None, lifted_clear: None });
                     }
                 }
             }
@@ -1065,7 +1072,8 @@ fn construct_src(t: &JsonType, json: bool) -> String {
         .lifted
         .iter()
         .map(|k| format!("{k}: __key"))
-        .chain(t.lifted_flag.iter().map(|flag| format!("{flag}: true")));
+        .chain(t.lifted_flag.iter().map(|flag| format!("{flag}: true")))
+        .chain(t.lifted_clear.iter().map(|clear| format!("{clear}: false")));
     let inits: Vec<String> = lifted
         .chain(t.fields.iter().filter_map(|f| match (&f.kind, &f.conv) {
             // on the JSON wire a presence flag is whether its field was read
@@ -1222,8 +1230,8 @@ fn json_value_map_read(f: &JsonField, tn: &str, k: &str, v: &MapValue, prefix: &
     b.push_str(&format!("{inner}let __ee = __mi.val_end;\n"));
     b.push_str(&json_elem_read(&v.elem, "__ma", &f.key, prefix, &inner));
     b.push_str(&format!(
-        "{inner}push(__h_{}.b, {tn} {{ {k}: __mk, {}: __ev }}) or fail JsonError {{ kind: \"too_long\", field: \"{}\" }};\n",
-        f.name, v.field, f.key
+        "{inner}push(__h_{}.b, {tn} {{ {k}: __mk, {}: __ev{} }}) or fail JsonError {{ kind: \"too_long\", field: \"{}\" }};\n",
+        f.name, v.field, v.key_inits, f.key
     ));
     b.push_str(&format!("{inner}__mi = std::json::object_next(__mi, __ma);\n"));
     b.push_str(&format!("{ind}}}\n"));
@@ -1273,8 +1281,8 @@ fn pb_value_map_read(f: &JsonField, tn: &str, k: &str, v: &MapValue, bad: &str) 
     b.push_str(&format!("{ind}let __en = __api_pb_decode_{rec}(std::bytes::slice(__b, __me, __me + __ml)) or raise;\n"));
     b.push_str(&format!("{ind}for __mx in __h_{}.b {{ if __mx.{k} == __en.key {{ {dup}; }} }}\n", f.name));
     b.push_str(&format!(
-        "{ind}push(__h_{}.b, {tn} {{ {k}: __en.key, {}: __en.value }}) or fail JsonError {{ kind: \"too_long\", field: \"{}\" }};\n",
-        f.name, v.field, f.key
+        "{ind}push(__h_{}.b, {tn} {{ {k}: __en.key, {}: __en.value{} }}) or fail JsonError {{ kind: \"too_long\", field: \"{}\" }};\n",
+        f.name, v.field, v.key_inits, f.key
     ));
     b.push_str(&format!("{ind}__p = __me + __ml;\n"));
     b
@@ -1289,7 +1297,7 @@ fn pb_value_map_read(f: &JsonField, tn: &str, k: &str, v: &MapValue, bad: &str) 
 /// field `key_no`, so a value that leaves its key out is no
 /// `missing_field`, then the entry's key replaces the value's (and sets
 /// its presence `flag`, when the key field is optional).
-fn generate_pb_entry_src(tn: &str, k: &str, key_no: u32, flag: Option<&str>) -> String {
+fn generate_pb_entry_src(tn: &str, k: &str, key_no: u32, flag: Option<&str>, clear: Option<&str>) -> String {
     let wrong = "fail JsonError { kind: \"wrong_type\", field: __f };";
     let mut b = format!("fn __api_pb_entry_{tn}__by_{k}(__b: Bytes, __f: String) -> {tn} fallible(JsonError) {{\n");
     b.push_str("    let __n = len(__b);\n    let mut __p = 0;\n    let mut __key = \"\";\n");
@@ -1322,6 +1330,10 @@ fn generate_pb_entry_src(tn: &str, k: &str, key_no: u32, flag: Option<&str>) -> 
     b.push_str(&format!("    __v.{k} = __key;\n"));
     if let Some(flag) = flag {
         b.push_str(&format!("    __v.{flag} = true;\n"));
+    }
+    // a triple's key is set, not cleared, whatever the record sent
+    if let Some(clear) = clear {
+        b.push_str(&format!("    __v.{clear} = false;\n"));
     }
     b.push_str("    return __v;\n}\n");
     b
@@ -2430,7 +2442,7 @@ fn generate_codecs(
             })
             .collect();
         if let (Some(fields), false) = (jfields, types.iter().any(|t| &t.name == name)) {
-            types.push(JsonType { name: name.clone(), fields, lifted: None, lifted_flag: None });
+            types.push(JsonType { name: name.clone(), fields, lifted: None, lifted_flag: None, lifted_clear: None });
         }
     }
     let mut src = String::new();
@@ -2548,21 +2560,30 @@ fn generate_codecs(
                     .iter()
                     .find(|f| matches!(&f.presence, Presence::Flag(of) if of == k))
                     .map(|f| f.name.clone());
-                src.push_str(&generate_pb_entry_src(tn, k, key_no, flag.as_deref()));
+                let clear = clear_flag(t, k).map(str::to_string);
+                src.push_str(&generate_pb_entry_src(tn, k, key_no, flag.as_deref(), clear.as_deref()));
             }
             continue;
         }
-        // the key and its presence flag, if it has one, are the map's
+        // the key and its presence flag and clear flag, if it has them,
+        // are the map's
         let flag = t
             .fields
             .iter()
             .find(|f| matches!(&f.presence, Presence::Flag(of) if of == k))
             .map(|f| f.name.clone());
+        let clear = clear_flag(t, k).map(str::to_string);
         let value = JsonType {
             name: t.name.clone(),
-            fields: t.fields.iter().filter(|f| &f.name != k && Some(&f.name) != flag.as_ref()).cloned().collect(),
+            fields: t
+                .fields
+                .iter()
+                .filter(|f| &f.name != k && Some(&f.name) != flag.as_ref() && Some(&f.name) != clear.as_ref())
+                .cloned()
+                .collect(),
             lifted: Some(k.clone()),
             lifted_flag: flag,
+            lifted_clear: clear,
         };
         if existing_fns.insert(format!("__api_decode_{tn}__by_{k}")) {
             src.push_str(&generate_parser_src_mode(&value, "__api_decode_", true));
@@ -2986,7 +3007,7 @@ fn map_entry_type(rec: &str, v: &MapValue) -> JsonType {
         presence: Presence::No,
         default_expr: None,
     };
-    JsonType { name: rec.to_string(), fields: vec![key, value], lifted: None, lifted_flag: None }
+    JsonType { name: rec.to_string(), fields: vec![key, value], lifted: None, lifted_flag: None, lifted_clear: None }
 }
 
 /// The records the variants with several values cross protobuf as, with
@@ -3030,7 +3051,7 @@ fn variant_records(e: &JsonEnum) -> Vec<(String, JsonType)> {
                 }
             })
             .collect();
-        out.push((decl, JsonType { name: rec, fields, lifted: None, lifted_flag: None }));
+        out.push((decl, JsonType { name: rec, fields, lifted: None, lifted_flag: None, lifted_clear: None }));
     }
     out
 }
@@ -3131,7 +3152,25 @@ fn collect_api_types(
                         // records' `<value>`s
                         let value = match (&elem, &f.map_value, key.is_some()) {
                             (Elem::Nested(tn), Some(v), true) => match map_value(tn, &v.name, records, scalars, aliases, enums) {
-                                Ok(mv) => Some(mv),
+                                Ok(mut mv) => {
+                                    // the map supplied the key: present,
+                                    // and not cleared
+                                    let k = key.as_deref().unwrap_or_default();
+                                    let is_bool = |te: &TypeExpr| matches!(through_aliases(te, aliases), TypeExpr::Primitive(PrimType::Bool, _));
+                                    if let Some(rf) = records.get(tn) {
+                                        for (of, flag) in presence_pairs(rf, &is_bool) {
+                                            if of == k {
+                                                mv.key_inits.push_str(&format!(", {flag}: true"));
+                                            }
+                                        }
+                                        for (of, clear) in presence_clears(rf, &is_bool) {
+                                            if of == k {
+                                                mv.key_inits.push_str(&format!(", {clear}: false"));
+                                            }
+                                        }
+                                    }
+                                    Some(mv)
+                                }
                                 Err(_) => continue,
                             },
                             _ => None,
@@ -3193,7 +3232,7 @@ fn collect_api_types(
                         }
                     }
                 }
-                out.push(JsonType { name: td.name.name.clone(), fields: jfields, lifted: None, lifted_flag: None });
+                out.push(JsonType { name: td.name.name.clone(), fields: jfields, lifted: None, lifted_flag: None, lifted_clear: None });
             }
             TopDecl::Module(m) => collect_api_types(&m.items, wanted, scalars, aliases, enums, records, out),
             _ => {}
