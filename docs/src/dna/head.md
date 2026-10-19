@@ -39,12 +39,13 @@ face's loopback URL. With no project it starts detached, and the
 browser's Projects workspace creates, initializes or attaches one.
 
 With a project, the head reads the record and Knowledge from memory under
-the record's head role. `hale dna head` derives that DSN as `hale dna
-memory migrate` derives it and hands it to the head alone; it is never
-printed. The record is memory's (GH #1590), so a head with no memory
-reads no record: when the project's memory is not up it says so, and
-`hale dna dev` brings the project's memory and nerves up. An operator's
-own `HALE_DNA_MEMORY_DSN_HEAD` wins.
+the record's head role. `hale dna head` derives that DSN from memory
+that is up and migrated and hands it to the head alone; it is never
+printed, and the head migrates and brings up nothing. The record is
+memory's (GH #1590), so a head with no memory reads no record: when the
+project's memory is not up it says so, and `hale habitat migrate
+<project>` brings the project's memory and nerves up and migrates them.
+An operator's own `HALE_DNA_MEMORY_DSN_HEAD` wins.
 
 From a checkout of hale, the launcher starts the same head, building it
 from the checkout into temporary storage on every start:
@@ -63,8 +64,14 @@ Both take the same flags; `hale dna head --help` and
 | 8794 | the stub OpenID provider (`dna/oidc`) | `--oidc-port` |
 | 8795 | the API child's commands: its surface's HTTP exposure | `--commands-port` |
 
-The API child says when each part is listening. Its commands port is
-given to it (`HALE_DNA_COMMANDS_PORT`), never derived from the reads'
+The launcher pins those four ports. The head program
+(`dna/api/project_service`) pins its child's only when it is given
+them: handed an API port of 0 and no `HALE_DNA_COMMANDS_PORT` (as a
+fixture starts it), it hands the API child port 0 for each, the child
+binds whatever the system gives it, and it reports both ports back to
+the head (`HALE_DNA_API_PORTS`), so no port is drawn free and then lost
+to a neighbour before the child binds it. The API child says when each
+part is listening. Its commands port is never derived from the reads'
 port, and once its binding holds that port it prints:
 
 ```text
@@ -347,7 +354,7 @@ says so:
 
 ```text
 $ hale dna route main.hl
-hale dna: route: the graph is memory's, and no memory is named (HALE_DNA_MEMORY_DSN_HEAD); `hale dna memory migrate` prints it
+hale dna: route: the graph is memory's, and no memory is named (HALE_DNA_MEMORY_DSN_HEAD); `hale habitat migrate <organism>` keeps the head's DSN
 ```
 
 A Review takes its signers and gates from the same computation when it

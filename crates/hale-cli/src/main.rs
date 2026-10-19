@@ -94,6 +94,11 @@ fn main() -> ExitCode {
     if cmd == "dna" {
         return dna::run(&args[2..]);
     }
+    // GH #1653: `hale habitat migrate [organism]` — the acts of the
+    // machine's habitat, the only ones that provision or migrate
+    if cmd == "habitat" {
+        return dna::habitat::run(&args[2..]);
+    }
     // GH #566 F5: `hale node <name>` — the agent that expresses a fleet
     // plan's instances on one machine, from the record.
     if cmd == "node" {

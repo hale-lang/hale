@@ -6,6 +6,8 @@
 
 #[path = "support/vault.rs"]
 mod vault;
+#[path = "support/scratch.rs"]
+mod scratch;
 use std::path::Path;
 
 fn hale(args: &[&str], cwd: &Path) -> (bool, String) {
@@ -22,7 +24,7 @@ fn hale(args: &[&str], cwd: &Path) -> (bool, String) {
 
 #[test]
 fn the_outcome_flag_reaches_the_verb() {
-    let d = std::env::temp_dir().join(format!("hale_dna_effres_{}", std::process::id()));
+    let d = scratch::Scratch::new(format!("hale_dna_effres_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(&d).unwrap();
     let (ok, out) = hale(&["dna", "new", "eff"], &d);

@@ -92,7 +92,7 @@ locus HeadCases {
         self.f.json.eq(outcome, "application_id", self.f.identity);
         self.f.json.eq(outcome, "root", self.f.project);
         self.f.json.eq(outcome, "name", "project");
-        self.f.json.is_int(outcome, "api_port", self.f.api_port);
+        self.f.json.is_int(outcome, "api_port", self.f.child_port("api"));
         self.f.json.is_bool(outcome, "authority_written", true);
         let registry = std::io::fs::read_file(self.f.state + "/projects.jsonl") or "";
         std::test::assert(std::str::contains(registry, "\"event\":\"registered\"") && std::str::contains(registry, "\"event\":\"activated\"") && std::str::contains(registry, self.f.identity), "registry lines: " + registry);
@@ -109,7 +109,7 @@ locus HeadCases {
         let active = self.f.json.raw(state, "active");
         self.f.json.eq(active, "application_id", self.f.identity);
         self.f.json.eq(self.f.json.raw(active, "api"), "state", "ready");
-        self.f.json.is_int(self.f.json.raw(active, "api"), "port", self.f.api_port);
+        self.f.json.is_int(self.f.json.raw(active, "api"), "port", self.f.child_port("api"));
         std::test::assert(std::str::contains(self.f.json.raw(state, "operations"), "\"name\": \"dna.project.sync\", \"version\": \"1\", \"available\": true"), "sync is available once attached");
         std::test::assert(std::str::contains(self.f.json.raw(self.f.json.raw(state, "credentials"), "needed"), "FIXTURE_MODEL_KEY"), "the catalog's credential names are advertised: " + state);
         // attaching the active project again is idempotent: nothing rewritten, the child kept
@@ -130,7 +130,7 @@ locus HeadCases {
         std::test::assert_eq_int(asset.status, 200, "the head serves the shell");
         std::test::assert_eq_str(asset.body, fixture::SHELL_JS, "the head's own app.js");
         std::test::assert(std::str::contains(dna::response_header(asset.headers, "Content-Security-Policy"), "script-src 'self'"), "the shell's CSP");
-        let child_asset = fixture::curl("GET", "http://127.0.0.1:" + to_string(self.f.api_port) + "/app.js", "", "");
+        let child_asset = fixture::curl("GET", "http://127.0.0.1:" + to_string(self.f.child_port("api")) + "/app.js", "", "");
         std::test::assert_eq_int(child_asset.status, 404, "the child has no webroot");
         // a proxied POST with the head's Origin reaches the child's api binding
         // on its own HTTP transport (GH #1135): a call whose payload does not decode is

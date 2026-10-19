@@ -1,23 +1,24 @@
-// dna/tests/nerves_compose_test.hl — the nerves `hale dna init` writes,
-// as `hale dna dev` runs them (GH #986).
+// dna/tests/nerves_compose_test.hl — the nerves birth provisions, as
+// `hale dna dev` runs on them (GH #986, GH #1653).
 //
-// With no NATS server named (HALE_DNA_NATS_URL_OWNER unset), `dev` brings
-// up the `nerves` service of the project's own dna/compose.yaml — NATS
-// with JetStream, configured by dna/nats.conf: one user per family of
-// subjects, each allowed only its own. It creates the organization's
-// stream as the owner and hands the host the spine's user alone. The
-// organization reads its facts through the durable consumer that user
-// may pull, and a task asked from the clone is born: the relay, the
-// stream, the consumer and every permission they need, on the
-// configuration a project runs. The passwords are the seed's own (GH
-// #989): drawn into the vault by init, rotated by upgrade, written into
-// the untracked, mode-600 dna/nats.secrets.conf, never into the tracked
-// dna/nats.conf; a tracked secrets file is refused, and so is a vault
-// with nothing in it. The application the record attaches holds an
-// account of its own (GH #989): it publishes on its own subjects and no
-// other application's, and `hale dna application remove` revokes it.
-// Without docker compose, or without memory's owner DSN, nothing here is
-// exercised.
+// With no NATS server named (HALE_DNA_NATS_URL_OWNER unset), birth brings
+// up the organism's nerves allocation in the local habitat (the fixture's
+// own, under its root) — NATS with JetStream, configured by the
+// allocation's nats.conf: one user per family of subjects, each allowed
+// only its own — and creates the organization's stream as the owner.
+// `dev` brings nothing up and migrates nothing: it hands the host the
+// spine's user alone, on the nerves that are up. The organization reads
+// its facts through the durable consumer that user may pull, and a task
+// asked from the clone is born: the relay, the stream, the consumer and
+// every permission they need, on the configuration a project runs. The
+// passwords are the organism's own (GH #989): drawn into the vault by
+// init, rotated by upgrade, written into the allocation's mode-600
+// nats.secrets.conf, never into its nats.conf, and never into a checkout;
+// a vault with nothing in it is refused. The application the record
+// attaches holds an account of its own (GH #989): it publishes on its own
+// subjects and no other application's, and `hale dna application remove`
+// revokes it. Without docker compose, or without memory's owner DSN,
+// nothing here is exercised.
 
 import "../core" as dna;
 import "../core/pond/realtime/nats" as nats;
@@ -27,19 +28,23 @@ fn toolchain() -> String {
     return "hale";
 }
 
-// Run `argv` (newline-separated) in `dir`, with no NATS server named:
-// `dev` must use compose's, under the seed's own compose project (its
-// name is this run's). The vault is this run's own (HALE_VAULT_DIR under
-// the scratch root).
+// Run `argv` (newline-separated) in `dir`, with no NATS server named: the
+// nerves are the organism's allocation in the local habitat, this test
+// file's own (`hale test` gives each file one). The vault is this run's
+// own (HALE_VAULT_DIR under the scratch root).
 fn in_dir(dir: String, argv: String) -> dna::RunResult {
-    return dna::run_tool("sh\n-c\ncd \"$1\" && export HALE_VAULT_DIR=\"$2\" && shift 2 && unset COMPOSE_PROJECT_NAME ANTHROPIC_API_KEY OPENAI_API_KEY HALE_DNA_NATS_URL_OWNER HALE_DNA_NATS_URL_SPINE HALE_DNA_NATS_ORG HALE_VAULT_ADDR && export HALE_DNA_DISCOVER=off && exec \"$@\"\nsh\n" + dir + "\n" + vault_of(dir) + "\n" + argv);
+    return dna::run_tool("sh\n-c\ncd \"$1\" && export HALE_VAULT_DIR=\"$2\" && shift 2 && unset COMPOSE_PROJECT_NAME ANTHROPIC_API_KEY OPENAI_API_KEY HALE_DNA_NATS_URL_OWNER HALE_DNA_NATS_URL_SPINE HALE_DNA_NATS_ORG HALE_VAULT_ADDR && export HALE_DNA_DISCOVER=off && exec \"$@\"\nsh\n" + dir + "\n" + root_of(dir) + "/vault\n" + argv);
 }
 
-// The scratch root's vault: `/tmp/dna-nerves-compose-<pid>/vault`.
-fn vault_of(dir: String) -> String {
+// The scratch root: `/tmp/dna-nerves-compose-<pid>`.
+fn root_of(dir: String) -> String {
     let at = std::str::index_of(dir, "/nervous");
-    return (if at > 0 { dir[0..at] } else { dir }) + "/vault";
+    return if at > 0 { dir[0..at] } else { dir };
 }
+
+// The organism's allocations in the habitat, and `docker compose` on them.
+fn allocation_of(app: String) -> String { return dna::allocation_dir(app); }
+fn compose_of(app: String) -> String { return dna::allocation_compose(app); }
 
 main locus App {
     params { app: String = ""; refused: String = ""; }
@@ -118,19 +123,25 @@ main locus App {
     run() {
         if !std::env::var_exists("HALE_DNA_MEMORY_DSN_OWNER") { eprintln("nerves_compose_test: not exercised (HALE_DNA_MEMORY_DSN_OWNER is not set)"); return; }
         if dna::run_tool("docker\ncompose\nversion").code != 0 { eprintln("nerves_compose_test: not exercised (docker compose is not on PATH)"); return; }
+        if dna::local_habitat_project() == dna::developer_habitat_project() { eprintln("nerves_compose_test: not exercised (outside `hale test`, the local habitat would be the developer's)"); return; }
         let scratch = dna::scratch_root("nerves-compose");
         dna::reap_on_exit(scratch);
         let name = "nervous" + to_string(std::process::pid());
         let made = in_dir(scratch, toolchain() + "\ndna\nnew\n" + name);
         std::test::assert_eq_int(made.code, 0, "hale dna new: " + made.stdout + made.stderr);
         self.app = scratch + "/" + name;
-        let compose = std::io::fs::read_file(self.app + "/dna/compose.yaml") or "";
-        std::test::assert(std::str::contains(compose, "\nname: hale-dna-" + name + "\n"), "the seed's compose is a project of its own: " + compose);
-        let conf = std::io::fs::read_file(self.app + "/dna/nats.conf") or "";
-        std::test::assert(std::str::contains(conf, "user: spine") && std::str::contains(conf, "jetstream"), "init writes the nerves' server configuration: " + conf);
-        // GH #989: the conf is tracked and holds no password; the secrets
-        // file does, drawn by the bootstrap with the vault, mode 600, ignored
-        let secrets = std::io::fs::read_file(self.app + "/dna/nats.secrets.conf") or "";
+        let alloc = allocation_of(self.app);
+        let nerves = "nerves-" + dna::allocation_key(self.app);
+        let compose = std::io::fs::read_file(alloc + "/compose.yaml") or "";
+        std::test::assert(std::str::contains(compose, "\n  " + nerves + ":\n") && !std::io::fs::file_exists(self.app + "/dna/compose.yaml"), "the organism's nerves are its allocation in the habitat, not the checkout's: " + compose);
+        let up = dna::run_tool(compose_of(self.app) + "\nps\n-q\n" + nerves);
+        std::test::assert(up.code == 0 && len(dna::trim_nl(up.stdout)) > 0, "birth brought them up: " + made.stdout + up.stderr);
+        let conf = std::io::fs::read_file(alloc + "/nats.conf") or "";
+        std::test::assert(std::str::contains(conf, "user: spine") && std::str::contains(conf, "jetstream") && !std::io::fs::file_exists(self.app + "/dna/nats.conf"), "init writes the nerves' server configuration beside the allocation: " + conf);
+        std::test::assert(std::str::contains(made.stdout, "the organization's stream created"), "and birth creates the organization's stream: " + made.stdout);
+        // GH #989: the conf holds no password; the secrets file does, drawn
+        // by the bootstrap with the vault, mode 600
+        let secrets = std::io::fs::read_file(alloc + "/nats.secrets.conf") or "";
         let at = std::str::index_of(secrets, "NATS_SPINE_PASSWORD: \"");
         let spine_pw = if at < 0 { "" } else { secrets[(at + 22)..(at + 54)] };
         // the record init bore is read under the vault init drew its roles
@@ -140,11 +151,10 @@ main locus App {
         let matched = dna::run_tool("env\n" + vault_env + "\n" + toolchain() + "\ndna\nsecrets\n" + self.app);
         std::test::assert(len(spine_pw) == 32 && std::str::contains(matched.stdout, "present  " + dna::nerves_vault_name(org, "spine")) && !std::str::contains(matched.stdout, "MISSING  " + dna::nerves_vault_name(org, "spine")), "the bootstrap drew the spine's password into the vault and the secrets file: " + matched.stdout + matched.stderr);
         std::test::assert(!std::str::contains(matched.stdout, spine_pw), "and `hale dna secrets` names it, never shows it");
-        std::test::assert(std::str::contains(conf, "password: $NATS_SPINE_PASSWORD") && std::str::contains(conf, "include ./nats.secrets.conf") && !std::str::contains(conf, spine_pw) && !std::str::contains(conf, "-dev\""), "the tracked conf names the password, never holds it: " + conf);
-        std::test::assert_eq_str(dna::file_mode(self.app + "/dna/nats.secrets.conf"), "600", "the secrets file is yours alone");
+        std::test::assert(std::str::contains(conf, "password: $NATS_SPINE_PASSWORD") && std::str::contains(conf, "include ./nats.secrets.conf") && !std::str::contains(conf, spine_pw) && !std::str::contains(conf, "-dev\""), "the conf names the password, never holds it: " + conf);
+        std::test::assert_eq_str(dna::file_mode(alloc + "/nats.secrets.conf"), "600", "the secrets file is yours alone");
         std::test::assert_eq_str(dna::file_mode(scratch + "/vault"), "700", "and so is the vault");
-        let ignored = in_dir(self.app, "git\ncheck-ignore\n-q\ndna/nats.secrets.conf");
-        std::test::assert_eq_int(ignored.code, 0, "and git ignores it");
+        std::test::assert(!std::io::fs::file_exists(self.app + "/dna/nats.secrets.conf"), "and it is never in the checkout");
         // GH #989: the attached application's account, drawn with the rest
         let app_name = dna::nerves_app_name(name);
         std::test::assert(std::str::contains(conf, "user: app-" + app_name + ", password: $NATS_APP_" + std::str::upper(app_name) + "_PASSWORD") && std::str::contains(conf, "publish: [\"*.app." + app_name + ".>\"]") && !std::str::contains(conf, "user: app,"), "the application's own user may publish on its own subjects alone: " + conf);
@@ -163,7 +173,7 @@ main locus App {
         let c0 = in_dir(self.app, "sh\n-c\ngit config user.name riley && git config user.email riley@dna && git add -A && git commit -q -m 'the organization'");
         std::test::assert_eq_int(c0.code, 0, "the scaffold committed: " + c0.stderr);
 
-        // ---- dev, on compose's NATS
+        // ---- dev, on the nerves birth brought up
         let started = in_dir(self.app, "sh\n-c\nnohup timeout --foreground 600 \"$0\" dna dev . --no-iris >.hale/dev.log 2>&1 </dev/null & echo $!\n" + toolchain());
         let host = dna::trim_nl(started.stdout);
         std::test::assert(len(host) > 0, "dev started");
@@ -177,7 +187,7 @@ main locus App {
         // ---- the heart's pulse stops (GH #989): its durable deleted, as the
         // owner, while the spine's connection holds. The spine records it
         // once, makes the durable again, and goes on
-        let hp = dna::trim_nl(in_dir(self.app, "docker\ncompose\n-f\ndna/compose.yaml\nport\nnerves\n4222").stdout);
+        let hp = dna::trim_nl(dna::run_tool(compose_of(self.app) + "\nport\n" + nerves + "\n4222").stdout);
         let stopped_the_heart = if reading { self.stop_the_heart(org, scratch, hp) } else { "not reading" };
         let pulse_said = reading && len(stopped_the_heart) == 0 && self.logged("the heart's pull on its durable heart was refused", 60, host);
         let board = if pulse_said { self.board_with("pulse_stopped heart (", 30) } else { in_dir(self.app, toolchain() + "\ndna\nboard\n.") };
@@ -189,13 +199,13 @@ main locus App {
         let own = if lent { self.app_publish(org, app_name, hp, app_name) } else { -3 };
         let other = if lent { self.app_publish(org, app_name, hp, "someone") } else { -3 };
         let removed = if lent { in_dir(self.app, toolchain() + "\ndna\napplication\nremove\n.\n--as\nriley") } else { dna::RunResult { code: -1 } };
-        let conf_after = std::io::fs::read_file(self.app + "/dna/nats.conf") or "";
-        let secrets_after = std::io::fs::read_file(self.app + "/dna/nats.secrets.conf") or "";
+        let conf_after = std::io::fs::read_file(alloc + "/nats.conf") or "";
+        let secrets_after = std::io::fs::read_file(alloc + "/nats.secrets.conf") or "";
 
         // ---- the stream dropped as the owner, over the authenticated server
         // the stream is dropped as the owner, so the server that restarted
         // for the removal is up; then the application's account is refused
-        let dropped = if reading { in_dir(self.app, "sh\n-c\nHALE_DNA_NATS_URL_OWNER=\"nats://$(docker compose -f dna/compose.yaml port nerves 4222)\" \"$0\" dna nerves drop .\n" + toolchain()) } else { dna::RunResult { code: -1 } };
+        let dropped = if reading { in_dir(self.app, "sh\n-c\nHALE_DNA_NATS_URL_OWNER=\"nats://$1\" \"$0\" dna nerves drop .\n" + toolchain() + "\n" + dna::trim_nl(dna::run_tool(compose_of(self.app) + "\nport\n" + nerves + "\n4222").stdout)) } else { dna::RunResult { code: -1 } };
 
         let revoked = if removed.code == 0 && dropped.code == 0 { self.app_publish(org, app_name, hp, app_name) } else { -3 };
 
@@ -208,9 +218,9 @@ main locus App {
         let org_pid = dna::trim_nl(std::io::fs::read_file(self.app + "/.hale/dna/org.pid") or "");
         let app_pid = dna::trim_nl(std::io::fs::read_file(self.app + "/.hale/dna/app.pid") or "");
         let stop = dna::run_tool("sh\n-c\nh=$1; lim=$2; shift 2; w=''; for p in \"$@\"; do [ -n \"$p\" ] || continue; c=$(ps -o comm= -p \"$p\" 2>/dev/null); [ -n \"$c\" ] && w=\"$w $p:$c\"; done; kill \"$h\" 2>/dev/null; i=0; while kill -0 \"$h\" 2>/dev/null && [ $i -lt $lim ]; do sleep 0.1; i=$((i + 1)); done; for e in $w; do p=${e%%:*}; c=${e#*:}; i=0; while [ \"$(ps -o comm= -p \"$p\" 2>/dev/null)\" = \"$c\" ] && [ $i -lt $lim ]; do sleep 0.1; i=$((i + 1)); done; [ \"$(ps -o comm= -p \"$p\" 2>/dev/null)\" = \"$c\" ] && kill -9 \"$p\" 2>/dev/null && echo \"pid $p ($c) outlived its host\"; done; true\nsh\n" + host + "\n" + to_string(dna::wait_secs(30) * 10) + "\n" + org_pid + "\n" + app_pid);
-        let down = in_dir(self.app, "docker\ncompose\n-f\ndna/compose.yaml\ndown\n-v");
+        let down = dna::run_tool(compose_of(self.app) + "\ndown\n-v");
 
-        std::test::assert(reading, "the organization reads its facts from compose's nerves, as the spine: " + self.log());
+        std::test::assert(reading, "the organization reads its facts from the habitat's nerves, as the spine: " + self.log());
         std::test::assert(std::str::contains(asked.stdout, "born for intent"), "a task asked from the clone is born over them: " + asked.stdout + asked.stderr + self.log());
         std::test::assert(declared.code == 0 && std::str::contains(declared.stdout, "schedule nightly declared: ask-person every 1h, convened by position:leader"), "a schedule asked from the clone is declared over them: " + declared.stdout + declared.stderr + self.log());
         std::test::assert(!std::str::contains(self.log(), "adapter_undeliverable") && !std::str::contains(self.log(), "Permissions Violation"), "no publish was refused: " + self.log());
@@ -234,20 +244,16 @@ main locus App {
         std::test::assert(revoked == -2 && std::str::contains(self.refused, "Authorization"), "the server refuses the revoked account (" + to_string(revoked) + "): " + self.refused);
         std::test::assert(len(org_pid) > 0 && len(app_pid) > 0, "the host named its organization's and its expression's pids: " + self.log());
         std::test::assert_eq_str(stop.stdout, "", "the organization and the expression went with their host: " + self.log());
-        std::test::assert_eq_int(down.code, 0, "compose's services and volumes go: " + down.stderr);
+        std::test::assert_eq_int(down.code, 0, "the allocations' services and volumes go: " + down.stderr);
 
         // ---- a regenerated seed rotates the passwords
         let upgraded = in_dir(self.app, toolchain() + "\ndna\nupgrade\n.");
-        let rotated = std::io::fs::read_file(self.app + "/dna/nats.secrets.conf") or "";
+        let rotated = std::io::fs::read_file(alloc + "/nats.secrets.conf") or "";
         std::test::assert(upgraded.code == 0 && len(rotated) > 0 && rotated != secrets && !std::str::contains(rotated, spine_pw), "upgrade drew every role's password anew: " + upgraded.stdout + upgraded.stderr);
         std::test::assert(!std::str::contains(rotated, "NATS_APP_"), "and none for the application the record detached: " + upgraded.stdout);
 
-        // ---- secrets fail closed: the bootstrap never writes a password into
-        // a tracked file, and a consumer with nothing in the vault refuses
-        let tracked = in_dir(self.app, "sh\n-c\ngit add -f dna/nats.secrets.conf && \"$0\" dna upgrade .\n" + toolchain());
-        let after = std::io::fs::read_file(self.app + "/dna/nats.secrets.conf") or "";
-        std::test::assert(std::str::contains(tracked.stdout + tracked.stderr, "is tracked by git") && after == rotated, "a password is never written into a tracked file: " + tracked.stdout + tracked.stderr);
-        let untrack = in_dir(self.app, "git\nrm\n-q\n--cached\ndna/nats.secrets.conf");
+        // ---- secrets fail closed: a consumer with nothing in the vault
+        // refuses
         let empty = in_dir(self.app, "sh\n-c\nmkdir -p ../empty-vault && HALE_VAULT_DIR=\"$(cd ../empty-vault && pwd)\" \"$0\" dna nerves migrate .\n" + toolchain());
         std::test::assert(empty.code != 0 && std::str::contains(empty.stderr + empty.stdout, "the vault holds no credential"), "no credential in the vault is no connection, never a default: " + empty.stdout + empty.stderr);
         dna::scratch_done(scratch);

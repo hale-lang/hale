@@ -477,7 +477,8 @@ write a manual teardown walk.
 
 This is what makes Ctrl-C trivial: SIGINT (or SIGTERM) drains the
 whole program. Every locus's `self.draining` turns true, a
-`sleep` returns early, and a `run()` that loops on the flag ends —
+`sleep` returns early, every server stops accepting and answers the
+requests it already took, and a `run()` that loops on the flag ends —
 then the tree dissolves in dependency order, leaves first, and the
 process exits 0:
 
@@ -509,7 +510,10 @@ second Ctrl-C ends it at once. The drain only happens while something
 live can answer it: if no locus that checks the flag has been built —
 say the only `!self.draining` loop is in a package you import but
 don't use — the signal ends the program at once, with no grace to wait
-out. Under `hale run` the same holds:
+out. A locus that checks the flag only in its own `run()` stops counting
+once that `run()` has returned and it has no subscription to serve: a
+child that finished its work has nothing to drain, so it does not hold
+the signal for the five seconds. Under `hale run` the same holds:
 `hale` waits for the drain instead of dying first, and passes a
 SIGTERM sent to it on to the program.
 

@@ -28,17 +28,23 @@ anything; the part that reads it decides, and writes what it decided.
 
 ## The server
 
-`dna/compose.yaml` runs the nerves as its `nerves` service
-(`nats:2`, on the loopback, a host port in 42xx taken free when the
-seed was made), configured by `dna/nats.conf`. Beyond one machine,
-run a server of your own with JetStream on (`-js`, or `jetstream {}`
-in its configuration), give it `dna/nats.conf` and
-`dna/nats.secrets.conf`, and name it with `HALE_DNA_NATS_URL_OWNER`.
+On your machine the nerves are the organism's `nerves-<id>` allocation
+in the local habitat ([Memory and the record](./memory.md#the-local-habitat)):
+`nats:2`, on the loopback, a host port in the 42000s chosen once and
+kept in the allocation's `ports.yaml`, configured by the allocation's
+`nats.conf`. Birth and `hale habitat migrate` bring it up and create
+the organization's stream; `hale dna nerves migrate` does the same for
+the nerves alone. `hale dna nerves urls` prints the token and each
+role's URL of nerves that are up, bringing nothing up. Beyond one
+machine, run a server of your own with JetStream on (`-js`, or
+`jetstream {}` in its configuration), give it the same `nats.conf` and
+`nats.secrets.conf`, and name it with `HALE_DNA_NATS_URL_OWNER`.
 
-`dna/nats.conf` is tracked and holds no password: each user's password
-is a variable of `dna/nats.secrets.conf`, which the bootstrap writes
-from the vault, mode 600 and ignored by git. For a project named
-`refproj` the users are:
+Both files live beside the allocation, under the habitat's
+`allocations/<id>/`, never in your checkout. `nats.conf` holds no
+password: each user's password is a variable of `nats.secrets.conf`,
+which the bootstrap writes from the vault, mode 600. For a project
+named `refproj` the users are:
 
 ```text
     # creates the organization's stream; held by no process that runs it
@@ -67,7 +73,7 @@ from the vault, mode 600 and ignored by git. For a project named
 
 | user | held by | may |
 |---|---|---|
-| `owner` | `hale dna nerves migrate`, `hale dna dev` | create, update or delete the stream; no process that runs the organism holds it |
+| `owner` | birth, `hale habitat migrate`, `hale dna nerves migrate`, `hale dna nerves drop` | create, update or delete the stream; no process that runs the organism holds it |
 | `spine` | a node's host and the organization it starts | publish and read the organization's facts (`<org>.dna.>`), read the applications' events through the durable `heart`, tell the heads what landed (`<org>.head.>`) |
 | `head` | a head (the face) | subscribe; publish nothing |
 | `reflexes` | the reflexes | publish their firings on `<org>.app.reflexes.>` alone |
@@ -75,8 +81,8 @@ from the vault, mode 600 and ignored by git. For a project named
 
 Each password is the vault's, `nats-<org>-<role>` (the application's
 is `nats-<org>-app-<name>`), drawn by `hale dna init` and drawn anew by
-every `hale dna upgrade`, which restarts a server compose is running so
-it reads them. A part that connects names its user and its vault
+every `hale dna upgrade`, which restarts the nerves allocation when it
+is up so it reads them. A part that connects names its user and its vault
 entry, and pond's client presents the password on the one line that
 writes `CONNECT`: no URL, argument or environment variable carries it.
 A role the vault holds no password for is refused; nothing connects
@@ -154,20 +160,24 @@ HALE_DNA_NATS_VAULT_REFLEXES=nats-dna_…-reflexes
 gives the record's schema. Every URL is the server alone,
 `nats://host:port`; the three `_APP` lines appear while the record
 attaches an application. With no `HALE_DNA_NATS_URL_OWNER` the verb
-brings up compose's `nerves` service and uses that. It refuses a
+brings up the organism's nerves allocation in the local habitat and uses
+that. It refuses a
 server without JetStream (`the server does not run JetStream (start
 it with -js)`) and a vault that lacks a role's password, naming
 `hale dna upgrade`. Run it again at any time: an existing stream is
 brought to this toolchain's configuration.
 
-`hale dna dev` does this first and hands the host the spine's URL and
-the token alone. `hale dna run` creates nothing: give it
+`hale dna nerves urls` prints the same lines for nerves that are up,
+and creates nothing. `hale dna dev` derives them the same way and hands
+the host the spine's URL and the token alone; it brings nothing up and
+creates no stream, and when the nerves are not up it says so and names
+`hale habitat migrate`. `hale dna run` creates nothing either: give it
 `HALE_DNA_NATS_URL_SPINE` and `HALE_DNA_NATS_ORG`, and it strips any
 owner's or head's URL before the host sees them. Without them the host
 says so and runs, and the organization hears nothing the record asks:
 
 ```text
-hale dna run: no nerves: HALE_DNA_NATS_URL_SPINE and HALE_DNA_NATS_ORG are not set (`hale dna dev` creates the stream from HALE_DNA_NATS_URL_OWNER or dna/compose.yaml and hands the host the spine's); the organization hears nothing the record asks
+hale dna run: no nerves: HALE_DNA_NATS_URL_SPINE and HALE_DNA_NATS_ORG are not set (`hale dna dev` hands the host the spine's URL of nerves whose stream `hale habitat migrate` created, on HALE_DNA_NATS_URL_OWNER or the organism's allocation in the local habitat); the organization hears nothing the record asks
 ```
 
 An application the organism starts (an instance a fleet node starts,
@@ -178,7 +188,7 @@ memory DSN are taken out of what it inherits.
 
 `hale dna nerves drop` deletes the stream, and everything it held,
 with the owner's URL; it prints `dropped DNA_…`, or `absent DNA_…` when
-there was none. It never falls back to compose: with no
+there was none. It never falls back to the habitat's allocation: with no
 `HALE_DNA_NATS_URL_OWNER` it drops nothing and says so. Drop it beside
 memory's schema when an organization is gone for good.
 

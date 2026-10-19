@@ -8,6 +8,7 @@
 //   fill <name> <holder>                fill * <holder>   (every vacant seat)
 //   vacate <name> <holder>
 //   practice <name> | <text>
+//   law <name> | <text>                 (a practice proposed as law, GH #1591)
 //   assign <name> reviews <node>        unassign <name> reviews <node>
 //   close <name>
 //   merge <name> into <name>            split <name> into <name> <name>
@@ -195,14 +196,19 @@ fn batch_steps(text: String) -> BatchPlan {
             out.steps = out.steps + "open\t" + batch_position(name) + "\t" + under + "\t" + mandate + "\n";
             continue;
         }
-        if std::str::starts_with(line, "practice ") {
+        // GH #1591: `law` is a practice its document proposes as law, which
+        // the Board ratifies as law or as advice; a step's fourth field says
+        // so (`practice\t<name>\t<text>\tlaw`)
+        if std::str::starts_with(line, "practice ") || std::str::starts_with(line, "law ") {
+            let law = std::str::starts_with(line, "law ");
+            let verb = if law { "law" } else { "practice" };
             let bar = std::str::index_of(line, "|");
-            if bar < 0 { out.why = at + "a practice is proposed with its text: `practice <name> | <text>`"; return out; }
-            let name = std::str::trim(line[9..bar]);
+            if bar < 0 { out.why = at + "a " + (if law { "law" } else { "practice" }) + " is proposed with its text: `" + verb + " <name> | <text>`"; return out; }
+            let name = std::str::trim(line[(len(verb) + 1)..bar]);
             let text = std::str::trim(line[(bar + 1)..len(line)]);
             if !batch_word(name) { out.why = at + "a practice is named by one word, with no space or `|`"; return out; }
             if len(text) == 0 || std::str::contains(text, "\t") { out.why = at + "a practice is one line of text, with no tab"; return out; }
-            out.steps = out.steps + "practice\t" + name + "\t" + text + "\n";
+            out.steps = out.steps + "practice\t" + name + "\t" + text + (if law { "\tlaw" } else { "" }) + "\n";
             continue;
         }
         if std::str::starts_with(line, "fill ") || std::str::starts_with(line, "vacate ") {
@@ -1177,7 +1183,7 @@ fn batch_filing(plan: BatchPlan, by: String, request_id: String, at: Int, pack: 
         rest = rest[(nl + 1)..len(rest)];
         if batch_field(step, 0) != "practice" { continue; }
         let pn = batch_field(step, 1);
-        let pdoc = knowledge_document(Idea { kind: "practice", text: batch_field(step, 2), author: by, name: pn, provenance: "proposed by " + by + " in " + name }, "org");
+        let pdoc = knowledge_document(Idea { kind: "practice", text: batch_field(step, 2), author: by, name: pn, provenance: "proposed by " + by + " in " + name, law: batch_field(step, 3) == "law" }, "org");
         let pd = digest_of(pdoc);
         docs = docs + pdoc + "\n";
         members = members + batch_member_row(pd, "practice", by, "org", pn, at);
@@ -1404,7 +1410,7 @@ fn batch_text(steps: String) -> String {
             let under = batch_field(step, 2);
             out = out + "open " + batch_field(step, 1) + (if len(under) > 0 { " under " + under } else { "" }) + " | " + batch_field(step, 3) + "\n";
         } else if verb == "practice" {
-            out = out + "practice " + batch_field(step, 1) + " | " + batch_field(step, 2) + "\n";
+            out = out + (if batch_field(step, 3) == "law" { "law " } else { "practice " }) + batch_field(step, 1) + " | " + batch_field(step, 2) + "\n";
         } else if verb == "assign" || verb == "unassign" {
             out = out + verb + " " + batch_field(step, 1) + " reviews " + batch_field(step, 2) + "\n";
         } else if verb == "close" || verb == "externalize" || verb == "retire-practice" || verb == "nursery" {

@@ -1204,7 +1204,11 @@ instantiating function's scope does. So every
 lifecycle body of a locus nested under a pinned one runs on the
 pinned thread, the domain it is placed in, and a yield inside
 one (`std::time::sleep`, an `await`) drains the pinned locus's
-mailbox, as a yield on main drains main's queue. The
+mailbox, as a yield on main drains main's queue. (An accept on main
+waits on main's queue as well as on its listener, and delivers a cell
+another thread enqueues for a subscriber on main when it arrives: a
+pinned locus's `std::log` line to a sink on main is written while main
+serves, not at the next connection; 2026-10-19, downstream handoff.) The
 instantiating thread waits until the params are initialized
 (`lotus_pinned_start_await_ready`), so nothing observes the tree
 before it is built. While it waits it services its own mailbox
@@ -4444,7 +4448,7 @@ build.
 | `HALE_SKIP_STALE_CHECK` | none | Any value but empty or `0` skips the check that the binary is not older than the workspace it was built from: every source of the identity-covered crates, the lock file and the ts-shim manifest (statted on each invocation, read only when one is newer than the binary), and the `dna/` tree it embeds (statted the same way, digested only when a file or its directory is newer than the binary or the file count is not the embedded set's). | off |
 | `HALE_STALE_DNA_ROOT` | none | The tree the stale-DNA check compares the embedded DNA against; the regression test's way to hand it a tree it may edit. | the workspace the binary was built from |
 | `HALE_TEST_JOBS` | none | How many workers `hale test` runs when `-j` is not given. | one per available core |
-| `HALE_TEST_KEEP_VAULT` | none | `1` keeps each test file's vault directory (mode 0700 under `<tmp>/hale-test-vaults-<uid>`) after its run and prints where, instead of removing it. | remove |
+| `HALE_TEST_KEEP_VAULT` | none | `1` keeps each test file's vault directory (mode 0700 under `<tmp>/hale-test-vaults-<uid>`), and the local habitat beside it (GH #1653), after its run and prints where, instead of removing them. | remove |
 | `HALE_WARM_SKIP_IRIS` | none | `scripts/warm-dna-cache.sh` skips building the observer (`1`), for jobs that never run `hale iris`. | off |
 
 ## Diagnostic + tuning env vars

@@ -583,7 +583,30 @@ int lotus_tls_connect_within(const char *host, uint16_t port, int64_t timeout_ns
     return handle;
 }
 
+int  lotus_io_nonblock_for_deadline(int fd);
+void lotus_io_restore_block(int fd, int was_blocking);
+
+static int lotus_tls__send_bytes(int handle, const void *bytes_ptr, int64_t until);
+
 int lotus_tls_send_bytes(int handle, const void *bytes_ptr) {
+    return lotus_tls__send_bytes(handle, bytes_ptr, 0);
+}
+
+/* `lotus_tls_send_bytes` that ends by the absolute CLOCK_MONOTONIC
+ * `until_ns` (0 = none): the socket is made non-blocking for the call,
+ * so every wait — a full send buffer, a renegotiation read — is a poll
+ * or a park bounded by it, where a blocking SSL_write's SO_SNDTIMEO
+ * restarted on every record a slow peer accepted. Past it the send
+ * fails EAGAIN. The HTTP client's call deadline (std::http). */
+int lotus_tls_send_bytes_until(int handle, const void *bytes_ptr, int64_t until_ns) {
+    int fd = until_ns > 0 ? lotus_tls__handle_fd(handle) : -1;
+    int was_blocking = fd >= 0 ? lotus_io_nonblock_for_deadline(fd) : 0;
+    int r = lotus_tls__send_bytes(handle, bytes_ptr, until_ns);
+    lotus_io_restore_block(fd, was_blocking);
+    return r;
+}
+
+static int lotus_tls__send_bytes(int handle, const void *bytes_ptr, int64_t until) {
     if (!bytes_ptr) {
         errno = EINVAL;
         return -1;
@@ -613,12 +636,16 @@ int lotus_tls_send_bytes(int handle, const void *bytes_ptr) {
      * (lotus_tls__upgrade_until), so each record written returns and
      * counts as progress. */
     int async = lotus_io_on_async_io_pool();
-    int raw_fd = async ? lotus_tls__handle_fd(handle) : -1;
-    if (raw_fd >= 0) lotus_io_set_nonblock(raw_fd);
+    int raw_fd = (async || until > 0) ? lotus_tls__handle_fd(handle) : -1;
+    if (raw_fd >= 0 && async) lotus_io_set_nonblock(raw_fd);
     const char *p = (const char *)bytes_ptr + sizeof(int64_t);
     size_t left = (size_t)total;
     int64_t stall = -1;   /* < 0: not read; 0: no SO_SNDTIMEO */
     while (left > 0) {
+        if (until > 0 && lotus_tls__now_ns() >= until) {
+            errno = EAGAIN;
+            return -1;
+        }
         int chunk = left > INT_MAX ? INT_MAX : (int)left;
         int n = SSL_write(ssl, p, chunk);
         if (n > 0) {
@@ -635,8 +662,14 @@ int lotus_tls_send_bytes(int handle, const void *bytes_ptr) {
                 int64_t t = lotus_sock_get_send_timeout_ns(raw_fd);
                 stall = t > 0 ? lotus_tls__now_ns() + t : 0;
             }
-            int w = lotus_io_wait_fd(raw_fd, ev, stall);
+            int64_t dl = stall;
+            if (until > 0 && (dl <= 0 || dl > until)) dl = until;
+            int w = lotus_io_wait_fd(raw_fd, ev, dl);
             if (w == 0) continue;
+            if (w == 1 && until > 0 && dl == until) {
+                errno = EAGAIN;
+                return -1;
+            }
             if (w == 1) {
                 /* The send timeout: the blocking write's expiry, a status
                  * like any failed write. */
@@ -668,15 +701,21 @@ int lotus_tls_send_bytes(int handle, const void *bytes_ptr) {
  * blocking: a single SSL_read, and -2 when the kernel's SO_RCVTIMEO
  * expired under it. The deadline is computed once, at entry, so a wake
  * that finds no whole record re-parks with the remaining time. */
-static int lotus_tls__read(int handle, SSL *ssl, char *buf, int max,
-                           const char *who) {
+static int lotus_tls__read_until(int handle, SSL *ssl, char *buf, int max,
+                                 const char *who, int64_t until) {
     int async = lotus_io_on_async_io_pool();
     int raw_fd = lotus_tls__handle_fd(handle);
     int64_t deadline = 0;
+    /* Under an absolute deadline (`until`, the HTTP client's) the read is
+     * the async one on any thread: a blocking SSL_read re-arms SO_RCVTIMEO
+     * on every partial read of a record, so a peer trickling one held it
+     * past the deadline. The caller made the socket non-blocking. */
+    if (until > 0) async = 1;
     if (async && raw_fd >= 0) {
         lotus_io_set_nonblock(raw_fd);
         int64_t t = lotus_sock_get_recv_timeout_ns(raw_fd);
         if (t > 0) deadline = lotus_tls__now_ns() + t;
+        if (until > 0 && (deadline <= 0 || deadline > until)) deadline = until;
     }
     for (;;) {
         int n = SSL_read(ssl, buf, max);
@@ -702,7 +741,28 @@ static int lotus_tls__read(int handle, SSL *ssl, char *buf, int max,
     }
 }
 
+static int lotus_tls__read(int handle, SSL *ssl, char *buf, int max,
+                           const char *who) {
+    return lotus_tls__read_until(handle, ssl, buf, max, who, 0);
+}
+
+static void *lotus_tls__recv_bytes(int handle, int max_bytes, int64_t until);
+
 void *lotus_tls_recv_bytes(int handle, int max_bytes) {
+    return lotus_tls__recv_bytes(handle, max_bytes, 0);
+}
+
+/* `lotus_tls_recv_bytes` bounded by the absolute CLOCK_MONOTONIC
+ * `until_ns` (0 = none): empty past it, as at a recv timeout. */
+void *lotus_tls_recv_bytes_until(int handle, int max_bytes, int64_t until_ns) {
+    int fd = until_ns > 0 ? lotus_tls__handle_fd(handle) : -1;
+    int was_blocking = fd >= 0 ? lotus_io_nonblock_for_deadline(fd) : 0;
+    void *r = lotus_tls__recv_bytes(handle, max_bytes, until_ns);
+    lotus_io_restore_block(fd, was_blocking);
+    return r;
+}
+
+static void *lotus_tls__recv_bytes(int handle, int max_bytes, int64_t until) {
     if (max_bytes <= 0) {
         return lotus_tls__bytes_empty();
     }
@@ -715,8 +775,8 @@ void *lotus_tls_recv_bytes(int handle, int max_bytes) {
     if (!blob) return lotus_tls__bytes_empty();
 
     char *body = (char *)lotus_bytes_data(blob);
-    int n = lotus_tls__read(handle, ssl, body, max_bytes,
-                            "lotus_tls_recv_bytes");
+    int n = lotus_tls__read_until(handle, ssl, body, max_bytes,
+                                  "lotus_tls_recv_bytes", until);
     if (n <= 0) {
         /* Peer closed (0), the recv deadline expired (-2) or a read
          * error (-1, printed). Hand back an empty Bytes so the caller

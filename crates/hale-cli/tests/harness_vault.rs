@@ -19,6 +19,8 @@
 //! Node allow-listed environment to carrying the override, and every test
 //! source to never clearing it (nor the whole environment).
 
+#[path = "support/scratch.rs"]
+mod scratch;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -34,10 +36,15 @@ const PROBE: &str = r#"fn main() {
     std::test::assert(!std::env::var_exists("HALE_VAULT_ADDR"), "no real vault reaches a test");
     std::test::assert(std::env::var_exists("HALE_VAULT_DIR") && dir == std::env::var("HALE_VAULT_DIR"), "the vault is the run's own: " + dir);
     std::test::assert(dir != std::env::var("CALLER_VAULT") && dir != std::env::var("XDG_CACHE_HOME") + "/hale/vault", "never the caller's, never the developer's: " + dir);
+    std::test::assert(std::env::var("XDG_DATA_HOME") == dir + "/data", "and so is the local habitat, beside the vault (GH #1653): " + std::env::var("XDG_DATA_HOME"));
     std::io::fs::write_file(std::env::var("PROBE_ROOT") + "/ORG.vault", dir) or raise;
     let made = std::process::run("sh\n-c\ncd \"$1\" && HALE_DNA_DISCOVER=off exec \"$2\" dna new ORG\nsh\n" + std::env::var("PROBE_ROOT") + "\n" + std::env::var("HALE_BIN")) or raise;
     std::test::assert_eq_int(made.code, 0, "hale dna new: " + made.stdout + made.stderr);
-    std::test::assert(std::secret::Credential { vault: "postgres-owner-ORG" }.ready(), "and the organism's secrets went into it");
+    // the memory allocation's owner entry, named for the record's identity
+    let manifest = std::io::fs::read_file(std::env::var("PROBE_ROOT") + "/ORG/hale.toml") or "";
+    let at = std::str::index_of(manifest, "record = \"");
+    let key = if at < 0 { "" } else { manifest[(at + 10)..(at + 22)] };
+    std::test::assert(len(key) == 12 && std::secret::Credential { vault: "postgres-owner-" + key }.ready(), "and the organism's secrets went into it: " + key);
 }
 "#;
 
@@ -59,14 +66,19 @@ fn listing(dir: &Path) -> Vec<String> {
 
 #[test]
 fn hale_test_runs_each_file_under_a_vault_of_its_own() {
-    let d = std::env::temp_dir().join(format!("hale_vault_probe_{}", std::process::id()));
+    let d = scratch::Scratch::new(format!("hale_vault_probe_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&d);
     let home = d.join("home");
     let work = d.join("work");
     std::fs::create_dir_all(&home).unwrap();
     std::fs::create_dir_all(&work).unwrap();
     std::fs::create_dir_all(d.join("probes")).unwrap();
-    for org in ["probea", "probeb"] {
+    // Two runs of this test on one machine are two organisms: each `new`
+    // births a fresh record identity, and an organism's allocations in the
+    // local habitat are named for its identity (GH #1653), never for its
+    // name, so the organizations' names need not be the run's own.
+    let orgs = ["probea", "probeb"];
+    for org in &orgs {
         std::fs::write(d.join(format!("probes/{org}_test.hl")), PROBE.replace("ORG", org)).unwrap();
     }
     // the toolchain cache the DNA tests share, warm, so the organism's
@@ -90,7 +102,7 @@ fn hale_test_runs_each_file_under_a_vault_of_its_own() {
         .expect("hale test");
     let said = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
     assert!(out.status.success() && said.contains("2 passed"), "both probes pass under hale test: {said}");
-    let ran: Vec<String> = ["probea", "probeb"].iter().map(|o| std::fs::read_to_string(work.join(format!("{o}.vault"))).unwrap_or_default()).collect();
+    let ran: Vec<String> = orgs.iter().map(|o| std::fs::read_to_string(work.join(format!("{o}.vault"))).unwrap_or_default()).collect();
     assert!(!ran[0].is_empty() && ran[0] != ran[1], "two files side by side, two vaults: {ran:?}");
     assert!(ran.iter().all(|v| !Path::new(v).exists()), "and each is gone once its file has run: {ran:?}");
     assert!(!caller_vault.exists(), "the caller's vault was never written: {said}");

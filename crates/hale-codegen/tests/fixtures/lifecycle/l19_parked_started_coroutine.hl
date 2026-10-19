@@ -1,29 +1,29 @@
 // Decision line 19, a parked started coroutine (Cancellation, Run).
 // Inventory row R20a, shipped in the trace build.
 //
-// `srv` is an async_io listener nobody connects to, so its run() is a
-// started coroutine parked in accept() when the pools are joined. The
-// worker abandons it: its stack is freed without resuming it, and its
-// run end never runs. That is a cancellation after start; the worker's
-// quiescence is the pool join's completion, witnessed separately.
+// `quiet` is an async_io locus whose run() waits, untimed, for a UDP
+// datagram nobody sends, so its run() is a started coroutine parked in
+// recv when the pools are joined. The worker abandons it: its stack is
+// freed without resuming it, and its run end never runs. That is a
+// cancellation after start; the worker's quiescence is the pool join's
+// completion, witnessed separately. (It parked in a listener's accept
+// until a drain stopped the process's listeners: an accept loop now
+// ends on the tree's drain, so a listener is no parked run to abandon.)
 //
 // Expected terminal outcome: the run ends in a named
 // `canceled-after-start`, which the trace build (L2) records where the
-// worker frees the coroutine, and the listener is torn down once,
+// worker frees the coroutine, and the locus is torn down once,
 // judged by the harness from the trace: `named:canceled-after-start`.
 
-fn noop(s: std::io::tcp::Stream) { }
+locus Quiet {
+    params { fd: Int = -1; }
+    birth() { self.fd = std::io::udp::bind("127.0.0.1", 0) or - 1; }
+    run() { let got = std::io::udp::recv(self.fd, 64) or b""; }
+}
 
 main locus App {
-    params {
-        srv: std::io::tcp::Listener = std::io::tcp::Listener {
-            host: "127.0.0.1",
-            port: 0,
-            max_accepts: 1,
-            on_connection: noop,
-        };
-    }
-    placement { srv: cooperative(pool = io) where async_io; }
+    params { quiet: Quiet = Quiet { }; }
+    placement { quiet: cooperative(pool = io) where async_io; }
     run() { std::time::sleep(100ms); }
 }
 

@@ -14,28 +14,10 @@
 //! `dna/` (`dna/tests`, `dna/api/**/tests`, `dna/host/tests`, ...).
 //! A port below 1024 is a placeholder and never a bind for an
 //! unprivileged process (`port: 1` in the default of a param that
-//! `fn main` overrides), so it is not a violation. The only allowlist
-//! is for parked fixtures, each with the reason.
+//! `fn main` overrides), so it is not a violation. There is no
+//! allowlist: a fixture nothing runs is deleted, not parked.
 
 use std::path::{Path, PathBuf};
-
-/// Parked fixtures: not in the suite's run set, so a literal there
-/// binds nothing today. Each entry goes when its fixture is unparked or
-/// deleted, and the scan fails on an entry with nothing left to allow.
-const PARKED: &[(&str, &str)] = &[
-    (
-        "dna/tests/parked/b1_team_test.hl",
-        "parked: not run; the App's default issuer still names 47815 (its heads already take dna::free_port)",
-    ),
-    (
-        "dna/tests/parked/principal_oidc_test.hl",
-        "parked: not run; the App's default issuer still names 47811 (its head already takes dna::free_port)",
-    ),
-    (
-        "dna/tests/parked/two_heads_test.hl",
-        "parked: not run; its FakeIssuer and issuer URLs still name 47811 and 47813",
-    ),
-];
 
 /// Directories the scan leaves alone. `dna/tests/onboarding/<repo>/` are
 /// repositories of their own, shaped for a clone that has no `dna/` above it
@@ -160,12 +142,8 @@ fn scanned_files() -> Vec<(String, String)> {
 
 #[test]
 fn no_fixture_invents_a_port() {
-    let parked: Vec<&str> = PARKED.iter().map(|(p, _)| *p).collect();
     let mut offenders = Vec::new();
     for (rel, text) in scanned_files() {
-        if parked.contains(&rel.as_str()) {
-            continue;
-        }
         for (line, rule, src) in violations(&text) {
             offenders.push(format!("{rel}:{line}: {rule}: {src}"));
         }
@@ -177,20 +155,6 @@ fn no_fixture_invents_a_port() {
         offenders.len(),
         offenders.join("\n")
     );
-}
-
-#[test]
-fn every_parked_entry_still_has_something_to_allow() {
-    let files = scanned_files();
-    for (path, why) in PARKED {
-        let Some((_, text)) = files.iter().find(|(rel, _)| rel == path) else {
-            panic!("{path} ({why}) is allowlisted but no longer exists: delete the entry");
-        };
-        assert!(
-            !violations(text).is_empty(),
-            "{path} ({why}) no longer binds a literal port: delete the entry"
-        );
-    }
 }
 
 #[test]

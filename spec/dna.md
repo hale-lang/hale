@@ -62,7 +62,8 @@ makes both, and nothing adopts or abandons a Ledger. Readers of history
 (`history`, the projections, the export) read both memories as one.
 `hale dna run` refuses to start without `HALE_DNA_MEMORY_DSN_SPINE`
 (#646 decision 3: a body without its memory admits nothing); `dev`
-applies memory's schema and hands the host the spine's DSN. `hale dna
+derives the spine's DSN from memory that is up and migrated and hands
+it to the host, applying no schema (GH #1653). `hale dna
 ledger rows` prints the Ledger's rows as JSON lines (`seq`,
 `kind`, `entity`, `body`, `author`, `writer` — the role that wrote it, so a head writing as `host` is told apart from the body — `prev`, `digest`), read under the
 head's role or the spine's.
@@ -246,33 +247,43 @@ host's tick (**The spine**, below).
   carries no password: it names the entry,
   `postgres://<role>@host:port/db?sslmode=…&vault=postgres-<role>`, and
   the connection reveals it into its SCRAM exchange's `@secret`
-  parameter, in the one statement that uses it (GH #989). The seed
-  compose database's owner DSN names `postgres-owner-<seed>` the same
-  way. An operator's DSN with a password in it is presented as given.
+  parameter, in the one statement that uses it (GH #989). The owner's
+  DSN of the organism's memory allocation in the local habitat names
+  `postgres-owner-<id>` the same way (**The local habitat holds the
+  organism's infrastructure**, below). An operator's DSN with a
+  password in it is presented as given.
 - **Three DSNs.** `HALE_DNA_MEMORY_DSN_OWNER` is the schema owner's,
-  used only to migrate: by `hale dna memory migrate [dir]`, by `hale
-  dna dev` before it starts the host, by `hale dna upgrade` when it is
-  set, and by a provisioned body, whose env file carries it for the
-  `hale dna dev` its unit runs. Without it, `memory migrate` and `dev`
-  use the database `dna/compose.yaml` brings up. `hale dna memory
-  migrate` prints two lines, `HALE_DNA_MEMORY_DSN_SPINE=<dsn>` and
-  `HALE_DNA_MEMORY_DSN_HEAD=<dsn>`: the owner's host and database, each
-  role's name and credentials. The host that runs the organism is
-  handed `HALE_DNA_MEMORY_DSN_SPINE` alone, and the organization
-  inherits it: `dev` sets it from the migration, and `hale dna run`
-  takes it from its own environment; both take
-  `HALE_DNA_MEMORY_DSN_OWNER` and `HALE_DNA_MEMORY_DSN_HEAD` out of the
-  host's. With no database to migrate, `dev` says why and starts the
-  host without the owner's DSN. A head — the CLI, `hale dna ui`, the API — opens memory with
+  used only by the habitat's acts that migrate (GH #1653): birth, `hale
+  habitat migrate [organism]`, `hale dna memory migrate [dir]`, `hale
+  dna upgrade` when it is set, and a provisioned body's provisioning
+  script, which runs `hale habitat migrate .` once with it. Without it,
+  those acts bring up and migrate the organism's memory allocation in
+  the local habitat. A migration prints two lines,
+  `HALE_DNA_MEMORY_DSN_SPINE=<dsn>` and `HALE_DNA_MEMORY_DSN_HEAD=<dsn>`:
+  the owner's host and database, each role's name and credentials. The
+  host that runs the organism is handed `HALE_DNA_MEMORY_DSN_SPINE`
+  alone, and the organization inherits it: `dev` derives it from memory
+  that is up and migrated, applying no schema (`memory-migrate
+  --derive`), and `hale dna run` takes it from its own environment;
+  both take `HALE_DNA_MEMORY_DSN_OWNER` and `HALE_DNA_MEMORY_DSN_HEAD`
+  out of the host's. With no memory up, `dev` says so, names `hale
+  habitat migrate <organism>`, and starts the host without memory. A
+  head — the CLI, `hale dna ui`, the API — opens memory with
   `HALE_DNA_MEMORY_DSN_HEAD`; a process given the spine's DSN uses that
   instead, and none holds both. The head's DSN a migration answers is
-  kept in the clone, `.hale/dna/memory.env`, and every `hale dna` verb
-  in that clone given neither role's DSN runs with it. The file holds
-  the head role's DSN alone (never the owner's or the spine's), is
-  written mode 600 and never printed, and is written only where git
-  ignores it (`init` and `upgrade` keep `/.hale/` in `.gitignore`); a
-  verb refuses it when it is readable by group or others, naming
-  `chmod 600`.
+  kept in the clone, `.hale/dna/memory.env`, beside the line that says
+  where it was derived, `HALE_DNA_MEMORY_FROM=owner` or
+  `HALE_DNA_MEMORY_FROM=habitat <project>/memory-<id>`, and every `hale
+  dna` verb in that clone given neither role's DSN runs with it. The
+  file holds the head role's DSN alone (never the owner's or the
+  spine's), is written mode 600 and never printed, and is written only
+  where git ignores it (`init` and `upgrade` keep `/.hale/` in
+  `.gitignore`); a verb refuses it when it is readable by group or
+  others, naming `chmod 600`. A kept DSN derived from anything but the
+  operator's database or the organism's own memory allocation (another
+  habitat's, a database an older toolchain migrated, a file with no
+  origin line) is removed and refused, naming `hale habitat migrate
+  <dir>`: no verb re-derives it, since none migrates as a side effect.
 - **The migration** runs in one transaction under an advisory lock on
   the schema: the `vector` and `pgcrypto` extensions, the schema and
   every store's tables, the record's claim on the schema
@@ -297,8 +308,9 @@ host's tick (**The spine**, below).
   none; GH #988: 8 adds the `reflex` family the same way. Each protocol move empties the
   graph once for the projectors to rebuild). A store's `open`
   selects the record's schema and refuses one at another version, or
-  at none, naming both and `hale dna memory migrate` with the owner's
-  DSN; it also refuses a schema whose claim names another record (`it
+  at none, naming both and `hale habitat migrate <organism>` (with
+  `HALE_DNA_MEMORY_DSN_OWNER` for a Postgres of the operator's); it
+  also refuses a schema whose claim names another record (`it
   is not read`). The host checks the version on the spine's DSN before
   it starts anything, and refuses to start (exit 2) on a mismatch.
 - **Grants.** A head's role — the head's, or an owner's — has `SELECT`
@@ -664,6 +676,13 @@ sync.
   `practice.proposed <request_id>` (`name`, `digest`, `review_id`, `by`,
   `because`, `supersedes`); a request without a name or a text is
   `practice.refused`. Nothing is in force until the Board ratifies it.
+  `--supersedes` takes the digest whole or as any prefix of it, as
+  `hale dna practice` abbreviates it (`sha256:3122d`), and the CLI
+  resolves it before it requests anything (`dna::superseded_digest`):
+  the row carries the full digest of the one practice in force it
+  begins, and a prefix that begins no practice's digest, several
+  practices' digests, or the digest of one not in force is refused
+  there, by name, never accepted and then refused at ratification.
   **Roles are authorities, not identities.** The person who proposed
   a practice may ratify it: the proposal is in their name (`by`), the
   verdict carries the Board's authority, and the record keeps both, so
@@ -718,7 +737,8 @@ sync.
     connection proposed before the nerves exchange** (`exchange: "git"`,
     no key pinned) **is not in force**: it is proposed again.
   - **The inbox key.** The other record's server holds a user
-    `exchange` (`nats-<org>-exchange` in the vault, `dna/nats.conf`) that
+    `exchange` (`nats-<org>-exchange` in the vault, the nerves
+    allocation's `nats.conf`) that
     may publish into `exchange.<org>.in.>` and read the card, and nothing
     else. Its operator hands it to a connected record's operator, who
     keeps it under the same vault name; a sender whose vault lacks it
@@ -769,9 +789,9 @@ sync.
     connected is kept beside any other claiming the same id, so a
     forgery never takes the place of the sender's own envelope, and only
     the one under the key a connection pins is admitted. The drain reaches its own nerves as the spine
-    (`HALE_DNA_NATS_URL_SPINE`, else the owner's server, else compose's
-    `nerves` if it is up) and says so when it reached none. `hale dna
-    handoff` lists a received handoff as admitted only under a
+    (`HALE_DNA_NATS_URL_SPINE`, else the owner's server, else the
+    organism's nerves allocation if it is up) and says so when it
+    reached none. `hale dna handoff` lists a received handoff as admitted only under a
     connection in force back to its origin record that pinned the key
     the envelope is signed with and carries its class; `hale dna handoff
     accept <id> [--as <who>]`, only for an admitted one, appends
@@ -1070,8 +1090,10 @@ sync.
   (`bearer_refusal`). A command reaches the head's surface (`HeadCommands`) over its
   `http::Rpc` exposure (GH #1135, #1417; `spec/api.md` § The HTTP
   transport), `POST /call/<member>`, on the port the head's launcher gives it
-  (`HALE_DNA_COMMANDS_PORT`, never derived from the reads' port; none
-  given, none served, and a relayed command is `commands_unavailable`),
+  (`HALE_DNA_COMMANDS_PORT`, never derived from the reads' port) or, none
+  given, the port the system picks, which the API child reports to the head
+  that started it (`HALE_DNA_API_PORTS`); until it has, a relayed command is
+  `commands_unavailable`,
   as a POSTed line of
   the wire under the caller's bearer; no program forwards a line. The
   head's bearer source (`dna/api/bearer.hl`, `OidcBearer`) verifies the
@@ -1281,20 +1303,24 @@ sync.
   subscribes and publishes nothing; the application the record attaches
   holds a user of its own, `app-<name>` (**The application's
   account**), which publishes on `<org>.app.<name>.>` alone and reads
-  nothing of DNA's. `hale dna nerves migrate [dir]`
-  creates or updates the stream with the owner's URL
-  (`HALE_DNA_NATS_URL_OWNER`, or the `nerves` service of
-  `dna/compose.yaml`, brought up) and prints `HALE_DNA_NATS_ORG`, one
-  `HALE_DNA_NATS_URL_<ROLE>` per role — `nats://host:port` alone — and
-  `HALE_DNA_NATS_VAULT_REFLEXES`, and for the attached application
-  `HALE_DNA_NATS_USER_APP` and `HALE_DNA_NATS_VAULT_APP`: the users and
-  vault names a program that is not the host presents; `hale dna dev` runs it
-  before it starts the host and hands the host the spine's URL and the
-  token, never the owner's nor the head's; `hale dna run` takes the
-  two from its environment and has the owner's and the head's removed
-  from it. `hale dna nerves drop [dir]` deletes the stream, and
-  everything it held, with the owner's URL — beside dropping memory's
-  schema, when an organization is torn down.
+  nothing of DNA's. Birth, `hale habitat migrate [organism]` and `hale
+  dna nerves migrate [dir]` create or update the stream with the
+  owner's URL (`HALE_DNA_NATS_URL_OWNER`, or the organism's nerves
+  allocation in the local habitat, brought up) and print
+  `HALE_DNA_NATS_ORG`, one `HALE_DNA_NATS_URL_<ROLE>` per role —
+  `nats://host:port` alone — and `HALE_DNA_NATS_VAULT_REFLEXES`, and for
+  the attached application `HALE_DNA_NATS_USER_APP` and
+  `HALE_DNA_NATS_VAULT_APP`: the users and vault names a program that is
+  not the host presents (GH #1653). `hale dna nerves urls [dir]` prints
+  the same lines for nerves that are up, bringing nothing up and
+  creating no stream (`nerves-migrate --derive`), and names `hale
+  habitat migrate <organism>` when they are not; `hale dna dev` derives
+  them the same way before it starts the host and hands the host the
+  spine's URL and the token, never the owner's nor the head's; `hale
+  dna run` takes the two from its environment and has the owner's and
+  the head's removed from it. `hale dna nerves drop [dir]` deletes the
+  stream, and everything it held, with the owner's URL — beside
+  dropping memory's schema, when an organization is torn down.
 - **The application's account** (GH #989). The application the record
   attaches is named by its project: the project's name as a subject
   token (lower-case letters and digits, anything else `_`, at most 32),
@@ -1303,7 +1329,8 @@ sync.
   name: a record is data already written, not an API kept compatible.
   An application publishes under its project's name. Its user is
   `app-<name>`, its password the vault's `nats-<org>-app-<name>` and
-  `dna/nats.conf`'s `$NATS_APP_<NAME>_PASSWORD`, and it may publish on
+  the nerves allocation's `$NATS_APP_<NAME>_PASSWORD`, and it may
+  publish on
   `<org>.app.<name>.>` and nowhere else; no other application's
   subjects, nor the reflexes'. It is provisioned when
   `application.attached` lands (`hale dna init` lands it, for an
@@ -1311,9 +1338,10 @@ sync.
   provisions the organism's secrets) and on every `upgrade` that finds
   it missing. `hale dna application remove [project] [--as <who>]`
   writes `application.detached {name, by}` to the record, the
-  membership's source, and revokes the account: its user leaves
-  `dna/nats.conf`, its password the include and its entry the vault,
-  and compose's `nerves` is restarted, so a connection it holds is
+  membership's source, and revokes the account: its user leaves the
+  nerves allocation's `nats.conf`, its password the include and its
+  entry the vault, and the `nerves-<id>` allocation is restarted when
+  it is up, so a connection it holds is
   closed and none opens again. An application named `reflexes` holds
   no account: those subjects are the reflexes' alone.
 - **The nerves' passwords** (GH #989) are the vault's, one per role
@@ -1324,22 +1352,20 @@ sync.
   No URL carries a password: userinfo in a server's URL is dropped. A
   role whose entry the vault lacks is refused (`nerves migrate`, the
   host, the reflexes); nothing connects with a default.
-  - **The server's files.** `dna/nats.conf` is a tracked seed file with
-    no secret in it: it `include`s `./nats.secrets.conf` and names each
-    user's password as its variable (`$NATS_<ROLE>_PASSWORD`, and the
-    attached application's `$NATS_APP_<NAME>_PASSWORD`).
-    `dna/nats.secrets.conf`, written by the bootstrap from the same draw
-    as the vault's entries, is the one file that holds a password: mode
-    600, ignored by the project's `.gitignore` (which `init` and
-    `upgrade` give the line), mounted into compose's `nerves` service.
-  - **The guard.** The writer refuses a secrets file git tracks or would
-    track.
-  - **Rotation.** `init` and `upgrade` draw every role's password anew
-    (a regenerated seed rotates them); a server compose is running is
-    restarted to read them, and a restart that fails is said. `upgrade`
-    rewrites `dna/compose.yaml`, which mounts the secrets file. A server
-    of the operator's (`HALE_DNA_NATS_URL_OWNER`) takes the conf and the
-    secrets file again after each rotation.
+  - **The server's files** live beside the nerves allocation in the
+    local habitat (`allocations/<id>/`, mode 700; GH #1653), never in a
+    checkout. `nats.conf` holds no secret: it `include`s
+    `./nats.secrets.conf` and names each user's password as its
+    variable (`$NATS_<ROLE>_PASSWORD`, and the attached application's
+    `$NATS_APP_<NAME>_PASSWORD`). `nats.secrets.conf`, written by the
+    bootstrap from the same draw as the vault's entries, is the one file
+    that holds a password: mode 600, mounted with `nats.conf` into the
+    `nerves-<id>` service.
+  - **Rotation.** `init` and `upgrade` draw every role's password anew;
+    a `nerves-<id>` allocation that is up is restarted to read them, and
+    a restart that fails is said. A server of the operator's
+    (`HALE_DNA_NATS_URL_OWNER`) takes the conf and the secrets file
+    again after each rotation.
 - **Liveness.** At start the host waits for the organization to read
   its facts: its durable consumer has a pull
   outstanding. It says so (`the organization reads its facts from the
@@ -1432,14 +1458,15 @@ sync.
   server, its own user and the vault name of that user's credential,
   and the organization's token (`HALE_DNA_NATS_URL_APP`,
   `HALE_DNA_NATS_USER_APP`, `HALE_DNA_NATS_VAULT_APP`,
-  `HALE_DNA_NATS_ORG`; `dev` keeps them from `nerves migrate`, a node is
+  `HALE_DNA_NATS_ORG`; `dev` derives them as `nerves urls` does, a node is
   started with them, and a repository's compose services are handed
   them with the path of the password's vault entry: **The body runs a
   repository's compose services**), and none of the organism's other
   credentials: the spine's, the owner's, the head's and the reflexes' NATS URLs and
   memory DSNs are taken out of what it inherits. A node materializes
   `vendor/dna` in its clone for its toolchain, so an instance can import
-  pond's NATS client from it. Local mode is the seed compose's nerves.
+  pond's NATS client from it. Local mode is the organism's nerves
+  allocation in the local habitat.
 
 `.hale/dna/` holds only what is not the record: the status projection,
 worktrees, scratch inputs to the toolchain. Deleting it loses nothing
@@ -3411,12 +3438,14 @@ organization's (`[claims] no_base = true`; each adopts its own law).
   order: the toolchain `hale.lock` pins (installed with the site's
   installer at that version, verified, or stop), the record's remote
   cloned (fetched into a clone that exists), `vendor/dna` and the
-  record brought up, memory's database from `dna/compose.yaml` or a
-  DSN (which goes into the body's env file as
-  `HALE_DNA_MEMORY_DSN_OWNER`, never the record: the unit's `hale dna
-  dev` migrates with it and hands the host only the spine's DSN),
-  and a systemd user unit `hale-dna-<project>-<record>` supervising `hale dna
-  dev . --no-iris` — on one server the body is the organization and
+  record brought up, memory's database from the body's local habitat or
+  a DSN (which goes into the body's env file as
+  `HALE_DNA_MEMORY_DSN_OWNER`, never the record), the organism's memory
+  and nerves migrated once by `hale habitat migrate .` in the script
+  (GH #1653: the unit's `hale dna dev` migrates nothing, and hands the
+  host only the spine's DSN), and a systemd user unit
+  `hale-dna-<project>-<record>` supervising `hale dna dev . --no-iris`
+  — on one server the body is the organization and
   the application under one host — with
   `Restart=always` (GH #1026): a failure flows up one more level, and
   a node that exits to take a moved genome is started again on it
@@ -3935,8 +3964,8 @@ The live half is memory's, projected from the record by the spine
   Postgres schema per record, `dna_<identity>`, selected for the
   session at `open` (with `public` behind it for the vector type), so
   two records on one database each see only their own ideas, bindings,
-  structure, signals and watermark; `hale dna dev`'s compose database
-  is one record's anyway. The schema's `knowledge_meta` carries a
+  structure, signals and watermark; a memory allocation in the local
+  habitat is one record's anyway. The schema's `knowledge_meta` carries a
   `record` row naming its owner, written by the migration and checked
   by the migration and by every `open`: a schema that names another
   record is refused (`scope: schema … belongs to record …, not …`),
@@ -4284,30 +4313,74 @@ The live half is memory's, projected from the record by the spine
   `intent.offered` with no admission naming it is noted
   (`intent.unrecovered`) and never re-offered: work may already have
   run.
-- **Dev relies on docker compose.** `init` writes `dna/compose.yaml`
-  (its own compose project, `name: hale-dna-<project>`, so two seeds
-  on one machine never share a container; the `knowledge-db` service,
-  `pgvector/pgvector:pg16`, a named volume
-  `hale-dna-<project>-knowledge`, a host port in 54xx). Each service's
-  host port (memory's in 54xx, the nerves' in 42xx, the senses' in 93xx)
-  is taken at seed time: a candidate from the project's name, stepped past
-  any port something on the machine already listens on, as
-  `dna::free_port` takes a fixture's, so a seed never publishes on one
-  another server holds (a CI runner's NATS on 4222). The file is part of
-  the genome, and `upgrade` rewrites it to the template, keeping the ports
-  the file already publishes, so a clone's upgrade regenerates the same
-  file. With no
-  `HALE_DNA_MEMORY_DSN_OWNER`, `hale dna dev` runs `docker compose -f
-  dna/compose.yaml up -d --wait knowledge-db` and derives the owner's
-  DSN from the published port and the vault's `postgres-owner-<project>`
-  (**The organism's secrets**), which a database made with another
-  password adopts first; an operator's
-  `HALE_DNA_MEMORY_DSN_OWNER` wins. It applies memory's schema with the
-  owner's DSN and starts the host with the record's spine DSN alone
-  (**Memory**). With compose not on PATH, or no compose file, it says
-  exactly which it needs and the host runs with no memory. `hale dna
-  run` brings up no database: beyond one machine memory is a Postgres
-  of the operator's, migrated with `hale dna memory migrate`.
+- **The local habitat holds the organism's infrastructure** (GH #1653).
+  A machine has one local habitat, under
+  `${XDG_DATA_HOME:-~/.local/share}/hale/habitat/local`, run as one docker
+  compose project named for the habitat: `hale-habitat-local-<h>`, `<h>`
+  the first eight hex digits of the sha256 of the habitat's directory. No
+  seed and no checkout appears in a project, container, volume or port
+  name. An organism is a tenant of the habitat: its memory, its nerves and
+  its senses' store are **allocations**, services of the habitat's
+  project named for the organism's record identity and the role —
+  `memory-<id>`, `nerves-<id>`, `senses-<id>`, `<id>` the first twelve hex
+  digits of the identity `[dna] record` pins. Two organisms are two sets
+  of allocations in the one project; two checkouts of one organism (two
+  worktrees, two clones) are the same organism, with the same
+  allocations. An allocation's files live beside it, never in a checkout:
+  `allocations/<id>/` holds its `compose.yaml` (`pgvector/pgvector:pg16`,
+  `nats:2`, the senses' Prometheus; each service on docker's default
+  bridge, so the habitat makes no network per tenant), its `ports.yaml`
+  (the host ports, memory's in the 54000s, the nerves' in the 42000s, the
+  senses' in the 39000s, a candidate from the service's name stepped past
+  any port something already listens on, chosen once for the habitat and
+  kept), `postgres.secrets`, `nats.conf`, `nats.secrets.conf` and
+  `senses.yml`, the directory mode 700 and every secrets file mode 600.
+  Compose runs as `docker compose -p <habitat project> --project-directory
+  allocations/<id> -f compose.yaml -f ports.yaml`, with
+  `COMPOSE_IGNORE_ORPHANS=1`, since the other tenants are the same
+  project's. A checkout holds no compose file and no server
+  configuration; `upgrade` removes the ones an older toolchain wrote
+  (`dna/compose.yaml`, `dna/nats.conf`, `dna/nats.secrets.conf`,
+  `dna/postgres.secrets`, `dna/senses.yml`) and migrates no container an
+  older toolchain started: there is no migration.
+- **The habitat is long-lived, and only its acts provision.** Nothing
+  tears the local habitat down when work ends, and organisms are reused
+  tenants from run to run: `hale dna dev` and `hale dna work next` run
+  against whatever is up. Provisioning and migration are the habitat's
+  acts alone: **birth** (`init`, `new`) brings the organism's memory and
+  nerves allocations up, applies memory's schema and creates the
+  organization's stream; `hale habitat migrate [organism]` brings its
+  allocations up and moves memory's schema and the nerves' stream to this
+  toolchain's, idempotently; `upgrade` moves the schema of an operator's
+  own memory (`HALE_DNA_MEMORY_DSN_OWNER`); and the explicit verbs `hale
+  dna memory migrate`, `nerves migrate` and `senses up` remain until graft
+  retires the free-standing ones. **No other command migrates or
+  provisions as a side effect**: `dev`, `run`, `head`, `show`, `work` and
+  the host's verbs derive the roles' DSNs and URLs from what is up
+  (`memory-migrate --derive`, `nerves-migrate --derive`, `senses-up
+  --derive`: nothing brought up, no schema applied, no stream created,
+  nothing written into the habitat) and, when it is not, say so and name
+  `hale habitat migrate <organism>`. A schema that is behind is the
+  store's refusal when it opens (`memory_fence`), naming the same act.
+  With an operator's `HALE_DNA_MEMORY_DSN_OWNER` or
+  `HALE_DNA_NATS_URL_OWNER`, that server is the organism's, and the
+  habitat's allocation for it is not used. The owner's DSN of the memory
+  allocation names the vault's `postgres-owner-<id>` (**The organism's
+  secrets**), which a database made with another password adopts first.
+  `hale dna run` brings up nothing: beyond one machine memory is a
+  Postgres of the operator's. Only a test's habitat is ever taken down: a
+  test's `hale` runs under a habitat of its own (`hale test` gives each
+  file one beside its vault, the CLI tests one per process), which comes
+  down with the vault. `hale test`, the CLI tests' reap and
+  `scripts/compose-down-under.sh` share one teardown, `hale habitat sweep
+  <root>`: it names every project rooted in the root in the root's
+  `.dna-compose-projects` before it takes any down, and drops a name
+  only once the project's containers and volumes are confirmed gone, so
+  a teardown that did not finish (a volume docker would not remove) is
+  found again by name and retried by the next — a vault whose habitat
+  did not come down is kept for the next sweep. It, and
+  `dna::scratch_done`, refuse the developer's habitat's project whatever
+  a file under a root names.
 - **Knowledge changes later work (K2).** The substrate holds a
   `MemoryKnowledge` (`budget`, 8 by default; memory opened under the
   spine's role), the owner's line to memory; the editor never holds
@@ -4646,7 +4719,9 @@ The live half is memory's, projected from the record by the spine
   ONE Board Review, applied all or nothing. The file is one step a line,
   in the language the scenario runner reads: `open <name> [under
   <node>] | <mandate>`, `fill <name> <holder>`, `fill * <holder>`,
-  `vacate <name> <holder>`, `practice <name> | <text>`, `retire-practice <name>`,
+  `vacate <name> <holder>`, `practice <name> | <text>`, `law <name> |
+  <text>` (a practice its document proposes as law, `law: true`, which
+  the Board ratifies as law or as advice; GH #1591), `retire-practice <name>`,
   `nursery <source>`, `assign|unassign <name>
   reviews <kind>:<node>`, `close <name>`, `merge <name> into <name>`,
   `split <name> into <name> <name>`, `expose <kind>:<node> as
@@ -4774,9 +4849,15 @@ The live half is memory's, projected from the record by the spine
   whose `nursery.toml` lists its packs (`[[pack]]`: `name`, `version`,
   `path`, `summary`, `params` with each one's default, `""` for none).
   With no `--from` the nursery is the toolchain's (`dna/nursery`,
-  embedded: `dev-team`, `small-startup`, `content-team`, and `founder`,
+  embedded: `dev-team`, `small-startup`, `content-team`, `founder`,
   `fill * {founder}`, one person in every vacant seat, what `init --with
-  founder --set founder=<who>` proposes); a git
+  founder --set founder=<who>` proposes, and `standard`, the standard
+  practices every organism is to adopt at birth, each a `law` step that
+  extends the foundational law once ratified: its first clause,
+  `standard/logs-are-structured`, is that every line a running part logs
+  is a record, held by the Board in review until the compiler classes the
+  stdio streams, the law can name a `program` group and `std::log` is the
+  logger (GH #1591)); a git
   repository is cloned into `$XDG_CACHE_HOME/hale/nursery/` and read at
   the revision after `#`, its default branch's head without one. The CLI
   renders the pack: every parameter replaced by its `--set` value or its
@@ -4958,7 +5039,8 @@ The live half is memory's, projected from the record by the spine
   `repository: true` and no `main`, `artifact` or shape (nothing was
   cut), before the purpose and the graph. Its broker account is drawn as
   any attached application's (**The application's account**): `app-<name>`
-  in the vault and `dna/nats.conf`, and `hale dna nerves migrate` prints
+  in the vault and the nerves allocation's `nats.conf`, and `hale dna
+  nerves migrate` prints
   `HALE_DNA_NATS_URL_APP`, `HALE_DNA_NATS_USER_APP` and
   `HALE_DNA_NATS_VAULT_APP` for it, so what the repository's processes
   publish under `<org>.app.<name>.` reaches the heart. `hale dna status`
@@ -5121,7 +5203,7 @@ The live half is memory's, projected from the record by the spine
   the record is said on stderr, never in the perspective: behind it
   (`memory has projected <m> of the record's <n> rows`), past it (a
   read that raced a writer: read again), or with a stamp that
-  vouches for nothing (`hale dna memory migrate`). On voice's record with
+  vouches for nothing (`hale habitat migrate <organism>`). On voice's record with
   its holes filled the two texts are GRAPH.md's renderings, byte for byte
   (`dna/tests/graph_show_test.hl`).
 - **Projections and ranking (K3).** The tail also projects the
@@ -5247,7 +5329,7 @@ secret, by its vault name, and never creates one.
 | vault name | kind | whose |
 |---|---|---|
 | `postgres-dna_<identity>_spine`, `_head` | drawn | memory's roles (**Memory**) |
-| `postgres-owner-<seed>`, when the seed has `dna/compose.yaml` | drawn | the compose database's superuser |
+| `postgres-owner-<id>`, when the organism has a memory allocation | drawn | the memory allocation's superuser in the local habitat |
 | `nats-<org>-<role>`, for `owner spine head reflexes` | drawn | the nerves' accounts (**The nerves**) |
 | `nats-<org>-app-<name>`, while the record attaches the application | drawn | the application's broker account (**The application's account**) |
 | `oidc-client-<dna.oidc.client>` (`dna-local` when unset) | drawn for an issuer on the loopback, else a slot | the head's OIDC client |
@@ -5258,12 +5340,12 @@ secret, by its vault name, and never creates one.
 - **Drawn or a slot.** A secret the organism owns the value of is drawn
   from urandom (32 hex characters) into the vault when the vault lacks
   it; the nerves' are drawn anew on every `init` and `upgrade`, since
-  the server's include is written from the same draw. The servers
-  compose runs read theirs from files written from the same draw as the
-  vault's entries: `dna/nats.secrets.conf` for the nerves and
-  `dna/postgres.secrets` for the database (its `POSTGRES_PASSWORD_FILE`),
-  each mode 600, ignored, and refused when git tracks it or would. No
-  committed file holds a secret. A secret a person
+  the server's include is written from the same draw. The habitat's
+  allocations read theirs from files written from the same draw as the
+  vault's entries, beside the allocation and never in a checkout
+  (GH #1653): `nats.secrets.conf` for the nerves and `postgres.secrets`
+  for memory (its `POSTGRES_PASSWORD_FILE`), each mode 600 in
+  `allocations/<id>/`. No committed file holds a secret. A secret a person
   supplies is a named empty entry that `hale dna secret set <NAME>`
   fills (`FORGE_TOKEN`, `OIDC_CLIENT_SECRET`, or a model key's name);
   an entry that is empty is not held.
@@ -5399,19 +5481,25 @@ routes; it never plans on a reading.
   own.
   It is no spine: its nerves connection has no server and stops at
   once, and it takes no application's events. It drains on SIGTERM.
-- **The store.** The seed's `dna/compose.yaml` has a `senses` service:
-  Prometheus, scraping what `dna/senses.yml` names over the host gateway
-  (`honor_labels`, so a part's own labels are the readings'), and keeping
-  what it scraped for its retention (`--storage.tsdb.retention.time`, a
-  week). Its port is the seed's, in 93xx, on 127.0.0.1, taken as the
-  compose file's other ports are.
-  - `init` writes both files. `upgrade` writes `dna/senses.yml` when it
-    is missing, and says so when the compose file has no `senses`
-    service or `dna/nats.conf` no `reflexes` user.
-  - `hale dna senses up [dir]` brings the service up and prints
-    `HALE_DNA_SENSES_URL`, its read URL.
-  - `hale dna dev` runs it with the rest of compose, unless the
-    environment names its own memory or nerves (an owner's DSN or URL).
+- **The store** is the organism's `senses-<id>` allocation in the local
+  habitat (GH #1653): Prometheus, scraping what the allocation's
+  `senses.yml` names over the host gateway (`honor_labels`, so a part's
+  own labels are the readings'), and keeping what it scraped for its
+  retention (`--storage.tsdb.retention.time`, a week). Its port is in
+  the 39000s, on 127.0.0.1, kept in the allocation's `ports.yaml` as
+  memory's and the nerves' are.
+  - The allocation's `compose.yaml` and `senses.yml` are written the
+    first time a habitat act brings an allocation of the organism up.
+  - `hale habitat migrate [organism]` and `hale dna senses up [dir]`
+    bring the store up; `senses up` prints `HALE_DNA_SENSES_URL`, its
+    read URL.
+  - `hale dna senses url [dir]` prints the same line for a store that
+    is up, bringing nothing up, and names `hale habitat migrate
+    <organism>` when it is not.
+  - `hale dna dev` never brings the store up: it says the store's URL
+    when it is up, or that it is not, unless the environment names its
+    own memory or nerves (an owner's DSN or URL), and nothing stops for
+    it.
   - A reading never acts.
 - **The reflexes** (`dna/reflexes`) are a program on the private-services
   tier. They hold the store's read URL and a publish-only credential,
@@ -5433,8 +5521,10 @@ routes; it never plans on a reading.
     duplicate. They remember what they published only while it is down.
   - **Launch.** The face's launcher (`hale dna head`, `start.sh`) builds and starts them beside the
     stub OpenID provider when a project is attached, with that project's
-    store and nerves, and stops them with the launcher. A store or
-    nerves that does not come up leaves the face running without them.
+    store and nerves (`hale dna senses url`, `hale dna nerves urls`), and
+    stops them with the launcher. The launcher brings nothing up: a store
+    or nerves that is not up leaves the face running without them, and
+    the launcher names `hale habitat migrate <project>`.
 - **The node acts on the row.** On its tick a node reads every firing
   that names it and has no `reflex.acted` row yet. It restarts that one
   instance at the latest deploy's revision, through the path a
@@ -5619,14 +5709,16 @@ side by side under the cache's build lock once per key, and execs the
 materialized launcher with every binary handed in (`HALE_API_BIN`,
 `HALE_HEAD_BIN`, `HALE_OIDC_BIN`, `HALE_REFLEXES_BIN`) and `HALE_BIN`
 the running toolchain. With a project and no
-`HALE_DNA_MEMORY_DSN_HEAD`, it derives the head's memory DSN as
-`hale dna memory migrate` does, onto the launcher's environment and
-never its output, when memory is up: an owner's server
-(`HALE_DNA_MEMORY_DSN_OWNER`), or the project's compose `knowledge-db`
-already running. Otherwise it says memory is not up, names `hale dna
-dev`, and starts the head with Knowledge unsupported; it brings no
-database up. From a checkout, `dna/face/start.sh [project]` is the same
-launcher, building each seed it is not handed from the checkout into
+`HALE_DNA_MEMORY_DSN_HEAD`, it derives the head's memory DSN alone,
+onto the launcher's environment and never its output, when memory is
+up and migrated: an owner's server (`HALE_DNA_MEMORY_DSN_OWNER`), or
+the organism's memory allocation in the local habitat already running.
+Otherwise it says memory is not up, names `hale habitat migrate
+<project>`, and starts the head with Knowledge unsupported; it brings
+nothing up and migrates nothing (GH #1653). The launcher reads the
+reflexes' store and nerves with `hale dna senses url` and `hale dna
+nerves urls`, which bring nothing up either. From a checkout,
+`dna/face/start.sh [project]` is the same launcher, building each seed it is not handed from the checkout into
 temporary storage on every start. The head is
 one loopback process that serves the browser shell, keeps a registry one loopback process that serves the browser shell, keeps a registry
 of projects and a journal of receipts under a state directory, and
@@ -5658,7 +5750,7 @@ held; one more is refused 503 `busy`. The rows come from the nerves
 organization and every owner's, as the head's user, on
 `HALE_DNA_NATS_URL_HEAD`, else on the server of
 `HALE_DNA_NATS_URL_OWNER` (which it hands a body it starts), else on
-the project's compose `nerves` service while `hale dna dev` has it up
+the organism's nerves allocation in the local habitat while it is up
 (asked for, never brought up; asked again every 5 s). With none, only
 the head's own state is pushed. The application view still reads on a
 timer: the application's readings (**The heart's events**) do not reach
@@ -5723,12 +5815,13 @@ otherwise.
 | `HALE_DNA_OWNER=<org>` | unnamed | The organization this body is, for the ownership graph. |
 | `HALE_DNA_LEASE=<name>` | unset | The lease a body holds; set by the body for the processes it starts. |
 | `HALE_DNA_LEASE_TOKEN=<n>` | unset | The lease's fencing token; set with `HALE_DNA_LEASE`. |
-| `HALE_DNA_MEMORY_DSN_OWNER=<dsn>` | the compose Postgres | A Postgres of your own instead of `dna/compose.yaml`'s: the owner role that migrates memory and creates the record's roles. Read by `memory migrate`, `dev`, `show` and the fixtures that migrate or drop a record. |
+| `HALE_DNA_MEMORY_DSN_OWNER=<dsn>` | the memory allocation | A Postgres of your own instead of the organism's memory allocation in the local habitat: the owner role that migrates memory and creates the record's roles. Migrated by `hale habitat migrate`, `memory migrate` and `upgrade`; read, never migrated, by `dev`, `head` and `show`; and by the fixtures that migrate or drop a record. |
 | `HALE_DNA_MEMORY_DSN_SPINE=<dsn>` | unset | The spine role's DSN, printed by `memory migrate` and handed to the process that is the spine. |
 | `HALE_DNA_MEMORY_DSN_HEAD=<dsn>` | unset | The head role's DSN, handed to the head and to nothing else. |
+| `HALE_DNA_MEMORY_FROM=owner\|habitat <project>/memory-<id>` | written by every migration | Not set by hand: the line beside the head's DSN in a clone's `.hale/dna/memory.env` that says where the DSN was derived, an operator's own Postgres (`owner`) or the organism's memory allocation in the local habitat. A kept DSN whose origin is anything else (another habitat's allocation, an older toolchain's database, or no origin) is removed and refused, naming `hale habitat migrate` (GH #1653). |
 | `HALE_DNA_OWNER_KEYS=<keys>` | one owner | `<owner>=<key> …`, space-separated: the owners `memory migrate` writes for a shared record. The keys stay the record's; memory never holds signature bytes. |
 | `HALE_DNA_RECEIPT_KEY=<key>` | unset | Sixteen characters or more: the key evidence bodies are sealed under. The first key given is written; a different one later is refused, because bodies sealed under the first would no longer open. |
-| `HALE_DNA_NATS_URL_OWNER=<url>` | the compose NATS | The owner user's URL: it creates the organization's stream (`nerves migrate`, `dev`). |
+| `HALE_DNA_NATS_URL_OWNER=<url>` | the nerves allocation | The owner user's URL: it creates the organization's stream (`hale habitat migrate`, `nerves migrate`); `dev` and `nerves urls` derive the roles' URLs on it. |
 | `HALE_DNA_NATS_URL_SPINE=<url>` | unset | The spine user's URL, handed to the process that is the spine. |
 | `HALE_DNA_NATS_URL_HEAD=<url>` | unset | The head user's URL: subscribes, publishes nothing. |
 | `HALE_DNA_NATS_URL_APP=<url>` | unset | The application's URL: publishes on its own subjects only. |
@@ -5738,7 +5831,8 @@ otherwise.
 | `HALE_DNA_NATS_SECRET_APP=<path>` | unset | Handed by a repository body to its compose services alone: the path of the local vault's entry holding the application's nerves password, for the compose file to mount as a secret (ruling 11). |
 | `HALE_DNA_COMPOSE=off` | on | A repository body leaves its compose services to the operator: it neither brings them up nor down, and says `a repository: its compose services are left to the operator (HALE_DNA_COMPOSE=off)` (ruling 11). The DNA suite sets it for every fixture; a fixture about compose opts in with `on`. |
 | `HALE_DNA_NATS_VAULT_REFLEXES=<name>` | unset | The same for the reflexes user; `dna/reflexes` refuses to start without it. |
-| `HALE_DNA_COMMANDS_PORT=<port>` | unset | The loopback port of the API child's HTTP commands transport, given by `dna/face/start.sh` to the head and by the head to its API child; without it the head answers `commands_unavailable` (503). |
+| `HALE_DNA_COMMANDS_PORT=<port>` | unset | The loopback port of the API child's HTTP commands transport, pinned by `dna/face/start.sh` (8795 by default) for the head and by the head for its API child; unset, the child's transport listens where the system puts it and the child reports the port it got (`HALE_DNA_API_PORTS`). |
+| `HALE_DNA_API_PORTS=<file>` | unset | Where an API child writes the ports it serves on once they are bound (`api=<port>` and `commands=<port>` lines, renamed into place): set by the head for its child, which it starts with port 0 for whatever it does not pin, and reads the ports back from there. |
 | `HALE_DNA_NATS_ORG=<token>` | unset | The organization's token, the prefix of its subjects; `dev` hands it to the host and the host to the parts. |
 | `HALE_DNA_SENSES_URL=<url>` | unset | The senses store's read URL, for the reflexes. |
 | `HALE_DNA_SENSES_PORT=<n>` | the seed's per-part port | The port a part serves its scrape endpoint on; `0` serves nothing. |
@@ -5777,7 +5871,7 @@ otherwise.
 | `HALE_DNA_OIDC_SERVICES=<clients>` | unset | The service clients the stub issuer accepts. |
 | `HALE_DNA_CHILD_PROOF=<proof>` | unset | The proof a face gave its child; the child answers an unauthenticated request with `X-Hale-Child: <digest of the proof>`, so the face knows its own child answered before it forwards a token. |
 | `HALE_DNA_TRUSTED_LOCAL=1` | off | The trusted-local session, a fixture's mode alone (`1` only). A project serves its heads under OIDC. |
-| `HALE_DNA_KEEP_SCRATCH` | off | Fixtures and the suite's sweep keep their scratch roots, for looking at what a fixture built. |
+| `HALE_DNA_KEEP_SCRATCH` | off | Fixtures and the suite's sweep keep their scratch roots, for looking at what a fixture built, and the compose projects run from under them. Without it, `dna::scratch_done` and the sweep take every compose project whose working directory is under a root they remove down with it (`docker compose -p <project> down -v`, found by the `com.docker.compose.project.working_dir` label on containers, or by name in the root's `.dna-compose-projects`), and confirm it by the project's label on containers and volumes. Neither ever takes down the developer's local habitat, nor the habitat `XDG_DATA_HOME` names outside the root (GH #1653). A teardown that fails or leaves anything fails the fixture (or the slice), and keeps the root, its registry entry, the slice's ledger and the projects it names for another attempt. |
 | `HALE_DNA_SUITE_TAG=<tag>` | unset | The stamp a DNA suite slice puts on the processes and scratch roots it starts, so its sweep collects only its own. |
 | `HALE_DNA_WAIT_SCALE=<n>` | 1 | A whole number of at least 1 that widens every fixture wait. |
 | `HALE_API_BIN=<path>` | built from the checkout | `dna/face/start.sh`: a prebuilt api binary to launch, as `--api` does. A binary handed in is checked before anything is built. |

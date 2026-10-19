@@ -29,9 +29,69 @@ type Idea {
     // declining it leaves the other in force. A `retirement` proposal
     // has this and no text of its own.
     supersedes: String = "";
+    // GH #1591: a practice proposed as law (`law <name> | <text>` in a
+    // batch): its document says `law: true`, and the Board ratifies it as
+    // law or as advice. Absent from every other document, whose bytes stay
+    // as they were.
+    law: Bool = false;
 }
 
 type KnowledgeEdge { from: String = ""; to: String = ""; rel: String = ""; }
+
+// The practice a proposal supersedes, as the person named it: `digest` the
+// full `sha256:<hex>` of the one version in force whose digest starts with
+// what was given, else `why` it names none.
+type SupersededPick { digest: String = ""; why: String = ""; }
+
+// `hale dna practice` lists a practice by an abbreviated digest
+// (`sha256:3122d`); `--supersedes` takes that form, or any longer prefix,
+// and is resolved here when the proposal is made, so a proposal is never
+// accepted and then refused at ratification. `candidates` is one practice
+// a line, `<hex> <state> <name>`, `<state>` one of `in-force`, `pending`,
+// `declined` or `retired`. An unknown prefix, one that names several
+// practices, and one whose practice is not in force are refused by name.
+@bounded_by(candidates)
+fn superseded_digest(candidates: String, given: String) -> SupersededPick { return superseded_digest_for(candidates, given, true); }
+
+// `superseded_digest`, with whether the request is a fresh one: a replay of
+// a request the record already answered resolves the prefix to the same
+// full digest whatever its practice's state is now, so it recovers its
+// answer (the native admission recovers an identity before it judges
+// eligibility) instead of being refused because its predecessor retired.
+@bounded_by(candidates)
+fn superseded_digest_for(candidates: String, given: String, fresh: Bool) -> SupersededPick {
+    let g = std::str::trim(given);
+    let hex = if std::str::starts_with(g, "sha256:") { g[7..len(g)] } else { g };
+    if len(hex) == 0 { return SupersededPick { why: "--supersedes names no digest: give the practice's digest as `hale dna practice` lists it (`sha256:<hex>`)" }; }
+    let mut found = "";
+    let mut named = "";
+    let mut n = 0;
+    let mut seen = "\n";
+    let mut rest = candidates;
+    while len(rest) > 0 {
+        let nl = std::str::index_of(rest, "\n");
+        let line = if nl < 0 { rest } else { rest[0..nl] };
+        rest = if nl < 0 { "" } else { rest[(nl + 1)..len(rest)] };
+        let sp = std::str::index_of(line, " ");
+        if sp < 0 { continue; }
+        let raw = line[0..sp];
+        if !std::str::starts_with(raw, hex) || std::str::contains(seen, "\n" + raw + "\n") { continue; }
+        seen = seen + raw + "\n";
+        n = n + 1;
+        found = line;
+        named = named + (if len(named) > 0 { ", " } else { "" }) + "sha256:" + raw[0..(if len(raw) < 12 { len(raw) } else { 12 })];
+    }
+    if n == 0 { return SupersededPick { why: "--supersedes " + g + " names no practice the record holds (`hale dna practice` lists them)" }; }
+    if n > 1 { return SupersededPick { why: "--supersedes " + g + " is ambiguous: it begins " + to_string(n) + " practices' digests (" + named + "); give more of the digest" }; }
+    let sp = std::str::index_of(found, " ");
+    let raw = found[0..sp];
+    let after = found[(sp + 1)..len(found)];
+    let sp2 = std::str::index_of(after, " ");
+    let state = if sp2 < 0 { after } else { after[0..sp2] };
+    let name = if sp2 < 0 { "" } else { after[(sp2 + 1)..len(after)] };
+    if fresh && state != "in-force" { return SupersededPick { why: "--supersedes " + g + " is the practice `" + name + "` (sha256:" + raw + "), which is not in force (" + state + "): only the version in force is superseded" }; }
+    return SupersededPick { digest: "sha256:" + raw };
+}
 
 type KnowledgeBinding {
     idea: String = "";
@@ -190,6 +250,7 @@ fn knowledge_document(i: Idea, target: String) -> String {
     b.append_str(", \"provenance\": "); b.append_str(record_json_quote(if len(i.provenance) > 0 { i.provenance } else { "proposed" }));
     if len(i.name) > 0 { b.append_str(", \"name\": "); b.append_str(record_json_quote(i.name)); }
     if len(i.supersedes) > 0 { b.append_str(", \"supersedes\": "); b.append_str(record_json_quote(i.supersedes)); }
+    if i.law { b.append_str(", \"law\": true"); }
     b.append_str("}"); return std::str::from_bytes(b.snapshot() or raise);
 }
 

@@ -31,3 +31,10 @@ version = "1"
 path = "packs/founder.pack"
 summary = "one person holds every seat the organization leaves open: the Board, each part's dev and reviewer, each operator"
 params = { founder = "" }
+
+[[pack]]
+name = "standard"
+version = "1"
+path = "packs/standard.pack"
+summary = "the standard practices every organism adopts at birth, each proposed as law: first, logs are structured"
+params = {}

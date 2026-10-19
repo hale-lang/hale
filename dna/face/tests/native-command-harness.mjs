@@ -86,7 +86,7 @@ export function hostChildren(root) {
 
 export const running = pid => { try { process.kill(pid, 0); return true; } catch (error) { return error.code === 'EPERM'; } };
 
-/** `hale dna memory migrate` under the owner: the head's DSN for the API (idempotent; `dev` applied the schema already). */
+/** `hale dna memory migrate` under the owner: the head's DSN for the API (idempotent; `hale habitat migrate` applied the schema already). */
 export function headMemory({ hale, root, env, owner }) {
   const bounded = boundedNative(hale, ['dna', 'memory', 'migrate', root], { lock: false });
   const out = execFileSync(bounded.command, bounded.args, { cwd: root, env: { ...env, HALE_DNA_MEMORY_DSN_OWNER: owner }, encoding: 'utf8', timeout: 40_000, maxBuffer: 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'] });
@@ -342,11 +342,15 @@ export async function startService(options = {}) {
       previous = head;
     }
   }
-  // `hale dna dev` in place of the Body and the relay: it migrates memory and
-  // the nerves from the owners' URLs (which reach no other process), builds
-  // and runs the organization, and relays the record's requests on its tick.
+  // `hale dna dev` in place of the Body and the relay, after the habitat's
+  // act: `hale habitat migrate` moves memory and the nerves with the owners'
+  // URLs (which reach no other process), and `dev`, which migrates nothing
+  // (GH #1653), builds and runs the organization and relays the record's
+  // requests on its tick.
   async function startHost() {
     assert(!alive(host), 'Stop the current host before starting another');
+    const migrate = boundedNative(hale, ['habitat', 'migrate', '.'], { lock: false });
+    execFileSync(migrate.command, migrate.args, { cwd: root, env: { ...env, HALE_DNA_MEMORY_DSN_OWNER: owner, HALE_DNA_NATS_URL_OWNER: nerves }, encoding: 'utf8', timeout: 60_000, maxBuffer: 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'] });
     host = launch('host', hale, ['dna', 'dev', '.', '--no-iris'], {
       HALE_BIN: hale, HALE_DNA_MEMORY_DSN_OWNER: owner, HALE_DNA_NATS_URL_OWNER: nerves,
       // The host's build cache: one per home, shared across the services this worker starts.

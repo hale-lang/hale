@@ -1,0 +1,11 @@
+# standard: the practices every organism adopts at birth (GH #1591). Each
+# clause is a practice proposed as law: once the Board ratifies it, it
+# extends the foundational law (dna/org/law.hl) the organism was born with.
+#   hale dna pack apply standard
+#
+# The first clause. How it is enforced is the heart's: a Hale heart's is a
+# claim the law names, which waits on the compiler (the stdio streams as an
+# effect class of their own, a `program` group the law can name, and the
+# `std::log` logger); until then the Board holds it by review. A foreign
+# heart's is its attach manifest, `attach --check` and the log adapter.
+law standard/logs-are-structured | Logs are structured: every line a running part writes to its log is a record (a time, a level, a message and named fields), never free text. A Hale heart's served and attached programs write through `std::log` and reach no bare `print`, `println`, `eprint` or `eprintln` outside it, a claim the law names once the compiler classes the stdio streams and the law can name the `program` group; until then the Board checks it in review. A foreign heart declares its log format in its attach manifest, `attach --check` samples its stream and refuses a line that is not a record, and the log adapter lands no line it cannot parse.

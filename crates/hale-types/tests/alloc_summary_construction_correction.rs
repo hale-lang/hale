@@ -310,11 +310,15 @@ fn own_scope_let_block_scope_test() {
             // loop); 447 since `std::crypto::ed25519_keypair`'s body came;
             // 458, and one more entry point, since std::http's streamed body
             // came (`BodyWriter`'s birth, `chunk` and `end`, `SseWriter`'s
-            // `event` and `end`, and six framing helpers)
+            // `event` and `end`, and six framing helpers); 471, and four
+            // more invoked unboundedly, since the HTTP client's call
+            // deadline came (eight helpers, five of them called in its read
+            // and retry loops, and its sends no longer through
+            // `__http_send_raw`)
             changed_lines(&old.render(), &now.render()),
             [
-                "- # 463 fns, 29 entry points, 119 invoked-unboundedly",
-                "+ # 463 fns, 29 entry points, 118 invoked-unboundedly",
+                "- # 471 fns, 29 entry points, 123 invoked-unboundedly",
+                "+ # 471 fns, 29 entry points, 122 invoked-unboundedly",
                 "- call  count loop_depth=0 result=local",
                 "+ call  <unresolved: count> loop_depth=0 result=local",
                 "- call  count loop_depth=0 result=local",
@@ -461,6 +465,11 @@ fn reached_no_other_target_changes() {
 /// failure in place: `__http_retry_sentinel`, called in that loop, went.
 /// One more since the client writes its `Host` header through
 /// `__http_host_text` (an IPv6 host is bracketed), called per request.
+/// Four more since the client's call deadline came: its arming, reads,
+/// writes and deadline tests run in its read and retry loops, and its
+/// writes go to the deadline sends rather than `__http_send_raw` (and
+/// oidc, which calls the one-shot fns by their public path, one more of
+/// them beside the copy).
 /// And the copy's fns a program calls by their public path
 /// (`std::…`) run where they are called, so a bus
 /// handler's such calls invoke them unboundedly beside the copy: is_route
@@ -490,7 +499,7 @@ fn reached_perspective_examples() {
         "crates/hale-codegen/tests/fixtures/examples/65-perspective-ctor-override",
         "tests/hale/perspective_ctor_override_test.hl",
     ] {
-        pinned_unreached(t, (120, 0), &["Gateway::handle", "RouterV1::route"], &[], &lines);
+        pinned_unreached(t, (124, 0), &["Gateway::handle", "RouterV1::route"], &[], &lines);
     }
 }
 
@@ -500,7 +509,7 @@ fn reached_perspective_examples() {
 fn reached_unowned_literal_positions() {
     pinned_unreached(
         "crates/hale-codegen/tests/fixtures/examples/90-unowned-literal-positions",
-        (120, 0),
+        (124, 0),
         &["Provider::submit", "Server::handle"],
         &["Provider::submit CollectionInsert(\"vec\") @1292..1320 InvokedUnboundedly"],
         &[
@@ -520,7 +529,7 @@ fn reached_unowned_literal_positions() {
 fn reached_oidc() {
     pinned_unreached(
         "dna/oidc",
-        (142, 12),
+        (146, 13),
         &[
             "b64",
             "decode",
@@ -587,7 +596,7 @@ fn reached_oidc() {
 fn reached_is_route_test() {
     pinned_unreached(
         "tests/hale/is_route_test.hl",
-        (122, 6),
+        (126, 6),
         &["Api::handle", "Api::list", "Api::rename", "Api::show"],
         &["Api::handle StructLit(\"std::http::Response\") @1449..1496 InvokedUnboundedly"],
         &[
@@ -1164,7 +1173,7 @@ fn startable_only_the_verb_program_runs_to_exit() {
         vec![(
             "dna/host/verb".to_string(),
             strs(&[
-                "dna__core: 177",
+                "dna__core: 183",
                 "dna__core__pond__pq: 11",
                 "dna__core__pond__realtime__nats: 2",
                 "dna__host: 613",

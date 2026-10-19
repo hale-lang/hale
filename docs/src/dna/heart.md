@@ -179,15 +179,16 @@ hale dna application remove [project] [--as <who>]
 ```
 
 This writes `application.detached {name, by}` to the record, which is
-where membership lives, and revokes the account: the user leaves
-`dna/nats.conf`, its password leaves `dna/nats.secrets.conf` and the
-vault, and compose's `nerves` is restarted, so a connection it holds is
-closed and none opens again.
+where membership lives, and revokes the account: the user leaves the
+nerves allocation's `nats.conf`, its password leaves its
+`nats.secrets.conf` and the vault, and the nerves allocation is
+restarted when it is up, so a connection it holds is closed and none
+opens again.
 
 ```text
 application remove: `<app>` detached (application.detached in the record)
-nerves  app-<app> removed from dna/nats.conf
-nerves  its password removed from dna/nats.secrets.conf
+nerves  app-<app> removed from the nerves allocation's configuration
+nerves  its password removed from the nerves allocation's secrets
 secret  nats-<org>-app-<app> removed from the vault
 ```
 
@@ -246,7 +247,7 @@ record:      this clone only (no remote; `git remote add origin …` shares it)
 body:        none (no body has run this record; `hale dna run` takes the lease)
 head:        this clone (…); hosted head: none
 fleet:       none (`[dna] fleet = "<name>"` in hale.toml names one)
-memory:      compose (dna/compose.yaml, under `hale dna dev`)
+memory:      the local habitat's allocation memory-<id> (compose project hale-habitat-local-<h>; `hale habitat migrate` brings it up)
 trust:       local (every writer to the record is trusted)
 github:      none (a bare remote: no reviews are opened, no verdicts read from it)
 connections: none
@@ -262,12 +263,14 @@ hale dna body start|stop|logs [--body <user@host>]
 `body provision` makes a body over ssh, in order: the toolchain
 `hale.lock` pins, the record's remote cloned (into `$HOME/dna/<project>`
 unless `--dir` names another place), `vendor/dna` and the record brought
-up with `hale dna upgrade`, memory from
-`dna/compose.yaml` or the DSN you give, and a systemd user unit,
+up with `hale dna upgrade`, memory from the body's local habitat or the
+DSN you give, the organism's memory and nerves migrated once with `hale
+habitat migrate .`, and a systemd user unit,
 `hale-dna-<project>-<record>`, that runs `hale dna dev . --no-iris` with
-`Restart=always`. On one server the body is the organization and the
-application under one host. A DSN goes into the body's env file as
-`HALE_DNA_MEMORY_DSN_OWNER`, never into the record.
+`Restart=always`; that `dev` migrates nothing. On one server the body is
+the organization and the application under one host. A DSN goes into
+the body's env file as `HALE_DNA_MEMORY_DSN_OWNER`, never into the
+record.
 
 It writes nothing when the record has no remote, or one local to this
 machine; when `hale.lock` pins no toolchain; when ssh cannot reach the
@@ -309,13 +312,14 @@ Both start the one host. `--port` is iris's port (8787 by default) and
 lacks a secret the organism draws (`hale dna upgrade` draws it), then
 takes the body lease, then builds and supervises.
 
-- **`dev`** is the whole organism on this machine. It applies memory's
-  schema and creates the nerves' stream as their owners (the servers
-  `dna/compose.yaml` brings up, or `HALE_DNA_MEMORY_DSN_OWNER` and
-  `HALE_DNA_NATS_URL_OWNER` when you name your own), brings up the
-  senses' store when compose is where the servers come from, hands the
-  host only the spine's DSN and URL, and runs the application under the
-  same host.
+- **`dev`** is the whole organism on this machine. It runs on what is
+  up and migrated: the organism's allocations in the local habitat, or
+  `HALE_DNA_MEMORY_DSN_OWNER` and `HALE_DNA_NATS_URL_OWNER` when you name
+  your own. It brings nothing up and migrates nothing; it derives the
+  spine's DSN and URL, hands the host only those, and runs the
+  application under the same host. When memory or the nerves are not
+  up it says so and names `hale habitat migrate`, which brings them up
+  and migrates them, idempotently.
 - **`run`** is the organization alone. It migrates nothing: give it
   `HALE_DNA_MEMORY_DSN_SPINE`, `HALE_DNA_NATS_URL_SPINE` and
   `HALE_DNA_NATS_ORG` (the migrate verbs print them), and it strips the

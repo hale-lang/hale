@@ -1611,6 +1611,7 @@ fn build_resolved_lowered(
         reads_draining: false,
         drain_observer_loci: BTreeSet::new(),
         drain_read_outside_locus: false,
+        drain_reads_beyond_run: BTreeSet::new(),
         bus_state: None,
         shm_ring_subjects: std::collections::BTreeMap::new(),
         routing_key_subjects: std::collections::BTreeMap::new(),
@@ -3803,6 +3804,13 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// handed a locus): its reader cannot be counted, so the drain
     /// keeps its grace unconditionally.
     pub(crate) drain_read_outside_locus: bool,
+    /// Of `drain_observer_loci`, those whose code reads `draining`
+    /// somewhere other than their own `run()` (a handler, a hook, a
+    /// method another locus may call). The rest answer a drain only
+    /// from run(), so an instance of one is counted out as soon as its
+    /// run() has returned for good and it has no subscription left to
+    /// serve: a finished locus has nothing to drain.
+    pub(crate) drain_reads_beyond_run: BTreeSet<String>,
     /// Bus state generated when any locus declares a subscribe.
     /// `Some` iff the program contains at least one `bus subscribe`
     /// declaration. Bus storage itself lives in the C runtime
@@ -8751,6 +8759,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 .get_nth_param(0)
                 .expect("run_end self_ptr param")
                 .into_pointer_value();
+            // GH #1077: run() has returned for good; with no
+            // subscription to serve, this instance has nothing left to
+            // drain.
+            if info.subscriptions.is_empty() {
+                self.emit_drain_observer_out(locus_name, self_arg, true)?;
+            }
             // 2026-05-30: reclaim this locus when run() completes if
             // EITHER (a) it's a FLOW — some parent declares
             // `release(c: ThisType)`, so run-completion reclaims it (a
@@ -10422,6 +10436,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // has lowered.
         for name in self.drain_observer_loci.clone() {
             if let Some(g) = self.module.get_global(&format!("lotus.observes_drain.{name}")) {
+                g.set_initializer(&self.context.i64_type().const_int(1, false));
+            }
+            if self.drain_reads_beyond_run.contains(&name) {
+                continue;
+            }
+            if let Some(g) = self.module.get_global(&format!("lotus.drain_in_run_only.{name}")) {
                 g.set_initializer(&self.context.i64_type().const_int(1, false));
             }
         }
@@ -28394,6 +28414,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             Id::IoTlsRecvBytes => {
                 self.lower_std_io_tls_recv_bytes(args, scope)
             }
+            // The HTTP client's call deadline: (handle, bytes|max, until_ns).
+            Id::IoTcpSendBytesUntilRaw => self.lower_io_until_call(args, scope, "lotus_tcp_send_bytes_until", false),
+            Id::IoTlsSendBytesUntilRaw => self.lower_io_until_call(args, scope, "lotus_tls_send_bytes_until", false),
+            Id::IoTlsRecvBytesUntilRaw => self.lower_io_until_call(args, scope, "lotus_tls_recv_bytes_until", true),
             Id::IoTlsClose => {
                 self.lower_std_io_tls_close(args, scope)
             }
@@ -29292,6 +29316,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             | Id::IoTcpRecvRaw
             | Id::IoTcpRecvStampedInto
             | Id::IoTcpSendBytesRaw
+            | Id::IoTcpSendBytesUntilRaw
             | Id::IoTcpSendRaw
             | Id::IoTcpSetRecvTimeoutNsRaw
             | Id::IoTcpShutdownListenSocketRaw
@@ -29299,9 +29324,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             | Id::IoTlsLastRecvKernelNs
             | Id::IoTlsLastRecvUserNs
             | Id::IoTlsRecvBytes
+            | Id::IoTlsRecvBytesUntilRaw
             | Id::IoTlsRecvInto
             | Id::IoTlsRecvStampedInto
             | Id::IoTlsSendBytes
+            | Id::IoTlsSendBytesUntilRaw
             | Id::IoUdpClose
             | Id::IoUdpCloseRaw
             | Id::IoUdpLastSourceHost
@@ -37021,22 +37048,117 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         Ok(v)
     }
 
-    /// GH #1077: count an instance of `locus_name` in (`delta` 1) or
-    /// out (-1) of the live drain observers — behind a private flag
-    /// whose initializer the end of `lower_program` writes, since
-    /// which loci read `draining` is known only once every body has
-    /// lowered. A locus that never reads it folds to nothing.
+    /// `(handle: Int, x, until_ns: Int)` into `cname(i32 handle, x, i64
+    /// until_ns)`: the deadline-bounded send (x Bytes, an i32 status widened
+    /// to Int) and read (x Int, the max, truncated to i32; a Bytes back).
+    pub(crate) fn lower_io_until_call(
+        &mut self,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+        cname: &str,
+        reads: bool,
+    ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
+        let e = |e: inkwell::builder::BuilderError| CodegenError::LlvmEmit(e.to_string());
+        if args.len() != 3 {
+            return Err(CodegenError::Unsupported(format!("{cname} takes 3 args, got {}", args.len())));
+        }
+        let i32_t = self.context.i32_type();
+        let i64_t = self.context.i64_type();
+        let (h, h_ty) = self.lower_expr(&args[0], scope)?;
+        if h_ty != CodegenTy::Int {
+            return Err(CodegenError::Unsupported(format!("{cname}: handle must be Int, got {h_ty:?}")));
+        }
+        let h = self.builder.build_int_truncate(h.into_int_value(), i32_t, "until.h").map_err(e)?;
+        let (x, x_ty) = self.lower_expr(&args[1], scope)?;
+        let x: inkwell::values::BasicMetadataValueEnum<'ctx> = if reads {
+            if x_ty != CodegenTy::Int {
+                return Err(CodegenError::Unsupported(format!("{cname}: max must be Int, got {x_ty:?}")));
+            }
+            self.builder.build_int_truncate(x.into_int_value(), i32_t, "until.max").map_err(e)?.into()
+        } else {
+            if !matches!(x_ty, CodegenTy::Bytes | CodegenTy::BytesView) {
+                return Err(CodegenError::Unsupported(format!("{cname}: bytes must be Bytes, got {x_ty:?}")));
+            }
+            self.unpack_view_if_needed(x, &x_ty)?.into()
+        };
+        let (until, u_ty) = self.lower_expr(&args[2], scope)?;
+        if u_ty != CodegenTy::Int {
+            return Err(CodegenError::Unsupported(format!("{cname}: until must be Int, got {u_ty:?}")));
+        }
+        let f = self.module.get_function(cname).unwrap_or_else(|| panic!("{cname} declared"));
+        let ret = self
+            .builder
+            .build_call(f, &[h.into(), x, until.into()], "until.ret")
+            .map_err(e)?
+            .try_as_basic_value()
+            .left()
+            .expect("returns a value");
+        if reads {
+            return Ok((ret, CodegenTy::Bytes));
+        }
+        let wide = self.builder.build_int_s_extend(ret.into_int_value(), i64_t, "until.i64").map_err(e)?;
+        Ok((wide.into(), CodegenTy::Int))
+    }
+
+    /// Whether the drain observers' counts are emitted at all (the
+    /// `DrainObserver` obligation): one read for every count site.
+    fn drain_observers_emitted(&self) -> Result<bool, CodegenError> {
+        Ok(self.cells.emits(Obligation::DrainObserver)?)
+    }
+
+    /// GH #1077: count this instance (`self_ptr`) of `locus_name` in to
+    /// the live drain observers (`lotus_drain_observer_enter`), which
+    /// keeps it by `self` until one of its ends counts it out
+    /// ([`Self::emit_drain_observer_out`]) — behind a private flag whose
+    /// initializer the end of `lower_program` writes, since which loci
+    /// read `draining` is known only once every body has lowered. A
+    /// locus that never reads it folds to nothing.
     pub(crate) fn emit_drain_observer_count(
         &mut self,
         locus_name: &str,
-        delta: i64,
+        self_ptr: PointerValue<'ctx>,
     ) -> Result<(), CodegenError> {
-        if !self.cells.emits(Obligation::DrainObserver)? {
+        self.emit_drain_observer_call(locus_name, self_ptr, "lotus.observes_drain", "lotus_drain_observer_enter")
+    }
+
+    /// GH #1077: count this instance (`self_ptr`) of `locus_name` out of
+    /// the live drain observers, once whichever of its two ends comes
+    /// first, in either order: `finished`, its run() has returned for good
+    /// with nothing left to serve (counted only for a locus that reads
+    /// `draining` in its run() alone), or its teardown's latch, which an
+    /// admitted run can outlive. The runtime keeps each instance by `self`
+    /// from its count-in to its teardown, so whichever end comes second
+    /// counts nothing. Behind private flags whose initializers the end of
+    /// `lower_program` writes, as [`Self::emit_drain_observer_count`].
+    pub(crate) fn emit_drain_observer_out(
+        &mut self,
+        locus_name: &str,
+        self_ptr: PointerValue<'ctx>,
+        finished: bool,
+    ) -> Result<(), CodegenError> {
+        if finished {
+            self.emit_drain_observer_call(locus_name, self_ptr, "lotus.drain_in_run_only", "lotus_drain_observer_finished")
+        } else {
+            self.emit_drain_observer_call(locus_name, self_ptr, "lotus.observes_drain", "lotus_drain_observer_leave")
+        }
+    }
+
+    /// `callee(self_ptr, locus_name)` behind the private flag
+    /// `<flag>.<locus_name>` (0 until the end of `lower_program` writes
+    /// its initializer), the shape every drain observer count shares.
+    fn emit_drain_observer_call(
+        &mut self,
+        locus_name: &str,
+        self_ptr: PointerValue<'ctx>,
+        flag: &str,
+        callee: &str,
+    ) -> Result<(), CodegenError> {
+        if !self.drain_observers_emitted()? {
             return Ok(());
         }
         let i64_t = self.context.i64_type();
         let e = |e: inkwell::builder::BuilderError| CodegenError::LlvmEmit(e.to_string());
-        let gname = format!("lotus.observes_drain.{locus_name}");
+        let gname = format!("{flag}.{locus_name}");
         let g = match self.module.get_global(&gname) {
             Some(g) => g,
             None => {
@@ -37046,14 +37168,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 g
             }
         };
-        let observes = self
+        let on = self
             .builder
             .build_load(i64_t, g.as_pointer_value(), "drain.observer.flag")
             .map_err(e)?
             .into_int_value();
         let yes = self
             .builder
-            .build_int_compare(inkwell::IntPredicate::NE, observes, i64_t.const_zero(), "drain.observer")
+            .build_int_compare(inkwell::IntPredicate::NE, on, i64_t.const_zero(), "drain.observer")
             .map_err(e)?;
         let func = self
             .builder
@@ -37064,22 +37186,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let cont_bb = self.context.append_basic_block(func, "drain.observer.cont");
         self.builder.build_conditional_branch(yes, do_bb, cont_bb).map_err(e)?;
         self.builder.position_at_end(do_bb);
-        let add = self
-            .module
-            .get_function("lotus_drain_observer_add")
-            .expect("lotus_drain_observer_add declared");
+        let f = self.module.get_function(callee).unwrap_or_else(|| panic!("{callee} declared"));
         let name = self
             .builder
             .build_global_string_ptr(locus_name, "lotus.drain.observer.name")
             .map_err(e)?
             .as_pointer_value();
-        self.builder
-            .build_call(
-                add,
-                &[i64_t.const_int(delta as u64, true).into(), name.into()],
-                "drain.observer.add",
-            )
-            .map_err(e)?;
+        self.builder.build_call(f, &[self_ptr.into(), name.into()], "drain.observer.call").map_err(e)?;
         self.builder.build_unconditional_branch(cont_bb).map_err(e)?;
         self.builder.position_at_end(cont_bb);
         Ok(())

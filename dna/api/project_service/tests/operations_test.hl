@@ -14,7 +14,7 @@ import "../../../core" as dna;
 import "../../../operations" as ops;
 
 fn config(root: String, api_port: Int) -> head::HeadConfig {
-    return head::HeadConfig { port: 1, api_port: api_port, api_binary: std::env::var("HALE_API_BIN"), hale: std::env::var("HALE_BIN"), state_dir: root + "/state", sources_dir: root + "/sources", principal_mode: "local", principal_name: "tester" };
+    return head::HeadConfig { port: 1, api_port: api_port, api_binary: std::env::var("HALE_HEAD_API_BIN"), hale: std::env::var("HALE_BIN"), state_dir: root + "/state", sources_dir: root + "/sources", principal_mode: "local", principal_name: "tester" };
 }
 
 fn git(repo: String, argv: String) -> String {
@@ -140,7 +140,7 @@ locus OperationCases {
         std::test::assert(attached.ok && attached.refused == "", "attach the made project: " + attached.reason);
         std::test::assert(attached.application_id == self.identity && attached.name == "alpha" && attached.authority_written, "the attach result");
         std::test::assert(head::child_view(self.cfg, "api").alive, "the API child is alive");
-        std::test::assert(head::api_ready(self.cfg.api_port, self.identity, ""), "the API child answers with the project's Record");
+        std::test::assert(head::api_ready(head::api_port_of(self.cfg), self.identity, ""), "the API child answers with the project's Record");
         let policies = head::policies_of(self.project, self.identity);
         std::test::assert(policies.command && policies.task && !policies.organization && !policies.organization_present, "the two synthesized policies decode");
         std::test::assert(std::str::contains(head::policy_env(self.project), "HALE_DNA_COMMAND_POLICY=" + self.project + "/.hale/dna/face/authority.json\n") && !std::str::contains(head::policy_env(self.project), "ORGANIZATION"), "the policy environment names the files that exist");
@@ -234,9 +234,11 @@ locus OperationCases {
 
 fn main() {
     std::test::assert(std::str::starts_with(std::env::var("HALE_BIN"), "/"), "HALE_BIN must be absolute");
-    std::test::assert(std::io::fs::file_exists(std::env::var("HALE_API_BIN")), "build dna/api and set absolute HALE_API_BIN");
+    // the head's configured API child, the composed one (`hale_dna::HEAD_API`)
+    std::test::assert(std::io::fs::file_exists(std::env::var("HALE_HEAD_API_BIN")) && std::str::ends_with(std::env::var("HALE_HEAD_API_BIN"), "/practice_review"), "build dna/api/practice_review and set absolute HALE_HEAD_API_BIN");
     let root = dna::scratch_root("head-operations");
-    let cfg = config(root, dna::free_port(3));
+    // the API child binds port 0 and reports the port it got
+    let cfg = config(root, 0);
     std::io::fs::mkdir(cfg.state_dir) or discard;
     std::io::fs::mkdir(cfg.state_dir + "/children") or discard;
     std::io::fs::mkdir(cfg.state_dir + "/runs") or discard;

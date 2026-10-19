@@ -1414,6 +1414,12 @@ reveals it:**
   transparent (every call it makes is to such a fn, or writes a builder
   it made itself; it calls no method or fn value, builds no locus,
   assigns only its own locals, and sends, stores and prints nothing).
+  The list holds the conversions, encodings, hashes and
+  percent-encoding (`std::url::encode`, `decode`, `decode_query`).
+  A secret that reaches a fn of the program's own that is not
+  transparent is refused there, and the diagnostic names the first
+  thing in that fn's body that keeps it from being one (`` `tag`
+  calls `println`, which may keep what it is handed ``).
 - It is **never** bound to a `let` or a `match` pattern, assigned,
   stored in a field, a param default or a locus literal, returned,
   raised, published, printed, iterated, used to decide a branch, or
@@ -3000,6 +3006,16 @@ into `fn main`'s prelude, right after the bus queue is published:
   `-> LocusRef(L)` return path also used before GH #1570), resolve the locus's `send`
   method's function pointer, then call
   `lotus_bus_register_remote_adapter(subject, self, send_fn)`.
+  The adapter literal is lowered there, before the `main` locus
+  that declares the binding is built, so the checker checks it as an
+  expression of a free fn: no `self`, no enclosing locus. A read of
+  `self` anywhere in its inits (`Remote: Relay { url: self.url }`), a
+  statement that acts on an enclosing locus (`terminate`, `violate`,
+  `<-`, `reperspective`), an unknown name or a field of the wrong type is
+  refused at check time, where it is written, with the free fn's
+  diagnostic and why it applies, rather than reaching lowering. Its
+  values are written in the literal or are the adapter's own `params`
+  defaults.
 
 Subjects use the desugared wire form (so a binding for
 hierarchical `Login` registers as `"events.login"`). Topics with
@@ -5133,14 +5149,22 @@ SIGINT or SIGTERM:
    `drain()` or `dissolve()` body pacing a flush — runs its full
    length. A receive blocked in the kernel on a pinned or classic
    thread returns at its own timeout, not earlier; an untimed wait
-   (a plain `accept`) is not interrupted.
-3. Each `run()` that watches `self.draining` returns; one that
+   (a plain `recv`) is not interrupted.
+3. The process's listeners stop: every named listener's socket is
+   shut down (as `std::io::tcp::stop(name)` does), so each accept
+   loop — a `std::http::Server`'s, a `std::io::tcp::Listener`'s, the
+   api runtime's — ends wherever it waits, on main, a pinned thread or
+   a pool, and its `run()` returns once the connections it accepted
+   are answered (`stdlib.md` § "Shutdown is a drain, never a cut").
+   A server used to keep accepting, and held the drain for the whole
+   grace. (2026-10-19, downstream handoff.)
+4. Each `run()` that watches `self.draining` returns; one that
    does not keeps running.
-4. Leaves dissolve first, each parent after its children, the
+5. Leaves dissolve first, each parent after its children, the
    root last — the ordinary end-of-program teardown, which also
    runs the runtime's own (schedulers, bus router, allocator,
    the atexit hooks).
-5. Process exits 0.
+6. Process exits 0.
 
 The drain has a **grace period**: if the process has not exited
 5 s after the signal (`LOTUS_DRAIN_GRACE_MS` sets it), the runtime
@@ -5160,9 +5184,18 @@ the default action and ends at the signal with `128 + signal`, as
 if the runtime were not there. **What can answer a drain is a live
 instance** of a locus whose own code reads `draining` (GH #1077):
 the runtime counts each such instance from its instantiation to its
-teardown. A signal that finds none live — the read sits in an
-imported package the program never builds, or every instance that
-could have answered has already ended — takes the signal's default
+teardown. A locus whose only `draining` reads are in its own `run()`
+is counted out sooner, once that `run()` has returned for good (no
+restart follows) and it has no subscription left to serve — exactly once,
+whichever of that and its teardown comes first (an admitted `run()` can
+outlive its teardown's start) — : a finished
+locus has nothing to drain, so a pinned child that already returned no
+longer holds the drain until its parent tears it down. A read anywhere
+else — a handler, a hook, a method another locus calls — keeps the
+instance counted to its teardown, since it can still answer. A signal
+that finds none live — the read sits in an imported package the
+program never builds, or every instance that could have answered has
+already finished or ended — takes the signal's default
 action at once, exactly as a program without the read does, instead
 of waiting out the grace with nothing to drain. A `draining` read
 outside any locus body (a free function handed a locus) cannot be
@@ -5188,8 +5221,10 @@ or `self.web.wait()` on an exposure param), and SIGINT / SIGTERM end that
 wait. A `main` that declares no `run()` and holds an exposure's listener
 is given the run that waits on its exposures (spec/api.md § Serving).
 A child's `run()` that never reads `self.draining` keeps the process
-alive until it returns, as under a signal; an `async_io` child parked
-on an untimed wait (a plain `accept`) is abandoned at its pool's
+alive until it returns, as under a signal; the tree's drain stops the
+process's listeners as a signal's does (step 3 above), so a server
+child's accept loop ends; an `async_io` child parked
+on an untimed wait (a plain `recv`) is abandoned at its pool's
 shutdown (`runtime.md` § the wakeable park). The tree's drain ends
 with its teardown: a `main` locus built afterwards starts undrained,
 and a signal's drain is neither masked nor ended by it. (Before

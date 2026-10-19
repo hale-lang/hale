@@ -10,6 +10,8 @@
 
 #[path = "support/reap.rs"]
 mod reap;
+#[path = "support/scratch.rs"]
+mod scratch;
 #[path = "support/record.rs"]
 mod record;
 #[path = "support/trace.rs"]
@@ -118,8 +120,8 @@ fn stop_host(app: &Path, host: &mut std::process::Child) {
 #[test]
 fn a_body_is_provisioned_only_where_it_can_be_and_secrets_never_reach_the_record() {
     let _t = trace::test("dna_body_provision");
-    let d = std::env::temp_dir().join(format!("hale_dna_prov_{}", std::process::id()));
-    let _reap = reap::ReapOnDrop(d.clone());
+    let d = scratch::Scratch::new(format!("hale_dna_prov_{}", std::process::id()));
+    let _reap = reap::ReapOnDrop(d.to_path_buf());
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(&d).unwrap();
     let home = d.join("home");
@@ -165,6 +167,7 @@ fn a_body_is_provisioned_only_where_it_can_be_and_secrets_never_reach_the_record
         "git clone -q \"$REMOTE\" \"$DIR\"",
         "hale dna upgrade .",
         "HALE_DNA_MEMORY_DSN_OWNER=$DSN",
+        "hale habitat migrate .",
         "hale-dna-$NAME.service",
         "WorkingDirectory=%h/dna/prov",
         &format!("EnvironmentFile=-%h/.config/hale-dna/{key}.env"),
@@ -177,7 +180,7 @@ fn a_body_is_provisioned_only_where_it_can_be_and_secrets_never_reach_the_record
     }
     let cfg = Command::new("git").args(["config", "dna.body"]).current_dir(&app).output().unwrap();
     assert!(!cfg.status.success(), "a dry run writes nothing");
-    // without the DSN the plan brings Postgres up from compose
+    // without the DSN the plan brings Postgres up in the body's habitat
     let (ok, plan) = hale_env(&["dna", "body", "provision", "riley@srv", "--dry-run"], &app, &home, None);
     assert!(ok && plan.contains("DSN=''") && plan.contains("docker compose version"), "{plan}");
     // body start/stop/logs need a body

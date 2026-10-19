@@ -4,8 +4,9 @@
 // Every store used to create its own tables on every open and every
 // reconnect, so every process that touched memory needed the rights to
 // change its shape. The schema is now applied once, by `migrate`, with
-// the schema owner's DSN (`hale dna memory migrate`, `hale dna upgrade`,
-// and `hale dna dev` before it starts the organism), and the processes
+// the schema owner's DSN by the habitat's acts alone (`hale habitat
+// migrate`, birth, `hale dna upgrade`, `hale dna memory migrate`; GH #1653:
+// `hale dna dev` derives and migrates nothing), and the processes
 // that run connect as a role that can read and write the tables but not
 // change them. A store's `open` checks the schema version and refuses a
 // memory at another one, naming both, the same fence the record keeps.
@@ -574,6 +575,27 @@ fn migrate_for(owner: Dsn, record_id: String, owners: String) -> Migrated {
     return Migrated { ok: true, spine_dsn: dsn_text(role_dsn(owner, spine_role(record_id))), head_dsn: dsn_text(role_dsn(owner, head_role(record_id))), owner_dsns: dsns };
 }
 
+// GH #1653: the roles' DSNs a migration hands back, derived without
+// touching the schema: what a command that never migrates (`dev`, `head`,
+// `show`) is given. A schema that is behind is the store's refusal when it
+// opens (`memory_fence`).
+@bounded_by(owners)
+fn derived_dsns(owner: Dsn, record_id: String) -> Migrated {
+    if !owner.ok { return Migrated { why: "the owner DSN: " + owner.why }; }
+    if !std::secret::Credential { vault: role_vault_name(spine_role(record_id)) }.ready() || !std::secret::Credential { vault: role_vault_name(head_role(record_id)) }.ready() {
+        return Migrated { why: "the vault holds no password for this record's roles (`hale dna upgrade` provisions the organism's secrets; `hale dna secrets` lists them)" };
+    }
+    let owners = owners_of_keys(if std::env::var_exists("HALE_DNA_OWNER_KEYS") { std::env::var("HALE_DNA_OWNER_KEYS") } else { "" });
+    let mut dsns = "";
+    let mut i = 0;
+    while len(nth_word(owners, i)) > 0 {
+        let o = nth_word(owners, i);
+        dsns = dsns + o + "=" + dsn_text(role_dsn(owner, owner_role(record_id, o))) + "\n";
+        i = i + 1;
+    }
+    return Migrated { ok: true, spine_dsn: dsn_text(role_dsn(owner, spine_role(record_id))), head_dsn: dsn_text(role_dsn(owner, head_role(record_id))), owner_dsns: dsns };
+}
+
 // The principals statement grows by a row per owner in `owners`.
 @bounded_by(owners)
 fn migrate_on(c: pq::PgConn, record_id: String, owners: String) -> String {
@@ -684,7 +706,8 @@ fn abort(c: pq::PgConn, what: String, e: db::DbError) -> String {
 // toolchain requires; otherwise why the store refuses it, naming both
 // versions and the command that fixes it.
 fn memory_fence(c: pq::PgConn, sch: String) -> String {
-    let fix = "run `hale dna memory migrate` with the owner's DSN in HALE_DNA_MEMORY_DSN_OWNER";
+    // GH #1653: nothing migrates as a side effect; the habitat's act does
+    let fix = "run `hale habitat migrate <organism>` (with HALE_DNA_MEMORY_DSN_OWNER for a Postgres of your own)";
     let v = c.query_one("SELECT value FROM " + sch + ".memory_meta WHERE key = 'schema_version'");
     if !v.ok {
         if v.err.kind == "no_row" { return "memory schema " + sch + " has no schema version (this toolchain needs version " + to_string(MEMORY_SCHEMA_VERSION) + "); " + fix; }

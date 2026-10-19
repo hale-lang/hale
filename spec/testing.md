@@ -279,9 +279,15 @@ developer's vault, and no test reads a secret the developer holds
 organization's entries into `~/.cache/hale/vault`). A test that
 needs a second vault sets `HALE_VAULT_DIR` on a child it starts;
 a child that is itself `hale test` gives each of its files one of
-its own again. `HALE_TEST_KEEP_VAULT=1` keeps every file's vault
-and prints where, to look at what a test provisioned; a run killed
-before it removed its vaults has them swept by the next. A
+its own again. The file runs under a local habitat of its own as
+well (GH #1653): `XDG_DATA_HOME` is the vault directory's `data`, so
+an organism a DNA fixture births is a tenant of the file's habitat,
+never of the developer's, and the compose projects run from under the
+vault directory come down before it is removed (one that does not
+keeps the directory for the next run's sweep). `HALE_TEST_KEEP_VAULT=1`
+keeps every file's vault and habitat and prints where, to look at what
+a test provisioned; a run killed before it removed its vaults has them
+swept by the next, habitats with them. A
 test that shares a fixed resource
 with another test — a port, a path, a record — is a test that races
 under the default; a fixture takes its port and scratch directory

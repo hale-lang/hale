@@ -8,8 +8,9 @@ import path from 'node:path';
 // starts, and the spine's to nothing a browser fixture starts.
 export const MEMORY_DSNS = ['HALE_DNA_MEMORY_DSN_OWNER', 'HALE_DNA_MEMORY_DSN_SPINE', 'HALE_DNA_MEMORY_DSN_HEAD'];
 // The nerves' URLs likewise (GH #1029): the owner's goes only to the host a
-// harness starts (`hale dna dev` creates the stream and hands the host the
-// spine's), never to a browser fixture by inheritance.
+// harness starts (`hale habitat migrate` creates the stream, and `hale dna
+// dev` hands the host the spine's), never to a browser fixture by
+// inheritance.
 export const NERVES_URLS = ['HALE_DNA_NATS_URL_OWNER', 'HALE_DNA_NATS_URL_SPINE', 'HALE_DNA_NATS_URL_HEAD', 'HALE_DNA_NATS_URL_APP', 'HALE_DNA_NATS_USER_APP', 'HALE_DNA_NATS_VAULT_APP', 'HALE_DNA_NATS_VAULT_REFLEXES', 'HALE_DNA_NATS_ORG'];
 
 // Every environment a fixture is handed carries a vault of its own
@@ -27,6 +28,9 @@ export function isolatedEnvironment() {
   const env = { ...process.env };
   delete env.HALE_VAULT_ADDR;
   env.HALE_VAULT_DIR = fixtureVault();
+  // GH #1653: and a local habitat beside it, so an organism a fixture
+  // births is never a tenant of the developer's habitat
+  env.XDG_DATA_HOME = path.join(env.HALE_VAULT_DIR, 'data');
   for (const key of [
     'GIT_DIR', 'GIT_COMMON_DIR', 'GIT_CONFIG', 'GIT_NAMESPACE', 'GIT_WORK_TREE',
     'GIT_INDEX_FILE', 'GIT_OBJECT_DIRECTORY', 'GIT_ALTERNATE_OBJECT_DIRECTORIES',

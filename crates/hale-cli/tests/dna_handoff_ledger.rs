@@ -8,6 +8,8 @@
 
 #[path = "support/vault.rs"]
 mod vault;
+#[path = "support/scratch.rs"]
+mod scratch;
 #[path = "support/record.rs"]
 mod record;
 #[path = "support/reap.rs"]
@@ -138,8 +140,8 @@ fn a_handoff_crosses_from_an_adopted_firm_and_its_acceptance_settles_the_task_in
         eprintln!("dna_handoff_ledger: no HALE_DNA_MEMORY_DSN_OWNER or HALE_DNA_NATS_URL_OWNER; the ledger is memory's and the exchange the nerves', so nothing was exercised");
         return;
     };
-    let d = std::env::temp_dir().join(format!("hale_dna_handoff_ledger_{}", std::process::id()));
-    let _reap = reap::ReapOnDrop(d.clone());
+    let d = scratch::Scratch::new(format!("hale_dna_handoff_ledger_{}", std::process::id()));
+    let _reap = reap::ReapOnDrop(d.to_path_buf());
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(&d).unwrap();
     let (firm, _firm_bare) = project(&d, "firm", "riley");

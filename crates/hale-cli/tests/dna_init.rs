@@ -18,9 +18,11 @@
 
 #[path = "support/vault.rs"]
 mod vault;
+#[path = "support/scratch.rs"]
+mod scratch;
 #[path = "support/record.rs"]
 mod record;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Command;
 
 fn hale(args: &[&str], cwd: &Path) -> (bool, String) {
@@ -31,8 +33,8 @@ fn hale(args: &[&str], cwd: &Path) -> (bool, String) {
     )
 }
 
-fn workdir(tag: &str) -> PathBuf {
-    let d = std::env::temp_dir().join(format!("hale_dna_init_{}_{}", std::process::id(), tag));
+fn workdir(tag: &str) -> scratch::Scratch {
+    let d = scratch::Scratch::new(format!("hale_dna_init_{}_{}", std::process::id(), tag));
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(&d).unwrap();
     d
@@ -40,8 +42,8 @@ fn workdir(tag: &str) -> PathBuf {
 
 /// The pinned renderer fixture as an existing application: two
 /// loci, two topics, a group, two claims, and one indirect call.
-fn pipeline_app(tag: &str) -> PathBuf {
-    let d = workdir(tag).join("pipeline");
+fn pipeline_app(tag: &str) -> scratch::Scratch {
+    let d = workdir(tag).nested("pipeline");
     std::fs::create_dir_all(&d).unwrap();
     let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/topology/pipeline.hl");
     std::fs::copy(fixture, d.join("main.hl")).unwrap();

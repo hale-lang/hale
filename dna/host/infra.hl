@@ -110,89 +110,117 @@ locus ReferenceInfrastructure {
         if transport_kind() == "local" { self.local.home = std::env::var("HALE_DNA_TRANSPORT_HOME"); return self.local.probe(target); }
         return self.ssh.probe(target);
     }
-    // The knowledge database, from dna/compose.yaml, brought up when it
-    // is not: the DSN. Absent compose or its file, `why` says what is
-    // needed instead.
+    // GH #1653: an organism's memory, nerves and senses' store are the local
+    // habitat's allocations for it (dna/core/memory_spine.hl), brought up
+    // here when they are not: one compose project per machine, a service per
+    // allocation named for the organism and the role, never a checkout's.
+    // `why` says what is needed instead, when there is no docker compose or
+    // the organism has no identity yet.
+    fn allocation(role: String) -> String {
+        if len(dna::allocation_key(self.root)) == 0 { return "the organism has no record identity yet: its allocations in the local habitat are named for it (`hale dna init` pins one)"; }
+        if dna::run_tool("docker\ncompose\nversion").code != 0 { return "the local habitat's " + role + " runs under docker compose, which is not on PATH"; }
+        return "";
+    }
+    // Whether the organism's allocations were ever written: a command that
+    // only reads them writes nothing into the habitat.
+    fn allocated() -> Bool {
+        let dir = dna::allocation_dir(self.root);
+        return len(dir) > 0 && std::io::fs::file_exists(dir + "/compose.yaml") && std::io::fs::file_exists(dir + "/ports.yaml");
+    }
+    // `service`'s published `inner` port, as `host:port`, "" when it is not up.
+    fn published(service: String, inner: String) -> String {
+        if !self.allocated() { return ""; }
+        let port = dna::run_tool(dna::allocation_compose(self.root) + "\nport\n" + service + "\n" + inner);
+        let hp = dna::trim_nl(port.stdout);
+        if port.code != 0 || std::str::index_of(hp, ":") < 0 { return ""; }
+        return hp;
+    }
+    // The organism's memory, its allocation brought up when it is not: the
+    // owner's DSN.
     fn knowledge_database(project: String) -> dna::Database {
-        let compose = self.root + "/dna/compose.yaml";
-        if !std::io::fs::file_exists(compose) { return dna::Database { why: "no dna/compose.yaml and no HALE_DNA_MEMORY_DSN_OWNER: there is no memory to run on (`hale dna upgrade` writes the compose file)" }; }
-        let have = dna::run_tool("docker\ncompose\nversion");
-        if have.code != 0 { return dna::Database { why: "dna/compose.yaml is here but `docker compose` is not on PATH; set HALE_DNA_MEMORY_DSN_OWNER to a Postgres of your own" }; }
+        let not = self.allocation("memory");
+        if len(not) > 0 { return dna::Database { why: not + "; or set HALE_DNA_MEMORY_DSN_OWNER to a Postgres of your own" }; }
         // GH #989: the superuser's password is the vault's, and reaches the
         // server through the file compose mounts: both before `up`, which
         // would otherwise make a directory where the file belongs
-        let seed = compose_seed(self.root);
-        let owner = std::secret::Credential { vault: postgres_owner_vault(seed) };
-        if len(seed) == 0 || !owner.ready() || !std::io::fs::file_exists(self.root + "/" + POSTGRES_SECRETS) { return dna::Database { why: "the compose database's password is not provisioned (" + postgres_owner_vault(seed) + " in the vault, " + POSTGRES_SECRETS + " beside compose; `hale dna upgrade` provisions them, `hale dna secrets` lists them)" }; }
-        let up = dna::run_tool("docker\ncompose\n-f\n" + compose + "\nup\n-d\n--wait\nknowledge-db");
+        let key = dna::allocation_key(self.root);
+        let owner = std::secret::Credential { vault: postgres_owner_vault(key) };
+        if !owner.ready() || !std::io::fs::file_exists(postgres_secrets_path(self.root)) { return dna::Database { why: "the memory allocation's password is not provisioned (" + postgres_owner_vault(key) + " in the vault, and its file beside the allocation; `hale dna upgrade` provisions them, `hale dna secrets` lists them)" }; }
+        let service = dna::allocation_service(self.root, "memory");
+        let up = dna::run_tool(dna::allocation_compose(self.root) + "\nup\n-d\n--wait\n" + service);
         if up.code != 0 { return dna::Database { why: "docker compose up failed: " + dna::trim_nl(up.stderr) }; }
-        let port = dna::run_tool("docker\ncompose\n-f\n" + compose + "\nport\nknowledge-db\n5432");
-        let hp = dna::trim_nl(port.stdout);
-        let colon = std::str::index_of(hp, ":");
-        if port.code != 0 || colon < 0 { return dna::Database { why: "cannot read the database's port from compose: " + dna::trim_nl(port.stderr) }; }
+        let hp = self.published(service, "5432");
+        if len(hp) == 0 { return dna::Database { why: "cannot read the memory allocation's port from compose" }; }
         // a database made with another password adopts the vault's, from
         // the file compose mounts (read inside the container, never on a
         // command line)
-        let adopt = "docker\ncompose\n-f\n" + compose + "\nexec\n-T\nknowledge-db\nsh\n-c\nprintf \"ALTER USER dna PASSWORD '%s';\\n\" \"$(cat /run/secrets/postgres-owner)\" | psql -q -v ON_ERROR_STOP=1 -U dna -d dna";
+        let adopt = dna::allocation_compose(self.root) + "\nexec\n-T\n" + service + "\nsh\n-c\nprintf \"ALTER USER dna PASSWORD '%s';\\n\" \"$(cat /run/secrets/postgres-owner)\" | psql -q -v ON_ERROR_STOP=1 -U dna -d dna";
         let mut tries = 0;
         let mut adopted = dna::run_tool(adopt);
         while adopted.code != 0 && tries < 20 { std::time::sleep(500ms); tries = tries + 1; adopted = dna::run_tool(adopt); }
-        if adopted.code != 0 { return dna::Database { why: "the compose database did not take the vault's password: " + dna::trim_nl(adopted.stderr) }; }
+        if adopted.code != 0 { return dna::Database { why: "the memory allocation did not take the vault's password: " + dna::trim_nl(adopted.stderr) }; }
         // the owner's DSN names the vault entry, never the password: the
         // connection presents it in its handshake
-        return dna::Database { present: true, dsn: "postgres://dna@127.0.0.1:" + hp[(colon + 1)..len(hp)] + "/dna?sslmode=disable&vault=" + postgres_owner_vault(seed) };
+        return dna::Database { present: true, dsn: "postgres://dna@" + hp + "/dna?sslmode=disable&vault=" + postgres_owner_vault(key) };
     }
-    // Compose's `service`, restarted when it is up (GH #989: a server that
-    // reads a secrets file rereads it); "" when it was not up or restarted,
-    // else why not.
-    fn restart_if_up(service: String) -> String {
-        let compose = self.root + "/dna/compose.yaml";
-        if !std::io::fs::file_exists(compose) { return ""; }
-        let up = dna::run_tool("docker\ncompose\n-f\n" + compose + "\nps\n-q\n" + service);
+    // The organism's memory, when its allocation is already up: the owner's
+    // DSN, never bringing it up (GH #1653: only the habitat's acts do).
+    fn knowledge_database_if_up() -> dna::Database {
+        let service = dna::allocation_service(self.root, "memory");
+        if len(service) == 0 { return dna::Database { why: "the organism has no record identity yet: its memory is the local habitat's allocation named for it (`hale dna init` pins one)" }; }
+        let hp = if dna::run_tool("docker\ncompose\nversion").code == 0 { self.published(service, "5432") } else { "" };
+        if len(hp) == 0 { return dna::Database { why: "the organism's memory allocation in the local habitat (" + service + ") is not up: `hale habitat migrate " + self.root + "` brings it up and migrates it; or set HALE_DNA_MEMORY_DSN_OWNER to a Postgres of your own" }; }
+        return dna::Database { present: true, dsn: "postgres://dna@" + hp + "/dna?sslmode=disable&vault=" + postgres_owner_vault(dna::allocation_key(self.root)) };
+    }
+    // The organism's senses' store, when its allocation is already up.
+    fn senses_if_up() -> dna::Database {
+        let service = dna::allocation_service(self.root, "senses");
+        let hp = if len(service) > 0 && dna::run_tool("docker\ncompose\nversion").code == 0 { self.published(service, "9090") } else { "" };
+        if len(hp) == 0 { return dna::Database { why: "the organism's senses' store in the local habitat is not up (`hale habitat migrate " + self.root + "` brings it up)" }; }
+        return dna::Database { present: true, dsn: "http://" + hp };
+    }
+    // The organism's allocation for `role`, restarted when it is up (GH
+    // #989: a server that reads a secrets file rereads it); "" when it was
+    // not up or restarted, else why not.
+    fn restart_if_up(role: String) -> String {
+        let service = dna::allocation_service(self.root, role);
+        if len(service) == 0 || !self.allocated() || dna::run_tool("docker\ncompose\nversion").code != 0 { return ""; }
+        let up = dna::run_tool(dna::allocation_compose(self.root) + "\nps\n-q\n" + service);
         if up.code != 0 || len(dna::trim_nl(up.stdout)) == 0 { return ""; }
-        let r = dna::run_tool("docker\ncompose\n-f\n" + compose + "\nrestart\n" + service);
+        let r = dna::run_tool(dna::allocation_compose(self.root) + "\nrestart\n" + service);
         return if r.code == 0 { "" } else { "exit " + to_string(r.code) + ": " + dna::trim_nl(r.stderr) };
     }
-    // The nerves' server (GH #986), from dna/compose.yaml's `nerves`
-    // service, brought up when it is not: its URL, without a user.
+    // The organism's nerves (GH #986), its allocation brought up when it is
+    // not: its URL, without a user.
     fn nerves_server(project: String) -> dna::Database {
-        let compose = self.root + "/dna/compose.yaml";
-        if !std::io::fs::file_exists(compose) { return dna::Database { why: "no dna/compose.yaml and no " + dna::NATS_OWNER_URL_ENV + ": there are no nerves to run on (`hale dna upgrade` writes the compose file)" }; }
-        let have = dna::run_tool("docker\ncompose\nversion");
-        if have.code != 0 { return dna::Database { why: "dna/compose.yaml is here but `docker compose` is not on PATH; set " + dna::NATS_OWNER_URL_ENV + " to a NATS server of your own" }; }
-        let up = dna::run_tool("docker\ncompose\n-f\n" + compose + "\nup\n-d\n--wait\nnerves");
+        let not = self.allocation("nerves");
+        if len(not) > 0 { return dna::Database { why: not + "; or set " + dna::NATS_OWNER_URL_ENV + " to a NATS server of your own" }; }
+        let service = dna::allocation_service(self.root, "nerves");
+        let up = dna::run_tool(dna::allocation_compose(self.root) + "\nup\n-d\n--wait\n" + service);
         if up.code != 0 { return dna::Database { why: "docker compose up failed: " + dna::trim_nl(up.stderr) }; }
-        let port = dna::run_tool("docker\ncompose\n-f\n" + compose + "\nport\nnerves\n4222");
-        let hp = dna::trim_nl(port.stdout);
-        let colon = std::str::index_of(hp, ":");
-        if port.code != 0 || colon < 0 { return dna::Database { why: "cannot read the nerves' port from compose: " + dna::trim_nl(port.stderr) }; }
-        return dna::Database { present: true, dsn: "nats://127.0.0.1:" + hp[(colon + 1)..len(hp)] };
+        let hp = self.published(service, "4222");
+        if len(hp) == 0 { return dna::Database { why: "cannot read the nerves allocation's port from compose" }; }
+        return dna::Database { present: true, dsn: "nats://" + hp };
     }
-    // The nerves' server if compose's `nerves` is up, never brought up from
+    // The organism's nerves if their allocation is up, never brought up from
     // here: its URL, without a user ("" when it is not up).
     fn nerves_if_up() -> String {
-        let compose = self.root + "/dna/compose.yaml";
-        if !std::io::fs::file_exists(compose) { return ""; }
-        let port = dna::run_tool("docker\ncompose\n-f\n" + compose + "\nport\nnerves\n4222");
-        let hp = dna::trim_nl(port.stdout);
-        let colon = std::str::index_of(hp, ":");
-        if port.code != 0 || colon < 0 { return ""; }
-        return "nats://127.0.0.1:" + hp[(colon + 1)..len(hp)];
+        let service = dna::allocation_service(self.root, "nerves");
+        if len(service) == 0 || dna::run_tool("docker\ncompose\nversion").code != 0 { return ""; }
+        let hp = self.published(service, "4222");
+        return if len(hp) > 0 { "nats://" + hp } else { "" };
     }
-    // The senses' store (GH #988), from dna/compose.yaml's `senses`
-    // service, brought up when it is not: its read URL.
+    // The organism's senses' store (GH #988), its allocation brought up when
+    // it is not: its read URL.
     fn senses_store(project: String) -> dna::Database {
-        let compose = self.root + "/dna/compose.yaml";
-        if !std::io::fs::file_exists(compose) { return dna::Database { why: "no dna/compose.yaml: there is no store for the senses (`hale dna upgrade` writes the compose file)" }; }
-        let have = dna::run_tool("docker\ncompose\nversion");
-        if have.code != 0 { return dna::Database { why: "dna/compose.yaml is here but `docker compose` is not on PATH" }; }
-        let up = dna::run_tool("docker\ncompose\n-f\n" + compose + "\nup\n-d\n--wait\nsenses");
+        let not = self.allocation("senses' store");
+        if len(not) > 0 { return dna::Database { why: not }; }
+        let service = dna::allocation_service(self.root, "senses");
+        let up = dna::run_tool(dna::allocation_compose(self.root) + "\nup\n-d\n--wait\n" + service);
         if up.code != 0 { return dna::Database { why: "docker compose up failed: " + dna::trim_nl(up.stderr) }; }
-        let port = dna::run_tool("docker\ncompose\n-f\n" + compose + "\nport\nsenses\n9090");
-        let hp = dna::trim_nl(port.stdout);
-        let colon = std::str::index_of(hp, ":");
-        if port.code != 0 || colon < 0 { return dna::Database { why: "cannot read the store's port from compose: " + dna::trim_nl(port.stderr) }; }
-        return dna::Database { present: true, dsn: "http://127.0.0.1:" + hp[(colon + 1)..len(hp)] };
+        let hp = self.published(service, "9090");
+        if len(hp) == 0 { return dna::Database { why: "cannot read the senses' store's port from compose" }; }
+        return dna::Database { present: true, dsn: "http://" + hp };
     }
     // ---- the supervisor: a systemd user unit
     fn unit_name(name: String) -> String { return "hale-dna-" + name; }
@@ -251,9 +279,13 @@ locus ReferenceInfrastructure {
             + "systemctl --user daemon-reload && systemctl --user enable --now \"hale-dna-$NAME\" && echo \"unit hale-dna-$NAME enabled and started (systemctl --user)\"\n";
     }
     // The database's part: a DSN given lands in the env file; none
-    // given means compose on the body, which must have it.
+    // given means the body's local habitat, under docker compose, which it
+    // must have. GH #1653: provisioning is the habitat's act, so the body's
+    // memory and nerves are migrated here, once, and the unit's `dev`
+    // migrates nothing.
     fn database_fragment() -> String {
-        return "if [ -n \"$DSN\" ]; then f=\"$HOME/.config/hale-dna/$NAME.env\"; { [ -f \"$f\" ] && grep -v '^HALE_DNA_MEMORY_DSN_OWNER=' \"$f\" || true; echo \"HALE_DNA_MEMORY_DSN_OWNER=$DSN\"; } > \"$f.tmp\" && mv \"$f.tmp\" \"$f\"; echo \"memory: the DSN given\"; else docker compose version >/dev/null 2>&1 || { echo \"no docker compose on the body and no --dsn: memory has to come from one of them\"; exit 4; }; echo \"memory: compose (dna/compose.yaml)\"; fi\n";
+        return "if [ -n \"$DSN\" ]; then f=\"$HOME/.config/hale-dna/$NAME.env\"; { [ -f \"$f\" ] && grep -v '^HALE_DNA_MEMORY_DSN_OWNER=' \"$f\" || true; echo \"HALE_DNA_MEMORY_DSN_OWNER=$DSN\"; } > \"$f.tmp\" && mv \"$f.tmp\" \"$f\"; echo \"memory: the DSN given\"; else docker compose version >/dev/null 2>&1 || { echo \"no docker compose on the body and no --dsn: memory has to come from one of them\"; exit 4; }; echo \"memory: the body's local habitat\"; fi\n"
+            + "HALE_DNA_MEMORY_DSN_OWNER=\"$DSN\" hale habitat migrate . >/dev/null || { echo \"the organism's memory and nerves did not migrate on the body (hale habitat migrate)\"; exit 4; }; echo \"memory and nerves: migrated (hale habitat migrate)\"\n";
     }
     // What the probe must have found for this infrastructure to be
     // installable; "" when it can.

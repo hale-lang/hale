@@ -36,6 +36,44 @@ hale dna --embedded-digest [--from-tree <dir>]
                              predates the working tree and a mutation run against it proves nothing
 ```
 
+The habitat is its own command, the one that brings an organism's
+memory, nerves and senses' store up and migrates them. `hale habitat
+--help`:
+
+```text
+usage: hale habitat migrate [organism]
+       hale habitat sweep <root>
+
+The local habitat holds every organism's infrastructure on this machine:
+one docker compose project, named for the habitat, with a service per
+allocation (memory-<id>, nerves-<id>, senses-<id>, <id> the organism's
+record identity), under ${XDG_DATA_HOME:-~/.local/share}/hale/habitat/local.
+It is long-lived: nothing tears it down when work ends, and two checkouts
+of one organism are the same tenant.
+
+migrate [organism]   bring the organism's allocations up and migrate them:
+                     memory's schema and the nerves' stream move to this
+                     toolchain's, and the head's DSN is kept in the
+                     checkout's .hale/dna/memory.env. With
+                     HALE_DNA_MEMORY_DSN_OWNER or HALE_DNA_NATS_URL_OWNER
+                     set, that server of your own is migrated instead.
+                     Idempotent. The organism defaults to the current
+                     directory.
+
+sweep <root>         take down every compose project run from under <root>,
+                     a test's habitat: its containers, networks and
+                     volumes, confirmed gone by the project's label. The
+                     projects are named in <root>/.dna-compose-projects
+                     until they are, so a teardown that did not finish is
+                     retried. Never the developer's habitat (under $HOME),
+                     nor the one XDG_DATA_HOME names outside <root>. Exit 1
+                     names what survived; nothing is done without docker.
+
+Nothing else migrates or provisions: `hale dna dev`, `run`, `head`, `show`
+and `work` run on what is up and migrated, and name this command when it
+is not.
+```
+
 ### The record
 
 [Memory and the record](./memory.md).
@@ -62,8 +100,9 @@ hale dna handoff <n> task <id> | receipt <digest>
 
 ```text
 hale dna memory migrate [dir]
-                             apply memory's schema with the owner's DSN (HALE_DNA_MEMORY_DSN_OWNER, or dna/compose.yaml)
-                             and print the record's spine and head DSNs (HALE_DNA_MEMORY_DSN_SPINE, …_HEAD)
+                             apply memory's schema with the owner's DSN (HALE_DNA_MEMORY_DSN_OWNER, or the organism's
+                             memory allocation in the local habitat, brought up) and print the record's spine and head DSNs
+                             (HALE_DNA_MEMORY_DSN_SPINE, …_HEAD); `hale habitat migrate` does it with the nerves and senses
 hale dna ledger rows         the operational memory's rows as JSON lines: where the day's work lives;
                              a head's write (a task done, a receipt filed …) goes straight into the Ledger
                              under the head's role: done when it lands, or refused by memory with the reason
@@ -85,7 +124,8 @@ hale dna show org|processes [--json] [project]
 ```text
 hale dna nerves migrate [dir]
                              create the organization's NATS JetStream stream with the owner's URL (HALE_DNA_NATS_URL_OWNER,
-                             or dna/compose.yaml) and print its token and each role's URL (HALE_DNA_NATS_ORG, …_URL_SPINE)
+                             or the organism's nerves allocation, brought up) and print its token and each role's URL
+hale dna nerves urls [dir]   the token and each role's URL of nerves that are up; nothing brought up or created
 hale dna nerves drop [dir]   delete the organization's stream, and everything it held, with the owner's URL
 ```
 
@@ -117,7 +157,8 @@ hale dna body                who runs this record (the body lease); `body claim 
                              `body release [--force]` gives it up — both are rows in your name (--as <who>)
 hale dna body provision <user@host> [--dsn <postgres://…>] [--dir <path>] [--dry-run]
                              over ssh: the toolchain hale.lock pins, the record's remote cloned, Postgres from
-                             dna/compose.yaml or the DSN, a systemd user unit supervising the host; writes nothing
+                             the body's local habitat or the DSN, migrated once (`hale habitat migrate .`), a systemd
+                             user unit supervising the host; writes nothing
                              when ssh or the toolchain is unavailable. Then `body start|stop|logs [--body <user@host>]`
 hale dna fleet [project]     what the fleet expresses: every instance, its node, revision, model hash, state
 hale dna deploy <revision>   express a genome revision through the fleet's nodes (fleet.deploy)
@@ -143,7 +184,8 @@ nerves itself (GH #986).
 [Senses and reflexes](./senses.md).
 
 ```text
-hale dna senses up [dir]     bring up the senses' store (compose's `senses` service) and print its read URL
+hale dna senses up [dir]     bring up the organism's senses' store in the local habitat and print its read URL
+hale dna senses url [dir]    the read URL of a senses' store that is up; nothing brought up
 hale dna pressure [raise <source> <what…>]
                              pressure raised and answered; `raise` writes one signal into the record, which a node relays
 hale dna concern raise <source> <what…> [--severity N]
@@ -197,7 +239,7 @@ hale dna head [project] [--port P] [--api-port P] [--oidc-port P] [--commands-po
                              the head: the project service serving the browser face (8792), its API child, the stub
                              OpenID provider and, with a project, the reflexes — built once into the toolchain cache,
                              no checkout needed (from a checkout, dna/face/start.sh); with a project, the head's
-                             memory DSN derived as `memory migrate` derives it (`hale dna head --help`)
+                             memory DSN derived from memory that is up, never migrated (`hale dna head --help`)
 hale dna ui [project] [--port N]
                              under `git config dna.principal oidc` a hosted head: sign-in through dna.oidc.issuer,
                              subjects mapped by dna.oidc.member, the secret the vault's oidc-client-<client>;
@@ -274,8 +316,8 @@ set for the processes they start.
 
 | variable | what it does |
 |---|---|
-| `HALE_DNA_MEMORY_DSN_OWNER` | a Postgres of your own instead of `dna/compose.yaml`'s: the owner role that migrates memory (`memory migrate`, `dev`, `show`) |
-| `HALE_DNA_NATS_URL_OWNER` | a NATS server of your own instead of compose's: the owner user that creates the stream (`nerves migrate`, `dev`) |
+| `HALE_DNA_MEMORY_DSN_OWNER` | a Postgres of your own instead of the organism's memory allocation in the local habitat: the owner role that migrates memory (`hale habitat migrate`, `memory migrate`, `upgrade`); `dev`, `head` and `show` derive from it and migrate nothing |
+| `HALE_DNA_NATS_URL_OWNER` | a NATS server of your own instead of the organism's nerves allocation: the owner user that creates the stream (`hale habitat migrate`, `nerves migrate`); `dev` and `nerves urls` derive from it |
 | `HALE_DNA_MEMORY_DSN_SPINE` | the spine role's DSN, which `hale dna run` needs; `memory migrate` prints it |
 | `HALE_DNA_NATS_URL_SPINE`, `HALE_DNA_NATS_ORG` | the spine's nerves URL and the organization's token, which `hale dna run` needs; `nerves migrate` prints them |
 | `HALE_DNA_MEMORY_DSN_HEAD` | the head role's DSN, for a head and nothing else; `memory migrate` prints it |
@@ -559,7 +601,7 @@ around an application you already have.
 | `main.hl`, `tests/main_test.hl` | the application and its first test (`new` only) |
 | `hale.toml` | the manifest: an environment for the application (`.`) and one for the organization (`dna/org`) |
 | `hale.lock` | the toolchain the DNA was materialized for (`[dna] toolchain`) |
-| `.gitignore` | ignores the build artifact, `/vendor/`, `/.hale/` and the two password files |
+| `.gitignore` | ignores the build artifact, `/vendor/` and `/.hale/` |
 | `vendor/dna/` | the DNA core, copied from the toolchain; git-ignored, `hale dna upgrade` copies it again |
 | `dna/org/main.hl` | the organization: its positions, the Leader's grant, the budget's owner |
 | `dna/org/law.hl` | its law |
@@ -569,10 +611,10 @@ around an application you already have.
 | `dna/org/work.hl` | the performers a leg runs |
 | `dna/org/workflows.hl` | the workflow catalog; rewritten by `upgrade`, not yours to edit |
 | `dna/org/own_workflows.hl` | your own workflow definitions, beside the baseline |
-| `dna/compose.yaml` | memory (Postgres), the nerves (NATS) and the senses' store, for `hale dna dev` |
-| `dna/nats.conf` | the nerves' users, one per family of subjects |
-| `dna/senses.yml` | what the senses' store scrapes |
-| `dna/nats.secrets.conf`, `dna/postgres.secrets` | the compose services' passwords, written from the vault; git-ignored |
+
+No file in the project runs or configures a service: memory, the nerves
+and the senses' store are the organism's allocations in the local
+habitat, below.
 
 ### The organism's state
 
@@ -582,7 +624,7 @@ around an application you already have.
 | memory, receipts | receipts, by the digest of their content (protected classes sealed) |
 | memory, leases | leases with fencing tokens, swapped by token; the body lease is one |
 | `hale.toml` `[dna] record` | the record's identity: the digest of its first row |
-| `.hale/dna/memory.env` | the head's DSN, kept by `hale dna memory migrate`; mode 600, head role only, git-ignored |
+| `.hale/dna/memory.env` | the head's DSN and where it came from (`HALE_DNA_MEMORY_FROM`), kept by `hale habitat migrate` and `hale dna memory migrate`; mode 600, head role only, git-ignored |
 | `refs/heads/dna/candidate/<mutation>` | a Mutation's candidate, a branch of the genome kept whatever its Review decided |
 | `refs/hale/remote/genome` | the forge's default branch as the node's last pull fetched it |
 | `.git/config` | the record's settings (`dna.trust`, `dna.unix.member`, … above) |
@@ -590,6 +632,7 @@ around an application you already have.
 | `.hale/node/<name>/` | on a node: its instances' pid files and artifacts |
 | memory | Postgres, schema `dna_<record identity>`: the ledger, the graph and protected evidence, under the spine's and the head's roles |
 | the nerves | one JetStream stream per organization, named after its token in capitals |
+| the local habitat | `${XDG_DATA_HOME:-~/.local/share}/hale/habitat/local`: one compose project per machine, `hale-habitat-local-<h>`, with the services `memory-<id>`, `nerves-<id>` and `senses-<id>` per organism (`<id>` the first twelve hex digits of the record's identity); each organism's `allocations/<id>/` holds `compose.yaml`, `ports.yaml`, `postgres.secrets`, `nats.conf`, `nats.secrets.conf` and `senses.yml`. Long-lived; `hale habitat migrate` brings an organism's allocations up |
 | the vault | `HALE_VAULT_DIR`, else `$XDG_CACHE_HOME/hale/vault`, else `~/.cache/hale/vault`; one file per secret, mode 600. `HALE_VAULT_ADDR` names a vault's HTTP API instead |
 | `HALE_DNA_HEAD_STATE` | the project head's state (`${XDG_STATE_HOME:-$HOME/.local/state}/hale/dna/head` when unset) |
 

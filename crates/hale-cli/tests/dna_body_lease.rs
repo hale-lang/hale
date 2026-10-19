@@ -8,6 +8,8 @@
 
 #[path = "support/vault.rs"]
 mod vault;
+#[path = "support/scratch.rs"]
+mod scratch;
 #[path = "support/record.rs"]
 mod record;
 #[path = "support/reap.rs"]
@@ -115,8 +117,8 @@ fn a_record_admits_one_body_and_a_partitioned_body_stops() {
         eprintln!("dna_body_lease: no HALE_DNA_MEMORY_DSN_OWNER; the body lease is memory's, so nothing was exercised");
         return;
     };
-    let d = std::env::temp_dir().join(format!("hale_dna_body_{}", std::process::id()));
-    let _reap = reap::ReapOnDrop(d.clone());
+    let d = scratch::Scratch::new(format!("hale_dna_body_{}", std::process::id()));
+    let _reap = reap::ReapOnDrop(d.to_path_buf());
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(&d).unwrap();
     let bare = d.join("origin.git");

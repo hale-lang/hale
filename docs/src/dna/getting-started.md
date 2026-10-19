@@ -9,9 +9,10 @@ the first task.
 - The `hale` binary on your `PATH`.
 - git. The record lives in your repository, so `new` and `init` make
   one when there is none.
-- `docker compose` on your `PATH`. `hale dna dev` brings up the
-  organism's private services with it: Postgres for memory, NATS for
-  the nerves, Prometheus for the senses.
+- `docker compose` on your `PATH`. The organism's private services
+  (Postgres for memory, NATS for the nerves, Prometheus for the senses)
+  run in your machine's local habitat, one compose project that birth
+  and `hale habitat migrate` bring up.
 - A model, for the organism to do work: a model key you put in the
   vault, `ollama` on your `PATH`, or a coding harness (`claude`, else
   `codex`) on your `PATH`. Without one the organism still runs; the
@@ -44,9 +45,7 @@ created …/demo/dna/org/work.hl
 created …/demo/dna/org/workflows.hl
 created …/demo/dna/org/own_workflows.hl
 created …/demo/dna/org/main.hl
-created …/demo/dna/compose.yaml
-memory  dna/compose.yaml: `hale dna dev` brings its Postgres and NATS up, applies memory's schema and creates the nerves' stream (docker compose on PATH); `hale dna run` needs HALE_DNA_MEMORY_DSN_SPINE, HALE_DNA_NATS_URL_SPINE and HALE_DNA_NATS_ORG
-created …/demo/dna/senses.yml
+memory  the local habitat's allocations: `hale habitat migrate …/demo` brings this organism's memory, nerves and senses' store up and migrates them (docker compose on PATH), and `hale dna dev` runs on them; `hale dna run` needs HALE_DNA_MEMORY_DSN_SPINE, HALE_DNA_NATS_URL_SPINE and HALE_DNA_NATS_ORG
 kept    …/demo/main.hl (the application is not modified; the organization oversees it from dna/org)
 edited  …/demo/hale.toml ([claims] no_base, [environments.local], [environments.org])
 pinned  …/demo/hale.toml ([dna] record = 4f1c9a07d2be…, the identity of the record born here)
@@ -59,12 +58,12 @@ seeded  purpose (proposed for the Board: `hale dna review` lists it under `purpo
 seeded  design (11 practice(s) proposed, one Board Review each: `hale dna review` lists them under `design`)
 seeded  operating (7 practice(s) proposed, one Board Review each: `hale dna review` lists them under `operating`)
 seeded  using (7 practice(s) proposed, one Board Review each: `hale dna review` lists them under `using`)
-edited  …/demo/.gitignore (/dna/nats.secrets.conf, /dna/postgres.secrets)
-memory  the compose database's superuser password in the vault; dna/postgres.secrets written from it (mode 600, untracked)
-nerves  every role's password drawn into the vault; dna/nats.secrets.conf written (mode 600, untracked)
+memory  its allocation's superuser password in the vault, and its file beside the allocation in the local habitat (mode 600)
+nerves  every role's password drawn into the vault, and the nerves allocation's secrets written (mode 600)
 secret  oidc-client-dna-local drawn into the vault
 secret  forge-token: a slot in the vault for a person to fill (`hale dna secret set`)
 secret  model-OPENAI_API_KEY: a slot in the vault for a person to fill (`hale dna secret set`)
+nerves  the organization's stream created
 
 next steps:
     hale check --matrix …/demo   # every entrypoint against its law
@@ -129,10 +128,6 @@ grant authority.
 | The performers a leg runs. | `dna/org/work.hl` | yes |
 | The workflow catalog: the baseline, rewritten by every `hale dna upgrade`. | `dna/org/workflows.hl` | no |
 | Your own workflow definitions, never rewritten. | `dna/org/own_workflows.hl` | yes |
-| The private services for `hale dna dev`: Postgres, NATS and Prometheus, each on `127.0.0.1`. | `dna/compose.yaml` | yes |
-| The nerves' server config: one user per part, each allowed only its own subjects. No password in it. | `dna/nats.conf` | yes; `upgrade` regenerates it |
-| What the senses' store scrapes. | `dna/senses.yml` | yes |
-| The two files that carry passwords to the compose servers, written from the vault. Mode 600, ignored by git. | `dna/postgres.secrets`, `dna/nats.secrets.conf` | never commit |
 | The core, as the `hale` you ran carries it. Ignored by git; `hale dna upgrade` refreshes it. | `vendor/dna` | no |
 | Scratch: the baseline artifact, sockets, worktrees, logs. Ignored by git; deleting it loses nothing. | `.hale/dna/` | no |
 | The record: one signed row per event, and the receipts. Rows in memory (Postgres), not files; the clone keeps only the head's DSN in `.hale/dna/memory.env`. | `record_rows` in `dna_<identity>` | no |
@@ -141,6 +136,23 @@ grant authority.
 for the organization, and `[claims] no_base = true`, because the two
 entrypoints are checked against their own law and share none. The
 [DNA chapter](./dna.md) quotes every generated file.
+
+Nothing in the checkout runs a service. The organism's memory, nerves
+and senses' store are **allocations** of your machine's local habitat:
+the services `memory-<id>`, `nerves-<id>` and `senses-<id>` of one
+compose project, `hale-habitat-local-<h>`, under
+`${XDG_DATA_HOME:-~/.local/share}/hale/habitat/local`, `<id>` the
+start of the record's identity. Their compose file, host ports, server
+configuration and passwords live there, under `allocations/<id>/`, not
+in your repository. The habitat is long-lived: a second clone or
+worktree of the same organism uses the same allocations, and nothing
+takes them down when you stop. Birth brought memory and the nerves up
+and migrated them; after a toolchain update, run `hale habitat migrate`
+(it is idempotent, and it also brings the senses' store up):
+
+```sh
+hale habitat migrate .
+```
 
 `embedded dna ca4012a0cda7226d` on the `wrote` line is the provenance
 of `vendor/dna`: the digest of the DNA source this `hale` binary
@@ -185,7 +197,7 @@ $ hale dna secrets
 the organism's secrets (the local vault, …):
   present  postgres-dna_db39b9dd436962c99cfa90fe5366f10a48f71dc0_spine  memory: the spine's role
   present  postgres-dna_db39b9dd436962c99cfa90fe5366f10a48f71dc0_head  memory: the head's role
-  present  postgres-owner-demo  memory: the compose database's superuser (dna/postgres.secrets)
+  present  postgres-owner-db39b9dd4369  memory: its allocation's superuser in the local habitat
   present  nats-dna_db39b9dd436962c99cfa90fe5366f10a48f71dc0-owner  the nerves: the owner's account
   present  nats-dna_db39b9dd436962c99cfa90fe5366f10a48f71dc0-spine  the nerves: the spine's account
   present  nats-dna_db39b9dd436962c99cfa90fe5366f10a48f71dc0-head  the nerves: the head's account
@@ -230,9 +242,10 @@ hale dna dev
 
 Leave that terminal open; it is the host. In order, `dev`:
 
-1. brings up `dna/compose.yaml` with docker compose, applies memory's
-   schema as the database's owner, creates the nerves' stream as the
-   broker's owner, and brings up the senses' store;
+1. derives the spine's credentials from the organism's memory and
+   nerves in the local habitat, which must be up and migrated: `dev`
+   brings nothing up and migrates nothing, and when they are not up it
+   says so and names `hale habitat migrate`;
 2. takes the body lease, so this clone is the one body running the
    record;
 3. builds and starts the organization (`dna/org`), handing it only the

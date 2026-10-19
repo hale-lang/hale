@@ -199,9 +199,10 @@ main locus App {
         leases: dna::PqLeaseStore = dna::PqLeaseStore { };
     }
     // The node that adopts the ledger: `hale dna dev` with the owner's DSN
-    // and the owners' keys (dev migrates memory, a head role per owner,
-    // and the nerves' stream, and hands the host the spine's roles), which
-    // a shared record not yet on the ledger needs.
+    // and the owners' keys (dev migrates nothing, GH #1653: it hands the
+    // host the spine's roles of memory `memory migrate` moved, a head role
+    // per owner, and of the stream birth created), which a shared record
+    // not yet on the ledger needs.
     fn start_dev(dir: String, owner: String) -> String {
         let started = in_dir(dir, "sh\n-c\nHALE_DNA_MEMORY_DSN_OWNER=\"$2\" HALE_DNA_OWNER_KEYS=\"acme=ka north=kb\" nohup timeout --foreground 900 \"$1\" dna dev . --no-iris >>.hale/body.log 2>&1 </dev/null & echo $!\nsh\n" + toolchain() + "\n" + owner);
         return dna::trim_nl(started.stdout);

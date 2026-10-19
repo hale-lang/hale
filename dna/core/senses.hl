@@ -18,7 +18,7 @@
 // The environment a part is told its port in; 0 serves nothing.
 const SENSES_PORT_ENV: String = "HALE_DNA_SENSES_PORT";
 // What each part serves on when its environment names no port: the
-// ports the seed's store scrapes (dna/senses.yml, written by `init`).
+// ports the organism's senses' store scrapes (its allocation's senses.yml in the local habitat).
 const SENSES_PORT_SPINE: Int = 9464;
 const SENSES_PORT_NODE: Int = 9465;
 const SENSES_PORT_HEAD: Int = 9466;

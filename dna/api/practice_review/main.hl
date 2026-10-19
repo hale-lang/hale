@@ -27,6 +27,10 @@ main locus PracticeReviewHead {
         commands: api::Commands = api::Commands { };
         // GH #1135: the commands port (the HTTP exposure's), and who its bearers are
         http_port: Int = 0;
+        // the reads' line, printed once the server listens with the port it
+        // got between the halves (`api::announce_ports`)
+        banner_head: String = "";
+        banner_tail: String = "";
         bearer: std::api::BearerSource = std::api::NoBearer { };
         local: api::Exposure = api::serve(HeadCommands, unix::Rpc { path: self.served, roles: self.roles }, as: "composed", bound: 64, on_full: refuse);
         remote: api::Exposure = api::serve(HeadCommands, http::Rpc { bind: "127.0.0.1:" + to_string(self.http_port), codec: json, principals: self.bearer, roles: self.roles }, as: "composed-commands", bound: 64, on_full: refuse);
@@ -36,9 +40,10 @@ main locus PracticeReviewHead {
     // the accept, the exposures stop and remove the socket).
     placement { srv: cooperative(pool = io); commands: cooperative(pool = commands); }
     run() {
-        // the exposures listen before run(): announce the commands port a
-        // launcher waits for (as dna/api's Head does)
-        if self.http_port > 0 { println("hale dna api: commands http://127.0.0.1:", self.http_port, "/"); }
+        // the server and the exposures listen before run(): report and
+        // announce the ports they got, as dna/api's Head does — a port the
+        // launcher left to the system (0) included
+        api::announce_ports(self.srv.listen_fd, self.http_port, self.remote, self.banner_head, self.banner_tail);
         std::api::run_until_stopped(self.local);
         self.local.stop();
         self.remote.stop();
@@ -60,16 +65,15 @@ fn head_up(root: String, port: Int, web: api::WebAssets, definitions: ops::Workf
     let knowledge_commands = api::LocalKnowledgeCommands { root: root };
     if mode == "oidc" {
         let auth = api::oidc_ui(record, port, "hale dna practice-review api");
-        println("hale dna api: http://127.0.0.1:", port, " (OIDC: ", auth.issuer, "; composed command provider)");
         PracticeReviewHead {
-            root: root, port: port, socket: socket, roles: dna::RecordRoles { root: root },
+            root: root, port: port, banner_head: "hale dna api: http://127.0.0.1:", banner_tail: " (OIDC: " + auth.issuer + "; composed command provider)", socket: socket, roles: dna::RecordRoles { root: root },
             served: api::served_socket(socket), http_port: api::commands_port(), bearer: api::OidcBearer { auth: api::oidc_ui(record, port, "hale dna practice-review api") },
             commands: api::Commands { admission: api::CommandAdmission { root: root, roles: dna::RecordRoles { root: root }, provider: commands }, knowledge: api::KnowledgeAdmission { root: root, roles: dna::RecordRoles { root: root }, provider: knowledge_commands } },
             srv: std::http::Server { host: "127.0.0.1", port: port, handler: api::Api {
                 root: root, web: web, organization: orgsource::OrganizationSource { root: root, allow_drafts: std::env::var("HALE_DNA_ORG_DRAFTS") == "1" },
                 definitions: definitions, knowledge: api::LocalKnowledge { root: root },
                 people: people, socket: socket, commands_port: api::commands_port(), organization_candidates: api::OrganizationCandidateWire { authority: authority }, organization_runtime: runtime,
-                command_origin: "http://127.0.0.1:" + to_string(port), mode: "oidc", auth: auth, roles: dna::RecordRoles { root: root }
+                command_origin: api::origin_of(port), mode: "oidc", auth: auth, roles: dna::RecordRoles { root: root }
             } }
         };
         return;
@@ -84,16 +88,15 @@ fn head_up(root: String, port: Int, web: api::WebAssets, definitions: ops::Workf
     }
     let user = api::local_person(root);
     let token = api::launch_token(root + "/.hale/dna");
-    println("hale dna api: http://127.0.0.1:", port, "/?token=", token, "  (trusted local; composed command provider; the token is in ", root, "/.hale/dna/head.token)");
     PracticeReviewHead {
-        root: root, port: port, socket: socket, roles: dna::RecordRoles { root: root },
+        root: root, port: port, banner_head: "hale dna api: http://127.0.0.1:", banner_tail: "/?token=" + token + "  (trusted local; composed command provider; the token is in " + root + "/.hale/dna/head.token)", socket: socket, roles: dna::RecordRoles { root: root },
         served: api::served_socket(socket), http_port: api::commands_port(), bearer: api::LaunchBearer { token: token },
         commands: api::Commands { admission: api::CommandAdmission { root: root, roles: dna::RecordRoles { root: root }, provider: commands }, knowledge: api::KnowledgeAdmission { root: root, roles: dna::RecordRoles { root: root }, provider: knowledge_commands } },
         srv: std::http::Server { host: "127.0.0.1", port: port, handler: api::Api {
             root: root, web: web, organization: orgsource::OrganizationSource { root: root, allow_drafts: std::env::var("HALE_DNA_ORG_DRAFTS") == "1" },
             definitions: definitions, knowledge: api::LocalKnowledge { root: root },
             people: people, socket: socket, commands_port: api::commands_port(), organization_candidates: api::OrganizationCandidateWire { authority: authority }, organization_runtime: runtime,
-            command_origin: "http://127.0.0.1:" + to_string(port), local_name: user, token: token
+            command_origin: api::origin_of(port), local_name: user, token: token
         } }
     };
 }
@@ -216,8 +219,8 @@ fn main() {
     let root = std::env::arg_or(1, ".");
     let http = api::Http { };
     let port = http.integer(std::env::arg_or(2, ""), 65535);
-    if std::env::args_count() < 3 || std::env::args_count() > 4 || port < 1 || std::str::contains(root, "\n") || std::str::contains(root, "\r") {
-        eprintln("hale dna practice-review api: expected <project-root> <port 1..65535> [face-webroot]");
+    if std::env::args_count() < 3 || std::env::args_count() > 4 || port < 0 || std::str::contains(root, "\n") || std::str::contains(root, "\r") {
+        eprintln("hale dna practice-review api: expected <project-root> <port 0..65535 (0: the system picks one)> [face-webroot]");
         std::process::exit(2);
     }
     let policy_path = std::env::var("HALE_DNA_COMMAND_POLICY");

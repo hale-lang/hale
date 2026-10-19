@@ -4134,3 +4134,63 @@ fn main() { }
 "#;
     assert!(check(src).iter().any(|m| m.contains("cell type cannot be a locus")), "{:?}", check(src));
 }
+
+/// An adapter binding is built by the program's prelude, before the
+/// `main` locus that declares it, so its literal is checked as an
+/// expression of a free fn is: no `self`, no enclosing locus. A read of
+/// the main locus's params there passed the check and then failed in
+/// codegen ("self.url read outside a locus method"), and so did every
+/// statement that acts on an enclosing locus. Each is refused at check,
+/// at the read or the statement, with the free fn's own diagnostic and
+/// why it applies; the same literal with its value written in it checks.
+fn adapter_literal(init: &str) -> String {
+    format!(
+        r#"
+type Tick {{ n: Int = 0; }}
+topic Ticks {{ payload: Tick; }}
+locus Relay {{
+    params {{ url: String = ""; }}
+    fn send(subject: String, bytes: Bytes) {{ println(self.url); }}
+}}
+main locus App {{
+    params {{ url: String = "nats://127.0.0.1:4222"; n: Int = 0; }}
+    bindings {{ Ticks: Relay {{ url: {init} }}; }}
+    bus {{ publish Ticks; }}
+    run() {{ Ticks <- Tick {{ n: 1 }}; }}
+}}
+fn main() {{ App {{ }}; }}
+"#
+    )
+}
+
+const ADAPTER_PREFIX: &str =
+    "adapter binding for topic `Ticks`: the `Relay` literal is built by the program's prelude, before `App`, as an expression of a free fn is: ";
+
+#[test]
+fn an_adapter_binding_literal_is_checked_as_a_free_fns_expression() {
+    for (init, why) in [
+        ("self.url", "`self` used outside a locus body"),
+        ("\"x\" + self.url", "`self` used outside a locus body"),
+        // the review's: an assignment target's index
+        ("{ let mut a = [\"nats://h:4222\"]; a[self.n] = \"x\"; a[0] }", "`self` used outside a locus body"),
+        // the review's: a statement that acts on the enclosing locus
+        ("{ terminate; \"nats://h:4222\" }", "`terminate` is only valid inside a locus method"),
+        ("{ violate nope; \"nats://h:4222\" }", "free fns can't use `violate`"),
+        ("{ Ticks <- Tick { n: 2 }; \"nats://h:4222\" }", "bus send (`<-`) only valid inside a locus body"),
+        ("{ reperspective self.r as Relay; \"nats://h:4222\" }", "`reperspective` is only valid inside a locus method"),
+        ("{ restart(child); \"nats://h:4222\" }", "unknown identifier `child`"),
+    ] {
+        let src = adapter_literal(init);
+        let errs = check(&src);
+        assert!(!errs.is_empty(), "{init}: refused");
+        assert!(errs.iter().all(|e| e.starts_with(ADAPTER_PREFIX)), "{init}: every refusal says why: {errs:?}");
+        assert!(errs.iter().any(|e| e.contains(why)), "{init}: {errs:?}");
+    }
+    let src = adapter_literal("self.url");
+    let prog = parse_source(&src).expect("parse");
+    let diag = check_program(&prog).into_iter().find(|d| d.is_error()).expect("a diagnostic");
+    assert_eq!(diag.span.start.0 as usize, src.find("self.url }").expect("the read"), "at the read");
+    for init in ["\"nats://127.0.0.1:4222\"", "{ let mut a = [\"nats://h:4222\"]; a[0] = \"x\"; a[0] }"] {
+        assert_eq!(check(&adapter_literal(init)), Vec::<String>::new(), "{init}");
+    }
+}

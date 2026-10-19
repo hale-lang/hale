@@ -14,9 +14,10 @@ head](./head.md), and a clone through rows in the record.
 
 ## A node
 
-Run one on your own machine with `hale dna dev`, which also brings up
-memory and the nerves from `dna/compose.yaml` and runs the
-application under the same host. `hale dna run` runs a node on its
+Run one on your own machine with `hale dna dev`, which runs on the
+organism's memory and nerves in the local habitat (brought up and
+migrated by birth and `hale habitat migrate`, never by `dev`) and runs
+the application under the same host. `hale dna run` runs a node on its
 own and takes memory and the nerves from its environment (see
 [Memory](./memory.md#working-memory) and
 [The nerves](./nerves.md#migrate-and-drop)).

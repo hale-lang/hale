@@ -27,6 +27,8 @@ mod http_server_bind_failure;
 mod http_server_concurrent;
 #[path = "http_server_classic_pool_shutdown.rs"]
 mod http_server_classic_pool_shutdown;
+#[path = "serve_drain.rs"]
+mod serve_drain;
 #[path = "http_server_memory.rs"]
 mod http_server_memory;
 #[path = "http_split_write.rs"]

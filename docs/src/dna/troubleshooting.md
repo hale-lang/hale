@@ -59,7 +59,7 @@ no record in memory for … (run `hale dna init`)
 
 The directory has DNA files but no record in memory. Run `hale dna
 init` in it. In a second clone of a project whose record exists, the
-pin in `hale.toml` names it; run `hale dna memory migrate` (or `hale
+pin in `hale.toml` names it; run `hale habitat migrate` (or `hale
 dna upgrade` with the owner's DSN) so the clone keeps the head's DSN.
 
 ```text
@@ -76,7 +76,7 @@ git for-each-ref --format='%(refname)' refs/dna/ | xargs -n1 git update-ref -d
 ```
 
 ```text
-… holds the head's DSN and is readable by others (mode …): `chmod 600 …`, or remove it and run `hale dna memory migrate` again
+… holds the head's DSN and is readable by others (mode …): `chmod 600 …`, or remove it and run `hale habitat migrate …`
 ```
 
 `.hale/dna/memory.env` keeps the head's DSN and a verb refuses it while
@@ -133,17 +133,28 @@ is refused, not queued: run the verb again once memory is back.
 ### The body has no memory
 
 ```text
-hale dna run: no memory: HALE_DNA_MEMORY_DSN_SPINE is not set (`hale dna dev` applies memory's schema from HALE_DNA_MEMORY_DSN_OWNER or dna/compose.yaml and hands the host the spine's DSN); nothing is projected or admitted
+hale dna run: no memory: HALE_DNA_MEMORY_DSN_SPINE is not set (`hale dna dev` hands the host the spine's DSN of memory that `hale habitat migrate` migrated, from HALE_DNA_MEMORY_DSN_OWNER or the organism's allocation in the local habitat); nothing is projected or admitted
 ```
 
 Under `hale dna run` the body is given the spine role's DSN, which
 `hale dna memory migrate` prints. Set it. Under `hale dna dev`, memory
-comes from `dna/compose.yaml`, and a line before this one says why it
-did not come up:
+is the organism's allocation in the local habitat, which `dev` never
+brings up, and a line before this one says why it is not there:
 
 ```text
-hale dna dev: dna/compose.yaml is here but `docker compose` is not on PATH; set HALE_DNA_MEMORY_DSN_OWNER to a Postgres of your own
-hale dna dev: no dna/compose.yaml and no HALE_DNA_MEMORY_DSN_OWNER: there is no memory to run on (`hale dna upgrade` writes the compose file)
+hale dna dev: the organism's memory allocation in the local habitat (memory-…) is not up: `hale habitat migrate …` brings it up and migrates it; or set HALE_DNA_MEMORY_DSN_OWNER to a Postgres of your own
+hale dna dev: the organism has no record identity yet: its memory is the local habitat's allocation named for it (`hale dna init` pins one)
+```
+
+Run `hale habitat migrate` on the organism (it needs `docker compose`
+on `PATH`). It is idempotent, so running it when memory is already up
+and migrated changes nothing.
+
+A clone's kept head DSN that came from anywhere but the organism's own
+memory is removed, and the verb that found it says so:
+
+```text
+…/.hale/dna/memory.env held a DSN derived from …, not from the organism's memory in the local habitat (…) (GH #1653), and is removed: run `hale habitat migrate …`, which brings the organism's memory up and migrates it
 ```
 
 A body without memory does not start:
@@ -155,12 +166,13 @@ hale dna run: this record's operations live in the ledger (adopted at …), and 
 ### The schema is another toolchain's
 
 ```text
-hale dna run: memory: memory schema … is at version …; this toolchain needs version …; run `hale dna memory migrate` with the owner's DSN in HALE_DNA_MEMORY_DSN_OWNER
+hale dna run: memory: memory schema … is at version …; this toolchain needs version …; run `hale habitat migrate <organism>` (with HALE_DNA_MEMORY_DSN_OWNER for a Postgres of your own)
 ```
 
-Also `… has no schema version …` when nothing migrated it. Run
-`hale dna memory migrate` with the owner's DSN. A migration never goes
-backwards:
+Also `… has no schema version …` when nothing migrated it. Run `hale
+habitat migrate` on the organism, with `HALE_DNA_MEMORY_DSN_OWNER` set
+when memory is a Postgres of your own; no other command migrates. A
+migration never goes backwards:
 
 ```text
 … memory schema … is at version …, newer than this toolchain's …; it is not migrated back
@@ -241,18 +253,19 @@ The nerves are NATS JetStream. See [The nerves](./nerves.md).
 ### The body hears nothing
 
 ```text
-hale dna run: no nerves: HALE_DNA_NATS_URL_SPINE and HALE_DNA_NATS_ORG are not set (`hale dna dev` creates the stream from HALE_DNA_NATS_URL_OWNER or dna/compose.yaml and hands the host the spine's); the organization hears nothing the record asks
+hale dna run: no nerves: HALE_DNA_NATS_URL_SPINE and HALE_DNA_NATS_ORG are not set (`hale dna dev` hands the host the spine's URL of nerves whose stream `hale habitat migrate` created, on HALE_DNA_NATS_URL_OWNER or the organism's allocation in the local habitat); the organization hears nothing the record asks
 ```
 
 The body runs, and every ask stays unanswered. Under `hale dna run`,
 set the two variables `hale dna nerves migrate` prints. Under
-`hale dna dev`, a line before this one says why the nerves did not
-come up:
+`hale dna dev`, which never brings the nerves up, a line before this
+one says why they are not there:
 
 ```text
-hale dna dev: dna/compose.yaml is here but `docker compose` is not on PATH; set HALE_DNA_NATS_URL_OWNER to a NATS server of your own
-hale dna dev: no dna/compose.yaml and no HALE_DNA_NATS_URL_OWNER: there are no nerves to run on (`hale dna upgrade` writes the compose file)
+hale dna dev: the organism's nerves allocation in the local habitat is not up (`hale habitat migrate …` brings it up and creates the stream)
 ```
+
+Run `hale habitat migrate` on the organism.
 
 A server of your own must run JetStream:
 
@@ -268,7 +281,7 @@ hale dna run: the organization did not come to read the nerves within 20s; the f
 
 The organization's connection cannot reach the server, or its user
 may not read its durable consumer (`spine`, or `spine_<owner>` over a
-shared record; `dna/nats.conf` lists the users). Its log,
+shared record; the nerves allocation's `nats.conf` lists the users). Its log,
 `.hale/dna/org.log`, says which. Nothing is lost: the facts wait in the
 stream until it connects.
 
@@ -429,13 +442,15 @@ fleet to express. Add the section to `hale.toml`; see
 See [Senses and reflexes](./senses.md).
 
 ```text
-hale dna senses up: dna/compose.yaml is here but `docker compose` is not on PATH
-hale dna senses up: no dna/compose.yaml: there is no store for the senses (`hale dna upgrade` writes the compose file)
+hale dna senses up: the local habitat's senses' store runs under docker compose, which is not on PATH
+hale dna senses url: the organism's senses' store in the local habitat is not up (`hale habitat migrate …` brings it up)
 ```
 
-The senses' store is the `senses` service of `dna/compose.yaml`.
-Under `hale dna dev` the same reason comes as `hale dna dev: senses: …`,
-and nothing else stops for it.
+The senses' store is the organism's `senses-<id>` allocation in the
+local habitat. `hale habitat migrate` and `hale dna senses up` bring it
+up; `hale dna senses url` and `hale dna dev` only read it. Under `hale
+dna dev` the reason comes as `hale dna dev: senses: …`, and nothing else
+stops for it.
 
 ```text
 reflexes: HALE_DNA_NATS_URL_REFLEXES, HALE_DNA_NATS_VAULT_REFLEXES and HALE_DNA_NATS_ORG name the nerves this program fires onto
@@ -495,17 +510,12 @@ you rotate it.
 
 ```text
 nerves migrate: the vault holds no credential for the nerves' … (`hale dna upgrade` provisions the organism's secrets; `hale dna secrets` lists them)
-the compose database's password is not provisioned (postgres-owner-… in the vault, dna/postgres.secrets beside compose; `hale dna upgrade` provisions them, `hale dna secrets` lists them)
+the memory allocation's password is not provisioned (postgres-owner-… in the vault, and its file beside the allocation; `hale dna upgrade` provisions them, `hale dna secrets` lists them)
 ```
 
-Run `hale dna upgrade`, which draws what the vault lacks. A password
-file (`dna/postgres.secrets`, `dna/nats.secrets.conf`) is never
-written where git would track it:
-
-```text
-refused: … is not ignored by git, and a password is never written where git would track it (add /… to .gitignore; `hale dna upgrade` does)
-refused: … is tracked by git, and a password is never written into a tracked file (`git rm --cached …`)
-```
+Run `hale dna upgrade`, which draws what the vault lacks. The password
+files (`postgres.secrets`, `nats.secrets.conf`) live beside the
+organism's allocations in the local habitat, never in your checkout.
 
 ### Violations
 
