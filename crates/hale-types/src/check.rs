@@ -9453,10 +9453,22 @@ fn check_wire_maps(programs: &[&Program], diags: &mut Vec<Diag>) {
                             format!("{at}: the value is the key; a map's value is the element's other field"),
                         )),
                         Some(g) => {
+                            // the key's presence flags are the key's: the
+                            // map supplies the key, so a record read from it
+                            // has the key present and not cleared
+                            let is_bool = |te: &TypeExpr| {
+                                matches!(te, TypeExpr::Primitive(hale_syntax::ast::PrimType::Bool, _))
+                            };
+                            let key_flags: Vec<&str> = hale_syntax::json_gen::presence_pairs(elem_fields, &is_bool)
+                                .into_iter()
+                                .chain(hale_syntax::json_gen::presence_clears(elem_fields, &is_bool))
+                                .filter(|(of, _)| *of == key.name)
+                                .map(|(_, flag)| flag)
+                                .collect();
                             let others: Vec<&str> = elem_fields
                                 .iter()
                                 .map(|h| h.name.name.as_str())
-                                .filter(|n| *n != key.name && *n != value.name)
+                                .filter(|n| *n != key.name && *n != value.name && !key_flags.contains(n))
                                 .collect();
                             // a record, a list, or an enum with payloads is no
                             // value a map of values carries (a map's entry

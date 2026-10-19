@@ -545,13 +545,17 @@ fn record(display: &str, schema: &TypeSchema, surface: &str, extra: &mut Extra) 
         // an optional field is its value's field, its flag a field of its own
         // (protobuf carries a presence pair as declared, spec/api.md § Codecs)
         let (f, flag) = match f {
-            FieldSchema::Nullable { inner, flag } => (inner.as_ref(), Some(flag)),
+            FieldSchema::Nullable { inner, flag, .. } => (inner.as_ref(), Some(flag)),
             f => (f, None),
         };
         let mut p = match f {
-            FieldSchema::Presence { of, .. } => {
+            FieldSchema::Presence { of, clears, .. } => {
                 let mut p = field(key, number, Ty::Scalar(Scalar::Bool), Label::Optional);
-                p.comment = Some(format!("Hale: whether `{of}` is present"));
+                p.comment = Some(if *clears {
+                    format!("Hale: whether `{of}` is cleared (sent as JSON `null`)")
+                } else {
+                    format!("Hale: whether `{of}` is present")
+                });
                 p
             }
             FieldSchema::Nullable { .. } => {

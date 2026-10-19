@@ -1,0 +1,63 @@
+// A presence triple crosses the protobuf codec as its three fields, as
+// declared (spec/api.md § Codecs, § gRPC): `x`, `has_x` and `clear_x`, so a
+// field left alone, cleared or set comes back as it went: JSON in, protobuf
+// through, JSON out gives back the same text. This program names no port:
+// the serve site is in a method nothing calls, which is all the compiler
+// needs to write the codecs.
+
+type Inner { a: Int; }
+type Patch {
+    note: String = "";
+    has_note: Bool = false;
+    clear_note: Bool = false;
+    inner: Inner = Inner { a: 0 };
+    has_inner: Bool = false;
+    clear_inner: Bool = false;
+}
+
+api PbPatch {
+    rpc Probe::patch;
+}
+
+locus Probe {
+    fn patch(p: Patch) -> Patch { return p; }
+}
+
+locus Tokens {
+    fn principal(token: String) -> std::api::Principal {
+        return std::api::Principal { mode: "bearer", name: "" };
+    }
+    fn refused() -> String { return "no such token"; }
+}
+
+main locus Desk {
+    params {
+        probe: Probe = Probe { };
+        bearer: Tokens = Tokens { };
+        // Served only so the compiler writes the codecs; nothing calls it.
+        h: api::Exposure = api::serve(PbPatch, grpc::Rpc { bind: "127.0.0.1:0", codec: json, principals: self.bearer }, as: "pb", receivers: { Probe: self.probe }, bound: 4, on_full: refuse);
+    }
+
+    // JSON in, protobuf through, JSON out: the same text.
+    fn round(json: String, what: String) {
+        let v = __api_decode_Patch(json) or {
+            std::test::assert(false, what + ": the JSON decoder: " + err.kind + " " + err.field);
+            return;
+        };
+        let back = __api_pb_decode_Patch(__api_pb_encode_Patch(v)) or {
+            std::test::assert(false, what + ": the protobuf decoder: " + err.kind + " " + err.field);
+            return;
+        };
+        std::test::assert(back.clear_note == v.clear_note && back.has_note == v.has_note, what + ": the flags");
+        std::test::assert_eq_str(__api_encode_Patch(back), json, what);
+    }
+
+    run() {
+        self.round("{}", "left alone");
+        self.round("{\"note\":null,\"inner\":null}", "cleared");
+        self.round("{\"note\":\"x\",\"inner\":{\"a\":3}}", "set");
+        self.round("{\"note\":null,\"inner\":{\"a\":1}}", "one cleared, one set");
+    }
+}
+
+fn main() { Desk { }; }

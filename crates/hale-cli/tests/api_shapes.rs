@@ -479,3 +479,71 @@ fn a_map_of_values_is_described_and_carried_by_the_clients() {
     }
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// A presence triple (`note` beside `has_note` and `clear_note`, spec/api.md
+/// § Codecs) is described as the field's schema or `null`, optional, with
+/// `"x-hale-null": "clear"`; protobuf carries its three fields. The Hale
+/// client declares the triple and its codec tells left alone, cleared and
+/// set apart on the server's wire; the TypeScript client's property may be
+/// left out, `null`, or a value, and sends each as it is.
+#[test]
+fn a_presence_triple_is_described_and_carried_by_the_clients() {
+    let dir = unique_dir("triple");
+    let src = dir.join("patch.hl");
+    std::fs::write(
+        &src,
+        "type Patch { note: String = \"\"; has_note: Bool = false; clear_note: Bool = false; }\n\
+         locus L {\n    fn edit(p: Patch) -> Patch { return p; }\n}\n\
+         api Edits { rpc L::edit; }\n\
+         locus Nobody { fn holds(p: std::api::Principal, r: String) -> Bool { return false; } }\n\
+         main locus App {\n    params {\n        l: L = L { };\n        h: api::Exposure = api::serve(Edits, unix::Rpc { path: \"/tmp/hale-edits.sock\", roles: Nobody { } }, as: \"edits\", receivers: { L: self.l }, bound: 4, on_full: refuse);\n    }\n    run() { }\n}\n\
+         fn main() { App { }; }\n",
+    )
+    .unwrap();
+    let out = dir.join("out");
+    let e = hale().args(["api", "export", "--surface", "Edits", "--out"]).arg(&out).arg(&src).output().expect("export");
+    assert!(e.status.success(), "{}", String::from_utf8_lossy(&e.stderr));
+    let doc = json_of(&std::fs::read_to_string(out.join("Edits.description.json")).unwrap());
+    assert_eq!(
+        doc["schemas"]["Patch"],
+        json!({"type": "object", "properties": {"note": {"anyOf": [{"type": "string"}, {"type": "null"}], "x-hale-null": "clear"}}, "required": []})
+    );
+    let proto = std::fs::read_to_string(out.join("Edits.proto")).unwrap();
+    assert!(
+        proto.contains("optional string note = 1;") && proto.contains("optional bool has_note = 2;") && proto.contains("optional bool clear_note = 3;"),
+        "{proto}"
+    );
+
+    let hl = dir.join("client.hl");
+    let o = hale().args(["api", "client", "--surface", "Edits", "--lang", "hale", "--out"]).arg(&hl).arg(&src).output().expect("hale client");
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let text = std::fs::read_to_string(&hl).unwrap();
+    assert!(text.contains("has_note: Bool = false;") && text.contains("clear_note: Bool = false;"), "the client declares the triple: {text}");
+    let caller = dir.join("caller.hl");
+    std::fs::write(
+        &caller,
+        text + "\nfn show(t: String) {\n    let p = Patch::api_decode(t) or { println(err.kind); return; };\n    println(to_string(p.has_note) + \" \" + to_string(p.clear_note) + \" \" + Patch::api_encode(p));\n}\n\
+                fn main() {\n    show(\"{}\");\n    show(\"{\\\"note\\\":null}\");\n    show(\"{\\\"note\\\":\\\"x\\\"}\");\n}\n",
+    )
+    .unwrap();
+    let r = hale().arg("run").arg(&caller).output().expect("run the caller");
+    assert_eq!(
+        String::from_utf8_lossy(&r.stdout),
+        "false false {}\nfalse true {\"note\":null}\ntrue false {\"note\":\"x\"}\n",
+        "{}",
+        String::from_utf8_lossy(&r.stderr)
+    );
+
+    let ts = dir.join("client.ts");
+    let o = hale().args(["api", "client", "--surface", "Edits", "--lang", "ts", "--out"]).arg(&ts).arg(&src).output().expect("ts client");
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let text = std::fs::read_to_string(&ts).unwrap();
+    assert!(text.contains("note?: string | null;"), "left out, null, or a value: {text}");
+    assert!(text.contains("=== null ? null :"), "null is sent and read as null: {text}");
+    let tsc = std::env::var("TSC").unwrap_or_else(|_| "tsc".to_string());
+    if Command::new(&tsc).arg("--version").output().is_ok_and(|o| o.status.success()) {
+        let c = Command::new(&tsc).args(["--strict", "--target", "es2022", "--lib", "es2022,dom", "--noEmit"]).arg(&ts).output().expect("tsc");
+        assert!(c.status.success(), "tsc refused the client:\n{}{}", String::from_utf8_lossy(&c.stdout), String::from_utf8_lossy(&c.stderr));
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}

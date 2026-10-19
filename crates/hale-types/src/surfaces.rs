@@ -2211,13 +2211,18 @@ pub enum FieldSchema {
     List { items: Box<FieldSchema>, max: u64, exact: bool },
     /// An optional field, the first half of a presence pair (`x` beside
     /// `has_x: Bool`, spec/api.md § Codecs): `{"anyOf": [<inner>, {"type":
-    /// "null"}]}`, never required. `flag` is its flag's field name.
-    Nullable { inner: Box<FieldSchema>, flag: String },
+    /// "null"}]}`, never required. `flag` is its flag's field name. A
+    /// presence triple's field (`clear_x: Bool` beside them) has `clear`, its
+    /// clear flag's name: `null` is then the field cleared, a value of its own
+    /// (`"x-hale-null": "clear"`).
+    Nullable { inner: Box<FieldSchema>, flag: String, clear: Option<String> },
     /// The presence flag of the optional field `of`: no JSON key (a JSON
     /// document leaves it out of a record's properties), a `bool` field as
     /// protobuf carries it. `flag` is the flag's own declared name, which an
     /// optional field's `Nullable::flag` names (its JSON key may differ).
-    Presence { of: String, flag: String },
+    /// `clears` marks a presence triple's clear flag (`clear_x`), which says
+    /// the payload sent `of` as `null`, rather than its presence flag.
+    Presence { of: String, flag: String, clears: bool },
     /// An enum (spec/api.md § Codecs), inline where it is used: `name` its
     /// declared name, and each variant with the schemas of its values (none
     /// for a payload-free variant). A payload-free enum is `{"type":
@@ -2322,6 +2327,7 @@ impl<'a> Schemas<'a> {
                     let mut required = Vec::new();
                     let is_bool = |te: &TypeExpr| matches!(self.shapes.dealias(te), TypeExpr::Primitive(PrimType::Bool, _));
                     let pairs = hale_syntax::json_gen::presence_pairs(fields, &is_bool);
+                    let clears = hale_syntax::json_gen::presence_clears(fields, &is_bool);
                     for f in fields {
                         let key = f
                             .tag
@@ -2330,7 +2336,11 @@ impl<'a> Schemas<'a> {
                             .unwrap_or_else(|| f.name.name.clone());
                         let name = f.name.name.as_str();
                         if let Some((of, _)) = pairs.iter().find(|(_, flag)| *flag == name) {
-                            properties.push((key, FieldSchema::Presence { of: of.to_string(), flag: name.to_string() }));
+                            properties.push((key, FieldSchema::Presence { of: of.to_string(), flag: name.to_string(), clears: false }));
+                            continue;
+                        }
+                        if let Some((of, _)) = clears.iter().find(|(_, clear)| *clear == name) {
+                            properties.push((key, FieldSchema::Presence { of: of.to_string(), flag: name.to_string(), clears: true }));
                             continue;
                         }
                         // a wire map: the element's schema without its key
@@ -2369,7 +2379,11 @@ impl<'a> Schemas<'a> {
                             let inner = map.unwrap_or_else(|| self.type_ref(&f.ty, out));
                             let schema = match inner {
                                 FieldSchema::Unformed => FieldSchema::Unformed,
-                                inner => FieldSchema::Nullable { inner: Box::new(inner), flag: flag.to_string() },
+                                inner => FieldSchema::Nullable {
+                                    inner: Box::new(inner),
+                                    flag: flag.to_string(),
+                                    clear: clears.iter().find(|(of, _)| *of == name).map(|(_, c)| c.to_string()),
+                                },
                             };
                             properties.push((key, schema));
                             continue;

@@ -710,6 +710,12 @@ fn main() {
   names neither. Never encode absence as a value the field's type can
   hold (`""`, `-1`, the epoch): the description cannot say so, and a
   client cannot tell it from a real value.
+- **A presence triple, when "not sent", "clear" and a value all differ.**
+  A PATCH keeps a field it is not sent, clears one sent as `null`, and
+  sets one sent a value. Add `clear_note: Bool = false` beside the pair,
+  and the handler reads `clear_note` before `has_note`. Use it only where
+  a caller must be able to clear: on a pair, `null` and "not sent" are
+  one answer, which is the right one for every other input.
 - **A map, when callers look entries up by name.** `bounded[Check; 16]
   indexed_by name` crosses as `{"db": {…}, "cache": {…}}`, and in the
   program it stays the bounded list it was, in order. A repeated key is

@@ -710,8 +710,9 @@ fn own_entries_run_to_exit_programs() {
     // whose codec, called by the program itself, decodes the same way; 8:
     // `tests/hale/api_codec_import_test.hl`, the same codec of an imported
     // type; 9: `tests/hale/api_value_map_test.hl`, whose map of values builds
-    // a record per member it reads.
-    assert_eq!(moved, 9, "the run-to-exit programs among the targets that lose a site");
+    // a record per member it reads; 10: `tests/hale/api_patch_field_test.hl`,
+    // whose codec of a presence triple decodes the same way.
+    assert_eq!(moved, 10, "the run-to-exit programs among the targets that lose a site");
     assert_eq!(more, [], "the copy's leak sites");
     assert_eq!(
         own,
@@ -761,6 +762,9 @@ fn own_entries_run_to_exit_programs() {
             // append whose operands are typed by the field and the
             // `recv` result, not a literal.
             "tests/hale/api_context_test.hl: Api::ask StringConcat @6428..6444 InvokedUnboundedly",
+            // `tests/hale/api_patch_field_test.hl`: its codec of presence triples,
+            // a nested record's refusal
+            "tests/hale/api_patch_field_test.hl: __api_decode_Inner StructLit(\"JsonError\") @4583..4627 InUnboundedLoop",
             "tests/hale/api_roles_test.hl: main StringConcat @10383..10408 InUnboundedLoop",
             "tests/hale/api_roles_test.hl: main StringConcat @10383..10401 InUnboundedLoop",
             "tests/hale/api_roles_test.hl: main StringConcat @10411..10465 InUnboundedLoop",
