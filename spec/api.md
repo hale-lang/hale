@@ -2292,8 +2292,11 @@ TypeScript and JavaScript clients type it `unknown`, as the response's
 `JSON.parse` gave it and as `JSON.stringify` writes it back, so a client
 is not byte-faithful; the server is. A program builds a value with
 `std::json::Value::parse(text) -> Value fallible(ParseError)`, held to the
-same rules, and a literal of one is refused, so every `Value` is one a
-codec or `parse` admitted. It reads one through its `.text` with
+same rules, or takes `std::json::Value::null()`. The check refuses a
+literal of one (by either spelling), a store into one (`v.text = …`,
+through a `let mut` copy or a record's field alike), and every other
+constructor, so every `Value` is one `parse` admitted; a codec reads one
+through `parse` too, and writes its text as it is. It reads one through its `.text` with
 `std::json`'s cursors (`find_field_raw`, `object_first`, ...). Two values
 are equal when their texts are; there is no semantic JSON equality.
 

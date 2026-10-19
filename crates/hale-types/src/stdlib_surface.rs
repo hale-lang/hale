@@ -1128,9 +1128,6 @@ pub const SURFACES: &[NsSurface] = &[
             // with unique literal keys.
             row!("valid", PURE, [Str] -> Bool, HaleBody("__json_valid")),
             row!("valid_object", PURE, [Str] -> Bool, HaleBody("__json_valid_object")),
-            // free-form JSON: the api codecs build a `Value` of text they
-            // have validated (spec/api.md § Codecs)
-            row!("__value_of", PURE, [Str] -> Named("__StdJsonValue"), HaleBody("__json_value_of")),
         ],
         open_prefixes: &[],
     },
@@ -1138,7 +1135,11 @@ pub const SURFACES: &[NsSurface] = &[
     // the codecs' rules (well-formed, 64 levels, 64 KiB)
     NsSurface {
         ns: &["json", "Value"],
-        fns: &[row!("parse", PURE, [Str] -> Named("__StdJsonValue") ! "ParseError", Renamed)],
+        fns: &[
+            row!("parse", PURE, [Str] -> Named("__StdJsonValue") ! "ParseError", Renamed),
+            // the JSON value `null`: what a codec holds before it reads one
+            row!("null", PURE, [] -> Named("__StdJsonValue"), Renamed),
+        ],
         open_prefixes: &[],
     },
     // GH #265 / R2 parity: `std::ts` (tree-sitter parsing) and

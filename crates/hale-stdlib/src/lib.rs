@@ -428,6 +428,7 @@ pub const PATH_RENAMES: &[(&[&str], &str)] = &[
     // free-form JSON (spec/api.md § Codecs): opaque, validated text
     (&["std", "json", "Value"], "__StdJsonValue"),
     (&["std", "json", "Value", "parse"], "__json_value_parse"),
+    (&["std", "json", "Value", "null"], "__json_value_null"),
     (&["std", "lang", "Lang"], "__StdLangLang"),
     (&["std", "lang", "Morpheme"], "__StdLangMorpheme"),
     (&["std", "log", "ConsoleSink"], "__StdLogConsoleSink"),

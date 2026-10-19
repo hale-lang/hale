@@ -623,3 +623,58 @@ fn a_json_value_is_described_as_any_and_carried_by_the_clients() {
     assert!(err.contains("its request is `std::json::Value`, which the JSON codec does not carry"), "the whole request: {err}");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// A checked program holds no `std::json::Value` that `parse` (or a
+/// codec, through `parse`) did not build: a store into one is refused,
+/// through a `let mut` copy and through a record's field alike, and so are
+/// a literal, by either spelling, and a constructor that would skip the
+/// check.
+#[test]
+fn a_json_value_is_built_only_by_parse() {
+    let dir = unique_dir("json_value_built");
+    let cases: [(&str, &str); 5] = [
+        (
+            "fn main() {\n    let mut v = std::json::Value::parse(\"{}\") or { return; };\n    v.text = \"null,\\\"injected\\\":true\";\n    println(v.text);\n}\n",
+            "`.text = …` writes into a `std::json::Value`",
+        ),
+        (
+            "fn main() {\n    let v = std::json::Value::parse(\"{}\") or { return; };\n    let mut w = v;\n    w.text = \"{\";\n    println(w.text);\n}\n",
+            "`.text = …` writes into a `std::json::Value`",
+        ),
+        (
+            "type Seat { name: String; config: std::json::Value; }\n\
+             fn main() {\n    let v = std::json::Value::parse(\"{}\") or { return; };\n    let mut s = Seat { name: \"a\", config: v };\n    s.config.text = \"{\";\n    println(s.config.text);\n}\n",
+            "`.text = …` writes into a `std::json::Value`",
+        ),
+        (
+            "fn main() {\n    let v = std::json::__value_of(\"{\");\n    println(v.text);\n}\n",
+            "unknown stdlib function `std::json::__value_of`",
+        ),
+        (
+            "fn main() {\n    let v = __StdJsonValue { text: \"{\" };\n    println(v.text);\n}\n",
+            "a `std::json::Value` is built by `std::json::Value::parse(text)`",
+        ),
+    ];
+    for (i, (src, want)) in cases.iter().enumerate() {
+        let file = dir.join(format!("case{i}.hl"));
+        std::fs::write(&file, src).unwrap();
+        let c = hale().arg("check").arg(&file).output().expect("check");
+        let err = String::from_utf8_lossy(&c.stderr);
+        assert!(!c.status.success(), "case {i} is refused: {err}");
+        assert!(err.contains(want), "case {i}: {err}");
+        if *want != "unknown stdlib function `std::json::__value_of`" {
+            assert!(err.contains("std::json::Value::parse(text)"), "case {i} names `parse`: {err}");
+        }
+    }
+    // the codec's own read and write still build through `parse`
+    let ok = dir.join("ok.hl");
+    std::fs::write(
+        &ok,
+        "type Seat { name: String; config: std::json::Value; }\n\
+         fn main() {\n    let v = std::json::Value::parse(\"{\\\"a\\\": 1}\") or { return; };\n    let s = Seat { name: \"a\", config: v };\n    let back = Seat::api_decode(Seat::api_encode(s)) or { println(err.kind); return; };\n    println(Seat::api_encode(back) + \" \" + std::json::Value::null().text);\n}\n",
+    )
+    .unwrap();
+    let r = hale().arg("run").arg(&ok).output().expect("run");
+    assert_eq!(String::from_utf8_lossy(&r.stdout), "{\"name\":\"a\",\"config\":{\"a\": 1}} null\n", "{}", String::from_utf8_lossy(&r.stderr));
+    let _ = std::fs::remove_dir_all(&dir);
+}

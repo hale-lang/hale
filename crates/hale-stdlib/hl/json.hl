@@ -1886,7 +1886,9 @@ fn __json_value_parse(text: String) -> __StdJsonValue fallible(ParseError) {
     return __StdJsonValue { text: text };
 }
 
-/// The `Value` of text a codec has already held to `parse`'s rules.
-fn __json_value_of(text: String) -> __StdJsonValue {
-    return __StdJsonValue { text: text };
+/// `std::json::Value::null()`: the JSON value `null`, which needs no
+/// checking. With `parse`, the only way a program (or a codec) builds a
+/// `Value`.
+fn __json_value_null() -> __StdJsonValue {
+    return __StdJsonValue { text: "null" };
 }

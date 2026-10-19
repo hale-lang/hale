@@ -20,8 +20,5 @@ fn main() {
     let vs = std::json::obj_value_string(it, json);
     let arr = std::json::array_first_span("[{\"b\": true}]");
     let found = std::json::iter_find_bool_field(arr, "[{\"b\": true}]", "b");
-    // The codec's constructor for a free-form `std::json::Value`: a
-    // generated decoder calls it once the text has been checked.
-    let raw = std::json::__value_of("[1]");
-    println(p + klen + vi, is_a, vb, vf, vs, found, range.start, raw.text);
+    println(p + klen + vi, is_a, vb, vf, vs, found, range.start);
 }

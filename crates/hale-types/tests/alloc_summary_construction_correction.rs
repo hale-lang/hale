@@ -320,7 +320,7 @@ fn own_scope_let_block_scope_test() {
             // called from a sink's bus handler); 478, and two more, since
             // a record's values are escaped byte by byte (the plain-byte
             // and hex-digit helpers); 480 since `std::json::Value` came
-            // (`parse` and the codecs' `__value_of`)
+            // (`parse` and `null`)
             changed_lines(&old.render(), &now.render()),
             [
                 "- # 480 fns, 29 entry points, 130 invoked-unboundedly",
@@ -767,9 +767,13 @@ fn own_entries_run_to_exit_programs() {
             "tests/hale/api_context_test.hl: Api::ask StringConcat @6428..6444 InvokedUnboundedly",
             // `tests/hale/api_json_value_test.hl`: its codec of JSON values, the
             // decoders' refusals and a list's appends
-            "tests/hale/api_json_value_test.hl: __api_decode_Log StructLit(\"JsonError\") @13879..13927 InUnboundedLoop",
-            "tests/hale/api_json_value_test.hl: __api_encode_Log StringConcat @14439..14448 InUnboundedLoop",
-            "tests/hale/api_json_value_test.hl: __api_encode_Log StringConcat @14466..14481 InUnboundedLoop",
+            "tests/hale/api_json_value_test.hl: __api_decode_Change StructLit(\"JsonError\") @8152..8201 InUnboundedLoop",
+            "tests/hale/api_json_value_test.hl: __api_decode_Change StructLit(\"JsonError\") @8770..8818 InUnboundedLoop",
+            "tests/hale/api_json_value_test.hl: __api_decode_Log StructLit(\"JsonError\") @13702..13752 InUnboundedLoop",
+            "tests/hale/api_json_value_test.hl: __api_decode_Log StructLit(\"JsonError\") @13812..13860 InUnboundedLoop",
+            "tests/hale/api_json_value_test.hl: __api_decode_Seat StructLit(\"JsonError\") @4003..4052 InUnboundedLoop",
+            "tests/hale/api_json_value_test.hl: __api_encode_Log StringConcat @14372..14381 InUnboundedLoop",
+            "tests/hale/api_json_value_test.hl: __api_encode_Log StringConcat @14399..14414 InUnboundedLoop",
             "tests/hale/api_json_value_test.hl: main StringConcat @2878..2950 InUnboundedLoop",
             "tests/hale/api_json_value_test.hl: nested StringConcat @1054..1064 InUnboundedLoop",
             "tests/hale/api_json_value_test.hl: nested StringConcat @1082..1093 InUnboundedLoop",

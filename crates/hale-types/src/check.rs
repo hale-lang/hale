@@ -17527,6 +17527,22 @@ impl<'a> Checker<'a> {
                     // one has no field to land in (the build refused it,
                     // "non-addressable type Perspective", with no
                     // location), as a read through one is refused.
+                    // a `std::json::Value`'s text was validated when it was
+                    // built (`parse`, or a codec's read), and the codecs write
+                    // it as it is: a store into it would put any text on the
+                    // wire, a sibling field injected or malformed JSON
+                    if matches!(&ty, Ty::Named(n) if n == hale_syntax::json_gen::JSON_VALUE) {
+                        self.diags.push(Diag::ty(
+                            f.span,
+                            format!(
+                                "`.{} = …` writes into a `std::json::Value`, whose text was validated when it \
+                                 was built and crosses the wire as it is: build another with \
+                                 `std::json::Value::parse(text)` and assign the whole value",
+                                f.name
+                            ),
+                        ));
+                        return Ty::Unknown;
+                    }
                     if let Ty::Named(n) = &ty {
                         let handle = match self.top.lookup(n) {
                             Some(TopSymbol::Perspective(_)) => Some("a perspective"),

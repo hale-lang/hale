@@ -114,15 +114,31 @@ pub const JSON_VALUE: &str = "__StdJsonValue";
 /// The most bytes a `std::json::Value` holds.
 pub const JSON_VALUE_MAX: usize = 65536;
 
-/// The statements that hold the JSON text `text` (a Hale expression) to a
-/// `std::json::Value`'s rules, failing for the field `key`: well-formed
-/// and at most 64 levels deep (`std::json::valid`), at most 64 KiB.
-fn json_value_check(text: &str, key: &str, ind: &str) -> String {
+/// The statements that make the JSON text `text` (a Hale expression) the
+/// `std::json::Value` `into`, failing for the field `key`: at most 64 KiB
+/// (`too_long`), then `std::json::Value::parse`, which holds it to a
+/// `Value`'s rules (well-formed, at most 64 levels deep; `wrong_type`). A
+/// codec builds a `Value` only through `parse`, as a program does: it has
+/// no constructor of its own a program could call.
+fn json_value_read(text: &str, into: &str, key: &str, ind: &str) -> String {
     format!(
         "{ind}if len({text}) > {JSON_VALUE_MAX} {{ fail JsonError {{ kind: \"too_long\", field: \"{key}\" }}; }}\n\
-         {ind}if !std::json::valid({text}) {{ fail JsonError {{ kind: \"wrong_type\", field: \"{key}\" }}; }}\n"
+         {ind}{into} = std::json::Value::parse({text}) or fail JsonError {{ kind: \"wrong_type\", field: \"{key}\" }};\n"
     )
 }
+
+/// What a codec writes for the `std::json::Value` `v`: its text, as it is.
+/// Every `Value` a checked program holds was built by `parse` (a codec's
+/// read included) and is never written into: the check refuses a literal,
+/// a store into one and any other constructor. Checking the text again
+/// here was measured and not kept: `std::json::valid` over a 40 KB value
+/// is ~140 µs, nineteen-twentieths of its encode.
+fn json_value_text(v: &str) -> String {
+    format!("{v}.text")
+}
+
+/// A `std::json::Value` the codec holds before it reads one: JSON `null`.
+const JSON_VALUE_NULL: &str = "std::json::Value::null()";
 
 /// A map of values (`indexed_by <key> -> <value>`, spec/api.md § Codecs):
 /// each record crosses as its `field` alone, keyed by its key, the record
@@ -679,7 +695,7 @@ fn generate_parser_src_mode(t: &JsonType, prefix: &str, strict: bool) -> String 
                 ));
             }
             // a JSON value's text; one left out is `null`
-            FieldKind::Raw => b.push_str(&format!("    let mut __f_{}: String = \"null\";\n", f.name)),
+            FieldKind::Raw => b.push_str(&format!("    let mut __f_{}: std::json::Value = {JSON_VALUE_NULL};\n", f.name)),
             FieldKind::Nested(_) | FieldKind::Enum { .. } => {
                 b.push_str(&format!("    let mut __raw_{}: String = \"\";\n", f.name));
             }
@@ -779,7 +795,7 @@ fn generate_parser_src_mode(t: &JsonType, prefix: &str, strict: bool) -> String 
                 FieldKind::Time => format!("__f_{} = {};", f.name, f.default_src.as_deref().unwrap_or(EPOCH)),
                 FieldKind::Nested(_) | FieldKind::Enum { .. } => format!("__raw_{} = \"\";", f.name),
                 FieldKind::List { .. } => format!("clear(__h_{}.b);", f.name),
-                FieldKind::Raw => format!("__f_{} = \"null\";", f.name),
+                FieldKind::Raw => format!("__f_{} = {JSON_VALUE_NULL};", f.name),
             };
             // a triple's field records which: `null` clears it
             let (cleared, set) = match clear_flag(t, &f.name) {
@@ -815,8 +831,7 @@ fn generate_parser_src_mode(t: &JsonType, prefix: &str, strict: bool) -> String 
             // a JSON value: its text as sent, held to a `Value`'s rules
             FieldKind::Raw => {
                 b.push_str(&format!("                    let __rt_{} = __s[__vs..__ve];\n", f.name));
-                b.push_str(&json_value_check(&format!("__rt_{}", f.name), &f.key, "                    "));
-                b.push_str(&format!("                    __f_{n} = __rt_{n};\n", n = f.name));
+                b.push_str(&json_value_read(&format!("__rt_{}", f.name), &format!("__f_{}", f.name), &f.key, "                    "));
             }
             // String: slice directly when escape-free (the common case),
             // only unescape-copy when the scan saw a backslash.
@@ -959,7 +974,7 @@ fn elem_zero(elem: &Elem, key: &str) -> String {
         Elem::Scalar(s, Some(c)) => c.from_int(&wire_zero(*s, &Some(c.clone()), &None), key),
         Elem::Scalar(s, None) => s.zero().to_string(),
         Elem::Time => EPOCH.to_string(),
-        Elem::Raw => "std::json::__value_of(\"null\")".to_string(),
+        Elem::Raw => JSON_VALUE_NULL.to_string(),
         Elem::Nested(tn) | Elem::Enum { name: tn, .. } => format!("{ZERO}{tn}() or raise"),
     }
 }
@@ -1032,7 +1047,7 @@ fn generate_zero_src(t: &JsonType) -> String {
                 }
             }
             FieldKind::Time => f.default_src.clone().unwrap_or_else(|| EPOCH.to_string()),
-            FieldKind::Raw => "std::json::__value_of(\"null\")".to_string(),
+            FieldKind::Raw => JSON_VALUE_NULL.to_string(),
             FieldKind::Nested(tn) | FieldKind::Enum { name: tn, .. } => format!("{ZERO}{tn}() or raise"),
             FieldKind::List { exact: false, .. } => continue,
             FieldKind::List { elem, cap, exact: true, .. } => format!("[{}; {cap}]", elem_zero(elem, &f.key)),
@@ -1143,7 +1158,7 @@ fn construct_src(t: &JsonType, json: bool) -> String {
             (FieldKind::Scalar(_), None) => Some(format!("{}: __f_{}", f.name, f.name)),
             (FieldKind::Nested(_) | FieldKind::Enum { .. }, _) => Some(format!("{}: __p_{}", f.name, f.name)),
             (FieldKind::Time, _) => Some(format!("{}: __f_{}", f.name, f.name)),
-            (FieldKind::Raw, _) => Some(format!("{}: std::json::__value_of(__f_{})", f.name, f.name)),
+            (FieldKind::Raw, _) => Some(format!("{}: __f_{}", f.name, f.name)),
             (FieldKind::List { exact: true, .. }, _) => Some(format!("{}: __a_{}", f.name, f.name)),
             (FieldKind::List { exact: false, .. }, _) => None,
         }))
@@ -1185,8 +1200,8 @@ fn json_elem_read(elem: &Elem, src: &str, key: &str, prefix: &str, ind: &str) ->
         // a JSON value: its text as sent, held to a `Value`'s rules
         Elem::Raw => {
             b.push_str(&format!("{ind}let __et = {src}[__es..__ee];\n"));
-            b.push_str(&json_value_check("__et", key, ind));
-            b.push_str(&format!("{ind}let __ev = std::json::__value_of(__et);\n"));
+            b.push_str(&format!("{ind}let mut __ev = {JSON_VALUE_NULL};\n"));
+            b.push_str(&json_value_read("__et", "__ev", key, ind));
         }
         Elem::Scalar(ScalarTy::Str, _) => {
             b.push_str(&format!("{ind}let __ev = std::json::unescape_string({src}[(__es + 1)..(__ee - 1)]);\n"));
@@ -1482,7 +1497,7 @@ fn generate_emit_src_mode(t: &JsonType, fn_prefix: &str) -> String {
             FieldKind::Enum { name, .. } => format!("{fn_prefix}{name}(__v.{})", f.name),
             FieldKind::Time => format!("\"\\\"\" + std::time::iso8601(__v.{}) + \"\\\"\"", f.name),
             // a JSON value: its text, byte for byte
-            FieldKind::Raw => format!("__v.{}.text", f.name),
+            FieldKind::Raw => json_value_text(&format!("__v.{}", f.name)),
             // a wire map: an object keyed by each record's key, the record
             // without it as the value (or a map of values', its value
             // alone), in the list's order
@@ -1569,7 +1584,7 @@ fn json_elem_write(elem: &Elem, v: &str, fn_prefix: &str) -> String {
         Elem::Scalar(_, Some(c)) => format!("to_string({})", c.to_int(v)),
         Elem::Scalar(_, None) => format!("to_string({v})"),
         Elem::Time => format!("\"\\\"\" + std::time::iso8601({v}) + \"\\\"\""),
-        Elem::Raw => format!("{v}.text"),
+        Elem::Raw => json_value_text(v),
         Elem::Nested(tn) | Elem::Enum { name: tn, .. } => format!("{fn_prefix}{tn}({v})"),
     }
 }
@@ -1602,7 +1617,7 @@ fn generate_pb_parser_src(t: &JsonType) -> String {
                 b.push_str(&format!("    let mut __f_{}: {} = {};\n", f.name, s.type_name(), init));
             }
             // a JSON value's text, a `string`; one left out is `null`
-            FieldKind::Raw => b.push_str(&format!("    let mut __f_{}: String = \"null\";\n", f.name)),
+            FieldKind::Raw => b.push_str(&format!("    let mut __f_{}: std::json::Value = {JSON_VALUE_NULL};\n", f.name)),
             FieldKind::Nested(_) | FieldKind::Enum { unit_only: false, .. } => {
                 b.push_str(&format!("    let mut __raw_{}: Bytes = std::bytes::from_string(\"\");\n", f.name));
             }
@@ -1686,8 +1701,7 @@ fn generate_pb_parser_src(t: &JsonType) -> String {
                         ));
                         if let FieldKind::Raw = f.kind {
                             // a JSON value's text, held to a `Value`'s rules
-                            b.push_str(&json_value_check("__s", &f.key, "            "));
-                            b.push_str(&format!("            __f_{} = __s;\n", f.name));
+                            b.push_str(&json_value_read("__s", &format!("__f_{}", f.name), &f.key, "            "));
                         } else if let FieldKind::Scalar(ScalarTy::Decimal(_)) = f.kind {
                             // A Decimal is its digits (proto3 has no decimal).
                             b.push_str(&format!(
@@ -1837,8 +1851,8 @@ fn pb_elem_read(elem: &Elem, key: &str, end: &str, bad: &str, ind: &str) -> Stri
                         "{ind}let __et = std::str::from_bytes(std::bytes::slice(__b, __ee, __ee + __el));\n"
                     ));
                     b.push_str(&format!("{ind}if len(__et) != __el {{ {wrong}; }}\n"));
-                    b.push_str(&json_value_check("__et", key, ind));
-                    b.push_str(&format!("{ind}let __ev = std::json::__value_of(__et);\n"));
+                    b.push_str(&format!("{ind}let mut __ev = {JSON_VALUE_NULL};\n"));
+                    b.push_str(&json_value_read("__et", "__ev", key, ind));
                 }
                 Elem::Scalar(d @ ScalarTy::Decimal(_), _) => {
                     b.push_str(&format!(
@@ -1941,7 +1955,7 @@ fn generate_pb_emit_src(t: &JsonType) -> String {
             },
             FieldKind::Nested(tn) => format!("__api_pb_put_msg({}, __api_pb_encode_{tn}({v}))", f.pb_no),
             // a JSON value: its text, a `string`
-            FieldKind::Raw => format!("__api_pb_put_str({}, {v}.text)", f.pb_no),
+            FieldKind::Raw => format!("__api_pb_put_str({}, {})", f.pb_no, json_value_text(&v)),
             FieldKind::Enum { name, unit_only: true } => format!("__api_pb_put_int({}, __api_pb_enum_no_{name}({v}))", f.pb_no),
             FieldKind::Enum { name, unit_only: false } => {
                 format!("__api_pb_put_msg({}, __api_pb_encode_{name}({v}))", f.pb_no)
@@ -1996,7 +2010,7 @@ fn pb_elem_put(elem: &Elem, no: u32, v: &str) -> String {
         Elem::Scalar(ScalarTy::Int, None) => format!("__api_pb_put_int({no}, {v})"),
         Elem::Scalar(ScalarTy::Decimal(_), _) => format!("__api_pb_put_str({no}, to_string({v}))"),
         Elem::Time => format!("__api_pb_put_int({no}, std::time::nanos({v}))"),
-        Elem::Raw => format!("__api_pb_put_str({no}, {v}.text)"),
+        Elem::Raw => format!("__api_pb_put_str({no}, {})", json_value_text(v)),
         Elem::Nested(tn) => format!("__api_pb_put_msg({no}, __api_pb_encode_{tn}({v}))"),
         Elem::Enum { name, unit_only: true } => format!("__api_pb_put_int({no}, __api_pb_enum_no_{name}({v}))"),
         Elem::Enum { name, unit_only: false } => format!("__api_pb_put_msg({no}, __api_pb_encode_{name}({v}))"),

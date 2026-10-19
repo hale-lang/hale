@@ -219,7 +219,9 @@ value must be well-formed JSON, at most 64 levels deep and 64 KiB long.
 In the program it is its text: read it with `std::json`'s cursors
 (`std::json::find_field_raw(seat.config.text, "theme")`), and build a new
 one with `std::json::Value::parse(text) or …`, which holds the text to
-the same rules. The description marks the field `{"x-hale-any": true}`,
+the same rules. That is the only way to make one (besides
+`std::json::Value::null()`): a literal and `seat.config.text = …` are
+refused, so a value you hold is always JSON. The description marks the field `{"x-hale-any": true}`,
 the `.proto` makes it a `string`, and the TypeScript client types it
 `unknown`.
 
