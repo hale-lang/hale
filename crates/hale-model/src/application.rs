@@ -243,6 +243,12 @@ pub struct StdlibAbsorption {
     pub entry_group: Option<u32>,
     /// The entry call's authored span.
     pub entry_provenance: ProvenanceId,
+    /// `Some(subject)` when the entry is no call but a DELIVERY: the
+    /// program's publish at `site` (a publish site of `from`, numbered
+    /// among its publishes, not its calls) reaching the handler of a
+    /// stdlib subscriber the program builds, node 0. A walk enters it
+    /// as a bus step from the publish, never at a call site.
+    pub entry_bus: Option<String>,
     /// Interior vertices, discovery order; node 0 is the entry.
     pub nodes: Vec<AbsorbedNode>,
 }
@@ -2218,7 +2224,9 @@ impl ApplicationModel {
                 };
                 join((c.from.0, c.site), pair);
             }
-            for a in &self.analyses.stdlib_absorption {
+            // A delivery entry sits at a publish site, which is no
+            // call site: it joins no dispatch class.
+            for a in self.analyses.stdlib_absorption.iter().filter(|a| a.entry_bus.is_none()) {
                 join(
                     (a.from.0, a.site),
                     a.entry_dispatch.clone(),

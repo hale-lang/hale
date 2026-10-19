@@ -1842,6 +1842,7 @@ fn absorbed_call_residue_contradicts_an_exact_cost_account() {
         let mut m = tiny_model();
         m.analyses.stdlib_absorption.push(
             hale_model::StdlibAbsorption {
+                entry_bus: None,
                 from: FunctionId(0),
                 site: 0,
                 entry_dispatch: None,

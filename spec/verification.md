@@ -180,7 +180,11 @@ main locus Org {
   with every stdlib subscriber the program instantiates (2026-10-19:
   `Logger.info` → `log.**` → `StdoutSink::on_event` → `println` is a
   path; the walk used to stop at the logger's publish, and a `forbid`
-  over a program that only logged held). A computed subject inside a
+  over a program that only logged held). The program's own publish
+  reaches a stdlib subscriber the program builds the same way, as a bus
+  step from the publish (`App::run -(publishes "log.app")->
+  std::log::StdoutSink::on_event`). A stdlib subscriber the program
+  never builds receives nothing and is no path. A computed subject inside a
   stdlib body, bounded by its locus's declared `**` patterns, composes
   with every subscriber whose subscription overlaps one; an unbounded
   one fails closed. A publish through a local binding

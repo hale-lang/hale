@@ -473,6 +473,7 @@ fn looped_stdlib_entry_with_carrier_is_unbounded() {
         analyses: Analyses {
             dispatch_plan: Default::default(),
             stdlib_absorption: vec![StdlibAbsorption {
+                entry_bus: None,
                 from: FunctionId(0),
                 site: 0,
                 entry_dispatch: None,
@@ -2690,6 +2691,7 @@ fn mixed_dispatch_alternatives_share_one_group() {
             // (site 0), carrying a summary-global group id that
             // differs from the local ordinal.
             stdlib_absorption: vec![StdlibAbsorption {
+                entry_bus: None,
                 from: FunctionId(0),
                 site: 0,
                 entry_dispatch: Some((

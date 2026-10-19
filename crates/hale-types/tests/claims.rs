@@ -920,3 +920,36 @@ fn a_publish_through_a_local_binding_is_a_computed_subject() {
         "{ds:?}"
     );
 }
+
+/// The reverse direction: the program's own publish reaching a stdlib
+/// subscriber it builds is a path, rendered as the bus step from the
+/// publish. Without the sink there is no path.
+#[test]
+fn a_program_publish_to_a_stdlib_sink_reaches_a_syscall() {
+    let program = |sink: &str| {
+        format!(
+            r#"
+    group app = {{ App }};
+    main locus App {{
+        params {{ {sink} }}
+        bus {{ publish "log.app" of type std::log::LogEvent; }}
+        claims {{ c: forbid reaches(app, effects(syscall)); }}
+        run() {{
+            "log.app" <- std::log::LogEvent {{ level: 1, msg: "raw", path: "app", fields: "", ts: 0 }};
+        }}
+    }}
+"#
+        )
+    };
+    let ds = diags(&program("sink: std::log::StdoutSink = std::log::StdoutSink { };"));
+    let hit = ds
+        .iter()
+        .find(|m| m.contains("claim `c` violated"))
+        .unwrap_or_else(|| panic!("{ds:?}"));
+    assert!(
+        hit.contains("`App::run` -(publishes \"log.app\")-> `std::log::StdoutSink::on_event`"),
+        "{hit}"
+    );
+    let ds = diags(&program(""));
+    assert!(!ds.iter().any(|m| m.contains("claim `c`")), "{ds:?}");
+}

@@ -798,6 +798,7 @@ fn two_stdlib_entries_to_one_callback_count_twice() {
     for site in 0..2u32 {
         m.analyses.stdlib_absorption.push(
             hale_model::StdlibAbsorption {
+                entry_bus: None,
                 from: handler,
                 site,
                 entry_dispatch: None,
@@ -846,6 +847,7 @@ fn stdlib_conformer_alternatives_take_the_max() {
     for _ in 0..2u32 {
         m.analyses.stdlib_absorption.push(
             hale_model::StdlibAbsorption {
+                entry_bus: None,
                 from: handler,
                 // One AUTHORED site, two conformers: alternatives
                 // of one dispatch share the site ordinal, which is
@@ -903,6 +905,7 @@ fn interior_dispatch_alternatives_take_the_max() {
     // re-emerging at the publishing callback.
     m.analyses.stdlib_absorption.push(
         hale_model::StdlibAbsorption {
+            entry_bus: None,
             from: handler,
             site: 0,
             entry_dispatch: None,
@@ -964,6 +967,7 @@ fn an_interior_edge_is_followed() {
     m.relations.calls.retain(|c| c.from != handler);
     m.analyses.stdlib_absorption.push(
         hale_model::StdlibAbsorption {
+            entry_bus: None,
             from: handler,
             site: 0,
             entry_dispatch: None,
@@ -1033,6 +1037,7 @@ fn a_site_mixing_both_call_accounts_is_one_dispatch() {
         .expect("the handler calls its emitter");
     m.analyses.stdlib_absorption.push(
         hale_model::StdlibAbsorption {
+            entry_bus: None,
             from: handler,
             site,
             entry_dispatch: None,

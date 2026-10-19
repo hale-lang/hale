@@ -415,7 +415,8 @@ and composes two edge kinds:
   direction). A publish inside a stdlib body reaches subscribers the
   same way, the stdlib's own included: a `std::log::Logger` call
   reaches the `StdoutSink` the program builds, and through it
-  `println`. A stdlib body's computed subject reaches every subscriber
+  `println` — and so does your own publish to `log.app`. A sink the
+  program never builds is no path. A stdlib body's computed subject reaches every subscriber
   its locus's declared `**` pattern can address; a computed subject in
   your own code (a publish through a variable) fails closed.
 

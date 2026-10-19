@@ -379,7 +379,15 @@ pub fn judge_forbid_reaches(
     // (from fn) → absorption entries (site, index).
     let mut absorb_of: BTreeMap<FunctionId, Vec<(u32, u32)>> =
         BTreeMap::new();
+    // (from fn, publish site) → delivery entries: the program's publish
+    // reaching a stdlib subscriber it builds.
+    let mut deliveries_of: BTreeMap<(FunctionId, u32), Vec<u32>> =
+        BTreeMap::new();
     for (ai, a) in absorption.iter().enumerate() {
+        if a.entry_bus.is_some() {
+            deliveries_of.entry((a.from, a.site)).or_default().push(ai as u32);
+            continue;
+        }
         absorb_of
             .entry(a.from)
             .or_default()
@@ -1072,9 +1080,26 @@ pub fn judge_forbid_reaches(
                                 diags.push(Diag::ty(row_span, msg));
                                 return Visit::hole(());
                             }
-                            for (_, sid, topic, written, ppid) in
+                            for (psite, sid, topic, written, ppid) in
                                 pubs_of.get(f).into_iter().flatten()
                             {
+                                // A stdlib subscriber the program
+                                // builds takes it too.
+                                for ai in deliveries_of
+                                    .get(&(*f, *psite))
+                                    .into_iter()
+                                    .flatten()
+                                {
+                                    edges.push((
+                                        V::Interior(*ai, 0),
+                                        StepIr::Bus {
+                                            subject: written.clone(),
+                                            publish_provenance: Some(*ppid),
+                                            subscribe_provenance: None,
+                                            from_stdlib: false,
+                                        },
+                                    ));
+                                }
                                 // A hole covering this publish's
                                 // TYPED identity — its declared
                                 // topic or its wire subject — means
@@ -3515,7 +3540,15 @@ pub fn judge_bound(
     }
     let mut absorb_of: BTreeMap<FunctionId, Vec<(u32, u32)>> =
         BTreeMap::new();
+    // (from fn, publish site) → delivery entries: the program's publish
+    // reaching a stdlib subscriber it builds.
+    let mut deliveries_of: BTreeMap<(FunctionId, u32), Vec<u32>> =
+        BTreeMap::new();
     for (ai, a) in absorption.iter().enumerate() {
+        if a.entry_bus.is_some() {
+            deliveries_of.entry((a.from, a.site)).or_default().push(ai as u32);
+            continue;
+        }
         absorb_of
             .entry(a.from)
             .or_default()
@@ -3818,6 +3851,7 @@ pub fn judge_bound(
         struct Ctx<'x> {
             calls_of: &'x BTreeMap<FunctionId, Vec<CallRow>>,
             absorb_of: &'x BTreeMap<FunctionId, Vec<(u32, u32)>>,
+            deliveries_of: &'x BTreeMap<(FunctionId, u32), Vec<u32>>,
             pubs_of: &'x BTreeMap<
                 FunctionId,
                 Vec<(
@@ -4038,6 +4072,23 @@ pub fn judge_bound(
                                 topic: *topic,
                                 wire: cx.wire_of(*sid),
                             });
+                            // Each stdlib subscriber the program builds
+                            // takes the publish: its handler's sites
+                            // count like a callee's.
+                            let psite = pubs[i].0;
+                            for ai in cx
+                                .deliveries_of
+                                .get(&(f, psite))
+                                .into_iter()
+                                .flatten()
+                            {
+                                evs.push(Ev::Call {
+                                    to: V::Interior(*ai, 0),
+                                    in_loop: *in_loop,
+                                    group: None,
+                                    prov: Some(*pprov),
+                                });
+                            }
                         }
                     }
                 }
@@ -4255,6 +4306,7 @@ pub fn judge_bound(
         let cx = Ctx {
             calls_of: &calls_of,
             absorb_of: &absorb_of,
+            deliveries_of: &deliveries_of,
             pubs_of: &pubs_of,
             holes_of: &holes_of,
             absorption,

@@ -2786,6 +2786,246 @@ pub fn derive_application_model_over(
     };
     let mut stdlib_absorption: Vec<hale_model::StdlibAbsorption> =
         Vec::new();
+    // The interior a walk entering the stdlib at `next` traverses:
+    // vertices in discovery order, each body's events in body order.
+    let absorb_interior = |next: &FnKey| -> Vec<hale_model::AbsorbedNode> {
+        let disp = |kk: &FnKey| -> String {
+            rename_table.demangle(&kk.display())
+        };
+        let mut nodes: Vec<hale_model::AbsorbedNode> = Vec::new();
+        let mut index: BTreeMap<FnKey, u32> = BTreeMap::new();
+        let mut order: Vec<FnKey> = Vec::new();
+        // A publish's deliveries to stdlib subscribers: each
+        // handler becomes an interior vertex of this entry.
+        let deliver = |reach: &[(String, String, String)],
+                       in_loop: bool,
+                       events: &mut Vec<hale_model::AbsorbedEvent>,
+                       index: &mut BTreeMap<FnKey, u32>,
+                       order: &mut Vec<FnKey>| {
+            for (subject, locus, handler) in reach {
+                let Some(hk) = merged.resolve(Some(locus), handler) else { continue };
+                let target = *index.entry(hk.clone()).or_insert_with(|| {
+                    order.push(hk.clone());
+                    (order.len() - 1) as u32
+                });
+                events.push(hale_model::AbsorbedEvent::Deliver {
+                    target,
+                    subject: subject.clone(),
+                    in_loop,
+                });
+            }
+        };
+        index.insert(next.clone(), 0);
+        order.push(next.clone());
+        let mut cursor = 0usize;
+        let mut truncated = false;
+        while cursor < order.len() {
+            if order.len() as u32 > crate::callgraph::MAX_STEPS {
+                // Explicit residue: a judgment must not treat a
+                // truncated interior as fully explored.
+                truncated = true;
+                break;
+            }
+            let n = order[cursor].clone();
+            cursor += 1;
+            let mut events: Vec<hale_model::AbsorbedEvent> =
+                Vec::new();
+            let node_direct = {
+                let d = inputs.effects.direct(&n);
+                if d.is_unclassified() {
+                    Vec::new()
+                } else {
+                    let mut c =
+                        crate::frontier::render_effects_named(
+                            d,
+                            &effect_names,
+                        );
+                    c.sort();
+                    c.dedup();
+                    c
+                }
+            };
+            let carries = merged
+                .carries
+                .get(&n)
+                .map(|set| {
+                    let mut c =
+                        crate::frontier::render_effects_named(
+                            *set,
+                            &effect_names,
+                        );
+                    c.sort();
+                    c.dedup();
+                    c
+                })
+                .unwrap_or_default();
+            if let Some(nfs) = merged.fns.get(&n) {
+                for e2 in &nfs.calls {
+                    match &e2.callee {
+                        Callee::Resolved(nn) => {
+                            let dsp = e2
+                                .via_interface
+                                .as_ref()
+                                .map(|i| {
+                                    (
+                                        rename_table.demangle(i),
+                                        nn.fn_name.clone(),
+                                    )
+                                });
+                            let target = if user_key(nn) {
+                                hale_model::AbsorbedTarget::User(
+                                    fid(nn),
+                                )
+                            } else {
+                                let idx = *index
+                                    .entry(nn.clone())
+                                    .or_insert_with(|| {
+                                        order.push(nn.clone());
+                                        (order.len() - 1) as u32
+                                    });
+                                hale_model::AbsorbedTarget::Interior(idx)
+                            };
+                            events.push(
+                                hale_model::AbsorbedEvent::Call {
+                                    target,
+                                    dispatch: dsp,
+                                    in_loop: e2.loop_depth > 0,
+                                    group: model_group(e2),
+                                },
+                            );
+                        }
+                        Callee::Unresolved(un) => {
+                            if e2.indirect
+                                || nfs
+                                    .fn_params
+                                    .iter()
+                                    .any(|pp| pp == un)
+                            {
+                                events.push(hale_model::AbsorbedEvent::CallHole(
+                                    hale_model::AbsorbedHoleKind::IndirectCall,
+                                ));
+                            } else if e2.opaque_method_call() {
+                                events.push(hale_model::AbsorbedEvent::CallHole(
+                                    hale_model::AbsorbedHoleKind::OpaqueCall {
+                                        callee: un.clone(),
+                                    },
+                                ));
+                            }
+                        }
+                    }
+                }
+                for site2 in &nfs.effect_sites {
+                    match &site2.kind {
+                        alloc_summary::EffectSiteKind::Publish(
+                            None,
+                        ) => {
+                            // Bounded by the declaring locus's
+                            // wildcard patterns: the language
+                            // requires one for a computed
+                            // subject and the publish site
+                            // enforces it, so a hole under
+                            // `io.tcp.**` cannot explain a
+                            // publisher of an application topic.
+                            // No locus (a free fn) or no
+                            // declaration recovered ⇒ empty ⇒
+                            // unconstrained, as before.
+                            let patterns = n
+                                .locus
+                                .as_ref()
+                                .and_then(|l| {
+                                    wildcard_publish_patterns
+                                        .get(l)
+                                })
+                                .cloned()
+                                .unwrap_or_default();
+                            // Bounded: deliver to every stdlib
+                            // subscriber a declared pattern can
+                            // address (unbounded fails closed at
+                            // the hole itself).
+                            let reach: Vec<(String, String, String)> = stdlib_subscribers
+                                .iter()
+                                .filter(|(sub, _, _)| {
+                                    patterns.iter().any(|p| hale_model::subjects_can_overlap(sub, p))
+                                })
+                                .cloned()
+                                .collect();
+                            events.push(
+                                hale_model::AbsorbedEvent::PublishHole {
+                                    patterns,
+                                },
+                            );
+                            deliver(&reach, site2.loop_depth > 0, &mut events, &mut index, &mut order);
+                        }
+                        alloc_summary::EffectSiteKind::Publish(
+                            Some(subj),
+                        ) => {
+                            // The SYNTACTIC form decides, same
+                            // rule as user publish rows: a
+                            // string literal is a wire address
+                            // even when its text collides with
+                            // a topic name (round 6).
+                            let declared_topic = if subj.literal
+                            {
+                                None
+                            } else {
+                                topic_id
+                                    .get(&subj.text)
+                                    .copied()
+                            };
+                            // The wire a stdlib subscription
+                            // matches: a declared topic's subject,
+                            // else the literal text.
+                            let wire = declared_topic
+                                .map(|t| e.subjects[e.topics[t.index()].subject.index()].pattern.clone())
+                                .unwrap_or_else(|| subj.text.clone());
+                            let reach: Vec<(String, String, String)> = stdlib_subscribers
+                                .iter()
+                                .filter(|(sub, _, _)| hale_model::subjects_can_overlap(sub, &wire))
+                                .cloned()
+                                .collect();
+                            events.push(
+                                hale_model::AbsorbedEvent::Publish {
+                                    subject: subj.text.clone(),
+                                    declared_topic,
+                                    in_loop: site2.loop_depth > 0,
+                                },
+                            );
+                            deliver(&reach, site2.loop_depth > 0, &mut events, &mut index, &mut order);
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            nodes.push(hale_model::AbsorbedNode {
+                display: disp(&n),
+                decl: n.locus.clone().unwrap_or_else(|| n.fn_name.clone()),
+                direct_effects: node_direct,
+                carries,
+                events,
+            });
+        }
+        if truncated {
+            // Truncation lands at the actual UNEXPANDED
+            // frontier (review round 3): every discovered-but-
+            // unwalked node materializes with a lone Truncated
+            // event, so (a) interior targets referencing it stay
+            // in range, (b) the known prefix keeps its complete
+            // event lists, and (c) a walk surfaces saturation
+            // exactly where knowledge ends — not on entry.
+            for k in order.iter().skip(nodes.len()) {
+                nodes.push(hale_model::AbsorbedNode {
+                    display: disp(k),
+                    decl: k.locus.clone().unwrap_or_else(|| k.fn_name.clone()),
+                    carries: Vec::new(),
+                    direct_effects: Vec::new(),
+                    events: vec![
+                        hale_model::AbsorbedEvent::Truncated,
+                    ],
+                });
+            }
+        }
+        nodes
+    };
     // MERGED summary: the evaluator's Cx.summary — stdlib conformer
     // alternatives and resolved stdlib methods only exist there.
     for (k, fs) in &merged.fns {
@@ -2862,241 +3102,7 @@ pub fn derive_application_model_over(
             let entry_group = model_group(edge);
             let entry_provenance =
                 intern_span(&mut records, edge.span);
-            let disp = |kk: &FnKey| -> String {
-                rename_table.demangle(&kk.display())
-            };
-            let mut nodes: Vec<hale_model::AbsorbedNode> = Vec::new();
-            let mut index: BTreeMap<FnKey, u32> = BTreeMap::new();
-            let mut order: Vec<FnKey> = Vec::new();
-            // A publish's deliveries to stdlib subscribers: each
-            // handler becomes an interior vertex of this entry.
-            let deliver = |reach: &[(String, String, String)],
-                           in_loop: bool,
-                           events: &mut Vec<hale_model::AbsorbedEvent>,
-                           index: &mut BTreeMap<FnKey, u32>,
-                           order: &mut Vec<FnKey>| {
-                for (subject, locus, handler) in reach {
-                    let Some(hk) = merged.resolve(Some(locus), handler) else { continue };
-                    let target = *index.entry(hk.clone()).or_insert_with(|| {
-                        order.push(hk.clone());
-                        (order.len() - 1) as u32
-                    });
-                    events.push(hale_model::AbsorbedEvent::Deliver {
-                        target,
-                        subject: subject.clone(),
-                        in_loop,
-                    });
-                }
-            };
-            index.insert(next.clone(), 0);
-            order.push(next.clone());
-            let mut cursor = 0usize;
-            let mut truncated = false;
-            while cursor < order.len() {
-                if order.len() as u32 > crate::callgraph::MAX_STEPS {
-                    // Explicit residue: a judgment must not treat a
-                    // truncated interior as fully explored.
-                    truncated = true;
-                    break;
-                }
-                let n = order[cursor].clone();
-                cursor += 1;
-                let mut events: Vec<hale_model::AbsorbedEvent> =
-                    Vec::new();
-                let node_direct = {
-                    let d = inputs.effects.direct(&n);
-                    if d.is_unclassified() {
-                        Vec::new()
-                    } else {
-                        let mut c =
-                            crate::frontier::render_effects_named(
-                                d,
-                                &effect_names,
-                            );
-                        c.sort();
-                        c.dedup();
-                        c
-                    }
-                };
-                let carries = merged
-                    .carries
-                    .get(&n)
-                    .map(|set| {
-                        let mut c =
-                            crate::frontier::render_effects_named(
-                                *set,
-                                &effect_names,
-                            );
-                        c.sort();
-                        c.dedup();
-                        c
-                    })
-                    .unwrap_or_default();
-                if let Some(nfs) = merged.fns.get(&n) {
-                    for e2 in &nfs.calls {
-                        match &e2.callee {
-                            Callee::Resolved(nn) => {
-                                let dsp = e2
-                                    .via_interface
-                                    .as_ref()
-                                    .map(|i| {
-                                        (
-                                            rename_table.demangle(i),
-                                            nn.fn_name.clone(),
-                                        )
-                                    });
-                                let target = if user_key(nn) {
-                                    hale_model::AbsorbedTarget::User(
-                                        fid(nn),
-                                    )
-                                } else {
-                                    let idx = *index
-                                        .entry(nn.clone())
-                                        .or_insert_with(|| {
-                                            order.push(nn.clone());
-                                            (order.len() - 1) as u32
-                                        });
-                                    hale_model::AbsorbedTarget::Interior(idx)
-                                };
-                                events.push(
-                                    hale_model::AbsorbedEvent::Call {
-                                        target,
-                                        dispatch: dsp,
-                                        in_loop: e2.loop_depth > 0,
-                                        group: model_group(e2),
-                                    },
-                                );
-                            }
-                            Callee::Unresolved(un) => {
-                                if e2.indirect
-                                    || nfs
-                                        .fn_params
-                                        .iter()
-                                        .any(|pp| pp == un)
-                                {
-                                    events.push(hale_model::AbsorbedEvent::CallHole(
-                                        hale_model::AbsorbedHoleKind::IndirectCall,
-                                    ));
-                                } else if e2.opaque_method_call() {
-                                    events.push(hale_model::AbsorbedEvent::CallHole(
-                                        hale_model::AbsorbedHoleKind::OpaqueCall {
-                                            callee: un.clone(),
-                                        },
-                                    ));
-                                }
-                            }
-                        }
-                    }
-                    for site2 in &nfs.effect_sites {
-                        match &site2.kind {
-                            alloc_summary::EffectSiteKind::Publish(
-                                None,
-                            ) => {
-                                // Bounded by the declaring locus's
-                                // wildcard patterns: the language
-                                // requires one for a computed
-                                // subject and the publish site
-                                // enforces it, so a hole under
-                                // `io.tcp.**` cannot explain a
-                                // publisher of an application topic.
-                                // No locus (a free fn) or no
-                                // declaration recovered ⇒ empty ⇒
-                                // unconstrained, as before.
-                                let patterns = n
-                                    .locus
-                                    .as_ref()
-                                    .and_then(|l| {
-                                        wildcard_publish_patterns
-                                            .get(l)
-                                    })
-                                    .cloned()
-                                    .unwrap_or_default();
-                                // Bounded: deliver to every stdlib
-                                // subscriber a declared pattern can
-                                // address (unbounded fails closed at
-                                // the hole itself).
-                                let reach: Vec<(String, String, String)> = stdlib_subscribers
-                                    .iter()
-                                    .filter(|(sub, _, _)| {
-                                        patterns.iter().any(|p| hale_model::subjects_can_overlap(sub, p))
-                                    })
-                                    .cloned()
-                                    .collect();
-                                events.push(
-                                    hale_model::AbsorbedEvent::PublishHole {
-                                        patterns,
-                                    },
-                                );
-                                deliver(&reach, site2.loop_depth > 0, &mut events, &mut index, &mut order);
-                            }
-                            alloc_summary::EffectSiteKind::Publish(
-                                Some(subj),
-                            ) => {
-                                // The SYNTACTIC form decides, same
-                                // rule as user publish rows: a
-                                // string literal is a wire address
-                                // even when its text collides with
-                                // a topic name (round 6).
-                                let declared_topic = if subj.literal
-                                {
-                                    None
-                                } else {
-                                    topic_id
-                                        .get(&subj.text)
-                                        .copied()
-                                };
-                                // The wire a stdlib subscription
-                                // matches: a declared topic's subject,
-                                // else the literal text.
-                                let wire = declared_topic
-                                    .map(|t| e.subjects[e.topics[t.index()].subject.index()].pattern.clone())
-                                    .unwrap_or_else(|| subj.text.clone());
-                                let reach: Vec<(String, String, String)> = stdlib_subscribers
-                                    .iter()
-                                    .filter(|(sub, _, _)| hale_model::subjects_can_overlap(sub, &wire))
-                                    .cloned()
-                                    .collect();
-                                events.push(
-                                    hale_model::AbsorbedEvent::Publish {
-                                        subject: subj.text.clone(),
-                                        declared_topic,
-                                        in_loop: site2.loop_depth > 0,
-                                    },
-                                );
-                                deliver(&reach, site2.loop_depth > 0, &mut events, &mut index, &mut order);
-                            }
-                            _ => {}
-                        }
-                    }
-                }
-                nodes.push(hale_model::AbsorbedNode {
-                    display: disp(&n),
-                    decl: n.locus.clone().unwrap_or_else(|| n.fn_name.clone()),
-                    direct_effects: node_direct,
-                    carries,
-                    events,
-                });
-            }
-            if truncated {
-                // Truncation lands at the actual UNEXPANDED
-                // frontier (review round 3): every discovered-but-
-                // unwalked node materializes with a lone Truncated
-                // event, so (a) interior targets referencing it stay
-                // in range, (b) the known prefix keeps its complete
-                // event lists, and (c) a walk surfaces saturation
-                // exactly where knowledge ends — not on entry.
-                for k in order.iter().skip(nodes.len()) {
-                    nodes.push(hale_model::AbsorbedNode {
-                        display: disp(k),
-                        decl: k.locus.clone().unwrap_or_else(|| k.fn_name.clone()),
-                        carries: Vec::new(),
-                        direct_effects: Vec::new(),
-                        events: vec![
-                            hale_model::AbsorbedEvent::Truncated,
-                        ],
-                    });
-                }
-            }
+            let nodes = absorb_interior(next);
             // Keep every entry that can matter to ANY judgment:
             // events (walks), carriers (counts), or direct effects
             // (effect sinks) — an effect-bearing leaf with no
@@ -3116,10 +3122,33 @@ pub fn derive_application_model_over(
                         entry_in_loop,
                         entry_group,
                         entry_provenance,
+                        entry_bus: None,
                         nodes,
                     },
                 );
             }
+        }
+    }
+    // The program's own publishes reaching a stdlib subscriber it
+    // builds: a delivery entry per (publish, subscriber), node 0 the
+    // handler, entered as a bus step from the publish.
+    for p in &r.publishes {
+        let wire = &e.subjects[p.subject.index()].pattern;
+        for (sub, locus, handler) in &stdlib_subscribers {
+            if !hale_model::subjects_can_overlap(sub, wire) {
+                continue;
+            }
+            let Some(hk) = merged.resolve(Some(locus), handler) else { continue };
+            stdlib_absorption.push(hale_model::StdlibAbsorption {
+                from: p.function,
+                site: p.site,
+                entry_dispatch: None,
+                entry_in_loop: p.in_loop,
+                entry_group: None,
+                entry_provenance: p.provenance,
+                entry_bus: Some(sub.clone()),
+                nodes: absorb_interior(hk),
+            });
         }
     }
     stdlib_absorption.sort_by_key(|a| (a.from, a.site));
