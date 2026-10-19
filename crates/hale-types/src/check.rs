@@ -842,6 +842,83 @@ fn bounded_return_diags(bundle: &Bundle<'_>, top: &crate::resolve::TopScope) -> 
     out
 }
 
+
+/// A record literal in a default that leaves out a field with no default
+/// of its own (`budget: BudgetSet = BudgetSet { }` where `BudgetSet` has a
+/// field `cap: Int;`). A default is typed where the literal or call that
+/// leaves it is, and that walk's own errors are not the caller's, so the
+/// literal's missing field reached no diagnostic and the build refused it
+/// ("literal missing field"). Refused at the literal, as anywhere else a
+/// record literal leaves a field out, for the defaults a declaration's
+/// literal does not check itself: a record type's field defaults and a
+/// fn's, method's or hook's param defaults (a locus's `params` defaults are
+/// typed where they are written, and report it there).
+fn literal_default_missing_field_diags(bundle: &Bundle<'_>, top: &crate::resolve::TopScope) -> Vec<Diag> {
+    use crate::listener_window::{visit_expr, Visited};
+    let literals = |e: &Expr, out: &mut Vec<Diag>| {
+        visit_expr(e, &mut |v| {
+            let Visited::Expr(Expr::Struct { path, inits, span, .. }) = v else { return };
+            let [seg] = path.segments.as_slice() else { return };
+            let Some(TopSymbol::Type(TypeInfo { kind: TypeKind::Struct(fields), .. })) = top.lookup(&seg.name) else {
+                return;
+            };
+            for f in fields {
+                // a `bounded` field starts empty and is never written in a literal
+                if f.has_default || matches!(f.ty, Ty::Bounded(_, _)) || inits.iter().any(|i| i.name.name == f.name) {
+                    continue;
+                }
+                out.push(Diag::ty(*span, format!("type `{}`: missing field `{}`", seg.name, f.name)));
+            }
+        });
+    };
+    let params = |ps: &[Param], out: &mut Vec<Diag>| {
+        for p in ps {
+            if let Some(d) = &p.default {
+                literals(d, out);
+            }
+        }
+    };
+    let fields = |t: &TypeDecl, out: &mut Vec<Diag>| {
+        if let TypeDeclBody::Struct(fs) = &t.body {
+            for f in fs {
+                if let Some(d) = &f.default {
+                    literals(d, out);
+                }
+            }
+        }
+    };
+    let mut out = Vec::new();
+    for p in bundle.programs.values() {
+        for d in flat_decls(&p.items) {
+            match d {
+                TopDecl::Fn(f) => params(&f.params, &mut out),
+                TopDecl::Type(t) => fields(t, &mut out),
+                TopDecl::Locus(l) => {
+                    for m in &l.members {
+                        match m {
+                            LocusMember::Fn(f) => params(&f.params, &mut out),
+                            LocusMember::Lifecycle(lc) => params(&lc.params, &mut out),
+                            LocusMember::Mode(md) => params(&md.params, &mut out),
+                            LocusMember::Failure(fd) => params(&fd.params, &mut out),
+                            LocusMember::Type(t) => fields(t, &mut out),
+                            _ => {}
+                        }
+                    }
+                }
+                TopDecl::Perspective(pd) => {
+                    for m in &pd.members {
+                        if let PerspectiveMember::Fn(f) = m {
+                            params(&f.params, &mut out);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    out
+}
+
 fn publish_in_default_diags(bundle: &Bundle<'_>) -> Vec<Diag> {
     use crate::listener_window::{visit_expr, Visited};
     fn sends(e: &Expr, out: &mut Vec<Diag>) {
@@ -1273,6 +1350,9 @@ fn walk_bundle(
         defaults_judged_at_literals: false,
         decl_diags_start: 0,
         struct_defaults_typing: Vec::new(),
+        default_scan: None,
+        default_uses: Vec::new(),
+        defaults_judged: BTreeSet::new(),
         default_evaluation: Vec::new(),
         array_elements: std::collections::HashMap::new(),
         decimal_literals: Vec::new(),
@@ -1352,6 +1432,7 @@ pub fn check_bundle_rules(
     diags.extend(crate::route_params_copy::stale_route_params_diags(bundle));
     diags.extend(crate::param_place_writes::param_place_write_diags(bundle, inputs.top));
     diags.extend(bounded_return_diags(bundle, top));
+    diags.extend(literal_default_missing_field_diags(bundle, top));
     diags.extend(walk.diags.iter().cloned());
     let mut by_decl = walk.by_decl.clone();
     let raw_frame_topics = raw_frame_topics(bundle, inputs.bindings);
@@ -11010,6 +11091,17 @@ struct Checker<'a> {
     /// them, innermost last: a default whose own literal leaves the same
     /// field is not entered again.
     struct_defaults_typing: Vec<*const Expr>,
+    /// While a default is typed where it is declared, with no binding in
+    /// scope (`judge_defaults_where_declared`): the bare names the walk
+    /// could not resolve, each with where it is read.
+    default_scan: Option<Vec<(String, Span)>>,
+    /// While a default is typed where a literal or call leaves it: the
+    /// scope stack's depth when it began (the frames below are the
+    /// caller's) and the literal or call, innermost last.
+    default_uses: Vec<(usize, Span)>,
+    /// The defaults `judge_defaults_where_declared` has judged, by place:
+    /// each once, however many walks reach its declaration.
+    defaults_judged: BTreeSet<usize>,
     /// While a default is typed where it is evaluated: the evaluation
     /// path, outermost first, each a struct literal that leaves a field
     /// or a call that leaves a parameter. A conversion typed there (a
@@ -11144,6 +11236,10 @@ impl ScopeStack {
             .expect("at least one scope")
             .insert(name.to_string(), sym);
     }
+    /// The frame that binds `name` innermost, counted from the outermost.
+    fn frame_of(&self, name: &str) -> Option<usize> {
+        self.frames.iter().rposition(|f| f.contains_key(name))
+    }
     fn lookup(&self, name: &str) -> Option<&LocalSym> {
         for frame in self.frames.iter().rev() {
             if let Some(s) = frame.get(name) {
@@ -11258,6 +11354,10 @@ impl<'a> Checker<'a> {
                                 &f.ty,
                             );
                         }
+                        // what a field default may read is judged here, where
+                        // it is declared, with no binding in scope
+                        let defaults: Vec<&'a Expr> = fields.iter().filter_map(|f| f.default.as_ref()).collect();
+                        self.judge_defaults_where_declared(&defaults, &t.generics);
                         // A field default is not typed here, but lowering
                         // emits it at every literal of the type that
                         // leaves the field, so the defaults its calls
@@ -14767,6 +14867,8 @@ impl<'a> Checker<'a> {
                 // The parser already enforces "main-only".
             }
             LocusMember::Lifecycle(lc) => {
+                let defaults: Vec<&'a Expr> = lc.params.iter().filter_map(|p| p.default.as_ref()).collect();
+                self.judge_defaults_where_declared(&defaults, &[]);
                 self.in_lifecycle = true;
                 self.locals.push();
                 for p in &lc.params {
@@ -14800,6 +14902,8 @@ impl<'a> Checker<'a> {
                 self.in_lifecycle = false;
             }
             LocusMember::Mode(md) => {
+                let defaults: Vec<&'a Expr> = md.params.iter().filter_map(|p| p.default.as_ref()).collect();
+                self.judge_defaults_where_declared(&defaults, &[]);
                 self.in_lifecycle = true;
                 self.locals.push();
                 for p in &md.params {
@@ -14862,6 +14966,8 @@ impl<'a> Checker<'a> {
                         ));
                     }
                 }
+                let defaults: Vec<&'a Expr> = fd.params.iter().filter_map(|p| p.default.as_ref()).collect();
+                self.judge_defaults_where_declared(&defaults, &[]);
                 self.in_lifecycle = true;
                 self.in_on_failure = true;
                 self.locals.push();
@@ -15374,6 +15480,10 @@ impl<'a> Checker<'a> {
         for p in &decl.params {
             self.check_type_annotation(&p.ty);
         }
+        // what a parameter's default may read is judged where it is
+        // declared, with no binding in scope (the generics are)
+        let defaults: Vec<&'a Expr> = decl.params.iter().filter_map(|p| p.default.as_ref()).collect();
+        self.judge_defaults_where_declared(&defaults, &[]);
         if let Some(ret) = &decl.ret {
             self.check_type_annotation(ret);
         }
@@ -17375,10 +17485,14 @@ impl<'a> Checker<'a> {
 
     fn lvalue_ty(&mut self, lv: &LValue) -> Ty {
         let mut ty = if lv.head.name == "self" {
+            self.note_self(lv.head.span);
             self.self_ty()
-        } else if let Some(s) = self.locals.lookup(&lv.head.name) {
-            s.ty.clone()
+        } else if let Some(s) = self.binding_of(&lv.head.name) {
+            s.ty
         } else {
+            // no module item is assigned: a name no binding answers is
+            // unknown, and in a default the caller's
+            self.note_unresolved(&lv.head);
             Ty::Unknown
         };
         let records = self.records_views();
@@ -18676,15 +18790,52 @@ impl<'a> Checker<'a> {
             || BARE_BUILTIN_CALLEES.contains(&name)
     }
 
+    /// The binding a bare name read or written resolves to in this scope,
+    /// if one does: the one path every such resolution takes (an
+    /// expression's read, an assignment's target), so the defaults' hooks
+    /// see every name a default resolves (`note_default_read`).
+    fn binding_of(&mut self, name: &str) -> Option<LocalSym> {
+        let sym = self.locals.lookup(name).cloned()?;
+        self.note_default_read(name);
+        Some(sym)
+    }
+
+    /// A bare name no binding and no module item answers: while a default
+    /// is typed where it is declared, the caller's
+    /// (`judge_defaults_where_declared`); a builtin callee is no such name.
+    /// `self` read or assigned: while a default is typed where it is
+    /// declared, the caller's (a record field's or a fn's, method's or
+    /// hook's default has no `self` of its own; a locus's params, whose
+    /// `self.<param>` is their own, are not judged this way).
+    fn note_self(&mut self, span: Span) {
+        if let Some(scan) = self.default_scan.as_mut() {
+            scan.push(("self".to_string(), span));
+        }
+    }
+
+    fn note_unresolved(&mut self, id: &Ident) {
+        if self.generic_fns.contains_key(id.name.as_str()) || BARE_BUILTIN_CALLEES.contains(&id.name.as_str()) {
+            return;
+        }
+        if let Some(scan) = self.default_scan.as_mut() {
+            scan.push((id.name.clone(), id.span));
+        }
+    }
+
     fn check_ident_expr(&mut self, id: &Ident, report_unknown: bool) -> Ty {
         let unshadowed = std::mem::take(&mut self.callee_unshadowed);
-        if let Some(s) = self.locals.lookup(&id.name).filter(|_| !unshadowed) {
-            if !self.defaults_judged_at_literals {
-                self.typed.ident_read(id.id, &self.default_evaluation, crate::typed_bodies::READ_BINDING);
+        if !unshadowed {
+            if let Some(s) = self.binding_of(&id.name) {
+                if !self.defaults_judged_at_literals {
+                    self.typed.ident_read(id.id, &self.default_evaluation, crate::typed_bodies::READ_BINDING);
+                }
+                return s.ty;
             }
-            return s.ty.clone();
         }
         let Some(sym) = self.top.lookup(&id.name) else {
+            if self.locals.lookup(&id.name).is_none() {
+                self.note_unresolved(id);
+            }
             // GH #1139: a name a block of this body bound and then
             // released is the block's — `hale check <file>` says so as
             // `hale check <seed>` and the build do, whatever the
@@ -19689,7 +19840,7 @@ impl<'a> Checker<'a> {
     /// conversion's where a value stands: the default's names mean what
     /// that scope says, and its values flow into what that scope makes of
     /// them. A default no literal leaves is never evaluated.
-    fn type_omitted_defaults(&mut self, literal: NodeId, decl: &'a TypeDecl, inits: &[StructInit]) {
+    fn type_omitted_defaults(&mut self, literal: NodeId, decl: &'a TypeDecl, inits: &[StructInit], at: Span) {
         let TypeDeclBody::Struct(fields) = &decl.body else { return };
         // Typed in every program, scalars or none: besides the conversion
         // rows, the walk is where the `ident_reads` and `omitted_args`
@@ -19728,6 +19879,10 @@ impl<'a> Checker<'a> {
         // for their walk as lowering pushes it for their lowering
         // (`populate_user_type_fields`).
         self.default_evaluation.push(literal.0);
+        self.default_uses.push((self.locals.frames.len(), at));
+        // the defaults this literal leaves are judged where they are
+        // declared, not as names of the default that holds the literal
+        let scan = self.default_scan.take();
         for (default, field, want) in omitted {
             self.struct_defaults_typing.push(default);
             let got = self.check_expr(default);
@@ -19736,6 +19891,8 @@ impl<'a> Checker<'a> {
             }
             self.struct_defaults_typing.pop();
         }
+        self.default_scan = scan;
+        self.default_uses.pop();
         self.default_evaluation.pop();
         self.generic_params.truncate(generics);
         self.discard_keeping_unit_errors(mark);
@@ -20417,6 +20574,141 @@ impl<'a> Checker<'a> {
     /// path and caller monomorph, retaining each default's source site,
     /// and their casts' conversions under the evaluation path that ends
     /// at the invocation (`default_evaluation`).
+    /// A default is evaluated where the literal or call that leaves it is
+    /// written, so a name it reads that the checker resolves there to a
+    /// binding of the caller's (one below the frames the default opened)
+    /// is the caller's. A default reads only its own fields and constants
+    /// (spec/types.md § Locus params): a name that is a module-level item
+    /// or a builtin, which a caller's binding shadows, is refused at the
+    /// literal or call. Any other name is refused where the default is
+    /// declared (`judge_defaults_where_declared`). Kept through the
+    /// discarding walk that types the default, and said once.
+    fn note_default_read(&mut self, name: &str) {
+        let Some(&(depth, at)) = self.default_uses.last() else { return };
+        if !self.locals.frame_of(name).is_some_and(|f| f < depth) {
+            return;
+        }
+        let module_level = self.top.lookup(name).is_some()
+            || BARE_BUILTIN_CALLEES.contains(&name)
+            || hale_syntax::parser::primitive_from_name(name).is_some();
+        if !module_level {
+            return;
+        }
+        let d = Diag::ty(
+            at,
+            format!(
+                "a default reads only its own fields and constants; `{name}` here is the caller's binding, which a \
+                 default left out here would read in place of the module's `{name}`: rename the binding or pass the value"
+            ),
+        );
+        // kept as a quantity rule's error is (`discard_keeping_unit_errors`),
+        // once in the declaration's result
+        self.unit_findings.insert((d.span.start.as_usize(), d.span.end.as_usize(), d.message.clone()));
+        let start = self.decl_diags_start.min(self.diags.len());
+        if !self.diags[start..].iter().any(|seen| seen.span == d.span && seen.message == d.message) {
+            self.diags.push(d);
+        }
+    }
+
+    /// A locus literal that leaves params evaluates their defaults where it
+    /// is written; their names are typed where the locus declares them, so
+    /// here the defaults are walked once more only to ask which names the
+    /// caller's bindings would answer (`note_default_read`). The walk is
+    /// discarded but for those refusals.
+    fn probe_locus_defaults(&mut self, defaults: &[&'a Expr], at: Span) {
+        // a default whose own literal leaves it again (`next: Node = Node
+        // { }`) is not entered again
+        let defaults: Vec<&'a Expr> =
+            defaults.iter().copied().filter(|d| !self.struct_defaults_typing.contains(&(*d as *const Expr))).collect();
+        if defaults.is_empty() {
+            return;
+        }
+        let seen = (self.locals.closed.clone(), self.expr_types.as_ref().map(Vec::len));
+        let opened = self.struct_defaults_typing.is_empty();
+        if opened {
+            self.typed.open_walk();
+        }
+        let mark = self.walk_mark();
+        let judged = std::mem::replace(&mut self.defaults_judged_at_literals, false);
+        // a locus's params read their own `self`, judged where written
+        let scan = self.default_scan.take();
+        self.default_uses.push((self.locals.frames.len(), at));
+        for d in defaults {
+            self.struct_defaults_typing.push(d);
+            let _ = self.check_expr(d);
+            self.struct_defaults_typing.pop();
+        }
+        self.default_uses.pop();
+        self.default_scan = scan;
+        self.defaults_judged_at_literals = judged;
+        self.discard_keeping_unit_errors(mark);
+        if opened {
+            let _ = self.typed.close_walk();
+        }
+        self.locals.closed = seen.0;
+        if let (Some(n), Some(types)) = (seen.1, self.expr_types.as_mut()) {
+            types.truncate(n);
+        }
+    }
+
+    /// A default reads only its own fields and constants (spec/types.md §
+    /// Locus params): each is typed once where it is declared, with no
+    /// binding in scope, and every bare name the checker cannot resolve
+    /// there (a caller's local, a fn value bound there, an earlier
+    /// parameter) is refused at the name. What the walk resolves, how it
+    /// scopes the default's own bindings and which `or` words are a
+    /// narrowing's policy are the checker's answers, the same as at every
+    /// literal and call that leaves the default. The walk is no
+    /// evaluation: it records nothing, and its other findings are not
+    /// reported here.
+    fn judge_defaults_where_declared(&mut self, defaults: &[&'a Expr], generics: &[GenericParam]) {
+        let defaults: Vec<&'a Expr> =
+            defaults.iter().copied().filter(|d| self.defaults_judged.insert(*d as *const Expr as usize)).collect();
+        if defaults.is_empty() {
+            return;
+        }
+        let saved_locals = std::mem::replace(&mut self.locals, ScopeStack::new());
+        let seen = self.expr_types.as_ref().map(Vec::len);
+        let opened = self.struct_defaults_typing.is_empty();
+        if opened {
+            self.typed.open_walk();
+        }
+        let mark = self.walk_mark();
+        let generic_count = self.generic_params.len();
+        self.generic_params.extend(generics.iter().map(|g| g.name.name.clone()));
+        let judged = std::mem::replace(&mut self.defaults_judged_at_literals, true);
+        let scan = std::mem::replace(&mut self.default_scan, Some(Vec::new()));
+        let uses = std::mem::take(&mut self.default_uses);
+        for d in defaults {
+            self.struct_defaults_typing.push(d);
+            let _ = self.check_expr(d);
+            self.struct_defaults_typing.pop();
+        }
+        let unresolved = std::mem::replace(&mut self.default_scan, scan).unwrap_or_default();
+        self.default_uses = uses;
+        self.defaults_judged_at_literals = judged;
+        self.generic_params.truncate(generic_count);
+        self.discard_since(mark);
+        if opened {
+            let _ = self.typed.close_walk();
+        }
+        if let (Some(n), Some(types)) = (seen, self.expr_types.as_mut()) {
+            types.truncate(n);
+        }
+        self.locals = saved_locals;
+        let mut said: BTreeSet<(usize, usize)> = BTreeSet::new();
+        for (name, span) in unresolved {
+            if said.insert((span.start.as_usize(), span.end.as_usize())) {
+                let message = if name == "self" {
+                    "a default reads only its own fields and constants; `self` here is the caller's".to_string()
+                } else {
+                    format!("a default reads only its own fields and constants; `{name}` is in the caller's scope")
+                };
+                self.diags.push(Diag::ty(span, message));
+            }
+        }
+    }
+
     fn record_omitted_defaults(&mut self, invocation: NodeId, callee: &Expr, supplied: usize) {
         if self.default_invocations.contains(&invocation.0) {
             return;
@@ -20480,11 +20772,15 @@ impl<'a> Checker<'a> {
         // for their walk as lowering pushes it for their lowering
         // (`lower_default_in_caller`).
         self.default_evaluation.push(invocation.0);
+        self.default_uses.push((self.locals.frames.len(), callee.span()));
+        let scan = self.default_scan.take();
         for (default, param, te) in defaults {
             let got = self.check_expr(default);
             let want = crate::resolve::resolve_type_expr(te, self.known);
             self.default_flows_into(&format!("param `{param}`"), &want, &got, default);
         }
+        self.default_scan = scan;
+        self.default_uses.pop();
         self.default_evaluation.pop();
         self.default_invocations.pop();
         // The param accesses the defaults reached stay, as the
@@ -21457,6 +21753,7 @@ impl<'a> Checker<'a> {
             }
             Expr::Path2 { .. } => Ty::Unknown,
             Expr::KwSelf(span) => {
+                self.note_self(*span);
                 if self.current_locus.is_none() {
                     self.diags.push(Diag::ty(
                         *span,
@@ -25101,7 +25398,7 @@ impl<'a> Checker<'a> {
                                     )
                                 })
                                 .collect();
-                            self.type_omitted_defaults(literal, td, inits);
+                            self.type_omitted_defaults(literal, td, inits, span);
                             return self.check_literal_fields(
                                 name, &fields, "type", true, inits, span,
                             );
@@ -25214,7 +25511,27 @@ impl<'a> Checker<'a> {
         };
         if let Some(decl) = self.type_decls.get(name).copied() {
             if kind_label == "type" {
-                self.type_omitted_defaults(literal, decl, inits);
+                self.type_omitted_defaults(literal, decl, inits, span);
+            }
+        }
+        // a locus's params defaults are evaluated where it is built too
+        if kind_label == "locus" {
+            if let Some(l) = self.locus_decls.get(name).copied() {
+                let omitted: Vec<&'a Expr> = l
+                    .members
+                    .iter()
+                    .filter_map(|m| match m {
+                        LocusMember::Params(pb) => Some(pb.params.iter()),
+                        _ => None,
+                    })
+                    .flatten()
+                    .filter(|p| !inits.iter().any(|i| i.name.name == p.name.name))
+                    .filter_map(|p| match &p.init {
+                        ParamInit::Value(e) if p.serve.is_none() => Some(e),
+                        _ => None,
+                    })
+                    .collect();
+                self.probe_locus_defaults(&omitted, span);
             }
         }
 

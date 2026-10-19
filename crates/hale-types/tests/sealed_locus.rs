@@ -315,6 +315,17 @@ fn error_sites(src: &str) -> Vec<(String, String)> {
         .collect()
 }
 
+/// A method's or a fn's parameter default has no `self` of its own: one
+/// there is the caller's (spec/types.md § Locus params).
+const DEFAULT_SELF: &str = "a default reads only its own fields and constants; `self` here is the caller's";
+
+/// [`error_sites`], sorted.
+fn sorted_sites(src: &str) -> Vec<(String, String)> {
+    let mut sites = error_sites(src);
+    sites.sort();
+    sites
+}
+
 const SEALED_KEY_READ: &str = "`Signer` is `@sealed`: its `params` are readable only from inside its own \
      methods, and `Signer.key` reads one from outside — call one of its methods instead (sign)";
 
@@ -322,7 +333,8 @@ const SEALED_KEY_READ: &str = "`Signer` is `@sealed`: its `params` are readable 
 fn a_default_reading_a_sealed_param_is_refused_where_it_is_written() {
     // The default is typed at each call that leaves it, in the caller's
     // scope, and that walk's findings are discarded; its accesses are
-    // kept, a row per evaluation, and refused once at the default.
+    // kept, a row per evaluation, and refused once at the default. The
+    // default reads a `self`, which is the caller's: refused too.
     let src = format!(
         "{SEALED_SIGNER}
         locus Gateway {{
@@ -335,7 +347,8 @@ fn a_default_reading_a_sealed_param_is_refused_where_it_is_written() {
         fn main() {{ App {{ }}; }}
         "
     );
-    assert_eq!(error_sites(&src), vec![("self.s.key".to_string(), SEALED_KEY_READ.to_string())]);
+    let both = vec![("self".to_string(), DEFAULT_SELF.to_string()), ("self.s.key".to_string(), SEALED_KEY_READ.to_string())];
+    assert_eq!(sorted_sites(&src), both);
     // Two declarations evaluating one default: still once.
     let shared = format!(
         "{SEALED_SIGNER}
@@ -352,10 +365,12 @@ fn a_default_reading_a_sealed_param_is_refused_where_it_is_written() {
         fn main() {{ App {{ }}; }}
         "
     );
-    assert_eq!(error_sites(&shared), vec![("self.s.key".to_string(), SEALED_KEY_READ.to_string())]);
-    // Unsealed, both read freely.
-    assert!(error_sites(&src.replace("@sealed ", "")).is_empty());
-    assert!(error_sites(&shared.replace("@sealed ", "")).is_empty());
+    assert_eq!(sorted_sites(&shared), both);
+    // Unsealed, the sealed rule says nothing; the default's `self` is still
+    // the caller's.
+    let caller_self = vec![("self".to_string(), DEFAULT_SELF.to_string())];
+    assert_eq!(error_sites(&src.replace("@sealed ", "")), caller_self);
+    assert_eq!(error_sites(&shared.replace("@sealed ", "")), caller_self);
 }
 
 #[test]
@@ -569,7 +584,7 @@ fn a_sealed_generic_locus_reads_its_own_params_in_every_specialization() {
 }
 
 #[test]
-fn a_default_evaluated_inside_the_sealed_locus_is_clean() {
+fn a_default_inside_the_sealed_locus_meets_no_sealed_rule() {
     let src = "
         @sealed locus Signer {
             params { key: Int = 7; }
@@ -579,5 +594,7 @@ fn a_default_evaluated_inside_the_sealed_locus_is_clean() {
         main locus App { params { s: Signer = Signer { }; } }
         fn main() { App { }; }
     ";
-    assert!(error_sites(src).is_empty(), "{:?}", error_sites(src));
+    // the sealed rule refuses nothing; a method's default reads no `self`
+    // of its own, wherever it is called from
+    assert_eq!(error_sites(src), vec![("self".to_string(), DEFAULT_SELF.to_string())]);
 }

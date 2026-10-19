@@ -3487,10 +3487,10 @@ row	Holder_String@main2	Holder_String	main	default
 == crates/hale-codegen/tests/generic_monomorph_agreement.rs#06768d69
 dynamic	Holder	on main|unresolved arguments	in the seed
 
-== crates/hale-codegen/tests/generic_monomorph_agreement.rs#17a6d7cc
-dynamic	Display	on main	in the seed
+== crates/hale-codegen/tests/generic_monomorph_agreement.rs#aef07c01
+row	Display@main1	Display	main	default
 
-== crates/hale-codegen/tests/generic_monomorph_agreement.rs#2ed79cb2
+== crates/hale-codegen/tests/generic_monomorph_agreement.rs#f2b43e62
 row	Holder_Int@main1	Holder_Int	main	default
 row	Holder_String@main2	Holder_String	main	default
 
@@ -7680,6 +7680,15 @@ row	Desk@literal1.bearer	Tokens	main	default
 row	Desk@literal1.local	Local	main	default
 row	Desk@literal1.other	Other	main	default
 
+== tests/hale/api/defaults_test.hl
+root	Desk	the entry
+domain	pool:__api_grpc	async_io
+row	Desk@literal1	Desk	main	default
+row	Desk@literal1.bearer	Tokens	main	default
+row	Desk@literal1.probe	Probe	main	default
+shared	Desk@literal1.__rpc_g_1	__StdIoH2Listener #b0c4764c
+shared	dynamic	sites in the seed #d81b1982
+
 == tests/hale/api/identity_test.hl
 root	App	the entry
 domain	pool:work	async_io
@@ -8182,6 +8191,9 @@ row	__StdBytesBytesBuilder@main1	__StdBytesBytesBuilder	main	default
 row	__StdBytesBytesBuilder@main2	__StdBytesBytesBuilder	main	default
 row	__StdBytesBytesBuilder@main3	__StdBytesBytesBuilder	main	default
 dynamic	__StdBytesBytesBuilder	on main	in the seed
+
+== tests/hale/literal_default_test.hl
+row	Pool@main1	Pool	main	default
 
 == tests/hale/local_place_value_test.hl
 row	App@main1	App	main	default

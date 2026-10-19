@@ -221,7 +221,7 @@ stdlib, which keep their own representation class (the table above).
 | Slice / array | `[T]` or `[T; N]` | Dynamic or fixed-size |
 | Bounded collection | `bounded[T; N]` | Fixed-capacity counted list, INLINE in its containing type/params (`{ i64 len, [N x T] }`). See § "bounded[T; N]" below. |
 | Tuple | `(A, B, C)` | Fixed-size heterogeneous |
-| Struct | `type Foo { x: Int; y: Int = 0; }` | Named record, a **value**: `let b = a;` copies (see § "A struct binding is a copy").  Each field can declare a default value (`= expr`); literals omitting a defaulted field fill it from the default at instantiation time. |
+| Struct | `type Foo { x: Int; y: Int = 0; }` | Named record, a **value**: `let b = a;` copies (see § "A struct binding is a copy").  Each field can declare a default value (`= expr`); literals omitting a defaulted field fill it from the default at instantiation time, the default evaluated where the literal that leaves it is written. A default reads only its constants and the module's items, never the literal's scope (§ Locus params). |
 | Enum | `type Foo = enum { A, B(int) };` | Tagged union (sum type). A constructor call carries the variant's declared values: `Foo::B(x)` is checked for the count and each value's type, a Decimal literal taking the field's scale ("\`Foo::B\` value 0: expected \`Int\`, got \`String\`"). A payload-free enum is stored as its tag. |
 | Set | `type Inbound = Book \| Trade;` | Untagged union: each member is a declared struct or enum and is its own discriminant. A member's value is the set's where a set is expected; `match` names a member by its type. See § "Set types". |
 | Alias | `type Thing = Int;` | A second SPELLING of a type, not a new type. See § "Type aliases". |
@@ -1362,12 +1362,12 @@ locus's specialization even when construction happens inside another
 generic function or locus. Specializations discovered in these bodies
 are checked in turn.
 
-Omitted function and method defaults are typed at each invocation in
-the caller's scope. Their generic call rows retain the default's source
-site and distinguish the invocation path and the caller's specialization.
-The same default can therefore use `Int` in one caller and `String` in
-another. Lowering reads the corresponding checked row; supplied arguments
-do not evaluate the default.
+Omitted function and method defaults are typed at each invocation that
+leaves them. Their generic call rows retain the default's source site and
+distinguish the invocation path and the caller's specialization. A
+default reads only its constants and the module's items (§ Locus params),
+so every invocation types it alike. Lowering reads the corresponding
+checked row; supplied arguments do not evaluate the default.
 
 **Where the arguments come from.** A struct / locus literal spelled
 with the template name (`Box { value: 1 }`, `Cache { cap: 2 }`)
@@ -1519,13 +1519,49 @@ not supported in v0; explicit is preferred for the `inferred`-vs-
 Three init shapes:
 
 - `name: T = expr;` — default. Used when the caller omits the
-  field; evaluated in the caller's scope at instantiation time. A
+  field; evaluated where the locus is built, at instantiation time.
+  **A default reads only its own fields and constants**, never the
+  scope of the literal or call that leaves it. That holds for every
+  default: a locus's param, a record type's field, a fn's, method's or
+  hook's param. Each name a default reads must be one of these:
+  - a module-level item: a constant, a free fn (as a call or a value), a
+    type, a variant, a locus;
+  - a builtin, or a primitive's conversion (`Time(3ns)`);
+  - a qualified path (no local is qualified);
+  - a name the default binds itself (a block's `let`, a `match` arm's
+    binding, an `or` handler's `err`), where that binding is in scope:
+    after its `let` and within its block, within its arm or handler. A
+    read in a `let`'s own initializer, or after the block that bound it,
+    is not the default's. The checker answers each of these, typing the
+    default once where it is declared with no binding in scope, as it
+    types it wherever it is evaluated: a word after `or` is a
+    narrowing's policy (`T(x) or clamp`) only where the `or` narrows,
+    and after any other fallible (`parse_int(s) or clamp`) it is a name
+    like any other;
+  - for a locus's param only, an earlier param through `self.<param>`.
+
+  Anything else is refused where the default is written ("a default
+  reads only its own fields and constants; `a` is in the caller's
+  scope"): a caller's local, a fn value bound there, an earlier
+  parameter of the same fn. So is `self` in a record field's or a fn's,
+  method's or hook's parameter default, where it would be the
+  caller's. A default that calls a fn leaving out a parameter, or
+  builds a record leaving out a field, expands defaults held to the
+  same rule where they are declared. Where a literal or call leaves a
+  default out, a caller binding of a name the default reads (a `let K`
+  beside `const K`) would be read in its place, so the check refuses
+  that literal or call ("`K` here is the caller's binding, …"): rename
+  the binding or pass the value. A
   default publishes nothing: a `<-` (or a `Topic.write`) written in
   any default (a locus's param, a record type's field, a fn's,
   method's or hook's param) is refused at the send, since the scope
   that evaluates it holds none of the declaration's bus ("a publish in
   a default: …; publish from a hook or a method instead"). A method
-  the default calls may publish.
+  the default calls may publish. A record literal written in a default is held to
+  every record literal's rule: it writes each field that has no
+  default of its own, and one that leaves such a field out is refused
+  at the literal ("type `T`: missing field `f`"), in any default, by
+  the check rather than the build.
 - `name: T;` — **required**. The caller MUST supply the field at
   the locus literal site; instantiation without it is a compile
   error. Use for fields where no sensible default exists (e.g.

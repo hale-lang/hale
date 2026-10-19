@@ -2907,3 +2907,239 @@ interface Handler { fn a(x: A) -> String; }
         );
     }
 }
+
+mod default_literal_tests {
+    //! A record literal in a default is held to the rule every record
+    //! literal is: a field with no default of its own is written. A default
+    //! is typed where it is evaluated, and that walk's errors are not the
+    //! caller's, so a literal default that left one out passed the check and
+    //! failed the build ("literal missing field").
+
+    use super::*;
+    use hale_syntax::parse_source;
+
+    fn errors(src: &str) -> Vec<String> {
+        let p = parse_source(src).unwrap_or_else(|d| panic!("parse: {:?}", d[0].message));
+        check_program(&p).into_iter().filter(|d| d.is_error()).map(|d| d.message).collect()
+    }
+
+    const BUDGET: &str = "type BudgetSet { cap: Int; spent: Int = 0; slots: bounded[Int; 4]; }\n";
+
+    #[test]
+    fn a_literal_default_missing_a_field_is_refused_at_the_literal() {
+        let missing = vec!["type `BudgetSet`: missing field `cap`".to_string()];
+        // a record type's field default
+        assert_eq!(errors(&format!("{BUDGET}type Cfg {{ budget: BudgetSet = BudgetSet {{ }}; }}\nfn main() {{ }}\n")), missing);
+        // a fn's parameter default
+        assert_eq!(errors(&format!("{BUDGET}fn f(b: BudgetSet = BudgetSet {{ }}) -> Int {{ return b.cap; }}\nfn main() {{ }}\n")), missing);
+        // a method's
+        assert_eq!(
+            errors(&format!("{BUDGET}locus L {{ fn f(b: BudgetSet = BudgetSet {{ spent: 1 }}) -> Int {{ return b.cap; }} }}\nfn main() {{ }}\n")),
+            missing
+        );
+        // nested inside another literal
+        assert_eq!(
+            errors(&format!("{BUDGET}type Inner {{ b: BudgetSet; }}\ntype Cfg {{ inner: Inner = Inner {{ b: BudgetSet {{ }} }}; }}\nfn main() {{ }}\n")),
+            missing
+        );
+        // a locus's `params` default reports it once, where it is typed
+        assert_eq!(errors(&format!("{BUDGET}locus L {{ params {{ budget: BudgetSet = BudgetSet {{ }}; }} }}\nfn main() {{ }}\n")), missing);
+    }
+
+    #[test]
+    fn a_complete_literal_default_checks() {
+        // every field without a default written; a defaulted and a bounded
+        // field left out
+        assert_eq!(
+            errors(&format!(
+                "{BUDGET}type Cfg {{ budget: BudgetSet = BudgetSet {{ cap: 3 }}; }}\nfn f(b: BudgetSet = BudgetSet {{ cap: 1 }}) -> Int {{ return b.cap; }}\nfn main() {{ }}\n"
+            )),
+            Vec::<String>::new()
+        );
+    }
+}
+
+mod default_scope_tests {
+    //! A default reads only its own fields and constants (spec/types.md §
+    //! Locus params): it is evaluated where the literal or call that leaves
+    //! it is written, and nothing of that scope is the declaration's to
+    //! read. A name it reads must be a module-level item, a builtin, or one
+    //! it binds itself; `self` is its own only in a locus's `params`. A
+    //! caller binding that would shadow a name the default reads is refused
+    //! where the default is left out.
+
+    use super::*;
+    use hale_syntax::parse_source;
+
+    fn errors(src: &str) -> Vec<String> {
+        let p = parse_source(src).unwrap_or_else(|d| panic!("parse: {:?}", d[0].message));
+        check_program(&p).into_iter().filter(|d| d.is_error()).map(|d| d.message).collect()
+    }
+
+    fn caller(name: &str) -> String {
+        format!("a default reads only its own fields and constants; `{name}` is in the caller's scope")
+    }
+
+    const SELF: &str = "a default reads only its own fields and constants; `self` here is the caller's";
+
+    #[test]
+    fn a_default_naming_the_callers_scope_is_refused_where_it_is_written() {
+        // a record type's field default: a caller local, a fn value bound there
+        assert_eq!(errors("type R { b: Int = a + 1; }\nfn main() { let a = 2; let r = R { }; }\n"), vec![caller("a")]);
+        assert_eq!(
+            errors("fn value() -> Int { return 3; }\ntype R { b: Int = compute(); }\nfn main() { let compute = value; let r = R { }; }\n"),
+            vec![caller("compute")]
+        );
+        // a fn's, a method's and a hook's parameter default
+        assert_eq!(errors("fn f(n: Int = a) -> Int { return n; }\nfn main() { let a = 1; f(); }\n"), vec![caller("a")]);
+        assert_eq!(errors("locus L { fn m(n: Int = a) -> Int { return n; } }\nfn main() { }\n"), vec![caller("a")]);
+        // an earlier parameter is no name of the default's either
+        assert_eq!(errors("fn f(a: Int, b: Int = a * 2) -> Int { return b; }\nfn main() { }\n"), vec![caller("a")]);
+        // a locus's `params` default is typed where it is written, so a
+        // name of no scope there is already unknown
+        assert_eq!(
+            errors("locus L { params { n: Int = a; } }\nfn main() { }\n"),
+            vec!["param `n`: unknown identifier `a` in its default".to_string()]
+        );
+        // `self` in a fn's or method's default is the caller's
+        assert_eq!(
+            errors("locus L { params { k: Int = 1; } fn m(n: Int = self.k) -> Int { return n; } }\nfn main() { }\n"),
+            vec![SELF.to_string()]
+        );
+        assert_eq!(errors("type R { b: Int = self.a; a: Int = 1; }\nfn main() { }\n"), vec![SELF.to_string()]);
+    }
+
+    #[test]
+    fn a_default_of_module_items_checks() {
+        let src = "const K: Int = 4;\n\
+                   fn value(n: Int = K) -> Int { return n; }\n\
+                   type OrderId = distinct Int;\n\
+                   type Color = enum { red, blue };\n\
+                   type Hue = Color;\n\
+                   type Inner { c: Int = 3; }\n\
+                   type R {\n\
+                       k: Int = K + 1;\n\
+                       f: Int = value();\n\
+                       v: fn() -> Int = value;\n\
+                       b: Int = len(\"abc\") + abs(-1);\n\
+                       id: OrderId = OrderId(3);\n\
+                       at: Time = Time(3ns);\n\
+                       hue: Color = Hue::blue;\n\
+                       inner: Inner = Inner { };\n\
+                       q: Int = std::math::abs_int(-2);\n\
+                       own: Int = { let x = 2; x * K };\n\
+                       m: Int = match Color::red { Color::red -> 1, Color::blue -> 2, };\n\
+                   }\n\
+                   locus L { params { a: Int = K; b: Int = self.a + 1; } }\n\
+                   fn main() { let r = R { }; }\n";
+        assert_eq!(errors(src), Vec::<String>::new());
+    }
+
+    /// A name a default binds itself is its own only where it is in scope,
+    /// as the checker scopes it: after its `let`, within its block, a match
+    /// arm's binding within its arm, an `or` handler's `err` within the
+    /// handler. A read before or outside that is the caller's.
+    #[test]
+    fn a_defaults_own_names_are_its_own_only_in_their_scope() {
+        // read in its own initializer: the caller's `a`
+        assert_eq!(errors("type R { b: Int = { let a = a + 1; a }; }\nfn main() { let a = 1; let r = R { }; }\n"), vec![caller("a")]);
+        // bound in an inner block, read after it
+        assert_eq!(
+            errors("type R { b: Int = { let ignored = { let a = 99; a }; a + 1 }; }\nfn main() { let a = 1; let r = R { }; }\n"),
+            vec![caller("a")]
+        );
+        // a constant read before a `let` of its name: still the constant,
+        // which the caller's binding would shadow where the literal leaves it
+        let k = "const K: Int = 4;\ntype R { b: Int = { let first = K; let K = 8; first }; }\n";
+        assert_eq!(
+            errors(&format!("{k}fn main() {{ let K = 2; let r = R {{ }}; }}\n")),
+            vec!["a default reads only its own fields and constants; `K` here is the caller's binding, which a default \
+                  left out here would read in place of the module's `K`: rename the binding or pass the value"
+                .to_string()]
+        );
+        assert_eq!(errors(&format!("{k}fn main() {{ let r = R {{ }}; }}\n")), Vec::<String>::new());
+        // a match arm's binding: its own within the arm, not after the match
+        assert_eq!(errors("type R { b: Int = match 2 { n -> n + 1, }; }\nfn main() { }\n"), Vec::<String>::new());
+        assert_eq!(
+            errors("type R { b: Int = { let m = match 2 { n -> n, }; m + n }; }\nfn main() { let n = 1; let r = R { }; }\n"),
+            vec![caller("n")]
+        );
+        // an `or` handler's `err`: its own within the handler only
+        let fallible = "type Oops { kind: String; }\nfn pick() -> Int fallible(Oops) { return 1; }\n";
+        assert_eq!(errors(&format!("{fallible}type R {{ b: Int = pick() or len(err.kind); }}\nfn main() {{ }}\n")), Vec::<String>::new());
+        assert_eq!(
+            errors(&format!("{fallible}type R {{ b: Int = (pick() or len(err.kind)) + len(err.kind); }}\nfn main() {{ }}\n")),
+            vec![caller("err")]
+        );
+    }
+
+    /// A word after `or` is a narrowing's policy only where the checker
+    /// reads the `or` as a narrowing; after any other fallible it is a
+    /// value, read like any name: the caller's if no module item, and
+    /// refused where a caller's binding shadows the module's.
+    #[test]
+    fn a_policy_word_is_a_name_unless_the_or_narrows() {
+        let parse = "type R { b: Int = std::str::parse_int(\"bad\") or clamp; }\n";
+        assert_eq!(errors(&format!("{parse}fn main() {{ let clamp = 7; let r = R {{ }}; }}\n")), vec![caller("clamp")]);
+        let shadowed = format!("const clamp: Int = 3;\n{parse}fn main() {{ let clamp = 7; let r = R {{ }}; }}\n");
+        assert_eq!(
+            errors(&shadowed),
+            vec!["a default reads only its own fields and constants; `clamp` here is the caller's binding, which a \
+                  default left out here would read in place of the module's `clamp`: rename the binding or pass the value"
+                .to_string()]
+        );
+        // a narrowing's policy word names nothing, whatever the caller binds
+        let narrowing = "type Session = Int { range: 0..64; }\ntype R { s: Session = Session(70) or clamp; }\n";
+        assert_eq!(errors(&format!("{narrowing}fn main() {{ let clamp = 7; let r = R {{ }}; }}\n")), Vec::<String>::new());
+    }
+
+    /// An assignment's target is a name the default resolves too: one of
+    /// the caller's is refused, written with `=` or `+=`; a local the
+    /// default declares and assigns is its own.
+    #[test]
+    fn an_assignment_in_a_default_resolves_its_target_as_a_read_does() {
+        assert_eq!(errors("type R { b: Int = { a = 3; 0 }; }\nfn main() { let mut a = 1; let r = R { }; }\n"), vec![caller("a")]);
+        assert_eq!(errors("type R { b: Int = { a += 3; 0 }; }\nfn main() { let mut a = 1; let r = R { }; }\n"), vec![caller("a")]);
+        assert_eq!(
+            errors("type R { b: Int = { let mut x = 1; x += 2; x = x * 2; x }; }\nfn main() { let r = R { }; }\n"),
+            Vec::<String>::new()
+        );
+    }
+
+    /// `self` assigned in a record's or a method's default is the caller's
+    /// as a `self` read is, with `=` or `+=`; a locus's params default
+    /// reads its own earlier param through `self.<param>`.
+    #[test]
+    fn a_self_assigned_in_a_default_is_the_callers() {
+        let self_ = vec![SELF.to_string()];
+        let app = "main locus App { params { a: Int = 1; } fn make() -> Int { let r = R { }; return r.b; } }\nfn main() { App { }; }\n";
+        assert_eq!(errors(&format!("type R {{ b: Int = {{ self.a += 3; 0 }}; }}\n{app}")), self_);
+        assert_eq!(errors(&format!("type R {{ b: Int = {{ self.a = 3; 0 }}; }}\n{app}")), self_);
+        assert_eq!(
+            errors("locus L { params { k: Int = 1; } fn m(n: Int = { self.k = 2; 0 }) -> Int { return n; } }\nfn main() { }\n"),
+            self_
+        );
+        assert_eq!(errors("locus L { params { a: Int = 1; b: Int = self.a + 1; } }\nfn main() { let l = L { }; }\n"), Vec::<String>::new());
+    }
+
+    #[test]
+    fn a_caller_binding_that_shadows_a_defaults_name_is_refused_at_the_use() {
+        let shadow = |name: &str| {
+            format!(
+                "a default reads only its own fields and constants; `{name}` here is the caller's binding, which a default \
+                 left out here would read in place of the module's `{name}`: rename the binding or pass the value"
+            )
+        };
+        let decls = "const K: Int = 4;\ntype R { b: Int = K + 1; }\nfn f(n: Int = K) -> Int { return n; }\n";
+        assert_eq!(errors(&format!("{decls}fn main() {{ let K = 0; let r = R {{ }}; }}\n")), vec![shadow("K")]);
+        assert_eq!(errors(&format!("{decls}fn main() {{ let K = 0; f(); }}\n")), vec![shadow("K")]);
+        // a locus's params default, where the locus is built
+        assert_eq!(
+            errors("const K: Int = 4;\nlocus L { params { n: Int = K + 1; } }\nfn main() { let K = 0; let l = L { }; }\n"),
+            vec![shadow("K")]
+        );
+        // the value passed, or no binding of the name: nothing to refuse
+        assert_eq!(errors(&format!("{decls}fn main() {{ let K = 0; let r = R {{ b: K }}; f(K); }}\n")), Vec::<String>::new());
+        assert_eq!(errors(&format!("{decls}fn main() {{ let r = R {{ }}; f(); }}\n")), Vec::<String>::new());
+    }
+}

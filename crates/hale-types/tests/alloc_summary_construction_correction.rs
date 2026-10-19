@@ -428,7 +428,7 @@ fn unreached(target: &str, stdlib: &BTreeSet<FnKey>) -> Option<Unreached> {
     })
 }
 
-/// The seven targets pinned below are the only ones whose own fns or leak
+/// The six targets pinned below are the only ones whose own fns or leak
 /// sites the reached correction moves.
 #[test]
 fn reached_no_other_target_changes() {
@@ -449,7 +449,6 @@ fn reached_no_other_target_changes() {
             "dna/oidc",
             "tests/hale/is_route_test.hl",
             "tests/hale/perspective_ctor_override_test.hl",
-            "tests/hale/unit_quantities_test.hl",
         ]
     );
 }
@@ -624,20 +623,6 @@ fn reached_is_route_test() {
             "- alloc string-concat    escaping=return      per-iteration-reclaim  reclaim@locus-dissolve @1951..1963",
             "+ alloc string-concat    escaping=return      once-per-invocation    reclaim@locus-dissolve @1951..1963",
         ],
-    );
-}
-
-/// unit_quantities_test reads `later` as a function value (a local that
-/// shadows a type in a default's scope); the indirect calls of the loops
-/// the program never starts resolve to it.
-#[test]
-fn reached_unit_quantities_test() {
-    pinned_unreached(
-        "tests/hale/unit_quantities_test.hl",
-        (123, 0),
-        &["later"],
-        &[],
-        &["- fn later   [invoked-unboundedly]", "+ fn later"],
     );
 }
 

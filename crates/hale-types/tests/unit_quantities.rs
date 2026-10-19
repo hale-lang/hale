@@ -487,19 +487,24 @@ fn a_whole_count_is_its_quantity_whatever_the_units_factor() {
     assert_eq!(errors_of(src), [("1c".to_string(), "`1c` as a count of `A` overflows an `Int`".to_string())]);
 }
 
-/// A literal in a default is converted once per evaluation, into what
-/// that evaluation's scope flows it into: its row is keyed by the
-/// evaluation path as a cast's is. Where a local shadows `Bucket`,
-/// `Bucket(2000msec)` calls `fake` and the literal stays a `Span` (2000);
-/// elsewhere it is the cast's, into `sec` (2). Keyed by its span alone,
-/// the literal had one row, and the shadowed evaluation was handed 2.
+/// A literal in a default is converted once per evaluation, into what the
+/// default flows it into: its row is keyed by the evaluation path as a
+/// cast's is, one per literal that leaves the field, each the cast's into
+/// `sec` (2). A local `Bucket` beside a literal would make the default a
+/// call of it, which is refused there (a default reads only its own
+/// fields and constants).
 #[test]
 fn a_literal_in_a_default_has_a_row_per_evaluation() {
-    let src = "unit msec;\nunit sec = 1_000 msec;\ntype Span = quantity Int in msec;\n\
+    let decls = "unit msec;\nunit sec = 1_000 msec;\ntype Span = quantity Int in msec;\n\
                type Bucket = Span in sec { round: floor; }\n\
                fn fake(d: Span) -> Bucket { return Bucket(d + 5000msec); }\n\
-               type L { b: Bucket = Bucket(2000msec); }\n\
-               fn main() {\n    let l = L {};\n    { let Bucket = fake; let m = L {}; println(m.b); }\n    println(l.b);\n}\n";
+               type L { b: Bucket = Bucket(2000msec); }\n";
+    let shadowing = format!("{decls}fn main() {{\n    {{ let Bucket = fake; let m = L {{}}; println(m.b); }}\n}}\n");
+    let refused: Vec<String> =
+        check_program(&parse_source(&shadowing).expect("parses")).into_iter().filter(|d| d.is_error()).map(|d| d.message).collect();
+    assert!(refused.iter().any(|m| m.starts_with("a default reads only its own fields and constants")), "{refused:#?}");
+    let src = &format!("{decls}fn main() {{\n    let l = L {{}};\n    {{ let m = L {{}}; println(m.b); }}\n    println(l.b);\n}}\n");
+    let src = src.as_str();
     let program = parse_source(src).expect("parses");
     let errors: Vec<String> = check_program(&program).into_iter().filter(|d| d.is_error()).map(|d| d.message).collect();
     assert!(errors.is_empty(), "{errors:#?}");
@@ -511,7 +516,7 @@ fn a_literal_in_a_default_has_a_row_per_evaluation() {
             literals.push(id.0);
         }
     });
-    let [plain, shadowed] = literals[..] else { panic!("two literals: {literals:?}") };
+    let [plain, other] = literals[..] else { panic!("two literals: {literals:?}") };
     let mut found: Vec<(ConversionSite, Option<i64>)> = table
         .conversion_sites()
         .filter(|(s, r)| matches!(s.kind, SiteKind::Value { .. }) && r.span.slice(src) == "2000msec")
@@ -520,11 +525,9 @@ fn a_literal_in_a_default_has_a_row_per_evaluation() {
     found.sort_by(|a, b| a.0.cmp(&b.0));
     let span = table.conversions().find(|r| r.span.slice(src) == "2000msec").expect("the literal's row").span;
     let at = |path: Vec<u32>| ConversionSite::new(SiteKind::value(span), path);
-    let mut want = vec![(at(vec![plain]), Some(2)), (at(vec![shadowed]), Some(2000))];
+    let mut want = vec![(at(vec![plain]), Some(2)), (at(vec![other]), Some(2))];
     want.sort_by(|a, b| a.0.cmp(&b.0));
-    assert_eq!(found, want, "one row per evaluation, each with its own count");
-    assert_eq!(table.conversion(&at(vec![plain])).and_then(|r| r.count), Some(2), "the cast's evaluation: into `sec`");
-    assert_eq!(table.conversion(&at(vec![shadowed])).and_then(|r| r.count), Some(2000), "`fake`'s: a `Span`");
+    assert_eq!(found, want, "one row per evaluation, each the cast's into `sec`");
     assert!(table.conversion(&at(vec![])).is_none(), "a default's literal has no evaluation-less row");
 }
 

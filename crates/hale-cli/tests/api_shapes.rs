@@ -392,6 +392,24 @@ fn the_hale_client_pairs_a_flag_by_its_declaration() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// A field with a default is optional on the wire, whatever its type, and
+/// the description lists it under no `required` (spec/api.md § Codecs).
+/// `tests/hale/api/defaults_test.hl` holds the same surface's codecs to it:
+/// a payload that leaves each such field out decodes to its default.
+#[test]
+fn a_field_with_a_default_is_described_optional() {
+    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/hale/api/defaults_test.hl");
+    let dir = unique_dir("defaults");
+    let e = hale().args(["api", "export", "--surface", "Defaults", "--out"]).arg(&dir).arg(&src).output().expect("export");
+    assert!(e.status.success(), "{}", String::from_utf8_lossy(&e.stderr));
+    let doc = json_of(&std::fs::read_to_string(dir.join("Defaults.description.json")).unwrap());
+    // every field of `Rec` but `name` has a default, or is a list
+    assert_eq!(doc["schemas"]["Rec"]["required"], json!(["name"]));
+    assert_eq!(doc["schemas"]["AllDefault"]["required"], json!([]));
+    assert_eq!(doc["schemas"]["Inner"]["required"], json!(["a"]));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// A map of values (`indexed_by name -> status`, spec/api.md § Codecs) is
 /// described as an object of the value's schema, naming the value
 /// (`x-hale-value`), and `map<string, string>` in the `.proto`. The Hale

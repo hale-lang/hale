@@ -221,6 +221,19 @@ struct JsonField {
     /// A presence pair (the api codecs only, spec/api.md § Codecs): the
     /// field is optional, or it is another field's presence flag.
     presence: Presence,
+    /// The field's declared default where `default_src` does not carry it
+    /// (the api codecs only): an enum's, a record's, or a scalar's that is
+    /// no literal. A payload may leave the field out, as the description
+    /// says, and the decoder builds this default then
+    /// ([`default_marker`], spliced in after the codec parses).
+    default_expr: Option<Expr>,
+}
+
+/// The call a generated codec makes where field `field` of `record` takes
+/// its declared default: replaced by a copy of the default expression once
+/// the generated source parses ([`splice_defaults`]).
+fn default_marker(record: &str, field: &str) -> String {
+    format!("__api_default__{record}__{field}()")
 }
 
 /// A field's part in a presence pair: `x` with a sibling `has_x: Bool`
@@ -243,12 +256,19 @@ impl JsonField {
     fn needs_seen(&self) -> bool {
         self.presence == Presence::No
             && self.default_src.is_none()
+            && self.default_expr.is_none()
             && !matches!(self.kind, FieldKind::List { exact: false, .. })
     }
     /// Whether the JSON decoder records that the field's key was read:
-    /// a required field, and an optional one (its flag's value).
+    /// a required field, an optional one (its flag's value), and one whose
+    /// default is built when it is absent.
     fn tracks(&self) -> bool {
-        self.needs_seen() || matches!(self.presence, Presence::Tracked(_))
+        self.needs_seen() || matches!(self.presence, Presence::Tracked(_)) || self.default_expr.is_some()
+    }
+    /// Whether the protobuf decoder records that the field was read: a
+    /// required field, and one whose default is built when it is absent.
+    fn pb_tracks(&self) -> bool {
+        self.needs_seen() || self.default_expr.is_some()
     }
     /// The presence flag: no JSON key.
     fn is_flag(&self) -> bool {
@@ -490,6 +510,7 @@ fn collect_json_types(items: &[TopDecl], names: &HashSet<String>, out: &mut Vec<
                             conv: None,
                             pb_no: 0,
                             presence: Presence::No,
+                            default_expr: None,
                         });
                     }
                     if ok && !jfields.is_empty() {
@@ -776,6 +797,23 @@ fn generate_parser_src_mode(t: &JsonType, prefix: &str, strict: bool) -> String 
     // Recurse into nested fields (their JsonError propagates via `or raise`);
     // an absent optional record is its type's zero.
     for f in &t.fields {
+        // a field with a declared default the codec builds: the default
+        // when the payload left it out
+        if f.default_expr.is_some() {
+            let decoded = match &f.kind {
+                FieldKind::Nested(tn) => Some(format!("{prefix}{tn}(__raw_{}) or raise", f.name)),
+                FieldKind::Enum { name, .. } => Some(format!("{prefix}{name}(__raw_{}, \"{}\") or raise", f.name, f.key)),
+                _ => None,
+            };
+            if let Some(decoded) = decoded {
+                b.push_str(&format!(
+                    "    let __p_{n} = if __seen_{n} {{ {decoded} }} else {{ {} }};\n",
+                    default_marker(&t.name, &f.name),
+                    n = f.name
+                ));
+                continue;
+            }
+        }
         if let FieldKind::Nested(tn) = &f.kind {
             if matches!(f.presence, Presence::Tracked(_)) {
                 b.push_str(&format!("    let __p_{n} = __api_optional_{tn}(__seen_{n}, __raw_{n}) or raise;\n", n = f.name));
@@ -886,6 +924,11 @@ fn generate_optional_src(t: &JsonType, protobuf: bool) -> String {
 fn generate_zero_src(t: &JsonType) -> String {
     let mut inits = Vec::new();
     for f in &t.fields {
+        // a declared default the codec builds is the field's zero as well
+        if f.default_expr.is_some() && !matches!(f.kind, FieldKind::List { .. }) {
+            inits.push(format!("{}: {}", f.name, default_marker(&t.name, &f.name)));
+            continue;
+        }
         let v = match &f.kind {
             FieldKind::Scalar(s) => {
                 let d = wire_zero(*s, &f.conv, &f.default_src);
@@ -988,6 +1031,15 @@ fn construct_src(t: &JsonType, json: bool) -> String {
             _ if json && f.is_flag() => {
                 let Presence::Flag(of) = &f.presence else { unreachable!("a flag") };
                 Some(format!("{}: __seen_{of}", f.name))
+            }
+            // a scalar whose declared default the codec builds: the
+            // default when the payload left it out
+            (FieldKind::Scalar(_) | FieldKind::Time, c) if f.default_expr.is_some() => {
+                let read = match c {
+                    Some(c) => c.from_int(&format!("__f_{}", f.name), &f.key),
+                    None => format!("__f_{}", f.name),
+                };
+                Some(format!("{}: if __seen_{} {{ {read} }} else {{ {} }}", f.name, f.name, default_marker(&t.name, &f.name)))
             }
             (FieldKind::Scalar(_), Some(c)) => Some(format!("{}: {}", f.name, c.from_int(&format!("__f_{}", f.name), &f.key))),
             (FieldKind::Scalar(_), None) => Some(format!("{}: __f_{}", f.name, f.name)),
@@ -1444,7 +1496,7 @@ fn generate_pb_parser_src(t: &JsonType) -> String {
                 b.push_str(&format!("    let mut __h_{} = {} {{ }};\n", f.name, holder_name(&t.name, &f.name)));
             }
         }
-        if f.needs_seen() {
+        if f.pb_tracks() {
             b.push_str(&format!("    let mut __seen_{}: Bool = false;\n", f.name));
         }
     }
@@ -1468,7 +1520,7 @@ fn generate_pb_parser_src(t: &JsonType) -> String {
         }
         if let FieldKind::List { elem, .. } = &f.kind {
             b.push_str(&pb_list_read(f, elem, bad));
-            if f.needs_seen() {
+            if f.pb_tracks() {
                 b.push_str(&format!("            __seen_{} = true;\n", f.name));
             }
             continue;
@@ -1538,7 +1590,7 @@ fn generate_pb_parser_src(t: &JsonType) -> String {
                 b.push_str("            __p = __e;\n");
             }
         }
-        if f.needs_seen() {
+        if f.pb_tracks() {
             b.push_str(&format!("            __seen_{} = true;\n", f.name));
         }
     }
@@ -1558,6 +1610,28 @@ fn generate_pb_parser_src(t: &JsonType) -> String {
         }
     }
     for f in &t.fields {
+        // a field with a declared default the codec builds: the default
+        // when the message did not carry it
+        if f.default_expr.is_some() {
+            let decoded = match &f.kind {
+                FieldKind::Nested(tn) => Some(format!("__api_pb_decode_{tn}(__raw_{}) or raise", f.name)),
+                FieldKind::Enum { name, unit_only: true } => {
+                    Some(format!("__api_pb_enum_{name}(__n_{}, \"{}\") or raise", f.name, f.key))
+                }
+                FieldKind::Enum { name, unit_only: false } => {
+                    Some(format!("__api_pb_decode_{name}(__raw_{}, \"{}\") or raise", f.name, f.key))
+                }
+                _ => None,
+            };
+            if let Some(decoded) = decoded {
+                b.push_str(&format!(
+                    "    let __p_{n} = if __seen_{n} {{ {decoded} }} else {{ {} }};\n",
+                    default_marker(&t.name, &f.name),
+                    n = f.name
+                ));
+                continue;
+            }
+        }
         if let FieldKind::Nested(tn) = &f.kind {
             // an optional record its message does not carry is its type's zero
             if matches!(f.presence, Presence::Tracked(_)) {
@@ -2301,6 +2375,7 @@ fn generate_codecs(
                     conv: None,
                     pb_no: at as u32 + 1,
                     presence: Presence::No,
+                    default_expr: None,
                 })
             })
             .collect();
@@ -2448,12 +2523,45 @@ fn generate_codecs(
         return;
     }
     match parse_source(&src) {
-        Ok(generated) => programs[main_idx].items.extend(mark_synthetic(generated.items)),
+        Ok(generated) => {
+            let mut items = mark_synthetic(generated.items);
+            splice_defaults(&mut items, &types);
+            programs[main_idx].items.extend(items)
+        }
         Err(ds) => eprintln!(
             "json_gen: generated api codec did not parse: {}",
             ds.iter().map(|d| d.message.clone()).collect::<Vec<_>>().join("; ")
         ),
     }
+}
+
+/// Put each field's declared default where the generated codecs call its
+/// [`default_marker`]: a copy of the expression the declaration wrote, so
+/// an absent field decodes to exactly what the record's own literal would
+/// build for it.
+fn splice_defaults(items: &mut [TopDecl], types: &[JsonType]) {
+    let mut defaults: std::collections::BTreeMap<String, Expr> = std::collections::BTreeMap::new();
+    for t in types {
+        for f in &t.fields {
+            if let Some(d) = &f.default_expr {
+                let marker = default_marker(&t.name, &f.name);
+                defaults.insert(marker.trim_end_matches("()").to_string(), d.clone());
+            }
+        }
+    }
+    if defaults.is_empty() {
+        return;
+    }
+    rewrite_items(items, &mut |e: &mut Expr| {
+        let Expr::Call { callee, args, .. } = e else { return };
+        if !args.is_empty() {
+            return;
+        }
+        let Expr::Ident(i) = callee.as_ref() else { return };
+        if let Some(d) = defaults.get(&i.name) {
+            *e = d.clone();
+        }
+    });
 }
 
 // ---- GH #1530 step 0: the codecs of an enum ------------------------------
@@ -2816,8 +2924,18 @@ fn map_entry_type(rec: &str, v: &MapValue) -> JsonType {
         conv: None,
         pb_no: 1,
         presence: Presence::No,
+        default_expr: None,
     };
-    let value = JsonField { name: "value".into(), key: "value".into(), kind, default_src, conv, pb_no: 2, presence: Presence::No };
+    let value = JsonField {
+        name: "value".into(),
+        key: "value".into(),
+        kind,
+        default_src,
+        conv,
+        pb_no: 2,
+        presence: Presence::No,
+        default_expr: None,
+    };
     JsonType { name: rec.to_string(), fields: vec![key, value], lifted: None, lifted_flag: None }
 }
 
@@ -2858,6 +2976,7 @@ fn variant_records(e: &JsonEnum) -> Vec<(String, JsonType)> {
                     conv,
                     pb_no: i as u32 + 1,
                     presence: Presence::No,
+                    default_expr: None,
                 }
             })
             .collect();
@@ -2986,6 +3105,16 @@ fn collect_api_types(
                         (FieldKind::Scalar(_), Some(c)) => f.default.as_ref().and_then(literal_src).map(|d| c.to_int(&d)),
                         _ => None,
                     };
+                    // any other default (an enum's, a record's, a scalar's
+                    // that is no literal) is built when the field is absent,
+                    // as the description's `required` promises; a list's is
+                    // not read (a `bounded` absent is empty, a fixed array is
+                    // always sent: spec/api.md § Codecs)
+                    let default_expr = match &kind {
+                        FieldKind::List { .. } => None,
+                        _ if default_src.is_some() => None,
+                        _ => f.default.clone(),
+                    };
                     jfields.push(JsonField {
                         name: f.name.name.clone(),
                         key: tag_json_key(&f.tag).unwrap_or_else(|| f.name.name.clone()),
@@ -2994,6 +3123,7 @@ fn collect_api_types(
                         conv,
                         pb_no: at as u32 + 1,
                         presence: Presence::No,
+                        default_expr,
                     });
                 }
                 let is_bool = |te: &TypeExpr| matches!(through_aliases(te, aliases), TypeExpr::Primitive(PrimType::Bool, _));
