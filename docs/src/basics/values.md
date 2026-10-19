@@ -210,6 +210,11 @@ them into the text. Use `{{` and `}}` for literal braces. A plain
 `"..."` string is *not* interpolated — `"x={x}"` prints the
 braces — and the compiler warns if you write that by accident.
 
+Text of several lines that has a syntax of its own (a program, a
+query, a document) is a raw **block string**, opened and closed by
+`"""` on lines of their own; see
+[Strings & text](./strings.md#block-strings).
+
 f-strings also take a format spec (`f"{n:>8}"`, `f"{r:.2}"`) and
 render whole structs. Both are in
 [Strings & text](./strings.md).

@@ -202,6 +202,10 @@ Filter these reflexes before they cost you time.
   `obj.method()` normally.
 - **No printf-style format strings.** `println(a, b, c)`
   concatenates its args. F-strings `f"hello {name}"` interpolate.
+- **Embedded program text, SQL or JSON is a block string**: `"""`
+  ending its line, the raw text, `"""` on a line of its own; the
+  closing line's indent is stripped and nothing is escaped
+  (`spec/tokens.md` § Block strings).
 - **No `return` inside `birth` / `run` / `dissolve` bodies.**
   Factor short-circuit logic into helper free fns.
 - **`fallible(E)` is rejected on substrate-facing surfaces:**

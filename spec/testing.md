@@ -501,9 +501,14 @@ max-line-length enforcement):
   (`let x   = 1;`) collapses to single spaces.
 - **Comments** — preserved verbatim in position: own-line comments
   indent with the code, trailing comments sit one space after it.
+- **Block strings** (spec/tokens.md § Block strings) — the closing
+  fence stands one level deeper than the line the literal opens on,
+  and every line of the text keeps its distance from it; lines of
+  whitespace alone are emptied. The value never moves.
 
 Safety: the formatter re-lexes its own output and refuses to write
-unless the semantic token stream is byte-identical to the input's —
+unless the semantic token stream is byte-identical to the input's
+(a block string, re-indented, is held to its value instead) —
 a formatter bug can mangle whitespace, never what the compiler
 sees. Files that don't lex are reported and left untouched.
 Formatting is idempotent; the corpus test

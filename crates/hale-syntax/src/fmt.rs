@@ -24,11 +24,17 @@
 //!
 //! Token text is always emitted as the RAW source slice (never
 //! re-serialized from the token value), so string escapes, float
-//! spellings, f-strings, and bytes literals round-trip exactly.
+//! spellings, f-strings, and bytes literals round-trip exactly. The
+//! one exception is a block string (`"""` … `"""`, spec/tokens.md §
+//! Block strings): its lines move with the code, the closing fence one
+//! level deeper than the line the literal opens on and every line of
+//! the text the same distance from it as before, which is exactly what
+//! keeps its value.
 //!
 //! Safety gate: `format_source` re-lexes its own output and requires
 //! the semantic token stream (kind + raw text) to be IDENTICAL to
-//! the input's. A formatter bug can therefore mangle whitespace at
+//! the input's — for a block string, kind + value, since its raw text
+//! is re-indented. A formatter bug can therefore mangle whitespace at
 //! worst — it cannot change what the compiler sees. Callers get
 //! `FmtError::Changed` (a formatter bug, never written to disk) or
 //! `FmtError::Parse` (the input didn't lex).
@@ -613,7 +619,12 @@ fn emit(source: &str, tokens: &[Token], items: &[Item]) -> String {
                     // EOL); block comment then code: one space.
                     out.push(' ');
                 }
-                out.push_str(tok_text(source, tok));
+                let text = tok_text(source, tok);
+                if is_block_string(text) {
+                    out.push_str(&reindent_block_string(text, cur_line_indent + 1));
+                } else {
+                    out.push_str(text);
+                }
 
                 match tok.kind {
                     LBrace | LParen | LBracket => {
@@ -664,6 +675,46 @@ fn emit(source: &str, tokens: &[Token], items: &[Item]) -> String {
     out
 }
 
+/// A block string's raw text: it opens with a fence of three or more
+/// quotes (a plain string's opening quote is never followed by two
+/// more, `""` being the empty string).
+fn is_block_string(raw: &str) -> bool {
+    raw.starts_with("\"\"\"")
+}
+
+/// A block string re-indented so its closing fence stands at `level`
+/// (spec/tokens.md § Block strings). Every line of the text keeps its
+/// distance from the fence, a line of whitespace alone becomes empty, a
+/// `\r\n` becomes `\n` and whitespace after the opening fence goes:
+/// none of which the value sees.
+fn reindent_block_string(raw: &str, level: usize) -> String {
+    let fence = raw.bytes().take_while(|&b| b == b'"').count();
+    let after_open = raw.find('\n').map_or(raw.len(), |i| i + 1);
+    let rest = &raw[after_open..];
+    let (body, close) = match rest.rfind('\n') {
+        Some(i) => (Some(&rest[..i]), &rest[i + 1..]),
+        None => (None, rest),
+    };
+    let old_indent = &close[..close.len() - fence];
+    let new_indent = "    ".repeat(level);
+    let mut out = String::with_capacity(raw.len() + 16);
+    out.push_str(&raw[..fence]);
+    out.push('\n');
+    if let Some(body) = body {
+        for line in body.split('\n') {
+            let line = line.strip_suffix('\r').unwrap_or(line);
+            if !line.bytes().all(|c| c == b' ' || c == b'\t') {
+                out.push_str(&new_indent);
+                out.push_str(&line[old_indent.len()..]);
+            }
+            out.push('\n');
+        }
+    }
+    out.push_str(&new_indent);
+    out.push_str(&raw[..fence]);
+    out
+}
+
 /// Compare two semantic token streams: same kinds, same raw text.
 fn token_streams_equal(
     src_a: &str,
@@ -679,7 +730,13 @@ fn token_streams_equal(
         {
             return false;
         }
-        if tok_text(src_a, ta) != tok_text(src_b, tb) {
+        let (ra, rb) = (tok_text(src_a, ta), tok_text(src_b, tb));
+        if is_block_string(ra) || is_block_string(rb) {
+            // Re-indented: the same form and the same value.
+            if !(is_block_string(ra) && is_block_string(rb) && ta.kind == tb.kind) {
+                return false;
+            }
+        } else if ra != rb {
             return false;
         }
     }
@@ -763,5 +820,54 @@ mod tests {
             format_source("fn main() { let s = \"unterminated; }"),
             Err(FmtError::Parse(_))
         ));
+    }
+
+    /// A block string's lines move with the code: the closing fence one
+    /// level deeper than the line the literal opens on, every line of
+    /// the text at the same distance from it, whitespace-only lines
+    /// emptied. The value is what the gate holds, and it holds.
+    #[test]
+    fn block_string_moves_with_the_code() {
+        let src = "fn main() {\nlet p = \"\"\"   \n  fn main() {\n      println(\"a\\n\");\n  \n  }\n\n  \"\"\";\n        println(p);\n}\n";
+        let want = "fn main() {\n    let p = \"\"\"\n        fn main() {\n            println(\"a\\n\");\n\n        }\n\n        \"\"\";\n    println(p);\n}\n";
+        let out = fmt(src);
+        assert_eq!(out, want);
+        assert_eq!(fmt(&out), out, "a fixed point");
+        let value = |s: &str| {
+            lex(s)
+                .unwrap()
+                .into_iter()
+                .find_map(|t| match t.kind {
+                    TokenKind::StringLit(v) if v.contains("main") => Some(v),
+                    _ => None,
+                })
+                .unwrap()
+        };
+        assert_eq!(value(src), value(&out));
+        assert_eq!(value(&out), "fn main() {\n    println(\"a\\n\");\n\n}\n");
+    }
+
+    /// The same at a deeper opening line and as a call's argument, with
+    /// a longer fence; tokens after the closing fence stay on its line.
+    #[test]
+    fn block_string_as_an_argument() {
+        let src = "fn main() {\n    if true {\n        check(\"\"\"\"\n  x \"\"\"\n  \"\"\"\", 1);\n    }\n}\n";
+        let want = "fn main() {\n    if true {\n        check(\"\"\"\"\n            x \"\"\"\n            \"\"\"\", 1);\n    }\n}\n";
+        assert_eq!(fmt(src), want);
+        assert_eq!(fmt(want), want);
+    }
+
+    /// The gate compares a block string by value: a different value is
+    /// refused even when the raw text is close.
+    #[test]
+    fn gate_compares_block_strings_by_value() {
+        let a = "let s = \"\"\"\n    x\n    \"\"\";\n";
+        let b = "let s = \"\"\"\n    y\n    \"\"\";\n";
+        let ta = lex(a).unwrap();
+        let tb = lex(b).unwrap();
+        assert!(!token_streams_equal(a, &ta, b, &tb));
+        let c = "let s = \"\"\"\n        x\n        \"\"\";\n";
+        let tc = lex(c).unwrap();
+        assert!(token_streams_equal(a, &ta, c, &tc));
     }
 }

@@ -54,6 +54,10 @@
       contains: [
         hljs.C_LINE_COMMENT_MODE,
         hljs.C_BLOCK_COMMENT_MODE,
+        // Block strings (spec/tokens.md § Block strings): raw, closed by
+        // the same fence, so they precede the escaped string.
+        { className: "string", begin: '""""', end: '""""' },
+        { className: "string", begin: '"""', end: '"""' },
         hljs.QUOTE_STRING_MODE,
         // `@form`, `@locality`, `@ffi` … annotations.
         { className: "meta", begin: "@\\w+" },
