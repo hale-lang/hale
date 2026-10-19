@@ -892,7 +892,7 @@ fn verdict_changes() {
             "__lib_dna__core__pond__pq___pq__PgConn::query_one StructLit(\"db::Row\") @2453175..2453299 InvokedUnboundedly",
             "__lib_dna__core__pond__pq___pq__PgConn::query_one StructLit(\"db::Row\") @2453490..2453523 InvokedUnboundedly",
             "__lib_dna__core__pond__realtime__nats___client__NatsClient::fail_with StructLit(\"__lib_dna__core__pond__realtime__nats___types__NatsError\") @3344506..3344546 InvokedUnboundedly",
-            "__lib_dna__core__pond__realtime__nats___jetstream__js_error_of StringConcat @3362225..3362311 InvokedUnboundedly",
+            "__lib_dna__core__pond__realtime__nats___jetstream__js_error_of StringConcat @3362694..3362780 InvokedUnboundedly",
             "__lib_dna__host___connections__admission_refusal StringConcat @47596..47750 InvokedUnboundedly",
             "__lib_dna__host___connections__admission_refusal StringConcat @47859..47955 InvokedUnboundedly",
             "__lib_dna__host___connections__admission_refusal StringConcat @48100..48191 InvokedUnboundedly",
