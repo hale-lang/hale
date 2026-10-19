@@ -4361,9 +4361,19 @@ The live half is memory's, projected from the record by the spine
   under ongoing work — and starts its body, `hale dna dev <genome>`: a
   systemd user unit named for the habitat's project, or with
   `--foreground` in the process itself (what a fixture runs, to ready).
-  `up` is idempotent; with an operator's `HALE_DNA_MEMORY_DSN_OWNER` or
-  `HALE_DNA_NATS_URL_OWNER` it refuses (the habitat runs on its own
-  allocations), and the `hosted` profile is not built. `hale habitat
+  `up` is idempotent, and the `hosted` profile is not built. **A
+  habitat's backends are chosen at its birth** (`--backends own|operator`,
+  kept beside it and as its `habitat.profile` row, which names no DSN):
+  `own`, the default, provisions memory, the nerves and the senses' store
+  as allocations of its project; `operator` adopts the Postgres and the
+  NATS `HALE_DNA_MEMORY_DSN_OWNER` and `HALE_DNA_NATS_URL_OWNER` name,
+  starts no service of its project, and records each allocation with the
+  service `operator` (what a suite run on an owner's DSN and NATS is).
+  `up` refuses when the environment disagrees with them: an `own`
+  habitat with an operator's server named, an `operator` habitat with
+  either unnamed, or a `--backends` other than the habitat's. A unit of an
+  `operator` habitat reads them from `<habitat>/backends.env` (mode 600),
+  never from its own lines. `hale habitat
   status` reads the habitat, its genome and body, and each allocation:
   whether each role's service runs, and the schema version it records
   against this toolchain's, naming `hale habitat migrate <organism>` (or

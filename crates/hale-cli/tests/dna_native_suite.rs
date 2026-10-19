@@ -1000,6 +1000,7 @@ fn dna_fixture_set_is_complete() {
             "graph_model_test.hl",
             "graph_route_test.hl",
             "graph_show_test.hl",
+            "habitat_operator_test.hl",
             "habitat_up_test.hl",
             "handed_task_test.hl",
             "handoff_test.hl",

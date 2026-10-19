@@ -41,7 +41,7 @@ memory, nerves and senses' store up and migrates them. `hale habitat
 --help`:
 
 ```text
-usage: hale habitat up [--foreground] [--profile local]
+usage: hale habitat up [--foreground] [--profile local] [--backends own|operator]
        hale habitat status
        hale habitat down
        hale habitat migrate [organism]
@@ -62,8 +62,13 @@ up                   birth the habitat the first time, from the genome the
                      whose recorded schema version is behind this
                      toolchain's, and start the habitat's body: a systemd
                      user unit named for the habitat, or, with
-                     --foreground, in this process. Idempotent. The hosted
-                     profile (backends the platform runs) is not built.
+                     --foreground, in this process. Idempotent. Its
+                     backends are chosen at its birth and kept: `own` (the
+                     default) provisions memory, the nerves and the senses'
+                     store as its project's allocations; `operator` adopts
+                     the Postgres and the NATS HALE_DNA_MEMORY_DSN_OWNER and
+                     HALE_DNA_NATS_URL_OWNER name, and provisions nothing
+                     of its own. The hosted profile is not built.
 status               the habitat, its genome and body, and each
                      allocation: its organism, whether each role's service
                      runs, and the schema version it records against this

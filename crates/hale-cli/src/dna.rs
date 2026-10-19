@@ -265,10 +265,8 @@ fn memory_roles(dir: &Path, args: &[String]) -> Result<MemoryPlan, String> {
         // GH #1653: a migration into the habitat is recorded in the
         // allocation's row, with the version it moved the schema to
         if let Some(v) = out.lines().find_map(|l| l.strip_prefix("allocation.schema_version=")).and_then(|v| v.trim().parse().ok()) {
-            if from != "owner" {
-                let slots = out.lines().find_map(|l| l.strip_prefix("allocation.vault_slots=")).unwrap_or("");
-                habitat::record_allocation(&root, "memory", v, slots)?;
-            }
+            let slots = out.lines().find_map(|l| l.strip_prefix("allocation.vault_slots=")).unwrap_or("");
+            habitat::record_allocation(&root, "memory", v, slots, from == "owner")?;
         }
         return Ok(MemoryPlan::Roles { spine: spine.to_string(), head: head.to_string(), owners });
     }
@@ -437,11 +435,9 @@ fn nerves_roles(dir: &Path, args: &[String]) -> Result<NervesPlan, String> {
     // GH #1653: a migration into the habitat is recorded in the
     // allocation's row, with the version it moved the stream to
     if let Some(v) = out.lines().find_map(|l| l.strip_prefix("allocation.schema_version=")).and_then(|v| v.trim().parse().ok()) {
-        if !std::env::var(NATS_OWNER_ENV).is_ok_and(|u| !u.is_empty()) {
-            let (root, _) = project(dir)?;
-            let slots = out.lines().find_map(|l| l.strip_prefix("allocation.vault_slots=")).unwrap_or("");
-            habitat::record_allocation(&root, "nerves", v, slots)?;
-        }
+        let (root, _) = project(dir)?;
+        let slots = out.lines().find_map(|l| l.strip_prefix("allocation.vault_slots=")).unwrap_or("");
+        habitat::record_allocation(&root, "nerves", v, slots, std::env::var(NATS_OWNER_ENV).is_ok_and(|u| !u.is_empty()))?;
     }
     let roles: Vec<(String, String)> = out
         .lines()

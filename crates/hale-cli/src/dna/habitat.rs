@@ -20,7 +20,7 @@ use super::{host_run, local_habitat_dir, local_habitat_project, manifest_pin, me
 /// The verb's help: stdout and exit 0 for `--help`, stderr and exit 2
 /// for a usage error (GH #817).
 pub(crate) fn usage_text() -> &'static str {
-    r#"usage: hale habitat up [--foreground] [--profile local]
+    r#"usage: hale habitat up [--foreground] [--profile local] [--backends own|operator]
        hale habitat status
        hale habitat down
        hale habitat migrate [organism]
@@ -41,8 +41,13 @@ up                   birth the habitat the first time, from the genome the
                      whose recorded schema version is behind this
                      toolchain's, and start the habitat's body: a systemd
                      user unit named for the habitat, or, with
-                     --foreground, in this process. Idempotent. The hosted
-                     profile (backends the platform runs) is not built.
+                     --foreground, in this process. Idempotent. Its
+                     backends are chosen at its birth and kept: `own` (the
+                     default) provisions memory, the nerves and the senses'
+                     store as its project's allocations; `operator` adopts
+                     the Postgres and the NATS HALE_DNA_MEMORY_DSN_OWNER and
+                     HALE_DNA_NATS_URL_OWNER name, and provisions nothing
+                     of its own. The hosted profile is not built.
 status               the habitat, its genome and body, and each
                      allocation: its organism, whether each role's service
                      runs, and the schema version it records against this
@@ -174,9 +179,10 @@ fn allocation_dir(root: &Path) -> Option<PathBuf> {
 /// allocation made before the habitat is born (its own, at bootstrap, or
 /// an organism's migrated first) waits in the cache and is written at
 /// birth. `allocations/<id>/allocation.json` is that cache, derived from
-/// the rows; `status` reads the rows when the habitat's memory is up.
-/// Never for an operator's own server.
-pub(super) fn record_allocation(root: &Path, role: &str, version: u64, slots: &str) -> Result<(), String> {
+/// the rows; `status` reads the rows when the habitat's memory is up. An
+/// allocation on an operator's own server (the habitat's `operator`
+/// backends) is recorded the same way, its service `operator`.
+pub(super) fn record_allocation(root: &Path, role: &str, version: u64, slots: &str, operator: bool) -> Result<(), String> {
     let Some(dir) = allocation_dir(root) else { return Ok(()) };
     let id = manifest_pin(&root.join("hale.toml")).ok().flatten().unwrap_or_default();
     let path = dir.join("allocation.json");
@@ -186,7 +192,7 @@ pub(super) fn record_allocation(root: &Path, role: &str, version: u64, slots: &s
     if !row["roles"].is_object() {
         row["roles"] = serde_json::json!({});
     }
-    next_rows(&mut row, &id, role, version, slots, &local_habitat_project());
+    next_rows(&mut row, &id, role, version, slots, &local_habitat_project(), operator);
     std::fs::create_dir_all(&dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
     write_row(&path, &row)?;
     // into the habitat's record now, when it exists; else at its birth
@@ -198,11 +204,13 @@ pub(super) fn record_allocation(root: &Path, role: &str, version: u64, slots: &s
 /// `version`: the rows the habitat's record is owed added to its pending
 /// ones — `habitat.allocated` the first time, `habitat.migrated` whenever
 /// the version moved — keyed by the organism and the role alone.
-fn next_rows(row: &mut serde_json::Value, id: &str, role: &str, version: u64, slots: &str, project: &str) {
+fn next_rows(row: &mut serde_json::Value, id: &str, role: &str, version: u64, slots: &str, project: &str, operator: bool) {
     let had = row["roles"][role]["schema_version"].as_u64();
     let recorded = row["roles"][role]["recorded"].as_bool().unwrap_or(false);
     let mut pending: Vec<serde_json::Value> = row["pending"].as_array().cloned().unwrap_or_default();
-    let service = format!("{role}-{}", &id[..12]);
+    // an allocation on the operator's own server is no service of the
+    // habitat's project: it is named `operator`
+    let service = if operator { "operator".to_string() } else { format!("{role}-{}", &id[..12]) };
     let entity = format!("{}/{role}", &id[..12]);
     let slots: Vec<&str> = slots.split_whitespace().collect();
     if had.is_none() && !recorded {
@@ -393,13 +401,49 @@ fn body_state() -> Option<String> {
     active.then(|| format!("up (systemd user unit {})", unit_name()))
 }
 
+fn backends_file() -> PathBuf {
+    PathBuf::from(local_habitat_dir()).join("backends")
+}
+
+/// The backends this run of `up` uses: the ones the habitat was born on
+/// (kept beside it, and as its `habitat.profile` row), or for a habitat not
+/// yet born the ones asked (`own` by default); refused when the asking or
+/// the environment disagrees with them.
+fn backends_of(asked: Option<&str>) -> Result<String, String> {
+    if let Some(a) = asked {
+        if a != "own" && a != "operator" {
+            return Err(format!("`--backends {a}`: the backends are `own` (the habitat's allocations under docker compose) or `operator` (the Postgres and NATS HALE_DNA_MEMORY_DSN_OWNER and HALE_DNA_NATS_URL_OWNER name)"));
+        }
+    }
+    let born = std::fs::read_to_string(backends_file()).ok().map(|t| t.trim().to_string()).filter(|t| !t.is_empty());
+    let backends = match (&born, asked) {
+        (Some(b), Some(a)) if b != a => return Err(format!("the habitat was born on `{b}` backends; they are chosen at its birth, not at `up`")),
+        (Some(b), _) => b.clone(),
+        (None, Some(a)) => a.to_string(),
+        (None, None) => "own".to_string(),
+    };
+    let named = |k: &str| std::env::var(k).is_ok_and(|v| !v.is_empty());
+    if backends == "own" && own_servers() {
+        return Err("the habitat runs on its own allocations; unset HALE_DNA_MEMORY_DSN_OWNER and HALE_DNA_NATS_URL_OWNER, or birth it with `--backends operator` to adopt them".to_string());
+    }
+    if backends == "operator" && !(named("HALE_DNA_MEMORY_DSN_OWNER") && named("HALE_DNA_NATS_URL_OWNER")) {
+        return Err("the habitat's backends are the operator's: name them in HALE_DNA_MEMORY_DSN_OWNER and HALE_DNA_NATS_URL_OWNER".to_string());
+    }
+    Ok(backends)
+}
+
 fn up(args: &[String]) -> ExitCode {
     let mut foreground = false;
     let mut profile = "local".to_string();
+    let mut asked: Option<String> = None;
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
             "--foreground" => foreground = true,
+            "--backends" if i + 1 < args.len() => {
+                asked = Some(args[i + 1].clone());
+                i += 1;
+            }
             "--profile" if i + 1 < args.len() => {
                 profile = args[i + 1].clone();
                 i += 1;
@@ -415,19 +459,27 @@ fn up(args: &[String]) -> ExitCode {
         eprintln!("hale habitat up: the `{profile}` profile is not built: only `local` (docker compose on this machine) is; the hosted one runs on the backends a platform already runs (GH #1653)");
         return ExitCode::from(2);
     }
-    // the habitat's memory and nerves are its own allocations: a server of
-    // the operator's named here would migrate one place and run another
-    if own_servers() {
-        eprintln!("hale habitat up: the habitat runs on its own allocations; unset HALE_DNA_MEMORY_DSN_OWNER and HALE_DNA_NATS_URL_OWNER for `hale habitat up`");
-        return ExitCode::from(2);
-    }
+    // GH #1653: the habitat's backends are chosen at its birth and kept:
+    // `own`, allocations of its own project under docker compose, or
+    // `operator`, the Postgres and the NATS an operator names
+    // (HALE_DNA_MEMORY_DSN_OWNER, HALE_DNA_NATS_URL_OWNER), adopted rather
+    // than provisioned. Either way the environment must agree with it: a
+    // server named for an `own` habitat would migrate one place and run
+    // another, and an `operator` habitat with none named has no backends
+    let backends = match backends_of(asked.as_deref()) {
+        Ok(b) => b,
+        Err(why) => {
+            eprintln!("hale habitat up: {why}");
+            return ExitCode::from(2);
+        }
+    };
     if let Some(state) = body_state() {
         if foreground {
             eprintln!("hale habitat up: the habitat's body is already {state}; `hale habitat down` stops it");
             return ExitCode::from(1);
         }
     }
-    match bring_up() {
+    match bring_up(&backends) {
         Ok(lines) => {
             for l in lines {
                 println!("{l}");
@@ -452,7 +504,7 @@ fn up(args: &[String]) -> ExitCode {
         println!("body    {state}");
         return ExitCode::SUCCESS;
     }
-    match start_unit(&me, &genome) {
+    match start_unit(&me, &genome, &backends) {
         Ok(line) => {
             println!("{line}");
             ExitCode::SUCCESS
@@ -469,11 +521,13 @@ fn up(args: &[String]) -> ExitCode {
 /// upgrade), and every tenant's recorded allocation brought up. A tenant is
 /// never migrated here: `up` runs under ongoing work, and an organism's
 /// allocation moves at its upgrade or with `hale habitat migrate`.
-fn bring_up() -> Result<Vec<String>, String> {
+fn bring_up(backends: &str) -> Result<Vec<String>, String> {
     let genome = genome_dir();
-    let mut out = vec![format!("habitat local at {} (compose project {})", local_habitat_dir(), local_habitat_project())];
+    let mut out = vec![format!("habitat local at {} (compose project {}; {backends} backends)", local_habitat_dir(), local_habitat_project())];
     if manifest_pin(&genome.join("hale.toml")).ok().flatten().is_none() {
-        out.extend(birth(&genome)?);
+        std::fs::create_dir_all(local_habitat_dir()).map_err(|e| format!("create {}: {e}", local_habitat_dir()))?;
+        std::fs::write(backends_file(), format!("{backends}\n")).map_err(|e| format!("write {}: {e}", backends_file().display()))?;
+        out.extend(birth(&genome, backends)?);
     } else {
         out.extend(migrate_lines(&genome)?);
     }
@@ -515,7 +569,7 @@ fn bring_up() -> Result<Vec<String>, String> {
 /// written from the toolchain's, made a repository, born as an organism
 /// (its record in its own memory allocation) and given its positions and
 /// its law as the Board's to ratify.
-fn birth(genome: &Path) -> Result<Vec<String>, String> {
+fn birth(genome: &Path, backends: &str) -> Result<Vec<String>, String> {
     std::fs::create_dir_all(genome).map_err(|e| format!("create {}: {e}", genome.display()))?;
     for f in hale_dna::HABITAT_FILES {
         let rel = f.path.strip_prefix("dna/habitat/").unwrap_or(f.path);
@@ -538,6 +592,14 @@ fn birth(genome: &Path) -> Result<Vec<String>, String> {
     if n > 0 {
         out.push(format!("recorded {n} allocation row(s) in the habitat's record"));
     }
+    // and its profile: the backends it was born on, a row as every
+    // provisioning choice is (never a DSN or a URL)
+    let profile = PathBuf::from(local_habitat_dir()).join(".profile-row.jsonl");
+    let row = serde_json::json!({ "kind": "habitat.profile", "entity": "local", "body": serde_json::json!({ "profile": "local", "backends": backends, "project": local_habitat_project() }).to_string() });
+    std::fs::write(&profile, format!("{row}\n")).map_err(|e| format!("write {}: {e}", profile.display()))?;
+    let landed = host_run("record-seed", genome, &[profile.display().to_string(), String::new()]);
+    let _ = std::fs::remove_file(&profile);
+    landed?;
     // each pack is proposed by its own `hale dna pack apply`, a process of
     // its own: the verb hands itself over to the host (exec), and the
     // habitat's birth goes on after it
@@ -554,9 +616,21 @@ fn birth(genome: &Path) -> Result<Vec<String>, String> {
     Ok(out)
 }
 
-fn start_unit(me: &str, genome: &Path) -> Result<String, String> {
+fn start_unit(me: &str, genome: &Path, backends: &str) -> Result<String, String> {
     let data = std::env::var("XDG_DATA_HOME").ok().filter(|v| !v.is_empty()).unwrap_or_else(|| format!("{}/.local/share", std::env::var("HOME").unwrap_or_default()));
-    let vault = std::env::var("HALE_VAULT_DIR").ok().filter(|v| !v.is_empty()).map(|v| format!("Environment=HALE_VAULT_DIR={v}\n")).unwrap_or_default();
+    let mut vault = std::env::var("HALE_VAULT_DIR").ok().filter(|v| !v.is_empty()).map(|v| format!("Environment=HALE_VAULT_DIR={v}\n")).unwrap_or_default();
+    // `operator` backends reach the unit through a file of the habitat's,
+    // mode 600, as a provisioned body's env file does: never on the unit's
+    // own lines
+    if backends == "operator" {
+        let env = PathBuf::from(local_habitat_dir()).join("backends.env");
+        let text = ["HALE_DNA_MEMORY_DSN_OWNER", "HALE_DNA_NATS_URL_OWNER"].iter().map(|k| format!("{k}={}\n", std::env::var(k).unwrap_or_default())).collect::<String>();
+        use std::os::unix::fs::OpenOptionsExt;
+        use std::io::Write;
+        let mut f = std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&env).map_err(|e| format!("write {}: {e}", env.display()))?;
+        f.write_all(text.as_bytes()).map_err(|e| format!("write {}: {e}", env.display()))?;
+        vault.push_str(&format!("EnvironmentFile={}\n", env.display()));
+    }
     let unit = format!(
         "[Unit]\nDescription=hale habitat (local) at {dir}\nAfter=network-online.target\n\n[Service]\nWorkingDirectory={g}\nEnvironment=XDG_DATA_HOME={data}\nEnvironment=HALE_DNA_COMPOSE=off\n{vault}ExecStart={me} dna dev {g} --no-iris\nRestart=on-failure\nRestartSec=5\n\n[Install]\nWantedBy=default.target\n",
         dir = local_habitat_dir(),
@@ -596,7 +670,8 @@ fn status() -> ExitCode {
         println!("allocation {key} ({})", row["root"].as_str().unwrap_or("no organism recorded"));
         for role in ["memory", "nerves", "senses"] {
             let service = format!("{role}-{key}");
-            let state = if running.iter().any(|s| s == &service) { "running" } else { "stopped" };
+            let on_operator = row["roles"][role]["service"].as_str() == Some("operator");
+            let state = if on_operator { "on the operator's server" } else if running.iter().any(|s| s == &service) { "running" } else { "stopped" };
             let recorded = row["roles"][role]["schema_version"].as_u64();
             let want = versions.iter().find(|(r, _)| r == role).map(|(_, v)| *v);
             let version = match (recorded, want) {
@@ -797,7 +872,7 @@ mod tests {
     fn allocation_rows_follow_the_version() {
         let id = "1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef";
         let mut row = serde_json::json!({ "root": "/a/checkout" });
-        next_rows(&mut row, id, "memory", 9, "postgres-owner-1234567890ab", "hale-habitat-local-x");
+        next_rows(&mut row, id, "memory", 9, "postgres-owner-1234567890ab", "hale-habitat-local-x", false);
         let kinds: Vec<&str> = row["pending"].as_array().unwrap().iter().map(|r| r["kind"].as_str().unwrap()).collect();
         assert_eq!(kinds, ["habitat.allocated", "habitat.migrated"]);
         let allocated = row["pending"][0]["body"].as_str().unwrap();
@@ -806,10 +881,10 @@ mod tests {
         // flushed, then migrated again at the same version: nothing owed
         row["pending"] = serde_json::json!([]);
         row["roles"]["memory"]["recorded"] = serde_json::json!(true);
-        next_rows(&mut row, id, "memory", 9, "", "p");
+        next_rows(&mut row, id, "memory", 9, "", "p", false);
         assert!(row["pending"].as_array().unwrap().is_empty());
         // the version moves: one migrated row, from the old version
-        next_rows(&mut row, id, "memory", 10, "", "p");
+        next_rows(&mut row, id, "memory", 10, "", "p", false);
         let moved = &row["pending"][0];
         assert_eq!(moved["kind"], "habitat.migrated");
         assert!(moved["body"].as_str().unwrap().contains("\"from\":9") && moved["body"].as_str().unwrap().contains("\"schema_version\":10"));
